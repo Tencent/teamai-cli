@@ -6,7 +6,7 @@ import { branchNames, type ExpressionStep } from './expression.js';
 import { isItem } from './fan-out.js';
 import { passesOf, previousPass, stepLoops, type StepLoops } from './loop.js';
 import { parseStepPath } from './step-path.js';
-import { settled, VISIBLE_OUTCOMES, type StepState } from './step-state.js';
+import { settled, visibleOutcome, type StepState } from './step-state.js';
 import type { TemplateContext } from './template.js';
 import type { InlineWorkflow, RunState, WorkflowDefinition, WorkflowStep } from './types.js';
 import { mergeRequirements, type Requirements } from './requirements.js';
@@ -142,7 +142,7 @@ export function contextOf(scope: Scope, states: StepState[], reader?: StepState)
 function expressionSteps(scope: Scope, states: StepState[], reader?: StepState): Record<string, ExpressionStep> {
   const previous = reader ? scope.loops.previous(localId(scope, reader)) : new Set<string>();
   return { ...scope.outer, ...Object.fromEntries(states.map((step) => [localId(scope, step), previous.has(localId(scope, step)) ? previousPass(step) : {
-    ...(settled(step) ? { outcome: VISIBLE_OUTCOMES[step.status] } : {}),
+    ...(settled(step) ? { outcome: visibleOutcome(step) } : {}),
     ...('end' in step && step.end !== undefined ? { end: step.end } : {}),
     ...('outputs' in step && step.outputs !== undefined ? { outputs: step.outputs } : {}),
     ...('results' in step && step.results !== undefined ? { results: step.results } : {}),

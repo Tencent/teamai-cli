@@ -63,7 +63,7 @@ const RecordSchema: z.ZodType<ReadRecord, z.ZodTypeDef, unknown> = z.object({
   steps: z.array(z.object({
     step: z.string(),
     pass: z.number(),
-    outcome: z.enum(['success', 'failed', 'cancelled']).optional(),
+    outcome: z.enum(['success', 'failed', 'timeout', 'cancelled']).optional(),
     tokens: TokensSchema.optional(),
     answer: z.object({ choice: z.string(), channel: z.string() }).optional(),
   })).optional(),
@@ -126,7 +126,7 @@ export type RunDetail = { run: LocalRunRow | ReportedRunRow; steps: StepRow[]; s
 /** The team history, or why it could not be read; the local runs show either way. */
 export type ReportedHistory = { state: 'ok'; runs: ReportedRunRow[] } | { state: 'unavailable' };
 
-const STATUS_OF_OUTCOME = { success: 'succeeded', failed: 'failed', cancelled: 'cancelled' } as const;
+const STATUS_OF_OUTCOME = { success: 'succeeded', failed: 'failed', timeout: 'failed', cancelled: 'cancelled' } as const;
 
 function tokenTotal(steps: StepEntry[] | undefined): number {
   return (steps ?? []).reduce((sum, entry) => sum + (entry.tokens?.input ?? 0) + (entry.tokens?.output ?? 0), 0);

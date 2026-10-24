@@ -25,7 +25,7 @@ import { isLaunchTool } from '../tool-launch/tools.js';
 import { stepDefinitions } from './scope.js';
 import { snapshotPath } from './snapshot.js';
 import { installOwner, runLockPath } from './store.js';
-import { settled, VISIBLE_OUTCOMES, type StepPass, type StepState, type VisibleOutcome } from './step-state.js';
+import { settled, visibleOutcome, type StepPass, type StepState, type VisibleOutcome } from './step-state.js';
 import type { TokenUsage } from '../tool-launch/stdout.js';
 import { LIMIT_FAILURES, type Unenforced } from './requirements.js';
 import type { DriverIdentity, RunState, RunStatus, WorkflowFailure } from './types.js';
@@ -211,7 +211,7 @@ export function buildEndRecord(
   const steps = [
     ...run.steps.flatMap((step) => [
       ...(step.passes ?? []).map((earlier) => entry(step.id, earlier.pass, earlier)),
-      entry(step.id, step.pass, settled(step) ? { ...step, outcome: VISIBLE_OUTCOMES[step.status] } : undefined),
+      entry(step.id, step.pass, settled(step) ? { ...step, outcome: visibleOutcome(step) } : undefined),
     ]),
     ...(run.archive ?? []).map((archived) => entry(archived.step, archived.pass, archived)),
   ];

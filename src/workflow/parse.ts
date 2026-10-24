@@ -19,9 +19,9 @@ import { loopProblems } from './loop.js';
 import { modelValueProblem } from '../models/aliases.js';
 import { REQUIREMENT_KEYS, RequirementsSchema, type Requirements } from './requirements.js';
 
-const HEADER_KEYS = new Set(['schemaVersion', 'name', 'description', 'inputs', 'defaults', 'ends', 'outputs', 'loop', 'steps']);
+const HEADER_KEYS = new Set(['schemaVersion', 'name', 'description', 'inputs', 'defaults', 'ends', 'outputs', 'loop', 'timeout', 'steps']);
 const ACTION_KEYS = Object.keys(STEP_ACTIONS);
-const STEP_KEYS = new Set(['id', 'needs', 'if', ...ACTION_KEYS, 'env', 'with', 'agent', 'model', 'output', 'end', 'loop', 'break', 'for_each', 'approve', 'choose', 'interactive', 'workspace', 'session', 'scorers', 'requires']);
+const STEP_KEYS = new Set(['id', 'needs', 'if', ...ACTION_KEYS, 'env', 'with', 'agent', 'model', 'output', 'end', 'loop', 'break', 'for_each', 'approve', 'choose', 'interactive', 'workspace', 'session', 'scorers', 'requires', 'timeout']);
 const STEP_LOOP_KEYS = new Set(['back_to', 'while', 'max_iterations']);
 const FOR_EACH_KEYS = new Set(['items', 'max_parallel']);
 const WORKFLOW_LOOP_KEYS = new Set(['while', 'max_iterations']);
@@ -32,6 +32,8 @@ const ACTION_LIST = `${ACTION_KEYS.slice(0, -1).join(', ')}, or ${ACTION_KEYS.at
 const TYPE_NAMES = new Set(['string', 'number', 'boolean']);
 const TOKEN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const DURATION = /^(\d+)(ms|s|m|h)$/;
+const DURATION_UNITS = new Map([['ms', 1], ['s', 1000], ['m', 60_000], ['h', 3_600_000]]);
 /**
  * How pull checks what each step expression other than `if` reads; an `if` is also checked for being always false.
  * `loop.while` and `break` are evaluated after their step succeeds, so they may read it.
@@ -184,6 +186,8 @@ export function parseWorkflow(file: string, content: string, files?: WorkflowFil
 
   const defaultsPair = root.items.find((pair) => scalarString(pair.key) === 'defaults');
   const defaults = defaultsPair ? parseDefaults(defaultsPair.value ?? defaultsPair.key, ctx) : undefined;
+  const timeoutPair = root.items.find((pair) => scalarString(pair.key) === 'timeout');
+  const timeout = timeoutPair ? parseTimeout(timeoutPair.value ?? timeoutPair.key, 'timeout', ctx) : undefined;
 
   // A malformed inputs header is already reported; checking reads against it would only add noise.
   const { workflow: { ends, outputs, loop, steps } } = parseBody(root, '', 'workflow', ctx, inputsPair && !inputs ? undefined : inputs ?? {}, false);
@@ -193,7 +197,7 @@ export function parseWorkflow(file: string, content: string, files?: WorkflowFil
     ok: true,
     definition: {
       schemaVersion: 'v1alpha1', name, description, ...(inputs ? { inputs } : {}), ...(ends ? { ends } : {}), ...(outputs ? { outputs } : {}),
-      ...(loop ? { loop } : {}), ...(defaults ? { defaults } : {}), steps,
+      ...(loop ? { loop } : {}), ...(defaults ? { defaults } : {}), ...(timeout !== undefined ? { timeout } : {}), steps,
     },
     promptFileLocations,
   };
@@ -388,6 +392,8 @@ function parseBody(
       }
       const requiresPair = item.items.find((pair) => scalarString(pair.key) === 'requires');
       const requires = requiresPair ? parseRequires(requiresPair.value ?? requiresPair.key, `${field}.requires`, ctx) : undefined;
+      const stepTimeoutPair = item.items.find((pair) => scalarString(pair.key) === 'timeout');
+      const timeout = stepTimeoutPair ? parseTimeout(stepTimeoutPair.value ?? stepTimeoutPair.key, `${field}.timeout`, ctx) : undefined;
       const envPair = item.items.find((pair) => scalarString(pair.key) === 'env');
       const env = envPair ? parseEnv(envPair.value ?? envPair.key, `${field}.env`, label, ctx) : undefined;
       const withPair = item.items.find((pair) => scalarString(pair.key) === 'with');
@@ -542,6 +548,7 @@ function parseBody(
           ...(model !== undefined ? { model } : {}),
           ...(scorers ? { scorers } : {}),
           ...(requires ? { requires } : {}),
+          ...(timeout !== undefined ? { timeout } : {}),
           ...(output ? { output } : {}),
           ...(end ? { end } : {}),
           ...(loop ? { loop } : {}),
@@ -892,6 +899,15 @@ function parseRequires(node: Node | null | undefined, field: string, ctx: ParseC
     }
   }
   return parsed.success && diagnostics.length === before ? parsed.data : undefined;
+}
+
+/** A `timeout`: a whole number of `ms`, `s`, `m`, or `h`, such as `30s` or `2h`, read as milliseconds. */
+function parseTimeout(node: Node | null | undefined, field: string, ctx: ParseContext): number | undefined {
+  const [, amount = '', unit = ''] = DURATION.exec(scalarString(node)?.trim() ?? '') ?? [];
+  const ms = Number(amount) * (DURATION_UNITS.get(unit) ?? 0);
+  if (ms > 0 && Number.isSafeInteger(ms)) return ms;
+  ctx.diagnostics.push(locate(ctx.file, ctx.lineCounter, node, field, `${field} must be a positive duration, such as 500ms, 30s, 10m, or 2h`));
+  return undefined;
 }
 
 /** `env` maps variable names to text. A YAML number or boolean is read as its text. */

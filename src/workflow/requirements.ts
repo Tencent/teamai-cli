@@ -75,8 +75,8 @@ export type Allow = z.infer<typeof AllowSchema>;
 /** What a held step lacks, as `wait.held[].missing` lists it: a capability, or what the member's policy allows. */
 export type Missing = StrictKey | `workspace.${WorkspaceMode}` | `policy.${keyof Allow}`;
 
-/** The failure codes a step's requirements set. Records carry them. */
-export const LIMIT_FAILURES = ['missing_env', 'env_unavailable', 'env_conflict'] as const;
+/** The failure codes a step's requirements and the run's limits set. Records carry them. */
+export const LIMIT_FAILURES = ['missing_env', 'env_unavailable', 'env_conflict', 'timeout'] as const;
 
 /** One step `next` did not hand to this driver. An empty `missing` means another driver holds what it needs. */
 export interface Held {

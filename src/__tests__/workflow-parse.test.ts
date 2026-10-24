@@ -137,15 +137,15 @@ description: Build it.
 steps:
   - id: one
     command: npm test
-    timeout: 10m
+    future_option: 10m
 `);
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.diagnostics).toEqual(expect.arrayContaining([
       expect.objectContaining({
         code: 'unknown_key',
-        field: 'steps[0].timeout',
-        message: 'workflows/build.yaml uses `timeout`, which this teamai does not know. Update teamai.',
+        field: 'steps[0].future_option',
+        message: 'workflows/build.yaml uses `future_option`, which this teamai does not know. Update teamai.',
       }),
     ]));
   });
@@ -1011,6 +1011,58 @@ ends: { shipped: succeeded }
       expect.stringContaining('field "steps[1].requires": step "done" has no action'),
     ]));
     expect(result.diagnostics).toContainEqual(expect.objectContaining({ field: 'steps[0].requires.gpu', code: 'unknown_key' }));
+  });
+
+  it('reads timeout on the file and on a step as milliseconds', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+timeout: 2h
+steps:
+  - id: plan
+    prompt: Plan it.
+    timeout: 30s
+  - id: check
+    needs: [plan]
+    command: echo check
+    timeout: 500ms
+`);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.definition.timeout).toBe(7_200_000);
+    expect(result.definition.steps.map((step) => step.timeout)).toEqual([30_000, 500]);
+  });
+
+  it('reports a timeout that is not a positive duration, and timeout on an inline workflow or a step with no action', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+timeout: soon
+steps:
+  - id: plan
+    prompt: Plan it.
+    timeout: 0s
+  - id: check
+    needs: [plan]
+    workflow:
+      timeout: 1m
+      steps:
+        - id: inner
+          command: echo inner
+  - id: done
+    needs: [check]
+    end: shipped
+    timeout: 1m
+ends: { shipped: succeeded }
+`);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.diagnostics.map(formatDiagnostic)).toEqual(expect.arrayContaining([
+      'workflows/build.yaml:4: field "timeout": timeout must be a positive duration, such as 500ms, 30s, 10m, or 2h',
+      'workflows/build.yaml:8: field "steps[0].timeout": steps[0].timeout must be a positive duration, such as 500ms, 30s, 10m, or 2h',
+      expect.stringContaining('field "steps[1].workflow.timeout": step "check" runs an inline workflow'),
+      expect.stringContaining('field "steps[2].timeout": step "done" has no action'),
+    ]));
   });
 
   it('reports defaults on an inline workflow, which carries none', () => {

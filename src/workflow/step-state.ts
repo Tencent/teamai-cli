@@ -24,7 +24,7 @@ const LeaseSessionSchema = SessionRefSchema.extend({ earlier: z.array(SessionRef
 
 const LeaseSchema: z.ZodType<StepLease> = z.object({
   attempt: z.string(), revision: z.number(), driver: DriverSchema, session: LeaseSessionSchema.optional(),
-  unenforced: z.array(UnenforcedSchema).optional(),
+  unenforced: z.array(UnenforcedSchema).optional(), expiresAt: z.string().optional(),
 });
 
 const ChangesSchema = z.object({
@@ -66,7 +66,7 @@ const report = {
   unenforced: z.array(UnenforcedSchema).optional(),
 };
 
-export const OutcomeSchema = z.enum(['success', 'failed', 'skipped', 'cancelled']);
+export const OutcomeSchema = z.enum(['success', 'failed', 'timeout', 'skipped', 'cancelled']);
 /** The outcome an expression reads of a settled step. */
 export type VisibleOutcome = z.infer<typeof OutcomeSchema>;
 
@@ -152,7 +152,8 @@ const settledFields = {
  */
 const PendingSchema = StepBaseSchema.extend({ status: z.literal('pending') });
 const WaitingSchema = StepBaseSchema.extend({ status: z.literal('waiting') });
-const RunningSchema = StepBaseSchema.extend({ status: z.literal('running') });
+/** `expiresAt`: when the step's `timeout`, or that of the workflow file it runs, ends it, set when it starts. */
+const RunningSchema = StepBaseSchema.extend({ status: z.literal('running'), expiresAt: z.string().optional() });
 const SucceededSchema = StepBaseSchema.extend({
   status: z.literal('succeeded'), outcome: z.literal('success').default('success'), ...settledFields, loopFinal: z.boolean().optional(),
 });
@@ -208,7 +209,12 @@ type Settlement<T extends StepState> = Omit<T, keyof StepBase | 'status' | 'outc
 
 const BASE_KEYS = Object.keys(StepBaseSchema.shape) as Array<keyof StepBase>;
 const SETTLED_KEYS = Object.keys(settledFields) as Array<keyof typeof settledFields>;
-export const VISIBLE_OUTCOMES = { succeeded: 'success', failed: 'failed', skipped: 'skipped', cancelled: 'cancelled' } as const;
+const VISIBLE_OUTCOMES = { succeeded: 'success', failed: 'failed', skipped: 'skipped', cancelled: 'cancelled' } as const;
+
+/** The outcome expressions and records read of a settled step: a failure with code `timeout` reads as `timeout`. */
+export function visibleOutcome(step: Extract<StepState, { status: keyof typeof VISIBLE_OUTCOMES }>): VisibleOutcome {
+  return step.status === 'failed' && step.failure?.code === 'timeout' ? 'timeout' : VISIBLE_OUTCOMES[step.status];
+}
 
 /**
  * Replaces a step's fields in place with `next`, keeping the fields every step has, and returns it as its new variant.
@@ -280,9 +286,12 @@ export function lease(state: StepState, held: StepLease): LeasedStep {
   return become<LeasedStep>(state, { status: 'leased', attempt: held.attempt, lease: held });
 }
 
-/** A workflow step starts; `inputs` are the values its `with` passed, when that workflow declares inputs. */
-export function start(state: StepState, inputs?: Record<string, unknown>): RunningStep {
-  const running = become<RunningStep>(state, { status: 'running' });
+/**
+ * A workflow step starts; `inputs` are the values its `with` passed, when that workflow declares inputs, and
+ * `expiresAt` is when its timeout ends it.
+ */
+export function start(state: StepState, inputs?: Record<string, unknown>, expiresAt?: string): RunningStep {
+  const running = become<RunningStep>(state, { status: 'running', ...(expiresAt !== undefined ? { expiresAt } : {}) });
   if (inputs) running.inputs = inputs;
   return running;
 }
@@ -295,6 +304,13 @@ export function fail(state: StepState, settlement: Settlement<FailedStep>): Fail
   return become<FailedStep>(state, { status: 'failed', outcome: 'failed', ...settlement });
 }
 
+/** A leased or running step whose deadline passed fails with `timeout`. A leased one keeps its invalidated attempt. */
+export function timeOut(state: LeasedStep | RunningStep, failure: WorkflowFailure & { code: 'timeout' }, settledAt: number): FailedStep {
+  return become<FailedStep>(state, {
+    status: 'failed', outcome: 'failed', settledAt, ...(state.status === 'leased' ? { attempt: state.attempt } : {}), message: failure.message, failure,
+  });
+}
+
 /** An open step is cancelled before it settles. A leased one keeps its invalidated attempt. */
 export function cancel(state: StepIn<'pending' | 'waiting' | 'leased' | 'running'>, failure: WorkflowFailure, settledAt: number): CancelledStep {
   return become<CancelledStep>(state, { status: 'cancelled', settledAt, ...(state.status === 'leased' ? { attempt: state.attempt } : {}), failure });
@@ -303,7 +319,7 @@ export function cancel(state: StepIn<'pending' | 'waiting' | 'leased' | 'running
 /** The current pass of a settled step, as `passes` keeps it once a loop runs the step again; undefined while it has not settled. */
 export function passOf(state: StepState): StepPass | undefined {
   if (!settled(state)) return undefined;
-  const outcome = VISIBLE_OUTCOMES[state.status];
+  const outcome = visibleOutcome(state);
   return StepPassSchema.parse({ ...state, pass: state.pass ?? 1, outcome });
 }
 

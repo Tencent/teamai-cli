@@ -81,6 +81,8 @@ export interface WorkflowStep {
   session?: { continue: true } | { from: string };
   /** What the driver that runs this step, or every step of the workflow it runs, must provide. */
   requires?: Requirements;
+  /** Milliseconds the step's lease, or the workflow or items it runs, may take before the step fails with `timeout`. */
+  timeout?: number;
 }
 
 /** A `for_each`: the list of items, and how many of them may run at once. */
@@ -166,6 +168,8 @@ export interface WorkflowDefinition {
   /** Runs the workflow's steps again, round after round. */
   loop?: WorkflowLoop;
   defaults?: WorkflowDefaults;
+  /** Milliseconds a run of this file may take, counted from its start, or from the step that runs it. */
+  timeout?: number;
   steps: WorkflowStep[];
 }
 
@@ -207,6 +211,8 @@ export interface StepLease {
   session?: LeaseSession;
   /** The best-effort requirements the driver could not enforce, decided when the lease was issued; a hand-back only adds. */
   unenforced?: Unenforced[];
+  /** When the step's own `timeout` ends this lease, set when it is issued so a hand-back keeps it. */
+  expiresAt?: string;
 }
 
 export interface WorkflowFailure {

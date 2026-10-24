@@ -1292,7 +1292,7 @@ describe('file sub-workflows', () => {
     fs.writeFileSync(path.join(workflows, 'check.yaml'), CHECK);
     await syncWorkflowDefinitions(fixture.config);
     const restoreShip = saveCachedCopy(fixture.config, 'ship');
-    fs.writeFileSync(path.join(workflows, 'check.yaml'), `${CHECK}    timeout: 10m\n`);
+    fs.writeFileSync(path.join(workflows, 'check.yaml'), `${CHECK}    future_option: 10m\n`);
     await syncWorkflowDefinitions(fixture.config);
     restoreShip();
 
@@ -4443,5 +4443,69 @@ describe('the session a step resumes after other steps continued it', () => {
 
     expect(parseReport({ ...report, resumed: 's' })).toBe('resumed must be a session: a tool and an id');
     expect(parseReport({ ...report, resumed: { tool: 'claude', id: '' } })).toBe('resumed must be a session: a tool and an id');
+  });
+});
+
+describe('deadlines', () => {
+  const at = (minutes: number): string => new Date(Date.UTC(2026, 0, 1) + minutes * 60_000).toISOString();
+
+  it('gives a lease the first of its own deadline, those of the steps it is under, fan-out items included, and the run\'s', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date(at(0)));
+      const { config, runId } = await startBuild(graph(`  - id: plan
+    command: echo plan
+    output:
+      targets: [string]
+  - id: batch
+    needs: [plan]
+    timeout: 30m
+    for_each: { items: steps.plan.outputs.targets }
+    workflow:
+      steps:
+        - id: work
+          command: echo work
+          timeout: 45m
+`, 'timeout: 1h\n'));
+      const plan = leaseIn(await leaseNext(config, runId, driverA));
+      expect(plan).toMatchObject({ step: 'plan', expiresAt: at(60) });
+      await reportAttempt(config, runId, { attempt: plan.attempt, revision: plan.revision, outcome: 'success', driver: driverA, outputs: { targets: ['a'] } });
+      vi.setSystemTime(new Date(at(20)));
+      expect(await leaseNext(config, runId, driverA)).toMatchObject({ data: { lease: { step: 'batch[0].work', expiresAt: at(50) } } });
+      vi.setSystemTime(new Date(at(25)));
+      expect(await leaseNext(config, runId, driverA, { running: [] })).toMatchObject({ data: { lease: { step: 'batch[0].work', expiresAt: at(50) } } });
+      expect(await readRun(config, runId)).toMatchObject({ steps: [
+        { id: 'plan' },
+        { id: 'batch', status: 'running', expiresAt: at(50) },
+        { id: 'batch[0]', status: 'running' },
+        { id: 'batch[0].work', status: 'leased', lease: { expiresAt: at(65) } },
+      ] });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('bounds a workflow step by the timeout of the file it runs when that is shorter', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date(at(0)));
+      const fixture = testConfig();
+      const workflows = path.join(fixture.config.repo.localPath, 'workflows');
+      fs.writeFileSync(path.join(workflows, 'build.yaml'), graph('  - id: check\n    workflow: check\n    timeout: 1h\n'));
+      fs.writeFileSync(path.join(workflows, 'check.yaml'), 'schemaVersion: v1alpha1\nname: check\ndescription: Check it.\ntimeout: 10m\nsteps:\n  - id: inner\n    command: echo inner\n');
+      await syncWorkflowDefinitions(fixture.config);
+      const started = await startRun(fixture.config, 'build');
+      if ('error' in started) throw new Error(started.error.message);
+      const runId = String(started.data.run);
+      expect(await leaseNext(fixture.config, runId, driverA)).toMatchObject({ data: { lease: { step: 'check.inner', expiresAt: at(10) } } });
+      vi.setSystemTime(new Date(at(10)));
+      expect(await leaseNext(fixture.config, runId, driverA)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+      expect(await readRun(fixture.config, runId)).toMatchObject({ steps: [
+        { id: 'check', status: 'failed', failure: { code: 'timeout' } },
+        { id: 'check.inner', status: 'cancelled', failure: { code: 'timeout' } },
+      ] });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

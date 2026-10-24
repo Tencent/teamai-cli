@@ -18,11 +18,11 @@ import {
 } from './template.js';
 import { parseStepPath } from './step-path.js';
 import {
-  ReadSchema, answerHitl, cancel, fail, lease, release, settled, skip, start, stopped, succeed, waitForAnswer,
+  ReadSchema, answerHitl, cancel, fail, lease, release, settled, skip, start, stopped, succeed, timeOut, waitForAnswer,
   type ItemResult, type LeasedStep, type StepRead, type StepState,
 } from './step-state.js';
 import { addItems, afterStanding, expandItems, isItem, itemsAfter, itemsOf, itemsSettled, startedItems } from './fan-out.js';
-import { decideRound, decideStepLoop, exhaustedAtStart, firstPass, loopSettled } from './loop.js';
+import { decideRound, decideStepLoop, exhaustedAtStart, firstPass, isUnder, loopSettled } from './loop.js';
 import { childScope, contextOf, insertChildren, localId, statesIn, stepDefinitions, topScope, type Scope } from './scope.js';
 import { planWorkspace, plannedBranch, sessionOf, type LeaseSession, type SessionRef, type WorkspaceContract, type WorkspacePlan } from './workspace.js';
 import {
@@ -251,6 +251,7 @@ function leaseData(
   run: RunState, state: LeasedStep, definition: WorkflowStep, rendered: RenderedLease,
   { requires, envScope }: { requires: Requirements; envScope?: EnvScope }, plan?: WorkspacePlan,
 ): Record<string, unknown> {
+  const expiresAt = leaseDeadline(run, state);
   return { lease: {
     run: run.id,
     step: state.id,
@@ -271,6 +272,7 @@ function leaseData(
     ...(Object.keys(requires).length > 0 ? { requires } : {}),
     ...(envScope ? { envScope } : {}),
     ...(state.lease.unenforced ? { unenforced: state.lease.unenforced } : {}),
+    ...(expiresAt !== undefined ? { expiresAt } : {}),
   } };
 }
 
@@ -492,7 +494,9 @@ type Settled =
  * Starts the workflow a step runs with the values its `with` renders to in the step's own workflow.
  * Its steps join the run right after the step, which is `running` until they settle.
  */
-function startWorkflowStep(run: RunState, scope: Scope, states: StepState[], state: StepState, step: WorkflowStep, child: Scope): WorkflowFailure | undefined {
+function startWorkflowStep(
+  run: RunState, scope: Scope, states: StepState[], state: StepState, step: WorkflowStep, child: Scope, now: string,
+): WorkflowFailure | undefined {
   // An inline workflow takes no `with`: it already reads the enclosing inputs.
   let inputs: Record<string, unknown> | undefined;
   if ('name' in child.definition) {
@@ -505,7 +509,7 @@ function startWorkflowStep(run: RunState, scope: Scope, states: StepState[], sta
       child.inputs = inputs;
     }
   }
-  start(state, inputs);
+  start(state, inputs, ownDeadline(run, state, step, now));
   const steps = child.definition.steps.map((step): StepState => {
     const id = `${child.prefix}${step.id}`;
     const pass = firstPass(run, id);
@@ -571,10 +575,10 @@ function childOrUnreadable(run: RunState, scope: Scope, states: StepState[], sta
     ?? { unreadable: `Run ${run.id} step "${state.id}" runs workflow "${definition.workflow}", which the run did not keep` };
 }
 
-function settleRunning(run: RunState, scope: Scope, states: StepState[], state: StepState, definition: WorkflowStep): Settled {
-  if (definition.forEach && !isItem(state)) return settleItems(run, scope, states, state, definition);
+function settleRunning(run: RunState, scope: Scope, states: StepState[], state: StepState, definition: WorkflowStep, now: string): Settled {
+  if (definition.forEach && !isItem(state)) return settleItems(run, scope, states, state, definition, now);
   const child = childOrUnreadable(run, scope, states, state, definition);
-  return 'unreadable' in child ? child : settleScope(run, child);
+  return 'unreadable' in child ? child : settleScope(run, child, now);
 }
 
 /**
@@ -583,10 +587,10 @@ function settleRunning(run: RunState, scope: Scope, states: StepState[], state: 
  * engine cannot hand out or start fails at the current revision. Returns undefined when it changed the run.
  */
 function advanceInstance(
-  run: RunState, scope: Scope, states: StepState[], state: StepState, definition: WorkflowStep, items?: Expression,
+  run: RunState, scope: Scope, states: StepState[], state: StepState, definition: WorkflowStep, now: string, items?: Expression,
 ): Settled | undefined {
   if (state.status === 'running') {
-    const result = settleRunning(run, scope, states, state, definition);
+    const result = settleRunning(run, scope, states, state, definition, now);
     if (!('outcome' in result)) return result;
     finishStep(state, result);
     return undefined;
@@ -597,7 +601,7 @@ function advanceInstance(
       failStep(state, values, run.revision);
       return undefined;
     }
-    start(state);
+    start(state, undefined, ownDeadline(run, state, definition, now));
     addItems(run, state, values);
     return undefined;
   }
@@ -609,7 +613,7 @@ function advanceInstance(
   }
   const child = childOrUnreadable(run, scope, states, state, definition);
   if ('unreadable' in child) return child;
-  const failure = startWorkflowStep(run, scope, states, state, definition, child);
+  const failure = startWorkflowStep(run, scope, states, state, definition, child, now);
   if (failure) failStep(state, failure, run.revision);
   return undefined;
 }
@@ -620,7 +624,7 @@ function advanceInstance(
  * `next` leases one step per call, so a held-back item leaves its room to the next one.
  */
 function settleItems(
-  run: RunState, scope: Scope, states: StepState[], state: StepState, definition: WorkflowStep,
+  run: RunState, scope: Scope, states: StepState[], state: StepState, definition: WorkflowStep, now: string,
 ): Settled {
   for (;;) {
     const items = itemsOf(run, state);
@@ -647,7 +651,7 @@ function settleItems(
         continue;
       }
       if (item.status !== 'running' && (item.status !== 'pending' || standing(index) !== 'ready' || (maxParallel !== undefined && started >= maxParallel))) continue;
-      const advanced = advanceInstance(run, scope, states, item, definition);
+      const advanced = advanceInstance(run, scope, states, item, definition, now);
       if (advanced && 'unreadable' in advanced) return advanced;
       if (advanced && 'ready' in advanced) ready.push(...advanced.ready);
       if (advanced) continue;
@@ -674,7 +678,7 @@ function workflowOutputs(scope: Scope, states: StepState[], paths: Map<string, E
  * Settles driverless transitions before applying an end or deciding a loop. The steps ready to lease are returned
  * only after this fixpoint, before another report can advance the revision.
  */
-function settleScope(run: RunState, scope: Scope): Settled {
+function settleScope(run: RunState, scope: Scope, now: string): Settled {
   const reads = parseReads(run, scope);
   if (typeof reads === 'string') return { unreadable: reads };
   const states = statesIn(run, scope);
@@ -714,7 +718,7 @@ function settleScope(run: RunState, scope: Scope): Settled {
       if (state.status === 'pending' && !hasAction(definition)) {
         succeed(state, { settledAt: run.revision });
       } else {
-        const advanced = advanceInstance(run, scope, states, state, definition, reads.items.get(localId(scope, state)));
+        const advanced = advanceInstance(run, scope, states, state, definition, now, reads.items.get(localId(scope, state)));
         if (advanced && 'unreadable' in advanced) return advanced;
         if (advanced && 'ready' in advanced) ready.push(...advanced.ready);
         if (advanced) continue;
@@ -767,9 +771,70 @@ function settleScope(run: RunState, scope: Scope): Settled {
   }
 }
 
-/** Every stored report is reconciled before a later protocol operation can apply another transition. */
-export function reconcileRun(run: RunState): Settled {
-  return settleScope(run, topScope(run));
+/**
+ * Every stored report is reconciled before a later protocol operation can apply another transition. Deadlines `now`
+ * has passed apply first: the engine has no clock of its own, so a timeout takes effect on the first operation after it.
+ */
+export function reconcileRun(run: RunState, now: string): Settled {
+  return expire(run, now) ?? settleScope(run, topScope(run), now);
+}
+
+function after(from: string, ms: number): string {
+  return new Date(Date.parse(from) + ms).toISOString();
+}
+
+function passed(deadline: string, now: string): boolean {
+  return Date.parse(deadline) <= Date.parse(now);
+}
+
+/**
+ * When instance `state` of `step`, leased or started at `now`, must settle: by its own `timeout`, and when it runs a
+ * workflow file, by that file's if it is shorter. A `for_each` step's own instance bounds the whole fan-out; each item
+ * runs the file.
+ */
+export function ownDeadline(run: RunState, state: StepState, step: WorkflowStep, now: string): string | undefined {
+  const file = typeof step.workflow === 'string' && (!step.forEach || isItem(state)) ? run.workflows?.[step.workflow]?.timeout : undefined;
+  const limits = [step.timeout, file].filter((ms) => ms !== undefined);
+  return limits.length > 0 ? after(now, Math.min(...limits)) : undefined;
+}
+
+/** The run's own deadline, from when it started. */
+function runDeadline(run: RunState): string | undefined {
+  return run.definition.timeout === undefined ? undefined : after(run.createdAt, run.definition.timeout);
+}
+
+/** When a lease ends: the first of its own deadline, that of every running step it is under, fan-out items included, and the run's. */
+function leaseDeadline(run: RunState, state: LeasedStep): string | undefined {
+  const deadlines = [
+    state.lease.expiresAt,
+    runDeadline(run),
+    ...run.steps.map((step) => (step.status === 'running' && isUnder(step.id)(state.id) ? step.expiresAt : undefined)),
+  ].filter((deadline) => deadline !== undefined);
+  return deadlines.sort((left, right) => Date.parse(left) - Date.parse(right))[0];
+}
+
+/**
+ * Applies every deadline `now` has passed, outer first, so what an expired step stops does not time out on its own.
+ * The run's own deadline cancels every open step and settles the run. A step's fails it with `timeout`, so a step that
+ * reads its outcome can recover, and cancels what it runs. Applying it again with the same `now` changes nothing.
+ */
+function expire(run: RunState, now: string): WorkflowResult | undefined {
+  const runEnds = runDeadline(run);
+  if (runEnds !== undefined && passed(runEnds, now)) {
+    const failure = { code: 'timeout', message: `Run ${run.id} passed its timeout at ${runEnds}` };
+    stopWhere(run, () => true, failure, run.revision);
+    return { outcome: 'failed', failure, settledAt: run.revision };
+  }
+  // A step's instance comes before the instances of what it runs, so an outer deadline applies first.
+  for (const state of run.steps) {
+    const expiresAt = state.status === 'running' ? state.expiresAt : state.status === 'leased' ? state.lease.expiresAt : undefined;
+    if (expiresAt === undefined || !passed(expiresAt, now)) continue;
+    const failure = { code: 'timeout', message: `Step "${state.id}" passed its timeout at ${expiresAt}` } as const;
+    if (state.status === 'running') stopWhere(run, isUnder(state.id), { code: 'timeout', message: `Cancelled: ${failure.message}` }, run.revision);
+    else if (state.status === 'leased') (run.cancelledAttempts ??= []).push(state.attempt);
+    if (state.status === 'running' || state.status === 'leased') timeOut(state, failure, run.revision);
+  }
+  return undefined;
 }
 
 /** Why `inputs` do not fit what the workflow declares, naming the field, or null when they fit. Every declared input is required. */
@@ -968,15 +1033,15 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
     }
     const older = missingNeeds(run);
     if (older) return { save: false, envelope: error('run_unreadable', older) };
-    const other = run.steps.find((step): step is LeasedStep => step.status === 'leased' && !sameDriver(step.lease.driver, driver));
-    if (other) return wait(other);
-    run.driver = driver;
     for (;;) {
-      // Ends reached through reports apply before an open lease is handed back, so a restarted driver does not run
-      // again what an end already stopped.
-      const result = reconcileRun(run);
+      // Ends reached through reports, and deadlines passed, apply before an open lease is handed back, so a restarted
+      // driver does not run again what they already stopped, and a lease past its timeout no longer holds the run.
+      const result = reconcileRun(run, now);
       if ('unreadable' in result) return { save: false, envelope: error('run_unreadable', result.unreadable) };
       if ('outcome' in result) return done(result);
+      const other = run.steps.find((step): step is LeasedStep => step.status === 'leased' && !sameDriver(step.lease.driver, driver));
+      if (other) return wait(other);
+      run.driver = driver;
       if (options.canTakeLease !== false && !can.hitl && answerWithoutHitl(config, run, now, options.autoApprove)) continue;
       // An open lease the driver does not list is handed back before another lease is issued, as a restarted driver expects.
       const leased = run.steps.find((step): step is LeasedStep => step.status === 'leased' && !running.has(step.lease.attempt));
@@ -1020,8 +1085,10 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
           }
           if (plan.contract && options.base && !run.base) run.base = options.base;
           const { unenforced } = terms.terms;
+          const expiresAt = ownDeadline(run, state, definition, now);
           const step = lease(state, offering({
-            attempt: `a${randomBytes(4).toString('hex')}`, revision: run.revision, driver, ...(unenforced.length > 0 ? { unenforced } : {}),
+            attempt: `a${randomBytes(4).toString('hex')}`, revision: run.revision, driver,
+            ...(unenforced.length > 0 ? { unenforced } : {}), ...(expiresAt !== undefined ? { expiresAt } : {}),
           }, plan.session));
           rememberCopy(run, plan, driver);
           return answer(leaseData(run, step, definition, rendered, terms.terms, plan));
@@ -1290,9 +1357,9 @@ function workspaceMismatch(report: ReportInput, contract: WorkspaceContract | un
  * steps again has made them pending, and a workflow or fan-out that can start has added its steps. A running workflow
  * or `for_each` step is skipped, since its steps are in the run; one that has not started counts by what it would run.
  */
-function branchStillUsed(run: RunState, branch: string): boolean {
+function branchStillUsed(run: RunState, branch: string, now: string): boolean {
   const ahead = structuredClone(run);
-  if ('unreadable' in reconcileRun(ahead)) return true;
+  if ('unreadable' in reconcileRun(ahead, now)) return true;
   for (const item of ahead.steps) {
     if (item.status === 'running' || settled(item)) continue;
     const located = locateStep(ahead, item.id);
@@ -1309,7 +1376,7 @@ function branchStillUsed(run: RunState, branch: string): boolean {
  */
 export function resumableSessions(run: RunState): LeaseSession[] {
   const ahead = structuredClone(run);
-  reconcileRun(ahead);
+  reconcileRun(ahead, new Date().toISOString());
   const sessions = new Map<string, LeaseSession>();
   const visit = (scope: Scope, state: StepState, step: WorkflowStep, unstarted: boolean): void => {
     // A step of a workflow that has not started reads none of that workflow's steps yet.
@@ -1359,7 +1426,7 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
     return error('judge_lease', `Attempt ${report.attempt} is a judge lease, which workflow report does not settle. Submit its answer with: teamai score --lease ${report.attempt} --submit --stdin`);
   }
   const install = await installOwner(config);
-  return withRun(config, runId, async (run) => {
+  return withRun(config, runId, async (run, now) => {
     // Settled membership wins. An old revision of a settled attempt is still repeated_report.
     if (run.settledAttempts.includes(report.attempt)) {
       return { save: false, envelope: error('repeated_report', `Attempt ${report.attempt} was already reported`) };
@@ -1375,7 +1442,7 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
       }
       return { save: false, envelope: error('wrong_attempt', `Attempt ${report.attempt} is not the leased attempt`) };
     }
-    const reconciled = reconcileRun(run);
+    const reconciled = reconcileRun(run, now);
     if ('unreadable' in reconciled) return { save: false, envelope: error('run_unreadable', reconciled.unreadable) };
     if (run.cancelledAttempts?.includes(report.attempt)) {
       return { save: true, envelope: error('lease_cancelled', `Attempt ${report.attempt} was cancelled; its report is not recorded`) };
@@ -1438,7 +1505,7 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
       : outcome === 'success' ? succeed(step, { ...settlement, ...(report.outputs !== undefined ? { outputs: report.outputs } : {}) })
         : fail(step, { ...settlement, failure });
     // From the lease, so a reader that was the copy's last user lets the driver remove the worktree.
-    const cleanup = outcome === 'success' && contract !== undefined && !branchStillUsed(run, contract.branch);
+    const cleanup = outcome === 'success' && contract !== undefined && !branchStillUsed(run, contract.branch, now);
     return {
       save: true,
       envelope: ok({

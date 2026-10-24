@@ -951,6 +951,90 @@ workflowConformanceScenarios.push(
   },
 );
 
+// The CLI runner waits for real, so each deadline leaves room for the calls made before the clock moves past it.
+const TIMED_STEP = controlsYaml(`  - id: work
+    command: echo work
+    timeout: 2s
+  - id: recover
+    needs: [work]
+    if: steps.work.outcome == 'timeout'
+    command: echo recover`);
+const TIMED_FAN_OUT = controlsYaml(`  - id: plan
+    command: echo plan
+    output:
+      targets: [string]
+  - id: batch
+    needs: [plan]
+    timeout: 3s
+    for_each: { items: steps.plan.outputs.targets }
+    workflow:
+      steps:
+        - id: work
+          command: echo work`);
+workflowConformanceScenarios.push(
+  {
+    name: 'a lease past its timeout is cancelled, its report is lease_cancelled, and the step settles with outcome timeout',
+    workflowName: 'build', yaml: TIMED_STEP,
+    operations: [
+      { kind: 'next', saveAs: 'work', expect: { data: { lease: { step: 'work' } } } },
+      { kind: 'advance', ms: 2000 },
+      { kind: 'next', saveAs: 'recover', running: ['work'], cancelled: ['work'], expect: { data: { lease: { step: 'recover' } } } },
+      { kind: 'report', lease: 'work', body: { outcome: 'success' }, expect: { error: { code: 'lease_cancelled' } } },
+      { kind: 'report', lease: 'recover', body: { outcome: 'success' }, expect: { data: { accepted: true } } },
+      { kind: 'next', saveAs: 'done', expect: { data: { done: { outcome: 'failed' } } } },
+    ],
+    expectState: { steps: [{ id: 'work', status: 'failed', failure: { code: 'timeout' } }, { id: 'recover', status: 'succeeded' }] },
+    expectRecord: { failure: { code: 'timeout' }, steps: [{ step: 'work', outcome: 'timeout' }, { step: 'recover', outcome: 'success' }] },
+  },
+  {
+    name: 'a for_each past its timeout cancels the leases of its items with it',
+    workflowName: 'build', yaml: TIMED_FAN_OUT,
+    operations: [
+      { kind: 'next', saveAs: 'plan', expect: { data: { lease: { step: 'plan' } } } },
+      { kind: 'report', lease: 'plan', body: { outcome: 'success', outputs: { targets: ['a', 'b'] } }, expect: { data: { accepted: true } } },
+      { kind: 'next', saveAs: 'first', expect: { data: { lease: { step: 'batch[0].work' } } } },
+      { kind: 'next', saveAs: 'second', running: ['first'], expect: { data: { lease: { step: 'batch[1].work' } } } },
+      { kind: 'advance', ms: 3000 },
+      { kind: 'next', saveAs: 'done', running: ['first', 'second'], cancelled: ['first', 'second'], expect: { data: { done: { outcome: 'failed' } } } },
+      { kind: 'report', lease: 'second', body: { outcome: 'success' }, expect: { error: { code: 'lease_cancelled' } } },
+    ],
+    expectState: { steps: [
+      { id: 'plan', status: 'succeeded' },
+      { id: 'batch', status: 'failed', failure: { code: 'timeout' } },
+      { id: 'batch[0]', status: 'cancelled' },
+      { id: 'batch[0].work', status: 'cancelled' },
+      { id: 'batch[1]', status: 'cancelled' },
+      { id: 'batch[1].work', status: 'cancelled' },
+    ] },
+    expectRecord: { failure: { code: 'timeout' } },
+  },
+  {
+    name: 'a run past its workflow timeout cancels its open leases and fails with timeout',
+    workflowName: 'build', yaml: PARALLEL_ROOTS.replace('steps:\n', 'timeout: 3s\nsteps:\n'),
+    operations: [
+      { kind: 'next', saveAs: 'a', expect: { data: { lease: { step: 'a' } } } },
+      { kind: 'next', saveAs: 'b', running: ['a'], expect: { data: { lease: { step: 'b' } } } },
+      { kind: 'advance', ms: 3000 },
+      { kind: 'next', saveAs: 'done', running: ['a', 'b'], cancelled: ['a', 'b'], expect: { data: { done: { outcome: 'failed', failure: { code: 'timeout' } } } } },
+      { kind: 'report', lease: 'a', body: { outcome: 'success' }, expect: { error: { code: 'lease_cancelled' } } },
+    ],
+    expectState: { status: 'failed', failure: { code: 'timeout' } },
+    expectRecord: { failure: { code: 'timeout' } },
+  },
+  {
+    name: "another driver's lease past its timeout no longer holds the run",
+    workflowName: 'build', yaml: TIMED_STEP,
+    operations: [
+      { kind: 'next', saveAs: 'work', as: 'external', expect: { data: { lease: { step: 'work' } } } },
+      { kind: 'next', saveAs: 'blocked', as: 'local', expect: { data: { wait: { reason: 'work is leased' } } } },
+      { kind: 'advance', ms: 2000 },
+      { kind: 'next', saveAs: 'recover', as: 'local', expect: { data: { lease: { step: 'recover' } } } },
+      { kind: 'report', lease: 'work', as: 'external', body: { outcome: 'success' }, expect: { error: { code: 'lease_cancelled' } } },
+    ],
+    expectState: { steps: [{ id: 'work', status: 'failed', failure: { code: 'timeout' } }, { id: 'recover', status: 'leased' }] },
+  },
+);
+
 workflowConformanceScenarios.push({
   name: 'a driver UI answers a required HITL request',
   workflowName: 'build',
