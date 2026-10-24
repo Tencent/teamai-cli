@@ -68,22 +68,16 @@ const failed = (fault: DeliveryFault): DeliveryOutcome => ({ ok: false, fault })
  * Nothing here logs in, prompts or merges, and no text a host answered with is kept, since it may hold a credential.
  */
 export async function deliverPr(job: DeliveryJob, gate: CreateGate): Promise<DeliveryOutcome | 'busy'> {
-  const changed = await changedFiles(job);
-  if ('fault' in changed) return failed(changed.fault);
-  const files = protectedPaths(changed.files);
-  if (files.length > 0) return failed({ kind: 'protected_path', files });
-  // A pull request holds what origin's branch holds, so it goes out only while that is the commit just checked. A push
-  // after this read still reaches a request opened below; only the driver that holds the branch can make that push.
+  if (!OBJECT_ID.test(job.key.head) || !OBJECT_ID.test(job.base)) return failed({ kind: 'unreadable' });
+  // A later push can still change an open request after this read; only the driver holding the branch can make it.
   const tip = await originTip(job.checkout, job.key.branch);
   if (tip.kind === 'unreadable') return failed({ kind: 'branch_unreadable' });
   if (tip.commit === undefined) return failed({ kind: 'branch_missing' });
-  if (tip.commit !== job.key.head) {
-    if (tip.commit !== job.recordedHead) return failed({ kind: 'branch_moved' });
-    const latest = await changedFiles({ ...job, key: { ...job.key, head: tip.commit } });
-    if ('fault' in latest) return failed(latest.fault);
-    const protectedFiles = protectedPaths(latest.files);
-    if (protectedFiles.length > 0) return failed({ kind: 'protected_path', files: protectedFiles });
-  }
+  if (tip.commit !== job.key.head && tip.commit !== job.recordedHead) return failed({ kind: 'branch_moved' });
+  const changed = await changedFiles({ ...job, key: { ...job.key, head: tip.commit } });
+  if ('fault' in changed) return failed(changed.fault);
+  const files = protectedPaths(changed.files);
+  if (files.length > 0) return failed({ kind: 'protected_path', files });
   if (job.reported) return { ok: true, pr: job.reported };
   const origin = await originOf(job.checkout);
   if (origin.kind === 'transport') return failed({ kind: 'no_provider' });

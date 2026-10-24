@@ -915,6 +915,39 @@ describe('retrying and cancelling a delivery', () => {
     }
   });
 
+  it('checks only the selected recorded tip when later work removed an earlier protected change', async () => {
+    const { config, root, runId } = await fixture(`  - id: work
+    workspace: new
+    workflow:
+      steps:
+        - id: impl
+          command: echo impl
+          workspace: continue
+          deliver: pr
+        - id: docs
+          needs: []
+          command: echo docs
+          workspace: continue
+`);
+    const gh = fakeGh(path.join(root, 'gh'));
+    const impl = await take(config, runId);
+    await succeed(config, runId, impl, { to: pushWork(root, impl, { '.github/workflows/temporary.yml': 'temporary' }) });
+    const lock = deliveryLockPath(config, runId);
+    expect(await acquireLock(lock)).toBe(true);
+    const docs = await take(config, runId);
+    await releaseLock(lock);
+    const branch = docs.workspace?.branch ?? '';
+    const clone = fs.mkdtempSync(path.join(root, 'correction-'));
+    git(root, ['clone', '-q', '-b', branch, path.join(root, 'remote.git'), clone]);
+    git(clone, ['rm', '.github/workflows/temporary.yml']);
+    const to = commitAndPush(clone, branch, { 'docs.txt': 'docs' });
+    await succeed(config, runId, docs, { to });
+
+    expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(creates(gh)).toEqual([[branch, 'main']]);
+    expect((await state(config, runId)).deliveries).toHaveLength(1);
+  });
+
   it('records only the canonical receipt after an unconfirmed TGit-style create and a retry', async () => {
     const { config, root, runId } = await fixture(FIX_THEN_REVIEW);
     const fix = await take(config, runId);
