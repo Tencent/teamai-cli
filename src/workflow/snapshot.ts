@@ -59,6 +59,7 @@ const BodySchema = z.object({
   /** The scorers the run pinned, by hash only: the machine that claims the run uses its own copy when the hash matches. */
   scorers: z.record(z.object({ sourceHash: z.string() })).optional(),
   createdAt: z.string(),
+  timeoutFrom: z.string().optional(),
   updatedAt: z.string(),
   steps: z.array(withCommitIds(StepCheckpointSchema)),
 });
@@ -192,7 +193,8 @@ const RUN_RULES = {
   end: 'publish', failure: 'rewrite', inputs: 'publish', sourceHash: 'publish', teamRevision: 'publish',
   definition: 'rewrite', workflows: 'rewrite', scorers: 'rewrite', steps: 'rewrite', settledAttempts: 'rewrite', settledCount: 'rewrite',
   endRecordQueued: 'drop', cancelledAttempts: 'rewrite', archive: 'rewrite', round: 'publish', base: 'publish',
-  checkout: 'drop', copies: 'rewrite', sessionContinuations: 'publish', releasedTokens: 'publish', publication: 'drop', createdAt: 'publish', updatedAt: 'publish',
+  checkout: 'drop', copies: 'rewrite', sessionContinuations: 'publish', releasedTokens: 'publish', publication: 'drop', createdAt: 'publish', timeoutFrom: 'publish',
+  updatedAt: 'publish',
 } satisfies FieldRules<RunState>;
 
 const STEP_RULES = {

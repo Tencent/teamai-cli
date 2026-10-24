@@ -294,6 +294,8 @@ export interface RunState {
   /** How this machine last published the run, or took it from another machine. Local run state only. */
   publication?: RunPublication;
   createdAt: string;
+  /** When the workflow's `timeout` counts from once a retry reopened the run, so the reopened run gets a whole window. */
+  timeoutFrom?: string;
   updatedAt: string;
 }
 

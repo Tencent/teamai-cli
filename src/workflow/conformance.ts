@@ -1046,6 +1046,20 @@ workflowConformanceScenarios.push(
     expectRecord: { failure: { code: 'timeout' } },
   },
   {
+    name: 'a retry that reopens a run its workflow timeout ended gives it a fresh window',
+    workflowName: 'build', yaml: controlsYaml('  - id: work\n    command: echo work').replace('steps:\n', 'timeout: 3s\nsteps:\n'),
+    operations: [
+      { kind: 'next', saveAs: 'work', expect: { data: { lease: { step: 'work' } } } },
+      { kind: 'advance', ms: 3000 },
+      { kind: 'next', saveAs: 'done', running: ['work'], expect: { data: { done: { outcome: 'failed', failure: { code: 'timeout' } } } } },
+      { kind: 'retry', step: 'work', expect: { data: { reopened: true } } },
+      { kind: 'next', saveAs: 'again', expect: { data: { lease: { step: 'work' } } } },
+      { kind: 'report', lease: 'again', body: { outcome: 'success' }, expect: { data: { accepted: true } } },
+      { kind: 'next', saveAs: 'end', expect: { data: { done: { outcome: 'succeeded' } } } },
+    ],
+    expectState: { status: 'succeeded' },
+  },
+  {
     name: "another driver's lease past its timeout no longer holds the run",
     workflowName: 'build', yaml: TIMED_STEP,
     operations: [

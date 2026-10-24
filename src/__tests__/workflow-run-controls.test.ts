@@ -8,6 +8,7 @@ import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, parseNextPayload, parseReport, reportAttempt, startRun, type NextOptions } from '../workflow/engine.js';
 import { cancelRun, respondToHitl, retryStep } from '../workflow/run-controls.js';
 import { pendingRecords } from '../workflow/records.js';
+import { projectRun } from '../workflow/snapshot.js';
 import { readRun, runFilePath } from '../workflow/store.js';
 import type { RunState, WorkflowEnvelope } from '../workflow/types.js';
 
@@ -224,6 +225,18 @@ describe('workflow retry', () => {
     expect(data(await retryStep(f.config, f.id, 'work'))).toMatchObject({
       reopened: true, run: { status: 'running' }, resume: `teamai workflow resume ${f.id}`,
     });
+  });
+
+  it('counts the workflow timeout of a reopened run from the retry, in the run and in what it publishes', async () => {
+    const f = await fixture('  - id: work\n    command: echo work', 'timeout: 1h\n');
+    await f.report(data(await f.next()).lease, 'failed');
+    expect(data(await f.next()).done.outcome).toBe('failed');
+    const before = Date.now();
+    expect(data(await retryStep(f.config, f.id, 'work'))).toMatchObject({ reopened: true });
+    const state = await f.state();
+    expect(Date.parse(state.timeoutFrom ?? '')).toBeGreaterThanOrEqual(before - 1000);
+    const projected = projectRun(state, {});
+    expect(projected.ok && projected.value.timeoutFrom).toBe(state.timeoutFrom);
   });
 
   it('reopens a failed run, keeps the failed pass and retries skipped dependents', async () => {

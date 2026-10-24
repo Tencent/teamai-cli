@@ -283,6 +283,7 @@ export async function retryStep(config: LocalConfig, runId: string, step: string
     }
     if (reopened) {
       run.status = 'running';
+      run.timeoutFrom = now;
       delete run.end;
       delete run.failure;
       await removeQueuedEndRecord(config, run.id);

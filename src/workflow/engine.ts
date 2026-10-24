@@ -822,7 +822,7 @@ function spentTokens(run: RunState, prefix: string): number {
 
 /** The run's own deadline, from when it started. */
 function runDeadline(run: RunState): string | undefined {
-  return run.definition.timeout === undefined ? undefined : after(run.createdAt, run.definition.timeout);
+  return run.definition.timeout === undefined ? undefined : after(run.timeoutFrom ?? run.createdAt, run.definition.timeout);
 }
 
 /** When a lease ends: the first of its own deadline, that of every running step it is under, fan-out items included, and the run's. */
