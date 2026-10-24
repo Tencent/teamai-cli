@@ -2321,3 +2321,69 @@ steps:
     expect(seen).toBe('{"sessions": [');
   });
 });
+
+describe('local workflow driver setup', () => {
+  const TOKEN = 'setup-token-value-1082';
+
+  async function setupFixture(setup: string, steps: string): Promise<{ config: LocalConfig; workspace: string; runId: string }> {
+    const built = await workflowFixture(`schemaVersion: v1alpha1
+name: build
+description: Prepare each new workspace.
+setup:
+${setup}
+steps:
+${steps}`);
+    fs.writeFileSync(path.join(built.workspace, '.gitignore'), '.npmrc\n.prepared\n');
+    execFileSync('git', ['add', '.gitignore'], { cwd: built.workspace });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'ignore'], { cwd: built.workspace });
+    vi.stubEnv('SETUP_TOKEN', TOKEN);
+    return built;
+  }
+
+  function worktrees(workspace: string): string[] {
+    return execFileSync('git', ['worktree', 'list', '--porcelain'], { cwd: workspace, encoding: 'utf8' })
+      .split('\n').filter((line) => line.startsWith('worktree ')).slice(1);
+  }
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('runs setup once in the workspace it creates, with its keys, and the steps there never get them', async () => {
+    const log = path.join(os.tmpdir(), `teamai-setup-log-${randomUUID()}`);
+    dirs.push(log);
+    const { config, workspace, runId } = await setupFixture(`  command: test "$SETUP_TOKEN" = setup-token-value-1082 && echo prepared > .prepared && echo ran >> ${log}\n  requires: { env: [SETUP_TOKEN] }`, `  - id: change
+    workspace: new
+    workflow:
+      steps:
+        - id: first
+          command: test -f .prepared && test -z "$SETUP_TOKEN"
+        - id: second
+          needs: [first]
+          command: test -f .prepared && test -z "$SETUP_TOKEN"
+`);
+    fs.writeFileSync(log, '');
+    const done = await runLocalDriver(config, runId, workspace, { hitl: false });
+    expect(done, JSON.stringify(await readRun(config, runId))).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(fs.readFileSync(log, 'utf8')).toBe('ran\n');
+  });
+
+  it.each([
+    ['setup_failed', 'echo broken; exit 4'],
+    ['setup_dirty', 'echo changed > tracked.txt'],
+    ['setup_secret', 'printf "//registry/:_authToken=%s\\n" "$SETUP_TOKEN" > .npmrc'],
+  ])('fails %s without running the step, and removes the workspace', async (code, command) => {
+    const marker = path.join(os.tmpdir(), `teamai-setup-step-${randomUUID()}`);
+    dirs.push(marker);
+    const { config, workspace, runId } = await setupFixture(`  command: ${JSON.stringify(command)}\n  requires: { env: [SETUP_TOKEN] }`, `  - id: change
+    workspace: new
+    command: touch ${JSON.stringify(marker)}
+`);
+    expect(await runLocalDriver(config, runId, workspace, { hitl: false })).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    const run = await readRun(config, runId);
+    expect(run).toMatchObject({ steps: [{ id: 'change', status: 'failed', failure: { code } }] });
+    expect(JSON.stringify(run)).not.toContain(TOKEN);
+    expect(fs.existsSync(marker)).toBe(false);
+    expect(worktrees(workspace)).toEqual([]);
+  });
+});

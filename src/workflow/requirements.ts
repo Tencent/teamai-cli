@@ -24,6 +24,16 @@ export type Requirements = z.infer<typeof RequirementsSchema>;
 /** The keys `requires:` takes; pull reports any other as `unknown_key`. */
 export const REQUIREMENT_KEYS: ReadonlySet<string> = new Set(Object.keys(RequirementsSchema.shape));
 
+const SetupRequirementsSchema = z.object({ env: z.array(EnvKeySchema).optional() }).strict();
+
+/**
+ * `setup:` in a workflow file: a command the driver runs in each workspace it creates for a step of the file, before
+ * the step. Its `requires.env` keys reach only setup; the step gets them only if it requires them too. The step's
+ * deadline bounds it.
+ */
+export const SetupSchema = z.object({ command: z.string().trim().min(1), requires: SetupRequirementsSchema.optional() }).strict();
+export type Setup = z.infer<typeof SetupSchema>;
+
 /**
  * What a step needs from the driver that runs it. A strict requirement holds the step until a driver that declares it
  * asks; a best-effort one is granted anyway and recorded as not enforced. The `satisfies` makes a new requirement fail
@@ -41,6 +51,8 @@ const ENFORCEMENT = {
   tokens: 'strict',
   /** Capping the agent turns of a prompt step's tool. */
   max_turns: 'bestEffort',
+  /** Running the workflow's `setup` in each workspace the driver creates, before the step. */
+  setup: 'strict',
 } as const satisfies Record<string, 'strict' | 'bestEffort'> & Record<keyof Requirements, 'strict' | 'bestEffort'>;
 type Enforcement = typeof ENFORCEMENT;
 type KeysOf<E extends Enforcement[keyof Enforcement]> = { [K in keyof Enforcement]: Enforcement[K] extends E ? K : never }[keyof Enforcement];
@@ -56,6 +68,9 @@ type BestEffortKey = KeysOf<'bestEffort'>;
  *   whatever runs the step. A driver whose executor is the agent leaves it out.
  * - `tokens`: every success report of a prompt step carries the tokens it spent.
  * - `max_turns`: the driver passes `maxTurns` to the tools it can cap, and reports `unenforced: ['max_turns']` for the others.
+ * - `setup`: in each workspace it creates, the driver runs `lease.setup` before the step with only setup's keys, and
+ *   fails the step without running it when setup exits non-zero (`setup_failed`), changes a tracked or non-ignored path
+ *   (`setup_dirty`), or leaves a value of one of its keys in a file it created or changed (`setup_secret`).
  */
 export const CanSchema = z.object({
   hitl: z.boolean().optional(),
@@ -65,6 +80,7 @@ export const CanSchema = z.object({
   env: z.boolean().optional(),
   tokens: z.boolean().optional(),
   max_turns: z.boolean().optional(),
+  setup: z.boolean().optional(),
 });
 export type DriverCan = z.infer<typeof CanSchema>;
 
@@ -84,7 +100,9 @@ export type Allow = z.infer<typeof AllowSchema>;
 export type Missing = StrictKey | `workspace.${WorkspaceMode}` | `policy.${keyof Allow}`;
 
 /** The failure codes a step's requirements and the run's limits set. Records carry them. */
-export const LIMIT_FAILURES = ['missing_env', 'env_unavailable', 'env_conflict', 'timeout', 'budget_exceeded', 'budget_unmeasured'] as const;
+export const LIMIT_FAILURES = [
+  'missing_env', 'env_unavailable', 'env_conflict', 'timeout', 'budget_exceeded', 'budget_unmeasured', 'setup_failed', 'setup_dirty', 'setup_secret',
+] as const;
 
 /** One step `next` did not hand to this driver. An empty `missing` means another driver holds what it needs. */
 export interface Held {
@@ -135,6 +153,10 @@ export function reportedUnenforced(keys: ReportedUnenforced, asked: { maxTurns?:
 export const EnvScopeSchema = z.object({ provide: z.array(z.string()), withhold: z.array(z.string()) });
 export type EnvScope = z.infer<typeof EnvScopeSchema>;
 
+/** The setup a lease carries: the command, and for a driver with `can.env`, the keys it gets and the ones kept from it. */
+export const LeaseSetupSchema = z.object({ command: z.string(), envScope: EnvScopeSchema.optional() });
+export type LeaseSetup = z.infer<typeof LeaseSetupSchema>;
+
 /** The requirements in effect at a level: each level's keys replace the earlier ones, and `env` lists add up. */
 export function mergeRequirements(...levels: ReadonlyArray<Requirements | undefined>): Requirements {
   const merged: Requirements = Object.assign({}, ...levels.map((level) => level ?? {}));
@@ -171,6 +193,8 @@ export interface Offer {
   budgeted: boolean;
   /** The step's `max_turns`. */
   maxTurns?: number;
+  /** The workflow's setup, when the lease names a workspace the driver may create. */
+  setup?: Setup;
 }
 
 /** What a granted lease carries besides the step itself. */
@@ -179,6 +203,7 @@ export interface Terms {
   envScope?: EnvScope;
   /** Only for a driver that can cap turns. */
   maxTurns?: number;
+  setup?: LeaseSetup;
   unenforced: Unenforced[];
 }
 
@@ -202,25 +227,21 @@ export function negotiate(offer: Offer, can: DriverCan, allow: Allow, env: EnvFa
     return { kind: 'fail', failure: { code: 'env_conflict', message: `Step "${offer.step}" sets env ${shadowed.join(', ')}, which the team env or a requires.env of the run names. Rename the step's variable, or remove it from env:.` } };
   }
   const required = offer.requires.env ?? [];
+  const setupKeys = offer.setup?.requires?.env ?? [];
   const policy: Missing[] = [];
   if (allow.network === false && offer.requires.network === true) policy.push('policy.network');
-  if (allow.env && required.some((key) => sameEnvName(allow.env ?? [], key) === undefined)) policy.push('policy.env');
+  if (allow.env && [...required, ...setupKeys].some((key) => sameEnvName(allow.env ?? [], key) === undefined)) policy.push('policy.env');
   const gaps: Missing[] = policy.length > 0 ? policy : [
     ...(offer.interactive && !can.hitl ? ['hitl' as const] : []),
-    ...(required.length > 0 && !can.env ? ['env' as const] : []),
+    ...(offer.setup && !can.setup ? ['setup' as const] : []),
+    ...(required.length + setupKeys.length > 0 && !can.env ? ['env' as const] : []),
     ...(offer.budgeted && !can.tokens ? ['tokens' as const] : []),
   ];
   const [first, ...rest] = gaps;
   if (first !== undefined) return { kind: 'hold', missing: [first, ...rest] };
-  if (can.env && required.length > 0) {
-    if (env.unreadable) {
-      return { kind: 'fail', failure: { code: 'env_unavailable', message: `Step "${offer.step}" requires env ${required.join(', ')}, and the team env cannot be read here: ${env.unreadable}. Run teamai env list, fix what it reports, then retry the step.` } };
-    }
-    const absent = required.filter((key) => sameEnvName(env.present, key) === undefined);
-    if (absent.length > 0) {
-      const one = absent.length === 1;
-      return { kind: 'fail', failure: { code: 'missing_env', message: `Step "${offer.step}" requires env ${absent.join(', ')}, which ${one ? 'has' : 'have'} no value on this machine. Run ${absent.map((key) => `teamai env set ${key}`).join(', ')}, or set ${one ? 'it' : 'them'} in the environment, then retry the step.` } };
-    }
+  if (can.env) {
+    const unavailable = envUnavailable(`Step "${offer.step}"`, required, env) ?? envUnavailable(`The setup of step "${offer.step}"`, setupKeys, env);
+    if (unavailable) return { kind: 'fail', failure: unavailable };
   }
   const unenforced: Unenforced[] = [];
   if (offer.requires.network === false && !can.network) unenforced.push({ requirement: 'network', asked: false });
@@ -232,7 +253,23 @@ export function negotiate(offer: Offer, can: DriverCan, allow: Allow, env: EnvFa
   if (offer.maxTurns !== undefined && !can.max_turns) unenforced.push({ requirement: 'max_turns', asked: offer.maxTurns });
   const envScope = can.env && (required.length > 0 || withhold.length > 0) ? { envScope: { provide: required, withhold } } : {};
   const maxTurns = offer.maxTurns !== undefined && can.max_turns ? { maxTurns: offer.maxTurns } : {};
-  return { kind: 'grant', terms: { requires: offer.requires, ...envScope, ...maxTurns, unenforced } };
+  const setupWithhold = [...new Set(guarded)].filter((key) => sameEnvName(setupKeys, key) === undefined).sort();
+  const setup = offer.setup && {
+    setup: { command: offer.setup.command, ...(can.env && (setupKeys.length > 0 || setupWithhold.length > 0) ? { envScope: { provide: setupKeys, withhold: setupWithhold } } : {}) },
+  };
+  return { kind: 'grant', terms: { requires: offer.requires, ...envScope, ...maxTurns, ...setup, unenforced } };
+}
+
+/** Why `keys`, which `who` requires, cannot be given here: the team env cannot be read, or a key has no value. */
+function envUnavailable(who: string, keys: readonly string[], env: EnvFacts): WorkflowFailure | undefined {
+  if (keys.length === 0) return undefined;
+  if (env.unreadable) {
+    return { code: 'env_unavailable', message: `${who} requires env ${keys.join(', ')}, and the team env cannot be read here: ${env.unreadable}. Run teamai env list, fix what it reports, then retry the step.` };
+  }
+  const absent = keys.filter((key) => sameEnvName(env.present, key) === undefined);
+  if (absent.length === 0) return undefined;
+  const one = absent.length === 1;
+  return { code: 'missing_env', message: `${who} requires env ${absent.join(', ')}, which ${one ? 'has' : 'have'} no value on this machine. Run ${absent.map((key) => `teamai env set ${key}`).join(', ')}, or set ${one ? 'it' : 'them'} in the environment, then retry the step.` };
 }
 
 function rank(level: Isolation): number {
@@ -250,8 +287,8 @@ export function unionUnenforced(stored: readonly Unenforced[], added: readonly U
   return [...stored, ...added.filter((entry) => !has(entry))];
 }
 
-/** Every key a step of these workflow files requires, `defaults.requires` and inline workflows included. */
-export function requiredEnvKeys(definitions: ReadonlyArray<{ defaults?: WorkflowDefaults; steps: WorkflowStep[] }>): Set<string> {
+/** Every key a step or the setup of these workflow files requires, `defaults.requires` and inline workflows included. */
+export function requiredEnvKeys(definitions: ReadonlyArray<{ defaults?: WorkflowDefaults; setup?: Setup; steps: WorkflowStep[] }>): Set<string> {
   const keys = new Set<string>();
   const visit = (steps: readonly WorkflowStep[]): void => {
     for (const step of steps) {
@@ -260,7 +297,7 @@ export function requiredEnvKeys(definitions: ReadonlyArray<{ defaults?: Workflow
     }
   };
   for (const definition of definitions) {
-    for (const key of definition.defaults?.requires?.env ?? []) keys.add(key);
+    for (const key of [...definition.defaults?.requires?.env ?? [], ...definition.setup?.requires?.env ?? []]) keys.add(key);
     visit(definition.steps);
   }
   return keys;

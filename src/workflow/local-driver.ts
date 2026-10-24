@@ -1,5 +1,4 @@
-import { execFile, spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -27,7 +26,8 @@ import { AgentSession } from '../session-flow/agent-session.js';
 import { openSessionArchive, type SessionArchive } from '../session-flow/archive.js';
 import { deliveredTeamSkills, usedSkills } from '../skill-use.js';
 import { leaseNext, reportAttempt } from './engine.js';
-import { EnvScopeSchema, type DriverCan, type EnvScope } from './requirements.js';
+import { EnvScopeSchema, LeaseSetupSchema, type DriverCan, type EnvScope, type LeaseSetup } from './requirements.js';
+import { runSetup } from './setup.js';
 import { respondToHitl } from './run-controls.js';
 import { isRecord } from './expression.js';
 import {
@@ -45,7 +45,7 @@ import type { DriverIdentity, StepHitl, WorkflowEnvelope, WorkflowFailure } from
 import { isWorkflowError, WORKSPACE_MODES } from './types.js';
 import type { LeaseSession, SessionRef, WorkspaceContract } from './workspace.js';
 import {
-  applyBaseConfig, commitWork, ensureWorktree, fetchMissingCommits, git, headCommit, hooksPath, keptSentence, type KeptChanges, markReadCopy, mergeBranch, offBranch, pushIfOrigin, putBackCopy, reconcileCopy, recordConfigOverlay, removeWorktree, reopenConfigConflicts, restoreUneditedConfig, stepCheckout, unrestoredCopy, worktreePath,
+  applyBaseConfig, changedPaths, commitWork, ensureWorktree, fetchMissingCommits, git, headCommit, hooksPath, keptSentence, type KeptChanges, markReadCopy, markSetup, mergeBranch, offBranch, pushIfOrigin, putBackCopy, reconcileCopy, recordConfigOverlay, removeWorktree, reopenConfigConflicts, restoreUneditedConfig, setupUnfinished, snapshotWorktree, stepCheckout, unrestoredCopy, worktreePath, type WorktreeSnapshot,
 } from './worktree.js';
 
 /** Local lease identity, stable across restarts in the same workspace. */
@@ -178,6 +178,8 @@ interface Lease {
   envScope?: EnvScope;
   /** The most agent turns the prompt's tool may take. */
   maxTurns?: number;
+  /** What to run in a workspace this driver creates, before the step. */
+  setup?: LeaseSetup;
   /** The environment the step's command or tool runs with, built from `envScope` when the lease is staged. */
   processEnv?: NodeJS.ProcessEnv;
   /** Set once the step has a directory to run in. */
@@ -245,100 +247,6 @@ async function loadAgent(
   return reversed.ok ? { spec: reversed.spec, file } : null;
 }
 
-interface WorktreeSnapshot {
-  ok: boolean;
-  files: Map<string, string>;
-  head?: string;
-  /** The ref HEAD points to, empty when it is detached, so a switch at the same commit is a change too. */
-  branch: string;
-}
-
-function gitStatus(workspace: string): Promise<{ ok: boolean; text: string }> {
-  return new Promise((resolve) => {
-    execFile('git', ['status', '--porcelain', '-z', '--untracked-files=all', '--ignore-submodules=none'], { cwd: workspace, env: process.env }, (error, stdout, stderr) => {
-      resolve(error ? { ok: false, text: stderr.trim() } : { ok: true, text: stdout });
-    });
-  });
-}
-
-/** Porcelain records from `git status -z`. A rename's first path is the one in the worktree; the next field is the old path. */
-function statusEntries(text: string): { mark: string; relative: string }[] {
-  const parts = text.split('\0');
-  const entries: { mark: string; relative: string }[] = [];
-  for (let index = 0; index < parts.length; index += 1) {
-    const item = parts[index] ?? '';
-    if (item.length < 4) continue;
-    const mark = item.slice(0, 2);
-    if (mark.includes('R') || mark.includes('C')) index += 1;
-    entries.push({ mark, relative: item.slice(3) });
-  }
-  return entries;
-}
-
-async function hashPath(workspace: string, relative: string): Promise<string> {
-  const full = path.resolve(workspace, relative);
-  try {
-    const stats = await fs.lstat(full);
-    const bytes = stats.isSymbolicLink() ? await fs.readlink(full) : await fs.readFile(full);
-    return createHash('sha256').update(bytes).digest('hex');
-  } catch {
-    return 'missing';
-  }
-}
-
-async function stagedEntry(workspace: string, relative: string): Promise<string> {
-  const listed = await git(workspace, ['ls-files', '-s', '--', relative]);
-  const entries = listed.stdout.split('\n').filter((line) => line.trim() !== '').map((line) => {
-    const [mode, blob, stage] = line.split(/\s+/);
-    return `${mode}:${blob}:${stage}`;
-  });
-  return entries.join(',') || 'none';
-}
-
-async function worktreeMode(workspace: string, relative: string): Promise<string> {
-  try {
-    return String((await fs.lstat(path.resolve(workspace, relative))).mode);
-  } catch {
-    return 'missing';
-  }
-}
-
-async function snapshotWorktree(workspace: string, depth = 0): Promise<WorktreeSnapshot> {
-  const status = await gitStatus(workspace);
-  const head = (await git(workspace, ['rev-parse', 'HEAD'])).stdout.trim();
-  const branch = (await git(workspace, ['symbolic-ref', '--quiet', 'HEAD'])).stdout.trim();
-  if (!status.ok) return { ok: false, files: new Map(), ...(head ? { head } : {}), branch };
-  const files = new Map<string, string>();
-  for (const { mark, relative } of statusEntries(status.text)) {
-    if (files.has(relative)) continue;
-    const staged = await stagedEntry(workspace, relative);
-    const mode = await worktreeMode(workspace, relative);
-    const gitlink = staged.split(',').some((entry) => entry.startsWith('160000:'));
-    const body = gitlink && depth < 3
-      ? await submoduleSnapshot(path.resolve(workspace, relative), depth)
-      : await hashPath(workspace, relative);
-    files.set(relative, `${mark}:${staged}:${mode}:${body}`);
-  }
-  return { ok: true, files, ...(head ? { head } : {}), branch };
-}
-
-async function submoduleSnapshot(dir: string, depth: number): Promise<string> {
-  const snap = await snapshotWorktree(dir, depth + 1);
-  const files = [...snap.files.entries()].sort(([left], [right]) => left.localeCompare(right))
-    .map(([name, value]) => `${name}=${value}`).join('\n');
-  return `${snap.ok ? 'ok' : 'unreadable'}:${snap.head ?? ''}:${files}`;
-}
-
-function changedPaths(before: WorktreeSnapshot, after: WorktreeSnapshot): string[] {
-  const files = !after.ok
-    ? []
-    : !before.ok
-      ? (after.files.size === 0 ? [] : [...after.files.keys()])
-      : [...new Set([...before.files.keys(), ...after.files.keys()])].filter((name) => before.files.get(name) !== after.files.get(name));
-  if ((before.head && after.head && before.head !== after.head) || before.branch !== after.branch) files.push('HEAD');
-  return files;
-}
-
 function failureReport(failure: WorkflowFailure): { outcome: 'failed'; message: string; failure: WorkflowFailure } {
   return { outcome: 'failed', message: failure.message, failure };
 }
@@ -366,6 +274,7 @@ function parseLease(raw: unknown): Lease | undefined {
   if (!rawLease || typeof rawLease.step !== 'string' || typeof rawLease.attempt !== 'string' || typeof rawLease.revision !== 'number') return undefined;
   const env = stringMap(rawLease.env);
   const envScope = EnvScopeSchema.safeParse(rawLease.envScope);
+  const setup = LeaseSetupSchema.safeParse(rawLease.setup);
   const workspace = workspaceOf(rawLease.workspace);
   const session = sessionRefOf(rawLease.session);
   const earlier = isRecord(rawLease.session) && Array.isArray(rawLease.session.earlier)
@@ -378,6 +287,7 @@ function parseLease(raw: unknown): Lease | undefined {
     ...(env ? { env } : {}),
     ...(envScope.success ? { envScope: envScope.data } : {}),
     ...(typeof rawLease.maxTurns === 'number' ? { maxTurns: rawLease.maxTurns } : {}),
+    ...(setup.success ? { setup: setup.data } : {}),
     ...(typeof rawLease.prompt === 'string' ? { prompt: rawLease.prompt } : {}),
     ...(typeof rawLease.agent === 'string' ? { agent: rawLease.agent } : {}),
     ...(typeof rawLease.model === 'string' ? { model: rawLease.model } : {}),
@@ -437,8 +347,11 @@ async function stageLease(lease: Lease, { active, runId, config }: { active: str
     const said = fetched.fetchError ? ` Git said: ${fetched.fetchError}.` : '';
     return { code: 'workspace_base', message: `Step "${lease.step}" needs ${named.join(', ')}, which this checkout does not have, even after fetching the run's branches from origin.${said} Push each branch to origin from the machine that has its commit, then retry this step with teamai workflow retry ${runId} ${lease.step}.` };
   }
+  const place = worktreePath(active, lease.workspace.branch);
+  if (lease.setup && await setupUnfinished(place)) await removeWorktree(active, place);
   const opened = await ensureWorktree(active, lease.workspace.branch, lease.workspace.start.commit);
   if ('error' in opened) return { code: 'workspace_base', message: opened.error };
+  if (lease.setup && opened.created) await markSetup(opened.dir, 'unfinished');
   lease.cwd = opened.dir;
   if (lease.workspace.mode === 'read-only') {
     const marked = await markReadCopy(opened.dir, { branch: lease.workspace.branch, step: lease.step });
@@ -473,6 +386,17 @@ async function stageLease(lease: Lease, { active, runId, config }: { active: str
   await deliverTeamAssets(opened.dir);
   await recordConfigOverlay(opened.dir, applied.saved);
   lease.overlay = applied.saved;
+  if (lease.setup && opened.created) {
+    // Setup gets its own keys and none of the step's.
+    const scope = lease.setup.envScope ?? { provide: [], withhold: [] };
+    const scoped = await stepEnvironment(config, scope);
+    const failure = scoped.ok ? await runSetup({ command: lease.setup.command, dir: opened.dir, env: scoped.env, keys: scope.provide }) : scoped.failure;
+    if (failure) {
+      await removeWorktree(active, opened.dir);
+      return failure;
+    }
+    await markSetup(opened.dir, 'finished');
+  }
   if (lease.workspace.mode === 'read-only') {
     // Taken over the base overlay, so only what the step itself changes differs from it.
     lease.before = await snapshotWorktree(opened.dir);
@@ -944,10 +868,10 @@ async function reconcileTakenCopies(config: LocalConfig, runId: string, active: 
 /**
  * What this driver declares on every `next`. Every key is set, so a new capability does not compile until it is decided.
  * It cannot deny a step the network, and keeps it from the member's machine only on a host the member marks `sandbox`.
- * It gives each command and tool only the env keys its lease provides.
+ * It gives each command and tool only the env keys its lease provides, and runs setup in each workspace it creates.
  */
 function localCan(config: LocalConfig, hitl: boolean): Required<DriverCan> {
-  return { hitl, workspace: [...WORKSPACE_MODES], network: false, isolation: config.workflows?.sandbox ? 'sandbox' : 'none', env: true, tokens: true, max_turns: true };
+  return { hitl, workspace: [...WORKSPACE_MODES], network: false, isolation: config.workflows?.sandbox ? 'sandbox' : 'none', env: true, tokens: true, max_turns: true, setup: true };
 }
 
 async function driveRun(config: LocalConfig, runId: string, cwd: string, options: LocalDriverOptions): Promise<WorkflowEnvelope> {

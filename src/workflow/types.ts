@@ -2,7 +2,7 @@
 
 import type { PinnedScorer } from '../scorers/pin.js';
 import type { ArchivedPass, ReleasedTokens, SessionContinuation, StepState } from './step-state.js';
-import type { Requirements, Unenforced } from './requirements.js';
+import type { Requirements, Setup, Unenforced } from './requirements.js';
 import type { LeaseSession } from './workspace.js';
 
 /** The driver's lease ownership, independent of its per-request capabilities. */
@@ -180,6 +180,8 @@ export interface WorkflowDefinition {
   /** Milliseconds a run of this file may take, counted from its start, or from the step that runs it. */
   timeout?: number;
   budget?: Budget;
+  /** Runs in each workspace a driver creates for a step of this file, or of a workflow it runs that has no setup. */
+  setup?: Setup;
   steps: WorkflowStep[];
 }
 

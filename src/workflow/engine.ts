@@ -251,7 +251,7 @@ function answerWithoutHitl(config: LocalConfig, run: RunState, now: string, auto
 
 function leaseData(
   run: RunState, state: LeasedStep, definition: WorkflowStep, rendered: RenderedLease,
-  { requires, envScope, maxTurns }: Omit<Terms, 'unenforced'>, plan?: WorkspacePlan,
+  { requires, envScope, maxTurns, setup }: Omit<Terms, 'unenforced'>, plan?: WorkspacePlan,
 ): Record<string, unknown> {
   const expiresAt = leaseDeadline(run, state);
   return { lease: {
@@ -274,6 +274,7 @@ function leaseData(
     ...(Object.keys(requires).length > 0 ? { requires } : {}),
     ...(envScope ? { envScope } : {}),
     ...(maxTurns !== undefined ? { maxTurns } : {}),
+    ...(setup ? { setup } : {}),
     ...(state.lease.unenforced ? { unenforced: state.lease.unenforced } : {}),
     ...(expiresAt !== undefined ? { expiresAt } : {}),
   } };
@@ -994,6 +995,7 @@ function offerTerms(
     runEnvKeys: requiredEnvKeys([run.definition, ...Object.values(run.workflows ?? {})]),
     budgeted: step.prompt !== undefined && scope.budgeted,
     ...(step.maxTurns !== undefined ? { maxTurns: step.maxTurns } : {}),
+    ...(plan?.contract && scope.setup ? { setup: scope.setup } : {}),
   }, context.can, context.allow, context.facts);
 }
 

@@ -9,7 +9,7 @@ import { parseStepPath } from './step-path.js';
 import { settled, visibleOutcome, type StepState } from './step-state.js';
 import type { TemplateContext } from './template.js';
 import type { Budget, InlineWorkflow, RunState, WorkflowDefinition, WorkflowStep } from './types.js';
-import { mergeRequirements, type Requirements } from './requirements.js';
+import { mergeRequirements, type Requirements, type Setup } from './requirements.js';
 
 /** A workflow inside a run: the top-level one, or the sub-workflow a step runs. */
 export interface Scope {
@@ -32,14 +32,20 @@ export interface Scope {
   budget?: number;
   /** Whether this workflow or one around it has a budget. */
   budgeted: boolean;
+  /** The `setup` in effect: the workflow file's own, else the enclosing scope's. */
+  setup?: Setup;
 }
 
 export function topScope(run: RunState): Scope {
   return {
     prefix: '', definition: run.definition, inputs: run.inputs, loops: stepLoops(run.definition.steps), defaultModel: run.definition.defaults?.model,
     requires: mergeRequirements(run.definition.defaults?.requires),
-    ...budgetOf(false, run.definition.budget),
+    ...budgetOf(false, run.definition.budget), ...setupOf(run.definition.setup),
   };
+}
+
+function setupOf(setup: Setup | undefined): Pick<Scope, 'setup'> {
+  return setup ? { setup } : {};
 }
 
 function budgetOf(outer: boolean, ...budgets: ReadonlyArray<Budget | undefined>): Pick<Scope, 'budget' | 'budgeted'> {
@@ -57,7 +63,7 @@ export function childScope(run: RunState, scope: Scope, states: StepState[], sta
       prefix: `${state.id}.`, definition: step.workflow, inputs: scope.inputs, outer: expressionSteps(scope, states, state),
       loops: stepLoops(step.workflow.steps), runner: state, ...itemOf(scope, state), defaultModel: scope.defaultModel,
       requires: mergeRequirements(scope.requires, step.requires),
-      ...budgetOf(scope.budgeted, step.budget),
+      ...budgetOf(scope.budgeted, step.budget), ...setupOf(scope.setup),
     };
   }
   const definition = step.workflow === undefined ? undefined : run.workflows?.[step.workflow];
@@ -65,7 +71,7 @@ export function childScope(run: RunState, scope: Scope, states: StepState[], sta
     prefix: `${state.id}.`, definition, inputs: state.inputs, loops: stepLoops(definition.steps), runner: state,
     defaultModel: definition.defaults?.model ?? scope.defaultModel,
     requires: mergeRequirements(scope.requires, step.requires, definition.defaults?.requires),
-    ...budgetOf(scope.budgeted, step.budget, definition.budget),
+    ...budgetOf(scope.budgeted, step.budget, definition.budget), ...setupOf(definition.setup ?? scope.setup),
   };
 }
 

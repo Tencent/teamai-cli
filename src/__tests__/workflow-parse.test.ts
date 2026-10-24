@@ -1107,6 +1107,41 @@ steps:
     expect(result.diagnostics).toContainEqual(expect.objectContaining({ field: 'steps[1].budget.dollars', code: 'unknown_key' }));
   });
 
+  it('reads setup on the file, and reports a setup without a command, an inline one, and a key this version does not know', () => {
+    const ok = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+setup:
+  command: npm ci
+  requires: { env: [NPM_TOKEN] }
+steps:
+  - id: plan
+    workspace: new
+    prompt: Plan it.
+`);
+    expect(ok.ok && ok.definition.setup).toEqual({ command: 'npm ci', requires: { env: ['NPM_TOKEN'] } });
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+setup: { timeout: 1m, requires: { network: false } }
+steps:
+  - id: check
+    workflow:
+      setup: { command: npm ci }
+      steps:
+        - id: inner
+          command: echo inner
+`);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.diagnostics.map(formatDiagnostic)).toEqual(expect.arrayContaining([
+      expect.stringContaining('field "setup.command": setup.command'),
+      expect.stringContaining('field "steps[0].workflow.setup": step "check" runs an inline workflow'),
+    ]));
+    expect(result.diagnostics).toContainEqual(expect.objectContaining({ field: 'setup.timeout', code: 'unknown_key' }));
+    expect(result.diagnostics).toContainEqual(expect.objectContaining({ field: 'setup.requires.network', code: 'unknown_key' }));
+  });
+
   it('reads max_turns on a prompt step, and reports it on another step or when it is not a positive whole number', () => {
     const ok = parse(`schemaVersion: v1alpha1
 name: build

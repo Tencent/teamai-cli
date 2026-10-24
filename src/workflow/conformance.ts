@@ -34,7 +34,7 @@ export interface ConformanceScenario {
  */
 export const DRIVER_PROFILES = {
   /** The in-process driver `teamai workflow run` uses. */
-  local: { can: { workspace: ['read-only', 'new', 'continue'], env: true, tokens: true, max_turns: true } },
+  local: { can: { workspace: ['read-only', 'new', 'continue'], env: true, tokens: true, max_turns: true, setup: true } },
   /** An agent session that runs the protocol itself, with a person in the chat. */
   session: { can: { hitl: true, workspace: ['read-only', 'new', 'continue'] } },
   /** A program that speaks only the CLI JSON protocol, such as an IDE or an orchestrator. */
@@ -55,6 +55,7 @@ export function profileDriver(profile: DriverProfile): DriverIdentity {
 export type ConformanceOperation =
   | {
     kind: 'next'; saveAs: string; as?: DriverProfile; running?: string[]; canTakeLease?: boolean; hitl?: boolean; claim?: boolean;
+    base?: { ref?: string; commit: string };
     cancelled?: string[]; absent?: string[]; expect: Record<string, unknown>; state?: Record<string, unknown>;
   }
   | { kind: 'respond'; step: string; choice: string; as?: DriverProfile; note?: string; pass?: number; json?: unknown; expect: Record<string, unknown> }
@@ -109,6 +110,7 @@ export async function runConformanceScenario(scenario: ConformanceScenario, runn
           ...(operation.running ? { running: operation.running.map(attemptOf) } : {}),
           ...(operation.canTakeLease !== undefined ? { canTakeLease: operation.canTakeLease } : {}),
           ...(operation.claim !== undefined ? { claim: operation.claim } : {}),
+          ...(operation.base ? { base: operation.base } : {}),
         });
         expect(envelope).toMatchObject(operation.expect);
         if (operation.state) expect(await runner.readRun(runId)).toMatchObject(operation.state);
@@ -948,6 +950,28 @@ workflowConformanceScenarios.push(
       { kind: 'next', saveAs: 'after', as: 'local', running: ['deploy'], expect: { data: { wait: { reason: 'deploy is leased' } } } },
     ],
     expectState: { steps: [{ id: 'deploy', status: 'leased' }, { id: 'build', status: 'failed', failure: { code: 'env_conflict' } }] },
+  },
+);
+
+const BASE = { ref: 'main', commit: 'a'.repeat(40) };
+const WITH_SETUP = controlsYaml('  - id: change\n    workspace: new\n    command: echo change\n  - id: look\n    needs: []\n    command: echo look')
+  .replace('steps:\n', 'setup:\n  command: npm ci\n  requires: { env: [CONFORMANCE_TOKEN] }\nsteps:\n');
+workflowConformanceScenarios.push(
+  {
+    name: 'a step in a workspace the driver creates waits for a driver that runs setup, which gets setup with its own keys only',
+    workflowName: 'build', yaml: WITH_SETUP, env: { CONFORMANCE_TOKEN: CONFORMANCE_SECRET },
+    operations: [
+      { kind: 'next', saveAs: 'look', as: 'external', base: BASE, absent: ['setup'], expect: { data: { lease: { step: 'look' } } } },
+      { kind: 'next', saveAs: 'held', as: 'external', base: BASE, running: ['look'], expect: { data: { wait: {
+        held: [{ step: 'change', reason: 'step "change" needs setup, env, which this driver does not declare', missing: ['setup', 'env'] }],
+      } } } },
+      { kind: 'report', lease: 'look', as: 'external', body: { outcome: 'success' }, expect: { data: { accepted: true } } },
+      { kind: 'next', saveAs: 'change', as: 'local', base: BASE, expect: { data: { lease: {
+        step: 'change',
+        envScope: { provide: [], withhold: ['CONFORMANCE_TOKEN'] },
+        setup: { command: 'npm ci', envScope: { provide: ['CONFORMANCE_TOKEN'], withhold: [] } },
+      } } } },
+    ],
   },
 );
 

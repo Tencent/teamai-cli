@@ -17,9 +17,9 @@ import {
 import { parseHitl } from './parse-hitl.js';
 import { loopProblems } from './loop.js';
 import { modelValueProblem } from '../models/aliases.js';
-import { REQUIREMENT_KEYS, RequirementsSchema, type Requirements } from './requirements.js';
+import { REQUIREMENT_KEYS, RequirementsSchema, SetupSchema, type Requirements, type Setup } from './requirements.js';
 
-const HEADER_KEYS = new Set(['schemaVersion', 'name', 'description', 'inputs', 'defaults', 'ends', 'outputs', 'loop', 'timeout', 'budget', 'steps']);
+const HEADER_KEYS = new Set(['schemaVersion', 'name', 'description', 'inputs', 'defaults', 'ends', 'outputs', 'loop', 'timeout', 'budget', 'setup', 'steps']);
 const ACTION_KEYS = Object.keys(STEP_ACTIONS);
 const STEP_KEYS = new Set(['id', 'needs', 'if', ...ACTION_KEYS, 'env', 'with', 'agent', 'model', 'output', 'end', 'loop', 'break', 'for_each', 'approve', 'choose', 'interactive', 'workspace', 'session', 'scorers', 'requires', 'timeout', 'budget', 'max_turns']);
 const STEP_LOOP_KEYS = new Set(['back_to', 'while', 'max_iterations']);
@@ -190,6 +190,8 @@ export function parseWorkflow(file: string, content: string, files?: WorkflowFil
   const timeout = timeoutPair ? parseTimeout(timeoutPair.value ?? timeoutPair.key, 'timeout', ctx) : undefined;
   const budgetPair = root.items.find((pair) => scalarString(pair.key) === 'budget');
   const budget = budgetPair ? parseBudget(budgetPair.value ?? budgetPair.key, 'budget', ctx) : undefined;
+  const setupPair = root.items.find((pair) => scalarString(pair.key) === 'setup');
+  const setup = setupPair ? parseSetup(setupPair.value ?? setupPair.key, ctx) : undefined;
 
   // A malformed inputs header is already reported; checking reads against it would only add noise.
   const { workflow: { ends, outputs, loop, steps } } = parseBody(root, '', 'workflow', ctx, inputsPair && !inputs ? undefined : inputs ?? {}, false);
@@ -199,7 +201,7 @@ export function parseWorkflow(file: string, content: string, files?: WorkflowFil
     ok: true,
     definition: {
       schemaVersion: 'v1alpha1', name, description, ...(inputs ? { inputs } : {}), ...(ends ? { ends } : {}), ...(outputs ? { outputs } : {}),
-      ...(loop ? { loop } : {}), ...(defaults ? { defaults } : {}), ...(timeout !== undefined ? { timeout } : {}), ...(budget ? { budget } : {}), steps,
+      ...(loop ? { loop } : {}), ...(defaults ? { defaults } : {}), ...(timeout !== undefined ? { timeout } : {}), ...(budget ? { budget } : {}), ...(setup ? { setup } : {}), steps,
     },
     promptFileLocations,
   };
@@ -913,6 +915,37 @@ function parseRequires(node: Node | null | undefined, field: string, ctx: ParseC
       const [key] = issue.path;
       const at = typeof key === 'string' ? valueNode(node, key) ?? node : node;
       diagnostics.push(locate(file, lineCounter, at, [field, ...issue.path].join('.'), `${[field, ...issue.path].join('.')}: ${issue.message}`));
+    }
+  }
+  return parsed.success && diagnostics.length === before ? parsed.data : undefined;
+}
+
+/** `setup: { command, requires: { env } }`. A key this version does not know, at either level, is `unknown_key`. */
+function parseSetup(node: Node | null | undefined, ctx: ParseContext): Setup | undefined {
+  const { file, lineCounter, diagnostics } = ctx;
+  if (!isMap(node)) {
+    diagnostics.push(locate(file, lineCounter, node, 'setup', 'setup must be { command: <shell command>, requires: { env: [...] } }'));
+    return undefined;
+  }
+  const before = diagnostics.length;
+  const unknownKeys = (map: YAMLMap, field: string, known: readonly string[]): void => {
+    for (const pair of map.items) {
+      const keyNode = isYamlNode(pair.key) ? pair.key : undefined;
+      const key = scalarString(keyNode);
+      if (key === undefined || !known.includes(key)) diagnostics.push(unknownKey(file, lineCounter, keyNode ?? map, `${field}.${key ?? 'key'}`, key ?? 'key'));
+    }
+  };
+  unknownKeys(node, 'setup', ['command', 'requires']);
+  const requires = valueNode(node, 'requires');
+  if (isMap(requires)) unknownKeys(requires, 'setup.requires', ['env']);
+  const parsed = SetupSchema.safeParse(node.toJSON());
+  if (!parsed.success) {
+    for (const issue of parsed.error.issues) {
+      if (issue.code === 'unrecognized_keys') continue;
+      const field = ['setup', ...issue.path].join('.');
+      const [key] = issue.path;
+      const at = typeof key === 'string' ? valueNode(node, key) ?? node : node;
+      diagnostics.push(locate(file, lineCounter, at, field, issue.path[0] === 'command' ? 'setup.command must be a shell command' : `${field}: ${issue.message}`));
     }
   }
   return parsed.success && diagnostics.length === before ? parsed.data : undefined;
