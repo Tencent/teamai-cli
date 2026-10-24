@@ -18,7 +18,7 @@ import {
 } from './template.js';
 import { parseStepPath } from './step-path.js';
 import {
-  ReadSchema, answerHitl, fail, lease, release, settled, skip, start, stopWhere, stopped, succeed, waitForAnswer,
+  ReadSchema, answerHitl, fail, lease, release, settled, skip, start, stopAttempt, stopWhere, stopped, succeed, waitForAnswer,
   type ItemResult, type LeasedStep, type StepRead, type StepState,
 } from './step-state.js';
 import { budgetSpent, countLateTokens, expire, leaseDeadline, ownDeadline, startLimits } from './limits.js';
@@ -1051,7 +1051,7 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
         // No step has run in an unused copy, so the driver gives up the copy too, and another driver may take the step,
         // unless the driver still holds another lease in it.
         if (terms.kind === 'hold') {
-          (run.cancelledAttempts ??= []).push(leased.attempt);
+          stopAttempt(run, leased, now);
           release(leased);
           const branch = offered?.contract?.branch;
           const copy = branch !== undefined ? run.copies?.[branch] : undefined;
@@ -1059,7 +1059,7 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
           continue;
         }
         if (terms.kind === 'fail') {
-          (run.cancelledAttempts ??= []).push(leased.attempt);
+          stopAttempt(run, leased, now);
           failStep(leased, terms.failure, leased.lease.revision);
           continue;
         }

@@ -4879,6 +4879,20 @@ describe('token budgets', () => {
     expect(await readRun(config, runId)).toMatchObject({ releasedTokens: [{ step: 'other', attempt: other.attempt, tokens: { input: 7 } }] });
   });
 
+  it('counts the late tokens of an attempt a held hand-back stopped', async () => {
+    vi.stubEnv('DEPLOY_TOKEN', 'deploy-value');
+    const { config, runId } = await startBuild(graph(`  - id: work
+    prompt: Work.
+    requires: { env: [DEPLOY_TOKEN] }
+`));
+    const work = leaseIn(await leaseNext(config, runId, driverA, { can: { tokens: true, env: true } }));
+    expect(await leaseNext(config, runId, driverA, reports)).toMatchObject({ data: { wait: { held: [{ step: 'work', missing: ['env'] }] } } });
+    expect(await reportAttempt(config, runId, { attempt: work.attempt, revision: work.revision, outcome: 'success', driver: driverA, tokens: { input: 7 } }))
+      .toMatchObject({ error: { code: 'lease_cancelled' } });
+
+    expect(await readRun(config, runId)).toMatchObject({ releasedTokens: [{ step: 'work', attempt: work.attempt, tokens: { input: 7 } }] });
+  });
+
   it('charges a stopped attempt\'s late tokens to the budget it was leased under, not to the one a retry opened after it', async () => {
     const { config, runId } = await startBuild(graph(`  - id: a
     prompt: A.
