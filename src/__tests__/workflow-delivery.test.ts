@@ -718,6 +718,27 @@ describe('reported URLs from a driver', () => {
   });
 
   it.each([
+    ['fails', FIX_THEN_REVIEW, { outcome: 'failed' }, true, 'the step failed'],
+    ['succeeds with stdout that does not match its output', `${FIX_THEN_REVIEW.split('  - id: review')[0]}    output:\n      ok: boolean\n`, { outcome: 'success', outputs: { ok: 'yes' } }, true, 'the step failed'],
+    ['is released', FIX_THEN_REVIEW, { outcome: 'released' }, true, 'the step was released'],
+    ['succeeds with its branch at the run base', FIX_THEN_REVIEW, { outcome: 'success' }, false, 'the branch has no changes beyond the run base'],
+  ])('names a kept URL as dropped, without its value, when the step %s', async (_case, steps, body, pushes, reason) => {
+    const { config, root, runId } = await fixture(steps);
+    const gh = fakeGh(path.join(root, 'gh'));
+    const fix = await take(config, runId);
+    const base = fix.workspace?.base.commit;
+    const to = pushes ? pushWork(root, fix) : base;
+    const url = 'https://review.acme.internal/changes/4821';
+    const accepted = await report(config, runId, { attempt: fix.attempt, revision: fix.revision, ...body,
+      changes: { branch: fix.workspace?.branch, base, from: base, to, commits: pushes ? [to] : [], pr_url: url } });
+
+    expect(accepted).toMatchObject({ data: { accepted: true, dropped: [{ field: 'changes.pr_url', reason }] } });
+    expect(JSON.stringify(accepted)).not.toContain('changes/4821');
+    expect((await state(config, runId)).deliveries).toBeUndefined();
+    expect(gh.calls()).toEqual([]);
+  });
+
+  it.each([
     ['is not the open pull request of its branch', [7], (branch: string) => `is not the open pull request of branch ${branch} into main`, 7],
     ['names a branch with no open pull request', [], (branch: string) => `branch ${branch} has no open pull request into main`, 1],
   ])('drops a URL on the origin host that %s, and delivers the open one of the branch instead', async (_case, open, reason, delivered) => {

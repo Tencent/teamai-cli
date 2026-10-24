@@ -1570,8 +1570,13 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
     // From the lease, so a reader that was the copy's last user lets the driver remove the worktree. Delivery reads the
     // pushed branch, so it does not keep the worktree.
     const cleanup = outcome === 'success' && contract !== undefined && !branchStillUsed(run, contract.branch);
-    // A URL that is not kept is named without its value, which may hold a token, and the report still counts.
-    const dropReason = reported?.reason ?? unmatched ?? (reported && defined?.deliver !== 'pr' ? 'the step has no deliver: pr' : undefined);
+    // A URL that is not kept, or that no delivery uses, is named without its value, which may hold a token, and the
+    // report still counts.
+    const dropReason = reported?.reason ?? unmatched ?? (reported?.url === undefined || delivery ? undefined
+      : defined?.deliver !== 'pr' ? 'the step has no deliver: pr'
+        : outcome === 'released' ? 'the step was released'
+          : outcome !== 'success' ? 'the step failed'
+            : 'the branch has no changes beyond the run base');
     return {
       save: true,
       envelope: ok({
