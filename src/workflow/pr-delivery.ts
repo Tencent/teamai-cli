@@ -4,7 +4,7 @@
  * the lock again, so no network call holds the lock and this module needs nothing of the engine's.
  */
 import os from 'node:os';
-import { providerForRemote } from '../providers/registry.js';
+import { providerForRemote, type OriginProvider } from '../providers/registry.js';
 import type { PullRequestLookup, PullRequestRef } from '../providers/types.js';
 import { sanitizePrUrl, type PrUrl } from './pr-url.js';
 import type { WorkflowFailure } from './types.js';
@@ -73,9 +73,8 @@ export async function deliverPr(job: DeliveryJob, gate: CreateGate): Promise<Del
   const files = protectedPaths(changed.files);
   if (files.length > 0) return failed({ kind: 'protected_path', files });
   if (job.reported) return { ok: true, pr: job.reported };
-  const remote = await git(job.checkout, ['config', '--get', 'remote.origin.url']);
-  const origin = remote.code === 0 ? providerForRemote(remote.stdout) : undefined;
-  if (!origin || origin.kind === 'transport') return failed({ kind: 'no_provider' });
+  const origin = await originOf(job.checkout);
+  if (origin.kind === 'transport') return failed({ kind: 'no_provider' });
   const { provider, pullRequests, repo } = origin;
   const ref: PullRequestRef = { repo, source: job.key.branch, target: job.target, timeoutMs: DELIVERY_TIMEOUT_MS };
   const found = await findOpen(pullRequests, ref);
@@ -97,6 +96,28 @@ export async function deliverPr(job: DeliveryJob, gate: CreateGate): Promise<Del
     const again = await findOpen(pullRequests, ref);
     return again.kind === 'found' ? { ok: true, pr: again.pr } : failed({ kind: 'create_failed', provider: provider.name });
   }
+}
+
+/**
+ * Why a URL a driver reported for `branch` is not kept: on the origin's host it must be the open request of the branch
+ * into `target`, as the provider's lookup answers. A URL on another host, such as a private review service, an origin
+ * only git reaches, or a lookup that cannot answer keeps it, and delivery accepts it as it is.
+ */
+export async function reportedPrMismatch(
+  { checkout, url, branch, target }: { checkout: string; url: PrUrl; branch: string; target: string },
+): Promise<string | undefined> {
+  const origin = await originOf(checkout);
+  if (origin.kind === 'transport' || new URL(url).hostname !== origin.hostname) return undefined;
+  const found = await findOpen(origin.pullRequests, { repo: origin.repo, source: branch, target, timeoutMs: DELIVERY_TIMEOUT_MS });
+  if (found.kind === 'none') return `branch ${branch} has no open pull request into ${target}`;
+  if (found.kind === 'found' && found.pr !== url) return `is not the open pull request of branch ${branch} into ${target}`;
+  return undefined;
+}
+
+/** The provider of the checkout's configured origin; git alone when the checkout has none. */
+async function originOf(checkout: string): Promise<OriginProvider> {
+  const remote = await git(checkout, ['config', '--get', 'remote.origin.url']);
+  return remote.code === 0 ? providerForRemote(remote.stdout) : { kind: 'transport' };
 }
 
 /** What a lookup said: the open request, sanitized; none; no answer; or a URL that cannot be kept. */

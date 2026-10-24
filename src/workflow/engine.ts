@@ -25,8 +25,8 @@ import { addItems, afterStanding, expandItems, isItem, itemsAfter, itemsOf, item
 import { decideRound, decideStepLoop, exhaustedAtStart, firstPass, loopSettled } from './loop.js';
 import { childScope, contextOf, insertChildren, localId, statesIn, stepDefinitions, topScope, type Scope } from './scope.js';
 import { deliverableOf, deliveryProblem, planWorkspace, plannedBranch, sessionOf, type LeaseSession, type SessionRef, type WorkspaceContract, type WorkspaceMode, type WorkspacePlan } from './workspace.js';
-import { deliverPr, deliveryFailure, type DeliveryJob, type DeliveryKey, type DeliveryOutcome } from './pr-delivery.js';
-import { sanitizePrUrl } from './pr-url.js';
+import { deliverPr, deliveryFailure, reportedPrMismatch, type DeliveryJob, type DeliveryKey, type DeliveryOutcome } from './pr-delivery.js';
+import { sanitizePrUrl, type PrUrl } from './pr-url.js';
 import { deliveryLockPath, generateRunId, installOwner, isRunId, readRun, updateRun } from './store.js';
 import { withFileLock } from '../update.js';
 import { pinScorers } from '../scorers/cache.js';
@@ -1404,12 +1404,26 @@ function continueSession(run: RunState, report: ReportInput): void {
   (run.sessionContinuations ??= []).push({ from, to });
 }
 
+/**
+ * Why the URL a delivering step's report keeps after sanitizing is still dropped, read from the run before its lock is
+ * taken, since the provider's lookup is a network call. The locked report checks the step again.
+ */
+async function reportedPrUnmatched(config: LocalConfig, runId: string, report: ReportInput, url: PrUrl): Promise<string | undefined> {
+  if (report.outcome !== 'success' || !report.changes || !isRunId(runId)) return undefined;
+  const run = await readRun(config, runId);
+  if (typeof run === 'string' || !run.checkout || !run.base?.ref) return undefined;
+  const step = run.steps.find((item) => item.status === 'leased' && item.lease.attempt === report.attempt);
+  if (!step || locateStep(run, step.id)?.step.deliver !== 'pr') return undefined;
+  return reportedPrMismatch({ checkout: run.checkout, url, branch: report.changes.branch, target: run.base.ref });
+}
+
 export async function reportAttempt(config: LocalConfig, runId: string, report: ReportInput): Promise<WorkflowEnvelope> {
   if (isLeaseRef(report.attempt)) {
     return error('judge_lease', `Attempt ${report.attempt} is a judge lease, which workflow report does not settle. Submit its answer with: teamai score --lease ${report.attempt} --submit --stdin`);
   }
   const install = await installOwner(config);
   const reported = report.prUrl === undefined ? undefined : sanitizePrUrl(report.prUrl);
+  const unmatched = reported?.url ? await reportedPrUnmatched(config, runId, report, reported.url) : undefined;
   return withRun(config, runId, async (run) => {
     // Settled membership wins. An old revision of a settled attempt is still repeated_report.
     if (run.settledAttempts.includes(report.attempt)) {
@@ -1488,13 +1502,13 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
     const delivery = outcome === 'success' && defined?.deliver === 'pr' ? deliverableOf(run, step, defined, report.changes) : undefined;
     const settledStep = outcome === 'released' ? release(step)
       : outcome !== 'success' ? fail(step, { ...settlement, failure })
-        : delivery ? startDelivery(step, successful, { ...delivery, ...(reported?.url ? { reported: reported.url } : {}) })
+        : delivery ? startDelivery(step, successful, { ...delivery, ...(reported?.url && !unmatched ? { reported: reported.url } : {}) })
           : succeed(step, successful);
     // From the lease, so a reader that was the copy's last user lets the driver remove the worktree. Delivery reads the
     // pushed branch, so it does not keep the worktree.
     const cleanup = outcome === 'success' && contract !== undefined && !branchStillUsed(run, contract.branch);
     // A URL that is not kept is named without its value, which may hold a token, and the report still counts.
-    const dropReason = reported?.reason ?? (reported && defined?.deliver !== 'pr' ? 'the step has no deliver: pr' : undefined);
+    const dropReason = reported?.reason ?? unmatched ?? (reported && defined?.deliver !== 'pr' ? 'the step has no deliver: pr' : undefined);
     return {
       save: true,
       envelope: ok({

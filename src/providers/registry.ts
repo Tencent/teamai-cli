@@ -218,7 +218,7 @@ export function getProviderFromUrl(repoUrl: string): GitProvider {
 
 /** A checkout's origin as workflow delivery reaches it: through a provider that can look up its pull requests, or git alone. */
 export type OriginProvider =
-  | { kind: 'provider'; provider: GitProvider; pullRequests: PullRequestLookup; repo: string; host: string }
+  | { kind: 'provider'; provider: GitProvider; pullRequests: PullRequestLookup; repo: string; hostname: string }
   | { kind: 'transport' };
 
 /**
@@ -234,7 +234,7 @@ export function providerForRemote(remoteUrl: string): OriginProvider {
   if (!provider.pullRequests) return { kind: 'transport' };
   try {
     const { owner, repo } = provider.parseRepoInput(hosted.href);
-    return { kind: 'provider', provider, pullRequests: provider.pullRequests, repo: `${owner}/${repo}`, host: hosted.host };
+    return { kind: 'provider', provider, pullRequests: provider.pullRequests, repo: `${owner}/${repo}`, hostname: hosted.hostname };
   } catch {
     return { kind: 'transport' };
   }
