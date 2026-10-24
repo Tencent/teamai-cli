@@ -64,7 +64,7 @@ const failed = (fault: DeliveryFault): DeliveryOutcome => ({ ok: false, fault })
 /**
  * Delivers one branch. Its changes against the run base are checked before anything else, a reported URL included,
  * so no pull request goes out, and no step succeeds, with a protected path changed. Then the open request of the branch
- * is looked up, and only when there is none, and `gate` agrees, is one opened; a create that fails is looked up again.
+ * is looked up, and only when there is none, and `gate` agrees, is one opened; then it is looked up again.
  * Nothing here logs in, prompts or merges, and no text a host answered with is kept, since it may hold a credential.
  */
 export async function deliverPr(job: DeliveryJob, gate: CreateGate): Promise<DeliveryOutcome> {
@@ -82,20 +82,24 @@ export async function deliverPr(job: DeliveryJob, gate: CreateGate): Promise<Del
   if (found.kind === 'failed') return failed({ kind: 'lookup_failed', provider: provider.name });
   if (found.kind === 'unsafe') return failed({ kind: 'unsafe_url', provider: provider.name });
   if (!await gate()) return failed({ kind: 'withdrawn' });
+  let created: ReturnType<typeof sanitizePrUrl> | undefined;
   try {
-    const created = sanitizePrUrl(await provider.createPullRequest({
+    created = sanitizePrUrl(await provider.createPullRequest({
       repo, source: job.key.branch, target: job.target, title: `${job.runName}: ${job.key.step}`,
       description: `Opened by TeamAI for review: workflow ${job.runName}, run ${job.runId}, step ${job.key.step}, pass ${job.key.pass}.\n\nBase commit: ${job.base}\n\nTeamAI never merges this pull request.`,
       // Run outside the member checkout, so the provider's CLI can neither push from it nor read its branch.
       cwd: os.tmpdir(),
       spawnTimeoutMs: DELIVERY_TIMEOUT_MS,
     }));
-    return created.url ? { ok: true, pr: created.url } : failed({ kind: 'unsafe_url', provider: provider.name });
   } catch {
-    // The host may have opened the request before the create failed or timed out: find it rather than open another.
-    const again = await findOpen(origin, ref);
-    return again.kind === 'found' ? { ok: true, pr: again.pr } : failed({ kind: 'create_failed', provider: provider.name });
+    created = undefined;
   }
+  // A create that failed or timed out may still have opened the request. One that answered may name it by another URL
+  // than the lookup a later delivery of the branch finds it by, so the lookup's is kept: one request, one receipt.
+  const opened = await findOpen(origin, ref);
+  if (opened.kind === 'found') return { ok: true, pr: opened.pr };
+  if (!created) return failed({ kind: 'create_failed', provider: provider.name });
+  return created.url ? { ok: true, pr: created.url } : failed({ kind: 'unsafe_url', provider: provider.name });
 }
 
 /**

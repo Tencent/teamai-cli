@@ -260,7 +260,8 @@ describe('delivering a step', () => {
 
     expect(await take(config, runId)).toMatchObject({ step: 'review' });
     expect((await state(config, runId)).deliveries).toEqual([{ url: 'https://github.com/fixture/app/pull/1', branch, base: 'main', step: 'fix', pass: 1 }]);
-    const [lookup, create, ...rest] = gh.calls();
+    const [lookup, create, again, ...rest] = gh.calls();
+    expect(again?.args).toEqual(lookup?.args);
     expect(rest).toEqual([]);
     expect(lookup?.args[0]).toBe('api');
     expect(lookup?.prompt).toBe('0');
@@ -573,7 +574,24 @@ describe('where a pull request goes', () => {
 
     expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
     expect(creates(gh)).toEqual([[`teamai/${runId}/change/p1`, 'main']]);
-    expect(gh.calls().filter((call) => call.args[0] === 'api')).toHaveLength(3);
+    // The first pass looks the branch up before and after it opens the request, and each later pass finds it.
+    expect(gh.calls().filter((call) => call.args[0] === 'api')).toHaveLength(4);
+    expect(buildEndRecord(await state(config, runId), remote, 'tester').prs).toEqual(['https://github.com/fixture/app/pull/1']);
+  });
+
+  it('lists a pull request once when its host answers the create with another URL than its lookup gives', async () => {
+    const { config, cwd, runId } = await fixture(
+      `  - id: change\n    workspace: new\n    workflow:\n      steps:\n        - id: fix\n          workspace: continue\n          command: ${bump('fix.txt')}\n          deliver: pr\n          loop: { back_to: fix, while: "length(steps.fix.passes) < 2", max_iterations: 2 }\n`,
+    );
+    const branch = `teamai/${runId}/change/p1`;
+    const open: string[] = [];
+    const create = providerDouble(async ({ source, target }) => (source === branch && target === 'main' ? open[0] : undefined), async () => {
+      open.push('https://github.com/fixture/app/pull/1');
+      return 'https://github.com/fixture/app/-/merge_requests/1';
+    });
+
+    expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(create).toHaveBeenCalledTimes(1);
     expect(buildEndRecord(await state(config, runId), remote, 'tester').prs).toEqual(['https://github.com/fixture/app/pull/1']);
   });
 
