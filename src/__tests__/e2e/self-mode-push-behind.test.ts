@@ -354,6 +354,29 @@ describe('single-repo push from a checkout behind the default branch', () => {
     expect(git(['show', 'main:.teamai/agents/ops/sample.md'], remote)).toContain('Teammate safety instructions.');
   });
 
+  it('publishes an edited root agent re-added after the placed agent was deleted', async () => {
+    expect((await runCLI(['pull'], projectRoot, home)).code).toBe(0);
+    fs.mkdirSync(active('.teamai/agents'), { recursive: true });
+    fs.writeFileSync(active('.teamai/agents/sample.md'), '---\nname: sample\ndescription: Sample\n---\nOriginal.\n');
+    expect((await runCLI(['push', '--all', '--role', 'ops'], projectRoot, home)).output).toContain('Pushed branch');
+    await mergePushAndPull(false);
+    git(['rm', '.teamai/agents/ops/sample.md'], teammate);
+    fs.mkdirSync(path.join(teammate, '.teamai/agents'), { recursive: true });
+    fs.writeFileSync(path.join(teammate, '.teamai/agents/sample.yaml'), 'name: sample\ndescription: Sample\ninstructions: Re-added.\n');
+    git(['add', '-A'], teammate);
+    git(['commit', '-q', '-m', 'replace placed agent with shared root'], teammate);
+    git(['push', '-q', 'origin', 'main'], teammate);
+    fs.rmSync(active('.teamai/agents/sample.md'));
+    git(['fetch', '-q', 'origin'], projectRoot);
+    git(['merge', '-q', '--no-edit', 'origin/main'], projectRoot);
+    expect((await runCLI(['pull'], projectRoot, home)).code).toBe(0);
+    fs.writeFileSync(active('.teamai/agents/sample.yaml'), 'name: sample\ndescription: Sample\ninstructions: Member edit after re-add.\n');
+    const pushed = await runCLI(['push', '--all'], projectRoot, home);
+    expect(pushed.output).toContain('Pushed branch');
+    const [branch] = pushBranches();
+    expect(git(['show', `${branch}:.teamai/agents/sample.yaml`], remote)).toContain('Member edit after re-add.');
+  });
+
   it.each([false, true])('converts a placed agent behind its own merge, deleted upstream: %s', async (deleted) => {
     expect((await runCLI(['pull'], projectRoot, home)).code).toBe(0);
     fs.mkdirSync(active('.teamai/agents'), { recursive: true });

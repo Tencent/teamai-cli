@@ -480,6 +480,18 @@ export async function reconcilePlacementRecords(
     state[field] = kept;
   }
 
+  // A new shared source supersedes the deleted namespaced copy's history.
+  // Otherwise its author can never publish edits after the team re-adds it.
+  for (const name of Object.keys(state.retiredPlacedAgents ?? {})) {
+    for (const candidate of sharedRootPaths('agents', name)) {
+      if (await exists(candidate)) {
+        delete state.retiredPlacedAgents?.[name];
+        changed = true;
+        break;
+      }
+    }
+  }
+
   for (const [name, source] of Object.entries(state.placedAgentSources ?? {})) {
     if (state.placedAgents?.[name] !== source.path) {
       delete state.placedAgentSources![name];
