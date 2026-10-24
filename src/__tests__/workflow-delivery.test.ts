@@ -558,6 +558,20 @@ describe('where a pull request goes', () => {
     expect(buildEndRecord(await state(config, runId), remote, 'tester').prs).toEqual(['https://github.com/fixture/app/pull/1']);
   });
 
+  it('starts the next for_each item while an earlier one delivers, since max_parallel bounds agents', async () => {
+    const { config, root, runId } = await fixture(`  - id: build\n    for_each: { items: inputs.packages, max_parallel: 1 }\n    workspace: new\n    command: node build.js\n    deliver: pr\n`,
+      { packages: ['one', 'two'].map((name) => ({ name, id: name, after: [] })) });
+    const first = await take(config, runId);
+    await succeed(config, runId, first, { to: pushWork(root, first), pr_url: 'https://review.acme.internal/changes/1' });
+    const held = deliveryLockPath(config, runId);
+    expect(await acquireLock(held)).toBe(true);
+    try {
+      expect(await take(config, runId)).toMatchObject({ step: 'build[1]' });
+    } finally {
+      await releaseLock(held);
+    }
+  });
+
   it('lists the pull requests of three for_each items in item order', async () => {
     const { config, cwd, root, runId } = await fixture(`  - id: build\n    for_each: inputs.packages\n    workspace: new\n    command: ${bump('items.txt')}\n    deliver: pr\n`,
       { packages: ['one', 'two', 'three'].map((name) => ({ name, id: name, after: [] })) });
