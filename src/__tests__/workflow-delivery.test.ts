@@ -421,6 +421,26 @@ describe('delivering a step', () => {
     expect(creates(gh)).toEqual([]);
   });
 
+  it('names a missing origin branch and reads it without credential prompts', async () => {
+    const { config, cwd, root, runId } = await fixture(FIX_THEN_REVIEW);
+    const gh = fakeGh(path.join(root, 'gh'));
+    const fix = await take(config, runId);
+    const to = pushWork(root, fix);
+    const branch = fix.workspace?.branch ?? '';
+    git(cwd, ['fetch', 'origin', branch]);
+    git(root, ['--git-dir=remote.git', 'update-ref', '-d', `refs/heads/${branch}`]);
+    await succeed(config, runId, fix, { to });
+    vi.stubEnv('GIT_TERMINAL_PROMPT', '1');
+    const reads = vi.spyOn(worktree, 'git');
+
+    expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    const run = await state(config, runId);
+    expect(run.steps[0]).toMatchObject({ status: 'failed', failure: { code: 'delivery_failed', message: expect.stringContaining(`origin has no branch ${branch}; push ${to} to it, then run: teamai workflow retry ${runId} fix`) } });
+    expect(reads).toHaveBeenCalledWith(cwd, ['-c', 'credential.interactive=false', 'ls-remote', 'origin', `refs/heads/${branch}`], { timeoutMs: 30000, env: { GIT_TERMINAL_PROMPT: '0' } });
+    expect(run.deliveries).toBeUndefined();
+    expect(gh.calls()).toEqual([]);
+  });
+
   it('reads a reported head only as a full commit id, so a ref name cannot stand in for the pushed branch', async () => {
     const { config, root, runId } = await fixture(FIX_THEN_REVIEW);
     fakeGh(path.join(root, 'gh'));

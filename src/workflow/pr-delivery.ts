@@ -48,6 +48,7 @@ export type DeliveryFault =
   | { kind: 'unreadable' }
   | { kind: 'protected_path'; files: string[] }
   | { kind: 'branch_moved' }
+  | { kind: 'branch_missing' }
   | { kind: 'branch_unreadable' }
   | { kind: 'no_provider' }
   | { kind: 'lookup_failed'; provider: string }
@@ -89,8 +90,9 @@ export async function deliverPr(job: DeliveryJob, gate: CreateGate): Promise<Del
   // after this read still reaches a request opened below; only the driver that holds the branch can make that push.
   const tip = await originTip(job.checkout, job.key.branch);
   if (tip.kind === 'unreadable') return failed({ kind: 'branch_unreadable' });
+  if (tip.commit === undefined) return failed({ kind: 'branch_missing' });
   if (tip.commit !== job.key.head) {
-    if (tip.commit === undefined || tip.commit !== job.recordedHead) return failed({ kind: 'branch_moved' });
+    if (tip.commit !== job.recordedHead) return failed({ kind: 'branch_moved' });
     const latest = await changedFiles({ ...job, key: { ...job.key, head: tip.commit } });
     if ('fault' in latest) return failed(latest.fault);
     const protectedFiles = protectedPaths(latest.files);
@@ -187,7 +189,7 @@ async function findOpen(
 /** The commit origin's `branch` is at, read by the checkout; none when origin has no such branch. */
 async function originTip(checkout: string, branch: string): Promise<{ kind: 'read'; commit?: string } | { kind: 'unreadable' }> {
   const ref = `refs/heads/${branch}`;
-  const listed = await git(checkout, ['ls-remote', 'origin', ref], { timeoutMs: DELIVERY_TIMEOUT_MS });
+  const listed = await git(checkout, ['-c', 'credential.interactive=false', 'ls-remote', 'origin', ref], { timeoutMs: DELIVERY_TIMEOUT_MS, env: { GIT_TERMINAL_PROMPT: '0' } });
   if (listed.code !== 0) return { kind: 'unreadable' };
   const commit = listed.stdout.split('\n').map((line) => line.split('\t')).find(([, name]) => name?.trim() === ref)?.[0];
   return commit ? { kind: 'read', commit } : { kind: 'read' };
@@ -228,6 +230,11 @@ export function deliveryFailure({ runId, key }: Pick<DeliveryJob, 'runId' | 'key
         message: `Step "${step}" changed protected paths against the run base: ${listed}${more}. TeamAI delivers no pull request that changes CI, hooks or agent configuration. The work is kept on origin in branch ${branch}. Have the step leave those paths alone, then run: ${retry}`,
       };
     }
+    case 'branch_missing':
+      return {
+        code: 'delivery_failed',
+        message: `PR delivery for step "${step}" failed: origin has no branch ${branch}; push ${key.head} to it, then run: ${retry}`,
+      };
     case 'branch_moved':
       return {
         code: 'delivery_failed',
