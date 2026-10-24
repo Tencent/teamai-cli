@@ -16,6 +16,7 @@ import { workflowRunDetail } from '../dashboard/workflow-runs.js';
 import { buildEndRecord } from '../workflow/records.js';
 import { projectRun } from '../workflow/snapshot.js';
 import { nextJudgeLease, parseJudgeRequest, parseJudgeSubmission, runJudgeLease, scoreOnDemand, scoredPasses, submitJudgeLease, type JudgeRequest } from '../workflow/scoring.js';
+import { cancelRun, retryStep } from '../workflow/run-controls.js';
 import { installOwner, readRun, updateRun } from '../workflow/store.js';
 import type { StepState } from '../workflow/step-state.js';
 import type { DriverIdentity, RunState, WorkflowEnvelope } from '../workflow/types.js';
@@ -123,6 +124,25 @@ describe('judge work', () => {
     await setStep(config, runId, (run) => ({ ...reported(run), status: 'succeeded', outcome: 'success' }));
     expect(data(await nextJudgeLease(config, request()))).not.toHaveProperty('lease');
     expect(await LabelStore.local(config)).toEqual(labels);
+  });
+
+  it('judges a step cancelled while it delivers as its agent left it, and the run record keeps the tokens of that pass', async () => {
+    const config = fixture(scorer(100));
+    const tokens = { input: 1200, output: 80 };
+    const runId = await settledRun(config, { tokens });
+    const settled = (await runOf(config, runId)).steps[0];
+    if (settled?.status !== 'succeeded') throw new Error('review did not succeed');
+    await setStep(config, runId, (run) => ({ ...settled, status: 'delivering', delivery: { branch: `teamai/${run.id}/review/p1`, head: 'c'.repeat(40) } }));
+    expect(await cancelRun(config, runId, 'review')).toMatchObject({ data: { cancelled: { steps: ['review'] } } });
+
+    const cancelled = await runOf(config, runId);
+    expect(cancelled.steps[0]).toMatchObject({ status: 'cancelled', tokens, outputs: { reviewed: true } });
+    expect(buildEndRecord(cancelled, workDriver, 'tester').steps).toEqual([expect.objectContaining({ step: 'review', pass: 1, outcome: 'cancelled', tokens })]);
+    expect(data(await nextJudgeLease(config, request()))).toHaveProperty('lease');
+
+    expect(await retryStep(config, runId, 'review')).toMatchObject({ data: { retried: { step: 'review', pass: 2 } } });
+    const install = (await installOwner(config)).id;
+    expect(scoredPasses(await runOf(config, runId), install)).toEqual([{ subject: { runId, step: 'review', pass: 1 }, scorers: ['quality'] }]);
   });
 
   it('finalizes the selected Codex tool in the lease', async () => {
