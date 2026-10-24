@@ -25,6 +25,8 @@ export interface DeliveryJob {
   recordedHead?: string;
   /** Work steps inside the delivering one left on branches no step delivers, which the delivered branch must hold. */
   childWork: Array<{ step: string; branch: string; commit: string }>;
+  /** The workflow step whose copy the branch is, when another step's: retrying it runs its steps again in a new branch. */
+  openedBy?: string;
   /** The branch the pull request goes into. */
   target: string;
   /** A URL the step's driver reported and the engine kept: nothing is opened for it. */
@@ -239,7 +241,7 @@ function listedFiles(files: string[]): string {
 }
 
 /** The failure a step keeps for `fault`: what happened, where the work is, and what to do next. */
-export function deliveryFailure({ runId, key, recordedHead }: Pick<DeliveryJob, 'runId' | 'key' | 'recordedHead'>, fault: DeliveryFault): DeliveryFailure {
+export function deliveryFailure({ runId, key, recordedHead, openedBy }: Pick<DeliveryJob, 'runId' | 'key' | 'recordedHead' | 'openedBy'>, fault: DeliveryFault): DeliveryFailure {
   const { step, branch } = key;
   const head = recordedHead ?? key.head;
   const retry = `teamai workflow retry ${runId} ${step}`;
@@ -259,18 +261,24 @@ export function deliveryFailure({ runId, key, recordedHead }: Pick<DeliveryJob, 
         code: 'protected_path',
         message: `Step "${step}" changed protected paths against the run base: ${listedFiles(fault.files)}. TeamAI delivers no pull request that changes CI, hooks or agent configuration. The work is kept on origin in branch ${branch}. Have the step leave those paths alone, then run: ${retry}`,
       };
-    case 'later_protected_path':
+    case 'later_protected_path': {
+      const rerun = openedBy ? `. Or, once workflow step "${openedBy}" has stopped, run its steps again in a new branch: teamai workflow retry ${runId} ${openedBy}` : '';
       return {
         code: 'delivery_failed',
-        message: `PR delivery for step "${step}" failed: commit ${head}, which a later report recorded on the shared branch ${branch}, changed protected paths against the run base: ${listedFiles(fault.files)}. Step "${step}" itself left them alone, so a retry does not run it again. TeamAI delivers no pull request that changes CI, hooks or agent configuration. The work is kept on origin in branch ${branch}. Have a step on that branch take those changes out, then run: ${retry}`,
+        message: `PR delivery for step "${step}" failed: commit ${head}, which a later report recorded on the shared branch ${branch}, changed protected paths against the run base: ${listedFiles(fault.files)}. Step "${step}" itself left them alone, so a retry does not run it again. TeamAI delivers no pull request that changes CI, hooks or agent configuration. The work is kept on origin in branch ${branch}. To deliver the step's own work without the later commits, put branch ${branch} on origin back at ${key.head}, the commit the step reported, then run: ${retry}${rerun}`,
       };
+    }
     case 'branch_missing':
       return {
         code: 'delivery_failed',
         message: `PR delivery for step "${step}" failed: origin has no branch ${branch}; push ${head} to it, then run: ${retry}`,
       };
-    case 'branch_moved':
     case 'branch_ahead':
+      return {
+        code: 'delivery_failed',
+        message: `PR delivery for step "${step}" failed: branch ${branch} on origin is at commit ${fault.tip}, which holds commit ${head}, the last one a report recorded on it, and later commits no report recorded, so TeamAI has not checked them, and no pull request was opened or accepted. Put branch ${branch} on origin back at ${head}, then run: ${retry}`,
+      };
+    case 'branch_moved':
       return {
         code: 'delivery_failed',
         message: `PR delivery for step "${step}" failed: branch ${branch} on origin moved away from commit ${head}, the last one a report recorded on it, so it no longer holds the changes TeamAI checked, and no pull request was opened or accepted. Put branch ${branch} on origin back at ${head}, then run: ${retry}`,

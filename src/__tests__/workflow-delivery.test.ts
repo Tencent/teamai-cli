@@ -422,14 +422,14 @@ describe('delivering a step', () => {
     const branch = `teamai/${runId}/fix/p1`;
     const gh = fakeGh(path.join(root, 'gh'), { open: 'pr_url' in changes ? [pull(1, branch)] : [] });
     const checked = pushWork(root, fix, { 'src/app.ts': 'ok\n' });
-    pushOnto(root, branch, { '.github/workflows/x.yml': 'on: push\n' });
+    const ahead = pushOnto(root, branch, { '.github/workflows/x.yml': 'on: push\n' });
     expect(await succeed(config, runId, fix, { to: checked, ...changes })).not.toHaveProperty('data.dropped');
 
     for (const _drain of [1, 2]) expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { wait: { delivering: ['fix'] } } });
     expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: 'failed' } } });
     const run = await state(config, runId);
     expect(run.steps).toMatchObject([
-      { id: 'fix', status: 'failed', failure: { code: 'delivery_failed', message: expect.stringContaining(`branch ${branch} on origin moved away from commit ${checked}`) } },
+      { id: 'fix', status: 'failed', failure: { code: 'delivery_failed', message: expect.stringContaining(`branch ${branch} on origin is at commit ${ahead}, which holds commit ${checked}, the last one a report recorded on it, and later commits no report recorded, so TeamAI has not checked them`) } },
       { id: 'review', status: 'skipped' },
     ]);
     expect(run.steps[0]).toMatchObject({ failure: { message: expect.stringContaining(`teamai workflow retry ${runId} fix`) } });
@@ -996,6 +996,34 @@ describe('retrying and cancelling a delivery', () => {
       expect(creates(gh)).toEqual([[docs.workspace?.branch, 'main']]);
       expect(run.deliveries).toHaveLength(1);
     }
+  });
+
+  it.each(['puts origin back at the step\'s own commit', 'retries the workflow step'] as const)('names remedies for a protected change a later report recorded on the shared branch, and the run accepts the one that %s', async (remedy) => {
+    const { config, root, runId } = await fixture(IMPL_AND_DOCS);
+    const gh = fakeGh(path.join(root, 'gh'), { lookup: 'fail' });
+    const impl = await take(config, runId);
+    const own = pushWork(root, impl);
+    await succeed(config, runId, impl, { to: own });
+    const docs = await take(config, runId);
+    const branch = docs.workspace?.branch ?? '';
+    await succeed(config, runId, docs, { to: pushOnto(root, branch, { '.github/workflows/docs.yml': 'docs' }) });
+    gh.configure({});
+    await retryStep(config, runId, 'work.impl');
+    expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    const failure = (await state(config, runId)).steps.find((step) => step.id === 'work.impl');
+    expect(failure).toMatchObject({ failure: { code: 'delivery_failed', message: expect.stringContaining(`put branch ${branch} on origin back at ${own}, the commit the step reported, then run: teamai workflow retry ${runId} work.impl`) } });
+    expect(failure).toMatchObject({ failure: { message: expect.stringContaining(`run its steps again in a new branch: teamai workflow retry ${runId} work`) } });
+
+    if (remedy === 'retries the workflow step') {
+      expect(await retryStep(config, runId, 'work')).toMatchObject({ data: { retried: { step: 'work', pass: 2 } } });
+      expect(await take(config, runId)).toMatchObject({ step: 'work.impl', workspace: { branch: `teamai/${runId}/work/p2` } });
+      return;
+    }
+    git(root, ['--git-dir=remote.git', 'update-ref', `refs/heads/${branch}`, own]);
+    await retryStep(config, runId, 'work.impl');
+    expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(creates(gh)).toEqual([[branch, 'main']]);
+    expect((await state(config, runId)).steps.find((step) => step.id === 'work.impl')).toMatchObject({ status: 'succeeded' });
   });
 
   it('blames the delivering step for its own protected change when a later report recorded more work on the shared branch', async () => {
