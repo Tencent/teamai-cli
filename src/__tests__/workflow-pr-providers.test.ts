@@ -207,6 +207,16 @@ describe('the provider of a checkout origin', () => {
     expect(origin.kind === 'provider' && [origin.provider.name, origin.repo]).toEqual([provider, repo]);
   });
 
+  it.each([
+    ['https://github.com/acme/app.git', '', 'github.com'],
+    ['ssh://git@github.com:22/acme/app.git', '', 'github.com'],
+    ['git@gl.example.com:acme/app.git', 'https://gl.example.com:8443', 'gl.example.com'],
+  ])('reads the host the pull requests of %s are on', (remote, gitlabUrl, host) => {
+    vi.stubEnv('GITLAB_URL', gitlabUrl); vi.stubEnv('TEAMAI_GITLAB_HOST', '');
+    const origin = providerForRemote(remote);
+    expect(origin.kind === 'provider' && origin.hostname).toBe(host);
+  });
+
   it.each(['/srv/git/app.git', 'file:///srv/git/app.git', 'https://git.example.internal/acme/app.git', 'https://github.com/acme', 'https://cnb.cool/acme/app.git'])(
     'reaches %s through git alone, which opens no pull request',
     (remote) => expect(providerForRemote(remote)).toEqual({ kind: 'transport' }),

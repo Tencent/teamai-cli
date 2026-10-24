@@ -5,7 +5,7 @@
  */
 import os from 'node:os';
 import { providerForRemote, type OriginProvider } from '../providers/registry.js';
-import type { PullRequestLookup, PullRequestRef } from '../providers/types.js';
+import type { PullRequestRef } from '../providers/types.js';
 import { sanitizePrUrl, type PrUrl } from './pr-url.js';
 import type { DeliveryFailure } from './step-state.js';
 import { fetchMissingCommits, git, protectedPaths } from './worktree.js';
@@ -75,9 +75,9 @@ export async function deliverPr(job: DeliveryJob, gate: CreateGate): Promise<Del
   if (job.reported) return { ok: true, pr: job.reported };
   const origin = await originOf(job.checkout);
   if (origin.kind === 'transport') return failed({ kind: 'no_provider' });
-  const { provider, pullRequests, repo } = origin;
+  const { provider, repo } = origin;
   const ref: PullRequestRef = { repo, source: job.key.branch, target: job.target, timeoutMs: DELIVERY_TIMEOUT_MS };
-  const found = await findOpen(pullRequests, ref);
+  const found = await findOpen(origin, ref);
   if (found.kind === 'found') return { ok: true, pr: found.pr };
   if (found.kind === 'failed') return failed({ kind: 'lookup_failed', provider: provider.name });
   if (found.kind === 'unsafe') return failed({ kind: 'unsafe_url', provider: provider.name });
@@ -93,7 +93,7 @@ export async function deliverPr(job: DeliveryJob, gate: CreateGate): Promise<Del
     return created.url ? { ok: true, pr: created.url } : failed({ kind: 'unsafe_url', provider: provider.name });
   } catch {
     // The host may have opened the request before the create failed or timed out: find it rather than open another.
-    const again = await findOpen(pullRequests, ref);
+    const again = await findOpen(origin, ref);
     return again.kind === 'found' ? { ok: true, pr: again.pr } : failed({ kind: 'create_failed', provider: provider.name });
   }
 }
@@ -108,7 +108,7 @@ export async function reportedPrMismatch(
 ): Promise<string | undefined> {
   const origin = await originOf(checkout);
   if (origin.kind === 'transport' || new URL(url).hostname !== origin.hostname) return undefined;
-  const found = await findOpen(origin.pullRequests, { repo: origin.repo, source: branch, target, timeoutMs: DELIVERY_TIMEOUT_MS });
+  const found = await findOpen(origin, { repo: origin.repo, source: branch, target, timeoutMs: DELIVERY_TIMEOUT_MS });
   if (found.kind === 'none') return `branch ${branch} has no open pull request into ${target}`;
   if (found.kind === 'found' && found.pr !== url) return `is not the open pull request of branch ${branch} into ${target}`;
   return undefined;
@@ -120,19 +120,22 @@ async function originOf(checkout: string): Promise<OriginProvider> {
   return remote.code === 0 ? providerForRemote(remote.stdout) : { kind: 'transport' };
 }
 
-/** What a lookup said: the open request, sanitized; none; no answer; or a URL that cannot be kept. */
+/**
+ * What a lookup said: the open request, sanitized; none; no answer; or a URL that cannot be kept, which a URL on another
+ * host than the origin's pull requests is, whichever provider answered.
+ */
 async function findOpen(
-  lookup: PullRequestLookup, ref: PullRequestRef,
+  { pullRequests, hostname }: Extract<OriginProvider, { kind: 'provider' }>, ref: PullRequestRef,
 ): Promise<{ kind: 'found'; pr: PrUrl } | { kind: 'none' } | { kind: 'failed' } | { kind: 'unsafe' }> {
   let url: string | undefined;
   try {
-    url = await lookup.findOpen(ref);
+    url = await pullRequests.findOpen(ref);
   } catch {
     return { kind: 'failed' };
   }
   if (url === undefined) return { kind: 'none' };
   const clean = sanitizePrUrl(url);
-  return clean.url ? { kind: 'found', pr: clean.url } : { kind: 'unsafe' };
+  return clean.url && new URL(clean.url).hostname === hostname ? { kind: 'found', pr: clean.url } : { kind: 'unsafe' };
 }
 
 /** The files the delivered head changes against the run base, read in the run's checkout once it fetched what it lacks. */

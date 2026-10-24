@@ -294,6 +294,22 @@ describe('delivering a step', () => {
     expect(handed.ok && handed.value.steps[0]).toEqual(run.steps[0]);
   });
 
+  it('fails, opening none, when the lookup names an open pull request on another host than the origin', async () => {
+    const { config, root, runId } = await fixture(FIX_THEN_REVIEW);
+    const fix = await take(config, runId);
+    const branch = `teamai/${runId}/fix/p1`;
+    const gh = fakeGh(path.join(root, 'gh'), { open: [{ ...pull(7, branch), html_url: 'https://github.example.net/fixture/app/pull/7' }] });
+    const to = pushWork(root, fix);
+    await succeed(config, runId, fix, { to });
+
+    expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    const run = await state(config, runId);
+    expect(run.deliveries).toBeUndefined();
+    expect(run.steps[0]).toMatchObject({ status: 'failed', failure: { code: 'delivery_failed', message: expect.stringContaining(`answered with a pull request URL TeamAI cannot keep. The work is kept on origin in branch ${branch}.`) } });
+    expect(gh.calls().map((call) => call.args[0])).toEqual(['api']);
+    expect(git(root, ['--git-dir=remote.git', 'rev-parse', `refs/heads/${branch}`])).toBe(to);
+  });
+
   it('keeps the work on origin when GitHub cannot be reached, stores none of its output, and retry delivers without running the step again', async () => {
     const { config, root, runId } = await fixture(FIX_THEN_REVIEW);
     const gh = fakeGh(path.join(root, 'gh'), { lookup: 'fail' });

@@ -216,7 +216,11 @@ export function getProviderFromUrl(repoUrl: string): GitProvider {
 
 // ─── Workflow delivery ───────────────────────────────────
 
-/** A checkout's origin as workflow delivery reaches it: through a provider that can look up its pull requests, or git alone. */
+/**
+ * A checkout's origin as workflow delivery reaches it: through a provider that can look up its pull requests, or git
+ * alone. `hostname` is the host the origin's pull requests are on: its web host, which an ssh or scp remote shares, since
+ * a self-hosted GitLab refuses a GITLAB_URL on another host than TEAMAI_GITLAB_HOST.
+ */
 export type OriginProvider =
   | { kind: 'provider'; provider: GitProvider; pullRequests: PullRequestLookup; repo: string; hostname: string }
   | { kind: 'transport' };
