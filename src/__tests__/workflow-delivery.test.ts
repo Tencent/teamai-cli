@@ -816,4 +816,31 @@ describe('retrying and cancelling a delivery', () => {
     expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: {} } });
     expect((await state(config, runId)).deliveries).toHaveLength(1);
   });
+
+  it('only looks up the request a cancelled delivery asked for before its process stopped, and opens none when the host holds none', async () => {
+    const { config, root, runId } = await fixture(FIX_THEN_REVIEW);
+    const fix = await take(config, runId);
+    const branch = `teamai/${runId}/fix/p1`;
+    await succeed(config, runId, fix, { to: pushWork(root, fix) });
+    let opened = (): void => {};
+    const creating = new Promise<void>((resolve) => { opened = resolve; });
+    const create = providerDouble(async () => undefined, async () => {
+      if (create.mock.calls.length > 1) return 'https://github.com/fixture/app/pull/9';
+      await cancelRun(config, runId);
+      opened();
+      // The process stops here, before the host opened anything.
+      return new Promise<string>(() => {});
+    });
+    void leaseNext(config, runId, remote, writable);
+    await creating;
+    fs.rmSync(deliveryLockPath(config, runId), { force: true });
+    expect((await state(config, runId)).steps[0]).toMatchObject({ id: 'fix', status: 'cancelled', delivery: { branch, creating: true } });
+
+    expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: {} } });
+    const run = await state(config, runId);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(run.deliveries).toBeUndefined();
+    expect(run.steps[0]).toMatchObject({ id: 'fix', status: 'cancelled', delivery: { branch } });
+    expect(run.steps[0]).not.toMatchObject({ delivery: { creating: true } });
+  });
 });
