@@ -306,8 +306,12 @@ export function delivered(state: DeliveringStep): SucceededStep {
   return succeed(state, settlement);
 }
 
+/** The failure codes only delivery gives a step, always after its agent succeeded. */
+const DELIVERY_FAILURE_CODES = ['delivery_failed', 'protected_path'] as const;
+export type DeliveryFailure = { code: (typeof DELIVERY_FAILURE_CODES)[number]; message: string };
+
 /** A delivery that failed stops the step, keeping what its agent did and the branch a retry delivers again. */
-export function deliveryFailed(state: DeliveringStep, failure: WorkflowFailure): FailedStep {
+export function deliveryFailed(state: DeliveringStep, failure: DeliveryFailure): FailedStep {
   const { id: _id, status: _status, ...settlement } = state;
   return fail(state, { ...settlement, message: failure.message, failure });
 }
@@ -339,6 +343,20 @@ export function passOf(state: StepState): StepPass | undefined {
   if (!settled(state)) return undefined;
   const outcome = VISIBLE_OUTCOMES[state.status];
   return StepPassSchema.parse({ ...state, pass: state.pass ?? 1, outcome });
+}
+
+/**
+ * The current pass of a step as its agent left it, which scorers judge: a step that delivers ran its agent to success,
+ * so delivery never decides whether, or by which install, a pass is judged.
+ */
+export function agentPassOf(state: StepState): StepPass | undefined {
+  return state.status === 'delivering' ? StepPassSchema.parse({ ...state, pass: state.pass ?? 1, outcome: 'success' }) : passOf(state);
+}
+
+/** Whether the agent of `pass` succeeded: it did, or only the delivery of what it wrote failed. */
+export function agentSucceeded(pass: StepPass): boolean {
+  const code: string | undefined = pass.failure?.code;
+  return pass.outcome === 'success' || (pass.outcome === 'failed' && DELIVERY_FAILURE_CODES.some((delivery) => delivery === code));
 }
 
 /**

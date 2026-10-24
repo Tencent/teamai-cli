@@ -16,7 +16,8 @@ import { workflowRunDetail } from '../dashboard/workflow-runs.js';
 import { buildEndRecord } from '../workflow/records.js';
 import { projectRun } from '../workflow/snapshot.js';
 import { nextJudgeLease, parseJudgeRequest, parseJudgeSubmission, runJudgeLease, scoreOnDemand, scoredPasses, submitJudgeLease, type JudgeRequest } from '../workflow/scoring.js';
-import { installOwner, readRun } from '../workflow/store.js';
+import { installOwner, readRun, updateRun } from '../workflow/store.js';
+import type { StepState } from '../workflow/step-state.js';
 import type { DriverIdentity, RunState, WorkflowEnvelope } from '../workflow/types.js';
 
 const dirs: string[] = [];
@@ -98,7 +99,32 @@ async function settledRun(config: LocalConfig, reported: Record<string, unknown>
   return runId;
 }
 
+/** Rewrites run `runId`'s one step as `step`, with the run still running, as a delivery would leave it. */
+async function setStep(config: LocalConfig, runId: string, step: (run: RunState) => StepState): Promise<void> {
+  await updateRun(config, runId, async (run) => (run === 'missing' ? { value: undefined } : { value: undefined, write: { ...run, status: 'running', steps: [step(run)] } }));
+}
+
 describe('judge work', () => {
+  it('judges a step while it delivers, and its label stays the judgement however the delivery ends', async () => {
+    const config = fixture(scorer(100));
+    const runId = await settledRun(config);
+    const settled = (await runOf(config, runId)).steps[0];
+    if (settled?.status !== 'succeeded') throw new Error('review did not succeed');
+    const reported = (run: RunState) => ({ ...settled, delivery: { branch: `teamai/${run.id}/review/p1`, head: 'c'.repeat(40) } });
+    await setStep(config, runId, (run) => ({ ...reported(run), status: 'delivering' }));
+
+    const lease = leaseOf(await nextJudgeLease(config, request()));
+    data(await submitJudgeLease(config, lease.ref, { driver: judgeDriver, outcome: 'success', answer: { label: 'good', reasoning: 'r' } }));
+    const labels = await LabelStore.local(config);
+    expect(labels).toMatchObject([{ subject: { runId, step: 'review', pass: 1 }, label: 'good' }]);
+
+    await setStep(config, runId, (run) => ({ ...reported(run), status: 'failed', outcome: 'failed', failure: { code: 'delivery_failed', message: 'm' } }));
+    expect(data(await nextJudgeLease(config, request()))).not.toHaveProperty('lease');
+    await setStep(config, runId, (run) => ({ ...reported(run), status: 'succeeded', outcome: 'success' }));
+    expect(data(await nextJudgeLease(config, request()))).not.toHaveProperty('lease');
+    expect(await LabelStore.local(config)).toEqual(labels);
+  });
+
   it('finalizes the selected Codex tool in the lease', async () => {
     const config = fixture(scorer(100));
     await settledRun(config);
@@ -494,6 +520,28 @@ describe('scoring totals', () => {
 });
 
 describe('scoredPasses', () => {
+  it('judges the agent pass of a step that delivers, for the install that reported it, whatever becomes of its delivery', async () => {
+    const config = fixture(scorer(100));
+    const run = await runOf(config, await settledRun(config));
+    const install = (await installOwner(config)).id;
+    const reported = { id: 'review', settledAt: 2, attempt: 'a1', installId: install, delivery: { branch: `teamai/${run.id}/review/p1`, head: 'c'.repeat(40) } };
+    const judged = [{ subject: { runId: run.id, step: 'review', pass: 1 }, scorers: ['quality'] }];
+    const withStep = (step: StepState): RunState => ({ ...run, status: 'running', steps: [step] });
+
+    expect(scoredPasses(withStep({ ...reported, status: 'delivering' }), install)).toEqual(judged);
+    expect(scoredPasses(withStep({ ...reported, status: 'succeeded', outcome: 'success' }), install)).toEqual(judged);
+    for (const code of ['delivery_failed', 'protected_path']) {
+      expect(scoredPasses(withStep({ ...reported, status: 'failed', outcome: 'failed', failure: { code, message: 'm' } }), install)).toEqual(judged);
+      const retried: StepState = { id: 'review', status: 'pending', pass: 2, passes: [{ pass: 1, outcome: 'failed', failure: { code, message: 'm' }, installId: install }] };
+      expect(scoredPasses(withStep(retried), install)).toEqual(judged);
+    }
+    expect(scoredPasses(withStep({ id: 'review', status: 'failed', outcome: 'failed', settledAt: 2, installId: install, failure: { code: 'tool_failed', message: 'm' } }), install)).toEqual([]);
+    // Claimed mid-delivery: the install that reported the pass judges it, the one that claimed the run does not.
+    const claimed = { ...withStep({ ...reported, status: 'delivering' }), publication: { stateRevision: 2 } };
+    expect(scoredPasses(claimed, install)).toEqual(judged);
+    expect(scoredPasses(claimed, 'claimer')).toEqual([]);
+  });
+
   it('keeps only the passes this install settled, and attributes archived children to the workflow pass that held them', async () => {
     const config = fixture(scorer(100));
     const run = await runOf(config, await settledRun(config));

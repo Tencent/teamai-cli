@@ -13,7 +13,7 @@ import {
 import type { RunSubject } from '../scorers/label.js';
 import { firstSettled, isUnder, passRange, passesWithin, runPasses } from './loop.js';
 import { stepDefinitions } from './scope.js';
-import type { StepPass } from './step-state.js';
+import { agentPassOf, type StepPass } from './step-state.js';
 import type { RunState } from './types.js';
 import { branchName } from './workspace.js';
 import { stepCheckout } from './worktree.js';
@@ -29,7 +29,7 @@ function ranIn(run: RunState, pass: StepPass): string | undefined {
 
 export function evidencePlan(run: RunState, subject: RunSubject) {
   const definitionOf = stepDefinitions(run);
-  const all = runPasses(run);
+  const all = runPasses(run, agentPassOf);
   const own = all.find((pass) => pass.step === subject.step && pass.pass === subject.pass);
   const workflow = definitionOf(subject.step)?.workflow !== undefined;
   const gaps: EvidenceGap[] = [];

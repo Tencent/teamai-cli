@@ -7,7 +7,7 @@ import os from 'node:os';
 import { providerForRemote, type OriginProvider } from '../providers/registry.js';
 import type { PullRequestLookup, PullRequestRef } from '../providers/types.js';
 import { sanitizePrUrl, type PrUrl } from './pr-url.js';
-import type { WorkflowFailure } from './types.js';
+import type { DeliveryFailure } from './step-state.js';
 import { fetchMissingCommits, git, protectedPaths } from './worktree.js';
 
 /** Which delivery an outcome belongs to: it applies only while the step still delivers this pass of this commit. */
@@ -148,7 +148,7 @@ async function changedFiles({ key, runId, checkout, base }: DeliveryJob): Promis
 const LISTED_FILES = 20;
 
 /** The failure a step keeps for `fault`: what happened, where the work is, and what to do next. */
-export function deliveryFailure({ runId, key }: Pick<DeliveryJob, 'runId' | 'key'>, fault: DeliveryFault): WorkflowFailure {
+export function deliveryFailure({ runId, key }: Pick<DeliveryJob, 'runId' | 'key'>, fault: DeliveryFault): DeliveryFailure {
   const { step, branch } = key;
   const retry = `teamai workflow retry ${runId} ${step}`;
   switch (fault.kind) {
