@@ -443,3 +443,7 @@ Session archive writers (`session push`, `migrate --push`, and `session pull`) w
 ## OpenCode hooks cannot start the CLI
 
 If OpenCode hooks stopped after moving or reinstalling Node or TeamAI, run `teamai hooks inject` or `teamai pull` and restart OpenCode. The plugin records the installed Node and CLI paths so it also works without `teamai` on the service PATH.
+
+## Placed agent format changes behind the default branch
+
+A `.md`/`.yaml` conversion may retire the agent this machine placed after its merge is proven. If the team changed that original, carry its changes into the conversion after updating the checkout. If the team deleted it, the remaining root copy is not a new agent to publish. Older records without a delivered blob need an updated checkout before conversion.
