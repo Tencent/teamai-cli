@@ -2014,6 +2014,25 @@ steps:
     expect(JSON.stringify(await endRecord(config))).not.toContain('postgres://ci:pw@db.example/app');
   });
 
+  it('masks a value an attempt was given after the value changes while the attempt runs', async () => {
+    const { config, workspace, runId } = await workflowFixture(`schemaVersion: v1alpha1
+name: build
+description: Print a secret late.
+steps:
+  - id: deploy
+    command: sleep 0.5; echo "deploying with $DEPLOY_TOKEN" >&2; exit 1
+    requires: { env: [DEPLOY_TOKEN] }
+`);
+    vi.stubEnv('DEPLOY_TOKEN', 'old-deploy-secret-value');
+    const rotated = setTimeout(() => vi.stubEnv('DEPLOY_TOKEN', 'new-deploy-secret-value'), 200);
+    expect(await runLocalDriver(config, runId, workspace, { hitl: false })).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    clearTimeout(rotated);
+    vi.unstubAllEnvs();
+    const runFile = JSON.stringify(await readRun(config, runId));
+    expect(runFile).toContain('deploying with <REDACTED:DEPLOY_TOKEN');
+    expect(runFile).not.toContain('old-deploy-secret-value');
+  });
+
   function keptResult(config: LocalConfig, runId: string): string {
     const attempts = path.join(getDataHome(config), 'workflows', 'runs', runId, 'attempts');
     return fs.readdirSync(attempts).map((attempt) => fs.readFileSync(path.join(attempts, attempt, 'result.json'), 'utf8')).join('\n');

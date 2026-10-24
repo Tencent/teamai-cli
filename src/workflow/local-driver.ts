@@ -938,6 +938,19 @@ async function reconcileTakenCopies(config: LocalConfig, runId: string, active: 
   return undefined;
 }
 
+/** Adds to `seen` each value of `secrets` it lacks, under a label of its own when its name already holds another value. */
+function rememberSecrets(seen: Record<string, string>, secrets: Record<string, string>): Record<string, string> {
+  const known = new Set(Object.values(seen));
+  for (const [key, value] of Object.entries(secrets)) {
+    if (known.has(value)) continue;
+    let label = key;
+    for (let count = 2; label in seen; count += 1) label = `${key} (value ${count})`;
+    seen[label] = value;
+    known.add(value);
+  }
+  return { ...seen };
+}
+
 /**
  * What this driver declares on every `next`. Every key is set, so a new capability does not compile until it is decided.
  * It cannot deny a step the network, and keeps it from the member's machine only on a host the member marks `sandbox`.
@@ -1010,8 +1023,10 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
     wake();
   };
   if (maxParallel > 1) handle(STOP_SIGNALS);
-  // The team env, resolved once per turn of the loop: the leases it hands out, their env, and what it masks agree.
+  // The team env, resolved once per turn of the loop: the leases it hands out, their env, and what it masks agree. It
+  // masks every value the drive has seen, so a value that changed while an attempt ran stays masked in what it reports.
   let env: WorkflowEnv | undefined;
+  const seen: Record<string, string> = {};
   const required = await requiredKeysOf(config, runId);
   const report = async (body: ReportBody, lease?: Lease): Promise<WorkflowEnvelope | undefined> => {
     const secrets = env?.secrets ?? await knownSecrets(config, required);
@@ -1031,7 +1046,8 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
       if (signalled) return { error: { code: 'interrupted', message: `Stopped by ${signalled} after every command it started exited` } };
       const running = [...inFlight.keys(), ...held.map((lease) => lease.attempt), ...(prompt ? [prompt.lease.attempt] : [])];
       const canTakeLease = room();
-      const turn = await resolveWorkflowEnv(config, required);
+      const resolved = await resolveWorkflowEnv(config, required);
+      const turn = { ...resolved, secrets: rememberSecrets(seen, resolved.secrets) };
       env = turn;
       const next = await leaseNext(config, runId, driver, {
         running, canTakeLease, can, autoApprove: options.autoApprove, ...(base ? { base } : {}), env: turn,
