@@ -885,12 +885,11 @@ interface OfferContext {
 
 /**
  * What the driver asking for step instance `id` is offered. Both places that hand out a lease ask here. Setup comes with
- * a lease on a copy no step has run in yet, whose driver may still have to create it.
+ * every lease on a copy, and the driver runs it when it creates the copy or the copy's setup never finished.
  */
 function offerTerms(
   run: RunState, id: string, { scope, step }: { scope: Scope; step: WorkflowStep }, plan: WorkspacePlan | undefined, context: OfferContext,
 ): Negotiation {
-  const creates = plan?.contract !== undefined && run.copies?.[plan.contract.branch]?.used !== true;
   return negotiate({
     step: id,
     requires: mergeRequirements(scope.requires, step.requires),
@@ -900,7 +899,7 @@ function offerTerms(
     runEnvKeys: requiredEnvKeys([run.definition, ...Object.values(run.workflows ?? {})]),
     budgeted: step.prompt !== undefined && scope.budgeted,
     ...(step.maxTurns !== undefined ? { maxTurns: step.maxTurns } : {}),
-    ...(creates && scope.setup ? { setup: scope.setup } : {}),
+    ...(plan?.contract && scope.setup ? { setup: scope.setup } : {}),
   }, context.can, context.allow, context.facts);
 }
 
@@ -1469,7 +1468,8 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
       copy.commit = report.changes.to;
       run.copies[report.changes.branch] = copy;
     }
-    if (contract && outcome !== 'released' && !failure?.code.startsWith('setup_')) {
+    // The step itself ran in the copy, not only its staging or setup.
+    if (contract && (report.outcome === 'success' || report.exitCode !== undefined || report.changes || report.read)) {
       ((run.copies ??= {})[contract.branch] ??= { owner: report.driver }).used = true;
     }
     const settledStep = outcome === 'released' ? release(step)

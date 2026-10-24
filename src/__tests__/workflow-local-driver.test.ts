@@ -2499,6 +2499,31 @@ ${steps}`);
     expect(fs.readFileSync(log, 'utf8')).toBe('ran\n');
   });
 
+  it('runs setup again when a retried step finds the workspace of a copy a step already ran in gone', async () => {
+    const log = path.join(os.tmpdir(), `teamai-setup-log-${randomUUID()}`);
+    const ready = path.join(os.tmpdir(), `teamai-setup-ready-${randomUUID()}`);
+    dirs.push(log, ready);
+    const { config, workspace, runId } = await setupFixture(`  command: echo prepared > .prepared && echo ran >> ${log}`, `  - id: change
+    workspace: new
+    workflow:
+      steps:
+        - id: first
+          command: test -f .prepared
+        - id: second
+          needs: [first]
+          command: test -f .prepared && test -f ${JSON.stringify(ready)}
+`);
+    fs.writeFileSync(log, '');
+    expect(await runLocalDriver(config, runId, workspace, { hitl: false })).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    for (const line of worktrees(workspace)) fs.rmSync(line.slice('worktree '.length), { recursive: true, force: true });
+    fs.writeFileSync(ready, '');
+    expect(await retryStep(config, runId, await knownSecrets(config), 'change.second')).toMatchObject({ data: {} });
+
+    const done = await runLocalDriver(config, runId, workspace, { hitl: false });
+    expect(done, JSON.stringify(await readRun(config, runId))).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(fs.readFileSync(log, 'utf8')).toBe('ran\nran\n');
+  });
+
   it.each([
     ['setup_failed', 'echo broken; exit 4'],
     ['setup_dirty', 'echo changed > tracked.txt'],

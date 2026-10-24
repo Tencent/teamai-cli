@@ -2660,7 +2660,7 @@ describe('held-back steps', () => {
     expect(taken).toMatchObject({ data: { lease: { step: 'a', workspace: { branch: expect.stringMatching(/a/) } } } });
   });
 
-  it('asks for setup only on a lease that opens its workspace, not on one that continues a copy another lease opened', async () => {
+  it('asks for setup on every lease with a workspace in a workflow that declares it, also one that continues a copy another lease opened', async () => {
     const fixture = testConfig();
     const workflows = path.join(fixture.config.repo.localPath, 'workflows');
     fs.writeFileSync(path.join(workflows, 'build.yaml'), graph(`  - id: box
@@ -2682,9 +2682,12 @@ describe('held-back steps', () => {
     const a = leaseIn(await leaseNext(fixture.config, runId, driverA, { can: { workspace: [...allModes] }, base }));
     expect(a.step).toBe('box.a');
     await reportAttempt(fixture.config, runId, { attempt: a.attempt, revision: a.revision, outcome: 'success', driver: driverA });
-    const c = await leaseNext(fixture.config, runId, driverA, { can: { workspace: [...allModes] }, base });
-    expect(c).toMatchObject({ data: { lease: { step: 'box.b.c' } } });
-    expect(c).not.toHaveProperty('data.lease.setup');
+    expect(await leaseNext(fixture.config, runId, driverA, { can: { workspace: [...allModes] }, base })).toMatchObject({
+      data: { wait: { held: [{ step: 'box.b.c', missing: ['setup'] }] } },
+    });
+    expect(await leaseNext(fixture.config, runId, driverA, { can: { workspace: [...allModes], setup: true }, base })).toMatchObject({
+      data: { lease: { step: 'box.b.c', setup: { command: 'npm ci' } } },
+    });
   });
 
   it('keeps setup on the lease that replaces a released one, since no report has used the copy yet', async () => {
@@ -2733,7 +2736,11 @@ describe('held-back steps', () => {
     });
   });
 
-  it('carries setup again when a step is retried after its setup failed, since no step ran in the copy', async () => {
+  it.each([
+    ['its setup failed', { code: 'setup_failed', message: 'Setup "npm ci" exited with code 1, so the step did not run.' }],
+    ['its workspace lacked a commit', { code: 'workspace_base', message: 'Step "box.a" needs commit abc, which this checkout does not have.' }],
+    ['its base config could not be applied', { code: 'base_config', message: 'Could not apply the base config.' }],
+  ])('carries setup again when a step is retried after %s, since the step never ran in the copy', async (_case, failure) => {
     const { config, runId } = await startBuild(graph(`  - id: box
     workspace: new
     workflow:
@@ -2744,9 +2751,7 @@ describe('held-back steps', () => {
 `, 'setup:\n  command: npm ci\n'));
     const can = { workspace: [...allModes], setup: true };
     const a = leaseIn(await leaseNext(config, runId, driverA, { can, base }));
-    await reportAttempt(config, runId, {
-      ...a, outcome: 'failed', driver: driverA, failure: { code: 'setup_failed', message: 'Setup "npm ci" exited with code 1, so the step did not run.' },
-    });
+    await reportAttempt(config, runId, { ...a, outcome: 'failed', driver: driverA, failure });
     expect(await retryStep(config, runId, await knownSecrets(config), 'box.a')).toMatchObject({ data: {} });
 
     expect(await leaseNext(config, runId, driverA, { can, base })).toMatchObject({
