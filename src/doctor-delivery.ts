@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { expandHome, listFilesRecursive, pathExists, readFileSafe, readJsonObject } from './utils/fs.js';
 import {
   DEFAULT_TOOL_PATHS, getDataHome, getMcpSharing, getTeamaiHome, isAgentExcluded, isGitExcludeEnabled, managedMcpManifestKey, MUSE_TOOL_ID,
-  resolveToolBaseDir, scopedToolPaths,
+  resolveBaseDir, resolveToolBaseDir, scopedToolPaths,
 } from './types.js';
 import type { DeliveryTarget, LocalConfig, ManagedMcpManifest, McpServerDef, ResourceItem, TeamaiConfig } from './types.js';
 import type { EntryLayout, EntryResolution } from './namespaced-entries.js';
@@ -383,7 +383,7 @@ export async function buildSkillDirChecks(ctx: DoctorContext): Promise<Check[]> 
   const checks: Check[] = [];
   for (const { tool, own, where } of located) {
     const blocks = [];
-    for (const dir of writesOf(where)) {
+    for (const { path: dir } of writesOf(where)) {
       const base = await skillsGuardBase(resolveBaseDir(ctx.localConfig), dir);
       // The built-in teamai skill is always owed, even without team skills.
       const block = await findSkillDirectoryBlock(base, path.join(dir, 'teamai'), { keepSkillLink: true });
