@@ -35,6 +35,32 @@ import {
 const culture = (text: string) => `${TEAMAI_CULTURE_START}\n${text}\n${TEAMAI_CULTURE_END}`;
 const claudemd = (text: string) => `${TEAMAI_CLAUDEMD_START}\n${text}\n${TEAMAI_CLAUDEMD_END}`;
 
+it('delivers Pi user blocks and rules to the override Pi actually reads', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-pi-override-'));
+  vi.stubEnv('HOME', root);
+  const normal = path.join(root, '.pi/agent/AGENTS.md');
+  const override = path.join(root, '.pi/agent/AGENTS.override.md');
+  try {
+    await fse.outputFile(normal, `# Personal normal\n\n${culture('OLD')}\n`);
+    await fse.outputFile(override, '# Personal override\n');
+    const team = TeamaiConfigSchema.parse({ team: 't', repo: 'https://example.invalid/t.git' });
+    const local = { repo: { localPath: path.join(root, 'repo'), remote: '' }, username: 'u', additionalRoles: [], scope: 'user', enabledAgents: ['pi'] } as LocalConfig;
+    expect(ownOf((await inlineRulesLocationOf('pi', installOf(team, local)))!)?.path).toBe(override);
+    const targets = await resolveInstructionTargets(team, local);
+    expect(targets.targets.find(t => t.tools.includes('pi'))?.path).toBe(override);
+    expect(targets.stale.map(t => t.path)).toContain(normal);
+    await applyInstructionPlan(await planInstructionFiles(targets.targets, { culture: culture('CURRENT') }, targets.stale), { dryRun: false });
+    expect(await fse.readFile(override, 'utf8')).toContain('# Personal override');
+    expect(await fse.readFile(override, 'utf8')).toContain('CURRENT');
+    expect(await fse.readFile(normal, 'utf8')).toBe('# Personal normal\n');
+    await fse.remove(override);
+    expect(ownOf((await inlineRulesLocationOf('pi', installOf(team, local)))!)?.path).toBe(normal);
+  } finally {
+    vi.unstubAllEnvs();
+    await fse.remove(root);
+  }
+});
+
 describe('instruction file planning (#945)', () => {
   let dir: string;
 
