@@ -19,6 +19,7 @@ import {
 import { getUserHome } from './utils/home.js';
 import { pathExists } from './utils/fs.js';
 import { hasPiHooks, removePiHooks, resolvePiExtensionsDir, PI_HOOK_FILE } from './pi-hooks.js';
+import { hasKiroHooks, kiroHookFile, removeKiroHooks } from './kiro-hooks.js';
 
 type HookListStatus = HookStatus | 'not configured';
 
@@ -115,7 +116,7 @@ export async function hooksInject(options: GlobalOptions): Promise<void> {
         }
     }
     // The reason is already reported; the installed team hooks were left as they were.
-    if (!reconciled.ok) {
+    if (!reconciled.ok || reconciled.unwritten?.length) {
         process.exitCode = 1;
         return;
     }
@@ -166,6 +167,11 @@ export async function hooksList(_options: GlobalOptions): Promise<void> {
 
     for (const [tool, paths] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
         if (isAgentExcluded(localConfig, tool)) continue;
+        if (tool === 'kiro') {
+            if (!await pathExists(path.join(getUserHome(), '.kiro'))) continue;
+            rows.push({ tool, status: await hasKiroHooks() ? 'installed' : 'missing', settingsPath: formatDisplayPath(kiroHookFile()), builtinDefs: installedBuiltinHookDefs(tool, false) });
+            continue;
+        }
         if (tool === 'pi') {
             const hookPath = path.join(resolvePiExtensionsDir(), PI_HOOK_FILE);
             rows.push({
@@ -332,6 +338,7 @@ export async function hooksRemove(_options: GlobalOptions): Promise<void> {
     if (teamConfig.toolPaths.pi) {
         await removePiHooks();
     }
+    if (teamConfig.toolPaths.kiro) await removeKiroHooks();
 
     log.success('Hooks removed from all AI tool settings');
 }

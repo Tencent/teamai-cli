@@ -3012,7 +3012,14 @@ export async function injectHooksToAllTools(toolPaths: Record<string, { settings
   for (const [tool, paths] of Object.entries(toolPaths)) {
     if (filterAgents && !filterAgents.includes(tool)) continue;
     if (skipped.has(tool)) continue;
-    if (tool === 'pi') {
+    if (tool === 'kiro') {
+      try {
+        const { injectKiroHooks } = await import('./kiro-hooks.js');
+        await injectKiroHooks(resolvedBaseDir);
+      } catch (e) {
+        log.warn(`Failed to inject Kiro hooks: ${(e as Error).message}`);
+      }
+    } else if (tool === 'pi') {
       try {
         await reconcilePiExtension(resolvedBaseDir);
       } catch (e) {
@@ -3154,6 +3161,18 @@ export async function reconcileHooksToAllTools(
   for (const [tool, paths] of Object.entries(toolPaths)) {
     if (opts.filterAgents && !opts.filterAgents.includes(tool)) continue;
     if (skipped.has(tool)) continue;
+    if (tool === 'kiro') {
+      if (opts.settingsOnly) continue;
+      try {
+        const { injectKiroHooks, removeKiroHooks } = await import('./kiro-hooks.js');
+        if (opts.removeAll) await removeKiroHooks();
+        else await injectKiroHooks(opts.installedBaseDir ?? baseDir);
+      } catch (e) {
+        log.warn(`Failed to reconcile Kiro hooks: ${(e as Error).message}`);
+        opts.unwritten?.push(tool);
+      }
+      continue;
+    }
     // Hermes uses config.yaml (YAML) + a script dir + allowlist instead of a
     // JSON settings file, so it bypasses the settings-based reconcile path.
     // Install when the .hermes home exists; removeAll clears the teamai hook.

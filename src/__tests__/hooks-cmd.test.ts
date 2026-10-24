@@ -721,6 +721,7 @@ describe('hooksList', () => {
     });
 
     it('lists only the built-in hooks a tool actually receives (#717)', async () => {
+        await fse.ensureDir(path.join(os.homedir(), '.kiro'));
         const out: string[] = [];
         const consoleLog = vi.spyOn(console, 'log').mockImplementation((m?: unknown) => { out.push(String(m)); });
         mockedAutoDetectInit.mockResolvedValue({
@@ -733,7 +734,6 @@ describe('hooksList', () => {
                     hermes: { skills: '.hermes/skills' },
                     omp: { skills: '.omp/skills' },
                     openclaw: { skills: '.openclaw/skills' },
-                    // No built-in hook from the hook pipeline.
                     joycode: { skills: '.joycode/skills' },
                     kiro: { skills: '.kiro/skills', agents: '.kiro/agents' },
                 },
@@ -768,11 +768,11 @@ describe('hooksList', () => {
             'SessionStart  →  teamai hook-dispatch session-start --tool <tool>',
             'UserPromptSubmit  →  teamai hook-dispatch prompt-submit --tool <tool>',
         ]);
-        // JoyCode has no hook surface, and Kiro's session-start command is
-        // embedded per agent by the agent sync instead of the hook pipeline:
-        // neither may be listed.
+        // JoyCode has no hook surface; Kiro V3 has a standalone SessionStart hook.
         expect(builtinBlock(builtin, 'joycode')).toBeUndefined();
-        expect(builtinBlock(builtin, 'kiro')).toBeUndefined();
+        expect(builtinBlock(builtin, 'kiro')).toEqual([
+            'SessionStart  →  teamai hook-dispatch session-start --tool <tool>',
+        ]);
     });
 });
 

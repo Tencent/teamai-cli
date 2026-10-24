@@ -37,7 +37,7 @@ describe('Kiro support', () => {
     });
   });
 
-  it('does not invent a settings hook path because Kiro hooks live in agent configs', () => {
+  it('keeps standalone Kiro hooks separate from settings files', () => {
     const config = TeamaiConfigSchema.parse({ team: 'test', repo: 'test/repo' });
 
     expect(config.toolPaths.kiro?.settings).toBeUndefined();
@@ -54,7 +54,7 @@ describe('Kiro support', () => {
     expect(usesMdcRules('kiro')).toBe(false);
   });
 
-  it('renders agentSpawn session-start into Kiro JSON while preserving custom hooks', () => {
+  it('preserves private Kiro hooks without duplicating the standalone lifecycle hook', () => {
     const rendered = renderForKiro({
       name: 'reviewer',
       description: 'Reviews changes',
@@ -64,7 +64,7 @@ describe('Kiro support', () => {
         kiro: {
           includeMcpJson: true,
           hooks: {
-            agentSpawn: [{ command: 'git status' }],
+            agentSpawn: [{ command: 'git status' }, { command: KIRO_SESSION_START_COMMAND }],
             postToolUse: [{ matcher: 'fs_write', command: 'npm test' }],
           },
         },
@@ -81,7 +81,6 @@ describe('Kiro support', () => {
       hooks: {
         agentSpawn: [
           { command: 'git status' },
-          { command: KIRO_SESSION_START_COMMAND },
         ],
         postToolUse: [{ matcher: 'fs_write', command: 'npm test' }],
       },
@@ -118,7 +117,7 @@ describe('Kiro support', () => {
     expect(deriveSessionId(payload)).toBe('kiro-session-1');
   });
 
-  it('writes the hook in the actual .kiro/agents JSON path on pull', async () => {
+  it('writes agents without redundant embedded lifecycle hooks on pull', async () => {
     const home = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-kiro-agent-test-'));
     try {
       const repoPath = path.join(home, 'team-repo');
@@ -155,9 +154,7 @@ describe('Kiro support', () => {
       const target = path.join(home, '.kiro', 'agents', 'reviewer.json');
       expect(await fse.pathExists(target)).toBe(true);
       expect(await fse.pathExists(path.join(home, '.kiro', 'agents', 'reviewer.md'))).toBe(false);
-      expect(JSON.parse(await fse.readFile(target, 'utf8'))).toMatchObject({
-        hooks: { agentSpawn: [{ command: KIRO_SESSION_START_COMMAND }] },
-      });
+      expect(JSON.parse(await fse.readFile(target, 'utf8'))).not.toHaveProperty('hooks');
     } finally {
       await fse.remove(home);
     }
