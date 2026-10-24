@@ -9,7 +9,7 @@ import { publishRunEnd } from './handoff.js';
 import { archiveUnder, isUnder } from './loop.js';
 import { publishRunRecords, removeQueuedEndRecord } from './records.js';
 import { contextOf, localId, statesIn } from './scope.js';
-import { answerHitl, cancel, deliver, repend, resetIteration, resetPending, settled, start, stopped, type HitlAnswer, type StepState } from './step-state.js';
+import { answerHitl, cancel, cancellable, deliver, repend, resetIteration, resetPending, settled, start, stopped, type HitlAnswer, type StepState } from './step-state.js';
 import type { RunState, WorkflowEnvelope } from './types.js';
 
 async function controlRun(
@@ -119,7 +119,7 @@ export async function cancelRun(config: LocalConfig, runId: string, step?: strin
     } else {
       const state = run.steps.find((state) => state.id === step);
       if (!state) return missingStepError(run, step);
-      if (state.status !== 'pending' && state.status !== 'waiting' && state.status !== 'leased' && state.status !== 'running' && state.status !== 'delivering') return error('not_cancellable', `Step "${state.id}" is ${state.status}; only pending, waiting, leased, running or delivering steps can be cancelled`);
+      if (!cancellable(state)) return error('not_cancellable', `Step "${state.id}" is ${state.status}; only pending, waiting, leased, running or delivering steps can be cancelled`);
       const located = locateStep(run, step);
       if (!located) return missingStepError(run, step);
       changed = state.status === 'running' ? stopWhere(run, isUnder(state.id), failure, run.revision) : [];

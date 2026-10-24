@@ -161,38 +161,23 @@ const FailedSchema = StepBaseSchema.extend({ status: z.literal('failed'), outcom
 const SkippedSchema = StepBaseSchema.extend({ status: z.literal('skipped'), settledAt: z.number().int().default(0) });
 const CancelledSchema = StepBaseSchema.extend({ status: z.literal('cancelled'), ...settledFields, failure: FailureSchema });
 
-export const StepStateSchema = z.discriminatedUnion('status', [
-  PendingSchema,
-  WaitingSchema,
-  StepBaseSchema.extend({ status: z.literal('leased'), attempt: z.string(), lease: LeaseSchema }),
-  RunningSchema,
-  DeliveringSchema,
-  SucceededSchema,
-  FailedSchema,
-  SkippedSchema,
-  CancelledSchema,
-]);
-type ReadonlyId<T> = T extends unknown ? Omit<T, 'id'> & { readonly id: string } : never;
-/** A step instance's `id` is read-only: the engine indexes instances by it, and every transition keeps it. */
-export type StepState = ReadonlyId<z.infer<typeof StepStateSchema>>;
-
+const LeasedSchema = StepBaseSchema.extend({ status: z.literal('leased'), attempt: z.string(), lease: LeaseSchema });
 /**
  * A step as a run handed to another machine carries it. A leased step keeps its attempt and the kind of driver that
  * holds it, not that driver's machine or workspace, which mean nothing on the machine that takes the run.
  */
-export const StepCheckpointSchema = z.discriminatedUnion('status', [
-  PendingSchema,
-  WaitingSchema,
-  StepBaseSchema.extend({
-    status: z.literal('leased'), attempt: z.string(), lease: z.object({ attempt: z.string(), revision: z.number(), driverKind: z.string() }),
-  }),
-  RunningSchema,
-  DeliveringSchema,
-  SucceededSchema,
-  FailedSchema,
-  SkippedSchema,
-  CancelledSchema,
-]);
+const HandedLeaseSchema = StepBaseSchema.extend({
+  status: z.literal('leased'), attempt: z.string(), lease: z.object({ attempt: z.string(), revision: z.number(), driverKind: z.string() }),
+});
+/** Every status but `leased` is the same locally and in a snapshot, so a status added here reaches both unions. */
+const SHARED_VARIANTS = [PendingSchema, WaitingSchema, RunningSchema, DeliveringSchema, SucceededSchema, FailedSchema, SkippedSchema, CancelledSchema] as const;
+
+export const StepStateSchema = z.discriminatedUnion('status', [LeasedSchema, ...SHARED_VARIANTS]);
+type ReadonlyId<T> = T extends unknown ? Omit<T, 'id'> & { readonly id: string } : never;
+/** A step instance's `id` is read-only: the engine indexes instances by it, and every transition keeps it. */
+export type StepState = ReadonlyId<z.infer<typeof StepStateSchema>>;
+
+export const StepCheckpointSchema = z.discriminatedUnion('status', [HandedLeaseSchema, ...SHARED_VARIANTS]);
 export type StepCheckpoint = ReadonlyId<z.infer<typeof StepCheckpointSchema>>;
 /** A lease another machine held when the run was handed over. */
 export type HandedLease = Extract<StepCheckpoint, { status: 'leased' }>;
@@ -371,6 +356,48 @@ export function stopped(step: StepState): boolean {
     case 'delivering':
     case 'succeeded':
     case 'skipped':
+      return false;
+    default: {
+      const unknown: never = step;
+      return unknown;
+    }
+  }
+}
+
+/** A step a driver or the engine is still working on, so its workflow waits rather than being stuck. */
+export function inProgress(step: StepState): boolean {
+  switch (step.status) {
+    case 'waiting':
+    case 'leased':
+    case 'running':
+    case 'delivering':
+      return true;
+    case 'pending':
+    case 'succeeded':
+    case 'failed':
+    case 'skipped':
+    case 'cancelled':
+      return false;
+    default: {
+      const unknown: never = step;
+      return unknown;
+    }
+  }
+}
+
+/** A step `teamai workflow cancel` may stop: one that has not settled. */
+export function cancellable(step: StepState): step is StepIn<'pending' | 'waiting' | 'leased' | 'running' | 'delivering'> {
+  switch (step.status) {
+    case 'pending':
+    case 'waiting':
+    case 'leased':
+    case 'running':
+    case 'delivering':
+      return true;
+    case 'succeeded':
+    case 'failed':
+    case 'skipped':
+    case 'cancelled':
       return false;
     default: {
       const unknown: never = step;

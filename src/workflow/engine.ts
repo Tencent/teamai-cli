@@ -18,7 +18,7 @@ import {
 } from './template.js';
 import { parseStepPath } from './step-path.js';
 import {
-  ReadSchema, answerHitl, cancel, deliver, fail, lease, release, settled, skip, start, stopped, succeed, waitForAnswer,
+  ReadSchema, answerHitl, cancel, deliver, fail, inProgress, lease, release, settled, skip, start, stopped, succeed, waitForAnswer,
   type ItemResult, type LeasedStep, type StepRead, type StepState,
 } from './step-state.js';
 import { addItems, afterStanding, expandItems, isItem, itemsAfter, itemsOf, itemsSettled, startedItems } from './fan-out.js';
@@ -775,7 +775,7 @@ function settleScope(run: RunState, scope: Scope): Settled {
       return decided === 'ended' ? result : { ...result, outcome: 'failed', failure: decided };
     }
     if (ready.length > 0) return { ready };
-    if (states.some((item) => item.status === 'waiting' || item.status === 'leased' || item.status === 'running' || item.status === 'delivering')) return { inProgress: true };
+    if (states.some(inProgress)) return { inProgress: true };
     return { unreadable: `Run ${run.id} has pending steps whose needs cannot be met` };
   }
 }
