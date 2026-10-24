@@ -4,7 +4,8 @@
  * `https://github.com/fixture/app.git`, which git rewrites to a bare repository. One fake `gh` on PATH is the host of
  * every case: it records each create, answers lookups from what it recorded, and holds the call a case names.
  *
- * - local: `workflow start --driver local` runs the run; after a crash, `workflow resume` continues it.
+ * - local: `workflow start --driver local` runs the run; after a crash, `workflow resume` continues it. While another
+ *   process delivers, `workflow resume` drives a run another driver reported.
  * - session: commits in a worktree of the install's checkout, pushes the branch itself, reports, then calls next.
  * - external: knows nothing of delivery. It works in a clone of its own and sleeps on every `wait`, whatever it says.
  * - remote: works in a clone on another machine, opens its own pull request there, and reports it as changes.pr_url.
@@ -156,10 +157,15 @@ function createsOf(run: string): string[][] {
     .map((call) => ['-R', '-H', '-B'].map((flag) => call.args[call.args.indexOf(flag) + 1] ?? ''));
 }
 
-/** What a stub driver did: the steps it was leased and reported, its next calls, those killed, and the waits it slept on. */
+const ReportAnswerSchema = z.object({ step: z.object({ status: z.string() }) });
+
+/**
+ * What a stub driver did: the steps it was leased, the steps it reported with the status each report answered, its
+ * next calls, those killed, and the waits it slept on.
+ */
 interface DriverLog {
   leases: string[];
-  reports: string[];
+  reports: Array<{ step: string; status: string }>;
   nexts: number;
   killed: number;
   waits: number;
@@ -202,9 +208,10 @@ async function stubDriver(profile: Exclude<Profile, 'local'>, member: Member, ru
     const reported = await work(profile, member, lease, options.reportedUrl);
     const body = { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver, ...reported };
     const result = await teamai(member, ['workflow', 'report', run, '--json', JSON.stringify(body)]);
-    log.reports.push(lease.step);
+    const answered = envelope(result);
+    log.reports.push({ step: lease.step, status: ReportAnswerSchema.safeParse(answered.data).data?.step.status ?? answered.error?.code ?? '' });
     options.onReport?.(lease.step, result);
-    expect(result.code === 0 || envelope(result).error?.code === 'lease_cancelled', said(result)).toBe(true);
+    expect(result.code === 0 || answered.error?.code === 'lease_cancelled', said(result)).toBe(true);
     await options.afterReport?.(lease.step);
   }
   throw new Error(`${profile} driver did not finish run ${run}: ${JSON.stringify(log)}`);
@@ -245,8 +252,11 @@ function openOwn(head: string): string {
   return url;
 }
 
-/** Starts the run on alice's install, drives it with `profile`, and does what the scenario's hold says while it holds. */
-async function drive(profile: Profile, scenario: DeliveryConformanceScenario): Promise<{ run: string; member: Member; log?: DriverLog; held: boolean; killed: boolean }> {
+/**
+ * Starts the run on alice's install, drives it with `profile`, and does what the scenario's hold says while it holds.
+ * `polled` says the driver was still driving when a `poll` hold was released.
+ */
+async function drive(profile: Profile, scenario: DeliveryConformanceScenario): Promise<{ run: string; member: Member; log?: DriverLog; held: boolean; killed: boolean; polled: boolean }> {
   for (const marker of ['release', 'lookup.held', 'create.held', 'ship-saw.json']) fs.rmSync(path.join(ghDir, marker), { force: true });
   gh.configure({ ...(scenario.unreachable ? { lookup: 'fail' as const } : {}), ...(scenario.hold ? { hold: scenario.hold.call } : {}) });
   const heldFile = scenario.hold && path.join(ghDir, `${scenario.hold.call}.held`);
@@ -254,10 +264,26 @@ async function drive(profile: Profile, scenario: DeliveryConformanceScenario): P
   let run = '';
   let stopped = false;
   let finished = false;
+  let polled = false;
   let watcher: Promise<Result> | undefined;
+  // A process of the same machine that polls without taking leases starts the delivery and holds it.
+  const deliverElsewhere = async (step: string): Promise<void> => {
+    if (step !== 'work' || scenario.hold?.action !== 'poll' || !heldFile) return;
+    const poller = { kind: 'watcher', machine: 'alice', workspace: workOf('alice') };
+    let exited = false;
+    watcher = teamai('alice', ['workflow', 'next', run, '--json', JSON.stringify({ driver: poller, canTakeLease: false })]);
+    void watcher.then(() => { exited = true; });
+    await waitFor(() => fs.existsSync(heldFile) || exited, 30_000);
+  };
 
   let driving: Promise<DriverLog | Result>;
-  if (profile === 'local') {
+  if (profile === 'local' && scenario.hold?.action === 'poll') {
+    // The local driver delivers in its own process right after it reports, so here a session driver reports work and
+    // stops while another process delivers it, and the local driver resumes the run meanwhile.
+    run = String(envelope(await teamai('alice', ['workflow', 'start', 'deliver'])).data?.run);
+    await stubDriver('session', 'alice', run, { afterReport: deliverElsewhere, stopped: () => watcher !== undefined });
+    driving = teamai('alice', ['workflow', 'resume', run]);
+  } else if (profile === 'local') {
     driving = teamai('alice', ['workflow', 'start', 'deliver', '--driver', 'local'], { stderr: (text) => {
       run ||= /Run (r[0-9a-f]{16}) started/.exec(text)?.[1] ?? '';
     } });
@@ -265,18 +291,7 @@ async function drive(profile: Profile, scenario: DeliveryConformanceScenario): P
   } else {
     const started = await teamai('alice', ['workflow', 'start', 'deliver']);
     run = String(envelope(started).data?.run);
-    driving = stubDriver(profile, 'alice', run, {
-      stopped: () => stopped,
-      // A process of the same machine that polls without taking leases starts the delivery and holds it.
-      afterReport: async (step) => {
-        if (step !== 'work' || scenario.hold?.action !== 'poll' || !heldFile) return;
-        const poller = { kind: 'watcher', machine: 'alice', workspace: workOf('alice') };
-        let exited = false;
-        watcher = teamai('alice', ['workflow', 'next', run, '--json', JSON.stringify({ driver: poller, canTakeLease: false })]);
-        void watcher.then(() => { exited = true; });
-        await waitFor(() => fs.existsSync(heldFile) || exited, 30_000);
-      },
-    });
+    driving = stubDriver(profile, 'alice', run, { stopped: () => stopped, afterReport: deliverElsewhere });
   }
   void driving.then(() => { finished = true; }, () => { finished = true; });
 
@@ -309,6 +324,7 @@ async function drive(profile: Profile, scenario: DeliveryConformanceScenario): P
       }
       case 'poll':
         await sleep(HOLD_MS);
+        polled = !finished;
         release();
         break;
       default: {
@@ -336,7 +352,7 @@ async function drive(profile: Profile, scenario: DeliveryConformanceScenario): P
     }
   }
   if (watcher) await watcher;
-  return { run, member, log, held, killed };
+  return { run, member, log, held, killed, polled };
 }
 
 const PROFILES: Profile[] = ['local', 'session', 'external', 'remote'];
@@ -362,11 +378,9 @@ describe('workflow delivery conformance of each kind of driver through the CLI',
 
   for (const scenario of workflowDeliveryConformanceScenarios) {
     for (const profile of PROFILES) {
-      // A local driver calls next only in its own process, so no other process can start its delivery first.
-      const runs = !(profile === 'local' && scenario.hold?.action === 'poll');
-      it.skipIf(!runs)(`${profile}: ${scenario.name}`, async () => {
+      it(`${profile}: ${scenario.name}`, async () => {
         const expected = profile === 'remote' ? scenario.reported : scenario.opened;
-        const { run, member, log, held, killed } = await drive(profile, scenario);
+        const { run, member, log, held, killed, polled } = await drive(profile, scenario);
         const state = readRun(member, run);
         const branch = `teamai/${run}/work/p1`;
         const work = state.steps.find((step) => step.id === 'work');
@@ -376,7 +390,10 @@ describe('workflow delivery conformance of each kind of driver through the CLI',
         const holds = profile === 'remote' ? scenario.hold?.call === 'lookup' : scenario.hold !== undefined;
         expect(held, 'the case reached the call it holds').toBe(holds);
         expect(killed, 'the process inside the create was killed').toBe(holds && scenario.hold?.action === 'crash');
-        if (holds && scenario.hold?.action === 'poll') expect(log?.waits, 'the driver polled while the delivery held').toBeGreaterThan(0);
+        if (holds && scenario.hold?.action === 'poll') {
+          expect(polled, 'the driver kept driving while the delivery held').toBe(true);
+          if (log) expect(log.waits, 'the driver polled while the delivery held').toBeGreaterThan(0);
+        }
         expect([state.status, work?.status], steps).toEqual([expected.run, expected.work]);
         expect(createsOf(run)).toEqual(Array.from({ length: expected.creates }, () => ['fixture/app', branch, 'main']));
         expect(state.deliveries ?? []).toHaveLength(expected.prs);
@@ -394,7 +411,9 @@ describe('workflow delivery conformance of each kind of driver through the CLI',
             .toEqual((state.deliveries ?? []).map((receipt) => receipt.url));
         }
         if (profile === 'external' && log) {
-          expect(log.reports, 'it reports only what it was leased, and never settles a delivering step').toEqual(log.leases);
+          expect(log.reports.map((report) => report.step), 'it reports only what it was leased').toEqual(log.leases);
+          expect(log.reports.filter((report) => report.step === 'work').map((report) => report.status), 'its report leaves work delivering, for TeamAI to settle')
+            .toEqual(log.leases.includes('work') ? ['delivering'] : []);
           expect(log.waits, 'it sleeps on each wait').toBeLessThanOrEqual(HOLD_MS / POLL_MS + 2);
           expect(log.nexts, 'its next calls stay bounded').toBeLessThanOrEqual(log.leases.length + log.waits + 2);
         }
