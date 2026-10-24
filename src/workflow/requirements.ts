@@ -309,7 +309,11 @@ export function requiredEnvKeys(definitions: ReadonlyArray<{ defaults?: Workflow
   return keys;
 }
 
-/** The `wait.held` entry for a step held for what it misses. */
+/** The `wait.held` entry for a step held for what it misses: what the member's policy refuses, or what the driver lacks. */
 export function heldFor(step: string, missing: readonly Missing[]): Held {
-  return { step, reason: `step "${step}" needs ${missing.join(', ')}, which this driver does not declare`, missing: [...missing] };
+  const refused = missing.flatMap((item) => (item.startsWith('policy.') ? [item.slice('policy.'.length)] : []));
+  const reason = refused.length > 0
+    ? `step "${step}" needs ${refused.join(', ')}, which workflows.allow in local config does not allow on this machine`
+    : `step "${step}" needs ${missing.join(', ')}, which this driver does not declare`;
+  return { step, reason, missing: [...missing] };
 }

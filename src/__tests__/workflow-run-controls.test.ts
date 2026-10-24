@@ -562,6 +562,13 @@ describe('run control recovery invariants', () => {
     expect(await leaseNext(f.config, f.id, driver)).toMatchObject({ data: { lease: { step: 'fetch' } } });
   });
 
+  it('says a step held by the member policy waits for workflows.allow, not for a driver', async () => {
+    const f = await fixture('  - id: fetch\n    command: echo fetch\n    requires: { network: true }');
+    f.config.workflows = { tools: {}, allow: { network: false } };
+    const reason = 'step "fetch" needs network, which workflows.allow in local config does not allow on this machine';
+    expect(await leaseNext(f.config, f.id, driver, { can: { network: true } })).toMatchObject({ data: { wait: { reason, held: [{ step: 'fetch', reason }] } } });
+  });
+
   it('caps the open leases of any driver at workflows.max_parallel', async () => {
     const f = await fixture('  - id: one\n    command: echo one\n  - id: two\n    needs: []\n    command: echo two');
     f.config.workflows = { tools: {}, max_parallel: 1 };
