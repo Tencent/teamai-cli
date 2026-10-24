@@ -2453,3 +2453,35 @@ ${timeout}`);
     expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'change', status: 'failed', failure: { code: 'timeout' } }] });
   });
 });
+
+describe('local workflow driver staging', () => {
+  it.each([1, 2])('does not start a step whose run was cancelled while its workspace was checked out, at max_parallel %i', async (maxParallel) => {
+    const marker = path.join(os.tmpdir(), `teamai-staged-step-${randomUUID()}`);
+    const checkingOut = path.join(os.tmpdir(), `teamai-checking-out-${randomUUID()}`);
+    dirs.push(marker, checkingOut);
+    const { config, workspace, runId } = await workflowFixture(`schemaVersion: v1alpha1
+name: build
+description: Change the project.
+steps:
+  - id: change
+    workspace: new
+    command: touch ${JSON.stringify(marker)}
+`);
+    // A smudge filter, as Git LFS uses, keeps the checkout busy while the run is cancelled.
+    execFileSync('git', ['config', 'filter.slow.smudge', `touch ${JSON.stringify(checkingOut)}; sleep 2; cat`], { cwd: workspace });
+    fs.writeFileSync(path.join(workspace, '.gitattributes'), 'slow.txt filter=slow\n');
+    fs.writeFileSync(path.join(workspace, 'slow.txt'), 'slow\n');
+    execFileSync('git', ['add', '.gitattributes', 'slow.txt'], { cwd: workspace });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'slow checkout'], { cwd: workspace });
+    config.workflows = { tools: { default: 'claude' }, max_parallel: maxParallel };
+    const driving = runLocalDriver(config, runId, workspace, { hitl: false });
+    for (let waited = 0; !fs.existsSync(checkingOut); waited += 20) {
+      if (waited > 10_000) throw new Error('checkout did not start');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(await cancelRun(config, runId)).toMatchObject({ data: { run: { status: 'cancelled' } } });
+    expect(await driving).toMatchObject({ data: { done: { outcome: 'cancelled' } } });
+    expect(fs.existsSync(marker)).toBe(false);
+    expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'change', status: 'cancelled', failure: { code: 'cancelled' } }] });
+  });
+});
