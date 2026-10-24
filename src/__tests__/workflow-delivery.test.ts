@@ -19,6 +19,9 @@ import { buildEndRecord, pendingRecords } from '../workflow/records.js';
 import { projectRun } from '../workflow/snapshot.js';
 import * as worktree from '../workflow/worktree.js';
 import { cancelRun, retryStep } from '../workflow/run-controls.js';
+import * as registry from '../providers/registry.js';
+import { GitHubProvider } from '../providers/github/index.js';
+import type { GitProvider, PullRequestLookup } from '../providers/types.js';
 import type { LocalConfig } from '../types.js';
 import type { RunState } from '../workflow/types.js';
 
@@ -68,7 +71,7 @@ async function state(config: LocalConfig, runId: string): Promise<RunState> {
 }
 
 const LeaseSchema = z.object({
-  step: z.string(), attempt: z.string(), revision: z.number(),
+  step: z.string(), attempt: z.string(), revision: z.number(), pass: z.number(),
   workspace: z.object({ branch: z.string(), base: z.object({ commit: z.string() }) }).optional(),
 });
 type Lease = z.infer<typeof LeaseSchema>;
@@ -652,5 +655,131 @@ describe('reported URLs from a driver', () => {
     expect(await take(config, runId)).toMatchObject({ step: 'review' });
     expect((await state(config, runId)).deliveries?.map((receipt) => receipt.url)).toEqual(['https://github.com/fixture/app/pull/4']);
     expect(gh.calls().filter((call) => call.args[0] === 'pr')).toEqual([]);
+  });
+});
+
+/**
+ * Puts a provider double on the fixture's GitHub origin: `findOpen` answers lookups and `create` opens requests. Returns
+ * the create spy, so a test can show what was asked of the host.
+ */
+function providerDouble(findOpen: PullRequestLookup['findOpen'], create: GitProvider['createPullRequest']) {
+  const provider = new GitHubProvider();
+  const creates = vi.spyOn(provider, 'createPullRequest').mockImplementation(create);
+  vi.spyOn(registry, 'providerForRemote').mockReturnValue({ kind: 'provider', provider, pullRequests: { findOpen }, repo: 'fixture/app', hostname: 'github.com' });
+  return creates;
+}
+
+describe('retrying and cancelling a delivery', () => {
+  it('retries a failed delivery in the same pass and attempt, without a lease, and opens the pull request on the next call', async () => {
+    const { config, root, runId } = await fixture(FIX_THEN_REVIEW);
+    const gh = fakeGh(path.join(root, 'gh'), { lookup: 'fail' });
+    const fix = await take(config, runId);
+    await succeed(config, runId, fix, { to: pushWork(root, fix) });
+    expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+
+    gh.configure({});
+    expect(await retryStep(config, runId, 'fix')).toMatchObject({ data: {} });
+    const retried = (await state(config, runId)).steps[0];
+    expect(retried).toMatchObject({ id: 'fix', status: 'delivering', attempt: fix.attempt });
+    expect(retried?.pass ?? 1).toBe(1);
+    expect(await take(config, runId)).toMatchObject({ step: 'review' });
+    expect(creates(gh)).toEqual([[`teamai/${runId}/fix/p1`, 'main']]);
+    expect((await state(config, runId)).steps[0]).toMatchObject({ id: 'fix', status: 'succeeded', attempt: fix.attempt });
+  });
+
+  it('retries a branch that changed protected paths by running the step again, in a new pass', async () => {
+    const { config, root, runId } = await fixture(FIX_THEN_REVIEW);
+    const gh = fakeGh(path.join(root, 'gh'));
+    const fix = await take(config, runId);
+    await succeed(config, runId, fix, { to: pushWork(root, fix, { '.github/workflows/ci.yml': 'on: push\n' }) });
+    expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+
+    expect(await retryStep(config, runId, 'fix')).toMatchObject({ data: {} });
+    const again = await take(config, runId);
+    expect(again).toMatchObject({ step: 'fix', pass: 2, workspace: { branch: `teamai/${runId}/fix/p2` } });
+    expect(again.attempt).not.toBe(fix.attempt);
+    expect(gh.calls()).toEqual([]);
+  });
+
+  it('cancels a delivering step and keeps its branch on origin', async () => {
+    const { config, root, runId } = await fixture(FIX_THEN_REVIEW);
+    const gh = fakeGh(path.join(root, 'gh'));
+    const fix = await take(config, runId);
+    const to = pushWork(root, fix);
+    await succeed(config, runId, fix, { to });
+
+    expect(await cancelRun(config, runId, 'fix')).toMatchObject({ data: { cancelled: { steps: ['fix'] } } });
+    expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    expect((await state(config, runId)).steps[0]).toMatchObject({ id: 'fix', status: 'cancelled' });
+    expect(git(root, ['--git-dir=remote.git', 'rev-parse', `refs/heads/teamai/${runId}/fix/p1`])).toBe(to);
+    expect(gh.calls()).toEqual([]);
+  });
+
+  it('opens nothing when the run is cancelled while its delivery looks for an open pull request', async () => {
+    const { config, root, runId } = await fixture(FIX_THEN_REVIEW);
+    const fix = await take(config, runId);
+    await succeed(config, runId, fix, { to: pushWork(root, fix) });
+    const create = providerDouble(async () => {
+      await cancelRun(config, runId);
+      return undefined;
+    }, async () => 'https://github.com/fixture/app/pull/1');
+
+    expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: {} } });
+    const run = await state(config, runId);
+    expect(run.steps[0]).toMatchObject({ id: 'fix', status: 'cancelled' });
+    expect(run.deliveries).toBeUndefined();
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('records a pull request opened while the run was cancelled, keeps the step cancelled, and queues the end record again with it', async () => {
+    const { config, root, runId } = await fixture(FIX_THEN_REVIEW);
+    config.usageReportEnabled = true;
+    const fix = await take(config, runId);
+    await succeed(config, runId, fix, { to: pushWork(root, fix) });
+    const url = 'https://github.com/fixture/app/pull/8';
+    providerDouble(async () => undefined, async () => {
+      await cancelRun(config, runId);
+      return url;
+    });
+
+    expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: {} } });
+    const run = await state(config, runId);
+    expect(run.steps[0]).toMatchObject({ id: 'fix', status: 'cancelled' });
+    expect(run.deliveries).toEqual([{ url, branch: `teamai/${runId}/fix/p1`, base: 'main', step: 'fix', pass: 1 }]);
+    expect((await pendingRecords(config)).find((record) => record.run === runId && record.phase === 'end')?.prs).toEqual([url]);
+  });
+
+  it('records a pull request a cancelled delivery opened before its process stopped, by looking it up on a later call, and opens no other', async () => {
+    const { config, root, runId } = await fixture(FIX_THEN_REVIEW);
+    config.usageReportEnabled = true;
+    const fix = await take(config, runId);
+    const branch = `teamai/${runId}/fix/p1`;
+    await succeed(config, runId, fix, { to: pushWork(root, fix) });
+    const url = 'https://github.com/fixture/app/pull/8';
+    const open: string[] = [];
+    let opened = (): void => {};
+    const creating = new Promise<void>((resolve) => { opened = resolve; });
+    const create = providerDouble(async ({ source, target }) => (source === branch && target === 'main' ? open[0] : undefined), async () => {
+      await cancelRun(config, runId);
+      open.push(url);
+      opened();
+      // The process stops here: the host opened the request, and the run never hears of it.
+      return new Promise<string>(() => {});
+    });
+    void leaseNext(config, runId, remote, writable);
+    await creating;
+    // A stopped process leaves its delivery lock to whoever comes next.
+    fs.rmSync(deliveryLockPath(config, runId), { force: true });
+    expect((await state(config, runId)).steps[0]).toMatchObject({ id: 'fix', status: 'cancelled', delivery: { branch, creating: true } });
+    expect((await state(config, runId)).deliveries).toBeUndefined();
+
+    expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: {} } });
+    const run = await state(config, runId);
+    expect(run.steps[0]).toMatchObject({ id: 'fix', status: 'cancelled' });
+    expect(run.deliveries).toEqual([{ url, branch, base: 'main', step: 'fix', pass: 1 }]);
+    expect((await pendingRecords(config)).find((record) => record.run === runId && record.phase === 'end')?.prs).toEqual([url]);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: {} } });
+    expect((await state(config, runId)).deliveries).toHaveLength(1);
   });
 });
