@@ -27,12 +27,12 @@ import { decideRound, decideStepLoop, exhaustedAtStart, firstPass, loopSettled }
 import { childScope, contextOf, insertChildren, localId, statesIn, stepDefinitions, topScope, type Scope } from './scope.js';
 import { planWorkspace, plannedBranch, sessionOf, type LeaseSession, type SessionRef, type WorkspaceContract, type WorkspacePlan } from './workspace.js';
 import {
-  CAN_KEYS, CanSchema, ReportedUnenforcedSchema, heldFor, mergeRequirements, negotiate, reportedUnenforced, requiredEnvKeys, unionUnenforced,
+  CAN_KEYS, CanSchema, ReportedUnenforcedSchema, heldFor, mergeRequirements, negotiate, reportedUnenforced, requiredEnvKeys, runEnvKeys, unionUnenforced,
   type Allow, type DriverCan, type EnvFacts, type Held, type Negotiation, type ReportedUnenforced, type Terms,
 } from './requirements.js';
 import { knownSecrets, resolveWorkflowEnv, secretKey, type WorkflowEnv } from '../env-resolution.js';
 import { redactJson } from '../utils/redact.js';
-import { generateRunId, installOwner, isRunId, updateRun } from './store.js';
+import { generateRunId, installOwner, isRunId, readRun, updateRun } from './store.js';
 import { pinScorers } from '../scorers/cache.js';
 import { isLeaseRef } from '../scorers/entry.js';
 import type {
@@ -105,6 +105,20 @@ function sameDriver(left: DriverIdentity, right: DriverIdentity): boolean {
 }
 
 /**
+ * The env keys run `runId` requires, whose values its writes mask: none for a run that cannot be read. They come from the
+ * workflow files the run pinned, which never change, so reading them without the run lock is safe.
+ */
+export async function requiredKeysOf(config: LocalConfig, runId: string): Promise<Set<string>> {
+  const run = isRunId(runId) ? await readRun(config, runId) : 'missing';
+  return typeof run === 'object' ? runEnvKeys(run) : new Set();
+}
+
+/** The team env for one operation on run `runId`, resolved before its lock. */
+export async function resolveRunEnv(config: LocalConfig, runId: string): Promise<WorkflowEnv> {
+  return resolveWorkflowEnv(config, await requiredKeysOf(config, runId));
+}
+
+/**
  * Applies one operation under the run lock and saves only when requested. The secrets the run file and records mask
  * are resolved before the lock, since resolving them can read the team env, unless the operation already resolved them.
  */
@@ -115,7 +129,7 @@ export async function withRun<T extends WorkflowEnvelope>(
   resolved?: Record<string, string>,
 ): Promise<T> {
   if (!isRunId(runId)) return error('invalid_run', 'Run id must look like r followed by 8 or 16 hex digits') as T;
-  const secrets = resolved ?? await knownSecrets(config);
+  const secrets = resolved ?? (await resolveRunEnv(config, runId)).secrets;
   const updated = await updateRun(config, runId, secrets, async (loaded) => {
     if (loaded === 'missing') return { value: error('run_not_found', `Run ${runId} was not found`) as T };
     // One timestamp per operation, so a settled run's end record and its run file agree.
@@ -820,7 +834,7 @@ export async function startRun(
   const tree = await loadWorkflowTree(config, cached);
   if ('failed' in tree) return error(tree.failed.code, tree.failed.message);
   const scorers = await pinScorers(config, listedScorers([cached.definition, ...Object.values(tree.workflows)]));
-  const secrets = await knownSecrets(config);
+  const secrets = await knownSecrets(config, requiredEnvKeys([cached.definition, ...Object.values(tree.workflows)]));
   const pinned = Object.fromEntries([
     ...[cached.definition, ...Object.values(tree.workflows)].map((definition) => [`workflows/${definition.name}.yaml`, definition]),
     ...Object.entries(scorers).map(([name, scorer]) => [`scorer ${name}`, scorer]),
@@ -896,7 +910,7 @@ function offerTerms(
     interactive: step.interactive === true,
     hasContract: plan?.contract !== undefined,
     envKeys: Object.keys(step.env ?? {}),
-    runEnvKeys: requiredEnvKeys([run.definition, ...Object.values(run.workflows ?? {})]),
+    runEnvKeys: runEnvKeys(run),
     budgeted: step.prompt !== undefined && scope.budgeted,
     ...(step.maxTurns !== undefined ? { maxTurns: step.maxTurns } : {}),
     ...(creates && scope.setup ? { setup: scope.setup } : {}),
@@ -930,7 +944,7 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
   const running = new Set(options.running);
   const can = options.can ?? {};
   // Resolved once, so the env this `next` offers against and the secrets its writes mask agree.
-  const env = options.env ?? await resolveWorkflowEnv(config);
+  const env = options.env ?? await resolveRunEnv(config, runId);
   const context: OfferContext = { can, allow: config.workflows?.allow ?? {}, facts: env.facts };
   const maxParallel = config.workflows?.max_parallel;
   // The end record is queued under the run lock, so the run stores whether it

@@ -353,13 +353,13 @@ function teamSecretsOf(secrets: StoreResolution<SecretValue>): Record<string, st
 }
 
 /**
- * Every value teamai masks on this machine, keyed by name: environment values that look secret, and the team's
- * declared secrets. Publishing a run, writing its file, and printing a workflow envelope agree on it. A team value
- * replaces the environment's under the same name for a step, but both stay known: the environment's is kept as
- * `<name> (environment)`.
+ * Every value teamai masks on this machine for a run that requires the env keys `required`, keyed by name: environment
+ * values that look secret, the team's declared secrets, and the value of each required key that env.yaml does not give.
+ * Publishing a run, writing its file, and printing a workflow envelope agree on it. A team value replaces the
+ * environment's under the same name for a step, but both stay known: the environment's is kept as `<name> (environment)`.
  */
-export async function knownSecrets(localConfig: LocalConfig, env: NodeJS.ProcessEnv = process.env): Promise<Record<string, string>> {
-  return (await resolveWorkflowEnv(localConfig, env)).secrets;
+export async function knownSecrets(localConfig: LocalConfig, required: Iterable<string>, env: NodeJS.ProcessEnv = process.env): Promise<Record<string, string>> {
+  return (await resolveWorkflowEnv(localConfig, required, env)).secrets;
 }
 
 function maskSet(fromEnvironment: Record<string, string>, team: Record<string, string>): Record<string, string> {
@@ -420,13 +420,14 @@ export interface WorkflowEnv {
 }
 
 /**
- * The team env a workflow step can be given on this machine, and what masking hides. A key nothing here declares takes
- * its value from the environment, as a CI job's token does.
+ * The team env a workflow step can be given on this machine, and what masking hides, for a run that requires the env
+ * keys `required`. A key nothing here declares takes its value from the environment, as a CI job's token does.
  */
-export async function resolveWorkflowEnv(localConfig: LocalConfig, env: NodeJS.ProcessEnv = process.env): Promise<WorkflowEnv> {
+export async function resolveWorkflowEnv(localConfig: LocalConfig, required: Iterable<string>, env: NodeJS.ProcessEnv = process.env): Promise<WorkflowEnv> {
   const values = new Map(Object.entries(env).flatMap(([key, value]) => (value ? [[key, value]] : [])));
   if (!resolvesTeamEnv(localConfig)) {
-    return { facts: { declared: new Set(), secrets: new Set(), present: new Set(values.keys()) }, values, secrets: collectEnvSecrets(env) };
+    const secrets = { ...collectEnvSecrets(env), ...requiredSecrets(required, values, new Set()) };
+    return { facts: { declared: new Set(), secrets: new Set(), present: new Set(values.keys()) }, values, secrets };
   }
   const teamEnv = await resolveTeamEnv(localConfig, undefined, env);
   const applied = appliedTeamEnv(teamEnv);
@@ -438,9 +439,24 @@ export async function resolveWorkflowEnv(localConfig: LocalConfig, env: NodeJS.P
   const unreadable = failed?.kind === 'failed' ? describeEntryFailure(failed.failure)
     : teamEnv.secrets.kind === 'store-unreadable' ? teamEnv.secrets.reason
       : teamEnv.variableValues.kind === 'store-unreadable' ? teamEnv.variableValues.reason : undefined;
+  const literal = [teamEnv.inheritedValues, teamEnv.variableValues].flatMap((resolved) => (resolved.kind === 'resolved'
+    ? [...resolved.values].flatMap(([key, { source, value }]) => (source === 'env.yaml' && applied.variables.get(key) === value ? [key] : []))
+    : []));
   return {
     facts: { declared, secrets: new Set(applied.secretKeys), present: new Set(values.keys()), ...(unreadable !== undefined ? { unreadable } : {}) },
     values,
-    secrets: maskSet(collectEnvSecrets(env), teamSecretsOf(teamEnv.secrets)),
+    secrets: maskSet({ ...collectEnvSecrets(env), ...requiredSecrets(required, values, new Set(literal)) }, teamSecretsOf(teamEnv.secrets)),
   };
+}
+
+/**
+ * The value of each required key a step gets from the environment or a store, whatever its name: a run that requires a
+ * key treats its value as a secret. A plain env.yaml value, which the team declared not secret, is left out.
+ */
+function requiredSecrets(required: Iterable<string>, values: ReadonlyMap<string, string>, plain: ReadonlySet<string>): Record<string, string> {
+  return Object.fromEntries([...required].flatMap((key) => {
+    const name = sameEnvName(values.keys(), key) ?? key;
+    const value = values.get(name);
+    return value !== undefined && value.length >= MIN_DECLARED_SECRET_LENGTH && !plain.has(name) ? [[name, value]] : [];
+  }));
 }

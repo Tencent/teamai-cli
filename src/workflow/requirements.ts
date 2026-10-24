@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { ENV_KEY_RE, sameEnvName } from '../resources/env-key.js';
-import { WORKSPACE_MODES, type WorkflowDefaults, type WorkflowFailure, type WorkflowStep } from './types.js';
+import { WORKSPACE_MODES, type RunState, type WorkflowDefaults, type WorkflowFailure, type WorkflowStep } from './types.js';
 import type { WorkspaceMode } from './workspace.js';
 
 /** How far a driver keeps a step from the member's machine, weakest first. A workspace contract is at least `worktree`. */
@@ -307,6 +307,11 @@ export function requiredEnvKeys(definitions: ReadonlyArray<{ defaults?: Workflow
     visit(definition.steps);
   }
   return keys;
+}
+
+/** Every key run `run` requires, in the workflow files it pinned. */
+export function runEnvKeys(run: Pick<RunState, 'definition' | 'workflows'>): Set<string> {
+  return requiredEnvKeys([run.definition, ...Object.values(run.workflows ?? {})]);
 }
 
 /** The `wait.held` entry for a step held for what it misses: what the member's policy refuses, or what the driver lacks. */

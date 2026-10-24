@@ -1994,6 +1994,26 @@ steps:
     expect(kept).not.toContain('deploy-secret-value-1082');
   });
 
+  it('masks the value of a required key from the environment whose name does not look secret, and not a plain env.yaml value', async () => {
+    const { config, workspace, runId } = await workflowFixture(`schemaVersion: v1alpha1
+name: build
+description: Print a required value.
+steps:
+  - id: migrate
+    command: echo "could not connect to $DATABASE_URL from $TEAM_URL" >&2; exit 1
+    requires: { env: [DATABASE_URL, TEAM_URL] }
+`);
+    fs.mkdirSync(path.join(config.repo.localPath, 'env'), { recursive: true });
+    fs.writeFileSync(path.join(config.repo.localPath, 'env', 'env.yaml'), 'variables:\n  - key: TEAM_URL\n    value: https://team.example\n');
+    vi.stubEnv('DATABASE_URL', 'postgres://ci:pw@db.example/app');
+    expect(await runLocalDriver(config, runId, workspace, { hitl: false })).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    vi.unstubAllEnvs();
+    const runFile = JSON.stringify(await readRun(config, runId));
+    expect(runFile).toContain('could not connect to <REDACTED:DATABASE_URL> from https://team.example');
+    expect(runFile).not.toContain('postgres://ci:pw@db.example/app');
+    expect(JSON.stringify(await endRecord(config))).not.toContain('postgres://ci:pw@db.example/app');
+  });
+
   function keptResult(config: LocalConfig, runId: string): string {
     const attempts = path.join(getDataHome(config), 'workflows', 'runs', runId, 'attempts');
     return fs.readdirSync(attempts).map((attempt) => fs.readFileSync(path.join(attempts, attempt, 'result.json'), 'utf8')).join('\n');

@@ -26,8 +26,8 @@ import { redact, redactJson } from '../utils/redact.js';
 import { AgentSession } from '../session-flow/agent-session.js';
 import { openSessionArchive, type SessionArchive } from '../session-flow/archive.js';
 import { deliveredTeamSkills, usedSkills } from '../skill-use.js';
-import { leaseNext, reportAttempt } from './engine.js';
-import { EnvScopeSchema, LeaseSetupSchema, type DriverCan, type EnvScope, type LeaseSetup } from './requirements.js';
+import { leaseNext, reportAttempt, requiredKeysOf } from './engine.js';
+import { EnvScopeSchema, LeaseSetupSchema, runEnvKeys, type DriverCan, type EnvScope, type LeaseSetup } from './requirements.js';
 import { runSetup } from './setup.js';
 import { respondToHitl } from './run-controls.js';
 import { isRecord } from './expression.js';
@@ -930,7 +930,7 @@ async function reconcileTakenCopies(config: LocalConfig, runId: string, active: 
     const refused = await reconcileCopy(active, branch, commit);
     if (refused) return { code: 'branch_diverged', message: refused.error };
   }
-  await updateRun(config, runId, await knownSecrets(config), async (local) => {
+  await updateRun(config, runId, await knownSecrets(config, runEnvKeys(run)), async (local) => {
     if (local === 'missing' || !local.publication?.reconcileCopies) return { value: undefined };
     const { reconcileCopies: _done, ...publication } = local.publication;
     return { value: undefined, write: { ...local, publication } };
@@ -1012,8 +1012,9 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
   if (maxParallel > 1) handle(STOP_SIGNALS);
   // The team env, resolved once per turn of the loop: the leases it hands out, their env, and what it masks agree.
   let env: WorkflowEnv | undefined;
+  const required = await requiredKeysOf(config, runId);
   const report = async (body: ReportBody, lease?: Lease): Promise<WorkflowEnvelope | undefined> => {
-    const secrets = env?.secrets ?? await knownSecrets(config);
+    const secrets = env?.secrets ?? await knownSecrets(config, required);
     await maskResultFile(resultPath(config, runId, body.attempt), secrets);
     const answer = await reportAttempt(config, runId, body, secrets);
     // Cancelled while it ran: the next `next` lists it in `cancelled`, and the run goes on without it.
@@ -1030,7 +1031,7 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
       if (signalled) return { error: { code: 'interrupted', message: `Stopped by ${signalled} after every command it started exited` } };
       const running = [...inFlight.keys(), ...held.map((lease) => lease.attempt), ...(prompt ? [prompt.lease.attempt] : [])];
       const canTakeLease = room();
-      const turn = await resolveWorkflowEnv(config);
+      const turn = await resolveWorkflowEnv(config, required);
       env = turn;
       const next = await leaseNext(config, runId, driver, {
         running, canTakeLease, can, autoApprove: options.autoApprove, ...(base ? { base } : {}), env: turn,
@@ -1195,7 +1196,7 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
       await command.stop();
       await (lease.workspace?.mode === 'read-only' ? leaveReadCopy(lease) : restoreLeaseOverlay(lease));
     }));
-    await maskAttemptFiles(config, runId, env?.secrets ?? await knownSecrets(config));
+    await maskAttemptFiles(config, runId, env?.secrets ?? await knownSecrets(config, required));
     await archive.close();
     if (signalled) exitOn(signalled);
     handle([]);
