@@ -136,7 +136,7 @@ describe('workflow requirements and limits (real CLI, #1082)', () => {
 steps:
   - id: print
     requires: { env: [WORKFLOW_SAFETY_TOKEN] }
-    command: node -e 'console.log(JSON.stringify({token:process.env.WORKFLOW_SAFETY_TOKEN,other:process.env.WORKFLOW_OTHER_TOKEN??null}))'
+    command: node -e 'console.log(JSON.stringify({token:process.env.WORKFLOW_SAFETY_TOKEN,[process.env.WORKFLOW_SAFETY_TOKEN]:"masked-key",other:process.env.WORKFLOW_OTHER_TOKEN??null}))'
 `);
     workflow('missing', `description: Require a key with no value.
 steps:
@@ -178,7 +178,7 @@ steps:
     expect(started.status, started.stderr).toBe(0);
     expect(envelope(started.stdout)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
     const runId = runOf(started.stdout);
-    expect(step(runId)).toMatchObject({ status: 'succeeded', outputs: { token: '<REDACTED:WORKFLOW_SAFETY_TOKEN>', other: null } });
+    expect(step(runId)).toMatchObject({ status: 'succeeded', outputs: { token: '<REDACTED:WORKFLOW_SAFETY_TOKEN>', '<REDACTED:WORKFLOW_SAFETY_TOKEN>': 'masked-key', other: null } });
     for (const content of filesOfRun(runId)) expect(content).not.toContain(SAFETY_TOKEN);
     expect(started.stdout + started.stderr).not.toContain(SAFETY_TOKEN);
   });

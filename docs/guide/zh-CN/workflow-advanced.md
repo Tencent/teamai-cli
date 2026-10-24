@@ -632,6 +632,8 @@ workflows:
 - `sandbox: true` 表示本机会隔离它运行的内容，例如 CI 虚拟机或容器，因此本地驱动声明 `sandbox` 隔离。
 - `max_parallel` 还限制本机上所有驱动同时持有同一运行的租约数。
 
+`allow.network` 筛选步骤显式声明的网络请求。v1 的 setup 仅声明环境变量键，不会从该设置继承网络限制。如需保证 setup 和步骤都无法联网，请使用能约束每个进程的驱动和运行环境。
+
 `env/secrets.yaml` 中声明的每个键的值（包括本机像 CI 任务那样从环境变量中获取的值），以及名称看起来像 secret 的环境变量的值，在运行文件、运行记录、每个 `teamai workflow` 输出以及本地驱动为每次 attempt 保留的 `result.json` 中都会显示为 `<REDACTED:KEY>`。`start` 拒绝包含这些值的输入，返回 `invalid_inputs`，只指出键名，不显示值。要遮蔽名称看起来不像 secret 的值（例如 `DATABASE_URL`），请在 `env/secrets.yaml` 中声明它的键。
 
 `local` 以外的驱动在每次 `next` 的 `driver.can` 中声明它能做什么：

@@ -632,6 +632,8 @@ workflows:
 - `sandbox: true` says this host contains what it runs, such as a CI VM or a container, so the local driver declares `sandbox` isolation.
 - `max_parallel` also caps how many leases of one run every driver on this machine holds at once.
 
+`allow.network` filters declared step requests. Setup declares only environment keys in v1 and receives no network restriction from that setting. To guarantee that setup and steps cannot reach the network, use a driver and host that enforce it for every process.
+
 The value of each key declared in `env/secrets.yaml`, including one this machine takes from the environment as a CI job does, and of each environment variable whose name looks like a secret, is masked as `<REDACTED:KEY>` in the run file, the run records, every `teamai workflow` output, and the `result.json` the local driver keeps for each attempt. `start` refuses inputs that hold one with `invalid_inputs`, naming the key and never the value. To mask a value whose name does not look secret, such as `DATABASE_URL`, declare its key in `env/secrets.yaml`.
 
 A driver other than `local` declares what it can do in `driver.can` on each `next`:

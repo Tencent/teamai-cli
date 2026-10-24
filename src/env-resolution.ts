@@ -430,6 +430,8 @@ export async function resolveWorkflowEnv(localConfig: LocalConfig, env: NodeJS.P
   }
   const teamEnv = await resolveTeamEnv(localConfig, undefined, env);
   const applied = appliedTeamEnv(teamEnv);
+  // The environment's own value of a declared secret is a secret too, whatever its name, even when the team value differs.
+  const personalSecrets = environmentValuesOf(applied.secretKeys, values);
   const declared = new Set([...applied.variables.keys(), ...applied.secretKeys]);
   for (const key of declared) values.delete(sameEnvName(values.keys(), key) ?? key);
   for (const [key, value] of applied.variables) values.set(key, value);
@@ -441,6 +443,15 @@ export async function resolveWorkflowEnv(localConfig: LocalConfig, env: NodeJS.P
   return {
     facts: { declared, secrets: new Set(applied.secretKeys), present: new Set(values.keys()), ...(unreadable !== undefined ? { unreadable } : {}) },
     values,
-    secrets: maskSet(collectEnvSecrets(env), teamSecretsOf(teamEnv.secrets)),
+    secrets: maskSet({ ...collectEnvSecrets(env), ...personalSecrets }, teamSecretsOf(teamEnv.secrets)),
   };
+}
+
+/** The environment's value of each of `keys`, long enough to mask. */
+function environmentValuesOf(keys: Iterable<string>, values: ReadonlyMap<string, string>): Record<string, string> {
+  return Object.fromEntries([...keys].flatMap((key) => {
+    const name = sameEnvName(values.keys(), key) ?? key;
+    const value = values.get(name);
+    return value !== undefined && value.length >= MIN_DECLARED_SECRET_LENGTH ? [[name, value]] : [];
+  }));
 }
