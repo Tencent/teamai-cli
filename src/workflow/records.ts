@@ -26,7 +26,7 @@ import { snapshotPath } from './snapshot.js';
 import { installOwner, runLockPath } from './store.js';
 import { settled, VISIBLE_OUTCOMES, type StepPass, type StepState, type VisibleOutcome } from './step-state.js';
 import type { TokenUsage } from '../tool-launch/stdout.js';
-import type { Unenforced } from './requirements.js';
+import { LIMIT_FAILURES, type Unenforced } from './requirements.js';
 import type { DriverIdentity, RunState, RunStatus, WorkflowFailure } from './types.js';
 
 /**
@@ -38,6 +38,7 @@ const RECORDED_FAILURES = [
   'loop_exhausted', 'invalid_output', 'invalid_template', 'invalid_inputs', 'invalid_items', 'item_cycle',
   'tool_failed', 'tool_unavailable', 'agent_unavailable', 'model_unavailable', 'read_only_dirty', 'tool_unconfigured', 'tool_unsupported',
   'merge_conflict', 'base_config', 'push_failed', 'workspace_base', 'bad_session',
+  ...LIMIT_FAILURES,
 ] as const;
 type RecordedFailure = (typeof RECORDED_FAILURES)[number];
 

@@ -64,7 +64,8 @@ describe('workflow protocol conformance through the CLI', () => {
       }
       const pulled = await runCLI(['pull'], repo);
       expect(pulled.code, `${pulled.stdout}\n${pulled.stderr}`).toBe(0);
-      const call = async (args: string[]): Promise<WorkflowEnvelope> => envelope((await runCLI(['workflow', ...args], repo)).stdout);
+      const env = { ...process.env, ...scenario.env };
+      const call = async (args: string[]): Promise<WorkflowEnvelope> => envelope((await runCLI(['workflow', ...args], repo, env)).stdout);
       const client: WorkflowClient = {
         start: (name) => call(['start', name]),
         next: (run, body) => call(['next', run, '--json', JSON.stringify(body)]),

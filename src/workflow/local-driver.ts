@@ -17,7 +17,7 @@ import { isAgentToolId } from '../tools.js';
 import { observeLaunch, type Used } from '../agent-observation.js';
 import { detectProjectConfig } from '../config.js';
 import { acquireLock, releaseLock } from '../update.js';
-import { commandSignalPolicy, exitLike, terminalReachesCommand } from '../env-exec.js';
+import { commandSignalPolicy, exitLike, stepEnvironment, terminalReachesCommand } from '../env-exec.js';
 import { workflowLaunch } from '../launch-context.js';
 import { getDataHome, type LocalConfig, type TeamaiConfig } from '../types.js';
 import { readFileSafe, readJson, writeJsonAtomic } from '../utils/fs.js';
@@ -26,7 +26,7 @@ import { AgentSession } from '../session-flow/agent-session.js';
 import { openSessionArchive, type SessionArchive } from '../session-flow/archive.js';
 import { deliveredTeamSkills, usedSkills } from '../skill-use.js';
 import { leaseNext, reportAttempt } from './engine.js';
-import type { DriverCan } from './requirements.js';
+import { EnvScopeSchema, type DriverCan, type EnvScope } from './requirements.js';
 import { respondToHitl } from './run-controls.js';
 import { isRecord } from './expression.js';
 import {
@@ -85,12 +85,12 @@ export function _setDriverPollMs(ms: number): void {
 }
 
 /**
- * Starts a leased command. The lease `env` is set over the inherited environment, so values reach the shell only as
- * variables. A detached command leads a process group of its own, so `stop` reaches everything it started; it has no
- * controlling terminal, and a terminal's Ctrl-C does not reach it.
+ * Starts a leased command with `env`: the step's environment with the lease `env` set over it, so values reach the
+ * shell only as variables. A detached command leads a process group of its own, so `stop` reaches everything it
+ * started; it has no controlling terminal, and a terminal's Ctrl-C does not reach it.
  */
-function startCommand(command: string, cwd: string, env: Record<string, string>, detached: boolean): CommandProcess {
-  const child = spawn(command, { cwd, shell: true, env: { ...process.env, ...env }, windowsHide: true, detached });
+function startCommand(command: string, cwd: string, env: NodeJS.ProcessEnv, detached: boolean): CommandProcess {
+  const child = spawn(command, { cwd, shell: true, env, windowsHide: true, detached });
   const exit = new Promise<CommandResult>((resolve) => {
     let stdout = '';
     let stderr = '';
@@ -173,6 +173,10 @@ interface Lease {
   /** The lease named a workspace this driver cannot read. The step fails instead of running in the active checkout. */
   unreadableWorkspace?: true;
   session?: LeaseSession;
+  /** The env keys the step gets and the ones kept from it, by name. */
+  envScope?: EnvScope;
+  /** The environment the step's command or tool runs with, built from `envScope` when the lease is staged. */
+  processEnv?: NodeJS.ProcessEnv;
   /** Set once the step has a directory to run in. */
   cwd?: string;
   before?: WorktreeSnapshot;
@@ -358,6 +362,7 @@ function parseLease(raw: unknown): Lease | undefined {
   const rawLease = raw as Record<string, unknown> | undefined;
   if (!rawLease || typeof rawLease.step !== 'string' || typeof rawLease.attempt !== 'string' || typeof rawLease.revision !== 'number') return undefined;
   const env = stringMap(rawLease.env);
+  const envScope = EnvScopeSchema.safeParse(rawLease.envScope);
   const workspace = workspaceOf(rawLease.workspace);
   const session = sessionRefOf(rawLease.session);
   const earlier = isRecord(rawLease.session) && Array.isArray(rawLease.session.earlier)
@@ -368,6 +373,7 @@ function parseLease(raw: unknown): Lease | undefined {
     revision: rawLease.revision,
     ...(typeof rawLease.command === 'string' ? { command: rawLease.command } : {}),
     ...(env ? { env } : {}),
+    ...(envScope.success ? { envScope: envScope.data } : {}),
     ...(typeof rawLease.prompt === 'string' ? { prompt: rawLease.prompt } : {}),
     ...(typeof rawLease.agent === 'string' ? { agent: rawLease.agent } : {}),
     ...(typeof rawLease.model === 'string' ? { model: rawLease.model } : {}),
@@ -395,9 +401,14 @@ function placeOf(lease: Lease, active: string): string {
   return lease.cwd ?? stepCheckout(active, lease.workspace?.branch);
 }
 
-async function stageLease(lease: Lease, { active, runId }: { active: string; runId: string }): Promise<WorkflowFailure | undefined> {
+async function stageLease(lease: Lease, { active, runId, config }: { active: string; runId: string; config: LocalConfig }): Promise<WorkflowFailure | undefined> {
   if (lease.unreadableWorkspace) {
     return { code: 'workspace_base', message: `Step "${lease.step}" was leased a workspace this teamai cannot read. Update teamai.` };
+  }
+  if (lease.envScope) {
+    const scoped = await stepEnvironment(config, lease.envScope);
+    if (!scoped.ok) return scoped.failure;
+    lease.processEnv = scoped.env;
   }
   if (!lease.workspace) {
     lease.cwd = active;
@@ -815,6 +826,7 @@ async function promptReport(
       prompt: lease.prompt!,
       cwd,
       resultPath: attemptResultPath,
+      ...(lease.processEnv ? { env: lease.processEnv } : {}),
       ...(launch ? { launch } : {}),
       ...(resume ? { resume: resume.id } : {}),
       ...(agent ? { agent: definitionRun(selected, lease.agent!, agent) } : {}),
@@ -924,9 +936,10 @@ async function reconcileTakenCopies(config: LocalConfig, runId: string, active: 
 /**
  * What this driver declares on every `next`. Every key is set, so a new capability does not compile until it is decided.
  * It cannot deny a step the network, and keeps it from the member's machine only on a host the member marks `sandbox`.
+ * It gives each command and tool only the env keys its lease provides.
  */
 function localCan(config: LocalConfig, hitl: boolean): Required<DriverCan> {
-  return { hitl, workspace: [...WORKSPACE_MODES], network: false, isolation: config.workflows?.sandbox ? 'sandbox' : 'none' };
+  return { hitl, workspace: [...WORKSPACE_MODES], network: false, isolation: config.workflows?.sandbox ? 'sandbox' : 'none', env: true };
 }
 
 async function driveRun(config: LocalConfig, runId: string, cwd: string, options: LocalDriverOptions): Promise<WorkflowEnvelope> {
@@ -1056,7 +1069,7 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
           continue;
         }
         held.splice(index, 1);
-        const failure = await stageLease(lease, { active: cwd, runId });
+        const failure = await stageLease(lease, { active: cwd, runId, config });
         if (failure) {
           const failed = await failStaged(lease, failure);
           if (failed) return failed;
@@ -1064,7 +1077,7 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
         }
         // An attached command already has the signals its terminal sends to the whole group; a second would force-quit some tools.
         if (maxParallel === 1) handle(commandSignalPolicy(await terminalReachesCommand()).forwarded);
-        inFlight.set(lease.attempt, { lease, command: startCommand(lease.command!, lease.cwd ?? cwd, lease.env ?? {}, detached) });
+        inFlight.set(lease.attempt, { lease, command: startCommand(lease.command!, lease.cwd ?? cwd, { ...lease.processEnv ?? process.env, ...lease.env }, detached) });
       }
       if (!prompt && busy() < maxParallel) {
         const promptAt = held.findIndex((lease) => lease.prompt !== undefined
@@ -1073,7 +1086,7 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
           && (!lease.interactive || (inFlight.size === 0 && dying.size === 0)));
         if (promptAt !== -1) {
           const lease = held.splice(promptAt, 1)[0]!;
-          const failure = await stageLease(lease, { active: cwd, runId });
+          const failure = await stageLease(lease, { active: cwd, runId, config });
           if (failure) {
             const failed = await failStaged(lease, failure);
             if (failed) return failed;

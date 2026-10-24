@@ -18,6 +18,8 @@ export interface ConformanceScenario {
   yaml: string;
   /** Other workflow files the scenario runs, by name. */
   workflows?: Record<string, string>;
+  /** Variables in the environment of every teamai process the scenario runs. */
+  env?: Record<string, string>;
   operations: ConformanceOperation[];
   /** Expected fields in the persisted run after all operations. */
   expectState?: Record<string, unknown>;
@@ -32,7 +34,7 @@ export interface ConformanceScenario {
  */
 export const DRIVER_PROFILES = {
   /** The in-process driver `teamai workflow run` uses. */
-  local: { can: { workspace: ['read-only', 'new', 'continue'] } },
+  local: { can: { workspace: ['read-only', 'new', 'continue'], env: true } },
   /** An agent session that runs the protocol itself, with a person in the chat. */
   session: { can: { hitl: true, workspace: ['read-only', 'new', 'continue'] } },
   /** A program that speaks only the CLI JSON protocol, such as an IDE or an orchestrator. */
@@ -876,6 +878,50 @@ workflowConformanceScenarios.push(
     expectState: { steps: [{ id: 'fetch', status: 'leased', lease: {
       unenforced: [{ requirement: 'network', asked: false }, { requirement: 'isolation', asked: 'sandbox', provided: 'none' }],
     } }] },
+  },
+);
+
+/** A value long enough to be masked, which no scenario output may carry. */
+export const CONFORMANCE_SECRET = 'conformance-secret-value-1082';
+const NEEDS_TOKEN = controlsYaml('  - id: deploy\n    command: echo deploy\n    requires: { env: [CONFORMANCE_TOKEN] }\n  - id: build\n    needs: []\n    command: echo build');
+workflowConformanceScenarios.push(
+  {
+    name: 'a step that requires env waits for a driver that scopes env, which gets the key name and no value',
+    workflowName: 'build', yaml: NEEDS_TOKEN, env: { CONFORMANCE_TOKEN: CONFORMANCE_SECRET },
+    operations: [
+      { kind: 'next', saveAs: 'build', as: 'external', expect: { data: { lease: {
+        step: 'build', unenforced: [{ requirement: 'withhold', keys: ['CONFORMANCE_TOKEN'] }],
+      } } } },
+      { kind: 'report', lease: 'build', as: 'external', body: { outcome: 'success' }, expect: { data: { accepted: true } } },
+      { kind: 'next', saveAs: 'held', as: 'external', expect: { data: { wait: {
+        held: [{ step: 'deploy', reason: 'step "deploy" needs env, which this driver does not declare', missing: ['env'] }],
+      } } } },
+      { kind: 'next', saveAs: 'deploy', as: 'local', absent: ['env', 'unenforced'], expect: { data: { lease: {
+        step: 'deploy', requires: { env: ['CONFORMANCE_TOKEN'] }, envScope: { provide: ['CONFORMANCE_TOKEN'], withhold: [] },
+      } } } },
+    ],
+  },
+  {
+    name: 'a step whose required env has no value here fails missing_env before it is leased', workflowName: 'build', yaml: NEEDS_TOKEN,
+    operations: [
+      { kind: 'next', saveAs: 'build', as: 'local', expect: { data: { lease: { step: 'build', envScope: { provide: [], withhold: ['CONFORMANCE_TOKEN'] } } } } },
+      { kind: 'report', lease: 'build', as: 'local', body: { outcome: 'success' }, expect: { data: { accepted: true } } },
+      { kind: 'next', saveAs: 'done', as: 'local', expect: { data: { done: { outcome: 'failed' } } } },
+    ],
+    expectState: { steps: [{ id: 'deploy', status: 'failed', failure: {
+      code: 'missing_env',
+      message: 'Step "deploy" requires env CONFORMANCE_TOKEN, which has no value on this machine. Run teamai env set CONFORMANCE_TOKEN, or set it in the environment, then retry the step.',
+    } }, { id: 'build', status: 'succeeded' }] },
+    expectRecord: { failure: { code: 'missing_env' } },
+  },
+  {
+    name: 'a step env that names a required key fails env_conflict', workflowName: 'build',
+    yaml: NEEDS_TOKEN.replace('command: echo build', 'command: echo build\n    env: { CONFORMANCE_TOKEN: plain }'), env: { CONFORMANCE_TOKEN: CONFORMANCE_SECRET },
+    operations: [
+      { kind: 'next', saveAs: 'deploy', as: 'local', expect: { data: { lease: { step: 'deploy' } } } },
+      { kind: 'next', saveAs: 'after', as: 'local', running: ['deploy'], expect: { data: { wait: { reason: 'deploy is leased' } } } },
+    ],
+    expectState: { steps: [{ id: 'deploy', status: 'leased' }, { id: 'build', status: 'failed', failure: { code: 'env_conflict' } }] },
   },
 );
 

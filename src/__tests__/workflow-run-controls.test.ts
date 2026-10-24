@@ -499,6 +499,40 @@ describe('run control recovery invariants', () => {
     expect((await f.state()).steps[0]).toMatchObject({ status: 'succeeded', unenforced: both });
   });
 
+  it('holds a step the member policy refuses, before what the driver lacks, whatever the driver declares', async () => {
+    const f = await fixture('  - id: fetch\n    command: echo fetch\n    requires: { network: true }\n  - id: deploy\n    needs: []\n    command: echo deploy\n    requires: { env: [DEPLOY_TOKEN] }');
+    f.config.workflows = { tools: {}, allow: { network: false, env: ['OTHER_TOKEN'] } };
+    expect(await leaseNext(f.config, f.id, driver, { can: { network: true, env: true } })).toMatchObject({ data: { wait: { held: [
+      { step: 'fetch', missing: ['policy.network'] }, { step: 'deploy', missing: ['policy.env'] },
+    ] } } });
+    expect(await leaseNext(f.config, f.id, driver)).toMatchObject({ data: { wait: { held: [
+      { step: 'fetch', missing: ['policy.network'] }, { step: 'deploy', missing: ['policy.env'] },
+    ] } } });
+    f.config.workflows = { tools: {}, allow: { network: true, env: ['DEPLOY_TOKEN'] } };
+    expect(await leaseNext(f.config, f.id, driver)).toMatchObject({ data: { lease: { step: 'fetch' } } });
+  });
+
+  it('caps the open leases of any driver at workflows.max_parallel', async () => {
+    const f = await fixture('  - id: one\n    command: echo one\n  - id: two\n    needs: []\n    command: echo two');
+    f.config.workflows = { tools: {}, max_parallel: 1 };
+    const one = data(await leaseNext(f.config, f.id, driver)).lease;
+    expect(await leaseNext(f.config, f.id, driver, { running: [one.attempt] })).toMatchObject({ data: {
+      wait: { reason: '1 steps are leased, as many as workflows.max_parallel allows on this machine' },
+    } });
+    await f.report(one);
+    expect(data(await leaseNext(f.config, f.id, driver)).lease.step).toBe('two');
+  });
+
+  it('releases a lease handed back to a driver that no longer scopes env, so it waits for one that does', async () => {
+    vi.stubEnv('DEPLOY_TOKEN', 'deploy-token-value');
+    const f = await fixture('  - id: deploy\n    command: echo deploy\n    requires: { env: [DEPLOY_TOKEN] }');
+    const lease = data(await leaseNext(f.config, f.id, driver, { can: { env: true } })).lease;
+    expect(await leaseNext(f.config, f.id, driver)).toMatchObject({ data: { wait: { held: [{ step: 'deploy', missing: ['env'] }] } } });
+    expect((await f.state()).steps[0]).toMatchObject({ status: 'pending' });
+    expect(await f.report(lease)).toMatchObject({ error: { code: 'lease_cancelled' } });
+    vi.unstubAllEnvs();
+  });
+
   it('lists only the steps changed by cancellation before reconciliation', async () => {
     const f = await fixture('  - id: work\n    command: echo work\n  - id: dependent\n    needs: [work]\n    command: echo later\n  - id: recover\n    needs: [work]\n    if: steps.work.outcome == \'cancelled\'\n    end: recovered', 'ends: { recovered: succeeded }\n');
     await f.next();

@@ -1176,7 +1176,8 @@ const timer = setInterval(() => { if (fs.existsSync('go')) clearInterval(timer);
     const slow = typeof run === 'object' ? run.steps.find((step) => step.id === 'slow') : undefined;
     if (slow?.status !== 'leased') throw new Error('slow is not leased');
     const same = localDriver(workspace);
-    const leased = await leaseNext(config, runId, same, { running: [slow.attempt] });
+    // The other caller runs with room for a second open lease.
+    const leased = await leaseNext({ ...config, workflows: { tools: {}, max_parallel: 2 } }, runId, same, { running: [slow.attempt] });
     const finish = 'data' in leased ? leased.data.lease as { attempt: string; revision: number } : undefined;
     if (!finish) throw new Error('finish was not leased');
     await reportAttempt(config, runId, { attempt: finish.attempt, revision: finish.revision, outcome: 'success', driver: same });
@@ -1229,9 +1230,11 @@ steps:
 `, 1);
     fs.writeFileSync(path.join(workspace, 'log.js'), LOG);
     const earlier = localDriver(workspace);
-    const a = await leaseNext(config, runId, earlier);
+    // The earlier driver ran while this machine allowed more open leases.
+    const before: LocalConfig = { ...config, workflows: { tools: {}, max_parallel: 2 } };
+    const a = await leaseNext(before, runId, earlier);
     const attempt = 'data' in a ? (a.data.lease as { attempt: string }).attempt : '';
-    expect(await leaseNext(config, runId, earlier, { running: [attempt] })).toMatchObject({ data: { lease: { step: 'b' } } });
+    expect(await leaseNext(before, runId, earlier, { running: [attempt] })).toMatchObject({ data: { lease: { step: 'b' } } });
 
     const done = await runLocalDriver(config, runId, workspace);
 
@@ -1258,9 +1261,11 @@ steps:
 `, 2);
     fs.writeFileSync(path.join(workspace, 'log.js'), LOG);
     const earlier = localDriver(workspace);
+    // The earlier driver ran while this machine allowed more open leases.
+    const before: LocalConfig = { ...config, workflows: { tools: {}, max_parallel: 3 } };
     const running: string[] = [];
     for (const step of ['c1', 'ask', 'c2']) {
-      const leased = await leaseNext(config, runId, earlier, { running });
+      const leased = await leaseNext(before, runId, earlier, { running });
       expect(leased).toMatchObject({ data: { lease: { step } } });
       if ('data' in leased) running.push((leased.data.lease as { attempt: string }).attempt);
     }
@@ -1916,6 +1921,26 @@ steps:
     config.workflows = { tools: {}, sandbox };
     expect(await runLocalDriver(config, runId, workspace, { hitl: false })).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
     expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'work', status: 'succeeded', unenforced }] });
+  });
+
+  it('gives each command only the env keys its step requires, the team value first, and keeps the rest of the environment', async () => {
+    const { config, workspace, runId } = await workflowFixture(`schemaVersion: v1alpha1
+name: build
+description: Scope env.
+steps:
+  - id: deploy
+    command: test "$DEPLOY_TOKEN" = deploy-value && test "$TEAM_URL" = https://team.example && test -n "$PATH"
+    requires: { env: [DEPLOY_TOKEN, TEAM_URL] }
+  - id: check
+    needs: []
+    command: test -z "$DEPLOY_TOKEN" && test -z "$TEAM_URL" && test -n "$PATH"
+`);
+    fs.mkdirSync(path.join(config.repo.localPath, 'env'), { recursive: true });
+    fs.writeFileSync(path.join(config.repo.localPath, 'env', 'env.yaml'), 'variables:\n  - key: TEAM_URL\n    value: https://team.example\n');
+    vi.stubEnv('DEPLOY_TOKEN', 'deploy-value');
+    vi.stubEnv('TEAM_URL', 'exported-by-another-shell');
+    expect(await runLocalDriver(config, runId, workspace, { hitl: false })).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    vi.unstubAllEnvs();
   });
 });
 

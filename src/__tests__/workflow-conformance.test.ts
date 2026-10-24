@@ -14,12 +14,14 @@ const dirs: string[] = [];
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.unstubAllEnvs();
   for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
 describe('workflow protocol conformance in process', () => {
   for (const scenario of workflowConformanceScenarios) {
     it(scenario.name, async () => {
+      for (const [name, value] of Object.entries(scenario.env ?? {})) vi.stubEnv(name, value);
       const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-workflow-conformance-'));
       dirs.push(root);
       const knowledge = path.join(root, 'knowledge');

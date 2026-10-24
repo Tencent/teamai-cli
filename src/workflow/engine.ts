@@ -25,7 +25,11 @@ import { addItems, afterStanding, expandItems, isItem, itemsAfter, itemsOf, item
 import { decideRound, decideStepLoop, exhaustedAtStart, firstPass, loopSettled } from './loop.js';
 import { childScope, contextOf, insertChildren, localId, statesIn, stepDefinitions, topScope, type Scope } from './scope.js';
 import { planWorkspace, plannedBranch, sessionOf, type LeaseSession, type SessionRef, type WorkspaceContract, type WorkspacePlan } from './workspace.js';
-import { CAN_KEYS, CanSchema, heldFor, mergeRequirements, negotiate, unionUnenforced, type DriverCan, type Held, type Negotiation, type Requirements } from './requirements.js';
+import {
+  CAN_KEYS, CanSchema, heldFor, mergeRequirements, negotiate, requiredEnvKeys, unionUnenforced,
+  type Allow, type DriverCan, type EnvFacts, type EnvScope, type Held, type Negotiation, type Requirements,
+} from './requirements.js';
+import { workflowEnvFacts } from '../env-resolution.js';
 import { generateRunId, installOwner, isRunId, updateRun } from './store.js';
 import { pinScorers } from '../scorers/cache.js';
 import { isLeaseRef } from '../scorers/entry.js';
@@ -239,7 +243,8 @@ function answerWithoutHitl(config: LocalConfig, run: RunState, now: string, auto
 }
 
 function leaseData(
-  run: RunState, state: LeasedStep, definition: WorkflowStep, rendered: RenderedLease, requires: Requirements, plan?: WorkspacePlan,
+  run: RunState, state: LeasedStep, definition: WorkflowStep, rendered: RenderedLease,
+  { requires, envScope }: { requires: Requirements; envScope?: EnvScope }, plan?: WorkspacePlan,
 ): Record<string, unknown> {
   return { lease: {
     run: run.id,
@@ -259,6 +264,7 @@ function leaseData(
     ...(definition.interactive ? { interactive: true } : {}),
     ...(definition.workspace === 'read-only' ? { readOnly: true } : {}),
     ...(Object.keys(requires).length > 0 ? { requires } : {}),
+    ...(envScope ? { envScope } : {}),
     ...(state.lease.unenforced ? { unenforced: state.lease.unenforced } : {}),
   } };
 }
@@ -836,11 +842,25 @@ function missingNeeds(run: RunState): string | undefined {
   return undefined;
 }
 
-/** What the driver asking for `step` is offered. Both places that hand out a lease ask here. */
-function offerTerms(scope: Scope, step: WorkflowStep, plan: WorkspacePlan | undefined, can: DriverCan): Negotiation {
+/** What a `next` request offers against: the driver's capabilities, the member's policy, and this machine's env. */
+interface OfferContext {
+  can: DriverCan;
+  allow: Allow;
+  facts: EnvFacts;
+}
+
+/** What the driver asking for step instance `id` is offered. Both places that hand out a lease ask here. */
+function offerTerms(
+  run: RunState, id: string, { scope, step }: { scope: Scope; step: WorkflowStep }, plan: WorkspacePlan | undefined, context: OfferContext,
+): Negotiation {
   return negotiate({
-    requires: mergeRequirements(scope.requires, step.requires), interactive: step.interactive === true, hasContract: plan?.contract !== undefined,
-  }, can);
+    step: id,
+    requires: mergeRequirements(scope.requires, step.requires),
+    interactive: step.interactive === true,
+    hasContract: plan?.contract !== undefined,
+    envKeys: Object.keys(step.env ?? {}),
+    runEnvKeys: requiredEnvKeys([run.definition, ...Object.values(run.workflows ?? {})]),
+  }, context.can, context.allow, context.facts);
 }
 
 /** What a driver tells `next` besides who it is. */
@@ -867,6 +887,8 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
   }
   const running = new Set(options.running);
   const can = options.can ?? {};
+  const context: OfferContext = { can, allow: config.workflows?.allow ?? {}, facts: await workflowEnvFacts(config) };
+  const maxParallel = config.workflows?.max_parallel;
   // The end record is queued under the run lock, so the run stores whether it
   // was in the same save. It publishes AFTER withRun releases the lock (#1126
   // P3): publication does a reports-branch push, and no network I/O may hold
@@ -917,6 +939,10 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
           const hitl = can.hitl ? waitingHitl(run) : undefined;
           return hitl ? answer({ hitl }) : wait();
         }
+        const open = run.steps.filter((step) => step.status === 'leased').length;
+        if (maxParallel !== undefined && open >= maxParallel) {
+          return answer({ wait: { reason: `${open} steps are leased, as many as workflows.max_parallel allows on this machine` } });
+        }
         // A step this driver must not take is held back, and the next ready one is tried. A failed step can change
         // what is ready, so the run settles again.
         const held: Held[] = [];
@@ -936,10 +962,15 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
             failed = true;
             break;
           }
-          const terms = offerTerms(located.scope, definition, plan, can);
+          const terms = offerTerms(run, state.id, located, plan, context);
           if (terms.kind === 'hold') {
             held.push(heldFor(state.id, terms.missing));
             continue;
+          }
+          if (terms.kind === 'fail') {
+            failStep(state, terms.failure, run.revision);
+            failed = true;
+            break;
           }
           if (plan.contract && options.base && !run.base) run.base = options.base;
           const { unenforced } = terms.terms;
@@ -947,7 +978,7 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
             attempt: `a${randomBytes(4).toString('hex')}`, revision: run.revision, driver, ...(unenforced.length > 0 ? { unenforced } : {}),
           }, plan.session));
           rememberCopy(run, plan, driver);
-          return answer(leaseData(run, step, definition, rendered, terms.terms.requires, plan));
+          return answer(leaseData(run, step, definition, rendered, terms.terms, plan));
         }
         if (failed) continue;
         return answer({ wait: { reason: held.map((item) => item.reason).join('; '), held } });
@@ -960,16 +991,21 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
           driver, modes: can.workspace, base: run.base ?? options.base,
         }, true);
         const offered = plan.fail ? undefined : plan;
-        const terms = offerTerms(located.scope, located.step, offered, can);
+        const terms = offerTerms(run, leased.id, located, offered, context);
         // A driver that can no longer run its lease gives it up, so the step waits for one that can instead of looping.
         if (terms.kind === 'hold') {
           (run.cancelledAttempts ??= []).push(leased.attempt);
           release(leased);
           continue;
         }
+        if (terms.kind === 'fail') {
+          (run.cancelledAttempts ??= []).push(leased.attempt);
+          failStep(leased, terms.failure, leased.lease.revision);
+          continue;
+        }
         const unenforced = unionUnenforced(leased.lease.unenforced ?? [], terms.terms.unenforced);
         leased.lease = offering({ ...leased.lease, ...(unenforced.length > 0 ? { unenforced } : {}) }, offered?.session);
-        return answer(leaseData(run, leased, located.step, rendered, terms.terms.requires, offered));
+        return answer(leaseData(run, leased, located.step, rendered, terms.terms, offered));
       }
       failStep(leased, rendered, leased.lease.revision);
     }

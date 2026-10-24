@@ -17,16 +17,17 @@ import { promisify } from 'node:util';
 import crossSpawn from 'cross-spawn';
 import { resolveConfigForDir } from './config.js';
 import { reportMissingSecrets } from './env-advisories.js';
-import { appliedTeamEnv, resolvesTeamEnv, resolveTeamEnv } from './env-resolution.js';
+import { appliedTeamEnv, resolvesTeamEnv, resolveTeamEnv, workflowEnvValues } from './env-resolution.js';
 import { memberEnvironmentWithoutScope, type MemberEnvironment } from './member-env.js';
 import { describeEntryFailure } from './namespaced-entries.js';
-import { ENV_KEY_RE, envTable } from './resources/env-key.js';
+import { ENV_KEY_RE, envTable, sameEnvName } from './resources/env-key.js';
 import { envExecBashEnvPath, envLoaderPath, writeEnvExecBashEnv } from './resources/env-loader.js';
 import { declaredSecretKeys } from './resources/secrets.js';
 import { getDataHome, type GlobalOptions, type LocalConfig } from './types.js';
 import { log, setStderrOnly } from './utils/logger.js';
 import { reservedTeamEnvWarning } from './env-reserved.js';
 import { readWorkspaceChildren } from './workspace-children.js';
+import type { WorkflowFailure } from './workflow/types.js';
 
 /** How the command ended. */
 export type ExecOutcome =
@@ -335,4 +336,25 @@ function run(
     });
     child.on('exit', (code, signal) => settle(signal ? { kind: 'signaled', signal } : { kind: 'exited', code: code ?? 1 }));
   });
+}
+
+/**
+ * The environment a workflow step runs with, built once per lease from its `envScope`: the inherited environment
+ * without every withheld key, with each provided key's value. PATH, HOME and every key the scope does not name stay.
+ * A provided key with no value here, after the engine saw one, fails the step as `missing_env`.
+ */
+export async function stepEnvironment(
+  localConfig: LocalConfig, scope: { provide: readonly string[]; withhold: readonly string[] },
+): Promise<{ ok: true; env: NodeJS.ProcessEnv } | { ok: false; failure: WorkflowFailure }> {
+  const { values } = await workflowEnvValues(localConfig);
+  const env = inheritedEnvironment();
+  for (const key of scope.withhold) removeKey(env, key);
+  for (const key of scope.provide) {
+    const value = values.get(sameEnvName(values.keys(), key) ?? key);
+    if (value === undefined) {
+      return { ok: false, failure: { code: 'missing_env', message: `Env ${key} has no value on this machine any more. Run teamai env set ${key}, or set it in the environment, then retry the step.` } };
+    }
+    setKey(env, key, value);
+  }
+  return { ok: true, env: await teamWinsOverBashEnv(env, scope.provide, scope.withhold) };
 }

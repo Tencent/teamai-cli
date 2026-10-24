@@ -24,6 +24,7 @@ import { readFileSafe } from './utils/fs.js';
 import { warnOnce } from './utils/warn-once.js';
 import { MIN_DECLARED_SECRET_LENGTH } from './utils/redact.js';
 import { isReservedTeamEnvKey } from './env-reserved.js';
+import type { EnvFacts } from './workflow/requirements.js';
 
 export interface SecretValue {
   readonly source: 'team' | 'global' | 'environment';
@@ -380,4 +381,38 @@ export function keptFromUserScope(localConfig: LocalConfig, teamEnv: TeamEnv, ex
 /** What a pull and MCP do while the member's values can't be read: keep what the last pull wrote. */
 export function variablesKeptWarning(reason: string): string {
   return `${reason} Team env variables keep the values the last pull wrote until it is fixed.`;
+}
+
+/** The team env a workflow step can be given here: the declared keys, each value, and why it cannot be read when it cannot. */
+export interface WorkflowEnvValues {
+  readonly declared: ReadonlySet<string>;
+  readonly values: ReadonlyMap<string, string>;
+  readonly unreadable?: string;
+}
+
+/**
+ * What a workflow step can be given on this machine: the variables `teamai env exec` applies and each declared
+ * secret's value. A key nothing here declares takes its value from the environment, as a CI job's token does.
+ */
+export async function workflowEnvValues(localConfig: LocalConfig, env: NodeJS.ProcessEnv = process.env): Promise<WorkflowEnvValues> {
+  const fromEnvironment = (): Map<string, string> => new Map(Object.entries(env).flatMap(([key, value]) => (value ? [[key, value]] : [])));
+  if (!resolvesTeamEnv(localConfig)) return { declared: new Set(), values: fromEnvironment() };
+  const teamEnv = await resolveTeamEnv(localConfig, undefined, env);
+  const applied = appliedTeamEnv(teamEnv);
+  const declared = new Set([...applied.variables.keys(), ...applied.secretKeys]);
+  const values = fromEnvironment();
+  for (const key of declared) values.delete(sameEnvName(values.keys(), key) ?? key);
+  for (const [key, value] of applied.variables) values.set(key, value);
+  if (teamEnv.secrets.kind === 'resolved') for (const [key, { value }] of teamEnv.secrets.values) values.set(key, value);
+  const failed = [teamEnv.variables, teamEnv.declarations].find((entries) => entries.kind === 'failed');
+  const unreadable = failed?.kind === 'failed' ? describeEntryFailure(failed.failure)
+    : teamEnv.secrets.kind === 'store-unreadable' ? teamEnv.secrets.reason
+      : teamEnv.variableValues.kind === 'store-unreadable' ? teamEnv.variableValues.reason : undefined;
+  return { declared, values, ...(unreadable !== undefined ? { unreadable } : {}) };
+}
+
+/** The same, by name only, which is all the workflow engine may hold. */
+export async function workflowEnvFacts(localConfig: LocalConfig): Promise<EnvFacts> {
+  const { declared, values, unreadable } = await workflowEnvValues(localConfig);
+  return { declared, present: new Set(values.keys()), ...(unreadable !== undefined ? { unreadable } : {}) };
 }

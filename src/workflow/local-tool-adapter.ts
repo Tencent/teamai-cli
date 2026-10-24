@@ -25,6 +25,8 @@ export interface LocalToolRun {
   launch?: Launch;
   /** A session id from the same tool. Claude and Codex resume it; OpenCode has no resume flag here. */
   resume?: string;
+  /** The environment the tool runs with, scoped to the env keys its lease provides; the inherited one when unset. */
+  env?: NodeJS.ProcessEnv;
 }
 
 /**
@@ -193,7 +195,7 @@ export function createLocalToolAdapter(
         try {
           child = spawnTool(executable, args, {
             cwd: input.cwd,
-            env: { ...process.env, ...(input.launch ? launchEnv(input.launch) : {}), TEAMAI_WORKFLOW_RESULT: input.resultPath },
+            env: { ...input.env ?? process.env, ...(input.launch ? launchEnv(input.launch) : {}), TEAMAI_WORKFLOW_RESULT: input.resultPath },
             // OpenCode waits for the end of a piped stdin before it starts.
             stdio: interactive ? 'inherit' : ['ignore', 'pipe', 'pipe'],
             detached: !interactive && process.platform !== 'win32',
