@@ -1,8 +1,16 @@
 /** Workflow types for the v1alpha1 local-driver subset. */
 
 import type { PinnedScorer } from '../scorers/pin.js';
+import type { PrUrl } from './pr-url.js';
 import type { ArchivedPass, SessionContinuation, StepState } from './step-state.js';
 import type { LeaseSession } from './workspace.js';
+
+/** The pull request a branch was delivered to, and the step pass whose delivery recorded it. */
+export interface BranchPr {
+  url: PrUrl;
+  step: string;
+  pass: number;
+}
 
 /** The driver's lease ownership, independent of its per-request capabilities. */
 export interface DriverIdentity {
@@ -256,9 +264,10 @@ export interface RunState {
   checkout?: string;
   /**
    * Workspaces this run has handed out, by branch. A `continue` step stays with the driver that opened the copy. A copy a
-   * claim brought from another machine has no owner until a driver leases it.
+   * claim brought from another machine has no owner until a driver leases it. `pr` is the pull request delivered for the
+   * branch, written once by the step whose delivery first recorded it: one branch has one pull request.
    */
-  copies?: Record<string, { owner?: DriverIdentity; commit?: string; origin?: string }>;
+  copies?: Record<string, { owner?: DriverIdentity; commit?: string; origin?: string; pr?: BranchPr }>;
   /**
    * Sessions a step resumed and continued under another id, in report order: a copy on another machine or in another
    * tool. `to` holds the turns of `from` and the ones that step added, so a step that would resume `from` resumes `to`.

@@ -41,6 +41,11 @@ export function runLockPath(config: LocalConfig, runId: string): string {
   return path.join(runsDir(config), `${runId}.lock`);
 }
 
+/** Held while this machine delivers a run's pull requests: never the run lock, which no network call may hold. */
+export function deliveryLockPath(config: LocalConfig, runId: string): string {
+  return path.join(runsDir(config), `${runId}.delivery.lock`);
+}
+
 export function driverLockPath(config: LocalConfig, runId: string): string {
   return path.join(runsDir(config), runId, 'driver.lock');
 }

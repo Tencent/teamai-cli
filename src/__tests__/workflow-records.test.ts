@@ -23,6 +23,7 @@ import {
 } from '../workflow/records.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { generateRunId, isRunId, runLockPath } from '../workflow/store.js';
+import { PrUrlSchema } from '../workflow/pr-url.js';
 import type { DriverIdentity, RunState, WorkflowDefinition, WorkflowDiagnostic } from '../workflow/types.js';
 
 const dirs: string[] = [];
@@ -394,6 +395,35 @@ describe('#1083 workflow run records', () => {
     expect(remerged.phase).toBe('end');
     expect(remerged.status).toBe('succeeded');
     expect(remerged.endedAt).toBe(end.endedAt);
+  });
+
+  it('lists the pull requests delivered on the run\'s branches once each, in step and pass order, and never a step output', () => {
+    const pr = (n: number): string => `https://github.com/acme/app/pull/${n}`;
+    const recorded = (n: number, step: string, pass: number) => ({ pr: { url: PrUrlSchema.parse(pr(n)), step, pass } });
+    const run = runState({
+      steps: [
+        { id: 'one', status: 'succeeded', attempt: 'a1', settledAt: 2, outcome: 'success', outputs: { pr_url: 'https://untrusted.example/1' } },
+        { id: 'two', status: 'succeeded', attempt: 'a2', settledAt: 3, outcome: 'success' },
+      ],
+      copies: {
+        'teamai/r1234567890abcdef/two/p2': recorded(4, 'two', 2),
+        'teamai/r1234567890abcdef/two/p1': recorded(3, 'two', 1),
+        'teamai/r1234567890abcdef/one/p1': recorded(2, 'one', 1),
+        'teamai/r1234567890abcdef/loop/p1': recorded(1, 'loop.write', 1),
+        'teamai/r1234567890abcdef/other/p1': { commit: 'c'.repeat(40) },
+      },
+    });
+
+    expect(buildEndRecord(run, driver, 'tester').prs).toEqual([pr(1), pr(2), pr(3), pr(4)]);
+    expect(buildEndRecord(runState(), driver, 'tester')).not.toHaveProperty('prs');
+  });
+
+  it('drops the prs of an earlier end when a retried run ends again without them', () => {
+    const delivered = { ...buildEndRecord(runState(), driver, 'tester'), prs: ['https://github.com/acme/app/pull/1'] };
+    const again = buildEndRecord(runState(), driver, 'tester');
+
+    expect(mergeRecord(delivered, again)).not.toHaveProperty('prs');
+    expect(mergeRecord(again, delivered).prs).toEqual(['https://github.com/acme/app/pull/1']);
   });
 
   it('queues records durably and keeps them across failure', async () => {

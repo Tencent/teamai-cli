@@ -1096,16 +1096,15 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
       }
       if ('lease' in next.data && room()) continue;
       if (inFlight.size === 0 && dying.size === 0 && !prompt && !question) {
-        // A wait for a call that could not take a lease says nothing about what is left; ask again with room.
-        if ((next.data.wait as { delivery?: boolean } | undefined)?.delivery) {
-          await new Promise((resolve) => setTimeout(resolve, 100));
+        const wait = isRecord(next.data.wait) ? next.data.wait : {};
+        // Another process of this machine delivers a step this run waits for; it settles without this driver.
+        if (Array.isArray(wait.delivering) && wait.delivering.length > 0) {
+          await new Promise((resolve) => setTimeout(resolve, pollMs));
           continue;
         }
+        // A wait for a call that could not take a lease says nothing about what is left; ask again with room.
         if (!canTakeLease) continue;
-        const reason = typeof (next.data.wait as { reason?: unknown }).reason === 'string'
-          ? (next.data.wait as { reason: string }).reason
-          : 'the next step is not available';
-        return { error: { code: 'busy', message: reason } };
+        return { error: { code: 'busy', message: typeof wait.reason === 'string' ? wait.reason : 'the next step is not available' } };
       }
       let timer: NodeJS.Timeout | undefined;
       const exited = await Promise.race([

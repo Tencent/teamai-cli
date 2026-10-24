@@ -11,6 +11,7 @@ const step = (status: StepState['status']): StepState => StepStateSchema.parse({
   id: 'work', status,
   ...(status === 'leased' ? { attempt: 'a1', lease: { attempt: 'a1', revision: 1, driver: { kind: 'local', machine: 'm', workspace: 'w' } } } : {}),
   ...(status === 'cancelled' ? { failure: { code: 'cancelled', message: 'Cancelled' } } : {}),
+  ...(status === 'delivering' ? { delivery: { branch: 'teamai/r1/work/p1', head: 'c'.repeat(40) } } : {}),
 });
 
 describe('step statuses', () => {

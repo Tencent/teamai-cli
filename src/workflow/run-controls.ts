@@ -9,7 +9,7 @@ import { publishRunEnd } from './handoff.js';
 import { archiveUnder, isUnder } from './loop.js';
 import { publishRunRecords, removeQueuedEndRecord } from './records.js';
 import { contextOf, localId, statesIn } from './scope.js';
-import { answerHitl, cancel, cancellable, deliver, repend, resetIteration, resetPending, settled, start, stopped, type HitlAnswer, type StepState } from './step-state.js';
+import { answerHitl, cancel, cancellable, redeliver, repend, resetIteration, resetPending, settled, start, stopped, type HitlAnswer, type StepState } from './step-state.js';
 import type { RunState, WorkflowEnvelope } from './types.js';
 
 async function controlRun(
@@ -269,10 +269,9 @@ export async function retryStep(config: LocalConfig, runId: string, step: string
     const reopened = run.status !== 'running';
     for (const container of containers) {
       if (container.child === target) {
-        if (target.status === 'failed' && target.failure?.code === 'delivery_failed' && target.changes) {
-          const { status: _status, outcome: _outcome, failure: _failure, message: _message, ...settlement } = target;
-          deliver(target, { ...settlement, settledAt: run.revision + 1 });
-        } else retryInstance(run, target);
+        // A failed delivery delivers the same branch again; the agent's work it delivers does not change.
+        if (target.status === 'failed' && target.failure?.code === 'delivery_failed' && target.delivery) redeliver(target, target.delivery);
+        else retryInstance(run, target);
         resetIteration(target);
       }
       for (const state of container.states) {

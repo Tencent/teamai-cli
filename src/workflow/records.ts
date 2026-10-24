@@ -27,7 +27,6 @@ import { installOwner, runLockPath } from './store.js';
 import { settled, VISIBLE_OUTCOMES, type StepPass, type StepState, type VisibleOutcome } from './step-state.js';
 import type { TokenUsage } from '../tool-launch/stdout.js';
 import type { DriverIdentity, RunState, RunStatus, WorkflowFailure } from './types.js';
-import { sanitizePrUrl } from './pr-url.js';
 
 /**
  * The failure codes the engine writes, then those the local driver sets. A code a model writes into its result, or
@@ -38,7 +37,7 @@ const RECORDED_FAILURES = [
   'loop_exhausted', 'invalid_output', 'invalid_template', 'invalid_inputs', 'invalid_items', 'item_cycle',
   'tool_failed', 'tool_unavailable', 'agent_unavailable', 'model_unavailable', 'read_only_dirty', 'tool_unconfigured', 'tool_unsupported',
   'merge_conflict', 'base_config', 'push_failed', 'workspace_base', 'bad_session',
-  'delivery_failed', 'timeout',
+  'delivery_failed',
 ] as const;
 type RecordedFailure = (typeof RECORDED_FAILURES)[number];
 
@@ -98,7 +97,7 @@ export type WorkflowRunRecord = {
   stepCounts?: { total: number; succeeded: number; failed: number; skipped: number; cancelled: number };
   /** Settled attempts across the run — the cumulative iteration count. */
   iterations?: number;
-  /** Validated review links, first appearance order. Public on a public team repo; omitted before this version. */
+  /** The pull requests the run delivered, in step order. Public on a public team repo; absent when it delivered none. */
   prs?: string[];
   username: string;
   publishedAt: string;
@@ -172,6 +171,19 @@ function failureOf(run: RunState): RecordedFailure | undefined {
 }
 
 /**
+ * The pull requests the run's steps delivered, once each, in the order of the steps that recorded them and, for one
+ * step, of its passes. That is item order for a `for_each`, whichever item finished first, and a loop that revised one
+ * branch lists its pull request once. A step a loop removed from the run lists first. Only what delivery recorded on a
+ * branch is listed, never a step's outputs.
+ */
+function prsOf(run: RunState): string[] {
+  const position = new Map(run.steps.map((step, index) => [step.id, index]));
+  const recorded = Object.values(run.copies ?? {}).flatMap((copy) => (copy.pr ? [copy.pr] : []));
+  const ordered = recorded.sort((left, right) => (position.get(left.step) ?? -1) - (position.get(right.step) ?? -1) || left.pass - right.pass);
+  return [...new Set(ordered.map((pr) => pr.url))];
+}
+
+/**
  * Build the end-phase record: outcome, duration, iterations, and step counts,
  * all derived as counts so no step payload crosses into the record.
  */
@@ -213,13 +225,7 @@ export function buildEndRecord(
     ]),
     ...(run.archive ?? []).map((archived) => entry(archived.step, archived.pass, archived)),
   ];
-  const changes = [
-    ...run.steps.flatMap((step) => [...(step.passes ?? []).flatMap((pass) => pass.changes ?? []), ...('changes' in step && step.changes ? [step.changes] : [])]),
-    ...(run.archive ?? []).flatMap((pass) => pass.changes ?? []),
-  ];
-  const prs = [...new Set(changes.filter((item) => item.prRecordedAt !== undefined)
-    .sort((a, b) => a.prRecordedAt! - b.prRecordedAt!)
-    .flatMap((item) => sanitizePrUrl(item.pr_url).url ?? []))];
+  const prs = prsOf(run);
   return {
     ...buildStartRecord(run, driver, username, now),
     phase: 'end',
@@ -259,6 +265,7 @@ export function mergeRecord(origin: WorkflowRunRecord | null, next: WorkflowRunR
   const merged = { ...origin, ...next, startedAt: origin.startedAt };
   if (next.end === undefined) delete merged.end;
   if (next.failure === undefined) delete merged.failure;
+  if (next.prs === undefined) delete merged.prs;
   return merged;
 }
 

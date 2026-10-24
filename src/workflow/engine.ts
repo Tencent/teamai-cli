@@ -18,15 +18,17 @@ import {
 } from './template.js';
 import { parseStepPath } from './step-path.js';
 import {
-  ReadSchema, answerHitl, cancel, deliver, fail, inProgress, lease, release, settled, skip, start, stopped, succeed, waitForAnswer,
-  type ItemResult, type LeasedStep, type StepRead, type StepState,
+  ReadSchema, answerHitl, cancel, delivered, deliveryFailed, fail, inProgress, lease, release, settled, skip, start, startDelivery, stopped,
+  succeed, waitForAnswer, type DeliveringStep, type ItemResult, type LeasedStep, type StepRead, type StepState,
 } from './step-state.js';
 import { addItems, afterStanding, expandItems, isItem, itemsAfter, itemsOf, itemsSettled, startedItems } from './fan-out.js';
 import { decideRound, decideStepLoop, exhaustedAtStart, firstPass, loopSettled } from './loop.js';
 import { childScope, contextOf, insertChildren, localId, statesIn, stepDefinitions, topScope, type Scope } from './scope.js';
-import { branchName, deliveryProblem, planWorkspace, plannedBranch, sessionOf, type StepChanges, type LeaseSession, type SessionRef, type WorkspaceContract, type WorkspaceMode, type WorkspacePlan } from './workspace.js';
-import { deliverPending, validateReportedPr } from './delivery.js';
-import { generateRunId, installOwner, isRunId, readRun, updateRun } from './store.js';
+import { deliverableOf, deliveryProblem, planWorkspace, plannedBranch, sessionOf, type LeaseSession, type SessionRef, type WorkspaceContract, type WorkspaceMode, type WorkspacePlan } from './workspace.js';
+import { deliverPr, deliveryFailure, type DeliveryJob, type DeliveryKey, type DeliveryOutcome } from './pr-delivery.js';
+import { sanitizePrUrl } from './pr-url.js';
+import { deliveryLockPath, generateRunId, installOwner, isRunId, readRun, updateRun } from './store.js';
+import { withFileLock } from '../update.js';
 import { pinScorers } from '../scorers/cache.js';
 import { isLeaseRef } from '../scorers/entry.js';
 import type {
@@ -36,7 +38,6 @@ import type {
   RunStatus,
   StepLease,
   StepOutcome,
-  WorkflowDefinition,
   WorkflowEnvelope,
   WorkflowFailure,
   WorkflowStep,
@@ -66,7 +67,9 @@ export interface ReportInput {
   tokens?: TokenUsage;
   failure?: WorkflowFailure;
   /** The branch this attempt committed, when it ran in a workspace. */
-  changes?: StepChanges;
+  changes?: { branch: string; base: string; from: string; to: string; commits: string[] };
+  /** `changes.pr_url` as the driver sent it: a pull request it opened itself, kept only once it is sanitized. */
+  prUrl?: unknown;
   /** The branch and commit this attempt read, when it ran read-only in a workspace. */
   read?: StepRead;
   agent?: ReportedAgent;
@@ -539,24 +542,9 @@ export function stopWhere(run: RunState, under: (id: string) => boolean, failure
 
 /**
  * A step takes how what it ran settled: a workflow step, the outcome, the end, and the outputs of its workflow; a
- * `for_each` step, the outcome and the results of its items.
+ * `for_each` step, the outcome and the results of its items. A workflow step or `for_each` item that delivers goes on
+ * to deliver what it wrote; a `for_each` step delivers nothing of its own, its items do.
  */
-function deliveryDeadline(run: RunState, state: StepState): number | undefined {
-  const limits: number[] = [];
-  const root = run.definition as WorkflowDefinition & { timeout?: number };
-  if (root.timeout) limits.push(Date.parse(run.createdAt) + root.timeout);
-  if (state.status === 'leased' && 'deadline' in state.lease && typeof state.lease.deadline === 'number') limits.push(state.lease.deadline);
-  for (const parent of run.steps) {
-    if (parent.id !== state.id && !state.id.startsWith(`${parent.id}.`)) continue;
-    const found = locateStep(run, parent.id);
-    const scope = found && found.step.workflow !== undefined ? childScope(run, found.scope, statesIn(run, found.scope), parent, found.step) : undefined;
-    const bounds = [(found?.step as (WorkflowStep & { timeout?: number }) | undefined)?.timeout,
-      (scope?.definition as { timeout?: number } | undefined)?.timeout];
-    for (const timeout of bounds) if (timeout && 'startedAt' in parent && typeof parent.startedAt === 'number') limits.push(parent.startedAt + timeout);
-  }
-  return limits.length ? Math.min(...limits) : undefined;
-}
-
 function finishStep(run: RunState, state: StepState, definition: WorkflowStep, result: WorkflowResult): void {
   const settlement = {
     settledAt: result.settledAt,
@@ -564,19 +552,13 @@ function finishStep(run: RunState, state: StepState, definition: WorkflowStep, r
     ...(result.outputs !== undefined ? { outputs: result.outputs } : {}),
     ...(result.results ? { results: result.results } : {}),
   };
-  if (result.outcome === 'succeeded' && definition.deliver === 'pr' && (!definition.forEach || isItem(state))) {
-    // A workflow's children may continue one enclosing copy. Deliver that branch once at its workflow boundary.
-    const own = branchName(run.id, state.id, state.pass ?? 1);
-    const branches = [...new Set(run.steps.flatMap((child) => child.id.startsWith(`${state.id}.`) && 'changes' in child && child.changes ? [child.changes.branch] : []))];
-    const branch = run.copies?.[own] ? own : branches.length === 1 ? branches[0] : undefined;
-    const copy = branch && run.copies?.[branch];
-    if (!branch || !copy || !copy.commit || !run.base) {
-      fail(state, { ...settlement, failure: { code: 'delivery_failed', message: 'PR delivery needs one writable branch; set workspace: new on the workflow step.' } });
-    } else {
-      deliver(state, { ...settlement, changes: { branch, base: run.base.commit, from: run.base.commit, to: copy.commit, commits: [] } }, deliveryDeadline(run, state));
-    }
-  } else if (result.outcome === 'succeeded') succeed(state, settlement);
-  else fail(state, { ...settlement, ...(result.failure ? { message: result.failure.message, failure: result.failure } : {}) });
+  if (result.outcome !== 'succeeded') {
+    fail(state, { ...settlement, ...(result.failure ? { message: result.failure.message, failure: result.failure } : {}) });
+    return;
+  }
+  const delivery = definition.deliver === 'pr' && (!definition.forEach || isItem(state)) ? deliverableOf(run, state, definition) : undefined;
+  if (delivery) startDelivery(state, settlement, delivery);
+  else succeed(state, settlement);
 }
 
 function childOrUnreadable(run: RunState, scope: Scope, states: StepState[], state: StepState, definition: WorkflowStep): Scope | { unreadable: string } {
@@ -894,18 +876,89 @@ export interface NextOptions {
   claim?: boolean;
 }
 
-export async function leaseNext(config: LocalConfig, runId: string, driver: DriverIdentity, options: NextOptions = {}): Promise<WorkflowEnvelope> {
-  const envelope = await leaseNextCore(config, runId, driver, options);
-  if ('error' in envelope || !await deliverPending(config, runId)) return envelope;
-  return leaseNext(config, runId, driver, options);
+/** The delivery of `step`, as the drain and the outcome it applies name it. */
+function deliveryKey(step: DeliveringStep): DeliveryKey {
+  return { step: step.id, pass: step.pass ?? 1, settledAt: step.settledAt, branch: step.delivery.branch, head: step.delivery.head };
 }
 
-async function leaseNextCore(config: LocalConfig, runId: string, driver: DriverIdentity, options: NextOptions): Promise<WorkflowEnvelope> {
+/** The step `key` names, while it still delivers that pass of that commit. */
+function deliveringStep(run: RunState, key: DeliveryKey): DeliveringStep | undefined {
+  const step = run.steps.find((item): item is DeliveringStep => item.status === 'delivering' && item.id === key.step);
+  if (!step) return undefined;
+  const current = deliveryKey(step);
+  return current.pass === key.pass && current.settledAt === key.settledAt && current.branch === key.branch && current.head === key.head ? step : undefined;
+}
+
+/**
+ * The first delivery to run, after what reports and controls left pending is applied, so a step an end or a cancel
+ * stopped is not delivered. Undefined when nothing delivers, or when the run settles, which the locked body of `next`
+ * finishes.
+ */
+function nextDelivery(run: RunState): DeliveryJob | undefined {
+  if (run.status !== 'running') return undefined;
+  const settledRun = reconcileRun(run);
+  if ('unreadable' in settledRun || 'outcome' in settledRun) return undefined;
+  const step = run.steps.find((item): item is DeliveringStep => item.status === 'delivering');
+  if (!step) return undefined;
+  return { key: deliveryKey(step), runId: run.id, ...(step.delivery.reported ? { reported: step.delivery.reported } : {}) };
+}
+
+/**
+ * Applies a delivery's outcome. A pull request is recorded on its branch whatever became of the step meanwhile: one
+ * opened while a cancel landed cannot be taken back, so the run says it exists. The step settles only while it still
+ * delivers what `job` delivered, at the revision its agent's report settled it.
+ */
+function completeDelivery(run: RunState, job: DeliveryJob, outcome: DeliveryOutcome): void {
+  if (outcome.ok) {
+    const copies = run.copies ??= {};
+    const copy = copies[job.key.branch] ?? {};
+    copy.pr ??= { url: outcome.pr, step: job.key.step, pass: job.key.pass };
+    copies[job.key.branch] = copy;
+  }
+  if (run.status === 'running') reconcileRun(run);
+  const step = deliveringStep(run, job.key);
+  if (!step) return;
+  if (outcome.ok) delivered(step);
+  else deliveryFailed(step, deliveryFailure(job, outcome.fault));
+}
+
+/**
+ * Delivers the run's delivering steps one at a time, before `next` answers, whichever driver called it. The run lock is
+ * held to pick a delivery and to apply its outcome, never across git or a provider. While another process of this
+ * machine delivers, it holds the delivery lock, and this call leaves the work to it.
+ */
+async function drainDeliveries(config: LocalConfig, runId: string): Promise<void> {
+  if (!isRunId(runId)) return;
+  const loaded = await readRun(config, runId);
+  if (typeof loaded === 'string' || loaded.status !== 'running' || !loaded.steps.some((step) => step.status === 'delivering')) return;
+  await withFileLock(deliveryLockPath(config, runId), { attempts: 1, delayMs: 0 }, async () => {
+    for (;;) {
+      const picked = await updateRun(config, runId, async (run) => {
+        if (run === 'missing') return { value: undefined };
+        const before = JSON.stringify(run);
+        const job = nextDelivery(run);
+        return { value: job, ...(job && JSON.stringify(run) !== before ? { write: { ...run, updatedAt: new Date().toISOString() } } : {}) };
+      });
+      if (picked.status !== 'done' || !picked.value) return;
+      const job = picked.value;
+      const outcome = await deliverPr(job);
+      const applied = await updateRun(config, runId, async (run) => {
+        if (run === 'missing') return { value: false };
+        completeDelivery(run, job, outcome);
+        return { value: true, write: { ...run, updatedAt: new Date().toISOString() } };
+      });
+      if (applied.status !== 'done' || !applied.value) return;
+    }
+  });
+}
+
+export async function leaseNext(config: LocalConfig, runId: string, driver: DriverIdentity, options: NextOptions = {}): Promise<WorkflowEnvelope> {
   driver = { kind: driver.kind, machine: driver.machine, workspace: driver.workspace };
   if (options.claim) {
     const claimed = await claimRun(config, runId, { checkout: driver.workspace });
     if (!claimed.ok) return { error: claimed.error };
   }
+  await drainDeliveries(config, runId);
   const running = new Set(options.running);
   // The end record is queued under the run lock, so the run stores whether it
   // was in the same save. It publishes AFTER withRun releases the lock (#1126
@@ -929,11 +982,12 @@ async function leaseNextCore(config: LocalConfig, runId: string, driver: DriverI
       queued = await finishRun(config, run, now, result, driver);
       return answer(doneData(run));
     };
-    const wait = (open = run.steps.find((step) => step.status === 'leased')): { save: boolean; envelope: WorkflowEnvelope } => (
-      answer({ wait: run.steps.some((step) => step.status === 'delivering')
-        ? { reason: 'PR delivery is in progress; poll next', delivery: true }
-        : { reason: open ? `${open.id} is leased` : 'canTakeLease is false' } })
-    );
+    const wait = (open = run.steps.find((step) => step.status === 'leased')): { save: boolean; envelope: WorkflowEnvelope } => {
+      // Steps still delivering here are being delivered by another process of this machine; a driver polls until they settle.
+      const delivering = run.steps.filter((step) => step.status === 'delivering').map((step) => step.id);
+      const reason = open ? `${open.id} is leased` : delivering.length > 0 ? `${delivering[0]} is delivering` : 'canTakeLease is false';
+      return answer({ wait: { reason, ...(delivering.length > 0 ? { delivering } : {}) } });
+    };
     if (run.status !== 'running') {
       // Settled by an earlier next, which queued the end record unless usage
       // reporting was off; the done envelope reports that record's state.
@@ -1143,10 +1197,7 @@ export function parseReport(value: unknown): ParsedReport | string {
       return 'changes.commits must be an array of strings';
     }
     report.changes = { branch: value.branch, base: value.base, from: value.from, to: value.to, commits: value.commits };
-    if (value.pr_url !== undefined) {
-      // Invalid types are dropped with a value-free reason by reportAttempt too.
-      report.changes.pr_url = value.pr_url as string;
-    }
+    if (value.pr_url !== undefined) report.prUrl = value.pr_url;
   }
   if (record.read !== undefined) {
     const read = ReadSchema.safeParse(record.read);
@@ -1262,7 +1313,7 @@ function branchStillUsed(run: RunState, branch: string): boolean {
   const ahead = structuredClone(run);
   if ('unreadable' in reconcileRun(ahead)) return true;
   for (const item of ahead.steps) {
-    if (item.status === 'running' || settled(item)) continue;
+    if (item.status === 'running' || item.status === 'delivering' || settled(item)) continue;
     const located = locateStep(ahead, item.id);
     if (located && plannedBranch(ahead, located.scope, item, located.step) === branch) return true;
   }
@@ -1327,20 +1378,10 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
     return error('judge_lease', `Attempt ${report.attempt} is a judge lease, which workflow report does not settle. Submit its answer with: teamai score --lease ${report.attempt} --submit --stdin`);
   }
   const install = await installOwner(config);
-  const dropped: Array<{ field: string; reason: string }> = [];
-  if (report.changes && report.changes.pr_url !== undefined) {
-    report = structuredClone(report);
-    const run = await readRun(config, runId);
-    if (typeof run !== 'string') {
-      const result = await validateReportedPr(run, report.changes!);
-      if (result.url) report.changes!.pr_url = result.url;
-      else {
-        delete report.changes!.pr_url;
-        dropped.push({ field: 'changes.pr_url', reason: result.reason! });
-      }
-    }
-  }
-  const envelope = await withRun(config, runId, async (run) => {
+  const reported = report.prUrl === undefined ? undefined : sanitizePrUrl(report.prUrl);
+  // A URL that is not kept is named without its value, which may hold a token, and the report still counts.
+  const dropped = reported?.reason === undefined ? [] : [{ field: 'changes.pr_url', reason: reported.reason }];
+  return withRun(config, runId, async (run) => {
     // Settled membership wins. An old revision of a settled attempt is still repeated_report.
     if (run.settledAttempts.includes(report.attempt)) {
       return { save: false, envelope: error('repeated_report', `Attempt ${report.attempt} was already reported`) };
@@ -1401,7 +1442,7 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
       model: report.model,
       session: report.session,
       tokens: report.tokens,
-      ...(report.changes ? { changes: { ...report.changes, prRecordedAt: report.changes.pr_url ? run.revision : undefined } } : {}),
+      ...(report.changes ? { changes: report.changes } : {}),
       ...(report.read ? { read: report.read } : {}),
       agent: settleObservation(report, defined?.agent),
       ...(report.used ? { used: report.used } : {}),
@@ -1415,11 +1456,14 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
       run.copies[report.changes.branch] = copy;
     }
     const successful = { ...settlement, ...(report.outputs !== undefined ? { outputs: report.outputs } : {}) };
+    const delivery = outcome === 'success' && defined?.deliver === 'pr' ? deliverableOf(run, step, defined, report.changes) : undefined;
     const settledStep = outcome === 'released' ? release(step)
-      : outcome === 'success' ? defined?.deliver === 'pr' ? deliver(step, successful, deliveryDeadline(run, step)) : succeed(step, successful)
-        : fail(step, { ...settlement, failure });
-    // From the lease, so a reader that was the copy's last user lets the driver remove the worktree.
-    const cleanup = outcome === 'success' && settledStep.status !== 'delivering' && contract !== undefined && !branchStillUsed(run, contract.branch);
+      : outcome !== 'success' ? fail(step, { ...settlement, failure })
+        : delivery ? startDelivery(step, successful, { ...delivery, ...(reported?.url ? { reported: reported.url } : {}) })
+          : succeed(step, successful);
+    // From the lease, so a reader that was the copy's last user lets the driver remove the worktree. Delivery reads the
+    // pushed branch, so it does not keep the worktree.
+    const cleanup = outcome === 'success' && contract !== undefined && !branchStillUsed(run, contract.branch);
     return {
       save: true,
       envelope: ok({
@@ -1427,25 +1471,8 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
         revision: run.revision,
         step: { id: settledStep.id, status: settledStep.status, outcome },
         ...(cleanup ? { cleanup: true } : {}),
+        ...(dropped.length > 0 ? { dropped } : {}),
       }),
     };
   });
-  if ('error' in envelope) return envelope;
-  const pending = await readRun(config, runId);
-  if (typeof pending !== 'string' && pending.status === 'running' && pending.steps.some((step) => step.status === 'delivering')) {
-    // Reconcile before provider I/O too: limits reached by this report must stop delivery before it opens a PR.
-    const checked = await leaseNextCore(config, runId, report.driver, { canTakeLease: false,
-      running: pending.steps.flatMap((step) => step.status === 'leased' ? [step.attempt] : []),
-    });
-    if (!('error' in checked)) await deliverPending(config, runId);
-    const run = await readRun(config, runId);
-    const step = typeof run !== 'string' && run.steps.find((state) => 'attempt' in state && state.attempt === report.attempt);
-    if (step) {
-      envelope.data.revision = run.revision;
-      envelope.data.step = { id: step.id, status: step.status, outcome: step.status === 'failed' || step.status === 'cancelled' ? 'failed' : 'success' };
-      if (step.status === 'succeeded' && report.changes && !branchStillUsed(run, report.changes.branch)) envelope.data.cleanup = true;
-    }
-  }
-  if (dropped.length) envelope.data.dropped = dropped;
-  return envelope;
 }

@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { AgentObservationSchema, UsedSchema } from '../agent-observation.js';
 import { DriverSchema } from '../driver-identity.js';
 import type { TokenUsage } from '../tool-launch/stdout.js';
+import { PrUrlSchema } from './pr-url.js';
 import type { StepLease, WorkflowFailure } from './types.js';
 import type { WorkspaceMode } from './workspace.js';
 
@@ -31,8 +32,6 @@ const ChangesSchema = z.object({
   from: z.string(),
   to: z.string(),
   commits: z.array(z.string()),
-  pr_url: z.string().optional(),
-  prRecordedAt: z.number().int().optional(),
 });
 
 /** What a read-only step inside a copy reports: the branch it ran on and the commit it read. It wrote nothing. */
@@ -130,6 +129,13 @@ const StepBaseSchema = z.object({
 type StepBase = z.infer<typeof StepBaseSchema>;
 
 /**
+ * What a step that delivers hands to delivery once its agent succeeded: the branch, the commit that branch must hold on
+ * origin, and a URL its driver reported and the engine kept. The target is not kept; it follows from the run.
+ */
+const DeliverySchema = z.object({ branch: z.string().min(1), head: z.string().min(1), reported: PrUrlSchema.optional() });
+export type Delivery = z.infer<typeof DeliverySchema>;
+
+/**
  * What a step that ran keeps. A file written before `settledAt` existed reads it as 0. `end` is the end the workflow
  * this step runs reached.
  */
@@ -139,8 +145,8 @@ const settledFields = {
   results: ResultsSchema.optional(),
   settledAt: z.number().int().default(0),
   attempt: z.string().optional(),
-  /** The original execution bound continues while its completed work is delivered. */
-  deliveryDeadline: z.number().optional(),
+  /** Kept once the step settles, so a retry of a failed delivery delivers the same branch again. */
+  delivery: DeliverySchema.optional(),
   ...report,
 };
 
@@ -153,13 +159,14 @@ const settledFields = {
 const PendingSchema = StepBaseSchema.extend({ status: z.literal('pending') });
 const WaitingSchema = StepBaseSchema.extend({ status: z.literal('waiting') });
 const RunningSchema = StepBaseSchema.extend({ status: z.literal('running') });
-const DeliveringSchema = StepBaseSchema.extend({ status: z.literal('delivering'), ...settledFields });
+/** `delivering`: the agent succeeded and its work is on its branch; dependents wait until that branch has its pull request. */
+const DeliveringSchema = StepBaseSchema.extend({ status: z.literal('delivering'), ...settledFields, delivery: DeliverySchema });
 const SucceededSchema = StepBaseSchema.extend({
   status: z.literal('succeeded'), outcome: z.literal('success').default('success'), ...settledFields, loopFinal: z.boolean().optional(),
 });
 const FailedSchema = StepBaseSchema.extend({ status: z.literal('failed'), outcome: z.literal('failed').default('failed'), ...settledFields, failure: FailureSchema.optional() });
 const SkippedSchema = StepBaseSchema.extend({ status: z.literal('skipped'), settledAt: z.number().int().default(0) });
-const CancelledSchema = StepBaseSchema.extend({ status: z.literal('cancelled'), ...settledFields, failure: FailureSchema });
+const CancelledSchema = StepBaseSchema.extend({ status: z.literal('cancelled'), settledAt: z.number().int().default(0), attempt: z.string().optional(), failure: FailureSchema });
 
 const LeasedSchema = StepBaseSchema.extend({ status: z.literal('leased'), attempt: z.string(), lease: LeaseSchema });
 /**
@@ -187,6 +194,7 @@ type StepIn<S extends StepStatus> = Extract<StepState, { status: S }>;
 type PendingStep = StepIn<'pending'>;
 export type LeasedStep = StepIn<'leased'>;
 type RunningStep = StepIn<'running'>;
+export type DeliveringStep = StepIn<'delivering'>;
 type SucceededStep = StepIn<'succeeded'>;
 type FailedStep = StepIn<'failed'>;
 type SkippedStep = StepIn<'skipped'>;
@@ -280,22 +288,37 @@ export function succeed(state: StepState, settlement: Settlement<SucceededStep>)
   return become<SucceededStep>(state, { status: 'succeeded', outcome: 'success', ...settlement });
 }
 
-/** Agent work is durable, but dependents wait for delivery to finish. */
-export function deliver(state: StepState, settlement: Settlement<SucceededStep>, deadline?: number): StepIn<'delivering'> {
-  return become<StepIn<'delivering'>>(state, { status: 'delivering', ...settlement, ...(deadline !== undefined ? { deliveryDeadline: deadline } : {}) });
+/** The agent's work is settled and durable; the step succeeds once `delivery` has its pull request. */
+export function startDelivery(state: StepState, settlement: Settlement<SucceededStep>, delivery: Delivery): DeliveringStep {
+  return become<DeliveringStep>(state, { status: 'delivering', ...settlement, delivery });
+}
+
+/** A delivered step settles as its agent left it, at the revision the agent's report settled it. */
+export function delivered(state: DeliveringStep): SucceededStep {
+  const { id: _id, status: _status, ...settlement } = state;
+  return succeed(state, settlement);
+}
+
+/** A delivery that failed stops the step, keeping what its agent did and the branch a retry delivers again. */
+export function deliveryFailed(state: DeliveringStep, failure: WorkflowFailure): FailedStep {
+  const { id: _id, status: _status, ...settlement } = state;
+  return fail(state, { ...settlement, message: failure.message, failure });
+}
+
+/** A failed delivery is retried in the same pass and attempt: the agent does not run again. */
+export function redeliver(state: FailedStep, delivery: Delivery): DeliveringStep {
+  const { id: _id, status: _status, outcome: _outcome, failure: _failure, message: _message, ...settlement } = state;
+  return startDelivery(state, settlement, delivery);
 }
 
 export function fail(state: StepState, settlement: Settlement<FailedStep>): FailedStep {
   return become<FailedStep>(state, { status: 'failed', outcome: 'failed', ...settlement });
 }
 
-/** An open step is cancelled before it settles. A leased one keeps its invalidated attempt. */
+/** An open step is cancelled before it settles. A leased or delivering one keeps the attempt it no longer settles. */
 export function cancel(state: StepIn<'pending' | 'waiting' | 'leased' | 'running' | 'delivering'>, failure: WorkflowFailure, settledAt: number): CancelledStep {
-  // Delivery follows completed agent work. Cancellation must retain that work's usage and any review link.
-  const reported = state.status === 'delivering'
-    ? Object.fromEntries(SETTLED_KEYS.filter((key) => state[key] !== undefined).map((key) => [key, state[key]]))
-    : state.status === 'leased' ? { attempt: state.attempt } : {};
-  return become<CancelledStep>(state, { ...reported, status: 'cancelled', settledAt, failure });
+  const attempt = state.status === 'leased' || state.status === 'delivering' ? state.attempt : undefined;
+  return become<CancelledStep>(state, { status: 'cancelled', settledAt, ...(attempt !== undefined ? { attempt } : {}), failure });
 }
 
 /** The current pass of a settled step, as `passes` keeps it once a loop runs the step again; undefined while it has not settled. */

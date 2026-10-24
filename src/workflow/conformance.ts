@@ -65,6 +65,16 @@ steps:
     command: echo work
 `;
 
+const REPORTED_PR = `schemaVersion: v1alpha1
+name: reported-pr
+description: A remote driver opens the pull request of the branch it worked on and reports it.
+steps:
+  - id: work
+    workspace: new
+    command: echo work
+    deliver: pr
+`;
+
 const FAILED_DEPENDENCY = `schemaVersion: v1alpha1
 name: build
 description: A step whose dependency failed is skipped.
@@ -252,13 +262,14 @@ steps:
 
 export const workflowConformanceScenarios: ConformanceScenario[] = [
   {
-    name: 'a driver reports a sanitized review URL', workflowName: 'review-link', yaml: REVIEW_LINK,
+    name: 'a driver reports the pull request it opened, which delivers the step without opening another',
+    workflowName: 'reported-pr', yaml: REPORTED_PR,
     operations: [
       { kind: 'next', saveAs: 'work', workspace: true, expect: { data: { lease: { step: 'work' } } } },
-      { kind: 'report', lease: 'work', leasedChanges: true, body: { outcome: 'success', changes: { pr_url: 'https://review.example/changes/1?session=private#note', unknown: 'private' } }, expect: { data: { accepted: true, ignored: ['changes.unknown'] } } },
+      { kind: 'report', lease: 'work', leasedChanges: true, body: { outcome: 'success', changes: { pr_url: 'https://review.example/changes/1?session=private#note', unknown: 'private' } }, expect: { data: { accepted: true, step: { id: 'work', status: 'delivering', outcome: 'success' }, ignored: ['changes.unknown'] } } },
       { kind: 'next', saveAs: 'done', expect: { data: { done: { outcome: 'succeeded' } } } },
     ],
-    expectState: { steps: [{ id: 'work', changes: { pr_url: 'https://review.example/changes/1' } }] },
+    expectState: { steps: [{ id: 'work', status: 'succeeded', delivery: { reported: 'https://review.example/changes/1' } }] },
   },
   {
     name: 'an unsafe review URL is dropped without rejecting the report', workflowName: 'review-link', yaml: REVIEW_LINK,

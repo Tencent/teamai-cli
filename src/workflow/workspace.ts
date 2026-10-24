@@ -5,7 +5,7 @@
 import { itemsAfter, itemsOf } from './fan-out.js';
 import { localId, statesIn, stepDefinitions, type Scope } from './scope.js';
 import { parseStepPath } from './step-path.js';
-import { passOf, type StepState } from './step-state.js';
+import { passOf, type Delivery, type StepState } from './step-state.js';
 import type { DriverIdentity, RunState, WorkflowDefinition, WorkflowFailure, WorkflowStep } from './types.js';
 
 export type WorkspaceMode = 'read-only' | 'new' | 'continue';
@@ -17,9 +17,6 @@ export interface StepChanges {
   from: string;
   to: string;
   commits: string[];
-  pr_url?: string;
-  /** Engine revision at which the validated URL first appeared. Never accepted from a driver. */
-  prRecordedAt?: number;
 }
 
 /**
@@ -151,6 +148,24 @@ function ancestorsOf(run: StepTree, path: string): Ancestor[] {
 function changesOf(state: StepState | undefined): StepChanges | undefined {
   if (!state || !('changes' in state) || !state.changes) return undefined;
   return state.changes;
+}
+
+/**
+ * What a step that just succeeded delivers, or undefined when its branch holds nothing beyond the run base. A leaf
+ * delivers the branch it reported. A workflow step delivers its own copy once, never per step inside it; one without a
+ * copy of its own, such as a `for_each` item that runs a workflow, delivers the branch its latest step wrote.
+ */
+export function deliverableOf(run: RunState, state: StepState, step: WorkflowStep, changes?: StepChanges): Omit<Delivery, 'reported'> | undefined {
+  let branch = changes?.branch;
+  let head = changes?.to;
+  if (step.workflow !== undefined) {
+    const own = branchName(run.id, state.id, state.pass ?? 1);
+    const latest = run.steps.filter((item) => item.id.startsWith(`${state.id}.`) && changesOf(item))
+      .sort((left, right) => ('settledAt' in right ? right.settledAt : 0) - ('settledAt' in left ? left.settledAt : 0))[0];
+    branch = run.copies?.[own]?.commit !== undefined ? own : changesOf(latest)?.branch;
+    head = branch === undefined ? undefined : run.copies?.[branch]?.commit;
+  }
+  return branch === undefined || head === undefined || head === run.base?.commit ? undefined : { branch, head };
 }
 
 /** Direct steps of a workflow step, such as `work.write`, not its fan-out items. */
