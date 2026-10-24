@@ -118,7 +118,7 @@ async function scoredRun(driver: 'external' | 'local' = 'external', files: Recor
   await syncWorkflowDefinitions(config);
   const runId = String(data(await startRun(config, 'build', undefined, { base: { ref: 'main', commit: from }, checkout })).run);
 
-  const write = z.object({ attempt: z.string(), revision: z.number(), workspace: z.object({ branch: z.string() }) }).parse(data(await leaseNext(config, runId, work, { workspaceModes: ['new', 'continue', 'read-only'] })).lease);
+  const write = z.object({ attempt: z.string(), revision: z.number(), workspace: z.object({ branch: z.string() }) }).parse(data(await leaseNext(config, runId, work, { can: { workspace: ['new', 'continue', 'read-only'] } })).lease);
   git(checkout, 'checkout', '-q', '-B', write.workspace.branch, from);
   fs.writeFileSync(path.join(checkout, 'src', 'app.ts'), 'export const run = () => { for (let i = 0; i < 3; i++) if (task()) return; };\n');
   git(checkout, 'commit', '-qam', 'retries');
@@ -130,7 +130,7 @@ async function scoredRun(driver: 'external' | 'local' = 'external', files: Recor
     outputs: { done: true }, changes: { branch: write.workspace.branch, base: from, from, to, commits: [to] },
   }));
   for (const session of ['session-review', 'session-look']) {
-    const lease = z.object({ attempt: z.string(), revision: z.number() }).parse(data(await leaseNext(config, runId, work, { workspaceModes: ['new', 'continue', 'read-only'] })).lease);
+    const lease = z.object({ attempt: z.string(), revision: z.number() }).parse(data(await leaseNext(config, runId, work, { can: { workspace: ['new', 'continue', 'read-only'] } })).lease);
     plantSession(checkout, session, `${session} prompt`);
     data(await reportAttempt(config, runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: work, tool: 'claude', session }));
   }

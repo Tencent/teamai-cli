@@ -13,7 +13,7 @@ import type { RunState, WorkflowEnvelope } from '../workflow/types.js';
 
 const roots: string[] = [];
 const driver = { kind: 'test', machine: 'test', workspace: '/work' };
-const hitl = { hitl: true };
+const hitl = { can: { hitl: true } };
 interface ControlData {
   run: { id: string; status: string; revision: number };
   lease: { step: string; attempt: string; revision: number; prompt?: string; interactive?: true };
@@ -126,17 +126,20 @@ describe('workflow HITL', () => {
     expect(decide.passes?.[0]?.answer?.note).toBe('Keep the flag');
   });
 
-  it('rejects interactive work without HITL but leases it to a driver with HITL', async () => {
+  it('holds interactive work for a driver with HITL and leases it to one', async () => {
     const f = await fixture('  - id: pair\n    prompt: Pair with me.\n    interactive: true');
     expect(data(await f.next()).lease.interactive).toBe(true);
     const alone = await fixture('  - id: pair\n    prompt: Pair with me.\n    interactive: true');
-    expect(data(await leaseNext(alone.config, alone.id, driver)).done.outcome).toBe('failed');
-    expect((await alone.state()).steps[0]).toMatchObject({ status: 'failed', failure: { code: 'hitl_required' } });
+    expect(await leaseNext(alone.config, alone.id, driver)).toMatchObject({ data: { wait: { held: [
+      { step: 'pair', reason: 'step "pair" needs hitl, which this driver does not declare', missing: ['hitl'] },
+    ] } } });
+    expect((await alone.state()).steps[0]).toMatchObject({ status: 'pending' });
   });
 
   it('parses capabilities separately from driver identity and reports unknown names', () => {
-    expect(parseNextPayload({ driver: { ...driver, can: { hitl: true, unknown: 'secret' } }, other: 1 })).toEqual({ request: { driver, hitl: true }, ignored: ['other', 'driver.can.unknown'] });
-    expect(parseNextPayload({ driver: { ...driver, can: { hitl: 'yes' } } })).toBe('driver.can.hitl must be a boolean');
+    expect(parseNextPayload({ driver: { ...driver, can: { hitl: true, unknown: 'secret' } }, other: 1 })).toEqual({ request: { driver, can: { hitl: true } }, ignored: ['other', 'driver.can.unknown'] });
+    expect(parseNextPayload({ driver: { ...driver, can: { hitl: 'yes' } } })).toBe('driver.can.hitl: Expected boolean, received string');
+    expect(parseNextPayload({ driver: { ...driver, can: { workspace: ['new', 'elsewhere'] } } })).toMatch(/^driver\.can\.workspace\.1: /);
   });
 
   it('reads claim as a request to take the run over, and refuses one that is not a boolean', () => {
@@ -449,10 +452,7 @@ describe('changing a HITL request answer', () => {
     const required = await fixture('  - id: ask\n    approve: { message: Continue?, required: true }');
     await leaseNext(required.config, required.id, driver);
     expect(warn).toHaveBeenLastCalledWith(expect.stringContaining("needs a person's answer"));
-    const interactive = await fixture('  - id: pair\n    interactive: true\n    prompt: Work together.');
-    await leaseNext(interactive.config, interactive.id, driver);
-    expect(warn).toHaveBeenLastCalledWith(expect.stringContaining('is interactive'));
-    expect(warn).toHaveBeenCalledTimes(5);
+    expect(warn).toHaveBeenCalledTimes(4);
   });
 });
 
@@ -477,14 +477,15 @@ describe('run control recovery invariants', () => {
     expect((await f.state()).endRecordQueued).toBeUndefined();
   });
 
-  it('fails an interactive lease handed back without a person at its lease revision', async () => {
+  it('releases an interactive lease handed back without a person, so it waits for a driver with one', async () => {
     const f = await fixture('  - id: pair\n    prompt: Pair with me.\n    interactive: true');
     const lease = data(await f.next()).lease;
     expect(data(await leaseNext(f.config, f.id, driver, { running: [lease.attempt] })).done).toBeUndefined();
-    expect(data(await leaseNext(f.config, f.id, driver)).done.outcome).toBe('failed');
-    expect((await f.state()).steps[0]).toMatchObject({ status: 'failed', settledAt: lease.revision, failure: { code: 'hitl_required' } });
+    expect(await leaseNext(f.config, f.id, driver)).toMatchObject({ data: { wait: { held: [{ step: 'pair', missing: ['hitl'] }] } } });
+    expect((await f.state()).steps[0]).toMatchObject({ status: 'pending' });
     expect((await f.state()).cancelledAttempts).toContain(lease.attempt);
     expect(await f.report(lease)).toMatchObject({ error: { code: 'lease_cancelled' } });
+    expect(data(await f.next()).lease).toMatchObject({ step: 'pair', interactive: true });
   });
 
   it('lists only the steps changed by cancellation before reconciliation', async () => {
@@ -546,7 +547,7 @@ it('stores the latest driver that called next before any lease exists', async ()
   await f.next();
   expect((await f.state()).driver).toEqual(driver);
   const latest = { kind: 'local', machine: os.hostname(), workspace: '/latest' };
-  await leaseNext(f.config, f.id, latest, { hitl: true, canTakeLease: false });
+  await leaseNext(f.config, f.id, latest, { can: { hitl: true }, canTakeLease: false });
   expect((await f.state()).driver).toEqual(latest);
   await f.respond('decide', 'stop');
   expect((await pendingRecords(f.config)).find((record) => record.phase === 'end')?.driver).toEqual({ kind: 'local' });

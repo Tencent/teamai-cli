@@ -246,7 +246,7 @@ async function work(
   driver = member.driver,
   { push = true }: { push?: boolean } = {},
 ): Promise<{ step: string; branch: string; commit: string }> {
-  const next = await leaseNext(member.config, runId, driver, { workspaceModes: [...WORKSPACES] });
+  const next = await leaseNext(member.config, runId, driver, { can: { workspace: [...WORKSPACES] } });
   if (!('data' in next) || !next.data.lease) throw new Error(`no lease: ${JSON.stringify(next)}`);
   const lease = next.data.lease as {
     step: string; attempt: string; revision: number; workspace: { branch: string; base: { commit: string }; start: { commit: string } };
@@ -1174,7 +1174,7 @@ describe('workflow handoff through teamai-reports', () => {
       await settle(alice, runId);
     } },
     { status: 'failed', end: async (alice: Member, runId: string) => {
-      const next = await leaseNext(alice.config, runId, alice.driver, { workspaceModes: [...WORKSPACES] });
+      const next = await leaseNext(alice.config, runId, alice.driver, { can: { workspace: [...WORKSPACES] } });
       if (!('data' in next) || !next.data.lease) throw new Error(`no lease: ${JSON.stringify(next)}`);
       const lease = next.data.lease as { attempt: string; revision: number };
       await reportAttempt(alice.config, runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'failed', driver: alice.driver, message: 'broke' });
@@ -1344,7 +1344,7 @@ describe('workflow handoff through teamai-reports', () => {
 
     const publishing = publishRun(alice.config, runId, { env: {}, checkout: alice.checkout });
     await pin.held();
-    expect(await leaseNext(alice.config, runId, alice.driver, { workspaceModes: [...WORKSPACES] })).toMatchObject({ data: { lease: { step: 'change.write' } } });
+    expect(await leaseNext(alice.config, runId, alice.driver, { can: { workspace: [...WORKSPACES] } })).toMatchObject({ data: { lease: { step: 'change.write' } } });
     pin.release();
 
     expect(await publishing).toMatchObject({ ok: true, value: { publication: 'published', stateRevision: 1, inFlight: [{ step: 'change.write' }] } });
@@ -1432,10 +1432,10 @@ describe('workflow handoff through teamai-reports', () => {
     const bob = await acme.member('bob');
     const runId = await startIn(alice, 'pair');
     const base = git(alice.checkout, 'rev-parse', 'main');
-    const first = await leaseNext(alice.config, runId, alice.driver, { workspaceModes: [...WORKSPACES] });
+    const first = await leaseNext(alice.config, runId, alice.driver, { can: { workspace: [...WORKSPACES] } });
     const built = 'data' in first ? (first.data.lease as { attempt: string; workspace: { branch: string } }) : undefined;
     expect(built?.workspace.branch).toBe(`teamai/${runId}/build/p1`);
-    expect(await leaseNext(alice.config, runId, alice.driver, { workspaceModes: [...WORKSPACES], running: [built?.attempt ?? ''] }))
+    expect(await leaseNext(alice.config, runId, alice.driver, { can: { workspace: [...WORKSPACES] }, running: [built?.attempt ?? ''] }))
       .toMatchObject({ data: { lease: { step: 'change.write', workspace: { branch: `teamai/${runId}/change/p1` } } } });
 
     expect(await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout })).toMatchObject({
@@ -1452,7 +1452,7 @@ describe('workflow handoff through teamai-reports', () => {
     expect(claimed).not.toHaveProperty('pushedBranches');
     expect(JSON.parse(originFile(acme.origin, `workflows/runs/${runId}/state.json`) ?? '{}')).not.toHaveProperty('pushedBranches');
     expect(typeof claimed === 'object' && Object.keys(claimed.copies ?? {})).toEqual([`teamai/${runId}/change/p1`]);
-    const again = await leaseNext(bob.config, runId, bob.driver, { workspaceModes: [...WORKSPACES] });
+    const again = await leaseNext(bob.config, runId, bob.driver, { can: { workspace: [...WORKSPACES] } });
     expect(again).toMatchObject({ data: { lease: { step: 'build', pass: 2, workspace: { branch: `teamai/${runId}/build/p2`, start: { commit: base } } } } });
   });
 
@@ -1466,12 +1466,12 @@ describe('workflow handoff through teamai-reports', () => {
     await claimRun(bob.config, runId, { checkout: bob.checkout });
     const runner: DriverIdentity = { kind: 'runner', machine: 'ci', workspace: bob.checkout };
     // The runner takes the copy's next step and hands it back unrun: the copy stays the runner's.
-    const taken = await leaseNext(bob.config, runId, runner, { workspaceModes: [...WORKSPACES] });
+    const taken = await leaseNext(bob.config, runId, runner, { can: { workspace: [...WORKSPACES] } });
     expect(taken).toMatchObject({ data: { lease: { step: 'change.more' } } });
     const lease = 'data' in taken ? (taken.data.lease as { attempt: string; revision: number }) : { attempt: '', revision: 0 };
     expect(await reportAttempt(bob.config, runId, { ...lease, outcome: 'released', driver: runner })).toMatchObject({ data: { accepted: true } });
 
-    expect(await leaseNext(bob.config, runId, bob.driver, { workspaceModes: [...WORKSPACES] })).toMatchObject({ data: { wait: {} } });
+    expect(await leaseNext(bob.config, runId, bob.driver, { can: { workspace: [...WORKSPACES] } })).toMatchObject({ data: { wait: {} } });
     expect(await work(bob, runId, 'more.txt', runner)).toMatchObject({ step: 'change.more' });
   });
 

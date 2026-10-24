@@ -689,13 +689,14 @@ const CHOOSE = controlsYaml(`  - id: decide
     command: echo work`);
 workflowConformanceScenarios.push(
   {
-    name: 'interactive hand-back refuses a driver that no longer has HITL', workflowName: 'build', yaml: controlsYaml('  - id: pair\n    prompt: Work together.\n    interactive: true'),
+    name: 'interactive hand-back to a driver that no longer has HITL releases the lease and waits', workflowName: 'build', yaml: controlsYaml('  - id: pair\n    prompt: Work together.\n    interactive: true'),
     operations: [
       { kind: 'next', saveAs: 'pair', hitl: true, expect: { data: { lease: { step: 'pair', interactive: true } } } },
-      { kind: 'next', saveAs: 'done', hitl: false, expect: { data: { done: { outcome: 'failed' } } } },
+      { kind: 'next', saveAs: 'held', hitl: false, expect: { data: { wait: { held: [{ step: 'pair', missing: ['hitl'] }] } } } },
       { kind: 'report', lease: 'pair', body: { outcome: 'success' }, expect: { error: { code: 'lease_cancelled' } } },
+      { kind: 'next', saveAs: 'again', hitl: true, expect: { data: { lease: { step: 'pair', interactive: true } } } },
     ],
-    expectState: { steps: [{ id: 'pair', status: 'failed', failure: { code: 'hitl_required' } }] },
+    expectState: { status: 'running', steps: [{ id: 'pair', status: 'leased' }] },
   },
   {
     name: 'retry after the final failure does not provisionally finish the run', workflowName: 'build', yaml: TWO_STEPS,
@@ -796,13 +797,26 @@ workflowConformanceScenarios.push(
     ],
   },
   {
-    name: 'interactive work requires a driver with HITL', workflowName: 'build', yaml: controlsYaml('  - id: pair\n    prompt: Work together.\n    interactive: true'),
+    name: 'interactive work waits for a driver with HITL', workflowName: 'build', yaml: controlsYaml('  - id: pair\n    prompt: Work together.\n    interactive: true'),
     operations: [
-      { kind: 'next', saveAs: 'hitl', hitl: true, expect: { data: { lease: { step: 'pair', interactive: true } } } },
-      { kind: 'retry', step: 'pair', expect: { data: { retried: { pass: 2 } } } },
-      { kind: 'next', saveAs: 'done', expect: { data: { done: { outcome: 'failed' } } } },
+      { kind: 'next', saveAs: 'held', as: 'external', expect: { data: { wait: {
+        reason: 'step "pair" needs hitl, which this driver does not declare',
+        held: [{ step: 'pair', reason: 'step "pair" needs hitl, which this driver does not declare', missing: ['hitl'] }],
+      } } } },
+      { kind: 'next', saveAs: 'local', expect: { data: { wait: { held: [{ step: 'pair', missing: ['hitl'] }] } } } },
+      { kind: 'next', saveAs: 'pair', as: 'session', expect: { data: { lease: { step: 'pair', interactive: true } } } },
     ],
-    expectState: { steps: [{ id: 'pair', status: 'failed', failure: { code: 'hitl_required' } }] },
+    expectState: { status: 'running', steps: [{ id: 'pair', status: 'leased', lease: { driver: { kind: 'session' } } }] },
+  },
+  {
+    name: 'a held step does not block a ready sibling', workflowName: 'build',
+    yaml: controlsYaml('  - id: pair\n    prompt: Work together.\n    interactive: true\n  - id: build\n    needs: []\n    command: echo build'),
+    operations: [
+      { kind: 'next', saveAs: 'build', as: 'external', expect: { data: { lease: { step: 'build' } } } },
+      { kind: 'report', lease: 'build', as: 'external', body: { outcome: 'success' }, expect: { data: { accepted: true } } },
+      { kind: 'next', saveAs: 'held', as: 'external', expect: { data: { wait: { held: [{ step: 'pair', missing: ['hitl'] }] } } } },
+    ],
+    expectState: { status: 'running', steps: [{ id: 'pair', status: 'pending' }, { id: 'build', status: 'succeeded' }] },
   },
   {
     name: 'whole run cancel has its own outcome', workflowName: 'build', yaml: TWO_STEPS,

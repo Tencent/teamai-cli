@@ -34,7 +34,7 @@ async function waitingRun(hitl = 'approve: { message: "Ship {{ inputs.ticket }}?
   const started = await startRun(config, 'ship', { ticket: 'TICKET-SECRET-42' });
   if ('error' in started) throw new Error(started.error.message);
   const id = String(started.data.run);
-  const next = () => leaseNext(config, id, driver, { hitl: true });
+  const next = () => leaseNext(config, id, driver, { can: { hitl: true } });
   const lease = await next();
   if ('error' in lease) throw new Error(lease.error.message);
   const { attempt, revision } = lease.data.lease as { attempt: string; revision: number };

@@ -24,7 +24,8 @@ import {
 import { addItems, afterStanding, expandItems, isItem, itemsAfter, itemsOf, itemsSettled, startedItems } from './fan-out.js';
 import { decideRound, decideStepLoop, exhaustedAtStart, firstPass, loopSettled } from './loop.js';
 import { childScope, contextOf, insertChildren, localId, statesIn, stepDefinitions, topScope, type Scope } from './scope.js';
-import { planWorkspace, plannedBranch, sessionOf, type LeaseSession, type SessionRef, type WorkspaceContract, type WorkspaceMode, type WorkspacePlan } from './workspace.js';
+import { planWorkspace, plannedBranch, sessionOf, type LeaseSession, type SessionRef, type WorkspaceContract, type WorkspacePlan } from './workspace.js';
+import { CAN_KEYS, CanSchema, heldFor, negotiate, type DriverCan, type Held, type Negotiation } from './requirements.js';
 import { generateRunId, installOwner, isRunId, updateRun } from './store.js';
 import { pinScorers } from '../scorers/cache.js';
 import { isLeaseRef } from '../scorers/entry.js';
@@ -833,11 +834,9 @@ function missingNeeds(run: RunState): string | undefined {
   return undefined;
 }
 
-/** The refusal shared by the engine and local driver for interactive work without HITL. */
-export function interactiveHitlRequired(runId: string, step: string): WorkflowFailure {
-  const failure = { code: 'hitl_required', message: `Step "${step}" is interactive and needs a person in the tool, but the driver declares no HITL (driver.can.hitl). Retry it from a terminal: teamai workflow retry ${runId} ${step}; then teamai workflow resume ${runId}` };
-  log.warn(failure.message);
-  return failure;
+/** What the driver asking for `step` is offered. Both places that hand out a lease ask here. */
+function offerTerms(step: WorkflowStep, can: DriverCan): Negotiation {
+  return negotiate({ interactive: step.interactive === true }, can);
 }
 
 /** What a driver tells `next` besides who it is. */
@@ -848,10 +847,8 @@ export interface NextOptions {
   canTakeLease?: boolean;
   /** The checkout the run's workspaces start from. It fixes the run's base only when `workflow start` recorded none. */
   base?: { ref?: string; commit: string };
-  /** Workspace modes this driver can run. Omitted means read-only, so a `new` or `continue` step waits. */
-  workspaceModes?: WorkspaceMode[];
-  /** Whether a person is present for HITL requests and interactive work on this next request. */
-  hitl?: boolean;
+  /** What the driver can do on this request. An omitted `workspace` means read-only, so a `new` or `continue` step waits. */
+  can?: DriverCan;
   /** Process-only override of the member's automatic HITL approval setting. */
   autoApprove?: boolean;
   /** Take the run over from the install that published it before leasing; a run this install owns stays as it is. */
@@ -865,6 +862,7 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
     if (!claimed.ok) return { error: claimed.error };
   }
   const running = new Set(options.running);
+  const can = options.can ?? {};
   // The end record is queued under the run lock, so the run stores whether it
   // was in the same save. It publishes AFTER withRun releases the lock (#1126
   // P3): publication does a reports-branch push, and no network I/O may hold
@@ -907,31 +905,26 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
       const result = reconcileRun(run);
       if ('unreadable' in result) return { save: false, envelope: error('run_unreadable', result.unreadable) };
       if ('outcome' in result) return done(result);
-      if (options.canTakeLease !== false && !options.hitl && answerWithoutHitl(config, run, now, options.autoApprove)) continue;
+      if (options.canTakeLease !== false && !can.hitl && answerWithoutHitl(config, run, now, options.autoApprove)) continue;
       // An open lease the driver does not list is handed back before another lease is issued, as a restarted driver expects.
       const leased = run.steps.find((step): step is LeasedStep => step.status === 'leased' && !running.has(step.lease.attempt));
       if (!leased) {
         if (options.canTakeLease === false || 'inProgress' in result) {
-          const hitl = options.hitl ? waitingHitl(run) : undefined;
+          const hitl = can.hitl ? waitingHitl(run) : undefined;
           return hitl ? answer({ hitl }) : wait();
         }
         // A step this driver must not take is held back, and the next ready one is tried. A failed step can change
         // what is ready, so the run settles again.
-        const held: string[] = [];
+        const held: Held[] = [];
         let failed = false;
         for (const { lease: state, definition, rendered } of result.ready) {
-          if (definition.interactive && !options.hitl) {
-            failStep(state, interactiveHitlRequired(run.id, state.id), run.revision);
-            failed = true;
-            break;
-          }
           const located = locateStep(run, state.id);
           if (!located) return { save: false, envelope: error('run_unreadable', `Run ${run.id} has no definition for step "${state.id}"`) };
           const plan = planWorkspace(run, located.scope, state, definition, {
-            driver, modes: options.workspaceModes, base: run.base ?? options.base,
+            driver, modes: can.workspace, base: run.base ?? options.base,
           });
           if (plan.defer) {
-            held.push(plan.defer);
+            held.push({ step: state.id, reason: plan.defer.reason, missing: plan.defer.needs ? [`workspace.${plan.defer.needs}`] : [] });
             continue;
           }
           if (plan.fail) {
@@ -939,26 +932,31 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
             failed = true;
             break;
           }
+          const terms = offerTerms(definition, can);
+          if (terms.kind === 'hold') {
+            held.push(heldFor(state.id, terms.missing));
+            continue;
+          }
           if (plan.contract && options.base && !run.base) run.base = options.base;
           const step = lease(state, offering({ attempt: `a${randomBytes(4).toString('hex')}`, revision: run.revision, driver }, plan.session));
           rememberCopy(run, plan, driver);
           return answer(leaseData(run, step, definition, rendered, plan));
         }
         if (failed) continue;
-        return answer({ wait: { reason: held.join('; ') } });
+        return answer({ wait: { reason: held.map((item) => item.reason).join('; '), held } });
       }
       const located = locateStep(run, leased.id);
       if (!located) return { save: false, envelope: error('run_unreadable', `Run ${run.id} has no definition for step "${leased.id}"`) };
-      if (located.step.interactive && !options.hitl) {
-        const failure = interactiveHitlRequired(run.id, leased.id);
+      // A driver that can no longer run its lease gives it up, so the step waits for one that can instead of looping.
+      if (offerTerms(located.step, can).kind === 'hold') {
         (run.cancelledAttempts ??= []).push(leased.attempt);
-        failStep(leased, failure, leased.lease.revision);
+        release(leased);
         continue;
       }
       const rendered = renderLease(located.scope, statesIn(run, located.scope), leased, located.step);
       if (!('code' in rendered)) {
         const plan = planWorkspace(run, located.scope, leased, located.step, {
-          driver, modes: options.workspaceModes, base: run.base ?? options.base,
+          driver, modes: can.workspace, base: run.base ?? options.base,
         }, true);
         const offered = plan.fail ? undefined : plan;
         leased.lease = offering(leased.lease, offered?.session);
@@ -1155,17 +1153,13 @@ export function parseNextPayload(value: unknown): ParsedNextPayload | string {
   const can = isRecord(record.driver) ? record.driver.can : undefined;
   if (can !== undefined) {
     if (!isRecord(can)) return 'driver.can must be an object';
-    if (can.hitl !== undefined && typeof can.hitl !== 'boolean') return 'driver.can.hitl must be a boolean';
-    if (can.hitl !== undefined) request.hitl = can.hitl;
-    const workspace = can.workspace;
-    if (workspace !== undefined) {
-      const modes = ['read-only', 'new', 'continue'];
-      if (!Array.isArray(workspace) || !workspace.every((mode): mode is WorkspaceMode => modes.includes(mode as WorkspaceMode))) {
-        return 'driver.can.workspace must list read-only, new, or continue';
-      }
-      request.workspaceModes = workspace;
+    const parsed = CanSchema.safeParse(can);
+    if (!parsed.success) {
+      const [issue] = parsed.error.issues;
+      return `driver.can.${issue?.path.join('.')}: ${issue?.message}`;
     }
-    ignored.push(...Object.keys(can).filter((key) => key !== 'hitl' && key !== 'workspace').map((key) => `driver.can.${key}`));
+    request.can = parsed.data;
+    ignored.push(...Object.keys(can).filter((key) => !CAN_KEYS.has(key)).map((key) => `driver.can.${key}`));
   }
   return { request, ignored };
 }

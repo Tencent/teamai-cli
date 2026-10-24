@@ -614,7 +614,7 @@ steps:
     const owner = driver(workspace);
     const base = { ref: 'HEAD', commit: git(['rev-parse', 'HEAD'], workspace).trim() };
     const modes = ['read-only', 'new', 'continue'] as const;
-    const leased = await leaseNext(config, runId, owner, { base, workspaceModes: [...modes] });
+    const leased = await leaseNext(config, runId, owner, { base, can: { workspace: [...modes] } });
     const lease = 'data' in leased ? leased.data.lease as { attempt: string; revision: number; step: string; workspace?: { branch: string } } : undefined;
     if (!lease?.workspace) throw new Error(JSON.stringify(leased));
     expect(lease.step).toBe('edit.first');
@@ -623,7 +623,7 @@ steps:
       changes: { branch: lease.workspace.branch, base: base.commit, from: base.commit, to: base.commit, commits: [] },
     });
 
-    const other = await leaseNext(config, runId, driver(workspace, 'other'), { base, workspaceModes: [...modes] });
+    const other = await leaseNext(config, runId, driver(workspace, 'other'), { base, can: { workspace: [...modes] } });
 
     expect(other).toMatchObject({ data: { wait: { reason: expect.stringContaining('another driver') } } });
   });
@@ -685,7 +685,7 @@ steps:
 `);
     const owner = driver(workspace);
     const base = { ref: 'HEAD', commit: git(['rev-parse', 'HEAD'], workspace).trim() };
-    const leased = await leaseNext(config, runId, owner, { base, workspaceModes: ['read-only', 'new', 'continue'] });
+    const leased = await leaseNext(config, runId, owner, { base, can: { workspace: ['read-only', 'new', 'continue'] } });
     const lease = 'data' in leased ? leased.data.lease as { attempt: string; revision: number; workspace?: { branch: string } } : undefined;
     if (!lease?.workspace) throw new Error(JSON.stringify(leased));
     const changes = { branch: lease.workspace.branch, base: base.commit, from: base.commit, to: base.commit, commits: [] };
@@ -2642,7 +2642,7 @@ steps:
     const { config, workspace, runId } = await fixture(yaml);
     const owner = driver(workspace);
     const base = { commit: git(['rev-parse', 'HEAD'], workspace).trim() };
-    const implement = leaseOf(await leaseNext(config, runId, owner, { base, workspaceModes: [...modes] }));
+    const implement = leaseOf(await leaseNext(config, runId, owner, { base, can: { workspace: [...modes] } }));
     const branch = branchName(runId, 'change', 1);
     expect(implement).toMatchObject({ step: 'change.implement', workspace: { mode: 'continue', branch } });
     const reported = await reportAttempt(config, runId, {
@@ -2656,7 +2656,7 @@ steps:
   it('leases a read-only step inside a copy on the branch its need wrote, merging nothing', async () => {
     const { config, runId, owner, base, branch } = await implemented();
 
-    const test = await leaseNext(config, runId, owner, { base, workspaceModes: [...modes] });
+    const test = await leaseNext(config, runId, owner, { base, can: { workspace: [...modes] } });
 
     expect(test).toMatchObject({ data: { lease: { step: 'change.test', workspace: {
       mode: 'read-only', base: { commit: base.commit }, configCommit: base.commit, branch, start: { commit: commit('c') }, merge: [],
@@ -2666,11 +2666,14 @@ steps:
   it('holds a reader in a copy back from a driver without continue, and from a driver that does not own the copy', async () => {
     const { config, runId, owner, base, branch } = await implemented();
 
-    const reader = await leaseNext(config, runId, owner, { base, workspaceModes: ['read-only', 'new'] });
-    const other = await leaseNext(config, runId, driver(owner.workspace, 'other'), { base, workspaceModes: [...modes] });
+    const reader = await leaseNext(config, runId, owner, { base, can: { workspace: ['read-only', 'new'] } });
+    const other = await leaseNext(config, runId, driver(owner.workspace, 'other'), { base, can: { workspace: [...modes] } });
 
-    expect(reader).toEqual({ data: { wait: { reason: `step "change.test" reads workspace ${branch}, which needs continue` }, cancelled: [] } });
-    expect(other).toEqual({ data: { wait: { reason: 'step "change.test" reads a workspace owned by another driver' }, cancelled: [] } });
+    const needsContinue = `step "change.test" reads workspace ${branch}, which needs continue`;
+    const owned = 'step "change.test" reads a workspace owned by another driver';
+    expect(reader).toEqual({ data: { wait: { reason: needsContinue, held: [{ step: 'change.test', reason: needsContinue, missing: ['workspace.continue'] }] }, cancelled: [] } });
+    // Another driver owns the copy: this one lacks nothing, so `missing` is empty.
+    expect(other).toEqual({ data: { wait: { reason: owned, held: [{ step: 'change.test', reason: owned, missing: [] }] }, cancelled: [] } });
   });
 
   it('runs an item reader on its own item branch, after the items its item waits for, and publishes only writer branches', async () => {
@@ -2703,7 +2706,7 @@ steps:
     const base = { commit: git(['rev-parse', 'HEAD'], workspace).trim() };
     const ran = new Map<string, string | undefined>();
     for (;;) {
-      const next = await leaseNext(config, runId, owner, { base, workspaceModes: [...modes] });
+      const next = await leaseNext(config, runId, owner, { base, can: { workspace: [...modes] } });
       if ('data' in next && next.data.done) break;
       const lease = leaseOf(next);
       const contract = lease.workspace;
@@ -2740,7 +2743,7 @@ steps:
 
   it('accepts read for a read-only lease, refuses changes or a success without read, and keeps the copy for the reader', async () => {
     const { config, runId, owner, base, branch } = await implemented();
-    const test = leaseOf(await leaseNext(config, runId, owner, { base, workspaceModes: [...modes] }));
+    const test = leaseOf(await leaseNext(config, runId, owner, { base, can: { workspace: [...modes] } }));
     const read = { branch, base: base.commit, commit: commit('d') };
     const report = (fields: Partial<engine.ReportInput>) => reportAttempt(config, runId, {
       attempt: test.attempt, revision: test.revision, outcome: 'success', driver: owner, ...fields,
@@ -2764,7 +2767,7 @@ steps:
     const { config, workspace, runId } = await fixture(EXAMPLE);
     const owner = driver(workspace);
     const base = { commit: git(['rev-parse', 'HEAD'], workspace).trim() };
-    const implement = leaseOf(await leaseNext(config, runId, owner, { base, workspaceModes: [...modes] }));
+    const implement = leaseOf(await leaseNext(config, runId, owner, { base, can: { workspace: [...modes] } }));
     const branch = branchName(runId, 'change', 1);
     const report = (fields: Partial<engine.ReportInput>) => reportAttempt(config, runId, {
       attempt: implement.attempt, revision: implement.revision, outcome: 'success', driver: owner, ...fields,
@@ -2878,7 +2881,7 @@ ${steps}`, steps.startsWith('inputs:') ? { items: ['a', 'b'] } : undefined);
     const open: Leased[] = [];
     const reported: Array<[string, boolean]> = [];
     for (let turn = 0; turn < 50; turn += 1) {
-      const next = await leaseNext(config, runId, owner, { base, workspaceModes: [...modes], hitl: true, running: open.map((lease) => lease.attempt) });
+      const next = await leaseNext(config, runId, owner, { base, can: { workspace: [...modes], hitl: true }, running: open.map((lease) => lease.attempt) });
       if ('error' in next) throw new Error(JSON.stringify(next));
       if (next.data.done) break;
       if (next.data.lease) {
@@ -3854,14 +3857,14 @@ steps:
 `);
     const owner = driver(workspace);
     const base = { commit: git(['rev-parse', 'HEAD'], workspace).trim() };
-    const edit = leaseOf(await leaseNext(config, runId, owner, { base, workspaceModes: [...modes] }));
+    const edit = leaseOf(await leaseNext(config, runId, owner, { base, can: { workspace: [...modes] } }));
     const branch = branchName(runId, 'edit', 1);
     await reportAttempt(config, runId, {
       attempt: edit.attempt, revision: edit.revision, outcome: 'success', driver: owner,
       changes: { branch, base: base.commit, from: base.commit, to: commit('c'), commits: [commit('c')] },
     });
 
-    const check = leaseOf(await leaseNext(config, runId, owner, { base, workspaceModes: [...modes] }));
+    const check = leaseOf(await leaseNext(config, runId, owner, { base, can: { workspace: [...modes] } }));
 
     expect(check.step).toBe('check');
     expect(check).not.toHaveProperty('workspace');
@@ -3890,7 +3893,7 @@ steps:
     const owner = driver(workspace);
     const base = { commit: git(['rev-parse', 'HEAD'], workspace).trim() };
     for (const [step, to] of [['left', commit('1')], ['right', commit('2')]] as const) {
-      const leased = leaseOf(await leaseNext(config, runId, owner, { base, workspaceModes: [...modes] }));
+      const leased = leaseOf(await leaseNext(config, runId, owner, { base, can: { workspace: [...modes] } }));
       expect(leased.step).toBe(`change.${step}`);
       await reportAttempt(config, runId, {
         attempt: leased.attempt, revision: leased.revision, outcome: 'success', driver: owner,
@@ -3898,7 +3901,7 @@ steps:
       });
     }
 
-    const done = await leaseNext(config, runId, owner, { base, workspaceModes: [...modes] });
+    const done = await leaseNext(config, runId, owner, { base, can: { workspace: [...modes] } });
 
     expect(done).toMatchObject({ data: { done: { outcome: 'failed' } } });
     const run = await readRun(config, runId);

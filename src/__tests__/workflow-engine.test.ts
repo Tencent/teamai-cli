@@ -2538,13 +2538,14 @@ describe('held-back steps', () => {
     command: node b.js
 `));
 
-    const next = await leaseNext(config, runId, driverA, { workspaceModes: ['read-only'] });
+    const next = await leaseNext(config, runId, driverA, { can: { workspace: ['read-only'] } });
 
     expect(next).toMatchObject({ data: { lease: { step: 'b' } } });
     expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'a', status: 'pending' }, { id: 'b', status: 'leased' }] });
     await reportAttempt(config, runId, { ...leaseIn(next), outcome: 'success', driver: driverA });
-    expect(await leaseNext(config, runId, driverA, { workspaceModes: ['read-only'] })).toEqual({ data: {
-      wait: { reason: 'step "a" needs workspace new, which this driver does not provide' }, cancelled: [],
+    const reason = 'step "a" needs workspace new, which this driver does not provide';
+    expect(await leaseNext(config, runId, driverA, { can: { workspace: ['read-only'] } })).toEqual({ data: {
+      wait: { reason, held: [{ step: 'a', reason, missing: ['workspace.new'] }] }, cancelled: [],
     } });
   });
 
@@ -2558,10 +2559,14 @@ describe('held-back steps', () => {
     command: node c.js
 `));
 
-    const next = await leaseNext(config, runId, driverA, { workspaceModes: ['read-only'] });
+    const next = await leaseNext(config, runId, driverA, { can: { workspace: ['read-only'] } });
 
     expect(next).toEqual({ data: { wait: {
       reason: 'step "a" needs workspace new, which this driver does not provide; step "c" needs workspace new, which this driver does not provide',
+      held: [
+        { step: 'a', reason: 'step "a" needs workspace new, which this driver does not provide', missing: ['workspace.new'] },
+        { step: 'c', reason: 'step "c" needs workspace new, which this driver does not provide', missing: ['workspace.new'] },
+      ],
     }, cancelled: [] } });
   });
 
@@ -2571,11 +2576,11 @@ describe('held-back steps', () => {
     workspace: new
     command: node build.js
 `, 'inputs:\n  targets: [string]\n') }, 'build', { targets: ['web', 'api', 'cli'] });
-    const web = leaseIn(await leaseNext(config, runId, driverB, { workspaceModes: [...allModes], base }));
+    const web = leaseIn(await leaseNext(config, runId, driverB, { can: { workspace: [...allModes] }, base }));
     await reportAttempt(config, runId, { ...web, outcome: 'released', driver: driverB });
 
-    const api = await leaseNext(config, runId, driverA, { workspaceModes: [...allModes], base });
-    const full = await leaseNext(config, runId, driverA, { workspaceModes: [...allModes], base, running: [leaseIn(api).attempt] });
+    const api = await leaseNext(config, runId, driverA, { can: { workspace: [...allModes] }, base });
+    const full = await leaseNext(config, runId, driverA, { can: { workspace: [...allModes] }, base, running: [leaseIn(api).attempt] });
 
     expect(web.step).toBe('build[0]');
     expect(api).toMatchObject({ data: { lease: { step: 'build[1]' } } });

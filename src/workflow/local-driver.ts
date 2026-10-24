@@ -25,7 +25,8 @@ import { log } from '../utils/logger.js';
 import { AgentSession } from '../session-flow/agent-session.js';
 import { openSessionArchive, type SessionArchive } from '../session-flow/archive.js';
 import { deliveredTeamSkills, usedSkills } from '../skill-use.js';
-import { interactiveHitlRequired, leaseNext, reportAttempt } from './engine.js';
+import { leaseNext, reportAttempt } from './engine.js';
+import type { DriverCan } from './requirements.js';
 import { respondToHitl } from './run-controls.js';
 import { isRecord } from './expression.js';
 import {
@@ -41,7 +42,7 @@ import { chooseStepModel } from './step-model.js';
 import type { StepRead } from './step-state.js';
 import type { DriverIdentity, StepHitl, WorkflowEnvelope, WorkflowFailure } from './types.js';
 import { isWorkflowError } from './types.js';
-import type { LeaseSession, SessionRef, WorkspaceContract } from './workspace.js';
+import { WORKSPACE_MODES, type LeaseSession, type SessionRef, type WorkspaceContract } from './workspace.js';
 import {
   applyBaseConfig, commitWork, ensureWorktree, fetchMissingCommits, git, headCommit, hooksPath, keptSentence, type KeptChanges, markReadCopy, mergeBranch, offBranch, pushIfOrigin, putBackCopy, reconcileCopy, recordConfigOverlay, removeWorktree, reopenConfigConflicts, restoreUneditedConfig, stepCheckout, unrestoredCopy, worktreePath,
 } from './worktree.js';
@@ -920,10 +921,16 @@ async function reconcileTakenCopies(config: LocalConfig, runId: string, active: 
   return undefined;
 }
 
+/** What this driver declares on every `next`. Every key is set, so a new capability does not compile until it is decided. */
+function localCan(hitl: boolean): Required<DriverCan> {
+  return { hitl, workspace: [...WORKSPACE_MODES] };
+}
+
 async function driveRun(config: LocalConfig, runId: string, cwd: string, options: LocalDriverOptions): Promise<WorkflowEnvelope> {
   const unreconciled = await reconcileTakenCopies(config, runId, cwd);
   if (unreconciled) return { error: unreconciled };
   const canHitl = options.hitl ?? (process.stdin.isTTY === true && process.stderr.isTTY === true);
+  const can = localCan(canHitl);
   const driver = localDriver(cwd);
   const tools = { ...config.workflows?.tools, ...options.tools };
   const adapter = options.adapter ?? createLocalToolAdapter();
@@ -1000,8 +1007,7 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
       const running = [...inFlight.keys(), ...held.map((lease) => lease.attempt), ...(prompt ? [prompt.lease.attempt] : [])];
       const canTakeLease = room();
       const next = await leaseNext(config, runId, driver, {
-        running, canTakeLease, hitl: canHitl, autoApprove: options.autoApprove,
-        ...(base ? { base } : {}), workspaceModes: ['read-only', 'new', 'continue'],
+        running, canTakeLease, can, autoApprove: options.autoApprove, ...(base ? { base } : {}),
       });
       if (signalled) continue;
       if (isWorkflowError(next)) return next;
@@ -1064,12 +1070,6 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
           && (!lease.interactive || (inFlight.size === 0 && dying.size === 0)));
         if (promptAt !== -1) {
           const lease = held.splice(promptAt, 1)[0]!;
-          if (lease.interactive && !canHitl) {
-            const failed = await report({ attempt: lease.attempt, revision: lease.revision, driver,
-              ...failureReport(interactiveHitlRequired(runId, lease.step)) }, lease);
-            if (failed) return failed;
-            continue;
-          }
           const failure = await stageLease(lease, { active: cwd, runId });
           if (failure) {
             const failed = await failStaged(lease, failure);

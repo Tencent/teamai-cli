@@ -1978,7 +1978,7 @@ steps:
     expect(fs.readFileSync(path.join(workspace, 'tracked.txt'), 'utf8')).toBe('fixed\n');
   });
 
-  it('refuses an interactive hand-back to a local driver without HITL', async () => {
+  it('gives up an interactive hand-back without HITL and leaves the step for a driver with HITL', async () => {
     const { config, workspace, runId } = await workflowFixture(`schemaVersion: v1alpha1
 name: build
 description: Need a person.
@@ -1987,10 +1987,13 @@ steps:
     prompt: Pair with me.
     interactive: true
 `);
-    await leaseNext(config, runId, localDriver(workspace), { hitl: true });
+    await leaseNext(config, runId, localDriver(workspace), { can: { hitl: true } });
     const adapter: LocalToolAdapter = { run: vi.fn(), runInteractive: vi.fn<LocalToolAdapter['runInteractive']>(async () => ({ started: true, exitCode: 0 })) };
-    expect(await runLocalDriver(config, runId, workspace, { hitl: false, adapter })).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    expect(await runLocalDriver(config, runId, workspace, { hitl: false, adapter })).toMatchObject({
+      error: { code: 'busy', message: 'step "pair" needs hitl, which this driver does not declare' },
+    });
     expect(adapter.runInteractive).not.toHaveBeenCalled();
+    expect(await readRun(config, runId)).toMatchObject({ status: 'running', steps: [{ id: 'pair', status: 'pending' }] });
   });
 
   it.each([1, 2])('ignores terminal Ctrl-C and Ctrl-\\ in an interactive tool at max_parallel %s', async (parallel) => {

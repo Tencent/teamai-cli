@@ -99,7 +99,7 @@ describe('workflow git conformance of the local driver', () => {
 
       const other: DriverIdentity = { kind: 'local', machine: 'elsewhere', workspace: elsewhere };
       for (const step of scenario.elsewhere ?? []) {
-        const next = await leaseNext(starter, runId, other, { workspaceModes: ['new', 'continue', 'read-only'] });
+        const next = await leaseNext(starter, runId, other, { can: { workspace: ['new', 'continue', 'read-only'] } });
         if (!('data' in next) || !next.data.lease) throw new Error(`no lease for ${step.step}: ${JSON.stringify(next)}`);
         const lease = next.data.lease as { step: string; attempt: string; revision: number; workspace: WorkspaceContract };
         expect(lease).toMatchObject({ step: step.step, workspace: { merge: [] } });
