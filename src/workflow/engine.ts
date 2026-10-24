@@ -800,12 +800,13 @@ function passed(deadline: string, now: string): boolean {
 
 /**
  * When instance `state` of `step`, leased or started at `now`, must settle: by its own `timeout`, and when it runs a
- * workflow file, by that file's if it is shorter. A `for_each` step's own instance bounds the whole fan-out; each item
- * runs the file.
+ * workflow file, by that file's if it is shorter. A `for_each` step's `timeout` bounds the whole fan-out, so it is its
+ * own instance's alone; each item runs the file, so the file's is the item's.
  */
 export function ownDeadline(run: RunState, state: StepState, step: WorkflowStep, now: string): string | undefined {
-  const file = typeof step.workflow === 'string' && (!step.forEach || isItem(state)) ? run.workflows?.[step.workflow]?.timeout : undefined;
-  const limits = [step.timeout, file].filter((ms) => ms !== undefined);
+  const item = step.forEach !== undefined && isItem(state);
+  const file = typeof step.workflow === 'string' && (!step.forEach || item) ? run.workflows?.[step.workflow]?.timeout : undefined;
+  const limits = [item ? undefined : step.timeout, file].filter((ms) => ms !== undefined);
   return limits.length > 0 ? after(now, Math.min(...limits)) : undefined;
 }
 
