@@ -52,6 +52,13 @@ describe('reconcilePlacementRecords', () => {
     return run(['hash-object', rel]);
   };
 
+  it('clears retired agent history when the team re-adds a shared root source', async () => {
+    await land('agents/sample.yaml', 'name: sample\ninstructions: Re-added.\n');
+    const state = { placedRules: {}, placedAgents: {}, pendingPushes: [], retiredPlacedAgents: { sample: 'agents/ops/sample.md' } };
+    await reconcilePlacementRecords(repoPath, state);
+    expect(state.retiredPlacedAgents).toEqual({});
+  });
+
   it('records a placement once the blob it pushed is on the default branch', async () => {
     const blob = await land('rules/fe/my-rule.md', 'x');
     const state = { placedRules: {}, placedAgents: {}, pendingPushes: [pending([{ ...placedRule(), blob }])] };
