@@ -1,0 +1,10 @@
+{
+  "name": "teamai-website",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test test.mjs"
+  }
+}

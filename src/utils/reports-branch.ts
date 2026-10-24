@@ -36,7 +36,7 @@ import {
   type LocalConfig,
 } from '../types.js';
 
-const reportsBranch = createBranchWorktree({
+export const reportsBranch = createBranchWorktree({
   branch: REPORTS_BRANCH,
   worktreeDirname: REPORTS_WORKTREE_DIRNAME,
   lockFilename: REPORTS_LOCK_FILENAME,
