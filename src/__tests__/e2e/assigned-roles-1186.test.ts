@@ -232,6 +232,27 @@ describe('assigned roles (#1186)', () => {
     const set = await runCLI(['roles', 'set', 'backend'], homeDir, projectRoot);
     expect(set.code, set.output).toBe(1);
   });
+
+  // Pinned to a tag, the checkout does not move when main reassigns, so the
+  // revision alone would say "Already synced" and leave the new skills undelivered.
+  it('delivers a reassignment to a workspace pinned to a tag, whose revision did not change', async () => {
+    git(['tag', 'pin-1186'], remoteRepo);
+    const projectRoot = project('dave-project', 'dave');
+    const pin = await runCLI(['pull', '--team-ref', 'pin-1186'], homeDir, projectRoot);
+    expect(pin.code, pin.output).toBe(0);
+    expect(deliveredSkills(projectRoot)).toEqual(['teamai']);
+
+    const members = fs.readFileSync(path.join(remoteRepo, 'manifest', 'members.yaml'), 'utf8');
+    fs.writeFileSync(path.join(remoteRepo, 'manifest', 'members.yaml'), members.replace('default: []', '  dave: [backend]\ndefault: []'));
+    git(['commit', '-qam', 'assign dave to backend'], remoteRepo);
+
+    const second = await runCLI(['pull'], homeDir, projectRoot);
+    expect(second.code, second.output).toBe(0);
+    expect(second.output).not.toContain('Already synced');
+    expect(deliveredSkills(projectRoot)).toEqual(['backend-only', 'teamai']);
+    const list = await runCLI(['roles', 'list', '--json'], homeDir, projectRoot);
+    expect(JSON.parse(list.output)).toMatchObject({ roles: ['backend'], source: 'assigned' });
+  });
 });
 
 /**

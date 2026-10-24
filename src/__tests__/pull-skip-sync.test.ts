@@ -369,6 +369,21 @@ describe('pull skip-sync when repo HEAD unchanged', () => {
     expect(log.persist).toHaveBeenCalledWith(expect.stringContaining('The built-in teamai skill was not deployed: EACCES'));
   });
 
+  // A reassignment in manifest/members.yaml changes what this member receives
+  // without moving a pinned checkout (#1186): the record's selection gates it.
+  it('does a full sync when the delivered selection differs from the record, with HEAD unchanged', async () => {
+    vi.mocked(getHeadRev).mockResolvedValue('abc1234');
+    const record = await homeRecord(homeDir, ['claude'], { claude: [path.join(homeDir, '.claude', 'skills')] });
+    const [entry] = Object.values(record.lastPullByWorkspace!);
+    entry.selection = { scope: 'user', primaryRole: 'other', additionalRoles: [] };
+    vi.mocked(loadStateForScope).mockResolvedValue(emptyState({ lastPull: '2026-04-01', lastPullRev: 'abc1234', lastPullTargets: ['claude'], ...record }));
+
+    await pull({});
+
+    expect(log.success).not.toHaveBeenCalledWith(expect.stringContaining('Already synced'));
+    expect(saveStateForScope).toHaveBeenCalled();
+  });
+
   it('should do full sync when HEAD rev differs from lastPullRev', async () => {
     await fse.writeFile(path.join(repoPath, 'rules', 'my-rule.md'), '# rule');
 

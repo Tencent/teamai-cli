@@ -1748,7 +1748,16 @@ async function pullForScope(
       // commit: the record names the children it delivered (#913).
       const sameChildren = !workspaceKey || state.lastPullByWorkspace?.[workspaceKey]?.children === localConfig.children?.fingerprint;
       if (!sameChildren) log.debug(`[${scopeLabel}] The workspace's children changed, syncing`);
-      if (currentRev && state[revisionField] === currentRev && recorded?.rev === currentRev && recorded.teamRef === localConfig.repo.ref && listed && sameChildren) {
+      const checkout = recordKey ? state.lastPullByWorkspace?.[recordKey] : undefined;
+      // A reassignment in manifest/members.yaml arrives with the fetch and can
+      // leave the checked-out revision where it was — a pinned workspace reads
+      // origin/<default> for it (#1186). A local selection change clears
+      // lastPullRev instead; an assignment has no command to do that, so the
+      // record's own selection gates the fast path. A record without one is
+      // from an older CLI and is read as unchanged.
+      const sameSelection = checkout?.selection === undefined || isDeepStrictEqual(checkout.selection, deliverySelection(localConfig));
+      if (!sameSelection) log.debug(`[${scopeLabel}] The delivered selection changed, syncing`);
+      if (currentRev && state[revisionField] === currentRev && recorded?.rev === currentRev && recorded.teamRef === localConfig.repo.ref && listed && sameChildren && sameSelection) {
         currentTargets = await getInstalledResourceTargets(freshConfig, localConfig);
         const previousTargets = recorded.targets;
         const syncedTargets = new Set(previousTargets ?? []);
@@ -1758,7 +1767,6 @@ async function pullForScope(
         // A tool whose skills directory moved (a recorded home changed) is still
         // a target by name: compare the directories too.
         currentPlaces = await placesOf(installOf(freshConfig, localConfig));
-        const checkout = recordKey ? state.lastPullByWorkspace?.[recordKey] : undefined;
         const recordedPlaces = placesRecordOf(checkout);
         if (targetSetMatches && recordedPlaces === undefined) log.debug(`[${scopeLabel}] No record of the skills directories yet, syncing`);
 
