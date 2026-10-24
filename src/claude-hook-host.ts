@@ -20,8 +20,8 @@ const COPILOT_MARKER = '--tool copilot';
  * The [event, matcher, command] entries Copilot runs from a parsed hook file.
  * Copilot loads only version 1 files and runs none of a file's hooks under
  * `disableAllHooks`, so any other file yields nothing. Every check of what
- * Copilot runs goes through this one predicate. It stays self-contained:
- * PROJECT_COPILOT_COPY_CHECK embeds its source in the shell guard.
+ * Copilot runs goes through this one predicate. The shell guard runs the same
+ * logic from COPILOT_RUNS_ENTRIES_SOURCE; claude-hook-host.test.ts runs both.
  */
 export function copilotRunsEntries(data: unknown): Array<[string, string | undefined, string]> {
   const file = data as { version?: unknown; disableAllHooks?: unknown; hooks?: unknown } | null;
@@ -33,11 +33,23 @@ export function copilotRunsEntries(data: unknown): Array<[string, string | undef
       .map((command): [string, string | undefined, string] => [event, entry.matcher, command])));
 }
 
+// copilotRunsEntries as plain JavaScript, for the shell guard. A fixed string,
+// not copilotRunsEntries.toString(): the bundler may rename the function's
+// locals, which would change every Claude team hook command and its hash.
+// The text is what earlier releases emitted, so existing hooks stay unchanged.
+export const COPILOT_RUNS_ENTRIES_SOURCE = [
+  'function copilotRunsEntries(data) {',
+  '  const file = data;',
+  '  if (file?.version !== 1 || file.disableAllHooks || !file.hooks || typeof file.hooks !== "object") return [];',
+  '  return Object.entries(file.hooks).flatMap(([event, entries]) => !Array.isArray(entries) ? [] : entries.filter((entry) => entry?.type === "command").flatMap((entry) => [entry.bash, entry.powershell, entry.command].filter((command) => typeof command === "string").map((command) => [event, entry.matcher, command])));',
+  '}',
+].join('\n');
+
 // Shell guards run outside the CLI, so read Copilot's project hook files with Node.
 // argv[2] is copilotCopyKey of the team hook; a file Copilot runs must hold it.
 const PROJECT_COPILOT_COPY_CHECK = [
   'const fs = require("node:fs"), path = require("node:path"), crypto = require("node:crypto");',
-  `const runs = ${copilotRunsEntries.toString()};`,
+  `const runs = ${COPILOT_RUNS_ENTRIES_SOURCE};`,
   'const key = (event, matcher, command) => crypto.createHash("sha256")',
   '.update(JSON.stringify([event, matcher && matcher !== "*" ? matcher : "", command])).digest("hex");',
   'try { process.exit(fs.readdirSync(process.argv[1]).some(name => {',

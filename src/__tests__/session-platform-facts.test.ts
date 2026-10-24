@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ADAPTER_REGISTRY } from '../session-flow/adapters/index.js';
-import { SESSION_PLATFORM_FACTS } from '../session-flow/adapters/platform-facts.js';
+import { SESSION_PLATFORM_FACTS, resumeCommand } from '../session-flow/adapters/platform-facts.js';
 import { AgentSession, noAdapter } from '../session-flow/agent-session.js';
 import { fidelityFromSession } from '../session-flow/migrate.js';
 import type { Session } from '../session-flow/ir.js';
@@ -14,6 +14,13 @@ describe('session platform facts (#1140)', () => {
       expect(Boolean(noAdapter(platform, 'write', 'win32'))).toBe(facts.sqliteRegistrationOnWindows);
     }
     expect(AgentSession.platformForTool('unsupported')).toBeUndefined();
+  });
+
+  it('prints the resume command each CLI accepts', () => {
+    expect(resumeCommand('claude-code', 'id1')).toBe('claude --resume id1');
+    expect(resumeCommand('codex', 'id1')).toBe('codex resume id1');
+    expect(resumeCommand('opencode', 'ses_1')).toBe('opencode --session ses_1');
+    expect(resumeCommand('codebuddy', 'id1')).toBe('codebuddy --resume id1');
   });
 
   it('Cursor still degrades thinking and images while Claude preserves them', () => {

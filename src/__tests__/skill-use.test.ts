@@ -202,8 +202,9 @@ describe('skill use from a tool call (#1221)', () => {
 
   it('credits a Codex skill read on one line of a multi-line command', async () => {
     const file = install('.codex/skills');
+    fs.writeFileSync(file, `---\nname: ${SKILL}\ndescription: d\n---\nbody\n`);
     const command = `sed -n '1,260p' ${file}\nrg -n -i "review|gate" ${path.join(home, '.codex', 'memories', 'MEMORY.md')}\nfind .scratch -maxdepth 3 -type f -name '*.md' -print | sort`;
-    await toolCall({ ...fixture('codex-real-a-cat'), tool_input: { command } }, 'codex');
+    await toolCall({ ...fixture('codex-real-a-cat'), tool_input: { command }, tool_response: `${fs.readFileSync(file, 'utf8')}.scratch/notes.md\n` }, 'codex');
     expect(await credits()).toEqual([{ skill: SKILL, tool: 'codex' }]);
   });
 
@@ -224,6 +225,19 @@ describe('skill use from a tool call (#1221)', () => {
     const file = install('.claude/skills');
     await toolCall({ ...fixture('claude-skill'), tool_name: 'Bash', tool_input: { command: `true || cat ${file}` }, tool_response: { stdout: '', stderr: '' } }, 'claude');
     expect(await credits()).toEqual([]);
+  });
+
+  it.each([
+    ['nothing for a read after && the command skipped', 'false && cat FILE; true', '', []],
+    ['a read after && that ran', 'test -f FILE && cat FILE; echo done', 'SHOWN\ndone\n', [SKILL]],
+    ['a read after || that ran', 'test -f /missing || cat FILE; true', 'SHOWN', [SKILL]],
+    ['nothing for a read after || that did not run, whose output names the skill only inside a line', `true || cat FILE; printf 'description: "name: ${SKILL}"\\n'`, `description: "name: ${SKILL}"\n`, []],
+  ])('credits %s, as the output shows', async (_, command, stdout, skills) => {
+    const file = install('.claude/skills');
+    const shown = `---\nname: ${SKILL}\ndescription: d\n---\nbody\n`;
+    fs.writeFileSync(file, shown);
+    await toolCall({ ...fixture('claude-skill'), tool_name: 'Bash', tool_input: { command: command.replaceAll('FILE', file) }, tool_response: { stdout: stdout.replace('SHOWN', shown), stderr: '' } }, 'claude');
+    expect(await credits()).toEqual(skills.map((skill) => ({ skill, tool: 'claude' })));
   });
 
   it('credits a skill read before &&', async () => {

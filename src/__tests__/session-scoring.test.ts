@@ -658,6 +658,18 @@ describe('teamai score --session', () => {
       fs.writeFileSync(path.join(dir, 'SKILL.md'), `---\nname: ${path.basename(dir)}\ndescription: d\n---\nbody\n`);
     }
 
+    /** What Codex records after a code-mode script that passed `text` the result of a command printing `printed`. */
+    function codeModeOutput(callId: string, printed: string): Record<string, unknown> {
+      return {
+        type: 'custom_tool_call_output',
+        call_id: callId,
+        output: [
+          { type: 'input_text', text: 'Script completed\nWall time 0.1 seconds\nOutput:\n' },
+          { type: 'input_text', text: JSON.stringify({ exit_code: 0, output: printed }) },
+        ],
+      };
+    }
+
     function appendCalls(file: string, cwd: string, calls: Array<{ name: string; input: Record<string, unknown> }>, sidechain = false): void {
       fs.appendFileSync(file, calls.map((call, index) => line({
         type: 'assistant', uuid: `c${index}`, parentUuid: 'u2', cwd, sessionId: SESSION, timestamp: '2026-10-20T10:00:02.000Z', ...(sidechain ? { isSidechain: true } : {}),
@@ -821,6 +833,7 @@ describe('teamai score --session', () => {
       expect(await usedByCodex(config, cwd, [
         { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Check the retries' }] },
         { type: 'function_call', name: 'exec_command', call_id: 'call_1', arguments: JSON.stringify({ cmd, workdir: cwd, yield_time_ms: 10000, max_output_tokens: 30000 }) },
+        { type: 'function_call_output', call_id: 'call_1', output: 'Chunk ID: 1a2b3c\nWall time: 0.0000 seconds\nProcess exited with code 0\nOriginal token count: 12\nOutput:\n---\nname: review\ndescription: d\n---\nbody\n.scratch/notes.md\n' },
       ])).toEqual({ skills: ['review'] });
     });
 
@@ -838,7 +851,74 @@ describe('teamai score --session', () => {
       expect(await usedByCodex(config, cwd, [
         { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Check the retries' }] },
         { type: 'custom_tool_call', status: 'completed', call_id: 'call_1', name: 'exec', input: `text(await tools.exec_command({cmd:${JSON.stringify(`cat ${read}`)},max_output_tokens:10000}));\n` },
+        codeModeOutput('call_1', '---\nname: review\ndescription: d\n---\nbody\n'),
       ])).toEqual({ skills });
+    });
+
+    it.each([
+      ['no team skill a Codex command skipped after &&', 'false && cat FILE; true', '', []],
+      ['a team skill a Codex command read after && and printed', 'test -f FILE && cat FILE; echo done', '---\nname: review\ndescription: d\n---\nbody\ndone\n', ['review']],
+    ])('names %s', async (_, command, printed, skills) => {
+      const config = await fixture();
+      const cwd = path.join(root, 'app');
+      plantSkills(cwd, config, ['review'], []);
+      writeSkill(path.join(cwd, '.agents', 'skills', 'review'));
+      captureTeamSkills('codex', '019a0000-0000-7000-8000-0000000000bb', { review: [path.join(cwd, '.agents', 'skills', 'review', 'SKILL.md')] });
+      const cmd = command.replaceAll('FILE', path.join(cwd, '.agents', 'skills', 'review', 'SKILL.md'));
+
+      expect(await usedByCodex(config, cwd, [
+        { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Check the retries' }] },
+        { type: 'function_call', name: 'exec_command', call_id: 'call_1', arguments: JSON.stringify({ cmd, workdir: cwd }) },
+        { type: 'function_call_output', call_id: 'call_1', output: `Chunk ID: 1a2b3c\nWall time: 0.0000 seconds\nProcess exited with code 0\nOriginal token count: 9\nOutput:\n${printed}` },
+      ])).toEqual({ skills });
+    });
+
+    it.each([
+      ['a compound command', (file: string) => `sed -n '1,260p' ${file}\nrg -n retries README.md`, '---\nname: review\ndescription: d\n---\nbody\n'],
+      ['cat -n', (file: string) => `cat -n ${file}`, '     1\t---\n     2\tname: review\n     3\tdescription: d\n     4\t---\n'],
+    ])('names the team skill whose SKILL.md %s in a Codex code-mode script read, as its JSON-printed output shows', async (_, command, printed) => {
+      const config = await fixture();
+      const cwd = path.join(root, 'app');
+      plantSkills(cwd, config, ['review'], []);
+      writeSkill(path.join(cwd, '.agents', 'skills', 'review'));
+      captureTeamSkills('codex', '019a0000-0000-7000-8000-0000000000bb', { review: [path.join(cwd, '.agents', 'skills', 'review', 'SKILL.md')] });
+      const cmd = command(path.join(cwd, '.agents', 'skills', 'review', 'SKILL.md'));
+
+      expect(await usedByCodex(config, cwd, [
+        { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Check the retries' }] },
+        { type: 'custom_tool_call', status: 'completed', call_id: 'call_1', name: 'exec', input: `text(await tools.exec_command({cmd:${JSON.stringify(cmd)}}));\n` },
+        codeModeOutput('call_1', printed),
+      ])).toEqual({ skills: ['review'] });
+    });
+
+    it('names the team skill a Codex code-mode script read, though a later command of the script failed on the same path elsewhere', async () => {
+      const config = await fixture();
+      const cwd = path.join(root, 'app');
+      plantSkills(cwd, config, ['review'], []);
+      writeSkill(path.join(cwd, '.agents', 'skills', 'review'));
+      captureTeamSkills('codex', '019a0000-0000-7000-8000-0000000000bb', { review: [path.join(cwd, '.agents', 'skills', 'review', 'SKILL.md')] });
+      const read = (workdir: string) => `text((await tools.exec_command({cmd:"cat .agents/skills/review/SKILL.md",workdir:${JSON.stringify(workdir)}})).output);\n`;
+
+      expect(await usedByCodex(config, cwd, [
+        { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Check the retries' }] },
+        { type: 'custom_tool_call', status: 'completed', call_id: 'call_1', name: 'exec', input: read(cwd) + read(path.join(cwd, 'src')) },
+        { type: 'custom_tool_call_output', call_id: 'call_1', output: [{ type: 'input_text', text: 'Script completed\nWall time 0.1 seconds\nOutput:\n---\nname: review\ndescription: d\n---\nbody\n\ncat: .agents/skills/review/SKILL.md: No such file or directory\n' }] },
+      ])).toEqual({ skills: ['review'] });
+    });
+
+    it('names no team skill a Codex code-mode script names in a call its output shows never ran', async () => {
+      const config = await fixture();
+      const cwd = path.join(root, 'app');
+      plantSkills(cwd, config, ['review'], []);
+      writeSkill(path.join(cwd, '.agents', 'skills', 'review'));
+      captureTeamSkills('codex', '019a0000-0000-7000-8000-0000000000bb', { review: [path.join(cwd, '.agents', 'skills', 'review', 'SKILL.md')] });
+      const cmd = `cat ${path.join(cwd, '.agents', 'skills', 'review', 'SKILL.md')}`;
+
+      expect(await usedByCodex(config, cwd, [
+        { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Check the retries' }] },
+        { type: 'custom_tool_call', status: 'completed', call_id: 'call_1', name: 'exec', input: `if (false) { text(await tools.exec_command({cmd:${JSON.stringify(cmd)}})); }\ntext("done");\n` },
+        codeModeOutput('call_1', 'done'),
+      ])).toEqual({ skills: [] });
     });
 
     it.each([

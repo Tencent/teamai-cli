@@ -98,6 +98,7 @@ beforeEach(async () => {
   repo = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-codex-trust-repo-'));
   fakeBin = installFakeCodex();
   vi.stubEnv('HOME', home);
+  vi.stubEnv('USERPROFILE', home);
   vi.stubEnv('PATH', `${fakeBin}${path.delimiter}${process.env.PATH ?? ''}`);
   await fse.ensureDir(codexHome());
   vi.mocked(log.warn).mockClear();
@@ -1266,6 +1267,19 @@ describe('Codex trust — which Codex build answers (#1244)', () => {
 
     expect(codexTrust?.kind).toBe('trusted');
     expect(codexTrust).not.toHaveProperty('skew');
+    expect(answeredBy()).toEqual([desktop]);
+  });
+
+  it('uses ChatGPT.app codex-cli/bin/codex when codex is not on PATH', async () => {
+    await withoutCodexOnPath();
+    const desktop = path.join(installFakeCodex({
+      version: '0.163.0',
+      dir: path.join(home, 'Applications', 'ChatGPT.app', 'Contents', 'Resources', 'codex-cli', 'bin'),
+    }), 'codex');
+
+    const { codexTrust } = await writeAndTrust(userConfig());
+
+    expect(codexTrust?.kind).toBe('trusted');
     expect(answeredBy()).toEqual([desktop]);
   });
 

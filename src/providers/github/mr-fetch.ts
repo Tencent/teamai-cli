@@ -1,9 +1,9 @@
-import { execFileSync, execSync } from 'node:child_process';
 import https from 'node:https';
 
 import { type MRData, type MRFetchOptions, type MRThread } from '../../types.js';
 import { log } from '../../utils/logger.js';
 import { pruneThreads } from '../mr-threads.js';
+import { ghExec } from './gh-cli.js';
 
 /** GitHub PR URL 解析结果 */
 interface ParsedGitHubPR {
@@ -100,8 +100,11 @@ type ApiGet = (path: string) => Promise<unknown>;
 
 /** `gh api <path>`: the same paths as the REST client, with gh's credentials. */
 async function ghApiGet(path: string): Promise<unknown> {
-  const out = execFileSync('gh', ['api', path.replace(/^\//, '')], { maxBuffer: 10 * 1024 * 1024, encoding: 'utf8' });
-  return JSON.parse(out);
+  const result = ghExec(['api', path.replace(/^\//, '')]);
+  if (result.status !== 0) {
+    throw new Error(`gh api error ${result.status}: ${result.stderr || result.stdout}`);
+  }
+  return JSON.parse(result.stdout);
 }
 
 /** A `/pulls/:n/comments` entry (the fields read). */
@@ -269,16 +272,28 @@ export async function fetchGitHubPR(url: string, opts: MRFetchOptions = {}): Pro
   let get: ApiGet;
   // ── 优先尝试 gh CLI ──────────────────────────────────────
   try {
-    const viewOutput = execSync(
-      `gh pr view ${number} --repo ${repoArg} --json title,body,author,mergedAt,commits`,
-      { maxBuffer: 10 * 1024 * 1024, encoding: 'utf8' },
-    );
-    const prView = JSON.parse(viewOutput) as GhPRView;
+    const viewResult = ghExec([
+      'pr',
+      'view',
+      number,
+      '--repo',
+      repoArg,
+      '--json',
+      'title,body,author,mergedAt,commits',
+    ]);
+    if (viewResult.status !== 0) {
+      throw new Error(`gh pr view failed (${viewResult.status}): ${viewResult.stderr || viewResult.stdout}`);
+    }
+    const prView = JSON.parse(viewResult.stdout) as GhPRView;
 
-    const rawDiff = execSync(
-      `gh pr diff ${number} --repo ${repoArg}`,
-      { maxBuffer: 50 * 1024 * 1024, encoding: 'utf8' },
+    const diffResult = ghExec(
+      ['pr', 'diff', number, '--repo', repoArg],
+      { maxBuffer: 50 * 1024 * 1024 },
     );
+    if (diffResult.status !== 0) {
+      throw new Error(`gh pr diff failed (${diffResult.status}): ${diffResult.stderr || diffResult.stdout}`);
+    }
+    const rawDiff = diffResult.stdout;
 
     mr = {
       title: prView.title,
@@ -310,13 +325,5 @@ export async function fetchGitHubPR(url: string, opts: MRFetchOptions = {}): Pro
     }
   }
   return mr;
-}
-
-
-/** GitHub PR URL 解析结果 */
-interface ParsedGitHubPR {
-  owner: string;
-  repo: string;
-  number: string;
 }
 

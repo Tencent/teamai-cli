@@ -20,6 +20,7 @@
 
 import type { Command } from 'commander';
 import { listAvailablePlatforms, listInstalledPlatforms } from './adapters/index.js';
+import { resumeCommand } from './adapters/platform-facts.js';
 import {
   AgentSession,
   noAdapter,
@@ -490,7 +491,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
       if (write.reused) {
         console.log(`\n  ✓ Session already restored as ${write.sessionId}, nothing written.`);
         console.log(`  CWD: ${resumeCwd}`);
-        console.log(`\n  To continue: ${opts.platform} --resume ${write.sessionId}\n`);
+        console.log(`\n  To continue: ${resumeCommand(opts.platform, write.sessionId)}\n`);
         return;
       }
 
@@ -502,7 +503,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
       console.log(`  Session ID: ${newSessionId}`);
       console.log(`  Messages: ${session.messages.length}`);
       console.log(`  CWD: ${resumeCwd}`);
-      console.log(`\n  To continue: ${opts.platform} --resume ${newSessionId}\n`);
+      console.log(`\n  To continue: ${resumeCommand(opts.platform, newSessionId)}\n`);
     });
 
   // ── session search ─────────────────────────────────────────
