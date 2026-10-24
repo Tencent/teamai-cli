@@ -4491,6 +4491,24 @@ ${workspace}    deliver: pr
     expect(await startRun(config, 'ship', { packages: ['web'] }, { base: { ref: 'main', commit } })).toMatchObject(expected);
   });
 
+  it.each(['approve: Continue?', 'end: done'])('refuses delivery when an inherited writable workflow contains only approval or end steps (%s)', async (action) => {
+    const { started } = await start({ ship: workflow('ship', `  - id: change
+    workspace: new
+    deliver: pr
+    workflow:
+      ends: { done: succeeded }
+      steps:
+        - id: approve
+          ${action}
+        - id: check
+          needs: []
+          command: echo check
+          end: done
+`) }, 'ship', { ref: 'main', commit });
+
+    expect(started).toMatchObject({ error: { code: 'bad_delivery', message: expect.stringContaining('no step of the workflow it runs writes a branch') } });
+  });
+
   it('refuses a run that delivers from a detached HEAD, telling to start from a named branch', async () => {
     const { started } = await start({ ship: workflow('ship', `  - id: fix
     workspace: new

@@ -91,7 +91,9 @@ export function deliveryProblem(
   const childOf = (step: WorkflowStep) => (typeof step.workflow === 'string' ? workflows[step.workflow] : step.workflow);
   const writes = (steps: WorkflowStep[], ancestors: WorkflowStep[]): boolean => steps.some((step) => {
     const child = childOf(step);
-    return child ? writes(child.steps, [...ancestors, step]) : resolveMode(step, ancestors) !== 'read-only';
+    if (child) return writes(child.steps, [...ancestors, step]);
+    return (step.prompt !== undefined || step.promptFile !== undefined || step.workspace === 'new' || step.workspace === 'continue')
+      && resolveMode(step, ancestors) !== 'read-only';
   });
   const visit = (steps: WorkflowStep[], ancestors: WorkflowStep[], prefix: string): WorkflowFailure | undefined => {
     for (const step of steps) {
