@@ -329,7 +329,7 @@ export function fail(state: StepState, settlement: Settlement<FailedStep>): Fail
 export function cancel(state: StepIn<'pending' | 'waiting' | 'leased' | 'running' | 'delivering'>, failure: WorkflowFailure, settledAt: number): CancelledStep {
   if (state.status === 'delivering') {
     const { id: _id, status: _status, ...settlement } = state;
-    return become<CancelledStep>(state, { ...settlement, status: 'cancelled', settledAt, failure });
+    return become<CancelledStep>(state, { ...settlement, status: 'cancelled', failure });
   }
   const attempt = state.status === 'leased' ? state.attempt : undefined;
   return become<CancelledStep>(state, { status: 'cancelled', settledAt, ...(attempt !== undefined ? { attempt } : {}), failure });

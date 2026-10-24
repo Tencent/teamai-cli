@@ -168,7 +168,7 @@ export function deliverableOf(run: RunState, state: StepState, step: WorkflowSte
   let head = changes?.to;
   if (step.workflow !== undefined) {
     const own = branchName(run.id, state.id, state.pass ?? 1);
-    const latest = run.steps.filter((item) => item.id.startsWith(`${state.id}.`) && changesOf(item))
+    const latest = run.steps.filter((item) => item.id.startsWith(`${state.id}.`) && item.status !== 'cancelled' && changesOf(item))
       .sort((left, right) => ('settledAt' in right ? right.settledAt : 0) - ('settledAt' in left ? left.settledAt : 0))[0];
     branch = run.copies?.[own]?.commit !== undefined ? own : changesOf(latest)?.branch;
     head = branch === undefined ? undefined : run.copies?.[branch]?.commit;

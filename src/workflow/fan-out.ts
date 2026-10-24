@@ -127,6 +127,7 @@ export function itemsSettled(
 function branchesFromChildren(run: RunState): Map<string, string> {
   const best = new Map<string, { branch: string; settledAt: number }>();
   for (const step of run.steps) {
+    if (step.status === 'cancelled') continue;
     const branch = 'changes' in step ? step.changes?.branch : undefined;
     if (!branch) continue;
     const settledAt = 'settledAt' in step ? step.settledAt : 0;

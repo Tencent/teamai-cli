@@ -73,7 +73,7 @@ async function state(config: LocalConfig, runId: string): Promise<RunState> {
 
 const LeaseSchema = z.object({
   step: z.string(), attempt: z.string(), revision: z.number(), pass: z.number(),
-  workspace: z.object({ branch: z.string(), base: z.object({ commit: z.string() }) }).optional(),
+  workspace: z.object({ branch: z.string(), base: z.object({ commit: z.string() }), start: z.object({ commit: z.string() }).optional() }).optional(),
 });
 type Lease = z.infer<typeof LeaseSchema>;
 const remote = { kind: 'remote', machine: 'paseo', workspace: 'session-1' };
@@ -802,6 +802,78 @@ function providerDouble(findOpen: PullRequestLookup['findOpen'], create: GitProv
 }
 
 describe('retrying and cancelling a delivery', () => {
+  it('delivers the winning child branch after an end cancels a sibling delivery', async () => {
+    const { config, root, runId } = await fixture(`  - id: ship
+    for_each: inputs.packages
+    deliver: pr
+    workflow:
+      ends:
+        done: succeeded
+      steps:
+        - id: loser
+          command: echo loser
+          workspace: new
+          deliver: pr
+        - id: winner
+          needs: []
+          command: echo winner
+          workspace: new
+          end: done
+`, { packages: [{ name: 'a', id: 'a', after: [] }] });
+    const gh = fakeGh(path.join(root, 'gh'));
+    config.workflows = { tools: {}, ...config.workflows, max_parallel: 2 };
+    const loser = await take(config, runId);
+    const winnerNext = await leaseNext(config, runId, remote, { ...writable, running: [loser.attempt] });
+    if ('error' in winnerNext) throw new Error(winnerNext.error.message);
+    if (!winnerNext.data.lease) throw new Error(JSON.stringify(winnerNext));
+    const winner = LeaseSchema.parse(winnerNext.data.lease);
+    await succeed(config, runId, loser, { to: pushWork(root, loser, { 'loser.txt': 'loser' }) });
+    await report(config, runId, { attempt: winner.attempt, revision: winner.revision, outcome: 'success',
+      changes: { branch: winner.workspace?.branch, base: winner.workspace?.base.commit, from: winner.workspace?.base.commit,
+        to: pushWork(root, winner, { 'winner.txt': 'winner' }), commits: [] } });
+
+    expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    const run = await state(config, runId);
+    expect(run.steps.find((step) => step.id === 'ship[0].loser')).toMatchObject({ status: 'cancelled', settledAt: 2 });
+    expect(creates(gh)).toEqual([[winner.workspace?.branch, 'main']]);
+    expect(run.steps.find((step) => step.id === 'ship')).toMatchObject({ results: [{ branch: winner.workspace?.branch }] });
+  });
+
+  it('starts explicit cancellation recovery from the latest recorded write on a shared branch', async () => {
+    const { config, root, runId } = await fixture(`  - id: work
+    workspace: new
+    workflow:
+      steps:
+        - id: impl
+          command: echo impl
+          workspace: continue
+          deliver: pr
+        - id: docs
+          needs: []
+          command: echo docs
+          workspace: continue
+        - id: recover
+          needs: [impl, docs]
+          if: steps.impl.outcome == 'cancelled'
+          command: echo recover
+          workspace: new
+`);
+    const impl = await take(config, runId);
+    await succeed(config, runId, impl, { to: pushWork(root, impl) });
+    const lock = deliveryLockPath(config, runId);
+    expect(await acquireLock(lock)).toBe(true);
+    const docs = await take(config, runId);
+    await releaseLock(lock);
+    const to = pushOnto(root, docs.workspace?.branch ?? '', { 'docs.txt': 'docs' });
+    await succeed(config, runId, docs, { to });
+    const settledAt = (await state(config, runId)).steps.find((step) => step.id === 'work.impl');
+    await cancelRun(config, runId, 'work.impl');
+
+    const recovery = await take(config, runId);
+    expect(recovery).toMatchObject({ step: 'work.recover', workspace: { start: { commit: to } } });
+    expect((await state(config, runId)).steps.find((step) => step.id === 'work.impl')).toMatchObject({ settledAt: settledAt && 'settledAt' in settledAt ? settledAt.settledAt : undefined });
+  });
+
   it('retries a failed delivery in the same pass and attempt, without a lease, and opens the pull request on the next call', async () => {
     const { config, root, runId } = await fixture(FIX_THEN_REVIEW);
     const gh = fakeGh(path.join(root, 'gh'), { lookup: 'fail' });
