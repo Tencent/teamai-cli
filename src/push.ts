@@ -620,7 +620,7 @@ async function placeNewResources(args: {
     // since the last pull would move new rules and agents off the shared
     // root), and the skills namespaces detected from its tree — so only an
     // explicit --role is safe here (#649 review).
-    if (teamRepoStale && !options.role && !options.shared) {
+    if (teamRepoStale && !options.role) {
       log.error(
         `Cannot place new ${type}: the team repo could not be refreshed, so where new ${type} belong `
         + '(manifest/roles.yaml, or the namespaces the repo already has) may be out of date. '
@@ -645,7 +645,8 @@ async function placeNewResources(args: {
         for (const item of newAtRoot) {
           if (options.shared) {
             const taken = await Promise.all(collisionPaths(type, item.relativePath).map(async candidate =>
-              await pathExists(path.join(localConfig.repo.localPath, candidate)) ? candidate : null));
+              path.resolve(localConfig.repo.localPath, candidate) !== path.resolve(item.sourcePath)
+                && await pathExists(path.join(localConfig.repo.localPath, candidate)) ? candidate : null));
             if (taken.some(Boolean)) {
               log.error(`[${type}] ${item.name} cannot be placed: ${taken.filter(Boolean).join(', ')} already exists in the team repo. Pull and edit that copy, or rename this new resource.`);
               process.exitCode = 2;

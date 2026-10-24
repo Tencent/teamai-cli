@@ -155,6 +155,27 @@ afterEach(() => fs.rmSync(sandbox, { recursive: true, force: true }));
 afterAll(() => fs.rmSync(fixtureRoot, { recursive: true, force: true }));
 
 describe('explicit shared-root pushes (#1314)', () => {
+  it('publishes a new document scanned from the clone without colliding with itself', () => {
+    const clone = path.join(project, '.teamai/team-repo');
+    writeFile(path.join(clone, 'docs/new.md'), '# Shared document\n');
+    const pushed = run(['push', '--all', '--shared']);
+    const branches = git(['for-each-ref', '--format=%(refname:short)', 'refs/heads/teamai/push/'], origin).split('\n').filter(Boolean);
+    expect(branches.length, pushed.output).toBe(1);
+    expect(git(['show', `${branches[0]}:docs/new.md`], origin)).toContain('Shared document');
+  }, 120000);
+
+  it('refuses an explicit shared push when the clone cannot refresh collision evidence', () => {
+    commitOnTeam('agents/race.md', '---\nname: race\ndescription: teammate\n---\nTeammate instructions.\n');
+    writeFile(path.join(project, '.claude/agents/race.md'), '---\nname: race\ndescription: member\n---\nMember instructions.\n');
+    const clone = path.join(project, '.teamai/team-repo');
+    git(['remote', 'set-url', '--push', 'origin', origin], clone);
+    git(['remote', 'set-url', 'origin', 'https://127.0.0.1:9/unreachable.git'], clone);
+    const pushed = run(['push', '--all', '--shared']);
+    expect(pushed.code, pushed.output).not.toBe(0);
+    expect(pushed.output).toContain('could not be refreshed');
+    expect(pushedFiles()).toEqual([]);
+  }, 120000);
+
   it('keeps a namespaced rule review intact when a separate explicit root review is requested', () => {
     writeFile(path.join(project, '.claude', 'rules', 'root-review.md'), '# A new rule\n');
     const first = run(['push', '--all', '--project', 'svc-a']);
