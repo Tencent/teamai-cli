@@ -2433,4 +2433,23 @@ ${timeout}`);
     expect(fs.existsSync(marker)).toBe(false);
     expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'change', status: 'failed', failure: { code: 'timeout' } }] });
   });
+
+  it.each([1, 2])('does not start a step whose setup finished after its timeout, before the run said so, at max_parallel %i', async (maxParallel) => {
+    const marker = path.join(os.tmpdir(), `teamai-setup-step-${randomUUID()}`);
+    dirs.push(marker);
+    const { config, workspace, runId } = await setupFixture(`  command: ${JSON.stringify('node -e "setTimeout(() => {}, 1500)"')}`, `  - id: change
+    workspace: new
+    timeout: 1s
+    command: touch ${JSON.stringify(marker)}
+`);
+    config.workflows = { tools: { default: 'claude' }, max_parallel: maxParallel };
+    _setDriverPollMs(10_000);
+    try {
+      expect(await runLocalDriver(config, runId, workspace, { hitl: false })).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    } finally {
+      _setDriverPollMs(20);
+    }
+    expect(fs.existsSync(marker)).toBe(false);
+    expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'change', status: 'failed', failure: { code: 'timeout' } }] });
+  });
 });
