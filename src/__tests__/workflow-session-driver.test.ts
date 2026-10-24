@@ -87,6 +87,21 @@ describe('session driver public workspace operations (#1086)', () => {
     const stored = fs.readdirSync(markers).map((attempt) => fs.readFileSync(path.join(markers, attempt, 'workspace.json'), 'utf8')).join('\n');
     expect(stored).not.toContain('Edit the project.'); expect(stored).not.toContain('Untrusted branch instructions.');
   });
+  it.each(['success', 'failed'] as const)('preserves a prepared writer when origin rejects a %s report push', async (outcome) => {
+    const f = await fixture();
+    const lease = await next(f);
+    fs.writeFileSync(path.join(lease.cwd, 'code.txt'), 'keep this work');
+    const hook = path.join(f.remote, 'hooks/pre-receive');
+    fs.writeFileSync(hook, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+    const answer = await reportSessionLease(f.config, f.runId, { attempt: lease.attempt, revision: lease.revision, outcome, driver: f.driver,
+      ...(outcome === 'failed' ? { failure: { code: 'tool_failed', message: 'Original tool failure' } } : {}) });
+    expect(answer).toMatchObject({ data: { accepted: true, step: { status: 'failed' } } });
+    const run = await readRun(f.config, f.runId);
+    expect(run).toMatchObject({ steps: expect.arrayContaining([expect.objectContaining({ id: 'change.write', status: 'failed', failure: { code: outcome === 'success' ? 'push_failed' : 'tool_failed', message: expect.stringContaining('push') } })]) });
+    expect(fs.existsSync(lease.cwd)).toBe(true);
+    expect(git(f.work, 'show', `${lease.workspace.branch}:code.txt`)).toBe('keep this work');
+  });
+
   it('does not commit or push a cancelled attempt', async () => {
     const f = await fixture(); const lease = await next(f); fs.writeFileSync(path.join(lease.cwd, 'code.txt'), 'preserve me');
     const before = git(f.work, 'rev-parse', lease.workspace.branch);

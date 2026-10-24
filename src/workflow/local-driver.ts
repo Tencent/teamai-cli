@@ -1197,10 +1197,12 @@ export async function finishSessionWorkspace(prepared: PreparedSessionWorkspace,
   const paths = !left && lease.before && lease.cwd && !lease.workspace && !(lease.interactive && !lease.readOnly) ? changedPaths(lease.before, await snapshotWorktree(lease.cwd)) : [];
   const dirty = left && left.state !== 'untouched' ? readCopyFailure(left, `Read-only session step changed repository paths: ${left.changed.join(', ')}.`)
     : paths.length ? { code: 'read_only_dirty', message: `Read-only session step changed repository paths: ${paths.join(', ')}` } : undefined;
-  const finished = lease.workspace && !left && !dirty ? await finishWorkspace(lease, report.outcome === 'success') : {};
+  const finished = lease.workspace && !left && !dirty ? await finishWorkspace(lease, report.outcome === 'failed') : {};
   prepared.overlay = lease.overlay;
   const { changes: _changes, read: _read, ...body } = report;
-  const failure = dirty ?? finished.failure;
-  return { ...body, ...(finished.changes ? { changes: finished.changes } : {}), ...(left ? { read: left.read } : {}),
+  const reportedFailure = report.outcome === 'failed' ? report.failure : undefined;
+  const failure = dirty ?? finished.failure ?? (reportedFailure && { ...reportedFailure, message: withUnpushed(reportedFailure.message, finished.unpushed) });
+  const message = finished.unpushed ? withUnpushed(report.message ?? reportedFailure?.message ?? 'Step failed', finished.unpushed) : report.message;
+  return { ...body, ...(message ? { message } : {}), ...(finished.changes ? { changes: finished.changes } : {}), ...(left ? { read: left.read } : {}),
     ...(failure ? failureReport(failure) : {}) };
 }

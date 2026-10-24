@@ -263,7 +263,7 @@ export async function workflowResume(runId: string, options: { tools?: string; a
     const local = localDriver(process.cwd());
     const lease = stored.steps.find((step) => step.status === 'leased' && step.lease.driver.kind === 'local' && step.lease.driver.machine === local.machine);
     const cwd = lease?.status === 'leased' ? lease.lease.driver.workspace
-      : stored.driver?.kind === 'local' && stored.driver.machine === local.machine ? stored.driver.workspace : stored.checkout ?? loaded.config.projectRoot ?? process.cwd();
+      : stored.driver?.kind === 'local' && stored.driver.machine === local.machine ? stored.driver.workspace : process.cwd();
     return drive(cwd, { tools, toolPaths: scopedToolPaths(loaded.teamConfig, loaded.config), autoApprove: options.autoApprove });
   }));
 }
