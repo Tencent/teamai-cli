@@ -171,10 +171,14 @@ const RunningSchema = StepBaseSchema.extend({ status: z.literal('running'), expi
 const SucceededSchema = StepBaseSchema.extend({
   status: z.literal('succeeded'), outcome: z.literal('success').default('success'), ...settledFields, loopFinal: z.boolean().optional(),
 });
-const FailedSchema = StepBaseSchema.extend({ status: z.literal('failed'), outcome: z.literal('failed').default('failed'), ...settledFields, failure: FailureSchema.optional() });
+/** `leaseDriver`: on a step whose lease the engine stopped, the driver that held it, which may still report what it spent. */
+const leaseDriver = DriverSchema.optional();
+const FailedSchema = StepBaseSchema.extend({
+  status: z.literal('failed'), outcome: z.literal('failed').default('failed'), ...settledFields, failure: FailureSchema.optional(), leaseDriver,
+});
 const SkippedSchema = StepBaseSchema.extend({ status: z.literal('skipped'), settledAt: z.number().int().default(0) });
 const CancelledSchema = StepBaseSchema.extend({
-  status: z.literal('cancelled'), settledAt: z.number().int().default(0), attempt: z.string().optional(), failure: FailureSchema, unenforced: report.unenforced,
+  status: z.literal('cancelled'), settledAt: z.number().int().default(0), attempt: z.string().optional(), failure: FailureSchema, unenforced: report.unenforced, leaseDriver,
 });
 
 export const StepStateSchema = z.discriminatedUnion('status', [
@@ -320,10 +324,10 @@ export function fail(state: StepState, settlement: Settlement<FailedStep>): Fail
   return become<FailedStep>(state, { status: 'failed', outcome: 'failed', ...settlement });
 }
 
-/** What a lease the engine stops leaves on its step: the invalidated attempt, and what the lease did not enforce. */
-function stoppedLease(state: StepState): { attempt?: string; unenforced?: StepLease['unenforced'] } {
+/** What a lease the engine stops leaves on its step: the invalidated attempt, its driver, and what it did not enforce. */
+function stoppedLease(state: StepState): { attempt?: string; leaseDriver?: StepLease['driver']; unenforced?: StepLease['unenforced'] } {
   if (state.status !== 'leased') return {};
-  return { attempt: state.attempt, ...(state.lease.unenforced ? { unenforced: state.lease.unenforced } : {}) };
+  return { attempt: state.attempt, leaseDriver: state.lease.driver, ...(state.lease.unenforced ? { unenforced: state.lease.unenforced } : {}) };
 }
 
 /** A leased or running step whose deadline passed fails with `timeout`. */

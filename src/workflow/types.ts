@@ -276,7 +276,7 @@ export interface RunState {
   cancelledAttempts?: string[];
   /** Passes of child and item instances a loop removed from `steps`. */
   archive?: ArchivedPass[];
-  /** The tokens of attempts their driver released, which no pass keeps. */
+  /** The tokens of attempts their driver released, or reported after the engine stopped them, which no pass keeps. */
   releasedTokens?: ReleasedTokens[];
   /** The round of a looping top-level workflow. */
   round?: number;

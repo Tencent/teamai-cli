@@ -1470,6 +1470,19 @@ function continueSession(run: RunState, report: ReportInput): void {
   (run.sessionContinuations ??= []).push({ from, to });
 }
 
+/**
+ * Counts the tokens a report of an attempt the engine stopped says it spent, so a budget does not undercount the work a
+ * stop cut short. Only the driver that held the lease counts, and only once. Returns whether it counted them.
+ */
+function countStoppedTokens(run: RunState, report: ReportInput): boolean {
+  const stopped = run.steps.find((step): step is Extract<StepState, { status: 'failed' | 'cancelled' }> => (
+    (step.status === 'failed' || step.status === 'cancelled') && step.attempt === report.attempt));
+  if (!report.tokens || !stopped?.leaseDriver || !sameDriver(stopped.leaseDriver, report.driver)) return false;
+  if (run.releasedTokens?.some((entry) => entry.attempt === report.attempt)) return false;
+  (run.releasedTokens ??= []).push({ step: stopped.id, attempt: report.attempt, tokens: report.tokens });
+  return true;
+}
+
 export async function reportAttempt(config: LocalConfig, runId: string, report: ReportInput): Promise<WorkflowEnvelope> {
   if (isLeaseRef(report.attempt)) {
     return error('judge_lease', `Attempt ${report.attempt} is a judge lease, which workflow report does not settle. Submit its answer with: teamai score --lease ${report.attempt} --submit --stdin`);
@@ -1482,7 +1495,7 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
     }
     // Before the driver check, so any driver learns that the attempt was cancelled.
     if (run.cancelledAttempts?.includes(report.attempt)) {
-      return { save: false, envelope: error('lease_cancelled', `Attempt ${report.attempt} was cancelled; its report is not recorded`) };
+      return { save: countStoppedTokens(run, report), envelope: error('lease_cancelled', `Attempt ${report.attempt} was cancelled; its report is not recorded`) };
     }
     const step = run.steps.find((item): item is LeasedStep => item.status === 'leased' && item.lease.attempt === report.attempt);
     if (!step) {
@@ -1494,6 +1507,7 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
     const reconciled = reconcileRun(run, now);
     if ('unreadable' in reconciled) return { save: false, envelope: error('run_unreadable', reconciled.unreadable) };
     if (run.cancelledAttempts?.includes(report.attempt)) {
+      countStoppedTokens(run, report);
       return { save: true, envelope: error('lease_cancelled', `Attempt ${report.attempt} was cancelled; its report is not recorded`) };
     }
 
