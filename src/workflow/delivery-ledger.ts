@@ -81,13 +81,16 @@ function recordReceipt(run: RunState, key: DeliveryKey, target: string, url: PrU
  * while origin's branch is ahead of the recorded commit and a report of it may still come.
  * `requeueEnd` is set when the receipt reached a run that already ended, whose end record must go out again to list it.
  */
-export function completeDelivery(run: RunState, job: DeliveryJob, outcome: DeliveryOutcome, reconcile: (run: RunState) => unknown): { requeueEnd: boolean } {
+export function completeDelivery(
+  run: RunState, job: DeliveryJob, outcome: DeliveryOutcome,
+  reconcile: (run: RunState) => unknown, writerLeased: (run: RunState, branch: string) => boolean,
+): { requeueEnd: boolean } {
   const receipted = outcome.ok && recordReceipt(run, job.key, job.target, outcome.pr);
   if (outcome.ok) forgetCreate(run, { ...job.key, target: job.target });
   if (run.status === 'running') reconcile(run);
   const step = deliveringStep(run, job.key);
   if (step && outcome.ok) delivered(step);
-  else if (step && !outcome.ok && !(outcome.fault.kind === 'branch_ahead' && awaitsReport(step, outcome.fault.tip))) {
+  else if (step && !outcome.ok && !(outcome.fault.kind === 'branch_ahead' && awaitsReport(step, outcome.fault.tip, writerLeased(run, job.key.branch)))) {
     deliveryFailed(step, deliveryFailure(job, outcome.fault));
   }
   return { requeueEnd: receipted && run.status !== 'running' };
@@ -98,9 +101,11 @@ const AHEAD_DRAINS = 3;
 
 /**
  * Whether `step` still waits for a report of `tip`, the commit origin's branch is ahead at: one may be on its way, from a
- * step of the same branch that pushed before it reported. The drain that finds it there a third time fails the step.
+ * step of the same branch that pushed before it reported. A drain counts only while no step that writes the branch is
+ * leased, and the one that finds it there a third time fails the step.
  */
-function awaitsReport(step: DeliveringStep, tip: string): boolean {
+function awaitsReport(step: DeliveringStep, tip: string, writerLeased: boolean): boolean {
+  if (writerLeased) return true;
   const drains = step.unrecordedTip?.commit === tip ? step.unrecordedTip.drains + 1 : 1;
   if (drains >= AHEAD_DRAINS) return false;
   step.unrecordedTip = { commit: tip, drains };

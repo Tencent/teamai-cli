@@ -939,7 +939,7 @@ async function drainDeliveries(config: LocalConfig, runId: string): Promise<void
         // As when the pick is busy: the step still delivers, and a later call checks and delivers it.
         if (outcome === 'busy') return requeued;
         if (!outcome.ok && outcome.fault.kind === 'branch_ahead') waiting.push(job.key);
-        apply = (run) => completeDelivery(run, job, outcome, reconcileRun);
+        apply = (run) => completeDelivery(run, job, outcome, reconcileRun, branchWriterLeased);
       } else {
         const { create, checkout } = picked.value;
         tried.push(create);
@@ -1328,6 +1328,18 @@ function branchStillUsed(run: RunState, branch: string): boolean {
     if (located && plannedBranch(ahead, located.scope, item, located.step) === branch) return true;
   }
   return false;
+}
+
+/** Whether a leased step writes `branch`, so a commit it pushed before it reported may already be on origin. */
+function branchWriterLeased(run: RunState, branch: string): boolean {
+  return run.steps.some((item) => {
+    if (item.status !== 'leased') return false;
+    const located = locateStep(run, item.id);
+    const plan = located && planWorkspace(run, located.scope, item, located.step, {
+      driver: item.lease.driver, modes: ['read-only', 'new', 'continue'],
+    }, true);
+    return plan !== undefined && plan.mode !== 'read-only' && plan.contract?.branch === branch;
+  });
 }
 
 /**

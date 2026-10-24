@@ -1074,6 +1074,29 @@ describe('retrying and cancelling a delivery', () => {
     expect((await state(config, runId)).steps.find((step) => step.id === 'work.impl')).toMatchObject({ status: 'succeeded' });
   });
 
+  it('keeps waiting for a report of a commit ahead on origin while a step that writes the branch still runs, however many calls come', async () => {
+    const { config, root, runId } = await fixture(IMPL_AND_DOCS);
+    const gh = fakeGh(path.join(root, 'gh'));
+    const impl = await take(config, runId);
+    await succeed(config, runId, impl, { to: pushWork(root, impl) });
+    const lock = deliveryLockPath(config, runId);
+    expect(await acquireLock(lock)).toBe(true);
+    const docs = await take(config, runId);
+    await releaseLock(lock);
+    const branch = docs.workspace?.branch ?? '';
+    const ahead = pushOnto(root, branch, { 'docs.txt': 'docs' });
+
+    for (let drain = 1; drain <= 3; drain += 1) {
+      expect(await leaseNext(config, runId, remote, { ...writable, running: [docs.attempt] })).toMatchObject({ data: { wait: { delivering: ['work.impl'] } } });
+    }
+    expect((await state(config, runId)).steps.find((step) => step.id === 'work.impl')).toMatchObject({ status: 'delivering' });
+    expect(creates(gh)).toEqual([]);
+    await succeed(config, runId, docs, { to: ahead });
+    expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(creates(gh)).toEqual([[branch, 'main']]);
+    expect((await state(config, runId)).steps.find((step) => step.id === 'work.impl')).toMatchObject({ status: 'succeeded' });
+  });
+
   it('records only the canonical receipt after an unconfirmed TGit-style create and a retry', async () => {
     const { config, root, runId } = await fixture(FIX_THEN_REVIEW);
     const fix = await take(config, runId);
