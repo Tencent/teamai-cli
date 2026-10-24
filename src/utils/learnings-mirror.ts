@@ -17,6 +17,15 @@ async function isDirectory(dir: string): Promise<boolean> {
   return await pathExists(dir) && (await fse.stat(dir)).isDirectory();
 }
 
+/** Preserve the cache fingerprint when a pull has not changed its bytes. */
+async function copyIfChanged(source: string, destination: string): Promise<void> {
+  if (await pathExists(destination)) {
+    const [incoming, existing] = await Promise.all([fse.readFile(source), fse.readFile(destination)]);
+    if (incoming.equals(existing)) return;
+  }
+  await fse.copy(source, destination, { overwrite: true });
+}
+
 /**
  * Reconcile the machine-local learnings cache with the selected repo content.
  *
@@ -108,11 +117,11 @@ export async function mirrorLearnings(
   }
 
   for (const [file, source] of sourceRootFiles) {
-    await fse.copy(source, path.join(destinationDir, file), { overwrite: true });
+    await copyIfChanged(source, path.join(destinationDir, file));
   }
   for (const [namespace, files] of sourceNamespaceFiles) {
     for (const [file, source] of files) {
-      await fse.copy(source, path.join(destinationDir, namespace, file), { overwrite: true });
+      await copyIfChanged(source, path.join(destinationDir, namespace, file));
     }
   }
 }

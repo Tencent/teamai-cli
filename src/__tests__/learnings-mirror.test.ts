@@ -25,6 +25,17 @@ describe('mirrorLearnings', () => {
     await fse.remove(tmpDir);
   });
 
+  it('keeps unchanged root and namespaced learning timestamps stable', async () => {
+    await mirrorLearnings(sourceDir, destinationDir, ['alpha']);
+    const files = ['shared-a.md', 'alpha/keep.md'];
+    for (const file of files) await fse.utimes(path.join(destinationDir, file), new Date(1000000), new Date(1000000));
+    await mirrorLearnings(sourceDir, destinationDir, ['alpha']);
+    for (const file of files) expect((await fse.stat(path.join(destinationDir, file))).mtimeMs).toBe(1000000);
+    await fse.writeFile(path.join(sourceDir, 'alpha/keep.md'), '# updated');
+    await mirrorLearnings(sourceDir, destinationDir, ['alpha']);
+    expect(await fse.readFile(path.join(destinationDir, 'alpha/keep.md'), 'utf8')).toBe('# updated');
+  });
+
   it('keeps what another source root provides instead of deleting it', async () => {
     // The mirror deletes anything its source does not have. With learnings split
     // across roots (#485) a single-source mirror would wipe the other root's
