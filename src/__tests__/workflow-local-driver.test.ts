@@ -21,6 +21,7 @@ import { createLocalToolAdapter, type LocalToolAdapter, type LocalToolResult, ty
 import { _setDriverPollMs, localDriver, runLocalDriver } from '../workflow/local-driver.js';
 import { pendingRecords, type WorkflowRunRecord } from '../workflow/records.js';
 import { driverLockPath, readRun } from '../workflow/store.js';
+import * as worktreeSnapshot from '../workflow/worktree-snapshot.js';
 import type { DriverIdentity } from '../workflow/types.js';
 import { commitFile, fakeClaude, git, recordDelivery } from './helpers/delivered-checkout.js';
 
@@ -2049,6 +2050,41 @@ steps:
     expect(await runLocalDriver(config, runId, workspace, { hitl: false, adapter })).toMatchObject({ data: { done: { outcome: 'failed' } } });
     vi.unstubAllEnvs();
     expect(keptResult(config, runId)).toBe('{"output":{"token":"<REDACTED:DEPLOY_TOKEN>');
+  });
+
+  it('masks a secret JSON escaped in a result file that is not valid JSON', async () => {
+    const { config, workspace, runId } = await fixture();
+    const secret = 'deploy"secret\\value-1082';
+    vi.stubEnv('DEPLOY_TOKEN', secret);
+    const adapter: LocalToolAdapter = { runInteractive: vi.fn(), run: vi.fn<LocalToolAdapter['run']>(async (_tool, input) => {
+      fs.mkdirSync(path.dirname(input.resultPath), { recursive: true });
+      fs.writeFileSync(input.resultPath, `{"output":{"token":${JSON.stringify(secret)}`);
+      return { started: true, exitCode: 1, failure: { code: 'tool_failed', message: 'claude wrote no result' } };
+    }) };
+    expect(await runLocalDriver(config, runId, workspace, { hitl: false, adapter })).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    vi.unstubAllEnvs();
+    expect(keptResult(config, runId)).toBe('{"output":{"token":"<REDACTED:DEPLOY_TOKEN>"');
+  });
+
+  it('masks every result file when the driver stops on an error before it reports', async () => {
+    const { config, workspace, runId } = await fixture();
+    vi.stubEnv('DEPLOY_TOKEN', 'deploy-secret-value-1082');
+    let ran = false;
+    const snapshot = worktreeSnapshot.snapshotWorktree;
+    vi.spyOn(worktreeSnapshot, 'snapshotWorktree').mockImplementation(async (dir) => {
+      if (ran) throw new Error('snapshot failed');
+      return snapshot(dir);
+    });
+    const adapter: LocalToolAdapter = { runInteractive: vi.fn(), run: vi.fn<LocalToolAdapter['run']>(async (_tool, input) => {
+      fs.mkdirSync(path.dirname(input.resultPath), { recursive: true });
+      fs.writeFileSync(input.resultPath, JSON.stringify({ output: { token: 'deploy-secret-value-1082' } }));
+      ran = true;
+      return { started: true, exitCode: 0 };
+    }) };
+    await expect(runLocalDriver(config, runId, workspace, { hitl: false, adapter })).rejects.toThrow('snapshot failed');
+    vi.unstubAllEnvs();
+    expect(keptResult(config, runId)).toContain('<REDACTED:DEPLOY_TOKEN>');
+    expect(keptResult(config, runId)).not.toContain('deploy-secret-value-1082');
   });
 
   it('masks the result file of a prompt a signal stopped before it was reported', async () => {

@@ -262,7 +262,9 @@ async function maskResultFile(file: string, secrets: Record<string, string>): Pr
   try {
     kept = JSON.parse(text);
   } catch {
-    const masked = redact(text, { envSecrets: secrets, patterns: false });
+    // Text a tool wrote as JSON holds a secret with a quote or a backslash in its escaped form.
+    const escaped = Object.fromEntries(Object.entries(secrets).map(([label, value]) => [label, JSON.stringify(value).slice(1, -1)]));
+    const masked = redact(redact(text, { envSecrets: escaped, patterns: false }), { envSecrets: secrets, patterns: false });
     if (masked !== text) await writeFileAtomic(file, masked);
     return;
   }
@@ -1204,15 +1206,19 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
       if (failed) return failed;
     }
   } finally {
-    question?.controller.abort();
-    prompt?.controller.abort(signalled);
-    if (prompt) await prompt.exit;
-    for (const attempt of inFlight.keys()) cancel(attempt);
-    await Promise.all([...dying.values()].map(async ({ lease, command }) => {
-      await command.stop();
-      await (lease.workspace?.mode === 'read-only' ? leaveReadCopy(lease) : restoreLeaseOverlay(lease));
-    }));
-    await maskAttemptFiles(config, runId, env?.secrets ?? await knownSecrets(config, required));
+    // The sweep runs even when stopping what still runs throws, so no attempt's result file keeps a secret.
+    try {
+      question?.controller.abort();
+      prompt?.controller.abort(signalled);
+      if (prompt) await prompt.exit;
+      for (const attempt of inFlight.keys()) cancel(attempt);
+      await Promise.all([...dying.values()].map(async ({ lease, command }) => {
+        await command.stop();
+        await (lease.workspace?.mode === 'read-only' ? leaveReadCopy(lease) : restoreLeaseOverlay(lease));
+      }));
+    } finally {
+      await maskAttemptFiles(config, runId, env?.secrets ?? await knownSecrets(config, required));
+    }
     await archive.close();
     if (signalled) exitOn(signalled);
     handle([]);
