@@ -7,23 +7,9 @@ import os from 'node:os';
 import { providerForRemote, type OriginProvider } from '../providers/registry.js';
 import type { PullRequestRef } from '../providers/types.js';
 import { sanitizePrUrl, type PrUrl } from './pr-url.js';
+import type { DeliveryKey, UnresolvedCreate } from './delivery-ledger.js';
 import type { DeliveryFailure } from './step-state.js';
 import { fetchMissingCommits, git, protectedPaths } from './worktree.js';
-
-/** Which delivery an outcome belongs to: it applies only while the step still delivers this pass of this commit. */
-export interface DeliveryKey {
-  step: string;
-  pass: number;
-  settledAt: number;
-  branch: string;
-  head: string;
-}
-
-/**
- * A pull request TeamAI asked a host to open, into `target`, and holds no receipt for yet. The run lists it until a
- * receipt or a lookup settles it, whatever becomes of its step, since the host may hold it.
- */
-export type UnresolvedCreate = DeliveryKey & { target: string; lookups: { total: number; none: number; failed: number } };
 
 /** Everything a delivery needs, read from the run under its lock. */
 export interface DeliveryJob {

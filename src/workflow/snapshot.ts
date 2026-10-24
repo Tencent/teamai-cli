@@ -5,12 +5,11 @@ import { z } from 'zod';
 import { canonicalJson } from '../utils/canonical-json.js';
 import { redact } from '../utils/redact.js';
 import { isRecord } from './expression.js';
-import { DeliveryReceiptSchema } from './pr-url.js';
+import { CommitIdSchema, DeliveryReceiptSchema, UnresolvedCreateSchema } from './delivery-ledger.js';
 import {
   ArchivedPassSchema, SessionContinuationSchema, StepCheckpointSchema, type ArchivedPass, type HitlAnswer, type StepPass, type StepState,
 } from './step-state.js';
 import type { RunState, StepLease, WorkflowDefinition, WorkflowFailure } from './types.js';
-import type { UnresolvedCreate } from './pr-delivery.js';
 
 /**
  * The run state one install hands to another, at `workflows/runs/<id>/state.json` on `teamai-reports`. It carries what
@@ -20,9 +19,6 @@ import type { UnresolvedCreate } from './pr-delivery.js';
 /** The install that owns a published run: a random id kept under its data home, and the member's team username for messages. */
 const OwnerSchema = z.object({ id: z.string().min(1), user: z.string() });
 export type HandoffOwner = z.infer<typeof OwnerSchema>;
-
-/** A claim hands every commit a snapshot names to git, so each is only ever a full commit id. */
-const CommitIdSchema = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/);
 
 const ReportedCommitsSchema = z.object({
   changes: z.object({ base: CommitIdSchema, from: CommitIdSchema, to: CommitIdSchema, commits: z.array(CommitIdSchema) }).optional(),
@@ -37,11 +33,6 @@ function withCommitIds<T extends z.ZodTypeAny>(schema: T): z.ZodEffects<T> {
     if (!reported.success) for (const issue of reported.error.issues) ctx.addIssue({ code: z.ZodIssueCode.custom, path: issue.path, message: issue.message });
   });
 }
-
-const UnresolvedCreateSchema: z.ZodType<UnresolvedCreate, z.ZodTypeDef, unknown> = z.object({
-  step: z.string(), pass: z.number().int(), settledAt: z.number().int(), branch: z.string().min(1), head: z.string().min(1), target: z.string().min(1),
-  lookups: z.object({ total: z.number().int().nonnegative(), none: z.number().int().nonnegative(), failed: z.number().int().nonnegative() }).default({ total: 0, none: 0, failed: 0 }),
-});
 
 const BodySchema = z.object({
   schemaVersion: z.literal('v1alpha1'),

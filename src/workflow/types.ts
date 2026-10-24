@@ -1,8 +1,7 @@
 /** Workflow types for the v1alpha1 local-driver subset. */
 
 import type { PinnedScorer } from '../scorers/pin.js';
-import type { UnresolvedCreate } from './pr-delivery.js';
-import type { DeliveryReceipt } from './pr-url.js';
+import type { DeliveryReceipt, UnresolvedCreate } from './delivery-ledger.js';
 import type { ArchivedPass, SessionContinuation, StepState } from './step-state.js';
 import type { LeaseSession } from './workspace.js';
 
