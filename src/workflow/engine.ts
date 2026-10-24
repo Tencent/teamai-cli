@@ -21,9 +21,9 @@ import {
   ReadSchema, answerHitl, fail, lease, release, settled, skip, start, stopAttempt, stopWhere, stopped, succeed, waitForAnswer,
   type ItemResult, type LeasedStep, type StepRead, type StepState,
 } from './step-state.js';
-import { budgetSpent, countLateTokens, expire, leaseDeadline, ownDeadline, startLimits } from './limits.js';
+import { budgetSpent, countLateTokens, expire, itemsSpent, leaseDeadline, ownDeadline, startLimits } from './limits.js';
 import { addItems, afterStanding, expandItems, isItem, itemsAfter, itemsOf, itemsSettled, startedItems } from './fan-out.js';
-import { decideRound, decideStepLoop, exhaustedAtStart, firstPass, loopSettled } from './loop.js';
+import { decideRound, decideStepLoop, exhaustedAtStart, firstPass, isUnder, loopSettled } from './loop.js';
 import { childScope, contextOf, insertChildren, localId, statesIn, stepDefinitions, topScope, type Scope } from './scope.js';
 import { planWorkspace, plannedBranch, sessionOf, type LeaseSession, type SessionRef, type WorkspaceContract, type WorkspacePlan } from './workspace.js';
 import {
@@ -604,6 +604,13 @@ function advanceInstance(
 function settleItems(
   run: RunState, scope: Scope, states: StepState[], state: StepState, definition: WorkflowStep, now: string,
 ): Settled {
+  // The step's budget covers all its items: once they spend more together, it stops them and fails.
+  const spent = definition.budget === undefined ? 0 : itemsSpent(run, state);
+  if (definition.budget !== undefined && spent > definition.budget.tokens) {
+    const failure = { code: 'budget_exceeded', message: `step "${state.id}" spent ${spent} of its ${definition.budget.tokens}-token budget` };
+    stopWhere(run, isUnder(state.id), failure, run.revision, now);
+    return { outcome: 'failed', failure, settledAt: run.revision };
+  }
   for (;;) {
     const items = itemsOf(run, state);
     const after = itemsAfter(state.id, items.map((item) => item.item));

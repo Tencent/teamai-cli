@@ -31,11 +31,11 @@ export function ownDeadline(run: RunState, state: StepState, step: WorkflowStep,
 }
 
 /**
- * The input and output tokens spent under a workflow, by the prefix of its step paths: every pass, current or archived,
+ * The input and output tokens spent by the steps `under` selects: every pass, current or archived,
  * and every released attempt. Cached input is shown, not budgeted: tools report it inside or beside input differently.
  */
-export function spentTokens(run: RunState, prefix: string): number {
-  const used = [...runPasses(run), ...run.releasedTokens ?? []].filter((entry) => entry.step.startsWith(prefix));
+export function spentTokens(run: RunState, under: (id: string) => boolean): number {
+  const used = [...runPasses(run), ...run.releasedTokens ?? []].filter((entry) => under(entry.step));
   return used.reduce((sum, { tokens }) => sum + budgeted(tokens), 0);
 }
 
@@ -64,7 +64,7 @@ export function countLateTokens(run: RunState, stopped: StoppedAttempt, tokens: 
  */
 export function startLimits(run: RunState, state: StepState, step: WorkflowStep, now: string): { expiresAt?: string; limitsFrom: LimitsFrom } {
   const expiresAt = ownDeadline(run, state, step, now);
-  return { ...(expiresAt !== undefined ? { expiresAt } : {}), limitsFrom: { at: now, tokens: spentTokens(run, `${state.id}.`) } };
+  return { ...(expiresAt !== undefined ? { expiresAt } : {}), limitsFrom: { at: now, tokens: spentTokens(run, isUnder(state.id)) } };
 }
 
 /** Where the limits of a workflow of the run count from: the run's, or those its running step recorded when it started. */
@@ -75,7 +75,12 @@ function limitsFrom(run: RunState, scope: Scope): LimitsFrom {
 
 /** The tokens a workflow of the run has spent against its budget: what it spent since its limits started counting. */
 export function budgetSpent(run: RunState, scope: Scope): number {
-  return spentTokens(run, scope.prefix) - limitsFrom(run, scope).tokens;
+  return spentTokens(run, (id) => id.startsWith(scope.prefix)) - limitsFrom(run, scope).tokens;
+}
+
+/** The tokens the items of a `for_each` step have spent together since the step started, against the step's own budget. */
+export function itemsSpent(run: RunState, state: StepState): number {
+  return spentTokens(run, isUnder(state.id)) - (state.status === 'running' ? state.limitsFrom?.tokens ?? 0 : 0);
 }
 
 /** The run's own deadline, from when it started or a retry reopened it. */

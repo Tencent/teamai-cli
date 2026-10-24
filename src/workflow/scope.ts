@@ -48,6 +48,11 @@ function setupOf(setup: Setup | undefined): Pick<Scope, 'setup'> {
   return setup ? { setup } : {};
 }
 
+/** A workflow step's budget, which a `for_each` step spends over all its items instead of giving each item its own. */
+function ownBudget(step: WorkflowStep): Budget | undefined {
+  return step.forEach ? undefined : step.budget;
+}
+
 function budgetOf(outer: boolean, ...budgets: ReadonlyArray<Budget | undefined>): Pick<Scope, 'budget' | 'budgeted'> {
   const limits = budgets.flatMap((budget) => (budget ? [budget.tokens] : []));
   return limits.length > 0 ? { budget: Math.min(...limits), budgeted: true } : { budgeted: outer };
@@ -63,7 +68,7 @@ export function childScope(run: RunState, scope: Scope, states: StepState[], sta
       prefix: `${state.id}.`, definition: step.workflow, inputs: scope.inputs, outer: expressionSteps(scope, states, state),
       loops: stepLoops(step.workflow.steps), runner: state, ...itemOf(scope, state), defaultModel: scope.defaultModel,
       requires: mergeRequirements(scope.requires, step.requires),
-      ...budgetOf(scope.budgeted, step.budget), ...setupOf(scope.setup),
+      ...budgetOf(scope.budgeted || step.budget !== undefined, ownBudget(step)), ...setupOf(scope.setup),
     };
   }
   const definition = step.workflow === undefined ? undefined : run.workflows?.[step.workflow];
@@ -71,7 +76,7 @@ export function childScope(run: RunState, scope: Scope, states: StepState[], sta
     prefix: `${state.id}.`, definition, inputs: state.inputs, loops: stepLoops(definition.steps), runner: state,
     defaultModel: definition.defaults?.model ?? scope.defaultModel,
     requires: mergeRequirements(scope.requires, step.requires, definition.defaults?.requires),
-    ...budgetOf(scope.budgeted, step.budget, definition.budget), ...setupOf(definition.setup ?? scope.setup),
+    ...budgetOf(scope.budgeted || step.budget !== undefined, ownBudget(step), definition.budget), ...setupOf(definition.setup ?? scope.setup),
   };
 }
 

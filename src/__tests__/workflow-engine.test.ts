@@ -4868,6 +4868,45 @@ describe('token budgets', () => {
     });
   });
 
+  it('spends a for_each workflow step\'s budget over all its items', async () => {
+    const { config, runId } = await startTree({ build: workflow('build', `  - id: check
+    budget: { tokens: 100 }
+    for_each: { items: inputs.targets, max_parallel: 1 }
+    workflow:
+      steps:
+        - id: review
+          prompt: "Review {{ item }}."
+  - id: recover
+    needs: [check]
+    if: steps.check.outcome == 'failed'
+    command: echo recover
+`, 'inputs:\n  targets: [string]\n') }, 'build', { targets: ['web', 'api', 'cli'] });
+    await report(config, runId, leaseIn(await leaseNext(config, runId, driverA, reports)), 'success', { input: 50, output: 10 });
+    await report(config, runId, leaseIn(await leaseNext(config, runId, driverA, reports)), 'success', { input: 50, output: 10 });
+
+    expect(await leaseNext(config, runId, driverA, reports)).toMatchObject({ data: { lease: { step: 'recover' } } });
+    expect(await readRun(config, runId)).toMatchObject({ steps: expect.arrayContaining([
+      expect.objectContaining({ id: 'check', status: 'failed', failure: { code: 'budget_exceeded', message: 'step "check" spent 120 of its 100-token budget' } }),
+      expect.objectContaining({ id: 'check[2]', status: 'skipped' }),
+    ]) });
+  });
+
+  it('keeps the budget of the workflow file each for_each item runs to that item', async () => {
+    const { config, runId } = await startTree({
+      build: workflow('build', `  - id: check
+    for_each: { items: inputs.targets, max_parallel: 1 }
+    workflow: review
+`, 'inputs:\n  targets: [string]\n'),
+      review: workflow('review', `  - id: review
+    prompt: Review.
+`, 'budget: { tokens: 100 }\n'),
+    }, 'build', { targets: ['web', 'api'] });
+    await report(config, runId, leaseIn(await leaseNext(config, runId, driverA, reports)), 'success', { input: 50, output: 10 });
+    await report(config, runId, leaseIn(await leaseNext(config, runId, driverA, reports)), 'success', { input: 50, output: 10 });
+
+    expect(await leaseNext(config, runId, driverA, reports)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+  });
+
   it('counts the passes a loop archived, so the run fails before a pass that would start past its budget', async () => {
     const { config, runId } = await startBuild(graph(`  - id: work
     workflow:

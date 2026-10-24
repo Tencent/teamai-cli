@@ -286,7 +286,7 @@ export async function retryStep(config: LocalConfig, runId: string, secrets: Rec
       const located = runner && locateStep(run, runner.id);
       if (runner) start(runner, undefined, located ? startLimits(run, runner, located.step, now) : undefined);
     }
-    if (ended) run.limitsFrom = { at: now, tokens: spentTokens(run, '') };
+    if (ended) run.limitsFrom = { at: now, tokens: spentTokens(run, () => true) };
     if (reopened) {
       run.status = 'running';
       delete run.end;
