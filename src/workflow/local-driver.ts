@@ -105,6 +105,41 @@ function startCommand(command: string, cwd: string, env: NodeJS.ProcessEnv, deta
   return { exit, stop: stopProcess(child, exit, detached) };
 }
 
+/** What a leased command came to: it ran, staging failed, or it was stopped or its lease ended before it could start. */
+type StagedResult = { kind: 'ran'; result: CommandResult } | { kind: 'unstaged'; failure: WorkflowFailure } | { kind: 'stopped' };
+
+interface StagedCommand {
+  exit: Promise<StagedResult>;
+  /** Aborts staging and setup, or stops the command once it runs. Settles once the attempt is over; a second call changes nothing. */
+  stop(): Promise<unknown>;
+}
+
+/** Whether a staged lease may start its command or tool: nothing stopped it, and its deadline has not passed. */
+function startable(lease: Lease, signal: AbortSignal): boolean {
+  return !signal.aborted && (lease.expiresAt === undefined || Date.now() < Date.parse(lease.expiresAt));
+}
+
+/**
+ * Stages a leased command, then starts it, as one attempt, so the driver keeps asking the run what to do while staging
+ * and setup run, and a cancel reaches either phase.
+ */
+function stageThenStart(lease: Lease, stage: (signal: AbortSignal) => Promise<WorkflowFailure | undefined>, start: () => CommandProcess): StagedCommand {
+  const controller = new AbortController();
+  let command: CommandProcess | undefined;
+  const exit = (async (): Promise<StagedResult> => {
+    const failure = await stage(controller.signal);
+    if (!startable(lease, controller.signal)) return { kind: 'stopped' };
+    if (failure) return { kind: 'unstaged', failure };
+    command = start();
+    return { kind: 'ran', result: await command.exit };
+  })();
+  return { exit, stop: async () => {
+    controller.abort();
+    await command?.stop();
+    return exit;
+  } };
+}
+
 function jsonStdout(stdout: string): unknown | undefined {
   const trimmed = stdout.trim();
   if (trimmed === '') return undefined;
@@ -180,6 +215,8 @@ interface Lease {
   maxTurns?: number;
   /** What to run in a workspace this driver creates, before the step. */
   setup?: LeaseSetup;
+  /** When the engine cancels the lease. A step staged after it does not start. */
+  expiresAt?: string;
   /** The environment the step's command or tool runs with, built from `envScope` when the lease is staged. */
   processEnv?: NodeJS.ProcessEnv;
   /** Set once the step has a directory to run in. */
@@ -288,6 +325,7 @@ function parseLease(raw: unknown): Lease | undefined {
     ...(envScope.success ? { envScope: envScope.data } : {}),
     ...(typeof rawLease.maxTurns === 'number' ? { maxTurns: rawLease.maxTurns } : {}),
     ...(setup.success ? { setup: setup.data } : {}),
+    ...(typeof rawLease.expiresAt === 'string' ? { expiresAt: rawLease.expiresAt } : {}),
     ...(typeof rawLease.prompt === 'string' ? { prompt: rawLease.prompt } : {}),
     ...(typeof rawLease.agent === 'string' ? { agent: rawLease.agent } : {}),
     ...(typeof rawLease.model === 'string' ? { model: rawLease.model } : {}),
@@ -315,7 +353,8 @@ function placeOf(lease: Lease, active: string): string {
   return lease.cwd ?? stepCheckout(active, lease.workspace?.branch);
 }
 
-async function stageLease(lease: Lease, { active, runId, config }: { active: string; runId: string; config: LocalConfig }): Promise<WorkflowFailure | undefined> {
+/** Gets the lease a place to run. `signal` stops setup, which then fails, and the workspace it was preparing is removed. */
+async function stageLease(lease: Lease, { active, runId, config, signal }: { active: string; runId: string; config: LocalConfig; signal?: AbortSignal }): Promise<WorkflowFailure | undefined> {
   if (lease.unreadableWorkspace) {
     return { code: 'workspace_base', message: `Step "${lease.step}" was leased a workspace this teamai cannot read. Update teamai.` };
   }
@@ -385,18 +424,18 @@ async function stageLease(lease: Lease, { active, runId, config }: { active: str
   if (!applied.ok) return { code: 'base_config', message: applied.message };
   await deliverTeamAssets(opened.dir);
   await recordConfigOverlay(opened.dir, applied.saved);
-  lease.overlay = applied.saved;
   if (lease.setup && opened.created) {
     // Setup gets its own keys and none of the step's.
     const scope = lease.setup.envScope ?? { provide: [], withhold: [] };
     const scoped = await stepEnvironment(config, scope);
-    const failure = scoped.ok ? await runSetup({ command: lease.setup.command, dir: opened.dir, env: scoped.env, keys: scope.provide }) : scoped.failure;
+    const failure = scoped.ok ? await runSetup({ command: lease.setup.command, dir: opened.dir, env: scoped.env, keys: scope.provide, signal }) : scoped.failure;
     if (failure) {
       await removeWorktree(active, opened.dir);
       return failure;
     }
     await markSetup(opened.dir, 'finished');
   }
+  lease.overlay = applied.saved;
   if (lease.workspace.mode === 'read-only') {
     // Taken over the base overlay, so only what the step itself changes differs from it.
     lease.before = await snapshotWorktree(opened.dir);
@@ -888,15 +927,16 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
   // process groups of their own, which `stop` and the signal handlers below can end as a whole.
   const detached = maxParallel > 1 && process.platform !== 'win32';
   const reported = new Set<string>();
-  const inFlight = new Map<string, { lease: Lease; command: CommandProcess }>();
+  const inFlight = new Map<string, { lease: Lease; command: StagedCommand }>();
   // Leases not started yet, in lease order. Steps that share a checkout run one at a time. Distinct worktrees overlap.
   const held: Lease[] = [];
   // Cancelled commands whose process group is not gone yet. They are not sent as running, so `next` does not cancel
   // them again. They still take a slot, and a new attempt of their step waits until they are gone, so a retried step
   // never runs beside its cancelled attempt.
-  const dying = new Map<string, { step: string; lease: Lease; command: CommandProcess }>();
+  const dying = new Map<string, { step: string; lease: Lease; command: StagedCommand }>();
   const base = await headCommit(cwd);
-  let prompt: { lease: Lease; controller: AbortController; exit: Promise<ReportBody> } | undefined;
+  // A prompt that was stopped before its tool started has nothing to report.
+  let prompt: { lease: Lease; controller: AbortController; exit: Promise<ReportBody | undefined> } | undefined;
   let question: { hitl: LocalHitl; controller: AbortController; exit: Promise<{ kind: 'question'; line?: string }> } | undefined;
   // A headless prompt takes a slot as a command does, so a step in another checkout starts beside it. An interactive one has the terminal.
   const busy = (): number => inFlight.size + dying.size + (prompt ? 1 : 0);
@@ -946,9 +986,7 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
     reported.add(body.attempt);
     return undefined;
   };
-  const failStaged = async (lease: Lease, failure: WorkflowFailure): Promise<WorkflowEnvelope | undefined> => report({
-    attempt: lease.attempt, revision: lease.revision, outcome: 'failed', driver, message: failure.message, failure,
-  }, lease);
+  const unstaged = (lease: Lease, failure: WorkflowFailure): ReportBody => ({ attempt: lease.attempt, revision: lease.revision, driver, ...failureReport(failure) });
   try {
     for (;;) {
       if (signalled) return { error: { code: 'interrupted', message: `Stopped by ${signalled} after every command it started exited` } };
@@ -965,7 +1003,8 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
         if (prompt) {
           const lease = prompt.lease;
           prompt.controller.abort();
-          const failed = await report(await prompt.exit, lease);
+          const body = await prompt.exit;
+          const failed = body && await report(body, lease);
           prompt = undefined;
           if (failed) return failed;
         }
@@ -992,8 +1031,10 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
         ...[...dying.values()].map(({ lease }) => placeOf(lease, cwd)),
         ...(prompt ? [placeOf(prompt.lease, cwd)] : []),
       ]);
-      for (let index = 0; !prompt?.lease.interactive && held[index]?.command !== undefined && busy() < maxParallel;) {
-        const lease = held[index]!;
+      for (let index = 0; !prompt?.lease.interactive && busy() < maxParallel;) {
+        const lease = held[index];
+        const command = lease?.command;
+        if (lease === undefined || command === undefined) break;
         if ([...dying.values()].some((stopping) => stopping.step === lease.step)
           || placesBusy().has(placeOf(lease, cwd))
           || held.slice(0, index).some((earlier) => earlier.prompt !== undefined && placeOf(earlier, cwd) === placeOf(lease, cwd))) {
@@ -1001,15 +1042,13 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
           continue;
         }
         held.splice(index, 1);
-        const failure = await stageLease(lease, { active: cwd, runId, config });
-        if (failure) {
-          const failed = await failStaged(lease, failure);
-          if (failed) return failed;
-          continue;
-        }
         // An attached command already has the signals its terminal sends to the whole group; a second would force-quit some tools.
         if (maxParallel === 1) handle(commandSignalPolicy(await terminalReachesCommand()).forwarded);
-        inFlight.set(lease.attempt, { lease, command: startCommand(lease.command!, lease.cwd ?? cwd, { ...lease.processEnv ?? process.env, ...lease.env }, detached) });
+        inFlight.set(lease.attempt, { lease, command: stageThenStart(
+          lease,
+          (signal) => stageLease(lease, { active: cwd, runId, config, signal }),
+          () => startCommand(command, lease.cwd ?? cwd, { ...lease.processEnv ?? process.env, ...lease.env }, detached),
+        ) });
       }
       if (!prompt && busy() < maxParallel) {
         const promptAt = held.findIndex((lease) => lease.prompt !== undefined
@@ -1018,12 +1057,6 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
           && (!lease.interactive || (inFlight.size === 0 && dying.size === 0)));
         if (promptAt !== -1) {
           const lease = held.splice(promptAt, 1)[0]!;
-          const failure = await stageLease(lease, { active: cwd, runId, config });
-          if (failure) {
-            const failed = await failStaged(lease, failure);
-            if (failed) return failed;
-            continue;
-          }
           if (lease.interactive) {
             if (question) {
               question.controller.abort();
@@ -1034,7 +1067,15 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
           }
           const controller = new AbortController();
           if (maxParallel === 1) handle(STOP_SIGNALS);
-          prompt = { lease, controller, exit: promptReport(config, resultPath(config, runId, lease.attempt), driver, lease, tools, adapter, options, archive, controller.signal) };
+          prompt = { lease, controller, exit: (async () => {
+            const failure = await stageLease(lease, { active: cwd, runId, config, signal: controller.signal });
+            if (!startable(lease, controller.signal)) {
+              await (lease.workspace?.mode === 'read-only' ? leaveReadCopy(lease) : restoreLeaseOverlay(lease));
+              return undefined;
+            }
+            if (failure) return unstaged(lease, failure);
+            return promptReport(config, resultPath(config, runId, lease.attempt), driver, lease, tools, adapter, options, archive, controller.signal);
+          })() };
         }
       }
       if (canHitl && hitl && !question && !prompt?.lease.interactive) {
@@ -1080,7 +1121,7 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
         const lease = prompt?.lease;
         prompt = undefined;
         if (maxParallel === 1) handle([]);
-        const failed = await report(exited.body, lease);
+        const failed = exited.body && await report(exited.body, lease);
         if (failed) return failed;
         continue;
       }
@@ -1093,7 +1134,16 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
       }
       inFlight.delete(exited.attempt);
       if (maxParallel === 1) handle([]);
-      const failed = await report(await commandReport(resultPath(config, runId, exited.attempt), driver, exited.lease, exited.result), exited.lease);
+      const staged = exited.result;
+      if (staged.kind === 'stopped') {
+        // Its lease ended while it was staged: the engine stops it, and the driver leaves the copy as it found it.
+        await (exited.lease.workspace?.mode === 'read-only' ? leaveReadCopy(exited.lease) : restoreLeaseOverlay(exited.lease));
+        continue;
+      }
+      const body = staged.kind === 'unstaged'
+        ? unstaged(exited.lease, staged.failure)
+        : await commandReport(resultPath(config, runId, exited.attempt), driver, exited.lease, staged.result);
+      const failed = await report(body, exited.lease);
       if (failed) return failed;
     }
   } finally {

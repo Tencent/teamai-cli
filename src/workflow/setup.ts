@@ -6,6 +6,7 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { stopProcess } from '../tool-launch/process-stop.js';
 import { redact } from '../utils/redact.js';
 import type { WorkflowFailure } from './types.js';
 import { changedPaths, snapshotWorktree } from './worktree.js';
@@ -18,6 +19,8 @@ export interface SetupRun {
   env: NodeJS.ProcessEnv;
   /** Setup's own keys, whose values `env` holds and no file setup leaves may hold. */
   keys: readonly string[];
+  /** Stops setup's process group: SIGTERM, then SIGKILL after five seconds. */
+  signal?: AbortSignal;
 }
 
 /** The last characters of setup's output a failure quotes. */
@@ -29,10 +32,13 @@ const OUTPUT_TAIL = 400;
  * `setup_dirty`; a value of one of setup's keys in a file setup created or changed, ignored files included and `.git`
  * excluded, is `setup_secret`, naming the file and the key, never the value.
  */
-export async function runSetup({ command, dir, env, keys }: SetupRun): Promise<WorkflowFailure | undefined> {
+export async function runSetup({ command, dir, env, keys, signal }: SetupRun): Promise<WorkflowFailure | undefined> {
+  const stopped: WorkflowFailure = { code: 'setup_failed', message: `Setup "${command}" was stopped, so the step did not run.` };
+  if (signal?.aborted) return stopped;
   const tracked = await snapshotWorktree(dir);
   const stamps = await fileStamps(dir);
-  const exit = await runCommand(command, dir, env);
+  const exit = await runCommand(command, dir, env, signal);
+  if (signal?.aborted) return stopped;
   const values = keys.flatMap((key) => {
     const value = env[key];
     return value ? [{ key, value }] : [];
@@ -83,9 +89,11 @@ async function fileStamps(dir: string): Promise<Map<string, FileStamp>> {
   return stamps;
 }
 
-function runCommand(command: string, cwd: string, env: NodeJS.ProcessEnv): Promise<{ code: number; output: string }> {
-  return new Promise((resolve) => {
-    const child = spawn(command, { cwd, env, shell: true, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+/** Runs `command` in a process group of its own, so an abort stops everything it started. */
+async function runCommand(command: string, cwd: string, env: NodeJS.ProcessEnv, signal: AbortSignal | undefined): Promise<{ code: number; output: string }> {
+  const detached = process.platform !== 'win32';
+  const child = spawn(command, { cwd, env, shell: true, windowsHide: true, detached, stdio: ['ignore', 'pipe', 'pipe'] });
+  const exit = new Promise<{ code: number; output: string }>((resolve) => {
     let output = '';
     const keep = (chunk: string): void => { output = (output + chunk).slice(-OUTPUT_TAIL * 2); };
     child.stdout.setEncoding('utf8').on('data', keep);
@@ -93,4 +101,15 @@ function runCommand(command: string, cwd: string, env: NodeJS.ProcessEnv): Promi
     child.on('error', (error) => resolve({ code: 1, output: error.message }));
     child.on('close', (code) => resolve({ code: code ?? 1, output }));
   });
+  const stop = stopProcess(child, exit, detached);
+  const onAbort = (): void => { void stop(); };
+  signal?.addEventListener('abort', onAbort, { once: true });
+  try {
+    const result = await exit;
+    // Settles once the whole group is gone, so nothing setup started still writes to the workspace.
+    if (signal?.aborted) await stop();
+    return result;
+  } finally {
+    signal?.removeEventListener('abort', onAbort);
+  }
 }

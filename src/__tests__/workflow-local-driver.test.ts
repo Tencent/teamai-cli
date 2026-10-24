@@ -2386,4 +2386,51 @@ ${steps}`);
     expect(fs.existsSync(marker)).toBe(false);
     expect(worktrees(workspace)).toEqual([]);
   });
+
+  async function slowSetup(maxParallel: number, timeout = ''): Promise<{ config: LocalConfig; workspace: string; runId: string; pidFile: string; marker: string }> {
+    const pidFile = path.join(os.tmpdir(), `teamai-setup-pid-${randomUUID()}`);
+    const marker = path.join(os.tmpdir(), `teamai-setup-step-${randomUUID()}`);
+    dirs.push(pidFile, marker);
+    const script = `require('fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setTimeout(() => {}, 4000)`;
+    const built = await setupFixture(`  command: ${JSON.stringify(`node -e ${JSON.stringify(script)}`)}`, `  - id: change
+    workspace: new
+    command: touch ${JSON.stringify(marker)}
+${timeout}`);
+    built.config.workflows = { tools: { default: 'claude' }, max_parallel: maxParallel };
+    return { ...built, pidFile, marker };
+  }
+
+  async function setupPid(pidFile: string): Promise<number> {
+    for (let waited = 0; !fs.existsSync(pidFile) || fs.readFileSync(pidFile, 'utf8') === ''; waited += 20) {
+      if (waited > 10_000) throw new Error('setup did not start');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    return Number(fs.readFileSync(pidFile, 'utf8'));
+  }
+
+  it.each([1, 2])('stops setup when the run is cancelled while it runs at max_parallel %i, and never runs the step', async (maxParallel) => {
+    const { config, workspace, runId, pidFile, marker } = await slowSetup(maxParallel);
+    const driving = runLocalDriver(config, runId, workspace, { hitl: false });
+    const pid = await setupPid(pidFile);
+    const cancelledAt = Date.now();
+    expect(await cancelRun(config, runId)).toMatchObject({ data: { run: { status: 'cancelled' } } });
+    expect(await driving).toMatchObject({ data: { done: { outcome: 'cancelled' } } });
+    expect(Date.now() - cancelledAt, 'the driver did not wait for setup to finish').toBeLessThan(2500);
+    expect(await exitsWithin(pid, 1000)).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 4500));
+    expect(fs.existsSync(marker)).toBe(false);
+    expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'change', status: 'cancelled', failure: { code: 'cancelled' } }] });
+  });
+
+  it.each([1, 2])('stops setup when the lease passes its timeout at max_parallel %i, and never runs the step', async (maxParallel) => {
+    const { config, workspace, runId, pidFile, marker } = await slowSetup(maxParallel, '    timeout: 1s\n');
+    const startedAt = Date.now();
+    const done = await runLocalDriver(config, runId, workspace, { hitl: false });
+    expect(done).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    expect(Date.now() - startedAt, 'the driver did not wait for setup to finish').toBeLessThan(3500);
+    expect(await exitsWithin(await setupPid(pidFile), 1000)).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 4500));
+    expect(fs.existsSync(marker)).toBe(false);
+    expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'change', status: 'failed', failure: { code: 'timeout' } }] });
+  });
 });
