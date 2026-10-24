@@ -99,13 +99,24 @@ function pushWork(root: string, lease: Lease, files: Record<string, string> = { 
   const clone = fs.mkdtempSync(path.join(root, 'driver-'));
   git(root, ['clone', '-q', path.join(root, 'remote.git'), clone]);
   git(clone, ['checkout', '-q', '-b', lease.workspace.branch, lease.workspace.base.commit]);
+  return commitAndPush(clone, lease.workspace.branch, files);
+}
+
+/** Commits `files` on top of `branch` as origin holds it, in a clone of its own, and pushes it, as a driver that went on working does. */
+function pushOnto(root: string, branch: string, files: Record<string, string>): string {
+  const clone = fs.mkdtempSync(path.join(root, 'driver-'));
+  git(root, ['clone', '-q', '-b', branch, path.join(root, 'remote.git'), clone]);
+  return commitAndPush(clone, branch, files);
+}
+
+function commitAndPush(clone: string, branch: string, files: Record<string, string>): string {
   for (const [file, content] of Object.entries(files)) {
     fs.mkdirSync(path.dirname(path.join(clone, file)), { recursive: true });
     fs.writeFileSync(path.join(clone, file), content);
   }
   git(clone, ['add', '-A']);
   git(clone, ['-c', 'user.name=Driver', '-c', 'user.email=driver@example.com', 'commit', '-qm', 'work']);
-  git(clone, ['push', '-q', 'origin', lease.workspace.branch]);
+  git(clone, ['push', '-q', 'origin', branch]);
   return git(clone, ['rev-parse', 'HEAD']);
 }
 
@@ -378,6 +389,29 @@ describe('delivering a step', () => {
     expect(run.deliveries).toBeUndefined();
     // The report-time lookup only reads; delivery refuses the protected paths before it looks up or opens anything.
     expect(gh.calls().map((call) => call.args[0])).toEqual('pr_url' in changes ? ['api'] : []);
+  });
+
+  it.each([
+    ['TeamAI would open the pull request', {}],
+    ['the driver reported one', { pr_url: 'https://github.com/fixture/app/pull/1' }],
+  ])('opens and accepts nothing when origin\'s branch moved past the checked commit to one that changes protected paths, when %s', async (_case, changes) => {
+    const { config, root, runId } = await fixture(FIX_THEN_REVIEW);
+    const fix = await take(config, runId);
+    const branch = `teamai/${runId}/fix/p1`;
+    const gh = fakeGh(path.join(root, 'gh'), { open: 'pr_url' in changes ? [pull(1, branch)] : [] });
+    const checked = pushWork(root, fix, { 'src/app.ts': 'ok\n' });
+    pushOnto(root, branch, { '.github/workflows/x.yml': 'on: push\n' });
+    expect(await succeed(config, runId, fix, { to: checked, ...changes })).not.toHaveProperty('data.dropped');
+
+    expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    const run = await state(config, runId);
+    expect(run.steps).toMatchObject([
+      { id: 'fix', status: 'failed', failure: { code: 'delivery_failed', message: expect.stringContaining(`branch ${branch} on origin moved after the step reported commit ${checked}`) } },
+      { id: 'review', status: 'skipped' },
+    ]);
+    expect(run.steps[0]).toMatchObject({ failure: { message: expect.stringContaining(`teamai workflow retry ${runId} fix`) } });
+    expect(run.deliveries).toBeUndefined();
+    expect(creates(gh)).toEqual([]);
   });
 
   it('reads a reported head only as a full commit id, so a ref name cannot stand in for the pushed branch', async () => {

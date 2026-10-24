@@ -59,10 +59,11 @@ export interface GitResult {
   stderr: string;
 }
 
-export function git(cwd: string, args: string[], input?: string): Promise<GitResult> {
-  if (input === undefined) {
+/** Runs git in `cwd`, writing `input` to its stdin, or stopping it once `timeoutMs` passed. */
+export function git(cwd: string, args: string[], options?: { input: string } | { timeoutMs: number }): Promise<GitResult> {
+  if (options === undefined || !('input' in options)) {
     return new Promise((resolve) => {
-      execFile('git', args, { cwd, env: process.env, windowsHide: true }, (error, stdout, stderr) => {
+      execFile('git', args, { cwd, env: process.env, windowsHide: true, timeout: options?.timeoutMs }, (error, stdout, stderr) => {
         const failed = error as NodeJS.ErrnoException & { status?: number } | null;
         const code = typeof failed?.status === 'number' ? failed.status : failed ? 1 : 0;
         resolve({ code, stdout: String(stdout), stderr: String(stderr) });
@@ -85,7 +86,7 @@ export function git(cwd: string, args: string[], input?: string): Promise<GitRes
     child.stderr.on('data', (chunk: string) => { stderr += chunk; });
     child.on('error', () => finish(1));
     child.on('close', (code) => finish(code ?? 1));
-    child.stdin.end(input);
+    child.stdin.end(options.input);
   });
 }
 
@@ -490,7 +491,7 @@ async function restoreConflictStages(dir: string, conflicts: string, paths: stri
   // `git rm --cached` leaves stage 0 in place beside the restored stages, and then `git add` cannot clear them.
   const removal = paths.map((relative) => `0 ${'0'.repeat(40)}\t${relative}`);
   const payload = [...removal, ...lines];
-  if (payload.length > 0) await git(dir, ['update-index', '--index-info'], `${payload.join('\n')}\n`);
+  if (payload.length > 0) await git(dir, ['update-index', '--index-info'], { input: `${payload.join('\n')}\n` });
 }
 
 async function fileManifest(root: string): Promise<Record<string, string>> {

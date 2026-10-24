@@ -39,6 +39,8 @@ export type DeliveryFault =
   | { kind: 'no_checkout' }
   | { kind: 'unreadable' }
   | { kind: 'protected_path'; files: string[] }
+  | { kind: 'branch_moved' }
+  | { kind: 'branch_unreadable' }
   | { kind: 'no_provider' }
   | { kind: 'lookup_failed'; provider: string }
   | { kind: 'create_failed'; provider: string }
@@ -72,6 +74,11 @@ export async function deliverPr(job: DeliveryJob, gate: CreateGate): Promise<Del
   if ('fault' in changed) return failed(changed.fault);
   const files = protectedPaths(changed.files);
   if (files.length > 0) return failed({ kind: 'protected_path', files });
+  // A pull request holds what origin's branch holds, so it goes out only while that is the commit just checked. A push
+  // after this read still reaches a request opened below; only the driver that holds the branch can make that push.
+  const tip = await originTip(job.checkout, job.key.branch);
+  if (tip.kind === 'unreadable') return failed({ kind: 'branch_unreadable' });
+  if (tip.commit !== job.key.head) return failed({ kind: 'branch_moved' });
   if (job.reported) return { ok: true, pr: job.reported };
   const origin = await originOf(job.checkout);
   if (origin.kind === 'transport') return failed({ kind: 'no_provider' });
@@ -142,6 +149,15 @@ async function findOpen(
   return clean.url && new URL(clean.url).hostname === hostname ? { kind: 'found', pr: clean.url } : { kind: 'unsafe' };
 }
 
+/** The commit origin's `branch` is at, read by the checkout; none when origin has no such branch. */
+async function originTip(checkout: string, branch: string): Promise<{ kind: 'read'; commit?: string } | { kind: 'unreadable' }> {
+  const ref = `refs/heads/${branch}`;
+  const listed = await git(checkout, ['ls-remote', 'origin', ref], { timeoutMs: DELIVERY_TIMEOUT_MS });
+  if (listed.code !== 0) return { kind: 'unreadable' };
+  const commit = listed.stdout.split('\n').map((line) => line.split('\t')).find(([, name]) => name?.trim() === ref)?.[0];
+  return commit ? { kind: 'read', commit } : { kind: 'read' };
+}
+
 /** The files the delivered head changes against the run base, read in the run's checkout once it fetched what it lacks. */
 async function changedFiles({ key, runId, checkout, base }: DeliveryJob): Promise<{ files: string[] } | { fault: DeliveryFault }> {
   if (!OBJECT_ID.test(key.head) || !OBJECT_ID.test(base)) return { fault: { kind: 'unreadable' } };
@@ -177,6 +193,16 @@ export function deliveryFailure({ runId, key }: Pick<DeliveryJob, 'runId' | 'key
         message: `Step "${step}" changed protected paths against the run base: ${listed}${more}. TeamAI delivers no pull request that changes CI, hooks or agent configuration. The work is kept on origin in branch ${branch}. Have the step leave those paths alone, then run: ${retry}`,
       };
     }
+    case 'branch_moved':
+      return {
+        code: 'delivery_failed',
+        message: `PR delivery for step "${step}" failed: branch ${branch} on origin moved after the step reported commit ${key.head}, so it no longer holds the changes TeamAI checked, and no pull request was opened or accepted. Put branch ${branch} on origin back at ${key.head}, then run: ${retry}`,
+      };
+    case 'branch_unreadable':
+      return {
+        code: 'delivery_failed',
+        message: `PR delivery for step "${step}" failed: TeamAI could not read branch ${branch} on origin to check that it still holds commit ${key.head} the step reported, so no pull request was opened or accepted. Check the checkout's access to origin, then run: ${retry}`,
+      };
     case 'no_provider':
       return {
         code: 'delivery_failed',
