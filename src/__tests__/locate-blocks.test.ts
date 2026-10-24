@@ -215,14 +215,14 @@ const ROWS: readonly MatrixRow[] = [
     tool: 'pi', scope: 'user',
     writes: [{ at: '~/.pi/agent/AGENTS.md', owned: false, header: null }],
     existingDirs: ['~/.pi'], installed: { probe: '~/.pi', met: true },
-    reads: [{ at: '~/.pi/agent/AGENTS.md', when: 'always' }],
+    reads: [{ at: '~/.pi/agent/AGENTS.override.md', when: 'always' }, { at: '~/.pi/agent/AGENTS.md', when: 'always' }],
     source: 'Pi 0.99.2 run: the agent dir AGENTS.md is read in every session',
   },
   {
     tool: 'pi', scope: 'user', env: { PI_CODING_AGENT_DIR: '/pi-agent' },
     writes: [{ at: '/pi-agent/AGENTS.md', owned: false, header: null }],
     existingDirs: ['/pi-agent'], installed: { probe: '/pi-agent', met: true },
-    reads: [{ at: '/pi-agent/AGENTS.md', when: 'always' }],
+    reads: [{ at: '/pi-agent/AGENTS.override.md', when: 'always' }, { at: '/pi-agent/AGENTS.md', when: 'always' }],
     source: 'Pi 0.99.2 run: PI_CODING_AGENT_DIR replaces ~/.pi/agent, AGENTS.md included',
   },
   {
