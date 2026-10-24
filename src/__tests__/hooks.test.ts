@@ -669,7 +669,7 @@ describe('hooks', () => {
     it('applyAgentHook (claude): writes a slug-tagged entry with timeout', async () => {
       await applyAgentHook('/t/settings.json', 'claude', {
         slug: 's1', event: 'SessionStart', command: 'echo hi', timeout: 10,
-      });
+      }, { kind: 'disabled' });
       const s = mockFiles['/t/settings.json'] as any;
       const e = s.hooks.SessionStart.find((x: any) => x.description === agentHookDescription('s1'));
       expect(e).toBeDefined();
@@ -679,8 +679,8 @@ describe('hooks', () => {
     });
 
     it('applyAgentHook (claude): re-install same slug replaces, no duplicate', async () => {
-      await applyAgentHook('/t/s.json', 'claude', { slug: 's2', event: 'Stop', command: 'echo a' });
-      await applyAgentHook('/t/s.json', 'claude', { slug: 's2', event: 'Stop', command: 'echo b' });
+      await applyAgentHook('/t/s.json', 'claude', { slug: 's2', event: 'Stop', command: 'echo a' }, { kind: 'disabled' });
+      await applyAgentHook('/t/s.json', 'claude', { slug: 's2', event: 'Stop', command: 'echo b' }, { kind: 'disabled' });
       const s = mockFiles['/t/s.json'] as any;
       const mine = s.hooks.Stop.filter((x: any) => x.description === agentHookDescription('s2'));
       expect(mine).toHaveLength(1);
@@ -691,14 +691,14 @@ describe('hooks', () => {
       mockFiles['/t/s.json'] = {
         hooks: { SessionStart: [{ matcher: '*', hooks: [{ type: 'command', command: 'user-cmd' }] }] },
       };
-      await applyAgentHook('/t/s.json', 'claude', { slug: 's3', event: 'SessionStart', command: 'echo hi' });
+      await applyAgentHook('/t/s.json', 'claude', { slug: 's3', event: 'SessionStart', command: 'echo hi' }, { kind: 'disabled' });
       const s = mockFiles['/t/s.json'] as any;
       expect(s.hooks.SessionStart.some((x: any) => x.hooks[0].command === 'user-cmd')).toBe(true);
       expect(s.hooks.SessionStart.some((x: any) => x.description === agentHookDescription('s3'))).toBe(true);
     });
 
     it('applyAgentHook (codex): writes entry without description, matched by command', async () => {
-      await applyAgentHook('/t/codex.json', 'codex', { slug: 's4', event: 'PreToolUse', command: 'echo cx' });
+      await applyAgentHook('/t/codex.json', 'codex', { slug: 's4', event: 'PreToolUse', command: 'echo cx' }, { kind: 'disabled' });
       const s = mockFiles['/t/codex.json'] as any;
       const e = s.hooks.PreToolUse.find((x: any) => x.hooks[0].command === 'echo cx');
       expect(e).toBeDefined();
@@ -706,15 +706,15 @@ describe('hooks', () => {
     });
 
     it('removeAgentHook (claude): removes by slug, drops empty event key', async () => {
-      await applyAgentHook('/t/s.json', 'claude', { slug: 's5', event: 'SessionStart', command: 'echo hi' });
-      await removeAgentHook('/t/s.json', 'claude', { slug: 's5' });
+      await applyAgentHook('/t/s.json', 'claude', { slug: 's5', event: 'SessionStart', command: 'echo hi' }, { kind: 'disabled' });
+      await removeAgentHook('/t/s.json', 'claude', { slug: 's5' }, { kind: 'disabled' });
       const s = mockFiles['/t/s.json'] as any;
       expect(s.hooks.SessionStart).toBeUndefined();
     });
 
     it('removeAgentHook (codex): removes by command', async () => {
-      await applyAgentHook('/t/codex.json', 'codex', { slug: 's6', event: 'Stop', command: 'echo cx6' });
-      await removeAgentHook('/t/codex.json', 'codex', { slug: 's6', command: 'echo cx6' });
+      await applyAgentHook('/t/codex.json', 'codex', { slug: 's6', event: 'Stop', command: 'echo cx6' }, { kind: 'disabled' });
+      await removeAgentHook('/t/codex.json', 'codex', { slug: 's6', command: 'echo cx6' }, { kind: 'disabled' });
       const s = mockFiles['/t/codex.json'] as any;
       expect(s.hooks.Stop).toBeUndefined();
     });
@@ -722,7 +722,7 @@ describe('hooks', () => {
     it('normal reconcile leaves an agent hook untouched; removeAll sweeps it', async () => {
       // Seed a claude settings file with a built-in inject + an agent hook.
       await injectHooks('/t/rec.json', 'claude');
-      await applyAgentHook('/t/rec.json', 'claude', { slug: 's7', event: 'SessionStart', command: 'echo hi' });
+      await applyAgentHook('/t/rec.json', 'claude', { slug: 's7', event: 'SessionStart', command: 'echo hi' }, { kind: 'disabled' });
       const marker = agentHookDescription('s7');
       const has = () => {
         const s = mockFiles['/t/rec.json'] as any;

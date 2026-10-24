@@ -1,5 +1,5 @@
 import { withFileLock } from './update.js';
-import { isToolId, TOOLS, type HomeMove } from './tools.js';
+import { homeVariables, isToolId, TOOLS, type HomeMove } from './tools.js';
 import { envToolHome, realHost, recordedHomes, reloadToolHomes, saveToolHomes, toolHomesPath, type Host } from './tool-home.js';
 import type { ToolId } from './types.js';
 import { log } from './utils/logger.js';
@@ -83,24 +83,4 @@ export function describeToolHomeChange({ tool, variable, dir }: ToolHomeChange):
   return dir === null
     ? `Cleared the recorded ${tool} home (${variable} is blank); teamai syncs ${tool} to its default home again`
     : `Recorded ${variable} as the ${tool} home: ${dir}. teamai syncs ${tool} there from any shell until \`teamai init\` records another`;
-}
-
-function homeVariables(tool: ToolId): readonly string[] {
-  const { home } = TOOLS[tool];
-  if (!('moves' in home)) return [];
-  return home.moves.by.flatMap((move): string[] => {
-    switch (move.kind) {
-      case 'env':
-      case 'profile-suffix':
-        return [move.name];
-      case 'xdg':
-        return ['XDG_CONFIG_HOME'];
-      case 'win32-appdata':
-        return [];
-      default: {
-        const unhandled: never = move;
-        return unhandled;
-      }
-    }
-  });
 }

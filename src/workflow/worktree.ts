@@ -77,6 +77,18 @@ export function worktreePath(main: string, branch: string): string {
   return path.join(main, '.teamai', 'workflow-worktrees', `${safe}-${hash}`);
 }
 
+export function stepCheckout(active: string, branch: string | undefined): string {
+  return branch === undefined ? active : worktreePath(active, branch);
+}
+
+/** The checkout `dir` is in a step worktree of (see worktreePath), whether or not that worktree still exists. */
+export function worktreeCheckout(dir: string): string | undefined {
+  const parts = path.resolve(dir).split(path.sep);
+  const at = parts.lastIndexOf('workflow-worktrees');
+  if (at < 2 || parts[at - 1] !== '.teamai' || at === parts.length - 1) return undefined;
+  return parts.slice(0, at - 1).join(path.sep) || path.sep;
+}
+
 /** A path git keeps for this checkout. A linked worktree's `.git` is a file, so the path is not `<checkout>/.git`. */
 export async function gitPath(cwd: string, name: string): Promise<string | undefined> {
   const result = await git(cwd, ['rev-parse', '--git-path', name]);
@@ -149,23 +161,96 @@ export async function offBranch(dir: string, branch: string): Promise<string | u
   return head ? `on ${head}` : `detached at ${(await git(dir, ['rev-parse', 'HEAD'])).stdout.trim()}`;
 }
 
+/**
+ * Brings local branch `branch` to `expected`, the commit a run this machine took over recorded for it, by fast-forward
+ * only. A branch ahead of it or apart from it, or its worktree with changes, a reader's mark, or HEAD elsewhere, stays
+ * as it is, and the answer says why, even when the branch is already at `expected`. A branch this checkout does not have
+ * is left to the lease that opens it.
+ */
+export async function reconcileCopy(main: string, branch: string, expected: string): Promise<{ error: string } | undefined> {
+  const ref = `refs/heads/${branch}`;
+  const local = await git(main, ['rev-parse', '--verify', '--quiet', ref]);
+  if (local.code !== 0) return undefined;
+  const tip = local.stdout.trim();
+  if (tip !== expected && (await git(main, ['merge-base', '--is-ancestor', tip, expected])).code !== 0) {
+    return { error: `Branch ${branch} here is at ${tip}, which is not behind ${expected}, the commit the run recorded for it, so it holds work the run does not know about. teamai moves neither: keep that work elsewhere, delete or reset ${branch}, then resume the run.` };
+  }
+  const own = worktreePath(main, branch);
+  if (await fs.stat(own).then((stats) => stats.isDirectory(), () => false)) {
+    const on = await offBranch(own, branch);
+    if (on) return { error: `Workspace ${own} is ${on}, not on branch ${branch}, so the run does not continue there. Check out ${branch} in ${own}, then resume the run.` };
+  }
+  const listed = await git(main, ['worktree', 'list', '--porcelain']);
+  const dir = listed.stdout.split('\n\n').map((entry) => entry.split('\n'))
+    .find((lines) => lines.includes(`branch ${ref}`))?.find((line) => line.startsWith('worktree '))?.slice('worktree '.length);
+  if (dir !== undefined) {
+    if (await unrestoredCopy(dir)) {
+      return { error: `Workspace ${dir} was left by a reader and is not back, so the run does not continue there. Put it back as the step found it, then resume the run.` };
+    }
+    const status = await copyStatus(dir);
+    if ('error' in status) return status;
+    if (status.lines.length > 0) {
+      return { error: `Workspace ${dir} on ${branch} has changes the run did not record, so the run does not continue there. Move them elsewhere or remove them, then resume the run.` };
+    }
+  }
+  if (tip === expected) return undefined;
+  if (dir === undefined) {
+    const moved = await git(main, ['update-ref', ref, expected, tip]);
+    return moved.code === 0 ? undefined : { error: `Branch ${branch} could not be moved from ${tip} to ${expected}: ${moved.stderr.trim()}` };
+  }
+  const merged = await git(dir, ['merge', '--ff-only', '--quiet', expected]);
+  return merged.code === 0 ? undefined : { error: `Workspace ${dir} could not be moved to ${expected}: ${merged.stderr.trim()}` };
+}
+
 /** Points this worktree's hooks at `hooks` without changing the active checkout's hooks. */
 async function worktreeHooks(main: string, dir: string, hooks: string): Promise<void> {
   await git(main, ['config', 'extensions.worktreeConfig', 'true']);
   await git(dir, ['config', '--worktree', 'core.hooksPath', hooks]);
 }
 
-/** Merges `commit` unless it is already contained. A conflict leaves the worktree as git stopped. */
-export async function mergeBranch(dir: string, commit: string): Promise<{ conflict: boolean; files: string[] }> {
+/**
+ * The commits among `commits` this checkout still lacks after fetching run `run`'s branches from origin. A fetch whose
+ * refspec matches no branch exits 0, so each commit is checked again after it. `fetchError` is git's message when the
+ * fetch itself failed.
+ */
+export async function fetchMissingCommits(dir: string, { run, commits }: { run: string; commits: string[] }): Promise<{ missing: string[]; fetchError?: string }> {
+  const lacking = await lackedCommits(dir, commits);
+  if (lacking.length === 0) return { missing: [] };
+  const fetched = await git(dir, ['fetch', '--quiet', '--no-tags', 'origin', `+refs/heads/teamai/${run}/*:refs/remotes/origin/teamai/${run}/*`]);
+  const missing = await lackedCommits(dir, lacking);
+  if (fetched.code === 0 || missing.length === 0) return { missing };
+  return { missing, fetchError: (fetched.stderr || fetched.stdout).trim() || 'git fetch failed' };
+}
+
+async function lackedCommits(dir: string, commits: string[]): Promise<string[]> {
+  const lacking: string[] = [];
+  for (const commit of new Set(commits)) {
+    if ((await git(dir, ['cat-file', '-e', `${commit}^{commit}`])).code !== 0) lacking.push(commit);
+  }
+  return lacking;
+}
+
+/**
+ * Merges `commit` unless it is already contained. A conflict leaves the worktree as git stopped. A merge that stopped
+ * with no unmerged file and no merge in progress, such as unrelated histories or an untracked file in the way, is
+ * `failed` with git's message.
+ */
+export async function mergeBranch(dir: string, commit: string): Promise<
+  { state: 'merged' } | { state: 'conflict'; files: string[] } | { state: 'failed'; error: string }
+> {
   const contained = await git(dir, ['merge-base', '--is-ancestor', commit, 'HEAD']);
-  if (contained.code === 0) return { conflict: false, files: [] };
+  if (contained.code === 0) return { state: 'merged' };
   const merged = await git(dir, [
     '-c', 'user.name=TeamAI', '-c', 'user.email=teamai@localhost',
     'merge', '--no-ff', '--no-edit', commit,
   ]);
-  if (merged.code === 0) return { conflict: false, files: [] };
-  const files = await gitPaths(dir, ['diff', '--name-only', '--diff-filter=U']);
-  return { conflict: true, files };
+  if (merged.code === 0) return { state: 'merged' };
+  const unmerged = await gitPaths(dir, ['diff', '--name-only', '--diff-filter=U']);
+  if (unmerged.code !== 0) return { state: 'failed', error: unmerged.stderr.trim() || 'git diff failed' };
+  // An earlier attempt that left its merge unfinished resolves it as a conflict, even with every file staged.
+  const unfinished = (await git(dir, ['rev-parse', '--verify', '--quiet', 'MERGE_HEAD'])).code === 0;
+  if (unmerged.paths.length > 0 || unfinished) return { state: 'conflict', files: unmerged.paths };
+  return { state: 'failed', error: (merged.stderr || merged.stdout).trim() || 'git merge failed' };
 }
 
 /**
@@ -186,6 +271,15 @@ export async function applyBaseConfig(
     const branch = (await git(dir, ['symbolic-ref', '--quiet', 'HEAD'])).stdout.trim().replace(/^refs\/heads\//, '');
     return { ok: false, message: `Agent configuration ${linked.relative} is under the symlink ${linked.parent} on branch ${branch}, so it was not reset. Commit ${linked.parent} as a directory on branch ${branch} in ${dir}, then retry the step.` };
   }
+  // Listed before anything is removed, so a base git cannot read leaves the branch's agent files in place.
+  const present = await gitPaths(dir, ['ls-tree', '--name-only', commit, '--', ...AGENT_PATHS]);
+  if (present.code !== 0) return { ok: false, message: unreadBase(dir, commit, present.stderr) };
+  // A failed checkout still stages the base copy, so the index is put back with the files.
+  const indexFile = await gitPath(dir, 'index');
+  const index = indexFile === undefined ? undefined : await fs.readFile(indexFile).catch(() => undefined);
+  if (indexFile === undefined || index === undefined) {
+    return { ok: false, message: `Agent configuration in ${dir} could not be reset to the run's base commit ${commit}, because its git index could not be read, so the step did not run. Check that git status works in ${dir}, then retry the step.` };
+  }
   const saved = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-agent-'));
   const conflicts = (await git(dir, ['ls-files', '-u', '-z', '--', ...AGENT_PATHS])).stdout;
   await fs.writeFile(path.join(saved, '_conflicts'), conflicts);
@@ -197,13 +291,11 @@ export async function applyBaseConfig(
     }
   }
   for (const relative of AGENT_PATHS) await fs.rm(path.join(dir, relative), { recursive: true, force: true });
-  const present = await gitPaths(dir, ['ls-tree', '--name-only', commit, '--', ...AGENT_PATHS]);
-  if (present.length > 0) {
-    const restored = await git(dir, ['checkout', commit, '--', ...present]);
-    if (restored.code !== 0) return { ok: false, message: restored.stderr.trim() || 'agent configuration could not be restored' };
+  const refused = await checkoutBaseConfig(dir, commit, present.paths);
+  if (refused) {
+    await putBackBranchConfig(dir, saved, { indexFile, index });
+    return { ok: false, message: refused };
   }
-  const extra = await gitPaths(dir, ['diff', '--name-only', commit, '--', ...AGENT_PATHS]);
-  if (extra.length > 0) return { ok: false, message: `agent configuration does not match the base commit: ${extra.join(', ')}` };
   // The base checkout cleared unmerged agent files. Put the conflict back so the step can see it,
   // and keep the stages in `_conflicts` so an untouched file is not committed as resolved.
   for (const relative of conflictPaths(conflicts)) {
@@ -215,6 +307,40 @@ export async function applyBaseConfig(
     }
   }
   return { ok: true, saved };
+}
+
+/** Checks out the base's agent paths `paths` over the removed branch copy. Why the step cannot run, when it cannot. */
+async function checkoutBaseConfig(dir: string, commit: string, paths: string[]): Promise<string | undefined> {
+  if (paths.length > 0) {
+    const restored = await git(dir, ['checkout', commit, '--', ...paths]);
+    if (restored.code !== 0) {
+      return `Agent configuration in ${dir} could not be checked out from the run's base commit ${commit}, so the step did not run and the branch's agent files were left as they were. Git said: ${restored.stderr.trim() || 'no message'}. Fix what git reported, then retry the step.`;
+    }
+  }
+  const extra = await gitPaths(dir, ['diff', '--name-only', commit, '--', ...AGENT_PATHS]);
+  if (extra.code !== 0) return unreadBase(dir, commit, extra.stderr);
+  if (extra.paths.length === 0) return undefined;
+  return `Agent configuration in ${dir} does not match the run's base commit ${commit} after checking it out: ${extra.paths.join(', ')}. The step did not run and the branch's agent files were left as they were. A .gitattributes filter or line-ending rule that rewrites these files on checkout usually causes this. Fix that rule and retry the step, or commit the files as they check out on the base branch and start a new run.`;
+}
+
+/** Puts the branch's agent files and index back after a reset that failed, and removes the saved copy. */
+async function putBackBranchConfig(dir: string, saved: string, { indexFile, index }: { indexFile: string; index: Buffer }): Promise<void> {
+  for (const relative of AGENT_PATHS) {
+    await fs.rm(path.join(dir, relative), { recursive: true, force: true });
+    try {
+      await copyEntry(path.join(saved, relative), path.join(dir, relative));
+    } catch {
+      // The branch does not have this path.
+    }
+  }
+  // Renamed over the index, so git never reads it half written.
+  await fs.writeFile(`${indexFile}.teamai`, index);
+  await fs.rename(`${indexFile}.teamai`, indexFile);
+  await fs.rm(saved, { recursive: true, force: true });
+}
+
+function unreadBase(dir: string, commit: string, stderr: string): string {
+  return `Agent configuration in ${dir} could not be reset to the run's base commit ${commit}, so the step did not run. Git said: ${stderr.trim() || 'no message'}. Make ${commit} available in this checkout, for example by fetching the branch that has it, then retry the step.`;
 }
 
 /** An agent path whose parent is a symlink. Copying or removing it would reach outside the worktree. */
@@ -248,8 +374,18 @@ export async function recordConfigOverlay(dir: string, saved: string): Promise<v
   await fs.writeFile(path.join(saved, '_dirs.json'), JSON.stringify(await agentDirs(dir)));
 }
 
-/** Puts back each branch agent file that the step left unchanged. A file the step edited stays. */
-export async function restoreUneditedConfig(dir: string, _commit: string, saved: string): Promise<void> {
+/**
+ * Puts back each branch agent file that the step left unchanged. A file the step edited stays. When git cannot list the
+ * worktree's files, nothing is put back, `saved` is kept, and the reason is returned as a clause.
+ */
+export async function restoreUneditedConfig(dir: string, _commit: string, saved: string): Promise<string | undefined> {
+  // Listed before anything changes. The index stays as it is until the files are back.
+  const unmergedListed = await gitPaths(dir, ['diff', '--name-only', '--diff-filter=U']);
+  const indexed = await gitPaths(dir, ['ls-files', '--', ...AGENT_PATHS]);
+  const unlisted = [unmergedListed, indexed].find((listed) => listed.code !== 0);
+  if (unlisted) {
+    return `git could not list the files in ${dir} (${unlisted.stderr.trim() || 'no message'}); the branch's agent files are still in ${saved}`;
+  }
   const overlay = JSON.parse(await fs.readFile(path.join(saved, '_overlay.json'), 'utf8')) as Record<string, string>;
   const current = await fileManifest(dir);
   const branch = await fileManifest(saved);
@@ -258,7 +394,7 @@ export async function restoreUneditedConfig(dir: string, _commit: string, saved:
   const marked = await markedConflicts(dir, conflictPaths(conflicts));
   // Staging a conflict without leaving markers is a resolution, even when the text matches the overlay.
   // An unstaged file that still matches the overlay is not.
-  const unmerged = new Set(await gitPaths(dir, ['diff', '--name-only', '--diff-filter=U']));
+  const unmerged = new Set(unmergedListed.paths);
   const unresolved = [...new Set([
     ...conflictPaths(conflicts).filter((relative) => current[relative] === overlay[relative] && unmerged.has(relative)),
     ...marked,
@@ -292,14 +428,17 @@ export async function restoreUneditedConfig(dir: string, _commit: string, saved:
   await fs.rm(saved, { recursive: true, force: true });
   // `checkout` of the base copies staged those paths. Put the index back with the files, or a step that
   // edits nothing still looks dirty and the empty commit fails it.
-  const present = await presentAgentPaths(dir);
+  const present = await presentAgentPaths(dir, indexed.paths);
   if (present.length > 0) await git(dir, ['add', '-A', '--', ...present]);
   if (unresolved.length > 0) await restoreConflictStages(dir, conflicts, unresolved);
+  return undefined;
 }
 
-/** Agent paths in the worktree or the index. `git add` stages nothing when one of its paths matches neither. */
-async function presentAgentPaths(dir: string): Promise<string[]> {
-  const indexed = await gitPaths(dir, ['ls-files', '--', ...AGENT_PATHS]);
+/**
+ * Agent paths in the worktree or among `indexed`, the index's agent files. `git add` stages nothing when one of its paths
+ * matches neither.
+ */
+async function presentAgentPaths(dir: string, indexed: string[]): Promise<string[]> {
   const present: string[] = [];
   for (const relative of AGENT_PATHS) {
     const tracked = indexed.some((file) => file === relative || file.startsWith(`${relative}/`));
@@ -308,9 +447,9 @@ async function presentAgentPaths(dir: string): Promise<string[]> {
   return present;
 }
 
-async function gitPaths(dir: string, args: string[]): Promise<string[]> {
+async function gitPaths(dir: string, args: string[]): Promise<{ code: number; stderr: string; paths: string[] }> {
   const listed = await git(dir, [...args.slice(0, 1), '-z', ...args.slice(1)]);
-  return listed.stdout.split('\0').filter((file) => file !== '');
+  return { code: listed.code, stderr: listed.stderr, paths: listed.stdout.split('\0').filter((file) => file !== '') };
 }
 
 function conflictRecords(conflicts: string): { line: string; path: string }[] {
@@ -447,6 +586,8 @@ function descendantEdited(current: Record<string, string>, overlay: Record<strin
 /** Copies a file, directory, or symlink without rewriting the link or dropping its mode. */
 async function copyEntry(from: string, to: string): Promise<void> {
   const stats = await fs.lstat(from);
+  // A nested agent path such as .github/copilot-instructions.md has no parent in a fresh copy.
+  await fs.mkdir(path.dirname(to), { recursive: true });
   if (stats.isSymbolicLink()) {
     await fs.symlink(await fs.readlink(from), to);
     return;

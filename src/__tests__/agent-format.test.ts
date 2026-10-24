@@ -36,12 +36,12 @@ import {
   reverseFromOpencode,
   renderForTool,
   mergeReverseResults,
-  ALL_SUPPORTED_TOOLS,
 } from '../resources/agent-format.js';
 import type { AgentSpec, ToolName, ParseResult } from '../resources/agent-format.js';
 import { AgentsHandler } from '../resources/agents.js';
 import type { AgentResourceItem } from '../resources/agents.js';
 import type { TeamaiConfig, LocalConfig } from '../types.js';
+import { AGENT_TOOLS } from '../tools.js';
 
 // ─── Test helpers ─────────────────────────────────────────────────────────────
 
@@ -558,7 +558,7 @@ describe('renderForTool tool_extras dispatch', () => {
 
   it('only claude and tclaude render tool_extras.claude', () => {
     const spec = makeSpec({ tool_extras: { claude: { probe: 1 } } });
-    const reached = ALL_SUPPORTED_TOOLS.filter((tool) => renderForTool(spec, tool).content.includes('probe'));
+    const reached = AGENT_TOOLS.filter((tool) => renderForTool(spec, tool).content.includes('probe'));
     expect(reached).toEqual(['claude', 'tclaude']);
   });
 

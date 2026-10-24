@@ -31,7 +31,7 @@ import {
 import { getHermesHome } from './hermes-home.js';
 import { warnOnce } from './utils/warn-once.js';
 import { blobIdOf, historicalVersions } from './utils/team-history.js';
-import { installOf, locate } from './locate.js';
+import { installOf, locate, ownOf } from './locate.js';
 import { resolveOpenclawStateDir, resolveOpenclawWorkspace } from './openclaw-home.js';
 import { BUILTIN_SKILL_NAMES, LEGACY_BUILTIN_SKILL_NAMES } from './builtin-skills.js';
 import { getUserHome } from './utils/home.js';
@@ -1522,7 +1522,7 @@ async function legacyCopyKeeper(
     const configured = toolPaths[tool]?.skills;
     if (!configured) continue;
     const legacy = path.join(baseDir, configured);
-    if (legacy !== (await locate(tool, 'skills', install)).own) legacyRoots.push(legacy);
+    if (legacy !== ownOf(await locate(tool, 'skills', install))?.path) legacyRoots.push(legacy);
   }
   const history = await pathExists(path.join(repoDir, '.git'));
   return (skillName, sourcePath) => async (skillDir) => {

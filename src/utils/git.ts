@@ -227,10 +227,37 @@ export function createGitWithBlockTimeout(basePath?: string): SimpleGit {
  * With `paths`, commits those paths alone, taken literally, and leaves anything
  * else staged in the checkout out of the commit and still staged. Without, it
  * commits the whole index.
+ *
+ * With `identityFallback`, a commit git cannot attribute, as on a CI runner
+ * with no user.email, is made as `TeamAI <teamai@localhost>` like a workflow
+ * workspace commit. Only the git config keys left unset are filled in, so an
+ * identity the user configured is kept.
  */
-export function commitSkippingHooks(git: SimpleGit, message: string, paths?: readonly string[]) {
-  if (paths === undefined) return git.commit(message, { '--no-verify': null });
-  return git.raw(['--literal-pathspecs', 'commit', '--no-verify', '-m', message, '--', ...paths]);
+export async function commitSkippingHooks(
+  git: SimpleGit,
+  message: string,
+  paths?: readonly string[],
+  options: { identityFallback?: boolean } = {},
+) {
+  const identity = options.identityFallback ? await fallbackIdentityConfig(git) : [];
+  if (paths === undefined && identity.length === 0) return git.commit(message, { '--no-verify': null });
+  const commit = [...identity, '--literal-pathspecs', 'commit', '--no-verify', '-m', message];
+  return git.raw(paths === undefined ? commit : [...commit, '--', ...paths]);
+}
+
+/** `-c` arguments setting TeamAI's identity for each unset key, or none when git already resolves an author and committer. */
+async function fallbackIdentityConfig(git: SimpleGit): Promise<string[]> {
+  try {
+    await git.raw(['var', 'GIT_AUTHOR_IDENT']);
+    await git.raw(['var', 'GIT_COMMITTER_IDENT']);
+    return [];
+  } catch {
+    const unset = async (key: string) => (await git.raw(['config', '--get', key]).catch(() => '')).trim() === '';
+    return [
+      ...(await unset('user.name') ? ['-c', 'user.name=TeamAI'] : []),
+      ...(await unset('user.email') ? ['-c', 'user.email=teamai@localhost'] : []),
+    ];
+  }
 }
 
 /**

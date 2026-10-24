@@ -30,14 +30,17 @@ describe('isAtSharedRoot', () => {
 });
 
 describe('isPlaceableType', () => {
-  it('accepts the namespaced types and rejects the rest', () => {
-    expect(isPlaceableType('skills')).toBe(true);
-    expect(isPlaceableType('rules')).toBe(true);
-    expect(isPlaceableType('agents')).toBe(true);
-    // env is pushable but never namespaced; docs and hooks are not placed either.
-    expect(isPlaceableType('env')).toBe(false);
-    expect(isPlaceableType('docs')).toBe(false);
-    expect(isPlaceableType('hooks')).toBe(false);
+  it('accepts all 14 placeable resource types and rejects invalid ones', () => {
+    const validTypes = [
+      'skills', 'rules', 'agents', 'docs', 'env', 'hooks', 'mcp',
+      'models', 'claudemd', 'learnings', 'wiki', 'workflows', 'prompts', 'scorers',
+    ];
+    for (const t of validTypes) {
+      expect(isPlaceableType(t)).toBe(true);
+    }
+    expect(isPlaceableType('unknown')).toBe(false);
+    expect(isPlaceableType('')).toBe(false);
+    expect(isPlaceableType('config')).toBe(false);
   });
 });
 
@@ -45,6 +48,9 @@ describe('withNamespace', () => {
   it('inserts the namespace after the resource root, keeping the basename', () => {
     expect(withNamespace('rules/my-rule.md', 'knowledge-ns')).toBe('rules/knowledge-ns/my-rule.md');
     expect(withNamespace('skills/my-skill', 'skills-ns')).toBe('skills/skills-ns/my-skill');
+    expect(withNamespace('docs/guide.md', 'docs-ns')).toBe('docs/docs-ns/guide.md');
+    expect(withNamespace('workflows/ci.yaml', 'wf-ns')).toBe('workflows/wf-ns/ci.yaml');
+    expect(withNamespace('prompts/system.md', 'pr-ns')).toBe('prompts/pr-ns/system.md');
   });
 
   it('keeps an agent extension the caller does not know about', () => {
@@ -62,7 +68,22 @@ const manifest: ProjectsManifest = {
       name: 'Front App',
       description: '',
       // Deliberately all different: the axis a type resolves from is the point.
-      resources: { knowledge: ['fe-know'], skills: ['fe-skills'], learnings: [], agents: ['fe-agents'] },
+      resources: {
+        knowledge: ['fe-know'],
+        skills: ['fe-skills'],
+        learnings: ['fe-learnings'],
+        agents: ['fe-agents'],
+        docs: ['fe-docs'],
+        env: ['fe-env'],
+        hooks: ['fe-hooks'],
+        mcp: ['fe-mcp'],
+        models: ['fe-models'],
+        claudemd: ['fe-claudemd'],
+        wiki: ['fe-wiki'],
+        workflows: ['fe-workflows'],
+        prompts: ['fe-prompts'],
+        scorers: ['fe-scorers'],
+      },
     },
     {
       id: 'bare',
@@ -91,6 +112,16 @@ describe('resolveProjectNamespace', () => {
     expect(resolveProjectNamespace(manifest, 'front-app', 'rules')).toEqual({ ok: true, namespace: 'fe-know' });
     expect(resolveProjectNamespace(manifest, 'front-app', 'skills')).toEqual({ ok: true, namespace: 'fe-skills' });
     expect(resolveProjectNamespace(manifest, 'front-app', 'agents')).toEqual({ ok: true, namespace: 'fe-agents' });
+    expect(resolveProjectNamespace(manifest, 'front-app', 'docs')).toEqual({ ok: true, namespace: 'fe-docs' });
+    expect(resolveProjectNamespace(manifest, 'front-app', 'env')).toEqual({ ok: true, namespace: 'fe-env' });
+    expect(resolveProjectNamespace(manifest, 'front-app', 'hooks')).toEqual({ ok: true, namespace: 'fe-hooks' });
+    expect(resolveProjectNamespace(manifest, 'front-app', 'mcp')).toEqual({ ok: true, namespace: 'fe-mcp' });
+    expect(resolveProjectNamespace(manifest, 'front-app', 'models')).toEqual({ ok: true, namespace: 'fe-models' });
+    expect(resolveProjectNamespace(manifest, 'front-app', 'claudemd')).toEqual({ ok: true, namespace: 'fe-know' });
+    expect(resolveProjectNamespace(manifest, 'front-app', 'wiki')).toEqual({ ok: true, namespace: 'fe-wiki' });
+    expect(resolveProjectNamespace(manifest, 'front-app', 'workflows')).toEqual({ ok: true, namespace: 'fe-workflows' });
+    expect(resolveProjectNamespace(manifest, 'front-app', 'prompts')).toEqual({ ok: true, namespace: 'fe-prompts' });
+    expect(resolveProjectNamespace(manifest, 'front-app', 'scorers')).toEqual({ ok: true, namespace: 'fe-scorers' });
   });
 
   it('fails naming the type and the axis when the project declares none', () => {

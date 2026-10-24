@@ -19,10 +19,7 @@ const RoleResourceNamespacesSchema = z.object({
   // Optional: a role without `agents` receives root-level agents only, which
   // is what every manifest written before this key existed already got.
   agents: z.array(NamespaceSegmentSchema).default([]),
-  // learnings is accepted for backward compatibility but ignored at runtime.
-  // All learnings are shared flat across the entire team (no namespace isolation).
-  // It never becomes a directory here, so it stays a plain string: holding an old
-  // manifest to the namespace rule would reject it over a field nothing reads.
+  // learnings namespaces: roles and projects both contribute them (#1101).
   learnings: z.array(z.string()).optional(),
   // env, hooks, mcp, models, docs: optional, see HAND_DECLARED_RESOURCE_TYPES.
   ...HandDeclaredNamespacesShape,
@@ -46,11 +43,9 @@ export type TeamRole = z.infer<typeof RoleSchema>;
 export type RolesManifest = z.infer<typeof RolesManifestSchema>;
 
 /**
- * Active resource namespaces after resolving roles ∪ projects. `learnings` is
- * always present but only projects ever populate it (roles leave it empty — see
- * the note on RoleResourceNamespacesSchema). Kept as a superset of the role
- * resource types so role and project resolutions share one shape and can be
- * unioned directly.
+ * Active resource namespaces after resolving roles ∪ projects. Both dimensions
+ * contribute `learnings` (#1101). Kept as a superset of the role resource types
+ * so role and project resolutions share one shape and can be unioned directly.
  */
 export type ResourceNamespaces = Record<RoleResourceType | 'learnings', string[]>
   // Optional so a resolution built before a type existed (or a test double of
@@ -104,7 +99,7 @@ function validateManifestShape(raw: unknown): RolesManifest {
 /** Every namespace a roles manifest puts to use, with the role that declares it. */
 export function roleNamespaceEntries(manifest: RolesManifest): NamespaceEntry[] {
   return manifest.roles.flatMap((role) =>
-    NAMESPACED_RESOURCE_TYPES.flatMap((type) =>
+    [...NAMESPACED_RESOURCE_TYPES, 'learnings' as const].flatMap((type) =>
       (role.resources[type] ?? []).map((namespace) => ({ type, namespace, owner: `role ${role.id}` })),
     ),
   );
@@ -209,16 +204,17 @@ export function resolveRoleResourceNamespaces(input: {
     ...input.additionalRoles.map((roleId) => getRoleOrThrow(input.manifest, roleId)),
   ];
 
-  // Roles never contribute learnings namespaces; only projects do. Kept empty
-  // so the shape matches project resolution for a clean union at the call site.
-  // A hand-declared type (env, hooks, mcp, models, docs) is absent until one is active.
+  // Roles and projects both contribute learnings namespaces (#1101 comment:
+  // "Learnings should support --project and --role namespaces just like the
+  // other resources"). A hand-declared type (env, hooks, mcp, models, docs) is
+  // absent until one is active.
   const namespaces: ResourceNamespaces = { knowledge: [], skills: [], learnings: [], agents: [] };
 
-  for (const type of NAMESPACED_RESOURCE_TYPES) {
+  for (const type of [...NAMESPACED_RESOURCE_TYPES, 'learnings' as const]) {
     const seen = new Set<string>();
     const out: string[] = [];
     for (const role of resolvedRoles) {
-      for (const namespace of role.resources[type] ?? []) {
+      for (const namespace of (role.resources as Record<string, string[] | undefined>)[type] ?? []) {
         if (seen.has(namespace)) continue;
         seen.add(namespace);
         out.push(namespace);

@@ -3,7 +3,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { realpathSync } from 'node:fs';
-import { lstat, readdir, rm, stat } from 'node:fs/promises';
+import { lstat, readdir, rm } from 'node:fs/promises';
 import { readJson, readJsonObject, writeJson, readFileSafe, writeFile, expandHome, ensureDir, pathExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import {
@@ -18,6 +18,8 @@ import {
   resolveLegacyProjectHookScope,
   resolveToolBaseDir,
   scopedToolPaths,
+  hookSettingsPath,
+  hookToolPathsForConfig,
   toolGateRoot,
 } from './types.js';
 import type { HookDef, TeamaiConfig, LocalConfig, ManagedMcpManifest, Scope } from './types.js';
@@ -44,8 +46,10 @@ import { historicalContents } from './utils/team-history.js';
 import { getUserHome } from './utils/home.js';
 import { LEGACY_CLAUDE_HOOK_OTHER_HOST_SKIP, claudeHookOtherHostSkip, copilotRunsEntries } from './claude-hook-host.js';
 import { gitCommonDir, listWorktrees, resolveAnchors } from './utils/git.js';
-import { findOnPath } from './utils/lookpath.js';
-import type { CodexHookTrustReport, CodexTrust } from './codex-trust.js';
+import {
+  codexBuildSkewMessage, codexBuildsIdentity, keepCodexHookTrust, readCodexHookTrust, removeOwnedCodexProjectTrust, trustCodexHooks,
+  type CodexHookTrustReport, type CodexTrust,
+} from './codex-trust.js';
 import { codexDispatcherCheckouts, codexDispatcherProjects, dispatchedCodexHooks, isCodexTeamHookDispatcher, reconcileCodexDispatchers, runsFromCodexDispatcher, setCodexDispatcherHooks } from './codex-team-hooks.js';
 import type { CodexTeamHook } from './codex-team-hooks.js';
 
@@ -239,6 +243,19 @@ export function isCodexTrustGatedTool(tool: string): boolean {
 }
 
 /**
+ * Whether teamai keeps Codex hook trust, and in which Codex home, as the
+ * active config says: a workspace or project `config.yaml` can turn it off or
+ * move the home without the member's user config showing it.
+ */
+export type CodexTrustPolicy = { kind: 'enabled'; codexHome: string } | { kind: 'disabled' };
+
+export function codexTrustPolicy(localConfig: Pick<LocalConfig, 'codexTrustEnabled' | 'toolRoots'>): CodexTrustPolicy {
+  return localConfig.codexTrustEnabled === false
+    ? { kind: 'disabled' }
+    : { kind: 'enabled', codexHome: resolveToolRootDir(CODEX_TOOL_ID, DEFAULT_CODEX_ROOT, localConfig.toolRoots) };
+}
+
+/**
  * One-line reminder that Codex may require the user to trust newly written
  * hooks before they run, for when teamai could not trust them itself (no
  * `codex` on PATH, a failure, or the member's `codexTrustEnabled: false`).
@@ -257,6 +274,7 @@ export function codexTrustReminder(): string {
  */
 export function reportCodexTrust(trust: CodexTrust | undefined, mode: 'all' | 'problems'): void {
   if (!trust) return;
+  if (trust.skew) log.warn(codexBuildSkewMessage(trust.skew));
   switch (trust.kind) {
     case 'trusted':
       if (trust.hooks > 0 && mode === 'all') log.success(`Trusted ${trust.hooks} teamai hook(s) in Codex`);
@@ -354,6 +372,8 @@ export interface ReconcileHooksOptions {
    * tracked settings while the team hooks live in `settings.local.json` (#915).
    */
   dropTeamEntries?: boolean;
+  /** The active config's Codex trust; without it, a write that moves a Codex group writes no trust and starts no Codex. */
+  codexTrust?: CodexTrustPolicy;
 }
 
 /** Every team hook any revision of the team repo's hook files declares, read once. */
@@ -1213,7 +1233,7 @@ export async function stopCodexTeamHookDispatch(
   }
   if (!homeFile) return null;
   try {
-    await reconcileCodexDispatchers(homeFile);
+    await reconcileCodexDispatchers(homeFile, codexTrustPolicy(localConfig));
     return null;
   } catch (e) {
     // The entries come back, each checkout with its own hooks, so the retry still finds the dispatcher entries to remove.
@@ -1327,7 +1347,7 @@ async function placeCodexTeamHooks(
   file: string,
   teamDefs: HookDef[],
   recorded: ManagedHookRecord[],
-  opts: { removeAll?: boolean; teamHookHistory?: TeamHookHistory; heldTeamHookIds?: readonly string[] },
+  opts: { removeAll?: boolean; teamHookHistory?: TeamHookHistory; heldTeamHookIds?: readonly string[]; codexTrust?: CodexTrustPolicy },
 ): Promise<CodexTeamHookPlace> {
   const current = await runsFromCodexDispatcher(placement.project, placement.checkout);
   const held = new Set(opts.removeAll ? [] : opts.heldTeamHookIds ?? []);
@@ -1358,7 +1378,7 @@ async function placeCodexTeamHooks(
   // The project file gives up the team hooks only once the dispatcher entries that run them are in place.
   try {
     if (!placement.homeFile) throw new Error('Codex has no user hook file here');
-    await reconcileCodexDispatchers(placement.homeFile);
+    await reconcileCodexDispatchers(placement.homeFile, opts.codexTrust ?? { kind: 'disabled' });
     return { dispatched: true, heldIntoFile: [], heldOutOfFile: heldInFile.map((hook) => hook.id) };
   } catch (e) {
     await setCodexDispatcherHooks(placement.project, null, placement.checkout);
@@ -1409,7 +1429,7 @@ async function reconcileSelfLocalTeamHooks(
   tool: string,
   teamDefs: HookDef[],
   manifestPath: string,
-  opts: { relocate: boolean; removeAll?: boolean; builtinOverride?: BuiltinHookOverride; teamHookHistory?: TeamHookHistory; heldTeamHookIds?: readonly string[] },
+  opts: { relocate: boolean; removeAll?: boolean; builtinOverride?: BuiltinHookOverride; teamHookHistory?: TeamHookHistory; heldTeamHookIds?: readonly string[]; codexTrust?: CodexTrustPolicy },
 ): Promise<void> {
   const relocate = opts.relocate && !opts.removeAll;
   if (relocate || await hasTeamaiHooks(localFile, tool, manifestPath)) {
@@ -1418,12 +1438,13 @@ async function reconcileSelfLocalTeamHooks(
       removeAll: !relocate,
       teamHookHistory: opts.teamHookHistory,
       heldTeamHookIds: opts.heldTeamHookIds,
+      codexTrust: opts.codexTrust,
     });
     if (!relocate) await removeEmptyHookFile(localFile);
   }
   await reconcileHooks(settingsPath, tool, relocate ? [] : teamDefs, relocate
-    ? { builtinOverride: opts.builtinOverride, dropTeamEntries: true }
-    : { manifestPath, removeAll: opts.removeAll, builtinOverride: opts.builtinOverride, teamHookHistory: opts.teamHookHistory, heldTeamHookIds: opts.heldTeamHookIds });
+    ? { builtinOverride: opts.builtinOverride, dropTeamEntries: true, codexTrust: opts.codexTrust }
+    : { manifestPath, removeAll: opts.removeAll, builtinOverride: opts.builtinOverride, teamHookHistory: opts.teamHookHistory, heldTeamHookIds: opts.heldTeamHookIds, codexTrust: opts.codexTrust });
 }
 
 /** Delete an untracked hook file that holds nothing but empty hook lists. */
@@ -1512,7 +1533,14 @@ function toClaudeEntry(def: HookDef): HookMatcher {
 }
 
 function toCursorEntry(def: HookDef): CursorHookEntry {
-  const entry: CursorHookEntry = { command: def.command };
+  // Cursor stores one `command` and, on Windows, runs it through PowerShell.
+  // Inbox Windows PowerShell rejects `||`; every PowerShell also needs `&` before
+  // a quoted Git Bash path. The per-machine hooks.json gets the same rewrite
+  // Copilot puts in its `powershell` field. POSIX injects keep `bash -lc … || true`.
+  // A team-authored command does not match the builtin wrapper and is left as written.
+  const entry: CursorHookEntry = {
+    command: process.platform === 'win32' ? copilotPowershellCommand(def.command) : def.command,
+  };
   if (def.timeout !== undefined) entry.timeout = def.timeout;
   if (def.matcher && def.matcher !== '*') entry.matcher = def.matcher;
   return entry;
@@ -2055,6 +2083,83 @@ function codexFormatDocument(tool: string, hooksJson: CodexHooksJson): CodexHook
     : hooksJson;
 }
 
+/**
+ * One group of an event after an edit of a Codex-format hooks file: `keep`
+ * names a group of the file as it was read, by its index there; `write` is
+ * content teamai renders. Only a `keep` carries a member's approval to a new
+ * position, so a copy of a group's content never inherits one.
+ */
+export type CodexGroupSlot = { keep: number } | { write: CodexHookMatcher };
+
+/** The groups of each event an edit changes, in their new order; null deletes the event. */
+type CodexHookPlan = Record<string, CodexGroupSlot[] | null>;
+
+/**
+ * Write a Codex-format hooks file (Codex, its internal variants, Muse) as
+ * `plan` lays out the events it changes; one that does not parse is left
+ * byte-identical (#993). Codex keys a member's approval of a group by its
+ * position (#1250), so a write that moves a kept group in the public Codex's
+ * file carries the approvals of the groups that moved to their new keys, unless
+ * `codexTrust` is disabled; no other write starts Codex. True when the file was
+ * written.
+ */
+export async function editCodexHookFile(
+  file: string,
+  tool: string,
+  plan: (hooks: Readonly<Record<string, readonly CodexHookMatcher[]>>) => CodexHookPlan,
+  codexTrust: CodexTrustPolicy,
+): Promise<boolean> {
+  const doc = await readHookFile<CodexHooksJson>(file, {});
+  const all = doc.hooks && typeof doc.hooks === 'object' && !Array.isArray(doc.hooks) ? doc.hooks : {};
+  const hooks = Object.fromEntries(Object.entries(all).filter(([, groups]) => Array.isArray(groups)));
+  const next = { ...all };
+  const planned = plan(hooks);
+  const retained = new Map<string, string>();
+  for (const [event, groups] of Object.entries(hooks)) {
+    if (Object.hasOwn(planned, event)) continue;
+    groups.forEach((group, index) => group?.hooks?.forEach((_, handler) => {
+      const key = codexHookKey(file, event, index, handler);
+      retained.set(key, key);
+    }));
+  }
+  let changed = false;
+  for (const [event, slots] of Object.entries(planned)) {
+    const before = hooks[event] ?? [];
+    if (slots === null) {
+      changed ||= Object.hasOwn(hooks, event);
+      delete next[event];
+      continue;
+    }
+    const groups = slots.map((slot, index) => {
+      const from = 'keep' in slot ? slot.keep : isDeepStrictEqual(slot.write, before[index]) ? index : undefined;
+      const group = 'keep' in slot ? before[slot.keep] : slot.write;
+      if (from !== undefined) {
+        group?.hooks?.forEach((_, handler) => retained.set(codexHookKey(file, event, index, handler), codexHookKey(file, event, from, handler)));
+      }
+      return group;
+    });
+    if (JSON.stringify(groups) === JSON.stringify(before)) continue;
+    next[event] = groups;
+    changed = true;
+  }
+  if (!changed) return false;
+  const write = async (): Promise<void> => {
+    await ensureDir(path.dirname(file));
+    await writeJson(file, codexFormatDocument(tool, { ...doc, hooks: next }));
+  };
+  if (codexTrust.kind === 'disabled' || !isCodexTrustGatedTool(tool) || [...retained].every(([to, from]) => to === from)) {
+    await write();
+    return true;
+  }
+  const dir = path.dirname(file);
+  const cwd = canonicalProjectRoot(dir) === canonicalProjectRoot(codexTrust.codexHome) ? getUserHome() : path.dirname(dir);
+  const trust = await keepCodexHookTrust({ codexHome: codexTrust.codexHome, cwd, file }, retained, write);
+  if (trust.kind === 'failed') {
+    log.warn(`Codex may skip the hooks that moved in ${file} until you approve them in /hooks: ${trust.reason}`);
+  }
+  return true;
+}
+
 async function reconcileCodexFormat(
   hooksPath: string,
   tool: string,
@@ -2062,13 +2167,11 @@ async function reconcileCodexFormat(
   opts: ReconcileHooksOptions,
   priorRecords: ManagedHookRecord[],
   isHeld: HeldEntryCheck,
-): Promise<ManagedHookRecord[]> {
+): Promise<{ records: ManagedHookRecord[]; newIndexByOld: Map<string, Map<number, number>> }> {
   const expanded = expandHome(hooksPath);
   await ensureDir(path.dirname(expanded));
-  const hooksJson: CodexHooksJson = await readHookFile<CodexHooksJson>(expanded, {});
-  if (!hooksJson.hooks) hooksJson.hooks = {};
 
-  const isManaged = (event: string, index: number, entries: CodexHookMatcher[]): boolean => {
+  const isManaged = (event: string, index: number, entries: readonly CodexHookMatcher[]): boolean => {
     const entry = entries[index];
     const cmd = entry.hooks?.[0]?.command ?? '';
     // The team-hook dispatchers have their own pass (reconcileCodexDispatchers).
@@ -2083,44 +2186,55 @@ async function reconcileCodexFormat(
 
   const defs = opts.removeAll ? [] : desiredDefs(tool, teamDefs, opts);
   const eventOrder = desiredEventOrder(defs, (e) => e);
-  const events = [...eventOrder, ...Object.keys(hooksJson.hooks).filter((e) => !eventOrder.includes(e))];
 
-  let changed = false;
   const records: ManagedHookRecord[] = [];
-  for (const event of events) {
-    const existing = hooksJson.hooks[event] ?? [];
-    const untouched = existing.filter((_, index) => isHeld(event, existing, index) || !isManaged(event, index, existing));
-    const eventDefs = defs.filter((d) => d.event === event);
-    const desiredEntries = eventDefs.map(toCodexEntry);
-    const newArr = [...untouched, ...desiredEntries];
-    eventDefs.forEach((def, index) => {
-      if (def.source !== 'team') return;
-      records.push({
-        id: def.key, event, command: def.command,
-        ...(def.matcher && def.matcher !== '*' ? { matcher: def.matcher } : {}),
-        ...(tool === CODEX_TOOL_ID ? {
-          codexEntryIndex: untouched.length + index,
-          codexEntry: desiredEntries[index],
-        } : {}),
+  const newIndexByOld = new Map<string, Map<number, number>>();
+  const changed = await editCodexHookFile(expanded, tool, (hooks) => Object.fromEntries(
+    [...eventOrder, ...Object.keys(hooks).filter((e) => !eventOrder.includes(e))].map((event) => {
+      const existing = hooks[event] ?? [];
+      const eventDefs = defs.filter((d) => d.event === event);
+      const desiredEntries = eventDefs.map(toCodexEntry);
+      const slots: CodexGroupSlot[] = [];
+      const shifts = new Map<number, number>();
+      const placedAt: number[] = [];
+      const place = (write: CodexHookMatcher): void => {
+        placedAt.push(slots.length);
+        slots.push({ write });
+      };
+      existing.forEach((_, index) => {
+        if (isHeld(event, existing, index) || !isManaged(event, index, existing)) {
+          if (index !== slots.length) shifts.set(index, slots.length);
+          slots.push({ keep: index });
+        } else if (placedAt.length < desiredEntries.length) {
+          place(desiredEntries[placedAt.length]);
+        }
       });
-    });
-    if (JSON.stringify(existing) !== JSON.stringify(newArr)) {
-      hooksJson.hooks[event] = newArr;
-      changed = true;
-    }
-  }
+      desiredEntries.slice(placedAt.length).forEach(place);
+      if (shifts.size > 0) newIndexByOld.set(event, shifts);
+      eventDefs.forEach((def, index) => {
+        if (def.source !== 'team') return;
+        records.push({
+          id: def.key, event, command: def.command,
+          ...(def.matcher && def.matcher !== '*' ? { matcher: def.matcher } : {}),
+          ...(tool === CODEX_TOOL_ID ? {
+            codexEntryIndex: placedAt[index],
+            codexEntry: desiredEntries[index],
+          } : {}),
+        });
+      });
+      return [event, slots];
+    })), opts.codexTrust ?? { kind: 'disabled' });
 
   if (changed) {
-    await writeJson(expanded, codexFormatDocument(tool, hooksJson));
     log.success(`${opts.removeAll ? 'Removed' : 'Updated'} teamai hooks in ${hooksPath}`);
   } else {
     log.debug(`teamai hooks already up-to-date in ${hooksPath}`);
   }
-  return records;
+  return { records, newIndexByOld };
 }
 
 /** Recover only a unique match on the definition or fields the manifest recorded. */
-function ownsCodexEntry(record: ManagedHookRecord, event: string, index: number, entries: CodexHookMatcher[]): boolean {
+function ownsCodexEntry(record: ManagedHookRecord, event: string, index: number, entries: readonly CodexHookMatcher[]): boolean {
   if (record.event !== event) return false;
   const entry = entries[index];
   if (record.codexEntry && record.codexEntryIndex === index && isDeepStrictEqual(entry, record.codexEntry)) return true;
@@ -2177,11 +2291,11 @@ async function reconcileZcodeFormat(
     'process.exit(status ?? 1);',
     '',
   ].join('\n');
-  if (opts.removeAll) {
+  if (opts.removeAll && !opts.teamOnly) {
     // Unconditional: after a normal inject the file equals the template, so a
     // content-diff gate never fires and the script would be left behind.
     await rm(launcherPath, { force: true });
-  } else if (process.platform === 'win32') {
+  } else if (!opts.removeAll && process.platform === 'win32') {
     // POSIX never runs the launcher — writing it there would litter ~/.zcode
     // with a script no entry references.
     const existingLauncher = await readFileSafe(launcherPath);
@@ -2256,6 +2370,10 @@ async function reconcileZcodeFormat(
   // same strategy as the Codex format.
   const isManaged = (entry: ZcodeHookMatcher): boolean => {
     const cmd = zcodeEntryCommand(entry);
+    if (opts.teamOnly) return priorTeamCommands.has(cmd);
+    if (opts.teamHookProjectRoot && isProjectGatedCommand(cmd)) {
+      return isGatedForProject(cmd, opts.teamHookProjectRoot) || priorTeamCommands.has(cmd);
+    }
     return TEAMAI_COMMAND_MARKERS.some((marker) => cmd.includes(marker)) || priorTeamCommands.has(cmd);
   };
 
@@ -2345,6 +2463,7 @@ export async function applyAgentHook(
   settingsPath: string,
   tool: string,
   def: AgentHookDef,
+  codexTrust: CodexTrustPolicy,
 ): Promise<void> {
   const format = detectFormat(tool);
   // ZCode's strict schema rejects its whole config over a Claude-shaped `hooks` key (#1220).
@@ -2369,14 +2488,17 @@ export async function applyAgentHook(
   // manifest, the authoritative record for codex teardown). Backends must use
   // a unique command per codex agent-hook slug so replace/remove stay precise.
   if (format === 'codex') {
-    const hooksJson: CodexHooksJson = await readHookFile<CodexHooksJson>(expanded, {});
-    if (!hooksJson.hooks) hooksJson.hooks = {};
-    const existing = hooksJson.hooks[def.event] ?? [];
-    const untouched = existing.filter((e) => (e.hooks?.[0]?.command ?? '') !== def.command);
-    const newArr = [...untouched, toCodexEntry(hookDef)];
-    if (JSON.stringify(existing) !== JSON.stringify(newArr)) {
-      hooksJson.hooks[def.event] = newArr;
-      await writeJson(expanded, codexFormatDocument(tool, hooksJson));
+    const entry = toCodexEntry(hookDef);
+    const isAgent = (group: CodexHookMatcher): boolean => (group.hooks?.[0]?.command ?? '') === def.command;
+    const written = await editCodexHookFile(expanded, tool, (hooks) => {
+      const existing = hooks[def.event] ?? [];
+      const at = existing.findIndex(isAgent);
+      const slots = existing.flatMap((group, index): CodexGroupSlot[] =>
+        !isAgent(group) ? [{ keep: index }] : index === at ? [{ write: entry }] : []);
+      if (at < 0) slots.push({ write: entry });
+      return { [def.event]: slots };
+    }, codexTrust);
+    if (written) {
       log.success(`Installed agent hook [${def.slug}] in ${settingsPath}`);
     } else {
       log.debug(`agent hook [${def.slug}] already up-to-date in ${settingsPath}`);
@@ -2400,14 +2522,14 @@ export async function applyAgentHook(
 /**
  * Remove a single agent hook from a tool's settings file by slug (claude) or
  * command (codex). Silent if the file does not exist or there is no matching entry.
- * Only writes when content has actually changed. Codex returns each retained
- * handler's new key mapped to its original key for preserving approval.
+ * Only writes when content has actually changed.
  */
 export async function removeAgentHook(
   settingsPath: string,
   tool: string,
   opts: { slug: string; command?: string },
-): Promise<ReadonlyMap<string, string> | void> {
+  codexTrust: CodexTrustPolicy,
+): Promise<void> {
   const expanded = expandHome(settingsPath);
   if (!(await pathExists(expanded))) return;
   const format = detectFormat(tool);
@@ -2417,35 +2539,12 @@ export async function removeAgentHook(
   // for codex teardown.
   if (format === 'codex') {
     if (!opts.command) return;
-    const hooksJson: CodexHooksJson = await readHookFile<CodexHooksJson>(expanded, {});
-    if (!hooksJson.hooks) return;
-    const retained = new Map<string, string>();
-    let changed = false;
-    for (const event of Object.keys(hooksJson.hooks)) {
-      const before = hooksJson.hooks[event];
-      const after: CodexHookMatcher[] = [];
-      for (const [index, group] of before.entries()) {
-        if ((group.hooks?.[0]?.command ?? '') === opts.command) continue;
-        group.hooks?.forEach((_, handler) => retained.set(
-          codexHookKey(expanded, event, after.length, handler),
-          codexHookKey(expanded, event, index, handler),
-        ));
-        after.push(group);
-      }
-      if (after.length !== before.length) {
-        changed = true;
-        if (after.length === 0) {
-          delete hooksJson.hooks[event];
-        } else {
-          hooksJson.hooks[event] = after;
-        }
-      }
-    }
-    if (changed) {
-      await writeJson(expanded, hooksJson);
-      log.success(`Removed agent hook [${opts.slug}] from ${settingsPath}`);
-    }
-    return retained;
+    const written = await editCodexHookFile(expanded, tool, (hooks) => Object.fromEntries(
+      Object.entries(hooks).flatMap(([event, groups]): Array<[string, CodexGroupSlot[] | null]> => {
+        const kept = groups.flatMap((group, index) => (group.hooks?.[0]?.command ?? '') === opts.command ? [] : [{ keep: index }]);
+        return kept.length === groups.length ? [] : [[event, kept.length > 0 ? kept : null]];
+      })), codexTrust);
+    if (written) log.success(`Removed agent hook [${opts.slug}] from ${settingsPath}`);
   } else {
     const settings: ClaudeSettingsJson = await readHookFile<ClaudeSettingsJson>(expanded, {});
     if (!settings.hooks) return;
@@ -2506,6 +2605,7 @@ export async function reconcileHooks(
       root: target.worktreeScoped ? undefined : target.root,
       removeAll: opts.removeAll,
       teamHookHistory: opts.teamHookHistory,
+      codexTrust: opts.codexTrust,
     });
   }
   const teamActive = !!opts.manifestPath || !!opts.dropTeamEntries;
@@ -2546,13 +2646,13 @@ export async function reconcileHooks(
   const priorTeamCommands = new Set(priorRecords.map((r) => r.command));
 
   const format = detectFormat(tool);
-  let codexRecords: ManagedHookRecord[] | undefined;
+  let codex: Awaited<ReturnType<typeof reconcileCodexFormat>> | undefined;
   if (format === 'cursor') {
     await reconcileCursorFormat(settingsPath, tool, scopedDefs, opts, priorTeamCommands, isHeld);
   } else if (format === 'copilot') {
     await reconcileCopilotFormat(settingsPath, tool, scopedDefs, opts, priorTeamCommands, isHeld);
   } else if (format === 'codex') {
-    codexRecords = await reconcileCodexFormat(settingsPath, tool, scopedDefs, opts, priorRecords, isHeld);
+    codex = await reconcileCodexFormat(settingsPath, tool, scopedDefs, opts, priorRecords, isHeld);
   } else if (format === 'zcode') {
     await reconcileZcodeFormat(settingsPath, tool, scopedDefs, opts, priorTeamCommands, isHeld);
   } else {
@@ -2566,16 +2666,20 @@ export async function reconcileHooks(
 
   // Update the manifest's team-hook index for this tool (when manifest is active).
   if (opts.manifestPath && manifest) {
+    const followCodexMove = (record: ManagedHookRecord): ManagedHookRecord => {
+      const index = record.codexEntryIndex === undefined ? undefined : codex?.newIndexByOld.get(record.event)?.get(record.codexEntryIndex);
+      return index === undefined ? record : { ...record, codexEntryIndex: index };
+    };
     const records = [
-      ...codexRecords ?? manifestRecordsForTool(teamDefs, tool, !!opts.removeAll, opts.teamHookProjectRoot, opts.teamHookChildRoots),
-      ...heldRecords.filter((r) => keptHeld.has(r)).map((r) => ({ ...r, command: keptHeld.get(r)! })),
+      ...codex?.records ?? manifestRecordsForTool(teamDefs, tool, !!opts.removeAll, opts.teamHookProjectRoot, opts.teamHookChildRoots),
+      ...heldRecords.filter((r) => keptHeld.has(r)).map((r) => followCodexMove({ ...r, command: keptHeld.get(r)! })),
     ];
     const prev = manifest[tool] ?? [];
     // Main-checkout team-only files belong to one project; their old gated
     // records are consumed on migration. HOME retains the other projects.
-    const retained = opts.teamHookProjectRoot
+    const retained = (opts.teamHookProjectRoot
       ? prev.filter((r) => !isGatedForProject(r.command, opts.teamHookProjectRoot!))
-      : prev.filter((r) => !opts.teamOnly && isProjectGatedCommand(r.command));
+      : prev.filter((r) => !opts.teamOnly && isProjectGatedCommand(r.command))).map(followCodexMove);
     const nextRecords = [...retained, ...records];
     const sameAsPrev = JSON.stringify(prev) === JSON.stringify(nextRecords);
     const hadEntry = Object.prototype.hasOwnProperty.call(manifest, tool);
@@ -2598,8 +2702,8 @@ export async function reconcileHooks(
 // ─── Back-compatible public API (built-in A only) ───────────
 
 /** Inject teamai built-in hooks into a tool's settings/hooks file. */
-export async function injectHooks(settingsPath: string, tool?: string): Promise<void> {
-  await reconcileHooks(settingsPath, tool ?? 'claude', []);
+export async function injectHooks(settingsPath: string, tool?: string, codexTrust?: CodexTrustPolicy): Promise<void> {
+  await reconcileHooks(settingsPath, tool ?? 'claude', [], { codexTrust });
 }
 
 /** Remove all teamai hooks from a tool's settings/hooks file. */
@@ -2900,7 +3004,7 @@ async function reconcilePiExtension(
  * Only writes to tools whose root directory already exists on disk,
  * preventing creation of config dirs for tools the user hasn't installed.
  */
-export async function injectHooksToAllTools(toolPaths: Record<string, { settings?: string }>, baseDir?: string, filterAgents?: string[], toolRoots?: Record<string, string>): Promise<void> {
+export async function injectHooksToAllTools(toolPaths: Record<string, { settings?: string }>, baseDir?: string, filterAgents?: string[], toolRoots?: Record<string, string>, codexTrust?: CodexTrustPolicy): Promise<void> {
   const resolvedBaseDir = baseDir ?? getUserHome();
   const skipped = skipToolsWithoutShell(
     Object.keys(toolPaths).filter(t => !filterAgents || filterAgents.includes(t)),
@@ -2915,11 +3019,11 @@ export async function injectHooksToAllTools(toolPaths: Record<string, { settings
         log.warn(`Failed to inject Pi hook: ${(e as Error).message}`);
       }
     } else if (paths.settings) {
-      const toolRoot = path.join(resolvedBaseDir, toolGateRoot(tool, paths.settings, toolRoots));
+      const toolRoot = hookSettingsPath(tool, resolvedBaseDir, toolGateRoot(tool, paths.settings, toolRoots));
       if (!await pathExists(toolRoot)) continue;
-      const settingsPath = path.join(resolvedBaseDir, paths.settings);
+      const settingsPath = hookSettingsPath(tool, resolvedBaseDir, paths.settings);
       try {
-        await injectHooks(settingsPath, tool);
+        await injectHooks(settingsPath, tool, codexTrust);
       } catch (e) {
         log.warn(`Failed to inject hook into ${tool}: ${(e as Error).message}`);
       }
@@ -3011,6 +3115,7 @@ export async function reconcileHooksToAllTools(
     codexTeamHooks?: CodexTeamHookPlacement;
     /** Collects the tools whose hook files a write failure left as they were. */
     unwritten?: string[];
+    codexTrust?: CodexTrustPolicy;
   } = {},
 ): Promise<Set<string>> {
   // Without the manifest, reconcileHooks manages the built-in entries only.
@@ -3162,7 +3267,7 @@ export async function reconcileHooksToAllTools(
     // ensureDir — making uninstalled tools look installed and pulling skills
     // into them on later `pull`s.
     const gateRoot = toolGateRoot(tool, paths.settings, opts.toolRoots);
-    const toolRoot = path.join(baseDir, gateRoot);
+    const toolRoot = opts.settingsOnly ? path.join(baseDir, gateRoot) : hookSettingsPath(tool, baseDir, gateRoot);
     const installedRoot = opts.installedBaseDir
       ? path.join(opts.installedBaseDir, gateRoot)
       : toolRoot;
@@ -3173,7 +3278,8 @@ export async function reconcileHooksToAllTools(
     // Existing main-checkout hooks can be removed after HOME was deleted or
     // relocated. Do not recreate the missing HOME root just to remove them.
     if (!installed && !(opts.removeAll && mainFile)) continue;
-    const settingsPath = path.join(baseDir, paths.settings);
+    // A legacy-project sweep deliberately edits the old project file.
+    const settingsPath = opts.settingsOnly ? path.join(baseDir, paths.settings) : hookSettingsPath(tool, baseDir, paths.settings);
     const settingsFileKey = path.resolve(settingsPath);
     if (claimedSettingsFiles.has(settingsFileKey)) continue;
     claimedSettingsFiles.add(settingsFileKey);
@@ -3185,7 +3291,7 @@ export async function reconcileHooksToAllTools(
       const placed = codexFile === null ? null : await placeCodexTeamHooks(opts.codexTeamHooks!, codexFile, defs, [
         ...(await readManifest(opts.mainCheckout && mainFile ? opts.mainCheckout.manifestPath : manifestPath))[tool] ?? [],
         ...(opts.mainCheckout && mainFile ? (await readManifest(legacyManagedHooksPath(opts.mainCheckout.root)))[tool] ?? [] : []),
-      ], { removeAll: opts.removeAll, teamHookHistory: opts.teamHookHistory, heldTeamHookIds: opts.heldTeamHookIds });
+      ], { removeAll: opts.removeAll, teamHookHistory: opts.teamHookHistory, heldTeamHookIds: opts.heldTeamHookIds, codexTrust: opts.codexTrust });
       // Dispatched: teamai's entries leave the file, through its manifest, a held one the dispatcher took over included.
       const fileDefs = placed?.dispatched ? [] : [...defs, ...placed?.heldIntoFile ?? []];
       const heldTeamHookIds = placed?.heldOutOfFile.length
@@ -3200,6 +3306,7 @@ export async function reconcileHooksToAllTools(
               builtinOverride: opts.builtinOverride,
               teamHookProjectRoot: root,
               teamHookHistory: opts.teamHookHistory,
+              codexTrust: opts.codexTrust,
             });
           }
         } else if (localFile && !opts.builtinsOnly) {
@@ -3209,16 +3316,20 @@ export async function reconcileHooksToAllTools(
             builtinOverride: opts.builtinOverride,
             teamHookHistory: opts.teamHookHistory,
             heldTeamHookIds,
+            codexTrust: opts.codexTrust,
           });
         } else {
           await reconcileHooks(settingsPath, tool, fileDefs, {
             manifestPath: teamManifestPath,
             removeAll: opts.removeAll,
             builtinOverride: opts.builtinOverride,
-            teamHookProjectRoot: opts.teamHookProjectRoot,
+            teamHookProjectRoot: tool === 'zcode' && opts.scope === 'project'
+              ? opts.installedBaseDir ?? baseDir : opts.teamHookProjectRoot,
+            ...(tool === 'zcode' && opts.scope === 'project' && opts.removeAll ? { teamOnly: true } : {}),
             ...(opts.teamHookChildRoots ? { teamHookChildRoots: opts.teamHookChildRoots } : {}),
             heldTeamHookIds,
             teamHookHistory: opts.teamHookHistory,
+            codexTrust: opts.codexTrust,
           });
         }
       }
@@ -3234,6 +3345,7 @@ export async function reconcileHooksToAllTools(
           removeAll: opts.removeAll,
           teamHookHistory: opts.teamHookHistory,
           heldTeamHookIds,
+          codexTrust: opts.codexTrust,
         });
         reconciledMainTools.add(tool);
       }
@@ -3265,6 +3377,7 @@ async function reconcileMainCheckoutTeamHooks(
     removeAll?: boolean;
     teamHookHistory?: TeamHookHistory;
     heldTeamHookIds?: readonly string[];
+    codexTrust?: CodexTrustPolicy;
   },
 ): Promise<void> {
   const { checkoutManifestPath, sharedWithOtherInstall, current, root, ...reconcileOpts } = opts;
@@ -3302,7 +3415,7 @@ async function reconcileMainCheckoutTeamHooks(
       await writeJson(expandHome(opts.manifestPath), manifest);
       const ownerManifestPath = checkoutManifestPath ?? (otherHasOwnManifest ? opts.manifestPath : undefined);
       if (ownerManifestPath) {
-        await removeCheckoutTeamHooks(file, tool, ownerManifestPath, opts.manifestPath, canonicalRoot ?? undefined);
+        await removeCheckoutTeamHooks(file, tool, ownerManifestPath, opts.manifestPath, canonicalRoot ?? undefined, opts.codexTrust);
       }
       return;
     }
@@ -3366,7 +3479,9 @@ async function reconcileMainCheckoutTeamHooks(
 }
 
 /** Keep surviving legacy ownership positions aligned when a shared file shrinks. */
-async function removeCheckoutTeamHooks(file: string, tool: string, manifestPath: string, sharedManifestPath: string, root?: string): Promise<void> {
+async function removeCheckoutTeamHooks(
+  file: string, tool: string, manifestPath: string, sharedManifestPath: string, root?: string, codexTrust?: CodexTrustPolicy,
+): Promise<void> {
   const before = tool === CODEX_TOOL_ID && root ? await readJson<CodexHooksJson>(file) : null;
   const owned = before ? (await readManifest(manifestPath))[tool] ?? [] : [];
   const surviving = new Map<string, number[]>();
@@ -3375,7 +3490,7 @@ async function removeCheckoutTeamHooks(file: string, tool: string, manifestPath:
       isExactBuiltinEntry(event, tool, entry) || owned.some((record) => ownsCodexEntry(record, event, index, entries))
         ? [] : [index]));
   }
-  await reconcileHooks(file, tool, [], { manifestPath, removeAll: true, teamOnly: true });
+  await reconcileHooks(file, tool, [], { manifestPath, removeAll: true, teamOnly: true, codexTrust });
   if (!before?.hooks || !root) return;
   const after = await readJson<CodexHooksJson>(file);
   const siblingPaths = new Set([sharedManifestPath, ...(await listWorktrees(root))
@@ -3455,7 +3570,6 @@ export async function trustCodexAgentHook(settingsPath: string, event: string, c
   const groups = (await readJson<CodexHooksJson>(file))?.hooks?.[event] ?? [];
   const index = groups.findIndex((group) => group.hooks?.[0]?.command === command);
   if (index === -1) return { kind: 'failed', reason: `${command} is not in ${file}` };
-  const { trustCodexHooks } = await import('./codex-trust.js');
   return trustCodexHooks({
     codexHome: path.dirname(file),
     cwd: getUserHome(),
@@ -3523,23 +3637,13 @@ async function codexTrustTargets(
 
 /**
  * Everything a trust pass's outcome depends on: what teamai wrote, the bytes of
- * the hook files and of Codex's `config.toml`, and which `codex` binary would
- * answer — an upgrade can change how Codex hashes a hook without touching
- * any file here.
+ * the hook files and of Codex's `config.toml`, and which Codex builds exist —
+ * an upgrade can change how Codex hashes a hook without touching any file here.
  */
 async function codexTrustFingerprint(targets: CodexTrustTargets): Promise<string> {
   const hash = createHash('sha256').update(JSON.stringify({ ...targets, inputs: undefined }));
   for (const file of targets.inputs) hash.update(`\0${file}\0${await readFileSafe(file) ?? ''}`);
-  const codex = findOnPath('codex');
-  if (codex) {
-    try {
-      const real = realpathSync.native(codex);
-      const { mtimeMs, size } = await stat(real);
-      hash.update(`\0${real}\0${mtimeMs}\0${size}`);
-    } catch {
-      hash.update(`\0${codex}`);
-    }
-  }
+  hash.update(`\0${codexBuildsIdentity()}`);
   return hash.digest('hex');
 }
 
@@ -3550,9 +3654,12 @@ async function codexTrustFingerprint(targets: CodexTrustTargets): Promise<string
  * after the MCP reconcile too, so a project whose only Codex content is its MCP
  * servers is trusted by the same pull.
  *
- * Skips the `codex app-server` spawn when the last pass ended `trusted` and
- * none of its inputs changed since (see State.codexTrustFingerprint); `force`
- * runs it anyway. Undefined when there is nothing of teamai's to trust.
+ * Skips the `codex app-server` spawn when the last pass ended `trusted`, every
+ * Codex build listed the hooks or the same builds failed to list them in the
+ * pass before too, and none of its inputs changed since (see
+ * State.codexTrustFingerprint), and then reports the build skew that pass
+ * found; `force` runs it anyway. Undefined when there is nothing of teamai's to
+ * trust.
  */
 export async function trustCodexForScope(
   teamConfig: TeamaiConfig,
@@ -3563,11 +3670,14 @@ export async function trustCodexForScope(
   if (!targets) return undefined;
   if (localConfig.codexTrustEnabled === false) return { kind: 'disabled' };
   const { loadStateForScope, saveStateForScope } = await import('./config.js');
-  const cached = { kind: 'trusted', hooks: 0, ...(targets.project ? { project: targets.project } : {}) } as const;
-  if (!opts.force && (await loadStateForScope(localConfig)).codexTrustFingerprint === await codexTrustFingerprint(targets)) {
-    return cached;
+  const last = await loadStateForScope(localConfig);
+  if (!opts.force && last.codexTrustFingerprint === await codexTrustFingerprint(targets)) {
+    return {
+      kind: 'trusted', hooks: 0,
+      ...(targets.project ? { project: targets.project } : {}),
+      ...(last.codexBuildSkew ? { skew: last.codexBuildSkew } : {}),
+    };
   }
-  const { trustCodexHooks } = await import('./codex-trust.js');
   const trust = await trustCodexHooks({ ...targets, onProjectTrusted: async (project) => {
     const state = await loadStateForScope(localConfig);
     state.codexProjectTrust = [...state.codexProjectTrust ?? []];
@@ -3576,10 +3686,16 @@ export async function trustCodexForScope(
       await saveStateForScope(state, localConfig);
     }
   } });
-  const fingerprint = trust.kind === 'trusted' ? await codexTrustFingerprint(targets) : undefined;
+  const cacheable = trust.kind === 'trusted' && (!trust.uncompared || isDeepStrictEqual(trust.uncompared, last.codexBuildUncompared));
+  const fingerprint = cacheable ? await codexTrustFingerprint(targets) : undefined;
+  const skew = cacheable ? trust.skew : undefined;
+  const uncompared = cacheable ? undefined : trust.uncompared;
   const state = await loadStateForScope(localConfig);
-  if (state.codexTrustFingerprint !== fingerprint) {
+  if (state.codexTrustFingerprint !== fingerprint || !isDeepStrictEqual(state.codexBuildSkew, skew)
+    || !isDeepStrictEqual(state.codexBuildUncompared, uncompared)) {
     state.codexTrustFingerprint = fingerprint;
+    state.codexBuildSkew = skew;
+    state.codexBuildUncompared = uncompared;
     await saveStateForScope(state, localConfig);
   }
   return trust;
@@ -3595,7 +3711,6 @@ export async function readCodexHookTrustForScope(
 ): Promise<CodexHookTrustReport | null> {
   const targets = await codexTrustTargets(teamConfig, localConfig);
   if (!targets || targets.hooks.length === 0) return null;
-  const { readCodexHookTrust } = await import('./codex-trust.js');
   return readCodexHookTrust({ ...targets, cwd: localConfig.projectRoot ?? targets.cwd });
 }
 
@@ -3625,6 +3740,7 @@ export async function sweepLegacyProjectHooks(
 ): Promise<void> {
   const legacy = resolveLegacyProjectHookScope(localConfig);
   if (!legacy) return;
+  const codexTrust = codexTrustPolicy(localConfig);
   // A coincident main file is handled by the main pass only when that tool
   // actually ran. Excluded tools still need legacy cleanup, without claiming
   // current-generation or member entries in the same file.
@@ -3634,7 +3750,7 @@ export async function sweepLegacyProjectHooks(
     const mainFile = mainCheckoutHookFile(mainCheckout, tool);
     if (mainFile && paths.settings && path.join(canonicalProjectRoot(legacy.baseDir), paths.settings) === mainFile) {
       if (!reconciledMainTools.has(tool) && await pathExists(mainFile)) {
-        await reconcileHooks(mainFile, tool, [], { removeAll: true, teamOnly: true, manifestPath: legacy.manifestPath });
+        await reconcileHooks(mainFile, tool, [], { removeAll: true, teamOnly: true, manifestPath: legacy.manifestPath, codexTrust });
       }
     } else {
       legacyToolPaths[tool] = paths;
@@ -3643,6 +3759,7 @@ export async function sweepLegacyProjectHooks(
   await reconcileHooksToAllTools(legacyToolPaths, legacy.baseDir, [], legacy.manifestPath, {
     removeAll: true,
     settingsOnly: true,
+    codexTrust,
   });
   if (toolPaths.opencode) {
     try {
@@ -3703,7 +3820,6 @@ async function cleanGitDirectoryHooks(localConfig: LocalConfig, toolPaths: Teama
   const state = await loadStateForScope(localConfig);
   for (const receipt of state.codexProjectTrust ?? []) {
     if (receipt.project !== common) continue;
-    const { removeOwnedCodexProjectTrust } = await import('./codex-trust.js');
     const result = await removeOwnedCodexProjectTrust({ codexHome: receipt.home, project: receipt.project });
     if (result.kind === 'failed' || result.kind === 'unavailable') {
       log.warn(`Could not clean the recorded Codex trust for ${common}: ${result.reason}. Run teamai pull again after fixing Codex.`);
@@ -3728,7 +3844,7 @@ async function cleanGitDirectoryHooks(localConfig: LocalConfig, toolPaths: Teama
     }
     await reconcileHooks(file, tool, [], {
       manifestPath, legacyManifestPath: legacyManagedHooksPath(common), removeAll: true, teamOnly: true,
-      teamHookHistory: teamHookHistory(localConfig),
+      teamHookHistory: teamHookHistory(localConfig), codexTrust: codexTrustPolicy(localConfig),
     });
   }
 }
@@ -3781,7 +3897,7 @@ export async function reconcileTeamHooksForConfig(
   // a tool that cannot run team hooks says so during the per-tool pass, and
   // the preview is only honest when the dry run repeats it — for the tools the
   // pass would actually reach, which is what hookToolPaths decides below too.
-  const hookToolPaths = scopedToolPaths(teamConfig, { ...localConfig, scope: hookScope });
+  const hookToolPaths = hookToolPathsForConfig(teamConfig, localConfig);
   if (opts.dryRun) {
     if (!opts.removeAll) await installProjectGitHook(localConfig, { dryRun: true });
     if (!opts.removeAll && 'pi' in hookToolPaths && (!filterAgents || filterAgents.includes('pi'))) {
@@ -3797,6 +3913,18 @@ export async function reconcileTeamHooksForConfig(
   const codexHome = codexHomeHooksFile(teamConfig, localConfig);
   const mainCheckout = await resolveMainCheckoutHooks(localConfig, teamConfig.toolPaths);
   const unwritten: string[] = [];
+  const codexTrust = codexTrustPolicy(localConfig);
+  // Retire only teamai-owned entries from the unread self-scope config before
+  // the same manifest starts recording the HOME commands (which are gated).
+  const oldZcodeSettings = scopedToolPaths(teamConfig, localConfig).zcode?.settings;
+  if (isSelfMode(localConfig) && !builtinsOnly && oldZcodeSettings
+    && (!filterAgents || filterAgents.includes('zcode'))) {
+    const legacyFile = path.join(baseDir, oldZcodeSettings);
+    const homeSettings = hookToolPaths.zcode?.settings;
+    if (homeSettings && legacyFile !== hookSettingsPath('zcode', baseDir, homeSettings) && await pathExists(legacyFile)) {
+      await reconcileHooks(legacyFile, 'zcode', [], { manifestPath, removeAll: true, teamHookHistory: history });
+    }
+  }
   const reconciledMainTools = await reconcileHooksToAllTools(hookToolPaths, baseDir, teamDefs, manifestPath, {
     removeAll: opts.removeAll,
     builtinOverride: builtin,
@@ -3813,6 +3941,7 @@ export async function reconcileTeamHooksForConfig(
     mainCheckout,
     teamHookHistory: history,
     unwritten,
+    codexTrust,
     ...(isSelfMode(localConfig) && localConfig.scope === 'project' && localConfig.projectRoot
       ? { selfLocalTeamHooks: { relocate: isGitExcludeEnabled(localConfig, teamConfig) } }
       : {}),
@@ -3823,7 +3952,7 @@ export async function reconcileTeamHooksForConfig(
   // The dispatcher entries follow every project's choice, this one's included.
   if (codexProject && codexHome && !builtinsOnly && (!filterAgents || filterAgents.includes(CODEX_TOOL_ID))) {
     try {
-      await reconcileCodexDispatchers(codexHome);
+      await reconcileCodexDispatchers(codexHome, codexTrust);
     } catch (e) {
       log.warn(`Failed to reconcile the Codex team-hook dispatchers in ${codexHome}: ${(e as Error).message}`);
       unwritten.push(CODEX_TOOL_ID);

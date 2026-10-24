@@ -8,19 +8,21 @@ import {
   applyInstructionPlan,
   clearInstructionFile,
   instructionChannelProblems,
+  holdsOnlyInstructionBlocks,
   instructionHookTextFor,
   planInstructionFiles,
-  readsTeamRulesFromFile,
   registerOpencodeContext,
   retiredFilesOfReached,
   resolveInstructionTargets,
-  userRulesFile,
   type InstructionTarget,
 } from '../instruction-targets.js';
+import { inlineRulesLabelOf, inlineRulesLocationOf } from '../resources/rules.js';
+import { installOf, ownOf } from '../locate.js';
 import { injectPiHooks } from '../pi-hooks.js';
 import {
   scopedToolPaths,
   toolInstallRoot,
+  LocalConfigSchema,
   TeamaiConfigSchema,
   type LocalConfig,
   type TeamaiConfig,
@@ -49,6 +51,18 @@ describe('instruction file planning (#945)', () => {
     tools: ['claude'],
     recall: false,
     ...extra,
+  });
+
+  it.each([
+    ['blocks alone', `${culture('c')}\n\n${claudemd('s')}\n`, true],
+    ['member text', `# Mine\n${culture('c')}\n`, false],
+    ['incomplete block', `${TEAMAI_CLAUDEMD_START}\nunfinished`, false],
+    ['duplicate blocks', `${culture('c')}\n${culture('c')}\n`, false],
+    ['empty file', '', false],
+  ])('classifies %s before excluding a shared instruction file', async (_name, content, onlyBlocks) => {
+    const file = path.join(dir, 'shared.md');
+    fs.writeFileSync(file, content as string);
+    expect(await holdsOnlyInstructionBlocks(file)).toBe(onlyBlocks);
   });
 
   it('gives the recall block to a target whose tool has the subagent, and the direct variant otherwise', async () => {
@@ -420,6 +434,26 @@ describe('instruction targets shared by several tools (#945)', () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it('gives a custom tool the direct recall block even with an agents path, since teamai writes it no subagent (#1221)', async () => {
+    const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-1221-recall-')));
+    try {
+      const projectRoot = path.join(root, 'project');
+      fs.mkdirSync(path.join(projectRoot, '.mytool', 'skills'), { recursive: true });
+      const localConfig = LocalConfigSchema.parse({
+        repo: { localPath: path.join(root, 'repo'), remote: 'https://example.invalid/t.git' },
+        username: 'u', scope: 'project', projectRoot,
+      });
+      const { targets } = await resolveInstructionTargets(TeamaiConfigSchema.parse({
+        team: 't', repo: 'https://example.invalid/t.git',
+        toolPaths: { mytool: { skills: '.mytool/skills', agents: '.mytool/agents', claudemd: '.mytool/AGENTS.md' } },
+      }), localConfig);
+
+      expect(targets).toEqual([expect.objectContaining({ path: path.join(projectRoot, '.mytool', 'AGENTS.md'), tools: ['mytool'], recall: false })]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('Copilot\'s project instructions with sharing.gitExclude (#915)', () => {
@@ -590,6 +624,60 @@ describe('OpenCode\'s Claude fallback (#945)', () => {
   });
 });
 
+describe('instruction blocks follow a moved tool home (#1221)', () => {
+  let root: string;
+  let home: string;
+  const localConfig = (enabledAgents: string[]): LocalConfig => LocalConfigSchema.parse({
+    repo: { localPath: path.join(root, 'repo'), remote: 'https://example.invalid/t.git' },
+    username: 'u', scope: 'user', enabledAgents,
+  });
+  const teamConfig = () => TeamaiConfigSchema.parse({ team: 't', repo: 'https://example.invalid/t.git' });
+
+  beforeEach(() => {
+    root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-1221-blocks-')));
+    home = path.join(root, 'home');
+    vi.stubEnv('HOME', home);
+    for (const name of ['XDG_CONFIG_HOME', 'OPENCODE_CONFIG_DIR', 'PI_CODING_AGENT_DIR']) vi.stubEnv(name, '');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it('writes Muse\'s and OpenCode\'s blocks under $XDG_CONFIG_HOME and Pi\'s under $PI_CODING_AGENT_DIR', async () => {
+    const xdg = path.join(root, 'xdg');
+    const piAgent = path.join(root, 'pi-agent');
+    for (const dir of [path.join(xdg, 'muse'), path.join(xdg, 'opencode'), piAgent, path.join(home, '.config', 'muse'), path.join(home, '.pi', 'agent')]) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    vi.stubEnv('XDG_CONFIG_HOME', xdg);
+    vi.stubEnv('PI_CODING_AGENT_DIR', piAgent);
+
+    const { targets } = await resolveInstructionTargets(teamConfig(), localConfig(['muse', 'opencode', 'pi']));
+
+    expect(targets.map((t) => t.path).sort()).toEqual([
+      path.join(piAgent, 'AGENTS.md'), path.join(xdg, 'muse', 'AGENTS.md'), path.join(xdg, 'opencode', 'teamai-context.md'),
+    ].sort());
+  });
+
+  it('counts OpenCode\'s own AGENTS.md under $XDG_CONFIG_HOME, which ends OpenCode V1\'s Claude fallback', async () => {
+    const xdg = path.join(root, 'xdg');
+    fs.mkdirSync(path.join(xdg, 'opencode'), { recursive: true });
+    fs.writeFileSync(path.join(xdg, 'opencode', 'AGENTS.md'), '# Mine\n');
+    fs.mkdirSync(path.join(home, '.config', 'opencode'), { recursive: true });
+    fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
+    vi.stubEnv('XDG_CONFIG_HOME', xdg);
+
+    const resolved = await resolveInstructionTargets(teamConfig(), localConfig(['claude', 'opencode']));
+
+    expect(resolved.targets.map((t) => t.path)).toEqual(expect.arrayContaining([
+      path.join(home, '.claude', 'CLAUDE.md'), path.join(xdg, 'opencode', 'teamai-context.md'),
+    ]));
+    expect(resolved.opencodeFallback).toBeNull();
+  });
+});
+
 describe('OpenCode instructions registration (#945)', () => {
   it.each(['malformed', 'write failure', 'current', 'written'])('registers only delivered instructions when the target is %s', async (state) => {
     const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-945-ocreg-')));
@@ -623,6 +711,33 @@ describe('OpenCode instructions registration (#945)', () => {
     }
   });
 
+  it('lists the user file in opencode.json beside it when the team maps no OpenCode MCP config', async () => {
+    const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-945-ocreg-')));
+    vi.stubEnv('HOME', path.join(root, 'home'));
+    try {
+      const opencodeHome = path.join(root, 'home', '.config', 'opencode');
+      fs.mkdirSync(path.join(opencodeHome, 'skills'), { recursive: true });
+      const localConfig = LocalConfigSchema.parse({
+        repo: { localPath: path.join(root, 'repo'), remote: 'https://example.invalid/t.git' },
+        username: 'u', scope: 'user', enabledAgents: ['opencode'],
+      });
+      const teamConfig = TeamaiConfigSchema.parse({
+        team: 't', repo: 'https://example.invalid/t.git',
+        toolPaths: { opencode: { skills: '.opencode/skills', userScope: { skills: '.config/opencode/skills' } } },
+      });
+      const resolved = await resolveInstructionTargets(teamConfig, localConfig);
+      const { files } = await applyInstructionPlan(await planInstructionFiles(resolved.targets, { claudemd: claudemd('desired') }), { dryRun: false });
+
+      await registerOpencodeContext(teamConfig, localConfig, resolved, false, files);
+
+      expect(JSON.parse(fs.readFileSync(path.join(opencodeHome, 'opencode.json'), 'utf8')).instructions)
+        .toEqual([path.join(opencodeHome, 'teamai-context.md')]);
+    } finally {
+      vi.unstubAllEnvs();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('leaves the member\'s own listed teamai-context.md entry alone, in a dry run and a real pull', async () => {
     const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-945-ocreg-')));
     try {
@@ -652,7 +767,8 @@ describe('OpenCode instructions registration (#945)', () => {
 });
 
 describe('Codex project instructions (#945)', () => {
-  it('reaches a Codex the member relocated with toolRoots, with no project .codex/', async () => {
+  // A project config that records no toolRoots follows the user config's, as `resolveMemberToolRoots` does.
+  it.each(['project', 'user'] as const)('reaches a Codex the member relocated with toolRoots in the %s config, with no project .codex/', async (recordedIn) => {
     const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-945-codexroot-')));
     const prevHome = process.env.HOME;
     process.env.HOME = path.join(root, 'home');
@@ -660,9 +776,15 @@ describe('Codex project instructions (#945)', () => {
       const projectRoot = path.join(root, 'project');
       fs.mkdirSync(projectRoot, { recursive: true });
       fs.mkdirSync(path.join(root, 'home', '.codex-work', 'skills'), { recursive: true });
+      const repo = { localPath: path.join(root, 'repo'), remote: 'https://example.invalid/t.git' };
+      if (recordedIn === 'user') {
+        fs.mkdirSync(path.join(root, 'home', '.teamai'), { recursive: true });
+        fs.writeFileSync(path.join(root, 'home', '.teamai', 'config.yaml'),
+          `repo:\n  localPath: ${repo.localPath}\n  remote: ${repo.remote}\nusername: u\nscope: user\ntoolRoots:\n  codex: ~/.codex-work\n`);
+      }
       const localConfig = {
-        repo: { localPath: path.join(root, 'repo'), remote: 'https://example.invalid/t.git' },
-        username: 'u', additionalRoles: [], scope: 'project', projectRoot, toolRoots: { codex: '~/.codex-work' },
+        repo, username: 'u', additionalRoles: [], scope: 'project', projectRoot,
+        ...recordedIn === 'project' ? { toolRoots: { codex: '~/.codex-work' } } : {},
       } as unknown as LocalConfig;
 
       const resolved = await resolveInstructionTargets(TeamaiConfigSchema.parse({ team: 't', repo: 'https://example.invalid/t.git' }), localConfig);
@@ -873,12 +995,15 @@ describe('every tool and toolPaths shape keeps its instructions (#945)', () => {
       } as unknown as LocalConfig;
       const paths = SHAPES[shape](scopedToolPaths(DEFAULTS, localConfig)[tool]);
       const base = scope === 'project' ? projectRoot : process.env.HOME;
-      for (const dir of [process.env.HERMES_HOME, process.env.COPILOT_HOME, path.join(process.env.HOME, '.omp')]) fs.mkdirSync(dir, { recursive: true });
+      // Pi's and OMP's extensions are user-level: a project reaches them through the member's home.
+      for (const dir of [process.env.HERMES_HOME, process.env.COPILOT_HOME, path.join(process.env.HOME, '.omp'), path.join(process.env.HOME, '.pi')]) fs.mkdirSync(dir, { recursive: true });
       for (const value of Object.values(paths)) {
         if (typeof value === 'string') fs.mkdirSync(path.join(base, toolInstallRoot(value)), { recursive: true });
       }
       // OpenClaw is installed where its workspace resolves (#946).
       if (tool === 'openclaw') fs.mkdirSync(path.join(process.env.HOME, '.openclaw', 'workspace'), { recursive: true });
+      // WorkBuddy is installed where its .workbuddy is, whatever its entry maps (#1221).
+      if (tool === 'workbuddy') fs.mkdirSync(path.join(base, '.workbuddy'), { recursive: true });
       const teamConfig = TeamaiConfigSchema.parse({ team: 't', repo: 'https://example.invalid/t.git', toolPaths: { [tool]: paths } });
 
       const { targets, hooks, stale } = await resolveInstructionTargets(teamConfig, localConfig);
@@ -901,7 +1026,8 @@ describe('every tool and toolPaths shape keeps its instructions (#945)', () => {
 
 describe('a tool that reads the team rules from a file of its own in user scope (#1029)', () => {
   const DEFAULTS = TeamaiConfigSchema.parse({ team: 't', repo: 'https://example.invalid/t.git' });
-  const tools = Object.keys(DEFAULTS.toolPaths).filter(readsTeamRulesFromFile);
+  // Hermes keeps its rules in a SOUL.md block of its own.
+  const tools = Object.keys(DEFAULTS.toolPaths).filter((tool) => tool !== 'hermes' && inlineRulesLabelOf(tool) !== null);
 
   /** A member's home with `tool` installed, its default paths, and the file it reads the team rules from. */
   async function installed(tool: string, run: (ctx: { home: string; localConfig: LocalConfig; paths: TeamaiConfig['toolPaths'][string]; rulesFile: string }) => Promise<void>) {
@@ -920,9 +1046,10 @@ describe('a tool that reads the team rules from a file of its own in user scope 
       }
       fs.mkdirSync(path.join(home, '.dsh'), { recursive: true });
       fs.mkdirSync(path.join(home, '.openclaw', 'workspace'), { recursive: true });
-      const rulesFile = (await userRulesFile(tool, paths, localConfig))?.file;
-      expect(rulesFile).toBeDefined();
-      await run({ home, localConfig, paths, rulesFile: rulesFile! });
+      const located = await inlineRulesLocationOf(tool, installOf(DEFAULTS, localConfig));
+      const rulesFile = located === null ? undefined : ownOf(located)?.path;
+      if (rulesFile === undefined) throw new Error(`${tool} has no team-rules file`);
+      await run({ home, localConfig, paths, rulesFile });
     } finally {
       vi.unstubAllEnvs();
       fs.rmSync(root, { recursive: true, force: true });

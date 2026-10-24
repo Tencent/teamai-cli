@@ -235,12 +235,14 @@ describe('push namespace routing', () => {
       availableUpdate: null,
     });
     mockSaveStateForScope.mockResolvedValue(undefined);
-    // Default manifest: role "hai" has namespaces [common, hai]
+    // Default manifest: role "hai" has namespaces [common, hai]. Every
+    // namespace a test names with --role is one a role declares (#1101).
     mockLoadRolesManifest.mockResolvedValue({
       version: 1,
       roles: [
         { id: 'hai', description: 'HyperAI', resources: { knowledge: ['common', 'hai'], skills: ['common', 'hai'], agents: [] } },
         { id: 'pm', description: 'Product Manager', resources: { knowledge: ['common', 'pm'], skills: ['common', 'pm'], agents: [] } },
+        { id: 'backend', description: 'Backend', resources: { knowledge: [], skills: ['backend'], agents: [] } },
       ],
     });
     readlineAnswer = '1';
@@ -526,8 +528,7 @@ describe('push namespace routing', () => {
       pushItem: vi.fn(),
     });
 
-    // --role "unknown" → used directly as namespace, no manifest validation
-    // (validation happens downstream in pushItem)
+    // --role "unknown" names no declared namespace, but nothing here needs placing.
     await push({ all: true, role: 'unknown' });
 
     // No items to push, so pushRepoBranch should not be called
@@ -1046,6 +1047,8 @@ describe('push namespace routing for rules and agents', () => {
       version: 1,
       roles: [
         { id: 'hai', description: 'HyperAI', resources: { knowledge: ['common', 'hai'], skills: ['common', 'hai'], agents: [] } },
+        // The namespaces the tests below name with --role (#1101).
+        { id: 'pm', description: 'Product Manager', resources: { knowledge: ['pm', 'fe-know'], skills: ['pm'], agents: ['pm', 'be-agents'] } },
       ],
     });
     readlineAnswer = '1';
@@ -1070,6 +1073,32 @@ describe('push namespace routing for rules and agents', () => {
     // The agent keeps the extension its handler chose.
     expect(agent?.relativePath).toBe('agents/pm/vr.yaml');
     expect(agent?.namespace).toBe('pm');
+  });
+
+  it('--role places a root scorer, and a scorer in a scorers/<dir>/ no role or project declares stays shared', async () => {
+    const pushedItems: Array<Record<string, unknown>> = [];
+    mockLoadRolesManifest.mockResolvedValue({
+      version: 1,
+      roles: [{ id: 'ops', description: '', resources: { knowledge: [], skills: [], agents: [], scorers: ['ops'] } }],
+    });
+    mockAutoDetectInit.mockResolvedValue({ localConfig: makeLocalConfig({ primaryRole: 'ops' }), teamConfig: makeTeamConfig() });
+    const scorer = (relativePath: string) => ({
+      name: relativePath.slice('scorers/'.length), type: 'scorers', sourcePath: `/tmp/${relativePath}`, relativePath, status: 'new',
+    });
+    mockGetHandler.mockImplementation((type: string) => ({
+      scanLocalForPush: vi.fn().mockResolvedValue(type === 'scorers' ? [scorer('scorers/z.md'), scorer('scorers/shared/x.md'), scorer('scorers/ops/y.md')] : []),
+      pushItem: vi.fn().mockImplementation(async (item: Record<string, unknown>) => {
+        pushedItems.push(item);
+      }),
+    }));
+
+    await push({ all: true, role: 'ops' });
+
+    expect(Object.fromEntries(pushedItems.map((item) => [item.name, item.relativePath]))).toEqual({
+      'z.md': 'scorers/ops/z.md',
+      'shared/x.md': 'scorers/shared/x.md',
+      'ops/y.md': 'scorers/ops/y.md',
+    });
   });
 
   it.each(silentPlacementCases)('$name', async ({ resource, setup, expected, error, root }) => {

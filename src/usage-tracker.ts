@@ -132,7 +132,7 @@ export async function skillRoots({ config, toolRoots, hookCwd, tool: callingTool
     for (const tool of Object.keys(team.toolPaths)) {
       if (callingTool !== undefined && callingTool !== tool) continue;
       const where = await locate(tool, 'skills', install);
-      for (const dir of writesOf(where)) roots.add(dir);
+      for (const place of writesOf(where)) roots.add(place.path);
       if (where.reads !== 'unknown') for (const read of where.reads) roots.add(read.path);
     }
   }

@@ -4,7 +4,7 @@ import {
   findTemplate, parseTemplate, stepExpressions, templatedTexts, templateExpressions, templateWithPaths, type StepExpression, type Template,
 } from './template.js';
 import type {
-  EndOutcome, ForEach, InlineWorkflow, OutputSchema, StepLoop, WorkflowDefaults, WorkflowDefinition, WorkflowDiagnostic, WorkflowLoop, WorkflowStep,
+  EndOutcome, ForEach, InlineWorkflow, OutputSchema, StepLoop, StepScorers, WorkflowDefaults, WorkflowDefinition, WorkflowDiagnostic, WorkflowLoop, WorkflowStep,
 } from './types.js';
 import { STEP_ACTIONS } from './types.js';
 import {
@@ -17,10 +17,11 @@ import {
 import { parseHitl } from './parse-hitl.js';
 import { loopProblems } from './loop.js';
 import { RequirementsSchema, StepExecutionSchema, WorkflowExecutionSchema } from './requirements.js';
+import { modelValueProblem } from '../models/aliases.js';
 
 const HEADER_KEYS = new Set(['schemaVersion', 'name', 'description', 'inputs', 'defaults', 'ends', 'outputs', 'loop', 'steps', 'requires', 'setup', 'budget', 'timeout']);
 const ACTION_KEYS = Object.keys(STEP_ACTIONS);
-const STEP_KEYS = new Set(['id', 'needs', 'if', ...ACTION_KEYS, 'env', 'with', 'agent', 'model', 'output', 'end', 'loop', 'break', 'for_each', 'approve', 'choose', 'interactive', 'workspace', 'session', 'requires', 'timeout', 'max_turns']);
+const STEP_KEYS = new Set(['id', 'needs', 'if', ...ACTION_KEYS, 'env', 'with', 'agent', 'model', 'output', 'end', 'loop', 'break', 'for_each', 'approve', 'choose', 'interactive', 'workspace', 'session', 'scorers', 'requires', 'timeout', 'max_turns']);
 const STEP_LOOP_KEYS = new Set(['back_to', 'while', 'max_iterations']);
 const FOR_EACH_KEYS = new Set(['items', 'max_parallel']);
 const WORKFLOW_LOOP_KEYS = new Set(['while', 'max_iterations']);
@@ -380,6 +381,11 @@ function parseBody(
       if (modelPair && model !== undefined && (commandPair || workflowPair)) {
         diagnostics.push(locate(file, lineCounter, modelPair.key ?? item, `${field}.model`, 'model is only allowed on a prompt or prompt_file step'));
       }
+      const scorersPair = item.items.find((pair) => scalarString(pair.key) === 'scorers');
+      const scorers = scorersPair ? parseScorers(scorersPair.value ?? scorersPair.key, `${field}.scorers`, ctx) : undefined;
+      if (scorersPair && commandPair) {
+        diagnostics.push(locate(file, lineCounter, scorersPair.key ?? item, `${field}.scorers`, 'scorers is only allowed on a prompt, prompt_file, or workflow step'));
+      }
       const envPair = item.items.find((pair) => scalarString(pair.key) === 'env');
       const env = envPair ? parseEnv(envPair.value ?? envPair.key, `${field}.env`, label, ctx) : undefined;
       const withPair = item.items.find((pair) => scalarString(pair.key) === 'with');
@@ -534,6 +540,7 @@ function parseBody(
           ...(withValues ? { with: withValues } : {}),
           ...(agent ? { agent } : {}),
           ...(model !== undefined ? { model } : {}),
+          ...(scorers ? { scorers } : {}),
           ...(output ? { output } : {}),
           ...(end ? { end } : {}),
           ...(loop ? { loop } : {}),
@@ -774,12 +781,9 @@ function parseForEach(node: Node | null | undefined, field: string, label: strin
 function parseModel(node: Node | null | undefined, field: string, ctx: ParseContext): string | undefined {
   const { file, lineCounter, diagnostics } = ctx;
   const model = scalarString(node);
-  if (model?.includes('{{')) {
-    diagnostics.push(locate(file, lineCounter, node, field, 'model cannot contain a template; write an alias or a model name as is'));
-    return undefined;
-  }
-  if (!model || /\s/.test(model)) {
-    diagnostics.push(locate(file, lineCounter, node, field, 'model must be a non-empty string without spaces'));
+  const problem = modelValueProblem(model);
+  if (problem !== undefined) {
+    diagnostics.push(locate(file, lineCounter, node, field, `model ${problem}`));
     return undefined;
   }
   return model;
@@ -792,16 +796,75 @@ function parseDefaults(node: Node | null | undefined, ctx: ParseContext): Workfl
     return undefined;
   }
   let model: string | undefined;
+  let scorers: { batch: boolean } | undefined;
   for (const pair of node.items) {
     const keyNode = isYamlNode(pair.key) ? pair.key : undefined;
     const key = scalarString(keyNode);
     if (key === 'model') model = parseModel(valueNode(node, 'model'), 'defaults.model', ctx);
+    else if (key === 'scorers') scorers = parseDefaultScorers(valueNode(node, 'scorers'), ctx);
     else if (key !== 'requires') diagnostics.push(unknownKey(file, lineCounter, keyNode ?? node, `defaults.${key ?? 'key'}`, key ?? 'key'));
   }
   const raw = valueNode(node, 'requires');
   const parsed = raw ? RequirementsSchema.safeParse(raw.toJSON()) : undefined;
   if (parsed && !parsed.success) diagnostics.push({ ...locate(file, lineCounter, raw, 'defaults.requires', 'invalid requirements: ' + parsed.error.issues.map((issue) => issue.path.join('.') + ': ' + issue.message).join('; ')), code: 'bad_requirements' });
-  return { ...(model !== undefined ? { model } : {}), ...(parsed?.success ? { requires: parsed.data } : {}) };
+  if (model === undefined && scorers === undefined && !parsed?.success) return undefined;
+  return { ...(model !== undefined ? { model } : {}), ...(scorers ? { scorers } : {}), ...(parsed?.success ? { requires: parsed.data } : {}) };
+}
+
+function parseBatch(node: Node | undefined, field: string, ctx: ParseContext): boolean | undefined {
+  if (isScalar(node) && typeof node.value === 'boolean') return node.value;
+  ctx.diagnostics.push(locate(ctx.file, ctx.lineCounter, node, field, 'batch must be true or false'));
+  return undefined;
+}
+
+/** `defaults.scorers` sets only `batch`. */
+function parseDefaultScorers(node: Node | undefined, ctx: ParseContext): { batch: boolean } | undefined {
+  const { file, lineCounter, diagnostics } = ctx;
+  if (!isMap(node) || !node.has('batch')) {
+    diagnostics.push(locate(file, lineCounter, node, 'defaults.scorers', 'defaults.scorers must be { batch: true } or { batch: false }'));
+    return undefined;
+  }
+  let batch: boolean | undefined;
+  for (const pair of node.items) {
+    const keyNode = isYamlNode(pair.key) ? pair.key : undefined;
+    const key = scalarString(keyNode);
+    if (key === 'batch') batch = parseBatch(valueNode(node, 'batch'), 'defaults.scorers.batch', ctx);
+    else diagnostics.push(unknownKey(file, lineCounter, keyNode ?? node, `defaults.scorers.${key ?? 'key'}`, key ?? 'key'));
+  }
+  return batch === undefined ? undefined : { batch };
+}
+
+/** A step's `scorers`: a list of names, or `{ names, batch }`. */
+function parseScorers(node: Node | null | undefined, field: string, ctx: ParseContext): StepScorers | undefined {
+  const { file, lineCounter, diagnostics } = ctx;
+  let list: Node | null | undefined = node;
+  let batch: boolean | undefined;
+  if (isMap(node)) {
+    list = undefined;
+    for (const pair of node.items) {
+      const keyNode = isYamlNode(pair.key) ? pair.key : undefined;
+      const key = scalarString(keyNode);
+      if (key === 'names') list = valueNode(node, 'names');
+      else if (key === 'batch') batch = parseBatch(valueNode(node, 'batch'), `${field}.batch`, ctx);
+      else diagnostics.push(unknownKey(file, lineCounter, keyNode ?? node, `${field}.${key ?? 'key'}`, key ?? 'key'));
+    }
+  }
+  if (!isSeq(list) || list.items.length === 0) {
+    diagnostics.push(locate(file, lineCounter, list ?? node, field, 'scorers must list scorer names, as [name, …] or { names: [name, …], batch: true }'));
+    return undefined;
+  }
+  const names: string[] = [];
+  for (const item of list.items) {
+    const name = isScalar(item) ? String(item.value) : undefined;
+    if (name === undefined || !TOKEN.test(name)) {
+      diagnostics.push(locate(file, lineCounter, list, field, `scorer ${name === undefined ? 'names' : `"${name}"`} must be a token, the name of a file in scorers/`));
+    } else if (names.includes(name)) {
+      diagnostics.push(locate(file, lineCounter, list, field, `scorers lists "${name}" twice`));
+    } else {
+      names.push(name);
+    }
+  }
+  return { names, ...(batch !== undefined ? { batch } : {}) };
 }
 
 /** `env` maps variable names to text. A YAML number or boolean is read as its text. */

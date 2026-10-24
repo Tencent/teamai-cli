@@ -81,6 +81,53 @@ describe('parseLearningDraft', () => {
   });
 });
 
+describe('importFromMR AI draft metadata', () => {
+  let root: string;
+  const url = 'https://github.com/o/r/pull/1';
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-import-mr-metadata-'));
+    vi.mocked(log.info).mockClear();
+  });
+
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it.each([
+    { tags: 'agent', displayed: undefined },
+    { tags: 42, displayed: undefined },
+    { tags: { topic: 'agent' }, displayed: undefined },
+    { tags: ['agent', null, 42, { topic: 'retry' }, ['nested'], 'retry'], displayed: 'agent, retry' },
+    { tags: ['agent', 'retry'], displayed: 'agent, retry' },
+  ])('saves the original draft when tags are $tags', async ({ tags, displayed }) => {
+    const content = `---\ntitle: Retry budget\ntags: ${JSON.stringify(tags)}\n---\n${DRAFT_BODY}\n`;
+    vi.mocked(callClaude).mockResolvedValueOnce(content);
+
+    const result = await importFromMR({ url, all: true, learningsDirs: [], outputDir: root });
+
+    expect(result.learning).toEqual({ title: 'Retry budget', content });
+    expect(result.learningFile).toBe(path.join(root, 'learning.md'));
+    expect(fs.readFileSync(result.learningFile!, 'utf8')).toBe(content);
+    expect(vi.mocked(log.info).mock.calls.map(([message]) => String(message)).filter((message) => message.startsWith('   Tags:')))
+      .toEqual(displayed ? [`   Tags: ${displayed}`] : []);
+  });
+
+  it.each([{ title: 42 }, { title: true }, { title: { text: 'Retry budget' } }, { title: ['Retry budget'] }])(
+    'uses the MR title to queue a draft with a non-string title $title', async ({ title }) => {
+      const content = `---\ntitle: ${JSON.stringify(title)}\ntags: [agent]\n---\n${DRAFT_BODY}\n`;
+      vi.mocked(callClaude).mockResolvedValueOnce(content);
+      const queueLearning = vi.fn(async (filename: string) => path.join(root, filename));
+
+      const result = await importFromMR({ url, all: true, learningsDirs: [], queueLearning });
+
+      expect(result.learning).toEqual({ title: 'Retry budget', content });
+      expect(queueLearning).toHaveBeenCalledWith(expect.stringMatching(/^retry-budget-.*\.md$/), content);
+      expect(result.learningFile).toBe(await queueLearning.mock.results[0].value);
+    },
+  );
+});
+
 /**
  * The possible-duplicate notice (#823 item 9): it compares the draft with the
  * learnings recall would find here, the shared root and the active project

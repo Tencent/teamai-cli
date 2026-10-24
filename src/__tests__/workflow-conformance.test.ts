@@ -72,6 +72,7 @@ describe('workflow protocol conformance in process', () => {
             driver: { ...driver, ...((operation.hitl !== undefined || operation.can) ? { can: { ...operation.can, ...(operation.hitl !== undefined ? { hitl: operation.hitl } : {}) } } : {}) },
             ...(operation.running ? { running: operation.running.map(attemptOf) } : {}),
             ...(operation.canTakeLease !== undefined ? { canTakeLease: operation.canTakeLease } : {}),
+            ...(operation.claim !== undefined ? { claim: operation.claim } : {}),
           });
           expect(envelope).toMatchObject(operation.expect);
           if (operation.saveAs === 'busy') {

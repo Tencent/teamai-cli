@@ -141,7 +141,7 @@ export async function buildAgentModelChecks(ctx: DoctorContext, stage: CheckStag
  * Why no agent's model, or no alias agent's while only the member's file
  * fails, can be resolved, and what that holds.
  */
-function loadFailure(aliases: ModelAliases): string | undefined {
+export function loadFailure(aliases: ModelAliases): string | undefined {
   if (!aliases.ok) {
     return `${aliases.reason}. Until that is fixed, pull keeps the deployed copies of every agent that sets a \`model\` and writes no new ones, `
       + 'and push skips those agents. Fix it, then run `teamai pull`.';

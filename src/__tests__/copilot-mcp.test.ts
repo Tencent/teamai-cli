@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fse from 'fs-extra';
 import os from 'node:os';
 import path from 'node:path';
-import { reconcileMcpForConfig, resolveMcpTargets } from '../mcp-reconcile.js';
+import { reconcileMcpForConfig } from '../mcp-reconcile.js';
 import { TeamaiConfigSchema, type LocalConfig, type TeamaiConfig } from '../types.js';
 
 vi.mock('../utils/logger.js', () => ({
@@ -81,12 +81,6 @@ describe('Copilot MCP reconciliation', () => {
     });
     await fse.writeFile(settingsFile, settings);
 
-    const targets = await resolveMcpTargets(teamConfig, userConfig);
-    expect(targets).toContainEqual(expect.objectContaining({
-      tool: 'copilot',
-      file: configFile,
-      projectScope: false,
-    }));
 
     const first = await reconcileMcpForConfig(teamConfig, userConfig);
     expect(first.wrote).toBe(true);
@@ -119,60 +113,8 @@ describe('Copilot MCP reconciliation', () => {
     expect((await fse.stat(configFile)).mtimeMs).toBe(mtime);
   });
 
-  it('targets an existing Copilot user MCP file without another resource directory', async () => {
-    const configFile = path.join(copilotHome, 'mcp-config.json');
-    await fse.remove(path.join(copilotHome, 'skills'));
-    await fse.writeJson(configFile, { mcpServers: {} });
-    const { enabledAgents: _enabledAgents, ...configWithoutSelection } = userConfig;
 
-    const targets = await resolveMcpTargets(teamConfig, configWithoutSelection as LocalConfig);
 
-    expect(targets).toContainEqual(expect.objectContaining({
-      tool: 'copilot',
-      file: configFile,
-      projectScope: false,
-    }));
-  });
-
-  it('targets a clean Copilot project when the agent is explicitly enabled', async () => {
-    const projectRoot = path.join(sandbox, 'clean-project');
-    const projectFile = path.join(projectRoot, '.github', 'mcp.json');
-    const projectConfig = {
-      ...userConfig,
-      scope: 'project',
-      projectRoot,
-    } as LocalConfig;
-
-    const targets = await resolveMcpTargets(teamConfig, projectConfig);
-
-    expect(targets).toContainEqual(expect.objectContaining({
-      tool: 'copilot',
-      file: projectFile,
-      projectScope: true,
-    }));
-  });
-
-  it('targets an existing Copilot project MCP file without user installation or explicit enablement', async () => {
-    const projectRoot = path.join(sandbox, 'config-only-project');
-    const projectFile = path.join(projectRoot, '.github', 'mcp.json');
-    await fse.remove(copilotHome);
-    await fse.ensureDir(path.dirname(projectFile));
-    await fse.writeJson(projectFile, { mcpServers: {} });
-    const { enabledAgents: _enabledAgents, ...configWithoutSelection } = userConfig;
-    const projectConfig = {
-      ...configWithoutSelection,
-      scope: 'project',
-      projectRoot,
-    } as LocalConfig;
-
-    const targets = await resolveMcpTargets(teamConfig, projectConfig);
-
-    expect(targets).toContainEqual(expect.objectContaining({
-      tool: 'copilot',
-      file: projectFile,
-      projectScope: true,
-    }));
-  });
 
   it('uses .github/mcp.json for project scope and leaves user configuration unchanged', async () => {
     const projectRoot = path.join(sandbox, 'project');
@@ -191,12 +133,6 @@ describe('Copilot MCP reconciliation', () => {
       projectRoot,
     } as LocalConfig;
 
-    const targets = await resolveMcpTargets(teamConfig, projectConfig);
-    expect(targets).toContainEqual(expect.objectContaining({
-      tool: 'copilot',
-      file: projectFile,
-      projectScope: true,
-    }));
 
     await reconcileMcpForConfig(teamConfig, projectConfig);
     const after = await fse.readJson(projectFile);

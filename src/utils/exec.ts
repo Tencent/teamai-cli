@@ -114,12 +114,18 @@ export function formatCommand(command: string, args: string[]): string {
  */
 export function captureTail(child: ChildProcess, maxChars: number): () => string {
   let output = '';
-  const collect = (chunk: Buffer) => {
-    output = (output + chunk.toString('utf8')).slice(-maxChars);
+  const stdoutDecoder = new StringDecoder('utf8');
+  const stderrDecoder = new StringDecoder('utf8');
+  const append = (text: string) => {
+    if (text) output = (output + text).slice(-maxChars);
   };
-  child.stdout?.on('data', collect);
-  child.stderr?.on('data', collect);
-  return () => output.trim().replace(/\s+/g, ' ').slice(-maxChars);
+  child.stdout?.on('data', (chunk: Buffer) => append(stdoutDecoder.write(chunk)));
+  child.stderr?.on('data', (chunk: Buffer) => append(stderrDecoder.write(chunk)));
+  return () => {
+    append(stdoutDecoder.end());
+    append(stderrDecoder.end());
+    return output.trim().replace(/\s+/g, ' ').slice(-maxChars);
+  };
 }
 
 /**

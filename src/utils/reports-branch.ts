@@ -17,6 +17,8 @@ import { log } from './logger.js';
 import {
   ForeignCheckoutError,
   createBranchWorktree,
+  failureReason,
+  fetchTrackingRef,
   isPublished,
   type BranchPushOptions,
   type BranchWrite,
@@ -158,20 +160,58 @@ export async function readReportsOriginFile(
   }
 }
 
+/** A reports file as origin holds it now. */
+export type ReportsOriginRead =
+  | { status: 'found'; text: string }
+  | { status: 'absent' }
+  | { status: 'unreachable'; reason: string };
+
+/**
+ * A file on origin's reports branch, fetched first so a failed fetch reads as `unreachable`, never as a missing file the
+ * way {@link readReportsOriginFile} would. `dir` is a checkout of the repository the branch lives in.
+ */
+export async function fetchReportsOriginFile(dir: string, relPath: string): Promise<ReportsOriginRead> {
+  const git = createGit(dir);
+  try {
+    const heads = await git.listRemote(['--heads', 'origin', REPORTS_BRANCH]);
+    if (heads.trim() === '') return { status: 'absent' };
+    await fetchTrackingRef(git, REPORTS_BRANCH);
+  } catch (e) {
+    return { status: 'unreachable', reason: failureReason(e) };
+  }
+  const text = await readReportsOriginFile(dir, relPath);
+  return text === null ? { status: 'absent' } : { status: 'found', text };
+}
+
+/** What an `updateReports` write decided: a value for its caller, and the files to commit, or null for none. */
+export interface ReportsChange<T> {
+  value: T;
+  write: ReportsWrite | null;
+}
+
 /**
  * Under the reports lock: sync with origin, run `write`, commit, push.
  *
  * Returns the full publish outcome, so a caller that holds the only durable
  * copy of what it wrote can drop it exactly on delivery (`isDelivered`) and
  * keep it on `busy`/`failed` (#1027); callers that only need "did the write
- * land" wrap with `isPublished`, as before.
+ * land" wrap with `isPublished`, as before. A `write` that returns a
+ * {@link ReportsChange} gets its `value` back on the outcome; the outcome has
+ * no value when `write` did not run.
  */
-export async function updateReports(
+export async function updateReports<T = never>(
   localConfig: LocalConfig,
-  write: (worktree: string, ctx: ReportsWriteContext) => Promise<ReportsWrite | null>,
-  options: BranchPushOptions = {},
-): Promise<PublishResult> {
-  return reportsBranch.update(localConfig, write, options);
+  write: (worktree: string, ctx: ReportsWriteContext) => Promise<ReportsWrite | ReportsChange<T> | null>,
+  options: BranchPushOptions & EnsureReportsWorktreeOptions = {},
+): Promise<PublishResult & { value?: T }> {
+  const held: { change?: { value: T } } = {};
+  const result = await reportsBranch.update(localConfig, async (worktree, ctx) => {
+    const change = await write(worktree, ctx);
+    if (change === null || !('value' in change)) return change;
+    held.change = { value: change.value };
+    return change.write;
+  }, options);
+  return held.change ? { ...result, value: held.change.value } : result;
 }
 
 /**

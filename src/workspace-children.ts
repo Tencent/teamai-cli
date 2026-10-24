@@ -163,7 +163,7 @@ export async function deliveredMembers(config: LocalConfig): Promise<readonly Lo
 export async function deliveredLearningsNamespaces(config: LocalConfig): Promise<string[]> {
   const namespaces = new Set<string>();
   for (const member of await deliveredMembers(config) ?? [config]) {
-    for (const namespace of await resolveActiveLearningsNamespaces(config.repo.localPath, member.projects ?? [])) {
+    for (const namespace of await resolveActiveLearningsNamespaces({ ...member, repo: config.repo })) {
       namespaces.add(namespace);
     }
   }
@@ -233,7 +233,7 @@ export function summarizeWorkspaceChildren(config: LocalConfig): string | null {
 }
 
 /** Whether `config` is a workspace that reads at least one child this run. */
-export function hasWorkspaceChildren(config: LocalConfig): boolean {
+export function hasWorkspaceChildren(config: Pick<LocalConfig, 'children'>): boolean {
   return (config.children?.children.length ?? 0) > 0;
 }
 

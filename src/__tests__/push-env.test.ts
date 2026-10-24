@@ -188,6 +188,17 @@ describe('push publishes the env files env add leaves in a standalone clone (#88
     expect(fs.readFileSync(path.join(teamRepo, 'env', 'env.yaml'), 'utf8')).toContain('value: changed');
   });
 
+  it('reports a scan that fails before the refresh as a failed pull, not as a refresh that succeeded', async () => {
+    const { push } = await import('../push.js');
+    const { getHandler } = await import('../resources/index.js');
+    // Fails only the pre-refresh scan, the first call, so a later scan cannot report it.
+    vi.spyOn(getHandler('docs'), 'scanLocalForPush').mockRejectedValueOnce(new Error('docs scan exploded'));
+
+    await push({ all: true });
+
+    expect(stderrOutput() + errorOutput()).toContain('Pull failed: docs scan exploded');
+  });
+
   it('still refuses when another path is dirty, and keeps the env edit', async () => {
     const { envAdd } = await import('../env-commands.js');
     const { push } = await import('../push.js');

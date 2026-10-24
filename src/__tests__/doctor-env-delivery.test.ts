@@ -17,6 +17,8 @@ vi.mock('../utils/logger.js', () => ({
     debug: vi.fn(), error: vi.fn(), info: vi.fn(), success: vi.fn(), warn: vi.fn(), dim: vi.fn(),
   },
   setStderrOnly: vi.fn(),
+  isSilent: () => false,
+  setSilent: vi.fn(),
 }));
 
 // The loader shells on PATH; by default none besides $SHELL, so only $SHELL's startup files are owed the block.

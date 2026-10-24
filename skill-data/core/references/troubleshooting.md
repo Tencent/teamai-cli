@@ -186,6 +186,8 @@ reference to VAR (`--from-env`) and VAR is unset in this environment. Ask the
 user whether to set VAR in their shell or replace the reference with the
 command in the line; do not choose for them.
 
+Muse may omit `type` when saving a stdio server. Pull and removal compare that form separately from the document they write, so a change to one server leaves personal servers and unchanged managed entries as saved.
+
 ## "Did not write <tool>'s MCP servers to <file>" / `withheld:`
 
 `pull` prints this, and `teamai mcp list` (`withheld:`) and `teamai doctor`
@@ -285,9 +287,12 @@ Codex runs a non-managed hook only once it is **trusted**. `teamai init`, `pull`
 and `teamai hooks inject` trust the hooks they write (and, in a project, the main
 checkout, or the current worktree when Git cannot locate a main checkout) through `codex app-server`.
 Trust written by a session-start pull applies from the next Codex session. `teamai doctor` names any teamai hook Codex will not
-run. Then: run `teamai pull`; if `codex` is not on PATH or `codexTrustEnabled: false`
+run. Then: run `teamai pull`; if teamai finds no Codex (neither `codex` on PATH nor
+the desktop app's bundled one) or `codexTrustEnabled: false`
 is set in `config.yaml`, guide the user to trust the teamai hooks in Codex `/hooks`,
-then reopen a session. A new linked worktree gets the team hooks from its second
+then reopen a session. When pull or doctor says `Codex builds disagree:`, teamai trusted
+with the newest build and the older one skips the hooks it hashes differently: have the
+user update or remove the older build it names, then run `teamai pull`. A new linked worktree gets the team hooks from its second
 Codex session (the first creates its `.codex/`). Member hooks with the same command
 are preserved and remain untouched by automatic trust. Codex ownership uses the
 recorded event, position and complete entry. A moved entry is recovered only by a
@@ -422,9 +427,15 @@ If the state write fails, repair the state directory's permissions and retry
 If the config write fails, ownership stays available for retry. Entries the
 member already listed are never claimed.
 
+CodeBuddy CLI and WorkBuddy use compressed project directory names above 255 UTF-8 bytes (a code-point-safe 180-byte prefix plus the native hash). Session listing, reading and migration follow those names; do not rename the native directories manually.
+
 ## GitHub MR/PR import API error
 
 When import falls back from `gh` to the REST API, a failed metadata, commits,
 or diff request stops before AI extraction and names the HTTP status and
 response body. Check PR visibility and authentication for 404/403, the rate
 limit for 429, or retry a temporary server failure. The error page is not a diff.
+
+## Session archive publication is busy or failed
+
+Session archive writers (`session push`, `migrate --push`, and `session pull`) wait up to ten seconds for another publication on the same machine. If busy, retry once it finishes. A failed save removes the new pair or restores the previous pair; a rollback failure names the retained backups. Remote push failures still keep the local commit.

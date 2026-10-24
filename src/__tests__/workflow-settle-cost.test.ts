@@ -22,22 +22,24 @@ vi.mock('../workflow/step-path.js', async (importOriginal) => {
 
 // Every scan over a run's step instances reads each one's path, so the number of `id` reads counts how many it looks at.
 // Counting the instances started against `max_parallel` reads only their `status`, which `status` reads count.
+// The engine reads a run it changes inside updateRun, so the steps are counted there as well as on a plain read.
 vi.mock('../workflow/store.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../workflow/store.js')>();
+  const counted = <T extends Awaited<ReturnType<typeof actual.readRun>>>(run: T): T => {
+    if (typeof run === 'string') return run;
+    run.steps = run.steps.map((state) => new Proxy(state, {
+      get: (target, key, receiver) => {
+        if (key === 'id') counter.read += 1;
+        if (key === 'status') counter.status += 1;
+        return Reflect.get(target, key, receiver);
+      },
+    }));
+    return run;
+  };
   return {
     ...actual,
-    readRun: async (...args: Parameters<typeof actual.readRun>) => {
-      const run = await actual.readRun(...args);
-      if (typeof run === 'string') return run;
-      run.steps = run.steps.map((state) => new Proxy(state, {
-        get: (target, key, receiver) => {
-          if (key === 'id') counter.read += 1;
-          if (key === 'status') counter.status += 1;
-          return Reflect.get(target, key, receiver);
-        },
-      }));
-      return run;
-    },
+    readRun: async (...args: Parameters<typeof actual.readRun>) => counted(await actual.readRun(...args)),
+    updateRun: (...[config, runId, change]: Parameters<typeof actual.updateRun>) => actual.updateRun(config, runId, async (run) => change(counted(run))),
   };
 });
 

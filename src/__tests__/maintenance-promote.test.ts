@@ -134,9 +134,9 @@ describe('executePromotion', () => {
     };
 
     const { targetPath, marked } = await executePromotion(candidate, tmpDir, { dryRun: true });
-    expect(targetPath).toContain('skills/candidate.md');
+    expect(targetPath).toContain('skills/candidate/SKILL.md');
     expect(marked).toBeNull();
-    expect(fs.existsSync(path.join(tmpDir, 'skills', 'candidate.md'))).toBe(false);
+    expect(fs.existsSync(path.join(tmpDir, 'skills', 'candidate', 'SKILL.md'))).toBe(false);
     // Not even the category directory: a preview creates nothing (#900).
     expect(fs.existsSync(path.join(tmpDir, 'skills'))).toBe(false);
   });
@@ -161,11 +161,11 @@ describe('executePromotion', () => {
     const { marked } = await executePromotion(candidate, tmpDir, { category: 'skills' });
     expect(marked).toBe(path.join(learningsDir, 'ready.md'));
 
-    expect(fs.existsSync(path.join(skillsDir, 'ready.md'))).toBe(true);
+    expect(fs.existsSync(path.join(skillsDir, 'ready', 'SKILL.md'))).toBe(true);
 
     // Original should have promoted_to in frontmatter
     const original = fs.readFileSync(path.join(learningsDir, 'ready.md'), 'utf-8');
     const { data } = matter(original);
-    expect(data.promoted_to).toBe('skills/ready.md');
+    expect(data.promoted_to).toBe('skills/ready/SKILL.md');
   });
 });

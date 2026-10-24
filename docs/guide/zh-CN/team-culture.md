@@ -36,10 +36,10 @@ team:
 | OpenCode | `~/.config/opencode/teamai-context.md` | `.opencode/teamai-context.md` |
 | Pi、Oh My Pi | 各自的用户文件 | 扩展加进系统提示 |
 | Hermes | `$HERMES_HOME/SOUL.md` | Hermes 插件 |
-| ZCode | `~/.zcode/AGENTS.md` | 仅 `toolPaths` 里配置的 `claudemd` |
-| DeepSeek Harness | `$DSH_HOME/AGENTS.md`（未设置时 `~/.dsh/AGENTS.md`） | 仅 `toolPaths` 里配置的 `claudemd` |
-| JoyCode | `~/.joycode/rules.txt` | 仅 `toolPaths` 里配置的 `claudemd` |
-| Muse Code | `~/.config/muse/AGENTS.md` | 仅 `toolPaths` 里配置的 `claudemd` |
+| ZCode | `~/.zcode/AGENTS.md` | session-start hook |
+| DeepSeek Harness | `$DSH_HOME/AGENTS.md`（未设置时 `~/.dsh/AGENTS.md`） | session-start hook |
+| JoyCode | `~/.joycode/rules.txt` | 无 |
+| Muse Code | `~/.config/muse/AGENTS.md` | session-start hook |
 
 ## 查看效果
 

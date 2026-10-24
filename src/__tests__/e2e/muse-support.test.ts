@@ -108,6 +108,9 @@ describe('Muse Code resource delivery', () => {
       '---\nname: demo\ndescription: Muse fixture skill\n---\n\n# demo\n',
     );
 
+    fs.mkdirSync(path.join(seed, 'mcp'), { recursive: true });
+    fs.writeFileSync(path.join(seed, 'mcp', 'mcp.yaml'), 'servers:\n  - name: local\n    transport: stdio\n    command: node\n    args: [server.mjs]\n');
+
     git(['init', '-q', '-b', 'main'], seed);
     git(['add', '-A'], seed);
     git(['commit', '-q', '-m', 'seed'], seed);
@@ -117,6 +120,54 @@ describe('Muse Code resource delivery', () => {
   afterAll(() => {
     if (sandbox) fs.rmSync(sandbox, { recursive: true, force: true });
   });
+
+  it('preserves a personal Muse server through a writing pull and uninstall', async () => {
+    const cwd = fs.mkdtempSync(path.join(sandbox, 'preserve-work-'));
+    const home = makeHome('home-preserve');
+    const file = path.join(home, '.config', 'muse', 'settings.json');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const init = await runCLI(['init', FAKE_URL, '--scope', 'user', '--role', 'dev', '--agent', 'muse', '--force'], cwd, home);
+    expect(init.code, init.output).toBe(0);
+    const inject = await runCLI(['mcp', 'inject'], cwd, home);
+    expect(inject.code, inject.output).toBe(0);
+    const settings = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const personal = { command: 'personal-server', args: ['--local'], env: { B: 'two', A: 'one' } };
+    settings.mcpServers.personal = personal;
+    delete settings.mcpServers.local;
+    fs.writeFileSync(file, JSON.stringify(settings));
+
+    const pull = await runCLI(['pull', '--force'], cwd, home);
+    expect(pull.code, pull.output).toBe(0);
+    const after = JSON.parse(fs.readFileSync(file, 'utf8'));
+    expect(after.mcpServers.local.command).toBe('node');
+    expect(JSON.stringify(after.mcpServers.personal)).toBe(JSON.stringify(personal));
+    const uninstall = await runCLI(['uninstall', '--agent', 'muse', '--force'], cwd, home);
+    expect(uninstall.code, uninstall.output).toBe(0);
+    expect(JSON.parse(fs.readFileSync(file, 'utf8')).mcpServers).toEqual({ personal });
+  }, 120_000);
+
+  it('keeps Muse-normalized MCP entries removable through the real CLI', async () => {
+    const workDir = path.join(sandbox, 'normalized-work');
+    fs.mkdirSync(workDir, { recursive: true });
+    const home = makeHome('home-normalized');
+    const file = path.join(home, '.config', 'muse', 'settings.json');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const init = await runCLI(['init', FAKE_URL, '--scope', 'user', '--role', 'dev', '--agent', 'muse', '--force'], workDir, home);
+    expect(init.code, init.output).toBe(0);
+    const inject = await runCLI(['mcp', 'inject'], workDir, home);
+    expect(inject.code, inject.output).toBe(0);
+    const settings = JSON.parse(fs.readFileSync(file, 'utf8'));
+    expect(settings.mcpServers, inject.output).toBeDefined();
+    expect(settings.mcpServers.local.type).toBe('stdio');
+    delete settings.mcpServers.local.type;
+    fs.writeFileSync(file, JSON.stringify(settings));
+
+    const pull = await runCLI(['pull', '--force'], workDir, home);
+    expect(pull.code, pull.output).toBe(0);
+    const uninstall = await runCLI(['uninstall', '--agent', 'muse', '--force'], workDir, home);
+    expect(uninstall.code, uninstall.output).toBe(0);
+    expect(JSON.parse(fs.readFileSync(file, 'utf8')).mcpServers).not.toHaveProperty('local');
+  }, 120_000);
 
   it('delivers team skills and the teamai skill to ~/.config/muse/skills in user scope', async () => {
     const workDir = path.join(sandbox, 'user-work');

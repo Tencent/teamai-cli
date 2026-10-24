@@ -16,8 +16,9 @@ import { z } from 'zod';
 import { getAgentVersion } from './agent-version.js';
 import { getCurrentVersion } from './package-info.js';
 import { recordedUnchanged } from './resources/delivered-copies.js';
-import type { LocalConfig } from './types.js';
-import { getHeadState } from './utils/git.js';
+import { DeliverySelectionSchema, SKILL_NAME_REGEX, type LocalConfig } from './types.js';
+import { getHeadState, type HeadState } from './utils/git.js';
+import type { TeamDelivery } from './pull.js';
 
 /**
  * A model as a driver reports it, such as `claude-sonnet-4.6` or `anthropic/claude-sonnet-4.6@2026`. A report is free
@@ -30,23 +31,35 @@ const LABEL = /^[A-Za-z0-9][A-Za-z0-9._@-]{0,79}$/;
 const COMMIT = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
 
 const Name = z.string().regex(NAME);
+/** What the checkout was delivered for: the pull's `DeliverySelection`, and the workspace children it kept (#913). */
+const Selection = DeliverySelectionSchema.extend({ children: z.string().optional() });
 const Label = z.string().regex(LABEL);
 const Applied = z.enum(['main', 'prompt', 'subagent']);
+
+/** The model asked for, the one the tool reports and the alias asked for, each kept only when shaped like a name. */
+export const ObservedModelSchema = z.object({ requested: Name.optional(), reported: Name.optional(), alias: Name.optional() });
+export type ObservedModel = z.infer<typeof ObservedModelSchema>;
+export const ObservedEffortSchema = z.object({ requested: Label.optional(), reported: Label.optional() });
+export type ObservedEffort = z.infer<typeof ObservedEffortSchema>;
 
 /** What one pass of a step ran as. Every field is best effort: absent when not observed, never inferred. */
 export const AgentObservationSchema = z.object({
   v: z.literal(1),
   definition: z.object({ name: z.string().min(1), applied: Applied.optional() }).optional(),
   tool: z.object({ name: Label, version: Label.optional() }),
-  model: z.object({ requested: Name.optional(), reported: Name.optional(), alias: Name.optional() }).optional(),
-  effort: z.object({ requested: Label.optional(), reported: Label.optional() }).optional(),
-  team: z.object({ revision: z.string().regex(COMMIT), localChanges: z.boolean() }).optional(),
+  model: ObservedModelSchema.optional(),
+  effort: ObservedEffortSchema.optional(),
+  team: z.object({ revision: z.string().regex(COMMIT), localChanges: z.boolean(), selection: Selection.optional() }).optional(),
   project: z.object({ commit: z.string().regex(COMMIT), dirty: z.boolean() }).optional(),
   teamai: z.string(),
   driver: z.string(),
   fingerprint: z.string().regex(/^[0-9a-f]{64}$/).optional(),
 });
 export type AgentObservation = z.infer<typeof AgentObservationSchema>;
+
+/** The team skills a pass or session loaded, by name. Absent when nothing observed them, so `[]` means none was loaded. */
+export const UsedSchema = z.object({ skills: z.array(z.string().min(1)) });
+export type Used = z.infer<typeof UsedSchema>;
 
 /**
  * What a driver may report. It has no key the engine owns (definition.name, teamai, driver) and no fingerprint. Zod
@@ -59,7 +72,7 @@ const ReportedAgentSchema = z.object({
   tool: z.object({ name: z.string().optional(), version: z.string().optional() }).optional(),
   model: z.object({ requested: z.string().optional(), reported: z.string().optional(), alias: z.string().optional() }).optional(),
   effort: z.object({ requested: z.string().optional(), reported: z.string().optional() }).optional(),
-  team: z.object({ revision: z.string(), localChanges: z.boolean() }).optional(),
+  team: z.object({ revision: z.string(), localChanges: z.boolean(), selection: Selection.optional() }).optional(),
   project: z.object({ commit: z.string(), dirty: z.boolean() }).optional(),
 });
 export type ReportedAgent = z.infer<typeof ReportedAgentSchema>;
@@ -95,15 +108,26 @@ export type ToolLaunch = {
   };
   /** The model the step or its `defaults.model` chose, which the launch passes on argv in place of the definition's. */
   chosen?: { model: string; effort?: string; alias?: string };
+  /** A session start whose own pull follows and marks what it changes (`teamDelivery`). */
+  beforeOwnPull?: boolean;
+  /** The checkout's git state when the launch already read it, null when it found none; read here otherwise. */
+  head?: HeadState | null;
+  /** The checkout's pull record when the launch already read it (`teamDelivery`), null when it found none; read here otherwise. */
+  delivery?: TeamDelivery | null;
 };
 
 /** Observe a launch before the tool starts. Never throws: each field it cannot observe is left out. */
 export async function observeLaunch(launch: ToolLaunch): Promise<ReportedAgent> {
+  const [version, checkout] = await Promise.all([getAgentVersion(launch.tool), observeCheckout(launch)]);
+  return { ...(version ? { tool: { version } } : {}), ...checkout };
+}
+
+/** What `observeLaunch` reads from the checkout and the pull record, without running the tool for its version. */
+export async function observeCheckout(launch: ToolLaunch): Promise<ReportedAgent> {
   const { teamDelivery } = await import('./pull.js');
-  const [version, delivery, head] = await Promise.all([
-    getAgentVersion(launch.tool),
-    teamDelivery(launch.config, launch.tool).catch(() => undefined),
-    getHeadState(launch.cwd).catch(() => null),
+  const [delivery, head] = await Promise.all([
+    launch.delivery !== undefined ? launch.delivery : teamDelivery(launch.config, launch.tool, { beforeOwnPull: launch.beforeOwnPull }).catch(() => undefined),
+    launch.head !== undefined ? launch.head : getHeadState(launch.cwd).catch(() => null),
   ]);
   const record = delivery?.record;
   const definition = launch.definition;
@@ -120,16 +144,31 @@ export async function observeLaunch(launch: ToolLaunch): Promise<ReportedAgent> 
   // The effort requested is the one the launch passes on argv. Claude does not apply an agent file's `effort:` under
   // `--agent`, so the file's value is not what ran.
   const effort = names({ requested: chosen ? chosen.effort : definition?.effort }, LABEL);
-  const team = delivery?.complete
-    ? { revision: delivery.commit, localChanges: !await allUnchanged(delivery.record.delivered ?? {}) }
+  // A record an older CLI wrote does not say what it was delivered for, so it names no team.
+  const selection = delivery?.complete ? delivery.record.selection : undefined;
+  const team = delivery?.complete && selection
+    ? {
+      revision: delivery.commit,
+      localChanges: !await allUnchanged(delivery.record.delivered ?? {}),
+      selection: { ...selection, ...(delivery.record.children ? { children: delivery.record.children } : {}) },
+    }
     : undefined;
   return {
-    ...(version ? { tool: { version } } : {}),
     ...(model ? { model } : {}),
     ...(effort ? { effort } : {}),
     ...(team ? { team } : {}),
     ...(head ? { project: { commit: head.head, dirty: head.dirty } } : {}),
   };
+}
+
+/** `values` without those not shaped like a model name, or undefined when none is left. */
+export function observedModel(values: { requested?: string; reported?: string; alias?: string }): ObservedModel | undefined {
+  return names(values);
+}
+
+/** `values` without those not shaped like an effort, or undefined when none is left. */
+export function observedEffort(values: { requested?: string; reported?: string }): ObservedEffort | undefined {
+  return names(values, LABEL);
 }
 
 function names<T extends Record<string, string | undefined>>(values: T, shape = NAME): Partial<T> | undefined {
@@ -219,4 +258,16 @@ export function readRecordedAgent(value: unknown): RecordedAgent | undefined {
   if (observation.success) return observation.data;
   const definitionOnly = DefinitionOnlySchema.safeParse(value);
   return definitionOnly.success ? definitionOnly.data : undefined;
+}
+
+/**
+ * Parse the `used` field of a report payload, or return an `invalid_report` message for a wrong JSON type. A skill not
+ * shaped like a skill name, such as a path, is dropped, not rejected; a list that leaves nothing is no observation.
+ */
+export function parseReportedUsed(value: unknown): Used | undefined | string {
+  const parsed = z.object({ skills: z.array(z.string()) }).safeParse(value);
+  if (!parsed.success) return 'used must be an object whose skills is an array of skill names';
+  const { skills } = parsed.data;
+  const named = [...new Set(skills.filter((skill) => SKILL_NAME_REGEX.test(skill)))].sort();
+  return named.length > 0 || skills.length === 0 ? { skills: named } : undefined;
 }

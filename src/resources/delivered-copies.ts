@@ -89,6 +89,10 @@ export interface DeliveryLedger {
   readonly failed: { name: string; tool: string }[];
   /** Tools that did not receive every skill this pull delivers: a copy there was kept, skipped or failed. */
   readonly toolsMissingSkills: Set<string>;
+  /** Tools that did not receive every rule this pull delivers: a copy there was kept, skipped or failed. */
+  readonly toolsMissingRules: Set<string>;
+  /** Tools that did not receive every agent this pull delivers: a copy there was kept, held or failed. */
+  readonly toolsMissingAgents: Set<string>;
   /**
    * Where a writer reports the paths it delivered into the project checkout
    * and whether it delivered all it meant to (#915). Only pull's project
@@ -109,6 +113,8 @@ export function openLedger(
     held: [],
     failed: [],
     toolsMissingSkills: new Set(),
+    toolsMissingRules: new Set(),
+    toolsMissingAgents: new Set(),
     agentModels: Object.fromEntries(Object.entries(agentModels ?? {}).map(([stem, byTool]) => [stem, { ...byTool }])),
   };
 }

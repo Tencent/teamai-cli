@@ -10,7 +10,7 @@
  */
 import matter from 'gray-matter';
 import { describeDeliveryConflict, resolveDesiredSkills } from '../resources/desired.js';
-import { installOf, locate, writableDir } from '../locate.js';
+import { installOf, locate, writable } from '../locate.js';
 import { getHandler } from '../resources/index.js';
 import { loadTagsConfig } from '../utils/tags.js';
 import { readFileSafe } from '../utils/fs.js';
@@ -164,7 +164,7 @@ async function installedAgentsFor(
   const install = installOf(teamConfig, localConfig);
   const installed: string[] = [];
   for (const tool of Object.keys(install.toolPaths)) {
-    const skillsDir = writableDir(await locate(tool, 'skills', install));
+    const skillsDir = writable(await locate(tool, 'skills', install))?.path ?? null;
     if (skillsDir === null) continue;
     if (await pathExists(pathJoin(skillsDir, skillName))) installed.push(tool);
   }

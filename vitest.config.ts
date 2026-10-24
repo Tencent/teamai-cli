@@ -2,6 +2,7 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
+    globalSetup: ['src/__tests__/helpers/assert-safe-tmpdir.ts'],
     include: ['src/__tests__/**/*.test.ts'],
     exclude: ['src/__tests__/e2e/**', 'src/__tests__/*-e2e.test.ts'],
     // isolate-home first: the other setup file imports modules that build

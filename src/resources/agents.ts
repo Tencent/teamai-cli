@@ -2,12 +2,14 @@ import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { parse as parseYaml } from 'yaml';
 import matter from 'gray-matter';
-import { isToolInstalledForConfig, ResourceHandler, type PlacementRecords, type ScanForPushOptions } from './base.js';
+import { ResourceHandler, type PlacementRecords, type ScanForPushOptions } from './base.js';
 import type { CopyOrigin, ResourceItem, ResourceItemStatus, DeliveryTarget, TeamaiConfig, LocalConfig, AgentModelRecords, RecordedAgentModel } from '../types.js';
 import { listFiles, listDirs, pathExists, copyFile, ensureDir, remove, fileContentEqual, getFileMtime, writeFile, readFileSafe, fileHash } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
-import { resolveToolBaseDir, installScopeName, isAgentExcluded, isSelfMode, scopedToolPaths } from '../types.js';
+import { installScopeName, isAgentExcluded, isSelfMode } from '../types.js';
 import { BUILTIN_AGENT_NAMES } from '../builtin-agents.js';
+import { isAgentToolId } from '../tools.js';
+import { cleanupOf, installOf, locate, ownOf, writable } from '../locate.js';
 import { resolveResourceNamespaces } from '../resource-namespaces.js';
 import { isSafeNamespaceSegment } from '../manifest-schema.js';
 import { assertWithinRoot } from '../utils/path-safety.js';
@@ -40,7 +42,6 @@ import {
   agentEffortField,
   toolExtrasFor,
   EXTRAS_BASE_TOOL,
-  ALL_SUPPORTED_TOOLS,
   AGENT_FILE_EXTENSIONS,
   agentStemFromFilename,
   museAgentDrops,
@@ -310,16 +311,15 @@ export class AgentsHandler extends ResourceHandler {
     // Collect all local agent files grouped by stem
     const grouped = new Map<string, Map<string, string>>(); // stem → (tool → filePath)
 
-    for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
-      if (!toolPath.agents) continue;
+    const install = installOf(teamConfig, localConfig);
+    for (const tool of Object.keys(install.toolPaths)) {
       // An excluded tool is neither written nor cleaned by teamai, so what it
       // holds is not a source either: `removeItem` leaves its copy behind, and
       // a namespaced removal tombstones only `<ns>/<stem>`, so reading that
       // copy republished the agent just removed (#649 review).
       if (isAgentExcluded(localConfig, tool)) continue;
-      const baseDir = resolveToolBaseDir(tool, localConfig);
-      const agentsDir = path.join(baseDir, toolPath.agents);
-      if (!await pathExists(agentsDir)) continue;
+      const agentsDir = ownOf(await locate(tool, 'agents', install))?.path;
+      if (agentsDir === undefined || !await pathExists(agentsDir)) continue;
 
       const files = await listFiles(agentsDir);
       for (const file of files) {
@@ -444,7 +444,7 @@ export class AgentsHandler extends ResourceHandler {
         // writes, aliases resolved. Unchanged/untargeted copies must not join a merge.
         let unresolved: string | undefined;
         for (const [tool, filePath] of toolFiles) {
-          if (!isKnownTool(tool)
+          if (!isAgentToolId(tool)
             || (canonicalSpec.targets && !canonicalSpec.targets.includes(tool))) {
             toolFiles.delete(tool);
             continue;
@@ -525,7 +525,7 @@ export class AgentsHandler extends ResourceHandler {
       let skipReason: string | undefined;
 
       for (const [tool, filePath] of toolFiles) {
-        if (!isKnownTool(tool)) continue;
+        if (!isAgentToolId(tool)) continue;
         const content = await readFileSafe(filePath);
         if (!content) {
           if (canonicalSpec) skipReason = `cannot read edited agent file for ${tool}`;
@@ -534,7 +534,7 @@ export class AgentsHandler extends ResourceHandler {
 
         const result = reverseByTool(tool, filePath, content);
         if (result.ok) {
-          perToolSpecs[tool as ToolName] = result.spec;
+          perToolSpecs[tool] = result.spec;
         } else {
           if (canonicalSpec) skipReason = `cannot parse edited agent file for ${tool}: ${result.reason}`;
           log.debug(`Reverse failed for ${stem} from ${tool}: ${result.reason}`);
@@ -718,8 +718,13 @@ export class AgentsHandler extends ResourceHandler {
       specModel = parseResult.spec.model;
       if (specModel !== undefined) {
         const holds = await this.modelHolds(item.name, spec, teamConfig, localConfig, aliases);
-        if (ledger) ledger.held.push(...holds);
-        else reportHeld(holds);
+        if (ledger) {
+          ledger.held.push(...holds);
+          const everyTool = async (): Promise<string[]> => (await this.agentToolDirs(teamConfig, localConfig)).map(({ tool }) => tool);
+          for (const hold of holds) for (const tool of hold.tools ?? await everyTool()) ledger.toolsMissingAgents.add(tool);
+        } else {
+          reportHeld(holds);
+        }
       }
     } else {
       warnLegacyAlias(item, content, aliases);
@@ -746,7 +751,10 @@ export class AgentsHandler extends ResourceHandler {
     for (const { tool, dest, render, origin } of renders) {
       const destDir = path.dirname(dest);
       try {
-        if (ledger && await keepsEditedCopy(ledger, item, { tool, dest, content: render.content, origin })) continue;
+        if (ledger && await keepsEditedCopy(ledger, item, { tool, dest, content: render.content, origin })) {
+          ledger.toolsMissingAgents.add(tool);
+          continue;
+        }
         await ensureDir(destDir);
         // Only a rendered spec can leave a sibling behind: its extension follows
         // the tool's format and changes when `targets` does. A legacy `.md` is
@@ -767,6 +775,7 @@ export class AgentsHandler extends ResourceHandler {
         ledger?.recorder?.failed('agents');
         log.warn(`Failed to sync agent ${item.name} to ${tool}: ${(e as Error).message}`);
         ledger?.failed.push({ name: item.name, tool });
+        ledger?.toolsMissingAgents.add(tool);
       }
     }
     if (ledger?.recorder) await this.reportHeldCopies(agentItem, teamConfig, localConfig, aliases, ledger);
@@ -881,28 +890,29 @@ export class AgentsHandler extends ResourceHandler {
     // teamai's only on proof, here as in pull (#993).
     const { deliveredHashes } = await import('../pull.js');
     const previous = await deliveredHashes(localConfig);
-    for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
-      if (!toolPath.agents) continue;
+    const install = installOf(teamConfig, localConfig);
+    for (const tool of Object.keys(install.toolPaths)) {
       // A tool the member excluded is not ours to write to, so it is not ours
       // to delete from either. This is the gate pull's tombstone pass applies.
       if (isAgentExcluded(localConfig, tool)) continue;
-      const baseDir = resolveToolBaseDir(tool, localConfig);
-      // Try every native agent extension: the render format varies per tool.
-      for (const localName of localNames) {
-        for (const ext of AGENT_FILE_EXTENSIONS) {
-          const filePath = path.join(baseDir, toolPath.agents, `${localName}${ext}`);
-          // A link is the member's, whatever the records say: teamai never deletes one (#993).
-          if (await isLink(filePath)) continue;
-          // The author's root copy is this agent's by the placement record, which proves it here.
-          if (localName === name && await pathExists(filePath)
-            && !await ownsAgentCopy(localConfig, filePath, stem, tool, previous)) {
-            log.warn(describeMembersDirLeft(filePath, resource, 'remove'));
-            continue;
-          }
-          if (await pathExists(filePath) && !await keepsTrackedCopy(filePath)) {
-            await remove(filePath);
-            removed.push(filePath);
-            log.debug(`Removed agent ${localName} from ${tool}`);
+      for (const { path: agentsDir } of cleanupOf(await locate(tool, 'agents', install))) {
+        // Try every native agent extension: the render format varies per tool.
+        for (const localName of localNames) {
+          for (const ext of AGENT_FILE_EXTENSIONS) {
+            const filePath = path.join(agentsDir, `${localName}${ext}`);
+            // A link is the member's, whatever the records say: teamai never deletes one (#993).
+            if (await isLink(filePath)) continue;
+            // The author's root copy is this agent's by the placement record, which proves it here.
+            if (localName === name && await pathExists(filePath)
+              && !await ownsAgentCopy(localConfig, filePath, stem, tool, previous)) {
+              log.warn(describeMembersDirLeft(filePath, resource, 'remove'));
+              continue;
+            }
+            if (await pathExists(filePath) && !await keepsTrackedCopy(filePath)) {
+              await remove(filePath);
+              removed.push(filePath);
+              log.debug(`Removed agent ${localName} from ${tool}`);
+            }
           }
         }
       }
@@ -1110,16 +1120,17 @@ export class AgentsHandler extends ResourceHandler {
     localConfig: LocalConfig,
   ): Promise<{ tool: ToolName; dir: string }[]> {
     const dirs: { tool: ToolName; dir: string }[] = [];
-
-    for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
-      if (!toolPath.agents || !isKnownTool(tool) || isAgentExcluded(localConfig, tool)) continue;
-      if (!await isToolInstalledForConfig(tool, toolPath.agents, localConfig)) {
-        debugOnce(`Skipping agent sync for ${tool} in ${localConfig.scope} scope: tool not installed`);
+    const install = installOf(teamConfig, localConfig);
+    for (const tool of Object.keys(install.toolPaths)) {
+      if (!isAgentToolId(tool)) continue;
+      const where = await locate(tool, 'agents', install);
+      const dir = writable(where)?.path ?? null;
+      if (dir === null) {
+        if (ownOf(where) !== null && !isAgentExcluded(localConfig, tool)) debugOnce(`Skipping agent sync for ${tool} in ${localConfig.scope} scope: tool not installed`);
         continue;
       }
-      dirs.push({ tool, dir: path.join(resolveToolBaseDir(tool, localConfig), toolPath.agents) });
+      dirs.push({ tool, dir });
     }
-
     return dirs;
   }
 
@@ -1602,7 +1613,7 @@ export function agentOrigin(repoPath: string, stem: string, tool: ToolName, alia
 /** `agentOrigin` for a copy of a removed agent; for a tool teamai renders no agents for, the team agents verbatim. */
 export async function removedAgentOrigin(localConfig: LocalConfig, stem: string, tool: string): Promise<CopyOrigin> {
   // A tool teamai renders no agents for still gets a proof: the team agents' own bytes, verbatim (#993).
-  if (!isKnownTool(tool)) return { repoPath: localConfig.repo.localPath, pathspec: `:(glob)agents/**/${stem}.*` };
+  if (!isAgentToolId(tool)) return { repoPath: localConfig.repo.localPath, pathspec: `:(glob)agents/**/${stem}.*` };
   return agentOrigin(localConfig.repo.localPath, stem, tool, await loadModelAliases(localConfig));
 }
 
@@ -1781,19 +1792,12 @@ function isLegacyAgent(item: AgentResourceItem): boolean {
 }
 
 /**
- * Check if a tool name is a known agent-capable tool.
- */
-function isKnownTool(tool: string): tool is ToolName {
-  return (ALL_SUPPORTED_TOOLS as string[]).includes(tool);
-}
-
-/**
  * Compare a tool-native agent with its canonical team-repo definition.
  * YAML definitions must be rendered first because tools such as Codex use a
  * different on-disk format (TOML), making a raw byte comparison always differ.
  */
 async function agentContentEqual(tool: string, localPath: string, teamPath: string): Promise<boolean> {
-  if (!teamPath.endsWith('.yaml') || !isKnownTool(tool)) {
+  if (!teamPath.endsWith('.yaml') || !isAgentToolId(tool)) {
     return fileContentEqual(localPath, teamPath);
   }
 

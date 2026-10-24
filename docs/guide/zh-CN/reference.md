@@ -56,6 +56,7 @@ sharing:
         secret: my-signing-key
         timeout: 5000
         retries: 3
+
 ```
 
 ### config.yaml（本地配置）
@@ -74,6 +75,8 @@ gitExcludeEnabled: true
 contributeHintEnabled: false
 usageReportEnabled: false
 codexTrustEnabled: false
+scoring:
+  isolation: verified          # 本作用域的评审必须是 verified；团队、评分器与此处取最严格的一项
 toolRoots:
   claude: ~/.claude-work
   codex: ~/.codex-alt
@@ -99,11 +102,11 @@ Cursor CLI 会搬两个目录：`CURSOR_DATA_DIR` 放会话记录，`CURSOR_CONF
 
 #### 记录的工具主目录（`~/.teamai/tool-homes.json`）
 
-有些工具会按变量搬家：`XDG_CONFIG_HOME`（OpenCode、Muse）、`OPENCODE_CONFIG_DIR`、`HERMES_HOME`、`PI_CODING_AGENT_DIR`、`COPILOT_HOME`、`DSH_HOME`、`OPENCLAW_STATE_DIR` 和 `OPENCLAW_PROFILE`。在 Windows 上，Hermes 在 `%LOCALAPPDATA%\hermes`。工具自己的变量是相对路径时，和工具一样按运行 teamai 的目录解析；`XDG_CONFIG_HOME` 或 `%LOCALAPPDATA%` 是相对路径时会被忽略。teamai 会同步到搬过去的主目录。OpenCode、Muse 和 Pi 目前只有一部分跟着走。设了 `XDG_CONFIG_HOME=/x` 时，OpenCode 的技能和 `teamai models switch` 写的 `opencode.json` 放到 `/x/opencode`，Muse 的技能放到 `/x/muse/skills`，它们的其他文件仍留在 `~/.config/opencode` 和 `~/.config/muse`。设了 `PI_CODING_AGENT_DIR=/x` 时，Pi 的技能和 `models.json` 放到 `/x`，它的扩展、MCP 和 `AGENTS.md` 仍留在 `~/.pi/agent`。`teamai doctor` 会提示。
+有些工具会按变量搬家：`XDG_CONFIG_HOME`（OpenCode、Muse）、`OPENCODE_CONFIG_DIR`、`HERMES_HOME`、`PI_CODING_AGENT_DIR`、`CODEBUDDY_CONFIG_DIR`、`COPILOT_HOME`、`DSH_HOME`、`OPENCLAW_STATE_DIR` 和 `OPENCLAW_PROFILE`。在 Windows 上，Hermes 在 `%LOCALAPPDATA%\hermes`。工具自己的变量是相对路径时，和工具一样按运行 teamai 的目录解析；`XDG_CONFIG_HOME` 或 `%LOCALAPPDATA%` 是相对路径时会被忽略。teamai 会同步到搬过去的主目录。OpenCode、Muse、Pi 和 CodeBuddy 目前只有一部分跟着走。设了 `XDG_CONFIG_HOME=/x` 时，OpenCode 的技能、agents、位于 `/x/opencode/rules` 的规则、位于 `/x/opencode/teamai-context.md` 的指令块，以及 MCP 和 `teamai models switch` 写的 `opencode.json` 都放到 `/x/opencode`。Muse 的技能和 agents 放到 `/x/muse`，它的 MCP 配置也放到 `/x/muse`，它的用户规则和指令块是 `/x/muse/AGENTS.md`。它们的 hooks 和其他设置仍留在 `~/.config/opencode` 和 `~/.config/muse`。设了 `PI_CODING_AGENT_DIR=/x` 时，Pi 的技能、MCP 配置和 `models.json` 放到 `/x`，它的用户规则和指令块是 `/x/AGENTS.md`，扩展仍留在 `~/.pi/agent`。设了 `CODEBUDDY_CONFIG_DIR=/x` 时，CodeBuddy 的技能、规则、agents、`CODEBUDDY.md` 和 MCP 文件（包括 `.codebuddy.json`）放到 `/x`，hooks 仍留在 `~/.codebuddy/settings.json`。`teamai doctor` 会提示。
 
 第一次看到该变量的 `pull` 会在该目录存在时把主目录记到 `~/.teamai/tool-homes.json`，整台机器共用这一份记录；pull 不会替换已有的记录。`teamai init` 也会记录，并且会替换已有的记录：工具自己的变量（`HERMES_HOME`、`OPENCLAW_PROFILE` 等）在目录还不存在时也记，`XDG_CONFIG_HOME` 要等目录存在才记。Hermes 在 Windows 上的默认目录只会补上缺的记录。所以请在你的工具运行的 shell 里运行 `init`。之后即使在没设该变量的 shell 里 pull，各个 scope 也仍然同步到那里。要换主目录，带着新值运行 `teamai init`。要清掉记录，把变量设为空再运行一次。记录的目录不存在时，`teamai doctor` 会报 `<tool> home exists`；shell 里的变量指向别的目录时，会报 `<tool> home matches <variable>`。
 
-工具的技能目录变了之后，旧目录里 teamai 放的副本会留下。别的 shell、别的项目或别的工具可能还在读那个目录，teamai 无法判断。第一次把技能送到新目录的 pull 会点名旧目录，之后 teamai 不再更新那里的副本。确认没有工具再读那个目录后，自己删掉即可。
+工具的技能目录、agents 目录、规则目录或指令块文件变了之后，teamai 在旧位置放的副本会留下。别的 shell、别的项目或别的工具可能还在读那个位置，teamai 无法判断。`places` 会记下 agents 目录、规则目录和指令块文件。第一次把它们送到新位置的 pull 会点名旧位置，之后 teamai 不再更新那里的副本。确认没有工具再读那个位置后，自己删掉即可。
 
 ### Webhook 通知（`sharing.webhooks`）
 

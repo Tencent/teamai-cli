@@ -8,7 +8,7 @@ import { resolveOpenclawStateDir } from '../openclaw-home.js';
 import { getCopilotHome, type LocalConfig } from '../types.js';
 import { skillRoots } from '../usage-tracker.js';
 import { getUserHome } from '../utils/home.js';
-import { saveToolHomes, toolHome, toolHomesPath } from '../tool-home.js';
+import { realHost, saveToolHomes, toolHome, toolHomesPath } from '../tool-home.js';
 import { recordToolHomes } from '../tool-home-record.js';
 
 describe('tool homes from a session whose directory was removed (#810)', () => {
@@ -87,5 +87,24 @@ describe('a home recorded on this machine', () => {
 
     expect(await recordToolHomes('pull')).toEqual([]);
     expect(toolHome('hermes')).toBe(winner);
+  });
+});
+
+describe('the real host\'s reads for a checkout key', () => {
+  it('resolves a path through its links and reads a small text file, and answers for a missing one', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-host-reads-'));
+    try {
+      const file = path.join(dir, '.git');
+      fs.writeFileSync(file, 'gitdir: ../main/.git/worktrees/x\n');
+      const host = realHost();
+      const missing = path.join(dir, 'missing', 'commondir');
+
+      expect(await host.realpath(file)).toBe(fs.realpathSync(file));
+      expect(await host.realpath(missing)).toBe(missing);
+      expect(await host.readText(file)).toBe('gitdir: ../main/.git/worktrees/x\n');
+      expect(await host.readText(missing)).toBeNull();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

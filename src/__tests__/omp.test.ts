@@ -3,13 +3,10 @@ import path from 'node:path';
 import fse from 'fs-extra';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { KNOWN_AGENTS } from '../known-agents.js';
-import { resolveMcpTargets } from '../mcp-reconcile.js';
 import {
   agentFileExtensionForTool,
-  ALL_SUPPORTED_TOOLS,
 } from '../resources/agent-format.js';
 import { AgentsHandler } from '../resources/agents.js';
-import { detectMcpFormat } from '../resources/mcp-format.js';
 import { ruleFileExtensionForTool, usesMdcRules } from '../resources/rule-format.js';
 import { RulesHandler } from '../resources/rules.js';
 import { checkoutKey } from '../pull.js';
@@ -20,6 +17,7 @@ import { loadStateForScope, saveStateForScope } from '../config.js';
 import { TeamaiConfigSchema, scopedToolPaths } from '../types.js';
 import type { LocalConfig, ResourceItem } from '../types.js';
 import { commitTeamRepo } from './helpers/team-repo-history.js';
+import { AGENT_TOOLS } from '../tools.js';
 
 describe('OMP (Oh My Pi) support', () => {
   afterEach(() => vi.unstubAllEnvs());
@@ -49,7 +47,6 @@ describe('OMP (Oh My Pi) support', () => {
       skills: '.omp/agent/skills',
       rules: '.omp/agent/rules',
       claudemd: '.omp/agent/AGENTS.md',
-      agents: '.omp/agent/agents',
     });
   });
 
@@ -58,39 +55,13 @@ describe('OMP (Oh My Pi) support', () => {
       displayName: 'Oh My Pi',
       skillsPath: '.omp/skills',
     });
-    expect(ALL_SUPPORTED_TOOLS).toContain('omp');
+    expect(AGENT_TOOLS).toContain('omp');
     expect(agentFileExtensionForTool('omp')).toBe('.md');
     expect(ruleFileExtensionForTool('omp')).toBe('.md');
     expect(usesMdcRules('omp')).toBe(false);
   });
 
-  it('uses the mcpServers JSON format in the OMP agent dir', () => {
-    expect(detectMcpFormat('omp')).toBe('claude');
-  });
 
-  it('resolves the installed OMP agent dir as an MCP target', async () => {
-    const home = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-omp-test-'));
-    try {
-      await fse.ensureDir(path.join(home, '.omp', 'agent', 'skills'));
-      vi.stubEnv('HOME', home);
-      const config = TeamaiConfigSchema.parse({ team: 'test', repo: 'test/repo' });
-      const localConfig = {
-        repo: { localPath: path.join(home, 'team-repo'), remote: 'test/repo' },
-        username: 'test',
-        scope: 'user',
-        additionalRoles: [],
-      } as unknown as LocalConfig;
-
-      expect(await resolveMcpTargets(config, localConfig)).toContainEqual({
-        tool: 'omp',
-        format: 'claude',
-        file: path.join(home, '.omp', 'agent', 'mcp.json'),
-        projectScope: false,
-      });
-    } finally {
-      await fse.remove(home);
-    }
-  });
 });
 
 describe('OMP rules directory is user-owned', () => {

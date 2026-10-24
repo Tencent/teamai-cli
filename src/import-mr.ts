@@ -334,7 +334,7 @@ export async function importFromMR(opts: {
   // ── 步骤 3：解析 learning 草稿 + dedup ─────────────────
   const { content: normalizedContent, data: frontmatter } = parseLearningDraft(learningContent);
   learningContent = normalizedContent;
-  const learningTitle = (frontmatter['title'] as string | undefined) ?? mr.title;
+  const learningTitle = typeof frontmatter['title'] === 'string' ? frontmatter['title'] : mr.title;
 
   const draftKeywords = extractKeywords(learningContent);
   const possibleDuplicates = (await findOverlappingLearnings(draftKeywords, learningsDirs, { namespaces: opts.learningsNamespaces }))
@@ -348,8 +348,10 @@ export async function importFromMR(opts: {
   // ── 步骤 4：打印摘要 ────────────────────────────────────
   log.info(`✅ Learning draft generated: ${learningTitle}`);
 
-  const tags = frontmatter['tags'] as string[] | undefined;
-  if (tags && tags.length > 0) {
+  const tags = Array.isArray(frontmatter['tags'])
+    ? frontmatter['tags'].filter((tag): tag is string => typeof tag === 'string')
+    : [];
+  if (tags.length > 0) {
     log.info(`   Tags: ${tags.join(', ')}`);
   }
 

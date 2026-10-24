@@ -43,7 +43,7 @@ beforeEach(async () => {
   origCopilotHome = process.env.COPILOT_HOME;
   process.env.HOME = tmpDir;
   vi.mocked(trustCodexHooks).mockResolvedValue({ kind: 'trusted', hooks: 1 });
-  vi.mocked(keepCodexHookTrust).mockImplementation(async (_req, write) => {
+  vi.mocked(keepCodexHookTrust).mockImplementation(async (_req, _retained, write) => {
     await write();
     return { kind: 'trusted', hooks: 0 };
   });
@@ -2230,6 +2230,76 @@ describe('local-agent: cmds[] migration', () => {
     }
   });
 
+  it('carries a member approval in the Codex home a project config relocates when an agent hook is removed (#1250)', async () => {
+    const actual = await vi.importActual<typeof import('../codex-trust.js')>('../codex-trust.js');
+    vi.mocked(trustCodexHooks).mockImplementation(actual.trustCodexHooks);
+    vi.mocked(keepCodexHookTrust).mockImplementation(actual.keepCodexHookTrust);
+    const fakeBin = installFakeCodex();
+    vi.stubEnv('PATH', `${fakeBin}${path.delimiter}${process.env.PATH ?? ''}`);
+    const work = path.join(tmpDir, 'work');
+    await fse.outputFile(path.join(work, '.teamai', 'config.yaml'), [
+      'username: tester', 'scope: project', 'toolRoots:', '  codex: ~/.codex-work', 'repo:',
+      '  remote: https://example.com/team.git', `  localPath: ${path.join(tmpDir, '.teamai', 'team-repo')}`, '',
+    ].join('\n'));
+    vi.spyOn(process, 'cwd').mockReturnValue(work);
+    const file = path.join(tmpDir, '.codex-work', 'hooks.json');
+    const mine = (index: number) => ({ file, command: 'echo mine', key: `${file}:stop:${index}:0` });
+    try {
+      await runResponse({ cmds: [{
+        id: 70, type: 'install_hook_rule', handle_type: 'hook', slug: 'a', event: 'Stop', cmd: 'echo a', scope: 'user',
+      }] }, undefined, 'codex');
+      const json = await fse.readJson(file);
+      json.hooks.Stop.push({ hooks: [{ type: 'command', command: 'echo mine' }] });
+      await fse.writeJson(file, json);
+      await actual.trustCodexHooks({ codexHome: path.dirname(file), cwd: tmpDir, hooks: [mine(1)] });
+
+      await runResponse({ cmds: [{
+        id: 71, type: 'uninstall_hook_rule', handle_type: 'hook', slug: 'a', scope: 'user',
+      }] }, undefined, 'codex');
+
+      expect((await fse.readJson(file)).hooks.Stop).toEqual([{ hooks: [{ type: 'command', command: 'echo mine' }] }]);
+      expect(await actual.readCodexHookTrust({ codexHome: path.dirname(file), cwd: tmpDir, hooks: [mine(0)] }))
+        .toEqual({ kind: 'listed', notTrusted: [] });
+    } finally {
+      vi.unstubAllEnvs();
+      await fse.remove(fakeBin);
+    }
+  });
+
+  it('carries a member approval in the Codex home a project config relocates when an agent hook install collapses a duplicate (#1250)', async () => {
+    const actual = await vi.importActual<typeof import('../codex-trust.js')>('../codex-trust.js');
+    vi.mocked(trustCodexHooks).mockImplementation(actual.trustCodexHooks);
+    vi.mocked(keepCodexHookTrust).mockImplementation(actual.keepCodexHookTrust);
+    const fakeBin = installFakeCodex();
+    vi.stubEnv('PATH', `${fakeBin}${path.delimiter}${process.env.PATH ?? ''}`);
+    const work = path.join(tmpDir, 'work');
+    await fse.outputFile(path.join(work, '.teamai', 'config.yaml'), [
+      'username: tester', 'scope: project', 'toolRoots:', '  codex: ~/.codex-work', 'repo:',
+      '  remote: https://example.com/team.git', `  localPath: ${path.join(tmpDir, '.teamai', 'team-repo')}`, '',
+    ].join('\n'));
+    vi.spyOn(process, 'cwd').mockReturnValue(work);
+    const file = path.join(tmpDir, '.codex-work', 'hooks.json');
+    const mine = (index: number) => ({ file, command: 'echo mine', key: `${file}:stop:${index}:0` });
+    const agent = { hooks: [{ type: 'command', command: 'echo a' }] };
+    try {
+      await fse.outputJson(file, { hooks: { Stop: [agent, agent, { hooks: [{ type: 'command', command: 'echo mine' }] }] } });
+      await actual.trustCodexHooks({ codexHome: path.dirname(file), cwd: tmpDir, hooks: [mine(2)] });
+
+      const installed = await runResponse({ cmds: [{
+        id: 72, type: 'install_hook_rule', handle_type: 'hook', slug: 'a', event: 'Stop', cmd: 'echo a', scope: 'user',
+      }] }, undefined, 'codex');
+
+      expect(installed.find((a) => a.id === 72)?.status).toBe('success');
+      expect((await fse.readJson(file)).hooks.Stop.map((g: { hooks: Array<{ command: string }> }) => g.hooks[0].command))
+        .toEqual(['echo a', 'echo mine']);
+      expect(await actual.readCodexHookTrust({ codexHome: path.dirname(file), cwd: tmpDir, hooks: [mine(1)] }))
+        .toEqual({ kind: 'listed', notTrusted: [] });
+    } finally {
+      vi.unstubAllEnvs();
+      await fse.remove(fakeBin);
+    }
+  });
+
   it.each(['uninstall', 'reinstall', 'teardown'])(
     'keeps an unapproved duplicate untrusted after %s removes its approved sibling group (#1220)',
     async (operation) => {
@@ -2795,6 +2865,17 @@ describe('local-agent: project prompts reach every installed tool (#945)', () =>
     const { ack, output } = await installProjectPrompt('codex', [], { sessionStart: true });
     expect(ack?.status).toBe('success');
     expect(output).toContain('PROJECT-PROMPT');
+  });
+
+  it('gives ZCode a project prompt through its SessionStart hook and writes it no file (#1221)', async () => {
+    await fse.ensureDir(path.join(tmpDir, '.zcode', 'skills'));
+    const { reconcileHooks } = await import('../hooks.js');
+    await reconcileHooks(path.join(tmpDir, '.zcode', 'cli', 'config.json'), 'zcode', []);
+    const { repo, ack, output } = await installProjectPrompt('zcode', [], { sessionStart: true });
+
+    expect(ack?.status).toBe('success');
+    expect(output).toContain('PROJECT-PROMPT');
+    expect(await fse.readdir(repo)).toEqual(expect.not.arrayContaining(['AGENTS.md', '.zcode']));
   });
 
   it('records the OpenCode entry it adds in the project\'s data home, where uninstall reads it', async () => {

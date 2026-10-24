@@ -30,6 +30,9 @@
  * layered on top as an *optional, opt-in deep pass*, not as the always-on floor.
  */
 
+import fs from 'node:fs';
+import path from 'node:path';
+
 const PLACEHOLDER = (label: string): string => `<REDACTED:${label}>`;
 
 /** Mask credentials embedded in HTTP(S) Git URLs found in logs or errors. */
@@ -37,20 +40,35 @@ export function sanitizeGitUrl(text: string): string {
   return text.replace(/(https?:\/\/)[^/@\s]+@/gi, '$1***@');
 }
 
-/** Env var name fragments that mark a value as likely-secret. */
-const SECRET_KEY_HINTS = ['TOKEN', 'SECRET', 'KEY', 'PASSWORD', 'PASSWD', '_PAT', 'CREDENTIAL'];
+/**
+ * Env var names that mark a value as likely-secret. `PAT` must be a whole
+ * `_`-separated segment, or every `*_PATH` variable would match.
+ */
+const SECRET_NAME_PATTERN = /TOKEN|SECRET|KEY|PASSWORD|PASSWD|CREDENTIAL|(?:^|_)PAT(?:_|$)/;
 
 /** Minimum length before an env value is worth masking (avoids masking `KEY=1`). */
-const MIN_ENV_VALUE_LENGTH = 8;
+export const MIN_ENV_VALUE_LENGTH = 8;
+
+/** Minimum length of a value the team declares secret: a shorter one cannot be told from ordinary text. */
+export const MIN_DECLARED_SECRET_LENGTH = 4;
 
 /**
  * (label, regex) pairs matched and replaced wholesale. Order matters: more
  * specific prefixes (e.g. `sk-ant-`) run before broader ones (e.g. `sk-`).
+ *
+ * A match whose `passedOver` group took part is kept unchanged. That group
+ * consumes text where the secret shape failed and would fail again from every
+ * later offset, so the scan skips it once instead of rescanning it per offset.
+ * Only that name keeps a match, so any other capture group still redacts.
  */
+function wasPassedOver(groups: unknown): boolean {
+  return typeof groups === 'object' && groups !== null && 'passedOver' in groups && typeof groups.passedOver === 'string';
+}
+
 const SECRET_PATTERNS: ReadonlyArray<readonly [string, RegExp]> = [
-  ['pem', /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g],
+  ['pem', /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?:[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----|(?<passedOver>[\s\S]*))/g],
   ['anthropic', /\bsk-ant-[A-Za-z0-9_-]{20,}/g],
-  ['openai', /\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}/g],
+  ['openai', /\bsk-(?:(?:proj|svcacct|admin|None)-[A-Za-z0-9_-]{20,}|[A-Za-z0-9]{20,}(?![\w-]))/g],
   ['gh_pat', /\bgithub_pat_[A-Za-z0-9_]{22,}/g],
   ['gh_tok', /\bgh[pousr]_[A-Za-z0-9]{20,}/g],
   ['aws', /\b(?:AKIA|ASIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA)[0-9A-Z]{16}\b/g],
@@ -59,9 +77,12 @@ const SECRET_PATTERNS: ReadonlyArray<readonly [string, RegExp]> = [
   ['google', /\bAIza[0-9A-Za-z_-]{35}\b/g],
   ['gcp_oauth', /\bya29\.[0-9A-Za-z_-]{20,}/g],
   ['stripe', /\b[rs]k_(?:live|test)_[A-Za-z0-9]{16,}/g],
-  ['jwt', /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g],
+  ['jwt', /\beyJ(?:[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}|(?<passedOver>[A-Za-z0-9_-]*))/g],
   ['sendgrid', /\bSG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}/g],
-  ['provider', /\b(?:xai-|gsk_|pplx-|sk-or-v1-|hf_|dop_v1_|glpat-|npm_|shpat_|tfp_|nvapi-|r8_)[A-Za-z0-9_-]{16,}/g],
+  ['provider', /\b(?:xai-|gsk_|pplx-|sk-or-v1-|dop_v1_|glpat-|shpat_|tfp_|nvapi-|r8_)[A-Za-z0-9_-]{16,}/g],
+  // npm and Hugging Face token bodies are purely alphanumeric; allowing `_`
+  // would match identifiers like `npm_package_devDependencies_typescript`.
+  ['provider', /\b(?:npm_|hf_)[A-Za-z0-9]{16,}(?![\w-])/g],
 ];
 
 /** `key=value` / `key: value` — mask only the value, keep the key for readability. */
@@ -71,8 +92,12 @@ const KV_PATTERN =
 /** `Authorization: Bearer <token>` — keep the scheme, mask the token. */
 const BEARER_PATTERN = /\b(bearer\s+)([A-Za-z0-9._-]{16,})/gi;
 
+/** Lowercase words joined by `-`, `_` or `.` read as prose (`Bearer authentication-scheme`), not a token. */
+const JOINED_WORDS_PATTERN = /^[a-z]+(?:[-_.][a-z]+)+$/;
+
 /** `proto://user:PASSWORD@host` — mask only the password segment. */
-const CONNECTION_STRING_PATTERN = /([a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^\s:/@]+:)([^\s/@]{6,})(@)/g;
+const CONNECTION_STRING_PATTERN =
+  /(?<![a-zA-Z0-9+.-])([0-9+.-]*[a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^\s:/@]+:)([^\s/@]{6,})(@)/g;
 
 export interface RedactOptions {
   /**
@@ -94,10 +119,11 @@ export function collectEnvSecrets(env: NodeJS.ProcessEnv = process.env): Record<
   const secrets: Record<string, string> = {};
   for (const [name, value] of Object.entries(env)) {
     if (typeof value !== 'string' || value.length < MIN_ENV_VALUE_LENGTH) continue;
-    const upper = name.toUpperCase();
-    if (SECRET_KEY_HINTS.some((hint) => upper.includes(hint))) {
-      secrets[name] = value;
-    }
+    if (!SECRET_NAME_PATTERN.test(name.toUpperCase())) continue;
+    // `SSH_KEY_PATH` names where a secret lives, not the secret. Shape alone
+    // cannot tell: base64 secrets contain `/` and may start with it.
+    if (path.isAbsolute(value) && fs.existsSync(value)) continue;
+    secrets[name] = value;
   }
   return secrets;
 }
@@ -111,11 +137,17 @@ export function redact(text: string, options: RedactOptions = {}): string {
   let out = text;
 
   // Layer 1: literal env-value masking. Longest values first so a value that
-  // contains a shorter one is masked before the shorter match can fire.
+  // contains a shorter one is masked before the shorter match can fire. A value
+  // shorter than MIN_ENV_VALUE_LENGTH only matches as a whole token, so `4938`
+  // is not masked inside `build-49381`.
   const envSecrets = options.envSecrets ?? {};
   const entries = Object.entries(envSecrets).sort((a, b) => b[1].length - a[1].length);
   for (const [label, value] of entries) {
-    if (value && out.includes(value)) {
+    if (!value) continue;
+    if (value.length < MIN_ENV_VALUE_LENGTH) {
+      const token = new RegExp(`(?<![\\p{L}\\p{N}_])${value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}_])`, 'gu');
+      out = out.replace(token, () => PLACEHOLDER(label));
+    } else if (out.includes(value)) {
       out = out.split(value).join(PLACEHOLDER(label));
     }
   }
@@ -123,10 +155,14 @@ export function redact(text: string, options: RedactOptions = {}): string {
   // Layer 2: secret-shape regexes.
   if (options.patterns !== false) {
     for (const [label, pattern] of SECRET_PATTERNS) {
-      out = out.replace(pattern, () => PLACEHOLDER(label));
+      out = out.replace(pattern, (match: string, ...rest: unknown[]) =>
+        wasPassedOver(rest.at(-1)) ? match : PLACEHOLDER(label),
+      );
     }
     out = out.replace(KV_PATTERN, (_m, key: string, sep: string) => key + sep + PLACEHOLDER('kv'));
-    out = out.replace(BEARER_PATTERN, (_m, scheme: string) => scheme + PLACEHOLDER('authz'));
+    out = out.replace(BEARER_PATTERN, (match, scheme: string, token: string) =>
+      JOINED_WORDS_PATTERN.test(token) ? match : scheme + PLACEHOLDER('authz'),
+    );
     out = out.replace(CONNECTION_STRING_PATTERN, (_m, prefix: string, _pw: string, at: string) =>
       prefix + PLACEHOLDER('conn') + at,
     );

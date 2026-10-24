@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { clearVersionCache } from '../../agent-version.js';
 import { saveStateForScope } from '../../config.js';
-import { checkoutRecordKey, type CheckoutRecord } from '../../pull.js';
+import { checkoutRecordKey, deliverySelection, type CheckoutRecord } from '../../pull.js';
 import { StateSchema, type LocalConfig } from '../../types.js';
 
 export function git(cwd: string, ...args: string[]): string {
@@ -26,16 +26,18 @@ export function initRepo(repo: string): void {
 
 /**
  * Write the checkout record a pull of `rev` into `config`'s checkout leaves, with `delivered` hashing the files as
- * they are now. `lastPullRev` defaults to `rev`.
+ * they are now and the selection `config` delivers for. `lastPullRev` defaults to `rev`. `withoutSelection` writes the
+ * record an older CLI leaves.
  */
 export async function recordDelivery(
   config: LocalConfig,
-  { rev, files = [], lastPullRev = rev, ...entry }: Omit<CheckoutRecord, 'delivered'> & { files?: string[]; lastPullRev?: string | null },
+  { rev, files = [], lastPullRev = rev, withoutSelection = false, ...entry }: Omit<CheckoutRecord, 'delivered' | 'selection'> & { files?: string[]; lastPullRev?: string | null; withoutSelection?: boolean },
 ): Promise<void> {
   const key = await checkoutRecordKey(config);
   if (!key) throw new Error('config has no checkout record key');
   const delivered = Object.fromEntries(files.map((file) => [file, crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex')]));
-  await saveStateForScope(StateSchema.parse({ lastPullRev, lastPullByWorkspace: { [key]: { rev, ...entry, delivered } } }), config);
+  const selection = withoutSelection ? {} : { selection: deliverySelection(config) };
+  await saveStateForScope(StateSchema.parse({ lastPullRev, lastPullByWorkspace: { [key]: { rev, ...entry, ...selection, delivered } } }), config);
 }
 
 /** Put an executable `claude` printing `version` first on PATH. Restore PATH with the returned function. */

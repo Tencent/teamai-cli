@@ -14,11 +14,13 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { getReportsDir, usesBranchWorktree, type LocalConfig } from '../types.js';
+import { LabelStore, type PassScore } from '../scorers/label-store.js';
 import { locateStep } from '../workflow/engine.js';
 import { buildEndRecord, RECORDS_DIR, runRecordStates, type RecordState, type WorkflowRunRecord } from '../workflow/records.js';
 import { respondToHitl } from '../workflow/run-controls.js';
 import { isRunId, readRun, runsDir } from '../workflow/store.js';
-import type { StepHitl, RunState, TokenUsage } from '../workflow/types.js';
+import type { TokenUsage } from '../tool-launch/stdout.js';
+import type { StepHitl, RunState } from '../workflow/types.js';
 import { HttpError } from './http.js';
 
 /** The newest runs each source lists; a run still running on this machine is always listed. */
@@ -112,9 +114,14 @@ interface StepRow {
   tokens?: TokenUsage;
   answer?: { choice: string; channel: string };
   gate?: Gate;
+  /** The labels scorers gave this pass. */
+  scores?: PassScore[];
 }
 
-export type RunDetail = { run: LocalRunRow | ReportedRunRow; steps: StepRow[] };
+/** What judging a run cost, kept apart from the run's own tokens: every attempt on this machine, or the published labels. */
+type ScoringTotal = Awaited<ReturnType<typeof LabelStore.scoringTotal>>;
+
+export type RunDetail = { run: LocalRunRow | ReportedRunRow; steps: StepRow[]; scoring: ScoringTotal };
 
 /** The team history, or why it could not be read; the local runs show either way. */
 export type ReportedHistory = { state: 'ok'; runs: ReportedRunRow[] } | { state: 'unavailable' };
@@ -143,7 +150,8 @@ function rowOf(record: ReadRecord): RunRow {
   };
 }
 
-function stepRow(entry: StepEntry, status: string, gate?: Gate): StepRow {
+function stepRow(entry: StepEntry, status: string, scores: ReadonlyMap<string, PassScore[]> | undefined, gate?: Gate): StepRow {
+  const passScores = scores?.get(`${entry.step}#${entry.pass}`);
   return {
     step: entry.step,
     pass: entry.pass,
@@ -151,6 +159,7 @@ function stepRow(entry: StepEntry, status: string, gate?: Gate): StepRow {
     ...(entry.tokens ? { tokens: entry.tokens } : {}),
     ...(entry.answer ? { answer: { choice: entry.answer.choice, channel: entry.answer.channel } } : {}),
     ...(gate ? { gate } : {}),
+    ...(passScores ? { scores: passScores.map(({ scorer, label, passed }) => ({ scorer, label, passed })) } : {}),
   };
 }
 
@@ -225,7 +234,7 @@ export async function listReportedRuns(config: LocalConfig): Promise<ReportedRun
   return newestFirst(records.filter((record) => record !== undefined).map(reportedRow)).slice(0, RUN_LIMIT);
 }
 
-function localDetail(run: RunState, row: LocalRunRow): RunDetail {
+function localDetail(run: RunState, row: LocalRunRow, scores: ReadonlyMap<string, PassScore[]> | undefined, scoring: ScoringTotal): RunDetail {
   const live = new Map(run.steps.map((state) => [`${state.id}#${state.pass ?? 1}`, state]));
   const steps = (localRecord(run).steps ?? []).map((entry) => {
     const state = live.get(`${entry.step}#${entry.pass}`);
@@ -233,9 +242,9 @@ function localDetail(run: RunState, row: LocalRunRow): RunDetail {
     const gate = hitl ? { kind: hitl.kind, options: hitl.options, required: hitl.required } : undefined;
     // A record entry keeps the answer only once its pass settles; an answered step still pending shows it too.
     const answer = entry.answer ?? state?.answer;
-    return stepRow({ ...entry, ...(answer ? { answer } : {}) }, state?.status ?? (entry.outcome ? STATUS_OF_OUTCOME[entry.outcome] : 'skipped'), gate);
+    return stepRow({ ...entry, ...(answer ? { answer } : {}) }, state?.status ?? (entry.outcome ? STATUS_OF_OUTCOME[entry.outcome] : 'skipped'), scores, gate);
   });
-  return { run: row, steps };
+  return { run: row, steps, scoring };
 }
 
 /** One run with a row per pass of each step, or undefined when the source holds no such run. */
@@ -244,7 +253,12 @@ export async function workflowRunDetail(config: LocalConfig, source: 'local' | '
   if (source === 'local') {
     const run = await readRun(config, runId);
     if (typeof run !== 'object') return undefined;
-    return localDetail(run, localRow(run, await runRecordStates(config, run.status === 'running' ? [] : [run])));
+    const [records, scores, scoring] = await Promise.all([
+      runRecordStates(config, run.status === 'running' ? [] : [run]),
+      LabelStore.ofRuns(config, [runId], { published: false }),
+      LabelStore.scoringTotal(config, runId, 'local'),
+    ]);
+    return localDetail(run, localRow(run, records), scores.get(runId), scoring);
   }
   if (usesBranchWorktree(config)) {
     // The history refreshes the checkout; a detail only checks it is this repository's.
@@ -253,7 +267,16 @@ export async function workflowRunDetail(config: LocalConfig, source: 'local' | '
   }
   const record = await readRecord(path.join(getReportsDir(config), RECORDS_DIR, `${runId}.json`));
   if (!record) return undefined;
-  return { run: reportedRow(record), steps: (record.steps ?? []).map((entry) => stepRow(entry, entry.outcome ? STATUS_OF_OUTCOME[entry.outcome] : 'skipped')) };
+  const [scores, scoring] = await Promise.all([
+    LabelStore.ofRuns(config, [runId], { published: true }),
+    LabelStore.scoringTotal(config, runId, 'published'),
+  ]);
+  const passes = scores.get(runId);
+  return {
+    run: reportedRow(record),
+    steps: (record.steps ?? []).map((entry) => stepRow(entry, entry.outcome ? STATUS_OF_OUTCOME[entry.outcome] : 'skipped', passes)),
+    scoring,
+  };
 }
 
 const AnswerSchema = z.object({

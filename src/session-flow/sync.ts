@@ -30,7 +30,8 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { getTeamaiHomeDir } from '../types.js';
 import { acquireLock, releaseLock } from '../update.js';
 import type { Session } from './ir.js';
@@ -380,6 +381,26 @@ function assertNoSymlinkedAncestors(target: string, root: string): void {
 // archive. Ten seconds covers both without leaving a command stuck.
 const INDEX_LOCK_ATTEMPTS = 100;
 const INDEX_LOCK_RETRY_MS = 100;
+const indexLockOwner = new AsyncLocalStorage<{ path: string; active: boolean }>();
+
+/** Serialize a command's archive writes and Git publication, including pull/merge. */
+export async function withSessionPublicationLock<T>(
+  repoRoot: string,
+  fn: () => Promise<T>,
+): Promise<{ status: 'done'; value: T } | { status: 'busy'; lockPath: string }> {
+  const real = await fs.promises.realpath(repoRoot).catch(() => path.resolve(repoRoot));
+  const key = createHash('sha256').update(real).digest('hex').slice(0, 16);
+  const lockPath = path.join(getTeamaiHomeDir(), 'locks', `session-publish-${key}.lock`);
+  for (let attempt = 1; !(await acquireLock(lockPath)); attempt++) {
+    if (attempt === INDEX_LOCK_ATTEMPTS) return { status: 'busy', lockPath };
+    await new Promise((resolve) => setTimeout(resolve, INDEX_LOCK_RETRY_MS));
+  }
+  try {
+    return { status: 'done', value: await fn() };
+  } finally {
+    await releaseLock(lockPath);
+  }
+}
 
 /**
  * Run `fn` holding the lock on the team repo's `sessions/` archive, or report
@@ -389,8 +410,8 @@ const INDEX_LOCK_RETRY_MS = 100;
  *
  * The lock lives under `~/.teamai/locks/`, keyed by the archive's real path,
  * not beside `_index.json`: there the commit and `pull --all`'s directory
- * renames would reach it. SyncManager stays synchronous and never takes the
- * lock itself, so it cannot re-enter it.
+ * renames would reach it. Public archive writes take this lock themselves;
+ * an existing caller holding it can safely invoke them within its operation.
  */
 export async function withSessionIndexLock<T>(
   repoRoot: string,
@@ -399,13 +420,17 @@ export async function withSessionIndexLock<T>(
   const real = await fs.promises.realpath(repoRoot).catch(() => path.resolve(repoRoot));
   const key = createHash('sha256').update(path.join(real, 'sessions')).digest('hex').slice(0, 16);
   const lockPath = path.join(getTeamaiHomeDir(), 'locks', `sessions-${key}.lock`);
+  const owner = indexLockOwner.getStore();
+  if (owner?.active && owner.path === lockPath) return { status: 'done', value: await fn() };
   for (let attempt = 1; !(await acquireLock(lockPath)); attempt++) {
     if (attempt === INDEX_LOCK_ATTEMPTS) return { status: 'busy', lockPath };
     await new Promise((resolve) => setTimeout(resolve, INDEX_LOCK_RETRY_MS));
   }
+  const held = { path: lockPath, active: true };
   try {
-    return { status: 'done', value: await fn() };
+    return { status: 'done', value: await indexLockOwner.run(held, fn) };
   } finally {
+    held.active = false;
     await releaseLock(lockPath);
   }
 }
@@ -419,6 +444,32 @@ export async function withSessionIndexLock<T>(
  * - pull only fetches the repo subdirectory that matches the current cwd
  */
 export class SyncManager {
+  private async writeArchive<T>(fn: () => T): Promise<T> {
+    const result = await withSessionIndexLock(this.repoRoot, async () => fn());
+    if (result.status === 'busy') throw new Error(`Session archive is busy; index lock: ${result.lockPath}`);
+    return result.value;
+  }
+
+  /** Save through the archive lock, including deduplication and index repair. */
+  saveSession(session: Session, meta: SessionSyncMeta): Promise<string> {
+    return this.writeArchive(() => this.saveSessionLocked(session, meta));
+  }
+
+  rebuildIndex(repoIdentity: string | null, dirOverride?: string): Promise<number> {
+    return this.writeArchive(() => this.rebuildIndexLocked(repoIdentity, dirOverride));
+  }
+
+  rebuildAllIndexes(): Promise<{ repos: number; sessions: number }> {
+    return this.writeArchive(() => this.rebuildAllIndexesLocked());
+  }
+
+  commitRebuiltIndexes(indexes: string[]): Promise<void> {
+    return this.writeArchive(() => this.commitRebuiltIndexesLocked(indexes));
+  }
+
+  deleteSession(repoIdentity: string | null, sessionName: string, author?: string): Promise<void> {
+    return this.writeArchive(() => this.deleteSessionLocked(repoIdentity, sessionName, author));
+  }
   private readonly sessionsDir: string;
   /**
    * Archive files this process has written (relative to repoRoot).
@@ -430,6 +481,11 @@ export class SyncManager {
 
   constructor(private readonly repoRoot: string) {
     this.sessionsDir = path.join(repoRoot, 'sessions');
+  }
+
+  /** The archive files this manager wrote, relative to the repo root: what `gitCommit` stages. */
+  writtenFiles(): string[] {
+    return [...this.writtenPaths];
   }
 
   /** Record the write path, and confirm there is no symlink hijack before writing. */
@@ -542,7 +598,7 @@ export class SyncManager {
       // the session being pushed. Rebuild first when the directory exists.
       const dir = this.repoDir(repoIdentity);
       if (fs.existsSync(dir)) {
-        this.rebuildIndex(repoIdentity);
+        this.rebuildIndexLocked(repoIdentity);
         if (fs.existsSync(p)) {
           return JSON.parse(fs.readFileSync(p, 'utf-8')) as RepoIndex;
         }
@@ -552,7 +608,7 @@ export class SyncManager {
     try {
       return JSON.parse(fs.readFileSync(p, 'utf-8')) as RepoIndex;
     } catch {
-      this.rebuildIndex(repoIdentity);
+      this.rebuildIndexLocked(repoIdentity);
       try {
         return JSON.parse(fs.readFileSync(p, 'utf-8')) as RepoIndex;
       } catch {
@@ -563,8 +619,7 @@ export class SyncManager {
     }
   }
 
-  private upsertIndexEntry(repoIdentity: string | null, entry: IndexEntry): void {
-    const index = this.readIndexForWrite(repoIdentity);
+  private upsertIndexEntry(repoIdentity: string | null, entry: IndexEntry, index: RepoIndex): void {
     const key = `${entry.sessionName}:${entry.author}`;
     const idx = index.sessions.findIndex((s) => `${s.sessionName}:${s.author}` === key);
     if (idx >= 0) {
@@ -631,13 +686,23 @@ export class SyncManager {
   }
 
   /**
+   * The archived copy of source session `origin`, pushed by any author, or undefined. Reads the index as it is and
+   * never repairs it, so a lookup writes nothing; when several authors pushed the session, the latest update wins.
+   */
+  findArchived(repoIdentity: string | null, origin: { platform: string; sessionId: string }): IndexEntry | undefined {
+    return this.readIndex(repoIdentity).sessions
+      .filter((s) => s.sessionId === origin.sessionId && s.platform === origin.platform)
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.author.localeCompare(b.author))[0];
+  }
+
+  /**
    * Save a session into the team repo.
    *
    * @param session IR Session
    * @param meta Sync metadata
    * @returns Path of the written jsonl file (relative to repoRoot)
    */
-  saveSession(session: Session, meta: SessionSyncMeta): string {
+  private saveSessionLocked(session: Session, meta: SessionSyncMeta): string {
     const repoId = meta.origin.repoIdentity;
     const author = meta.origin.author;
 
@@ -655,30 +720,61 @@ export class SyncManager {
     const paths = this.sessionPaths(repoId, author, sessionName);
     this.guardWrite(paths.jsonl);
     this.guardWrite(paths.meta);
+
+    // Resolve/repair the index before installing the pair: a rebuild must
+    // never adopt half of this transaction as an existing archive.
+    const index = this.readIndexForWrite(repoId);
     fs.mkdirSync(path.dirname(paths.jsonl), { recursive: true });
-
-    // Write JSONL — one message per line
-    const lines = session.messages.map((m) => JSON.stringify(messageToDict(m)));
-    fs.writeFileSync(paths.jsonl, lines.join('\n') + '\n', 'utf-8');
-
-    // Write meta.json
     meta.sync.pushedAt = utcNow();
-    fs.writeFileSync(paths.meta, JSON.stringify(meta, null, 2), 'utf-8');
-
-    // Update the index
-    this.upsertIndexEntry(repoId, {
-      sessionName,
-      author,
-      platform: session.platform,
-      title: session.title,
-      cwd: session.cwd,
-      repoIdentity: repoId,
-      messageCount: session.messages.length,
-      createdAt: session.createdAt,
-      updatedAt: session.updatedAt,
-      status: meta.status,
-      sessionId: meta.origin.sessionId,
-    });
+    const token = randomUUID();
+    const files = [
+      { file: paths.jsonl, content: session.messages.map((m) => JSON.stringify(messageToDict(m))).join('\n') + '\n' },
+      { file: paths.meta, content: JSON.stringify(meta, null, 2) },
+    ].map((file) => ({ ...file, temp: `${file.file}.${token}.tmp`, backup: `${file.file}.${token}.bak`, backedUp: false, installed: false }));
+    let committed = false;
+    try {
+      for (const file of files) fs.writeFileSync(file.temp, file.content, { encoding: 'utf-8', flag: 'wx' });
+      for (const file of files) {
+        if (fs.existsSync(file.file)) {
+          fs.renameSync(file.file, file.backup);
+          file.backedUp = true;
+        }
+        fs.renameSync(file.temp, file.file);
+        file.installed = true;
+      }
+      this.upsertIndexEntry(repoId, {
+        sessionName,
+        author,
+        platform: session.platform,
+        title: session.title,
+        cwd: session.cwd,
+        repoIdentity: repoId,
+        messageCount: session.messages.length,
+        createdAt: session.createdAt,
+        updatedAt: session.updatedAt,
+        status: meta.status,
+        sessionId: meta.origin.sessionId,
+      }, index);
+      committed = true;
+    } catch (error) {
+      const failures: unknown[] = [];
+      for (const file of [...files].reverse()) {
+        try {
+          if (file.installed) fs.unlinkSync(file.file);
+          if (file.backedUp) fs.renameSync(file.backup, file.file);
+        } catch (rollbackError) { failures.push(rollbackError); }
+      }
+      if (failures.length > 0) {
+        throw new AggregateError([error, ...failures], `Session archive rollback failed; original files kept at ${files.filter((f) => f.backedUp).map((f) => f.backup).join(', ')}`);
+      }
+      throw error;
+    } finally {
+      for (const file of files) {
+        try { fs.unlinkSync(file.temp); } catch { /* already installed, or staging failed */ }
+        // Never delete a backup whose rollback failed.
+        if (committed) try { fs.unlinkSync(file.backup); } catch { /* absent or kept for recovery */ }
+      }
+    }
 
     return path.relative(this.repoRoot, paths.jsonl);
   }
@@ -884,7 +980,7 @@ export class SyncManager {
     return out;
   }
 
-  deleteSession(repoIdentity: string | null, sessionName: string, author?: string): void {
+  private deleteSessionLocked(repoIdentity: string | null, sessionName: string, author?: string): void {
     const resolvedAuthor = author ?? this.findAuthor(repoIdentity, sessionName);
     const paths = this.sessionPaths(repoIdentity, resolvedAuthor, sessionName);
     // Same symlink guard as writes: deleting through a checkout-controlled
@@ -906,7 +1002,7 @@ export class SyncManager {
    *
    * `dirOverride` points at the actual directory (fallback rebuild for an old-encoding directory name).
    */
-  rebuildIndex(repoIdentity: string | null, dirOverride?: string): number {
+  private rebuildIndexLocked(repoIdentity: string | null, dirOverride?: string): number {
     const dir = dirOverride ?? this.repoDir(repoIdentity);
     if (!fs.existsSync(dir)) return 0;
 
@@ -990,7 +1086,7 @@ export class SyncManager {
    * so a repo with no index is skipped outright — and those are exactly the ones `pull --all` most needs to repair.
    * So walk by directory: prefer the identity stored in the index, and if it is missing, fall back to decoding the directory name.
    */
-  rebuildAllIndexes(): { repos: number; sessions: number } {
+  private rebuildAllIndexesLocked(): { repos: number; sessions: number } {
     /** identity → actual directory (old-encoding directory names differ from the new encoding, so the directory must travel with the identity). */
     const targets: Array<{ identity: string | null; dir?: string }> = [];
     const seen = new Set<string>();
@@ -1041,7 +1137,7 @@ export class SyncManager {
 
     let sessions = 0;
     for (const t of targets) {
-      sessions += this.rebuildIndex(t.identity, t.dir);
+      sessions += this.rebuildIndexLocked(t.identity, t.dir);
     }
     return { repos: targets.length, sessions };
   }
@@ -1207,9 +1303,9 @@ export class SyncManager {
   }
 
   /** Finish a merge `gitPull` left on `indexes-conflicted`: rebuild those indexes from the session files and commit. */
-  commitRebuiltIndexes(indexes: string[]): void {
+  private commitRebuiltIndexesLocked(indexes: string[]): void {
     for (const index of indexes) {
-      this.rebuildIndex(this.conflictedIndexIdentity(index), path.join(this.repoRoot, path.dirname(index)));
+      this.rebuildIndexLocked(this.conflictedIndexIdentity(index), path.join(this.repoRoot, path.dirname(index)));
       this.runGit(['add', '--', index]);
     }
     this.runGit(['commit', '--no-edit']);

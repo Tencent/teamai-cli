@@ -39,10 +39,15 @@ export interface SessionRef {
   id: string;
 }
 
+/** The session a lease resumes, with the sessions it continued, newest first, for a driver that cannot resume it. */
+export interface LeaseSession extends SessionRef {
+  earlier?: SessionRef[];
+}
+
 export interface WorkspacePlan {
   mode: WorkspaceMode;
   contract?: WorkspaceContract;
-  session?: SessionRef;
+  session?: LeaseSession;
   /** The step stays pending. `next` does not hand it to this driver. */
   defer?: string;
   fail?: WorkflowFailure;
@@ -74,13 +79,22 @@ export function resolveMode(step: WorkflowStep, ancestors: WorkflowStep[]): Work
   return 'read-only';
 }
 
+/** How step instance `path` runs, or undefined when the run's definitions have no such step. */
+export function stepMode(run: StepTree, path: string): WorkspaceMode | undefined {
+  const definition = stepDefinitions(run)(path);
+  return definition && resolveMode(definition, ancestorsOf(run, path).map((ancestor) => ancestor.step));
+}
+
 interface Ancestor {
   instance: string;
   step: WorkflowStep;
   pass: number;
 }
 
-function ancestorsOf(run: RunState, path: string): Ancestor[] {
+/** What finding a step's workspace reads of a run: its definitions, and the pass of each step instance. */
+type StepTree = Pick<RunState, 'definition' | 'workflows'> & { steps: readonly { id: string; pass?: number }[] };
+
+function ancestorsOf(run: StepTree, path: string): Ancestor[] {
   const definitionOf = stepDefinitions(run);
   const segments = parseStepPath(path);
   const ancestors: Ancestor[] = [];
@@ -216,11 +230,32 @@ function sessionFromPasses(passes: Array<{ tool?: string; session?: string }>): 
   return undefined;
 }
 
-function sessionOf(run: RunState, scope: Scope, state: StepState, definition: WorkflowStep): SessionRef | WorkflowFailure | undefined {
+/** Where `session` stands now: the copy the latest step that continued it under another id left, and so on from there. */
+function latestContinuation(run: RunState, session: SessionRef | undefined): LeaseSession | undefined {
+  if (!session) return undefined;
+  const latestFirst = [...(run.sessionContinuations ?? [])].reverse();
+  let latest = session;
+  const earlier: SessionRef[] = [];
+  // At most one hop per link, so links a driver reported in a circle still end.
+  for (let hop = 0; hop < latestFirst.length; hop += 1) {
+    const from = latest;
+    const next = latestFirst.find((link) => link.from.tool === from.tool && link.from.id === from.id);
+    if (!next) break;
+    earlier.unshift(from);
+    latest = next.to;
+  }
+  return { tool: latest.tool, id: latest.id, ...(earlier.length > 0 ? { earlier } : {}) };
+}
+
+/**
+ * The session a step resumes: its own latest with `session: continue`, or the latest of the step `session.from` names,
+ * as later steps that continued it left it.
+ */
+export function sessionOf(run: RunState, scope: Scope, state: StepState, definition: WorkflowStep): LeaseSession | WorkflowFailure | undefined {
   if (!definition.session) return undefined;
   if ('continue' in definition.session) {
     const archived = (run.archive ?? []).filter((entry) => entry.step === state.id);
-    return sessionFromPasses([...archived, ...(state.passes ?? [])]);
+    return latestContinuation(run, sessionFromPasses([...archived, ...(state.passes ?? [])]));
   }
   const name = definition.session.from;
   const states = statesIn(run, scope);
@@ -239,7 +274,7 @@ function sessionOf(run: RunState, scope: Scope, state: StepState, definition: Wo
     return { code: 'bad_session', message: `step "${state.id}" resumes "${name}", which is a for_each step` };
   }
   const current = passOf(target);
-  return sessionFromPasses([...(target.passes ?? []), ...(current ? [current] : [])]);
+  return latestContinuation(run, sessionFromPasses([...(target.passes ?? []), ...(current ? [current] : [])]));
 }
 
 function sameDriver(left: DriverIdentity, right: DriverIdentity): boolean {
@@ -290,7 +325,7 @@ export function planWorkspace(
       return { mode, fail: { code: 'workspace_base', message: `step "${state.id}" needs the run's base commit` } };
     }
     const copy = run.copies?.[branch];
-    if (!handback && copy && !sameDriver(copy.owner, request.driver)) {
+    if (!handback && copy?.owner && !sameDriver(copy.owner, request.driver)) {
       return { mode, defer: `step "${state.id}" reads a workspace owned by another driver` };
     }
     const start = { commit: copy?.commit ?? needed?.commit ?? base.commit };
@@ -310,7 +345,7 @@ export function planWorkspace(
     return { mode, fail: { code: 'workspace_base', message: `step "${state.id}" continues a workspace, but no enclosing step opens one` } };
   }
   const copy = run.copies?.[branch];
-  if (!handback && copy && !sameDriver(copy.owner, request.driver)) {
+  if (!handback && copy?.owner && !sameDriver(copy.owner, request.driver)) {
     return { mode, defer: `step "${state.id}" continues a workspace owned by another driver` };
   }
   const changes = mergeChanges(run, scope, state, definition);

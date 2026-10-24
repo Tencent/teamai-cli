@@ -15,6 +15,7 @@ import { detectProjectConfig } from '../config.js';
 import { reconcileHooks } from '../hooks.js';
 import { reconcileDshHooks, resolveDshHomePatchPath, resolveDshHookConfigPath } from '../dsh-hooks.js';
 import { injectPiHooks } from '../pi-hooks.js';
+import { channelReadiness } from '../instruction-targets.js';
 import { TeamaiConfigSchema } from '../types.js';
 import type { LocalConfig } from '../types.js';
 
@@ -105,13 +106,14 @@ describe('ZCode, DeepSeek Harness and Muse Code get the project\'s rules from th
     expect(await sessionStart(tool, config('project', ['claude']))).toBeNull();
   });
 
-  it.each(['zcode', 'dsh', 'muse'])('%s: adds the rules only, not the instruction blocks, which #945 gives it no channel for', async (tool) => {
+  it.each(['zcode', 'dsh', 'muse'])('%s: adds the instruction blocks before the rules, the only channel it has for them in a project (#1221)', async (tool) => {
     await fse.outputFile(path.join(repoPath, 'culture.md'), '---\ncompany:\n  name: Acme\n---\n\nBe kind to teammates.\n');
 
     const text = await sessionStart(tool, config('project'));
 
-    expect(text).toContain('PROJ-RULE-7');
-    expect(text).not.toContain('Be kind to teammates.');
+    expect(count(text, 'Be kind to teammates.')).toBe(1);
+    expect(count(text, 'PROJ-RULE-7')).toBe(1);
+    expect(text?.indexOf('Be kind to teammates.')).toBeLessThan(text?.indexOf('PROJ-RULE-7') ?? -1);
   });
 });
 
@@ -419,5 +421,33 @@ describe('init and doctor name the limits of the project hooks (#946)', () => {
     const notes = await ruleChannelNotes(config(scope, enabled));
 
     expect(notes.some((note) => note.startsWith('ZCode') || note.startsWith('DeepSeek Harness'))).toBe(false);
+  });
+});
+
+describe('a session-start channel is ready only once teamai\'s hook is where the tool runs it (#1221)', () => {
+  const teamConfig = () => TeamaiConfigSchema.parse({ team: 'test', repo: 'https://example.invalid/x/team.git' });
+  const install: Record<'zcode' | 'dsh' | 'muse', () => Promise<void>> = {
+    zcode: () => reconcileHooks(path.join(homeDir, '.zcode', 'cli', 'config.json'), 'zcode'),
+    dsh: async () => {
+      await fse.ensureDir(path.join(homeDir, '.dsh'));
+      await reconcileDshHooks([], {});
+    },
+    muse: () => reconcileHooks(path.join(homeDir, '.config', 'muse', 'settings.json'), 'muse'),
+  };
+
+  it.each([
+    ['zcode', 'zcode-session-start'],
+    ['dsh', 'dsh-session-start'],
+    ['muse', 'muse-session-start'],
+  ] as const)('%s: not ready before `hooks inject`, ready after', async (tool, probe) => {
+    const context = { teamConfig: teamConfig(), localConfig: config('project', [tool]) };
+
+    const before = await channelReadiness(tool, probe, context);
+    await install[tool]();
+    const after = await channelReadiness(tool, probe, context);
+
+    expect(before.ready).toBe(false);
+    expect(before.fix).toContain('teamai hooks inject');
+    expect(after.ready).toBe(true);
   });
 });

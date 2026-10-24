@@ -14,6 +14,7 @@ import {
 } from './types.js';
 import { isToolInstalledForConfig } from './resources/base.js';
 import { isToolId, TOOLS } from './tools.js';
+import { installOf, locate, ownOf } from './locate.js';
 import type { LocalConfig, TeamaiConfig, Scope } from './types.js';
 import { getUserHome } from './utils/home.js';
 
@@ -186,6 +187,7 @@ export async function seedSelfModeToolDirs(
   const selfMode = isSelfMode(localConfig);
   const baseDir = resolveBaseDir(localConfig);
   const configured = scopedToolPaths(teamConfig, localConfig);
+  const install = installOf(teamConfig, localConfig);
 
   // Non-self project scope injects hooks into HOME, not the project root
   // (`resolveHookScope`, #264): `~/.claude` always exists for a built-in tool,
@@ -208,7 +210,8 @@ export async function seedSelfModeToolDirs(
     if (!selfMode && !isCustom) continue;
 
     const fallbackSkills = KNOWN_AGENTS.find((a) => a.id === id)?.skillsPath;
-    let ensured = await seedToolRoots(id, baseDir, configured[id], fallbackSkills, localConfig.toolRoots);
+    const agentsDir = ownOf(await locate(id, 'agents', install))?.path ?? null;
+    let ensured = await seedToolRoots(id, baseDir, configured[id], agentsDir, fallbackSkills, localConfig.toolRoots);
     // The HOME pass is restricted to what hook installation actually reads
     // (settings/hooks) — seeding skills/rules/agents/claudemd there too would
     // create a redundant directory for a tool with no settings-based hook
@@ -237,14 +240,16 @@ async function seedToolRoots(
   tool: string,
   baseDir: string,
   paths: ReturnType<typeof scopedToolPaths>[string] | undefined,
+  agentsDir: string | null,
   fallbackSkills?: string,
   toolRoots?: Record<string, string>,
 ): Promise<boolean> {
-  const dirPaths = [paths?.skills, paths?.rules, paths?.agents].filter((p): p is string => !!p);
-  if (dirPaths.length === 0 && fallbackSkills) dirPaths.push(fallbackSkills);
-  for (const dirPath of dirPaths) await ensureDir(path.join(baseDir, dirPath));
+  const dirPaths = [paths?.skills, paths?.rules].filter((p): p is string => !!p);
+  if (dirPaths.length === 0 && agentsDir === null && fallbackSkills) dirPaths.push(fallbackSkills);
+  const dirs = [...dirPaths.map((dirPath) => path.join(baseDir, dirPath)), ...agentsDir === null ? [] : [agentsDir]];
+  for (const dir of dirs) await ensureDir(dir);
 
-  let ensuredAnything = dirPaths.length > 0;
+  let ensuredAnything = dirs.length > 0;
   const claudemd = paths?.claudemd;
   if (claudemd) {
     const claudemdRoot = toolGateRoot(tool, claudemd, toolRoots);

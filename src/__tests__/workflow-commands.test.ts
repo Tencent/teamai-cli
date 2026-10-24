@@ -13,16 +13,18 @@ vi.mock('../config.js', async (importOriginal) => {
     ...actual,
     autoDetectInit: vi.fn(async () => {
       if (!state.config) throw new Error('teamai is not initialized');
-      return { localConfig: state.config, teamConfig: { team: 'test' } };
+      return { localConfig: state.config, teamConfig: { team: 'test', toolPaths: {} } };
     }),
   };
 });
 
 import { setStderrOnly } from '../utils/logger.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
+import { acquireLock, releaseLock } from '../update.js';
 import { startRun } from '../workflow/engine.js';
-import { readRun } from '../workflow/store.js';
-import { workflowNext, workflowReport, workflowStart } from '../workflow-commands.js';
+import { publishRun } from '../workflow/handoff.js';
+import { driverLockPath, readRun } from '../workflow/store.js';
+import { workflowNext, workflowPublish, workflowReport, workflowResume, workflowStart } from '../workflow-commands.js';
 
 const dirs: string[] = [];
 
@@ -237,5 +239,99 @@ steps:
 
     const run = await readRun(config, runId);
     expect(typeof run === 'object' ? run.base : run).toEqual({ commit });
+  });
+});
+
+describe('workflow start --driver local', () => {
+  it('prints the run and how to continue it on stderr before the driver runs a step, and only the envelope on stdout', async () => {
+    const config = testConfig();
+    fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'mark.yaml'), `schemaVersion: v1alpha1
+name: mark
+description: One command.
+steps:
+  - id: mark
+    command: node -e "require('fs').writeFileSync('ran.marker', '')"
+`);
+    await syncWorkflowDefinitions(config);
+    state.config = config;
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-workflow-start-'));
+    dirs.push(work);
+    vi.spyOn(process, 'cwd').mockReturnValue(work);
+    const printed: Array<{ line: string; ran: boolean }> = [];
+    vi.spyOn(console, 'error').mockImplementation((line: unknown) => {
+      printed.push({ line: String(line), ran: fs.existsSync(path.join(work, 'ran.marker')) });
+    });
+
+    const started = await capture(() => workflowStart('mark', { driver: 'local' }));
+
+    expect(started).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    const done = started.data?.done;
+    const runId = typeof done === 'object' && done !== null && 'run' in done ? String(done.run) : '';
+    expect(printed).toContainEqual({ line: expect.stringMatching(new RegExp(`Run ${runId} started\\. .*teamai workflow resume ${runId}$`)), ran: false });
+    expect(fs.existsSync(path.join(work, 'ran.marker'))).toBe(true);
+  });
+});
+
+describe('workflow publish and resume --claim', () => {
+  it('publish answers with the refusal envelope and a failing exit code for a run this machine does not have', async () => {
+    state.config = testConfig();
+
+    expect(await capture(() => workflowPublish('r0123456789abcdef'))).toMatchObject({ error: { code: 'run_not_found' } });
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('resume --claim answers with the claim refusal and runs nothing', async () => {
+    const { config, runId } = await startBuild();
+    state.config = { ...config, repo: { ...config.repo, kind: 'http' } };
+
+    expect(await capture(() => workflowResume(runId, { claim: true }))).toMatchObject({ error: { code: 'unsupported_repo' } });
+    expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'one', status: 'pending' }] });
+  });
+
+  it('resume --claim answers driver_running and claims nothing while a local driver of the run is running', async () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-workflow-claim-')));
+    dirs.push(root);
+    const git = (cwd: string, ...args: string[]): string => execFileSync('git', ['-c', 'user.name=T', '-c', 'user.email=t@t', ...args], { cwd, encoding: 'utf8' }).trim();
+    const seed = path.join(root, 'seed');
+    fs.mkdirSync(path.join(seed, 'workflows'), { recursive: true });
+    fs.writeFileSync(path.join(seed, 'teamai.yaml'), 'team: acme\nrepo: https://github.com/acme/team.git\nprovider: github\n');
+    fs.writeFileSync(path.join(seed, 'workflows', 'build.yaml'), 'schemaVersion: v1alpha1\nname: build\ndescription: One command.\nsteps:\n  - id: one\n    command: echo one\n');
+    git(root, 'init', '-q', '-b', 'main', seed);
+    git(seed, 'add', '-A');
+    git(seed, 'commit', '-qm', 'team');
+    const origin = path.join(root, 'team.git');
+    git(root, 'clone', '-q', '--bare', seed, origin);
+    const business = path.join(root, 'business.git');
+    git(root, 'clone', '-q', '--bare', seed, business);
+    const member = async (name: string): Promise<{ config: LocalConfig; checkout: string }> => {
+      const clone = path.join(root, name, 'team-repo');
+      const checkout = path.join(root, name, 'work');
+      git(root, 'clone', '-q', origin, clone);
+      git(root, 'clone', '-q', business, checkout);
+      const config: LocalConfig = {
+        repo: { localPath: clone, remote: origin, kind: 'git' }, username: name, scope: 'user', additionalRoles: [], dataHome: path.join(root, name, 'data'),
+      };
+      await syncWorkflowDefinitions(config);
+      return { config, checkout };
+    };
+    const alice = await member('alice');
+    const bob = await member('bob');
+    const started = await startRun(alice.config, 'build');
+    if ('error' in started) throw new Error(started.error.message);
+    const runId = String(started.data.run);
+    expect(await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout })).toMatchObject({ ok: true });
+    const published = git(root, '--git-dir', origin, 'rev-parse', 'teamai-reports');
+    state.config = bob.config;
+    vi.spyOn(process, 'cwd').mockReturnValue(bob.checkout);
+    const lock = driverLockPath(bob.config, runId);
+    expect(await acquireLock(lock)).toBe(true);
+    try {
+      expect(await capture(() => workflowResume(runId, { claim: true }))).toMatchObject({ error: { code: 'driver_running' } });
+    } finally {
+      await releaseLock(lock);
+    }
+
+    expect(await readRun(bob.config, runId)).toBe('missing');
+    expect(git(root, '--git-dir', origin, 'rev-parse', 'teamai-reports')).toBe(published);
   });
 });

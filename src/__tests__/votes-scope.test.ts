@@ -32,7 +32,7 @@ vi.mock('node:child_process', async (importOriginal) => ({
     return child;
   }),
 }));
-vi.mock('../pull.js', () => ({ pull: vi.fn(async () => undefined) }));
+vi.mock('../pull.js', () => ({ pull: vi.fn(async () => undefined), settleLateUsageReport: vi.fn(async () => undefined) }));
 vi.mock('../update.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../update.js')>()),
   doUpdate: vi.fn(async () => undefined),

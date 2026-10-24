@@ -5,9 +5,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { builtinHookDefs } from '../builtin-hooks.js';
 import { KNOWN_AGENTS } from '../known-agents.js';
 import { getHookStatus, hasTeamaiHooks, reconcileHooks } from '../hooks.js';
-import { agentFileExtensionForTool, ALL_SUPPORTED_TOOLS } from '../resources/agent-format.js';
-import { detectMcpFormat } from '../resources/mcp-format.js';
+import { agentFileExtensionForTool } from '../resources/agent-format.js';
 import { HookDef, TeamaiConfigSchema } from '../types.js';
+import { AGENT_TOOLS } from '../tools.js';
 
 describe('ZCode support', () => {
   afterEach(() => vi.unstubAllEnvs());
@@ -19,7 +19,8 @@ describe('ZCode support', () => {
       skills: '.zcode/skills',
       agents: '.zcode/agents',
       settings: '.zcode/cli/config.json',
-      mcp: '.agents/mcp.json',
+      mcp: '.zcode/cli/config.json',
+      mcpProject: '.zcode/config.json',
     });
   });
 
@@ -28,9 +29,8 @@ describe('ZCode support', () => {
       displayName: 'ZCode',
       skillsPath: '.zcode/skills',
     });
-    expect(ALL_SUPPORTED_TOOLS).toContain('zcode');
+    expect(AGENT_TOOLS).toContain('zcode');
     expect(agentFileExtensionForTool('zcode')).toBe('.md');
-    expect(detectMcpFormat('zcode')).toBe('claude');
   });
 
   it('generates raw (unwrapped) dispatch commands for ZCode', () => {

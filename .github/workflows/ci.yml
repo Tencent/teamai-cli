@@ -49,8 +49,9 @@ jobs:
       - name: Type check
         run: npx tsc --noEmit
 
-      - name: Unit tests with coverage
-        run: npx vitest run --coverage
+      # Coverage only where it is uploaded: it costs the other legs time and nothing reads it.
+      - name: Unit tests
+        run: npx vitest run ${{ matrix.os == 'ubuntu-latest' && matrix.node-version == 20 && '--coverage' || '' }}
 
       - name: Upload coverage
         if: matrix.os == 'ubuntu-latest' && matrix.node-version == 20
@@ -102,11 +103,11 @@ jobs:
         run: echo "Build and unit test matrix passed."
 
   # Three shards of the suite at once, each on its own 4-vCPU runner: vitest's
-  # hash splits the files into thirds of about the same running time.
+  # hash splits the files into thirds of about the same running time. Runs on
+  # every event; the remote fixture cases skip here and run in `e2e` below.
   fork-e2e-shard:
     name: E2E (fork-safe, no credentials, shard ${{ matrix.shard }}/3)
     needs: prepare-build
-    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -158,14 +159,16 @@ jobs:
   fork-e2e:
     name: E2E (fork-safe, no credentials)
     needs: fork-e2e-shard
-    if: ${{ always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+    if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
       - name: Confirm every E2E shard passed
         run: test "${{ needs.fork-e2e-shard.result }}" = success
 
+  # Only the file that touches the shared fixture repo; the shards above run
+  # the rest of the suite.
   e2e:
-    name: E2E (GitHub provider, full surface)
+    name: E2E (GitHub provider, remote fixture)
     needs: prepare-build
     if: ${{ vars.TEAMAI_TEST_REPO_URL != '' && (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-latest
@@ -196,27 +199,17 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts
 
-      - name: Build
-        run: npm run build
-
-      # A pinned tarball checked against its sha256, never a piped install
-      # script: this job holds a repository token.
-      - name: Install OpenCode 2
-        run: |
-          dir="$RUNNER_TEMP/opencode2"
-          mkdir -p "$dir"
-          curl -fsSL -o "$dir/cli.tgz" "https://registry.npmjs.org/@opencode/cli-linux-x64/-/cli-linux-x64-$OPENCODE2_VERSION.tgz"
-          echo "$OPENCODE2_LINUX_X64_SHA256  $dir/cli.tgz" | sha256sum -c -
-          tar -xzf "$dir/cli.tgz" -C "$dir"
-          "$dir/package/bin/opencode" --version
-          echo "$dir/package/bin" >> "$GITHUB_PATH"
-          echo "TEAMAI_OPENCODE_V2_BIN=$dir/package/bin/opencode" >> "$GITHUB_ENV"
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
 
       # Each test file runs in a sandbox HOME with its own git identity
       # (src/__tests__/helpers/isolate-e2e-env.ts); the remote cases clone the
       # fixture repo into it themselves (prepareRemoteTeamHome in e2e.test.ts).
-      - name: Run E2E (full surface)
-        run: npx vitest run --config vitest.e2e.config.ts --reporter=verbose
+      - name: Run E2E (remote fixture)
+        run: npx vitest run --config vitest.e2e.config.ts --reporter=verbose src/__tests__/e2e/e2e.test.ts
 
   # Not required: not in `build.needs` nor in branch protection, and no
   # `continue-on-error`, which would paint a failure green. Add it to

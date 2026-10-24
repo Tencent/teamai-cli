@@ -18,11 +18,14 @@
  * are bookkeeping and are not read.
  */
 
+import { randomBytes } from 'node:crypto';
 import * as fs from 'node:fs';
+import { createServer } from 'node:net';
 import * as path from 'node:path';
+import crossSpawn from 'cross-spawn';
 import { homedir, tmpdir } from 'node:os';
 import { z } from 'zod';
-import { AgentAdapter, ToolUnavailableError, type SessionMeta, type SessionReadRef } from './base.js';
+import { AgentAdapter, ToolUnavailableError, type SessionMeta, type SessionReadRef, type Subagent, type SubagentsRead } from './base.js';
 import { imagePlaceholderText, type ContentBlock, type Message, type Session } from '../ir.js';
 import { resolveRealCwd } from '../fs.js';
 import { deriveOpencodeMessageIds, deriveTargetSessionId } from '../ids.js';
@@ -41,6 +44,63 @@ const OPENCODE_TO_IR_TOOL: Record<string, string> = {
   webfetch: 'web_fetch',
   websearch: 'web_search',
 };
+
+const ChildSessions = z.union([
+  z.array(z.object({ id: z.string(), parentID: z.string().optional() })),
+  z.object({ data: z.array(z.object({ id: z.string(), parentID: z.string().optional() })) }).transform((body) => body.data),
+]);
+
+const SERVER_READY_MS = 10_000;
+
+async function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const probe = createServer();
+    probe.once('error', reject);
+    probe.listen(0, '127.0.0.1', () => {
+      const address = probe.address();
+      const port = typeof address === 'object' && address ? address.port : 0;
+      probe.close(() => resolve(port));
+    });
+  });
+}
+
+async function startChildServer(): Promise<{ children(parent: string): Promise<string[]>; stop(): Promise<void> } | string> {
+  const port = await freePort();
+  const password = randomBytes(16).toString('hex');
+  const child = crossSpawn('opencode', ['serve', '--hostname', '127.0.0.1', '--port', String(port)], {
+    env: { ...process.env, OPENCODE_SERVER_PASSWORD: password },
+    stdio: 'ignore',
+    windowsHide: true,
+  });
+  const exited = new Promise<void>((resolve) => {
+    child.once('exit', () => resolve());
+    child.once('error', () => resolve());
+  });
+  const stop = async (): Promise<void> => {
+    if (child.exitCode === null) child.kill('SIGTERM');
+    await exited;
+  };
+  const headers = { authorization: `Basic ${Buffer.from(`opencode:${password}`).toString('base64')}` };
+  const get = (query: string): Promise<Response> => fetch(`http://127.0.0.1:${port}/api/session?${query}`, { headers, signal: AbortSignal.timeout(1000) });
+  const deadline = Date.now() + SERVER_READY_MS;
+  for (;;) {
+    const ready = await get('limit=1').then((response) => response.ok, () => false);
+    if (ready) break;
+    if (child.exitCode !== null || Date.now() > deadline) {
+      await stop();
+      return `opencode serve did not answer on port ${port} within ${SERVER_READY_MS / 1000} s`;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return {
+    async children(parent) {
+      const response = await get(`parentID=${encodeURIComponent(parent)}`);
+      if (!response.ok) throw new Error(`opencode serve answered ${response.status} to the children of ${parent}`);
+      return ChildSessions.parse(await response.json()).filter((info) => info.parentID === parent).map((info) => info.id);
+    },
+    stop,
+  };
+}
 
 /** How many sessions one listing returns; the CLI's own default is 100. */
 const LIST_MAX = 10_000;
@@ -359,6 +419,30 @@ export class OpencodeAdapter extends AgentAdapter {
     const result = await this.session(['export', ref.sessionId]);
     if (result.code !== 0) throw new Error(result.stderr.trim() || `opencode session export exited ${result.code}`);
     return sessionFromExport(result.stdout);
+  }
+
+  /**
+   * The agents a session started. OpenCode 2 lists a session's children only through its server, so this starts one of
+   * its own on a free local port with a one-time password, asks it for `GET /api/session?parentID=<id>` down the tree,
+   * reads each child with `session export`, and stops it.
+   */
+  async readSubagents(session: Session, _ref: SessionReadRef): Promise<SubagentsRead> {
+    const server = await startChildServer();
+    if (typeof server === 'string') return { status: 'unread', reason: server };
+    try {
+      const agents: Subagent[] = [];
+      const visit = async (parent: string, depth: number): Promise<void> => {
+        for (const id of await server.children(parent)) {
+          if (agents.some((agent) => agent.session.sessionId === id)) continue;
+          agents.push({ session: await this.readSession({ sessionId: id }), depth });
+          await visit(id, depth + 1);
+        }
+      };
+      await visit(session.sessionId, 1);
+      return { status: 'read', agents };
+    } finally {
+      await server.stop();
+    }
   }
 
   async existingSessionId(sessionId: string, projectPath?: string): Promise<string | undefined> {

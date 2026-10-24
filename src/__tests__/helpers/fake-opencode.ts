@@ -33,6 +33,24 @@ if (args[0] === '--version') {
   process.stdout.write(version + '\n');
   process.exit(0);
 }
+if (args[0] === 'serve') {
+  const http = require('node:http');
+  const port = Number(args[args.indexOf('--port') + 1]);
+  const expected = 'Basic ' + Buffer.from('opencode:' + (process.env.OPENCODE_SERVER_PASSWORD || '')).toString('base64');
+  http.createServer((req, res) => {
+    if (req.headers.authorization !== expected) { res.writeHead(401); res.end(); return; }
+    const url = new URL(req.url, 'http://localhost');
+    if (url.pathname !== '/api/session') { res.writeHead(404); res.end(); return; }
+    const parent = url.searchParams.get('parentID');
+    const infos = [];
+    for (const name of fs.existsSync(dir) ? fs.readdirSync(dir) : []) {
+      try { infos.push(JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8')).info); } catch {}
+    }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(infos.filter((info) => parent === null || info.parentID === parent)));
+  }).listen(port, args[args.indexOf('--hostname') + 1] || '127.0.0.1');
+  return;
+}
 if (args[0] !== 'session') fail('fake opencode: unsupported command ' + args.join(' '));
 if (!args.includes('--standalone')) fail('Managed service port 49374 on 127.0.0.1 is already in use by another process.');
 const positional = args.filter((a, i) => !a.startsWith('-') && !(i > 0 && ['--format', '-n', '--max-count', '--directory'].includes(args[i - 1])));

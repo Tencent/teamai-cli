@@ -2912,6 +2912,30 @@ describe('uninstall', () => {
     expect(await fse.pathExists(openclawUserSkill)).toBe(true);
   });
 
+  it('removes the agents teamai wrote where XDG_CONFIG_HOME moves OpenCode\'s home, and keeps the member\'s', async () => {
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+    const xdg = path.join(tmpDir, 'xdg');
+    vi.stubEnv('XDG_CONFIG_HOME', xdg);
+    const recallAgent = path.join(xdg, 'opencode', 'agents', 'teamai-recall.md');
+    const membersAgent = path.join(xdg, 'opencode', 'agents', 'my-own-agent.md');
+    await fse.outputFile(recallAgent, '# Recall');
+    await fse.outputFile(membersAgent, '# User agent');
+    mockAutoDetectInit.mockResolvedValue({
+      localConfig: makeLocalConfig(homeDir, repoPath),
+      teamConfig: makeTeamConfig({
+        toolPaths: { opencode: { skills: '.opencode/skills', agents: '.opencode/agents', userScope: { skills: '.config/opencode/skills', agents: '.config/opencode/agents' } } },
+      }),
+    });
+    commitTeamRepo(repoPath);
+
+    await uninstall({ force: true });
+
+    expect(await fse.pathExists(recallAgent)).toBe(false);
+    expect(await fse.pathExists(membersAgent)).toBe(true);
+  });
+
   it('uninstall summary lists teamai-managed MCP servers', async () => {
     const { homeDir, repoPath, teamaiHome } = await setupFixture(tmpDir);
     vi.stubEnv('HOME', homeDir);
@@ -4450,6 +4474,19 @@ describe('user-scope uninstall and the projects still set up (#1025)', () => {
     expect(projects[app.anchor].mcpServers).toEqual({ 'team-api': server });
     expect(projects[stale.anchor]?.mcpServers ?? {}).toEqual({});
     expect(await fse.readFile(path.join(app.dir, 'managed-local-mcp.json'), 'utf8')).toBe(records(app.anchor));
+  });
+
+  it('removes the servers of a partition that is not a project from WorkBuddy\'s local scope in .codebuddy.json (#1221)', async () => {
+    const { homeDir, teamaiHome } = await userScope();
+    const server = { type: 'stdio', command: 'team-tool', args: [] };
+    const stale = await partition(teamaiHome, 'stale', {});
+    await fse.outputJson(path.join(stale.dir, 'managed-local-mcp.json'), { [`workbuddy:local:${stale.anchor}`]: [{ name: 'team-api', hash: entryHash(server) }] });
+    const codebuddyJson = path.join(homeDir, '.codebuddy.json');
+    await fse.writeJson(codebuddyJson, { projects: { [stale.anchor]: { mcpServers: { 'team-api': server, mine: server } } } });
+
+    await uninstall({ force: true });
+
+    expect((await fse.readJson(codebuddyJson)).projects[stale.anchor].mcpServers).toEqual({ mine: server });
   });
 
   // The project-gated records a user-scope hook removal retains, and the project's Codex dispatchers.

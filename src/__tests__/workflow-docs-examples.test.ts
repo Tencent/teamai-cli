@@ -4,8 +4,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { parseDocument } from 'yaml';
+import { syncScorerDefinitions } from '../scorers/cache.js';
+import { formatScorerDiagnostic } from '../scorers/definition.js';
 import type { LocalConfig } from '../types.js';
-import { syncWorkflowDefinitions } from '../workflow/cache.js';
+import { formatUnknownScorer, syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
 import { formatDiagnostic } from '../workflow/parse.js';
 import type { DriverIdentity, WorkflowEnvelope } from '../workflow/types.js';
@@ -14,10 +16,15 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '.
 const GUIDE = path.join(ROOT, 'docs', 'guide');
 
 // docs/guide/**/workflow*.md, so a new page or language is checked by default. fs.globSync needs Node 22; CI runs Node 20.
-const PAGES = fs.readdirSync(GUIDE, { recursive: true, encoding: 'utf8' })
-  .filter((file) => /^workflow.*\.md$/.test(path.basename(file)))
-  .map((file) => path.posix.join('docs/guide', file.split(path.sep).join('/')))
-  .sort();
+function guidePages(name: RegExp): string[] {
+  return fs.readdirSync(GUIDE, { recursive: true, encoding: 'utf8' })
+    .filter((file) => name.test(path.basename(file)))
+    .map((file) => path.posix.join('docs/guide', file.split(path.sep).join('/')))
+    .sort();
+}
+
+const PAGES = guidePages(/^workflow.*\.md$/);
+const SCORER_PAGES = guidePages(/^scorers.*\.md$/);
 
 interface Example {
   label: string;
@@ -70,6 +77,16 @@ function startsOf(page: string): { starts: Start[]; unread: string[] } {
     .filter((line) => !starts.some((start) => start.line === line))
     .map((line) => `${page}:${line}: --inputs is not part of a teamai workflow start line`);
   return { starts, unread };
+}
+
+/** Each scorer file a page shows: a `scorers/<name>.md` line, then the file in a markdown fence. */
+function scorerExamplesOf(page: string): Array<{ label: string; file: string; source: string }> {
+  const text = fs.readFileSync(path.join(ROOT, page), 'utf8');
+  return [...text.matchAll(/^`(scorers\/[^`\n]+\.md)`[:：]\n\n```markdown\n([\s\S]*?)^```/gm)].map((match) => ({
+    label: `${page}:${text.slice(0, match.index).split('\n').length}`,
+    file: match[1] ?? '',
+    source: match[2] ?? '',
+  }));
 }
 
 const dirs: string[] = [];
@@ -184,7 +201,13 @@ describe('workflow guide examples', () => {
 
     // An example may be invalid only to show a failure: the page prints its exact diagnostic as review output.
     const shown = new Set([...fs.readFileSync(path.join(ROOT, page), 'utf8').matchAll(/^\s*✖ \[workflows\] (.+)$/gm)].map((match) => match[1] ?? ''));
+    // The scorers a workflow example lists are the ones the scorer pages show.
+    for (const example of SCORER_PAGES.flatMap(scorerExamplesOf)) {
+      fs.mkdirSync(path.join(config.repo.localPath, 'scorers'), { recursive: true });
+      fs.writeFileSync(path.join(config.repo.localPath, example.file), example.source);
+    }
     const result = await syncWorkflowDefinitions(config, { dryRun: true });
+    for (const unknown of result.unknownScorers) failures.push(`${byFile.get(unknown.file) ?? page}: ${formatUnknownScorer(unknown)}`);
     const reported = new Set(result.invalid.map(formatDiagnostic));
     const shownInvalid = new Set(result.invalid.filter((diagnostic) => shown.has(formatDiagnostic(diagnostic))).map((diagnostic) => diagnostic.file));
     for (const diagnostic of result.invalid.filter((diagnostic) => !shown.has(formatDiagnostic(diagnostic)))) {
@@ -284,11 +307,32 @@ describe('workflow guide examples', () => {
     expect(JSON.parse(prompt.slice(prompt.indexOf('[')))).toEqual(shown);
   });
 
-  it.each(PAGES)('%s: every relative link to a .md file resolves', (page) => {
+  it.each([...PAGES, ...SCORER_PAGES])('%s: every relative link to a .md file resolves', (page) => {
     const text = fs.readFileSync(path.join(ROOT, page), 'utf8');
     const missing = [...text.matchAll(/\]\(([^)#\s:]+\.md)(?:#[^)]*)?\)/g)]
       .map((match) => match[1]!)
       .filter((target) => !fs.existsSync(path.join(ROOT, path.dirname(page), target)));
     expect(missing).toEqual([]);
+  });
+});
+
+describe('scorer guide examples', () => {
+  it('finds the English and Chinese scorer pages', () => {
+    expect(SCORER_PAGES).toEqual(['docs/guide/scorers.md', 'docs/guide/zh-CN/scorers.md']);
+  });
+
+  it.each(SCORER_PAGES)('%s: each scorer file passes pull', async (page) => {
+    const config = teamRepo();
+    const examples = scorerExamplesOf(page);
+    expect(examples.length, `${page} has no scorer example`).toBeGreaterThan(0);
+    for (const example of examples) {
+      fs.mkdirSync(path.join(config.repo.localPath, 'scorers'), { recursive: true });
+      fs.writeFileSync(path.join(config.repo.localPath, example.file), example.source);
+    }
+
+    const result = await syncScorerDefinitions(config, { dryRun: true });
+
+    expect(result.invalid.map(formatScorerDiagnostic)).toEqual([]);
+    expect(result.cached).toHaveLength(examples.length);
   });
 });

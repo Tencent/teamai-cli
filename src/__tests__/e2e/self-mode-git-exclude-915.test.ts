@@ -202,6 +202,27 @@ describe('a single-repo team keeps what teamai delivers out of git (#915)', () =
     expect(hasTeamHook(cloned)).toBe(false);
   });
 
+  it.each(['claude-internal', 'tclaude'])('%s instructions stay excluded only while they contain TeamAI blocks alone', (tool) => {
+    const m = member(`self-${tool}`, { committed: { '.teamai/claudemd/shared.md': 'Shared internal instructions.\n' } });
+    fs.mkdirSync(path.join(m.home, `.${tool}`), { recursive: true });
+    fs.mkdirSync(path.join(m.dir, `.${tool}`), { recursive: true });
+    const rel = `.${tool}/CLAUDE.md`;
+    m.ok(['init', '.', '--provider', 'git', '--agent', tool]);
+    m.ok(['pull']);
+    expect(fs.existsSync(path.join(m.dir, rel))).toBe(true);
+    expect(m.notIgnored([rel])).toEqual([]);
+    const generated = fs.readFileSync(path.join(m.dir, rel), 'utf8');
+    fs.appendFileSync(path.join(m.dir, rel), '\nMy own instructions.\n');
+    m.ok(['pull']);
+    expect(m.notIgnored([rel])).toEqual([rel]);
+    expect(fs.readFileSync(path.join(m.dir, rel), 'utf8')).toContain('My own instructions.');
+    fs.writeFileSync(path.join(m.dir, rel), generated);
+    m.git(['add', '-f', rel]);
+    m.git(['commit', '-qm', 'track internal instructions']);
+    m.ok(['pull']);
+    expect(m.deliveredLines()).not.toContain(`/${rel}`);
+  });
+
   it('removes the docs search whitelist a project kept before it switched to single-repo mode', () => {
     const m = member('self-whitelist', { committed: { '.teamai/docs/guide.md': '# Guide\n' } });
     m.ok(['init', '.', '--provider', 'git', '--agent', 'claude,copilot']);

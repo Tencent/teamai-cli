@@ -199,9 +199,37 @@ describe('observeLaunch (#1176)', () => {
     })).toEqual({
       tool: { version: '2.1.301' },
       model: { requested: 'claude-opus-4-1', alias: 'opus' },
-      team: { revision: rev, localChanges: false },
+      team: { revision: rev, localChanges: false, selection: { scope: 'project', additionalRoles: [] } },
       project: { commit: git(project, 'rev-parse', 'HEAD'), dirty: false },
     });
+  });
+
+  it('names the selection the last pull delivered for, with the workspace children it kept, never the current config', async () => {
+    const { config, project, rev } = checkout();
+    await recordDelivery({ ...config, primaryRole: 'backend', subscribedTags: ['go'] }, { rev: rev.slice(0, 7), targets: ['claude'], children: 'children-1' });
+
+    expect((await observeLaunch({ config: { ...config, primaryRole: 'frontend' }, tool: 'claude', cwd: project })).team).toEqual({
+      revision: rev, localChanges: false,
+      selection: { scope: 'project', primaryRole: 'backend', additionalRoles: [], subscribedTags: ['go'], children: 'children-1' },
+    });
+  });
+
+  it('takes the delivery from the pull record the launch already read, and reads none itself', async () => {
+    const { config, project, rev } = checkout();
+    await recordDelivery(config, { rev: rev.slice(0, 7), targets: ['claude'] });
+    const { teamDelivery } = await import('../pull.js');
+    const read = await teamDelivery(config, 'claude');
+    await recordDelivery(config, { rev: rev.slice(0, 7), targets: ['claude'], withoutSelection: true });
+
+    expect((await observeLaunch({ config, tool: 'claude', cwd: project, delivery: read })).team).toMatchObject({ revision: rev });
+    expect(await observeLaunch({ config, tool: 'claude', cwd: project, delivery: null })).not.toHaveProperty('team');
+  });
+
+  it('names no team for a record an older CLI wrote without the selection', async () => {
+    const { config, project, rev } = checkout();
+    await recordDelivery(config, { rev: rev.slice(0, 7), targets: ['claude'], withoutSelection: true });
+
+    expect(await observeLaunch({ config, tool: 'claude', cwd: project })).not.toHaveProperty('team');
   });
 
   it('reports local changes after a delivered file is edited', async () => {
@@ -209,7 +237,7 @@ describe('observeLaunch (#1176)', () => {
     await recordDelivery(config, { rev: rev.slice(0, 7), targets: ['claude'], files: [skill] });
     fs.appendFileSync(skill, 'edited\n');
 
-    expect((await observeLaunch({ config, tool: 'claude', cwd: project })).team).toEqual({ revision: rev, localChanges: true });
+    expect((await observeLaunch({ config, tool: 'claude', cwd: project })).team).toMatchObject({ revision: rev, localChanges: true });
   });
 
   it('requests no model after the deployed agent file is edited', async () => {

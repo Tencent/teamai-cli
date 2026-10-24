@@ -2,13 +2,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { gitTracks, realFilePath } from './git-exclude.js';
 import { judgeTeamaiOnlyCodexHooks } from './hooks.js';
-import { instructionTargetPath } from './instruction-targets.js';
+import { holdsOnlyInstructionBlocks, resolveInstructionTargets } from './instruction-targets.js';
+import { installOf, locate, ownOf } from './locate.js';
 import { findMcpGitExcludes } from './mcp-git-exclude.js';
 import { judgeTeamaiOnlyMcpConfigs, opencodeV1Servers } from './mcp-reconcile.js';
 import { opencodeDeliversThroughPlugin } from './opencode-hooks.js';
 import { opencodeContextReference, readOpencodeInstructionList, reconcileOpencodeInstructionSet } from './resources/opencode-config.js';
 import { RulesHandler } from './resources/rules.js';
-import { resolveToolBaseDir, scopedToolPaths, type LocalConfig, type TeamaiConfig } from './types.js';
+import { resolveToolBaseDir, type LocalConfig, type TeamaiConfig } from './types.js';
 import { readFileSafe } from './utils/fs.js';
 
 // ─── teamai-only files (#915) ─────────────────────────────────
@@ -19,7 +20,8 @@ import { readFileSafe } from './utils/fs.js';
 //  `delivered` git exclude block; once it holds anything else, it is the
 //  member's too, and git sees it again. Files: the project MCP configs with no
 //  per-member alternative (judgeTeamaiOnlyMcpConfigs), `.codex/hooks.json`
-//  (judgeTeamaiOnlyCodexHooks) and OpenCode's `.opencode/opencode.json`.
+//  (judgeTeamaiOnlyCodexHooks), internal Claude instruction files, and OpenCode's
+//  `.opencode/opencode.json`.
 
 /**
  * How a shared file teamai writes entries into stands:
@@ -49,6 +51,7 @@ export async function judgeTeamaiOnlyFiles(teamConfig: TeamaiConfig, localConfig
   if (localConfig.scope !== 'project') return [];
   const verdicts = [
     ...await judgeTeamaiOnlyMcpConfigs(teamConfig, localConfig),
+    ...await judgeInternalClaudeInstructions(teamConfig, localConfig),
     ...[await judgeTeamaiOnlyCodexHooks(teamConfig, localConfig), await judgeOpencodeInstructions(teamConfig, localConfig)]
       .filter((verdict) => verdict !== null),
   ];
@@ -62,6 +65,18 @@ export async function judgeTeamaiOnlyFiles(teamConfig: TeamaiConfig, localConfig
     else judged.push({ file, state: tracking.kind === 'tracked' ? 'tracked' : teamaiOnly ? 'teamai-only' : 'mixed' });
   }
   return judged;
+}
+
+/** Internal Claude tools share CLAUDE.md with member text, so only block-only copies are excluded. */
+async function judgeInternalClaudeInstructions(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<Array<{ file: string; teamaiOnly: boolean }>> {
+  const { targets } = await resolveInstructionTargets(teamConfig, localConfig);
+  const files = targets.filter((target) => target.tools.some((tool) => tool === 'claude-internal' || tool === 'tclaude'));
+  const verdicts = [];
+  for (const target of files) {
+    if (await readFileSafe(target.path) === null) continue;
+    verdicts.push({ file: target.path, teamaiOnly: await holdsOnlyInstructionBlocks(target.path) });
+  }
+  return verdicts;
 }
 
 /**
@@ -112,8 +127,7 @@ async function opencodeInstructionEntries(
   const target = await new RulesHandler().opencodeInstructionsTarget(teamConfig, localConfig, []);
   if (target === null) return null;
   const file = target.configFile;
-  const paths = scopedToolPaths(teamConfig, localConfig).opencode;
-  const contextFile = paths ? await instructionTargetPath('opencode', paths, localConfig) : undefined;
+  const contextFile = ownOf(await locate('opencode', 'blocks', installOf(teamConfig, localConfig)))?.path;
   const context = contextFile ? opencodeContextReference(contextFile, 'project', resolveToolBaseDir('opencode', localConfig)) : null;
   return {
     file,

@@ -1,0 +1,67 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { afterEach, expect, it, vi } from 'vitest';
+import { reconcileHooks, reconcileTeamHooksForConfig, sweepLegacyProjectHooks } from '../hooks.js';
+import { hookSettingsPath, hookToolPathsForConfig, TeamaiConfigSchema, type LocalConfig } from '../types.js';
+
+let root = '';
+const normalized = (text: string) => text.replace(/\\+/g, '/').toLowerCase();
+afterEach(() => { vi.unstubAllEnvs(); if (root) fs.rmSync(root, { recursive: true, force: true }); });
+
+it('installs self-scope ZCode hooks in the HOME config that ZCode reads', async () => {
+  root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-zcode-self-'));
+  const home = path.join(root, 'home');
+  const project = path.join(root, 'project');
+  const repo = path.join(project, '.teamai');
+  fs.mkdirSync(path.join(home, '.zcode'), { recursive: true });
+  fs.mkdirSync(path.join(project, '.zcode'), { recursive: true });
+  fs.mkdirSync(path.join(repo, 'hooks'), { recursive: true });
+  vi.stubEnv('HOME', home);
+  vi.stubEnv('USERPROFILE', home);
+  execFileSync('git', ['init', '-q', project]);
+  fs.writeFileSync(path.join(repo, 'teamai.yaml'), 'team: self\nrepo: https://example.invalid/team.git\nmode: self\nsharing:\n  hooks:\n    requireTeamScripts: false\n');
+  fs.writeFileSync(path.join(repo, 'hooks', 'hooks.yaml'), 'hooks:\n  - id: stop-fixture\n    description: Self fixture\n    event: Stop\n    command: echo self-team-hook\n');
+  const localConfig: LocalConfig = { repo: { kind: 'self', localPath: repo, remote: 'https://example.invalid/team.git' }, username: 'test', additionalRoles: [], scope: 'project', projectRoot: project, enabledAgents: ['zcode'], dataHome: path.join(home, 'data') };
+  const teamConfig = TeamaiConfigSchema.parse({ team: 'self', repo: 'https://example.invalid/team.git', mode: 'self', sharing: { hooks: { requireTeamScripts: false } } });
+  const oldFile = path.join(project, '.zcode', 'cli', 'config.json');
+  fs.mkdirSync(path.dirname(oldFile), { recursive: true });
+  fs.writeFileSync(oldFile, JSON.stringify({ personal: 'keep me', hooks: { events: {} } }));
+  const { resolveHookScope } = await import('../types.js');
+  await reconcileHooks(oldFile, 'zcode', [{ key: 'stop-fixture', source: 'team', description: 'Self fixture', event: 'Stop', command: 'echo self-team-hook' }], { manifestPath: resolveHookScope(localConfig).manifestPath });
+  expect(fs.readFileSync(oldFile, 'utf8')).toContain('self-team-hook');
+  const result = await reconcileTeamHooksForConfig(teamConfig, localConfig);
+  expect(result.ok).toBe(true);
+  const file = path.join(home, '.zcode', 'cli', 'config.json');
+  expect(fs.existsSync(file)).toBe(true);
+  const contents = fs.readFileSync(file, 'utf8');
+  expect(contents).toContain('teamai hook-dispatch session-start --tool zcode');
+  expect(contents).toContain('self-team-hook');
+  expect(fs.readFileSync(oldFile, 'utf8')).toContain('keep me');
+  expect(fs.readFileSync(oldFile, 'utf8')).not.toContain('self-team-hook');
+  expect(normalized(contents)).toContain(normalized(project));
+  await sweepLegacyProjectHooks(teamConfig.toolPaths, { ...localConfig, repo: { ...localConfig.repo, kind: 'git' } });
+  expect(fs.readFileSync(file, 'utf8')).toBe(contents);
+  const secondProject = path.join(root, 'second');
+  fs.mkdirSync(secondProject);
+  const second = { ...localConfig, projectRoot: secondProject };
+  await reconcileTeamHooksForConfig(teamConfig, second);
+  const both = fs.readFileSync(file, 'utf8');
+  expect(normalized(both)).toContain(normalized(project));
+  expect(normalized(both)).toContain(normalized(secondProject));
+  await reconcileTeamHooksForConfig(teamConfig, localConfig, { removeAll: true });
+  const remaining = fs.readFileSync(file, 'utf8');
+  expect(normalized(remaining)).not.toContain(normalized(project));
+  expect(normalized(remaining)).toContain(normalized(secondProject));
+  expect(remaining).toContain('teamai hook-dispatch session-start --tool zcode');
+});
+
+it('uses the ZCode user-scope override while leaving other tools at the hook scope', () => {
+  const team = TeamaiConfigSchema.parse({ team: 'fixture', repo: 'fixture', toolPaths: { zcode: { settings: '.zcode/project.json', userScope: { settings: '.zcode/cli/custom.json' } } } });
+  const local: LocalConfig = { repo: { kind: 'self', localPath: 'fixture', remote: 'fixture' }, username: 'test', additionalRoles: [], scope: 'project', projectRoot: 'project' };
+  const paths = hookToolPathsForConfig(team, local);
+  expect(paths.zcode.settings).toBe('.zcode/cli/custom.json');
+  expect(hookSettingsPath('zcode', 'project', paths.zcode.settings!)).toBe(path.join(os.homedir(), '.zcode/cli/custom.json'));
+  expect(hookSettingsPath('claude', 'project', '.claude/settings.json')).toBe(path.join('project', '.claude/settings.json'));
+});

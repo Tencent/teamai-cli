@@ -6,8 +6,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { LocalConfig } from '../types.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { startRun } from '../workflow/engine.js';
-import { runLocalDriver } from '../workflow/local-driver.js';
+import { _setDriverPollMs, runLocalDriver } from '../workflow/local-driver.js';
 import { readRun } from '../workflow/store.js';
+
+_setDriverPollMs(20);
 
 const output = vi.hoisted(() => ({ stdout: Buffer.alloc(0), stderr: Buffer.alloc(0), code: 0 }));
 vi.mock('node:child_process', async (importOriginal) => {

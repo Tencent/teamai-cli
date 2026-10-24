@@ -193,6 +193,29 @@ describe('seedSelfModeToolDirs (no hardcoded claude default)', () => {
     vi.unstubAllEnvs();
   });
 
+  it('seeds no agents directory for a custom agent teamai renders no agents for', async () => {
+    const config: LocalConfig = {
+      repo: { localPath: path.join(repoRoot, '.teamai'), remote: 'r' },
+      username: 'alice',
+      scope: 'user',
+      additionalRoles: [],
+      enabledAgents: ['AA'],
+    };
+    const customTeamConfig: TeamaiConfig = {
+      ...teamConfig,
+      toolPaths: { ...teamConfig.toolPaths, AA: { skills: 'a/skills', agents: 'a/agents' } },
+    };
+    vi.stubEnv('HOME', repoRoot);
+
+    const seeded = await seedSelfModeToolDirs(config, customTeamConfig);
+
+    expect(seeded).toContain('AA');
+    expect(await fse.pathExists(path.join(repoRoot, 'a', 'skills'))).toBe(true);
+    expect(await fse.pathExists(path.join(repoRoot, 'a', 'agents'))).toBe(false);
+
+    vi.unstubAllEnvs();
+  });
+
   // Outside self mode, a built-in tool's root must already exist on its own —
   // that's exactly what doctor's "is installed" check verifies (#598).
   // Seeding it here would silently create a directory for software that was

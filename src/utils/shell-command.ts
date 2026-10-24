@@ -453,6 +453,29 @@ export function classifyShellCommand(command: string, flavor: ShellFlavor = {}, 
   return pipeline ? classifySimple(commands[0], commands.length === 1, flavor) : classifyList(command, commands, flavor, succeeded);
 }
 
+/**
+ * The files each reader among a command line's simple commands names, whether or not it succeeded
+ * (`sed -n 1,200p a/SKILL.md` on one line of many, or before `&& rg x b.md | head`), for a caller that accepts that.
+ * None from a pipeline after `||`, which the shell may skip, none when a heredoc feeds a command, since its body is no
+ * command, and none relative after a `cd`.
+ */
+export function namedReads(command: string, flavor: ShellFlavor = {}): string[] {
+  const commands = simpleCommands(command, flavor.home);
+  if (commands.some((c) => c.redirects.some((r) => r.op.startsWith('<<') && r.op !== '<<<'))) return [];
+  const files: string[] = [];
+  let moved = false;
+  let skippable = false;
+  let after: ShellOperator | null = null;
+  for (const c of commands) {
+    if (after !== '|') skippable = after === '||';
+    after = c.op;
+    moved ||= c.words[0] === 'cd';
+    const read = classifySimple(c, false, flavor);
+    if (read.category === 'read' && !skippable) files.push(...read.paths.filter((file) => !moved || isAbsolutePath(file)));
+  }
+  return files;
+}
+
 /** A character a plain list has nowhere, quoted or not. */
 const NOT_PLAIN = /[|$`(){}<#]|[^\S \t\n]/;
 

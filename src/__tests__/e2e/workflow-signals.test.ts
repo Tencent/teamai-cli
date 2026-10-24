@@ -112,6 +112,13 @@ steps:
     workspace: new
     command: node hold.js ${pidRoot}/two
 `);
+    fs.writeFileSync(path.join(workflows, 'once.yaml'), `schemaVersion: v1alpha1
+name: once
+description: A command that runs until it is stopped the first time, and ends at once after that.
+steps:
+  - id: once
+    command: test -f ${pidRoot}/once.pids || node hold.js ${pidRoot}/once
+`);
     fs.writeFileSync(path.join(workflows, 'pair.yaml'), `schemaVersion: v1alpha1
 name: pair
 description: An interactive step beside a HITL request.
@@ -158,6 +165,39 @@ steps:
 
       expect(await ended).toEqual({ code: null, signal: 'SIGINT' });
       expect(await waitFor(() => !pids.some(alive), 2000), `still running: ${pids.filter(alive).join(' ')}`).toBe(true);
+    } finally {
+      for (const pid of pids.filter(alive)) process.kill(pid, 'SIGKILL');
+      if (driver.exitCode === null && driver.signalCode === null) driver.kill('SIGKILL');
+    }
+  });
+
+  it.each(['SIGTERM', 'SIGHUP'] as const)('stops its one command and its children on a %s to the driver alone, and the run resumes', async (signal) => {
+    setMaxParallel(1);
+    const pidFile = path.join(pidRoot, 'once.pids');
+    fs.rmSync(pidFile, { force: true });
+    const driver = spawn(process.execPath, [CLI, 'workflow', 'start', 'once', '--driver', 'local'], {
+      cwd: repo, env: { ...process.env, FORCE_COLOR: '0' }, stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stderr = '';
+    driver.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+    const ended = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+      driver.on('close', (code, signal) => resolve({ code, signal }));
+    });
+    let pids: number[] = [];
+    try {
+      expect(await waitFor(() => fs.existsSync(pidFile), 20_000), stderr).toBe(true);
+      pids = fs.readFileSync(pidFile, 'utf8').trim().split(' ').map(Number);
+      expect(pids.every(alive)).toBe(true);
+
+      driver.kill(signal);
+
+      expect(await ended).toEqual({ code: null, signal });
+      expect(await waitFor(() => !pids.some(alive), 2000), `still running: ${pids.filter(alive).join(' ')}`).toBe(true);
+      const runId = /Run (\S+) started/.exec(stderr)?.[1];
+      expect(runId, stderr).toBeDefined();
+      const resumed = await runCLI(['workflow', 'resume', String(runId)], repo);
+      expect(resumed.code, `${resumed.stdout}\n${resumed.stderr}`).toBe(0);
+      expect(JSON.parse(resumed.stdout)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
     } finally {
       for (const pid of pids.filter(alive)) process.kill(pid, 'SIGKILL');
       if (driver.exitCode === null && driver.signalCode === null) driver.kill('SIGKILL');

@@ -81,6 +81,8 @@ interface Member {
   configFile: string;
   git(args: string[], cwd: string): string;
   teamai(args: string[], cwd: string): string;
+  /** The built CLI, whatever its exit code. */
+  cli(args: string[], cwd: string): Run;
   teamCommit(files: Record<string, string | null>): void;
   /** Turn the team's `sharing.gitExclude` on or off. */
   gitExclude(on: boolean): void;
@@ -159,6 +161,7 @@ function member(name: string, opts: { files?: Record<string, string>; gitExclude
     configFile,
     git,
     teamai,
+    cli: (args, cwd) => run(process.execPath, [CLI, ...args], cwd),
     teamCommit,
     gitExclude: (on) => teamCommit({ 'teamai.yaml': teamYaml(on) }),
     project: (dir, popts = {}) => {
@@ -379,6 +382,44 @@ describe.skipIf(process.platform === 'win32')('CodeBuddy gets the team\'s projec
     expect(m.local(wt)).toBeUndefined();
     expect(withoutLocal(m.codebuddyJson(), main)).toEqual(CODEBUDDY_JSON);
     expect(read(m.configFile)).not.toContain(TOKEN);
+  }, 120_000);
+
+  // From a checkout that holds none of teamai's servers itself: the removed worktree's records are the only ones.
+  it.each([
+    { state: 'parses', broken: false },
+    { state: 'does not parse until it is repaired', broken: true },
+  ])('uninstall from another checkout removes a removed worktree\'s servers, keeping the data home while the .codebuddy.json they are in $state', async ({ broken }) => {
+    const m = member('uninstall-gone');
+    const root = caseDir('uninstall-gone');
+    const main = m.project(path.join(root, 'main'));
+    const wt = await m.worktree(main, path.join(root, 'wt'));
+    // The team drops its servers: a pull takes them out of the main checkout's local scope; the worktree is removed before its own.
+    m.teamCommit({ 'mcp/mcp.yaml': 'servers: []\n' });
+    m.teamai(['pull'], main);
+    m.git(['worktree', 'remove', '--force', wt], main);
+    expect(m.local(main)).toBeUndefined();
+    expect(names(m.local(wt))).toEqual(TEAM_SERVERS);
+    const records = (): string[] => fs.readdirSync(path.join(m.home, '.teamai', 'projects'))
+      .map((dir) => path.join(m.home, '.teamai', 'projects', dir, 'managed-local-mcp.json')).filter((file) => fs.existsSync(file));
+    expect(Object.keys(JSON.parse(read(records()[0])) as Record<string, unknown>)).toEqual([`codebuddy:local:${wt}`]);
+
+    if (broken) {
+      const repaired = read(m.configFile);
+      write(m.configFile, '{ "projects": {');
+      const first = m.cli(['uninstall', '--force'], main);
+
+      expect(first.code, first.output).toBe(1);
+      expect(first.output).toContain('Uninstall incomplete');
+      expect(first.output).toContain(m.configFile);
+      expect(Object.keys(JSON.parse(read(records()[0])) as Record<string, unknown>)).toEqual([`codebuddy:local:${wt}`]);
+      write(m.configFile, repaired);
+    }
+    const uninstall = m.cli(['uninstall', '--force'], main);
+
+    expect(uninstall.code, uninstall.output).toBe(0);
+    expect(m.local(wt)).toBeUndefined();
+    expect(withoutLocal(m.codebuddyJson(), main, wt)).toEqual(CODEBUDDY_JSON);
+    expect(records()).toEqual([]);
   }, 120_000);
 
   it('writes to the .codebuddy.json in CODEBUDDY_CONFIG_DIR when it is set', () => {

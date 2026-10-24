@@ -60,8 +60,13 @@ function fixture(agent: keyof typeof agents, provider: string, team: Record<stri
         tokens: { input: 10, output: 5, cacheRead: 0, cacheCreation: 0 }, dataHomeKey: key },
     ].map((e) => JSON.stringify(e)).join('\n') + '\n');
   }
-  function receiver(mode: 'slow' | 'reject' | 'normal') {
-    fs.writeFileSync(path.join(remote, 'hooks/update'), `#!/bin/sh\nif [ "$1" = "refs/heads/teamai-reports" ]; then\n  ${mode === 'slow' ? 'sleep 7' : mode === 'reject' ? 'exit 1' : ':'}\nfi\nexit 0\n`, { mode: 0o755 });
+  function receiver(mode: 'slow' | 'reject' | 'normal' | 'slow-reject') {
+    // Only the first rejection must outlast pull's wait; later report writes can reject immediately.
+    const delay = mode === 'slow-reject'
+      ? 'if [ ! -f hooks/rejection-delayed ]; then : > hooks/rejection-delayed; sleep 7; fi'
+      : 'sleep 7';
+    const action = `${mode.startsWith('slow') ? `${delay}\n` : ''}${mode.endsWith('reject') ? 'exit 1' : ':'}`;
+    fs.writeFileSync(path.join(remote, 'hooks/update'), `#!/bin/sh\nif [ "$1" = "refs/heads/teamai-reports" ]; then\n  ${action}\nfi\nexit 0\n`, { mode: 0o755 });
   }
   async function pull(onPending?: () => void) {
     return new Promise<string>((resolve, reject) => {
@@ -103,7 +108,14 @@ function fixture(agent: keyof typeof agents, provider: string, team: Record<stri
   function run(args: string[]) {
     return execFileSync(process.execPath, [cli, ...args], { cwd: sandbox, env, encoding: 'utf8', windowsHide: true });
   }
-  return { home, env, clone, usage, usageLine, dashboard, seedEvents, receiver, pull, stats, snapshot, run, runId };
+  /** The detached background pass that a host's SessionStart hook spawns, which runs the pull. */
+  function sessionStart() {
+    return execFileSync(process.execPath, [cli, 'hook-dispatch', 'session-start', '--tool', agent, '--bg-only'], {
+      cwd: sandbox, env, encoding: 'utf8', windowsHide: true, timeout: 45_000,
+      input: JSON.stringify({ cwd: sandbox, session_id: 's2' }),
+    });
+  }
+  return { home, env, clone, usage, usageLine, dashboard, seedEvents, receiver, pull, stats, snapshot, run, sessionStart, runId };
 }
 
 afterAll(() => {
@@ -166,6 +178,41 @@ describe('real CLI report completion', () => {
     expect(stats.prompts).toBe(1);
     expect(stats.tokens.input).toBe(10);
     expect(fs.readFileSync(f.usage, 'utf8')).toBe('');
+  }, 60_000);
+
+  // The dispatcher exits once its handlers settle, which must not cut the push the pull stopped waiting for (#1322).
+  it('publishes a slow push started by the session-start hook before the hook process exits', async () => {
+    const f = fixture('claude', 'git');
+    await f.pull(); // Warm reports worktree without any session data.
+    await f.seedEvents();
+    f.receiver('slow');
+    f.sessionStart();
+    expect(f.stats().skills.review.count).toBe(1);
+    expect(fs.readFileSync(f.usage, 'utf8')).toBe('');
+    expect(fs.existsSync(path.join(f.home, '.teamai/.sync-lock'))).toBe(false);
+  }, 60_000);
+
+  it('keeps a rejected session-start report retryable and releases its locks', async () => {
+    const f = fixture('claude', 'git');
+    await f.pull();
+    await f.seedEvents();
+    f.receiver('slow-reject');
+    f.sessionStart();
+    expect(fs.readFileSync(f.usage, 'utf8')).toBe(f.usageLine);
+    expect(f.snapshot('prompt-tokens')[f.runId]).toBeUndefined();
+    for (const lock of ['.reports-lock', '.sync-lock']) {
+      expect(fs.existsSync(path.join(f.home, '.teamai', lock)), lock).toBe(false);
+    }
+    f.receiver('normal');
+    await f.pull();
+    const stats = f.stats();
+    expect(stats.skills.review.count).toBe(1);
+    expect(stats.prompts).toBe(1);
+    expect(stats.tokens.input).toBe(10);
+    expect(fs.readFileSync(f.usage, 'utf8')).toBe('');
+    expect(f.snapshot('prompt-tokens')[f.runId]).toBeDefined();
+    await f.pull();
+    expect(f.stats()).toEqual(stats);
   }, 60_000);
 
   it('does not report for a member who set usageReportEnabled: false', async () => {

@@ -3,15 +3,12 @@ import { autoDetectInit, saveLocalConfigForScope } from './config.js';
 import { log } from './utils/logger.js';
 import { remove, pathExists } from './utils/fs.js';
 import { applyInstructionPlan, planInstructionFiles, registerOpencodeContext, resolveInstructionTargets } from './instruction-targets.js';
-import {
-  ALL_SUPPORTED_TOOLS,
-  agentFileExtensionForTool,
-  type ToolName,
-} from './resources/agent-format.js';
+import { agentFileExtensionForTool } from './resources/agent-format.js';
+import { isAgentToolId } from './tools.js';
+import { cleanupOf, installOf, locate, ownOf } from './locate.js';
 import { ruleFileExtensionForTool } from './resources/rule-format.js';
 import { LEGACY_RECALL_SKILL_NAMES, builtinSkillsTarget, pruneLegacyBuiltinSkills } from './builtin-skills.js';
 import {
-  resolveToolBaseDir,
   isRecallEnabled,
   isAgentExcluded,
   scopedToolPaths,
@@ -21,14 +18,15 @@ import {
 } from './types.js';
 
 async function removeRecallArtifacts(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
+  const install = installOf(teamConfig, localConfig);
   for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
-    const baseDir = resolveToolBaseDir(tool, localConfig);
     // Remove recall rule file
-    if (toolPath.rules) {
+    const rulesDir = ownOf(await locate(tool, 'rules', install));
+    if (rulesDir?.kind === 'dir') {
       // Cursor and JoyCode copies are `.mdc`; older layouts also left `.md` files.
       const extensions = new Set<string>([ruleFileExtensionForTool(tool), '.md']);
       for (const extension of extensions) {
-        const ruleFile = path.join(baseDir, toolPath.rules, `teamai-recall${extension}`);
+        const ruleFile = path.join(rulesDir.path, `teamai-recall${extension}`);
         if (await pathExists(ruleFile)) {
           await remove(ruleFile);
           log.debug(`Removed recall rule from ${tool}`);
@@ -47,12 +45,10 @@ async function removeRecallArtifacts(teamConfig: TeamaiConfig, localConfig: Loca
       if (target) await pruneLegacyBuiltinSkills(tool, target, LEGACY_RECALL_SKILL_NAMES);
     }
 
-    // Remove recall agent file
-    if (toolPath.agents) {
-      const agentsDir = path.join(baseDir, toolPath.agents);
+    for (const { path: agentsDir } of cleanupOf(await locate(tool, 'agents', install))) {
       const extensions = new Set<string>(['.md']);
-      if ((ALL_SUPPORTED_TOOLS as string[]).includes(tool)) {
-        extensions.add(agentFileExtensionForTool(tool as ToolName));
+      if (isAgentToolId(tool)) {
+        extensions.add(agentFileExtensionForTool(tool));
       }
       for (const extension of extensions) {
         const agentFile = path.join(agentsDir, `teamai-recall${extension}`);

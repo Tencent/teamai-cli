@@ -1,4 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { afterAll, beforeAll, describe, it, expect } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { redact, collectEnvSecrets, redactWithEnv } from '../utils/redact.js';
 
 describe('redact', () => {
@@ -80,6 +83,26 @@ describe('redact', () => {
       expect(redact('glpat-ABCDEFGHIJKLMNOPQRST')).toContain('<REDACTED:provider>');
       expect(redact('hf_ABCDEFGHIJKLMNOPQRSTUVWX')).toContain('<REDACTED:provider>');
     });
+
+    const jwt =
+      'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV';
+    const pem =
+      '-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA\nsecretbody\n-----END RSA PRIVATE KEY-----';
+    const jwtPrefixes = 'eyJ-'.repeat(25_000);
+    const unendedPems = '-----BEGIN PRIVATE KEY-----\n'.repeat(40_000);
+
+    it.each([
+      ['JWT prefixes with no dot', `${jwtPrefixes} ${jwt}`, `${jwtPrefixes} <REDACTED:jwt>`],
+      ['PEM headers with no END', `${pem}\n${unendedPems}`, `<REDACTED:pem>\n${unendedPems}`],
+    ])('stays fast on %s and still masks a real one', (_shape, text, expected) => {
+      const start = performance.now();
+      const out = redact(text);
+      const elapsed = performance.now() - start;
+
+      expect(out).toBe(expected);
+      // Linear work here is a few milliseconds; rescanning to the end from every prefix takes seconds.
+      expect(elapsed).toBeLessThan(500);
+    }, 30_000);
   });
 
   describe('layer 2: structural patterns keep surrounding context', () => {
@@ -104,6 +127,31 @@ describe('redact', () => {
       const expected = dsn.replace(pw, '<REDACTED:conn>');
       expect(redact(dsn)).toBe(expected);
     });
+
+    const pw = ['hun', 'ter2', 'pass'].join('');
+    const dsn = ['postgres://user', pw].join(':') + '@' + 'db.example.com';
+
+    it('masks a connection string whose scheme follows digits or punctuation', () => {
+      for (const lead of ['', ' ', '1', '+', '9.x-']) {
+        const text = `${lead}${dsn}`;
+        expect(redact(text)).toBe(text.replace(pw, '<REDACTED:conn>'));
+      }
+    });
+
+    it.each([
+      ['a letter run', 'x'.repeat(100_000)],
+      ['an alphanumeric run', 'a1'.repeat(50_000)],
+    ])('stays fast on %s and still masks a connection string after it', (_shape, token) => {
+      const text = `${token} ${dsn}`;
+
+      const start = performance.now();
+      const out = redact(text);
+      const elapsed = performance.now() - start;
+
+      expect(out).toBe(text.replace(pw, '<REDACTED:conn>'));
+      // Linear work here is a few milliseconds; a per-offset rescan of the token takes seconds.
+      expect(elapsed).toBeLessThan(500);
+    }, 30_000);
   });
 
   it('can disable the pattern layer', () => {
@@ -142,6 +190,30 @@ describe('collectEnvSecrets', () => {
   });
 });
 
+describe('redactWithEnv on path-valued env vars', () => {
+  let dir: string;
+  beforeAll(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-redact-'));
+    fs.mkdirSync(path.join(dir, '.ssh'));
+    for (const file of ['.ssh/id_ed25519', 'login.keychain-db', 'creds.json']) fs.writeFileSync(path.join(dir, file), '');
+  });
+  afterAll(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  it.each([
+    ['SSH_KEY_PATH', false, () => path.join(dir, '.ssh', 'id_ed25519')],
+    ['KEYCHAIN_PATH', false, () => path.join(dir, 'login.keychain-db')],
+    ['GOOGLE_APPLICATION_CREDENTIALS', false, () => path.join(dir, 'creds.json')],
+    ['SECRETS_DIR', false, () => dir],
+    ['SIGNING_KEY_FILE', true, () => path.join(dir, 'missing.pem')],
+    ['API_KEY', true, () => 'q1w2/e3r4+t5y6/u7i8o9p0=='],
+    ['SESSION_SECRET', true, () => '/9j4AAQSkZJRgABAQ+a1b2c3=='],
+  ])('%s value is masked: %s', (name, masked, value) => {
+    const env = { [name]: value() };
+    const text = `read ${value()} once`;
+    expect(redactWithEnv(text, env)).toBe(masked ? `read <REDACTED:${name}> once` : text);
+  });
+});
+
 describe('redactWithEnv', () => {
   it('composes env collection with pattern redaction', () => {
     const out = redactWithEnv('token=abcdefghij and ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345', {
@@ -149,5 +221,94 @@ describe('redactWithEnv', () => {
     } as NodeJS.ProcessEnv);
     expect(out).toContain('<REDACTED:SOME_TOKEN>');
     expect(out).toContain('<REDACTED:gh_tok>');
+  });
+});
+
+describe('redactWithEnv on a fixed env', () => {
+  // Fixtures are assembled at runtime so no token-shaped literal sits in source
+  // for a repository secret scanner to flag.
+  const ALNUM = 'aB3dE5gH7jK9mN1pQ2rS4tU6vW8xY0zC';
+  const ALPHA = 'aBcDeFgHiJkLmNoPqRsTuVwXyZ';
+  const HEX = '0f6c3e1a9b8d7c2e';
+  const run = (chars: string, n: number): string => chars.repeat(Math.ceil(n / chars.length)).slice(0, n);
+
+  const env = {
+    NODE_PATH: '/usr/local/lib/node_modules',
+    GITHUB_PATH: '/home/runner/work/_temp/_runner_file_commands/add_path_0f6c3e1a',
+    PKG_CONFIG_PATH: '/opt/homebrew/lib/pkgconfig',
+    GITHUB_TOKEN: 'gh-actions-value-0001',
+    SERVICE_PAT: 'pat-value-0002-abcd',
+    OPENAI_API_KEY: 'api-key-value-0003',
+  };
+
+  it.each([
+    ['a NODE_PATH value', `resolved from ${env.NODE_PATH}/teamai-cli`],
+    ['a GITHUB_PATH value', `appended to ${env.GITHUB_PATH}`],
+    ['a PKG_CONFIG_PATH value', `pkg-config searched ${env.PKG_CONFIG_PATH}`],
+    ['an npm package env var name', 'set npm_package_devDependencies_typescript'],
+    ['an hf_ directory name', 'cache in hf_transformers_cache_directory'],
+    ['a Bearer scheme in prose', 'the Bearer authentication-scheme is required'],
+    ['an sk- branch name', 'branch sk-feature-improve-retry-loop-x'],
+    ['a 40-hex commit SHA', 'commit 3ef4e1884260306e2e733663d875096458f25503'],
+    ['a sha256 integrity digest', 'integrity sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU='],
+    ['a plain base64 blob', 'dGhpcyBpcyBqdXN0IGJhc2U2NCBkYXRhIG5vdGhpbmcgc2VjcmV0'],
+    ['a GitHub PR URL', 'https://github.com/Tencent/teamai-cli/pull/1084'],
+  ])('leaves %s unchanged', (_name, text) => {
+    expect(redactWithEnv(text, env)).toBe(text);
+  });
+
+  it.each([
+    ['a PEM block', 'pem', ['-----BEGIN', 'PRIVATE KEY-----\n'].join(' ') + run(ALNUM, 64) + '\n' + ['-----END', 'PRIVATE KEY-----'].join(' ')],
+    ['sk-ant-', 'anthropic', 'sk-ant-api03-' + run(ALNUM, 40) + '_' + run(ALNUM, 20)],
+    ['sk-proj-', 'openai', 'sk-proj-' + run(ALNUM, 40) + '_' + run(ALNUM, 20) + '-' + run(ALNUM, 20)],
+    ['sk-svcacct-', 'openai', 'sk-svcacct-' + run(ALNUM, 40) + '-' + run(ALNUM, 20)],
+    ['sk-None-', 'openai', 'sk-None-' + run(ALNUM, 40) + '_' + run(ALNUM, 20)],
+    ['sk-', 'openai', 'sk-' + run(ALNUM, 48)],
+    ['github_pat_', 'gh_pat', 'github_pat_' + run(ALNUM, 22) + '_' + run(ALNUM, 59)],
+    ['ghp_', 'gh_tok', 'ghp_' + run(ALNUM, 36)],
+    ['AKIA', 'aws', 'AKIA' + run('Z7Q2X9W4', 16)],
+    ['xoxb-', 'slack', 'xoxb-' + run('0123456789', 12) + '-' + run(ALNUM, 24)],
+    ['a Slack webhook', 'slackhook', 'https://hooks.slack.com/services/' + ['T0A1B2C3D', 'B0A1B2C3D', run(ALNUM, 24)].join('/')],
+    ['AIza', 'google', 'AIza' + run(ALNUM, 35)],
+    ['ya29.', 'gcp_oauth', 'ya29.' + run(ALNUM, 40)],
+    ['sk_live_', 'stripe', ['sk', 'live', run(ALNUM, 24)].join('_')],
+    ['a JWT', 'jwt', ['eyJ' + run(ALNUM, 20), 'eyJ' + run(ALNUM, 20), run(ALNUM, 30)].join('.')],
+    ['SG.', 'sendgrid', ['SG', run(ALNUM, 22), run(ALNUM, 43)].join('.')],
+    ['xai-', 'provider', 'xai-' + run(ALNUM, 80)],
+    ['gsk_', 'provider', 'gsk_' + run(ALNUM, 52)],
+    ['pplx-', 'provider', 'pplx-' + run(ALNUM, 48)],
+    ['sk-or-v1-', 'provider', 'sk-or-v1-' + run(HEX, 64)],
+    ['hf_', 'provider', 'hf_' + run(ALPHA, 34)],
+    ['dop_v1_', 'provider', 'dop_v1_' + run(HEX, 64)],
+    ['glpat-', 'provider', 'glpat-' + run(ALNUM, 12) + '-' + run(ALNUM, 7)],
+    ['npm_', 'provider', 'npm_' + run(ALNUM, 36)],
+    ['shpat_', 'provider', 'shpat_' + run(HEX, 32)],
+    ['tfp_', 'provider', 'tfp_' + run(ALNUM, 59)],
+    ['nvapi-', 'provider', 'nvapi-' + run(ALNUM, 40) + '_' + run(ALNUM, 23)],
+    ['r8_', 'provider', 'r8_' + run(ALNUM, 37)],
+    ['a GITHUB_TOKEN value', 'GITHUB_TOKEN', env.GITHUB_TOKEN],
+    ['a *_PAT value', 'SERVICE_PAT', env.SERVICE_PAT],
+    ['an *_API_KEY value', 'OPENAI_API_KEY', env.OPENAI_API_KEY],
+  ])('redacts a %s token as %s', (_name, label, secret) => {
+    const text = `value ${secret} end`;
+    expect(redactWithEnv(text, env)).toBe(`value <REDACTED:${label}> end`);
+  });
+
+  it('redacts an opaque Bearer token', () => {
+    const text = `Authorization: Bearer ${run(ALNUM, 40)}`;
+    expect(redactWithEnv(text, env)).toBe('Authorization: Bearer <REDACTED:authz>');
+  });
+
+  it('redacts a connection-string password', () => {
+    const dsn = ['postgres://app', 'changeme'].join(':') + '@db:5432/app';
+    expect(redactWithEnv(dsn, env)).toBe(dsn.replace('changeme', '<REDACTED:conn>'));
+  });
+
+  // A page cursor keyed by `nextPageToken` keeps being redacted: the kv rule
+  // cannot tell it from `refreshToken: <value>` by key or by value shape.
+  it('redacts a token-keyed value even when it is a page cursor', () => {
+    expect(redactWithEnv('nextPageToken: CjQKEgoQbG9yZW0taXBzdW0tZG9sb3I', env)).toBe(
+      'nextPageToken: <REDACTED:kv>',
+    );
   });
 });

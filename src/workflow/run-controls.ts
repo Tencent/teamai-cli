@@ -5,6 +5,7 @@ import {
 } from './engine.js';
 import { evaluateExpression, isTruthy } from './expression.js';
 import { isItem, itemsAfter, itemsOf } from './fan-out.js';
+import { publishRunEnd } from './handoff.js';
 import { archiveUnder, isUnder } from './loop.js';
 import { publishRunRecords, removeQueuedEndRecord } from './records.js';
 import { contextOf, localId, statesIn } from './scope.js';
@@ -17,15 +18,23 @@ async function controlRun(
   operation: (run: RunState, now: string, finish: (result: WorkflowResult) => Promise<void>) => Promise<WorkflowEnvelope>,
 ): Promise<WorkflowEnvelope> {
   let queued = false;
+  let settled = false;
+  let checkout = process.cwd();
   const envelope = await withRun(config, runId, async (run, now) => {
     const before = JSON.stringify(run);
+    checkout = run.driver?.workspace ?? checkout;
     const finish = async (result: WorkflowResult): Promise<void> => {
+      settled = true;
       queued = await finishRun(config, run, now, result, run.driver);
     };
     const envelope = await operation(run, now, finish);
     return { envelope, save: JSON.stringify(run) !== before };
   });
+  // Not on a control that only found a run already ended: its answer is an error, and the end was published before.
+  // A control that settled the run answers with an error too, and still publishes its end.
+  const notPublished = 'data' in envelope || settled ? await publishRunEnd(config, runId, checkout) : undefined;
   if (queued) await publishRunRecords(config);
+  if (notPublished && 'data' in envelope) envelope.data.notPublished = notPublished;
   return envelope;
 }
 

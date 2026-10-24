@@ -41,7 +41,7 @@ members pick them up on sync.
 A server with a `${VAR}` the tool cannot expand itself gets the resolved value
 written into its project config (`.mcp.json`, `.cursor/mcp.json`, ...). With
 `sharing.gitExclude` on, Claude's (not in a single-repo team, whose worktrees
-each read their own branch's servers) and CodeBuddy's servers go to their local
+each read their own branch's servers) and CodeBuddy's and WorkBuddy's servers go to their local
 scopes in `~/.claude.json` and `.codebuddy.json` instead, outside the project,
 and the next pull (on an HTTP-backed team, the local agent's next sync) moves
 teamai's servers out of `.mcp.json`. Before
@@ -84,9 +84,15 @@ server with any header, env value, argument or URL (only a bare stdio command is
 `teamai uninstall` takes that line out. The next sync or `teamai pull` in the
 workspace also lists a file an older local agent wrote a credential into; `teamai doctor` checks those files too.
 
+ZCode servers use `mcp.servers` in `~/.zcode/cli/config.json` or the project's `.zcode/config.json`. This follows the 3.16.2 source; 3.15.1 is not certified. Pull moves only unchanged teamai entries out of `~/.agents/mcp.json`. Doctor names other servers there because the desktop app stops reading that fallback once the native config has servers.
+
+WorkBuddy uses the first existing user file in `~/.workbuddy/.mcp.json`, `~/.workbuddy/mcp.json`, and `~/.codebuddy.json`. `CODEBUDDY_CONFIG_DIR` moves the last file. A project uses `.mcp.json`, or `mcp.json` when only that exists. With `sharing.gitExclude` on, its servers use `projects[<project path>].mcpServers` in `.codebuddy.json`. These paths follow the CodeBuddy 2.168.0 engine; WorkBuddy's launcher binding is not certified. Pull removes only unchanged teamai entries from the former `.workbuddy/mcp.json` project file.
+
+When a tool's home or configured MCP path moves, pull leaves old copies in place and names them once. Remove them after no tool reads them. Doctor reports unread mappings, moved files, and project MCP that is read only from a session started at the project root. Internal builds with an unknown MCP channel get a note instead of a guessed config.
+
 ### Pi MCP delivery
 
-Pi 0.99.0+ receives stdio and streamable HTTP servers through the existing MCP commands and `teamai pull`; SSE is skipped. User scope writes `~/.pi/agent/mcp.json`, workspace scope writes `.pi/mcp.json` (Pi requires project trust). TeamAI keeps Pi's default codemode exposure and converts timeout milliseconds to seconds. Relocated Pi agent directories (`PI_CODING_AGENT_DIR` / `PI_CONFIG_DIR`) are unsupported. Local exposure/enabled edits on managed servers survive until the team definition changes; doctor reports differences from the team entry. Extensions that replace `/mcp` must be removed to use Pi's built-in MCP.
+Pi 0.99.0+ receives stdio and streamable HTTP servers through the existing MCP commands and `teamai pull`; SSE is skipped. User scope writes `~/.pi/agent/mcp.json`, workspace scope writes `.pi/mcp.json` (Pi requires project trust). TeamAI keeps Pi's default codemode exposure and converts timeout milliseconds to seconds. User MCP follows `PI_CODING_AGENT_DIR`. Project MCP is read only from a session started at the project root. Local exposure/enabled edits on managed servers survive until the team definition changes; doctor reports differences from the team entry. Extensions that replace `/mcp` must be removed to use Pi's built-in MCP.
 
 ## Invite a member
 
@@ -162,7 +168,7 @@ for the real reset fallback. Removal refuses when that refresh also fails.
 
 Every namespace that names a directory — `knowledge`, `skills`, `agents`, `env`,
 `hooks`, `mcp`, `models`, `docs` and `wiki` in either manifest, and `learnings` in `projects.yaml` (a role's `learnings:` is
-ignored and unchecked) — must be a single path segment: no `/`, `\`, `:` or control character, no trailing
+not checked) — must be a single path segment: no `/`, `\`, `:` or control character, no trailing
 `.` or space, and not a Windows device name (`CON`, `NUL`, `COM1`, …). `team-codebase`
 cannot be a `docs` namespace (`docs/team-codebase/` is the legacy codebase output). Two
 namespaces of one resource type may not differ only by case, across both

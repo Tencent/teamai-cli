@@ -260,7 +260,7 @@ describe('pull submodule skip-sync (issue #525)', () => {
         lastPull: '2026-04-01T00:00:00.000Z',
         lastPullRev: head,
         lastPullTargets: ['claude'],
-        lastPullByWorkspace: { [await checkoutKey(homeDir)]: { rev: head, targets: ['claude'], skillDirs: { claude: [claudeSkills] } } },
+        lastPullByWorkspace: { [await checkoutKey(homeDir)]: { rev: head, targets: ['claude'], places: { skills: { claude: [claudeSkills] }, rules: { claude: [path.join(homeDir, '.claude', 'rules')] }, blocks: {}, agents: {} } } },
         pushedRules: [],
         pushedSkills: [],
         pushedEnvVars: [],

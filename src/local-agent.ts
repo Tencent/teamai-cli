@@ -23,7 +23,7 @@ import {
   writeJsonAtomic,
 } from './utils/fs.js';
 import { RulesHandler, SkillsHandler } from './resources/index.js';
-import { injectHooksToAllTools, applyAgentHook, removeAgentHook, isAgentHookSupportedTool, isAgentHookEvent, isCodexTrustGatedTool, trustCodexAgentHook, OPENCLAW_TOOLS } from './hooks.js';
+import { injectHooksToAllTools, applyAgentHook, removeAgentHook, isAgentHookSupportedTool, isAgentHookEvent, isCodexTrustGatedTool, trustCodexAgentHook, OPENCLAW_TOOLS, codexTrustPolicy, type CodexTrustPolicy } from './hooks.js';
 import { parseHookEvent } from './dashboard-collector.js';
 import { resolveHookCwd } from './utils/hook-cwd.js';
 import { isInteractive } from './utils/prompt.js';
@@ -40,7 +40,6 @@ import {
   renderJsonEntry,
   renderCodexBlock,
   entryHash,
-  MCP_SERVER_KEY,
 } from './resources/mcp-format.js';
 import {
   readJsonDoc,
@@ -53,27 +52,30 @@ import {
   codexServerNames,
   recordedFileOf,
   sameMcpFile,
-  userMcpFile,
-  USER_MCP_LOOKUP,
   claimedByOtherTools,
   deleteEmptiedMcpFile,
   describeMcpLocation,
   loadMcpManifest,
+  mcpKeyOf,
+  recordedMcpTarget,
+  sameMcpPlace,
+  logLeftMcpFiles,
   mcpManifestKey,
   mcpRelocated,
   projectMcpLocations,
   resolveMcpTargets,
   saveMcpManifest,
+  type McpKey,
   type McpTarget,
 } from './mcp-reconcile.js';
 import { normalizeAgentType } from './utils/tool-names.js';
 import { logHttpRequest, logHttpResponse } from './utils/http-log.js';
 import {
-  applyInstructionPlan, deliversInstructionsByHook, holdsInstructionBlocks, instructionHookChannel, instructionHookText, instructionHookTextFor,
-  instructionTargetAt, instructionTargetFile, isInstructionToolInstalled, planInstructionFiles, registerOpencodeContext, resolveInstructionTargets,
+  applyInstructionPlan, channelReadiness, deliversInstructionsByHook, holdsInstructionBlocks, instructionHookText, instructionHookTextFor,
+  instructionTargetOf, planInstructionFiles, registerOpencodeContext, resolveInstructionTargets,
   retiredFilesOfReached, nativeProjectInstructions,
 } from './instruction-targets.js';
-import { opencodeClaudeFallback } from './resources/opencode-config.js';
+import { opencodeV1ClaudeFile } from './resources/opencode-config.js';
 import { reconcilePlugins, teardownAllPlugins, parseGetConfig, substituteVars, unresolvedPlaceholders, type ReconcileDeps, type PluginState } from './plugin-lifecycle.js';
 import {
   resolveBaseDir,
@@ -115,7 +117,7 @@ import {
 } from './git-exclude-notices.js';
 import { blockingEntries, contentHash, deliveredSkillFiles, describeMembersDirLeft, isLink, keepsTrackedCopy, ownsSkillDir } from './resources/delivered-copies.js';
 import { skillOrigin, withSkillFrontmatter } from './resources/skills.js';
-import { installOf, locate } from './locate.js';
+import { installOf, locate, ownOf, writable, type FilePlace } from './locate.js';
 import { acquireLock, releaseLock } from './update.js';
 
 const execFileAsync = promisify(execFile);
@@ -572,33 +574,30 @@ async function agentHookSettingsPaths(config: LocalAgentConfig | null, tool: str
   return [...new Set([settings, legacy ?? settings])].map((rel) => path.join(getUserHome(), rel));
 }
 
+async function memberCodexTrust(): Promise<CodexTrustPolicy> {
+  const { loadLocalConfig } = await import('./config.js');
+  return codexTrustPolicy(await loadLocalConfig() ?? {});
+}
+
 /** The member turned off teamai's Codex trust writes (`codexTrustEnabled: false`). */
 async function codexTrustDisabled(): Promise<boolean> {
   const { loadLocalConfig } = await import('./config.js');
   return (await loadLocalConfig())?.codexTrustEnabled === false;
 }
 
-/**
- * Remove a settings-file agent hook from every file it can sit in. In Codex,
- * the hooks after it move up, so the ones Codex trusted are trusted again.
- */
+function agentHookCodexTrust(disabled: boolean, settingsPath: string): CodexTrustPolicy {
+  return disabled ? { kind: 'disabled' } : { kind: 'enabled', codexHome: path.dirname(settingsPath) };
+}
+
+/** Remove a settings-file agent hook from every file it can sit in. */
 async function removeSettingsAgentHook(
   config: LocalAgentConfig | null,
   tool: string,
   opts: { slug: string; command?: string },
 ): Promise<void> {
-  const keepTrust = isCodexTrustGatedTool(tool) && !(await codexTrustDisabled());
+  const disabled = await codexTrustDisabled();
   for (const settingsPath of await agentHookSettingsPaths(config, tool)) {
-    const remove = () => removeAgentHook(settingsPath, tool, opts);
-    if (!keepTrust || !(await pathExists(settingsPath))) {
-      await remove();
-      continue;
-    }
-    const { keepCodexHookTrust } = await import('./codex-trust.js');
-    const trust = await keepCodexHookTrust({ codexHome: path.dirname(settingsPath), cwd: getUserHome(), file: settingsPath }, remove);
-    if (trust.kind === 'failed') {
-      log.warn(`Codex may skip the hooks after agent hook [${opts.slug}] in ${settingsPath} until you approve them in /hooks: ${trust.reason}`);
-    }
+    await removeAgentHook(settingsPath, tool, opts, agentHookCodexTrust(disabled, settingsPath));
   }
 }
 
@@ -1922,12 +1921,11 @@ export async function buildReportPayload(
     const localConfig = await createResourceLocalConfig(config, scope, workspacePath ?? getUserHome(), workspacePath);
     const toolPath = scopedToolPaths(teamConfig, localConfig)[tool];
     if (!toolPath) return { skills: [], rules: [] };
-    const baseDir = resolveToolBaseDir(tool, localConfig);
-    const skillsDir = (await locate(tool, 'skills', installOf(teamConfig, localConfig))).own;
+    const install = installOf(teamConfig, localConfig);
+    const skillsDir = ownOf(await locate(tool, 'skills', install))?.path ?? null;
     const skills = skillsDir === null ? [] : await scanSkillsFromDisk(skillsDir, manifestSlugs.skills);
-    const rules = toolPath.rules
-      ? await scanRulesFromDisk(path.join(baseDir, toolPath.rules), manifestSlugs.rules)
-      : [];
+    const rulesDir = ownOf(await locate(tool, 'rules', install));
+    const rules = rulesDir?.kind === 'dir' ? await scanRulesFromDisk(rulesDir.path, manifestSlugs.rules) : [];
     return { skills, rules };
   };
 
@@ -2565,11 +2563,9 @@ async function recordedProjectCopies(config: LocalAgentConfig, workspacePath: st
     new RulesHandler());
   // The instruction file teamai owns of each tool the claudemd block reached, while it holds teamai's blocks, as pull lists its own.
   for (const tool of new Set(Object.values(scope.claudemd ?? {}).flatMap((entry) => entry.tools ?? []))) {
-    const toolPath = fullTeamConfig.toolPaths[tool];
-    const file = toolPath && await instructionTargetFile(tool, toolPath, 'project', true);
-    if (!file) continue;
-    const target = await instructionTargetAt(tool, path.resolve(resolveToolBaseDir(tool, localConfig), file), 'project', toolPath, true);
-    if (target.owned && await holdsInstructionBlocks(target.path)) copies.push(target.path);
+    if (fullTeamConfig.toolPaths[tool] === undefined) continue;
+    const own = ownOf(await locate(tool, 'blocks', { ...installOf(fullTeamConfig, localConfig), gitExclude: true }));
+    if (own?.owned === true && await holdsInstructionBlocks(own.path)) copies.push(own.path);
   }
   const gitignore = await workspaceCacheGitignore(workspacePath, repoPath);
   if (gitignore) copies.push(gitignore);
@@ -2800,9 +2796,9 @@ async function syncClaudemd(
   const skipped: string[] = [];
   const reached: string[] = [];
   // The targets resolveInstructionTargets checks below (#915: Copilot's moves with the flag).
-  const gitExclude = isGitExcludeEnabled(localConfig, fullTeamConfig);
+  const install = { ...installOf(teamConfig, localConfig), gitExclude: isGitExcludeEnabled(localConfig, fullTeamConfig) };
 
-  for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
+  for (const tool of Object.keys(install.toolPaths)) {
     // Pi, OMP and Hermes in a project take the cache from their extension or
     // plugin through `hook-dispatch instructions` (localAgentInstructionText).
     if (deliversInstructionsByHook(tool, localConfig.scope)) {
@@ -2817,39 +2813,28 @@ async function syncClaudemd(
       reached.push(tool);
       continue;
     }
-    const targetFile = await instructionTargetFile(tool, toolPath, localConfig.scope, gitExclude)
-      // A server-sent workspace can exist where OpenClaw's own lookup finds none.
-      ?? (tool === 'openclaw' && localConfig.scope !== 'project' && workspacePath ? toolPath.claudemd : undefined);
-    if (!targetFile) continue;
-
-    let baseDir = resolveToolBaseDir(tool, localConfig);
-    let resolvedAbsPath: string | null = null;
-
-    if (tool === 'openclaw' && localConfig.scope !== 'project') {
-      const openclawWs = await resolveOpenclawWorkspaceDir(workspacePath);
-      if (openclawWs) {
-        resolvedAbsPath = path.join(openclawWs, path.basename(targetFile));
-      }
-    }
-
-    // Probed through the tool's own paths, as pull does: WorkBuddy's project
-    // target sits under .codebuddy, which says nothing about WorkBuddy.
-    const toolInstalled = resolvedAbsPath
-      ? await pathExists(path.dirname(resolvedAbsPath))
-      : await isInstructionToolInstalled(tool, toolPath, localConfig);
+    const location = await locate(tool, 'blocks', install);
+    // A server-sent workspace can exist where OpenClaw's own lookup finds none.
+    const openclawWs = tool === 'openclaw' && localConfig.scope !== 'project' ? await resolveOpenclawWorkspaceDir(workspacePath) : null;
+    const own: FilePlace | null = openclawWs
+      ? { kind: 'file', path: path.join(openclawWs, 'AGENTS.md'), owned: false, header: null }
+      : ownOf(location);
+    if (own === null) continue;
+    const toolInstalled = openclawWs ? await pathExists(openclawWs) : writable(location) !== null;
     if (!toolInstalled) {
       log.debug(`Skipped CLAUDE.md sync for ${tool}: target not found`);
       continue;
     }
 
-    const claudeMdPath = resolvedAbsPath ?? path.resolve(baseDir, targetFile);
+    const claudeMdPath = own.path;
+    const baseDir = resolveToolBaseDir(tool, localConfig);
     // OpenCode V1's Claude fallback already carries the blocks, as in pull
     // (#945), so OpenCode's file is written for V2's plugin but not listed.
-    const claudeUserFile = path.join(getUserHome(), '.claude', 'CLAUDE.md');
+    const claudeUserFile = opencodeV1ClaudeFile(getUserHome());
     const viaClaude = tool === 'opencode' && localConfig.scope === 'user'
       && (await readFileSafe(claudeUserFile))?.includes(TEAMAI_CLAUDEMD_START) === true
-      && await opencodeClaudeFallback(getUserHome(), [claudeUserFile]) !== null;
-    const target = await instructionTargetAt(tool, claudeMdPath, localConfig.scope, toolPath, gitExclude);
+      && !await pathExists(path.join(path.dirname(claudeMdPath), 'AGENTS.md'));
+    const target = instructionTargetOf(own);
     const plan = await planInstructionFiles([target], { claudemd: block });
     // A warning means the file was left as it was: nothing reached the tool.
     if (plan.warnings.length > 0) {
@@ -2945,7 +2930,7 @@ async function hookDeliveryProblem(
 ): Promise<string | null> {
   const hook = (await resolveInstructionTargets(teamConfig, localConfig)).hooks.find((entry) => entry.tool === tool);
   if (!hook) return `${tool} is not installed here.`;
-  const channel = await instructionHookChannel(tool, { teamConfig, localConfig });
+  const channel = await channelReadiness(tool, hook.probe, { teamConfig, localConfig });
   if (!channel.ready) return channel.fix;
   if (hook.limit === undefined) return null;
   const parts = [block ? instructionHookText({ claudemd: block }, false) : ''];
@@ -3805,7 +3790,7 @@ async function runHookRuleCommand(
     }
   }
 
-  let codexTrustPath: string | undefined;
+  let codexTrust: { settingsPath: string; policy: CodexTrustPolicy } | undefined;
   if (tool === 'hermes') {
     const { applyHermesAgentHook } = await import('./hermes-hooks.js');
     await applyHermesAgentHook({ slug, event, command: cmd, matcher, timeout });
@@ -3821,16 +3806,17 @@ async function runHookRuleCommand(
     await applyPiAgentHook({ slug, event, command: cmd, matcher, timeout });
   } else {
     const [settingsPath] = await agentHookSettingsPaths(config, tool);
-    await applyAgentHook(settingsPath, tool, { slug, event, command: cmd, matcher, timeout });
-    if (isCodexTrustGatedTool(tool)) codexTrustPath = settingsPath;
+    const policy = agentHookCodexTrust(await codexTrustDisabled(), settingsPath);
+    await applyAgentHook(settingsPath, tool, { slug, event, command: cmd, matcher, timeout }, policy);
+    if (isCodexTrustGatedTool(tool)) codexTrust = { settingsPath, policy };
   }
   manifest[slug] = { tool, event, command: cmd, matcher, timeout };
   await saveAgentHookManifest(manifest);
-  if (codexTrustPath) {
+  if (codexTrust) {
     // Recorded first, so an uninstall still finds the hook Codex will not run.
-    const trust = await codexTrustDisabled()
+    const trust = codexTrust.policy.kind === 'disabled'
       ? { kind: 'disabled' as const }
-      : await trustCodexAgentHook(codexTrustPath, event, cmd);
+      : await trustCodexAgentHook(codexTrust.settingsPath, event, cmd);
     if (trust.kind !== 'trusted') {
       const why = trust.kind === 'disabled' ? 'codexTrustEnabled is false, so approve it in Codex /hooks' : 'reason' in trust ? trust.reason : trust.kind;
       throw new Error(`Codex will not run agent hook [${slug}] until it is trusted: ${why}`);
@@ -3860,22 +3846,9 @@ function mcpConfigToDef(slug: string, cfg: NonNullable<LocalAgentCommand['mcp_co
   };
 }
 
-function updateManifestRecord(
-  manifest: ManagedMcpManifest,
-  key: string,
-  name: string,
-  hash: string,
-  /** Project scope: whether the entry carries a credential, as `resolved` notes for a pull's (#882). */
-  resolved?: boolean,
-  bare?: boolean,
-  /** User scope, CodeBuddy: the file it wrote (#993). */
-  file?: string,
-): void {
+function updateManifestRecord(manifest: ManagedMcpManifest, key: string, record: ManagedMcpRecord): void {
   const records = manifest[key] ?? [];
-  const idx = records.findIndex((r: ManagedMcpRecord) => r.name === name);
-  const record: ManagedMcpRecord = {
-    name, hash, ...resolved === undefined ? {} : { resolved }, ...bare === undefined ? {} : { bare }, ...file === undefined ? {} : { file },
-  };
+  const idx = records.findIndex((r: ManagedMcpRecord) => r.name === record.name);
   if (idx >= 0) {
     records[idx] = record;
   } else {
@@ -3884,9 +3857,17 @@ function updateManifestRecord(
   manifest[key] = records;
 }
 
+async function mcpPlaceOf(
+  teamConfig: TeamaiConfig, localConfig: LocalConfig, tool: string,
+): Promise<(McpTarget & { key: McpKey }) | null> {
+  const target = (await resolveMcpTargets(teamConfig, localConfig, { includeUndetected: true }))
+    .find((target) => target.tool === tool && !target.builtinFallback);
+  return target === undefined ? null : { ...target, key: mcpKeyOf(target) };
+}
+
 /**
  * `tool`'s two places for a workspace's project MCP servers (#915), as a pull
- * resolves them: the project's file (`tree`) and, for Claude and CodeBuddy,
+ * resolves them: the project's file (`tree`) and, for a tool with one,
  * the tool's local scope (`local`), with `config`, the workspace's config the
  * places were resolved with (the member's tool roots: Claude's local scope is
  * in its user config). Null for a tool that has no local scope.
@@ -3933,7 +3914,7 @@ async function leaveOtherMcpLocation(
   config: LocalAgentConfig,
   places: { tree: McpTarget; config: LocalConfig },
   other: McpTarget,
-  serverKey: string,
+  serverKey: McpKey,
   records: readonly ManagedMcpRecord[],
   target: string,
   manifest: ManagedMcpManifest,
@@ -3968,14 +3949,13 @@ async function installMcpServer(
   // the member relocated (`toolRoots`) the way `teamai pull` writes it. Project
   // scope returns `mcpProject` unchanged — it belongs to the workspace.
   const localConfig = await createResourceLocalConfig(config, scope, getUserHome(), workspacePath);
-  const toolPath = scopedToolPaths(fullTeamConfig, localConfig)[tool];
-  if (!toolPath) {
+  if (!Object.hasOwn(fullTeamConfig.toolPaths, tool)) {
     throw new Error(`install_mcp: unknown tool "${tool}"`);
   }
 
   const projectScope = scope === 'project';
-  const mcpRel = projectScope ? toolPath.mcpProject : toolPath.mcp;
-  if (!mcpRel) {
+  const place = await mcpPlaceOf(fullTeamConfig, localConfig, tool);
+  if (!place) {
     throw new Error(`install_mcp: tool "${tool}" has no MCP config path for scope "${scope}"`);
   }
 
@@ -3987,21 +3967,17 @@ async function installMcpServer(
     throw new Error(`install_mcp: tool "${tool}" does not support ${def.transport} transport`);
   }
 
-  const baseDir = resolveToolBaseDir(tool, localConfig);
-  const mappedFile = path.join(baseDir, mcpRel);
-  // Claude's and CodeBuddy's go to the tool's local scope while the workspace's git exclude flag moves them, as a
+  // A tool with a local scope writes there while the workspace's git exclude flag moves its servers, as a
   // pull's do (#915); the other place is where an earlier install may have left this server.
   const places = projectScope && workspacePath ? await workspaceMcpLocations(config, localConfig, tool, workspacePath) : null;
   const relocated = places !== null
     && await mcpRelocated(await localAgentTeamConfig(config.endpoint, scope, workspacePath, `install ${slug}`), places.config, tool);
   const active = places && (relocated ? places.local : places.tree);
   const other = places && (relocated ? places.tree : places.local);
-  // CodeBuddy reads only the first of its user MCP files that exists (#993), as a pull writes it.
-  const lookup = !projectScope && USER_MCP_LOOKUP[tool] !== undefined;
-  const targetFile = active?.file ?? (lookup ? await userMcpFile(tool, mcpRel, baseDir) : mappedFile);
+  const mappedFile = active?.projectKey === undefined ? place.mappedFile : undefined;
+  const targetFile = active?.file ?? place.file;
   const target = describeMcpLocation({ file: targetFile, projectKey: active?.projectKey });
-  const fileOf = (record: ManagedMcpRecord): string =>
-    recordedFileOf({ file: targetFile, ...(lookup ? { mappedFile } : {}) }, record);
+  const fileOf = (record: ManagedMcpRecord): string => recordedFileOf({ ...place, file: targetFile, mappedFile }, record);
 
   const { resolveDataHomeForScope } = await import('./config.js');
   const dataHome = await resolveDataHomeForScope(projectScope ? 'project' : 'user', projectScope ? workspacePath : undefined);
@@ -4010,13 +3986,18 @@ async function installMcpServer(
   // Only records of this file: a server an earlier install left in a file CodeBuddy no longer reads moves below.
   // By real path, as reconciliation compares them: a lookup file linked to another is that file.
   const records = manifest[manifestKey] ?? [];
-  const inTarget = await Promise.all(records.map((r: ManagedMcpRecord) => sameMcpFile(fileOf(r), targetFile)));
+  // A local scope's record that notes no file is in that scope, not in a file the project's place names.
+  const recordedIn = active?.projectKey === undefined ? place : active;
+  const recordedTargets = new Map(await Promise.all(records.map(async (record) => [record, await recordedMcpTarget(recordedIn, record)] as const)));
+  const inTarget = await Promise.all(records.map(async (r: ManagedMcpRecord) => {
+    const recorded = recordedTargets.get(r);
+    return recorded === undefined ? sameMcpFile(fileOf(r), targetFile) : sameMcpPlace(recorded, { ...recordedIn, file: targetFile });
+  }));
   const owned = records.filter((_, i) => inTarget[i]);
   const ownedNames = new Set(owned.map((r: ManagedMcpRecord) => r.name));
   const otherKey = other ? mcpManifestKey(other) : undefined;
   const movedFrom = records.find((r: ManagedMcpRecord, i) => r.name === slug && !inTarget[i])
     ?? (otherKey ? manifest[otherKey]?.find((r) => r.name === slug) : undefined);
-  const file = lookup ? targetFile : undefined;
 
   if (format === 'codex') {
     const block = renderCodexBlock(def);
@@ -4026,13 +4007,13 @@ async function installMcpServer(
     if (present.has(slug) && !ownedNames.has(slug)) {
       throw new Error(`install_mcp: server "${slug}" exists in ${tool} config and is not managed by teamai`);
     }
-    updateManifestRecord(manifest, manifestKey, slug, hash);
+    updateManifestRecord(manifest, manifestKey, { name: slug, hash, file: targetFile });
     await save();
     source = spliceCodexBlock(source, slug, block);
     await writeCodexAtomic(targetFile, source);
   } else {
     const entry = renderJsonEntry(format, def);
-    const serverKey = MCP_SERVER_KEY[format];
+    const serverKey = active ? mcpKeyOf(active) : place.key;
     const hash = entryHash(entry);
     const allowBare = format === 'copilot' && projectScope;
     const doc = await readJsonDoc(targetFile, serverKey, allowBare, active?.projectKey);
@@ -4054,7 +4035,7 @@ async function installMcpServer(
     // Existing ownership stays valid until the config write completes. New installs
     // still persist a provisional record before adding a Git exclusion (#882).
     if (!previousRecord) {
-      updateManifestRecord(manifest, manifestKey, slug, hash, projectScope ? credential : undefined, undefined, file);
+      updateManifestRecord(manifest, manifestKey, { name: slug, hash, ...projectScope ? { resolved: credential } : {}, file: targetFile });
       await save();
     }
     if (credential) await keepCredentialOutOfGit({ ...localConfig, dataHome }, tool, slug, targetFile, entry);
@@ -4063,7 +4044,9 @@ async function installMcpServer(
     await writeJsonDoc(targetFile, serverKey, doc);
     if (allowBare || previousRecord) {
       // Placement is evidence of a completed write, not just an attempted install.
-      updateManifestRecord(manifest, manifestKey, slug, hash, projectScope ? credential : undefined, allowBare ? doc.bare : undefined, file);
+      updateManifestRecord(manifest, manifestKey, {
+        name: slug, hash, ...projectScope ? { resolved: credential } : {}, ...allowBare ? { bare: doc.bare } : {}, file: targetFile,
+      });
       // A record in the tool's other place goes with the copy there, once this write holds the server.
       if (otherKey && manifest[otherKey]) {
         manifest[otherKey] = manifest[otherKey].filter((r) => r.name !== slug);
@@ -4086,11 +4069,14 @@ async function installMcpServer(
         throw error;
       }
     }
-    if (movedFrom && places && other) {
-      await leaveOtherMcpLocation(config, places, other, serverKey, [movedFrom], target, manifest);
-    } else if (movedFrom) {
-      await removeMovedMcpEntry({ file: fileOf(movedFrom) }, serverKey, slug, target, movedFrom.hash);
-    }
+  }
+  if (movedFrom && places && other) {
+    await leaveOtherMcpLocation(config, places, other, active ? mcpKeyOf(active) : place.key, [movedFrom], target, manifest);
+  } else if (movedFrom) {
+    const from = recordedTargets.get(movedFrom) ?? await recordedMcpTarget(place, movedFrom);
+    const relocations = [place.mappedFile, place.alternateFile, ...place.lookupFiles ?? [], ...(place.retired ?? []).map(({ file }) => file)];
+    if (relocations.includes(from.file)) await removeMovedMcpEntry(from, mcpKeyOf(from), slug, target, movedFrom.hash);
+    else logLeftMcpFiles(localConfig, { ...place, file: targetFile }, [{ ...movedFrom, file: from.file }]);
   }
   if (projectScope && workspacePath) {
     const resources = await loadManifest();
@@ -4110,7 +4096,7 @@ async function installMcpServer(
  * where. Whether it took it out.
  */
 async function removeMovedMcpEntry(
-  from: Pick<McpTarget, 'file' | 'projectKey'>, serverKey: string, slug: string, target: string, recordedHash: string,
+  from: Pick<McpTarget, 'file' | 'projectKey'>, serverKey: McpKey, slug: string, target: string, recordedHash: string,
 ): Promise<boolean> {
   const file = describeMcpLocation(from);
   try {
@@ -4178,17 +4164,12 @@ async function uninstallMcpServer(
   const fullTeamConfig = createLocalAgentTeamConfig(config.endpoint);
   // Removal has to look where the install wrote: same scope seam, same root.
   const localConfig = await createResourceLocalConfig(config, scope, getUserHome(), workspacePath);
-  const toolPath = scopedToolPaths(fullTeamConfig, localConfig)[tool];
-  if (!toolPath) return;
+  const place = await mcpPlaceOf(fullTeamConfig, localConfig, tool);
+  if (!place) return;
 
   const projectScope = scope === 'project';
-  const mcpRel = projectScope ? toolPath.mcpProject : toolPath.mcp;
-  if (!mcpRel) return;
-
   const format = detectMcpFormat(tool);
   if (!format) return;
-
-  const baseDir = resolveToolBaseDir(tool, localConfig);
 
   const { resolveDataHomeForScope } = await import('./config.js');
   const dataHome = await resolveDataHomeForScope(projectScope ? 'project' : 'user', projectScope ? workspacePath : undefined);
@@ -4203,9 +4184,10 @@ async function uninstallMcpServer(
   for (const { manifestKey, file, projectKey } of locations) {
     const owned = manifest[manifestKey] ?? [];
     if (!owned.some((r: ManagedMcpRecord) => r.name === slug)) continue;
-    // CodeBuddy's user servers are where the install recorded them (#993); an older one recorded no file.
-    const recordedFile = !projectScope && USER_MCP_LOOKUP[tool] ? owned.find((r) => r.name === slug)?.file : undefined;
-    const targetFile = file ?? recordedFile ?? path.join(baseDir, mcpRel);
+    // A server is in the file its record names (#993), even one a home move left; an older record names none.
+    const record = owned.find((r) => r.name === slug);
+    const recorded = record ? await recordedMcpTarget(place, record) : place;
+    const targetFile = record?.file ?? file ?? recorded.file;
     const where = describeMcpLocation({ file: targetFile, projectKey });
 
     let restoreConfig: (() => Promise<void>) | undefined;
@@ -4217,7 +4199,7 @@ async function uninstallMcpServer(
         restoreConfig = () => writeCodexAtomic(targetFile, source);
       }
     } else {
-      const serverKey = MCP_SERVER_KEY[format];
+      const serverKey = mcpKeyOf(recorded);
       const allowBare = format === 'copilot' && projectScope;
       const doc = await readJsonDoc(targetFile, serverKey, allowBare, projectKey);
       if (!doc) throw new Error(`uninstall_mcp: cannot parse ${targetFile}. Ownership was kept; repair the config and uninstall the server again.`);
@@ -4591,7 +4573,7 @@ async function moveToLocalScope(
   const localKey = mcpManifestKey(local);
   const records = manifest[treeKey] ?? [];
   if (records.length === 0 || tree.format === 'codex') return;
-  const serverKey = MCP_SERVER_KEY[tree.format];
+  const serverKey = mcpKeyOf(tree);
   const there = describeMcpLocation(local);
   const from = await readJsonDoc(tree.file, serverKey);
   const to = await readJsonDoc(local.file, serverKey, false, local.projectKey);
@@ -4629,7 +4611,7 @@ async function moveToLocalScope(
   const wrote = moved.some((record) => !owned.has(record.name));
   if (wrote) await writeJsonDoc(local.file, serverKey, to);
   for (const record of moved) {
-    if (!owned.has(record.name)) updateManifestRecord(manifest, localKey, record.name, record.hash, false);
+    if (!owned.has(record.name)) updateManifestRecord(manifest, localKey, { name: record.name, hash: record.hash, resolved: false, file: local.file });
   }
   if (left.length > 0) manifest[treeKey] = left;
   else delete manifest[treeKey];
@@ -4743,6 +4725,7 @@ export async function initLocalAgentHttp(options: {
     getUserHome(),
     options.filterAgents,
     toolRoots,
+    await memberCodexTrust(),
   );
   log.success(`HTTP local agent initialized at ${getConfigPath()}`);
 }

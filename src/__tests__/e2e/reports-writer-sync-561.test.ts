@@ -230,17 +230,19 @@ describe('real CLI reports writer sync (#561)', () => {
     seedSession(home, 'alice-1277', timestamp);
     const allowReportsPush = rejectReportsPush(origin);
     const first = await runCli(home, ['session', 'save', '--session-id', 'alice-1277', '--push', '--force', '--scope', 'user'], sandbox);
-    expect(first.code, first.output).toBe(0);
-    expect(first.output).toContain('Nothing new to push.');
+    expect(first.code, first.output).toBe(1);
+    expect(first.output).toContain('Team push failed:');
+    expect(first.output).toContain('The local log was still saved. Retry later with: teamai session save --push');
 
     const rejectedRetry = await runCli(home, ['session', 'save', '--session-id', 'alice-1277', '--push', '--force', '--scope', 'user'], sandbox);
-    expect(rejectedRetry.code, rejectedRetry.output).toBe(0);
-    expect(rejectedRetry.output).toContain('Push failed. The summary is saved locally; retry with: teamai session save --push');
+    expect(rejectedRetry.code, rejectedRetry.output).toBe(1);
+    expect(rejectedRetry.output).toContain('Team push failed:');
+    expect(rejectedRetry.output).toContain('The local log was still saved. Retry later with: teamai session save --push');
 
     allowReportsPush();
     const retry = await runCli(home, ['session', 'save', '--session-id', 'alice-1277', '--push', '--force', '--scope', 'user'], sandbox);
     expect(retry.code, retry.output).toBe(0);
-    expect(retry.output).toContain('Pushed a previously unpushed session summary.');
+    expect(retry.output).toContain('Pushed: sessions/alice/2026-09.md');
 
     const monthLog = git(['show', 'teamai-reports:sessions/alice/2026-09.md'], origin, env);
     expect(monthLog).toContain('<!-- teamai:session alice-1277 -->');

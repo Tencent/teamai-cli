@@ -253,14 +253,10 @@ export function opencodeContextReference(contextFile: string, scope: 'user' | 'p
 }
 
 /**
- * OpenCode loads `~/.claude/CLAUDE.md` while its own user `AGENTS.md` does not
- * exist. When teamai delivers the user blocks there for Claude, OpenCode
- * already gets them, and a second file would add a duplicate. Returns the
- * Claude file in that case, null otherwise.
+ * The file OpenCode V1 loads while its own user `AGENTS.md` (beside its
+ * config) does not exist. It is Claude Code's default user file, wherever
+ * Claude Code's home is.
  */
-export async function opencodeClaudeFallback(home: string, targetPaths: readonly string[]): Promise<string | null> {
-  const claudeFile = path.join(home, '.claude', 'CLAUDE.md');
-  if (!targetPaths.includes(claudeFile)) return null;
-  if (await pathExists(path.join(home, '.config', 'opencode', 'AGENTS.md'))) return null;
-  return claudeFile;
+export function opencodeV1ClaudeFile(home: string): string {
+  return path.join(home, '.claude', 'CLAUDE.md');
 }

@@ -1,9 +1,14 @@
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
+import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
-import { readFileSafe, writeJsonAtomic } from '../utils/fs.js';
+import { DriverSchema } from '../driver-identity.js';
+import { readFileSafe, writeFileAtomic, writeJsonAtomic } from '../utils/fs.js';
 import { getDataHome, type LocalConfig } from '../types.js';
-import { ArchivedPassSchema, DriverSchema, StepStateSchema } from './step-state.js';
+import { PinnedScorerSchema } from '../scorers/pin.js';
+import { acquireLock, releaseLock } from '../update.js';
+import { ArchivedPassSchema, SessionContinuationSchema, StepStateSchema } from './step-state.js';
+import type { HandoffOwner } from './snapshot.js';
 import type { RunState, WorkflowDefinition } from './types.js';
 
 /**
@@ -70,6 +75,9 @@ const RunProgressSchema = z.object({
   round: z.number().int().optional(),
   /** Latest driver that called next, absent in older run files. */
   driver: DriverSchema.optional(),
+  publication: z.object({ stateRevision: z.number().int(), pending: z.string().optional(), reconcileCopies: z.literal(true).optional() }).optional(),
+  sessionContinuations: z.array(SessionContinuationSchema).optional(),
+  scorers: z.record(PinnedScorerSchema).optional(),
 });
 
 export async function readRun(config: LocalConfig, runId: string): Promise<RunState | 'missing' | 'corrupt'> {
@@ -85,6 +93,71 @@ export async function readRun(config: LocalConfig, runId: string): Promise<RunSt
   }
 }
 
-export async function writeRun(config: LocalConfig, run: RunState): Promise<void> {
-  await writeJsonAtomic(runFilePath(config, run.id), run);
+const LOCK_ATTEMPTS = 40;
+const LOCK_WAIT_MS = 25;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** What a locked run update found: the value its change returned, or why the change did not run. */
+export type RunUpdate<T> = { status: 'done'; value: T } | { status: 'busy' } | { status: 'corrupt' };
+
+/**
+ * Reads run `runId` under its lock, `missing` when it has no file, and writes the run `change` returns, if any.
+ * The only writer of run files, so no write lands between another process's read and its write.
+ */
+export async function updateRun<T>(
+  config: LocalConfig,
+  runId: string,
+  change: (run: RunState | 'missing') => Promise<{ value: T; write?: RunState }>,
+): Promise<RunUpdate<T>> {
+  const lock = runLockPath(config, runId);
+  let held = false;
+  for (let attempt = 0; attempt < LOCK_ATTEMPTS && !held; attempt += 1) {
+    held = await acquireLock(lock);
+    if (!held) await delay(LOCK_WAIT_MS);
+  }
+  if (!held) return { status: 'busy' };
+  try {
+    const loaded = await readRun(config, runId);
+    if (loaded === 'corrupt') return { status: 'corrupt' };
+    const { value, write } = await change(loaded);
+    if (write) await writeJsonAtomic(runFilePath(config, runId), write);
+    return { status: 'done', value };
+  } finally {
+    await releaseLock(lock);
+  }
+}
+
+/** The install this data home belongs to. Its id is created once, by whichever process gets there first. */
+export async function installOwner(config: LocalConfig): Promise<HandoffOwner> {
+  const file = path.join(getDataHome(config), 'workflows', 'owner.json');
+  let id = ownerId(await readFileSafe(file));
+  if (id === undefined) {
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    const draft = `${file}.${randomUUID()}.tmp`;
+    await writeFileAtomic(draft, `${JSON.stringify({ id: randomUUID() })}\n`);
+    try {
+      // A hard link never replaces an existing file, so two first runs agree on one id.
+      await fs.link(draft, file);
+    } catch (e) {
+      if (!(e instanceof Error && 'code' in e && e.code === 'EEXIST')) throw e;
+    } finally {
+      await fs.rm(draft, { force: true });
+    }
+    id = ownerId(await readFileSafe(file));
+  }
+  if (id === undefined) throw new Error(`${file} does not hold an install id. Move it aside and try again.`);
+  return { id, user: config.username };
+}
+
+function ownerId(text: string | null): string | undefined {
+  if (text === null) return undefined;
+  try {
+    const value: unknown = JSON.parse(text);
+    return typeof value === 'object' && value !== null && 'id' in value && typeof value.id === 'string' && value.id !== '' ? value.id : undefined;
+  } catch {
+    return undefined;
+  }
 }

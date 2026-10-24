@@ -1,6 +1,6 @@
 # CI E2E Setup
 
-The `e2e` job on GitHub Actions runs the full end-to-end suite (init / push / pull / source / env / tags / roles / contribute / dashboard / uninstall …), matching the coverage that used to be checked by hand, one command at a time. This page explains the configuration the job needs before it will run on CI.
+The `e2e` job on GitHub Actions runs the remote cases of the end-to-end suite (init / push / pull / env / tags / roles / contribute / dashboard / uninstall …) against a real fixture repo, matching the coverage that used to be checked by hand, one command at a time. This page explains the configuration the job needs before it will run on CI.
 
 ---
 
@@ -12,9 +12,9 @@ The `e2e` job runs on:
 - any PR targeting `master` / `main`
 - only when the repository variable `TEAMAI_TEST_REPO_URL` is set; otherwise the job skips itself (a fork without the secrets skips cleanly, with no red CI)
 
-Several PRs or pushes operating on the same fixture repo at once would corrupt its state, so the job runs under `concurrency: e2e-fixture-repo`: runs queue up and a run in progress is not cancelled, so it finishes and leaves a clean state behind.
+Several PRs or pushes operating on the same fixture repo at once would corrupt its state, so the job runs under `concurrency: e2e-fixture-repo`: runs queue up and a run in progress is not cancelled, so it finishes and leaves a clean state behind. It runs only `src/__tests__/e2e/e2e.test.ts`, the one file that uses the fixture repo, so a run holds the queue only for that file.
 
-PRs from forks run `fork-e2e-shard` (no token; the remote cases skip), the suite split in three shards on parallel runners; `fork-e2e` passes when all do, under the check name branch protection requires. A test must never rebuild `dist/` or reinstall the OpenCode binary: workers share both. Both jobs also install a pinned OpenCode 2 from npm (`@opencode/cli`) and point `TEAMAI_OPENCODE_V2_BIN` at it; to bump it, change `OPENCODE2_VERSION` and `OPENCODE2_LINUX_X64_SHA256` together in the `env` block at the top of `.github/workflows/ci.yml`.
+Every PR and push, forks included, runs the rest of the suite in `fork-e2e-shard` (no token; the remote cases skip), split in three shards on parallel runners; `fork-e2e` passes when all do. A test must never rebuild `dist/` or reinstall the OpenCode binary: workers share both. The shards also install a pinned OpenCode 2 from npm (`@opencode/cli`) and point `TEAMAI_OPENCODE_V2_BIN` at it; to bump it, change `OPENCODE2_VERSION` and `OPENCODE2_LINUX_X64_SHA256` together in the `env` block at the top of `.github/workflows/ci.yml`.
 
 ---
 
@@ -105,7 +105,7 @@ export GITHUB_TOKEN=$TEAMAI_TEST_TOKEN
 
 # 2. Run
 npm run build
-npx vitest run --config vitest.e2e.config.ts --reporter=verbose
+npx vitest run --config vitest.e2e.config.ts --reporter=verbose src/__tests__/e2e/e2e.test.ts
 ```
 
 ---

@@ -10,12 +10,17 @@ import path from 'node:path';
  * project that is the cwd or one of its parents, or that `$CODEX_HOME/fake.json`
  * maps the cwd to (`projectLayers`, how Codex reads a linked worktree from its
  * main checkout). A hook's hash is its handler's JSON, so editing it reads as
- * `modified`, as in Codex. `fake.json` can also make one method fail
- * (`failMethod`), the process exit at once (`exit`), or the listing name a hook
- * by its `commandWindows` where it has one (`windowsCommands`), as Codex on
+ * `modified`, as in Codex; `hashIgnores` drops fields from it, as codex-cli
+ * 0.142.5 ignores `additionalContextLimit`. `--version` prints
+ * `codex-cli <version>`, and each recorded call names the install that answered
+ * it (`codex`). `fake.json` can also make one method fail (`failMethod`; with
+ * `failCodex`, only for the install at that path, so the chosen build still
+ * answers), the process exit at once (`exit`), or the listing name a hook by
+ * its `commandWindows` where it has one (`windowsCommands`), as Codex on
  * Windows does.
  */
 const SERVER = String.raw`
+if (process.argv[2] === '--version') { process.stdout.write('codex-cli ' + BUILD.version + '\n'); process.exit(0); }
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
@@ -36,7 +41,9 @@ function layer(file, source, s, out) {
     (groups || []).forEach((g, gi) => (g.hooks || []).forEach((h, hi) => {
       if ((opts.omitCommands || []).includes(h.command)) return;
       const key = src + ':' + snake(event) + ':' + gi + ':' + hi;
-      const currentHash = 'sha256:' + crypto.createHash('sha256').update(JSON.stringify(h)).digest('hex');
+      const hashed = { ...h };
+      for (const field of BUILD.hashIgnores) delete hashed[field];
+      const currentHash = 'sha256:' + crypto.createHash('sha256').update(JSON.stringify(hashed)).digest('hex');
       const trusted = s.hooksState[key] && s.hooksState[key].trusted_hash;
       const trustStatus = !trusted ? 'untrusted' : trusted === currentHash ? 'trusted' : 'modified';
       const command = opts.windowsCommands && h.commandWindows ? h.commandWindows : h.command;
@@ -67,11 +74,11 @@ process.stdin.on('data', (chunk) => {
     const m = JSON.parse(line);
     const s = state();
     s.pid = process.pid;
-    s.calls.push({ method: m.method, params: m.params });
+    s.calls.push({ method: m.method, params: m.params, codex: BUILD.codex });
     save(s);
     if (m.id === undefined) continue;
     const reply = (body) => process.stdout.write(JSON.stringify({ id: m.id, ...body }) + '\n');
-    if (opts.failMethod === m.method) { reply({ error: { code: -32000, message: 'fake failure' } }); continue; }
+    if (opts.failMethod === m.method && (!opts.failCodex || opts.failCodex === BUILD.codex)) { reply({ error: { code: -32000, message: 'fake failure' } }); continue; }
     if (m.method === 'initialize') reply({ result: { userAgent: 'fake' } });
     else if (m.method === 'hooks/list') reply({ result: { data: m.params.cwds.map((cwd) => ({ cwd, hooks: list(cwd, s), warnings: [] })) } });
     else if (m.method === 'config/read') reply({ result: { config: { projects: s.projects } } });
@@ -93,14 +100,19 @@ export interface FakeCodexState {
   pid?: number;
   projects: Record<string, { trust_level?: string }>;
   hooksState: Record<string, { trusted_hash?: string }>;
-  calls: Array<{ method: string; params: unknown }>;
+  calls: Array<{ method: string; params: unknown; codex: string }>;
 }
 
-/** Write the fake `codex` into a new directory and return it (prepend it to PATH). */
-export function installFakeCodex(): string {
-  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-fake-codex-')));
+/**
+ * Write the fake `codex` into `dir` (by default a new directory, to prepend to
+ * PATH) and return the directory.
+ */
+export function installFakeCodex(options: { version?: string; hashIgnores?: string[]; dir?: string } = {}): string {
+  const dir = options.dir ?? fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-fake-codex-')));
+  fs.mkdirSync(dir, { recursive: true });
   const script = path.join(dir, 'fake-codex.cjs');
-  fs.writeFileSync(script, SERVER);
+  const build = { codex: path.join(dir, 'codex'), version: options.version ?? '0.163.0', hashIgnores: options.hashIgnores ?? [] };
+  fs.writeFileSync(script, `const BUILD = ${JSON.stringify(build)};\n${SERVER}`);
   const node = JSON.stringify(process.execPath);
   fs.writeFileSync(path.join(dir, 'codex'), `#!/bin/sh\nexec ${node} ${JSON.stringify(script)} "$@"\n`);
   fs.chmodSync(path.join(dir, 'codex'), 0o755);
@@ -118,7 +130,7 @@ export function readFakeCodexState(codexHome: string): FakeCodexState {
 
 export function writeFakeCodexOptions(
   codexHome: string,
-  options: { failMethod?: string; exit?: boolean; omitCommands?: string[]; projectLayers?: Record<string, string>; windowsCommands?: boolean },
+  options: { failMethod?: string; failCodex?: string; exit?: boolean; omitCommands?: string[]; projectLayers?: Record<string, string>; windowsCommands?: boolean },
 ): void {
   fs.mkdirSync(codexHome, { recursive: true });
   fs.writeFileSync(path.join(codexHome, 'fake.json'), JSON.stringify(options));

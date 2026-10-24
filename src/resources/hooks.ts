@@ -6,6 +6,7 @@ import type { ResourceItem, TeamaiConfig, LocalConfig, HookDef } from '../types.
 import { TEAMAI_CUSTOM_HOOK_PREFIX, areTeamHooksDisabled, getHooksSharing } from '../types.js';
 import { pathExists } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
+import { pushRepoResourceItem, scanRepoResourceForPush } from './repo-resource.js';
 import {
   entryFilePath, missingTopLevelKeyReason, readEntryFileText, reportEntryResolution, resolveEntriesFor, unknownEntryKeys,
   type EntryReader, type EntryResolution,
@@ -258,9 +259,8 @@ export async function resolveTeamHooks(
 export class HooksHandler extends ResourceHandler {
   readonly type = 'hooks' as const;
 
-  /** Never reverse-push from local settings (avoids confusion with built-in A hooks). */
-  async scanLocalForPush(_teamConfig: TeamaiConfig, _localConfig: LocalConfig): Promise<ResourceItem[]> {
-    return [];
+  async scanLocalForPush(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<ResourceItem[]> {
+    return scanRepoResourceForPush('hooks', 'hooks', teamConfig, localConfig);
   }
 
   async scanTeamForPull(_teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<ResourceItem[]> {
@@ -269,8 +269,8 @@ export class HooksHandler extends ResourceHandler {
     return [{ name: 'hooks.yaml', type: 'hooks', sourcePath: yamlPath, relativePath: 'hooks/hooks.yaml' }];
   }
 
-  async pushItem(_item: ResourceItem, _teamConfig: TeamaiConfig, _localConfig: LocalConfig): Promise<void> {
-    // No-op — hooks.yaml is edited directly in the repo; push.ts handles git commit.
+  async pushItem(item: ResourceItem, _teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
+    await pushRepoResourceItem(item, localConfig);
   }
 
   async pullItem(_item: ResourceItem, _teamConfig: TeamaiConfig, _localConfig: LocalConfig): Promise<void> {

@@ -40,6 +40,23 @@ export interface SessionReadRef {
   filePath?: string;
 }
 
+/** One agent a session started, as the tool stored it. */
+export interface Subagent {
+  session: Session;
+  /** 1 for an agent the session started, 2 for one that agent started, and so on. */
+  depth: number;
+  /** Whether the tool recorded that the agent finished; absent when the tool records nothing either way. */
+  finished?: boolean;
+  /**
+   * Whether the tool recorded where the agent's own work starts, for a tool that copies the parent's history into the
+   * agent's; `unknown` keeps the whole record, which may open with context the agent inherited.
+   */
+  start?: 'recorded' | 'unknown';
+}
+
+/** The agents a session started, in the order it started them, or why they could not be read. */
+export type SubagentsRead = { status: 'read'; agents: Subagent[] } | { status: 'unread'; reason: string };
+
 /**
  * Thrown by an adapter whose tool CLI cannot run on this machine (absent, or too old), or whose
  * store cannot be read.
@@ -71,8 +88,8 @@ export abstract class AgentAdapter {
 
   abstract get platform(): string;
 
-  /** List every session under the given project (working directory) on this platform. When projectPath is undefined, list all. */
-  abstract listConversations(projectPath?: string): Promise<SessionMeta[]>;
+  /** List every session under the given project (working directory) on this platform. When projectPath is undefined, list all. `archived` adds the sessions the platform archived. */
+  abstract listConversations(projectPath?: string, options?: { archived?: boolean }): Promise<SessionMeta[]>;
 
   /**
    * Read one session and return a normalized IR Session. Lookup order: `filePath`, then the id in
@@ -90,6 +107,14 @@ export abstract class AgentAdapter {
    * With `projectPath`, only that workspace counts, the same scope `deleteSession` uses.
    */
   abstract existingSessionId(sessionId: string, projectPath?: string): Promise<string | undefined>;
+
+  /**
+   * The agents `session` started, read from where the tool keeps them, in the order it started them. Only `find` asks,
+   * and only when its caller does, so a copy, a migration or an archive never carries them.
+   */
+  async readSubagents(session: Session, _ref: SessionReadRef): Promise<SubagentsRead> {
+    return { status: 'unread', reason: `TeamAI does not read the subagents of ${session.platform} sessions` };
+  }
 
   /** Write a normalized IR Session to the target platform and return the written session ID. */
   abstract writeSession(session: Session, projectPath?: string): Promise<string>;

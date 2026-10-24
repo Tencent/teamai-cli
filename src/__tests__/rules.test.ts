@@ -1076,6 +1076,15 @@ scope: 'user',
   });
 });
 
+describe('OpenCode rules activation does not ask locate for mcp', () => {
+  it('rules.ts does not call locate with resource mcp', async () => {
+    const source = await fse.readFile(new URL('../resources/rules.ts', import.meta.url), 'utf8');
+    const resources = [...source.matchAll(/\blocate\s*\(\s*[^,]+,\s*(['"])([^'"]+)\1/g)].map((match) => match[2]);
+    expect(resources).toContain('rules');
+    expect(resources).not.toContain('mcp');
+  });
+});
+
 describe('RulesHandler.pullAllRules — OpenCode instructions activation', () => {
   let tmpDir: string;
   let homeDir: string;
@@ -1217,6 +1226,19 @@ describe('RulesHandler.pullAllRules — OpenCode instructions activation', () =>
     expect(doc.instructions ?? []).not.toContain(`${ocRules()}/*.md`);
   });
 
+  it('follows $XDG_CONFIG_HOME: the rules and their glob go to the opencode dir there (#1221)', async () => {
+    const xdgOpencode = path.join(tmpDir, 'xdg', 'opencode');
+    await fse.ensureDir(xdgOpencode);
+    vi.stubEnv('XDG_CONFIG_HOME', path.join(tmpDir, 'xdg'));
+    await fse.writeFile(path.join(localConfig.repo.localPath, 'rules', 'team-rule.md'), 'team content');
+
+    await handler.pullAllRules(teamConfig, localConfig);
+
+    expect(await fse.pathExists(path.join(xdgOpencode, 'rules', 'team-rule.md'))).toBe(true);
+    expect((await fse.readJson(path.join(xdgOpencode, 'opencode.json'))).instructions).toEqual([`${path.join(xdgOpencode, 'rules')}/*.md`]);
+    expect(await fse.pathExists(ocRules())).toBe(false);
+  });
+
   it('does not create opencode.json when OpenCode is not installed', async () => {
     // Remove the install marker.
     await fse.remove(path.join(homeDir, '.config', 'opencode'));
@@ -1276,6 +1298,31 @@ describe('RulesHandler.pullAllRules — OpenCode instructions activation', () =>
       await handler.pullAllRules(teamConfig, projectConfig, []);
 
       expect((await fse.readJson(dotConfig())).instructions).toBeUndefined();
+    });
+
+    it('names the project opencode.json as retired.configFile under the default MCP path', async () => {
+      const target = await handler.opencodeInstructionsTarget(teamConfig, projectConfig, []);
+      expect(target?.retired?.configFile).toBe(path.join(projectRoot, 'opencode.json'));
+    });
+
+    it('leaves retired null when the project MCP place is absent', async () => {
+      const target = await handler.opencodeInstructionsTarget({
+        ...teamConfig,
+        toolPaths: {
+          opencode: {
+            skills: '.opencode/skills',
+            rules: '.opencode/rules',
+            agents: '.opencode/agents',
+            mcp: '.config/opencode/opencode.json',
+            userScope: {
+              skills: '.config/opencode/skills',
+              rules: '.config/opencode/rules',
+              agents: '.config/opencode/agents',
+            },
+          },
+        },
+      }, projectConfig, []);
+      expect(target?.retired).toBeNull();
     });
   });
 });

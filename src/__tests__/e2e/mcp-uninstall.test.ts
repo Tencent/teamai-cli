@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -141,6 +142,58 @@ describe('MCP uninstall (e2e)', () => {
     const afterUninstall = JSON.parse(fs.readFileSync(claudeJson, 'utf-8'));
     expect(afterUninstall.mcpServers['team-mcp']).toBeUndefined();
     expect(afterUninstall.mcpServers['my-own']).toEqual({ command: 'my-server' });
+    expect(fs.existsSync(teamaiHome)).toBe(false);
+  }, 60_000);
+});
+
+describe('MCP uninstall with a config that does not parse (e2e)', () => {
+  const API = { type: 'http', url: 'https://example.com/api/mcp' };
+  const MINE = { command: 'my-server' };
+  const sandboxes: string[] = [];
+
+  afterAll(() => {
+    for (const sandbox of sandboxes) fs.rmSync(sandbox, { recursive: true, force: true });
+  });
+
+  it.each([
+    { tool: 'claude', file: '.claude.json', key: 'mcpServers' },
+    // An earlier release's ZCode record notes no file: its server is under mcpServers in the retired ~/.agents/mcp.json.
+    { tool: 'zcode', file: '.agents/mcp.json', key: 'mcpServers' },
+  ])('keeps the data home and the record of $tool while ~/$file does not parse, and removes the server once it is repaired', async ({ tool, file, key }) => {
+    const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-mcp-uninstall-unparsable-'));
+    sandboxes.push(sandbox);
+    const homeDir = path.join(sandbox, 'home');
+    const teamaiHome = path.join(homeDir, '.teamai');
+    const config = path.join(homeDir, file);
+    const repoLocal = path.join(teamaiHome, 'team-repo');
+    fs.mkdirSync(path.join(repoLocal, 'mcp'), { recursive: true });
+    fs.mkdirSync(path.join(homeDir, '.claude'), { recursive: true });
+    fs.mkdirSync(path.join(homeDir, '.zcode', 'cli'), { recursive: true });
+    fs.mkdirSync(path.dirname(config), { recursive: true });
+    fs.writeFileSync(path.join(repoLocal, 'teamai.yaml'), 'team: mcp-uninstall-e2e\nrepo: https://example.com/mcp-e2e.git\nprovider: git\n');
+    fs.writeFileSync(path.join(repoLocal, 'mcp', 'mcp.yaml'), 'servers:\n  - name: team-mcp\n    transport: http\n    url: https://example.com/api/mcp\n');
+    fs.writeFileSync(path.join(teamaiHome, 'config.yaml'), [
+      'repo:', `  localPath: ${repoLocal}`, '  remote: https://example.com/mcp-e2e.git',
+      'username: e2e-user', 'updatePolicy: auto', 'scope: user', `enabledAgents: [${tool}]`,
+    ].join('\n'));
+    const hash = createHash('sha1').update(JSON.stringify(API)).digest('hex').slice(0, 16);
+    fs.writeFileSync(path.join(teamaiHome, 'managed-mcp.json'), JSON.stringify({ [tool]: [{ name: 'team-mcp', hash }] }));
+    const repaired = JSON.stringify({ [key]: { 'team-mcp': API, 'my-own': MINE } }, null, 2);
+    fs.writeFileSync(config, `{ "${key}": {`);
+    const env = { HOME: homeDir };
+
+    const first = await runCLI(['uninstall', '--force'], env, homeDir);
+
+    expect(first.code).toBe(1);
+    expect(first.output).toContain('Uninstall incomplete');
+    expect(first.output).toContain(config);
+    expect(JSON.parse(fs.readFileSync(path.join(teamaiHome, 'managed-mcp.json'), 'utf-8'))[tool]).toEqual([expect.objectContaining({ name: 'team-mcp', hash })]);
+
+    fs.writeFileSync(config, repaired);
+    const second = await runCLI(['uninstall', '--force'], env, homeDir);
+
+    expect(second.code).toBe(0);
+    expect(JSON.parse(fs.readFileSync(config, 'utf-8'))).toEqual({ [key]: { 'my-own': MINE } });
     expect(fs.existsSync(teamaiHome)).toBe(false);
   }, 60_000);
 });

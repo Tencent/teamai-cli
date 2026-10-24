@@ -9,7 +9,7 @@ import { log } from '../utils/logger.js';
 import { debugOnce, warnOnce } from '../utils/warn-once.js';
 import { getFileContentWhenAdded, isPastVersionOf, resolveAnchors } from '../utils/git.js';
 import { isCliOwnedSkillName, ownedSkillFiles, prunedWhole, removeOwnedFiles, skillsGuardBase } from '../builtin-skills.js';
-import { installOf, locate, SHARED_AGENT_SKILLS_PATH, writableDir, writesOf, type Install } from '../locate.js';
+import { installOf, locate, ownOf, SHARED_AGENT_SKILLS_PATH, writable, writesOf, type Install } from '../locate.js';
 import {
   loadRolesManifest, resolveRoleResourceNamespaces, RolesManifestNotFoundError, type RolesManifest,
 } from '../roles.js';
@@ -34,6 +34,7 @@ export const CODEX_TOOL = 'codex';
 /** Why delivery may not write a skill directory: the path itself, or a link on the way to it. */
 export type SkillDirectoryBlock =
   | { kind: 'outside-base'; target: string; baseDir: string }
+  | { kind: 'not-directory'; path: string }
   | { kind: 'members-link'; link: string }
   | { kind: 'broken-link'; link: string }
   | { kind: 'link-outside-base'; link: string; resolved: string; baseDir: string }
@@ -57,7 +58,11 @@ export async function findSkillDirectoryBlock(
     walked = path.join(walked, segment);
     const entry = await lstat(walked).catch((e: NodeJS.ErrnoException) => e.code === 'ENOENT' ? null : Promise.reject(e));
     if (!entry) break;
-    if (!entry.isSymbolicLink()) continue;
+    if (!entry.isSymbolicLink()) {
+      // A file at the skill itself is judged by ownership, as before.
+      if (!entry.isDirectory() && walked !== target) return { kind: 'not-directory', path: walked };
+      continue;
+    }
     // Team-skill ownership checks name and preserve a leaf link without following it.
     if (walked === target) return keepSkillLink ? null : { kind: 'members-link', link: walked };
     const resolved = await realpath(walked).catch(() => null);
@@ -82,12 +87,15 @@ export function describeSkippedSkillDirectory(skillName: string, tool: string, b
   const why = describeSkillDirectoryBlock(block);
   const next = block.kind === 'members-link'
     ? 'Remove the link to let teamai deliver this skill.'
+    : block.kind === 'not-directory'
+    ? 'Move the file aside and run `teamai pull` again.'
     : 'Point the skill directory inside the same repository.';
   return `Skipped ${skillName} (${tool}): ${why}. ${next}`;
 }
 
 function describeSkillDirectoryBlock(block: SkillDirectoryBlock): string {
   switch (block.kind) {
+    case 'not-directory': return `${block.path} is not a directory; the existing file was left unchanged`;
     case 'outside-base': return `${block.target} is outside ${block.baseDir}`;
     case 'members-link': return `${block.link} is your own link`;
     case 'broken-link': return `${block.link} is a link whose target does not exist`;
@@ -136,7 +144,7 @@ export function codexSkillConflictLine(skillName: string, configuredSkillsPath: 
 async function sharedSkillsDelivered(install: Install, sharedDir: string): Promise<boolean> {
   for (const tool of Object.keys(install.toolPaths)) {
     if (tool === CODEX_TOOL) continue;
-    const dir = writableDir(await locate(tool, 'skills', install));
+    const dir = writable(await locate(tool, 'skills', install))?.path ?? null;
     if (dir !== null && path.resolve(dir) === path.resolve(sharedDir)) return true;
   }
   return false;
@@ -222,10 +230,10 @@ export function skillTargetsFor(
   let sharedDelivered: Promise<boolean> | undefined;
   return async ({ tool, skillName, ownsShared, sourcePath }) => {
     const where = await locate(tool, 'skills', install);
-    const skillsDir = writableDir(where);
+    const skillsDir = writable(where)?.path ?? null;
     const configuredSkillsPath = toolPaths[tool]?.skills;
     if (skillsDir === null || configuredSkillsPath === undefined) return null;
-    const sharedDir = where.shared;
+    const sharedDir = where.shared?.path ?? null;
     if (tool !== CODEX_TOOL || sharedDir === null) return path.join(skillsDir, skillName);
 
     // Codex alone can redirect a skill to the shared `.agents/skills`
@@ -972,7 +980,7 @@ export class SkillsHandler extends ResourceHandler {
     // Scan each tool's skills directory
     const install = installOf(teamConfig, localConfig);
     for (const tool of Object.keys(install.toolPaths)) {
-      const skillsDir = (await locate(tool, 'skills', install)).own;
+      const skillsDir = ownOf(await locate(tool, 'skills', install))?.path ?? null;
       if (skillsDir === null || !await pathExists(skillsDir)) continue;
 
       // Use recursive scanning to find all skills at any depth
@@ -1244,9 +1252,9 @@ export class SkillsHandler extends ResourceHandler {
     const skillTarget = skillTargetsFor(teamConfig, localConfig);
     for (const tool of Object.keys(install.toolPaths)) {
       const where = await locate(tool, 'skills', install);
-      const skillsDir = writableDir(where);
+      const skillsDir = writable(where)?.path ?? null;
       if (skillsDir === null) {
-        if (where.own !== null) debugOnce(`Skipping skill sync for ${tool} in ${localConfig.scope} scope: excluded or not installed`);
+        if (ownOf(where) !== null) debugOnce(`Skipping skill sync for ${tool} in ${localConfig.scope} scope: excluded or not installed`);
         continue;
       }
       const guard = await skillsGuardBase(resolveBaseDir(localConfig), skillsDir);
@@ -1254,6 +1262,10 @@ export class SkillsHandler extends ResourceHandler {
       if (block) {
         warnOnce(describeSkippedSkillDirectory(item.name, tool, block));
         ledger?.toolsMissingSkills.add(tool);
+        if (block.kind === 'not-directory') {
+          ledger?.failed.push({ name: item.name, tool });
+          ledger?.recorder?.failed('skills');
+        }
         continue;
       }
       const ownsShared = async (dest: string): Promise<boolean> =>
@@ -1341,7 +1353,7 @@ export class SkillsHandler extends ResourceHandler {
       const where = await locate(tool, 'skills', install);
       // Not ours to write to, so not ours to delete from.
       if (where.gates.some((gate) => gate.kind === 'selected' && !gate.met)) continue;
-      for (const skillsDir of writesOf(where)) {
+      for (const { path: skillsDir } of writesOf(where)) {
         const skillDir = path.join(skillsDir, name);
         const toolBase = await skillsGuardBase(resolveBaseDir(localConfig), skillsDir);
         if (!await pathExists(skillDir)) continue;

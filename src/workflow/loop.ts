@@ -224,12 +224,66 @@ export function isUnder(path: string): (id: string) => boolean {
 /** Moves the instances under a step, those of the workflow it ran, from the run's steps to its archive, with every pass they had. */
 export function archiveUnder(run: RunState, path: string): void {
   const under = isUnder(path);
+  const within = { step: path, pass: run.steps.find((state) => state.id === path)?.pass ?? 1 };
   for (const state of run.steps) {
     if (!under(state.id)) continue;
     const current = passOf(state);
-    for (const pass of [...state.passes ?? [], ...(current ? [current] : [])]) (run.archive ??= []).push({ step: state.id, ...pass });
+    for (const pass of [...state.passes ?? [], ...(current ? [current] : [])]) (run.archive ??= []).push({ step: state.id, ...pass, within });
   }
   run.steps = run.steps.filter((state) => !under(state.id));
+}
+
+/** A pass of the run, current or archived, with the path of the instance it belongs to. */
+export type RunPass = StepPass & { step: string; within?: { step: string; pass: number } };
+
+/** Every pass of the run, current and archived. */
+export function runPasses(run: RunState): RunPass[] {
+  return [
+    ...run.steps.flatMap((state) => {
+      const current = passOf(state);
+      return [...state.passes ?? [], ...(current ? [current] : [])].map((pass) => ({ ...pass, step: state.id }));
+    }),
+    ...(run.archive ?? []),
+  ];
+}
+
+/** The commits a pass changed, or read, from the one it started at to the one it left. */
+export function passRange(pass: StepPass): { branch: string; from: string; to: string; source: 'changes' | 'read' } | undefined {
+  if (pass.changes) return { branch: pass.changes.branch, from: pass.changes.from, to: pass.changes.to, source: 'changes' };
+  if (pass.read) return { branch: pass.read.branch, from: pass.read.base, to: pass.read.commit, source: 'read' };
+  return undefined;
+}
+
+/**
+ * The pass of `passes` that settled first. Passes record no settle time, so the order comes from what they record: a
+ * step's passes settle in pass order, and a pass whose range starts where another's non-empty range ends settled after
+ * it. Of the passes nothing orders, the first listed.
+ */
+export function firstSettled<T extends RunPass>(passes: readonly T[]): T | undefined {
+  const before = (earlier: T, later: T): boolean => {
+    if (earlier.step === later.step) return earlier.pass < later.pass;
+    const [from, to] = [passRange(earlier), passRange(later)];
+    return from !== undefined && to !== undefined && from.from !== from.to && from.to === to.from;
+  };
+  return passes.find((pass) => !passes.some((other) => other !== pass && before(other, pass)));
+}
+
+/**
+ * The passes inside pass `pass` of step `step`, among `all`: those under it while that pass is current, and archived
+ * ones whose `within` leads to it, through the passes of nested workflows a loop archived on the way.
+ */
+export function passesWithin(run: RunState, all: readonly RunPass[], step: string, pass: number): RunPass[] {
+  const current = run.steps.find((state) => state.id === step)?.pass ?? 1;
+  const under = isUnder(step);
+  const reaches = (child: RunPass, seen: Set<RunPass>): boolean => {
+    if (seen.has(child)) return false;
+    seen.add(child);
+    const { within } = child;
+    if (!within) return current === pass && run.steps.some((state) => state.id === child.step);
+    if (within.step === step && within.pass === pass) return true;
+    return all.some((parent) => parent.step === within.step && parent.pass === within.pass && reaches(parent, seen));
+  };
+  return all.filter((child) => under(child.step) && reaches(child, new Set()));
 }
 
 /** The pass a new instance at `path` starts at: after every pass the archive holds for that path, so a pass id is never reused. */

@@ -11,6 +11,9 @@ All notable changes to this project will be documented in this file. See [standa
 ### Changed
 
 - `teamai init` no longer pulls team skills, rules, agents or MCP before it exits. It still saves config and installs hooks. In project scope it creates a tool directory only for a tool named with `--agent` or picked in a terminal; otherwise that directory appears when the tool starts a session, and that session start pulls. `teamai pull` still does not create a missing tool directory. A tool that reads rules and MCP once, before its SessionStart hook, sees them from the following session (for [#1065](https://github.com/Tencent/teamai-cli/issues/1065)).
+- `teamai push --role <ns>` fails with exit 2 when no role or project declares `<ns>` for that type, as `--project` already does. It used to write the files under `<ns>` anyway, where pull delivers them to nobody. A team with neither manifest still accepts any namespace (for [#1101](https://github.com/Tencent/teamai-cli/issues/1101)).
+- `teamai contribute --namespace ""` writes to the shared root `learnings/`, also for a member whose default is a namespace. It used to be rejected, so such a member could not reach the shared root (for [#1101](https://github.com/Tencent/teamai-cli/issues/1101)).
+- In single-repo mode, `teamai push` from a branch behind the default branch leaves out a team file under `.teamai/` that the default branch changed since and the member did not, and names it. It used to push the member's older copy over the teammate's change. When the member changed that file too, push stops with exit 2 and names it; merge the default branch and push again (for [#1101](https://github.com/Tencent/teamai-cli/issues/1101)).
 
 ### 💥 Breaking Changes
 

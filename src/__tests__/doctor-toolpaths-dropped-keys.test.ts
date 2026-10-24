@@ -60,7 +60,8 @@ describe('doctor notes — toolPaths entries that drop a default-provided key (#
         skills: '.zcode/skills',
         agents: '.zcode/agents',
         settings: '.zcode/cli/config.json',
-        mcp: '.agents/mcp.json',
+        mcp: '.zcode/cli/config.json',
+        mcpProject: '.zcode/config.json',
       },
     }))).toHaveLength(0);
   });

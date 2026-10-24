@@ -144,7 +144,7 @@ describe('#1083 workflow run records reach the reports branch', () => {
           definition: { name: 'reviewer', applied: 'main' },
           tool: { name: 'claude', version: '2.1.301' },
           model: { requested: 'claude-opus-4-1', reported: 'claude-opus-4-1-20250805' },
-          team: { revision: git(repo, 'rev-parse', rev).trim(), localChanges: false },
+          team: { revision: git(repo, 'rev-parse', rev).trim(), localChanges: false, selection: { scope: 'user', additionalRoles: [] } },
           teamai: getCurrentVersion(),
           driver: 'local',
           fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),

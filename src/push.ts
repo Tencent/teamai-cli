@@ -5,7 +5,7 @@ import { autoDetectInit, loadStateForScope, saveStateForScope } from './config.j
 import { assertNotReadOnly } from './read-only.js';
 import {
   createGit, pullRepo, pushRepoBranch, checkoutMaster, generateBranchName, unusedBranchName,
-  resetToCleanMaster, isDedicatedRepoRoot, getDefaultBranch, getFileContentAtRev, getHeadCommit,
+  resetToCleanMaster, isDedicatedRepoRoot, getDefaultBranch, getFileContentAtRev, getHeadCommit, hashObject,
 } from './utils/git.js';
 import { reconcilePlacementRecords, dropClosedPendingPushes,
   findPendingForItem, isRecordedItem, partiallySelectedEntries, pendingNamespaceFor, planPushGroups, recordedNamespace,
@@ -18,23 +18,31 @@ import { getUserHome } from './utils/home.js';
 import { getHandler } from './resources/index.js';
 import { createSkillPushItem, scanTeamRepoNamespaces } from './resources/skills.js';
 import { AgentsHandler } from './resources/agents.js';
-import { deliversEveryNamespace } from './resource-namespaces.js';
+import { deliversEveryNamespace, resolveResourceNamespaces } from './resource-namespaces.js';
 import type {
   GlobalOptions, PendingPushItem, ResourceItem, ResourceType, LocalConfig, TeamaiConfig, State,
 } from './types.js';
 import { getDataHome, SELF_KNOWLEDGE_SCAN_KEY, SYNC_LOCK_FILENAME } from './types.js';
 import { acquireLock, releaseLock } from './update.js';
 import { assertSafeResourceName, resolveReal } from './utils/path-safety.js';
-import { loadRolesManifest, resolveRoleResourceNamespaces, RolesManifestNotFoundError, type ResourceNamespaces } from './roles.js';
-import { loadProjectsManifest, resolveProjectResourceNamespaces, type ProjectsManifest } from './projects.js';
-import { isSafeNamespaceSegment, NAMESPACE_RULE, fallbackNamespaceError } from './manifest-schema.js';
+import { loadRolesManifest, resolveRoleResourceNamespaces, roleNamespaceEntries, RolesManifestNotFoundError, type ResourceNamespaces } from './roles.js';
+import { loadProjectsManifest, projectNamespaceEntries, resolveProjectResourceNamespaces, type ProjectsManifest } from './projects.js';
+import { isSafeNamespaceSegment, NAMESPACE_RULE, fallbackNamespaceError, type NamespaceEntry } from './manifest-schema.js';
 import {
-  isAtSharedRoot, isPlaceableType, NAMESPACE_AXIS, PLACEABLE_TYPES, placedResourcePath,
-  resolveProjectNamespace, skillNamespacePath, withNamespace, type PlaceableType,
+  declaredNamespaceFor, isAtSharedRoot, isNestedPlaceableType, isPlaceableType, NAMESPACE_AXIS, PLACEABLE_TYPES, placedResourcePath,
+  resolveProjectNamespace, resolveRoleNamespace, rootSegmentsFor, skillNamespacePath, withNamespace, type PlaceableType,
 } from './push-namespaces.js';
 import { askQuestion, askSelection, isInteractive } from './utils/prompt.js';
 import { pathExists, pruneEmptyDirs, readFileSafe, writeFile } from './utils/fs.js';
 import { brokenTeamProfileFiles } from './models/profile.js';
+
+/**
+ * Types whose `scanLocalForPush` source is the tool's own file (outside the
+ * clone), not a clone-backed path. The pre-refresh snapshot must exclude them:
+ * scanning them fires spurious warnings (e.g. "Skipped b-skill") and their
+ * source is untouched by `resetToCleanMaster` anyway.
+ */
+const LOCAL_TOOL_TYPES: ReadonlySet<PlaceableType> = new Set(['skills', 'rules', 'agents']);
 
 /**
  * Filter a list of repo-root-relative paths (e.g. "rules/", ".codebuddy-plugin/") down to
@@ -108,7 +116,7 @@ async function namespaceCandidates(
         additionalRoles: localConfig.additionalRoles ?? [],
       });
       const axis = NAMESPACE_AXIS[type];
-      const candidates = namespaces[axis];
+      const candidates = namespaces[axis] ?? [];
       // A namespace is ONE directory under the resource root. `--role` and the
       // projects manifest are both checked for that; the roles manifest was
       // not, so `foo/bar` went through and pushed an agent to a depth `pull`
@@ -230,17 +238,16 @@ async function resolveNamespaceForNew(
   options: { role?: string; project?: string; silent?: boolean },
   localConfig: LocalConfig,
   projectsManifest: ProjectsManifest | null,
+  roleNamespaces: readonly NamespaceEntry[] | null,
 ): Promise<NewResourceDestination> {
-  if (options.project && projectsManifest) {
-    const resolved = resolveProjectNamespace(projectsManifest, options.project, type);
-    return resolved.ok
-      ? { kind: 'namespace', namespace: resolved.namespace }
-      : { kind: 'unresolvable', message: resolved.message };
+  const flagged = options.project && projectsManifest
+    ? resolveProjectNamespace(projectsManifest, options.project, type)
+    : options.role ? resolveRoleNamespace(roleNamespaces, options.role, type) : null;
+  if (flagged) {
+    return flagged.ok
+      ? { kind: 'namespace', namespace: flagged.namespace }
+      : { kind: 'unresolvable', message: flagged.message };
   }
-
-  // An explicit --role is a literal namespace on every axis (already checked
-  // for path traversal before selection).
-  if (options.role) return { kind: 'namespace', namespace: options.role };
 
   const resolution = await namespaceCandidates(type, localConfig);
   if (!resolution.ok) return { kind: 'unresolvable', message: resolution.message };
@@ -546,13 +553,15 @@ function reuseRecordedDestinations(groups: PushGroup[]): Set<ResourceItem> {
       if (item.type === 'skills') {
         // A skill's path is derived from its name, so the recorded namespace
         // replaces whatever a --role/--project override wrote above.
+        (item as ResourceItem & { prePlacementPath?: string }).prePlacementPath = item.relativePath;
         item.namespace = ns;
         item.relativePath = ns ? skillNamespacePath(ns, item.name) : `skills/${item.name}`;
       } else if (ns && isAtSharedRoot(item)) {
         // A rule or agent carries its own path from the scanner, and that path
         // is authoritative when it already names a namespace (#654).
+        (item as ResourceItem & { prePlacementPath?: string }).prePlacementPath = item.relativePath;
         item.namespace = ns;
-        item.relativePath = withNamespace(item.relativePath, ns);
+        item.relativePath = withNamespace(item.relativePath, ns, rootSegmentsFor(item.type));
       }
     }
   }
@@ -576,13 +585,15 @@ async function placeNewResources(args: {
   options: { role?: string; project?: string; silent?: boolean };
   localConfig: LocalConfig;
   projectsManifest: ProjectsManifest | null;
+  /** What `--role` may name: every namespace the manifests declare, null with neither manifest. */
+  roleNamespaces: readonly NamespaceEntry[] | null;
   skillsDestinationError?: string;
   /** The clone could not be refreshed this run; its manifests may be stale. */
   teamRepoStale?: boolean;
   /** Resources whose open PR already decided where they go. */
   settled: ReadonlySet<ResourceItem>;
 }): Promise<boolean> {
-  const { items, options, localConfig, projectsManifest, skillsDestinationError, teamRepoStale, settled } = args;
+  const { items, options, localConfig, projectsManifest, roleNamespaces, skillsDestinationError, teamRepoStale, settled } = args;
 
   // A project that declares no skills namespace only blocks the push once a
   // skill the flag relocates is actually selected, so a rule can still go out
@@ -615,7 +626,7 @@ async function placeNewResources(args: {
       return false;
     }
 
-    const destination = await resolveNamespaceForNew(type, options, localConfig, projectsManifest);
+    const destination = await resolveNamespaceForNew(type, options, localConfig, projectsManifest, roleNamespaces);
     switch (destination.kind) {
       case 'unresolvable':
         log.error(destination.message);
@@ -633,7 +644,7 @@ async function placeNewResources(args: {
         continue;
       case 'namespace':
         for (const item of newAtRoot) {
-          const placedAt = withNamespace(item.relativePath, destination.namespace);
+          const placedAt = withNamespace(item.relativePath, destination.namespace, rootSegmentsFor(type));
           // This resource is NEW here, so nothing of ours is at that path yet.
           // Anything already there is somebody else's, and `pushItem` writes
           // rather than merges: placing on top of it would replace their work
@@ -656,7 +667,14 @@ async function placeNewResources(args: {
             return false;
           }
           item.namespace = destination.namespace;
+          // Save the pre-placement path so the snapshot delete (pushGroup
+          // cleanup) can find the entry keyed by the root path.
+          (item as ResourceItem & { prePlacementPath?: string }).prePlacementPath = item.relativePath;
           item.relativePath = placedAt;
+          // Do NOT mark the pre-placement path as `supersedes`: the original
+          // root file was never in the clone, so staging its path would fail
+          // with "pathspec did not match". `supersedes` is for `pushItem`
+          // retiring a tracked file during a format rename (agent .md ↔ .yaml).
           // The silent widening in #649 was the real damage: say where it went.
           log.info(`[${type}] ${item.name} → ${item.relativePath}`);
         }
@@ -1037,6 +1055,134 @@ async function pendingSelfTeamConfig(localConfig: LocalConfig): Promise<string |
   return committed === null || committed.toString() !== activeConfig ? activeConfig : null;
 }
 
+type DefaultBranchChanges =
+  | { history: 'complete'; untouched: ResourceItem[]; edited: ResourceItem[]; retiring: ResourceItem[] }
+  | { history: 'missing'; shallow: boolean; unclassified: ResourceItem[] };
+
+/**
+ * The self-mode push items sourced from `.teamai/` whose source, destination or
+ * retired file the default branch changed since this checkout branched from it,
+ * and which the checkout does not already hold at the branch's version:
+ * `untouched` when the checkout still holds the version it branched from,
+ * `edited` when it changed the file too, `retiring` when the push would delete
+ * a file the branch changed. Self-mode scans compare the checkout with the default
+ * branch, so on a checkout behind it both read as this member's edit, and
+ * pushing either reverts the other side. Without a common ancestor (a shallow
+ * clone, or rewritten history), what differs from its own HEAD is
+ * `unclassified`. A tool-directory copy is left alone: the pre-push sync can
+ * move it to the default branch's version while `.teamai/` stays behind, so
+ * where this checkout branched says nothing about it.
+ */
+async function itemsChangedOnDefaultBranch(
+  localConfig: LocalConfig,
+  memberRoot: string,
+  items: readonly ResourceItem[],
+): Promise<DefaultBranchChanges> {
+  const teamDir = path.join(memberRoot, '.teamai');
+  const teamFile = (relativePath: string): string => path.join(teamDir, ...relativePath.split('/'));
+  const teamItems = items.filter((item) => path.resolve(item.sourcePath).startsWith(teamDir + path.sep));
+  const git = createGit(memberRoot);
+  const missing = async (unclassified: ResourceItem[]): Promise<DefaultBranchChanges> => ({
+    history: 'missing',
+    shallow: (await git.raw(['rev-parse', '--is-shallow-repository'])).trim() === 'true',
+    unclassified,
+  });
+  const defaultTip = await getHeadCommit(localConfig.repo.businessRepoRoot ?? localConfig.repo.localPath);
+  if (!defaultTip) return missing(teamItems);
+  const branchedFrom = (await git.raw(['merge-base', 'HEAD', defaultTip]).catch(() => '')).trim();
+  const raw = await git.raw([
+    'diff', '--raw', '-z', '--no-renames', '--no-abbrev', '--relative', branchedFrom || 'HEAD', defaultTip, '--', '.teamai/',
+  ]);
+  const blobs = new Map<string, { atBase: string | null; atTip: string | null }>();
+  const fields = raw.split('\0');
+  const blobOrNull = (sha: string | undefined): string | null => (!sha || /^0+$/.test(sha) ? null : sha);
+  for (let i = 0; i + 1 < fields.length; i += 2) {
+    const [, , atBase, atTip] = fields[i].split(' ');
+    blobs.set(path.join(memberRoot, ...fields[i + 1].split('/')), { atBase: blobOrNull(atBase), atTip: blobOrNull(atTip) });
+  }
+  const untouched: ResourceItem[] = [];
+  const edited: ResourceItem[] = [];
+  const retiring: ResourceItem[] = [];
+  for (const item of teamItems) {
+    const retired = supersededPathOf(item);
+    if (retired && blobs.get(teamFile(retired))?.atTip) {
+      retiring.push(item);
+      continue;
+    }
+    const changes = [...new Set([path.resolve(item.sourcePath), teamFile(item.relativePath)])]
+      .flatMap((file) => blobs.get(file) ?? []);
+    if (changes.length === 0) continue;
+    const memberBlob = await hashObject(memberRoot, item.sourcePath);
+    const behind = changes.filter((change) => change.atTip !== memberBlob);
+    if (behind.length === 0) continue;
+    (behind.every((change) => change.atBase === memberBlob) ? untouched : edited).push(item);
+  }
+  return branchedFrom
+    ? { history: 'complete', untouched, edited, retiring }
+    : missing([...untouched, ...edited, ...retiring]);
+}
+
+/**
+ * Where the default branch moved under a self-mode checkout: the items to
+ * leave out of the push (announced here), and a check that stops the push,
+ * exit 2, when an item going out would overwrite or delete that branch's change.
+ */
+async function defaultBranchGuard(
+  localConfig: LocalConfig,
+  memberRoot: string,
+  items: readonly ResourceItem[],
+): Promise<{ leftOut: readonly ResourceItem[]; stops: (going: readonly ResourceItem[]) => Promise<boolean> }> {
+  const changes = await itemsChangedOnDefaultBranch(localConfig, memberRoot, items);
+  const sourceOf = (item: ResourceItem): string => path.relative(memberRoot, item.sourcePath).split(path.sep).join('/');
+  const named = (list: readonly ResourceItem[]): string => list.map((item) => {
+    const source = sourceOf(item);
+    const destination = `.teamai/${item.relativePath}`;
+    return source === destination ? source : `${source} (pushed to ${destination})`;
+  }).join(', ');
+  const leftOut = changes.history === 'complete' ? changes.untouched : [];
+  if (leftOut.length > 0) {
+    const defaultBranch = await getDefaultBranch(memberRoot);
+    log.info(
+      `Left out ${named(leftOut)}: changed on origin/${defaultBranch} since `
+        + `this checkout branched from it, and not edited here. \`git pull origin ${defaultBranch}\` brings the change in.`,
+    );
+  }
+
+  // Like the destination errors in pushCore, this stops the push only for an
+  // item that is going out: a file left out by --skill, a filter or the
+  // selection must not hold back the rest.
+  const stops = async (going: readonly ResourceItem[]): Promise<boolean> => {
+    const goingOut = (list: readonly ResourceItem[]): ResourceItem[] => list.filter((item) => going.includes(item));
+    const edited = goingOut(changes.history === 'complete' ? changes.edited : changes.unclassified);
+    const retiring = goingOut(changes.history === 'complete' ? changes.retiring : []);
+    if (edited.length === 0 && retiring.length === 0) return false;
+    const defaultBranch = await getDefaultBranch(memberRoot);
+    if (changes.history === 'missing') {
+      log.error(changes.shallow
+        ? `${named(edited)} differs from origin/${defaultBranch}, and this checkout lacks the history to tell `
+          + 'whether that is your edit or a change on that branch, so pushing could overwrite a teammate\'s change. '
+          + 'Nothing was pushed. Run `git fetch --unshallow origin`, then push again.'
+        : `${named(edited)} differs from origin/${defaultBranch}, and this checkout shares no history with `
+          + `origin/${defaultBranch} to tell whether that is your edit or a change on that branch, so pushing could `
+          + 'overwrite a teammate\'s change. Nothing was pushed. '
+          + `Merge or rebase onto origin/${defaultBranch}, then push again.`);
+    }
+    if (changes.history === 'complete' && edited.length > 0) {
+      log.error(`${named(edited)} changed both here and on origin/${defaultBranch} since this checkout branched `
+        + 'from it, so pushing would overwrite that change. Nothing was pushed. '
+        + `Merge origin/${defaultBranch} (\`git pull origin ${defaultBranch}\`), resolve any conflict, then push again.`);
+    }
+    for (const item of retiring) {
+      log.error(`${named([item])} would delete .teamai/${supersededPathOf(item)}, which changed on `
+        + `origin/${defaultBranch} since this checkout branched from it. Nothing was pushed. `
+        + `Run \`git pull origin ${defaultBranch}\`, carry that change into ${sourceOf(item)}, then push again.`);
+    }
+    process.exitCode = 2;
+    return true;
+  };
+  return { leftOut, stops };
+}
+
 async function pushCore(
   localConfig: LocalConfig,
   teamConfig: TeamaiConfig,
@@ -1109,10 +1255,10 @@ async function pushCore(
       const yamlPath = path.join(repoPath, 'teamai.yaml');
       const workingContent = await readFileSafe(yamlPath);
       // Nothing below writes before these reads finish, so they run together:
-      // the env scan, the clone's status, and what HEAD holds of teamai.yaml.
-      const envScan = getHandler('env').scanLocalForPush(teamConfig, localConfig);
-      // Awaited after the status: a status failure is the one reported, as before.
-      envScan.catch(() => {});
+      const repoScan = Promise.all(
+        PLACEABLE_TYPES.filter((t) => !LOCAL_TOOL_TYPES.has(t)).map((t) => getHandler(t).scanLocalForPush(teamConfig, localConfig)),
+      );
+      repoScan.catch(() => {});
       const [committed, status] = await Promise.all([
         workingContent === null ? null : getFileContentAtRev(repoPath, 'HEAD', 'teamai.yaml'),
         git.status(),
@@ -1124,8 +1270,7 @@ async function pushCore(
       if (pendingTeamConfig !== null && await hasGitModeChange(git, 'teamai.yaml')) {
         modeChangedPaths.add('teamai.yaml');
       }
-      // `env add` edits env files in the clone and leaves the commit to push:
-      // capture what the env scan will push, to restore it after the refresh
+      // Capture what repo scans will push, to restore after the refresh
       // below as teamai.yaml is (#881). A mode change is not captured, so it
       // stays dirty and stops the push. So does any index state: the snapshot
       // holds only the working copy, and reset --hard would drop a staged,
@@ -1137,8 +1282,16 @@ async function pushCore(
         deleted: status.deleted,
         renamed: status.renamed,
       }));
-      for (const item of await envScan) {
+      const scannedGroups = await repoScan;
+      const cloneRoot = path.resolve(localConfig.repo.localPath);
+      for (const item of scannedGroups.flat()) {
         if (indexedPaths.has(item.relativePath)) continue;
+        // Only capture items whose source is the clone file at its relativePath
+        // — the ones `resetToCleanMaster` can destroy. A project-local source
+        // (a tool-format agent, rule or skill) is untouched by the refresh, and
+        // restoring its bytes under `relativePath` would write tool-format
+        // content over the clone's canonical file.
+        if (path.resolve(item.sourcePath) !== path.resolve(cloneRoot, ...item.relativePath.split('/'))) continue;
         const snapshot = await readFileSnapshot(item.sourcePath);
         if (snapshot !== null && !await hasGitModeChange(git, item.relativePath)) {
           pendingEnvFiles.set(item.relativePath, snapshot);
@@ -1232,6 +1385,27 @@ async function pushCore(
     // a push where nothing needs placing, instead of being silently ignored.
     if (!findProject(projectsManifest, options.project)) {
       log.error(unknownProjectMessage(projectsManifest, options.project));
+      process.exitCode = 2;
+      return;
+    }
+  }
+
+  // --role names a namespace directly, so check it against what the manifests
+  // declare, as --project is: a namespace no role or project declares for a
+  // type is one pull delivers to nobody.
+  let roleNamespaces: NamespaceEntry[] | null = null;
+  if (options.role) {
+    try {
+      const roles = await loadRolesManifest(localConfig.repo.localPath).catch((e: unknown) => {
+        if (e instanceof RolesManifestNotFoundError) return null;
+        throw e;
+      });
+      const projects = await loadProjectsManifest(localConfig.repo.localPath);
+      roleNamespaces = roles || projects
+        ? [...roles ? roleNamespaceEntries(roles) : [], ...projects ? projectNamespaceEntries(projects) : []]
+        : null;
+    } catch (e) {
+      log.error(`Cannot check where --role ${options.role} may place resources: ${(e as Error).message}`);
       process.exitCode = 2;
       return;
     }
@@ -1374,7 +1548,7 @@ async function pushCore(
   // Scan for pushable resources first, then resolve namespace for new skills only.
   // Skills already carry the destination scanLocalForPush decided: a modified
   // one its team skill's, a new one awaiting review its open PR's.
-  const pushableTypes: ResourceType[] = ['skills', 'rules', 'env', 'agents'];
+  const pushableTypes: ResourceType[] = [...PLACEABLE_TYPES];
   const fullScan: ResourceItem[] = [];
 
   // Agents are the one type whose SCAN needs the destination: it has to tell
@@ -1384,15 +1558,13 @@ async function pushCore(
   // no candidate here and is rejected with exit 2 before anything is pushed.
   let requestedAgentsNamespace: string | undefined;
   let agentsDestinationError: string | undefined;
-  if (options.role) {
-    requestedAgentsNamespace = options.role;
-  } else if (options.project && projectsManifest) {
-    const resolved = resolveProjectNamespace(projectsManifest, options.project, 'agents');
-    if (resolved.ok) {
-      requestedAgentsNamespace = resolved.namespace;
-    } else {
-      agentsDestinationError = resolved.message;
-    }
+  const flaggedAgents = options.project && projectsManifest
+    ? resolveProjectNamespace(projectsManifest, options.project, 'agents')
+    : options.role ? resolveRoleNamespace(roleNamespaces, options.role, 'agents') : null;
+  if (flaggedAgents?.ok) {
+    requestedAgentsNamespace = flaggedAgents.namespace;
+  } else if (flaggedAgents) {
+    agentsDestinationError = flaggedAgents.message;
   }
   // The skills namespace the flags name: it picks among a name's several open PRs.
   let requestedSkillsNamespace: string | undefined;
@@ -1443,6 +1615,41 @@ async function pushCore(
     }
   }
 
+  // docs/, wiki/ and prompts/ allow ordinary nested shared content. Only a
+  // first path segment declared by a role or project is a namespace, so
+  // annotate those items before the placement filter decides whether they are
+  // already scoped. A manifest that exists but cannot be read must stop the
+  // push: every placement below would fall through to the shared root, the
+  // widening #649 is about — and nobody asked for it.
+  let resolvedNamespaces: Awaited<ReturnType<typeof resolveResourceNamespaces>> = null;
+  try {
+    resolvedNamespaces = await resolveResourceNamespaces(localConfig);
+  } catch (e) {
+    log.error(`${(e as Error).message}`);
+    process.exitCode = 2;
+    return;
+  }
+  if (resolvedNamespaces) {
+    const declaredByType: Partial<Record<PlaceableType, string[]>> = {
+      docs: [
+        ...(resolvedNamespaces.activeNamespaces.docs ?? []),
+        ...resolvedNamespaces.inactiveDocsNamespaces,
+      ],
+      wiki: [
+        ...(resolvedNamespaces.activeNamespaces.wiki ?? []),
+        ...resolvedNamespaces.inactiveWikiNamespaces,
+      ],
+      prompts: [
+        ...(resolvedNamespaces.activeNamespaces.prompts ?? []),
+        ...resolvedNamespaces.inactivePromptsNamespaces,
+      ],
+    };
+    for (const item of fullScan) {
+      if (!isPlaceableType(item.type) || !isNestedPlaceableType(item.type)) continue;
+      item.namespace ??= declaredNamespaceFor(item, declaredByType[item.type] ?? []);
+    }
+  }
+
   // A project that cannot answer for agents is reported below for an agent the
   // scan itself dropped — skipped as "no active source" with `needsDestination`
   // set. That one never reaches the listing, so deferring its error until the
@@ -1458,7 +1665,7 @@ async function pushCore(
 
   // Preserve blocked items in the full scan so their pending PR records survive.
   // Exclude them before selection and grouping: pushItem cannot write their paths.
-  const allItems = fullScan.filter((item) => {
+  const listed = fullScan.filter((item) => {
     if ('skipReason' in item && typeof item.skipReason === 'string' && item.skipReason) {
       log.warn(`[${item.type}] Skipped ${item.name}: ${item.skipReason}`);
       return false;
@@ -1469,6 +1676,12 @@ async function pushCore(
     }
     return true;
   });
+
+  const memberRoot = selfMode ? localConfig.projectRoot : undefined;
+  const branchGuard = memberRoot
+    ? await defaultBranchGuard(localConfig, memberRoot, listed)
+    : { leftOut: [], stops: async () => false };
+  const allItems = listed.filter((item) => !branchGuard.leftOut.includes(item));
 
   // Such an agent is skipped like any other, and a skipped agent does not
   // block the rest of the push: a stale copy of an agent from a dropped role
@@ -1653,7 +1866,12 @@ async function pushCore(
       process.exitCode = 2;
       return;
     }
-    skillsDestination = options.role;
+    const resolved = resolveRoleNamespace(roleNamespaces, options.role, 'skills');
+    if (resolved.ok) {
+      skillsDestination = resolved.namespace;
+    } else {
+      skillsDestinationError = resolved.message;
+    }
   } else if (options.project && projectsManifest && allItems.some(isRelocatedByFlag)) {
     const resolved = resolveProjectNamespace(projectsManifest, options.project, 'skills');
     if (resolved.ok) {
@@ -1861,11 +2079,12 @@ async function pushCore(
   // before this would let a dry run call a push viable that the real command
   // refuses — and say nothing about who the new resources reach.
   if (options.dryRun) {
+    if (await branchGuard.stops(allItems)) return;
     // Same two steps, same order as a real run: an open PR's recorded
     // destination first, then placement for whatever is still at the root.
     const settled = reuseRecordedDestinations(planPushGroups(allItems, reusablePending));
     const placed = await placeNewResources({
-      items: allItems, options, localConfig, projectsManifest, skillsDestinationError, teamRepoStale, settled,
+      items: allItems, options, localConfig, projectsManifest, roleNamespaces, skillsDestinationError, teamRepoStale, settled,
     });
     if (!placed) return;
     log.info('Dry run — no changes made');
@@ -1887,6 +2106,7 @@ async function pushCore(
     }
     selectedItems = indices.map((i) => allItems[i]);
   }
+  if (await branchGuard.stops(selectedItems)) return;
 
   // ── Step 3b: Split the selection into per-PR groups ────────────────
   // Resources that belong to an open PR are pushed by force-pushing that PR's
@@ -1907,7 +2127,7 @@ async function pushCore(
 
   // ── Step 4: Place NEW root-level resources in a namespace (after selection) ─
   if (!await placeNewResources({
-    items: selectedItems, options, localConfig, projectsManifest, skillsDestinationError, teamRepoStale, settled,
+    items: selectedItems, options, localConfig, projectsManifest, roleNamespaces, skillsDestinationError, teamRepoStale, settled,
   })) return;
 
   // ── Step 5: Push each group — one branch/PR per group ──────────────
@@ -1957,7 +2177,13 @@ async function pushCore(
     // retrying its PR also takes before it reports pushed), so the rest go back
     // whatever the outcome; rewriting a file still in place changes nothing.
     if (outcome === 'pushed' || outcome === 'pr-failed') {
-      for (const item of group.items) pendingEnvFiles.delete(item.relativePath);
+      for (const item of group.items) {
+        // The snapshot was keyed by the pre-placement path; placement rewrote
+        // item.relativePath to the namespaced destination, so look up both.
+        pendingEnvFiles.delete(item.relativePath);
+        const prePath = (item as ResourceItem & { prePlacementPath?: string }).prePlacementPath;
+        if (prePath) pendingEnvFiles.delete(prePath);
+      }
     }
     const lost = await restorePendingEnvFiles();
     if (outcome === 'failed' || lost.length > 0) {
@@ -2091,3 +2317,4 @@ async function pushTeamConfigOnly(
     return;
   }
 }
+

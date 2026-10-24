@@ -1,13 +1,11 @@
 import path from 'node:path';
 import { ensureDir, writeFile, pathExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
-import { isToolInstalledForConfig, ResourceHandler } from './resources/base.js';
 import { renderRuleForTool, ruleFileExtensionForTool } from './resources/rule-format.js';
 import type { TeamaiConfig, LocalConfig } from './types.js';
-import { resolveToolBaseDir, isAgentExcluded, scopedToolPaths } from './types.js';
+import { installOf, locate, ownOf, writable, type Install } from './locate.js';
 import fs from 'node:fs/promises';
 import crypto from 'node:crypto';
-import { getUserHome } from './utils/home.js';
 import type { DeliveryRecorder } from './git-exclude-delivered.js';
 
 // ─── Built-in rules deployment ──────────────────────────
@@ -57,30 +55,31 @@ export const EXCLUDED_RULE_NAMES = new Set<string>([
 export async function deployBuiltinRules(
     teamConfig: TeamaiConfig,
     localConfig?: LocalConfig,
-    options?: { skipRecall?: boolean; recorder?: DeliveryRecorder; dryRun?: boolean },
+    options?: {
+        skipRecall?: boolean; recorder?: DeliveryRecorder; dryRun?: boolean;
+        /** Gets each tool that did not take every built-in rule (`DeliveryLedger.toolsMissingRules`). */
+        toolsMissingRules?: Set<string>;
+    },
 ): Promise<number> {
-    const defaultBaseDir = getUserHome();
+    const install: Install = localConfig === undefined
+        ? { toolPaths: teamConfig.toolPaths, agents: {}, toolRoots: {}, gitExclude: false, scope: 'user' }
+        : installOf(teamConfig, localConfig);
     let deployed = 0;
 
     const builtinRules: Array<{ name: string; content: string }> = [
         { name: 'teamai-recall', content: recallRuleContent(teamConfig.language) },
     ].filter(r => !(options?.skipRecall && r.name === 'teamai-recall'));
 
-    for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig ?? {}))) {
-        if (!toolPath.rules) continue;
-        const baseDir = localConfig ? resolveToolBaseDir(tool, localConfig) : defaultBaseDir;
-
-        // Skip tools that are not installed
-        const installed = localConfig
-            ? await isToolInstalledForConfig(tool, toolPath.rules, localConfig)
-            : await ResourceHandler.isToolInstalled(toolPath.rules, baseDir);
-        if (!installed) {
+    for (const tool of Object.keys(install.toolPaths)) {
+        const location = await locate(tool, 'rules', install);
+        if (ownOf(location)?.kind !== 'dir') continue;
+        const own = writable(location);
+        if (own === null) {
             log.debug(`Skipping built-in rules for ${tool}: tool not installed`);
             continue;
         }
-        if (localConfig && isAgentExcluded(localConfig, tool)) continue;
 
-        const rulesDir = path.join(baseDir, toolPath.rules);
+        const rulesDir = own.path;
         if (!await pathExists(rulesDir)) continue;
         // A dry run writes nothing: it reports where each rule would land (#915).
         if (options?.dryRun) {
@@ -131,6 +130,7 @@ export async function deployBuiltinRules(
             deployed++;
         } catch (e) {
             options?.recorder?.failed('builtin');
+            options?.toolsMissingRules?.add(tool);
             log.error(`Failed to deploy built-in rules to ${tool}: ${(e as Error).message}`);
         }
     }

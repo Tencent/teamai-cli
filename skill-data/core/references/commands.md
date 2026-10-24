@@ -36,8 +36,8 @@ Generated: do not edit by hand. Regenerate with
 - `teamai push` — Push local resources to team repo
   - `--all` — Push all without confirmation
   - `--skill <path>` — Push a specific skill by path (e.g., ~/.claude/skills/hai/my-skill or skills/hai_dev/my-skill)
-  - `--role <id>` — Namespace for new skills, rules and agents (skills/<id>/, rules/<id>/, agents/<id>/). Without --role or --project, the namespaces of your role and active projects decide
-  - `--project <id>` — Target a project: each new resource goes to that project's namespace for its own type — skills, knowledge for rules, agents (from manifest/projects.yaml)
+  - `--role <id>` — Namespace for every new resource type (skills/<id>/, rules/<id>/, docs/<id>/, env/<id>/, etc.). When the team has manifest/roles.yaml or manifest/projects.yaml, a role or project there must declare it for each type it places. Without --role or --project, the namespaces of your role and active projects decide
+  - `--project <id>` — Target a project: each new resource goes to that project's namespace for its own type — skills, knowledge for rules, agents, learnings, docs, env, hooks, mcp, models, and more (from manifest/projects.yaml)
   - `--branch <name>` — Push to this destination branch instead of a generated teamai/push branch
 
 ## pull
@@ -226,8 +226,8 @@ Generated: do not edit by hand. Regenerate with
     - `--tools <list>` — Override local prompt tools for this run, as comma-separated name=tool pairs
     - `--auto-approve` — With --driver local, automatically answer optional approve HITL requests and choose defaults in this process
     - `--inputs <json>` — Values for the inputs the workflow declares, as a JSON object, for example {"issue":42}. Every declared input is required.
-  - `teamai workflow next <run>` — Get a lease, hitl, wait, or done JSON envelope. Declare enforced requirements in driver.can (network, env, isolation, human, resume, tokens, max_turns, setup). Show hitl.message and hitl.respond to a person.
-    - `--json <payload>` — Driver identity, for example {"driver":{"kind":"local","machine":"host","workspace":"/work"}}. Optional: running, the attempt ids of its open leases the driver still runs (an open lease left out is handed back), canTakeLease, false to poll while a tool runs without taking a new lease, and driver.can.hitl, true when a person can answer HITL requests and work interactively. Send driver.can.hitl on every next request, including busy polls. Every answer lists in cancelled the running attempts whose tools the driver must stop.
+  - `teamai workflow next <run>` — Get a lease, hitl, wait, or done JSON envelope. Declare enforced requirements in driver.can (network, env, isolation, human, resume, tokens, max_turns, setup). Show hitl.message and hitl.respond to a person, who replaces <option> with a choice.
+    - `--json <payload>` — Driver identity, for example {"driver":{"kind":"local","machine":"host","workspace":"/work"}}. Optional: running, the attempt ids of its open leases the driver still runs (an open lease left out is handed back), canTakeLease, false to poll while a tool runs without taking a new lease, and driver.can.hitl, true when a person can answer HITL requests and work interactively. Send driver.can.hitl on every next request, including busy polls. claim, true to take a run another install published from teamai-reports before leasing; a run this install owns stays as it is. Every answer lists in cancelled the running attempts whose tools the driver must stop.
   - `teamai workflow report <run>` — Report the outcome of a leased step. Prints a JSON envelope.
     - `--json <payload>` — attempt, revision, outcome (success, failed, or released), and driver
   - `teamai workflow respond <run> <step> <choice>` — Answer a waiting approve (yes/no) or choose HITL request. Required HITL requests accept terminal answers or declared person answers from a driver UI. Prints one JSON envelope.
@@ -235,10 +235,31 @@ Generated: do not edit by hand. Regenerate with
     - `--note <text>` — Keep a note with the answer, readable as steps.<id>.note
     - `--pass <n>` — Answer only this positive pass number; rejects an answered or replaced HITL request
   - `teamai workflow retry <run> <step>` — Retry a leased or stopped step, or a HITL request to answer it again, with a new pass and revision. Reopen its dependent steps and a settled run; keep earlier passes. After reopening, run resume or let your driver poll next. Prints one JSON envelope.
-  - `teamai workflow resume <run>` — Continue a run with the local driver after retry, respond, or a stopped driver (Ctrl-C or closed terminal). Uses this machine's open local lease workspace, then the latest local driver's workspace on this machine, then cwd. Another live local driver returns driver_running. A settled run returns done.
+  - `teamai workflow resume <run>` — Continue a run with the local driver after retry, respond, or a stopped driver (Ctrl-C or closed terminal). Uses this machine's open local lease workspace, then the latest local driver's workspace on this machine, then cwd. Another live local driver returns driver_running. A settled run returns done. A run this machine does not have is taken from teamai-reports, where workflow publish put it; a published run continues only while this install owns it, else not_owner names the owner.
     - `--tools <list>` — Override local prompt tools for this run, as comma-separated name=tool pairs
     - `--auto-approve` — Automatically answer optional approve HITL requests and choose defaults in this process
+    - `--claim` — Take the published run over from the install that owns it, replacing this machine's copy and releasing its leases
+  - `teamai workflow publish <run>` — Publish a run's state to teamai-reports so another member or a runner can continue it with workflow resume. The first publish makes this install the run's owner; publishing an unchanged run writes nothing. Refuses a run with records not yet on teamai-reports, or with a value that looks like a secret. Prints one JSON envelope listing the leases still in flight.
+    - `--sessions` — Also put the agent sessions that the run's unsettled steps continue (session: continue or session.from) in the team session archive, scrubbed, so whoever continues the run resumes them; listed in the envelope as sessions. Without it, those steps start new sessions on another machine
   - `teamai workflow cancel <run> [step]` — Cancel a whole run, or a pending, waiting, leased, or running step and its open descendants. Invalidates leases; drivers stop tools listed in next.cancelled. Prints one JSON envelope.
+
+## score
+
+- `teamai score` — Judge workflow passes with team scorers (scorers/<name>.md). Any driver takes judge work with --next, runs its own judge on the lease prompt with the lease evidence directory as its only readable root and settles it with --lease <ref> --submit, or judges it here with --lease <ref>. --run <id> --step <path> --scorer <name> judges a pass on demand. --scorer <name> [--session <id>] judges a finished agent session here: the one --session names, or, inside a session, the one its agent session variable names; it never guesses. workflow next never hands out judge work, and a driver never lists a judge ref in workflow next running. Prints one JSON envelope.
+  - `--next` — Take judge work: a lease with ref, scorer, subject, evidence, prompt, answer.schema, expiresAt and a submit command line, or idle with counts. A batch lease, for scorers of one pass that share a judge call, has scorers and batched: true instead of scorer. --json {"driver":{"kind":"t3","machine":"host","workspace":"/work","can":{"judge":{"isolation":"verified","access":"read","tools":["claude"]}}},"running":["<ref>"]}. isolation is verified or best-effort; access is what your judge can do, answer (no tools), read (reads the evidence) or full (any tool), default full, and its labels record it; tools in your order of preference. running lists the judge refs you still run, which renews them; a live lease of yours left out is handed back. A lease lapses 30 minutes after it was taken or renewed.
+  - `--lease <ref>` — The judge lease, as --next printed it (s<13 hex>/a<8 hex>). Without --submit, judge it here with the tool the lease names, in a confined profile, and settle it through the submit path: --json {"driver":{…same as --next…}}.
+  - `--submit` — Settle --lease <ref> with the payload {"driver":{…same as --next…},"outcome":"success","answer":{"label":"<one of answer.schema>","reasoning":"…"},"judge":{"tool":"claude","model":"…","usage":{"inputTokens":0,"outputTokens":0}}}. For a batch lease, answer is {"<scorer>":{"label":"…","reasoning":"…"},…} with one entry per scorer. outcome is success, failed, or released. A label a scorer does not list is refused, the whole answer with it, and the lease stays open; teamai computes score and passed.
+  - `--json <payload>` — The payload as a JSON string
+  - `--stdin` — Read the payload from stdin
+  - `--run <id>` — Judge a pass of this run on demand, whatever sampling says, with --step and --scorer; this also reopens judge work that failed or expired. Without --queue, judges it here with the local judge and prints the label.
+  - `--step <path>` — With --run: the step path, such as review or check.review
+  - `--pass <n>` — With --run: the pass to judge; default the step's latest succeeded pass
+  - `--session <id>` — Judge this finished session of an agent tool on this machine, whatever sampling says, with --scorer. Prints the session's first prompt and directory first, then the label; the session and the judge's reasoning are never published.
+  - `--source <platform>` — With --session: the tool that holds it, as session migrate --source names it (claude-code, codex, opencode, …); needed unless the agent session variable names that session, or the captures its session-start hook wrote here name one platform for it
+  - `--scorer <name>` — With --run: a scorer the run pinned or one teamai pull cached. With --session, or alone inside a session: a scorer teamai pull cached. Repeatable.
+  - `--queue` — With --run: leave the work to any driver's score --next instead of judging it here
+  - `--batch` — With --run or --session: the scorers share one judge call when they resolve to the same tool and model
+  - `--push` — Publish every pending label of this machine to scores/<member>/<YYYY-MM>.jsonl on teamai-reports, alone or after --session. Labels only: never the session, the prompt or the judge's reasoning. With usage reporting off, or when the push fails, they stay pending for the next --push.
 
 ## hooks
 
@@ -313,7 +334,7 @@ Generated: do not edit by hand. Regenerate with
     - `--cwd <path>` — Working directory (defaults to current directory)
     - `--target-cwd <path>` — Override cwd for the target session
     - `--push` — Also push the migrated session to the team repo
-    - `--repo-root <path>` — Team repo root (for --push)
+    - `--repo-root <path>` — Team repo clone to archive into with --push (default: the teamai install for this directory, else your user install)
     - `--scrub` — Redact secrets (tokens/keys/passwords) from the session before writing it
     - `--all` — Migrate every session from source (not just the 5 most recent)
     - `--limit <n>` — Max sessions to migrate (only caps --all; ignored otherwise)
@@ -321,28 +342,28 @@ Generated: do not edit by hand. Regenerate with
     - `--json` — Print one {data}|{error} JSON envelope on stdout; never prompts (needs a session id, -s and -t)
   - `teamai session push` — Push local sessions to the team repo
     - `--source <platform>` — Source platform to read sessions from
-    - `--repo-root <path>` — Team repo root (defaults to cwd)
+    - `--repo-root <path>` — Team repo clone that holds the session archive (default: the teamai install for this directory, else your user install)
     - `--cwd <path>` — Working directory (defaults to current directory)
     - `--limit <n>` — Max sessions to push (default: 5; ignored with --all)
     - `--all` — Push every session of the platform across all workspace directories (ignores --limit)
     - `-y, --yes` — Skip confirmation prompts, including archiving unredacted transcripts (--all)
     - `--scrub` — Redact secrets before archiving (archived sessions are team-readable)
   - `teamai session pull` — Pull team sessions for the current project
-    - `--repo-root <path>` — Team repo root (defaults to cwd)
+    - `--repo-root <path>` — Team repo clone that holds the session archive (default: the teamai install for this directory, else your user install)
     - `--cwd <path>` — Working directory (defaults to current directory)
     - `--all` — Rebuild indexes for every repo in the team repo (not just the current project)
   - `teamai session list` — List team sessions for the current project
-    - `--repo-root <path>` — Team repo root (defaults to cwd)
+    - `--repo-root <path>` — Team repo clone that holds the session archive (default: the teamai install for this directory, else your user install)
     - `--cwd <path>` — Working directory (defaults to current directory)
     - `--author <name>` — Filter by author
     - `--all` — List sessions across all projects in the team repo (not just the current one)
   - `teamai session resume <sessionName>` — Restore a team session to a local platform
     - `--platform <platform>` — Target platform to restore into
-    - `--repo-root <path>` — Team repo root (defaults to cwd)
+    - `--repo-root <path>` — Team repo clone that holds the session archive (default: the teamai install for this directory, else your user install)
     - `--cwd <path>` — Working directory for the restored session (defaults to current directory)
     - `--author <name>` — Author of the session (if ambiguous)
   - `teamai session search <query>` — Search team session content
-    - `--repo-root <path>` — Team repo root (defaults to cwd)
+    - `--repo-root <path>` — Team repo clone that holds the session archive (default: the teamai install for this directory, else your user install)
     - `--cwd <path>` — Working directory (defaults to current directory)
     - `--limit <n>` — Max results (default: 10)
     - `--all` — Search across all projects (not just current)
@@ -370,7 +391,7 @@ Generated: do not edit by hand. Regenerate with
 - `teamai contribute` — Contribute session knowledge to team repo; projects list shows the default destination and allowed namespaces
   - `--file <path>` — Path to the contribution document
   - `--title <title>` — Title for the contribution document
-  - `--namespace <ns>` — Write to an active learnings namespace (default: the only active namespace, or the shared root when none or several are active)
+  - `--namespace <ns>` — Write to an active learnings namespace, or to the shared root with "" (default: the only active namespace, or the shared root when none or several are active)
   - `--session-id <id>` — Session ID for dedup tracking
   - `--scope <scope>` — Target scope: user or workspace
 
@@ -394,7 +415,7 @@ Generated: do not edit by hand. Regenerate with
     - `--update-quality` — Find stale docs/rules/skills and suggest updates
     - `--dry-run` — Show what would be done without making changes
   - `teamai recall promote [learningId]` — Promote a high-confidence learning to formal knowledge (docs/skills/rules)
-    - `--category <cat>` — Target category: skills | rules | docs
+    - `--category <cat>` — Target category: skills | rules | docs; skills use <learningId>/SKILL.md
     - `--dry-run` — Show what would be done without making changes
 
 ## import

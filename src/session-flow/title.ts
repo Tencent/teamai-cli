@@ -107,10 +107,13 @@ export function fallbackTitle(sessionId: string): string {
 const META_BLOCK_RE =
   /<(user_info|rules|environment_context|system-reminder|system_reminder|system_instructions|available_skills|agent_request|local-command-caveat|local-command-stdout|uploaded_documents|additional_data|timestamp|command-name|command-message|command-args|command-contents)[^>]*>[\s\S]*?<\/\1>[ \t]*\r?\n?/gi;
 
+/** The project instructions Codex sends as the first user message, before the member's own words. */
+const CODEX_AGENTS_RE = /# AGENTS\.md instructions for [^\n]*\n+<INSTRUCTIONS>[\s\S]*?<\/INSTRUCTIONS>[ \t]*\r?\n?/g;
+
 export function stripMetaBlocks(text: string): string {
   let out = text;
   for (let i = 0; i < 10; i++) {
-    const next = out.replace(META_BLOCK_RE, '');
+    const next = out.replace(META_BLOCK_RE, '').replace(CODEX_AGENTS_RE, '');
     if (next === out) break;
     out = next;
   }
@@ -126,6 +129,24 @@ export function stripMetaBlocks(text: string): string {
 export function extractUserText(text: string): string {
   const m = text.match(/<user_query[^>]*>([\s\S]*?)<\/user_query>/i);
   return stripMetaBlocks(m ? m[1] : text);
+}
+
+const COMMAND_RECORD = /^\s*(?:<(command-message|command-name|command-args)>[\s\S]*?<\/\1>\s*)+$/;
+const TYPED_COMMAND = /<command-name>(\/[^<\s]+)<\/command-name>(?:\s*<command-args>([\s\S]*?)<\/command-args>)?/;
+
+/**
+ * What the member typed in a user message, without the text the tool injected around it, or '' when it holds none.
+ * Claude Code keeps a typed `/name args` as a message of only `<command-name>` and `<command-args>` tags.
+ */
+export function typedText(text: string): string {
+  const command = COMMAND_RECORD.test(text) ? TYPED_COMMAND.exec(text) : null;
+  return command ? `${command[1]} ${command[2] ?? ''}`.trim() : extractUserText(text);
+}
+
+/** The first line the member typed in a user message, as a title. */
+export function typedTitle(text: string): string {
+  const line = typedText(text).split('\n').map((typed) => typed.replace(/\s+/g, ' ').trim()).find((typed) => typed !== '');
+  return line ? line.slice(0, TITLE_MAX) : '';
 }
 
 /** Attachment refs (@image:/path, @file:/path) and tool-result placeholders are not title material. */
