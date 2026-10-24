@@ -38,9 +38,15 @@ it.each(['repair', 'uninstall'])('keeps a blocking file, reports it in doctor, a
     expect(report.checks).toContainEqual(expect.objectContaining({ name: 'hermes skills directory is usable', ok: false, fix: expect.stringContaining(blocked) }));
     expect(report.checks).not.toContainEqual(expect.objectContaining({ name: 'hermes skills are where the last pull wrote them', ok: true }));
     if (next === 'uninstall') {
+      const hook = path.join(home, '.hermes', 'hooks', 'teamai-status-report.sh');
+      const plugin = path.join(home, '.hermes', 'plugins', 'teamai-instructions');
+      expect(fs.existsSync(hook)).toBe(true);
+      expect(fs.existsSync(plugin)).toBe(true);
       const uninstall = spawnSync(process.execPath, [cli, 'uninstall', '--agent', 'hermes', '--force'], { cwd: home, env, encoding: 'utf8', timeout: 30_000 });
       expect(uninstall.status, uninstall.stdout + uninstall.stderr).toBe(0);
       expect(uninstall.stdout + uninstall.stderr).not.toContain('ENOTDIR');
+      expect(fs.existsSync(hook)).toBe(false);
+      expect(fs.existsSync(plugin)).toBe(false);
       expect(fs.readFileSync(blocked, 'utf8')).toBe('member file');
       expect(fs.existsSync(path.join(home, '.claude', 'skills', 'fixture', 'SKILL.md'))).toBe(true);
       return;

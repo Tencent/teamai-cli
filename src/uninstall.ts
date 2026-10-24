@@ -1463,6 +1463,7 @@ function isPlanEmpty(plan: RemovalPlan): boolean {
     plan.ompHookFile === null &&
     plan.piHookFiles.length === 0 &&
     plan.dshHookFile === null &&
+    !plan.hermesCleanup &&
     plan.claudeMdFiles.length === 0 &&
     plan.opencodeInstructions.length === 0 &&
     plan.skillDirs.length === 0 &&
