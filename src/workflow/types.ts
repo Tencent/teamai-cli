@@ -85,7 +85,7 @@ export interface WorkflowStep {
   timeout?: number;
   /**
    * On a workflow step: the tokens its workflow may spend each time the step starts, a loop's next pass or a retry
-   * included, before the step fails with `budget_exceeded`.
+   * included. Spending more fails the step with `budget_exceeded`.
    */
   budget?: Budget;
   /** On a prompt step: the most agent turns its tool may take, for a driver that can cap them. */

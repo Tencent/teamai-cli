@@ -685,10 +685,10 @@ function workflowOutputs(scope: Scope, states: StepState[], paths: Map<string, E
 function settleScope(run: RunState, scope: Scope, now: string): Settled {
   const reads = parseReads(run, scope);
   if (typeof reads === 'string') return { unreadable: reads };
-  // A workflow that spent its budget stops what it still runs and fails: the run, or the step that runs it, so a step
+  // A workflow that spent more than its budget stops what it still runs and fails: the run, or the step that runs it, so a step
   // around it that reads its outcome can recover.
   const spent = scope.budget === undefined ? 0 : spentTokens(run, scope.prefix) - limitsFrom(run, scope).tokens;
-  if (scope.budget !== undefined && spent >= scope.budget) {
+  if (scope.budget !== undefined && spent > scope.budget) {
     const failure = { code: 'budget_exceeded', message: `${workflowLabel(scope)} spent ${spent} of its ${scope.budget}-token budget` };
     stopWhere(run, (id) => id.startsWith(scope.prefix), failure, run.revision);
     return { outcome: 'failed', failure, settledAt: run.revision };

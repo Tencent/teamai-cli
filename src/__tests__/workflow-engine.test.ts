@@ -4648,6 +4648,14 @@ describe('token budgets', () => {
     expect(await leaseNext(config, runId, driverA, reports)).toMatchObject({ data: { done: { outcome: 'failed', failure: { code: 'budget_exceeded' } } } });
   });
 
+  it('lets a workflow spend exactly its budget', async () => {
+    const { config, runId } = await startBuild(graph(`  - id: work
+    prompt: Work.
+`, 'budget: { tokens: 10 }\n'));
+    await report(config, runId, leaseIn(await leaseNext(config, runId, driverA, reports)), 'success', { input: 6, output: 4 });
+    expect(await leaseNext(config, runId, driverA, reports)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+  });
+
   it('counts the tokens a stopped attempt\'s own driver reports, once, and still answers lease_cancelled', async () => {
     const { config, runId } = await startBuild(graph(`  - id: work
     prompt: Work.

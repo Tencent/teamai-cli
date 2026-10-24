@@ -612,7 +612,7 @@ steps:
 | `requires.isolation` | `none`、`worktree` 或 `sandbox`。有工作区的步骤至少是 `worktree`。 | 步骤照常运行，其 `unenforced` 列出 `isolation`。 |
 | `setup` | 驱动在它创建的每个工作区中、在步骤之前运行 `command`。setup 获得它的 `requires.env` 键；步骤只有自己也要求时才会获得。setup 以非零退出（`setup_failed`）、改动 git 会提交的文件（`setup_dirty`），或把自己某个键的值留在它写入的文件中（包括被忽略的文件，`setup_secret`）时，步骤不运行即失败，工作区被删除。步骤的 `timeout` 也约束 setup。 | 新工作区中的步骤等待。 |
 | `timeout` | `500ms`、`30s`、`10m` 或 `2h`，写在步骤或工作流文件上。超时的步骤被停止，结果为 `timeout`。写在 workflow 步骤上时，会停止其中每个步骤。写在工作流文件上时，运行以 `failed` 结束，失败码为 `timeout`。重试会重新开始计时。 | 不是能力。每个驱动都会在租约上拿到 `expiresAt`。 |
-| `budget` | `{ tokens: N }`，写在工作流文件或 workflow 步骤上。其下每个步骤的输入和输出 token 从它开始时计入：运行从开始时算起，workflow 步骤从每次开始时算起，例如循环的下一轮。重试会重新开始计算预算。达到 `N` 时，其中未结束的步骤停止，并以 `budget_exceeded` 失败。 | 预算内的非交互 prompt 步骤等待，它没有 token 的成功报告以 `budget_unmeasured` 失败。交互式 prompt 由人操作，照常运行；它的报告没有 token 时，其 `unenforced` 列出 `budget`。 |
+| `budget` | `{ tokens: N }`，写在工作流文件或 workflow 步骤上。其下每个步骤的输入和输出 token 从它开始时计入：运行从开始时算起，workflow 步骤从每次开始时算起，例如循环的下一轮。重试会重新开始计算预算。超过 `N` 时，其中未结束的步骤停止，并以 `budget_exceeded` 失败。 | 预算内的非交互 prompt 步骤等待，它没有 token 的成功报告以 `budget_unmeasured` 失败。交互式 prompt 由人操作，照常运行；它的报告没有 token 时，其 `unenforced` 列出 `budget`。 |
 | `max_turns` | 限制 prompt 步骤的智能体轮数。本地驱动只把它传给无头 Claude。 | 步骤照常运行，其 `unenforced` 列出 `max_turns`。 |
 
 `unenforced` 出现在租约、步骤和运行记录中。每个 `interactive: true` 步骤还需要支持 HITL 的驱动，见 [HITL](#hitl人在回路中)。
