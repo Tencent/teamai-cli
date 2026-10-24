@@ -337,7 +337,10 @@ function variableValues(
  */
 export async function collectTeamSecrets(localConfig: LocalConfig, env: NodeJS.ProcessEnv = process.env): Promise<Record<string, string>> {
   if (!resolvesTeamEnv(localConfig)) return {};
-  const { secrets } = await resolveTeamEnv(localConfig, undefined, env);
+  return teamSecretsOf((await resolveTeamEnv(localConfig, undefined, env)).secrets);
+}
+
+function teamSecretsOf(secrets: StoreResolution<SecretValue>): Record<string, string> {
   if (secrets.kind !== 'resolved') {
     warnOnce(`${secrets.reason} Until it can be read, teamai does not mask the team's secret values in what it writes.`);
     return {};
@@ -356,8 +359,10 @@ export async function collectTeamSecrets(localConfig: LocalConfig, env: NodeJS.P
  * `<name> (environment)`.
  */
 export async function knownSecrets(localConfig: LocalConfig, env: NodeJS.ProcessEnv = process.env): Promise<Record<string, string>> {
-  const fromEnvironment = collectEnvSecrets(env);
-  const team = await collectTeamSecrets(localConfig, env);
+  return (await resolveWorkflowEnv(localConfig, env)).secrets;
+}
+
+function maskSet(fromEnvironment: Record<string, string>, team: Record<string, string>): Record<string, string> {
   const shadowed = Object.entries(fromEnvironment).flatMap(([key, value]) => (key in team && team[key] !== value ? [[`${key} (environment)`, value]] : []));
   return { ...fromEnvironment, ...team, ...Object.fromEntries(shadowed) };
 }
@@ -404,28 +409,28 @@ export function variablesKeptWarning(reason: string): string {
   return `${reason} Team env variables keep the values the last pull wrote until it is fixed.`;
 }
 
-/**
- * The team env a workflow step can be given here: the declared keys, the secrets among them, each value, and why it
- * cannot be read when it cannot.
- */
-export interface WorkflowEnvValues {
-  readonly declared: ReadonlySet<string>;
-  readonly secrets: ReadonlySet<string>;
+/** This machine's team env for one workflow operation, resolved once, so what the engine holds and what is masked agree. */
+export interface WorkflowEnv {
+  /** By name only, which is all the workflow engine may hold. */
+  readonly facts: EnvFacts;
+  /** Each value a step can be given: the variables `teamai env exec` applies, each declared secret's, else the environment's. */
   readonly values: ReadonlyMap<string, string>;
-  readonly unreadable?: string;
+  /** What every write and print masks, as `knownSecrets` says. */
+  readonly secrets: Record<string, string>;
 }
 
 /**
- * What a workflow step can be given on this machine: the variables `teamai env exec` applies and each declared
- * secret's value. A key nothing here declares takes its value from the environment, as a CI job's token does.
+ * The team env a workflow step can be given on this machine, and what masking hides. A key nothing here declares takes
+ * its value from the environment, as a CI job's token does.
  */
-export async function workflowEnvValues(localConfig: LocalConfig, env: NodeJS.ProcessEnv = process.env): Promise<WorkflowEnvValues> {
-  const fromEnvironment = (): Map<string, string> => new Map(Object.entries(env).flatMap(([key, value]) => (value ? [[key, value]] : [])));
-  if (!resolvesTeamEnv(localConfig)) return { declared: new Set(), secrets: new Set(), values: fromEnvironment() };
+export async function resolveWorkflowEnv(localConfig: LocalConfig, env: NodeJS.ProcessEnv = process.env): Promise<WorkflowEnv> {
+  const values = new Map(Object.entries(env).flatMap(([key, value]) => (value ? [[key, value]] : [])));
+  if (!resolvesTeamEnv(localConfig)) {
+    return { facts: { declared: new Set(), secrets: new Set(), present: new Set(values.keys()) }, values, secrets: collectEnvSecrets(env) };
+  }
   const teamEnv = await resolveTeamEnv(localConfig, undefined, env);
   const applied = appliedTeamEnv(teamEnv);
   const declared = new Set([...applied.variables.keys(), ...applied.secretKeys]);
-  const values = fromEnvironment();
   for (const key of declared) values.delete(sameEnvName(values.keys(), key) ?? key);
   for (const [key, value] of applied.variables) values.set(key, value);
   if (teamEnv.secrets.kind === 'resolved') for (const [key, { value }] of teamEnv.secrets.values) values.set(key, value);
@@ -433,11 +438,9 @@ export async function workflowEnvValues(localConfig: LocalConfig, env: NodeJS.Pr
   const unreadable = failed?.kind === 'failed' ? describeEntryFailure(failed.failure)
     : teamEnv.secrets.kind === 'store-unreadable' ? teamEnv.secrets.reason
       : teamEnv.variableValues.kind === 'store-unreadable' ? teamEnv.variableValues.reason : undefined;
-  return { declared, secrets: new Set(applied.secretKeys), values, ...(unreadable !== undefined ? { unreadable } : {}) };
-}
-
-/** The same, by name only, which is all the workflow engine may hold. */
-export async function workflowEnvFacts(localConfig: LocalConfig): Promise<EnvFacts> {
-  const { declared, secrets, values, unreadable } = await workflowEnvValues(localConfig);
-  return { declared, secrets, present: new Set(values.keys()), ...(unreadable !== undefined ? { unreadable } : {}) };
+  return {
+    facts: { declared, secrets: new Set(applied.secretKeys), present: new Set(values.keys()), ...(unreadable !== undefined ? { unreadable } : {}) },
+    values,
+    secrets: maskSet(collectEnvSecrets(env), teamSecretsOf(teamEnv.secrets)),
+  };
 }

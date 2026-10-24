@@ -29,7 +29,7 @@ import {
   CAN_KEYS, CanSchema, ReportedUnenforcedSchema, heldFor, mergeRequirements, negotiate, reportedUnenforced, requiredEnvKeys, unionUnenforced,
   type Allow, type DriverCan, type EnvFacts, type Held, type Negotiation, type ReportedUnenforced, type Terms,
 } from './requirements.js';
-import { knownSecrets, secretKey, workflowEnvFacts } from '../env-resolution.js';
+import { knownSecrets, resolveWorkflowEnv, secretKey, type WorkflowEnv } from '../env-resolution.js';
 import { redactJson } from '../utils/redact.js';
 import { generateRunId, installOwner, isRunId, updateRun } from './store.js';
 import { pinScorers } from '../scorers/cache.js';
@@ -105,15 +105,16 @@ function sameDriver(left: DriverIdentity, right: DriverIdentity): boolean {
 
 /**
  * Applies one operation under the run lock and saves only when requested. The secrets the run file and records mask
- * are resolved before the lock, since resolving them can read the team env.
+ * are resolved before the lock, since resolving them can read the team env, unless the operation already resolved them.
  */
 export async function withRun<T extends WorkflowEnvelope>(
   config: LocalConfig,
   runId: string,
   mutate: (run: RunState, now: string, secrets: Record<string, string>) => Promise<{ envelope: T; save: boolean }>,
+  resolved?: Record<string, string>,
 ): Promise<T> {
   if (!isRunId(runId)) return error('invalid_run', 'Run id must look like r followed by 8 or 16 hex digits') as T;
-  const secrets = await knownSecrets(config);
+  const secrets = resolved ?? await knownSecrets(config);
   const updated = await updateRun(config, runId, secrets, async (loaded) => {
     if (loaded === 'missing') return { value: error('run_not_found', `Run ${runId} was not found`) as T };
     // One timestamp per operation, so a settled run's end record and its run file agree.
@@ -1035,6 +1036,8 @@ export interface NextOptions {
   autoApprove?: boolean;
   /** Take the run over from the install that published it before leasing; a run this install owns stays as it is. */
   claim?: boolean;
+  /** Process-only: the team env the caller resolved for this operation, so `next` does not resolve it again. */
+  env?: WorkflowEnv;
 }
 
 export async function leaseNext(config: LocalConfig, runId: string, driver: DriverIdentity, options: NextOptions = {}): Promise<WorkflowEnvelope> {
@@ -1045,7 +1048,9 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
   }
   const running = new Set(options.running);
   const can = options.can ?? {};
-  const context: OfferContext = { can, allow: config.workflows?.allow ?? {}, facts: await workflowEnvFacts(config) };
+  // Resolved once, so the env this `next` offers against and the secrets its writes mask agree.
+  const env = options.env ?? await resolveWorkflowEnv(config);
+  const context: OfferContext = { can, allow: config.workflows?.allow ?? {}, facts: env.facts };
   const maxParallel = config.workflows?.max_parallel;
   // The end record is queued under the run lock, so the run stores whether it
   // was in the same save. It publishes AFTER withRun releases the lock (#1126
@@ -1170,7 +1175,7 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
       }
       failStep(leased, rendered, leased.lease.revision);
     }
-  });
+  }, env.secrets);
   const done = (envelope as { data?: { done?: Record<string, unknown> } }).data?.done;
   // Every `next` that answers `done` publishes the end again, so an end saved by a process that stopped before it was
   // published still reaches teamai-reports; an end already there writes nothing.
@@ -1488,7 +1493,8 @@ function countStoppedTokens(run: RunState, report: ReportInput): boolean {
   return true;
 }
 
-export async function reportAttempt(config: LocalConfig, runId: string, report: ReportInput): Promise<WorkflowEnvelope> {
+/** `secrets`: what the run file masks, when the caller already resolved them for this operation. */
+export async function reportAttempt(config: LocalConfig, runId: string, report: ReportInput, secrets?: Record<string, string>): Promise<WorkflowEnvelope> {
   if (isLeaseRef(report.attempt)) {
     return error('judge_lease', `Attempt ${report.attempt} is a judge lease, which workflow report does not settle. Submit its answer with: teamai score --lease ${report.attempt} --submit --stdin`);
   }
@@ -1595,5 +1601,5 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
         ...(cleanup ? { cleanup: true } : {}),
       }),
     };
-  });
+  }, secrets);
 }

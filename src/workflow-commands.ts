@@ -1,5 +1,5 @@
 import { autoDetectInit } from './config.js';
-import { knownSecrets } from './env-resolution.js';
+import { resolveWorkflowEnv, type WorkflowEnv } from './env-resolution.js';
 import { isLeaseRef } from './scorers/entry.js';
 import { log, setStderrOnly } from './utils/logger.js';
 import { collectEnvSecrets, redactJson } from './utils/redact.js';
@@ -54,14 +54,18 @@ function readJson(payload: string | undefined, missing: string): JsonRead {
   }
 }
 
-/** The member's config, and the secrets every envelope the command prints masks, resolved once for the command. */
-async function readyConfig(): Promise<{ config: LocalConfig; teamConfig: TeamaiConfig; secrets: Record<string, string> } | undefined> {
+/**
+ * The member's config, and the team env resolved once for the command: the secrets every envelope it prints masks, which
+ * `next` and `report` also offer against and mask with.
+ */
+async function readyConfig(): Promise<{ config: LocalConfig; teamConfig: TeamaiConfig; env: WorkflowEnv; secrets: Record<string, string> } | undefined> {
   const loaded = await loadConfig();
   if (!('config' in loaded)) {
     writeEnvelope(loaded, collectEnvSecrets());
     return undefined;
   }
-  return { ...loaded, secrets: await knownSecrets(loaded.config) };
+  const env = await resolveWorkflowEnv(loaded.config);
+  return { ...loaded, env, secrets: env.secrets };
 }
 
 function parseTools(value: string | undefined): Record<string, string> | string {
@@ -119,7 +123,7 @@ export async function workflowNext(runId: string, options: { json?: string }): P
   setStderrOnly(true);
   const loaded = await readyConfig();
   if (!loaded) return;
-  const { config, secrets } = loaded;
+  const { config, env, secrets } = loaded;
   const payload = readJson(options.json, 'Pass --json with a driver object');
   if (!payload.ok) {
     writeEnvelope(payload.envelope, secrets);
@@ -131,7 +135,7 @@ export async function workflowNext(runId: string, options: { json?: string }): P
     return;
   }
   const { driver, ...next } = parsed.request;
-  writeEnvelope(withIgnored(await leaseNext(config, runId, driver, next), parsed.ignored), secrets);
+  writeEnvelope(withIgnored(await leaseNext(config, runId, driver, { ...next, env }), parsed.ignored), secrets);
 }
 
 export async function workflowReport(runId: string, options: { json?: string }): Promise<void> {
@@ -153,7 +157,7 @@ export async function workflowReport(runId: string, options: { json?: string }):
     writeEnvelope({ error: { code: 'invalid_report', message: parsed } }, secrets);
     return;
   }
-  writeEnvelope(withIgnored(await reportAttempt(config, runId, parsed.report), parsed.ignored), secrets);
+  writeEnvelope(withIgnored(await reportAttempt(config, runId, parsed.report, secrets), parsed.ignored), secrets);
 }
 
 

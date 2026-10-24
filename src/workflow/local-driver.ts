@@ -17,7 +17,7 @@ import { observeLaunch, type Used } from '../agent-observation.js';
 import { detectProjectConfig } from '../config.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { commandSignalPolicy, exitLike, stepEnvironment, terminalReachesCommand } from '../env-exec.js';
-import { knownSecrets } from '../env-resolution.js';
+import { knownSecrets, resolveWorkflowEnv, type WorkflowEnv } from '../env-resolution.js';
 import { workflowLaunch } from '../launch-context.js';
 import { getDataHome, type LocalConfig, type TeamaiConfig } from '../types.js';
 import { readFileSafe, readJson, writeFileAtomic, writeJsonAtomic } from '../utils/fs.js';
@@ -383,13 +383,16 @@ function placeOf(lease: Lease, active: string): string {
   return lease.cwd ?? stepCheckout(active, lease.workspace?.branch);
 }
 
-/** Gets the lease a place to run. `signal` stops setup, which then fails, and the workspace it was preparing is removed. */
-async function stageLease(lease: Lease, { active, runId, config, signal }: { active: string; runId: string; config: LocalConfig; signal?: AbortSignal }): Promise<WorkflowFailure | undefined> {
+/**
+ * Gets the lease a place to run, with the team env `values` resolved for it. `signal` stops setup, which then fails, and
+ * the workspace it was preparing is removed.
+ */
+async function stageLease(lease: Lease, { active, runId, values, signal }: { active: string; runId: string; values: ReadonlyMap<string, string>; signal?: AbortSignal }): Promise<WorkflowFailure | undefined> {
   if (lease.unreadableWorkspace) {
     return { code: 'workspace_base', message: `Step "${lease.step}" was leased a workspace this teamai cannot read. Update teamai.` };
   }
   if (lease.envScope) {
-    const scoped = await stepEnvironment(config, lease.envScope);
+    const scoped = await stepEnvironment(values, lease.envScope);
     if (!scoped.ok) return scoped.failure;
     lease.processEnv = scoped.env;
   }
@@ -457,7 +460,7 @@ async function stageLease(lease: Lease, { active, runId, config, signal }: { act
   if (lease.setup && opened.created) {
     // Setup gets its own keys and none of the step's.
     const scope = lease.setup.envScope ?? { provide: [], withhold: [] };
-    const scoped = await stepEnvironment(config, scope);
+    const scoped = await stepEnvironment(values, scope);
     const failure = scoped.ok ? await runSetup({ command: lease.setup.command, dir: opened.dir, env: scoped.env, keys: scope.provide, signal }) : scoped.failure;
     if (failure) {
       await removeWorktree(active, opened.dir);
@@ -1006,9 +1009,12 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
     wake();
   };
   if (maxParallel > 1) handle(STOP_SIGNALS);
+  // The team env, resolved once per turn of the loop: the leases it hands out, their env, and what it masks agree.
+  let env: WorkflowEnv | undefined;
   const report = async (body: ReportBody, lease?: Lease): Promise<WorkflowEnvelope | undefined> => {
-    await maskResultFile(resultPath(config, runId, body.attempt), await knownSecrets(config));
-    const answer = await reportAttempt(config, runId, body);
+    const secrets = env?.secrets ?? await knownSecrets(config);
+    await maskResultFile(resultPath(config, runId, body.attempt), secrets);
+    const answer = await reportAttempt(config, runId, body, secrets);
     // Cancelled while it ran: the next `next` lists it in `cancelled`, and the run goes on without it.
     if (isWorkflowError(answer)) return answer.error.code === 'lease_cancelled' ? undefined : answer;
     if (lease?.workspace && 'data' in answer && answer.data.cleanup === true) {
@@ -1023,8 +1029,10 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
       if (signalled) return { error: { code: 'interrupted', message: `Stopped by ${signalled} after every command it started exited` } };
       const running = [...inFlight.keys(), ...held.map((lease) => lease.attempt), ...(prompt ? [prompt.lease.attempt] : [])];
       const canTakeLease = room();
+      const turn = await resolveWorkflowEnv(config);
+      env = turn;
       const next = await leaseNext(config, runId, driver, {
-        running, canTakeLease, can, autoApprove: options.autoApprove, ...(base ? { base } : {}),
+        running, canTakeLease, can, autoApprove: options.autoApprove, ...(base ? { base } : {}), env: turn,
       });
       if (signalled) continue;
       if (isWorkflowError(next)) return next;
@@ -1077,7 +1085,7 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
         if (maxParallel === 1) handle(commandSignalPolicy(await terminalReachesCommand()).forwarded);
         inFlight.set(lease.attempt, { lease, command: stageThenStart(
           lease,
-          (signal) => stageLease(lease, { active: cwd, runId, config, signal }),
+          (signal) => stageLease(lease, { active: cwd, runId, values: turn.values, signal }),
           () => startCommand(command, lease.cwd ?? cwd, { ...lease.processEnv ?? process.env, ...lease.env }, detached),
         ) });
       }
@@ -1099,7 +1107,7 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
           const controller = new AbortController();
           if (maxParallel === 1) handle(STOP_SIGNALS);
           prompt = { lease, controller, exit: (async () => {
-            const failure = await stageLease(lease, { active: cwd, runId, config, signal: controller.signal });
+            const failure = await stageLease(lease, { active: cwd, runId, values: turn.values, signal: controller.signal });
             if (!startable(lease, controller.signal)) {
               await (lease.workspace?.mode === 'read-only' ? leaveReadCopy(lease) : restoreLeaseOverlay(lease));
               return undefined;
@@ -1186,7 +1194,7 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
       await command.stop();
       await (lease.workspace?.mode === 'read-only' ? leaveReadCopy(lease) : restoreLeaseOverlay(lease));
     }));
-    await maskAttemptFiles(config, runId, await knownSecrets(config));
+    await maskAttemptFiles(config, runId, env?.secrets ?? await knownSecrets(config));
     await archive.close();
     if (signalled) exitOn(signalled);
     handle([]);

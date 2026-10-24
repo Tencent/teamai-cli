@@ -17,7 +17,7 @@ import { promisify } from 'node:util';
 import crossSpawn from 'cross-spawn';
 import { resolveConfigForDir } from './config.js';
 import { reportMissingSecrets } from './env-advisories.js';
-import { appliedTeamEnv, resolvesTeamEnv, resolveTeamEnv, workflowEnvValues } from './env-resolution.js';
+import { appliedTeamEnv, resolvesTeamEnv, resolveTeamEnv } from './env-resolution.js';
 import { memberEnvironmentWithoutScope, type MemberEnvironment } from './member-env.js';
 import { describeEntryFailure } from './namespaced-entries.js';
 import { ENV_KEY_RE, envTable, sameEnvName } from './resources/env-key.js';
@@ -339,14 +339,14 @@ function run(
 }
 
 /**
- * The environment a workflow step runs with, built once per lease from its `envScope`: the inherited environment
- * without every withheld key, with each provided key's value. PATH, HOME and every key the scope does not name stay.
- * A provided key with no value here, after the engine saw one, fails the step as `missing_env`.
+ * The environment a workflow step runs with, built once per lease from its `envScope` and the `values` of the team env
+ * resolved for it (`resolveWorkflowEnv`): the inherited environment without every withheld key, with each provided key's
+ * value. PATH, HOME and every key the scope does not name stay. A provided key with no value here, after the engine saw
+ * one, fails the step as `missing_env`.
  */
 export async function stepEnvironment(
-  localConfig: LocalConfig, scope: { provide: readonly string[]; withhold: readonly string[] },
+  values: ReadonlyMap<string, string>, scope: { provide: readonly string[]; withhold: readonly string[] },
 ): Promise<{ ok: true; env: NodeJS.ProcessEnv } | { ok: false; failure: WorkflowFailure }> {
-  const { values } = await workflowEnvValues(localConfig);
   const env = inheritedEnvironment();
   for (const key of scope.withhold) removeKey(env, key);
   for (const key of scope.provide) {
