@@ -23,7 +23,7 @@ export interface DeliveryKey {
  * A pull request TeamAI asked a host to open, into `target`, and holds no receipt for yet. The run lists it until a
  * receipt or a lookup settles it, whatever becomes of its step, since the host may hold it.
  */
-export type UnresolvedCreate = DeliveryKey & { target: string };
+export type UnresolvedCreate = DeliveryKey & { target: string; lookups: { total: number; none: number; failed: number } };
 
 /** Everything a delivery needs, read from the run under its lock. */
 export interface DeliveryJob {
@@ -148,15 +148,14 @@ export async function reportedPrMismatch(
 
 /**
  * Whether the host holds the open request `create` asked for, by lookup alone: nothing of the branch is read, and
- * nothing is opened. `failed` is a host that cannot answer, an origin no provider reads, or a URL that cannot be kept.
+ * nothing is opened. `failed` is a host that cannot answer or an origin no provider reads. `unsafe` is a URL that cannot be kept.
  */
 export async function findDelivered(
   checkout: string, { branch, target }: Pick<UnresolvedCreate, 'branch' | 'target'>,
-): Promise<{ kind: 'found'; pr: PrUrl } | { kind: 'none' } | { kind: 'failed' }> {
+): Promise<{ kind: 'found'; pr: PrUrl } | { kind: 'none' } | { kind: 'failed' } | { kind: 'unsafe' }> {
   const origin = await originOf(checkout);
   if (origin.kind === 'transport') return { kind: 'failed' };
-  const found = await findOpen(origin, { repo: origin.repo, source: branch, target, timeoutMs: DELIVERY_TIMEOUT_MS });
-  return found.kind === 'unsafe' ? { kind: 'failed' } : found;
+  return findOpen(origin, { repo: origin.repo, source: branch, target, timeoutMs: DELIVERY_TIMEOUT_MS });
 }
 
 /** The provider of the checkout's configured origin; git alone when the checkout has none. */

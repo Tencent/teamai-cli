@@ -38,8 +38,9 @@ function withCommitIds<T extends z.ZodTypeAny>(schema: T): z.ZodEffects<T> {
   });
 }
 
-const UnresolvedCreateSchema: z.ZodType<UnresolvedCreate> = z.object({
+const UnresolvedCreateSchema: z.ZodType<UnresolvedCreate, z.ZodTypeDef, unknown> = z.object({
   step: z.string(), pass: z.number().int(), settledAt: z.number().int(), branch: z.string().min(1), head: z.string().min(1), target: z.string().min(1),
+  lookups: z.object({ total: z.number().int().nonnegative(), none: z.number().int().nonnegative(), failed: z.number().int().nonnegative() }).default({ total: 0, none: 0, failed: 0 }),
 });
 
 const BodySchema = z.object({

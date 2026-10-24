@@ -923,18 +923,18 @@ function nextDelivery(run: RunState): DeliveryJob | undefined {
 }
 
 /** The first request in `run.creating` that this drain has not looked up yet. */
-function unresolvedCreate(run: RunState, tried: readonly UnresolvedCreate[]): { create: UnresolvedCreate; checkout: string } | undefined {
+function unresolvedCreate(run: RunState, tried: readonly Omit<UnresolvedCreate, 'lookups'>[]): { create: UnresolvedCreate; checkout: string } | undefined {
   const { checkout } = run;
   const create = run.creating?.find((listed) => !tried.some((done) => sameCreate(done, listed)));
   return create && checkout ? { create, checkout } : undefined;
 }
 
-function sameCreate(a: UnresolvedCreate, b: UnresolvedCreate): boolean {
+function sameCreate(a: Omit<UnresolvedCreate, 'lookups'>, b: Omit<UnresolvedCreate, 'lookups'>): boolean {
   return sameKey(a, b) && a.target === b.target;
 }
 
 /** Drops `create` from the requests the run has no receipt for. */
-function forgetCreate(run: RunState, create: UnresolvedCreate): void {
+function forgetCreate(run: RunState, create: Omit<UnresolvedCreate, 'lookups'>): void {
   const left = run.creating?.filter((listed) => !sameCreate(listed, create));
   if (left?.length) run.creating = left;
   else delete run.creating;
@@ -966,12 +966,19 @@ function completeDelivery(run: RunState, job: DeliveryJob, outcome: DeliveryOutc
 
 /**
  * Applies what a lookup said of a request in `run.creating`, and touches no step. One the host holds gets its receipt,
- * and one it does not hold is dropped. One it could not answer for stays for a later drain.
+ * and unsafe URLs are dropped. Empty and failed answers stay until the second empty or third failed lookup.
  */
 function resolveCreate(run: RunState, create: UnresolvedCreate, found: Awaited<ReturnType<typeof findDelivered>>): { requeueEnd: boolean } {
-  if (found.kind === 'failed') return { requeueEnd: false };
+  const listed = run.creating?.find((item) => sameCreate(item, create));
+  if (!listed) return { requeueEnd: false };
+  const lookups = listed.lookups ?? { total: 0, none: 0, failed: 0 };
+  listed.lookups = {
+    total: lookups.total + 1,
+    none: lookups.none + (found.kind === 'none' ? 1 : 0),
+    failed: lookups.failed + (found.kind === 'failed' ? 1 : 0),
+  };
   const receipted = found.kind === 'found' && recordReceipt(run, create, create.target, found.pr);
-  forgetCreate(run, create);
+  if (found.kind === 'found' || found.kind === 'unsafe' || listed.lookups.none >= 2 || listed.lookups.failed >= 3) forgetCreate(run, create);
   return { requeueEnd: receipted && run.status !== 'running' };
 }
 
@@ -987,7 +994,7 @@ async function markCreating(config: LocalConfig, runId: string, job: DeliveryJob
     const step = 'unreadable' in settledRun || 'outcome' in settledRun ? undefined : deliveringStep(run, job.key);
     if (!step) return { value: 'refused' };
     const create = { ...job.key, target: job.target };
-    if (!run.creating?.some((listed) => sameCreate(listed, create))) (run.creating ??= []).push(create);
+    if (!run.creating?.some((listed) => sameCreate(listed, create))) (run.creating ??= []).push({ ...create, lookups: { total: 0, none: 0, failed: 0 } });
     return { value: 'open', write: { ...run, updatedAt: new Date().toISOString() } };
   });
   return marked.status === 'done' ? marked.value : 'busy';
@@ -1007,7 +1014,7 @@ async function drainDeliveries(config: LocalConfig, runId: string): Promise<void
   if (!delivering && !unresolvedCreate(loaded, [])) return;
   const drained = await withFileLock(deliveryLockPath(config, runId), { attempts: 1, delayMs: 0 }, async () => {
     let requeued = false;
-    const tried: UnresolvedCreate[] = [];
+    const tried: Array<Omit<UnresolvedCreate, 'lookups'>> = [];
     for (;;) {
       const picked = await updateRun(config, runId, async (run) => {
         if (run === 'missing') return { value: undefined };
@@ -1020,6 +1027,7 @@ async function drainDeliveries(config: LocalConfig, runId: string): Promise<void
       let apply: (run: RunState) => { requeueEnd: boolean };
       if ('job' in picked.value) {
         const { job } = picked.value;
+        tried.push({ ...job.key, target: job.target });
         const outcome = await deliverPr(job, () => markCreating(config, runId, job));
         // As when the pick is busy: the step still delivers, and a later call delivers it.
         if (outcome === 'busy') return requeued;

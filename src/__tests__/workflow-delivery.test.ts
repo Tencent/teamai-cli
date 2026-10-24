@@ -1012,6 +1012,65 @@ describe('retrying and cancelling a delivery', () => {
     expect((await pendingRecords(config)).find((record) => record.run === runId && record.phase === 'end')?.prs).toEqual([url]);
   });
 
+  it.each<[string, number]>([
+    ['none', 2], ['failed', 3], ['unsafe', 1],
+  ])('bounds unresolved-create lookups answering %s across drains', async (answer, limit) => {
+    const { config, root, runId } = await fixture(FIX_THEN_REVIEW);
+    const fix = await take(config, runId);
+    await succeed(config, runId, fix, { to: pushWork(root, fix) });
+    let recovering = false;
+    const lookup = vi.fn(async () => {
+      if (!recovering) return undefined;
+      if (answer === 'failed') throw new Error('host unavailable');
+      return answer === 'unsafe' ? 'https://other.example/pull/7' : undefined;
+    });
+    const create = providerDouble(lookup, async () => {
+      await cancelRun(config, runId);
+      throw new Error('create timed out');
+    });
+    await leaseNext(config, runId, remote, writable);
+    expect(lookup).toHaveBeenCalledTimes(2);
+    expect((await state(config, runId)).creating).toEqual([expect.objectContaining({ lookups: { total: 0, none: 0, failed: 0 } })]);
+    recovering = true;
+    lookup.mockClear();
+
+    for (let count = 1; count <= limit; count += 1) {
+      await leaseNext(config, runId, remote, writable);
+      expect(lookup).toHaveBeenCalledTimes(count);
+      const run = await state(config, runId);
+      if (count < limit) {
+        expect(run.creating).toEqual([expect.objectContaining({ lookups: { total: count, none: answer === 'none' ? count : 0, failed: answer === 'failed' ? count : 0 } })]);
+        const projected = projectRun(run, {});
+        expect(projected.ok && projected.value.creating).toEqual(run.creating);
+      } else expect(run.creating).toBeUndefined();
+      expect(run.deliveries).toBeUndefined();
+    }
+    await leaseNext(config, runId, remote, writable);
+    expect(lookup).toHaveBeenCalledTimes(limit);
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps an empty unresolved lookup until a later drain finds its receipt', async () => {
+    const { config, root, runId } = await fixture(FIX_THEN_REVIEW);
+    const fix = await take(config, runId);
+    await succeed(config, runId, fix, { to: pushWork(root, fix) });
+    let url: string | undefined;
+    const lookup = vi.fn(async () => url);
+    providerDouble(lookup, async () => {
+      await cancelRun(config, runId);
+      throw new Error('create timed out');
+    });
+    await leaseNext(config, runId, remote, writable);
+    await leaseNext(config, runId, remote, writable);
+    expect((await state(config, runId)).creating).toEqual([expect.objectContaining({ lookups: { total: 1, none: 1, failed: 0 } })]);
+    url = 'https://github.com/fixture/app/pull/7';
+    await leaseNext(config, runId, remote, writable);
+    const run = await state(config, runId);
+    expect(run.creating).toBeUndefined();
+    expect(run.deliveries?.map((receipt) => receipt.url)).toEqual([url]);
+    expect(lookup).toHaveBeenCalledTimes(4);
+  });
+
   it('records a pull request a cancelled delivery opened before its process stopped, by looking it up on a later call, and opens no other', async () => {
     const { config, root, runId } = await fixture(FIX_THEN_REVIEW);
     config.usageReportEnabled = true;
@@ -1072,7 +1131,9 @@ describe('retrying and cancelling a delivery', () => {
     expect(create).toHaveBeenCalledTimes(1);
     expect(run.deliveries).toBeUndefined();
     expect(run.steps[0]).toMatchObject({ id: 'fix', status: 'cancelled', delivery: { branch } });
-    expect(run.creating).toBeUndefined();
+    expect(run.creating).toEqual([expect.objectContaining({ lookups: { total: 1, none: 1, failed: 0 } })]);
+    await leaseNext(config, runId, remote, writable);
+    expect((await state(config, runId)).creating).toBeUndefined();
   });
 
   it('records a pull request a cancelled delivery opened before its process stopped, when the step is retried before any later call', async () => {
@@ -1122,6 +1183,8 @@ describe('retrying and cancelling a delivery', () => {
       return url;
     });
 
+    expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    expect(retried).toBe(false);
     expect(await take(config, runId)).toMatchObject({ step: 'review' });
     const run = await state(config, runId);
     expect(retried).toBe(true);
@@ -1159,7 +1222,7 @@ describe('retrying and cancelling a delivery', () => {
     fs.rmSync(deliveryLockPath(config, runId), { force: true });
     const marked = await state(config, runId);
     expect(marked.steps[0]).toMatchObject({ id: 'fix', status: 'delivering' });
-    expect(marked.creating).toEqual([{ step: 'fix', pass: 1, settledAt: 2, branch, head: to, target: 'main' }]);
+    expect(marked.creating).toEqual([{ step: 'fix', pass: 1, settledAt: 2, branch, head: to, target: 'main', lookups: { total: 0, none: 0, failed: 0 } }]);
     const handed = projectRun(marked, {});
     expect(handed.ok && handed.value.creating).toEqual(marked.creating);
 
