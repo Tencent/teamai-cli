@@ -31,6 +31,7 @@ import {
   resolvePlaceholders,
   referencedVars,
   entryHash,
+  museEntryHash,
   MCP_SERVER_KEY,
   sameServerKey,
   type McpFormat,
@@ -1074,10 +1075,12 @@ function judgeUnrecordedMcpEntry(
     return entries;
   });
   // Equal as values, as doctor compares them: key order is not ownership.
-  return async (name, entry) => {
+  return async (name, entry, recordedHash) => {
     if (claimed.has(name)) return 'another tool';
-    if (desired.has(name) && isDeepStrictEqual(desired.get(name)?.entry, entry)) return 'teamai';
-    return (await renders())?.get(name)?.some((rendered) => isDeepStrictEqual(rendered, entry)) ? 'teamai' : 'member';
+    const matches = (rendered: unknown) => (recordedHash === undefined || entryHash(rendered) === recordedHash)
+      && isDeepStrictEqual(rendered, entry);
+    if (desired.has(name) && matches(desired.get(name)?.entry)) return 'teamai';
+    return (await renders())?.get(name)?.some(matches) ? 'teamai' : 'member';
   };
 }
 
@@ -2486,8 +2489,9 @@ async function reconcileTargets(
     ): Promise<McpEntryJudge> => {
       const otherTools = others ?? await claimedByOtherTools(claimTargets, t, manifest);
       const judgeHere = judgeUnrecordedMcpEntry(localConfig, t, desired, desiredContext.vars, new Set([...otherTools, ...held]), history);
-      return async (name, entry) => !otherTools.has(name) && moved.has(name) && isDeepStrictEqual(moved.get(name)?.entry, entry)
-        ? 'teamai' : judgeHere(name, entry);
+      return async (name, entry, recordedHash) => !otherTools.has(name) && moved.has(name)
+        && (recordedHash === undefined || moved.get(name)?.hash === recordedHash) && isDeepStrictEqual(moved.get(name)?.entry, entry)
+        ? 'teamai' : judgeHere(name, entry, recordedHash);
     };
     const judge = await judgeIn(resolved);
     // A file an earlier teamai created that hides a later one, holding only teamai's servers, is left (#993).
@@ -2746,7 +2750,7 @@ function normalizeMuseServers(target: McpTarget, servers: Record<string, unknown
 // ─── Appliers ────────────────────────────────────────────────
 
 /** `judgeUnrecordedMcpEntry` for one target. */
-type McpEntryJudge = (name: string, entry: unknown) => Promise<UnrecordedMcpOwner>;
+type McpEntryJudge = (name: string, entry: unknown, recordedHash?: string) => Promise<UnrecordedMcpOwner>;
 
 /**
  * A server this tool's record does not claim, left as it is: another tool's,
@@ -2809,6 +2813,7 @@ async function applyJson(
       continue;
     }
     const record: ManagedMcpRecord = { name, hash };
+    if (target.format === 'muse') record.valueHash = museEntryHash(entry);
     if (allowBare && !doc.bare) record.bare = false;
     if (doc.bare && owned.some((r) => r.name === name && r.bare === true)) record.bare = true;
     nextRecords.push(record);
@@ -2831,7 +2836,12 @@ async function applyJson(
   for (const name of ownedNames) {
     if (desired.has(name)) continue;
     const previous = ownedHere.find((record) => record.name === name);
-    if (options.removeAll && previous && doc.servers[name] !== undefined && entryHash(comparable.servers[name]) !== previous.hash) {
+    // Muse's content fingerprint survives native key reordering. Legacy records
+    // need a historical render with both the recorded hash and the installed value.
+    if (options.removeAll && previous && doc.servers[name] !== undefined && entryHash(comparable.servers[name]) !== previous.hash
+      && !(target.format === 'muse' && (previous.valueHash !== undefined
+        ? previous.valueHash === museEntryHash(doc.servers[name])
+        : await judge(name, comparable.servers[name], previous.hash) === 'teamai'))) {
       log.warn(`Kept MCP server ${name} in ${describeMcpLocation(target)}: you changed it since teamai wrote it. `
         + 'Remove it there when you no longer need it.');
       continue;
