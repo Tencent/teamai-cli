@@ -1782,8 +1782,17 @@ export async function init(options: GlobalOptions & {
               let aside = `${localPath}.previous`;
               for (let n = 1; await pathExists(aside); n++) aside = `${localPath}.previous.${n}`;
               await fs.promises.rename(localPath, aside);
-              await createGitWithBlockTimeout(aside).raw(['worktree', 'repair']);
               log.warn(`Kept the old clone and its uncommitted side checkout(s) at ${aside}.`);
+              try {
+                await createGitWithBlockTimeout(aside).raw(['worktree', 'repair']);
+              } catch (e) {
+                throw new Error(
+                  `The old clone was kept at ${aside}, but Git could not repair its worktree links. ` +
+                    `Run \`git -C ${aside} worktree repair\` to recover them before retrying init. ` +
+                    `Git reported: ${(e as Error).message}`,
+                  { cause: e },
+                );
+              }
             } else {
               // A checkout not registered to this clone belongs to an older or
               // different install. Leave it for the existing foreign-checkout
