@@ -78,8 +78,9 @@ function recordReceipt(run: RunState, key: DeliveryKey, target: string, url: PrU
  * Applies a delivery's outcome to the job it was picked as. A pull request gets its receipt whatever became of the step
  * meanwhile: one opened while a cancel landed cannot be taken back, so the run says it exists. The receipt settles the
  * job's listed request; a failed delivery leaves it listed, since a create that failed may still have opened one. The
- * step settles only while it still delivers what `job` delivered, at the revision its agent's report settled it, and not
- * while origin's branch is ahead of the recorded commit and a report of it may still come.
+ * step settles only while it still delivers what `job` delivered, at the revision its agent's report settled it. Origin's
+ * branch ahead of the recorded commit fails it only once no report of that tip can come: no step that writes the branch
+ * is leased, and no report recorded another commit on it since the job was picked.
  * `requeueEnd` is set when the receipt reached a run that already ended, whose end record must go out again to list it.
  */
 export function completeDelivery(
@@ -90,27 +91,11 @@ export function completeDelivery(
   if (outcome.ok) forgetCreate(run, { ...job.key, target: job.target });
   if (run.status === 'running') reconcile(run);
   const step = deliveringStep(run, job.key);
+  const awaited = !outcome.ok && outcome.fault.kind === 'branch_ahead'
+    && (writerLeased(run, job.key.branch) || run.copies?.[job.key.branch]?.commit !== job.recordedHead);
   if (step && outcome.ok) delivered(step);
-  else if (step && !outcome.ok && !(outcome.fault.kind === 'branch_ahead' && awaitsReport(step, outcome.fault.tip, writerLeased(run, job.key.branch)))) {
-    deliveryFailed(step, deliveryFailure(job, outcome.fault));
-  }
+  else if (step && !outcome.ok && !awaited) deliveryFailed(step, deliveryFailure(job, outcome.fault));
   return { requeueEnd: receipted && run.status !== 'running' };
-}
-
-/** How many drains in a row may find origin's branch ahead of the recorded commit, at one commit, before delivery fails. */
-const AHEAD_DRAINS = 3;
-
-/**
- * Whether `step` still waits for a report of `tip`, the commit origin's branch is ahead at: one may be on its way, from a
- * step of the same branch that pushed before it reported. A drain counts only while no step that writes the branch is
- * leased, and the one that finds it there a third time fails the step.
- */
-function awaitsReport(step: DeliveringStep, tip: string, writerLeased: boolean): boolean {
-  if (writerLeased) return true;
-  const drains = step.unrecordedTip?.commit === tip ? step.unrecordedTip.drains + 1 : 1;
-  if (drains >= AHEAD_DRAINS) return false;
-  step.unrecordedTip = { commit: tip, drains };
-  return true;
 }
 
 /**

@@ -425,7 +425,7 @@ describe('delivering a step', () => {
     const ahead = pushOnto(root, branch, { '.github/workflows/x.yml': 'on: push\n' });
     expect(await succeed(config, runId, fix, { to: checked, ...changes })).not.toHaveProperty('data.dropped');
 
-    for (const _drain of [1, 2]) expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { wait: { delivering: ['fix'] } } });
+    // No step that writes the branch is leased, so no report can record that commit, and the first call fails the step.
     expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: 'failed' } } });
     const run = await state(config, runId);
     expect(run.steps).toMatchObject([
@@ -1119,10 +1119,6 @@ describe('retrying and cancelling a delivery', () => {
     gh.configure({});
     await retryStep(config, runId, 'work.impl');
 
-    const drains = change === 'moved' ? 3 : 1;
-    for (let drain = 1; drain < drains; drain += 1) {
-      expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { wait: { delivering: ['work.impl'] } } });
-    }
     expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: 'failed' } } });
     const failure = (await state(config, runId)).steps.find((step) => step.id === 'work.impl');
     const remedy = change === 'moved' ? `Put branch ${branch} on origin back at ${recorded}, then run` : `push ${recorded} to it, then run`;
@@ -1172,6 +1168,35 @@ describe('retrying and cancelling a delivery', () => {
     expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
     expect(creates(gh)).toEqual([[branch, 'main']]);
     expect((await state(config, runId)).steps.find((step) => step.id === 'work.impl')).toMatchObject({ status: 'succeeded' });
+  });
+
+  it('keeps a step delivering when a report records origin\'s ahead commit while delivery reads the branch, and delivers it on the next call', async () => {
+    const { config, root, runId } = await fixture(IMPL_AND_DOCS);
+    const gh = fakeGh(path.join(root, 'gh'));
+    const impl = await take(config, runId);
+    await succeed(config, runId, impl, { to: pushWork(root, impl) });
+    const lock = deliveryLockPath(config, runId);
+    expect(await acquireLock(lock)).toBe(true);
+    const docs = await take(config, runId);
+    await releaseLock(lock);
+    const branch = docs.workspace?.branch ?? '';
+    const ahead = pushOnto(root, branch, { 'docs.txt': 'docs' });
+    let reported = false;
+    const read = worktree.git;
+    vi.spyOn(worktree, 'git').mockImplementation(async (...args) => {
+      const answer = await read(...args);
+      if (!reported && args[1].includes('ls-remote')) {
+        reported = true;
+        await succeed(config, runId, docs, { to: ahead });
+      }
+      return answer;
+    });
+
+    expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { wait: { delivering: ['work.impl'] } } });
+    expect(reported).toBe(true);
+    expect(creates(gh)).toEqual([]);
+    expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(creates(gh)).toEqual([[branch, 'main']]);
   });
 
   it('records only the canonical receipt after an unconfirmed TGit-style create and a retry', async () => {
