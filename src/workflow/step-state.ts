@@ -131,8 +131,12 @@ type StepBase = z.infer<typeof StepBaseSchema>;
 /**
  * What a step that delivers hands to delivery once its agent succeeded: the branch, the commit that branch must hold on
  * origin, and a URL its driver reported and the engine kept. The target is not kept; it follows from the run.
+ * `creating` is set under the run lock right before TeamAI asks the host to open a request, and stays: a request may
+ * exist with no receipt after a crash or a cancel, so such a step is looked up before anything opens another.
  */
-const DeliverySchema = z.object({ branch: z.string().min(1), head: z.string().min(1), reported: PrUrlSchema.optional() });
+const DeliverySchema = z.object({
+  branch: z.string().min(1), head: z.string().min(1), reported: PrUrlSchema.optional(), creating: z.literal(true).optional(),
+});
 export type Delivery = z.infer<typeof DeliverySchema>;
 
 /**
@@ -166,7 +170,10 @@ const SucceededSchema = StepBaseSchema.extend({
 });
 const FailedSchema = StepBaseSchema.extend({ status: z.literal('failed'), outcome: z.literal('failed').default('failed'), ...settledFields, failure: FailureSchema.optional() });
 const SkippedSchema = StepBaseSchema.extend({ status: z.literal('skipped'), settledAt: z.number().int().default(0) });
-const CancelledSchema = StepBaseSchema.extend({ status: z.literal('cancelled'), settledAt: z.number().int().default(0), attempt: z.string().optional(), failure: FailureSchema });
+const CancelledSchema = StepBaseSchema.extend({
+  status: z.literal('cancelled'), settledAt: z.number().int().default(0), attempt: z.string().optional(), failure: FailureSchema,
+  delivery: DeliverySchema.optional(),
+});
 
 const LeasedSchema = StepBaseSchema.extend({ status: z.literal('leased'), attempt: z.string(), lease: LeaseSchema });
 /**
@@ -315,10 +322,16 @@ export function fail(state: StepState, settlement: Settlement<FailedStep>): Fail
   return become<FailedStep>(state, { status: 'failed', outcome: 'failed', ...settlement });
 }
 
-/** An open step is cancelled before it settles. A leased or delivering one keeps the attempt it no longer settles. */
+/**
+ * An open step is cancelled before it settles. A leased or delivering one keeps the attempt it no longer settles, and a
+ * delivering one what it was delivering, since a request it asked for may exist with no receipt yet.
+ */
 export function cancel(state: StepIn<'pending' | 'waiting' | 'leased' | 'running' | 'delivering'>, failure: WorkflowFailure, settledAt: number): CancelledStep {
   const attempt = state.status === 'leased' || state.status === 'delivering' ? state.attempt : undefined;
-  return become<CancelledStep>(state, { status: 'cancelled', settledAt, ...(attempt !== undefined ? { attempt } : {}), failure });
+  const delivery = state.status === 'delivering' ? state.delivery : undefined;
+  return become<CancelledStep>(state, {
+    status: 'cancelled', settledAt, ...(attempt !== undefined ? { attempt } : {}), ...(delivery ? { delivery } : {}), failure,
+  });
 }
 
 /** The current pass of a settled step, as `passes` keeps it once a loop runs the step again; undefined while it has not settled. */

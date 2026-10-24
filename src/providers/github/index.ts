@@ -1,4 +1,4 @@
-import type { GitProvider, PrCreateOptions, RepoInfo, OrgRepoInfo } from '../types.js';
+import type { GitProvider, PrCreateOptions, PullRequestLookup, RepoInfo, OrgRepoInfo } from '../types.js';
 import { RepoNotFoundError } from '../types.js';
 import {
   ensureGhAvailable,
@@ -8,14 +8,15 @@ import {
   ghRepoClone,
   ghCreateRepo,
   ghPrCreate,
+  ghFindOpenPull,
   RepoNotFoundError as GhRepoNotFoundError,
 } from './gh-cli.js';
 import { ghListOrgRepos } from './gh-org.js';
 import { parseGitHubRepoInput } from './repo-url.js';
-import { findGitHubPull, validateGitHubPull } from './workflow-pr.js';
 
 export class GitHubProvider implements GitProvider {
   readonly name = 'github';
+  readonly pullRequests: PullRequestLookup = { findOpen: ghFindOpenPull };
 
   parseRepoInput(input: string): RepoInfo {
     return parseGitHubRepoInput(input);
@@ -63,14 +64,6 @@ export class GitHubProvider implements GitProvider {
       cwd: opts.cwd,
       spawnTimeoutMs: opts.spawnTimeoutMs,
     });
-  }
-
-  findOpenPullRequest(opts: PrCreateOptions): Promise<string | undefined> {
-    return findGitHubPull(opts);
-  }
-
-  validatePullRequest(url: string, opts: PrCreateOptions): Promise<boolean | undefined> {
-    return validateGitHubPull(url, opts);
   }
 
   getDefaultEmailDomain(): string | null {

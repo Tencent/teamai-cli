@@ -13,11 +13,12 @@ import { deliveryLockPath, readRun } from '../workflow/store.js';
 import { _setDriverPollMs, runLocalDriver } from '../workflow/local-driver.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { AGENT_PATHS, DELIVERY_ONLY_PATHS, protectedPaths } from '../workflow/worktree.js';
-import { GitHubProvider } from '../providers/github/index.js';
+import { fakeGh } from './helpers/fake-gh.js';
+import { deliverPr } from '../workflow/pr-delivery.js';
 import { buildEndRecord, pendingRecords } from '../workflow/records.js';
 import { projectRun } from '../workflow/snapshot.js';
 import * as worktree from '../workflow/worktree.js';
-import { cancelRun } from '../workflow/run-controls.js';
+import { cancelRun, retryStep } from '../workflow/run-controls.js';
 import type { LocalConfig } from '../types.js';
 import type { RunState } from '../workflow/types.js';
 
@@ -26,6 +27,7 @@ _setDriverPollMs(20);
 const dirs: string[] = [];
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -77,7 +79,7 @@ const head = 'c'.repeat(40);
 /** Takes the next lease as a driver that speaks only CLI JSON does. */
 async function take(config: LocalConfig, runId: string): Promise<Lease> {
   const next = await leaseNext(config, runId, remote, writable);
-  if (!('data' in next)) throw new Error(JSON.stringify(next));
+  if (!('data' in next) || !next.data.lease) throw new Error(`no lease: ${JSON.stringify(next)}`);
   return LeaseSchema.parse(next.data.lease);
 }
 
@@ -112,13 +114,15 @@ async function succeed(config: LocalConfig, runId: string, lease: Lease, changes
     ...(lease.workspace ? { changes: { branch: lease.workspace.branch, base, from: base, to, commits: [to], ...changes } } : {}) });
 }
 
-/** The pull request lookups and creates a GitHub origin could see, none of which may run. */
-function provider() {
-  return [
-    vi.spyOn(GitHubProvider.prototype, 'createPullRequest').mockRejectedValue(new Error('no PR may be opened')),
-    vi.spyOn(GitHubProvider.prototype, 'findOpenPullRequest').mockRejectedValue(new Error('no PR may be looked up')),
-    vi.spyOn(GitHubProvider.prototype, 'validatePullRequest').mockRejectedValue(new Error('no PR may be read')),
-  ];
+/** The value that follows `flag` in a gh call. */
+function flag(args: string[], name: string): string | undefined {
+  const at = args.indexOf(name);
+  return at < 0 ? undefined : args[at + 1];
+}
+
+/** An open pull request as GitHub lists it. */
+function pull(number: number, head: string, base = 'main', repo = 'fixture/app') {
+  return { state: 'open', html_url: `https://github.com/${repo}/pull/${number}`, head: { ref: head, repo: { full_name: repo } }, base: { ref: base, repo: { full_name: repo } } };
 }
 
 const FIX_THEN_REVIEW = `  - id: fix\n    workspace: new\n    command: node fix.js\n    deliver: pr\n  - id: review\n    needs: [fix]\n    command: echo review\n`;
@@ -180,8 +184,8 @@ describe('workflow PR delivery contract', () => {
 
 describe('delivering a step', () => {
   it('delivers a driver-reported URL without opening a PR, and leases the dependent in the same next', async () => {
-    const create = vi.spyOn(GitHubProvider.prototype, 'createPullRequest').mockRejectedValue(new Error('no PR may be opened'));
     const { config, root, runId } = await fixture(FIX_THEN_REVIEW);
+    const gh = fakeGh(path.join(root, 'gh'));
     const fix = await take(config, runId);
     const branch = `teamai/${runId}/fix/p1`;
     expect(fix).toMatchObject({ step: 'fix', workspace: { branch } });
@@ -202,7 +206,7 @@ describe('delivering a step', () => {
     const run = await state(config, runId);
     expect(run.steps[0]).toMatchObject({ id: 'fix', status: 'succeeded', settledAt: 2 });
     expect(run.deliveries).toEqual([{ url: 'https://review.acme.internal/changes/4821', branch, base: 'main', step: 'fix', pass: 1 }]);
-    expect(create).not.toHaveBeenCalled();
+    expect(gh.calls()).toEqual([]);
 
     await report(config, runId, { attempt: review.attempt, revision: review.revision, outcome: 'success' });
     expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
@@ -221,9 +225,14 @@ describe('delivering a step', () => {
     await released;
   });
 
-  it('fails a delivery that has no URL and no host to open one on, naming the branch that keeps the work', async () => {
+  it.each([
+    ['a filesystem path', (root: string) => path.join(root, 'remote.git')],
+    ['a host only git reaches', () => 'https://git.example.internal/fixture/app.git'],
+  ])('fails a delivery that has no URL and an origin at %s, naming the branch that keeps the work', async (_case, origin) => {
     const { config, cwd, root, runId } = await fixture(FIX_THEN_REVIEW);
-    git(cwd, ['remote', 'set-url', 'origin', path.join(root, 'remote.git')]);
+    const gh = fakeGh(path.join(root, 'gh'));
+    git(cwd, ['remote', 'set-url', 'origin', origin(root)]);
+    git(cwd, ['config', `url.${path.join(root, 'remote.git')}.insteadOf`, 'https://git.example.internal/fixture/app.git']);
     const fix = await take(config, runId);
     const to = pushWork(root, fix);
     expect(await succeed(config, runId, fix, { to })).toMatchObject({ data: { step: { id: 'fix', status: 'delivering' } } });
@@ -235,6 +244,84 @@ describe('delivering a step', () => {
       { id: 'review', status: 'skipped' },
     ]);
     expect((await state(config, runId)).steps[0]).toMatchObject({ failure: { message: expect.stringContaining(`teamai workflow retry ${runId} fix`) } });
+    expect(gh.calls()).toEqual([]);
+  });
+
+  it('opens one pull request from the pushed branch into the run base branch, outside the member checkout, and records it', async () => {
+    const { config, cwd, root, runId } = await fixture(FIX_THEN_REVIEW);
+    const gh = fakeGh(path.join(root, 'gh'));
+    const fix = await take(config, runId);
+    const branch = `teamai/${runId}/fix/p1`;
+    const to = pushWork(root, fix);
+    expect(await succeed(config, runId, fix, { to })).toMatchObject({ data: { step: { id: 'fix', status: 'delivering' } } });
+
+    expect(await take(config, runId)).toMatchObject({ step: 'review' });
+    expect((await state(config, runId)).deliveries).toEqual([{ url: 'https://github.com/fixture/app/pull/1', branch, base: 'main', step: 'fix', pass: 1 }]);
+    const [lookup, create, ...rest] = gh.calls();
+    expect(rest).toEqual([]);
+    expect(lookup?.args[0]).toBe('api');
+    expect(lookup?.prompt).toBe('0');
+    const query = new URLSearchParams(lookup?.args[1]?.split('?')[1]);
+    expect([lookup?.args[1]?.split('?')[0], query.get('state'), query.get('head'), query.get('base')]).toEqual(['repos/fixture/app/pulls', 'open', `fixture:${branch}`, 'main']);
+    expect(create?.args.slice(0, 2)).toEqual(['pr', 'create']);
+    expect([flag(create?.args ?? [], '-R'), flag(create?.args ?? [], '-H'), flag(create?.args ?? [], '-B')]).toEqual(['fixture/app', branch, 'main']);
+    expect(fs.realpathSync(create?.cwd ?? cwd).startsWith(fs.realpathSync(root))).toBe(false);
+    expect(git(root, ['--git-dir=remote.git', 'rev-parse', `refs/heads/${branch}`])).toBe(to);
+  });
+
+  it.each([
+    ['a delivery that stopped after opening it', {}],
+    ['a create that failed after GitHub took it', { create: 'fail-after-open' as const }],
+  ])('records the pull request %s rather than opening another', async (_case, options) => {
+    const { config, root, runId } = await fixture(FIX_THEN_REVIEW);
+    const fix = await take(config, runId);
+    const branch = `teamai/${runId}/fix/p1`;
+    const gh = fakeGh(path.join(root, 'gh'), { ...options, open: 'create' in options ? [] : [pull(5, `${branch}-other`), pull(6, branch, 'main', 'fork/app'), pull(7, branch)] });
+    await succeed(config, runId, fix, { to: pushWork(root, fix) });
+
+    expect(await take(config, runId)).toMatchObject({ step: 'review' });
+    const url = 'create' in options ? 'https://github.com/fixture/app/pull/1' : 'https://github.com/fixture/app/pull/7';
+    const run = await state(config, runId);
+    expect(run.deliveries?.map((receipt) => receipt.url)).toEqual([url]);
+    expect(gh.calls().map((call) => call.args[0])).toEqual('create' in options ? ['api', 'pr', 'api'] : ['api']);
+    // A step marked before it asks GitHub to open a request looks one up first after a crash; one found needs no mark.
+    expect(run.steps[0]).toMatchObject({ delivery: { branch, ...('create' in options ? { creating: true } : {}) } });
+    if (!('create' in options)) expect(run.steps[0]).not.toHaveProperty('delivery.creating');
+    const handed = projectRun(run, {});
+    expect(handed.ok && handed.value.steps[0]).toEqual(run.steps[0]);
+  });
+
+  it('keeps the work on origin when GitHub cannot be reached, stores none of its output, and retry delivers without running the step again', async () => {
+    const { config, root, runId } = await fixture(FIX_THEN_REVIEW);
+    const gh = fakeGh(path.join(root, 'gh'), { lookup: 'fail' });
+    const fix = await take(config, runId);
+    const branch = `teamai/${runId}/fix/p1`;
+    const to = pushWork(root, fix);
+    await succeed(config, runId, fix, { to });
+
+    expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    const failed = await state(config, runId);
+    expect(failed.steps[0]).toMatchObject({ status: 'failed', failure: { code: 'delivery_failed', message: expect.stringContaining(`The work is kept on origin in branch ${branch}.`) } });
+    expect(failed.steps[0]).toMatchObject({ failure: { message: expect.stringContaining(`teamai workflow retry ${runId} fix`) } });
+    expect(JSON.stringify(failed)).not.toContain('ghp_fake_secret');
+    expect(git(root, ['--git-dir=remote.git', 'rev-parse', `refs/heads/${branch}`])).toBe(to);
+
+    gh.configure({});
+    expect(await retryStep(config, runId, 'fix')).toMatchObject({ data: {} });
+    expect(await take(config, runId)).toMatchObject({ step: 'review' });
+    expect((await state(config, runId)).deliveries?.map((receipt) => receipt.url)).toEqual(['https://github.com/fixture/app/pull/1']);
+  });
+
+  it('asks the run before it opens a pull request, and opens none for a step that stopped delivering', async () => {
+    const { config, cwd, root, runId } = await fixture(FIX_THEN_REVIEW);
+    const gh = fakeGh(path.join(root, 'gh'));
+    const fix = await take(config, runId);
+    if (!fix.workspace) throw new Error('fix has no workspace');
+    const to = pushWork(root, fix);
+    const job = { key: { step: 'fix', pass: 1, settledAt: 2, branch: fix.workspace.branch, head: to }, runId, runName: 'ship', checkout: cwd, base: fix.workspace.base.commit, target: 'main' };
+
+    expect(await deliverPr(job, async () => false)).toEqual({ ok: false, fault: { kind: 'withdrawn' } });
+    expect(gh.calls().map((call) => call.args[0])).toEqual(['api']);
   });
 
   it('cancels a delivering step: it delivers nothing and its dependents do not run', async () => {
@@ -244,7 +331,9 @@ describe('delivering a step', () => {
 
     expect(await cancelRun(config, runId, 'fix')).toMatchObject({ data: { cancelled: { steps: ['fix'], attempts: [] }, run: { status: 'failed' } } });
     const run = await state(config, runId);
-    expect(run.steps).toMatchObject([{ id: 'fix', status: 'cancelled', attempt: fix.attempt }, { id: 'review', status: 'skipped' }]);
+    expect(run.steps).toMatchObject([
+      { id: 'fix', status: 'cancelled', attempt: fix.attempt, delivery: { branch: `teamai/${runId}/fix/p1`, head } }, { id: 'review', status: 'skipped' },
+    ]);
     expect(run.deliveries).toBeUndefined();
   });
 
@@ -252,8 +341,8 @@ describe('delivering a step', () => {
     ['TeamAI would open the pull request', {}],
     ['the driver reported one', { pr_url: 'https://github.com/fixture/app/pull/1' }],
   ])('refuses a branch that changes protected paths, naming them, before any provider request, when %s', async (_case, changes) => {
-    const calls = provider();
     const { config, root, runId } = await fixture(FIX_THEN_REVIEW);
+    const gh = fakeGh(path.join(root, 'gh'));
     const fix = await take(config, runId);
     const to = pushWork(root, fix, { '.github/workflows/ci.yml': 'on: push\n', 'src/app.ts': 'ok\n', 'packages/web/CLAUDE.md': 'rules\n' });
     await succeed(config, runId, fix, { to, ...changes });
@@ -266,7 +355,7 @@ describe('delivering a step', () => {
     ]);
     expect(run.steps[0]).not.toMatchObject({ failure: { message: expect.stringContaining('src/app.ts') } });
     expect(run.deliveries).toBeUndefined();
-    for (const call of calls) expect(call).not.toHaveBeenCalled();
+    expect(gh.calls()).toEqual([]);
   });
 
   it('reads a reported head only as a full commit id, so a ref name cannot stand in for the pushed branch', async () => {
@@ -282,13 +371,13 @@ describe('delivering a step', () => {
   });
 
   it('refuses protected changes the branch inherited from a step it needs, though the delivering step left them alone', async () => {
-    const calls = provider();
     const write = (file: string) => `node -e "require('fs').mkdirSync(require('path').dirname('${file}'),{recursive:true});require('fs').writeFileSync('${file}','x')"`;
-    const { config, cwd, runId } = await fixture(`  - id: earlier\n    workspace: new\n    command: ${write('.github/workflows/ci.yml')}\n  - id: later\n    needs: [earlier]\n    workspace: new\n    command: ${write('change.txt')}\n    deliver: pr\n`);
+    const { config, cwd, root, runId } = await fixture(`  - id: earlier\n    workspace: new\n    command: ${write('.github/workflows/ci.yml')}\n  - id: later\n    needs: [earlier]\n    workspace: new\n    command: ${write('change.txt')}\n    deliver: pr\n`);
 
+    const gh = fakeGh(path.join(root, 'gh'));
     expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'failed' } } });
     expect((await state(config, runId)).steps[1]).toMatchObject({ id: 'later', status: 'failed', failure: { code: 'protected_path', message: expect.stringContaining('.github/workflows/ci.yml') } });
-    for (const call of calls) expect(call).not.toHaveBeenCalled();
+    expect(gh.calls()).toEqual([]);
   });
 
   it('records a pull request once, however many deliveries report it', async () => {
@@ -353,18 +442,19 @@ describe('protected paths', () => {
 
 describe('reported URLs from a driver', () => {
   it('drops a URL with credentials without failing the report, and never stores, echoes or publishes it', async () => {
-    const validate = vi.spyOn(GitHubProvider.prototype, 'validatePullRequest');
-    const { config, runId } = await fixture(FIX_THEN_REVIEW);
-    const accepted = await succeed(config, runId, await take(config, runId), { pr_url: 'https://user:s3cret-value@github.com/fixture/app/pull/1', extra: 'kept-out' });
+    const { config, root, runId } = await fixture(FIX_THEN_REVIEW);
+    const gh = fakeGh(path.join(root, 'gh'));
+    const fix = await take(config, runId);
+    const accepted = await succeed(config, runId, fix, { to: pushWork(root, fix), pr_url: 'https://user:s3cret-value@github.com/fixture/app/pull/1', extra: 'kept-out' });
     expect(accepted).toMatchObject({ data: {
       accepted: true, step: { id: 'fix', status: 'delivering' },
       dropped: [{ field: 'changes.pr_url', reason: 'contains credentials' }], ignored: ['changes.extra'],
     } });
-    expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: {} } });
+    expect(await take(config, runId)).toMatchObject({ step: 'review' });
     const run = await state(config, runId);
     expect(run.steps[0]).not.toHaveProperty('delivery.reported');
-    expect(JSON.stringify([accepted, run, buildEndRecord(run, remote, 'tester')])).not.toMatch(/s3cret-value|kept-out/);
-    expect(validate).not.toHaveBeenCalled();
+    expect(run.deliveries?.map((receipt) => receipt.url)).toEqual(['https://github.com/fixture/app/pull/1']);
+    expect(JSON.stringify([accepted, run, buildEndRecord(run, remote, 'tester'), gh.calls()])).not.toMatch(/s3cret-value|kept-out/);
   });
 
   it('drops a URL from a step that does not deliver, saying why, and still accepts the report', async () => {

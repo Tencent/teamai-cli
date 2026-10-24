@@ -57,6 +57,8 @@ function gitIdentity(): string {
  */
 export class GenericGitProvider implements GitProvider {
   readonly name = 'git';
+  /** Git alone opens no pull request. */
+  readonly pullRequests = null;
 
   parseRepoInput(input: string): RepoInfo {
     return parseGenericGitRepoInput(input);

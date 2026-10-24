@@ -1,5 +1,4 @@
 import type { GitProvider, PrCreateOptions, RepoInfo, OrgRepoInfo } from '../types.js';
-import { findTGitMergeRequest, validateTGitMergeRequest } from './workflow-pr.js';
 import { RepoNotFoundError } from '../types.js';
 import {
   ensureGfInstalled,
@@ -16,6 +15,8 @@ import { parseTGitRepoInput } from './repo-url.js';
 
 export class TGitProvider implements GitProvider {
   readonly name = 'tgit';
+  /** Workflow delivery cannot look up TGit merge requests yet, so it opens none. */
+  readonly pullRequests = null;
 
   parseRepoInput(input: string): RepoInfo {
     return parseTGitRepoInput(input);
@@ -68,9 +69,6 @@ export class TGitProvider implements GitProvider {
   getDefaultEmailDomain(): string | null {
     return 'tencent.com';
   }
-
-  findOpenPullRequest(opts: PrCreateOptions): Promise<string | undefined> { return findTGitMergeRequest(opts); }
-  validatePullRequest(url: string, opts: PrCreateOptions): Promise<boolean | undefined> { return validateTGitMergeRequest(url, opts); }
 
   async listOrgRepos(org: string, opts?: { maxRepos?: number }): Promise<OrgRepoInfo[]> {
     return gfListOrgRepos(org, opts);

@@ -1,5 +1,4 @@
 import type { GitProvider, PrCreateOptions, RepoInfo, OrgRepoInfo } from '../types.js';
-import { findGitCodePull, validateGitCodePull } from './workflow-pr.js';
 import { RepoNotFoundError } from '../types.js';
 import {
   gitcodeIsAuthenticated,
@@ -26,9 +25,9 @@ import { askQuestion, isInteractive } from '../../utils/prompt.js';
  * that distinguish it from the GitLab provider it is structurally modelled on.
  */
 export class GitCodeProvider implements GitProvider {
-  findOpenPullRequest(opts: PrCreateOptions): Promise<string | undefined> { return findGitCodePull(opts); }
-  validatePullRequest(url: string, opts: PrCreateOptions): Promise<boolean | undefined> { return validateGitCodePull(url, opts); }
   readonly name = 'gitcode';
+  /** Workflow delivery cannot look up GitCode pull requests yet, so it opens none. */
+  readonly pullRequests = null;
 
   parseRepoInput(input: string): RepoInfo {
     return parseGitCodeRepoInput(input);

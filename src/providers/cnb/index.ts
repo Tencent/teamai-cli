@@ -1,5 +1,4 @@
 import type { GitProvider, RepoInfo, PrCreateOptions } from '../types.js';
-import { findCnbPull, validateCnbPull } from './workflow-pr.js';
 import { RepoNotFoundError } from '../types.js';
 import {
   cnbParseRepoInput,
@@ -20,9 +19,9 @@ import {
  * the TGit provider's "thin class over a platform CLI" shape.
  */
 export class CNBProvider implements GitProvider {
-  findOpenPullRequest(opts: PrCreateOptions): Promise<string | undefined> { return findCnbPull(opts); }
-  validatePullRequest(url: string, opts: PrCreateOptions): Promise<boolean | undefined> { return validateCnbPull(url, opts); }
   readonly name = 'cnb';
+  /** Workflow delivery cannot look up CNB pull requests yet, so it opens none. */
+  readonly pullRequests = null;
 
   parseRepoInput(input: string): RepoInfo {
     return cnbParseRepoInput(input);

@@ -906,7 +906,7 @@ function nextDelivery(run: RunState): DeliveryJob | undefined {
       continue;
     }
     return {
-      key, runId: run.id, checkout: run.checkout, base: run.base.commit, target: run.base.ref,
+      key, runId: run.id, runName: run.name, checkout: run.checkout, base: run.base.commit, target: run.base.ref,
       ...(step.delivery.reported ? { reported: step.delivery.reported } : {}),
     };
   }
@@ -932,6 +932,23 @@ function completeDelivery(run: RunState, job: DeliveryJob, outcome: DeliveryOutc
 }
 
 /**
+ * The gate before a pull request is opened: with what reports and controls left pending applied, whether the step still
+ * delivers `job`. If it does, it is marked as creating in the same write, so a request opened by a process that then
+ * stops is looked up rather than opened again.
+ */
+async function markCreating(config: LocalConfig, runId: string, job: DeliveryJob): Promise<boolean> {
+  const marked = await updateRun(config, runId, async (run) => {
+    if (run === 'missing' || run.status !== 'running') return { value: false };
+    const settledRun = reconcileRun(run);
+    const step = 'unreadable' in settledRun || 'outcome' in settledRun ? undefined : deliveringStep(run, job.key);
+    if (!step) return { value: false };
+    step.delivery.creating = true;
+    return { value: true, write: { ...run, updatedAt: new Date().toISOString() } };
+  });
+  return marked.status === 'done' && marked.value;
+}
+
+/**
  * Delivers the run's delivering steps one at a time, before `next` answers, whichever driver called it. The run lock is
  * held to pick a delivery and to apply its outcome, never across git or a provider. While another process of this
  * machine delivers, it holds the delivery lock, and this call leaves the work to it.
@@ -951,7 +968,7 @@ async function drainDeliveries(config: LocalConfig, runId: string): Promise<void
       });
       if (picked.status !== 'done' || !picked.value) return requeued;
       const job = picked.value;
-      const outcome = await deliverPr(job);
+      const outcome = await deliverPr(job, () => markCreating(config, runId, job));
       const applied = await updateRun(config, runId, async (run) => {
         if (run === 'missing') return { value: undefined };
         const { requeueEnd } = completeDelivery(run, job, outcome);
