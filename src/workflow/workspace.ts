@@ -168,6 +168,20 @@ export function deliverableOf(run: RunState, state: StepState, step: WorkflowSte
   return branch === undefined || head === undefined || head === run.base?.commit ? undefined : { branch, head };
 }
 
+/**
+ * The branch a pull request from `branch` goes into: the nearest branch it grew from that delivered a pull request, so
+ * the request holds only the work done since, else the run base branch. Undefined when the run started from no branch.
+ */
+export function deliveryTarget(run: Pick<RunState, 'base' | 'copies' | 'deliveries'>, branch: string): string | undefined {
+  const delivered = new Set((run.deliveries ?? []).map((receipt) => receipt.branch));
+  const walked = new Set([branch]);
+  for (let from = run.copies?.[branch]?.from; from !== undefined && !walked.has(from); from = run.copies?.[from]?.from) {
+    if (delivered.has(from)) return from;
+    walked.add(from);
+  }
+  return run.base?.ref;
+}
+
 /** Direct steps of a workflow step, such as `work.write`, not its fan-out items. */
 function workflowChildren(run: RunState, step: StepState): StepState[] {
   const prefix = `${step.id}.`;

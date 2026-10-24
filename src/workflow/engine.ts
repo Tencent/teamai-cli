@@ -24,7 +24,7 @@ import {
 import { addItems, afterStanding, expandItems, isItem, itemsAfter, itemsOf, itemsSettled, startedItems } from './fan-out.js';
 import { decideRound, decideStepLoop, exhaustedAtStart, firstPass, loopSettled } from './loop.js';
 import { childScope, contextOf, insertChildren, localId, statesIn, stepDefinitions, topScope, type Scope } from './scope.js';
-import { deliverableOf, deliveryProblem, planWorkspace, plannedBranch, sessionOf, type LeaseSession, type SessionRef, type WorkspaceContract, type WorkspaceMode, type WorkspacePlan } from './workspace.js';
+import { deliverableOf, deliveryProblem, deliveryTarget, planWorkspace, plannedBranch, sessionOf, type LeaseSession, type SessionRef, type WorkspaceContract, type WorkspaceMode, type WorkspacePlan } from './workspace.js';
 import { deliverPr, deliveryFailure, reportedPrMismatch, type DeliveryJob, type DeliveryKey, type DeliveryOutcome } from './pr-delivery.js';
 import { sanitizePrUrl, type PrUrl } from './pr-url.js';
 import { deliveryLockPath, generateRunId, installOwner, isRunId, readRun, updateRun } from './store.js';
@@ -904,12 +904,13 @@ function nextDelivery(run: RunState): DeliveryJob | undefined {
   for (const step of run.steps) {
     if (step.status !== 'delivering') continue;
     const key = deliveryKey(step);
-    if (!run.checkout || !run.base?.ref) {
+    const target = deliveryTarget(run, key.branch);
+    if (!run.checkout || !run.base || target === undefined) {
       deliveryFailed(step, deliveryFailure({ runId: run.id, key }, { kind: 'no_checkout' }));
       continue;
     }
     return {
-      key, runId: run.id, runName: run.name, checkout: run.checkout, base: run.base.commit, target: run.base.ref,
+      key, runId: run.id, runName: run.name, checkout: run.checkout, base: run.base.commit, target,
       ...(step.delivery.reported ? { reported: step.delivery.reported } : {}),
     };
   }
@@ -1414,10 +1415,11 @@ function continueSession(run: RunState, report: ReportInput): void {
 async function reportedPrUnmatched(config: LocalConfig, runId: string, report: ReportInput, url: PrUrl): Promise<string | undefined> {
   if (report.outcome !== 'success' || !report.changes || !isRunId(runId)) return undefined;
   const run = await readRun(config, runId);
-  if (typeof run === 'string' || !run.checkout || !run.base?.ref) return undefined;
+  if (typeof run === 'string' || !run.checkout) return undefined;
+  const target = deliveryTarget(run, report.changes.branch);
   const step = run.steps.find((item) => item.status === 'leased' && item.lease.attempt === report.attempt);
-  if (!step || locateStep(run, step.id)?.step.deliver !== 'pr') return undefined;
-  return reportedPrMismatch({ checkout: run.checkout, url, branch: report.changes.branch, target: run.base.ref });
+  if (!step || target === undefined || locateStep(run, step.id)?.step.deliver !== 'pr') return undefined;
+  return reportedPrMismatch({ checkout: run.checkout, url, branch: report.changes.branch, target });
 }
 
 export async function reportAttempt(config: LocalConfig, runId: string, report: ReportInput): Promise<WorkflowEnvelope> {

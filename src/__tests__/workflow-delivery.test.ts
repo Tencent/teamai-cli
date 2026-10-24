@@ -429,9 +429,146 @@ describe('delivering a step', () => {
     expect(delivered.ok && delivered.value.deliveries).toEqual([{ url, branch, base: 'main', step: 'fix', pass: 1 }]);
   });
 
-  it.todo('delivers a workflow step with workspace: new once, against the delivered branch of the step it needs');
-  it.todo('delivers each for_each item against the delivered branch of the item it waited for, and lists the PRs in item order');
-  it.todo('targets the nearest delivered branch, passing over a need that was skipped');
+});
+
+/** A command that adds a line no earlier run of it wrote to `file`, so every run commits. */
+const bump = (file: string) => `node -e "require('fs').appendFileSync('${file}', Date.now() + ' ' + Math.random() + '\\n')"`;
+
+/** The head and target branch of each pull request the fake gh was asked to open, in order. */
+function creates(gh: ReturnType<typeof fakeGh>): Array<[string | undefined, string | undefined]> {
+  return gh.calls().filter((call) => call.args[0] === 'pr').map((call) => [flag(call.args, '-H'), flag(call.args, '-B')]);
+}
+
+/** The commits on `head` that `target` does not have, on the fixture's origin, leaving out the merge that brings a copy up to its needs. */
+function commitsBeyond(root: string, target: string, head: string): string[] {
+  return git(root, ['--git-dir=remote.git', 'log', '--no-merges', '--format=%H', `${target}..${head}`]).split('\n').filter(Boolean);
+}
+
+function changedTo(run: RunState, id: string): string | undefined {
+  const step = run.steps.find((item) => item.id === id);
+  return step && 'changes' in step ? step.changes?.to : undefined;
+}
+
+describe('where a pull request goes', () => {
+  it('opens the pull request of a step into the delivered branch of the step it needs, with only its own commits', async () => {
+    const { config, cwd, root, runId } = await fixture(`  - id: a\n    workspace: new\n    command: ${bump('a.txt')}\n    deliver: pr\n  - id: b\n    needs: [a]\n    workspace: new\n    command: ${bump('b.txt')}\n    deliver: pr\n`);
+    const gh = fakeGh(path.join(root, 'gh'));
+
+    expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    const [a, b] = [`teamai/${runId}/a/p1`, `teamai/${runId}/b/p1`];
+    expect(creates(gh)).toEqual([[a, 'main'], [b, a]]);
+    const run = await state(config, runId);
+    expect(commitsBeyond(root, a, b)).toEqual([changedTo(run, 'b')]);
+    expect(run.deliveries).toEqual([
+      { url: 'https://github.com/fixture/app/pull/1', branch: a, base: 'main', step: 'a', pass: 1 },
+      { url: 'https://github.com/fixture/app/pull/2', branch: b, base: a, step: 'b', pass: 1 },
+    ]);
+  });
+
+  it('keeps a URL a stacked step reports when it is the open pull request into the delivered branch of the step it needs', async () => {
+    const { config, root, runId } = await fixture(`  - id: a\n    workspace: new\n    command: node a.js\n    deliver: pr\n  - id: b\n    needs: [a]\n    workspace: new\n    command: node b.js\n    deliver: pr\n`);
+    const gh = fakeGh(path.join(root, 'gh'));
+    const [a, b] = [`teamai/${runId}/a/p1`, `teamai/${runId}/b/p1`];
+    const first = await take(config, runId);
+    await succeed(config, runId, first, { to: pushWork(root, first) });
+    const second = await take(config, runId);
+    gh.configure({ open: [pull(1, a), pull(2, b, a)] });
+
+    const accepted = await succeed(config, runId, second, { to: pushWork(root, second), pr_url: 'https://github.com/fixture/app/pull/2' });
+    expect(accepted).toMatchObject({ data: { accepted: true, step: { id: 'b', status: 'delivering' } } });
+    expect(accepted).not.toHaveProperty('data.dropped');
+    expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect((await state(config, runId)).deliveries?.[1]).toEqual({ url: 'https://github.com/fixture/app/pull/2', branch: b, base: a, step: 'b', pass: 1 });
+    expect(creates(gh)).toEqual([[a, 'main']]);
+  });
+
+  it('opens the pull request of a for_each item into the delivered branch of the item it runs after, with only its own commits', async () => {
+    const { config, cwd, root, runId } = await fixture(`  - id: build\n    for_each: inputs.packages\n    workspace: new\n    command: ${bump('items.txt')}\n    deliver: pr\n`,
+      { packages: [{ name: 'one', id: 'one', after: [] }, { name: 'two', id: 'two', after: ['one'] }] });
+    const gh = fakeGh(path.join(root, 'gh'));
+
+    expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    const [one, two] = [`teamai/${runId}/build-0/p1`, `teamai/${runId}/build-1/p1`];
+    expect(creates(gh)).toEqual([[one, 'main'], [two, one]]);
+    expect(commitsBeyond(root, one, two)).toEqual([changedTo(await state(config, runId), 'build[1]')]);
+  });
+
+  it('passes over a need that was skipped, to the delivered branch before it', async () => {
+    const { config, cwd, root, runId } = await fixture([
+      `  - id: a\n    workspace: new\n    command: ${bump('a.txt')}\n    deliver: pr\n`,
+      `  - id: retry\n    needs: [a]\n    if: steps.a.outcome == 'failed'\n    workspace: new\n    command: ${bump('retry.txt')}\n    deliver: pr\n`,
+      `  - id: c\n    needs: [retry, a]\n    workspace: new\n    command: ${bump('c.txt')}\n    deliver: pr\n`,
+    ].join(''));
+    const gh = fakeGh(path.join(root, 'gh'));
+
+    expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect((await state(config, runId)).steps[1]).toMatchObject({ id: 'retry', status: 'skipped' });
+    expect(creates(gh)).toEqual([[`teamai/${runId}/a/p1`, 'main'], [`teamai/${runId}/c/p1`, `teamai/${runId}/a/p1`]]);
+  });
+
+  it('opens the pull request of a sub-workflow\'s first step into the delivered branch of what the workflow step needs', async () => {
+    const { config, cwd, root, runId } = await fixture([
+      `  - id: a\n    workspace: new\n    command: ${bump('a.txt')}\n    deliver: pr\n`,
+      `  - id: change\n    needs: [a]\n    workflow:\n      steps:\n        - id: write\n          workspace: new\n          command: ${bump('write.txt')}\n          deliver: pr\n`,
+    ].join(''));
+    const gh = fakeGh(path.join(root, 'gh'));
+
+    expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(creates(gh)).toEqual([[`teamai/${runId}/a/p1`, 'main'], [`teamai/${runId}/change-write/p1`, `teamai/${runId}/a/p1`]]);
+  });
+
+  it('opens one pull request for a workflow step with workspace: new, from the branch its steps share, and none for its steps', async () => {
+    const { config, cwd, root, runId } = await fixture([
+      `  - id: a\n    workspace: new\n    command: ${bump('a.txt')}\n    deliver: pr\n`,
+      `  - id: change\n    needs: [a]\n    workspace: new\n    deliver: pr\n    workflow:\n      steps:\n`,
+      `        - id: write\n          workspace: continue\n          command: ${bump('write.txt')}\n`,
+      `        - id: more\n          needs: [write]\n          workspace: continue\n          command: ${bump('more.txt')}\n`,
+    ].join(''));
+    const gh = fakeGh(path.join(root, 'gh'));
+
+    expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    const [a, change] = [`teamai/${runId}/a/p1`, `teamai/${runId}/change/p1`];
+    expect(creates(gh)).toEqual([[a, 'main'], [change, a]]);
+    const run = await state(config, runId);
+    expect(commitsBeyond(root, a, change)).toEqual([changedTo(run, 'change.more'), changedTo(run, 'change.write')]);
+    expect(run.deliveries?.map((receipt) => [receipt.step, receipt.branch])).toEqual([['a', a], ['change', change]]);
+  });
+
+  it('opens a pull request for each pass of a looped new step, leaves the earlier ones open, and lists them in order', async () => {
+    const { config, cwd, root, runId } = await fixture(
+      `  - id: fix\n    workspace: new\n    command: ${bump('fix.txt')}\n    deliver: pr\n    loop: { back_to: fix, while: "length(steps.fix.passes) < 2", max_iterations: 2 }\n`,
+    );
+    const gh = fakeGh(path.join(root, 'gh'));
+
+    expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(creates(gh)).toEqual([[`teamai/${runId}/fix/p1`, 'main'], [`teamai/${runId}/fix/p2`, 'main']]);
+    expect(gh.calls().every((call) => call.args[0] === 'api' || (call.args[0] === 'pr' && call.args[1] === 'create'))).toBe(true);
+    expect(buildEndRecord(await state(config, runId), remote, 'tester').prs).toEqual(['https://github.com/fixture/app/pull/1', 'https://github.com/fixture/app/pull/2']);
+  });
+
+  it('opens one pull request for a step that loops on one continue branch, and lists it once', async () => {
+    const { config, cwd, root, runId } = await fixture(
+      `  - id: change\n    workspace: new\n    workflow:\n      steps:\n        - id: fix\n          workspace: continue\n          command: ${bump('fix.txt')}\n          deliver: pr\n          loop: { back_to: fix, while: "length(steps.fix.passes) < 3", max_iterations: 3 }\n`,
+    );
+    const gh = fakeGh(path.join(root, 'gh'));
+
+    expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(creates(gh)).toEqual([[`teamai/${runId}/change/p1`, 'main']]);
+    expect(gh.calls().filter((call) => call.args[0] === 'api')).toHaveLength(3);
+    expect(buildEndRecord(await state(config, runId), remote, 'tester').prs).toEqual(['https://github.com/fixture/app/pull/1']);
+  });
+
+  it('lists the pull requests of three for_each items in item order', async () => {
+    const { config, cwd, root, runId } = await fixture(`  - id: build\n    for_each: inputs.packages\n    workspace: new\n    command: ${bump('items.txt')}\n    deliver: pr\n`,
+      { packages: ['one', 'two', 'three'].map((name) => ({ name, id: name, after: [] })) });
+    const gh = fakeGh(path.join(root, 'gh'));
+
+    expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(creates(gh)).toEqual([0, 1, 2].map((index) => [`teamai/${runId}/build-${index}/p1`, 'main']));
+    const run = await state(config, runId);
+    expect(run.deliveries?.map((receipt) => receipt.step)).toEqual(['build[0]', 'build[1]', 'build[2]']);
+    expect(buildEndRecord(run, remote, 'tester').prs).toEqual([1, 2, 3].map((number) => `https://github.com/fixture/app/pull/${number}`));
+  });
 });
 
 describe('protected paths', () => {
