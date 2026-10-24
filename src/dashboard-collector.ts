@@ -2368,6 +2368,7 @@ export async function compactEvents(eventsPath?: string): Promise<void> {
 
 /** What a session last recorded: its scope and the repo it was in. */
 interface RecordedScope {
+  cwd?: string;
   /** The last event's data home key, with the `projectAnchor` of that same event. */
   scope?: { key: string; anchor: string | undefined };
   /** The last `projectAnchor` the session recorded (#809's attribution rule). */
@@ -2391,6 +2392,7 @@ function recordedScope(sessionId: string, cwd: string): Promise<RecordedScope> {
       const here = own.filter((e) => e.cwd === cwd);
       const scoped = here.find((e) => e.dataHomeKey) ?? own.find((e) => e.dataHomeKey);
       return {
+        cwd: scoped?.cwd ?? own.find((e) => e.cwd)?.cwd,
         scope: scoped?.dataHomeKey ? { key: scoped.dataHomeKey, anchor: scoped.projectAnchor } : undefined,
         projectAnchor: (here.find((e) => e.projectAnchor) ?? own.find((e) => e.projectAnchor))?.projectAnchor,
       };
@@ -2398,6 +2400,11 @@ function recordedScope(sessionId: string, cwd: string): Promise<RecordedScope> {
     recordedScopes.set(key, known);
   }
   return known;
+}
+
+/** Recover the last recorded directory only when the launcher's process cwd is gone. */
+export async function recordedHookCwd(hookData: Record<string, unknown>, tool: string): Promise<string | undefined> {
+  return (await recordedScope(deriveDispatchSessionId(hookData, tool), '')).cwd;
 }
 
 /**
