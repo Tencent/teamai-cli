@@ -3,14 +3,19 @@
  * 读取 MR/PR 上 reviewer 对知识建议的交互状态。
  *
  * - GitHub: 👎 reaction = reject，无 reaction = approve（默认写入）
+ * - GitLab: 👎 (thumbsdown) award emoji = reject，无 emoji = approve（默认写入）
  * - TGit: resolve_state=1 = approve，resolve_state=0 = reject（默认不写入）
  */
 
 import { parseMrUrl } from './mr-comment.js';
 import { tgitFetch } from '../providers/tgit/rest-auth.js';
+import { getGitLabToken } from '../providers/gitlab/gitlab-api.js';
+import { parseGitLabMRUrl } from '../providers/gitlab/mr-fetch.js';
 import { log } from '../utils/logger.js';
 
 const API_TIMEOUT_MS = 15_000;
+// GitLab caps note pages at 100; same guard as fetchGitLabDiscussions (mr-fetch.ts).
+const MAX_NOTE_PAGES = 20;
 
 // ─── 类型 ────────────────────────────────────────────────
 
@@ -151,6 +156,71 @@ async function readTGitRejections(owner: string, repo: string, mrIid: string): P
   return result;
 }
 
+// ─── GitLab ─────────────────────────────────────────────
+
+interface GitLabNote {
+  id: number;
+  body: string;
+}
+
+interface GitLabAward {
+  name: string; // 'thumbsdown', 'thumbsup', ...
+}
+
+async function readGitLabRejections(mrUrl: string): Promise<RejectionResult> {
+  const result: RejectionResult = { rejectedIds: new Set(), approvedIds: new Set(), allIds: new Set() };
+
+  const { apiBase, projectPath, mrIid } = parseGitLabMRUrl(mrUrl);
+  const token = getGitLabToken();
+  if (!token) {
+    throw new Error(
+      'GitLab authentication unavailable. Set the GITLAB_TOKEN environment variable '
+      + '(a GitLab Personal Access Token with `api` scope).',
+    );
+  }
+  const enc = encodeURIComponent(projectPath);
+  const headers = { 'PRIVATE-TOKEN': token };
+  const doFetch = (path: string) => fetch(`${apiBase}${path}`, {
+    headers,
+    signal: AbortSignal.timeout(API_TIMEOUT_MS),
+  });
+
+  // GitLab returns notes newest-first, capped at 100 per page. Page through
+  // all of them: a 👎 on an older note (pushed past page 1 by newer discussion)
+  // must still reject the learning, same as fetchGitLabDiscussions paging.
+  const notes: GitLabNote[] = [];
+  for (let page = 1; page <= MAX_NOTE_PAGES; page++) {
+    const resp = await doFetch(`/projects/${enc}/merge_requests/${mrIid}/notes?per_page=100&page=${page}`);
+    if (!resp.ok) throw new Error(`GitLab notes request failed (${resp.status})`);
+    const pageNotes = (await resp.json()) as GitLabNote[];
+    notes.push(...pageNotes);
+    if (!resp.headers.get('x-next-page')) break;
+  }
+
+  for (const note of notes) {
+    const markerId = extractMarkerId(note.body);
+    if (!markerId) continue;
+    result.allIds.add(markerId);
+
+    const reactResp = await doFetch(
+      `/projects/${enc}/merge_requests/${mrIid}/notes/${note.id}/award_emoji?per_page=100`,
+    );
+    if (!reactResp.ok) {
+      throw new Error(`GitLab award_emoji request failed for note ${note.id} (${reactResp.status})`);
+    }
+    const awards = (await reactResp.json()) as GitLabAward[];
+
+    // GitLab: 👎 (thumbsdown) = reject，无 emoji = approve（默认写入，与 GitHub 一致）
+    if (awards.some((a) => a.name === 'thumbsdown')) {
+      result.rejectedIds.add(markerId);
+    } else {
+      result.approvedIds.add(markerId);
+    }
+  }
+
+  return result;
+}
+
 // ─── Public API ─────────────────────────────────────────
 
 /**
@@ -158,6 +228,7 @@ async function readTGitRejections(owner: string, repo: string, mrIid: string): P
  *
  * 返回被 reject 和 approve 的 marker id 集合。
  * - GitHub: 默认写入，👎 = reject
+ * - GitLab: 默认写入，👎 (thumbsdown award emoji) = reject
  * - TGit: 默认不写入，点"解决" = approve
  */
 export async function readRejections(mrUrl: string): Promise<RejectionResult> {
@@ -168,6 +239,11 @@ export async function readRejections(mrUrl: string): Promise<RejectionResult> {
     return readGitHubRejections(parsed.owner, parsed.repo, parsed.number);
   }
 
+  if (parsed.provider === 'gitlab') {
+    log.debug('读取 GitLab award emoji...');
+    return readGitLabRejections(mrUrl);
+  }
+
   log.debug('读取 TGit emoji reactions...');
   return readTGitRejections(parsed.owner, parsed.repo, parsed.number);
 }
@@ -175,10 +251,10 @@ export async function readRejections(mrUrl: string): Promise<RejectionResult> {
 /**
  * 根据 rejection 结果判断某条建议是否应该写入。
  *
- * 两个平台逻辑统一：默认写入，被 reject 的不写入。
- * - GitHub: 👎 reaction = reject
+ * 三个平台逻辑统一：默认写入，被 reject 的不写入。
+ * - GitHub / GitLab: 👎 = reject
  * - TGit: ☝️ emoji (编号 8) = reject
  */
-export function shouldWrite(markerId: string, rejections: RejectionResult, _provider: 'github' | 'tgit'): boolean {
+export function shouldWrite(markerId: string, rejections: RejectionResult, _provider: 'github' | 'tgit' | 'gitlab'): boolean {
   return !rejections.rejectedIds.has(markerId);
 }

@@ -2,18 +2,22 @@
 /**
  * MR/PR comment 格式化与幂等发布。
  *
- * 支持 GitHub REST API 和 TGit REST API，通过 marker 锚点实现
+ * 支持 GitHub、GitLab（含自建实例）和 TGit REST API，通过 marker 锚点实现
  * 同一 MR 上多次运行只产生/更新一条 comment。
  */
 
 import type { LearningDraft, CodebaseSuggestion } from '../types.js';
 import { tgitFetch } from '../providers/tgit/rest-auth.js';
+import { getGitLabToken } from '../providers/gitlab/gitlab-api.js';
+import { parseGitLabMRUrl } from '../providers/gitlab/mr-fetch.js';
 import { log } from '../utils/logger.js';
 
 // ─── 常量 ────────────────────────────────────────────────
 
 const DEFAULT_MARKER = '<!-- teamai:ci-extract -->';
 const API_TIMEOUT_MS = 15_000;
+// GitLab caps note pages at 100; same guard as fetchGitLabDiscussions (mr-fetch.ts).
+const MAX_NOTE_PAGES = 20;
 
 // ─── 类型 ────────────────────────────────────────────────
 
@@ -23,7 +27,7 @@ export interface CommentResult {
 }
 
 interface ParsedMrUrl {
-  provider: 'github' | 'tgit';
+  provider: 'github' | 'tgit' | 'gitlab';
   owner: string;
   repo: string;
   number: string;
@@ -48,7 +52,23 @@ export function parseMrUrl(url: string): ParsedMrUrl {
     return { provider: 'tgit', owner: tgitMatch[1], repo: tgitMatch[2], number: tgitMatch[3] };
   }
 
-  throw new Error(`无法解析 MR URL: ${url}，仅支持 GitHub 和 TGit`);
+  // GitLab（含自建实例）: https://<host>/<group...>/<project>/-/merge_requests/<iid>
+  // `/-/` 路由分隔符为 GitLab 专有，凭它即可在任意 host 上识别平台。
+  const glMatch = url.match(/^[a-z]+:\/\/[^/]+\/(.+)\/-\/merge_requests\/(\d+)/i);
+  if (glMatch) {
+    const projectPath = glMatch[1];
+    const lastSlash = projectPath.lastIndexOf('/');
+    if (lastSlash > 0) {
+      return {
+        provider: 'gitlab',
+        owner: projectPath.slice(0, lastSlash),
+        repo: projectPath.slice(lastSlash + 1),
+        number: glMatch[2],
+      };
+    }
+  }
+
+  throw new Error(`无法解析 MR URL: ${url}，仅支持 GitHub、TGit 和 GitLab`);
 }
 
 // ─── Comment 格式化 ──────────────────────────────────────
@@ -268,6 +288,73 @@ async function updateTGitComment(
   return { created: false };
 }
 
+// ─── GitLab Comment API ─────────────────────────────────
+
+interface GitLabNote {
+  id: number;
+  body: string;
+}
+
+/**
+ * GitLab Notes API 直接使用 MR 的项目内 iid（与 TGit 需全局 id 不同）。
+ * API base 与 host 校验复用 parseGitLabMRUrl：只把 PAT 发给配置过的实例。
+ */
+async function gitlabNotesBase(mrUrl: string): Promise<string> {
+  const { apiBase, projectPath, mrIid } = parseGitLabMRUrl(mrUrl);
+  return `${apiBase}/projects/${encodeURIComponent(projectPath)}/merge_requests/${mrIid}/notes`;
+}
+
+async function gitlabRequest(mrUrl: string, path: string, method: string, body?: unknown): Promise<Response> {
+  const token = getGitLabToken();
+  if (!token) {
+    throw new Error(
+      'GitLab authentication unavailable. Set the GITLAB_TOKEN environment variable '
+      + '(a GitLab Personal Access Token with `api` scope).',
+    );
+  }
+  return fetch(`${await gitlabNotesBase(mrUrl)}${path}`, {
+    method,
+    headers: { 'PRIVATE-TOKEN': token, 'Content-Type': 'application/json', 'Accept': 'application/json' },
+    body: body ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(API_TIMEOUT_MS),
+  });
+}
+
+async function findGitLabComment(mrUrl: string, marker: string): Promise<GitLabNote | null> {
+  // GitLab returns notes newest-first, capped at 100 per page. Page through all
+  // of them: a marker note pushed far back by newer discussion is still the one
+  // to update in place, and missing it would post a duplicate instead.
+  for (let page = 1; page <= MAX_NOTE_PAGES; page++) {
+    const resp = await gitlabRequest(mrUrl, `?per_page=100&page=${page}`, 'GET');
+    if (!resp.ok) {
+      throw new Error(`GitLab note list request failed (${resp.status})`);
+    }
+    const notes = (await resp.json()) as GitLabNote[];
+    const found = notes.find((n) => n.body.includes(marker));
+    if (found) return found;
+    if (!resp.headers.get('x-next-page')) break;
+  }
+  return null;
+}
+
+async function postGitLabComment(mrUrl: string, body: string): Promise<CommentResult> {
+  const resp = await gitlabRequest(mrUrl, '', 'POST', { body });
+  if (!resp.ok) {
+    const errText = await resp.text();
+    throw new Error(`GitLab comment post failed (${resp.status}): ${errText}`);
+  }
+  return { created: true };
+}
+
+async function updateGitLabComment(mrUrl: string, noteId: number, body: string): Promise<CommentResult> {
+  const resp = await gitlabRequest(mrUrl, `/${noteId}`, 'PUT', { body });
+  if (!resp.ok) {
+    const errText = await resp.text();
+    throw new Error(`GitLab comment update failed (${resp.status}): ${errText}`);
+  }
+  return { created: false };
+}
+
 // ─── Public API ─────────────────────────────────────────
 
 /**
@@ -315,6 +402,15 @@ export async function postOrUpdateMrComment(
     return postGitHubComment(parsed.owner, parsed.repo, parsed.number, body);
   }
 
+  if (parsed.provider === 'gitlab') {
+    const existing = await findGitLabComment(mrUrl, effectiveMarker);
+    if (existing) {
+      log.debug(`Found existing note #${existing.id}; updating in place...`);
+      return updateGitLabComment(mrUrl, existing.id, body);
+    }
+    return postGitLabComment(mrUrl, body);
+  }
+
   // TGit — Notes API 使用 MR 全局 id
   const projectId = encodeURIComponent(`${parsed.owner}/${parsed.repo}`);
   const mrGlobalId = await getMrGlobalId(projectId, parsed.number);
@@ -335,7 +431,7 @@ export function formatIndividualComment(
   type: 'learning' | 'suggestion',
   index: number,
   content: { title?: string; body?: string; section?: string; action?: string; preview?: string },
-  provider: 'github' | 'tgit',
+  provider: 'github' | 'tgit' | 'gitlab',
 ): string {
   const markerId = type === 'learning' ? 'learning' : `suggestion:${index}`;
   const marker = `<!-- teamai:ci-extract:${markerId} -->`;
@@ -363,10 +459,11 @@ export function formatIndividualComment(
   }
 
   lines.push('');
-  if (provider === 'github') {
-    lines.push('> 💡 不写入此条？请对本条 comment 加 👎 reaction');
-  } else {
+  if (provider === 'tgit') {
     lines.push('> 💡 不写入此条？请对本条评论加 ☝️ emoji reaction');
+  } else {
+    // GitHub / GitLab：👎 reaction（GitLab 为 thumbsdown award emoji）
+    lines.push('> 💡 不写入此条？请对本条 comment 加 👎 reaction');
   }
   lines.push('');
   lines.push('_Auto-generated by `teamai ci extract-mr`_');
@@ -433,6 +530,18 @@ export async function postIndividualComments(
         await updateGitHubComment(parsed.owner, parsed.repo, existing.id, item.body);
       } else {
         await postGitHubComment(parsed.owner, parsed.repo, parsed.number, item.body);
+      }
+      posted++;
+    }
+  } else if (parsed.provider === 'gitlab') {
+    // GitLab：发布为普通 conversation note，reviewer 通过 👎 award emoji reject
+    for (const item of items) {
+      const marker = `<!-- teamai:ci-extract:${item.markerId} -->`;
+      const existing = await findGitLabComment(mrUrl, marker);
+      if (existing) {
+        await updateGitLabComment(mrUrl, existing.id, item.body);
+      } else {
+        await postGitLabComment(mrUrl, item.body);
       }
       posted++;
     }
@@ -552,6 +661,13 @@ export async function postCodebaseGraphComment(
       await updateGitHubComment(parsed.owner, parsed.repo, existing.id, body);
     } else {
       await postGitHubComment(parsed.owner, parsed.repo, parsed.number, body);
+    }
+  } else if (parsed.provider === 'gitlab') {
+    const existing = await findGitLabComment(mrUrl, CODEBASE_GRAPH_MARKER);
+    if (existing) {
+      await updateGitLabComment(mrUrl, existing.id, body);
+    } else {
+      await postGitLabComment(mrUrl, body);
     }
   } else {
     const projectId = encodeURIComponent(`${parsed.owner}/${parsed.repo}`);

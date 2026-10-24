@@ -43,9 +43,10 @@ export interface CiExtractMrOptions {
  *
  * 通过 provider API 获取当前 token 对应的用户信息：
  * - GitHub: GITHUB_TOKEN → GET /user
+ * - GitLab: GITLAB_TOKEN → GET /api/v4/user
  * - TGit: TGIT_TOKEN → GET /api/v3/user
  */
-async function configureGitUser(repoPath: string, provider: 'github' | 'tgit'): Promise<void> {
+async function configureGitUser(repoPath: string, provider: 'github' | 'tgit' | 'gitlab'): Promise<void> {
   const { execFileSync } = await import('node:child_process');
   let name = 'teamai-ci';
   let email = 'teamai-ci@noreply';
@@ -63,6 +64,13 @@ async function configureGitUser(repoPath: string, provider: 'github' | 'tgit'): 
           name = user.login;
           email = user.email ?? `${user.login}@users.noreply.github.com`;
         }
+      }
+    } else if (provider === 'gitlab') {
+      const { gitlabWhoami } = await import('../providers/gitlab/gitlab-api.js');
+      const username = await gitlabWhoami();
+      if (username) {
+        name = username;
+        email = `${username}@users.noreply.gitlab`;
       }
     } else {
       // tgitFetch throws when no TGit credential is available; the outer
@@ -153,7 +161,9 @@ async function writeKnowledgeToRepo(
   // 提交并推送
   if (!dryRun && changedFiles.length > 0) {
     try {
-      const provider = mrUrl.includes('github.com') ? 'github' as const : 'tgit' as const;
+      const provider = mrUrl.includes('github.com') ? 'github' as const
+        : mrUrl.includes('git.woa.com') ? 'tgit' as const
+          : 'gitlab' as const;
       await configureGitUser(teamRepo, provider);
       await pushRepoDirectly(teamRepo, `[teamai] CI extract knowledge from MR`, changedFiles);
       log.success('已推送到团队仓库');

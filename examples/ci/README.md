@@ -8,6 +8,7 @@
 |------|------|
 | `github-actions-mr-extract.yml` | GitHub Actions 示例：PR 创建/更新时提炼知识并评论，PR 合入后写入团队知识仓库 |
 | `coding-ci-mr-extract.yaml`     | 智研 / Coding CI（工蜂）示例：MR 创建/更新时提炼知识并评论，MR 合入后写入团队知识仓库 |
+| `gitlab-ci-mr-extract.yml`      | GitLab CI（自建实例，API v4）示例：MR 创建/更新时提炼知识并评论，合入默认分支后写入团队知识仓库 |
 | `codebase-lint.yml`             | GitHub Actions 示例：对 teamwiki 知识图谱做全局一致性检查 |
 
 ## MR 知识提炼示例（`*-mr-extract`）
@@ -26,6 +27,7 @@
 3. 需要对团队知识仓库有 push 权限的 token：GitHub 用 `TEAMAI_SYNC_TOKEN`，工蜂用 `TGIT_TOKEN`。
 4. 智研 / Coding CI（工蜂）的 MR 触发规则**必须写在 YAML 的 `mr:` 块**，仅在 UI 勾选无效。
 5. write 模式的工作目录必须是合入后的源码 checkout，团队知识仓库必须克隆在 checkout **之外**（模板分别用并排目录和 `/tmp/teamai-team-repo`）；克隆在 checkout 内时，CLI 会跳过 `teamwiki/` 更新，只写 learning。
+6. GitLab CI（`gitlab-ci-mr-extract.yml`）：凭据用 `GITLAB_TOKEN`（GitLab PAT，`api` 权限）；GitLab 没有 "MR merged" 原生触发器，合入后的 write 阶段跑在默认分支 push pipeline 上，按 merge/squash commit 反查 MR。MR 上不想要的建议点 👎 award emoji 拒绝。
 
 ## teamwiki 一致性检查示例（`codebase-lint.yml`）
 
