@@ -43,7 +43,7 @@ async function fixture(steps: string, header = '') {
   const id = String(started.data.run);
   return { config, id, next: (options: NextOptions = {}) => leaseNext(config, id, driver, { ...hitl, ...options }),
     respond: (step: string, choice: string, extra = {}) => respondToHitl(config, id, { step, choice, channel: 'tty', agent: false, ...extra }),
-    report: (lease: { attempt: string; revision: number }, outcome: 'success' | 'failed' = 'success') => reportAttempt(config, id, { ...lease, driver, outcome }),
+    report: (lease: { attempt: string; revision: number }, outcome: 'success' | 'failed' = 'success') => reportAttempt(config, id, { attempt: lease.attempt, revision: lease.revision, driver, outcome }),
     state: async () => await readRun(config, id) as RunState };
 }
 afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });

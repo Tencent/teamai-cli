@@ -1850,6 +1850,38 @@ steps:
     expect(adapter.run).not.toHaveBeenCalled();
   });
 
+  it('caps the turns of headless Claude, and reports max_turns as unenforced for another tool and for an interactive prompt', async () => {
+    const yaml = (interactive: boolean) => `schemaVersion: v1alpha1
+name: build
+description: Plan in a few turns.
+steps:
+  - id: plan
+    prompt: Plan it.
+    max_turns: 3
+${interactive ? '    interactive: true\n' : ''}`;
+    const inputs: LocalToolRun[] = [];
+    const ran = vi.fn(async (_tool: string, input: LocalToolRun) => {
+      inputs.push(input);
+      return { started: true as const, exitCode: 0, tokens: { input: 1, output: 1 } };
+    });
+    const adapter: LocalToolAdapter = { run: ran, runInteractive: ran };
+    const headless = await workflowFixture(yaml(false));
+    const codex = await workflowFixture(yaml(false));
+    codex.config.workflows = { tools: { default: 'codex' } };
+    const interactive = await workflowFixture(yaml(true));
+    for (const { config, workspace, runId } of [headless, codex, interactive]) {
+      expect(await runLocalDriver(config, runId, workspace, { hitl: true, adapter })).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    }
+    expect(inputs.map((input) => input.maxTurns)).toEqual([3, undefined, undefined]);
+    const unenforced = async ({ config, runId }: { config: LocalConfig; runId: string }) => {
+      const run = await readRun(config, runId);
+      return typeof run === 'object' && run.steps[0] && 'unenforced' in run.steps[0] ? run.steps[0].unenforced : undefined;
+    };
+    expect(await unenforced(headless)).toBeUndefined();
+    expect(await unenforced(codex)).toEqual([{ requirement: 'max_turns', asked: 3 }]);
+    expect(await unenforced(interactive)).toEqual([{ requirement: 'max_turns', asked: 3 }]);
+  });
+
   it('auto-approves only for this driver process without HITL', async () => {
     const { config, workspace, runId } = await workflowFixture(`schemaVersion: v1alpha1
 name: build

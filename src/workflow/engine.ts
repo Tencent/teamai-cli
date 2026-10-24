@@ -26,8 +26,8 @@ import { decideRound, decideStepLoop, exhaustedAtStart, firstPass, isUnder, loop
 import { childScope, contextOf, insertChildren, localId, statesIn, stepDefinitions, topScope, type Scope } from './scope.js';
 import { planWorkspace, plannedBranch, sessionOf, type LeaseSession, type SessionRef, type WorkspaceContract, type WorkspacePlan } from './workspace.js';
 import {
-  CAN_KEYS, CanSchema, heldFor, mergeRequirements, negotiate, requiredEnvKeys, unionUnenforced,
-  type Allow, type DriverCan, type EnvFacts, type EnvScope, type Held, type Negotiation, type Requirements,
+  CAN_KEYS, CanSchema, ReportedUnenforcedSchema, heldFor, mergeRequirements, negotiate, reportedUnenforced, requiredEnvKeys, unionUnenforced,
+  type Allow, type DriverCan, type EnvFacts, type Held, type Negotiation, type ReportedUnenforced, type Terms,
 } from './requirements.js';
 import { knownSecrets, workflowEnvFacts } from '../env-resolution.js';
 import { redactJson } from '../utils/redact.js';
@@ -76,6 +76,8 @@ export interface ReportInput {
   agent?: ReportedAgent;
   /** The team skills the attempt loaded, by name. */
   used?: Used;
+  /** What the attempt's driver learned, once it ran the step, that it did not enforce. */
+  unenforced?: ReportedUnenforced;
 }
 
 /** A protocol rejection that retains its actionable code and message. */
@@ -249,7 +251,7 @@ function answerWithoutHitl(config: LocalConfig, run: RunState, now: string, auto
 
 function leaseData(
   run: RunState, state: LeasedStep, definition: WorkflowStep, rendered: RenderedLease,
-  { requires, envScope }: { requires: Requirements; envScope?: EnvScope }, plan?: WorkspacePlan,
+  { requires, envScope, maxTurns }: Omit<Terms, 'unenforced'>, plan?: WorkspacePlan,
 ): Record<string, unknown> {
   const expiresAt = leaseDeadline(run, state);
   return { lease: {
@@ -271,6 +273,7 @@ function leaseData(
     ...(definition.workspace === 'read-only' ? { readOnly: true } : {}),
     ...(Object.keys(requires).length > 0 ? { requires } : {}),
     ...(envScope ? { envScope } : {}),
+    ...(maxTurns !== undefined ? { maxTurns } : {}),
     ...(state.lease.unenforced ? { unenforced: state.lease.unenforced } : {}),
     ...(expiresAt !== undefined ? { expiresAt } : {}),
   } };
@@ -989,6 +992,7 @@ function offerTerms(
     envKeys: Object.keys(step.env ?? {}),
     runEnvKeys: requiredEnvKeys([run.definition, ...Object.values(run.workflows ?? {})]),
     budgeted: step.prompt !== undefined && scope.budgeted,
+    ...(step.maxTurns !== undefined ? { maxTurns: step.maxTurns } : {}),
   }, context.can, context.allow, context.facts);
 }
 
@@ -1171,6 +1175,7 @@ const NEXT_PAYLOAD_FIELDS = new Set(['driver', 'running', 'canTakeLease', 'base'
 /** The top-level payload fields `parseReport` reads. Keep in sync with the fields it picks. */
 const REPORT_FIELDS = new Set([
   'attempt', 'revision', 'outcome', 'driver', 'outputs', 'exitCode', 'message', 'tool', 'model', 'session', 'resumed', 'tokens', 'failure', 'changes', 'read', 'agent', 'used',
+  'unenforced',
 ]);
 
 /**
@@ -1288,6 +1293,11 @@ export function parseReport(value: unknown): ParsedReport | string {
     const used = parseReportedUsed(record.used);
     if (typeof used === 'string') return used;
     if (used) report.used = used;
+  }
+  if (record.unenforced !== undefined) {
+    const unenforced = ReportedUnenforcedSchema.safeParse(record.unenforced);
+    if (!unenforced.success) return 'unenforced must list the requirements the driver did not enforce: max_turns';
+    report.unenforced = unenforced.data;
   }
   return { report, ignored: unreadFields(record, REPORT_FIELDS) };
 }
@@ -1482,6 +1492,9 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
     const contract = plan?.contract;
     const mismatch = workspaceMismatch(report, contract) ?? resumedMismatch(step, report.resumed);
     if (mismatch) return { save: false, envelope: error('invalid_report', mismatch) };
+    const added = reportedUnenforced(report.unenforced ?? [], { maxTurns: defined?.maxTurns });
+    if (typeof added === 'string') return { save: false, envelope: error('invalid_report', `Attempt ${report.attempt} of step "${step.id}": ${added}`) };
+    const unenforced = unionUnenforced(step.lease.unenforced ?? [], added);
     let outcome = report.outcome;
     let message = report.message;
     let failure = report.failure;
@@ -1515,7 +1528,7 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
       ...(report.read ? { read: report.read } : {}),
       agent: settleObservation(report, defined?.agent),
       ...(report.used ? { used: report.used } : {}),
-      ...(step.lease.unenforced ? { unenforced: step.lease.unenforced } : {}),
+      ...(unenforced.length > 0 ? { unenforced } : {}),
       installId: install.id,
     };
     if (outcome !== 'released') continueSession(run, report);

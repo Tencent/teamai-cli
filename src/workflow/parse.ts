@@ -21,7 +21,7 @@ import { REQUIREMENT_KEYS, RequirementsSchema, type Requirements } from './requi
 
 const HEADER_KEYS = new Set(['schemaVersion', 'name', 'description', 'inputs', 'defaults', 'ends', 'outputs', 'loop', 'timeout', 'budget', 'steps']);
 const ACTION_KEYS = Object.keys(STEP_ACTIONS);
-const STEP_KEYS = new Set(['id', 'needs', 'if', ...ACTION_KEYS, 'env', 'with', 'agent', 'model', 'output', 'end', 'loop', 'break', 'for_each', 'approve', 'choose', 'interactive', 'workspace', 'session', 'scorers', 'requires', 'timeout', 'budget']);
+const STEP_KEYS = new Set(['id', 'needs', 'if', ...ACTION_KEYS, 'env', 'with', 'agent', 'model', 'output', 'end', 'loop', 'break', 'for_each', 'approve', 'choose', 'interactive', 'workspace', 'session', 'scorers', 'requires', 'timeout', 'budget', 'max_turns']);
 const STEP_LOOP_KEYS = new Set(['back_to', 'while', 'max_iterations']);
 const FOR_EACH_KEYS = new Set(['items', 'max_parallel']);
 const WORKFLOW_LOOP_KEYS = new Set(['while', 'max_iterations']);
@@ -398,6 +398,14 @@ function parseBody(
       const timeout = stepTimeoutPair ? parseTimeout(stepTimeoutPair.value ?? stepTimeoutPair.key, `${field}.timeout`, ctx) : undefined;
       const budgetPair = item.items.find((pair) => scalarString(pair.key) === 'budget');
       const budget = budgetPair ? parseBudget(budgetPair.value ?? budgetPair.key, `${field}.budget`, ctx) : undefined;
+      const maxTurnsPair = item.items.find((pair) => scalarString(pair.key) === 'max_turns');
+      const maxTurnsValue: unknown = isScalar(maxTurnsPair?.value) ? maxTurnsPair.value.value : undefined;
+      const maxTurns = typeof maxTurnsValue === 'number' && Number.isSafeInteger(maxTurnsValue) && maxTurnsValue > 0 ? maxTurnsValue : undefined;
+      if (maxTurnsPair && maxTurns === undefined) {
+        diagnostics.push(locate(file, lineCounter, maxTurnsPair.value ?? maxTurnsPair.key, `${field}.max_turns`, `${label} max_turns must be a positive whole number`));
+      } else if (maxTurnsPair && actions.length > 0 && !promptPair && !promptFilePair) {
+        diagnostics.push(locate(file, lineCounter, maxTurnsPair.key as Node, `${field}.max_turns`, `${label} max_turns is only allowed on a prompt or prompt_file step`));
+      }
       if (budgetPair && actions.length > 0 && !workflowPair) {
         diagnostics.push(locate(file, lineCounter, budgetPair.key as Node, `${field}.budget`, `${label} budget is only allowed on a workflow step; a workflow spends it over all its steps`));
       }
@@ -557,6 +565,7 @@ function parseBody(
           ...(requires ? { requires } : {}),
           ...(timeout !== undefined ? { timeout } : {}),
           ...(budget ? { budget } : {}),
+          ...(maxTurns !== undefined ? { maxTurns } : {}),
           ...(output ? { output } : {}),
           ...(end ? { end } : {}),
           ...(loop ? { loop } : {}),

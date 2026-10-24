@@ -1107,6 +1107,36 @@ steps:
     expect(result.diagnostics).toContainEqual(expect.objectContaining({ field: 'steps[1].budget.dollars', code: 'unknown_key' }));
   });
 
+  it('reads max_turns on a prompt step, and reports it on another step or when it is not a positive whole number', () => {
+    const ok = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+steps:
+  - id: plan
+    prompt: Plan it.
+    max_turns: 30
+`);
+    expect(ok.ok && ok.definition.steps[0]?.maxTurns).toBe(30);
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+steps:
+  - id: plan
+    prompt: Plan it.
+    max_turns: many
+  - id: check
+    needs: [plan]
+    command: echo check
+    max_turns: 3
+`);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.diagnostics.map(formatDiagnostic)).toEqual(expect.arrayContaining([
+      'workflows/build.yaml:7: field "steps[0].max_turns": step "plan" max_turns must be a positive whole number',
+      'workflows/build.yaml:11: field "steps[1].max_turns": step "check" max_turns is only allowed on a prompt or prompt_file step',
+    ]));
+  });
+
   it('reports defaults on an inline workflow, which carries none', () => {
     const result = parse(`schemaVersion: v1alpha1
 name: build

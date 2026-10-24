@@ -34,7 +34,7 @@ export interface ConformanceScenario {
  */
 export const DRIVER_PROFILES = {
   /** The in-process driver `teamai workflow run` uses. */
-  local: { can: { workspace: ['read-only', 'new', 'continue'], env: true, tokens: true } },
+  local: { can: { workspace: ['read-only', 'new', 'continue'], env: true, tokens: true, max_turns: true } },
   /** An agent session that runs the protocol itself, with a person in the chat. */
   session: { can: { hitl: true, workspace: ['read-only', 'new', 'continue'] } },
   /** A program that speaks only the CLI JSON protocol, such as an IDE or an orchestrator. */
@@ -1065,6 +1065,35 @@ workflowConformanceScenarios.push(
     ],
     expectState: { status: 'failed', steps: [{ id: 'a', status: 'succeeded' }, { id: 'b', status: 'cancelled', failure: { code: 'budget_exceeded' } }] },
     expectRecord: { failure: { code: 'budget_exceeded' } },
+  },
+);
+
+const MAX_TURNS = controlsYaml('  - id: plan\n    prompt: Plan it.\n    max_turns: 5\n  - id: check\n    needs: []\n    command: echo check');
+const TURNS_UNENFORCED = [{ requirement: 'max_turns', asked: 5 }];
+workflowConformanceScenarios.push(
+  {
+    name: 'a driver that cannot cap turns gets a max_turns prompt without maxTurns, and the run records max_turns as unenforced',
+    workflowName: 'build', yaml: MAX_TURNS,
+    operations: [
+      { kind: 'next', saveAs: 'plan', as: 'external', absent: ['maxTurns'], expect: { data: { lease: { step: 'plan', unenforced: TURNS_UNENFORCED } } } },
+      { kind: 'report', lease: 'plan', as: 'external', body: { outcome: 'success' }, expect: { data: { accepted: true, step: { id: 'plan', unenforced: TURNS_UNENFORCED } } } },
+    ],
+    expectState: { steps: [{ id: 'plan', status: 'succeeded', unenforced: TURNS_UNENFORCED }, { id: 'check', status: 'pending' }] },
+  },
+  {
+    name: 'a driver that caps turns gets maxTurns, and its report may say the tool it ran did not enforce it',
+    workflowName: 'build', yaml: MAX_TURNS,
+    operations: [
+      { kind: 'next', saveAs: 'plan', absent: ['unenforced'], expect: { data: { lease: { step: 'plan', maxTurns: 5 } } } },
+      { kind: 'next', saveAs: 'check', running: ['plan'], absent: ['maxTurns'], expect: { data: { lease: { step: 'check' } } } },
+      { kind: 'report', lease: 'check', body: { outcome: 'success', unenforced: ['max_turns'] }, expect: { error: { code: 'invalid_report' } } },
+      { kind: 'report', lease: 'check', body: { outcome: 'success' }, expect: { data: { accepted: true } } },
+      { kind: 'report', lease: 'plan', body: { outcome: 'success', tokens: { input: 1, output: 1 }, unenforced: ['max_turns'] }, expect: { data: { accepted: true, step: {
+        id: 'plan', unenforced: TURNS_UNENFORCED,
+      } } } },
+      { kind: 'next', saveAs: 'done', expect: { data: { done: { outcome: 'succeeded' } } } },
+    ],
+    expectRecord: { steps: [{ step: 'plan', unenforced: TURNS_UNENFORCED }, { step: 'check' }] },
   },
 );
 

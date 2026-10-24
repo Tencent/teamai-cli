@@ -27,6 +27,8 @@ export interface LocalToolRun {
   resume?: string;
   /** The environment the tool runs with, scoped to the env keys its lease provides; the inherited one when unset. */
   env?: NodeJS.ProcessEnv;
+  /** The most agent turns headless Claude may take. Other tools have no such flag. */
+  maxTurns?: number;
 }
 
 /**
@@ -86,7 +88,8 @@ function invocation(tool: LaunchTool, input: LocalToolRun, opencodeMajor: number
     return [...agent, ...model, '--prompt', prompt];
   }
   if (family === 'claude') {
-    return ['-p', prompt, '--output-format', 'stream-json', '--verbose', ...agent, ...model, ...(effort ? ['--effort', effort] : []), ...resume];
+    const turns = input.maxTurns !== undefined ? ['--max-turns', String(input.maxTurns)] : [];
+    return ['-p', prompt, '--output-format', 'stream-json', '--verbose', ...turns, ...agent, ...model, ...(effort ? ['--effort', effort] : []), ...resume];
   }
   if (family === 'codex') {
     const codexModel = input.model?.name ?? input.agent?.model;

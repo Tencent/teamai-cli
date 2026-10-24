@@ -176,6 +176,8 @@ interface Lease {
   session?: LeaseSession;
   /** The env keys the step gets and the ones kept from it, by name. */
   envScope?: EnvScope;
+  /** The most agent turns the prompt's tool may take. */
+  maxTurns?: number;
   /** The environment the step's command or tool runs with, built from `envScope` when the lease is staged. */
   processEnv?: NodeJS.ProcessEnv;
   /** Set once the step has a directory to run in. */
@@ -375,6 +377,7 @@ function parseLease(raw: unknown): Lease | undefined {
     ...(typeof rawLease.command === 'string' ? { command: rawLease.command } : {}),
     ...(env ? { env } : {}),
     ...(envScope.success ? { envScope: envScope.data } : {}),
+    ...(typeof rawLease.maxTurns === 'number' ? { maxTurns: rawLease.maxTurns } : {}),
     ...(typeof rawLease.prompt === 'string' ? { prompt: rawLease.prompt } : {}),
     ...(typeof rawLease.agent === 'string' ? { agent: rawLease.agent } : {}),
     ...(typeof rawLease.model === 'string' ? { model: rawLease.model } : {}),
@@ -818,6 +821,8 @@ async function promptReport(
     workflowLaunch(stepConfig, selected),
     delivered ? deliveredTeamSkills(stepConfig, cwd, delivered).catch(() => undefined) : undefined,
   ]);
+  // Only headless Claude has a turn limit; any other launch reports the cap as not enforced.
+  const capsTurns = lease.maxTurns !== undefined && !lease.interactive && localToolFamily(selected) === 'claude';
   let result: LocalToolResult;
   const launchedAt = Date.now();
   try {
@@ -832,6 +837,7 @@ async function promptReport(
       ...(resume ? { resume: resume.id } : {}),
       ...(agent ? { agent: definitionRun(selected, lease.agent!, agent) } : {}),
       ...(chosen.model ? { model: chosen.model } : {}),
+      ...(capsTurns ? { maxTurns: lease.maxTurns } : {}),
     }, signal);
   } catch {
     result = {
@@ -863,6 +869,7 @@ async function promptReport(
     // How the definition was handed over is known only once the launch resolved its tool: OpenCode's depends on its major.
     ...(ran ? { agent: ran.applied ? { ...observed, definition: { applied: ran.applied } } : observed } : {}),
     ...(used ? { used } : {}),
+    ...(lease.maxTurns !== undefined && !capsTurns ? { unenforced: ['max_turns' as const] } : {}),
     exitCode: result.exitCode,
     ...(finished.changes ? { changes: finished.changes } : {}),
     ...(left ? { read: left.read } : {}),
@@ -940,7 +947,7 @@ async function reconcileTakenCopies(config: LocalConfig, runId: string, active: 
  * It gives each command and tool only the env keys its lease provides.
  */
 function localCan(config: LocalConfig, hitl: boolean): Required<DriverCan> {
-  return { hitl, workspace: [...WORKSPACE_MODES], network: false, isolation: config.workflows?.sandbox ? 'sandbox' : 'none', env: true, tokens: true };
+  return { hitl, workspace: [...WORKSPACE_MODES], network: false, isolation: config.workflows?.sandbox ? 'sandbox' : 'none', env: true, tokens: true, max_turns: true };
 }
 
 async function driveRun(config: LocalConfig, runId: string, cwd: string, options: LocalDriverOptions): Promise<WorkflowEnvelope> {

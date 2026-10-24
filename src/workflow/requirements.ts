@@ -39,6 +39,8 @@ const ENFORCEMENT = {
   withhold: 'bestEffort',
   /** Reporting the tokens a prompt step under a budget spent. */
   tokens: 'strict',
+  /** Capping the agent turns of a prompt step's tool. */
+  max_turns: 'bestEffort',
 } as const satisfies Record<string, 'strict' | 'bestEffort'> & Record<keyof Requirements, 'strict' | 'bestEffort'>;
 type Enforcement = typeof ENFORCEMENT;
 type KeysOf<E extends Enforcement[keyof Enforcement]> = { [K in keyof Enforcement]: Enforcement[K] extends E ? K : never }[keyof Enforcement];
@@ -53,6 +55,7 @@ type BestEffortKey = KeysOf<'bestEffort'>;
  * - `env`: the driver resolves `envScope.provide` itself, removes `envScope.withhold`, and keeps the values from
  *   whatever runs the step. A driver whose executor is the agent leaves it out.
  * - `tokens`: every success report of a prompt step carries the tokens it spent.
+ * - `max_turns`: the driver passes `maxTurns` to the tools it can cap, and reports `unenforced: ['max_turns']` for the others.
  */
 export const CanSchema = z.object({
   hitl: z.boolean().optional(),
@@ -61,6 +64,7 @@ export const CanSchema = z.object({
   isolation: IsolationSchema.optional(),
   env: z.boolean().optional(),
   tokens: z.boolean().optional(),
+  max_turns: z.boolean().optional(),
 });
 export type DriverCan = z.infer<typeof CanSchema>;
 
@@ -98,8 +102,34 @@ export const UnenforcedSchema = z.discriminatedUnion('requirement', [
   z.object({ requirement: z.literal('isolation'), asked: z.enum(['worktree', 'sandbox']), provided: IsolationSchema }),
   /** The run's env keys a driver without `can.env` may have passed to the step. */
   z.object({ requirement: z.literal('withhold'), keys: z.array(z.string()) }),
+  z.object({ requirement: z.literal('max_turns'), asked: z.number().int().positive() }),
 ]) satisfies z.ZodType<{ requirement: BestEffortKey }>;
 export type Unenforced = z.infer<typeof UnenforcedSchema>;
+
+/**
+ * What a report's `unenforced` may name: a best-effort requirement whose enforcement the driver learns only once it
+ * runs the step, such as the tool it picked not capping turns.
+ */
+export const ReportedUnenforcedSchema = z.array(z.enum(['max_turns'])) satisfies z.ZodType<BestEffortKey[]>;
+export type ReportedUnenforced = z.infer<typeof ReportedUnenforcedSchema>;
+
+/** The entries a report's `unenforced` adds, or why it names a requirement the step did not ask for. */
+export function reportedUnenforced(keys: ReportedUnenforced, asked: { maxTurns?: number }): Unenforced[] | string {
+  const entries: Unenforced[] = [];
+  for (const key of keys) {
+    switch (key) {
+      case 'max_turns':
+        if (asked.maxTurns === undefined) return 'unenforced names max_turns, which the step does not set';
+        entries.push({ requirement: 'max_turns', asked: asked.maxTurns });
+        break;
+      default: {
+        const unknown: never = key;
+        return unknown;
+      }
+    }
+  }
+  return entries;
+}
 
 /** The env keys a lease gives the step and the ones it keeps from it, by name. */
 export const EnvScopeSchema = z.object({ provide: z.array(z.string()), withhold: z.array(z.string()) });
@@ -139,12 +169,16 @@ export interface Offer {
   runEnvKeys: ReadonlySet<string>;
   /** A prompt step under a token budget, whose report must say what it spent. */
   budgeted: boolean;
+  /** The step's `max_turns`. */
+  maxTurns?: number;
 }
 
 /** What a granted lease carries besides the step itself. */
 export interface Terms {
   requires: Requirements;
   envScope?: EnvScope;
+  /** Only for a driver that can cap turns. */
+  maxTurns?: number;
   unenforced: Unenforced[];
 }
 
@@ -195,8 +229,10 @@ export function negotiate(offer: Offer, can: DriverCan, allow: Allow, env: EnvFa
   if (asked !== undefined && asked !== 'none' && rank(asked) > rank(provided)) unenforced.push({ requirement: 'isolation', asked, provided });
   const withhold = [...new Set(guarded)].filter((key) => sameEnvName(required, key) === undefined).sort();
   if (!can.env && withhold.length > 0) unenforced.push({ requirement: 'withhold', keys: withhold });
+  if (offer.maxTurns !== undefined && !can.max_turns) unenforced.push({ requirement: 'max_turns', asked: offer.maxTurns });
   const envScope = can.env && (required.length > 0 || withhold.length > 0) ? { envScope: { provide: required, withhold } } : {};
-  return { kind: 'grant', terms: { requires: offer.requires, ...envScope, unenforced } };
+  const maxTurns = offer.maxTurns !== undefined && can.max_turns ? { maxTurns: offer.maxTurns } : {};
+  return { kind: 'grant', terms: { requires: offer.requires, ...envScope, ...maxTurns, unenforced } };
 }
 
 function rank(level: Isolation): number {
