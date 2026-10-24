@@ -1534,7 +1534,8 @@ describe('a checkout an older git-mode install left (#808)', () => {
     expect(initSame.output).not.toContain('Set aside');
     const samePull = await runCLI(['pull'], projectRoot, home);
     expect(samePull.code, samePull.output).toBe(0);
-    expect(partitionQueue(install)).toContain(name);
+    expect(partitionQueue(install)).not.toContain(name);
+    expect(published({ ...install, remote: teamA.bare })).toContain(`learnings/${name}`);
     const indexed = (JSON.parse(fs.readFileSync(index, 'utf8')) as { entries: Array<{ filename: string }> }).entries;
     expect(indexed.map((entry) => entry.filename)).toContain(name);
 
@@ -1766,7 +1767,8 @@ describe('a checkout an older git-mode install left (#808)', () => {
     // Replacing the clone preserves the dirty checkout with its backing clone,
     // so later commands correctly identify that preserved clone in the warning.
     const preservedClone = path.join(partition, 'team-repo.previous');
-    const refusal = `${checkout} is a teamai-learnings checkout teamai cannot show to be ${preservedClone}'s`;
+    const refusal = `${checkout} is a teamai-learnings checkout of ${preservedClone}, ` +
+      `not of ${path.join(partition, 'team-repo')}, left by an install in another mode.`;
     expect(contribute.output.split(refusal).length - 1, contribute.output).toBe(1);
     expect(fs.existsSync(path.join(preservedClone, '.git'))).toBe(true);
     expect(contribute.output).toContain('Saved locally');
