@@ -37,8 +37,8 @@ export type ConformanceOperation =
     lease?: string;
     attempt?: string;
     revision?: number;
-    /** The harness fills the changes branch/base from this operation's saved lease. */
-    leasedChanges?: boolean;
+    /** Fields added to the `changes` the harness reports from the workspace of this operation's saved lease. */
+    changes?: Record<string, unknown>;
     body: Record<string, unknown>;
     expect: Record<string, unknown>;
   };
@@ -266,7 +266,7 @@ export const workflowConformanceScenarios: ConformanceScenario[] = [
     workflowName: 'reported-pr', yaml: REPORTED_PR,
     operations: [
       { kind: 'next', saveAs: 'work', workspace: true, expect: { data: { lease: { step: 'work' } } } },
-      { kind: 'report', lease: 'work', leasedChanges: true, body: { outcome: 'success', changes: { pr_url: 'https://review.example/changes/1?session=private#note', unknown: 'private' } }, expect: { data: { accepted: true, step: { id: 'work', status: 'delivering', outcome: 'success' }, ignored: ['changes.unknown'] } } },
+      { kind: 'report', lease: 'work', changes: { pr_url: 'https://review.example/changes/1?session=private#note', unknown: 'private' }, body: { outcome: 'success' }, expect: { data: { accepted: true, step: { id: 'work', status: 'delivering', outcome: 'success' }, ignored: ['changes.unknown'] } } },
       { kind: 'next', saveAs: 'done', expect: { data: { done: { outcome: 'succeeded' } } } },
     ],
     expectState: { steps: [{ id: 'work', status: 'succeeded', delivery: { reported: 'https://review.example/changes/1' } }] },
@@ -275,7 +275,7 @@ export const workflowConformanceScenarios: ConformanceScenario[] = [
     name: 'an unsafe review URL is dropped without rejecting the report', workflowName: 'review-link', yaml: REVIEW_LINK,
     operations: [
       { kind: 'next', saveAs: 'work', workspace: true, expect: { data: { lease: { step: 'work' } } } },
-      { kind: 'report', lease: 'work', leasedChanges: true, body: { outcome: 'success', changes: { pr_url: 'https://user:token@review.example/changes/1' } }, expect: { data: { accepted: true, dropped: [{ field: 'changes.pr_url', reason: 'contains credentials' }] } } },
+      { kind: 'report', lease: 'work', changes: { pr_url: 'https://user:token@review.example/changes/1' }, body: { outcome: 'success' }, expect: { data: { accepted: true, dropped: [{ field: 'changes.pr_url', reason: 'contains credentials' }] } } },
       { kind: 'next', saveAs: 'done', expect: { data: { done: { outcome: 'succeeded' } } } },
     ],
   },

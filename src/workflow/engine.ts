@@ -1379,8 +1379,6 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
   }
   const install = await installOwner(config);
   const reported = report.prUrl === undefined ? undefined : sanitizePrUrl(report.prUrl);
-  // A URL that is not kept is named without its value, which may hold a token, and the report still counts.
-  const dropped = reported?.reason === undefined ? [] : [{ field: 'changes.pr_url', reason: reported.reason }];
   return withRun(config, runId, async (run) => {
     // Settled membership wins. An old revision of a settled attempt is still repeated_report.
     if (run.settledAttempts.includes(report.attempt)) {
@@ -1464,6 +1462,8 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
     // From the lease, so a reader that was the copy's last user lets the driver remove the worktree. Delivery reads the
     // pushed branch, so it does not keep the worktree.
     const cleanup = outcome === 'success' && contract !== undefined && !branchStillUsed(run, contract.branch);
+    // A URL that is not kept is named without its value, which may hold a token, and the report still counts.
+    const dropReason = reported?.reason ?? (reported && defined?.deliver !== 'pr' ? 'the step has no deliver: pr' : undefined);
     return {
       save: true,
       envelope: ok({
@@ -1471,7 +1471,7 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
         revision: run.revision,
         step: { id: settledStep.id, status: settledStep.status, outcome },
         ...(cleanup ? { cleanup: true } : {}),
-        ...(dropped.length > 0 ? { dropped } : {}),
+        ...(dropReason ? { dropped: [{ field: 'changes.pr_url', reason: dropReason }] } : {}),
       }),
     };
   });

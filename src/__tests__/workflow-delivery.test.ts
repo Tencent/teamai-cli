@@ -115,24 +115,37 @@ describe('workflow PR delivery contract', () => {
   });
 
   it.each([
-    ['https://github.com/acme/app/pull/101', 'https://github.com/acme/app/pull/101'],
-    ['https://bitbucket.acme.internal/projects/APP/repos/web/pull-requests/7/overview', 'https://bitbucket.acme.internal/projects/APP/repos/web/pull-requests/7/overview'],
-    ['https://review.acme.internal/changes/4821?session=abc#c3', 'https://review.acme.internal/changes/4821'],
-    ['https://user:token@github.com/acme/app/pull/1', undefined],
-    ['http://github.com/acme/app/pull/1', undefined], ['not a url', undefined],
-    [`https://example.com/${'a'.repeat(512)}`, undefined],
-  ])('sanitizes %s', (value, expected) => expect(sanitizePrUrl(value).url).toBe(expected));
+    ['https://github.com/acme/app/pull/101', { url: 'https://github.com/acme/app/pull/101' }],
+    ['https://bitbucket.acme.internal/projects/APP/repos/web/pull-requests/7/overview', { url: 'https://bitbucket.acme.internal/projects/APP/repos/web/pull-requests/7/overview' }],
+    ['https://review.acme.internal/changes/4821?session=abc#c3', { url: 'https://review.acme.internal/changes/4821' }],
+    ['https://user:token@github.com/acme/app/pull/1', { reason: 'contains credentials' }],
+    ['http://github.com/acme/app/pull/1', { reason: 'must use HTTPS' }],
+    ['not a url', { reason: 'is not a valid URL' }],
+    [`https://example.com/${'a'.repeat(512)}`, { reason: 'exceeds 512 characters' }],
+    [101, { reason: 'must be a URL string' }],
+  ])('sanitizes %s', (value, expected) => expect(sanitizePrUrl(value)).toEqual(expected));
 
-  it('never preserves credentials, queries or fragments and is idempotent and bounded', () => {
-    fc.assert(fc.property(fc.webUrl({ validSchemes: ['https', 'http'] }), (value) => {
+  const urls = fc.webUrl({ validSchemes: ['https', 'http'], withQueryParameters: true, withFragments: true, authoritySettings: { withUserInfo: true } });
+
+  it('never keeps credentials, a query or a fragment, gives back what it kept unchanged, and stays within 512 characters', () => {
+    fc.assert(fc.property(fc.oneof(urls, fc.string(), fc.string({ minLength: 513, maxLength: 700 })), (value) => {
       const result = sanitizePrUrl(value);
-      if (!result.url) return;
+      if (result.url === undefined) return;
       const url = new URL(result.url);
       expect(url.protocol).toBe('https:');
       expect([url.username, url.password, url.search, url.hash]).toEqual(['', '', '', '']);
       expect(result.url.length).toBeLessThanOrEqual(512);
       expect(sanitizePrUrl(result.url)).toEqual(result);
-    }), { numRuns: 300 });
+    }), { numRuns: 500 });
+  });
+
+  it('drops every URL with credentials, and keeps the host and path of any other https URL', () => {
+    fc.assert(fc.property(urls, (value) => {
+      const url = new URL(value);
+      const expected = url.username || url.password ? undefined
+        : url.protocol === 'https:' && `${url.origin}${url.pathname}`.length <= 512 ? `${url.origin}${url.pathname}` : undefined;
+      expect(sanitizePrUrl(value).url).toBe(expected);
+    }), { numRuns: 500 });
   });
 });
 
@@ -209,12 +222,27 @@ describe('delivering a step', () => {
 });
 
 describe('reported URLs from a driver', () => {
-  it('drops a URL with credentials without failing the report, and never stores or echoes it', async () => {
+  it('drops a URL with credentials without failing the report, and never stores, echoes or publishes it', async () => {
     const validate = vi.spyOn(GitHubProvider.prototype, 'validatePullRequest');
-    const { config, runId } = await fixture(`  - id: write\n    command: node write.js\n    workspace: new\n`);
-    const accepted = await succeed(config, runId, await take(config, runId), { pr_url: 'https://user:token@github.com/fixture/app/pull/1' });
-    expect(accepted).toMatchObject({ data: { accepted: true, dropped: [{ field: 'changes.pr_url', reason: 'contains credentials' }] } });
-    expect(JSON.stringify([accepted, await state(config, runId)])).not.toContain('token');
+    const { config, runId } = await fixture(FIX_THEN_REVIEW);
+    const accepted = await succeed(config, runId, await take(config, runId), { pr_url: 'https://user:s3cret-value@github.com/fixture/app/pull/1', extra: 'kept-out' });
+    expect(accepted).toMatchObject({ data: {
+      accepted: true, step: { id: 'fix', status: 'delivering' },
+      dropped: [{ field: 'changes.pr_url', reason: 'contains credentials' }], ignored: ['changes.extra'],
+    } });
+    expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: {} } });
+    const run = await state(config, runId);
+    expect(run.steps[0]).not.toHaveProperty('delivery.reported');
+    expect(JSON.stringify([accepted, run, buildEndRecord(run, remote, 'tester')])).not.toMatch(/s3cret-value|kept-out/);
     expect(validate).not.toHaveBeenCalled();
+  });
+
+  it('drops a URL from a step that does not deliver, saying why, and still accepts the report', async () => {
+    const { config, runId } = await fixture('  - id: write\n    command: node write.js\n    workspace: new\n');
+    expect(await succeed(config, runId, await take(config, runId), { pr_url: 'https://github.com/fixture/app/pull/1' })).toEqual({ data: {
+      accepted: true, revision: 2, step: { id: 'write', status: 'succeeded', outcome: 'success' }, cleanup: true,
+      dropped: [{ field: 'changes.pr_url', reason: 'the step has no deliver: pr' }],
+    } });
+    expect((await state(config, runId)).copies?.[`teamai/${runId}/write/p1`]?.pr).toBeUndefined();
   });
 });

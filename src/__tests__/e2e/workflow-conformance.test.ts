@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import { resolveProjectDataHome } from '../../config.js';
 import { workflowConformanceScenarios, workflowGitConformanceScenarios, type GitConformanceName, type WorkflowClient } from '../../workflow/conformance.js';
 import type { StepState } from '../../workflow/step-state.js';
@@ -13,6 +14,17 @@ import type { WorkspaceContract } from '../../workflow/workspace.js';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const CLI = path.join(ROOT, 'dist', 'index.js');
 const driver: DriverIdentity = { kind: 'local', machine: 'cli-conformance', workspace: '/work' };
+
+const SavedLeaseSchema = z.object({
+  attempt: z.string(), revision: z.number(), workspace: z.object({ branch: z.string(), base: z.object({ commit: z.string() }) }).optional(),
+});
+type SavedLease = z.infer<typeof SavedLeaseSchema>;
+
+/** The `changes` a report of `lease` carries: the branch and base of its workspace, and the scenario's own fields. */
+function leasedChanges(lease: SavedLease | undefined, fields: Record<string, unknown>): Record<string, unknown> {
+  if (!lease?.workspace) throw new Error('A report with changes needs a saved lease that ran in a workspace');
+  return { branch: lease.workspace.branch, base: lease.workspace.base.commit, from: 'a'.repeat(40), to: 'b'.repeat(40), commits: [], ...fields };
+}
 
 function runCLI(args: string[], cwd: string, env: NodeJS.ProcessEnv = process.env): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
@@ -75,7 +87,7 @@ describe('workflow protocol conformance through the CLI', () => {
       const started = await client.start(scenario.workflowName);
       if ('error' in started) throw new Error(started.error.message);
       const runId = String(started.data.run);
-      const leases = new Map<string, { attempt: string; revision: number; workspace?: { branch: string; base: { commit: string } } }>();
+      const leases = new Map<string, SavedLease>();
       const attemptOf = (name: string): string | undefined => leases.get(name)?.attempt;
       for (const operation of scenario.operations) {
         if (operation.kind === 'next') {
@@ -99,7 +111,7 @@ describe('workflow protocol conformance through the CLI', () => {
           if (operation.cancelled) expect('data' in value && value.data.cancelled).toEqual(operation.cancelled.map(attemptOf));
           for (const field of operation.absent ?? []) expect('data' in value ? value.data.lease : undefined).not.toHaveProperty(field);
           if ('data' in value && value.data.lease) {
-            leases.set(operation.saveAs, value.data.lease as { attempt: string; revision: number });
+            leases.set(operation.saveAs, SavedLeaseSchema.parse(value.data.lease));
           }
           continue;
         }
@@ -115,7 +127,7 @@ describe('workflow protocol conformance through the CLI', () => {
           revision: operation.revision ?? lease?.revision,
           driver,
           ...operation.body,
-          ...(operation.leasedChanges ? { changes: { branch: lease!.workspace!.branch, base: lease!.workspace!.base.commit, from: 'a'.repeat(40), to: 'b'.repeat(40), commits: [], ...(operation.body.changes as Record<string, unknown>) } } : {}),
+          ...(operation.changes ? { changes: leasedChanges(lease, operation.changes) } : {}),
         });
         expect(value).toMatchObject(operation.expect);
       }
