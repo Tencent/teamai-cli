@@ -244,6 +244,8 @@ pull request 合入这条分支来源中最近一条已经交付过的分支，�
 
 其他交付失败会让步骤以 `delivery_failed` 失败。消息说明出了什么问题、工作保存在哪条分支，并给出重试命令。修复原因（例如 provider 的凭据）后，运行 `teamai workflow retry <run> <step>`，再运行 `teamai workflow resume <run>`，或让驱动调用 `next`。重试会再次交付同一条分支，不会重新运行步骤。运行在开 pull request 期间被取消时，这个 pull request 无法收回。运行会列出它，步骤保持 cancelled。
 
+如果主机可能已打开请求，但 TeamAI 无法确认，步骤会以 `delivery_failed` 失败，且不记录 URL。运行消息中的重试命令。TeamAI 会先查找已有请求，再尝试打开请求。
+
 自己开 pull request 的驱动（例如在另一台机器上的驱动）把它作为 `changes.pr_url`，和步骤的其他 `changes` 一起上报。TeamAI 保留不含凭据、不超过 512 个字符的 `https` URL，并去掉 query 和 fragment。在 origin 自己的主机上，URL 必须是这条分支合入目标分支的已打开 pull request。其他主机上的 URL（例如私有审查服务）原样保留。TeamAI 不保留的 URL 会被丢弃；没有交付使用的 URL 也会被丢弃：来自未设置 `deliver: pr` 的步骤、来自失败或被 released 的步骤，或分支相对运行基线没有变更时的 URL。report 仍会被接受，其信封列出 `"dropped":[{"field":"changes.pr_url","reason":"…"}]`，不包含 URL 本身。随后这条分支像其他驱动的分支一样交付。
 
 ### 从 CI 启动

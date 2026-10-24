@@ -52,6 +52,7 @@ export type DeliveryFault =
   | { kind: 'no_provider' }
   | { kind: 'lookup_failed'; provider: string }
   | { kind: 'create_failed'; provider: string }
+  | { kind: 'create_unconfirmed'; provider: string }
   | { kind: 'unsafe_url'; provider: string }
   | { kind: 'withdrawn' };
 
@@ -124,6 +125,7 @@ export async function deliverPr(job: DeliveryJob, gate: CreateGate): Promise<Del
   const opened = await findOpen(origin, ref);
   if (opened.kind === 'found') return { ok: true, pr: opened.pr };
   if (opened.kind === 'unsafe') return failed({ kind: 'unsafe_url', provider: provider.name });
+  if (opened.kind === 'failed') return failed({ kind: 'create_unconfirmed', provider: provider.name });
   if (!created) return failed({ kind: 'create_failed', provider: provider.name });
   return created.url && new URL(created.url).hostname === origin.hostname
     ? { ok: true, pr: created.url }
@@ -250,6 +252,11 @@ export function deliveryFailure({ runId, key }: Pick<DeliveryJob, 'runId' | 'key
       return {
         code: 'delivery_failed',
         message: `PR delivery for step "${step}" failed: the ${fault.provider} provider did not open a pull request from branch ${branch}. Check its credentials, its access to the repository, and that the branch is on origin. The work is kept in branch ${branch}. Then run: ${retry}`,
+      };
+    case 'create_unconfirmed':
+      return {
+        code: 'delivery_failed',
+        message: `PR delivery for step "${step}" failed: the ${fault.provider} host may have opened a pull request from branch ${branch}, but TeamAI could not confirm it. No receipt was recorded. Check its credentials and its access to the repository, then run: ${retry}`,
       };
     case 'unsafe_url':
       return {

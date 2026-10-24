@@ -637,24 +637,19 @@ describe('where a pull request goes', () => {
   });
 
   it.each([
-    ['lists a request on another host', async (): Promise<string | undefined> => 'https://other.example/review/1', 'https://github.com/fixture/app/pull/1', false],
+    ['lists a request on another host', async (): Promise<string | undefined> => 'https://other.example/review/1', 'https://github.com/fixture/app/pull/1', true],
     ['cannot answer, and the create named a request on another host', (): Promise<string | undefined> => Promise.reject(new Error('GitHub timed out')), 'https://other.example/review/1', false],
-    ['cannot answer, and the create named a request on the origin host', (): Promise<string | undefined> => Promise.reject(new Error('GitHub timed out')), 'https://github.com/fixture/app/pull/1', true],
-  ])('records the URL a create answered only on the origin host, when the lookup after it %s', async (_case, lookupAfter, answered, kept) => {
+    ['cannot answer, and the create named a request on the origin host', (): Promise<string | undefined> => Promise.reject(new Error('GitHub timed out')), 'https://github.com/fixture/app/pull/1', false],
+  ])('records no receipt, when the lookup after it %s', async (_case, lookupAfter, answered, unsafe) => {
     const { config, root, runId } = await fixture(FIX_THEN_REVIEW);
     const fix = await take(config, runId);
     const branch = `teamai/${runId}/fix/p1`;
     await succeed(config, runId, fix, { to: pushWork(root, fix) });
     const create = providerDouble(async () => (create.mock.calls.length === 0 ? undefined : lookupAfter()), async () => answered);
 
-    if (kept) {
-      expect(await take(config, runId)).toMatchObject({ step: 'review' });
-      expect((await state(config, runId)).deliveries?.map((receipt) => receipt.url)).toEqual([answered]);
-      return;
-    }
     expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: 'failed' } } });
     const run = await state(config, runId);
-    expect(run.steps[0]).toMatchObject({ status: 'failed', failure: { code: 'delivery_failed', message: expect.stringContaining(`answered with a pull request URL TeamAI cannot keep. The work is kept on origin in branch ${branch}.`) } });
+    expect(run.steps[0]).toMatchObject({ status: 'failed', failure: { code: 'delivery_failed', message: expect.stringContaining(unsafe ? `answered with a pull request URL TeamAI cannot keep. The work is kept on origin in branch ${branch}.` : `may have opened a pull request from branch ${branch}, but TeamAI could not confirm it`) } });
     expect(run.deliveries).toBeUndefined();
     expect(create).toHaveBeenCalledTimes(1);
   });
@@ -781,10 +776,10 @@ describe('reported URLs from a driver', () => {
  * Puts a provider double on the fixture's GitHub origin: `findOpen` answers lookups and `create` opens requests. Returns
  * the create spy, so a test can show what was asked of the host.
  */
-function providerDouble(findOpen: PullRequestLookup['findOpen'], create: GitProvider['createPullRequest']) {
+function providerDouble(findOpen: PullRequestLookup['findOpen'], create: GitProvider['createPullRequest'], hostname = 'github.com') {
   const provider = new GitHubProvider();
   const creates = vi.spyOn(provider, 'createPullRequest').mockImplementation(create);
-  vi.spyOn(registry, 'providerForRemote').mockReturnValue({ kind: 'provider', provider, pullRequests: { findOpen }, repo: 'fixture/app', hostname: 'github.com' });
+  vi.spyOn(registry, 'providerForRemote').mockReturnValue({ kind: 'provider', provider, pullRequests: { findOpen }, repo: 'fixture/app', hostname });
   return creates;
 }
 
@@ -898,6 +893,38 @@ describe('retrying and cancelling a delivery', () => {
       expect(creates(gh)).toEqual([[docs.workspace?.branch, 'main']]);
       expect(run.deliveries).toHaveLength(1);
     }
+  });
+
+  it('records only the canonical receipt after an unconfirmed TGit-style create and a retry', async () => {
+    const { config, root, runId } = await fixture(FIX_THEN_REVIEW);
+    const fix = await take(config, runId);
+    await succeed(config, runId, fix, { to: pushWork(root, fix) });
+    const canonical = 'https://git.woa.com/fixture/app/merge_requests/7';
+    let recovered = false;
+    const lookup = vi.fn(async () => {
+      if (recovered) return canonical;
+      if (create.mock.calls.length > 0) throw new Error('TGit lookup timed out');
+      return undefined;
+    });
+    const create = providerDouble(lookup, async () => 'https://git.woa.com/fixture/app/-/merge_requests/7', 'git.woa.com');
+
+    expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    const failed = await state(config, runId);
+    expect(failed.steps[0]).toMatchObject({ status: 'failed', failure: { code: 'delivery_failed', message: expect.stringContaining(`may have opened a pull request from branch ${fix.workspace?.branch}, but TeamAI could not confirm it`) } });
+    expect(failed.steps[0]).toMatchObject({ failure: { message: expect.stringContaining(`teamai workflow retry ${runId} fix`) } });
+    expect(failed.deliveries).toBeUndefined();
+    expect(failed.creating).toHaveLength(1);
+    expect(lookup).toHaveBeenCalledTimes(2);
+
+    recovered = true;
+    await retryStep(config, runId, 'fix');
+    expect(await take(config, runId)).toMatchObject({ step: 'review' });
+    const run = await state(config, runId);
+    expect(run.creating).toBeUndefined();
+    expect(run.deliveries?.map((receipt) => receipt.url)).toEqual([canonical]);
+    expect(buildEndRecord(run, remote, 'tester').prs).toEqual([canonical]);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(lookup).toHaveBeenCalledTimes(3);
   });
 
   it('retries a failed delivery in the same pass and attempt, without a lease, and opens the pull request on the next call', async () => {
