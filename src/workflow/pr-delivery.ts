@@ -112,28 +112,25 @@ export async function deliverPr(job: DeliveryJob, gate: CreateGate): Promise<Del
   const gated = await gate();
   if (gated === 'busy') return 'busy';
   if (gated === 'refused') return failed({ kind: 'withdrawn' });
-  let created: ReturnType<typeof sanitizePrUrl> | undefined;
+  let answered = false;
   try {
-    created = sanitizePrUrl(await provider.createPullRequest({
+    await provider.createPullRequest({
       repo, source: job.key.branch, target: job.target, title: `${job.runName}: ${job.key.step}`,
       description: `Opened by TeamAI for review: workflow ${job.runName}, run ${job.runId}, step ${job.key.step}, pass ${job.key.pass}.\n\nBase commit: ${job.base}\n\nTeamAI never merges this pull request.`,
       // Run outside the member checkout, so the provider's CLI can neither push from it nor read its branch.
       cwd: os.tmpdir(),
       spawnTimeoutMs: DELIVERY_TIMEOUT_MS,
-    }));
+    });
+    answered = true;
   } catch {
-    created = undefined;
+    // A create that failed or timed out may still have opened the request, so the lookup below decides.
   }
-  // A create that failed or timed out may still have opened the request. One that answered may name it by another URL
-  // than the lookup a later delivery of the branch finds it by, so the lookup's is kept: one request, one receipt.
+  // One that answered may name the request by another URL than the lookup a later delivery of the branch finds it by,
+  // or before the host lists it, so only the lookup's URL is kept: one request, one receipt.
   const opened = await findOpen(origin, ref);
   if (opened.kind === 'found') return { ok: true, pr: opened.pr };
   if (opened.kind === 'unsafe') return failed({ kind: 'unsafe_url', provider: provider.name });
-  if (opened.kind === 'failed') return failed({ kind: 'create_unconfirmed', provider: provider.name });
-  if (!created) return failed({ kind: 'create_failed', provider: provider.name });
-  return created.url && new URL(created.url).hostname === origin.hostname
-    ? { ok: true, pr: created.url }
-    : failed({ kind: 'unsafe_url', provider: provider.name });
+  return failed({ kind: answered || opened.kind === 'failed' ? 'create_unconfirmed' : 'create_failed', provider: provider.name });
 }
 
 /**

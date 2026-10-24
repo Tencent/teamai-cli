@@ -1092,6 +1092,31 @@ describe('retrying and cancelling a delivery', () => {
     expect(lookup).toHaveBeenCalledTimes(3);
   });
 
+  it('records only the canonical receipt when the lookup right after a TGit-style create does not list it yet', async () => {
+    const { config, root, runId } = await fixture(FIX_THEN_REVIEW);
+    const fix = await take(config, runId);
+    await succeed(config, runId, fix, { to: pushWork(root, fix) });
+    const canonical = 'https://git.woa.com/fixture/app/merge_requests/7';
+    let listed = false;
+    const lookup = vi.fn(async () => (listed ? canonical : undefined));
+    const create = providerDouble(lookup, async () => 'https://git.woa.com/fixture/app/-/merge_requests/7', 'git.woa.com');
+
+    expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    const failed = await state(config, runId);
+    expect(failed.steps[0]).toMatchObject({ status: 'failed', failure: { code: 'delivery_failed', message: expect.stringContaining(`may have opened a pull request from branch ${fix.workspace?.branch}, but TeamAI could not confirm it`) } });
+    expect(failed.deliveries).toBeUndefined();
+    expect(failed.creating).toHaveLength(1);
+
+    listed = true;
+    await leaseNext(config, runId, remote, writable);
+    await retryStep(config, runId, 'fix');
+    expect(await take(config, runId)).toMatchObject({ step: 'review' });
+    const run = await state(config, runId);
+    expect(run.creating).toBeUndefined();
+    expect(run.deliveries?.map((receipt) => receipt.url)).toEqual([canonical]);
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+
   it('retries a failed delivery in the same pass and attempt, without a lease, and opens the pull request on the next call', async () => {
     const { config, root, runId } = await fixture(FIX_THEN_REVIEW);
     const gh = fakeGh(path.join(root, 'gh'), { lookup: 'fail' });
@@ -1155,10 +1180,14 @@ describe('retrying and cancelling a delivery', () => {
       }
       return result;
     });
+    let opened: string | undefined;
     const create = providerDouble(async () => {
       if (!released && !holding) holding = await acquireLock(runLock);
-      return undefined;
-    }, async () => 'https://github.com/fixture/app/pull/1');
+      return opened;
+    }, async () => {
+      opened = 'https://github.com/fixture/app/pull/1';
+      return opened;
+    });
 
     expect(await leaseNext(config, runId, remote, writable)).toEqual({ data: { wait: { reason: 'fix is delivering', delivering: ['fix'] }, cancelled: [] } });
     expect(released).toBe(true);
@@ -1192,8 +1221,10 @@ describe('retrying and cancelling a delivery', () => {
     const fix = await take(config, runId);
     await succeed(config, runId, fix, { to: pushWork(root, fix) });
     const url = 'https://github.com/fixture/app/pull/8';
-    providerDouble(async () => undefined, async () => {
+    let opened: string | undefined;
+    providerDouble(async () => opened, async () => {
       await cancelRun(config, runId);
+      opened = url;
       return url;
     });
 
