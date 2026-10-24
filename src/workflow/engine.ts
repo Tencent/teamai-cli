@@ -979,17 +979,17 @@ function resolveCreate(run: RunState, create: UnresolvedCreate, found: Awaited<R
  * delivers `job`. If it does, the run lists its request in the same write, so one opened by a process that then stops
  * is looked up, whatever becomes of the step, rather than lost.
  */
-async function markCreating(config: LocalConfig, runId: string, job: DeliveryJob): Promise<boolean> {
-  const marked = await updateRun(config, runId, async (run) => {
-    if (run === 'missing' || run.status !== 'running') return { value: false };
+async function markCreating(config: LocalConfig, runId: string, job: DeliveryJob): Promise<'open' | 'refused' | 'busy'> {
+  const marked = await updateRun(config, runId, async (run): Promise<{ value: 'open' | 'refused'; write?: RunState }> => {
+    if (run === 'missing' || run.status !== 'running') return { value: 'refused' };
     const settledRun = reconcileRun(run);
     const step = 'unreadable' in settledRun || 'outcome' in settledRun ? undefined : deliveringStep(run, job.key);
-    if (!step) return { value: false };
+    if (!step) return { value: 'refused' };
     const create = { ...job.key, target: job.target };
     if (!run.creating?.some((listed) => sameCreate(listed, create))) (run.creating ??= []).push(create);
-    return { value: true, write: { ...run, updatedAt: new Date().toISOString() } };
+    return { value: 'open', write: { ...run, updatedAt: new Date().toISOString() } };
   });
-  return marked.status === 'done' && marked.value;
+  return marked.status === 'done' ? marked.value : 'busy';
 }
 
 /**
@@ -1020,6 +1020,8 @@ async function drainDeliveries(config: LocalConfig, runId: string): Promise<void
       if ('job' in picked.value) {
         const { job } = picked.value;
         const outcome = await deliverPr(job, () => markCreating(config, runId, job));
+        // As when the pick is busy: the step still delivers, and a later call delivers it.
+        if (outcome === 'busy') return requeued;
         apply = (run) => completeDelivery(run, job, outcome);
       } else {
         const { create, checkout } = picked.value;
@@ -1073,7 +1075,8 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
       return answer(doneData(run));
     };
     const wait = (open = run.steps.find((step) => step.status === 'leased')): { save: boolean; envelope: WorkflowEnvelope } => {
-      // Steps still delivering here are being delivered by another process of this machine; a driver polls until they settle.
+      // Steps still delivering here are being delivered by another process of this machine, or waited for a busy run
+      // lock; a driver polls until they settle.
       const delivering = run.steps.filter((step) => step.status === 'delivering').map((step) => step.id);
       const reason = open ? `${open.id} is leased` : delivering.length > 0 ? `${delivering[0]} is delivering` : 'canTakeLease is false';
       return answer({ wait: { reason, ...(delivering.length > 0 ? { delivering } : {}) } });

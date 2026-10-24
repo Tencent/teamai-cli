@@ -56,10 +56,11 @@ export type DeliveryFault =
 export type DeliveryOutcome = { ok: true; pr: PrUrl } | { ok: false; fault: DeliveryFault };
 
 /**
- * Asked under the run lock right before a pull request is opened: true while the step still delivers the job, whose
- * request the run then lists as unresolved. False opens nothing.
+ * Asked under the run lock right before a pull request is opened: `open` while the step still delivers the job, whose
+ * request the run then lists as unresolved; `refused` when it no longer does; `busy` when the run lock could not be
+ * taken, so nobody knows yet. Only `open` opens anything.
  */
-export type CreateGate = () => Promise<boolean>;
+export type CreateGate = () => Promise<'open' | 'refused' | 'busy'>;
 
 /** How long a host may take to answer one lookup or one create. */
 export const DELIVERY_TIMEOUT_MS = 30_000;
@@ -72,10 +73,11 @@ const failed = (fault: DeliveryFault): DeliveryOutcome => ({ ok: false, fault })
 /**
  * Delivers one branch. Its changes against the run base are checked before anything else, a reported URL included,
  * so no pull request goes out, and no step succeeds, with a protected path changed. Then the open request of the branch
- * is looked up, and only when there is none, and `gate` agrees, is one opened; then it is looked up again.
+ * is looked up, and only when there is none, and `gate` opens, is one opened; then it is looked up again. `busy` is a
+ * gate that could not answer: nothing was opened, and the job is for a later call.
  * Nothing here logs in, prompts or merges, and no text a host answered with is kept, since it may hold a credential.
  */
-export async function deliverPr(job: DeliveryJob, gate: CreateGate): Promise<DeliveryOutcome> {
+export async function deliverPr(job: DeliveryJob, gate: CreateGate): Promise<DeliveryOutcome | 'busy'> {
   const changed = await changedFiles(job);
   if ('fault' in changed) return failed(changed.fault);
   const files = protectedPaths(changed.files);
@@ -94,7 +96,9 @@ export async function deliverPr(job: DeliveryJob, gate: CreateGate): Promise<Del
   if (found.kind === 'found') return { ok: true, pr: found.pr };
   if (found.kind === 'failed') return failed({ kind: 'lookup_failed', provider: provider.name });
   if (found.kind === 'unsafe') return failed({ kind: 'unsafe_url', provider: provider.name });
-  if (!await gate()) return failed({ kind: 'withdrawn' });
+  const gated = await gate();
+  if (gated === 'busy') return 'busy';
+  if (gated === 'refused') return failed({ kind: 'withdrawn' });
   let created: ReturnType<typeof sanitizePrUrl> | undefined;
   try {
     created = sanitizePrUrl(await provider.createPullRequest({

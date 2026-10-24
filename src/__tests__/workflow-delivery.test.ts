@@ -9,7 +9,8 @@ import { parseWorkflow } from '../workflow/parse.js';
 import { leaseNext, parseReport, reportAttempt, startRun, withIgnored } from '../workflow/engine.js';
 import { sanitizePrUrl } from '../workflow/pr-url.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
-import { deliveryLockPath, readRun } from '../workflow/store.js';
+import { deliveryLockPath, readRun, runLockPath } from '../workflow/store.js';
+import * as store from '../workflow/store.js';
 import { _setDriverPollMs, runLocalDriver } from '../workflow/local-driver.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { AGENT_PATHS, DELIVERY_ONLY_PATHS, protectedPaths } from '../workflow/worktree.js';
@@ -351,7 +352,7 @@ describe('delivering a step', () => {
     const to = pushWork(root, fix);
     const job = { key: { step: 'fix', pass: 1, settledAt: 2, branch: fix.workspace.branch, head: to }, runId, runName: 'ship', checkout: cwd, base: fix.workspace.base.commit, target: 'main' };
 
-    expect(await deliverPr(job, async () => false)).toEqual({ ok: false, fault: { kind: 'withdrawn' } });
+    expect(await deliverPr(job, async () => 'refused')).toEqual({ ok: false, fault: { kind: 'withdrawn' } });
     expect(gh.calls().map((call) => call.args[0])).toEqual(['api']);
   });
 
@@ -804,6 +805,39 @@ describe('retrying and cancelling a delivery', () => {
     expect((await state(config, runId)).steps[0]).toMatchObject({ id: 'fix', status: 'cancelled' });
     expect(git(root, ['--git-dir=remote.git', 'rev-parse', `refs/heads/teamai/${runId}/fix/p1`])).toBe(to);
     expect(gh.calls()).toEqual([]);
+  });
+
+  it('leaves a step delivering, opening nothing, while the run lock is held when its pull request is about to be opened', async () => {
+    const { config, root, runId } = await fixture(FIX_THEN_REVIEW);
+    const fix = await take(config, runId);
+    await succeed(config, runId, fix, { to: pushWork(root, fix) });
+    const runLock = runLockPath(config, runId);
+    let holding = false;
+    let released = false;
+    const update = store.updateRun;
+    vi.spyOn(store, 'updateRun').mockImplementation(async (...args) => {
+      const result = await update(...args);
+      // The process that holds the run lock lets it go once an update gave up waiting for it.
+      if (result.status === 'busy' && holding) {
+        await releaseLock(runLock);
+        holding = false;
+        released = true;
+      }
+      return result;
+    });
+    const create = providerDouble(async () => {
+      if (!released && !holding) holding = await acquireLock(runLock);
+      return undefined;
+    }, async () => 'https://github.com/fixture/app/pull/1');
+
+    expect(await leaseNext(config, runId, remote, writable)).toEqual({ data: { wait: { reason: 'fix is delivering', delivering: ['fix'] }, cancelled: [] } });
+    expect(released).toBe(true);
+    expect((await state(config, runId)).steps[0]).toMatchObject({ id: 'fix', status: 'delivering' });
+    expect(create).not.toHaveBeenCalled();
+
+    expect(await take(config, runId)).toMatchObject({ step: 'review' });
+    expect(create).toHaveBeenCalledTimes(1);
+    expect((await state(config, runId)).deliveries?.map((receipt) => receipt.url)).toEqual(['https://github.com/fixture/app/pull/1']);
   });
 
   it('opens nothing when the run is cancelled while its delivery looks for an open pull request', async () => {
