@@ -290,6 +290,15 @@ function rememberCopy(run: RunState, plan: WorkspacePlan, driver: DriverIdentity
   else run.copies[branch] = { owner: driver };
 }
 
+/** Whether a step holds a lease in copy `branch`. */
+function leasedIn(run: RunState, branch: string): boolean {
+  return run.steps.some((item) => {
+    if (item.status !== 'leased') return false;
+    const located = locateStep(run, item.id);
+    return located !== undefined && plannedBranch(run, located.scope, item, located.step) === branch;
+  });
+}
+
 /**
  * Fails a step the engine cannot hand out, so the rest of the graph keeps settling. Like a skip, it does not bump
  * `revision`. `settledAt` is the revision the failure is stamped with: the run's current one, or that of an open lease.
@@ -1039,12 +1048,14 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
         const offered = plan.fail ? undefined : plan;
         const terms = offerTerms(run, leased.id, located, offered, context);
         // A driver that can no longer run its lease gives it up, so the step waits for one that can instead of looping.
-        // No step has run in an unused copy, so the driver gives up the copy too, and another driver may take the step.
+        // No step has run in an unused copy, so the driver gives up the copy too, and another driver may take the step,
+        // unless the driver still holds another lease in it.
         if (terms.kind === 'hold') {
           (run.cancelledAttempts ??= []).push(leased.attempt);
           release(leased);
-          const copy = offered?.contract && run.copies?.[offered.contract.branch];
-          if (copy && !copy.used) delete copy.owner;
+          const branch = offered?.contract?.branch;
+          const copy = branch !== undefined ? run.copies?.[branch] : undefined;
+          if (branch !== undefined && copy && !copy.used && !leasedIn(run, branch)) delete copy.owner;
           continue;
         }
         if (terms.kind === 'fail') {
@@ -1054,6 +1065,7 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
         }
         const unenforced = unionUnenforced(leased.lease.unenforced ?? [], terms.terms.unenforced);
         leased.lease = offering({ ...leased.lease, ...(unenforced.length > 0 ? { unenforced } : {}) }, offered?.session);
+        if (offered) rememberCopy(run, offered, driver);
         return answer(leaseData(run, leased, located.step, rendered, terms.terms, offered));
       }
       failStep(leased, rendered, leased.lease.revision);

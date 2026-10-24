@@ -2781,6 +2781,61 @@ describe('held-back steps', () => {
     });
   });
 
+  it('keeps the copy with its owner when a held hand-back leaves the owner another lease in it', async () => {
+    vi.stubEnv('DEPLOY_TOKEN', 'deploy-value');
+    const { config, runId } = await startBuild(graph(`  - id: box
+    workspace: new
+    workflow:
+      steps:
+        - id: a
+          workspace: continue
+          requires: { env: [DEPLOY_TOKEN] }
+          command: node a.js
+        - id: b
+          needs: []
+          workspace: continue
+          command: node b.js
+`));
+    const can = { workspace: [...allModes], env: true };
+    const a = leaseIn(await leaseNext(config, runId, driverA, { can, base }));
+    expect(a.step).toBe('box.a');
+    const b = leaseIn(await leaseNext(config, runId, driverA, { can, base, running: [a.attempt] }));
+    expect(b.step).toBe('box.b');
+    expect(await leaseNext(config, runId, driverA, { can: { workspace: [...allModes] }, base })).toMatchObject({ data: { lease: { step: 'box.b' } } });
+    await reportAttempt(config, runId, { ...b, outcome: 'success', exitCode: 0, driver: driverA });
+
+    expect(await leaseNext(config, runId, driverB, { can, base })).toMatchObject({
+      data: { wait: { reason: 'step "box.a" continues a workspace owned by another driver' } },
+    });
+  });
+
+  it('gives a copy back its owner when the owner takes back a lease in it', async () => {
+    const { config, runId } = await startBuild(graph(`  - id: box
+    workspace: new
+    workflow:
+      steps:
+        - id: a
+          workspace: continue
+          command: node a.js
+        - id: b
+          needs: [a]
+          workspace: continue
+          command: node b.js
+`));
+    const can = { workspace: [...allModes] };
+    const a = leaseIn(await leaseNext(config, runId, driverA, { can, base }));
+    const stored = await readRun(config, runId);
+    if (typeof stored !== 'object') throw new Error('run unreadable');
+    for (const copy of Object.values(stored.copies ?? {})) delete copy.owner;
+    await saveRun(config, stored);
+    expect(await leaseNext(config, runId, driverA, { can, base })).toMatchObject({ data: { lease: { step: 'box.a' } } });
+    await reportAttempt(config, runId, { ...a, outcome: 'success', exitCode: 0, driver: driverA });
+
+    expect(await leaseNext(config, runId, driverB, { can, base })).toMatchObject({
+      data: { wait: { reason: 'step "box.b" continues a workspace owned by another driver' } },
+    });
+  });
+
   it('waits when every ready step is held back, and names each one in order', async () => {
     const { config, runId } = await startBuild(graph(`  - id: a
     workspace: new
