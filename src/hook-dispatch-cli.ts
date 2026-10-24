@@ -448,6 +448,11 @@ export async function hookDispatchCli(
       process.cwd();
     } catch {
       process.chdir(os.tmpdir());
+      if (!resolveHookCwd(stdin)) {
+        const { recordedHookCwd } = await import('./dashboard-collector.js');
+        const previousCwd = await recordedHookCwd(stdin, tool);
+        if (previousCwd) stdin.cwd = previousCwd;
+      }
     }
 
     // Config gates: a directory without teamai runs no team handlers (#748), and

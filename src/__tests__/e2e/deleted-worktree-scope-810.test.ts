@@ -9,7 +9,7 @@
  * scope's usage file.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -377,4 +377,24 @@ describe('hook events after their worktree is deleted (#810)', () => {
       expect(r.output).not.toContain('worth documenting');
     });
   });
+});
+
+
+it.runIf(process.platform !== 'win32').each([false, true])('recovers an omitted cwd from the recorded session after process cwd deletion, user scope: %s', async (userScope) => {
+  const fixture = scenario({ userScope });
+  try {
+    await fixture.setup();
+    const { state } = fixture;
+    const before = readJsonl<RecordedEvent>(state.eventsFile).length;
+    fs.mkdirSync(state.worktree);
+    const stopped = spawnSync('/bin/sh', ['-c', 'rmdir "$REMOVED_WORK" && exec "$TEST_NODE" "$TEST_CLI" hook-dispatch stop --tool claude --bg-only'], {
+      cwd: state.worktree, env: { ...cliEnv(state.home), REMOVED_WORK: state.worktree, TEST_NODE: process.execPath, TEST_CLI: CLI },
+      input: JSON.stringify({ session_id: SESSION, hook_event_name: 'Stop' }), encoding: 'utf8', timeout: 30000,
+    });
+    expect(stopped.status, stopped.stdout + stopped.stderr).toBe(0);
+    expect(stopped.stdout + stopped.stderr).not.toContain('uv_cwd');
+    const events = readJsonl<RecordedEvent>(state.eventsFile).slice(before).filter(event => event.sessionId === SESSION && event.type === 'stop');
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ dataHomeKey: await dataHomeKey(state.partition), projectAnchor: state.anchor });
+  } finally { fixture.cleanup(); }
 });
