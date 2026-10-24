@@ -11,7 +11,7 @@ import { formatUnknownScorer, syncWorkflowDefinitions } from '../workflow/cache.
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
 import { formatDiagnostic } from '../workflow/parse.js';
 import type { DriverIdentity, WorkflowEnvelope } from '../workflow/types.js';
-import { startSecrets } from './helpers/workflow-secrets.js';
+import { knownSecrets } from '../env-resolution.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const GUIDE = path.join(ROOT, 'docs', 'guide');
@@ -170,7 +170,7 @@ async function startExample(page: string, name: string, inputs: unknown = {}): P
   const config = teamRepo();
   writeExamples(page, config);
   await syncWorkflowDefinitions(config);
-  const started = await startRun(config, name, inputs, { secrets: await startSecrets(config, name) });
+  const started = await startRun(config, name, inputs, { secrets: await knownSecrets(config) });
   if ('error' in started) throw new Error(`${page}: ${started.error.message}`);
   return { config, runId: String(started.data.run) };
 }
@@ -258,7 +258,7 @@ describe('workflow guide examples', () => {
         failures.push(`${start.label}: --inputs is not JSON`);
         continue;
       }
-      const started = await startRun(config, start.name, inputs, { secrets: await startSecrets(config, start.name) });
+      const started = await startRun(config, start.name, inputs, { secrets: await knownSecrets(config) });
       if ('error' in started) {
         failures.push(`${start.label}: ${started.error.code}: ${started.error.message}`);
         continue;

@@ -24,7 +24,7 @@ import { driverLockPath, readRun } from '../workflow/store.js';
 import * as worktreeSnapshot from '../workflow/worktree-snapshot.js';
 import type { DriverIdentity } from '../workflow/types.js';
 import { commitFile, fakeClaude, git, recordDelivery } from './helpers/delivered-checkout.js';
-import { runSecrets, startSecrets } from './helpers/workflow-secrets.js';
+import { knownSecrets } from '../env-resolution.js';
 
 _setDriverPollMs(20);
 
@@ -64,7 +64,7 @@ async function workflowFixture(yaml: string): Promise<{ config: LocalConfig; wor
   };
   fs.writeFileSync(path.join(knowledge, 'workflows', 'build.yaml'), yaml);
   await syncWorkflowDefinitions(config);
-  const started = await startRun(config, 'build', {}, { secrets: await startSecrets(config, 'build') });
+  const started = await startRun(config, 'build', {}, { secrets: await knownSecrets(config) });
   if ('error' in started) throw new Error(started.error.message);
   return { config, workspace, runId: String(started.data.run) };
 }
@@ -1316,13 +1316,13 @@ setInterval(() => {}, 1000);
     try {
       await vi.waitFor(() => expect(fs.existsSync(path.join(workspace, 'child.pid'))).toBe(true), { timeout: 10_000, interval: 20 });
       pid = Number(fs.readFileSync(path.join(workspace, 'child.pid'), 'utf8'));
-      expect(await cancelRun(config, runId, await runSecrets(config, runId))).not.toHaveProperty('error');
+      expect(await cancelRun(config, runId, await knownSecrets(config))).not.toHaveProperty('error');
 
       expect(await driving).toMatchObject({ data: { done: { outcome: 'cancelled' } } });
       expect(await exitsWithin(pid, 1000)).toBe(true);
     } finally {
       if (pid !== undefined && alive(pid)) process.kill(pid, 'SIGKILL');
-      await cancelRun(config, runId, await runSecrets(config, runId));
+      await cancelRun(config, runId, await knownSecrets(config));
       await driving;
     }
   }, 30_000);
@@ -1366,7 +1366,7 @@ fs.writeFileSync(file('first.pid'), String(process.pid));
 fs.writeFileSync(file('first.started'), '');
 setInterval(() => {}, 1000);
 `);
-      expect(await respondToHitl(config, runId, await runSecrets(config, runId), { step: 'plan', choice: 'small', channel: 'cli', agent: false }))
+      expect(await respondToHitl(config, runId, await knownSecrets(config), { step: 'plan', choice: 'small', channel: 'cli', agent: false }))
         .not.toHaveProperty('error');
       const options = { hitl: true, question: async () => 'big' };
       const driving = runLocalDriver(config, runId, workspace, options);
@@ -1374,9 +1374,9 @@ setInterval(() => {}, 1000);
         await vi.waitFor(() => expect(fs.existsSync(path.join(markers, 'first.started'))).toBe(true), { timeout: 10_000, interval: 20 });
         expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'plan', status: 'succeeded' }, { id: 'work', status: 'leased' }] });
         if (control.startsWith('cancel')) {
-          expect(await cancelRun(config, runId, await runSecrets(config, runId), control.startsWith('cancel step') ? 'work' : undefined)).not.toHaveProperty('error');
+          expect(await cancelRun(config, runId, await knownSecrets(config), control.startsWith('cancel step') ? 'work' : undefined)).not.toHaveProperty('error');
         }
-        expect(await retryStep(config, runId, await runSecrets(config, runId), control === 'retry ancestor' ? 'plan' : 'work'))
+        expect(await retryStep(config, runId, await knownSecrets(config), control === 'retry ancestor' ? 'plan' : 'work'))
           .toMatchObject({ data: { retried: { pass: 2 } } });
         await vi.waitFor(() => expect(fs.existsSync(path.join(markers, 'first.stopping'))).toBe(true), { timeout: 7000, interval: 20 });
         expect(await driving).not.toHaveProperty('error');
@@ -1389,7 +1389,7 @@ setInterval(() => {}, 1000);
         expect(fs.existsSync(path.join(markers, 'overlap'))).toBe(false);
         expect(fs.readFileSync(path.join(markers, 'second.saw'), 'utf8')).toBe('cleaned');
       } finally {
-        await cancelRun(config, runId, await runSecrets(config, runId));
+        await cancelRun(config, runId, await knownSecrets(config));
         const pidFile = path.join(markers, 'first.pid');
         if (fs.existsSync(pidFile) && !fs.existsSync(path.join(markers, 'first.cleaned'))) {
           try { process.kill(Number(fs.readFileSync(pidFile, 'utf8')), 'SIGKILL'); } catch { /* Already exited. */ }
@@ -1810,7 +1810,7 @@ steps:
     let aborted = false;
     const question = vi.fn((_hitl, signal: AbortSignal) => new Promise<string>((_resolve, reject) => {
       signal.addEventListener('abort', () => { aborted = true; reject(new Error('aborted')); });
-      void runSecrets(config, runId).then((secrets) => respondToHitl(config, runId, secrets, { step: 'ask', choice: 'one', channel: 'cli', agent: true }));
+      void knownSecrets(config).then((secrets) => respondToHitl(config, runId, secrets, { step: 'ask', choice: 'one', channel: 'cli', agent: true }));
     }));
     expect(await runLocalDriver(config, runId, workspace, { hitl: true, question })).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
     expect(aborted).toBe(true);
@@ -1827,7 +1827,7 @@ steps:
           aborted = true;
           resolve({ started: true, exitCode: 1 });
         });
-        void runSecrets(config, runId).then((secrets) => cancelRun(config, runId, secrets));
+        void knownSecrets(config).then((secrets) => cancelRun(config, runId, secrets));
       })),
     };
     expect(await runLocalDriver(config, runId, workspace, { adapter })).toMatchObject({ data: { done: { outcome: 'cancelled' } } });
@@ -1917,7 +1917,7 @@ steps:
     }) });
     await asked;
     expect(await runLocalDriver(config, runId, workspace)).toEqual({ error: { code: 'driver_running', message: `Run ${runId} is already driven by process ${process.pid} on this machine. Stop that driver, or wait for it.` } });
-    await respondToHitl(config, runId, await runSecrets(config, runId), { step: 'ask', choice: 'no', channel: 'cli', agent: true });
+    await respondToHitl(config, runId, await knownSecrets(config), { step: 'ask', choice: 'no', channel: 'cli', agent: true });
     expect(await first).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
     expect(fs.existsSync(driverLockPath(config, runId))).toBe(false);
     expect(await runLocalDriver(config, runId, workspace)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
@@ -1996,7 +1996,7 @@ steps:
     expect(kept).not.toContain('deploy-secret-value-1082');
   });
 
-  it('masks the value of a required key from the environment whose name does not look secret, and not a plain env.yaml value', async () => {
+  it('masks the environment value of a key env/secrets.yaml declares whose name does not look secret, and not a plain env.yaml value', async () => {
     const { config, workspace, runId } = await workflowFixture(`schemaVersion: v1alpha1
 name: build
 description: Print a required value.
@@ -2007,6 +2007,7 @@ steps:
 `);
     fs.mkdirSync(path.join(config.repo.localPath, 'env'), { recursive: true });
     fs.writeFileSync(path.join(config.repo.localPath, 'env', 'env.yaml'), 'variables:\n  - key: TEAM_URL\n    value: https://team.example\n');
+    fs.writeFileSync(path.join(config.repo.localPath, 'env', 'secrets.yaml'), 'secrets:\n  - key: DATABASE_URL\n');
     vi.stubEnv('DATABASE_URL', 'postgres://ci:pw@db.example/app');
     expect(await runLocalDriver(config, runId, workspace, { hitl: false })).toMatchObject({ data: { done: { outcome: 'failed' } } });
     vi.unstubAllEnvs();
@@ -2154,7 +2155,7 @@ steps:
     let abortedBeforeLaunch = false;
     const question = vi.fn((_hitl, signal: AbortSignal) => new Promise<string>((_resolve, reject) => {
       signal.addEventListener('abort', () => { aborted = true; reject(new Error('aborted')); });
-      void runSecrets(config, runId).then((secrets) => respondToHitl(config, runId, secrets, { step: 'pair', choice: 'yes', channel: 'cli', agent: true }));
+      void knownSecrets(config).then((secrets) => respondToHitl(config, runId, secrets, { step: 'pair', choice: 'yes', channel: 'cli', agent: true }));
     }));
     const adapter: LocalToolAdapter = { run: vi.fn(), runInteractive: vi.fn<LocalToolAdapter['runInteractive']>(async () => {
       abortedBeforeLaunch = aborted;
@@ -2543,7 +2544,7 @@ ${timeout}`);
     const driving = runLocalDriver(config, runId, workspace, { hitl: false });
     const pid = await setupPid(pidFile);
     const cancelledAt = Date.now();
-    expect(await cancelRun(config, runId, await runSecrets(config, runId))).toMatchObject({ data: { run: { status: 'cancelled' } } });
+    expect(await cancelRun(config, runId, await knownSecrets(config))).toMatchObject({ data: { run: { status: 'cancelled' } } });
     expect(await driving).toMatchObject({ data: { done: { outcome: 'cancelled' } } });
     expect(Date.now() - cancelledAt, 'the driver did not wait for setup to finish').toBeLessThan(2500);
     expect(await exitsWithin(pid, 1000)).toBe(true);
@@ -2609,7 +2610,7 @@ steps:
       if (waited > 10_000) throw new Error('checkout did not start');
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
-    expect(await cancelRun(config, runId, await runSecrets(config, runId))).toMatchObject({ data: { run: { status: 'cancelled' } } });
+    expect(await cancelRun(config, runId, await knownSecrets(config))).toMatchObject({ data: { run: { status: 'cancelled' } } });
     expect(await driving).toMatchObject({ data: { done: { outcome: 'cancelled' } } });
     expect(fs.existsSync(marker)).toBe(false);
     expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'change', status: 'cancelled', failure: { code: 'cancelled' } }] });

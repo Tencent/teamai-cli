@@ -9,7 +9,7 @@ import type { SyncWorkflowResult } from '../workflow/cache.js';
 import { formatDiagnostic } from '../workflow/parse.js';
 import { leaseNext, startRun } from '../workflow/engine.js';
 import { readRun } from '../workflow/store.js';
-import { startSecrets } from './helpers/workflow-secrets.js';
+import { knownSecrets } from '../env-resolution.js';
 
 const dirs: string[] = [];
 
@@ -142,7 +142,7 @@ describe('workflow cache', () => {
     await syncWorkflowDefinitions(config);
 
     expect((await loadCachedWorkflow(config, 'build'))?.teamRevision).toBe(pushed);
-    const started = await startRun(config, 'build', {}, { secrets: await startSecrets(config, 'build') });
+    const started = await startRun(config, 'build', {}, { secrets: await knownSecrets(config) });
     if ('error' in started) throw new Error(started.error.message);
     const run = await readRun(config, String(started.data.run));
     if (typeof run === 'string') throw new Error(`Could not read run: ${run}`);
@@ -253,7 +253,7 @@ steps:
     repository.push();
     await syncWorkflowDefinitions(config);
 
-    const first = await startRun(config, 'build', {}, { secrets: await startSecrets(config, 'build') });
+    const first = await startRun(config, 'build', {}, { secrets: await knownSecrets(config) });
     if ('error' in first) throw new Error(first.error.message);
     const firstRun = await readRun(config, String(first.data.run));
     if (typeof firstRun === 'string') throw new Error(`Could not read first run: ${firstRun}`);
@@ -282,7 +282,7 @@ steps:
     expect(currentChildRevision).toBeDefined();
     expect(currentChildRevision).not.toBe(firstRevision);
 
-    const mixed = await startRun(config, 'build', {}, { secrets: await startSecrets(config, 'build') });
+    const mixed = await startRun(config, 'build', {}, { secrets: await knownSecrets(config) });
     if ('error' in mixed) throw new Error(mixed.error.message);
     const mixedRun = await readRun(config, String(mixed.data.run));
     if (typeof mixedRun === 'string') throw new Error(`Could not read mixed run: ${mixedRun}`);
@@ -302,7 +302,7 @@ steps:
     repository.push();
     expect((await syncWorkflowDefinitions(config)).kept).toEqual(['build']);
 
-    const started = await startRun(config, 'build', {}, { secrets: await startSecrets(config, 'build') });
+    const started = await startRun(config, 'build', {}, { secrets: await knownSecrets(config) });
     if ('error' in started) throw new Error(started.error.message);
     const run = await readRun(config, String(started.data.run));
     if (typeof run === 'string') throw new Error(`Could not read run: ${run}`);
@@ -490,7 +490,7 @@ steps:
     const first = await loadCachedWorkflow(config, 'build');
     expect(first?.definition.steps[0]).toMatchObject({ promptFile: 'prompts/review.md', prompt: 'first prompt' });
 
-    const started = await startRun(config, 'build', {}, { secrets: await startSecrets(config, 'build') });
+    const started = await startRun(config, 'build', {}, { secrets: await knownSecrets(config) });
     if ('error' in started) throw new Error(started.error.message);
     fs.writeFileSync(promptFile, 'second prompt');
     const changed = await syncWorkflowDefinitions(config);
@@ -587,9 +587,9 @@ steps:
     expect(result.cached).toEqual(['build']);
     expect(result.unrunnable).toEqual(['workflows/broken.yaml']);
     expect(result.invalid.some((diagnostic) => diagnostic.file === 'workflows/broken.yaml' && diagnostic.line > 0)).toBe(true);
-    const started = await startRun(config, 'broken', {}, { secrets: await startSecrets(config, 'broken') });
+    const started = await startRun(config, 'broken', {}, { secrets: await knownSecrets(config) });
     expect(started).toMatchObject({ error: { code: 'workflow_not_found' } });
-    const runnable = await startRun(config, 'build', {}, { secrets: await startSecrets(config, 'build') });
+    const runnable = await startRun(config, 'build', {}, { secrets: await knownSecrets(config) });
     expect(runnable).toMatchObject({ data: { name: 'build', status: 'running' } });
   });
 
@@ -597,7 +597,7 @@ steps:
     const config = testConfig();
     writeWorkflow(config, 'build', VALID);
     await syncWorkflowDefinitions(config);
-    const first = await startRun(config, 'build', {}, { secrets: await startSecrets(config, 'build') });
+    const first = await startRun(config, 'build', {}, { secrets: await knownSecrets(config) });
     if ('error' in first) throw new Error(first.error.message);
     const before = await readRun(config, String(first.data.run));
     if (typeof before !== 'object') throw new Error('run was not stored');
@@ -608,7 +608,7 @@ steps:
     expect(again.kept).toEqual(['build']);
     expect(again.cached).not.toContain('build');
     expect(again.invalid[0]).toMatchObject({ file: 'workflows/build.yaml', field: '(document)' });
-    const second = await startRun(config, 'build', {}, { secrets: await startSecrets(config, 'build') });
+    const second = await startRun(config, 'build', {}, { secrets: await knownSecrets(config) });
     if ('error' in second) throw new Error(second.error.message);
     const after = await readRun(config, String(second.data.run));
     if (typeof after !== 'object') throw new Error('run was not stored');
@@ -626,7 +626,7 @@ steps:
 
     await syncWorkflowDefinitions(config, { dryRun: true });
 
-    const started = await startRun(config, 'build', {}, { secrets: await startSecrets(config, 'build') });
+    const started = await startRun(config, 'build', {}, { secrets: await knownSecrets(config) });
     expect(started).toMatchObject({ data: { name: 'build', status: 'running' } });
   });
 
@@ -643,7 +643,7 @@ steps:
 
     expect(result.cached).toEqual([]);
     expect(cachedText(config)).not.toContain('outside-dir.js');
-    const started = await startRun(config, 'build', {}, { secrets: await startSecrets(config, 'build') });
+    const started = await startRun(config, 'build', {}, { secrets: await knownSecrets(config) });
     expect(started).toMatchObject({ error: { code: 'workflow_not_found' } });
   });
 
@@ -659,7 +659,7 @@ steps:
     const result = await syncWorkflowDefinitions(config);
 
     expect(result).toEqual({ cached: [], kept: [], invalid: [], unrunnable: [], scorers: { cached: [], invalid: [], verified: [] }, unknownScorers: [] });
-    expect(await startRun(config, 'build', {}, { secrets: await startSecrets(config, 'build') })).toMatchObject({ error: { code: 'workflow_not_found' } });
+    expect(await startRun(config, 'build', {}, { secrets: await knownSecrets(config) })).toMatchObject({ error: { code: 'workflow_not_found' } });
   });
 
   it('does not read or cache a symlinked yaml outside workflows', async () => {
@@ -675,7 +675,7 @@ steps:
     expect(result.invalid).toEqual([]);
     expect(result.unrunnable).toEqual([]);
     expect(cachedText(config)).not.toContain('outside-only.js');
-    const started = await startRun(config, 'build', {}, { secrets: await startSecrets(config, 'build') });
+    const started = await startRun(config, 'build', {}, { secrets: await knownSecrets(config) });
     expect(started).toMatchObject({ error: { code: 'workflow_not_found' } });
   });
 
@@ -691,7 +691,7 @@ steps:
     expect(synced.unrunnable).toContain('workflows/build.yaml');
     expect(synced.kept).not.toContain('build');
     expect(await loadCachedWorkflow(config, 'build')).toBeNull();
-    expect(await startRun(config, 'build', {}, { secrets: await startSecrets(config, 'build') })).toMatchObject({ error: { code: 'workflow_not_found' } });
+    expect(await startRun(config, 'build', {}, { secrets: await knownSecrets(config) })).toMatchObject({ error: { code: 'workflow_not_found' } });
   });
 
   it('keeps each self-mode checkout on its own cache', async () => {
@@ -719,7 +719,7 @@ steps:
     await syncWorkflowDefinitions(first);
     await syncWorkflowDefinitions(second);
 
-    const started = await startRun(first, 'build', {}, { secrets: await startSecrets(first, 'build') });
+    const started = await startRun(first, 'build', {}, { secrets: await knownSecrets(first) });
     if ('error' in started) throw new Error(started.error.message);
     const leased = await leaseNext(first, String(started.data.run), { kind: 'local', machine: 'test', workspace: '/work' });
     expect(leased).toMatchObject({ data: { lease: { command: 'echo main-command' } } });
@@ -727,14 +727,14 @@ steps:
     writeWorkflow(first, 'build', 'schemaVersion: [\n');
     const kept = await syncWorkflowDefinitions(first);
     expect(kept.kept).toEqual(['build']);
-    const afterInvalid = await startRun(first, 'build', {}, { secrets: await startSecrets(first, 'build') });
+    const afterInvalid = await startRun(first, 'build', {}, { secrets: await knownSecrets(first) });
     if ('error' in afterInvalid) throw new Error(afterInvalid.error.message);
     const stillFirst = await leaseNext(first, String(afterInvalid.data.run), { kind: 'local', machine: 'test', workspace: '/work' });
     expect(stillFirst).toMatchObject({ data: { lease: { command: 'echo main-command' } } });
 
     fs.rmSync(path.join(second.repo.localPath, 'workflows', 'build.yaml'));
     await syncWorkflowDefinitions(second);
-    const afterDelete = await startRun(first, 'build', {}, { secrets: await startSecrets(first, 'build') });
+    const afterDelete = await startRun(first, 'build', {}, { secrets: await knownSecrets(first) });
     expect(afterDelete).toMatchObject({ data: { name: 'build', status: 'running' } });
   });
 
@@ -853,7 +853,7 @@ steps:
     expect(result.invalid).toEqual([expect.objectContaining({ code: 'missing_needs', field: 'steps[1].needs' })]);
     expect(result.unrunnable).toEqual(['workflows/build.yaml']);
     expect(result.kept).toEqual([]);
-    expect(await startRun(config, 'build', {}, { secrets: await startSecrets(config, 'build') })).toMatchObject({ error: { code: 'workflow_not_found' } });
+    expect(await startRun(config, 'build', {}, { secrets: await knownSecrets(config) })).toMatchObject({ error: { code: 'workflow_not_found' } });
   });
 
   it('reports only the broken step when a step numbered 10 or higher is valid', async () => {
@@ -1144,7 +1144,7 @@ steps:
     ]);
     expect(result.unrunnable).toEqual(['workflows/build.yaml']);
     expect(result.kept).toEqual([]);
-    expect(await startRun(config, 'build', {}, { secrets: await startSecrets(config, 'build') })).toMatchObject({ error: { code: 'workflow_not_found' } });
+    expect(await startRun(config, 'build', {}, { secrets: await knownSecrets(config) })).toMatchObject({ error: { code: 'workflow_not_found' } });
   });
 
   it('reports a template in a command and points to env', async () => {
@@ -1320,7 +1320,7 @@ steps:
     expect(result.invalid.map((diagnostic) => diagnostic.code)).toEqual(['bad_template']);
     expect(result.unrunnable).toEqual(['workflows/review.yaml']);
     expect(result.kept).toEqual([]);
-    expect(await startRun(config, 'review', { targets: [] }, { secrets: await startSecrets(config, 'review') })).toMatchObject({ error: { code: 'workflow_not_found' } });
+    expect(await startRun(config, 'review', { targets: [] }, { secrets: await knownSecrets(config) })).toMatchObject({ error: { code: 'workflow_not_found' } });
   });
 
   it('reports a bad template in prompt_file text and drops the version that rendered it as text', async () => {
@@ -1351,7 +1351,7 @@ steps:
     expect(result.invalid[0]?.code).toBe('bad_template');
     expect(result.unrunnable).toEqual(['workflows/build.yaml']);
     expect(result.kept).toEqual([]);
-    expect(await startRun(config, 'build', {}, { secrets: await startSecrets(config, 'build') })).toMatchObject({ error: { code: 'workflow_not_found' } });
+    expect(await startRun(config, 'build', {}, { secrets: await knownSecrets(config) })).toMatchObject({ error: { code: 'workflow_not_found' } });
   });
 
   it('lets a prompt_file read item where a for_each binds it, and keeps item as written elsewhere', async () => {
@@ -1453,7 +1453,7 @@ steps:
     ]);
     expect(result.invalid[0]?.code).toBe('bad_template');
     expect(result.unrunnable).toEqual(['workflows/build.yaml']);
-    expect(await startRun(config, 'build', {}, { secrets: await startSecrets(config, 'build') })).toMatchObject({ error: { code: 'workflow_not_found' } });
+    expect(await startRun(config, 'build', {}, { secrets: await knownSecrets(config) })).toMatchObject({ error: { code: 'workflow_not_found' } });
   });
 
   it('reports an if that reads an input the workflow does not declare', async () => {
@@ -1507,7 +1507,7 @@ steps:
     ]);
     expect(result.invalid.map((diagnostic) => diagnostic.code)).toEqual(['dotted_name', 'dotted_name', 'dotted_name']);
     expect(result.kept).toEqual([]);
-    expect(await startRun(config, 'build', {}, { secrets: await startSecrets(config, 'build') })).toMatchObject({ error: { code: 'workflow_not_found' } });
+    expect(await startRun(config, 'build', {}, { secrets: await knownSecrets(config) })).toMatchObject({ error: { code: 'workflow_not_found' } });
   });
 
   it('reads env numbers and booleans as text and reports a value that is not a scalar', async () => {
@@ -1810,7 +1810,7 @@ steps:
 async function syncAndStart(config: LocalConfig): Promise<SyncWorkflowResult> {
   const result = await syncWorkflowDefinitions(config);
   for (const name of [...result.cached, ...result.kept]) {
-    expect(await startRun(config, name, {}, { secrets: await startSecrets(config, name) }), name).not.toMatchObject({ error: { code: expect.stringMatching(/^workflow_(recursion|not_found)$/) } });
+    expect(await startRun(config, name, {}, { secrets: await knownSecrets(config) }), name).not.toMatchObject({ error: { code: expect.stringMatching(/^workflow_(recursion|not_found)$/) } });
   }
   return result;
 }
@@ -1892,7 +1892,7 @@ steps:
     expect(second.kept).toEqual([]);
     expect(second.unrunnable).toEqual(['workflows/ship.yaml']);
     expect(second.cached).toEqual(['build']);
-    expect(await startRun(config, 'ship', {}, { secrets: await startSecrets(config, 'ship') })).toMatchObject({ error: { code: 'workflow_not_found', message: expect.stringContaining('Workflow "ship" has no runnable version') } });
+    expect(await startRun(config, 'ship', {}, { secrets: await knownSecrets(config) })).toMatchObject({ error: { code: 'workflow_not_found', message: expect.stringContaining('Workflow "ship" has no runnable version') } });
   });
 
   it('reports a parent whose child has no runnable version because of its own references', async () => {
@@ -2078,7 +2078,7 @@ steps:
     expect(result.cached).toEqual([]);
     expect(result.kept).toEqual(['a', 'b']);
     expect(result.unrunnable).toEqual([]);
-    expect(await startRun(config, 'a', {}, { secrets: await startSecrets(config, 'a') })).toMatchObject({ data: { name: 'a' } });
+    expect(await startRun(config, 'a', {}, { secrets: await knownSecrets(config) })).toMatchObject({ data: { name: 'a' } });
   });
 
   describe('checks every version against the versions the other files settle to', () => {

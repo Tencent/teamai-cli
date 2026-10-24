@@ -10,7 +10,7 @@ import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, startRun } from '../workflow/engine.js';
 import { readRun } from '../workflow/store.js';
 import type { RunState } from '../workflow/types.js';
-import { startSecrets } from './helpers/workflow-secrets.js';
+import { knownSecrets } from '../env-resolution.js';
 
 const roots: string[] = [];
 const driver = { kind: 'ide', machine: 'host-7f3a', workspace: '/private/work/checkout' };
@@ -32,7 +32,7 @@ async function waitingRun(hitl = 'approve: { message: "Ship {{ inputs.ticket }}?
     '  - id: ship', '    needs: [build]', `    ${hitl}`, '    prompt: Deliver {{ inputs.ticket }} as prompt-secret-text',
   ].join('\n'));
   expect((await syncWorkflowDefinitions(config)).invalid).toEqual([]);
-  const started = await startRun(config, 'ship', { ticket: 'TICKET-SECRET-42' }, { secrets: await startSecrets(config, 'ship') });
+  const started = await startRun(config, 'ship', { ticket: 'TICKET-SECRET-42' }, { secrets: await knownSecrets(config) });
   if ('error' in started) throw new Error(started.error.message);
   const id = String(started.data.run);
   const next = () => leaseNext(config, id, driver, { can: { hitl: true } });

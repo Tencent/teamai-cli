@@ -2,7 +2,6 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { knownSecrets } from '../env-resolution.js';
-import { runEnvKeys } from './requirements.js';
 import { pinScorers } from '../scorers/cache.js';
 import { AgentSession } from '../session-flow/agent-session.js';
 import { archiveSessions, type ArchiveSessionRef } from '../session-flow/archive.js';
@@ -203,7 +202,7 @@ export async function publishRun(
   const stored = await readRun(config, runId);
   if (stored === 'missing') return refused({ code: 'run_not_found', message: `Run ${runId} was not found` });
   if (stored === 'corrupt') return refused(runUnreadable(runId));
-  const secrets = await knownSecrets(config, runEnvKeys(stored), env);
+  const secrets = await knownSecrets(config, env);
   const projected = projectRun(stored, secrets);
   if (!projected.ok) return projected;
   const checked = checkedOutsideLocks(stored, options.sessions);
@@ -576,8 +575,7 @@ async function acquire(
 ): Promise<Result<ClaimReceipt>> {
   if (!origin.ok) return origin;
   const owner = await installOwner(config);
-  // The values a claimed run holds were masked by the machine that published it.
-  const secrets = await knownSecrets(config, []);
+  const secrets = await knownSecrets(config);
   // Decided outside the reports lock: rebuilding definitions and checking the business origin can take a while.
   const decided = await decideClaim(config, runId, origin.value, owner, { transfer, checkout });
   if (!decided.ok) return decided;

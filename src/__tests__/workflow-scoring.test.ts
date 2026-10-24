@@ -18,7 +18,7 @@ import { projectRun } from '../workflow/snapshot.js';
 import { nextJudgeLease, parseJudgeRequest, parseJudgeSubmission, runJudgeLease, scoreOnDemand, scoredPasses, submitJudgeLease, type JudgeRequest } from '../workflow/scoring.js';
 import { installOwner, readRun } from '../workflow/store.js';
 import type { DriverIdentity, RunState, WorkflowEnvelope } from '../workflow/types.js';
-import { startSecrets } from './helpers/workflow-secrets.js';
+import { knownSecrets } from '../env-resolution.js';
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -90,7 +90,7 @@ async function runOf(config: LocalConfig, runId: string): Promise<RunState> {
  */
 async function settledRun(config: LocalConfig, reported: Record<string, unknown> = {}): Promise<string> {
   await syncWorkflowDefinitions(config);
-  const runId = String(data(await startRun(config, 'review', {}, { secrets: await startSecrets(config, 'review') })).run);
+  const runId = String(data(await startRun(config, 'review', {}, { secrets: await knownSecrets(config) })).run);
   const lease = z.object({ attempt: z.string(), revision: z.number() }).parse(data(await leaseNext(config, runId, workDriver)).lease);
   const parsed = parseReport({ attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: workDriver, outputs: { reviewed: true }, ...reported });
   if (typeof parsed === 'string') throw new Error(parsed);
@@ -283,7 +283,7 @@ console.log(JSON.stringify({ type: 'result', structured_output: { label: 'great'
   it('names the entry it closed for empty evidence in the next answer', async () => {
     const config = fixture(scorer(100));
     await syncWorkflowDefinitions(config);
-    const runId = String(data(await startRun(config, 'review', {}, { secrets: await startSecrets(config, 'review') })).run);
+    const runId = String(data(await startRun(config, 'review', {}, { secrets: await knownSecrets(config) })).run);
     const work = z.object({ attempt: z.string(), revision: z.number() }).parse(data(await leaseNext(config, runId, workDriver)).lease);
     data(await reportAttempt(config, runId, { ...work, outcome: 'success', driver: workDriver }));
 
@@ -482,7 +482,7 @@ steps:
   async function reviewed(config: LocalConfig): Promise<string> {
     fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'review.yaml'), BUDGETED);
     await syncWorkflowDefinitions(config);
-    const runId = String(data(await startRun(config, 'review', {}, { secrets: await startSecrets(config, 'review') })).run);
+    const runId = String(data(await startRun(config, 'review', {}, { secrets: await knownSecrets(config) })).run);
     const lease = z.object({ attempt: z.string(), revision: z.number() }).parse(data(await leaseNext(config, runId, workDriver, reports)).lease);
     data(await reportAttempt(config, runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: workDriver, outputs: { reviewed: true }, tokens: { input: 60, output: 30 } }));
     return runId;
@@ -613,7 +613,7 @@ describe('scoredPasses', () => {
     const config = fixture(scorer(100));
     fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'review.yaml'), WORKFLOW.replace('    scorers:', "    for_each: '[]'\n    scorers:"));
     await syncWorkflowDefinitions(config);
-    const runId = String(data(await startRun(config, 'review', {}, { secrets: await startSecrets(config, 'review') })).run);
+    const runId = String(data(await startRun(config, 'review', {}, { secrets: await knownSecrets(config) })).run);
     expect(data(await leaseNext(config, runId, workDriver))).toMatchObject({ done: { outcome: 'succeeded' } });
     const install = (await installOwner(config)).id;
     const run = await runOf(config, runId);
@@ -676,7 +676,7 @@ steps:
           prompt: Review the change.
 `);
     await syncWorkflowDefinitions(config);
-    const runId = String(data(await startRun(config, 'review', {}, { secrets: await startSecrets(config, 'review') })).run);
+    const runId = String(data(await startRun(config, 'review', {}, { secrets: await knownSecrets(config) })).run);
     for (const reported of reports) {
       const lease = z.object({ attempt: z.string(), revision: z.number() }).parse(data(await leaseNext(config, runId, workDriver)).lease);
       const parsed = parseReport({ attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: workDriver, outputs: { done: true }, ...reported });
@@ -962,7 +962,7 @@ console.log(JSON.stringify({ type: 'result', structured_output: { label: 'good',
   it('says the evidence is empty when a pass on demand recorded nothing to judge', async () => {
     const config = fixture(scorer(0));
     await syncWorkflowDefinitions(config);
-    const runId = String(data(await startRun(config, 'review', {}, { secrets: await startSecrets(config, 'review') })).run);
+    const runId = String(data(await startRun(config, 'review', {}, { secrets: await knownSecrets(config) })).run);
     const work = z.object({ attempt: z.string(), revision: z.number() }).parse(data(await leaseNext(config, runId, workDriver)).lease);
     data(await reportAttempt(config, runId, { ...work, outcome: 'success', driver: workDriver }));
     fakeClaude(config);

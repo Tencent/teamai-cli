@@ -27,12 +27,12 @@ import { decideRound, decideStepLoop, exhaustedAtStart, firstPass, loopSettled }
 import { childScope, contextOf, insertChildren, localId, statesIn, stepDefinitions, topScope, type Scope } from './scope.js';
 import { planWorkspace, plannedBranch, sessionOf, type LeaseSession, type SessionRef, type WorkspaceContract, type WorkspacePlan } from './workspace.js';
 import {
-  CAN_KEYS, CanSchema, ReportedUnenforcedSchema, heldFor, mergeRequirements, negotiate, reportedUnenforced, requiredEnvKeys, runEnvKeys, unionUnenforced,
+  CAN_KEYS, CanSchema, ReportedUnenforcedSchema, heldFor, mergeRequirements, negotiate, reportedUnenforced, requiredEnvKeys, unionUnenforced,
   type Allow, type DriverCan, type EnvFacts, type Held, type Negotiation, type ReportedUnenforced, type Terms,
 } from './requirements.js';
-import { resolveWorkflowEnv, secretKey, type WorkflowEnv } from '../env-resolution.js';
+import { knownSecrets, resolveWorkflowEnv, secretKey, type WorkflowEnv } from '../env-resolution.js';
 import { redactJson } from '../utils/redact.js';
-import { generateRunId, installOwner, isRunId, readRun, updateRun } from './store.js';
+import { generateRunId, installOwner, isRunId, updateRun } from './store.js';
 import { pinScorers } from '../scorers/cache.js';
 import { isLeaseRef } from '../scorers/entry.js';
 import type {
@@ -102,27 +102,6 @@ export function withIgnored(envelope: WorkflowEnvelope, ignored: string[]): Work
 
 function sameDriver(left: DriverIdentity, right: DriverIdentity): boolean {
   return left.kind === right.kind && left.machine === right.machine && left.workspace === right.workspace;
-}
-
-/**
- * The env keys run `runId` requires, whose values its writes mask: none for a run that cannot be read. They come from the
- * workflow files the run pinned, which never change, so reading them without the run lock is safe.
- */
-export async function requiredKeysOf(config: LocalConfig, runId: string): Promise<Set<string>> {
-  const run = isRunId(runId) ? await readRun(config, runId) : 'missing';
-  return typeof run === 'object' ? runEnvKeys(run) : new Set();
-}
-
-/** The env keys a new run of workflow `name` would require: none when it has no runnable version, which start reports. */
-export async function startKeysOf(config: LocalConfig, name: string): Promise<Set<string>> {
-  const cached = await loadCachedWorkflow(config, name);
-  const tree = cached && await loadWorkflowTree(config, cached);
-  return cached && tree && !('failed' in tree) ? requiredEnvKeys([cached.definition, ...Object.values(tree.workflows)]) : new Set();
-}
-
-/** The team env for one operation on run `runId`, resolved before its lock. */
-export async function resolveRunEnv(config: LocalConfig, runId: string): Promise<WorkflowEnv> {
-  return resolveWorkflowEnv(config, await requiredKeysOf(config, runId));
 }
 
 /**
@@ -826,7 +805,7 @@ function listedScorers(definitions: ReadonlyArray<{ steps: WorkflowStep[] }>): s
 
 /**
  * Creates a run. `inputs` are checked against the declared inputs before the run file exists. `secrets` are what the
- * caller resolved for the operation, for the keys the workflow requires (`startKeysOf`).
+ * caller resolved for the operation.
  */
 export async function startRun(
   config: LocalConfig,
@@ -918,7 +897,7 @@ function offerTerms(
     interactive: step.interactive === true,
     hasContract: plan?.contract !== undefined,
     envKeys: Object.keys(step.env ?? {}),
-    runEnvKeys: runEnvKeys(run),
+    runEnvKeys: requiredEnvKeys([run.definition, ...Object.values(run.workflows ?? {})]),
     budgeted: step.prompt !== undefined && scope.budgeted,
     ...(step.maxTurns !== undefined ? { maxTurns: step.maxTurns } : {}),
     ...(creates && scope.setup ? { setup: scope.setup } : {}),
@@ -952,7 +931,7 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
   const running = new Set(options.running);
   const can = options.can ?? {};
   // Resolved once, so the env this `next` offers against and the secrets its writes mask agree.
-  const env = options.env ?? await resolveRunEnv(config, runId);
+  const env = options.env ?? await resolveWorkflowEnv(config);
   const context: OfferContext = { can, allow: config.workflows?.allow ?? {}, facts: env.facts };
   const maxParallel = config.workflows?.max_parallel;
   // The end record is queued under the run lock, so the run stores whether it
@@ -1402,7 +1381,7 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
     return error('judge_lease', `Attempt ${report.attempt} is a judge lease, which workflow report does not settle. Submit its answer with: teamai score --lease ${report.attempt} --submit --stdin`);
   }
   const install = await installOwner(config);
-  return withRun(config, runId, secrets ?? (await resolveRunEnv(config, runId)).secrets, async (run, now) => {
+  return withRun(config, runId, secrets ?? await knownSecrets(config), async (run, now) => {
     // Settled membership wins. An old revision of a settled attempt is still repeated_report.
     if (run.settledAttempts.includes(report.attempt)) {
       return { save: false, envelope: error('repeated_report', `Attempt ${report.attempt} was already reported`) };

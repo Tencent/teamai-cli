@@ -10,7 +10,7 @@ import { leaseNext, parseNextPayload, parseReport, parseResponsePayload, reportA
 import { cancelRun, respondToHitl, retryStep } from '../workflow/run-controls.js';
 import { pendingRecords } from '../workflow/records.js';
 import { readRun } from '../workflow/store.js';
-import { runSecrets, startSecrets } from './helpers/workflow-secrets.js';
+import { knownSecrets } from '../env-resolution.js';
 
 const dirs: string[] = [];
 
@@ -45,13 +45,13 @@ describe('workflow protocol conformance in process', () => {
         respond: async (runId, step, choice, options) => {
           const parsed = options?.json !== undefined ? parseResponsePayload(options.json) : undefined;
           if (typeof parsed === 'string') return { error: { code: 'invalid_json', message: parsed } };
-          return withIgnored(await respondToHitl(config, runId, await runSecrets(config, runId), { step, choice, note: options?.note, pass: options?.pass,
+          return withIgnored(await respondToHitl(config, runId, await knownSecrets(config), { step, choice, note: options?.note, pass: options?.pass,
             ...(parsed ? parsed.response : { channel: 'cli', agent: true }),
           }), parsed?.ignored ?? []);
         },
-        retry: async (runId, step) => retryStep(config, runId, await runSecrets(config, runId), step),
-        cancel: async (runId, step) => cancelRun(config, runId, await runSecrets(config, runId), step),
-        start: async (name) => startRun(config, name, {}, { secrets: await startSecrets(config, name) }),
+        retry: async (runId, step) => retryStep(config, runId, await knownSecrets(config), step),
+        cancel: async (runId, step) => cancelRun(config, runId, await knownSecrets(config), step),
+        start: async (name) => startRun(config, name, {}, { secrets: await knownSecrets(config) }),
         next: async (runId, body) => {
           const parsed = parseNextPayload(body);
           if (typeof parsed === 'string') return { error: { code: 'invalid_json', message: parsed } };

@@ -22,7 +22,7 @@ import type { StepPass, StepState } from '../workflow/step-state.js';
 import { readRun, runLockPath, updateRun } from '../workflow/store.js';
 import type { DriverIdentity, RunState, WorkflowEnvelope } from '../workflow/types.js';
 import { ensureWorktree, fetchMissingCommits, headCommit, markReadCopy, worktreePath } from '../workflow/worktree.js';
-import { runSecrets, startSecrets } from './helpers/workflow-secrets.js';
+import { knownSecrets } from '../env-resolution.js';
 
 const dirs: string[] = [];
 
@@ -231,7 +231,7 @@ async function settle(member: Member, runId: string): Promise<void> {
 /** Starts `workflow` in the member's business checkout, which fixes the run's base. */
 async function startIn({ config, checkout }: Member, workflow: string): Promise<string> {
   const base = await headCommit(checkout);
-  const started = await startRun(config, workflow, {}, { secrets: await startSecrets(config, workflow), ...(base ? { base } : {}), checkout });
+  const started = await startRun(config, workflow, {}, { secrets: await knownSecrets(config), ...(base ? { base } : {}), checkout });
   if ('error' in started) throw new Error(started.error.message);
   return String(started.data.run);
 }
@@ -304,7 +304,7 @@ function hasCommit(dir: string, commit: string): boolean {
 }
 
 async function start({ config }: Member): Promise<string> {
-  const started = await startRun(config, 'build', {}, { secrets: await startSecrets(config, 'build') });
+  const started = await startRun(config, 'build', {}, { secrets: await knownSecrets(config) });
   if ('error' in started) throw new Error(started.error.message);
   return String(started.data.run);
 }
@@ -1000,13 +1000,13 @@ describe('workflow handoff through teamai-reports', () => {
     const runId = await start(alice);
     expect(await leaseNext(alice.config, runId, alice.driver)).toMatchObject({ data: { lease: { step: 'one' } } });
     await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout });
-    expect(await cancelRun(alice.config, runId, await runSecrets(alice.config, runId))).not.toHaveProperty('data.notPublished');
+    expect(await cancelRun(alice.config, runId, await knownSecrets(alice.config))).not.toHaveProperty('data.notPublished');
     expect(JSON.parse(originFile(acme.origin, `workflows/runs/${runId}/state.json`) ?? '{}')).toMatchObject({ status: 'cancelled', stateRevision: 2 });
 
     expect(await claimRun(bob.config, runId, { checkout: bob.checkout })).toMatchObject({ ok: true, value: { ownership: 'claimed' } });
     expect(await leaseNext(bob.config, runId, bob.driver)).toMatchObject({ data: { done: { outcome: 'cancelled' } } });
 
-    expect(await retryStep(bob.config, runId, await runSecrets(bob.config, runId), 'one')).toMatchObject({ data: { reopened: true } });
+    expect(await retryStep(bob.config, runId, await knownSecrets(bob.config), 'one')).toMatchObject({ data: { reopened: true } });
     expect(await resumeRun(bob.config, runId, { claim: false, checkout: bob.checkout })).toMatchObject({ ok: true, value: { ownership: 'already_owned' } });
     expect(await runStep(bob, runId)).toBe('one');
   });
@@ -1043,7 +1043,7 @@ describe('workflow handoff through teamai-reports', () => {
     expect(JSON.parse(originFile(acme.origin, `workflows/runs/${runId}/state.json`) ?? '{}')).toMatchObject({ status: 'failed', stateRevision: 2 });
 
     expect(await claimRun(bob.config, runId, { checkout: bob.checkout })).toMatchObject({ ok: true, value: { ownership: 'claimed', stateRevision: 3 } });
-    expect(await retryStep(bob.config, runId, await runSecrets(bob.config, runId), 'two')).toMatchObject({ data: { reopened: true } });
+    expect(await retryStep(bob.config, runId, await knownSecrets(bob.config), 'two')).toMatchObject({ data: { reopened: true } });
     expect(await runStep(bob, runId)).toBe('two');
     expect(await leaseNext(bob.config, runId, bob.driver)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
     expect(JSON.parse(originFile(acme.origin, `workflows/runs/${runId}/state.json`) ?? '{}')).toMatchObject({ status: 'succeeded', stateRevision: 4 });
@@ -1182,7 +1182,7 @@ describe('workflow handoff through teamai-reports', () => {
       await settle(alice, runId);
     } },
     { status: 'cancelled', end: async (alice: Member, runId: string) => {
-      await cancelRun(alice.config, runId, await runSecrets(alice.config, runId));
+      await cancelRun(alice.config, runId, await knownSecrets(alice.config));
     } },
   ])('needs the branches of a $status run on the business origin to claim it only while it runs', async ({ status, end }) => {
     const acme = team({ ship: SHIP });
@@ -1209,7 +1209,7 @@ describe('workflow handoff through teamai-reports', () => {
     const { acme, alice, runId } = await finishedCopyRun();
     deleteRunBranches(acme.business, runId);
 
-    expect(await cancelRun(alice.config, runId, await runSecrets(alice.config, runId))).toMatchObject({ error: { code: 'run_settled' } });
+    expect(await cancelRun(alice.config, runId, await knownSecrets(alice.config))).toMatchObject({ error: { code: 'run_settled' } });
     expect(originRef(acme.business, `refs/heads/teamai/${runId}/base`)).toBeUndefined();
   });
 
@@ -1225,7 +1225,7 @@ describe('workflow handoff through teamai-reports', () => {
     expect(await reportAttempt(alice.config, runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'failed', driver: alice.driver }))
       .toMatchObject({ data: { accepted: true } });
 
-    expect(await cancelRun(alice.config, runId, await runSecrets(alice.config, runId), 'two')).toMatchObject({ error: { code: 'run_settled' } });
+    expect(await cancelRun(alice.config, runId, await knownSecrets(alice.config), 'two')).toMatchObject({ error: { code: 'run_settled' } });
     expect(JSON.parse(originFile(acme.origin, `workflows/runs/${runId}/state.json`) ?? '{}')).toMatchObject({ status: 'failed', stateRevision: 2 });
   });
 
@@ -1499,7 +1499,7 @@ steps:
     const acme = team({ review: REVIEW, check: CHECK }, { 'prompts/read.md': 'Read the change.\n' });
     const alice = await acme.member('alice');
     const bob = await acme.member('bob');
-    const started = await startRun(alice.config, 'review', {}, { secrets: await startSecrets(alice.config, 'review') });
+    const started = await startRun(alice.config, 'review', {}, { secrets: await knownSecrets(alice.config) });
     if ('error' in started) throw new Error(started.error.message);
     const runId = String(started.data.run);
     expect(await runStep(alice, runId)).toBe('build');

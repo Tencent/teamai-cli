@@ -6,7 +6,7 @@ import type { LocalConfig } from '../types.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
 import type { DriverIdentity } from '../workflow/types.js';
-import { startSecrets } from './helpers/workflow-secrets.js';
+import { knownSecrets } from '../env-resolution.js';
 
 // Settling reads a step instance's scope from its path, so the number of paths parsed counts settle work without a clock.
 const counter = vi.hoisted(() => ({ parsed: 0, read: 0, status: 0 }));
@@ -131,7 +131,7 @@ async function startFan(items: number, body = FAN, item = (index: number): unkno
     additionalRoles: [], projectRoot: root, dataHome: path.join(root, 'data'), usageReportEnabled: false,
   };
   await syncWorkflowDefinitions(config);
-  const started = await startRun(config, 'fan', { xs: Array.from({ length: items }, (_, index) => item(index)) }, { secrets: await startSecrets(config, 'fan') });
+  const started = await startRun(config, 'fan', { xs: Array.from({ length: items }, (_, index) => item(index)) }, { secrets: await knownSecrets(config) });
   if ('error' in started) throw new Error(started.error.message);
   return { config, run: String(started.data.run) };
 }

@@ -11,7 +11,7 @@ import { pendingRecords } from '../workflow/records.js';
 import { projectRun } from '../workflow/snapshot.js';
 import { readRun, runFilePath } from '../workflow/store.js';
 import type { RunState, WorkflowEnvelope } from '../workflow/types.js';
-import { runSecrets, startSecrets } from './helpers/workflow-secrets.js';
+import { knownSecrets } from '../env-resolution.js';
 
 const roots: string[] = [];
 const driver = { kind: 'test', machine: 'test', workspace: '/work' };
@@ -40,11 +40,11 @@ async function fixture(steps: string, header = '') {
   fs.writeFileSync(path.join(config.repo.localPath, 'workflows/build.yaml'), `schemaVersion: v1alpha1\nname: build\ndescription: Run controls.\n${header}steps:\n${steps}\n`);
   const synced = await syncWorkflowDefinitions(config);
   expect(synced.invalid).toEqual([]);
-  const started = await startRun(config, 'build', header.includes('after:') ? { items: [{ id: 'one', after: [] }, { id: 'two', after: ['one'] }] } : header.includes('inputs:') ? { items: [{ name: 'one' }] } : {}, { secrets: await startSecrets(config, 'build') });
+  const started = await startRun(config, 'build', header.includes('after:') ? { items: [{ id: 'one', after: [] }, { id: 'two', after: ['one'] }] } : header.includes('inputs:') ? { items: [{ name: 'one' }] } : {}, { secrets: await knownSecrets(config) });
   if ('error' in started) throw new Error(started.error.message);
   const id = String(started.data.run);
   return { config, id, next: (options: NextOptions = {}) => leaseNext(config, id, driver, { ...hitl, ...options }),
-    respond: async (step: string, choice: string, extra = {}) => respondToHitl(config, id, await runSecrets(config, id), { step, choice, channel: 'tty', agent: false, ...extra }),
+    respond: async (step: string, choice: string, extra = {}) => respondToHitl(config, id, await knownSecrets(config), { step, choice, channel: 'tty', agent: false, ...extra }),
     report: (lease: { attempt: string; revision: number }, outcome: 'success' | 'failed' = 'success') => reportAttempt(config, id, { attempt: lease.attempt, revision: lease.revision, driver, outcome }),
     state: async () => await readRun(config, id) as RunState };
 }
@@ -155,7 +155,7 @@ describe('workflow cancellation', () => {
   it('cancels a leased attempt, rejects its report, and lists it to the driver', async () => {
     const f = await fixture('  - id: work\n    command: echo work\n  - id: later\n    needs: [work]\n    command: echo later');
     const lease = data(await f.next()).lease;
-    expect(data(await cancelRun(f.config, f.id, await runSecrets(f.config, f.id), 'work'))).toMatchObject({ cancelled: { steps: ['work'], attempts: [lease.attempt] }, run: { status: 'failed', revision: 1 } });
+    expect(data(await cancelRun(f.config, f.id, await knownSecrets(f.config), 'work'))).toMatchObject({ cancelled: { steps: ['work'], attempts: [lease.attempt] }, run: { status: 'failed', revision: 1 } });
     expect(await f.report(lease)).toMatchObject({ error: { code: 'lease_cancelled' } });
     expect(data(await leaseNext(f.config, f.id, driver, { ...hitl, running: [lease.attempt] })).cancelled).toEqual([lease.attempt]);
     expect((await f.state()).steps[0]).toMatchObject({ status: 'cancelled', failure: { code: 'cancelled' } });
@@ -164,9 +164,9 @@ describe('workflow cancellation', () => {
   it('cancels pending work as stopped, so its dependents skip', async () => {
     const f = await fixture('  - id: first\n    command: echo first\n  - id: pending\n    needs: [first]\n    command: echo pending\n  - id: later\n    needs: [pending]\n    command: echo later');
     await f.next();
-    expect(data(await cancelRun(f.config, f.id, await runSecrets(f.config, f.id), 'pending')).run.status).toBe('running');
+    expect(data(await cancelRun(f.config, f.id, await knownSecrets(f.config), 'pending')).run.status).toBe('running');
     expect((await f.state()).steps.map((s) => s.status)).toEqual(['leased', 'cancelled', 'skipped']);
-    expect(await cancelRun(f.config, f.id, await runSecrets(f.config, f.id), 'later')).toMatchObject({ error: { code: 'not_cancellable' } });
+    expect(await cancelRun(f.config, f.id, await knownSecrets(f.config), 'later')).toMatchObject({ error: { code: 'not_cancellable' } });
   });
 
   it('cancels a waiting HITL request and allows a recovery branch', async () => {
@@ -176,7 +176,7 @@ describe('workflow cancellation', () => {
     needs: [ask]
     if: steps.ask.outcome == 'cancelled'
     end: recovered`, 'ends: { recovered: succeeded }\n');
-    expect(data(await cancelRun(f.config, f.id, await runSecrets(f.config, f.id), 'ask')).run).toMatchObject({ status: 'succeeded', end: 'recovered' });
+    expect(data(await cancelRun(f.config, f.id, await knownSecrets(f.config), 'ask')).run).toMatchObject({ status: 'succeeded', end: 'recovered' });
   });
 
   it('stops descendants of a running workflow and preserves their attempts', async () => {
@@ -189,7 +189,7 @@ describe('workflow cancellation', () => {
           needs: [work]
           command: echo pending`);
     const lease = data(await f.next()).lease;
-    const cancelled = data(await cancelRun(f.config, f.id, await runSecrets(f.config, f.id), 'nested'));
+    const cancelled = data(await cancelRun(f.config, f.id, await knownSecrets(f.config), 'nested'));
     expect(cancelled.cancelled.attempts).toEqual([lease.attempt]);
     expect((await f.state()).steps.map((s) => s.status)).toEqual(['cancelled', 'cancelled', 'skipped']);
     expect(await f.report(lease)).toMatchObject({ error: { code: 'lease_cancelled' } });
@@ -199,9 +199,9 @@ describe('workflow cancellation', () => {
     const f = await fixture('  - id: work\n    command: echo work', 'loop: { max_iterations: 3 }\n');
     const lease = data(await f.next()).lease;
     await f.report(lease);
-    expect(data(await cancelRun(f.config, f.id, await runSecrets(f.config, f.id))).run).toMatchObject({ status: 'cancelled', revision: 2 });
+    expect(data(await cancelRun(f.config, f.id, await knownSecrets(f.config))).run).toMatchObject({ status: 'cancelled', revision: 2 });
     expect((await f.state()).round).toBeUndefined();
-    expect(await cancelRun(f.config, f.id, await runSecrets(f.config, f.id))).toMatchObject({ error: { code: 'run_settled' } });
+    expect(await cancelRun(f.config, f.id, await knownSecrets(f.config))).toMatchObject({ error: { code: 'run_settled' } });
   });
 });
 
@@ -216,14 +216,14 @@ describe('workflow retry', () => {
       await f.respond('work', 'go');
     } else {
       const lease = data(await f.next()).lease;
-      if (outcome === 'cancelled') await cancelRun(f.config, f.id, await runSecrets(f.config, f.id));
+      if (outcome === 'cancelled') await cancelRun(f.config, f.id, await knownSecrets(f.config));
       else {
         await f.report(lease, 'failed');
         await f.next();
       }
     }
     expect((await f.state()).status).toBe(outcome);
-    expect(data(await retryStep(f.config, f.id, await runSecrets(f.config, f.id), 'work'))).toMatchObject({
+    expect(data(await retryStep(f.config, f.id, await knownSecrets(f.config), 'work'))).toMatchObject({
       reopened: true, run: { status: 'running' }, resume: `teamai workflow resume ${f.id}`,
     });
   });
@@ -233,7 +233,7 @@ describe('workflow retry', () => {
     await f.report(data(await f.next()).lease, 'failed');
     expect(data(await f.next()).done.outcome).toBe('failed');
     const before = Date.now();
-    expect(data(await retryStep(f.config, f.id, await runSecrets(f.config, f.id), 'work'))).toMatchObject({ reopened: true });
+    expect(data(await retryStep(f.config, f.id, await knownSecrets(f.config), 'work'))).toMatchObject({ reopened: true });
     const state = await f.state();
     expect(Date.parse(state.limitsFrom?.at ?? '')).toBeGreaterThanOrEqual(before - 1000);
     const projected = projectRun(state, {});
@@ -247,7 +247,7 @@ describe('workflow retry', () => {
       const f = await fixture('  - id: work\n    command: echo work', 'timeout: 1h\n');
       data(await f.next());
       vi.setSystemTime(new Date('2026-01-01T02:00:00.000Z'));
-      data(await retryStep(f.config, f.id, await runSecrets(f.config, f.id), 'work'));
+      data(await retryStep(f.config, f.id, await knownSecrets(f.config), 'work'));
       expect(data(await f.next()).lease).toMatchObject({ step: 'work', expiresAt: '2026-01-01T03:00:00.000Z' });
     } finally {
       vi.useRealTimers();
@@ -266,14 +266,14 @@ describe('workflow retry', () => {
     expect(data(await run.next({ ...tokens, running: [work.attempt] })).lease.step).toBe('other');
     data(await reportAttempt(run.config, run.id, { attempt: work.attempt, revision: work.revision, driver, outcome: 'success', tokens: { input: 15, output: 5 } }));
     expect(data(await run.next(tokens)).done).toMatchObject({ outcome: 'failed', failure: { code: 'budget_exceeded' } });
-    data(await retryStep(run.config, run.id, await runSecrets(run.config, run.id), 'other'));
+    data(await retryStep(run.config, run.id, await knownSecrets(run.config), 'other'));
     await spend(run, 'other');
 
     const nested = await fixture('  - id: check\n    budget: { tokens: 10 }\n    workflow:\n      steps:\n        - id: inner\n          prompt: Inner.');
     await spend(nested, 'check.inner');
     expect(data(await nested.next(tokens)).done).toMatchObject({ outcome: 'failed' });
     expect((await nested.state()).steps[0]).toMatchObject({ id: 'check', failure: { code: 'budget_exceeded' } });
-    data(await retryStep(nested.config, nested.id, await runSecrets(nested.config, nested.id), 'check'));
+    data(await retryStep(nested.config, nested.id, await knownSecrets(nested.config), 'check'));
     await spend(nested, 'check.inner');
   });
 
@@ -281,7 +281,7 @@ describe('workflow retry', () => {
     const f = await fixture('  - id: work\n    command: echo work\n  - id: later\n    needs: [work]\n    command: echo later');
     await f.report(data(await f.next()).lease, 'failed');
     expect(data(await f.next()).done.outcome).toBe('failed');
-    expect(data(await retryStep(f.config, f.id, await runSecrets(f.config, f.id), 'work'))).toMatchObject({ retried: { step: 'work', pass: 2 }, reopened: true, run: { status: 'running', revision: 3 } });
+    expect(data(await retryStep(f.config, f.id, await knownSecrets(f.config), 'work'))).toMatchObject({ retried: { step: 'work', pass: 2 }, reopened: true, run: { status: 'running', revision: 3 } });
     const state = await f.state();
     expect(state.steps.map((s) => s.status)).toEqual(['pending', 'pending']);
     expect(state.steps[0]?.passes?.[0]).toMatchObject({ pass: 1, outcome: 'failed' });
@@ -297,7 +297,7 @@ describe('workflow retry', () => {
     const f = await fixture('  - id: one\n    command: echo one\n  - id: two\n    needs: []\n    command: echo two');
     const one = data(await f.next()).lease;
     const two = data(await leaseNext(f.config, f.id, driver, { ...hitl, running: [one.attempt] })).lease;
-    const retried = data(await retryStep(f.config, f.id, await runSecrets(f.config, f.id), 'one'));
+    const retried = data(await retryStep(f.config, f.id, await knownSecrets(f.config), 'one'));
     expect(retried.retried.pass).toBe(2);
     expect(retried.reopened).toBe(false);
     expect(retried).not.toHaveProperty('resume');
@@ -318,7 +318,7 @@ describe('workflow retry', () => {
     const lease = data(await f.next()).lease;
     await f.report(lease, 'failed');
     await f.next();
-    expect(data(await retryStep(f.config, f.id, await runSecrets(f.config, f.id), lease.step)).reopened).toBe(true);
+    expect(data(await retryStep(f.config, f.id, await knownSecrets(f.config), lease.step)).reopened).toBe(true);
     expect((await f.state()).steps[0]?.status).toBe('running');
     expect(data(await f.next()).lease.step).toBe(lease.step);
   });
@@ -328,7 +328,7 @@ describe('workflow retry', () => {
     await f.report(data(await f.next()).lease);
     expect(data(await f.next()).done.outcome).toBe('failed');
     expect((await f.state()).steps[0]).toMatchObject({ status: 'failed', iteration: 1 });
-    await retryStep(f.config, f.id, await runSecrets(f.config, f.id), 'work');
+    await retryStep(f.config, f.id, await knownSecrets(f.config), 'work');
     expect(data(await f.next()).lease.step).toBe('work');
   });
 
@@ -337,7 +337,7 @@ describe('workflow retry', () => {
     await f.next();
     await f.respond('finish', 'yes');
     const before = await f.state();
-    expect(await retryStep(f.config, f.id, await runSecrets(f.config, f.id), 'work')).toMatchObject({ error: { code: 'not_retryable', message: expect.stringContaining('does not depend on it') } });
+    expect(await retryStep(f.config, f.id, await knownSecrets(f.config), 'work')).toMatchObject({ error: { code: 'not_retryable', message: expect.stringContaining('does not depend on it') } });
     expect(await f.state()).toEqual(before);
   });
 
@@ -359,7 +359,7 @@ describe('workflow retry', () => {
     await f.report(work, 'failed');
     await f.next();
     expect((await f.state()).steps.map((s) => s.status)).toEqual(['failed', 'succeeded', 'cancelled', 'skipped']);
-    await retryStep(f.config, f.id, await runSecrets(f.config, f.id), 'work');
+    await retryStep(f.config, f.id, await knownSecrets(f.config), 'work');
     expect((await f.state()).steps.map((s) => s.status)).toEqual(['pending', 'pending', 'pending', 'pending']);
     expect(await f.report(parallel)).toMatchObject({ error: { code: 'lease_cancelled' } });
   });
@@ -376,8 +376,8 @@ describe('retry graph boundaries', () => {
     const lease = data(await f.next()).lease;
     expect(lease.step).toBe('items[0]');
     await f.report(lease, 'failed');
-    await cancelRun(f.config, f.id, await runSecrets(f.config, f.id), 'unrelated');
-    await retryStep(f.config, f.id, await runSecrets(f.config, f.id), 'items[0]');
+    await cancelRun(f.config, f.id, await knownSecrets(f.config), 'unrelated');
+    await retryStep(f.config, f.id, await knownSecrets(f.config), 'items[0]');
     const run = await f.state();
     expect(run.steps.find((s) => s.id === 'items')?.status).toBe('running');
     expect(run.steps.find((s) => s.id === 'unrelated')?.status).toBe('cancelled');
@@ -396,7 +396,7 @@ describe('retry graph boundaries', () => {
     approve: Recover?`);
     await f.report(data(await f.next()).lease, 'failed');
     await f.respond('ask', 'no');
-    await retryStep(f.config, f.id, await runSecrets(f.config, f.id), 'work');
+    await retryStep(f.config, f.id, await knownSecrets(f.config), 'work');
     const ask = (await f.state()).steps.find((s) => s.id === 'ask')!;
     expect(ask).toMatchObject({ status: 'pending', pass: 2, passes: [{ pass: 1, outcome: 'skipped', answer: { choice: 'no' } }] });
     expect(ask.answer).toBeUndefined();
@@ -406,7 +406,7 @@ describe('retry graph boundaries', () => {
     const f = await fixture('  - id: work\n    command: echo work', 'loop: { max_iterations: 1 }\n');
     await f.report(data(await f.next()).lease, 'failed');
     expect(data(await f.next()).done.outcome).toBe('failed');
-    await retryStep(f.config, f.id, await runSecrets(f.config, f.id), 'work');
+    await retryStep(f.config, f.id, await knownSecrets(f.config), 'work');
     await f.report(data(await f.next()).lease);
     await f.next();
     expect((await f.state()).failure?.code).toBe('loop_exhausted');
@@ -423,7 +423,7 @@ describe('retry graph boundaries', () => {
     await f.respond('decide', 'again');
     await f.report(data(await f.next()).lease, 'failed');
     await f.next();
-    await retryStep(f.config, f.id, await runSecrets(f.config, f.id), 'work');
+    await retryStep(f.config, f.id, await knownSecrets(f.config), 'work');
     expect((await f.state()).steps.find((s) => s.id === 'decide')?.iteration).toBe(1);
   });
 });
@@ -460,7 +460,7 @@ describe('changing a HITL request answer', () => {
   it('retries a refused approve and asks again at a new pass', async () => {
     const f = await fixture('  - id: ask\n    approve: Continue?\n    command: echo work');
     await f.respond('ask', 'no');
-    expect(data(await retryStep(f.config, f.id, await runSecrets(f.config, f.id), 'ask'))).toMatchObject({ retried: { pass: 2 }, reopened: true });
+    expect(data(await retryStep(f.config, f.id, await knownSecrets(f.config), 'ask'))).toMatchObject({ retried: { pass: 2 }, reopened: true });
     expect(data(await f.next()).hitl).toMatchObject({ step: 'ask', pass: 2, respond: `teamai workflow respond ${f.id} ask <option> --pass 2` });
     await f.respond('ask', 'yes', { pass: 2 });
     expect(data(await f.next()).lease.step).toBe('ask');
@@ -480,7 +480,7 @@ describe('changing a HITL request answer', () => {
     command: echo build`, 'ends: { dropped: succeeded }\n');
     await f.respond('decide', 'drop');
     expect((await f.state()).end).toBe('dropped');
-    await retryStep(f.config, f.id, await runSecrets(f.config, f.id), 'decide');
+    await retryStep(f.config, f.id, await knownSecrets(f.config), 'decide');
     expect(data(await f.next()).hitl.pass).toBe(2);
     await f.respond('decide', 'build');
     expect(data(await f.next()).lease.step).toBe('build');
@@ -513,7 +513,7 @@ describe('run control recovery invariants', () => {
     const f = await fixture('  - id: work\n    command: exit 1');
     await f.report(data(await f.next()).lease, 'failed');
     expect((await f.state()).status).toBe('running');
-    expect(data(await retryStep(f.config, f.id, await runSecrets(f.config, f.id), 'work')).reopened).toBe(false);
+    expect(data(await retryStep(f.config, f.id, await knownSecrets(f.config), 'work')).reopened).toBe(false);
     expect((await pendingRecords(f.config)).map((record) => record.phase)).toEqual(['start']);
     expect((await f.state()).endRecordQueued).toBeUndefined();
   });
@@ -523,7 +523,7 @@ describe('run control recovery invariants', () => {
     await f.report(data(await f.next()).lease, 'failed');
     await f.next();
     expect((await pendingRecords(f.config)).some((record) => record.phase === 'end')).toBe(true);
-    await retryStep(f.config, f.id, await runSecrets(f.config, f.id), 'work');
+    await retryStep(f.config, f.id, await knownSecrets(f.config), 'work');
     expect((await pendingRecords(f.config)).map((record) => record.phase)).toEqual(['start']);
     expect((await f.state()).endRecordQueued).toBeUndefined();
   });
@@ -594,14 +594,14 @@ describe('run control recovery invariants', () => {
   it('lists only the steps changed by cancellation before reconciliation', async () => {
     const f = await fixture('  - id: work\n    command: echo work\n  - id: dependent\n    needs: [work]\n    command: echo later\n  - id: recover\n    needs: [work]\n    if: steps.work.outcome == \'cancelled\'\n    end: recovered', 'ends: { recovered: succeeded }\n');
     await f.next();
-    expect(data(await cancelRun(f.config, f.id, await runSecrets(f.config, f.id), 'work')).cancelled.steps).toEqual(['work']);
+    expect(data(await cancelRun(f.config, f.id, await knownSecrets(f.config), 'work')).cancelled.steps).toEqual(['work']);
   });
 
   it('explains how to recover a run cancelled before any step ran', async () => {
     const f = await fixture('  - id: ask\n    approve: Continue?');
     await f.next();
-    await cancelRun(f.config, f.id, await runSecrets(f.config, f.id));
-    expect(await retryStep(f.config, f.id, await runSecrets(f.config, f.id), 'ask')).toMatchObject({ error: { code: 'not_retryable', message: expect.stringContaining('start a new run') } });
+    await cancelRun(f.config, f.id, await knownSecrets(f.config));
+    expect(await retryStep(f.config, f.id, await knownSecrets(f.config), 'ask')).toMatchObject({ error: { code: 'not_retryable', message: expect.stringContaining('start a new run') } });
   });
 
   it('stores only the identity of the latest driver and keeps it on control end records', async () => {
@@ -635,8 +635,8 @@ it.each(['whole run', 'inline workflow'])('retry after cancelling a %s runs its 
           command: echo work`);
   if (kind === 'whole run') await f.report(data(await f.next()).lease);
   const a = data(await f.next()).lease;
-  await cancelRun(f.config, f.id, await runSecrets(f.config, f.id), kind === 'whole run' ? undefined : 'ship');
-  await retryStep(f.config, f.id, await runSecrets(f.config, f.id), a.step);
+  await cancelRun(f.config, f.id, await knownSecrets(f.config), kind === 'whole run' ? undefined : 'ship');
+  await retryStep(f.config, f.id, await knownSecrets(f.config), a.step);
   await f.report(data(await f.next()).lease);
   const b = data(await f.next()).lease;
   expect(b?.step).toBe(kind === 'whole run' ? 'b' : 'ship.b');
@@ -694,7 +694,7 @@ describe('retry and cancel state matrix', () => {
         expect(lease.step).toBe(prepare === 'run' ? 'deploy.work' : 'deploy');
         if (prepare === 'fail') data(await f.report(lease, 'failed'));
       }
-      if (prepare === 'cancel') data(await cancelRun(f.config, f.id, await runSecrets(f.config, f.id), 'deploy'));
+      if (prepare === 'cancel') data(await cancelRun(f.config, f.id, await knownSecrets(f.config), 'deploy'));
       const before = await f.state();
       const subject = before.steps.find((step) => step.id === 'deploy')!;
       expect(subject.status).toBe(status);
@@ -703,11 +703,11 @@ describe('retry and cancel state matrix', () => {
       if (operation === 'retry ancestor' || operation === 'retry step') {
         const target = operation === 'retry ancestor' ? 'plan' : 'deploy';
         if (target === 'deploy' && (status === 'pending' || status === 'waiting' || status === 'running')) {
-          expect(await retryStep(f.config, f.id, await runSecrets(f.config, f.id), target)).toMatchObject({ error: { code: 'not_retryable' } });
+          expect(await retryStep(f.config, f.id, await knownSecrets(f.config), target)).toMatchObject({ error: { code: 'not_retryable' } });
           expect(await f.state()).toEqual(before);
           return;
         }
-        data(await retryStep(f.config, f.id, await runSecrets(f.config, f.id), target));
+        data(await retryStep(f.config, f.id, await knownSecrets(f.config), target));
         const after = await f.state();
         for (const id of target === 'plan' ? ['plan', 'deploy'] : ['deploy']) {
           const previous = before.steps.find((step) => step.id === id)!;
@@ -726,11 +726,11 @@ describe('retry and cancel state matrix', () => {
       } else {
         const cancellable = status === 'pending' || status === 'waiting' || status === 'leased' || status === 'running';
         if (operation === 'cancel step' && !cancellable) {
-          expect(await cancelRun(f.config, f.id, await runSecrets(f.config, f.id), 'deploy')).toMatchObject({ error: { code: 'not_cancellable' } });
+          expect(await cancelRun(f.config, f.id, await knownSecrets(f.config), 'deploy')).toMatchObject({ error: { code: 'not_cancellable' } });
           expect(await f.state()).toEqual(before);
           return;
         }
-        data(await cancelRun(f.config, f.id, await runSecrets(f.config, f.id), operation === 'cancel step' ? 'deploy' : undefined));
+        data(await cancelRun(f.config, f.id, await knownSecrets(f.config), operation === 'cancel step' ? 'deploy' : undefined));
         const after = await f.state();
         const expected = operation === 'cancel run' && (status === 'pending' || status === 'waiting')
           ? 'skipped' : cancellable ? 'cancelled' : status;

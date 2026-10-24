@@ -632,7 +632,7 @@ workflows:
 - `sandbox: true` says this host contains what it runs, such as a CI VM or a container, so the local driver declares `sandbox` isolation.
 - `max_parallel` also caps how many leases of one run every driver on this machine holds at once.
 
-The value of each team secret, of each environment variable whose name looks like a secret, and of each key the run requires (`requires.env`) unless `env.yaml` gives it, is masked as `<REDACTED:KEY>` in the run file, the run records, every `teamai workflow` output, and the `result.json` the local driver keeps for each attempt. `start` refuses inputs that hold one with `invalid_inputs`, naming the key and never the value.
+The value of each key declared in `env/secrets.yaml`, including one this machine takes from the environment as a CI job does, and of each environment variable whose name looks like a secret, is masked as `<REDACTED:KEY>` in the run file, the run records, every `teamai workflow` output, and the `result.json` the local driver keeps for each attempt. `start` refuses inputs that hold one with `invalid_inputs`, naming the key and never the value. To mask a value whose name does not look secret, such as `DATABASE_URL`, declare its key in `env/secrets.yaml`.
 
 A driver other than `local` declares what it can do in `driver.can` on each `next`:
 

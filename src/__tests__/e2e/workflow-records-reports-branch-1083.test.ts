@@ -12,7 +12,7 @@ import { localDriver, runLocalDriver } from '../../workflow/local-driver.js';
 import { createLocalToolAdapter, type ToolSpawn } from '../../workflow/local-tool-adapter.js';
 import { pendingRecords } from '../../workflow/records.js';
 import { fakeClaude, recordDelivery } from '../helpers/delivered-checkout.js';
-import { startSecrets } from '../helpers/workflow-secrets.js';
+import { knownSecrets } from '../../env-resolution.js';
 
 // #1083 end-to-end: a real git clone with a real bare origin, driven through
 // the engine the CLI uses. The run record and the workflow stats totals must
@@ -100,7 +100,7 @@ describe('#1083 workflow run records reach the reports branch', () => {
     const claude: ToolSpawn = (_command, _args, options) => spawn(process.execPath, ['-e', `process.stdout.write(${JSON.stringify(stream)})`], options);
 
     await syncWorkflowDefinitions(config);
-    const started = await startRun(config, 'build', {}, { secrets: await startSecrets(config, 'build'), driver: localDriver(work) });
+    const started = await startRun(config, 'build', {}, { secrets: await knownSecrets(config), driver: localDriver(work) });
     expect(started).toMatchObject({ data: { status: 'running', record: 'published' } });
     const runId = String((started as { data: { run: string } }).data.run);
 
