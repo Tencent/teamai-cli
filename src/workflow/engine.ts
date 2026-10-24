@@ -572,7 +572,7 @@ function finishStep(run: RunState, state: StepState, definition: WorkflowStep, r
   if (delivery) startDelivery(state, settlement, delivery);
   else if (left) {
     const key = { step: state.id, pass: state.pass ?? 1, settledAt: result.settledAt, branch: left.branch, head: left.head };
-    const failure = deliveryFailure({ runId: run.id, key }, { kind: 'child_work_left_out', ...left.child });
+    const failure = deliveryFailure({ runId: run.id, key }, { kind: 'child_work_left_out', step: left.child.step, branch: left.child.branch });
     fail(state, { ...settlement, message: failure.message, failure });
   } else succeed(state, settlement);
 }
