@@ -229,12 +229,14 @@ async function worktreeHooks(main: string, dir: string, hooks: string): Promise<
 /**
  * The commits among `commits` this checkout still lacks after fetching run `run`'s branches from origin. A fetch whose
  * refspec matches no branch exits 0, so each commit is checked again after it. `fetchError` is git's message when the
- * fetch itself failed.
+ * fetch itself failed. `fetch` bounds the fetch and sets its environment.
  */
-export async function fetchMissingCommits(dir: string, { run, commits }: { run: string; commits: string[] }): Promise<{ missing: string[]; fetchError?: string }> {
+export async function fetchMissingCommits(
+  dir: string, { run, commits }: { run: string; commits: string[] }, fetch?: { timeoutMs: number; env?: NodeJS.ProcessEnv },
+): Promise<{ missing: string[]; fetchError?: string }> {
   const lacking = await lackedCommits(dir, commits);
   if (lacking.length === 0) return { missing: [] };
-  const fetched = await git(dir, ['fetch', '--quiet', '--no-tags', 'origin', `+refs/heads/teamai/${run}/*:refs/remotes/origin/teamai/${run}/*`]);
+  const fetched = await git(dir, ['fetch', '--quiet', '--no-tags', 'origin', `+refs/heads/teamai/${run}/*:refs/remotes/origin/teamai/${run}/*`], fetch);
   const missing = await lackedCommits(dir, lacking);
   if (fetched.code === 0 || missing.length === 0) return { missing };
   return { missing, fetchError: (fetched.stderr || fetched.stdout).trim() || 'git fetch failed' };

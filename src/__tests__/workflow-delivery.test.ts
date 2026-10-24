@@ -458,6 +458,29 @@ describe('delivering a step', () => {
     expect(gh.calls()).toEqual([]);
   });
 
+  it('fetches the commits it checks within the delivery timeout and without credential prompts', async () => {
+    const { config, cwd, root, runId } = await fixture(FIX_THEN_REVIEW);
+    fakeGh(path.join(root, 'gh'));
+    const fix = await take(config, runId);
+    const to = pushWork(root, fix);
+    await succeed(config, runId, fix, { to });
+    // Every git process that reaches origin logs the askpass it was given, then serves the fixture's bare repository.
+    const [log, transport, bare] = [path.join(root, 'transport.log'), path.join(root, 'transport.sh'), path.join(root, 'remote.git')];
+    fs.writeFileSync(transport, `#!/bin/sh\nprintf '%s\\n' "$GIT_ASKPASS" >> '${log}'\nexec git upload-pack "$1"\n`, { mode: 0o755 });
+    git(cwd, ['config', '--unset', `url.${bare}.insteadOf`]);
+    git(cwd, ['config', `url.ext::${transport} ${bare}.insteadOf`, 'https://github.com/fixture/app.git']);
+    git(cwd, ['config', 'protocol.ext.allow', 'always']);
+    vi.stubEnv('GIT_ASKPASS', '/opt/editor/askpass.sh');
+    const fetches = vi.spyOn(worktree, 'fetchMissingCommits');
+
+    expect(await take(config, runId)).toMatchObject({ step: 'review' });
+    const env = { GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: 'echo', GCM_INTERACTIVE: 'never' };
+    expect(fetches).toHaveBeenCalledWith(cwd, { run: runId, commits: [fix.workspace?.base.commit, to] }, { timeoutMs: 30000, env });
+    const askpass = fs.readFileSync(log, 'utf8').trim().split('\n');
+    expect(askpass.length).toBeGreaterThanOrEqual(3);
+    expect(askpass.filter((given) => given !== 'echo')).toEqual([]);
+  });
+
   it('reads a reported head only as a full commit id, so a ref name cannot stand in for the pushed branch', async () => {
     const { config, root, runId } = await fixture(FIX_THEN_REVIEW);
     fakeGh(path.join(root, 'gh'));

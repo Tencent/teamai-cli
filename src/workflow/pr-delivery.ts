@@ -71,6 +71,9 @@ export type CreateGate = () => Promise<'open' | 'refused' | 'busy'>;
 /** How long a host may take to answer one lookup or one create. */
 export const DELIVERY_TIMEOUT_MS = 30_000;
 
+/** How delivery runs git that reaches origin: bounded, and never waiting on a prompt. */
+const ORIGIN_GIT = { timeoutMs: DELIVERY_TIMEOUT_MS, env: NON_INTERACTIVE_GIT_ENV };
+
 /** A full object id: the head comes from a driver's report, and anything else could reach git as an option. */
 const OBJECT_ID = /^[0-9a-f]{40}([0-9a-f]{24})?$/i;
 
@@ -208,7 +211,7 @@ async function findOpen(
 /** The commit origin's `branch` is at, read by the checkout; none when origin has no such branch. */
 async function originTip(checkout: string, branch: string): Promise<{ kind: 'read'; commit?: string } | { kind: 'unreadable' }> {
   const ref = `refs/heads/${branch}`;
-  const listed = await git(checkout, ['-c', 'credential.interactive=false', 'ls-remote', 'origin', ref], { timeoutMs: DELIVERY_TIMEOUT_MS, env: NON_INTERACTIVE_GIT_ENV });
+  const listed = await git(checkout, ['-c', 'credential.interactive=false', 'ls-remote', 'origin', ref], ORIGIN_GIT);
   if (listed.code !== 0) return { kind: 'unreadable' };
   const commit = listed.stdout.split('\n').map((line) => line.split('\t')).find(([, name]) => name?.trim() === ref)?.[0];
   return commit ? { kind: 'read', commit } : { kind: 'read' };
@@ -217,7 +220,7 @@ async function originTip(checkout: string, branch: string): Promise<{ kind: 'rea
 /** The files the delivered head changes against the run base, read in the run's checkout once it fetched what it lacks. */
 async function changedFiles({ key, runId, checkout, base }: DeliveryJob): Promise<{ files: string[] } | { fault: DeliveryFault }> {
   if (!OBJECT_ID.test(key.head) || !OBJECT_ID.test(base)) return { fault: { kind: 'unreadable' } };
-  const fetched = await fetchMissingCommits(checkout, { run: runId, commits: [base, key.head] });
+  const fetched = await fetchMissingCommits(checkout, { run: runId, commits: [base, key.head] }, ORIGIN_GIT);
   if (fetched.missing.length > 0) return { fault: { kind: 'unreadable' } };
   const diff = await git(checkout, ['diff', '--no-renames', '--name-only', '-z', base, key.head, '--']);
   if (diff.code !== 0) return { fault: { kind: 'unreadable' } };
@@ -227,7 +230,7 @@ async function changedFiles({ key, runId, checkout, base }: DeliveryJob): Promis
 /** Whether `commit` holds `ancestor`, read in the run's checkout once it fetched what it lacks. */
 async function contains({ runId, checkout }: DeliveryJob, { commit, ancestor }: { commit: string; ancestor: string }): Promise<{ contains: boolean } | { fault: DeliveryFault }> {
   if (!OBJECT_ID.test(commit) || !OBJECT_ID.test(ancestor)) return { contains: false };
-  const fetched = await fetchMissingCommits(checkout, { run: runId, commits: [ancestor, commit] });
+  const fetched = await fetchMissingCommits(checkout, { run: runId, commits: [ancestor, commit] }, ORIGIN_GIT);
   if (fetched.missing.includes(commit)) return { fault: { kind: 'unreadable' } };
   // A commit the checkout holds brings its history, so an ancestor still missing is not in it.
   if (fetched.missing.length > 0) return { contains: false };
