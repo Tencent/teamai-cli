@@ -660,14 +660,22 @@ async function ghApiGet(path: string, timeoutMs: number): Promise<unknown> {
 function ghSpawn(ghPath: string, args: string[], { env, timeoutMs }: { env: NodeJS.ProcessEnv; timeoutMs: number }): Promise<{ stdout: string; status: number }> {
   log.debug(`gh exec: ${ghPath} ${args.join(' ')}`);
   return new Promise((resolve) => {
-    const child = crossSpawn(ghPath, args, { env: { ...process.env, ...env }, timeout: timeoutMs });
+    const child = crossSpawn(ghPath, args, { env: { ...process.env, ...env } });
     let stdout = '';
     let settled = false;
     const finish = (status: number): void => {
       if (settled) return;
       settled = true;
+      clearTimeout(deadline);
       resolve({ stdout: stdout.trim(), status });
     };
+    const deadline = setTimeout(() => {
+      finish(1);
+      child.kill('SIGKILL');
+      child.stdin?.destroy();
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+    }, timeoutMs);
     child.stdout?.setEncoding('utf8');
     child.stdout?.on('data', (chunk: string) => { stdout += chunk; });
     child.stderr?.resume();

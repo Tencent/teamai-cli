@@ -67,6 +67,35 @@ describe('GitHub pull request lookup', () => {
     }
   });
 
+  it('ends the lookup at its deadline when a launcher child keeps the output pipe open', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-gh-launcher-'));
+    dirs.push(dir);
+    const launcher = path.join(dir, 'gh');
+    const pidFile = path.join(dir, 'holder.pid');
+    fs.writeFileSync(launcher, `#!${process.execPath}
+const { spawn } = require('node:child_process');
+const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'inherit' });
+require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(child.pid));
+setInterval(() => {}, 1000);
+`, { mode: 0o755 });
+    resolveGh(launcher);
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    const answer = lookup().findOpen({ ...ref, timeoutMs: 300 }).then(() => 'found', () => 'failed');
+    try {
+      await vi.waitFor(() => expect(fs.existsSync(pidFile)).toBe(true));
+      const result = await Promise.race([
+        answer,
+        new Promise<string>((resolve) => { deadline = setTimeout(() => resolve('still waiting for the pipe'), 1000); }),
+      ]);
+      expect(result).toBe('failed');
+    } finally {
+      clearTimeout(deadline);
+      const pid = Number(fs.readFileSync(pidFile, 'utf8'));
+      process.kill(pid, 'SIGKILL');
+      await answer;
+    }
+  });
+
   it('fails, rather than finding nothing, without credentials or on an answer it cannot read, and never repeats what GitHub said', async () => {
     resolveGh(null);
     vi.stubEnv('GITHUB_TOKEN', ''); vi.stubEnv('GH_TOKEN', '');
