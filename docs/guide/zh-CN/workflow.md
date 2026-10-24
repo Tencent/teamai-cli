@@ -240,7 +240,7 @@ pull request 合入这条分支来源中最近一条已经交付过的分支，�
 
 循环中 `workspace: new` 步骤的每个 pass 都有自己的 `/p<pass>` 分支，因此各开一个 pull request。之前的 pull request 保持打开，这是有意为之。在同一条 `continue` 分支上循环的步骤只有一个 pull request。
 
-开出或接受 pull request 之前，TeamAI 将交付的提交与运行的基准提交比较。修改 CI 配置（例如 `.github/workflows` 或 `.gitlab-ci.yml`）、hooks、任意层级的 `AGENTS.md` 或 `CLAUDE.md`，或任一工具的 agent、rule、MCP 文件，步骤会以 `protected_path` 失败，消息列出这些文件。这些路径就是工作区步骤从运行基准获得的 agent 文件，再加上 CI 和 hook 路径。删除和重命名也算，分支从前序步骤带来的修改也算。之后运行 `teamai workflow retry <run> <step>`，会在新的 pass 中重新运行这个步骤。
+开出或接受 pull request 之前，TeamAI 将交付的提交与运行的基准提交比较。修改 CI 配置（例如 `.github/workflows` 或 `.gitlab-ci.yml`）、hooks、任意层级的 `AGENTS.md` 或 `CLAUDE.md`，或任一工具的 agent、rule、MCP 文件，步骤会以 `protected_path` 失败，消息列出这些文件。这些路径就是工作区步骤从运行基准获得的 agent 文件，再加上 CI 和 hook 路径。删除和重命名也算，分支从前序步骤带来的修改也算。之后运行 `teamai workflow retry <run> <step>`，会在新的 pass 中重新运行这个步骤。如果修改只来自另一个步骤之后在共享分支上记录的提交，步骤改为以 `delivery_failed` 失败，重试也不会重新运行它。
 
 其他交付失败会让步骤以 `delivery_failed` 失败。消息说明出了什么问题、工作保存在哪条分支，并给出重试命令。修复原因（例如 provider 的凭据）后，运行 `teamai workflow retry <run> <step>`，再运行 `teamai workflow resume <run>`，或让驱动调用 `next`。重试会再次交付同一条分支，不会重新运行步骤。运行在开 pull request 期间被取消时，这个 pull request 无法收回。运行会列出它，步骤保持 cancelled。
 

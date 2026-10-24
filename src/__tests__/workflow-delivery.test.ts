@@ -921,14 +921,34 @@ describe('retrying and cancelling a delivery', () => {
     expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: protectedChange ? 'failed' : 'succeeded' } } });
     const run = await state(config, runId);
     if (protectedChange) {
-      expect(run.steps.find((step) => step.id === 'work.impl')).toMatchObject({ status: 'failed', failure: { code: 'protected_path', message: expect.stringContaining(file) } });
+      const message = `commit ${to}, which a later report recorded on the shared branch ${docs.workspace?.branch}, changed protected paths against the run base: ${file}. Step "work.impl" itself left them alone, so a retry does not run it again.`;
+      expect(run.steps.find((step) => step.id === 'work.impl')).toMatchObject({ status: 'failed', failure: { code: 'delivery_failed', message: expect.stringContaining(message) } });
       expect(creates(gh)).toEqual([]);
       expect(run.deliveries).toBeUndefined();
+      await retryStep(config, runId, 'work.impl');
+      expect((await state(config, runId)).steps.find((step) => step.id === 'work.impl')).toMatchObject({ status: 'delivering', attempt: impl.attempt });
     } else {
       expect(run.steps.find((step) => step.id === 'work.impl')).toMatchObject({ status: 'succeeded' });
       expect(creates(gh)).toEqual([[docs.workspace?.branch, 'main']]);
       expect(run.deliveries).toHaveLength(1);
     }
+  });
+
+  it('blames the delivering step for its own protected change when a later report recorded more work on the shared branch', async () => {
+    const { config, root, runId } = await fixture(IMPL_AND_DOCS);
+    const gh = fakeGh(path.join(root, 'gh'));
+    const impl = await take(config, runId);
+    await succeed(config, runId, impl, { to: pushWork(root, impl, { '.github/workflows/impl.yml': 'impl' }) });
+    const lock = deliveryLockPath(config, runId);
+    expect(await acquireLock(lock)).toBe(true);
+    const docs = await take(config, runId);
+    await releaseLock(lock);
+    await succeed(config, runId, docs, { to: pushOnto(root, docs.workspace?.branch ?? '', { '.github/workflows/docs.yml': 'docs' }) });
+
+    expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    const failure = (await state(config, runId)).steps.find((step) => step.id === 'work.impl');
+    expect(failure).toMatchObject({ status: 'failed', failure: { code: 'protected_path', message: expect.stringContaining('Step "work.impl" changed protected paths against the run base: .github/workflows/impl.yml.') } });
+    expect(creates(gh)).toEqual([]);
   });
 
   it('checks only the selected recorded tip when later work removed an earlier protected change', async () => {

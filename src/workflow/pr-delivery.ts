@@ -33,6 +33,8 @@ export type DeliveryFault =
   | { kind: 'no_checkout' }
   | { kind: 'unreadable' }
   | { kind: 'protected_path'; files: string[] }
+  /** Only the commits a later report recorded after the step's own head change `files`. */
+  | { kind: 'later_protected_path'; files: string[] }
   | { kind: 'branch_moved' }
   /** Origin's branch holds the recorded commit and more, at `tip`: a report of `tip` may still be on its way. */
   | { kind: 'branch_ahead'; tip: string }
@@ -83,6 +85,12 @@ export async function deliverPr(job: DeliveryJob, gate: CreateGate): Promise<Del
   const changed = await changedFiles({ ...job, key: { ...job.key, head: tip.commit } });
   if ('fault' in changed) return failed(changed.fault);
   const files = protectedPaths(changed.files);
+  if (files.length > 0 && tip.commit !== job.key.head) {
+    const own = await changedFiles(job);
+    if ('fault' in own) return failed(own.fault);
+    const owned = protectedPaths(own.files);
+    return failed(owned.length > 0 ? { kind: 'protected_path', files: owned } : { kind: 'later_protected_path', files });
+  }
   if (files.length > 0) return failed({ kind: 'protected_path', files });
   if (job.reported) return { ok: true, pr: job.reported };
   const origin = await originOf(job.checkout);
@@ -201,6 +209,11 @@ async function contains({ runId, checkout }: DeliveryJob, { commit, ancestor }: 
 
 const LISTED_FILES = 20;
 
+function listedFiles(files: string[]): string {
+  const more = files.length > LISTED_FILES ? `, and ${files.length - LISTED_FILES} more` : '';
+  return `${files.slice(0, LISTED_FILES).join(', ')}${more}`;
+}
+
 /** The failure a step keeps for `fault`: what happened, where the work is, and what to do next. */
 export function deliveryFailure({ runId, key, recordedHead }: Pick<DeliveryJob, 'runId' | 'key' | 'recordedHead'>, fault: DeliveryFault): DeliveryFailure {
   const { step, branch } = key;
@@ -217,14 +230,16 @@ export function deliveryFailure({ runId, key, recordedHead }: Pick<DeliveryJob, 
         code: 'delivery_failed',
         message: `PR delivery for step "${step}" failed: the run's checkout cannot read the commit branch ${branch} reported, or the run base, even after fetching the run's branches from origin, so its changes cannot be checked. Push branch ${branch} to origin, then run: ${retry}`,
       };
-    case 'protected_path': {
-      const listed = fault.files.slice(0, LISTED_FILES).join(', ');
-      const more = fault.files.length > LISTED_FILES ? `, and ${fault.files.length - LISTED_FILES} more` : '';
+    case 'protected_path':
       return {
         code: 'protected_path',
-        message: `Step "${step}" changed protected paths against the run base: ${listed}${more}. TeamAI delivers no pull request that changes CI, hooks or agent configuration. The work is kept on origin in branch ${branch}. Have the step leave those paths alone, then run: ${retry}`,
+        message: `Step "${step}" changed protected paths against the run base: ${listedFiles(fault.files)}. TeamAI delivers no pull request that changes CI, hooks or agent configuration. The work is kept on origin in branch ${branch}. Have the step leave those paths alone, then run: ${retry}`,
       };
-    }
+    case 'later_protected_path':
+      return {
+        code: 'delivery_failed',
+        message: `PR delivery for step "${step}" failed: commit ${head}, which a later report recorded on the shared branch ${branch}, changed protected paths against the run base: ${listedFiles(fault.files)}. Step "${step}" itself left them alone, so a retry does not run it again. TeamAI delivers no pull request that changes CI, hooks or agent configuration. The work is kept on origin in branch ${branch}. Have a step on that branch take those changes out, then run: ${retry}`,
+      };
     case 'branch_missing':
       return {
         code: 'delivery_failed',
