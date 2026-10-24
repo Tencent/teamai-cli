@@ -1497,12 +1497,14 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
     if (mismatch) return { save: false, envelope: error('invalid_report', mismatch) };
     const added = reportedUnenforced(report.unenforced ?? [], { maxTurns: defined?.maxTurns });
     if (typeof added === 'string') return { save: false, envelope: error('invalid_report', `Attempt ${report.attempt} of step "${step.id}": ${added}`) };
-    const unenforced = unionUnenforced(step.lease.unenforced ?? [], added);
     let outcome = report.outcome;
     let message = report.message;
     let failure = report.failure;
     const measured = report.tokens?.input !== undefined || report.tokens?.output !== undefined;
-    if (outcome === 'success' && defined?.prompt !== undefined && located?.scope.budgeted && !measured) {
+    const unmeasured = outcome === 'success' && defined?.prompt !== undefined && located?.scope.budgeted === true && !measured;
+    // A person drives an interactive prompt, so its spend is recorded as not counted rather than failing their work.
+    const unenforced = unionUnenforced(step.lease.unenforced ?? [], [...added, ...(unmeasured && defined.interactive ? [{ requirement: 'budget' as const }] : [])]);
+    if (unmeasured && !defined.interactive) {
       outcome = 'failed';
       message = `Step "${step.id}" runs under a token budget, and its report has no tokens, so the budget cannot count what it spent. Run it with a driver that reports tokens (driver.can.tokens), then retry the step.`;
       failure = { code: 'budget_unmeasured', message };

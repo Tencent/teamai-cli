@@ -47,8 +47,10 @@ const ENFORCEMENT = {
   isolation: 'bestEffort',
   /** Keeping the run's other env keys from a step, which only a driver with `can.env` does. */
   withhold: 'bestEffort',
-  /** Reporting the tokens a prompt step under a budget spent. */
+  /** Reporting the tokens a headless prompt step under a budget spent. */
   tokens: 'strict',
+  /** Counting an interactive prompt step against its budget: a person drives it, and no driver meters that session. */
+  budget: 'bestEffort',
   /** Capping the agent turns of a prompt step's tool. */
   max_turns: 'bestEffort',
   /** Running the workflow's `setup` in each workspace the driver creates, before the step. */
@@ -66,7 +68,7 @@ type BestEffortKey = KeysOf<'bestEffort'>;
  * - `isolation`: the level the driver keeps every step it runs at.
  * - `env`: the driver resolves `envScope.provide` itself, removes `envScope.withhold`, and keeps the values from
  *   whatever runs the step. A driver whose executor is the agent leaves it out.
- * - `tokens`: every success report of a prompt step carries the tokens it spent.
+ * - `tokens`: every success report of a headless prompt step carries the tokens it spent.
  * - `max_turns`: the driver passes `maxTurns` to the tools it can cap, and reports `unenforced: ['max_turns']` for the others.
  * - `setup`: in each workspace it creates, the driver runs `lease.setup` before the step with only setup's keys, and
  *   fails the step without running it when setup exits non-zero (`setup_failed`), changes a tracked or non-ignored path
@@ -121,6 +123,8 @@ export const UnenforcedSchema = z.discriminatedUnion('requirement', [
   /** The run's env keys a driver without `can.env` may have passed to the step. */
   z.object({ requirement: z.literal('withhold'), keys: z.array(z.string()) }),
   z.object({ requirement: z.literal('max_turns'), asked: z.number().int().positive() }),
+  /** An interactive prompt under a budget whose report had no tokens, so the budget did not count what it spent. */
+  z.object({ requirement: z.literal('budget') }),
 ]) satisfies z.ZodType<{ requirement: BestEffortKey }>;
 export type Unenforced = z.infer<typeof UnenforcedSchema>;
 
@@ -189,7 +193,7 @@ export interface Offer {
   envKeys: readonly string[];
   /** Every key a step of the run requires, so each other step withholds it. */
   runEnvKeys: ReadonlySet<string>;
-  /** A prompt step under a token budget, whose report must say what it spent. */
+  /** A prompt step under a token budget, whose report must say what it spent unless it is interactive. */
   budgeted: boolean;
   /** The step's `max_turns`. */
   maxTurns?: number;
@@ -235,7 +239,7 @@ export function negotiate(offer: Offer, can: DriverCan, allow: Allow, env: EnvFa
     ...(offer.interactive && !can.hitl ? ['hitl' as const] : []),
     ...(offer.setup && !can.setup ? ['setup' as const] : []),
     ...(required.length + setupKeys.length > 0 && !can.env ? ['env' as const] : []),
-    ...(offer.budgeted && !can.tokens ? ['tokens' as const] : []),
+    ...(offer.budgeted && !offer.interactive && !can.tokens ? ['tokens' as const] : []),
   ];
   const [first, ...rest] = gaps;
   if (first !== undefined) return { kind: 'hold', missing: [first, ...rest] };

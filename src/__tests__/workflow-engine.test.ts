@@ -4563,4 +4563,22 @@ describe('token budgets', () => {
     }
     expect(await leaseNext(config, runId, driverA, reports)).toMatchObject({ data: { done: { outcome: 'failed', failure: { code: 'budget_exceeded' } } } });
   });
+
+  it('gives a budgeted interactive prompt to a driver that cannot meter it, and records its spend as not counted', async () => {
+    const { config, runId } = await startBuild(graph(`  - id: pair
+    interactive: true
+    prompt: Work on it with me.
+  - id: after
+    needs: [pair]
+    prompt: Sum it up.
+`, 'budget: { tokens: 100 }\n'));
+    const pair = leaseIn(await leaseNext(config, runId, driverA, { can: { hitl: true } }));
+    expect(pair.step).toBe('pair');
+    expect(await reportAttempt(config, runId, { attempt: pair.attempt, revision: pair.revision, outcome: 'success', driver: driverA })).toMatchObject({
+      data: { step: { id: 'pair', status: 'succeeded', unenforced: [{ requirement: 'budget' }] } },
+    });
+    expect(await leaseNext(config, runId, driverA, { can: { hitl: true } })).toMatchObject({
+      data: { wait: { held: [{ step: 'after', missing: ['tokens'] }] } },
+    });
+  });
 });

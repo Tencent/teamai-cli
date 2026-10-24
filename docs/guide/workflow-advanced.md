@@ -612,7 +612,7 @@ steps:
 | `requires.isolation` | `none`, `worktree`, or `sandbox`. A step with a workspace has at least `worktree`. | The step runs, and its `unenforced` lists `isolation`. |
 | `setup` | The driver runs `command` in each workspace it creates, before the step. Setup gets its `requires.env` keys; a step gets them only if it requires them too. Setup fails the step without running it, and the workspace is removed, when it exits non-zero (`setup_failed`), changes a file git would commit (`setup_dirty`), or leaves the value of one of its keys in a file it wrote, ignored files included (`setup_secret`). The step's `timeout` bounds setup. | Steps in a new workspace wait. |
 | `timeout` | `500ms`, `30s`, `10m`, or `2h`, on a step or the workflow file. A step past it is stopped and ends with outcome `timeout`. On a workflow step, it stops every step inside. On the workflow file, the run ends `failed` with `timeout`. A retry starts the timeout again. | Not a capability. Every driver gets `expiresAt` on the lease. |
-| `budget` | `{ tokens: N }` on the workflow file or a workflow step. Input and output tokens of every step under it count. Once they reach `N`, its open steps stop and it fails `budget_exceeded`. | A prompt under a budget waits. A success report without tokens fails `budget_unmeasured`. |
+| `budget` | `{ tokens: N }` on the workflow file or a workflow step. Input and output tokens of every step under it count. Once they reach `N`, its open steps stop and it fails `budget_exceeded`. | A headless prompt under a budget waits. Its success report without tokens fails `budget_unmeasured`. An interactive prompt runs, since a person drives it; when its report has no tokens, its `unenforced` lists `budget`. |
 | `max_turns` | Caps the agent turns of a prompt step. The local driver passes it to headless Claude only. | The step runs, and its `unenforced` lists `max_turns`. |
 
 `unenforced` is on the lease, the step, and the run record. Each `interactive: true` step also needs a driver with HITL, as [HITL](#hitl-human-in-the-loop) describes.
@@ -642,7 +642,7 @@ A driver other than `local` declares what it can do in `driver.can` on each `nex
 | `workspace` | Takes leases in these workspace modes: `read-only`, `new`, `continue`. |
 | `env` | Resolves `lease.envScope.provide` itself, removes `lease.envScope.withhold`, and keeps the values from what runs the step. A driver whose agent runs the step leaves it out. |
 | `setup` | Runs `lease.setup.command` in each workspace it creates, with `lease.setup.envScope`, and fails the step with the codes above. |
-| `tokens` | Reports the tokens of every successful prompt step. |
+| `tokens` | Reports the tokens of every successful headless prompt step. |
 | `max_turns` | Passes `lease.maxTurns` to the tools it can cap, and reports `"unenforced":["max_turns"]` for the others. |
 | `network` | Can deny a step the network. |
 | `isolation` | Keeps every step at this level: `none`, `worktree`, or `sandbox`. |
