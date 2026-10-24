@@ -898,32 +898,37 @@ function nextDelivery(run: RunState): DeliveryJob | undefined {
   if (run.status !== 'running') return undefined;
   const settledRun = reconcileRun(run);
   if ('unreadable' in settledRun || 'outcome' in settledRun) return undefined;
-  const step = run.steps.find((item): item is DeliveringStep => item.status === 'delivering');
-  if (!step) return undefined;
-  return {
-    key: deliveryKey(step), runId: run.id,
-    ...(run.checkout ? { checkout: run.checkout } : {}), ...(run.base ? { base: run.base.commit } : {}),
-    ...(step.delivery.reported ? { reported: step.delivery.reported } : {}),
-  };
+  for (const step of run.steps) {
+    if (step.status !== 'delivering') continue;
+    const key = deliveryKey(step);
+    if (!run.checkout || !run.base?.ref) {
+      deliveryFailed(step, deliveryFailure({ runId: run.id, key }, { kind: 'no_checkout' }));
+      continue;
+    }
+    return {
+      key, runId: run.id, checkout: run.checkout, base: run.base.commit, target: run.base.ref,
+      ...(step.delivery.reported ? { reported: step.delivery.reported } : {}),
+    };
+  }
+  return undefined;
 }
 
 /**
- * Applies a delivery's outcome. A pull request is recorded on its branch whatever became of the step meanwhile: one
- * opened while a cancel landed cannot be taken back, so the run says it exists. The step settles only while it still
- * delivers what `job` delivered, at the revision its agent's report settled it.
+ * Applies a delivery's outcome to the job it was picked as. A pull request gets its receipt whatever became of the step
+ * meanwhile: one opened while a cancel landed cannot be taken back, so the run says it exists. The step settles only
+ * while it still delivers what `job` delivered, at the revision its agent's report settled it. `requeueEnd` is set when
+ * the receipt reached a run that already ended, whose end record must go out again to list it.
  */
-function completeDelivery(run: RunState, job: DeliveryJob, outcome: DeliveryOutcome): void {
-  if (outcome.ok) {
-    const copies = run.copies ??= {};
-    const copy = copies[job.key.branch] ?? {};
-    copy.pr ??= { url: outcome.pr, step: job.key.step, pass: job.key.pass };
-    copies[job.key.branch] = copy;
+function completeDelivery(run: RunState, job: DeliveryJob, outcome: DeliveryOutcome): { requeueEnd: boolean } {
+  const receipted = outcome.ok && !run.deliveries?.some((receipt) => receipt.url === outcome.pr);
+  if (outcome.ok && receipted) {
+    (run.deliveries ??= []).push({ url: outcome.pr, branch: job.key.branch, base: job.target, step: job.key.step, pass: job.key.pass });
   }
   if (run.status === 'running') reconcileRun(run);
   const step = deliveringStep(run, job.key);
-  if (!step) return;
-  if (outcome.ok) delivered(step);
-  else deliveryFailed(step, deliveryFailure(job, outcome.fault));
+  if (step && outcome.ok) delivered(step);
+  else if (step && !outcome.ok) deliveryFailed(step, deliveryFailure(job, outcome.fault));
+  return { requeueEnd: receipted && run.status !== 'running' };
 }
 
 /**
@@ -935,25 +940,30 @@ async function drainDeliveries(config: LocalConfig, runId: string): Promise<void
   if (!isRunId(runId)) return;
   const loaded = await readRun(config, runId);
   if (typeof loaded === 'string' || loaded.status !== 'running' || !loaded.steps.some((step) => step.status === 'delivering')) return;
-  await withFileLock(deliveryLockPath(config, runId), { attempts: 1, delayMs: 0 }, async () => {
+  const drained = await withFileLock(deliveryLockPath(config, runId), { attempts: 1, delayMs: 0 }, async () => {
+    let requeued = false;
     for (;;) {
       const picked = await updateRun(config, runId, async (run) => {
         if (run === 'missing') return { value: undefined };
         const before = JSON.stringify(run);
         const job = nextDelivery(run);
-        return { value: job, ...(job && JSON.stringify(run) !== before ? { write: { ...run, updatedAt: new Date().toISOString() } } : {}) };
+        return { value: job, ...(JSON.stringify(run) !== before ? { write: { ...run, updatedAt: new Date().toISOString() } } : {}) };
       });
-      if (picked.status !== 'done' || !picked.value) return;
+      if (picked.status !== 'done' || !picked.value) return requeued;
       const job = picked.value;
       const outcome = await deliverPr(job);
       const applied = await updateRun(config, runId, async (run) => {
-        if (run === 'missing') return { value: false };
-        completeDelivery(run, job, outcome);
-        return { value: true, write: { ...run, updatedAt: new Date().toISOString() } };
+        if (run === 'missing') return { value: undefined };
+        const { requeueEnd } = completeDelivery(run, job, outcome);
+        // Queued under the lock with the receipt, as finishRun queues an end; it publishes once the lock is released.
+        if (requeueEnd) run.endRecordQueued = await queueRunRecord(config, run, run.driver, 'end');
+        return { value: requeueEnd, write: { ...run, updatedAt: new Date().toISOString() } };
       });
-      if (applied.status !== 'done' || !applied.value) return;
+      if (applied.status !== 'done' || applied.value === undefined) return requeued;
+      requeued ||= applied.value;
     }
   });
+  if (drained.held && drained.value) await publishRunRecords(config);
 }
 
 export async function leaseNext(config: LocalConfig, runId: string, driver: DriverIdentity, options: NextOptions = {}): Promise<WorkflowEnvelope> {

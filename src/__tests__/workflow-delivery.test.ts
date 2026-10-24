@@ -14,7 +14,9 @@ import { _setDriverPollMs, runLocalDriver } from '../workflow/local-driver.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { AGENT_PATHS, DELIVERY_ONLY_PATHS, protectedPaths } from '../workflow/worktree.js';
 import { GitHubProvider } from '../providers/github/index.js';
-import { buildEndRecord } from '../workflow/records.js';
+import { buildEndRecord, pendingRecords } from '../workflow/records.js';
+import { projectRun } from '../workflow/snapshot.js';
+import * as worktree from '../workflow/worktree.js';
 import { cancelRun } from '../workflow/run-controls.js';
 import type { LocalConfig } from '../types.js';
 import type { RunState } from '../workflow/types.js';
@@ -199,7 +201,7 @@ describe('delivering a step', () => {
     expect(review.step).toBe('review');
     const run = await state(config, runId);
     expect(run.steps[0]).toMatchObject({ id: 'fix', status: 'succeeded', settledAt: 2 });
-    expect(run.copies?.[branch]?.pr).toEqual({ url: 'https://review.acme.internal/changes/4821', step: 'fix', pass: 1 });
+    expect(run.deliveries).toEqual([{ url: 'https://review.acme.internal/changes/4821', branch, base: 'main', step: 'fix', pass: 1 }]);
     expect(create).not.toHaveBeenCalled();
 
     await report(config, runId, { attempt: review.attempt, revision: review.revision, outcome: 'success' });
@@ -243,7 +245,7 @@ describe('delivering a step', () => {
     expect(await cancelRun(config, runId, 'fix')).toMatchObject({ data: { cancelled: { steps: ['fix'], attempts: [] }, run: { status: 'failed' } } });
     const run = await state(config, runId);
     expect(run.steps).toMatchObject([{ id: 'fix', status: 'cancelled', attempt: fix.attempt }, { id: 'review', status: 'skipped' }]);
-    expect(run.copies?.[`teamai/${runId}/fix/p1`]?.pr).toBeUndefined();
+    expect(run.deliveries).toBeUndefined();
   });
 
   it.each([
@@ -263,7 +265,7 @@ describe('delivering a step', () => {
       { id: 'review', status: 'skipped' },
     ]);
     expect(run.steps[0]).not.toMatchObject({ failure: { message: expect.stringContaining('src/app.ts') } });
-    expect(run.copies?.[`teamai/${runId}/fix/p1`]?.pr).toBeUndefined();
+    expect(run.deliveries).toBeUndefined();
     for (const call of calls) expect(call).not.toHaveBeenCalled();
   });
 
@@ -287,6 +289,52 @@ describe('delivering a step', () => {
     expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'failed' } } });
     expect((await state(config, runId)).steps[1]).toMatchObject({ id: 'later', status: 'failed', failure: { code: 'protected_path', message: expect.stringContaining('.github/workflows/ci.yml') } });
     for (const call of calls) expect(call).not.toHaveBeenCalled();
+  });
+
+  it('records a pull request once, however many deliveries report it', async () => {
+    const { config, root, runId } = await fixture(`  - id: a\n    workspace: new\n    command: node a.js\n    deliver: pr\n  - id: b\n    needs: [a]\n    workspace: new\n    command: node b.js\n    deliver: pr\n`);
+    const url = 'https://review.acme.internal/changes/9';
+    const a = await take(config, runId);
+    await succeed(config, runId, a, { to: pushWork(root, a), pr_url: url });
+    const b = await take(config, runId);
+    await succeed(config, runId, b, { to: pushWork(root, b), pr_url: url });
+
+    expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect((await state(config, runId)).deliveries).toEqual([{ url, branch: `teamai/${runId}/a/p1`, base: 'main', step: 'a', pass: 1 }]);
+  });
+
+  it('records a pull request delivered after the run ended, and queues the end record again with it', async () => {
+    const { config, root, runId } = await fixture(FIX_THEN_REVIEW);
+    config.usageReportEnabled = true;
+    const url = 'https://review.acme.internal/changes/3';
+    const fix = await take(config, runId);
+    await succeed(config, runId, fix, { to: pushWork(root, fix), pr_url: url });
+    const read = worktree.fetchMissingCommits;
+    vi.spyOn(worktree, 'fetchMissingCommits').mockImplementation(async (dir, options) => {
+      await cancelRun(config, runId);
+      return read(dir, options);
+    });
+
+    expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: {} } });
+    const run = await state(config, runId);
+    expect(run.steps[0]).toMatchObject({ id: 'fix', status: 'cancelled' });
+    expect(run.deliveries).toEqual([{ url, branch: `teamai/${runId}/fix/p1`, base: 'main', step: 'fix', pass: 1 }]);
+    expect((await pendingRecords(config)).find((record) => record.run === runId && record.phase === 'end')?.prs).toEqual([url]);
+  });
+
+  it('hands over a delivering step with what it delivers, and the run with its receipts', async () => {
+    const { config, root, runId } = await fixture(FIX_THEN_REVIEW);
+    const url = 'https://review.acme.internal/changes/5';
+    const fix = await take(config, runId);
+    const to = pushWork(root, fix);
+    await succeed(config, runId, fix, { to, pr_url: url });
+    const branch = `teamai/${runId}/fix/p1`;
+
+    const delivering = projectRun(await state(config, runId), {});
+    expect(delivering.ok && delivering.value.steps[0]).toMatchObject({ status: 'delivering', delivery: { branch, head: to, reported: url } });
+    await take(config, runId);
+    const delivered = projectRun(await state(config, runId), {});
+    expect(delivered.ok && delivered.value.deliveries).toEqual([{ url, branch, base: 'main', step: 'fix', pass: 1 }]);
   });
 
   it.todo('delivers a workflow step with workspace: new once, against the delivered branch of the step it needs');
@@ -325,6 +373,6 @@ describe('reported URLs from a driver', () => {
       accepted: true, revision: 2, step: { id: 'write', status: 'succeeded', outcome: 'success' }, cleanup: true,
       dropped: [{ field: 'changes.pr_url', reason: 'the step has no deliver: pr' }],
     } });
-    expect((await state(config, runId)).copies?.[`teamai/${runId}/write/p1`]?.pr).toBeUndefined();
+    expect((await state(config, runId)).deliveries).toBeUndefined();
   });
 });

@@ -21,14 +21,16 @@ export interface DeliveryJob {
   key: DeliveryKey;
   runId: string;
   /** The checkout the run started or was claimed in, which reads the delivered branch. */
-  checkout?: string;
+  checkout: string;
   /** The run base commit the delivered branch is compared with. */
-  base?: string;
+  base: string;
+  /** The branch the pull request goes into. */
+  target: string;
   /** A URL the step's driver reported and the engine kept: nothing is opened for it. */
   reported?: PrUrl;
 }
 
-/** Why a delivery opened no pull request. */
+/** Why a delivery opened no pull request. `no_checkout` is found under the run lock, before there is a job. */
 export type DeliveryFault =
   | { kind: 'no_checkout' }
   | { kind: 'unreadable' }
@@ -55,7 +57,6 @@ export async function deliverPr(job: DeliveryJob): Promise<DeliveryOutcome> {
 
 /** The files the delivered head changes against the run base, read in the run's checkout once it fetched what it lacks. */
 async function changedFiles({ key, runId, checkout, base }: DeliveryJob): Promise<{ files: string[] } | { fault: DeliveryFault }> {
-  if (!checkout || !base) return { fault: { kind: 'no_checkout' } };
   if (!OBJECT_ID.test(key.head) || !OBJECT_ID.test(base)) return { fault: { kind: 'unreadable' } };
   const fetched = await fetchMissingCommits(checkout, { run: runId, commits: [base, key.head] });
   if (fetched.missing.length > 0) return { fault: { kind: 'unreadable' } };
@@ -67,14 +68,14 @@ async function changedFiles({ key, runId, checkout, base }: DeliveryJob): Promis
 const LISTED_FILES = 20;
 
 /** The failure a step keeps for `fault`: what happened, where the work is, and what to do next. */
-export function deliveryFailure(job: DeliveryJob, fault: DeliveryFault): WorkflowFailure {
-  const { step, branch } = job.key;
-  const retry = `teamai workflow retry ${job.runId} ${step}`;
+export function deliveryFailure({ runId, key }: Pick<DeliveryJob, 'runId' | 'key'>, fault: DeliveryFault): WorkflowFailure {
+  const { step, branch } = key;
+  const retry = `teamai workflow retry ${runId} ${step}`;
   switch (fault.kind) {
     case 'no_checkout':
       return {
         code: 'delivery_failed',
-        message: `PR delivery for step "${step}" failed: the run records no checkout and base to compare branch ${branch} with, so its changes cannot be checked. The work is kept in branch ${branch}. Open a pull request from it yourself, or start the run again from a checkout of its repository.`,
+        message: `PR delivery for step "${step}" failed: the run records no checkout, or no base branch, to deliver branch ${branch} from and into. The work is kept in branch ${branch}. Open a pull request from it yourself, or start the run again from a checkout of its repository.`,
       };
     case 'unreadable':
       return {

@@ -397,24 +397,18 @@ describe('#1083 workflow run records', () => {
     expect(remerged.endedAt).toBe(end.endedAt);
   });
 
-  it('lists the pull requests delivered on the run\'s branches once each, in step and pass order, and never a step output', () => {
+  it('lists the pull requests delivered on the run in the order they first appeared, and never a step output', () => {
     const pr = (n: number): string => `https://github.com/acme/app/pull/${n}`;
-    const recorded = (n: number, step: string, pass: number) => ({ pr: { url: PrUrlSchema.parse(pr(n)), step, pass } });
+    const receipt = (n: number, step: string, pass: number) => ({ url: PrUrlSchema.parse(pr(n)), branch: `teamai/r1234567890abcdef/${step}/p${pass}`, base: 'main', step, pass });
     const run = runState({
       steps: [
         { id: 'one', status: 'succeeded', attempt: 'a1', settledAt: 2, outcome: 'success', outputs: { pr_url: 'https://untrusted.example/1' } },
         { id: 'two', status: 'succeeded', attempt: 'a2', settledAt: 3, outcome: 'success' },
       ],
-      copies: {
-        'teamai/r1234567890abcdef/two/p2': recorded(4, 'two', 2),
-        'teamai/r1234567890abcdef/two/p1': recorded(3, 'two', 1),
-        'teamai/r1234567890abcdef/one/p1': recorded(2, 'one', 1),
-        'teamai/r1234567890abcdef/loop/p1': recorded(1, 'loop.write', 1),
-        'teamai/r1234567890abcdef/other/p1': { commit: 'c'.repeat(40) },
-      },
+      deliveries: [receipt(3, 'two', 1), receipt(1, 'loop.write', 1), receipt(2, 'one', 1)],
     });
 
-    expect(buildEndRecord(run, driver, 'tester').prs).toEqual([pr(1), pr(2), pr(3), pr(4)]);
+    expect(buildEndRecord(run, driver, 'tester').prs).toEqual([pr(3), pr(1), pr(2)]);
     expect(buildEndRecord(runState(), driver, 'tester')).not.toHaveProperty('prs');
   });
 

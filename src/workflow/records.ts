@@ -97,7 +97,7 @@ export type WorkflowRunRecord = {
   stepCounts?: { total: number; succeeded: number; failed: number; skipped: number; cancelled: number };
   /** Settled attempts across the run — the cumulative iteration count. */
   iterations?: number;
-  /** The pull requests the run delivered, in step order. Public on a public team repo; absent when it delivered none. */
+  /** The pull requests the run delivered, in the order they first appeared. Public on a public team repo; absent when it delivered none. */
   prs?: string[];
   username: string;
   publishedAt: string;
@@ -171,19 +171,6 @@ function failureOf(run: RunState): RecordedFailure | undefined {
 }
 
 /**
- * The pull requests the run's steps delivered, once each, in the order of the steps that recorded them and, for one
- * step, of its passes. That is item order for a `for_each`, whichever item finished first, and a loop that revised one
- * branch lists its pull request once. A step a loop removed from the run lists first. Only what delivery recorded on a
- * branch is listed, never a step's outputs.
- */
-function prsOf(run: RunState): string[] {
-  const position = new Map(run.steps.map((step, index) => [step.id, index]));
-  const recorded = Object.values(run.copies ?? {}).flatMap((copy) => (copy.pr ? [copy.pr] : []));
-  const ordered = recorded.sort((left, right) => (position.get(left.step) ?? -1) - (position.get(right.step) ?? -1) || left.pass - right.pass);
-  return [...new Set(ordered.map((pr) => pr.url))];
-}
-
-/**
  * Build the end-phase record: outcome, duration, iterations, and step counts,
  * all derived as counts so no step payload crosses into the record.
  */
@@ -225,7 +212,8 @@ export function buildEndRecord(
     ]),
     ...(run.archive ?? []).map((archived) => entry(archived.step, archived.pass, archived)),
   ];
-  const prs = prsOf(run);
+  // Receipts are what delivery recorded, never a step's outputs, and each URL appears once.
+  const prs = (run.deliveries ?? []).map((receipt) => receipt.url);
   return {
     ...buildStartRecord(run, driver, username, now),
     phase: 'end',

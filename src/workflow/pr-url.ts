@@ -38,3 +38,13 @@ export function sanitizePrUrl(value: unknown): { url: PrUrl; reason?: never } | 
   const parsed = PrUrlSchema.safeParse(value);
   return parsed.success ? { url: parsed.data } : { reason: parsed.error.issues[0]?.message ?? 'is not a valid URL' };
 }
+
+/** A pull request delivered on a run: its URL, the branch it was opened from and into, and the step pass it delivered. */
+export const DeliveryReceiptSchema = z.object({
+  url: PrUrlSchema,
+  branch: z.string(),
+  base: z.string(),
+  step: z.string(),
+  pass: z.number().int(),
+});
+export type DeliveryReceipt = z.infer<typeof DeliveryReceiptSchema>;
