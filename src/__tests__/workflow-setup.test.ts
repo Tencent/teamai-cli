@@ -71,6 +71,13 @@ describe('workspace setup', () => {
     expect(Date.now() - startedAt).toBeLessThan(10_000);
   });
 
+  it('runs setup normally when the step deadline is further away than a timer can wait', async () => {
+    const dir = workspace();
+    const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+    expect(await runSetup({ command: 'sleep 0.2 && mkdir -p node_modules && touch node_modules/done', dir, env: process.env, keys: [], expiresAt })).toBeUndefined();
+    expect(fs.existsSync(path.join(dir, 'node_modules', 'done'))).toBe(true);
+  });
+
   it('scans only the files setup created or changed, and never .git', async () => {
     const dir = workspace();
     fs.writeFileSync(path.join(dir, '.npmrc'), TOKEN);

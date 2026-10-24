@@ -28,6 +28,9 @@ export interface SetupRun {
 /** The last characters of setup's output a failure quotes. */
 const OUTPUT_TAIL = 400;
 
+/** The longest delay `setTimeout` honours. */
+const MAX_TIMER_DELAY = 2 ** 31 - 1;
+
 /**
  * Runs setup and checks what it left. The step may start when this answers undefined. Otherwise, first match wins:
  * a non-zero exit is `setup_failed`; a change to a tracked or non-ignored path, which the step would commit, is
@@ -35,13 +38,15 @@ const OUTPUT_TAIL = 400;
  * excluded, is `setup_secret`, naming the file and the key, never the value.
  */
 export async function runSetup({ expiresAt, signal: caller, ...run }: SetupRun): Promise<WorkflowFailure | undefined> {
-  if (expiresAt === undefined) return checkedSetup({ ...run, signal: caller });
+  const remaining = expiresAt === undefined ? undefined : Math.max(0, Date.parse(expiresAt) - Date.now());
+  // A longer delay fires at once, so a deadline that far away is left to the caller's own deadline handling.
+  if (remaining === undefined || remaining > MAX_TIMER_DELAY) return checkedSetup({ ...run, signal: caller });
   const bound = new AbortController();
   const stop = (): void => bound.abort();
   caller?.addEventListener('abort', stop, { once: true });
   if (caller?.aborted) stop();
   let timedOut = false;
-  const timer = setTimeout(() => { timedOut = true; stop(); }, Math.max(0, Date.parse(expiresAt) - Date.now()));
+  const timer = setTimeout(() => { timedOut = true; stop(); }, remaining);
   try {
     const failure = await checkedSetup({ ...run, signal: bound.signal });
     return timedOut
