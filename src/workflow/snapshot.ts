@@ -6,7 +6,7 @@ import { canonicalJson } from '../utils/canonical-json.js';
 import { redact } from '../utils/redact.js';
 import { isRecord } from './expression.js';
 import {
-  ArchivedPassSchema, ReleasedTokensSchema, SessionContinuationSchema, StepCheckpointSchema, type ArchivedPass, type HitlAnswer, type StepPass, type StepState,
+  ArchivedPassSchema, LimitsFromSchema, ReleasedTokensSchema, SessionContinuationSchema, StepCheckpointSchema, type ArchivedPass, type HitlAnswer, type StepPass, type StepState,
 } from './step-state.js';
 import type { RunState, StepLease, WorkflowDefinition, WorkflowFailure } from './types.js';
 
@@ -59,7 +59,7 @@ const BodySchema = z.object({
   /** The scorers the run pinned, by hash only: the machine that claims the run uses its own copy when the hash matches. */
   scorers: z.record(z.object({ sourceHash: z.string() })).optional(),
   createdAt: z.string(),
-  timeoutFrom: z.string().optional(),
+  limitsFrom: LimitsFromSchema.optional(),
   updatedAt: z.string(),
   steps: z.array(withCommitIds(StepCheckpointSchema)),
 });
@@ -193,7 +193,7 @@ const RUN_RULES = {
   end: 'publish', failure: 'rewrite', inputs: 'publish', sourceHash: 'publish', teamRevision: 'publish',
   definition: 'rewrite', workflows: 'rewrite', scorers: 'rewrite', steps: 'rewrite', settledAttempts: 'rewrite', settledCount: 'rewrite',
   endRecordQueued: 'drop', cancelledAttempts: 'rewrite', archive: 'rewrite', round: 'publish', base: 'publish',
-  checkout: 'drop', copies: 'rewrite', sessionContinuations: 'publish', releasedTokens: 'publish', publication: 'drop', createdAt: 'publish', timeoutFrom: 'publish',
+  checkout: 'drop', copies: 'rewrite', sessionContinuations: 'publish', releasedTokens: 'publish', publication: 'drop', createdAt: 'publish', limitsFrom: 'publish',
   updatedAt: 'publish',
 } satisfies FieldRules<RunState>;
 
@@ -203,6 +203,7 @@ const STEP_RULES = {
   outputs: 'publish', end: 'publish', results: 'publish', settledAt: 'publish', exitCode: 'publish', message: 'drop',
   tool: 'publish', model: 'publish', session: 'publish', tokens: 'publish', changes: 'publish', read: 'publish',
   agent: 'publish', used: 'publish', installId: 'publish', loopFinal: 'publish', failure: 'rewrite', unenforced: 'publish', expiresAt: 'publish',
+  limitsFrom: 'publish',
 } satisfies FieldRules<StepState>;
 
 const PASS_RULES = {

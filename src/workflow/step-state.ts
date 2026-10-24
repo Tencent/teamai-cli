@@ -12,6 +12,13 @@ const TokenUsageSchema: z.ZodType<TokenUsage> = z.object({
   cachedInput: z.number().optional(),
 });
 
+/**
+ * Where a workflow's limits count from: when its timeout starts, and the tokens already spent under it, which its budget
+ * does not count. A workflow step records it each time it starts; the run, when a retry reopens it.
+ */
+export const LimitsFromSchema = z.object({ at: z.string(), tokens: z.number() });
+export type LimitsFrom = z.infer<typeof LimitsFromSchema>;
+
 /** The tokens a released attempt spent, which a budget still counts once its step has nothing of the attempt. */
 export const ReleasedTokensSchema = z.object({ step: z.string(), attempt: z.string(), tokens: TokenUsageSchema });
 export type ReleasedTokens = z.infer<typeof ReleasedTokensSchema>;
@@ -156,8 +163,11 @@ const settledFields = {
  */
 const PendingSchema = StepBaseSchema.extend({ status: z.literal('pending') });
 const WaitingSchema = StepBaseSchema.extend({ status: z.literal('waiting') });
-/** `expiresAt`: when the step's `timeout`, or that of the workflow file it runs, ends it, set when it starts. */
-const RunningSchema = StepBaseSchema.extend({ status: z.literal('running'), expiresAt: z.string().optional() });
+/**
+ * `expiresAt`: when the step's `timeout`, or that of the workflow file it runs, ends it. `limitsFrom`: where the budget of
+ * the workflow it runs counts from. Both are set when it starts.
+ */
+const RunningSchema = StepBaseSchema.extend({ status: z.literal('running'), expiresAt: z.string().optional(), limitsFrom: LimitsFromSchema.optional() });
 const SucceededSchema = StepBaseSchema.extend({
   status: z.literal('succeeded'), outcome: z.literal('success').default('success'), ...settledFields, loopFinal: z.boolean().optional(),
 });
@@ -291,11 +301,11 @@ export function lease(state: StepState, held: StepLease): LeasedStep {
 }
 
 /**
- * A workflow step starts; `inputs` are the values its `with` passed, when that workflow declares inputs, and
- * `expiresAt` is when its timeout ends it.
+ * A workflow step starts; `inputs` are the values its `with` passed, when that workflow declares inputs, and `limits`
+ * when its timeout ends it and where its workflow's budget counts from.
  */
-export function start(state: StepState, inputs?: Record<string, unknown>, expiresAt?: string): RunningStep {
-  const running = become<RunningStep>(state, { status: 'running', ...(expiresAt !== undefined ? { expiresAt } : {}) });
+export function start(state: StepState, inputs?: Record<string, unknown>, limits: Pick<RunningStep, 'expiresAt' | 'limitsFrom'> = {}): RunningStep {
+  const running = become<RunningStep>(state, { status: 'running', ...limits });
   if (inputs) running.inputs = inputs;
   return running;
 }

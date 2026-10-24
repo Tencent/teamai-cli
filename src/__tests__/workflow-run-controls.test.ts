@@ -234,9 +234,46 @@ describe('workflow retry', () => {
     const before = Date.now();
     expect(data(await retryStep(f.config, f.id, 'work'))).toMatchObject({ reopened: true });
     const state = await f.state();
-    expect(Date.parse(state.timeoutFrom ?? '')).toBeGreaterThanOrEqual(before - 1000);
+    expect(Date.parse(state.limitsFrom?.at ?? '')).toBeGreaterThanOrEqual(before - 1000);
     const projected = projectRun(state, {});
-    expect(projected.ok && projected.value.timeoutFrom).toBe(state.timeoutFrom);
+    expect(projected.ok && projected.value.limitsFrom).toEqual(state.limitsFrom);
+  });
+
+  it('gives a run a whole timeout again when the retry is what finds it timed out', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+      const f = await fixture('  - id: work\n    command: echo work', 'timeout: 1h\n');
+      data(await f.next());
+      vi.setSystemTime(new Date('2026-01-01T02:00:00.000Z'));
+      data(await retryStep(f.config, f.id, 'work'));
+      expect(data(await f.next()).lease).toMatchObject({ step: 'work', expiresAt: '2026-01-01T03:00:00.000Z' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('gives a run that spent its budget, and a workflow step that spent its own, a whole budget again on retry', async () => {
+    const tokens = { can: { hitl: true, tokens: true } };
+    const spend = async (f: Awaited<ReturnType<typeof fixture>>, step: string): Promise<void> => {
+      const lease = data(await f.next(tokens)).lease;
+      expect(lease.step).toBe(step);
+      data(await reportAttempt(f.config, f.id, { attempt: lease.attempt, revision: lease.revision, driver, outcome: 'success', tokens: { input: 15, output: 5 } }));
+    };
+    const run = await fixture('  - id: work\n    prompt: Work.\n  - id: other\n    needs: []\n    prompt: Other.', 'budget: { tokens: 10 }\n');
+    const work = data(await run.next(tokens)).lease;
+    expect(data(await run.next({ ...tokens, running: [work.attempt] })).lease.step).toBe('other');
+    data(await reportAttempt(run.config, run.id, { attempt: work.attempt, revision: work.revision, driver, outcome: 'success', tokens: { input: 15, output: 5 } }));
+    expect(data(await run.next(tokens)).done).toMatchObject({ outcome: 'failed', failure: { code: 'budget_exceeded' } });
+    data(await retryStep(run.config, run.id, 'other'));
+    await spend(run, 'other');
+
+    const nested = await fixture('  - id: check\n    budget: { tokens: 10 }\n    workflow:\n      steps:\n        - id: inner\n          prompt: Inner.');
+    await spend(nested, 'check.inner');
+    expect(data(await nested.next(tokens)).done).toMatchObject({ outcome: 'failed' });
+    expect((await nested.state()).steps[0]).toMatchObject({ id: 'check', failure: { code: 'budget_exceeded' } });
+    data(await retryStep(nested.config, nested.id, 'check'));
+    await spend(nested, 'check.inner');
   });
 
   it('reopens a failed run, keeps the failed pass and retries skipped dependents', async () => {

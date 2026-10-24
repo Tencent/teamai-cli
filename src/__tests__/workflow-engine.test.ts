@@ -4594,6 +4594,24 @@ describe('token budgets', () => {
     expect(await leaseNext(config, runId, driverA, reports)).toMatchObject({ data: { done: { outcome: 'failed', failure: { code: 'budget_exceeded' } } } });
   });
 
+  it('gives a workflow step a whole budget on each pass a loop runs it', async () => {
+    const { config, runId } = await startBuild(graph(`  - id: work
+    budget: { tokens: 5 }
+    workflow:
+      steps:
+        - id: review
+          prompt: Review.
+    loop: { back_to: work, max_iterations: 3 }
+`));
+    for (let pass = 0; pass < 3; pass += 1) {
+      const review = leaseIn(await leaseNext(config, runId, driverA, reports));
+      expect(review.step).toBe('work.review');
+      await report(config, runId, review, 'success', { input: 2, output: 1 });
+    }
+    expect(await leaseNext(config, runId, driverA, reports)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'work', status: 'failed', failure: { code: 'loop_exhausted' } }] });
+  });
+
   it('gives a budgeted interactive prompt to a driver that cannot meter it, and records its spend as not counted', async () => {
     const { config, runId } = await startBuild(graph(`  - id: pair
     interactive: true

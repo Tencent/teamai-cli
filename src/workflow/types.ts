@@ -1,7 +1,7 @@
 /** Workflow types for the v1alpha1 local-driver subset. */
 
 import type { PinnedScorer } from '../scorers/pin.js';
-import type { ArchivedPass, ReleasedTokens, SessionContinuation, StepState } from './step-state.js';
+import type { ArchivedPass, LimitsFrom, ReleasedTokens, SessionContinuation, StepState } from './step-state.js';
 import type { Requirements, Setup, Unenforced } from './requirements.js';
 import type { LeaseSession } from './workspace.js';
 
@@ -83,13 +83,19 @@ export interface WorkflowStep {
   requires?: Requirements;
   /** Milliseconds the step's lease, or the workflow or items it runs, may take before the step fails with `timeout`. */
   timeout?: number;
-  /** On a workflow step: the tokens each run of its workflow may spend before the step fails with `budget_exceeded`. */
+  /**
+   * On a workflow step: the tokens its workflow may spend each time the step starts, a loop's next pass or a retry
+   * included, before the step fails with `budget_exceeded`.
+   */
   budget?: Budget;
   /** On a prompt step: the most agent turns its tool may take, for a driver that can cap them. */
   maxTurns?: number;
 }
 
-/** The tokens a workflow may spend, input and output, over every pass of its steps. */
+/**
+ * The input and output tokens a workflow may spend over every pass of its steps, counted from when it starts: the run's
+ * from its start, or from the retry that reopened it, and a workflow step's from each time the step starts.
+ */
 export interface Budget {
   tokens: number;
 }
@@ -294,8 +300,11 @@ export interface RunState {
   /** How this machine last published the run, or took it from another machine. Local run state only. */
   publication?: RunPublication;
   createdAt: string;
-  /** When the workflow's `timeout` counts from once a retry reopened the run, so the reopened run gets a whole window. */
-  timeoutFrom?: string;
+  /**
+   * Where the workflow's `timeout` and `budget` count from once a retry reopened the run, so the reopened run gets a whole
+   * window and a whole budget. Absent, they count from `createdAt`, with nothing spent.
+   */
+  limitsFrom?: LimitsFrom;
   updatedAt: string;
 }
 

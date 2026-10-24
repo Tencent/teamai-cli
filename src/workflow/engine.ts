@@ -19,7 +19,7 @@ import {
 import { parseStepPath } from './step-path.js';
 import {
   ReadSchema, answerHitl, cancel, fail, lease, release, settled, skip, start, stopped, succeed, takeOver, timeOut, waitForAnswer,
-  type ItemResult, type LeasedStep, type StepRead, type StepState,
+  type ItemResult, type LeasedStep, type LimitsFrom, type StepRead, type StepState,
 } from './step-state.js';
 import { addItems, afterStanding, expandItems, isItem, itemsAfter, itemsOf, itemsSettled, startedItems } from './fan-out.js';
 import { decideRound, decideStepLoop, exhaustedAtStart, firstPass, isUnder, loopSettled, runPasses } from './loop.js';
@@ -513,7 +513,7 @@ function startWorkflowStep(
       child.inputs = inputs;
     }
   }
-  start(state, inputs, ownDeadline(run, state, step, now));
+  start(state, inputs, startLimits(run, state, step, now));
   const steps = child.definition.steps.map((step): StepState => {
     const id = `${child.prefix}${step.id}`;
     const pass = firstPass(run, id);
@@ -605,7 +605,7 @@ function advanceInstance(
       failStep(state, values, run.revision);
       return undefined;
     }
-    start(state, undefined, ownDeadline(run, state, definition, now));
+    start(state, undefined, startLimits(run, state, definition, now));
     addItems(run, state, values);
     return undefined;
   }
@@ -687,7 +687,7 @@ function settleScope(run: RunState, scope: Scope, now: string): Settled {
   if (typeof reads === 'string') return { unreadable: reads };
   // A workflow that spent its budget stops what it still runs and fails: the run, or the step that runs it, so a step
   // around it that reads its outcome can recover.
-  const spent = scope.budget === undefined ? 0 : spentTokens(run, scope.prefix);
+  const spent = scope.budget === undefined ? 0 : spentTokens(run, scope.prefix) - limitsFrom(run, scope).tokens;
   if (scope.budget !== undefined && spent >= scope.budget) {
     const failure = { code: 'budget_exceeded', message: `${workflowLabel(scope)} spent ${spent} of its ${scope.budget}-token budget` };
     stopWhere(run, (id) => id.startsWith(scope.prefix), failure, run.revision);
@@ -815,14 +815,29 @@ export function ownDeadline(run: RunState, state: StepState, step: WorkflowStep,
  * The input and output tokens spent under a workflow, by the prefix of its step paths: every pass, current or archived,
  * and every released attempt. Cached input is shown, not budgeted: tools report it inside or beside input differently.
  */
-function spentTokens(run: RunState, prefix: string): number {
+export function spentTokens(run: RunState, prefix: string): number {
   const used = [...runPasses(run), ...run.releasedTokens ?? []].filter((entry) => entry.step.startsWith(prefix));
   return used.reduce((sum, { tokens }) => sum + (tokens?.input ?? 0) + (tokens?.output ?? 0), 0);
 }
 
-/** The run's own deadline, from when it started. */
+/**
+ * What a workflow step, or `for_each` item, starting at `now` records: when its timeout ends it, and where the budget of
+ * what it runs counts from. What it ran before, such as an earlier pass a loop archived, is not counted again.
+ */
+export function startLimits(run: RunState, state: StepState, step: WorkflowStep, now: string): { expiresAt?: string; limitsFrom: LimitsFrom } {
+  const expiresAt = ownDeadline(run, state, step, now);
+  return { ...(expiresAt !== undefined ? { expiresAt } : {}), limitsFrom: { at: now, tokens: spentTokens(run, `${state.id}.`) } };
+}
+
+/** Where the limits of a workflow of the run count from: the run's, or those its running step recorded when it started. */
+function limitsFrom(run: RunState, scope: Scope): LimitsFrom {
+  const recorded = scope.runner ? (scope.runner.status === 'running' ? scope.runner.limitsFrom : undefined) : run.limitsFrom;
+  return recorded ?? { at: run.createdAt, tokens: 0 };
+}
+
+/** The run's own deadline, from when it started or a retry reopened it. */
 function runDeadline(run: RunState): string | undefined {
-  return run.definition.timeout === undefined ? undefined : after(run.timeoutFrom ?? run.createdAt, run.definition.timeout);
+  return run.definition.timeout === undefined ? undefined : after(limitsFrom(run, topScope(run)).at, run.definition.timeout);
 }
 
 /** When a lease ends: the first of its own deadline, that of every running step it is under, fan-out items included, and the run's. */

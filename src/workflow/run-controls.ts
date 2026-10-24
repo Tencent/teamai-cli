@@ -1,6 +1,6 @@
 import type { LocalConfig } from '../types.js';
 import {
-  error, finishRun, locateStep, ok, ownDeadline, parseReads, reconcileRun, runData, stopWhere, withRun, workflowLabel,
+  error, finishRun, locateStep, ok, parseReads, reconcileRun, runData, spentTokens, startLimits, stopWhere, withRun, workflowLabel,
   type RunReads, type WorkflowResult,
 } from './engine.js';
 import { evaluateExpression, isTruthy } from './expression.js';
@@ -246,9 +246,12 @@ function retryInstance(run: RunState, state: StepState): void {
 /** Retries a step and its dependency cone, retaining pass history and reopening a settled run. */
 export async function retryStep(config: LocalConfig, runId: string, step: string): Promise<WorkflowEnvelope> {
   return controlRun(config, runId, async (run, now, finish) => {
-    if (run.status === 'running') {
+    // A run this reconcile finds ended, by its timeout or budget too, is reopened by the retry like a settled one.
+    let ended = run.status !== 'running';
+    if (!ended) {
       const reconciled = reconcileRun(run, now);
       if ('unreadable' in reconciled) return error('run_unreadable', reconciled.unreadable);
+      ended = 'outcome' in reconciled;
     }
     const target = run.steps.find((state) => state.id === step);
     if (!target) return missingStepError(run, step);
@@ -276,14 +279,14 @@ export async function retryStep(config: LocalConfig, runId: string, step: string
         if (container.cone.has(state) || (container.resetStops && state.status === 'cancelled' && state.failure.code === 'end_reached')) retryInstance(run, state);
         else if (state.status === 'skipped' && !state.answer) resetPending(state);
       }
-      // A retried workflow runs again, so its timeout counts from now.
+      // A retried workflow runs again, so its timeout and budget count from now.
       const runner = container.runner && settled(container.runner) ? container.runner : undefined;
       const located = runner && locateStep(run, runner.id);
-      if (runner) start(runner, undefined, located ? ownDeadline(run, runner, located.step, now) : undefined);
+      if (runner) start(runner, undefined, located ? startLimits(run, runner, located.step, now) : undefined);
     }
+    if (ended) run.limitsFrom = { at: now, tokens: spentTokens(run, '') };
     if (reopened) {
       run.status = 'running';
-      run.timeoutFrom = now;
       delete run.end;
       delete run.failure;
       await removeQueuedEndRecord(config, run.id);
