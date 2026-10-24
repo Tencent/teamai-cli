@@ -2578,6 +2578,46 @@ ${timeout}`);
     expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'change', status: 'cancelled', failure: { code: 'cancelled' } }] });
   });
 
+  it('stops setup on a terminal Ctrl-C at max_parallel 1, before the step command that would get it itself starts', async () => {
+    const { config, workspace, runId, pidFile, marker } = await slowSetup(1);
+    vi.spyOn(envExec, 'terminalReachesCommand').mockResolvedValue(true);
+    const exit = vi.spyOn(envExec, 'exitLike').mockImplementation(() => {});
+    const before = new Set(process.listeners('SIGINT'));
+    const driving = runLocalDriver(config, runId, workspace, { hitl: false });
+    const pid = await setupPid(pidFile);
+    const handlers = process.listeners('SIGINT').filter((handler) => !before.has(handler));
+    expect(handlers, 'the driver leaves Ctrl-C during setup to the terminal, which does not reach setup').not.toHaveLength(0);
+    for (const handler of handlers) handler('SIGINT');
+
+    expect(await driving).toMatchObject({ error: { code: 'interrupted' } });
+    expect(exit).toHaveBeenCalledWith({ kind: 'signaled', signal: 'SIGINT' });
+    expect(await exitsWithin(pid, 1000)).toBe(true);
+    expect(fs.existsSync(marker)).toBe(false);
+  });
+
+  it('stops setup on a terminal Ctrl-C before an interactive tool that would ignore it starts', async () => {
+    const pidFile = path.join(os.tmpdir(), `teamai-setup-pid-${randomUUID()}`);
+    dirs.push(pidFile);
+    const script = `require('fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setTimeout(() => {}, 4000)`;
+    const { config, workspace, runId } = await setupFixture(`  command: ${JSON.stringify(`node -e ${JSON.stringify(script)}`)}`, `  - id: pair
+    workspace: new
+    interactive: true
+    prompt: Pair with me.
+`);
+    vi.spyOn(envExec, 'terminalReachesCommand').mockResolvedValue(true);
+    const exit = vi.spyOn(envExec, 'exitLike').mockImplementation(() => {});
+    const before = new Set(process.listeners('SIGINT'));
+    const adapter: LocalToolAdapter = { run: vi.fn(), runInteractive: vi.fn<LocalToolAdapter['runInteractive']>(async () => ({ started: true, exitCode: 0 })) };
+    const driving = runLocalDriver(config, runId, workspace, { hitl: true, adapter });
+    const pid = await setupPid(pidFile);
+    for (const handler of process.listeners('SIGINT')) if (!before.has(handler)) handler('SIGINT');
+
+    expect(await driving).toMatchObject({ error: { code: 'interrupted' } });
+    expect(exit).toHaveBeenCalledWith({ kind: 'signaled', signal: 'SIGINT' });
+    expect(await exitsWithin(pid, 1000)).toBe(true);
+    expect(adapter.runInteractive).not.toHaveBeenCalled();
+  });
+
   it.each([1, 2])('stops setup when the lease passes its timeout at max_parallel %i, and never runs the step', async (maxParallel) => {
     const { config, workspace, runId, pidFile, marker } = await slowSetup(maxParallel, '    timeout: 1s\n');
     const startedAt = Date.now();

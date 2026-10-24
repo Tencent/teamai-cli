@@ -1100,12 +1100,18 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
           continue;
         }
         held.splice(index, 1);
-        // An attached command already has the signals its terminal sends to the whole group; a second would force-quit some tools.
-        if (maxParallel === 1) handle(commandSignalPolicy(await terminalReachesCommand()).forwarded);
+        // Setup runs in its own process group, out of the terminal's reach, so the driver handles every stop signal until
+        // the command starts. An attached command already has the signals its terminal sends to the whole group; a second
+        // would force-quit some tools.
+        const forwarded = maxParallel === 1 ? commandSignalPolicy(await terminalReachesCommand()).forwarded : undefined;
+        if (forwarded) handle(STOP_SIGNALS);
         inFlight.set(lease.attempt, { lease, command: stageThenStart(
           lease,
           (signal) => stageLease(lease, { active: cwd, runId, values: turn.values, signal }),
-          () => startCommand(command, lease.cwd ?? cwd, { ...lease.processEnv ?? process.env, ...lease.env }, detached),
+          () => {
+            if (forwarded) handle(forwarded);
+            return startCommand(command, lease.cwd ?? cwd, { ...lease.processEnv ?? process.env, ...lease.env }, detached);
+          },
         ) });
       }
       if (!prompt && busy() < maxParallel) {
@@ -1115,14 +1121,14 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
           && (!lease.interactive || (inFlight.size === 0 && dying.size === 0)));
         if (promptAt !== -1) {
           const lease = held.splice(promptAt, 1)[0]!;
-          if (lease.interactive) {
-            if (question) {
-              question.controller.abort();
-              await question.exit;
-              question = undefined;
-            }
-            interactiveIgnores = commandSignalPolicy(await terminalReachesCommand()).ignored;
+          if (lease.interactive && question) {
+            question.controller.abort();
+            await question.exit;
+            question = undefined;
           }
+          // Setup runs out of the terminal's reach, so the tool's signals are left to it only once it starts.
+          interactiveIgnores = [];
+          const ignored = lease.interactive ? commandSignalPolicy(await terminalReachesCommand()).ignored : [];
           const controller = new AbortController();
           if (maxParallel === 1) handle(STOP_SIGNALS);
           prompt = { lease, controller, exit: (async () => {
@@ -1132,6 +1138,7 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
               return undefined;
             }
             if (failure) return unstaged(lease, failure);
+            interactiveIgnores = ignored;
             return promptReport(config, resultPath(config, runId, lease.attempt), driver, lease, tools, adapter, options, archive, controller.signal);
           })() };
         }
