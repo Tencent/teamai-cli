@@ -34,7 +34,7 @@ export interface ConformanceScenario {
  */
 export const DRIVER_PROFILES = {
   /** The in-process driver `teamai workflow run` uses. */
-  local: { can: { workspace: ['read-only', 'new', 'continue'], env: true } },
+  local: { can: { workspace: ['read-only', 'new', 'continue'], env: true, tokens: true } },
   /** An agent session that runs the protocol itself, with a person in the chat. */
   session: { can: { hitl: true, workspace: ['read-only', 'new', 'continue'] } },
   /** A program that speaks only the CLI JSON protocol, such as an IDE or an orchestrator. */
@@ -1032,6 +1032,39 @@ workflowConformanceScenarios.push(
       { kind: 'report', lease: 'work', as: 'external', body: { outcome: 'success' }, expect: { error: { code: 'lease_cancelled' } } },
     ],
     expectState: { steps: [{ id: 'work', status: 'failed', failure: { code: 'timeout' } }, { id: 'recover', status: 'leased' }] },
+  },
+);
+
+const BUDGETED = (tokens: number, steps: string): string => controlsYaml(steps).replace('steps:\n', `budget: { tokens: ${tokens} }\nsteps:\n`);
+workflowConformanceScenarios.push(
+  {
+    name: 'a prompt under a budget waits for a driver that reports tokens, and a success that reports none fails budget_unmeasured',
+    workflowName: 'build', yaml: BUDGETED(100, '  - id: plan\n    prompt: Plan it.\n  - id: check\n    needs: []\n    command: echo check'),
+    operations: [
+      { kind: 'next', saveAs: 'check', as: 'external', expect: { data: { lease: { step: 'check' } } } },
+      { kind: 'next', saveAs: 'held', as: 'external', running: ['check'], expect: { data: { wait: {
+        held: [{ step: 'plan', reason: 'step "plan" needs tokens, which this driver does not declare', missing: ['tokens'] }],
+      } } } },
+      { kind: 'report', lease: 'check', as: 'external', body: { outcome: 'success' }, expect: { data: { accepted: true } } },
+      { kind: 'next', saveAs: 'plan', as: 'local', expect: { data: { lease: { step: 'plan' } } } },
+      { kind: 'report', lease: 'plan', as: 'local', body: { outcome: 'success' }, expect: { data: { accepted: true, step: { id: 'plan', status: 'failed' } } } },
+      { kind: 'next', saveAs: 'done', as: 'local', expect: { data: { done: { outcome: 'failed' } } } },
+    ],
+    expectState: { steps: [{ id: 'plan', status: 'failed', failure: { code: 'budget_unmeasured' } }, { id: 'check', status: 'succeeded' }] },
+    expectRecord: { failure: { code: 'budget_unmeasured' } },
+  },
+  {
+    name: 'a run that spent its token budget cancels its open leases and fails budget_exceeded',
+    workflowName: 'build', yaml: BUDGETED(10, '  - id: a\n    prompt: Do a.\n  - id: b\n    needs: []\n    prompt: Do b.'),
+    operations: [
+      { kind: 'next', saveAs: 'a', expect: { data: { lease: { step: 'a' } } } },
+      { kind: 'next', saveAs: 'b', running: ['a'], expect: { data: { lease: { step: 'b' } } } },
+      { kind: 'report', lease: 'a', body: { outcome: 'success', tokens: { input: 8, output: 4 } }, expect: { data: { accepted: true } } },
+      { kind: 'next', saveAs: 'done', running: ['b'], cancelled: ['b'], expect: { data: { done: { outcome: 'failed', failure: { code: 'budget_exceeded' } } } } },
+      { kind: 'report', lease: 'b', body: { outcome: 'success', tokens: { input: 1, output: 1 } }, expect: { error: { code: 'lease_cancelled' } } },
+    ],
+    expectState: { status: 'failed', steps: [{ id: 'a', status: 'succeeded' }, { id: 'b', status: 'cancelled', failure: { code: 'budget_exceeded' } }] },
+    expectRecord: { failure: { code: 'budget_exceeded' } },
   },
 );
 

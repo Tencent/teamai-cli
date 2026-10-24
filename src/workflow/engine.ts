@@ -22,7 +22,7 @@ import {
   type ItemResult, type LeasedStep, type StepRead, type StepState,
 } from './step-state.js';
 import { addItems, afterStanding, expandItems, isItem, itemsAfter, itemsOf, itemsSettled, startedItems } from './fan-out.js';
-import { decideRound, decideStepLoop, exhaustedAtStart, firstPass, isUnder, loopSettled } from './loop.js';
+import { decideRound, decideStepLoop, exhaustedAtStart, firstPass, isUnder, loopSettled, runPasses } from './loop.js';
 import { childScope, contextOf, insertChildren, localId, statesIn, stepDefinitions, topScope, type Scope } from './scope.js';
 import { planWorkspace, plannedBranch, sessionOf, type LeaseSession, type SessionRef, type WorkspaceContract, type WorkspacePlan } from './workspace.js';
 import {
@@ -681,6 +681,14 @@ function workflowOutputs(scope: Scope, states: StepState[], paths: Map<string, E
 function settleScope(run: RunState, scope: Scope, now: string): Settled {
   const reads = parseReads(run, scope);
   if (typeof reads === 'string') return { unreadable: reads };
+  // A workflow that spent its budget stops what it still runs and fails: the run, or the step that runs it, so a step
+  // around it that reads its outcome can recover.
+  const spent = scope.budget === undefined ? 0 : spentTokens(run, scope.prefix);
+  if (scope.budget !== undefined && spent >= scope.budget) {
+    const failure = { code: 'budget_exceeded', message: `${workflowLabel(scope)} spent ${spent} of its ${scope.budget}-token budget` };
+    stopWhere(run, (id) => id.startsWith(scope.prefix), failure, run.revision);
+    return { outcome: 'failed', failure, settledAt: run.revision };
+  }
   const states = statesIn(run, scope);
   const defined = new Map(scope.definition.steps.map((item) => [item.id, item]));
   const definitionOf = (state: StepState): WorkflowStep | undefined => defined.get(localId(scope, state));
@@ -796,6 +804,15 @@ export function ownDeadline(run: RunState, state: StepState, step: WorkflowStep,
   const file = typeof step.workflow === 'string' && (!step.forEach || isItem(state)) ? run.workflows?.[step.workflow]?.timeout : undefined;
   const limits = [step.timeout, file].filter((ms) => ms !== undefined);
   return limits.length > 0 ? after(now, Math.min(...limits)) : undefined;
+}
+
+/**
+ * The input and output tokens spent under a workflow, by the prefix of its step paths: every pass, current or archived,
+ * and every released attempt. Cached input is shown, not budgeted: tools report it inside or beside input differently.
+ */
+function spentTokens(run: RunState, prefix: string): number {
+  const used = [...runPasses(run), ...run.releasedTokens ?? []].filter((entry) => entry.step.startsWith(prefix));
+  return used.reduce((sum, { tokens }) => sum + (tokens?.input ?? 0) + (tokens?.output ?? 0), 0);
 }
 
 /** The run's own deadline, from when it started. */
@@ -971,6 +988,7 @@ function offerTerms(
     hasContract: plan?.contract !== undefined,
     envKeys: Object.keys(step.env ?? {}),
     runEnvKeys: requiredEnvKeys([run.definition, ...Object.values(run.workflows ?? {})]),
+    budgeted: step.prompt !== undefined && scope.budgeted,
   }, context.can, context.allow, context.facts);
 }
 
@@ -1467,6 +1485,12 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
     let outcome = report.outcome;
     let message = report.message;
     let failure = report.failure;
+    const measured = report.tokens?.input !== undefined || report.tokens?.output !== undefined;
+    if (outcome === 'success' && defined?.prompt !== undefined && located?.scope.budgeted && !measured) {
+      outcome = 'failed';
+      message = `Step "${step.id}" runs under a token budget, and its report has no tokens, so the budget cannot count what it spent. Run it with a driver that reports tokens (driver.can.tokens), then retry the step.`;
+      failure = { code: 'budget_unmeasured', message };
+    }
     if (outcome === 'success' && defined?.output && (!defined.interactive || report.outputs !== undefined)) {
       const mismatch = outputMismatch(defined.output, report.outputs);
       if (mismatch) {
@@ -1495,6 +1519,7 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
       installId: install.id,
     };
     if (outcome !== 'released') continueSession(run, report);
+    else if (report.tokens) (run.releasedTokens ??= []).push({ step: step.id, attempt: report.attempt, tokens: report.tokens });
     if (report.changes) {
       const copy = (run.copies ??= {})[report.changes.branch] ?? { owner: report.driver };
       copy.owner ??= report.driver;

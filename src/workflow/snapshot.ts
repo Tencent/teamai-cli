@@ -6,7 +6,7 @@ import { canonicalJson } from '../utils/canonical-json.js';
 import { redact } from '../utils/redact.js';
 import { isRecord } from './expression.js';
 import {
-  ArchivedPassSchema, SessionContinuationSchema, StepCheckpointSchema, type ArchivedPass, type HitlAnswer, type StepPass, type StepState,
+  ArchivedPassSchema, ReleasedTokensSchema, SessionContinuationSchema, StepCheckpointSchema, type ArchivedPass, type HitlAnswer, type StepPass, type StepState,
 } from './step-state.js';
 import type { RunState, StepLease, WorkflowDefinition, WorkflowFailure } from './types.js';
 
@@ -55,6 +55,7 @@ const BodySchema = z.object({
   /** The run's workspaces by branch, with the commit each was last reported at. Which driver holds one stays local. */
   copies: z.record(z.object({ commit: CommitIdSchema.optional() })),
   sessionContinuations: z.array(SessionContinuationSchema).optional(),
+  releasedTokens: z.array(ReleasedTokensSchema).optional(),
   /** The scorers the run pinned, by hash only: the machine that claims the run uses its own copy when the hash matches. */
   scorers: z.record(z.object({ sourceHash: z.string() })).optional(),
   createdAt: z.string(),
@@ -191,7 +192,7 @@ const RUN_RULES = {
   end: 'publish', failure: 'rewrite', inputs: 'publish', sourceHash: 'publish', teamRevision: 'publish',
   definition: 'rewrite', workflows: 'rewrite', scorers: 'rewrite', steps: 'rewrite', settledAttempts: 'rewrite', settledCount: 'rewrite',
   endRecordQueued: 'drop', cancelledAttempts: 'rewrite', archive: 'rewrite', round: 'publish', base: 'publish',
-  checkout: 'drop', copies: 'rewrite', sessionContinuations: 'publish', publication: 'drop', createdAt: 'publish', updatedAt: 'publish',
+  checkout: 'drop', copies: 'rewrite', sessionContinuations: 'publish', releasedTokens: 'publish', publication: 'drop', createdAt: 'publish', updatedAt: 'publish',
 } satisfies FieldRules<RunState>;
 
 const STEP_RULES = {

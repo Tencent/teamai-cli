@@ -1,7 +1,7 @@
 /** Workflow types for the v1alpha1 local-driver subset. */
 
 import type { PinnedScorer } from '../scorers/pin.js';
-import type { ArchivedPass, SessionContinuation, StepState } from './step-state.js';
+import type { ArchivedPass, ReleasedTokens, SessionContinuation, StepState } from './step-state.js';
 import type { Requirements, Unenforced } from './requirements.js';
 import type { LeaseSession } from './workspace.js';
 
@@ -83,6 +83,13 @@ export interface WorkflowStep {
   requires?: Requirements;
   /** Milliseconds the step's lease, or the workflow or items it runs, may take before the step fails with `timeout`. */
   timeout?: number;
+  /** On a workflow step: the tokens each run of its workflow may spend before the step fails with `budget_exceeded`. */
+  budget?: Budget;
+}
+
+/** The tokens a workflow may spend, input and output, over every pass of its steps. */
+export interface Budget {
+  tokens: number;
 }
 
 /** A `for_each`: the list of items, and how many of them may run at once. */
@@ -170,6 +177,7 @@ export interface WorkflowDefinition {
   defaults?: WorkflowDefaults;
   /** Milliseconds a run of this file may take, counted from its start, or from the step that runs it. */
   timeout?: number;
+  budget?: Budget;
   steps: WorkflowStep[];
 }
 
@@ -258,6 +266,8 @@ export interface RunState {
   cancelledAttempts?: string[];
   /** Passes of child and item instances a loop removed from `steps`. */
   archive?: ArchivedPass[];
+  /** The tokens of attempts their driver released, which no pass keeps. */
+  releasedTokens?: ReleasedTokens[];
   /** The round of a looping top-level workflow. */
   round?: number;
   /**

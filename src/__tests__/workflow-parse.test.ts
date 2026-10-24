@@ -1065,6 +1065,48 @@ ends: { shipped: succeeded }
     ]));
   });
 
+  it('reads a token budget on the file and on a workflow step', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+budget: { tokens: 20000 }
+steps:
+  - id: check
+    workflow:
+      steps:
+        - id: inner
+          prompt: Check it.
+    budget: { tokens: 500 }
+`);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.definition.budget).toEqual({ tokens: 20000 });
+    expect(result.definition.steps[0]?.budget).toEqual({ tokens: 500 });
+  });
+
+  it('reports a budget that is not a positive token count, a budget key this version does not know, and a budget on a step that runs no workflow', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+budget: { tokens: 0 }
+steps:
+  - id: plan
+    prompt: Plan it.
+    budget: { tokens: 10 }
+  - id: check
+    needs: [plan]
+    workflow: check
+    budget: { tokens: 10, dollars: 5 }
+`);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.diagnostics.map(formatDiagnostic)).toEqual(expect.arrayContaining([
+      'workflows/build.yaml:4: field "budget.tokens": budget.tokens must be a positive whole number of tokens',
+      'workflows/build.yaml:8: field "steps[0].budget": step "plan" budget is only allowed on a workflow step; a workflow spends it over all its steps',
+    ]));
+    expect(result.diagnostics).toContainEqual(expect.objectContaining({ field: 'steps[1].budget.dollars', code: 'unknown_key' }));
+  });
+
   it('reports defaults on an inline workflow, which carries none', () => {
     const result = parse(`schemaVersion: v1alpha1
 name: build

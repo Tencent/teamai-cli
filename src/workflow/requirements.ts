@@ -37,6 +37,8 @@ const ENFORCEMENT = {
   isolation: 'bestEffort',
   /** Keeping the run's other env keys from a step, which only a driver with `can.env` does. */
   withhold: 'bestEffort',
+  /** Reporting the tokens a prompt step under a budget spent. */
+  tokens: 'strict',
 } as const satisfies Record<string, 'strict' | 'bestEffort'> & Record<keyof Requirements, 'strict' | 'bestEffort'>;
 type Enforcement = typeof ENFORCEMENT;
 type KeysOf<E extends Enforcement[keyof Enforcement]> = { [K in keyof Enforcement]: Enforcement[K] extends E ? K : never }[keyof Enforcement];
@@ -50,6 +52,7 @@ type BestEffortKey = KeysOf<'bestEffort'>;
  * - `isolation`: the level the driver keeps every step it runs at.
  * - `env`: the driver resolves `envScope.provide` itself, removes `envScope.withhold`, and keeps the values from
  *   whatever runs the step. A driver whose executor is the agent leaves it out.
+ * - `tokens`: every success report of a prompt step carries the tokens it spent.
  */
 export const CanSchema = z.object({
   hitl: z.boolean().optional(),
@@ -57,6 +60,7 @@ export const CanSchema = z.object({
   network: z.boolean().optional(),
   isolation: IsolationSchema.optional(),
   env: z.boolean().optional(),
+  tokens: z.boolean().optional(),
 });
 export type DriverCan = z.infer<typeof CanSchema>;
 
@@ -76,7 +80,7 @@ export type Allow = z.infer<typeof AllowSchema>;
 export type Missing = StrictKey | `workspace.${WorkspaceMode}` | `policy.${keyof Allow}`;
 
 /** The failure codes a step's requirements and the run's limits set. Records carry them. */
-export const LIMIT_FAILURES = ['missing_env', 'env_unavailable', 'env_conflict', 'timeout'] as const;
+export const LIMIT_FAILURES = ['missing_env', 'env_unavailable', 'env_conflict', 'timeout', 'budget_exceeded', 'budget_unmeasured'] as const;
 
 /** One step `next` did not hand to this driver. An empty `missing` means another driver holds what it needs. */
 export interface Held {
@@ -133,6 +137,8 @@ export interface Offer {
   envKeys: readonly string[];
   /** Every key a step of the run requires, so each other step withholds it. */
   runEnvKeys: ReadonlySet<string>;
+  /** A prompt step under a token budget, whose report must say what it spent. */
+  budgeted: boolean;
 }
 
 /** What a granted lease carries besides the step itself. */
@@ -168,6 +174,7 @@ export function negotiate(offer: Offer, can: DriverCan, allow: Allow, env: EnvFa
   const gaps: Missing[] = policy.length > 0 ? policy : [
     ...(offer.interactive && !can.hitl ? ['hitl' as const] : []),
     ...(required.length > 0 && !can.env ? ['env' as const] : []),
+    ...(offer.budgeted && !can.tokens ? ['tokens' as const] : []),
   ];
   const [first, ...rest] = gaps;
   if (first !== undefined) return { kind: 'hold', missing: [first, ...rest] };

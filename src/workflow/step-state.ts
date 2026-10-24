@@ -12,6 +12,10 @@ const TokenUsageSchema: z.ZodType<TokenUsage> = z.object({
   cachedInput: z.number().optional(),
 });
 
+/** The tokens a released attempt spent, which a budget still counts once its step has nothing of the attempt. */
+export const ReleasedTokensSchema = z.object({ step: z.string(), attempt: z.string(), tokens: TokenUsageSchema });
+export type ReleasedTokens = z.infer<typeof ReleasedTokensSchema>;
+
 const FailureSchema: z.ZodType<WorkflowFailure> = z.object({ code: z.string(), message: z.string() });
 
 const SessionRefSchema = z.object({ tool: z.string().min(1), id: z.string().min(1) });

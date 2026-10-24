@@ -4509,3 +4509,58 @@ describe('deadlines', () => {
     }
   });
 });
+
+describe('token budgets', () => {
+  const reports = { can: { tokens: true } };
+
+  async function report(config: LocalConfig, runId: string, lease: { attempt: string; revision: number }, outcome: ReportInput['outcome'], tokens: TokenUsage): Promise<void> {
+    expect(await reportAttempt(config, runId, { attempt: lease.attempt, revision: lease.revision, outcome, driver: driverA, tokens })).toMatchObject({ data: { accepted: true } });
+  }
+
+  it('fails a workflow step that spent its budget, counting released attempts and not cached input, so a step that reads it recovers', async () => {
+    const { config, runId } = await startBuild(graph(`  - id: check
+    budget: { tokens: 100 }
+    workflow:
+      steps:
+        - id: first
+          prompt: First.
+        - id: second
+          needs: [first]
+          prompt: Second.
+  - id: recover
+    needs: [check]
+    if: steps.check.outcome == 'failed'
+    command: echo recover
+`));
+    await report(config, runId, leaseIn(await leaseNext(config, runId, driverA, reports)), 'success', { input: 50, output: 10, cachedInput: 1000 });
+    const second = leaseIn(await leaseNext(config, runId, driverA, reports));
+    expect(second.step).toBe('check.second');
+    await report(config, runId, second, 'released', { input: 30, output: 20 });
+    expect(await leaseNext(config, runId, driverA, reports)).toMatchObject({ data: { lease: { step: 'recover' } } });
+    expect(await readRun(config, runId)).toMatchObject({
+      releasedTokens: [{ step: 'check.second', attempt: second.attempt, tokens: { input: 30, output: 20 } }],
+      steps: [
+        { id: 'check', status: 'failed', failure: { code: 'budget_exceeded', message: 'step "check" inline workflow spent 110 of its 100-token budget' } },
+        { id: 'check.first', status: 'succeeded' },
+        { id: 'check.second', status: 'skipped' },
+        { id: 'recover', status: 'leased' },
+      ],
+    });
+  });
+
+  it('counts the passes a loop archived, so the run fails before a pass that would start past its budget', async () => {
+    const { config, runId } = await startBuild(graph(`  - id: work
+    workflow:
+      steps:
+        - id: review
+          prompt: Review.
+    loop: { back_to: work, max_iterations: 5 }
+`, 'budget: { tokens: 5 }\n'));
+    for (let pass = 0; pass < 2; pass += 1) {
+      const review = leaseIn(await leaseNext(config, runId, driverA, reports));
+      expect(review.step).toBe('work.review');
+      await report(config, runId, review, 'success', { input: 2, output: 1 });
+    }
+    expect(await leaseNext(config, runId, driverA, reports)).toMatchObject({ data: { done: { outcome: 'failed', failure: { code: 'budget_exceeded' } } } });
+  });
+});

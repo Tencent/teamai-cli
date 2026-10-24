@@ -940,7 +940,7 @@ async function reconcileTakenCopies(config: LocalConfig, runId: string, active: 
  * It gives each command and tool only the env keys its lease provides.
  */
 function localCan(config: LocalConfig, hitl: boolean): Required<DriverCan> {
-  return { hitl, workspace: [...WORKSPACE_MODES], network: false, isolation: config.workflows?.sandbox ? 'sandbox' : 'none', env: true };
+  return { hitl, workspace: [...WORKSPACE_MODES], network: false, isolation: config.workflows?.sandbox ? 'sandbox' : 'none', env: true, tokens: true };
 }
 
 async function driveRun(config: LocalConfig, runId: string, cwd: string, options: LocalDriverOptions): Promise<WorkflowEnvelope> {

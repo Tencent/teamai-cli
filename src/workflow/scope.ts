@@ -8,7 +8,7 @@ import { passesOf, previousPass, stepLoops, type StepLoops } from './loop.js';
 import { parseStepPath } from './step-path.js';
 import { settled, visibleOutcome, type StepState } from './step-state.js';
 import type { TemplateContext } from './template.js';
-import type { InlineWorkflow, RunState, WorkflowDefinition, WorkflowStep } from './types.js';
+import type { Budget, InlineWorkflow, RunState, WorkflowDefinition, WorkflowStep } from './types.js';
 import { mergeRequirements, type Requirements } from './requirements.js';
 
 /** A workflow inside a run: the top-level one, or the sub-workflow a step runs. */
@@ -28,13 +28,23 @@ export interface Scope {
   defaultModel?: string;
   /** The requirements every step here has: the enclosing scope's, the workflow step's own, then the file's `defaults.requires`. */
   requires: Requirements;
+  /** The tokens this workflow may spend: the file's budget, or the workflow step's when that is smaller. */
+  budget?: number;
+  /** Whether this workflow or one around it has a budget. */
+  budgeted: boolean;
 }
 
 export function topScope(run: RunState): Scope {
   return {
     prefix: '', definition: run.definition, inputs: run.inputs, loops: stepLoops(run.definition.steps), defaultModel: run.definition.defaults?.model,
     requires: mergeRequirements(run.definition.defaults?.requires),
+    ...budgetOf(false, run.definition.budget),
   };
+}
+
+function budgetOf(outer: boolean, ...budgets: ReadonlyArray<Budget | undefined>): Pick<Scope, 'budget' | 'budgeted'> {
+  const limits = budgets.flatMap((budget) => (budget ? [budget.tokens] : []));
+  return limits.length > 0 ? { budget: Math.min(...limits), budgeted: true } : { budgeted: outer };
 }
 
 /**
@@ -47,6 +57,7 @@ export function childScope(run: RunState, scope: Scope, states: StepState[], sta
       prefix: `${state.id}.`, definition: step.workflow, inputs: scope.inputs, outer: expressionSteps(scope, states, state),
       loops: stepLoops(step.workflow.steps), runner: state, ...itemOf(scope, state), defaultModel: scope.defaultModel,
       requires: mergeRequirements(scope.requires, step.requires),
+      ...budgetOf(scope.budgeted, step.budget),
     };
   }
   const definition = step.workflow === undefined ? undefined : run.workflows?.[step.workflow];
@@ -54,6 +65,7 @@ export function childScope(run: RunState, scope: Scope, states: StepState[], sta
     prefix: `${state.id}.`, definition, inputs: state.inputs, loops: stepLoops(definition.steps), runner: state,
     defaultModel: definition.defaults?.model ?? scope.defaultModel,
     requires: mergeRequirements(scope.requires, step.requires, definition.defaults?.requires),
+    ...budgetOf(scope.budgeted, step.budget, definition.budget),
   };
 }
 

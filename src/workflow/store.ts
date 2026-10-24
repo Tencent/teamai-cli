@@ -8,7 +8,7 @@ import { redactJson } from '../utils/redact.js';
 import { getDataHome, type LocalConfig } from '../types.js';
 import { PinnedScorerSchema } from '../scorers/pin.js';
 import { acquireLock, releaseLock } from '../update.js';
-import { ArchivedPassSchema, SessionContinuationSchema, StepStateSchema } from './step-state.js';
+import { ArchivedPassSchema, ReleasedTokensSchema, SessionContinuationSchema, StepStateSchema } from './step-state.js';
 import type { HandoffOwner } from './snapshot.js';
 import type { RunState, WorkflowDefinition } from './types.js';
 
@@ -78,6 +78,7 @@ const RunProgressSchema = z.object({
   driver: DriverSchema.optional(),
   publication: z.object({ stateRevision: z.number().int(), pending: z.string().optional(), reconcileCopies: z.literal(true).optional() }).optional(),
   sessionContinuations: z.array(SessionContinuationSchema).optional(),
+  releasedTokens: z.array(ReleasedTokensSchema).optional(),
   scorers: z.record(PinnedScorerSchema).optional(),
 });
 

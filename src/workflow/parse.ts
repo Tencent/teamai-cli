@@ -4,7 +4,7 @@ import {
   findTemplate, parseTemplate, stepExpressions, templatedTexts, templateExpressions, templateWithPaths, type StepExpression, type Template,
 } from './template.js';
 import type {
-  EndOutcome, ForEach, InlineWorkflow, OutputSchema, StepLoop, StepScorers, WorkflowDefaults, WorkflowDefinition, WorkflowDiagnostic, WorkflowLoop, WorkflowStep,
+  Budget, EndOutcome, ForEach, InlineWorkflow, OutputSchema, StepLoop, StepScorers, WorkflowDefaults, WorkflowDefinition, WorkflowDiagnostic, WorkflowLoop, WorkflowStep,
 } from './types.js';
 import { STEP_ACTIONS } from './types.js';
 import {
@@ -19,9 +19,9 @@ import { loopProblems } from './loop.js';
 import { modelValueProblem } from '../models/aliases.js';
 import { REQUIREMENT_KEYS, RequirementsSchema, type Requirements } from './requirements.js';
 
-const HEADER_KEYS = new Set(['schemaVersion', 'name', 'description', 'inputs', 'defaults', 'ends', 'outputs', 'loop', 'timeout', 'steps']);
+const HEADER_KEYS = new Set(['schemaVersion', 'name', 'description', 'inputs', 'defaults', 'ends', 'outputs', 'loop', 'timeout', 'budget', 'steps']);
 const ACTION_KEYS = Object.keys(STEP_ACTIONS);
-const STEP_KEYS = new Set(['id', 'needs', 'if', ...ACTION_KEYS, 'env', 'with', 'agent', 'model', 'output', 'end', 'loop', 'break', 'for_each', 'approve', 'choose', 'interactive', 'workspace', 'session', 'scorers', 'requires', 'timeout']);
+const STEP_KEYS = new Set(['id', 'needs', 'if', ...ACTION_KEYS, 'env', 'with', 'agent', 'model', 'output', 'end', 'loop', 'break', 'for_each', 'approve', 'choose', 'interactive', 'workspace', 'session', 'scorers', 'requires', 'timeout', 'budget']);
 const STEP_LOOP_KEYS = new Set(['back_to', 'while', 'max_iterations']);
 const FOR_EACH_KEYS = new Set(['items', 'max_parallel']);
 const WORKFLOW_LOOP_KEYS = new Set(['while', 'max_iterations']);
@@ -188,6 +188,8 @@ export function parseWorkflow(file: string, content: string, files?: WorkflowFil
   const defaults = defaultsPair ? parseDefaults(defaultsPair.value ?? defaultsPair.key, ctx) : undefined;
   const timeoutPair = root.items.find((pair) => scalarString(pair.key) === 'timeout');
   const timeout = timeoutPair ? parseTimeout(timeoutPair.value ?? timeoutPair.key, 'timeout', ctx) : undefined;
+  const budgetPair = root.items.find((pair) => scalarString(pair.key) === 'budget');
+  const budget = budgetPair ? parseBudget(budgetPair.value ?? budgetPair.key, 'budget', ctx) : undefined;
 
   // A malformed inputs header is already reported; checking reads against it would only add noise.
   const { workflow: { ends, outputs, loop, steps } } = parseBody(root, '', 'workflow', ctx, inputsPair && !inputs ? undefined : inputs ?? {}, false);
@@ -197,7 +199,7 @@ export function parseWorkflow(file: string, content: string, files?: WorkflowFil
     ok: true,
     definition: {
       schemaVersion: 'v1alpha1', name, description, ...(inputs ? { inputs } : {}), ...(ends ? { ends } : {}), ...(outputs ? { outputs } : {}),
-      ...(loop ? { loop } : {}), ...(defaults ? { defaults } : {}), ...(timeout !== undefined ? { timeout } : {}), steps,
+      ...(loop ? { loop } : {}), ...(defaults ? { defaults } : {}), ...(timeout !== undefined ? { timeout } : {}), ...(budget ? { budget } : {}), steps,
     },
     promptFileLocations,
   };
@@ -394,6 +396,11 @@ function parseBody(
       const requires = requiresPair ? parseRequires(requiresPair.value ?? requiresPair.key, `${field}.requires`, ctx) : undefined;
       const stepTimeoutPair = item.items.find((pair) => scalarString(pair.key) === 'timeout');
       const timeout = stepTimeoutPair ? parseTimeout(stepTimeoutPair.value ?? stepTimeoutPair.key, `${field}.timeout`, ctx) : undefined;
+      const budgetPair = item.items.find((pair) => scalarString(pair.key) === 'budget');
+      const budget = budgetPair ? parseBudget(budgetPair.value ?? budgetPair.key, `${field}.budget`, ctx) : undefined;
+      if (budgetPair && actions.length > 0 && !workflowPair) {
+        diagnostics.push(locate(file, lineCounter, budgetPair.key as Node, `${field}.budget`, `${label} budget is only allowed on a workflow step; a workflow spends it over all its steps`));
+      }
       const envPair = item.items.find((pair) => scalarString(pair.key) === 'env');
       const env = envPair ? parseEnv(envPair.value ?? envPair.key, `${field}.env`, label, ctx) : undefined;
       const withPair = item.items.find((pair) => scalarString(pair.key) === 'with');
@@ -549,6 +556,7 @@ function parseBody(
           ...(scorers ? { scorers } : {}),
           ...(requires ? { requires } : {}),
           ...(timeout !== undefined ? { timeout } : {}),
+          ...(budget ? { budget } : {}),
           ...(output ? { output } : {}),
           ...(end ? { end } : {}),
           ...(loop ? { loop } : {}),
@@ -907,6 +915,25 @@ function parseTimeout(node: Node | null | undefined, field: string, ctx: ParseCo
   const ms = Number(amount) * (DURATION_UNITS.get(unit) ?? 0);
   if (ms > 0 && Number.isSafeInteger(ms)) return ms;
   ctx.diagnostics.push(locate(ctx.file, ctx.lineCounter, node, field, `${field} must be a positive duration, such as 500ms, 30s, 10m, or 2h`));
+  return undefined;
+}
+
+/** A `budget`: `{ tokens: <positive whole number> }`. A key this version does not know is `unknown_key`. */
+function parseBudget(node: Node | null | undefined, field: string, ctx: ParseContext): Budget | undefined {
+  const { file, lineCounter, diagnostics } = ctx;
+  if (!isMap(node)) {
+    diagnostics.push(locate(file, lineCounter, node, field, `${field} must be { tokens: <count> }`));
+    return undefined;
+  }
+  for (const pair of node.items) {
+    const keyNode = isYamlNode(pair.key) ? pair.key : undefined;
+    const key = scalarString(keyNode);
+    if (key !== 'tokens') diagnostics.push(unknownKey(file, lineCounter, keyNode ?? node, `${field}.${key ?? 'key'}`, key ?? 'key'));
+  }
+  const tokensNode = valueNode(node, 'tokens');
+  const tokens: unknown = isScalar(tokensNode) ? tokensNode.value : undefined;
+  if (typeof tokens === 'number' && Number.isSafeInteger(tokens) && tokens > 0) return { tokens };
+  diagnostics.push(locate(file, lineCounter, tokensNode ?? node, `${field}.tokens`, `${field}.tokens must be a positive whole number of tokens`));
   return undefined;
 }
 
