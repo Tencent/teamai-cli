@@ -124,14 +124,6 @@ async function hideTeamaiWorktrees(main: string): Promise<void> {
   await fs.appendFile(exclude, `${current.endsWith('\n') || current === '' ? '' : '\n'}${marker}\n.teamai/workflow-worktrees/\n.teamai/workflow-hooks/\n`);
 }
 
-/** The git directory every worktree of the repository at `dir` shares. */
-export async function commonDir(dir: string): Promise<string | undefined> {
-  const printed = await git(dir, ['rev-parse', '--path-format=absolute', '--git-common-dir']);
-  if (printed.code !== 0) return undefined;
-  const common = printed.stdout.trim();
-  return fs.realpath(common).catch(() => common);
-}
-
 export function hooksPath(main: string): string {
   return path.join(main, '.teamai', 'workflow-hooks');
 }

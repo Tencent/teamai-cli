@@ -4,13 +4,14 @@ import { z } from 'zod';
 import { stepEnvironment } from '../../env-exec.js';
 import type { RunMode } from '../../launch-context.js';
 import type { LocalConfig } from '../../types.js';
+import { gitCommonDir } from '../../utils/git.js';
 import { redactJson } from '../../utils/redact.js';
 import { attemptEnv } from '../attempt-marker.js';
+import type { LeaseWire } from '../lease-wire.js';
 import { attemptDir, AttemptIdSchema, attemptsDir, type AttemptId, type RunId, type RunLock } from '../store.js';
 import type { WorkflowFailure } from '../types.js';
-import type { LeaseWire } from '../lease-wire.js';
 import type { WorkspaceContract } from '../workspace.js';
-import { commonDir, headCommit, markReadCopy, markSetup, removeWorktree, reopenConfigConflicts, stepCheckout, worktreePath } from '../worktree.js';
+import { headCommit, markReadCopy, markSetup, removeWorktree, reopenConfigConflicts, stepCheckout, worktreePath } from '../worktree.js';
 import { adoptRefusal, takeAdopted } from './adopted.js';
 import { openWorktree } from './created.js';
 import { applyOverlay, restoreOverlay, unrestoredConfig } from './overlay.js';
@@ -26,8 +27,8 @@ import { finishWriter, mergeBranches, rememberConflicts, withUnpushed } from './
  */
 export async function placeRoot({ cwd, checkout }: { cwd: string; checkout: string | undefined }): Promise<string> {
   if (checkout === undefined) return cwd;
-  const [here, there] = await Promise.all([commonDir(cwd), commonDir(checkout)]);
-  return here !== undefined && here !== there ? cwd : checkout;
+  const [here, there] = await Promise.all([gitCommonDir(cwd), gitCommonDir(checkout)]);
+  return here !== null && here !== there ? cwd : checkout;
 }
 
 /** The place key two attempts of one driver must not share: the copy of the lease's branch, else the checkout. */

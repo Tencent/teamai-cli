@@ -3,9 +3,10 @@
  * checks change nothing, so a refused place costs the attempt nothing, and TeamAI never adds or removes the worktree.
  */
 import fs from 'node:fs/promises';
+import { gitCommonDir } from '../../utils/git.js';
 import type { WorkflowFailure } from '../types.js';
 import type { WorkspaceContract } from '../workspace.js';
-import { commonDir, fetchMissingCommits, git, hooksPath, offBranch, worktreeHooks } from '../worktree.js';
+import { fetchMissingCommits, git, hooksPath, offBranch, worktreeHooks } from '../worktree.js';
 import { leaseCommits } from './created.js';
 import type { PlaceRecord } from './record.js';
 
@@ -56,7 +57,7 @@ async function adoptedMismatch({ root, dir, run, attempt, workspace }: Adoption)
   if (top.code !== 0 || await realpath(top.stdout.trim()) !== await realpath(dir)) {
     return `${dir} is not the top directory of a git worktree, so attempt ${attempt} was not prepared there. Adopt the top directory of a worktree on branch ${branch}.`;
   }
-  if (await commonDir(dir) !== await commonDir(root)) {
+  if (await gitCommonDir(dir) !== await gitCommonDir(root)) {
     return `${dir} is not a worktree of the repository of ${root}, so attempt ${attempt} was not prepared there. Adopt a worktree of ${root} on branch ${branch}, as git worktree add makes.`;
   }
   const status = await git(dir, ['status', '--porcelain', '--untracked-files=all']);
