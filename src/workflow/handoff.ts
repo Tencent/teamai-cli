@@ -17,9 +17,9 @@ import {
 } from './snapshot.js';
 import { takeOver, type UnleasedStep } from './step-state.js';
 import { installOwner, isRunId, readRun, updateRun } from './store.js';
-import type { RunState, WorkflowDefinition } from './types.js';
+import type { RunState, WorkflowDefinition, WorkflowFailure } from './types.js';
 import { branchName, stepMode, type LeaseSession, type SessionRef } from './workspace.js';
-import { git } from './worktree.js';
+import { fetchMissingCommits, git, reconcileCopy } from './worktree.js';
 
 /**
  * Hands a run from one teamai install to another through `teamai-reports`. The install that owns a run is the only one
@@ -558,6 +558,33 @@ export async function resumeRun(config: LocalConfig, runId: string, options: { c
   // No other install can have claimed a run origin never showed, and this one never saw it there.
   if (origin.ok && origin.value === 'absent' && stored.publication.stateRevision === 0) return ok(null);
   return acquire(config, runId, origin, { transfer: false, checkout: options.checkout });
+}
+
+/**
+ * Once after this machine took run `runId` over, before its first lease: brings the local branch of each copy the run
+ * recorded a commit for to that commit, fetched the way a lease fetches what it lacks. A settled run waits for a retry
+ * to reopen it, since it leases nothing before that.
+ */
+export async function reconcileTakenCopies(config: LocalConfig, runId: string, active: string): Promise<WorkflowFailure | undefined> {
+  const run = await readRun(config, runId);
+  if (typeof run !== 'object' || !run.publication?.reconcileCopies || run.status !== 'running') return undefined;
+  const recorded = Object.entries(run.copies ?? {}).flatMap(([branch, copy]) => (copy.commit === undefined ? [] : [{ branch, commit: copy.commit }]));
+  const fetched = await fetchMissingCommits(active, { run: runId, commits: recorded.map((copy) => copy.commit) });
+  if (fetched.missing.length > 0) {
+    const named = recorded.filter((copy) => fetched.missing.includes(copy.commit)).map((copy) => `commit ${copy.commit} from branch ${copy.branch}`);
+    const said = fetched.fetchError ? ` Git said: ${fetched.fetchError}.` : '';
+    return { code: 'workspace_base', message: `Run ${runId} records ${named.join(', ')}, which this checkout does not have, even after fetching the run's branches from origin.${said} Push each branch to origin from the machine that has its commit, then resume the run.` };
+  }
+  for (const { branch, commit } of recorded) {
+    const refused = await reconcileCopy(active, branch, commit);
+    if (refused) return { code: 'branch_diverged', message: refused.error };
+  }
+  await updateRun(config, runId, await knownSecrets(config), async (local) => {
+    if (local === 'missing' || !local.publication?.reconcileCopies) return { value: undefined };
+    const { reconcileCopies: _done, ...publication } = local.publication;
+    return { value: undefined, write: { ...local, publication } };
+  });
+  return undefined;
 }
 
 /** The snapshot of run `runId` origin holds, for a claim or a resume. */

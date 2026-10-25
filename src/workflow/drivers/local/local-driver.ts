@@ -17,6 +17,7 @@ import { openSessionArchive, type SessionArchive } from '../../../session-flow/a
 import { deliveredTeamSkills, usedSkills } from '../../../skill-use.js';
 import { attemptEnv } from '../../attempt-marker.js';
 import { leaseNext, type ReportInput } from '../../engine.js';
+import { reconcileTakenCopies } from '../../handoff.js';
 import { LeaseWireSchema, type LeaseWire } from '../../lease-wire.js';
 import type { DriverCan } from '../../requirements.js';
 import { callerProvenance, respondProvenance, respondToHitl } from '../../run-controls.js';
@@ -27,7 +28,7 @@ import {
   type LocalToolResult,
   type LocalToolRun,
 } from './local-tool-adapter.js';
-import { attemptDir, AttemptIdSchema, attemptResultPath, attemptsDir, readRun, RunIdSchema, updateRun, withRunLock, type RunId, type RunLock } from '../../store.js';
+import { attemptDir, AttemptIdSchema, attemptResultPath, attemptsDir, readRun, RunIdSchema, withRunLock, type RunId, type RunLock } from '../../store.js';
 import { abandonPlace, placeLeaseOf, placeOf, placeRoot, preparePlace, runPlaceSetup, type StepEnd } from '../../place/place.js';
 import { commandEnd, managedReport } from '../../protocol.js';
 import { startGroupedCommand, stopRecordedGroup, type CommandExit, type GroupedCommand } from '../../../tool-launch/process-stop.js';
@@ -36,7 +37,7 @@ import { chooseStepModel, loadDeployedAgent } from '../../step-model.js';
 import type { DriverIdentity, StepHitl, WorkflowEnvelope, WorkflowFailure } from '../../types.js';
 import { isWorkflowError, WORKSPACE_MODES } from '../../types.js';
 import type { SessionRef } from '../../workspace.js';
-import { fetchMissingCommits, headCommit, reconcileCopy } from '../../worktree.js';
+import { headCommit } from '../../worktree.js';
 
 const STOP_SIGNALS: readonly NodeJS.Signals[] = ['SIGINT', 'SIGQUIT', 'SIGTERM', 'SIGHUP'];
 
@@ -424,33 +425,6 @@ export async function withDriverLock(
   const run = RunIdSchema.safeParse(runId);
   if (!run.success) return { error: { code: 'invalid_run', message: 'Run id must look like r followed by 8 or 16 hex digits' } };
   return withRunLock(config, run.data, (lock) => body((cwd, options) => driveRun(config, lock, cwd, options)), { waitMs: 0 });
-}
-
-/**
- * Once after this machine took run `runId` over, before its first lease: brings the local branch of each copy the run
- * recorded a commit for to that commit, fetched the way a lease fetches what it lacks. A settled run waits for a retry
- * to reopen it, since it leases nothing before that.
- */
-async function reconcileTakenCopies(config: LocalConfig, runId: string, active: string): Promise<WorkflowFailure | undefined> {
-  const run = await readRun(config, runId);
-  if (typeof run !== 'object' || !run.publication?.reconcileCopies || run.status !== 'running') return undefined;
-  const recorded = Object.entries(run.copies ?? {}).flatMap(([branch, copy]) => (copy.commit === undefined ? [] : [{ branch, commit: copy.commit }]));
-  const fetched = await fetchMissingCommits(active, { run: runId, commits: recorded.map((copy) => copy.commit) });
-  if (fetched.missing.length > 0) {
-    const named = recorded.filter((copy) => fetched.missing.includes(copy.commit)).map((copy) => `commit ${copy.commit} from branch ${copy.branch}`);
-    const said = fetched.fetchError ? ` Git said: ${fetched.fetchError}.` : '';
-    return { code: 'workspace_base', message: `Run ${runId} records ${named.join(', ')}, which this checkout does not have, even after fetching the run's branches from origin.${said} Push each branch to origin from the machine that has its commit, then resume the run.` };
-  }
-  for (const { branch, commit } of recorded) {
-    const refused = await reconcileCopy(active, branch, commit);
-    if (refused) return { code: 'branch_diverged', message: refused.error };
-  }
-  await updateRun(config, runId, await knownSecrets(config), async (local) => {
-    if (local === 'missing' || !local.publication?.reconcileCopies) return { value: undefined };
-    const { reconcileCopies: _done, ...publication } = local.publication;
-    return { value: undefined, write: { ...local, publication } };
-  });
-  return undefined;
 }
 
 /** Adds to `seen` each value of `secrets` it lacks, under a label of its own when its name already holds another value. */
