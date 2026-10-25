@@ -35,7 +35,7 @@ vi.mock('../utils/logger.js', () => ({
 import { pull } from '../pull.js';
 import { detectProjectConfig, loadLocalConfigForScope, loadStateForScope, loadTeamConfig, saveStateForScope } from '../config.js';
 import { log } from '../utils/logger.js';
-import { TeamaiConfigSchema, type LocalConfig, type State } from '../types.js';
+import { StateSchema, TeamaiConfigSchema, type LocalConfig, type State } from '../types.js';
 
 const workflow = (invoke: string) => `schemaVersion: v1alpha1
 name: check
@@ -59,8 +59,9 @@ describe('a pull and the generated workflow skills', () => {
     vi.stubEnv('HOME', home);
     vi.stubEnv('XDG_CONFIG_HOME', '');
     saved = {};
-    vi.mocked(saveStateForScope).mockImplementation(async (s, scope) => { saved[scope ?? 'user'] = structuredClone(s); });
-    vi.mocked(loadStateForScope).mockImplementation(async (scope) => structuredClone(saved[scope ?? 'user'] ?? {}) as never);
+    // Each scope keeps its own state, as each scope's config names its own state file.
+    vi.mocked(saveStateForScope).mockImplementation(async (state, config) => { saved[config.scope] = structuredClone(state); });
+    vi.mocked(loadStateForScope).mockImplementation(async (config) => structuredClone(saved[config.scope] ?? StateSchema.parse({})));
     vi.mocked(loadTeamConfig).mockResolvedValue(TeamaiConfigSchema.parse({ team: 't', repo: 'https://example.invalid/x/t.git' }));
     user = {
       repo: { localPath: repo, remote: 'https://example.invalid/x/t.git' }, username: 'u', updatePolicy: 'auto',
