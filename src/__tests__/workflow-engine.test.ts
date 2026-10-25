@@ -2689,6 +2689,28 @@ describe('held-back steps', () => {
     expect(taken).toMatchObject({ data: { lease: { step: 'a', workspace: { branch: expect.stringMatching(/a/) } } } });
   });
 
+  it('holds a requires.env prompt step and leases a requires.env command step for can.env commands', async () => {
+    vi.stubEnv('DEPLOY_TOKEN', 'deploy-value');
+    const { config, runId } = await startBuild(graph(`  - id: notify
+    requires: { env: [DEPLOY_TOKEN] }
+    prompt: Tell the channel
+  - id: publish
+    needs: []
+    requires: { env: [DEPLOY_TOKEN] }
+    command: node publish.js
+`));
+    const can = { workspace: ['read-only' as const], env: 'commands' as const };
+
+    const publish = await leaseNext(config, runId, driverA, { can });
+
+    expect(publish).toMatchObject({ data: { lease: { step: 'publish', envScope: { provide: ['DEPLOY_TOKEN'], withhold: [] } } } });
+    expect(publish).not.toHaveProperty('data.lease.unenforced.0');
+    const reason = 'step "notify" needs env, which this driver does not declare';
+    expect(await leaseNext(config, runId, driverA, { can, running: [leaseIn(publish).attempt] })).toEqual({ data: {
+      wait: { reason, held: [{ step: 'notify', reason, missing: ['env'] }] }, cancelled: [],
+    } });
+  });
+
   it('asks for setup on every lease with a workspace in a workflow that declares it, also one that continues a copy another lease opened', async () => {
     const fixture = testConfig();
     const workflows = path.join(fixture.config.repo.localPath, 'workflows');

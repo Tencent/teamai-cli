@@ -133,6 +133,37 @@ limitsConformanceScenarios.push(
   },
 );
 
+const SETUP_SECRET = 'conformance-setup-value-1304';
+const COMMANDS_ONLY = controlsYaml(`  - id: publish
+    workspace: new
+    command: echo publish
+    requires: { env: [CONFORMANCE_TOKEN] }
+  - id: notify
+    needs: []
+    prompt: Tell the channel
+    requires: { env: [CONFORMANCE_TOKEN] }`).replace('steps:\n', 'setup:\n  command: npm ci\n  requires: { env: [SETUP_TOKEN] }\nsteps:\n');
+limitsConformanceScenarios.push(
+  {
+    name: 'env-commands-scope: a driver that scopes env for commands only gets the command step and its setup scoped, and the prompt step waits',
+    workflowName: 'build', yaml: COMMANDS_ONLY, env: { CONFORMANCE_TOKEN: CONFORMANCE_SECRET, SETUP_TOKEN: SETUP_SECRET },
+    operations: [
+      { kind: 'next', saveAs: 'bare', as: 'external', base: BASE, can: { setup: true }, expect: { data: { wait: { held: [
+        { step: 'publish', missing: ['env'] },
+        { step: 'notify', missing: ['env'] },
+      ] } } } },
+      { kind: 'next', saveAs: 'publish', as: 'external', base: BASE, can: { setup: true, env: 'commands' }, absent: ['unenforced'], expect: { data: { lease: {
+        step: 'publish',
+        envScope: { provide: ['CONFORMANCE_TOKEN'], withhold: ['SETUP_TOKEN'] },
+        setup: { command: 'npm ci', envScope: { provide: ['SETUP_TOKEN'], withhold: ['CONFORMANCE_TOKEN'] } },
+      } } } },
+      { kind: 'next', saveAs: 'held', as: 'external', base: BASE, can: { setup: true, env: 'commands' }, running: ['publish'], expect: { data: { wait: {
+        held: [{ step: 'notify', reason: 'step "notify" needs env, which this driver does not declare', missing: ['env'] }],
+      } } } },
+    ],
+    expectState: { steps: [{ id: 'publish', status: 'leased' }, { id: 'notify', status: 'pending' }] },
+  },
+);
+
 // The CLI runner waits for real, so each deadline leaves room for the calls made before the clock moves past it.
 const TIMED_STEP = controlsYaml(`  - id: work
     command: echo work

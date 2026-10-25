@@ -67,7 +67,8 @@ type BestEffortKey = KeysOf<'bestEffort'>;
  * - `network`: the driver can deny a step the network.
  * - `isolation`: the level the driver keeps every step it runs at.
  * - `env`: the driver resolves `envScope.provide` itself, removes `envScope.withhold`, and keeps the values from
- *   whatever runs the step. A driver whose executor is the agent leaves it out.
+ *   whatever runs the step. `true` covers every step; `'commands'` only command steps and setup, which run in the
+ *   driver's own processes, so a prompt step that requires env is held. A driver whose executor is the agent leaves it out.
  * - `tokens`: every success report of a headless prompt step carries the tokens it spent.
  * - `max_turns`: the driver passes `maxTurns` to the tools it can cap, and reports `unenforced: ['max_turns']` for the others.
  * - `setup`: in each workspace it creates, the driver runs `lease.setup` before the step with only setup's keys, and
@@ -79,7 +80,7 @@ export const CanSchema = z.object({
   workspace: z.array(z.enum(WORKSPACE_MODES)).optional(),
   network: z.boolean().optional(),
   isolation: IsolationSchema.optional(),
-  env: z.boolean().optional(),
+  env: z.union([z.boolean(), z.literal('commands')], { errorMap: () => ({ message: "Expected true, false or 'commands'" }) }).optional(),
   tokens: z.boolean().optional(),
   max_turns: z.boolean().optional(),
   setup: z.boolean().optional(),
@@ -120,7 +121,7 @@ export interface Held {
 export const UnenforcedSchema = z.discriminatedUnion('requirement', [
   z.object({ requirement: z.literal('network'), asked: z.literal(false) }),
   z.object({ requirement: z.literal('isolation'), asked: z.enum(['worktree', 'sandbox']), provided: IsolationSchema }),
-  /** The run's env keys a driver without `can.env` may have passed to the step. */
+  /** The run's env keys a driver whose `can.env` does not cover the step may have passed to it. */
   z.object({ requirement: z.literal('withhold'), keys: z.array(z.string()) }),
   z.object({ requirement: z.literal('max_turns'), asked: z.number().int().positive() }),
   /** An interactive prompt under a budget whose report had no tokens, so the budget did not count what it spent. */
@@ -184,9 +185,30 @@ export interface EnvFacts {
   unreadable?: string;
 }
 
+/** What runs a step: a process of the driver's own, or an agent. */
+export type Executor = 'command' | 'prompt';
+
+/** Whether `can.env` covers a step run by `executor`, and the setup before it. */
+function envCovers(env: DriverCan['env'], executor: Executor): { step: boolean; setup: boolean } {
+  switch (env) {
+    case undefined:
+    case false:
+      return { step: false, setup: false };
+    case true:
+      return { step: true, setup: true };
+    case 'commands':
+      return { step: executor === 'command', setup: true };
+    default: {
+      const unhandled: never = env;
+      return unhandled;
+    }
+  }
+}
+
 /** What the engine knows about the step it is about to offer. */
 export interface Offer {
   step: string;
+  executor: Executor;
   requires: Requirements;
   interactive: boolean;
   /** The lease runs in a copy of its own, which is at least `worktree` isolation. */
@@ -234,18 +256,19 @@ export function negotiate(offer: Offer, can: DriverCan, allow: Allow, env: EnvFa
   }
   const required = offer.requires.env ?? [];
   const setupKeys = offer.setup?.requires?.env ?? [];
+  const covers = envCovers(can.env, offer.executor);
   const policy: Missing[] = [];
   if (allow.network === false && offer.requires.network === true) policy.push('policy.network');
   if (allow.env && [...required, ...setupKeys].some((key) => sameEnvName(allow.env ?? [], key) === undefined)) policy.push('policy.env');
   const gaps: Missing[] = policy.length > 0 ? policy : [
     ...(offer.interactive && !can.hitl ? ['hitl' as const] : []),
     ...(offer.setup && !can.setup ? ['setup' as const] : []),
-    ...(required.length + setupKeys.length > 0 && !can.env ? ['env' as const] : []),
+    ...((required.length > 0 && !covers.step) || (setupKeys.length > 0 && !covers.setup) ? ['env' as const] : []),
     ...(offer.budgeted && !offer.interactive && !can.tokens ? ['tokens' as const] : []),
   ];
   const [first, ...rest] = gaps;
   if (first !== undefined) return { kind: 'hold', missing: [first, ...rest] };
-  if (can.env) {
+  if (covers.step || covers.setup) {
     const unavailable = envUnavailable(`Step "${offer.step}"`, required, env) ?? envUnavailable(`The setup of step "${offer.step}"`, setupKeys, env);
     if (unavailable) return { kind: 'fail', failure: unavailable };
   }
@@ -255,13 +278,13 @@ export function negotiate(offer: Offer, can: DriverCan, allow: Allow, env: EnvFa
   const provided = providedIsolation(can, offer.hasContract);
   if (asked !== undefined && asked !== 'none' && rank(asked) > rank(provided)) unenforced.push({ requirement: 'isolation', asked, provided });
   const withhold = [...new Set(guarded)].filter((key) => sameEnvName(required, key) === undefined).sort();
-  if (!can.env && withhold.length > 0) unenforced.push({ requirement: 'withhold', keys: withhold });
+  if (!covers.step && withhold.length > 0) unenforced.push({ requirement: 'withhold', keys: withhold });
   if (offer.maxTurns !== undefined && !can.max_turns) unenforced.push({ requirement: 'max_turns', asked: offer.maxTurns });
-  const envScope = can.env && (required.length > 0 || withhold.length > 0) ? { envScope: { provide: required, withhold } } : {};
+  const envScope = covers.step && (required.length > 0 || withhold.length > 0) ? { envScope: { provide: required, withhold } } : {};
   const maxTurns = offer.maxTurns !== undefined && can.max_turns ? { maxTurns: offer.maxTurns } : {};
   const setupWithhold = [...new Set(guarded)].filter((key) => sameEnvName(setupKeys, key) === undefined).sort();
   const setup = offer.setup && {
-    setup: { command: offer.setup.command, ...(can.env && (setupKeys.length > 0 || setupWithhold.length > 0) ? { envScope: { provide: setupKeys, withhold: setupWithhold } } : {}) },
+    setup: { command: offer.setup.command, ...(covers.setup && (setupKeys.length > 0 || setupWithhold.length > 0) ? { envScope: { provide: setupKeys, withhold: setupWithhold } } : {}) },
   };
   return { kind: 'grant', terms: { requires: offer.requires, ...envScope, ...maxTurns, ...setup, unenforced } };
 }

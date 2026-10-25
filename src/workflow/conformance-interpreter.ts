@@ -1,6 +1,7 @@
 /** The conformance scenario language, the driver profiles it speaks as, and the interpreter that runs a scenario. */
 import { z } from 'zod';
 import type { WorkflowClient } from './protocol.js';
+import type { DriverCan } from './requirements.js';
 import type { DriverIdentity, RunState } from './types.js';
 
 export const PARALLEL_ROOTS = `schemaVersion: v1alpha1
@@ -58,12 +59,13 @@ export function profileDriver(profile: DriverProfile): DriverIdentity {
 
 /**
  * `running` and `cancelled` name leases that earlier operations saved; `cancelled` must match exactly.
- * `absent` lists fields the lease must not carry. `as` picks the driver profile, `local` when omitted.
+ * `absent` lists fields the lease must not carry. `as` picks the driver profile, `local` when omitted, and `can` replaces
+ * the keys of the profile's `can` it names.
  * `state` is matched against the persisted run after the operation. `advance` moves the clock the engine reads.
  */
 export type ConformanceOperation =
   | {
-    kind: 'next'; saveAs: string; as?: DriverProfile; running?: string[]; canTakeLease?: boolean; hitl?: boolean; claim?: boolean;
+    kind: 'next'; saveAs: string; as?: DriverProfile; can?: DriverCan; running?: string[]; canTakeLease?: boolean; hitl?: boolean; claim?: boolean;
     base?: { ref?: string; commit: string };
     cancelled?: string[]; absent?: string[]; expect: Record<string, unknown>; state?: Record<string, unknown>;
   }
@@ -131,7 +133,7 @@ export async function runConformanceScenario(scenario: ConformanceScenario, runn
         const profile = operation.as ?? 'local';
         const { can } = DRIVER_PROFILES[profile];
         const envelope = await client.next(runId, {
-          driver: { ...profileDriver(profile), can: { ...can, ...(operation.hitl !== undefined ? { hitl: operation.hitl } : {}) } },
+          driver: { ...profileDriver(profile), can: { ...can, ...operation.can, ...(operation.hitl !== undefined ? { hitl: operation.hitl } : {}) } },
           ...(operation.running ? { running: operation.running.map(attemptOf) } : {}),
           ...(operation.canTakeLease !== undefined ? { canTakeLease: operation.canTakeLease } : {}),
           ...(operation.claim !== undefined ? { claim: operation.claim } : {}),

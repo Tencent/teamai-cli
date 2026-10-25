@@ -939,6 +939,7 @@ function offerTerms(
 ): Negotiation {
   return negotiate({
     step: id,
+    executor: step.command !== undefined ? 'command' : 'prompt',
     requires: mergeRequirements(scope.requires, step.requires),
     interactive: step.interactive === true,
     hasContract: plan?.contract !== undefined,
