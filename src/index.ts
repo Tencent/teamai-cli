@@ -803,7 +803,7 @@ workflowCmd
   .command('start <name>')
   .description('Create a run. With --driver skill, the current coding session drives it; with --driver local, this process runs it headless.')
   .option('--describe', 'Show workflow metadata and required input schemas without creating a run. With --driver skill, also say how to start it: the start command, a question for the person, or the local driver.')
-  .option('--driver <kind>', 'Select local for headless execution in this process, or skill for the current coding session, which then runs the commands each reply prints.')
+  .option('--driver <kind>', 'Select skill for the current coding session, which then runs the commands each reply prints, or local for headless execution in this process.')
   .option('--parallel <n>', 'With --driver skill: the most steps that run at once, as the describe reply offered')
   .option('--confirmed', 'The person agreed to start this run, as the describe reply asked. From an agent session, an invoke: ask workflow starts only with it, with any driver; teamai takes the agent\'s word for it. In an unattended run (TEAMAI_MODE=unattended or CI) an agent cannot start an invoke: ask workflow, with or without it')
   .option('--hitl <mode>', 'With --driver skill: who answers optional approvals and choices, as the describe reply offered: person (the agent asks the person) or recommend (the agent answers). A required approval always goes to the person')
