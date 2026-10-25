@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { parseReportedAgent, parseReportedUsed, settleObservation, type ReportedAgent, type Used } from '../agent-observation.js';
-import { DriverSchema } from '../driver-identity.js';
+import { DriverSchema, sameDriver } from '../driver-identity.js';
 import { log } from '../utils/logger.js';
 import type { LocalConfig } from '../types.js';
 import { loadCachedWorkflow, loadWorkflowTree } from './cache.js';
@@ -107,10 +107,6 @@ export function ok(value: Record<string, unknown>): WorkflowEnvelope {
 export function withIgnored(envelope: WorkflowEnvelope, ignored: string[]): WorkflowEnvelope {
   if (ignored.length === 0 || 'error' in envelope) return envelope;
   return { data: { ...envelope.data, ignored } };
-}
-
-function sameDriver(left: DriverIdentity, right: DriverIdentity): boolean {
-  return left.kind === right.kind && left.machine === right.machine && left.workspace === right.workspace;
 }
 
 /**

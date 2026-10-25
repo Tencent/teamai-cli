@@ -3,6 +3,7 @@
  * A driver creates the worktree. This module does not run git.
  */
 import { z } from 'zod';
+import { sameDriver } from '../driver-identity.js';
 import { itemsAfter, itemsOf } from './fan-out.js';
 import { localId, statesIn, stepDefinitions, type Scope } from './scope.js';
 import { parseStepPath } from './step-path.js';
@@ -417,10 +418,6 @@ export function sessionOf(run: RunState, scope: Scope, state: StepState, definit
   }
   const current = passOf(target);
   return latestContinuation(run, sessionFromPasses([...(target.passes ?? []), ...(current ? [current] : [])]));
-}
-
-function sameDriver(left: DriverIdentity, right: DriverIdentity): boolean {
-  return left.kind === right.kind && left.machine === right.machine && left.workspace === right.workspace;
 }
 
 export interface WorkspaceRequest {
