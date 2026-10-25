@@ -639,6 +639,20 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     },
   },
   {
+    name: 'an unattended describe asks nothing: it denies a workflow that needs a person, and answers the recommended start under --auto-approve, which runs to done',
+    rows: ['R17', 'R18', 'R10'],
+    run: async () => {
+      const made = await harness({ release: RELEASE, check: CHECK }, { mode: 'unattended' });
+      expect(await made.call({ kind: 'describe', name: 'release' })).toMatchObject({ data: { describe: { ask: {
+        kind: 'denied', reason: expect.stringContaining('only a person can answer the approval at go-live'),
+      } } } });
+      expect(await made.call({ kind: 'describe', name: 'check' })).toMatchObject({ data: { describe: { ask: { kind: 'start', start: 'teamai workflow start check --driver skill --auto-approve' } } } });
+      const { run } = await turnOf(await made.call({ kind: 'start', name: 'check', answers: { confirmed: false, hitl: 'auto-approve' }, inputs: undefined }));
+      expect(await polledToDone(made, run)).toMatchObject({ status: 'done', actions: [{ kind: 'done', outcome: 'succeeded' }] });
+      return made.rows;
+    },
+  },
+  {
     name: 'an interactive step is offered for the agent to work with the person, here, one at a time',
     rows: ['D7', 'C2'],
     run: async () => {

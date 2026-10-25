@@ -8,6 +8,7 @@ import { resolveCliEntry } from '../../../builtin-hooks.js';
 import { driverIdentity } from '../../../driver-identity.js';
 import type { WorkflowEnv } from '../../../env-resolution.js';
 import type { ToolName } from '../../../resources/agent-format.js';
+import { resolveRunMode, type RunMode } from '../../../launch-context.js';
 import { isAgentToolId } from '../../../tools.js';
 import type { LocalConfig, TeamaiConfig } from '../../../types.js';
 import { agentSessionFromEnv } from '../../../utils/session-id.js';
@@ -17,7 +18,7 @@ import { AttemptIdSchema, RunIdSchema, withRunLock, type AttemptId, type RunId, 
 import { canFor, HOST_CHOICES, type HostChoice } from './host-profiles.js';
 import { journalCall } from './journal.js';
 import { describeLiteral, invocationOf, type Invocation } from './literals.js';
-import { askFor, checkStartAnswers, localPromptTool, localReason, neededAnswers, type HitlMode } from './preflight.js';
+import { askFor, attendedReason, checkStartAnswers, localPromptTool, localReason, neededAnswers, type HitlMode } from './preflight.js';
 import { writeSkillState, type SkillState } from './skill-state.js';
 import { detachedRunners, runRunner } from './skill-runner.js';
 import { agentReport, ceilingOf, errorOf, foreground, poll, startRefused } from './tick.js';
@@ -80,6 +81,8 @@ export interface SkillContext {
   session: string | undefined;
   /** What says an agent runs the calling process, which a start of the workflow is checked against: its `invoke`. */
   evidence: AgentEvidence;
+  /** The run mode of the calling process, which describe answers for and a start keeps for the run. */
+  mode: RunMode;
   /** The tool of that session, which a child's model is resolved for; undefined when its host names none. */
   tool: ToolName | undefined;
   invocation: Invocation;
@@ -105,6 +108,7 @@ export async function skillContext(input: Pick<SkillContext, 'config' | 'toolPat
     session: session.id,
     // Only a coding agent drives --driver skill, so a host that sets no session variable is still an agent's.
     evidence: evidence.kind === 'none' ? { kind: 'skill-driver' } : evidence,
+    mode: resolveRunMode(process.env),
     tool: session.agent !== undefined && isAgentToolId(session.agent) ? session.agent : undefined,
     invocation: invocationOf(resolveCliEntry() ?? undefined),
     client: inProcessClient({ config, env }),
@@ -260,8 +264,10 @@ async function start(call: Extract<SkillCall, { kind: 'describe' | 'start' }>, c
   const why = local !== undefined ? { local } : {};
   if (call.kind === 'describe') {
     const denied = description.invoke === 'deny' && context.evidence.kind !== 'none' ? { denied: invokeDeniedMessage(description.name, context.evidence) } : {};
+    const attended = attendedReason(description);
     const { row, verdict } = describeRow({
       needed: neededAnswers(description), ...denied, ...(undeliverable ? { undeliverable: undeliverable.message } : {}), ...why, judgingHere: judging.kind === 'here',
+      mode: context.mode, ...(attended !== undefined ? { attended } : {}),
     });
     context.trace?.(row);
     return { data: { describe: { workflow: description, judging, ask: askFor(verdict, description, context.invocation, judging, { tool: localPromptTool(context.config, context.tool) }) } } };

@@ -12,8 +12,11 @@ import { childCap, reportedByAgent } from './transitions.js';
 
 /** How describe says to start: as is, after one question to the person, or with the local driver. */
 export type DescribeAsk =
-  /** `say`: the facts to tell the person before running `start`, a line each. */
-  | { kind: 'start'; say?: string; start: Literal }
+  /**
+   * `say`: the facts to tell the person before running `start`, a line each. `inputs`: in an unattended run, the inputs
+   * the agent fills `start`'s `{inputs}` slot with, as JSON, from its own task.
+   */
+  | { kind: 'start'; say?: string; start: Literal; inputs?: Array<{ name: string; type: OutputSchema }> }
   | {
     kind: 'ask';
     question: {

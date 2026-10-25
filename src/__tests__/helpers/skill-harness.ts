@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { onTestFinished, vi } from 'vitest';
 import { resolveWorkflowEnv } from '../../env-resolution.js';
+import type { RunMode } from '../../launch-context.js';
 import { TeamaiConfigBaseSchema, type LocalConfig } from '../../types.js';
 import type { AgentEvidence } from '../../workflow/attempt-marker.js';
 import { syncWorkflowDefinitions } from '../../workflow/cache.js';
@@ -195,6 +196,8 @@ interface HarnessOptions {
   session?: string;
   /** Why the caller counts as an agent's; none unless a test sets it. */
   evidence?: AgentEvidence;
+  /** The run mode of the calling process; attended unless a test sets it. */
+  mode?: RunMode;
   /** Wraps the in-process protocol, to script an engine answer. */
   client?: (client: WorkflowClient) => WorkflowClient;
   /** Wraps the in-memory runners, to drop or hold a runner. */
@@ -241,7 +244,7 @@ export async function skillHarness(workflows: Record<string, string>, options: H
   const client = inProcessClient({ config, env });
   const rows: string[] = [];
   const context: SkillContext = {
-    config, toolPaths, env, client: scheduler.judging(options.client ? options.client(client) : client), session: options.session ?? 'session-a', tool: 'claude', invocation: 'teamai', evidence: options.evidence ?? { kind: 'none' }, cwd: work,
+    config, toolPaths, env, client: scheduler.judging(options.client ? options.client(client) : client), session: options.session ?? 'session-a', tool: 'claude', invocation: 'teamai', evidence: options.evidence ?? { kind: 'none' }, mode: options.mode ?? 'attended', cwd: work,
     now: scheduler.now, runners: scheduler.track(options.runners ? options.runners(scheduler.runners) : scheduler.runners),
     locks: { take: (run, body, waitMs) => withRunLock(config, run, body, { waitMs }) },
     trace: (row) => { rows.push(row); },
@@ -253,7 +256,7 @@ export async function skillHarness(workflows: Record<string, string>, options: H
     hold: scheduler.hold,
     /** Makes the runner of `attempt` crash where it is parked at the next sleep. Whether one is alive to crash. */
     crashRunner: scheduler.crash,
-    /** Makes `call` as the session, or with another session, agent evidence, lock, config, session tool or working directory in its context. */
-    call: (call: SkillCall, overrides: Partial<Pick<SkillContext, 'session' | 'evidence' | 'locks' | 'config' | 'tool' | 'cwd'>> = {}) => runSkillCall(call, { ...context, ...overrides }),
+    /** Makes `call` as the session, or with another session, agent evidence, run mode, lock, config, session tool or working directory in its context. */
+    call: (call: SkillCall, overrides: Partial<Pick<SkillContext, 'session' | 'evidence' | 'mode' | 'locks' | 'config' | 'tool' | 'cwd'>> = {}) => runSkillCall(call, { ...context, ...overrides }),
   };
 }

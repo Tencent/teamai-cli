@@ -82,6 +82,75 @@ steps:
     command: node -e "process.exit(0)"
 `;
 
+// Two steps at once, then an optional approval: describe recommends running both at once, with the agent deciding.
+const WIDE = `schemaVersion: v1alpha1
+name: wide
+description: Lint and test at once, then approve the results
+invoke: allow
+steps:
+  - id: lint
+    command: node -e "process.exit(0)"
+  - id: test
+    needs: []
+    command: node -e "process.exit(0)"
+  - id: review
+    needs: [lint, test]
+    approve: Approve the results?
+    command: node -e "process.exit(0)"
+`;
+
+const DEPLOY = `schemaVersion: v1alpha1
+name: deploy
+description: Deploy once the person approves
+invoke: allow
+steps:
+  - id: go-live
+    approve: { message: Deploy to production?, required: true }
+    command: node -e "process.exit(0)"
+`;
+
+const DRAFT = `schemaVersion: v1alpha1
+name: draft
+description: Draft the notes with the person
+invoke: allow
+steps:
+  - id: write
+    prompt: Write the notes.
+    interactive: true
+`;
+
+const GATED = `schemaVersion: v1alpha1
+name: gated
+description: Lint once the person agrees
+invoke: ask
+steps:
+  - id: lint
+    command: node -e "process.exit(0)"
+`;
+
+const PICK = `schemaVersion: v1alpha1
+name: pick
+description: Pick a target, then lint
+invoke: allow
+steps:
+  - id: target
+    choose: { message: Which target?, options: [web, mobile] }
+  - id: lint
+    needs: [target]
+    command: node -e "process.exit(0)"
+`;
+
+const GREET = `schemaVersion: v1alpha1
+name: greet
+description: Greet someone
+invoke: allow
+inputs: { who: string }
+steps:
+  - id: greet
+    env: { NAME: "{{ inputs.who }}" }
+    command: node -e "console.log(process.env.NAME)"
+`;
+
 const SCORERS = { 'review-quality': `---
 labels:
   - { value: thorough, score: 1, description: Did the work it was asked for }
@@ -170,5 +239,44 @@ describe('skill driver preflight', () => {
     expect(await made.call({ kind: 'start', name: 'release-docs', answers: { confirmed: false }, inputs: undefined }))
       .toMatchObject({ error: { code: 'needs_local_driver', next: null } });
     expect(runCount(made)).toBe(0);
+  });
+});
+
+describe('skill driver preflight in an unattended run', () => {
+  const unattended = { mode: 'unattended' } as const;
+  const needsPerson = (name: string, needs: string) => `Workflow ${name} needs a person, and this run is unattended (TEAMAI_MODE or CI says so): ${needs}. Start it from a session a person attends, or set TEAMAI_MODE=attended where one does.`;
+
+  it('starts a workflow with nothing to ask with --auto-approve, asking nothing', async () => {
+    const made = await harness({ lint: LINT });
+    const answer = await made.call({ kind: 'describe', name: 'lint' }, unattended);
+    expect(answer).toMatchObject({ data: { describe: { ask: { kind: 'start', start: 'teamai workflow start lint --driver skill --auto-approve' } } } });
+    expect(answer).not.toMatchObject({ data: { describe: { ask: { question: expect.anything() } } } });
+  });
+
+  it('answers the start of the recommended option, with optional gates auto-approved', async () => {
+    const made = await harness({ wide: WIDE });
+    expect(await made.call({ kind: 'describe', name: 'wide' })).toMatchObject({ data: { describe: { ask: { kind: 'ask' } } } });
+    expect(await made.call({ kind: 'describe', name: 'wide' }, unattended)).toMatchObject({ data: { describe: { ask: {
+      kind: 'start', start: 'teamai workflow start wide --driver skill --parallel 2 --auto-approve',
+    } } } });
+  });
+
+  it.each([
+    ['a required approval', 'deploy', { deploy: DEPLOY }, 'only a person can answer the approval at go-live'],
+    ['an interactive step', 'draft', { draft: DRAFT }, 'write is interactive, worked with a person'],
+    ['invoke: ask', 'gated', { gated: GATED }, 'the team asks that a person agree before it starts (invoke: ask)'],
+    ['a choice without a default', 'pick', { pick: PICK }, 'the choice at target has no default, so --auto-approve leaves it to a person'],
+  ])('denies a workflow with %s, naming what needs the person', async (_case, name, workflows, needs) => {
+    const made = await harness(workflows);
+    expect(await made.call({ kind: 'describe', name }, unattended)).toEqual({ data: { describe: expect.objectContaining({
+      ask: { kind: 'denied', reason: needsPerson(name, needs) },
+    }) } });
+  });
+
+  it('keeps the {inputs} slot for the agent to fill from its task, and lists the inputs', async () => {
+    const made = await harness({ greet: GREET });
+    expect(await made.call({ kind: 'describe', name: 'greet' }, unattended)).toMatchObject({ data: { describe: { ask: {
+      kind: 'start', start: "teamai workflow start greet --driver skill --auto-approve --inputs '{inputs}'", inputs: [{ name: 'who', type: { type: 'string' } }],
+    } } } });
   });
 });

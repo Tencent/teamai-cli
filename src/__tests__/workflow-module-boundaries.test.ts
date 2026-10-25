@@ -42,6 +42,8 @@ const SKILL_IMPORTS: Record<string, { typeOnly?: true; names?: string[] }> = {
   'src/skill-content.ts': { names: ['packagedSkillRoots'] },
   // The identity every driver reports, the repository's atomic file writes, and the shared config types.
   'src/driver-identity.ts': {},
+  // The run mode: whether a person attends the run, which describe answers for and every attempt's process gets.
+  'src/launch-context.ts': { names: ['resolveRunMode', 'RunMode', 'RUN_MODES'] },
   'src/utils/fs.ts': {},
   'src/types.ts': { typeOnly: true },
 };

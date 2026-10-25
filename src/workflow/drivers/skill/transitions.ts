@@ -2,6 +2,7 @@
  * The skill driver's state machine: `step(state, input)` returns the row it took, the new state and what the caller
  * must do. The rows are the tables under `## The skill driver` in docs/dev/workflow-engine.md, cell by cell.
  */
+import type { RunMode } from '../../../launch-context.js';
 import type { EnvScope } from '../../requirements.js';
 import type { AttemptId, RunId } from '../../store.js';
 import type { WorkflowFailure } from '../../types.js';
@@ -27,6 +28,8 @@ export const TRANSITIONS = [
   { id: 'R3', state: 'none', input: 'describe', guard: 'something to ask: `invoke: ask`, a required input, width above 1, an optional gate, or judging here', effects: 'none', next: 'none', action: 'describe `ask.kind: ask`: one question stating every fact, and at most five start literals, the recommended first' },
   { id: 'R4', state: 'none', input: 'describe', guard: 'nothing to ask', effects: 'none', next: 'none', action: 'describe `ask.kind: start` with the one start literal, and the facts to tell the person' },
   { id: 'R16', state: 'none', input: 'describe', guard: '`deliveryProblem` answers for the checkout: a `deliver: pr` step the definition cannot deliver (`bad_delivery`), or a detached HEAD (`no_base_branch`)', effects: 'none', next: 'none', action: 'describe `ask.kind: denied` with its message, no literal' },
+  { id: 'R17', state: 'none', input: 'describe', guard: 'run mode `unattended`, R1, R16 and R2 do not apply, and `attendedReason` names what needs a person: `invoke: ask`, an interactive step, a required approval, or a choice without a default', effects: 'none', next: 'none', action: 'describe `ask.kind: denied` with that reason, no literal' },
+  { id: 'R18', state: 'none', input: 'describe', guard: 'run mode `unattended`, and R1, R16, R2 and R17 do not apply', effects: 'none', next: 'none', action: 'describe `ask.kind: start` with the start of R3\'s recommended option under `--auto-approve`; `{inputs}` kept and `inputs` listed when the workflow has inputs' },
   { id: 'R8', state: 'none', input: 'start `--driver skill`', guard: 'the definition has a local route', effects: 'none', next: 'none', action: 'error `needs_local_driver` with the reason, next null' },
   { id: 'R9', state: 'none', input: 'start `--driver skill`', guard: '`checkStartAnswers` answers `confirm-needed`', effects: 'none', next: 'none', action: 'error `confirm_needed`, next: the describe literal' },
   { id: 'R10', state: 'none', input: 'start `--driver skill`', guard: '`checkStartAnswers` answers `ok`', effects: '`WorkflowClient.start`; write skill.json: identity `{skill, machine, run checkout}`, invocation, options (`--parallel`, the HITL mode), host `pending` when the definition has a prompt step, owner := the caller\'s session; judging on with the session tool when describe judges here and the start has no `--no-judge`', next: 'host when it has a prompt step, else drive', action: 'the turn of a tick' },
@@ -146,8 +149,11 @@ export type ReportReply = { kind: 'reported'; outcome: Extract<TurnEvent, { kind
  * What describe knows before the rows choose how to start. `denied`: why an agent session may not start the workflow.
  * `local`: why the local driver must run it. `judgingHere`: the session tool's confined judge would judge the scored steps here.
  */
-/** `undeliverable`: why a start from the checkout would be refused for its delivery. */
-export interface DescribeInput { needed: StartAnswer[]; denied?: string; undeliverable?: string; local?: string; judgingHere: boolean }
+/**
+ * `undeliverable`: why a start from the checkout would be refused for its delivery. `mode`: the run mode of the caller.
+ * `attended`: why a run of the workflow needs a person.
+ */
+export interface DescribeInput { needed: StartAnswer[]; denied?: string; undeliverable?: string; local?: string; judgingHere: boolean; mode: RunMode; attended?: string }
 
 /** What a start knows before the rows decide it. `judge`: the session tool whose confined judge judges the run, when describe judges here and the start keeps judging. */
 export interface StartInput { name: string; check: StartCheck; local?: string; prompts: boolean; judge?: string }
@@ -225,8 +231,11 @@ export type Refusal =
   | { code: 'not_dispatched'; run: RunId; attempt: AttemptId; phase: AttemptState['phase'] }
   | { code: 'driver_running'; run: RunId };
 
-/** How describe says to start, and why, for the kinds that start no run here. */
-export type DescribeVerdict = { ask: 'start' | 'ask' } | { ask: 'local' | 'denied'; reason: string };
+/**
+ * How describe says to start, and why, for the kinds that start no run here. `unattended`: start with the recommended
+ * answers and optional gates auto-approved, since nobody answers a question.
+ */
+export type DescribeVerdict = { ask: 'start' | 'ask' | 'unattended' } | { ask: 'local' | 'denied'; reason: string };
 
 /** The run R10 starts: its options, whether it asks the host question first, and the tool that judges it. */
 export interface StartRun { parallel: number; hitl: HitlMode; host: 'none' | 'pending'; judge?: string }
@@ -319,10 +328,13 @@ export function unseenEvents(state: SkillState, session: string | undefined): Tu
 }
 
 /** The describe row `input` matches, with how describe says to start. */
-export function describeRow(input: DescribeInput): { row: 'R1' | 'R16' | 'R2' | 'R3' | 'R4'; verdict: DescribeVerdict } {
+export function describeRow(input: DescribeInput): { row: 'R1' | 'R16' | 'R2' | 'R17' | 'R18' | 'R3' | 'R4'; verdict: DescribeVerdict } {
   if (input.denied !== undefined) return { row: 'R1', verdict: { ask: 'denied', reason: input.denied } };
   if (input.undeliverable !== undefined) return { row: 'R16', verdict: { ask: 'denied', reason: input.undeliverable } };
   if (input.local !== undefined) return { row: 'R2', verdict: { ask: 'local', reason: input.local } };
+  if (input.mode === 'unattended') {
+    return input.attended !== undefined ? { row: 'R17', verdict: { ask: 'denied', reason: input.attended } } : { row: 'R18', verdict: { ask: 'unattended' } };
+  }
   if (input.needed.length > 0 || input.judgingHere) return { row: 'R3', verdict: { ask: 'ask' } };
   return { row: 'R4', verdict: { ask: 'start' } };
 }

@@ -49,6 +49,25 @@ export function localReason(description: WorkflowDescription): string | undefine
   return `Step ${route.held} works in the workspace ${route.opener} opened, and ${lacks}. Only the driver that opened that workspace may go on in it, so the local driver runs the whole of ${name}.`;
 }
 
+/**
+ * Why a run of `description` needs a person, which an unattended run lacks: undefined when it can do without one, its
+ * optional gates auto-approved.
+ */
+export function attendedReason(description: WorkflowDescription): string | undefined {
+  const { name, facts } = description;
+  const { interactive } = facts;
+  const required = facts.gates.filter((gate) => gate.required);
+  const open = facts.gates.filter((gate) => !gate.required && gate.kind === 'choose' && !gate.hasDefault);
+  const needs = [
+    ...(description.invoke === 'ask' ? ['the team asks that a person agree before it starts (invoke: ask)'] : []),
+    ...(interactive.length > 0 ? [`${listOf(interactive)} ${interactive.length > 1 ? 'are' : 'is'} interactive, worked with a person`] : []),
+    ...(required.length > 0 ? [`only a person can answer the ${gatesNoun(required)} at ${listOf(required.map((gate) => gate.step))}`] : []),
+    ...(open.length > 0 ? [`the ${open.length > 1 ? 'choices' : 'choice'} at ${listOf(open.map((gate) => gate.step))} ${open.length > 1 ? 'have' : 'has'} no default, so --auto-approve leaves ${open.length > 1 ? 'them' : 'it'} to a person`] : []),
+  ];
+  if (needs.length === 0) return undefined;
+  return `Workflow ${name} needs a person, and this run is unattended (TEAMAI_MODE or CI says so): ${listOf(needs)}. Start it from a session a person attends, or set TEAMAI_MODE=attended where one does.`;
+}
+
 /** Checks a start of `description` against what describe asked. `ceiling` is the most steps the driver runs at once. */
 export function checkStartAnswers(input: {
   description: WorkflowDescription;
@@ -152,13 +171,10 @@ function factsOf(description: WorkflowDescription, judging: Judging): string[] {
  */
 function optionsOf(description: WorkflowDescription, judging: Judging, invocation: Invocation): Array<{ label: string; start: Literal }> {
   const { name, facts } = description;
-  const needed = neededAnswers(description);
-  const flags = { confirmed: needed.includes('confirmed'), inputs: needed.includes('inputs') };
+  const flags = startFlags(description);
   const noun = gatesNoun(facts.gates.filter((gate) => !gate.required), true);
   const here = judging.kind === 'here';
-  const recommended: StartPick = {
-    ...(needed.includes('parallel') ? { parallel: facts.width } : {}), ...(needed.includes('hitl') ? { hitl: 'recommend' as const } : {}),
-  };
+  const recommended = recommendedPick(description);
   const others: Array<{ label: string; pick: StartPick }> = [
     ...(recommended.hitl ? [
       { label: `Same, but ask me at optional ${noun}`, pick: { ...recommended, hitl: 'person' as const } },
@@ -183,6 +199,23 @@ interface StartPick {
   noJudge?: true;
 }
 
+/** Whether every start of `description` carries the person's yes, and the `{inputs}` slot. */
+function startFlags(description: WorkflowDescription): { confirmed: boolean; inputs: boolean } {
+  const needed = neededAnswers(description);
+  return { confirmed: needed.includes('confirmed'), inputs: needed.includes('inputs') };
+}
+
+/** The answers of the recommended start: every step it can run at once, and the agent deciding optional gates. */
+function recommendedPick(description: WorkflowDescription): StartPick {
+  const needed = neededAnswers(description);
+  return { ...(needed.includes('parallel') ? { parallel: description.facts.width } : {}), ...(needed.includes('hitl') ? { hitl: 'recommend' as const } : {}) };
+}
+
+/** The inputs of `description`, as describe lists them for its `{inputs}` slot. */
+function inputsOf(description: WorkflowDescription): Array<{ name: string; type: OutputSchema }> {
+  return Object.entries(description.inputs).map(([input, type]) => ({ name: input, type }));
+}
+
 /**
  * The prompt tool a person's local run must be told: the session's `tool`, when this machine's config names no default
  * prompt tool (`workflows.tools.default`) and the local driver launches `tool`. Undefined when the config names one,
@@ -199,13 +232,18 @@ export function askFor(verdict: DescribeVerdict, description: WorkflowDescriptio
   switch (verdict.ask) {
     case 'start':
       return { kind: 'start', ...(facts.length > 0 ? { say: facts.join('\n') } : {}), start: startLiteral(invocation, name) };
+    case 'unattended': {
+      const inputs = inputsOf(description);
+      const start = startLiteral(invocation, name, { ...startFlags(description), ...recommendedPick(description), hitl: 'auto-approve' });
+      return { kind: 'start', ...(facts.length > 0 ? { say: facts.join('\n') } : {}), start, ...(inputs.length > 0 ? { inputs } : {}) };
+    }
     case 'local':
     case 'denied':
       return verdict.ask === 'local' ? { kind: 'local', reason: verdict.reason, start: localStartLiteral(invocation, name, local) } : { kind: 'denied', reason: verdict.reason };
     case 'ask': {
       const options = optionsOf(description, judging, invocation);
       const confirmed = description.invoke === 'ask';
-      const inputs = Object.entries(description.inputs).map(([input, type]) => ({ name: input, type }));
+      const inputs = inputsOf(description);
       const closing = options.length > 1 ? (confirmed ? 'Start it, and if so, how should it run?' : 'How should it run?')
         : confirmed || inputs.length === 0 ? 'Start it?' : `What should the input${inputs.length > 1 ? 's' : ''} be?`;
       return { kind: 'ask', question: { text: [...facts, closing].join('\n'), inputs, options } };

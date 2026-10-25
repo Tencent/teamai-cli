@@ -15,7 +15,7 @@ Run `teamai workflow start --describe <name> --driver skill` with the workflow n
 
 Act on `data.describe.ask.kind`:
 
-- `start`: tell the person `ask.say` when the reply has it, then run `ask.start`.
+- `start`: tell the person `ask.say` when the reply has it, then run `ask.start`. In an unattended run (CI, a cloud agent) describe never asks the person; when `ask.inputs` is listed, fill `{inputs}` in `ask.start` with their values from your task, as one JSON object.
 - `ask`: the question is the person's to answer, once, so the run goes on without them after. In one message, give them `ask.question.text` as it is, each entry of `ask.question.inputs` to fill in, and the `label` of each option as their choices. Wait for their pick, also when an option is marked recommended. In the `start` of the option they pick, replace `{inputs}` with their answers as one JSON object, and run it. Those options are the whole choice: when the person wants a start none of them offers, show them the options again.
 - `local`: tell the person `ask.reason` and give them `ask.start` for their own terminal. It is theirs to run.
 - `denied`: tell the person `ask.reason`. Nothing is left to run here.
