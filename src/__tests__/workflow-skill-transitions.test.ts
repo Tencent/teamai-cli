@@ -83,6 +83,18 @@ steps:
     prompt: Review it again.
 `;
 
+const SITE = `schemaVersion: v1alpha1
+name: site
+description: Plan the settings page
+invoke: allow
+steps:
+  - id: site
+    workflow:
+      steps:
+        - id: settings-page-with-every-tab-the-person-asked-for-in-the-ticket
+          prompt: Plan the settings page.
+`;
+
 const SETUP = `schemaVersion: v1alpha1
 name: build
 description: Build in a set-up workspace
@@ -963,6 +975,19 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       const turn = await chosen(made, 'reviewed', 2);
       const models = Object.fromEntries(dispatches(turn).map((action) => [action.step, action.model]));
       expect(models).toEqual({ plain: { by: 'defaults', name: 'claude-haiku-4-5' }, pinned: { by: 'definition' } });
+      return made.rows;
+    },
+  },
+  {
+    name: 'a dispatch is titled with a name every host accepts for a child, even for a long step path with dots',
+    rows: ['D7', 'C2'],
+    run: async () => {
+      const made = await harness({ site: SITE });
+      const { run } = await turnOf(await made.call({ kind: 'start', name: 'site', answers: { confirmed: false }, inputs: undefined }));
+      const [dispatch] = dispatches(await turnOf(await made.call({ kind: 'choose', run, choice: 'h1' })));
+      if (!dispatch) throw new Error('site was not dispatched');
+      expect(dispatch.title).toBe(`site-settings-page-with-every-tab-the-person-asked-for-${dispatch.attempt}`);
+      expect(dispatch.title).toMatch(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/);
       return made.rows;
     },
   },

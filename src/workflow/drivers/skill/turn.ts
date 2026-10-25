@@ -33,7 +33,7 @@ export interface DispatchAction {
   offer: `dispatch.${string}`;
   attempt: AttemptId;
   step: string;
-  /** `<run>/<attempt> <step>`: the child's name, so an agent that lost the ack can tell the child exists. */
+  /** `<step>-<attempt>`, a valid agent name: the child's name, so an agent that lost the ack can tell the child exists. */
   title: string;
   /** `parallel`: the child may run beside other children of the run. `person`: the agent works the step itself, with the person. */
   needs: { place: Dispatch['place']; parallel: boolean; person: boolean };
@@ -197,20 +197,25 @@ function reference(name: 'hosts.md' | 'places.md'): string {
   return path.join(packagedSkillRoots().dataRoot, 'workflow', 'references', name);
 }
 
-function titleOf(run: RunId, open: AttemptState): string {
-  return `${run}/${open.attempt} ${open.step}`;
+/**
+ * The name a child runs under, valid as an agent or teammate name (`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`): `<step>-<attempt>`,
+ * each other character of the step path mapped to `-`, the step cut so the whole fits 64 characters.
+ */
+function titleOf(open: AttemptState): string {
+  const suffix = `-${open.attempt}`;
+  return `${open.step.replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 64 - suffix.length)}${suffix}`;
 }
 
 function dispatchOf(state: SkillState, open: Extract<AttemptState, { phase: 'offered' | 'dispatched' }>): DispatchAction {
   const { attempt, step, dispatch } = open;
   const { invocation, run } = state;
   return {
-    kind: 'dispatch', offer: `dispatch.${attempt}`, attempt, step, title: titleOf(run, open),
+    kind: 'dispatch', offer: `dispatch.${attempt}`, attempt, step, title: titleOf(open),
     needs: { place: dispatch.place, parallel: childCap(state) > 1 && !dispatch.person, person: dispatch.person === true },
     dir: dispatch.dir, brief: dispatch.brief, ...(dispatch.agent !== undefined ? { agent: dispatch.agent } : {}), model: dispatch.model,
     ack: ackLiteral(invocation, run, attempt), report: reportLiteral(invocation, run, attempt),
     ...(dispatch.model.by !== 'definition' ? { unavailable: unavailableLiteral(invocation, run, attempt) } : {}),
-    ...(open.phase === 'offered' && open.reissued ? { reissued: `An earlier session was given this dispatch, and its child may still run as ${titleOf(run, open)}. Stop that child if you can reach it, then dispatch this one.` } : {}),
+    ...(open.phase === 'offered' && open.reissued ? { reissued: `An earlier session was given this dispatch, and its child may still run as ${titleOf(open)}. Stop that child if you can reach it, then dispatch this one.` } : {}),
   };
 }
 
@@ -240,7 +245,7 @@ function actionsOf(state: SkillState): Action[] {
     return [{ kind: 'choose', about: 'host', decide: 'agent', question: HOST_QUESTION, options, reference: reference('hosts.md') }];
   }
   const stops = state.attempts.flatMap((open): StopAction[] => (open.phase === 'stopping' && open.by === 'agent'
-    ? [{ kind: 'stop', attempt: open.attempt, step: open.step, title: titleOf(state.run, open), why: open.why, report: reportLiteral(state.invocation, state.run, open.attempt) }]
+    ? [{ kind: 'stop', attempt: open.attempt, step: open.step, title: titleOf(open), why: open.why, report: reportLiteral(state.invocation, state.run, open.attempt) }]
     : []));
   const offers = state.attempts.flatMap((open) => (open.phase === 'offered' ? [dispatchOf(state, open)] : []));
   const places = state.attempts.flatMap((open): PlaceAction[] => (open.phase === 'placing'
