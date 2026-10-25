@@ -33,6 +33,12 @@ export type RespondVia =
   | { kind: 'process'; caller: CallerProvenance; json?: unknown }
   | Extract<Via, { kind: 'skill' }>;
 
+/** A run file's status, and its revision, which each settled report and each retry bumps: what an engine `done` answers from. */
+export interface RunVersion {
+  status: RunState['status'];
+  revision: number;
+}
+
 /**
  * The protocol as one client, in process or through the built CLI. A report made with the run's `RunLock` does not take
  * the lock again; made without one, it takes the lock to finish the attempt's place.
@@ -73,6 +79,8 @@ export interface WorkflowClient {
    * made under the run's lock, and a prepare that fails settles the attempt `failed` with its own code.
    */
   next(runId: string, body: unknown, options?: { prepare?: NextPrepare }): Promise<WorkflowEnvelope>;
+  /** What the run file of `runId` says now, or undefined while this machine cannot read it. */
+  runVersion(runId: RunId): Promise<RunVersion | undefined>;
   /** Reports an attempt. A prepared one is finished first: its `changes` or `read` come from its place. */
   report(runId: string, body: unknown, options?: { lock?: RunLock }): Promise<WorkflowEnvelope>;
   /** Records an answer, with the provenance decided from the process or driver `via` names. A process inside a workflow attempt answers none: `nested_workflow`. */
@@ -374,6 +382,10 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
       if (refused) return { error: refused };
       const base = checkout === undefined ? undefined : await headCommit(checkout);
       return startRun(config, name, inputs ?? {}, { secrets: env.secrets, ...(checkout !== undefined ? { checkout } : {}), ...(base ? { base } : {}) });
+    },
+    runVersion: async (runId) => {
+      const run = await readRun(config, runId);
+      return typeof run === 'object' ? { status: run.status, revision: run.revision } : undefined;
     },
     next: async (runId, body, options) => {
       const parsed = parseNextPayload(body);

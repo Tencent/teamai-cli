@@ -5,7 +5,7 @@ import { RUN_MODES } from '../../../launch-context.js';
 import type { LocalConfig } from '../../../types.js';
 import { readFileSafe, writeJsonAtomic } from '../../../utils/fs.js';
 import { redactJson } from '../../../utils/redact.js';
-import type { HostPlaceRequest } from '../../protocol.js';
+import type { HostPlaceRequest, RunVersion } from '../../protocol.js';
 import { FailureSchema } from '../../step-state.js';
 import { AttemptIdSchema, RunIdSchema, skillStatePath, type RunId, type RunLock } from '../../store.js';
 import { HOST_CHOICES } from './host-profiles.js';
@@ -67,6 +67,7 @@ const HostRequestSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('adopt'), dir: z.string() }),
 ]) satisfies z.ZodType<HostPlaceRequest>;
 
+const RunVersionSchema: z.ZodType<RunVersion> = z.object({ status: z.enum(['running', 'succeeded', 'failed', 'cancelled']), revision: z.number().int() });
 const AttemptBase = { attempt: AttemptIdSchema, step: z.string(), revision: z.number().int(), spawnedAt: z.string(), expiresAt: z.string().optional() };
 /**
  * An open attempt: its runner prepares its place or runs its command; it waits for the place another attempt holds;
@@ -165,8 +166,11 @@ const SkillStateSchema = z.object({
   seen: z.record(z.string(), z.number().int()),
   /** The attempts the engine settled or stopped: a report that comes for one again is P1. */
   settled: z.array(AttemptIdSchema),
-  /** `prs`: the pull requests the run's deliveries opened, as the engine's `done` listed them. */
-  done: z.object({ outcome: z.enum(['succeeded', 'failed', 'cancelled']), failure: FailureSchema.optional(), prs: z.array(z.string()) }).optional(),
+  /**
+   * `prs`: the pull requests the run's deliveries opened, as the engine's `done` listed them. `version`: what the run
+   * file said when the end was kept, so a tick asks the engine again only once it moved.
+   */
+  done: z.object({ outcome: z.enum(['succeeded', 'failed', 'cancelled']), failure: FailureSchema.optional(), prs: z.array(z.string()), version: RunVersionSchema.optional() }).optional(),
 });
 export type SkillState = z.infer<typeof SkillStateSchema>;
 

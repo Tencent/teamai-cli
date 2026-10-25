@@ -4,7 +4,7 @@
  * are the tables under `## The skill driver` in docs/dev/workflow-engine.md, cell by cell.
  */
 import type { RunMode } from '../../../launch-context.js';
-import type { RunReadied } from '../../protocol.js';
+import type { RunReadied, RunVersion } from '../../protocol.js';
 import type { EnvScope } from '../../requirements.js';
 import type { AttemptId, RunId } from '../../store.js';
 import type { WorkflowFailure } from '../../types.js';
@@ -67,7 +67,7 @@ export const TRANSITIONS = [
   { id: 'D14', state: 'drive', input: 'reply wait', guard: 'it lists `held`, and no attempt is open', effects: 'none', next: 'drive', action: '`person why:handoff` with the person\'s `teamai workflow resume <run>` literal, with `--tools default=<session tool>` when `localPromptTool` names one; waiting `held`; no `then`' },
   { id: 'D15', state: 'drive', input: 'reply wait', guard: '', effects: 'none', next: 'drive', action: 'waiting' },
   { id: 'D27', state: 'drive', input: 'reply wait, after its row', guard: 'it lists `held`, and no reply of this tick came to a `next` that took no lease', effects: 'engine `next` as D1, with `canTakeLease: false`, since the engine answers a held step before a gate; H5, then D10 to D12 for a gate, take its reply', next: 'drive', action: '' },
-  { id: 'D16', state: 'drive', input: 'reply done', guard: '', effects: '`seq` := seq + 1, so every session has the end to see', next: 'done', action: '`done {outcome, failure, prs, judging}`' },
+  { id: 'D16', state: 'drive', input: 'reply done', guard: '', effects: '`seq` := seq + 1, so every session has the end to see; keep the run file\'s status and revision with the end', next: 'done', action: '`done {outcome, failure, prs, judging}`' },
   { id: 'D17', state: 'drive', input: 'reply error', guard: '', effects: 'none', next: 'drive', action: 'error with the engine\'s code, next: the next literal' },
   { id: 'D18', state: 'drive', input: 'a foreground call', guard: 'it spawned runners', effects: 'release the lock; wait up to `WAIT_GRACE_MS` for them, re-taking the lock per check', next: 'drive', action: '' },
   { id: 'D19', state: 'any', input: 'a foreground call', guard: 'the lock is not free within `TICK_LOCK_WAIT_MS` (`report`: `WAIT_BOUND_MS`)', effects: 'none', next: 'unchanged', action: 'error `driver_running`, next: the same literal' },
@@ -119,8 +119,9 @@ export const TRANSITIONS = [
   { id: 'X1', state: 'done', input: 'next', guard: 'no attempt is open, and a judge is', effects: 'none', next: 'done', action: '`done` with `judging`; `then: poll`' },
   { id: 'X2', state: 'done', input: 'next', guard: 'no attempt or judge is open', effects: 'none', next: 'done', action: '`done`, no `then`' },
   { id: 'X4', state: 'done', input: 'next', guard: 'an attempt is still open: the engine cancelled it with the run', effects: 'none', next: 'done', action: 'every `stop`, then `done`; `then: poll`' },
-  { id: 'X5', state: 'done', input: 'tick', guard: '', effects: 'engine `next` as D1, with `canTakeLease: false`', next: 'done', action: '' },
-  { id: 'X6', state: 'done', input: 'reply, before its row', guard: 'the reply is not `done`: the engine reopened the run, as `workflow retry` does', effects: 'drop `done`', next: 'drive', action: 'the reply\'s row; the tick goes on as in drive' },
+  { id: 'X5', state: 'done', input: 'tick', guard: 'the run file shows a status or revision other than those kept with the end, or none were kept', effects: 'keep the run file\'s status and revision with the end; engine `next` as D1, with `canTakeLease: false`', next: 'done', action: '' },
+  { id: 'X6', state: 'done', input: 'reply, before its row', guard: 'the reply is not `done`, or is a `done` whose outcome, failure or PRs differ from the kept end (`canonicalJson`): the engine reopened the run, as `workflow retry` does, or another driver ended it again', effects: 'drop `done`', next: 'drive', action: 'the reply\'s row; the tick goes on as in drive' },
+  { id: 'X7', state: 'done', input: 'tick', guard: 'the run file shows the status and revision kept with the end', effects: 'none: no engine `next`, so no tick publishes an end already out again', next: 'done', action: '' },
 ] as const satisfies readonly TransitionRow[];
 
 export type RowId = typeof TRANSITIONS[number]['id'];
@@ -440,21 +441,36 @@ export function hasSlot(state: SkillState): boolean {
   return state.attempts.length < childCap(state);
 }
 
+interface TickRequest {
+  running: AttemptId[];
+  canTakeLease: boolean;
+  autoApprove: boolean;
+}
+
 /**
  * The engine `next` of a tick (D1), or R12 while the host question waits. Once the run is done, a `next` that takes no
- * lease (X5) asks whether the engine reopened it. A runner's check (`role: 'runner'`) takes no lease.
+ * lease (X5) asks whether the engine reopened it or another driver ended it again, but only once `version`, what the
+ * run file says now, moved from what the end kept (X7). A runner's check (`role: 'runner'`) takes no lease.
  */
-export function tickRow(state: SkillState, role: 'call' | 'runner'): { row: 'R12' } | { row: 'D1' | 'X5'; request: { running: AttemptId[]; canTakeLease: boolean; autoApprove: boolean } } {
+export function tickRow(state: SkillState, input: { role: 'call' | 'runner'; version?: RunVersion }): { row: 'R12' | 'X7' } | { row: 'D1'; request: TickRequest } | (Moved<'X5'> & { request: TickRequest }) {
+  const { role, version } = input;
   const running = state.attempts.map((open) => open.attempt);
   const autoApprove = state.options.hitl === 'auto-approve';
-  if (state.done) return { row: 'X5', request: { running, canTakeLease: false, autoApprove } };
+  const { done } = state;
+  if (done) {
+    if (version && version.status === done.version?.status && version.revision === done.version.revision) return { row: 'X7' };
+    return { row: 'X5', request: { running, canTakeLease: false, autoApprove }, state: version ? { ...state, done: { ...done, version } } : state };
+  }
   if (state.host.kind === 'pending') return { row: 'R12' };
   return { row: 'D1', request: { running, canTakeLease: role === 'call' && hasSlot(state), autoApprove } };
 }
 
-/** X6: the engine answered a run this driver saw done with anything but its end, so it was reopened, as a retry does. */
-export function reopenedRow(state: SkillState, reply: EngineReply): Moved<'X6'> | undefined {
-  if (!state.done || reply.kind === 'done') return undefined;
+/**
+ * X6: the engine answered a run this driver saw done with anything but that same end: it reopened the run, as a retry
+ * does, or another driver ended it again. `sameEnd`: the reply is a `done` naming the end the driver kept.
+ */
+export function reopenedRow(state: SkillState, input: { reply: EngineReply; sameEnd: boolean }): Moved<'X6'> | undefined {
+  if (!state.done || input.sameEnd) return undefined;
   const { done: _done, ...rest } = state;
   return { row: 'X6', state: rest };
 }
@@ -551,7 +567,7 @@ function choicePending(state: SkillState): Answered<'R14'> {
  * end (D16), or an error (D17). Undefined once the run is done. `waiting` says why the run leases nothing more; `turn`
  * is the turn a row decides for its call.
  */
-export function replyRow(state: SkillState, input: { reply: EngineReply; at: string }):
+export function replyRow(state: SkillState, input: { reply: EngineReply; at: string; version?: RunVersion }):
   | (MovedWithEffects<'D6' | 'D7' | 'D8' | 'D10' | 'D11' | 'D12' | 'D13' | 'D14' | 'D15' | 'D16'> & TickTurn)
   | Answered<'D17', Relayed>
   | undefined {
@@ -585,7 +601,10 @@ export function replyRow(state: SkillState, input: { reply: EngineReply; at: str
       return { row, state: { ...state, seq, gate }, effects: [], ...waiting };
     }
     case 'done':
-      return { row: 'D16', state: { ...state, seq: state.seq + 1, done: { outcome: engine.outcome, ...(engine.failure ? { failure: engine.failure } : {}), prs: engine.prs } }, effects: [] };
+      return {
+        row: 'D16', effects: [],
+        state: { ...state, seq: state.seq + 1, done: { outcome: engine.outcome, ...(engine.failure ? { failure: engine.failure } : {}), prs: engine.prs, ...(input.version ? { version: input.version } : {}) } },
+      };
     case 'error':
       return { row: 'D17', answer: { kind: 'engine-error', error: engine.error, next: 'next' } };
     default: {

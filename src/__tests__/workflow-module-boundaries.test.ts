@@ -35,6 +35,8 @@ const SKILL_IMPORTS: Record<string, { typeOnly?: true; names?: string[] }> = {
   'src/env-exec.ts': { names: ['stepEnvironment'] },
   'src/utils/redact.ts': {},
   'src/utils/session-id.ts': {},
+  // Equal values as equal text, so a kept end is compared with the engine's latest one.
+  'src/utils/canonical-json.ts': {},
   'src/resources/agent-format.ts': {},
   'src/tool-launch/process-stop.ts': {},
   // Whether the local driver launches the session's tool, so a local start or resume can name it.

@@ -3,6 +3,7 @@
  * effect, and feeds each answer back as the next input. It holds the lock only while it ticks, never across a sleep.
  */
 import { driverIdentity } from '../../../driver-identity.js';
+import { canonicalJson } from '../../../utils/canonical-json.js';
 import type { AttemptId, RunId, RunLock } from '../../store.js';
 import type { WorkflowFailure } from '../../types.js';
 import { readChildResult } from './child-brief.js';
@@ -157,13 +158,19 @@ async function attemptCheckRow(context: SkillContext, state: SkillState, open: A
   }
 }
 
+/** The end a `done` names, whether the engine answered it or the driver kept it, so the two compare as equal text. */
+function endOf(done: { outcome: string; failure?: WorkflowFailure; prs: string[] }): unknown {
+  return { outcome: done.outcome, failure: done.failure, prs: done.prs };
+}
+
 /**
  * The steps' tick: sends the reports a crash left stored, respawns runners that are gone and gives up the attempts a
  * gone runner was stopping, then, while the run drives, calls `next` while a lease comes back and a slot is free, once
  * more when a reply to a `next` with no slot freed one (D2), and once more after the last lease while a gate is
  * journalled: with no slot, that reply says whether the gate still waits. A wait that holds a step gets that `next`
  * with no slot too (D27), as the engine answers a held step before a gate. A run that is done gets one `next` with no
- * slot, whose reply says whether the engine reopened it; a reopened run then ticks as one that drives. Each reply's
+ * slot once its run file moved since the end was kept, whose reply says whether the engine reopened it or another
+ * driver ended it again; a reopened run then ticks as one that drives. Each reply's
  * reopen check, its `cancelled`, then its gate check, are taken before the reply itself. A runner's check
  * (`role: 'runner'`) takes no lease.
  */
@@ -183,8 +190,10 @@ async function stepTick(context: SkillContext, lock: RunLock, start: SkillState,
   }
   let probed = false;
   for (;;) {
-    const ticked = traced(context, tickRow(state, role));
+    const version = state.done ? await context.client.runVersion(state.run) : undefined;
+    const ticked = traced(context, tickRow(state, { role, ...(version ? { version } : {}) }));
     if (!('request' in ticked)) return { state, spawned };
+    if ('state' in ticked) state = ticked.state;
     const { request } = ticked;
     probed = probed || !request.canTakeLease;
     const body = {
@@ -194,10 +203,12 @@ async function stepTick(context: SkillContext, lock: RunLock, start: SkillState,
     const answer = await context.client.next(state.run, body);
     const at = context.now().toISOString();
     const { reply, cancelled } = engineReply(state.run, answer);
-    state = traced(context, reopenedRow(state, reply))?.state ?? state;
+    const sameEnd = reply.kind === 'done' && state.done !== undefined && canonicalJson(endOf(reply)) === canonicalJson(endOf(state.done));
+    state = traced(context, reopenedRow(state, { reply, sameEnd }))?.state ?? state;
     for (const attempt of cancelled) state = traced(context, cancelledRow(state, { attempt, at }))?.state ?? state;
     state = traced(context, gateCheckRow(state, reply))?.state ?? state;
-    const replied = traced(context, replyRow(state, { reply, at }));
+    const ended = reply.kind === 'done' && !state.done ? await context.client.runVersion(state.run) : undefined;
+    const replied = traced(context, replyRow(state, { reply, at, ...(ended ? { version: ended } : {}) }));
     if (!replied) return { state, spawned };
     if ('answer' in replied) {
       return { state, spawned, error: errorOf(replied.answer, { invocation: state.invocation, same: nextLiteral(state.invocation, state.run), run: state.run }) };

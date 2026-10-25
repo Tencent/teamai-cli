@@ -12,6 +12,7 @@ import { inProcessClient, type WorkflowClient } from '../workflow/protocol.js';
 import type { LocalConfig } from '../types.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { WORKSPACE_MODES } from '../workflow/types.js';
+import { runLocalDriver } from '../workflow/drivers/local/local-driver.js';
 import { respondProvenance, respondToHitl } from '../workflow/run-controls.js';
 import { attemptDir, AttemptIdSchema, deliveryLockPath, readRun, RunIdSchema, runsDir, skillStatePath, type RunId } from '../workflow/store.js';
 import type { Runners } from '../workflow/drivers/skill/skill-driver.js';
@@ -730,6 +731,36 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       const retried = await turnOf(await made.call({ kind: 'next', run, wait: false }));
       expect(retried).toMatchObject({ status: 'driving', events: [{ kind: 'started', step: 'flag' }] });
       expect((await polledToDone(made, run)).actions).toEqual([{ kind: 'done', outcome: 'succeeded', prs: [] }]);
+      return made.rows;
+    },
+  },
+  {
+    name: 'a run that failed, was retried and was finished by another driver shows the end that driver reached, not the one this driver saw',
+    rows: ['X5', 'X6', 'D16'],
+    run: async () => {
+      const made = await harness({ check: FLAGGED });
+      const flag = path.join(made.root, 'flag');
+      vi.stubEnv('RETRY_FLAG', flag);
+      const { run } = await started(made);
+      expect((await polledToDone(made, run)).actions).toEqual([expect.objectContaining({ kind: 'done', outcome: 'failed' })]);
+      fs.writeFileSync(flag, 'set');
+      expect(await made.context.client.retry(run, 'flag')).toMatchObject({ data: { run: { status: 'running' } } });
+      expect(await runLocalDriver(made.config, run, made.work)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+      expect(await turnOf(await made.call({ kind: 'next', run, wait: false }))).toMatchObject({ status: 'done', actions: [{ kind: 'done', outcome: 'succeeded', prs: [] }] });
+      return made.rows;
+    },
+  },
+  {
+    name: 'a done run asks the engine again only once its run file changed, so no tick republishes an end already out',
+    rows: ['X7'],
+    run: async () => {
+      let asked = 0;
+      const made = await harness({ check: CHECK }, { client: (client) => ({ ...client, next: async (...args) => { asked += 1; return client.next(...args); } }) });
+      const { run } = await started(made);
+      expect((await polledToDone(made, run)).actions).toEqual([expect.objectContaining({ kind: 'done', outcome: 'succeeded' })]);
+      const before = asked;
+      for (let call = 0; call < 3; call += 1) expect(await turnOf(await made.call({ kind: 'next', run, wait: false }))).toMatchObject({ status: 'done', actions: [{ kind: 'done', outcome: 'succeeded' }] });
+      expect(asked).toBe(before);
       return made.rows;
     },
   },
