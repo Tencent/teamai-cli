@@ -111,6 +111,8 @@ JSON
 {"data":{"label":{"scorer":"review-quality","label":"good","score":1,"passed":true,…},"published":true}}
 ```
 
+带 `run` 时，`score --next` 按运行 id 找到运行的 scope，所以 driver 可以在运行的工作树里或运行起始检出目录之外请求。
+
 | `can.judge` | 含义 |
 |---|---|
 | `isolation` | `verified` 或 `best-effort`。只租出它满足[所需级别](#隔离)的任务。 |

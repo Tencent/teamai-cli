@@ -111,6 +111,8 @@ JSON
 {"data":{"label":{"scorer":"review-quality","label":"good","score":1,"passed":true,…},"published":true}}
 ```
 
+With `run`, `score --next` finds the run's scope by its id, so a driver can ask from the run's worktree or from outside the checkout the run started in.
+
 | `can.judge` | Meaning |
 |---|---|
 | `isolation` | `verified` or `best-effort`. Only work whose [required level](#isolation) it meets is leased. |

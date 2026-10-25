@@ -87,8 +87,6 @@ A `dispatch` action is one prompt step for one child agent. For each one:
 
 When your host cannot run `model.name`, run `unavailable` in place of both steps.
 
-A dispatch whose `needs.place` is `checkout` and whose `needs.person` is false only reads the checkout: TeamAI fails the step with `read_only_dirty` when it leaves a file there changed. Add "Change no file there." to the child's prompt.
-
 A dispatch whose `needs.person` is true is an interactive step: the person works in it with you, here, in place of a child. Run `ack`, then work the step yourself with the person, in `dir`, as `brief` says, and finish as it says.
 
 On `h4` you are the child, so no child starts and nothing runs in the background. Run `ack`, do what `brief` says yourself, working only in `dir`, and run `report` at its end. The next dispatch comes after this one is reported. A `model.name` that is not your own model is one your host cannot run.
