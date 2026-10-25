@@ -377,7 +377,7 @@ async function polledToDone(made: Awaited<ReturnType<typeof harness>>, run: RunI
  */
 async function publishedMidStep(install: { config: LocalConfig; checkout: string }, name: string) {
   const client = inProcessClient({ config: install.config, env: await resolveWorkflowEnv(install.config) });
-  const started = await client.start(name, { checkout: install.checkout, caller: { evidence: { kind: 'none' }, confirmed: false } });
+  const started = await client.start(name, { checkout: install.checkout, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
   if (!('data' in started) || typeof started.data.run !== 'string') throw new Error(JSON.stringify(started));
   const run = RunIdSchema.parse(started.data.run);
   const leased = await client.next(run, { driver: { kind: 'local', machine: 'ci', workspace: install.checkout, can: { workspace: [...WORKSPACE_MODES] } } });
@@ -789,7 +789,7 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       expect(await made.call({ kind: 'takeover', run: lacking })).toEqual({
         error: { code: 'run_not_found', message: expect.any(String), next: `teamai workflow resume ${lacking} --driver skill --claim` },
       });
-      const other = await made.context.client.start('check', { checkout: made.work, caller: { evidence: { kind: 'none' }, confirmed: false } });
+      const other = await made.context.client.start('check', { checkout: made.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
       if (!('data' in other) || typeof other.data.run !== 'string') throw new Error(JSON.stringify(other));
       const run = RunIdSchema.parse(other.data.run);
       expect(await turnOf(await made.call({ kind: 'takeover', run }))).toMatchObject({ run, status: 'driving' });
