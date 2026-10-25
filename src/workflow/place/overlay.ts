@@ -1,3 +1,4 @@
+import fs from 'node:fs/promises';
 import { pathExists } from '../../utils/fs.js';
 import type { WorkflowFailure } from '../types.js';
 import { applyBaseConfig, hooksPath, recordConfigOverlay, restoreUneditedConfig } from '../worktree.js';
@@ -5,10 +6,10 @@ import { applyBaseConfig, hooksPath, recordConfigOverlay, restoreUneditedConfig 
 /**
  * Puts the base agent configuration at `configCommit` over the copy `dir` of `root`, with the branch's own files kept
  * in `saved`, then delivers the team's assets into it. The delivery is recorded as part of the overlay, so it is not
- * the step's edit.
+ * the step's edit. With `resume`, it finishes an overlay a killed process left, over the files it kept in `saved`.
  */
-export async function applyOverlay({ root, dir, configCommit, saved }: { root: string; dir: string; configCommit: string; saved: string }): Promise<WorkflowFailure | undefined> {
-  const applied = await applyBaseConfig(dir, configCommit, hooksPath(root), saved);
+export async function applyOverlay({ root, dir, configCommit, saved, resume }: { root: string; dir: string; configCommit: string; saved: string; resume?: true }): Promise<WorkflowFailure | undefined> {
+  const applied = await applyBaseConfig(dir, configCommit, hooksPath(root), saved, resume ? { resume } : {});
   if (!applied.ok) return { code: 'base_config', message: applied.message };
   await deliverTeamAssets(dir);
   await recordConfigOverlay(dir, saved);
@@ -17,10 +18,14 @@ export async function applyOverlay({ root, dir, configCommit, saved }: { root: s
 
 /**
  * Puts back each branch agent file the step left unchanged. Why they are not back, when git could not list the copy's
- * files. An overlay already restored, whose `saved` is gone, has nothing left to put back.
+ * files. An overlay already restored, whose `saved` is gone, has nothing left to put back. An overlay a killed process
+ * left `unfinished` had no step run over it, so every agent file in the copy is the overlay's, and all are put back.
  */
-export async function restoreOverlay({ dir, configCommit, saved }: { dir: string; configCommit: string; saved: string }): Promise<string | undefined> {
+export async function restoreOverlay({ dir, configCommit, saved, unfinished }: { dir: string; configCommit: string; saved: string; unfinished?: true }): Promise<string | undefined> {
+  // A copy aside cut short left the branch's files in the copy.
+  if (unfinished) await fs.rm(`${saved}.partial`, { recursive: true, force: true });
   if (!await pathExists(saved)) return undefined;
+  if (unfinished) await recordConfigOverlay(dir, saved);
   return restoreUneditedConfig(dir, configCommit, saved);
 }
 

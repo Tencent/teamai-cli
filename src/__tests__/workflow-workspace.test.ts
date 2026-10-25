@@ -1470,6 +1470,40 @@ steps:
     expect(await pushIfOrigin(repo, 'teamai/solo', [])).toBe('pushed');
   });
 
+  it.each([
+    ['copying the branch files aside', async ({ saved }: { dir: string; saved: string; apply: () => Promise<unknown> }) => {
+      fs.mkdirSync(`${saved}.partial`, { recursive: true });
+      fs.writeFileSync(path.join(`${saved}.partial`, '_conflicts'), '');
+    }],
+    ['after it took the branch files out', async ({ dir, apply }: { dir: string; saved: string; apply: () => Promise<unknown> }) => {
+      await apply();
+      fs.rmSync(path.join(dir, 'AGENTS.md'));
+    }],
+  ])('finishes the agent configuration reset a process killed while %s left', async (_when, killed) => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-base-config-')));
+    dirs.push(root);
+    const repo = path.join(root, 'repo');
+    const commit = (text: string): string => {
+      fs.writeFileSync(path.join(repo, 'AGENTS.md'), text);
+      execFileSync('git', ['add', 'AGENTS.md'], { cwd: repo });
+      execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'agents'], { cwd: repo });
+      return git(['rev-parse', 'HEAD'], repo).trim();
+    };
+    execFileSync('git', ['init', '-q', '-b', 'main', repo]);
+    const base = commit('base rules\n');
+    const head = commit('branch rules\n');
+    const opened = await ensureWorktree(repo, 'teamai/r/step/p1', head);
+    if ('error' in opened) throw new Error(opened.error);
+    const saved = path.join(root, 'attempt', 'overlay');
+    await killed({ dir: opened.dir, saved, apply: () => applyBaseConfig(opened.dir, base, hooksPath(repo), saved) });
+
+    expect(await applyBaseConfig(opened.dir, base, hooksPath(repo), saved, { resume: true })).toEqual({ ok: true, saved });
+
+    expect(fs.readFileSync(path.join(opened.dir, 'AGENTS.md'), 'utf8')).toBe('base rules\n');
+    expect(fs.readFileSync(path.join(saved, 'AGENTS.md'), 'utf8')).toBe('branch rules\n');
+    expect(fs.existsSync(`${saved}.partial`)).toBe(false);
+  });
+
   it('fails the agent configuration reset to a base commit this checkout does not have, and leaves the branch agent files', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-base-config-'));
     dirs.push(root);

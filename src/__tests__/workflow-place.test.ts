@@ -10,6 +10,7 @@ import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { runConformanceScenario, type ConformanceClient } from '../workflow/conformance-interpreter.js';
 import { PLACE_CHECKOUT_FILES, workflowPlaceConformanceScenarios } from '../workflow/conformance.js';
 import { inProcessClient } from '../workflow/protocol.js';
+import { pull } from '../pull.js';
 import { pendingRecords } from '../workflow/records.js';
 import { findRunConfig } from '../workflow/run-location.js';
 import { cancelRun } from '../workflow/run-controls.js';
@@ -103,6 +104,38 @@ describe('prepared places through the workflow client', () => {
     expect(run).toMatchObject({ steps: expect.arrayContaining([expect.objectContaining({ id: 'change.write', status: 'failed', failure: { code: outcome === 'success' ? 'push_failed' : 'tool_failed', message: expect.stringContaining('push') } })]) });
     expect(fs.existsSync(lease.cwd)).toBe(true);
     expect(git(f.work, 'show', `${lease.workspace.branch}:code.txt`)).toBe('keep this work');
+  });
+
+  describe('a process killed while it puts the base agent files over the branch', () => {
+    /** Runs the first step, which commits its own AGENTS.md, then crashes the prepare of the second while it delivers the team's assets. */
+    async function crashedPrepare() {
+      const f = await fixture(); const first = await next(f);
+      fs.writeFileSync(path.join(first.cwd, 'AGENTS.md'), 'Branch instructions.\n');
+      expect(await f.client.report(f.runId, { attempt: first.attempt, revision: first.revision, outcome: 'success', driver: f.driver })).toMatchObject({ data: { accepted: true } });
+      vi.mocked(pull).mockRejectedValueOnce(new Error('killed while delivering'));
+      await expect(next(f)).rejects.toThrow('killed while delivering');
+      return { f, dir: first.cwd };
+    }
+
+    it('lets the next prepare of the attempt finish the overlay', async () => {
+      const { f, dir } = await crashedPrepare();
+      const second = await next(f);
+      expect(second.cwd).toBe(dir);
+      expect(fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf8')).toBe('Trusted base instructions.\n');
+      expect(await f.client.report(f.runId, { attempt: second.attempt, revision: second.revision, outcome: 'success', driver: f.driver })).toMatchObject({ data: { accepted: true } });
+      expect(git(f.remote, 'show', `${second.workspace.branch}:AGENTS.md`)).toBe('Branch instructions.');
+    });
+
+    it('puts the branch agent files back when the attempt is given up', async () => {
+      const { f, dir } = await crashedPrepare();
+      const run = await readRun(f.config, f.runId);
+      const polish = typeof run === 'object' ? run.steps.find((step) => step.id === 'change.polish') : undefined;
+      if (polish?.status !== 'leased') throw new Error(JSON.stringify(polish));
+      await cancelRun(f.config, f.runId, f.env.secrets);
+      await f.client.report(f.runId, { attempt: polish.lease.attempt, revision: polish.lease.revision, outcome: 'released', driver: f.driver });
+      expect(fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf8')).toBe('Branch instructions.\n');
+      expect(git(dir, 'status', '--porcelain')).toBe('');
+    });
   });
 
   it('does not commit or push a cancelled attempt', async () => {

@@ -9,7 +9,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { TeamaiConfigBaseSchema } from '../types.js';
-import { writeJsonAtomic } from '../utils/fs.js';
+import { pathExists, writeJsonAtomic } from '../utils/fs.js';
 
 /** Agent configuration a workspace step reads from the run's base rather than from its branch. */
 export const AGENT_PATHS: readonly string[] = agentConfigPaths();
@@ -290,9 +290,10 @@ export async function mergeBranch(dir: string, commit: string): Promise<
 /**
  * Replaces agent configuration with the copy at `commit` and points hooks at an empty directory.
  * `saved`, a directory that does not exist yet, receives the branch's own copy, put back for paths the step does not edit.
+ * With `resume`, a `saved` an interrupted run of this left is the branch's copy, and the rest is done again over it.
  */
 export async function applyBaseConfig(
-  dir: string, commit: string, hooks: string, saved: string,
+  dir: string, commit: string, hooks: string, saved: string, options: { resume?: true } = {},
 ): Promise<{ ok: true; saved: string } | { ok: false; message: string }> {
   await git(dir, ['config', '--worktree', 'core.hooksPath', hooks]);
   const linked = await symlinkedParent(dir);
@@ -315,22 +316,28 @@ export async function applyBaseConfig(
     return { ok: false, message: `Agent configuration in ${dir} could not be reset to the run's base commit ${commit}, because its git index could not be read, so the step did not run. Check that git status works in ${dir}, then retry the step.` };
   }
   await fs.mkdir(path.dirname(saved), { recursive: true });
-  const made = await fs.mkdir(saved).then(() => true, (error: unknown) => {
-    if (error instanceof Error && 'code' in error && error.code === 'EEXIST') return false;
-    throw error;
-  });
-  if (!made) {
+  // The branch's files are copied aside under another name, and renamed to `saved` once all are there, so a process
+  // killed while it copies leaves them in place in the copy, and a `saved` that exists holds every one of them.
+  const copying = `${saved}.partial`;
+  await fs.rm(copying, { recursive: true, force: true });
+  const kept = await pathExists(saved);
+  if (kept && !options.resume) {
     return { ok: false, message: `Agent configuration in ${dir} was not reset to the run's base commit ${commit}, because ${saved} already holds the branch's agent files from an earlier attempt to prepare this step, so the step did not run. Copy the files you need from ${saved} into ${dir}, delete ${saved}, then retry the step.` };
   }
-  const conflicts = (await git(dir, ['ls-files', '-u', '-z', '--', ...AGENT_PATHS])).stdout;
-  await fs.writeFile(path.join(saved, '_conflicts'), conflicts);
-  for (const relative of AGENT_PATHS) {
-    try {
-      await copyEntry(path.join(dir, relative), path.join(saved, relative));
-    } catch {
-      // The branch does not have this path.
+  if (!kept) {
+    await fs.mkdir(copying);
+    await fs.writeFile(path.join(copying, '_conflicts'), (await git(dir, ['ls-files', '-u', '-z', '--', ...AGENT_PATHS])).stdout);
+    for (const relative of AGENT_PATHS) {
+      try {
+        await copyEntry(path.join(dir, relative), path.join(copying, relative));
+      } catch {
+        // The branch does not have this path.
+      }
     }
+    await fs.rename(copying, saved);
   }
+  // Read back, so a resumed prepare puts back the conflicts the branch had, which the base checkout cleared.
+  const conflicts = await fs.readFile(path.join(saved, '_conflicts'), 'utf8');
   for (const relative of AGENT_PATHS) await fs.rm(path.join(dir, relative), { recursive: true, force: true });
   const refused = await checkoutBaseConfig(dir, commit, present.paths);
   if (refused) {

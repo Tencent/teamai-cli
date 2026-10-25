@@ -6,27 +6,27 @@ import { ChangesSchema, FailureSchema, ReadSchema } from '../step-state.js';
 import { AttemptIdSchema, placeRecordPath, RunIdSchema, type AttemptId, type RunId } from '../store.js';
 import { WorkspaceContractSchema } from '../workspace.js';
 
+/** A lease without a workspace contract, in the checkout itself: what it changes there fails it, unless it is interactive and may write. */
+const CheckoutRoleSchema = z.object({ role: z.literal('checkout') });
+/** A read-only lease in a copy of `workspace.branch`, which held `found` untracked when it was marked as read. */
+const ReaderRoleSchema = z.object({ role: z.literal('reader'), workspace: WorkspaceContractSchema, found: z.array(z.string()) });
+/**
+ * A lease that commits to `workspace.branch`, reporting the range from `rangeFrom`. `conflicts` hashes each file
+ * that was unmerged when the step got it, and `conflictNote` is what its prompt adds about them.
+ */
+const WriterRoleSchema = z.object({
+  role: z.literal('writer'),
+  workspace: WorkspaceContractSchema,
+  rangeFrom: z.string().optional(),
+  conflicts: z.record(z.string()),
+  conflictNote: z.string().optional(),
+});
+
 /**
  * How the attempt uses its place. The snapshot a reader is checked against is `before.json` beside the record, and the
  * branch's agent files kept while the base overlay is in place are in `overlay/`.
  */
-const PlaceRoleSchema = z.discriminatedUnion('role', [
-  /** A lease without a workspace contract, in the checkout itself: what it changes there fails it, unless it is interactive and may write. */
-  z.object({ role: z.literal('checkout') }),
-  /** A read-only lease in a copy of `workspace.branch`, which held `found` untracked when it was marked as read. */
-  z.object({ role: z.literal('reader'), workspace: WorkspaceContractSchema, found: z.array(z.string()) }),
-  /**
-   * A lease that commits to `workspace.branch`, reporting the range from `rangeFrom`. `conflicts` hashes each file
-   * that was unmerged when the step got it, and `conflictNote` is what its prompt adds about them.
-   */
-  z.object({
-    role: z.literal('writer'),
-    workspace: WorkspaceContractSchema,
-    rangeFrom: z.string().optional(),
-    conflicts: z.record(z.string()),
-    conflictNote: z.string().optional(),
-  }),
-]);
+const PlaceRoleSchema = z.discriminatedUnion('role', [CheckoutRoleSchema, ReaderRoleSchema, WriterRoleSchema]);
 
 /** What finishing a place made of the step's end, masked: the report the attempt settles with. */
 export const PlaceFinishedSchema = z.object({
@@ -52,6 +52,14 @@ const PlaceBase = {
 };
 
 export const PlaceRecordSchema = z.discriminatedUnion('phase', [
+  /**
+   * Git is done in a copy, and the base overlay goes in next. Recorded before the overlay, so a prepare cut short is
+   * finished by the next one, or given up. `setup` is what runs once it is staged, in a worktree prepare created.
+   */
+  z.object({
+    ...PlaceBase, phase: z.literal('preparing'), place: z.discriminatedUnion('role', [ReaderRoleSchema, WriterRoleSchema]),
+    setup: LeaseSetupSchema.optional(), expiresAt: z.string().optional(),
+  }),
   /** Git and the overlay are done in a worktree prepare created, and `setup` runs there before the step. */
   z.object({ ...PlaceBase, phase: z.literal('staged'), setup: LeaseSetupSchema, expiresAt: z.string().optional() }),
   z.object({ ...PlaceBase, phase: z.literal('ready') }),
