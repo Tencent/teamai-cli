@@ -6,7 +6,7 @@ import { attemptEnv } from '../workflow/attempt-marker.js';
 import { parseSkillCall } from '../workflow/drivers/skill/skill-driver.js';
 import {
   ackLiteral, chooseHostLiteral, describeLiteral, generatedStartPatterns, INVOCATIONS, localStartLiteral, nextLiteral, pollLiteral, preapprovedPatterns,
-  reportLiteral, runnerArgs, startLiteral, unavailableLiteral, type Invocation,
+  reportLiteral, runnerArgs, startLiteral, takeoverLiteral, unavailableLiteral, type Invocation,
 } from '../workflow/drivers/skill/literals.js';
 import { loadCommandTable } from './helpers/command-table.js';
 
@@ -56,6 +56,7 @@ describe.each(INVOCATIONS)('skill driver literals run as %s', (invocation) => {
     expect(skillCall(filled, invocation)).toEqual({ kind: 'start', name: 'check', answers: { parallel: 2, confirmed: true }, inputs: { task: 'a fix' } });
     expect(skillCall(nextLiteral(invocation, RUN), invocation)).toEqual({ kind: 'next', run: RUN, wait: false });
     expect(skillCall(pollLiteral(invocation, RUN), invocation)).toEqual({ kind: 'next', run: RUN, wait: true });
+    expect(skillCall(takeoverLiteral(invocation, RUN), invocation)).toEqual({ kind: 'takeover', run: RUN });
     expect(skillCall(reportLiteral(invocation, RUN, ATTEMPT), invocation)).toEqual({ kind: 'report', run: RUN, attempt: ATTEMPT, role: 'agent', modelUnavailable: false });
     expect(skillCall(unavailableLiteral(invocation, RUN, ATTEMPT), invocation)).toEqual({ kind: 'report', run: RUN, attempt: ATTEMPT, role: 'agent', modelUnavailable: true });
     expect(skillCall(chooseHostLiteral(invocation, RUN, 'h2'), invocation)).toEqual({ kind: 'choose', run: RUN, choice: 'h2' });
@@ -83,13 +84,15 @@ describe.each(INVOCATIONS)('skill driver literals run as %s', (invocation) => {
 });
 
 describe('next options of the skill driver', () => {
-  it('name the host choices, the shape of an offer, and that one call takes one of --wait, --choice and --ack', () => {
+  it('name the host choices, the shape of an offer, and that one call takes one of --wait, --takeover, --choice and --ack', () => {
     expect(parseSkillCall({ kind: 'next', run: RUN, options: { choice: 'h9' } }, {}))
       .toEqual({ error: { code: 'invalid_arguments', message: '--choice takes the id of a host question option: h1, h2', next: null } });
     expect(parseSkillCall({ kind: 'next', run: RUN, options: { ack: ATTEMPT } }, {}))
       .toEqual({ error: { code: 'invalid_arguments', message: `--ack takes the offer of a dispatch action, such as dispatch.a1b2c3d4e; got ${ATTEMPT}`, next: null } });
     expect(parseSkillCall({ kind: 'next', run: RUN, options: { wait: true, ack: `dispatch.${ATTEMPT}` } }, {}))
-      .toEqual({ error: { code: 'invalid_arguments', message: 'next takes at most one of --wait, --choice and --ack', next: null } });
+      .toEqual({ error: { code: 'invalid_arguments', message: 'next takes at most one of --wait, --takeover, --choice and --ack', next: null } });
+    expect(parseSkillCall({ kind: 'next', run: RUN, options: { wait: true, takeover: true } }, {}))
+      .toEqual({ error: { code: 'invalid_arguments', message: 'next takes at most one of --wait, --takeover, --choice and --ack', next: null } });
   });
 });
 

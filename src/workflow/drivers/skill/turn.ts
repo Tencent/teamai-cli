@@ -42,6 +42,8 @@ export interface DispatchAction {
   report: Literal;
   /** Present when the model names one: run it instead when the host cannot run that model. */
   unavailable?: Literal;
+  /** Present when an earlier session was shown this dispatch: what to do about the child it may have started. */
+  reissued?: string;
 }
 
 /** A child the agent started whose attempt the engine stopped: shown in every foreground turn until `report` runs. */
@@ -128,6 +130,7 @@ function dispatchOf(state: SkillState, open: Extract<AttemptState, { phase: 'off
     dir: dispatch.dir, brief: dispatch.brief, ...(dispatch.agent !== undefined ? { agent: dispatch.agent } : {}), model: dispatch.model,
     ack: ackLiteral(invocation, run, attempt), report: reportLiteral(invocation, run, attempt),
     ...(dispatch.model.by !== 'definition' ? { unavailable: unavailableLiteral(invocation, run, attempt) } : {}),
+    ...(open.phase === 'offered' && open.reissued ? { reissued: `An earlier session was given this dispatch, and its child may still run as ${titleOf(run, open)}. Stop that child if you can reach it, then dispatch this one.` } : {}),
   };
 }
 

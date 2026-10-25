@@ -34,7 +34,9 @@ export const TRANSITIONS = [
   { id: 'R14', state: 'host', input: 'report, next `--ack`', guard: '', effects: 'none', next: 'host', action: 'error `choice_pending`, next: the next literal' },
   { id: 'R15', state: 'drive, done', input: 'next `--choice h`', guard: '', effects: 'none', next: 'unchanged', action: 'error `unknown_choice`, next: the next literal' },
   { id: 'S1', state: 'host, drive, done', input: 'an agent call from session s', guard: 'the owner is s, or either session is unknown', effects: '`lastCallAt` := now; owner := s when unknown', next: 'unchanged', action: 'the input\'s row' },
-  { id: 'S2', state: 'host, drive, done', input: 'an agent call from session s', guard: 'owner o is not s, and both are known', effects: 'none', next: 'unchanged', action: 'error `orchestrator_active`, next null' },
+  { id: 'S2', state: 'host, drive, done', input: 'an agent call from session s without `--takeover`', guard: 'owner o is not s, both are known, and o called within `TAKEOVER_STALE_MS`', effects: 'none', next: 'unchanged', action: 'error `orchestrator_active`, next: the takeover literal' },
+  { id: 'S3', state: 'host, drive, done', input: 'an agent call from session s without `--takeover`', guard: 'owner o is not s, both are known, and o\'s last call is older than `TAKEOVER_STALE_MS`', effects: 'owner := s; `lastCallAt` := now; every offered or dispatched attempt becomes offered with `reissued`', next: 'unchanged', action: 'event `takeover`; the input\'s row' },
+  { id: 'S4', state: 'host, drive, done', input: 'next `--takeover` from session s', guard: '', effects: 'as S3, whatever the owner\'s age', next: 'unchanged', action: 'event `takeover`; the turn of a tick' },
   { id: 'S5', state: 'any', input: 'a runner call (`report --attempt a` with the marker `<run>/a`)', guard: '', effects: 'no session check, no `lastCallAt`', next: 'unchanged', action: 'C rows' },
   { id: 'D1', state: 'drive', input: 'tick', guard: '', effects: 'engine `next {driver: identity + SKILL_CAN, running: every open attempt, canTakeLease: fewer open than options.parallel, and than one under a serial host; false in a runner\'s check}`', next: 'drive', action: '' },
   { id: 'D2', state: 'drive', input: 'reply `cancelled` holds a', guard: 'a queued', effects: 'drop a', next: 'drive', action: 'event `stopped`' },
@@ -102,7 +104,8 @@ export type ReportReply = { kind: 'reported'; outcome: Extract<TurnEvent, { kind
 export type MachineInput =
   | { kind: 'describe'; needed: StartAnswer[]; localOnly: string[] }
   | { kind: 'start'; name: string; check: StartCheck; localOnly: string[]; prompts: boolean }
-  | { kind: 'call'; run: RunId; session: string | undefined; at: string }
+  /** `takeover`: the call is `next --takeover`. `staleMs`: how long the owner may go without a call before another session takes over. */
+  | { kind: 'call'; run: RunId; session: string | undefined; at: string; takeover: boolean; staleMs: number }
   | { kind: 'runner-call' }
   /** `runner`: the check a runner makes while its attempt runs, which takes no lease. */
   | { kind: 'tick'; role: 'call' | 'runner' }
@@ -147,7 +150,8 @@ export type Refusal =
   | { code: 'needs_local_driver'; name: string; steps: string[] }
   | { code: 'confirm_needed'; name: string; missing: StartAnswer[]; outOfRange?: { parallel: number; ceiling: number } }
   | { code: 'not_skill_run'; run: RunId }
-  | { code: 'orchestrator_active'; run: RunId }
+  /** `since`: the seconds since the owner's last call. */
+  | { code: 'orchestrator_active'; run: RunId; since: number }
   | { code: 'choice_pending'; run: RunId }
   | { code: 'unknown_choice'; run: RunId }
   | { code: 'unknown_offer'; run: RunId; attempt: AttemptId }
@@ -158,7 +162,7 @@ export type Refusal =
 /** What the call answers, when the row decides it. */
 export type Answer =
   | { kind: 'describe'; ask: DescribeAsk['kind'] }
-  | { kind: 'error'; refusal: Refusal; next: 'describe' | 'next' | 'same' | null }
+  | { kind: 'error'; refusal: Refusal; next: 'describe' | 'next' | 'takeover' | 'same' | null }
   | { kind: 'engine-error'; error: WorkflowFailure; next: 'next' | 'same' }
   | { kind: 'turn'; events: 'unseen' | 'none'; poll: boolean };
 
@@ -235,9 +239,12 @@ export function step(state: SkillState | undefined, input: MachineInput): Step |
       return { row: 'R10', state, effects: [{ kind: 'start', parallel: input.check.parallel, host: input.prompts ? 'pending' : 'none' }] };
     case 'call': {
       if (!state) return { row: 'R11', state, effects: [], answer: { kind: 'error', refusal: { code: 'not_skill_run', run: input.run }, next: null } };
+      if (input.takeover) return { row: 'S4', state: takenOver(state, input.session, input.at), effects: [] };
       const owner = state.orchestrator.session;
       if (owner !== undefined && input.session !== undefined && owner !== input.session) {
-        return { row: 'S2', state, effects: [], answer: { kind: 'error', refusal: { code: 'orchestrator_active', run: state.run }, next: null } };
+        const idle = Date.parse(input.at) - Date.parse(state.orchestrator.lastCallAt);
+        if (idle > input.staleMs) return { row: 'S3', state: takenOver(state, input.session, input.at), effects: [] };
+        return { row: 'S2', state, effects: [], answer: { kind: 'error', refusal: { code: 'orchestrator_active', run: state.run, since: Math.round(idle / 1000) }, next: 'takeover' } };
       }
       return { row: 'S1', state: { ...state, orchestrator: { session: state.orchestrator.session ?? input.session, lastCallAt: input.at } }, effects: [] };
     }
@@ -259,7 +266,10 @@ export function step(state: SkillState | undefined, input: MachineInput): Step |
       if (!state) return undefined;
       if (state.host.kind === 'pending') return choicePending(state);
       const open = openAttempt(state, input.attempt);
-      if (open?.phase === 'offered') return { row: 'K1', state: withAttempt(state, { ...open, phase: 'dispatched' }), effects: [] };
+      if (open?.phase === 'offered') {
+        const { reissued: _reissued, ...rest } = open;
+        return { row: 'K1', state: withAttempt(state, { ...rest, phase: 'dispatched' }), effects: [] };
+      }
       if (open?.phase === 'dispatched') return { row: 'K2', state, effects: [] };
       return { row: 'K3', state, effects: [], answer: { kind: 'error', refusal: { code: 'unknown_offer', run: state.run, attempt: input.attempt }, next: 'next' } };
     }
@@ -419,6 +429,19 @@ export function hasSlot(state: SkillState): boolean {
 function tick(state: SkillState, role: 'call' | 'runner'): Step {
   if (state.host.kind === 'pending') return { row: 'R12', state, effects: [] };
   return { row: 'D1', state, effects: [{ kind: 'next', running: state.attempts.map((open) => open.attempt), canTakeLease: role === 'call' && hasSlot(state) }] };
+}
+
+/**
+ * `state` driven from session `session` from `at` on. Every dispatch an earlier session was shown is offered again, as
+ * reissued, since that session may have started its child.
+ */
+function takenOver(state: SkillState, session: string | undefined, at: string): SkillState {
+  const attempts = state.attempts.map((open): AttemptState => {
+    if (open.phase !== 'offered' && open.phase !== 'dispatched') return open;
+    return { ...open, phase: 'offered', reissued: true };
+  });
+  const from = state.orchestrator.session;
+  return withEvent({ ...state, attempts, orchestrator: { ...(session !== undefined ? { session } : {}), lastCallAt: at } }, { kind: 'takeover', ...(from !== undefined ? { from } : {}) });
 }
 
 function choicePending(state: SkillState): Step {

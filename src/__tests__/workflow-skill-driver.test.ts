@@ -158,6 +158,34 @@ describe('skill driver', () => {
     ]));
   });
 
+  it('a second live session gets orchestrator_active, and --takeover reissues acked dispatches', async () => {
+    const harness = await skillHarness({ feature: FEATURE });
+    roots.push(harness.root);
+    const started = await harness.call({ kind: 'start', name: 'feature', answers: { parallel: 2, confirmed: false }, inputs: undefined });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+    const { run } = started.data.turn;
+    const chosen = await harness.call({ kind: 'choose', run, choice: 'h1' });
+    if (!('data' in chosen) || !('turn' in chosen.data)) throw new Error(JSON.stringify(chosen));
+    const api = chosen.data.turn.actions.find((action) => action.kind === 'dispatch' && action.step === 'api');
+    const ui = chosen.data.turn.actions.find((action) => action.kind === 'dispatch' && action.step === 'ui');
+    if (api?.kind !== 'dispatch' || ui?.kind !== 'dispatch') throw new Error(JSON.stringify(chosen));
+    await harness.call({ kind: 'ack', run, attempt: api.attempt });
+
+    const takeover = `teamai workflow next ${run} --driver skill --takeover`;
+    expect(await harness.call({ kind: 'next', run, wait: false }, { session: 'session-b' }))
+      .toEqual({ error: { code: 'orchestrator_active', message: expect.stringContaining('Ask the person'), next: takeover } });
+
+    const taken = await harness.call({ kind: 'takeover', run }, { session: 'session-b' });
+    if (!('data' in taken) || !('turn' in taken.data)) throw new Error(JSON.stringify(taken));
+    expect(taken.data.turn.events).toContainEqual({ kind: 'takeover', from: 'session-a' });
+    // Both dispatches are offered again, saying the child the first session may have started may still run.
+    expect(taken.data.turn.actions).toEqual(expect.arrayContaining([api, ui].map((action) => ({ ...action, reissued: expect.stringContaining(action.title) }))));
+    expect(taken.data.turn.actions).toHaveLength(2);
+    expect(taken.data.turn.running).toContainEqual({ attempt: api.attempt, step: 'api', phase: 'offered', report: api.report });
+    // The first session no longer drives the run.
+    expect(await harness.call({ kind: 'next', run, wait: false })).toMatchObject({ error: { code: 'orchestrator_active', next: takeover } });
+  });
+
   it('a cancelled command is stopped by its runner and reported released; a cancelled prompt step shows stop until reported', async () => {
     // A prompt step's child is the agent's, so the agent is asked to stop it, until it reports.
     const prompts = await skillHarness({ feature: FEATURE });

@@ -53,6 +53,11 @@ export function nextLiteral(invocation: Invocation, run: string): Literal {
   return LiteralSchema.parse(`${invocation} workflow next ${run} --driver skill`);
 }
 
+/** Takes the run over from the session that drives it: printed only with `orchestrator_active`, for the person to agree to. */
+export function takeoverLiteral(invocation: Invocation, run: string): Literal {
+  return LiteralSchema.parse(`${invocation} workflow next ${run} --driver skill --takeover`);
+}
+
 export function pollLiteral(invocation: Invocation, run: string): Literal {
   return LiteralSchema.parse(`${invocation} workflow next ${run} --driver skill --wait`);
 }

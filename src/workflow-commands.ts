@@ -172,7 +172,7 @@ export async function workflowStart(name: string, options: { driver?: string; to
   writeEnvelope(await runLocalDriver(config, runId, process.cwd(), { tools, toolPaths: teamConfig.toolPaths, autoApprove: options.autoApprove }), secrets);
 }
 
-export async function workflowNext(runId: string, options: { json?: string; prepare?: boolean; driver?: string; wait?: boolean; choice?: string; ack?: string }): Promise<void> {
+export async function workflowNext(runId: string, options: { json?: string; prepare?: boolean; driver?: string; wait?: boolean; takeover?: boolean; choice?: string; ack?: string }): Promise<void> {
   const { driver: kind, ...rest } = options;
   if (kind === 'skill') {
     await workflowSkill({ kind: 'next', run: runId, options: rest });
@@ -180,8 +180,9 @@ export async function workflowNext(runId: string, options: { json?: string; prep
   }
   setStderrOnly(true);
   const skillOnly = options.wait ? '--wait needs --driver skill'
-    : options.choice !== undefined ? '--choice needs --driver skill'
-      : options.ack !== undefined ? '--ack needs --driver skill' : undefined;
+    : options.takeover ? '--takeover needs --driver skill'
+      : options.choice !== undefined ? '--choice needs --driver skill'
+        : options.ack !== undefined ? '--ack needs --driver skill' : undefined;
   const refused = kind !== undefined ? `next takes --driver skill, not --driver ${kind}` : skillOnly;
   if (refused !== undefined) {
     writeEnvelope({ error: { code: 'invalid_arguments', message: refused } }, collectEnvSecrets());

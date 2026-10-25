@@ -26,6 +26,8 @@ export type SkillCall =
   | { kind: 'describe'; name: string }
   | { kind: 'start'; name: string; answers: { parallel?: number; confirmed: boolean }; inputs: unknown }
   | { kind: 'next'; run: RunId; wait: boolean }
+  /** `next --takeover`: this session drives the run from now on, as the person agreed. */
+  | { kind: 'takeover'; run: RunId }
   /** `next --choice`: the agent's answer to the host question. */
   | { kind: 'choose'; run: RunId; choice: HostChoice }
   /** `next --ack dispatch.<a>`: the child of attempt `a` started. */
@@ -107,6 +109,7 @@ const StartOptionsSchema = z.object({
 const OFFER = /^dispatch\.(.+)$/;
 const NextOptionsSchema = z.object({
   wait: z.boolean().optional(),
+  takeover: z.boolean().optional(),
   choice: z.enum(HOST_CHOICES, { errorMap: () => ({ message: `--choice takes the id of a host question option: ${HOST_CHOICES.join(', ')}` }) }).optional(),
   ack: z.string().transform((offer, ctx) => {
     const attempt = AttemptIdSchema.safeParse(OFFER.exec(offer)?.[1]);
@@ -116,8 +119,8 @@ const NextOptionsSchema = z.object({
   }).optional(),
   json: z.undefined({ invalid_type_error: '--driver skill takes no --json: the skill driver composes every request itself' }),
   prepare: z.undefined({ invalid_type_error: '--prepare is for --json drivers' }),
-}).refine((options) => [options.wait, options.choice, options.ack].filter((given) => given !== undefined && given !== false).length <= 1, {
-  message: 'next takes at most one of --wait, --choice and --ack',
+}).refine((options) => [options.wait, options.takeover, options.choice, options.ack].filter((given) => given !== undefined && given !== false).length <= 1, {
+  message: 'next takes at most one of --wait, --takeover, --choice and --ack',
 });
 const ReportOptionsSchema = z.object({
   attempt: AttemptIdSchema,
@@ -158,7 +161,8 @@ export function parseSkillCall(
   if (raw.kind === 'next') {
     const options = NextOptionsSchema.safeParse(raw.options);
     if (!options.success) return invalid(options.error);
-    const { choice, ack, wait } = options.data;
+    const { choice, ack, wait, takeover } = options.data;
+    if (takeover) return { kind: 'takeover', run: run.data };
     if (choice !== undefined) return { kind: 'choose', run: run.data, choice };
     if (ack !== undefined) return { kind: 'ack', run: run.data, attempt: ack };
     return { kind: 'next', run: run.data, wait: wait === true };
@@ -177,6 +181,8 @@ export async function runSkillCall(call: SkillCall, context: SkillContext): Prom
       return start(call, context);
     case 'next':
       return call.wait ? poll(context, call.run) : foreground(context, call.run, { kind: 'next' });
+    case 'takeover':
+      return foreground(context, call.run, { kind: 'takeover' });
     case 'choose':
       return foreground(context, call.run, { kind: 'choose', choice: call.choice });
     case 'ack':

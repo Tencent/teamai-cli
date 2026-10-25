@@ -58,7 +58,8 @@ export const AttemptStateSchema = z.discriminatedUnion('phase', [
   z.object({ ...AttemptBase, phase: z.literal('preparing') }),
   z.object({ ...AttemptBase, phase: z.literal('queued'), behind: AttemptIdSchema }),
   z.object({ ...AttemptBase, phase: z.literal('running') }),
-  z.object({ ...AttemptBase, phase: z.literal('offered'), dispatch: DispatchSchema }),
+  /** `reissued`: an earlier session was shown this dispatch, and a child it started may still run. */
+  z.object({ ...AttemptBase, phase: z.literal('offered'), dispatch: DispatchSchema, reissued: z.literal(true).optional() }),
   z.object({ ...AttemptBase, phase: z.literal('dispatched'), dispatch: DispatchSchema }),
   z.object({ ...AttemptBase, phase: z.literal('stopping'), by: z.enum(['runner', 'agent']), why: z.enum(STOP_REASONS) }),
   /** `stopped`: the report gives up an attempt stopped for this reason. */
@@ -69,6 +70,8 @@ export type AttemptState = z.infer<typeof AttemptStateSchema>;
 export const TurnEventSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('started'), step: z.string(), attempt: AttemptIdSchema }),
   z.object({ kind: z.literal('restarted'), step: z.string(), attempt: AttemptIdSchema }),
+  /** This session took the run over from session `from`, when that one was known. */
+  z.object({ kind: z.literal('takeover'), from: z.string().optional() }),
   /** The engine cancelled the attempt's lease, or its deadline passed, so its report was not recorded. */
   z.object({ kind: z.literal('stopped'), step: z.string(), attempt: AttemptIdSchema, why: z.enum(STOP_REASONS) }),
   /** A report came again for an attempt already settled. */

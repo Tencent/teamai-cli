@@ -271,12 +271,20 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     },
   },
   {
-    name: 'a second known session is refused',
-    rows: ['S2'],
+    name: 'a second live session is refused with the takeover literal, an owner gone quiet is taken over by any call, and --takeover takes over at once',
+    rows: ['S2', 'S3', 'S4'],
     run: async () => {
-      const made = await harness({ check: CHECK });
-      const { run } = await started(made);
-      expect(await made.call({ kind: 'next', run, wait: false }, { session: 'session-b' })).toMatchObject({ error: { code: 'orchestrator_active', next: null } });
+      const made = await harness({ check: SERVE }, { runners: sleepFaked([]) });
+      const { turn: { run } } = await serving(made);
+      const refused = { error: { code: 'orchestrator_active', message: expect.stringMatching(/which last called [0-9]+ s ago/), next: `teamai workflow next ${run} --driver skill --takeover` } };
+      expect(await made.call({ kind: 'next', run, wait: false }, { session: 'session-b' })).toEqual(refused);
+      made.hold(true);
+      // The owner made no call for longer than the 200 s a session may go quiet.
+      await made.context.runners.sleep(201_000);
+      expect((await turnOf(await made.call({ kind: 'next', run, wait: false }, { session: 'session-b' }))).events).toContainEqual({ kind: 'takeover', from: 'session-a' });
+      expect(await made.call({ kind: 'next', run, wait: false })).toEqual(refused);
+      expect((await turnOf(await made.call({ kind: 'takeover', run }))).events).toContainEqual({ kind: 'takeover', from: 'session-b' });
+      made.hold(false);
       return made.rows;
     },
   },

@@ -80,7 +80,9 @@ Test parsing through `parseWorkflow` and `syncWorkflowDefinitions`. Test the eng
 | Row | State | Input | Guard | Effects | Next | Action |
 |---|---|---|---|---|---|---|
 | S1 | host, drive, done | an agent call from session s | the owner is s, or either session is unknown | `lastCallAt` := now; owner := s when unknown | unchanged | the input's row |
-| S2 | host, drive, done | an agent call from session s | owner o is not s, and both are known | none | unchanged | error `orchestrator_active`, next null |
+| S2 | host, drive, done | an agent call from session s without `--takeover` | owner o is not s, both are known, and o called within `TAKEOVER_STALE_MS` | none | unchanged | error `orchestrator_active`, next: the takeover literal |
+| S3 | host, drive, done | an agent call from session s without `--takeover` | owner o is not s, both are known, and o's last call is older than `TAKEOVER_STALE_MS` | owner := s; `lastCallAt` := now; every offered or dispatched attempt becomes offered with `reissued` | unchanged | event `takeover`; the input's row |
+| S4 | host, drive, done | next `--takeover` from session s | | as S3, whatever the owner's age | unchanged | event `takeover`; the turn of a tick |
 | S5 | any | a runner call (`report --attempt a` with the marker `<run>/a`) | | no session check, no `lastCallAt` | unchanged | C rows |
 
 ### Ticks, polls and the lock

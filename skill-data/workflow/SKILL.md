@@ -34,7 +34,7 @@ A turn lists the `actions` that wait for you, the `running` attempts, the `event
 
 Done when a turn has no `then`.
 
-When you have lost the last turn, after a compaction for instance, run `teamai workflow next <run> --driver skill` once for the current one.
+When you have lost the last turn, after a compaction or in a new session, run `teamai workflow next <run> --driver skill` once for the current one.
 
 ## Choose
 
@@ -60,6 +60,8 @@ A `dispatch` action is one prompt step for one child agent. For each one:
 
 When your host cannot run `model.name`, run `unavailable` in place of both steps.
 
+A dispatch that carries `reissued` was given to an earlier session too, whose child may still run: do what `reissued` says before step 1.
+
 The child finishes by running `report` and ends with that reply: take it as the newest turn. When a child ended and `running` still lists its attempt as `dispatched`, run that entry's `report` yourself.
 
 Done when every `dispatch` in the turn is acked.
@@ -70,4 +72,6 @@ The `done` action carries the `outcome`, and the `failure` when there is one. Te
 
 ## Errors
 
-A reply with `error` carries `code`, `message` and `next`. When `next` is a literal, run it. When it is null, tell the person `message`: only they can act on it.
+A reply with `error` carries `code`, `message` and `next`. When `next` is a literal, run it, except for `orchestrator_active`. When it is null, tell the person `message`: only they can act on it.
+
+`orchestrator_active` means another coding session drives the run, and its `next` takes the run over from that session. Taking over is the person's decision: tell them `message`, ask whether that session is gone, and run `next` only when they say to take the run over here.

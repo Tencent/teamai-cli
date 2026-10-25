@@ -14,7 +14,8 @@ import type { WorkflowEnvelope, WorkflowFailure } from '../../types.js';
 import { readChildResult } from './child-brief.js';
 import { HOST_PROFILES, SKILL_CAN, type HostChoice } from './host-profiles.js';
 import {
-  ackLiteral, chooseHostLiteral, describeLiteral, localStartLiteral, nextLiteral, pollLiteral, reportLiteral, unavailableLiteral, type Invocation, type Literal,
+  ackLiteral, chooseHostLiteral, describeLiteral, localStartLiteral, nextLiteral, pollLiteral, reportLiteral, takeoverLiteral, unavailableLiteral, type Invocation,
+  type Literal,
 } from './literals.js';
 import { readSkillState, writeSkillState, type ReportBody, type SkillState } from './skill-state.js';
 import { hasSlot, step, unseenEvents, type Answer, type EngineReply, type MachineInput, type ReadLease, type Refusal, type ReportReply, type Step } from './transitions.js';
@@ -31,6 +32,8 @@ export const WAIT_GRACE_MS = 5_000;
 export const TICK_LOCK_WAIT_MS = 30_000;
 /** How long a runner waits before it tries again: for the run lock, or to send a report the engine refused. */
 export const RUNNER_POLL_MS = 10_000;
+/** How long the session that drives a run may go without a call before another session takes the run over by calling. */
+export const TAKEOVER_STALE_MS = 200_000;
 /** The most steps the skill driver runs at once when the member set no `workflows.max_parallel`. */
 export const SKILL_MAX_CHILDREN = 3;
 const GRACE_CHECK_MS = 250;
@@ -164,8 +167,9 @@ export function errorOf(answer: Extract<Answer, { kind: 'error' | 'engine-error'
   const { refusal } = answer;
   const next = answer.next === null ? null
     : answer.next === 'next' && 'run' in refusal ? nextLiteral(invocation, refusal.run)
-      : answer.next === 'describe' && 'name' in refusal ? describeLiteral(invocation, refusal.name)
-        : same;
+      : answer.next === 'takeover' && 'run' in refusal ? takeoverLiteral(invocation, refusal.run)
+        : answer.next === 'describe' && 'name' in refusal ? describeLiteral(invocation, refusal.name)
+          : same;
   return { code: refusal.code, message: refusalMessage(refusal, invocation), next };
 }
 
@@ -185,7 +189,7 @@ function refusalMessage(refusal: Refusal, invocation: Invocation): string {
     case 'not_skill_run':
       return `Run ${refusal.run} is not driven by the skill driver on this machine. The person can continue it in a terminal with teamai workflow resume ${refusal.run}.`;
     case 'orchestrator_active':
-      return `Run ${refusal.run} is driven by another coding session. Continue it from that session.`;
+      return `Run ${refusal.run} is driven by another coding session, which last called ${refusal.since} s ago. Ask the person whether that session is gone, and run the command in next only when they agree to take the run over here; otherwise the run goes on from that session.`;
     case 'choice_pending':
       return `Run ${refusal.run} waits for the host question. Run the next literal, then the run of the option that fits your host.`;
     case 'unknown_choice':
@@ -279,14 +283,14 @@ function lockBusy(context: SkillContext, run: RunId, same: Literal): SkillAnswer
   return { error: errorOf(answer, { invocation: context.invocation, same }) };
 }
 
-/** Reads skill.json under the lock, and takes S1 or S2, or R11 when there is none. */
-async function called(context: SkillContext, run: RunId, same: Literal): Promise<{ state: SkillState } | { answer: SkillAnswer }> {
+/** Reads skill.json under the lock, and takes its S row, or R11 when there is none. */
+async function called(context: SkillContext, run: RunId, same: Literal, takeover = false): Promise<{ state: SkillState } | { answer: SkillAnswer }> {
   const read = await readSkillState(context.config, run);
   if ('kind' in read && read.kind === 'unreadable') {
     return { answer: { error: { code: 'run_unreadable', message: `The skill driver's state of run ${run} cannot be read (${read.reason}). The person can continue the run in a terminal with teamai workflow resume ${run}.`, next: null } } };
   }
   const state = 'kind' in read ? undefined : read;
-  const taken = take(context, state, { kind: 'call', run, session: context.session, at: context.now().toISOString() });
+  const taken = take(context, state, { kind: 'call', run, session: context.session, at: context.now().toISOString(), takeover, staleMs: TAKEOVER_STALE_MS });
   if (taken?.state && !taken.answer) return { state: taken.state };
   const refused = taken?.answer?.kind === 'error' || taken?.answer?.kind === 'engine-error' ? taken.answer : { kind: 'error' as const, refusal: { code: 'not_skill_run' as const, run }, next: null };
   return { answer: { error: errorOf(refused, { invocation: context.invocation, same, run }) } };
@@ -300,9 +304,10 @@ async function finish(context: SkillContext, lock: RunLock, state: SkillState, w
   return { data: { turn: turnOf(shown, { events, after: { kind: 'poll', run: pollLiteral(shown.invocation, shown.run) }, ...(waiting ? { waiting } : {}) }) } };
 }
 
-/** A call that answers at once: `next`, an answer to the host question, an ack, or a report from the agent. */
+/** A call that answers at once: `next`, a takeover, an answer to the host question, an ack, or a report from the agent. */
 export type ForegroundCall =
   | { kind: 'next' }
+  | { kind: 'takeover' }
   | { kind: 'choose'; choice: HostChoice }
   | { kind: 'ack'; attempt: AttemptId }
   | { kind: 'report'; attempt: AttemptId; modelUnavailable: boolean };
@@ -311,6 +316,8 @@ function literalOf(invocation: Invocation, run: RunId, call: ForegroundCall): Li
   switch (call.kind) {
     case 'next':
       return nextLiteral(invocation, run);
+    case 'takeover':
+      return takeoverLiteral(invocation, run);
     case 'choose':
       return chooseHostLiteral(invocation, run, call.choice);
     case 'ack':
@@ -329,6 +336,7 @@ async function applyCall(context: SkillContext, lock: RunLock, state: SkillState
   let taken: Step | undefined;
   switch (call.kind) {
     case 'next':
+    case 'takeover':
       return { state: state.done ? take(context, state, { kind: 'next' })?.state ?? state : state };
     case 'choose':
       taken = take(context, state, { kind: 'choose', choice: call.choice, profile: HOST_PROFILES[call.choice] });
@@ -369,7 +377,7 @@ async function applyCall(context: SkillContext, lock: RunLock, state: SkillState
 export async function foreground(context: SkillContext, run: RunId, call: ForegroundCall): Promise<SkillAnswer> {
   const same = literalOf(context.invocation, run, call);
   const first = await context.locks.take(run, async (lock): Promise<{ answer: SkillAnswer } | { grace: true }> => {
-    const read = await called(context, run, same);
+    const read = await called(context, run, same, call.kind === 'takeover');
     if ('answer' in read) return read;
     const applied = await applyCall(context, lock, read.state, call, same);
     if ('answer' in applied) return applied;
