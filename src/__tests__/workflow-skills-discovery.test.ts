@@ -127,6 +127,21 @@ describe('generated workflow skills', () => {
     );
   });
 
+  it('writes no skill for a workflow without a runnable version, removes the skill of one whose file stopped running, and keeps one whose last valid version runs', async () => {
+    const twoSteps = (name: string, needs: string) => `${workflow(name, 'allow')}  - id: test\n${needs}    command: node -e "process.exit(0)"\n`;
+    // A step after the first without needs changes what the file means, so its last valid version stops running too.
+    const unrunnable = (name: string) => twoSteps(name, '');
+    // A need that names no step is only invalid: the last valid version keeps running.
+    const invalid = (name: string) => twoSteps(name, '    needs: [ghost]\n');
+    const { deploy, skill, put } = await team({ never: unrunnable('never'), dropped: workflow('dropped', 'allow'), kept: workflow('kept', 'allow') });
+    await deploy();
+    expect(['never', 'dropped', 'kept'].map((name) => fs.existsSync(skill(name)))).toEqual([false, true, true]);
+    await put('dropped', unrunnable('dropped'));
+    await put('kept', invalid('kept'));
+    await deploy();
+    expect(['never', 'dropped', 'kept'].map((name) => fs.existsSync(path.dirname(skill(name))))).toEqual([false, false, true]);
+  });
+
   it('keeps one Codex copy, removing an unedited generated one from the other root', async () => {
     const { deploy, home } = await team({ check: workflow('check', 'allow') }, { codex: { skills: '.codex/skills' } });
     await deploy();
