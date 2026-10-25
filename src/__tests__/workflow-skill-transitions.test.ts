@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { driverIdentity } from '../driver-identity.js';
 import { resolveWorkflowEnv } from '../env-resolution.js';
 import { publishRun } from '../workflow/handoff.js';
+import { reportsBranch } from '../utils/reports-branch.js';
 import { inProcessClient, type WorkflowClient } from '../workflow/protocol.js';
 import type { LocalConfig } from '../types.js';
 import { acquireLock, releaseLock } from '../update.js';
@@ -901,11 +902,15 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       const modes: string[] = [];
       const made = await harness({}, { install: await team.install('member'), mode: 'unattended', runners: (runners) => ({ ...runners, spawn: async (job) => { modes.push(job.mode); await runners.spawn(job); } }) });
       // The definition the run carries says invoke: deny, so an agent session gets nothing of it, and nothing is claimed.
+      const reports = reportsBranch.dir(made.config);
+      const reportsCache = (): string[] => (fs.existsSync(reports) ? fs.readdirSync(reports, { recursive: true, encoding: 'utf8' }).sort() : []);
+      const cached = reportsCache();
       expect(await made.call({ kind: 'resume', run, claim: false, confirmed: false, answers: {} }, { evidence: AGENT }))
         .toMatchObject({ error: { code: 'invoke_denied', next: null } });
       expect(await readRun(made.config, run)).toBe('missing');
       const runs = runsDir(made.config);
       expect(fs.existsSync(runs) ? fs.readdirSync(runs).filter((entry) => entry.startsWith(run)) : []).toEqual([]);
+      expect(reportsCache()).toEqual(cached);
       const resumed = await turnOf(await made.call({ kind: 'resume', run, claim: false, confirmed: false, answers: { parallel: 2 } }));
       expect(resumed).toMatchObject({ run, status: 'driving', actions: [{ kind: 'choose', about: 'host' }] });
       expect(await publishRun(ci.config, run, { checkout: ci.checkout })).toMatchObject({ ok: false, error: { code: 'not_owner' } });

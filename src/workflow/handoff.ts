@@ -6,6 +6,7 @@ import { pinScorers } from '../scorers/cache.js';
 import { AgentSession } from '../session-flow/agent-session.js';
 import { archiveSessions, type ArchiveSessionRef } from '../session-flow/archive.js';
 import { usesBranchWorktree, type LocalConfig } from '../types.js';
+import { gitRoot } from '../utils/branch-worktree.js';
 import { canonicalJson } from '../utils/canonical-json.js';
 import { sanitizeGitUrl } from '../utils/redact.js';
 import { fetchReportsOriginFile, updateReports, type ReportsChange } from '../utils/reports-branch.js';
@@ -570,7 +571,8 @@ export async function carriedDefinition(config: LocalConfig, runId: string, { pu
   if (stored === 'corrupt') return refused(runUnreadable(runId));
   if (stored !== 'missing') return ok(stored.definition);
   if (!published) return ok(undefined);
-  const origin = await publishedRun(config, runId);
+  // Read from the team repository rather than the reports checkout, which a refused resume would otherwise leave synced.
+  const origin = await publishedRun(config, runId, { checkout: false });
   if (!origin.ok || origin.value === 'absent') return origin.ok ? ok(undefined) : origin;
   const definitions = await definitionsOf(config, origin.value);
   return definitions.ok ? ok(definitions.value.definition) : definitions;
@@ -603,11 +605,14 @@ export async function reconcileTakenCopies(config: LocalConfig, runId: string, a
   return undefined;
 }
 
-/** The snapshot of run `runId` origin holds, for a claim or a resume. */
-async function publishedRun(config: LocalConfig, runId: string): Promise<OriginSnapshot> {
+/**
+ * The snapshot of run `runId` origin holds, for a claim or a resume, read through the reports checkout, or with
+ * `checkout: false` from the team repository, which leaves that checkout as it is.
+ */
+async function publishedRun(config: LocalConfig, runId: string, { checkout = true }: { checkout?: boolean } = {}): Promise<OriginSnapshot> {
   if (!isRunId(runId)) return refused(INVALID_RUN);
   if (!usesBranchWorktree(config)) return refused(UNSUPPORTED_REPO);
-  return readPublished(config, runId);
+  return checkout ? readPublished(config, runId) : readOrigin(gitRoot(config), runId);
 }
 
 async function acquire(

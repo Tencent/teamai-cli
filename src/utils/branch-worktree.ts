@@ -87,7 +87,7 @@ export function isDelivered(result: PublishResult): boolean {
  * - self: the business repo (knowledge lives in `.teamai/` inside it)
  * - git: the dedicated team clone (`localPath` itself)
  */
-function gitRoot(localConfig: LocalConfig): string {
+export function gitRoot(localConfig: LocalConfig): string {
   if (isSelfMode(localConfig)) {
     return getBusinessRoot(localConfig);
   }
