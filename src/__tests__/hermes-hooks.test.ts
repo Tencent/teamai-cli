@@ -1,9 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import * as builtinHooks from '../builtin-hooks.js';
 import path from 'node:path';
 import os from 'node:os';
 import YAML from 'yaml';
-import { injectHermesHooks, removeHermesHooks, hasHermesHooks, getReportScriptPath, getInstructionsPluginDir } from '../hermes-hooks.js';
+import { injectHermesHooks, removeHermesHooks, hasHermesHooks, getReportScriptPath, getInstructionsPluginDir, buildInstructionsPlugin } from '../hermes-hooks.js';
 import { log } from '../utils/logger.js';
 import { channelReadiness } from '../instruction-targets.js';
 
@@ -23,6 +25,31 @@ afterEach(() => {
 });
 
 describe('injectHermesHooks', () => {
+  it.each(['status', 'instructions'] as const)('runs the %s entry without teamai on PATH', async (kind) => {
+    const entry = path.join(tmpDir, "CLI with spaces and 'quotes.mjs");
+    const observed = path.join(tmpDir, 'observed.json');
+    fs.writeFileSync(entry, `import fs from 'node:fs';
+      fs.writeFileSync(${JSON.stringify(observed)}, JSON.stringify(process.argv.slice(2)));
+      console.log(JSON.stringify({hookSpecificOutput:{additionalContext:'HERMES-CONTEXT'}}));`);
+    const resolver = vi.spyOn(builtinHooks, 'resolveCliEntry').mockReturnValue(entry);
+    try {
+      if (kind === 'status') {
+        await injectHermesHooks();
+        execFileSync('/bin/bash', [getReportScriptPath()], { env: { ...process.env, PATH: '/usr/bin:/bin' } });
+      } else {
+        const plugin = path.join(tmpDir, 'plugin.py');
+        fs.writeFileSync(plugin, buildInstructionsPlugin().init);
+        const result = execFileSync('/usr/bin/python3', ['-c', `import runpy; p = runpy.run_path(${JSON.stringify(plugin)}); print(p['_instructions']({'cwd': ${JSON.stringify(tmpDir)}}))`], {
+          env: { ...process.env, PATH: '/usr/bin:/bin' }, encoding: 'utf8',
+        });
+        expect(result.trim()).toBe('HERMES-CONTEXT');
+      }
+      expect(JSON.parse(fs.readFileSync(observed, 'utf8'))).toEqual(['hook-dispatch', kind === 'status' ? 'session-start' : 'instructions', '--tool', 'hermes']);
+    } finally {
+      resolver.mockRestore();
+    }
+  });
+
   it('migrates a raw command and its approval without removing member hooks', async () => {
     process.env.HERMES_HOME = path.join(tmpDir, 'Hermes home');
     fs.mkdirSync(process.env.HERMES_HOME);
