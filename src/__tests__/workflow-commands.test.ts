@@ -27,6 +27,7 @@ import { driverLockPath, readRun } from '../workflow/store.js';
 import { workflowNext, workflowPublish, workflowReport, workflowResume, workflowStart } from '../workflow-commands.js';
 import { loadLocalConfigForScope } from '../config.js';
 import { knownSecrets } from '../env-resolution.js';
+import { skillHarness } from './helpers/skill-harness.js';
 
 const dirs: string[] = [];
 
@@ -518,6 +519,23 @@ steps:
 
     expect(await capture(() => workflowResume(locked, {}))).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
     expect(await capture(() => workflowResume(gated, {}))).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+  });
+
+  it('lets the session that drives a run with the skill driver resume it with the local driver unchecked, and checks another session', async () => {
+    const made = await skillHarness({ gated: workflow('gated', 'ask') }, { evidence: { kind: 'session', variable: 'CLAUDE_CODE_SESSION_ID' } });
+    dirs.push(made.root);
+    const started = await made.call({ kind: 'start', name: 'gated', answers: { confirmed: true }, inputs: undefined });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+    const { run } = started.data.turn;
+    expect(await made.call({ kind: 'next', run, wait: true })).toMatchObject({ data: { turn: { status: 'done' } } });
+    state.config = made.config;
+    vi.spyOn(process, 'cwd').mockReturnValue(made.work);
+    vi.stubEnv('TEAMAI_MODE', 'attended');
+
+    vi.stubEnv('CLAUDE_CODE_SESSION_ID', 'session-b');
+    expect(await capture(() => workflowResume(run, {}))).toMatchObject({ error: { code: 'confirm_needed' } });
+    vi.stubEnv('CLAUDE_CODE_SESSION_ID', 'session-a');
+    expect(await capture(() => workflowResume(run, {}))).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
   });
 
   it('checks a driver\'s next claim from an agent session as a resume, and names the resume that carries the person\'s yes, which a payload cannot', async () => {
