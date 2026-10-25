@@ -352,7 +352,7 @@ async function applyCall(context: SkillContext, lock: RunLock, state: SkillState
  */
 export async function foreground(context: SkillContext, run: RunId, call: ForegroundCall): Promise<SkillAnswer> {
   const same = literalOf(context.invocation, run, call);
-  const first = await context.locks.take(run, async (lock): Promise<{ answer: SkillAnswer } | { grace: { waiting?: { reason: string } } }> => {
+  const first = await context.locks.take(run, async (lock): Promise<{ answer: SkillAnswer } | { grace: true }> => {
     const read = await called(context, run, same);
     if ('answer' in read) return read;
     const applied = await applyCall(context, lock, read.state, call, same);
@@ -367,7 +367,7 @@ export async function foreground(context: SkillContext, run: RunId, call: Foregr
     }
     if (!ticked.spawned || !take(context, state, { kind: 'spawned' })) return { answer: await finish(context, lock, state, ticked.waiting) };
     await writeSkillState(context.config, lock, state, context.env.secrets);
-    return { grace: ticked.waiting ? { waiting: ticked.waiting } : {} };
+    return { grace: true };
   }, call.kind === 'report' ? WAIT_BOUND_MS : TICK_LOCK_WAIT_MS);
   if (busy(first)) return lockBusy(context, run, same);
   if ('answer' in first) return first.answer;
@@ -378,7 +378,8 @@ export async function foreground(context: SkillContext, run: RunId, call: Foregr
       const read = await readSkillState(context.config, run);
       if ('kind' in read) return { error: { code: 'run_unreadable', message: `The skill driver's state of run ${run} went missing while it ran.`, next: null } };
       if (read.attempts.some((open) => open.phase === 'preparing') && context.now().getTime() < until) return 'again';
-      return finish(context, lock, read, first.grace.waiting);
+      // The tick's reason to wait is stale once its runners moved, and while they have not, an attempt is open.
+      return finish(context, lock, read, undefined);
     }, TICK_LOCK_WAIT_MS);
     if (checked === 'again') continue;
     return busy(checked) ? lockBusy(context, run, same) : checked;
