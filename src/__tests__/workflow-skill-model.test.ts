@@ -5,7 +5,7 @@ import { z } from 'zod';
 import type { LocalConfig } from '../types.js';
 import type { WorkflowClient } from '../workflow/protocol.js';
 import type { Runners } from '../workflow/drivers/skill/skill-driver.js';
-import { readRun, skillStatePath, type AttemptId, type RunId } from '../workflow/store.js';
+import { AttemptIdSchema, readRun, skillStatePath, type AttemptId, type RunId } from '../workflow/store.js';
 import { Crash, skillHarness, untilStopped } from './helpers/skill-harness.js';
 
 // Two prompt roots in their own worktrees; two command roots and one that runs until its timeout, all three sharing the
@@ -269,7 +269,7 @@ class Sleep implements fc.AsyncCommand<Model, Real> {
  * ended without reporting.
  */
 class Compact implements fc.AsyncCommand<Model, Real> {
-  check = (model: Readonly<Model>): boolean => !model.done;
+  check = (model: Readonly<Model>): boolean => !model.done && model.acked.size > 0;
   async run(model: Model, real: Real): Promise<void> {
     const turn = turnOf(await called(real, { kind: 'next', run: real.run, wait: false }));
     sawForeground(model, turn);
@@ -341,7 +341,11 @@ class RunnerCrash implements fc.AsyncCommand<Model, Real> {
   constructor(readonly pick: number) {}
   check = (model: Readonly<Model>): boolean => !model.done;
   async run(_model: Model, real: Real): Promise<void> {
-    const attempts = openAttempts(real.made.config, real.run);
+    const attempts: string[] = [];
+    for (const attempt of openAttempts(real.made.config, real.run)) {
+      const id = AttemptIdSchema.parse(attempt);
+      if (await real.made.context.runners.alive(real.run, id)) attempts.push(attempt);
+    }
     const attempt = attempts[this.pick % Math.max(attempts.length, 1)];
     if (attempt !== undefined) real.made.crashRunner(real.run, attempt);
     await real.made.context.runners.sleep(1);
@@ -513,7 +517,8 @@ async function driveToDone(model: Model, real: Real): Promise<Turn> {
       continue;
     }
     if (model.open.size > 0) {
-      while (model.open.size > 0 && !model.done) await new Report(0, 'output', false).run(model, real);
+      // Every other child runs in a session of its own, as an app's child tasks do.
+      for (let child = 0; model.open.size > 0 && !model.done; child += 1) await new Report(0, 'output', child % 2 === 1).run(model, real);
       continue;
     }
     sawPoll(model, turnOf(await called(real, { kind: 'next', run: real.run, wait: true })));
