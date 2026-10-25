@@ -12,7 +12,7 @@ import { runLocalDriver, withDriverLock } from './workflow/drivers/local/local-d
 import { driverIdentity } from './driver-identity.js';
 import { getBusinessRoot, getDataHome, type LocalConfig, type TeamaiConfig } from './types.js';
 import { AttemptIdSchema, readRun, RunIdSchema } from './workflow/store.js';
-import { inProcessClient, resumeRefusal, workflowNotFound, type NextPrepare } from './workflow/protocol.js';
+import { inProcessClient, resumeRefusal, workflowNotFound, type InvokeCaller, type NextPrepare } from './workflow/protocol.js';
 import { parseInputsFlag, parseSkillCall, runSkillCall, sessionDrivesRun, skillContext } from './workflow/drivers/skill/skill-driver.js';
 import { loadCachedWorkflow } from './workflow/cache.js';
 import { findRunConfig } from './workflow/run-location.js';
@@ -134,6 +134,11 @@ async function readyRunConfig(runId: string, options: { allowRemote: boolean } =
   return { ...owner, env, secrets: env.secrets };
 }
 
+/** This process as `invoke` judges it: its agent evidence and run mode, and whether it passed `--confirmed`. */
+function invokeCaller(confirmed: boolean | undefined): InvokeCaller {
+  return { evidence: agentEvidence(process.env), confirmed: confirmed === true, mode: resolveRunMode(process.env) };
+}
+
 function parseTools(value: string | undefined): Record<string, string> | string {
   if (value === undefined) return {};
   const tools: Record<string, string> = {};
@@ -223,7 +228,7 @@ export async function workflowStart(name: string, options: {
     return;
   }
   const { inputs } = read;
-  const caller = { evidence: agentEvidence(process.env), confirmed: options.confirmed === true, mode: resolveRunMode(process.env) };
+  const caller = invokeCaller(options.confirmed);
   const started = await inProcessClient({ config, env }).start(name, { inputs, checkout: process.cwd(), caller });
   if ('error' in started || options.driver !== 'local') {
     writeEnvelope(started, secrets);
@@ -321,7 +326,7 @@ export async function workflowNext(runId: string, options: {
   const run = RunIdSchema.safeParse(runId);
   // A claim continues the run as a resume does, so it makes the resume's check first.
   if (parsed.request.claim === true && run.success && !await sessionDrivesRun(config, run.data)) {
-    const caller = { evidence: agentEvidence(process.env), confirmed: false, mode: resolveRunMode(process.env) };
+    const caller = invokeCaller(false);
     const refused = await resumeRefusal(config, run.data, caller, { published: true, act: 'claim' });
     if (refused) {
       writeEnvelope({ error: refused }, secrets);
@@ -486,7 +491,7 @@ export async function workflowResume(runId: string, options: {
     writeEnvelope({ error: { code: 'invalid_tools', message: tools } }, secrets);
     return;
   }
-  const caller = { evidence: agentEvidence(process.env), confirmed: options.confirmed === true, mode: resolveRunMode(process.env) };
+  const caller = invokeCaller(options.confirmed);
   const refused = await sessionDrivesRun(loaded.config, run.data) ? undefined : await resumeRefusal(loaded.config, run.data, caller, { published: true });
   if (refused) {
     writeEnvelope({ error: refused }, secrets);
