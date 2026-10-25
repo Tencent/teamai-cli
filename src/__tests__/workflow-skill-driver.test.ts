@@ -5,6 +5,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { encodeCwdClaude } from '../session-flow/fs.js';
+import type { RunMode } from '../launch-context.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { getDataHome } from '../types.js';
 import { skillContext } from '../workflow/drivers/skill/skill-driver.js';
@@ -203,20 +204,21 @@ async function eventsToDone(harness: Harness, run: RunId): Promise<unknown[]> {
 }
 
 /** Starts `review` with the skill driver, has its child review the change and report, and answers the turn that follows. */
-async function reviewed(harness: Harness): Promise<{ run: RunId; turn: unknown }> {
-  const started = await harness.call({ kind: 'start', name: 'review', answers: { confirmed: false }, inputs: undefined });
+async function reviewed(harness: Harness, mode: RunMode = 'attended'): Promise<{ run: RunId; turn: unknown }> {
+  const answers = mode === 'unattended' ? { confirmed: false, hitl: 'auto-approve' as const } : { confirmed: false };
+  const started = await harness.call({ kind: 'start', name: 'review', answers, inputs: undefined }, { mode });
   if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
   const run = RunIdSchema.parse(started.data.turn.run);
-  const chosen = await harness.call({ kind: 'choose', run, choice: 'h1' });
+  const chosen = await harness.call({ kind: 'choose', run, choice: 'h1' }, { mode });
   if (!('data' in chosen) || !('turn' in chosen.data)) throw new Error(JSON.stringify(chosen));
   const [dispatch] = chosen.data.turn.actions.flatMap((action) => (action.kind === 'dispatch' ? [action] : []));
   if (!dispatch) throw new Error(JSON.stringify(chosen));
-  await harness.call({ kind: 'ack', run, attempt: dispatch.attempt });
+  await harness.call({ kind: 'ack', run, attempt: dispatch.attempt }, { mode });
   const file = /Write `([^`]+result\.json)`/.exec(fs.readFileSync(dispatch.brief, 'utf8'))?.[1];
   if (!file) throw new Error(`${dispatch.brief} names no result file`);
   fs.writeFileSync(file, JSON.stringify({ kind: 'output', output: 'Reviewed the change.' }));
   expect(await harness.call({ kind: 'report', run, attempt: dispatch.attempt, role: 'agent', modelUnavailable: false })).toMatchObject({ data: { runner: { status: 'reported' } } });
-  return { run, turn: await harness.call({ kind: 'next', run, wait: false }) };
+  return { run, turn: await harness.call({ kind: 'next', run, wait: false }, { mode }) };
 }
 
 /** A Claude Code session of the harness's checkout, captured and idle for 7 hours: finished, for session scoring to judge. */
@@ -770,6 +772,44 @@ steps:
       events: [{ kind: 'judged', step: 'review', scorer: 'review-quality', label: 'thorough' }],
       actions: [{ kind: 'done', outcome: 'succeeded', prs: [] }],
     });
+  });
+
+  it('an unattended run judges here as describe\'s start keeps judging on, and asks nothing while done carries judging', async () => {
+    const harness = await skillHarness({ review: REVIEW }, { scorers: { 'review-quality': REVIEW_QUALITY } });
+    roots.push(harness.root);
+    fakeJudge(harness.root, 'thorough');
+    expect(await harness.call({ kind: 'describe', name: 'review' }, { mode: 'unattended' })).toMatchObject({ data: { describe: {
+      judging: { kind: 'here', tool: 'claude' }, ask: { kind: 'start', start: 'teamai workflow start review --driver skill --auto-approve' },
+    } } });
+    const { run, turn: done } = await reviewed(harness, 'unattended');
+    expect(done).toMatchObject({ data: { turn: {
+      status: 'done',
+      actions: [{ kind: 'done', outcome: 'succeeded', judging: { step: 'review', scorers: ['review-quality'] } }],
+      // oxlint-disable-next-line unicorn/no-thenable
+      then: { kind: 'poll', run: `teamai workflow next ${run} --driver skill --wait` },
+    } } });
+    const judged = await harness.call({ kind: 'next', run, wait: true }, { mode: 'unattended' });
+    expect(judged).toMatchObject({ data: { turn: { status: 'done', events: [{ kind: 'judged', step: 'review', label: 'thorough' }], actions: [{ kind: 'done', outcome: 'succeeded' }] } } });
+    expect(judged).not.toHaveProperty(['data', 'turn', 'then']);
+    for (const turn of [done, judged]) expect(JSON.stringify(turn)).not.toMatch(/"kind":"(choose|person)"/);
+  });
+
+  it('an unattended run whose judge is elsewhere reaches done without waiting, and leaves the pass to score --next', async () => {
+    const harness = await skillHarness({ review: REVIEW }, { scorers: { 'review-quality': REVIEW_QUALITY } });
+    roots.push(harness.root);
+    // A claude without a verified judge profile: describe finds the judge elsewhere.
+    const bin = path.join(harness.root, 'bin');
+    fs.mkdirSync(bin, { recursive: true });
+    fs.writeFileSync(path.join(bin, 'claude'), `#!${process.execPath}\nconsole.log('0.0.1 (Claude Code)');\n`, { mode: 0o755 });
+    vi.stubEnv('PATH', `${bin}${path.delimiter}${process.env.PATH ?? ''}`);
+    expect(await harness.call({ kind: 'describe', name: 'review' }, { mode: 'unattended' })).toMatchObject({ data: { describe: {
+      judging: { kind: 'elsewhere' }, ask: { kind: 'start' },
+    } } });
+    const { run, turn: done } = await reviewed(harness, 'unattended');
+    expect(done).toMatchObject({ data: { turn: { status: 'done', actions: [{ kind: 'done', outcome: 'succeeded' }] } } });
+    expect(done).not.toHaveProperty(['data', 'turn', 'then']);
+    const judge = { driver: { kind: 'external', machine: 'm2', workspace: '/w', can: { judge: { isolation: 'verified', tools: ['claude'] } } }, running: [] };
+    expect(await harness.context.client.scoreNext(judge)).toMatchObject({ data: { lease: { subject: { runId: run, step: 'review' } } } });
   });
 
   it('a skill run judges only its own passes: never a finished session, never another run\'s pass', async () => {
