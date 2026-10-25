@@ -19,6 +19,7 @@ import { nextJudgeLease, parseJudgeRequest, runJudgeLease } from './scoring.js';
 import { AttemptIdSchema, readRun, RunIdSchema, withRunLock, type AttemptId, type RunId, type RunLock } from './store.js';
 import type { DriverCan } from './requirements.js';
 import { isWorkflowError, type DriverIdentity, type WorkflowDefinition, type WorkflowEnvelope, type WorkflowFailure } from './types.js';
+import { deliveryProblem } from './workspace.js';
 import { headCommit } from './worktree.js';
 
 /**
@@ -39,7 +40,8 @@ export interface WorkflowClient {
    * declares `can` and runs at most `ceiling` steps at once, as a run started from `checkout` would go. `tool` is the
    * tool of the caller's coding session, whose confined judge would judge the scored steps here.
    */
-  describe: (name: string, options: { ceiling: number; can: DriverCan; checkout?: string; tool?: string }) => Promise<{ description: WorkflowDescription; judging: Judging } | { error: WorkflowFailure }>;
+  /** `undeliverable`: why a start from `checkout` would be refused for its delivery (`deliveryProblem`). */
+  describe: (name: string, options: { ceiling: number; can: DriverCan; checkout?: string; tool?: string }) => Promise<{ description: WorkflowDescription; judging: Judging; undeliverable?: WorkflowFailure } | { error: WorkflowFailure }>;
   /**
    * Prepares the place of `lease`, the lease `next` answered with, in the checkout the run started from. `busy` when
    * another attempt the run leased holds that place: `behind` is that attempt.
@@ -202,11 +204,12 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
       if (!cached) return { error: { code: 'workflow_not_found', message: `Workflow or alias ${name} has no unambiguous runnable version` } };
       const tree = await loadWorkflowTree(config, cached);
       if ('failed' in tree) return { error: tree.failed };
-      const base = checkout === undefined ? undefined : (await headCommit(checkout))?.ref;
+      const head = checkout === undefined ? undefined : await headCommit(checkout);
       const description = describeWorkflow({
-        definition: cached.definition, workflows: tree.workflows, ceiling, can, allow: config.workflows?.allow ?? {}, env: env.facts, ...(base !== undefined ? { base } : {}),
+        definition: cached.definition, workflows: tree.workflows, ceiling, can, allow: config.workflows?.allow ?? {}, env: env.facts, ...(head?.ref !== undefined ? { base: head.ref } : {}),
       });
-      return { description, judging: await judgingOf(config, description, tool) };
+      const undeliverable = deliveryProblem(cached.definition, tree.workflows, head);
+      return { description, judging: await judgingOf(config, description, tool), ...(undeliverable ? { undeliverable } : {}) };
     },
     prepare: async (lock, raw) => {
       const leased = await leasedPlace(config, lock, raw);

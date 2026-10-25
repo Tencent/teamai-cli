@@ -586,6 +586,21 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     },
   },
   {
+    name: 'describe tells the person a delivering workflow cannot start from a detached HEAD, and a start the engine refuses points at describe only when another answer fixes it',
+    rows: ['R16', 'R10'],
+    run: async () => {
+      const made = await harness({ implement: IMPLEMENT });
+      expect(await made.call({ kind: 'start', name: 'implement', answers: { confirmed: false }, inputs: { extra: 1 } }))
+        .toMatchObject({ error: { code: 'invalid_inputs', next: 'teamai workflow start --describe implement --driver skill' } });
+      execFileSync('git', ['checkout', '-q', '--detach'], { cwd: made.work });
+      const commit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: made.work, encoding: 'utf8' }).trim();
+      const reason = `Step "implement" delivers a pull request, but the run would start from a detached HEAD at ${commit}, so no branch is there for the pull request to target. Check out a named branch, then start the run again.`;
+      expect(await made.call({ kind: 'describe', name: 'implement' })).toMatchObject({ data: { describe: { ask: { kind: 'denied', reason } } } });
+      expect(await made.call({ kind: 'start', name: 'implement', answers: { confirmed: false }, inputs: undefined })).toEqual({ error: { code: 'no_base_branch', message: reason, next: null } });
+      return made.rows;
+    },
+  },
+  {
     name: 'the local start literal names the session tool only on a machine that names no default prompt tool, for a tool the local driver launches',
     rows: ['R2', 'R8'],
     run: async () => {

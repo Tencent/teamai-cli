@@ -255,12 +255,14 @@ async function start(call: Extract<SkillCall, { kind: 'describe' | 'start' }>, c
   const ceiling = ceilingOf(context.config);
   const described = await context.client.describe(call.name, { ceiling, can: canFor(undefined), checkout: context.cwd, ...(context.tool !== undefined ? { tool: context.tool } : {}) });
   if ('error' in described) return { error: { ...described.error, next: null } };
-  const { description, judging } = described;
+  const { description, judging, undeliverable } = described;
   const local = localReason(description);
   const why = local !== undefined ? { local } : {};
   if (call.kind === 'describe') {
     const denied = description.invoke === 'deny' && context.evidence.kind !== 'none' ? { denied: invokeDeniedMessage(description.name, context.evidence) } : {};
-    const { row, verdict } = describeRow({ needed: neededAnswers(description), ...denied, ...why, judgingHere: judging.kind === 'here' });
+    const { row, verdict } = describeRow({
+      needed: neededAnswers(description), ...denied, ...(undeliverable ? { undeliverable: undeliverable.message } : {}), ...why, judgingHere: judging.kind === 'here',
+    });
     context.trace?.(row);
     return { data: { describe: { workflow: description, judging, ask: askFor(verdict, description, context.invocation, judging, { tool: localPromptTool(context.config, context.tool) }) } } };
   }

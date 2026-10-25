@@ -611,7 +611,13 @@ export async function poll(context: SkillContext, run: RunId): Promise<SkillAnsw
   }
 }
 
-/** The error a start answers when the protocol refused it: describe again to see why, unless only the person can start it, or no start runs from here. */
+/** The refusals of a protocol start that another answer to describe fixes: other inputs, or the person's yes. */
+const ANSWERABLE_START_REFUSALS: ReadonlySet<string> = new Set(['invalid_inputs', 'confirm_needed']);
+
+/**
+ * The error a start answers when the protocol refused it: describe again for a refusal another answer fixes, and no
+ * literal for the rest, which a new describe would only lead back to.
+ */
 export function startRefused(context: SkillContext, name: string, error: WorkflowFailure): SkillAnswer {
-  return { error: { ...error, next: error.code === 'invoke_denied' || error.code === 'nested_workflow' ? null : describeLiteral(context.invocation, name) } };
+  return { error: { ...error, next: ANSWERABLE_START_REFUSALS.has(error.code) ? describeLiteral(context.invocation, name) : null } };
 }

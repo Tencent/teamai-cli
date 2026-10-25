@@ -24,7 +24,7 @@ export type DescribeAsk =
     };
   }
   | { kind: 'local'; reason: string; start: Literal }
-  /** `invoke: deny` asked from an agent session: no literal. */
+  /** `invoke: deny` asked from an agent session, or a start this checkout would refuse for its delivery: no literal. */
   | { kind: 'denied'; reason: string };
 
 /** A prompt step for a child agent, shown in every foreground turn until its `ack` runs. */

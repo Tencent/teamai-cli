@@ -26,6 +26,7 @@ export const TRANSITIONS = [
   { id: 'R2', state: 'none', input: 'describe', guard: 'the definition has a local route: a step this driver takes and a later one it is held from for env or tokens work in one workspace copy', effects: 'none', next: 'none', action: 'describe `ask.kind: local` with the reason and the `--driver local` start literal, with `--tools default=<session tool>` when `localPromptTool` names one' },
   { id: 'R3', state: 'none', input: 'describe', guard: 'something to ask: `invoke: ask`, a required input, width above 1, an optional gate, or judging here', effects: 'none', next: 'none', action: 'describe `ask.kind: ask`: one question stating every fact, and at most five start literals, the recommended first' },
   { id: 'R4', state: 'none', input: 'describe', guard: 'nothing to ask', effects: 'none', next: 'none', action: 'describe `ask.kind: start` with the one start literal, and the facts to tell the person' },
+  { id: 'R16', state: 'none', input: 'describe', guard: '`deliveryProblem` answers for the checkout: a `deliver: pr` step the definition cannot deliver (`bad_delivery`), or a detached HEAD (`no_base_branch`)', effects: 'none', next: 'none', action: 'describe `ask.kind: denied` with its message, no literal' },
   { id: 'R8', state: 'none', input: 'start `--driver skill`', guard: 'the definition has a local route', effects: 'none', next: 'none', action: 'error `needs_local_driver` with the reason, next null' },
   { id: 'R9', state: 'none', input: 'start `--driver skill`', guard: '`checkStartAnswers` answers `confirm-needed`', effects: 'none', next: 'none', action: 'error `confirm_needed`, next: the describe literal' },
   { id: 'R10', state: 'none', input: 'start `--driver skill`', guard: '`checkStartAnswers` answers `ok`', effects: '`WorkflowClient.start`; write skill.json: identity `{skill, machine, run checkout}`, invocation, options (`--parallel`, the HITL mode), host `pending` when the definition has a prompt step, owner := the caller\'s session; judging on with the session tool when describe judges here and the start has no `--no-judge`', next: 'host when it has a prompt step, else drive', action: 'the turn of a tick' },
@@ -145,7 +146,8 @@ export type ReportReply = { kind: 'reported'; outcome: Extract<TurnEvent, { kind
  * What describe knows before the rows choose how to start. `denied`: why an agent session may not start the workflow.
  * `local`: why the local driver must run it. `judgingHere`: the session tool's confined judge would judge the scored steps here.
  */
-export interface DescribeInput { needed: StartAnswer[]; denied?: string; local?: string; judgingHere: boolean }
+/** `undeliverable`: why a start from the checkout would be refused for its delivery. */
+export interface DescribeInput { needed: StartAnswer[]; denied?: string; undeliverable?: string; local?: string; judgingHere: boolean }
 
 /** What a start knows before the rows decide it. `judge`: the session tool whose confined judge judges the run, when describe judges here and the start keeps judging. */
 export interface StartInput { name: string; check: StartCheck; local?: string; prompts: boolean; judge?: string }
@@ -317,8 +319,9 @@ export function unseenEvents(state: SkillState, session: string | undefined): Tu
 }
 
 /** The describe row `input` matches, with how describe says to start. */
-export function describeRow(input: DescribeInput): { row: 'R1' | 'R2' | 'R3' | 'R4'; verdict: DescribeVerdict } {
+export function describeRow(input: DescribeInput): { row: 'R1' | 'R16' | 'R2' | 'R3' | 'R4'; verdict: DescribeVerdict } {
   if (input.denied !== undefined) return { row: 'R1', verdict: { ask: 'denied', reason: input.denied } };
+  if (input.undeliverable !== undefined) return { row: 'R16', verdict: { ask: 'denied', reason: input.undeliverable } };
   if (input.local !== undefined) return { row: 'R2', verdict: { ask: 'local', reason: input.local } };
   if (input.needed.length > 0 || input.judgingHere) return { row: 'R3', verdict: { ask: 'ask' } };
   return { row: 'R4', verdict: { ask: 'start' } };
