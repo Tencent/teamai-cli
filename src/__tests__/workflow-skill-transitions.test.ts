@@ -1076,6 +1076,11 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       await turnOf(await made.call({ kind: 'takeover', run: taken.run, confirmed: false }));
       expect(await stillRunning(taken.left)).toBe('SIGTERM');
       expect(await polledToDone(made, taken.run)).toMatchObject({ status: 'done', actions: [{ kind: 'done', outcome: 'succeeded' }] });
+      // A step of that driver cancelled before the resume holds no lease any more, yet its command is stopped as well.
+      const cancelled = await stopped();
+      expect(await made.context.client.cancel(cancelled.run, 'lint')).toMatchObject({ data: {} });
+      await made.call({ kind: 'resume', run: cancelled.run, claim: false, confirmed: false, answers: {} });
+      expect(await stillRunning(cancelled.left)).toBe('SIGTERM');
       return made.rows;
     },
   },

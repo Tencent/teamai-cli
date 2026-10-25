@@ -438,6 +438,13 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
         const released = await managedReport({ config, runId, report: { attempt, revision, outcome: 'released', driver }, secrets: env.secrets, lock });
         if (isWorkflowError(released)) return { kind: 'failed', failure: released.error };
       }
+      // An attempt of that driver the run already stopped, cancelled or expired, holds no lease, but what it detached may
+      // still run beside the step's next attempt.
+      for (const stopped of run.stoppedAttempts ?? []) {
+        if (stopped.driver.kind !== 'local' || stopped.driver.machine !== machine) continue;
+        const left = AttemptIdSchema.safeParse(stopped.attempt);
+        if (left.success) await stopRecordedGroup(attemptDir(config, runId, left.data));
+      }
       const unreconciled = await reconcileTakenCopies(config, runId, run.checkout ?? checkout);
       if (unreconciled) return { kind: 'failed', failure: unreconciled };
       const description = describeWorkflow({ definition: run.definition, workflows: run.workflows ?? {}, ceiling, can, allow: config.workflows?.allow ?? {}, env: env.facts });
