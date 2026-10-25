@@ -520,6 +520,7 @@ export const TOOLS = {
       retired: { user: ['.agents/mcp.json'] },
     },
   },
+  // Extensions capture the installed Node/CLI launcher instead of depending on the host PATH.
   omp: {
     home: { dir: '.omp' },
     skillLoad: { calls: [] },

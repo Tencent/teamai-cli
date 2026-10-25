@@ -61,12 +61,12 @@ export function loadPiExtension(stdoutFor: (args: string[]) => string = () => ''
 
 /**
  * The generated OMP extension, whose Bun shell (`$`) records each dispatch
- * instead of running `teamai`: the argv is the template's first value, the
+ * instead of running `teamai`: the launcher is the first value, argv the second, and the
  * STDIN the Response redirected into it.
  */
 export function loadOmpExtension(stdoutFor: (args: string[]) => string = () => ''): LoadedExtension {
   const dispatches: ExtensionDispatch[] = [];
-  const $ = (_strings: TemplateStringsArray, args: string[], stdin: Response) => {
+  const $ = (_strings: TemplateStringsArray, _launcher: string[], args: string[], stdin: Response) => {
     const run = (async () => {
       dispatches.push({ args, payload: JSON.parse(await stdin.text()) as Record<string, unknown> });
       return stdoutFor(args);
