@@ -4,7 +4,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import type { WorkflowClient } from '../workflow/protocol.js';
 import { readRun, type AttemptId, type RunId } from '../workflow/store.js';
-import type { SkillAnswer, DispatchAction, Turn } from '../workflow/drivers/skill/turn.js';
 import { skillHarness } from './helpers/skill-harness.js';
 
 // Two command roots that share the checkout, two prompt roots in their own worktrees, and a prompt step after all four.
@@ -38,6 +37,9 @@ const RUNS = Number(process.env.WORKFLOW_SKILL_MODEL_RUNS ?? '8');
 const NextBodySchema = z.object({ running: z.array(z.string()) });
 
 type Made = Awaited<ReturnType<typeof skillHarness>>;
+type SkillAnswer = Awaited<ReturnType<Made['call']>>;
+type Turn = Extract<SkillAnswer, { data: { turn: unknown } }>['data']['turn'];
+type DispatchAction = Extract<Turn['actions'][number], { kind: 'dispatch' }>;
 
 interface Real {
   made: Made;
