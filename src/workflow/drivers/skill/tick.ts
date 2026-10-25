@@ -190,8 +190,10 @@ export async function sendReport(context: SkillContext, lock: RunLock, state: Sk
   return { state: taken?.state ?? state, ...(refused ? { refused } : {}) };
 }
 
-/** The error a row answers, with its message and the literal to run instead. `run` names the run of an engine error. */
-/** `localTool`: the prompt tool a local start the refusal prints names (`localPromptTool`). */
+/**
+ * The error a row answers, with its message and the literal to run instead. `run` names the run of an engine error;
+ * `localTool`, the prompt tool a local start the refusal prints names (`localPromptTool`).
+ */
 export function errorOf(answer: Extract<Answer, { kind: 'error' | 'engine-error' }>, context: { invocation: Invocation; same: Literal; run?: RunId; localTool?: string }): SkillError {
   const { invocation, same } = context;
   if (answer.kind === 'engine-error') {

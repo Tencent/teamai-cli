@@ -38,9 +38,9 @@ export interface WorkflowClient {
   /**
    * Describes workflow or alias `name` from the cache, with every workflow it runs, for the caller's driver, which
    * declares `can` and runs at most `ceiling` steps at once, as a run started from `checkout` would go. `tool` is the
-   * tool of the caller's coding session, whose confined judge would judge the scored steps here.
+   * tool of the caller's coding session, whose confined judge would judge the scored steps here. `undeliverable`: why
+   * a start from `checkout` would be refused for its delivery (`deliveryProblem`).
    */
-  /** `undeliverable`: why a start from `checkout` would be refused for its delivery (`deliveryProblem`). */
   describe: (name: string, options: { ceiling: number; can: DriverCan; checkout?: string; tool?: string }) => Promise<{ description: WorkflowDescription; judging: Judging; undeliverable?: WorkflowFailure } | { error: WorkflowFailure }>;
   /**
    * Prepares the place of `lease`, the lease `next` answered with, in the checkout the run started from. `busy` when
