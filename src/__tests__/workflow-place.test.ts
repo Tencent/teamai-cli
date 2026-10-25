@@ -254,6 +254,34 @@ steps:
     expect(git(f.work, 'rev-parse', lease.workspace.branch)).toBe(before);
     expect(fs.readFileSync(path.join(lease.cwd, 'code.txt'), 'utf8')).toBe('preserve me');
   });
+  it('does not prepare a second attempt in the place another open attempt holds, and prepares it there once that one reports', async () => {
+    const f = await fixture(`schemaVersion: v1alpha1
+name: build
+description: Read the code twice.
+alias: ship
+steps:
+  - id: review
+    prompt: Review the code.
+  - id: audit
+    needs: []
+    prompt: Audit the code.
+`);
+    const can = { hitl: true, setup: true, workspace: ['read-only', 'new', 'continue'] };
+    const review = await next(f);
+    expect(review.cwd).toBe(f.work);
+    const audit = await f.client.next(f.runId, { driver: { ...f.driver, can }, running: [review.attempt] }, { prepare: true });
+    const run = await readRun(f.config, f.runId);
+    const leased = typeof run === 'object' ? run.steps.find((step) => step.id === 'audit') : undefined;
+    if (leased?.status !== 'leased') throw new Error(JSON.stringify({ audit, run }));
+    const attempt = AttemptIdSchema.parse(leased.lease.attempt);
+    expect(audit).toEqual({ error: {
+      code: 'busy',
+      message: `Attempt ${attempt} of run ${f.runId} runs in ${f.work}, the place of attempt ${review.attempt}, which is still open, so it was not prepared. Report attempt ${review.attempt}, then prepare this one with next --prepare --attempt ${attempt}.`,
+    } });
+
+    expect(await f.client.report(f.runId, { attempt: review.attempt, revision: review.revision, outcome: 'success', driver: f.driver })).toMatchObject({ data: { accepted: true } });
+    expect(await f.client.next(f.runId, { driver: { ...f.driver, can } }, { prepare: { attempt } })).toMatchObject({ data: { lease: { attempt, cwd: f.work } } });
+  });
 });
 
 describe('places the host made', () => {

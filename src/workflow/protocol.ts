@@ -18,7 +18,7 @@ import { cancelRun, respondProvenance, respondToHitl, retryStep, type CallerProv
 import { nextJudgeLease, parseJudgeRequest, runJudgeLease } from './scoring.js';
 import { AttemptIdSchema, readRun, RunIdSchema, withRunLock, type AttemptId, type RunId, type RunLock } from './store.js';
 import type { DriverCan } from './requirements.js';
-import { isWorkflowError, type DriverIdentity, type WorkflowDefinition, type WorkflowEnvelope, type WorkflowFailure } from './types.js';
+import { isWorkflowError, type DriverIdentity, type RunState, type WorkflowDefinition, type WorkflowEnvelope, type WorkflowFailure } from './types.js';
 import { deliveryProblem } from './workspace.js';
 import { headCommit } from './worktree.js';
 
@@ -187,11 +187,15 @@ async function leasedPlace(config: LocalConfig, lock: RunLock, raw: unknown): Pr
   const leased = run.steps.find((step) => step.status === 'leased' && step.lease.attempt === lease.attempt);
   if (!leased) return { kind: 'failed', failure: { code: 'wrong_attempt', message: `Attempt ${lease.attempt} is not the leased attempt` } };
   if (run.checkout === undefined) return { kind: 'failed', failure: noCheckout(lock.run, lease.attempt) };
-  const others = run.steps.flatMap((step) => {
-    const other = step.status === 'leased' && step.lease.attempt !== lease.attempt ? AttemptIdSchema.safeParse(step.lease.attempt) : undefined;
+  return { lease: { ...lease, step: leased.id }, root: run.checkout, others: otherLeases(run, lease.attempt) };
+}
+
+/** The attempts `run` leases besides `attempt`. */
+function otherLeases(run: RunState, attempt: AttemptId): AttemptId[] {
+  return run.steps.flatMap((step) => {
+    const other = step.status === 'leased' && step.lease.attempt !== attempt ? AttemptIdSchema.safeParse(step.lease.attempt) : undefined;
     return other?.success ? [other.data] : [];
   });
-  return { lease: { ...lease, step: leased.id }, root: run.checkout, others };
 }
 
 /** Why `attempt` was not prepared in `dir`, the place of `behind`, another open attempt of `run`: as every adopt refuses it. */
@@ -326,8 +330,8 @@ async function prepareAttempt(input: {
 /**
  * Prepares the place of the lease `answer` carries, holding the run's lock: a lease with a workspace contract gets its
  * worktree set up, or adopts the place the host made at `adopt`. A prepare that fails reports the attempt `failed` with
- * its own code, and answers with that failure; an adopt the place does not pass answers `adopt_mismatch`, and the
- * attempt stays leased.
+ * its own code, and answers with that failure; an adopt the place does not pass answers `adopt_mismatch`, and a place
+ * another open attempt holds answers `busy`, and the attempt stays leased.
  */
 async function prepareLeased(input: { config: LocalConfig; lock: RunLock; driver: DriverIdentity; env: WorkflowEnv; answer: WorkflowEnvelope; adopt?: string }): Promise<WorkflowEnvelope> {
   const { config, lock, driver, env, answer, adopt } = input;
@@ -337,10 +341,14 @@ async function prepareLeased(input: { config: LocalConfig; lock: RunLock; driver
   if (!leased.success) return { error: { code: 'run_unreadable', message: `Run ${lock.run} returned a lease this teamai cannot read` } };
   const wire = LeaseWireSchema.safeParse(answer.data.lease);
   const lease = wire.success ? placeLeaseOf(wire.data) : undefined;
-  const placed: PlacePrepared = lease
+  const placed: Awaited<ReturnType<typeof prepareWithSetup>> = lease
     ? await prepareWithSetup({ config, lock, env, lease, ...(adopt !== undefined ? { adopt } : {}) })
     : { kind: 'failed', failure: { code: 'workspace_base', message: `Attempt ${leased.data.attempt} was leased a place this teamai cannot read. Update teamai.` } };
   if (placed.kind === 'refused') return { error: placed.failure };
+  if (placed.kind === 'busy') {
+    const { attempt } = leased.data;
+    return { error: { code: 'busy', message: `Attempt ${attempt} of run ${lock.run} runs in ${placed.dir}, the place of attempt ${placed.behind}, which is still open, so it was not prepared. Report attempt ${placed.behind}, then prepare this one with next --prepare --attempt ${attempt}.` } };
+  }
   if (placed.kind === 'failed') {
     const { failure } = placed;
     await reportAttempt(config, lock.run, { attempt: leased.data.attempt, revision: leased.data.revision, driver, outcome: 'failed', message: failure.message, failure }, env.secrets);
@@ -349,11 +357,16 @@ async function prepareLeased(input: { config: LocalConfig; lock: RunLock; driver
   return { data: { ...answer.data, lease: { ...leased.data, cwd: placed.dir, ...(placed.prompt !== undefined ? { prompt: placed.prompt } : {}) } } };
 }
 
-async function prepareWithSetup(input: { config: LocalConfig; lock: RunLock; env: WorkflowEnv; lease: PlaceLease; adopt?: string }): Promise<PlacePrepared> {
+async function prepareWithSetup(input: {
+  config: LocalConfig; lock: RunLock; env: WorkflowEnv; lease: PlaceLease; adopt?: string;
+}): Promise<PlacePrepared | { kind: 'busy'; dir: string; behind: AttemptId }> {
   const { config, lock, env, lease, adopt } = input;
   const run = await readRun(config, lock.run);
-  const checkout = typeof run === 'object' ? run.checkout : undefined;
-  if (checkout === undefined) return { kind: 'failed', failure: noCheckout(lock.run, lease.attempt) };
+  if (typeof run !== 'object' || run.checkout === undefined) return { kind: 'failed', failure: noCheckout(lock.run, lease.attempt) };
+  const { checkout } = run;
+  // As the local and skill drivers' prepare does; prepareAttempt checked an adopt against the place the host made.
+  const behind = adopt === undefined ? await placeHeldBy({ config, run: lock.run, root: checkout, lease, others: otherLeases(run, lease.attempt) }) : undefined;
+  if (behind) return { kind: 'busy', dir: placeOf(lease, checkout), behind };
   const placed = await preparePlace({ config, lock, root: checkout, lease, ...(adopt !== undefined ? { adopt } : {}) });
   if (placed.kind !== 'prepared') return placed;
   // A --json driver's run keeps no mode, so its setup runs in the mode of the process that prepares it.

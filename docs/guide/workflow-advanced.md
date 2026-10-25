@@ -779,7 +779,7 @@ Every refusal is one JSON envelope with `error.code`, `error.message`, and the e
 | `run_mismatch` | A run here has the same id but started at another time. Carries `localCreatedAt` and `remoteCreatedAt`. | Neither run is changed. They are different runs. |
 | `invalid_run` | The id is not `r` followed by 8 or 16 hex digits. | Check the id. |
 | `unsupported_repo` | The team repo is an `http` repo, which has no `teamai-reports`. | Continue the run on the machine that has it. |
-| `busy` | Another teamai process is writing `teamai-reports` or the run. | Try again. |
+| `busy` | Another teamai process is writing `teamai-reports` or the run, or another open attempt holds the place `next --prepare` would prepare. | Try again; for a held place, once that attempt reports. |
 | `reports_unreachable` | `teamai-reports` could not be read from the team repo's origin. | Check the connection, then try again. |
 | `reports_failed` | The write to `teamai-reports` failed. | Try again. |
 | `records_pending` | The run's records did not reach `teamai-reports`: git's push error, a busy writer, or a record queued while the publish ran. | Try again. |
@@ -826,7 +826,7 @@ A driver that continues a [published run](#publish-and-claim) relies on these ru
 
 ### Let TeamAI prepare the workspace
 
-A driver can leave the workspace and its git to TeamAI. `next <run> --prepare --json '<payload>'` leases a step and prepares its workspace: it creates or reuses the worktree in the checkout the run started from, applies the base agent files and team delivery, and returns the directory as `lease.cwd`. Preparing again keeps the edits already there. Run the step in `lease.cwd`, and run no git there.
+A driver can leave the workspace and its git to TeamAI. `next <run> --prepare --json '<payload>'` leases a step and prepares its workspace: it creates or reuses the worktree in the checkout the run started from, applies the base agent files and team delivery, and returns the directory as `lease.cwd`. Preparing again keeps the edits already there. Run the step in `lease.cwd`, and run no git there. Two attempts never share a place: a lease whose place another open attempt holds, such as a second step in the checkout, answers `busy` and stays leased; prepare it with `--attempt` once that attempt reports.
 
 `report` then finishes the attempt. It commits, pushes, and fills `changes` or `read` itself, so a report of a prepared attempt that carries `changes` or `read` answers `invalid_report`. TeamAI removes the worktree only after it accepts a successful report whose answer allows cleanup. A failed attempt keeps its work for a retry.
 

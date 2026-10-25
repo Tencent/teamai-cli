@@ -779,7 +779,7 @@ teamai workflow resume <run> [--claim]
 | `run_mismatch` | 本机有一个 id 相同、但开始时间不同的运行。带 `localCreatedAt` 和 `remoteCreatedAt`。 | 两个运行都不会被改动。它们是不同的运行。 |
 | `invalid_run` | id 不是 `r` 加 8 或 16 位十六进制数字。 | 检查 id。 |
 | `unsupported_repo` | 团队仓库是 `http` 仓库，没有 `teamai-reports`。 | 在有这个运行的机器上继续。 |
-| `busy` | 另一个 teamai 进程正在写 `teamai-reports` 或该运行。 | 重试。 |
+| `busy` | 另一个 teamai 进程正在写 `teamai-reports` 或该运行，或者 `next --prepare` 要准备的位置被另一个未结束的 attempt 占用。 | 重试；位置被占用时，等那个 attempt 报告后再试。 |
 | `reports_unreachable` | 无法从团队仓库的 origin 读取 `teamai-reports`。 | 检查网络连接后重试。 |
 | `reports_failed` | 写入 `teamai-reports` 失败。 | 重试。 |
 | `records_pending` | 运行记录没有到达 `teamai-reports`：git 推送出错、另一个写入方占用，或发布期间有记录排队。 | 重试。 |
@@ -826,7 +826,7 @@ teamai workflow next <run> --json '{"claim":true,"driver":{"kind":"script","mach
 
 ### 让 TeamAI 准备工作区
 
-驱动可以把工作区及其 git 操作交给 TeamAI。`next <run> --prepare --json '<payload>'` 领取一个步骤并准备它的工作区：在运行启动时所在的检出目录中创建或复用 worktree，应用基线 agent 文件和团队资源，并以 `lease.cwd` 返回该目录。再次准备会保留已有的编辑。在 `lease.cwd` 中运行步骤，不要在那里运行 git。
+驱动可以把工作区及其 git 操作交给 TeamAI。`next <run> --prepare --json '<payload>'` 领取一个步骤并准备它的工作区：在运行启动时所在的检出目录中创建或复用 worktree，应用基线 agent 文件和团队资源，并以 `lease.cwd` 返回该目录。再次准备会保留已有的编辑。在 `lease.cwd` 中运行步骤，不要在那里运行 git。两个 attempt 从不共用一个位置：租约的位置被另一个未结束的 attempt 占用时（例如检出目录中的第二个步骤），返回 `busy`，attempt 仍保持租约；等那个 attempt 报告后，用 `--attempt` 准备它。
 
 之后由 `report` 完成这个 attempt。它负责 commit、push，并自己填写 `changes` 或 `read`，所以已准备的 attempt 的报告如果带有 `changes` 或 `read`，会返回 `invalid_report`。TeamAI 只在接受了成功报告且回复允许 cleanup 后才删除 worktree。失败的 attempt 保留其工作，以便重试。
 
