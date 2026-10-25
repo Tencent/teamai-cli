@@ -10,9 +10,9 @@ import type { RunMode } from '../launch-context.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { getDataHome } from '../types.js';
 import { skillContext } from '../workflow/drivers/skill/skill-driver.js';
-import { inProcessClient } from '../workflow/protocol.js';
+import { inProcessClient, type WorkflowClient } from '../workflow/protocol.js';
 import { takeJudgeLease, type JudgeRequest } from '../workflow/scoring.js';
-import { AttemptIdSchema, deliveryLockPath, RunIdSchema, skillStatePath, type RunId } from '../workflow/store.js';
+import { AttemptIdSchema, deliveryLockPath, readRun, RunIdSchema, skillStatePath, type RunId } from '../workflow/store.js';
 import { Crash, fakeJudge, githubOrigin, skillHarness, untilStopped } from './helpers/skill-harness.js';
 
 const CHECK = `schemaVersion: v1alpha1
@@ -754,6 +754,57 @@ describe('skill driver', () => {
     const later = calls.slice(released).flatMap((call) => ('next' in call ? [call.next] : []));
     expect(later.length).toBeGreaterThan(0);
     for (const running of later) expect(running).not.toContain(serve.attempt);
+  });
+
+  it.each([
+    // The person cancels the run from their terminal while setup runs.
+    { stop: 'the run cancelled', timeout: '', meanwhile: async (client: WorkflowClient, run: RunId) => { await client.cancel(run); }, step: { status: 'cancelled' } },
+    // A next past the deadline settles the run: the engine stops the attempt, as a runner's own check would.
+    {
+      stop: 'whose deadline passed', timeout: '    timeout: 30s\n', step: { status: 'failed', failure: { code: 'timeout' } },
+      meanwhile: async (client: WorkflowClient, run: RunId, driver: unknown) => {
+        vi.setSystemTime(Date.now() + 60_000);
+        await client.next(run, { driver, canTakeLease: false });
+      },
+    },
+  ])('gives up an attempt $stop while its setup ran, and never starts its command', async ({ timeout, meanwhile, step }) => {
+    const commands: string[] = [];
+    const reports: string[] = [];
+    const harness = await skillHarness({ build: `schemaVersion: v1alpha1
+name: build
+description: Build in a set-up workspace
+invoke: allow
+setup:
+  command: node -e "process.exit(0)"
+steps:
+  - id: build
+    workspace: new
+${timeout}    command: node -e "require('fs').writeFileSync('built.txt', 'B')"
+` }, {
+      client: (client) => ({
+        ...client,
+        setup: async (run, attempt, mode) => {
+          const failure = await client.setup(run, attempt, mode);
+          await meanwhile(client, run, z.object({ driver: z.unknown() }).parse(JSON.parse(fs.readFileSync(skillStatePath(harness.config, run), 'utf8'))).driver);
+          return failure;
+        },
+        report: async (runId, body, options) => {
+          reports.push(z.object({ outcome: z.string() }).parse(body).outcome);
+          return client.report(runId, body, options);
+        },
+      }),
+      runners: (runners) => ({ ...runners, command: (input) => { commands.push(input.command); return runners.command(input); } }),
+    });
+    roots.push(harness.root);
+    const started = await harness.call({ kind: 'start', name: 'build', answers: { parallel: 1, confirmed: false }, inputs: undefined });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+    const run = RunIdSchema.parse(started.data.turn.run);
+    const events = await eventsToDone(harness, run);
+    expect(commands).toEqual([]);
+    expect(reports).toEqual(['released']);
+    expect([...started.data.turn.events, ...events]).toContainEqual(expect.objectContaining({ kind: 'stopped', step: 'build' }));
+    const stored = await readRun(harness.config, run);
+    expect(typeof stored === 'object' && stored.steps.find((item) => item.id === 'build')).toMatchObject(step);
   });
 
   it('stops the setup a killed runner left running, as it stops a command one left', async () => {

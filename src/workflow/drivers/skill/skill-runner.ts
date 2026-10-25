@@ -245,10 +245,11 @@ async function setupFailed(context: SkillContext, lock: RunLock, attempt: Attemp
 
 /**
  * Under the lock, once the place is set up: a command gets its env (C1), and a prompt its child's model and brief,
- * which offer it to the agent (C2, C3). An attempt stopped meanwhile is given up before either starts (C9).
+ * which offer it to the agent (C2, C3). The run is checked first, since a cancel or a deadline that passed while setup
+ * ran reached only the engine, and an attempt stopped meanwhile is given up before either starts (C9).
  */
 async function begin(context: SkillContext, lock: RunLock, attempt: AttemptId, prepared: Extract<Stage, { kind: 'prepared' }>): Promise<Stage> {
-  const state = await readState(context, lock);
+  const state = await ticked(context, lock);
   const open = state && openAttempt(state, attempt);
   if (state && open?.phase === 'stopping') return stopped(context, lock, state, attempt);
   if (!state || (open?.phase !== 'preparing' && open?.phase !== 'running')) return { kind: 'gone', status: 'gone' };
@@ -290,14 +291,20 @@ function checkIn(context: SkillContext, expiresAt: string | undefined): number {
 
 /**
  * Under the lock: a tick of the run as its driver, which takes no lease (D1), so the runner learns what the engine
- * cancelled while no agent calls. Whether the attempt still runs.
+ * cancelled while no agent calls. The state it saved.
  */
-async function check(context: SkillContext, lock: RunLock, attempt: AttemptId): Promise<{ running: boolean }> {
+async function ticked(context: SkillContext, lock: RunLock): Promise<SkillState | undefined> {
   const state = await readState(context, lock);
-  if (!state) return { running: false };
-  const ticked = await runTick(context, lock, state, 'runner');
-  await writeSkillState(context.config, lock, ticked.state, context.env.secrets);
-  return { running: openAttempt(ticked.state, attempt)?.phase === 'running' };
+  if (!state) return undefined;
+  const after = (await runTick(context, lock, state, 'runner')).state;
+  await writeSkillState(context.config, lock, after, context.env.secrets);
+  return after;
+}
+
+/** Under the lock: whether the attempt still runs, once the run is ticked. */
+async function check(context: SkillContext, lock: RunLock, attempt: AttemptId): Promise<{ running: boolean }> {
+  const state = await ticked(context, lock);
+  return { running: state !== undefined && openAttempt(state, attempt)?.phase === 'running' };
 }
 
 /**
