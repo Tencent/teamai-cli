@@ -171,10 +171,10 @@ export async function preparePlace(input: { config: LocalConfig; lock: RunLock; 
   const opened = await openCopy({ config, base, lease, workspace, reopened, adopt, hosted });
   // While the host's place has the branch checked out, git refuses TeamAI's own worktree of it, so the failure leads with
   // why that place was passed over.
-  const failure = (opening: WorkflowFailure): WorkflowFailure => adopt === undefined && hosted !== undefined && passedOver !== undefined
+  const explained = (opening: WorkflowFailure): WorkflowFailure => adopt === undefined && hosted !== undefined && passedOver !== undefined
     ? { ...opening, message: `TeamAI did not go on in ${hosted}, the place the host made for branch ${workspace.branch}: ${passedOver} Making its own worktree of the branch failed too: ${opening.message}` }
     : opening;
-  const prepared: PlacePrepared = 'code' in opened ? { kind: 'failed', failure: failure(opened) } : await stageRole({ config, base, lease, workspace, ...opened });
+  const prepared: PlacePrepared = 'code' in opened ? { kind: 'failed', failure: explained(opened) } : await stageRole({ config, base, lease, workspace, ...opened });
   // The step does not run in a place the host made whose prepare failed, so the host's own hooks run there again.
   if (prepared.kind === 'failed' && adopt !== undefined) await clearWorktreeHooks(adopt);
   return prepared;
