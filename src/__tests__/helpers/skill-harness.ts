@@ -19,8 +19,9 @@ function git(cwd: string, ...args: string[]): string {
  * process makes, and it waits at each run lock it takes until the next `sleep`, so a test sees each phase a real runner
  * passes through: preparing, then running, then reported.
  */
-function memoryRunners(start: number): { runners: Runners; now: () => Date; bind(context: SkillContext): void } {
+function memoryRunners(start: number): { runners: Runners; now: () => Date; bind(context: SkillContext): void; hold(held: boolean): void } {
   let clock = start;
+  let held = false;
   let base: SkillContext | undefined;
   const live = new Map<string, Promise<unknown>>();
   const gates: Array<() => void> = [];
@@ -37,6 +38,7 @@ function memoryRunners(start: number): { runners: Runners; now: () => Date; bind
   return {
     now: () => new Date(clock),
     bind: (context) => { base = context; },
+    hold: (on) => { held = on; },
     runners: {
       spawn: async (job) => {
         if (!base) throw new Error('memoryRunners used before bind');
@@ -49,6 +51,7 @@ function memoryRunners(start: number): { runners: Runners; now: () => Date; bind
       alive: async (run, attempt) => live.has(`${run}/${attempt}`),
       sleep: async (ms) => {
         clock += ms;
+        if (held) return;
         for (const open of gates.splice(0)) open();
         await settle();
       },
@@ -103,6 +106,8 @@ export async function skillHarness(workflows: Record<string, string>, options: H
   scheduler.bind(context);
   return {
     root, work, config, context, rows,
+    /** While held, a sleep moves the clock and no runner, so two calls in a row see the same runners. */
+    hold: scheduler.hold,
     /** Makes `call` as the session, or with another session or lock in its context. */
     call: (call: SkillCall, overrides: Partial<Pick<SkillContext, 'session' | 'locks'>> = {}) => runSkillCall(call, { ...context, ...overrides }),
   };
