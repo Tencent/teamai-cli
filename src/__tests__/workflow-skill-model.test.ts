@@ -43,6 +43,8 @@ const STEPS = ['api', 'ui', 'lint', 'test', 'integrate', 'serve'] as const;
 
 /** fast-check runs per property: a few in the suite, more by hand (`WORKFLOW_SKILL_MODEL_RUNS=200`). */
 const RUNS = Number(process.env.WORKFLOW_SKILL_MODEL_RUNS ?? '8');
+/** A run takes about 1.5 s; the property gets 3 s a run, and never less than ten minutes. */
+const TIMEOUT_MS = Math.max(600_000, RUNS * 3_000);
 
 const NextBodySchema = z.object({ running: z.array(z.string()) });
 const LeaseReplySchema = z.object({ data: z.object({ lease: z.object({ attempt: z.string() }) }) });
@@ -584,5 +586,5 @@ describe('skill driver model', () => {
       // No command outlives the run.
       expect([...commands.live]).toEqual([]);
     }), { numRuns: RUNS });
-  }, 600_000);
+  }, TIMEOUT_MS);
 });
