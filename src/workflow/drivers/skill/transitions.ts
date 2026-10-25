@@ -39,6 +39,7 @@ export const TRANSITIONS = [
   { id: 'R19', state: 'any', input: 'resume `--driver skill`; `next --takeover` with no skill.json here', guard: '`WorkflowClient.resume` readied the run: it took a run this machine lacks, or with `--claim` one another install owns, or found the run here and this install its owner; no skill.json is kept here, or the claim installed the published state; R8 does not apply', effects: 'write skill.json as R10 does, with the caller\'s run mode and the options of `--parallel`, `--hitl` or `--auto-approve` and `--no-judge`, else a start\'s: one step at a time, HITL mode `person`', next: 'host when the run has a prompt step, else drive', action: 'the turn of a tick' },
   { id: 'R20', state: 'any', input: 'R19\'s input', guard: '`WorkflowClient.resume` answers that another install owns the run (a resume without `--claim`, or a takeover), or that this machine lacks it (a takeover)', effects: 'none', next: 'unchanged', action: 'error `not_owner` or `run_not_found`, next: the `resume <run> --driver skill --claim` literal, run only when the person agrees' },
   { id: 'R21', state: 'any', input: 'R19\'s input', guard: '`WorkflowClient.resume` refuses the run otherwise: teamai-reports does not hold it or moved while it was claimed, its definition cannot be read here, or its copies cannot be brought to the commits it recorded', effects: 'none', next: 'unchanged', action: 'error with the refusal\'s code and message, next null' },
+  { id: 'R22', state: 'any', input: 'resume `--driver skill`, `next --takeover`', guard: 'the caller is not the session skill.json here names as the run\'s owner, and `WorkflowClient.resumeRefusal` refuses it by the `invoke` of the run\'s own definition, as a start is refused: a session variable shows an agent, and `invoke: deny`, or `invoke: ask` without `--confirmed` or in an unattended run', effects: 'none', next: 'unchanged', action: 'error `invoke_denied`, `unattended_denied` or `confirm_needed`; next: for `confirm_needed` the same call with `--confirmed`, run only when the person agrees, else null' },
   { id: 'R12', state: 'host', input: 'tick', guard: '', effects: 'none', next: 'host', action: '`choose about:host decide:agent`' },
   { id: 'R13', state: 'host', input: 'next `--choice h`', guard: '', effects: 'host := `HOST_PROFILES[h]`', next: 'drive', action: 'the turn of a tick' },
   { id: 'R14', state: 'host', input: 'report, next `--ack` or `--adopt`', guard: '', effects: 'none', next: 'host', action: 'error `choice_pending`, next: the next literal' },
@@ -373,6 +374,15 @@ export function readiedRow(input: { run: RunId; readied: RunReadied; kept: boole
       return unhandled;
     }
   }
+}
+
+/**
+ * R22: the refusal `WorkflowClient.resumeRefusal` gave a resume or a takeover, which only the person's yes, carried by
+ * `--confirmed`, can lift. Undefined when it gave none.
+ */
+export function invokeRow(refusal: WorkflowFailure | undefined): Answered<'R22', Relayed> | undefined {
+  if (refusal === undefined) return undefined;
+  return { row: 'R22', answer: { kind: 'engine-error', error: refusal, next: refusal.code === 'confirm_needed' ? 'same' : null } };
 }
 
 /**

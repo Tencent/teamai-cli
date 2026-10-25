@@ -9,7 +9,7 @@ import type { LocalConfig } from '../types.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { WORKSPACE_MODES } from '../workflow/types.js';
 import { respondProvenance, respondToHitl } from '../workflow/run-controls.js';
-import { AttemptIdSchema, deliveryLockPath, readRun, RunIdSchema, type RunId } from '../workflow/store.js';
+import { AttemptIdSchema, deliveryLockPath, readRun, RunIdSchema, skillStatePath, type RunId } from '../workflow/store.js';
 import type { Runners } from '../workflow/drivers/skill/skill-driver.js';
 // The doc comparison reads the table itself; every behaviour below goes through runSkillCall.
 import { TRANSITIONS, type TransitionRow } from '../workflow/drivers/skill/transitions.js';
@@ -347,6 +347,9 @@ samplingRate: 100
 ---
 Judge the review.
 ` };
+
+/** The evidence of a process an agent session runs. */
+const AGENT = { kind: 'session', variable: 'CLAUDE_CODE_SESSION_ID' } as const;
 
 const roots: string[] = [];
 afterEach(() => {
@@ -826,7 +829,11 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       const { run, attempt } = await publishedMidStep(ci, 'handed');
       const modes: string[] = [];
       const made = await harness({}, { install: await team.install('member'), mode: 'unattended', runners: (runners) => ({ ...runners, spawn: async (job) => { modes.push(job.mode); await runners.spawn(job); } }) });
-      const resumed = await turnOf(await made.call({ kind: 'resume', run, claim: false, answers: { parallel: 2 } }));
+      // The definition the run carries says invoke: deny, so an agent session gets nothing of it, and nothing is claimed.
+      expect(await made.call({ kind: 'resume', run, claim: false, confirmed: false, answers: {} }, { evidence: AGENT }))
+        .toMatchObject({ error: { code: 'invoke_denied', next: null } });
+      expect(await readRun(made.config, run)).toBe('missing');
+      const resumed = await turnOf(await made.call({ kind: 'resume', run, claim: false, confirmed: false, answers: { parallel: 2 } }));
       expect(resumed).toMatchObject({ run, status: 'driving', actions: [{ kind: 'choose', about: 'host' }] });
       expect(await publishRun(ci.config, run, { checkout: ci.checkout })).toMatchObject({ ok: false, error: { code: 'not_owner' } });
       const built = await turnOf(await made.call({ kind: 'choose', run, choice: 'h1' }));
@@ -846,6 +853,53 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     },
   },
   {
+    name: 'a resume or a takeover follows the invoke of the run\'s own definition, as a start does: an agent session needs allow, or ask and the person\'s yes in an attended run',
+    rows: ['R22', 'R19'],
+    run: async () => {
+      const made = await harness({ locked: LOCKED, gated: GATED, check: CHECK });
+      const runOf = async (name: string): Promise<RunId> => {
+        const started = await made.context.client.start(name, { checkout: made.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
+        if (!('data' in started)) throw new Error(JSON.stringify(started));
+        return RunIdSchema.parse(started.data.run);
+      };
+      const locked = await runOf('locked');
+      expect(await made.call({ kind: 'resume', run: locked, claim: false, confirmed: true, answers: {} }, { evidence: AGENT })).toEqual({ error: {
+        code: 'invoke_denied', message: expect.stringContaining('Workflow "locked" has invoke: deny, so no coding agent continues it, with any driver, and this command runs inside an agent session (CLAUDE_CODE_SESSION_ID is set).'), next: null,
+      } });
+      expect(await made.call({ kind: 'takeover', run: locked, confirmed: false }, { evidence: AGENT })).toMatchObject({ error: { code: 'invoke_denied', next: null } });
+      expect(fs.existsSync(skillStatePath(made.config, locked))).toBe(false);
+      const gated = await runOf('gated');
+      expect(await made.call({ kind: 'resume', run: gated, claim: false, confirmed: false, answers: { parallel: 2 } }, { evidence: AGENT })).toEqual({ error: {
+        code: 'confirm_needed', message: expect.stringContaining('Ask the person whether to continue gated'), next: `teamai workflow resume ${gated} --driver skill --parallel 2 --confirmed`,
+      } });
+      expect(await made.call({ kind: 'takeover', run: gated, confirmed: false }, { evidence: AGENT }))
+        .toMatchObject({ error: { code: 'confirm_needed', next: `teamai workflow next ${gated} --driver skill --takeover --confirmed` } });
+      expect(await made.call({ kind: 'resume', run: gated, claim: false, confirmed: true, answers: {} }, { evidence: AGENT, mode: 'unattended' }))
+        .toMatchObject({ error: { code: 'unattended_denied', next: null } });
+      expect(fs.existsSync(skillStatePath(made.config, gated))).toBe(false);
+      expect(await turnOf(await made.call({ kind: 'resume', run: gated, claim: false, confirmed: true, answers: {} }, { evidence: AGENT }))).toMatchObject({ run: gated });
+      expect(await turnOf(await made.call({ kind: 'takeover', run: await runOf('check'), confirmed: false }, { evidence: AGENT }))).toMatchObject({ status: expect.any(String) });
+      // A session that sets no agent variable is the person's, whatever the driver.
+      expect(await turnOf(await made.call({ kind: 'takeover', run: locked, confirmed: false }, { evidence: { kind: 'skill-driver' } }))).toMatchObject({ run: locked });
+      return made.rows;
+    },
+  },
+  {
+    name: 'the session that drives a run is not checked again, and another session\'s takeover of it needs the person\'s yes for an invoke: ask workflow',
+    rows: ['S4', 'R22'],
+    run: async () => {
+      const made = await harness({ gated: GATED });
+      const { run } = await turnOf(await made.call({ kind: 'start', name: 'gated', answers: { confirmed: true }, inputs: undefined }, { evidence: AGENT }));
+      expect(await turnOf(await made.call({ kind: 'resume', run, claim: false, confirmed: false, answers: {} }, { evidence: AGENT }))).toMatchObject({ run });
+      expect(await turnOf(await made.call({ kind: 'takeover', run, confirmed: false }, { evidence: AGENT }))).toMatchObject({ run });
+      expect(await made.call({ kind: 'takeover', run, confirmed: false }, { evidence: AGENT, session: 'session-b' }))
+        .toMatchObject({ error: { code: 'confirm_needed', next: `teamai workflow next ${run} --driver skill --takeover --confirmed` } });
+      const taken = await turnOf(await made.call({ kind: 'takeover', run, confirmed: true }, { evidence: AGENT, session: 'session-b' }));
+      expect(taken.events).toContainEqual({ kind: 'takeover', from: 'session-a' });
+      return made.rows;
+    },
+  },
+  {
     name: 'a resume of a run another install owns now is refused with the --claim literal for the person, and the claim takes it back',
     rows: ['R20', 'R19'],
     run: async () => {
@@ -853,12 +907,12 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       const ci = await team.install('ci');
       const { run } = await publishedMidStep(ci, 'handed');
       const member = await harness({}, { install: await team.install('member') });
-      await turnOf(await member.call({ kind: 'resume', run, claim: false, answers: {} }));
+      await turnOf(await member.call({ kind: 'resume', run, claim: false, confirmed: false, answers: {} }));
       const back = await harness({}, { install: ci });
-      expect(await back.call({ kind: 'resume', run, claim: false, answers: {} })).toEqual({
+      expect(await back.call({ kind: 'resume', run, claim: false, confirmed: false, answers: {} })).toEqual({
         error: { code: 'not_owner', message: expect.stringContaining(`Run ${run} is owned by member`), next: `teamai workflow resume ${run} --driver skill --claim` },
       });
-      expect(await turnOf(await back.call({ kind: 'resume', run, claim: true, answers: {} }))).toMatchObject({ run, status: 'driving', actions: [{ kind: 'choose', about: 'host' }] });
+      expect(await turnOf(await back.call({ kind: 'resume', run, claim: true, confirmed: false, answers: {} }))).toMatchObject({ run, status: 'driving', actions: [{ kind: 'choose', about: 'host' }] });
       return [...member.rows, ...back.rows];
     },
   },
@@ -868,13 +922,13 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     run: async () => {
       const made = await harness({ check: CHECK });
       const lacking = RunIdSchema.parse('r0123456789abcdef');
-      expect(await made.call({ kind: 'takeover', run: lacking })).toEqual({
+      expect(await made.call({ kind: 'takeover', run: lacking, confirmed: false })).toEqual({
         error: { code: 'run_not_found', message: expect.any(String), next: `teamai workflow resume ${lacking} --driver skill --claim` },
       });
       const other = await made.context.client.start('check', { checkout: made.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
       if (!('data' in other) || typeof other.data.run !== 'string') throw new Error(JSON.stringify(other));
       const run = RunIdSchema.parse(other.data.run);
-      expect(await turnOf(await made.call({ kind: 'takeover', run }))).toMatchObject({ run, status: 'driving' });
+      expect(await turnOf(await made.call({ kind: 'takeover', run, confirmed: false }))).toMatchObject({ run, status: 'driving' });
       expect(await polledToDone(made, run)).toMatchObject({ status: 'done', actions: [{ kind: 'done', outcome: 'succeeded' }] });
       return made.rows;
     },
@@ -885,7 +939,7 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     run: async () => {
       const team = sharedTeam({ handed: HANDED });
       const made = await harness({}, { install: await team.install('member') });
-      expect(await made.call({ kind: 'resume', run: RunIdSchema.parse('r0123456789abcdef'), claim: false, answers: {} })).toMatchObject({ error: { code: 'run_not_published', next: null } });
+      expect(await made.call({ kind: 'resume', run: RunIdSchema.parse('r0123456789abcdef'), claim: false, confirmed: false, answers: {} })).toMatchObject({ error: { code: 'run_not_published', next: null } });
       return made.rows;
     },
   },
@@ -897,7 +951,7 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       const ci = await team.install('ci');
       const { run } = await publishedMidStep(ci, 'release-docs');
       const made = await harness({}, { install: await team.install('member') });
-      expect(await made.call({ kind: 'resume', run, claim: false, answers: {} })).toEqual({
+      expect(await made.call({ kind: 'resume', run, claim: false, confirmed: false, answers: {} })).toEqual({
         error: { code: 'needs_local_driver', message: expect.stringContaining(`Ask the person to run teamai workflow resume ${run} --tools default=claude in their own terminal.`), next: null },
       });
       return made.rows;
@@ -922,7 +976,7 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       // An owner quiet for an hour may be in a long talk with the person: only the person decides it is gone.
       await made.context.runners.sleep(3_600_000);
       expect(await idle('session-b')).toBe(first + 3600);
-      expect((await turnOf(await made.call({ kind: 'takeover', run }, { session: 'session-b' }))).events).toContainEqual({ kind: 'takeover', from: 'session-a' });
+      expect((await turnOf(await made.call({ kind: 'takeover', run, confirmed: false }, { session: 'session-b' }))).events).toContainEqual({ kind: 'takeover', from: 'session-a' });
       expect(await idle()).toBe(0);
       made.hold(false);
       return made.rows;

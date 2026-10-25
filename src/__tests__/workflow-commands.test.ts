@@ -462,3 +462,61 @@ describe('workflow publish and resume --claim', () => {
     expect(git(root, '--git-dir', origin, 'rev-parse', 'teamai-reports')).toBe(published);
   });
 });
+
+describe('workflow resume follows the invoke of the run it continues', () => {
+  const workflow = (name: string, invoke: string): string => `schemaVersion: v1alpha1
+name: ${name}
+description: One command.
+invoke: ${invoke}
+steps:
+  - id: one
+    command: node -e "process.exit(0)"
+`;
+
+  /** A run of each workflow, started from a terminal, and the config they are in. */
+  async function runs(): Promise<{ config: LocalConfig; locked: string; gated: string; open: string }> {
+    const config = testConfig();
+    for (const [name, invoke] of [['locked', 'deny'], ['gated', 'ask'], ['open', 'allow']]) {
+      fs.writeFileSync(path.join(config.repo.localPath, 'workflows', `${name}.yaml`), workflow(name, invoke));
+    }
+    await syncWorkflowDefinitions(config);
+    const secrets = await knownSecrets(config);
+    const [locked, gated, open] = await Promise.all(['locked', 'gated', 'open'].map(async (name) => {
+      const started = await startRun(config, name, {}, { secrets });
+      if ('error' in started) throw new Error(started.error.message);
+      return String(started.data.run);
+    }));
+    state.config = config;
+    vi.spyOn(process, 'cwd').mockReturnValue(config.projectRoot ?? '');
+    return { config, locked: locked ?? '', gated: gated ?? '', open: open ?? '' };
+  }
+
+  it('refuses an agent session by the run\'s own definition before it changes the run, and lets an allowed or confirmed one drive it', async () => {
+    const { config, locked, gated, open } = await runs();
+    // The cache now allows what the run's definition denies: the run's own definition decides.
+    fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'locked.yaml'), workflow('locked', 'allow'));
+    await syncWorkflowDefinitions(config);
+    vi.stubEnv('CLAUDE_CODE_SESSION_ID', 'session-a');
+
+    expect(await capture(() => workflowResume(locked, {}))).toEqual({ error: {
+      code: 'invoke_denied', message: expect.stringContaining(`The person can continue it from their own terminal with teamai workflow resume ${locked}.`),
+    } });
+    expect(await capture(() => workflowResume(gated, {}))).toEqual({ error: {
+      code: 'confirm_needed', message: expect.stringContaining('Ask the person whether to continue gated; once they agree, run the same command with --confirmed.'),
+    } });
+    vi.stubEnv('TEAMAI_MODE', 'unattended');
+    expect(await capture(() => workflowResume(gated, { confirmed: true }))).toMatchObject({ error: { code: 'unattended_denied' } });
+    expect(await readRun(config, locked)).toMatchObject({ steps: [{ id: 'one', status: 'pending' }] });
+    expect(await readRun(config, gated)).toMatchObject({ steps: [{ id: 'one', status: 'pending' }] });
+    vi.stubEnv('TEAMAI_MODE', 'attended');
+    expect(await capture(() => workflowResume(gated, { confirmed: true }))).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(await capture(() => workflowResume(open, {}))).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+  });
+
+  it('lets the person\'s terminal resume a run of any workflow', async () => {
+    const { locked, gated } = await runs();
+
+    expect(await capture(() => workflowResume(locked, {}))).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(await capture(() => workflowResume(gated, {}))).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+  });
+});

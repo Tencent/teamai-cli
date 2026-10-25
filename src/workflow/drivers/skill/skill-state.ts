@@ -183,6 +183,11 @@ export function newSkillState(input: {
   };
 }
 
+/** Whether `session` is the one that drives the run of `state`: it passed the run's `invoke` check when it started or took the run. */
+export function drivesRun(state: SkillState | undefined, session: string | undefined): boolean {
+  return state !== undefined && session !== undefined && state.orchestrator.session === session;
+}
+
 export async function readSkillState(config: LocalConfig, run: RunId): Promise<{ kind: 'found'; state: SkillState } | { kind: 'missing' } | { kind: 'unreadable'; reason: string }> {
   const raw = await readFileSafe(skillStatePath(config, run));
   if (raw === null) return { kind: 'missing' };

@@ -9,7 +9,7 @@ import { nestedWorkflowError, type AgentEvidence } from './attempt-marker.js';
 import { loadCachedWorkflow, loadWorkflowTree } from './cache.js';
 import { describeWorkflow, type WorkflowDescription } from './describe.js';
 import { LeaseIdSchema, LeaseWireSchema } from './lease-wire.js';
-import { reconcileTakenCopies, resumeRun } from './handoff.js';
+import { carriedDefinition, reconcileTakenCopies, resumeRun } from './handoff.js';
 import { leaseNext, parseNextPayload, parseReport, parseResponsePayload, reportable, reportAttempt, startRun, withIgnored, type NextOptions, type ReportInput } from './engine.js';
 import {
   abandonPlace, adoptedPlaceOf, finishPlace, placeHeldBy, placeLeaseOf, placeOf, placeRecorded, preparePlace, releasePlace, runPlaceSetup, type PlaceLease, type PlacePrepared,
@@ -64,7 +64,7 @@ export interface WorkflowClient {
    * inside a workflow attempt starts none, `nested_workflow`, and an agent one only a workflow whose `invoke` lets it:
    * `invoke_denied` for `deny`, and `confirm_needed` for `ask` without `confirmed`.
    */
-  start(name: string, options: { inputs?: unknown; checkout?: string; caller: StartCaller }): Promise<WorkflowEnvelope>;
+  start(name: string, options: { inputs?: unknown; checkout?: string; caller: InvokeCaller }): Promise<WorkflowEnvelope>;
   /**
    * Asks the run what to do. With `prepare`, a lease comes with `cwd`, its place in the checkout the run started from,
    * made under the run's lock, and a prepare that fails settles the attempt `failed` with its own code.
@@ -85,6 +85,8 @@ export interface WorkflowClient {
    * definition as `describe` does.
    */
   resume(runId: RunId, options: { claim: 'none' | 'lacking' | 'any'; checkout: string; ceiling: number; can: DriverCan; tool?: string }): Promise<RunReadied>;
+  /** Why `caller` may not continue run `runId`, by a resume or a takeover, as `resumeRefusal` decides it. */
+  resumeRefusal(runId: RunId, options: { caller: InvokeCaller; published: boolean }): Promise<WorkflowFailure | undefined>;
   /** Takes or renews judge work, as `teamai score --next` does with `body` as its payload. */
   scoreNext(body: unknown): Promise<WorkflowEnvelope>;
   /**
@@ -106,15 +108,18 @@ export type RunReadied =
   | { kind: 'failed'; failure: WorkflowFailure };
 
 /**
- * The process that asks to start a run: the evidence it carries that an agent runs it, whether it passed
- * `--confirmed`, an agent's word that the person agreed to start the run, which teamai cannot verify, and its run mode:
- * in an unattended one no person is there to agree.
+ * The process that asks to start or continue a run: the evidence it carries that an agent runs it, whether it passed
+ * `--confirmed`, an agent's word that the person agreed, which teamai cannot verify, and its run mode: in an unattended
+ * one no person is there to agree.
  */
-export interface StartCaller {
+export interface InvokeCaller {
   evidence: AgentEvidence;
   confirmed: boolean;
   mode: RunMode;
 }
+
+/** What a caller asks of a workflow: to start a run, or to continue run `run`, by `workflow resume` or a takeover. */
+export type InvokeAct = { kind: 'start' } | { kind: 'continue'; run: RunId };
 
 /** What shows an agent runs the calling process, as the clause the `invoke` refusals end their first sentence with. */
 function agentClause(evidence: Exclude<AgentEvidence, { kind: 'none' }>): string {
@@ -132,9 +137,18 @@ function agentClause(evidence: Exclude<AgentEvidence, { kind: 'none' }>): string
   }
 }
 
-/** Why an agent, as `evidence` shows it, may not start workflow `name`, whose definition has `invoke: deny`. */
-export function invokeDeniedMessage(name: string, evidence: Exclude<AgentEvidence, { kind: 'none' }>): string {
-  return `Workflow "${name}" has invoke: deny, so no coding agent starts it, with any driver, and ${agentClause(evidence)}. The person can start it from their own terminal with teamai workflow start ${name} --driver local. To let agents start it, the team sets invoke: allow, or invoke: ask for a start after the person agrees, in workflows/${name}.yaml.`;
+/** Why an agent, as `evidence` shows it, may not `act` on workflow `name`, whose definition has `invoke: deny`. */
+export function invokeDeniedMessage(name: string, evidence: Exclude<AgentEvidence, { kind: 'none' }>, act: InvokeAct): string {
+  switch (act.kind) {
+    case 'start':
+      return `Workflow "${name}" has invoke: deny, so no coding agent starts it, with any driver, and ${agentClause(evidence)}. The person can start it from their own terminal with teamai workflow start ${name} --driver local. To let agents start it, the team sets invoke: allow, or invoke: ask for a start after the person agrees, in workflows/${name}.yaml.`;
+    case 'continue':
+      return `Workflow "${name}" has invoke: deny, so no coding agent continues it, with any driver, and ${agentClause(evidence)}. The person can continue it from their own terminal with teamai workflow resume ${act.run}. To let agents continue it, the team sets invoke: allow, or invoke: ask for a resume after the person agrees, in workflows/${name}.yaml.`;
+    default: {
+      const unhandled: never = act;
+      return unhandled;
+    }
+  }
 }
 
 /** What `invoke: ask` needs, as an unattended run's refusal lists it. */
@@ -146,13 +160,13 @@ export function unattendedReason(name: string, needs: string): string {
 }
 
 /**
- * Why `caller` may not start `definition`: inside a workflow attempt nothing starts, and from an agent session
- * `invoke: deny` refuses every start, and `invoke: ask` one without the person's yes, and every one in an unattended
- * run, where `--confirmed` vouches for a person who is not there. Undefined for a process without
- * agent evidence, such as the person's terminal or CI, and for a session's start of a workflow the cache lacks, which
- * the start answers.
+ * Why `caller` may not `act` on `definition`: inside a workflow attempt nothing starts, and from an agent session
+ * `invoke: deny` refuses every start or continue, and `invoke: ask` one without the person's yes, and every one in an
+ * unattended run, where `--confirmed` vouches for a person who is not there. Undefined for a process without agent
+ * evidence, such as the person's terminal or CI, and for a session's start of a workflow the cache lacks, which the start
+ * answers.
  */
-function startRefusal(definition: WorkflowDefinition | undefined, caller: StartCaller): WorkflowFailure | undefined {
+function invokeRefusal(definition: WorkflowDefinition | undefined, caller: InvokeCaller, act: InvokeAct): WorkflowFailure | undefined {
   const { evidence } = caller;
   switch (evidence.kind) {
     case 'none':
@@ -164,17 +178,42 @@ function startRefusal(definition: WorkflowDefinition | undefined, caller: StartC
       if (definition === undefined) return undefined;
       const { name } = definition;
       const invoke = definition.invoke ?? 'deny';
-      if (invoke === 'ask' && caller.mode === 'unattended') return { code: 'unattended_denied', message: unattendedReason(name, INVOKE_ASK_NEED) };
-      if (invoke === 'allow' || (invoke === 'ask' && caller.confirmed)) return undefined;
-      return invoke === 'deny'
-        ? { code: 'invoke_denied', message: invokeDeniedMessage(name, evidence) }
-        : { code: 'confirm_needed', message: `Workflow "${name}" has invoke: ask, so a coding agent starts it only after the person agrees, and ${agentClause(evidence)}. Ask the person whether to start ${name}; once they agree, run the same command with --confirmed.` };
+      if (invoke === 'allow' || (invoke === 'ask' && caller.confirmed && caller.mode !== 'unattended')) return undefined;
+      if (invoke === 'deny') return { code: 'invoke_denied', message: invokeDeniedMessage(name, evidence, act) };
+      switch (act.kind) {
+        case 'start':
+          return caller.mode === 'unattended'
+            ? { code: 'unattended_denied', message: unattendedReason(name, INVOKE_ASK_NEED) }
+            : { code: 'confirm_needed', message: `Workflow "${name}" has invoke: ask, so a coding agent starts it only after the person agrees, and ${agentClause(evidence)}. Ask the person whether to start ${name}; once they agree, run the same command with --confirmed.` };
+        case 'continue':
+          return caller.mode === 'unattended'
+            ? { code: 'unattended_denied', message: `Workflow ${name} needs a person, and this run is unattended (TEAMAI_MODE or CI says so): the team asks that a person agree before an agent continues it (invoke: ask). Continue it from a session a person attends, or set TEAMAI_MODE=attended where one does.` }
+            : { code: 'confirm_needed', message: `Workflow "${name}" has invoke: ask, so a coding agent continues it only after the person agrees, and ${agentClause(evidence)}. Ask the person whether to continue ${name}; once they agree, run the same command with --confirmed.` };
+        default: {
+          const unhandled: never = act;
+          return unhandled;
+        }
+      }
     }
     default: {
       const unhandled: never = evidence;
       return unhandled;
     }
   }
+}
+
+/**
+ * Why `caller` may not continue run `runId`, by `workflow resume` or a takeover: the check `start` makes, of the
+ * definition the run carries rather than the cache's, before anything claims or changes the run. `--driver skill` alone
+ * is no agent evidence here, as the skill driver of the session that drives the run is not checked again. `published`
+ * reads a run this machine lacks from teamai-reports, as a resume that claims it does. Reads nothing for a caller
+ * without agent evidence.
+ */
+export async function resumeRefusal(config: LocalConfig, runId: RunId, caller: InvokeCaller, { published }: { published: boolean }): Promise<WorkflowFailure | undefined> {
+  if (caller.evidence.kind === 'none' || caller.evidence.kind === 'skill-driver') return undefined;
+  const carried = await carriedDefinition(config, runId, { published });
+  if (!carried.ok) return { code: carried.error.code, message: carried.error.message };
+  return invokeRefusal(carried.value, caller, { kind: 'continue', run: runId });
 }
 
 /** The failure a call answers when the cache holds no unambiguous runnable version of workflow or alias `name`. */
@@ -291,7 +330,7 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
     setup: (run, attempt, mode) => runPlaceSetup({ config, run, attempt, mode, values: env.values }),
     start: async (name, { inputs, checkout, caller }) => {
       const cached = await loadCachedWorkflow(config, name);
-      const refused = startRefusal(cached?.definition, caller);
+      const refused = invokeRefusal(cached?.definition, caller, { kind: 'start' });
       if (refused) return { error: refused };
       const base = checkout === undefined ? undefined : await headCommit(checkout);
       return startRun(config, name, inputs ?? {}, { secrets: env.secrets, ...(checkout !== undefined ? { checkout } : {}), ...(base ? { base } : {}) });
@@ -340,6 +379,7 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
       const description = describeWorkflow({ definition: run.definition, workflows: run.workflows ?? {}, ceiling, can, allow: config.workflows?.allow ?? {}, env: env.facts });
       return { kind: 'ready', installed: resumed.value?.ownership === 'claimed', description, judging: await judgingOf(config, description, tool) };
     },
+    resumeRefusal: (runId, { caller, published }) => resumeRefusal(config, runId, caller, { published }),
     scoreNext: async (body) => {
       const request = parseJudgeRequest(body);
       return typeof request === 'string' ? { error: { code: 'invalid_json', message: request } } : nextJudgeLease(config, request);

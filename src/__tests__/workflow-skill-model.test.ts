@@ -385,7 +385,7 @@ class NewSession implements fc.AsyncCommand<Model, Real> {
     expect('error' in refused ? refused.error.idleSeconds : undefined).toBeGreaterThanOrEqual(idle);
     if (this.how === 'refused') return;
     const given = new Set(model.open.keys());
-    const turn = turnOf(await called(real, { kind: 'takeover', run: real.run }, session));
+    const turn = turnOf(await called(real, { kind: 'takeover', run: real.run, confirmed: false }, session));
     expect(turn.events).toContainEqual({ kind: 'takeover', from: previous });
     real.session = session;
     model.acked.clear();

@@ -19,7 +19,7 @@ import { canFor, HOST_CHOICES, type HostChoice } from './host-profiles.js';
 import { journalCall } from './journal.js';
 import { describeLiteral, invocationOf, type Invocation } from './literals.js';
 import { askFor, attendedReason, ceilingOf, checkStartAnswers, localPromptTool, localReason, neededAnswers, type HitlMode } from './preflight.js';
-import { newSkillState, writeSkillState } from './skill-state.js';
+import { drivesRun, newSkillState, readSkillState, writeSkillState } from './skill-state.js';
 import { detachedRunners, runRunner } from './skill-runner.js';
 import { agentReport, foreground, poll } from './tick.js';
 import { describeRow, startRow, type ResumeAnswers, type RowId } from './transitions.js';
@@ -29,11 +29,14 @@ export type SkillCall =
   | { kind: 'describe'; name: string }
   /** `judge: false`: `--no-judge`, which leaves the scored steps unjudged here. `hitl`: `--hitl`, or `--auto-approve`. */
   | { kind: 'start'; name: string; answers: { parallel?: number; confirmed: boolean; hitl?: HitlMode; judge?: false }; inputs: unknown }
-  /** `resume --driver skill`: this session drives a run another machine published; `claim` takes it from another install. */
-  | { kind: 'resume'; run: RunId; claim: boolean; answers: ResumeAnswers }
+  /**
+   * `resume --driver skill`: this session drives a run another machine published; `claim` takes it from another install.
+   * `confirmed`: `--confirmed`, the agent's word that the person agreed to continue a run of an `invoke: ask` workflow.
+   */
+  | { kind: 'resume'; run: RunId; claim: boolean; confirmed: boolean; answers: ResumeAnswers }
   | { kind: 'next'; run: RunId; wait: boolean }
-  /** `next --takeover`: this session drives the run from now on, as the person agreed. */
-  | { kind: 'takeover'; run: RunId }
+  /** `next --takeover`: this session drives the run from now on, as the person agreed; `confirmed` as a resume's. */
+  | { kind: 'takeover'; run: RunId; confirmed: boolean }
   /** `next --choice`: the agent's answer to the host question. */
   | { kind: 'choose'; run: RunId; choice: HostChoice }
   /** `next --ack dispatch.<a>`: the child of attempt `a` started. */
@@ -121,6 +124,15 @@ export async function skillContext(input: Pick<SkillContext, 'config' | 'toolPat
   };
 }
 
+/**
+ * Whether the agent session of this process drives run `run` with the skill driver on this install, as its skill.json
+ * records: that session passed the run's `invoke` check when it started or took the run.
+ */
+export async function sessionDrivesRun(config: LocalConfig, run: RunId): Promise<boolean> {
+  const read = await readSkillState(config, run);
+  return drivesRun(read.kind === 'found' ? read.state : undefined, (await agentSessionFromEnv()).id);
+}
+
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 /** The options of a run that a skill start and a skill resume share. */
 const RunOptionsSchema = z.object({
@@ -139,11 +151,12 @@ const StartOptionsSchema = RunOptionsSchema.extend({
   confirmed: z.boolean().optional(),
   inputs: z.string().optional(),
 }).refine(ONE_HITL.check, { message: ONE_HITL.message });
-const ResumeOptionsSchema = RunOptionsSchema.extend({ claim: z.boolean().optional() }).refine(ONE_HITL.check, { message: ONE_HITL.message });
+const ResumeOptionsSchema = RunOptionsSchema.extend({ claim: z.boolean().optional(), confirmed: z.boolean().optional() }).refine(ONE_HITL.check, { message: ONE_HITL.message });
 const OFFER = /^dispatch\.(.+)$/;
 const NextOptionsSchema = z.object({
   wait: z.boolean().optional(),
   takeover: z.boolean().optional(),
+  confirmed: z.boolean().optional(),
   choice: z.enum(HOST_CHOICES, { errorMap: () => ({ message: `--choice takes the id of a host question option: ${HOST_CHOICES.join(', ')}` }) }).optional(),
   ack: z.string().transform((offer, ctx) => {
     const attempt = AttemptIdSchema.safeParse(OFFER.exec(offer)?.[1]);
@@ -159,6 +172,8 @@ const NextOptionsSchema = z.object({
   message: '--driver skill takes --attempt and --adopt together, as the adopt of a place action prints them',
 }).refine((options) => [options.wait, options.takeover, options.choice, options.ack, options.adopt].filter((given) => given !== undefined && given !== false).length <= 1, {
   message: 'next takes at most one of --wait, --takeover, --choice, --ack and --adopt',
+}).refine((options) => !options.confirmed || options.takeover === true, {
+  message: 'next takes --confirmed only with --takeover, as a confirm_needed answer prints it',
 });
 const RespondOptionsSchema = z.object({
   pass: z.string({ required_error: '--driver skill needs --pass, as the choose action printed it' }).regex(/^[1-9][0-9]*$/, '--pass takes the pass the choose action printed').transform(Number),
@@ -211,18 +226,18 @@ export function parseSkillCall(
   if (raw.kind === 'resume') {
     const options = ResumeOptionsSchema.safeParse(raw.options);
     if (!options.success) return invalid(options.error);
-    const { claim, parallel, judge, autoApprove } = options.data;
+    const { claim, confirmed, parallel, judge, autoApprove } = options.data;
     const hitl: HitlMode | undefined = autoApprove ? 'auto-approve' : options.data.hitl;
     return {
-      kind: 'resume', run: run.data, claim: claim === true,
+      kind: 'resume', run: run.data, claim: claim === true, confirmed: confirmed === true,
       answers: { ...(parallel !== undefined ? { parallel } : {}), ...(hitl !== undefined ? { hitl } : {}), ...(judge === false ? { judge } : {}) },
     };
   }
   if (raw.kind === 'next') {
     const options = NextOptionsSchema.safeParse(raw.options);
     if (!options.success) return invalid(options.error);
-    const { choice, ack, wait, takeover, attempt, adopt } = options.data;
-    if (takeover) return { kind: 'takeover', run: run.data };
+    const { choice, ack, wait, takeover, confirmed, attempt, adopt } = options.data;
+    if (takeover) return { kind: 'takeover', run: run.data, confirmed: confirmed === true };
     if (choice !== undefined) return { kind: 'choose', run: run.data, choice };
     if (ack !== undefined) return { kind: 'ack', run: run.data, attempt: ack };
     if (attempt !== undefined && adopt !== undefined) return { kind: 'adopt', run: run.data, attempt, dir: path.resolve(adopt) };
@@ -257,12 +272,12 @@ async function answerOf(call: SkillCall, context: SkillContext): Promise<SkillAn
       if (call.answers.parallel !== undefined && call.answers.parallel > ceiling) {
         return { error: { code: 'invalid_arguments', message: `--parallel ${call.answers.parallel} is above the most this machine runs at once, ${ceiling}.`, next: null } };
       }
-      return foreground(context, call.run, { kind: 'resume', claim: call.claim, answers: call.answers });
+      return foreground(context, call.run, { kind: 'resume', claim: call.claim, confirmed: call.confirmed, answers: call.answers });
     }
     case 'next':
       return call.wait ? poll(context, call.run) : foreground(context, call.run, { kind: 'next' });
     case 'takeover':
-      return foreground(context, call.run, { kind: 'takeover' });
+      return foreground(context, call.run, { kind: 'takeover', confirmed: call.confirmed });
     case 'choose':
       return foreground(context, call.run, { kind: 'choose', choice: call.choice });
     case 'ack':
@@ -292,7 +307,7 @@ async function start(call: Extract<SkillCall, { kind: 'describe' | 'start' }>, c
   const local = localReason(description);
   const why = local !== undefined ? { local } : {};
   if (call.kind === 'describe') {
-    const denied = description.invoke === 'deny' && context.evidence.kind !== 'none' ? { denied: invokeDeniedMessage(description.name, context.evidence) } : {};
+    const denied = description.invoke === 'deny' && context.evidence.kind !== 'none' ? { denied: invokeDeniedMessage(description.name, context.evidence, { kind: 'start' }) } : {};
     const attended = attendedReason(description);
     const { row, verdict } = describeRow({
       needed: neededAnswers(description), ...denied, ...(undeliverable ? { undeliverable: undeliverable.message } : {}), ...why, judgingHere: judging.kind === 'here',

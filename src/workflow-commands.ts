@@ -11,9 +11,9 @@ import { callerProvenance, cancelRun, respondProvenance, respondToHitl, retrySte
 import { runLocalDriver, withDriverLock } from './workflow/drivers/local/local-driver.js';
 import { driverIdentity } from './driver-identity.js';
 import { getBusinessRoot, getDataHome, type LocalConfig, type TeamaiConfig } from './types.js';
-import { AttemptIdSchema, isRunId, readRun } from './workflow/store.js';
-import { inProcessClient, workflowNotFound, type NextPrepare } from './workflow/protocol.js';
-import { parseSkillCall, runSkillCall, skillContext } from './workflow/drivers/skill/skill-driver.js';
+import { AttemptIdSchema, readRun, RunIdSchema } from './workflow/store.js';
+import { inProcessClient, resumeRefusal, workflowNotFound, type NextPrepare } from './workflow/protocol.js';
+import { parseSkillCall, runSkillCall, sessionDrivesRun, skillContext } from './workflow/drivers/skill/skill-driver.js';
 import { loadCachedWorkflow } from './workflow/cache.js';
 import { findRunConfig } from './workflow/run-location.js';
 import { resolveRunMode } from './launch-context.js';
@@ -248,6 +248,7 @@ const JsonNextOptionsSchema = z.object({
   driver: refusedDriverFlag('next'),
   wait: z.boolean().optional().refine((given) => !given, '--wait needs --driver skill'),
   takeover: z.boolean().optional().refine((given) => !given, '--takeover needs --driver skill'),
+  confirmed: z.boolean().optional().refine((given) => !given, '--confirmed on next needs --driver skill --takeover'),
   choice: z.undefined({ invalid_type_error: '--choice needs --driver skill' }),
   ack: z.undefined({ invalid_type_error: '--ack needs --driver skill' }),
   json: z.string().optional(),
@@ -282,7 +283,7 @@ function refuseOptions(error: z.ZodError): void {
 }
 
 export async function workflowNext(runId: string, options: {
-  json?: string; prepare?: boolean; attempt?: string; adopt?: string; driver?: string; wait?: boolean; takeover?: boolean; choice?: string; ack?: string;
+  json?: string; prepare?: boolean; attempt?: string; adopt?: string; driver?: string; wait?: boolean; takeover?: boolean; confirmed?: boolean; choice?: string; ack?: string;
 }): Promise<void> {
   const { driver: kind, ...rest } = options;
   if (refusedNested(nestedCall(process.env), kind === 'skill')) return;
@@ -425,7 +426,7 @@ export async function workflowPublish(runId: string, options: { sessions?: boole
 
 /** `judge` is false with `--no-judge`. */
 export async function workflowResume(runId: string, options: {
-  driver?: string; tools?: string; autoApprove?: boolean; claim?: boolean; parallel?: string; hitl?: string; judge?: boolean;
+  driver?: string; tools?: string; autoApprove?: boolean; claim?: boolean; confirmed?: boolean; parallel?: string; hitl?: string; judge?: boolean;
 }): Promise<void> {
   if (refusedNested(nestedCall(process.env), options.driver === 'skill')) return;
   if (options.driver === 'skill') {
@@ -445,13 +446,20 @@ export async function workflowResume(runId: string, options: {
   const loaded = await readyRunConfig(runId, true);
   if (!loaded) return;
   const { secrets } = loaded;
-  if (!isRunId(runId)) {
+  const run = RunIdSchema.safeParse(runId);
+  if (!run.success) {
     writeEnvelope({ error: { code: 'invalid_run', message: 'Run id must look like r followed by 8 or 16 hex digits' } }, secrets);
     return;
   }
   const tools = parseTools(options.tools);
   if (typeof tools === 'string') {
     writeEnvelope({ error: { code: 'invalid_tools', message: tools } }, secrets);
+    return;
+  }
+  const caller = { evidence: agentEvidence(process.env), confirmed: options.confirmed === true, mode: resolveRunMode(process.env) };
+  const refused = await sessionDrivesRun(loaded.config, run.data) ? undefined : await resumeRefusal(loaded.config, run.data, caller, { published: true });
+  if (refused) {
+    writeEnvelope({ error: refused }, secrets);
     return;
   }
   // Claimed under the driver lock, so a driver of this run already running here never drives the claimed run.

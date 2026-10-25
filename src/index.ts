@@ -826,9 +826,10 @@ workflowCmd
   .option('--driver <kind>', 'skill: advance a run the current coding session drives, and print its turn: the actions to carry out and the command to run next')
   .option('--wait', 'With --driver skill: wait until the run has something to show, up to 100 s. Run it in the background.')
   .option('--takeover', 'With --driver skill: drive the run from this coding session instead of the one that drives it. Run it only when the person agrees, after an orchestrator_active answer')
+  .option('--confirmed', 'With --driver skill --takeover: the person agreed to take this run over, as the confirm_needed answer asked. From an agent session, a run of an invoke: ask workflow is taken over only with it; teamai takes the agent\'s word for it. In an unattended run (TEAMAI_MODE=unattended or CI) an agent cannot take over a run of an invoke: ask workflow, with or without it')
   .option('--choice <id>', 'With --driver skill: answer the host question with the id of one of its options, as its run prints it')
   .option('--ack <offer>', 'With --driver skill: acknowledge that the child of a dispatch started, as its ack prints it, so later turns stop offering it')
-  .action(async (run: string, cmdOpts: { json?: string; prepare?: boolean; attempt?: string; adopt?: string; driver?: string; wait?: boolean; takeover?: boolean; choice?: string; ack?: string }) => {
+  .action(async (run: string, cmdOpts: { json?: string; prepare?: boolean; attempt?: string; adopt?: string; driver?: string; wait?: boolean; takeover?: boolean; confirmed?: boolean; choice?: string; ack?: string }) => {
     const { workflowNext } = await import('./workflow-commands.js');
     await workflowNext(run, cmdOpts);
   });
@@ -875,7 +876,8 @@ workflowCmd
   .option('--tools <list>', 'Override local prompt tools for this run, as comma-separated name=tool pairs')
   .option('--auto-approve', 'Answer optional approve HITL requests yes and choose requests with their default: with --driver local in this process, with --driver skill for this run. A required approval still goes to the person')
   .option('--claim', 'Take the published run over from the install that owns it, replacing this machine\'s copy and releasing its leases')
-  .action(async (run: string, options: { driver?: string; parallel?: string; hitl?: string; judge?: boolean; tools?: string; autoApprove?: boolean; claim?: boolean }) => {
+  .option('--confirmed', 'The person agreed to continue this run, as the confirm_needed answer asked. From an agent session, a run of an invoke: ask workflow continues only with it, with any driver; teamai takes the agent\'s word for it. In an unattended run (TEAMAI_MODE=unattended or CI) an agent cannot continue a run of an invoke: ask workflow, with or without it')
+  .action(async (run: string, options: { driver?: string; parallel?: string; hitl?: string; judge?: boolean; tools?: string; autoApprove?: boolean; claim?: boolean; confirmed?: boolean }) => {
     const { workflowResume } = await import('./workflow-commands.js');
     await workflowResume(run, options);
   });

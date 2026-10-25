@@ -66,16 +66,17 @@ export function resumeLiteral(invocation: Invocation, run: RunId, options: { too
 
 /**
  * Continues `run` from this coding session with the skill driver, taking it over from the machine that published it.
- * `claim` takes it from another install that owns it: printed only for the person to agree to. The other options are
- * a start's (`startLiteral`).
+ * `claim` takes it from another install that owns it: printed only for the person to agree to. `confirmed` carries the
+ * person's yes to continue a run of an `invoke: ask` workflow. The other options are a start's (`startLiteral`).
  */
-export function skillResumeLiteral(invocation: Invocation, run: RunId, options: { claim?: boolean; parallel?: number; hitl?: HitlMode; noJudge?: boolean } = {}): Literal {
+export function skillResumeLiteral(invocation: Invocation, run: RunId, options: { claim?: boolean; parallel?: number; hitl?: HitlMode; noJudge?: boolean; confirmed?: boolean } = {}): Literal {
   return LiteralSchema.parse([
     `${invocation} workflow resume ${run} --driver skill`,
     ...(options.claim ? ['--claim'] : []),
     ...(options.parallel !== undefined ? [`--parallel ${options.parallel}`] : []),
     ...(options.hitl === 'auto-approve' ? ['--auto-approve'] : options.hitl !== undefined ? [`--hitl ${options.hitl}`] : []),
     ...(options.noJudge ? ['--no-judge'] : []),
+    ...(options.confirmed ? ['--confirmed'] : []),
   ].join(' '));
 }
 
@@ -83,9 +84,12 @@ export function nextLiteral(invocation: Invocation, run: RunId): Literal {
   return LiteralSchema.parse(`${invocation} workflow next ${run} --driver skill`);
 }
 
-/** Takes the run over from the session that drives it: printed only with `orchestrator_active`, for the person to agree to. */
-export function takeoverLiteral(invocation: Invocation, run: RunId): Literal {
-  return LiteralSchema.parse(`${invocation} workflow next ${run} --driver skill --takeover`);
+/**
+ * Takes the run over from the session that drives it: printed only for the person to agree to. `confirmed` carries the
+ * person's yes to continue a run of an `invoke: ask` workflow.
+ */
+export function takeoverLiteral(invocation: Invocation, run: RunId, options: { confirmed?: boolean } = {}): Literal {
+  return LiteralSchema.parse(`${invocation} workflow next ${run} --driver skill --takeover${options.confirmed ? ' --confirmed' : ''}`);
 }
 
 export function pollLiteral(invocation: Invocation, run: RunId): Literal {

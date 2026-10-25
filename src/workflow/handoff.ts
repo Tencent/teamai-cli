@@ -561,6 +561,22 @@ export async function resumeRun(config: LocalConfig, runId: string, options: { c
 }
 
 /**
+ * The definition run `runId` runs, before `resumeRun` changes anything: this machine's copy of the run, else, when
+ * `published`, the run teamai-reports holds, as a claim would install it. Undefined when neither holds the run, which
+ * the resume then answers.
+ */
+export async function carriedDefinition(config: LocalConfig, runId: string, { published }: { published: boolean }): Promise<Result<WorkflowDefinition | undefined>> {
+  const stored = await readRun(config, runId);
+  if (stored === 'corrupt') return refused(runUnreadable(runId));
+  if (stored !== 'missing') return ok(stored.definition);
+  if (!published) return ok(undefined);
+  const origin = await publishedRun(config, runId);
+  if (!origin.ok || origin.value === 'absent') return origin.ok ? ok(undefined) : origin;
+  const definitions = await definitionsOf(config, origin.value);
+  return definitions.ok ? ok(definitions.value.definition) : definitions;
+}
+
+/**
  * Once after this machine took run `runId` over, before its first lease: brings the local branch of each copy the run
  * recorded a commit for to that commit, fetched the way a lease fetches what it lacks. A settled run waits for a retry
  * to reopen it, since it leases nothing before that.

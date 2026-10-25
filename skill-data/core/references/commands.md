@@ -241,6 +241,7 @@ Generated: do not edit by hand. Regenerate with
     - `--driver <kind>` — skill: advance a run the current coding session drives, and print its turn: the actions to carry out and the command to run next
     - `--wait` — With --driver skill: wait until the run has something to show, up to 100 s. Run it in the background.
     - `--takeover` — With --driver skill: drive the run from this coding session instead of the one that drives it. Run it only when the person agrees, after an orchestrator_active answer
+    - `--confirmed` — With --driver skill --takeover: the person agreed to take this run over, as the confirm_needed answer asked. From an agent session, a run of an invoke: ask workflow is taken over only with it; teamai takes the agent's word for it. In an unattended run (TEAMAI_MODE=unattended or CI) an agent cannot take over a run of an invoke: ask workflow, with or without it
     - `--choice <id>` — With --driver skill: answer the host question with the id of one of its options, as its run prints it
     - `--ack <offer>` — With --driver skill: acknowledge that the child of a dispatch started, as its ack prints it, so later turns stop offering it
   - `teamai workflow report <run>` — Report the outcome of a leased step. Prints a JSON envelope.
@@ -262,6 +263,7 @@ Generated: do not edit by hand. Regenerate with
     - `--tools <list>` — Override local prompt tools for this run, as comma-separated name=tool pairs
     - `--auto-approve` — Answer optional approve HITL requests yes and choose requests with their default: with --driver local in this process, with --driver skill for this run. A required approval still goes to the person
     - `--claim` — Take the published run over from the install that owns it, replacing this machine's copy and releasing its leases
+    - `--confirmed` — The person agreed to continue this run, as the confirm_needed answer asked. From an agent session, a run of an invoke: ask workflow continues only with it, with any driver; teamai takes the agent's word for it. In an unattended run (TEAMAI_MODE=unattended or CI) an agent cannot continue a run of an invoke: ask workflow, with or without it
   - `teamai workflow publish <run>` — Publish a run's state to teamai-reports so another member or a runner can continue it with workflow resume. The first publish makes this install the run's owner; publishing an unchanged run writes nothing. Refuses a run with records not yet on teamai-reports, or with a value that looks like a secret. Prints one JSON envelope listing the leases still in flight.
     - `--sessions` — Also put the agent sessions that the run's unsettled steps continue (session: continue or session.from) in the team session archive, scrubbed, so whoever continues the run resumes them; listed in the envelope as sessions. Without it, those steps start new sessions on another machine
   - `teamai workflow cancel <run> [step]` — Cancel a whole run, or a pending, waiting, leased, running, or delivering step and its open descendants. Invalidates leases; drivers stop tools listed in next.cancelled. Prints one JSON envelope.

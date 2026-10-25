@@ -461,7 +461,7 @@ describe('skill driver', () => {
     expect(await harness.call({ kind: 'next', run, wait: false }, { session: 'session-b' }))
       .toEqual({ error: { code: 'orchestrator_active', message: expect.stringContaining('Ask the person'), idleSeconds: expect.any(Number), next: takeover } });
 
-    const taken = await harness.call({ kind: 'takeover', run }, { session: 'session-b' });
+    const taken = await harness.call({ kind: 'takeover', run, confirmed: false }, { session: 'session-b' });
     if (!('data' in taken) || !('turn' in taken.data)) throw new Error(JSON.stringify(taken));
     // The first session was told both steps started, so the person does not hear it again.
     expect(taken.data.turn.events).toEqual([{ kind: 'takeover', from: 'session-a' }]);
