@@ -7,6 +7,7 @@ import type { WorkflowFailure } from '../types.js';
 import type { WorkspaceContract } from '../workspace.js';
 import { commonDir, fetchMissingCommits, git, hooksPath, offBranch, worktreeHooks } from '../worktree.js';
 import { leaseCommits } from './created.js';
+import type { PlaceRecord } from './record.js';
 
 interface Adoption {
   /** The checkout the run started from. */
@@ -19,12 +20,37 @@ interface Adoption {
 }
 
 /**
- * Why `dir` cannot be the copy of `workspace.branch`, as the message `adopt_mismatch` answers with, or undefined when
- * it can: the top of a worktree of the checkout's repository, with nothing the step would commit, on the branch, or
- * detached at its start while no such branch exists, with that start in its history and every commit the lease merges
- * or restores agent files from, once the run's branches are fetched.
+ * Why attempt `lease.attempt` cannot adopt `adopt`, as the message `adopt_mismatch` answers with, or undefined when it
+ * can, or adopts nothing. A place recorded for the attempt answers for itself, so only that place may be adopted again.
+ * A lease with no copy of its own, in the checkout or reading a copy TeamAI keeps, adopts none.
  */
-export async function adoptedMismatch({ root, dir, run, attempt, workspace }: Adoption): Promise<string | undefined> {
+export async function adoptRefusal(input: {
+  /** The checkout the run started from. */
+  root: string;
+  run: string;
+  recorded: PlaceRecord | undefined;
+  lease: { attempt: string; step: string; workspace?: WorkspaceContract };
+  adopt: string | undefined;
+}): Promise<string | undefined> {
+  const { root, run, recorded, lease, adopt } = input;
+  if (adopt === undefined) return undefined;
+  if (recorded !== undefined && recorded.phase !== 'abandoned') {
+    if (recorded.dir !== adopt) return `Attempt ${lease.attempt} is already prepared in ${recorded.dir}, so it cannot adopt ${adopt}. Prepare it again without --adopt, which answers with that place.`;
+    if (recorded.phase !== 'opening') return undefined;
+  }
+  const { workspace } = lease;
+  if (!workspace) return `Step "${lease.step}" runs in the checkout itself, so attempt ${lease.attempt} cannot adopt a place. Prepare it without --adopt.`;
+  if (workspace.mode === 'read-only') return `Step "${lease.step}" reads a copy TeamAI keeps, so attempt ${lease.attempt} cannot adopt a place. Prepare it without --adopt.`;
+  return adoptedMismatch({ root, dir: adopt, run, attempt: lease.attempt, workspace });
+}
+
+/**
+ * Why `dir` cannot be the copy of `workspace.branch`, or undefined when it can: the top of a worktree of the checkout's
+ * repository, with nothing the step would commit, on the branch, or detached at its start while no such branch exists,
+ * with that start in its history and every commit the lease merges or restores agent files from, once the run's
+ * branches are fetched.
+ */
+async function adoptedMismatch({ root, dir, run, attempt, workspace }: Adoption): Promise<string | undefined> {
   const { branch, start } = workspace;
   const top = await git(dir, ['rev-parse', '--show-toplevel']);
   if (top.code !== 0 || await realpath(top.stdout.trim()) !== await realpath(dir)) {
@@ -59,7 +85,7 @@ export async function adoptedMismatch({ root, dir, run, attempt, workspace }: Ad
 }
 
 /**
- * Makes `dir`, which `adoptedMismatch` accepted, the copy of `workspace.branch`: its hooks point at the checkout's empty
+ * Makes `dir`, which `adoptRefusal` accepted, the copy of `workspace.branch`: its hooks point at the checkout's empty
  * hooks directory, and a place detached at the start gets the branch there.
  */
 export async function takeAdopted({ root, dir, workspace }: Omit<Adoption, 'run' | 'attempt'>): Promise<{ dir: string; created: true } | WorkflowFailure> {

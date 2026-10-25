@@ -9,7 +9,7 @@ import { attemptDir, AttemptIdSchema, type AttemptId, type RunId, type RunLock }
 import type { WorkflowFailure } from '../types.js';
 import { WorkspaceContractSchema, type WorkspaceContract } from '../workspace.js';
 import { commonDir, headCommit, markReadCopy, markSetup, removeWorktree, reopenConfigConflicts, stepCheckout, worktreePath } from '../worktree.js';
-import { adoptedMismatch, takeAdopted } from './adopted.js';
+import { adoptRefusal, takeAdopted } from './adopted.js';
 import { openWorktree } from './created.js';
 import { applyOverlay, restoreOverlay, unrestoredConfig } from './overlay.js';
 import { finishReader, leaveReadCopy, readCopyFailure, stageReader } from './reader.js';
@@ -129,63 +129,80 @@ function baseOf(record: Placed): PlaceRecordBase {
  * left to `runPlaceSetup`. A second prepare of the attempt returns the recorded place, unless it was abandoned: then
  * the place is as prepare found it, and a resumed lease whose step stopped prepares it again. A prepare killed before
  * the place is ready is finished by the next. With `adopt`, a writer's copy is the place the host made there, once
- * `adoptedMismatch` accepts it.
+ * `adoptRefusal` accepts it.
  */
 export async function preparePlace(input: { config: LocalConfig; lock: RunLock; root: string; lease: PlaceLease; adopt?: string }): Promise<PlacePrepared> {
   const { config, lock: { run }, lease } = input;
   const root = path.resolve(input.root);
-  const adopt = input.adopt === undefined ? undefined : path.resolve(input.adopt);
-  const recorded = await readPlaceRecord(config, run, lease.attempt);
-  if ('kind' in recorded && recorded.kind === 'unreadable') {
-    return { kind: 'failed', failure: { code: 'workspace_base', message: `The place record of attempt ${lease.attempt} cannot be read (${recorded.reason}). Retry the step with teamai workflow retry ${run} ${lease.step}.` } };
+  const read = await readPlaceRecord(config, run, lease.attempt);
+  if ('kind' in read && read.kind === 'unreadable') {
+    return { kind: 'failed', failure: { code: 'workspace_base', message: `The place record of attempt ${lease.attempt} cannot be read (${read.reason}). Retry the step with teamai workflow retry ${run} ${lease.step}.` } };
   }
-  if (adopt !== undefined && !('kind' in recorded) && recorded.phase !== 'abandoned' && recorded.dir !== adopt) {
-    return { kind: 'refused', failure: { code: 'adopt_mismatch', message: `Attempt ${lease.attempt} is already prepared in ${recorded.dir}, so it cannot adopt ${adopt}. Prepare it again without --adopt, which answers with that place.` } };
-  }
-  if (!('kind' in recorded) && recorded.phase === 'preparing') return overlaid(config, recorded, lease.prompt, { resume: true });
-  if (!('kind' in recorded) && recorded.phase !== 'abandoned' && recorded.phase !== 'opening') return preparedOf(recorded, lease.prompt);
-  const files = placeFiles(config, run, lease.attempt);
-  const base = {
-    version: 1 as const, run, attempt: lease.attempt, step: lease.step, executor: lease.executor, root,
+  const recorded = 'kind' in read ? undefined : read;
+  const reopened = recorded?.phase === 'opening' ? recorded : undefined;
+  // A prepare killed while it adopted a place goes on in that place.
+  const adopt = input.adopt !== undefined ? path.resolve(input.adopt) : reopened?.adopted ? reopened.dir : undefined;
+  const refusal = await adoptRefusal({ root, run, recorded, lease, adopt });
+  if (refusal !== undefined) return { kind: 'refused', failure: { code: 'adopt_mismatch', message: refusal } };
+  const result = await recordedResult(config, recorded, lease.prompt);
+  if (result) return result;
+  const base: OpeningBase = {
+    version: 1, run, attempt: lease.attempt, step: lease.step, executor: lease.executor, root,
     ...(lease.interactive ? { interactive: true as const } : {}), ...(lease.readOnly ? { readOnly: true as const } : {}),
   };
   if (!lease.workspace) {
-    if (adopt !== undefined) {
-      return { kind: 'refused', failure: { code: 'adopt_mismatch', message: `Step "${lease.step}" runs in the checkout itself, so attempt ${lease.attempt} cannot adopt a place. Prepare it without --adopt.` } };
-    }
-    await stageReader(root, files.snapshot);
+    await stageReader(root, placeFiles(config, run, lease.attempt).snapshot);
     const record: PlaceRecord = { ...base, dir: root, place: { role: 'checkout' }, phase: 'ready' };
     await writePlaceRecord(config, record);
     return preparedOf(record, lease.prompt);
   }
   const { workspace } = lease;
-  if (adopt !== undefined && workspace.mode === 'read-only') {
-    return { kind: 'refused', failure: { code: 'adopt_mismatch', message: `Step "${lease.step}" reads a copy TeamAI keeps, so attempt ${lease.attempt} cannot adopt a place. Prepare it without --adopt.` } };
-  }
-  const reopened = !('kind' in recorded) && recorded.phase === 'opening' ? recorded : undefined;
-  // A prepare killed while it adopted a place goes on in that place.
-  const adopted = adopt ?? (reopened?.adopted ? reopened.dir : undefined);
-  if (adopted !== undefined) {
-    const mismatch = await adoptedMismatch({ root, dir: adopted, run, attempt: lease.attempt, workspace });
-    if (mismatch !== undefined) return { kind: 'refused', failure: { code: 'adopt_mismatch', message: mismatch } };
-  }
+  const opened = await openCopy({ config, base, lease, workspace, reopened, adopt });
+  if ('code' in opened) return { kind: 'failed', failure: opened };
+  return stageRole({ config, base, lease, workspace, ...opened });
+}
+
+/** The place a prepare recorded for the attempt before, unless it gave the place up or left its git undone. */
+async function recordedResult(config: LocalConfig, recorded: PlaceRecord | undefined, prompt: string | undefined): Promise<PlacePrepared | undefined> {
+  if (recorded === undefined || recorded.phase === 'abandoned' || recorded.phase === 'opening') return undefined;
+  return recorded.phase === 'preparing' ? overlaid(config, recorded, prompt, { resume: true }) : preparedOf(recorded, prompt);
+}
+
+/**
+ * Opens the copy of `workspace.branch`: `reopened`, the one a killed prepare recorded `opening`, else `adopt`, else the
+ * worktree of the branch. The `opening` record comes before git touches the copy.
+ */
+async function openCopy(input: {
+  config: LocalConfig; base: OpeningBase; lease: PlaceLease; workspace: WorkspaceContract; reopened: Opening | undefined; adopt: string | undefined;
+}): Promise<{ opening: Opening; dir: string; created: boolean } | WorkflowFailure> {
+  const { config, base, lease, workspace, reopened, adopt } = input;
   let opening: Opening;
   if (reopened) opening = reopened;
-  else if (adopted !== undefined) {
-    opening = { ...base, dir: adopted, phase: 'opening', created: true, adopted: true };
+  else if (adopt !== undefined) {
+    opening = { ...base, dir: adopt, phase: 'opening', created: true, adopted: true };
     await writePlaceRecord(config, opening);
   } else {
-    const dir = worktreePath(root, workspace.branch);
+    const dir = worktreePath(base.root, workspace.branch);
     const present = await fs.stat(dir).then(() => true, () => false);
     opening = { ...base, dir, phase: 'opening', ...(present ? {} : { created: true as const }) };
     await writePlaceRecord(config, opening);
   }
-  const opened = adopted !== undefined
-    ? await takeAdopted({ root, dir: adopted, workspace })
-    : await openWorktree({ root, run, step: lease.step, workspace, setup: lease.setup !== undefined });
-  if ('code' in opened) return { kind: 'failed', failure: opened };
-  const { dir } = opened;
-  let place: Placed['place'];
+  const opened = adopt !== undefined
+    ? await takeAdopted({ root: base.root, dir: adopt, workspace })
+    : await openWorktree({ root: base.root, run: base.run, step: lease.step, workspace, setup: lease.setup !== undefined });
+  if ('code' in opened) return opened;
+  return { opening, dir: opened.dir, created: opened.created === true || opening.created === true };
+}
+
+/**
+ * Stages the opened copy for the lease's role: a reader marks it in use, and a writer takes its range and merges. It is
+ * then recorded `preparing`, with the lease's setup when the copy is new, and gets the base overlay.
+ */
+async function stageRole(input: {
+  config: LocalConfig; base: OpeningBase; lease: PlaceLease; workspace: WorkspaceContract; opening: Opening; dir: string; created: boolean;
+}): Promise<PlacePrepared> {
+  const { config, base, lease, workspace, opening, dir, created } = input;
+  let place: Preparing['place'];
   if (workspace.mode === 'read-only') {
     const marked = await markReadCopy(dir, { branch: workspace.branch, step: lease.step });
     if ('error' in marked) return { kind: 'failed', failure: { code: 'workspace_base', message: `Step "${lease.step}" cannot mark workspace ${dir} as in use by a reader: ${marked.error}` } };
@@ -193,7 +210,7 @@ export async function preparePlace(input: { config: LocalConfig; lock: RunLock; 
   } else {
     const rangeFrom = opening.rangeFrom ?? (await headCommit(dir))?.commit;
     if (rangeFrom !== undefined && opening.rangeFrom === undefined) await writePlaceRecord(config, { ...opening, rangeFrom });
-    const merged = await mergeBranches({ dir, run, step: lease.step, executor: lease.executor, merge: workspace.merge });
+    const merged = await mergeBranches({ dir, run: base.run, step: lease.step, executor: lease.executor, merge: workspace.merge });
     if (merged.kind === 'failed') return merged;
     place = {
       role: 'writer', workspace, ...(opening.adopted ? { adopted: true } : {}), ...(rangeFrom ? { rangeFrom } : {}), conflicts: {},
@@ -202,7 +219,7 @@ export async function preparePlace(input: { config: LocalConfig; lock: RunLock; 
   }
   const preparing: Preparing = {
     ...base, dir, place, phase: 'preparing',
-    ...(lease.setup && (opened.created || opening.created) ? { setup: lease.setup, ...(lease.expiresAt !== undefined ? { expiresAt: lease.expiresAt } : {}) } : {}),
+    ...(lease.setup && created ? { setup: lease.setup, ...(lease.expiresAt !== undefined ? { expiresAt: lease.expiresAt } : {}) } : {}),
   };
   await writePlaceRecord(config, preparing);
   return overlaid(config, preparing, lease.prompt);
@@ -210,6 +227,8 @@ export async function preparePlace(input: { config: LocalConfig; lock: RunLock; 
 
 type Opening = Extract<PlaceRecord, { phase: 'opening' }>;
 type Preparing = Extract<PlaceRecord, { phase: 'preparing' }>;
+/** The fields every record of a lease's place shares, before its copy is known. */
+type OpeningBase = Omit<PlaceRecordBase, 'dir' | 'place'>;
 
 /**
  * Puts the base overlay over the copy of a place recorded `preparing`, then leaves it staged for its setup, or ready.
