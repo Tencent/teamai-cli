@@ -29,8 +29,9 @@ export function isInteractive(): boolean {
   return !envFlag('CI') && !envFlag('TEAMAI_NONINTERACTIVE');
 }
 
-function envFlag(name: string): boolean {
-  const v = process.env[name]?.trim().toLowerCase();
+/** Whether variable `name` of `env` is set: non-empty, and other than `0` and `false`. */
+export function envFlag(name: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  const v = env[name]?.trim().toLowerCase();
   return v !== undefined && v !== '' && v !== '0' && v !== 'false';
 }
 

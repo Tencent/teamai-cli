@@ -10,6 +10,34 @@
  * own environment, which a detached child does not inherit on Windows.
  */
 import type { LocalConfig } from './types.js';
+import { envFlag } from './utils/prompt.js';
+
+/**
+ * Whether a person is there for a run: `attended` where one launched it, `unattended` in CI or a cloud agent. A run's
+ * mode belongs to the run, whatever drives it.
+ */
+export const RUN_MODES = ['attended', 'unattended'] as const;
+export type RunMode = typeof RUN_MODES[number];
+
+/** The variable that names the run mode, and that every process of a workflow attempt inherits it in. */
+export const RUN_MODE_ENV = 'TEAMAI_MODE';
+
+let warnedRunMode = false;
+
+/**
+ * The run mode `env` launches: `TEAMAI_MODE` when it names a mode, else `unattended` when `CI` is set, else `attended`.
+ * Any other non-empty `TEAMAI_MODE` is ignored, with a warning on stderr the first time.
+ */
+export function resolveRunMode(env: NodeJS.ProcessEnv): RunMode {
+  const named = env[RUN_MODE_ENV];
+  const mode = RUN_MODES.find((known) => known === named);
+  if (mode) return mode;
+  if (named !== undefined && named !== '' && !warnedRunMode) {
+    warnedRunMode = true;
+    process.stderr.write(`teamai: TEAMAI_MODE is "${named}", which is neither attended nor unattended, so teamai ignores it and reads the mode from CI. Set TEAMAI_MODE to attended or unattended, or unset it.\n`);
+  }
+  return envFlag('CI', env) ? 'unattended' : 'attended';
+}
 
 /** A tool launched by a workflow step, in the checkout whose pull record has key `checkout`. */
 export type Launch = { by: 'workflow'; tool: string; checkout: string };

@@ -17,7 +17,7 @@ vi.mock('../pkg/pkg-hint.js', () => ({
 }));
 
 const { checkoutRecordKey } = await import('../pull.js');
-const { LAUNCH_PAYLOAD_KEY, launchEnv, launchHoldsCheckout, readLaunch, workflowLaunch } = await import('../launch-context.js');
+const { LAUNCH_PAYLOAD_KEY, launchEnv, launchHoldsCheckout, readLaunch, resolveRunMode, workflowLaunch } = await import('../launch-context.js');
 const { buildHandlerRegistry } = await import('../hook-handlers.js');
 
 const dirs: string[] = [];
@@ -69,6 +69,32 @@ describe('the workflow launch signal (#1176)', () => {
     expect(await launchHoldsCheckout(config, launch)).toBe(true);
     expect(await launchHoldsCheckout(config, { ...launch, checkout: 'another-checkout' })).toBe(false);
     expect(await launchHoldsCheckout(config, { ...launch, tool: 'codex' })).toBe(false);
+  });
+});
+
+describe('the run mode of a launch', () => {
+  it.each([
+    [{ TEAMAI_MODE: 'attended', CI: '1' }, 'attended'],
+    [{ TEAMAI_MODE: 'unattended' }, 'unattended'],
+    [{ TEAMAI_MODE: '', CI: '1' }, 'unattended'],
+    [{ CI: '1' }, 'unattended'],
+    [{ CI: 'true' }, 'unattended'],
+    [{ CI: ' FALSE ' }, 'attended'],
+    [{ CI: '0' }, 'attended'],
+    [{ CI: '' }, 'attended'],
+    [{}, 'attended'],
+  ] as const)('reads %o as %s: TEAMAI_MODE, then CI, then attended', (env, mode) => {
+    expect(resolveRunMode(env)).toBe(mode);
+  });
+
+  it('ignores a TEAMAI_MODE that names no mode, and says so on stderr once', () => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
+    expect(resolveRunMode({ TEAMAI_MODE: 'bogus', CI: '1' })).toBe('unattended');
+    expect(resolveRunMode({ TEAMAI_MODE: 'bogus' })).toBe('attended');
+    expect(stderr.mock.calls.map(([text]) => String(text))).toEqual([
+      'teamai: TEAMAI_MODE is "bogus", which is neither attended nor unattended, so teamai ignores it and reads the mode from CI. Set TEAMAI_MODE to attended or unattended, or unset it.\n',
+    ]);
+    stderr.mockRestore();
   });
 });
 
