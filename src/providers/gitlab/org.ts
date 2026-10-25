@@ -5,6 +5,7 @@ import { getGitLabToken, gitlabApiBase } from './gitlab-api.js';
 const MAX_RESPONSE_BYTES = 50 * 1024 * 1024;
 const DEFAULT_PER_PAGE = 100;
 const DEFAULT_MAX_REPOS = 200;
+const REQUEST_TIMEOUT_MS = 30_000;
 
 interface GitLabProjectApiItem {
   id: number;
@@ -69,7 +70,7 @@ export async function gitlabListOrgRepos(
     // drop every project nested under a subgroup of the requested group.
     const url = `${gitlabApiBase()}/groups/${encodedGroup}/projects`
       + `?per_page=${perPage}&page=${page}&include_subgroups=true`;
-    const resp = await fetch(url, { headers, redirect: 'manual' });
+    const resp = await fetch(url, { headers, redirect: 'manual', signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
 
     if (resp.status >= 300 && resp.status < 400) {
       throw new Error(`Unexpected redirect from GitLab API: ${resp.status}`);
