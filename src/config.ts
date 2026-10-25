@@ -23,7 +23,9 @@ import { nearestGitEntry, resolveAnchors } from './utils/git.js';
 import { getUserHome } from './utils/home.js';
 import { resolvePartitionDir, writeAnchorFile } from './utils/partition.js';
 import { log } from './utils/logger.js';
-import { loadRolesManifest, RolesManifestNotFoundError } from './roles.js';
+import { listRoleIds, loadRolesManifest, RolesManifestNotFoundError } from './roles.js';
+import { loadRoleAssignmentsIfPresent, resolveAssignedRoles, ROLE_ASSIGNMENTS_FILE } from './role-assignments.js';
+import { warnOnce } from './utils/warn-once.js';
 
 /**
  * Loads that serve a --dry-run write nothing: the legacy role migration, the
@@ -45,7 +47,10 @@ async function migrateLegacyRoleConfig(
   configPath: string,
   options: LoadOptions = {},
 ): Promise<LocalConfig> {
-  if (config.primaryRole) {
+  // The assignment overlay runs first, and an assignment already decided this
+  // member's roles — holding none is one of its answers (`default: []`).
+  // Migrating would persist a `hai` the team did not assign.
+  if (config.primaryRole || config.roleAssignment) {
     return config;
   }
 
@@ -83,6 +88,131 @@ async function migrateLegacyRoleConfig(
   await writeFileAtomic(expandHome(configPath), serializeLocalConfig(migrated));
   log.info('Migrated legacy teamai config to default role profile: hai');
   return migrated;
+}
+
+/**
+ * The roles `manifest/members.yaml` assigns this member, overlaid on the config
+ * this machine holds (#1186).
+ *
+ * Every reader of `primaryRole`/`additionalRoles` — pull, push, the namespace
+ * filter, the hooks and env a role scopes — then sees the team's assignment
+ * without knowing it was assigned, and `teamai roles set` has nothing left to
+ * change. The overlay is runtime-only: `serializeLocalConfig` writes the local
+ * selection back, so a save by any other command never freezes a copy of the
+ * assignment into the config file.
+ *
+ * Absence of the file is the only case that leaves the local selection in
+ * charge. A file that exists but cannot be read, or that assigns a role
+ * `roles.yaml` does not declare, leaves this member with fewer roles — never
+ * with the selection the file was written to take over.
+ */
+async function applyRoleAssignment(config: LocalConfig): Promise<LocalConfig> {
+  // Idempotent: a project config passes through `readConfigFrom` and then the
+  // loader that migrates it, and the second pass must not read the overlaid
+  // roles as the local selection to keep.
+  if (config.roleAssignment) return config;
+
+  let assignments;
+  try {
+    assignments = await loadRoleAssignmentsIfPresent(config.repo.localPath, config.repo);
+  } catch (error) {
+    warnOnce(`${ROLE_ASSIGNMENTS_FILE} could not be read: ${(error as Error).message}`);
+    warnOnce(`Roles are assigned in ${ROLE_ASSIGNMENTS_FILE} while that file exists, so this run holds none. `
+      + 'Fix it in the team repo, or ask a code owner of manifest/ to.');
+    return withAssignedRoles(config, [], 'default');
+  }
+  if (!assignments) return config;
+
+  const { roles, source } = resolveAssignedRoles(assignments, config.username);
+  return withAssignedRoles(config, await declaredRoles(config.repo.localPath, roles), source);
+}
+
+/** The assigned ids `manifest/roles.yaml` still declares, with a word about the rest. */
+async function declaredRoles(repoPath: string, roles: string[]): Promise<string[]> {
+  if (roles.length === 0) return roles;
+
+  let declared: Set<string>;
+  try {
+    declared = new Set(listRoleIds(await loadRolesManifest(repoPath)));
+  } catch (error) {
+    // Without a roles manifest nothing maps an assigned id to its namespaces.
+    // The id doubles as a namespace in the legacy fallback, but guessing that
+    // here would deliver directories no reviewed manifest named.
+    warnOnce(`${ROLE_ASSIGNMENTS_FILE} assigns ${roles.join(', ')}, but manifest/roles.yaml could not be read: `
+      + `${(error as Error).message}. No role resources are delivered until it can.`);
+    return [];
+  }
+
+  const unknown = roles.filter((role) => !declared.has(role));
+  if (unknown.length > 0) {
+    warnOnce(`${ROLE_ASSIGNMENTS_FILE} assigns ${unknown.join(', ')}, which manifest/roles.yaml does not declare. `
+      + `Ignoring ${unknown.length === 1 ? 'it' : 'them'}; fix one file or the other in the team repo.`);
+  }
+  return roles.filter((role) => declared.has(role));
+}
+
+/** `config` with the member's own selection back in place of an overlay. */
+function withLocalRoles(config: LocalConfig): LocalConfig {
+  const { roleAssignment, ...local } = config;
+  if (!roleAssignment) return config;
+  const restored: LocalConfig = { ...local, additionalRoles: roleAssignment.local.additionalRoles };
+  if (roleAssignment.local.primaryRole) restored.primaryRole = roleAssignment.local.primaryRole;
+  else delete restored.primaryRole;
+  return restored;
+}
+
+/**
+ * Resolve the assignment again on a config that is already in memory (#1186).
+ *
+ * Two callers:
+ *
+ *  - `pull` loads the config before it updates the team repo, so the assignment
+ *    it read is the one the previous pull left on disk. Re-resolving after the
+ *    refresh is what makes a reassignment take effect on the pull that fetches
+ *    it, instead of delivering the old roles and recording the new revision as
+ *    synced — which the fast path would then skip until `pull --force`.
+ *  - `init` builds the config in memory and hands it straight to the hook, MCP
+ *    and env reconciliation, before any load can overlay it. Without this the
+ *    config would reach them role-less, which matches every role-scoped entry.
+ *
+ * Mutates `config` rather than returning a new one. Pull keys `teamEnvs` and
+ * `instructions` on config identity and reconciles hooks, MCP and env on the
+ * object its caller holds, so a replacement would reach neither.
+ */
+export async function refreshRoleAssignment(config: LocalConfig): Promise<void> {
+  // The local selection is restored first, so an assignments file that just
+  // arrived is applied over it — and one that just went away hands it back.
+  const resolved = await applyRoleAssignment(withLocalRoles(config));
+  if (resolved.primaryRole) config.primaryRole = resolved.primaryRole;
+  else delete config.primaryRole;
+  config.additionalRoles = resolved.additionalRoles;
+  if (resolved.roleAssignment) {
+    config.roleAssignment = resolved.roleAssignment;
+    // The assignment decides the role the legacy migration could not, as it
+    // does on a load, where the migration then never runs.
+    delete config.roleUnresolved;
+  } else {
+    delete config.roleAssignment;
+  }
+}
+
+/** `roles` as this member's effective selection, primary first. */
+function withAssignedRoles(config: LocalConfig, roles: string[], source: 'assigned' | 'default'): LocalConfig {
+  const [primaryRole, ...additionalRoles] = roles;
+  const assigned: LocalConfig = {
+    ...config,
+    additionalRoles,
+    roleAssignment: {
+      source,
+      local: {
+        ...(config.primaryRole ? { primaryRole: config.primaryRole } : {}),
+        additionalRoles: config.additionalRoles ?? [],
+      },
+    },
+  };
+  if (primaryRole) assigned.primaryRole = primaryRole;
+  else delete assigned.primaryRole;
+  return assigned;
 }
 
 /**
@@ -142,7 +272,7 @@ export async function loadLocalConfig(options: LoadOptions = {}): Promise<LocalC
   try {
     const raw = YAML.parse(content);
     const parsed = LocalConfigSchema.parse(raw);
-    return await migrateLegacyRoleConfig(parsed, configPath, options);
+    return await migrateLegacyRoleConfig(await applyRoleAssignment(parsed), configPath, options);
   } catch (e) {
     log.error(`Invalid local config: ${describeConfigError(e)}`);
     return null;
@@ -161,7 +291,10 @@ export async function loadLocalConfig(options: LoadOptions = {}): Promise<LocalC
  * migration); a plain load leaves a `scope: project` file as it is.
  */
 function serializeLocalConfig(config: LocalConfig): string {
-  const { dataHome: _dataHome, roleUnresolved: _roleUnresolved, children: _children, ...persisted } = config;
+  // The overlaid roles are the team's, read fresh on every load. Writing them
+  // would leave a stale copy behind once the assignment changes or the file
+  // goes, and a stale copy is exactly what a member must not be able to keep.
+  const { dataHome: _dataHome, roleUnresolved: _roleUnresolved, children: _children, roleAssignment: _assignment, ...persisted } = withLocalRoles(config);
   return YAML.stringify({ ...persisted, scope: installScopeName(persisted.scope) });
 }
 
@@ -290,7 +423,7 @@ export async function loadLocalConfigForScope(
     // "detect the active project" and "load a named project's config".
     const detected = await detectProjectConfig(projectRoot, undefined, options);
     if (!detected) return null;
-    return migrateLegacyRoleConfig(detected, path.join(getDataHome(detected), 'config.yaml'), options);
+    return migrateLegacyRoleConfig(await applyRoleAssignment(detected), path.join(getDataHome(detected), 'config.yaml'), options);
   }
   const configPath = getConfigPath(scope, projectRoot);
   const content = await readFileSafe(expandHome(configPath));
@@ -298,7 +431,7 @@ export async function loadLocalConfigForScope(
   try {
     const raw = YAML.parse(content);
     const parsed = LocalConfigSchema.parse(raw);
-    return await migrateLegacyRoleConfig(parsed, configPath, options);
+    return await migrateLegacyRoleConfig(await applyRoleAssignment(parsed), configPath, options);
   } catch (e) {
     log.error(`Invalid ${installScopeName(scope)} config at ${configPath}: ${describeConfigError(e)}`);
     return null;
@@ -601,7 +734,7 @@ export async function readConfigFrom(
       }
       return null;
     }
-    return anchorProjectConfig(config, dataHomeDir, projectRoot);
+    return await applyRoleAssignment(anchorProjectConfig(config, dataHomeDir, projectRoot));
   } catch (e) {
     onUnreadable?.(configPath, describeConfigError(e));
     return null;

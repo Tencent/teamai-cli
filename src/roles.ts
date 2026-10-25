@@ -232,11 +232,19 @@ export function resolveRoleResourceNamespaces(input: {
  * receiving every resource, the same fallback pull applies to skills and rules.
  * A config whose role could not be resolved (`roleUnresolved`) holds none:
  * `[]` matches no role-scoped entry.
+ *
+ * An assignment (`roleAssignment`, #1186) never reads as "no filter": a member
+ * the team assigned no roles holds none, which is the point of assigning them.
  */
 export function activeRoleIds(
-  localConfig: { primaryRole?: string; additionalRoles?: string[]; roleUnresolved?: true },
+  localConfig: {
+    primaryRole?: string;
+    additionalRoles?: string[];
+    roleUnresolved?: true;
+    roleAssignment?: unknown;
+  },
 ): string[] | null {
   if (localConfig.roleUnresolved) return [];
-  if (!localConfig.primaryRole) return null;
+  if (!localConfig.primaryRole) return localConfig.roleAssignment ? [] : null;
   return [...new Set([localConfig.primaryRole, ...(localConfig.additionalRoles ?? [])])];
 }

@@ -4,8 +4,9 @@ import { autoDetectInit } from './config.js';
 import { saveScopeSelection } from './scope-selection.js';
 import { loadRolesManifest, saveRolesManifest, findRole, listRoleIds } from './roles.js';
 import type { RolesManifest, TeamRole } from './roles.js';
+import { ROLE_ASSIGNMENTS_FILE, type RoleSource } from './role-assignments.js';
 import { pathExists } from './utils/fs.js';
-import { log } from './utils/logger.js';
+import { log, setStderrOnly } from './utils/logger.js';
 import { pullLatest, runManifestEdit, pushManifestChange } from './manifest-edit.js';
 import type { GlobalOptions, LocalConfig, TeamaiConfig } from './types.js';
 import { askQuestion, askConfirmation } from './utils/prompt.js';
@@ -144,10 +145,68 @@ async function initializeRoles(options: GlobalOptions, localConfig: LocalConfig,
 
 // ─── roles list ─────────────────────────────────────────
 
-export async function rolesList(): Promise<void> {
-    // Read-only: the load never persists a migration (#893).
-    const { localConfig } = await autoDetectInit(undefined, { dryRun: true });
+/**
+ * This member's effective roles and where they come from.
+ *
+ * `assigned` — `manifest/members.yaml` lists this member; `default` — it exists
+ * but does not list them, so they hold the file's `default`; `local` — no such
+ * file, and the roles are this machine's own selection; `none` — neither.
+ *
+ * A team hook that bounds an agent by role reads this (`roles list --json`)
+ * rather than the member's config file, whose path and shape are teamai's own.
+ */
+export function effectiveRoles(localConfig: LocalConfig): {
+    roles: string[];
+    primaryRole: string | null;
+    additionalRoles: string[];
+    source: RoleSource;
+} {
+    const primaryRole = localConfig.primaryRole ?? null;
+    const additionalRoles = primaryRole ? (localConfig.additionalRoles ?? []) : [];
+    const source: RoleSource = localConfig.roleAssignment
+        ? localConfig.roleAssignment.source
+        : primaryRole ? 'local' : 'none';
+    return {
+        roles: primaryRole ? [...new Set([primaryRole, ...additionalRoles])] : [],
+        primaryRole,
+        additionalRoles,
+        source,
+    };
+}
+
+/** Said wherever a local role change is refused, and in `roles list`. */
+export function assignedRolesNotice(effective: ReturnType<typeof effectiveRoles>): string {
+    return `Roles are assigned in ${ROLE_ASSIGNMENTS_FILE} in the team repo. `
+        + `Yours: ${effective.roles.join(', ') || 'none'}. `
+        + 'To change them, open a merge request against that file, or ask a code owner of manifest/ to.';
+}
+
+export async function rolesList(options: { json?: boolean } = {}): Promise<void> {
+    if (!options.json) return listRoles(options);
+    // --json: stdout is the data channel a hook parses. The load may warn — an
+    // assigned role roles.yaml does not declare, a members.yaml that cannot be
+    // read — so every log line goes to stderr, as doctor --json routes them.
+    const stderrOnly = setStderrOnly(true);
+    try {
+        await listRoles(options);
+    } finally {
+        setStderrOnly(stderrOnly);
+    }
+}
+
+async function listRoles(options: { json?: boolean }): Promise<void> {
+    // Read-only: the load never persists a migration (#893). Its preview notice
+    // would precede the JSON, so --json, read by hooks, omits it.
+    const { localConfig } = await autoDetectInit(undefined, { dryRun: true, suppressMigrationNotice: options.json });
     const repoPath = localConfig.repo.localPath;
+    const effective = effectiveRoles(localConfig);
+
+    // The effective roles are config, not manifest: report them even when the
+    // manifest cannot be read, so a hook reading --json is never left guessing.
+    if (options.json) {
+        console.log(JSON.stringify({ ...effective, assignmentFile: localConfig.roleAssignment ? ROLE_ASSIGNMENTS_FILE : null }, null, 2));
+        return;
+    }
 
     let manifest;
     try {
@@ -171,13 +230,19 @@ export async function rolesList(): Promise<void> {
     }
 
     // Show current user's role
-    if (localConfig.primaryRole) {
-        console.log(`Your primary role: ${localConfig.primaryRole}`);
-        if (localConfig.additionalRoles && localConfig.additionalRoles.length > 0) {
-            console.log(`Additional roles: ${localConfig.additionalRoles.join(', ')}`);
+    if (effective.primaryRole) {
+        console.log(`Your primary role: ${effective.primaryRole}`);
+        if (effective.additionalRoles.length > 0) {
+            console.log(`Additional roles: ${effective.additionalRoles.join(', ')}`);
         }
+    } else if (localConfig.roleAssignment) {
+        console.log('You hold no roles, so you receive shared resources only.');
     } else {
         console.log('You have no role configured. Run `teamai roles set <role>` to set one.');
+    }
+    if (localConfig.roleAssignment) {
+        console.log('');
+        console.log(assignedRolesNotice(effective));
     }
 }
 
@@ -189,6 +254,15 @@ export async function rolesSet(
 ): Promise<void> {
     const { localConfig } = await autoDetectInit(undefined, options);
     const repoPath = localConfig.repo.localPath;
+
+    // The team assigns roles (#1186): a local selection would be overlaid away
+    // on the next load, and letting it through would make the assignment look
+    // like something each member can still decide.
+    if (localConfig.roleAssignment) {
+        log.error(assignedRolesNotice(effectiveRoles(localConfig)));
+        process.exitCode = 1;
+        return;
+    }
 
     let manifest;
     try {

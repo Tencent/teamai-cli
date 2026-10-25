@@ -87,11 +87,11 @@ teamai status
 
 ```bash
 teamai roles list
-teamai roles set hai
+teamai roles set hai   # unless the team assigns roles (below)
 teamai pull
 ```
 
-How roles are defined: [Distribution mechanism](./distribution.md#roles-and-projects).
+How roles are defined: [Distribution mechanism](./distribution.md#roles-and-projects). A team that assigns roles in `manifest/members.yaml` decides yours: `roles list` shows them, `roles set` is refused, and a change goes through that file — see [Assigning roles in the team repo](./distribution.md#assigning-roles-in-the-team-repo).
 
 ### Tag subscriptions
 

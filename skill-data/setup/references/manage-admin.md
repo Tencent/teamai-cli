@@ -128,6 +128,14 @@ teamai roles remove <id>     # remove a role
 After editing roles, `teamai push` to publish the manifest. Members re-sync on
 their next session.
 
+To assign roles in the team repo instead of letting each member pick one, add
+`manifest/members.yaml` (`members: { alice: [frontend] }`, `default: []` for
+members it does not list). While it exists, `teamai roles set` is refused and
+an unlisted member receives shared resources only. Who may edit the file is the
+forge's decision (protected branch, code owners for `manifest/`); teamai keeps
+no access list. Details: docs/guide/distribution.md, "Assigning roles in the
+team repo".
+
 ## Projects (manage several projects from one repo)
 
 `project` is a second dispatch dimension alongside `role` — one team repo can serve

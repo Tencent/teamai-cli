@@ -369,6 +369,38 @@ describe('pull skip-sync when repo HEAD unchanged', () => {
     expect(log.persist).toHaveBeenCalledWith(expect.stringContaining('The built-in teamai skill was not deployed: EACCES'));
   });
 
+  // A reassignment in manifest/members.yaml changes what this member receives
+  // without moving a pinned checkout (#1186): the record's selection gates it.
+  it.each([
+    ['the roles differ', { scope: 'user', primaryRole: 'other', additionalRoles: [] }],
+    ['the roles became assigned', { scope: 'user', primaryRole: 'hai', additionalRoles: [], rolesAssigned: true }],
+  ] as const)('does a full sync when %s from the record, with HEAD unchanged', async (_case, selection) => {
+    vi.mocked(getHeadRev).mockResolvedValue('abc1234');
+    const record = await homeRecord(homeDir, ['claude'], { claude: [path.join(homeDir, '.claude', 'skills')] });
+    const [entry] = Object.values(record.lastPullByWorkspace!);
+    entry.selection = { ...selection, additionalRoles: [...selection.additionalRoles] };
+    vi.mocked(loadStateForScope).mockResolvedValue(emptyState({ lastPull: '2026-04-01', lastPullRev: 'abc1234', lastPullTargets: ['claude'], ...record }));
+
+    await pull({});
+
+    expect(log.success).not.toHaveBeenCalledWith(expect.stringContaining('Already synced'));
+    expect(saveStateForScope).toHaveBeenCalled();
+  });
+
+  // The rest of the selection changes only through commands that clear
+  // lastPullRev; a config edited by hand keeps the fast path, as before.
+  it('still skips when only the recorded projects differ from the config', async () => {
+    vi.mocked(getHeadRev).mockResolvedValue('abc1234');
+    const record = await homeRecord(homeDir, ['claude'], { claude: [path.join(homeDir, '.claude', 'skills')] });
+    const [entry] = Object.values(record.lastPullByWorkspace!);
+    entry.selection = { scope: 'user', primaryRole: 'hai', additionalRoles: [], projects: ['svc-a'] };
+    vi.mocked(loadStateForScope).mockResolvedValue(emptyState({ lastPull: '2026-04-01', lastPullRev: 'abc1234', lastPullTargets: ['claude'], ...record }));
+
+    await pull({});
+
+    expect(log.success).toHaveBeenCalledWith(expect.stringContaining('Already synced at abc1234, skipping'));
+  });
+
   it('should do full sync when HEAD rev differs from lastPullRev', async () => {
     await fse.writeFile(path.join(repoPath, 'rules', 'my-rule.md'), '# rule');
 

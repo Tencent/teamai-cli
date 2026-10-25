@@ -196,9 +196,43 @@ teamai pull
 
 `repo.localPath` 支持 `~/.teamai/team-repo` 这样的用户目录相对路径，在 Windows 上也支持原生的 `~\.teamai\team-repo` 写法。
 
+## 在团队仓库里分配角色
+
+默认情况下，角色由成员自己设置，也可以随时改。如果团队还把生效角色当作边界——例如用 hook 让 `frontend` 成员的 agent 只能改 `frontend/` 和共享文件——那么这个分配应当是团队仓库里一次经过评审的变更。`manifest/members.yaml` 就是这个文件：
+
+```yaml
+# manifest/members.yaml
+version: 1
+members:
+  alice: [frontend]
+  bob: [backend, ki]
+default: []        # 这个文件未列出的成员所持有的角色
+```
+
+列在第一位的是主角色，其余是附加角色。该文件存在时：
+
+- 成员的生效角色就是这里分配的角色。`teamai roles set` 会被拒绝，dashboard 的 Distribution 页面也一样，只展示角色而不提供修改。
+- 文件未列出的成员持有 `default`——除非另行声明即为无角色——并且只接收共享资源，而不是没有该文件时无角色成员得到的全量同步。
+- 谁可以分配角色由代码平台决定，和 `roles.yaml` 一样：保护分支、合并请求、`manifest/` 的 code owner。teamai 自己不维护任何权限名单。
+
+成员的键是该成员本地 teamai 配置里的用户名，由 `teamai init` 从 Git 平台记录。删除该文件后，角色选择重新回到每个成员手里。teamai 从团队仓库已拉取的默认分支读取该文件，而不是成员机器上的克隆副本，所以改写或删除本地副本不起作用：只有代码平台已合并的内容才算。
+
+重新分配会在下一次 pull 时生效。
+
+团队 hook 读取生效角色时不需要解析任何配置文件：
+
+```bash
+teamai roles list --json
+# {"roles":["frontend"],"primaryRole":"frontend","additionalRoles":[],"source":"assigned","assignmentFile":"manifest/members.yaml"}
+```
+
+`source` 取值为 `assigned`（文件中列出）、`default`（未列出）、`local`（没有该文件，成员自己的选择）或 `none`。
+
+这不是对以该成员身份运行的进程的硬边界：agent 以该成员身份运行，可以改写用户名所在的配置，也可以改 teamai 自身。它带来的是：角色变更成为一次有记录、经过评审的团队决定，而不是笔记本上的一条命令。
+
 ## 把技能限定给部分成员
 
-Namespace 只对设置了角色的成员过滤：`primaryRole` 未设置的成员会同步全部技能，因此只有 `manifest/roles.yaml` 并不限定任何人。`teamai init` 会让新成员选择角色；manifest 之前入队的成员需要执行一次 `teamai roles set <role-id>`。之后的 pull 会收回新 namespace 之外、由 teamai 下发的副本（本地改过的保留）。
+Namespace 只对设置了角色的成员过滤：`primaryRole` 未设置的成员会同步全部技能，因此只有 `manifest/roles.yaml` 并不限定任何人。有了 `manifest/members.yaml` 这个缺口就被补上——未列出的成员只接收共享资源。`teamai init` 会让新成员选择角色；manifest 之前入队的成员需要执行一次 `teamai roles set <role-id>`。之后的 pull 会收回新 namespace 之外、由 teamai 下发的副本（本地改过的保留）。
 
 要提醒一直没设角色的成员，可以用强制规则让 agent 检查 `teamai roles list` 并催促设置——强制规则成员不可删除：
 

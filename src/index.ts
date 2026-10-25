@@ -406,14 +406,15 @@ rolesCmd
 rolesCmd
   .command('list')
   .description('List all defined roles and your current role')
-  .action(async () => {
+  .option('--json', 'Print your effective roles and where they come from (assigned, default, local, none)')
+  .action(async (cmdOpts) => {
     const { rolesList } = await import('./roles-cmd.js');
-    await rolesList();
+    await rolesList(cmdOpts);
   });
 
 rolesCmd
   .command('set <primary>')
-  .description('Set your primary role (updates local config)')
+  .description('Set your primary role (updates local config; refused when manifest/members.yaml assigns roles)')
   .option('--add <roles...>', 'Additional roles to include')
   .action(async (primary: string, cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;

@@ -142,11 +142,19 @@ export async function deliveredMembers(config: LocalConfig): Promise<readonly Lo
       return false;
     });
     const { roleUnresolved: _roleUnresolved, ...base } = own;
+    // With roles assigned in the team repo (#1186) every member of this
+    // workspace holds the workspace's assignment: a child cannot select a role,
+    // so the selection it recorded is not a selection to honour.
+    const roles = own.roleAssignment
+      ? { primaryRole: own.primaryRole, additionalRoles: own.additionalRoles ?? [] }
+      : {
+        ...(child.selection.primaryRole ? { primaryRole: child.selection.primaryRole } : {}),
+        additionalRoles: child.selection.additionalRoles ?? [],
+      };
     members.push({
       ...base,
       ...withoutSelection(),
-      ...(child.selection.primaryRole ? { primaryRole: child.selection.primaryRole } : {}),
-      additionalRoles: child.selection.additionalRoles ?? [],
+      ...roles,
       projects,
       ...(child.selection.subscribedTags ? { subscribedTags: child.selection.subscribedTags } : {}),
       ...(child.selection.excludedSkills ? { excludedSkills: child.selection.excludedSkills } : {}),
