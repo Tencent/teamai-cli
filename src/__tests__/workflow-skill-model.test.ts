@@ -706,7 +706,7 @@ describe('skill driver model', () => {
         const held = await driveInline(model, real);
         expect(held.waiting?.reason).toContain('step "change" needs workspace new, which this driver does not provide');
         // The person continues the run with the local driver; the agent only shows the literal.
-        expect(held.actions).toEqual([expect.objectContaining({ kind: 'person', why: 'handoff', held: [expect.objectContaining({ step: 'change' })], run: [`teamai workflow resume ${real.run}`] })]);
+        expect(held.actions).toEqual([expect.objectContaining({ kind: 'person', why: 'handoff', held: [expect.objectContaining({ step: 'change' })], run: [`teamai workflow resume ${real.run} --tools default=claude`] })]);
         expect(held.then).toBeUndefined();
         const run = await readRun(made.config, real.run);
         expect(typeof run === 'object' && run.steps.find((step) => step.id === 'change')?.status).toBe('pending');
