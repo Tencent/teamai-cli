@@ -778,14 +778,14 @@ describe('doctor — where a tool takes skills', () => {
     expect(check?.fix).toContain(`opencode does not read ${path.join(homeDir, '.opencode', 'skills')}`);
   });
 
-  it('notes that OpenCode\'s other files stay in its default home while its skills follow the moved one', async () => {
+  it('does not warn about OpenCode default files after its plugins follow the moved home', async () => {
     const xdg = path.join(tempDir, 'xdg');
     await fse.ensureDir(path.join(xdg, 'opencode'));
     vi.stubEnv('XDG_CONFIG_HOME', xdg);
 
     const { notes } = await report();
 
-    expect(notes).toContain(`opencode takes skills from ${path.join(xdg, 'opencode', 'skills')}, but teamai still writes some of its other files under ${path.join(homeDir, '.config', 'opencode')}.`);
+    expect(notes?.filter((note) => note.startsWith('opencode '))).toEqual([]);
   });
 
   it('notes that Pi\'s other files stay in its default home while its skills follow the moved one', async () => {

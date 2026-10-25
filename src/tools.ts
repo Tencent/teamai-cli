@@ -698,7 +698,7 @@ export const TOOLS = {
   opencode: {
     home: {
       dir: '.config/opencode',
-      moves: { by: [{ kind: 'env', name: 'OPENCODE_CONFIG_DIR', evidence: 'source' }, { kind: 'xdg', child: 'opencode', evidence: 'source' }], settingsAtDefault: true },
+      moves: { by: [{ kind: 'env', name: 'OPENCODE_CONFIG_DIR', evidence: 'source' }, { kind: 'xdg', child: 'opencode', evidence: 'source' }] },
     },
     skillLoad: { calls: [{ name: 'skill', evidence: 'verified' }] },
     skills: {

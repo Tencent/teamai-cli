@@ -26,6 +26,7 @@ import {
 import { reconcileHooksToAllTools } from '../hooks.js';
 import { loadOpencodePlugin, loadPluginDefinition, loadV2Plugin } from './helpers/opencode-plugin.js';
 import { log } from '../utils/logger.js';
+import { saveToolHomes } from '../tool-home.js';
 import * as builtinHooks from '../builtin-hooks.js';
 
 describe('resolveOpencodePluginDir', () => {
@@ -230,8 +231,32 @@ describe('buildAgentHookPluginSource is valid JS across event kinds and tricky c
 
 describe('injectOpencodeHooks / removeOpencodeHooks', () => {
   let tmp: string;
-  beforeEach(async () => { tmp = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-oc-hooks-')); });
-  afterEach(async () => { await fse.remove(tmp); });
+  beforeEach(async () => {
+    tmp = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-oc-hooks-'));
+    vi.stubEnv('HOME', tmp);
+    vi.stubEnv('OPENCODE_CONFIG_DIR', '');
+    vi.stubEnv('XDG_CONFIG_HOME', '');
+  });
+  afterEach(async () => { vi.unstubAllEnvs(); await fse.remove(tmp); });
+
+  it.each(['xdg', 'explicit', 'recorded'] as const)('installs both plugin kinds in the %s OpenCode home', async (source) => {
+    const moved = path.join(tmp, 'moved', 'opencode');
+    if (source === 'xdg') vi.stubEnv('XDG_CONFIG_HOME', path.dirname(moved));
+    else if (source === 'explicit') vi.stubEnv('OPENCODE_CONFIG_DIR', moved);
+    else await saveToolHomes({ opencode: moved });
+    const personal = path.join(moved, 'plugin', 'personal.ts');
+    await fse.outputFile(personal, '// keep personal');
+    await injectOpencodeHooks(tmp, 'user');
+    const file = path.join(moved, 'plugin', OPENCODE_HOOK_FILE);
+    expect(await fse.pathExists(file)).toBe(true);
+    expect(await fse.readFile(file, 'utf8')).toContain(JSON.stringify(moved));
+    await applyOpencodeAgentHook({ baseDir: tmp, scope: 'user', slug: 'scan', event: 'SessionStart', command: 'echo scan' });
+    expect(await fse.pathExists(path.join(moved, 'plugin', 'teamai-agent-scan.ts'))).toBe(true);
+    await removeOpencodeAgentHook({ baseDir: tmp, scope: 'user', slug: 'scan' });
+    await removeOpencodeHooks(tmp, 'user');
+    expect(await fse.pathExists(file)).toBe(false);
+    expect(await fse.readFile(personal, 'utf8')).toBe('// keep personal');
+  });
 
   it('project scope writes .opencode/plugin/teamai-hooks.ts', async () => {
     await injectOpencodeHooks(tmp, 'project');
