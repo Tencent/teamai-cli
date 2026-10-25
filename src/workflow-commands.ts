@@ -15,8 +15,8 @@ import { inProcessClient, type NextPrepare } from './workflow/protocol.js';
 import { parseSkillCall, runSkillCall, skillContext } from './workflow/drivers/skill/skill-driver.js';
 import { loadCachedWorkflow } from './workflow/cache.js';
 import { findRunConfig } from './workflow/run-location.js';
-import { agentEvidence } from './workflow/attempt-marker.js';
-import type { WorkflowEnvelope } from './workflow/types.js';
+import { agentEvidence, isAttemptRunner, nestedCall, nestedStart, nestedWorkflowError, type Nested } from './workflow/attempt-marker.js';
+import type { WorkflowEnvelope, WorkflowFailure } from './workflow/types.js';
 
 /** Prints `envelope` with each of `secrets` masked, and sets the exit code from the envelope as the operation returned it. */
 function writeEnvelope(envelope: WorkflowEnvelope, secrets: Record<string, string>): void {
@@ -29,6 +29,18 @@ function writeEnvelope(envelope: WorkflowEnvelope, secrets: Record<string, strin
   if (done && typeof done === 'object' && ['failed', 'cancelled'].includes(String((done as { outcome?: unknown }).outcome))) {
     process.exitCode = 1;
   }
+}
+
+/**
+ * Answers `nested_workflow` when `nested` says the call comes from inside a workflow attempt or, for a start, from a
+ * workflow's place, before anything reads a run; true when it did. A `--driver skill` error carries `next: null`.
+ */
+function refusedNested(nested: Nested | undefined, skill: boolean): boolean {
+  if (nested === undefined) return false;
+  const failure = nestedWorkflowError(nested);
+  const answer: { error: WorkflowFailure & { next?: null } } = { error: skill ? { ...failure, next: null } : failure };
+  writeEnvelope(answer, collectEnvSecrets());
+  return true;
 }
 
 async function loadConfig(readOnly = false): Promise<{ config: LocalConfig; teamConfig: TeamaiConfig } | WorkflowEnvelope> {
@@ -126,6 +138,7 @@ async function workflowSkill(raw: Parameters<typeof parseSkillCall>[0]): Promise
 export async function workflowStart(name: string, options: {
   driver?: string; tools?: string; inputs?: string; autoApprove?: boolean; describe?: boolean; parallel?: string; confirmed?: boolean; hitl?: string; judge?: boolean;
 }): Promise<void> {
+  if (refusedNested(await nestedStart(process.env, process.cwd()), options.driver === 'skill')) return;
   if (options.driver === 'skill') {
     const { driver: _skill, ...rest } = options;
     await workflowSkill({ kind: 'start', name, options: rest });
@@ -182,6 +195,7 @@ export async function workflowNext(runId: string, options: {
   json?: string; prepare?: boolean; attempt?: string; adopt?: string; driver?: string; wait?: boolean; takeover?: boolean; choice?: string; ack?: string;
 }): Promise<void> {
   const { driver: kind, ...rest } = options;
+  if (refusedNested(nestedCall(process.env), kind === 'skill')) return;
   if (kind === 'skill') {
     await workflowSkill({ kind: 'next', run: runId, options: rest });
     return;
@@ -224,6 +238,9 @@ export async function workflowNext(runId: string, options: {
 
 export async function workflowReport(runId: string, options: { json?: string; driver?: string; attempt?: string; modelUnavailable?: boolean }): Promise<void> {
   const { driver: kind, ...rest } = options;
+  // A runner of the skill driver carries the marker of the attempt it reports.
+  const runner = kind === 'skill' && options.attempt !== undefined && isAttemptRunner(process.env, runId, options.attempt);
+  if (!runner && refusedNested(nestedCall(process.env), kind === 'skill')) return;
   if (kind === 'skill') {
     await workflowSkill({ kind: 'report', run: runId, options: rest });
     return;
@@ -259,6 +276,7 @@ export async function workflowReport(runId: string, options: { json?: string; dr
 
 async function workflowControl(runId: string, operation: (config: LocalConfig, secrets: Record<string, string>) => Promise<WorkflowEnvelope>): Promise<void> {
   setStderrOnly(true);
+  if (refusedNested(nestedCall(process.env), false)) return;
   const loaded = await readyRunConfig(runId);
   if (loaded) writeEnvelope(await operation(loaded.config, loaded.secrets), loaded.secrets);
 }
@@ -269,6 +287,7 @@ async function workflowControl(runId: string, operation: (config: LocalConfig, s
  */
 export async function workflowRespond(runId: string, step: string, choice: string, options: { note?: string; pass?: string; json?: string; driver?: string }): Promise<void> {
   const { driver: kind, ...rest } = options;
+  if (refusedNested(nestedCall(process.env), kind === 'skill')) return;
   if (kind === 'skill') {
     await workflowSkill({ kind: 'respond', run: runId, step, choice, options: rest });
     return;
@@ -317,6 +336,7 @@ export async function workflowCancel(runId: string, step?: string): Promise<void
 /** Publishes a run to teamai-reports, with the sessions its unsettled steps continue when asked. */
 export async function workflowPublish(runId: string, options: { sessions?: boolean } = {}): Promise<void> {
   setStderrOnly(true);
+  if (refusedNested(nestedCall(process.env), false)) return;
   const loaded = await readyConfig();
   if (!loaded) return;
   const { secrets } = loaded;
@@ -330,6 +350,7 @@ export async function workflowPublish(runId: string, options: { sessions?: boole
 
 export async function workflowResume(runId: string, options: { tools?: string; autoApprove?: boolean; claim?: boolean }): Promise<void> {
   setStderrOnly(true);
+  if (refusedNested(nestedCall(process.env), false)) return;
   const loaded = await readyRunConfig(runId, true);
   if (!loaded) return;
   const { secrets } = loaded;

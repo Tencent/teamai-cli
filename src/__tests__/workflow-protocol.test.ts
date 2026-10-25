@@ -108,6 +108,15 @@ describe('workflow protocol in process', () => {
     expect(await (await protocol(config)).describe('missing', { ceiling: 3, can: {} })).toEqual({ error: { code: 'workflow_not_found', message: 'Workflow or alias missing has no unambiguous runnable version' } });
   });
 
+  it('refuses a start inside a workflow attempt before it looks the workflow up, and an answer from it', async () => {
+    const { config } = await fixture({ check: CHECK });
+    const client = await protocol(config);
+    const nested = { code: 'nested_workflow', message: "This process runs inside workflow attempt r0123456789abcdef/a0000000a (TEAMAI_WORKFLOW_ATTEMPT is set), so it cannot start or drive a workflow run. Do the step's own work here; to run another workflow as part of a run, add it to the definition as a workflow step." };
+    const caller = { evidence: { kind: 'attempt', attempt: 'r0123456789abcdef/a0000000a' }, confirmed: true } as const;
+    expect(await client.start('missing', { caller })).toEqual({ error: nested });
+    expect(await client.respond('r0123456789abcdef', 'lint', 'yes', { via: { kind: 'process', caller: { tty: true, evidence: caller.evidence } } })).toEqual({ error: nested });
+  });
+
   it('fails a reader step that changed the checkout it was prepared in, when its report says it succeeded', async () => {
     const { config, checkout } = await fixture({ check: CHECK });
     const { run, attempt, revision, lease } = await leased(config, checkout);

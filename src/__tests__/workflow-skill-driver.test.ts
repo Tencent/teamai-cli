@@ -255,6 +255,18 @@ describe('skill driver', () => {
     expect(fs.existsSync(path.join(getDataHome(harness.config), 'workflows', 'runs'))).toBe(false);
   });
 
+  it('refuses a start from inside a workflow attempt, even of a workflow agents may start, and offers no describe to retry it', async () => {
+    const harness = await skillHarness({ check: CHECK });
+    roots.push(harness.root);
+    const started = await harness.call({ kind: 'start', name: 'check', answers: { confirmed: false }, inputs: undefined }, { evidence: { kind: 'attempt', attempt: 'r0123456789abcdef/a0000000a' } });
+    expect(started).toEqual({ error: {
+      code: 'nested_workflow',
+      message: "This process runs inside workflow attempt r0123456789abcdef/a0000000a (TEAMAI_WORKFLOW_ATTEMPT is set), so it cannot start or drive a workflow run. Do the step's own work here; to run another workflow as part of a run, add it to the definition as a workflow step.",
+      next: null,
+    } });
+    expect(fs.existsSync(path.join(getDataHome(harness.config), 'workflows', 'runs'))).toBe(false);
+  });
+
   it('offers two parallel new prompt steps with acks, keeps an unacked one offered, and a poll answers wake', async () => {
     const harness = await skillHarness({ feature: FEATURE });
     roots.push(harness.root);

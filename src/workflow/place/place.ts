@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { stepEnvironment } from '../../env-exec.js';
 import type { LocalConfig } from '../../types.js';
 import { redactJson } from '../../utils/redact.js';
+import { attemptEnv } from '../attempt-marker.js';
 import { LeaseSetupSchema, type LeaseSetup } from '../requirements.js';
 import { attemptDir, AttemptIdSchema, attemptsDir, type AttemptId, type RunId, type RunLock } from '../store.js';
 import type { WorkflowFailure } from '../types.js';
@@ -305,7 +306,7 @@ async function settle(config: LocalConfig, record: PlaceRecordBase): Promise<Pla
 
 /**
  * Runs the setup of a place `preparePlace` left `staged`, with the env `values` resolved for it, then makes it ready.
- * Setup gets its own keys and none of the step's. `signal` stops setup, which then fails, and the worktree it was
+ * Setup gets its own keys and none of the step's, and the attempt marker. `signal` stops setup, which then fails, and the worktree it was
  * preparing is removed, or, when the host made it, gets the branch agent files back. Nothing to do for any other place.
  */
 export async function runPlaceSetup(input: { config: LocalConfig; run: RunId; attempt: AttemptId; values: ReadonlyMap<string, string>; signal?: AbortSignal }): Promise<WorkflowFailure | undefined> {
@@ -316,7 +317,7 @@ export async function runPlaceSetup(input: { config: LocalConfig; run: RunId; at
   const scope = setup.envScope ?? { provide: [], withhold: [] };
   const scoped = await stepEnvironment(values, scope);
   const failure = scoped.ok
-    ? await runSetup({ command: setup.command, dir: recorded.dir, env: scoped.env, keys: scope.provide, signal, groupDir: attemptDir(config, run, attempt), ...(expiresAt !== undefined ? { expiresAt } : {}) })
+    ? await runSetup({ command: setup.command, dir: recorded.dir, env: { ...scoped.env, ...attemptEnv(run, attempt) }, keys: scope.provide, signal, groupDir: attemptDir(config, run, attempt), ...(expiresAt !== undefined ? { expiresAt } : {}) })
     : scoped.failure;
   if (failure) {
     const { place } = recorded;

@@ -727,9 +727,10 @@ workflowConformanceScenarios.push({
   yaml: REQUIRED_APPROVE,
   operations: [
     { kind: 'next', saveAs: 'hitl', hitl: true, expect: { data: { hitl: { step: 'work', required: true } } } },
-    ...[...AGENT_SESSION_ENV, ATTEMPT_ENV].map((name): ConformanceOperation => (
+    ...AGENT_SESSION_ENV.map((name): ConformanceOperation => (
       { kind: 'respond', step: 'work', choice: 'yes', pass: 1, json: UI, env: { [name]: 'agent-1304' }, expect: { error: { code: 'agent_in_path' } } }
     )),
+    { kind: 'respond', step: 'work', choice: 'yes', pass: 1, json: UI, env: { [ATTEMPT_ENV]: 'r0123456789abcdef/a0000000a' }, expect: { error: { code: 'nested_workflow' } } },
     { kind: 'respond', step: 'work', choice: 'yes', pass: 1, env: { CLAUDE_CODE_SESSION_ID: 'agent-1304' }, expect: { error: { code: 'agent_in_path' } } },
     { kind: 'respond', step: 'work', choice: 'yes', pass: 1, json: UI, expect: { data: { answered: { step: 'work', choice: 'yes', channel: 'driver', agent: false } } } },
   ],

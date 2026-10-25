@@ -6,7 +6,7 @@ import type { WorkflowEnv } from '../env-resolution.js';
 import { scoringUnavailable } from '../scorers/home.js';
 import { isJudgeTool, judgeToolLevel } from '../scorers/judge.js';
 import type { LocalConfig } from '../types.js';
-import type { AgentEvidence } from './attempt-marker.js';
+import { nestedWorkflowError, type AgentEvidence } from './attempt-marker.js';
 import { loadCachedWorkflow, loadWorkflowTree } from './cache.js';
 import { describeWorkflow, type WorkflowDescription } from './describe.js';
 import { leaseNext, parseNextPayload, parseReport, parseResponsePayload, reconcileRun, reportAttempt, startRun, withIgnored, type NextOptions, type ReportInput } from './engine.js';
@@ -54,9 +54,9 @@ export interface WorkflowClient {
   /** Runs the setup of the place `prepare` made for `attempt`, outside the run lock. Nothing for a place without setup. */
   setup(run: RunId, attempt: AttemptId): Promise<WorkflowFailure | undefined>;
   /**
-   * Starts `name` with `inputs`, from `checkout` when given: the run's workspaces start from its HEAD. An agent
-   * `caller` starts only a workflow whose `invoke` lets it: `invoke_denied` for `deny`, and `confirm_needed` for `ask`
-   * without `confirmed`.
+   * Starts `name` with `inputs`, from `checkout` when given: the run's workspaces start from its HEAD. A `caller`
+   * inside a workflow attempt starts none, `nested_workflow`, and an agent one only a workflow whose `invoke` lets it:
+   * `invoke_denied` for `deny`, and `confirm_needed` for `ask` without `confirmed`.
    */
   start(name: string, options: { inputs?: unknown; checkout?: string; caller: StartCaller }): Promise<WorkflowEnvelope>;
   /**
@@ -66,7 +66,7 @@ export interface WorkflowClient {
   next(runId: string, body: unknown, options?: { prepare?: NextPrepare }): Promise<WorkflowEnvelope>;
   /** Reports an attempt. A prepared one is finished first: its `changes` or `read` come from its place. */
   report(runId: string, body: unknown, options?: { lock?: RunLock }): Promise<WorkflowEnvelope>;
-  /** Records an answer, with the provenance decided from the process or driver `via` names. */
+  /** Records an answer, with the provenance decided from the process or driver `via` names. A process inside a workflow attempt answers none: `nested_workflow`. */
   respond(runId: string, step: string, choice: string, options: { note?: string; pass?: number; via: RespondVia }): Promise<WorkflowEnvelope>;
   /** Reopens the target step's dependency cone. */
   retry(runId: string, step: string): Promise<WorkflowEnvelope>;
@@ -97,23 +97,27 @@ export function invokeDeniedMessage(name: string, evidence: Exclude<AgentEvidenc
 }
 
 /**
- * Why `caller` may not start `definition`: from an agent session, `invoke: deny` refuses every start, and `invoke: ask`
- * one without the person's yes. Undefined for a process without agent evidence, such as the person's terminal or CI.
+ * Why `caller` may not start `definition`: inside a workflow attempt nothing starts, and from an agent session
+ * `invoke: deny` refuses every start, and `invoke: ask` one without the person's yes. Undefined for a process without
+ * agent evidence, such as the person's terminal or CI, and for a session's start of a workflow the cache lacks, which
+ * the start answers.
  */
-function invokeRefusal(definition: WorkflowDefinition, caller: StartCaller): WorkflowFailure | undefined {
-  const { name } = definition;
+function startRefusal(definition: WorkflowDefinition | undefined, caller: StartCaller): WorkflowFailure | undefined {
   const { evidence } = caller;
-  const invoke = definition.invoke ?? 'deny';
-  if (evidence.kind === 'none' || invoke === 'allow' || (invoke === 'ask' && caller.confirmed)) return undefined;
   switch (evidence.kind) {
-    case 'session':
+    case 'none':
+      return undefined;
+    case 'attempt':
+      return nestedWorkflowError({ kind: 'marker', attempt: evidence.attempt });
+    case 'session': {
+      if (definition === undefined) return undefined;
+      const { name } = definition;
+      const invoke = definition.invoke ?? 'deny';
+      if (invoke === 'allow' || (invoke === 'ask' && caller.confirmed)) return undefined;
       return invoke === 'deny'
         ? { code: 'invoke_denied', message: invokeDeniedMessage(name, evidence) }
         : { code: 'confirm_needed', message: `Workflow "${name}" has invoke: ask, so a coding agent starts it only after the person agrees, and this command runs inside an agent session (${evidence.variable} is set). Ask the person whether to start ${name}; once they agree, run the same command with --confirmed.` };
-    case 'attempt':
-      return invoke === 'deny'
-        ? { code: 'invoke_denied', message: invokeDeniedMessage(name, evidence) }
-        : { code: 'confirm_needed', message: `Workflow "${name}" has invoke: ask, so a coding agent starts it only after the person agrees, and this command runs inside workflow attempt ${evidence.attempt}. Ask the person whether to start ${name}; once they agree, run the same command with --confirmed.` };
+    }
     default: {
       const unhandled: never = evidence;
       return unhandled;
@@ -219,7 +223,7 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
     setup: (run, attempt) => runPlaceSetup({ config, run, attempt, values: env.values }),
     start: async (name, { inputs, checkout, caller }) => {
       const cached = await loadCachedWorkflow(config, name);
-      const refused = cached && invokeRefusal(cached.definition, caller);
+      const refused = startRefusal(cached?.definition, caller);
       if (refused) return { error: refused };
       const base = checkout === undefined ? undefined : await headCommit(checkout);
       return startRun(config, name, inputs ?? {}, { secrets: env.secrets, ...(checkout !== undefined ? { checkout } : {}), ...(base ? { base } : {}) });
@@ -243,6 +247,8 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
     },
     respond: async (runId, step, choice, { via, ...answer }) => {
       if (via.kind === 'skill') return respondToHitl(config, runId, env.secrets, { step, choice, ...answer, provenance: respondProvenance(via) });
+      const { evidence } = via.caller;
+      if (evidence.kind === 'attempt') return { error: nestedWorkflowError({ kind: 'marker', attempt: evidence.attempt }) };
       const declared = via.json !== undefined ? parseResponsePayload(via.json) : undefined;
       if (typeof declared === 'string') return { error: { code: 'invalid_json', message: declared } };
       const provenance = respondProvenance(declared ? { kind: 'driver-json', driver: declared.driver, caller: via.caller } : { kind: 'terminal', caller: via.caller });

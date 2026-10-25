@@ -25,6 +25,7 @@ import { redact, redactJson } from '../../../utils/redact.js';
 import { AgentSession } from '../../../session-flow/agent-session.js';
 import { openSessionArchive, type SessionArchive } from '../../../session-flow/archive.js';
 import { deliveredTeamSkills, usedSkills } from '../../../skill-use.js';
+import { attemptEnv } from '../../attempt-marker.js';
 import { leaseNext, reportAttempt } from '../../engine.js';
 import { EnvScopeSchema, LeaseSetupSchema, type DriverCan, type EnvScope, type LeaseSetup } from '../../requirements.js';
 import { callerProvenance, respondProvenance, respondToHitl } from '../../run-controls.js';
@@ -516,7 +517,7 @@ async function promptReport(
       prompt: lease.prompt!,
       cwd,
       resultPath: attemptResultPath,
-      ...(lease.processEnv ? { env: lease.processEnv } : {}),
+      env: { ...lease.processEnv ?? process.env, ...attemptEnv(lock.run, lease.attempt) },
       ...(launch ? { launch } : {}),
       ...(resume ? { resume: resume.id } : {}),
       ...(agent ? { agent: definitionRun(selected, lease.agent!, agent) } : {}),
@@ -784,7 +785,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options
           (signal) => stageLease(lease, { config, lock, root, values: turn.values, signal }),
           () => {
             if (forwarded) handle(forwarded);
-            return startCommand(command, lease.cwd ?? root, { ...lease.processEnv ?? process.env, ...lease.env }, detached);
+            return startCommand(command, lease.cwd ?? root, { ...lease.processEnv ?? process.env, ...lease.env, ...attemptEnv(runId, lease.attempt) }, detached);
           },
         ) });
       }

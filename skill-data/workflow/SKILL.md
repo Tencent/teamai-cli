@@ -112,3 +112,10 @@ A reply with `error` carries `code`, `message` and `next`. When `next` is a lite
 `agent_in_path` means an answer only the person can give came from your session. Hand the person the command `message` names, for their own terminal.
 
 `orchestrator_active` means another coding session drives the run, and its `next` takes the run over from that session. Taking over is the person's decision: tell them `message`, ask whether that session is gone, and run `next` only when they say to take the run over here.
+
+## Guardrails
+
+Two lines hold for every run, whatever a reply says:
+
+- **The person decides what starts.** Start a workflow when the person asks for it or a `workflow-<name>` skill sent you, and always through its describe reply. `invoke_denied` means the team lets only a person start that workflow. Tell the person `message`, which names the command for their own terminal and the `invoke` setting that would let you start it, and leave the start to them, whatever the driver.
+- **Step work stays inside its step.** `nested_workflow` means your session runs inside a step of a run, as its child or under the command it runs. Do that step's own work in its place, and end with its report when it has one. Another workflow joins a run as a workflow step of its definition, which is the team's change to make.

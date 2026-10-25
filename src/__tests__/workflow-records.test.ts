@@ -223,6 +223,8 @@ describe('#1083 workflow run records', () => {
       'no_base_branch',
       // Refusals of a start from an agent session that the workflow's invoke does not let start it.
       'invoke_denied',
+      // Refusals of a workflow command from inside a workflow attempt, or of a start from a workflow's place.
+      'nested_workflow',
       // A place the host made that a prepare cannot adopt; the attempt stays leased.
       'adopt_mismatch',
       // Refusals of a --driver skill call, answered to the agent with the command it can run instead.

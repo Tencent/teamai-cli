@@ -607,7 +607,7 @@ export async function poll(context: SkillContext, run: RunId): Promise<SkillAnsw
   }
 }
 
-/** The error a start answers when the protocol refused it: describe again to see why, unless only the person can start it. */
+/** The error a start answers when the protocol refused it: describe again to see why, unless only the person can start it, or no start runs from here. */
 export function startRefused(context: SkillContext, name: string, error: WorkflowFailure): SkillAnswer {
-  return { error: { ...error, next: error.code === 'invoke_denied' ? null : describeLiteral(context.invocation, name) } };
+  return { error: { ...error, next: error.code === 'invoke_denied' || error.code === 'nested_workflow' ? null : describeLiteral(context.invocation, name) } };
 }
