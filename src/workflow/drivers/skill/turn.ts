@@ -176,10 +176,8 @@ export interface Turn {
 
 /** An error the agent can act on: `next` is the literal to run instead, or null when only the person can act. */
 export interface SkillError {
-  /** The skill driver's own codes. An engine or protocol code is relayed as written. */
-  code:
-    | 'confirm_needed' | 'needs_local_driver' | 'not_skill_run' | 'orchestrator_active' | 'choice_pending' | 'unknown_choice' | 'unknown_offer'
-    | 'unknown_attempt' | 'not_dispatched' | (string & {});
+  /** A refusal of the transitions, or the driver's own code for a call or state it cannot read. An engine or protocol code is relayed as written. */
+  code: Refusal['code'] | 'run_unreadable' | 'invalid_arguments' | 'invalid_json' | (string & {});
   message: string;
   /** `orchestrator_active`: the seconds since the session that drives the run last called, for the person to judge whether it is gone. */
   idleSeconds?: number;
