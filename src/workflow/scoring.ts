@@ -6,7 +6,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
-import { DriverSchema } from '../driver-identity.js';
+import { DriverSchema, driverIdentity } from '../driver-identity.js';
 import type { LocalConfig } from '../types.js';
 import { log } from '../utils/logger.js';
 import {
@@ -32,7 +32,6 @@ import { scopeScoring } from '../scorers/settings.js';
 import { answerSchema, evidenceDirOf, sweepEvidence, type Rubrics } from '../scorers/evidence.js';
 import { buildEvidence, evidencePlan } from './scoring-evidence.js';
 import { error, ok } from './engine.js';
-import { localDriver } from './drivers/local/local-driver.js';
 import { firstSettled, passesWithin, runPasses, type RunPass } from './loop.js';
 import { stepDefinitions } from './scope.js';
 import { agentPassOf, agentSucceeded } from './step-state.js';
@@ -856,7 +855,7 @@ export async function scoreOnDemand(config: LocalConfig, demand: ScoreDemand, no
 
   const [tool, ...tools] = installedJudgeTools(evidencePlan(run, subject).passes.flatMap((judged) => judged.tool ?? []));
   if (!tool) return error('judge_tool_unavailable', 'No judge tool is on PATH. Install Claude Code, Codex, OpenCode or CodeBuddy, or add --queue so another driver judges this pass.');
-  const driver = localDriver(process.cwd());
+  const driver = driverIdentity('local', process.cwd());
   const ids = asked.map(({ scorer }) => entryIdOf(scorer, subject));
   const labelled: SucceededAttempt[] = [];
   let published = true;

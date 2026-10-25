@@ -82,6 +82,11 @@ export function resolveMode(step: WorkflowStep, ancestors: WorkflowStep[]): Work
   return 'read-only';
 }
 
+/** Whether a step runs in the member's checkout as it is: read-only, with no enclosing step that opens a copy. */
+export function runsInCheckout(step: WorkflowStep, ancestors: WorkflowStep[]): boolean {
+  return resolveMode(step, ancestors) === 'read-only' && !ancestors.some(opensCopy);
+}
+
 /**
  * Why a run of `definition` cannot deliver what its steps declare, or undefined when it can. A step in a sub-workflow
  * continues the copy of the step that runs it, so this reads the whole tree a run executes, which one file cannot.

@@ -18,7 +18,8 @@ import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
 import { cancelRun, respondToHitl, retryStep } from '../workflow/run-controls.js';
 import { createLocalToolAdapter, type LocalToolAdapter, type LocalToolResult, type LocalToolRun, type ToolSpawn } from '../workflow/drivers/local/local-tool-adapter.js';
-import { _setDriverPollMs, localDriver, runLocalDriver } from '../workflow/drivers/local/local-driver.js';
+import { _setDriverPollMs, runLocalDriver } from '../workflow/drivers/local/local-driver.js';
+import { driverIdentity } from '../driver-identity.js';
 import { pendingRecords, type WorkflowRunRecord } from '../workflow/records.js';
 import { driverLockPath, readRun } from '../workflow/store.js';
 import * as worktreeSnapshot from '../workflow/place/worktree-snapshot.js';
@@ -1177,7 +1178,7 @@ const timer = setInterval(() => { if (fs.existsSync('go')) clearInterval(timer);
     const run = await readRun(config, runId);
     const slow = typeof run === 'object' ? run.steps.find((step) => step.id === 'slow') : undefined;
     if (slow?.status !== 'leased') throw new Error('slow is not leased');
-    const same = localDriver(workspace);
+    const same = driverIdentity('local', workspace);
     // The other caller runs with room for a second open lease.
     const leased = await leaseNext({ ...config, workflows: { tools: {}, max_parallel: 2 } }, runId, same, { running: [slow.attempt] });
     const finish = 'data' in leased ? leased.data.lease as { attempt: string; revision: number } : undefined;
@@ -1231,7 +1232,7 @@ steps:
     command: node log.js b
 `, 1);
     fs.writeFileSync(path.join(workspace, 'log.js'), LOG);
-    const earlier = localDriver(workspace);
+    const earlier = driverIdentity('local', workspace);
     // The earlier driver ran while this machine allowed more open leases.
     const before: LocalConfig = { ...config, workflows: { tools: {}, max_parallel: 2 } };
     const a = await leaseNext(before, runId, earlier);
@@ -1262,7 +1263,7 @@ steps:
     command: node log.js c2
 `, 2);
     fs.writeFileSync(path.join(workspace, 'log.js'), LOG);
-    const earlier = localDriver(workspace);
+    const earlier = driverIdentity('local', workspace);
     // The earlier driver ran while this machine allowed more open leases.
     const before: LocalConfig = { ...config, workflows: { tools: {}, max_parallel: 3 } };
     const running: string[] = [];
@@ -2192,7 +2193,7 @@ steps:
     prompt: Pair with me.
     interactive: true
 `);
-    await leaseNext(config, runId, localDriver(workspace), { can: { hitl: true } });
+    await leaseNext(config, runId, driverIdentity('local', workspace), { can: { hitl: true } });
     const adapter: LocalToolAdapter = { run: vi.fn(), runInteractive: vi.fn<LocalToolAdapter['runInteractive']>(async () => ({ started: true, exitCode: 0 })) };
     expect(await runLocalDriver(config, runId, workspace, { hitl: false, adapter })).toMatchObject({
       error: { code: 'busy', message: 'step "pair" needs hitl, which this driver does not declare' },

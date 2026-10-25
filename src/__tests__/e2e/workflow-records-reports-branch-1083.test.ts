@@ -8,7 +8,8 @@ import { getCurrentVersion } from '../../package-info.js';
 import type { LocalConfig, TeamaiConfig } from '../../types.js';
 import { syncWorkflowDefinitions } from '../../workflow/cache.js';
 import { startRun } from '../../workflow/engine.js';
-import { localDriver, runLocalDriver } from '../../workflow/drivers/local/local-driver.js';
+import { runLocalDriver } from '../../workflow/drivers/local/local-driver.js';
+import { driverIdentity } from '../../driver-identity.js';
 import { createLocalToolAdapter, type ToolSpawn } from '../../workflow/drivers/local/local-tool-adapter.js';
 import { pendingRecords } from '../../workflow/records.js';
 import { fakeClaude, recordDelivery } from '../helpers/delivered-checkout.js';
@@ -100,7 +101,7 @@ describe('#1083 workflow run records reach the reports branch', () => {
     const claude: ToolSpawn = (_command, _args, options) => spawn(process.execPath, ['-e', `process.stdout.write(${JSON.stringify(stream)})`], options);
 
     await syncWorkflowDefinitions(config);
-    const started = await startRun(config, 'build', {}, { secrets: await knownSecrets(config), driver: localDriver(work) });
+    const started = await startRun(config, 'build', {}, { secrets: await knownSecrets(config), driver: driverIdentity('local', work) });
     expect(started).toMatchObject({ data: { status: 'running', record: 'published' } });
     const runId = String((started as { data: { run: string } }).data.run);
 

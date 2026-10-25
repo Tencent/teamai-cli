@@ -11,6 +11,7 @@ import { log } from '../../../utils/logger.js';
 import { stopProcess } from '../../../tool-launch/process-stop.js';
 import { toolStdout, type TokenUsage, type ToolReport } from '../../../tool-launch/stdout.js';
 import { localToolFamily, opencodeModelArgs, type LaunchTool } from '../../../tool-launch/tools.js';
+import type { StepModel } from '../../step-model.js';
 import type { WorkflowFailure } from '../../types.js';
 
 export interface LocalToolRun {
@@ -20,7 +21,7 @@ export interface LocalToolRun {
   /** The definition the step runs as. `settings` are the deployed OpenCode file's other fields, such as `mode` and `variant`. */
   agent?: { name: string; instructions: string; model?: string; settings?: Record<string, unknown> };
   /** The model and effort the launch passes: the step's, which replaces the definition's, or on Codex and OpenCode the definition's own. */
-  model?: { name: string; effort?: string };
+  model?: StepModel;
   /** The workflow launch the tool's session-start hook reads from its environment (#1176). */
   launch?: Launch;
   /** A session id from the same tool. Claude and Codex resume it; OpenCode has no resume flag here. */

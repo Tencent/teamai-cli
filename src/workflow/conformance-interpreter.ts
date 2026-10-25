@@ -1,18 +1,7 @@
 /** The conformance scenario language, the driver profiles it speaks as, and the interpreter that runs a scenario. */
 import { z } from 'zod';
-import type { DriverIdentity, RunState, WorkflowEnvelope } from './types.js';
-
-export interface WorkflowClient {
-  start(name: string): Promise<WorkflowEnvelope>;
-  next(runId: string, body: unknown): Promise<WorkflowEnvelope>;
-  report(runId: string, body: unknown): Promise<WorkflowEnvelope>;
-  /** Records an answer through the client's channel. */
-  respond(runId: string, step: string, choice: string, options?: { note?: string; pass?: number; json?: unknown }): Promise<WorkflowEnvelope>;
-  /** Reopens the target step's dependency cone. */
-  retry(runId: string, step: string): Promise<WorkflowEnvelope>;
-  /** Stops the run or the named step. */
-  cancel(runId: string, step?: string): Promise<WorkflowEnvelope>;
-}
+import type { WorkflowClient } from './protocol.js';
+import type { DriverIdentity, RunState } from './types.js';
 
 export const PARALLEL_ROOTS = `schemaVersion: v1alpha1
 name: build
@@ -53,7 +42,7 @@ export interface ConformanceScenario {
  * has a person only when it runs in a terminal.
  */
 export const DRIVER_PROFILES = {
-  /** The in-process driver `teamai workflow run` uses. */
+  /** The in-process driver `workflow start --driver local` and `workflow resume` run. */
   local: { can: { workspace: ['read-only', 'new', 'continue'], env: true, tokens: true, max_turns: true, setup: true } },
   /** An agent session that runs the protocol itself, with a person in the chat. */
   session: { can: { hitl: true, workspace: ['read-only', 'new', 'continue'] } },

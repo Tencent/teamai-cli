@@ -1,7 +1,6 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import {
@@ -16,12 +15,12 @@ import { installOf, locate, ownOf } from '../../../locate.js';
 import { isAgentToolId } from '../../../tools.js';
 import { observeLaunch, type Used } from '../../../agent-observation.js';
 import { detectProjectConfig } from '../../../config.js';
-import { acquireLock, releaseLock } from '../../../update.js';
+import { driverIdentity } from '../../../driver-identity.js';
 import { commandSignalPolicy, exitLike, stepEnvironment, terminalReachesCommand } from '../../../env-exec.js';
 import { knownSecrets, resolveWorkflowEnv, type WorkflowEnv } from '../../../env-resolution.js';
 import { workflowLaunch } from '../../../launch-context.js';
 import { getDataHome, type LocalConfig, type TeamaiConfig } from '../../../types.js';
-import { readFileSafe, readJson, writeFileAtomic, writeJsonAtomic } from '../../../utils/fs.js';
+import { readFileSafe, writeFileAtomic, writeJsonAtomic } from '../../../utils/fs.js';
 import { log } from '../../../utils/logger.js';
 import { redact, redactJson } from '../../../utils/redact.js';
 import { AgentSession } from '../../../session-flow/agent-session.js';
@@ -38,7 +37,8 @@ import {
   type LocalToolResult,
   type LocalToolRun,
 } from './local-tool-adapter.js';
-import { driverLockPath, isRunId, readRun, updateRun } from '../../store.js';
+import { AttemptIdSchema, readRun, RunIdSchema, updateRun, withRunLock, type RunLock } from '../../store.js';
+import { finishPlace, preparePlace } from '../../place/place.js';
 import { stopProcess } from '../../../tool-launch/process-stop.js';
 import { isLaunchTool, localToolFamily, type LaunchTool } from '../../../tool-launch/tools.js';
 import { chooseStepModel } from '../../step-model.js';
@@ -50,17 +50,6 @@ import {
   applyBaseConfig, commitWork, ensureWorktree, fetchMissingCommits, git, headCommit, hooksPath, keptSentence, type KeptChanges, markReadCopy, markSetup, mergeBranch, offBranch, pushIfOrigin, putBackCopy, reconcileCopy, recordConfigOverlay, removeWorktree, reopenConfigConflicts, restoreUneditedConfig, setupUnfinished, stepCheckout, unrestoredCopy, worktreePath,
 } from '../../worktree.js';
 import { changedPaths, snapshotWorktree, type WorktreeSnapshot } from '../../place/worktree-snapshot.js';
-
-/** Local lease identity, stable across restarts in the same workspace. */
-export function localDriver(cwd: string): DriverIdentity {
-  let machine = 'unknown';
-  try {
-    machine = os.hostname();
-  } catch {
-    machine = 'unknown';
-  }
-  return { kind: 'local', machine, workspace: path.resolve(cwd) };
-}
 
 interface CommandResult {
   exitCode: number;
@@ -392,7 +381,14 @@ function placeOf(lease: Lease, active: string): string {
  * Gets the lease a place to run, with the team env `values` resolved for it. `signal` stops setup, which then fails, and
  * the workspace it was preparing is removed.
  */
-async function stageLease(lease: Lease, { active, runId, values, signal }: { active: string; runId: string; values: ReadonlyMap<string, string>; signal?: AbortSignal }): Promise<WorkflowFailure | undefined> {
+async function stageLease(lease: Lease, { active, runId, values, signal, checkout }: {
+  active: string;
+  runId: string;
+  values: ReadonlyMap<string, string>;
+  signal?: AbortSignal;
+  /** Stages a lease without a workspace contract, which runs in `active`. */
+  checkout: (lease: Lease) => Promise<WorkflowFailure | undefined>;
+}): Promise<WorkflowFailure | undefined> {
   if (lease.unreadableWorkspace) {
     return { code: 'workspace_base', message: `Step "${lease.step}" was leased a workspace this teamai cannot read. Update teamai.` };
   }
@@ -403,8 +399,7 @@ async function stageLease(lease: Lease, { active, runId, values, signal }: { act
   }
   if (!lease.workspace) {
     lease.cwd = active;
-    lease.before = await snapshotWorktree(active);
-    return undefined;
+    return checkout(lease);
   }
   const blocked = await unrestoredCopy(worktreePath(active, lease.workspace.branch));
   if (blocked?.state === 'unreadable') {
@@ -704,18 +699,14 @@ function withUnpushed(message: string, unpushed: string | undefined): string {
   return unpushed ? `${message.replace(/\.?$/, '.')} ${unpushed}` : message;
 }
 
-async function commandReport(attemptResultPath: string, driver: DriverIdentity, lease: Lease, result: CommandResult): Promise<ReportBody> {
+async function commandReport(config: LocalConfig, lock: RunLock, driver: DriverIdentity, lease: Lease, result: CommandResult): Promise<ReportBody> {
   const output = jsonStdout(result.stdout);
+  const attemptResultPath = resultPath(config, lock.run, lease.attempt);
   await fs.mkdir(path.dirname(attemptResultPath), { recursive: true });
   await writeJsonAtomic(attemptResultPath, output !== undefined ? { output } : {});
   const snippet = result.stderr.trim().slice(0, 400);
-  if (result.exitCode === 0 && !lease.workspace && lease.before && lease.cwd) {
-    const paths = changedPaths(lease.before, await snapshotWorktree(lease.cwd));
-    if (paths.length > 0) {
-      const failure = { code: 'read_only_dirty', message: `Read-only command step changed repository paths: ${paths.join(', ')}` };
-      return { attempt: lease.attempt, revision: lease.revision, driver, exitCode: 0, ...failureReport(failure) };
-    }
-  }
+  const placed = await finishCheckout(config, lock, lease, result.exitCode === 0 ? 'success' : 'failed');
+  if (placed) return { attempt: lease.attempt, revision: lease.revision, driver, exitCode: result.exitCode, ...failureReport(placed) };
   const left = await leaveReadCopy(lease);
   const touched = left?.state === 'untouched' ? undefined : left;
   const exited = result.exitCode === 0
@@ -760,7 +751,7 @@ async function usedInSession(tool: LaunchTool, sessionId: string, cwd: string, t
 
 async function promptReport(
   config: LocalConfig,
-  attemptResultPath: string,
+  lock: RunLock,
   driver: DriverIdentity,
   lease: Lease,
   tools: Record<string, string>,
@@ -800,7 +791,7 @@ async function promptReport(
     }
   }
   const cwd = lease.cwd ?? driver.workspace;
-  const before = lease.interactive && !lease.readOnly ? undefined : (lease.before ?? await snapshotWorktree(cwd));
+  const attemptResultPath = resultPath(config, lock.run, lease.attempt);
   const resume = await resumeSession(archive, lease, selected, cwd);
   const definitionModel = chosen.model && chosen.by === 'definition'
     ? { model: chosen.model.name, ...(chosen.model.effort ? { effort: chosen.model.effort } : {}) }
@@ -849,10 +840,9 @@ async function promptReport(
   }
   const left = await leaveReadCopy(lease);
   const touched = left?.state === 'untouched' ? undefined : left;
-  const paths = !left && before && !lease.workspace ? changedPaths(before, await snapshotWorktree(cwd)) : [];
   const dirtyFailure = touched
     ? readCopyFailure(touched, touched.changed.length > 0 ? `Read-only prompt step changed repository paths: ${touched.changed.join(', ')}.` : '')
-    : paths.length === 0 ? undefined : { code: 'read_only_dirty', message: `Read-only prompt step changed repository paths: ${paths.join(', ')}` };
+    : await finishCheckout(config, lock, lease, result.exitCode === 0 && !result.failure ? 'success' : 'failed');
   const finished = lease.workspace && !left && !dirtyFailure ? await finishWorkspace(lease, result.failure !== undefined) : {};
   const failure = dirtyFailure ?? finished.failure ?? (result.failure && { ...result.failure, message: withUnpushed(result.failure.message, finished.unpushed) });
   const ran = result.started ? result : undefined;
@@ -900,19 +890,31 @@ export async function withDriverLock(
   runId: string,
   body: (drive: (cwd: string, options: LocalDriverOptions) => Promise<WorkflowEnvelope>) => Promise<WorkflowEnvelope>,
 ): Promise<WorkflowEnvelope> {
-  if (!isRunId(runId)) return { error: { code: 'invalid_run', message: 'Run id must look like r followed by 8 or 16 hex digits' } };
-  const lock = driverLockPath(config, runId);
-  if (!await acquireLock(lock)) {
-    const owner = await readJson(lock);
-    return { error: { code: 'driver_running', message: isRecord(owner) && typeof owner.pid === 'number'
-      ? `Run ${runId} is already driven by process ${owner.pid} on this machine. Stop that driver, or wait for it.`
-      : `Run ${runId} has a local driver lock whose process id is unknown. Stop that driver, or inspect its driver.lock file.` } };
-  }
-  try {
-    return await body((cwd, options) => driveRun(config, runId, cwd, options));
-  } finally {
-    await releaseLock(lock);
-  }
+  const run = RunIdSchema.safeParse(runId);
+  if (!run.success) return { error: { code: 'invalid_run', message: 'Run id must look like r followed by 8 or 16 hex digits' } };
+  return withRunLock(config, run.data, (lock) => body((cwd, options) => driveRun(config, lock, cwd, options)), { waitMs: 0 });
+}
+
+/**
+ * Stages a lease without a workspace contract in the member's checkout `active`, as a reader of it: what the step
+ * changes there fails it.
+ */
+async function placeInCheckout(config: LocalConfig, lock: RunLock, active: string, lease: Lease): Promise<WorkflowFailure | undefined> {
+  const attempt = AttemptIdSchema.safeParse(lease.attempt);
+  if (!attempt.success) return { code: 'workspace_base', message: `Attempt ${lease.attempt} of step "${lease.step}" has an id this teamai cannot read. Update teamai.` };
+  const prepared = await preparePlace({ config, lock, root: active, lease: {
+    attempt: attempt.data, executor: lease.command !== undefined ? 'command' : 'prompt',
+    ...(lease.interactive ? { interactive: true } : {}), ...(lease.readOnly ? { readOnly: true } : {}),
+  } });
+  return prepared.kind === 'failed' ? prepared.failure : undefined;
+}
+
+/** Why a lease `placeInCheckout` staged fails once it ran with `outcome`. Undefined for a lease with a workspace contract. */
+async function finishCheckout(config: LocalConfig, lock: RunLock, lease: Lease, outcome: 'success' | 'failed'): Promise<WorkflowFailure | undefined> {
+  const attempt = AttemptIdSchema.safeParse(lease.attempt);
+  if (lease.workspace || !attempt.success) return undefined;
+  const finished = await finishPlace({ config, lock, attempt: attempt.data, outcome });
+  return finished === 'unmanaged' ? undefined : finished.failure;
 }
 
 /**
@@ -964,12 +966,13 @@ function localCan(config: LocalConfig, hitl: boolean): Required<DriverCan> {
   return { hitl, workspace: [...WORKSPACE_MODES], network: false, isolation: config.workflows?.sandbox ? 'sandbox' : 'none', env: true, tokens: true, max_turns: true, setup: true };
 }
 
-async function driveRun(config: LocalConfig, runId: string, cwd: string, options: LocalDriverOptions): Promise<WorkflowEnvelope> {
+async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options: LocalDriverOptions): Promise<WorkflowEnvelope> {
+  const runId = lock.run;
   const unreconciled = await reconcileTakenCopies(config, runId, cwd);
   if (unreconciled) return { error: unreconciled };
   const canHitl = options.hitl ?? (process.stdin.isTTY === true && process.stderr.isTTY === true);
   const can = localCan(config, canHitl);
-  const driver = localDriver(cwd);
+  const driver = driverIdentity('local', cwd);
   const tools = { ...config.workflows?.tools, ...options.tools };
   const adapter = options.adapter ?? createLocalToolAdapter();
   const archive = openSessionArchive(config);
@@ -1109,7 +1112,7 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
         if (forwarded) handle(STOP_SIGNALS);
         inFlight.set(lease.attempt, { lease, command: stageThenStart(
           lease,
-          (signal) => stageLease(lease, { active: cwd, runId, values: turn.values, signal }),
+          (signal) => stageLease(lease, { active: cwd, runId, values: turn.values, signal, checkout: (staged) => placeInCheckout(config, lock, cwd, staged) }),
           () => {
             if (forwarded) handle(forwarded);
             return startCommand(command, lease.cwd ?? cwd, { ...lease.processEnv ?? process.env, ...lease.env }, detached);
@@ -1134,14 +1137,14 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
           const controller = new AbortController();
           if (maxParallel === 1) handle(STOP_SIGNALS);
           prompt = { lease, controller, exit: (async () => {
-            const failure = await stageLease(lease, { active: cwd, runId, values: turn.values, signal: controller.signal });
+            const failure = await stageLease(lease, { active: cwd, runId, values: turn.values, signal: controller.signal, checkout: (staged) => placeInCheckout(config, lock, cwd, staged) });
             if (!startable(lease, controller.signal)) {
               await (lease.workspace?.mode === 'read-only' ? leaveReadCopy(lease) : restoreLeaseOverlay(lease));
               return undefined;
             }
             if (failure) return unstaged(lease, failure);
             interactiveIgnores = ignored;
-            return promptReport(config, resultPath(config, runId, lease.attempt), driver, lease, tools, adapter, options, archive, controller.signal);
+            return promptReport(config, lock, driver, lease, tools, adapter, options, archive, controller.signal);
           })() };
         }
       }
@@ -1212,7 +1215,7 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
       }
       const body = staged.kind === 'unstaged'
         ? unstaged(exited.lease, staged.failure)
-        : await commandReport(resultPath(config, runId, exited.attempt), driver, exited.lease, staged.result);
+        : await commandReport(config, lock, driver, exited.lease, staged.result);
       const failed = await report(body, exited.lease);
       if (failed) return failed;
     }
@@ -1247,7 +1250,10 @@ export interface PreparedSessionWorkspace {
 export async function prepareSessionWorkspace(raw: unknown, active: string, runId: string, values: ReadonlyMap<string, string>): Promise<PreparedSessionWorkspace | WorkflowFailure> {
   const lease = parseLease(raw);
   if (!lease) return { code: 'workspace_base', message: 'The session driver received an unreadable lease' };
-  const failure = await stageLease(lease, { active, runId, values });
+  const failure = await stageLease(lease, { active, runId, values, checkout: async (staged) => {
+    staged.before = await snapshotWorktree(active);
+    return undefined;
+  } });
   if (failure) return failure;
   return { step: lease.step, attempt: lease.attempt, revision: lease.revision, cwd: lease.cwd, workspace: lease.workspace,
     ...(lease.interactive ? { interactive: true } : {}), ...(lease.readOnly ? { readOnly: true } : {}),

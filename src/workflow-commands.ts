@@ -3,13 +3,14 @@ import { resolveWorkflowEnv, type WorkflowEnv } from './env-resolution.js';
 import { isLeaseRef } from './scorers/entry.js';
 import { log, setStderrOnly } from './utils/logger.js';
 import { collectEnvSecrets, redactJson } from './utils/redact.js';
-import { leaseNext, parseNextPayload, parseReport, parseResponsePayload, reportAttempt, resumableSessions, startRun, withIgnored, type ParsedResponsePayload } from './workflow/engine.js';
+import { leaseNext, parseNextPayload, parseReport, parseResponsePayload, reportAttempt, resumableSessions, withIgnored, type ParsedResponsePayload } from './workflow/engine.js';
 import { publishRun, resumeRun } from './workflow/handoff.js';
 import { cancelRun, respondToHitl, retryStep } from './workflow/run-controls.js';
-import { localDriver, runLocalDriver, withDriverLock } from './workflow/drivers/local/local-driver.js';
+import { runLocalDriver, withDriverLock } from './workflow/drivers/local/local-driver.js';
+import { driverIdentity } from './driver-identity.js';
 import { getBusinessRoot, getDataHome, scopedToolPaths, type LocalConfig, type TeamaiConfig } from './types.js';
 import { isRunId, readRun } from './workflow/store.js';
-import { headCommit } from './workflow/worktree.js';
+import { inProcessClient } from './workflow/protocol.js';
 import { loadCachedWorkflow } from './workflow/cache.js';
 import { findRunConfig } from './workflow/run-location.js';
 import { prepareSessionLease, reportSessionLease } from './workflow/session-driver.js';
@@ -109,7 +110,7 @@ export async function workflowStart(name: string, options: { driver?: string; to
   setStderrOnly(true);
   const loaded = await readyConfig();
   if (!loaded) return;
-  const { config, teamConfig, secrets } = loaded;
+  const { config, teamConfig, env, secrets } = loaded;
   if (options.describe) {
     const cached = await loadCachedWorkflow(config, name);
     if (!cached) writeEnvelope({ error: { code: 'workflow_not_found', message: `Workflow or alias ${name} has no unambiguous runnable version` } }, secrets);
@@ -134,8 +135,7 @@ export async function workflowStart(name: string, options: { driver?: string; to
       return;
     }
   }
-  const base = await headCommit(process.cwd());
-  const started = await startRun(config, name, inputs, { secrets, checkout: process.cwd(), ...(base ? { base } : {}) });
+  const started = await inProcessClient({ config, env }).start(name, { inputs, checkout: process.cwd() });
   if ('error' in started || options.driver !== 'local') {
     writeEnvelope(started, secrets);
     return;
@@ -278,7 +278,7 @@ export async function workflowResume(runId: string, options: { tools?: string; a
         ? { error: { code: 'run_not_found', message: `Run ${runId} was not found` } }
         : { error: { code: 'run_unreadable', message: `Run ${runId} could not be read` } };
     }
-    const local = localDriver(process.cwd());
+    const local = driverIdentity('local', process.cwd());
     const lease = stored.steps.find((step) => step.status === 'leased' && step.lease.driver.kind === 'local' && step.lease.driver.machine === local.machine);
     const cwd = lease?.status === 'leased' ? lease.lease.driver.workspace
       : stored.driver?.kind === 'local' && stored.driver.machine === local.machine ? stored.driver.workspace : process.cwd();

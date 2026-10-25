@@ -4,13 +4,12 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { LocalConfig } from '../types.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
-import { runConformanceScenario, type WorkflowClient } from '../workflow/conformance-interpreter.js';
+import { runConformanceScenario } from '../workflow/conformance-interpreter.js';
 import { workflowConformanceScenarios } from '../workflow/conformance.js';
-import { leaseNext, parseNextPayload, parseReport, parseResponsePayload, reportAttempt, startRun, withIgnored } from '../workflow/engine.js';
-import { cancelRun, respondToHitl, retryStep } from '../workflow/run-controls.js';
+import { inProcessClient } from '../workflow/protocol.js';
 import { pendingRecords } from '../workflow/records.js';
 import { readRun } from '../workflow/store.js';
-import { knownSecrets } from '../env-resolution.js';
+import { resolveWorkflowEnv } from '../env-resolution.js';
 
 const dirs: string[] = [];
 
@@ -41,30 +40,7 @@ describe('workflow protocol conformance in process', () => {
         fs.writeFileSync(path.join(knowledge, 'workflows', `${name}.yaml`), yaml);
       }
       await syncWorkflowDefinitions(config);
-      const client: WorkflowClient = {
-        respond: async (runId, step, choice, options) => {
-          const parsed = options?.json !== undefined ? parseResponsePayload(options.json) : undefined;
-          if (typeof parsed === 'string') return { error: { code: 'invalid_json', message: parsed } };
-          return withIgnored(await respondToHitl(config, runId, await knownSecrets(config), { step, choice, note: options?.note, pass: options?.pass,
-            ...(parsed ? parsed.response : { channel: 'cli', agent: true }),
-          }), parsed?.ignored ?? []);
-        },
-        retry: async (runId, step) => retryStep(config, runId, await knownSecrets(config), step),
-        cancel: async (runId, step) => cancelRun(config, runId, await knownSecrets(config), step),
-        start: async (name) => startRun(config, name, {}, { secrets: await knownSecrets(config) }),
-        next: async (runId, body) => {
-          const parsed = parseNextPayload(body);
-          if (typeof parsed === 'string') return { error: { code: 'invalid_json', message: parsed } };
-          const { driver: identity, ...options } = parsed.request;
-          return withIgnored(await leaseNext(config, runId, identity, options), parsed.ignored);
-        },
-        report: async (runId, body) => {
-          const parsed = parseReport(body);
-          return typeof parsed === 'string'
-            ? { error: { code: 'invalid_report', message: parsed } }
-            : withIgnored(await reportAttempt(config, runId, parsed.report), parsed.ignored);
-        },
-      };
+      const client = inProcessClient({ config, env: await resolveWorkflowEnv(config) });
       await runConformanceScenario(scenario, {
         client,
         readRun: async (runId) => {
