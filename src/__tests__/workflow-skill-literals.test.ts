@@ -89,6 +89,11 @@ describe.each(INVOCATIONS)('skill driver literals run as %s', (invocation) => {
     expect(parsed(words(resumeLiteral(invocation, RUN), invocation))).toEqual({ sub: 'resume', operands: [RUN], options: {} });
   });
 
+  it('name the default prompt tool of a local run in the local start and resume literals', () => {
+    expect(parsed(words(localStartLiteral(invocation, 'check', { tool: 'claude' }), invocation))).toEqual({ sub: 'start', operands: ['check'], options: { driver: 'local', tools: 'default=claude' } });
+    expect(parsed(words(resumeLiteral(invocation, RUN, { tool: 'claude' }), invocation))).toEqual({ sub: 'resume', operands: [RUN], options: { tools: 'default=claude' } });
+  });
+
   it('describe, and start no run, whatever follows the pre-approved describe', () => {
     const trailing = `${describeLiteral(invocation, 'check')} --confirmed --parallel 3 --inputs '{}'`;
     expect(skillCall(trailing, invocation)).toEqual({ kind: 'describe', name: 'check' });

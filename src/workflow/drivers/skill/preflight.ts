@@ -1,4 +1,7 @@
 /** Before a run: what describe asks the person, and whether a start carries every answer it needs. */
+import type { ToolName } from '../../../resources/agent-format.js';
+import { isLaunchTool, type LaunchTool } from '../../../tool-launch/tools.js';
+import type { LocalConfig } from '../../../types.js';
 import type { WorkflowDescription } from '../../describe.js';
 import type { Judging } from '../../protocol.js';
 import type { OutputSchema } from '../../types.js';
@@ -180,8 +183,17 @@ interface StartPick {
   noJudge?: true;
 }
 
-/** The describe reply's `ask` of the kind the transitions chose. */
-export function askFor(verdict: DescribeVerdict, description: WorkflowDescription, invocation: Invocation, judging: Judging): DescribeAsk {
+/**
+ * The prompt tool a person's local run must be told: the session's `tool`, when this machine's config names no default
+ * prompt tool (`workflows.tools.default`) and the local driver launches `tool`. Undefined when the config names one,
+ * or when no tool the local driver launches is known.
+ */
+export function localPromptTool(config: LocalConfig, tool: ToolName | undefined): LaunchTool | undefined {
+  return config.workflows?.tools.default === undefined && tool !== undefined && isLaunchTool(tool) ? tool : undefined;
+}
+
+/** The describe reply's `ask` of the kind the transitions chose. `local.tool`: the prompt tool a local start names. */
+export function askFor(verdict: DescribeVerdict, description: WorkflowDescription, invocation: Invocation, judging: Judging, local: { tool?: string } = {}): DescribeAsk {
   const { name } = description;
   const facts = factsOf(description, judging).map((fact) => `- ${fact}`);
   switch (verdict.ask) {
@@ -189,7 +201,7 @@ export function askFor(verdict: DescribeVerdict, description: WorkflowDescriptio
       return { kind: 'start', ...(facts.length > 0 ? { say: facts.join('\n') } : {}), start: startLiteral(invocation, name) };
     case 'local':
     case 'denied':
-      return verdict.ask === 'local' ? { kind: 'local', reason: verdict.reason, start: localStartLiteral(invocation, name) } : { kind: 'denied', reason: verdict.reason };
+      return verdict.ask === 'local' ? { kind: 'local', reason: verdict.reason, start: localStartLiteral(invocation, name, local) } : { kind: 'denied', reason: verdict.reason };
     case 'ask': {
       const options = optionsOf(description, judging, invocation);
       const confirmed = description.invoke === 'ask';

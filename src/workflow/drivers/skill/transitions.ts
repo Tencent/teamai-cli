@@ -23,7 +23,7 @@ export interface TransitionRow {
 
 export const TRANSITIONS = [
   { id: 'R1', state: 'none', input: 'describe', guard: '`invoke: deny` and the caller has agent evidence', effects: 'none', next: 'none', action: 'describe `ask.kind: denied` with the reason, no literal' },
-  { id: 'R2', state: 'none', input: 'describe', guard: 'the definition has a local route: a step this driver takes and a later one it is held from for env or tokens work in one workspace copy', effects: 'none', next: 'none', action: 'describe `ask.kind: local` with the reason and the `--driver local` start literal' },
+  { id: 'R2', state: 'none', input: 'describe', guard: 'the definition has a local route: a step this driver takes and a later one it is held from for env or tokens work in one workspace copy', effects: 'none', next: 'none', action: 'describe `ask.kind: local` with the reason and the `--driver local` start literal, with `--tools default=<session tool>` when `localPromptTool` names one' },
   { id: 'R3', state: 'none', input: 'describe', guard: 'something to ask: `invoke: ask`, a required input, width above 1, an optional gate, or judging here', effects: 'none', next: 'none', action: 'describe `ask.kind: ask`: one question stating every fact, and at most five start literals, the recommended first' },
   { id: 'R4', state: 'none', input: 'describe', guard: 'nothing to ask', effects: 'none', next: 'none', action: 'describe `ask.kind: start` with the one start literal, and the facts to tell the person' },
   { id: 'R8', state: 'none', input: 'start `--driver skill`', guard: 'the definition has a local route', effects: 'none', next: 'none', action: 'error `needs_local_driver` with the reason, next null' },
@@ -52,7 +52,7 @@ export const TRANSITIONS = [
   { id: 'D11', state: 'drive', input: 'reply hitl', guard: 'an optional gate; HITL mode `person`, or `auto-approve`, under which only a choice without a default comes back', effects: 'as D10', next: 'drive', action: '`choose about:gate decide:person`' },
   { id: 'D12', state: 'drive', input: 'reply hitl', guard: 'an optional gate; HITL mode `recommend`', effects: 'as D10', next: 'drive', action: '`choose about:gate decide:agent`' },
   { id: 'D13', state: 'drive', input: 'reply wait', guard: 'it lists `delivering`', effects: 'none', next: 'drive', action: 'waiting `delivering` in each turn that ticked, polls\' included; `then: poll`' },
-  { id: 'D14', state: 'drive', input: 'reply wait', guard: 'it lists `held`, and no attempt is open', effects: 'none', next: 'drive', action: '`person why:handoff` with the person\'s `teamai workflow resume <run>` literal; waiting `held`; no `then`' },
+  { id: 'D14', state: 'drive', input: 'reply wait', guard: 'it lists `held`, and no attempt is open', effects: 'none', next: 'drive', action: '`person why:handoff` with the person\'s `teamai workflow resume <run>` literal, with `--tools default=<session tool>` when `localPromptTool` names one; waiting `held`; no `then`' },
   { id: 'D15', state: 'drive', input: 'reply wait', guard: '', effects: 'none', next: 'drive', action: 'waiting' },
   { id: 'D16', state: 'drive', input: 'reply done', guard: '', effects: '`seq` := seq + 1, so every session has the end to see', next: 'done', action: '`done {outcome, failure, prs, judging}`' },
   { id: 'D17', state: 'drive', input: 'reply error', guard: '', effects: 'none', next: 'drive', action: 'error with the engine\'s code, next: the next literal' },

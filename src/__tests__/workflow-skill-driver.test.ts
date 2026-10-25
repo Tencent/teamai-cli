@@ -777,7 +777,7 @@ steps:
         kind: 'person', why: 'handoff', held,
         message: `Run ${run} waits on steps this coding session cannot run: ${reason}. Nothing else of the run is open.`,
         say: `This session can take the run no further. To continue it with the local driver, run this command in your own terminal, from ${harness.work}.`,
-        run: [`teamai workflow resume ${run}`],
+        run: [`teamai workflow resume ${run} --tools default=claude`],
       }],
       waiting: { reason, held },
     } } });

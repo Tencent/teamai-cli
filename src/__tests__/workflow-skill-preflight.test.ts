@@ -165,7 +165,7 @@ describe('skill driver preflight', () => {
     const made = await harness({ 'release-docs': RELEASE_DOCS });
     expect(await made.call({ kind: 'describe', name: 'release-docs' })).toMatchObject({ data: { describe: {
       workflow: { facts: { localRoute: { opener: 'docs', held: 'docs.sign', missing: 'env' } } },
-      ask: { kind: 'local', start: 'teamai workflow start release-docs --driver local' },
+      ask: { kind: 'local', start: 'teamai workflow start release-docs --driver local --tools default=claude' },
     } } });
     expect(await made.call({ kind: 'start', name: 'release-docs', answers: { confirmed: false }, inputs: undefined }))
       .toMatchObject({ error: { code: 'needs_local_driver', next: null } });

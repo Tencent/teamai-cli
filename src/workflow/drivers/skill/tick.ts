@@ -17,6 +17,7 @@ import {
   ackLiteral, adoptLiteral, chooseHostLiteral, describeLiteral, localStartLiteral, nextLiteral, pollLiteral, reportLiteral, respondLiteral, takeoverLiteral, unavailableLiteral, type Invocation,
   type Literal,
 } from './literals.js';
+import { localPromptTool } from './preflight.js';
 import { readSkillState, writeSkillState, type ReportBody, type SkillState, type TurnEvent } from './skill-state.js';
 import {
   adoptRow, hasSlot, step, unseenEvents, type Answer, type EngineReply, type MachineInput, type ReadLease, type Refusal, type ReportReply, type RespondReply, type RowId, type ScoreReply,
@@ -190,7 +191,8 @@ export async function sendReport(context: SkillContext, lock: RunLock, state: Sk
 }
 
 /** The error a row answers, with its message and the literal to run instead. `run` names the run of an engine error. */
-export function errorOf(answer: Extract<Answer, { kind: 'error' | 'engine-error' }>, context: { invocation: Invocation; same: Literal; run?: RunId }): SkillError {
+/** `localTool`: the prompt tool a local start the refusal prints names (`localPromptTool`). */
+export function errorOf(answer: Extract<Answer, { kind: 'error' | 'engine-error' }>, context: { invocation: Invocation; same: Literal; run?: RunId; localTool?: string }): SkillError {
   const { invocation, same } = context;
   if (answer.kind === 'engine-error') {
     const next = context.run === undefined || answer.next === 'same' ? same : answer.next === 'poll' ? pollLiteral(invocation, context.run) : nextLiteral(invocation, context.run);
@@ -202,14 +204,14 @@ export function errorOf(answer: Extract<Answer, { kind: 'error' | 'engine-error'
       : answer.next === 'takeover' && 'run' in refusal ? takeoverLiteral(invocation, refusal.run)
         : answer.next === 'describe' && 'name' in refusal ? describeLiteral(invocation, refusal.name)
           : same;
-  return { code: refusal.code, message: refusalMessage(refusal, invocation), ...(refusal.code === 'orchestrator_active' ? { idleSeconds: refusal.idleSeconds } : {}), next };
+  return { code: refusal.code, message: refusalMessage(refusal, { invocation, tool: context.localTool }), ...(refusal.code === 'orchestrator_active' ? { idleSeconds: refusal.idleSeconds } : {}), next };
 }
 
 /** The message of each refusal: what happened, and what the agent or the person does next. */
-function refusalMessage(refusal: Refusal, invocation: Invocation): string {
+function refusalMessage(refusal: Refusal, local: { invocation: Invocation; tool?: string | undefined }): string {
   switch (refusal.code) {
     case 'needs_local_driver':
-      return `Workflow ${refusal.name} must run with the local driver. ${refusal.reason} Ask the person to run ${localStartLiteral(invocation, refusal.name)} in their own terminal.`;
+      return `Workflow ${refusal.name} must run with the local driver. ${refusal.reason} Ask the person to run ${localStartLiteral(local.invocation, refusal.name, { tool: local.tool })} in their own terminal.`;
     case 'confirm_needed': {
       const lacks = refusal.missing.map((answer) => ({ confirmed: '--confirmed, the person\'s yes', inputs: '--inputs', parallel: '--parallel', hitl: '--hitl or --auto-approve' })[answer]);
       const said = [
@@ -407,11 +409,12 @@ async function called(context: SkillContext, run: RunId, same: Literal, input: {
 }
 
 /** The turn of `state` as `answer` renders it, from the events the session has not seen and why the run waits. */
-function rendered(state: SkillState, answer: TurnAnswer, input: { events: TurnEvent[]; waiting?: Waiting }): Turn {
+function rendered(state: SkillState, answer: TurnAnswer, input: { events: TurnEvent[]; waiting?: Waiting; localTool?: string }): Turn {
   const after = answer.after === 'none' ? undefined
     : { kind: answer.after, run: answer.after === 'wake' ? nextLiteral(state.invocation, state.run) : pollLiteral(state.invocation, state.run) };
   return turnOf(state, {
     events: answer.events === 'unseen' ? input.events : [], ...(after ? { after } : {}), ...(input.waiting ? { waiting: input.waiting } : {}), ...(answer.quiet ? { quiet: true } : {}),
+    localTool: input.localTool,
   });
 }
 
@@ -421,8 +424,9 @@ async function finish(context: SkillContext, lock: RunLock, state: SkillState, t
   const shown = take(context, state, { kind: 'turn', session: context.session })?.state ?? state;
   await writeSkillState(context.config, lock, shown, context.env.secrets);
   const { waiting, turn } = ticked;
-  if (turn) return { data: { turn: rendered(shown, turn, { events, ...(waiting ? { waiting } : {}) }) } };
-  return { data: { turn: turnOf(shown, { events, after: { kind: 'poll', run: pollLiteral(shown.invocation, shown.run) }, ...(waiting ? { waiting } : {}) }) } };
+  const localTool = localPromptTool(context.config, context.tool);
+  if (turn) return { data: { turn: rendered(shown, turn, { events, ...(waiting ? { waiting } : {}), localTool }) } };
+  return { data: { turn: turnOf(shown, { events, after: { kind: 'poll', run: pollLiteral(shown.invocation, shown.run) }, ...(waiting ? { waiting } : {}), localTool }) } };
 }
 
 /**
@@ -589,7 +593,7 @@ export async function poll(context: SkillContext, run: RunId): Promise<SkillAnsw
       const polled = take(context, state, { kind: 'poll', session: context.session, busy: false, boundReached, ...(result.turn ? { ticked: result.turn } : {}) });
       last = polled?.state ?? state;
       await writeSkillState(context.config, lock, last, context.env.secrets);
-      const waiting = result.waiting ? { waiting: result.waiting } : {};
+      const waiting = result.waiting ? { waiting: result.waiting, localTool: localPromptTool(context.config, context.tool) } : {};
       if (polled?.turn) return { data: { turn: rendered(last, polled.turn, { events, ...waiting }) } };
       if (polled?.row === 'D23') return { data: { turn: turnOf(last, { events, after: { kind: 'poll', run: same } }) } };
       if (polled?.row === 'D22') return { data: { turn: turnOf(last, { events: [], after: { kind: 'wake', run: nextLiteral(last.invocation, run) }, quiet: true }) } };

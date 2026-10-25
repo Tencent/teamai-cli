@@ -266,12 +266,13 @@ function actionsOf(state: SkillState): Action[] {
  * The handoff of a run that can go no further here. `resume` drives from the directory it runs in when the run's last
  * driver was not a local one, so the person runs it from the checkout the run started in.
  */
-function handoffOf(state: SkillState, waiting: { reason: string; held: NonNullable<Waiting['held']> }): HandoffAction {
+/** `localTool`: the prompt tool the resume literal names (`localPromptTool`). */
+function handoffOf(state: SkillState, waiting: { reason: string; held: NonNullable<Waiting['held']> }, localTool: string | undefined): HandoffAction {
   return {
     kind: 'person', why: 'handoff', held: waiting.held,
     message: `Run ${state.run} waits on steps this coding session cannot run: ${waiting.reason}. Nothing else of the run is open.`,
     say: `This session can take the run no further. To continue it with the local driver, run this command in your own terminal, from ${state.driver.workspace}.`,
-    run: [resumeLiteral(state.invocation, state.run)],
+    run: [resumeLiteral(state.invocation, state.run, { tool: localTool })],
   };
 }
 
@@ -279,12 +280,12 @@ function handoffOf(state: SkillState, waiting: { reason: string; held: NonNullab
  * The turn of `state` that shows `events`, with `after` as its `then` while the run drives, or an attempt or a judge of
  * it is open. A `quiet` turn carries no action; any other shows the handoff of a `waiting` that holds steps.
  */
-export function turnOf(state: SkillState, input: { events: TurnEvent[]; after?: NonNullable<Turn['then']>; waiting?: Waiting; quiet?: true }): Turn {
+export function turnOf(state: SkillState, input: { events: TurnEvent[]; after?: NonNullable<Turn['then']>; waiting?: Waiting; quiet?: true; localTool?: string }): Turn {
   const running = state.attempts.map((open): RunningEntry => ({
     attempt: open.attempt, step: open.step, phase: open.phase, ...(reportedByAgent(open) ? { report: reportLiteral(state.invocation, state.run, open.attempt) } : {}),
   }));
   const waiting = input.waiting && !state.done && state.attempts.length === 0 ? input.waiting : undefined;
-  const handoff = waiting?.held && !input.quiet ? [handoffOf(state, { reason: waiting.reason, held: waiting.held })] : [];
+  const handoff = waiting?.held && !input.quiet ? [handoffOf(state, { reason: waiting.reason, held: waiting.held }, input.localTool)] : [];
   return {
     run: state.run,
     status: state.done ? 'done' : 'driving',

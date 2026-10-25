@@ -17,7 +17,7 @@ import { AttemptIdSchema, RunIdSchema, withRunLock, type AttemptId, type RunId, 
 import { canFor, HOST_CHOICES, type HostChoice } from './host-profiles.js';
 import { journalCall } from './journal.js';
 import { describeLiteral, invocationOf, type Invocation } from './literals.js';
-import { askFor, checkStartAnswers, localReason, neededAnswers, type HitlMode } from './preflight.js';
+import { askFor, checkStartAnswers, localPromptTool, localReason, neededAnswers, type HitlMode } from './preflight.js';
 import { writeSkillState, type SkillState } from './skill-state.js';
 import { detachedRunners, runRunner } from './skill-runner.js';
 import { agentReport, ceilingOf, errorOf, foreground, poll, startRefused } from './tick.js';
@@ -262,14 +262,15 @@ async function start(call: Extract<SkillCall, { kind: 'describe' | 'start' }>, c
     const denied = description.invoke === 'deny' && context.evidence.kind !== 'none' ? { denied: invokeDeniedMessage(description.name, context.evidence) } : {};
     const { row, verdict } = describeRow({ needed: neededAnswers(description), ...denied, ...why, judgingHere: judging.kind === 'here' });
     context.trace?.(row);
-    return { data: { describe: { workflow: description, judging, ask: askFor(verdict, description, context.invocation, judging) } } };
+    return { data: { describe: { workflow: description, judging, ask: askFor(verdict, description, context.invocation, judging, { tool: localPromptTool(context.config, context.tool) }) } } };
   }
   const check = checkStartAnswers({ description, answers: call.answers, inputs: call.inputs, ceiling });
   const judge = judging.kind === 'here' && call.answers.judge !== false ? judging.tool : undefined;
   const taken = startRow({ name: description.name, check, ...why, prompts: description.facts.prompts.length > 0, ...(judge !== undefined ? { judge } : {}) });
   context.trace?.(taken.row);
   if (taken.row !== 'R10') {
-    return { error: errorOf({ kind: 'error', refusal: taken.refusal, next: taken.next }, { invocation: context.invocation, same: describeLiteral(context.invocation, description.name) }) };
+    const same = describeLiteral(context.invocation, description.name);
+    return { error: errorOf({ kind: 'error', refusal: taken.refusal, next: taken.next }, { invocation: context.invocation, same, localTool: localPromptTool(context.config, context.tool) }) };
   }
   const planned = taken.start;
   const started = await context.client.start(description.name, {

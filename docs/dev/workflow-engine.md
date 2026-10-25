@@ -66,7 +66,7 @@ Test parsing through `parseWorkflow` and `syncWorkflowDefinitions`. Test the eng
 | Row | State | Input | Guard | Effects | Next | Action |
 |---|---|---|---|---|---|---|
 | R1 | none | describe | `invoke: deny` and the caller has agent evidence | none | none | describe `ask.kind: denied` with the reason, no literal |
-| R2 | none | describe | the definition has a local route: a step this driver takes and a later one it is held from for env or tokens work in one workspace copy | none | none | describe `ask.kind: local` with the reason and the `--driver local` start literal |
+| R2 | none | describe | the definition has a local route: a step this driver takes and a later one it is held from for env or tokens work in one workspace copy | none | none | describe `ask.kind: local` with the reason and the `--driver local` start literal, with `--tools default=<session tool>` when `localPromptTool` names one |
 | R3 | none | describe | something to ask: `invoke: ask`, a required input, width above 1, an optional gate, or judging here | none | none | describe `ask.kind: ask`: one question stating every fact, and at most five start literals, the recommended first |
 | R4 | none | describe | nothing to ask | none | none | describe `ask.kind: start` with the one start literal, and the facts to tell the person |
 | R8 | none | start `--driver skill` | the definition has a local route | none | none | error `needs_local_driver` with the reason, next null |
@@ -105,7 +105,7 @@ Test parsing through `parseWorkflow` and `syncWorkflowDefinitions`. Test the eng
 | D11 | drive | reply hitl | an optional gate; HITL mode `person`, or `auto-approve`, under which only a choice without a default comes back | as D10 | drive | `choose about:gate decide:person` |
 | D12 | drive | reply hitl | an optional gate; HITL mode `recommend` | as D10 | drive | `choose about:gate decide:agent` |
 | D13 | drive | reply wait | it lists `delivering` | none | drive | waiting `delivering` in each turn that ticked, polls' included; `then: poll` |
-| D14 | drive | reply wait | it lists `held`, and no attempt is open | none | drive | `person why:handoff` with the person's `teamai workflow resume <run>` literal; waiting `held`; no `then` |
+| D14 | drive | reply wait | it lists `held`, and no attempt is open | none | drive | `person why:handoff` with the person's `teamai workflow resume <run>` literal, with `--tools default=<session tool>` when `localPromptTool` names one; waiting `held`; no `then` |
 | D15 | drive | reply wait | | none | drive | waiting |
 | D16 | drive | reply done | | `seq` := seq + 1, so every session has the end to see | done | `done {outcome, failure, prs, judging}` |
 | D17 | drive | reply error | | none | drive | error with the engine's code, next: the next literal |

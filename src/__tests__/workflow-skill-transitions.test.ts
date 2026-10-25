@@ -522,7 +522,7 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       expect(polled.actions).toEqual([]);
       expect(polled.then).toEqual({ kind: 'wake', run: `teamai workflow next ${run} --driver skill` });
       const turn = await turnOf(await made.call({ kind: 'next', run, wait: false }));
-      expect(turn.actions).toEqual([expect.objectContaining({ kind: 'person', why: 'handoff', held: [{ step: 'notify', missing: ['env'] }], run: [`teamai workflow resume ${run}`] })]);
+      expect(turn.actions).toEqual([expect.objectContaining({ kind: 'person', why: 'handoff', held: [{ step: 'notify', missing: ['env'] }], run: [`teamai workflow resume ${run} --tools default=claude`] })]);
       expect(turn).not.toHaveProperty('then');
       return made.rows;
     },
@@ -586,11 +586,26 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     },
   },
   {
+    name: 'the local start literal names the session tool only on a machine that names no default prompt tool, for a tool the local driver launches',
+    rows: ['R2', 'R8'],
+    run: async () => {
+      const made = await harness({ 'release-docs': RELEASE_DOCS });
+      const describe = { kind: 'describe', name: 'release-docs' } as const;
+      const named = { ...made.config, workflows: { tools: { default: 'codex' } } };
+      expect(await made.call(describe, { config: named })).toMatchObject({ data: { describe: { ask: { start: 'teamai workflow start release-docs --driver local' } } } });
+      expect(await made.call(describe, { tool: 'codebuddy' })).toMatchObject({ data: { describe: { ask: { start: 'teamai workflow start release-docs --driver local' } } } });
+      expect(await made.call({ kind: 'start', name: 'release-docs', answers: { confirmed: false }, inputs: undefined })).toMatchObject({ error: {
+        code: 'needs_local_driver', message: expect.stringContaining('Ask the person to run teamai workflow start release-docs --driver local --tools default=claude in their own terminal.'),
+      } });
+      return made.rows;
+    },
+  },
+  {
     name: 'a workflow whose held step works in the copy of a step this driver takes is routed to the local driver',
     rows: ['R2', 'R8'],
     run: async () => {
       const made = await harness({ 'release-docs': RELEASE_DOCS });
-      expect(await made.call({ kind: 'describe', name: 'release-docs' })).toMatchObject({ data: { describe: { ask: { kind: 'local', start: 'teamai workflow start release-docs --driver local' } } } });
+      expect(await made.call({ kind: 'describe', name: 'release-docs' })).toMatchObject({ data: { describe: { ask: { kind: 'local', start: 'teamai workflow start release-docs --driver local --tools default=claude' } } } });
       expect(await made.call({ kind: 'start', name: 'release-docs', answers: { confirmed: false }, inputs: undefined })).toMatchObject({ error: { code: 'needs_local_driver', next: null } });
       return made.rows;
     },

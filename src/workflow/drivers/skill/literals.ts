@@ -55,14 +55,19 @@ export function startLiteral(invocation: Invocation, name: string, options: { pa
   ].join(' '));
 }
 
-/** Starts `name` with the local driver: shown to the person, never run by the agent. */
-export function localStartLiteral(invocation: Invocation, name: string): Literal {
-  return LiteralSchema.parse(`${invocation} workflow start ${name} --driver local`);
+/** `--tools default=<tool>`, when `tool` is the prompt tool a local run must be told (`localPromptTool`). */
+function toolsWords(tool: string | undefined): string[] {
+  return tool !== undefined ? [`--tools default=${shellWord(tool)}`] : [];
 }
 
-/** Continues `run` with the local driver: shown to the person for their own terminal, never run by the agent. */
-export function resumeLiteral(invocation: Invocation, run: string): Literal {
-  return LiteralSchema.parse(`${invocation} workflow resume ${run}`);
+/** Starts `name` with the local driver: shown to the person, never run by the agent. `tool`: its prompt tool. */
+export function localStartLiteral(invocation: Invocation, name: string, options: { tool?: string } = {}): Literal {
+  return LiteralSchema.parse([`${invocation} workflow start ${name} --driver local`, ...toolsWords(options.tool)].join(' '));
+}
+
+/** Continues `run` with the local driver: shown to the person for their own terminal, never run by the agent. `tool`: its prompt tool. */
+export function resumeLiteral(invocation: Invocation, run: string, options: { tool?: string } = {}): Literal {
+  return LiteralSchema.parse([`${invocation} workflow resume ${run}`, ...toolsWords(options.tool)].join(' '));
 }
 
 export function nextLiteral(invocation: Invocation, run: string): Literal {
