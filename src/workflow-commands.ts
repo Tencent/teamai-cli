@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { z } from 'zod';
 import { autoDetectInit, loadLocalConfigForScope, loadTeamConfig } from './config.js';
 import { resolveWorkflowEnv, type WorkflowEnv } from './env-resolution.js';
 import { isLeaseRef } from './scorers/entry.js';
@@ -218,6 +219,53 @@ export async function workflowStart(name: string, options: {
   writeEnvelope(await runLocalDriver(config, runId, process.cwd(), { tools, toolPaths: teamConfig.toolPaths, autoApprove: options.autoApprove }), secrets);
 }
 
+/** Refuses `--driver <kind>` on `command`, which takes only `--driver skill`, naming the kind given. */
+function refusedDriverFlag(command: 'next' | 'report'): z.ZodUndefined {
+  return z.undefined({ errorMap: (_issue, ctx) => ({ message: `${command} takes --driver skill, not --driver ${String(ctx.data)}` }) });
+}
+
+/**
+ * The flags of `workflow next` for a driver that sends `--json`: `--prepare`, with `--attempt` for an attempt already
+ * leased to it and `--adopt` for the place its host made. The skill driver's flags are refused, the first given in
+ * this order.
+ */
+const JsonNextOptionsSchema = z.object({
+  driver: refusedDriverFlag('next'),
+  wait: z.boolean().optional().refine((given) => !given, '--wait needs --driver skill'),
+  takeover: z.boolean().optional().refine((given) => !given, '--takeover needs --driver skill'),
+  choice: z.undefined({ invalid_type_error: '--choice needs --driver skill' }),
+  ack: z.undefined({ invalid_type_error: '--ack needs --driver skill' }),
+  json: z.string().optional(),
+  prepare: z.boolean().optional(),
+  attempt: z.string().optional(),
+  adopt: z.string().optional(),
+}).superRefine((options, ctx) => {
+  if (options.adopt !== undefined && options.attempt === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, message: '--adopt needs --attempt, the attempt whose place the host made' });
+  else if (options.attempt !== undefined && !options.prepare) ctx.addIssue({ code: z.ZodIssueCode.custom, message: '--attempt needs --prepare' });
+}).transform((options, ctx): { json?: string; prepare?: NextPrepare } => {
+  const json = options.json !== undefined ? { json: options.json } : {};
+  if (options.attempt === undefined) return { ...json, ...(options.prepare ? { prepare: true } : {}) };
+  const attempt = AttemptIdSchema.safeParse(options.attempt);
+  if (!attempt.success) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: `--attempt takes the attempt of a lease, such as a1b2c3d4e; got ${options.attempt}` });
+    return z.NEVER;
+  }
+  return { ...json, prepare: { attempt: attempt.data, ...(options.adopt !== undefined ? { adopt: path.resolve(options.adopt) } : {}) } };
+});
+
+/** The flags of `workflow report` for a driver that sends `--json`. The skill driver's flags are refused. */
+const JsonReportOptionsSchema = z.object({
+  driver: refusedDriverFlag('report'),
+  attempt: z.undefined({ invalid_type_error: '--attempt needs --driver skill' }),
+  modelUnavailable: z.boolean().optional().refine((given) => !given, '--model-unavailable needs --driver skill'),
+  json: z.string().optional(),
+});
+
+/** Answers the first issue of a `--json` driver's flags, as `invalid_arguments`. */
+function refuseOptions(error: z.ZodError): void {
+  writeEnvelope({ error: { code: 'invalid_arguments', message: error.issues[0]?.message ?? 'invalid options' } }, collectEnvSecrets());
+}
+
 export async function workflowNext(runId: string, options: {
   json?: string; prepare?: boolean; attempt?: string; adopt?: string; driver?: string; wait?: boolean; takeover?: boolean; choice?: string; ack?: string;
 }): Promise<void> {
@@ -228,26 +276,13 @@ export async function workflowNext(runId: string, options: {
     return;
   }
   setStderrOnly(true);
-  const skillOnly = options.wait ? '--wait needs --driver skill'
-    : options.takeover ? '--takeover needs --driver skill'
-      : options.choice !== undefined ? '--choice needs --driver skill'
-        : options.ack !== undefined ? '--ack needs --driver skill' : undefined;
-  const prepareOnly = options.adopt !== undefined && options.attempt === undefined ? '--adopt needs --attempt, the attempt whose place the host made'
-    : options.attempt !== undefined && !options.prepare ? '--attempt needs --prepare' : undefined;
-  const refused = kind !== undefined ? `next takes --driver skill, not --driver ${kind}` : skillOnly ?? prepareOnly;
-  if (refused !== undefined) {
-    writeEnvelope({ error: { code: 'invalid_arguments', message: refused } }, collectEnvSecrets());
+  const parsedOptions = JsonNextOptionsSchema.safeParse(options);
+  if (!parsedOptions.success) {
+    refuseOptions(parsedOptions.error);
     return;
   }
-  const attempt = options.attempt === undefined ? undefined : AttemptIdSchema.safeParse(options.attempt);
-  if (attempt && !attempt.success) {
-    writeEnvelope({ error: { code: 'invalid_arguments', message: `--attempt takes the attempt of a lease, such as a1b2c3d4e; got ${options.attempt}` } }, collectEnvSecrets());
-    return;
-  }
-  const prepare: NextPrepare | undefined = attempt
-    ? { attempt: attempt.data, ...(options.adopt !== undefined ? { adopt: path.resolve(options.adopt) } : {}) }
-    : options.prepare ? true : undefined;
-  const payload = readJson(options.json, 'Pass --json with a driver object');
+  const { prepare } = parsedOptions.data;
+  const payload = readJson(parsedOptions.data.json, 'Pass --json with a driver object');
   if (!payload.ok) {
     writeEnvelope(payload.envelope, collectEnvSecrets());
     return;
@@ -273,18 +308,16 @@ export async function workflowReport(runId: string, options: { json?: string; dr
     return;
   }
   setStderrOnly(true);
-  const skillOnly = options.attempt !== undefined ? '--attempt needs --driver skill'
-    : options.modelUnavailable ? '--model-unavailable needs --driver skill' : undefined;
-  const refused = kind !== undefined ? `report takes --driver skill, not --driver ${kind}` : skillOnly;
-  if (refused !== undefined) {
-    writeEnvelope({ error: { code: 'invalid_arguments', message: refused } }, collectEnvSecrets());
+  const parsedOptions = JsonReportOptionsSchema.safeParse(options);
+  if (!parsedOptions.success) {
+    refuseOptions(parsedOptions.error);
     return;
   }
   if (isLeaseRef(runId)) {
     writeEnvelope({ error: { code: 'judge_lease', message: `${runId} is a judge lease, which workflow report does not settle. Submit its answer with: teamai score --lease ${runId} --submit --stdin` } }, collectEnvSecrets());
     return;
   }
-  const payload = readJson(options.json, 'Pass --json with attempt, revision, outcome, and driver');
+  const payload = readJson(parsedOptions.data.json, 'Pass --json with attempt, revision, outcome, and driver');
   if (!payload.ok) {
     writeEnvelope(payload.envelope, collectEnvSecrets());
     return;
