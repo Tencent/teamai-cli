@@ -114,8 +114,9 @@ export interface PersonAction {
 }
 
 /**
- * Only steps held from this driver are left, and nothing of the run is open: the person continues the run with the
- * local driver. The agent shows `run` and never runs it, and the turn has no `then`, so its loop ends here.
+ * Only steps held from this driver are left, and nothing of the run is open but a gate the turn shows: the person
+ * continues the run with the local driver. The agent shows `run` and never runs it, and the turn has no `then`, so its
+ * loop ends here.
  */
 export interface HandoffAction {
   kind: 'person';
@@ -339,7 +340,7 @@ function actionsOf(state: SkillState): Action[] {
 function handoffOf(state: SkillState, waiting: { reason: string; held: NonNullable<Waiting['held']> }, localTool: string | undefined): HandoffAction {
   return {
     kind: 'person', why: 'handoff', held: waiting.held,
-    message: `Run ${state.run} waits on steps this coding session cannot run: ${waiting.reason}. Nothing else of the run is open.`,
+    message: `Run ${state.run} waits on steps this coding session cannot run: ${waiting.reason}.${state.gate ? '' : ' Nothing else of the run is open.'}`,
     say: `This session can take the run no further. To continue it with the local driver, run this command in your own terminal, from ${state.driver.workspace}.`,
     run: [resumeLiteral(state.invocation, state.run, { tool: localTool })],
   };

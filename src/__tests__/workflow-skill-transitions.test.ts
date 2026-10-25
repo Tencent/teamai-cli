@@ -302,6 +302,25 @@ steps:
     prompt: Tell the team the package is out.
 `;
 
+// An approval, then a step this driver is held from: answering the approval leaves only that step.
+const SHIP_AFTER = `schemaVersion: v1alpha1
+name: ship
+description: Ship once the person agrees, then tell the team
+invoke: allow
+steps:
+  - id: go
+    approve: { message: Ship it?, required: true }
+  - id: notify
+    needs: [go]
+    requires: { env: [SLACK_TOKEN] }
+    prompt: Tell the team the package is out.
+`;
+
+const SHIP_OPTIONAL = SHIP_AFTER.replace('approve: { message: Ship it?, required: true }', 'approve: Ship it?');
+
+// An approval beside a step this driver is held from: the engine answers the held step first.
+const SHIP_BESIDE = SHIP_AFTER.replace('needs: [go]', 'needs: []');
+
 // CI builds, and leaves the API and the UI, which a coding session writes, to whoever continues the run.
 const HANDED = `schemaVersion: v1alpha1
 name: handed
@@ -546,6 +565,42 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       await turnOf(await made.call({ kind: 'respond', run, step: 'plan-review', choice: 'yes', pass: 1 }));
       const again = await turnOf(await made.call({ kind: 'respond', run, step: 'plan-review', choice: 'yes', pass: 1 }));
       expect(again.actions.filter((action) => action.kind === 'choose')).toEqual([]);
+      return made.rows;
+    },
+  },
+  {
+    name: 'an approval the person answered from their terminal leaves the turn once only a held step is left, required or optional, and the agent\'s late answer to it too',
+    rows: ['D10', 'D11', 'D14', 'D27', 'H5', 'H1'],
+    run: async () => {
+      vi.stubEnv('SLACK_TOKEN', 'slack-value-1304');
+      const person = respondProvenance({ kind: 'terminal', caller: { tty: true, evidence: { kind: 'none' } } });
+      const required = await harness({ ship: SHIP_AFTER });
+      const asked = await chosen(required, 'ship', 1);
+      expect(asked.actions).toEqual([expect.objectContaining({ kind: 'person', why: 'approval', step: 'go' })]);
+      expect(await respondToHitl(required.config, asked.run, required.context.env.secrets, { step: 'go', choice: 'yes', pass: 1, provenance: person })).not.toHaveProperty('error');
+      const handed = await turnOf(await required.call({ kind: 'next', run: asked.run, wait: false }));
+      expect(handed.actions).toEqual([expect.objectContaining({ kind: 'person', why: 'handoff', message: expect.stringMatching(/Nothing else of the run is open\.$/) })]);
+
+      const optional = await harness({ ship: SHIP_OPTIONAL });
+      const { run } = await turnOf(await optional.call({ kind: 'start', name: 'ship', answers: { confirmed: false, hitl: 'person' }, inputs: undefined }));
+      expect((await turnOf(await optional.call({ kind: 'choose', run, choice: 'h1' }))).actions).toEqual([expect.objectContaining({ kind: 'choose', about: 'gate', step: 'go' })]);
+      expect(await respondToHitl(optional.config, run, optional.context.env.secrets, { step: 'go', choice: 'yes', pass: 1, provenance: person })).not.toHaveProperty('error');
+      const late = await turnOf(await optional.call({ kind: 'respond', run, step: 'go', choice: 'yes', pass: 1 }));
+      expect(late.actions).toEqual([expect.objectContaining({ kind: 'person', why: 'handoff' })]);
+      return [...required.rows, ...optional.rows];
+    },
+  },
+  {
+    name: 'a required approval beside a held step still reaches the person, beside the handoff, which no longer says nothing else is open',
+    rows: ['D14', 'D27', 'D10'],
+    run: async () => {
+      vi.stubEnv('SLACK_TOKEN', 'slack-value-1304');
+      const made = await harness({ ship: SHIP_BESIDE });
+      const turn = await chosen(made, 'ship', 1);
+      expect(turn.actions).toEqual([
+        expect.objectContaining({ kind: 'person', why: 'approval', step: 'go', run: [`teamai workflow respond ${turn.run} go yes --pass 1`, `teamai workflow respond ${turn.run} go no --pass 1`] }),
+        expect.objectContaining({ kind: 'person', why: 'handoff', held: [{ step: 'notify', missing: ['env'] }], message: expect.not.stringContaining('Nothing else') }),
+      ]);
       return made.rows;
     },
   },

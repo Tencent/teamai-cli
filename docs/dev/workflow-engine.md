@@ -113,6 +113,7 @@ Test parsing through `parseWorkflow` and `syncWorkflowDefinitions`. Test the eng
 | D13 | drive | reply wait | it lists `delivering` | none | drive | waiting `delivering` in each turn that ticked, polls' included; `then: poll` |
 | D14 | drive | reply wait | it lists `held`, and no attempt is open | none | drive | `person why:handoff` with the person's `teamai workflow resume <run>` literal, with `--tools default=<session tool>` when `localPromptTool` names one; waiting `held`; no `then` |
 | D15 | drive | reply wait | | none | drive | waiting |
+| D27 | drive | reply wait, after its row | it lists `held`, and no reply of this tick came to a `next` that took no lease | engine `next` as D1, with `canTakeLease: false`, since the engine answers a held step before a gate; H5, then D10 to D12 for a gate, take its reply | drive | |
 | D16 | drive | reply done | | `seq` := seq + 1, so every session has the end to see | done | `done {outcome, failure, prs, judging}` |
 | D17 | drive | reply error | | none | drive | error with the engine's code, next: the next literal |
 | D18 | drive | a foreground call | it spawned runners | release the lock; wait up to `WAIT_GRACE_MS` for them, re-taking the lock per check | drive | |

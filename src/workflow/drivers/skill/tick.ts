@@ -17,7 +17,7 @@ import {
 import { ceilingOf, localPromptTool, localReason } from './preflight.js';
 import { newSkillState, readSkillState, writeSkillState, type AttemptState, type ReportBody, type SkillState, type TurnEvent } from './skill-state.js';
 import {
-  ackRow, adoptRow, callRow, cancelledRow, chooseRow, doneRow, gateCheckRow, graceRow, hasSlot, judgeFreeRow, judgeTickRow, lockBusyRow, pollRow, readiedRow, reopenedRow, replyRow,
+  ackRow, adoptRow, callRow, cancelledRow, chooseRow, doneRow, gateCheckRow, graceRow, hasSlot, heldProbeRow, judgeFreeRow, judgeTickRow, lockBusyRow, pollRow, readiedRow, reopenedRow, replyRow,
   reportCallRow, reportedRow, reportRow, resendRow, respondedRow, runnerFreeRow, scoreReplyRow, tickRow, turnRow, unqueueRow, unseenEvents, type Answer,
   type Effect, type MovedWithEffects, type ResumeAnswers, type RowId, type TickTurn, type TurnAnswer,
 } from './transitions.js';
@@ -162,7 +162,8 @@ async function attemptCheckRow(context: SkillContext, state: SkillState, open: A
  * The steps' tick: sends the reports a crash left stored, respawns runners that are gone and gives up the attempts a
  * gone runner was stopping, then, while the run drives, calls `next` while a lease comes back and a slot is free, once
  * more when a reply to a `next` with no slot freed one (D2), and once more after the last lease while a gate is
- * journalled: with no slot, that reply says whether the gate still waits. A run that is done gets one `next` with no
+ * journalled: with no slot, that reply says whether the gate still waits. A wait that holds a step gets that `next`
+ * with no slot too (D27), as the engine answers a held step before a gate. A run that is done gets one `next` with no
  * slot, whose reply says whether the engine reopened it; a reopened run then ticks as one that drives. Each reply's
  * reopen check, its `cancelled`, then its gate check, are taken before the reply itself. A runner's check
  * (`role: 'runner'`) takes no lease.
@@ -187,10 +188,11 @@ async function stepTick(context: SkillContext, lock: RunLock, start: SkillState,
     if (!('request' in ticked)) return { state, spawned };
     const { request } = ticked;
     probed = probed || !request.canTakeLease;
-    const answer = await context.client.next(state.run, {
+    const body = {
       driver: { ...state.driver, can: canFor(state.host.kind === 'chosen' ? state.host.id : undefined) }, running: request.running, canTakeLease: request.canTakeLease,
       ...(request.autoApprove ? { autoApprove: true } : {}),
-    });
+    };
+    const answer = await context.client.next(state.run, body);
     const at = context.now().toISOString();
     const { reply, cancelled } = engineReply(state.run, answer);
     state = traced(context, reopenedRow(state, reply))?.state ?? state;
@@ -203,6 +205,16 @@ async function stepTick(context: SkillContext, lock: RunLock, start: SkillState,
     }
     state = replied.state;
     await apply(replied.effects);
+    if (!probed && traced(context, heldProbeRow(reply))) {
+      probed = true;
+      const probe = engineReply(state.run, await context.client.next(state.run, { ...body, canTakeLease: false })).reply;
+      state = traced(context, gateCheckRow(state, probe))?.state ?? state;
+      const asked = probe.kind === 'hitl' ? traced(context, replyRow(state, { reply: probe, at })) : undefined;
+      if (asked && 'state' in asked) {
+        state = asked.state;
+        await apply(asked.effects);
+      }
+    }
     const leased = reply.kind === 'lease';
     // A cancel in this reply gave up an attempt that waited, so a slot the request had no room for is free now.
     const freed = !request.canTakeLease && role === 'call' && hasSlot(state);
