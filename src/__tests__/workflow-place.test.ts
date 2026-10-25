@@ -374,7 +374,28 @@ steps:
     expect(hooks()).toBe('');
   });
 
-  it('keeps a place whose setup failed, with the branch agent files back', async () => {
+  it.each([
+    { end: 'fails', report: (f: Awaited<ReturnType<typeof fixture>>, lease: { attempt: string; revision: number }) => f.client.report(f.runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'failed', message: 'broke', driver: f.driver }), answer: { data: { accepted: true } } },
+    {
+      end: 'is cancelled',
+      report: async (f: Awaited<ReturnType<typeof fixture>>, lease: { attempt: string; revision: number }) => {
+        await f.client.cancel(f.runId);
+        return f.client.report(f.runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: f.driver });
+      },
+      answer: { error: { code: 'lease_cancelled' } },
+    },
+  ])('leaves a place the host made with its own hooks when its step $end', async ({ report, answer }) => {
+    const f = await fixture();
+    const lease = await leased(f);
+    const dir = lease.host('ended', '--detach');
+    const hooks = (): string => git(dir, 'config', '--worktree', '--default', '', '--get', 'core.hooksPath');
+    expect(await f.client.next(f.runId, body(f), { prepare: { attempt: lease.attempt, adopt: dir } })).toMatchObject({ data: { lease: { cwd: dir } } });
+    expect(hooks()).not.toBe('');
+    expect(await report(f, lease)).toMatchObject(answer);
+    expect(hooks()).toBe('');
+  });
+
+  it('keeps a place whose setup failed, with the branch agent files back and its own hooks', async () => {
     const f = await fixture(SETUP('exit 3'));
     const lease = await leased(f);
     const dir = lease.host('failing', '-b', lease.workspace.branch);
@@ -383,6 +404,7 @@ steps:
     expect(await f.client.next(f.runId, body(f), { prepare: { attempt: lease.attempt, adopt: dir } })).toMatchObject({ error: { code: 'setup_failed' } });
     expect(fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf8')).toBe('Host instructions.\n');
     expect(git(dir, 'status', '--porcelain')).toBe('');
+    expect(git(dir, 'config', '--worktree', '--default', '', '--get', 'core.hooksPath')).toBe('');
   });
 
   it('refuses a place whose setup was cut short until the host makes it again, and checks the setup of the new one from the start', async () => {

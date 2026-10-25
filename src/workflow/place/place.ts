@@ -168,8 +168,10 @@ export async function preparePlace(input: { config: LocalConfig; lock: RunLock; 
   const goesOn = !reopened && hosted !== undefined && await adoptRefusal({ root, run, recorded, lease, adopt: hosted, hosted }) === undefined;
   const adopt = asked ?? (goesOn ? hosted : undefined);
   const opened = await openCopy({ config, base, lease, workspace, reopened, adopt, hosted });
-  if ('code' in opened) return { kind: 'failed', failure: opened };
-  return stageRole({ config, base, lease, workspace, ...opened });
+  const prepared: PlacePrepared = 'code' in opened ? { kind: 'failed', failure: opened } : await stageRole({ config, base, lease, workspace, ...opened });
+  // The step does not run in a place the host made whose prepare failed, so the host's own hooks run there again.
+  if (prepared.kind === 'failed' && adopt !== undefined) await clearWorktreeHooks(adopt);
+  return prepared;
 }
 
 /** The place a prepare recorded for the attempt before, unless it gave the place up or left its git undone. */
@@ -333,8 +335,10 @@ async function giveUpSetup(config: LocalConfig, record: Extract<PlaceRecord, { p
   const { place, dir } = record;
   const { overlay } = placeFiles(config, record.run, record.attempt);
   let unrestored: string | undefined;
-  if (record.adopted && place.role !== 'checkout') unrestored = await restoreOverlay({ dir, configCommit: place.workspace.configCommit, saved: overlay });
-  else await removeWorktree(record.root, dir);
+  if (record.adopted && place.role !== 'checkout') {
+    unrestored = await restoreOverlay({ dir, configCommit: place.workspace.configCommit, saved: overlay });
+    await clearWorktreeHooks(dir);
+  } else await removeWorktree(record.root, dir);
   await fs.rm(overlay, { recursive: true, force: true });
   const abandoned: PlaceRecord = { ...baseOf(record), phase: 'abandoned', at: new Date().toISOString() };
   await writePlaceRecord(config, abandoned);
@@ -374,6 +378,8 @@ export async function finishPlace(input: { config: LocalConfig; lock: RunLock; a
   }
   const finished = await finishRole(placeFiles(config, run, attempt), recorded, end);
   await writePlaceRecord(config, { ...baseOf(recorded), phase: 'finished', at: new Date().toISOString(), finished: PlaceFinishedSchema.parse(redactJson(finished, secrets)) });
+  // Once the step's work is committed, the host's own hooks run again in a place it made.
+  if (recorded.adopted) await clearWorktreeHooks(recorded.dir);
   return finished;
 }
 
@@ -448,16 +454,23 @@ export async function abandonPlace(input: { config: LocalConfig; lock: RunLock; 
   const { config, lock: { run }, attempt } = input;
   const read = await readPlaceRecord(config, run, attempt);
   const recorded = read.kind === 'found' ? read.record : undefined;
+  if (!recorded || recorded.phase === 'finished' || recorded.phase === 'abandoned') return undefined;
+  const { dir } = recorded;
+  // Once the place is put back, the host's own hooks run again in a place it made.
+  const left = async (unrestored: string | undefined): Promise<string | undefined> => {
+    if (recorded.adopted) await clearWorktreeHooks(dir);
+    return unrestored && unrestoredConfig(unrestored, dir);
+  };
   // A prepare cut short in git put nothing over the copy, and the next prepare of the attempt goes on from its record.
-  if (!recorded || recorded.phase === 'opening' || recorded.phase === 'finished' || recorded.phase === 'abandoned') return undefined;
+  if (recorded.phase === 'opening') return left(undefined);
   const files = placeFiles(config, run, attempt);
-  const { place, dir } = recorded;
+  const { place } = recorded;
   const abandoned: PlaceRecord = { ...baseOf(recorded), phase: 'abandoned', at: new Date().toISOString() };
   if (recorded.phase === 'preparing') {
     // No step ran over an overlay a killed prepare left, so that overlay is all there is to put back.
     const unrestored = await restoreOverlay({ dir, configCommit: recorded.place.workspace.configCommit, saved: files.overlay, unfinished: true });
     await writePlaceRecord(config, abandoned);
-    return unrestored && unrestoredConfig(unrestored, dir);
+    return left(unrestored);
   }
   let unrestored: string | undefined;
   switch (place.role) {
@@ -477,7 +490,7 @@ export async function abandonPlace(input: { config: LocalConfig; lock: RunLock; 
     }
   }
   await writePlaceRecord(config, abandoned);
-  return unrestored && unrestoredConfig(unrestored, dir);
+  return left(unrestored);
 }
 
 /** Whether `preparePlace` recorded a place for `attempt`, readable or not. */
@@ -487,16 +500,12 @@ export async function placeRecorded(input: { config: LocalConfig; run: RunId; at
 
 /**
  * After an accepted success with `cleanup`: removes the worktree prepare created. A step in the checkout leaves it, and
- * so does one in a place the host made, a reader's included, whose own hooks run there again.
+ * so does one in a place the host made, a reader's included.
  */
 export async function releasePlace(input: { config: LocalConfig; lock: RunLock; attempt: AttemptId }): Promise<'removed' | 'left'> {
   const read = await readPlaceRecord(input.config, input.lock.run, input.attempt);
   const recorded = read.kind === 'found' ? read.record : undefined;
-  if (!recorded || recorded.phase === 'opening' || recorded.place.role === 'checkout') return 'left';
-  if (recorded.adopted) {
-    await clearWorktreeHooks(recorded.dir);
-    return 'left';
-  }
+  if (!recorded || recorded.phase === 'opening' || recorded.place.role === 'checkout' || recorded.adopted) return 'left';
   await removeWorktree(recorded.root, recorded.dir);
   return 'removed';
 }
