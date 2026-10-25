@@ -5,9 +5,9 @@ export default defineConfig({
     globalSetup: ['src/__tests__/helpers/assert-safe-tmpdir.ts'],
     include: ['src/__tests__/**/*.test.ts'],
     exclude: ['src/__tests__/e2e/**', 'src/__tests__/*-e2e.test.ts'],
-    // Applied before setupFiles: clear-agent-session-env.ts must remove both,
+    // Applied before setupFiles: clear-agent-session-env.ts must remove each,
     // which workflow-test-env.test.ts checks.
-    env: { CLAUDE_CODE_SESSION_ID: 'seeded-by-vitest-config', TEAMAI_WORKFLOW_ATTEMPT: 'seeded-by-vitest-config' },
+    env: { CLAUDE_CODE_SESSION_ID: 'seeded-by-vitest-config', TEAMAI_WORKFLOW_ATTEMPT: 'seeded-by-vitest-config', TEAMAI_MODE: 'unattended', CI: 'seeded-by-vitest-config' },
     // isolate-home first: the other setup file imports modules that build
     // home paths at load time.
     setupFiles: [
