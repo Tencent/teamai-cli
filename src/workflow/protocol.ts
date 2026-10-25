@@ -14,7 +14,7 @@ import {
   abandonPlace, adoptedPlaceOf, finishPlace, placeHeldBy, placeLeaseOf, placeOf, placeRecorded, preparePlace, releasePlace, runPlaceSetup, type PlaceLease, type PlacePrepared,
   type StepEnd,
 } from './place/place.js';
-import { cancelRun, respondProvenance, respondToHitl, retryStep, type CallerProvenance } from './run-controls.js';
+import { cancelRun, respondProvenance, respondToHitl, retryStep, type CallerProvenance, type Via } from './run-controls.js';
 import { nextJudgeLease, parseJudgeRequest, runJudgeLease } from './scoring.js';
 import { AttemptIdSchema, readRun, RunIdSchema, withRunLock, type AttemptId, type RunId, type RunLock } from './store.js';
 import type { DriverCan } from './requirements.js';
@@ -28,7 +28,7 @@ import { headCommit } from './worktree.js';
  */
 export type RespondVia =
   | { kind: 'process'; caller: CallerProvenance; json?: unknown }
-  | { kind: 'skill'; driver: DriverIdentity };
+  | Extract<Via, { kind: 'skill' }>;
 
 /**
  * The protocol as one client, in process or through the built CLI. A report made with the run's `RunLock` does not take
