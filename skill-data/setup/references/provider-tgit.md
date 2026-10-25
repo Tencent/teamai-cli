@@ -89,7 +89,7 @@ its own once they do. Confirm with
 There is no headless substitute for this step: a `TGIT_TOKEN` Personal Access
 Token reaches the git.woa.com REST API only, and the git endpoint rejects it, so
 `init` cannot clone with it. Run the login once on the machine (interactively);
-later unattended runs reuse the credential it stores.
+later non-interactive runs reuse the credential it stores.
 
 ## When you `teamai init` on TGit
 

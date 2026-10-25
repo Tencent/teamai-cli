@@ -91,7 +91,7 @@ teamai init your-org/your-repo
 # when not logged in, runs gh auth login --web (interactive terminals only)
 ```
 
-An unattended run (stdin is not a TTY, or `CI` / `TEAMAI_NONINTERACTIVE` is set) does not start that login: nobody would complete the browser device flow and the job would hang until it timed out ([#711](https://github.com/Tencent/teamai-cli/issues/711)). `init` fails at once and asks you to export a `GITHUB_TOKEN` (or `GH_TOKEN`) with the `repo` scope.
+A non-interactive run (stdin is not a TTY, or `CI` / `TEAMAI_NONINTERACTIVE` is set) does not start that login: nobody would complete the browser device flow and the job would hang until it timed out ([#711](https://github.com/Tencent/teamai-cli/issues/711)). `init` fails at once and asks you to export a `GITHUB_TOKEN` (or `GH_TOKEN`) with the `repo` scope.
 
 **Option 2: the `GITHUB_TOKEN` environment variable**
 
@@ -120,7 +120,7 @@ Teammates need permission to push branches and to open pull requests. Leave the 
 
 `teamai init` downloads the Gongfeng CLI `gf` to `~/.teamai/gf/` and, in an interactive terminal, runs `gf auth login` (iOA SSO, browser device code or a manual token). The token lands in `~/.netrc` and every later git operation carries it.
 
-An unattended run (stdin is not a TTY, or `CI` / `TEAMAI_NONINTERACTIVE` is set) does not start that login; it fails at once and asks you to run `gf auth login` once in an interactive terminal ([#711](https://github.com/Tencent/teamai-cli/issues/711)). There is no substitute token here: `TGIT_TOKEN` is only for the REST API, the git endpoints of git.woa.com do not accept it, so it cannot clone. After one login, unattended runs reuse the saved credentials.
+A non-interactive run (stdin is not a TTY, or `CI` / `TEAMAI_NONINTERACTIVE` is set) does not start that login; it fails at once and asks you to run `gf auth login` once in an interactive terminal ([#711](https://github.com/Tencent/teamai-cli/issues/711)). There is no substitute token here: `TGIT_TOKEN` is only for the REST API, the git endpoints of git.woa.com do not accept it, so it cannot clone. After one login, non-interactive runs reuse the saved credentials.
 
 ### Default email domain
 
@@ -141,7 +141,7 @@ cnb login --host cnb.cool   # OAuth2 device flow; afterwards `cnb git-credential
 teamai init https://cnb.cool/your-org/your-repo
 ```
 
-> **Why `--host`**: without an explicit host, the `cnb` CLI infers the platform address from the first git remote of the current directory. Running `cnb login` inside a repo whose remote points at a non-CNB platform (an internal git server, say) sends the request to that host and gets a `401`. An explicit `--host cnb.cool` avoids that; a self-hosted instance uses its own domain. When `teamai init` starts the login itself, it already passes `--host` from `TEAMAI_CNB_HOST` (default `cnb.cool`). That automatic login happens only in an interactive terminal; an unattended run fails at once and asks for `CNB_TOKEN` (option 2, [#711](https://github.com/Tencent/teamai-cli/issues/711)).
+> **Why `--host`**: without an explicit host, the `cnb` CLI infers the platform address from the first git remote of the current directory. Running `cnb login` inside a repo whose remote points at a non-CNB platform (an internal git server, say) sends the request to that host and gets a `401`. An explicit `--host cnb.cool` avoids that; a self-hosted instance uses its own domain. When `teamai init` starts the login itself, it already passes `--host` from `TEAMAI_CNB_HOST` (default `cnb.cool`). That automatic login happens only in an interactive terminal; a non-interactive run fails at once and asks for `CNB_TOKEN` (option 2, [#711](https://github.com/Tencent/teamai-cli/issues/711)).
 
 **Option 2: the `CNB_TOKEN` environment variable (headless / CI)**
 
