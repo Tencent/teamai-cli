@@ -21,6 +21,9 @@ export function untilStopped(stopped: () => void): CommandRun {
   return { exit, stop: async () => { stopped(); end({ exitCode: 143, stdout: '', stderr: '', output: '' }); return exit; } };
 }
 
+/** A crash a test injects: the call or the runner that throws it stops there, as a process killed at that point does. */
+export class Crash extends Error {}
+
 /** How many turns a settle waits for a runner to park before it fails, naming the runner, instead of hanging. */
 const SETTLE_TURNS = 5_000;
 /** How long a settle waits for a real command to exit on its own. */
@@ -31,29 +34,40 @@ const COMMAND_EXIT_MS = 10_000;
  * `report --driver skill --attempt` call the detached process makes, and it parks at each run lock it takes and each
  * sleep until the next `sleep` of the session, so a test sees each phase a real runner passes through: preparing, then
  * running, then reported. A command runs for real, and a session's sleep waits for it to exit; a test fakes one that
- * runs until it is stopped.
+ * runs until it is stopped. A runner that throws `Crash` is gone, as a killed one is; any other error fails the next sleep.
  */
-function memoryRunners(command: Runners['command']): { runners: Runners; now: () => Date; bind(context: SkillContext): void; hold(held: boolean): void } {
+function memoryRunners(command: Runners['command']): {
+  runners: Runners; now: () => Date; bind(context: SkillContext): void; hold(held: boolean): void; crash(run: string, attempt: string): boolean;
+} {
   let clock = Date.now();
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(clock);
   onTestFinished(() => { vi.useRealTimers(); });
   let held = false;
   let base: SkillContext | undefined;
+  /** Every runner still going, by its own id, `<run>/<attempt>#<n>`. A runner spawned again gets a new id. */
   const live = new Map<string, Promise<unknown>>();
-  /** What lets each parked runner go on, by runner. */
-  const parked = new Map<string, () => void>();
+  let spawned = 0;
+  /** What lets each parked runner go on, or makes it crash, by runner. */
+  const parked = new Map<string, { resume: () => void; crash: () => void }>();
+  /** The attempts, `<run>/<attempt>`, whose runners crash where they are parked at the next sleep. */
+  const doomed = new Set<string>();
+  const failures: unknown[] = [];
+  const attemptOf = (id: string): string => id.slice(0, id.lastIndexOf('#'));
   /** Every real command still running, by what it runs. */
   const commands = new Map<Promise<unknown>, string>();
-  const park = (key: string, signal?: AbortSignal): Promise<void> => new Promise<void>((resolve) => {
-    parked.set(key, resolve);
+  const park = (id: string, signal?: AbortSignal): Promise<void> => new Promise<void>((resolve, reject) => {
+    const entry = { resume: resolve, crash: () => { reject(new Crash(`the runner ${id} crashed`)); } };
+    parked.set(id, entry);
     signal?.addEventListener('abort', () => {
-      if (parked.get(key) === resolve) parked.delete(key);
+      if (parked.get(id) === entry) parked.delete(id);
       resolve();
     }, { once: true });
   });
   const settle = async (): Promise<void> => {
     for (let turn = 0; ; turn += 1) {
+      const [failure] = failures.splice(0);
+      if (failure !== undefined) throw failure;
       if (commands.size > 0) {
         let timer: NodeJS.Timeout | undefined;
         const late = new Promise<'late'>((resolve) => { timer = setTimeout(() => resolve('late'), COMMAND_EXIT_MS); });
@@ -61,8 +75,8 @@ function memoryRunners(command: Runners['command']): { runners: Runners; now: ()
         clearTimeout(timer);
         if (exited === 'late') throw new Error(`${[...commands.values()].join('; ')} did not exit within ${COMMAND_EXIT_MS} ms. Fake a command that runs until it is stopped with the harness's runners option.`);
       }
-      const moving = [...live.keys()].filter((key) => !parked.has(key));
-      if (moving.length === 0 && commands.size === 0 && turn > 0) return;
+      const moving = [...live.keys()].filter((id) => !parked.has(id));
+      if (moving.length === 0 && commands.size === 0 && turn > 0 && failures.length === 0) return;
       if (turn >= SETTLE_TURNS) throw new Error(`The runner of ${moving.join(', ')} neither parked at a lock or a sleep nor ended within ${SETTLE_TURNS} turns: it loops without waiting.`);
       await new Promise((resolve) => { setTimeout(resolve, 1); });
     }
@@ -71,18 +85,28 @@ function memoryRunners(command: Runners['command']): { runners: Runners; now: ()
     now: () => new Date(clock),
     bind: (context) => { base = context; },
     hold: (on) => { held = on; },
+    crash: (run, attempt) => {
+      const key = `${run}/${attempt}`;
+      if (![...live.keys()].some((id) => attemptOf(id) === key)) return false;
+      doomed.add(key);
+      return true;
+    },
     runners: {
       spawn: async (job) => {
         if (!base) throw new Error('memoryRunners used before bind');
         const { config } = base;
-        const key = `${job.run}/${job.attempt}`;
+        spawned += 1;
+        const id = `${job.run}/${job.attempt}#${spawned}`;
         const call: SkillCall = { kind: 'report', run: job.run, attempt: job.attempt, role: 'runner' };
         // A runner parks at each lock and sleep until the next sleep of the session, so it never waits on itself.
-        const locks: SkillContext['locks'] = { take: async (run, body, waitMs) => { await park(key); return withRunLock(config, run, body, { waitMs }); } };
-        const runners = { ...base.runners, sleep: (_ms: number, signal?: AbortSignal) => park(key, signal) };
-        live.set(key, runSkillCall(call, { ...base, session: undefined, locks, runners }).finally(() => live.delete(key)));
+        const locks: SkillContext['locks'] = { take: async (run, body, waitMs) => { await park(id); return withRunLock(config, run, body, { waitMs }); } };
+        const runners = { ...base.runners, sleep: (_ms: number, signal?: AbortSignal) => park(id, signal) };
+        const running = runSkillCall(call, { ...base, session: undefined, locks, runners })
+          .catch((error: unknown) => { if (!(error instanceof Crash)) failures.push(error); })
+          .finally(() => live.delete(id));
+        live.set(id, running);
       },
-      alive: async (run, attempt) => live.has(`${run}/${attempt}`),
+      alive: async (run, attempt) => [...live.keys()].some((id) => attemptOf(id) === `${run}/${attempt}`),
       command: (input) => {
         const started = command(input);
         const exit = started.exit.finally(() => commands.delete(exit));
@@ -93,9 +117,12 @@ function memoryRunners(command: Runners['command']): { runners: Runners; now: ()
         clock += ms;
         vi.setSystemTime(clock);
         if (held) return;
-        const waiting = [...parked.values()];
+        const waiting = [...parked.entries()];
         parked.clear();
-        for (const open of waiting) open();
+        for (const [id, open] of waiting) {
+          if (doomed.delete(attemptOf(id))) open.crash();
+          else open.resume();
+        }
         await settle();
       },
     },
@@ -152,6 +179,8 @@ export async function skillHarness(workflows: Record<string, string>, options: H
     root, work, config, context, rows,
     /** While held, a sleep moves the clock and no runner, so two calls in a row see the same runners. */
     hold: scheduler.hold,
+    /** Makes the runner of `attempt` crash where it is parked at the next sleep. Whether one is alive to crash. */
+    crashRunner: scheduler.crash,
     /** Makes `call` as the session, or with another session or lock in its context. */
     call: (call: SkillCall, overrides: Partial<Pick<SkillContext, 'session' | 'locks'>> = {}) => runSkillCall(call, { ...context, ...overrides }),
   };

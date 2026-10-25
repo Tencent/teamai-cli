@@ -150,8 +150,12 @@ function reportReply(answer: WorkflowEnvelope): ReportReply {
     : { kind: 'error', error: { code: 'run_unreadable', message: 'The engine answered a report with a reply this teamai cannot read. Update teamai.' } };
 }
 
-/** Sends the stored report `body` of `attempt` under `lock`, and applies the engine's answer. */
+/**
+ * Saves `state`, which holds the report `body` of `attempt`, then sends that body under `lock` and applies the engine's
+ * answer. A crash after the engine took the report leaves the body stored, and the next tick sends it again (P11).
+ */
 export async function sendReport(context: SkillContext, lock: RunLock, state: SkillState, attempt: AttemptId, body: ReportBody): Promise<{ state: SkillState; refused?: WorkflowFailure }> {
+  await writeSkillState(context.config, lock, state, context.env.secrets);
   const reply = reportReply(await context.client.report(state.run, body, { lock }));
   const taken = take(context, state, { kind: 'reported', attempt, reply, at: context.now().toISOString() });
   const refused = taken?.answer?.kind === 'engine-error' ? taken.answer.error : undefined;

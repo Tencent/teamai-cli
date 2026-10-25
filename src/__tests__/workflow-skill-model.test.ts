@@ -2,9 +2,10 @@ import fs from 'node:fs';
 import fc from 'fast-check';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
+import type { LocalConfig } from '../types.js';
 import type { WorkflowClient } from '../workflow/protocol.js';
-import { readRun, type AttemptId, type RunId } from '../workflow/store.js';
-import { skillHarness, untilStopped } from './helpers/skill-harness.js';
+import { readRun, skillStatePath, type AttemptId, type RunId } from '../workflow/store.js';
+import { Crash, skillHarness, untilStopped } from './helpers/skill-harness.js';
 
 // Two prompt roots in their own worktrees; two command roots and one that runs until its timeout, all three sharing the
 // checkout; and a prompt step after the first four. The prompt roots come first, so dispatches are out early.
@@ -42,6 +43,73 @@ const STEPS = ['api', 'ui', 'lint', 'test', 'integrate', 'serve'] as const;
 const RUNS = Number(process.env.WORKFLOW_SKILL_MODEL_RUNS ?? '8');
 
 const NextBodySchema = z.object({ running: z.array(z.string()) });
+const LeaseReplySchema = z.object({ data: z.object({ lease: z.object({ attempt: z.string() }) }) });
+const SkillJsonSchema = z.object({ attempts: z.array(z.object({ attempt: z.string() })) });
+
+/**
+ * The protocol as the model test watches it. Every `next` must list the attempts the engine leased (invariant 1), apart
+ * from ones the engine stopped, and leases a crash lost before skill.json was written, which the engine hands back in
+ * that same reply. Once armed, the next `next` or `report`, from the session or a runner, crashes after the engine
+ * answered it and before its caller writes anything.
+ */
+function watched(input: { config: () => LocalConfig | undefined; drift: string[] }) {
+  let armed = false;
+  const lost = new Set<string>();
+  const leasedIn = async (run: string): Promise<{ leased: string[]; stopped: string[] } | undefined> => {
+    const config = input.config();
+    const state = config ? await readRun(config, run) : 'missing';
+    if (typeof state !== 'object') return undefined;
+    return { leased: state.steps.flatMap((step) => (step.status === 'leased' ? [step.lease.attempt] : [])), stopped: state.cancelledAttempts ?? [] };
+  };
+  const crash = async (run: string): Promise<void> => {
+    if (!armed) return;
+    armed = false;
+    const config = input.config();
+    const engine = await leasedIn(run);
+    const saved = config ? SkillJsonSchema.safeParse(JSON.parse(fs.readFileSync(skillStatePath(config, run as RunId), 'utf8'))) : undefined;
+    const kept = saved?.success ? saved.data.attempts.map((open) => open.attempt) : [];
+    for (const attempt of engine?.leased ?? []) if (!kept.includes(attempt)) lost.add(attempt);
+    throw new Crash('injected after the engine answered');
+  };
+  const drifted = (said: string): never => {
+    input.drift.push(said);
+    // Thrown as well, since a call that went on with the wrong list may never return.
+    throw new Error(input.drift.join('; '));
+  };
+  return {
+    arm: () => { armed = true; },
+    disarm: () => { armed = false; },
+    client: (client: WorkflowClient): WorkflowClient => ({
+      ...client,
+      next: async (runId, body, options) => {
+        const sent = NextBodySchema.safeParse(body);
+        const engine = await leasedIn(runId);
+        let unlisted: string[] = [];
+        if (sent.success && engine) {
+          const { leased, stopped } = engine;
+          // An attempt the engine stopped stays listed until its runner or the session has given it up.
+          const listed = sent.data.running.filter((attempt) => !stopped.includes(attempt) || leased.includes(attempt));
+          unlisted = leased.filter((attempt) => !listed.includes(attempt));
+          const gone = listed.filter((attempt) => !leased.includes(attempt));
+          if (gone.length > 0 || unlisted.some((attempt) => !lost.has(attempt))) drifted(`sent ${sent.data.running.join(',')} while the engine leased ${leased.join(',')}`);
+        }
+        const answer = await client.next(runId, body, options);
+        if (unlisted.length > 0) {
+          const handed = LeaseReplySchema.safeParse(answer);
+          if (!handed.success || !unlisted.includes(handed.data.data.lease.attempt)) drifted(`the engine did not hand back ${unlisted.join(',')}, which a crash lost`);
+          else lost.delete(handed.data.data.lease.attempt);
+        }
+        await crash(runId);
+        return answer;
+      },
+      report: async (runId, body, options) => {
+        const answer = await client.report(runId, body, options);
+        await crash(runId);
+        return answer;
+      },
+    }),
+  };
+}
 
 type Made = Awaited<ReturnType<typeof skillHarness>>;
 type SkillAnswer = Awaited<ReturnType<Made['call']>>;
@@ -54,6 +122,8 @@ interface Real {
   run: RunId;
   /** The session that drives the run. */
   session: string;
+  /** Arms the crash after the next engine `next` or `report`. */
+  crash: { arm(): void; disarm(): void };
   /** Every engine `next` whose `running` was not the attempts the engine had leased, and ones it stopped (invariant 1). */
   drift: string[];
 }
@@ -275,6 +345,39 @@ class ReportStop implements fc.AsyncCommand<Model, Real> {
   toString = (): string => `report stop #${this.pick}`;
 }
 
+/**
+ * A crash after the engine answered a `next` or a `report`, before skill.json is written: in the session's call, or in
+ * a runner its call lets go on. The session's call either fails, and the session lost that turn, or returns.
+ */
+class CrashAfterEngine implements fc.AsyncCommand<Model, Real> {
+  constructor(readonly call: 'next' | 'poll' | 'report', readonly pick: number) {}
+  check = (model: Readonly<Model>): boolean => !model.done;
+  async run(model: Model, real: Real): Promise<void> {
+    const action = [...model.open.values()][this.pick % Math.max(model.open.size, 1)];
+    real.crash.arm();
+    try {
+      if (this.call === 'report' && action) {
+        // The child's report crashed or went through: either way its part is over, and its result is with TeamAI.
+        model.open.delete(action.attempt);
+        model.acked.delete(action.attempt);
+        model.unseen.push(cancelledStep(model, action)
+          ? { kind: 'stopped', step: action.step, attempt: action.attempt, why: 'cancelled' }
+          : expect.objectContaining({ kind: 'settled', step: action.step, outcome: 'failed' }));
+        await called(real, { kind: 'report', run: real.run, attempt: action.attempt, role: 'agent', modelUnavailable: false });
+      } else if (this.call === 'poll') {
+        sawPoll(model, turnOf(await called(real, { kind: 'next', run: real.run, wait: true })));
+      } else {
+        sawForeground(model, turnOf(await called(real, { kind: 'next', run: real.run, wait: false })));
+      }
+    } catch (error) {
+      if (!(error instanceof Crash)) throw error;
+    } finally {
+      real.crash.disarm();
+    }
+  }
+  toString = (): string => `crash after the engine, in ${this.call}`;
+}
+
 const COMMANDS = [
   fc.constant(new Next()),
   fc.constant(new Poll()),
@@ -285,6 +388,7 @@ const COMMANDS = [
   fc.constantFrom<'h1' | 'h2'>('h1', 'h2').map((choice) => new Choose(choice)),
   fc.nat(3).map((pick) => new Ack(pick)),
   fc.tuple(fc.nat(3), fc.constantFrom<'output' | 'failure' | 'none'>('output', 'output', 'failure', 'none'), fc.boolean()).map(([pick, result, own]) => new Report(pick, result, own)),
+  fc.tuple(fc.constantFrom<'next' | 'poll' | 'report'>('next', 'poll', 'report'), fc.nat(3)).map(([call, pick]) => new CrashAfterEngine(call, pick)),
 ];
 
 /** Plays a fair session from where the commands left the run, and checks invariant 10: it reaches `done` with nothing open. */
@@ -323,28 +427,10 @@ describe('skill driver model', () => {
     await fc.assert(fc.asyncProperty(answered, fc.commands(COMMANDS, { maxCommands: 14 }), async (host, commands) => {
       const drift: string[] = [];
       let config: Made['config'] | undefined;
+      const protocol = watched({ config: () => config, drift });
       const made = await skillHarness({ build: BUILD }, {
         runners: (runners) => ({ ...runners, command: (input) => (input.command === 'sleep 300' ? untilStopped(() => {}) : runners.command(input)) }),
-        client: (client): WorkflowClient => ({
-          ...client,
-          next: async (runId, body, options) => {
-            const sent = NextBodySchema.safeParse(body);
-            const state = config ? await readRun(config, runId) : 'missing';
-            if (sent.success && typeof state === 'object') {
-              const leased = state.steps.flatMap((step) => (step.status === 'leased' ? [step.lease.attempt] : [])).sort();
-              const running = [...sent.data.running].sort();
-              // An attempt the engine stopped stays listed until its runner or the session has given it up.
-              const stopped = state.cancelledAttempts ?? [];
-              const listed = running.filter((attempt) => !stopped.includes(attempt) || leased.includes(attempt));
-              if (JSON.stringify(leased) !== JSON.stringify(listed)) {
-                drift.push(`sent ${running.join(',')} while the engine leased ${leased.join(',')}`);
-                // Thrown as well, since a call that went on with the wrong list may never return.
-                throw new Error(drift.join('; '));
-              }
-            }
-            return client.next(runId, body, options);
-          },
-        }),
+        client: protocol.client,
       });
       roots.push(made.root);
       config = made.config;
@@ -352,7 +438,7 @@ describe('skill driver model', () => {
       const model: Model = { hostPending: false, done: false, open: new Map(), acked: new Set(), stopping: new Map(), stopped: new Set(), cancelled: new Set(), unseen: [] };
       sawForeground(model, started);
       expect(model.hostPending).toBe(true);
-      const real: Real = { made, run: started.run, session: 'session-a', drift };
+      const real: Real = { made, run: started.run, session: 'session-a', drift, crash: protocol };
       if (host) await new Choose(host).run(model, real);
       await fc.asyncModelRun(() => ({ model, real }), commands);
       const done = await driveToDone(model, real);
