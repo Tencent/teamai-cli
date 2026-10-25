@@ -1249,7 +1249,7 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     },
   },
   {
-    name: 'an attempt whose runner is gone while it stops is given up by the next tick, which stops the command it left',
+    name: 'an attempt whose runner is gone while it stops is given up by the first tick past the spawn grace, which stops the command it left',
     rows: ['C11'],
     run: async () => {
       let gone = false;
@@ -1257,8 +1257,14 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       const made = await harness({ check: SERVE }, { runners: (runners) => ({ ...sleepFaked(stops)(runners), alive: async (run, attempt) => !gone && runners.alive(run, attempt) }) });
       const { turn: { run }, running } = await serving(made);
       await made.context.client.cancel(run, running.step);
-      expect((await turnOf(await made.call({ kind: 'next', run, wait: false }))).running).toContainEqual({ attempt: running.attempt, step: running.step, phase: 'stopping' });
+      const stopping = { attempt: running.attempt, step: running.step, phase: 'stopping' };
+      expect((await turnOf(await made.call({ kind: 'next', run, wait: false }))).running).toContainEqual(stopping);
       gone = true;
+      // Within the 5 s a runner gets to take its lock, a free lock may be a runner not yet started.
+      expect((await turnOf(await made.call({ kind: 'next', run, wait: false }))).running).toContainEqual(stopping);
+      made.hold(true);
+      await made.context.runners.sleep(6_000);
+      made.hold(false);
       expect((await turnOf(await made.call({ kind: 'next', run, wait: false }))).events).toContainEqual({ kind: 'stopped', step: running.step, attempt: running.attempt, why: 'cancelled' });
       expect(stops).toEqual([`${run}/${running.attempt}`]);
       return made.rows;

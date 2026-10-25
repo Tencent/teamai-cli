@@ -689,6 +689,13 @@ describe('skill driver model', () => {
     await fc.assert(fc.asyncProperty(fc.constant('h3' as const), fc.commands(COMMANDS, { maxCommands: 14 }), sessionRun), { numRuns: RUNS });
   }, TIMEOUT_MS);
 
+  // Seed 1258969508 of the property below: the poll leases lint, the person cancels it, and its runner dies before it
+  // takes its lock. Inside the spawn grace the first next keeps the runner and stops lint by it, so the second, with
+  // nothing moved, must keep it too, and not give lint up as a runner gone.
+  it('gives a runner that died before its lock the spawn grace once its attempt is cancelled, so two nexts at once show one turn', async () => {
+    await inlineRun([new Report(0, 'output', false), new Poll(), new Cancel(2, false), new RunnerCrash(0), new TwoCallers()]);
+  }, TIMEOUT_MS);
+
   it('on a host that starts no child, declares only read-only workspaces, works one attempt at a time, and leaves the worktree step to the person', async () => {
     const commands = [
       fc.constant(new Next()),
@@ -704,34 +711,40 @@ describe('skill driver model', () => {
       fc.constantFrom<'refused' | 'takeover' | 'quiet'>('refused', 'takeover', 'quiet').map((how) => new NewSession(how)),
       fc.nat(5).map((pick) => new RunnerCrash(pick)),
     ];
-    await fc.assert(fc.asyncProperty(fc.commands(commands, { maxCommands: 14 }), async (steps) => {
-      const drift: string[] = [];
-      let config: Made['config'] | undefined;
-      const protocol = watched({ config: () => config, drift });
-      const declared = inlineWatched({ config: () => config, drift });
-      const commandsRun: Real['commands'] = { live: new Set(), twice: [] };
-      const made = await skillHarness({ inline: INLINE }, { client: (client) => declared(protocol.client(client)) });
-      config = made.config;
-      try {
-        const started = turnOf(await called({ made, drift, session: 'session-a', commands: commandsRun }, { kind: 'start', name: 'inline', answers: { parallel: 2, confirmed: false }, inputs: undefined }));
-        const model: Model = { hostPending: false, done: false, placing: new Map(), open: new Map(), acked: new Set(), stopping: new Map(), stopped: new Set(), cancelled: new Set(), unseen: [] };
-        sawForeground(model, started);
-        const real: Real = { made, run: started.run, session: 'session-a', sessions: 0, drift, crash: protocol, commands: commandsRun };
-        sawForeground(model, turnOf(await called(real, { kind: 'choose', run: real.run, choice: 'h4' })));
-        await fc.asyncModelRun(() => ({ model, real }), steps);
-        const held = await driveInline(model, real);
-        expect(held.waiting?.reason).toContain('step "change" needs workspace new, which this driver does not provide');
-        // The person continues the run with the local driver; the agent only shows the literal.
-        expect(held.actions).toEqual([expect.objectContaining({ kind: 'person', why: 'handoff', held: [expect.objectContaining({ step: 'change' })], run: [`teamai workflow resume ${real.run} --tools default=claude`] })]);
-        expect(held.then).toBeUndefined();
-        const run = await readRun(made.config, real.run);
-        expect(typeof run === 'object' && run.steps.find((step) => step.id === 'change')?.status).toBe('pending');
-      } finally {
-        fs.rmSync(made.root, { recursive: true, force: true });
-      }
-    }), { numRuns: RUNS });
+    await fc.assert(fc.asyncProperty(fc.commands(commands, { maxCommands: 14 }), inlineRun), { numRuns: RUNS });
   }, TIMEOUT_MS);
 });
+
+/**
+ * One session over the INLINE run on h4: it starts the run, answers the host question with h4, plays `steps`, and a
+ * fair session then works every step it can and is left with the handoff of the worktree step.
+ */
+async function inlineRun(steps: Iterable<fc.AsyncCommand<Model, Real>>): Promise<void> {
+  const drift: string[] = [];
+  let config: Made['config'] | undefined;
+  const protocol = watched({ config: () => config, drift });
+  const declared = inlineWatched({ config: () => config, drift });
+  const commandsRun: Real['commands'] = { live: new Set(), twice: [] };
+  const made = await skillHarness({ inline: INLINE }, { client: (client) => declared(protocol.client(client)) });
+  config = made.config;
+  try {
+    const started = turnOf(await called({ made, drift, session: 'session-a', commands: commandsRun }, { kind: 'start', name: 'inline', answers: { parallel: 2, confirmed: false }, inputs: undefined }));
+    const model: Model = { hostPending: false, done: false, placing: new Map(), open: new Map(), acked: new Set(), stopping: new Map(), stopped: new Set(), cancelled: new Set(), unseen: [] };
+    sawForeground(model, started);
+    const real: Real = { made, run: started.run, session: 'session-a', sessions: 0, drift, crash: protocol, commands: commandsRun };
+    sawForeground(model, turnOf(await called(real, { kind: 'choose', run: real.run, choice: 'h4' })));
+    await fc.asyncModelRun(() => ({ model, real }), steps);
+    const held = await driveInline(model, real);
+    expect(held.waiting?.reason).toContain('step "change" needs workspace new, which this driver does not provide');
+    // The person continues the run with the local driver; the agent only shows the literal.
+    expect(held.actions).toEqual([expect.objectContaining({ kind: 'person', why: 'handoff', held: [expect.objectContaining({ step: 'change' })], run: [`teamai workflow resume ${real.run} --tools default=claude`] })]);
+    expect(held.then).toBeUndefined();
+    const run = await readRun(made.config, real.run);
+    expect(typeof run === 'object' && run.steps.find((step) => step.id === 'change')?.status).toBe('pending');
+  } finally {
+    fs.rmSync(made.root, { recursive: true, force: true });
+  }
+}
 
 const CanBodySchema = z.object({ driver: z.object({ can: z.object({ hitl: z.boolean(), workspace: z.array(z.string()), env: z.string() }) }) });
 const LeaseStepSchema = z.object({ data: z.object({ lease: z.object({ step: z.string(), workspace: z.unknown().optional() }) }) });

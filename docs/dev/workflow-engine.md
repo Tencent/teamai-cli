@@ -142,7 +142,7 @@ Test parsing through `parseWorkflow` and `syncWorkflowDefinitions`. Test the eng
 | C8 | running | runner: the command exited | | write-ahead: `success` on exit 0, else `failed`; outputs, exit code, masked tail | reporting | |
 | C9 | stopping by its runner | runner: its check every `RUNNER_POLL_MS` and at `expiresAt`, its setup ending, or its command exiting | | stop the command and every process it started (`tool-launch/process-stop.ts`); write-ahead `released` | reporting | |
 | C10 | preparing, running | tick: its `runner.lock` is free | it was spawned more than `WAIT_GRACE_MS` ago | stop the process group its setup or command left; spawn the same job again (prepare is idempotent; a command restarts in its prepared place) | unchanged | event `restarted` |
-| C11 | stopping by its runner | tick: its `runner.lock` is free | | stop the process group its setup or command left; write-ahead `released` | reporting | |
+| C11 | stopping by its runner | tick: its `runner.lock` is free | it was spawned more than `WAIT_GRACE_MS` ago | stop the process group its setup or command left; write-ahead `released` | reporting | |
 
 ### Acks
 
