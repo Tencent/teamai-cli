@@ -9,7 +9,7 @@ import { attemptDir, attemptResultPath, type AttemptId, type RunId } from '../..
 import type { Literal } from './literals.js';
 
 /** `attempts/<a>/result.json`, as the child writes it: what the step produced, or why it could not. */
-export const ChildResultSchema = z.discriminatedUnion('kind', [
+const ChildResultSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('output'), output: z.unknown() }),
   z.object({ kind: z.literal('failure'), failure: z.object({ code: z.string().min(1), message: z.string() }) }),
 ]);

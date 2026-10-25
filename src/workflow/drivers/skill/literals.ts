@@ -1,5 +1,7 @@
 /** Every command line the skill driver prints, and the permission patterns that pre-approve them. */
 import { z } from 'zod';
+import type { AttemptId, RunId } from '../../store.js';
+import type { HostChoice } from './host-profiles.js';
 import type { HitlMode } from './preflight.js';
 
 const LiteralSchema = z.string().brand<'Literal'>();
@@ -58,61 +60,61 @@ export function localStartLiteral(invocation: Invocation, name: string, options:
 }
 
 /** Continues `run` with the local driver: shown to the person for their own terminal, never run by the agent. `tool`: its prompt tool. */
-export function resumeLiteral(invocation: Invocation, run: string, options: { tool?: string } = {}): Literal {
+export function resumeLiteral(invocation: Invocation, run: RunId, options: { tool?: string } = {}): Literal {
   return LiteralSchema.parse([`${invocation} workflow resume ${run}`, ...toolsWords(options.tool)].join(' '));
 }
 
-export function nextLiteral(invocation: Invocation, run: string): Literal {
+export function nextLiteral(invocation: Invocation, run: RunId): Literal {
   return LiteralSchema.parse(`${invocation} workflow next ${run} --driver skill`);
 }
 
 /** Takes the run over from the session that drives it: printed only with `orchestrator_active`, for the person to agree to. */
-export function takeoverLiteral(invocation: Invocation, run: string): Literal {
+export function takeoverLiteral(invocation: Invocation, run: RunId): Literal {
   return LiteralSchema.parse(`${invocation} workflow next ${run} --driver skill --takeover`);
 }
 
-export function pollLiteral(invocation: Invocation, run: string): Literal {
+export function pollLiteral(invocation: Invocation, run: RunId): Literal {
   return LiteralSchema.parse(`${invocation} workflow next ${run} --driver skill --wait`);
 }
 
 /** Answers the host question with profile `choice`. */
-export function chooseHostLiteral(invocation: Invocation, run: string, choice: string): Literal {
+export function chooseHostLiteral(invocation: Invocation, run: RunId, choice: HostChoice): Literal {
   return LiteralSchema.parse(`${invocation} workflow next ${run} --driver skill --choice ${choice}`);
 }
 
 /** Acks the dispatch of `attempt` once its child started. */
-export function ackLiteral(invocation: Invocation, run: string, attempt: string): Literal {
+export function ackLiteral(invocation: Invocation, run: RunId, attempt: AttemptId): Literal {
   return LiteralSchema.parse(`${invocation} workflow next ${run} --driver skill --ack dispatch.${attempt}`);
 }
 
 /** The agent's answer `choice` to the optional gate at `step`, pass `pass`, sent through the skill driver. */
-export function respondLiteral(invocation: Invocation, run: string, gate: { step: string; pass: number; choice: string }): Literal {
+export function respondLiteral(invocation: Invocation, run: RunId, gate: { step: string; pass: number; choice: string }): Literal {
   return LiteralSchema.parse(`${invocation} workflow respond ${run} ${shellWord(gate.step)} ${shellWord(gate.choice)} --pass ${gate.pass} --driver skill`);
 }
 
 /** The person's answer `choice` to the gate at `step`, pass `pass`: shown to the person for their own terminal, never run by the agent. */
-export function personRespondLiteral(invocation: Invocation, run: string, gate: { step: string; pass: number; choice: string }): Literal {
+export function personRespondLiteral(invocation: Invocation, run: RunId, gate: { step: string; pass: number; choice: string }): Literal {
   return LiteralSchema.parse(`${invocation} workflow respond ${run} ${shellWord(gate.step)} ${shellWord(gate.choice)} --pass ${gate.pass}`);
 }
 
-export function reportLiteral(invocation: Invocation, run: string, attempt: string): Literal {
-  return LiteralSchema.parse(`${invocation} workflow report ${run} --driver skill --attempt ${attempt}`);
+export function reportLiteral(invocation: Invocation, run: RunId, attempt: AttemptId): Literal {
+  return LiteralSchema.parse([invocation, ...runnerArgs(run, attempt)].join(' '));
 }
 
 /**
  * Adopts `dir`, the place the host made for `attempt`, as its turn printed it. Without `dir`, the agent fills the
  * `{dir}` slot with that directory.
  */
-export function adoptLiteral(invocation: Invocation, run: string, attempt: string, dir?: string): Literal {
+export function adoptLiteral(invocation: Invocation, run: RunId, attempt: AttemptId, dir?: string): Literal {
   return LiteralSchema.parse(`${invocation} workflow next ${run} --driver skill --attempt ${attempt} --adopt ${dir === undefined ? "'{dir}'" : shellWord(dir)}`);
 }
 
 /** Reports that the host cannot run the model the dispatch of `attempt` names. */
-export function unavailableLiteral(invocation: Invocation, run: string, attempt: string): Literal {
-  return LiteralSchema.parse(`${invocation} workflow report ${run} --driver skill --attempt ${attempt} --model-unavailable`);
+export function unavailableLiteral(invocation: Invocation, run: RunId, attempt: AttemptId): Literal {
+  return LiteralSchema.parse([invocation, ...runnerArgs(run, attempt), '--model-unavailable'].join(' '));
 }
 
 /** The arguments, after the teamai entry script, that start the runner of `attempt`. */
-export function runnerArgs(run: string, attempt: string): string[] {
+export function runnerArgs(run: RunId, attempt: AttemptId): string[] {
   return ['workflow', 'report', run, '--driver', 'skill', '--attempt', attempt];
 }

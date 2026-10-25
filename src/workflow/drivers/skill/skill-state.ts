@@ -14,7 +14,7 @@ import { HITL_MODES } from './preflight.js';
 
 
 /** A report as the runner sends it, kept before it is sent so a crash between the two loses nothing. */
-export const ReportBodySchema = z.object({
+const ReportBodySchema = z.object({
   attempt: AttemptIdSchema,
   revision: z.number().int(),
   /** `released`: the attempt was stopped, so the protocol abandons its place instead of finishing it. */
@@ -31,7 +31,7 @@ export type ReportBody = z.infer<typeof ReportBodySchema>;
  * The model a child must run. `definition`: neither the step nor `defaults.model` named one, so the child runs the team
  * agent's own model, or the host's default.
  */
-export const ModelPickSchema = z.union([
+const ModelPickSchema = z.union([
   z.object({ by: z.literal('definition') }),
   z.object({ by: z.enum(['step', 'defaults']), name: z.string(), effort: z.string().optional(), alias: z.string().optional() }),
 ]);
@@ -52,7 +52,7 @@ const DispatchSchema = z.object({
 export type Dispatch = z.infer<typeof DispatchSchema>;
 
 /** Why an attempt is stopped: the person cancelled it, or it passed the deadline its lease carries. */
-export const STOP_REASONS = ['cancelled', 'timeout'] as const;
+const STOP_REASONS = ['cancelled', 'timeout'] as const;
 export type StopReason = typeof STOP_REASONS[number];
 
 /** The place the host is asked to make for a step: `name` for it, on `branch`, from commit `start`. */
@@ -71,7 +71,7 @@ const AttemptBase = { attempt: AttemptIdSchema, step: z.string(), revision: z.nu
  * it waits for the agent to adopt a place its host made; its dispatch is offered to the agent, or acked; it is being
  * stopped, by its runner or by the agent that started its child; or it has a report to send.
  */
-export const AttemptStateSchema = z.discriminatedUnion('phase', [
+const AttemptStateSchema = z.discriminatedUnion('phase', [
   z.object({ ...AttemptBase, phase: z.literal('preparing'), request: HostRequestSchema.optional() }),
   z.object({ ...AttemptBase, phase: z.literal('queued'), behind: AttemptIdSchema, request: HostRequestSchema.optional() }),
   /** `refused`: why the place the agent adopted last was not prepared. */
@@ -90,7 +90,7 @@ export type AttemptState = z.infer<typeof AttemptStateSchema>;
 const JudgeSchema = z.object({ ref: z.string(), attempt: AttemptIdSchema, step: z.string(), scorers: z.array(z.string()), spawnedAt: z.string() });
 export type Judge = z.infer<typeof JudgeSchema>;
 
-export const TurnEventSchema = z.discriminatedUnion('kind', [
+const TurnEventSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('started'), step: z.string(), attempt: AttemptIdSchema }),
   z.object({ kind: z.literal('restarted'), step: z.string(), attempt: AttemptIdSchema }),
   /** This session took the run over from session `from`, when that one was known. */
@@ -136,7 +136,7 @@ const GateSchema = z.discriminatedUnion('required', [
 ]);
 export type Gate = z.infer<typeof GateSchema>;
 
-export const SkillStateSchema = z.object({
+const SkillStateSchema = z.object({
   version: z.literal(1),
   run: RunIdSchema,
   /** The identity every `next` and report sends: kind `skill`, this machine, the checkout the run started from. */

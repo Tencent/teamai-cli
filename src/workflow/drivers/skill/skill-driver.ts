@@ -15,7 +15,6 @@ import { agentSessionFromEnv } from '../../../utils/session-id.js';
 import { agentEvidence, isAttemptRunner, type AgentEvidence } from '../../attempt-marker.js';
 import { inProcessClient, invokeDeniedMessage, type WorkflowClient } from '../../protocol.js';
 import { AttemptIdSchema, RunIdSchema, withRunLock, type AttemptId, type RunId, type RunLock } from '../../store.js';
-import type { WorkflowFailure } from '../../types.js';
 import { canFor, HOST_CHOICES, type HostChoice } from './host-profiles.js';
 import { journalCall } from './journal.js';
 import { describeLiteral, invocationOf, type Invocation } from './literals.js';
@@ -257,6 +256,9 @@ async function answerOf(call: SkillCall, context: SkillContext): Promise<SkillAn
   }
 }
 
+/** The refusals of a protocol start that another answer to describe fixes: other inputs, or the person's yes. */
+const ANSWERABLE_START_REFUSALS: ReadonlySet<string> = new Set(['invalid_inputs', 'confirm_needed']);
+
 async function start(call: Extract<SkillCall, { kind: 'describe' | 'start' }>, context: SkillContext): Promise<SkillAnswer> {
   const ceiling = ceilingOf(context.config);
   const described = await context.client.describe(call.name, { ceiling, can: canFor(undefined), checkout: context.cwd, ...(context.tool !== undefined ? { tool: context.tool } : {}) });
@@ -286,7 +288,10 @@ async function start(call: Extract<SkillCall, { kind: 'describe' | 'start' }>, c
   const started = await context.client.start(description.name, {
     ...(call.inputs !== undefined ? { inputs: call.inputs } : {}), checkout: context.cwd, caller: { evidence: context.evidence, confirmed: call.answers.confirmed },
   });
-  if ('error' in started) return startRefused(context, description.name, started.error);
+  if ('error' in started) {
+    // No literal for a refusal no other answer fixes: a new describe would only lead back to it.
+    return { error: { ...started.error, next: ANSWERABLE_START_REFUSALS.has(started.error.code) ? describeLiteral(context.invocation, description.name) : null } };
+  }
   const run = RunIdSchema.safeParse(started.data.run);
   if (!run.success) return { error: { code: 'run_unreadable', message: 'The new run id was missing', next: null } };
   const state: SkillState = {
@@ -297,15 +302,4 @@ async function start(call: Extract<SkillCall, { kind: 'describe' | 'start' }>, c
   const saved = await context.locks.take(run.data, (lock) => writeSkillState(context.config, lock, state, context.env.secrets), 0);
   if (saved !== undefined) return { error: { ...saved.error, next: null } };
   return foreground(context, run.data, { kind: 'next' });
-}
-
-/** The refusals of a protocol start that another answer to describe fixes: other inputs, or the person's yes. */
-const ANSWERABLE_START_REFUSALS: ReadonlySet<string> = new Set(['invalid_inputs', 'confirm_needed']);
-
-/**
- * The error a start answers when the protocol refused it: describe again for a refusal another answer fixes, and no
- * literal for the rest, which a new describe would only lead back to.
- */
-function startRefused(context: SkillContext, name: string, error: WorkflowFailure): SkillAnswer {
-  return { error: { ...error, next: ANSWERABLE_START_REFUSALS.has(error.code) ? describeLiteral(context.invocation, name) : null } };
 }

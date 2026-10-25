@@ -82,7 +82,7 @@ async function spawnRunner(context: SkillContext, state: SkillState, attempt: At
  * Saves `state`, which holds the report `body` of `attempt`, then sends that body under `lock` and applies the engine's
  * answer. A crash after the engine took the report leaves the body stored, and the next tick sends it again (P11).
  */
-export async function sendReport(context: SkillContext, lock: RunLock, state: SkillState, attempt: AttemptId, body: ReportBody): Promise<{ state: SkillState; refused?: WorkflowFailure }> {
+async function sendReport(context: SkillContext, lock: RunLock, state: SkillState, attempt: AttemptId, body: ReportBody): Promise<{ state: SkillState; refused?: WorkflowFailure }> {
   await writeSkillState(context.config, lock, state, context.env.secrets);
   const reply = reportReply(await context.client.report(state.run, body, { lock }));
   const taken = traced(context, reportedRow(state, { attempt, reply, at: context.now().toISOString() }));

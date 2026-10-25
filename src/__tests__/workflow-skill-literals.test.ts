@@ -4,6 +4,7 @@ import type { Command } from 'commander';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { attemptEnv } from '../workflow/attempt-marker.js';
 import { parseSkillCall } from '../workflow/drivers/skill/skill-driver.js';
+import { AttemptIdSchema, RunIdSchema } from '../workflow/store.js';
 import {
   ackLiteral, adoptLiteral, chooseHostLiteral, describeLiteral, generatedStartPatterns, INVOCATIONS, localStartLiteral, nextLiteral, personRespondLiteral, pollLiteral,
   reportLiteral, respondLiteral, resumeLiteral, runnerArgs, startLiteral, takeoverLiteral, unavailableLiteral, type Invocation,
@@ -11,8 +12,8 @@ import {
 import { loadCommandTable } from './helpers/command-table.js';
 
 const ROOT = path.join(import.meta.dirname, '../..');
-const RUN = 'r0123456789abcdef';
-const ATTEMPT = 'a01234567';
+const RUN = RunIdSchema.parse('r0123456789abcdef');
+const ATTEMPT = AttemptIdSchema.parse('a01234567');
 
 /** The `allowed-tools` patterns the teamai stub pre-approves. */
 function stubPatterns(): string[] {
