@@ -635,42 +635,53 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
+/**
+ * One session over the BUILD run: it starts the run, answers the host question with `host` first if given, plays `steps`,
+ * and a fair session then reaches done with no command left running.
+ */
+async function sessionRun(host: 'h1' | 'h2' | 'h3' | undefined, steps: Iterable<fc.AsyncCommand<Model, Real>>): Promise<void> {
+  const drift: string[] = [];
+  let config: Made['config'] | undefined;
+  const protocol = watched({ config: () => config, drift });
+  const commands: Real['commands'] = { live: new Set(), twice: [] };
+  const sleeping = (input: Parameters<Runners['command']>[0]) => {
+    if (commands.live.has(input.attempt)) commands.twice.push(input.attempt);
+    commands.live.add(input.attempt);
+    return untilStopped(() => { commands.live.delete(input.attempt); });
+  };
+  const made = await skillHarness({ build: BUILD }, {
+    runners: (runners) => ({ ...runners, command: (input) => (input.command === 'sleep 300' ? sleeping(input) : runners.command(input)) }),
+    client: protocol.client,
+  });
+  config = made.config;
+  // Each run's repositories go when it ends, so hundreds of runs do not pile them up.
+  try {
+    const started = turnOf(await called({ made, drift, session: 'session-a', commands }, { kind: 'start', name: 'build', answers: { parallel: 2, confirmed: false }, inputs: undefined }));
+    const model: Model = { hostPending: false, done: false, placing: new Map(), open: new Map(), acked: new Set(), stopping: new Map(), stopped: new Set(), cancelled: new Set(), unseen: [] };
+    sawForeground(model, started);
+    expect(model.hostPending).toBe(true);
+    const real: Real = { made, run: started.run, session: 'session-a', sessions: 0, drift, crash: protocol, commands };
+    if (host) await new Choose(host).run(model, real);
+    await fc.asyncModelRun(() => ({ model, real }), steps);
+    const done = await driveToDone(model, real);
+    expect(done.actions).toEqual([expect.objectContaining({ kind: 'done' })]);
+    // No command outlives the run.
+    expect([...commands.live]).toEqual([]);
+  } finally {
+    fs.rmSync(made.root, { recursive: true, force: true });
+  }
+}
+
 describe('skill driver model', () => {
   it('keeps its invariants over any order of session calls and runner progress, and a fair session reaches done', async () => {
     // Half the sessions answer the host question first, so the commands also land while dispatches are out.
     const answered = fc.option(fc.constantFrom<'h1' | 'h2' | 'h3'>('h1', 'h2', 'h3'), { nil: undefined });
-    await fc.assert(fc.asyncProperty(answered, fc.commands(COMMANDS, { maxCommands: 14 }), async (host, steps) => {
-      const drift: string[] = [];
-      let config: Made['config'] | undefined;
-      const protocol = watched({ config: () => config, drift });
-      const commands: Real['commands'] = { live: new Set(), twice: [] };
-      const sleeping = (input: Parameters<Runners['command']>[0]) => {
-        if (commands.live.has(input.attempt)) commands.twice.push(input.attempt);
-        commands.live.add(input.attempt);
-        return untilStopped(() => { commands.live.delete(input.attempt); });
-      };
-      const made = await skillHarness({ build: BUILD }, {
-        runners: (runners) => ({ ...runners, command: (input) => (input.command === 'sleep 300' ? sleeping(input) : runners.command(input)) }),
-        client: protocol.client,
-      });
-      config = made.config;
-      // Each run's repositories go when it ends, so hundreds of runs do not pile them up.
-      try {
-        const started = turnOf(await called({ made, drift, session: 'session-a', commands }, { kind: 'start', name: 'build', answers: { parallel: 2, confirmed: false }, inputs: undefined }));
-        const model: Model = { hostPending: false, done: false, placing: new Map(), open: new Map(), acked: new Set(), stopping: new Map(), stopped: new Set(), cancelled: new Set(), unseen: [] };
-        sawForeground(model, started);
-        expect(model.hostPending).toBe(true);
-        const real: Real = { made, run: started.run, session: 'session-a', sessions: 0, drift, crash: protocol, commands };
-        if (host) await new Choose(host).run(model, real);
-        await fc.asyncModelRun(() => ({ model, real }), steps);
-        const done = await driveToDone(model, real);
-        expect(done.actions).toEqual([expect.objectContaining({ kind: 'done' })]);
-        // No command outlives the run.
-        expect([...commands.live]).toEqual([]);
-      } finally {
-        fs.rmSync(made.root, { recursive: true, force: true });
-      }
-    }), { numRuns: RUNS });
+    await fc.assert(fc.asyncProperty(answered, fc.commands(COMMANDS, { maxCommands: 14 }), sessionRun), { numRuns: RUNS });
+  }, TIMEOUT_MS);
+
+  // The property above answers h3 first in about a quarter of its runs, so a few runs can miss a host that makes places.
+  it('keeps them, and a fair session reaches done, on a host that makes its own places (h3)', async () => {
+    await fc.assert(fc.asyncProperty(fc.constant('h3' as const), fc.commands(COMMANDS, { maxCommands: 14 }), sessionRun), { numRuns: RUNS });
   }, TIMEOUT_MS);
 
   it('on a host that starts no child, declares only read-only workspaces, works one attempt at a time, and leaves the worktree step to the person', async () => {
