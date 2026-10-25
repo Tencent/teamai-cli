@@ -34,6 +34,15 @@ function shellWord(word: string): string {
   return /^[A-Za-z0-9_.-]+$/.test(word) ? word : `'${word.replaceAll("'", "'\\''")}'`;
 }
 
+/** The words of the options a skill run is started or continued with: `--parallel`, the HITL mode and `--no-judge`. */
+function runOptionWords(options: { parallel?: number; hitl?: HitlMode; noJudge?: boolean }): string[] {
+  return [
+    ...(options.parallel !== undefined ? [`--parallel ${options.parallel}`] : []),
+    ...(options.hitl === 'auto-approve' ? ['--auto-approve'] : options.hitl !== undefined ? [`--hitl ${options.hitl}`] : []),
+    ...(options.noJudge ? ['--no-judge'] : []),
+  ];
+}
+
 /**
  * Starts `name` for the skill driver. `inputs` leaves the `{inputs}` slot the agent fills with the person's answers;
  * `hitl` is how optional gates are answered; `noJudge` leaves the scored steps unjudged here.
@@ -41,10 +50,9 @@ function shellWord(word: string): string {
 export function startLiteral(invocation: Invocation, name: string, options: { parallel?: number; confirmed?: boolean; hitl?: HitlMode; inputs?: boolean; noJudge?: boolean } = {}): Literal {
   return LiteralSchema.parse([
     `${invocation} workflow start ${name} --driver skill`,
-    ...(options.parallel !== undefined ? [`--parallel ${options.parallel}`] : []),
+    ...runOptionWords({ parallel: options.parallel }),
     ...(options.confirmed ? ['--confirmed'] : []),
-    ...(options.hitl === 'auto-approve' ? ['--auto-approve'] : options.hitl !== undefined ? [`--hitl ${options.hitl}`] : []),
-    ...(options.noJudge ? ['--no-judge'] : []),
+    ...runOptionWords({ hitl: options.hitl, noJudge: options.noJudge }),
     ...(options.inputs ? ["--inputs '{inputs}'"] : []),
   ].join(' '));
 }
@@ -73,9 +81,7 @@ export function skillResumeLiteral(invocation: Invocation, run: RunId, options: 
   return LiteralSchema.parse([
     `${invocation} workflow resume ${run} --driver skill`,
     ...(options.claim ? ['--claim'] : []),
-    ...(options.parallel !== undefined ? [`--parallel ${options.parallel}`] : []),
-    ...(options.hitl === 'auto-approve' ? ['--auto-approve'] : options.hitl !== undefined ? [`--hitl ${options.hitl}`] : []),
-    ...(options.noJudge ? ['--no-judge'] : []),
+    ...runOptionWords(options),
     ...(options.confirmed ? ['--confirmed'] : []),
   ].join(' '));
 }

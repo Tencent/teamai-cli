@@ -5,7 +5,6 @@
 import path from 'node:path';
 import { z } from 'zod';
 import { resolveCliEntry } from '../../../builtin-hooks.js';
-import { driverIdentity } from '../../../driver-identity.js';
 import type { WorkflowEnv } from '../../../env-resolution.js';
 import type { ToolName } from '../../../resources/agent-format.js';
 import { resolveRunMode, type RunMode } from '../../../launch-context.js';
@@ -21,9 +20,9 @@ import { canFor, HOST_CHOICES, type HostChoice } from './host-profiles.js';
 import { journalCall } from './journal.js';
 import { describeLiteral, invocationOf, type Invocation } from './literals.js';
 import { askFor, attendedReason, ceilingOf, checkStartAnswers, localPromptTool, localReason, neededAnswers, type HitlMode } from './preflight.js';
-import { drivesRun, newSkillState, readSkillState, writeSkillState } from './skill-state.js';
+import { drivesRun, readSkillState, writeSkillState } from './skill-state.js';
 import { detachedRunners, runRunner } from './skill-runner.js';
-import { agentReport, foreground, poll } from './tick.js';
+import { agentReport, foreground, plannedState, poll } from './tick.js';
 import { describeRow, startRow, type ResumeAnswers, type RowId } from './transitions.js';
 import { errorOf, type SkillAnswer, type SkillError } from './turn.js';
 
@@ -350,10 +349,7 @@ async function start(call: Extract<SkillCall, { kind: 'describe' | 'start' }>, c
   }
   const run = RunIdSchema.safeParse(started.data.run);
   if (!run.success) return { error: { code: 'run_unreadable', message: 'The new run id was missing', next: null } };
-  const state = newSkillState({
-    run: run.data, driver: driverIdentity('skill', context.cwd), invocation: context.invocation, options: { parallel: planned.parallel, hitl: planned.hitl, mode: context.mode },
-    host: planned.host, session: context.session, at: context.now().toISOString(), ...(planned.judge !== undefined ? { judge: planned.judge } : {}),
-  });
+  const state = plannedState(context, run.data, planned);
   const saved = await context.locks.take(run.data, (lock) => writeSkillState(context.config, lock, state, context.env.secrets), 0);
   switch (saved.kind) {
     case 'held':

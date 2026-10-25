@@ -19,7 +19,7 @@ import { drivesRun, newSkillState, readSkillState, writeSkillState, type Attempt
 import {
   ackRow, adoptRow, callRow, cancelledRow, chooseRow, doneRow, gateCheckRow, graceRow, hasSlot, heldProbeRow, invokeRow, judgeFreeRow, judgeTickRow, lockBusyRow, pollRow, readiedRow, reopenedRow, replyRow,
   reportCallRow, reportedRow, reportRow, resendRow, respondedRow, runnerFreeRow, scoreReplyRow, tickRow, turnRow, unqueueRow, unseenEvents, type Answer,
-  type Effect, type MovedWithEffects, type ResumeAnswers, type RowId, type TickTurn, type TurnAnswer,
+  type Effect, type MovedWithEffects, type ResumeAnswers, type RowId, type StartRun, type TickTurn, type TurnAnswer,
 } from './transitions.js';
 import { errorOf, turnOf, type SkillAnswer, type SkillError, type Turn, type Waiting } from './turn.js';
 import type { SkillContext } from './skill-driver.js';
@@ -158,6 +158,14 @@ async function attemptCheckRow(context: SkillContext, state: SkillState, open: A
   }
 }
 
+/** The skill state of `run` as this session starts to drive it, as R10 or R19 `planned` it. */
+export function plannedState(context: SkillContext, run: RunId, planned: StartRun): SkillState {
+  return newSkillState({
+    run, driver: driverIdentity('skill', context.cwd), invocation: context.invocation, options: { parallel: planned.parallel, hitl: planned.hitl, mode: context.mode },
+    host: planned.host, session: context.session, at: context.now().toISOString(), ...(planned.judge !== undefined ? { judge: planned.judge } : {}),
+  });
+}
+
 /** The end a `done` names, whether the engine answered it or the driver kept it, so the two compare as equal text. */
 function endOf(done: { outcome: string; failure?: WorkflowFailure; prs: string[] }): unknown {
   return { outcome: done.outcome, failure: done.failure, prs: done.prs };
@@ -265,13 +273,7 @@ async function called(context: SkillContext, lock: RunLock, same: Literal, input
     }));
     if (taken && 'answer' in taken) return { answer: { error: errorOf(taken.answer, { invocation: context.invocation, same, localTool }) } };
     if (taken) {
-      const planned = taken.start;
-      return {
-        state: newSkillState({
-          run, driver: driverIdentity('skill', context.cwd), invocation: context.invocation, options: { parallel: planned.parallel, hitl: planned.hitl, mode: context.mode },
-          host: planned.host, session: context.session, at: context.now().toISOString(), ...(planned.judge !== undefined ? { judge: planned.judge } : {}),
-        }),
-      };
+      return { state: plannedState(context, run, taken.start) };
     }
   }
   if (state && input.report !== undefined && traced(context, reportCallRow(state, input.report))) return { state };
