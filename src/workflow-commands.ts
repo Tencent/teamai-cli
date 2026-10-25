@@ -12,7 +12,7 @@ import { runLocalDriver, withDriverLock } from './workflow/drivers/local/local-d
 import { driverIdentity } from './driver-identity.js';
 import { getBusinessRoot, getDataHome, type LocalConfig, type TeamaiConfig } from './types.js';
 import { AttemptIdSchema, isRunId, readRun } from './workflow/store.js';
-import { inProcessClient, type NextPrepare } from './workflow/protocol.js';
+import { inProcessClient, workflowNotFound, type NextPrepare } from './workflow/protocol.js';
 import { parseSkillCall, runSkillCall, skillContext } from './workflow/drivers/skill/skill-driver.js';
 import { loadCachedWorkflow } from './workflow/cache.js';
 import { findRunConfig } from './workflow/run-location.js';
@@ -163,6 +163,13 @@ async function workflowSkill(raw: Parameters<typeof parseSkillCall>[0]): Promise
   writeEnvelope(await runSkillCall(call, context), loaded.secrets);
 }
 
+/** The flags of `workflow start` without `--driver skill`. The skill driver's flags are refused, the first given in this order. */
+const NonSkillStartOptionsSchema = z.object({
+  parallel: z.undefined({ invalid_type_error: '--parallel needs --driver skill' }),
+  hitl: z.undefined({ invalid_type_error: '--hitl needs --driver skill' }),
+  judge: z.boolean().optional().refine((judged) => judged !== false, '--no-judge needs --driver skill'),
+});
+
 /** `judge` is false with `--no-judge`. */
 export async function workflowStart(name: string, options: {
   driver?: string; tools?: string; inputs?: string; autoApprove?: boolean; describe?: boolean; parallel?: string; confirmed?: boolean; hitl?: string; judge?: boolean;
@@ -174,8 +181,9 @@ export async function workflowStart(name: string, options: {
     return;
   }
   setStderrOnly(true);
-  if (options.parallel !== undefined || options.hitl !== undefined || options.judge === false) {
-    writeEnvelope({ error: { code: 'invalid_arguments', message: '--parallel, --hitl and --no-judge need --driver skill' } }, collectEnvSecrets());
+  const nonSkill = NonSkillStartOptionsSchema.safeParse(options);
+  if (!nonSkill.success) {
+    refuseOptions(nonSkill.error);
     return;
   }
   const loaded = await readyStartConfig(name);
@@ -183,8 +191,12 @@ export async function workflowStart(name: string, options: {
   const { config, teamConfig, env, secrets } = loaded;
   if (options.describe) {
     const cached = await loadCachedWorkflow(config, name);
-    if (!cached) writeEnvelope({ error: { code: 'workflow_not_found', message: `Workflow or alias ${name} has no unambiguous runnable version` } }, secrets);
-    else { const { name, description, alias, invoke, inputs } = cached.definition; writeEnvelope({ data: { name, description, ...(alias ? { alias } : {}), invoke: invoke ?? 'deny', inputs: inputs ?? {} } }, secrets); }
+    if (!cached) {
+      writeEnvelope({ error: workflowNotFound(name) }, secrets);
+      return;
+    }
+    const { description, alias, invoke, inputs } = cached.definition;
+    writeEnvelope({ data: { name: cached.definition.name, description, ...(alias ? { alias } : {}), invoke: invoke ?? 'deny', inputs: inputs ?? {} } }, secrets);
     return;
   }
   if (options.driver !== undefined && options.driver !== 'local') {

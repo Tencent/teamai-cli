@@ -158,6 +158,11 @@ function startRefusal(definition: WorkflowDefinition | undefined, caller: StartC
   }
 }
 
+/** The failure a call answers when the cache holds no unambiguous runnable version of workflow or alias `name`. */
+export function workflowNotFound(name: string): WorkflowFailure {
+  return { code: 'workflow_not_found', message: `Workflow or alias ${name} has no unambiguous runnable version` };
+}
+
 /**
  * Who judges a run's scored steps as the skill driver drives it: no step is scored; the confined judge of `tool`, the
  * session's tool, here; or no judge here, for `reason`.
@@ -226,7 +231,7 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
   return {
     describe: async (name, { ceiling, can, checkout, tool }) => {
       const cached = await loadCachedWorkflow(config, name);
-      if (!cached) return { error: { code: 'workflow_not_found', message: `Workflow or alias ${name} has no unambiguous runnable version` } };
+      if (!cached) return { error: workflowNotFound(name) };
       const tree = await loadWorkflowTree(config, cached);
       if ('failed' in tree) return { error: tree.failed };
       const head = checkout === undefined ? undefined : await headCommit(checkout);

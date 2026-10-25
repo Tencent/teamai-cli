@@ -166,7 +166,7 @@ describe('workflow json payloads', () => {
   });
 });
 
-describe('workflow next and report without --driver skill', () => {
+describe('workflow next, report and start without --driver skill', () => {
   it.each([
     ['next', { driver: 'local' }, 'next takes --driver skill, not --driver local'],
     ['next', { wait: true, adopt: '/place' }, '--wait needs --driver skill'],
@@ -181,6 +181,17 @@ describe('workflow next and report without --driver skill', () => {
     ['report', { modelUnavailable: true }, '--model-unavailable needs --driver skill'],
   ] as const)('refuses %s with %j before it reads the run', async (command, options, message) => {
     const answer = await capture(() => (command === 'next' ? workflowNext('r00000000', options) : workflowReport('r00000000', options)));
+
+    expect(answer).toEqual({ error: { code: 'invalid_arguments', message } });
+  });
+
+  it.each([
+    [{ parallel: '2' }, '--parallel needs --driver skill'],
+    [{ hitl: 'person' }, '--hitl needs --driver skill'],
+    [{ judge: false }, '--no-judge needs --driver skill'],
+    [{ driver: 'local', parallel: '2', hitl: 'person' }, '--parallel needs --driver skill'],
+  ] as const)('refuses start with %j before it reads the workflow', async (options, message) => {
+    const answer = await capture(() => workflowStart('missing', options));
 
     expect(answer).toEqual({ error: { code: 'invalid_arguments', message } });
   });
