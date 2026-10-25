@@ -84,15 +84,15 @@ function readJson(payload: string | undefined, missing: string): JsonRead {
 }
 
 /**
- * The member's config, and the team env resolved once for the command: the secrets every envelope it prints masks, which
- * the operation offers against and masks its writes with.
+ * A command's config, and the team env resolved once for it: the secrets every envelope it prints masks, which the
+ * operation offers against and masks its writes with.
  */
-async function readyConfig(write = refuse): Promise<{ config: LocalConfig; teamConfig: TeamaiConfig; env: WorkflowEnv; secrets: Record<string, string> } | undefined> {
+interface Ready { config: LocalConfig; teamConfig: TeamaiConfig; env: WorkflowEnv; secrets: Record<string, string> }
+
+/** The member's config as `Ready`, or the failure the caller prints. */
+async function readyConfig(): Promise<Ready | WorkflowEnvelope> {
   const loaded = await loadConfig();
-  if (!('config' in loaded)) {
-    write(loaded);
-    return undefined;
-  }
+  if (!('config' in loaded)) return loaded;
   const env = await resolveWorkflowEnv(loaded.config);
   return { ...loaded, env, secrets: env.secrets };
 }
@@ -101,9 +101,9 @@ async function readyConfig(write = refuse): Promise<{ config: LocalConfig; teamC
  * `readyConfig`, or the user scope's when this is a project whose cache has no runnable version of `name` and the user
  * scope's has one: the skills a user-scope pull generates show in every directory, so `start` finds what they name.
  */
-async function readyStartConfig(name: string, write = refuse): Promise<Awaited<ReturnType<typeof readyConfig>>> {
-  const loaded = await readyConfig(write);
-  if (!loaded || loaded.config.scope !== 'project' || await loadCachedWorkflow(loaded.config, name)) return loaded;
+async function readyStartConfig(name: string): Promise<Ready | WorkflowEnvelope> {
+  const loaded = await readyConfig();
+  if (!('config' in loaded) || loaded.config.scope !== 'project' || await loadCachedWorkflow(loaded.config, name)) return loaded;
   const user = await loadLocalConfigForScope('user', undefined, { dryRun: true });
   if (!user || !await loadCachedWorkflow(user, name)) return loaded;
   const teamConfig = await loadTeamConfig(user.repo.localPath);
@@ -112,23 +112,24 @@ async function readyStartConfig(name: string, write = refuse): Promise<Awaited<R
   return { config: user, teamConfig, env, secrets: env.secrets };
 }
 
-async function runOwner(runId: string, allowRemote: boolean, write: typeof refuse): Promise<{ config: LocalConfig; teamConfig: TeamaiConfig } | undefined> {
+/** `allowRemote`: a run no config here has is the current config's, as a call that may claim it from teamai-reports needs. */
+async function runOwner(runId: string, { allowRemote }: { allowRemote: boolean }): Promise<{ config: LocalConfig; teamConfig: TeamaiConfig } | WorkflowEnvelope> {
   const current = await loadConfig(true);
   const found = await findRunConfig(runId, 'config' in current ? current.config : undefined);
   if (!('config' in found)) {
     if (allowRemote && 'error' in found && found.error.code === 'run_not_found' && 'config' in current) return current;
-    write(found); return undefined;
+    return found;
   }
   if ('config' in current && getDataHome(current.config) === getDataHome(found.config) && getBusinessRoot(current.config) === getBusinessRoot(found.config)) return { config: found.config, teamConfig: current.teamConfig };
   const teamConfig = await loadTeamConfig(found.config.repo.localPath);
-  if (!teamConfig) { write({ error: { code: 'not_initialized', message: 'The run owning team configuration cannot be read' } }); return undefined; }
+  if (!teamConfig) return { error: { code: 'not_initialized', message: 'The run owning team configuration cannot be read' } };
   return { config: found.config, teamConfig };
 }
 
 /** The config of the team that owns `runId`, whatever the cwd, and that team's env resolved as `readyConfig` does. */
-async function readyRunConfig(runId: string, allowRemote = false, write = refuse): Promise<{ config: LocalConfig; teamConfig: TeamaiConfig; env: WorkflowEnv; secrets: Record<string, string> } | undefined> {
-  const owner = await runOwner(runId, allowRemote, write);
-  if (!owner) return undefined;
+async function readyRunConfig(runId: string, options: { allowRemote: boolean } = { allowRemote: false }): Promise<Ready | WorkflowEnvelope> {
+  const owner = await runOwner(runId, options);
+  if (!('config' in owner)) return owner;
   const env = await resolveWorkflowEnv(owner.config);
   return { ...owner, env, secrets: env.secrets };
 }
@@ -155,9 +156,12 @@ async function workflowSkill(raw: Parameters<typeof parseSkillCall>[0]): Promise
     return;
   }
   // A resume, or a takeover, readies a run this machine may lack, so the skill driver answers for it.
-  const loaded = call.kind === 'describe' || call.kind === 'start' ? await readyStartConfig(call.name, refuseSkill)
-    : await readyRunConfig(call.run, call.kind === 'resume' || call.kind === 'takeover', refuseSkill);
-  if (!loaded) return;
+  const loaded = call.kind === 'describe' || call.kind === 'start' ? await readyStartConfig(call.name)
+    : await readyRunConfig(call.run, { allowRemote: call.kind === 'resume' || call.kind === 'takeover' });
+  if (!('config' in loaded)) {
+    refuseSkill(loaded);
+    return;
+  }
   const context = await skillContext({
     config: loaded.config, toolPaths: loaded.teamConfig.toolPaths, env: loaded.env, cwd: process.cwd(),
     trace: (row) => log.debug(`[workflow] skill driver took row ${row}`),
@@ -189,7 +193,10 @@ export async function workflowStart(name: string, options: {
     return;
   }
   const loaded = await readyStartConfig(name);
-  if (!loaded) return;
+  if (!('config' in loaded)) {
+    refuse(loaded);
+    return;
+  }
   const { config, teamConfig, env, secrets } = loaded;
   if (options.describe) {
     const cached = await loadCachedWorkflow(config, name);
@@ -305,8 +312,11 @@ export async function workflowNext(runId: string, options: {
     writeEnvelope({ error: { code: 'invalid_json', message: parsed } }, collectEnvSecrets());
     return;
   }
-  const loaded = await readyRunConfig(runId, parsed.request.claim === true);
-  if (!loaded) return;
+  const loaded = await readyRunConfig(runId, { allowRemote: parsed.request.claim === true });
+  if (!('config' in loaded)) {
+    refuse(loaded);
+    return;
+  }
   const { config, env, secrets } = loaded;
   writeEnvelope(await inProcessClient({ config, env }).next(runId, payload.value, prepare ? { prepare } : undefined), secrets);
 }
@@ -341,7 +351,10 @@ export async function workflowReport(runId: string, options: { json?: string; dr
     return;
   }
   const loaded = await readyRunConfig(runId);
-  if (!loaded) return;
+  if (!('config' in loaded)) {
+    refuse(loaded);
+    return;
+  }
   const { config, env, secrets } = loaded;
   writeEnvelope(await inProcessClient({ config, env }).report(runId, payload.value), secrets);
 }
@@ -351,7 +364,11 @@ async function workflowControl(runId: string, operation: (config: LocalConfig, s
   setStderrOnly(true);
   if (refusedNested(nestedCall(process.env), false)) return;
   const loaded = await readyRunConfig(runId);
-  if (loaded) writeEnvelope(await operation(loaded.config, loaded.secrets), loaded.secrets);
+  if (!('config' in loaded)) {
+    refuse(loaded);
+    return;
+  }
+  writeEnvelope(await operation(loaded.config, loaded.secrets), loaded.secrets);
 }
 
 /**
@@ -411,7 +428,10 @@ export async function workflowPublish(runId: string, options: { sessions?: boole
   setStderrOnly(true);
   if (refusedNested(nestedCall(process.env), false)) return;
   const loaded = await readyConfig();
-  if (!loaded) return;
+  if (!('config' in loaded)) {
+    refuse(loaded);
+    return;
+  }
   const { secrets } = loaded;
   const published = await publishRun(loaded.config, runId, { checkout: process.cwd(), ...(options.sessions ? { sessions: resumableSessions } : {}) });
   if (published.ok && published.value.skipped) {
@@ -440,8 +460,11 @@ export async function workflowResume(runId: string, options: {
     writeEnvelope({ error: { code: 'unsupported_driver', message: `Driver "${options.driver}" is not available. Use --driver local or --driver skill.` } }, collectEnvSecrets());
     return;
   }
-  const loaded = await readyRunConfig(runId, true);
-  if (!loaded) return;
+  const loaded = await readyRunConfig(runId, { allowRemote: true });
+  if (!('config' in loaded)) {
+    refuse(loaded);
+    return;
+  }
   const { secrets } = loaded;
   const run = RunIdSchema.safeParse(runId);
   if (!run.success) {
