@@ -303,8 +303,9 @@ function noCheckout(run: string, attempt: string): WorkflowFailure {
 /**
  * Prepares `attempt`, which the run already leased to `driver`, holding the run's lock, as `prepareLeased` prepares a
  * new lease, in the place the host made at `adopt` when given. Every other lease of the run is listed as running, so
- * the engine hands this one back and leases nothing new. `wrong_attempt` when the run no longer leases it to `driver`;
- * `adopt_mismatch`, with the attempt still leased, when another open attempt of the run holds `adopt`.
+ * the engine hands this one back and leases nothing new. `wrong_attempt` when the run no longer leases it to `driver`,
+ * or released it just now for a `can` that no longer covers its step; `adopt_mismatch`, with the attempt still leased,
+ * when another open attempt of the run holds `adopt`.
  */
 async function prepareAttempt(input: {
   config: LocalConfig; lock: RunLock; driver: DriverIdentity; env: WorkflowEnv; next: Omit<NextOptions, 'env'>; attempt: AttemptId; adopt?: string;
@@ -317,6 +318,12 @@ async function prepareAttempt(input: {
   if (!('data' in answer) || answer.data.done !== undefined) return answer;
   const leased = LeaseIdSchema.safeParse(answer.data.lease);
   if (!leased.success || leased.data.attempt !== attempt) {
+    // The engine gives up a lease it would hand back to a driver whose can no longer covers the step, which waits again.
+    const step = run.steps.find((candidate) => candidate.status === 'leased' && candidate.lease.attempt === attempt);
+    const after = step ? await readRun(config, lock.run) : undefined;
+    if (step && typeof after === 'object' && after.steps.find((candidate) => candidate.id === step.id)?.status === 'pending') {
+      return { error: { code: 'wrong_attempt', message: `Run ${lock.run} released attempt ${attempt} of step "${step.id}" when this driver asked for it back, since the can this next declares no longer covers the step, so it was not prepared. Call next without --attempt: the run leases the step again to a driver whose can covers it.` } };
+    }
     return { error: { code: 'wrong_attempt', message: `Run ${lock.run} does not lease attempt ${attempt} to this driver, so it was not prepared. Prepare an attempt next leased this driver, or call next without --attempt.` } };
   }
   if (adopt !== undefined) {

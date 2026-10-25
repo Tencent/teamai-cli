@@ -461,6 +461,18 @@ steps:
     expect(await prepare(api.attempt)).toMatchObject({ data: { lease: { attempt: api.attempt, cwd: dir } } });
   });
 
+  it('says the run released an attempt the driver asked back with a can that no longer covers its step, and what to call instead', async () => {
+    const f = await fixture(SETUP('exit 0'));
+    const lease = await leased(f);
+    const narrower = { driver: { ...f.driver, can: { hitl: true, workspace: ['read-only', 'new', 'continue'] } } };
+    expect(await f.client.next(f.runId, narrower, { prepare: { attempt: lease.attempt } })).toEqual({ error: {
+      code: 'wrong_attempt',
+      message: `Run ${f.runId} released attempt ${lease.attempt} of step "build" when this driver asked for it back, since the can this next declares no longer covers the step, so it was not prepared. Call next without --attempt: the run leases the step again to a driver whose can covers it.`,
+    } });
+    const run = await readRun(f.config, f.runId);
+    expect(typeof run === 'object' && run.steps.find((step) => step.id === 'build')?.status).toBe('pending');
+  });
+
   it('refuses a place on the lease\'s branch whose history lacks the start, and the attempt stays leased', async () => {
     const f = await fixture();
     const lease = await leased(f);
