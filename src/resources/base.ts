@@ -6,22 +6,12 @@ import type { ResourceType, ResourceItem, ResourceDiff, DeliveryTarget, TeamaiCo
 export type PlacementRecords = Pick<State, 'placedRules' | 'placedAgents'>;
 import { readFileSafe, writeFile, ensureDir, pathExists } from '../utils/fs.js';
 import { getUserHome } from '../utils/home.js';
-import { installGateOf, isToolId } from '../tools.js';
+import { installGateOf, isToolId, NEW_GENERATION_INSTALL_ROOTS } from '../tools.js';
 import { defaultToolHome, homeRoot } from '../tool-home.js';
 import type { DeliveryLedger } from './delivered-copies.js';
 
 const TOMBSTONE_FILE = '.removed';
 
-/**
- * Roots of newer app generations, which count as install proof beside the
- * primary root: WorkBuddy 5.7+ moved its runtime to `.workbuddy-ai/` and stops
- * reading `.workbuddy/`, so a member on 5.7+ has only the new root (#1273).
- * The probe accepts either; which paths teamai writes stays the toolPaths
- * entry's choice, per generation.
- */
-const NEW_GENERATION_INSTALL_ROOTS: Readonly<Record<string, readonly string[]>> = {
-  workbuddy: ['.workbuddy-ai'],
-};
 /** Detect an installed tool while respecting tool-specific user roots. */
 export async function isToolInstalledForConfig(
   tool: string,

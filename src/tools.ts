@@ -777,6 +777,17 @@ export const TOOLS = {
   },
 } as const satisfies Record<ToolId, ToolDescriptor>;
 
+/**
+ * Roots of newer app generations, which count as install proof beside the
+ * tool's primary root: WorkBuddy 5.7+ moved its runtime to `.workbuddy-ai/`
+ * and stops reading `.workbuddy/`, so a member on 5.7+ has only the new
+ * root (#1273). A probe accepts either; which paths teamai writes stays the
+ * toolPaths entry's choice, per generation.
+ */
+export const NEW_GENERATION_INSTALL_ROOTS: Readonly<Record<string, readonly string[]>> = {
+  workbuddy: ['.workbuddy-ai'],
+};
+
 export function isToolId(value: string): value is ToolId {
   return Object.hasOwn(TOOLS, value);
 }

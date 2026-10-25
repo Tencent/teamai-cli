@@ -16,6 +16,7 @@ import {
 } from './tools.js';
 import {
   DEFAULT_TOOL_PATHS, isAgentExcluded, isGitExcludeEnabled, isSelfMode, resolveBaseDir, scopedToolPaths, toolGateRoot,
+  WORKBUDDY_NEW_GENERATION_ROOT, WORKBUDDY_TOOL_ID, WORKBUDDY_TOOL_ROOT,
   type HomePaths, type LocalConfig, type Scope, type TeamaiConfig, type ToolId,
 } from './types.js';
 import { homeRoot, movedToolHome, realHost, toolHome, type Host } from './tool-home.js';
@@ -433,6 +434,13 @@ async function installedGateOf(tool: string, install: Install, host: Host, roots
       case 'home':
         return probe(home.dir);
       case 'own-root':
+        // WorkBuddy 5.7+ moved its runtime to `.workbuddy-ai/` and stops
+        // reading `.workbuddy/` (#1273): the new root present means 5.7+ is
+        // the live generation (an upgrade leaves the old root behind as an
+        // unread leftover), so it is the install proof even when both exist.
+        if (tool === WORKBUDDY_TOOL_ID && await host.exists(join(roots.base, WORKBUDDY_NEW_GENERATION_ROOT))) {
+          return probe(join(roots.base, WORKBUDDY_NEW_GENERATION_ROOT));
+        }
         return probe(join(roots.base, home.root));
       default: {
         const unhandled: never = installedBy;
@@ -545,6 +553,19 @@ async function locateSkills(tool: string, install: Install, host: Host): Promise
   if (configured === null) return { channel: 'files', own: null, shared: null, reads: 'unknown', readGates: [], retired: [], gates: [] };
 
   let own: string | null = configured;
+  // WorkBuddy 5.7+ scans skills from `.workbuddy-ai/skills` and stops reading
+  // `.workbuddy/` (#1273), so on an install whose live generation is the new
+  // root, skills land where the app scans. Only the default path swaps —
+  // a team that redirected skills on purpose keeps its own. User scope may
+  // already carry the swapped default (`scopedToolPaths`), so both spellings
+  // count (#1290: the new root wins even when an upgrade left both behind).
+  if (tool === WORKBUDDY_TOOL_ID) {
+    const relative = roots.paths?.skills;
+    if ((relative === `${WORKBUDDY_TOOL_ROOT}/skills` || relative === `${WORKBUDDY_NEW_GENERATION_ROOT}/skills`)
+      && await host.exists(roots.join(roots.base, WORKBUDDY_NEW_GENERATION_ROOT))) {
+      own = roots.join(roots.base, `${WORKBUDDY_NEW_GENERATION_ROOT}/skills`);
+    }
+  }
   let shared: string | null = null;
   if (tool === 'openclaw') {
     const workspace = await openclawWorkspaceOf(roots, host);
