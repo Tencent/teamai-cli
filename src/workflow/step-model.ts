@@ -5,10 +5,16 @@
  * gets it on argv, and so does OpenCode with the variant: OpenCode 2 reads neither from the agent file, and OpenCode 1
  * does not start a subagent, which is how pull deploys OpenCode agents.
  */
+import path from 'node:path';
+import { installOf, locate, ownOf } from '../locate.js';
 import { isModelAlias, loadModelAliases, noModelCause, noModelReason, resolveModelValue, type NoModel } from '../models/aliases.js';
-import { toolExtrasFor, type AgentSpec, type ToolName } from '../resources/agent-format.js';
-import type { LocalConfig } from '../types.js';
-import { isLaunchTool, localToolFamily } from '../tool-launch/tools.js';
+import {
+  agentFileExtensionForTool, reverseFromClaude, reverseFromCodex, reverseFromOpencode, toolExtrasFor, type AgentSpec, type ToolName,
+} from '../resources/agent-format.js';
+import { isAgentToolId } from '../tools.js';
+import type { LocalConfig, TeamaiConfig } from '../types.js';
+import { isLaunchTool, localToolFamily, type LaunchTool } from '../tool-launch/tools.js';
+import { readFileSafe } from '../utils/fs.js';
 import type { WorkflowFailure } from './types.js';
 
 /** The model a prompt step's tool runs on, with the reasoning effort it takes. */
@@ -86,4 +92,34 @@ export async function chooseStepModel(request: StepModelRequest): Promise<StepMo
     model: { name: resolution.model, ...(resolution.effort !== undefined ? { effort: resolution.effort } : {}) },
     ...(isModelAlias(aliases, chosen.value) ? { alias: chosen.value } : {}),
   };
+}
+
+function reverseAgent(tool: LaunchTool, file: string, content: string) {
+  const family = localToolFamily(tool);
+  if (family === 'claude') return reverseFromClaude(file, content);
+  if (family === 'codex') return reverseFromCodex(file, content);
+  return reverseFromOpencode(file, content);
+}
+
+/**
+ * The agent `name` as `teamai pull` deployed it for `tool` in `config`'s scope, and the file it was read from, which is
+ * the key its pull recorded it under. Null when it is not deployed, cannot be read, or `tool` is one teamai does not
+ * launch, whose agent files it does not read back.
+ */
+export async function loadDeployedAgent(input: {
+  tool: string;
+  name: string;
+  config: LocalConfig;
+  toolPaths: TeamaiConfig['toolPaths'] | undefined;
+}): Promise<{ spec: AgentSpec; file: string } | null> {
+  const { tool, name, config, toolPaths } = input;
+  if (toolPaths === undefined || !isLaunchTool(tool) || !isAgentToolId(tool)) return null;
+  // The same directory `teamai pull` writes, not the step's cwd.
+  const agents = ownOf(await locate(tool, 'agents', installOf({ toolPaths }, config)))?.path;
+  if (agents === undefined) return null;
+  const file = path.join(agents, `${name}${agentFileExtensionForTool(tool)}`);
+  const content = await readFileSafe(file);
+  if (content === null) return null;
+  const reversed = reverseAgent(tool, file, content);
+  return reversed.ok ? { spec: reversed.spec, file } : null;
 }

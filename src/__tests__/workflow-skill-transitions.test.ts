@@ -65,6 +65,24 @@ steps:
     prompt: Write the UI.
 `;
 
+const REVIEWED = `schemaVersion: v1alpha1
+name: reviewed
+description: Review the change with the team's reviewers
+invoke: allow
+defaults:
+  model: claude-haiku-4-5
+steps:
+  - id: plain
+    workspace: new
+    agent: plain-reviewer
+    prompt: Review the change.
+  - id: pinned
+    needs: []
+    workspace: new
+    agent: pinned-reviewer
+    prompt: Review it again.
+`;
+
 const SETUP = `schemaVersion: v1alpha1
 name: build
 description: Build in a set-up workspace
@@ -930,6 +948,21 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       await made.call({ kind: 'choose', run, choice: 'h2' });
       expect(await made.call({ kind: 'choose', run, choice: 'h1' })).toMatchObject({ error: { code: 'unknown_choice', next: `teamai workflow next ${run} --driver skill` } });
       expect(await made.call({ kind: 'ack', run, attempt })).toMatchObject({ error: { code: 'unknown_offer', next: `teamai workflow next ${run} --driver skill` } });
+      return made.rows;
+    },
+  },
+  {
+    name: 'defaults.model fills the model of a team agent whose definition sets none, and leaves a definition that sets one alone',
+    rows: ['C2'],
+    run: async () => {
+      const made = await harness({ reviewed: REVIEWED });
+      const agents = path.join(made.work, '.claude', 'agents');
+      fs.mkdirSync(agents, { recursive: true });
+      fs.writeFileSync(path.join(agents, 'plain-reviewer.md'), '---\nname: plain-reviewer\ndescription: Reviews changes.\n---\nFollow the review checklist.\n');
+      fs.writeFileSync(path.join(agents, 'pinned-reviewer.md'), '---\nname: pinned-reviewer\ndescription: Reviews changes.\nmodel: claude-opus-4-1\n---\nFollow the review checklist.\n');
+      const turn = await chosen(made, 'reviewed', 2);
+      const models = Object.fromEntries(dispatches(turn).map((action) => [action.step, action.model]));
+      expect(models).toEqual({ plain: { by: 'defaults', name: 'claude-haiku-4-5' }, pinned: { by: 'definition' } });
       return made.rows;
     },
   },

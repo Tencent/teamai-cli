@@ -565,7 +565,7 @@ steps:
     const alive = (): boolean => { try { return process.kill(pid, 0); } catch { return false; } };
     expect(alive()).toBe(true);
 
-    const { runners } = await skillContext({ config: harness.config, env: harness.context.env, cwd: harness.work });
+    const { runners } = await skillContext({ config: harness.config, toolPaths: harness.context.toolPaths, env: harness.context.env, cwd: harness.work });
     await runners.stopLeft(run, attempt);
     expect(alive()).toBe(false);
     expect(await setup).toMatchObject({ code: 'setup_failed' });

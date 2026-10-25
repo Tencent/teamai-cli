@@ -9,7 +9,7 @@ import { driverIdentity } from '../../../driver-identity.js';
 import type { WorkflowEnv } from '../../../env-resolution.js';
 import type { ToolName } from '../../../resources/agent-format.js';
 import { isAgentToolId } from '../../../tools.js';
-import type { LocalConfig } from '../../../types.js';
+import type { LocalConfig, TeamaiConfig } from '../../../types.js';
 import { agentSessionFromEnv } from '../../../utils/session-id.js';
 import { agentEvidence, isAttemptRunner, type AgentEvidence } from '../../attempt-marker.js';
 import { inProcessClient, invokeDeniedMessage, type WorkflowClient } from '../../protocol.js';
@@ -71,6 +71,8 @@ export interface Runners {
 
 export interface SkillContext {
   config: LocalConfig;
+  /** The team's `toolPaths` in `config`'s scope: where `teamai pull` deployed the agents a step names. */
+  toolPaths: TeamaiConfig['toolPaths'] | undefined;
   env: WorkflowEnv;
   client: WorkflowClient;
   /** The calling agent session, undefined when its host names none. */
@@ -93,7 +95,7 @@ export interface SkillContext {
  * The context of a call from this process: its agent session, how the member ran teamai, the in-process protocol,
  * detached runners, and the real clock.
  */
-export async function skillContext(input: Pick<SkillContext, 'config' | 'env' | 'cwd' | 'trace'>): Promise<SkillContext> {
+export async function skillContext(input: Pick<SkillContext, 'config' | 'toolPaths' | 'env' | 'cwd' | 'trace'>): Promise<SkillContext> {
   const { config, env } = input;
   const session = await agentSessionFromEnv();
   return {

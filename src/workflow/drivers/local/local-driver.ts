@@ -2,16 +2,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
-import {
-  agentFileExtensionForTool,
-  reverseFromClaude,
-  reverseFromCodex,
-  reverseFromOpencode,
-  toolExtrasFor,
-  type AgentSpec,
-} from '../../../resources/agent-format.js';
-import { installOf, locate, ownOf } from '../../../locate.js';
-import { isAgentToolId } from '../../../tools.js';
+import { toolExtrasFor, type AgentSpec } from '../../../resources/agent-format.js';
 import { observeLaunch, type Used } from '../../../agent-observation.js';
 import { detectProjectConfig } from '../../../config.js';
 import { driverIdentity } from '../../../driver-identity.js';
@@ -41,7 +32,7 @@ import { abandonPlace, finishPlace, placeOf, placeRoot, preparePlace, releasePla
 import { commandOutputs } from '../../protocol.js';
 import { stopProcess } from '../../../tool-launch/process-stop.js';
 import { isLaunchTool, localToolFamily, type LaunchTool } from '../../../tool-launch/tools.js';
-import { chooseStepModel } from '../../step-model.js';
+import { chooseStepModel, loadDeployedAgent } from '../../step-model.js';
 import type { DriverIdentity, StepHitl, WorkflowEnvelope, WorkflowFailure } from '../../types.js';
 import { isWorkflowError, WORKSPACE_MODES } from '../../types.js';
 import { WorkspaceContractSchema, type LeaseSession, type SessionRef, type WorkspaceContract } from '../../workspace.js';
@@ -260,31 +251,6 @@ function definitionRun(tool: LaunchTool, name: string, agent: AgentSpec): NonNul
   return { name, instructions: agent.instructions, ...(agent.model ? { model: agent.model } : {}), ...(settings ? { settings } : {}) };
 }
 
-function reverseAgent(tool: LaunchTool, file: string, content: string) {
-  const family = localToolFamily(tool);
-  if (family === 'claude') return reverseFromClaude(file, content);
-  if (family === 'codex') return reverseFromCodex(file, content);
-  return reverseFromOpencode(file, content);
-}
-
-/** A deployed agent and the file it was read from, which is the key its pull recorded it under. */
-async function loadAgent(
-  tool: LaunchTool,
-  name: string,
-  config: LocalConfig,
-  toolPaths: TeamaiConfig['toolPaths'] | undefined,
-): Promise<{ spec: AgentSpec; file: string } | null> {
-  if (toolPaths === undefined || !isAgentToolId(tool)) return null;
-  // The same directory `teamai pull` writes, not the step's cwd.
-  const agents = ownOf(await locate(tool, 'agents', installOf({ toolPaths }, config)))?.path;
-  if (agents === undefined) return null;
-  const file = path.join(agents, `${name}${agentFileExtensionForTool(tool)}`);
-  const content = await readFileSafe(file);
-  if (content === null) return null;
-  const reversed = reverseAgent(tool, file, content);
-  return reversed.ok ? { spec: reversed.spec, file } : null;
-}
-
 function failureReport(failure: WorkflowFailure): { outcome: 'failed'; message: string; failure: WorkflowFailure } {
   return { outcome: 'failed', message: failure.message, failure };
 }
@@ -465,7 +431,7 @@ async function promptReport(
   }
   // A worktree has its own pull record, so the tool launched there is observed and bound as that checkout.
   const stepConfig = lease.workspace && lease.cwd ? await detectProjectConfig(lease.cwd) ?? config : config;
-  const loaded = lease.agent ? await loadAgent(selected, lease.agent, stepConfig, options.toolPaths) : undefined;
+  const loaded = lease.agent ? await loadDeployedAgent({ tool: selected, name: lease.agent, config: stepConfig, toolPaths: options.toolPaths }) : undefined;
   const agent = loaded?.spec;
   if (lease.agent && !agent) {
     return giveUp({

@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { onTestFinished, vi } from 'vitest';
 import { resolveWorkflowEnv } from '../../env-resolution.js';
-import type { LocalConfig } from '../../types.js';
+import { TeamaiConfigBaseSchema, type LocalConfig } from '../../types.js';
 import type { AgentEvidence } from '../../workflow/attempt-marker.js';
 import { syncWorkflowDefinitions } from '../../workflow/cache.js';
 import { inProcessClient, type WorkflowClient } from '../../workflow/protocol.js';
@@ -234,12 +234,14 @@ export async function skillHarness(workflows: Record<string, string>, options: H
   for (const [name, yaml] of Object.entries(workflows)) fs.writeFileSync(path.join(repo, 'workflows', `${name}.yaml`), yaml);
   await syncWorkflowDefinitions(config);
   const env = await resolveWorkflowEnv(config);
-  const production = await skillContext({ config, env, cwd: work });
+  // Every tool's default paths, as a team repository that sets no toolPaths has them.
+  const toolPaths = TeamaiConfigBaseSchema.shape.toolPaths.parse(undefined);
+  const production = await skillContext({ config, toolPaths, env, cwd: work });
   const scheduler = memoryRunners(production.runners.command);
   const client = inProcessClient({ config, env });
   const rows: string[] = [];
   const context: SkillContext = {
-    config, env, client: scheduler.judging(options.client ? options.client(client) : client), session: options.session ?? 'session-a', tool: 'claude', invocation: 'teamai', evidence: options.evidence ?? { kind: 'none' }, cwd: work,
+    config, toolPaths, env, client: scheduler.judging(options.client ? options.client(client) : client), session: options.session ?? 'session-a', tool: 'claude', invocation: 'teamai', evidence: options.evidence ?? { kind: 'none' }, cwd: work,
     now: scheduler.now, runners: scheduler.track(options.runners ? options.runners(scheduler.runners) : scheduler.runners),
     locks: { take: (run, body, waitMs) => withRunLock(config, run, body, { waitMs }) },
     trace: (row) => { rows.push(row); },

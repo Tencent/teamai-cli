@@ -130,7 +130,10 @@ async function workflowSkill(raw: Parameters<typeof parseSkillCall>[0]): Promise
   }
   const loaded = call.kind === 'next' || call.kind === 'report' || call.kind === 'respond' ? await readyRunConfig(call.run) : await readyConfig();
   if (!loaded) return;
-  const context = await skillContext({ config: loaded.config, env: loaded.env, cwd: process.cwd(), trace: (row) => log.debug(`[workflow] skill driver took row ${row}`) });
+  const context = await skillContext({
+    config: loaded.config, toolPaths: scopedToolPaths(loaded.teamConfig, loaded.config), env: loaded.env, cwd: process.cwd(),
+    trace: (row) => log.debug(`[workflow] skill driver took row ${row}`),
+  });
   writeEnvelope(await runSkillCall(call, context), loaded.secrets);
 }
 
