@@ -362,6 +362,13 @@ steps:
 });
 
 describe('workflow publish and resume --claim', () => {
+  it('a skill call of a run this machine does not have answers run_not_found with the next the skill wire carries', async () => {
+    state.config = testConfig();
+
+    expect(await capture(() => workflowNext('r0123456789abcdef', { driver: 'skill' }))).toEqual({ error: expect.objectContaining({ code: 'run_not_found', next: null }) });
+    expect(await capture(() => workflowNext('r0123456789abcdef', {}))).not.toMatchObject({ error: { next: null } });
+  });
+
   it('publish answers with the refusal envelope and a failing exit code for a run this machine does not have', async () => {
     state.config = testConfig();
 

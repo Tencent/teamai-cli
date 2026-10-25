@@ -37,10 +37,19 @@ function writeEnvelope(envelope: WorkflowEnvelope, secrets: Record<string, strin
  */
 function refusedNested(nested: Nested | undefined, skill: boolean): boolean {
   if (nested === undefined) return false;
-  const failure = nestedWorkflowError(nested);
-  const answer: { error: WorkflowFailure & { next?: null } } = { error: skill ? { ...failure, next: null } : failure };
-  writeEnvelope(answer, collectEnvSecrets());
+  (skill ? refuseSkill : refuse)({ error: nestedWorkflowError(nested) });
   return true;
+}
+
+/** Prints a refusal found before any driver answers. */
+function refuse(envelope: WorkflowEnvelope): void {
+  writeEnvelope(envelope, collectEnvSecrets());
+}
+
+/** `refuse` for a `--driver skill` call, whose every error carries `next`: null, since nothing here names what to run. */
+function refuseSkill(envelope: WorkflowEnvelope): void {
+  const answer: WorkflowEnvelope | { error: WorkflowFailure & { next: null } } = 'error' in envelope ? { error: { ...envelope.error, next: null } } : envelope;
+  writeEnvelope(answer, collectEnvSecrets());
 }
 
 async function loadConfig(readOnly = false): Promise<{ config: LocalConfig; teamConfig: TeamaiConfig } | WorkflowEnvelope> {
@@ -76,10 +85,10 @@ function readJson(payload: string | undefined, missing: string): JsonRead {
  * The member's config, and the team env resolved once for the command: the secrets every envelope it prints masks, which
  * the operation offers against and masks its writes with.
  */
-async function readyConfig(): Promise<{ config: LocalConfig; teamConfig: TeamaiConfig; env: WorkflowEnv; secrets: Record<string, string> } | undefined> {
+async function readyConfig(write = refuse): Promise<{ config: LocalConfig; teamConfig: TeamaiConfig; env: WorkflowEnv; secrets: Record<string, string> } | undefined> {
   const loaded = await loadConfig();
   if (!('config' in loaded)) {
-    writeEnvelope(loaded, collectEnvSecrets());
+    write(loaded);
     return undefined;
   }
   const env = await resolveWorkflowEnv(loaded.config);
@@ -90,8 +99,8 @@ async function readyConfig(): Promise<{ config: LocalConfig; teamConfig: TeamaiC
  * `readyConfig`, or the user scope's when this is a project whose cache has no runnable version of `name` and the user
  * scope's has one: the skills a user-scope pull generates show in every directory, so `start` finds what they name.
  */
-async function readyStartConfig(name: string): Promise<Awaited<ReturnType<typeof readyConfig>>> {
-  const loaded = await readyConfig();
+async function readyStartConfig(name: string, write = refuse): Promise<Awaited<ReturnType<typeof readyConfig>>> {
+  const loaded = await readyConfig(write);
   if (!loaded || loaded.config.scope !== 'project' || await loadCachedWorkflow(loaded.config, name)) return loaded;
   const user = await loadLocalConfigForScope('user', undefined, { dryRun: true });
   if (!user || !await loadCachedWorkflow(user, name)) return loaded;
@@ -101,22 +110,22 @@ async function readyStartConfig(name: string): Promise<Awaited<ReturnType<typeof
   return { config: user, teamConfig, env, secrets: env.secrets };
 }
 
-async function runOwner(runId: string, allowRemote: boolean): Promise<{ config: LocalConfig; teamConfig: TeamaiConfig } | undefined> {
+async function runOwner(runId: string, allowRemote: boolean, write: typeof refuse): Promise<{ config: LocalConfig; teamConfig: TeamaiConfig } | undefined> {
   const current = await loadConfig(true);
   const found = await findRunConfig(runId, 'config' in current ? current.config : undefined);
   if (!('config' in found)) {
     if (allowRemote && 'error' in found && found.error.code === 'run_not_found' && 'config' in current) return current;
-    writeEnvelope(found, collectEnvSecrets()); return undefined;
+    write(found); return undefined;
   }
   if ('config' in current && getDataHome(current.config) === getDataHome(found.config) && getBusinessRoot(current.config) === getBusinessRoot(found.config)) return { config: found.config, teamConfig: current.teamConfig };
   const teamConfig = await loadTeamConfig(found.config.repo.localPath);
-  if (!teamConfig) { writeEnvelope({ error: { code: 'not_initialized', message: 'The run owning team configuration cannot be read' } }, collectEnvSecrets()); return undefined; }
+  if (!teamConfig) { write({ error: { code: 'not_initialized', message: 'The run owning team configuration cannot be read' } }); return undefined; }
   return { config: found.config, teamConfig };
 }
 
 /** The config of the team that owns `runId`, whatever the cwd, and that team's env resolved as `readyConfig` does. */
-async function readyRunConfig(runId: string, allowRemote = false): Promise<{ config: LocalConfig; teamConfig: TeamaiConfig; env: WorkflowEnv; secrets: Record<string, string> } | undefined> {
-  const owner = await runOwner(runId, allowRemote);
+async function readyRunConfig(runId: string, allowRemote = false, write = refuse): Promise<{ config: LocalConfig; teamConfig: TeamaiConfig; env: WorkflowEnv; secrets: Record<string, string> } | undefined> {
+  const owner = await runOwner(runId, allowRemote, write);
   if (!owner) return undefined;
   const env = await resolveWorkflowEnv(owner.config);
   return { ...owner, env, secrets: env.secrets };
@@ -143,7 +152,7 @@ async function workflowSkill(raw: Parameters<typeof parseSkillCall>[0]): Promise
     writeEnvelope(call, collectEnvSecrets());
     return;
   }
-  const loaded = call.kind === 'describe' || call.kind === 'start' ? await readyStartConfig(call.name) : await readyRunConfig(call.run);
+  const loaded = call.kind === 'describe' || call.kind === 'start' ? await readyStartConfig(call.name, refuseSkill) : await readyRunConfig(call.run, false, refuseSkill);
   if (!loaded) return;
   const context = await skillContext({
     config: loaded.config, toolPaths: loaded.teamConfig.toolPaths, env: loaded.env, cwd: process.cwd(),
