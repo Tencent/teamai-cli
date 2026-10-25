@@ -1,6 +1,6 @@
 # Judging
 
-A run whose steps list scorers is judged on this machine when describe found the confined judge of your session's tool here and the person kept judging. Teamai runs that judge in the background on each scored step's work, from evidence only the judge reads, so a label stays independent of the session whose work it scores. Your part is the person.
+A run whose steps list scorers is judged on this machine when describe found the confined judge of your session's tool here and the person kept judging. TeamAI runs that judge in the background on each scored step's work, from evidence only the judge reads, so a label stays independent of the session whose work it scores. Your part is the person.
 
 | Event | What happened | Tell the person |
 |---|---|---|
