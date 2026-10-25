@@ -105,7 +105,7 @@ Done when every `dispatch` in the turn is acked.
 
 ## Place
 
-A `place` action comes when your host makes the worktrees children work in (`h3`): it asks your host for the place of one step, before its dispatch. Follow `reference`. The action stays in every turn until a place is adopted.
+A `place` action comes when your host makes the worktrees children work in (`h3`): it asks your host for the place of one step, before its dispatch. Follow `reference`. Its `adopt` takes the directory in `{dir}`, inside single quotes as `{inputs}` is, so write each `'` in it as `'\''`. The action stays in every turn until a place is adopted.
 
 Done when the turn carries a `dispatch` for its `attempt`.
 
