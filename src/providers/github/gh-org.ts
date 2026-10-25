@@ -78,7 +78,9 @@ async function fetchApiPage(url: string, token: string): Promise<GhRepoApiItem[]
   const chunks: Uint8Array[] = [];
   if (reader) {
     while (true) {
-      const { done, value } = await reader.read();
+      const { done, value } = await reader.read().catch((err: unknown) => {
+        throw signal.aborted ? signal.reason : err;
+      });
       if (done) break;
       received += value.length;
       if (received > MAX_RESPONSE_BYTES) {
