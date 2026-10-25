@@ -19,16 +19,18 @@ import { canFor, HOST_CHOICES, type HostChoice } from './host-profiles.js';
 import { journalCall } from './journal.js';
 import { describeLiteral, invocationOf, type Invocation } from './literals.js';
 import { askFor, attendedReason, ceilingOf, checkStartAnswers, localPromptTool, localReason, neededAnswers, type HitlMode } from './preflight.js';
-import { writeSkillState, type SkillState } from './skill-state.js';
+import { newSkillState, writeSkillState } from './skill-state.js';
 import { detachedRunners, runRunner } from './skill-runner.js';
 import { agentReport, foreground, poll } from './tick.js';
-import { describeRow, startRow, type RowId } from './transitions.js';
+import { describeRow, startRow, type ResumeAnswers, type RowId } from './transitions.js';
 import { errorOf, type SkillAnswer, type SkillError } from './turn.js';
 
 export type SkillCall =
   | { kind: 'describe'; name: string }
   /** `judge: false`: `--no-judge`, which leaves the scored steps unjudged here. `hitl`: `--hitl`, or `--auto-approve`. */
   | { kind: 'start'; name: string; answers: { parallel?: number; confirmed: boolean; hitl?: HitlMode; judge?: false }; inputs: unknown }
+  /** `resume --driver skill`: this session drives a run another machine published; `claim` takes it from another install. */
+  | { kind: 'resume'; run: RunId; claim: boolean; answers: ResumeAnswers }
   | { kind: 'next'; run: RunId; wait: boolean }
   /** `next --takeover`: this session drives the run from now on, as the person agreed. */
   | { kind: 'takeover'; run: RunId }
@@ -120,18 +122,24 @@ export async function skillContext(input: Pick<SkillContext, 'config' | 'toolPat
 }
 
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
-const StartOptionsSchema = z.object({
-  describe: z.boolean().optional(),
+/** The options of a run that a skill start and a skill resume share. */
+const RunOptionsSchema = z.object({
   parallel: z.string().regex(/^[1-9][0-9]*$/, '--parallel takes a whole number of steps, 1 or more').transform(Number).optional(),
-  confirmed: z.boolean().optional(),
   judge: z.boolean().optional(),
-  inputs: z.string().optional(),
   hitl: z.enum(['person', 'recommend'], { errorMap: () => ({ message: '--hitl takes person or recommend, as the describe reply offered' }) }).optional(),
   autoApprove: z.boolean().optional(),
   tools: z.undefined({ invalid_type_error: '--tools is for --driver local' }),
-}).refine((options) => !(options.hitl !== undefined && options.autoApprove), {
-  message: '--hitl and --auto-approve answer the same question: pass one of them, as the describe reply offered',
 });
+const ONE_HITL = {
+  check: (options: z.infer<typeof RunOptionsSchema>) => !(options.hitl !== undefined && options.autoApprove),
+  message: '--hitl and --auto-approve answer the same question: pass one of them, as the describe reply offered',
+};
+const StartOptionsSchema = RunOptionsSchema.extend({
+  describe: z.boolean().optional(),
+  confirmed: z.boolean().optional(),
+  inputs: z.string().optional(),
+}).refine(ONE_HITL.check, { message: ONE_HITL.message });
+const ResumeOptionsSchema = RunOptionsSchema.extend({ claim: z.boolean().optional() }).refine(ONE_HITL.check, { message: ONE_HITL.message });
 const OFFER = /^dispatch\.(.+)$/;
 const NextOptionsSchema = z.object({
   wait: z.boolean().optional(),
@@ -174,7 +182,7 @@ function invalid(error: z.ZodError): { error: SkillError } {
 export function parseSkillCall(
   raw:
     | { kind: 'start'; name: string; options: unknown }
-    | { kind: 'next' | 'report'; run: string; options: unknown }
+    | { kind: 'next' | 'resume' | 'report'; run: string; options: unknown }
     | { kind: 'respond'; run: string; step: string; choice: string; options: unknown },
   env: NodeJS.ProcessEnv,
 ): SkillCall | { error: SkillError } {
@@ -200,6 +208,16 @@ export function parseSkillCall(
   }
   const run = RunIdSchema.safeParse(raw.run);
   if (!run.success) return invalid(run.error);
+  if (raw.kind === 'resume') {
+    const options = ResumeOptionsSchema.safeParse(raw.options);
+    if (!options.success) return invalid(options.error);
+    const { claim, parallel, judge, autoApprove } = options.data;
+    const hitl: HitlMode | undefined = autoApprove ? 'auto-approve' : options.data.hitl;
+    return {
+      kind: 'resume', run: run.data, claim: claim === true,
+      answers: { ...(parallel !== undefined ? { parallel } : {}), ...(hitl !== undefined ? { hitl } : {}), ...(judge === false ? { judge } : {}) },
+    };
+  }
   if (raw.kind === 'next') {
     const options = NextOptionsSchema.safeParse(raw.options);
     if (!options.success) return invalid(options.error);
@@ -234,6 +252,13 @@ async function answerOf(call: SkillCall, context: SkillContext): Promise<SkillAn
     case 'describe':
     case 'start':
       return start(call, context);
+    case 'resume': {
+      const ceiling = ceilingOf(context.config);
+      if (call.answers.parallel !== undefined && call.answers.parallel > ceiling) {
+        return { error: { code: 'invalid_arguments', message: `--parallel ${call.answers.parallel} is above the most this machine runs at once, ${ceiling}.`, next: null } };
+      }
+      return foreground(context, call.run, { kind: 'resume', claim: call.claim, answers: call.answers });
+    }
     case 'next':
       return call.wait ? poll(context, call.run) : foreground(context, call.run, { kind: 'next' });
     case 'takeover':
@@ -294,11 +319,10 @@ async function start(call: Extract<SkillCall, { kind: 'describe' | 'start' }>, c
   }
   const run = RunIdSchema.safeParse(started.data.run);
   if (!run.success) return { error: { code: 'run_unreadable', message: 'The new run id was missing', next: null } };
-  const state: SkillState = {
-    version: 1, run: run.data, driver: driverIdentity('skill', context.cwd), invocation: context.invocation, options: { parallel: planned.parallel, hitl: planned.hitl, mode: context.mode }, host: { kind: planned.host },
-    orchestrator: { ...(context.session !== undefined ? { session: context.session } : {}), lastCallAt: context.now().toISOString() },
-    attempts: [], ...(planned.judge !== undefined ? { judging: { tool: planned.judge } } : {}), seq: 0, events: [], seen: {}, settled: [],
-  };
+  const state = newSkillState({
+    run: run.data, driver: driverIdentity('skill', context.cwd), invocation: context.invocation, options: { parallel: planned.parallel, hitl: planned.hitl, mode: context.mode },
+    host: planned.host, session: context.session, at: context.now().toISOString(), ...(planned.judge !== undefined ? { judge: planned.judge } : {}),
+  });
   const saved = await context.locks.take(run.data, (lock) => writeSkillState(context.config, lock, state, context.env.secrets), 0);
   if (saved !== undefined) return { error: { ...saved.error, next: null } };
   return foreground(context, run.data, { kind: 'next' });

@@ -19,7 +19,7 @@ const CallLineSchema = z.object({
   at: z.string(),
   kind: z.literal('call'),
   /** The call: `poll` is `next --wait`, `unavailable` is `report --model-unavailable`. */
-  call: z.enum(['start', 'next', 'poll', 'takeover', 'choose', 'ack', 'adopt', 'respond', 'report', 'unavailable']),
+  call: z.enum(['start', 'resume', 'next', 'poll', 'takeover', 'choose', 'ack', 'adopt', 'respond', 'report', 'unavailable']),
   /** `orchestrator`: the session that drives the run made it; `session`: another session; `none`: a host that names no session. */
   by: z.enum(['orchestrator', 'session', 'none']),
   /** Whether it ran from the checkout the run started in, as the orchestrator does: a child that shares its session runs from its own place. */
@@ -85,6 +85,7 @@ function callLine(call: SkillCall, answer: SkillAnswer, input: Pick<CallLine, 'a
     case 'describe':
       return undefined;
     case 'start':
+    case 'resume':
     case 'takeover':
       return { ...base, call: call.kind, answer: code ?? 'ok' };
     case 'next':

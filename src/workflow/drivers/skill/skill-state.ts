@@ -168,6 +168,21 @@ const SkillStateSchema = z.object({
 });
 export type SkillState = z.infer<typeof SkillStateSchema>;
 
+/**
+ * The state of a run this driver starts to drive for `session`, from `at` on: nothing open and nothing shown yet, and
+ * `judge`, the session tool whose confined judge judges its scored steps here, when it judges them.
+ */
+export function newSkillState(input: {
+  run: RunId; driver: SkillState['driver']; invocation: SkillState['invocation']; options: SkillState['options']; host: 'none' | 'pending'; session: string | undefined; at: string; judge?: string;
+}): SkillState {
+  const { run, driver, invocation, options, host, session, at, judge } = input;
+  return {
+    version: 1, run, driver, invocation, options, host: { kind: host },
+    orchestrator: { ...(session !== undefined ? { session } : {}), lastCallAt: at },
+    attempts: [], ...(judge !== undefined ? { judging: { tool: judge } } : {}), seq: 0, events: [], seen: {}, settled: [],
+  };
+}
+
 export async function readSkillState(config: LocalConfig, run: RunId): Promise<{ kind: 'found'; state: SkillState } | { kind: 'missing' } | { kind: 'unreadable'; reason: string }> {
   const raw = await readFileSafe(skillStatePath(config, run));
   if (raw === null) return { kind: 'missing' };

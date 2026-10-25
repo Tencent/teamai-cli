@@ -154,7 +154,9 @@ async function workflowSkill(raw: Parameters<typeof parseSkillCall>[0]): Promise
     writeEnvelope(call, collectEnvSecrets());
     return;
   }
-  const loaded = call.kind === 'describe' || call.kind === 'start' ? await readyStartConfig(call.name, refuseSkill) : await readyRunConfig(call.run, false, refuseSkill);
+  // A resume, or a takeover, readies a run this machine may lack, so the skill driver answers for it.
+  const loaded = call.kind === 'describe' || call.kind === 'start' ? await readyStartConfig(call.name, refuseSkill)
+    : await readyRunConfig(call.run, call.kind === 'resume' || call.kind === 'takeover', refuseSkill);
   if (!loaded) return;
   const context = await skillContext({
     config: loaded.config, toolPaths: loaded.teamConfig.toolPaths, env: loaded.env, cwd: process.cwd(),
@@ -421,9 +423,25 @@ export async function workflowPublish(runId: string, options: { sessions?: boole
   writeEnvelope(published.ok ? { data: { ...published.value } } : { error: published.error }, secrets);
 }
 
-export async function workflowResume(runId: string, options: { tools?: string; autoApprove?: boolean; claim?: boolean }): Promise<void> {
+/** `judge` is false with `--no-judge`. */
+export async function workflowResume(runId: string, options: {
+  driver?: string; tools?: string; autoApprove?: boolean; claim?: boolean; parallel?: string; hitl?: string; judge?: boolean;
+}): Promise<void> {
+  if (refusedNested(nestedCall(process.env), options.driver === 'skill')) return;
+  if (options.driver === 'skill') {
+    const { driver: _skill, ...rest } = options;
+    await workflowSkill({ kind: 'resume', run: runId, options: rest });
+    return;
+  }
   setStderrOnly(true);
-  if (refusedNested(nestedCall(process.env), false)) return;
+  if (options.parallel !== undefined || options.hitl !== undefined || options.judge === false) {
+    writeEnvelope({ error: { code: 'invalid_arguments', message: '--parallel, --hitl and --no-judge need --driver skill' } }, collectEnvSecrets());
+    return;
+  }
+  if (options.driver !== undefined && options.driver !== 'local') {
+    writeEnvelope({ error: { code: 'unsupported_driver', message: `Driver "${options.driver}" is not available. Use --driver local or --driver skill.` } }, collectEnvSecrets());
+    return;
+  }
   const loaded = await readyRunConfig(runId, true);
   if (!loaded) return;
   const { secrets } = loaded;

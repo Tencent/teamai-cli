@@ -7,7 +7,7 @@ import { parseSkillCall } from '../workflow/drivers/skill/skill-driver.js';
 import { AttemptIdSchema, RunIdSchema } from '../workflow/store.js';
 import {
   ackLiteral, adoptLiteral, chooseHostLiteral, describeLiteral, generatedStartPatterns, INVOCATIONS, localStartLiteral, nextLiteral, personRespondLiteral, pollLiteral,
-  reportLiteral, respondLiteral, resumeLiteral, runnerArgs, startLiteral, takeoverLiteral, unavailableLiteral, type Invocation,
+  reportLiteral, respondLiteral, resumeLiteral, runnerArgs, skillResumeLiteral, startLiteral, takeoverLiteral, unavailableLiteral, type Invocation,
 } from '../workflow/drivers/skill/literals.js';
 import { loadCommandTable } from './helpers/command-table.js';
 
@@ -50,7 +50,7 @@ function skillCall(literal: string, invocation: Invocation, env: NodeJS.ProcessE
   expect(driver, literal).toBe('skill');
   const [operand = ''] = operands;
   if (sub === 'start') return parseSkillCall({ kind: 'start', name: operand, options }, env);
-  if (sub === 'next' || sub === 'report') return parseSkillCall({ kind: sub, run: operand, options }, env);
+  if (sub === 'next' || sub === 'resume' || sub === 'report') return parseSkillCall({ kind: sub, run: operand, options }, env);
   if (sub === 'respond') {
     const [, step = '', choice = ''] = operands;
     return parseSkillCall({ kind: 'respond', run: operand, step, choice, options }, env);
@@ -69,6 +69,10 @@ describe.each(INVOCATIONS)('skill driver literals run as %s', (invocation) => {
     expect(skillCall(nextLiteral(invocation, RUN), invocation)).toEqual({ kind: 'next', run: RUN, wait: false });
     expect(skillCall(pollLiteral(invocation, RUN), invocation)).toEqual({ kind: 'next', run: RUN, wait: true });
     expect(skillCall(takeoverLiteral(invocation, RUN), invocation)).toEqual({ kind: 'takeover', run: RUN });
+    expect(skillCall(skillResumeLiteral(invocation, RUN), invocation)).toEqual({ kind: 'resume', run: RUN, claim: false, answers: {} });
+    expect(skillCall(skillResumeLiteral(invocation, RUN, { claim: true, parallel: 2, hitl: 'auto-approve', noJudge: true }), invocation))
+      .toEqual({ kind: 'resume', run: RUN, claim: true, answers: { parallel: 2, hitl: 'auto-approve', judge: false } });
+    expect(skillCall(skillResumeLiteral(invocation, RUN, { hitl: 'recommend' }), invocation)).toEqual({ kind: 'resume', run: RUN, claim: false, answers: { hitl: 'recommend' } });
     expect(skillCall(reportLiteral(invocation, RUN, ATTEMPT), invocation)).toEqual({ kind: 'report', run: RUN, attempt: ATTEMPT, role: 'agent', modelUnavailable: false });
     expect(skillCall(unavailableLiteral(invocation, RUN, ATTEMPT), invocation)).toEqual({ kind: 'report', run: RUN, attempt: ATTEMPT, role: 'agent', modelUnavailable: true });
     expect(skillCall(chooseHostLiteral(invocation, RUN, 'h2'), invocation)).toEqual({ kind: 'choose', run: RUN, choice: 'h2' });

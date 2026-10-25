@@ -2,14 +2,18 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { WorkflowClient } from '../workflow/protocol.js';
+import { resolveWorkflowEnv } from '../env-resolution.js';
+import { publishRun } from '../workflow/handoff.js';
+import { inProcessClient, type WorkflowClient } from '../workflow/protocol.js';
+import type { LocalConfig } from '../types.js';
 import { acquireLock, releaseLock } from '../update.js';
+import { WORKSPACE_MODES } from '../workflow/types.js';
 import { respondProvenance, respondToHitl } from '../workflow/run-controls.js';
 import { AttemptIdSchema, deliveryLockPath, readRun, RunIdSchema, type RunId } from '../workflow/store.js';
 import type { Runners } from '../workflow/drivers/skill/skill-driver.js';
 // The doc comparison reads the table itself; every behaviour below goes through runSkillCall.
 import { TRANSITIONS, type TransitionRow } from '../workflow/drivers/skill/transitions.js';
-import { fakeJudge, githubOrigin, skillHarness, untilStopped } from './helpers/skill-harness.js';
+import { fakeJudge, githubOrigin, sharedTeam, skillHarness, untilStopped } from './helpers/skill-harness.js';
 
 const CHECK = `schemaVersion: v1alpha1
 name: check
@@ -288,6 +292,23 @@ steps:
     prompt: Tell the team the package is out.
 `;
 
+// CI builds, and leaves the API and the UI, which a coding session writes, to whoever continues the run.
+const HANDED = `schemaVersion: v1alpha1
+name: handed
+description: Build, then write the API and the UI
+steps:
+  - id: build
+    command: node -e "process.exit(0)"
+  - id: api
+    needs: [build]
+    workspace: new
+    prompt: Write the API.
+  - id: ui
+    needs: [build]
+    workspace: new
+    prompt: Write the UI.
+`;
+
 const SCORERS = { 'review-quality': `---
 labels:
   - { value: thorough, score: 1, description: Did the work it was asked for }
@@ -348,6 +369,32 @@ async function polledToDone(made: Awaited<ReturnType<typeof harness>>, run: RunI
     if (turn.status === 'done') return { ...turn, events };
   }
   throw new Error('the run did not reach done in ten polls');
+}
+
+/**
+ * Starts `name` on `install` from its checkout, as a CI job does, leases its first step to that machine's local driver,
+ * and publishes the run with the lease in flight: the run, and the attempt of that lease.
+ */
+async function publishedMidStep(install: { config: LocalConfig; checkout: string }, name: string) {
+  const client = inProcessClient({ config: install.config, env: await resolveWorkflowEnv(install.config) });
+  const started = await client.start(name, { checkout: install.checkout, caller: { evidence: { kind: 'none' }, confirmed: false } });
+  if (!('data' in started) || typeof started.data.run !== 'string') throw new Error(JSON.stringify(started));
+  const run = RunIdSchema.parse(started.data.run);
+  const leased = await client.next(run, { driver: { kind: 'local', machine: 'ci', workspace: install.checkout, can: { workspace: [...WORKSPACE_MODES] } } });
+  const attempt = 'data' in leased && typeof leased.data.lease === 'object' && leased.data.lease !== null && 'attempt' in leased.data.lease ? String(leased.data.lease.attempt) : '';
+  expect(attempt, JSON.stringify(leased)).not.toBe('');
+  expect(await publishRun(install.config, run, { checkout: install.checkout })).toMatchObject({ ok: true, value: { inFlight: [{ attempt }] } });
+  return { run, attempt };
+}
+
+/** Polls `run`, running a foreground next when a poll wakes, until a turn carries a dispatch: that turn. */
+async function dispatchTurn(made: Awaited<ReturnType<typeof harness>>, run: RunId) {
+  for (let poll = 0; poll < 10; poll += 1) {
+    let turn = await turnOf(await made.call({ kind: 'next', run, wait: true }));
+    if (turn.then?.kind === 'wake') turn = await turnOf(await made.call({ kind: 'next', run, wait: false }));
+    if (dispatches(turn).length > 0) return turn;
+  }
+  throw new Error('no dispatch came up in ten polls');
 }
 
 /** Starts REVIEW with `answers` and has its child review and report: the turn of the `next` after, in which the run is done. */
@@ -684,7 +731,93 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       const made = await harness({ check: CHECK });
       const other = await made.context.client.start('check', { checkout: made.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
       if (!('data' in other) || typeof other.data.run !== 'string') throw new Error(JSON.stringify(other));
-      expect(await made.call({ kind: 'next', run: RunIdSchema.parse(other.data.run), wait: false })).toMatchObject({ error: { code: 'not_skill_run', next: null } });
+      expect(await made.call({ kind: 'next', run: RunIdSchema.parse(other.data.run), wait: false })).toMatchObject({ error: { code: 'not_skill_run', next: `teamai workflow resume ${other.data.run} --driver skill` } });
+      return made.rows;
+    },
+  },
+  {
+    name: 'a session resumes a run another machine published mid-step: it claims it, keeps the options and mode of the resume, and drives it to done',
+    rows: ['R19'],
+    run: async () => {
+      const team = sharedTeam({ handed: HANDED });
+      const ci = await team.install('ci');
+      const { run, attempt } = await publishedMidStep(ci, 'handed');
+      const modes: string[] = [];
+      const made = await harness({}, { install: await team.install('member'), mode: 'unattended', runners: (runners) => ({ ...runners, spawn: async (job) => { modes.push(job.mode); await runners.spawn(job); } }) });
+      const resumed = await turnOf(await made.call({ kind: 'resume', run, claim: false, answers: { parallel: 2 } }));
+      expect(resumed).toMatchObject({ run, status: 'driving', actions: [{ kind: 'choose', about: 'host' }] });
+      expect(await publishRun(ci.config, run, { checkout: ci.checkout })).toMatchObject({ ok: false, error: { code: 'not_owner' } });
+      const built = await turnOf(await made.call({ kind: 'choose', run, choice: 'h1' }));
+      expect(built.events).toContainEqual({ kind: 'started', step: 'build', attempt: expect.not.stringMatching(attempt) });
+      const turn = await dispatchTurn(made, run);
+      const [api, ui] = dispatches(turn);
+      expect([api?.step, ui?.step, api?.needs.parallel, ui?.needs.parallel]).toEqual(['api', 'ui', true, true]);
+      for (const dispatch of [api, ui]) {
+        if (!dispatch) continue;
+        await made.call({ kind: 'ack', run, attempt: dispatch.attempt });
+        childWrites(dispatch.brief, { kind: 'output', output: `Wrote ${dispatch.step}.` });
+        await made.call({ kind: 'report', run, attempt: dispatch.attempt, role: 'agent', modelUnavailable: false });
+      }
+      expect(await polledToDone(made, run)).toMatchObject({ status: 'done', actions: [{ kind: 'done', outcome: 'succeeded' }] });
+      expect(new Set(modes)).toEqual(new Set(['unattended']));
+      return made.rows;
+    },
+  },
+  {
+    name: 'a resume of a run another install owns now is refused with the --claim literal for the person, and the claim takes it back',
+    rows: ['R20', 'R19'],
+    run: async () => {
+      const team = sharedTeam({ handed: HANDED });
+      const ci = await team.install('ci');
+      const { run } = await publishedMidStep(ci, 'handed');
+      const member = await harness({}, { install: await team.install('member') });
+      await turnOf(await member.call({ kind: 'resume', run, claim: false, answers: {} }));
+      const back = await harness({}, { install: ci });
+      expect(await back.call({ kind: 'resume', run, claim: false, answers: {} })).toEqual({
+        error: { code: 'not_owner', message: expect.stringContaining(`Run ${run} is owned by member`), next: `teamai workflow resume ${run} --driver skill --claim` },
+      });
+      expect(await turnOf(await back.call({ kind: 'resume', run, claim: true, answers: {} }))).toMatchObject({ run, status: 'driving', actions: [{ kind: 'choose', about: 'host' }] });
+      return [...member.rows, ...back.rows];
+    },
+  },
+  {
+    name: 'a takeover with no skill state here drives a run this machine holds, and for a run it lacks names the --claim literal for the person',
+    rows: ['R19', 'R20'],
+    run: async () => {
+      const made = await harness({ check: CHECK });
+      const lacking = RunIdSchema.parse('r0123456789abcdef');
+      expect(await made.call({ kind: 'takeover', run: lacking })).toEqual({
+        error: { code: 'run_not_found', message: expect.any(String), next: `teamai workflow resume ${lacking} --driver skill --claim` },
+      });
+      const other = await made.context.client.start('check', { checkout: made.work, caller: { evidence: { kind: 'none' }, confirmed: false } });
+      if (!('data' in other) || typeof other.data.run !== 'string') throw new Error(JSON.stringify(other));
+      const run = RunIdSchema.parse(other.data.run);
+      expect(await turnOf(await made.call({ kind: 'takeover', run }))).toMatchObject({ run, status: 'driving' });
+      expect(await polledToDone(made, run)).toMatchObject({ status: 'done', actions: [{ kind: 'done', outcome: 'succeeded' }] });
+      return made.rows;
+    },
+  },
+  {
+    name: 'a resume of a run neither this machine nor teamai-reports holds relays the refusal, with nothing to run',
+    rows: ['R21'],
+    run: async () => {
+      const team = sharedTeam({ handed: HANDED });
+      const made = await harness({}, { install: await team.install('member') });
+      expect(await made.call({ kind: 'resume', run: RunIdSchema.parse('r0123456789abcdef'), claim: false, answers: {} })).toMatchObject({ error: { code: 'run_not_published', next: null } });
+      return made.rows;
+    },
+  },
+  {
+    name: 'a resumed run with a local route is handed to the person\'s local resume',
+    rows: ['R8'],
+    run: async () => {
+      const team = sharedTeam({ 'release-docs': RELEASE_DOCS });
+      const ci = await team.install('ci');
+      const { run } = await publishedMidStep(ci, 'release-docs');
+      const made = await harness({}, { install: await team.install('member') });
+      expect(await made.call({ kind: 'resume', run, claim: false, answers: {} })).toEqual({
+        error: { code: 'needs_local_driver', message: expect.stringContaining(`Ask the person to run teamai workflow resume ${run} --tools default=claude in their own terminal.`), next: null },
+      });
       return made.rows;
     },
   },

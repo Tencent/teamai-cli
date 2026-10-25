@@ -3,6 +3,7 @@
  * effect, and feeds each answer back as the next input. It holds the lock only while it ticks, never across a sleep.
  */
 import { z } from 'zod';
+import { driverIdentity } from '../../../driver-identity.js';
 import type { AttemptId, RunId, RunLock } from '../../store.js';
 import type { WorkflowFailure } from '../../types.js';
 import { readChildResult } from './child-brief.js';
@@ -10,14 +11,15 @@ import { engineReply, reportReply, respondReply, scoreReply } from './engine-rep
 import { canFor, HOST_PROFILES, judgeCan, type HostChoice } from './host-profiles.js';
 import { writeJob } from './job.js';
 import {
-  ackLiteral, adoptLiteral, chooseHostLiteral, nextLiteral, pollLiteral, reportLiteral, respondLiteral, resumeLiteral, takeoverLiteral, unavailableLiteral, type Invocation, type Literal,
+  ackLiteral, adoptLiteral, chooseHostLiteral, nextLiteral, pollLiteral, reportLiteral, respondLiteral, resumeLiteral, skillResumeLiteral, takeoverLiteral, unavailableLiteral, type Invocation,
+  type Literal,
 } from './literals.js';
-import { localPromptTool } from './preflight.js';
-import { readSkillState, writeSkillState, type AttemptState, type ReportBody, type SkillState, type TurnEvent } from './skill-state.js';
+import { ceilingOf, localPromptTool, localReason } from './preflight.js';
+import { newSkillState, readSkillState, writeSkillState, type AttemptState, type ReportBody, type SkillState, type TurnEvent } from './skill-state.js';
 import {
-  ackRow, adoptRow, callRow, cancelledRow, chooseRow, doneRow, gateCheckRow, graceRow, hasSlot, judgeFreeRow, judgeTickRow, lockBusyRow, pollRow, replyRow, reportCallRow,
-  reportedRow, reportRow, resendRow, respondedRow, runnerFreeRow, scoreReplyRow, tickRow, turnRow, unqueueRow, unseenEvents, type Answer, type Effect,
-  type MovedWithEffects, type RowId, type TickTurn, type TurnAnswer,
+  ackRow, adoptRow, callRow, cancelledRow, chooseRow, doneRow, gateCheckRow, graceRow, hasSlot, judgeFreeRow, judgeTickRow, lockBusyRow, pollRow, readiedRow, replyRow,
+  reportCallRow, reportedRow, reportRow, resendRow, respondedRow, runnerFreeRow, scoreReplyRow, tickRow, turnRow, unqueueRow, unseenEvents, type Answer,
+  type Effect, type MovedWithEffects, type ResumeAnswers, type RowId, type TickTurn, type TurnAnswer,
 } from './transitions.js';
 import { errorOf, turnOf, type SkillAnswer, type SkillError, type Turn, type Waiting } from './turn.js';
 import type { SkillContext } from './skill-driver.js';
@@ -222,16 +224,37 @@ function lockBusy(context: SkillContext, run: RunId, same: Literal): SkillAnswer
 /**
  * Reads skill.json under the lock, and takes its S row, or R11 when there is none. `takeover` is a `next --takeover`;
  * `report` is the attempt an agent's report names, which skips the session check when the agent reports it (S6).
+ * `resume`, and a takeover with no skill.json, first ready the run here, claiming it as `WorkflowClient.resume` does,
+ * and take R19, R20 or R21, or R8.
  */
-async function called(context: SkillContext, run: RunId, same: Literal, input: { takeover?: true; report?: AttemptId } = {}): Promise<{ state: SkillState } | { answer: SkillAnswer }> {
+async function called(context: SkillContext, run: RunId, same: Literal, input: { takeover?: true; report?: AttemptId; resume?: Resume } = {}): Promise<{ state: SkillState } | { answer: SkillAnswer }> {
   const read = await readSkillState(context.config, run);
+  const localTool = localPromptTool(context.config, context.tool);
   if (read.kind === 'unreadable') {
-    return { answer: { error: { code: 'run_unreadable', message: `The skill driver's state of run ${run} cannot be read (${read.reason}). The person can continue the run in a terminal with ${resumeLiteral(context.invocation, run, { tool: localPromptTool(context.config, context.tool) })}.`, next: null } } };
+    return { answer: { error: { code: 'run_unreadable', message: `The skill driver's state of run ${run} cannot be read (${read.reason}). The person can continue the run in a terminal with ${resumeLiteral(context.invocation, run, { tool: localTool })}.`, next: null } } };
   }
   const state = read.kind === 'found' ? read.state : undefined;
+  if (input.resume !== undefined || (input.takeover && !state)) {
+    const readied = await context.client.resume(run, {
+      claim: input.resume === undefined ? 'none' : input.resume.claim ? 'any' : 'lacking', checkout: context.cwd, ceiling: ceilingOf(context.config), can: canFor(undefined),
+      ...(context.tool !== undefined ? { tool: context.tool } : {}),
+    });
+    const local = readied.kind === 'ready' ? localReason(readied.description) : undefined;
+    const taken = traced(context, readiedRow({ run, readied, kept: state !== undefined, ...(local !== undefined ? { local } : {}), answers: input.resume?.answers ?? {} }));
+    if (taken && 'answer' in taken) return { answer: { error: errorOf(taken.answer, { invocation: context.invocation, same, localTool }) } };
+    if (taken) {
+      const planned = taken.start;
+      return {
+        state: newSkillState({
+          run, driver: driverIdentity('skill', context.cwd), invocation: context.invocation, options: { parallel: planned.parallel, hitl: planned.hitl, mode: context.mode },
+          host: planned.host, session: context.session, at: context.now().toISOString(), ...(planned.judge !== undefined ? { judge: planned.judge } : {}),
+        }),
+      };
+    }
+  }
   if (state && input.report !== undefined && traced(context, reportCallRow(state, input.report))) return { state };
   const taken = traced(context, callRow(state, { run, session: context.session, at: context.now().toISOString(), takeover: input.takeover === true }));
-  if ('answer' in taken) return { answer: { error: errorOf(taken.answer, { invocation: context.invocation, same, run, localTool: localPromptTool(context.config, context.tool) }) } };
+  if ('answer' in taken) return { answer: { error: errorOf(taken.answer, { invocation: context.invocation, same, run, localTool }) } };
   return { state: taken.state };
 }
 
@@ -253,13 +276,17 @@ async function finish(context: SkillContext, lock: RunLock, state: SkillState, t
   return { data: { turn: rendered(shown.state, shown.turn, { events, ...(shown.waiting ? { waiting: shown.waiting } : {}), localTool: localPromptTool(context.config, context.tool) }) } };
 }
 
+/** A `resume --driver skill`: `claim` takes the run from another install that owns it; `answers`, its options. */
+interface Resume { claim: boolean; answers: ResumeAnswers }
+
 /**
- * A call that answers with a turn at once: `next`, a takeover, an answer to the host question, an ack, a place the host
- * made, or an answer to a gate.
+ * A call that answers with a turn at once: `next`, a takeover, a resume, an answer to the host question, an ack, a place
+ * the host made, or an answer to a gate.
  */
 export type ForegroundCall =
   | { kind: 'next' }
   | { kind: 'takeover' }
+  | ({ kind: 'resume' } & Resume)
   | { kind: 'choose'; choice: HostChoice }
   | { kind: 'ack'; attempt: AttemptId }
   | { kind: 'adopt'; attempt: AttemptId; dir: string }
@@ -271,6 +298,8 @@ function literalOf(invocation: Invocation, run: RunId, call: ForegroundCall): Li
       return nextLiteral(invocation, run);
     case 'takeover':
       return takeoverLiteral(invocation, run);
+    case 'resume':
+      return skillResumeLiteral(invocation, run, { claim: call.claim, ...call.answers, noJudge: call.answers.judge === false });
     case 'choose':
       return chooseHostLiteral(invocation, run, call.choice);
     case 'ack':
@@ -290,7 +319,8 @@ function literalOf(invocation: Invocation, run: RunId, call: ForegroundCall): Li
 async function callRowOf(context: SkillContext, state: SkillState, call: ForegroundCall): Promise<{ row: RowId; state: SkillState; effects?: Effect[] } | { row: RowId; answer: Answer } | undefined> {
   switch (call.kind) {
     case 'next':
-    case 'takeover': {
+    case 'takeover':
+    case 'resume': {
       const done = doneRow(state);
       return done && { ...done, state };
     }
@@ -332,7 +362,7 @@ async function applyCall(context: SkillContext, lock: RunLock, state: SkillState
 export async function foreground(context: SkillContext, run: RunId, call: ForegroundCall): Promise<SkillAnswer> {
   const same = literalOf(context.invocation, run, call);
   const first = await context.locks.take(run, async (lock): Promise<{ answer: SkillAnswer } | { grace: true }> => {
-    const read = await called(context, run, same, call.kind === 'takeover' ? { takeover: true } : {});
+    const read = await called(context, run, same, call.kind === 'takeover' ? { takeover: true } : call.kind === 'resume' ? { resume: call } : {});
     if ('answer' in read) return read;
     const applied = await applyCall(context, lock, read.state, call, same);
     if ('answer' in applied) return applied;

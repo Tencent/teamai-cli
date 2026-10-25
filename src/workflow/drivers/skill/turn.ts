@@ -8,7 +8,7 @@ import type { OutputSchema, WorkflowFailure } from '../../types.js';
 import { HOST_CHOICES, HOST_PROFILES, HOST_QUESTION, type HostChoice } from './host-profiles.js';
 import {
   ackLiteral, adoptLiteral, chooseHostLiteral, describeLiteral, localStartLiteral, nextLiteral, personRespondLiteral, pollLiteral, reportLiteral, respondLiteral, resumeLiteral,
-  takeoverLiteral, unavailableLiteral, type Invocation, type Literal,
+  skillResumeLiteral, takeoverLiteral, unavailableLiteral, type Invocation, type Literal,
 } from './literals.js';
 import type { AttemptState, Dispatch, Gate, ModelPick, SkillState, StopReason, TurnEvent } from './skill-state.js';
 import { childCap, reportedByAgent, type Answer, type Refusal } from './transitions.js';
@@ -191,23 +191,27 @@ export interface SkillError {
 export function errorOf(answer: Answer, context: { invocation: Invocation; same: Literal; run?: RunId; localTool?: string }): SkillError {
   const { invocation, same } = context;
   if (answer.kind === 'engine-error') {
-    const next = context.run === undefined || answer.next === 'same' ? same : answer.next === 'poll' ? pollLiteral(invocation, context.run) : nextLiteral(invocation, context.run);
+    const next = answer.next === null ? null : context.run === undefined || answer.next === 'same' ? same : answer.next === 'poll' ? pollLiteral(invocation, context.run) : nextLiteral(invocation, context.run);
     return { ...answer.error, next };
   }
   const { refusal } = answer;
+  const run = 'run' in refusal ? refusal.run : undefined;
   const next = answer.next === null ? null
-    : answer.next === 'next' && 'run' in refusal ? nextLiteral(invocation, refusal.run)
-      : answer.next === 'takeover' && 'run' in refusal ? takeoverLiteral(invocation, refusal.run)
-        : answer.next === 'describe' && 'name' in refusal ? describeLiteral(invocation, refusal.name)
-          : same;
+    : answer.next === 'describe' && 'name' in refusal ? describeLiteral(invocation, refusal.name)
+      : answer.next === 'same' || run === undefined ? same
+        : answer.next === 'next' ? nextLiteral(invocation, run)
+          : answer.next === 'takeover' ? takeoverLiteral(invocation, run)
+            : skillResumeLiteral(invocation, run, { claim: answer.next === 'claim' });
   return { code: refusal.code, message: refusalMessage(refusal, { invocation, tool: context.localTool }), ...(refusal.code === 'orchestrator_active' ? { idleSeconds: refusal.idleSeconds } : {}), next };
 }
 
 /** The message of each refusal: what happened, and what the agent or the person does next. */
 function refusalMessage(refusal: Refusal, local: { invocation: Invocation; tool?: string | undefined }): string {
   switch (refusal.code) {
-    case 'needs_local_driver':
-      return `Workflow ${refusal.name} must run with the local driver. ${refusal.reason} Ask the person to run ${localStartLiteral(local.invocation, refusal.name, { tool: local.tool })} in their own terminal.`;
+    case 'needs_local_driver': {
+      const literal = refusal.run === undefined ? localStartLiteral(local.invocation, refusal.name, { tool: local.tool }) : resumeLiteral(local.invocation, refusal.run, { tool: local.tool });
+      return `Workflow ${refusal.name} must run with the local driver. ${refusal.reason} Ask the person to run ${literal} in their own terminal.`;
+    }
     case 'confirm_needed': {
       const lacks = refusal.missing.map((answer) => ({ confirmed: '--confirmed, the person\'s yes', inputs: '--inputs', parallel: '--parallel', hitl: '--hitl or --auto-approve' })[answer]);
       const said = [
@@ -217,7 +221,11 @@ function refusalMessage(refusal: Refusal, local: { invocation: Invocation; tool?
       return `Start ${refusal.name} from its describe reply: ${said.join('; ')}. Run the describe literal and ask the person.`;
     }
     case 'not_skill_run':
-      return `Run ${refusal.run} is not driven by the skill driver on this machine. The person can continue it in a terminal with ${resumeLiteral(local.invocation, refusal.run, { tool: local.tool })}.`;
+      return `Run ${refusal.run} is not driven by the skill driver on this machine. Ask the person whether to continue it from this session, and run the command in next only when they agree: it takes the run over from the machine that last drove it. The person can instead continue it in a terminal with ${resumeLiteral(local.invocation, refusal.run, { tool: local.tool })}.`;
+    case 'not_owner':
+      return `Run ${refusal.run} is owned by ${refusal.owner}, who claimed it at ${refusal.since}. Ask the person whether that install is done with it, and run the command in next only when they agree to take it from there; otherwise the run goes on there.`;
+    case 'run_not_found':
+      return `Run ${refusal.run} is not on this machine, so there is no session to take it over from. Ask the person whether to take it from the machine that published it, and run the command in next only when they agree.`;
     case 'orchestrator_active':
       return `Run ${refusal.run} is driven by another coding session, which last called ${refusal.idleSeconds} s ago. Ask the person whether that session is gone, and run the command in next only when they agree to take the run over here; otherwise the run goes on from that session.`;
     case 'choice_pending':

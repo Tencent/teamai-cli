@@ -964,7 +964,7 @@ steps:
     } } });
   });
 
-  it('points the person at the resume literal for a run it does not drive, and for one whose state it cannot read', async () => {
+  it('points at the skill resume and the person\'s resume for a run it does not drive, and at the person\'s for one whose state it cannot read', async () => {
     const harness = await skillHarness({ check: CHECK });
     roots.push(harness.root);
     const other = await harness.context.client.start('check', { checkout: harness.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
@@ -972,8 +972,8 @@ steps:
     const run = RunIdSchema.parse(other.data.run);
     expect(await harness.call({ kind: 'next', run, wait: false })).toEqual({ error: {
       code: 'not_skill_run',
-      message: `Run ${run} is not driven by the skill driver on this machine. The person can continue it in a terminal with teamai workflow resume ${run} --tools default=claude.`,
-      next: null,
+      message: `Run ${run} is not driven by the skill driver on this machine. Ask the person whether to continue it from this session, and run the command in next only when they agree: it takes the run over from the machine that last drove it. The person can instead continue it in a terminal with teamai workflow resume ${run} --tools default=claude.`,
+      next: `teamai workflow resume ${run} --driver skill`,
     } });
 
     fs.writeFileSync(skillStatePath(harness.config, run), '{');

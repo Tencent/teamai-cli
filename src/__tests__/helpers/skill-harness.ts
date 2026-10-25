@@ -206,18 +206,59 @@ interface HarnessOptions {
   scorers?: Record<string, string>;
   /** The member's `scoring` settings. */
   scoring?: LocalConfig['scoring'];
+  /** An install of a `sharedTeam` to drive from, instead of a checkout and team repository of the harness's own. */
+  install?: TeamInstall;
+}
+
+/** A member's install of a `sharedTeam`: its config, and the business checkout its runs start from. */
+interface TeamInstall {
+  config: LocalConfig;
+  checkout: string;
 }
 
 /**
- * A member's checkout and team repository holding `workflows`, synced, with the skill driver's context for one session.
- * `rows` collects the id of every transition row a call or a runner takes.
+ * A team repository holding `workflows` and a business repository, each on a bare origin, so one install publishes a
+ * run to `teamai-reports` and another claims it. `install` makes a member's install: a team clone with its workflows
+ * synced, a data home, and a business checkout.
  */
-export async function skillHarness(workflows: Record<string, string>, options: HarnessOptions = {}) {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-skill-driver-')));
-  const home = path.join(root, 'home');
-  fs.mkdirSync(home);
-  vi.stubEnv('HOME', home);
-  vi.stubEnv('USERPROFILE', home);
+export function sharedTeam(workflows: Record<string, string>): { install(name: string): Promise<TeamInstall> } {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-skill-team-')));
+  onTestFinished(() => { fs.rmSync(root, { recursive: true, force: true }); });
+  const origin = path.join(root, 'team.git');
+  const business = path.join(root, 'business.git');
+  const seed = (dir: string, files: Record<string, string>): void => {
+    for (const [file, text] of Object.entries(files)) {
+      fs.mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
+      fs.writeFileSync(path.join(dir, file), text);
+    }
+    git(dir, 'init', '-q', '-b', 'main');
+    git(dir, 'add', '-A');
+    git(dir, '-c', 'user.name=Seed', '-c', 'user.email=seed@example.invalid', 'commit', '-qm', 'seed');
+  };
+  seed(path.join(root, 'team'), { 'teamai.yaml': 'team: acme\nrepo: https://github.com/acme/team.git\nprovider: github\n', ...Object.fromEntries(Object.entries(workflows).map(([name, yaml]) => [`workflows/${name}.yaml`, yaml])) });
+  seed(path.join(root, 'product'), { 'README.md': 'fixture\n' });
+  git(root, 'clone', '-q', '--bare', path.join(root, 'team'), origin);
+  git(root, 'clone', '-q', '--bare', path.join(root, 'product'), business);
+  return {
+    install: async (name) => {
+      const home = path.join(root, name);
+      const clone = path.join(home, 'team-repo');
+      const checkout = path.join(home, 'work');
+      git(root, 'clone', '-q', origin, clone);
+      git(root, 'clone', '-q', business, checkout);
+      for (const dir of [clone, checkout]) {
+        git(dir, 'config', 'user.name', name);
+        git(dir, 'config', 'user.email', `${name}@example.invalid`);
+      }
+      const config: LocalConfig = { repo: { kind: 'git', localPath: clone, remote: origin }, username: name, scope: 'user', additionalRoles: [], dataHome: path.join(home, 'data') };
+      await syncWorkflowDefinitions(config);
+      return { config, checkout };
+    },
+  };
+}
+
+/** A checkout and a team repository of the harness's own under `root`, holding `workflows` and the scorers of `options`, synced. */
+async function ownInstall(root: string, workflows: Record<string, string>, options: HarnessOptions): Promise<TeamInstall> {
   const work = path.join(root, 'work');
   const repo = path.join(root, 'knowledge');
   fs.mkdirSync(work);
@@ -236,6 +277,20 @@ export async function skillHarness(workflows: Record<string, string>, options: H
   };
   for (const [name, yaml] of Object.entries(workflows)) fs.writeFileSync(path.join(repo, 'workflows', `${name}.yaml`), yaml);
   await syncWorkflowDefinitions(config);
+  return { config, checkout: work };
+}
+
+/**
+ * A member's checkout and team repository holding `workflows`, synced, with the skill driver's context for one session.
+ * `rows` collects the id of every transition row a call or a runner takes.
+ */
+export async function skillHarness(workflows: Record<string, string>, options: HarnessOptions = {}) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-skill-driver-')));
+  const home = path.join(root, 'home');
+  fs.mkdirSync(home);
+  vi.stubEnv('HOME', home);
+  vi.stubEnv('USERPROFILE', home);
+  const { config, checkout: work } = options.install ?? await ownInstall(root, workflows, options);
   const env = await resolveWorkflowEnv(config);
   // Every tool's default paths, as a team repository that sets no toolPaths has them.
   const toolPaths = TeamaiConfigBaseSchema.shape.toolPaths.parse(undefined);

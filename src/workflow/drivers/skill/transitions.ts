@@ -4,6 +4,7 @@
  * are the tables under `## The skill driver` in docs/dev/workflow-engine.md, cell by cell.
  */
 import type { RunMode } from '../../../launch-context.js';
+import type { RunReadied } from '../../protocol.js';
 import type { EnvScope } from '../../requirements.js';
 import type { AttemptId, RunId } from '../../store.js';
 import type { WorkflowFailure } from '../../types.js';
@@ -31,10 +32,13 @@ export const TRANSITIONS = [
   { id: 'R16', state: 'none', input: 'describe', guard: '`deliveryProblem` answers for the checkout: a `deliver: pr` step the definition cannot deliver (`bad_delivery`), or a detached HEAD (`no_base_branch`)', effects: 'none', next: 'none', action: 'describe `ask.kind: denied` with its message, no literal' },
   { id: 'R17', state: 'none', input: 'describe', guard: 'run mode `unattended`, R1, R16 and R2 do not apply, and `attendedReason` names what needs a person: `invoke: ask`, an interactive step, a required approval, or a choice without a default', effects: 'none', next: 'none', action: 'describe `ask.kind: denied` with that reason, no literal' },
   { id: 'R18', state: 'none', input: 'describe', guard: 'run mode `unattended`, and R1, R16, R2 and R17 do not apply', effects: 'none', next: 'none', action: 'describe `ask.kind: start` with the start of R3\'s recommended option under `--auto-approve`; `{inputs}` kept and `inputs` listed when the workflow has inputs' },
-  { id: 'R8', state: 'none', input: 'start `--driver skill`', guard: 'the definition has a local route', effects: 'none', next: 'none', action: 'error `needs_local_driver` with the reason, next null' },
+  { id: 'R8', state: 'none', input: 'start `--driver skill`, or R19\'s input', guard: 'the definition has a local route; for R19\'s input, the run\'s own definition, once R20 and R21 do not apply', effects: 'none', next: 'none', action: 'error `needs_local_driver` with the reason, next null; for R19\'s input it names the person\'s `teamai workflow resume <run>` literal, and the run stays readied here' },
   { id: 'R9', state: 'none', input: 'start `--driver skill`', guard: '`checkStartAnswers` answers `confirm-needed`', effects: 'none', next: 'none', action: 'error `confirm_needed`, next: the describe literal' },
   { id: 'R10', state: 'none', input: 'start `--driver skill`', guard: '`checkStartAnswers` answers `ok`', effects: '`WorkflowClient.start`; write skill.json: identity `{skill, machine, run checkout}`, invocation, options (`--parallel`, the HITL mode, the caller\'s run mode), host `pending` when the definition has a prompt step, owner := the caller\'s session; judging on with the session tool when describe judges here and the start has no `--no-judge`', next: 'host when it has a prompt step, else drive', action: 'the turn of a tick' },
-  { id: 'R11', state: 'none', input: 'next, report `--driver skill`', guard: 'this machine has no skill.json for the run', effects: 'none', next: 'none', action: 'error `not_skill_run`, next null' },
+  { id: 'R11', state: 'none', input: 'next, report `--driver skill`', guard: 'this machine has no skill.json for the run', effects: 'none', next: 'none', action: 'error `not_skill_run`, next: the `resume <run> --driver skill` literal' },
+  { id: 'R19', state: 'any', input: 'resume `--driver skill`; `next --takeover` with no skill.json here', guard: '`WorkflowClient.resume` readied the run: it took a run this machine lacks, or with `--claim` one another install owns, or found the run here and this install its owner; no skill.json is kept here, or the claim installed the published state; R8 does not apply', effects: 'write skill.json as R10 does, with the caller\'s run mode and the options of `--parallel`, `--hitl` or `--auto-approve` and `--no-judge`, else a start\'s: one step at a time, HITL mode `person`', next: 'host when the run has a prompt step, else drive', action: 'the turn of a tick' },
+  { id: 'R20', state: 'any', input: 'R19\'s input', guard: '`WorkflowClient.resume` answers that another install owns the run (a resume without `--claim`, or a takeover), or that this machine lacks it (a takeover)', effects: 'none', next: 'unchanged', action: 'error `not_owner` or `run_not_found`, next: the `resume <run> --driver skill --claim` literal, run only when the person agrees' },
+  { id: 'R21', state: 'any', input: 'R19\'s input', guard: '`WorkflowClient.resume` refuses the run otherwise: teamai-reports does not hold it or moved while it was claimed, its definition cannot be read here, or its copies cannot be brought to the commits it recorded', effects: 'none', next: 'unchanged', action: 'error with the refusal\'s code and message, next null' },
   { id: 'R12', state: 'host', input: 'tick', guard: '', effects: 'none', next: 'host', action: '`choose about:host decide:agent`' },
   { id: 'R13', state: 'host', input: 'next `--choice h`', guard: '', effects: 'host := `HOST_PROFILES[h]`', next: 'drive', action: 'the turn of a tick' },
   { id: 'R14', state: 'host', input: 'report, next `--ack` or `--adopt`', guard: '', effects: 'none', next: 'host', action: 'error `choice_pending`, next: the next literal' },
@@ -174,9 +178,14 @@ export type Effect =
 
 /** A call the skill driver refuses, with what its message names. */
 export type Refusal =
-  | { code: 'needs_local_driver'; name: string; reason: string }
+  /** `run`: the run a resume or a takeover readied here, which the person goes on with the local driver. */
+  | { code: 'needs_local_driver'; name: string; reason: string; run?: RunId }
   | { code: 'confirm_needed'; name: string; missing: StartAnswer[]; outOfRange?: { parallel: number; ceiling: number } }
   | { code: 'not_skill_run'; run: RunId }
+  /** Another teamai install, `owner`, has owned the run since `since`. */
+  | { code: 'not_owner'; run: RunId; owner: string; since: string }
+  /** A takeover of a run this machine lacks. */
+  | { code: 'run_not_found'; run: RunId }
   /** `idleSeconds`: the seconds since the owner's last call. */
   | { code: 'orchestrator_active'; run: RunId; idleSeconds: number }
   | { code: 'choice_pending'; run: RunId }
@@ -197,9 +206,9 @@ export type DescribeVerdict = { ask: 'start' | 'ask' | 'unattended' } | { ask: '
 export interface StartRun { parallel: number; hitl: HitlMode; host: 'none' | 'pending'; judge?: string }
 
 /** A refusal of the skill driver, and the literal it names to run instead. */
-type Refused = { kind: 'error'; refusal: Refusal; next: 'describe' | 'next' | 'takeover' | 'same' | null };
+type Refused = { kind: 'error'; refusal: Refusal; next: 'describe' | 'next' | 'takeover' | 'resume' | 'claim' | 'same' | null };
 /** An engine error the skill driver relays, and the literal it names to run instead. */
-type Relayed = { kind: 'engine-error'; error: WorkflowFailure; next: 'next' | 'same' | 'poll' };
+type Relayed = { kind: 'engine-error'; error: WorkflowFailure; next: 'next' | 'same' | 'poll' | null };
 /** The error a row answers the call with. */
 export type Answer = Refused | Relayed;
 
@@ -324,12 +333,51 @@ export function startRow(input: StartInput): { row: 'R8' | 'R9'; refusal: Refusa
   return { row: 'R10', start: { parallel, hitl, host: input.prompts ? 'pending' : 'none', ...(input.judge !== undefined ? { judge: input.judge } : {}) } };
 }
 
+/** The options a resume carries: `--parallel`, the HITL mode of `--hitl` or `--auto-approve`, and `judge: false` for `--no-judge`. */
+export interface ResumeAnswers { parallel?: number; hitl?: HitlMode; judge?: false }
+
+/**
+ * The row of a resume, or of a takeover of a run this machine keeps no skill state of, once `WorkflowClient.resume`
+ * answered `readied`: R20 or R21 when it refused the run, R8 for a run with a local route, else R19 and the run this
+ * session drives anew. Undefined for a resume of a run whose skill state is `kept` here, as the claim installed nothing
+ * over it: the session rows take the call as a `next`.
+ */
+export function readiedRow(input: { run: RunId; readied: RunReadied; kept: boolean; local?: string; answers: ResumeAnswers }):
+  | { row: 'R19'; start: StartRun }
+  | Answered<'R8' | 'R20'>
+  | Answered<'R21', Relayed>
+  | undefined {
+  const { run, readied, answers } = input;
+  switch (readied.kind) {
+    case 'not-owner':
+      return { row: 'R20', answer: { kind: 'error', refusal: { code: 'not_owner', run, owner: readied.owner, since: readied.since }, next: 'claim' } };
+    case 'not-here':
+      return { row: 'R20', answer: { kind: 'error', refusal: { code: 'run_not_found', run }, next: 'claim' } };
+    case 'failed':
+      return { row: 'R21', answer: { kind: 'engine-error', error: readied.failure, next: null } };
+    case 'ready': {
+      if (input.kept && !readied.installed) return undefined;
+      const { description, judging } = readied;
+      if (input.local !== undefined) return { row: 'R8', answer: { kind: 'error', refusal: { code: 'needs_local_driver', name: description.name, reason: input.local, run }, next: null } };
+      const judge = judging.kind === 'here' && answers.judge !== false ? judging.tool : undefined;
+      return {
+        row: 'R19',
+        start: { parallel: answers.parallel ?? 1, hitl: answers.hitl ?? 'person', host: description.facts.prompts.length > 0 ? 'pending' : 'none', ...(judge !== undefined ? { judge } : {}) },
+      };
+    }
+    default: {
+      const unhandled: never = readied;
+      return unhandled;
+    }
+  }
+}
+
 /**
  * The session row of an agent call from `input.session` (S1, S2, S4), or R11 when this machine keeps no skill state of
  * the run. `takeover`: the call is `next --takeover`.
  */
 export function callRow(state: SkillState | undefined, input: { run: RunId; session: string | undefined; at: string; takeover: boolean }): Moved<'S1' | 'S4'> | Answered<'R11' | 'S2'> {
-  if (!state) return { row: 'R11', answer: { kind: 'error', refusal: { code: 'not_skill_run', run: input.run }, next: null } };
+  if (!state) return { row: 'R11', answer: { kind: 'error', refusal: { code: 'not_skill_run', run: input.run }, next: 'resume' } };
   if (input.takeover) return { row: 'S4', state: takenOver(state, input.session, input.at) };
   const owner = state.orchestrator.session;
   if (owner !== undefined && input.session !== undefined && owner !== input.session) {

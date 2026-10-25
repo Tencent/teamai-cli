@@ -9,6 +9,7 @@ import { nestedWorkflowError, type AgentEvidence } from './attempt-marker.js';
 import { loadCachedWorkflow, loadWorkflowTree } from './cache.js';
 import { describeWorkflow, type WorkflowDescription } from './describe.js';
 import { LeaseIdSchema, LeaseWireSchema } from './lease-wire.js';
+import { reconcileTakenCopies, resumeRun } from './handoff.js';
 import { leaseNext, parseNextPayload, parseReport, parseResponsePayload, reportable, reportAttempt, startRun, withIgnored, type NextOptions, type ReportInput } from './engine.js';
 import {
   abandonPlace, adoptedPlaceOf, finishPlace, placeHeldBy, placeLeaseOf, placeOf, placeRecorded, preparePlace, releasePlace, runPlaceSetup, type PlaceLease, type PlacePrepared,
@@ -77,6 +78,13 @@ export interface WorkflowClient {
   retry(runId: string, step: string): Promise<WorkflowEnvelope>;
   /** Stops the run or the named step. */
   cancel(runId: string, step?: string): Promise<WorkflowEnvelope>;
+  /**
+   * Readies run `runId` for a driver of this machine as `workflow resume` does, under the caller's run lock, and brings
+   * the branches of a run taken over to the commits it recorded. `claim` says which runs it takes from teamai-reports:
+   * `lacking`, a run this machine lacks; `any`, also one another install owns; `none`, no run. Describes the run's own
+   * definition as `describe` does.
+   */
+  resume(runId: RunId, options: { claim: 'none' | 'lacking' | 'any'; checkout: string; ceiling: number; can: DriverCan; tool?: string }): Promise<RunReadied>;
   /** Takes or renews judge work, as `teamai score --next` does with `body` as its payload. */
   scoreNext(body: unknown): Promise<WorkflowEnvelope>;
   /**
@@ -85,6 +93,17 @@ export interface WorkflowClient {
    */
   judge(ref: string, body: unknown, options: { group: string }): Promise<WorkflowEnvelope>;
 }
+
+/**
+ * What `resume` made of a run: ready to drive here, with `installed` true when the published state replaced this
+ * machine's; not on this machine, when nothing was to be claimed; owned by `owner`, another install, since `since`; or
+ * refused for `failure`.
+ */
+export type RunReadied =
+  | { kind: 'ready'; installed: boolean; description: WorkflowDescription; judging: Judging }
+  | { kind: 'not-here' }
+  | { kind: 'not-owner'; owner: string; since: string }
+  | { kind: 'failed'; failure: WorkflowFailure };
 
 /**
  * The process that asks to start a run: the evidence it carries that an agent runs it, whether it passed
@@ -305,6 +324,22 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
     },
     retry: (runId, step) => retryStep(config, runId, env.secrets, step),
     cancel: (runId, step) => cancelRun(config, runId, env.secrets, step),
+    resume: async (runId, { claim, checkout, ceiling, can, tool }) => {
+      if (claim === 'none' && await readRun(config, runId) === 'missing') return { kind: 'not-here' };
+      const resumed = await resumeRun(config, runId, { claim: claim === 'any', checkout });
+      if (!resumed.ok) {
+        const { error } = resumed;
+        return error.code === 'not_owner'
+          ? { kind: 'not-owner', owner: `${error.owner.user} (install ${error.owner.id})`, since: error.ownedAt }
+          : { kind: 'failed', failure: { code: error.code, message: error.message } };
+      }
+      const run = await readRun(config, runId);
+      if (typeof run !== 'object') return { kind: 'failed', failure: { code: 'run_unreadable', message: `Run ${runId} cannot be read` } };
+      const unreconciled = await reconcileTakenCopies(config, runId, run.checkout ?? checkout);
+      if (unreconciled) return { kind: 'failed', failure: unreconciled };
+      const description = describeWorkflow({ definition: run.definition, workflows: run.workflows ?? {}, ceiling, can, allow: config.workflows?.allow ?? {}, env: env.facts });
+      return { kind: 'ready', installed: resumed.value?.ownership === 'claimed', description, judging: await judgingOf(config, description, tool) };
+    },
     scoreNext: async (body) => {
       const request = parseJudgeRequest(body);
       return typeof request === 'string' ? { error: { code: 'invalid_json', message: request } } : nextJudgeLease(config, request);

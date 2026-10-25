@@ -64,6 +64,21 @@ export function resumeLiteral(invocation: Invocation, run: RunId, options: { too
   return LiteralSchema.parse([`${invocation} workflow resume ${run}`, ...toolsWords(options.tool)].join(' '));
 }
 
+/**
+ * Continues `run` from this coding session with the skill driver, taking it over from the machine that published it.
+ * `claim` takes it from another install that owns it: printed only for the person to agree to. The other options are
+ * a start's (`startLiteral`).
+ */
+export function skillResumeLiteral(invocation: Invocation, run: RunId, options: { claim?: boolean; parallel?: number; hitl?: HitlMode; noJudge?: boolean } = {}): Literal {
+  return LiteralSchema.parse([
+    `${invocation} workflow resume ${run} --driver skill`,
+    ...(options.claim ? ['--claim'] : []),
+    ...(options.parallel !== undefined ? [`--parallel ${options.parallel}`] : []),
+    ...(options.hitl === 'auto-approve' ? ['--auto-approve'] : options.hitl !== undefined ? [`--hitl ${options.hitl}`] : []),
+    ...(options.noJudge ? ['--no-judge'] : []),
+  ].join(' '));
+}
+
 export function nextLiteral(invocation: Invocation, run: RunId): Literal {
   return LiteralSchema.parse(`${invocation} workflow next ${run} --driver skill`);
 }
