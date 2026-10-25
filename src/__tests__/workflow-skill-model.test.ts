@@ -43,8 +43,8 @@ const STEPS = ['api', 'ui', 'lint', 'test', 'integrate', 'serve'] as const;
 
 /** fast-check runs per property: a few in the suite, more by hand (`WORKFLOW_SKILL_MODEL_RUNS=200`). */
 const RUNS = Number(process.env.WORKFLOW_SKILL_MODEL_RUNS ?? '8');
-/** A run takes about 1.5 s; the property gets 3 s a run, and never less than ten minutes. */
-const TIMEOUT_MS = Math.max(600_000, RUNS * 3_000);
+/** A run takes 1.5 s on an idle machine and 3 s on a busy one; the property gets 6 s a run, and never less than ten minutes. */
+const TIMEOUT_MS = Math.max(600_000, RUNS * 6_000);
 
 const NextBodySchema = z.object({ running: z.array(z.string()) });
 const LeaseReplySchema = z.object({ data: z.object({ lease: z.object({ attempt: z.string() }) }) });
@@ -548,10 +548,8 @@ async function driveToDone(model: Model, real: Real): Promise<Turn> {
   throw new Error('a fair session did not reach done in 40 calls');
 }
 
-const roots: string[] = [];
 afterEach(() => {
   vi.unstubAllEnvs();
-  for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 
 describe('skill driver model', () => {
@@ -572,19 +570,23 @@ describe('skill driver model', () => {
         runners: (runners) => ({ ...runners, command: (input) => (input.command === 'sleep 300' ? sleeping(input) : runners.command(input)) }),
         client: protocol.client,
       });
-      roots.push(made.root);
       config = made.config;
-      const started = turnOf(await called({ made, drift, session: 'session-a', commands }, { kind: 'start', name: 'build', answers: { parallel: 2, confirmed: false }, inputs: undefined }));
-      const model: Model = { hostPending: false, done: false, open: new Map(), acked: new Set(), stopping: new Map(), stopped: new Set(), cancelled: new Set(), unseen: [] };
-      sawForeground(model, started);
-      expect(model.hostPending).toBe(true);
-      const real: Real = { made, run: started.run, session: 'session-a', sessions: 0, drift, crash: protocol, commands };
-      if (host) await new Choose(host).run(model, real);
-      await fc.asyncModelRun(() => ({ model, real }), steps);
-      const done = await driveToDone(model, real);
-      expect(done.actions).toEqual([expect.objectContaining({ kind: 'done' })]);
-      // No command outlives the run.
-      expect([...commands.live]).toEqual([]);
+      // Each run's repositories go when it ends, so hundreds of runs do not pile them up.
+      try {
+        const started = turnOf(await called({ made, drift, session: 'session-a', commands }, { kind: 'start', name: 'build', answers: { parallel: 2, confirmed: false }, inputs: undefined }));
+        const model: Model = { hostPending: false, done: false, open: new Map(), acked: new Set(), stopping: new Map(), stopped: new Set(), cancelled: new Set(), unseen: [] };
+        sawForeground(model, started);
+        expect(model.hostPending).toBe(true);
+        const real: Real = { made, run: started.run, session: 'session-a', sessions: 0, drift, crash: protocol, commands };
+        if (host) await new Choose(host).run(model, real);
+        await fc.asyncModelRun(() => ({ model, real }), steps);
+        const done = await driveToDone(model, real);
+        expect(done.actions).toEqual([expect.objectContaining({ kind: 'done' })]);
+        // No command outlives the run.
+        expect([...commands.live]).toEqual([]);
+      } finally {
+        fs.rmSync(made.root, { recursive: true, force: true });
+      }
     }), { numRuns: RUNS });
   }, TIMEOUT_MS);
 });
