@@ -164,11 +164,8 @@ export type JudgeAnswer = { kind: 'judged'; labels: Array<{ scorer: string; labe
 /**
  * What describe knows before the rows choose how to start. `denied`: why an agent session may not start the workflow.
  * `local`: why the local driver must run it. `judgingHere`: the session tool's confined judge would judge the scored
- * steps here. `undeliverable`: why a start from the checkout would be refused for its delivery.
- */
-/**
- * `undeliverable`: why a start from the checkout would be refused for its delivery. `mode`: the run mode of the caller.
- * `attended`: why a run of the workflow needs a person.
+ * steps here. `undeliverable`: why a start from the checkout would be refused for its delivery. `mode`: the run mode of
+ * the caller. `attended`: why a run of the workflow needs a person.
  */
 export interface DescribeInput { needed: StartAnswer[]; denied?: string; undeliverable?: string; local?: string; judgingHere: boolean; mode: RunMode; attended?: string }
 
