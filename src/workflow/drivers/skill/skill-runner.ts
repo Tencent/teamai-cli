@@ -262,7 +262,8 @@ async function begin(context: SkillContext, lock: RunLock, attempt: AttemptId, p
   });
   if (!picked.ok) return failed(picked.failure, 'model');
   const brief = await writeChildBrief({
-    config: context.config, run: lock.run, attempt, step: open.step, dir, writes, prompt: prepared.prompt ?? lease.prompt, ...(interactive ? { person: true } : {}),
+    config: context.config, run: lock.run, attempt, step: open.step, dir, writes, prompt: prepared.prompt ?? lease.prompt,
+    by: interactive ? 'person' : state.host.kind === 'chosen' && state.host.id === 'h4' ? 'self' : 'child',
     ...(output !== undefined ? { output } : {}), report: reportLiteral(state.invocation, lock.run, attempt), secrets: context.env.secrets,
   });
   const offered = traced(context, offerRow(state, {

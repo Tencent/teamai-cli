@@ -579,6 +579,21 @@ describe('skill driver', () => {
     expect(briefs.change).not.toContain('Do not change files here');
   });
 
+  it('on h4, where the agent works each step itself, tells it to go on with the run after its report', async () => {
+    const harness = await skillHarness({ survey: SURVEY });
+    roots.push(harness.root);
+    const started = await harness.call({ kind: 'start', name: 'survey', answers: { parallel: 2, confirmed: false }, inputs: undefined });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+    const chosen = await harness.call({ kind: 'choose', run: started.data.turn.run, choice: 'h4' });
+    if (!('data' in chosen) || !('turn' in chosen.data)) throw new Error(JSON.stringify(chosen));
+    const [read] = chosen.data.turn.actions.flatMap((action) => (action.kind === 'dispatch' ? [action] : []));
+    if (!read) throw new Error(JSON.stringify(chosen));
+    const brief = fs.readFileSync(read.brief, 'utf8');
+    expect(brief).toContain(`2. Run \`${read.report}\` once, then go on with the run.`);
+    expect(brief).not.toContain('Another agent orchestrates the run');
+    expect(brief).not.toContain('your last message');
+  });
+
   it('h3 asks the host for a place, adopts it, and a continue step reuses it', async () => {
     const harness = await skillHarness({ change: CHANGE });
     roots.push(harness.root);

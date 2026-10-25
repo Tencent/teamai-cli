@@ -29,21 +29,26 @@ export async function writeChildBrief(input: {
   /** Whether TeamAI commits what the step changes in `dir`: false for a step in the checkout or in a read-only copy, which must change nothing. */
   writes: boolean;
   prompt: string;
-  /** An interactive step: the orchestrator works it with the person, in its own session. */
-  person?: true;
+  /**
+   * Who works the step: a `child` agent the orchestrator started; the orchestrator, with the `person`, in an interactive
+   * step; or the orchestrator alone (`self`), on a host that starts no child. Only a child ends when it reports.
+   */
+  by: 'child' | 'person' | 'self';
   /** The step's output schema, when it declares one. */
   output?: unknown;
   report: Literal;
   secrets: Record<string, string>;
 }): Promise<string> {
-  const { config, run, attempt, step, dir, writes, prompt, person, output, report, secrets } = input;
+  const { config, run, attempt, step, dir, writes, prompt, by, output, report, secrets } = input;
   const shape = output === undefined ? 'a short summary of what you did, as a JSON string' : `a value that matches the JSON schema \`${JSON.stringify(output)}\``;
   const brief = [
     `# Step ${step}, attempt ${attempt} of run ${run}`,
     '',
-    person
-      ? 'You work this one step of a team workflow with the person, in this session: ask them what the step needs, and do it together. Your part in it ends when you report.'
-      : 'You work this one step of a team workflow. Another agent orchestrates the run, and your part ends when you report.',
+    {
+      child: 'You work this one step of a team workflow. Another agent orchestrates the run, and your part ends when you report.',
+      person: 'You work this one step of a team workflow with the person, in this session: ask them what the step needs, and do it together. Your part in it ends when you report.',
+      self: 'You orchestrate this team workflow, and you work this one step of it yourself, in this session. Your part in the step ends when you report.',
+    }[by],
     '',
     '## The step',
     '',
@@ -61,9 +66,9 @@ export async function writeChildBrief(input: {
     `1. Write \`${attemptResultPath(config, run, attempt)}\` with one JSON object:`,
     `   - When the step is done: \`{"kind":"output","output":...}\`, where \`output\` is ${shape}.`,
     '   - When you cannot do it: `{"kind":"failure","failure":{"code":"blocked","message":"..."}}`, with a short code and a message that says what stopped you.',
-    person
-      ? `2. Run \`${report}\` once, then go on with the run.`
-      : `2. Run \`${report}\` once, and end with its reply as your last message. The orchestrator learns from TeamAI that you reported.`,
+    by === 'child'
+      ? `2. Run \`${report}\` once, and end with its reply as your last message. The orchestrator learns from TeamAI that you reported.`
+      : `2. Run \`${report}\` once, then go on with the run.`,
     '',
   ].join('\n');
   const file = path.join(attemptDir(config, run, attempt), 'brief.md');
