@@ -88,6 +88,19 @@ steps:
     prompt: Write the change.
 `;
 
+const INLINE = `schemaVersion: v1alpha1
+name: inline
+description: Write the notes, then change the code
+invoke: allow
+steps:
+  - id: notes
+    prompt: Write the notes.
+  - id: change
+    needs: [notes]
+    workspace: new
+    prompt: Change the code.
+`;
+
 const GATED = `schemaVersion: v1alpha1
 name: gated
 description: Lint once the person agrees
@@ -926,6 +939,26 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
         code: 'unknown_attempt', message: `Attempt ${place.attempt} of run ${run} is offered and waits for no place, so nothing was adopted. Run the next literal to see the run.`,
         next: `teamai workflow next ${run} --driver skill`,
       } });
+      return made.rows;
+    },
+  },
+  {
+    name: 'on a host that starts no child, a step in the checkout is the session\'s to work in the foreground, and a step that needs a worktree is held',
+    rows: ['R13', 'D1', 'D7', 'C2', 'K1', 'P5'],
+    run: async () => {
+      const made = await harness({ inline: INLINE });
+      const { run } = await turnOf(await made.call({ kind: 'start', name: 'inline', answers: { confirmed: false }, inputs: undefined }));
+      const turn = await turnOf(await made.call({ kind: 'choose', run, choice: 'h4' }));
+      const [notes] = dispatches(turn);
+      expect(notes).toEqual(expect.objectContaining({ step: 'notes', dir: made.work, needs: { place: 'checkout', parallel: false } }));
+      if (!notes) throw new Error(JSON.stringify(turn));
+      await made.call({ kind: 'ack', run, attempt: notes.attempt });
+      childWrites(notes.brief, { kind: 'output', output: 'Wrote the notes.' });
+      expect(await made.call({ kind: 'report', run, attempt: notes.attempt, role: 'agent', modelUnavailable: false })).toEqual({ data: { runner: { attempt: notes.attempt, status: 'reported' } } });
+      const held = await turnOf(await made.call({ kind: 'next', run, wait: false }));
+      expect(dispatches(held)).toEqual([]);
+      expect(held.running).toEqual([]);
+      expect(held.waiting?.reason).toContain('step "change" needs workspace new, which this driver does not provide');
       return made.rows;
     },
   },

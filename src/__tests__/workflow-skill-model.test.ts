@@ -41,6 +41,27 @@ steps:
 
 const STEPS = ['api', 'ui', 'lint', 'test', 'integrate', 'serve'] as const;
 
+// For a host that starts no child (h4): a prompt step in the checkout, a command beside it, a prompt step in a worktree
+// of its own, and a prompt step after the first two.
+const INLINE = `schemaVersion: v1alpha1
+name: inline
+description: Write the notes and lint, change the code, then sum up
+invoke: allow
+steps:
+  - id: notes
+    prompt: Write the notes.
+  - id: lint
+    needs: []
+    command: node -e "process.exit(0)"
+  - id: change
+    needs: []
+    workspace: new
+    prompt: Change the code.
+  - id: summary
+    needs: [notes, lint]
+    prompt: Sum up.
+`;
+
 /** fast-check runs per property: a few in the suite, more by hand (`WORKFLOW_SKILL_MODEL_RUNS=200`). */
 const RUNS = Number(process.env.WORKFLOW_SKILL_MODEL_RUNS ?? '8');
 /** A run takes 1.5 s on an idle machine and 3 s on a busy one; the property gets 6 s a run, and never less than ten minutes. */
@@ -604,4 +625,96 @@ describe('skill driver model', () => {
       }
     }), { numRuns: RUNS });
   }, TIMEOUT_MS);
+
+  it('on a host that starts no child, declares only read-only workspaces, works one attempt at a time, and leaves the worktree step to the person', async () => {
+    const commands = [
+      fc.constant(new Next()),
+      fc.constant(new Poll()),
+      fc.integer({ min: 1, max: 6_000 }).map((ms) => new Sleep(ms)),
+      fc.tuple(fc.nat(STEPS.length - 1), fc.boolean()).map(([pick, dispatched]) => new Cancel(pick, dispatched)),
+      fc.nat(3).map((pick) => new ReportStop(pick)),
+      fc.nat(3).map((pick) => new Ack(pick)),
+      fc.tuple(fc.nat(3), fc.constantFrom<'output' | 'failure' | 'none'>('output', 'output', 'failure', 'none'), fc.boolean()).map(([pick, result, own]) => new Report(pick, result, own)),
+      fc.tuple(fc.constantFrom<'next' | 'poll' | 'report'>('next', 'poll', 'report'), fc.nat(3)).map(([call, pick]) => new CrashAfterEngine(call, pick)),
+      fc.constant(new Compact()),
+      fc.constant(new TwoCallers()),
+      fc.constantFrom<'refused' | 'takeover' | 'quiet'>('refused', 'takeover', 'quiet').map((how) => new NewSession(how)),
+      fc.nat(5).map((pick) => new RunnerCrash(pick)),
+    ];
+    await fc.assert(fc.asyncProperty(fc.commands(commands, { maxCommands: 14 }), async (steps) => {
+      const drift: string[] = [];
+      let config: Made['config'] | undefined;
+      const protocol = watched({ config: () => config, drift });
+      const declared = inlineWatched({ config: () => config, drift });
+      const commandsRun: Real['commands'] = { live: new Set(), twice: [] };
+      const made = await skillHarness({ inline: INLINE }, { client: (client) => declared(protocol.client(client)) });
+      config = made.config;
+      try {
+        const started = turnOf(await called({ made, drift, session: 'session-a', commands: commandsRun }, { kind: 'start', name: 'inline', answers: { parallel: 2, confirmed: false }, inputs: undefined }));
+        const model: Model = { hostPending: false, done: false, open: new Map(), acked: new Set(), stopping: new Map(), stopped: new Set(), cancelled: new Set(), unseen: [] };
+        sawForeground(model, started);
+        const real: Real = { made, run: started.run, session: 'session-a', sessions: 0, drift, crash: protocol, commands: commandsRun };
+        sawForeground(model, turnOf(await called(real, { kind: 'choose', run: real.run, choice: 'h4' })));
+        await fc.asyncModelRun(() => ({ model, real }), steps);
+        const held = await driveInline(model, real);
+        expect(held.waiting?.reason).toContain('step "change" needs workspace new, which this driver does not provide');
+        const run = await readRun(made.config, real.run);
+        expect(typeof run === 'object' && run.steps.find((step) => step.id === 'change')?.status).toBe('pending');
+      } finally {
+        fs.rmSync(made.root, { recursive: true, force: true });
+      }
+    }), { numRuns: RUNS });
+  }, TIMEOUT_MS);
 });
+
+const CanBodySchema = z.object({ driver: z.object({ can: z.object({ hitl: z.boolean(), workspace: z.array(z.string()), env: z.string() }) }) });
+const LeaseStepSchema = z.object({ data: z.object({ lease: z.object({ step: z.string(), workspace: z.unknown().optional() }) }) });
+
+/**
+ * The protocol as the h4 model watches it: every engine `next` declares HITL, commands' env and only read-only
+ * workspaces; no lease is for a step in a worktree; and the engine leases one attempt at a time.
+ */
+function inlineWatched(input: { config: () => LocalConfig | undefined; drift: string[] }) {
+  return (client: WorkflowClient): WorkflowClient => ({
+    ...client,
+    next: async (runId, body, options) => {
+      const sent = CanBodySchema.safeParse(body);
+      if (!sent.success || !isDeepStrictEqual(sent.data.driver.can, { hitl: true, workspace: ['read-only'], env: 'commands' })) {
+        input.drift.push(`declared ${JSON.stringify(body)} on h4`);
+      }
+      const answer = await client.next(runId, body, options);
+      const leased = LeaseStepSchema.safeParse(answer);
+      if (leased.success && leased.data.data.lease.workspace !== undefined) input.drift.push(`leased ${leased.data.data.lease.step}, a step in a worktree, on h4`);
+      const config = input.config();
+      const state = config ? await readRun(config, runId) : 'missing';
+      const open = typeof state === 'object' ? state.steps.filter((step) => step.status === 'leased').map((step) => step.id) : [];
+      if (open.length > 1) input.drift.push(`leased ${open.join(', ')} at once on h4`);
+      return answer;
+    },
+  });
+}
+
+/**
+ * Plays a fair session on h4 from where the commands left the run: it works each dispatch itself in the checkout, one
+ * at a time, until nothing is open and the run waits for the worktree step alone. That turn.
+ */
+async function driveInline(model: Model, real: Real): Promise<Turn> {
+  for (let call = 0; call < 40; call += 1) {
+    const turn = turnOf(await called(real, { kind: 'next', run: real.run, wait: false }));
+    sawForeground(model, turn);
+    if (model.stopping.size > 0) {
+      while (model.stopping.size > 0) await new ReportStop(0).run(model, real);
+      continue;
+    }
+    for (const action of model.open.values()) expect(action).toEqual(expect.objectContaining({ dir: real.made.work, needs: { place: 'checkout', parallel: false } }));
+    expect(model.open.size).toBeLessThanOrEqual(1);
+    if (model.open.size > 0) {
+      for (const [pick, attempt] of [...model.open.keys()].entries()) if (!model.acked.has(attempt)) await new Ack(pick).run(model, real);
+      await new Report(0, 'output', false).run(model, real);
+      continue;
+    }
+    if (turn.running.length === 0 && turn.waiting?.reason.includes('step "change"')) return turn;
+    await polled(model, real);
+  }
+  throw new Error('a fair session on h4 did not reach the worktree step in 40 calls');
+}

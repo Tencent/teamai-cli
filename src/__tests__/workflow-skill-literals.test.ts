@@ -119,7 +119,7 @@ describe('start and respond options of the skill driver', () => {
 describe('next options of the skill driver', () => {
   it('name the host choices, the shape of an offer, and that one call takes one of --wait, --takeover, --choice and --ack', () => {
     expect(parseSkillCall({ kind: 'next', run: RUN, options: { choice: 'h9' } }, {}))
-      .toEqual({ error: { code: 'invalid_arguments', message: '--choice takes the id of a host question option: h1, h2, h3', next: null } });
+      .toEqual({ error: { code: 'invalid_arguments', message: '--choice takes the id of a host question option: h1, h2, h3, h4', next: null } });
     expect(parseSkillCall({ kind: 'next', run: RUN, options: { ack: ATTEMPT } }, {}))
       .toEqual({ error: { code: 'invalid_arguments', message: `--ack takes the offer of a dispatch action, such as dispatch.a1b2c3d4e; got ${ATTEMPT}`, next: null } });
     expect(parseSkillCall({ kind: 'next', run: RUN, options: { wait: true, ack: `dispatch.${ATTEMPT}` } }, {}))

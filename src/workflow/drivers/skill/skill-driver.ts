@@ -14,7 +14,7 @@ import { agentSessionFromEnv } from '../../../utils/session-id.js';
 import { agentEvidence, isAttemptRunner, type AgentEvidence } from '../../attempt-marker.js';
 import { inProcessClient, type WorkflowClient } from '../../protocol.js';
 import { AttemptIdSchema, RunIdSchema, withRunLock, type AttemptId, type RunId, type RunLock } from '../../store.js';
-import { HOST_CHOICES, SKILL_CAN, type HostChoice } from './host-profiles.js';
+import { canFor, HOST_CHOICES, type HostChoice } from './host-profiles.js';
 import { describeLiteral, invocationOf, type Invocation } from './literals.js';
 import { askFor, checkStartAnswers, deniedReason, localReason, neededAnswers, type HitlMode } from './preflight.js';
 import { writeSkillState, type SkillState } from './skill-state.js';
@@ -241,7 +241,7 @@ export async function runSkillCall(call: SkillCall, context: SkillContext): Prom
 
 async function start(call: Extract<SkillCall, { kind: 'describe' | 'start' }>, context: SkillContext): Promise<SkillAnswer> {
   const ceiling = ceilingOf(context.config);
-  const described = await context.client.describe(call.name, { ceiling, can: SKILL_CAN, checkout: context.cwd, ...(context.tool !== undefined ? { tool: context.tool } : {}) });
+  const described = await context.client.describe(call.name, { ceiling, can: canFor(undefined), checkout: context.cwd, ...(context.tool !== undefined ? { tool: context.tool } : {}) });
   if ('error' in described) return { error: { ...described.error, next: null } };
   const { description, judging } = described;
   const local = localReason(description);

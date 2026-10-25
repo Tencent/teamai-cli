@@ -12,7 +12,7 @@ import type { EnvScope } from '../../requirements.js';
 import { AttemptIdSchema, attemptDir, type AttemptId, type RunId, type RunLock } from '../../store.js';
 import type { WorkflowEnvelope, WorkflowFailure } from '../../types.js';
 import { readChildResult } from './child-brief.js';
-import { HOST_PROFILES, judgeCan, SKILL_CAN, type HostChoice } from './host-profiles.js';
+import { canFor, HOST_PROFILES, judgeCan, type HostChoice } from './host-profiles.js';
 import {
   ackLiteral, adoptLiteral, chooseHostLiteral, describeLiteral, localStartLiteral, nextLiteral, pollLiteral, reportLiteral, respondLiteral, takeoverLiteral, unavailableLiteral, type Invocation,
   type Literal,
@@ -350,7 +350,7 @@ async function stepTick(context: SkillContext, lock: RunLock, start: SkillState,
     if (!next || next.kind !== 'next') return { state, spawned };
     probed = probed || !next.canTakeLease;
     const answer = await context.client.next(state.run, {
-      driver: { ...state.driver, can: SKILL_CAN }, running: next.running, canTakeLease: next.canTakeLease, ...(next.autoApprove ? { autoApprove: true } : {}),
+      driver: { ...state.driver, can: canFor(state.host.kind === 'chosen' ? state.host.id : undefined) }, running: next.running, canTakeLease: next.canTakeLease, ...(next.autoApprove ? { autoApprove: true } : {}),
     });
     const at = context.now().toISOString();
     const { reply, cancelled } = engineReply(state.run, answer);

@@ -6,6 +6,7 @@ The host question asks how this coding session starts a child agent, and so how 
    1. App orchestration tools: a tool of the app you run in that starts a child task or thread with a prompt and a model.
    2. Team agents: agents your host starts by name, such as the files in `.claude/agents/`.
    3. Native subagents: the host's own subagent tool.
+   4. None: your host starts no child, or its children cannot run teamai.
 2. Pick the first option whose row fits that way:
 
    | Option | Pick it when that way | Children at once |
@@ -13,11 +14,14 @@ The host question asks how this coding session starts a child agent, and so how 
    | `h3` | makes a worktree of its own for each child to work in, as T3 worktree tasks, Claude Code agent teams with worktrees and Codex worktrees do | up to the run's `--parallel` |
    | `h1` | runs several children in the background while you keep working | up to the run's `--parallel` |
    | `h2` | runs one child at a time, or only in the foreground | one |
+   | `h4` | is none: you work each prompt step yourself | none: you work one step at a time |
 
    On `h3`, a step that commits to a branch first comes as a `place` action: your host makes the worktree, and TeamAI adopts it before the step's dispatch comes.
+
+   On `h4`, a step that works in a worktree is the person's to run from their own terminal: once nothing else is open, a `person` action hands the run to them.
 
 3. Run the option's `run`.
 
 Done when the turn it returns has no `choose` action.
 
-When your host has none of the three ways, tell the person: this session cannot start the run's prompt steps, and `teamai workflow cancel <run>` ends the run.
+When your host cannot run the commands a turn prints, tell the person: this session cannot drive the run, and `teamai workflow cancel <run>` ends the run.

@@ -7,7 +7,7 @@ description: Drive a team workflow from this coding session. Use when a workflow
 
 ## Your role
 
-You orchestrate. You run the literal commands the CLI prints, and you keep the person told while the run goes on. Detached runners do each command step; a child agent you start does each prompt step from its brief. Step work belongs to them: yours is the literals and the person. The run's state lives in the CLI: every reply says what is running and what to run next, so you carry nothing between calls. Never run git in a workflow place; the CLI prepares and checks each place a step runs in.
+You orchestrate. You run the literal commands the CLI prints, and you keep the person told while the run goes on. Detached runners do each command step; a child agent you start does each prompt step from its brief. Step work belongs to them, and yours is the literals and the person. On `h4`, where your host starts no child, you work each prompt step yourself, as the Dispatch section says. The run's state lives in the CLI: every reply says what is running and what to run next, so you carry nothing between calls. Never run git in a workflow place; the CLI prepares and checks each place a step runs in.
 
 ## Start
 
@@ -86,6 +86,8 @@ A `dispatch` action is one prompt step for one child agent. For each one:
 When your host cannot run `model.name`, run `unavailable` in place of both steps.
 
 A dispatch whose `needs.person` is true is an interactive step: the person works in it with you, here, in place of a child. Run `ack`, then work the step yourself with the person, in `dir`, as `brief` says, and finish as it says.
+
+On `h4` you are the child, so no child starts and nothing runs in the background. Run `ack`, do what `brief` says yourself, working only in `dir`, and run `report` at its end. Then go on with `then` of your newest turn: the next dispatch comes after this one is reported. A `model.name` that is not your own model is one your host cannot run.
 
 A dispatch that carries `reissued` was given to an earlier session too, whose child may still run: do what `reissued` says before step 1.
 
