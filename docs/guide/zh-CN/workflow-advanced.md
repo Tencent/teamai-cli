@@ -815,7 +815,7 @@ teamai workflow next <run> --json '{"claim":true,"driver":{"kind":"script","mach
 1. 从 `workspace.start` 开始一个步骤、合并 `workspace.merge` 里的一项，或从 `workspace.configCommit` 恢复 agent 文件之前，先用 `git cat-file -e <commit>^{commit}` 检查检出目录里有没有这个提交。缺少时，用 refspec `+refs/heads/teamai/<run>/*:refs/remotes/origin/teamai/<run>/*` 取回这次运行的分支，再检查一次。refspec 没有匹配到任何分支时，fetch 也会成功，所以只有第二次检查算数。仍然缺少的提交会让步骤在运行任何内容之前以 `workspace_base` 失败，消息里写明该提交和它所在的分支。
 2. 检出目录有 `origin` 时，驱动在发送报告之前推送 `changes` 里报告的提交所在的分支，步骤失败时也一样。推送失败时，这些提交仍然会被报告。成功的步骤随后以 `push_failed` 失败。本身已失败的步骤保留自己的失败，消息里再补充该分支没有推送。
 
-`src/workflow/conformance.ts` 里的 `workflowGitConformanceScenarios` 在一个 bare `origin` 上检查这两条规则。像 `src/__tests__/workflow-git-conformance.test.ts` 对 `local` 所做的那样，用它们检查你的驱动。
+`src/workflow/conformance/git.ts` 里的 `workflowGitConformanceScenarios` 在一个 bare `origin` 上检查这两条规则。像 `src/__tests__/workflow-git-conformance.test.ts` 对 `local` 所做的那样，用它们检查你的驱动。
 
 继续一个[已发布的运行](#发布和认领)的驱动同样依赖这些规则：
 

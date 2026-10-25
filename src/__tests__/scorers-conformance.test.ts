@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { inProcessConformanceClient, JUDGES_UNDER_TEST, runJudgeConformanceScenario } from '../workflow/conformance-interpreter.js';
-import { judgeConformanceScenarios } from '../workflow/conformance.js';
+import { judgeConformanceScenarios } from '../workflow/conformance/judge.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { inProcessClient } from '../workflow/protocol.js';
 import { parseJudgeSubmission, submitJudgeLease } from '../workflow/scoring.js';

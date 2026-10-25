@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { afterAll, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { JUDGES_UNDER_TEST, runJudgeConformanceScenario } from '../../workflow/conformance-interpreter.js';
-import { judgeConformanceScenarios } from '../../workflow/conformance.js';
+import { judgeConformanceScenarios } from '../../workflow/conformance/judge.js';
 import type { WorkflowEnvelope } from '../../workflow/types.js';
 import { cliConformanceClient, envelope, fileUnder, runCLI } from '../helpers/cli-conformance.js';
 

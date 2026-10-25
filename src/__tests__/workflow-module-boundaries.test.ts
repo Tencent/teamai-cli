@@ -63,7 +63,8 @@ const ALLOWED: Array<{ from: string; to: string; count: number; why: string }> =
 
 const under = (file: string, folder: string): boolean => file.startsWith(folder);
 const isTest = (file: string): boolean => under(file, 'src/__tests__/');
-const isFlat = (file: string): boolean => path.posix.dirname(file) === 'src/workflow';
+/** A workflow module outside the driver, place and discovery folders: the flat engine modules and the conformance suites. */
+const isFlat = (file: string): boolean => under(file, FLAT) && ![`${FLAT}drivers/`, PLACE, DISCOVERY].some((folder) => under(file, folder));
 
 interface RuleResult { matched: number; violations: string[] }
 const show = (edge: Edge): string => `${edge.from} -> ${edge.to}`;

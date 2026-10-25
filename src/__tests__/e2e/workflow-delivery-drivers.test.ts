@@ -1,5 +1,5 @@
 /**
- * Real CLI: the delivery scenarios of `conformance.ts` for each kind of driver, through `teamai workflow` JSON alone. Two
+ * Real CLI: the delivery scenarios of `conformance/delivery.ts` for each kind of driver, through `teamai workflow` JSON alone. Two
  * installs, each with its own HOME and checkout, share a team origin and a product origin whose URL is
  * `https://github.com/fixture/app.git`, which git rewrites to a bare repository. One fake `gh` on PATH is the host of
  * every case: it records each create, answers lookups from what it recorded, and holds the call a case names.
@@ -17,7 +17,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { deliveryConformanceWorkflow, workflowDeliveryConformanceScenarios, type DeliveryConformanceScenario } from '../../workflow/conformance.js';
+import { deliveryConformanceWorkflow, workflowDeliveryConformanceScenarios, type DeliveryConformanceScenario } from '../../workflow/conformance/delivery.js';
 import { trackDetachedProcesses } from '../helpers/detached-processes.js';
 import { fakeGhHost, type FakeGh } from '../helpers/fake-gh.js';
 

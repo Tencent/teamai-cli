@@ -4,7 +4,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { DRIVER_PROFILES, DRIVERS_UNDER_TEST, JUDGE_PROFILES, runConformanceScenario } from '../workflow/conformance-interpreter.js';
-import { workflowConformanceScenarios } from '../workflow/conformance.js';
+import { workflowConformanceScenarios } from '../workflow/conformance/run.js';
 import { RunIdSchema } from '../workflow/store.js';
 import { inProcessConformanceRunner } from './helpers/in-process-conformance.js';
 import { fakeJudge, skillHarness } from './helpers/skill-harness.js';

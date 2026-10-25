@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { LocalConfig } from '../types.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { DRIVER_PROFILES, DRIVERS_UNDER_TEST, driveByProtocol, inProcessConformanceClient, profileDriver } from '../workflow/conformance-interpreter.js';
-import { workflowGitConformanceScenarios, type GitConformanceName } from '../workflow/conformance.js';
+import { workflowGitConformanceScenarios, type GitConformanceName } from '../workflow/conformance/git.js';
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
 import { claimRun, publishRun } from '../workflow/handoff.js';
 import { runLocalDriver } from '../workflow/drivers/local/local-driver.js';

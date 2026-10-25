@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { DRIVER_PROFILES, DRIVERS_UNDER_TEST, driveByProtocol, profileDriver } from '../../workflow/conformance-interpreter.js';
-import { workflowGitConformanceScenarios, type GitConformanceName } from '../../workflow/conformance.js';
+import { workflowGitConformanceScenarios, type GitConformanceName } from '../../workflow/conformance/git.js';
 import type { StepState } from '../../workflow/step-state.js';
 import type { RunState, WorkflowEnvelope } from '../../workflow/types.js';
 import type { WorkspaceContract } from '../../workflow/workspace.js';

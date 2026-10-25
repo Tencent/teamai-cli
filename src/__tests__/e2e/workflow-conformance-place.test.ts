@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { DRIVERS_UNDER_TEST, runConformanceScenario } from '../../workflow/conformance-interpreter.js';
-import { PLACE_CHECKOUT_FILES, workflowPlaceConformanceScenarios } from '../../workflow/conformance.js';
+import { PLACE_CHECKOUT_FILES, workflowPlaceConformanceScenarios } from '../../workflow/conformance/place.js';
 import type { RunState, WorkflowEnvelope } from '../../workflow/types.js';
 import { cliConformanceClient, envelope, fileUnder, runCLI } from '../helpers/cli-conformance.js';
 
