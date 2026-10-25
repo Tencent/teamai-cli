@@ -2283,6 +2283,23 @@ describe('a run taken back on the machine that worked on it', () => {
     expect(originRef(acme.business, `refs/heads/${wrote.branch}`)).toBe(wrote.commit);
     expect(await readRun(alice.config, runId)).toMatchObject({ publication: { reconcileCopies: true } });
   });
+
+  it('brings a copy that next takes back with claim to the commit the other machine recorded, as a resume does', async () => {
+    const acme = team({ ship: SHIP });
+    const alice = await acme.member('alice');
+    const bob = await acme.member('bob');
+    const runId = await startIn(alice, 'ship');
+    const wrote = await work(alice, runId, 'write.txt');
+    await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout });
+    await claimRun(bob.config, runId, { checkout: bob.checkout });
+    const more = await work(bob, runId, 'more.txt');
+    await publishRun(bob.config, runId, { env: {}, checkout: bob.checkout });
+
+    expect(await leaseNext(alice.config, runId, alice.driver, { claim: true, can: { workspace: [...WORKSPACES] } })).toMatchObject({ data: { lease: { step: 'change.last' } } });
+    expect(git(alice.checkout, 'rev-parse', wrote.branch)).toBe(more.commit);
+    const run = await readRun(alice.config, runId);
+    expect(typeof run === 'object' && run.publication).not.toHaveProperty('reconcileCopies');
+  });
 });
 
 describe('the session archive a claimed run restores from', () => {

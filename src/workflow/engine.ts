@@ -4,7 +4,7 @@ import { DriverSchema, sameDriver } from '../driver-identity.js';
 import { log } from '../utils/logger.js';
 import type { LocalConfig } from '../types.js';
 import { loadCachedWorkflow, loadWorkflowTree } from './cache.js';
-import { claimRun, publishRunEnd } from './handoff.js';
+import { claimRun, publishRunEnd, reconcileTakenCopies } from './handoff.js';
 import {
   evaluateExpression, expressionPaths, isRecord, isTruthy, parseExpression, resolvePath,
   type Expression, type ExpressionPath,
@@ -1086,6 +1086,9 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
   if (options.claim) {
     const claimed = await claimRun(config, runId, { checkout: driver.workspace });
     if (!claimed.ok) return { error: claimed.error };
+    // As a resume does, before anything is leased: the branches of a run taken back go to the commits it recorded.
+    const unreconciled = await reconcileTakenCopies(config, runId, driver.workspace);
+    if (unreconciled) return { error: unreconciled };
   }
   // Resolved once, so the env this `next` offers against and the secrets its writes, deliveries' included, mask agree.
   const env = options.env ?? await resolveWorkflowEnv(config);
