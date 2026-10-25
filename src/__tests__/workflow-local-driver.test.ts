@@ -1000,7 +1000,8 @@ steps:
     });
   });
 
-  it('kills a cancelled command that ignores SIGTERM after the grace period, and finishes', async () => {
+  // Real worktree preparation and the five-second SIGKILL grace period share this budget.
+  it('kills a cancelled command that ignores SIGTERM after the grace period, and finishes', { timeout: 30_000 }, async ({ signal }) => {
     const { config, workspace, runId } = await parallelFixture(`schemaVersion: v1alpha1
 name: build
 description: An end cancels a command that ignores SIGTERM.
@@ -1024,16 +1025,28 @@ require('fs').mkdirSync(${JSON.stringify(path.dirname(pidFile))}, { recursive: t
 require('fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
 setInterval(() => {}, 1000);
 `);
-    fs.writeFileSync(path.join(workspace, 'finish.js'), `const timer = setInterval(() => {
-  if (require('fs').existsSync(${JSON.stringify(pidFile)})) clearInterval(timer);
+    fs.writeFileSync(path.join(workspace, 'finish.js'), `const deadline = setTimeout(() => {
+  console.error('The stubborn command did not publish its PID');
+  process.exit(1);
+}, 10000);
+const timer = setInterval(() => {
+  if (require('fs').existsSync(${JSON.stringify(pidFile)})) {
+    clearTimeout(deadline);
+    clearInterval(timer);
+  }
 }, 20);
 `);
     execFileSync('git', ['add', 'stubborn.js', 'finish.js'], { cwd: workspace });
     execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'scripts'], { cwd: workspace });
-    let pid: number | undefined;
+    const cleanup = (): void => {
+      if (!fs.existsSync(pidFile)) return;
+      const pid = Number(fs.readFileSync(pidFile, 'utf8'));
+      if (Number.isSafeInteger(pid) && pid > 0 && alive(pid)) process.kill(pid, 'SIGKILL');
+    };
+    signal.addEventListener('abort', cleanup, { once: true });
     try {
       const done = await runLocalDriver(config, runId, workspace);
-      pid = Number(fs.readFileSync(path.join(workspace, '..', 'markers', 'stubborn.pid'), 'utf8'));
+      const pid = Number(fs.readFileSync(pidFile, 'utf8'));
 
       expect(done).toMatchObject({ data: { done: { outcome: 'succeeded', end: 'done' } } });
       expect(await exitsWithin(pid, 1000)).toBe(true);
@@ -1041,7 +1054,8 @@ setInterval(() => {}, 1000);
         steps: [{ id: 'stubborn', status: 'cancelled' }, { id: 'finish', status: 'succeeded' }],
       });
     } finally {
-      if (pid !== undefined && alive(pid)) process.kill(pid, 'SIGKILL');
+      signal.removeEventListener('abort', cleanup);
+      cleanup();
     }
   });
 

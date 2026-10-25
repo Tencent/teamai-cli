@@ -190,6 +190,12 @@ vi.mock('../project-agent-root.js', () => ({
   seedProjectAgentRoot: mockSeedProjectAgentRoot,
 }));
 
+// No scope scores finished sessions unless a test says so; a detached process is never started for real.
+const mockSessionScoringScopes = vi.fn().mockResolvedValue([]);
+vi.mock('../score-sessions.js', () => ({ sessionScoringScopes: mockSessionScoringScopes }));
+const { mockSpawn } = vi.hoisted(() => ({ mockSpawn: vi.fn(() => ({ on: vi.fn().mockReturnThis(), unref: vi.fn() })) }));
+vi.mock('node:child_process', async (importOriginal) => ({ ...(await importOriginal<typeof import('node:child_process')>()), spawn: mockSpawn }));
+
 import { buildAdoptedSummary, buildHandlerRegistry, filterHandlersForConfig } from '../hook-handlers.js';
 import { createDispatcher } from '../hook-dispatch.js';
 import { GIT_HOOK_EVENTS } from '../git-hook.js';
@@ -499,6 +505,44 @@ describe('hook-handlers registry', () => {
     await done;
 
     expect(returned).toBe(true);
+  });
+
+  function sessionStartPull() {
+    const registered = buildHandlerRegistry().find((r) => r.event === 'session-start' && r.handler.name === 'pull');
+    if (!registered) throw new Error('no session-start pull handler');
+    return registered.handler;
+  }
+
+  it('session-start pull starts score-sessions detached once the late usage report settles, when a scope scores sessions (#1179)', async () => {
+    const handler = sessionStartPull();
+    const cwd = fs.realpathSync.native(os.tmpdir());
+    mockSessionScoringScopes.mockResolvedValueOnce([scope]);
+
+    await handler.execute({ cwd }, 'claude', scope);
+
+    expect(mockSessionScoringScopes).toHaveBeenCalledWith(cwd);
+    expect(mockSpawn).toHaveBeenCalledWith(process.execPath, [expect.any(String), 'score-sessions'], expect.objectContaining({ cwd, detached: true, stdio: 'ignore' }));
+    expect(mockSettleLateUsageReport.mock.invocationCallOrder.at(-1)).toBeLessThan(mockSpawn.mock.invocationCallOrder.at(-1) ?? 0);
+  });
+
+  it('session-start pull scores the sessions of the directory it runs in when the payload names none (#1179)', async () => {
+    const handler = sessionStartPull();
+    mockSessionScoringScopes.mockResolvedValueOnce([scope]);
+    mockSpawn.mockClear();
+
+    await handler.execute({}, 'claude', scope);
+
+    expect(mockSessionScoringScopes).toHaveBeenLastCalledWith(process.cwd());
+    expect(mockSpawn).toHaveBeenCalledWith(process.execPath, [expect.any(String), 'score-sessions'], expect.objectContaining({ cwd: process.cwd() }));
+  });
+
+  it('session-start pull starts no score-sessions when no scope scores sessions (#1179)', async () => {
+    const handler = sessionStartPull();
+    mockSpawn.mockClear();
+
+    await handler.execute({ cwd: fs.realpathSync.native(os.tmpdir()) }, 'claude', scope);
+
+    expect(mockSpawn).not.toHaveBeenCalled();
   });
 
   it('session-start pull marks the session\'s captures when it delivers a new revision (#1178)', async () => {

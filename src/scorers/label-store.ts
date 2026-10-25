@@ -10,7 +10,7 @@ import { loadTeamConfig } from '../config.js';
 import { getReportsDir, isUsageReportEnabled, usesBranchWorktree, type LocalConfig } from '../types.js';
 import { readFileSafe, writeFileAtomic, writeJsonAtomic } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
-import { AttemptStore, scoresDir } from './attempts.js';
+import { AttemptStore, isRunAttempt, scoresDir } from './attempts.js';
 import { labelId, labelVersion, newestLabels, parseScoreLabel, parseScoreLabels, type JudgeUsage, type ScoreLabel } from './label.js';
 
 function labelsFile(config: LocalConfig): string {
@@ -219,7 +219,7 @@ export const LabelStore = {
     if (source === 'local') {
       for (const attempts of (await AttemptStore.read(config)).values()) {
         for (const attempt of attempts) {
-          if (attempt.subject.runId !== runId) continue;
+          if (!isRunAttempt(attempt) || attempt.subject.runId !== runId) continue;
           total.judged += 1;
           addUsage(total, attempt.usage);
         }

@@ -29,6 +29,8 @@ const FrontmatterSchema = z.object({
     if (problem !== undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, message: problem });
   }).optional(),
   isolation: z.enum(['verified', 'best-effort'], { errorMap: () => ({ message: 'must be verified or best-effort' }) }).optional(),
+  /** `true`: this scorer judges a member's finished agent sessions too, in the background where the member turns that on. */
+  sessions: z.boolean({ invalid_type_error: 'must be true or false' }).optional(),
 }).strict().superRefine((scorer, ctx) => {
   const seen = new Set<string>();
   scorer.labels.forEach((label, index) => {

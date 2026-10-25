@@ -10,7 +10,8 @@ import { canonicalJson } from '../utils/canonical-json.js';
 export const RunSubjectSchema = z.object({ runId: z.string().min(1), step: z.string().min(1), pass: z.number().int().positive() });
 export type RunSubject = z.infer<typeof RunSubjectSchema>;
 
-const SessionSubjectSchema = z.object({ platform: z.string().min(1), sessionId: z.string().min(1) });
+export const SessionSubjectSchema = z.object({ platform: z.string().min(1), sessionId: z.string().min(1) });
+export type SessionSubject = z.infer<typeof SessionSubjectSchema>;
 
 /** What the judge's tool reports it used, as far as it reports it. `cost` is in the tool's own unit. */
 export const JudgeUsageSchema = z.object({
@@ -64,6 +65,16 @@ const LabelFields = {
   scoredAt: z.string().datetime(),
 };
 
+const SessionLabelSchema = z.object({
+  ...LabelFields,
+  source: z.literal('session'),
+  subject: SessionSubjectSchema,
+  agent: AgentObservationSchema.optional(),
+  /** The team skills the session or its subagents loaded. */
+  used: UsedSchema.optional(),
+});
+export type SessionLabel = z.infer<typeof SessionLabelSchema>;
+
 /** Unknown keys are dropped, so a label a newer teamai wrote still reads here. */
 export const ScoreLabelSchema = z.discriminatedUnion('source', [
   z.object({
@@ -73,16 +84,16 @@ export const ScoreLabelSchema = z.discriminatedUnion('source', [
     /** The team skills the judged pass loaded, as its driver reported them. */
     used: UsedSchema.optional(),
   }),
-  z.object({
-    ...LabelFields,
-    source: z.literal('session'),
-    subject: SessionSubjectSchema,
-    agent: AgentObservationSchema.optional(),
-    /** The team skills the session or its subagents loaded. */
-    used: UsedSchema.optional(),
-  }),
+  SessionLabelSchema,
 ]);
 export type ScoreLabel = z.infer<typeof ScoreLabelSchema>;
+
+/**
+ * What a session label takes from one read of the session besides the verdict: the agent it ran as when its captures
+ * agree on one, the team skills it used, and its redacted first prompt, which heads the label's reasoning file.
+ */
+export const SessionLabelContextSchema = SessionLabelSchema.pick({ agent: true, used: true }).required({ used: true }).extend({ prompt: z.string() });
+export type SessionLabelContext = z.infer<typeof SessionLabelContextSchema>;
 
 /** The label `value` holds, or undefined when it is not one. */
 export function parseScoreLabel(value: unknown): ScoreLabel | undefined {

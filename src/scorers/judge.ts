@@ -6,7 +6,8 @@ import { z } from 'zod';
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml';
 import { observedEffort, observedModel } from '../agent-observation.js';
 import { opencodeMajorVersion } from '../opencode-hooks.js';
-import { toolHome } from '../tool-home.js';
+import { movedToolHome, realHost, toolHome } from '../tool-home.js';
+import { isToolId } from '../tools.js';
 import { resolveCliPath } from '../utils/cli-path.js';
 import { execCommand, probeBinary } from '../utils/exec.js';
 import { stopProcess } from '../tool-launch/process-stop.js';
@@ -24,6 +25,8 @@ const TOOL_ENV = {
   opencode: ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GOOGLE_GENERATIVE_AI_API_KEY', 'GEMINI_API_KEY', 'OPENROUTER_API_KEY', 'OPENCODE_API_KEY'],
   codebuddy: ['CODEBUDDY_API_KEY', 'CODEBUDDY_AUTH_TOKEN', 'CODEBUDDY_CONFIG_DIR'],
 } as const;
+/** The variable each tool reads its home from. A judge started outside the member's shell, as background scoring is, gets the recorded one. */
+const HOME_ENV = { claude: 'CLAUDE_CONFIG_DIR', codex: 'CODEX_HOME', opencode: undefined, codebuddy: 'CODEBUDDY_CONFIG_DIR' } as const satisfies Record<keyof typeof TOOL_ENV, string | undefined>;
 const CODEX_DISABLED = ['hooks', 'plugins', 'apps', 'browser_use', 'computer_use', 'multi_agent', 'multi_agent_v2'];
 const VERIFIED = { claude: /^2\.1\.308 \(Claude Code\)$/, codex: /^codex-cli 0\.163\.0$/, opencode: /^opencode v2\.1\.2$/, codebuddy: undefined } as const;
 /** What each profile lets the judge do. CodeBuddy lists about 70 tools whatever `--tools` says. */
@@ -87,7 +90,13 @@ function memberEnv(): NodeJS.ProcessEnv {
 
 function judgeEnv(tool: JudgeTool): NodeJS.ProcessEnv {
   const restored = memberEnv();
-  return { ...Object.fromEntries([...COMMON_ENV, ...TOOL_ENV[judgeFamily(tool)]].flatMap((key) => restored[key] === undefined ? [] : [[key, restored[key]]])), TEAMAI_LAUNCHED_BY: 'scorer' };
+  const variable = HOME_ENV[judgeFamily(tool)];
+  const moved = variable !== undefined && restored[variable] === undefined && isToolId(tool) ? movedToolHome(tool, realHost({ env: restored })) : null;
+  return {
+    ...Object.fromEntries([...COMMON_ENV, ...TOOL_ENV[judgeFamily(tool)]].flatMap((key) => restored[key] === undefined ? [] : [[key, restored[key]]])),
+    ...(variable !== undefined && moved !== null ? { [variable]: moved } : {}),
+    TEAMAI_LAUNCHED_BY: 'scorer',
+  };
 }
 
 async function optionalFile(file: string): Promise<string | undefined> {

@@ -129,12 +129,26 @@ vi.mock('../session-flow/migrate.js', () => ({
 
 vi.mock('../session-flow/sync.js', async (importOriginal) => {
   const actual = (await importOriginal()) as typeof import('../session-flow/sync.js');
+  class MockSyncManager extends actual.SyncManager {
+    private busy<T>(): import('../session-flow/sync.js').ArchiveWriteResult<T> | undefined {
+      return mocks.heldArchiveLock ? { status: 'busy', lockPath: mocks.heldArchiveLock } : undefined;
+    }
+    override saveSession(session: import('../session-flow/ir.js').Session, meta: import('../session-flow/sync.js').SessionSyncMeta) {
+      const busy = this.busy<string>();
+      return busy ? Promise.resolve(busy) : super.saveSession(session, meta);
+    }
+    override rebuildIndex(repoIdentity: string | null, dirOverride?: string) {
+      const busy = this.busy<number>();
+      return busy ? Promise.resolve(busy) : super.rebuildIndex(repoIdentity, dirOverride);
+    }
+    override rebuildAllIndexes() {
+      const busy = this.busy<{ repos: number; sessions: number }>();
+      return busy ? Promise.resolve(busy) : super.rebuildAllIndexes();
+    }
+  }
   return {
     ...actual,
-    withSessionIndexLock: (async (repo, fn) =>
-      mocks.heldArchiveLock
-        ? { status: 'busy', lockPath: mocks.heldArchiveLock }
-        : actual.withSessionIndexLock(repo, fn)) as typeof actual.withSessionIndexLock,
+    SyncManager: MockSyncManager,
   };
 });
 

@@ -28,7 +28,7 @@ import {
   toolRootsLookup,
   writeCopyOnce,
 } from './agent-session.js';
-import { SyncManager, getGitAuthor, defaultSyncMeta, withSessionIndexLock, withSessionPublicationLock } from './sync.js';
+import { SyncManager, getGitAuthor, defaultSyncMeta, withSessionPublicationLock } from './sync.js';
 import { SessionSearchEngine, type LoadedSession } from './search.js';
 import { isSafeSessionFileId } from './ids.js';
 import { isInteractive } from '../utils/prompt.js';
@@ -219,7 +219,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
           // mid-batch must not fall through to a commit that publishes a
           // half-archive.
           try {
-            const write = await withSessionIndexLock(root, async () => syncMgr.saveSession(session, meta));
+            const write = await syncMgr.saveSession(session, meta);
             if (write.status === 'busy') {
               reportArchiveBusy(root, write.lockPath);
               return undefined;
@@ -332,7 +332,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
         if (opts.all) {
           // P2: rebuild by directory (including repos whose index is missing or corrupt — those are exactly the ones that most need repair),
           // rather than only rebuilding the ones whose identity can be recovered from _index.json.
-          const rebuilt = await withSessionIndexLock(root, async () => syncMgr.rebuildAllIndexes());
+          const rebuilt = await syncMgr.rebuildAllIndexes();
           if (rebuilt.status === 'busy') {
             reportArchiveBusy(root, rebuilt.lockPath);
             return true;
@@ -341,7 +341,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
           console.log(`\n  ✓ Pulled and indexed ${sessions} session(s) across ${repos} repo(s)\n`);
         } else {
           const repoIdentity = resolveRepoIdentity(workCwd);
-          const rebuilt = await withSessionIndexLock(root, async () => syncMgr.rebuildIndex(repoIdentity));
+          const rebuilt = await syncMgr.rebuildIndex(repoIdentity);
           if (rebuilt.status === 'busy') {
             reportArchiveBusy(root, rebuilt.lockPath);
             return true;

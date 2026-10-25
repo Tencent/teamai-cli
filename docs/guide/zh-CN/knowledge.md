@@ -132,11 +132,15 @@ teamai import --from-repo https://github.com/org/repo --incremental
 teamai import --from-repo https://github.com/org/repo --skip-enrich
 ```
 
+`--from-repo-list` 默认最多同时导入 3 个仓库。可用 `--concurrency <n>` 设置上限，值必须是正的安全整数。非法值会在读取仓库清单、准备输出目录之前报错。
+
 `--from-mr` 可以一次传多个 MR URL：每个草稿照旧单独确认（`--all` 则都不问），接受的 learning 在最后一次性发布，每个仓库的 teamwiki 只更新一次。其中一个 MR 失败不影响其余，运行结束时给出汇总，有失败则退出码非零。
 
 GitHub 导入从 `gh` 回退到 REST 时，会按每页 100 个提交继续读取，最多返回 [GitHub 此接口限制的 250 个提交](https://docs.github.com/en/rest/pulls/pulls#list-commits-on-a-pull-request)。任一提交页失败都会使该 PR 在 AI 提炼前失败。
 
 GitLab MR 导入会按每页 50 个继续读取提交，而不是只读取第一页，最多读取 100 页。每个 GitLab MR API 请求都有 30 秒期限，包含读取响应正文。元信息超时会使该 MR 失败；commits、diff 或评审 threads 超时则省略相应可选数据并继续处理。提交和评审 threads 的每一页都有独立期限。后续提交页失败时会省略整个提交列表，不把不完整的历史交给提炼流程。
+
+GitLab 的 `--from-org` 会为组织仓库列表的每一页设置独立的 30 秒期限，包含读取响应正文。任一页超时都会使导入失败，不写入白名单，也不开始导入仓库。
 
 提炼时除了 MR 的描述、提交和 diff，还会读取评审 threads：GitLab 的 discussions，GitHub 的 review 评论、review 结论和会话评论，TGit 的 notes。每个 thread 带上它锚定的文件和行、是否已 resolved，以及按顺序标为 MR 作者或评审者的各条 note 进入提示词；已 resolved 的 thread 里的决定比 diff 更重要。teamai 自己的 CI 评论会被跳过。`--no-discussions` 不读取 threads，`teamai ci extract-mr` 同样适用。`teamai.yaml` 设了 `language: en` 时 learning 用英文写，否则用中文。
 

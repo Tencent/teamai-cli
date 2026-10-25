@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -16,6 +17,7 @@ import { AttemptStore } from '../scorers/attempts.js';
 import { parseScoreLabels } from '../scorers/label.js';
 import { syncScorerDefinitions } from '../scorers/cache.js';
 import { encodeCwdClaude } from '../session-flow/fs.js';
+import { projectDataHome } from '../utils/partition.js';
 import { AGENT_SESSION_ENV } from '../utils/session-id.js';
 import { scoreSession } from '../session-flow/scoring.js';
 import type { WorkflowEnvelope } from '../workflow/types.js';
@@ -90,12 +92,12 @@ function plantSubagentEdit(cwd: string): void {
  * prompt file it was given in `<root>/judged.md` and the transcript file in `<root>/judged-transcript.md`, and counts
  * its calls in `<root>/calls`.
  */
-function fakeClaude(answer: string | Record<string, unknown>): void {
+function fakeClaude(answer: string | Record<string, unknown>, version = '2.1.308 (Claude Code)'): void {
   const bin = path.join(root, 'bin');
   fs.mkdirSync(bin, { recursive: true });
   fs.writeFileSync(path.join(bin, 'claude'), `#!${process.execPath}
 const fs = require('node:fs');
-if (process.argv.includes('--version')) { console.log('2.1.308 (Claude Code)'); process.exit(); }
+if (process.argv.includes('--version')) { console.log(${JSON.stringify(version)}); process.exit(); }
 const at = process.argv.indexOf('--append-system-prompt-file');
 fs.copyFileSync(process.argv[at + 1], ${JSON.stringify(path.join(root, 'judged.md'))});
 fs.copyFileSync(require('node:path').join('transcripts', 'session.md'), ${JSON.stringify(path.join(root, 'judged-transcript.md'))});
@@ -532,6 +534,60 @@ describe('teamai score --session', () => {
 
     expect(parseScoreLabels(fs.readFileSync(path.join(userHome, 'scores', 'labels.jsonl'), 'utf8'))).toHaveLength(1);
     expect(fs.existsSync(path.join(root, 'elsewhere-data', 'scores'))).toBe(false);
+  });
+
+  it('asks the judge for the isolation a namespace of the workspace\'s children sets', async () => {
+    const knowledge = path.join(root, 'knowledge');
+    const files = {
+      'manifest/roles.yaml': 'version: 1\nroles:\n  - id: dev\n    resources: { knowledge: [], skills: [] }\n',
+      'manifest/projects.yaml': 'version: 1\nprojects:\n'
+        + '  - id: billing\n    name: Billing\n    resources: { scorers: [billing] }\n'
+        + '  - id: checkout\n    name: Checkout\n    resources: { scorers: [checkout] }\n',
+      'scorers/quality.md': SCORER,
+      'scorers/checkout/scoring.yaml': 'isolation: verified\n',
+    };
+    for (const [file, text] of Object.entries(files)) {
+      fs.mkdirSync(path.dirname(path.join(knowledge, file)), { recursive: true });
+      fs.writeFileSync(path.join(knowledge, file), text);
+    }
+    const remote = 'https://git.example.com/team/team.git';
+    const member = (projects: string[]) => `repo:\n  localPath: ${knowledge}\n  remote: ${remote}\nusername: tester\nscope: project\nadditionalRoles: []\nprojects: [${projects.join(', ')}]\n`;
+    const repoAt = (dir: string, projects: string[]): string => {
+      fs.mkdirSync(dir, { recursive: true });
+      execFileSync('git', ['init', '-q'], { cwd: dir });
+      const dataHome = projectDataHome(fs.realpathSync(dir));
+      fs.mkdirSync(dataHome, { recursive: true });
+      fs.writeFileSync(path.join(dataHome, 'config.yaml'), member(projects));
+      return dataHome;
+    };
+    const ws = path.join(root, 'ws');
+    const workspace: LocalConfig = {
+      repo: { localPath: knowledge, remote }, username: 'tester', scope: 'project', additionalRoles: [], projects: ['billing'],
+      projectRoot: ws, dataHome: repoAt(ws, ['billing']),
+    };
+    repoAt(path.join(ws, 'svc'), ['checkout']);
+    await syncScorerDefinitions(workspace);
+    plantClaudeSession(ws, 'Add retries to the client');
+    fakeClaude('good', '2.0.0 (Claude Code)');
+
+    expect(await scoreSession(workspace, { session: SESSION, source: 'claude-code', scorers: ['quality'] })).toEqual({
+      error: { code: 'judge_tool_unavailable', message: 'claude 2.0.0 (Claude Code) has no verified judge profile. Install a supported version or use another driver. scorers/checkout/scoring.yaml isolation asks for verified.' },
+    });
+    expect(fs.existsSync(path.join(workspace.dataHome ?? '', 'scores', 'labels.jsonl'))).toBe(false);
+  });
+
+  it('names the scorer file that asks for a verified judge when no tool here judges at verified', async () => {
+    const config = await fixture({});
+    fs.mkdirSync(path.join(config.repo.localPath, 'scorers', 'checkout'));
+    fs.writeFileSync(path.join(config.repo.localPath, 'scorers', 'checkout', 'quality.md'), SCORER.replace('samplingRate: 0', 'samplingRate: 0\nisolation: verified'));
+    await syncScorerDefinitions(config);
+    plantClaudeSession(path.join(root, 'app'), 'Add retries to the client');
+    fakeClaude('good', '2.0.0 (Claude Code)');
+
+    expect(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: ['quality'] })).toEqual({ error: {
+      code: 'judge_tool_unavailable',
+      message: 'claude 2.0.0 (Claude Code) has no verified judge profile. Install a supported version or use another driver. scorers/checkout/quality.md isolation asks for verified.',
+    } });
   });
 
   it('publishes from the scope the session ran in with push, also when it is scored from another one', async () => {

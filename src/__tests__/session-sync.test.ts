@@ -10,10 +10,17 @@ import {
   encodeRepoIdentity,
   decodeRepoIdentity,
   canonicalizeRemote,
+  type ArchiveWriteResult,
   withSessionIndexLock,
   withSessionPublicationLock,
 } from '../session-flow/sync.js';
 import type { Session } from '../session-flow/ir.js';
+
+function written<T>(result: ArchiveWriteResult<T>): T {
+  expect(result.status).toBe('written');
+  if (result.status === 'busy') throw new Error(`unexpected busy archive: ${result.lockPath}`);
+  return result.value;
+}
 
 // Keep the named filesystem boundary live so fault injection reaches sync.ts.
 vi.mock('node:fs', async (importOriginal) => {
@@ -111,7 +118,7 @@ describe('archive save rollback', () => {
     const after = fs.readdirSync(repoRoot, { recursive: true }).map(String).filter((p) => fs.statSync(path.join(repoRoot, p)).isFile());
     expect(after.sort()).toEqual(before.sort());
     for (const [p, content] of bytes) expect(fs.readFileSync(path.join(repoRoot, p))).toEqual(content);
-    const saved = await mgr.saveSession(mkSession(), mkMeta());
+    const saved = written(await mgr.saveSession(mkSession(), mkMeta()));
     expect(saved).not.toMatch(/_1\.jsonl$/);
     expect(readRepoIndex('github.com/org/alpha').sessions).toHaveLength(1);
   });
@@ -366,33 +373,16 @@ describe('withSessionIndexLock', () => {
     expect(readRepoIndex('github.com/org/alpha').sessions).toHaveLength(1);
   });
 
-  it('lands both of two concurrent saves of different sessions with the same title and day', async () => {
-    let releaseFirst!: () => void;
-    const firstHolds = new Promise<void>((resolve) => {
-      releaseFirst = resolve;
-    });
-    let firstHasLock!: () => void;
-    const firstLocked = new Promise<void>((resolve) => {
-      firstHasLock = resolve;
-    });
-    const first = withSessionIndexLock(repoRoot, async () => {
-      firstHasLock();
-      await firstHolds;
-      return new SyncManager(repoRoot).saveSession(mkSession({ sessionId: 's-a' }), mkMeta({ sessionId: 's-a' }));
-    });
-    await firstLocked;
-    const second = withSessionIndexLock(repoRoot, async () =>
-      new SyncManager(repoRoot).saveSession(mkSession({ sessionId: 's-b' }), mkMeta({ sessionId: 's-b' })),
-    );
-
-    // The second save waits for the first instead of picking the same free name.
-    await new Promise((resolve) => setTimeout(resolve, 250));
-    expect(fs.existsSync(path.join(repoRoot, 'sessions'))).toBe(false);
-    releaseFirst();
-
-    const [a, b] = await Promise.all([first, second]);
-    expect(a).toEqual({ status: 'done', value: expect.stringMatching(/claude-code_fix-payment_20260102\.jsonl$/) });
-    expect(b).toEqual({ status: 'done', value: expect.stringMatching(/claude-code_fix-payment_20260102_1\.jsonl$/) });
+  it('lands both of two concurrent public saves with the same title and day', async () => {
+    const mgr = new SyncManager(repoRoot);
+    const [a, b] = await Promise.all([
+      mgr.saveSession(mkSession({ sessionId: 's-a' }), mkMeta({ sessionId: 's-a' })),
+      mgr.saveSession(mkSession({ sessionId: 's-b' }), mkMeta({ sessionId: 's-b' })),
+    ]);
+    expect([a, b].map((result) => written(result)).sort()).toEqual([
+      expect.stringMatching(/claude-code_fix-payment_20260102\.jsonl$/),
+      expect.stringMatching(/claude-code_fix-payment_20260102_1\.jsonl$/),
+    ]);
     const sessions = readRepoIndex('github.com/org/alpha').sessions;
     expect(sessions.map((s) => s.sessionId).sort()).toEqual(['s-a', 's-b']);
   });
@@ -418,7 +408,7 @@ describe('rebuildIndex', () => {
     // 索引损坏后重建
     fs.writeFileSync(path.join(repoDirOf('github.com/org/alpha'), '_index.json'), '{ corrupted');
 
-    const count = (await mgr.rebuildIndex('github.com/org/alpha'));
+    const count = written(await mgr.rebuildIndex('github.com/org/alpha'));
     expect(count).toBe(1);
 
     const idx = readRepoIndex('github.com/org/alpha');
@@ -430,7 +420,7 @@ describe('rebuildIndex', () => {
     await mgr.saveSession(mkSession(), mkMeta({ author: '_alice' }));
     fs.unlinkSync(path.join(repoDirOf('github.com/org/alpha'), '_index.json'));
 
-    expect((await mgr.rebuildIndex('github.com/org/alpha'))).toBe(1);
+    expect(written(await mgr.rebuildIndex('github.com/org/alpha'))).toBe(1);
     expect(readRepoIndex('github.com/org/alpha').sessions[0]).toMatchObject({ author: '_alice', sessionId: 's-1' });
   });
 
@@ -438,8 +428,8 @@ describe('rebuildIndex', () => {
     const mgr = new SyncManager(repoRoot);
     await mgr.saveSession(mkSession(), mkMeta());
 
-    expect((await mgr.rebuildIndex('github.com/org/alpha'))).toBe(1);
-    expect((await mgr.rebuildIndex('github.com/org/alpha'))).toBe(1);
+    expect(written(await mgr.rebuildIndex('github.com/org/alpha'))).toBe(1);
+    expect(written(await mgr.rebuildIndex('github.com/org/alpha'))).toBe(1);
     expect(readRepoIndex('github.com/org/alpha').sessions).toHaveLength(1);
   });
 
@@ -468,7 +458,7 @@ describe('rebuildIndex', () => {
     fs.unlinkSync(path.join(repoDirOf('github.com/org/alpha'), '_index.json'));
     expect(new SyncManager(repoRoot).listAllRepoIdentities()).toEqual([]);
 
-    const { repos, sessions } = (await new SyncManager(repoRoot).rebuildAllIndexes());
+    const { repos, sessions } = written(await new SyncManager(repoRoot).rebuildAllIndexes());
     expect(repos).toBe(1);
     expect(sessions).toBe(1);
     expect(new SyncManager(repoRoot).listAllRepoIdentities()).toEqual(['github.com/org/alpha']);
@@ -506,7 +496,7 @@ describe('rebuildIndex', () => {
     );
     fs.unlinkSync(path.join(reposDir, 'github.com_org_alpha', '_index.json'));
 
-    const { repos, sessions } = (await new SyncManager(repoRoot).rebuildAllIndexes());
+    const { repos, sessions } = written(await new SyncManager(repoRoot).rebuildAllIndexes());
     expect(repos).toBe(1);
     expect(sessions).toBe(1);
 

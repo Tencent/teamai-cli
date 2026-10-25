@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { AttemptRecord } from '../scorers/attempts.js';
+import type { RunAttempt } from '../scorers/attempts.js';
 import { entryIdOf, entryState, isLeaseRef, leaseRefOf, parseLeaseRef } from '../scorers/entry.js';
 import type { ScoreLabel } from '../scorers/label.js';
 import { isSampled } from '../scorers/sampling.js';
@@ -9,7 +9,7 @@ const now = '2026-10-22T12:00:00.000Z';
 const minutes = (count: number): string => new Date(Date.parse(now) + count * 60_000).toISOString();
 const days = (count: number): string => new Date(Date.parse(now) + count * 24 * 3_600_000).toISOString();
 
-function leased(attempt: string, expiresAt: string): AttemptRecord {
+function leased(attempt: string, expiresAt: string): RunAttempt {
   return {
     status: 'leased', attempt, entry: entryIdOf('q', subject), scorer: 'q', rubric: { sourceHash: 'h' }, subject,
     driver: { kind: 't3', machine: 'm', workspace: '/w' }, judge: { tool: 'claude', by: 'tool_default', isolation: 'verified', access: 'read' },

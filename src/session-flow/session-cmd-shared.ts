@@ -11,7 +11,6 @@ import {
   SyncManager,
   getRepoIdentity,
   getGitAuthor,
-  withSessionIndexLock,
 } from './sync.js';
 import { getReportsDir, isSelfMode, usesBranchWorktree, type LocalConfig } from '../types.js';
 import { isInteractive } from '../utils/prompt.js';
@@ -312,7 +311,7 @@ export async function pushArchive(syncMgr: SyncManager, repoRoot: string): Promi
   try {
     const pushed = syncMgr.gitPush();
     if (pushed.status === 'indexes-conflicted') {
-      const merged = await withSessionIndexLock(repoRoot, async () => syncMgr.commitRebuiltIndexes(pushed.indexes));
+      const merged = await syncMgr.commitRebuiltIndexes(pushed.indexes);
       if (merged.status === 'busy') throw new Error(mergeBusyMessage(repoRoot, merged.lockPath));
       if (syncMgr.gitPush().status !== 'pushed') {
         throw new Error(`The remote moved on again and its merge stopped on the session indexes; run \`teamai session pull\` to finish it.`);
@@ -331,7 +330,7 @@ export async function pushArchive(syncMgr: SyncManager, repoRoot: string): Promi
 export async function pullArchive(syncMgr: SyncManager, repoRoot: string): Promise<{ status: 'pulled'; rebuilt: number } | { status: 'failed'; reason: string }> {
   let rebuilt = 0;
   const finishMerge = async (indexes: string[]): Promise<string | undefined> => {
-    const merged = await withSessionIndexLock(repoRoot, async () => syncMgr.commitRebuiltIndexes(indexes));
+    const merged = await syncMgr.commitRebuiltIndexes(indexes);
     if (merged.status === 'busy') return mergeBusyMessage(repoRoot, merged.lockPath);
     rebuilt += indexes.length;
     return undefined;

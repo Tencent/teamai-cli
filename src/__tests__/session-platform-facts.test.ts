@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ADAPTER_REGISTRY } from '../session-flow/adapters/index.js';
-import { SESSION_PLATFORM_FACTS, resumeCommand } from '../session-flow/adapters/platform-facts.js';
+import { SESSION_PLATFORM_FACTS, resumeCommand, sessionPlatformFacts } from '../session-flow/adapters/platform-facts.js';
 import { AgentSession, noAdapter } from '../session-flow/agent-session.js';
 import { fidelityFromSession } from '../session-flow/migrate.js';
 import type { Session } from '../session-flow/ir.js';
@@ -21,6 +21,13 @@ describe('session platform facts (#1140)', () => {
     expect(resumeCommand('codex', 'id1')).toBe('codex resume id1');
     expect(resumeCommand('opencode', 'ses_1')).toBe('opencode --session ses_1');
     expect(resumeCommand('codebuddy', 'id1')).toBe('codebuddy --resume id1');
+  });
+
+  it('rejects inherited object keys as platform names', () => {
+    expect(sessionPlatformFacts('claude-code')).toBe(SESSION_PLATFORM_FACTS['claude-code']);
+    for (const platform of ['constructor', 'toString', '__proto__']) {
+      expect(sessionPlatformFacts(platform)).toBeUndefined();
+    }
   });
 
   it('Cursor still degrades thinking and images while Claude preserves them', () => {

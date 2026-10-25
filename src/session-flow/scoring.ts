@@ -4,7 +4,6 @@
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { isDeepStrictEqual } from 'node:util';
 import { observedModel } from '../agent-observation.js';
 import { collectTeamSecrets } from '../env-resolution.js';
 import { loadModelAliases } from '../models/aliases.js';
@@ -12,10 +11,7 @@ import { AttemptStore, newAttemptId, scoresDir } from '../scorers/attempts.js';
 import { batchesScorers, verdictsOf } from '../scorers/batch.js';
 import { cachedScorerNames, pinScorers } from '../scorers/cache.js';
 import type { ScorerDefinition } from '../scorers/definition.js';
-import {
-  answerSchema, evidenceDirOf, fencedEvidence, keepEnds, rubricPrompt, writeEvidence,
-  EVIDENCE_MAX_CHARS, TOOL_CALL_MAX_CHARS, type EvidenceGap, type Rubrics,
-} from '../scorers/evidence.js';
+import { answerSchema, evidenceDirOf, type Rubrics } from '../scorers/evidence.js';
 import { scoringUnavailable } from '../scorers/home.js';
 import { requiredIsolation, scorerIsolationSource } from '../scorers/isolation.js';
 import { scopeScoring } from '../scorers/settings.js';
@@ -24,41 +20,20 @@ import { chooseJudgeModel } from '../scorers/judge-model.js';
 import type { ScoreLabel } from '../scorers/label.js';
 import { LabelStore, reasoningPath, shareFailedLabelHint } from '../scorers/label-store.js';
 import { pinnedDefinition, type PinnedScorer } from '../scorers/pin.js';
-import { typedIn, usedSkills } from '../skill-use.js';
 import type { LocalConfig } from '../types.js';
+import { readWorkspaceChildren } from '../workspace-children.js';
 import { log } from '../utils/logger.js';
 import { collectEnvSecrets, redact } from '../utils/redact.js';
 import type { WorkflowEnvelope } from '../workflow/types.js';
 import { agentSessionFromEnv } from '../utils/session-id.js';
 import { AgentSession } from './agent-session.js';
 import { listAvailablePlatforms, listInstalledPlatforms } from './adapters/index.js';
-import type { SubagentsRead } from './adapters/base.js';
-import { SessionCaptures, type SessionCapture } from './captures.js';
+import { SessionCaptures } from './captures.js';
+import { judgeSession, sessionLabel, writeSessionEvidence } from './session-work.js';
 import type { Session } from './ir.js';
 
 function failure(code: string, message: string): WorkflowEnvelope {
   return { error: { code, message } };
-}
-
-function transcriptOf(session: Session, budget: number): string {
-  const capped: Session = {
-    ...session,
-    messages: session.messages.map((message) => ({ ...message, content: message.content.map((block) =>
-      block.type === 'tool_call' ? { ...block, arguments: { excerpt: keepEnds(JSON.stringify(block.arguments), TOOL_CALL_MAX_CHARS) } } : block) })),
-  };
-  return keepEnds(AgentSession.transcript(capped).map((entry) => `### ${entry.role}\n${entry.text}\n${entry.toolOutput}`).join('\n\n'), budget);
-}
-
-/** A read session's transcript followed by each of its subagents', each kept to its budget, and what of them could not be read. */
-export function judgedTranscript(found: { session: Session; subagents?: SubagentsRead }, budget: { session: number; subagent: number }): { body: string; gaps: EvidenceGap[] } {
-  const gaps: EvidenceGap[] = [];
-  let body = transcriptOf(found.session, budget.session);
-  if (found.subagents?.status !== 'read') gaps.push('subagents_unread');
-  else for (const agent of found.subagents.agents) {
-    if (agent.start === 'unknown') gaps.push('subagent_boundary_unknown');
-    body += `\n\n## Subagent (depth ${agent.depth}${agent.finished === false ? ', not finished' : ''})\n\n${transcriptOf(agent.session, budget.subagent)}`;
-  }
-  return { body, gaps };
 }
 
 /** What `teamai score --session <id> [--source <platform>] --scorer <name>… [--batch] [--push]` asks for. */
@@ -97,31 +72,14 @@ async function sessionOf(config: LocalConfig, demand: SessionDemand): Promise<{ 
 }
 
 /**
- * The team skills a session's checkout held as delivered at a message's time: those of the latest capture at or before
- * it. A message with no time takes the ones every capture records alike, else none.
+ * The config of the scope a session ran in, found from its directory as the hooks that captured it found it, else
+ * `config`, with its workspace children, whose namespaces it receives too.
  */
-function capturedTeamSkillsAt(captures: readonly SessionCapture[]): (timestamp: string | undefined) => Readonly<Record<string, readonly string[]>> {
-  const [first, ...rest] = captures;
-  const alike = first !== undefined && rest.every((capture) => isDeepStrictEqual(capture.teamSkills ?? {}, first.teamSkills ?? {}));
-  return (timestamp) => {
-    const at = timestamp === undefined ? Number.NaN : Date.parse(timestamp);
-    if (Number.isNaN(at)) return alike ? first.teamSkills ?? {} : {};
-    const inEffect = captures.filter((capture) => Date.parse(capture.capturedAt) <= at).pop();
-    return inEffect?.teamSkills ?? {};
-  };
-}
-
-function firstPrompt(session: Session): string {
-  const text = session.messages.flatMap((message) => message.content.map((block) => typedIn(message, block))).find((typed) => typed !== '') ?? '';
-  const flat = text.replace(/\s+/g, ' ').trim();
-  return flat.length > 200 ? `${flat.slice(0, 200)}…` : flat;
-}
-
-/** The config of the scope a session ran in, found from its directory as the hooks that captured it found it, else `config`. */
 async function scopeOf(config: LocalConfig, platform: string, session: Session): Promise<LocalConfig> {
   if (!session.cwd) return config;
   const { resolveHookConfig } = await import('../dashboard-collector.js');
-  return await resolveHookConfig({ cwd: session.cwd, session_id: session.sessionId }, AgentSession.toolForPlatform(platform)) ?? config;
+  const resolved = await resolveHookConfig({ cwd: session.cwd, session_id: session.sessionId }, AgentSession.toolForPlatform(platform));
+  return resolved ? readWorkspaceChildren(resolved) : config;
 }
 
 /**
@@ -159,7 +117,8 @@ export async function scoreSession(from: LocalConfig, demand: SessionDemand, now
   log.info(`Scoring ${platform} session ${session.sessionId} in ${session.cwd || '(directory unknown)'}`);
   const envSecrets = { ...collectEnvSecrets(), ...await collectTeamSecrets(config) };
   const mask = (text: string): string => redact(text, { envSecrets });
-  const prompt = mask(firstPrompt(session));
+  const judged = judgeSession({ platform, found, captures: await SessionCaptures.read(config, platform, session.sessionId), mask });
+  const { subject, context: { prompt, used } } = judged;
   log.info(`First prompt: ${prompt || '(none)'}`);
 
   const tools = installedJudgeTools([]);
@@ -178,16 +137,6 @@ export async function scoreSession(from: LocalConfig, demand: SessionDemand, now
     if (group) group.members.push(judged);
     else groups.push({ choice: chosen.choice, members: [judged] });
   }
-  const judged = judgedTranscript(found, { session: Number.POSITIVE_INFINITY, subagent: Number.POSITIVE_INFINITY });
-  const subject = { platform, sessionId: session.sessionId };
-  const manifest = { subject, kind: 'session', gaps: judged.gaps };
-  const framing = `## evidence.json\n\n${JSON.stringify(manifest)}\n\n## transcripts/session.md\n\n`.length;
-  const body = keepEnds(mask(judged.body), EVIDENCE_MAX_CHARS - framing);
-  const models = new Set(session.messages.flatMap((message) => message.metadata?.model ?? []));
-  const [reportedModel] = models.size === 1 ? models : [];
-  const captures = await SessionCaptures.read(config, platform, session.sessionId);
-  const agent = SessionCaptures.agentOf(captures, reportedModel);
-  const used = { skills: usedSkills(AgentSession.toolForPlatform(platform), found, capturedTeamSkillsAt(captures)) };
   const answers: Array<Record<string, unknown>> = [];
   for (const { choice, members } of groups) {
     const [head, ...tail] = members;
@@ -195,17 +144,9 @@ export async function scoreSession(from: LocalConfig, demand: SessionDemand, now
     const attempt = newAttemptId();
     const evidence = evidenceDirOf(scoresDir(config), attempt);
     try {
-      await writeEvidence(evidence, async (tmp) => {
-        await fs.mkdir(path.join(tmp, 'transcripts'));
-        await fs.writeFile(path.join(tmp, 'transcripts', 'session.md'), body);
-        await fs.writeFile(path.join(tmp, 'evidence.json'), JSON.stringify(manifest, null, 2));
-        await fs.writeFile(path.join(tmp, 'prompt.md'), mask(rubricPrompt(rubrics)) + fencedEvidence([
-          { title: 'evidence.json', body: JSON.stringify(manifest) },
-          { title: 'transcripts/session.md', body },
-        ], 'transcripts/session.md and evidence.json'));
-      });
-      const isolation = requiredIsolation([...scoring.isolation, ...members.map(({ scorer, definition }) => ({ source: scorerIsolationSource(scorer), value: definition.isolation }))]).level;
-      const result = await runLocalJudge({ tool: choice.tool, model: choice.model, evidence, schema: answerSchema(rubrics), isolation });
+      await writeSessionEvidence(evidence, judged, rubrics);
+      const required = requiredIsolation([...scoring.isolation, ...members.map(({ scorer, pin, definition }) => ({ source: scorerIsolationSource(scorer, pin.relativePath), value: definition.isolation }))]);
+      const result = await runLocalJudge({ tool: choice.tool, model: choice.model, evidence, schema: answerSchema(rubrics), isolation: required.level });
       const verdicts = result.ok ? verdictsOf(members, (member) => member.definition, result.answer) : undefined;
       if (!result.ok || !verdicts?.ok) {
         const raw = result.ok ? JSON.stringify(result.answer) : result.raw;
@@ -218,23 +159,19 @@ export async function scoreSession(from: LocalConfig, demand: SessionDemand, now
         }
         return result.ok
           ? failure('judge_answer_invalid', `The judge's answer names no label of the scorer: ${verdicts && !verdicts.ok ? verdicts.message : ''} No label was written.${saved}`)
-          : failure(result.code, result.message + saved);
+          : failure(result.code, result.message + (result.code === 'judge_tool_unavailable' && required.level === 'verified' ? ` ${required.setBy.join(' and ')} asks for verified.` : '') + saved);
       }
-      const labels = verdicts.verdicts.map(({ judged, label, passed, reasoning }) => {
-        const model = observedModel({ ...result.judge.model, alias: judged.alias });
-        return { reasoning, label: {
-          scorer: judged.scorer,
-          rubric: { sourceHash: judged.pin.sourceHash, ...(judged.pin.teamRevision ? { teamRevision: judged.pin.teamRevision } : {}) },
+      const labels = verdicts.verdicts.map(({ judged: member, label, passed, reasoning }) => {
+        const model = observedModel({ ...result.judge.model, alias: member.alias });
+        return { reasoning, label: sessionLabel({
+          scorer: member.scorer,
+          rubric: { sourceHash: member.pin.sourceHash, ...(member.pin.teamRevision ? { teamRevision: member.pin.teamRevision } : {}) },
           label: label.value,
           score: label.score,
           passed,
-          source: 'session',
-          subject,
-          ...(agent ? { agent } : {}),
-          used,
           judge: { kind: 'model', ...result.judge, ...(model ? { model } : {}), ...(members.length > 1 ? { batched: true as const } : {}) },
           scoredAt: now,
-        } satisfies ScoreLabel };
+        }, subject, judged.context) };
       });
       const stored = await AttemptStore.locked(config, async () => {
         const kept: Array<{ label: ScoreLabel; id: string; version: string }> = [];

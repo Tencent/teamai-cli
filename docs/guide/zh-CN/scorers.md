@@ -29,6 +29,7 @@ Judge whether the change does what the step asked. Read the diff and the session
 | `labels` | 2 到 20 个 `{ value, score, description }`。至少一个分数不低于 `passingScore`，至少一个低于它。 |
 | `passingScore` | 标签分数不低于它即为通过。 |
 | `samplingRate`、`model`、`isolation` | 可选。被评判的步骤执行比例，0 到 100，默认 25。评审者的模型：团队[模型别名](sharing.md#模型别名)，按评审工具分别解析；或模型名，原样交给第一个评审工具。默认用工具自己的模型。`verified` 或 `best-effort`。 |
+| `sessions` | 可选。`true`：评分器也评判[已结束的会话](#已结束的会话)。 |
 
 frontmatter 之后的文本是评审者的提示词。`teamai pull` 缓存有效的评分器（`teamai status` 会列出它们），并对其余文件给出警告。`teamai review --branch` 遇到格式错误的评分器、分支的 `models/aliases.yaml` 没有为任何工具映射的模型别名、`scorers/` 里除 `<name>.md`、`<namespace>/<name>.md`、`scoring.yaml` 和 `README.md` 以外的文件、含有它不认识的键或值的 `scoring.yaml`，或其中任何文件含有凭据或内网地址时会失败，与规则的检查相同。
 
@@ -151,6 +152,20 @@ $ teamai score --session 7c1e… --source codex --scorer review-quality --push
 评审者最多读取会话的 200,000 个字符。会话评分器指定更便宜的[模型别名](#选择评审者的模型)，长会话的评审成本也会更低。
 
 无论在哪个目录评分，标签都保存在会话所在的作用域。标签记录 `agent`，即会话启动时的运行配置，来自会话启动 hook 写入的捕获记录。标签还记录 `used.skills`，即会话或其子 agent 加载过、且捕获记录显示会话启动时（包括启动时那次 pull）由 teamai 交付并未经修改的团队技能。之后的 pull 不会改变它。捕获记录无法确认来源的技能不记录，例如与团队技能同名的成员自有技能。`--push` 发布该作用域所有待发布的标签。关闭[用量上报](reporting.md)时，它输出 `Usage reporting is off, so labels stay on this machine.`，标签继续待发布。http 团队仓库没有 `teamai-reports`，因此 `--push` 以 `unsupported_repo` 失败，标签留在本机。有标签等待发布时，`teamai doctor` 会给出警告。
+
+### 已结束的会话
+
+成员在 `config.yaml` 中设置 `scoring.sessions: true` 后，该作用域捕获的每个会话在六小时内没有任何活动时，就成为评审工作，由每个设置了 `sessions: true` 的评分器按其 `samplingRate` 抽样评判。命名空间中的评分器只在会话每次启动时记录的角色和项目都使该命名空间生效时，才评判该会话。`score --next` 先分发工作流的评审工作，再分发会话。会话租约带有 `"source":"session"`，其 `cwd` 是提交答案时所在的目录。
+
+团队可以在 `scorers/scoring.yaml` 或某个生效命名空间的 `scoring.yaml` 中设置 `sessions` 和 `daily_limit`，命名空间的设置覆盖根文件。两个生效命名空间不一致时，`sessions: false` 和最低的 `daily_limit` 生效。成员的 `config.yaml` 覆盖以上所有设置。
+
+每个会话对同一评分器和评分标准只评判一次。释放、过期或本地评审失败都会关闭它。过期租约的答案仍会被记录，除非之后已有评审者为该会话打了标签。`config.yaml` 中的 `scoring.daily_limit` 设置每个数据目录每个本地日最多租出多少个会话，默认 10，失败或无法读取的会话也计入。`0` 关闭会话评分。修改评分器的评分标准后，已捕获的会话会重新成为它的评审工作，每日上限会把这些工作分摊到之后几天。
+
+你不需要自己运行 driver。会话启动时的 pull 之后，如果会话所在项目或你的用户作用域开启了会话评分，teamai 会为这两个作用域在后台启动评审。它用本机安装的评审工具评判每个已结束的会话，30 分钟后不再领取新工作，标签保持待发布，由下一次 `teamai pull` 发布。每个租约是一次在你账号上的评审调用，每天最多 `daily_limit` 次。会话评分器指定便宜的[模型别名](#选择评审者的模型)（例如 `model: fast`）可以控制成本。要停止，在 `config.yaml` 中设置 `scoring.sessions: false`。
+
+后台评审使用 `teamai init` 记录的工具主目录，例如移动过的 `CLAUDE_CONFIG_DIR`。它看不到只在你的 shell 中设置的凭据或 base URL，在 Windows 上尤其如此。请把它们放在工具的登录状态、用户环境变量或工具 `settings.json` 的 `env` 中。
+
+比当前版本更旧的 teamai 会拒绝带有 `sessions: true` 的评分器，因此团队添加这样的评分器之前，请先在每位成员的机器上更新 teamai。在你的机器上领取评审工作的旧版 teamai（例如某个驱动自带的副本）会删除会话租约的评分标准，因此开启 `scoring.sessions` 之前，请先更新机器上的每一份 teamai。
 
 ## 批量评审
 

@@ -214,7 +214,7 @@ describe('#1083 workflow run records', () => {
       // Refusals of a driver's or member's request about a run that is already past it.
       'stale_revision', 'wrong_driver', 'run_settled', 'step_not_found', 'not_hitl', 'not_waiting', 'invalid_choice', 'not_cancellable', 'not_retryable',
       // Refusals of a judge submit, answered to the driver; the lease and the run stay as they were.
-      'lease_unknown', 'lease_settled', 'entry_closed', 'label_invalid', 'isolation_unmet', 'scoring_settings_invalid',
+      'lease_unknown', 'lease_settled', 'lease_judging', 'entry_closed', 'label_invalid', 'isolation_unmet', 'scoring_settings_invalid',
       // Work the driver's judge tools cannot run the scorer's model for; it stays open for another driver.
       'judge_model_unavailable',
       // Refusals of a teamai score or teamai workflow command line before it reads any run or judge work.

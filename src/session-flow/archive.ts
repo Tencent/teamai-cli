@@ -15,7 +15,7 @@ import { AgentSession, noAdapter, recordedToolRoots, writeCopyOnce } from './age
 import type { Session } from './ir.js';
 import { degradeThinkingBlocks } from './migrate.js';
 import { archiveBusyMessage, authorForCwd, pushArchive, sessionArchiveRoot } from './session-cmd-shared.js';
-import { SyncManager, defaultSyncMeta, getRepoIdentity, withSessionIndexLock, type SessionSyncMeta } from './sync.js';
+import { SyncManager, defaultSyncMeta, getRepoIdentity, type SessionSyncMeta } from './sync.js';
 
 /** A session in one tool, by the id that tool gave it. */
 export type ArchiveSessionRef = { platform: string; sessionId: string };
@@ -231,7 +231,7 @@ async function archiveOnReports(
   }
 }
 
-/** Saves each session into `archive` under its index lock, or says why one could not be saved. */
+/** Saves each session into `archive`, or says why one could not be saved. */
 async function saveAll(
   archive: SyncManager,
   root: string,
@@ -239,7 +239,7 @@ async function saveAll(
 ): Promise<string | undefined> {
   for (const { session, meta } of sessions) {
     try {
-      const saved = await withSessionIndexLock(root, async () => archive.saveSession(session, meta));
+      const saved = await archive.saveSession(session, meta);
       if (saved.status === 'busy') return archiveBusyMessage(root, saved.lockPath);
     } catch (error) {
       return error instanceof Error ? error.message : String(error);

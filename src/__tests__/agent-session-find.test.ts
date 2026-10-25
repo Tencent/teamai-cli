@@ -34,7 +34,7 @@ import { AgentSession } from '../session-flow/agent-session.js';
 import { getAdapter } from '../session-flow/adapters/index.js';
 import type { Session } from '../session-flow/ir.js';
 import { SessionSearchEngine } from '../session-flow/search.js';
-import { SyncManager, defaultSyncMeta, withSessionIndexLock } from '../session-flow/sync.js';
+import { SyncManager, defaultSyncMeta } from '../session-flow/sync.js';
 import {
   installFakeOpencode,
   opencodeExportFixture,
@@ -397,7 +397,7 @@ describe('AgentSession.find on OpenCode', () => {
     const found = await AgentSession.find({ platform: 'opencode', sessionId, cwd });
     if (found.status !== 'done') throw new Error(`find failed: ${JSON.stringify(found)}`);
     const meta = defaultSyncMeta({ platform: 'opencode', author: 'tester', cwd, sessionId, title: found.session.title });
-    await withSessionIndexLock(repoRoot, async () => sync.saveSession(found.session, meta));
+    expect((await sync.saveSession(found.session, meta)).status).toBe('written');
 
     const listed = sync.listSessions(null);
     const loaded = listed.map((entry) => ({ ...entry, session: sync.loadSession(null, entry.sessionName, entry.author).session }));

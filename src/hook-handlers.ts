@@ -9,6 +9,7 @@
  * remain unchanged for backward compatibility during migration.
  */
 
+import os from 'node:os';
 import path from 'node:path';
 
 import type { ResolvedEntry } from './namespaced-entries.js';
@@ -158,6 +159,14 @@ const pullHandler: HookHandler = {
     // cut the push of a report pull() stopped waiting for. The host does not
     // wait for this pass, so waiting here does not delay the session.
     await settleLateUsageReport();
+    // Finished sessions are judged in a process this pass does not wait for, where a scope turns that on.
+    const { sessionScoringScopes } = await import('./score-sessions.js');
+    const scoringCwd = await pathExists(hintCwd) ? hintCwd : os.homedir();
+    const scoring = await sessionScoringScopes(scoringCwd).catch((e: unknown) => {
+      log.debug(`hook-dispatch: could not tell whether sessions are scored here: ${e instanceof Error ? e.message : String(e)}`);
+      return [];
+    });
+    if (scoring.length > 0) await spawnDetachedScoreSessions(scoringCwd);
     return null;
   },
 };
@@ -279,6 +288,15 @@ async function spawnDetachedPull(cwd: string, event: GitHookEvent): Promise<void
   spawn(process.execPath, [resolveCliEntry() ?? '', 'pull', '--silent'], {
     cwd, detached: true, stdio: 'ignore', windowsHide: true, env: { ...process.env, TEAMAI_GIT_HOOK: event },
   }).on('error', (e) => log.debug(`git hook: detached pull failed to start: ${e.message}`)).unref();
+}
+
+/** Start `teamai score-sessions` in `cwd`, which this process does not wait for. */
+async function spawnDetachedScoreSessions(cwd: string): Promise<void> {
+  const { resolveCliEntry } = await import('./builtin-hooks.js');
+  const { spawn } = await import('node:child_process');
+  spawn(process.execPath, [resolveCliEntry() ?? '', 'score-sessions'], {
+    cwd, detached: true, stdio: 'ignore', windowsHide: true,
+  }).on('error', (e) => log.debug(`hook-dispatch: detached score-sessions failed to start: ${e.message}`)).unref();
 }
 
 /**

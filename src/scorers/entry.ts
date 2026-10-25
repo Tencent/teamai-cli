@@ -4,12 +4,17 @@
  */
 import { createHash } from 'node:crypto';
 import { canonicalJson } from '../utils/canonical-json.js';
-import type { AttemptRecord, JudgeFailureCode, LeasedAttempt } from './attempts.js';
-import type { RunSubject, ScoreLabel } from './label.js';
+import type { AttemptRecord, JudgeFailureCode, LeasedAttempt, LeasedSessionAttempt } from './attempts.js';
+import type { RunSubject, ScoreLabel, SessionSubject } from './label.js';
 
 /** `s` + 13 hex of sha256 over (scorer, subject): the same on every read and every machine. */
 export function entryIdOf(scorer: string, subject: RunSubject): string {
   return `s${createHash('sha256').update(canonicalJson({ scorer, subject })).digest('hex').slice(0, 13)}`;
+}
+
+/** `s` + 13 hex of sha256 over (scorer, rubric, session): a new rubric of the scorer is a new key, tried once of its own. */
+export function sessionEntryIdOf(scorer: string, sourceHash: string, subject: SessionSubject): string {
+  return `s${createHash('sha256').update(canonicalJson({ scorer, sourceHash, subject })).digest('hex').slice(0, 13)}`;
 }
 
 const LEASE_REF = /^(s[0-9a-f]{13})\/(a[0-9a-f]{8})$/;
@@ -71,4 +76,22 @@ export function entryState(facts: {
   if (attempts.filter((attempt) => hasLapsed(attempt, now)).length > LEASE_LAPSES_ALLOWED) return { kind: 'failed', code: 'lease_expired' };
   if (Math.max(Date.parse(facts.subjectChangedAt), Date.parse(requestedAt) || 0) + ENTRY_WINDOW_MS <= Date.parse(now)) return { kind: 'expired' };
   return { kind: 'open' };
+}
+
+export type SessionEntryState =
+  | { kind: 'open' }
+  | { kind: 'leased'; attempt: LeasedSessionAttempt }
+  | { kind: 'labelled' }
+  | { kind: 'tried' };
+
+/**
+ * The state of one session key, first match wins: a model label or a succeeded attempt, a live lease, any other attempt,
+ * else open. A session is judged once: a release, a lapse or a failure never opens it again.
+ */
+export function sessionEntryState(facts: { labels: readonly ScoreLabel[]; attempts: readonly AttemptRecord[]; now: string }): SessionEntryState {
+  const { attempts, now } = facts;
+  if (facts.labels.some((label) => label.judge.kind === 'model') || attempts.some((attempt) => attempt.status === 'succeeded')) return { kind: 'labelled' };
+  const live = attempts.find((attempt): attempt is LeasedSessionAttempt => attempt.source === 'session' && attempt.status === 'leased' && !hasLapsed(attempt, now));
+  if (live) return { kind: 'leased', attempt: live };
+  return attempts.length > 0 ? { kind: 'tried' } : { kind: 'open' };
 }

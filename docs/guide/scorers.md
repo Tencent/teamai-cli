@@ -29,6 +29,7 @@ Judge whether the change does what the step asked. Read the diff and the session
 | `labels` | 2 to 20 `{ value, score, description }`. At least one scores at or above `passingScore`, and one below it. |
 | `passingScore` | A label passes when its score is at or above this. |
 | `samplingRate`, `model`, `isolation` | Optional. Percent of passes judged, 0 to 100, default 25. The judge's model: a team [model alias](sharing.md#model-aliases), resolved per judge tool, or a model name, which goes unchanged to the first judge tool; default the tool's. `verified` or `best-effort`. |
+| `sessions` | Optional. `true`: the scorer also judges [finished sessions](#finished-sessions). |
 
 The text after the frontmatter is the judge's prompt. `teamai pull` caches valid scorers, which `teamai status` lists, and warns about the rest. `teamai review --branch` fails on a malformed scorer, on a model alias the branch's `models/aliases.yaml` maps for no tool, on any file in `scorers/` other than `<name>.md`, `<namespace>/<name>.md`, `scoring.yaml` and `README.md`, on a `scoring.yaml` with a key or value it does not know, and on a credential or internal address in any file there, as it does for rules.
 
@@ -151,6 +152,20 @@ Outside a session, pass `--session <id>`. Scoring never guesses the session. `--
 The judge reads at most 200,000 characters of a session. A session scorer that names a cheaper [model alias](#choose-the-judges-model) keeps a long session cheap to judge.
 
 The label is kept in the scope the session ran in, from whichever directory you score it. It records `agent`, what the session ran as, from the captures the session-start hook writes. It records `used.skills`, the team skills the session or its subagents loaded that its captures show teamai delivered, unchanged, when it started, including by the pull it runs at start. A later pull does not change that. A skill the captures cannot place, such as a member's own skill with a team skill's name, is left out. `--push` publishes every pending label of that scope. With [usage reporting](reporting.md) off, it prints `Usage reporting is off, so labels stay on this machine.` and the labels stay pending. An http team repo has no `teamai-reports`, so `--push` fails with `unsupported_repo` and the labels stay here. `teamai doctor` warns while a label waits to be published.
+
+### Finished sessions
+
+A member who sets `scoring.sessions: true` in `config.yaml` turns each session captured in that scope into judge work once nothing has happened in it for six hours, for every scorer with `sessions: true`, sampled by its `samplingRate`. A namespace scorer judges a session only when the roles and projects each of its starts recorded make that namespace active. `score --next` hands out workflow work first, then sessions. A session lease has `"source":"session"`, and its `cwd` is where to submit from.
+
+The team can set `sessions` and `daily_limit` in `scorers/scoring.yaml` or in an active namespace's `scoring.yaml`, which overrides the root file. When two active namespaces disagree, `sessions: false` and the lowest `daily_limit` win. A member's `config.yaml` overrides them all.
+
+A session is judged once per scorer and rubric. A release, a lapse, or a local judge that fails closes it. An answer to a lapsed lease is still recorded, unless a judge has labelled the session since. `scoring.daily_limit` in `config.yaml` sets how many sessions one data home leases per local day, 10 by default, counting those that failed or could not be read. `0` turns session scoring off. Editing a scorer's rubric makes the captured sessions judge work again for it, and the daily limit spreads that over the following days.
+
+You do not have to run a driver. After the pull at a session's start, when the session's project or your user scope scores sessions, teamai starts a background judge for both scopes. It judges each finished session with a judge tool installed here, stops taking work after 30 minutes, and leaves the labels pending for the next `teamai pull` to publish. Each lease is one judge call on your account, at most `daily_limit` a day. A session scorer with a cheap [model alias](#choose-the-judges-model), such as `model: fast`, keeps that cheap. To stop it, set `scoring.sessions: false` in `config.yaml`.
+
+The background judge uses the tool's home that `teamai init` recorded, such as a moved `CLAUDE_CONFIG_DIR`. It does not see a credential or base URL that only your shell sets, notably on Windows. Keep those in the tool's sign-in, your user environment, or the tool's `settings.json` `env`.
+
+A teamai older than this one rejects a scorer with `sessions: true`, so update teamai on every member's machine before the team adds one. An older teamai that takes judge work on your machine, such as a driver's own copy, removes the rubrics of session leases, so update every copy there before you turn on `scoring.sessions`.
 
 ## Batching
 

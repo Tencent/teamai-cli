@@ -219,6 +219,26 @@ async function sweep(config: LocalConfig): Promise<void> {
   }
 }
 
+/** One session captured here, with its captures, oldest first. */
+export interface CapturedSession {
+  platform: string;
+  sessionId: string;
+  captures: readonly [SessionCapture, ...SessionCapture[]];
+}
+
+/** Every session captured here, as `sweep` walks them. */
+async function list(config: LocalConfig): Promise<CapturedSession[]> {
+  const root = path.join(getDataHome(config), 'sessions', 'captures');
+  const sessions: CapturedSession[] = [];
+  for (const platform of (await fs.readdir(root).catch(() => [])).filter((name) => SEGMENT.test(name)).sort()) {
+    for (const sessionId of (await fs.readdir(path.join(root, platform)).catch(() => [])).sort()) {
+      const [first, ...rest] = await read(config, platform, sessionId);
+      if (first) sessions.push({ platform, sessionId, captures: [first, ...rest] });
+    }
+  }
+  return sessions;
+}
+
 /** The platforms whose sessions named `sessionId` were captured here. */
 async function platformsOf(config: LocalConfig, sessionId: string): Promise<string[]> {
   if (!SEGMENT.test(sessionId)) return [];
@@ -249,4 +269,4 @@ function agentOf(captures: readonly SessionCapture[], reportedModel: string | un
   return settled && { ...settled, teamai };
 }
 
-export const SessionCaptures = { atStart, addToolVersion, checkoutDelivery, markTeamChanged, read, platformsOf, agentOf, sweep } as const;
+export const SessionCaptures = { atStart, addToolVersion, checkoutDelivery, markTeamChanged, read, list, platformsOf, agentOf, sweep } as const;

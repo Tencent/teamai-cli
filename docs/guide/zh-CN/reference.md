@@ -102,7 +102,7 @@ Cursor CLI 会搬两个目录：`CURSOR_DATA_DIR` 放会话记录，`CURSOR_CONF
 
 #### 记录的工具主目录（`~/.teamai/tool-homes.json`）
 
-有些工具会按变量搬家：`XDG_CONFIG_HOME`（OpenCode、Muse）、`OPENCODE_CONFIG_DIR`、`HERMES_HOME`、`PI_CODING_AGENT_DIR`、`CODEBUDDY_CONFIG_DIR`、`COPILOT_HOME`、`DSH_HOME`、`OPENCLAW_STATE_DIR` 和 `OPENCLAW_PROFILE`。在 Windows 上，Hermes 在 `%LOCALAPPDATA%\hermes`。工具自己的变量是相对路径时，和工具一样按运行 teamai 的目录解析；`XDG_CONFIG_HOME` 或 `%LOCALAPPDATA%` 是相对路径时会被忽略。teamai 会同步到搬过去的主目录。OpenCode、Muse、Pi 和 CodeBuddy 目前只有一部分跟着走。设了 `XDG_CONFIG_HOME=/x` 时，OpenCode 的技能、agents、位于 `/x/opencode/rules` 的规则、位于 `/x/opencode/teamai-context.md` 的指令块，以及 MCP 和 `teamai models switch` 写的 `opencode.json` 都放到 `/x/opencode`。Muse 的技能和 agents 放到 `/x/muse`，它的 MCP 配置也放到 `/x/muse`，它的用户规则和指令块是 `/x/muse/AGENTS.md`。它们的 hooks 和其他设置仍留在 `~/.config/opencode` 和 `~/.config/muse`。设了 `PI_CODING_AGENT_DIR=/x` 时，Pi 的技能、MCP 配置和 `models.json` 放到 `/x`，它的用户规则和指令块是 `/x/AGENTS.md`，扩展仍留在 `~/.pi/agent`。设了 `CODEBUDDY_CONFIG_DIR=/x` 时，CodeBuddy 的技能、规则、agents、`CODEBUDDY.md` 和 MCP 文件（包括 `.codebuddy.json`）放到 `/x`，hooks 仍留在 `~/.codebuddy/settings.json`。`teamai doctor` 会提示。
+有些工具会按变量搬家：`XDG_CONFIG_HOME`（OpenCode、Muse）、`OPENCODE_CONFIG_DIR`、`HERMES_HOME`、`PI_CODING_AGENT_DIR`、`CODEBUDDY_CONFIG_DIR`、`COPILOT_HOME`、`DSH_HOME`、`OPENCLAW_STATE_DIR` 和 `OPENCLAW_PROFILE`。在 Windows 上，Hermes 在 `%LOCALAPPDATA%\hermes`。工具自己的变量是相对路径时，和工具一样按运行 teamai 的目录解析；`XDG_CONFIG_HOME` 或 `%LOCALAPPDATA%` 是相对路径时会被忽略。teamai 会同步到搬过去的主目录。OpenCode、Muse、Pi 和 CodeBuddy 目前只有一部分跟着走。设了 `XDG_CONFIG_HOME=/x` 时，OpenCode 的技能、agents、位于 `/x/opencode/rules` 的规则、位于 `/x/opencode/teamai-context.md` 的指令块，以及 MCP 和 `teamai models switch` 写的 `opencode.json` 都放到 `/x/opencode`。Muse 的技能和 agents 放到 `/x/muse`，它的 MCP 配置也放到 `/x/muse`，它的用户规则和指令块是 `/x/muse/AGENTS.md`。Muse 的模型设置也会跟随该主目录；它的 hooks 仍留在 `~/.config/muse`，OpenCode 的 hooks 仍留在 `~/.config/opencode`。设了 `PI_CODING_AGENT_DIR=/x` 时，Pi 的技能、MCP 配置和 `models.json` 放到 `/x`，它的用户规则和指令块是 `/x/AGENTS.md`，扩展仍留在 `~/.pi/agent`。设了 `CODEBUDDY_CONFIG_DIR=/x` 时，CodeBuddy 的技能、规则、agents、`CODEBUDDY.md` 和 MCP 文件（包括 `.codebuddy.json`）放到 `/x`，hooks 仍留在 `~/.codebuddy/settings.json`。`teamai doctor` 会提示。
 
 第一次看到该变量的 `pull` 会在该目录存在时把主目录记到 `~/.teamai/tool-homes.json`，整台机器共用这一份记录；pull 不会替换已有的记录。`teamai init` 也会记录，并且会替换已有的记录：工具自己的变量（`HERMES_HOME`、`OPENCLAW_PROFILE` 等）在目录还不存在时也记，`XDG_CONFIG_HOME` 要等目录存在才记。Hermes 在 Windows 上的默认目录只会补上缺的记录。所以请在你的工具运行的 shell 里运行 `init`。之后即使在没设该变量的 shell 里 pull，各个 scope 也仍然同步到那里。要换主目录，带着新值运行 `teamai init`。要清掉记录，把变量设为空再运行一次。记录的目录不存在时，`teamai doctor` 会报 `<tool> home exists`；shell 里的变量指向别的目录时，会报 `<tool> home matches <variable>`。
 
@@ -157,10 +157,10 @@ profiles:
 | Claude Code | `anthropic` | `~/.claude/settings.json` |
 | Codex | `openai-responses` | `~/.codex/config.toml` |
 | OpenCode | 任意 | `opencode.json` |
-| CodeBuddy / WorkBuddy | `openai-chat-completions` | `models.json` |
+| CodeBuddy / WorkBuddy | `openai-chat-completions` | `models.json` (CodeBuddy 跟随记录的主目录) |
 | Pi | 任意 | `~/.pi/agent/models.json` |
 | OMP | 任意 | `~/.omp/agent/models.yml` |
-| Muse Code | `openai-responses` | `~/.config/muse/settings.json`，密钥以 `META_API_KEY` 写入 `~/.teamai/models/env.sh`，由 shell 配置文件加载 |
+| Muse Code | `openai-responses` | `<Muse 主目录>/settings.json`（已记录目录，否则使用 `$XDG_CONFIG_HOME/muse` 或 `~/.config/muse`），密钥以 `META_API_KEY` 写入 `~/.teamai/models/env.sh`，由 shell 配置文件加载 |
 
 上面的例子没有 `openai-responses`，所以不会改 Codex 和 Muse Code。
 

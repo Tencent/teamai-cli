@@ -12,7 +12,7 @@ import { DriverSchema } from '../driver-identity.js';
 import { getDataHome, type LocalConfig } from '../types.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { readFileSafe, writeJsonAtomic } from '../utils/fs.js';
-import { ACCESS_LEVELS, ISOLATIONS, JudgeUsageSchema, RunSubjectSchema } from './label.js';
+import { ACCESS_LEVELS, ISOLATIONS, JudgeUsageSchema, RunSubjectSchema, SessionLabelContextSchema, SessionSubjectSchema } from './label.js';
 import { PinnedScorerSchema } from './pin.js';
 
 const ENTRY_ID = /^s[0-9a-f]{13}$/;
@@ -44,7 +44,6 @@ const AttemptBase = {
   entry: z.string().regex(ENTRY_ID),
   scorer: z.string().min(1),
   rubric: PinnedScorerSchema.omit({ content: true }),
-  subject: RunSubjectSchema,
   driver: DriverSchema,
   judge: JudgeChoiceSchema,
   leasedAt: z.string(),
@@ -54,22 +53,50 @@ const AttemptBase = {
   /** In a batch, the entries of every scorer the lease judges, in the step's order; each has an attempt of this id. */
   batch: z.array(z.string().regex(ENTRY_ID)).min(2).optional(),
 };
-const Settled = { ...AttemptBase, settledAt: z.string() };
+const Settled = { settledAt: z.string() };
+const Verdict = {
+  labelId: z.string().min(1),
+  verdict: z.object({ label: z.string().min(1), score: z.number(), passed: z.boolean(), version: z.string().min(1) }),
+};
 
-export const AttemptRecordSchema = z.discriminatedUnion('status', [
-  z.object({ ...AttemptBase, status: z.literal('leased') }),
-  z.object({
-    ...Settled,
-    status: z.literal('succeeded'),
-    labelId: z.string().min(1),
-    verdict: z.object({ label: z.string().min(1), score: z.number(), passed: z.boolean(), version: z.string().min(1) }),
-  }),
-  z.object({ ...Settled, status: z.literal('failed'), code: z.enum(JUDGE_FAILURES) }),
-  z.object({ ...Settled, status: z.literal('released') }),
+/** A workflow attempt names no source, as every attempt file written before session attempts did. */
+const RunPart = { ...AttemptBase, source: z.literal('workflow').optional(), subject: RunSubjectSchema };
+
+const RunAttemptSchema = z.discriminatedUnion('status', [
+  z.object({ ...RunPart, status: z.literal('leased') }),
+  z.object({ ...RunPart, ...Settled, status: z.literal('succeeded'), ...Verdict }),
+  z.object({ ...RunPart, ...Settled, status: z.literal('failed'), code: z.enum(JUDGE_FAILURES) }),
+  z.object({ ...RunPart, ...Settled, status: z.literal('released') }),
 ]);
+
+/**
+ * A session attempt keeps the context its label is built from, read when its lease was taken: the evidence directory
+ * is removed on settle. Only a session that could not be read before the lease closes without one.
+ */
+const SessionPart = { ...AttemptBase, source: z.literal('session'), subject: SessionSubjectSchema, session: SessionLabelContextSchema };
+
+const SessionAttemptSchema = z.union([
+  /** `judgingSince`: a local judge started on it then, so no other local judge starts; a session is judged once. */
+  z.object({ ...SessionPart, status: z.literal('leased'), judgingSince: z.string().optional() }),
+  z.object({ ...SessionPart, ...Settled, status: z.literal('succeeded'), ...Verdict }),
+  z.object({ ...SessionPart, ...Settled, status: z.literal('released') }),
+  z.object({ ...SessionPart, ...Settled, status: z.literal('failed'), code: z.literal('evidence_empty'), session: SessionLabelContextSchema.optional() }),
+  z.object({ ...SessionPart, ...Settled, status: z.literal('failed'), code: z.enum(JUDGE_FAILURES).exclude(['evidence_empty']) }),
+]);
+
+/** A file without `source` reads as a run attempt; `source: 'session'` fails each of those. */
+export const AttemptRecordSchema = z.union([RunAttemptSchema, SessionAttemptSchema]);
 export type AttemptRecord = z.infer<typeof AttemptRecordSchema>;
+export type RunAttempt = z.infer<typeof RunAttemptSchema>;
+export type SessionAttempt = z.infer<typeof SessionAttemptSchema>;
 export type LeasedAttempt = Extract<AttemptRecord, { status: 'leased' }>;
+export type LeasedRunAttempt = Extract<RunAttempt, { status: 'leased' }>;
+export type LeasedSessionAttempt = Extract<SessionAttempt, { status: 'leased' }>;
 export type SucceededAttempt = Extract<AttemptRecord, { status: 'succeeded' }>;
+
+export function isRunAttempt(attempt: AttemptRecord): attempt is RunAttempt {
+  return attempt.source !== 'session';
+}
 
 /**
  * `<entryId>/request.json`: a member asked for this (scorer, pass) to be judged, whatever sampling says. Attempts and
@@ -110,7 +137,7 @@ export function rawOutputPath(config: LocalConfig, attempt: string): string {
 const LOCK_ATTEMPTS = 40;
 const LOCK_WAIT_MS = 25;
 
-async function readRecord<T>(file: string, schema: z.ZodType<T>): Promise<T | undefined> {
+async function readRecord<T>(file: string, schema: z.ZodType<T, z.ZodTypeDef, unknown>): Promise<T | undefined> {
   const raw = await readFileSafe(file);
   if (raw === null) return undefined;
   try {
@@ -199,6 +226,11 @@ export const AttemptStore = {
     };
     await remove(path.join(scoresDir(config), 'rubrics'), /^([0-9a-f]{64})\.json$/, named);
     await remove(path.join(scoresDir(config), 'raw'), /^(a[0-9a-f]{8})\.txt$/, latest);
+  },
+
+  /** Removes every attempt of `entry`. Call under `locked`. */
+  async removeEntry(config: LocalConfig, entry: string): Promise<void> {
+    if (ENTRY_ID.test(entry)) await fs.rm(path.join(attemptsDir(config), entry), { recursive: true, force: true });
   },
 
   /** Runs `change` under `scores/attempts.lock`; `change` re-reads what it decides on. */

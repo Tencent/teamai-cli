@@ -125,7 +125,7 @@ function ompSettingsPath(): string {
 
 /** Muse Code reads `model` and `endpoint_transport` from its user settings.json. */
 function museSettingsPath(): string {
-  return path.join(getUserHome(), '.config', 'muse', 'settings.json');
+  return path.join(toolHome('muse'), 'settings.json');
 }
 
 function agentSettingsPath(agent: ModelAgent): string {
@@ -135,6 +135,7 @@ function agentSettingsPath(agent: ModelAgent): string {
   if (agent === 'opencode') return openCodeSettingsPath();
   if (agent === 'pi') return piSettingsPath();
   if (agent === 'omp') return ompSettingsPath();
+  if (agent === 'codebuddy') return path.join(toolHome('codebuddy'), 'models.json');
   return path.join(getUserHome(), `.${agent}`, 'models.json');
 }
 

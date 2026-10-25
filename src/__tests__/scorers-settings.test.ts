@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { LocalConfig } from '../types.js';
+import { LocalConfigSchema, type LocalConfig } from '../types.js';
 import { scopeScoring } from '../scorers/settings.js';
 
 const dirs: string[] = [];
@@ -28,16 +28,17 @@ function teamRepo(files: Record<string, string>, member: Partial<LocalConfig> = 
 }
 
 const MACHINE = { source: 'config.yaml scoring.isolation', value: undefined };
+const SESSIONS_OFF = { enabled: false, reason: 'nothing sets scoring.sessions: true in config.yaml or sessions: true in scorers/scoring.yaml' };
 
 describe('scopeScoring isolation', () => {
   it('reads the root file, and an active namespace file in its place; an inactive one is not read', async () => {
     const files = { 'scorers/scoring.yaml': 'isolation: best-effort\n', 'scorers/ops/scoring.yaml': 'isolation: verified\n' };
 
     expect(await scopeScoring(teamRepo(files, { primaryRole: 'dev' }))).toEqual({
-      ok: true, batch: undefined, problems: [], isolation: [{ source: 'scorers/scoring.yaml isolation', value: 'best-effort' }, MACHINE],
+      ok: true, batch: undefined, problems: [], isolation: [{ source: 'scorers/scoring.yaml isolation', value: 'best-effort' }, MACHINE], sessions: SESSIONS_OFF,
     });
     expect(await scopeScoring(teamRepo(files, { primaryRole: 'ops' }))).toEqual({
-      ok: true, batch: undefined, problems: [], isolation: [{ source: 'scorers/ops/scoring.yaml isolation', value: 'verified' }, MACHINE],
+      ok: true, batch: undefined, problems: [], isolation: [{ source: 'scorers/ops/scoring.yaml isolation', value: 'verified' }, MACHINE], sessions: SESSIONS_OFF,
     });
   });
 
@@ -61,7 +62,7 @@ describe('scopeScoring isolation', () => {
 
   it('drops a key it does not know, with a problem that names the file', async () => {
     expect(await scopeScoring(teamRepo({ 'scorers/scoring.yaml': 'isolation: verified\nsampling: 50\n' }))).toMatchObject({
-      ok: true, problems: ['scorers/scoring.yaml: "sampling" is not a scoring setting (batch, isolation), so it is ignored'],
+      ok: true, problems: ['scorers/scoring.yaml: "sampling" is not a scoring setting (batch, isolation, sessions, daily_limit), so it is ignored'],
     });
   });
 });
@@ -89,6 +90,63 @@ describe('scopeScoring batch', () => {
   it('ignores a batch that is not true or false, with a problem', async () => {
     expect(await scopeScoring(teamRepo({ 'scorers/scoring.yaml': 'batch: yes please\n' }))).toMatchObject({
       ok: true, batch: undefined, problems: ['scorers/scoring.yaml: batch is "yes please", not true or false, so it is ignored'],
+    });
+  });
+});
+
+describe('scopeScoring sessions', () => {
+  /** `config.yaml` `scoring`, read as teamai reads the file. */
+  const member = (scoring: Record<string, unknown>): Partial<LocalConfig> => ({ scoring: LocalConfigSchema.shape.scoring.parse(scoring) });
+
+  it.each([
+    ['sessions: true takes the built-in daily limit', { sessions: true }, { enabled: true, dailyLimit: 10 }],
+    ['daily_limit sets how many sessions a day may lease', { sessions: true, daily_limit: 3 }, { enabled: true, dailyLimit: 3 }],
+    ['daily_limit: 0 turns session scoring off', { sessions: true, daily_limit: 0 }, { enabled: false, reason: 'config.yaml scoring.daily_limit is 0' }],
+  ])('%s', async (_, scoring, sessions) => {
+    expect(await scopeScoring(teamRepo({}, member(scoring)))).toMatchObject({ ok: true, problems: [], sessions });
+  });
+
+  it('reports a daily_limit that is not a whole number of 0 or more, and keeps the built-in one', async () => {
+    expect(await scopeScoring(teamRepo({}, member({ sessions: true, daily_limit: -2 })))).toMatchObject({
+      ok: true,
+      problems: ['config.yaml scoring.daily_limit is -2, not a whole number of 0 or more, so it is ignored'],
+      sessions: { enabled: true, dailyLimit: 10 },
+    });
+  });
+});
+
+describe('scopeScoring team session defaults', () => {
+  const both = { primaryRole: 'ops', additionalRoles: ['sre'] };
+
+  it('takes sessions and daily_limit from scorers/scoring.yaml when the member sets neither', async () => {
+    expect(await scopeScoring(teamRepo({ 'scorers/scoring.yaml': 'sessions: true\ndaily_limit: 4\n' }))).toMatchObject({ problems: [], sessions: { enabled: true, dailyLimit: 4 } });
+  });
+
+  it('lets an active namespace file override the root file, with the lowest limit of them all', async () => {
+    const files = { 'scorers/scoring.yaml': 'sessions: true\ndaily_limit: 4\n', 'scorers/ops/scoring.yaml': 'daily_limit: 2\n', 'scorers/sre/scoring.yaml': 'daily_limit: 3\n' };
+    expect(await scopeScoring(teamRepo(files, both))).toMatchObject({ sessions: { enabled: true, dailyLimit: 2 } });
+  });
+
+  it('turns sessions off when any active namespace file sets sessions: false', async () => {
+    const files = { 'scorers/ops/scoring.yaml': 'sessions: true\n', 'scorers/sre/scoring.yaml': 'sessions: false\n' };
+    expect(await scopeScoring(teamRepo(files, both))).toMatchObject({ sessions: { enabled: false, reason: 'scorers/sre/scoring.yaml sessions is false' } });
+  });
+
+  it('lets the member override the team', async () => {
+    const files = { 'scorers/scoring.yaml': 'sessions: true\n', 'scorers/ops/scoring.yaml': 'daily_limit: 2\n' };
+    expect(await scopeScoring(teamRepo(files, { primaryRole: 'ops', scoring: { sessions: false } }))).toMatchObject({
+      sessions: { enabled: false, reason: 'config.yaml scoring.sessions is false' },
+    });
+    expect(await scopeScoring(teamRepo(files, { primaryRole: 'ops', scoring: { daily_limit: 5 } }))).toMatchObject({ sessions: { enabled: true, dailyLimit: 5 } });
+  });
+
+  it('reports a team value it cannot use, and ignores it', async () => {
+    expect(await scopeScoring(teamRepo({ 'scorers/scoring.yaml': 'sessions: yes please\ndaily_limit: many\n' }))).toMatchObject({
+      problems: [
+        'scorers/scoring.yaml: sessions is "yes please", not true or false, so it is ignored',
+        'scorers/scoring.yaml: daily_limit is "many", not a whole number of 0 or more, so it is ignored',
+      ],
+      sessions: { enabled: false },
     });
   });
 });

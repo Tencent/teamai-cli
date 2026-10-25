@@ -124,7 +124,9 @@ export const SESSION_PLATFORM_FACTS = {
 } satisfies Record<string, SessionPlatformFacts>;
 
 export function sessionPlatformFacts(platform: string): SessionPlatformFacts | undefined {
-  return (SESSION_PLATFORM_FACTS as Record<string, SessionPlatformFacts>)[platform];
+  return Object.hasOwn(SESSION_PLATFORM_FACTS, platform)
+    ? SESSION_PLATFORM_FACTS[platform as keyof typeof SESSION_PLATFORM_FACTS]
+    : undefined;
 }
 
 /** How each CLI continues a session; the rest are assumed to take `<platform> --resume <id>`. */

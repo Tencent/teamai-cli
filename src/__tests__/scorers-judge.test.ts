@@ -303,3 +303,30 @@ it('offers every launch tool on PATH as a judge, the preferred one first', () =>
 
   expect(installedJudgeTools(['codebuddy'], { resolveTool: (tool) => onPath.has(tool) ? `/bin/${tool}` : null })).toEqual(['codebuddy', 'tclaude', 'codex-internal']);
 });
+
+it('gives a Claude judge the home the tool-homes record names when nothing in the environment moves it', async () => {
+  root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-judge-')));
+  const evidence = path.join(root, 'evidence');
+  const moved = path.join(root, 'claude-work');
+  await fs.mkdir(evidence);
+  await fs.mkdir(moved);
+  await fs.mkdir(path.join(root, '.teamai'));
+  await fs.writeFile(path.join(root, '.teamai', 'tool-homes.json'), JSON.stringify({ claude: moved }));
+  await fs.writeFile(path.join(moved, 'settings.json'), JSON.stringify({ env: { ANTHROPIC_BASE_URL: 'https://moved.test' } }));
+  await fs.writeFile(path.join(evidence, 'prompt.md'), 'Judge.');
+  vi.stubEnv('HOME', root);
+  vi.stubEnv('USERPROFILE', root);
+  vi.stubEnv('CLAUDE_CONFIG_DIR', undefined);
+  const executable = path.join(root, 'claude-fake');
+  await fs.writeFile(executable, `#!${process.execPath}
+const fs = require('fs');
+if (process.argv.includes('--version')) { console.log('2.1.308 (Claude Code)'); process.exit(); }
+process.stdin.resume(); process.stdin.on('end', () => {
+const args=process.argv.slice(2); const settings=JSON.parse(fs.readFileSync(args[args.indexOf('--settings')+1],'utf8'));
+fs.writeFileSync('invocation.json', JSON.stringify({ home: process.env.CLAUDE_CONFIG_DIR ?? null, settings }));
+console.log(JSON.stringify({type:'result',structured_output:{label:'good',reasoning:'done'}}));
+});\n`, { mode: 0o755 });
+
+  expect(await runLocalJudge({ tool: 'claude', evidence, schema: { type: 'object' } }, { resolveTool: () => executable })).toMatchObject({ ok: true });
+  expect(JSON.parse(await fs.readFile(path.join(evidence, 'invocation.json'), 'utf8'))).toEqual({ home: moved, settings: { env: { ANTHROPIC_BASE_URL: 'https://moved.test' } } });
+});

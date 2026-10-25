@@ -892,7 +892,7 @@ workflowCmd
 program
   .command('score')
   .description('Judge workflow passes with team scorers (scorers/<name>.md). Any driver takes judge work with --next, runs its own judge on the lease prompt with the lease evidence directory as its only readable root and settles it with --lease <ref> --submit, or judges it here with --lease <ref>. --run <id> --step <path> --scorer <name> judges a pass on demand. --scorer <name> [--session <id>] judges a finished agent session here: the one --session names, or, inside a session, the one its agent session variable names; it never guesses. workflow next never hands out judge work, and a driver never lists a judge ref in workflow next running. Prints one JSON envelope.')
-  .option('--next', 'Take judge work: a lease with ref, scorer, subject, evidence, prompt, answer.schema, expiresAt and a submit command line, or idle with counts. A batch lease, for scorers of one pass that share a judge call, has scorers and batched: true instead of scorer. --json {"driver":{"kind":"t3","machine":"host","workspace":"/work","can":{"judge":{"isolation":"verified","access":"read","tools":["claude"]}}},"running":["<ref>"]}. isolation is verified or best-effort; access is what your judge can do, answer (no tools), read (reads the evidence) or full (any tool), default full, and its labels record it; tools in your order of preference. running lists the judge refs you still run, which renews them; a live lease of yours left out is handed back. A lease lapses 30 minutes after it was taken or renewed.')
+  .option('--next', 'Take judge work: workflow passes first, then finished sessions where scoring.sessions is on (config.yaml, else scorers/scoring.yaml). A lease has ref, source (workflow or session), scorer, subject, evidence, prompt, answer.schema, expiresAt, the cwd to submit from and a submit command line; else idle with counts. A batch lease, for scorers of one pass that share a judge call, has scorers and batched: true instead of scorer. --json {"driver":{"kind":"t3","machine":"host","workspace":"/work","can":{"judge":{"isolation":"verified","access":"read","tools":["claude"]}}},"running":["<ref>"]}. isolation is verified or best-effort; access is what your judge can do, answer (no tools), read (reads the evidence) or full (any tool), default full, and its labels record it; tools in your order of preference. running lists the judge refs you still run, which renews them; a live workflow lease of yours left out is handed back, and a session lease left out lapses: a session is judged once. A lease lapses 30 minutes after it was taken or renewed.')
   .option('--lease <ref>', 'The judge lease, as --next printed it (s<13 hex>/a<8 hex>). Without --submit, judge it here with the tool the lease names, in a confined profile, and settle it through the submit path: --json {"driver":{…same as --next…}}.')
   .option('--submit', 'Settle --lease <ref> with the payload {"driver":{…same as --next…},"outcome":"success","answer":{"label":"<one of answer.schema>","reasoning":"…"},"judge":{"tool":"claude","model":"…","usage":{"inputTokens":0,"outputTokens":0}}}. For a batch lease, answer is {"<scorer>":{"label":"…","reasoning":"…"},…} with one entry per scorer. outcome is success, failed, or released. A label a scorer does not list is refused, the whole answer with it, and the lease stays open; teamai computes score and passed.')
   .option('--json <payload>', 'The payload as a JSON string')
@@ -1194,6 +1194,14 @@ program
   });
 
 program
+  .command('score-sessions', { hidden: true })
+  .description('Judge this machine\'s finished sessions with the local judge (started by the session-start hook)')
+  .action(async () => {
+    const { scoreSessionsCommand } = await import('./score-sessions.js');
+    await scoreSessionsCommand();
+  });
+
+program
   .command('hook-dispatch <event> [hookArgs...]', { hidden: true })
   .description('Unified hook dispatcher — handles all teamai hooks for a given event in one process')
   .option('--stdin', 'Read hook data from STDIN (accepted for forward compat, always reads STDIN)')
@@ -1368,7 +1376,7 @@ program
   .addOption(new Option('--ssh', 'Force SSH clone even if HTTPS token is available').hideHelp())
   .addOption(new Option('--domain <name>', 'Skip AI recommendation and assign repo to this domain explicitly').hideHelp())
   .option('--from-repo-list <path>', 'Batch import repos from a YAML whitelist')
-  .addOption(new Option('--concurrency <n>', 'Concurrent repos for --from-repo-list (default 3)').default('3').hideHelp())
+  .addOption(new Option('--concurrency <n>', 'Concurrent repos for --from-repo-list (positive safe integer, default 3)').default('3').hideHelp())
   .option('--incremental', 'Re-extract only files changed since the last import (with --dir, --from-repo or --from-repo-list; remote repos also reuse the cached clone)')
   .option('--skip-enrich', 'Skip AI enrichment (only clone + extract + graph, no LLM calls)')
   .option('--max-files <n>', 'Max source files collected per repository (default 200)')

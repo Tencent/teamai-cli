@@ -132,11 +132,15 @@ teamai import --from-repo https://github.com/org/repo --incremental
 teamai import --from-repo https://github.com/org/repo --skip-enrich
 ```
 
+`--from-repo-list` runs up to 3 imports at once by default. `--concurrency <n>` sets this limit and must be a positive safe integer. Invalid values fail before the repo list is read or output is prepared.
+
 `--from-mr` takes several MR URLs. Each draft is still confirmed on its own (or none with `--all`), the accepted learnings are published once at the end, and each repository's teamwiki is updated once. An MR that fails does not stop the rest; the run ends with a summary and exits non-zero if any failed.
 
 When GitHub import falls back from `gh` to REST, it reads commit pages of 100, up to the [GitHub endpoint's 250-commit limit](https://docs.github.com/en/rest/pulls/pulls#list-commits-on-a-pull-request). A failed commit page fails that PR before AI extraction.
 
 GitLab MR import reads commit pages of 50 instead of using only the first page, up to 100 pages. Each GitLab MR API request has a 30-second deadline, including reading its response body. A metadata timeout fails that MR; a commits, diff or review-threads timeout leaves out that optional data and continues. Each commit or review-thread page gets its own deadline. A later commit-page failure leaves out the whole commit list rather than passing an incomplete history to extraction.
+
+For GitLab `--from-org`, each page of the group project list has a 30-second deadline, including reading its response body. A timeout on any page fails the import before writing the whitelist or importing repositories.
 
 The extraction reads the MR's review threads along with its description, commits and diff: GitLab discussions, GitHub review comments, reviews and conversation comments, TGit notes. Each thread goes into the prompt with the file and line it is anchored to, whether it is resolved, and its notes marked as the MR author's or a reviewer's; a decision in a resolved thread outweighs the diff. teamai's own CI comments are skipped. `--no-discussions` leaves the threads out, for `teamai ci extract-mr` too. With `language: en` in `teamai.yaml` the learning is written in English; otherwise in Chinese.
 

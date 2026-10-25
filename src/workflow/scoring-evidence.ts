@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { AgentSession } from '../session-flow/agent-session.js';
-import { judgedTranscript } from '../session-flow/scoring.js';
+import { judgedTranscript } from '../session-flow/session-work.js';
 import { collectTeamSecrets } from '../env-resolution.js';
 import type { LocalConfig } from '../types.js';
 import { collectEnvSecrets, redact } from '../utils/redact.js';

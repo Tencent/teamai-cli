@@ -309,6 +309,23 @@ describe('Codex model switching', () => {
 // from META_API_KEY (or a saved Meta credential), so the key goes out through a
 // shell profile block.
 describe('Muse Code model switching', () => {
+  it.each(['environment', 'recorded'] as const)('switches and restores the %s Muse home without touching its default settings', async (source) => {
+    const moved = path.join(home, 'moved', 'muse');
+    const original = { schema_version: 1, model: 'personal', hooks: { Stop: [] } };
+    await fse.outputJson(path.join(moved, 'settings.json'), original);
+    await fse.outputJson(museFile(), { schema_version: 1, model: 'default-personal' });
+    if (source === 'environment') process.env.XDG_CONFIG_HOME = path.dirname(moved);
+    else {
+      await saveToolHomes({ muse: moved });
+      delete process.env.XDG_CONFIG_HOME;
+    }
+    expect((await switchModelProfile(routed({ 'openai-responses': ['team-model'] }), ['muse']))[0].status).toBe('switched');
+    expect(await fse.readJson(path.join(moved, 'settings.json'))).toMatchObject({ model: 'team-model', hooks: original.hooks });
+    expect(await fse.readJson(museFile())).toEqual({ schema_version: 1, model: 'default-personal' });
+    expect((await restoreModelProfiles(['muse']))[0].status).toBe('restored');
+    expect(await fse.readJson(path.join(moved, 'settings.json'))).toEqual(original);
+  });
+
   it('points Muse at a Responses route, exports the key for new shells, and restores both', async () => {
     process.env.SHELL = '/bin/zsh';
     const original = { schema_version: 1, model: 'muse-spark-1.3', hooks: { Stop: [] } };
