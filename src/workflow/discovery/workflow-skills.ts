@@ -12,7 +12,7 @@ import { isAgentExcluded, scopedToolPaths, type LocalConfig, type TeamaiConfig }
 import { pathExists, readFileSafe, writeFileAtomic } from '../../utils/fs.js';
 import { warnOnce } from '../../utils/warn-once.js';
 import { listCachedWorkflows, loadCachedWorkflow } from '../cache.js';
-import { readGenerated } from './generated-marker.js';
+import { generatedSkillAt, readGenerated } from './generated-marker.js';
 import { renderWorkflowSkill, type AdvertisedWorkflow } from './render.js';
 
 /**
@@ -63,27 +63,20 @@ async function plan(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise
     const target = await builtinSkillsTarget(tool, teamConfig, localConfig);
     if (!target) continue;
     const { guardBase } = target;
+    // Codex takes the shared `.agents/skills` copy only when it is free or already generated.
+    const ownsShared = async (dir: string): Promise<boolean> => await allowsSkillDirectory(guardBase, dir)
+      && (!await pathExists(dir) || (await generatedSkillAt(dir)).kind === 'ours');
     for (const dir of [target.skillsDir, ...tool === CODEX_TOOL ? [path.join(guardBase, SHARED_AGENT_SKILLS_PATH)] : []]) {
       if (!roots.has(dir)) roots.set(dir, { dir, guardBase });
     }
     for (const workflow of workflows) {
       const skillName = `${PREFIX}${workflow.name}`;
-      // Codex takes the shared `.agents/skills` copy only when it is free or already generated.
-      const ownsShared = async (dir: string): Promise<boolean> => await allowsSkillDirectory(guardBase, dir)
-        && (!await pathExists(dir) || await generatedAt(dir) !== null);
       const dir = await skillTarget({ tool, skillName, ownsShared }) ?? path.join(target.skillsDir, skillName);
       if (placed.has(dir)) continue;
       placed.set(dir, { tool, workflow: workflow.name, dir, guardBase, content: renderWorkflowSkill(workflow, tool) });
     }
   }
   return { placements: [...placed.values()], roots: [...roots.values()] };
-}
-
-/** The workflow whose generated skill `dir` holds, and whether it was edited; null when it holds none. */
-async function generatedAt(dir: string): Promise<{ name: string; edited: boolean } | null> {
-  const content = await readFileSafe(path.join(dir, 'SKILL.md'));
-  const generated = content === null ? null : readGenerated(content);
-  return generated?.kind === 'ours' ? generated : null;
 }
 
 function shadowed({ tool, workflow, dir }: Pick<Placement, 'tool' | 'workflow' | 'dir'>): string {
@@ -127,8 +120,8 @@ async function place({ tool, workflow, dir, guardBase, content }: Placement): Pr
 /** Removes the generated skill at `dir` when it is unedited, reachable without a link, and untracked. */
 async function prune({ dir, guardBase }: Root): Promise<void> {
   if (await findSkillDirectoryBlock(guardBase, dir)) return;
-  const generated = await generatedAt(dir);
-  if (generated === null) return;
+  const generated = await generatedSkillAt(dir);
+  if (generated.kind === 'theirs') return;
   const file = path.join(dir, 'SKILL.md');
   if (generated.edited) {
     warnOnce(keptEdited(file, generated.name, false));
@@ -176,7 +169,7 @@ export async function shadowedWorkflowSkills({ teamConfig, localConfig }: { team
   const lines: string[] = [];
   for (const placement of (await plan(teamConfig, localConfig)).placements) {
     if (await findSkillDirectoryBlock(placement.guardBase, placement.dir) || !await pathExists(placement.dir)) continue;
-    if (await generatedAt(placement.dir) === null) lines.push(shadowed(placement));
+    if ((await generatedSkillAt(placement.dir)).kind === 'theirs') lines.push(shadowed(placement));
   }
   return lines;
 }
