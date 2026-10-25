@@ -876,6 +876,32 @@ async function exitsWithin(pid: number, ms: number): Promise<boolean> {
   return true;
 }
 
+describe('local workflow driver and a lease from a newer teamai', () => {
+  it('fails a step whose place it cannot read with the wording every driver uses', async () => {
+    const { config, workspace, runId } = await workflowFixture(`schemaVersion: v1alpha1
+name: build
+description: One command in a worktree of its own.
+steps:
+  - id: change
+    workspace: new
+    command: node -e "process.exit(0)"
+`);
+    const engine = await import('../workflow/engine.js');
+    const real = engine.leaseNext;
+    // The workspace of the lease takes a shape a newer teamai wrote.
+    vi.spyOn(engine, 'leaseNext').mockImplementationOnce(async (...args) => {
+      const answer = await real(...args);
+      const lease = 'data' in answer ? answer.data.lease : undefined;
+      return lease !== null && typeof lease === 'object' ? { data: { lease: { ...lease, workspace: { mode: 'teleported' } } } } : answer;
+    });
+
+    expect(await runLocalDriver(config, runId, workspace, { toolPaths })).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    expect(await readRun(config, runId)).toMatchObject({
+      steps: [{ id: 'change', status: 'failed', failure: { code: 'workspace_base', message: `Run ${runId} leased a place this teamai cannot read. Update teamai.` } }],
+    });
+  });
+});
+
 describe('local workflow driver concurrency', () => {
   it('runs two command roots at the same time with max_parallel 2', async () => {
     const { config, workspace, runId } = await parallelFixture(TWO_BARRIERS, 2);

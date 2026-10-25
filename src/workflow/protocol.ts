@@ -274,10 +274,15 @@ export type HostPlacePrepared =
 /** A lease as the run leases it now, with the checkout its place goes in and the run's other leased attempts. */
 type Leased = { kind: 'leased'; lease: PlaceLease; root: string; others: AttemptId[] };
 
+/** What every driver fails a lease of run `run` with when this teamai cannot read the place it names, as a newer one writes. */
+export function unreadablePlace(run: RunId): WorkflowFailure {
+  return { code: 'workspace_base', message: `Run ${run} leased a place this teamai cannot read. Update teamai.` };
+}
+
 /** The lease `raw` names, as the run leases it now. */
 async function leasedPlace(config: LocalConfig, lock: RunLock, raw: unknown): Promise<Leased | { kind: 'failed'; failure: WorkflowFailure }> {
   const wire = LeaseWireSchema.safeParse(raw);
-  if (!wire.success) return { kind: 'failed', failure: { code: 'workspace_base', message: `Run ${lock.run} leased a place this teamai cannot read. Update teamai.` } };
+  if (!wire.success) return { kind: 'failed', failure: unreadablePlace(lock.run) };
   const lease = placeLeaseOf(wire.data);
   const run = await readRun(config, lock.run);
   if (typeof run !== 'object') return { kind: 'failed', failure: { code: 'run_unreadable', message: `Run ${lock.run} cannot be read, so attempt ${lease.attempt} has no place to run in` } };
