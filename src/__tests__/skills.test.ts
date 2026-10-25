@@ -386,6 +386,19 @@ scope: 'user',
     expect(names).toContain('teamai-workflow');
   });
 
+  it('never offers a skill pull generated from a workflow, edited or not', async () => {
+    const generated = path.join(homeDir, '.claude/skills', 'workflow-ship');
+    await fse.ensureDir(generated);
+    await fse.writeFile(path.join(generated, 'SKILL.md'), `---\nname: workflow-ship\ndescription: Ship it.\nmetadata:\n  teamai-generated: workflow/ship sha256:${'0'.repeat(64)}\n---\nEdited.\n`);
+    const unmarked = path.join(homeDir, '.claude/skills', 'workflow-build');
+    await fse.ensureDir(unmarked);
+    await fse.writeFile(path.join(unmarked, 'SKILL.md'), '---\nname: workflow-build\ndescription: Mine.\n---\nMine.\n');
+
+    const names = (await handler.scanLocalForPush(teamConfig, localConfig)).map((i) => i.name);
+    expect(names).not.toContain('workflow-ship');
+    expect(names).toContain('workflow-build');
+  });
+
   it('should detect both new and modified skills together', async () => {
     // Modified
     const teamSkillDir = path.join(localConfig.repo.localPath, 'skills', 'existing');

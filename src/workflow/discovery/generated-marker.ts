@@ -5,6 +5,8 @@
  * pull needs before it rewrites or removes it.
  */
 import { createHash } from 'node:crypto';
+import path from 'node:path';
+import { readFileIfExists } from '../../utils/fs.js';
 
 const MARKER = /^( {2}teamai-generated: )(.*)$/m;
 const VALUE = /^workflow\/([A-Za-z0-9][A-Za-z0-9._-]*) sha256:([0-9a-f]{64})$/;
@@ -32,4 +34,11 @@ export function readGenerated(content: string): Generated {
   const name = parsed?.[1];
   if (!parsed || name === undefined) return { kind: 'theirs' };
   return { kind: 'ours', name, edited: parsed[2] !== digestOf(content) };
+}
+
+/** The workflow `skillDir` was generated from, edited or not; null when its SKILL.md carries no marker. */
+export async function generatedWorkflowOf(skillDir: string): Promise<string | null> {
+  const content = await readFileIfExists(path.join(skillDir, 'SKILL.md'));
+  const generated = content === null ? null : readGenerated(content);
+  return generated?.kind === 'ours' ? generated.name : null;
 }
