@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { driverIdentity } from '../driver-identity.js';
 import { resolveWorkflowEnv } from '../env-resolution.js';
 import { publishRun } from '../workflow/handoff.js';
 import { inProcessClient, type WorkflowClient } from '../workflow/protocol.js';
@@ -966,6 +967,28 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
         .toMatchObject({ error: { code: 'confirm_needed', next: `teamai workflow next ${run} --driver skill --takeover --confirmed` } });
       const taken = await turnOf(await made.call({ kind: 'takeover', run, confirmed: true }, { evidence: AGENT, session: 'session-b' }));
       expect(taken.events).toContainEqual({ kind: 'takeover', from: 'session-a' });
+      return made.rows;
+    },
+  },
+  {
+    name: 'a resume or a takeover of a run whose local driver on this machine stopped mid-step gives that step to this session, and the run reaches done',
+    rows: ['R19'],
+    run: async () => {
+      const made = await harness({ check: CHECK });
+      const stopped = async (): Promise<RunId> => {
+        const started = await made.context.client.start('check', { checkout: made.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
+        if (!('data' in started)) throw new Error(JSON.stringify(started));
+        const run = RunIdSchema.parse(started.data.run);
+        const leased = await made.context.client.next(run, { driver: { ...driverIdentity('local', made.work), can: { workspace: [...WORKSPACE_MODES] } } });
+        expect(leased).toMatchObject({ data: { lease: { step: 'lint' } } });
+        return run;
+      };
+      const resumed = await stopped();
+      await turnOf(await made.call({ kind: 'resume', run: resumed, claim: false, confirmed: false, answers: {} }));
+      expect(await polledToDone(made, resumed)).toMatchObject({ status: 'done', actions: [{ kind: 'done', outcome: 'succeeded' }] });
+      const taken = await stopped();
+      await turnOf(await made.call({ kind: 'takeover', run: taken, confirmed: false }));
+      expect(await polledToDone(made, taken)).toMatchObject({ status: 'done', actions: [{ kind: 'done', outcome: 'succeeded' }] });
       return made.rows;
     },
   },

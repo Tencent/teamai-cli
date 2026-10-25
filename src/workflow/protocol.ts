@@ -1,5 +1,6 @@
 /** The workflow protocol in process: the calls behind `workflow start`, `next`, `report`, `respond`, `retry` and `cancel`, for every driver. */
 import path from 'node:path';
+import { driverIdentity } from '../driver-identity.js';
 import type { WorkflowEnv } from '../env-resolution.js';
 import { scoringUnavailable } from '../scorers/home.js';
 import { isJudgeTool, judgeToolLevel } from '../scorers/judge.js';
@@ -79,12 +80,13 @@ export interface WorkflowClient {
   /** Stops the run or the named step. */
   cancel(runId: string, step?: string): Promise<WorkflowEnvelope>;
   /**
-   * Readies run `runId` for a driver of this machine as `workflow resume` does, under the caller's run lock, and brings
+   * Readies run `runId` for a driver of this machine as `workflow resume` does, under the caller's run `lock`, and brings
    * the branches of a run taken over to the commits it recorded. `claim` says which runs it takes from teamai-reports:
-   * `lacking`, a run this machine lacks; `any`, also one another install owns; `none`, no run. Describes the run's own
-   * definition as `describe` does.
+   * `lacking`, a run this machine lacks; `any`, also one another install owns; `none`, no run. A lease this machine's
+   * local driver still holds is released, as that driver would on its way out: it drives only while it holds the run
+   * lock, so it is gone. Describes the run's own definition as `describe` does.
    */
-  resume(runId: RunId, options: { claim: 'none' | 'lacking' | 'any'; checkout: string; ceiling: number; can: DriverCan; tool?: string }): Promise<RunReadied>;
+  resume(runId: RunId, options: { lock: RunLock; claim: 'none' | 'lacking' | 'any'; checkout: string; ceiling: number; can: DriverCan; tool?: string }): Promise<RunReadied>;
   /** Why `caller` may not continue run `runId`, by a resume or a takeover, as `resumeRefusal` decides it. */
   resumeRefusal(runId: RunId, options: { caller: InvokeCaller; published: boolean }): Promise<WorkflowFailure | undefined>;
   /** Takes or renews judge work, as `teamai score --next` does with `body` as its payload. */
@@ -363,7 +365,7 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
     },
     retry: (runId, step) => retryStep(config, runId, env.secrets, step),
     cancel: (runId, step) => cancelRun(config, runId, env.secrets, step),
-    resume: async (runId, { claim, checkout, ceiling, can, tool }) => {
+    resume: async (runId, { lock, claim, checkout, ceiling, can, tool }) => {
       if (claim === 'none' && await readRun(config, runId) === 'missing') return { kind: 'not-here' };
       const resumed = await resumeRun(config, runId, { claim: claim === 'any', checkout });
       if (!resumed.ok) {
@@ -374,6 +376,13 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
       }
       const run = await readRun(config, runId);
       if (typeof run !== 'object') return { kind: 'failed', failure: { code: 'run_unreadable', message: `Run ${runId} cannot be read` } };
+      const { machine } = driverIdentity('local', checkout);
+      for (const step of run.steps) {
+        if (step.status !== 'leased' || step.lease.driver.kind !== 'local' || step.lease.driver.machine !== machine) continue;
+        const { attempt, revision, driver } = step.lease;
+        const released = await managedReport({ config, runId, report: { attempt, revision, outcome: 'released', driver }, secrets: env.secrets, lock });
+        if (isWorkflowError(released)) return { kind: 'failed', failure: released.error };
+      }
       const unreconciled = await reconcileTakenCopies(config, runId, run.checkout ?? checkout);
       if (unreconciled) return { kind: 'failed', failure: unreconciled };
       const description = describeWorkflow({ definition: run.definition, workflows: run.workflows ?? {}, ceiling, can, allow: config.workflows?.allow ?? {}, env: env.facts });

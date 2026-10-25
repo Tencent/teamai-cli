@@ -229,12 +229,13 @@ function lockBusy(context: SkillContext, run: RunId, same: Literal): SkillAnswer
 }
 
 /**
- * Reads skill.json under the lock, and takes its S row, or R11 when there is none. `takeover` is a `next --takeover`;
- * `report` is the attempt an agent's report names, which skips the session check when the agent reports it (S6).
- * `resume`, and a takeover with no skill.json, first ready the run here, claiming it as `WorkflowClient.resume` does,
- * and take R19, R20 or R21, or R8.
+ * Reads skill.json under the run's `lock`, and takes its S row, or R11 when there is none. `takeover` is a
+ * `next --takeover`; `report` is the attempt an agent's report names, which skips the session check when the agent
+ * reports it (S6). `resume`, and a takeover with no skill.json, first ready the run here, claiming it as
+ * `WorkflowClient.resume` does, and take R19, R20 or R21, or R8.
  */
-async function called(context: SkillContext, run: RunId, same: Literal, input: { takeover?: { confirmed: boolean }; report?: AttemptId; resume?: Resume } = {}): Promise<{ state: SkillState } | { answer: SkillAnswer }> {
+async function called(context: SkillContext, lock: RunLock, same: Literal, input: { takeover?: { confirmed: boolean }; report?: AttemptId; resume?: Resume } = {}): Promise<{ state: SkillState } | { answer: SkillAnswer }> {
+  const { run } = lock;
   const read = await readSkillState(context.config, run);
   const localTool = localPromptTool(context.config, context.tool);
   if (read.kind === 'unreadable') {
@@ -252,7 +253,7 @@ async function called(context: SkillContext, run: RunId, same: Literal, input: {
   }
   if (input.resume !== undefined || (input.takeover && !state)) {
     const readied = await context.client.resume(run, {
-      claim: input.resume === undefined ? 'none' : input.resume.claim ? 'any' : 'lacking', checkout: context.cwd, ceiling: ceilingOf(context.config), can: canFor(undefined),
+      lock, claim: input.resume === undefined ? 'none' : input.resume.claim ? 'any' : 'lacking', checkout: context.cwd, ceiling: ceilingOf(context.config), can: canFor(undefined),
       ...(context.tool !== undefined ? { tool: context.tool } : {}),
     });
     const local = readied.kind === 'ready' ? localReason(readied.description) : undefined;
@@ -379,7 +380,7 @@ async function applyCall(context: SkillContext, lock: RunLock, state: SkillState
 export async function foreground(context: SkillContext, run: RunId, call: ForegroundCall): Promise<SkillAnswer> {
   const same = literalOf(context.invocation, run, call);
   const first = await context.locks.take(run, async (lock): Promise<{ answer: SkillAnswer } | { grace: true }> => {
-    const read = await called(context, run, same, call.kind === 'takeover' ? { takeover: call } : call.kind === 'resume' ? { resume: call } : {});
+    const read = await called(context, lock, same, call.kind === 'takeover' ? { takeover: call } : call.kind === 'resume' ? { resume: call } : {});
     if ('answer' in read) return read;
     const applied = await applyCall(context, lock, read.state, call, same);
     if ('answer' in applied) return applied;
@@ -438,7 +439,7 @@ export async function agentReport(context: SkillContext, run: RunId, call: { att
   const { attempt } = call;
   const same = (call.modelUnavailable ? unavailableLiteral : reportLiteral)(context.invocation, run, attempt);
   const answered = await context.locks.take(run, async (lock): Promise<SkillAnswer> => {
-    const read = await called(context, run, same, { report: attempt });
+    const read = await called(context, lock, same, { report: attempt });
     if ('answer' in read) return read.answer;
     const { state } = read;
     const result = await readChildResult({ config: context.config, run, attempt });
@@ -477,7 +478,7 @@ export async function poll(context: SkillContext, run: RunId): Promise<SkillAnsw
   for (;;) {
     const boundReached = context.now().getTime() - started >= WAIT_BOUND_MS;
     const ticked = await context.locks.take(run, async (lock): Promise<SkillAnswer | 'sleep'> => {
-      const read = await called(context, run, same);
+      const read = await called(context, lock, same);
       if ('answer' in read) return read.answer;
       const result = await runTick(context, lock, read.state, 'call');
       if (result.error) {
