@@ -9,7 +9,7 @@ import { publishRun, resumeRun } from './workflow/handoff.js';
 import { callerProvenance, cancelRun, respondProvenance, respondToHitl, retryStep } from './workflow/run-controls.js';
 import { runLocalDriver, withDriverLock } from './workflow/drivers/local/local-driver.js';
 import { driverIdentity } from './driver-identity.js';
-import { getBusinessRoot, getDataHome, scopedToolPaths, type LocalConfig, type TeamaiConfig } from './types.js';
+import { getBusinessRoot, getDataHome, type LocalConfig, type TeamaiConfig } from './types.js';
 import { AttemptIdSchema, isRunId, readRun } from './workflow/store.js';
 import { inProcessClient, type NextPrepare } from './workflow/protocol.js';
 import { parseSkillCall, runSkillCall, skillContext } from './workflow/drivers/skill/skill-driver.js';
@@ -380,6 +380,6 @@ export async function workflowResume(runId: string, options: { tools?: string; a
     const lease = stored.steps.find((step) => step.status === 'leased' && step.lease.driver.kind === 'local' && step.lease.driver.machine === local.machine);
     const cwd = lease?.status === 'leased' ? lease.lease.driver.workspace
       : stored.driver?.kind === 'local' && stored.driver.machine === local.machine ? stored.driver.workspace : process.cwd();
-    return drive(cwd, { tools, toolPaths: scopedToolPaths(loaded.teamConfig, loaded.config), autoApprove: options.autoApprove });
+    return drive(cwd, { tools, toolPaths: loaded.teamConfig.toolPaths, autoApprove: options.autoApprove });
   }), secrets);
 }
