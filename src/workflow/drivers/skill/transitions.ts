@@ -3,7 +3,7 @@
  * must do. The rows are the tables under `## The skill driver` in docs/dev/workflow-engine.md, cell by cell.
  */
 import type { EnvScope } from '../../requirements.js';
-import type { AttemptId } from '../../store.js';
+import type { AttemptId, RunId } from '../../store.js';
 import type { WorkflowFailure } from '../../types.js';
 import type { StartAnswer, StartCheck } from './preflight.js';
 import type { AttemptState, ReportBody, SkillState, TurnEvent } from './skill-state.js';
@@ -77,14 +77,14 @@ export type ReportReply = { kind: 'reported'; outcome: Extract<TurnEvent, { kind
 
 export type MachineInput =
   | { kind: 'describe'; needed: StartAnswer[]; localOnly: string[] }
-  | { kind: 'start'; check: StartCheck; localOnly: string[] }
-  | { kind: 'call'; session: string | undefined; at: string }
+  | { kind: 'start'; name: string; check: StartCheck; localOnly: string[] }
+  | { kind: 'call'; run: RunId; session: string | undefined; at: string }
   | { kind: 'runner-call' }
   | { kind: 'tick' }
   | { kind: 'next' }
   | { kind: 'reply'; reply: EngineReply; at: string }
   | { kind: 'spawned' }
-  | { kind: 'lock-busy' }
+  | { kind: 'lock-busy'; run: RunId }
   | { kind: 'turn'; session: string | undefined }
   | { kind: 'poll'; session: string | undefined; busy: boolean; boundReached: boolean }
   | { kind: 'prepared'; attempt: AttemptId }
@@ -106,10 +106,20 @@ export type Effect =
   | { kind: 'grace' }
   | { kind: 'sleep' };
 
+/** A call the skill driver refuses, with what its message names. */
+export type Refusal =
+  | { code: 'needs_local_driver'; name: string; steps: string[] }
+  | { code: 'confirm_needed'; name: string; missing: StartAnswer[]; outOfRange?: { parallel: number; ceiling: number } }
+  | { code: 'not_skill_run'; run: RunId }
+  | { code: 'orchestrator_active'; run: RunId }
+  | { code: 'unknown_attempt'; run: RunId; attempt: AttemptId }
+  | { code: 'not_dispatched'; run: RunId; attempt: AttemptId; phase: AttemptState['phase'] }
+  | { code: 'driver_running'; run: RunId };
+
 /** What the call answers, when the row decides it. */
 export type Answer =
   | { kind: 'describe'; ask: DescribeAsk['kind'] }
-  | { kind: 'error'; code: 'needs_local_driver' | 'confirm_needed' | 'not_skill_run' | 'orchestrator_active' | 'unknown_attempt' | 'not_dispatched' | 'driver_running'; next: 'describe' | 'next' | 'same' | null }
+  | { kind: 'error'; refusal: Refusal; next: 'describe' | 'next' | 'same' | null }
   | { kind: 'engine-error'; error: WorkflowFailure; next: 'next' | 'same' }
   | { kind: 'turn'; events: 'unseen' | 'none'; poll: boolean };
 
@@ -154,14 +164,19 @@ export function step(state: SkillState | undefined, input: MachineInput): Step |
       if (input.needed.length > 0) return { row: 'R3', state, effects: [], answer: { kind: 'describe', ask: 'ask' } };
       return { row: 'R4', state, effects: [], answer: { kind: 'describe', ask: 'start' } };
     case 'start':
-      if (input.localOnly.length > 0) return { row: 'R8', state, effects: [], answer: { kind: 'error', code: 'needs_local_driver', next: null } };
-      if (input.check.kind === 'confirm-needed') return { row: 'R9', state, effects: [], answer: { kind: 'error', code: 'confirm_needed', next: 'describe' } };
+      if (input.localOnly.length > 0) {
+        return { row: 'R8', state, effects: [], answer: { kind: 'error', refusal: { code: 'needs_local_driver', name: input.name, steps: input.localOnly }, next: null } };
+      }
+      if (input.check.kind === 'confirm-needed') {
+        const { missing, outOfRange } = input.check;
+        return { row: 'R9', state, effects: [], answer: { kind: 'error', refusal: { code: 'confirm_needed', name: input.name, missing, ...(outOfRange ? { outOfRange } : {}) }, next: 'describe' } };
+      }
       return { row: 'R10', state, effects: [{ kind: 'start', parallel: input.check.parallel }] };
     case 'call': {
-      if (!state) return { row: 'R11', state, effects: [], answer: { kind: 'error', code: 'not_skill_run', next: null } };
+      if (!state) return { row: 'R11', state, effects: [], answer: { kind: 'error', refusal: { code: 'not_skill_run', run: input.run }, next: null } };
       const owner = state.orchestrator.session;
       if (owner !== undefined && input.session !== undefined && owner !== input.session) {
-        return { row: 'S2', state, effects: [], answer: { kind: 'error', code: 'orchestrator_active', next: null } };
+        return { row: 'S2', state, effects: [], answer: { kind: 'error', refusal: { code: 'orchestrator_active', run: state.run }, next: null } };
       }
       return { row: 'S1', state: { ...state, orchestrator: { session: state.orchestrator.session ?? input.session, lastCallAt: input.at } }, effects: [] };
     }
@@ -180,7 +195,7 @@ export function step(state: SkillState | undefined, input: MachineInput): Step |
     case 'spawned':
       return state && !state.done ? { row: 'D18', state, effects: [{ kind: 'grace' }] } : undefined;
     case 'lock-busy':
-      return { row: 'D19', state, effects: [], answer: { kind: 'error', code: 'driver_running', next: 'same' } };
+      return { row: 'D19', state, effects: [], answer: { kind: 'error', refusal: { code: 'driver_running', run: input.run }, next: 'same' } };
     case 'turn':
       if (!state) return undefined;
       return { row: 'D20', state: { ...state, seen: { ...state.seen, [seenBy(input.session)]: state.seq } }, effects: [], answer: { kind: 'turn', events: 'unseen', poll: !state.done } };
@@ -237,8 +252,8 @@ export function step(state: SkillState | undefined, input: MachineInput): Step |
     case 'report': {
       if (!state || state.done) return undefined;
       const open = openAttempt(state, input.attempt);
-      if (!open) return { row: 'P2', state, effects: [], answer: { kind: 'error', code: 'unknown_attempt', next: 'next' } };
-      return { row: 'P3', state, effects: [], answer: { kind: 'error', code: 'not_dispatched', next: 'next' } };
+      if (!open) return { row: 'P2', state, effects: [], answer: { kind: 'error', refusal: { code: 'unknown_attempt', run: state.run, attempt: input.attempt }, next: 'next' } };
+      return { row: 'P3', state, effects: [], answer: { kind: 'error', refusal: { code: 'not_dispatched', run: state.run, attempt: input.attempt, phase: open.phase }, next: 'next' } };
     }
     default: {
       const unhandled: never = input;

@@ -15,7 +15,7 @@ import { describeLiteral, invocationOf, type Invocation } from './literals.js';
 import { askFor, checkStartAnswers, localOnlySteps, neededAnswers } from './preflight.js';
 import { writeSkillState, type SkillState } from './skill-state.js';
 import { detachedRunners, runRunner } from './skill-runner.js';
-import { ceilingOf, foreground, poll, startRefused, take } from './tick.js';
+import { ceilingOf, errorOf, foreground, poll, startRefused, take } from './tick.js';
 import type { RowId } from './transitions.js';
 import type { SkillAnswer, SkillError } from './turn.js';
 
@@ -159,19 +159,10 @@ async function start(call: Extract<SkillCall, { kind: 'describe' | 'start' }>, c
     return { data: { describe: { workflow: description, ask: askFor(kind, description, context.invocation) } } };
   }
   const check = checkStartAnswers({ description, answers: call.answers, inputs: call.inputs, ceiling });
-  const taken = take(context, undefined, { kind: 'start', check, localOnly });
+  const taken = take(context, undefined, { kind: 'start', name: description.name, check, localOnly });
   const effect = taken?.effects.find((planned) => planned.kind === 'start');
-  if (taken?.row === 'R9' && check.kind === 'confirm-needed') {
-    const lacks = check.missing.map((answer) => ({ confirmed: '--confirmed, the person\'s yes', inputs: '--inputs', parallel: '--parallel' })[answer]);
-    const said = [
-      ...(lacks.length > 0 ? [`it needs ${lacks.join(', ')}`] : []),
-      ...(check.outOfRange ? [`--parallel ${check.outOfRange.parallel} is above the most this machine runs at once, ${check.outOfRange.ceiling}`] : []),
-    ];
-    return { error: { code: 'confirm_needed', message: `Start ${description.name} from its describe reply: ${said.join('; ')}. Run the describe literal and ask the person.`, next: describeLiteral(context.invocation, description.name) } };
-  }
-  if (!effect || effect.kind !== 'start') {
-    return { error: { code: 'needs_local_driver', message: `${description.name} has steps the skill driver does not run in a coding session yet: ${localOnly.join(', ')}. Prompt steps and steps outside the checkout need the local driver for now. The person can run it in a terminal with ${context.invocation} workflow start ${description.name} --driver local.`, next: null } };
-  }
+  if (taken?.answer?.kind === 'error') return { error: errorOf(taken.answer, { invocation: context.invocation, same: describeLiteral(context.invocation, description.name) }) };
+  if (!effect || effect.kind !== 'start') return { error: { code: 'run_unreadable', message: `The skill driver took no start row for ${description.name}.`, next: null } };
   const started = await context.client.start(description.name, { ...(call.inputs !== undefined ? { inputs: call.inputs } : {}), checkout: context.cwd });
   if ('error' in started) return startRefused(context, description.name, started.error);
   const run = RunIdSchema.safeParse(started.data.run);

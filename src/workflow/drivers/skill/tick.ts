@@ -11,9 +11,9 @@ import { redactJson } from '../../../utils/redact.js';
 import type { DriverCan, EnvScope } from '../../requirements.js';
 import { AttemptIdSchema, attemptDir, type AttemptId, type RunId, type RunLock } from '../../store.js';
 import type { WorkflowEnvelope, WorkflowFailure } from '../../types.js';
-import { describeLiteral, nextLiteral, pollLiteral, reportLiteral, type Literal } from './literals.js';
+import { describeLiteral, localStartLiteral, nextLiteral, pollLiteral, reportLiteral, type Invocation, type Literal } from './literals.js';
 import { readSkillState, writeSkillState, type ReportBody, type SkillState } from './skill-state.js';
-import { hasSlot, step, unseenEvents, type Answer, type EngineReply, type MachineInput, type ReportReply, type Step } from './transitions.js';
+import { hasSlot, step, unseenEvents, type Answer, type EngineReply, type MachineInput, type Refusal, type ReportReply, type Step } from './transitions.js';
 import { turnOf, type SkillAnswer, type SkillError } from './turn.js';
 import type { SkillContext } from './skill-driver.js';
 
@@ -127,25 +127,49 @@ export async function sendReport(context: SkillContext, lock: RunLock, state: Sk
   return { state: taken?.state ?? state, ...(refused ? { refused } : {}) };
 }
 
-/** The error a row answers, with its message and the literal to run instead. */
-export function errorOf(answer: Extract<Answer, { kind: 'error' | 'engine-error' }>, state: { run: RunId; invocation: SkillState['invocation'] }, same: Literal, message?: string): SkillError {
+/** The error a row answers, with its message and the literal to run instead. `run` names the run of an engine error. */
+export function errorOf(answer: Extract<Answer, { kind: 'error' | 'engine-error' }>, context: { invocation: Invocation; same: Literal; run?: RunId }): SkillError {
+  const { invocation, same } = context;
+  if (answer.kind === 'engine-error') {
+    return { ...answer.error, next: answer.next === 'next' && context.run !== undefined ? nextLiteral(invocation, context.run) : same };
+  }
+  const { refusal } = answer;
   const next = answer.next === null ? null
-    : answer.next === 'same' ? same
-      : answer.next === 'next' ? nextLiteral(state.invocation, state.run)
+    : answer.next === 'next' && 'run' in refusal ? nextLiteral(invocation, refusal.run)
+      : answer.next === 'describe' && 'name' in refusal ? describeLiteral(invocation, refusal.name)
         : same;
-  if (answer.kind === 'engine-error') return { ...answer.error, next };
-  return { code: answer.code, message: message ?? ERROR_MESSAGES[answer.code](state.run), next };
+  return { code: refusal.code, message: refusalMessage(refusal, invocation), next };
 }
 
-const ERROR_MESSAGES: Record<Extract<Answer, { kind: 'error' }>['code'], (run: RunId) => string> = {
-  needs_local_driver: () => 'This workflow has steps the skill driver does not run in a coding session yet. The person can run it in a terminal with the local driver.',
-  confirm_needed: () => 'This start lacks an answer describe asks for. Run the describe literal and ask the person.',
-  not_skill_run: (run) => `Run ${run} is not driven by the skill driver on this machine. The person can continue it in a terminal with teamai workflow resume ${run}.`,
-  orchestrator_active: (run) => `Run ${run} is driven by another coding session. Continue it from that session.`,
-  unknown_attempt: (run) => `That attempt is not open in run ${run}. Run the next literal to see the run.`,
-  not_dispatched: (run) => `That attempt of run ${run} runs as a command, and its runner reports it. Run the next literal to see the run.`,
-  driver_running: (run) => `Run ${run} is busy: another teamai process holds its driver lock. Run the same call again.`,
-};
+/** The message of each refusal: what happened, and what the agent or the person does next. */
+function refusalMessage(refusal: Refusal, invocation: Invocation): string {
+  switch (refusal.code) {
+    case 'needs_local_driver':
+      return `${refusal.name} has steps the skill driver does not run in a coding session yet: ${refusal.steps.join(', ')}. Prompt steps and steps outside the checkout need the local driver for now. The person can run it in a terminal with ${localStartLiteral(invocation, refusal.name)}.`;
+    case 'confirm_needed': {
+      const lacks = refusal.missing.map((answer) => ({ confirmed: '--confirmed, the person\'s yes', inputs: '--inputs', parallel: '--parallel' })[answer]);
+      const said = [
+        ...(lacks.length > 0 ? [`it needs ${lacks.join(', ')}`] : []),
+        ...(refusal.outOfRange ? [`--parallel ${refusal.outOfRange.parallel} is above the most this machine runs at once, ${refusal.outOfRange.ceiling}`] : []),
+      ];
+      return `Start ${refusal.name} from its describe reply: ${said.join('; ')}. Run the describe literal and ask the person.`;
+    }
+    case 'not_skill_run':
+      return `Run ${refusal.run} is not driven by the skill driver on this machine. The person can continue it in a terminal with teamai workflow resume ${refusal.run}.`;
+    case 'orchestrator_active':
+      return `Run ${refusal.run} is driven by another coding session. Continue it from that session.`;
+    case 'unknown_attempt':
+      return `Attempt ${refusal.attempt} is not open in run ${refusal.run}. Run the next literal to see the run.`;
+    case 'not_dispatched':
+      return `Attempt ${refusal.attempt} of run ${refusal.run} is ${refusal.phase}: teamai runs it and reports it, so there is nothing to report yet. Run the next literal to see the run.`;
+    case 'driver_running':
+      return `Run ${refusal.run} is busy: another teamai process holds its driver lock. Run the same call again.`;
+    default: {
+      const unhandled: never = refusal;
+      return unhandled;
+    }
+  }
+}
 
 /**
  * One tick under `lock`: sends the reports a crash left stored, respawns runners that are gone, then calls `next` while
@@ -181,7 +205,7 @@ async function runTick(context: SkillContext, lock: RunLock, start: SkillState):
       spawned = true;
     }
     if (replied.answer?.kind === 'engine-error') {
-      return { state, spawned, error: errorOf(replied.answer, state, nextLiteral(state.invocation, state.run)) };
+      return { state, spawned, error: errorOf(replied.answer, { invocation: state.invocation, same: nextLiteral(state.invocation, state.run), run: state.run }) };
     }
     if (replied.row !== 'D6' || !hasSlot(state)) return { state, spawned, ...(replied.waiting ? { waiting: replied.waiting } : {}) };
   }
@@ -196,10 +220,9 @@ function busy(result: unknown): result is z.infer<typeof BusySchema> {
 
 /** D19: the lock stayed busy. */
 function lockBusy(context: SkillContext, run: RunId, same: Literal): SkillAnswer {
-  const taken = take(context, undefined, { kind: 'lock-busy' });
-  const answer = taken?.answer;
-  if (answer?.kind !== 'error') return { error: { code: 'driver_running', message: ERROR_MESSAGES.driver_running(run), next: same } };
-  return { error: errorOf(answer, { run, invocation: context.invocation }, same) };
+  const taken = take(context, undefined, { kind: 'lock-busy', run });
+  const answer = taken?.answer?.kind === 'error' ? taken.answer : { kind: 'error' as const, refusal: { code: 'driver_running' as const, run }, next: 'same' as const };
+  return { error: errorOf(answer, { invocation: context.invocation, same }) };
 }
 
 /** Reads skill.json under the lock, and takes S1 or S2, or R11 when there is none. */
@@ -209,11 +232,10 @@ async function called(context: SkillContext, run: RunId, same: Literal): Promise
     return { answer: { error: { code: 'run_unreadable', message: `The skill driver's state of run ${run} cannot be read (${read.reason}). The person can continue the run in a terminal with teamai workflow resume ${run}.`, next: null } } };
   }
   const state = 'kind' in read ? undefined : read;
-  const taken = take(context, state, { kind: 'call', session: context.session, at: context.now().toISOString() });
-  if (taken?.answer && (taken.answer.kind === 'error' || taken.answer.kind === 'engine-error')) {
-    return { answer: { error: errorOf(taken.answer, { run, invocation: context.invocation }, same) } };
-  }
-  return taken?.state ? { state: taken.state } : { answer: { error: { code: 'not_skill_run', message: ERROR_MESSAGES.not_skill_run(run), next: null } } };
+  const taken = take(context, state, { kind: 'call', run, session: context.session, at: context.now().toISOString() });
+  if (taken?.state && !taken.answer) return { state: taken.state };
+  const refused = taken?.answer?.kind === 'error' || taken?.answer?.kind === 'engine-error' ? taken.answer : { kind: 'error' as const, refusal: { code: 'not_skill_run' as const, run }, next: null };
+  return { answer: { error: errorOf(refused, { invocation: context.invocation, same, run }) } };
 }
 
 /** D20: saves `state` as shown to the calling session and answers its turn. */
@@ -237,7 +259,7 @@ export async function foreground(context: SkillContext, run: RunId, call: { kind
     if (call.kind === 'report') {
       const refused = take(context, state, { kind: 'report', attempt: call.attempt });
       await writeSkillState(context.config, lock, state, context.env.secrets);
-      if (refused?.answer?.kind === 'error') return { answer: { error: errorOf(refused.answer, state, same) } };
+      if (refused?.answer?.kind === 'error') return { answer: { error: errorOf(refused.answer, { invocation: state.invocation, same }) } };
       return { answer: await finish(context, lock, state, undefined) };
     }
     if (state.done) {
