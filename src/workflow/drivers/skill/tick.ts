@@ -242,15 +242,6 @@ async function called(context: SkillContext, lock: RunLock, same: Literal, input
     return { answer: { error: { code: 'run_unreadable', message: `The skill driver's state of run ${run} cannot be read (${read.reason}). The person can continue the run in a terminal with ${resumeLiteral(context.invocation, run, { tool: localTool })}.`, next: null } } };
   }
   const state = read.kind === 'found' ? read.state : undefined;
-  const continued = input.resume ?? input.takeover;
-  if (continued !== undefined && !drivesRun(state, context.session)) {
-    const caller = { evidence: context.evidence, confirmed: continued.confirmed, mode: context.mode };
-    const refused = traced(context, invokeRow(await context.client.resumeRefusal(run, { caller, published: input.resume !== undefined })));
-    if (refused) {
-      const confirmed = literalOf(context.invocation, run, input.resume !== undefined ? { kind: 'resume', ...input.resume, confirmed: true } : { kind: 'takeover', confirmed: true });
-      return { answer: { error: errorOf(refused.answer, { invocation: context.invocation, same: confirmed, localTool }) } };
-    }
-  }
   if (input.resume !== undefined || (input.takeover && !state)) {
     const readied = await context.client.resume(run, {
       lock, claim: input.resume === undefined ? 'none' : input.resume.claim ? 'any' : 'lacking', checkout: context.cwd, ceiling: ceilingOf(context.config), can: canFor(undefined),
@@ -374,11 +365,28 @@ async function applyCall(context: SkillContext, lock: RunLock, state: SkillState
 }
 
 /**
+ * R22: why a resume or a takeover may not continue the run, checked before the run lock, whose file would leave
+ * `runs/<run>/` behind a refusal on a machine that lacks the run. The session skill.json names as the run's owner is
+ * not checked again, as the local resume does not check it (`sessionDrivesRun`).
+ */
+async function invokeRefused(context: SkillContext, run: RunId, call: Extract<ForegroundCall, { kind: 'resume' | 'takeover' }>): Promise<SkillAnswer | undefined> {
+  const read = await readSkillState(context.config, run);
+  if (drivesRun(read.kind === 'found' ? read.state : undefined, context.session)) return undefined;
+  const caller = { evidence: context.evidence, confirmed: call.confirmed, mode: context.mode };
+  const refused = traced(context, invokeRow(await context.client.resumeRefusal(run, { caller, published: call.kind === 'resume' })));
+  if (!refused) return undefined;
+  const confirmed = literalOf(context.invocation, run, { ...call, confirmed: true });
+  return { error: errorOf(refused.answer, { invocation: context.invocation, same: confirmed, localTool: localPromptTool(context.config, context.tool) }) };
+}
+
+/**
  * A foreground call answers at once, after the tick its row leads to, or, when the tick spawned runners, after they
  * prepared or `WAIT_GRACE_MS` passed (D18).
  */
 export async function foreground(context: SkillContext, run: RunId, call: ForegroundCall): Promise<SkillAnswer> {
   const same = literalOf(context.invocation, run, call);
+  const refused = call.kind === 'resume' || call.kind === 'takeover' ? await invokeRefused(context, run, call) : undefined;
+  if (refused) return refused;
   const first = await context.locks.take(run, async (lock): Promise<{ answer: SkillAnswer } | { grace: true }> => {
     const read = await called(context, lock, same, call.kind === 'takeover' ? { takeover: call } : call.kind === 'resume' ? { resume: call } : {});
     if ('answer' in read) return read;

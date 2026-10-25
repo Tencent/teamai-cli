@@ -10,7 +10,7 @@ import type { LocalConfig } from '../types.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { WORKSPACE_MODES } from '../workflow/types.js';
 import { respondProvenance, respondToHitl } from '../workflow/run-controls.js';
-import { AttemptIdSchema, deliveryLockPath, readRun, RunIdSchema, skillStatePath, type RunId } from '../workflow/store.js';
+import { AttemptIdSchema, deliveryLockPath, readRun, RunIdSchema, runsDir, skillStatePath, type RunId } from '../workflow/store.js';
 import type { Runners } from '../workflow/drivers/skill/skill-driver.js';
 // The doc comparison reads the table itself; every behaviour below goes through runSkillCall.
 import { TRANSITIONS, type TransitionRow } from '../workflow/drivers/skill/transitions.js';
@@ -904,6 +904,8 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       expect(await made.call({ kind: 'resume', run, claim: false, confirmed: false, answers: {} }, { evidence: AGENT }))
         .toMatchObject({ error: { code: 'invoke_denied', next: null } });
       expect(await readRun(made.config, run)).toBe('missing');
+      const runs = runsDir(made.config);
+      expect(fs.existsSync(runs) ? fs.readdirSync(runs).filter((entry) => entry.startsWith(run)) : []).toEqual([]);
       const resumed = await turnOf(await made.call({ kind: 'resume', run, claim: false, confirmed: false, answers: { parallel: 2 } }));
       expect(resumed).toMatchObject({ run, status: 'driving', actions: [{ kind: 'choose', about: 'host' }] });
       expect(await publishRun(ci.config, run, { checkout: ci.checkout })).toMatchObject({ ok: false, error: { code: 'not_owner' } });
