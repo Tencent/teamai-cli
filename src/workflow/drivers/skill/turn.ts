@@ -325,9 +325,9 @@ function actionsOf(state: SkillState): Action[] {
 
 /**
  * The handoff of a run that can go no further here. `resume` drives from the directory it runs in when the run's last
- * driver was not a local one, so the person runs it from the checkout the run started in.
+ * driver was not a local one, so the person runs it from the checkout the run started in. `localTool`: the prompt tool
+ * the resume literal names (`localPromptTool`).
  */
-/** `localTool`: the prompt tool the resume literal names (`localPromptTool`). */
 function handoffOf(state: SkillState, waiting: { reason: string; held: NonNullable<Waiting['held']> }, localTool: string | undefined): HandoffAction {
   return {
     kind: 'person', why: 'handoff', held: waiting.held,
