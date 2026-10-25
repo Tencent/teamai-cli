@@ -176,7 +176,8 @@ beforeAll(async () => {
     .filter((file) => /\.tsx?$/.test(file) && !file.endsWith('.d.ts'))
     .map((file) => `src/${file.split(path.sep).join('/')}`);
   graph = files.flatMap((file) => importsOf(file, fs.readFileSync(path.join(ROOT, file), 'utf8')));
-});
+  // Parsing every source file takes about 5 s alone and past the default 15 s on a loaded machine.
+}, 60_000);
 
 describe('workflow module boundaries', () => {
   it.each(Object.entries(RULES))('%s', (_name, rule) => {
