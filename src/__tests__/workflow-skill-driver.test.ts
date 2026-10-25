@@ -97,6 +97,20 @@ steps:
     deliver: pr
 `;
 
+// `notify` needs a secret in a prompt step, which a session keeps from its agents.
+const PUBLISH = `schemaVersion: v1alpha1
+name: publish
+description: Build the package, then tell the team
+invoke: allow
+steps:
+  - id: build
+    command: node -e "process.exit(0)"
+  - id: notify
+    needs: [build]
+    requires: { env: [SLACK_TOKEN] }
+    prompt: Tell the team the package is out.
+`;
+
 type Harness = Awaited<ReturnType<typeof skillHarness>>;
 
 /** Starts `review` with the skill driver, has its child review the change and report, and answers the turn that follows. */
@@ -527,6 +541,38 @@ steps:
     expect(done).toEqual({ data: { turn: {
       run, status: 'done', running: [], events: [],
       actions: [{ kind: 'done', outcome: 'succeeded', prs: ['https://github.com/fixture/app/pull/1'] }],
+    } } });
+  });
+
+  it('hands a run whose only step left is held for this driver to the person, with the resume literal, and ends the loop', async () => {
+    vi.stubEnv('SLACK_TOKEN', 'slack-value-1304');
+    const harness = await skillHarness({ publish: PUBLISH });
+    roots.push(harness.root);
+    const started = await harness.call({ kind: 'start', name: 'publish', answers: { confirmed: false }, inputs: undefined });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+    const { run } = started.data.turn;
+    await harness.call({ kind: 'choose', run, choice: 'h1' });
+
+    let woke = false;
+    for (let poll = 0; poll < 5 && !woke; poll += 1) {
+      const polled = await harness.call({ kind: 'next', run, wait: true });
+      if (!('data' in polled) || !('turn' in polled.data)) throw new Error(JSON.stringify(polled));
+      woke = polled.data.turn.then?.kind === 'wake';
+    }
+    expect(woke).toBe(true);
+
+    const handoff = await harness.call({ kind: 'next', run, wait: false });
+    const held = [{ step: 'notify', missing: ['env'] }];
+    const reason = 'step "notify" needs env, which this driver does not declare';
+    expect(handoff).toEqual({ data: { turn: {
+      run, status: 'driving', running: [], events: expect.arrayContaining([{ kind: 'settled', step: 'build', outcome: 'success', exitCode: 0 }]),
+      actions: [{
+        kind: 'person', why: 'handoff', held,
+        message: `Run ${run} waits on steps this coding session cannot run: ${reason}. Nothing else of the run is open.`,
+        say: `This session can take the run no further. To continue it with the local driver, run this command in your own terminal, from ${harness.work}.`,
+        run: [`teamai workflow resume ${run}`],
+      }],
+      waiting: { reason, held },
     } } });
   });
 });

@@ -17,11 +17,12 @@ import {
   ackLiteral, chooseHostLiteral, describeLiteral, localStartLiteral, nextLiteral, pollLiteral, reportLiteral, respondLiteral, takeoverLiteral, unavailableLiteral, type Invocation,
   type Literal,
 } from './literals.js';
-import { readSkillState, writeSkillState, type ReportBody, type SkillState } from './skill-state.js';
+import { readSkillState, writeSkillState, type ReportBody, type SkillState, type TurnEvent } from './skill-state.js';
 import {
   hasSlot, step, unseenEvents, type Answer, type EngineReply, type MachineInput, type ReadLease, type Refusal, type ReportReply, type RespondReply, type ScoreReply, type Step,
+  type TurnAnswer,
 } from './transitions.js';
-import { turnOf, type SkillAnswer, type SkillError, type Waiting } from './turn.js';
+import { turnOf, type SkillAnswer, type SkillError, type Turn, type Waiting } from './turn.js';
 import type { SkillContext } from './skill-driver.js';
 
 /** How long one poll waits for something to show the agent. */
@@ -122,7 +123,9 @@ const NextDataSchema = z.object({
   hitl: z.object({
     step: z.string(), pass: z.number().int(), kind: z.enum(['approve', 'choose']), message: z.string(), options: z.array(z.string()), default: z.string().optional(), required: z.boolean(),
   }).optional(),
-  wait: z.object({ reason: z.string(), delivering: z.array(z.string()).optional(), held: z.array(z.unknown()).optional() }).optional(),
+  wait: z.object({
+    reason: z.string(), delivering: z.array(z.string()).optional(), held: z.array(z.object({ step: z.string(), missing: z.array(z.string()) })).optional(),
+  }).optional(),
   done: z.object({ outcome: z.enum(['succeeded', 'failed', 'cancelled']), failure: FailureSchema.optional(), prs: z.array(z.string()).optional() }).optional(),
 });
 
@@ -140,7 +143,7 @@ function engineReply(run: RunId, answer: WorkflowEnvelope): { reply: EngineReply
     return { reply: { kind: 'hitl', gate: { step: id, pass, kind, message, options, ...(chosen !== undefined ? { default: chosen } : {}), required } }, cancelled };
   }
   if (lease === undefined) {
-    return { reply: { kind: 'wait', reason: wait?.reason ?? 'the next step is not available', delivering: wait?.delivering ?? [], held: (wait?.held?.length ?? 0) > 0 }, cancelled };
+    return { reply: { kind: 'wait', reason: wait?.reason ?? 'the next step is not available', delivering: wait?.delivering ?? [], held: wait?.held ?? [] }, cancelled };
   }
   const read = readLease(lease);
   if (!read) {
@@ -275,10 +278,22 @@ async function judgeTick(context: SkillContext, start: SkillState, role: 'call' 
 }
 
 /**
+ * What a tick leaves: the state, whether it spawned runners, why the run leases nothing more, the turn a row of the tick
+ * decided, and the error the engine answered.
+ */
+interface Ticked {
+  state: SkillState;
+  spawned: boolean;
+  waiting?: Waiting;
+  turn?: TurnAnswer;
+  error?: SkillError;
+}
+
+/**
  * One tick under `lock`: the steps' tick, then the judge work's. Judge runners count as no spawn: a turn waits for
  * nothing of theirs.
  */
-export async function runTick(context: SkillContext, lock: RunLock, start: SkillState, role: 'call' | 'runner'): Promise<{ state: SkillState; spawned: boolean; waiting?: Waiting; error?: SkillError }> {
+export async function runTick(context: SkillContext, lock: RunLock, start: SkillState, role: 'call' | 'runner'): Promise<Ticked> {
   const stepped = await stepTick(context, lock, start, role);
   return { ...stepped, state: await judgeTick(context, stepped.state, role) };
 }
@@ -290,7 +305,7 @@ export async function runTick(context: SkillContext, lock: RunLock, start: Skill
  * waits. Each reply's `cancelled`, then its gate check, are taken before the reply itself. A runner's check
  * (`role: 'runner'`) takes no lease.
  */
-async function stepTick(context: SkillContext, lock: RunLock, start: SkillState, role: 'call' | 'runner'): Promise<{ state: SkillState; spawned: boolean; waiting?: Waiting; error?: SkillError }> {
+async function stepTick(context: SkillContext, lock: RunLock, start: SkillState, role: 'call' | 'runner'): Promise<Ticked> {
   let state = start;
   let spawned = false;
   for (const open of start.attempts) {
@@ -346,7 +361,9 @@ async function stepTick(context: SkillContext, lock: RunLock, start: SkillState,
       return { state, spawned, error: errorOf(replied.answer, { invocation: state.invocation, same: nextLiteral(state.invocation, state.run), run: state.run }) };
     }
     const leased = replied.row === 'D6' || replied.row === 'D7';
-    if (!leased || (!hasSlot(state) && (state.gate === undefined || probed))) return { state, spawned, ...(replied.waiting ? { waiting: replied.waiting } : {}) };
+    if (!leased || (!hasSlot(state) && (state.gate === undefined || probed))) {
+      return { state, spawned, ...(replied.waiting ? { waiting: replied.waiting } : {}), ...(replied.turn ? { turn: replied.turn } : {}) };
+    }
   }
 }
 
@@ -382,11 +399,22 @@ async function called(context: SkillContext, run: RunId, same: Literal, input: {
   return { answer: { error: errorOf(refused, { invocation: context.invocation, same, run }) } };
 }
 
+/** The turn of `state` as `answer` renders it, from the events the session has not seen and why the run waits. */
+function rendered(state: SkillState, answer: TurnAnswer, input: { events: TurnEvent[]; waiting?: Waiting }): Turn {
+  const after = answer.after === 'none' ? undefined
+    : { kind: answer.after, run: answer.after === 'wake' ? nextLiteral(state.invocation, state.run) : pollLiteral(state.invocation, state.run) };
+  return turnOf(state, {
+    events: answer.events === 'unseen' ? input.events : [], ...(after ? { after } : {}), ...(input.waiting ? { waiting: input.waiting } : {}), ...(answer.quiet ? { quiet: true } : {}),
+  });
+}
+
 /** D20: saves `state` as shown to the calling session and answers its turn. */
-async function finish(context: SkillContext, lock: RunLock, state: SkillState, waiting: Waiting | undefined): Promise<SkillAnswer> {
+async function finish(context: SkillContext, lock: RunLock, state: SkillState, ticked: Pick<Ticked, 'waiting' | 'turn'>): Promise<SkillAnswer> {
   const events = unseenEvents(state, context.session);
   const shown = take(context, state, { kind: 'turn', session: context.session })?.state ?? state;
   await writeSkillState(context.config, lock, shown, context.env.secrets);
+  const { waiting, turn } = ticked;
+  if (turn) return { data: { turn: rendered(shown, turn, { events, ...(waiting ? { waiting } : {}) }) } };
   return { data: { turn: turnOf(shown, { events, after: { kind: 'poll', run: pollLiteral(shown.invocation, shown.run) }, ...(waiting ? { waiting } : {}) }) } };
 }
 
@@ -464,7 +492,7 @@ export async function foreground(context: SkillContext, run: RunId, call: Foregr
       await writeSkillState(context.config, lock, state, context.env.secrets);
       return { answer: { error: ticked.error } };
     }
-    if (!ticked.spawned || !take(context, state, { kind: 'spawned' })) return { answer: await finish(context, lock, state, ticked.waiting) };
+    if (!ticked.spawned || !take(context, state, { kind: 'spawned' })) return { answer: await finish(context, lock, state, ticked) };
     await writeSkillState(context.config, lock, state, context.env.secrets);
     return { grace: true };
   }, TICK_LOCK_WAIT_MS);
@@ -478,7 +506,7 @@ export async function foreground(context: SkillContext, run: RunId, call: Foregr
       if ('kind' in read) return { error: { code: 'run_unreadable', message: `The skill driver's state of run ${run} went missing while it ran.`, next: null } };
       if (read.attempts.some((open) => open.phase === 'preparing') && context.now().getTime() < until) return 'again';
       // The tick's reason to wait is stale once its runners moved, and while they have not, an attempt is open.
-      return finish(context, lock, read, undefined);
+      return finish(context, lock, read, {});
     }, TICK_LOCK_WAIT_MS);
     if (checked === 'again') continue;
     return busy(checked) ? lockBusy(context, run, same) : checked;
@@ -533,10 +561,11 @@ export async function poll(context: SkillContext, run: RunId): Promise<SkillAnsw
         return { error: result.error };
       }
       const events = unseenEvents(state, context.session);
-      const polled = take(context, state, { kind: 'poll', session: context.session, busy: false, boundReached });
+      const polled = take(context, state, { kind: 'poll', session: context.session, busy: false, boundReached, ...(result.turn ? { ticked: result.turn } : {}) });
       last = polled?.state ?? state;
       await writeSkillState(context.config, lock, last, context.env.secrets);
       const waiting = result.waiting ? { waiting: result.waiting } : {};
+      if (polled?.turn) return { data: { turn: rendered(last, polled.turn, { events, ...waiting }) } };
       if (polled?.row === 'D23') return { data: { turn: turnOf(last, { events, after: { kind: 'poll', run: same } }) } };
       if (polled?.row === 'D22') return { data: { turn: turnOf(last, { events: [], after: { kind: 'wake', run: nextLiteral(last.invocation, run) }, quiet: true }) } };
       if (polled?.row === 'D24') return { data: { turn: turnOf(last, { events: [], after: { kind: 'poll', run: same }, ...waiting, quiet: true }) } };

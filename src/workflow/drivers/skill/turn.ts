@@ -6,7 +6,7 @@ import type { Judging } from '../../protocol.js';
 import type { AttemptId, RunId } from '../../store.js';
 import type { OutputSchema, WorkflowFailure } from '../../types.js';
 import { HOST_CHOICES, HOST_PROFILES, HOST_QUESTION, type HostChoice } from './host-profiles.js';
-import { ackLiteral, chooseHostLiteral, personRespondLiteral, reportLiteral, respondLiteral, unavailableLiteral, type Literal } from './literals.js';
+import { ackLiteral, chooseHostLiteral, personRespondLiteral, reportLiteral, respondLiteral, resumeLiteral, unavailableLiteral, type Literal } from './literals.js';
 import type { AttemptState, Dispatch, Gate, ModelPick, SkillState, StopReason, TurnEvent } from './skill-state.js';
 import { childCap, reportedByAgent } from './transitions.js';
 
@@ -85,6 +85,19 @@ export interface PersonAction {
   run: Literal[];
 }
 
+/**
+ * Only steps held from this driver are left, and nothing of the run is open: the person continues the run with the
+ * local driver. The agent shows `run` and never runs it, and the turn has no `then`, so its loop ends here.
+ */
+export interface HandoffAction {
+  kind: 'person';
+  why: 'handoff';
+  held: NonNullable<Waiting['held']>;
+  message: string;
+  say: string;
+  run: Literal[];
+}
+
 export type Action =
   /** The agent's own answer, once per run with prompt steps: how its host runs a child. */
   | { kind: 'choose'; about: 'host'; decide: 'agent'; question: string; options: Array<{ id: HostChoice; label: string; run: Literal }>; reference: string }
@@ -92,6 +105,7 @@ export type Action =
   | DispatchAction
   | GateAction
   | PersonAction
+  | HandoffAction
   /** `judging`: the judge running now, on the pass of `step` that `scorers` judge. */
   | { kind: 'done'; outcome: NonNullable<SkillState['done']>['outcome']; failure?: WorkflowFailure; prs: string[]; judging?: { step: string; scorers: string[] } };
 
@@ -103,10 +117,14 @@ export interface RunningEntry {
   report?: Literal;
 }
 
-/** Why the run leases nothing. `delivering`: steps whose pull requests teamai is opening; the run goes on once they are. */
+/**
+ * Why the run leases nothing. `delivering`: steps whose pull requests teamai is opening; the run goes on once they are.
+ * `held`: steps the engine holds from this driver, with what each needs that it does not declare.
+ */
 export interface Waiting {
   reason: string;
   delivering?: string[];
+  held?: Array<{ step: string; missing: string[] }>;
 }
 
 export interface Turn {
@@ -122,7 +140,7 @@ export interface Turn {
   waiting?: Waiting;
   /**
    * The call to make next: `poll` in the background, or `wake` in the foreground when work waits for the agent.
-   * Absent once the run is done and none of its attempts, and no judge of it, is open.
+   * Absent once the run is done and none of its attempts, and no judge of it, is open, and while a handoff shows.
    */
   then?: { kind: 'poll' | 'wake'; run: Literal };
 }
@@ -211,20 +229,35 @@ function actionsOf(state: SkillState): Action[] {
 }
 
 /**
+ * The handoff of a run that can go no further here. `resume` drives from the directory it runs in when the run's last
+ * driver was not a local one, so the person runs it from the checkout the run started in.
+ */
+function handoffOf(state: SkillState, waiting: { reason: string; held: NonNullable<Waiting['held']> }): HandoffAction {
+  return {
+    kind: 'person', why: 'handoff', held: waiting.held,
+    message: `Run ${state.run} waits on steps this coding session cannot run: ${waiting.reason}. Nothing else of the run is open.`,
+    say: `This session can take the run no further. To continue it with the local driver, run this command in your own terminal, from ${state.driver.workspace}.`,
+    run: [resumeLiteral(state.invocation, state.run)],
+  };
+}
+
+/**
  * The turn of `state` that shows `events`, with `after` as its `then` while the run drives, or an attempt or a judge of
- * it is open. A `quiet` turn carries no action.
+ * it is open. A `quiet` turn carries no action; any other shows the handoff of a `waiting` that holds steps.
  */
 export function turnOf(state: SkillState, input: { events: TurnEvent[]; after?: NonNullable<Turn['then']>; waiting?: Waiting; quiet?: true }): Turn {
   const running = state.attempts.map((open): RunningEntry => ({
     attempt: open.attempt, step: open.step, phase: open.phase, ...(reportedByAgent(open) ? { report: reportLiteral(state.invocation, state.run, open.attempt) } : {}),
   }));
+  const waiting = input.waiting && !state.done && state.attempts.length === 0 ? input.waiting : undefined;
+  const handoff = waiting?.held && !input.quiet ? [handoffOf(state, { reason: waiting.reason, held: waiting.held })] : [];
   return {
     run: state.run,
     status: state.done ? 'done' : 'driving',
-    actions: input.quiet ? [] : actionsOf(state),
+    actions: input.quiet ? [] : [...actionsOf(state), ...handoff],
     running,
     events: input.events,
-    ...(input.waiting && !state.done && state.attempts.length === 0 ? { waiting: input.waiting } : {}),
+    ...(waiting ? { waiting } : {}),
     // `then` is a value, never a function, so awaiting a turn does not treat it as a promise.
     // oxlint-disable-next-line unicorn/no-thenable
     ...(input.after && (!state.done || state.attempts.length > 0 || state.judging?.open) ? { then: input.after } : {}),

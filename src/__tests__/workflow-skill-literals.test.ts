@@ -6,7 +6,7 @@ import { attemptEnv } from '../workflow/attempt-marker.js';
 import { parseSkillCall } from '../workflow/drivers/skill/skill-driver.js';
 import {
   ackLiteral, chooseHostLiteral, describeLiteral, generatedStartPatterns, INVOCATIONS, localStartLiteral, nextLiteral, personRespondLiteral, pollLiteral, preapprovedPatterns,
-  reportLiteral, respondLiteral, runnerArgs, startLiteral, takeoverLiteral, unavailableLiteral, type Invocation,
+  reportLiteral, respondLiteral, resumeLiteral, runnerArgs, startLiteral, takeoverLiteral, unavailableLiteral, type Invocation,
 } from '../workflow/drivers/skill/literals.js';
 import { loadCommandTable } from './helpers/command-table.js';
 
@@ -79,6 +79,10 @@ describe.each(INVOCATIONS)('skill driver literals run as %s', (invocation) => {
 
   it('start the local driver with the local start literal', () => {
     expect(parsed(words(localStartLiteral(invocation, 'check'), invocation))).toEqual({ sub: 'start', operands: ['check'], options: { driver: 'local' } });
+  });
+
+  it('continue the run with the local driver with the resume literal', () => {
+    expect(parsed(words(resumeLiteral(invocation, RUN), invocation))).toEqual({ sub: 'resume', operands: [RUN], options: {} });
   });
 
   it('describe, and start no run, whatever follows the pre-approved describe', () => {

@@ -155,6 +155,19 @@ steps:
     deliver: pr
 `;
 
+const PUBLISH = `schemaVersion: v1alpha1
+name: publish
+description: Build the package, then tell the team
+invoke: allow
+steps:
+  - id: build
+    command: node -e "process.exit(0)"
+  - id: notify
+    needs: [build]
+    requires: { env: [SLACK_TOKEN] }
+    prompt: Tell the team the package is out.
+`;
+
 const SCORERS = { 'review-quality': `---
 labels:
   - { value: thorough, score: 1, description: Did the work it was asked for }
@@ -374,6 +387,23 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
         await releaseLock(held);
       }
       expect((await polledToDone(made, run)).actions).toEqual([{ kind: 'done', outcome: 'succeeded', prs: ['https://github.com/fixture/app/pull/1'] }]);
+      return made.rows;
+    },
+  },
+  {
+    name: 'a run whose only step left is held for this driver wakes the poll, and the next turn hands it to the person with the resume literal and no then',
+    rows: ['D14', 'D26'],
+    run: async () => {
+      vi.stubEnv('SLACK_TOKEN', 'slack-value-1304');
+      const made = await harness({ publish: PUBLISH });
+      const { run } = await chosen(made, 'publish', 1);
+      let polled = await turnOf(await made.call({ kind: 'next', run, wait: true }));
+      for (let poll = 0; poll < 5 && polled.then?.kind !== 'wake'; poll += 1) polled = await turnOf(await made.call({ kind: 'next', run, wait: true }));
+      expect(polled.actions).toEqual([]);
+      expect(polled.then).toEqual({ kind: 'wake', run: `teamai workflow next ${run} --driver skill` });
+      const turn = await turnOf(await made.call({ kind: 'next', run, wait: false }));
+      expect(turn.actions).toEqual([expect.objectContaining({ kind: 'person', why: 'handoff', held: [{ step: 'notify', missing: ['env'] }], run: [`teamai workflow resume ${run}`] })]);
+      expect(turn).not.toHaveProperty('then');
       return made.rows;
     },
   },

@@ -60,6 +60,11 @@ export function localStartLiteral(invocation: Invocation, name: string): Literal
   return LiteralSchema.parse(`${invocation} workflow start ${name} --driver local`);
 }
 
+/** Continues `run` with the local driver: shown to the person for their own terminal, never run by the agent. */
+export function resumeLiteral(invocation: Invocation, run: string): Literal {
+  return LiteralSchema.parse(`${invocation} workflow resume ${run}`);
+}
+
 export function nextLiteral(invocation: Invocation, run: string): Literal {
   return LiteralSchema.parse(`${invocation} workflow next ${run} --driver skill`);
 }

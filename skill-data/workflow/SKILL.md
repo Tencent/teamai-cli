@@ -51,13 +51,20 @@ The action stays in every turn until it is answered. Done when you ran the `run`
 
 ## Person
 
-A `person` action is a required approval at `step`. Only the person answers it, from their own terminal or teamai dashboard, so your part is the handover:
+A `person` action with `why: approval` is a required approval at `step`. Only the person answers it, from their own terminal or teamai dashboard, so your part is the handover:
 
 1. Tell the person `say` and `message`.
 2. Show them every literal in `run`, for them to run in their own terminal. Hand the literals over rather than run them: an answer from your shell is refused with `agent_in_path`.
 3. Go on with `then`. The run moves on once they answer.
 
 Done when the person has `message` and the literals.
+
+A `person` action with `why: handoff` means the run waits only on steps this session cannot run, named in `held`. Its `run` continues the run with the local driver, from the person's own terminal in the directory `say` names:
+
+1. Tell the person `message` and `say`, and show them the literal in `run`. It is theirs to run.
+2. Stop polling: the turn has no `then`, and the run is in the person's hands.
+
+Done when the person has the literal.
 
 ## Stop
 
@@ -87,7 +94,7 @@ Done when every `dispatch` in the turn is acked.
 
 ## Done
 
-The `done` action carries the `outcome`, and the `failure` when there is one. Tell the person the outcome; for a failure, its message and the step it names. The steps are over. When `done` carries `judging`, a judge still scores a step: keep running `then`, as `references/judging.md` says.
+The `done` action carries the `outcome`, the pull requests the run opened in `prs`, and the `failure` when there is one. Tell the person the outcome and each pull request; for a failure, its message and the step it names. The steps are over. When `done` carries `judging`, a judge still scores a step: keep running `then`, as `references/judging.md` says.
 
 ## Errors
 
