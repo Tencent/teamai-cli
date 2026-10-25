@@ -70,6 +70,8 @@ const TIMEOUT_MS = Math.max(600_000, RUNS * 6_000);
 const NextBodySchema = z.object({ running: z.array(z.string()) });
 const LeaseReplySchema = z.object({ data: z.object({ lease: z.object({ attempt: z.string() }) }) });
 const SkillJsonSchema = z.object({ attempts: z.array(z.object({ attempt: z.string() })) });
+const CancelledReplySchema = z.object({ data: z.object({ cancelled: z.array(z.string()) }) });
+const ReleasedBodySchema = z.object({ attempt: z.string(), outcome: z.literal('released') });
 
 /** The attempts skill.json holds open. */
 function openAttempts(config: LocalConfig, run: RunId): string[] {
@@ -80,12 +82,14 @@ function openAttempts(config: LocalConfig, run: RunId): string[] {
 /**
  * The protocol as the model test watches it. Every `next` must list the attempts the engine leased (invariant 1), apart
  * from ones the engine stopped, and leases a crash lost before skill.json was written, which the engine hands back in
- * that same reply. Once armed, the next `next` or `report`, from the session or a runner, crashes after the engine
+ * that same reply. A `released` report gives up only an attempt some `next` reply listed in `cancelled`, or one of a run
+ * that ended (row 71): the driver never releases an attempt on its own. Once armed, the next `next` or `report`, from the session or a runner, crashes after the engine
  * answered it and before its caller writes anything.
  */
 function watched(input: { config: () => LocalConfig | undefined; drift: string[] }) {
   let armed = false;
   const lost = new Set<string>();
+  const cancelled = new Set<string>();
   const leasedIn = async (run: string): Promise<{ leased: string[]; stopped: string[] } | undefined> => {
     const config = input.config();
     const state = config ? await readRun(config, run) : 'missing';
@@ -124,6 +128,7 @@ function watched(input: { config: () => LocalConfig | undefined; drift: string[]
           if (gone.length > 0 || unlisted.some((attempt) => !lost.has(attempt))) drifted(`sent ${sent.data.running.join(',')} while the engine leased ${leased.join(',')}`);
         }
         const answer = await client.next(runId, body, options);
+        for (const attempt of CancelledReplySchema.safeParse(answer).data?.data.cancelled ?? []) cancelled.add(attempt);
         if (unlisted.length > 0) {
           const handed = LeaseReplySchema.safeParse(answer);
           if (!handed.success || !unlisted.includes(handed.data.data.lease.attempt)) drifted(`the engine did not hand back ${unlisted.join(',')}, which a crash lost`);
@@ -133,6 +138,12 @@ function watched(input: { config: () => LocalConfig | undefined; drift: string[]
         return answer;
       },
       report: async (runId, body, options) => {
+        const released = ReleasedBodySchema.safeParse(body);
+        if (released.success && !cancelled.has(released.data.attempt)) {
+          const config = input.config();
+          const state = config ? await readRun(config, runId) : 'missing';
+          if (typeof state !== 'object' || state.status === 'running') drifted(`released ${released.data.attempt}, which no next listed in cancelled, while the run still ran`);
+        }
         const answer = await client.report(runId, body, options);
         await crash(runId);
         return answer;
