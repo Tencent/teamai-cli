@@ -55,9 +55,9 @@ Test parsing through `parseWorkflow` and `syncWorkflowDefinitions`. Test the eng
 
 `drivers/skill/` runs a workflow from a coding session. The agent runs only the literal commands each reply prints. A detached runner per attempt, `workflow report <run> --driver skill --attempt <a>` with `TEAMAI_WORKFLOW_ATTEMPT=<run>/<a>` (`attempt-marker.ts`), prepares the attempt's place under the run lock and runs its setup outside it; then it runs a command step outside the lock and reports it, or writes a prompt step's brief and offers it to the agent, which hands it to a child agent and reports it when the child returns. A runner holds the attempt's `runner.lock` while it lives, which is how a tick tells it is alive. `skill-state.ts` is the only writer of `runs/<run>/skill.json`. `transitions.ts` holds the rows below as `TRANSITIONS`, and `step(state, input)` returns the row it took; `tick.ts` and `skill-runner.ts` carry out its effects. `workflow-skill-transitions.test.ts` compares these tables with `TRANSITIONS` cell by cell, both ways, and walks every row through `runSkillCall`, so a row lands in both places or in neither.
 
-**Run states**, derived from skill.json and never stored as a field: `none` (no skill.json for this run, or no run yet), `host` (the run has prompt steps and the agent has not answered the host question), `drive`, and `done` (the engine answered `done`). **Attempt phases**: `preparing` (its runner prepares its place), `queued` (another open attempt of the run holds its place), `running` (its runner runs the command), `offered` (its dispatch is shown, not acked), `dispatched` (acked: a child works it), and `reporting` (a write-ahead report body is stored).
+**Run states**, derived from skill.json and never stored as a field: `none` (no skill.json for this run, or no run yet), `host` (the run has prompt steps and the agent has not answered the host question), `drive`, and `done` (the engine answered `done`). **Attempt phases**: `preparing` (its runner prepares its place), `queued` (another open attempt of the run holds its place), `running` (its runner runs the command), `offered` (its dispatch is shown, not acked), `dispatched` (acked: a child works it), `stopping` (the engine cancelled it, or its `expiresAt` passed: its runner stops its command, or the agent stops its child and reports it), and `reporting` (a write-ahead report body is stored).
 
-**Order of one call.** Parse options with zod; take the run lock (D19); S rows; the row of the input; a tick; build the turn; save; release. **A tick** sends the reports a crash left stored (P11), respawns the runners of queued attempts whose place is free (D9) and of attempts whose lock is free (C10), then calls the engine `next` (D1) and applies its reply, repeating while a lease comes back and a slot is free. **A poll** (`--wait`) repeats lock, tick, release and a `WAIT_POLL_MS` sleep until D22, D23 or D24 applies. Runners take C rows under the same lock and never take S rows.
+**Order of one call.** Parse options with zod; take the run lock (D19); S rows; the row of the input; a tick; build the turn; save; release. **A tick** sends the reports a crash left stored (P11), gives up attempts stopping by a runner that is gone (C11), respawns the runners of queued attempts whose place is free (D9) and of attempts whose lock is free (C10), then calls the engine `next` (D1), takes D2 to D5 for each attempt its `cancelled` lists, and applies its reply, repeating while a lease comes back and a slot is free. **A poll** (`--wait`) repeats lock, tick, release and a `WAIT_POLL_MS` sleep until D22, D23 or D24 applies. Runners take C rows under the same lock and never take S rows. **A runner's check**: while its command runs, a runner ticks every `RUNNER_POLL_MS`, and once at the attempt's `expiresAt`, with `canTakeLease` false. The engine applies deadlines only when it is called, so the check at `expiresAt` is what turns an expired attempt into a stop (D3, C9).
 
 ### Describe and start
 
@@ -87,7 +87,11 @@ Test parsing through `parseWorkflow` and `syncWorkflowDefinitions`. Test the eng
 
 | Row | State | Input | Guard | Effects | Next | Action |
 |---|---|---|---|---|---|---|
-| D1 | drive | tick | | engine `next {driver: identity + SKILL_CAN, running: every open attempt, canTakeLease: fewer open than options.parallel, and than one under a serial host}` | drive | |
+| D1 | drive | tick | | engine `next {driver: identity + SKILL_CAN, running: every open attempt, canTakeLease: fewer open than options.parallel, and than one under a serial host; false in a runner's check}` | drive | |
+| D2 | drive | reply `cancelled` holds a | a queued | drop a | drive | event `stopped` |
+| D3 | drive | reply `cancelled` holds a | a preparing or running | phase stopping by its runner, why `timeout` once its `expiresAt` passed, else `cancelled` | drive | |
+| D4 | drive | reply `cancelled` holds a | a offered or dispatched | phase stopping by the agent, why as D3 | drive | `stop {why, report}` in each foreground turn until reported |
+| D5 | drive | reply `cancelled` holds a | a stopping or reporting | none | drive | |
 | D6 | drive | reply lease | executor command | phase preparing; spawn runner job `command` | drive | event `started` |
 | D7 | drive | reply lease | executor prompt | phase preparing; spawn runner job `prompt` | drive | event `started` |
 | D9 | drive | tick | a queued attempt whose `behind` is no longer open | phase preparing; spawn its job again | drive | |
@@ -96,10 +100,10 @@ Test parsing through `parseWorkflow` and `syncWorkflowDefinitions`. Test the eng
 | D17 | drive | reply error | | none | drive | error with the engine's code, next: the next literal |
 | D18 | drive | a foreground call | it spawned runners | release the lock; wait up to `WAIT_GRACE_MS` for them, re-taking the lock per check | drive | |
 | D19 | any | a foreground call | the lock is not free within `TICK_LOCK_WAIT_MS` (`report`: `WAIT_BOUND_MS`) | none | unchanged | error `driver_running`, next: the same literal |
-| D20 | host, drive, done | a foreground call, after its tick | | `seen[s]` := seq | unchanged | the turn: the host question or every unacked dispatch, events after the old `seen[s]`; `then: poll` (none once done) |
+| D20 | host, drive, done | a foreground call, after its tick | | `seen[s]` := seq | unchanged | the turn: the host question, or every `stop` then every unacked dispatch; events after the old `seen[s]`; `then: poll` until the run is done and no attempt is open |
 | D21 | host, drive, done | a poll tick | the lock was busy, or nothing below applies, and the bound is not reached | release; sleep `WAIT_POLL_MS`; tick again | unchanged | |
-| D22 | host, drive | a poll tick | the host question is unanswered, or a dispatch is unacked | none | unchanged | `then: wake` with the next literal, no actions |
-| D23 | done | a poll tick | `seen[s]` is below seq: s has not seen `done` | `seen[s]` := seq | done | `done` with its events |
+| D22 | host, drive, done | a poll tick | the host question is unanswered, a dispatch is unacked, or a `stop` is not reported | none | unchanged | `then: wake` with the next literal, no actions |
+| D23 | done | a poll tick | `seen[s]` is below seq, and no attempt is open | `seen[s]` := seq | done | `done` with its events |
 | D24 | host, drive, done | a poll tick | the bound is reached | none | unchanged | `then: poll`, no actions |
 
 ### Runner outcomes
@@ -112,7 +116,9 @@ Test parsing through `parseWorkflow` and `syncWorkflowDefinitions`. Test the eng
 | C4 | preparing | runner: place busy, behind b | | `behind` := b | queued | |
 | C7 | preparing | runner: prepare or setup failed | | write-ahead `failed` with its failure | reporting | |
 | C8 | running | runner: the command exited | | write-ahead: `success` on exit 0, else `failed`; outputs, exit code, masked tail | reporting | |
+| C9 | stopping by its runner | runner: its check every `RUNNER_POLL_MS` and at `expiresAt`, its setup ending, or its command exiting | | stop the command and every process it started (`tool-launch/process-stop.ts`); write-ahead `released` | reporting | |
 | C10 | preparing, running | tick: its `runner.lock` is free | it was spawned more than `WAIT_GRACE_MS` ago | spawn the same job again (prepare is idempotent; a command restarts in its prepared place) | unchanged | event `restarted` |
+| C11 | stopping by its runner | tick: its `runner.lock` is free | | write-ahead `released` | reporting | |
 
 ### Acks
 
@@ -128,12 +134,13 @@ Test parsing through `parseWorkflow` and `syncWorkflowDefinitions`. Test the eng
 |---|---|---|---|---|---|---|
 | P1 | drive, done | report a | a is in the settled list | none | unchanged | the turn of a tick with event `repeated` |
 | P2 | drive | report a | a is unknown | none | drive | error `unknown_attempt`, next: the next literal |
-| P3 | drive | report a | a preparing, queued, running or reporting | none | drive | error `not_dispatched`, next: the next literal |
+| P3 | drive | report a | a preparing, queued, running, reporting, or stopping by its runner | none | drive | error `not_dispatched`, next: the next literal |
 | P4 | drive | report a `--model-unavailable` | a offered or dispatched, its dispatch printed `unavailable` | write-ahead `failed` `model_unavailable` naming the model | reporting | P7 to P10, then the turn of a tick |
 | P5 | drive | report a | a offered or dispatched, otherwise | read `result.json`: an output gives `success` with it as outputs, a failure gives `failed` with it, none or an unreadable one gives `failed` `tool_failed`; write-ahead | reporting | P7 to P10, then the turn of a tick |
+| P6 | drive, done | report a | a stopping by the agent | write-ahead `released` | reporting | P7 to P10, then the turn of a tick |
 | P7 | reporting | engine: reported, any status | | drop a; add to settled | drive | event `settled` |
 | P8 | reporting | engine: `repeated_report` | | as P7 | drive | event `settled` |
-| P9 | reporting | engine: `lease_cancelled` | | drop a (the protocol abandoned its place) | drive | event `stopped` |
+| P9 | reporting | engine: `lease_cancelled` | | drop a (the protocol abandoned its place); add to settled, so a late report of its child is P1 | unchanged | event `stopped`, why as its stop said, else as D3 |
 | P10 | reporting | engine: another error | | keep the body | reporting | error, next: the same report literal (a runner retries at its next check) |
 | P11 | reporting | tick | a body is stored (a crash came between write and send) | send it again | reporting | P7 to P10 |
 
@@ -141,4 +148,5 @@ Test parsing through `parseWorkflow` and `syncWorkflowDefinitions`. Test the eng
 
 | Row | State | Input | Guard | Effects | Next | Action |
 |---|---|---|---|---|---|---|
-| X2 | done | next | | none | done | `done`, no `then` |
+| X2 | done | next | no attempt is open | none | done | `done`, no `then` |
+| X4 | done | next | an attempt is still open: the engine cancelled it with the run | none | done | every `stop`, then `done`; `then: poll` |

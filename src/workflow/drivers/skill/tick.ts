@@ -52,6 +52,7 @@ const LeaseBase = {
   attempt: AttemptIdSchema,
   step: z.string(),
   revision: z.number().int(),
+  expiresAt: z.string().optional(),
   // No person answers through this driver, so the engine holds every interactive step back from it.
   interactive: z.undefined(),
 };
@@ -67,14 +68,15 @@ const LeaseSchema = z.union([
 function readLease(raw: unknown): ReadLease | undefined {
   const read = LeaseSchema.safeParse(raw);
   if (!read.success) return undefined;
-  const { attempt, step: id, revision } = read.data;
+  const { attempt, step: id, revision, expiresAt } = read.data;
+  const base = { attempt, step: id, revision, ...(expiresAt !== undefined ? { expiresAt } : {}) };
   if ('command' in read.data) {
     const { command, env, envScope } = read.data;
-    return { attempt, step: id, revision, executor: 'command', command, env: env ?? {}, ...(envScope ? { envScope } : {}) };
+    return { ...base, executor: 'command', command, env: env ?? {}, ...(envScope ? { envScope } : {}) };
   }
   const { prompt, workspace, agent, model, defaultModel, output } = read.data;
   return {
-    attempt, step: id, revision, executor: 'prompt', prompt, place: workspace === undefined ? 'checkout' : 'workspace',
+    ...base, executor: 'prompt', prompt, place: workspace === undefined ? 'checkout' : 'workspace',
     ...(agent !== undefined ? { agent } : {}), ...(model !== undefined ? { model } : {}), ...(defaultModel !== undefined ? { defaultModel } : {}),
     ...(output !== undefined ? { output } : {}),
   };
@@ -111,25 +113,28 @@ async function spawnRunner(context: SkillContext, state: SkillState, attempt: At
 
 const FailureSchema = z.object({ code: z.string(), message: z.string() });
 const NextDataSchema = z.object({
+  /** The attempts this driver listed as running that the engine no longer leases to it. */
+  cancelled: z.array(AttemptIdSchema).optional(),
   lease: z.unknown().optional(),
   wait: z.object({ reason: z.string() }).optional(),
   done: z.object({ outcome: z.enum(['succeeded', 'failed', 'cancelled']), failure: FailureSchema.optional() }).optional(),
 });
 
-function engineReply(run: RunId, answer: WorkflowEnvelope): EngineReply {
-  if ('error' in answer) return { kind: 'error', error: { code: answer.error.code, message: answer.error.message } };
+/** The engine's answer to `next`, and the attempts it no longer leases to this driver. */
+function engineReply(run: RunId, answer: WorkflowEnvelope): { reply: EngineReply; cancelled: AttemptId[] } {
+  if ('error' in answer) return { reply: { kind: 'error', error: { code: answer.error.code, message: answer.error.message } }, cancelled: [] };
   const data = NextDataSchema.safeParse(answer.data);
   if (!data.success) {
-    return { kind: 'error', error: { code: 'run_unreadable', message: `Run ${run} answered next with a reply this teamai cannot read: ${data.error.issues[0]?.message ?? 'invalid'}. Update teamai.` } };
+    return { reply: { kind: 'error', error: { code: 'run_unreadable', message: `Run ${run} answered next with a reply this teamai cannot read: ${data.error.issues[0]?.message ?? 'invalid'}. Update teamai.` } }, cancelled: [] };
   }
-  const { done, lease, wait } = data.data;
-  if (done) return { kind: 'done', outcome: done.outcome, ...(done.failure ? { failure: done.failure } : {}) };
-  if (lease === undefined) return { kind: 'wait', reason: wait?.reason ?? 'the next step is not available' };
+  const { done, lease, wait, cancelled = [] } = data.data;
+  if (done) return { reply: { kind: 'done', outcome: done.outcome, ...(done.failure ? { failure: done.failure } : {}) }, cancelled };
+  if (lease === undefined) return { reply: { kind: 'wait', reason: wait?.reason ?? 'the next step is not available' }, cancelled };
   const read = readLease(lease);
   if (!read) {
-    return { kind: 'error', error: { code: 'run_unreadable', message: `Run ${run} leased a step the skill driver cannot run. Ask the person to continue it in a terminal with teamai workflow resume ${run}.` } };
+    return { reply: { kind: 'error', error: { code: 'run_unreadable', message: `Run ${run} leased a step the skill driver cannot run. Ask the person to continue it in a terminal with teamai workflow resume ${run}.` } }, cancelled };
   }
-  return { kind: 'lease', lease: read, raw: lease };
+  return { reply: { kind: 'lease', lease: read, raw: lease }, cancelled };
 }
 
 const ReportDataSchema = z.object({ step: z.object({ outcome: z.enum(['success', 'failed', 'released']) }) });
@@ -145,7 +150,7 @@ function reportReply(answer: WorkflowEnvelope): ReportReply {
 /** Sends the stored report `body` of `attempt` under `lock`, and applies the engine's answer. */
 export async function sendReport(context: SkillContext, lock: RunLock, state: SkillState, attempt: AttemptId, body: ReportBody): Promise<{ state: SkillState; refused?: WorkflowFailure }> {
   const reply = reportReply(await context.client.report(state.run, body, { lock }));
-  const taken = take(context, state, { kind: 'reported', attempt, reply });
+  const taken = take(context, state, { kind: 'reported', attempt, reply, at: context.now().toISOString() });
   const refused = taken?.answer?.kind === 'engine-error' ? taken.answer.error : undefined;
   return { state: taken?.state ?? state, ...(refused ? { refused } : {}) };
 }
@@ -201,16 +206,24 @@ function refusalMessage(refusal: Refusal, invocation: Invocation): string {
 }
 
 /**
- * One tick under `lock`: sends the reports a crash left stored, respawns runners that are gone, then calls `next` while
- * a lease comes back and a slot is free.
+ * One tick under `lock`: sends the reports a crash left stored, respawns runners that are gone and gives up the
+ * attempts a gone runner was stopping, then, while the run drives, calls `next` while a lease comes back and a slot is
+ * free. Each reply's `cancelled` is taken before the reply itself. A runner's check (`role: 'runner'`) takes no lease.
  */
-async function runTick(context: SkillContext, lock: RunLock, start: SkillState): Promise<{ state: SkillState; spawned: boolean; waiting?: { reason: string }; error?: SkillError }> {
+export async function runTick(context: SkillContext, lock: RunLock, start: SkillState, role: 'call' | 'runner'): Promise<{ state: SkillState; spawned: boolean; waiting?: { reason: string }; error?: SkillError }> {
   let state = start;
   let spawned = false;
   for (const open of start.attempts) {
     if (open.phase === 'reporting') {
       const resent = take(context, state, { kind: 'resend', attempt: open.attempt });
       if (resent?.state) state = (await sendReport(context, lock, resent.state, open.attempt, open.body)).state;
+      continue;
+    }
+    if (open.phase === 'stopping' && open.by === 'runner') {
+      if (await context.runners.alive(state.run, open.attempt)) continue;
+      const given = take(context, state, { kind: 'runner-free', attempt: open.attempt, at: context.now().toISOString(), graceMs: WAIT_GRACE_MS });
+      const send = given?.effects.find((effect) => effect.kind === 'send');
+      if (given?.state && send?.kind === 'send') state = (await sendReport(context, lock, given.state, open.attempt, send.body)).state;
       continue;
     }
     if (open.phase === 'queued') {
@@ -230,11 +243,14 @@ async function runTick(context: SkillContext, lock: RunLock, start: SkillState):
     spawned = true;
   }
   for (;;) {
-    const ticked = take(context, state, { kind: 'tick' });
+    const ticked = take(context, state, { kind: 'tick', role });
     const next = ticked?.effects.find((effect) => effect.kind === 'next');
     if (!next || next.kind !== 'next') return { state, spawned };
     const answer = await context.client.next(state.run, { driver: { ...state.driver, can: SKILL_CAN }, running: next.running, canTakeLease: next.canTakeLease });
-    const replied = take(context, state, { kind: 'reply', reply: engineReply(state.run, answer), at: context.now().toISOString() });
+    const at = context.now().toISOString();
+    const { reply, cancelled } = engineReply(state.run, answer);
+    for (const attempt of cancelled) state = take(context, state, { kind: 'cancelled', attempt, at })?.state ?? state;
+    const replied = take(context, state, { kind: 'reply', reply, at });
     if (!replied) return { state, spawned };
     state = replied.state ?? state;
     for (const effect of replied.effects) {
@@ -357,10 +373,8 @@ export async function foreground(context: SkillContext, run: RunId, call: Foregr
     if ('answer' in read) return read;
     const applied = await applyCall(context, lock, read.state, call, same);
     if ('answer' in applied) return applied;
-    let { state } = applied;
-    if (state.done) return { answer: await finish(context, lock, state, undefined) };
-    const ticked = await runTick(context, lock, state);
-    state = ticked.state;
+    const ticked = await runTick(context, lock, applied.state, 'call');
+    const { state } = ticked;
     if (ticked.error) {
       await writeSkillState(context.config, lock, state, context.env.secrets);
       return { answer: { error: ticked.error } };
@@ -396,14 +410,11 @@ export async function poll(context: SkillContext, run: RunId): Promise<SkillAnsw
     const ticked = await context.locks.take(run, async (lock): Promise<SkillAnswer | 'sleep'> => {
       const read = await called(context, run, same);
       if ('answer' in read) return read.answer;
-      let state = read.state;
-      if (!state.done) {
-        const result = await runTick(context, lock, state);
-        state = result.state;
-        if (result.error) {
-          await writeSkillState(context.config, lock, state, context.env.secrets);
-          return { error: result.error };
-        }
+      const result = await runTick(context, lock, read.state, 'call');
+      const { state } = result;
+      if (result.error) {
+        await writeSkillState(context.config, lock, state, context.env.secrets);
+        return { error: result.error };
       }
       const events = unseenEvents(state, context.session);
       const polled = take(context, state, { kind: 'poll', session: context.session, busy: false, boundReached });

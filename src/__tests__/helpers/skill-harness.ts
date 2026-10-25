@@ -2,38 +2,70 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { vi } from 'vitest';
+import { onTestFinished, vi } from 'vitest';
 import { resolveWorkflowEnv } from '../../env-resolution.js';
 import type { LocalConfig } from '../../types.js';
 import { syncWorkflowDefinitions } from '../../workflow/cache.js';
 import { inProcessClient, type WorkflowClient } from '../../workflow/protocol.js';
-import { runSkillCall, type Runners, type SkillCall, type SkillContext } from '../../workflow/drivers/skill/skill-driver.js';
+import { runSkillCall, skillContext, type CommandRun, type Runners, type SkillCall, type SkillContext } from '../../workflow/drivers/skill/skill-driver.js';
 import { withRunLock } from '../../workflow/store.js';
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: 'pipe' }).trim();
 }
 
+/** A command that runs until it is stopped, as `sleep 300` does, and calls `stopped` when it is. */
+export function untilStopped(stopped: () => void): CommandRun {
+  let end: (exit: Awaited<CommandRun['exit']>) => void = () => {};
+  const exit = new Promise<Awaited<CommandRun['exit']>>((resolve) => { end = resolve; });
+  return { exit, stop: async () => { stopped(); end({ exitCode: 143, stdout: '', stderr: '', output: '' }); return exit; } };
+}
+
+/** How many turns a settle waits for a runner to park before it fails, naming the runner, instead of hanging. */
+const SETTLE_TURNS = 5_000;
+/** How long a settle waits for a real command to exit on its own. */
+const COMMAND_EXIT_MS = 10_000;
+
 /**
- * Runners in this process on a fake clock. A runner is the same `report --driver skill --attempt` call the detached
- * process makes, and it waits at each run lock it takes until the next `sleep`, so a test sees each phase a real runner
- * passes through: preparing, then running, then reported.
+ * Runners in this process on a fake clock, which is also the engine's: `Date` follows it. A runner is the same
+ * `report --driver skill --attempt` call the detached process makes, and it parks at each run lock it takes and each
+ * sleep until the next `sleep` of the session, so a test sees each phase a real runner passes through: preparing, then
+ * running, then reported. A command runs for real, and a session's sleep waits for it to exit; a test fakes one that
+ * runs until it is stopped.
  */
-function memoryRunners(start: number): { runners: Runners; now: () => Date; bind(context: SkillContext): void; hold(held: boolean): void } {
-  let clock = start;
+function memoryRunners(command: Runners['command']): { runners: Runners; now: () => Date; bind(context: SkillContext): void; hold(held: boolean): void } {
+  let clock = Date.now();
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(clock);
+  onTestFinished(() => { vi.useRealTimers(); });
   let held = false;
   let base: SkillContext | undefined;
   const live = new Map<string, Promise<unknown>>();
-  const gates: Array<() => void> = [];
-  const locks: SkillContext['locks'] = {
-    take: async (run, body, waitMs) => {
-      await new Promise<void>((resolve) => { gates.push(resolve); });
-      if (!base) throw new Error('memoryRunners used before bind');
-      return withRunLock(base.config, run, body, { waitMs });
-    },
-  };
+  /** What lets each parked runner go on, by runner. */
+  const parked = new Map<string, () => void>();
+  /** Every real command still running, by what it runs. */
+  const commands = new Map<Promise<unknown>, string>();
+  const park = (key: string, signal?: AbortSignal): Promise<void> => new Promise<void>((resolve) => {
+    parked.set(key, resolve);
+    signal?.addEventListener('abort', () => {
+      if (parked.get(key) === resolve) parked.delete(key);
+      resolve();
+    }, { once: true });
+  });
   const settle = async (): Promise<void> => {
-    while (live.size > gates.length) await new Promise((resolve) => { setImmediate(resolve); });
+    for (let turn = 0; ; turn += 1) {
+      if (commands.size > 0) {
+        let timer: NodeJS.Timeout | undefined;
+        const late = new Promise<'late'>((resolve) => { timer = setTimeout(() => resolve('late'), COMMAND_EXIT_MS); });
+        const exited = await Promise.race([Promise.all(commands.keys()), late]);
+        clearTimeout(timer);
+        if (exited === 'late') throw new Error(`${[...commands.values()].join('; ')} did not exit within ${COMMAND_EXIT_MS} ms. Fake a command that runs until it is stopped with the harness's runners option.`);
+      }
+      const moving = [...live.keys()].filter((key) => !parked.has(key));
+      if (moving.length === 0 && commands.size === 0 && turn > 0) return;
+      if (turn >= SETTLE_TURNS) throw new Error(`The runner of ${moving.join(', ')} neither parked at a lock or a sleep nor ended within ${SETTLE_TURNS} turns: it loops without waiting.`);
+      await new Promise((resolve) => { setTimeout(resolve, 1); });
+    }
   };
   return {
     now: () => new Date(clock),
@@ -42,17 +74,28 @@ function memoryRunners(start: number): { runners: Runners; now: () => Date; bind
     runners: {
       spawn: async (job) => {
         if (!base) throw new Error('memoryRunners used before bind');
+        const { config } = base;
         const key = `${job.run}/${job.attempt}`;
         const call: SkillCall = { kind: 'report', run: job.run, attempt: job.attempt, role: 'runner' };
-        // A runner that waits parks until the next sleep of the session, so it never waits on itself.
-        const runners = { ...base.runners, sleep: () => new Promise<void>((resolve) => { gates.push(resolve); }) };
+        // A runner parks at each lock and sleep until the next sleep of the session, so it never waits on itself.
+        const locks: SkillContext['locks'] = { take: async (run, body, waitMs) => { await park(key); return withRunLock(config, run, body, { waitMs }); } };
+        const runners = { ...base.runners, sleep: (_ms: number, signal?: AbortSignal) => park(key, signal) };
         live.set(key, runSkillCall(call, { ...base, session: undefined, locks, runners }).finally(() => live.delete(key)));
       },
       alive: async (run, attempt) => live.has(`${run}/${attempt}`),
+      command: (input) => {
+        const started = command(input);
+        const exit = started.exit.finally(() => commands.delete(exit));
+        commands.set(exit, `The command ${input.command} of ${input.env.TEAMAI_WORKFLOW_ATTEMPT ?? 'a runner'}`);
+        return { exit, stop: started.stop };
+      },
       sleep: async (ms) => {
         clock += ms;
+        vi.setSystemTime(clock);
         if (held) return;
-        for (const open of gates.splice(0)) open();
+        const waiting = [...parked.values()];
+        parked.clear();
+        for (const open of waiting) open();
         await settle();
       },
     },
@@ -94,7 +137,8 @@ export async function skillHarness(workflows: Record<string, string>, options: H
   for (const [name, yaml] of Object.entries(workflows)) fs.writeFileSync(path.join(repo, 'workflows', `${name}.yaml`), yaml);
   await syncWorkflowDefinitions(config);
   const env = await resolveWorkflowEnv(config);
-  const scheduler = memoryRunners(Date.parse('2026-10-01T09:00:00.000Z'));
+  const production = await skillContext({ config, env, cwd: work });
+  const scheduler = memoryRunners(production.runners.command);
   const client = inProcessClient({ config, env });
   const rows: string[] = [];
   const context: SkillContext = {

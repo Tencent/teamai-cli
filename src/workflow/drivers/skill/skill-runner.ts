@@ -1,12 +1,14 @@
 /**
  * The runner of one attempt: a detached `teamai workflow report <run> --driver skill --attempt <a>` that prepares the
  * attempt's place and runs its setup outside the run lock, then runs its command and reports it, or offers its prompt
- * to the agent. It holds `runner.lock` for its whole life, which is how a tick tells it is alive.
+ * to the agent. It holds `runner.lock` for its whole life, which is how a tick tells it is alive. While its command
+ * runs it checks the run as its driver, and it alone stops that command when the engine stopped the attempt.
  */
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { resolveCliEntry } from '../../../builtin-hooks.js';
 import { stepEnvironment } from '../../../env-exec.js';
+import { stopProcess } from '../../../tool-launch/process-stop.js';
 import type { LocalConfig } from '../../../types.js';
 import { writeFileAtomic } from '../../../utils/fs.js';
 import { redact } from '../../../utils/redact.js';
@@ -19,9 +21,9 @@ import { writeSkillState, readSkillState, type ReportBody, type SkillState } fro
 import { pickChildModel } from './child-model.js';
 import { writeChildBrief } from './child-brief.js';
 import { reportLiteral } from './literals.js';
-import { readJob, RUNNER_POLL_MS, sendReport, take, WAIT_BOUND_MS, type Job } from './tick.js';
-import { openAttempt } from './transitions.js';
-import type { Runners, SkillContext } from './skill-driver.js';
+import { readJob, RUNNER_POLL_MS, runTick, sendReport, take, WAIT_BOUND_MS, type Job } from './tick.js';
+import { openAttempt, type Step } from './transitions.js';
+import type { CommandRun, Runners, SkillContext } from './skill-driver.js';
 import type { SkillAnswer } from './turn.js';
 
 /** Runners as detached teamai processes, alive while they hold their runner lock. */
@@ -35,15 +37,36 @@ export function detachedRunners(config: LocalConfig): Runners {
       }).unref();
     },
     alive: (run, attempt) => runnerAlive(config, run, attempt),
-    sleep: (ms) => new Promise((resolve) => { setTimeout(resolve, ms); }),
+    command: ({ command, cwd, env }) => {
+      // A process group of its own, so a stop reaches every process the command started.
+      const detached = process.platform !== 'win32';
+      const child = spawn(command, { shell: true, cwd, env, detached, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+      const exit = new Promise<Awaited<CommandRun['exit']>>((resolve) => {
+        let stdout = '';
+        let stderr = '';
+        let output = '';
+        child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; output += chunk; });
+        child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; output += chunk; });
+        child.on('error', (error) => resolve({ exitCode: 127, stdout, stderr: `${stderr}${error.message}`, output }));
+        child.on('close', (code) => resolve({ exitCode: code ?? 1, stdout, stderr, output }));
+      });
+      return { exit, stop: stopProcess(child, exit, detached) };
+    },
+    sleep: (ms, signal) => new Promise((resolve) => {
+      const timer = setTimeout(resolve, ms);
+      signal?.addEventListener('abort', () => { clearTimeout(timer); resolve(); }, { once: true });
+    }),
   };
 }
 
 type Stage =
   /** The place is prepared; `prompt` is the step's prompt with what the place adds to it, a merge conflict to resolve. */
   | { kind: 'prepared'; dir: string; job: Job; prompt?: string }
-  /** `env` is the environment the command runs with: the job's `envScope` applied, else this process's, and its own env. */
-  | { kind: 'run'; dir: string; command: string; env: NodeJS.ProcessEnv }
+  /**
+   * `env` is the environment the command runs with: the job's `envScope` applied, else this process's, and its own env.
+   * `expiresAt` is the lease's deadline, when it has one.
+   */
+  | { kind: 'run'; dir: string; command: string; env: NodeJS.ProcessEnv; expiresAt?: string }
   /** The engine refused the report; it stays stored, and the runner sends it again. */
   | { kind: 'retry' }
   /** Nothing is left for this runner: its attempt waits for a place, waits for the agent, or was reported or closed. */
@@ -74,7 +97,7 @@ async function runAttempt(context: SkillContext, run: RunId, attempt: AttemptId)
 }
 
 /** Runs `body` under the run lock, waiting `RUNNER_POLL_MS` between tries while another process holds it. */
-async function locked(context: SkillContext, run: RunId, body: (lock: RunLock) => Promise<Stage>): Promise<Stage> {
+async function locked<T extends object>(context: SkillContext, run: RunId, body: (lock: RunLock) => Promise<T>): Promise<T> {
   for (;;) {
     const result = await context.locks.take(run, body, WAIT_BOUND_MS);
     if (!('error' in result)) return result;
@@ -96,6 +119,17 @@ async function send(context: SkillContext, lock: RunLock, state: SkillState, att
   return { kind: 'gone', status: sent.state.settled.includes(attempt) ? 'reported' : 'gone' };
 }
 
+/** Sends the report row `taken` stored, when it took one. */
+async function sendTaken(context: SkillContext, lock: RunLock, taken: Step | undefined, attempt: AttemptId): Promise<Stage> {
+  const body = taken?.effects.find((effect) => effect.kind === 'send');
+  return taken?.state && body?.kind === 'send' ? send(context, lock, taken.state, attempt, body.body) : { kind: 'gone', status: 'gone' };
+}
+
+/** Gives up the attempt the engine stopped, once nothing of it runs (C9). */
+function stopped(context: SkillContext, lock: RunLock, state: SkillState, attempt: AttemptId): Promise<Stage> {
+  return sendTaken(context, lock, take(context, state, { kind: 'runner-stop', attempt }), attempt);
+}
+
 function failedBody(state: SkillState, attempt: AttemptId, revision: number, failure: WorkflowFailure): ReportBody {
   return { attempt, revision, outcome: 'failed', driver: state.driver, message: failure.message, failure };
 }
@@ -103,9 +137,7 @@ function failedBody(state: SkillState, attempt: AttemptId, revision: number, fai
 /** Takes the row `failed` names for a failure before the step ran (C3, C7), and sends its report. */
 async function fail(context: SkillContext, lock: RunLock, input: { state: SkillState; attempt: AttemptId; revision: number; failure: WorkflowFailure; kind: 'prepare-failed' | 'model-failed' }): Promise<Stage> {
   const { state, attempt, revision, failure, kind } = input;
-  const body = failedBody(state, attempt, revision, failure);
-  const reporting = take(context, state, { kind, attempt, body });
-  return reporting?.state ? send(context, lock, reporting.state, attempt, body) : { kind: 'gone', status: 'gone' };
+  return sendTaken(context, lock, take(context, state, { kind, attempt, body: failedBody(state, attempt, revision, failure) }), attempt);
 }
 
 /** Under the lock: prepares the attempt's place (C4, C7), or sends the report it already has. */
@@ -114,6 +146,7 @@ async function prepare(context: SkillContext, lock: RunLock, attempt: AttemptId)
   const open = state && openAttempt(state, attempt);
   if (!state || !open) return { kind: 'gone', status: state?.settled.includes(attempt) ? 'reported' : 'gone' };
   if (open.phase === 'reporting') return send(context, lock, state, attempt, open.body);
+  if (open.phase === 'stopping') return stopped(context, lock, state, attempt);
   if (open.phase !== 'preparing' && open.phase !== 'running') return { kind: 'gone', status: 'gone' };
   const failed = (failure: WorkflowFailure): Promise<Stage> => fail(context, lock, { state, attempt, revision: open.revision, failure, kind: 'prepare-failed' });
   const job = await readJob(context.config, lock.run, attempt);
@@ -130,21 +163,23 @@ async function prepare(context: SkillContext, lock: RunLock, attempt: AttemptId)
   return { kind: 'prepared', dir: prepared.dir, job, ...(prepared.prompt !== undefined ? { prompt: prepared.prompt } : {}) };
 }
 
-/** Under the lock: reports a setup that failed (C7). */
+/** Under the lock: reports a setup that failed (C7), or gives up an attempt stopped while it ran (C9). */
 async function setupFailed(context: SkillContext, lock: RunLock, attempt: AttemptId, failure: WorkflowFailure): Promise<Stage> {
   const state = await readState(context, lock);
   const open = state && openAttempt(state, attempt);
+  if (state && open?.phase === 'stopping') return stopped(context, lock, state, attempt);
   if (!state || (open?.phase !== 'preparing' && open?.phase !== 'running')) return { kind: 'gone', status: 'gone' };
   return fail(context, lock, { state, attempt, revision: open.revision, failure, kind: 'prepare-failed' });
 }
 
 /**
  * Under the lock, once the place is set up: a command gets its env (C1), and a prompt its child's model and brief,
- * which offer it to the agent (C2, C3).
+ * which offer it to the agent (C2, C3). An attempt stopped meanwhile is given up before either starts (C9).
  */
 async function begin(context: SkillContext, lock: RunLock, attempt: AttemptId, prepared: Extract<Stage, { kind: 'prepared' }>): Promise<Stage> {
   const state = await readState(context, lock);
   const open = state && openAttempt(state, attempt);
+  if (state && open?.phase === 'stopping') return stopped(context, lock, state, attempt);
   if (!state || (open?.phase !== 'preparing' && open?.phase !== 'running')) return { kind: 'gone', status: 'gone' };
   const { dir, job: { lease } } = prepared;
   const failed = (failure: WorkflowFailure, kind: 'prepare-failed' | 'model-failed'): Promise<Stage> => fail(context, lock, { state, attempt, revision: open.revision, failure, kind });
@@ -154,7 +189,7 @@ async function begin(context: SkillContext, lock: RunLock, attempt: AttemptId, p
     // A runner that restarts a command already running starts it again in the place it was prepared in.
     const running = open.phase === 'preparing' ? take(context, state, { kind: 'prepared', attempt })?.state ?? state : state;
     await writeSkillState(context.config, lock, running, context.env.secrets);
-    return { kind: 'run', dir, command: lease.command, env: { ...scoped.env, ...lease.env } };
+    return { kind: 'run', dir, command: lease.command, env: { ...scoped.env, ...lease.env }, ...(open.expiresAt !== undefined ? { expiresAt: open.expiresAt } : {}) };
   }
   if (open.phase !== 'preparing') return { kind: 'gone', status: 'gone' };
   const { agent, model, defaultModel, output, place } = lease;
@@ -180,30 +215,47 @@ interface Exited {
   output: string;
 }
 
-/** Runs the job's command in `dir`, outside the run lock, and keeps its masked output in `output.log`. */
+/** How long a runner waits for its next check: `RUNNER_POLL_MS`, or less, so one check falls on `expiresAt`. */
+function checkIn(context: SkillContext, expiresAt: string | undefined): number {
+  const left = expiresAt === undefined ? RUNNER_POLL_MS : Date.parse(expiresAt) - context.now().getTime();
+  return left > 0 ? Math.min(left, RUNNER_POLL_MS) : RUNNER_POLL_MS;
+}
+
+/**
+ * Under the lock: a tick of the run as its driver, which takes no lease (D1), so the runner learns what the engine
+ * cancelled while no agent calls. Whether the attempt still runs.
+ */
+async function check(context: SkillContext, lock: RunLock, attempt: AttemptId): Promise<{ running: boolean }> {
+  const state = await readState(context, lock);
+  if (!state) return { running: false };
+  const ticked = await runTick(context, lock, state, 'runner');
+  await writeSkillState(context.config, lock, ticked.state, context.env.secrets);
+  return { running: openAttempt(ticked.state, attempt)?.phase === 'running' };
+}
+
+/**
+ * Runs the job's command in `dir`, outside the run lock, until it exits or a check finds its attempt stopped, which
+ * stops it. Keeps its masked output in `output.log`.
+ */
 async function runCommand(context: SkillContext, run: RunId, attempt: AttemptId, stage: Extract<Stage, { kind: 'run' }>): Promise<Exited> {
-  const exited = await new Promise<Omit<Exited, 'output'> & { raw: string }>((resolve) => {
-    let stdout = '';
-    let stderr = '';
-    let raw = '';
-    const child = spawn(stage.command, {
-      shell: true, cwd: stage.dir, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
-      env: { ...stage.env, ...attemptEnv(run, attempt) },
-    });
-    child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; raw += chunk; });
-    child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; raw += chunk; });
-    child.on('error', (error) => resolve({ exitCode: 127, stdout, stderr: `${stderr}${error.message}`, raw }));
-    child.on('close', (code) => resolve({ exitCode: code ?? 1, stdout, stderr, raw }));
-  });
-  const output = redact(exited.raw, { envSecrets: context.env.secrets, patterns: false });
+  const command = context.runners.command({ command: stage.command, cwd: stage.dir, env: { ...stage.env, ...attemptEnv(run, attempt) } });
+  let exited: Awaited<CommandRun['exit']> | undefined;
+  while (!exited) {
+    const checking = new AbortController();
+    exited = await Promise.race([command.exit, context.runners.sleep(checkIn(context, stage.expiresAt), checking.signal).then(() => undefined)]);
+    checking.abort();
+    if (!exited && !(await locked(context, run, (lock) => check(context, lock, attempt))).running) exited = await command.stop();
+  }
+  const output = redact(exited.output, { envSecrets: context.env.secrets, patterns: false });
   await writeFileAtomic(path.join(attemptDir(context.config, run, attempt), 'output.log'), output);
   return { exitCode: exited.exitCode, stdout: exited.stdout, stderr: exited.stderr, output };
 }
 
-/** Under the lock: stores the report of the exited command (C8), then sends it. */
+/** Under the lock: stores the report of the exited command (C8), or gives up a stopped attempt (C9), then sends it. */
 async function report(context: SkillContext, lock: RunLock, attempt: AttemptId, exited: Exited): Promise<Stage> {
   const state = await readState(context, lock);
   const open = state && openAttempt(state, attempt);
+  if (state && open?.phase === 'stopping') return stopped(context, lock, state, attempt);
   if (!state || open?.phase !== 'running') return { kind: 'gone', status: 'gone' };
   const outputs = commandOutputs(exited.stdout);
   const snippet = exited.stderr.trim().slice(0, 400);
@@ -213,6 +265,5 @@ async function report(context: SkillContext, lock: RunLock, attempt: AttemptId, 
     ...(exited.exitCode !== 0 ? { message: snippet === '' ? `command exited with status ${exited.exitCode}` : `command exited with status ${exited.exitCode}: ${snippet}` } : {}),
   };
   const tail = exited.output.trim().slice(-400);
-  const reporting = take(context, state, { kind: 'exited', attempt, body, ...(tail ? { tail } : {}) });
-  return reporting?.state ? send(context, lock, reporting.state, attempt, body) : { kind: 'gone', status: 'gone' };
+  return sendTaken(context, lock, take(context, state, { kind: 'exited', attempt, body, ...(tail ? { tail } : {}) }), attempt);
 }

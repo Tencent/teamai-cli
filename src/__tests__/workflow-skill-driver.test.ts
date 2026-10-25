@@ -1,6 +1,8 @@
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { skillHarness } from './helpers/skill-harness.js';
+import { z } from 'zod';
+import { skillHarness, untilStopped } from './helpers/skill-harness.js';
 
 const CHECK = `schemaVersion: v1alpha1
 name: check
@@ -30,6 +32,19 @@ steps:
     needs: [api, ui]
     workspace: new
     prompt: Integrate the API and the UI.
+`;
+
+// `serve` runs until it is stopped; `lint` shares the checkout, so it waits behind it.
+const SERVE = `schemaVersion: v1alpha1
+name: serve
+description: Serve the app, then lint it
+invoke: allow
+steps:
+  - id: serve
+    command: sleep 300
+  - id: lint
+    needs: []
+    command: node -e "process.exit(0)"
 `;
 
 const roots: string[] = [];
@@ -141,5 +156,84 @@ describe('skill driver', () => {
       { attempt: first.attempt, phase: 'dispatched' },
       { attempt: second.attempt, phase: 'offered' },
     ]));
+  });
+
+  it('a cancelled command is stopped by its runner and reported released; a cancelled prompt step shows stop until reported', async () => {
+    // A prompt step's child is the agent's, so the agent is asked to stop it, until it reports.
+    const prompts = await skillHarness({ feature: FEATURE });
+    roots.push(prompts.root);
+    const started = await prompts.call({ kind: 'start', name: 'feature', answers: { parallel: 2, confirmed: false }, inputs: undefined });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+    const { run } = started.data.turn;
+    const chosen = await prompts.call({ kind: 'choose', run, choice: 'h1' });
+    if (!('data' in chosen) || !('turn' in chosen.data)) throw new Error(JSON.stringify(chosen));
+    const api = chosen.data.turn.actions.find((action) => action.kind === 'dispatch' && action.step === 'api');
+    const ui = chosen.data.turn.actions.find((action) => action.kind === 'dispatch' && action.step === 'ui');
+    if (api?.kind !== 'dispatch' || ui?.kind !== 'dispatch') throw new Error(JSON.stringify(chosen));
+    await prompts.call({ kind: 'ack', run, attempt: api.attempt });
+    const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: api.dir, encoding: 'utf8' });
+    fs.writeFileSync(`${api.dir}/api.txt`, 'half done\n');
+    expect(await prompts.context.client.cancel(run, 'api')).toMatchObject({ data: { cancelled: { attempts: [api.attempt] } } });
+
+    const stop = { kind: 'stop', attempt: api.attempt, step: 'api', title: api.title, why: 'cancelled', report: api.report };
+    for (let call = 0; call < 2; call += 1) {
+      const shown = await prompts.call({ kind: 'next', run, wait: false });
+      if (!('data' in shown) || !('turn' in shown.data)) throw new Error(JSON.stringify(shown));
+      // The stop comes before any dispatch, in every turn until the agent reports.
+      expect(shown.data.turn.actions).toEqual([stop, ui]);
+      expect(shown.data.turn.running).toContainEqual({ attempt: api.attempt, step: 'api', phase: 'stopping', report: api.report });
+    }
+    const reported = await prompts.call({ kind: 'report', run, attempt: api.attempt, role: 'agent', modelUnavailable: false });
+    if (!('data' in reported) || !('turn' in reported.data)) throw new Error(JSON.stringify(reported));
+    expect(reported.data.turn.events).toContainEqual({ kind: 'stopped', step: 'api', attempt: api.attempt, why: 'cancelled' });
+    expect(reported.data.turn.actions).toEqual([ui]);
+    // The protocol abandoned the place: what the child left there is not committed.
+    expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: api.dir, encoding: 'utf8' })).toBe(head);
+    expect(execFileSync('git', ['status', '--porcelain', '--', 'api.txt'], { cwd: api.dir, encoding: 'utf8' })).toBe('?? api.txt\n');
+
+    // A command's child is its runner's, so the runner stops it at its next check and reports it released.
+    const calls: Array<{ next: string[] } | { report: string; outcome: string }> = [];
+    const stops: string[] = [];
+    const commands = await skillHarness({ serve: SERVE }, {
+      client: (client) => ({
+        ...client,
+        next: async (runId, body, options) => {
+          calls.push({ next: z.object({ running: z.array(z.string()) }).parse(body).running });
+          return client.next(runId, body, options);
+        },
+        report: async (runId, body, options) => {
+          const { attempt, outcome } = z.object({ attempt: z.string(), outcome: z.string() }).parse(body);
+          calls.push({ report: attempt, outcome });
+          return client.report(runId, body, options);
+        },
+      }),
+      runners: (runners) => ({
+        ...runners,
+        command: (input) => (input.command === 'sleep 300' ? untilStopped(() => { stops.push(input.env.TEAMAI_WORKFLOW_ATTEMPT ?? ''); }) : runners.command(input)),
+      }),
+    });
+    roots.push(commands.root);
+    const events: unknown[] = [];
+    const turnOf = (answer: Awaited<ReturnType<typeof commands.call>>) => {
+      if (!('data' in answer) || !('turn' in answer.data)) throw new Error(JSON.stringify(answer));
+      events.push(...answer.data.turn.events);
+      return answer.data.turn;
+    };
+    // One at a time, so lint is leased only once serve is given up, and the run is not done before then.
+    let turn = turnOf(await commands.call({ kind: 'start', name: 'serve', answers: { parallel: 1, confirmed: false }, inputs: undefined }));
+    const served = turn.run;
+    const serve = turn.running.find((entry) => entry.step === 'serve');
+    if (serve?.phase !== 'running') throw new Error(JSON.stringify(turn));
+    await commands.context.client.cancel(served, 'serve');
+
+    for (let poll = 0; poll < 5 && turn.status !== 'done'; poll += 1) turn = turnOf(await commands.call({ kind: 'next', run: served, wait: true }));
+    expect(stops).toEqual([`${served}/${serve.attempt}`]);
+    expect(events).toContainEqual({ kind: 'stopped', step: 'serve', attempt: serve.attempt, why: 'cancelled' });
+    expect(events).toContainEqual(expect.objectContaining({ kind: 'settled', step: 'lint', outcome: 'success' }));
+    const released = calls.findIndex((call) => 'report' in call && call.report === serve.attempt);
+    expect(calls[released]).toEqual({ report: serve.attempt, outcome: 'released' });
+    const later = calls.slice(released).flatMap((call) => ('next' in call ? [call.next] : []));
+    expect(later.length).toBeGreaterThan(0);
+    for (const running of later) expect(running).not.toContain(serve.attempt);
   });
 });

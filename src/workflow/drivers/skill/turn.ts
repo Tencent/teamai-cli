@@ -6,7 +6,7 @@ import type { AttemptId, RunId } from '../../store.js';
 import type { OutputSchema, WorkflowFailure } from '../../types.js';
 import { HOST_CHOICES, HOST_PROFILES, HOST_QUESTION, type HostChoice } from './host-profiles.js';
 import { ackLiteral, chooseHostLiteral, reportLiteral, unavailableLiteral, type Literal } from './literals.js';
-import type { AttemptState, Dispatch, ModelPick, SkillState, TurnEvent } from './skill-state.js';
+import type { AttemptState, Dispatch, ModelPick, SkillState, StopReason, TurnEvent } from './skill-state.js';
 import { childCap } from './transitions.js';
 
 /** How describe says to start: as is, after one question to the person, or with the local driver. */
@@ -44,9 +44,22 @@ export interface DispatchAction {
   unavailable?: Literal;
 }
 
+/** A child the agent started whose attempt the engine stopped: shown in every foreground turn until `report` runs. */
+export interface StopAction {
+  kind: 'stop';
+  attempt: AttemptId;
+  step: string;
+  /** The title the child was started with. */
+  title: string;
+  why: StopReason;
+  /** Run once the child is stopped: it gives the attempt up, and the protocol abandons its place. */
+  report: Literal;
+}
+
 export type Action =
   /** The agent's own answer, once per run with prompt steps: how its host runs a child. */
   | { kind: 'choose'; about: 'host'; decide: 'agent'; question: string; options: Array<{ id: HostChoice; label: string; run: Literal }>; reference: string }
+  | StopAction
   | DispatchAction
   | { kind: 'done'; outcome: NonNullable<SkillState['done']>['outcome']; failure?: WorkflowFailure; prs: string[] };
 
@@ -54,7 +67,7 @@ export interface RunningEntry {
   attempt: AttemptId;
   step: string;
   phase: AttemptState['phase'];
-  /** For a dispatch: the literal that reports it, so a returning child is linked back by attempt. */
+  /** For a dispatch or a stop the agent makes: the literal that reports it, so a returning child is linked back by attempt. */
   report?: Literal;
 }
 
@@ -71,7 +84,7 @@ export interface Turn {
   waiting?: { reason: string };
   /**
    * The call to make next: `poll` in the background, or `wake` in the foreground when work waits for the agent.
-   * Absent once the run is done.
+   * Absent once the run is done and none of its attempts is open.
    */
   then?: { kind: 'poll' | 'wake'; run: Literal };
 }
@@ -102,11 +115,15 @@ function hostsReference(): string {
   return path.join(packagedSkillRoots().dataRoot, 'workflow', 'references', 'hosts.md');
 }
 
+function titleOf(run: RunId, open: AttemptState): string {
+  return `${run}/${open.attempt} ${open.step}`;
+}
+
 function dispatchOf(state: SkillState, open: Extract<AttemptState, { phase: 'offered' | 'dispatched' }>): DispatchAction {
   const { attempt, step, dispatch } = open;
   const { invocation, run } = state;
   return {
-    kind: 'dispatch', offer: `dispatch.${attempt}`, attempt, step, title: `${run}/${attempt} ${step}`,
+    kind: 'dispatch', offer: `dispatch.${attempt}`, attempt, step, title: titleOf(run, open),
     needs: { place: dispatch.place, parallel: childCap(state) > 1 },
     dir: dispatch.dir, brief: dispatch.brief, ...(dispatch.agent !== undefined ? { agent: dispatch.agent } : {}), model: dispatch.model,
     ack: ackLiteral(invocation, run, attempt), report: reportLiteral(invocation, run, attempt),
@@ -114,20 +131,35 @@ function dispatchOf(state: SkillState, open: Extract<AttemptState, { phase: 'off
   };
 }
 
-/** What waits for the agent: the host question, else every dispatch not acked yet, else the end. */
+/** Whether the agent reports `open`: its child works it, or the agent must stop that child. */
+function reportedByAgent(open: AttemptState): boolean {
+  return open.phase === 'offered' || open.phase === 'dispatched' || (open.phase === 'stopping' && open.by === 'agent');
+}
+
+/**
+ * What waits for the agent: the host question; else every child to stop, then every dispatch not acked yet; and the
+ * end once the run is done.
+ */
 function actionsOf(state: SkillState): Action[] {
-  if (state.done) return [{ kind: 'done', outcome: state.done.outcome, ...(state.done.failure ? { failure: state.done.failure } : {}), prs: [] }];
   if (state.host.kind === 'pending') {
     const options = HOST_CHOICES.map((id) => ({ id, label: HOST_PROFILES[id].label, run: chooseHostLiteral(state.invocation, state.run, id) }));
     return [{ kind: 'choose', about: 'host', decide: 'agent', question: HOST_QUESTION, options, reference: hostsReference() }];
   }
-  return state.attempts.flatMap((open) => (open.phase === 'offered' ? [dispatchOf(state, open)] : []));
+  const stops = state.attempts.flatMap((open): StopAction[] => (open.phase === 'stopping' && open.by === 'agent'
+    ? [{ kind: 'stop', attempt: open.attempt, step: open.step, title: titleOf(state.run, open), why: open.why, report: reportLiteral(state.invocation, state.run, open.attempt) }]
+    : []));
+  const offers = state.attempts.flatMap((open) => (open.phase === 'offered' ? [dispatchOf(state, open)] : []));
+  const end: Action[] = state.done ? [{ kind: 'done', outcome: state.done.outcome, ...(state.done.failure ? { failure: state.done.failure } : {}), prs: [] }] : [];
+  return [...stops, ...offers, ...end];
 }
 
-/** The turn of `state` that shows `events`, with `after` as its `then` unless the run is done. A `quiet` turn carries no action. */
+/**
+ * The turn of `state` that shows `events`, with `after` as its `then` while the run drives or an attempt of it is open.
+ * A `quiet` turn carries no action.
+ */
 export function turnOf(state: SkillState, input: { events: TurnEvent[]; after?: NonNullable<Turn['then']>; waiting?: { reason: string }; quiet?: true }): Turn {
-  const running = state.attempts.map(({ attempt, step, phase }): RunningEntry => ({
-    attempt, step, phase, ...(phase === 'offered' || phase === 'dispatched' ? { report: reportLiteral(state.invocation, state.run, attempt) } : {}),
+  const running = state.attempts.map((open): RunningEntry => ({
+    attempt: open.attempt, step: open.step, phase: open.phase, ...(reportedByAgent(open) ? { report: reportLiteral(state.invocation, state.run, open.attempt) } : {}),
   }));
   return {
     run: state.run,
@@ -138,6 +170,6 @@ export function turnOf(state: SkillState, input: { events: TurnEvent[]; after?: 
     ...(input.waiting && !state.done && state.attempts.length === 0 ? { waiting: input.waiting } : {}),
     // `then` is a value, never a function, so awaiting a turn does not treat it as a promise.
     // oxlint-disable-next-line unicorn/no-thenable
-    ...(input.after && !state.done ? { then: input.after } : {}),
+    ...(input.after && (!state.done || state.attempts.length > 0) ? { then: input.after } : {}),
   };
 }

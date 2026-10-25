@@ -8,7 +8,7 @@ import type { WorkflowFailure } from '../../types.js';
 import type { ChildResult } from './child-brief.js';
 import type { HostChoice, HostProfile } from './host-profiles.js';
 import type { StartAnswer, StartCheck } from './preflight.js';
-import type { AttemptState, Dispatch, ReportBody, SkillState, TurnEvent } from './skill-state.js';
+import type { AttemptState, Dispatch, ReportBody, SkillState, StopReason, TurnEvent } from './skill-state.js';
 import type { DescribeAsk } from './turn.js';
 
 export interface TransitionRow {
@@ -36,7 +36,11 @@ export const TRANSITIONS = [
   { id: 'S1', state: 'host, drive, done', input: 'an agent call from session s', guard: 'the owner is s, or either session is unknown', effects: '`lastCallAt` := now; owner := s when unknown', next: 'unchanged', action: 'the input\'s row' },
   { id: 'S2', state: 'host, drive, done', input: 'an agent call from session s', guard: 'owner o is not s, and both are known', effects: 'none', next: 'unchanged', action: 'error `orchestrator_active`, next null' },
   { id: 'S5', state: 'any', input: 'a runner call (`report --attempt a` with the marker `<run>/a`)', guard: '', effects: 'no session check, no `lastCallAt`', next: 'unchanged', action: 'C rows' },
-  { id: 'D1', state: 'drive', input: 'tick', guard: '', effects: 'engine `next {driver: identity + SKILL_CAN, running: every open attempt, canTakeLease: fewer open than options.parallel, and than one under a serial host}`', next: 'drive', action: '' },
+  { id: 'D1', state: 'drive', input: 'tick', guard: '', effects: 'engine `next {driver: identity + SKILL_CAN, running: every open attempt, canTakeLease: fewer open than options.parallel, and than one under a serial host; false in a runner\'s check}`', next: 'drive', action: '' },
+  { id: 'D2', state: 'drive', input: 'reply `cancelled` holds a', guard: 'a queued', effects: 'drop a', next: 'drive', action: 'event `stopped`' },
+  { id: 'D3', state: 'drive', input: 'reply `cancelled` holds a', guard: 'a preparing or running', effects: 'phase stopping by its runner, why `timeout` once its `expiresAt` passed, else `cancelled`', next: 'drive', action: '' },
+  { id: 'D4', state: 'drive', input: 'reply `cancelled` holds a', guard: 'a offered or dispatched', effects: 'phase stopping by the agent, why as D3', next: 'drive', action: '`stop {why, report}` in each foreground turn until reported' },
+  { id: 'D5', state: 'drive', input: 'reply `cancelled` holds a', guard: 'a stopping or reporting', effects: 'none', next: 'drive', action: '' },
   { id: 'D6', state: 'drive', input: 'reply lease', guard: 'executor command', effects: 'phase preparing; spawn runner job `command`', next: 'drive', action: 'event `started`' },
   { id: 'D7', state: 'drive', input: 'reply lease', guard: 'executor prompt', effects: 'phase preparing; spawn runner job `prompt`', next: 'drive', action: 'event `started`' },
   { id: 'D9', state: 'drive', input: 'tick', guard: 'a queued attempt whose `behind` is no longer open', effects: 'phase preparing; spawn its job again', next: 'drive', action: '' },
@@ -45,10 +49,10 @@ export const TRANSITIONS = [
   { id: 'D17', state: 'drive', input: 'reply error', guard: '', effects: 'none', next: 'drive', action: 'error with the engine\'s code, next: the next literal' },
   { id: 'D18', state: 'drive', input: 'a foreground call', guard: 'it spawned runners', effects: 'release the lock; wait up to `WAIT_GRACE_MS` for them, re-taking the lock per check', next: 'drive', action: '' },
   { id: 'D19', state: 'any', input: 'a foreground call', guard: 'the lock is not free within `TICK_LOCK_WAIT_MS` (`report`: `WAIT_BOUND_MS`)', effects: 'none', next: 'unchanged', action: 'error `driver_running`, next: the same literal' },
-  { id: 'D20', state: 'host, drive, done', input: 'a foreground call, after its tick', guard: '', effects: '`seen[s]` := seq', next: 'unchanged', action: 'the turn: the host question or every unacked dispatch, events after the old `seen[s]`; `then: poll` (none once done)' },
+  { id: 'D20', state: 'host, drive, done', input: 'a foreground call, after its tick', guard: '', effects: '`seen[s]` := seq', next: 'unchanged', action: 'the turn: the host question, or every `stop` then every unacked dispatch; events after the old `seen[s]`; `then: poll` until the run is done and no attempt is open' },
   { id: 'D21', state: 'host, drive, done', input: 'a poll tick', guard: 'the lock was busy, or nothing below applies, and the bound is not reached', effects: 'release; sleep `WAIT_POLL_MS`; tick again', next: 'unchanged', action: '' },
-  { id: 'D22', state: 'host, drive', input: 'a poll tick', guard: 'the host question is unanswered, or a dispatch is unacked', effects: 'none', next: 'unchanged', action: '`then: wake` with the next literal, no actions' },
-  { id: 'D23', state: 'done', input: 'a poll tick', guard: '`seen[s]` is below seq: s has not seen `done`', effects: '`seen[s]` := seq', next: 'done', action: '`done` with its events' },
+  { id: 'D22', state: 'host, drive, done', input: 'a poll tick', guard: 'the host question is unanswered, a dispatch is unacked, or a `stop` is not reported', effects: 'none', next: 'unchanged', action: '`then: wake` with the next literal, no actions' },
+  { id: 'D23', state: 'done', input: 'a poll tick', guard: '`seen[s]` is below seq, and no attempt is open', effects: '`seen[s]` := seq', next: 'done', action: '`done` with its events' },
   { id: 'D24', state: 'host, drive, done', input: 'a poll tick', guard: 'the bound is reached', effects: 'none', next: 'unchanged', action: '`then: poll`, no actions' },
   { id: 'C1', state: 'preparing', input: 'runner: prepared', guard: 'job `command`', effects: 'run the command outside the lock with `{...stepEnvironment(values, envScope).env, ...lease.env, TEAMAI_WORKFLOW_ATTEMPT}` (`process.env` for a lease without `envScope`), output masked into `output.log`', next: 'running', action: '' },
   { id: 'C2', state: 'preparing', input: 'runner: prepared', guard: 'job `prompt`', effects: '`pickChildModel`; `writeChildBrief`', next: 'offered', action: '`dispatch` in each foreground turn until acked' },
@@ -56,27 +60,31 @@ export const TRANSITIONS = [
   { id: 'C4', state: 'preparing', input: 'runner: place busy, behind b', guard: '', effects: '`behind` := b', next: 'queued', action: '' },
   { id: 'C7', state: 'preparing', input: 'runner: prepare or setup failed', guard: '', effects: 'write-ahead `failed` with its failure', next: 'reporting', action: '' },
   { id: 'C8', state: 'running', input: 'runner: the command exited', guard: '', effects: 'write-ahead: `success` on exit 0, else `failed`; outputs, exit code, masked tail', next: 'reporting', action: '' },
+  { id: 'C9', state: 'stopping by its runner', input: 'runner: its check every `RUNNER_POLL_MS` and at `expiresAt`, its setup ending, or its command exiting', guard: '', effects: 'stop the command and every process it started (`tool-launch/process-stop.ts`); write-ahead `released`', next: 'reporting', action: '' },
   { id: 'C10', state: 'preparing, running', input: 'tick: its `runner.lock` is free', guard: 'it was spawned more than `WAIT_GRACE_MS` ago', effects: 'spawn the same job again (prepare is idempotent; a command restarts in its prepared place)', next: 'unchanged', action: 'event `restarted`' },
+  { id: 'C11', state: 'stopping by its runner', input: 'tick: its `runner.lock` is free', guard: '', effects: 'write-ahead `released`', next: 'reporting', action: '' },
   { id: 'K1', state: 'drive', input: 'next `--ack dispatch.a`', guard: 'a offered', effects: 'phase dispatched', next: 'drive', action: 'the turn of a tick' },
   { id: 'K2', state: 'drive', input: 'next `--ack dispatch.a`', guard: 'a dispatched', effects: 'none', next: 'drive', action: 'the turn of a tick' },
   { id: 'K3', state: 'drive, done', input: 'next `--ack dispatch.a`', guard: 'a neither offered nor dispatched', effects: 'none', next: 'unchanged', action: 'error `unknown_offer`, next: the next literal' },
   { id: 'P1', state: 'drive, done', input: 'report a', guard: 'a is in the settled list', effects: 'none', next: 'unchanged', action: 'the turn of a tick with event `repeated`' },
   { id: 'P2', state: 'drive', input: 'report a', guard: 'a is unknown', effects: 'none', next: 'drive', action: 'error `unknown_attempt`, next: the next literal' },
-  { id: 'P3', state: 'drive', input: 'report a', guard: 'a preparing, queued, running or reporting', effects: 'none', next: 'drive', action: 'error `not_dispatched`, next: the next literal' },
+  { id: 'P3', state: 'drive', input: 'report a', guard: 'a preparing, queued, running, reporting, or stopping by its runner', effects: 'none', next: 'drive', action: 'error `not_dispatched`, next: the next literal' },
   { id: 'P4', state: 'drive', input: 'report a `--model-unavailable`', guard: 'a offered or dispatched, its dispatch printed `unavailable`', effects: 'write-ahead `failed` `model_unavailable` naming the model', next: 'reporting', action: 'P7 to P10, then the turn of a tick' },
   { id: 'P5', state: 'drive', input: 'report a', guard: 'a offered or dispatched, otherwise', effects: 'read `result.json`: an output gives `success` with it as outputs, a failure gives `failed` with it, none or an unreadable one gives `failed` `tool_failed`; write-ahead', next: 'reporting', action: 'P7 to P10, then the turn of a tick' },
+  { id: 'P6', state: 'drive, done', input: 'report a', guard: 'a stopping by the agent', effects: 'write-ahead `released`', next: 'reporting', action: 'P7 to P10, then the turn of a tick' },
   { id: 'P7', state: 'reporting', input: 'engine: reported, any status', guard: '', effects: 'drop a; add to settled', next: 'drive', action: 'event `settled`' },
   { id: 'P8', state: 'reporting', input: 'engine: `repeated_report`', guard: '', effects: 'as P7', next: 'drive', action: 'event `settled`' },
-  { id: 'P9', state: 'reporting', input: 'engine: `lease_cancelled`', guard: '', effects: 'drop a (the protocol abandoned its place)', next: 'drive', action: 'event `stopped`' },
+  { id: 'P9', state: 'reporting', input: 'engine: `lease_cancelled`', guard: '', effects: 'drop a (the protocol abandoned its place); add to settled, so a late report of its child is P1', next: 'unchanged', action: 'event `stopped`, why as its stop said, else as D3' },
   { id: 'P10', state: 'reporting', input: 'engine: another error', guard: '', effects: 'keep the body', next: 'reporting', action: 'error, next: the same report literal (a runner retries at its next check)' },
   { id: 'P11', state: 'reporting', input: 'tick', guard: 'a body is stored (a crash came between write and send)', effects: 'send it again', next: 'reporting', action: 'P7 to P10' },
-  { id: 'X2', state: 'done', input: 'next', guard: '', effects: 'none', next: 'done', action: '`done`, no `then`' },
+  { id: 'X2', state: 'done', input: 'next', guard: 'no attempt is open', effects: 'none', next: 'done', action: '`done`, no `then`' },
+  { id: 'X4', state: 'done', input: 'next', guard: 'an attempt is still open: the engine cancelled it with the run', effects: 'none', next: 'done', action: 'every `stop`, then `done`; `then: poll`' },
 ] as const satisfies readonly TransitionRow[];
 
 export type RowId = typeof TRANSITIONS[number]['id'];
 
 /** A lease the engine handed out, as the tick read it: a command, or a prompt for a child. */
-export type ReadLease = { attempt: AttemptId; step: string; revision: number } & (
+export type ReadLease = { attempt: AttemptId; step: string; revision: number; expiresAt?: string } & (
   | { executor: 'command'; command: string; env: Record<string, string>; envScope?: EnvScope }
   | { executor: 'prompt'; prompt: string; place: Dispatch['place']; agent?: string; model?: string; defaultModel?: string; output?: unknown }
 );
@@ -96,11 +104,14 @@ export type MachineInput =
   | { kind: 'start'; name: string; check: StartCheck; localOnly: string[]; prompts: boolean }
   | { kind: 'call'; run: RunId; session: string | undefined; at: string }
   | { kind: 'runner-call' }
-  | { kind: 'tick' }
+  /** `runner`: the check a runner makes while its attempt runs, which takes no lease. */
+  | { kind: 'tick'; role: 'call' | 'runner' }
   | { kind: 'next' }
   | { kind: 'choose'; choice: HostChoice; profile: HostProfile }
   | { kind: 'ack'; attempt: AttemptId }
   | { kind: 'reply'; reply: EngineReply; at: string }
+  /** The engine no longer leases `attempt` to this driver: it was cancelled, or it passed its deadline. */
+  | { kind: 'cancelled'; attempt: AttemptId; at: string }
   | { kind: 'spawned' }
   | { kind: 'lock-busy'; run: RunId }
   | { kind: 'turn'; session: string | undefined }
@@ -113,7 +124,9 @@ export type MachineInput =
   | { kind: 'model-failed'; attempt: AttemptId; body: ReportBody }
   | { kind: 'exited'; attempt: AttemptId; body: ReportBody; tail?: string }
   | { kind: 'runner-free'; attempt: AttemptId; at: string; graceMs: number }
-  | { kind: 'reported'; attempt: AttemptId; reply: ReportReply }
+  /** The runner found its attempt stopping, and its command, if it started one, is stopped. */
+  | { kind: 'runner-stop'; attempt: AttemptId }
+  | { kind: 'reported'; attempt: AttemptId; reply: ReportReply; at: string }
   | { kind: 'resend'; attempt: AttemptId }
   /** `result` is what the attempt's child left, read before the row is taken. */
   | { kind: 'report'; attempt: AttemptId; modelUnavailable: boolean; result: ChildResult };
@@ -167,6 +180,28 @@ function withAttempt(state: SkillState, attempt: AttemptState): SkillState {
   return { ...state, attempts: [...state.attempts.filter((open) => open.attempt !== attempt.attempt), attempt] };
 }
 
+/** The attempt `open` with only what every phase keeps. */
+function baseOf(open: AttemptState): Pick<AttemptState, 'attempt' | 'step' | 'revision' | 'spawnedAt' | 'expiresAt'> {
+  const { attempt, step: id, revision, spawnedAt, expiresAt } = open;
+  return { attempt, step: id, revision, spawnedAt, ...(expiresAt !== undefined ? { expiresAt } : {}) };
+}
+
+/** Why the engine stopped `open`, as it is known at `at`: its deadline passed, or the person cancelled it. */
+function stopReason(open: AttemptState, at: string): StopReason {
+  return open.expiresAt !== undefined && Date.parse(open.expiresAt) <= Date.parse(at) ? 'timeout' : 'cancelled';
+}
+
+/** Gives up stopped attempt `open` with a `released` report, which the protocol answers by abandoning its place. */
+function released(state: SkillState, open: Extract<AttemptState, { phase: 'stopping' }>, row: 'C9' | 'C11' | 'P6'): Step {
+  const body: ReportBody = { attempt: open.attempt, revision: open.revision, driver: state.driver, outcome: 'released' };
+  return { row, state: withAttempt(state, { ...baseOf(open), phase: 'reporting', body, stopped: open.why }), effects: [{ kind: 'send', attempt: open.attempt, body }] };
+}
+
+/** Whether something waits for the agent: the host question, a dispatch to ack, or a child to stop. */
+export function waitsForAgent(state: SkillState): boolean {
+  return state.host.kind === 'pending' || state.attempts.some((open) => open.phase === 'offered' || (open.phase === 'stopping' && open.by === 'agent'));
+}
+
 function seenBy(session: string | undefined): string {
   return session ?? '';
 }
@@ -211,11 +246,11 @@ export function step(state: SkillState | undefined, input: MachineInput): Step |
       return { row: 'S5', state, effects: [] };
     case 'next':
       if (!state) return undefined;
-      if (state.done) return { row: 'X2', state, effects: [] };
-      return tick(state);
+      if (state.done) return { row: state.attempts.length > 0 ? 'X4' : 'X2', state, effects: [] };
+      return tick(state, 'call');
     case 'tick':
       if (!state || state.done) return undefined;
-      return tick(state);
+      return tick(state, input.role);
     case 'choose':
       if (!state) return undefined;
       if (state.host.kind !== 'pending') return { row: 'R15', state, effects: [], answer: { kind: 'error', refusal: { code: 'unknown_choice', run: state.run }, next: 'next' } };
@@ -230,6 +265,30 @@ export function step(state: SkillState | undefined, input: MachineInput): Step |
     }
     case 'reply':
       return state && !state.done ? reply(state, input.reply, input.at) : undefined;
+    case 'cancelled': {
+      const open = state && !state.done ? openAttempt(state, input.attempt) : undefined;
+      if (!state || !open) return undefined;
+      const stopping = (by: 'runner' | 'agent'): AttemptState => ({ ...baseOf(open), phase: 'stopping', by, why: stopReason(open, input.at) });
+      switch (open.phase) {
+        case 'queued': {
+          const others = state.attempts.filter((other) => other.attempt !== open.attempt);
+          return { row: 'D2', state: withEvent({ ...state, attempts: others }, { kind: 'stopped', step: open.step, attempt: open.attempt, why: stopReason(open, input.at) }), effects: [] };
+        }
+        case 'preparing':
+        case 'running':
+          return { row: 'D3', state: withAttempt(state, stopping('runner')), effects: [] };
+        case 'offered':
+        case 'dispatched':
+          return { row: 'D4', state: withAttempt(state, stopping('agent')), effects: [] };
+        case 'stopping':
+        case 'reporting':
+          return { row: 'D5', state, effects: [] };
+        default: {
+          const unhandled: never = open;
+          return unhandled;
+        }
+      }
+    }
     case 'spawned':
       return state && !state.done ? { row: 'D18', state, effects: [{ kind: 'grace' }] } : undefined;
     case 'lock-busy':
@@ -238,11 +297,9 @@ export function step(state: SkillState | undefined, input: MachineInput): Step |
       if (!state) return undefined;
       return { row: 'D20', state: { ...state, seen: { ...state.seen, [seenBy(input.session)]: state.seq } }, effects: [], answer: { kind: 'turn', events: 'unseen', poll: !state.done } };
     case 'poll': {
-      if (state?.done && !input.busy && (state.seen[seenBy(input.session)] ?? 0) < state.seq) {
+      if (state && !input.busy && waitsForAgent(state)) return { row: 'D22', state, effects: [], answer: { kind: 'turn', events: 'none', poll: false } };
+      if (state?.done && !input.busy && state.attempts.length === 0 && (state.seen[seenBy(input.session)] ?? 0) < state.seq) {
         return { row: 'D23', state: { ...state, seen: { ...state.seen, [seenBy(input.session)]: state.seq } }, effects: [], answer: { kind: 'turn', events: 'unseen', poll: false } };
-      }
-      if (state && !state.done && !input.busy && (state.host.kind === 'pending' || state.attempts.some((open) => open.phase === 'offered'))) {
-        return { row: 'D22', state, effects: [], answer: { kind: 'turn', events: 'none', poll: false } };
       }
       if (input.boundReached) return { row: 'D24', state, effects: [], answer: { kind: 'turn', events: 'none', poll: true } };
       return { row: 'D21', state, effects: [{ kind: 'sleep' }] };
@@ -272,7 +329,7 @@ export function step(state: SkillState | undefined, input: MachineInput): Step |
     case 'model-failed': {
       const open = state && openAttempt(state, input.attempt);
       if (!state || (open?.phase !== 'preparing' && open?.phase !== 'running')) return undefined;
-      const reporting: AttemptState = { attempt: open.attempt, step: open.step, revision: open.revision, spawnedAt: open.spawnedAt, phase: 'reporting', body: input.body };
+      const reporting: AttemptState = { ...baseOf(open), phase: 'reporting', body: input.body };
       return { row: input.kind === 'prepare-failed' ? 'C7' : 'C3', state: withAttempt(state, reporting), effects: [{ kind: 'send', attempt: input.attempt, body: input.body }] };
     }
     case 'exited': {
@@ -283,16 +340,23 @@ export function step(state: SkillState | undefined, input: MachineInput): Step |
     }
     case 'runner-free': {
       const open = state && openAttempt(state, input.attempt);
+      if (state && open?.phase === 'stopping' && open.by === 'runner') return released(state, open, 'C11');
       if (!state || (open?.phase !== 'preparing' && open?.phase !== 'running') || Date.parse(input.at) - Date.parse(open.spawnedAt) <= input.graceMs) return undefined;
       const respawned = withAttempt(state, { ...open, spawnedAt: input.at });
       return { row: 'C10', state: withEvent(respawned, { kind: 'restarted', step: open.step, attempt: open.attempt }), effects: [{ kind: 'spawn', attempt: open.attempt }] };
+    }
+    case 'runner-stop': {
+      const open = state && openAttempt(state, input.attempt);
+      if (!state || open?.phase !== 'stopping' || open.by !== 'runner') return undefined;
+      return released(state, open, 'C9');
     }
     case 'reported': {
       const open = state && openAttempt(state, input.attempt);
       if (!state || open?.phase !== 'reporting') return undefined;
       const others = state.attempts.filter((other) => other.attempt !== open.attempt);
       if (input.reply.kind === 'error' && input.reply.error.code === 'lease_cancelled') {
-        return { row: 'P9', state: withEvent({ ...state, attempts: others }, { kind: 'stopped', step: open.step, attempt: open.attempt }), effects: [] };
+        const why = open.stopped ?? stopReason(open, input.at);
+        return { row: 'P9', state: withEvent({ ...state, attempts: others, settled: [...state.settled, open.attempt] }, { kind: 'stopped', step: open.step, attempt: open.attempt, why }), effects: [] };
       }
       if (input.reply.kind === 'error' && input.reply.error.code !== 'repeated_report') {
         return { row: 'P10', state, effects: [], answer: { kind: 'engine-error', error: input.reply.error, next: 'same' } };
@@ -315,9 +379,10 @@ export function step(state: SkillState | undefined, input: MachineInput): Step |
     case 'report': {
       if (!state) return undefined;
       if (state.settled.includes(input.attempt)) return { row: 'P1', state: withEvent(state, { kind: 'repeated', attempt: input.attempt }), effects: [] };
+      const open = openAttempt(state, input.attempt);
+      if (open?.phase === 'stopping' && open.by === 'agent') return released(state, open, 'P6');
       if (state.done) return undefined;
       if (state.host.kind === 'pending') return choicePending(state);
-      const open = openAttempt(state, input.attempt);
       if (!open) return { row: 'P2', state, effects: [], answer: { kind: 'error', refusal: { code: 'unknown_attempt', run: state.run, attempt: input.attempt }, next: 'next' } };
       if (open.phase !== 'offered' && open.phase !== 'dispatched') {
         return { row: 'P3', state, effects: [], answer: { kind: 'error', refusal: { code: 'not_dispatched', run: state.run, attempt: input.attempt, phase: open.phase }, next: 'next' } };
@@ -351,9 +416,9 @@ export function hasSlot(state: SkillState): boolean {
   return state.attempts.length < childCap(state);
 }
 
-function tick(state: SkillState): Step {
+function tick(state: SkillState, role: 'call' | 'runner'): Step {
   if (state.host.kind === 'pending') return { row: 'R12', state, effects: [] };
-  return { row: 'D1', state, effects: [{ kind: 'next', running: state.attempts.map((open) => open.attempt), canTakeLease: hasSlot(state) }] };
+  return { row: 'D1', state, effects: [{ kind: 'next', running: state.attempts.map((open) => open.attempt), canTakeLease: role === 'call' && hasSlot(state) }] };
 }
 
 function choicePending(state: SkillState): Step {
@@ -363,8 +428,8 @@ function choicePending(state: SkillState): Step {
 function reply(state: SkillState, engine: EngineReply, at: string): Step {
   switch (engine.kind) {
     case 'lease': {
-      const { attempt, step: id, revision, executor } = engine.lease;
-      const preparing = withAttempt(state, { attempt, step: id, revision, spawnedAt: at, phase: 'preparing' });
+      const { attempt, step: id, revision, executor, expiresAt } = engine.lease;
+      const preparing = withAttempt(state, { attempt, step: id, revision, spawnedAt: at, ...(expiresAt !== undefined ? { expiresAt } : {}), phase: 'preparing' });
       return { row: executor === 'command' ? 'D6' : 'D7', state: withEvent(preparing, { kind: 'started', step: id, attempt }), effects: [{ kind: 'spawn', attempt, job: { lease: engine.raw } }] };
     }
     case 'wait':

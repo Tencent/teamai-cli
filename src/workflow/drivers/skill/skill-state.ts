@@ -14,7 +14,8 @@ const FailureSchema = z.object({ code: z.string(), message: z.string() });
 export const ReportBodySchema = z.object({
   attempt: AttemptIdSchema,
   revision: z.number().int(),
-  outcome: z.enum(['success', 'failed']),
+  /** `released`: the attempt was stopped, so the protocol abandons its place instead of finishing it. */
+  outcome: z.enum(['success', 'failed', 'released']),
   driver: DriverSchema,
   exitCode: z.number().int().optional(),
   outputs: z.unknown().optional(),
@@ -43,10 +44,15 @@ const DispatchSchema = z.object({
 });
 export type Dispatch = z.infer<typeof DispatchSchema>;
 
-const AttemptBase = { attempt: AttemptIdSchema, step: z.string(), revision: z.number().int(), spawnedAt: z.string() };
+/** Why an attempt is stopped: the person cancelled it, or it passed the deadline its lease carries. */
+export const STOP_REASONS = ['cancelled', 'timeout'] as const;
+export type StopReason = typeof STOP_REASONS[number];
+
+const AttemptBase = { attempt: AttemptIdSchema, step: z.string(), revision: z.number().int(), spawnedAt: z.string(), expiresAt: z.string().optional() };
 /**
  * An open attempt: its runner prepares its place or runs its command; it waits for the place another attempt holds;
- * its dispatch is offered to the agent, or acked; or it has a report to send.
+ * its dispatch is offered to the agent, or acked; it is being stopped, by its runner or by the agent that started its
+ * child; or it has a report to send.
  */
 export const AttemptStateSchema = z.discriminatedUnion('phase', [
   z.object({ ...AttemptBase, phase: z.literal('preparing') }),
@@ -54,15 +60,17 @@ export const AttemptStateSchema = z.discriminatedUnion('phase', [
   z.object({ ...AttemptBase, phase: z.literal('running') }),
   z.object({ ...AttemptBase, phase: z.literal('offered'), dispatch: DispatchSchema }),
   z.object({ ...AttemptBase, phase: z.literal('dispatched'), dispatch: DispatchSchema }),
-  z.object({ ...AttemptBase, phase: z.literal('reporting'), body: ReportBodySchema, tail: z.string().optional() }),
+  z.object({ ...AttemptBase, phase: z.literal('stopping'), by: z.enum(['runner', 'agent']), why: z.enum(STOP_REASONS) }),
+  /** `stopped`: the report gives up an attempt stopped for this reason. */
+  z.object({ ...AttemptBase, phase: z.literal('reporting'), body: ReportBodySchema, tail: z.string().optional(), stopped: z.enum(STOP_REASONS).optional() }),
 ]);
 export type AttemptState = z.infer<typeof AttemptStateSchema>;
 
 export const TurnEventSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('started'), step: z.string(), attempt: AttemptIdSchema }),
   z.object({ kind: z.literal('restarted'), step: z.string(), attempt: AttemptIdSchema }),
-  /** The engine cancelled the attempt's lease, so its report was not recorded. */
-  z.object({ kind: z.literal('stopped'), step: z.string(), attempt: AttemptIdSchema }),
+  /** The engine cancelled the attempt's lease, or its deadline passed, so its report was not recorded. */
+  z.object({ kind: z.literal('stopped'), step: z.string(), attempt: AttemptIdSchema, why: z.enum(STOP_REASONS) }),
   /** A report came again for an attempt already settled. */
   z.object({ kind: z.literal('repeated'), attempt: AttemptIdSchema }),
   z.object({
@@ -98,6 +106,7 @@ export const SkillStateSchema = z.object({
   events: z.array(z.object({ seq: z.number().int(), event: TurnEventSchema })),
   /** The last event each session was shown, by session. */
   seen: z.record(z.string(), z.number().int()),
+  /** The attempts the engine settled or stopped: a report that comes for one again is P1. */
   settled: z.array(AttemptIdSchema),
   done: z.object({ outcome: z.enum(['succeeded', 'failed', 'cancelled']), failure: FailureSchema.optional() }).optional(),
 });

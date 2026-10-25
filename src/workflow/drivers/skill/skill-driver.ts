@@ -41,11 +41,21 @@ export interface RunnerJob {
   checkout: string;
 }
 
-/** How runners start, how a tick tells one is alive, and how a call waits. */
+/** A step's command as its runner started it. */
+export interface CommandRun {
+  /** Settles once the command exited and closed its output. `output` is stdout and stderr as they came, unmasked. */
+  exit: Promise<{ exitCode: number; stdout: string; stderr: string; output: string }>;
+  /** Stops the command and every process it started, and settles once they are gone. A second call changes nothing. */
+  stop(): Promise<Awaited<CommandRun['exit']>>;
+}
+
+/** How runners start, how a tick tells one is alive, how a runner runs its command, and how a call waits. */
 export interface Runners {
   spawn(job: RunnerJob): Promise<void>;
   alive(run: RunId, attempt: AttemptId): Promise<boolean>;
-  sleep(ms: number): Promise<void>;
+  command(input: { command: string; cwd: string; env: NodeJS.ProcessEnv }): CommandRun;
+  /** Waits `ms`, or until `signal` aborts. */
+  sleep(ms: number, signal?: AbortSignal): Promise<void>;
 }
 
 export interface SkillContext {

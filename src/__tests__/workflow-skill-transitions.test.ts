@@ -2,11 +2,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { WorkflowClient } from '../workflow/protocol.js';
-import { AttemptIdSchema, RunIdSchema, type RunId } from '../workflow/store.js';
+import { AttemptIdSchema, readRun, RunIdSchema, type RunId } from '../workflow/store.js';
 import type { Runners } from '../workflow/drivers/skill/skill-driver.js';
 // The doc comparison reads the table itself; every behaviour below goes through runSkillCall.
 import { TRANSITIONS, type TransitionRow } from '../workflow/drivers/skill/transitions.js';
-import { skillHarness } from './helpers/skill-harness.js';
+import { skillHarness, untilStopped } from './helpers/skill-harness.js';
 
 const CHECK = `schemaVersion: v1alpha1
 name: check
@@ -92,6 +92,29 @@ steps:
     command: node -e "process.exit(0)"
 `;
 
+// Two commands that run until they are stopped and share the checkout, so one waits behind the other.
+const SERVE = `schemaVersion: v1alpha1
+name: check
+description: Serve the app and watch its files
+invoke: allow
+steps:
+  - id: serve
+    command: sleep 300
+  - id: watch
+    needs: []
+    command: sleep 300
+`;
+
+const TIMED = `schemaVersion: v1alpha1
+name: check
+description: Serve the app for half a minute
+invoke: allow
+steps:
+  - id: serve
+    timeout: 30s
+    command: sleep 300
+`;
+
 const roots: string[] = [];
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -139,6 +162,23 @@ async function polledToDone(made: Awaited<ReturnType<typeof harness>>, run: RunI
     if ('data' in answer && 'turn' in answer.data && answer.data.turn.status === 'done') return answer.data.turn;
   }
   throw new Error('the run did not reach done in five polls');
+}
+
+/** The runners with `sleep 300` faked: it runs until it is stopped, and `stops` gets the attempt of each stop. */
+function sleepFaked(stops: string[]) {
+  return (runners: Runners): Runners => ({
+    ...runners,
+    command: (input) => (input.command === 'sleep 300' ? untilStopped(() => { stops.push(input.env.TEAMAI_WORKFLOW_ATTEMPT ?? ''); }) : runners.command(input)),
+  });
+}
+
+/** Starts SERVE: the turn, and its attempt that runs and the one that waits behind it. */
+async function serving(made: Awaited<ReturnType<typeof harness>>) {
+  const turn = await turnOf(await made.call({ kind: 'start', name: 'check', answers: { parallel: 2, confirmed: false }, inputs: undefined }));
+  const running = turn.running.find((entry) => entry.phase === 'running');
+  const queued = turn.running.find((entry) => entry.phase === 'queued');
+  if (!running || !queued) throw new Error(JSON.stringify(turn));
+  return { turn, running, queued };
 }
 
 /** The protocol with its first `next`, `report` or `prepare` answered by `script` instead. */
@@ -327,9 +367,97 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       if (lint?.step !== 'lint') throw new Error(JSON.stringify(answer));
       expect(await made.context.client.cancel(run, 'lint')).toMatchObject({ data: { cancelled: { attempts: [lint.attempt] } } });
       const done = await polledToDone(made, run);
-      expect(done.events).toContainEqual({ kind: 'stopped', step: 'lint', attempt: lint.attempt });
+      expect(done.events).toContainEqual({ kind: 'stopped', step: 'lint', attempt: lint.attempt, why: 'cancelled' });
       expect(done.events.filter((event) => event.kind === 'settled').map((event) => event.step)).toEqual(['test']);
       expect(done.running).toEqual([]);
+      return made.rows;
+    },
+  },
+  {
+    name: 'a cancelled command is stopped by its runner at its next check, and a cancelled one waiting behind it is dropped',
+    rows: ['D2', 'D3', 'D5', 'C9', 'P9'],
+    run: async () => {
+      const stops: string[] = [];
+      const made = await harness({ check: SERVE }, { runners: sleepFaked(stops) });
+      const { turn: { run }, running, queued } = await serving(made);
+      await made.context.client.cancel(run, running.step);
+      for (let call = 0; call < 2; call += 1) {
+        expect((await turnOf(await made.call({ kind: 'next', run, wait: false }))).running).toContainEqual({ attempt: running.attempt, step: running.step, phase: 'stopping' });
+      }
+      expect(stops).toEqual([]);
+      await made.context.client.cancel(run, queued.step);
+      const events: unknown[] = [];
+      for (let poll = 0; poll < 5 && events.length < 2; poll += 1) {
+        events.push(...(await turnOf(await made.call({ kind: 'next', run, wait: true }))).events.filter((event) => event.kind === 'stopped'));
+      }
+      expect(events).toEqual(expect.arrayContaining([
+        { kind: 'stopped', step: queued.step, attempt: queued.attempt, why: 'cancelled' },
+        { kind: 'stopped', step: running.step, attempt: running.attempt, why: 'cancelled' },
+      ]));
+      expect(stops).toEqual([`${run}/${running.attempt}`]);
+      return made.rows;
+    },
+  },
+  {
+    name: 'a command past its timeout is stopped by its runner at its deadline',
+    rows: ['D3', 'C9', 'P9'],
+    run: async () => {
+      const stops: string[] = [];
+      const made = await harness({ check: TIMED }, { runners: sleepFaked(stops) });
+      const { run, running: [serve] } = await started(made);
+      if (serve?.phase !== 'running') throw new Error(`serve is ${serve?.phase}`);
+      const done = await polledToDone(made, run);
+      expect(done.events).toContainEqual({ kind: 'stopped', step: 'serve', attempt: serve.attempt, why: 'timeout' });
+      expect(done.actions).toMatchObject([{ kind: 'done', outcome: 'failed' }]);
+      const engine = await readRun(made.config, run);
+      expect(typeof engine === 'object' && engine.steps.find((step) => step.id === 'serve')).toMatchObject({ status: 'failed', failure: { code: 'timeout' } });
+      expect(stops).toEqual([`${run}/${serve.attempt}`]);
+      return made.rows;
+    },
+  },
+  {
+    name: 'an attempt whose runner is gone while it stops is given up by the next tick',
+    rows: ['C11'],
+    run: async () => {
+      let gone = false;
+      const made = await harness({ check: SERVE }, { runners: (runners) => ({ ...sleepFaked([])(runners), alive: async (run, attempt) => !gone && runners.alive(run, attempt) }) });
+      const { turn: { run }, running } = await serving(made);
+      await made.context.client.cancel(run, running.step);
+      expect((await turnOf(await made.call({ kind: 'next', run, wait: false }))).running).toContainEqual({ attempt: running.attempt, step: running.step, phase: 'stopping' });
+      gone = true;
+      expect((await turnOf(await made.call({ kind: 'next', run, wait: false }))).events).toContainEqual({ kind: 'stopped', step: running.step, attempt: running.attempt, why: 'cancelled' });
+      return made.rows;
+    },
+  },
+  {
+    name: 'a run cancelled while children work: each turn asks the agent to stop them, a poll wakes for that, and their reports give them up',
+    rows: ['D4', 'D22', 'X4', 'P6', 'X2'],
+    run: async () => {
+      const made = await harness({ pair: PAIR });
+      const turn = await chosen(made, 'pair', 2);
+      const { run } = turn;
+      const [first] = dispatches(turn);
+      if (!first) throw new Error(JSON.stringify(turn));
+      await made.call({ kind: 'ack', run, attempt: first.attempt });
+      await made.context.client.cancel(run);
+      const cancelled = await turnOf(await made.call({ kind: 'next', run, wait: false }));
+      const stops = cancelled.actions.flatMap((action) => (action.kind === 'stop' ? [action] : []));
+      expect(cancelled.actions.map((action) => action.kind)).toEqual(['stop', 'stop', 'done']);
+      expect(stops.map(({ step, why }) => ({ step, why })).sort((a, b) => a.step.localeCompare(b.step))).toEqual([{ step: 'api', why: 'cancelled' }, { step: 'ui', why: 'cancelled' }]);
+      expect(cancelled.then).toEqual({ kind: 'poll', run: `teamai workflow next ${run} --driver skill --wait` });
+      const woken = await turnOf(await made.call({ kind: 'next', run, wait: true }));
+      expect([woken.actions, woken.then]).toEqual([[], { kind: 'wake', run: `teamai workflow next ${run} --driver skill` }]);
+      expect((await turnOf(await made.call({ kind: 'next', run, wait: false }))).actions).toEqual(cancelled.actions);
+      let last = cancelled;
+      const events: unknown[] = [];
+      for (const stop of stops) {
+        last = await turnOf(await made.call({ kind: 'report', run, attempt: stop.attempt, role: 'agent', modelUnavailable: false }));
+        events.push(...last.events);
+      }
+      expect(events).toEqual(stops.map(({ step, attempt }) => ({ kind: 'stopped', step, attempt, why: 'cancelled' })));
+      expect(last.actions.map((action) => action.kind)).toEqual(['done']);
+      expect(last).not.toHaveProperty('then');
+      await made.call({ kind: 'next', run, wait: false });
       return made.rows;
     },
   },
