@@ -51,6 +51,7 @@ steps:
 `);
       fs.writeFileSync(path.join(workflows, 'private.yaml'), 'schemaVersion: v1alpha1\nname: private\ndescription: Not advertised.\nsteps:\n  - id: work\n    command: echo private\n');
       fs.writeFileSync(path.join(workflows, 'pair.yaml'), 'schemaVersion: v1alpha1\nname: pair\ndescription: Interactive editing.\nsteps:\n  - id: pair\n    prompt: Pair on code.\n    interactive: true\n');
+      git('add', '.teamai/workflows'); git('commit', '-qm', 'workflows');
       const pulled = call(['pull']); expect(pulled.status, pulled.stderr).toBe(0);
       const hook = call(['hook-dispatch', 'session-start', '--tool', 'claude'], repo, JSON.stringify({ cwd: repo, session_id: 'session-fixture', hook_event_name: 'SessionStart' }));
       expect(hook.status, hook.stderr).toBe(0);
@@ -67,6 +68,9 @@ steps:
       const next = (cwd: string) => { const answer = call(['workflow', 'next', id, '--prepare', '--json', JSON.stringify({ driver })], cwd); expect(answer.status, answer.stderr).toBe(0); return envelope(answer.stdout).data; };
       const first = next(outside).lease;
       expect(first.step).toBe('work.write'); expect(first.cwd).not.toBe(outside);
+      // The place gets the base checkout's generated skill, the same bytes, not one of its own.
+      const generated = (dir: string) => fs.readFileSync(path.join(dir, '.claude', 'skills', 'workflow-change', 'SKILL.md'), 'utf8');
+      expect(generated(first.cwd)).toBe(generated(repo));
       fs.writeFileSync(path.join(first.cwd, 'code.txt'), 'first\n'); fs.writeFileSync(path.join(first.cwd, 'AGENTS.md'), 'Untrusted branch instructions.\n');
       expect(next(first.cwd).lease.cwd).toBe(first.cwd);
       expect(fs.readFileSync(path.join(first.cwd, 'code.txt'), 'utf8')).toBe('first\n');

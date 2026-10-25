@@ -36,6 +36,10 @@ const [gitMajor, gitMinor] = versionMatch ? [Number(versionMatch[1]), Number(ver
 const configHooks = gitMajor > 2 || (gitMajor === 2 && gitMinor >= 54);
 const eventDisable = gitMajor > 2 || (gitMajor === 2 && gitMinor >= 55);
 
+/** A workflow an agent may start: pull generates its `workflow-<name>` skill. */
+const teamWorkflow = (name: string): string =>
+  `schemaVersion: v1alpha1\nname: ${name}\ndescription: Check the change.\ninvoke: allow\nsteps:\n  - id: run\n    command: echo ok\n`;
+
 interface Run {
   code: number | null;
   output: string;
@@ -98,10 +102,11 @@ describe.skipIf(!configHooks)('git hook: a new worktree gets the team\'s resourc
         && fs.readFileSync(teamHooks, 'utf8').includes('echo team-hook-v1'),
       rule: fs.existsSync(path.join(dir, '.claude', 'rules', 'team-rule.md')),
       mcp: fs.existsSync(path.join(dir, '.mcp.json')) && fs.readFileSync(path.join(dir, '.mcp.json'), 'utf8').includes('team-api'),
+      workflowSkill: fs.existsSync(path.join(dir, '.claude', 'skills', 'workflow-team-check', 'SKILL.md')),
     };
   };
-  const ALL = { skill: true, agent: true, hook: true, rule: true, mcp: true };
-  const NOTHING = { skill: false, agent: false, hook: false, rule: false, mcp: false };
+  const ALL = { skill: true, agent: true, hook: true, rule: true, mcp: true, workflowSkill: true };
+  const NOTHING = { skill: false, agent: false, hook: false, rule: false, mcp: false, workflowSkill: false };
 
   /** The project partition (data home) `init` created for the repo at `root`. */
   const partitionOf = (root: string): string => {
@@ -137,6 +142,7 @@ describe.skipIf(!configHooks)('git hook: a new worktree gets the team\'s resourc
     write('agents/team-agent.yaml', 'name: team-agent\ndescription: Startup agent fixture\ninstructions: Team agent v1\n');
     write('hooks/hooks.yaml', 'hooks:\n  - id: startup-guard\n    description: Startup hook fixture\n    event: SessionStart\n    command: echo team-hook-v1\n');
     write('mcp/mcp.yaml', 'servers:\n  - name: team-api\n    transport: http\n    url: https://team.example.com/mcp\n');
+    write('workflows/team-check.yaml', teamWorkflow('team-check'));
     gitOk(['init', '-q', '-b', 'main'], seed);
     gitOk(['add', '-A'], seed);
     gitOk(['commit', '-q', '-m', 'seed'], seed);
@@ -458,6 +464,7 @@ describe.skipIf(!configHooks)('git hook: a new worktree gets the team\'s resourc
       fs.writeFileSync(path.join(teamChange, 'rules', 'team-rule.md'), `# Team rule ${version}\n`);
       fs.writeFileSync(path.join(teamChange, 'mcp', 'mcp.yaml'), `servers:\n  - name: team-api\n    transport: http\n    url: https://team-${version}.example.com/mcp\n`);
       fs.writeFileSync(path.join(teamChange, 'hooks', 'hooks.yaml'), `hooks:\n  - id: startup-guard\n    description: Startup hook fixture\n    event: SessionStart\n    command: echo team-hook-${version}\n`);
+      fs.writeFileSync(path.join(teamChange, 'workflows', `published-${mode}.yaml`), teamWorkflow(`published-${mode}`));
       gitOk(['add', '-A'], teamChange);
       gitOk(['commit', '-q', '-m', 'update all startup resources'], teamChange);
       gitOk(['push', '-q', 'origin', 'HEAD:main'], teamChange);
@@ -478,6 +485,7 @@ describe.skipIf(!configHooks)('git hook: a new worktree gets the team\'s resourc
       expect(fs.readFileSync(path.join(repo, '.claude', 'rules', 'team-rule.md'), 'utf8')).toContain(`Team rule ${version}`);
       expect(fs.readFileSync(path.join(repo, '.mcp.json'), 'utf8')).toContain(`https://team-${version}.example.com/mcp`);
       expect(fs.readFileSync(path.join(repo, '.claude', 'settings.local.json'), 'utf8')).toContain(`echo team-hook-${version}`);
+      expect(fs.existsSync(path.join(repo, '.claude', 'skills', `workflow-published-${mode}`, 'SKILL.md'))).toBe(true);
       await settle(repo);
     });
 
