@@ -1,4 +1,3 @@
-import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
@@ -28,32 +27,16 @@ import {
   type LocalToolResult,
   type LocalToolRun,
 } from './local-tool-adapter.js';
-import { AttemptIdSchema, attemptResultPath, attemptsDir, readRun, RunIdSchema, updateRun, withRunLock, type RunId, type RunLock } from '../../store.js';
+import { attemptDir, AttemptIdSchema, attemptResultPath, attemptsDir, readRun, RunIdSchema, updateRun, withRunLock, type RunId, type RunLock } from '../../store.js';
 import { abandonPlace, placeLeaseOf, placeOf, placeRoot, preparePlace, runPlaceSetup, type StepEnd } from '../../place/place.js';
-import { commandOutputs, managedReport } from '../../protocol.js';
-import { stopProcess } from '../../../tool-launch/process-stop.js';
+import { commandEnd, managedReport } from '../../protocol.js';
+import { startGroupedCommand, type CommandExit, type GroupedCommand } from '../../../tool-launch/process-stop.js';
 import { isLaunchTool, localToolFamily, type LaunchTool } from '../../../tool-launch/tools.js';
 import { chooseStepModel, loadDeployedAgent } from '../../step-model.js';
 import type { DriverIdentity, StepHitl, WorkflowEnvelope, WorkflowFailure } from '../../types.js';
 import { isWorkflowError, WORKSPACE_MODES } from '../../types.js';
 import type { SessionRef } from '../../workspace.js';
 import { fetchMissingCommits, headCommit, reconcileCopy } from '../../worktree.js';
-
-interface CommandResult {
-  exitCode: number;
-  stdout: string;
-  stderr: string;
-}
-
-interface CommandProcess {
-  /** Settles when the command has exited and closed its output. */
-  exit: Promise<CommandResult>;
-  /**
-   * SIGTERM, then SIGKILL after the grace period. Settles once the command's process group is gone, which can be after
-   * `exit` when a process it started outlives it; a second call changes nothing.
-   */
-  stop(): Promise<CommandResult>;
-}
 
 const STOP_SIGNALS: readonly NodeJS.Signals[] = ['SIGINT', 'SIGQUIT', 'SIGTERM', 'SIGHUP'];
 
@@ -65,28 +48,8 @@ export function _setDriverPollMs(ms: number): void {
   pollMs = ms;
 }
 
-/**
- * Starts a leased command with `env`: the step's environment with the lease `env` set over it, so values reach the
- * shell only as variables. A detached command leads a process group of its own, so `stop` reaches everything it
- * started; it has no controlling terminal, and a terminal's Ctrl-C does not reach it.
- */
-function startCommand(command: string, cwd: string, env: NodeJS.ProcessEnv, detached: boolean): CommandProcess {
-  const child = spawn(command, { cwd, shell: true, env, windowsHide: true, detached });
-  const exit = new Promise<CommandResult>((resolve) => {
-    let stdout = '';
-    let stderr = '';
-    child.stdout?.setEncoding('utf8');
-    child.stderr?.setEncoding('utf8');
-    child.stdout?.on('data', (chunk: string) => { stdout += chunk; });
-    child.stderr?.on('data', (chunk: string) => { stderr += chunk; });
-    child.on('error', (error) => resolve({ exitCode: 1, stdout, stderr: error.message }));
-    child.on('close', (code) => resolve({ exitCode: code ?? 1, stdout, stderr }));
-  });
-  return { exit, stop: stopProcess(child, exit, detached) };
-}
-
 /** What a leased command came to: it ran, staging failed, or it was stopped or its lease ended before it could start. */
-type StagedResult = { kind: 'ran'; result: CommandResult } | { kind: 'unstaged'; failure: WorkflowFailure } | { kind: 'stopped' };
+type StagedResult = { kind: 'ran'; result: CommandExit } | { kind: 'unstaged'; failure: WorkflowFailure } | { kind: 'stopped' };
 
 interface StagedCommand {
   exit: Promise<StagedResult>;
@@ -103,9 +66,9 @@ function startable(lease: Lease, signal: AbortSignal): boolean {
  * Stages a leased command, then starts it, as one attempt, so the driver keeps asking the run what to do while staging
  * and setup run, and a cancel reaches either phase.
  */
-function stageThenStart(lease: Lease, stage: (signal: AbortSignal) => Promise<WorkflowFailure | undefined>, start: () => CommandProcess): StagedCommand {
+function stageThenStart(lease: Lease, stage: (signal: AbortSignal) => Promise<WorkflowFailure | undefined>, start: () => GroupedCommand): StagedCommand {
   const controller = new AbortController();
-  let command: CommandProcess | undefined;
+  let command: GroupedCommand | undefined;
   const exit = (async (): Promise<StagedResult> => {
     const failure = await stage(controller.signal);
     if (!startable(lease, controller.signal)) return { kind: 'stopped' };
@@ -296,24 +259,12 @@ async function resumeSession(archive: SessionArchive, lease: Lease, tool: Launch
   return undefined;
 }
 
-async function commandReport(config: LocalConfig, lock: RunLock, driver: DriverIdentity, lease: Lease, result: CommandResult): Promise<ReportBody> {
-  const output = commandOutputs(result.stdout);
+async function commandReport(config: LocalConfig, lock: RunLock, driver: DriverIdentity, lease: Lease, result: CommandExit): Promise<ReportBody> {
+  const end = commandEnd(result);
   const resultFile = attemptResultPath(config, lock.run, lease.attempt);
   await fs.mkdir(path.dirname(resultFile), { recursive: true });
-  await writeJsonAtomic(resultFile, output !== undefined ? { output } : {});
-  const snippet = result.stderr.trim().slice(0, 400);
-  const end: StepEnd = result.exitCode === 0
-    ? { outcome: 'success' }
-    : { outcome: 'failed', message: snippet === '' ? `command exited with status ${result.exitCode}` : `command exited with status ${result.exitCode}: ${snippet}` };
-  return {
-    attempt: lease.attempt,
-    revision: lease.revision,
-    outcome: end.outcome,
-    driver,
-    ...(output !== undefined ? { outputs: output } : {}),
-    exitCode: result.exitCode,
-    ...(end.message ? { message: end.message } : {}),
-  };
+  await writeJsonAtomic(resultFile, end.outputs !== undefined ? { output: end.outputs } : {});
+  return { attempt: lease.attempt, revision: lease.revision, driver, ...end };
 }
 
 /**
@@ -672,7 +623,10 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options
           (signal) => stageLease(lease, { config, lock, root, values: turn.values, mode, signal }),
           () => {
             if (forwarded) handle(forwarded);
-            return startCommand(command, lease.cwd ?? root, { ...lease.processEnv ?? process.env, ...lease.env, ...attemptEnv(runId, lease.attempt, mode) }, detached);
+            // The lease `env` is set over the step's environment, so its values reach the shell only as variables.
+            return startGroupedCommand({
+              command, cwd: lease.cwd ?? root, env: { ...lease.processEnv ?? process.env, ...lease.env, ...attemptEnv(runId, lease.attempt, mode) }, detached, group: attemptDir(config, runId, lease.attempt),
+            });
           },
         ) });
       }

@@ -1,4 +1,4 @@
-import { execFile, execFileSync, type ChildProcess } from 'node:child_process';
+import { execFile, execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
@@ -89,6 +89,43 @@ export async function stopGroup(group: ProcessGroup): Promise<boolean> {
     await new Promise<void>((resolve) => setTimeout(resolve, 50));
   }
   return true;
+}
+
+/** What a command `startGroupedCommand` ran left: its status, its stdout and stderr, and both together as they came. */
+export interface CommandExit {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+  output: string;
+}
+
+/** A shell command a driver started. */
+export interface GroupedCommand {
+  /** Settles once the command exited and closed its output. */
+  exit: Promise<CommandExit>;
+  /** Stops the command and what it started, then settles once they are gone. A second call changes nothing. */
+  stop: (signal?: NodeJS.Signals) => Promise<CommandExit>;
+}
+
+/**
+ * Starts shell `command` with its stdin closed. A `detached` command leads a process group of its own, recorded in
+ * `group` for `stopRecordedGroup`, so a stop reaches everything it started even after its starter died. A command that
+ * cannot be spawned exits 127, the shell's status for a command it cannot run, with the error at the end of its stderr.
+ */
+export function startGroupedCommand(input: { command: string; cwd: string; env: NodeJS.ProcessEnv; detached: boolean; group: string }): GroupedCommand {
+  const { command, cwd, env, detached, group } = input;
+  const child = spawn(command, { shell: true, cwd, env, detached, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+  if (detached) recordGroup(child, group);
+  const exit = new Promise<CommandExit>((resolve) => {
+    let stdout = '';
+    let stderr = '';
+    let output = '';
+    child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; output += chunk; });
+    child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; output += chunk; });
+    child.on('error', (error) => resolve({ exitCode: 127, stdout, stderr: `${stderr}${error.message}`, output }));
+    child.on('close', (code) => resolve({ exitCode: code ?? 1, stdout, stderr, output }));
+  });
+  return { exit, stop: stopProcess(child, exit, detached) };
 }
 
 /** Stops a detached process group or an attached process tree, with a five-second grace period before SIGKILL. */

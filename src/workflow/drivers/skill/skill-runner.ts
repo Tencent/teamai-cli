@@ -11,13 +11,13 @@ import path from 'node:path';
 import { z } from 'zod';
 import { resolveCliEntry } from '../../../builtin-hooks.js';
 import { stepEnvironment } from '../../../env-exec.js';
-import { recordGroup, stopProcess, stopRecordedGroup } from '../../../tool-launch/process-stop.js';
+import { startGroupedCommand, stopRecordedGroup } from '../../../tool-launch/process-stop.js';
 import type { RunMode } from '../../../launch-context.js';
 import type { LocalConfig } from '../../../types.js';
 import { writeFileAtomic } from '../../../utils/fs.js';
 import { redact } from '../../../utils/redact.js';
 import { attemptEnv } from '../../attempt-marker.js';
-import { commandOutputs, type WorkflowClient } from '../../protocol.js';
+import { commandEnd, type WorkflowClient } from '../../protocol.js';
 import { attemptDir, runnerAlive, withRunnerLock, type AttemptId, type RunId, type RunLock } from '../../store.js';
 import type { WorkflowEnvelope, WorkflowFailure } from '../../types.js';
 import { runnerArgs } from './literals.js';
@@ -45,22 +45,8 @@ export function detachedRunners(config: LocalConfig): Runners {
       }).unref();
     },
     alive: (run, attempt) => runnerAlive(config, run, attempt),
-    command: ({ run, attempt, command, cwd, env }) => {
-      // A process group of its own, so a stop reaches every process the command started.
-      const detached = process.platform !== 'win32';
-      const child = spawn(command, { shell: true, cwd, env, detached, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
-      if (detached) recordGroup(child, attemptDir(config, run, attempt));
-      const exit = new Promise<Awaited<CommandRun['exit']>>((resolve) => {
-        let stdout = '';
-        let stderr = '';
-        let output = '';
-        child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; output += chunk; });
-        child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; output += chunk; });
-        child.on('error', (error) => resolve({ exitCode: 127, stdout, stderr: `${stderr}${error.message}`, output }));
-        child.on('close', (code) => resolve({ exitCode: code ?? 1, stdout, stderr, output }));
-      });
-      return { exit, stop: stopProcess(child, exit, detached) };
-    },
+    // A process group of its own, so a stop reaches every process the command started.
+    command: ({ run, attempt, command, cwd, env }) => startGroupedCommand({ command, cwd, env, detached: process.platform !== 'win32', group: attemptDir(config, run, attempt) }),
     stopLeft: (run, attempt) => stopRecordedGroup(attemptDir(config, run, attempt)),
     sleep: (ms, signal) => new Promise((resolve) => {
       const timer = setTimeout(resolve, ms);
@@ -329,13 +315,7 @@ async function report(context: SkillContext, lock: RunLock, attempt: AttemptId, 
   const open = state && openAttempt(state, attempt);
   if (state && open?.phase === 'stopping') return stopped(context, lock, state, attempt);
   if (!state || open?.phase !== 'running') return { kind: 'gone', status: 'gone' };
-  const outputs = commandOutputs(exited.stdout);
-  const snippet = exited.stderr.trim().slice(0, 400);
-  const body: ReportBody = {
-    attempt, revision: open.revision, outcome: exited.exitCode === 0 ? 'success' : 'failed', driver: state.driver, exitCode: exited.exitCode,
-    ...(outputs !== undefined ? { outputs } : {}),
-    ...(exited.exitCode !== 0 ? { message: snippet === '' ? `command exited with status ${exited.exitCode}` : `command exited with status ${exited.exitCode}: ${snippet}` } : {}),
-  };
+  const body: ReportBody = { attempt, revision: open.revision, driver: state.driver, ...commandEnd(exited) };
   const tail = exited.output.trim().slice(-400);
   return send(context, lock, exitedRow(state, { attempt, body, ...(tail ? { tail } : {}) }), attempt);
 }

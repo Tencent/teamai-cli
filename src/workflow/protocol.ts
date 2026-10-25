@@ -412,6 +412,21 @@ async function settleManaged(input: { config: LocalConfig; lock: RunLock; attemp
   return answer;
 }
 
+/**
+ * What a command step reports once it exited: `success` on status 0, else `failed` with its status and the start of
+ * its stderr; and its whole stdout as its outputs, when that is JSON.
+ */
+export function commandEnd(result: { exitCode: number; stdout: string; stderr: string }): { outcome: 'success' | 'failed'; exitCode: number; message?: string; outputs?: unknown } {
+  const { exitCode } = result;
+  const outputs = commandOutputs(result.stdout);
+  const snippet = result.stderr.trim().slice(0, 400);
+  return {
+    outcome: exitCode === 0 ? 'success' : 'failed', exitCode,
+    ...(exitCode !== 0 ? { message: snippet === '' ? `command exited with status ${exitCode}` : `command exited with status ${exitCode}: ${snippet}` } : {}),
+    ...(outputs !== undefined ? { outputs } : {}),
+  };
+}
+
 /** The outputs a command step reports: its whole stdout, when that is JSON. */
 export function commandOutputs(stdout: string): unknown {
   const trimmed = stdout.trim();
