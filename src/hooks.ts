@@ -3268,7 +3268,7 @@ export async function reconcileHooksToAllTools(
     // into them on later `pull`s.
     const gateRoot = toolGateRoot(tool, paths.settings, opts.toolRoots);
     const toolRoot = opts.settingsOnly ? path.join(baseDir, gateRoot) : hookSettingsPath(tool, baseDir, gateRoot);
-    const installedRoot = opts.installedBaseDir
+    const installedRoot = opts.installedBaseDir && toolRoot === path.join(baseDir, gateRoot)
       ? path.join(opts.installedBaseDir, gateRoot)
       : toolRoot;
     const mainFile = mainCheckoutHookFile(opts.mainCheckout, tool);

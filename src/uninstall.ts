@@ -42,6 +42,7 @@ import {
   resolveToolBaseDir,
   scopedToolPaths,
   hookToolPathsForConfig,
+  hookSettingsPath as resolveHookSettingsPath,
   SYNC_LOCK_FILENAME,
   toolInstallRoot,
   type GlobalOptions,
@@ -594,7 +595,10 @@ async function discoverToolResources(
       const settingsRel = path.resolve(hookBaseDir) === path.resolve(getUserHome())
         ? (hookSettingsPath ?? toolPath.settings)
         : toolPath.settings;
-      const settingsPath = fileFor ? fileFor(tool) : path.join(hookBaseDir, settingsRel);
+      const settingsPath = fileFor ? fileFor(tool)
+        : path.resolve(hookBaseDir) === path.resolve(getUserHome())
+          ? resolveHookSettingsPath(tool, hookBaseDir, settingsRel)
+          : path.join(hookBaseDir, settingsRel);
       // Prefer main-file ownership when a legacy target names the same file.
       if (!teamOnly && settingsPath && mainFiles.has(await canonical(settingsPath))) continue;
       // Other installs use Codex's user hooks as their instruction channel.

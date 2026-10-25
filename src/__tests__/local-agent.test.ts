@@ -1996,6 +1996,19 @@ describe('local-agent: cmds[] migration', () => {
     expect(acks.find((a) => a.id === 4)?.version).toBe('1.0.0');
   });
 
+  it('installs and removes HTTP codebuddy hooks in the recorded home after the shell variable disappears', async () => {
+    const moved = path.join(tmpDir, 'moved-codebuddy');
+    const { saveToolHomes } = await import('../tool-home.js');
+    await saveToolHomes({ codebuddy: moved });
+    const acks = await runResponse({ cmds: [{ id: 94, type: 'install_hook_rule', slug: 'moved-hook', event: 'SessionStart', cmd: 'echo moved-http-hook', scope: 'user' }] }, undefined, 'codebuddy');
+    expect(acks.find(a => a.id === 94)?.status).toBe('success');
+    const file = path.join(moved, 'settings.json');
+    expect(await fse.readFile(file, 'utf8')).toContain('echo moved-http-hook');
+    const removed = await runResponse({ cmds: [{ id: 95, type: 'uninstall_hook_rule', slug: 'moved-hook', scope: 'user' }] }, undefined, 'codebuddy');
+    expect(removed.find(a => a.id === 95)?.status).toBe('success');
+    expect(await fse.pathExists(file) ? await fse.readFile(file, 'utf8') : '').not.toContain('echo moved-http-hook');
+  });
+
   it('install_hook_rule writes a slug-tagged claude hook with default timeout', async () => {
     const acks = await runResponse({
       cmds: [{
