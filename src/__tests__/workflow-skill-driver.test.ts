@@ -138,6 +138,7 @@ inputs:
   topic: string
 steps:
   - id: note
+    workspace: new
     prompt: Write a note on {{ inputs.topic }}.
 `;
 
@@ -448,18 +449,18 @@ describe('skill driver', () => {
     const file = /Write `([^`]+result\.json)`/.exec(fs.readFileSync(note.brief, 'utf8'))?.[1];
     if (!file) throw new Error(`${note.brief} names no result file`);
     fs.writeFileSync(file, JSON.stringify({ kind: 'output', output: 'Wrote the note.' }));
-    await call({ kind: 'report', run, attempt: note.attempt, role: 'agent', modelUnavailable: false }, { session: 'child-session' });
+    await call({ kind: 'report', run, attempt: note.attempt, role: 'agent', modelUnavailable: false }, { session: 'child-session', cwd: note.dir });
 
     const journal = fs.readFileSync(path.join(path.dirname(skillStatePath(harness.config, run)), 'journal.jsonl'), 'utf8');
     const at = expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/);
     expect(journal.trim().split('\n').map((line) => JSON.parse(line))).toEqual([
-      { at, kind: 'call', call: 'start', by: 'orchestrator', answer: 'ok' },
-      { at, kind: 'call', call: 'choose', by: 'orchestrator', choice: 'h1', answer: 'ok' },
+      { at, kind: 'call', call: 'start', by: 'orchestrator', inCheckout: true, answer: 'ok' },
+      { at, kind: 'call', call: 'choose', by: 'orchestrator', inCheckout: true, choice: 'h1', answer: 'ok' },
       { at, kind: 'asked', action: 'dispatch', attempt: note.attempt, step: 'note' },
-      { at, kind: 'call', call: 'next', by: 'orchestrator', answer: 'ok' },
-      { at, kind: 'call', call: 'next', by: 'session', answer: 'orchestrator_active' },
-      { at, kind: 'call', call: 'ack', by: 'orchestrator', attempt: note.attempt, answer: 'acked' },
-      { at, kind: 'call', call: 'report', by: 'session', attempt: note.attempt, answer: 'reported' },
+      { at, kind: 'call', call: 'next', by: 'orchestrator', inCheckout: true, answer: 'ok' },
+      { at, kind: 'call', call: 'next', by: 'session', inCheckout: true, answer: 'orchestrator_active' },
+      { at, kind: 'call', call: 'ack', by: 'orchestrator', inCheckout: true, attempt: note.attempt, answer: 'acked' },
+      { at, kind: 'call', call: 'report', by: 'session', inCheckout: false, attempt: note.attempt, answer: 'reported' },
     ]);
     expect(journal).not.toContain('the-input-topic');
     expect(JSON.stringify(answers)).not.toContain('journal');

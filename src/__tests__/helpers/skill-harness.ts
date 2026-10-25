@@ -253,7 +253,7 @@ export async function skillHarness(workflows: Record<string, string>, options: H
     hold: scheduler.hold,
     /** Makes the runner of `attempt` crash where it is parked at the next sleep. Whether one is alive to crash. */
     crashRunner: scheduler.crash,
-    /** Makes `call` as the session, or with another session, agent evidence, lock, config or session tool in its context. */
-    call: (call: SkillCall, overrides: Partial<Pick<SkillContext, 'session' | 'evidence' | 'locks' | 'config' | 'tool'>> = {}) => runSkillCall(call, { ...context, ...overrides }),
+    /** Makes `call` as the session, or with another session, agent evidence, lock, config, session tool or working directory in its context. */
+    call: (call: SkillCall, overrides: Partial<Pick<SkillContext, 'session' | 'evidence' | 'locks' | 'config' | 'tool' | 'cwd'>> = {}) => runSkillCall(call, { ...context, ...overrides }),
   };
 }

@@ -22,6 +22,8 @@ const CallLineSchema = z.object({
   call: z.enum(['start', 'next', 'poll', 'takeover', 'choose', 'ack', 'adopt', 'respond', 'report', 'unavailable']),
   /** `orchestrator`: the session that drives the run made it; `session`: another session; `none`: a host that names no session. */
   by: z.enum(['orchestrator', 'session', 'none']),
+  /** Whether it ran from the checkout the run started in, as the orchestrator does: a child that shares its session runs from its own place. */
+  inCheckout: z.boolean(),
   attempt: AttemptIdSchema.optional(),
   step: z.string().optional(),
   /** The host question's option, or the gate's. */
@@ -76,7 +78,7 @@ function askedOf(action: Action, at: string): AskedLine | undefined {
 }
 
 /** The line of `call`, or none for a call that journals none. */
-function callLine(call: SkillCall, answer: SkillAnswer, input: { at: string; by: CallLine['by'] }): CallLine | undefined {
+function callLine(call: SkillCall, answer: SkillAnswer, input: Pick<CallLine, 'at' | 'by' | 'inCheckout'>): CallLine | undefined {
   const base = { ...input, kind: 'call' as const };
   const code = 'error' in answer ? answer.error.code : undefined;
   switch (call.kind) {
@@ -137,7 +139,8 @@ export async function journalCall(context: SkillContext, call: SkillCall, answer
   if ('kind' in state) return;
   const at = context.now().toISOString();
   const by = context.session === undefined ? 'none' : state.orchestrator.session === context.session ? 'orchestrator' : 'session';
-  const line = callLine(call, answer, { at, by });
+  const inCheckout = path.resolve(context.cwd) === state.driver.workspace;
+  const line = callLine(call, answer, { at, by, inCheckout });
   if (line === undefined) return;
   const file = journalPath(context, run);
   const actions = 'data' in answer && 'turn' in answer.data ? answer.data.turn.actions : [];
