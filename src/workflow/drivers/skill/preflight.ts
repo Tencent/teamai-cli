@@ -43,9 +43,7 @@ export function localReason(description: WorkflowDescription): string | undefine
   const route = facts.localRoute;
   if (!route) return undefined;
   const keys = facts.held.find((held) => held.step === route.held)?.env ?? [];
-  const lacks = route.missing === 'env'
-    ? `needs env ${keys.join(', ')}, which a coding session keeps from its agents`
-    : 'runs under a token budget, which no coding session meters for teamai';
+  const lacks = missingReason(route.missing, keys);
   return `Step ${route.held} works in the workspace ${route.opener} opened, and ${lacks}. Only the driver that opened that workspace may go on in it, so the local driver runs the whole of ${name}.`;
 }
 
@@ -122,14 +120,19 @@ function durationOf(ms: number): string {
   return unit ? `${ms / unit[1]}${unit[0]}` : `${ms}ms`;
 }
 
+type HeldFact = WorkflowDescription['facts']['held'][number];
+
+/** Why a coding session cannot give a held step what it lacks, `missing`; `env` is the keys the step requires. */
+function missingReason(missing: HeldFact['missing'][number], env: readonly string[]): string {
+  if (missing === 'env') return `needs env ${listOf(env)}, which a coding session keeps from its agents`;
+  if (missing === 'tokens') return 'runs under a token budget, which no coding session meters for teamai';
+  if (missing.startsWith('policy.')) return `needs ${missing.slice('policy.'.length)}, which workflows.allow in this machine's local config does not allow`;
+  return `needs ${missing}, which a coding session does not provide`;
+}
+
 /** Why this driver is held from step `held`, and what the person does about it. */
-function heldFact(held: WorkflowDescription['facts']['held'][number]): string {
-  const reasons = held.missing.map((missing) => {
-    if (missing === 'env') return `needs env ${listOf(held.env)}, which a coding session keeps from its agents`;
-    if (missing === 'tokens') return 'runs under a token budget, which no coding session meters for teamai';
-    if (missing.startsWith('policy.')) return `needs ${missing.slice('policy.'.length)}, which workflows.allow in this machine's local config does not allow`;
-    return `needs ${missing}, which a coding session does not provide`;
-  });
+function heldFact(held: HeldFact): string {
+  const reasons = held.missing.map((missing) => missingReason(missing, held.env));
   const after = held.missing.some((missing) => missing.startsWith('policy.'))
     ? 'so no driver on this machine runs it'
     : 'so you finish it in your own terminal with teamai workflow resume once the run reaches it';

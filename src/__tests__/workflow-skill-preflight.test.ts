@@ -240,6 +240,13 @@ describe('skill driver preflight', () => {
       .toMatchObject({ error: { code: 'needs_local_driver', next: null } });
     expect(runCount(made)).toBe(0);
   });
+
+  it('names the env keys of a local route as the held step facts do', async () => {
+    const made = await harness({ 'release-docs': RELEASE_DOCS.replace('[SIGNING_KEY]', '[SIGNING_KEY, RELEASE_KEY]') });
+    expect(await made.call({ kind: 'describe', name: 'release-docs' })).toMatchObject({ data: { describe: { ask: {
+      kind: 'local', reason: expect.stringContaining('needs env SIGNING_KEY and RELEASE_KEY, which a coding session keeps from its agents.'),
+    } } } });
+  });
 });
 
 describe('skill driver preflight in an unattended run', () => {
