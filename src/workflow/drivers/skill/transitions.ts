@@ -9,7 +9,7 @@ import type { ChildResult } from './child-brief.js';
 import type { HostChoice, HostProfile } from './host-profiles.js';
 import type { HitlMode, StartAnswer, StartCheck } from './preflight.js';
 import type { AttemptState, Dispatch, Gate, Judge, ReportBody, SkillState, StopReason, TurnEvent } from './skill-state.js';
-import type { DescribeAsk } from './turn.js';
+import type { DescribeAsk, Waiting } from './turn.js';
 
 export interface TransitionRow {
   id: string;
@@ -49,6 +49,7 @@ export const TRANSITIONS = [
   { id: 'D10', state: 'drive', input: 'reply hitl', guard: 'a required approval', effects: 'journal the gate: `seq` := seq + 1, unless it is the gate journalled already', next: 'drive', action: '`person why:approval` with the person\'s literals; waiting `<step> waits for the person\'s answer`' },
   { id: 'D11', state: 'drive', input: 'reply hitl', guard: 'an optional gate; HITL mode `person`, or `auto-approve`, under which only a choice without a default comes back', effects: 'as D10', next: 'drive', action: '`choose about:gate decide:person`' },
   { id: 'D12', state: 'drive', input: 'reply hitl', guard: 'an optional gate; HITL mode `recommend`', effects: 'as D10', next: 'drive', action: '`choose about:gate decide:agent`' },
+  { id: 'D13', state: 'drive', input: 'reply wait', guard: 'it lists `delivering`', effects: 'none', next: 'drive', action: 'waiting `delivering` in each turn that ticked, polls\' included; `then: poll`' },
   { id: 'D15', state: 'drive', input: 'reply wait', guard: '', effects: 'none', next: 'drive', action: 'waiting' },
   { id: 'D16', state: 'drive', input: 'reply done', guard: '', effects: '`seq` := seq + 1, so every session has the end to see', next: 'done', action: '`done {outcome, failure, prs, judging}`' },
   { id: 'D17', state: 'drive', input: 'reply error', guard: '', effects: 'none', next: 'drive', action: 'error with the engine\'s code, next: the next literal' },
@@ -113,10 +114,13 @@ export type AskedGate = Omit<Gate, 'seq' | 'decide'>;
 export type EngineReply =
   /** `raw` is the lease as the engine sent it: its runner prepares the place from it. */
   | { kind: 'lease'; lease: ReadLease; raw: unknown }
-  /** `held`: steps were ready, and the engine held them back from this driver. */
-  | { kind: 'wait'; reason: string; held: boolean }
+  /**
+   * `delivering`: steps whose pull requests are being opened. `held`: steps were ready, and the engine held them back
+   * from this driver.
+   */
+  | { kind: 'wait'; reason: string; delivering: string[]; held: boolean }
   | { kind: 'hitl'; gate: AskedGate }
-  | { kind: 'done'; outcome: NonNullable<SkillState['done']>['outcome']; failure?: WorkflowFailure }
+  | { kind: 'done'; outcome: NonNullable<SkillState['done']>['outcome']; failure?: WorkflowFailure; prs: string[] }
   | { kind: 'error'; error: WorkflowFailure };
 
 /** What `score --next` answered: a lease, read as the judge it opens; nothing to take; or an error. */
@@ -216,8 +220,8 @@ export interface Step {
   state: SkillState | undefined;
   effects: Effect[];
   answer?: Answer;
-  /** Why the run leased nothing more (D10, D15). */
-  waiting?: { reason: string };
+  /** Why the run leased nothing more (D10, D13, D15). */
+  waiting?: Waiting;
 }
 
 function withEvent(state: SkillState, event: TurnEvent): SkillState {
@@ -607,6 +611,7 @@ function reply(state: SkillState, engine: EngineReply, at: string): Step {
       return { row: executor === 'command' ? 'D6' : 'D7', state: withEvent(preparing, { kind: 'started', step: id, attempt }), effects: [{ kind: 'spawn', attempt, job: { lease: engine.raw } }] };
     }
     case 'wait':
+      if (engine.delivering.length > 0) return { row: 'D13', state, effects: [], waiting: { reason: engine.reason, delivering: engine.delivering } };
       return { row: 'D15', state, effects: [], waiting: { reason: engine.reason } };
     case 'hitl': {
       const asked = engine.gate;
@@ -618,7 +623,7 @@ function reply(state: SkillState, engine: EngineReply, at: string): Step {
       return { row, state: { ...state, seq, gate }, effects: [], ...waiting };
     }
     case 'done':
-      return { row: 'D16', state: { ...state, seq: state.seq + 1, done: { outcome: engine.outcome, ...(engine.failure ? { failure: engine.failure } : {}) } }, effects: [] };
+      return { row: 'D16', state: { ...state, seq: state.seq + 1, done: { outcome: engine.outcome, ...(engine.failure ? { failure: engine.failure } : {}), prs: engine.prs } }, effects: [] };
     case 'error':
       return { row: 'D17', state, effects: [], answer: { kind: 'engine-error', error: engine.error, next: 'next' } };
     default: {

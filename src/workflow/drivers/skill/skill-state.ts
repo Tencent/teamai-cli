@@ -144,7 +144,8 @@ export const SkillStateSchema = z.object({
   seen: z.record(z.string(), z.number().int()),
   /** The attempts the engine settled or stopped: a report that comes for one again is P1. */
   settled: z.array(AttemptIdSchema),
-  done: z.object({ outcome: z.enum(['succeeded', 'failed', 'cancelled']), failure: FailureSchema.optional() }).optional(),
+  /** `prs`: the pull requests the run's deliveries opened, as the engine's `done` listed them. */
+  done: z.object({ outcome: z.enum(['succeeded', 'failed', 'cancelled']), failure: FailureSchema.optional(), prs: z.array(z.string()) }).optional(),
 });
 export type SkillState = z.infer<typeof SkillStateSchema>;
 

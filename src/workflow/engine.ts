@@ -393,7 +393,8 @@ export function runData(run: RunState): Record<string, unknown> {
 }
 
 function doneData(run: RunState): Record<string, unknown> {
-  return { done: { run: run.id, outcome: run.status, ...(run.end !== undefined ? { end: run.end } : {}), ...(run.failure ? { failure: run.failure } : {}) } };
+  const prs = (run.deliveries ?? []).map((receipt) => receipt.url);
+  return { done: { run: run.id, outcome: run.status, ...(run.end !== undefined ? { end: run.end } : {}), ...(run.failure ? { failure: run.failure } : {}), ...(prs.length > 0 ? { prs } : {}) } };
 }
 
 /** The step ids these paths read. */

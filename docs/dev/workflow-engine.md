@@ -100,6 +100,7 @@ Test parsing through `parseWorkflow` and `syncWorkflowDefinitions`. Test the eng
 | D10 | drive | reply hitl | a required approval | journal the gate: `seq` := seq + 1, unless it is the gate journalled already | drive | `person why:approval` with the person's literals; waiting `<step> waits for the person's answer` |
 | D11 | drive | reply hitl | an optional gate; HITL mode `person`, or `auto-approve`, under which only a choice without a default comes back | as D10 | drive | `choose about:gate decide:person` |
 | D12 | drive | reply hitl | an optional gate; HITL mode `recommend` | as D10 | drive | `choose about:gate decide:agent` |
+| D13 | drive | reply wait | it lists `delivering` | none | drive | waiting `delivering` in each turn that ticked, polls' included; `then: poll` |
 | D15 | drive | reply wait | | none | drive | waiting |
 | D16 | drive | reply done | | `seq` := seq + 1, so every session has the end to see | done | `done {outcome, failure, prs, judging}` |
 | D17 | drive | reply error | | none | drive | error with the engine's code, next: the next literal |

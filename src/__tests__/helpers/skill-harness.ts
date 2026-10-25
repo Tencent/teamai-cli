@@ -9,6 +9,7 @@ import { syncWorkflowDefinitions } from '../../workflow/cache.js';
 import { inProcessClient, type WorkflowClient } from '../../workflow/protocol.js';
 import { runSkillCall, skillContext, type CommandRun, type Runners, type SkillCall, type SkillContext } from '../../workflow/drivers/skill/skill-driver.js';
 import { withRunLock } from '../../workflow/store.js';
+import { fakeGh } from './fake-gh.js';
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: 'pipe' }).trim();
@@ -36,6 +37,20 @@ console.log(JSON.stringify({ type: 'system', subtype: 'init', model: 'm1' }));
 console.log(JSON.stringify({ type: 'result', structured_output: { label: ${JSON.stringify(label)}, reasoning: 'It read the change.' } }));
 });\n`, { mode: 0o755 });
   vi.stubEnv('PATH', `${bin}${path.delimiter}${process.env.PATH ?? ''}`);
+}
+
+/**
+ * Gives the harness checkout `work` a GitHub origin that git rewrites to a bare repository under `root`, with main
+ * pushed, and puts a fake `gh` in front of teamai: the host a `deliver: pr` step opens its pull request on.
+ */
+export function githubOrigin(harness: { root: string; work: string }): void {
+  const bare = path.join(harness.root, 'origin.git');
+  execFileSync('git', ['init', '-q', '--bare', bare]);
+  git(harness.work, 'remote', 'add', 'origin', 'https://github.com/fixture/app.git');
+  git(harness.work, 'config', `url.${bare}.insteadOf`, 'https://github.com/fixture/app.git');
+  git(harness.work, 'push', '-qu', 'origin', 'main');
+  fakeGh(path.join(harness.root, 'gh'));
+  onTestFinished(() => { vi.restoreAllMocks(); });
 }
 
 /** A crash a test injects: the call or the runner that throws it stops there, as a process killed at that point does. */

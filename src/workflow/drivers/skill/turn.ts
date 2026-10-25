@@ -103,6 +103,12 @@ export interface RunningEntry {
   report?: Literal;
 }
 
+/** Why the run leases nothing. `delivering`: steps whose pull requests teamai is opening; the run goes on once they are. */
+export interface Waiting {
+  reason: string;
+  delivering?: string[];
+}
+
 export interface Turn {
   run: RunId;
   status: 'driving' | 'done';
@@ -113,7 +119,7 @@ export interface Turn {
    * Why the run leases nothing, when no attempt is open. An open attempt is in `running` already, and a call that leased
    * one would otherwise show no reason where its repeat shows one.
    */
-  waiting?: { reason: string };
+  waiting?: Waiting;
   /**
    * The call to make next: `poll` in the background, or `wake` in the foreground when work waits for the agent.
    * Absent once the run is done and none of its attempts, and no judge of it, is open.
@@ -198,7 +204,7 @@ function actionsOf(state: SkillState): Action[] {
   const offers = state.attempts.flatMap((open) => (open.phase === 'offered' ? [dispatchOf(state, open)] : []));
   const judge = state.judging?.open;
   const end: Action[] = state.done ? [{
-    kind: 'done', outcome: state.done.outcome, ...(state.done.failure ? { failure: state.done.failure } : {}), prs: [], ...(judge ? { judging: { step: judge.step, scorers: judge.scorers } } : {}),
+    kind: 'done', outcome: state.done.outcome, ...(state.done.failure ? { failure: state.done.failure } : {}), prs: state.done.prs, ...(judge ? { judging: { step: judge.step, scorers: judge.scorers } } : {}),
   }] : [];
   const gate = state.gate && !state.done ? [gateAction(state, state.gate)] : [];
   return [...stops, ...offers, ...gate, ...end];
@@ -208,7 +214,7 @@ function actionsOf(state: SkillState): Action[] {
  * The turn of `state` that shows `events`, with `after` as its `then` while the run drives, or an attempt or a judge of
  * it is open. A `quiet` turn carries no action.
  */
-export function turnOf(state: SkillState, input: { events: TurnEvent[]; after?: NonNullable<Turn['then']>; waiting?: { reason: string }; quiet?: true }): Turn {
+export function turnOf(state: SkillState, input: { events: TurnEvent[]; after?: NonNullable<Turn['then']>; waiting?: Waiting; quiet?: true }): Turn {
   const running = state.attempts.map((open): RunningEntry => ({
     attempt: open.attempt, step: open.step, phase: open.phase, ...(reportedByAgent(open) ? { report: reportLiteral(state.invocation, state.run, open.attempt) } : {}),
   }));

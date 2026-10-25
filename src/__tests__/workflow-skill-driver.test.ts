@@ -5,11 +5,12 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { encodeCwdClaude } from '../session-flow/fs.js';
+import { acquireLock, releaseLock } from '../update.js';
 import { skillContext } from '../workflow/drivers/skill/skill-driver.js';
 import { inProcessClient } from '../workflow/protocol.js';
 import { takeJudgeLease, type JudgeRequest } from '../workflow/scoring.js';
-import { AttemptIdSchema, RunIdSchema, type RunId } from '../workflow/store.js';
-import { Crash, fakeJudge, skillHarness, untilStopped } from './helpers/skill-harness.js';
+import { AttemptIdSchema, deliveryLockPath, RunIdSchema, type RunId } from '../workflow/store.js';
+import { Crash, fakeJudge, githubOrigin, skillHarness, untilStopped } from './helpers/skill-harness.js';
 
 const CHECK = `schemaVersion: v1alpha1
 name: check
@@ -83,6 +84,17 @@ samplingRate: 100
 sessions: true
 ---
 Judge the session.
+`;
+
+const IMPLEMENT = `schemaVersion: v1alpha1
+name: implement
+description: Implement the change and open a pull request for it
+invoke: allow
+steps:
+  - id: implement
+    workspace: new
+    command: node -e "require('fs').writeFileSync('work.txt', 'W')"
+    deliver: pr
 `;
 
 type Harness = Awaited<ReturnType<typeof skillHarness>>;
@@ -484,5 +496,37 @@ steps:
     const now = new Date().toISOString();
     expect(await takeJudgeLease(harness.config, { driver: external, judge, running: [], run: other }, now)).toMatchObject({ kind: 'lease', lease: { subject: { runId: other } } });
     expect(await takeJudgeLease(harness.config, { driver: external, judge, running: [], only: 'session' }, now)).toMatchObject({ kind: 'lease', lease: { source: 'session' } });
+  });
+
+  it('a deliver: pr step shows waiting delivering, and the poll returns done with the PR', async () => {
+    const harness = await skillHarness({ implement: IMPLEMENT });
+    roots.push(harness.root);
+    githubOrigin(harness);
+    const started = await harness.call({ kind: 'start', name: 'implement', answers: { confirmed: false }, inputs: undefined });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+    const { run } = started.data.turn;
+    const delivering = { reason: 'implement is delivering', delivering: ['implement'] };
+
+    // Another process of this machine delivers the step, so this driver's next leaves the delivery to it.
+    const held = deliveryLockPath(harness.config, run);
+    expect(await acquireLock(held)).toBe(true);
+    try {
+      const settled = await harness.call({ kind: 'next', run, wait: true });
+      expect(settled).toMatchObject({ data: { turn: {
+        status: 'driving', actions: [], running: [], waiting: delivering,
+        events: [{ kind: 'settled', step: 'implement', outcome: 'success', exitCode: 0 }],
+        // oxlint-disable-next-line unicorn/no-thenable
+        then: { kind: 'poll', run: `teamai workflow next ${run} --driver skill --wait` },
+      } } });
+      expect(await harness.call({ kind: 'next', run, wait: false })).toMatchObject({ data: { turn: { status: 'driving', actions: [], waiting: delivering } } });
+    } finally {
+      await releaseLock(held);
+    }
+
+    const done = await harness.call({ kind: 'next', run, wait: true });
+    expect(done).toEqual({ data: { turn: {
+      run, status: 'done', running: [], events: [],
+      actions: [{ kind: 'done', outcome: 'succeeded', prs: ['https://github.com/fixture/app/pull/1'] }],
+    } } });
   });
 });

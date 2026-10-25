@@ -21,7 +21,7 @@ import { readSkillState, writeSkillState, type ReportBody, type SkillState } fro
 import {
   hasSlot, step, unseenEvents, type Answer, type EngineReply, type MachineInput, type ReadLease, type Refusal, type ReportReply, type RespondReply, type ScoreReply, type Step,
 } from './transitions.js';
-import { turnOf, type SkillAnswer, type SkillError } from './turn.js';
+import { turnOf, type SkillAnswer, type SkillError, type Waiting } from './turn.js';
 import type { SkillContext } from './skill-driver.js';
 
 /** How long one poll waits for something to show the agent. */
@@ -122,8 +122,8 @@ const NextDataSchema = z.object({
   hitl: z.object({
     step: z.string(), pass: z.number().int(), kind: z.enum(['approve', 'choose']), message: z.string(), options: z.array(z.string()), default: z.string().optional(), required: z.boolean(),
   }).optional(),
-  wait: z.object({ reason: z.string(), held: z.array(z.unknown()).optional() }).optional(),
-  done: z.object({ outcome: z.enum(['succeeded', 'failed', 'cancelled']), failure: FailureSchema.optional() }).optional(),
+  wait: z.object({ reason: z.string(), delivering: z.array(z.string()).optional(), held: z.array(z.unknown()).optional() }).optional(),
+  done: z.object({ outcome: z.enum(['succeeded', 'failed', 'cancelled']), failure: FailureSchema.optional(), prs: z.array(z.string()).optional() }).optional(),
 });
 
 /** The engine's answer to `next`, and the attempts it no longer leases to this driver. */
@@ -134,12 +134,14 @@ function engineReply(run: RunId, answer: WorkflowEnvelope): { reply: EngineReply
     return { reply: { kind: 'error', error: { code: 'run_unreadable', message: `Run ${run} answered next with a reply this teamai cannot read: ${data.error.issues[0]?.message ?? 'invalid'}. Update teamai.` } }, cancelled: [] };
   }
   const { done, lease, hitl, wait, cancelled = [] } = data.data;
-  if (done) return { reply: { kind: 'done', outcome: done.outcome, ...(done.failure ? { failure: done.failure } : {}) }, cancelled };
+  if (done) return { reply: { kind: 'done', outcome: done.outcome, ...(done.failure ? { failure: done.failure } : {}), prs: done.prs ?? [] }, cancelled };
   if (hitl) {
     const { step: id, pass, kind, message, options, default: chosen, required } = hitl;
     return { reply: { kind: 'hitl', gate: { step: id, pass, kind, message, options, ...(chosen !== undefined ? { default: chosen } : {}), required } }, cancelled };
   }
-  if (lease === undefined) return { reply: { kind: 'wait', reason: wait?.reason ?? 'the next step is not available', held: (wait?.held?.length ?? 0) > 0 }, cancelled };
+  if (lease === undefined) {
+    return { reply: { kind: 'wait', reason: wait?.reason ?? 'the next step is not available', delivering: wait?.delivering ?? [], held: (wait?.held?.length ?? 0) > 0 }, cancelled };
+  }
   const read = readLease(lease);
   if (!read) {
     return { reply: { kind: 'error', error: { code: 'run_unreadable', message: `Run ${run} leased a step the skill driver cannot run. Ask the person to continue it in a terminal with teamai workflow resume ${run}.` } }, cancelled };
@@ -276,7 +278,7 @@ async function judgeTick(context: SkillContext, start: SkillState, role: 'call' 
  * One tick under `lock`: the steps' tick, then the judge work's. Judge runners count as no spawn: a turn waits for
  * nothing of theirs.
  */
-export async function runTick(context: SkillContext, lock: RunLock, start: SkillState, role: 'call' | 'runner'): Promise<{ state: SkillState; spawned: boolean; waiting?: { reason: string }; error?: SkillError }> {
+export async function runTick(context: SkillContext, lock: RunLock, start: SkillState, role: 'call' | 'runner'): Promise<{ state: SkillState; spawned: boolean; waiting?: Waiting; error?: SkillError }> {
   const stepped = await stepTick(context, lock, start, role);
   return { ...stepped, state: await judgeTick(context, stepped.state, role) };
 }
@@ -288,7 +290,7 @@ export async function runTick(context: SkillContext, lock: RunLock, start: Skill
  * waits. Each reply's `cancelled`, then its gate check, are taken before the reply itself. A runner's check
  * (`role: 'runner'`) takes no lease.
  */
-async function stepTick(context: SkillContext, lock: RunLock, start: SkillState, role: 'call' | 'runner'): Promise<{ state: SkillState; spawned: boolean; waiting?: { reason: string }; error?: SkillError }> {
+async function stepTick(context: SkillContext, lock: RunLock, start: SkillState, role: 'call' | 'runner'): Promise<{ state: SkillState; spawned: boolean; waiting?: Waiting; error?: SkillError }> {
   let state = start;
   let spawned = false;
   for (const open of start.attempts) {
@@ -381,7 +383,7 @@ async function called(context: SkillContext, run: RunId, same: Literal, input: {
 }
 
 /** D20: saves `state` as shown to the calling session and answers its turn. */
-async function finish(context: SkillContext, lock: RunLock, state: SkillState, waiting: { reason: string } | undefined): Promise<SkillAnswer> {
+async function finish(context: SkillContext, lock: RunLock, state: SkillState, waiting: Waiting | undefined): Promise<SkillAnswer> {
   const events = unseenEvents(state, context.session);
   const shown = take(context, state, { kind: 'turn', session: context.session })?.state ?? state;
   await writeSkillState(context.config, lock, shown, context.env.secrets);
@@ -534,10 +536,11 @@ export async function poll(context: SkillContext, run: RunId): Promise<SkillAnsw
       const polled = take(context, state, { kind: 'poll', session: context.session, busy: false, boundReached });
       last = polled?.state ?? state;
       await writeSkillState(context.config, lock, last, context.env.secrets);
+      const waiting = result.waiting ? { waiting: result.waiting } : {};
       if (polled?.row === 'D23') return { data: { turn: turnOf(last, { events, after: { kind: 'poll', run: same } }) } };
       if (polled?.row === 'D22') return { data: { turn: turnOf(last, { events: [], after: { kind: 'wake', run: nextLiteral(last.invocation, run) }, quiet: true }) } };
-      if (polled?.row === 'D24') return { data: { turn: turnOf(last, { events: [], after: { kind: 'poll', run: same }, quiet: true }) } };
-      if (polled?.row === 'D25') return { data: { turn: turnOf(last, { events, after: { kind: 'poll', run: same }, quiet: true }) } };
+      if (polled?.row === 'D24') return { data: { turn: turnOf(last, { events: [], after: { kind: 'poll', run: same }, ...waiting, quiet: true }) } };
+      if (polled?.row === 'D25') return { data: { turn: turnOf(last, { events, after: { kind: 'poll', run: same }, ...waiting, quiet: true }) } };
       return 'sleep';
     }, 0);
     if (busy(ticked)) {

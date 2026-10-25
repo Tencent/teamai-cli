@@ -2,12 +2,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { WorkflowClient } from '../workflow/protocol.js';
+import { acquireLock, releaseLock } from '../update.js';
 import { respondProvenance, respondToHitl } from '../workflow/run-controls.js';
-import { AttemptIdSchema, readRun, RunIdSchema, type RunId } from '../workflow/store.js';
+import { AttemptIdSchema, deliveryLockPath, readRun, RunIdSchema, type RunId } from '../workflow/store.js';
 import type { Runners } from '../workflow/drivers/skill/skill-driver.js';
 // The doc comparison reads the table itself; every behaviour below goes through runSkillCall.
 import { TRANSITIONS, type TransitionRow } from '../workflow/drivers/skill/transitions.js';
-import { fakeJudge, skillHarness, untilStopped } from './helpers/skill-harness.js';
+import { fakeJudge, githubOrigin, skillHarness, untilStopped } from './helpers/skill-harness.js';
 
 const CHECK = `schemaVersion: v1alpha1
 name: check
@@ -141,6 +142,17 @@ steps:
     needs: [plan-review]
     approve: { message: Deploy to production?, required: true }
     command: node -e "process.exit(0)"
+`;
+
+const IMPLEMENT = `schemaVersion: v1alpha1
+name: implement
+description: Implement the change and open a pull request for it
+invoke: allow
+steps:
+  - id: implement
+    workspace: new
+    command: node -e "require('fs').writeFileSync('work.txt', 'W')"
+    deliver: pr
 `;
 
 const SCORERS = { 'review-quality': `---
@@ -344,6 +356,24 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       await turnOf(await made.call({ kind: 'respond', run, step: 'plan-review', choice: 'yes', pass: 1 }));
       const again = await turnOf(await made.call({ kind: 'respond', run, step: 'plan-review', choice: 'yes', pass: 1 }));
       expect(again.actions.filter((action) => action.kind === 'choose')).toEqual([]);
+      return made.rows;
+    },
+  },
+  {
+    name: 'a step whose pull request another process is opening keeps the run waiting, and done carries the pull request',
+    rows: ['D13'],
+    run: async () => {
+      const made = await harness({ implement: IMPLEMENT });
+      githubOrigin(made);
+      const { run } = await turnOf(await made.call({ kind: 'start', name: 'implement', answers: { confirmed: false }, inputs: undefined }));
+      const held = deliveryLockPath(made.config, run);
+      expect(await acquireLock(held)).toBe(true);
+      try {
+        expect(await turnOf(await made.call({ kind: 'next', run, wait: true }))).toMatchObject({ waiting: { reason: 'implement is delivering', delivering: ['implement'] } });
+      } finally {
+        await releaseLock(held);
+      }
+      expect((await polledToDone(made, run)).actions).toEqual([{ kind: 'done', outcome: 'succeeded', prs: ['https://github.com/fixture/app/pull/1'] }]);
       return made.rows;
     },
   },
