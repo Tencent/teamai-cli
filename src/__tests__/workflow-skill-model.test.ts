@@ -1,4 +1,6 @@
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import fc from 'fast-check';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -157,6 +159,7 @@ type SkillAnswer = Awaited<ReturnType<Made['call']>>;
 type Turn = Extract<SkillAnswer, { data: { turn: unknown } }>['data']['turn'];
 type DispatchAction = Extract<Turn['actions'][number], { kind: 'dispatch' }>;
 type StopAction = Extract<Turn['actions'][number], { kind: 'stop' }>;
+type PlaceAction = Extract<Turn['actions'][number], { kind: 'place' }>;
 
 interface Real {
   made: Made;
@@ -180,6 +183,8 @@ interface Real {
 interface Model {
   hostPending: boolean;
   done: boolean;
+  /** Places the session's last foreground turn asked for, and it has not adopted, by attempt. */
+  placing: Map<AttemptId, PlaceAction>;
   /** Dispatches the session saw and has not reported, by attempt. */
   open: Map<AttemptId, DispatchAction>;
   acked: Set<AttemptId>;
@@ -223,6 +228,9 @@ function sawForeground(model: Model, turn: Turn): void {
   const shown = turn.actions.flatMap((action) => (action.kind === 'dispatch' ? [action] : []));
   expect(shown.filter((action) => model.stopped.has(action.attempt))).toEqual([]);
   for (const action of shown) model.open.set(action.attempt, action);
+  const places = turn.actions.flatMap((action) => (action.kind === 'place' ? [action] : []));
+  expect(places.filter((action) => model.stopped.has(action.attempt))).toEqual([]);
+  model.placing = new Map(places.map((action) => [action.attempt, action]));
   if (model.done) return;
   const unacked = [...model.open.keys()].filter((attempt) => !model.acked.has(attempt));
   expect(shown.map((action) => action.attempt).sort()).toEqual(unacked.sort());
@@ -428,7 +436,7 @@ class Cancel implements fc.AsyncCommand<Model, Real> {
 }
 
 class Choose implements fc.AsyncCommand<Model, Real> {
-  constructor(readonly choice: 'h1' | 'h2') {}
+  constructor(readonly choice: 'h1' | 'h2' | 'h3') {}
   check = (model: Readonly<Model>): boolean => !model.done;
   async run(model: Model, real: Real): Promise<void> {
     const answer = await called(real, { kind: 'choose', run: real.run, choice: this.choice });
@@ -460,6 +468,29 @@ class Ack implements fc.AsyncCommand<Model, Real> {
     sawForeground(model, first);
   }
   toString = (): string => `ack #${this.pick}`;
+}
+
+/** The host makes a worktree of the checkout at the start a place asks for, as a host that makes places does (h3). */
+function madePlace(real: Real, place: PlaceAction): string {
+  const dir = path.join(fs.mkdtempSync(path.join(real.made.root, 'place-')), 'tree');
+  execFileSync('git', ['worktree', 'add', '-q', '--detach', dir, place.start], { cwd: real.made.work, stdio: 'ignore' });
+  return dir;
+}
+
+/** The session adopts a place its host made for an attempt that asked for one. */
+class Adopt implements fc.AsyncCommand<Model, Real> {
+  constructor(readonly pick: number) {}
+  check = (model: Readonly<Model>): boolean => !model.done && model.placing.size > 0;
+  async run(model: Model, real: Real): Promise<void> {
+    const place = [...model.placing.values()][this.pick % model.placing.size];
+    if (place === undefined) throw new Error('no place asked for');
+    model.placing.delete(place.attempt);
+    const answer = await called(real, { kind: 'adopt', run: real.run, attempt: place.attempt, dir: madePlace(real, place) });
+    // A cancel, a deadline or the run's end may have dropped the attempt since the session's last foreground turn.
+    if ('error' in answer) expect(answer.error.code).toBe('unknown_attempt');
+    else sawForeground(model, turnOf(answer));
+  }
+  toString = (): string => `adopt #${this.pick}`;
 }
 
 /**
@@ -548,7 +579,8 @@ const COMMANDS = [
   fc.oneof(fc.integer({ min: 1, max: 6_000 }), fc.integer({ min: 10_000, max: 40_000 })).map((ms) => new Sleep(ms)),
   fc.tuple(fc.nat(STEPS.length - 1), fc.boolean()).map(([pick, dispatched]) => new Cancel(pick, dispatched)),
   fc.nat(3).map((pick) => new ReportStop(pick)),
-  fc.constantFrom<'h1' | 'h2'>('h1', 'h2').map((choice) => new Choose(choice)),
+  fc.constantFrom<'h1' | 'h2' | 'h3'>('h1', 'h2', 'h3').map((choice) => new Choose(choice)),
+  fc.nat(3).map((pick) => new Adopt(pick)),
   fc.nat(3).map((pick) => new Ack(pick)),
   fc.tuple(fc.nat(3), fc.constantFrom<'output' | 'failure' | 'none'>('output', 'output', 'failure', 'none'), fc.boolean()).map(([pick, result, own]) => new Report(pick, result, own)),
   fc.tuple(fc.constantFrom<'next' | 'poll' | 'report'>('next', 'poll', 'report'), fc.nat(3)).map(([call, pick]) => new CrashAfterEngine(call, pick)),
@@ -577,6 +609,10 @@ async function driveToDone(model: Model, real: Real): Promise<Turn> {
       while (model.stopping.size > 0) await new ReportStop(0).run(model, real);
       continue;
     }
+    if (model.placing.size > 0) {
+      for (let left = model.placing.size; left > 0 && model.placing.size > 0; left -= 1) await new Adopt(0).run(model, real);
+      continue;
+    }
     if (model.open.size > 0) {
       const attempts = [...model.open.keys()];
       for (const [pick, attempt] of attempts.entries()) if (!model.acked.has(attempt)) await new Ack(pick).run(model, real);
@@ -602,7 +638,7 @@ afterEach(() => {
 describe('skill driver model', () => {
   it('keeps its invariants over any order of session calls and runner progress, and a fair session reaches done', async () => {
     // Half the sessions answer the host question first, so the commands also land while dispatches are out.
-    const answered = fc.option(fc.constantFrom<'h1' | 'h2'>('h1', 'h2'), { nil: undefined });
+    const answered = fc.option(fc.constantFrom<'h1' | 'h2' | 'h3'>('h1', 'h2', 'h3'), { nil: undefined });
     await fc.assert(fc.asyncProperty(answered, fc.commands(COMMANDS, { maxCommands: 14 }), async (host, steps) => {
       const drift: string[] = [];
       let config: Made['config'] | undefined;
@@ -621,7 +657,7 @@ describe('skill driver model', () => {
       // Each run's repositories go when it ends, so hundreds of runs do not pile them up.
       try {
         const started = turnOf(await called({ made, drift, session: 'session-a', commands }, { kind: 'start', name: 'build', answers: { parallel: 2, confirmed: false }, inputs: undefined }));
-        const model: Model = { hostPending: false, done: false, open: new Map(), acked: new Set(), stopping: new Map(), stopped: new Set(), cancelled: new Set(), unseen: [] };
+        const model: Model = { hostPending: false, done: false, placing: new Map(), open: new Map(), acked: new Set(), stopping: new Map(), stopped: new Set(), cancelled: new Set(), unseen: [] };
         sawForeground(model, started);
         expect(model.hostPending).toBe(true);
         const real: Real = { made, run: started.run, session: 'session-a', sessions: 0, drift, crash: protocol, commands };
@@ -662,7 +698,7 @@ describe('skill driver model', () => {
       config = made.config;
       try {
         const started = turnOf(await called({ made, drift, session: 'session-a', commands: commandsRun }, { kind: 'start', name: 'inline', answers: { parallel: 2, confirmed: false }, inputs: undefined }));
-        const model: Model = { hostPending: false, done: false, open: new Map(), acked: new Set(), stopping: new Map(), stopped: new Set(), cancelled: new Set(), unseen: [] };
+        const model: Model = { hostPending: false, done: false, placing: new Map(), open: new Map(), acked: new Set(), stopping: new Map(), stopped: new Set(), cancelled: new Set(), unseen: [] };
         sawForeground(model, started);
         const real: Real = { made, run: started.run, session: 'session-a', sessions: 0, drift, crash: protocol, commands: commandsRun };
         sawForeground(model, turnOf(await called(real, { kind: 'choose', run: real.run, choice: 'h4' })));
