@@ -336,21 +336,25 @@ class NewSession implements fc.AsyncCommand<Model, Real> {
   toString = (): string => `new session, ${this.how}`;
 }
 
-/** The runner of an open attempt is killed where it waits, as `kill -9` kills it, at the next sleep. */
+/** Kills the runner of an open attempt where it waits, as `kill -9` kills it, at the next sleep. Whether one was alive. */
+async function killRunner(real: Real, pick: number): Promise<boolean> {
+  const attempts: string[] = [];
+  for (const attempt of openAttempts(real.made.config, real.run)) {
+    if (await real.made.context.runners.alive(real.run, AttemptIdSchema.parse(attempt))) attempts.push(attempt);
+  }
+  const attempt = attempts[pick % Math.max(attempts.length, 1)];
+  const killed = attempt !== undefined && real.made.crashRunner(real.run, attempt);
+  await real.made.context.runners.sleep(1);
+  expect(real.drift).toEqual([]);
+  expect(real.commands.twice).toEqual([]);
+  return killed;
+}
+
 class RunnerCrash implements fc.AsyncCommand<Model, Real> {
   constructor(readonly pick: number) {}
   check = (model: Readonly<Model>): boolean => !model.done;
   async run(_model: Model, real: Real): Promise<void> {
-    const attempts: string[] = [];
-    for (const attempt of openAttempts(real.made.config, real.run)) {
-      const id = AttemptIdSchema.parse(attempt);
-      if (await real.made.context.runners.alive(real.run, id)) attempts.push(attempt);
-    }
-    const attempt = attempts[this.pick % Math.max(attempts.length, 1)];
-    if (attempt !== undefined) real.made.crashRunner(real.run, attempt);
-    await real.made.context.runners.sleep(1);
-    expect(real.drift).toEqual([]);
-    expect(real.commands.twice).toEqual([]);
+    await killRunner(real, this.pick);
   }
   toString = (): string => `kill runner #${this.pick}`;
 }
@@ -502,8 +506,13 @@ const COMMANDS = [
   fc.nat(5).map((pick) => new RunnerCrash(pick)),
 ];
 
-/** Plays a fair session from where the commands left the run, and checks invariant 10: it reaches `done` with nothing open. */
+/**
+ * Plays a fair session from where the commands left the run, and checks invariant 10: it reaches `done` with nothing
+ * open. It acks each dispatch, is compacted once while children work, and has one runner killed while it runs.
+ */
 async function driveToDone(model: Model, real: Real): Promise<Turn> {
+  let compacted = false;
+  let killed = false;
   for (let call = 0; call < 40; call += 1) {
     const turn = turnOf(await called(real, { kind: 'next', run: real.run, wait: false }));
     sawForeground(model, turn);
@@ -517,10 +526,18 @@ async function driveToDone(model: Model, real: Real): Promise<Turn> {
       continue;
     }
     if (model.open.size > 0) {
+      const attempts = [...model.open.keys()];
+      for (const [pick, attempt] of attempts.entries()) if (!model.acked.has(attempt)) await new Ack(pick).run(model, real);
+      const compact = new Compact();
+      if (!compacted && compact.check(model)) {
+        await compact.run(model, real);
+        compacted = true;
+      }
       // Every other child runs in a session of its own, as an app's child tasks do.
       for (let child = 0; model.open.size > 0 && !model.done; child += 1) await new Report(0, 'output', child % 2 === 1).run(model, real);
       continue;
     }
+    killed ||= await killRunner(real, call);
     sawPoll(model, turnOf(await called(real, { kind: 'next', run: real.run, wait: true })));
   }
   throw new Error('a fair session did not reach done in 40 calls');
