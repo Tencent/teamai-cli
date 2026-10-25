@@ -175,7 +175,7 @@ teamai workflow report <run> --json '{"attempt":"<attempt>","revision":1,"outcom
 
 `outcome` is `success`, `failed`, or `released`. `released` puts the step back to pending. It does not use up a retry. A report for an attempt that was already settled returns `repeated_report`, even when the revision is old. The run keeps recent settled attempts for that check. An older attempt uses the other checks: an old revision returns `stale_revision`, and a current revision that is not the leased attempt returns `wrong_attempt`. Another driver returns `wrong_driver`. `changes` whose `branch` or `base` differs from the lease returns `invalid_report`, and the step stays leased. A read-only step in a workspace reports `read` (`branch`, `base`, and the `commit` it read) in place of `changes`. `changes` from it, a success without `read`, `read` from any other step, or `read` that differs from the lease returns `invalid_report` too. `used` (`{"skills":["review-notes"]}`) names the team skills the pass loaded, for its [scorer labels](scorers.md#any-driver). A value that is not a skill name is dropped, and a `used` of another shape returns `invalid_report`. A payload field the CLI does not read, such as a misspelled `tokens` written as `tokenz` or a field from a newer protocol version, is accepted but reported back: the success envelope of `next`, `report`, and `respond --json` carries `ignored` with those names — top-level fields first, then `driver.<field>` and `changes.<field>` names — names only and never values. The key is left out when nothing was ignored, and an error envelope stays as it is.
 
-The run is stored in its owning scope's TeamAI data directory. `next`, `report`, `respond`, and the run controls find it by id across configured local scopes, including from a workflow worktree or outside the product repository. The command exits when it finishes. A local run that ends `failed` or `cancelled` exits with status 1. No workflow process keeps running.
+The run is stored in its owning scope's TeamAI data directory. `next`, `report`, `respond`, and the run controls find it by id across configured local scopes, including from a workflow worktree or outside the product repository. An id that two scopes hold answers `ambiguous_run`. The command exits when it finishes. A local run that ends `failed` or `cancelled` exits with status 1. No workflow process keeps running.
 
 Use `workflow respond <run> <step> <choice>` for a waiting HITL request, `workflow retry <run> <step>` for a failed or stuck step, `workflow cancel <run> [step]` to stop work, `workflow resume <run>` to continue locally, and `workflow publish <run>` to let another machine continue it ([Continue a run on another machine](#continue-a-run-on-another-machine)). `next` answers `lease`, `hitl`, `wait`, or `done`. See [HITL](workflow-advanced.md#hitl-human-in-the-loop) and [Retry, cancel, and resume](workflow-advanced.md#retry-cancel-and-resume).
 
@@ -314,7 +314,15 @@ Workflow totals (runs, succeeded, failed, cumulative duration) are folded into `
 
 ## Run from a coding session
 
-`invoke` says whether an agent session may start a workflow: `allow` (it starts it when the task matches), `ask` (after the person agrees) or `deny`, the default. Only `allow` and `ask` workflows are advertised to sessions. An optional token `alias` is another entry name for `workflow start`. An alias that another workflow also uses, or takes as its name, starts nothing (`alias_conflict`); start those workflows by name.
+A coding session, such as Claude Code or Codex, can run a team workflow for the person it works with. `invoke` in the workflow file says whether it may:
+
+| `invoke` | An agent session |
+|---|---|
+| `allow` | Starts the workflow when the task matches. |
+| `ask` | Proposes it, and starts it once the person agrees. |
+| `deny`, the default | Cannot start it, with any driver. |
+
+`alias` is an optional second name for `workflow start`, a single token. An alias that another workflow also uses, or takes as its name, starts nothing (`alias_conflict`). Start those workflows by name.
 
 ```yaml
 schemaVersion: v1alpha1
@@ -329,21 +337,43 @@ steps:
     prompt: "Implement {{ inputs.task }}."
 ```
 
-`teamai pull` writes a `workflow-<name>` skill for each workflow with `invoke: allow` or `ask`, which points the agent at `teamai skill get workflow`. The skill carries no graph, prompt or command bodies, and `teamai push` never publishes it. Edit the workflow, not the skill: pull keeps an edited skill as it is, and a skill of the same name without the generated marker takes its place. The workflow instructions are served by the installed CLI.
+teamai before 0.28.0 drops a workflow that sets `invoke` or `alias`, so members and CI jobs need 0.28.0 or later. `teamai review --branch` warns about each workflow that adds either key.
 
-```bash
-teamai workflow start session-fix --describe
-teamai workflow start session-change --inputs '{"task":"fix the retry"}'
-teamai workflow next <run> --prepare --json '<driver payload>'
-teamai workflow report <run> --json '<attempt report>'
-```
+A process runs inside an agent session when an agent's session variable, such as `CLAUDE_CODE_SESSION_ID`, is set, or when it runs inside a workflow attempt (`TEAMAI_WORKFLOW_ATTEMPT`). From there, `workflow start` of a `deny` workflow answers `invoke_denied`, and an `ask` workflow needs `--confirmed`, which the session adds once the person agreed. The same holds with `--driver local` and with no driver. A CI job sets none of these variables, so it starts any workflow.
 
-`--describe` returns metadata and input schemas without creating a run. The session collects required inputs, requests leases and reports their actual results. It treats step paths as opaque, follows `wait` and `done`, stops cancelled attempts, and never reproduces dependencies, conditions or loops. The workflow skill reads current CLI help rather than copying its flags. A requested model the host cannot apply fails with `model_unavailable`.
+### Workflow skills
 
-With `next --prepare`, the CLI creates or reuses the leased worktree in the checkout the run originally retained, applies base agent configuration and team delivery, and returns `lease.cwd`. Repeat preparation does not overwrite edits. The session works there and never runs git for that workspace. `report` commits, pushes, fills `changes` or `read`, and removes the worktree only after an accepted successful report authorizes cleanup. Omit caller-supplied `changes` and `read` for these managed attempts. Failure keeps work for recovery. Other drivers that prepare their own workspaces omit `--prepare`.
+`teamai pull` writes a `workflow-<name>` skill for each workflow with `invoke: allow` or `ask`. A session finds the workflow through it: the skill carries the workflow's description and alias, and sends the agent to `teamai skill get workflow`, the instructions the installed CLI serves. It carries no step, prompt, or command. On Claude Code and CodeBuddy, the skill of an `allow` workflow pre-approves its `workflow start` command.
 
-A driver that took a lease without `--prepare` prepares it later with `next <run> --prepare --attempt <attempt>`. With `--adopt <dir>`, the attempt runs in a place the host made instead: a clean worktree of this repository on the lease's workspace branch, or detached at its start, as `git worktree add` makes. A place that does not fit answers `adopt_mismatch`, and the attempt stays leased. TeamAI commits and pushes there as in its own worktree, and never removes the place.
+Edit the workflow, not the skill. Pull rewrites an unchanged skill when the workflow changes, and removes it when the workflow is removed or set to `deny`. It keeps a skill you edited, with a warning. A team or member skill named `workflow-<name>` without the generated marker takes its place, and `teamai doctor` lists it. `teamai push` never publishes a generated skill. `push --skill` refuses one, and refuses a skill the CLI owns, such as `teamai`. In a project, pull lists the generated skills in `.git/info/exclude`.
 
-A session declares only its host's actual workspace, human, model and execution capabilities. It must not claim scoped env, setup credentials, token measurement, network controls or turn limits it cannot enforce. Requirement negotiation follows the engine's requirements contract when those fields are available. The ordinary session profile cannot receive fresh scoped secrets and leaves env/setup capabilities off. A worktree alone does not provide a sandbox. Required approvals use the literal response command answered by the person or a trusted driver UI; an agent-mediated CLI response is rejected with `agent_in_path`.
+In self mode, a workflow worktree holds the team files as committed. Commit a workflow before a session runs it in a worktree, or its skill is missing there.
 
-Run ids address all configured local scopes. Duplicate ids fail with `ambiguous_run`; the current directory never chooses between duplicates. The retained checkout stays local. Attempt preparation records keep paths and file fingerprints, with no prompt, env values or graph.
+### What the session does
+
+The agent runs `teamai workflow start --describe <name> --driver skill`. The reply says how to start the run: directly, after one question to the person, or with the local driver. The question covers the inputs, how many steps run at once, who answers optional approvals, and whether to judge. A workflow with an `interactive` step goes to the local driver, which the person runs in their own terminal.
+
+After the start, every reply is a turn: the actions for the agent, the steps that run, what happened since the last call, and the command to run next. The run's state stays in the CLI, so the agent keeps nothing between calls. After a compaction, or in a new session, `teamai workflow next <run> --driver skill` prints the current turn. When another session still drives the run, it answers `orchestrator_active`, and the person decides whether this session takes over with `--takeover`.
+
+- A command step runs in a background process that TeamAI starts on this machine.
+- A prompt step goes to a child agent that the session starts, with a brief and the directory to work in. The child reports when it is done. When the step has a workspace, TeamAI commits and pushes the child's work.
+- The session tells the person what happened, asks the questions, and gives the outcome and the pull requests.
+
+`teamai skill get workflow` prints the instructions the agent follows. `teamai workflow <command> --help` lists every option.
+
+The skill driver declares `env: "commands"` (see [Requirements and limits](workflow-advanced.md#requirements-and-limits)). A command step and setup get their `requires.env` keys as with the local driver. A prompt step with `requires.env` waits, because TeamAI scopes team env only in the processes it starts. The driver never declares `tokens`, `max_turns`, or `network`, since no host reports a child's tokens or turns to TeamAI. A prompt step under a `budget` waits, and `max_turns` and `requires.network: false` are listed in `unenforced`. Run a workflow that needs these with the local driver. A worktree is not a sandbox: `requires.isolation: sandbox` is listed in `unenforced` too.
+
+### Answers only the person gives
+
+A required approval reaches only the person. The session shows it and gives them the `teamai workflow respond` command for their own terminal, or they answer in [`teamai dashboard`](dashboard.md#workflow-runs). TeamAI decides who answered from the process that sends the answer. Any answer sent from inside an agent session counts as the agent's: `respond --driver skill`, `respond --json` with a driver identity, and a dashboard started from that session. A required approval refuses it with `agent_in_path`. These variables are evidence, not proof: a process that unsets them, or opens a terminal, passes as the person.
+
+Optional approvals and choices are answered as the person picked at the start. With `--hitl person`, the agent asks the person. With `--hitl recommend`, the agent decides and says why. With `--auto-approve`, TeamAI answers an approval yes and a choice with its default.
+
+### Judging
+
+When a step lists [scorers](scorers.md) and the confined judge of the session's tool is installed on this machine, TeamAI judges each scored pass in the background, and the session tells the person the labels. To leave the scored steps unjudged on this machine, the person picks the start option without judging (`--no-judge`). The orchestrating agent never judges.
+
+### Limits
+
+- On Windows, a command whose background runner was killed keeps running until it ends. TeamAI does not stop it.
+- A prompt step's `timeout` is noticed at the session's next `next` call or poll, not at the moment it passes.

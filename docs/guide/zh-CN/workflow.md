@@ -175,7 +175,7 @@ teamai workflow report <run> --json '{"attempt":"<attempt>","revision":1,"outcom
 
 `outcome` 可以是 `success`、`failed` 或 `released`。`released` 把步骤退回 pending，不消耗重试。已经上报过的 attempt 返回 `repeated_report`，revision 旧了也一样。运行状态会记住最近上报过的 attempt。更早的 attempt 走其余检查：revision 旧了返回 `stale_revision`，revision 是当前值但不是当前租约的 attempt 时返回 `wrong_attempt`。其他驱动返回 `wrong_driver`。`changes` 的 `branch` 或 `base` 与租约不符时返回 `invalid_report`，步骤仍处于租约中。工作区里的只读步骤上报 `read`（`branch`、`base` 和它读取的 `commit`），而不是 `changes`。它上报 `changes`、成功时没有 `read`、其他步骤上报 `read`，或 `read` 与租约不符时，同样返回 `invalid_report`。`used`（`{"skills":["review-notes"]}`）写明该轮次加载过的团队技能，供它的[评分标签](scorers.md#任意-driver)使用。不是技能名的值会被丢弃，其他形状的 `used` 返回 `invalid_report`。CLI 不读取的 payload 字段——例如把 `tokens` 拼成 `tokenz`，或来自更新协议版本的字段——会被接受但回报出来：`next`、`report` 和 `respond --json` 的成功信封会带上 `ignored`，先列顶层字段、再列 `driver.<字段>` 和 `changes.<字段>`，只有名字、没有值。没有未读字段时不带这个键，错误信封保持原样。
 
-运行状态保存在所属 scope 的 TeamAI 数据目录里。`next`、`report`、`respond` 和运行控制命令按 id 跨本机已配置 scope 查找，工作流 worktree 内或产品仓库外也可以使用。命令结束后进程就退出。本地运行以 `failed` 或 `cancelled` 结束时，退出码是 1。不会留下常驻的工作流进程。
+运行状态保存在所属 scope 的 TeamAI 数据目录里。`next`、`report`、`respond` 和运行控制命令按 id 跨本机已配置 scope 查找，工作流 worktree 内或产品仓库外也可以使用。两个 scope 中都有的 id 返回 `ambiguous_run`。命令结束后进程就退出。本地运行以 `failed` 或 `cancelled` 结束时，退出码是 1。不会留下常驻的工作流进程。
 
 等待 HITL 请求用 `workflow respond <run> <step> <choice>` 回答，失败或卡住的步骤用 `workflow retry <run> <step>` 重试，`workflow cancel <run> [step]` 停止工作，`workflow resume <run>` 继续本地执行，`workflow publish <run>` 让另一台机器接着运行（见[在另一台机器上继续运行](#在另一台机器上继续运行)）。next 返回 lease、hitl、wait 或 done。参见[HITL](workflow-advanced.md#hitl人在回路中)和[重试、取消和继续运行](workflow-advanced.md#重试取消和继续运行)。本地运行以 failed 或 cancelled 结束时退出码为 1。结束运行的操作在锁内排队写入结束记录，在释放锁后发布；重试后仍更新同一路径。回答记录只发布 choice、channel 和 agent，备注、回答时间和回答驱动身份只保存在本地。
 
@@ -314,7 +314,15 @@ Run id 是 `r` 加 16 位十六进制。此方案之前创建的运行用 8 位�
 
 ## 在编程会话中运行
 
-`invoke` 决定 agent 会话能否启动工作流：`allow`（任务匹配时直接启动）、`ask`（征得本人同意后启动）或 `deny`（默认）。只有 `allow` 和 `ask` 的工作流会提供给会话。可选的 token `alias` 是 `workflow start` 的另一个入口名。别名若与另一个工作流的别名或名称相同，就不启动任何工作流（`alias_conflict`），请用名称启动它们。
+Claude Code、Codex 等编程会话可以替与它协作的人运行团队工作流。工作流文件中的 `invoke` 决定它能否这样做：
+
+| `invoke` | agent 会话 |
+|---|---|
+| `allow` | 任务匹配时直接启动工作流。 |
+| `ask` | 先提议，本人同意后再启动。 |
+| `deny`（默认） | 用任何驱动都不能启动。 |
+
+`alias` 是 `workflow start` 可选的第二个名称，必须是单个 token。别名若与另一个工作流的别名或名称相同，就不启动任何工作流（`alias_conflict`）。请用名称启动这些工作流。
 
 ```yaml
 schemaVersion: v1alpha1
@@ -329,21 +337,43 @@ steps:
     prompt: "Implement {{ inputs.task }}."
 ```
 
-`teamai pull` 为每个 `invoke: allow` 或 `ask` 的工作流写入一个 `workflow-<name>` skill，引导 agent 读取 `teamai skill get workflow`。该 skill 不携带图、提示词或命令体，`teamai push` 也从不发布它。请修改工作流而不是 skill：pull 会原样保留被编辑过的 skill，同名但没有生成标记的 skill 会取代它。工作流指令由已安装 CLI 提供。
+0.28.0 之前的 teamai 会丢弃设置了 `invoke` 或 `alias` 的工作流，所以成员和 CI 任务需要 0.28.0 或更高版本。`teamai review --branch` 会对每个新增这两个键之一的工作流给出警告。
 
-```bash
-teamai workflow start session-fix --describe
-teamai workflow start session-change --inputs '{"task":"fix the retry"}'
-teamai workflow next <run> --prepare --json '<driver payload>'
-teamai workflow report <run> --json '<attempt report>'
-```
+设置了 agent 的会话变量（如 `CLAUDE_CODE_SESSION_ID`），或在工作流 attempt 内运行（设置了 `TEAMAI_WORKFLOW_ATTEMPT`）的进程，就算在 agent 会话内运行。在这样的进程中，`workflow start` 启动 `deny` 工作流时返回 `invoke_denied`；启动 `ask` 工作流需要 `--confirmed`，会话在本人同意后加上它。使用 `--driver local` 或不指定驱动时也一样。CI 任务不设置这些变量，所以可以启动任何工作流。
 
-`--describe` 只返回元数据和输入类型，不创建运行。会话收集必需输入，获取租约并报告实际结果。步骤路径是不透明标识；会话遵循 `wait`、`done`，停止被取消的 attempt，不重新实现依赖、条件或循环。工作流 skill 读取当前 CLI help，不复制参数表。宿主无法应用明确请求的模型时，以 `model_unavailable` 失败。
+### 工作流 skill
 
-使用 `next --prepare` 时，CLI 在运行最初保留的检出目录中创建或复用租约工作树，应用基线 agent 配置和团队资源，并返回 `lease.cwd`。重复准备不会覆盖已有编辑。会话只在那里工作，不自己运行工作区 git 操作。`report` 负责 commit、push、填充 `changes` 或 `read`；只有报告成功接受且允许 cleanup 时才删除工作树。对这类托管 attempt，不要自己提供 `changes` 和 `read`。失败时保留工作以便恢复。自行准备工作区的其他驱动不使用 `--prepare`。
+`teamai pull` 为每个 `invoke: allow` 或 `ask` 的工作流写入一个 `workflow-<name>` skill。会话通过它找到工作流：skill 带有工作流的描述和别名，并引导 agent 读取 `teamai skill get workflow`，即已安装 CLI 提供的指令。它不带任何步骤、提示词或命令。在 Claude Code 和 CodeBuddy 中，`allow` 工作流的 skill 会预先批准它的 `workflow start` 命令。
 
-未使用 `--prepare` 获取租约的驱动，可以稍后用 `next <run> --prepare --attempt <attempt>` 准备它。加上 `--adopt <dir>` 时，attempt 改在宿主创建的位置运行：该仓库的一个干净 worktree，位于租约的工作区分支上，或分离在其起点，就像 `git worktree add` 创建的那样。不符合的位置返回 `adopt_mismatch`，attempt 仍保持租约。TeamAI 在那里像在自己的工作树中一样 commit 和 push，但从不删除该位置。
+请修改工作流，而不是 skill。工作流变化时，pull 会重写未改动过的 skill；工作流被删除或改为 `deny` 时，pull 会删除它。被你编辑过的 skill 会保留，并给出警告。没有生成标记、名为 `workflow-<name>` 的团队或成员 skill 会取代它，`teamai doctor` 会列出这种情况。`teamai push` 从不发布生成的 skill。`push --skill` 拒绝生成的 skill，也拒绝 CLI 自有的 skill，如 `teamai`。在项目中，pull 会把生成的 skill 列入 `.git/info/exclude`。
 
-会话只声明宿主真正提供的工作区、人机交互、模型和执行能力，不能声称支持无法执行的环境隔离、setup 凭据、token 计量、网络控制或轮次限制。引擎支持要求字段时，能力协商遵循其要求契约。普通会话不能接收新注入的受限密钥，应关闭 env/setup 能力。worktree 本身不是 sandbox。必需审批由人执行返回的字面响应命令，或通过可信驱动 UI 回答；由 agent 转述的 CLI 回答以 `agent_in_path` 拒绝。
+self 模式下，工作流 worktree 中的团队文件是已提交的版本。会话要在 worktree 中运行某个工作流前，先提交该工作流，否则那里没有它的 skill。
 
-运行 id 跨本机已配置 scope 定位。重复 id 以 `ambiguous_run` 失败，当前目录不参与选择。原始检出目录只保存在本机。attempt 准备记录只保存路径和文件指纹，不保存提示词、环境变量值或图。
+### 会话做什么
+
+agent 运行 `teamai workflow start --describe <name> --driver skill`。回复说明如何启动运行：直接启动、先问本人一个问题，或交给本地驱动。这个问题涵盖输入、同时运行几个步骤、谁回答可选审批，以及是否评审。含 `interactive` 步骤的工作流交给本地驱动，由本人在自己的终端运行。
+
+启动后，每次回复都是一个 turn：agent 要做的 action、正在运行的步骤、上次调用以来发生的事，以及下一条要运行的命令。运行状态保存在 CLI 中，agent 在两次调用之间不需要记住任何东西。上下文压缩后或在新会话中，`teamai workflow next <run> --driver skill` 会打印当前 turn。如果另一个会话仍在驱动这次运行，它返回 `orchestrator_active`，由本人决定是否让本会话用 `--takeover` 接管。
+
+- 命令步骤在 TeamAI 于本机启动的后台进程中运行。
+- 提示词步骤交给会话启动的子 agent，附带任务说明和工作目录。子 agent 完成后自行上报。步骤有工作区时，TeamAI 会 commit 并 push 子 agent 的工作。
+- 会话告诉本人发生了什么，提出问题，并给出结果和 PR。
+
+`teamai skill get workflow` 打印 agent 遵循的指令。`teamai workflow <command> --help` 列出所有选项。
+
+skill 驱动声明 `env: "commands"`（见[要求和限制](workflow-advanced.md#要求和限制)）。命令步骤和 setup 像在本地驱动中一样获得各自的 `requires.env` 键。带 `requires.env` 的提示词步骤会等待，因为 TeamAI 只在自己启动的进程中限定团队 env。该驱动从不声明 `tokens`、`max_turns` 或 `network`，因为没有宿主会把子 agent 的 token 或轮次报告给 TeamAI。处于 `budget` 下的提示词步骤会等待，`max_turns` 和 `requires.network: false` 会列入 `unenforced`。需要这些能力的工作流请用本地驱动运行。worktree 不是 sandbox：`requires.isolation: sandbox` 也会列入 `unenforced`。
+
+### 只有本人能给的回答
+
+必需审批只交给本人。会话展示它，并把 `teamai workflow respond` 命令交给本人在自己的终端运行，或由本人在 [`teamai dashboard`](dashboard.md#工作流运行workflow-runs) 中回答。TeamAI 根据发送回答的进程判断是谁回答的。从 agent 会话内发出的回答都算 agent 的：`respond --driver skill`、带驱动身份的 `respond --json`，以及从该会话启动的 dashboard。必需审批会以 `agent_in_path` 拒绝这样的回答。这些变量是证据，不是证明：取消这些变量或打开终端的进程可以冒充本人。
+
+可选审批和选择按本人在启动时选的方式回答。`--hitl person` 时，agent 问本人。`--hitl recommend` 时，agent 自己决定并说明理由。`--auto-approve` 时，TeamAI 对审批回答 yes，对选择取其默认值。
+
+### 评审
+
+当步骤列出[评分器](scorers.md)，且本机安装了会话所用工具的受限评审器时，TeamAI 在后台评审每个被评分的 pass，会话把标签告诉本人。如果不想在本机评审这些步骤，本人选择不评审的启动选项（`--no-judge`）。负责编排的 agent 从不评审。
+
+### 限制
+
+- 在 Windows 上，后台 runner 被杀掉后，它启动的命令会一直运行到结束。TeamAI 不会停止它。
+- 提示词步骤的 `timeout` 在会话下一次调用 `next` 或轮询时才被发现，而不是在超时的那一刻。
