@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { WorkflowClient } from '../workflow/protocol.js';
+import { respondProvenance, respondToHitl } from '../workflow/run-controls.js';
 import { AttemptIdSchema, readRun, RunIdSchema, type RunId } from '../workflow/store.js';
 import type { Runners } from '../workflow/drivers/skill/skill-driver.js';
 // The doc comparison reads the table itself; every behaviour below goes through runSkillCall.
@@ -125,6 +126,23 @@ steps:
     scorers: [review-quality]
 `;
 
+const RELEASE = `schemaVersion: v1alpha1
+name: release
+description: Write the notes, review them, then deploy
+invoke: allow
+steps:
+  - id: notes
+    command: node -e "process.exit(0)"
+  - id: plan-review
+    needs: [notes]
+    approve: Approve the release notes?
+    command: node -e "process.exit(0)"
+  - id: go-live
+    needs: [plan-review]
+    approve: { message: Deploy to production?, required: true }
+    command: node -e "process.exit(0)"
+`;
+
 const SCORERS = { 'review-quality': `---
 labels:
   - { value: thorough, score: 1, description: Did the work it was asked for }
@@ -199,6 +217,22 @@ async function reviewed(made: Awaited<ReturnType<typeof harness>>, answers: { ju
   return turnOf(await made.call({ kind: 'next', run: turn.run, wait: false }));
 }
 
+/** Starts RELEASE with `hitl`, then polls until a turn carries a gate's action: that turn. */
+async function gated(made: Awaited<ReturnType<typeof harness>>, hitl: 'person' | 'recommend' | 'auto-approve') {
+  const { run } = await turnOf(await made.call({ kind: 'start', name: 'release', answers: { confirmed: false, hitl }, inputs: undefined }));
+  return gateTurn(made, run);
+}
+
+/** Polls `run` until a turn carries a gate's action, running a foreground next when a poll wakes: that turn. */
+async function gateTurn(made: Awaited<ReturnType<typeof harness>>, run: RunId) {
+  for (let poll = 0; poll < 10; poll += 1) {
+    let turn = await turnOf(await made.call({ kind: 'next', run, wait: true }));
+    if (turn.then?.kind === 'wake') turn = await turnOf(await made.call({ kind: 'next', run, wait: false }));
+    if (turn.actions.some((action) => action.kind === 'person' || (action.kind === 'choose' && action.about === 'gate'))) return turn;
+  }
+  throw new Error('no gate came up in ten polls');
+}
+
 /** The runners with `sleep 300` faked: it runs until it is stopped, and `stops` gets the attempt of each stop. */
 function sleepFaked(stops: string[]) {
   return (runners: Runners): Runners => ({
@@ -240,6 +274,79 @@ function scriptedOnce(script: (client: WorkflowClient) => Partial<Pick<WorkflowC
  * the last case checks the cases cover every row of `TRANSITIONS`.
  */
 const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> }> = [
+  {
+    name: 'an optional gate of a run whose person said "you decide" is the agent\'s to answer, and its answer is recorded as an agent\'s',
+    rows: ['R3', 'R9', 'D12', 'H2'],
+    run: async () => {
+      const made = await harness({ release: RELEASE });
+      expect(await made.call({ kind: 'describe', name: 'release' })).toMatchObject({ data: { describe: { ask: { kind: 'ask', question: {
+        text: 'Only you can answer the approval at go-live, from your own terminal or teamai dashboard. Optional approvals: plan-review. How should optional approvals be answered?',
+        options: [
+          { label: 'Ask me at optional approvals', start: 'teamai workflow start release --driver skill --hitl person' },
+          { label: 'You decide optional approvals', start: 'teamai workflow start release --driver skill --hitl recommend' },
+          { label: 'Answer optional approvals automatically', start: 'teamai workflow start release --driver skill --auto-approve' },
+        ],
+      } } } } });
+      expect(await made.call({ kind: 'start', name: 'release', answers: { confirmed: false }, inputs: undefined }))
+        .toMatchObject({ error: { code: 'confirm_needed', message: expect.stringContaining('--hitl or --auto-approve') } });
+      const turn = await gated(made, 'recommend');
+      expect(turn.actions).toEqual([{
+        kind: 'choose', about: 'gate', decide: 'agent', step: 'plan-review', pass: 1, question: 'Approve the release notes?',
+        options: [
+          { choice: 'yes', run: `teamai workflow respond ${turn.run} plan-review yes --pass 1 --driver skill` },
+          { choice: 'no', run: `teamai workflow respond ${turn.run} plan-review no --pass 1 --driver skill` },
+        ],
+      }]);
+      const answered = await turnOf(await made.call({ kind: 'respond', run: turn.run, step: 'plan-review', choice: 'yes', pass: 1 }));
+      expect(answered.events).toContainEqual({ kind: 'answered', step: 'plan-review', choice: 'yes', channel: 'driver', agent: true });
+      expect(await readRun(made.config, turn.run)).toMatchObject({ steps: expect.arrayContaining([
+        expect.objectContaining({ id: 'plan-review', answer: expect.objectContaining({ choice: 'yes', channel: 'driver', agent: true, driver: expect.objectContaining({ kind: 'skill' }) }) }),
+      ]) });
+      return made.rows;
+    },
+  },
+  {
+    name: 'under auto-approve the engine answers the optional approval, and the required one waits for the person: the agent\'s answer is refused, the person\'s from their terminal clears it',
+    rows: ['D10', 'H3', 'H5'],
+    run: async () => {
+      const made = await harness({ release: RELEASE });
+      const turn = await gated(made, 'auto-approve');
+      const { run } = turn;
+      expect(turn.actions).toEqual([{
+        kind: 'person', why: 'approval', step: 'go-live', pass: 1, message: 'Deploy to production?',
+        say: 'Only you can answer this approval. Run one of these commands in your own terminal, or answer it in teamai dashboard.',
+        run: [`teamai workflow respond ${run} go-live yes --pass 1`, `teamai workflow respond ${run} go-live no --pass 1`],
+      }]);
+      expect(turn.waiting).toEqual({ reason: 'go-live waits for the person\'s answer' });
+      expect(await readRun(made.config, run)).toMatchObject({ steps: expect.arrayContaining([
+        expect.objectContaining({ id: 'plan-review', answer: expect.objectContaining({ choice: 'yes', channel: 'auto_approve', agent: false }) }),
+      ]) });
+      expect(await made.call({ kind: 'respond', run, step: 'go-live', choice: 'yes', pass: 1 }))
+        .toEqual({ error: expect.objectContaining({ code: 'agent_in_path', next: `teamai workflow next ${run} --driver skill --wait` }) });
+      const person = respondProvenance({ kind: 'terminal', caller: { tty: true, evidence: { kind: 'none' } } });
+      expect(await respondToHitl(made.config, run, made.context.env.secrets, { step: 'go-live', choice: 'yes', pass: 1, provenance: person })).not.toHaveProperty('error');
+      const after = await turnOf(await made.call({ kind: 'next', run, wait: false }));
+      expect(after.actions.filter((action) => action.kind === 'person')).toEqual([]);
+      expect((await polledToDone(made, run)).actions).toContainEqual(expect.objectContaining({ kind: 'done', outcome: 'succeeded' }));
+      return made.rows;
+    },
+  },
+  {
+    name: 'an optional gate of a run whose person said "ask me" is the agent\'s to put to the person; a choice it does not offer is refused, and an answer given twice changes nothing',
+    rows: ['D11', 'H4', 'H1'],
+    run: async () => {
+      const made = await harness({ release: RELEASE });
+      const turn = await gated(made, 'person');
+      const { run } = turn;
+      expect(turn.actions).toEqual([expect.objectContaining({ kind: 'choose', about: 'gate', decide: 'person', step: 'plan-review', pass: 1 })]);
+      expect(await made.call({ kind: 'respond', run, step: 'plan-review', choice: 'maybe', pass: 1 }))
+        .toEqual({ error: expect.objectContaining({ code: 'invalid_choice', next: `teamai workflow next ${run} --driver skill` }) });
+      await turnOf(await made.call({ kind: 'respond', run, step: 'plan-review', choice: 'yes', pass: 1 }));
+      const again = await turnOf(await made.call({ kind: 'respond', run, step: 'plan-review', choice: 'yes', pass: 1 }));
+      expect(again.actions.filter((action) => action.kind === 'choose')).toEqual([]);
+      return made.rows;
+    },
+  },
   {
     name: 'a command that requires env gets its key, and a step that does not require it runs without it',
     rows: ['D6', 'C1'],

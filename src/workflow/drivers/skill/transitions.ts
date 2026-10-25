@@ -7,8 +7,8 @@ import type { AttemptId, RunId } from '../../store.js';
 import type { WorkflowFailure } from '../../types.js';
 import type { ChildResult } from './child-brief.js';
 import type { HostChoice, HostProfile } from './host-profiles.js';
-import type { StartAnswer, StartCheck } from './preflight.js';
-import type { AttemptState, Dispatch, Judge, ReportBody, SkillState, StopReason, TurnEvent } from './skill-state.js';
+import type { HitlMode, StartAnswer, StartCheck } from './preflight.js';
+import type { AttemptState, Dispatch, Gate, Judge, ReportBody, SkillState, StopReason, TurnEvent } from './skill-state.js';
 import type { DescribeAsk } from './turn.js';
 
 export interface TransitionRow {
@@ -23,11 +23,11 @@ export interface TransitionRow {
 
 export const TRANSITIONS = [
   { id: 'R2', state: 'none', input: 'describe', guard: 'the definition has an interactive step', effects: 'none', next: 'none', action: 'describe `ask.kind: local` with the reason and the `--driver local` start literal' },
-  { id: 'R3', state: 'none', input: 'describe', guard: 'something to ask: `invoke: ask`, a required input, width above 1, or judging here', effects: 'none', next: 'none', action: 'describe `ask.kind: ask`: one question, and the start literal of each option' },
+  { id: 'R3', state: 'none', input: 'describe', guard: 'something to ask: `invoke: ask`, a required input, width above 1, an optional gate, or judging here', effects: 'none', next: 'none', action: 'describe `ask.kind: ask`: one question, and the start literal of each option' },
   { id: 'R4', state: 'none', input: 'describe', guard: 'nothing to ask', effects: 'none', next: 'none', action: 'describe `ask.kind: start` with the one start literal' },
   { id: 'R8', state: 'none', input: 'start `--driver skill`', guard: 'the definition has an interactive step', effects: 'none', next: 'none', action: 'error `needs_local_driver`, next null' },
   { id: 'R9', state: 'none', input: 'start `--driver skill`', guard: '`checkStartAnswers` answers `confirm-needed`', effects: 'none', next: 'none', action: 'error `confirm_needed`, next: the describe literal' },
-  { id: 'R10', state: 'none', input: 'start `--driver skill`', guard: '`checkStartAnswers` answers `ok`', effects: '`WorkflowClient.start`; write skill.json: identity `{skill, machine, run checkout}`, invocation, options, host `pending` when the definition has a prompt step, owner := the caller\'s session; judging on with the session tool when describe judges here and the start has no `--no-judge`', next: 'host when it has a prompt step, else drive', action: 'the turn of a tick' },
+  { id: 'R10', state: 'none', input: 'start `--driver skill`', guard: '`checkStartAnswers` answers `ok`', effects: '`WorkflowClient.start`; write skill.json: identity `{skill, machine, run checkout}`, invocation, options (`--parallel`, the HITL mode), host `pending` when the definition has a prompt step, owner := the caller\'s session; judging on with the session tool when describe judges here and the start has no `--no-judge`', next: 'host when it has a prompt step, else drive', action: 'the turn of a tick' },
   { id: 'R11', state: 'none', input: 'next, report `--driver skill`', guard: 'this machine has no skill.json for the run', effects: 'none', next: 'none', action: 'error `not_skill_run`, next null' },
   { id: 'R12', state: 'host', input: 'tick', guard: '', effects: 'none', next: 'host', action: '`choose about:host decide:agent`' },
   { id: 'R13', state: 'host', input: 'next `--choice h`', guard: '', effects: 'host := `HOST_PROFILES[h]`', next: 'drive', action: 'the turn of a tick' },
@@ -38,7 +38,7 @@ export const TRANSITIONS = [
   { id: 'S4', state: 'host, drive, done', input: 'next `--takeover` from session s', guard: '', effects: 'owner := s; `lastCallAt` := now; `seen[s]` := `seen[o]` when that is later; every offered or dispatched attempt becomes offered with `reissued`', next: 'unchanged', action: 'event `takeover`; the turn of a tick' },
   { id: 'S5', state: 'any', input: 'a runner call (`report --attempt a` with the marker `<run>/a`)', guard: '', effects: 'no session check, no `lastCallAt`', next: 'unchanged', action: 'C rows' },
   { id: 'S6', state: 'host, drive, done', input: 'an agent `report --attempt a`, from any session', guard: 'a is settled, or open offered, dispatched, reporting, or stopping by the agent', effects: 'no session check, no `lastCallAt`', next: 'unchanged', action: 'the input\'s row' },
-  { id: 'D1', state: 'drive', input: 'tick', guard: '', effects: 'engine `next {driver: identity + SKILL_CAN, running: every open attempt, canTakeLease: fewer open than options.parallel, and than one under a serial host; false in a runner\'s check}`', next: 'drive', action: '' },
+  { id: 'D1', state: 'drive', input: 'tick', guard: '', effects: 'engine `next {driver: identity + SKILL_CAN, running: every open attempt, canTakeLease: fewer open than options.parallel, and than one under a serial host; false in a runner\'s check, autoApprove: true under HITL mode `auto-approve`}`', next: 'drive', action: '' },
   { id: 'D2', state: 'drive', input: 'reply `cancelled` holds a', guard: 'a queued', effects: 'drop a', next: 'drive', action: 'event `stopped`' },
   { id: 'D3', state: 'drive', input: 'reply `cancelled` holds a', guard: 'a preparing or running', effects: 'phase stopping by its runner, why `timeout` once its `expiresAt` passed, else `cancelled`', next: 'drive', action: '' },
   { id: 'D4', state: 'drive', input: 'reply `cancelled` holds a', guard: 'a offered or dispatched', effects: 'phase stopping by the agent, why as D3', next: 'drive', action: '`stop {why, report}` in each foreground turn until reported' },
@@ -46,14 +46,17 @@ export const TRANSITIONS = [
   { id: 'D6', state: 'drive', input: 'reply lease', guard: 'executor command', effects: 'phase preparing; spawn runner job `command`', next: 'drive', action: 'event `started`' },
   { id: 'D7', state: 'drive', input: 'reply lease', guard: 'executor prompt', effects: 'phase preparing; spawn runner job `prompt`', next: 'drive', action: 'event `started`' },
   { id: 'D9', state: 'drive', input: 'tick', guard: 'a queued attempt whose `behind` is no longer open', effects: 'phase preparing; spawn its job again', next: 'drive', action: '' },
+  { id: 'D10', state: 'drive', input: 'reply hitl', guard: 'a required approval', effects: 'journal the gate: `seq` := seq + 1, unless it is the gate journalled already', next: 'drive', action: '`person why:approval` with the person\'s literals; waiting `<step> waits for the person\'s answer`' },
+  { id: 'D11', state: 'drive', input: 'reply hitl', guard: 'an optional gate; HITL mode `person`, or `auto-approve`, under which only a choice without a default comes back', effects: 'as D10', next: 'drive', action: '`choose about:gate decide:person`' },
+  { id: 'D12', state: 'drive', input: 'reply hitl', guard: 'an optional gate; HITL mode `recommend`', effects: 'as D10', next: 'drive', action: '`choose about:gate decide:agent`' },
   { id: 'D15', state: 'drive', input: 'reply wait', guard: '', effects: 'none', next: 'drive', action: 'waiting' },
   { id: 'D16', state: 'drive', input: 'reply done', guard: '', effects: '`seq` := seq + 1, so every session has the end to see', next: 'done', action: '`done {outcome, failure, prs, judging}`' },
   { id: 'D17', state: 'drive', input: 'reply error', guard: '', effects: 'none', next: 'drive', action: 'error with the engine\'s code, next: the next literal' },
   { id: 'D18', state: 'drive', input: 'a foreground call', guard: 'it spawned runners', effects: 'release the lock; wait up to `WAIT_GRACE_MS` for them, re-taking the lock per check', next: 'drive', action: '' },
   { id: 'D19', state: 'any', input: 'a foreground call', guard: 'the lock is not free within `TICK_LOCK_WAIT_MS` (`report`: `WAIT_BOUND_MS`)', effects: 'none', next: 'unchanged', action: 'error `driver_running`, next: the same literal' },
-  { id: 'D20', state: 'host, drive, done', input: 'a foreground call, after its tick', guard: '', effects: '`seen[s]` := seq', next: 'unchanged', action: 'the turn: the host question, or every `stop` then every unacked dispatch; events after the old `seen[s]`; `then: poll` until the run is done and no attempt or judge is open' },
+  { id: 'D20', state: 'host, drive, done', input: 'a foreground call, after its tick', guard: '', effects: '`seen[s]` := seq', next: 'unchanged', action: 'the turn: the host question, or every `stop`, then every unacked dispatch, then the gate\'s `choose` or `person`; events after the old `seen[s]`; `then: poll` until the run is done and no attempt or judge is open' },
   { id: 'D21', state: 'host, drive, done', input: 'a poll tick', guard: 'the lock was busy, or nothing below applies, and the bound is not reached', effects: 'release; sleep `WAIT_POLL_MS`; tick again', next: 'unchanged', action: '' },
-  { id: 'D22', state: 'host, drive, done', input: 'a poll tick', guard: 'the host question is unanswered, a dispatch is unacked, or a `stop` is not reported', effects: 'none', next: 'unchanged', action: '`then: wake` with the next literal, no actions' },
+  { id: 'D22', state: 'host, drive, done', input: 'a poll tick', guard: 'the host question is unanswered, a dispatch is unacked, a `stop` is not reported, or the gate was journalled after `seen[s]`', effects: 'none', next: 'unchanged', action: '`then: wake` with the next literal, no actions' },
   { id: 'D23', state: 'done', input: 'a poll tick', guard: '`seen[s]` is below seq, and no attempt is open', effects: '`seen[s]` := seq', next: 'done', action: '`done` with its events; `then: poll` while a judge is open' },
   { id: 'D24', state: 'host, drive, done', input: 'a poll tick', guard: 'the bound is reached, and D25 does not apply', effects: 'none', next: 'unchanged', action: '`then: poll`, no actions' },
   { id: 'D25', state: 'drive, done', input: 'a poll tick', guard: 'a `settled` or `stopped` event came after `seen[s]`, and neither D22 nor D23 applies', effects: '`seen[s]` := seq', next: 'unchanged', action: 'the events after the old `seen[s]`, no actions; `then: poll`' },
@@ -80,6 +83,11 @@ export const TRANSITIONS = [
   { id: 'P9', state: 'reporting', input: 'engine: `lease_cancelled`', guard: '', effects: 'drop a (the protocol abandoned its place); add to settled, so a late report of its child is P1', next: 'unchanged', action: 'event `stopped`, why as its stop said, else as D3' },
   { id: 'P10', state: 'reporting', input: 'engine: another error', guard: '', effects: 'keep the body', next: 'reporting', action: 'error, next: the same report literal (a runner retries at its next check)' },
   { id: 'P11', state: 'reporting', input: 'tick, or report a', guard: 'a body is stored (a crash or a refusal came between write and send)', effects: 'send it again', next: 'reporting', action: 'P7 to P10' },
+  { id: 'H1', state: 'drive', input: 'respond `--driver skill`', guard: 'the engine answers `repeated_response`: the gate was answered already', effects: 'none', next: 'drive', action: 'the turn of a tick' },
+  { id: 'H2', state: 'drive', input: 'respond `--driver skill`', guard: 'the engine recorded the answer, as an agent\'s', effects: 'clear the gate when it is the one answered', next: 'drive', action: 'event `answered`; the turn of a tick' },
+  { id: 'H3', state: 'drive', input: 'respond `--driver skill`', guard: 'the engine answers `agent_in_path`: a required approval', effects: 'none', next: 'drive', action: 'error `agent_in_path`, next: the poll literal' },
+  { id: 'H4', state: 'drive', input: 'respond `--driver skill`', guard: 'the engine answers another error', effects: 'none', next: 'drive', action: 'error with the engine\'s code, next: the next literal' },
+  { id: 'H5', state: 'drive', input: 'reply, before its row', guard: 'a gate is journalled, and the reply is done, a wait that holds nothing, or another gate: the person answered it in their terminal or the dashboard', effects: 'clear the gate', next: 'drive', action: '' },
   { id: 'J1', state: 'drive, done', input: 'tick', guard: 'judging is on', effects: '`score --next {driver: identity + can.judge of the session tool, run, running: the open judge ref, canTakeLease: no judge open; false in a runner\'s check}`', next: 'unchanged', action: '' },
   { id: 'J2', state: 'drive, done', input: 'score reply: a lease', guard: 'judging is on, and no judge is open', effects: 'the judge is open; spawn its runner, keyed by the attempt in its ref', next: 'unchanged', action: 'event `judging`' },
   { id: 'J3', state: 'drive, done', input: 'judge runner: labelled', guard: 'its judge is open', effects: 'drop the judge', next: 'unchanged', action: 'event `judged` per scorer' },
@@ -99,15 +107,23 @@ export type ReadLease = { attempt: AttemptId; step: string; revision: number; ex
   | { executor: 'prompt'; prompt: string; place: Dispatch['place']; agent?: string; model?: string; defaultModel?: string; output?: unknown }
 );
 
+/** A gate as the engine asks it. */
+export type AskedGate = Omit<Gate, 'seq' | 'decide'>;
+
 export type EngineReply =
   /** `raw` is the lease as the engine sent it: its runner prepares the place from it. */
   | { kind: 'lease'; lease: ReadLease; raw: unknown }
-  | { kind: 'wait'; reason: string }
+  /** `held`: steps were ready, and the engine held them back from this driver. */
+  | { kind: 'wait'; reason: string; held: boolean }
+  | { kind: 'hitl'; gate: AskedGate }
   | { kind: 'done'; outcome: NonNullable<SkillState['done']>['outcome']; failure?: WorkflowFailure }
   | { kind: 'error'; error: WorkflowFailure };
 
 /** What `score --next` answered: a lease, read as the judge it opens; nothing to take; or an error. */
 export type ScoreReply = { kind: 'lease'; judge: Omit<Judge, 'spawnedAt'> } | { kind: 'idle' } | { kind: 'error'; error: WorkflowFailure };
+
+/** What the engine answered the agent's answer to a gate: the answer it recorded, or an error. */
+export type RespondReply = { kind: 'answered'; step: string; pass: number; choice: string; channel: string } | { kind: 'error'; error: WorkflowFailure };
 
 /** What the engine answered a sent report: the step it settled, or an error. */
 export type ReportReply = { kind: 'reported'; outcome: Extract<TurnEvent, { kind: 'settled' }>['outcome'] } | { kind: 'error'; error: WorkflowFailure };
@@ -134,6 +150,10 @@ export type MachineInput =
   | { kind: 'choose'; choice: HostChoice; profile: HostProfile }
   | { kind: 'ack'; attempt: AttemptId }
   | { kind: 'reply'; reply: EngineReply; at: string }
+  /** The reply of a `next`, before its own row: whether it shows the journalled gate answered elsewhere. */
+  | { kind: 'gate-check'; reply: EngineReply }
+  /** The engine's answer to `respond --driver skill`. */
+  | { kind: 'responded'; reply: RespondReply }
   /** The engine no longer leases `attempt` to this driver: it was cancelled, or it passed its deadline. */
   | { kind: 'cancelled'; attempt: AttemptId; at: string }
   | { kind: 'spawned' }
@@ -157,8 +177,8 @@ export type MachineInput =
 
 /** What the caller does for a row, beyond saving its state. */
 export type Effect =
-  | { kind: 'start'; parallel: number; host: 'none' | 'pending'; judge?: string }
-  | { kind: 'next'; running: AttemptId[]; canTakeLease: boolean }
+  | { kind: 'start'; parallel: number; hitl: HitlMode; host: 'none' | 'pending'; judge?: string }
+  | { kind: 'next'; running: AttemptId[]; canTakeLease: boolean; autoApprove: boolean }
   /** `score --next` as the confined judge of `tool`. */
   | { kind: 'score'; tool: string; running: string[]; canTakeLease: boolean }
   /** `job` is the lease of a new attempt; a respawn reuses the job already saved. */
@@ -188,7 +208,7 @@ export type Refusal =
 export type Answer =
   | { kind: 'describe'; ask: DescribeAsk['kind'] }
   | { kind: 'error'; refusal: Refusal; next: 'describe' | 'next' | 'takeover' | 'same' | null }
-  | { kind: 'engine-error'; error: WorkflowFailure; next: 'next' | 'same' }
+  | { kind: 'engine-error'; error: WorkflowFailure; next: 'next' | 'same' | 'poll' }
   | { kind: 'turn'; events: 'unseen' | 'none'; poll: boolean };
 
 export interface Step {
@@ -196,7 +216,7 @@ export interface Step {
   state: SkillState | undefined;
   effects: Effect[];
   answer?: Answer;
-  /** Why the run leased nothing more (D15). */
+  /** Why the run leased nothing more (D10, D15). */
   waiting?: { reason: string };
 }
 
@@ -238,6 +258,11 @@ export function waitsForAgent(state: SkillState): boolean {
   return state.host.kind === 'pending' || state.attempts.some((open) => open.phase === 'offered' || (open.phase === 'stopping' && open.by === 'agent'));
 }
 
+/** Whether `gate` is the gate the engine asks about in `asked`: the same step, at the same pass. */
+function sameGate(gate: Pick<Gate, 'step' | 'pass'>, asked: Pick<Gate, 'step' | 'pass'>): boolean {
+  return gate.step === asked.step && gate.pass === asked.pass;
+}
+
 function seenBy(session: string | undefined): string {
   return session ?? '';
 }
@@ -268,7 +293,7 @@ export function step(state: SkillState | undefined, input: MachineInput): Step |
         const { missing, outOfRange } = input.check;
         return { row: 'R9', state, effects: [], answer: { kind: 'error', refusal: { code: 'confirm_needed', name: input.name, missing, ...(outOfRange ? { outOfRange } : {}) }, next: 'describe' } };
       }
-      return { row: 'R10', state, effects: [{ kind: 'start', parallel: input.check.parallel, host: input.prompts ? 'pending' : 'none', ...(input.judge !== undefined ? { judge: input.judge } : {}) }] };
+      return { row: 'R10', state, effects: [{ kind: 'start', parallel: input.check.parallel, hitl: input.check.hitl, host: input.prompts ? 'pending' : 'none', ...(input.judge !== undefined ? { judge: input.judge } : {}) }] };
     case 'call': {
       if (!state) return { row: 'R11', state, effects: [], answer: { kind: 'error', refusal: { code: 'not_skill_run', run: input.run }, next: null } };
       if (input.takeover) return { row: 'S4', state: takenOver(state, input.session, input.at), effects: [] };
@@ -334,6 +359,27 @@ export function step(state: SkillState | undefined, input: MachineInput): Step |
     }
     case 'reply':
       return state && !state.done ? reply(state, input.reply, input.at) : undefined;
+    case 'gate-check': {
+      const gate = state?.gate;
+      if (!state || state.done || !gate) return undefined;
+      const { reply: engine } = input;
+      const gone = engine.kind === 'done' || (engine.kind === 'wait' && !engine.held) || (engine.kind === 'hitl' && !sameGate(gate, engine.gate));
+      if (!gone) return undefined;
+      const { gate: _gate, ...rest } = state;
+      return { row: 'H5', state: rest, effects: [] };
+    }
+    case 'responded': {
+      if (!state) return undefined;
+      const { reply: engine } = input;
+      if (engine.kind === 'answered') {
+        const { gate, ...rest } = state;
+        const kept = gate && !sameGate(gate, engine) ? { ...rest, gate } : rest;
+        return { row: 'H2', state: withEvent(kept, { kind: 'answered', step: engine.step, choice: engine.choice, channel: engine.channel, agent: true }), effects: [] };
+      }
+      if (engine.error.code === 'repeated_response') return { row: 'H1', state, effects: [] };
+      if (engine.error.code === 'agent_in_path') return { row: 'H3', state, effects: [], answer: { kind: 'engine-error', error: engine.error, next: 'poll' } };
+      return { row: 'H4', state, effects: [], answer: { kind: 'engine-error', error: engine.error, next: 'next' } };
+    }
     case 'cancelled': {
       const open = state && !state.done ? openAttempt(state, input.attempt) : undefined;
       if (!state || !open) return undefined;
@@ -366,7 +412,8 @@ export function step(state: SkillState | undefined, input: MachineInput): Step |
       if (!state) return undefined;
       return { row: 'D20', state: { ...state, seen: { ...state.seen, [seenBy(input.session)]: state.seq } }, effects: [], answer: { kind: 'turn', events: 'unseen', poll: !state.done } };
     case 'poll': {
-      if (state && !input.busy && waitsForAgent(state)) return { row: 'D22', state, effects: [], answer: { kind: 'turn', events: 'none', poll: false } };
+      const unseenGate = state?.gate !== undefined && state.gate.seq > (state.seen[seenBy(input.session)] ?? 0);
+      if (state && !input.busy && (waitsForAgent(state) || unseenGate)) return { row: 'D22', state, effects: [], answer: { kind: 'turn', events: 'none', poll: false } };
       if (state?.done && !input.busy && state.attempts.length === 0 && (state.seen[seenBy(input.session)] ?? 0) < state.seq) {
         return { row: 'D23', state: { ...state, seen: { ...state.seen, [seenBy(input.session)]: state.seq } }, effects: [], answer: { kind: 'turn', events: 'unseen', poll: false } };
       }
@@ -497,7 +544,10 @@ export function hasSlot(state: SkillState): boolean {
 
 function tick(state: SkillState, role: 'call' | 'runner'): Step {
   if (state.host.kind === 'pending') return { row: 'R12', state, effects: [] };
-  return { row: 'D1', state, effects: [{ kind: 'next', running: state.attempts.map((open) => open.attempt), canTakeLease: role === 'call' && hasSlot(state) }] };
+  return {
+    row: 'D1', state,
+    effects: [{ kind: 'next', running: state.attempts.map((open) => open.attempt), canTakeLease: role === 'call' && hasSlot(state), autoApprove: state.options.hitl === 'auto-approve' }],
+  };
 }
 
 /**
@@ -558,6 +608,15 @@ function reply(state: SkillState, engine: EngineReply, at: string): Step {
     }
     case 'wait':
       return { row: 'D15', state, effects: [], waiting: { reason: engine.reason } };
+    case 'hitl': {
+      const asked = engine.gate;
+      const row = asked.required ? 'D10' : state.options.hitl === 'recommend' ? 'D12' : 'D11';
+      const waiting = asked.required ? { waiting: { reason: `${asked.step} waits for the person's answer` } } : {};
+      if (state.gate && sameGate(state.gate, asked)) return { row, state, effects: [], ...waiting };
+      const seq = state.seq + 1;
+      const gate: Gate = asked.required ? { ...asked, required: true, seq } : { ...asked, required: false, decide: row === 'D12' ? 'agent' : 'person', seq };
+      return { row, state: { ...state, seq, gate }, effects: [], ...waiting };
+    }
     case 'done':
       return { row: 'D16', state: { ...state, seq: state.seq + 1, done: { outcome: engine.outcome, ...(engine.failure ? { failure: engine.failure } : {}) } }, effects: [] };
     case 'error':

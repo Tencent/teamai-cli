@@ -27,8 +27,8 @@ Done when a reply carries `data.turn` with a `run` id.
 
 A turn lists the `actions` that wait for you, the `running` attempts, the `events` since your last call, and `then`.
 
-1. Act on each action by its `kind`: `choose`, `stop`, `dispatch` or `done`, as their sections say.
-2. Tell the person in one line what the events say: a step started, settled with its outcome, or stopped with its `why`. For `judging`, `judged` and `judging-off`, follow `references/judging.md`.
+1. Act on each action by its `kind`: `choose`, `person`, `stop`, `dispatch` or `done`, as their sections say.
+2. Tell the person in one line what the events say: a step started, settled with its outcome, or stopped with its `why`, or a gate was `answered`. For `judging`, `judged` and `judging-off`, follow `references/judging.md`.
 3. Run `then.run` of the newest turn you have:
    - `poll`: in the background when your host can, so you stay free to talk with the person; otherwise in the foreground. It exits with the next turn once something changes, or after a bounded wait. Keep one poll of the run going at a time.
    - `wake`: in the foreground. Work waits for you, and the turn it returns carries it.
@@ -40,7 +40,24 @@ When you have lost the last turn, after a compaction or in a new session, run `t
 
 ## Choose
 
-A `choose` action with `about: host` comes once per run that has prompt steps. Follow `reference`: it says which option fits your host and how to run it.
+A `choose` action asks for one answer, and `about` says what it is for:
+
+- `host`: comes once per run that has prompt steps. Follow `reference`: it says which option fits your host and how to run it.
+- `gate`: an optional approval or choice at `step`. `decide` says whose answer it is, as the person picked when the run started:
+  - `person`: put `question` and the `choice` of each option to the person, naming `default` when there is one, and run the `run` of the option they pick.
+  - `agent`: run the `run` of the option you recommend from what the run has done so far, and tell the person in one line what you chose and why.
+
+The action stays in every turn until it is answered. Done when you ran the `run` of one option.
+
+## Person
+
+A `person` action is a required approval at `step`. Only the person answers it, from their own terminal or teamai dashboard, so your part is the handover:
+
+1. Tell the person `say` and `message`.
+2. Show them every literal in `run`, for them to run in their own terminal. Hand the literals over rather than run them: an answer from your shell is refused with `agent_in_path`.
+3. Go on with `then`. The run moves on once they answer.
+
+Done when the person has `message` and the literals.
 
 ## Stop
 
@@ -75,5 +92,7 @@ The `done` action carries the `outcome`, and the `failure` when there is one. Te
 ## Errors
 
 A reply with `error` carries `code`, `message` and `next`. When `next` is a literal, run it, except for `orchestrator_active`. When it is null, tell the person `message`: only they can act on it.
+
+`agent_in_path` means an answer only the person can give came from your session. Hand the person the command `message` names, for their own terminal.
 
 `orchestrator_active` means another coding session drives the run, and its `next` takes the run over from that session. Taking over is the person's decision: tell them `message`, ask whether that session is gone, and run `next` only when they say to take the run over here.

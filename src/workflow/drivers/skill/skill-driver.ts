@@ -15,7 +15,7 @@ import { inProcessClient, type WorkflowClient } from '../../protocol.js';
 import { AttemptIdSchema, RunIdSchema, withRunLock, type AttemptId, type RunId, type RunLock } from '../../store.js';
 import { HOST_CHOICES, type HostChoice } from './host-profiles.js';
 import { describeLiteral, invocationOf, type Invocation } from './literals.js';
-import { askFor, checkStartAnswers, localOnlySteps, neededAnswers } from './preflight.js';
+import { askFor, checkStartAnswers, localOnlySteps, neededAnswers, type HitlMode } from './preflight.js';
 import { writeSkillState, type SkillState } from './skill-state.js';
 import { detachedRunners, runRunner } from './skill-runner.js';
 import { agentReport, ceilingOf, errorOf, foreground, poll, startRefused, take } from './tick.js';
@@ -24,8 +24,8 @@ import type { SkillAnswer, SkillError } from './turn.js';
 
 export type SkillCall =
   | { kind: 'describe'; name: string }
-  /** `judge: false`: `--no-judge`, which leaves the scored steps unjudged here. */
-  | { kind: 'start'; name: string; answers: { parallel?: number; confirmed: boolean; judge?: false }; inputs: unknown }
+  /** `judge: false`: `--no-judge`, which leaves the scored steps unjudged here. `hitl`: `--hitl`, or `--auto-approve`. */
+  | { kind: 'start'; name: string; answers: { parallel?: number; confirmed: boolean; hitl?: HitlMode; judge?: false }; inputs: unknown }
   | { kind: 'next'; run: RunId; wait: boolean }
   /** `next --takeover`: this session drives the run from now on, as the person agreed. */
   | { kind: 'takeover'; run: RunId }
@@ -33,6 +33,8 @@ export type SkillCall =
   | { kind: 'choose'; run: RunId; choice: HostChoice }
   /** `next --ack dispatch.<a>`: the child of attempt `a` started. */
   | { kind: 'ack'; run: RunId; attempt: AttemptId }
+  /** `respond --driver skill`: the agent's answer to an optional gate. */
+  | { kind: 'respond'; run: RunId; step: string; pass: number; choice: string }
   /** The runner's call carries the attempt's marker: the runner reports itself. */
   | { kind: 'report'; run: RunId; attempt: AttemptId; role: 'runner' }
   | { kind: 'report'; run: RunId; attempt: AttemptId; role: 'agent'; modelUnavailable: boolean };
@@ -108,8 +110,11 @@ const StartOptionsSchema = z.object({
   confirmed: z.boolean().optional(),
   judge: z.boolean().optional(),
   inputs: z.string().optional(),
+  hitl: z.enum(['person', 'recommend'], { errorMap: () => ({ message: '--hitl takes person or recommend, as the describe reply offered' }) }).optional(),
+  autoApprove: z.boolean().optional(),
   tools: z.undefined({ invalid_type_error: '--tools is for --driver local' }),
-  autoApprove: z.undefined({ invalid_type_error: '--auto-approve is for --driver local' }),
+}).refine((options) => !(options.hitl !== undefined && options.autoApprove), {
+  message: '--hitl and --auto-approve answer the same question: pass one of them, as the describe reply offered',
 });
 const OFFER = /^dispatch\.(.+)$/;
 const NextOptionsSchema = z.object({
@@ -129,6 +134,11 @@ const NextOptionsSchema = z.object({
 }).refine((options) => [options.wait, options.takeover, options.choice, options.ack].filter((given) => given !== undefined && given !== false).length <= 1, {
   message: 'next takes at most one of --wait, --takeover, --choice and --ack',
 });
+const RespondOptionsSchema = z.object({
+  pass: z.string({ required_error: '--driver skill needs --pass, as the choose action printed it' }).regex(/^[1-9][0-9]*$/, '--pass takes the pass the choose action printed').transform(Number),
+  note: z.undefined({ invalid_type_error: '--driver skill takes no --note' }),
+  json: z.undefined({ invalid_type_error: '--driver skill takes no --json: the skill driver composes every request itself' }),
+});
 const ReportOptionsSchema = z.object({
   attempt: AttemptIdSchema,
   modelUnavailable: z.boolean().optional(),
@@ -144,7 +154,10 @@ function invalid(error: z.ZodError): { error: SkillError } {
  * an agent.
  */
 export function parseSkillCall(
-  raw: { kind: 'start'; name: string; options: unknown } | { kind: 'next' | 'report'; run: string; options: unknown },
+  raw:
+    | { kind: 'start'; name: string; options: unknown }
+    | { kind: 'next' | 'report'; run: string; options: unknown }
+    | { kind: 'respond'; run: string; step: string; choice: string; options: unknown },
   env: NodeJS.ProcessEnv,
 ): SkillCall | { error: SkillError } {
   if (raw.kind === 'start') {
@@ -160,8 +173,12 @@ export function parseSkillCall(
         return { error: { code: 'invalid_json', message: 'Could not parse --inputs as JSON', next: null } };
       }
     }
-    const { parallel, confirmed, judge } = options.data;
-    return { kind: 'start', name: raw.name, answers: { ...(parallel !== undefined ? { parallel } : {}), confirmed: confirmed === true, ...(judge === false ? { judge } : {}) }, inputs };
+    const { parallel, confirmed, judge, autoApprove } = options.data;
+    const hitl: HitlMode | undefined = autoApprove ? 'auto-approve' : options.data.hitl;
+    return {
+      kind: 'start', name: raw.name, inputs,
+      answers: { ...(parallel !== undefined ? { parallel } : {}), confirmed: confirmed === true, ...(hitl !== undefined ? { hitl } : {}), ...(judge === false ? { judge } : {}) },
+    };
   }
   const run = RunIdSchema.safeParse(raw.run);
   if (!run.success) return invalid(run.error);
@@ -173,6 +190,11 @@ export function parseSkillCall(
     if (choice !== undefined) return { kind: 'choose', run: run.data, choice };
     if (ack !== undefined) return { kind: 'ack', run: run.data, attempt: ack };
     return { kind: 'next', run: run.data, wait: wait === true };
+  }
+  if (raw.kind === 'respond') {
+    const options = RespondOptionsSchema.safeParse(raw.options);
+    if (!options.success) return invalid(options.error);
+    return { kind: 'respond', run: run.data, step: raw.step, pass: options.data.pass, choice: raw.choice };
   }
   const options = ReportOptionsSchema.safeParse(raw.options);
   if (!options.success) return invalid(options.error);
@@ -194,6 +216,8 @@ export async function runSkillCall(call: SkillCall, context: SkillContext): Prom
       return foreground(context, call.run, { kind: 'choose', choice: call.choice });
     case 'ack':
       return foreground(context, call.run, { kind: 'ack', attempt: call.attempt });
+    case 'respond':
+      return foreground(context, call.run, { kind: 'respond', step: call.step, pass: call.pass, choice: call.choice });
     case 'report':
       if (call.role === 'runner') return runRunner(context, call.run, call.attempt);
       return agentReport(context, call.run, call);
@@ -226,7 +250,7 @@ async function start(call: Extract<SkillCall, { kind: 'describe' | 'start' }>, c
   const run = RunIdSchema.safeParse(started.data.run);
   if (!run.success) return { error: { code: 'run_unreadable', message: 'The new run id was missing', next: null } };
   const state: SkillState = {
-    version: 1, run: run.data, driver: driverIdentity('skill', context.cwd), invocation: context.invocation, options: { parallel: effect.parallel }, host: { kind: effect.host },
+    version: 1, run: run.data, driver: driverIdentity('skill', context.cwd), invocation: context.invocation, options: { parallel: effect.parallel, hitl: effect.hitl }, host: { kind: effect.host },
     orchestrator: { ...(context.session !== undefined ? { session: context.session } : {}), lastCallAt: context.now().toISOString() },
     attempts: [], ...(effect.judge !== undefined ? { judging: { tool: effect.judge } } : {}), seq: 0, events: [], seen: {}, settled: [],
   };

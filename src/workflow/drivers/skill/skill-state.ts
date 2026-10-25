@@ -7,6 +7,7 @@ import { redactJson } from '../../../utils/redact.js';
 import { AttemptIdSchema, RunIdSchema, skillStatePath, type RunId, type RunLock } from '../../store.js';
 import { HOST_CHOICES } from './host-profiles.js';
 import { INVOCATIONS } from './literals.js';
+import { HITL_MODES } from './preflight.js';
 
 const FailureSchema = z.object({ code: z.string(), message: z.string() });
 
@@ -83,6 +84,8 @@ export const TurnEventSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('judged'), step: z.string(), scorer: z.string(), label: z.string() }),
   /** This driver judges no more of the run, for `failure`; the open judge lease lapses back to the queue. */
   z.object({ kind: z.literal('judging-off'), failure: FailureSchema }),
+  /** The agent's answer to an optional gate, as the engine recorded it. */
+  z.object({ kind: z.literal('answered'), step: z.string(), choice: z.string(), channel: z.string(), agent: z.boolean() }),
   z.object({
     kind: z.literal('settled'),
     step: z.string(),
@@ -95,19 +98,40 @@ export const TurnEventSchema = z.discriminatedUnion('kind', [
 ]);
 export type TurnEvent = z.infer<typeof TurnEventSchema>;
 
+const GateBase = {
+  step: z.string(),
+  pass: z.number().int(),
+  kind: z.enum(['approve', 'choose']),
+  message: z.string(),
+  options: z.array(z.string()),
+  default: z.string().optional(),
+  /** The `seq` it was journalled at, so a poll wakes a session that was not shown it yet. */
+  seq: z.number().int(),
+};
+/**
+ * The gate the engine asks about now. Only the person answers a required one; `decide` says who answers an optional
+ * one: the agent, after asking the person (`person`), or with its own best recommendation (`agent`).
+ */
+const GateSchema = z.discriminatedUnion('required', [
+  z.object({ ...GateBase, required: z.literal(true) }),
+  z.object({ ...GateBase, required: z.literal(false), decide: z.enum(['person', 'agent']) }),
+]);
+export type Gate = z.infer<typeof GateSchema>;
+
 export const SkillStateSchema = z.object({
   version: z.literal(1),
   run: RunIdSchema,
   /** The identity every `next` and report sends: kind `skill`, this machine, the checkout the run started from. */
   driver: DriverSchema,
   invocation: z.enum(INVOCATIONS),
-  options: z.object({ parallel: z.number().int().min(1) }),
+  options: z.object({ parallel: z.number().int().min(1), hitl: z.enum(HITL_MODES) }),
   /** `none`: the run has no prompt step. `pending`: the agent has not answered the host question yet. */
   host: z.discriminatedUnion('kind', [
     z.object({ kind: z.literal('none') }),
     z.object({ kind: z.literal('pending') }),
     z.object({ kind: z.literal('chosen'), id: z.enum(HOST_CHOICES), children: z.enum(['parallel', 'serial']) }),
   ]),
+  gate: GateSchema.optional(),
   /** The session that drives the run, when its host names one, and when it last called. */
   orchestrator: z.object({ session: z.string().optional(), lastCallAt: z.string() }),
   attempts: z.array(AttemptStateSchema),

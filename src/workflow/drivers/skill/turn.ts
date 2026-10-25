@@ -6,8 +6,8 @@ import type { Judging } from '../../protocol.js';
 import type { AttemptId, RunId } from '../../store.js';
 import type { OutputSchema, WorkflowFailure } from '../../types.js';
 import { HOST_CHOICES, HOST_PROFILES, HOST_QUESTION, type HostChoice } from './host-profiles.js';
-import { ackLiteral, chooseHostLiteral, reportLiteral, unavailableLiteral, type Literal } from './literals.js';
-import type { AttemptState, Dispatch, ModelPick, SkillState, StopReason, TurnEvent } from './skill-state.js';
+import { ackLiteral, chooseHostLiteral, personRespondLiteral, reportLiteral, respondLiteral, unavailableLiteral, type Literal } from './literals.js';
+import type { AttemptState, Dispatch, Gate, ModelPick, SkillState, StopReason, TurnEvent } from './skill-state.js';
 import { childCap, reportedByAgent } from './transitions.js';
 
 /** How describe says to start: as is, after one question to the person, or with the local driver. */
@@ -59,11 +59,39 @@ export interface StopAction {
   report: Literal;
 }
 
+/**
+ * An optional gate, shown in every foreground turn until it is answered. `decide: person`: the agent asks the person
+ * `question` and runs the `run` of their answer; `decide: agent`: the agent runs the `run` of its best recommendation.
+ */
+export interface GateAction {
+  kind: 'choose';
+  about: 'gate';
+  decide: 'person' | 'agent';
+  step: string;
+  pass: number;
+  question: string;
+  default?: string;
+  options: Array<{ choice: string; run: Literal }>;
+}
+
+/** A required approval, shown in every foreground turn until the person answers it. The agent shows `run` and never runs it. */
+export interface PersonAction {
+  kind: 'person';
+  why: 'approval';
+  step: string;
+  pass: number;
+  message: string;
+  say: string;
+  run: Literal[];
+}
+
 export type Action =
   /** The agent's own answer, once per run with prompt steps: how its host runs a child. */
   | { kind: 'choose'; about: 'host'; decide: 'agent'; question: string; options: Array<{ id: HostChoice; label: string; run: Literal }>; reference: string }
   | StopAction
   | DispatchAction
+  | GateAction
+  | PersonAction
   /** `judging`: the judge running now, on the pass of `step` that `scorers` judge. */
   | { kind: 'done'; outcome: NonNullable<SkillState['done']>['outcome']; failure?: WorkflowFailure; prs: string[]; judging?: { step: string; scorers: string[] } };
 
@@ -139,9 +167,25 @@ function dispatchOf(state: SkillState, open: Extract<AttemptState, { phase: 'off
   };
 }
 
+/** The action of `gate`: the person's approval, or the agent's choice. */
+function gateAction(state: SkillState, gate: Gate): GateAction | PersonAction {
+  const { step, pass, message } = gate;
+  if (gate.required) {
+    return {
+      kind: 'person', why: 'approval', step, pass, message,
+      say: 'Only you can answer this approval. Run one of these commands in your own terminal, or answer it in teamai dashboard.',
+      run: gate.options.map((choice) => personRespondLiteral(state.invocation, state.run, { step, pass, choice })),
+    };
+  }
+  return {
+    kind: 'choose', about: 'gate', decide: gate.decide, step, pass, question: message, ...(gate.default !== undefined ? { default: gate.default } : {}),
+    options: gate.options.map((choice) => ({ choice, run: respondLiteral(state.invocation, state.run, { step, pass, choice }) })),
+  };
+}
+
 /**
- * What waits for the agent: the host question; else every child to stop, then every dispatch not acked yet; and the
- * end once the run is done.
+ * What waits for the agent: the host question; else every child to stop, then every dispatch not acked yet, then the
+ * gate; and the end once the run is done.
  */
 function actionsOf(state: SkillState): Action[] {
   if (state.host.kind === 'pending') {
@@ -156,7 +200,8 @@ function actionsOf(state: SkillState): Action[] {
   const end: Action[] = state.done ? [{
     kind: 'done', outcome: state.done.outcome, ...(state.done.failure ? { failure: state.done.failure } : {}), prs: [], ...(judge ? { judging: { step: judge.step, scorers: judge.scorers } } : {}),
   }] : [];
-  return [...stops, ...offers, ...end];
+  const gate = state.gate && !state.done ? [gateAction(state, state.gate)] : [];
+  return [...stops, ...offers, ...gate, ...end];
 }
 
 /**

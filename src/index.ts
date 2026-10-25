@@ -805,11 +805,12 @@ workflowCmd
   .option('--driver <kind>', 'Select local for headless execution in this process, or skill for the current coding session, which then runs the commands each reply prints.')
   .option('--parallel <n>', 'With --driver skill: the most steps that run at once, as the describe reply offered')
   .option('--confirmed', 'With --driver skill: the person agreed to start this run, as the describe reply asked')
+  .option('--hitl <mode>', 'With --driver skill: who answers optional approvals and choices, as the describe reply offered: person (the agent asks the person) or recommend (the agent answers). A required approval always goes to the person')
   .option('--no-judge', 'With --driver skill: leave the scored steps unjudged on this machine, as the describe reply offered')
   .option('--tools <list>', 'Override local prompt tools for this run, as comma-separated name=tool pairs')
-  .option('--auto-approve', 'With --driver local, automatically answer optional approve HITL requests and choose defaults in this process')
+  .option('--auto-approve', 'Answer optional approve HITL requests yes and choose requests with their default: with --driver local in this process, with --driver skill for this run. A required approval still goes to the person')
   .option('--inputs <json>', 'Values for the inputs the workflow declares, as a JSON object, for example {"issue":42}. Every declared input is required.')
-  .action(async (name: string, cmdOpts: { driver?: string; tools?: string; inputs?: string; autoApprove?: boolean; describe?: boolean; parallel?: string; confirmed?: boolean; judge?: boolean }) => {
+  .action(async (name: string, cmdOpts: { driver?: string; tools?: string; inputs?: string; autoApprove?: boolean; describe?: boolean; parallel?: string; confirmed?: boolean; hitl?: string; judge?: boolean }) => {
     const { workflowStart } = await import('./workflow-commands.js');
     await workflowStart(name, cmdOpts);
   });
@@ -845,11 +846,12 @@ workflowCmd
 
 workflowCmd
   .command('respond <run> <step> <choice>')
-  .description('Answer a waiting approve (yes/no) or choose HITL request. Required HITL requests accept terminal answers or declared person answers from a driver UI. Prints one JSON envelope.')
-  .option('--json <payload>', 'Driver identity {"driver":{"kind":"ide","machine":"host","workspace":"/work"}} declares an answer a person gave in the driver UI, never one its agent chose. Records channel driver with agent false; accepts required HITL requests.')
+  .description('Answer a waiting approve (yes/no) or choose HITL request. A required HITL request accepts only the person\'s answer: from their own terminal, or declared by a driver UI, sent from outside an agent session. Prints one JSON envelope.')
+  .option('--json <payload>', 'Driver identity {"driver":{"kind":"ide","machine":"host","workspace":"/work"}} declares an answer a person gave in the driver UI, never one its agent chose. Records channel driver; sent from inside an agent session it records agent true, which a required HITL request refuses.')
+  .option('--driver <kind>', 'skill: answer an optional gate of a run the current coding session drives, as its choose action prints it, and print the turn. Records the agent\'s answer, which a required HITL request refuses')
   .option('--note <text>', 'Keep a note with the answer, readable as steps.<id>.note')
   .option('--pass <n>', 'Answer only this positive pass number; rejects an answered or replaced HITL request')
-  .action(async (run: string, step: string, choice: string, options: { note?: string; pass?: string; json?: string }) => {
+  .action(async (run: string, step: string, choice: string, options: { note?: string; pass?: string; json?: string; driver?: string }) => {
     const { workflowRespond } = await import('./workflow-commands.js');
     await workflowRespond(run, step, choice, options);
   });

@@ -4,11 +4,22 @@ import type { Judging } from '../../protocol.js';
 import { localStartLiteral, startLiteral, type Invocation } from './literals.js';
 import type { DescribeAsk } from './turn.js';
 
-/** The answers a start must carry: the person's yes for `invoke: ask`, the inputs, and how many steps run at once. */
-export type StartAnswer = 'confirmed' | 'inputs' | 'parallel';
+/**
+ * The answers a start must carry: the person's yes for `invoke: ask`, the inputs, how many steps run at once, and how
+ * optional gates are answered.
+ */
+export type StartAnswer = 'confirmed' | 'inputs' | 'parallel' | 'hitl';
+
+/**
+ * How a run answers its optional gates, as the person picked at start: the agent asks the person (`person`), the agent
+ * answers with its best recommendation (`recommend`), or the engine answers them (`auto-approve`). A required approval
+ * always goes to the person.
+ */
+export const HITL_MODES = ['person', 'recommend', 'auto-approve'] as const;
+export type HitlMode = typeof HITL_MODES[number];
 
 export type StartCheck =
-  | { kind: 'ok'; parallel: number }
+  | { kind: 'ok'; parallel: number; hitl: HitlMode }
   | { kind: 'confirm-needed'; missing: StartAnswer[]; outOfRange?: { parallel: number; ceiling: number } };
 
 /** The answers a start of `description` needs before it can run. */
@@ -17,6 +28,7 @@ export function neededAnswers(description: WorkflowDescription): StartAnswer[] {
     ...(description.invoke === 'ask' ? ['confirmed' as const] : []),
     ...(Object.keys(description.inputs).length > 0 ? ['inputs' as const] : []),
     ...(description.facts.width > 1 ? ['parallel' as const] : []),
+    ...(description.facts.gates.some((gate) => !gate.required) ? ['hitl' as const] : []),
   ];
 }
 
@@ -28,16 +40,24 @@ export function localOnlySteps(description: WorkflowDescription): string[] {
 /** Checks a start of `description` against what describe asked. `ceiling` is the most steps the driver runs at once. */
 export function checkStartAnswers(input: {
   description: WorkflowDescription;
-  answers: { parallel?: number; confirmed: boolean };
+  answers: { parallel?: number; confirmed: boolean; hitl?: HitlMode };
   inputs: unknown;
   ceiling: number;
 }): StartCheck {
   const { description, answers, inputs, ceiling } = input;
-  const given: Record<StartAnswer, boolean> = { confirmed: answers.confirmed, inputs: inputs !== undefined, parallel: answers.parallel !== undefined };
+  const given: Record<StartAnswer, boolean> = {
+    confirmed: answers.confirmed, inputs: inputs !== undefined, parallel: answers.parallel !== undefined, hitl: answers.hitl !== undefined,
+  };
   const missing = neededAnswers(description).filter((answer) => !given[answer]);
   const outOfRange = answers.parallel !== undefined && answers.parallel > ceiling ? { parallel: answers.parallel, ceiling } : undefined;
   if (missing.length > 0 || outOfRange) return { kind: 'confirm-needed', missing, ...(outOfRange ? { outOfRange } : {}) };
-  return { kind: 'ok', parallel: answers.parallel ?? 1 };
+  return { kind: 'ok', parallel: answers.parallel ?? 1, hitl: answers.hitl ?? 'person' };
+}
+
+/** What the optional gates of `description` are, by kind, for a label: approvals, choices, or both. */
+function optionalGatesNoun(description: WorkflowDescription): string {
+  const kinds = new Set(description.facts.gates.filter((gate) => !gate.required).map((gate) => gate.kind));
+  return kinds.size > 1 ? 'approvals and choices' : kinds.has('choose') ? 'choices' : 'approvals';
 }
 
 /**
@@ -62,19 +82,34 @@ export function askFor(kind: DescribeAsk['kind'], description: WorkflowDescripti
       const inputNames = Object.keys(description.inputs);
       const flags = { confirmed: needed.includes('confirmed'), inputs: needed.includes('inputs') };
       const here = judging.kind === 'here';
+      const required = facts.gates.filter((gate) => gate.required).map((gate) => gate.step);
+      const optional = facts.gates.filter((gate) => !gate.required).map((gate) => gate.step);
+      const noun = optionalGatesNoun(description);
       const text = [
         ...(inputNames.length > 0 ? [`${name} needs the input${inputNames.length > 1 ? 's' : ''} ${inputNames.join(', ')}.`] : []),
         ...(needed.includes('parallel') ? [`It can run up to ${facts.width} steps at once.`] : []),
         ...(needed.includes('confirmed') ? ['The team asks that you agree before it starts.'] : []),
+        ...(required.length > 0 ? [`Only you can answer the approval${required.length > 1 ? 's' : ''} at ${required.join(', ')}, from your own terminal or teamai dashboard.`] : []),
+        ...(needed.includes('hitl') ? [`Optional ${noun}: ${optional.join(', ')}.`] : []),
         ...(here ? [`${judging.tool} judges ${facts.scored.map((scored) => scored.step).join(', ')} here, with one confined judge call per pass.`] : []),
-        needed.includes('parallel') ? 'How should it run?' : 'Start it?',
+        needed.includes('parallel') ? 'How should it run?' : needed.includes('hitl') ? `How should optional ${noun} be answered?` : 'Start it?',
       ].join(' ');
-      const options = needed.includes('parallel')
+      const widths: Array<{ label: string; parallel?: number }> = needed.includes('parallel')
         ? [
           { label: `Up to ${facts.width} steps at once`, parallel: facts.width },
           { label: 'One step at a time', parallel: 1 },
         ]
-        : [{ label: 'Start it' }];
+        : [{ label: needed.includes('hitl') ? '' : 'Start it' }];
+      const modes: Array<{ label: string; hitl?: HitlMode }> = needed.includes('hitl')
+        ? [
+          { label: `Ask me at optional ${noun}`, hitl: 'person' },
+          { label: `You decide optional ${noun}`, hitl: 'recommend' },
+          { label: `Answer optional ${noun} automatically`, hitl: 'auto-approve' },
+        ]
+        : [{ label: '' }];
+      const options = widths.flatMap((width) => modes.map((mode) => ({
+        ...width, ...mode, label: [width.label, mode.label].filter((part) => part !== '').join(', '),
+      })));
       const starts = options.flatMap(({ label, ...option }) => [
         { label, start: startLiteral(invocation, name, { ...flags, ...option }) },
         ...(here ? [{ label: `${label}, without judging`, start: startLiteral(invocation, name, { ...flags, ...option, noJudge: true }) }] : []),

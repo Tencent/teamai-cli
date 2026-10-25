@@ -14,11 +14,13 @@ import type { WorkflowEnvelope, WorkflowFailure } from '../../types.js';
 import { readChildResult } from './child-brief.js';
 import { HOST_PROFILES, judgeCan, SKILL_CAN, type HostChoice } from './host-profiles.js';
 import {
-  ackLiteral, chooseHostLiteral, describeLiteral, localStartLiteral, nextLiteral, pollLiteral, reportLiteral, takeoverLiteral, unavailableLiteral, type Invocation,
+  ackLiteral, chooseHostLiteral, describeLiteral, localStartLiteral, nextLiteral, pollLiteral, reportLiteral, respondLiteral, takeoverLiteral, unavailableLiteral, type Invocation,
   type Literal,
 } from './literals.js';
 import { readSkillState, writeSkillState, type ReportBody, type SkillState } from './skill-state.js';
-import { hasSlot, step, unseenEvents, type Answer, type EngineReply, type MachineInput, type ReadLease, type Refusal, type ReportReply, type ScoreReply, type Step } from './transitions.js';
+import {
+  hasSlot, step, unseenEvents, type Answer, type EngineReply, type MachineInput, type ReadLease, type Refusal, type ReportReply, type RespondReply, type ScoreReply, type Step,
+} from './transitions.js';
 import { turnOf, type SkillAnswer, type SkillError } from './turn.js';
 import type { SkillContext } from './skill-driver.js';
 
@@ -54,7 +56,7 @@ const LeaseBase = {
   step: z.string(),
   revision: z.number().int(),
   expiresAt: z.string().optional(),
-  // No person answers through this driver, so the engine holds every interactive step back from it.
+  // R8 starts no skill run with an interactive step, so no lease of one is interactive.
   interactive: z.undefined(),
 };
 const LeaseSchema = z.union([
@@ -117,7 +119,10 @@ const NextDataSchema = z.object({
   /** The attempts this driver listed as running that the engine no longer leases to it. */
   cancelled: z.array(AttemptIdSchema).optional(),
   lease: z.unknown().optional(),
-  wait: z.object({ reason: z.string() }).optional(),
+  hitl: z.object({
+    step: z.string(), pass: z.number().int(), kind: z.enum(['approve', 'choose']), message: z.string(), options: z.array(z.string()), default: z.string().optional(), required: z.boolean(),
+  }).optional(),
+  wait: z.object({ reason: z.string(), held: z.array(z.unknown()).optional() }).optional(),
   done: z.object({ outcome: z.enum(['succeeded', 'failed', 'cancelled']), failure: FailureSchema.optional() }).optional(),
 });
 
@@ -128,14 +133,28 @@ function engineReply(run: RunId, answer: WorkflowEnvelope): { reply: EngineReply
   if (!data.success) {
     return { reply: { kind: 'error', error: { code: 'run_unreadable', message: `Run ${run} answered next with a reply this teamai cannot read: ${data.error.issues[0]?.message ?? 'invalid'}. Update teamai.` } }, cancelled: [] };
   }
-  const { done, lease, wait, cancelled = [] } = data.data;
+  const { done, lease, hitl, wait, cancelled = [] } = data.data;
   if (done) return { reply: { kind: 'done', outcome: done.outcome, ...(done.failure ? { failure: done.failure } : {}) }, cancelled };
-  if (lease === undefined) return { reply: { kind: 'wait', reason: wait?.reason ?? 'the next step is not available' }, cancelled };
+  if (hitl) {
+    const { step: id, pass, kind, message, options, default: chosen, required } = hitl;
+    return { reply: { kind: 'hitl', gate: { step: id, pass, kind, message, options, ...(chosen !== undefined ? { default: chosen } : {}), required } }, cancelled };
+  }
+  if (lease === undefined) return { reply: { kind: 'wait', reason: wait?.reason ?? 'the next step is not available', held: (wait?.held?.length ?? 0) > 0 }, cancelled };
   const read = readLease(lease);
   if (!read) {
     return { reply: { kind: 'error', error: { code: 'run_unreadable', message: `Run ${run} leased a step the skill driver cannot run. Ask the person to continue it in a terminal with teamai workflow resume ${run}.` } }, cancelled };
   }
   return { reply: { kind: 'lease', lease: read, raw: lease }, cancelled };
+}
+
+const AnsweredDataSchema = z.object({ answered: z.object({ step: z.string(), pass: z.number().int(), choice: z.string(), channel: z.string() }) });
+
+function respondReply(answer: WorkflowEnvelope): RespondReply {
+  if ('error' in answer) return { kind: 'error', error: { code: answer.error.code, message: answer.error.message } };
+  const data = AnsweredDataSchema.safeParse(answer.data);
+  return data.success
+    ? { kind: 'answered', ...data.data.answered }
+    : { kind: 'error', error: { code: 'run_unreadable', message: 'The engine answered respond with a reply this teamai cannot read. Update teamai.' } };
 }
 
 const ReportDataSchema = z.object({ step: z.object({ outcome: z.enum(['success', 'failed', 'released']) }) });
@@ -164,7 +183,8 @@ export async function sendReport(context: SkillContext, lock: RunLock, state: Sk
 export function errorOf(answer: Extract<Answer, { kind: 'error' | 'engine-error' }>, context: { invocation: Invocation; same: Literal; run?: RunId }): SkillError {
   const { invocation, same } = context;
   if (answer.kind === 'engine-error') {
-    return { ...answer.error, next: answer.next === 'next' && context.run !== undefined ? nextLiteral(invocation, context.run) : same };
+    const next = context.run === undefined || answer.next === 'same' ? same : answer.next === 'poll' ? pollLiteral(invocation, context.run) : nextLiteral(invocation, context.run);
+    return { ...answer.error, next };
   }
   const { refusal } = answer;
   const next = answer.next === null ? null
@@ -181,7 +201,7 @@ function refusalMessage(refusal: Refusal, invocation: Invocation): string {
     case 'needs_local_driver':
       return `${refusal.name} has steps the skill driver does not run in a coding session yet: ${refusal.steps.join(', ')}. Interactive steps need the local driver for now. The person can run it in a terminal with ${localStartLiteral(invocation, refusal.name)}.`;
     case 'confirm_needed': {
-      const lacks = refusal.missing.map((answer) => ({ confirmed: '--confirmed, the person\'s yes', inputs: '--inputs', parallel: '--parallel' })[answer]);
+      const lacks = refusal.missing.map((answer) => ({ confirmed: '--confirmed, the person\'s yes', inputs: '--inputs', parallel: '--parallel', hitl: '--hitl or --auto-approve' })[answer]);
       const said = [
         ...(lacks.length > 0 ? [`it needs ${lacks.join(', ')}`] : []),
         ...(refusal.outOfRange ? [`--parallel ${refusal.outOfRange.parallel} is above the most this machine runs at once, ${refusal.outOfRange.ceiling}`] : []),
@@ -263,8 +283,10 @@ export async function runTick(context: SkillContext, lock: RunLock, start: Skill
 
 /**
  * The steps' tick: sends the reports a crash left stored, respawns runners that are gone and gives up the attempts a
- * gone runner was stopping, then, while the run drives, calls `next` while a lease comes back and a slot is free. Each
- * reply's `cancelled` is taken before the reply itself. A runner's check (`role: 'runner'`) takes no lease.
+ * gone runner was stopping, then, while the run drives, calls `next` while a lease comes back and a slot is free, and
+ * once more after the last lease while a gate is journalled: with no slot, that reply says whether the gate still
+ * waits. Each reply's `cancelled`, then its gate check, are taken before the reply itself. A runner's check
+ * (`role: 'runner'`) takes no lease.
  */
 async function stepTick(context: SkillContext, lock: RunLock, start: SkillState, role: 'call' | 'runner'): Promise<{ state: SkillState; spawned: boolean; waiting?: { reason: string }; error?: SkillError }> {
   let state = start;
@@ -297,14 +319,19 @@ async function stepTick(context: SkillContext, lock: RunLock, start: SkillState,
       if (effect.kind === 'send') state = (await sendReport(context, lock, state, effect.attempt, effect.body)).state;
     }
   }
+  let probed = false;
   for (;;) {
     const ticked = take(context, state, { kind: 'tick', role });
     const next = ticked?.effects.find((effect) => effect.kind === 'next');
     if (!next || next.kind !== 'next') return { state, spawned };
-    const answer = await context.client.next(state.run, { driver: { ...state.driver, can: SKILL_CAN }, running: next.running, canTakeLease: next.canTakeLease });
+    probed = probed || !next.canTakeLease;
+    const answer = await context.client.next(state.run, {
+      driver: { ...state.driver, can: SKILL_CAN }, running: next.running, canTakeLease: next.canTakeLease, ...(next.autoApprove ? { autoApprove: true } : {}),
+    });
     const at = context.now().toISOString();
     const { reply, cancelled } = engineReply(state.run, answer);
     for (const attempt of cancelled) state = take(context, state, { kind: 'cancelled', attempt, at })?.state ?? state;
+    state = take(context, state, { kind: 'gate-check', reply })?.state ?? state;
     const replied = take(context, state, { kind: 'reply', reply, at });
     if (!replied) return { state, spawned };
     state = replied.state ?? state;
@@ -316,7 +343,8 @@ async function stepTick(context: SkillContext, lock: RunLock, start: SkillState,
     if (replied.answer?.kind === 'engine-error') {
       return { state, spawned, error: errorOf(replied.answer, { invocation: state.invocation, same: nextLiteral(state.invocation, state.run), run: state.run }) };
     }
-    if ((replied.row !== 'D6' && replied.row !== 'D7') || !hasSlot(state)) return { state, spawned, ...(replied.waiting ? { waiting: replied.waiting } : {}) };
+    const leased = replied.row === 'D6' || replied.row === 'D7';
+    if (!leased || (!hasSlot(state) && (state.gate === undefined || probed))) return { state, spawned, ...(replied.waiting ? { waiting: replied.waiting } : {}) };
   }
 }
 
@@ -360,12 +388,13 @@ async function finish(context: SkillContext, lock: RunLock, state: SkillState, w
   return { data: { turn: turnOf(shown, { events, after: { kind: 'poll', run: pollLiteral(shown.invocation, shown.run) }, ...(waiting ? { waiting } : {}) }) } };
 }
 
-/** A call that answers with a turn at once: `next`, a takeover, an answer to the host question, or an ack. */
+/** A call that answers with a turn at once: `next`, a takeover, an answer to the host question, an ack, or an answer to a gate. */
 export type ForegroundCall =
   | { kind: 'next' }
   | { kind: 'takeover' }
   | { kind: 'choose'; choice: HostChoice }
-  | { kind: 'ack'; attempt: AttemptId };
+  | { kind: 'ack'; attempt: AttemptId }
+  | { kind: 'respond'; step: string; pass: number; choice: string };
 
 function literalOf(invocation: Invocation, run: RunId, call: ForegroundCall): Literal {
   switch (call.kind) {
@@ -377,6 +406,8 @@ function literalOf(invocation: Invocation, run: RunId, call: ForegroundCall): Li
       return chooseHostLiteral(invocation, run, call.choice);
     case 'ack':
       return ackLiteral(invocation, run, call.attempt);
+    case 'respond':
+      return respondLiteral(invocation, run, call);
     default: {
       const unhandled: never = call;
       return unhandled;
@@ -397,6 +428,11 @@ async function applyCall(context: SkillContext, lock: RunLock, state: SkillState
     case 'ack':
       taken = take(context, state, { kind: 'ack', attempt: call.attempt });
       break;
+    case 'respond': {
+      const answer = await context.client.respond(state.run, call.step, call.choice, { pass: call.pass, via: { kind: 'skill', driver: state.driver } });
+      taken = take(context, state, { kind: 'responded', reply: respondReply(answer) });
+      break;
+    }
     default: {
       const unhandled: never = call;
       return unhandled;

@@ -1,5 +1,6 @@
 /** Every command line the skill driver prints, and the permission patterns that pre-approve them. */
 import { z } from 'zod';
+import type { HitlMode } from './preflight.js';
 
 const LiteralSchema = z.string().brand<'Literal'>();
 /** A command line the agent runs, or shows the person, exactly as printed. Only this module builds one. */
@@ -34,15 +35,21 @@ export function describeLiteral(invocation: Invocation, name: string): Literal {
   return LiteralSchema.parse(`${invocation} workflow start --describe ${name} --driver skill`);
 }
 
+/** `word` as one shell word: as is when it holds only safe characters, else single-quoted. */
+function shellWord(word: string): string {
+  return /^[A-Za-z0-9_.-]+$/.test(word) ? word : `'${word.replaceAll("'", "'\\''")}'`;
+}
+
 /**
  * Starts `name` for the skill driver. `inputs` leaves the `{inputs}` slot the agent fills with the person's answers;
- * `noJudge` leaves the scored steps unjudged here.
+ * `hitl` is how optional gates are answered; `noJudge` leaves the scored steps unjudged here.
  */
-export function startLiteral(invocation: Invocation, name: string, options: { parallel?: number; confirmed?: boolean; inputs?: boolean; noJudge?: boolean } = {}): Literal {
+export function startLiteral(invocation: Invocation, name: string, options: { parallel?: number; confirmed?: boolean; hitl?: HitlMode; inputs?: boolean; noJudge?: boolean } = {}): Literal {
   return LiteralSchema.parse([
     `${invocation} workflow start ${name} --driver skill`,
     ...(options.parallel !== undefined ? [`--parallel ${options.parallel}`] : []),
     ...(options.confirmed ? ['--confirmed'] : []),
+    ...(options.hitl === 'auto-approve' ? ['--auto-approve'] : options.hitl !== undefined ? [`--hitl ${options.hitl}`] : []),
     ...(options.noJudge ? ['--no-judge'] : []),
     ...(options.inputs ? ["--inputs '{inputs}'"] : []),
   ].join(' '));
@@ -74,6 +81,16 @@ export function chooseHostLiteral(invocation: Invocation, run: string, choice: s
 /** Acks the dispatch of `attempt` once its child started. */
 export function ackLiteral(invocation: Invocation, run: string, attempt: string): Literal {
   return LiteralSchema.parse(`${invocation} workflow next ${run} --driver skill --ack dispatch.${attempt}`);
+}
+
+/** The agent's answer `choice` to the optional gate at `step`, pass `pass`, sent through the skill driver. */
+export function respondLiteral(invocation: Invocation, run: string, gate: { step: string; pass: number; choice: string }): Literal {
+  return LiteralSchema.parse(`${invocation} workflow respond ${run} ${shellWord(gate.step)} ${shellWord(gate.choice)} --pass ${gate.pass} --driver skill`);
+}
+
+/** The person's answer `choice` to the gate at `step`, pass `pass`: shown to the person for their own terminal, never run by the agent. */
+export function personRespondLiteral(invocation: Invocation, run: string, gate: { step: string; pass: number; choice: string }): Literal {
+  return LiteralSchema.parse(`${invocation} workflow respond ${run} ${shellWord(gate.step)} ${shellWord(gate.choice)} --pass ${gate.pass}`);
 }
 
 export function reportLiteral(invocation: Invocation, run: string, attempt: string): Literal {

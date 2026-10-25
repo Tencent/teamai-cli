@@ -115,22 +115,24 @@ async function workflowSkill(raw: Parameters<typeof parseSkillCall>[0]): Promise
     writeEnvelope(call, collectEnvSecrets());
     return;
   }
-  const loaded = call.kind === 'next' || call.kind === 'report' ? await readyRunConfig(call.run) : await readyConfig();
+  const loaded = call.kind === 'next' || call.kind === 'report' || call.kind === 'respond' ? await readyRunConfig(call.run) : await readyConfig();
   if (!loaded) return;
   const context = await skillContext({ config: loaded.config, env: loaded.env, cwd: process.cwd(), trace: (row) => log.debug(`[workflow] skill driver took row ${row}`) });
   writeEnvelope(await runSkillCall(call, context), loaded.secrets);
 }
 
 /** `judge` is false with `--no-judge`. */
-export async function workflowStart(name: string, options: { driver?: string; tools?: string; inputs?: string; autoApprove?: boolean; describe?: boolean; parallel?: string; confirmed?: boolean; judge?: boolean }): Promise<void> {
+export async function workflowStart(name: string, options: {
+  driver?: string; tools?: string; inputs?: string; autoApprove?: boolean; describe?: boolean; parallel?: string; confirmed?: boolean; hitl?: string; judge?: boolean;
+}): Promise<void> {
   if (options.driver === 'skill') {
     const { driver: _skill, ...rest } = options;
     await workflowSkill({ kind: 'start', name, options: rest });
     return;
   }
   setStderrOnly(true);
-  if (options.parallel !== undefined || options.confirmed || options.judge === false) {
-    writeEnvelope({ error: { code: 'invalid_arguments', message: '--parallel, --confirmed and --no-judge need --driver skill' } }, collectEnvSecrets());
+  if (options.parallel !== undefined || options.confirmed || options.hitl !== undefined || options.judge === false) {
+    writeEnvelope({ error: { code: 'invalid_arguments', message: '--parallel, --confirmed, --hitl and --no-judge need --driver skill' } }, collectEnvSecrets());
     return;
   }
   const loaded = await readyConfig();
@@ -259,8 +261,21 @@ async function workflowControl(runId: string, operation: (config: LocalConfig, s
   if (loaded) writeEnvelope(await operation(loaded.config, loaded.secrets), loaded.secrets);
 }
 
-/** Records a HITL answer with the provenance decided from this process and the driver UI `--json` declares. */
-export async function workflowRespond(runId: string, step: string, choice: string, options: { note?: string; pass?: string; json?: string }): Promise<void> {
+/**
+ * Records a HITL answer with the provenance decided from this process and the driver UI `--json` declares. With
+ * `--driver skill`, the skill driver records the agent's answer to an optional gate.
+ */
+export async function workflowRespond(runId: string, step: string, choice: string, options: { note?: string; pass?: string; json?: string; driver?: string }): Promise<void> {
+  const { driver: kind, ...rest } = options;
+  if (kind === 'skill') {
+    await workflowSkill({ kind: 'respond', run: runId, step, choice, options: rest });
+    return;
+  }
+  if (kind !== undefined) {
+    setStderrOnly(true);
+    writeEnvelope({ error: { code: 'invalid_arguments', message: `respond takes --driver skill, not --driver ${kind}` } }, collectEnvSecrets());
+    return;
+  }
   const pass = options.pass === undefined ? undefined : Number(options.pass);
   if (pass !== undefined && (!/^\d+$/.test(options.pass!) || !Number.isSafeInteger(pass) || pass < 1)) {
     writeEnvelope({ error: { code: 'invalid_pass', message: 'Pass --pass as a positive integer identifying the HITL pass' } }, collectEnvSecrets());

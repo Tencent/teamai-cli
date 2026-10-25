@@ -206,8 +206,8 @@ describe('skill driver', () => {
     const started = await harness.call({ kind: 'start', name: 'feature', answers: { parallel: 2, confirmed: false }, inputs: undefined });
     if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
     const { run } = started.data.turn;
-    const host = started.data.turn.actions.find((action) => action.kind === 'choose');
-    if (host?.kind !== 'choose') throw new Error(JSON.stringify(started));
+    const host = started.data.turn.actions.find((action) => action.kind === 'choose' && action.about === 'host');
+    if (host?.kind !== 'choose' || host.about !== 'host') throw new Error(JSON.stringify(started));
     expect(host.options.find((option) => option.id === 'h1')?.run).toBe(`teamai workflow next ${run} --driver skill --choice h1`);
     expect(fs.existsSync(host.reference), host.reference).toBe(true);
 

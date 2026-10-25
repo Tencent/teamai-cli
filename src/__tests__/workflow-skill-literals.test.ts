@@ -5,8 +5,8 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { attemptEnv } from '../workflow/attempt-marker.js';
 import { parseSkillCall } from '../workflow/drivers/skill/skill-driver.js';
 import {
-  ackLiteral, chooseHostLiteral, describeLiteral, generatedStartPatterns, INVOCATIONS, localStartLiteral, nextLiteral, pollLiteral, preapprovedPatterns,
-  reportLiteral, runnerArgs, startLiteral, takeoverLiteral, unavailableLiteral, type Invocation,
+  ackLiteral, chooseHostLiteral, describeLiteral, generatedStartPatterns, INVOCATIONS, localStartLiteral, nextLiteral, personRespondLiteral, pollLiteral, preapprovedPatterns,
+  reportLiteral, respondLiteral, runnerArgs, startLiteral, takeoverLiteral, unavailableLiteral, type Invocation,
 } from '../workflow/drivers/skill/literals.js';
 import { loadCommandTable } from './helpers/command-table.js';
 
@@ -44,6 +44,10 @@ function skillCall(literal: string, invocation: Invocation, env: NodeJS.ProcessE
   const [operand = ''] = operands;
   if (sub === 'start') return parseSkillCall({ kind: 'start', name: operand, options }, env);
   if (sub === 'next' || sub === 'report') return parseSkillCall({ kind: sub, run: operand, options }, env);
+  if (sub === 'respond') {
+    const [, step = '', choice = ''] = operands;
+    return parseSkillCall({ kind: 'respond', run: operand, step, choice, options }, env);
+  }
   throw new Error(`not a skill driver call: ${literal}`);
 }
 
@@ -62,6 +66,15 @@ describe.each(INVOCATIONS)('skill driver literals run as %s', (invocation) => {
     expect(skillCall(unavailableLiteral(invocation, RUN, ATTEMPT), invocation)).toEqual({ kind: 'report', run: RUN, attempt: ATTEMPT, role: 'agent', modelUnavailable: true });
     expect(skillCall(chooseHostLiteral(invocation, RUN, 'h2'), invocation)).toEqual({ kind: 'choose', run: RUN, choice: 'h2' });
     expect(skillCall(ackLiteral(invocation, RUN, ATTEMPT), invocation)).toEqual({ kind: 'ack', run: RUN, attempt: ATTEMPT });
+    expect(skillCall(startLiteral(invocation, 'check', { hitl: 'recommend' }), invocation)).toEqual({ kind: 'start', name: 'check', answers: { confirmed: false, hitl: 'recommend' }, inputs: undefined });
+    expect(skillCall(startLiteral(invocation, 'check', { hitl: 'auto-approve' }), invocation)).toEqual({ kind: 'start', name: 'check', answers: { confirmed: false, hitl: 'auto-approve' }, inputs: undefined });
+    expect(skillCall(respondLiteral(invocation, RUN, { step: 'items[0].ask', pass: 2, choice: 'yes' }), invocation))
+      .toEqual({ kind: 'respond', run: RUN, step: 'items[0].ask', pass: 2, choice: 'yes' });
+  });
+
+  it('answer a required approval with the person\'s literal, which runs respond without a driver', () => {
+    expect(parsed(words(personRespondLiteral(invocation, RUN, { step: 'items[0].ask', pass: 1, choice: 'no' }), invocation)))
+      .toEqual({ sub: 'respond', operands: [RUN, 'items[0].ask', 'no'], options: { pass: '1' } });
   });
 
   it('start the local driver with the local start literal', () => {
@@ -81,6 +94,17 @@ describe.each(INVOCATIONS)('skill driver literals run as %s', (invocation) => {
     expect(generated).toEqual([`${invocation} workflow start ship --driver skill`, `${invocation} workflow start go --driver skill`]);
     for (const literal of starts) expect(generated.some((prefix) => literal.startsWith(prefix)), literal).toBe(true);
     expect(generated.some((prefix) => startLiteral(invocation, 'ship-issue').startsWith(prefix))).toBe(false);
+  });
+});
+
+describe('start and respond options of the skill driver', () => {
+  it('take one answer to how optional gates are answered, and the pass of the gate an answer is for', () => {
+    expect(parseSkillCall({ kind: 'start', name: 'check', options: { hitl: 'recommend', autoApprove: true } }, {}))
+      .toEqual({ error: { code: 'invalid_arguments', message: '--hitl and --auto-approve answer the same question: pass one of them, as the describe reply offered', next: null } });
+    expect(parseSkillCall({ kind: 'start', name: 'check', options: { hitl: 'auto' } }, {}))
+      .toEqual({ error: { code: 'invalid_arguments', message: '--hitl takes person or recommend, as the describe reply offered', next: null } });
+    expect(parseSkillCall({ kind: 'respond', run: RUN, step: 'review', choice: 'yes', options: {} }, {}))
+      .toEqual({ error: { code: 'invalid_arguments', message: '--driver skill needs --pass, as the choose action printed it', next: null } });
   });
 });
 
