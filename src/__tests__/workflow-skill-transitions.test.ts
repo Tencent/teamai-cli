@@ -950,8 +950,9 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       expect(fs.existsSync(skillStatePath(made.config, gated))).toBe(false);
       expect(await turnOf(await made.call({ kind: 'resume', run: gated, claim: false, confirmed: true, answers: {} }, { evidence: AGENT }))).toMatchObject({ run: gated });
       expect(await turnOf(await made.call({ kind: 'takeover', run: await runOf('check'), confirmed: false }, { evidence: AGENT }))).toMatchObject({ status: expect.any(String) });
-      // A session that sets no agent variable is the person's, whatever the driver.
-      expect(await turnOf(await made.call({ kind: 'takeover', run: locked, confirmed: false }, { evidence: { kind: 'skill-driver' } }))).toMatchObject({ run: locked });
+      // Only a coding agent drives --driver skill, so a host that sets no agent variable is refused alike.
+      expect(await made.call({ kind: 'takeover', run: locked, confirmed: false }, { evidence: { kind: 'skill-driver' } }))
+        .toMatchObject({ error: { code: 'invoke_denied', message: expect.stringContaining('this command uses --driver skill'), next: null } });
       return made.rows;
     },
   },

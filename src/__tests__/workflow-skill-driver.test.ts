@@ -365,7 +365,7 @@ describe('skill driver', () => {
     roots.push(harness.root);
     // The test env carries no agent session variable, as a host that sets none.
     const { evidence } = await skillContext({ config: harness.config, toolPaths: harness.context.toolPaths, env: harness.context.env, cwd: harness.work });
-    const message = 'Workflow "check" has invoke: deny, so no coding agent starts it, with any driver, and this start uses --driver skill, which only a coding agent drives. The person can start it from their own terminal with teamai workflow start check --driver local. To let agents start it, the team sets invoke: allow, or invoke: ask for a start after the person agrees, in workflows/check.yaml.';
+    const message = 'Workflow "check" has invoke: deny, so no coding agent starts it, with any driver, and this command uses --driver skill, which only a coding agent drives. The person can start it from their own terminal with teamai workflow start check --driver local. To let agents start it, the team sets invoke: allow, or invoke: ask for a start after the person agrees, in workflows/check.yaml.';
     expect(await harness.call({ kind: 'describe', name: 'check' }, { evidence })).toMatchObject({ data: { describe: { ask: { kind: 'denied', reason: message } } } });
     expect(await harness.call({ kind: 'start', name: 'check', answers: { confirmed: false }, inputs: undefined }, { evidence }))
       .toEqual({ error: { code: 'invoke_denied', message, next: null } });

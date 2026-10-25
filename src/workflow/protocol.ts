@@ -131,7 +131,7 @@ function agentClause(evidence: Exclude<AgentEvidence, { kind: 'none' }>): string
     case 'attempt':
       return `this command runs inside workflow attempt ${evidence.attempt}`;
     case 'skill-driver':
-      return 'this start uses --driver skill, which only a coding agent drives';
+      return 'this command uses --driver skill, which only a coding agent drives';
     default: {
       const unhandled: never = evidence;
       return unhandled;
@@ -206,13 +206,13 @@ function invokeRefusal(definition: WorkflowDefinition | undefined, caller: Invok
 
 /**
  * Why `caller` may not continue run `runId`, by `workflow resume` or a takeover: the check `start` makes, of the
- * definition the run carries rather than the cache's, before anything claims or changes the run. `--driver skill` alone
- * is no agent evidence here, as the skill driver of the session that drives the run is not checked again. `published`
+ * definition the run carries rather than the cache's, before anything claims or changes the run. `--driver skill` counts
+ * as an agent's, as it does for a start; the caller skips this check for the session that drives the run. `published`
  * reads a run this machine lacks from teamai-reports, as a resume that claims it does. Reads nothing for a caller
  * without agent evidence.
  */
 export async function resumeRefusal(config: LocalConfig, runId: RunId, caller: InvokeCaller, { published }: { published: boolean }): Promise<WorkflowFailure | undefined> {
-  if (caller.evidence.kind === 'none' || caller.evidence.kind === 'skill-driver') return undefined;
+  if (caller.evidence.kind === 'none') return undefined;
   const carried = await carriedDefinition(config, runId, { published });
   if (!carried.ok) return { code: carried.error.code, message: carried.error.message };
   return invokeRefusal(carried.value, caller, { kind: 'continue', run: runId });
