@@ -2,6 +2,12 @@ import { log } from '../../utils/logger.js';
 import type { OrgRepoInfo } from '../types.js';
 import { ghExec, isGhInstalled, getGitHubToken } from './gh-cli.js';
 
+const DEFAULT_GITHUB_API_URL = 'https://api.github.com';
+
+function githubApiBaseUrl(): string {
+  return process.env.GITHUB_API_URL?.trim().replace(/\/+$/, '') || DEFAULT_GITHUB_API_URL;
+}
+
 // ─── GitHub API types ────────────────────────────────────
 
 interface GhRepoApiItem {
@@ -43,8 +49,10 @@ function ghApiPage(endpoint: string): GhRepoApiItem[] {
  */
 // 响应体最大 50 MB，防止恶意服务器返回超大响应导致 OOM
 const MAX_RESPONSE_BYTES = 50 * 1024 * 1024;
+const REQUEST_TIMEOUT_MS = 30_000;
 
 async function fetchApiPage(url: string, token: string): Promise<GhRepoApiItem[]> {
+  const signal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
   // redirect: 'manual' 防止跟随重定向到内网地址（SSRF）
   const resp = await fetch(url, {
     headers: {
@@ -53,12 +61,14 @@ async function fetchApiPage(url: string, token: string): Promise<GhRepoApiItem[]
       'X-GitHub-Api-Version': '2022-11-28',
     },
     redirect: 'manual',
+    signal,
   });
   if (resp.status >= 300 && resp.status < 400) {
     throw new Error(`Unexpected redirect from GitHub API: ${resp.status}`);
   }
   if (!resp.ok) {
     const body = await resp.text().catch(() => '');
+    if (signal.aborted) throw signal.reason;
     throw new Error(`GitHub API error ${resp.status}: ${body}`);
   }
 
@@ -124,7 +134,9 @@ export async function ghListOrgRepos(
   const perPage = 100;
   const results: OrgRepoInfo[] = [];
 
-  if (isGhInstalled()) {
+  const BASE = githubApiBaseUrl();
+
+  if (BASE === DEFAULT_GITHUB_API_URL && isGhInstalled()) {
     // 使用 gh CLI 分页拉取
     const tryEndpointPrefix = async (prefix: string, allowFallback = false): Promise<boolean> => {
       let page = 1;
@@ -165,7 +177,6 @@ export async function ghListOrgRepos(
       );
     }
 
-    const BASE = 'https://api.github.com';
     const tryUrl = async (urlPrefix: string, allowFallback = false): Promise<boolean> => {
       let page = 1;
       while (results.length < maxRepos) {
@@ -175,7 +186,7 @@ export async function ghListOrgRepos(
         try {
           items = await fetchApiPage(url, token);
         } catch (err) {
-          if (page === 1 && allowFallback) {
+          if (page === 1 && allowFallback && (err as Error)?.name !== 'TimeoutError') {
             log.debug(`fetch ${urlPrefix} failed: ${String(err)}`);
             return false;
           }

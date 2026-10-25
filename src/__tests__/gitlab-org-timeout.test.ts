@@ -10,7 +10,10 @@ afterEach(() => {
   vi.resetModules();
 });
 
-describe('GitLab organization request deadlines', () => {
+describe.each([
+  ['GitLab', () => import('../providers/gitlab/org.js').then((m) => m.gitlabListOrgRepos)],
+  ['GitHub', () => import('../providers/github/gh-org.js').then((m) => m.ghListOrgRepos)],
+] as const)('%s organization request deadlines', (_label, loadListOrgRepos) => {
   it.each([
     [1, 'headers'], [1, 'body'], [1, 'error-body'],
     [2, 'headers'], [2, 'body'], [2, 'error-body'],
@@ -29,6 +32,7 @@ describe('GitLab organization request deadlines', () => {
       }
       res.end(JSON.stringify(Array.from({ length: 100 }, (_, id) => ({
         id, name: `repo-${id}`, path_with_namespace: `g/repo-${id}`, http_url_to_repo: `https://example.com/g/repo-${id}.git`,
+        full_name: `g/repo-${id}`, clone_url: `https://example.com/g/repo-${id}.git`, archived: false,
       }))));
     });
     await new Promise<void>((resolve) => { server.listen(0, '127.0.0.1', resolve); });
@@ -38,10 +42,12 @@ describe('GitLab organization request deadlines', () => {
       vi.stubEnv('GITLAB_URL', `http://127.0.0.1:${address.port}`);
       vi.stubEnv('TEAMAI_GITLAB_HOST', `127.0.0.1:${address.port}`);
       vi.stubEnv('GITLAB_TOKEN', 'fixture-token');
+      vi.stubEnv('GITHUB_API_URL', `http://127.0.0.1:${address.port}`);
+      vi.stubEnv('GITHUB_TOKEN', 'fixture-token');
       vi.resetModules();
-      const { gitlabListOrgRepos } = await import('../providers/gitlab/org.js');
+      const listOrgRepos = await loadListOrgRepos();
       const result = await Promise.race([
-        gitlabListOrgRepos('g').then((repos) => ({ repos }), (error: unknown) => ({ error })),
+        listOrgRepos('g').then((repos) => ({ repos }), (error: unknown) => ({ error })),
         delay(1500, 'request did not settle'),
       ]);
       expect(result).not.toBe('request did not settle');

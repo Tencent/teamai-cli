@@ -9,7 +9,10 @@ import { parse } from 'yaml';
 
 const CLI = fileURLToPath(new URL('../../../dist/index.js', import.meta.url));
 
-describe('import --from-org with a stalled GitLab response body', () => {
+describe.each([
+  ['GitLab', (origin: string) => `${origin}/g`],
+  ['GitHub', () => 'github.com/g'],
+] as const)('import --from-org with a stalled %s response body', (_label, targetOrg) => {
   it('fails at the real deadline without replacing the whitelist, then succeeds on retry', async () => {
     const sandbox = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-gitlab-org-timeout-'));
     const draft = path.join(sandbox, '.teamai', 'repo-whitelist.draft.yaml');
@@ -28,7 +31,10 @@ describe('import --from-org with a stalled GitLab response body', () => {
       }
       res.end(JSON.stringify(Array.from({ length: page === 1 ? 100 : 1 }, (_, index) => {
         const id = (page - 1) * 100 + index;
-        return { id, name: `repo-${id}`, path_with_namespace: `g/repo-${id}`, http_url_to_repo: `https://example.com/g/repo-${id}.git` };
+        return {
+          id, name: `repo-${id}`, path_with_namespace: `g/repo-${id}`, http_url_to_repo: `https://example.com/g/repo-${id}.git`,
+          full_name: `g/repo-${id}`, clone_url: `https://example.com/g/repo-${id}.git`, archived: false,
+        };
       })));
     });
     await new Promise<void>((resolve) => { server.listen(0, '127.0.0.1', resolve); });
@@ -37,11 +43,12 @@ describe('import --from-org with a stalled GitLab response body', () => {
       if (!address || typeof address === 'string') throw new Error('Expected a TCP address');
       const origin = `http://127.0.0.1:${address.port}`;
       const run = (): Promise<{ code: number | null; output: string }> => new Promise((resolve, reject) => {
-        const child = spawn(process.execPath, [CLI, 'import', '--from-org', `${origin}/g`, '--skip-import'], {
+        const child = spawn(process.execPath, [CLI, 'import', '--from-org', targetOrg(origin), '--skip-import'], {
           cwd: sandbox,
           env: {
             ...process.env, HOME: sandbox, USERPROFILE: sandbox, TEAMAI_HOME: path.join(sandbox, '.teamai'), FORCE_COLOR: '0',
             GITLAB_URL: origin, TEAMAI_GITLAB_HOST: `127.0.0.1:${address.port}`, GITLAB_API_PREFIX: 'api/v4', GITLAB_TOKEN: 'fixture-token',
+            GITHUB_API_URL: origin, GITHUB_TOKEN: 'fixture-token',
           },
           stdio: ['ignore', 'pipe', 'pipe'],
         });
