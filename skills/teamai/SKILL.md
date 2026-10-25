@@ -38,6 +38,7 @@ teamai skill get setup            # day 0: create a team repo (admin) or join on
 teamai skill get wiki             # large multi-repo codebase: architecture reverse-engineering and knowledge base
 teamai skill get share            # turn what this session taught you into a team learning (needs recall on)
 teamai skill get workflow         # drive a requested team workflow from this coding session
+teamai skill get workflow-local   # run a workflow unattended: CI, cloud agents, a handed-off run
 ```
 
 Publishing a skill, rule or doc the user already has is in `core`; it needs no recall.

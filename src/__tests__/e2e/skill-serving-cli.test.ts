@@ -37,7 +37,7 @@ describe('teamai skill get / path CLI (e2e)', () => {
     expect(listed.status).toBe(0);
 
     const catalog = JSON.parse(listed.stdout) as { skills: Array<{ name: string; path: string }> };
-    expect(catalog.skills.map((s) => s.name)).toEqual(['core', 'setup', 'share', 'wiki', 'workflow']);
+    expect(catalog.skills.map((s) => s.name)).toEqual(['core', 'setup', 'share', 'wiki', 'workflow', 'workflow-local']);
 
     for (const skill of catalog.skills) {
       const got = run('skill', 'get', skill.name);

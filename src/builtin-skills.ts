@@ -38,7 +38,7 @@ import type { DeliveryRecorder } from './git-exclude-delivered.js';
 //    ~/.cursor/skills/teamai/SKILL.md
 //    ...
 //
-//    skill-data/{core,setup,wiki,share}/   never copied
+//    skill-data/{core,setup,wiki,share,workflow,workflow-local}/   never copied
 //
 
 /**
