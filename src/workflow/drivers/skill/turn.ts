@@ -64,7 +64,10 @@ export interface Turn {
   actions: Action[];
   running: RunningEntry[];
   events: TurnEvent[];
-  /** Why the run leased nothing more, when it did not. */
+  /**
+   * Why the run leases nothing, when no attempt is open. An open attempt is in `running` already, and a call that leased
+   * one would otherwise show no reason where its repeat shows one.
+   */
   waiting?: { reason: string };
   /**
    * The call to make next: `poll` in the background, or `wake` in the foreground when work waits for the agent.
@@ -132,7 +135,7 @@ export function turnOf(state: SkillState, input: { events: TurnEvent[]; after?: 
     actions: input.quiet ? [] : actionsOf(state),
     running,
     events: input.events,
-    ...(input.waiting && !state.done ? { waiting: input.waiting } : {}),
+    ...(input.waiting && !state.done && state.attempts.length === 0 ? { waiting: input.waiting } : {}),
     // `then` is a value, never a function, so awaiting a turn does not treat it as a promise.
     // oxlint-disable-next-line unicorn/no-thenable
     ...(input.after && !state.done ? { then: input.after } : {}),
