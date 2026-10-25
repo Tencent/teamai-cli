@@ -540,6 +540,43 @@ steps:
     expect(git(dir, 'config', '--worktree', '--default', '', '--get', 'core.hooksPath')).toBe('');
   });
 
+  it('says why the place the host made was passed over when the copy TeamAI then makes of its branch fails', async () => {
+    const f = await fixture(`schemaVersion: v1alpha1
+name: build
+description: Write a change, then check it, in a place the host makes.
+alias: ship
+steps:
+  - id: change
+    workspace: new
+    workflow:
+      steps:
+        - id: write
+          prompt: Write the change.
+        - id: check
+          needs: [write]
+          command: cat change.txt
+`);
+    const run = RunIdSchema.parse(f.runId);
+    const lease = async (): Promise<{ raw: unknown } & z.infer<typeof LeaseSchema>> => {
+      const answer = await f.client.next(f.runId, body(f));
+      if (!('data' in answer) || !answer.data.lease) throw new Error(JSON.stringify(answer));
+      return { raw: answer.data.lease, ...LeaseSchema.parse(answer.data.lease) };
+    };
+    const write = await lease();
+    const dir = path.join(path.dirname(f.work), 'hosts', 'place');
+    git(f.work, 'worktree', 'add', '-q', '--detach', dir, write.workspace.start.commit);
+    expect(await withRunLock(f.config, run, (lock) => f.client.prepareHostPlace(lock, write.raw, { kind: 'adopt', dir }), { waitMs: 0 })).toMatchObject({ kind: 'prepared', dir });
+    fs.writeFileSync(path.join(dir, 'change.txt'), 'written\n');
+    expect(await f.client.report(f.runId, { attempt: write.attempt, revision: write.revision, outcome: 'success', driver: f.driver })).toMatchObject({ data: { accepted: true } });
+    fs.writeFileSync(path.join(dir, 'stray.txt'), 'left by the host\n');
+
+    const check = await lease();
+    expect(await withRunLock(f.config, run, (lock) => f.client.prepare(lock, check.raw), { waitMs: 0 })).toEqual({ kind: 'failed', failure: {
+      code: 'workspace_base',
+      message: expect.stringMatching(new RegExp(`^TeamAI did not go on in ${dir}, the place the host made for branch ${write.workspace.branch}: ${dir} has changes the step would commit \\(\\?\\? stray\\.txt\\).* Making its own worktree of the branch failed too: .*already used by worktree`, 's')),
+    } });
+  });
+
   it('refuses a place another open attempt began to adopt, even when its prepare was killed before it made its branch there', async () => {
     const f = await fixture(`schemaVersion: v1alpha1
 name: build
