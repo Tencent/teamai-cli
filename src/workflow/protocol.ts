@@ -376,11 +376,12 @@ async function reportable(config: LocalConfig, runId: string, report: ReportInpu
 }
 
 /**
- * Reports an attempt, after finishing the place `prepare` gave it, under the run's lock. An attempt without a place is
- * reported as it is. A report the run would refuse is sent as it is, and a cancelled one leaves the place as prepare
- * found it; so does a `released` attempt.
+ * Reports an attempt, after finishing the place `prepare` gave it, under the run's lock, and removes that place once the
+ * engine answers `cleanup`. Every driver reports through it. An attempt without a place is reported as it is. A report
+ * the run would refuse is sent as it is, and a cancelled one leaves the place as prepare found it; so does a
+ * `released` attempt.
  */
-async function managedReport(input: { config: LocalConfig; runId: string; report: ReportInput; secrets: Record<string, string>; lock: RunLock | undefined }): Promise<WorkflowEnvelope> {
+export async function managedReport(input: { config: LocalConfig; runId: string; report: ReportInput; secrets: Record<string, string>; lock: RunLock | undefined }): Promise<WorkflowEnvelope> {
   const { config, runId, report, secrets, lock } = input;
   const attempt = AttemptIdSchema.safeParse(report.attempt);
   const run = RunIdSchema.safeParse(runId);
@@ -406,7 +407,7 @@ async function settleManaged(input: { config: LocalConfig; lock: RunLock; attemp
   const finished = await finishPlace({ config, lock, attempt, end, secrets });
   const body = finished === 'unmanaged' ? report : { ...report, ...finished };
   const answer = await reportAttempt(config, lock.run, body, secrets);
-  if ('data' in answer && answer.data.cleanup === true && body.outcome === 'success') await releasePlace({ config, lock, attempt });
+  if ('data' in answer && answer.data.cleanup === true) await releasePlace({ config, lock, attempt });
   return answer;
 }
 

@@ -17,7 +17,7 @@ import { AgentSession } from '../../../session-flow/agent-session.js';
 import { openSessionArchive, type SessionArchive } from '../../../session-flow/archive.js';
 import { deliveredTeamSkills, usedSkills } from '../../../skill-use.js';
 import { attemptEnv } from '../../attempt-marker.js';
-import { leaseNext, reportAttempt } from '../../engine.js';
+import { leaseNext, type ReportInput } from '../../engine.js';
 import { EnvScopeSchema, LeaseSetupSchema, type DriverCan, type EnvScope, type LeaseSetup } from '../../requirements.js';
 import { callerProvenance, respondProvenance, respondToHitl } from '../../run-controls.js';
 import { isRecord } from '../../expression.js';
@@ -28,8 +28,8 @@ import {
   type LocalToolRun,
 } from './local-tool-adapter.js';
 import { attemptDir, AttemptIdSchema, attemptsDir, readRun, RunIdSchema, updateRun, withRunLock, type AttemptId, type RunId, type RunLock } from '../../store.js';
-import { abandonPlace, finishPlace, placeOf, placeRoot, preparePlace, releasePlace, runPlaceSetup, type PlaceFinished, type PlaceLease, type StepEnd } from '../../place/place.js';
-import { commandOutputs } from '../../protocol.js';
+import { abandonPlace, placeOf, placeRoot, preparePlace, runPlaceSetup, type PlaceLease, type StepEnd } from '../../place/place.js';
+import { commandOutputs, managedReport } from '../../protocol.js';
 import { stopProcess } from '../../../tool-launch/process-stop.js';
 import { isLaunchTool, localToolFamily, type LaunchTool } from '../../../tool-launch/tools.js';
 import { chooseStepModel, loadDeployedAgent } from '../../step-model.js';
@@ -255,7 +255,7 @@ function failureReport(failure: WorkflowFailure): { outcome: 'failed'; message: 
   return { outcome: 'failed', message: failure.message, failure };
 }
 
-type ReportBody = Parameters<typeof reportAttempt>[2];
+type ReportBody = ReportInput;
 
 function parseLease(rawLease: unknown): Lease | undefined {
   if (!isRecord(rawLease) || typeof rawLease.step !== 'string' || typeof rawLease.revision !== 'number') return undefined;
@@ -368,7 +368,7 @@ async function resumeSession(archive: SessionArchive, lease: Lease, tool: Launch
   return undefined;
 }
 
-async function commandReport(config: LocalConfig, lock: RunLock, driver: DriverIdentity, lease: Lease, result: CommandResult, secrets: Record<string, string>): Promise<ReportBody> {
+async function commandReport(config: LocalConfig, lock: RunLock, driver: DriverIdentity, lease: Lease, result: CommandResult): Promise<ReportBody> {
   const output = commandOutputs(result.stdout);
   const attemptResultPath = resultPath(config, lock.run, lease.attempt);
   await fs.mkdir(path.dirname(attemptResultPath), { recursive: true });
@@ -377,19 +377,14 @@ async function commandReport(config: LocalConfig, lock: RunLock, driver: DriverI
   const end: StepEnd = result.exitCode === 0
     ? { outcome: 'success' }
     : { outcome: 'failed', message: snippet === '' ? `command exited with status ${result.exitCode}` : `command exited with status ${result.exitCode}: ${snippet}` };
-  const finished = await finishPlace({ config, lock, attempt: lease.attempt, end, secrets });
-  const ended: PlaceFinished = finished === 'unmanaged' ? end : finished;
   return {
     attempt: lease.attempt,
     revision: lease.revision,
-    outcome: ended.outcome,
+    outcome: end.outcome,
     driver,
     ...(output !== undefined ? { outputs: output } : {}),
     exitCode: result.exitCode,
-    ...(ended.message ? { message: ended.message } : {}),
-    ...(ended.failure ? { failure: ended.failure } : {}),
-    ...(ended.changes ? { changes: ended.changes } : {}),
-    ...(ended.read ? { read: ended.read } : {}),
+    ...(end.message ? { message: end.message } : {}),
   };
 }
 
@@ -418,7 +413,6 @@ async function promptReport(
   options: LocalDriverOptions,
   archive: SessionArchive,
   signal: AbortSignal,
-  secrets: Record<string, string>,
   mode: RunMode,
 ): Promise<ReportBody> {
   const selected = lease.agent && tools[lease.agent] ? tools[lease.agent] : tools.default;
@@ -502,8 +496,6 @@ async function promptReport(
   const end: StepEnd = result.exitCode === 0 && !result.failure
     ? { outcome: 'success' }
     : { outcome: 'failed', ...(result.failure ? { message: result.failure.message, failure: result.failure } : {}) };
-  const finished = await finishPlace({ config, lock, attempt: lease.attempt, end, secrets });
-  const ended: PlaceFinished = finished === 'unmanaged' ? end : finished;
   const ran = result.started ? result : undefined;
   const used = ran?.session && teamSkills ? await usedInSession(selected, ran.session, cwd, teamSkills, launchedAt) : undefined;
   return {
@@ -521,9 +513,7 @@ async function promptReport(
     ...(used ? { used } : {}),
     ...(lease.maxTurns !== undefined && !capsTurns ? { unenforced: ['max_turns' as const] } : {}),
     exitCode: result.exitCode,
-    ...(ended.changes ? { changes: ended.changes } : {}),
-    ...(ended.read ? { read: ended.read } : {}),
-    ...(ended.failure ? failureReport(ended.failure) : { outcome: ended.outcome, ...(ended.message ? { message: ended.message } : {}) }),
+    ...(end.failure ? failureReport(end.failure) : { outcome: end.outcome, ...(end.message ? { message: end.message } : {}) }),
   };
 }
 
@@ -679,10 +669,9 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options
   const report = async (body: ReportBody, lease: Lease): Promise<WorkflowEnvelope | undefined> => {
     const secrets = env?.secrets ?? await knownSecrets(config);
     await maskResultFile(resultPath(config, runId, lease.attempt), secrets);
-    const answer = await reportAttempt(config, runId, body, secrets);
+    const answer = await managedReport({ config, runId, report: body, secrets, lock });
     // Cancelled while it ran: the next `next` lists it in `cancelled`, and the run goes on without it.
     if (isWorkflowError(answer)) return answer.error.code === 'lease_cancelled' ? undefined : answer;
-    if ('data' in answer && answer.data.cleanup === true) await releasePlace({ config, lock, attempt: lease.attempt });
     reported.add(body.attempt);
     return undefined;
   };
@@ -784,7 +773,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options
             }
             if (failure) return unstaged(lease, failure);
             interactiveIgnores = ignored;
-            return promptReport(config, lock, driver, lease, tools, adapter, options, archive, controller.signal, seen, mode);
+            return promptReport(config, lock, driver, lease, tools, adapter, options, archive, controller.signal, mode);
           })() };
         }
       }
@@ -857,7 +846,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options
       }
       const body = staged.kind === 'unstaged'
         ? unstaged(exited.lease, staged.failure)
-        : await commandReport(config, lock, driver, exited.lease, staged.result, seen);
+        : await commandReport(config, lock, driver, exited.lease, staged.result);
       const failed = await report(body, exited.lease);
       if (failed) return failed;
     }
