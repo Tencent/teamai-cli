@@ -151,6 +151,20 @@ steps:
     command: node -e "process.exit(0)"
 `;
 
+// `read` works in the checkout, which no step may change; `change` writes a copy TeamAI commits.
+const SURVEY = `schemaVersion: v1alpha1
+name: survey
+description: Read the code, and change it in a copy
+invoke: allow
+steps:
+  - id: read
+    prompt: Read the code.
+  - id: change
+    needs: []
+    workspace: new
+    prompt: Change the code.
+`;
+
 type Harness = Awaited<ReturnType<typeof skillHarness>>;
 
 /** Starts `review` with the skill driver, has its child review the change and report, and answers the turn that follows. */
@@ -468,6 +482,21 @@ describe('skill driver', () => {
     const journal = fs.readFileSync(path.join(path.dirname(skillStatePath(harness.config, run)), 'journal.jsonl'), 'utf8');
     const asked = journal.trim().split('\n').map((line) => JSON.parse(line)).filter((line) => line.kind === 'asked');
     expect(asked).toEqual([{ at: expect.any(String), kind: 'asked', action: 'approval', step: 'go-live', pass: 1 }]);
+  });
+
+  it('tells the child of a step that only reads its place to change no file there, and the child of a writer that TeamAI commits its changes', async () => {
+    const harness = await skillHarness({ survey: SURVEY });
+    roots.push(harness.root);
+    const started = await harness.call({ kind: 'start', name: 'survey', answers: { parallel: 2, confirmed: false }, inputs: undefined });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+    const chosen = await harness.call({ kind: 'choose', run: started.data.turn.run, choice: 'h1' });
+    if (!('data' in chosen) || !('turn' in chosen.data)) throw new Error(JSON.stringify(chosen));
+    const briefs = Object.fromEntries(chosen.data.turn.actions.flatMap((action) => (action.kind === 'dispatch' ? [[action.step, fs.readFileSync(action.brief, 'utf8')]] : [])));
+    expect(Object.keys(briefs).sort()).toEqual(['change', 'read']);
+    expect(briefs.read).toContain('Do not change files here');
+    expect(briefs.read).not.toContain('commits and pushes');
+    expect(briefs.change).toContain('It commits and pushes that directory after you report.');
+    expect(briefs.change).not.toContain('Do not change files here');
   });
 
   it('h3 asks the host for a place, adopts it, and a continue step reuses it', async () => {
