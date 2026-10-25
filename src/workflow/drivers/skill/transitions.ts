@@ -64,8 +64,8 @@ export const TRANSITIONS = [
   { id: 'C7', state: 'preparing', input: 'runner: prepare or setup failed', guard: '', effects: 'write-ahead `failed` with its failure', next: 'reporting', action: '' },
   { id: 'C8', state: 'running', input: 'runner: the command exited', guard: '', effects: 'write-ahead: `success` on exit 0, else `failed`; outputs, exit code, masked tail', next: 'reporting', action: '' },
   { id: 'C9', state: 'stopping by its runner', input: 'runner: its check every `RUNNER_POLL_MS` and at `expiresAt`, its setup ending, or its command exiting', guard: '', effects: 'stop the command and every process it started (`tool-launch/process-stop.ts`); write-ahead `released`', next: 'reporting', action: '' },
-  { id: 'C10', state: 'preparing, running', input: 'tick: its `runner.lock` is free', guard: 'it was spawned more than `WAIT_GRACE_MS` ago', effects: 'spawn the same job again (prepare is idempotent; a command restarts in its prepared place)', next: 'unchanged', action: 'event `restarted`' },
-  { id: 'C11', state: 'stopping by its runner', input: 'tick: its `runner.lock` is free', guard: '', effects: 'write-ahead `released`', next: 'reporting', action: '' },
+  { id: 'C10', state: 'preparing, running', input: 'tick: its `runner.lock` is free', guard: 'it was spawned more than `WAIT_GRACE_MS` ago', effects: 'stop the process group its command left; spawn the same job again (prepare is idempotent; a command restarts in its prepared place)', next: 'unchanged', action: 'event `restarted`' },
+  { id: 'C11', state: 'stopping by its runner', input: 'tick: its `runner.lock` is free', guard: '', effects: 'stop the process group its command left; write-ahead `released`', next: 'reporting', action: '' },
   { id: 'K1', state: 'drive', input: 'next `--ack dispatch.a`', guard: 'a offered', effects: 'phase dispatched', next: 'drive', action: 'the turn of a tick' },
   { id: 'K2', state: 'drive', input: 'next `--ack dispatch.a`', guard: 'a dispatched', effects: 'none', next: 'drive', action: 'the turn of a tick' },
   { id: 'K3', state: 'drive, done', input: 'next `--ack dispatch.a`', guard: 'a neither offered nor dispatched', effects: 'none', next: 'unchanged', action: 'error `unknown_offer`, next: the next literal' },
@@ -144,6 +144,8 @@ export type Effect =
   /** `job` is the lease of a new attempt; a respawn reuses the job already saved. */
   | { kind: 'spawn'; attempt: AttemptId; job?: { lease: unknown } }
   | { kind: 'run'; attempt: AttemptId }
+  /** Stops what the command of `attempt` left running when its runner died, before anything else runs in its place. */
+  | { kind: 'stop-left'; attempt: AttemptId }
   | { kind: 'send'; attempt: AttemptId; body: ReportBody }
   | { kind: 'grace' }
   | { kind: 'sleep' };
@@ -364,10 +366,16 @@ export function step(state: SkillState | undefined, input: MachineInput): Step |
     }
     case 'runner-free': {
       const open = state && openAttempt(state, input.attempt);
-      if (state && open?.phase === 'stopping' && open.by === 'runner') return released(state, open, 'C11');
+      if (state && open?.phase === 'stopping' && open.by === 'runner') {
+        const given = released(state, open, 'C11');
+        return { ...given, effects: [{ kind: 'stop-left', attempt: open.attempt }, ...given.effects] };
+      }
       if (!state || (open?.phase !== 'preparing' && open?.phase !== 'running') || Date.parse(input.at) - Date.parse(open.spawnedAt) <= input.graceMs) return undefined;
       const respawned = withAttempt(state, { ...open, spawnedAt: input.at });
-      return { row: 'C10', state: withEvent(respawned, { kind: 'restarted', step: open.step, attempt: open.attempt }), effects: [{ kind: 'spawn', attempt: open.attempt }] };
+      return {
+        row: 'C10', state: withEvent(respawned, { kind: 'restarted', step: open.step, attempt: open.attempt }),
+        effects: [{ kind: 'stop-left', attempt: open.attempt }, { kind: 'spawn', attempt: open.attempt }],
+      };
     }
     case 'runner-stop': {
       const open = state && openAttempt(state, input.attempt);

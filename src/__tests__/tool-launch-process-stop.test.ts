@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
-import { stopProcess } from '../tool-launch/process-stop.js';
+import { processStarts, stopGroup, stopProcess } from '../tool-launch/process-stop.js';
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); vi.useRealTimers(); });
 
@@ -144,5 +144,46 @@ esac
     expect(kill).toHaveBeenCalledWith(0);
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+/** Starts a detached shell that leads its own group and keeps a `sleep` in it, as a command's shell does. */
+async function detachedGroup() {
+  const shell = spawn('sh', ['-c', 'sleep 300 & wait'], { detached: true, stdio: 'ignore' });
+  await new Promise<void>((resolve, reject) => {
+    shell.once('spawn', resolve);
+    shell.once('error', reject);
+  });
+  const pid = shell.pid;
+  if (pid === undefined) throw new Error('the detached shell has no pid');
+  const start = processStarts()?.get(pid) ?? '';
+  const alive = (): boolean => {
+    try { return process.kill(-pid, 0); } catch { return false; }
+  };
+  return { shell, pid, start, alive };
+}
+
+it.skipIf(process.platform === 'win32')('stops a detached group whose shell was killed, from what was recorded of it', async () => {
+  const { shell, pid, start, alive } = await detachedGroup();
+  try {
+    expect(start).not.toBe('');
+    const closed = new Promise((resolve) => { shell.once('close', resolve); });
+    process.kill(pid, 'SIGKILL');
+    await closed;
+    expect(alive()).toBe(true);
+    expect(await stopGroup({ pid, start })).toBe(true);
+    expect(alive()).toBe(false);
+  } finally {
+    try { process.kill(-pid, 'SIGKILL'); } catch { /* Already stopped. */ }
+  }
+});
+
+it.skipIf(process.platform === 'win32')('leaves a group alone when its pid now leads a process started at another time', async () => {
+  const { pid, alive } = await detachedGroup();
+  try {
+    expect(await stopGroup({ pid, start: 'Thu Jan  1 00:00:00 1970' })).toBe(false);
+    expect(alive()).toBe(true);
+  } finally {
+    process.kill(-pid, 'SIGKILL');
   }
 });

@@ -55,7 +55,10 @@ export interface CommandRun {
 export interface Runners {
   spawn(job: RunnerJob): Promise<void>;
   alive(run: RunId, attempt: AttemptId): Promise<boolean>;
-  command(input: { command: string; cwd: string; env: NodeJS.ProcessEnv }): CommandRun;
+  /** Starts the command of `attempt`, and records what it started where `stopLeft` finds it. */
+  command(input: { run: RunId; attempt: AttemptId; command: string; cwd: string; env: NodeJS.ProcessEnv }): CommandRun;
+  /** Stops what the last command of `attempt` left running when its runner died with it. */
+  stopLeft(run: RunId, attempt: AttemptId): Promise<void>;
   /** Waits `ms`, or until `signal` aborts. */
   sleep(ms: number, signal?: AbortSignal): Promise<void>;
 }

@@ -227,13 +227,6 @@ export async function runTick(context: SkillContext, lock: RunLock, start: Skill
       if (resent?.state) state = (await sendReport(context, lock, resent.state, open.attempt, open.body)).state;
       continue;
     }
-    if (open.phase === 'stopping' && open.by === 'runner') {
-      if (await context.runners.alive(state.run, open.attempt)) continue;
-      const given = take(context, state, { kind: 'runner-free', attempt: open.attempt, at: context.now().toISOString(), graceMs: WAIT_GRACE_MS });
-      const send = given?.effects.find((effect) => effect.kind === 'send');
-      if (given?.state && send?.kind === 'send') state = (await sendReport(context, lock, given.state, open.attempt, send.body)).state;
-      continue;
-    }
     if (open.phase === 'queued') {
       const unqueued = take(context, state, { kind: 'unqueue', attempt: open.attempt, at: context.now().toISOString() });
       if (!unqueued?.state) continue;
@@ -242,13 +235,19 @@ export async function runTick(context: SkillContext, lock: RunLock, start: Skill
       spawned = true;
       continue;
     }
-    if (open.phase !== 'preparing' && open.phase !== 'running') continue;
+    if (open.phase !== 'preparing' && open.phase !== 'running' && !(open.phase === 'stopping' && open.by === 'runner')) continue;
     if (await context.runners.alive(state.run, open.attempt)) continue;
-    const respawned = take(context, state, { kind: 'runner-free', attempt: open.attempt, at: context.now().toISOString(), graceMs: WAIT_GRACE_MS });
-    if (!respawned?.state) continue;
-    state = respawned.state;
-    await spawnRunner(context, state, open.attempt, undefined);
-    spawned = true;
+    const freed = take(context, state, { kind: 'runner-free', attempt: open.attempt, at: context.now().toISOString(), graceMs: WAIT_GRACE_MS });
+    if (!freed?.state) continue;
+    state = freed.state;
+    for (const effect of freed.effects) {
+      if (effect.kind === 'stop-left') await context.runners.stopLeft(state.run, effect.attempt);
+      if (effect.kind === 'spawn') {
+        await spawnRunner(context, state, effect.attempt, undefined);
+        spawned = true;
+      }
+      if (effect.kind === 'send') state = (await sendReport(context, lock, state, effect.attempt, effect.body)).state;
+    }
   }
   for (;;) {
     const ticked = take(context, state, { kind: 'tick', role });

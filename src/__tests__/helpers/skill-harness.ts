@@ -37,7 +37,7 @@ const COMMAND_EXIT_MS = 10_000;
  * runs until it is stopped. A runner that throws `Crash` is gone, as a killed one is; any other error fails the next sleep.
  */
 function memoryRunners(command: Runners['command']): {
-  runners: Runners; now: () => Date; bind(context: SkillContext): void; hold(held: boolean): void; crash(run: string, attempt: string): boolean;
+  runners: Runners; track(runners: Runners): Runners; now: () => Date; bind(context: SkillContext): void; hold(held: boolean): void; crash(run: string, attempt: string): boolean;
 } {
   let clock = Date.now();
   vi.useFakeTimers({ toFake: ['Date'] });
@@ -56,6 +56,8 @@ function memoryRunners(command: Runners['command']): {
   const attemptOf = (id: string): string => id.slice(0, id.lastIndexOf('#'));
   /** Every real command still running, by what it runs. */
   const commands = new Map<Promise<unknown>, string>();
+  /** The stop of every command, real or faked, still running, by `<run>/<attempt>`. */
+  const started = new Map<string, Set<CommandRun['stop']>>();
   const park = (id: string, signal?: AbortSignal): Promise<void> => new Promise<void>((resolve, reject) => {
     const entry = { resume: resolve, crash: () => { reject(new Crash(`the runner ${id} crashed`)); } };
     parked.set(id, entry);
@@ -85,6 +87,22 @@ function memoryRunners(command: Runners['command']): {
     now: () => new Date(clock),
     bind: (context) => { base = context; },
     hold: (on) => { held = on; },
+    /** Wraps the runners a test ends with, so `stopLeft` reaches the commands they start, faked ones too. */
+    track: (runners) => ({
+      ...runners,
+      command: (input) => {
+        const running = runners.command(input);
+        const key = `${input.run}/${input.attempt}`;
+        const stops = started.get(key) ?? new Set();
+        started.set(key, stops);
+        stops.add(running.stop);
+        void running.exit.finally(() => stops.delete(running.stop));
+        return running;
+      },
+      stopLeft: async (run, attempt) => {
+        for (const stop of started.get(`${run}/${attempt}`) ?? []) await stop();
+      },
+    }),
     crash: (run, attempt) => {
       const key = `${run}/${attempt}`;
       if (![...live.keys()].some((id) => attemptOf(id) === key)) return false;
@@ -108,11 +126,12 @@ function memoryRunners(command: Runners['command']): {
       },
       alive: async (run, attempt) => [...live.keys()].some((id) => attemptOf(id) === `${run}/${attempt}`),
       command: (input) => {
-        const started = command(input);
-        const exit = started.exit.finally(() => commands.delete(exit));
+        const running = command(input);
+        const exit = running.exit.finally(() => commands.delete(exit));
         commands.set(exit, `The command ${input.command} of ${input.env.TEAMAI_WORKFLOW_ATTEMPT ?? 'a runner'}`);
-        return { exit, stop: started.stop };
+        return { exit, stop: running.stop };
       },
+      stopLeft: async () => {},
       sleep: async (ms) => {
         clock += ms;
         vi.setSystemTime(clock);
@@ -170,7 +189,7 @@ export async function skillHarness(workflows: Record<string, string>, options: H
   const rows: string[] = [];
   const context: SkillContext = {
     config, env, client: options.client ? options.client(client) : client, session: options.session ?? 'session-a', tool: 'claude', invocation: 'teamai', cwd: work,
-    now: scheduler.now, runners: options.runners ? options.runners(scheduler.runners) : scheduler.runners,
+    now: scheduler.now, runners: scheduler.track(options.runners ? options.runners(scheduler.runners) : scheduler.runners),
     locks: { take: (run, body, waitMs) => withRunLock(config, run, body, { waitMs }) },
     trace: (row) => { rows.push(row); },
   };

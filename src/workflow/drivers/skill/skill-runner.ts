@@ -5,12 +5,14 @@
  * runs it checks the run as its driver, and it alone stops that command when the engine stopped the attempt.
  */
 import { spawn } from 'node:child_process';
+import fs from 'node:fs';
 import path from 'node:path';
+import { z } from 'zod';
 import { resolveCliEntry } from '../../../builtin-hooks.js';
 import { stepEnvironment } from '../../../env-exec.js';
-import { stopProcess } from '../../../tool-launch/process-stop.js';
+import { processStarts, stopGroup, stopProcess, type ProcessGroup } from '../../../tool-launch/process-stop.js';
 import type { LocalConfig } from '../../../types.js';
-import { writeFileAtomic } from '../../../utils/fs.js';
+import { readFileSafe, writeFileAtomic } from '../../../utils/fs.js';
 import { redact } from '../../../utils/redact.js';
 import { attemptEnv } from '../../attempt-marker.js';
 import { commandOutputs } from '../../protocol.js';
@@ -26,6 +28,27 @@ import { openAttempt, type Step } from './transitions.js';
 import type { CommandRun, Runners, SkillContext } from './skill-driver.js';
 import type { SkillAnswer } from './turn.js';
 
+const ProcessGroupSchema = z.object({ pid: z.number().int().positive(), start: z.string().min(1) });
+
+/** Where the runner of `attempt` records the process group of the command it started. */
+function commandGroupPath(config: LocalConfig, run: RunId, attempt: AttemptId): string {
+  return path.join(attemptDir(config, run, attempt), 'command.json');
+}
+
+/**
+ * Records `group` before anything else runs, so a runner killed right after the spawn still leaves it. Synchronous on
+ * purpose: an await here would widen that window.
+ */
+function recordGroup(file: string, group: ProcessGroup): void {
+  const temporary = `${file}.${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(temporary, JSON.stringify(group));
+    fs.renameSync(temporary, file);
+  } catch {
+    // The runner still stops its command itself; only a runner killed with it would leave the command running.
+  }
+}
+
 /** Runners as detached teamai processes, alive while they hold their runner lock. */
 export function detachedRunners(config: LocalConfig): Runners {
   return {
@@ -37,10 +60,12 @@ export function detachedRunners(config: LocalConfig): Runners {
       }).unref();
     },
     alive: (run, attempt) => runnerAlive(config, run, attempt),
-    command: ({ command, cwd, env }) => {
+    command: ({ run, attempt, command, cwd, env }) => {
       // A process group of its own, so a stop reaches every process the command started.
       const detached = process.platform !== 'win32';
       const child = spawn(command, { shell: true, cwd, env, detached, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+      const start = detached && child.pid !== undefined ? processStarts()?.get(child.pid) : undefined;
+      if (child.pid !== undefined && start !== undefined) recordGroup(commandGroupPath(config, run, attempt), { pid: child.pid, start });
       const exit = new Promise<Awaited<CommandRun['exit']>>((resolve) => {
         let stdout = '';
         let stderr = '';
@@ -51,6 +76,17 @@ export function detachedRunners(config: LocalConfig): Runners {
         child.on('close', (code) => resolve({ exitCode: code ?? 1, stdout, stderr, output }));
       });
       return { exit, stop: stopProcess(child, exit, detached) };
+    },
+    stopLeft: async (run, attempt) => {
+      const file = commandGroupPath(config, run, attempt);
+      let recorded: ProcessGroup | undefined;
+      try {
+        recorded = ProcessGroupSchema.parse(JSON.parse(await readFileSafe(file) ?? 'null'));
+      } catch {
+        return;
+      }
+      await stopGroup(recorded);
+      await fs.promises.rm(file, { force: true });
     },
     sleep: (ms, signal) => new Promise((resolve) => {
       const timer = setTimeout(resolve, ms);
@@ -238,7 +274,7 @@ async function check(context: SkillContext, lock: RunLock, attempt: AttemptId): 
  * stops it. Keeps its masked output in `output.log`.
  */
 async function runCommand(context: SkillContext, run: RunId, attempt: AttemptId, stage: Extract<Stage, { kind: 'run' }>): Promise<Exited> {
-  const command = context.runners.command({ command: stage.command, cwd: stage.dir, env: { ...stage.env, ...attemptEnv(run, attempt) } });
+  const command = context.runners.command({ run, attempt, command: stage.command, cwd: stage.dir, env: { ...stage.env, ...attemptEnv(run, attempt) } });
   let exited: Awaited<CommandRun['exit']> | undefined;
   while (!exited) {
     const checking = new AbortController();

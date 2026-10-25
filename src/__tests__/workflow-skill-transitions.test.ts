@@ -327,6 +327,33 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     },
   },
   {
+    name: 'a runner killed while its command runs: the next tick stops the command it left, then starts the step again',
+    rows: ['C10'],
+    run: async () => {
+      const log: string[] = [];
+      const logged = (runners: Runners): Runners => ({
+        ...runners,
+        command: (input) => {
+          if (input.command !== 'sleep 300') return runners.command(input);
+          log.push(`start ${input.attempt}`);
+          return untilStopped(() => { log.push(`stop ${input.attempt}`); });
+        },
+      });
+      const made = await harness({ check: SERVE }, { runners: logged });
+      const { turn: { run }, running } = await serving(made);
+      expect(log).toEqual([`start ${running.attempt}`]);
+      expect(made.crashRunner(run, running.attempt)).toBe(true);
+      // Longer than the 5 s a runner gets to take its lock, so the next tick starts it again.
+      await made.context.runners.sleep(6_000);
+      const restarted = await turnOf(await made.call({ kind: 'next', run, wait: false }));
+      expect(restarted.events).toContainEqual({ kind: 'restarted', step: running.step, attempt: running.attempt });
+      // The new runner prepares the place and starts the command again, a lock at a time.
+      for (let turn = 0; turn < 5 && log.length < 3; turn += 1) await made.context.runners.sleep(1_000);
+      expect(log).toEqual([`start ${running.attempt}`, `stop ${running.attempt}`, `start ${running.attempt}`]);
+      return made.rows;
+    },
+  },
+  {
     name: 'a place that fails to prepare is reported failed',
     rows: ['C7'],
     run: async () => {
@@ -424,16 +451,18 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     },
   },
   {
-    name: 'an attempt whose runner is gone while it stops is given up by the next tick',
+    name: 'an attempt whose runner is gone while it stops is given up by the next tick, which stops the command it left',
     rows: ['C11'],
     run: async () => {
       let gone = false;
-      const made = await harness({ check: SERVE }, { runners: (runners) => ({ ...sleepFaked([])(runners), alive: async (run, attempt) => !gone && runners.alive(run, attempt) }) });
+      const stops: string[] = [];
+      const made = await harness({ check: SERVE }, { runners: (runners) => ({ ...sleepFaked(stops)(runners), alive: async (run, attempt) => !gone && runners.alive(run, attempt) }) });
       const { turn: { run }, running } = await serving(made);
       await made.context.client.cancel(run, running.step);
       expect((await turnOf(await made.call({ kind: 'next', run, wait: false }))).running).toContainEqual({ attempt: running.attempt, step: running.step, phase: 'stopping' });
       gone = true;
       expect((await turnOf(await made.call({ kind: 'next', run, wait: false }))).events).toContainEqual({ kind: 'stopped', step: running.step, attempt: running.attempt, why: 'cancelled' });
+      expect(stops).toEqual([`${run}/${running.attempt}`]);
       return made.rows;
     },
   },

@@ -1,5 +1,58 @@
 import { execFile, execFileSync, type ChildProcess } from 'node:child_process';
 
+/** The start time of every process, as `ps -o lstart=` prints it, by pid; undefined when ps cannot run. */
+export function processStarts(): Map<number, string> | undefined {
+  let stdout: string;
+  try {
+    stdout = execFileSync('ps', ['-A', '-o', 'pid=,lstart='], { encoding: 'utf8' });
+  } catch {
+    return undefined;
+  }
+  return new Map(stdout.trim().split('\n').map((line) => {
+    const [pid, ...start] = line.trim().split(/\s+/);
+    return [Number(pid), start.join(' ')];
+  }));
+}
+
+/** A detached process group: the pid of the process that leads it, and when that process started. */
+export interface ProcessGroup {
+  pid: number;
+  start: string;
+}
+
+/** Whether a signal reached any process of group `pid`. */
+function signalGroup(pid: number, name: NodeJS.Signals | 0): boolean {
+  try {
+    return process.kill(-pid, name);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Stops `group`, a detached process group no child handle of this process reaches, with a five-second grace period
+ * before SIGKILL. A group that is gone, or whose pid now leads another process, is left alone: while any process of a
+ * group lives, POSIX reuses no pid equal to its id, so a group whose leader is gone is still the one recorded. Whether
+ * it signalled the group. POSIX only: Windows has no process groups to reach.
+ */
+export async function stopGroup(group: ProcessGroup): Promise<boolean> {
+  if (process.platform === 'win32' || !signalGroup(group.pid, 0)) return false;
+  const starts = processStarts();
+  const leader = starts?.get(group.pid);
+  // Without current identities, a pid reused since cannot be told apart, so the group is left alone.
+  if (!starts || (leader !== undefined && leader !== group.start)) return false;
+  signalGroup(group.pid, 'SIGTERM');
+  // Counted rather than timed, so a faked clock cannot stretch the grace period.
+  for (let probe = 0; signalGroup(group.pid, 0); probe += 1) {
+    if (probe === 100) {
+      signalGroup(group.pid, 'SIGKILL');
+      break;
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+  }
+  return true;
+}
+
 /** Stops a detached process group or an attached process tree, with a five-second grace period before SIGKILL. */
 export function stopProcess<T>(child: ChildProcess, exit: Promise<T>, detached: boolean): (signal?: NodeJS.Signals) => Promise<T> {
   let stopping: Promise<T> | undefined;
@@ -10,16 +63,8 @@ export function stopProcess<T>(child: ChildProcess, exit: Promise<T>, detached: 
       if (detached && child.pid !== undefined) return process.kill(-child.pid, name);
       let targets = descendants;
       if ((name === 0 || name === 'SIGKILL') && descendants.length > 0) {
-        let stdout = '';
-        try {
-          stdout = execFileSync('ps', ['-A', '-o', 'pid=,lstart='], { encoding: 'utf8' });
-        } catch {
-          // Without current identities, stop only the shell.
-        }
-        const starts = new Map(stdout.trim().split('\n').map((line) => {
-          const [pid, ...start] = line.trim().split(/\s+/);
-          return [Number(pid), start.join(' ')];
-        }));
+        // Without current identities, stop only the shell.
+        const starts = processStarts() ?? new Map<number, string>();
         // lstart has one-second resolution and the check is not atomic with kill, so this narrows the window but does not close it.
         targets = descendants.filter(({ pid, start }) => starts.get(pid) === start);
       }
