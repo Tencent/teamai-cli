@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { resolveProjectDataHome } from '../../config.js';
-import { DRIVERS_UNDER_TEST, runConformanceScenario } from '../../workflow/conformance-interpreter.js';
+import { DRIVERS_UNDER_TEST, runConformanceScenario, speaksAsDriverUnderTest } from '../../workflow/conformance-interpreter.js';
 import { workflowConformanceScenarios } from '../../workflow/conformance/run.js';
 import type { RunState, WorkflowEnvelope } from '../../workflow/types.js';
 import { cliConformanceClient, envelope, runCLI } from '../helpers/cli-conformance.js';
@@ -36,7 +36,8 @@ describe.each(DRIVERS_UNDER_TEST)('workflow protocol conformance through the CLI
     for (const dir of dirs) fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  for (const scenario of workflowConformanceScenarios) {
+  // A scenario that never speaks as the driver under test makes the same calls under every profile, so it runs under the first.
+  for (const scenario of workflowConformanceScenarios.filter((item) => profile === DRIVERS_UNDER_TEST[0] || speaksAsDriverUnderTest(item))) {
     it(scenario.name, async () => {
       const workflows = path.join(repo, '.teamai', 'workflows');
       fs.mkdirSync(workflows, { recursive: true });

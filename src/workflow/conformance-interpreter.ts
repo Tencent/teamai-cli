@@ -211,6 +211,38 @@ async function readOrNull(file: string): Promise<string | null> {
   return stat.isDirectory() ? '' : fs.readFile(file, 'utf8');
 }
 
+/** Whether an operation's `as` stands for the driver under test. */
+const standsForDriverUnderTest = (as: DriverProfile | undefined): as is 'local' | undefined => as === undefined || as === 'local';
+
+/**
+ * Whether the answers `scenario` gets can differ by the profile it runs under: a profile refuses it, or one of its
+ * operations speaks as the driver under test. A scenario that does neither makes the same calls under every profile.
+ */
+export function speaksAsDriverUnderTest(scenario: ConformanceScenario): boolean {
+  if (scenario.refusedBy !== undefined) return true;
+  return scenario.operations.some((operation) => {
+    switch (operation.kind) {
+      case 'next':
+      case 'report':
+        return standsForDriverUnderTest(operation.as);
+      case 'respond':
+        return operation.as !== undefined && standsForDriverUnderTest(operation.as) && !('json' in operation);
+      case 'host':
+      case 'edit':
+      case 'files':
+      case 'start':
+      case 'retry':
+      case 'cancel':
+      case 'advance':
+        return false;
+      default: {
+        const unhandled: never = operation;
+        throw new Error(`unknown conformance operation ${JSON.stringify(unhandled)}`);
+      }
+    }
+  });
+}
+
 /**
  * Runs one scenario as a driver that speaks only the protocol: it keeps each lease's attempt and revision, and lists
  * the attempts an operation names in `running`. `profile` is the driver under test, which every operation that speaks
@@ -218,7 +250,7 @@ async function readOrNull(file: string): Promise<string | null> {
  */
 export async function runConformanceScenario(scenario: ConformanceScenario, runner: ConformanceRunner, profile: DriverProfile): Promise<void> {
   const { client, expect } = runner;
-  const speaker = (as: DriverProfile | undefined): DriverProfile => (as === undefined || as === 'local' ? profile : as);
+  const speaker = (as: DriverProfile | undefined): DriverProfile => (standsForDriverUnderTest(as) ? profile : as);
   const started = await client.start(scenario.workflowName);
   if ('error' in started) throw new Error(started.error.message);
   const runId = String(started.data.run);

@@ -3,10 +3,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
-import { DRIVER_PROFILES, DRIVERS_UNDER_TEST, JUDGE_PROFILES, runConformanceScenario } from '../workflow/conformance-interpreter.js';
+import { DRIVER_PROFILES, DRIVERS_UNDER_TEST, JUDGE_PROFILES, runConformanceScenario, speaksAsDriverUnderTest, type ConformanceClient } from '../workflow/conformance-interpreter.js';
 import { workflowConformanceScenarios } from '../workflow/conformance/run.js';
 import { RunIdSchema } from '../workflow/store.js';
-import { inProcessConformanceRunner } from './helpers/in-process-conformance.js';
+import { inProcessConformanceRunner, normalized } from './helpers/in-process-conformance.js';
 import { fakeJudge, skillHarness } from './helpers/skill-harness.js';
 
 const dirs: string[] = [];
@@ -26,6 +26,39 @@ describe.each(DRIVERS_UNDER_TEST)('workflow protocol conformance in process as %
       await runConformanceScenario(scenario, { ...runner, expect }, profile);
     });
   }
+});
+
+// The CLI suites run a scenario that speaks only as other drivers under one profile; this holds them to that.
+describe('a protocol scenario that does not speak as the driver under test', () => {
+  const independent = workflowConformanceScenarios.filter((scenario) => !speaksAsDriverUnderTest(scenario));
+
+  it('exists, so the check below checks something', () => {
+    expect(independent.length).toBeGreaterThan(0);
+  });
+
+  it.each(independent.map((scenario) => [scenario.name, scenario] as const))('makes the same calls under every profile: %s', async (_name, scenario) => {
+    const calls: Record<string, unknown> = {};
+    for (const profile of DRIVERS_UNDER_TEST) {
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-workflow-conformance-'));
+      dirs.push(root);
+      const { runner, places } = await inProcessConformanceRunner(scenario, root);
+      const sent: unknown[] = [];
+      const { client } = runner;
+      const sending: ConformanceClient = {
+        start: (...args) => { sent.push(['start', args]); return client.start(...args); },
+        next: (...args) => { sent.push(['next', args]); return client.next(...args); },
+        report: (...args) => { sent.push(['report', args]); return client.report(...args); },
+        respond: (...args) => { sent.push(['respond', args]); return client.respond(...args); },
+        retry: (...args) => { sent.push(['retry', args]); return client.retry(...args); },
+        cancel: (...args) => { sent.push(['cancel', args]); return client.cancel(...args); },
+      };
+      await runConformanceScenario(scenario, { ...runner, client: sending, expect }, profile);
+      calls[profile] = normalized(sent, places);
+    }
+    expect(calls).toEqual(Object.fromEntries(DRIVERS_UNDER_TEST.map((profile) => [profile, calls[DRIVERS_UNDER_TEST[0]]])));
+  });
 });
 
 /** The driver a body declares, and the run it names, if any. */

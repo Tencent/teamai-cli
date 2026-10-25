@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import { DRIVERS_UNDER_TEST, runConformanceScenario } from '../../workflow/conformance-interpreter.js';
+import { DRIVERS_UNDER_TEST, runConformanceScenario, speaksAsDriverUnderTest } from '../../workflow/conformance-interpreter.js';
 import { PLACE_CHECKOUT_FILES, workflowPlaceConformanceScenarios } from '../../workflow/conformance/place.js';
 import type { RunState, WorkflowEnvelope } from '../../workflow/types.js';
 import { cliConformanceClient, envelope, fileUnder, runCLI } from '../helpers/cli-conformance.js';
@@ -15,7 +15,8 @@ describe.each(DRIVERS_UNDER_TEST)('workflow place conformance through the CLI as
     for (const dir of dirs) fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  for (const scenario of workflowPlaceConformanceScenarios) {
+  // A scenario that never speaks as the driver under test makes the same calls under every profile, so it runs under the first.
+  for (const scenario of workflowPlaceConformanceScenarios.filter((item) => profile === DRIVERS_UNDER_TEST[0] || speaksAsDriverUnderTest(item))) {
     it(scenario.name, async () => {
       const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-place-cli-conformance-')));
       dirs.push(root);
