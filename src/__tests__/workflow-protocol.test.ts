@@ -76,7 +76,7 @@ const LeaseSchema = z.object({ attempt: z.string(), revision: z.number() }).pass
 
 async function leased(config: LocalConfig, checkout: string): Promise<{ run: RunLock['run']; attempt: string; revision: number; lease: z.infer<typeof LeaseSchema> }> {
   const client = await protocol(config);
-  const started = await client.start('check', { checkout });
+  const started = await client.start('check', { checkout, caller: { evidence: { kind: 'none' }, confirmed: false } });
   if (!('data' in started)) throw new Error(JSON.stringify(started));
   const run = RunIdSchema.parse(started.data.run);
   const next = await client.next(run, { driver });

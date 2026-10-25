@@ -46,11 +46,6 @@ export function localReason(description: WorkflowDescription): string | undefine
   return `Step ${route.held} works in the workspace ${route.opener} opened, and ${lacks}. Only the driver that opened that workspace may go on in it, so the local driver runs the whole of ${name}.`;
 }
 
-/** Why an agent session may not start workflow `name`, whose definition has `invoke: deny`. */
-export function deniedReason(name: string): string {
-  return `Workflow "${name}" has invoke: deny, so an agent session cannot start it with any driver. Run it from your own terminal or CI, or set invoke: allow or invoke: ask in workflows/${name}.yaml.`;
-}
-
 /** Checks a start of `description` against what describe asked. `ceiling` is the most steps the driver runs at once. */
 export function checkStartAnswers(input: {
   description: WorkflowDescription;

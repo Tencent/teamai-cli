@@ -34,7 +34,7 @@ for (const scenario of judgeConformanceScenarios) {
       await syncWorkflowDefinitions(config);
       const client = inProcessClient({ config, env: await resolveWorkflowEnv(config) });
       const driver = { kind: 'external', machine: 'm1', workspace: '/w' };
-      const runId = String(data(await client.start('judged')).run);
+      const runId = String(data(await client.start('judged', { caller: { evidence: { kind: 'none' }, confirmed: false } })).run);
       const work = z.object({ attempt: z.string(), revision: z.number() }).parse(data(await client.next(runId, { driver })).lease);
       data(await client.report(runId, { ...work, driver, outcome: 'success', outputs: { reviewed: true } }));
       data(await client.next(runId, { driver }));

@@ -527,9 +527,9 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       const made = await harness({ locked: LOCKED }, { evidence: { kind: 'session', variable: 'CLAUDE_CODE_SESSION_ID' } });
       const answer = await made.call({ kind: 'describe', name: 'locked' });
       expect(answer).toMatchObject({ data: { describe: { ask: {
-        kind: 'denied', reason: 'Workflow "locked" has invoke: deny, so an agent session cannot start it with any driver. Run it from your own terminal or CI, or set invoke: allow or invoke: ask in workflows/locked.yaml.',
+        kind: 'denied', reason: expect.stringContaining('Workflow "locked" has invoke: deny, so no coding agent starts it, with any driver, and this command runs inside an agent session (CLAUDE_CODE_SESSION_ID is set). The person can start it from their own terminal'),
       } } } });
-      expect(JSON.stringify(answer)).not.toContain('teamai workflow start locked');
+      expect(answer).not.toMatchObject({ data: { describe: { ask: { start: expect.anything() } } } });
       return made.rows;
     },
   },
@@ -563,7 +563,7 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     rows: ['R11'],
     run: async () => {
       const made = await harness({ check: CHECK });
-      const other = await made.context.client.start('check', { checkout: made.work });
+      const other = await made.context.client.start('check', { checkout: made.work, caller: { evidence: { kind: 'none' }, confirmed: false } });
       if (!('data' in other) || typeof other.data.run !== 'string') throw new Error(JSON.stringify(other));
       expect(await made.call({ kind: 'next', run: RunIdSchema.parse(other.data.run), wait: false })).toMatchObject({ error: { code: 'not_skill_run', next: null } });
       return made.rows;

@@ -73,7 +73,7 @@ describe('workflow protocol conformance through the CLI', () => {
         return envelope(stdout);
       };
       const client: ConformanceClient = {
-        start: (name) => call(['start', name]),
+        start: (name, options = {}) => call(['start', name, ...(options.driver !== undefined ? ['--driver', options.driver] : []), ...(options.confirmed ? ['--confirmed'] : [])], options.env),
         next: (run, body) => call(['next', run, '--json', JSON.stringify(body)]),
         report: (run, body) => call(['report', run, '--json', JSON.stringify(body)]),
         respond: (run, step, choice, options) => call(['respond', run, step, choice, ...(options.note !== undefined ? ['--note', options.note] : []), ...(options.pass !== undefined ? ['--pass', String(options.pass)] : []), ...(options.json !== undefined ? ['--json', JSON.stringify(options.json)] : [])], options.env),

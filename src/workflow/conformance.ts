@@ -768,6 +768,25 @@ workflowConformanceScenarios.push({
     { id: 'ship', status: 'succeeded', answer: { choice: 'yes', channel: 'driver', agent: false } }, { id: 'name', status: 'waiting' }] },
 });
 
+const AGENT_SESSION = { CLAUDE_CODE_SESSION_ID: 'agent-1304' };
+
+workflowConformanceScenarios.push({
+  name: 'invoke-from-agent: an agent session cannot start a workflow without invoke with any driver, CI or not, and starts an invoke: ask one only with --confirmed; a process without agent evidence starts both',
+  workflowName: 'build',
+  yaml: controlsYaml('  - id: work\n    command: echo work'),
+  workflows: { gated: 'schemaVersion: v1alpha1\nname: gated\ndescription: Starts after the person agrees.\ninvoke: ask\nsteps:\n  - id: work\n    command: echo work\n' },
+  operations: [
+    { kind: 'start', driver: 'local', env: AGENT_SESSION, expect: { error: { code: 'invoke_denied' } } },
+    { kind: 'start', env: AGENT_SESSION, expect: { error: { code: 'invoke_denied' } } },
+    { kind: 'start', driver: 'skill', env: AGENT_SESSION, expect: { error: { code: 'invoke_denied' } } },
+    { kind: 'start', driver: 'local', env: { ...AGENT_SESSION, CI: '1' }, expect: { error: { code: 'invoke_denied' } } },
+    { kind: 'start', workflow: 'gated', env: AGENT_SESSION, expect: { error: { code: 'confirm_needed' } } },
+    { kind: 'start', workflow: 'gated', env: AGENT_SESSION, confirmed: true, expect: { data: {} } },
+    { kind: 'start', workflow: 'gated', expect: { data: {} } },
+    { kind: 'start', expect: { data: {} } },
+  ],
+});
+
 workflowConformanceScenarios.push(...limitsConformanceScenarios);
 
 /** A value a scenario reads from the run once it is done: its base, or what a step reported in `changes`. */

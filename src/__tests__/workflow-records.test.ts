@@ -221,6 +221,8 @@ describe('#1083 workflow run records', () => {
       'invalid_arguments', 'invalid_pass', 'not_initialized', 'unsupported_driver', 'invalid_tools',
       // Refusals of teamai workflow start for a run whose pull requests would have no branch to target.
       'no_base_branch',
+      // Refusals of a start from an agent session that the workflow's invoke does not let start it.
+      'invoke_denied',
       // A place the host made that a prepare cannot adopt; the attempt stays leased.
       'adopt_mismatch',
       // Refusals of a --driver skill call, answered to the agent with the command it can run instead.

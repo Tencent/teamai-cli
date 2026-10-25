@@ -6,6 +6,7 @@ import type { WorkflowEnv } from '../env-resolution.js';
 import { scoringUnavailable } from '../scorers/home.js';
 import { isJudgeTool, judgeToolLevel } from '../scorers/judge.js';
 import type { LocalConfig } from '../types.js';
+import type { AgentEvidence } from './attempt-marker.js';
 import { loadCachedWorkflow, loadWorkflowTree } from './cache.js';
 import { describeWorkflow, type WorkflowDescription } from './describe.js';
 import { leaseNext, parseNextPayload, parseReport, parseResponsePayload, reconcileRun, reportAttempt, startRun, withIgnored, type NextOptions, type ReportInput } from './engine.js';
@@ -17,7 +18,7 @@ import { cancelRun, respondProvenance, respondToHitl, retryStep, type CallerProv
 import { nextJudgeLease, parseJudgeRequest, runJudgeLease } from './scoring.js';
 import { AttemptIdSchema, readRun, RunIdSchema, withRunLock, type AttemptId, type RunId, type RunLock } from './store.js';
 import type { DriverCan } from './requirements.js';
-import { isWorkflowError, type DriverIdentity, type WorkflowEnvelope, type WorkflowFailure } from './types.js';
+import { isWorkflowError, type DriverIdentity, type WorkflowDefinition, type WorkflowEnvelope, type WorkflowFailure } from './types.js';
 import { headCommit } from './worktree.js';
 
 /**
@@ -52,8 +53,12 @@ export interface WorkflowClient {
   prepareHostPlace(lock: RunLock, lease: unknown, request: HostPlaceRequest): Promise<HostPlacePrepared>;
   /** Runs the setup of the place `prepare` made for `attempt`, outside the run lock. Nothing for a place without setup. */
   setup(run: RunId, attempt: AttemptId): Promise<WorkflowFailure | undefined>;
-  /** Starts `name` with `inputs`, from `checkout` when given: the run's workspaces start from its HEAD. */
-  start(name: string, options?: { inputs?: unknown; checkout?: string }): Promise<WorkflowEnvelope>;
+  /**
+   * Starts `name` with `inputs`, from `checkout` when given: the run's workspaces start from its HEAD. An agent
+   * `caller` starts only a workflow whose `invoke` lets it: `invoke_denied` for `deny`, and `confirm_needed` for `ask`
+   * without `confirmed`.
+   */
+  start(name: string, options: { inputs?: unknown; checkout?: string; caller: StartCaller }): Promise<WorkflowEnvelope>;
   /**
    * Asks the run what to do. With `prepare`, a lease comes with `cwd`, its place in the checkout the run started from,
    * made under the run's lock, and a prepare that fails settles the attempt `failed` with its own code.
@@ -74,6 +79,46 @@ export interface WorkflowClient {
    * `body` as its payload, and records the judge tool's process group in the directory `group`.
    */
   judge(ref: string, body: unknown, options: { group: string }): Promise<WorkflowEnvelope>;
+}
+
+/**
+ * The process that asks to start a run: the evidence it carries that an agent runs it, and whether it passed
+ * `--confirmed`, an agent's word that the person agreed to start the run, which teamai cannot verify.
+ */
+export interface StartCaller {
+  evidence: AgentEvidence;
+  confirmed: boolean;
+}
+
+/** Why an agent, as `evidence` shows it, may not start workflow `name`, whose definition has `invoke: deny`. */
+export function invokeDeniedMessage(name: string, evidence: Exclude<AgentEvidence, { kind: 'none' }>): string {
+  const where = evidence.kind === 'session' ? `an agent session (${evidence.variable} is set)` : `workflow attempt ${evidence.attempt}`;
+  return `Workflow "${name}" has invoke: deny, so no coding agent starts it, with any driver, and this command runs inside ${where}. The person can start it from their own terminal with teamai workflow start ${name} --driver local. To let agents start it, the team sets invoke: allow, or invoke: ask for a start after the person agrees, in workflows/${name}.yaml.`;
+}
+
+/**
+ * Why `caller` may not start `definition`: from an agent session, `invoke: deny` refuses every start, and `invoke: ask`
+ * one without the person's yes. Undefined for a process without agent evidence, such as the person's terminal or CI.
+ */
+function invokeRefusal(definition: WorkflowDefinition, caller: StartCaller): WorkflowFailure | undefined {
+  const { name } = definition;
+  const { evidence } = caller;
+  const invoke = definition.invoke ?? 'deny';
+  if (evidence.kind === 'none' || invoke === 'allow' || (invoke === 'ask' && caller.confirmed)) return undefined;
+  switch (evidence.kind) {
+    case 'session':
+      return invoke === 'deny'
+        ? { code: 'invoke_denied', message: invokeDeniedMessage(name, evidence) }
+        : { code: 'confirm_needed', message: `Workflow "${name}" has invoke: ask, so a coding agent starts it only after the person agrees, and this command runs inside an agent session (${evidence.variable} is set). Ask the person whether to start ${name}; once they agree, run the same command with --confirmed.` };
+    case 'attempt':
+      return invoke === 'deny'
+        ? { code: 'invoke_denied', message: invokeDeniedMessage(name, evidence) }
+        : { code: 'confirm_needed', message: `Workflow "${name}" has invoke: ask, so a coding agent starts it only after the person agrees, and this command runs inside workflow attempt ${evidence.attempt}. Ask the person whether to start ${name}; once they agree, run the same command with --confirmed.` };
+    default: {
+      const unhandled: never = evidence;
+      return unhandled;
+    }
+  }
 }
 
 /**
@@ -172,10 +217,12 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
       return { kind: 'failed', failure: placed.failure };
     },
     setup: (run, attempt) => runPlaceSetup({ config, run, attempt, values: env.values }),
-    start: async (name, options) => {
-      const checkout = options?.checkout;
+    start: async (name, { inputs, checkout, caller }) => {
+      const cached = await loadCachedWorkflow(config, name);
+      const refused = cached && invokeRefusal(cached.definition, caller);
+      if (refused) return { error: refused };
       const base = checkout === undefined ? undefined : await headCommit(checkout);
-      return startRun(config, name, options?.inputs ?? {}, { secrets: env.secrets, ...(checkout !== undefined ? { checkout } : {}), ...(base ? { base } : {}) });
+      return startRun(config, name, inputs ?? {}, { secrets: env.secrets, ...(checkout !== undefined ? { checkout } : {}), ...(base ? { base } : {}) });
     },
     next: async (runId, body, options) => {
       const parsed = parseNextPayload(body);

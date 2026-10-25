@@ -15,6 +15,7 @@ import { inProcessClient, type NextPrepare } from './workflow/protocol.js';
 import { parseSkillCall, runSkillCall, skillContext } from './workflow/drivers/skill/skill-driver.js';
 import { loadCachedWorkflow } from './workflow/cache.js';
 import { findRunConfig } from './workflow/run-location.js';
+import { agentEvidence } from './workflow/attempt-marker.js';
 import type { WorkflowEnvelope } from './workflow/types.js';
 
 /** Prints `envelope` with each of `secrets` masked, and sets the exit code from the envelope as the operation returned it. */
@@ -131,8 +132,8 @@ export async function workflowStart(name: string, options: {
     return;
   }
   setStderrOnly(true);
-  if (options.parallel !== undefined || options.confirmed || options.hitl !== undefined || options.judge === false) {
-    writeEnvelope({ error: { code: 'invalid_arguments', message: '--parallel, --confirmed, --hitl and --no-judge need --driver skill' } }, collectEnvSecrets());
+  if (options.parallel !== undefined || options.hitl !== undefined || options.judge === false) {
+    writeEnvelope({ error: { code: 'invalid_arguments', message: '--parallel, --hitl and --no-judge need --driver skill' } }, collectEnvSecrets());
     return;
   }
   const loaded = await readyConfig();
@@ -162,7 +163,8 @@ export async function workflowStart(name: string, options: {
       return;
     }
   }
-  const started = await inProcessClient({ config, env }).start(name, { inputs, checkout: process.cwd() });
+  const caller = { evidence: agentEvidence(process.env), confirmed: options.confirmed === true };
+  const started = await inProcessClient({ config, env }).start(name, { inputs, checkout: process.cwd(), caller });
   if ('error' in started || options.driver !== 'local') {
     writeEnvelope(started, secrets);
     return;

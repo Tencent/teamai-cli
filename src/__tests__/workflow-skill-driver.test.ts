@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { encodeCwdClaude } from '../session-flow/fs.js';
 import { acquireLock, releaseLock } from '../update.js';
+import { getDataHome } from '../types.js';
 import { skillContext } from '../workflow/drivers/skill/skill-driver.js';
 import { inProcessClient } from '../workflow/protocol.js';
 import { takeJudgeLease, type JudgeRequest } from '../workflow/scoring.js';
@@ -240,6 +241,18 @@ describe('skill driver', () => {
     }
     expect(settled).toEqual(['lint', 'test']);
     expect(actions).toEqual([{ kind: 'done', outcome: 'succeeded', prs: [] }]);
+  });
+
+  it('refuses a start from an agent session of a workflow without invoke, and leaves the person nothing but their own terminal', async () => {
+    const harness = await skillHarness({ check: CHECK.replace('invoke: allow\n', '') });
+    roots.push(harness.root);
+    const started = await harness.call({ kind: 'start', name: 'check', answers: { confirmed: false }, inputs: undefined }, { evidence: { kind: 'session', variable: 'CLAUDE_CODE_SESSION_ID' } });
+    expect(started).toEqual({ error: {
+      code: 'invoke_denied',
+      message: 'Workflow "check" has invoke: deny, so no coding agent starts it, with any driver, and this command runs inside an agent session (CLAUDE_CODE_SESSION_ID is set). The person can start it from their own terminal with teamai workflow start check --driver local. To let agents start it, the team sets invoke: allow, or invoke: ask for a start after the person agrees, in workflows/check.yaml.',
+      next: null,
+    } });
+    expect(fs.existsSync(path.join(getDataHome(harness.config), 'workflows', 'runs'))).toBe(false);
   });
 
   it('offers two parallel new prompt steps with acks, keeps an unacked one offered, and a poll answers wake', async () => {
@@ -584,7 +597,7 @@ steps:
     // An older run whose pass another driver settled: it is open for judging, and a driver of any run would take it first.
     const external = { kind: 'external', machine: 'm2', workspace: '/w' };
     const engine = inProcessClient({ config: harness.config, env: harness.context.env });
-    const started = await engine.start('review');
+    const started = await engine.start('review', { caller: { evidence: { kind: 'none' }, confirmed: false } });
     const other = 'data' in started ? String(started.data.run) : '';
     const next = await engine.next(other, { driver: external });
     const work = z.object({ attempt: z.string(), revision: z.number() }).parse('data' in next ? next.data.lease : undefined);

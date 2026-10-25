@@ -2,6 +2,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
+import { agentEvidence } from './attempt-marker.js';
 import type { NextPrepare, WorkflowClient } from './protocol.js';
 import type { DriverCan } from './requirements.js';
 import { callerProvenance } from './run-controls.js';
@@ -89,6 +90,11 @@ export type ConformanceOperation =
   | { kind: 'host'; name: string; lease: string; on: 'branch' | 'start' | 'other' | 'foreign'; files?: Record<string, string> }
   | { kind: 'edit'; lease: string; files: Record<string, string> }
   | { kind: 'files'; lease?: string; expect: Record<string, string | null> }
+  /**
+   * Starts another run of `workflow`, the scenario's own when omitted, as `workflow start` with `driver` and `--confirmed`
+   * does, from a process whose environment adds `env` to the scenario's.
+   */
+  | { kind: 'start'; workflow?: string; driver?: StartDriver; confirmed?: boolean; env?: Record<string, string>; expect: Record<string, unknown> }
   /** `env`: variables the answering process has beside the scenario's, such as an agent session's. */
   | { kind: 'respond'; step: string; choice: string; as?: DriverProfile; note?: string; pass?: number; json?: unknown; env?: Record<string, string>; expect: Record<string, unknown> }
   | { kind: 'retry'; step: string; expect: Record<string, unknown> }
@@ -125,19 +131,26 @@ export type ConformanceExpect = (actual: unknown, message?: string) => {
   not: { toHaveProperty(property: string): void };
 };
 
+/** The driver a `workflow start` names: none, the local driver, or the skill driver. */
+export type StartDriver = 'local' | 'skill';
+
 /**
- * The protocol calls a scenario makes, which the in-process client and the built CLI both answer. `respond` answers
- * from a process of its own without a terminal, whose environment adds `env` to the scenario's.
+ * The protocol calls a scenario makes, which the in-process client and the built CLI both answer. `start` and
+ * `respond` run in a process of their own, whose environment adds `env` to the scenario's; `respond`'s has no terminal.
  */
-export type ConformanceClient = Pick<WorkflowClient, 'start' | 'next' | 'report' | 'retry' | 'cancel'> & {
-  // A property, not a method, so a WorkflowClient's respond is not taken for this one.
+export type ConformanceClient = Pick<WorkflowClient, 'next' | 'report' | 'retry' | 'cancel'> & {
+  // Properties, not methods, so a WorkflowClient's start and respond are not taken for these.
+  start: (name: string, options?: { driver?: StartDriver; confirmed?: boolean; env?: Record<string, string> }) => Promise<WorkflowEnvelope>;
   respond: (runId: string, step: string, choice: string, options: { note?: string; pass?: number; json?: unknown; env?: Record<string, string> }) => Promise<WorkflowEnvelope>;
 };
 
-/** The in-process client as a scenario's, answering `respond` as a process without a terminal would with `env` added to this one's. */
+/**
+ * The in-process client as a scenario's. `start` is the protocol's start whichever driver it names, since every driver
+ * starts through it; `respond` answers as a process without a terminal would; both with `env` added to this one's.
+ */
 export function inProcessConformanceClient(client: WorkflowClient): ConformanceClient {
   return {
-    start: (name, options) => client.start(name, options),
+    start: (name, { env, confirmed } = {}) => client.start(name, { caller: { evidence: agentEvidence({ ...process.env, ...env }), confirmed: confirmed === true } }),
     next: (runId, body, options) => client.next(runId, body, options),
     report: (runId, body, options) => client.report(runId, body, options),
     retry: (runId, step) => client.retry(runId, step),
@@ -250,6 +263,11 @@ export async function runConformanceScenario(scenario: ConformanceScenario, runn
           expect(await readOrNull(path.join(placeOf(operation.lease), file)), file).toEqual(text);
         }
         break;
+      case 'start': {
+        const { workflow, driver, confirmed, env } = operation;
+        expect(await client.start(workflow ?? scenario.workflowName, { driver, confirmed, env })).toMatchObject(operation.expect);
+        break;
+      }
       case 'respond': {
         const json = 'json' in operation || !operation.as ? operation.json : { driver: profileDriver(operation.as) };
         expect(await client.respond(runId, operation.step, operation.choice, { note: operation.note, pass: operation.pass, json, env: operation.env })).toMatchObject(operation.expect);

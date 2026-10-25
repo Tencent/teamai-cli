@@ -12,11 +12,11 @@ import { isAgentToolId } from '../../../tools.js';
 import type { LocalConfig } from '../../../types.js';
 import { agentSessionFromEnv } from '../../../utils/session-id.js';
 import { agentEvidence, isAttemptRunner, type AgentEvidence } from '../../attempt-marker.js';
-import { inProcessClient, type WorkflowClient } from '../../protocol.js';
+import { inProcessClient, invokeDeniedMessage, type WorkflowClient } from '../../protocol.js';
 import { AttemptIdSchema, RunIdSchema, withRunLock, type AttemptId, type RunId, type RunLock } from '../../store.js';
 import { canFor, HOST_CHOICES, type HostChoice } from './host-profiles.js';
 import { describeLiteral, invocationOf, type Invocation } from './literals.js';
-import { askFor, checkStartAnswers, deniedReason, localReason, neededAnswers, type HitlMode } from './preflight.js';
+import { askFor, checkStartAnswers, localReason, neededAnswers, type HitlMode } from './preflight.js';
 import { writeSkillState, type SkillState } from './skill-state.js';
 import { detachedRunners, runRunner } from './skill-runner.js';
 import { agentReport, ceilingOf, errorOf, foreground, poll, startRefused } from './tick.js';
@@ -75,11 +75,11 @@ export interface SkillContext {
   client: WorkflowClient;
   /** The calling agent session, undefined when its host names none. */
   session: string | undefined;
+  /** What says an agent runs the calling process, which a start of the workflow is checked against: its `invoke`. */
+  evidence: AgentEvidence;
   /** The tool of that session, which a child's model is resolved for; undefined when its host names none. */
   tool: ToolName | undefined;
   invocation: Invocation;
-  /** Why the caller counts as an agent's, as `agentEvidence` reads it from the process. */
-  evidence: AgentEvidence;
   /** The checkout a start runs from. */
   cwd: string;
   now: () => Date;
@@ -99,9 +99,9 @@ export async function skillContext(input: Pick<SkillContext, 'config' | 'env' | 
   return {
     ...input,
     session: session.id,
+    evidence: agentEvidence(process.env),
     tool: session.agent !== undefined && isAgentToolId(session.agent) ? session.agent : undefined,
     invocation: invocationOf(resolveCliEntry() ?? undefined),
-    evidence: agentEvidence(process.env),
     client: inProcessClient({ config, env }),
     now: () => new Date(),
     runners: detachedRunners(config),
@@ -247,7 +247,7 @@ async function start(call: Extract<SkillCall, { kind: 'describe' | 'start' }>, c
   const local = localReason(description);
   const why = local !== undefined ? { local } : {};
   if (call.kind === 'describe') {
-    const denied = description.invoke === 'deny' && context.evidence.kind !== 'none' ? { denied: deniedReason(description.name) } : {};
+    const denied = description.invoke === 'deny' && context.evidence.kind !== 'none' ? { denied: invokeDeniedMessage(description.name, context.evidence) } : {};
     const { row, verdict } = describeRow({ needed: neededAnswers(description), ...denied, ...why, judgingHere: judging.kind === 'here' });
     context.trace?.(row);
     return { data: { describe: { workflow: description, judging, ask: askFor(verdict, description, context.invocation, judging) } } };
@@ -260,7 +260,9 @@ async function start(call: Extract<SkillCall, { kind: 'describe' | 'start' }>, c
     return { error: errorOf({ kind: 'error', refusal: taken.refusal, next: taken.next }, { invocation: context.invocation, same: describeLiteral(context.invocation, description.name) }) };
   }
   const planned = taken.start;
-  const started = await context.client.start(description.name, { ...(call.inputs !== undefined ? { inputs: call.inputs } : {}), checkout: context.cwd });
+  const started = await context.client.start(description.name, {
+    ...(call.inputs !== undefined ? { inputs: call.inputs } : {}), checkout: context.cwd, caller: { evidence: context.evidence, confirmed: call.answers.confirmed },
+  });
   if ('error' in started) return startRefused(context, description.name, started.error);
   const run = RunIdSchema.safeParse(started.data.run);
   if (!run.success) return { error: { code: 'run_unreadable', message: 'The new run id was missing', next: null } };
