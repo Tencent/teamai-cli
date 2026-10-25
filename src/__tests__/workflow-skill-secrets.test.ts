@@ -149,7 +149,7 @@ describe('a secret value through a skill run', () => {
     const { run } = turnOf(await made.call({ kind: 'start', name: 'ship', answers: { confirmed: false }, inputs: undefined }));
     const respond = { kind: 'respond', run, step: SECRET, choice: SECRET, pass: 1 } as const;
     expect(await made.call(respond)).toMatchObject({ error: { code: 'step_not_found' } });
-    const busy: Parameters<Made['call']>[1] = { locks: { take: async () => ({ error: { code: 'driver_running', message: 'busy' } }) } };
+    const busy: Parameters<Made['call']>[1] = { locks: { take: async () => ({ kind: 'busy', error: { code: 'driver_running', message: 'busy' } }) } };
     expect(await made.call(respond, busy)).toMatchObject({ error: { code: 'driver_running' } });
 
     const journal = fs.readFileSync(path.join(path.dirname(skillStatePath(made.config, run)), 'journal.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));

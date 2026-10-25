@@ -14,7 +14,7 @@ import type { LocalConfig, TeamaiConfig } from '../../../types.js';
 import { agentSessionFromEnv } from '../../../utils/session-id.js';
 import { agentEvidence, isAttemptRunner, type AgentEvidence } from '../../attempt-marker.js';
 import { inProcessClient, invokeDeniedMessage, type WorkflowClient } from '../../protocol.js';
-import { AttemptIdSchema, RunIdSchema, withRunLock, type AttemptId, type RunId, type RunLock } from '../../store.js';
+import { AttemptIdSchema, RunIdSchema, takeRunLock, type AttemptId, type LockTaken, type RunId, type RunLock } from '../../store.js';
 import { canFor, HOST_CHOICES, type HostChoice } from './host-profiles.js';
 import { journalCall } from './journal.js';
 import { describeLiteral, invocationOf, type Invocation } from './literals.js';
@@ -93,7 +93,7 @@ export interface SkillContext {
   cwd: string;
   now: () => Date;
   runners: Runners;
-  locks: { take<T>(run: RunId, body: (lock: RunLock) => Promise<T>, waitMs: number): Promise<T | { error: { code: 'driver_running'; message: string } }> };
+  locks: { take<T>(run: RunId, body: (lock: RunLock) => Promise<T>, waitMs: number): Promise<LockTaken<T>> };
   /** Gets the id of every transition row a call takes. */
   trace?: (row: RowId) => void;
 }
@@ -117,7 +117,7 @@ export async function skillContext(input: Pick<SkillContext, 'config' | 'toolPat
     client: inProcessClient({ config, env }),
     now: () => new Date(),
     runners: detachedRunners(config),
-    locks: { take: (run, body, waitMs) => withRunLock(config, run, body, { waitMs }) },
+    locks: { take: (run, body, waitMs) => takeRunLock(config, run, body, { waitMs }) },
   };
 }
 
@@ -324,6 +324,14 @@ async function start(call: Extract<SkillCall, { kind: 'describe' | 'start' }>, c
     host: planned.host, session: context.session, at: context.now().toISOString(), ...(planned.judge !== undefined ? { judge: planned.judge } : {}),
   });
   const saved = await context.locks.take(run.data, (lock) => writeSkillState(context.config, lock, state, context.env.secrets), 0);
-  if (saved !== undefined) return { error: { ...saved.error, next: null } };
-  return foreground(context, run.data, { kind: 'next' });
+  switch (saved.kind) {
+    case 'held':
+      return foreground(context, run.data, { kind: 'next' });
+    case 'busy':
+      return { error: { ...saved.error, next: null } };
+    default: {
+      const unhandled: never = saved;
+      return unhandled;
+    }
+  }
 }

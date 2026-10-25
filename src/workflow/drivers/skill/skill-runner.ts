@@ -153,10 +153,19 @@ async function runAttempt(context: SkillContext, run: RunId, attempt: AttemptId)
 }
 
 /** Runs `body` under the run lock, waiting `RUNNER_POLL_MS` between tries while another process holds it. */
-async function locked<T extends object>(context: SkillContext, run: RunId, body: (lock: RunLock) => Promise<T>): Promise<T> {
+async function locked<T>(context: SkillContext, run: RunId, body: (lock: RunLock) => Promise<T>): Promise<T> {
   for (;;) {
-    const result = await context.locks.take(run, body, WAIT_BOUND_MS);
-    if (!('error' in result)) return result;
+    const taken = await context.locks.take(run, body, WAIT_BOUND_MS);
+    switch (taken.kind) {
+      case 'held':
+        return taken.value;
+      case 'busy':
+        break;
+      default: {
+        const unhandled: never = taken;
+        return unhandled;
+      }
+    }
     await context.runners.sleep(RUNNER_POLL_MS);
   }
 }

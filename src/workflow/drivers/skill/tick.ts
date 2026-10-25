@@ -2,7 +2,6 @@
  * The shell around the transitions: it takes the run lock, reads and saves skill.json, calls the protocol for each
  * effect, and feeds each answer back as the next input. It holds the lock only while it ticks, never across a sleep.
  */
-import { z } from 'zod';
 import { driverIdentity } from '../../../driver-identity.js';
 import type { AttemptId, RunId, RunLock } from '../../store.js';
 import type { WorkflowFailure } from '../../types.js';
@@ -224,13 +223,6 @@ async function stepTick(context: SkillContext, lock: RunLock, start: SkillState,
   }
 }
 
-const BusySchema = z.object({ error: z.object({ code: z.literal('driver_running'), message: z.string() }) });
-
-/** Whether a `locks.take` answered that another process holds the run lock. */
-function busy(result: unknown): result is z.infer<typeof BusySchema> {
-  return BusySchema.safeParse(result).success;
-}
-
 /** D19: the lock stayed busy. */
 function lockBusy(context: SkillContext, run: RunId, same: Literal): SkillAnswer {
   return { error: errorOf(traced(context, lockBusyRow(run)).answer, { invocation: context.invocation, same }) };
@@ -391,8 +383,17 @@ export async function foreground(context: SkillContext, run: RunId, call: Foregr
     await writeSkillState(context.config, lock, state, context.env.secrets);
     return { grace: true };
   }, TICK_LOCK_WAIT_MS);
-  if (busy(first)) return lockBusy(context, run, same);
-  if ('answer' in first) return first.answer;
+  switch (first.kind) {
+    case 'held':
+      if ('answer' in first.value) return first.value.answer;
+      break;
+    case 'busy':
+      return lockBusy(context, run, same);
+    default: {
+      const unhandled: never = first;
+      return unhandled;
+    }
+  }
   const until = context.now().getTime() + WAIT_GRACE_MS;
   for (;;) {
     await context.runners.sleep(GRACE_CHECK_MS);
@@ -403,8 +404,17 @@ export async function foreground(context: SkillContext, run: RunId, call: Foregr
       // The tick's reason to wait is stale once its runners moved, and while they have not, an attempt is open.
       return finish(context, lock, read.state, {});
     }, TICK_LOCK_WAIT_MS);
-    if (checked === 'again') continue;
-    return busy(checked) ? lockBusy(context, run, same) : checked;
+    switch (checked.kind) {
+      case 'held':
+        if (checked.value === 'again') continue;
+        return checked.value;
+      case 'busy':
+        return lockBusy(context, run, same);
+      default: {
+        const unhandled: never = checked;
+        return unhandled;
+      }
+    }
   }
 }
 
@@ -432,7 +442,16 @@ export async function agentReport(context: SkillContext, run: RunId, call: { att
     if (sent.refused) return { error: { ...sent.refused, next: same } };
     return { data: { runner: { attempt, status: sent.state.settled.includes(attempt) ? 'reported' : 'gone' } } };
   }, WAIT_BOUND_MS);
-  return busy(answered) ? lockBusy(context, run, same) : answered;
+  switch (answered.kind) {
+    case 'held':
+      return answered.value;
+    case 'busy':
+      return lockBusy(context, run, same);
+    default: {
+      const unhandled: never = answered;
+      return unhandled;
+    }
+  }
 }
 
 /**
@@ -460,15 +479,23 @@ export async function poll(context: SkillContext, run: RunId): Promise<SkillAnsw
       if (!('turn' in polled)) return 'sleep';
       return { data: { turn: rendered(last, polled.turn, { events, ...(polled.waiting ? { waiting: polled.waiting } : {}), localTool: localPromptTool(context.config, context.tool) }) } };
     }, 0);
-    if (busy(ticked)) {
-      if (last === undefined) {
-        if (boundReached) return lockBusy(context, run, same);
-      } else {
+    switch (ticked.kind) {
+      case 'held':
+        if (ticked.value !== 'sleep') return ticked.value;
+        break;
+      case 'busy': {
+        if (last === undefined) {
+          if (boundReached) return lockBusy(context, run, same);
+          break;
+        }
         const polled = traced(context, pollRow(last, { session: context.session, busy: true, boundReached, ticked: {} }));
         if ('turn' in polled) return { data: { turn: rendered(polled.state, polled.turn, { events: [] }) } };
+        break;
       }
-    } else if (ticked !== 'sleep') {
-      return ticked;
+      default: {
+        const unhandled: never = ticked;
+        return unhandled;
+      }
     }
     await context.runners.sleep(WAIT_POLL_MS);
   }

@@ -29,7 +29,7 @@ const SKILL_IMPORTS: Record<string, { typeOnly?: true; names?: string[] }> = {
   // The wire shapes the engine answers with, which every driver parses with the same schema.
   'src/workflow/lease-wire.ts': { names: ['LeaseWireSchema'] },
   'src/workflow/step-state.ts': { names: ['FailureSchema'] },
-  'src/workflow/store.ts': { names: ['withRunLock', 'RunLock', 'attemptDir', 'attemptResultPath', 'skillStatePath', 'RunIdSchema', 'RunId', 'AttemptIdSchema', 'AttemptId', 'withRunnerLock', 'runnerAlive'] },
+  'src/workflow/store.ts': { names: ['takeRunLock', 'LockTaken', 'RunLock', 'attemptDir', 'attemptResultPath', 'skillStatePath', 'RunIdSchema', 'RunId', 'AttemptIdSchema', 'AttemptId', 'withRunnerLock', 'runnerAlive'] },
   'src/workflow/step-model.ts': {},
   'src/env-resolution.ts': {},
   'src/env-exec.ts': { names: ['stepEnvironment'] },

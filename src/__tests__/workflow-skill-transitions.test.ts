@@ -934,7 +934,7 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     run: async () => {
       const made = await harness({ check: CHECK });
       const { run } = await started(made);
-      const busy = { take: async () => ({ error: { code: 'driver_running' as const, message: 'held' } }) };
+      const busy = { take: async () => ({ kind: 'busy' as const, error: { code: 'driver_running' as const, message: 'held' } }) };
       expect(await made.call({ kind: 'next', run, wait: false }, { locks: busy }))
         .toMatchObject({ error: { code: 'driver_running', next: `teamai workflow next ${run} --driver skill` } });
       return made.rows;

@@ -10,7 +10,7 @@ import type { AgentEvidence } from '../../workflow/attempt-marker.js';
 import { syncWorkflowDefinitions } from '../../workflow/cache.js';
 import { inProcessClient, type WorkflowClient } from '../../workflow/protocol.js';
 import { runSkillCall, skillContext, type CommandRun, type Runners, type SkillCall, type SkillContext } from '../../workflow/drivers/skill/skill-driver.js';
-import { withRunLock } from '../../workflow/store.js';
+import { takeRunLock } from '../../workflow/store.js';
 import { fakeGh } from './fake-gh.js';
 
 function git(cwd: string, ...args: string[]): string {
@@ -161,7 +161,7 @@ function memoryRunners(command: Runners['command']): {
         const id = `${job.run}/${job.attempt}#${spawned}`;
         const call: SkillCall = { kind: 'report', run: job.run, attempt: job.attempt, role: 'runner' };
         // A runner parks at each lock and sleep until the next sleep of the session, so it never waits on itself.
-        const locks: SkillContext['locks'] = { take: async (run, body, waitMs) => { await park(id); return withRunLock(config, run, body, { waitMs }); } };
+        const locks: SkillContext['locks'] = { take: async (run, body, waitMs) => { await park(id); return takeRunLock(config, run, body, { waitMs }); } };
         const runners = { ...base.runners, sleep: (_ms: number, signal?: AbortSignal) => park(id, signal) };
         const running = runSkillCall(call, { ...base, session: undefined, locks, runners })
           .catch((error: unknown) => { if (!(error instanceof Crash)) failures.push(error); })
@@ -301,7 +301,7 @@ export async function skillHarness(workflows: Record<string, string>, options: H
   const context: SkillContext = {
     config, toolPaths, env, client: scheduler.judging(options.client ? options.client(client) : client), session: options.session ?? 'session-a', tool: 'claude', invocation: 'teamai', evidence: options.evidence ?? { kind: 'none' }, mode: options.mode ?? 'attended', cwd: work,
     now: scheduler.now, runners: scheduler.track(options.runners ? options.runners(scheduler.runners) : scheduler.runners),
-    locks: { take: (run, body, waitMs) => withRunLock(config, run, body, { waitMs }) },
+    locks: { take: (run, body, waitMs) => takeRunLock(config, run, body, { waitMs }) },
     trace: (row) => { rows.push(row); },
   };
   scheduler.bind(context);

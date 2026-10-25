@@ -148,7 +148,7 @@ export async function journalCall(context: SkillContext, call: SkillCall, answer
   if (line === undefined) return;
   const file = journalPath(context, run);
   const actions = 'data' in answer && 'turn' in answer.data ? answer.data.turn.actions : [];
-  const written = await context.locks.take(run, async () => {
+  const taken = await context.locks.take(run, async () => {
     const asked = await askedKeys(file);
     const fresh = actions.flatMap((action) => {
       const entry = askedOf(action, at);
@@ -157,7 +157,16 @@ export async function journalCall(context: SkillContext, call: SkillCall, answer
       return [entry];
     });
     await fs.appendFile(file, lines([line, ...fresh], context.env.secrets));
-    return 'written' as const;
   }, TICK_LOCK_WAIT_MS);
-  if (written !== 'written') await fs.appendFile(file, lines([line], context.env.secrets));
+  switch (taken.kind) {
+    case 'held':
+      return;
+    case 'busy':
+      await fs.appendFile(file, lines([line], context.env.secrets));
+      return;
+    default: {
+      const unhandled: never = taken;
+      return unhandled;
+    }
+  }
 }

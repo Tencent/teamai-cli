@@ -1,12 +1,11 @@
 import fs from 'node:fs';
 import { performance } from 'node:perf_hooks';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { z } from 'zod';
 import type { LocalConfig } from '../types.js';
 import type { WorkflowClient } from '../workflow/protocol.js';
 import type { Runners, SkillContext } from '../workflow/drivers/skill/skill-driver.js';
 import { withDriverLock } from '../workflow/drivers/local/local-driver.js';
-import { skillStatePath, withRunLock } from '../workflow/store.js';
+import { skillStatePath, takeRunLock } from '../workflow/store.js';
 import { skillHarness } from './helpers/skill-harness.js';
 
 const PAIR = `schemaVersion: v1alpha1
@@ -32,8 +31,6 @@ afterEach(() => {
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 
-const BusySchema = z.object({ error: z.object({ code: z.literal('driver_running') }) });
-
 /**
  * The run lock as production takes it, giving up after `ms` of real time. The harness fakes `Date`, which the lock's
  * own wait is measured on, so a held lock would otherwise be waited for without end.
@@ -43,8 +40,8 @@ function within(config: LocalConfig, ms: number): SkillContext['locks'] {
     take: async (run, body) => {
       const until = performance.now() + ms;
       for (;;) {
-        const taken = await withRunLock(config, run, body, { waitMs: 0 });
-        if (!BusySchema.safeParse(taken).success || performance.now() >= until) return taken;
+        const taken = await takeRunLock(config, run, body, { waitMs: 0 });
+        if (taken.kind === 'held' || performance.now() >= until) return taken;
         await new Promise((resolve) => { setTimeout(resolve, 20); });
       }
     },
@@ -142,6 +139,18 @@ describe('the run lock of a skill run', () => {
     made.hold(false);
     expect(both.map((answer) => turnOf(answer).run)).toEqual([run, run]);
     expect(most).toBe(1);
+  });
+
+  it('relays an error answered under the lock as it is, even one coded driver_running, and never reads it as a busy lock', async () => {
+    const refusal = { code: 'driver_running', message: 'The engine refused this report as busy.' };
+    const refusing = (client: WorkflowClient): WorkflowClient => ({ ...client, report: async () => ({ error: refusal }) });
+    const made = await skillHarness({ pair: PAIR }, { client: refusing });
+    roots.push(made.root);
+    const { run, shown: [api] } = await dispatched(made);
+    if (!api) throw new Error('no dispatch');
+    expect(await made.call({ kind: 'report', run, attempt: api.attempt, role: 'agent', modelUnavailable: false }))
+      .toEqual({ error: { ...refusal, next: `teamai workflow report ${run} --driver skill --attempt ${api.attempt}` } });
+    expect(made.rows).not.toContain('D19');
   });
 
   it('answers driver_running to a call on a run the local driver holds, with the same literal, and changes nothing', async () => {

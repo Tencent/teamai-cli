@@ -91,37 +91,46 @@ function parsedJson(text: string | null): unknown {
 }
 
 const RunLockSchema = z.object({ run: RunIdSchema }).brand<'RunLock'>();
-/** Proof that the caller holds this machine's driver lock of `run`. Only `withRunLock` makes one. */
+/** Proof that the caller holds this machine's driver lock of `run`. Only `takeRunLock` makes one. */
 export type RunLock = z.infer<typeof RunLockSchema>;
 
 const LockOwnerSchema = z.object({ pid: z.number().int() });
 
+/** What `takeRunLock` did: ran its body, which answered `value`, or found the lock `busy` and ran nothing. */
+export type LockTaken<T> = { kind: 'held'; value: T } | { kind: 'busy'; error: { code: 'driver_running'; message: string } };
+
 /**
  * Runs `body` holding `runs/<run>/driver.lock`, the one lock every driver of `run` on this machine takes, or answers
- * `driver_running` when another live process still holds it after `waitMs`. `waitMs: 0` tries once.
+ * `busy` when another live process still holds it after `waitMs`. `waitMs: 0` tries once.
  */
-export async function withRunLock<T>(
-  config: LocalConfig,
-  run: RunId,
-  body: (lock: RunLock) => Promise<T>,
-  { waitMs }: { waitMs: number },
-): Promise<T | { error: { code: 'driver_running'; message: string } }> {
+export async function takeRunLock<T>(config: LocalConfig, run: RunId, body: (lock: RunLock) => Promise<T>, { waitMs }: { waitMs: number }): Promise<LockTaken<T>> {
   const lock = driverLockPath(config, run);
   const until = Date.now() + waitMs;
   while (!await acquireLock(lock)) {
     if (Date.now() >= until) {
       const owner = LockOwnerSchema.safeParse(parsedJson(await readFileSafe(lock)));
-      return { error: { code: 'driver_running', message: owner.success
+      return { kind: 'busy', error: { code: 'driver_running', message: owner.success
         ? `Run ${run} is already driven by process ${owner.data.pid} on this machine. Stop that driver, or wait for it.`
         : `Run ${run} has a local driver lock whose process id is unknown. Stop that driver, or inspect its driver.lock file.` } };
     }
     await delay(LOCK_WAIT_MS);
   }
   try {
-    return await body(RunLockSchema.parse({ run }));
+    return { kind: 'held', value: await body(RunLockSchema.parse({ run })) };
   } finally {
     await releaseLock(lock);
   }
+}
+
+/** `takeRunLock` for a caller whose body answers an envelope: a busy lock answers as the `driver_running` error. */
+export async function withRunLock<T>(
+  config: LocalConfig,
+  run: RunId,
+  body: (lock: RunLock) => Promise<T>,
+  options: { waitMs: number },
+): Promise<T | { error: { code: 'driver_running'; message: string } }> {
+  const taken = await takeRunLock(config, run, body, options);
+  return taken.kind === 'held' ? taken.value : { error: taken.error };
 }
 
 function runnerLockPath(config: LocalConfig, run: RunId, attempt: AttemptId): string {
