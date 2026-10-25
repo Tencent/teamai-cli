@@ -32,7 +32,7 @@ import { scopeScoring } from '../scorers/settings.js';
 import { answerSchema, evidenceDirOf, sweepEvidence, type Rubrics } from '../scorers/evidence.js';
 import { buildEvidence, evidencePlan } from './scoring-evidence.js';
 import { error, ok } from './engine.js';
-import { localDriver } from './local-driver.js';
+import { localDriver } from './drivers/local/local-driver.js';
 import { firstSettled, passesWithin, runPasses, type RunPass } from './loop.js';
 import { stepDefinitions } from './scope.js';
 import { agentPassOf, agentSucceeded } from './step-state.js';

@@ -3,15 +3,15 @@ import { StringDecoder } from 'node:string_decoder';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import crossSpawn from 'cross-spawn';
-import { launchEnv, type Launch } from '../launch-context.js';
-import { opencodeMajorVersion } from '../opencode-hooks.js';
-import { resolveCliPath } from '../utils/cli-path.js';
-import { writeJsonAtomic } from '../utils/fs.js';
-import { log } from '../utils/logger.js';
-import { stopProcess } from '../tool-launch/process-stop.js';
-import { toolStdout, type TokenUsage, type ToolReport } from '../tool-launch/stdout.js';
-import { localToolFamily, opencodeModelArgs, type LaunchTool } from '../tool-launch/tools.js';
-import type { WorkflowFailure } from './types.js';
+import { launchEnv, type Launch } from '../../../launch-context.js';
+import { opencodeMajorVersion } from '../../../opencode-hooks.js';
+import { resolveCliPath } from '../../../utils/cli-path.js';
+import { writeJsonAtomic } from '../../../utils/fs.js';
+import { log } from '../../../utils/logger.js';
+import { stopProcess } from '../../../tool-launch/process-stop.js';
+import { toolStdout, type TokenUsage, type ToolReport } from '../../../tool-launch/stdout.js';
+import { localToolFamily, opencodeModelArgs, type LaunchTool } from '../../../tool-launch/tools.js';
+import type { WorkflowFailure } from '../../types.js';
 
 export interface LocalToolRun {
   prompt: string;

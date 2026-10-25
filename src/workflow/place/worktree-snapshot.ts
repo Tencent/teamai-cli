@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { git } from './worktree.js';
+import { git } from '../worktree.js';
 
 /** Every tracked or non-ignored path that differs from HEAD, with its content and mode, and where HEAD is. */
 export interface WorktreeSnapshot {

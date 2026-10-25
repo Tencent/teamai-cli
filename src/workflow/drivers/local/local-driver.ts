@@ -11,45 +11,45 @@ import {
   reverseFromOpencode,
   toolExtrasFor,
   type AgentSpec,
-} from '../resources/agent-format.js';
-import { installOf, locate, ownOf } from '../locate.js';
-import { isAgentToolId } from '../tools.js';
-import { observeLaunch, type Used } from '../agent-observation.js';
-import { detectProjectConfig } from '../config.js';
-import { acquireLock, releaseLock } from '../update.js';
-import { commandSignalPolicy, exitLike, stepEnvironment, terminalReachesCommand } from '../env-exec.js';
-import { knownSecrets, resolveWorkflowEnv, type WorkflowEnv } from '../env-resolution.js';
-import { workflowLaunch } from '../launch-context.js';
-import { getDataHome, type LocalConfig, type TeamaiConfig } from '../types.js';
-import { readFileSafe, readJson, writeFileAtomic, writeJsonAtomic } from '../utils/fs.js';
-import { log } from '../utils/logger.js';
-import { redact, redactJson } from '../utils/redact.js';
-import { AgentSession } from '../session-flow/agent-session.js';
-import { openSessionArchive, type SessionArchive } from '../session-flow/archive.js';
-import { deliveredTeamSkills, usedSkills } from '../skill-use.js';
-import { leaseNext, reportAttempt } from './engine.js';
-import { EnvScopeSchema, LeaseSetupSchema, type DriverCan, type EnvScope, type LeaseSetup } from './requirements.js';
-import { runSetup } from './setup.js';
-import { respondToHitl } from './run-controls.js';
-import { isRecord } from './expression.js';
+} from '../../../resources/agent-format.js';
+import { installOf, locate, ownOf } from '../../../locate.js';
+import { isAgentToolId } from '../../../tools.js';
+import { observeLaunch, type Used } from '../../../agent-observation.js';
+import { detectProjectConfig } from '../../../config.js';
+import { acquireLock, releaseLock } from '../../../update.js';
+import { commandSignalPolicy, exitLike, stepEnvironment, terminalReachesCommand } from '../../../env-exec.js';
+import { knownSecrets, resolveWorkflowEnv, type WorkflowEnv } from '../../../env-resolution.js';
+import { workflowLaunch } from '../../../launch-context.js';
+import { getDataHome, type LocalConfig, type TeamaiConfig } from '../../../types.js';
+import { readFileSafe, readJson, writeFileAtomic, writeJsonAtomic } from '../../../utils/fs.js';
+import { log } from '../../../utils/logger.js';
+import { redact, redactJson } from '../../../utils/redact.js';
+import { AgentSession } from '../../../session-flow/agent-session.js';
+import { openSessionArchive, type SessionArchive } from '../../../session-flow/archive.js';
+import { deliveredTeamSkills, usedSkills } from '../../../skill-use.js';
+import { leaseNext, reportAttempt } from '../../engine.js';
+import { EnvScopeSchema, LeaseSetupSchema, type DriverCan, type EnvScope, type LeaseSetup } from '../../requirements.js';
+import { runSetup } from '../../place/setup.js';
+import { respondToHitl } from '../../run-controls.js';
+import { isRecord } from '../../expression.js';
 import {
   createLocalToolAdapter,
   type LocalToolAdapter,
   type LocalToolResult,
   type LocalToolRun,
 } from './local-tool-adapter.js';
-import { driverLockPath, isRunId, readRun, updateRun } from './store.js';
-import { stopProcess } from '../tool-launch/process-stop.js';
-import { isLaunchTool, localToolFamily, type LaunchTool } from '../tool-launch/tools.js';
-import { chooseStepModel } from './step-model.js';
-import type { StepRead } from './step-state.js';
-import type { DriverIdentity, StepHitl, WorkflowEnvelope, WorkflowFailure } from './types.js';
-import { isWorkflowError, WORKSPACE_MODES } from './types.js';
-import type { LeaseSession, SessionRef, WorkspaceContract } from './workspace.js';
+import { driverLockPath, isRunId, readRun, updateRun } from '../../store.js';
+import { stopProcess } from '../../../tool-launch/process-stop.js';
+import { isLaunchTool, localToolFamily, type LaunchTool } from '../../../tool-launch/tools.js';
+import { chooseStepModel } from '../../step-model.js';
+import type { StepRead } from '../../step-state.js';
+import type { DriverIdentity, StepHitl, WorkflowEnvelope, WorkflowFailure } from '../../types.js';
+import { isWorkflowError, WORKSPACE_MODES } from '../../types.js';
+import type { LeaseSession, SessionRef, WorkspaceContract } from '../../workspace.js';
 import {
   applyBaseConfig, commitWork, ensureWorktree, fetchMissingCommits, git, headCommit, hooksPath, keptSentence, type KeptChanges, markReadCopy, markSetup, mergeBranch, offBranch, pushIfOrigin, putBackCopy, reconcileCopy, recordConfigOverlay, removeWorktree, reopenConfigConflicts, restoreUneditedConfig, setupUnfinished, stepCheckout, unrestoredCopy, worktreePath,
-} from './worktree.js';
-import { changedPaths, snapshotWorktree, type WorktreeSnapshot } from './worktree-snapshot.js';
+} from '../../worktree.js';
+import { changedPaths, snapshotWorktree, type WorktreeSnapshot } from '../../place/worktree-snapshot.js';
 
 /** Local lease identity, stable across restarts in the same workspace. */
 export function localDriver(cwd: string): DriverIdentity {
@@ -495,9 +495,9 @@ async function stageLease(lease: Lease, { active, runId, values, signal }: { act
 async function deliverTeamAssets(dir: string): Promise<void> {
   const exitCode = process.exitCode;
   try {
-    const { createProjectToolRoots } = await import('../project-agent-root.js');
+    const { createProjectToolRoots } = await import('../../../project-agent-root.js');
     await createProjectToolRoots({ cwd: dir });
-    const { pull } = await import('../pull.js');
+    const { pull } = await import('../../../pull.js');
     await pull({ silent: true, inline: true, gitHook: 'post-checkout', prepareCheckout: true, cwd: dir });
   } finally {
     process.exitCode = exitCode;
@@ -805,7 +805,7 @@ async function promptReport(
   const definitionModel = chosen.model && chosen.by === 'definition'
     ? { model: chosen.model.name, ...(chosen.model.effort ? { effort: chosen.model.effort } : {}) }
     : {};
-  const { teamDelivery } = await import('../pull.js');
+  const { teamDelivery } = await import('../../../pull.js');
   const delivery = await teamDelivery(stepConfig, selected).catch(() => undefined);
   const delivered = delivery?.record?.delivered;
   const [observed, launch, teamSkills] = await Promise.all([

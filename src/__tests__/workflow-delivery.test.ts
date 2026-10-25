@@ -12,7 +12,7 @@ import { sanitizePrUrl } from '../workflow/pr-url.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { deliveryLockPath, readRun, runLockPath } from '../workflow/store.js';
 import * as store from '../workflow/store.js';
-import { _setDriverPollMs, runLocalDriver } from '../workflow/local-driver.js';
+import { _setDriverPollMs, runLocalDriver } from '../workflow/drivers/local/local-driver.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { AGENT_PATHS, DELIVERY_ONLY_PATHS, protectedPaths } from '../workflow/worktree.js';
 import { fakeGh, type FakeGhOptions } from './helpers/fake-gh.js';

@@ -6,7 +6,7 @@ import { collectEnvSecrets, redactJson } from './utils/redact.js';
 import { leaseNext, parseNextPayload, parseReport, parseResponsePayload, reportAttempt, resumableSessions, startRun, withIgnored, type ParsedResponsePayload } from './workflow/engine.js';
 import { publishRun, resumeRun } from './workflow/handoff.js';
 import { cancelRun, respondToHitl, retryStep } from './workflow/run-controls.js';
-import { localDriver, runLocalDriver, withDriverLock } from './workflow/local-driver.js';
+import { localDriver, runLocalDriver, withDriverLock } from './workflow/drivers/local/local-driver.js';
 import { getBusinessRoot, getDataHome, scopedToolPaths, type LocalConfig, type TeamaiConfig } from './types.js';
 import { isRunId, readRun } from './workflow/store.js';
 import { headCommit } from './workflow/worktree.js';

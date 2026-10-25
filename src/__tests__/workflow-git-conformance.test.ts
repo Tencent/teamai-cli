@@ -8,7 +8,7 @@ import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { workflowGitConformanceScenarios, type GitConformanceName } from '../workflow/conformance.js';
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
 import { claimRun, publishRun } from '../workflow/handoff.js';
-import { runLocalDriver } from '../workflow/local-driver.js';
+import { runLocalDriver } from '../workflow/drivers/local/local-driver.js';
 import type { StepState } from '../workflow/step-state.js';
 import { readRun } from '../workflow/store.js';
 import type { DriverIdentity, RunState } from '../workflow/types.js';

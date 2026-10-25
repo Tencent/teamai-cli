@@ -9,7 +9,7 @@ import { isModelAlias, loadModelAliases, noModelCause, noModelReason, resolveMod
 import { toolExtrasFor, type AgentSpec } from '../resources/agent-format.js';
 import type { LocalConfig } from '../types.js';
 import { localToolFamily, type LaunchTool } from '../tool-launch/tools.js';
-import type { LocalToolRun } from './local-tool-adapter.js';
+import type { LocalToolRun } from './drivers/local/local-tool-adapter.js';
 import type { WorkflowFailure } from './types.js';
 
 export type StepModel = NonNullable<LocalToolRun['model']>;
