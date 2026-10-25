@@ -345,7 +345,7 @@ steps:
 
 ### 工作流 skill
 
-`teamai pull` 为每个 `invoke: allow` 或 `ask` 的工作流写入一个 `workflow-<name>` skill。会话通过它找到工作流：skill 带有工作流的描述和别名，并引导 agent 读取 `teamai skill get workflow`，即已安装 CLI 提供的指令。它不带任何步骤、提示词或命令。在 Claude Code 和 CodeBuddy 中，`allow` 工作流的 skill 会预先批准它的 `workflow start` 命令。
+`teamai pull` 为每个 `invoke: allow` 或 `ask` 的工作流写入一个 `workflow-<name>` skill。会话通过它找到工作流：skill 带有工作流的描述和别名，并引导 agent 读取 `teamai skill get workflow`，即已安装 CLI 提供的指令。它不带任何步骤、提示词或命令。在 Claude Code 和 CodeBuddy 中，`allow` 工作流的 skill 会预先批准它的 `workflow start` 命令。用户级安装的 pull 会把这些 skill 写入你的主目录，所有会话都能看到。在没有同名可运行工作流的项目中，`workflow start` 会启动用户级安装的那个工作流，该运行属于用户级安装。
 
 请修改工作流，而不是 skill。工作流变化时，pull 会重写未改动过的 skill；工作流被删除或改为 `deny` 时，pull 会删除它。被你编辑过的 skill 会保留，并给出警告。没有生成标记、名为 `workflow-<name>` 的团队或成员 skill 会取代它，`teamai doctor` 会列出这种情况。`teamai push` 从不发布生成的 skill。`push --skill` 拒绝生成的 skill，也拒绝 CLI 自有的 skill，如 `teamai`。在项目中，pull 会把生成的 skill 列入 `.git/info/exclude`。
 

@@ -25,6 +25,7 @@ import { startRun } from '../workflow/engine.js';
 import { publishRun } from '../workflow/handoff.js';
 import { driverLockPath, readRun } from '../workflow/store.js';
 import { workflowNext, workflowPublish, workflowReport, workflowResume, workflowStart } from '../workflow-commands.js';
+import { loadLocalConfigForScope } from '../config.js';
 import { knownSecrets } from '../env-resolution.js';
 
 const dirs: string[] = [];
@@ -78,6 +79,7 @@ async function capture(run: () => Promise<void>): Promise<{ data?: Record<string
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   state.config = undefined;
   setStderrOnly(false);
   process.exitCode = undefined;
@@ -280,6 +282,82 @@ steps:
     const runId = typeof done === 'object' && done !== null && 'run' in done ? String(done.run) : '';
     expect(printed).toContainEqual({ line: expect.stringMatching(new RegExp(`Run ${runId} started\\. .*teamai workflow resume ${runId}$`)), ran: false });
     expect(fs.existsSync(path.join(work, 'ran.marker'))).toBe(true);
+  });
+});
+
+describe('workflow start in a project whose cache lacks the workflow', () => {
+  const ship = (description: string): string => `schemaVersion: v1alpha1
+name: ship
+description: ${description}
+invoke: allow
+steps:
+  - id: check
+    command: node -e "console.log('checked')"
+`;
+
+  /** A project install without `ship`, and a user-scope install of another team whose cache has it, in HOME. */
+  async function installs(): Promise<{ project: LocalConfig; user: LocalConfig }> {
+    const project = testConfig();
+    await syncWorkflowDefinitions(project);
+    state.config = project;
+    const home = path.join(path.dirname(project.repo.localPath), 'home');
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('USERPROFILE', home);
+    const knowledge = path.join(path.dirname(project.repo.localPath), 'user-knowledge');
+    fs.mkdirSync(path.join(knowledge, 'workflows'), { recursive: true });
+    fs.writeFileSync(path.join(knowledge, 'teamai.yaml'), 'team: acme\nrepo: local\n');
+    fs.writeFileSync(path.join(knowledge, 'workflows', 'ship.yaml'), ship('Ship from the user scope'));
+    fs.mkdirSync(path.join(home, '.teamai'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.teamai', 'config.yaml'), `repo:\n  localPath: ${JSON.stringify(knowledge)}\n  remote: local\n  kind: self\nusername: tester\nscope: user\nadditionalRoles: []\n`);
+    const user = await loadLocalConfigForScope('user');
+    if (!user) throw new Error('the user config did not load');
+    await syncWorkflowDefinitions(user);
+    return { project, user };
+  }
+
+  it('describes and starts the user scope\'s workflow of that name, whose generated skill shows in every directory', async () => {
+    const { project, user } = await installs();
+
+    expect(await capture(() => workflowStart('ship', { describe: true }))).toMatchObject({ data: { name: 'ship', description: 'Ship from the user scope' } });
+    expect(await capture(() => workflowStart('ship', { driver: 'skill', describe: true })))
+      .toMatchObject({ data: { describe: { workflow: { name: 'ship', description: 'Ship from the user scope' } } } });
+    const started = await capture(() => workflowStart('ship', {}));
+    expect(started).toMatchObject({ data: { name: 'ship', status: 'running' } });
+    const runId = String(started.data?.run);
+    expect(typeof await readRun(user, runId)).toBe('object');
+    expect(await readRun(project, runId)).toBe('missing');
+  });
+
+  it('drives a user-scope run started there as the skill driver of that scope', async () => {
+    const { project, user } = await installs();
+    fs.writeFileSync(path.join(user.repo.localPath, 'workflows', 'review.yaml'), `schemaVersion: v1alpha1
+name: review
+description: Review the change
+invoke: allow
+steps:
+  - id: review
+    prompt: Review the change.
+`);
+    await syncWorkflowDefinitions(user);
+    vi.spyOn(process, 'cwd').mockReturnValue(project.projectRoot ?? '');
+
+    const started = await capture(() => workflowStart('review', { driver: 'skill' }));
+    expect(started).toMatchObject({ data: { turn: { status: 'driving', actions: [{ kind: 'choose', about: 'host' }] } } });
+    const turn = started.data?.turn;
+    const runId = typeof turn === 'object' && turn !== null && 'run' in turn ? String(turn.run) : '';
+
+    // A takeover, unlike the answer to the question, starts no runner process.
+    expect(await capture(() => workflowNext(runId, { driver: 'skill', takeover: true }))).toMatchObject({ data: { turn: { run: runId, actions: [{ kind: 'choose', about: 'host' }] } } });
+    expect(typeof await readRun(user, runId)).toBe('object');
+  });
+
+  it('keeps the project\'s own workflow of that name, and answers workflow_not_found for a name neither scope has', async () => {
+    const { project } = await installs();
+    fs.writeFileSync(path.join(project.repo.localPath, 'workflows', 'ship.yaml'), ship('Ship from the project'));
+    await syncWorkflowDefinitions(project);
+
+    expect(await capture(() => workflowStart('ship', { describe: true }))).toMatchObject({ data: { name: 'ship', description: 'Ship from the project' } });
+    expect(await capture(() => workflowStart('nowhere', { describe: true }))).toMatchObject({ error: { code: 'workflow_not_found' } });
   });
 });
 

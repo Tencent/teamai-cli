@@ -345,7 +345,7 @@ No run starts or is driven from inside a step of another run. The process of a s
 
 ### Workflow skills
 
-`teamai pull` writes a `workflow-<name>` skill for each workflow with `invoke: allow` or `ask`. A session finds the workflow through it: the skill carries the workflow's description and alias, and sends the agent to `teamai skill get workflow`, the instructions the installed CLI serves. It carries no step, prompt, or command. On Claude Code and CodeBuddy, the skill of an `allow` workflow pre-approves its `workflow start` command.
+`teamai pull` writes a `workflow-<name>` skill for each workflow with `invoke: allow` or `ask`. A session finds the workflow through it: the skill carries the workflow's description and alias, and sends the agent to `teamai skill get workflow`, the instructions the installed CLI serves. It carries no step, prompt, or command. On Claude Code and CodeBuddy, the skill of an `allow` workflow pre-approves its `workflow start` command. A user-scope pull writes these skills into your home, where every session sees them. In a project that has no runnable workflow of that name, `workflow start` starts the user scope's, and the run belongs to the user scope.
 
 Edit the workflow, not the skill. Pull rewrites an unchanged skill when the workflow changes, and removes it when the workflow is removed or set to `deny`. It keeps a skill you edited, with a warning. A team or member skill named `workflow-<name>` without the generated marker takes its place, and `teamai doctor` lists it. `teamai push` never publishes a generated skill. `push --skill` refuses one, and refuses a skill the CLI owns, such as `teamai`. In a project, pull lists the generated skills in `.git/info/exclude`.
 

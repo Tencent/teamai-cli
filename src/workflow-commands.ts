@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { autoDetectInit, loadTeamConfig } from './config.js';
+import { autoDetectInit, loadLocalConfigForScope, loadTeamConfig } from './config.js';
 import { resolveWorkflowEnv, type WorkflowEnv } from './env-resolution.js';
 import { isLeaseRef } from './scorers/entry.js';
 import { log, setStderrOnly } from './utils/logger.js';
@@ -86,6 +86,21 @@ async function readyConfig(): Promise<{ config: LocalConfig; teamConfig: TeamaiC
   return { ...loaded, env, secrets: env.secrets };
 }
 
+/**
+ * `readyConfig`, or the user scope's when this is a project whose cache has no runnable version of `name` and the user
+ * scope's has one: the skills a user-scope pull generates show in every directory, so `start` finds what they name.
+ */
+async function readyStartConfig(name: string): Promise<Awaited<ReturnType<typeof readyConfig>>> {
+  const loaded = await readyConfig();
+  if (!loaded || loaded.config.scope !== 'project' || await loadCachedWorkflow(loaded.config, name)) return loaded;
+  const user = await loadLocalConfigForScope('user', undefined, { dryRun: true });
+  if (!user || !await loadCachedWorkflow(user, name)) return loaded;
+  const teamConfig = await loadTeamConfig(user.repo.localPath);
+  if (!teamConfig) return loaded;
+  const env = await resolveWorkflowEnv(user);
+  return { config: user, teamConfig, env, secrets: env.secrets };
+}
+
 async function runOwner(runId: string, allowRemote: boolean): Promise<{ config: LocalConfig; teamConfig: TeamaiConfig } | undefined> {
   const current = await loadConfig(true);
   const found = await findRunConfig(runId, 'config' in current ? current.config : undefined);
@@ -128,7 +143,7 @@ async function workflowSkill(raw: Parameters<typeof parseSkillCall>[0]): Promise
     writeEnvelope(call, collectEnvSecrets());
     return;
   }
-  const loaded = call.kind === 'next' || call.kind === 'report' || call.kind === 'respond' ? await readyRunConfig(call.run) : await readyConfig();
+  const loaded = call.kind === 'describe' || call.kind === 'start' ? await readyStartConfig(call.name) : await readyRunConfig(call.run);
   if (!loaded) return;
   const context = await skillContext({
     config: loaded.config, toolPaths: scopedToolPaths(loaded.teamConfig, loaded.config), env: loaded.env, cwd: process.cwd(),
@@ -152,7 +167,7 @@ export async function workflowStart(name: string, options: {
     writeEnvelope({ error: { code: 'invalid_arguments', message: '--parallel, --hitl and --no-judge need --driver skill' } }, collectEnvSecrets());
     return;
   }
-  const loaded = await readyConfig();
+  const loaded = await readyStartConfig(name);
   if (!loaded) return;
   const { config, teamConfig, env, secrets } = loaded;
   if (options.describe) {
