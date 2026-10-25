@@ -169,7 +169,8 @@ export type StartDriver = 'local' | 'skill';
  */
 export type ConformanceClient = Pick<WorkflowClient, 'next' | 'report' | 'retry' | 'cancel'> & {
   // Properties, not methods, so a WorkflowClient's start and respond are not taken for these.
-  start: (name: string, options?: { driver?: StartDriver; confirmed?: boolean; env?: Record<string, string> }) => Promise<WorkflowEnvelope>;
+  // `checkout` is the in-process start's: the CLI always starts from its cwd.
+  start: (name: string, options?: { driver?: StartDriver; confirmed?: boolean; env?: Record<string, string>; checkout?: string }) => Promise<WorkflowEnvelope>;
   respond: (runId: string, step: string, choice: string, options: { note?: string; pass?: number; json?: unknown; env?: Record<string, string> }) => Promise<WorkflowEnvelope>;
 };
 
@@ -179,7 +180,9 @@ export type ConformanceClient = Pick<WorkflowClient, 'next' | 'report' | 'retry'
  */
 export function inProcessConformanceClient(client: WorkflowClient): ConformanceClient {
   return {
-    start: (name, { env, confirmed } = {}) => client.start(name, { caller: { evidence: agentEvidence({ ...process.env, ...env }), confirmed: confirmed === true } }),
+    start: (name, { env, confirmed, checkout } = {}) => client.start(name, {
+      ...(checkout !== undefined ? { checkout } : {}), caller: { evidence: agentEvidence({ ...process.env, ...env }), confirmed: confirmed === true },
+    }),
     next: (runId, body, options) => client.next(runId, body, options),
     report: (runId, body, options) => client.report(runId, body, options),
     retry: (runId, step) => client.retry(runId, step),
