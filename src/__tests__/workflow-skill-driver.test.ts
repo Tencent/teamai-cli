@@ -10,7 +10,7 @@ import { getDataHome } from '../types.js';
 import { skillContext } from '../workflow/drivers/skill/skill-driver.js';
 import { inProcessClient } from '../workflow/protocol.js';
 import { takeJudgeLease, type JudgeRequest } from '../workflow/scoring.js';
-import { AttemptIdSchema, deliveryLockPath, RunIdSchema, type RunId } from '../workflow/store.js';
+import { AttemptIdSchema, deliveryLockPath, RunIdSchema, skillStatePath, type RunId } from '../workflow/store.js';
 import { Crash, fakeJudge, githubOrigin, skillHarness, untilStopped } from './helpers/skill-harness.js';
 
 const CHECK = `schemaVersion: v1alpha1
@@ -127,6 +127,28 @@ steps:
     needs: [build]
     requires: { env: [SLACK_TOKEN] }
     prompt: Tell the team the package is out.
+`;
+
+// `topic` is an input, which the journal of a run never holds.
+const NOTE = `schemaVersion: v1alpha1
+name: note
+description: Write a note on a topic
+invoke: allow
+inputs:
+  topic: string
+steps:
+  - id: note
+    prompt: Write a note on {{ inputs.topic }}.
+`;
+
+const DEPLOY = `schemaVersion: v1alpha1
+name: deploy
+description: Deploy to production
+invoke: allow
+steps:
+  - id: go-live
+    approve: { message: Deploy to production?, required: true }
+    command: node -e "process.exit(0)"
 `;
 
 type Harness = Awaited<ReturnType<typeof skillHarness>>;
@@ -388,6 +410,64 @@ describe('skill driver', () => {
       expect.objectContaining({ kind: 'settled', step: 'ui', outcome: 'success' }),
     ]));
     expect(next.data.turn.actions.map((action) => action.kind === 'dispatch' && action.step)).toEqual(['integrate']);
+  });
+
+  it('journals each call a session makes on a run beside its skill state, and each dispatch once, with no input and nothing in a turn', async () => {
+    const harness = await skillHarness({ note: NOTE });
+    roots.push(harness.root);
+    const answers: unknown[] = [];
+    const call = async (...args: Parameters<Harness['call']>): ReturnType<Harness['call']> => {
+      const answer = await harness.call(...args);
+      answers.push(answer);
+      return answer;
+    };
+    const started = await call({ kind: 'start', name: 'note', answers: { confirmed: false }, inputs: { topic: 'the-input-topic' } });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+    const run = RunIdSchema.parse(started.data.turn.run);
+    const chosen = await call({ kind: 'choose', run, choice: 'h1' });
+    if (!('data' in chosen) || !('turn' in chosen.data)) throw new Error(JSON.stringify(chosen));
+    const [note] = chosen.data.turn.actions.flatMap((action) => (action.kind === 'dispatch' ? [action] : []));
+    if (!note) throw new Error(JSON.stringify(chosen));
+    await call({ kind: 'next', run, wait: false });
+    await call({ kind: 'next', run, wait: false }, { session: 'session-b' });
+    await call({ kind: 'ack', run, attempt: note.attempt });
+    const file = /Write `([^`]+result\.json)`/.exec(fs.readFileSync(note.brief, 'utf8'))?.[1];
+    if (!file) throw new Error(`${note.brief} names no result file`);
+    fs.writeFileSync(file, JSON.stringify({ kind: 'output', output: 'Wrote the note.' }));
+    await call({ kind: 'report', run, attempt: note.attempt, role: 'agent', modelUnavailable: false }, { session: 'child-session' });
+
+    const journal = fs.readFileSync(path.join(path.dirname(skillStatePath(harness.config, run)), 'journal.jsonl'), 'utf8');
+    const at = expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/);
+    expect(journal.trim().split('\n').map((line) => JSON.parse(line))).toEqual([
+      { at, kind: 'call', call: 'start', by: 'orchestrator', answer: 'ok' },
+      { at, kind: 'call', call: 'choose', by: 'orchestrator', choice: 'h1', answer: 'ok' },
+      { at, kind: 'asked', action: 'dispatch', attempt: note.attempt, step: 'note' },
+      { at, kind: 'call', call: 'next', by: 'orchestrator', answer: 'ok' },
+      { at, kind: 'call', call: 'next', by: 'session', answer: 'orchestrator_active' },
+      { at, kind: 'call', call: 'ack', by: 'orchestrator', attempt: note.attempt, answer: 'acked' },
+      { at, kind: 'call', call: 'report', by: 'session', attempt: note.attempt, answer: 'reported' },
+    ]);
+    expect(journal).not.toContain('the-input-topic');
+    expect(JSON.stringify(answers)).not.toContain('journal');
+  });
+
+  it('journals a person action once, however many turns show it', async () => {
+    const harness = await skillHarness({ deploy: DEPLOY });
+    roots.push(harness.root);
+    const started = await harness.call({ kind: 'start', name: 'deploy', answers: { confirmed: false }, inputs: undefined });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+    const run = RunIdSchema.parse(started.data.turn.run);
+    let shown = 0;
+    for (let call = 0; call < 10 && shown < 3; call += 1) {
+      const turn = await harness.call({ kind: 'next', run, wait: false });
+      if (!('data' in turn) || !('turn' in turn.data)) throw new Error(JSON.stringify(turn));
+      if (turn.data.turn.actions.some((action) => action.kind === 'person')) shown += 1;
+    }
+    expect(shown).toBe(3);
+
+    const journal = fs.readFileSync(path.join(path.dirname(skillStatePath(harness.config, run)), 'journal.jsonl'), 'utf8');
+    const asked = journal.trim().split('\n').map((line) => JSON.parse(line)).filter((line) => line.kind === 'asked');
+    expect(asked).toEqual([{ at: expect.any(String), kind: 'asked', action: 'approval', step: 'go-live', pass: 1 }]);
   });
 
   it('h3 asks the host for a place, adopts it, and a continue step reuses it', async () => {

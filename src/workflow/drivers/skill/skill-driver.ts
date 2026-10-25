@@ -15,6 +15,7 @@ import { agentEvidence, isAttemptRunner, type AgentEvidence } from '../../attemp
 import { inProcessClient, invokeDeniedMessage, type WorkflowClient } from '../../protocol.js';
 import { AttemptIdSchema, RunIdSchema, withRunLock, type AttemptId, type RunId, type RunLock } from '../../store.js';
 import { canFor, HOST_CHOICES, type HostChoice } from './host-profiles.js';
+import { journalCall } from './journal.js';
 import { describeLiteral, invocationOf, type Invocation } from './literals.js';
 import { askFor, checkStartAnswers, localReason, neededAnswers, type HitlMode } from './preflight.js';
 import { writeSkillState, type SkillState } from './skill-state.js';
@@ -216,7 +217,14 @@ export function parseSkillCall(
   return { kind: 'report', run: run.data, attempt, role: 'agent', modelUnavailable: modelUnavailable === true };
 }
 
+/** Answers `call`, then journals it beside the run's skill state (`journal.ts`). */
 export async function runSkillCall(call: SkillCall, context: SkillContext): Promise<SkillAnswer> {
+  const answer = await answerOf(call, context);
+  await journalCall(context, call, answer);
+  return answer;
+}
+
+async function answerOf(call: SkillCall, context: SkillContext): Promise<SkillAnswer> {
   switch (call.kind) {
     case 'describe':
     case 'start':
