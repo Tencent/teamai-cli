@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import type { LocalConfig } from '../types.js';
 import type { WorkflowClient } from '../workflow/protocol.js';
+import type { Runners } from '../workflow/drivers/skill/skill-driver.js';
 import { readRun, skillStatePath, type AttemptId, type RunId } from '../workflow/store.js';
 import { Crash, skillHarness, untilStopped } from './helpers/skill-harness.js';
 
@@ -46,6 +47,12 @@ const NextBodySchema = z.object({ running: z.array(z.string()) });
 const LeaseReplySchema = z.object({ data: z.object({ lease: z.object({ attempt: z.string() }) }) });
 const SkillJsonSchema = z.object({ attempts: z.array(z.object({ attempt: z.string() })) });
 
+/** The attempts skill.json holds open. */
+function openAttempts(config: LocalConfig, run: RunId): string[] {
+  const saved = SkillJsonSchema.safeParse(JSON.parse(fs.readFileSync(skillStatePath(config, run), 'utf8')));
+  return saved.success ? saved.data.attempts.map((open) => open.attempt) : [];
+}
+
 /**
  * The protocol as the model test watches it. Every `next` must list the attempts the engine leased (invariant 1), apart
  * from ones the engine stopped, and leases a crash lost before skill.json was written, which the engine hands back in
@@ -66,8 +73,7 @@ function watched(input: { config: () => LocalConfig | undefined; drift: string[]
     armed = false;
     const config = input.config();
     const engine = await leasedIn(run);
-    const saved = config ? SkillJsonSchema.safeParse(JSON.parse(fs.readFileSync(skillStatePath(config, run as RunId), 'utf8'))) : undefined;
-    const kept = saved?.success ? saved.data.attempts.map((open) => open.attempt) : [];
+    const kept = config ? openAttempts(config, run as RunId) : [];
     for (const attempt of engine?.leased ?? []) if (!kept.includes(attempt)) lost.add(attempt);
     throw new Crash('injected after the engine answered');
   };
@@ -122,10 +128,17 @@ interface Real {
   run: RunId;
   /** The session that drives the run. */
   session: string;
+  /** How many other sessions have called. */
+  sessions: number;
   /** Arms the crash after the next engine `next` or `report`. */
   crash: { arm(): void; disarm(): void };
   /** Every engine `next` whose `running` was not the attempts the engine had leased, and ones it stopped (invariant 1). */
   drift: string[];
+  /**
+   * The attempts whose `sleep 300` runs, and each attempt that started one while its last still ran (invariant 11: an
+   * attempt runs one command at a time, and none outlives the run).
+   */
+  commands: { live: Set<string>; twice: string[] };
 }
 
 /** What the session has seen and done so far. */
@@ -200,10 +213,11 @@ function cancelledStep(model: Model, action: DispatchAction): boolean {
   return model.cancelled.has(action.step);
 }
 
-/** Makes `call` as the session, or as `session`, and checks invariant 1 on every engine `next` it led to. */
-async function called(real: Pick<Real, 'made' | 'drift' | 'session'>, call: Parameters<Made['call']>[0], session = real.session): Promise<SkillAnswer> {
+/** Makes `call` as the session, or as `session`, and checks invariants 1 and 11 on every engine `next` and command it led to. */
+async function called(real: Pick<Real, 'made' | 'drift' | 'session' | 'commands'>, call: Parameters<Made['call']>[0], session = real.session): Promise<SkillAnswer> {
   const answer = await real.made.call(call, { session });
   expect(real.drift).toEqual([]);
+  expect(real.commands.twice).toEqual([]);
   return answer;
 }
 
@@ -244,8 +258,97 @@ class Sleep implements fc.AsyncCommand<Model, Real> {
   async run(_model: Model, real: Real): Promise<void> {
     await real.made.context.runners.sleep(this.ms);
     expect(real.drift).toEqual([]);
+    expect(real.commands.twice).toEqual([]);
   }
   toString = (): string => `sleep ${this.ms}`;
+}
+
+/**
+ * The session's context was compacted, so it lost its turns, and it runs `next` (invariant 6): the turn shows every
+ * dispatch it has not acked, and `running` lists each acked one with the `report` the session runs for a child that
+ * ended without reporting.
+ */
+class Compact implements fc.AsyncCommand<Model, Real> {
+  check = (model: Readonly<Model>): boolean => !model.done;
+  async run(model: Model, real: Real): Promise<void> {
+    const turn = turnOf(await called(real, { kind: 'next', run: real.run, wait: false }));
+    sawForeground(model, turn);
+    if (model.done) return;
+    const dispatched = turn.running.filter((entry) => entry.phase === 'dispatched');
+    expect(dispatched.map((entry) => entry.attempt).sort()).toEqual([...model.acked].sort());
+    for (const entry of dispatched) expect(entry.report).toBe(`teamai workflow report ${real.run} --driver skill --attempt ${entry.attempt}`);
+  }
+  toString = (): string => 'compact, then next';
+}
+
+/** The session runs `next` again before the first returned: the second waits for the run lock, and both get one turn. */
+class TwoCallers implements fc.AsyncCommand<Model, Real> {
+  check = (model: Readonly<Model>): boolean => !model.done;
+  async run(model: Model, real: Real): Promise<void> {
+    // Held, so only the calls move the run; their sleeps still move the clock the lock's wait is measured on.
+    real.made.hold(true);
+    try {
+      const call = { kind: 'next', run: real.run, wait: false } as const;
+      const [first, second] = (await Promise.all([called(real, call), called(real, call)])).map(turnOf);
+      if (!first || !second) throw new Error('two calls gave fewer than two turns');
+      expect({ ...second, events: [] }).toEqual({ ...first, events: [] });
+      // Whichever took the lock first shows the events.
+      sawForeground(model, { ...first, events: [...first.events, ...second.events] });
+    } finally {
+      real.made.hold(false);
+    }
+  }
+  toString = (): string => 'two nexts at once';
+}
+
+/**
+ * Another coding session calls `next` (invariant 7). While the owner calls, it is refused with the takeover literal,
+ * which it runs when the person agrees; once the owner made no call for longer than 200 s, its `next` takes the run
+ * over. A takeover reissues every dispatch the old session was given, and refuses the old session from then on.
+ */
+class NewSession implements fc.AsyncCommand<Model, Real> {
+  constructor(readonly how: 'refused' | 'takeover' | 'quiet') {}
+  check = (model: Readonly<Model>): boolean => !model.done;
+  async run(model: Model, real: Real): Promise<void> {
+    real.sessions += 1;
+    const session = `session-${real.sessions}`;
+    const previous = real.session;
+    const next = { kind: 'next', run: real.run, wait: false } as const;
+    if (this.how === 'quiet') {
+      // Longer than the 200 s a session may go quiet before another takes its run over.
+      await real.made.context.runners.sleep(201_000);
+    } else {
+      sawForeground(model, turnOf(await called(real, next)));
+      if (model.done) return;
+      expect(await called(real, next, session)).toEqual({ error: expect.objectContaining({ code: 'orchestrator_active', next: `teamai workflow next ${real.run} --driver skill --takeover` }) });
+      if (this.how === 'refused') return;
+    }
+    const given = new Set(model.open.keys());
+    const turn = turnOf(await called(real, this.how === 'takeover' ? { kind: 'takeover', run: real.run } : next, session));
+    expect(turn.events).toContainEqual({ kind: 'takeover', from: previous });
+    real.session = session;
+    model.acked.clear();
+    sawForeground(model, turn);
+    for (const action of turn.actions) if (action.kind === 'dispatch' && given.has(action.attempt)) expect(action.reissued).toEqual(expect.any(String));
+    if (model.done) return;
+    expect(await called(real, next, previous)).toMatchObject({ error: { code: 'orchestrator_active' } });
+  }
+  toString = (): string => `new session, ${this.how}`;
+}
+
+/** The runner of an open attempt is killed where it waits, as `kill -9` kills it, at the next sleep. */
+class RunnerCrash implements fc.AsyncCommand<Model, Real> {
+  constructor(readonly pick: number) {}
+  check = (model: Readonly<Model>): boolean => !model.done;
+  async run(_model: Model, real: Real): Promise<void> {
+    const attempts = openAttempts(real.made.config, real.run);
+    const attempt = attempts[this.pick % Math.max(attempts.length, 1)];
+    if (attempt !== undefined) real.made.crashRunner(real.run, attempt);
+    await real.made.context.runners.sleep(1);
+    expect(real.drift).toEqual([]);
+    expect(real.commands.twice).toEqual([]);
+  }
+  toString = (): string => `kill runner #${this.pick}`;
 }
 
 /** The person cancels a step from another shell: one the session dispatched when `dispatched` is set and it has one. */
@@ -389,6 +492,10 @@ const COMMANDS = [
   fc.nat(3).map((pick) => new Ack(pick)),
   fc.tuple(fc.nat(3), fc.constantFrom<'output' | 'failure' | 'none'>('output', 'output', 'failure', 'none'), fc.boolean()).map(([pick, result, own]) => new Report(pick, result, own)),
   fc.tuple(fc.constantFrom<'next' | 'poll' | 'report'>('next', 'poll', 'report'), fc.nat(3)).map(([call, pick]) => new CrashAfterEngine(call, pick)),
+  fc.constant(new Compact()),
+  fc.constant(new TwoCallers()),
+  fc.constantFrom<'refused' | 'takeover' | 'quiet'>('refused', 'takeover', 'quiet').map((how) => new NewSession(how)),
+  fc.nat(5).map((pick) => new RunnerCrash(pick)),
 ];
 
 /** Plays a fair session from where the commands left the run, and checks invariant 10: it reaches `done` with nothing open. */
@@ -424,25 +531,33 @@ describe('skill driver model', () => {
   it('keeps its invariants over any order of session calls and runner progress, and a fair session reaches done', async () => {
     // Half the sessions answer the host question first, so the commands also land while dispatches are out.
     const answered = fc.option(fc.constantFrom<'h1' | 'h2'>('h1', 'h2'), { nil: undefined });
-    await fc.assert(fc.asyncProperty(answered, fc.commands(COMMANDS, { maxCommands: 14 }), async (host, commands) => {
+    await fc.assert(fc.asyncProperty(answered, fc.commands(COMMANDS, { maxCommands: 14 }), async (host, steps) => {
       const drift: string[] = [];
       let config: Made['config'] | undefined;
       const protocol = watched({ config: () => config, drift });
+      const commands: Real['commands'] = { live: new Set(), twice: [] };
+      const sleeping = (input: Parameters<Runners['command']>[0]) => {
+        if (commands.live.has(input.attempt)) commands.twice.push(input.attempt);
+        commands.live.add(input.attempt);
+        return untilStopped(() => { commands.live.delete(input.attempt); });
+      };
       const made = await skillHarness({ build: BUILD }, {
-        runners: (runners) => ({ ...runners, command: (input) => (input.command === 'sleep 300' ? untilStopped(() => {}) : runners.command(input)) }),
+        runners: (runners) => ({ ...runners, command: (input) => (input.command === 'sleep 300' ? sleeping(input) : runners.command(input)) }),
         client: protocol.client,
       });
       roots.push(made.root);
       config = made.config;
-      const started = turnOf(await called({ made, drift, session: 'session-a' }, { kind: 'start', name: 'build', answers: { parallel: 2, confirmed: false }, inputs: undefined }));
+      const started = turnOf(await called({ made, drift, session: 'session-a', commands }, { kind: 'start', name: 'build', answers: { parallel: 2, confirmed: false }, inputs: undefined }));
       const model: Model = { hostPending: false, done: false, open: new Map(), acked: new Set(), stopping: new Map(), stopped: new Set(), cancelled: new Set(), unseen: [] };
       sawForeground(model, started);
       expect(model.hostPending).toBe(true);
-      const real: Real = { made, run: started.run, session: 'session-a', drift, crash: protocol };
+      const real: Real = { made, run: started.run, session: 'session-a', sessions: 0, drift, crash: protocol, commands };
       if (host) await new Choose(host).run(model, real);
-      await fc.asyncModelRun(() => ({ model, real }), commands);
+      await fc.asyncModelRun(() => ({ model, real }), steps);
       const done = await driveToDone(model, real);
       expect(done.actions).toEqual([expect.objectContaining({ kind: 'done' })]);
+      // No command outlives the run.
+      expect([...commands.live]).toEqual([]);
     }), { numRuns: RUNS });
   }, 600_000);
 });
