@@ -115,6 +115,8 @@ export const TRANSITIONS = [
   { id: 'X1', state: 'done', input: 'next', guard: 'no attempt is open, and a judge is', effects: 'none', next: 'done', action: '`done` with `judging`; `then: poll`' },
   { id: 'X2', state: 'done', input: 'next', guard: 'no attempt or judge is open', effects: 'none', next: 'done', action: '`done`, no `then`' },
   { id: 'X4', state: 'done', input: 'next', guard: 'an attempt is still open: the engine cancelled it with the run', effects: 'none', next: 'done', action: 'every `stop`, then `done`; `then: poll`' },
+  { id: 'X5', state: 'done', input: 'tick', guard: '', effects: 'engine `next` as D1, with `canTakeLease: false`', next: 'done', action: '' },
+  { id: 'X6', state: 'done', input: 'reply, before its row', guard: 'the reply is not `done`: the engine reopened the run, as `workflow retry` does', effects: 'drop `done`', next: 'drive', action: 'the reply\'s row; the tick goes on as in drive' },
 ] as const satisfies readonly TransitionRow[];
 
 export type RowId = typeof TRANSITIONS[number]['id'];
@@ -420,16 +422,22 @@ export function hasSlot(state: SkillState): boolean {
 }
 
 /**
- * The engine `next` of a tick (D1), or R12 while the host question waits; undefined once the run is done. A runner's
- * check (`role: 'runner'`) takes no lease.
+ * The engine `next` of a tick (D1), or R12 while the host question waits. Once the run is done, a `next` that takes no
+ * lease (X5) asks whether the engine reopened it. A runner's check (`role: 'runner'`) takes no lease.
  */
-export function tickRow(state: SkillState, role: 'call' | 'runner'): { row: 'R12' } | { row: 'D1'; request: { running: AttemptId[]; canTakeLease: boolean; autoApprove: boolean } } | undefined {
-  if (state.done) return undefined;
+export function tickRow(state: SkillState, role: 'call' | 'runner'): { row: 'R12' } | { row: 'D1' | 'X5'; request: { running: AttemptId[]; canTakeLease: boolean; autoApprove: boolean } } {
+  const running = state.attempts.map((open) => open.attempt);
+  const autoApprove = state.options.hitl === 'auto-approve';
+  if (state.done) return { row: 'X5', request: { running, canTakeLease: false, autoApprove } };
   if (state.host.kind === 'pending') return { row: 'R12' };
-  return {
-    row: 'D1',
-    request: { running: state.attempts.map((open) => open.attempt), canTakeLease: role === 'call' && hasSlot(state), autoApprove: state.options.hitl === 'auto-approve' },
-  };
+  return { row: 'D1', request: { running, canTakeLease: role === 'call' && hasSlot(state), autoApprove } };
+}
+
+/** X6: the engine answered a run this driver saw done with anything but its end, so it was reopened, as a retry does. */
+export function reopenedRow(state: SkillState, reply: EngineReply): Moved<'X6'> | undefined {
+  if (!state.done || reply.kind === 'done') return undefined;
+  const { done: _done, ...rest } = state;
+  return { row: 'X6', state: rest };
 }
 
 /** J1: the `score --next` of a tick while judging is on and the host is chosen. A runner's check takes no judge work. */

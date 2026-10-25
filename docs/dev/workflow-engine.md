@@ -199,3 +199,5 @@ While judging is on, a tick asks `score --next` for judge work of its own run on
 | X1 | done | next | no attempt is open, and a judge is | none | done | `done` with `judging`; `then: poll` |
 | X2 | done | next | no attempt or judge is open | none | done | `done`, no `then` |
 | X4 | done | next | an attempt is still open: the engine cancelled it with the run | none | done | every `stop`, then `done`; `then: poll` |
+| X5 | done | tick | | engine `next` as D1, with `canTakeLease: false` | done | |
+| X6 | done | reply, before its row | the reply is not `done`: the engine reopened the run, as `workflow retry` does | drop `done` | drive | the reply's row; the tick goes on as in drive |

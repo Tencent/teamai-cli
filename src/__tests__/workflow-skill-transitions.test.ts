@@ -197,6 +197,16 @@ steps:
     command: node -e "console.log(process.env.NAME)"
 `;
 
+// Passes once the file RETRY_FLAG names exists, outside the checkout the step only reads.
+const FLAGGED = `schemaVersion: v1alpha1
+name: check
+description: Check the flag
+invoke: allow
+steps:
+  - id: flag
+    command: node -e "require('fs').existsSync(process.env.RETRY_FLAG) || process.exit(1)"
+`;
+
 const DIRTY = `schemaVersion: v1alpha1
 name: check
 description: Write the notes into the checkout
@@ -616,6 +626,23 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       const after = await made.call({ kind: 'next', run, wait: false });
       expect(after).toMatchObject({ data: { turn: { status: 'done', actions: [{ kind: 'done', outcome: 'succeeded' }] } } });
       expect(JSON.stringify(after)).not.toContain('"then"');
+      return made.rows;
+    },
+  },
+  {
+    name: 'a run that failed and was retried is driven again: the next call leases the retried step instead of showing the old end',
+    rows: ['X5', 'X6', 'D6'],
+    run: async () => {
+      const made = await harness({ check: FLAGGED });
+      const flag = path.join(made.root, 'flag');
+      vi.stubEnv('RETRY_FLAG', flag);
+      const { run } = await started(made);
+      expect((await polledToDone(made, run)).actions).toEqual([expect.objectContaining({ kind: 'done', outcome: 'failed' })]);
+      fs.writeFileSync(flag, 'set');
+      expect(await made.context.client.retry(run, 'flag')).toMatchObject({ data: { run: { status: 'running' } } });
+      const retried = await turnOf(await made.call({ kind: 'next', run, wait: false }));
+      expect(retried).toMatchObject({ status: 'driving', events: [{ kind: 'started', step: 'flag' }] });
+      expect((await polledToDone(made, run)).actions).toEqual([{ kind: 'done', outcome: 'succeeded', prs: [] }]);
       return made.rows;
     },
   },
