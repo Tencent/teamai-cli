@@ -1,9 +1,11 @@
 /** A scenario's runner over the in-process client, and what the in-process and CLI clients must answer alike. */
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { vi } from 'vitest';
 import { resolveWorkflowEnv } from '../../env-resolution.js';
 import type { LocalConfig } from '../../types.js';
+import { redactJson } from '../../utils/redact.js';
 import { syncWorkflowDefinitions } from '../../workflow/cache.js';
 import { inProcessConformanceClient, type ConformanceClient, type ConformanceRunner, type ConformanceScenario } from '../../workflow/conformance-interpreter.js';
 import { inProcessClient } from '../../workflow/protocol.js';
@@ -11,12 +13,27 @@ import { pendingRecords } from '../../workflow/records.js';
 import { readRun } from '../../workflow/store.js';
 import type { WorkflowEnvelope } from '../../workflow/types.js';
 
+/** The origin of the CLI conformance install, where nothing listens. */
+export const UNREACHABLE_ORIGIN = 'http://127.0.0.1:9/team/workflow.git';
+
 /**
  * Installs `scenario` under `root` with its env stubbed, and its runner over the in-process client on a fake Date. The
- * caller restores the env and the clock. `places` names the directories the run's envelopes can name.
+ * caller restores the env and the clock. `places` names the directories the run's envelopes can name. With `checkout`,
+ * `root` is a git checkout every run starts from, as `teamai workflow start` starts from its cwd, whose origin no one
+ * answers, as the CLI conformance install's; `printed` is what the CLI prints of an envelope, the team's secrets masked.
  */
-export async function inProcessConformanceRunner(scenario: ConformanceScenario, root: string): Promise<{ runner: Omit<ConformanceRunner, 'expect'>; places: Record<string, string> }> {
+export async function inProcessConformanceRunner(scenario: ConformanceScenario, root: string, options: { checkout?: true } = {}): Promise<{
+  runner: Omit<ConformanceRunner, 'expect'>; places: Record<string, string>; printed: (value: unknown) => unknown;
+}> {
   for (const [name, value] of Object.entries(scenario.env ?? {})) vi.stubEnv(name, value);
+  if (options.checkout) {
+    const git = (...args: string[]): string => execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', ...args], { cwd: root, encoding: 'utf8' });
+    git('init', '-q', '-b', 'main');
+    fs.writeFileSync(path.join(root, 'README.md'), '# fixture\n');
+    git('add', 'README.md');
+    git('commit', '-qm', 'initial');
+    git('remote', 'add', 'origin', UNREACHABLE_ORIGIN);
+  }
   const knowledge = path.join(root, 'knowledge');
   const data = path.join(root, 'data');
   fs.mkdirSync(path.join(knowledge, 'workflows'), { recursive: true });
@@ -33,9 +50,11 @@ export async function inProcessConformanceRunner(scenario: ConformanceScenario, 
     fs.writeFileSync(path.join(knowledge, 'workflows', `${name}.yaml`), yaml);
   }
   await syncWorkflowDefinitions(config);
+  const env = await resolveWorkflowEnv(config);
+  const client = inProcessConformanceClient(inProcessClient({ config, env }));
   return {
     runner: {
-      client: inProcessConformanceClient(inProcessClient({ config, env: await resolveWorkflowEnv(config) })),
+      client: options.checkout ? { ...client, start: (name, start) => client.start(name, { ...start, checkout: root }) } : client,
       readRun: async (runId) => {
         const stored = await readRun(config, runId);
         if (typeof stored !== 'object') throw new Error('run was not stored');
@@ -49,6 +68,7 @@ export async function inProcessConformanceRunner(scenario: ConformanceScenario, 
       },
     },
     places: { knowledge, data, project: root },
+    printed: (value) => redactJson(value, env.secrets),
   };
 }
 
@@ -74,8 +94,8 @@ export function recorded(client: ConformanceClient): { client: ConformanceClient
 }
 
 /**
- * `value` with what two installs of one scenario cannot share named instead: run and attempt ids, times, and each of
- * `places`, by its key, whether as given or as its real path.
+ * `value` with what two installs of one scenario cannot share named instead: run and attempt ids, commits, times, how
+ * long git took to fail to connect, and each of `places`, by its key, whether as given or as its real path.
  */
 export function normalized(value: unknown, places: Record<string, string>): unknown {
   const named = Object.entries(places)
@@ -86,6 +106,8 @@ export function normalized(value: unknown, places: Record<string, string>): unkn
   text = text
     .replace(/\br[0-9a-f]{16}\b|\br[0-9a-f]{8}\b/g, '<run>')
     .replace(/\ba[0-9a-f]{8}\b/g, '<attempt>')
-    .replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/g, '<time>');
+    .replace(/\b[0-9a-f]{40}\b/g, '<commit>')
+    .replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/g, '<time>')
+    .replace(/ after \d+ ms/g, ' after <ms> ms');
   return JSON.parse(text);
 }

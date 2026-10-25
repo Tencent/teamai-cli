@@ -8,7 +8,7 @@ import { DRIVERS_UNDER_TEST, runConformanceScenario } from '../../workflow/confo
 import { workflowConformanceScenarios } from '../../workflow/conformance.js';
 import type { RunState, WorkflowEnvelope } from '../../workflow/types.js';
 import { cliConformanceClient, envelope, runCLI } from '../helpers/cli-conformance.js';
-import { inProcessConformanceRunner, normalized, recorded } from '../helpers/in-process-conformance.js';
+import { inProcessConformanceRunner, normalized, recorded, UNREACHABLE_ORIGIN } from '../helpers/in-process-conformance.js';
 
 describe.each(DRIVERS_UNDER_TEST)('workflow protocol conformance through the CLI as %s', (profile) => {
   let repo: string;
@@ -19,7 +19,7 @@ describe.each(DRIVERS_UNDER_TEST)('workflow protocol conformance through the CLI
     execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repo });
     execFileSync('git', ['add', 'README.md'], { cwd: repo });
     execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'initial'], { cwd: repo });
-    execFileSync('git', ['remote', 'add', 'origin', 'http://127.0.0.1:9/team/workflow.git'], { cwd: repo });
+    execFileSync('git', ['remote', 'add', 'origin', UNREACHABLE_ORIGIN], { cwd: repo });
     const initialized = await runCLI(['init', '--self', '--agent', 'claude', '--force'], repo);
     expect(initialized.code, `${initialized.stdout}\n${initialized.stderr}`).toBe(0);
   });
@@ -69,14 +69,14 @@ describe.each(DRIVERS_UNDER_TEST)('workflow protocol conformance through the CLI
         expect,
       }, profile);
 
-      // The in-process client answers the same scenario with the same envelopes.
+      // The in-process client answers the same scenario, started from a checkout as the CLI's is, with the envelopes the CLI prints.
       const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-workflow-conformance-'));
       dirs.push(root);
-      const inProcess = await inProcessConformanceRunner(scenario, root);
+      const inProcess = await inProcessConformanceRunner(scenario, root, { checkout: true });
       const local = recorded(inProcess.runner.client);
       await runConformanceScenario(scenario, { ...inProcess.runner, client: local.client, expect }, profile);
       const places = { knowledge: path.join(repo, '.teamai'), data: await resolveProjectDataHome(repo), project: repo };
-      expect(normalized(cli.envelopes, places), 'the CLI and the in-process client answer alike').toEqual(normalized(local.envelopes, inProcess.places));
+      expect(normalized(cli.envelopes, places), 'the CLI and the in-process client answer alike').toEqual(normalized(inProcess.printed(local.envelopes), inProcess.places));
     });
   }
 });
