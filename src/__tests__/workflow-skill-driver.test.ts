@@ -10,6 +10,7 @@ import type { RunMode } from '../launch-context.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { getDataHome } from '../types.js';
 import { skillContext } from '../workflow/drivers/skill/skill-driver.js';
+import { detachedRunners } from '../workflow/drivers/skill/skill-runner.js';
 import { inProcessClient } from '../workflow/protocol.js';
 import { takeJudgeLease, type JudgeRequest } from '../workflow/scoring.js';
 import { AttemptIdSchema, deliveryLockPath, RunIdSchema, skillStatePath, type RunId } from '../workflow/store.js';
@@ -967,5 +968,16 @@ steps:
       message: expect.stringMatching(new RegExp(`^The skill driver's state of run ${run} cannot be read \\(.+\\)\\. The person can continue the run in a terminal with teamai workflow resume ${run} --tools default=claude\\.$`)),
       next: null,
     } });
+  });
+});
+
+describe('detached runners', () => {
+  it('refuse to start a runner in a checkout that is gone, saying what to do', async () => {
+    const harness = await skillHarness({ check: CHECK });
+    roots.push(harness.root);
+    const checkout = path.join(harness.root, 'removed');
+    const run = RunIdSchema.parse('r0123456789abcdef');
+    const spawned = detachedRunners(harness.config).spawn({ run, attempt: AttemptIdSchema.parse('a00000000'), checkout, mode: 'attended' });
+    await expect(spawned).rejects.toThrow(`The runner of attempt a00000000 cannot start in ${checkout}, the checkout run ${run} started from: it does not exist. Restore that checkout at that path, then run the same call again, or end the run with teamai workflow cancel ${run}.`);
   });
 });

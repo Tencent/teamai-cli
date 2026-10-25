@@ -40,9 +40,16 @@ export function detachedRunners(config: LocalConfig): Runners {
     spawn: async ({ run, attempt, checkout, mode }) => {
       const entry = resolveCliEntry();
       if (!entry) throw new Error('The teamai entry script is unknown, so the runner of a workflow step cannot start. Reinstall teamai.');
-      spawn(process.execPath, [entry, ...runnerArgs(run, attempt)], {
+      const child = spawn(process.execPath, [entry, ...runnerArgs(run, attempt)], {
         cwd: checkout, detached: true, stdio: 'ignore', windowsHide: true, env: { ...process.env, ...attemptEnv(run, attempt, mode) },
-      }).unref();
+      });
+      const failed = await new Promise<NodeJS.ErrnoException | undefined>((resolve) => { child.once('spawn', () => resolve(undefined)).once('error', resolve); });
+      if (failed) {
+        // The node running this call exists, so the only path a spawn can miss is the directory it starts in.
+        const cause = failed.code === 'ENOENT' ? 'it does not exist' : failed.message;
+        throw new Error(`The runner of attempt ${attempt} cannot start in ${checkout}, the checkout run ${run} started from: ${cause}. Restore that checkout at that path, then run the same call again, or end the run with teamai workflow cancel ${run}.`);
+      }
+      child.unref();
     },
     alive: (run, attempt) => runnerAlive(config, run, attempt),
     // A process group of its own, so a stop reaches every process the command started.
