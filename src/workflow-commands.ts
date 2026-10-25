@@ -13,7 +13,7 @@ import { driverIdentity } from './driver-identity.js';
 import { getBusinessRoot, getDataHome, type LocalConfig, type TeamaiConfig } from './types.js';
 import { AttemptIdSchema, readRun, RunIdSchema } from './workflow/store.js';
 import { inProcessClient, resumeRefusal, workflowNotFound, type NextPrepare } from './workflow/protocol.js';
-import { parseSkillCall, runSkillCall, sessionDrivesRun, skillContext } from './workflow/drivers/skill/skill-driver.js';
+import { parseInputsFlag, parseSkillCall, runSkillCall, sessionDrivesRun, skillContext } from './workflow/drivers/skill/skill-driver.js';
 import { loadCachedWorkflow } from './workflow/cache.js';
 import { findRunConfig } from './workflow/run-location.js';
 import { resolveRunMode } from './launch-context.js';
@@ -210,15 +210,12 @@ export async function workflowStart(name: string, options: {
     writeEnvelope({ error: { code: 'invalid_tools', message: tools } }, secrets);
     return;
   }
-  let inputs: unknown = {};
-  if (options.inputs !== undefined) {
-    try {
-      inputs = JSON.parse(options.inputs) as unknown;
-    } catch {
-      writeEnvelope({ error: { code: 'invalid_json', message: 'Could not parse --inputs as JSON' } }, secrets);
-      return;
-    }
+  const read = options.inputs === undefined ? { inputs: {} } : parseInputsFlag(options.inputs);
+  if ('error' in read) {
+    writeEnvelope({ error: read.error }, secrets);
+    return;
   }
+  const { inputs } = read;
   const caller = { evidence: agentEvidence(process.env), confirmed: options.confirmed === true, mode: resolveRunMode(process.env) };
   const started = await inProcessClient({ config, env }).start(name, { inputs, checkout: process.cwd(), caller });
   if ('error' in started || options.driver !== 'local') {

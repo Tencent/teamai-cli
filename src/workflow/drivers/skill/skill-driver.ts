@@ -15,6 +15,7 @@ import type { LocalConfig, TeamaiConfig } from '../../../types.js';
 import { agentSessionFromEnv } from '../../../utils/session-id.js';
 import { agentEvidence, isAttemptRunner, type AgentEvidence } from '../../attempt-marker.js';
 import { inProcessClient, invokeDeniedMessage, type WorkflowClient } from '../../protocol.js';
+import type { WorkflowFailure } from '../../types.js';
 import { AttemptIdSchema, RunIdSchema, takeRunLock, type AttemptId, type LockTaken, type RunId, type RunLock } from '../../store.js';
 import { canFor, HOST_CHOICES, type HostChoice } from './host-profiles.js';
 import { journalCall } from './journal.js';
@@ -187,6 +188,15 @@ const ReportOptionsSchema = z.object({
   json: z.undefined({ invalid_type_error: '--driver skill takes no --json: the skill driver composes every report itself' }),
 });
 
+/** The JSON object `workflow start --inputs` carries, with either driver. */
+export function parseInputsFlag(raw: string): { inputs: unknown } | { error: WorkflowFailure } {
+  try {
+    return { inputs: JSON.parse(raw) as unknown };
+  } catch {
+    return { error: { code: 'invalid_json', message: 'Could not parse --inputs as JSON' } };
+  }
+}
+
 function invalid(error: z.ZodError): { error: SkillError } {
   return { error: { code: 'invalid_arguments', message: error.issues[0]?.message ?? 'invalid options', next: null } };
 }
@@ -207,14 +217,9 @@ export function parseSkillCall(
     const options = StartOptionsSchema.safeParse(raw.options);
     if (!options.success) return invalid(options.error);
     if (options.data.describe) return { kind: 'describe', name: raw.name };
-    let inputs: unknown;
-    if (options.data.inputs !== undefined) {
-      try {
-        inputs = JSON.parse(options.data.inputs) as unknown;
-      } catch {
-        return { error: { code: 'invalid_json', message: 'Could not parse --inputs as JSON', next: null } };
-      }
-    }
+    const read = options.data.inputs === undefined ? { inputs: undefined } : parseInputsFlag(options.data.inputs);
+    if ('error' in read) return { error: { ...read.error, next: null } };
+    const { inputs } = read;
     const { parallel, confirmed, judge, autoApprove } = options.data;
     const hitl: HitlMode | undefined = autoApprove ? 'auto-approve' : options.data.hitl;
     return {
