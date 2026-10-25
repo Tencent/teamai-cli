@@ -2,6 +2,7 @@
  * The skill driver's state machine: `step(state, input)` returns the row it took, the new state and what the caller
  * must do. The rows are the tables under `## The skill driver` in docs/dev/workflow-engine.md, cell by cell.
  */
+import type { EnvScope } from '../../requirements.js';
 import type { AttemptId } from '../../store.js';
 import type { WorkflowFailure } from '../../types.js';
 import type { StartAnswer, StartCheck } from './preflight.js';
@@ -40,7 +41,7 @@ export const TRANSITIONS = [
   { id: 'D21', state: 'drive, done', input: 'a poll tick', guard: 'the lock was busy, or nothing below applies, and the bound is not reached', effects: 'release; sleep `WAIT_POLL_MS`; tick again', next: 'unchanged', action: '' },
   { id: 'D23', state: 'done', input: 'a poll tick', guard: '`seen[s]` is below seq: s has not seen `done`', effects: '`seen[s]` := seq', next: 'done', action: '`done` with its events' },
   { id: 'D24', state: 'drive, done', input: 'a poll tick', guard: 'the bound is reached', effects: 'none', next: 'unchanged', action: '`then: poll`, no actions' },
-  { id: 'C1', state: 'preparing', input: 'runner: prepared', guard: 'job `command`', effects: 'run the command outside the lock with `{...process.env, ...lease.env, TEAMAI_WORKFLOW_ATTEMPT}`, output masked into `output.log`', next: 'running', action: '' },
+  { id: 'C1', state: 'preparing', input: 'runner: prepared', guard: 'job `command`', effects: 'run the command outside the lock with `{...stepEnvironment(values, envScope).env, ...lease.env, TEAMAI_WORKFLOW_ATTEMPT}` (`process.env` for a lease without `envScope`), output masked into `output.log`', next: 'running', action: '' },
   { id: 'C7', state: 'preparing', input: 'runner: prepare failed', guard: '', effects: 'write-ahead `failed` with its failure', next: 'reporting', action: '' },
   { id: 'C8', state: 'running', input: 'runner: the command exited', guard: '', effects: 'write-ahead: `success` on exit 0, else `failed`; outputs, exit code, masked tail', next: 'reporting', action: '' },
   { id: 'C10', state: 'preparing, running', input: 'tick: its `runner.lock` is free', guard: 'it was spawned more than `WAIT_GRACE_MS` ago', effects: 'spawn the same job again (prepare is idempotent; a command restarts in its prepared place)', next: 'unchanged', action: 'event `restarted`' },
@@ -62,6 +63,7 @@ export interface ReadLease {
   revision: number;
   command: string;
   env: Record<string, string>;
+  envScope?: EnvScope;
 }
 
 export type EngineReply =
@@ -98,7 +100,7 @@ export type Effect =
   | { kind: 'start'; parallel: number }
   | { kind: 'next'; running: AttemptId[]; canTakeLease: boolean }
   /** `job` is the lease's command and env for a new attempt; a respawn reuses the job already saved. */
-  | { kind: 'spawn'; attempt: AttemptId; job?: { command: string; env: Record<string, string> } }
+  | { kind: 'spawn'; attempt: AttemptId; job?: Pick<ReadLease, 'command' | 'env' | 'envScope'> }
   | { kind: 'run'; attempt: AttemptId }
   | { kind: 'send'; attempt: AttemptId; body: ReportBody }
   | { kind: 'grace' }
@@ -257,9 +259,10 @@ function tick(state: SkillState): Step {
 function reply(state: SkillState, engine: EngineReply, at: string): Step {
   switch (engine.kind) {
     case 'lease': {
-      const { attempt, step: id, revision, command, env } = engine.lease;
+      const { attempt, step: id, revision, command, env, envScope } = engine.lease;
       const preparing = withAttempt(state, { attempt, step: id, revision, spawnedAt: at, phase: 'preparing' });
-      return { row: 'D6', state: withEvent(preparing, { kind: 'started', step: id, attempt }), effects: [{ kind: 'spawn', attempt, job: { command, env } }] };
+      const job = { command, env, ...(envScope ? { envScope } : {}) };
+      return { row: 'D6', state: withEvent(preparing, { kind: 'started', step: id, attempt }), effects: [{ kind: 'spawn', attempt, job }] };
     }
     case 'wait':
       return { row: 'D15', state, effects: [], waiting: { reason: engine.reason } };

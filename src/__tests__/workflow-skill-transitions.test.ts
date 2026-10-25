@@ -38,6 +38,19 @@ steps:
     command: node -e "process.exit(0)"
 `;
 
+const SHIP = `schemaVersion: v1alpha1
+name: check
+description: Publish, then lint
+invoke: allow
+steps:
+  - id: publish
+    requires: { env: [DEPLOY_TOKEN] }
+    command: node -e "console.log('token length ' + (process.env.DEPLOY_TOKEN ?? '').length)"
+  - id: lint
+    needs: [publish]
+    command: node -e "console.log('lint sees ' + (process.env.DEPLOY_TOKEN ?? 'no token'))"
+`;
+
 const roots: string[] = [];
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -88,6 +101,23 @@ function scriptedOnce(script: (client: WorkflowClient) => Partial<Pick<WorkflowC
  * the last case checks the cases cover every row of `TRANSITIONS`.
  */
 const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> }> = [
+  {
+    name: 'a command that requires env gets its key, and a step that does not require it runs without it',
+    rows: ['D6', 'C1'],
+    run: async () => {
+      vi.stubEnv('DEPLOY_TOKEN', 'deploy-value-1304');
+      const made = await harness({ check: SHIP });
+      const tails: Record<string, string | undefined> = {};
+      const { run } = await started(made);
+      for (let poll = 0; poll < 5 && !('lint' in tails); poll += 1) {
+        const answer = await made.call({ kind: 'next', run, wait: true });
+        if (!('data' in answer) || !('turn' in answer.data)) throw new Error(JSON.stringify(answer));
+        for (const event of answer.data.turn.events) if (event.kind === 'settled') tails[event.step] = event.tail;
+      }
+      expect(tails).toEqual({ publish: 'token length 17', lint: 'lint sees no token' });
+      return made.rows;
+    },
+  },
   {
     name: 'a command-only run, from describe to done and a next after it',
     rows: ['R4', 'R10', 'S1', 'S5', 'D1', 'D6', 'D15', 'D16', 'D18', 'D20', 'D21', 'D23', 'C1', 'C8', 'P7', 'X2'],

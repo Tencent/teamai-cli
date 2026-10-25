@@ -6,6 +6,7 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { resolveCliEntry } from '../../../builtin-hooks.js';
+import { stepEnvironment } from '../../../env-exec.js';
 import type { LocalConfig } from '../../../types.js';
 import { writeFileAtomic } from '../../../utils/fs.js';
 import { redact } from '../../../utils/redact.js';
@@ -36,7 +37,8 @@ export function detachedRunners(config: LocalConfig): Runners {
 }
 
 type Stage =
-  | { kind: 'run'; dir: string; job: Job }
+  /** `env` is the environment the command starts from: the job's `envScope` applied, else this process's. */
+  | { kind: 'run'; dir: string; job: Job; env: NodeJS.ProcessEnv }
   /** The engine refused the report; it stays stored, and the runner sends it again. */
   | { kind: 'retry' }
   /** Nothing is left for this runner: its attempt was reported, or is no longer open. */
@@ -89,7 +91,7 @@ function failedBody(state: SkillState, attempt: AttemptId, revision: number, fai
   return { attempt, revision, outcome: 'failed', driver: state.driver, message: failure.message, failure };
 }
 
-/** Under the lock: prepares the attempt's place (C1, C7), or sends the report it already has. */
+/** Under the lock: prepares the attempt's place and its env (C1, C7), or sends the report it already has. */
 async function prepare(context: SkillContext, lock: RunLock, attempt: AttemptId): Promise<Stage> {
   const state = await readState(context, lock);
   const open = state && openAttempt(state, attempt);
@@ -106,10 +108,12 @@ async function prepare(context: SkillContext, lock: RunLock, attempt: AttemptId)
   if (!job) {
     return failed({ code: 'run_unreadable', message: `The command of attempt ${attempt} was not saved where its runner reads it, so the step did not run. Retry it with teamai workflow retry ${lock.run} ${open.step}.` });
   }
+  const scoped = job.envScope ? await stepEnvironment(context.env.values, job.envScope) : { ok: true as const, env: process.env };
+  if (!scoped.ok) return failed(scoped.failure);
   // A runner that restarts a command already running starts it again in the place it was prepared in.
   const running = open.phase === 'preparing' ? take(context, state, { kind: 'prepared', attempt })?.state ?? state : state;
   await writeSkillState(context.config, lock, running, context.env.secrets);
-  return { kind: 'run', dir: prepared.dir, job };
+  return { kind: 'run', dir: prepared.dir, job, env: scoped.env };
 }
 
 interface Exited {
@@ -128,7 +132,7 @@ async function runCommand(context: SkillContext, run: RunId, attempt: AttemptId,
     let raw = '';
     const child = spawn(stage.job.command, {
       shell: true, cwd: stage.dir, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
-      env: { ...process.env, ...stage.job.env, ...attemptEnv(run, attempt) },
+      env: { ...stage.env, ...stage.job.env, ...attemptEnv(run, attempt) },
     });
     child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; raw += chunk; });
     child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; raw += chunk; });

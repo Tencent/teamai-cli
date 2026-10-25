@@ -99,7 +99,7 @@ Test parsing through `parseWorkflow` and `syncWorkflowDefinitions`. Test the eng
 
 | Row | State | Input | Guard | Effects | Next | Action |
 |---|---|---|---|---|---|---|
-| C1 | preparing | runner: prepared | job `command` | run the command outside the lock with `{...process.env, ...lease.env, TEAMAI_WORKFLOW_ATTEMPT}`, output masked into `output.log` | running | |
+| C1 | preparing | runner: prepared | job `command` | run the command outside the lock with `{...stepEnvironment(values, envScope).env, ...lease.env, TEAMAI_WORKFLOW_ATTEMPT}` (`process.env` for a lease without `envScope`), output masked into `output.log` | running | |
 | C7 | preparing | runner: prepare failed | | write-ahead `failed` with its failure | reporting | |
 | C8 | running | runner: the command exited | | write-ahead: `success` on exit 0, else `failed`; outputs, exit code, masked tail | reporting | |
 | C10 | preparing, running | tick: its `runner.lock` is free | it was spawned more than `WAIT_GRACE_MS` ago | spawn the same job again (prepare is idempotent; a command restarts in its prepared place) | unchanged | event `restarted` |

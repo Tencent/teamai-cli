@@ -8,7 +8,7 @@ import { z } from 'zod';
 import type { LocalConfig } from '../../../types.js';
 import { readFileSafe, writeJsonAtomic } from '../../../utils/fs.js';
 import { redactJson } from '../../../utils/redact.js';
-import type { DriverCan } from '../../requirements.js';
+import type { DriverCan, EnvScope } from '../../requirements.js';
 import { AttemptIdSchema, attemptDir, type AttemptId, type RunId, type RunLock } from '../../store.js';
 import type { WorkflowEnvelope, WorkflowFailure } from '../../types.js';
 import { describeLiteral, nextLiteral, pollLiteral, reportLiteral, type Literal } from './literals.js';
@@ -31,8 +31,11 @@ export const RUNNER_POLL_MS = 10_000;
 export const SKILL_MAX_CHILDREN = 3;
 const GRACE_CHECK_MS = 250;
 
-/** What the skill driver declares on every `next`: it runs commands in the checkout, and no person answers through it. */
-const CAN: DriverCan = { hitl: false, workspace: ['read-only'] };
+/**
+ * What the skill driver declares on every `next`: it runs commands in the checkout and scopes their env in its own
+ * processes, and no person answers through it.
+ */
+const CAN: DriverCan = { hitl: false, workspace: ['read-only'], env: 'commands' };
 
 /** The most steps the skill driver runs at once for `config`. */
 export function ceilingOf(config: LocalConfig): number {
@@ -46,8 +49,9 @@ export function take(context: SkillContext, state: SkillState | undefined, input
   return taken;
 }
 
-const JobSchema = z.object({ command: z.string(), env: z.record(z.string()) });
-/** What a runner runs: the leased command and the env the lease rendered for it. */
+const EnvScopeShape = z.object({ provide: z.array(z.string()), withhold: z.array(z.string()) }) satisfies z.ZodType<EnvScope>;
+const JobSchema = z.object({ command: z.string(), env: z.record(z.string()), envScope: EnvScopeShape.optional() });
+/** What a runner runs: the leased command, the env the lease rendered for it, and the team env keys it gives or keeps. */
 export type Job = z.infer<typeof JobSchema>;
 
 function jobPath(config: LocalConfig, run: RunId, attempt: AttemptId): string {
@@ -78,6 +82,7 @@ const LeaseSchema = z.object({
   revision: z.number().int(),
   command: z.string(),
   env: z.record(z.string()).optional(),
+  envScope: EnvScopeShape.optional(),
   prompt: z.undefined(),
   workspace: z.undefined(),
 });
@@ -100,8 +105,8 @@ function engineReply(run: RunId, answer: WorkflowEnvelope): EngineReply {
   if (!read.success) {
     return { kind: 'error', error: { code: 'run_unreadable', message: `Run ${run} leased a step the skill driver cannot run. Ask the person to continue it in a terminal with teamai workflow resume ${run}.` } };
   }
-  const { attempt, step: id, revision, command, env } = read.data;
-  return { kind: 'lease', lease: { attempt, step: id, revision, command, env: env ?? {} } };
+  const { attempt, step: id, revision, command, env, envScope } = read.data;
+  return { kind: 'lease', lease: { attempt, step: id, revision, command, env: env ?? {}, ...(envScope ? { envScope } : {}) } };
 }
 
 const ReportDataSchema = z.object({ step: z.object({ outcome: z.enum(['success', 'failed', 'released']) }) });
