@@ -26,8 +26,11 @@ export async function writeChildBrief(input: {
   attempt: AttemptId;
   step: string;
   dir: string;
-  /** Whether TeamAI commits what the step changes in `dir`: false for a step in the checkout or in a read-only copy, which must change nothing. */
-  writes: boolean;
+  /**
+   * What becomes of what the step changes in `dir`: `commit`, TeamAI commits it; `keep`, an interactive step in the
+   * checkout, it stays there and TeamAI commits nothing; `none`, the step only reads, and must change nothing.
+   */
+  changes: 'commit' | 'keep' | 'none';
   prompt: string;
   /**
    * Who works the step: a `child` agent the orchestrator started; the orchestrator, with the `person`, in an interactive
@@ -39,7 +42,7 @@ export async function writeChildBrief(input: {
   report: Literal;
   secrets: Record<string, string>;
 }): Promise<string> {
-  const { config, run, attempt, step, dir, writes, prompt, by, output, report, secrets } = input;
+  const { config, run, attempt, step, dir, changes, prompt, by, output, report, secrets } = input;
   const shape = output === undefined ? 'a short summary of what you did, as a JSON string' : `a value that matches the JSON schema \`${JSON.stringify(output)}\``;
   const brief = [
     `# Step ${step}, attempt ${attempt} of run ${run}`,
@@ -56,9 +59,11 @@ export async function writeChildBrief(input: {
     '',
     '## How to work',
     '',
-    ...(writes
-      ? [`- Work in \`${dir}\`: every file the step reads or changes is there.`, '- Leave git to TeamAI. It commits and pushes that directory after you report.']
-      : [`- Work in \`${dir}\`: every file the step reads is there. Do not change files here: the step only reads them, and TeamAI fails a step that leaves a change.`, '- Leave git to TeamAI.']),
+    ...{
+      commit: [`- Work in \`${dir}\`: every file the step reads or changes is there.`, '- Leave git to TeamAI. It commits and pushes that directory after you report.'],
+      keep: [`- Work in \`${dir}\`, the person's checkout: every file the step reads or changes is there. What you change stays there; TeamAI commits nothing.`, '- Leave git to the person.'],
+      none: [`- Work in \`${dir}\`: every file the step reads is there. Do not change files here: the step only reads them, and TeamAI fails a step that leaves a change.`, '- Leave git to TeamAI.'],
+    }[changes],
     '- Run one teamai command, the report below, once, at the end.',
     '',
     '## Finish',

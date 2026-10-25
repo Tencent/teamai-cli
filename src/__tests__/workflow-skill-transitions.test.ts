@@ -37,6 +37,9 @@ steps:
     interactive: true
 `;
 
+// DRAFT, with the person reading only.
+const DRAFT_READ = DRAFT.replace('name: draft', 'name: draft-read').replace('    interactive: true\n', '    interactive: true\n    workspace: read-only\n');
+
 const RELEASE_DOCS = `schemaVersion: v1alpha1
 name: release-docs
 description: Draft the release notes, then sign them
@@ -821,6 +824,23 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       const [dispatch] = dispatches(await turnOf(await made.call({ kind: 'choose', run, choice: 'h1' })));
       expect(dispatch).toMatchObject({ step: 'write', needs: { place: 'checkout', parallel: false, person: true }, dir: made.work });
       expect(fs.readFileSync(dispatch?.brief ?? '', 'utf8')).toContain('with the person');
+      return made.rows;
+    },
+  },
+  {
+    name: 'the brief of an interactive step in the checkout keeps what the person changes, and one that only reads forbids changes',
+    rows: ['D7'],
+    run: async () => {
+      const made = await harness({ draft: DRAFT, 'draft-read': DRAFT_READ });
+      const briefOf = async (name: string): Promise<string> => {
+        const { run } = await turnOf(await made.call({ kind: 'start', name, answers: { confirmed: false }, inputs: undefined }));
+        const [dispatch] = dispatches(await turnOf(await made.call({ kind: 'choose', run, choice: 'h1' })));
+        return fs.readFileSync(dispatch?.brief ?? '', 'utf8');
+      };
+      const kept = await briefOf('draft');
+      expect(kept).toContain('What you change stays there; TeamAI commits nothing.');
+      expect(kept).not.toContain('Do not change files here');
+      expect(await briefOf('draft-read')).toContain('Do not change files here');
       return made.rows;
     },
   },

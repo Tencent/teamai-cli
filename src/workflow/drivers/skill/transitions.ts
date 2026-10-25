@@ -127,8 +127,11 @@ export type RowId = typeof TRANSITIONS[number]['id'];
 /** A lease the engine handed out, as the tick read it: a command, or a prompt for a child. */
 export type ReadLease = { attempt: AttemptId; step: string; revision: number; expiresAt?: string } & (
   | { executor: 'command'; command: string; env: Record<string, string>; envScope?: EnvScope }
-  /** `writes`: the step commits to a branch, in a workspace `new` or `continue`. `interactive`: the person works in the step. */
-  | { executor: 'prompt'; prompt: string; place: Dispatch['place']; writes: boolean; interactive?: true; agent?: string; model?: string; defaultModel?: string; output?: unknown }
+  /**
+   * `writes`: the step commits to a branch, in a workspace `new` or `continue`. `interactive`: the person works in the step.
+   * `readOnly`: the step set `workspace: read-only`.
+   */
+  | { executor: 'prompt'; prompt: string; place: Dispatch['place']; writes: boolean; interactive?: true; readOnly?: true; agent?: string; model?: string; defaultModel?: string; output?: unknown }
 );
 
 /** A gate as the engine asks it. */

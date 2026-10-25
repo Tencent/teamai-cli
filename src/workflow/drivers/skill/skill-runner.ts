@@ -263,14 +263,15 @@ async function begin(context: SkillContext, lock: RunLock, attempt: AttemptId, p
     return { kind: 'run', dir, command: lease.command, env: { ...scoped.env, ...lease.env }, mode: state.options.mode, ...(open.expiresAt !== undefined ? { expiresAt: open.expiresAt } : {}) };
   }
   if (open.phase !== 'preparing') return { kind: 'gone', status: 'gone' };
-  const { agent, model, defaultModel, output, place, writes, interactive } = lease;
+  const { agent, model, defaultModel, output, place, writes, interactive, readOnly } = lease;
   const picked = await pickChildModel({
     config: context.config, toolPaths: context.toolPaths, step: open.step, tool: context.tool,
     ...(agent !== undefined ? { agent } : {}), ...(model !== undefined ? { model } : {}), ...(defaultModel !== undefined ? { defaultModel } : {}),
   });
   if (!picked.ok) return failed(picked.failure, 'model');
   const brief = await writeChildBrief({
-    config: context.config, run: lock.run, attempt, step: open.step, dir, writes, prompt: prepared.prompt ?? lease.prompt,
+    config: context.config, run: lock.run, attempt, step: open.step, dir, prompt: prepared.prompt ?? lease.prompt,
+    changes: writes ? 'commit' : interactive && place === 'checkout' && !readOnly ? 'keep' : 'none',
     by: interactive ? 'person' : state.host.kind === 'chosen' && state.host.id === 'h4' ? 'self' : 'child',
     ...(output !== undefined ? { output } : {}), report: reportLiteral(state.invocation, lock.run, attempt), secrets: context.env.secrets,
   });
