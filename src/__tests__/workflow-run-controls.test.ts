@@ -522,7 +522,7 @@ describe('changing a HITL request answer', () => {
     await leaseNext(no.config, no.id, driver);
     await leaseNext(no.config, no.id, driver);
     expect(warn).toHaveBeenCalledTimes(1);
-    expect(warn).toHaveBeenLastCalledWith('Step "ask" was skipped: its approve HITL request needs a person, and the driver declares no HITL (driver.can.hitl). Set workflows.auto_approve, pass --auto-approve, or run the workflow from a terminal.');
+    expect(warn).toHaveBeenLastCalledWith('Step "ask" was skipped: its approve HITL request needs a person, and the driver declares no HITL (driver.can.hitl). Set workflows.auto_approve, pass --auto-approve, or run the workflow where a person answers, from a terminal in an attended run (TEAMAI_MODE=attended, or neither TEAMAI_MODE nor CI set).');
     const yes = await fixture('  - id: ask\n    approve: Continue?');
     await leaseNext(yes.config, yes.id, driver, { autoApprove: true });
     expect(warn).toHaveBeenLastCalledWith('Step "ask" was approved by auto_approve.');
@@ -531,7 +531,7 @@ describe('changing a HITL request answer', () => {
     expect(warn).toHaveBeenLastCalledWith('Step "ask" chose "one" by auto_approve.');
     const required = await fixture('  - id: ask\n    approve: { message: Continue?, required: true }');
     await leaseNext(required.config, required.id, driver);
-    expect(warn).toHaveBeenLastCalledWith(expect.stringContaining("needs a person's answer"));
+    expect(warn).toHaveBeenLastCalledWith(`Step "ask" needs a person's answer, and the driver declares no HITL (driver.can.hitl). Retry it, then resume the run where a person answers, from a terminal in an attended run (TEAMAI_MODE=attended, or neither TEAMAI_MODE nor CI set): teamai workflow retry ${required.id} ask; then teamai workflow resume ${required.id}`);
     expect(warn).toHaveBeenCalledTimes(4);
   });
 });

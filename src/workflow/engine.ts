@@ -265,11 +265,11 @@ function answerWithoutHitl(config: LocalConfig, run: RunState, now: string, auto
     const hitl = definitionOf(state.id)?.hitl;
     if (!hitl) continue;
     if (hitl.required || hitl.kind === 'choose') {
-      const failure = { code: 'hitl_required', message: `Step "${state.id}" needs a person's answer, and the driver declares no HITL (driver.can.hitl). Retry it from a terminal: teamai workflow retry ${run.id} ${state.id}; then teamai workflow resume ${run.id}` };
+      const failure = { code: 'hitl_required', message: `Step "${state.id}" needs a person's answer, and the driver declares no HITL (driver.can.hitl). Retry it, then resume the run where a person answers, from a terminal in an attended run (TEAMAI_MODE=attended, or neither TEAMAI_MODE nor CI set): teamai workflow retry ${run.id} ${state.id}; then teamai workflow resume ${run.id}` };
       log.warn(failure.message);
       failStep(state, failure, run.revision);
     } else {
-      log.warn(`Step "${state.id}" was skipped: its approve HITL request needs a person, and the driver declares no HITL (driver.can.hitl). Set workflows.auto_approve, pass --auto-approve, or run the workflow from a terminal.`);
+      log.warn(`Step "${state.id}" was skipped: its approve HITL request needs a person, and the driver declares no HITL (driver.can.hitl). Set workflows.auto_approve, pass --auto-approve, or run the workflow where a person answers, from a terminal in an attended run (TEAMAI_MODE=attended, or neither TEAMAI_MODE nor CI set).`);
       answerHitl(state, { choice: 'no', at: now, channel: 'no_hitl', agent: false });
     }
     changed = true;
