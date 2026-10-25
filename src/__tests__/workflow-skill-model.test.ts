@@ -83,8 +83,8 @@ function openAttempts(config: LocalConfig, run: RunId): string[] {
  * The protocol as the model test watches it. Every `next` must list the attempts the engine leased (invariant 1), apart
  * from ones the engine stopped, and leases a crash lost before skill.json was written, which the engine hands back in
  * that same reply. A `released` report gives up only an attempt some `next` reply listed in `cancelled`, or one of a run
- * that ended (row 71): the driver never releases an attempt on its own. Once armed, the next `next` or `report`, from the session or a runner, crashes after the engine
- * answered it and before its caller writes anything.
+ * that ended: the driver never releases an attempt on its own. Once armed, the next `next` or `report`, from the session
+ * or a runner, crashes after the engine answered it and before its caller writes anything.
  */
 function watched(input: { config: () => LocalConfig | undefined; drift: string[] }) {
   let armed = false;
