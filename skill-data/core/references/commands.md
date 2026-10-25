@@ -223,16 +223,22 @@ Generated: do not edit by hand. Regenerate with
 
 - `teamai workflow` — Run a validated workflow from workflows/<name>.yaml. Writable steps may set deliver: pr to open review requests; TeamAI never merges them.
   - `teamai workflow start <name>` — Create a run. With --driver local, execute command and prompt steps in this process.
-    - `--describe` — Show workflow metadata and required input schemas without creating a run
-    - `--driver <kind>` — Select local for headless execution in this process, or skill for the current coding session.
+    - `--describe` — Show workflow metadata and required input schemas without creating a run. With --driver skill, also say how to start it: the start command, a question for the person, or the local driver.
+    - `--driver <kind>` — Select local for headless execution in this process, or skill for the current coding session, which then runs the commands each reply prints.
+    - `--parallel <n>` — With --driver skill: the most steps that run at once, as the describe reply offered
+    - `--confirmed` — With --driver skill: the person agreed to start this run, as the describe reply asked
     - `--tools <list>` — Override local prompt tools for this run, as comma-separated name=tool pairs
     - `--auto-approve` — With --driver local, automatically answer optional approve HITL requests and choose defaults in this process
     - `--inputs <json>` — Values for the inputs the workflow declares, as a JSON object, for example {"issue":42}. Every declared input is required.
   - `teamai workflow next <run>` — Get a lease, hitl, wait, or done JSON envelope. Show hitl.message and hitl.respond to a person, who replaces <option> with a choice.
     - `--prepare` — Prepare the leased workspace in its original checkout; report commits and pushes it automatically
     - `--json <payload>` — Driver identity, for example {"driver":{"kind":"local","machine":"host","workspace":"/work"}}. Optional: running, the attempt ids of its open leases the driver still runs (an open lease left out is handed back), canTakeLease, false to poll while a tool runs without taking a new lease, and driver.can, what the driver can do on this request: hitl (a person can answer HITL requests and work interactively), workspace, env, setup, tokens, max_turns, network, isolation. An omitted key is not offered, so a step that needs it waits, and wait.held names what it lacks. Send driver.can on every next request, including busy polls. claim, true to take a run another install published from teamai-reports before leasing; a run this install owns stays as it is. Every answer lists in cancelled the running attempts whose tools the driver must stop.
+    - `--driver <kind>` — skill: advance a run the current coding session drives, and print its turn: the actions to carry out and the command to run next
+    - `--wait` — With --driver skill: wait until the run has something to show, up to 100 s. Run it in the background.
   - `teamai workflow report <run>` — Report the outcome of a leased step. Prints a JSON envelope.
     - `--json <payload>` — attempt, revision, outcome (success, failed, or released), and driver
+    - `--driver <kind>` — skill: report an attempt of a run the current coding session drives, as its turn printed the command
+    - `--attempt <id>` — With --driver skill: the attempt to report
   - `teamai workflow respond <run> <step> <choice>` — Answer a waiting approve (yes/no) or choose HITL request. Required HITL requests accept terminal answers or declared person answers from a driver UI. Prints one JSON envelope.
     - `--json <payload>` — Driver identity {"driver":{"kind":"ide","machine":"host","workspace":"/work"}} declares an answer a person gave in the driver UI, never one its agent chose. Records channel driver with agent false; accepts required HITL requests.
     - `--note <text>` — Keep a note with the answer, readable as steps.<id>.note

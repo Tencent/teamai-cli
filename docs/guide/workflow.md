@@ -333,7 +333,7 @@ SessionStart adds a bounded name/description list and points the agent at `teama
 
 ```bash
 teamai workflow start session-fix --describe
-teamai workflow start session-change --driver skill --inputs '{"task":"fix the retry"}'
+teamai workflow start session-change --inputs '{"task":"fix the retry"}'
 teamai workflow next <run> --prepare --json '<driver payload>'
 teamai workflow report <run> --json '<attempt report>'
 ```

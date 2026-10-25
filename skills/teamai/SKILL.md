@@ -11,7 +11,7 @@ description: >-
   after a friction reminder. Triggers include "set up teamai", "join the team repo", "sync team
   skills", "team wiki", "share what I learned", and running /teamai. Talking about a team needs no
   skill; operating on what the team shares does.
-allowed-tools: Bash(teamai skill:*), Bash(npx teamai-cli skill:*)
+allowed-tools: Bash(teamai skill:*), Bash(npx teamai-cli skill:*), Bash(teamai workflow start --describe:*), Bash(teamai workflow next:*), Bash(teamai workflow report:*), Bash(teamai workflow respond:*), Bash(npx teamai-cli workflow start --describe:*), Bash(npx teamai-cli workflow next:*), Bash(npx teamai-cli workflow report:*), Bash(npx teamai-cli workflow respond:*)
 ---
 
 # teamai

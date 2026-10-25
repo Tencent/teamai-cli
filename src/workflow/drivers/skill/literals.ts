@@ -1,0 +1,67 @@
+/** Every command line the skill driver prints, and the permission patterns that pre-approve them. */
+import { z } from 'zod';
+
+const LiteralSchema = z.string().brand<'Literal'>();
+/** A command line the agent runs, or shows the person, exactly as printed. Only this module builds one. */
+export type Literal = z.infer<typeof LiteralSchema>;
+
+/** How the member runs teamai: the first words of every literal. */
+export const INVOCATIONS = ['teamai', 'npx teamai-cli'] as const;
+export type Invocation = typeof INVOCATIONS[number];
+
+/** The invocation of a teamai process whose entry script is `entry`: npx runs the package from its own cache. */
+export function invocationOf(entry: string | undefined): Invocation {
+  return entry !== undefined && /[\\/]_npx[\\/]/.test(entry) ? 'npx teamai-cli' : 'teamai';
+}
+
+/** The subcommands the teamai skill pre-approves. None of them can start a run: `--describe` comes before the name. */
+export const PREAPPROVED_WORKFLOW_SUBCOMMANDS = ['workflow start --describe', 'workflow next', 'workflow report', 'workflow respond'] as const;
+
+/** The `allowed-tools` patterns of `PREAPPROVED_WORKFLOW_SUBCOMMANDS`, in each invocation. */
+export function preapprovedPatterns(): string[] {
+  return INVOCATIONS.flatMap((invocation) => PREAPPROVED_WORKFLOW_SUBCOMMANDS.map((subcommand) => `Bash(${invocation} ${subcommand}:*)`));
+}
+
+/**
+ * The patterns a generated `invoke: allow` skill adds, so the agent starts its workflow, by name or alias, without a
+ * prompt. The trailing `--driver` keeps `ship` from matching `ship-issue`.
+ */
+export function generatedStartPatterns(name: string, alias?: string): string[] {
+  return INVOCATIONS.flatMap((invocation) => [name, ...(alias ? [alias] : [])].map((start) => `Bash(${invocation} workflow start ${start} --driver skill:*)`));
+}
+
+export function describeLiteral(invocation: Invocation, name: string): Literal {
+  return LiteralSchema.parse(`${invocation} workflow start --describe ${name} --driver skill`);
+}
+
+/** Starts `name` for the skill driver. `inputs` leaves the `{inputs}` slot the agent fills with the person's answers. */
+export function startLiteral(invocation: Invocation, name: string, options: { parallel?: number; confirmed?: boolean; inputs?: boolean } = {}): Literal {
+  return LiteralSchema.parse([
+    `${invocation} workflow start ${name} --driver skill`,
+    ...(options.parallel !== undefined ? [`--parallel ${options.parallel}`] : []),
+    ...(options.confirmed ? ['--confirmed'] : []),
+    ...(options.inputs ? ["--inputs '{inputs}'"] : []),
+  ].join(' '));
+}
+
+/** Starts `name` with the local driver: shown to the person, never run by the agent. */
+export function localStartLiteral(invocation: Invocation, name: string): Literal {
+  return LiteralSchema.parse(`${invocation} workflow start ${name} --driver local`);
+}
+
+export function nextLiteral(invocation: Invocation, run: string): Literal {
+  return LiteralSchema.parse(`${invocation} workflow next ${run} --driver skill`);
+}
+
+export function pollLiteral(invocation: Invocation, run: string): Literal {
+  return LiteralSchema.parse(`${invocation} workflow next ${run} --driver skill --wait`);
+}
+
+export function reportLiteral(invocation: Invocation, run: string, attempt: string): Literal {
+  return LiteralSchema.parse(`${invocation} workflow report ${run} --driver skill --attempt ${attempt}`);
+}
+
+/** The arguments, after the teamai entry script, that start the runner of `attempt`. */
+export function runnerArgs(run: string, attempt: string): string[] {
+  return ['workflow', 'report', run, '--driver', 'skill', '--attempt', attempt];
+}

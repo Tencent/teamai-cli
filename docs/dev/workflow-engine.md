@@ -50,3 +50,73 @@ Test parsing through `parseWorkflow` and `syncWorkflowDefinitions`. Test the eng
 ## Session driver workspace preparation
 
 `workflow next --prepare` delegates to the local driver's preparation; it never implements graph semantics. Attempt-local metadata contains paths, workspace contracts and fingerprints only. Repeated next calls reuse that metadata without reapplying an overlay over agent edits. Public report reconciles cancellations before git, checks driver/revision ownership, finishes through the shared local workspace helpers, and cleans up only after the engine accepts success with cleanup. No network operation holds the run lock. The existing per-run driver lock serializes local and public preparation/report. Run lookup scans configured local data homes by id and rejects duplicates, independent of cwd; the run's checkout governs git work.
+
+## The skill driver
+
+`drivers/skill/` runs a workflow from a coding session. The agent runs only the literal commands each reply prints. A detached runner per attempt, `workflow report <run> --driver skill --attempt <a>` with `TEAMAI_WORKFLOW_ATTEMPT=<run>/<a>` (`attempt-marker.ts`), prepares the attempt's place, runs its command outside the run lock, and reports it; it holds the attempt's `runner.lock` while it lives, which is how a tick tells it is alive. `skill-state.ts` is the only writer of `runs/<run>/skill.json`. `transitions.ts` holds the rows below as `TRANSITIONS`, and `step(state, input)` returns the row it took; `tick.ts` and `skill-runner.ts` carry out its effects. `workflow-skill-transitions.test.ts` compares these tables with `TRANSITIONS` cell by cell, both ways, and walks every row through `runSkillCall`, so a row lands in both places or in neither.
+
+**Run states**, derived from skill.json and never stored as a field: `none` (no skill.json for this run, or no run yet), `drive`, and `done` (the engine answered `done`). **Attempt phases**: `preparing` (its runner prepares its place), `running` (its runner runs the command), and `reporting` (a write-ahead report body is stored).
+
+**Order of one call.** Parse options with zod; take the run lock (D19); S rows; the row of the input; a tick; build the turn; save; release. **A tick** sends the reports a crash left stored (P11), respawns runners whose lock is free (C10), then calls the engine `next` (D1) and applies its reply, repeating while a lease comes back and a slot is free. **A poll** (`--wait`) repeats lock, tick, release and a `WAIT_POLL_MS` sleep until D23 or D24 applies. Runners take C rows under the same lock and never take S rows.
+
+### Describe and start
+
+| Row | State | Input | Guard | Effects | Next | Action |
+|---|---|---|---|---|---|---|
+| R2 | none | describe | the definition has a prompt step or a step outside the checkout | none | none | describe `ask.kind: local` with the reason and the `--driver local` start literal |
+| R3 | none | describe | something to ask: `invoke: ask`, a required input, or width above 1 | none | none | describe `ask.kind: ask`: one question, and the start literal of each option |
+| R4 | none | describe | nothing to ask | none | none | describe `ask.kind: start` with the one start literal |
+| R8 | none | start `--driver skill` | the definition has a prompt step or a step outside the checkout | none | none | error `needs_local_driver`, next null |
+| R9 | none | start `--driver skill` | `checkStartAnswers` answers `confirm-needed` | none | none | error `confirm_needed`, next: the describe literal |
+| R10 | none | start `--driver skill` | `checkStartAnswers` answers `ok` | `WorkflowClient.start`; write skill.json: identity `{skill, machine, run checkout}`, invocation, options, owner := the caller's session | drive | the turn of a tick |
+| R11 | none | next, report `--driver skill` | this machine has no skill.json for the run | none | none | error `not_skill_run`, next null |
+
+### Sessions
+
+| Row | State | Input | Guard | Effects | Next | Action |
+|---|---|---|---|---|---|---|
+| S1 | drive, done | an agent call from session s | the owner is s, or either session is unknown | `lastCallAt` := now; owner := s when unknown | unchanged | the input's row |
+| S2 | drive, done | an agent call from session s | owner o is not s, and both are known | none | unchanged | error `orchestrator_active`, next null |
+| S5 | any | a runner call (`report --attempt a` with the marker `<run>/a`) | | no session check, no `lastCallAt` | unchanged | C rows |
+
+### Ticks, polls and the lock
+
+| Row | State | Input | Guard | Effects | Next | Action |
+|---|---|---|---|---|---|---|
+| D1 | drive | tick | | engine `next {driver: identity + can, running: every open attempt, canTakeLease: fewer open than options.parallel}` | drive | |
+| D6 | drive | reply lease | executor command | phase preparing; spawn runner job `command` | drive | event `started` |
+| D15 | drive | reply wait | | none | drive | waiting |
+| D16 | drive | reply done | | `seq` := seq + 1, so every session has the end to see | done | `done {outcome, failure, prs}` |
+| D17 | drive | reply error | | none | drive | error with the engine's code, next: the next literal |
+| D18 | drive | a foreground call | it spawned runners | release the lock; wait up to `WAIT_GRACE_MS` for them, re-taking the lock per check | drive | |
+| D19 | any | a foreground call | the lock is not free within `TICK_LOCK_WAIT_MS` (`report`: `WAIT_BOUND_MS`) | none | unchanged | error `driver_running`, next: the same literal |
+| D20 | drive, done | a foreground call, after its tick | | `seen[s]` := seq | unchanged | the turn: events after the old `seen[s]`; `then: poll` (none once done) |
+| D21 | drive, done | a poll tick | the lock was busy, or nothing below applies, and the bound is not reached | release; sleep `WAIT_POLL_MS`; tick again | unchanged | |
+| D23 | done | a poll tick | `seen[s]` is below seq: s has not seen `done` | `seen[s]` := seq | done | `done` with its events |
+| D24 | drive, done | a poll tick | the bound is reached | none | unchanged | `then: poll`, no actions |
+
+### Runner outcomes
+
+| Row | State | Input | Guard | Effects | Next | Action |
+|---|---|---|---|---|---|---|
+| C1 | preparing | runner: prepared | job `command` | run the command outside the lock with `{...process.env, ...lease.env, TEAMAI_WORKFLOW_ATTEMPT}`, output masked into `output.log` | running | |
+| C7 | preparing | runner: prepare failed | | write-ahead `failed` with its failure | reporting | |
+| C8 | running | runner: the command exited | | write-ahead: `success` on exit 0, else `failed`; outputs, exit code, masked tail | reporting | |
+| C10 | preparing, running | tick: its `runner.lock` is free | it was spawned more than `WAIT_GRACE_MS` ago | spawn the same job again (prepare is idempotent; a command restarts in its prepared place) | unchanged | event `restarted` |
+
+### Reports
+
+| Row | State | Input | Guard | Effects | Next | Action |
+|---|---|---|---|---|---|---|
+| P2 | drive | report a | a is unknown | none | drive | error `unknown_attempt`, next: the next literal |
+| P3 | drive | report a | a preparing, running or reporting | none | drive | error `not_dispatched`, next: the next literal |
+| P7 | reporting | engine: reported, any status | | drop a; add to settled | drive | event `settled` |
+| P8 | reporting | engine: `repeated_report` | | as P7 | drive | event `settled` |
+| P10 | reporting | engine: another error | | keep the body | reporting | error, next: the same report literal (a runner retries at its next check) |
+| P11 | reporting | tick | a body is stored (a crash came between write and send) | send it again | reporting | P7 to P10 |
+
+### Done
+
+| Row | State | Input | Guard | Effects | Next | Action |
+|---|---|---|---|---|---|---|
+| X2 | done | next | | none | done | `done`, no `then` |

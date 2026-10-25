@@ -59,7 +59,7 @@ steps:
       const described = call(['workflow', 'start', 'ship', '--describe']); expect(described.status, described.stderr).toBe(0);
       expect(envelope(described.stdout)).toMatchObject({ data: { name: 'change', inputs: { task: { type: 'string' } } } });
       expect(described.stdout).not.toContain('Polish the implementation.');
-      const started = call(['workflow', 'start', 'ship', '--driver', 'skill', '--inputs', '{"task":"a fixture"}']); expect(started.status, started.stderr).toBe(0);
+      const started = call(['workflow', 'start', 'ship', '--inputs', '{"task":"a fixture"}']); expect(started.status, started.stderr).toBe(0);
       const id = envelope(started.stdout).data.run;
       const driver = { kind: 'skill', machine: 'fixture', workspace: repo, can: { hitl: true, workspace: ['read-only', 'new', 'continue'] } };
       const next = (cwd: string) => { const answer = call(['workflow', 'next', id, '--prepare', '--json', JSON.stringify({ driver })], cwd); expect(answer.status, answer.stderr).toBe(0); return envelope(answer.stdout).data; };
@@ -85,7 +85,7 @@ steps:
       const pushed = run('git', ['--git-dir', bare, 'show', `${first.workspace.branch}:code.txt`]); expect(pushed.status, pushed.stderr).toBe(0);
       expect(pushed.stdout).toBe('first\nsecond\n'); expect(fs.existsSync(path.join(repo, 'code.txt'))).toBe(false);
       const skill = call(['skill', 'get', 'workflow']); expect(skill.status, skill.stderr).toBe(0); expect(skill.stdout).toContain('Never run git');
-      const pair = call(['workflow', 'start', 'pair', '--driver', 'skill']); expect(pair.status, pair.stderr).toBe(0);
+      const pair = call(['workflow', 'start', 'pair']); expect(pair.status, pair.stderr).toBe(0);
       const pairId = envelope(pair.stdout).data.run;
       const pairNext = call(['workflow', 'next', pairId, '--prepare', '--json', JSON.stringify({ driver })]); expect(pairNext.status, pairNext.stderr).toBe(0);
       const pairLease = envelope(pairNext.stdout).data.lease;

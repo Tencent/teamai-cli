@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { resolveWorkflowEnv } from '../env-resolution.js';
 import type { LocalConfig } from '../types.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
-import { inProcessClient, protocolDescribe, protocolPrepare } from '../workflow/protocol.js';
+import { inProcessClient, type WorkflowClient } from '../workflow/protocol.js';
 import { AttemptIdSchema, readRun, RunIdSchema, withRunLock, type RunLock } from '../workflow/store.js';
 
 const dirs: string[] = [];
@@ -65,10 +65,14 @@ steps:
     command: echo ship
 `;
 
+async function protocol(config: LocalConfig): Promise<WorkflowClient> {
+  return inProcessClient({ config, env: await resolveWorkflowEnv(config) });
+}
+
 const driver = { kind: 'skill', machine: 'test', workspace: '/work', can: { hitl: false, workspace: ['read-only'] } };
 
 async function leased(config: LocalConfig, checkout: string): Promise<{ run: RunLock['run']; attempt: string; revision: number }> {
-  const client = inProcessClient({ config, env: await resolveWorkflowEnv(config) });
+  const client = await protocol(config);
   const started = await client.start('check', { checkout });
   if (!('data' in started)) throw new Error(JSON.stringify(started));
   const run = RunIdSchema.parse(started.data.run);
@@ -81,31 +85,31 @@ async function leased(config: LocalConfig, checkout: string): Promise<{ run: Run
 describe('workflow protocol in process', () => {
   it('describes a workflow before any run: inputs, invoke, gates, prompts, steps outside the checkout, and its width', async () => {
     const { config } = await fixture({ wide: WIDE });
-    expect(await protocolDescribe({ config, name: 'fan', ceiling: 3 })).toEqual({ description: {
+    expect(await (await protocol(config)).describe('fan', { ceiling: 3 })).toEqual({ description: {
       name: 'wide', description: 'Fan out, review, ship.', alias: 'fan', invoke: 'ask', inputs: { targets: { type: 'array', items: { type: 'string' } } },
       facts: { prompts: ['review'], width: 3, gates: [{ step: 'review', kind: 'approve', required: false, hasDefault: false }], inWorkspace: ['ship'] },
     } });
-    expect(await protocolDescribe({ config, name: 'wide', ceiling: 20 })).toMatchObject({ description: { facts: { width: 7 } } });
+    expect(await (await protocol(config)).describe('wide', { ceiling: 20 })).toMatchObject({ description: { facts: { width: 7 } } });
   });
 
   it('counts a for_each with no max_parallel as wide as the ceiling, and one command as one', async () => {
     const each = CHECK.replace('name: check', 'name: each\ninputs:\n  targets: [string]').replace('  - id: lint\n', '  - id: lint\n    for_each: inputs.targets\n');
     const { config } = await fixture({ check: CHECK, each });
-    expect(await protocolDescribe({ config, name: 'each', ceiling: 5 })).toMatchObject({ description: { facts: { width: 5 } } });
-    expect(await protocolDescribe({ config, name: 'check', ceiling: 5 })).toMatchObject({ description: { invoke: 'deny', facts: { width: 1, prompts: [], gates: [], inWorkspace: [] } } });
+    expect(await (await protocol(config)).describe('each', { ceiling: 5 })).toMatchObject({ description: { facts: { width: 5 } } });
+    expect(await (await protocol(config)).describe('check', { ceiling: 5 })).toMatchObject({ description: { invoke: 'deny', facts: { width: 1, prompts: [], gates: [], inWorkspace: [] } } });
   });
 
   it('answers workflow_not_found for a name with no runnable version', async () => {
     const { config } = await fixture({ check: CHECK });
-    expect(await protocolDescribe({ config, name: 'missing', ceiling: 3 })).toEqual({ error: { code: 'workflow_not_found', message: 'Workflow or alias missing has no unambiguous runnable version' } });
+    expect(await (await protocol(config)).describe('missing', { ceiling: 3 })).toEqual({ error: { code: 'workflow_not_found', message: 'Workflow or alias missing has no unambiguous runnable version' } });
   });
 
   it('fails a reader step that changed the checkout it was prepared in, when its report says it succeeded', async () => {
     const { config, checkout } = await fixture({ check: CHECK });
     const { run, attempt, revision } = await leased(config, checkout);
-    const client = inProcessClient({ config, env: await resolveWorkflowEnv(config) });
+    const client = await protocol(config);
     const answer = await withRunLock(config, run, async (lock) => {
-      expect(await protocolPrepare({ config, lock, lease: { attempt: AttemptIdSchema.parse(attempt), executor: 'command' } })).toEqual({ kind: 'prepared', dir: checkout });
+      expect(await client.prepare(lock, { attempt: AttemptIdSchema.parse(attempt), executor: 'command' })).toEqual({ kind: 'prepared', dir: checkout });
       fs.writeFileSync(path.join(checkout, 'README.md'), 'changed\n');
       return client.report(run, { attempt, revision, outcome: 'success', driver }, { lock });
     }, { waitMs: 0 });
@@ -118,19 +122,19 @@ describe('workflow protocol in process', () => {
     const { config, checkout } = await fixture({ check: CHECK });
     const { run, attempt, revision } = await leased(config, checkout);
     const lease = { attempt: AttemptIdSchema.parse(attempt), executor: 'command' as const };
-    await withRunLock(config, run, (lock) => protocolPrepare({ config, lock, lease }), { waitMs: 0 });
+    const client = await protocol(config);
+    await withRunLock(config, run, (lock) => client.prepare(lock, lease), { waitMs: 0 });
     fs.writeFileSync(path.join(checkout, 'new.txt'), 'new\n');
-    await withRunLock(config, run, (lock) => protocolPrepare({ config, lock, lease }), { waitMs: 0 });
-    const client = inProcessClient({ config, env: await resolveWorkflowEnv(config) });
+    await withRunLock(config, run, (lock) => client.prepare(lock, lease), { waitMs: 0 });
     expect(await client.report(run, { attempt, revision, outcome: 'success', driver })).toMatchObject({ data: { step: { status: 'failed' } } });
   });
 
   it('does not check a reader step that failed, so it keeps its own failure', async () => {
     const { config, checkout } = await fixture({ check: CHECK });
     const { run, attempt, revision } = await leased(config, checkout);
-    const client = inProcessClient({ config, env: await resolveWorkflowEnv(config) });
+    const client = await protocol(config);
     await withRunLock(config, run, async (lock) => {
-      await protocolPrepare({ config, lock, lease: { attempt: AttemptIdSchema.parse(attempt), executor: 'command' } });
+      await client.prepare(lock, { attempt: AttemptIdSchema.parse(attempt), executor: 'command' });
       fs.writeFileSync(path.join(checkout, 'README.md'), 'changed\n');
       return client.report(run, { attempt, revision, outcome: 'failed', driver, message: 'command exited with status 1', failure: { code: 'command_failed', message: 'command exited with status 1' } }, { lock });
     }, { waitMs: 0 });
@@ -141,7 +145,8 @@ describe('workflow protocol in process', () => {
   it('refuses to prepare an attempt the run has not leased', async () => {
     const { config, checkout } = await fixture({ check: CHECK });
     const { run } = await leased(config, checkout);
-    expect(await withRunLock(config, run, (lock) => protocolPrepare({ config, lock, lease: { attempt: AttemptIdSchema.parse('a00000000'), executor: 'command' } }), { waitMs: 0 }))
+    const client = await protocol(config);
+    expect(await withRunLock(config, run, (lock) => client.prepare(lock, { attempt: AttemptIdSchema.parse('a00000000'), executor: 'command' }), { waitMs: 0 }))
       .toEqual({ kind: 'failed', failure: { code: 'wrong_attempt', message: 'Attempt a00000000 is not the leased attempt' } });
   });
 });

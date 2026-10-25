@@ -801,12 +801,14 @@ const workflowCmd = program
 workflowCmd
   .command('start <name>')
   .description('Create a run. With --driver local, execute command and prompt steps in this process.')
-  .option('--describe', 'Show workflow metadata and required input schemas without creating a run')
-  .option('--driver <kind>', 'Select local for headless execution in this process, or skill for the current coding session.')
+  .option('--describe', 'Show workflow metadata and required input schemas without creating a run. With --driver skill, also say how to start it: the start command, a question for the person, or the local driver.')
+  .option('--driver <kind>', 'Select local for headless execution in this process, or skill for the current coding session, which then runs the commands each reply prints.')
+  .option('--parallel <n>', 'With --driver skill: the most steps that run at once, as the describe reply offered')
+  .option('--confirmed', 'With --driver skill: the person agreed to start this run, as the describe reply asked')
   .option('--tools <list>', 'Override local prompt tools for this run, as comma-separated name=tool pairs')
   .option('--auto-approve', 'With --driver local, automatically answer optional approve HITL requests and choose defaults in this process')
   .option('--inputs <json>', 'Values for the inputs the workflow declares, as a JSON object, for example {"issue":42}. Every declared input is required.')
-  .action(async (name: string, cmdOpts: { driver?: string; tools?: string; inputs?: string; autoApprove?: boolean; describe?: boolean }) => {
+  .action(async (name: string, cmdOpts: { driver?: string; tools?: string; inputs?: string; autoApprove?: boolean; describe?: boolean; parallel?: string; confirmed?: boolean }) => {
     const { workflowStart } = await import('./workflow-commands.js');
     await workflowStart(name, cmdOpts);
   });
@@ -816,7 +818,9 @@ workflowCmd
   .description('Get a lease, hitl, wait, or done JSON envelope. Show hitl.message and hitl.respond to a person, who replaces <option> with a choice.')
   .option('--prepare', 'Prepare the leased workspace in its original checkout; report commits and pushes it automatically')
   .option('--json <payload>', 'Driver identity, for example {"driver":{"kind":"local","machine":"host","workspace":"/work"}}. Optional: running, the attempt ids of its open leases the driver still runs (an open lease left out is handed back), canTakeLease, false to poll while a tool runs without taking a new lease, and driver.can, what the driver can do on this request: hitl (a person can answer HITL requests and work interactively), workspace, env, setup, tokens, max_turns, network, isolation. An omitted key is not offered, so a step that needs it waits, and wait.held names what it lacks. Send driver.can on every next request, including busy polls. claim, true to take a run another install published from teamai-reports before leasing; a run this install owns stays as it is. Every answer lists in cancelled the running attempts whose tools the driver must stop.')
-  .action(async (run: string, cmdOpts: { json?: string; prepare?: boolean }) => {
+  .option('--driver <kind>', 'skill: advance a run the current coding session drives, and print its turn: the actions to carry out and the command to run next')
+  .option('--wait', 'With --driver skill: wait until the run has something to show, up to 100 s. Run it in the background.')
+  .action(async (run: string, cmdOpts: { json?: string; prepare?: boolean; driver?: string; wait?: boolean }) => {
     const { workflowNext } = await import('./workflow-commands.js');
     await workflowNext(run, cmdOpts);
   });
@@ -825,7 +829,9 @@ workflowCmd
   .command('report <run>')
   .description('Report the outcome of a leased step. Prints a JSON envelope.')
   .option('--json <payload>', 'attempt, revision, outcome (success, failed, or released), and driver')
-  .action(async (run: string, cmdOpts: { json?: string }) => {
+  .option('--driver <kind>', 'skill: report an attempt of a run the current coding session drives, as its turn printed the command')
+  .option('--attempt <id>', 'With --driver skill: the attempt to report')
+  .action(async (run: string, cmdOpts: { json?: string; driver?: string; attempt?: string }) => {
     const { workflowReport } = await import('./workflow-commands.js');
     await workflowReport(run, cmdOpts);
   });

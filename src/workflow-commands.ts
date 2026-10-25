@@ -11,6 +11,7 @@ import { driverIdentity } from './driver-identity.js';
 import { getBusinessRoot, getDataHome, scopedToolPaths, type LocalConfig, type TeamaiConfig } from './types.js';
 import { isRunId, readRun } from './workflow/store.js';
 import { inProcessClient } from './workflow/protocol.js';
+import { parseSkillCall, runSkillCall, skillContext } from './workflow/drivers/skill/skill-driver.js';
 import { loadCachedWorkflow } from './workflow/cache.js';
 import { findRunConfig } from './workflow/run-location.js';
 import { prepareSessionLease, reportSessionLease } from './workflow/session-driver.js';
@@ -106,8 +107,31 @@ function parseTools(value: string | undefined): Record<string, string> | string 
   return tools;
 }
 
-export async function workflowStart(name: string, options: { driver?: string; tools?: string; inputs?: string; autoApprove?: boolean; describe?: boolean }): Promise<void> {
+/** Runs a `--driver skill` call: the skill driver answers with a describe reply, a turn, or an error naming what to run. */
+async function workflowSkill(raw: Parameters<typeof parseSkillCall>[0]): Promise<void> {
   setStderrOnly(true);
+  const call = parseSkillCall(raw, process.env);
+  if ('error' in call) {
+    writeEnvelope(call, collectEnvSecrets());
+    return;
+  }
+  const loaded = call.kind === 'next' || call.kind === 'report' ? await readyRunConfig(call.run) : await readyConfig();
+  if (!loaded) return;
+  const context = await skillContext({ config: loaded.config, env: loaded.env, cwd: process.cwd(), trace: (row) => log.debug(`[workflow] skill driver took row ${row}`) });
+  writeEnvelope(await runSkillCall(call, context), loaded.secrets);
+}
+
+export async function workflowStart(name: string, options: { driver?: string; tools?: string; inputs?: string; autoApprove?: boolean; describe?: boolean; parallel?: string; confirmed?: boolean }): Promise<void> {
+  if (options.driver === 'skill') {
+    const { driver: _skill, ...rest } = options;
+    await workflowSkill({ kind: 'start', name, options: rest });
+    return;
+  }
+  setStderrOnly(true);
+  if (options.parallel !== undefined || options.confirmed) {
+    writeEnvelope({ error: { code: 'invalid_arguments', message: '--parallel and --confirmed need --driver skill' } }, collectEnvSecrets());
+    return;
+  }
   const loaded = await readyConfig();
   if (!loaded) return;
   const { config, teamConfig, env, secrets } = loaded;
@@ -117,7 +141,7 @@ export async function workflowStart(name: string, options: { driver?: string; to
     else { const { name, description, alias, invoke, inputs } = cached.definition; writeEnvelope({ data: { name, description, ...(alias ? { alias } : {}), invoke: invoke ?? 'deny', inputs: inputs ?? {} } }, secrets); }
     return;
   }
-  if (options.driver !== undefined && options.driver !== 'local' && options.driver !== 'skill') {
+  if (options.driver !== undefined && options.driver !== 'local') {
     writeEnvelope({ error: { code: 'unsupported_driver', message: `Driver "${options.driver}" is not available. Use --driver local or --driver skill.` } }, secrets);
     return;
   }
@@ -149,8 +173,17 @@ export async function workflowStart(name: string, options: { driver?: string; to
   writeEnvelope(await runLocalDriver(config, runId, process.cwd(), { tools, toolPaths: teamConfig.toolPaths, autoApprove: options.autoApprove }), secrets);
 }
 
-export async function workflowNext(runId: string, options: { json?: string; prepare?: boolean }): Promise<void> {
+export async function workflowNext(runId: string, options: { json?: string; prepare?: boolean; driver?: string; wait?: boolean }): Promise<void> {
+  const { driver: kind, ...rest } = options;
+  if (kind === 'skill') {
+    await workflowSkill({ kind: 'next', run: runId, options: rest });
+    return;
+  }
   setStderrOnly(true);
+  if (kind !== undefined || options.wait) {
+    writeEnvelope({ error: { code: 'invalid_arguments', message: kind !== undefined ? `next takes --driver skill, not --driver ${kind}` : '--wait needs --driver skill' } }, collectEnvSecrets());
+    return;
+  }
   const payload = readJson(options.json, 'Pass --json with a driver object');
   if (!payload.ok) {
     writeEnvelope(payload.envelope, collectEnvSecrets());
@@ -173,8 +206,17 @@ export async function workflowNext(runId: string, options: { json?: string; prep
   writeEnvelope(withIgnored(answer, parsed.ignored), secrets);
 }
 
-export async function workflowReport(runId: string, options: { json?: string }): Promise<void> {
+export async function workflowReport(runId: string, options: { json?: string; driver?: string; attempt?: string }): Promise<void> {
+  const { driver: kind, ...rest } = options;
+  if (kind === 'skill') {
+    await workflowSkill({ kind: 'report', run: runId, options: rest });
+    return;
+  }
   setStderrOnly(true);
+  if (kind !== undefined || options.attempt !== undefined) {
+    writeEnvelope({ error: { code: 'invalid_arguments', message: kind !== undefined ? `report takes --driver skill, not --driver ${kind}` : '--attempt needs --driver skill' } }, collectEnvSecrets());
+    return;
+  }
   if (isLeaseRef(runId)) {
     writeEnvelope({ error: { code: 'judge_lease', message: `${runId} is a judge lease, which workflow report does not settle. Submit its answer with: teamai score --lease ${runId} --submit --stdin` } }, collectEnvSecrets());
     return;

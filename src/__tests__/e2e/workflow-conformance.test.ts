@@ -5,8 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { resolveProjectDataHome } from '../../config.js';
-import { runConformanceScenario } from '../../workflow/conformance-interpreter.js';
-import type { WorkflowClient } from '../../workflow/protocol.js';
+import { runConformanceScenario, type ConformanceClient } from '../../workflow/conformance-interpreter.js';
 import { workflowConformanceScenarios, workflowGitConformanceScenarios, type GitConformanceName } from '../../workflow/conformance.js';
 import type { StepState } from '../../workflow/step-state.js';
 import type { RunState, WorkflowEnvelope } from '../../workflow/types.js';
@@ -70,7 +69,7 @@ describe('workflow protocol conformance through the CLI', () => {
         for (const [name, value] of Object.entries(scenario.env ?? {})) expect(stdout.includes(value), `workflow ${args[0]} printed the value of ${name}`).toBe(false);
         return envelope(stdout);
       };
-      const client: WorkflowClient = {
+      const client: ConformanceClient = {
         start: (name) => call(['start', name]),
         next: (run, body) => call(['next', run, '--json', JSON.stringify(body)]),
         report: (run, body) => call(['report', run, '--json', JSON.stringify(body)]),

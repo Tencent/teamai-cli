@@ -101,9 +101,12 @@ export type ConformanceExpect = (actual: unknown, message?: string) => {
   not: { toHaveProperty(property: string): void };
 };
 
+/** The protocol calls a scenario makes, which the in-process client and the built CLI both answer. */
+export type ConformanceClient = Pick<WorkflowClient, 'start' | 'next' | 'report' | 'respond' | 'retry' | 'cancel'>;
+
 /** What a runner provides: its client, how it reads the run file and the queued end record, and how it moves the clock. */
 export interface ConformanceRunner {
-  client: WorkflowClient;
+  client: ConformanceClient;
   readRun(runId: string): Promise<RunState>;
   /** The run's queued end record, undefined while it has none. */
   readEndRecord(runId: string): Promise<unknown>;

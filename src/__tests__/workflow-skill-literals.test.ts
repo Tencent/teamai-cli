@@ -1,0 +1,104 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import type { Command } from 'commander';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { attemptEnv } from '../workflow/attempt-marker.js';
+import { parseSkillCall } from '../workflow/drivers/skill/skill-driver.js';
+import {
+  describeLiteral, generatedStartPatterns, INVOCATIONS, localStartLiteral, nextLiteral, pollLiteral, preapprovedPatterns,
+  reportLiteral, runnerArgs, startLiteral, type Invocation,
+} from '../workflow/drivers/skill/literals.js';
+import { loadCommandTable } from './helpers/command-table.js';
+
+const ROOT = path.join(import.meta.dirname, '../..');
+const RUN = 'r0123456789abcdef';
+const ATTEMPT = 'a01234567';
+
+let program: Command;
+beforeAll(async () => { program = await loadCommandTable(); });
+afterEach(() => { vi.unstubAllEnvs(); });
+
+/** The words of `literal` after its invocation, single-quoted words unquoted, as a shell would pass them. */
+function words(literal: string, invocation: Invocation): string[] {
+  expect(literal.startsWith(`${invocation} `), literal).toBe(true);
+  return (literal.slice(invocation.length + 1).match(/'[^']*'|\S+/g) ?? []).map((word) => word.replace(/^'(.*)'$/, '$1'));
+}
+
+/** Parses `args` with the real `workflow <sub>` command, as Commander hands them to its action. */
+function parsed(args: string[]): { sub: string; operands: string[]; options: Record<string, unknown> } {
+  const [group, sub, ...rest] = args;
+  const leaf = program.commands.find((command) => command.name() === group)?.commands.find((command) => command.name() === sub);
+  if (!leaf || sub === undefined) throw new Error(`no command ${group} ${sub}`);
+  // Commander keeps option values between parses; each literal starts from none.
+  for (const option of leaf.options) leaf.setOptionValue(option.attributeName(), undefined);
+  const { operands, unknown } = leaf.parseOptions(rest);
+  expect(unknown, args.join(' ')).toEqual([]);
+  const options = Object.fromEntries(Object.entries(leaf.opts()).filter(([, value]) => value !== undefined));
+  return { sub, operands, options };
+}
+
+/** The call a `--driver skill` literal makes, read the way `workflow-commands.ts` reads it. */
+function skillCall(literal: string, invocation: Invocation, env: NodeJS.ProcessEnv = {}) {
+  const { sub, operands, options: { driver, ...options } } = parsed(words(literal, invocation));
+  expect(driver, literal).toBe('skill');
+  const [operand = ''] = operands;
+  if (sub === 'start') return parseSkillCall({ kind: 'start', name: operand, options }, env);
+  if (sub === 'next' || sub === 'report') return parseSkillCall({ kind: sub, run: operand, options }, env);
+  throw new Error(`not a skill driver call: ${literal}`);
+}
+
+describe.each(INVOCATIONS)('skill driver literals run as %s', (invocation) => {
+  it('parse into the calls they name', () => {
+    expect(skillCall(describeLiteral(invocation, 'check'), invocation)).toEqual({ kind: 'describe', name: 'check' });
+    expect(skillCall(startLiteral(invocation, 'check'), invocation)).toEqual({ kind: 'start', name: 'check', answers: { confirmed: false }, inputs: undefined });
+    const filled = startLiteral(invocation, 'check', { parallel: 2, confirmed: true, inputs: true }).replace('{inputs}', '{"task":"a fix"}');
+    expect(filled).not.toBe(startLiteral(invocation, 'check', { parallel: 2, confirmed: true, inputs: true }));
+    expect(skillCall(filled, invocation)).toEqual({ kind: 'start', name: 'check', answers: { parallel: 2, confirmed: true }, inputs: { task: 'a fix' } });
+    expect(skillCall(nextLiteral(invocation, RUN), invocation)).toEqual({ kind: 'next', run: RUN, wait: false });
+    expect(skillCall(pollLiteral(invocation, RUN), invocation)).toEqual({ kind: 'next', run: RUN, wait: true });
+    expect(skillCall(reportLiteral(invocation, RUN, ATTEMPT), invocation)).toEqual({ kind: 'report', run: RUN, attempt: ATTEMPT, role: 'agent' });
+  });
+
+  it('start the local driver with the local start literal', () => {
+    expect(parsed(words(localStartLiteral(invocation, 'check'), invocation))).toEqual({ sub: 'start', operands: ['check'], options: { driver: 'local' } });
+  });
+
+  it('describe, and start no run, whatever follows the pre-approved describe', () => {
+    const trailing = `${describeLiteral(invocation, 'check')} --confirmed --parallel 3 --inputs '{}'`;
+    expect(skillCall(trailing, invocation)).toEqual({ kind: 'describe', name: 'check' });
+  });
+
+  it('pre-approve no call that starts a run, and start only the workflow a generated skill names', () => {
+    const prefixes = (patterns: string[]) => patterns.map((pattern) => pattern.replace(/^Bash\((.*):\*\)$/, '$1'));
+    const starts = [startLiteral(invocation, 'ship'), startLiteral(invocation, 'ship', { parallel: 2, confirmed: true, inputs: true })];
+    for (const prefix of prefixes(preapprovedPatterns())) expect(starts.filter((literal) => literal.startsWith(prefix)), prefix).toEqual([]);
+    const generated = prefixes(generatedStartPatterns('ship', 'go')).filter((prefix) => prefix.startsWith(`${invocation} `));
+    expect(generated).toEqual([`${invocation} workflow start ship --driver skill`, `${invocation} workflow start go --driver skill`]);
+    for (const literal of starts) expect(generated.some((prefix) => literal.startsWith(prefix)), literal).toBe(true);
+    expect(generated.some((prefix) => startLiteral(invocation, 'ship-issue').startsWith(prefix))).toBe(false);
+  });
+});
+
+describe('the runner', () => {
+  it('reports its own attempt: the runner arguments carry the attempt, and the marker makes it the runner', () => {
+    const args = runnerArgs(RUN, ATTEMPT);
+    const { sub, operands, options: { driver, ...options } } = parsed(args);
+    expect([sub, driver]).toEqual(['report', 'skill']);
+    expect(parseSkillCall({ kind: 'report', run: operands[0] ?? '', options }, attemptEnv(RUN, ATTEMPT)))
+      .toEqual({ kind: 'report', run: RUN, attempt: ATTEMPT, role: 'runner' });
+    expect(parseSkillCall({ kind: 'report', run: operands[0] ?? '', options }, attemptEnv(RUN, 'a76543210')))
+      .toEqual({ kind: 'report', run: RUN, attempt: ATTEMPT, role: 'agent' });
+  });
+});
+
+describe('the files an agent reads', () => {
+  it('the teamai stub pre-approves the skill commands and the skill driver calls, and nothing else', () => {
+    const stub = fs.readFileSync(path.join(ROOT, 'skills/teamai/SKILL.md'), 'utf8');
+    expect(stub.match(/^allowed-tools: (.*)$/m)?.[1]).toBe(['Bash(teamai skill:*)', 'Bash(npx teamai-cli skill:*)', ...preapprovedPatterns()].join(', '));
+  });
+
+  it('the workflow guide starts with the describe literal', () => {
+    const guide = fs.readFileSync(path.join(ROOT, 'skill-data/workflow/SKILL.md'), 'utf8');
+    expect(guide).toContain(`\`${describeLiteral('teamai', '<name>')}\``);
+  });
+});

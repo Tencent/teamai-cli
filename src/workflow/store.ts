@@ -114,6 +114,29 @@ export async function withRunLock<T>(
   }
 }
 
+function runnerLockPath(config: LocalConfig, run: RunId, attempt: AttemptId): string {
+  return path.join(attemptDir(config, run, attempt), 'runner.lock');
+}
+
+/**
+ * Runs `body` holding `attempts/<attempt>/runner.lock`, which the skill driver's runner of the attempt holds for its
+ * whole life, or answers `held` when a live process holds it.
+ */
+export async function withRunnerLock<T>(config: LocalConfig, run: RunId, attempt: AttemptId, body: () => Promise<T>): Promise<T | 'held'> {
+  const lock = runnerLockPath(config, run, attempt);
+  if (!await acquireLock(lock)) return 'held';
+  try {
+    return await body();
+  } finally {
+    await releaseLock(lock);
+  }
+}
+
+/** Whether a live process holds the runner lock of `attempt`. */
+export async function runnerAlive(config: LocalConfig, run: RunId, attempt: AttemptId): Promise<boolean> {
+  return !await acquireLock(runnerLockPath(config, run, attempt), { dryRun: true });
+}
+
 function isDefinition(value: unknown): value is WorkflowDefinition {
   if (!value || typeof value !== 'object') return false;
   const definition = value as WorkflowDefinition;

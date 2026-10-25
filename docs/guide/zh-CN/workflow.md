@@ -333,7 +333,7 @@ SessionStart 注入有长度上限的名称、描述列表，引导 agent 读取
 
 ```bash
 teamai workflow start session-fix --describe
-teamai workflow start session-change --driver skill --inputs '{"task":"fix the retry"}'
+teamai workflow start session-change --inputs '{"task":"fix the retry"}'
 teamai workflow next <run> --prepare --json '<driver payload>'
 teamai workflow report <run> --json '<attempt report>'
 ```

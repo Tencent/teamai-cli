@@ -39,6 +39,7 @@ import {
 } from './local-tool-adapter.js';
 import { AttemptIdSchema, readRun, RunIdSchema, updateRun, withRunLock, type RunLock } from '../../store.js';
 import { finishPlace, preparePlace } from '../../place/place.js';
+import { commandOutputs } from '../../protocol.js';
 import { stopProcess } from '../../../tool-launch/process-stop.js';
 import { isLaunchTool, localToolFamily, type LaunchTool } from '../../../tool-launch/tools.js';
 import { chooseStepModel } from '../../step-model.js';
@@ -130,16 +131,6 @@ function stageThenStart(lease: Lease, stage: (signal: AbortSignal) => Promise<Wo
     await command?.stop();
     return exit;
   } };
-}
-
-function jsonStdout(stdout: string): unknown | undefined {
-  const trimmed = stdout.trim();
-  if (trimmed === '') return undefined;
-  try {
-    return JSON.parse(trimmed) as unknown;
-  } catch {
-    return undefined;
-  }
 }
 
 /** A rendered HITL request and the exact pass and response command presented by the engine. */
@@ -700,7 +691,7 @@ function withUnpushed(message: string, unpushed: string | undefined): string {
 }
 
 async function commandReport(config: LocalConfig, lock: RunLock, driver: DriverIdentity, lease: Lease, result: CommandResult): Promise<ReportBody> {
-  const output = jsonStdout(result.stdout);
+  const output = commandOutputs(result.stdout);
   const attemptResultPath = resultPath(config, lock.run, lease.attempt);
   await fs.mkdir(path.dirname(attemptResultPath), { recursive: true });
   await writeJsonAtomic(attemptResultPath, output !== undefined ? { output } : {});

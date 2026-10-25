@@ -5,14 +5,18 @@ import { afterAll, vi } from 'vitest';
 import { homeVariables, isToolId, TOOLS } from '../../tools.js';
 import { GIT_REPOSITORY_ENV } from '../../utils/git-env.js';
 import { AGENT_SESSION_ENV } from '../../utils/session-id.js';
+import { ATTEMPT_ENV } from '../../workflow/attempt-marker.js';
 
 // Tests run inside an agent's shell (Claude Code sets CLAUDE_CODE_SESSION_ID),
 // and recall, contribute and session save read that id through
 // agentSessionIdFromEnv; a test that does not isolate HOME would also write
 // that live session's state into the real ~/.teamai. Start every test file,
 // and the CLIs it spawns, with none set (an OpenCode shell's
-// TEAMAI_AGENT_SESSION_ID and a Pi shell's PI_SESSION_ID included).
-for (const name of AGENT_SESSION_ENV) {
+// TEAMAI_AGENT_SESSION_ID and a Pi shell's PI_SESSION_ID included). A workflow
+// step that runs the tests carries its runner's TEAMAI_WORKFLOW_ATTEMPT, which
+// would make a spawned `workflow report --driver skill` that runner. Both
+// vitest configs seed these in `test.env`, so the scrub always has one to remove.
+for (const name of [...AGENT_SESSION_ENV, ATTEMPT_ENV]) {
   delete process.env[name];
 }
 
