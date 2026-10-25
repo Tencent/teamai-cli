@@ -209,8 +209,8 @@ export type DescribeVerdict = { ask: 'start' | 'ask' | 'unattended' } | { ask: '
 /** The run R10 starts: its options, whether it asks the host question first, and the tool that judges it. */
 export interface StartRun { parallel: number; hitl: HitlMode; host: 'none' | 'pending'; judge?: string }
 
-/** A refusal of the skill driver, and the literal it names to run instead. */
-type Refused = { kind: 'error'; refusal: Refusal; next: 'describe' | 'next' | 'takeover' | 'resume' | 'claim' | 'same' | null };
+/** A refusal of the skill driver; its code decides the literal it names to run instead. */
+type Refused = { kind: 'error'; refusal: Refusal };
 /** An engine error the skill driver relays, and the literal it names to run instead. */
 type Relayed = { kind: 'engine-error'; error: WorkflowFailure; next: 'next' | 'same' | 'poll' | null };
 /** The error a row answers the call with. */
@@ -327,11 +327,11 @@ export function describeRow(input: DescribeInput): { row: 'R1' | 'R16' | 'R2' | 
 }
 
 /** The start row `input` matches: the refusal of a start that may not run here, or the run to start. */
-export function startRow(input: StartInput): { row: 'R8' | 'R9'; refusal: Refusal; next: 'describe' | null } | { row: 'R10'; start: StartRun } {
-  if (input.local !== undefined) return { row: 'R8', refusal: { code: 'needs_local_driver', name: input.name, reason: input.local }, next: null };
+export function startRow(input: StartInput): { row: 'R8' | 'R9'; refusal: Refusal } | { row: 'R10'; start: StartRun } {
+  if (input.local !== undefined) return { row: 'R8', refusal: { code: 'needs_local_driver', name: input.name, reason: input.local } };
   if (input.check.kind === 'confirm-needed') {
     const { missing, outOfRange } = input.check;
-    return { row: 'R9', refusal: { code: 'confirm_needed', name: input.name, missing, ...(outOfRange ? { outOfRange } : {}) }, next: 'describe' };
+    return { row: 'R9', refusal: { code: 'confirm_needed', name: input.name, missing, ...(outOfRange ? { outOfRange } : {}) } };
   }
   const { parallel, hitl } = input.check;
   return { row: 'R10', start: { parallel, hitl, host: input.prompts ? 'pending' : 'none', ...(input.judge !== undefined ? { judge: input.judge } : {}) } };
@@ -354,15 +354,15 @@ export function readiedRow(input: { run: RunId; readied: RunReadied; kept: boole
   const { run, readied, answers } = input;
   switch (readied.kind) {
     case 'not-owner':
-      return { row: 'R20', answer: { kind: 'error', refusal: { code: 'not_owner', run, owner: readied.owner, since: readied.since }, next: 'claim' } };
+      return { row: 'R20', answer: { kind: 'error', refusal: { code: 'not_owner', run, owner: readied.owner, since: readied.since } } };
     case 'not-here':
-      return { row: 'R20', answer: { kind: 'error', refusal: { code: 'run_not_found', run }, next: 'claim' } };
+      return { row: 'R20', answer: { kind: 'error', refusal: { code: 'run_not_found', run } } };
     case 'failed':
       return { row: 'R21', answer: { kind: 'engine-error', error: readied.failure, next: null } };
     case 'ready': {
       if (input.kept && !readied.installed) return undefined;
       const { description, judging } = readied;
-      if (input.local !== undefined) return { row: 'R8', answer: { kind: 'error', refusal: { code: 'needs_local_driver', name: description.name, reason: input.local, run }, next: null } };
+      if (input.local !== undefined) return { row: 'R8', answer: { kind: 'error', refusal: { code: 'needs_local_driver', name: description.name, reason: input.local, run } } };
       const judge = judging.kind === 'here' && answers.judge !== false ? judging.tool : undefined;
       return {
         row: 'R19',
@@ -390,12 +390,12 @@ export function invokeRow(refusal: WorkflowFailure | undefined): Answered<'R22',
  * the run. `takeover`: the call is `next --takeover`.
  */
 export function callRow(state: SkillState | undefined, input: { run: RunId; session: string | undefined; at: string; takeover: boolean }): Moved<'S1' | 'S4'> | Answered<'R11' | 'S2'> {
-  if (!state) return { row: 'R11', answer: { kind: 'error', refusal: { code: 'not_skill_run', run: input.run }, next: 'resume' } };
+  if (!state) return { row: 'R11', answer: { kind: 'error', refusal: { code: 'not_skill_run', run: input.run } } };
   if (input.takeover) return { row: 'S4', state: takenOver(state, input.session, input.at) };
   const owner = state.orchestrator.session;
   if (owner !== undefined && input.session !== undefined && owner !== input.session) {
     const idleSeconds = Math.round((Date.parse(input.at) - Date.parse(state.orchestrator.lastCallAt)) / 1000);
-    return { row: 'S2', answer: { kind: 'error', refusal: { code: 'orchestrator_active', run: state.run, idleSeconds }, next: 'takeover' } };
+    return { row: 'S2', answer: { kind: 'error', refusal: { code: 'orchestrator_active', run: state.run, idleSeconds } } };
   }
   return { row: 'S1', state: { ...state, orchestrator: { session: state.orchestrator.session ?? input.session, lastCallAt: input.at } } };
 }
@@ -504,7 +504,7 @@ export function judgeAnsweredRow(state: SkillState, input: { attempt: AttemptId;
 
 /** R13: the agent's answer to the host question; R15 when the run asks none now. */
 export function chooseRow(state: SkillState, input: { choice: HostChoice; profile: HostProfile }): Moved<'R13'> | Answered<'R15'> {
-  if (state.host.kind !== 'pending') return { row: 'R15', answer: { kind: 'error', refusal: { code: 'unknown_choice', run: state.run }, next: 'next' } };
+  if (state.host.kind !== 'pending') return { row: 'R15', answer: { kind: 'error', refusal: { code: 'unknown_choice', run: state.run } } };
   return { row: 'R13', state: { ...state, host: { kind: 'chosen', id: input.choice, children: input.profile.children, places: input.profile.places } } };
 }
 
@@ -517,7 +517,7 @@ export function ackRow(state: SkillState, attempt: AttemptId): Moved<'K1' | 'K2'
     return { row: 'K1', state: withAttempt(state, { ...rest, phase: 'dispatched' }) };
   }
   if (open?.phase === 'dispatched') return { row: 'K2', state };
-  return { row: 'K3', answer: { kind: 'error', refusal: { code: 'unknown_offer', run: state.run, attempt }, next: 'next' } };
+  return { row: 'K3', answer: { kind: 'error', refusal: { code: 'unknown_offer', run: state.run, attempt } } };
 }
 
 /**
@@ -528,14 +528,14 @@ export function adoptRow(state: SkillState, input: { attempt: AttemptId; dir: st
   if (state.host.kind === 'pending') return choicePending(state);
   const open = openAttempt(state, input.attempt);
   if (open?.phase !== 'placing') {
-    return { row: 'K5', answer: { kind: 'error', refusal: { code: 'unknown_attempt', run: state.run, attempt: input.attempt, ...(open ? { phase: open.phase } : {}) }, next: 'next' } };
+    return { row: 'K5', answer: { kind: 'error', refusal: { code: 'unknown_attempt', run: state.run, attempt: input.attempt, ...(open ? { phase: open.phase } : {}) } } };
   }
   const preparing: AttemptState = { ...baseOf(open), spawnedAt: input.at, phase: 'preparing', request: { kind: 'adopt', dir: input.dir } };
   return { row: 'K4', state: withAttempt(state, preparing), effects: [{ kind: 'spawn', attempt: open.attempt }] };
 }
 
 function choicePending(state: SkillState): Answered<'R14'> {
-  return { row: 'R14', answer: { kind: 'error', refusal: { code: 'choice_pending', run: state.run }, next: 'next' } };
+  return { row: 'R14', answer: { kind: 'error', refusal: { code: 'choice_pending', run: state.run } } };
 }
 
 /**
@@ -651,7 +651,7 @@ export function graceRow(state: SkillState): { row: 'D18' } | undefined {
 
 /** D19: the run lock stayed busy. */
 export function lockBusyRow(run: RunId): Answered<'D19', Refused> {
-  return { row: 'D19', answer: { kind: 'error', refusal: { code: 'driver_running', run }, next: 'same' } };
+  return { row: 'D19', answer: { kind: 'error', refusal: { code: 'driver_running', run } } };
 }
 
 /** D20: the turn of a foreground call, after its tick: the turn a row of that tick decided, else a turn with `then: poll`. */
@@ -800,9 +800,9 @@ export function reportRow(state: SkillState, input: { attempt: AttemptId; modelU
   if (open?.phase === 'reporting') return resendRow(state, open.attempt);
   if (state.done) return undefined;
   if (state.host.kind === 'pending') return choicePending(state);
-  if (!open) return { row: 'P2', answer: { kind: 'error', refusal: { code: 'unknown_attempt', run: state.run, attempt: input.attempt }, next: 'next' } };
+  if (!open) return { row: 'P2', answer: { kind: 'error', refusal: { code: 'unknown_attempt', run: state.run, attempt: input.attempt } } };
   if (open.phase !== 'offered' && open.phase !== 'dispatched') {
-    return { row: 'P3', answer: { kind: 'error', refusal: { code: 'not_dispatched', run: state.run, attempt: input.attempt, phase: open.phase }, next: 'next' } };
+    return { row: 'P3', answer: { kind: 'error', refusal: { code: 'not_dispatched', run: state.run, attempt: input.attempt, phase: open.phase } } };
   }
   const { model } = open.dispatch;
   const base = { attempt: open.attempt, revision: open.revision, driver: state.driver };

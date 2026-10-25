@@ -196,14 +196,40 @@ export function errorOf(answer: Answer, context: { invocation: Invocation; same:
     return { ...answer.error, next };
   }
   const { refusal } = answer;
-  const run = 'run' in refusal ? refusal.run : undefined;
-  const next = answer.next === null ? null
-    : answer.next === 'describe' && 'name' in refusal ? describeLiteral(invocation, refusal.name)
-      : answer.next === 'same' || run === undefined ? same
-        : answer.next === 'next' ? nextLiteral(invocation, run)
-          : answer.next === 'takeover' ? takeoverLiteral(invocation, run)
-            : skillResumeLiteral(invocation, run, { claim: answer.next === 'claim' });
-  return { code: refusal.code, message: refusalMessage(refusal, { invocation, tool: context.localTool }), ...(refusal.code === 'orchestrator_active' ? { idleSeconds: refusal.idleSeconds } : {}), next };
+  return {
+    code: refusal.code, message: refusalMessage(refusal, { invocation, tool: context.localTool }), ...(refusal.code === 'orchestrator_active' ? { idleSeconds: refusal.idleSeconds } : {}),
+    next: refusalNext(refusal, { invocation, same }),
+  };
+}
+
+/** The literal each refusal names to run instead, null when only the person can act on it; `same` is the call refused. */
+function refusalNext(refusal: Refusal, context: { invocation: Invocation; same: Literal }): Literal | null {
+  const { invocation } = context;
+  switch (refusal.code) {
+    case 'needs_local_driver':
+      return null;
+    case 'confirm_needed':
+      return describeLiteral(invocation, refusal.name);
+    case 'not_skill_run':
+      return skillResumeLiteral(invocation, refusal.run);
+    case 'not_owner':
+    case 'run_not_found':
+      return skillResumeLiteral(invocation, refusal.run, { claim: true });
+    case 'orchestrator_active':
+      return takeoverLiteral(invocation, refusal.run);
+    case 'choice_pending':
+    case 'unknown_choice':
+    case 'unknown_offer':
+    case 'unknown_attempt':
+    case 'not_dispatched':
+      return nextLiteral(invocation, refusal.run);
+    case 'driver_running':
+      return context.same;
+    default: {
+      const unhandled: never = refusal;
+      return unhandled;
+    }
+  }
 }
 
 /** The message of each refusal: what happened, and what the agent or the person does next. */

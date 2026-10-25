@@ -322,7 +322,7 @@ async function start(call: Extract<SkillCall, { kind: 'describe' | 'start' }>, c
   context.trace?.(taken.row);
   if (taken.row !== 'R10') {
     const same = describeLiteral(context.invocation, description.name);
-    return { error: errorOf({ kind: 'error', refusal: taken.refusal, next: taken.next }, { invocation: context.invocation, same, localTool: localPromptTool(context.config, context.tool) }) };
+    return { error: errorOf({ kind: 'error', refusal: taken.refusal }, { invocation: context.invocation, same, localTool: localPromptTool(context.config, context.tool) }) };
   }
   const planned = taken.start;
   const started = await context.client.start(description.name, {
