@@ -1,5 +1,5 @@
 /** Conformance scenarios for what a step requires, its env and secrets, its setup, and the run's deadlines and budgets. */
-import { PARALLEL_ROOTS, controlsYaml, skillProfilesRefuse, type ConformanceScenario } from './conformance-interpreter.js';
+import { PARALLEL_ROOTS, controlsYaml, bothSkillProfiles, type ConformanceScenario } from './conformance-interpreter.js';
 
 export const limitsConformanceScenarios: ConformanceScenario[] = [];
 
@@ -284,7 +284,7 @@ limitsConformanceScenarios.push(
     ],
     expectState: { steps: [{ id: 'plan', status: 'failed', failure: { code: 'budget_unmeasured' } }, { id: 'check', status: 'succeeded' }] },
     expectRecord: { failure: { code: 'budget_unmeasured' } },
-    refusedBy: skillProfilesRefuse({ at: 'plan', expect: { data: { wait: { held: [{ step: 'plan', missing: ['tokens'] }] } } } }),
+    refusedBy: bothSkillProfiles({ at: 'plan', expect: { data: { wait: { held: [{ step: 'plan', missing: ['tokens'] }] } } } }),
   },
   {
     name: 'a run that spent its token budget cancels its open leases and fails budget_exceeded',
@@ -298,7 +298,7 @@ limitsConformanceScenarios.push(
     ],
     expectState: { status: 'failed', steps: [{ id: 'a', status: 'succeeded' }, { id: 'b', status: 'cancelled', failure: { code: 'budget_exceeded' } }] },
     expectRecord: { failure: { code: 'budget_exceeded' } },
-    refusedBy: skillProfilesRefuse({ at: 'a', expect: { data: { wait: { held: [{ step: 'a', missing: ['tokens'] }, { step: 'b', missing: ['tokens'] }] } } } }),
+    refusedBy: bothSkillProfiles({ at: 'a', expect: { data: { wait: { held: [{ step: 'a', missing: ['tokens'] }, { step: 'b', missing: ['tokens'] }] } } } }),
   },
 );
 
@@ -328,6 +328,6 @@ limitsConformanceScenarios.push(
       { kind: 'next', saveAs: 'done', expect: { data: { done: { outcome: 'succeeded' } } } },
     ],
     expectRecord: { steps: [{ step: 'plan', unenforced: TURNS_UNENFORCED }, { step: 'check' }] },
-    refusedBy: skillProfilesRefuse({ at: 'plan', expect: { data: { lease: { step: 'plan', unenforced: TURNS_UNENFORCED } } } }),
+    refusedBy: bothSkillProfiles({ at: 'plan', expect: { data: { lease: { step: 'plan', unenforced: TURNS_UNENFORCED } } } }),
   },
 );

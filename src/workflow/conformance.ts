@@ -1,4 +1,6 @@
-import { PARALLEL_ROOTS, controlsYaml, skillProfilesRefuse, type ConformanceOperation, type ConformanceScenario, type DriverProfile } from './conformance-interpreter.js';
+import {
+  PARALLEL_ROOTS, bothSkillProfiles, controlsYaml, type ConformanceOperation, type ConformanceScenario, type DriverProfile,
+} from './conformance-interpreter.js';
 import { AGENT_SESSION_ENV } from '../utils/session-id.js';
 import { ATTEMPT_ENV } from './attempt-marker.js';
 import { limitsConformanceScenarios } from './limits-conformance.js';
@@ -569,7 +571,7 @@ workflowConformanceScenarios.push(
       { kind: 'next', saveAs: 'again', hitl: true, expect: { data: { lease: { step: 'pair', interactive: true } } } },
     ],
     expectState: { status: 'running', steps: [{ id: 'pair', status: 'leased' }] },
-    refusedBy: skillProfilesRefuse({ at: 'held', expect: { data: { lease: { step: 'pair', interactive: true } } } }),
+    refusedBy: bothSkillProfiles({ at: 'held', expect: { data: { lease: { step: 'pair', interactive: true } } } }),
   },
   {
     name: 'retry after the final failure does not provisionally finish the run', workflowName: 'build', yaml: TWO_STEPS,
@@ -591,7 +593,7 @@ workflowConformanceScenarios.push(
       { kind: 'respond', step: 'work', choice: 'no', expect: { error: { code: 'repeated_response' } } },
       { kind: 'next', saveAs: 'work', hitl: true, running: ['parallel'], expect: { data: { lease: { step: 'work' } } } },
     ],
-    refusedBy: skillProfilesRefuse({ at: 'busy', expect: { data: { hitl: { step: 'work' } } } }),
+    refusedBy: bothSkillProfiles({ at: 'busy', expect: { data: { hitl: { step: 'work' } } } }),
   },
   {
     name: 'refused approve skips and can be answered again', workflowName: 'build', yaml: APPROVE,
@@ -608,7 +610,7 @@ workflowConformanceScenarios.push(
   {
     name: 'optional approve without HITL skips', workflowName: 'build', yaml: APPROVE,
     operations: [{ kind: 'next', saveAs: 'done', expect: { data: { done: { outcome: 'succeeded' } } } }],
-    refusedBy: skillProfilesRefuse({ at: 'done', expect: { data: { hitl: { step: 'work', kind: 'approve' } } } }),
+    refusedBy: bothSkillProfiles({ at: 'done', expect: { data: { hitl: { step: 'work', kind: 'approve' } } } }),
   },
   {
     name: 'required approve refuses drivers without HITL and agent answers', workflowName: 'build', yaml: APPROVE.replace('approve: Build it?', 'approve: { message: Build it?, required: true }'),
@@ -618,7 +620,7 @@ workflowConformanceScenarios.push(
       { kind: 'next', saveAs: 'done', expect: { data: { done: { outcome: 'failed' } } } },
     ],
     expectState: { steps: [{ id: 'work', status: 'failed', failure: { code: 'hitl_required' } }, { id: 'later', status: 'skipped' }] },
-    refusedBy: skillProfilesRefuse({ at: 'done', expect: { data: { hitl: { step: 'work', required: true } } } }),
+    refusedBy: bothSkillProfiles({ at: 'done', expect: { data: { hitl: { step: 'work', required: true } } } }),
   },
   {
     name: 'choose exposes choice and rejects stale pass', workflowName: 'build', yaml: CHOOSE,
@@ -683,7 +685,7 @@ workflowConformanceScenarios.push(
       { kind: 'next', saveAs: 'pair', as: 'session', expect: { data: { lease: { step: 'pair', interactive: true } } } },
     ],
     expectState: { status: 'running', steps: [{ id: 'pair', status: 'leased', lease: { driver: { kind: 'session' } } }] },
-    refusedBy: skillProfilesRefuse({ at: 'local', expect: { data: { lease: { step: 'pair', interactive: true } } } }),
+    refusedBy: bothSkillProfiles({ at: 'local', expect: { data: { lease: { step: 'pair', interactive: true } } } }),
   },
   {
     name: 'a held step does not block a ready sibling', workflowName: 'build',
@@ -828,6 +830,12 @@ export interface GitConformanceScenario {
   expectPushed?: Record<string, Record<string, string>>;
   /** The step's `message` contains each named value as a whole word, and its `failure.code` is not `codeIsNot`. */
   expectFailure?: { step: string; names: GitConformanceName[]; codeIsNot?: string };
+  /**
+   * The profiles designed to end the scenario otherwise, each with the end it reaches instead. A driver that prepares
+   * through the protocol, as the skill driver does, makes its places in the checkout the run started from, which holds
+   * every commit that checkout made.
+   */
+  refusedBy?: Partial<Record<DriverProfile, Pick<GitConformanceScenario, 'expectState' | 'expectPushed'>>>;
 }
 
 const FAILING_WRITER = `schemaVersion: v1alpha1
@@ -914,6 +922,10 @@ export const workflowGitConformanceScenarios: GitConformanceScenario[] = [
     expectState: { steps: [{ id: 'right', status: 'succeeded' }, { id: 'left', status: 'succeeded' }, { id: 'join', status: 'failed', failure: { code: 'workspace_base' } }] },
     expectPushed: { left: { 'left.txt': 'L' } },
     expectFailure: { step: 'join', names: ['steps.right.commit', 'steps.right.branch'] },
+    refusedBy: bothSkillProfiles({
+      expectState: { steps: [{ id: 'right', status: 'succeeded' }, { id: 'left', status: 'succeeded' }, { id: 'join', status: 'succeeded' }] },
+      expectPushed: { join: { 'left.txt': 'L', 'right.txt': 'R', 'joined.txt': 'J' } },
+    }),
   },
   {
     name: 'a step whose base commit is on no branch of origin fails workspace_base naming the commit and its branch',
@@ -922,6 +934,10 @@ export const workflowGitConformanceScenarios: GitConformanceScenario[] = [
     base: 'elsewhere',
     expectState: { steps: [{ id: 'broken', status: 'failed', failure: { code: 'workspace_base' } }] },
     expectFailure: { step: 'broken', names: ['base.commit', 'base.ref'] },
+    refusedBy: bothSkillProfiles({
+      expectState: { steps: [{ id: 'broken', status: 'failed', message: 'command exited with status 1' }] },
+      expectPushed: { broken: { 'broken.txt': 'B', 'elsewhere.txt': 'only on the other machine' } },
+    }),
   },
   {
     name: 'a claimed run whose base only the publishing machine had starts its copies from that base',
@@ -1149,6 +1165,7 @@ steps:
         state: { steps: [{ id: 'change', status: 'failed', failure: { code: 'setup_failed' } }] },
       },
     ],
+    refusedBy: { 'skill-bare': { at: 'change', expect: { data: { wait: { held: [{ step: 'change', missing: ['setup'] }] } } } } },
   },
   {
     name: 'a prepare whose start commit is on no branch of origin settles the attempt failed with workspace_base',

@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { resolveWorkflowEnv } from '../env-resolution.js';
 import type { LocalConfig } from '../types.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
-import { inProcessConformanceClient, runConformanceScenario, type ConformanceClient } from '../workflow/conformance-interpreter.js';
+import { DRIVERS_UNDER_TEST, inProcessConformanceClient, runConformanceScenario, type ConformanceClient } from '../workflow/conformance-interpreter.js';
 import { PLACE_CHECKOUT_FILES, workflowPlaceConformanceScenarios } from '../workflow/conformance.js';
 import { inProcessClient, type HostPlaceRequest } from '../workflow/protocol.js';
 import { pull } from '../pull.js';
@@ -410,7 +410,7 @@ steps:
   });
 });
 
-describe('workflow place conformance in process', () => {
+describe.each(DRIVERS_UNDER_TEST)('workflow place conformance in process as %s', (profile) => {
   for (const scenario of workflowPlaceConformanceScenarios) {
     it(scenario.name, async () => {
       for (const [name, value] of Object.entries(scenario.env ?? {})) vi.stubEnv(name, value);
@@ -478,7 +478,7 @@ describe('workflow place conformance in process', () => {
         },
         expect,
         place: { checkout, origin },
-      }, 'local');
+      }, profile);
     });
   }
 });

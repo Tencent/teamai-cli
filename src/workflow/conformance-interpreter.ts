@@ -1,9 +1,10 @@
 /** The conformance scenario language, the driver profiles it speaks as, and the interpreter that runs a scenario. */
+import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { agentEvidence } from './attempt-marker.js';
-import type { NextPrepare, WorkflowClient } from './protocol.js';
+import { commandOutputs, type NextPrepare, type WorkflowClient } from './protocol.js';
 import type { DriverCan } from './requirements.js';
 import { callerProvenance } from './run-controls.js';
 import { AttemptIdSchema } from './store.js';
@@ -61,7 +62,7 @@ export interface ConformanceRefusal {
 }
 
 /** The same refusal from both skill profiles: each declares a person, and neither declares tokens or turns. */
-export function skillProfilesRefuse(refusal: ConformanceRefusal): Partial<Record<DriverProfile, ConformanceRefusal>> {
+export function bothSkillProfiles<T>(refusal: T): { skill: T; 'skill-bare': T } {
   return { skill: refusal, 'skill-bare': refusal };
 }
 
@@ -365,4 +366,51 @@ async function expectEnd(scenario: ConformanceScenario, runner: ConformanceRunne
     expect(tip, `${lease.workspace.branch} on origin is the commit ${lease.step} reported`).toEqual(changes?.to);
     for (const [file, text] of Object.entries(files)) expect((await git(origin, ['show', `${tip}:${file}`])).stdout).toEqual(text);
   }
+}
+
+const PreparedCommandSchema = z.object({
+  attempt: z.string(), revision: z.number(), step: z.string(), command: z.string(), cwd: z.string(), env: z.record(z.string()).optional(),
+});
+
+/** The codes a `next --prepare` answers once it settled the attempt it could not prepare `failed`. */
+const PREPARE_FAILURES = new Set(['setup_failed', 'workspace_base', 'merge_conflict']);
+
+function runCommand(lease: z.infer<typeof PreparedCommandSchema>): Promise<{ exitCode: number; stdout: string }> {
+  return new Promise((resolve) => {
+    const child = spawn(lease.command, { shell: true, cwd: lease.cwd, env: { ...process.env, ...lease.env }, stdio: ['ignore', 'pipe', 'ignore'] });
+    let stdout = '';
+    child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; });
+    child.on('error', () => resolve({ exitCode: 127, stdout }));
+    child.on('close', (code) => resolve({ exitCode: code ?? 1, stdout }));
+  });
+}
+
+/**
+ * Drives run `runId` to its end as `driver` declaring `can`, through the protocol as the skill driver's runners do:
+ * each lease is prepared in its place, its command run there, and its exit reported, one step at a time. With `claim`,
+ * the first call claims the run. Answers the call that ended the run.
+ */
+export async function driveByProtocol(input: {
+  client: Pick<ConformanceClient, 'next' | 'report'>; runId: string; driver: DriverIdentity; can: DriverCan; claim?: true;
+}): Promise<WorkflowEnvelope> {
+  const { client, runId, driver, can } = input;
+  for (let calls = 0; calls < 20; calls += 1) {
+    const answer = await client.next(runId, { driver: { ...driver, can }, ...(input.claim && calls === 0 ? { claim: true } : {}) }, { prepare: true });
+    if ('error' in answer) {
+      if (PREPARE_FAILURES.has(answer.error.code)) continue;
+      return answer;
+    }
+    if (answer.data.done !== undefined) return answer;
+    const lease = PreparedCommandSchema.safeParse(answer.data.lease);
+    if (!lease.success) throw new Error(`Run ${runId} answered neither a prepared command nor its end: ${JSON.stringify(answer)}`);
+    const { attempt, revision, step } = lease.data;
+    const { exitCode, stdout } = await runCommand(lease.data);
+    const outputs = commandOutputs(stdout);
+    const reported = await client.report(runId, {
+      attempt, revision, driver, outcome: exitCode === 0 ? 'success' : 'failed', exitCode,
+      ...(outputs !== undefined ? { outputs } : {}), ...(exitCode !== 0 ? { message: `command exited with status ${exitCode}` } : {}),
+    });
+    if ('error' in reported) throw new Error(`The report of ${step} was refused: ${reported.error.message}`);
+  }
+  throw new Error(`Run ${runId} did not end within 20 calls`);
 }
