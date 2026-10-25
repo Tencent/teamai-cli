@@ -16,16 +16,18 @@ import { getDataHome, getReportsDir, type LocalConfig, type TeamaiConfig } from 
 import { log } from '../utils/logger.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
+import { LeaseIdSchema } from '../workflow/lease-wire.js';
 import { cancelRun, respondProvenance, respondToHitl, retryStep } from '../workflow/run-controls.js';
 import { createLocalToolAdapter, type LocalToolAdapter, type LocalToolResult, type LocalToolRun, type ToolSpawn } from '../workflow/drivers/local/local-tool-adapter.js';
 import { _setDriverPollMs, runLocalDriver } from '../workflow/drivers/local/local-driver.js';
 import { driverIdentity } from '../driver-identity.js';
 import { pendingRecords, type WorkflowRunRecord } from '../workflow/records.js';
-import { driverLockPath, readRun } from '../workflow/store.js';
+import { attemptDir, driverLockPath, readRun, RunIdSchema } from '../workflow/store.js';
 import * as worktreeSnapshot from '../workflow/place/worktree-snapshot.js';
 import type { DriverIdentity } from '../workflow/types.js';
 import { commitFile, fakeClaude, git, recordDelivery } from './helpers/delivered-checkout.js';
 import { knownSecrets } from '../env-resolution.js';
+import { recordGroup } from '../tool-launch/process-stop.js';
 
 _setDriverPollMs(20);
 
@@ -1275,6 +1277,30 @@ steps:
 
     expect(done).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
     expect(fs.readFileSync(path.join(workspace, '..', 'log.txt'), 'utf8')).toBe('start a\nend a\nstart b\nend b\n');
+  });
+
+  it('stops what an earlier driver left running in an attempt it gets back, before that attempt runs again', async () => {
+    const { config, workspace, runId } = await workflowFixture(`schemaVersion: v1alpha1
+name: build
+description: A step whose earlier driver was killed while its setup ran.
+steps:
+  - id: check
+    command: "true"
+`);
+    const leased = await leaseNext(config, runId, driverIdentity('local', workspace));
+    if (!('data' in leased)) throw new Error(leased.error.message);
+    const dir = attemptDir(config, RunIdSchema.parse(runId), LeaseIdSchema.parse(leased.data.lease).attempt);
+    fs.mkdirSync(dir, { recursive: true });
+    // What the killed driver's setup left: a process group of its own, recorded where its attempt keeps it.
+    const left = spawn('sleep', ['30'], { detached: true, stdio: 'ignore' });
+    const exited = new Promise<NodeJS.Signals | null>((resolve) => left.on('exit', (_code, signal) => resolve(signal)));
+    recordGroup(left, dir);
+    try {
+      expect(await runLocalDriver(config, runId, workspace)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+      expect(await Promise.race([exited, new Promise((resolve) => setTimeout(() => resolve('still running'), 2000))])).toBe('SIGTERM');
+    } finally {
+      left.kill('SIGKILL');
+    }
   });
 
   it('runs a prompt an earlier driver leased alone, between the commands leased before and after it', async () => {

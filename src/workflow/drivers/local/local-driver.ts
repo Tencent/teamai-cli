@@ -30,7 +30,7 @@ import {
 import { attemptDir, AttemptIdSchema, attemptResultPath, attemptsDir, readRun, RunIdSchema, updateRun, withRunLock, type RunId, type RunLock } from '../../store.js';
 import { abandonPlace, placeLeaseOf, placeOf, placeRoot, preparePlace, runPlaceSetup, type StepEnd } from '../../place/place.js';
 import { commandEnd, managedReport } from '../../protocol.js';
-import { startGroupedCommand, type CommandExit, type GroupedCommand } from '../../../tool-launch/process-stop.js';
+import { startGroupedCommand, stopRecordedGroup, type CommandExit, type GroupedCommand } from '../../../tool-launch/process-stop.js';
 import { isLaunchTool, localToolFamily, type LaunchTool } from '../../../tool-launch/tools.js';
 import { chooseStepModel, loadDeployedAgent } from '../../step-model.js';
 import type { DriverIdentity, StepHitl, WorkflowEnvelope, WorkflowFailure } from '../../types.js';
@@ -215,6 +215,9 @@ async function stageLease(lease: Lease, { config, lock, root, values, mode, sign
   if (lease.unreadableWorkspace) {
     return { code: 'workspace_base', message: `Step "${lease.step}" was leased a workspace this teamai cannot read. Update teamai.` };
   }
+  // A lease is handed back to a driver after one of this run was killed: the setup or command that one left running
+  // in the attempt's place is stopped before the attempt is staged again.
+  await stopRecordedGroup(attemptDir(config, lock.run, lease.attempt));
   if (lease.envScope) {
     const scoped = await stepEnvironment(values, lease.envScope);
     if (!scoped.ok) return scoped.failure;
