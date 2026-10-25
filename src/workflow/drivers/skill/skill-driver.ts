@@ -261,7 +261,6 @@ export function parseSkillCall(
   return { kind: 'report', run: run.data, attempt, role: 'agent', modelUnavailable: modelUnavailable === true };
 }
 
-/** Answers `call`, then journals it beside the run's skill state (`journal.ts`). */
 /**
  * Answers `call` with one envelope, and journals it. An error thrown inside an agent's call answers `skill_call_failed`
  * with its message, as the agent reads only the envelope. A runner's own call answers nobody, so its error goes on up: the
