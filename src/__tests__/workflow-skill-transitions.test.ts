@@ -469,7 +469,9 @@ function documentedRows(): TransitionRow[] {
   return section.split('\n')
     .filter((line) => line.startsWith('| ') && !line.startsWith('| Row |'))
     .map((line) => {
-      const [id = '', state = '', input = '', guard = '', effects = '', next = '', action = ''] = line.slice(1, -1).split('|').map((cell) => cell.trim());
+      const cells = line.slice(1, -1).split('|').map((cell) => cell.trim());
+      if (cells.length !== COLUMNS.length) throw new Error(`A skill driver row has ${cells.length} cells, not ${COLUMNS.length}: ${line}`);
+      const [id = '', state = '', input = '', guard = '', effects = '', next = '', action = ''] = cells;
       return { id, state, input, guard, effects, next, action };
     });
 }
