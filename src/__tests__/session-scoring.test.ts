@@ -20,6 +20,7 @@ import { encodeCwdClaude } from '../session-flow/fs.js';
 import { projectDataHome } from '../utils/partition.js';
 import { AGENT_SESSION_ENV } from '../utils/session-id.js';
 import { scoreSession } from '../session-flow/scoring.js';
+import { getTeamSecretsPath, writeSecretStore } from '../secret-store.js';
 import type { WorkflowEnvelope } from '../workflow/types.js';
 
 const SCORER = `---
@@ -525,6 +526,27 @@ describe('teamai score --session', () => {
     const judged = fs.readFileSync(path.join(root, 'judged.md'), 'utf8');
     expect(judged).toContain('Judge the session. Never print');
     expect(judged).not.toContain(dsn);
+  });
+
+  it('masks both the environment value of a secret and the different value the team gives it, in the scorer\'s prompt, the evidence and the first prompt', async () => {
+    const personal = 'personal-token-value-1362';
+    const team = 'team-token-value-1362';
+    const config = await fixture({ quality: SCORER.replace('Judge the session.', `Judge the session. Never print ${personal} or ${team}.`) });
+    fs.mkdirSync(path.join(config.repo.localPath, 'env'), { recursive: true });
+    fs.writeFileSync(path.join(config.repo.localPath, 'env', 'secrets.yaml'), 'secrets:\n  - key: DEPLOY_HOOK\n');
+    await writeSecretStore(getTeamSecretsPath(config), { DEPLOY_HOOK: { value: team } });
+    vi.stubEnv('DEPLOY_HOOK', personal);
+    plantClaudeSession(path.join(root, 'app'), `Deploy with ${personal}`);
+    const printed = vi.spyOn(console, 'log').mockImplementation(() => {});
+    fakeClaude('good');
+
+    const { reasoning } = z.object({ label: z.object({ reasoning: z.string() }) }).parse(data(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: ['quality'] }))).label;
+
+    expect(fs.readFileSync(path.join(root, 'judged.md'), 'utf8')).toContain('Judge the session. Never print');
+    for (const text of [fs.readFileSync(path.join(root, 'judged.md'), 'utf8'), fs.readFileSync(path.join(root, 'judged-transcript.md'), 'utf8'), fs.readFileSync(reasoning, 'utf8'), printed.mock.calls.flat().join('\n')]) {
+      expect(text).not.toContain(personal);
+      expect(text).not.toContain(team);
+    }
   });
 
   it('keeps the label in the scope the session ran in, also when it is scored from another one', async () => {

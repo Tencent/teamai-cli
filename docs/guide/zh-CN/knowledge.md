@@ -48,6 +48,8 @@ teamai recall --check "API 超时"
 
 ### Recall 采纳与 upvote
 
+设置 `TEAMAI_UPVOTE_JUDGE=1` 后，可选 judge 也能为通过摘要采纳的指导计分。Claude 系工具使用 transcript；Codex、Muse 和 ZCode 使用 Stop 事件的最终回复与本会话已确认的 recall 日志。只有本作用域允许计分的已召回文档能获得 upvote，每个会话至多一次。
+
 这次会话打开了 recall 返回的文档，就计一次 upvote。也可以手动记：
 
 ```bash

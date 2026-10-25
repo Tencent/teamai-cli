@@ -734,10 +734,12 @@ const votesJudgeHandler: HookHandler = {
     if (process.env.TEAMAI_UPVOTE_JUDGE !== '1') return null;
 
     const transcriptPath = typeof stdin.transcript_path === 'string' ? stdin.transcript_path : null;
-    if (!transcriptPath) return null;
+    const finalReply = typeof stdin.last_assistant_message === 'string' ? stdin.last_assistant_message.trim() : '';
+    if (!transcriptPath && !finalReply) return null;
 
     try {
       const sessionId = deriveSessionId(stdin, { includeCwd: true });
+      const dispatchSessionId = deriveDispatchSessionId(stdin, _tool);
 
       // Parse and filter candidates BEFORE claiming the session. Stop fires
       // every turn, including turns before any recall has happened; claiming on
@@ -745,7 +747,16 @@ const votesJudgeHandler: HookHandler = {
       // judge from ever running on the later turns that DO have recalls. So we
       // only spend the claim once there is real work to do.
       const { parseTranscriptForVotes } = await import('./transcript-parser.js');
-      const voteData = await parseTranscriptForVotes(transcriptPath);
+      // Codex, Muse and ZCode provide the reply directly. Their native session
+      // files are not Claude transcripts; use our settled recall log as evidence.
+      const { recalledDocsForSession } = await import('./recall-adoption.js');
+      const docs = finalReply ? await recalledDocsForSession(localConfig, dispatchSessionId) : [];
+      const voteData = finalReply ? {
+        finalAssistantText: finalReply,
+        recalledDocIds: docs.map(d => d.key),
+        recalledDocPaths: Object.fromEntries(docs.map(d => [d.key, d.path])),
+        recalledDocScopes: Object.fromEntries(docs.map(d => [d.key, d.scope])),
+      } : await parseTranscriptForVotes(transcriptPath!);
       if (voteData.recalledDocIds.length === 0) return null;
 
       // The session's upvote ledger holds every doc the hook path (or an earlier
@@ -759,7 +770,6 @@ const votesJudgeHandler: HookHandler = {
       // opened in this turn is then in the ledger and never sent to the judge.
       // Safe to run twice: the ledger and consumed marks dedupe it.
       const { creditAdoptedDocs, recalledKeyOf, recalledPathOf } = await import('./recall-adoption.js');
-      const dispatchSessionId = deriveDispatchSessionId(stdin, _tool);
       await creditAdoptedDocs(localConfig, dispatchSessionId);
       const { creditedDocIdsForSession } = await import('./votes.js');
       const ledgerCredited = await creditedDocIdsForSession(votePath, sessionId);

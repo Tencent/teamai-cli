@@ -4,11 +4,13 @@
  * its branches from the business origin; the first member then gets `not_owner` until it takes the run back.
  */
 import { execFileSync, spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { acquireLock, releaseLock } from '../../update.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const CLI = path.join(ROOT, 'dist', 'index.js');
@@ -350,6 +352,23 @@ describe('workflow publish and resume across members', () => {
       attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver, tool: 'claude', session,
     })]);
     expect(reported.envelope(), said(reported)).toMatchObject({ data: { accepted: true } });
+
+    const archive = path.join(homeOf('alice'), '.teamai', 'team-repo');
+    const lockKey = createHash('sha256').update(fs.realpathSync(archive)).digest('hex').slice(0, 16);
+    const lock = path.join(homeOf('alice'), '.teamai', 'locks', `session-publish-${lockKey}.lock`);
+    expect(await acquireLock(lock)).toBe(true);
+    let blocked: RunResult;
+    try {
+      blocked = await teamai('alice', ['workflow', 'publish', run, '--sessions']);
+    } finally {
+      await releaseLock(lock);
+    }
+    expect(blocked.code, said(blocked)).toBe(1);
+    expect(blocked.envelope()).toMatchObject({
+      error: { code: 'sessions_not_archived', message: expect.stringContaining('another teamai command is writing the session archive') },
+    });
+    expect(git(archive, ['status', '--porcelain'], envOf('alice'))).toBe('');
+    expect(originGit(teamOrigin, 'ls-tree', '-r', '--name-only', 'main', 'sessions')).toBe('');
 
     const published = await teamai('alice', ['workflow', 'publish', run, '--sessions']);
     expect(published.code, said(published)).toBe(0);

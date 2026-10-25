@@ -7,7 +7,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import { collectTeamSecrets } from '../env-resolution.js';
+import { knownSecrets } from '../env-resolution.js';
 import { AttemptStore, type AttemptRecord } from '../scorers/attempts.js';
 import { batchesScorers } from '../scorers/batch.js';
 import { cachedScorerNames, pinScorers, scorerNamespaces } from '../scorers/cache.js';
@@ -24,7 +24,7 @@ import type { ScopeScoring } from '../scorers/settings.js';
 import { typedIn, usedSkills } from '../skill-use.js';
 import { getDataHome, type LocalConfig } from '../types.js';
 import { readWorkspaceChildren } from '../workspace-children.js';
-import { collectEnvSecrets, redact } from '../utils/redact.js';
+import { redact } from '../utils/redact.js';
 import { AgentSession } from './agent-session.js';
 import type { SubagentsRead } from './adapters/base.js';
 import { SessionCaptures, type CapturedSession, type SessionCapture } from './captures.js';
@@ -319,7 +319,7 @@ async function read(config: LocalConfig, subject: SessionSubject): Promise<{ ok:
   const filePath = captures.flatMap((capture) => capture.sessionFile ?? []).at(-1);
   const found = await AgentSession.find({ ...subject, ...(filePath ? { filePath } : {}) }, { subagents: true });
   if (found.status !== 'done' || found.session.messages.length === 0) return { ok: false };
-  const envSecrets = { ...collectEnvSecrets(), ...await collectTeamSecrets(config) };
+  const envSecrets = await knownSecrets(config);
   return { ok: true, judged: judgeSession({ platform: subject.platform, found, captures, mask: (text) => redact(text, { envSecrets }) }) };
 }
 

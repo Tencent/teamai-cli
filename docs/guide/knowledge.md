@@ -48,6 +48,8 @@ teamai recall --check "API timeout"
 
 ### Recall adoption and upvotes
 
+With `TEAMAI_UPVOTE_JUDGE=1`, the optional judge can also credit guidance used through a summary. Claude-family tools use their transcript; Codex, Muse and ZCode use the Stop payload's final reply and this session's settled recall log. Only eligible recalled docs can receive a vote, once per session.
+
 Opening a document that recall returned counts as one upvote for this session. You can also record it by hand:
 
 ```bash

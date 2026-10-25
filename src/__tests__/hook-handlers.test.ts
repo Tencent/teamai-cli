@@ -151,6 +151,7 @@ vi.mock('../transcript-parser.js', () => ({
 // behavior is covered end to end in recall-attribution.test.ts.
 const mockCreditAdoptedDocs = vi.hoisted(() => vi.fn());
 vi.mock('../recall-adoption.js', () => ({
+  recalledDocsForSession: vi.fn(async () => []),
   creditAdoptedDocs: mockCreditAdoptedDocs,
   recalledKeyOf: vi.fn(async () => () => undefined),
   // The judge backfills a missing `File:` path from the recall log; these tests
