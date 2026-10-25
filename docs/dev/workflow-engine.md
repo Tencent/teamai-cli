@@ -112,6 +112,7 @@ Test parsing through `parseWorkflow` and `syncWorkflowDefinitions`. Test the eng
 | P3 | drive | report a | a preparing, running or reporting | none | drive | error `not_dispatched`, next: the next literal |
 | P7 | reporting | engine: reported, any status | | drop a; add to settled | drive | event `settled` |
 | P8 | reporting | engine: `repeated_report` | | as P7 | drive | event `settled` |
+| P9 | reporting | engine: `lease_cancelled` | | drop a (the protocol abandoned its place) | drive | event `stopped` |
 | P10 | reporting | engine: another error | | keep the body | reporting | error, next: the same report literal (a runner retries at its next check) |
 | P11 | reporting | tick | a body is stored (a crash came between write and send) | send it again | reporting | P7 to P10 |
 

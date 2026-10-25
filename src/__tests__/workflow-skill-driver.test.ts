@@ -56,4 +56,23 @@ describe('skill driver', () => {
     // Every command the session ran came whole from a reply: no slot or placeholder was left for it to fill.
     expect(JSON.stringify([described, started, polled])).not.toMatch(/\{inputs\}|\{dir\}|<[a-z]+>/);
   });
+
+  it('answers held to a step command that reports its own attempt, and the runner alone reports it', async () => {
+    const harness = await skillHarness({ check: CHECK });
+    roots.push(harness.root);
+    const started = await harness.call({ kind: 'start', name: 'check', answers: { confirmed: false }, inputs: undefined });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+    const { run, running: [lint] } = started.data.turn;
+    if (lint?.phase !== 'running') throw new Error(JSON.stringify(started));
+
+    // A step command inherits its runner's marker, so its own report call reads as the runner's, while that runner
+    // still holds the attempt's runner lock.
+    expect(await harness.call({ kind: 'report', run, attempt: lint.attempt, role: 'runner' }))
+      .toEqual({ data: { runner: { attempt: lint.attempt, status: 'held' } } });
+
+    const done = await harness.call({ kind: 'next', run, wait: true });
+    if (!('data' in done) || !('turn' in done.data)) throw new Error(JSON.stringify(done));
+    expect(done.data.turn.events.filter((event) => event.kind === 'settled' && event.step === 'lint')).toHaveLength(1);
+    expect(done.data.turn.actions).toEqual([{ kind: 'done', outcome: 'succeeded', prs: [] }]);
+  });
 });

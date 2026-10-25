@@ -50,8 +50,11 @@ export interface SkillError {
 export type SkillAnswer =
   | { data: { describe: { workflow: WorkflowDescription; ask: DescribeAsk } } }
   | { data: { turn: Turn } }
-  /** What a runner answers once it is done with its attempt. Nobody reads it: a runner reports itself. */
-  | { data: { runner: { attempt: AttemptId; reported: boolean } } }
+  /**
+   * What a runner answers once it is done with its attempt: `reported`, `gone` when the attempt closed without its
+   * report, or `held` when another live runner of the attempt holds its lock and this call did nothing.
+   */
+  | { data: { runner: { attempt: AttemptId; status: 'reported' | 'gone' | 'held' } } }
   | { error: SkillError };
 
 /** The turn of `state` that shows `events`, with `then` unless the run is done. A `quiet` turn carries no action. */

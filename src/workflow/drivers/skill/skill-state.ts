@@ -34,6 +34,8 @@ export type AttemptState = z.infer<typeof AttemptStateSchema>;
 export const TurnEventSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('started'), step: z.string(), attempt: AttemptIdSchema }),
   z.object({ kind: z.literal('restarted'), step: z.string(), attempt: AttemptIdSchema }),
+  /** The engine cancelled the attempt's lease, so its report was not recorded. */
+  z.object({ kind: z.literal('stopped'), step: z.string(), attempt: AttemptIdSchema }),
   z.object({
     kind: z.literal('settled'),
     step: z.string(),

@@ -42,25 +42,25 @@ type Stage =
   /** The engine refused the report; it stays stored, and the runner sends it again. */
   | { kind: 'retry' }
   /** Nothing is left for this runner: its attempt was reported, or is no longer open. */
-  | { kind: 'gone'; reported: boolean };
+  | { kind: 'gone'; status: 'reported' | 'gone' };
 
 /** Runs attempt `attempt` of `run` to its report, unless another live runner of it holds its lock. */
 export async function runRunner(context: SkillContext, run: RunId, attempt: AttemptId): Promise<SkillAnswer> {
   const result = await withRunnerLock(context.config, run, attempt, () => runAttempt(context, run, attempt));
-  return result === 'held' ? { data: { runner: { attempt, reported: false } } } : result;
+  return result === 'held' ? { data: { runner: { attempt, status: 'held' } } } : result;
 }
 
 async function runAttempt(context: SkillContext, run: RunId, attempt: AttemptId): Promise<SkillAnswer> {
   for (;;) {
     const stage = await locked(context, run, (lock) => prepare(context, lock, attempt));
-    if (stage.kind === 'gone') return { data: { runner: { attempt, reported: stage.reported } } };
+    if (stage.kind === 'gone') return { data: { runner: { attempt, status: stage.status } } };
     if (stage.kind === 'retry') {
       await context.runners.sleep(RUNNER_POLL_MS);
       continue;
     }
     const exited = await runCommand(context, run, attempt, stage);
     const sent = await locked(context, run, (lock) => report(context, lock, attempt, exited));
-    if (sent.kind === 'gone') return { data: { runner: { attempt, reported: sent.reported } } };
+    if (sent.kind === 'gone') return { data: { runner: { attempt, status: sent.status } } };
     await context.runners.sleep(RUNNER_POLL_MS);
   }
 }
@@ -84,7 +84,8 @@ async function readState(context: SkillContext, lock: RunLock): Promise<SkillSta
 async function send(context: SkillContext, lock: RunLock, state: SkillState, attempt: AttemptId, body: ReportBody): Promise<Stage> {
   const sent = await sendReport(context, lock, state, attempt, body);
   await writeSkillState(context.config, lock, sent.state, context.env.secrets);
-  return sent.refused ? { kind: 'retry' } : { kind: 'gone', reported: true };
+  if (sent.refused) return { kind: 'retry' };
+  return { kind: 'gone', status: sent.state.settled.includes(attempt) ? 'reported' : 'gone' };
 }
 
 function failedBody(state: SkillState, attempt: AttemptId, revision: number, failure: WorkflowFailure): ReportBody {
@@ -95,12 +96,12 @@ function failedBody(state: SkillState, attempt: AttemptId, revision: number, fai
 async function prepare(context: SkillContext, lock: RunLock, attempt: AttemptId): Promise<Stage> {
   const state = await readState(context, lock);
   const open = state && openAttempt(state, attempt);
-  if (!state || !open) return { kind: 'gone', reported: state?.settled.includes(attempt) ?? false };
+  if (!state || !open) return { kind: 'gone', status: state?.settled.includes(attempt) ? 'reported' : 'gone' };
   if (open.phase === 'reporting') return send(context, lock, state, attempt, open.body);
   const failed = async (failure: WorkflowFailure): Promise<Stage> => {
     const body = failedBody(state, attempt, open.revision, failure);
     const reporting = take(context, state, { kind: 'prepare-failed', attempt, body });
-    return reporting?.state ? send(context, lock, reporting.state, attempt, body) : { kind: 'gone', reported: false };
+    return reporting?.state ? send(context, lock, reporting.state, attempt, body) : { kind: 'gone', status: 'gone' };
   };
   const prepared = await context.client.prepare(lock, { attempt, executor: 'command' });
   if (prepared.kind === 'failed') return failed(prepared.failure);
@@ -148,7 +149,7 @@ async function runCommand(context: SkillContext, run: RunId, attempt: AttemptId,
 async function report(context: SkillContext, lock: RunLock, attempt: AttemptId, exited: Exited): Promise<Stage> {
   const state = await readState(context, lock);
   const open = state && openAttempt(state, attempt);
-  if (!state || open?.phase !== 'running') return { kind: 'gone', reported: false };
+  if (!state || open?.phase !== 'running') return { kind: 'gone', status: 'gone' };
   const outputs = commandOutputs(exited.stdout);
   const snippet = exited.stderr.trim().slice(0, 400);
   const body: ReportBody = {
@@ -158,5 +159,5 @@ async function report(context: SkillContext, lock: RunLock, attempt: AttemptId, 
   };
   const tail = exited.output.trim().slice(-400);
   const reporting = take(context, state, { kind: 'exited', attempt, body, ...(tail ? { tail } : {}) });
-  return reporting?.state ? send(context, lock, reporting.state, attempt, body) : { kind: 'gone', reported: false };
+  return reporting?.state ? send(context, lock, reporting.state, attempt, body) : { kind: 'gone', status: 'gone' };
 }

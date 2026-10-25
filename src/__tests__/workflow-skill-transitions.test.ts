@@ -51,6 +51,18 @@ steps:
     command: node -e "console.log('lint sees ' + (process.env.DEPLOY_TOKEN ?? 'no token'))"
 `;
 
+const ROOTS = `schemaVersion: v1alpha1
+name: check
+description: Lint and test
+invoke: allow
+steps:
+  - id: lint
+    command: node -e "process.exit(0)"
+  - id: test
+    needs: []
+    command: node -e "process.exit(0)"
+`;
+
 const roots: string[] = [];
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -248,6 +260,24 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       } })) });
       const { run } = await started(made);
       await polledToDone(made, run);
+      return made.rows;
+    },
+  },
+  {
+    name: 'a report of a lease cancelled meanwhile drops the attempt and shows it stopped',
+    rows: ['P9'],
+    run: async () => {
+      // A second root keeps the run open, so its turns show what the runner of the cancelled lease does.
+      const made = await harness({ check: ROOTS });
+      const answer = await made.call({ kind: 'start', name: 'check', answers: { parallel: 1, confirmed: false }, inputs: undefined });
+      if (!('data' in answer) || !('turn' in answer.data)) throw new Error(JSON.stringify(answer));
+      const { run, running: [lint] } = answer.data.turn;
+      if (lint?.step !== 'lint') throw new Error(JSON.stringify(answer));
+      expect(await made.context.client.cancel(run, 'lint')).toMatchObject({ data: { cancelled: { attempts: [lint.attempt] } } });
+      const done = await polledToDone(made, run);
+      expect(done.events).toContainEqual({ kind: 'stopped', step: 'lint', attempt: lint.attempt });
+      expect(done.events.filter((event) => event.kind === 'settled').map((event) => event.step)).toEqual(['test']);
+      expect(done.running).toEqual([]);
       return made.rows;
     },
   },

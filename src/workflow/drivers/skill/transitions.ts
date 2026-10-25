@@ -49,6 +49,7 @@ export const TRANSITIONS = [
   { id: 'P3', state: 'drive', input: 'report a', guard: 'a preparing, running or reporting', effects: 'none', next: 'drive', action: 'error `not_dispatched`, next: the next literal' },
   { id: 'P7', state: 'reporting', input: 'engine: reported, any status', guard: '', effects: 'drop a; add to settled', next: 'drive', action: 'event `settled`' },
   { id: 'P8', state: 'reporting', input: 'engine: `repeated_report`', guard: '', effects: 'as P7', next: 'drive', action: 'event `settled`' },
+  { id: 'P9', state: 'reporting', input: 'engine: `lease_cancelled`', guard: '', effects: 'drop a (the protocol abandoned its place)', next: 'drive', action: 'event `stopped`' },
   { id: 'P10', state: 'reporting', input: 'engine: another error', guard: '', effects: 'keep the body', next: 'reporting', action: 'error, next: the same report literal (a runner retries at its next check)' },
   { id: 'P11', state: 'reporting', input: 'tick', guard: 'a body is stored (a crash came between write and send)', effects: 'send it again', next: 'reporting', action: 'P7 to P10' },
   { id: 'X2', state: 'done', input: 'next', guard: '', effects: 'none', next: 'done', action: '`done`, no `then`' },
@@ -231,11 +232,15 @@ export function step(state: SkillState | undefined, input: MachineInput): Step |
     case 'reported': {
       const open = state && openAttempt(state, input.attempt);
       if (!state || open?.phase !== 'reporting') return undefined;
+      const others = state.attempts.filter((other) => other.attempt !== open.attempt);
+      if (input.reply.kind === 'error' && input.reply.error.code === 'lease_cancelled') {
+        return { row: 'P9', state: withEvent({ ...state, attempts: others }, { kind: 'stopped', step: open.step, attempt: open.attempt }), effects: [] };
+      }
       if (input.reply.kind === 'error' && input.reply.error.code !== 'repeated_report') {
         return { row: 'P10', state, effects: [], answer: { kind: 'engine-error', error: input.reply.error, next: 'same' } };
       }
       const outcome = input.reply.kind === 'reported' ? input.reply.outcome : open.body.outcome;
-      const dropped = { ...state, attempts: state.attempts.filter((other) => other.attempt !== open.attempt), settled: [...state.settled, open.attempt] };
+      const dropped = { ...state, attempts: others, settled: [...state.settled, open.attempt] };
       const settled = withEvent(dropped, {
         kind: 'settled', step: open.step, outcome,
         ...(open.body.exitCode !== undefined ? { exitCode: open.body.exitCode } : {}),
