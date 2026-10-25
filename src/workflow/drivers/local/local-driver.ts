@@ -28,7 +28,7 @@ import {
   type LocalToolResult,
   type LocalToolRun,
 } from './local-tool-adapter.js';
-import { attemptDir, AttemptIdSchema, attemptsDir, readRun, RunIdSchema, updateRun, withRunLock, type AttemptId, type RunId, type RunLock } from '../../store.js';
+import { AttemptIdSchema, attemptResultPath, attemptsDir, readRun, RunIdSchema, updateRun, withRunLock, type RunId, type RunLock } from '../../store.js';
 import { abandonPlace, placeLeaseOf, placeOf, placeRoot, preparePlace, runPlaceSetup, type StepEnd } from '../../place/place.js';
 import { commandOutputs, managedReport } from '../../protocol.js';
 import { stopProcess } from '../../../tool-launch/process-stop.js';
@@ -174,10 +174,6 @@ interface Lease extends LeaseWire {
   cwd?: string;
 }
 
-function resultPath(config: LocalConfig, run: RunId, attempt: AttemptId): string {
-  return path.join(attemptDir(config, run, attempt), 'result.json');
-}
-
 /**
  * Masks the secret values an attempt's result file holds, so the copy it keeps on disk carries none. A file that is
  * not JSON, such as one a tool stopped writing halfway, is masked as text.
@@ -206,7 +202,7 @@ async function maskAttemptFiles(config: LocalConfig, run: RunId, secrets: Record
     const attempt = AttemptIdSchema.safeParse(name);
     return attempt.success ? [attempt.data] : [];
   });
-  await Promise.all(attempts.map((attempt) => maskResultFile(resultPath(config, run, attempt), secrets)));
+  await Promise.all(attempts.map((attempt) => maskResultFile(attemptResultPath(config, run, attempt), secrets)));
 }
 
 function supportedTool(value: string): value is LaunchTool {
@@ -302,9 +298,9 @@ async function resumeSession(archive: SessionArchive, lease: Lease, tool: Launch
 
 async function commandReport(config: LocalConfig, lock: RunLock, driver: DriverIdentity, lease: Lease, result: CommandResult): Promise<ReportBody> {
   const output = commandOutputs(result.stdout);
-  const attemptResultPath = resultPath(config, lock.run, lease.attempt);
-  await fs.mkdir(path.dirname(attemptResultPath), { recursive: true });
-  await writeJsonAtomic(attemptResultPath, output !== undefined ? { output } : {});
+  const resultFile = attemptResultPath(config, lock.run, lease.attempt);
+  await fs.mkdir(path.dirname(resultFile), { recursive: true });
+  await writeJsonAtomic(resultFile, output !== undefined ? { output } : {});
   const snippet = result.stderr.trim().slice(0, 400);
   const end: StepEnd = result.exitCode === 0
     ? { outcome: 'success' }
@@ -378,7 +374,7 @@ async function promptReport(
     }
   }
   const cwd = lease.cwd ?? driver.workspace;
-  const attemptResultPath = resultPath(config, lock.run, lease.attempt);
+  const resultFile = attemptResultPath(config, lock.run, lease.attempt);
   const resume = await resumeSession(archive, lease, selected, cwd);
   const definitionModel = chosen.model && chosen.by === 'definition'
     ? { model: chosen.model.name, ...(chosen.model.effort ? { effort: chosen.model.effort } : {}) }
@@ -410,7 +406,7 @@ async function promptReport(
     result = await run(selected, {
       prompt: lease.prompt!,
       cwd,
-      resultPath: attemptResultPath,
+      resultPath: resultFile,
       env: { ...lease.processEnv ?? process.env, ...attemptEnv(lock.run, lease.attempt, mode) },
       ...(launch ? { launch } : {}),
       ...(resume ? { resume: resume.id } : {}),
@@ -600,7 +596,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options
   const seen: Record<string, string> = {};
   const report = async (body: ReportBody, lease: Lease): Promise<WorkflowEnvelope | undefined> => {
     const secrets = env?.secrets ?? await knownSecrets(config);
-    await maskResultFile(resultPath(config, runId, lease.attempt), secrets);
+    await maskResultFile(attemptResultPath(config, runId, lease.attempt), secrets);
     const answer = await managedReport({ config, runId, report: body, secrets, lock });
     // Cancelled while it ran: the next `next` lists it in `cancelled`, and the run goes on without it.
     if (isWorkflowError(answer)) return answer.error.code === 'lease_cancelled' ? undefined : answer;

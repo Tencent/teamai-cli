@@ -6,12 +6,12 @@ import type { LocalConfig } from '../../../types.js';
 import { readFileSafe, writeJsonAtomic } from '../../../utils/fs.js';
 import { redactJson } from '../../../utils/redact.js';
 import type { HostPlaceRequest } from '../../protocol.js';
+import { FailureSchema } from '../../step-state.js';
 import { AttemptIdSchema, RunIdSchema, skillStatePath, type RunId, type RunLock } from '../../store.js';
 import { HOST_CHOICES } from './host-profiles.js';
 import { INVOCATIONS } from './literals.js';
 import { HITL_MODES } from './preflight.js';
 
-const FailureSchema = z.object({ code: z.string(), message: z.string() });
 
 /** A report as the runner sends it, kept before it is sent so a crash between the two loses nothing. */
 export const ReportBodySchema = z.object({

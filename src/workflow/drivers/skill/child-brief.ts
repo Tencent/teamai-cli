@@ -5,7 +5,7 @@ import { z } from 'zod';
 import type { LocalConfig } from '../../../types.js';
 import { readFileSafe, writeFileAtomic } from '../../../utils/fs.js';
 import { redact } from '../../../utils/redact.js';
-import { attemptDir, type AttemptId, type RunId } from '../../store.js';
+import { attemptDir, attemptResultPath, type AttemptId, type RunId } from '../../store.js';
 import type { Literal } from './literals.js';
 
 /** `attempts/<a>/result.json`, as the child writes it: what the step produced, or why it could not. */
@@ -15,9 +15,6 @@ export const ChildResultSchema = z.discriminatedUnion('kind', [
 ]);
 export type ChildResult = z.infer<typeof ChildResultSchema>;
 
-function resultPath(config: LocalConfig, run: RunId, attempt: AttemptId): string {
-  return path.join(attemptDir(config, run, attempt), 'result.json');
-}
 
 /**
  * Writes `attempts/<a>/brief.md`, masked with `secrets`, and returns its path. It carries the step's prompt, where to
@@ -61,7 +58,7 @@ export async function writeChildBrief(input: {
     '',
     '## Finish',
     '',
-    `1. Write \`${resultPath(config, run, attempt)}\` with one JSON object:`,
+    `1. Write \`${attemptResultPath(config, run, attempt)}\` with one JSON object:`,
     `   - When the step is done: \`{"kind":"output","output":...}\`, where \`output\` is ${shape}.`,
     '   - When you cannot do it: `{"kind":"failure","failure":{"code":"blocked","message":"..."}}`, with a short code and a message that says what stopped you.',
     person
@@ -77,7 +74,7 @@ export async function writeChildBrief(input: {
 
 /** The result the child of `attempt` wrote. A missing or unreadable one is a `tool_failed` failure. */
 export async function readChildResult(input: { config: LocalConfig; run: RunId; attempt: AttemptId }): Promise<ChildResult> {
-  const file = resultPath(input.config, input.run, input.attempt);
+  const file = attemptResultPath(input.config, input.run, input.attempt);
   const raw = await readFileSafe(file);
   if (raw === null) {
     return { kind: 'failure', failure: { code: 'tool_failed', message: `The child of attempt ${input.attempt} wrote no ${file}, so the step has no result.` } };

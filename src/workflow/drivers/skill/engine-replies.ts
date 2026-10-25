@@ -4,6 +4,7 @@
  */
 import { z } from 'zod';
 import { LeaseWireSchema } from '../../lease-wire.js';
+import { FailureSchema } from '../../step-state.js';
 import { AttemptIdSchema, type AttemptId, type RunId } from '../../store.js';
 import type { WorkflowEnvelope } from '../../types.js';
 import type { EngineReply, ReadLease, ReportReply, RespondReply, ScoreReply } from './transitions.js';
@@ -25,7 +26,6 @@ export function readLease(raw: unknown): ReadLease | undefined {
   };
 }
 
-const FailureSchema = z.object({ code: z.string(), message: z.string() });
 const NextDataSchema = z.object({
   /** The attempts this driver listed as running that the engine no longer leases to it. */
   cancelled: z.array(AttemptIdSchema).optional(),
