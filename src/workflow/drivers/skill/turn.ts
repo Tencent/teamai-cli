@@ -98,6 +98,8 @@ export interface SkillError {
     | 'confirm_needed' | 'needs_local_driver' | 'not_skill_run' | 'orchestrator_active' | 'choice_pending' | 'unknown_choice' | 'unknown_offer'
     | 'unknown_attempt' | 'not_dispatched' | (string & {});
   message: string;
+  /** `orchestrator_active`: the seconds since the session that drives the run last called, for the person to judge whether it is gone. */
+  idleSeconds?: number;
   next: Literal | null;
 }
 

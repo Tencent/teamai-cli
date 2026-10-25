@@ -308,9 +308,9 @@ class TwoCallers implements fc.AsyncCommand<Model, Real> {
 }
 
 /**
- * Another coding session calls `next` (invariant 7). While the owner calls, it is refused with the takeover literal,
- * which it runs when the person agrees; once the owner made no call for longer than 200 s, its `next` takes the run
- * over. A takeover reissues every dispatch the old session was given, and refuses the old session from then on.
+ * Another coding session calls `next` (invariant 7). It is refused with the takeover literal and how long the owner has
+ * been idle, even when the owner made no call for minutes, and it runs that literal when the person agrees. A takeover
+ * reissues every dispatch the old session was given, and refuses the old session from then on.
  */
 class NewSession implements fc.AsyncCommand<Model, Real> {
   constructor(readonly how: 'refused' | 'takeover' | 'quiet') {}
@@ -320,17 +320,20 @@ class NewSession implements fc.AsyncCommand<Model, Real> {
     const session = `session-${real.sessions}`;
     const previous = real.session;
     const next = { kind: 'next', run: real.run, wait: false } as const;
+    let idle = 0;
     if (this.how === 'quiet') {
-      // Longer than the 200 s a session may go quiet before another takes its run over.
-      await real.made.context.runners.sleep(201_000);
+      idle = 201;
+      await real.made.context.runners.sleep(idle * 1000);
     } else {
       sawForeground(model, turnOf(await called(real, next)));
       if (model.done) return;
-      expect(await called(real, next, session)).toEqual({ error: expect.objectContaining({ code: 'orchestrator_active', next: `teamai workflow next ${real.run} --driver skill --takeover` }) });
-      if (this.how === 'refused') return;
     }
+    const refused = await called(real, next, session);
+    expect(refused).toEqual({ error: expect.objectContaining({ code: 'orchestrator_active', next: `teamai workflow next ${real.run} --driver skill --takeover` }) });
+    expect('error' in refused ? refused.error.idleSeconds : undefined).toBeGreaterThanOrEqual(idle);
+    if (this.how === 'refused') return;
     const given = new Set(model.open.keys());
-    const turn = turnOf(await called(real, this.how === 'takeover' ? { kind: 'takeover', run: real.run } : next, session));
+    const turn = turnOf(await called(real, { kind: 'takeover', run: real.run }, session));
     expect(turn.events).toContainEqual({ kind: 'takeover', from: previous });
     real.session = session;
     model.acked.clear();

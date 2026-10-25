@@ -173,7 +173,7 @@ describe('skill driver', () => {
 
     const takeover = `teamai workflow next ${run} --driver skill --takeover`;
     expect(await harness.call({ kind: 'next', run, wait: false }, { session: 'session-b' }))
-      .toEqual({ error: { code: 'orchestrator_active', message: expect.stringContaining('Ask the person'), next: takeover } });
+      .toEqual({ error: { code: 'orchestrator_active', message: expect.stringContaining('Ask the person'), idleSeconds: expect.any(Number), next: takeover } });
 
     const taken = await harness.call({ kind: 'takeover', run }, { session: 'session-b' });
     if (!('data' in taken) || !('turn' in taken.data)) throw new Error(JSON.stringify(taken));

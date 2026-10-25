@@ -32,8 +32,6 @@ export const WAIT_GRACE_MS = 5_000;
 export const TICK_LOCK_WAIT_MS = 30_000;
 /** How long a runner waits before it tries again: for the run lock, or to send a report the engine refused. */
 export const RUNNER_POLL_MS = 10_000;
-/** How long the session that drives a run may go without a call before another session takes the run over by calling. */
-export const TAKEOVER_STALE_MS = 200_000;
 /** The most steps the skill driver runs at once when the member set no `workflows.max_parallel`. */
 export const SKILL_MAX_CHILDREN = 3;
 const GRACE_CHECK_MS = 250;
@@ -174,7 +172,7 @@ export function errorOf(answer: Extract<Answer, { kind: 'error' | 'engine-error'
       : answer.next === 'takeover' && 'run' in refusal ? takeoverLiteral(invocation, refusal.run)
         : answer.next === 'describe' && 'name' in refusal ? describeLiteral(invocation, refusal.name)
           : same;
-  return { code: refusal.code, message: refusalMessage(refusal, invocation), next };
+  return { code: refusal.code, message: refusalMessage(refusal, invocation), ...(refusal.code === 'orchestrator_active' ? { idleSeconds: refusal.idleSeconds } : {}), next };
 }
 
 /** The message of each refusal: what happened, and what the agent or the person does next. */
@@ -193,7 +191,7 @@ function refusalMessage(refusal: Refusal, invocation: Invocation): string {
     case 'not_skill_run':
       return `Run ${refusal.run} is not driven by the skill driver on this machine. The person can continue it in a terminal with teamai workflow resume ${refusal.run}.`;
     case 'orchestrator_active':
-      return `Run ${refusal.run} is driven by another coding session, which last called ${refusal.since} s ago. Ask the person whether that session is gone, and run the command in next only when they agree to take the run over here; otherwise the run goes on from that session.`;
+      return `Run ${refusal.run} is driven by another coding session, which last called ${refusal.idleSeconds} s ago. Ask the person whether that session is gone, and run the command in next only when they agree to take the run over here; otherwise the run goes on from that session.`;
     case 'choice_pending':
       return `Run ${refusal.run} waits for the host question. Run the next literal, then the run of the option that fits your host.`;
     case 'unknown_choice':
@@ -298,7 +296,7 @@ async function called(context: SkillContext, run: RunId, same: Literal, input: {
   const state = 'kind' in read ? undefined : read;
   const exempt = input.report !== undefined ? take(context, state, { kind: 'report-call', attempt: input.report }) : undefined;
   if (exempt?.state) return { state: exempt.state };
-  const taken = take(context, state, { kind: 'call', run, session: context.session, at: context.now().toISOString(), takeover: input.takeover === true, staleMs: TAKEOVER_STALE_MS });
+  const taken = take(context, state, { kind: 'call', run, session: context.session, at: context.now().toISOString(), takeover: input.takeover === true });
   if (taken?.state && !taken.answer) return { state: taken.state };
   const refused = taken?.answer?.kind === 'error' || taken?.answer?.kind === 'engine-error' ? taken.answer : { kind: 'error' as const, refusal: { code: 'not_skill_run' as const, run }, next: null };
   return { answer: { error: errorOf(refused, { invocation: context.invocation, same, run }) } };

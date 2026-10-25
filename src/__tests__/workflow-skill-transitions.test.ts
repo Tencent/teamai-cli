@@ -271,19 +271,26 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     },
   },
   {
-    name: 'a second live session is refused with the takeover literal, an owner gone quiet is taken over by any call, and --takeover takes over at once',
-    rows: ['S2', 'S3', 'S4'],
+    name: 'a second session is refused with how long the owner has been idle, however long that is, and --takeover takes over at once',
+    rows: ['S2', 'S4'],
     run: async () => {
       const made = await harness({ check: SERVE }, { runners: sleepFaked([]) });
       const { turn: { run } } = await serving(made);
-      const refused = { error: { code: 'orchestrator_active', message: expect.stringMatching(/which last called [0-9]+ s ago/), next: `teamai workflow next ${run} --driver skill --takeover` } };
-      expect(await made.call({ kind: 'next', run, wait: false }, { session: 'session-b' })).toEqual(refused);
+      /** The seconds the refusal of a call from `session` says the owner has been idle, in its message and as a field. */
+      const idle = async (session?: string): Promise<number> => {
+        const answer = await made.call({ kind: 'next', run, wait: false }, session === undefined ? {} : { session });
+        expect(answer).toEqual({ error: { code: 'orchestrator_active', message: expect.any(String), idleSeconds: expect.any(Number), next: `teamai workflow next ${run} --driver skill --takeover` } });
+        const { message, idleSeconds } = 'error' in answer && 'idleSeconds' in answer.error ? answer.error : { message: '', idleSeconds: -1 };
+        expect(message).toContain(`which last called ${idleSeconds} s ago`);
+        return idleSeconds ?? -1;
+      };
+      const first = await idle('session-b');
       made.hold(true);
-      // The owner made no call for longer than the 200 s a session may go quiet.
-      await made.context.runners.sleep(201_000);
-      expect((await turnOf(await made.call({ kind: 'next', run, wait: false }, { session: 'session-b' }))).events).toContainEqual({ kind: 'takeover', from: 'session-a' });
-      expect(await made.call({ kind: 'next', run, wait: false })).toEqual(refused);
-      expect((await turnOf(await made.call({ kind: 'takeover', run }))).events).toContainEqual({ kind: 'takeover', from: 'session-b' });
+      // An owner quiet for an hour may be in a long talk with the person: only the person decides it is gone.
+      await made.context.runners.sleep(3_600_000);
+      expect(await idle('session-b')).toBe(first + 3600);
+      expect((await turnOf(await made.call({ kind: 'takeover', run }, { session: 'session-b' }))).events).toContainEqual({ kind: 'takeover', from: 'session-a' });
+      expect(await idle()).toBe(0);
       made.hold(false);
       return made.rows;
     },
