@@ -35,7 +35,7 @@ export const TRANSITIONS = [
   { id: 'R15', state: 'drive, done', input: 'next `--choice h`', guard: '', effects: 'none', next: 'unchanged', action: 'error `unknown_choice`, next: the next literal' },
   { id: 'S1', state: 'host, drive, done', input: 'an agent call from session s', guard: 'the owner is s, or either session is unknown', effects: '`lastCallAt` := now; owner := s when unknown', next: 'unchanged', action: 'the input\'s row' },
   { id: 'S2', state: 'host, drive, done', input: 'an agent call from session s without `--takeover`', guard: 'owner o is not s, and both are known, however long o has been idle', effects: 'none', next: 'unchanged', action: 'error `orchestrator_active` with `idleSeconds`, the seconds since o\'s last call, next: the takeover literal' },
-  { id: 'S4', state: 'host, drive, done', input: 'next `--takeover` from session s', guard: '', effects: 'owner := s; `lastCallAt` := now; every offered or dispatched attempt becomes offered with `reissued`', next: 'unchanged', action: 'event `takeover`; the turn of a tick' },
+  { id: 'S4', state: 'host, drive, done', input: 'next `--takeover` from session s', guard: '', effects: 'owner := s; `lastCallAt` := now; `seen[s]` := `seen[o]` when that is later; every offered or dispatched attempt becomes offered with `reissued`', next: 'unchanged', action: 'event `takeover`; the turn of a tick' },
   { id: 'S5', state: 'any', input: 'a runner call (`report --attempt a` with the marker `<run>/a`)', guard: '', effects: 'no session check, no `lastCallAt`', next: 'unchanged', action: 'C rows' },
   { id: 'S6', state: 'host, drive, done', input: 'an agent `report --attempt a`, from any session', guard: 'a is settled, or open offered, dispatched, reporting, or stopping by the agent', effects: 'no session check, no `lastCallAt`', next: 'unchanged', action: 'the input\'s row' },
   { id: 'D1', state: 'drive', input: 'tick', guard: '', effects: 'engine `next {driver: identity + SKILL_CAN, running: every open attempt, canTakeLease: fewer open than options.parallel, and than one under a serial host; false in a runner\'s check}`', next: 'drive', action: '' },
@@ -456,7 +456,7 @@ function tick(state: SkillState, role: 'call' | 'runner'): Step {
 
 /**
  * `state` driven from session `session` from `at` on. Every dispatch an earlier session was shown is offered again, as
- * reissued, since that session may have started its child.
+ * reissued, since that session may have started its child. The new session is told only what the earlier one was not.
  */
 function takenOver(state: SkillState, session: string | undefined, at: string): SkillState {
   const attempts = state.attempts.map((open): AttemptState => {
@@ -464,7 +464,11 @@ function takenOver(state: SkillState, session: string | undefined, at: string): 
     return { ...open, phase: 'offered', reissued: true };
   });
   const from = state.orchestrator.session;
-  return withEvent({ ...state, attempts, orchestrator: { ...(session !== undefined ? { session } : {}), lastCallAt: at } }, { kind: 'takeover', ...(from !== undefined ? { from } : {}) });
+  const told = Math.max(state.seen[seenBy(from)] ?? 0, state.seen[seenBy(session)] ?? 0);
+  return withEvent(
+    { ...state, attempts, orchestrator: { ...(session !== undefined ? { session } : {}), lastCallAt: at }, seen: { ...state.seen, [seenBy(session)]: told } },
+    { kind: 'takeover', ...(from !== undefined ? { from } : {}) },
+  );
 }
 
 function choicePending(state: SkillState): Step {

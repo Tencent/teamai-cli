@@ -177,7 +177,8 @@ describe('skill driver', () => {
 
     const taken = await harness.call({ kind: 'takeover', run }, { session: 'session-b' });
     if (!('data' in taken) || !('turn' in taken.data)) throw new Error(JSON.stringify(taken));
-    expect(taken.data.turn.events).toContainEqual({ kind: 'takeover', from: 'session-a' });
+    // The first session was told both steps started, so the person does not hear it again.
+    expect(taken.data.turn.events).toEqual([{ kind: 'takeover', from: 'session-a' }]);
     // Both dispatches are offered again, saying the child the first session may have started may still run.
     expect(taken.data.turn.actions).toEqual(expect.arrayContaining([api, ui].map((action) => ({ ...action, reissued: expect.stringContaining(action.title) }))));
     expect(taken.data.turn.actions).toHaveLength(2);
