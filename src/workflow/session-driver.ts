@@ -56,7 +56,7 @@ export async function prepareSessionLease(config: LocalConfig, runId: string, dr
       } catch { /* Never reapply an overlay over work after a corrupt preparation record. */ }
       return { error: { code: 'workspace_base', message: 'The prepared workspace record is unreadable; preserve the worktree before retrying' } };
     }
-    const prepared = await prepareSessionWorkspace(raw, run.checkout, runId, env.values);
+    const prepared = await prepareSessionWorkspace(raw, run.checkout, runId, env.values, path.join(path.dirname(file), 'overlay'));
     if ('code' in prepared) {
       await reportAttempt(config, runId, { attempt: state.attempt, revision: state.lease.revision, driver, outcome: 'failed', failure: prepared, message: prepared.message }, env.secrets);
       return { error: prepared };

@@ -867,6 +867,52 @@ export const workflowGitConformanceScenarios: GitConformanceScenario[] = [
   },
 ];
 
+/** What the checkout of every place scenario holds on `main`, which origin has too. */
+export const PLACE_CHECKOUT_FILES: Record<string, string> = { 'README.md': '# fixture\n', 'AGENTS.md': 'Trusted base instructions.\n' };
+
+const PREPARED_CHANGE = `schemaVersion: v1alpha1
+name: build
+description: Two prompts a driver runs in one prepared copy.
+steps:
+  - id: change
+    workspace: new
+    workflow:
+      steps:
+        - id: write
+          prompt: Edit the project.
+        - id: polish
+          needs: [write]
+          prompt: Polish the project.
+`;
+
+/**
+ * The places `next --prepare` makes, for a driver that runs the protocol from other processes than the one that
+ * prepared its lease. The runner starts the run in a git checkout holding `PLACE_CHECKOUT_FILES`, whose origin is a
+ * bare repository, and a runner through the CLI gives every call a temporary directory of its own.
+ */
+export const workflowPlaceConformanceScenarios: ConformanceScenario[] = [
+  {
+    name: 'a prepared lease is reported from another process, which commits and pushes its changes and puts the branch agent files back',
+    workflowName: 'build',
+    yaml: PREPARED_CHANGE,
+    operations: [
+      { kind: 'next', saveAs: 'first', as: 'external', prepare: true, expect: { data: { lease: { step: 'change.write' } } } },
+      { kind: 'edit', lease: 'first', files: { 'code.txt': 'first\n', 'AGENTS.md': 'Untrusted branch instructions.\n' } },
+      { kind: 'next', saveAs: 'again', as: 'external', prepare: true, expect: { data: { lease: { step: 'change.write' } } } },
+      { kind: 'files', lease: 'again', expect: { 'code.txt': 'first\n', 'AGENTS.md': 'Untrusted branch instructions.\n' } },
+      { kind: 'report', lease: 'first', as: 'external', changes: {}, body: { outcome: 'success' }, expect: { error: { code: 'invalid_report' } } },
+      { kind: 'report', lease: 'first', as: 'external', body: { outcome: 'success' }, expect: { data: { accepted: true } } },
+      { kind: 'next', saveAs: 'second', as: 'external', prepare: true, expect: { data: { lease: { step: 'change.polish' } } } },
+      { kind: 'files', lease: 'second', expect: { 'code.txt': 'first\n', 'AGENTS.md': 'Trusted base instructions.\n' } },
+      { kind: 'edit', lease: 'second', files: { 'code.txt': 'first\nsecond\n' } },
+      { kind: 'report', lease: 'second', as: 'external', body: { outcome: 'success' }, expect: { data: { accepted: true, cleanup: true } } },
+      { kind: 'files', lease: 'second', expect: { '.': null } },
+      { kind: 'files', expect: { 'code.txt': null } },
+    ],
+    expectPushed: { second: { 'code.txt': 'first\nsecond\n', 'AGENTS.md': 'Untrusted branch instructions.\n' } },
+  },
+];
+
 /** What a run holds once a delivery case ends, over every install that drove it. */
 export interface DeliveryExpectation {
   /** Pull requests TeamAI asked the host to open. */

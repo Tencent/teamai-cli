@@ -233,6 +233,10 @@ function resultPath(config: LocalConfig, runId: string, attempt: string): string
   return path.join(attemptsDir(config, runId), attempt, 'result.json');
 }
 
+function overlayPath(config: LocalConfig, runId: string, attempt: string): string {
+  return path.join(attemptsDir(config, runId), attempt, 'overlay');
+}
+
 /**
  * Masks the secret values an attempt's result file holds, so the copy it keeps on disk carries none. A file that is
  * not JSON, such as one a tool stopped writing halfway, is masked as text.
@@ -372,11 +376,13 @@ function placeOf(lease: Lease, active: string): string {
  * Gets the lease a place to run, with the team env `values` resolved for it. `signal` stops setup, which then fails, and
  * the workspace it was preparing is removed.
  */
-async function stageLease(lease: Lease, { active, runId, values, signal, checkout }: {
+async function stageLease(lease: Lease, { active, runId, values, signal, overlay, checkout }: {
   active: string;
   runId: string;
   values: ReadonlyMap<string, string>;
   signal?: AbortSignal;
+  /** Where the branch's agent files are kept while the base overlay is in place: a directory of the attempt. */
+  overlay: string;
   /** Stages a lease without a workspace contract, which runs in `active`. */
   checkout: (lease: Lease) => Promise<WorkflowFailure | undefined>;
 }): Promise<WorkflowFailure | undefined> {
@@ -444,7 +450,7 @@ async function stageLease(lease: Lease, { active, runId, values, signal, checkou
     const left = remaining.length > 0 ? ` Remaining branches: ${remaining.join(', ')}.` : '';
     lease.prompt = `${lease.prompt}\n\nMerge conflict with ${conflict.branch} (${files}).${left} Resolve the conflict in the workspace.`;
   }
-  const applied = await applyBaseConfig(opened.dir, lease.workspace.configCommit, hooksPath(active));
+  const applied = await applyBaseConfig(opened.dir, lease.workspace.configCommit, hooksPath(active), overlay);
   if (!applied.ok) return { code: 'base_config', message: applied.message };
   await deliverTeamAssets(opened.dir);
   await recordConfigOverlay(opened.dir, applied.saved);
@@ -1103,7 +1109,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options
         if (forwarded) handle(STOP_SIGNALS);
         inFlight.set(lease.attempt, { lease, command: stageThenStart(
           lease,
-          (signal) => stageLease(lease, { active: cwd, runId, values: turn.values, signal, checkout: (staged) => placeInCheckout(config, lock, cwd, staged) }),
+          (signal) => stageLease(lease, { active: cwd, runId, values: turn.values, signal, overlay: overlayPath(config, runId, lease.attempt), checkout: (staged) => placeInCheckout(config, lock, cwd, staged) }),
           () => {
             if (forwarded) handle(forwarded);
             return startCommand(command, lease.cwd ?? cwd, { ...lease.processEnv ?? process.env, ...lease.env }, detached);
@@ -1128,7 +1134,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options
           const controller = new AbortController();
           if (maxParallel === 1) handle(STOP_SIGNALS);
           prompt = { lease, controller, exit: (async () => {
-            const failure = await stageLease(lease, { active: cwd, runId, values: turn.values, signal: controller.signal, checkout: (staged) => placeInCheckout(config, lock, cwd, staged) });
+            const failure = await stageLease(lease, { active: cwd, runId, values: turn.values, signal: controller.signal, overlay: overlayPath(config, runId, lease.attempt), checkout: (staged) => placeInCheckout(config, lock, cwd, staged) });
             if (!startable(lease, controller.signal)) {
               await (lease.workspace?.mode === 'read-only' ? leaveReadCopy(lease) : restoreLeaseOverlay(lease));
               return undefined;
@@ -1238,10 +1244,10 @@ export interface PreparedSessionWorkspace {
   found?: string[]; overlay?: string; rangeFrom?: string; conflicts?: Array<[string, string]>;
 }
 
-export async function prepareSessionWorkspace(raw: unknown, active: string, runId: string, values: ReadonlyMap<string, string>): Promise<PreparedSessionWorkspace | WorkflowFailure> {
+export async function prepareSessionWorkspace(raw: unknown, active: string, runId: string, values: ReadonlyMap<string, string>, overlay: string): Promise<PreparedSessionWorkspace | WorkflowFailure> {
   const lease = parseLease(raw);
   if (!lease) return { code: 'workspace_base', message: 'The session driver received an unreadable lease' };
-  const failure = await stageLease(lease, { active, runId, values, checkout: async (staged) => {
+  const failure = await stageLease(lease, { active, runId, values, overlay, checkout: async (staged) => {
     staged.before = await snapshotWorktree(active);
     return undefined;
   } });

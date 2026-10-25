@@ -6,7 +6,6 @@
 import { createHash } from 'node:crypto';
 import { execFile, spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
 import { TeamaiConfigBaseSchema } from '../types.js';
@@ -290,10 +289,10 @@ export async function mergeBranch(dir: string, commit: string): Promise<
 
 /**
  * Replaces agent configuration with the copy at `commit` and points hooks at an empty directory.
- * `saved` is the branch's own copy, put back for paths the step does not edit.
+ * `saved`, a directory that does not exist yet, receives the branch's own copy, put back for paths the step does not edit.
  */
 export async function applyBaseConfig(
-  dir: string, commit: string, hooks: string,
+  dir: string, commit: string, hooks: string, saved: string,
 ): Promise<{ ok: true; saved: string } | { ok: false; message: string }> {
   await git(dir, ['config', '--worktree', 'core.hooksPath', hooks]);
   const linked = await symlinkedParent(dir);
@@ -315,7 +314,14 @@ export async function applyBaseConfig(
   if (indexFile === undefined || index === undefined) {
     return { ok: false, message: `Agent configuration in ${dir} could not be reset to the run's base commit ${commit}, because its git index could not be read, so the step did not run. Check that git status works in ${dir}, then retry the step.` };
   }
-  const saved = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-agent-'));
+  await fs.mkdir(path.dirname(saved), { recursive: true });
+  const made = await fs.mkdir(saved).then(() => true, (error: unknown) => {
+    if (error instanceof Error && 'code' in error && error.code === 'EEXIST') return false;
+    throw error;
+  });
+  if (!made) {
+    return { ok: false, message: `Agent configuration in ${dir} was not reset to the run's base commit ${commit}, because ${saved} already holds the branch's agent files from an earlier attempt to prepare this step, so the step did not run. Copy the files you need from ${saved} into ${dir}, delete ${saved}, then retry the step.` };
+  }
   const conflicts = (await git(dir, ['ls-files', '-u', '-z', '--', ...AGENT_PATHS])).stdout;
   await fs.writeFile(path.join(saved, '_conflicts'), conflicts);
   for (const relative of AGENT_PATHS) {

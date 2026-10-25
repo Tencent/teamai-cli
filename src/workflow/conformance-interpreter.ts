@@ -1,8 +1,11 @@
 /** The conformance scenario language, the driver profiles it speaks as, and the interpreter that runs a scenario. */
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import { z } from 'zod';
 import type { WorkflowClient } from './protocol.js';
 import type { DriverCan } from './requirements.js';
-import type { DriverIdentity, RunState } from './types.js';
+import type { DriverIdentity, RunState, WorkflowEnvelope } from './types.js';
+import { git } from './worktree.js';
 
 export const PARALLEL_ROOTS = `schemaVersion: v1alpha1
 name: build
@@ -35,6 +38,11 @@ export interface ConformanceScenario {
   expectState?: Record<string, unknown>;
   /** Expected fields in the run's queued end record after all operations. */
   expectRecord?: Record<string, unknown>;
+  /**
+   * By saved lease: the step it leased reported `changes` on the lease's branch, `changes.to` is that branch's tip on
+   * origin, and the tip holds these files. Needs a runner with a `place`.
+   */
+  expectPushed?: Record<string, Record<string, string>>;
 }
 
 /**
@@ -62,13 +70,18 @@ export function profileDriver(profile: DriverProfile): DriverIdentity {
  * `absent` lists fields the lease must not carry. `as` picks the driver profile, `local` when omitted, and `can` replaces
  * the keys of the profile's `can` it names.
  * `state` is matched against the persisted run after the operation. `advance` moves the clock the engine reads.
+ * `prepare` asks `next` to prepare the lease's place; `promptHas` lists text its prompt contains. `edit` writes files in
+ * a prepared lease's place, and `files` checks them there, or in the checkout without a lease: `null` is a path that
+ * does not exist.
  */
 export type ConformanceOperation =
   | {
     kind: 'next'; saveAs: string; as?: DriverProfile; can?: DriverCan; running?: string[]; canTakeLease?: boolean; hitl?: boolean; claim?: boolean;
-    base?: { ref?: string; commit: string };
+    base?: { ref?: string; commit: string }; prepare?: true; promptHas?: string[];
     cancelled?: string[]; absent?: string[]; expect: Record<string, unknown>; state?: Record<string, unknown>;
   }
+  | { kind: 'edit'; lease: string; files: Record<string, string> }
+  | { kind: 'files'; lease?: string; expect: Record<string, string | null> }
   | { kind: 'respond'; step: string; choice: string; as?: DriverProfile; note?: string; pass?: number; json?: unknown; expect: Record<string, unknown> }
   | { kind: 'retry'; step: string; expect: Record<string, unknown> }
   | { kind: 'cancel'; step?: string; expect: Record<string, unknown> }
@@ -86,7 +99,8 @@ export type ConformanceOperation =
   };
 
 const SavedLeaseSchema = z.object({
-  attempt: z.string(), revision: z.number(), workspace: z.object({ branch: z.string(), base: z.object({ commit: z.string() }) }).optional(),
+  attempt: z.string(), revision: z.number(), step: z.string(), cwd: z.string().optional(), prompt: z.string().optional(),
+  workspace: z.object({ branch: z.string(), base: z.object({ commit: z.string() }) }).optional(),
 });
 type SavedLease = z.infer<typeof SavedLeaseSchema>;
 
@@ -104,7 +118,9 @@ export type ConformanceExpect = (actual: unknown, message?: string) => {
 };
 
 /** The protocol calls a scenario makes, which the in-process client and the built CLI both answer. */
-export type ConformanceClient = Pick<WorkflowClient, 'start' | 'next' | 'report' | 'respond' | 'retry' | 'cancel'>;
+export type ConformanceClient = Pick<WorkflowClient, 'start' | 'report' | 'respond' | 'retry' | 'cancel'> & {
+  next(runId: string, body: unknown, options?: { prepare?: true }): Promise<WorkflowEnvelope>;
+};
 
 /** What a runner provides: its client, how it reads the run file and the queued end record, and how it moves the clock. */
 export interface ConformanceRunner {
@@ -114,6 +130,14 @@ export interface ConformanceRunner {
   readEndRecord(runId: string): Promise<unknown>;
   advance(ms: number): Promise<void>;
   expect: ConformanceExpect;
+  /** The git checkout the run starts in and the bare origin it pushes to, for scenarios that check places. */
+  place?: { checkout: string; origin: string };
+}
+
+async function readOrNull(file: string): Promise<string | null> {
+  const stat = await fs.stat(file).catch(() => undefined);
+  if (!stat) return null;
+  return stat.isDirectory() ? '' : fs.readFile(file, 'utf8');
 }
 
 /**
@@ -127,6 +151,14 @@ export async function runConformanceScenario(scenario: ConformanceScenario, runn
   const runId = String(started.data.run);
   const leases = new Map<string, SavedLease>();
   const attemptOf = (name: string): string | undefined => leases.get(name)?.attempt;
+  const placeOf = (name: string | undefined): string => {
+    const place = runner.place;
+    if (!place) throw new Error('A scenario that checks places needs a runner with a place');
+    if (name === undefined) return place.checkout;
+    const cwd = leases.get(name)?.cwd;
+    if (cwd === undefined) throw new Error(`Lease ${name} was not prepared`);
+    return cwd;
+  };
   for (const operation of scenario.operations) {
     switch (operation.kind) {
       case 'next': {
@@ -138,7 +170,7 @@ export async function runConformanceScenario(scenario: ConformanceScenario, runn
           ...(operation.canTakeLease !== undefined ? { canTakeLease: operation.canTakeLease } : {}),
           ...(operation.claim !== undefined ? { claim: operation.claim } : {}),
           ...(operation.base ? { base: operation.base } : {}),
-        });
+        }, operation.prepare ? { prepare: true } : undefined);
         expect(envelope).toMatchObject(operation.expect);
         if (operation.state) expect(await runner.readRun(runId)).toMatchObject(operation.state);
         if ('data' in envelope && envelope.data.hitl) {
@@ -148,10 +180,20 @@ export async function runConformanceScenario(scenario: ConformanceScenario, runn
         if (operation.cancelled) expect('data' in envelope && envelope.data.cancelled).toEqual(operation.cancelled.map(attemptOf));
         for (const field of operation.absent ?? []) expect('data' in envelope ? envelope.data.lease : undefined).not.toHaveProperty(field);
         if ('data' in envelope && envelope.data.lease) {
-          leases.set(operation.saveAs, SavedLeaseSchema.parse(envelope.data.lease));
+          const lease = SavedLeaseSchema.parse(envelope.data.lease);
+          for (const text of operation.promptHas ?? []) expect(lease.prompt?.includes(text), `the prompt of ${operation.saveAs} has ${text}`).toEqual(true);
+          leases.set(operation.saveAs, lease);
         }
         break;
       }
+      case 'edit':
+        for (const [file, text] of Object.entries(operation.files)) await fs.writeFile(path.join(placeOf(operation.lease), file), text);
+        break;
+      case 'files':
+        for (const [file, text] of Object.entries(operation.expect)) {
+          expect(await readOrNull(path.join(placeOf(operation.lease), file)), file).toEqual(text);
+        }
+        break;
       case 'respond': {
         const json = 'json' in operation || !operation.as ? operation.json : { driver: profileDriver(operation.as) };
         expect(await client.respond(runId, operation.step, operation.choice, { note: operation.note, pass: operation.pass, json })).toMatchObject(operation.expect);
@@ -185,6 +227,17 @@ export async function runConformanceScenario(scenario: ConformanceScenario, runn
   }
   if (scenario.expectState) expect(await runner.readRun(runId)).toMatchObject(scenario.expectState);
   if (scenario.expectRecord) expect(await runner.readEndRecord(runId)).toMatchObject(scenario.expectRecord);
+  for (const [name, files] of Object.entries(scenario.expectPushed ?? {})) {
+    const origin = runner.place?.origin;
+    const lease = leases.get(name);
+    if (!origin || !lease?.workspace) throw new Error(`expectPushed needs a runner with a place and lease ${name} with a workspace`);
+    const step = (await runner.readRun(runId)).steps.find((item) => item.id === lease.step);
+    const changes = step && 'changes' in step ? step.changes : undefined;
+    expect(changes?.branch, `${lease.step} reported changes on its branch`).toEqual(lease.workspace.branch);
+    const tip = (await git(origin, ['rev-parse', `refs/heads/${lease.workspace.branch}`])).stdout.trim();
+    expect(tip, `${lease.workspace.branch} on origin is the commit ${lease.step} reported`).toEqual(changes?.to);
+    for (const [file, text] of Object.entries(files)) expect((await git(origin, ['show', `${tip}:${file}`])).stdout).toEqual(text);
+  }
   const secrets = Object.entries(scenario.env ?? {});
   if (secrets.length === 0) return;
   const stored = JSON.stringify(await runner.readRun(runId));
