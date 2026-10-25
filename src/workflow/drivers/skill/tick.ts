@@ -57,8 +57,7 @@ const LeaseBase = {
   step: z.string(),
   revision: z.number().int(),
   expiresAt: z.string().optional(),
-  // R8 starts no skill run with an interactive step, so no lease of one is interactive.
-  interactive: z.undefined(),
+  interactive: z.literal(true).optional(),
 };
 const LeaseSchema = z.union([
   z.object({ ...LeaseBase, command: z.string(), env: z.record(z.string()).optional(), envScope: EnvScopeShape.optional() }),
@@ -78,9 +77,9 @@ function readLease(raw: unknown): ReadLease | undefined {
     const { command, env, envScope } = read.data;
     return { ...base, executor: 'command', command, env: env ?? {}, ...(envScope ? { envScope } : {}) };
   }
-  const { prompt, workspace, agent, model, defaultModel, output } = read.data;
+  const { prompt, workspace, agent, model, defaultModel, output, interactive } = read.data;
   return {
-    ...base, executor: 'prompt', prompt, place: workspace === undefined ? 'checkout' : 'workspace',
+    ...base, executor: 'prompt', prompt, place: workspace === undefined ? 'checkout' : 'workspace', ...(interactive ? { interactive } : {}),
     ...(agent !== undefined ? { agent } : {}), ...(model !== undefined ? { model } : {}), ...(defaultModel !== undefined ? { defaultModel } : {}),
     ...(output !== undefined ? { output } : {}),
   };

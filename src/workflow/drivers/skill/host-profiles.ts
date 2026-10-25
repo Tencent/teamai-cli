@@ -24,8 +24,8 @@ export function judgeCan(tool: string): { isolation: 'verified'; tools: [string]
 
 /**
  * What the skill driver declares on every `next`, whichever host answered. Every `CanSchema` key is decided here, so a
- * new key fails to compile until it is. A person answers gates through the agent or in their own terminal; a run with
- * an interactive step never starts on this driver (R8). No host meters a child's tokens or turns to the CLI, and teamai
+ * new key fails to compile until it is. A person answers gates through the agent or in their own terminal, and works in
+ * an interactive step with the agent. No host meters a child's tokens or turns to the CLI, and teamai
  * scopes team env only in the processes it starts, so prompt steps get none.
  */
 export const SKILL_CAN: Required<DriverCan> = {

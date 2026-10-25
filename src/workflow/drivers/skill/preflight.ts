@@ -33,24 +33,16 @@ export function neededAnswers(description: WorkflowDescription): StartAnswer[] {
   ];
 }
 
-/**
- * Why `description` must run with the local driver, or undefined when this driver runs it: it has interactive steps,
- * which no person works in through this driver yet, or a local route.
- */
+/** Why `description` must run with the local driver, or undefined when this driver runs it: its local route. */
 export function localReason(description: WorkflowDescription): string | undefined {
   const { name, facts } = description;
   const route = facts.localRoute;
-  if (route) {
-    const keys = facts.held.find((held) => held.step === route.held)?.env ?? [];
-    const lacks = route.missing === 'env'
-      ? `needs env ${keys.join(', ')}, which a coding session keeps from its agents`
-      : 'runs under a token budget, which no coding session meters for teamai';
-    return `Step ${route.held} works in the workspace ${route.opener} opened, and ${lacks}. Only the driver that opened that workspace may go on in it, so the local driver runs the whole of ${name}.`;
-  }
-  if (facts.interactive.length > 0) {
-    return `${name} has steps this driver does not run in a coding session yet: ${facts.interactive.join(', ')}. The person can run it in a terminal with the local driver.`;
-  }
-  return undefined;
+  if (!route) return undefined;
+  const keys = facts.held.find((held) => held.step === route.held)?.env ?? [];
+  const lacks = route.missing === 'env'
+    ? `needs env ${keys.join(', ')}, which a coding session keeps from its agents`
+    : 'runs under a token budget, which no coding session meters for teamai';
+  return `Step ${route.held} works in the workspace ${route.opener} opened, and ${lacks}. Only the driver that opened that workspace may go on in it, so the local driver runs the whole of ${name}.`;
 }
 
 /** Checks a start of `description` against what describe asked. `ceiling` is the most steps the driver runs at once. */

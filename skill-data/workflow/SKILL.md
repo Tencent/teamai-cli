@@ -86,6 +86,8 @@ A `dispatch` action is one prompt step for one child agent. For each one:
 
 When your host cannot run `model.name`, run `unavailable` in place of both steps.
 
+A dispatch whose `needs.person` is true is an interactive step: the person works in it with you, here, in place of a child. Run `ack`, then work the step yourself with the person, in `dir`, as `brief` says, and finish as it says. When `model` names a model this session does not run on, run `unavailable` instead.
+
 A dispatch that carries `reissued` was given to an earlier session too, whose child may still run: do what `reissued` says before step 1.
 
 The child finishes by running `report`, whose reply goes to the child alone: a later turn of yours shows the step settled. When a child ended and `running` still lists its attempt as `dispatched`, run that entry's `report` yourself, then go on with `then` of your newest turn.

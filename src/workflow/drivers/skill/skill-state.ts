@@ -35,9 +35,13 @@ export const ModelPickSchema = z.union([
 ]);
 export type ModelPick = z.infer<typeof ModelPickSchema>;
 
-/** A prompt step's work as a child gets it: the place it works in, its brief, and the agent and model it runs as. */
+/**
+ * A prompt step's work as a child gets it: the place it works in, its brief, and the agent and model it runs as.
+ * `person`: an interactive step, which the agent works itself with the person instead of a child.
+ */
 const DispatchSchema = z.object({
   place: z.enum(['workspace', 'checkout']),
+  person: z.literal(true).optional(),
   dir: z.string(),
   brief: z.string(),
   agent: z.string().optional(),

@@ -32,6 +32,23 @@ steps:
     interactive: true
 `;
 
+const RELEASE_DOCS = `schemaVersion: v1alpha1
+name: release-docs
+description: Draft the release notes, then sign them
+invoke: allow
+steps:
+  - id: docs
+    workspace: new
+    workflow:
+      steps:
+        - id: draft
+          prompt: Draft the release notes.
+        - id: sign
+          needs: [draft]
+          prompt: Sign the notes.
+          requires: { env: [SIGNING_KEY] }
+`;
+
 const PAIR = `schemaVersion: v1alpha1
 name: pair
 description: Write the API and the UI
@@ -461,12 +478,24 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     },
   },
   {
-    name: 'a workflow with an interactive step is routed to the local driver',
+    name: 'a workflow whose held step works in the copy of a step this driver takes is routed to the local driver',
     rows: ['R2', 'R8'],
     run: async () => {
+      const made = await harness({ 'release-docs': RELEASE_DOCS });
+      expect(await made.call({ kind: 'describe', name: 'release-docs' })).toMatchObject({ data: { describe: { ask: { kind: 'local', start: 'teamai workflow start release-docs --driver local' } } } });
+      expect(await made.call({ kind: 'start', name: 'release-docs', answers: { confirmed: false }, inputs: undefined })).toMatchObject({ error: { code: 'needs_local_driver', next: null } });
+      return made.rows;
+    },
+  },
+  {
+    name: 'an interactive step is offered for the agent to work with the person, here, one at a time',
+    rows: ['D7', 'C2'],
+    run: async () => {
       const made = await harness({ draft: DRAFT });
-      expect(await made.call({ kind: 'describe', name: 'draft' })).toMatchObject({ data: { describe: { ask: { kind: 'local', start: 'teamai workflow start draft --driver local' } } } });
-      expect(await made.call({ kind: 'start', name: 'draft', answers: { confirmed: false }, inputs: undefined })).toMatchObject({ error: { code: 'needs_local_driver', next: null } });
+      const { run } = await turnOf(await made.call({ kind: 'start', name: 'draft', answers: { confirmed: false }, inputs: undefined }));
+      const [dispatch] = dispatches(await turnOf(await made.call({ kind: 'choose', run, choice: 'h1' })));
+      expect(dispatch).toMatchObject({ step: 'write', needs: { place: 'checkout', parallel: false, person: true }, dir: made.work });
+      expect(fs.readFileSync(dispatch?.brief ?? '', 'utf8')).toContain('with the person');
       return made.rows;
     },
   },

@@ -22,10 +22,10 @@ export interface TransitionRow {
 }
 
 export const TRANSITIONS = [
-  { id: 'R2', state: 'none', input: 'describe', guard: 'the definition has an interactive step, or a local route: a step this driver takes and a later one it is held from for env or tokens work in one workspace copy', effects: 'none', next: 'none', action: 'describe `ask.kind: local` with the reason and the `--driver local` start literal' },
+  { id: 'R2', state: 'none', input: 'describe', guard: 'the definition has a local route: a step this driver takes and a later one it is held from for env or tokens work in one workspace copy', effects: 'none', next: 'none', action: 'describe `ask.kind: local` with the reason and the `--driver local` start literal' },
   { id: 'R3', state: 'none', input: 'describe', guard: 'something to ask: `invoke: ask`, a required input, width above 1, an optional gate, or judging here', effects: 'none', next: 'none', action: 'describe `ask.kind: ask`: one question, and the start literal of each option' },
   { id: 'R4', state: 'none', input: 'describe', guard: 'nothing to ask', effects: 'none', next: 'none', action: 'describe `ask.kind: start` with the one start literal' },
-  { id: 'R8', state: 'none', input: 'start `--driver skill`', guard: 'the definition has an interactive step, or a local route', effects: 'none', next: 'none', action: 'error `needs_local_driver` with the reason, next null' },
+  { id: 'R8', state: 'none', input: 'start `--driver skill`', guard: 'the definition has a local route', effects: 'none', next: 'none', action: 'error `needs_local_driver` with the reason, next null' },
   { id: 'R9', state: 'none', input: 'start `--driver skill`', guard: '`checkStartAnswers` answers `confirm-needed`', effects: 'none', next: 'none', action: 'error `confirm_needed`, next: the describe literal' },
   { id: 'R10', state: 'none', input: 'start `--driver skill`', guard: '`checkStartAnswers` answers `ok`', effects: '`WorkflowClient.start`; write skill.json: identity `{skill, machine, run checkout}`, invocation, options (`--parallel`, the HITL mode), host `pending` when the definition has a prompt step, owner := the caller\'s session; judging on with the session tool when describe judges here and the start has no `--no-judge`', next: 'host when it has a prompt step, else drive', action: 'the turn of a tick' },
   { id: 'R11', state: 'none', input: 'next, report `--driver skill`', guard: 'this machine has no skill.json for the run', effects: 'none', next: 'none', action: 'error `not_skill_run`, next null' },
@@ -107,7 +107,8 @@ export type RowId = typeof TRANSITIONS[number]['id'];
 /** A lease the engine handed out, as the tick read it: a command, or a prompt for a child. */
 export type ReadLease = { attempt: AttemptId; step: string; revision: number; expiresAt?: string } & (
   | { executor: 'command'; command: string; env: Record<string, string>; envScope?: EnvScope }
-  | { executor: 'prompt'; prompt: string; place: Dispatch['place']; agent?: string; model?: string; defaultModel?: string; output?: unknown }
+  /** `interactive`: the person works in the step. */
+  | { executor: 'prompt'; prompt: string; place: Dispatch['place']; interactive?: true; agent?: string; model?: string; defaultModel?: string; output?: unknown }
 );
 
 /** A gate as the engine asks it. */

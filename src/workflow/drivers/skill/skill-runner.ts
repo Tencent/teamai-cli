@@ -249,17 +249,19 @@ async function begin(context: SkillContext, lock: RunLock, attempt: AttemptId, p
     return { kind: 'run', dir, command: lease.command, env: { ...scoped.env, ...lease.env }, ...(open.expiresAt !== undefined ? { expiresAt: open.expiresAt } : {}) };
   }
   if (open.phase !== 'preparing') return { kind: 'gone', status: 'gone' };
-  const { agent, model, defaultModel, output, place } = lease;
+  const { agent, model, defaultModel, output, place, interactive } = lease;
   const picked = await pickChildModel({
     config: context.config, step: open.step, tool: context.tool,
     ...(agent !== undefined ? { agent } : {}), ...(model !== undefined ? { model } : {}), ...(defaultModel !== undefined ? { defaultModel } : {}),
   });
   if (!picked.ok) return failed(picked.failure, 'model-failed');
   const brief = await writeChildBrief({
-    config: context.config, run: lock.run, attempt, step: open.step, dir, prompt: prepared.prompt ?? lease.prompt,
+    config: context.config, run: lock.run, attempt, step: open.step, dir, prompt: prepared.prompt ?? lease.prompt, ...(interactive ? { person: true } : {}),
     ...(output !== undefined ? { output } : {}), report: reportLiteral(state.invocation, lock.run, attempt), secrets: context.env.secrets,
   });
-  const offered = take(context, state, { kind: 'offer', attempt, dispatch: { place, dir, brief, ...(agent !== undefined ? { agent } : {}), model: picked.model } });
+  const offered = take(context, state, {
+    kind: 'offer', attempt, dispatch: { place, ...(interactive ? { person: true } : {}), dir, brief, ...(agent !== undefined ? { agent } : {}), model: picked.model },
+  });
   if (offered?.state) await writeSkillState(context.config, lock, offered.state, context.env.secrets);
   return { kind: 'gone', status: 'offered' };
 }

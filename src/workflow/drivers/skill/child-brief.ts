@@ -30,17 +30,21 @@ export async function writeChildBrief(input: {
   step: string;
   dir: string;
   prompt: string;
+  /** An interactive step: the orchestrator works it with the person, in its own session. */
+  person?: true;
   /** The step's output schema, when it declares one. */
   output?: unknown;
   report: Literal;
   secrets: Record<string, string>;
 }): Promise<string> {
-  const { config, run, attempt, step, dir, prompt, output, report, secrets } = input;
+  const { config, run, attempt, step, dir, prompt, person, output, report, secrets } = input;
   const shape = output === undefined ? 'a short summary of what you did, as a JSON string' : `a value that matches the JSON schema \`${JSON.stringify(output)}\``;
   const brief = [
     `# Step ${step}, attempt ${attempt} of run ${run}`,
     '',
-    'You work this one step of a team workflow. Another agent orchestrates the run, and your part ends when you report.',
+    person
+      ? 'You work this one step of a team workflow with the person, in this session: ask them what the step needs, and do it together. Your part in it ends when you report.'
+      : 'You work this one step of a team workflow. Another agent orchestrates the run, and your part ends when you report.',
     '',
     '## The step',
     '',
@@ -57,7 +61,9 @@ export async function writeChildBrief(input: {
     `1. Write \`${resultPath(config, run, attempt)}\` with one JSON object:`,
     `   - When the step is done: \`{"kind":"output","output":...}\`, where \`output\` is ${shape}.`,
     '   - When you cannot do it: `{"kind":"failure","failure":{"code":"blocked","message":"..."}}`, with a short code and a message that says what stopped you.',
-    `2. Run \`${report}\` once, and end with its reply as your last message. The orchestrator learns from TeamAI that you reported.`,
+    person
+      ? `2. Run \`${report}\` once, then go on with the run.`
+      : `2. Run \`${report}\` once, and end with its reply as your last message. The orchestrator learns from TeamAI that you reported.`,
     '',
   ].join('\n');
   const file = path.join(attemptDir(config, run, attempt), 'brief.md');
