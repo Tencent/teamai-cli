@@ -62,7 +62,7 @@ When your host cannot run `model.name`, run `unavailable` in place of both steps
 
 A dispatch that carries `reissued` was given to an earlier session too, whose child may still run: do what `reissued` says before step 1.
 
-The child finishes by running `report` and ends with that reply: take it as the newest turn. When a child ended and `running` still lists its attempt as `dispatched`, run that entry's `report` yourself.
+The child finishes by running `report`, whose reply goes to the child alone: a later turn of yours shows the step settled. When a child ended and `running` still lists its attempt as `dispatched`, run that entry's `report` yourself, then go on with `then` of your newest turn.
 
 Done when every `dispatch` in the turn is acked.
 

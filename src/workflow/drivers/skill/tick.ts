@@ -283,14 +283,19 @@ function lockBusy(context: SkillContext, run: RunId, same: Literal): SkillAnswer
   return { error: errorOf(answer, { invocation: context.invocation, same }) };
 }
 
-/** Reads skill.json under the lock, and takes its S row, or R11 when there is none. */
-async function called(context: SkillContext, run: RunId, same: Literal, takeover = false): Promise<{ state: SkillState } | { answer: SkillAnswer }> {
+/**
+ * Reads skill.json under the lock, and takes its S row, or R11 when there is none. `takeover` is a `next --takeover`;
+ * `report` is the attempt an agent's report names, which skips the session check when the agent reports it (S6).
+ */
+async function called(context: SkillContext, run: RunId, same: Literal, input: { takeover?: true; report?: AttemptId } = {}): Promise<{ state: SkillState } | { answer: SkillAnswer }> {
   const read = await readSkillState(context.config, run);
   if ('kind' in read && read.kind === 'unreadable') {
     return { answer: { error: { code: 'run_unreadable', message: `The skill driver's state of run ${run} cannot be read (${read.reason}). The person can continue the run in a terminal with teamai workflow resume ${run}.`, next: null } } };
   }
   const state = 'kind' in read ? undefined : read;
-  const taken = take(context, state, { kind: 'call', run, session: context.session, at: context.now().toISOString(), takeover, staleMs: TAKEOVER_STALE_MS });
+  const exempt = input.report !== undefined ? take(context, state, { kind: 'report-call', attempt: input.report }) : undefined;
+  if (exempt?.state) return { state: exempt.state };
+  const taken = take(context, state, { kind: 'call', run, session: context.session, at: context.now().toISOString(), takeover: input.takeover === true, staleMs: TAKEOVER_STALE_MS });
   if (taken?.state && !taken.answer) return { state: taken.state };
   const refused = taken?.answer?.kind === 'error' || taken?.answer?.kind === 'engine-error' ? taken.answer : { kind: 'error' as const, refusal: { code: 'not_skill_run' as const, run }, next: null };
   return { answer: { error: errorOf(refused, { invocation: context.invocation, same, run }) } };
@@ -304,13 +309,12 @@ async function finish(context: SkillContext, lock: RunLock, state: SkillState, w
   return { data: { turn: turnOf(shown, { events, after: { kind: 'poll', run: pollLiteral(shown.invocation, shown.run) }, ...(waiting ? { waiting } : {}) }) } };
 }
 
-/** A call that answers at once: `next`, a takeover, an answer to the host question, an ack, or a report from the agent. */
+/** A call that answers with a turn at once: `next`, a takeover, an answer to the host question, or an ack. */
 export type ForegroundCall =
   | { kind: 'next' }
   | { kind: 'takeover' }
   | { kind: 'choose'; choice: HostChoice }
-  | { kind: 'ack'; attempt: AttemptId }
-  | { kind: 'report'; attempt: AttemptId; modelUnavailable: boolean };
+  | { kind: 'ack'; attempt: AttemptId };
 
 function literalOf(invocation: Invocation, run: RunId, call: ForegroundCall): Literal {
   switch (call.kind) {
@@ -322,8 +326,6 @@ function literalOf(invocation: Invocation, run: RunId, call: ForegroundCall): Li
       return chooseHostLiteral(invocation, run, call.choice);
     case 'ack':
       return ackLiteral(invocation, run, call.attempt);
-    case 'report':
-      return (call.modelUnavailable ? unavailableLiteral : reportLiteral)(invocation, run, call.attempt);
     default: {
       const unhandled: never = call;
       return unhandled;
@@ -344,20 +346,6 @@ async function applyCall(context: SkillContext, lock: RunLock, state: SkillState
     case 'ack':
       taken = take(context, state, { kind: 'ack', attempt: call.attempt });
       break;
-    case 'report': {
-      const result = await readChildResult({ config: context.config, run: state.run, attempt: call.attempt });
-      taken = take(context, state, { kind: 'report', attempt: call.attempt, modelUnavailable: call.modelUnavailable, result });
-      const send = taken?.effects.find((effect) => effect.kind === 'send');
-      if (taken?.state && send?.kind === 'send') {
-        const sent = await sendReport(context, lock, taken.state, call.attempt, send.body);
-        if (sent.refused) {
-          await writeSkillState(context.config, lock, sent.state, context.env.secrets);
-          return { answer: { error: { ...sent.refused, next: same } } };
-        }
-        return { state: sent.state };
-      }
-      break;
-    }
     default: {
       const unhandled: never = call;
       return unhandled;
@@ -377,7 +365,7 @@ async function applyCall(context: SkillContext, lock: RunLock, state: SkillState
 export async function foreground(context: SkillContext, run: RunId, call: ForegroundCall): Promise<SkillAnswer> {
   const same = literalOf(context.invocation, run, call);
   const first = await context.locks.take(run, async (lock): Promise<{ answer: SkillAnswer } | { grace: true }> => {
-    const read = await called(context, run, same, call.kind === 'takeover');
+    const read = await called(context, run, same, call.kind === 'takeover' ? { takeover: true } : {});
     if ('answer' in read) return read;
     const applied = await applyCall(context, lock, read.state, call, same);
     if ('answer' in applied) return applied;
@@ -390,7 +378,7 @@ export async function foreground(context: SkillContext, run: RunId, call: Foregr
     if (!ticked.spawned || !take(context, state, { kind: 'spawned' })) return { answer: await finish(context, lock, state, ticked.waiting) };
     await writeSkillState(context.config, lock, state, context.env.secrets);
     return { grace: true };
-  }, call.kind === 'report' ? WAIT_BOUND_MS : TICK_LOCK_WAIT_MS);
+  }, TICK_LOCK_WAIT_MS);
   if (busy(first)) return lockBusy(context, run, same);
   if ('answer' in first) return first.answer;
   const until = context.now().getTime() + WAIT_GRACE_MS;
@@ -406,6 +394,34 @@ export async function foreground(context: SkillContext, run: RunId, call: Foregr
     if (checked === 'again') continue;
     return busy(checked) ? lockBusy(context, run, same) : checked;
   }
+}
+
+/**
+ * An agent's `report --attempt`: the child of the attempt, in whatever session it runs, or the orchestrator. It answers
+ * as a runner does, with no turn, so the session's events stay for the orchestrator's own next call to show.
+ */
+export async function agentReport(context: SkillContext, run: RunId, call: { attempt: AttemptId; modelUnavailable: boolean }): Promise<SkillAnswer> {
+  const { attempt } = call;
+  const same = (call.modelUnavailable ? unavailableLiteral : reportLiteral)(context.invocation, run, attempt);
+  const answered = await context.locks.take(run, async (lock): Promise<SkillAnswer> => {
+    const read = await called(context, run, same, { report: attempt });
+    if ('answer' in read) return read.answer;
+    const { state } = read;
+    const result = await readChildResult({ config: context.config, run, attempt });
+    const taken = take(context, state, { kind: 'report', attempt, modelUnavailable: call.modelUnavailable, result });
+    if (taken?.answer?.kind === 'error' || taken?.answer?.kind === 'engine-error') {
+      await writeSkillState(context.config, lock, state, context.env.secrets);
+      return { error: errorOf(taken.answer, { invocation: state.invocation, same, run }) };
+    }
+    if (taken?.row === 'P1') return { data: { runner: { attempt, status: 'repeated' } } };
+    const send = taken?.effects.find((effect) => effect.kind === 'send');
+    if (!taken?.state || send?.kind !== 'send') return { data: { runner: { attempt, status: 'gone' } } };
+    const sent = await sendReport(context, lock, taken.state, attempt, send.body);
+    await writeSkillState(context.config, lock, sent.state, context.env.secrets);
+    if (sent.refused) return { error: { ...sent.refused, next: same } };
+    return { data: { runner: { attempt, status: sent.state.settled.includes(attempt) ? 'reported' : 'gone' } } };
+  }, WAIT_BOUND_MS);
+  return busy(answered) ? lockBusy(context, run, same) : answered;
 }
 
 /** `next --wait`: ticks every `WAIT_POLL_MS`, holding the lock only while it ticks, until the run is done or the bound. */

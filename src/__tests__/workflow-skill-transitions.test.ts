@@ -456,16 +456,30 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       const woken = await turnOf(await made.call({ kind: 'next', run, wait: true }));
       expect([woken.actions, woken.then]).toEqual([[], { kind: 'wake', run: `teamai workflow next ${run} --driver skill` }]);
       expect((await turnOf(await made.call({ kind: 'next', run, wait: false }))).actions).toEqual(cancelled.actions);
-      let last = cancelled;
-      const events: unknown[] = [];
       for (const stop of stops) {
-        last = await turnOf(await made.call({ kind: 'report', run, attempt: stop.attempt, role: 'agent', modelUnavailable: false }));
-        events.push(...last.events);
+        expect(await made.call({ kind: 'report', run, attempt: stop.attempt, role: 'agent', modelUnavailable: false })).toEqual({ data: { runner: { attempt: stop.attempt, status: 'reported' } } });
       }
-      expect(events).toEqual(stops.map(({ step, attempt }) => ({ kind: 'stopped', step, attempt, why: 'cancelled' })));
+      const last = await turnOf(await made.call({ kind: 'next', run, wait: false }));
+      expect(last.events).toEqual(stops.map(({ step, attempt }) => ({ kind: 'stopped', step, attempt, why: 'cancelled' })));
       expect(last.actions.map((action) => action.kind)).toEqual(['done']);
       expect(last).not.toHaveProperty('then');
       await made.call({ kind: 'next', run, wait: false });
+      return made.rows;
+    },
+  },
+  {
+    name: 'a child in its own session reports without a session check, and its report refused once is sent when it runs the literal again',
+    rows: ['S6', 'P5', 'P10', 'P11', 'P7'],
+    run: async () => {
+      const made = await harness({ pair: PAIR }, { client: scriptedOnce(() => ({ report: async () => ({ error: { code: 'protocol_unavailable', message: 'scripted' } }) })) });
+      const turn = await chosen(made, 'pair', 2);
+      const [first] = dispatches(turn);
+      if (!first) throw new Error(JSON.stringify(turn));
+      childWrites(first.brief, { kind: 'output', output: 'Done.' });
+      const report = { kind: 'report', run: turn.run, attempt: first.attempt, role: 'agent', modelUnavailable: false } as const;
+      expect(await made.call(report, { session: 'child-session' })).toEqual({ error: { code: 'protocol_unavailable', message: 'scripted', next: first.report } });
+      expect(await made.call(report, { session: 'child-session' })).toEqual({ data: { runner: { attempt: first.attempt, status: 'reported' } } });
+      expect((await turnOf(await made.call({ kind: 'next', run: turn.run, wait: false }))).events).toContainEqual(expect.objectContaining({ kind: 'settled', step: first.step, outcome: 'success' }));
       return made.rows;
     },
   },
@@ -497,10 +511,10 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       await made.call({ kind: 'ack', run, attempt: api.attempt });
       expect(dispatches(await turnOf(await made.call({ kind: 'ack', run, attempt: api.attempt })))).toEqual([ui]);
       childWrites(api.brief, { kind: 'output', output: 'Wrote the API.' });
-      const reported = await turnOf(await made.call({ kind: 'report', run, attempt: api.attempt, role: 'agent', modelUnavailable: false }));
-      expect(reported.events).toContainEqual(expect.objectContaining({ kind: 'settled', step: 'api', outcome: 'success' }));
-      expect((await turnOf(await made.call({ kind: 'report', run, attempt: api.attempt, role: 'agent', modelUnavailable: false }))).events)
-        .toEqual([{ kind: 'repeated', attempt: api.attempt }]);
+      const report = { kind: 'report', run, attempt: api.attempt, role: 'agent', modelUnavailable: false } as const;
+      expect(await made.call(report)).toEqual({ data: { runner: { attempt: api.attempt, status: 'reported' } } });
+      expect(await made.call(report)).toEqual({ data: { runner: { attempt: api.attempt, status: 'repeated' } } });
+      expect((await turnOf(await made.call({ kind: 'next', run, wait: false }))).events).toContainEqual(expect.objectContaining({ kind: 'settled', step: 'api', outcome: 'success' }));
       return made.rows;
     },
   },
@@ -532,7 +546,8 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       const offered = await chosen(pinned, 'pair', 2);
       const ui = dispatches(offered).find((action) => action.step === 'ui');
       if (!ui?.unavailable) throw new Error(JSON.stringify(offered));
-      const reported = await turnOf(await pinned.call({ kind: 'report', run: offered.run, attempt: ui.attempt, role: 'agent', modelUnavailable: true }));
+      expect(await pinned.call({ kind: 'report', run: offered.run, attempt: ui.attempt, role: 'agent', modelUnavailable: true })).toEqual({ data: { runner: { attempt: ui.attempt, status: 'reported' } } });
+      const reported = await turnOf(await pinned.call({ kind: 'next', run: offered.run, wait: false }));
       expect(reported.events).toContainEqual(expect.objectContaining({ kind: 'settled', step: 'ui', outcome: 'failed', failure: expect.objectContaining({ code: 'model_unavailable' }) }));
       return [...aliased.rows, ...pinned.rows];
     },

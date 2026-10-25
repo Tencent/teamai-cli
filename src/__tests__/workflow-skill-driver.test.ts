@@ -186,6 +186,39 @@ describe('skill driver', () => {
     expect(await harness.call({ kind: 'next', run, wait: false })).toMatchObject({ error: { code: 'orchestrator_active', next: takeover } });
   });
 
+  it('a child reports from its own session or the orchestrator\'s and gets the runner answer, and the orchestrator\'s next turn shows the step settled', async () => {
+    const harness = await skillHarness({ feature: FEATURE });
+    roots.push(harness.root);
+    const started = await harness.call({ kind: 'start', name: 'feature', answers: { parallel: 2, confirmed: false }, inputs: undefined });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+    const { run } = started.data.turn;
+    const chosen = await harness.call({ kind: 'choose', run, choice: 'h1' });
+    if (!('data' in chosen) || !('turn' in chosen.data)) throw new Error(JSON.stringify(chosen));
+    const dispatches = chosen.data.turn.actions.flatMap((action) => (action.kind === 'dispatch' ? [action] : []));
+    for (const action of dispatches) {
+      await harness.call({ kind: 'ack', run, attempt: action.attempt });
+      const file = /Write `([^`]+result\.json)`/.exec(fs.readFileSync(action.brief, 'utf8'))?.[1];
+      if (!file) throw new Error(`${action.brief} names no result file`);
+      fs.writeFileSync(file, JSON.stringify({ kind: 'output', output: `Built ${action.step}.` }));
+    }
+    const [api, ui] = dispatches;
+    if (!api || !ui) throw new Error(JSON.stringify(chosen));
+
+    // An app orchestration tool starts the child in its own session; a native subagent shares the orchestrator's.
+    const report = { kind: 'report', run, role: 'agent', modelUnavailable: false } as const;
+    expect(await harness.call({ ...report, attempt: api.attempt }, { session: 'child-session' })).toEqual({ data: { runner: { attempt: api.attempt, status: 'reported' } } });
+    expect(await harness.call({ ...report, attempt: api.attempt }, { session: 'child-session' })).toEqual({ data: { runner: { attempt: api.attempt, status: 'repeated' } } });
+    expect(await harness.call({ ...report, attempt: ui.attempt })).toEqual({ data: { runner: { attempt: ui.attempt, status: 'reported' } } });
+
+    const next = await harness.call({ kind: 'next', run, wait: false });
+    if (!('data' in next) || !('turn' in next.data)) throw new Error(JSON.stringify(next));
+    expect(next.data.turn.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'settled', step: 'api', outcome: 'success' }),
+      expect.objectContaining({ kind: 'settled', step: 'ui', outcome: 'success' }),
+    ]));
+    expect(next.data.turn.actions.map((action) => action.kind === 'dispatch' && action.step)).toEqual(['integrate']);
+  });
+
   it('a cancelled command is stopped by its runner and reported released; a cancelled prompt step shows stop until reported', async () => {
     // A prompt step's child is the agent's, so the agent is asked to stop it, until it reports.
     const prompts = await skillHarness({ feature: FEATURE });
@@ -211,7 +244,9 @@ describe('skill driver', () => {
       expect(shown.data.turn.actions).toEqual([stop, ui]);
       expect(shown.data.turn.running).toContainEqual({ attempt: api.attempt, step: 'api', phase: 'stopping', report: api.report });
     }
-    const reported = await prompts.call({ kind: 'report', run, attempt: api.attempt, role: 'agent', modelUnavailable: false });
+    expect(await prompts.call({ kind: 'report', run, attempt: api.attempt, role: 'agent', modelUnavailable: false }))
+      .toEqual({ data: { runner: { attempt: api.attempt, status: 'reported' } } });
+    const reported = await prompts.call({ kind: 'next', run, wait: false });
     if (!('data' in reported) || !('turn' in reported.data)) throw new Error(JSON.stringify(reported));
     expect(reported.data.turn.events).toContainEqual({ kind: 'stopped', step: 'api', attempt: api.attempt, why: 'cancelled' });
     expect(reported.data.turn.actions).toEqual([ui]);

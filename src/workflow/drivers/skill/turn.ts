@@ -7,7 +7,7 @@ import type { OutputSchema, WorkflowFailure } from '../../types.js';
 import { HOST_CHOICES, HOST_PROFILES, HOST_QUESTION, type HostChoice } from './host-profiles.js';
 import { ackLiteral, chooseHostLiteral, reportLiteral, unavailableLiteral, type Literal } from './literals.js';
 import type { AttemptState, Dispatch, ModelPick, SkillState, StopReason, TurnEvent } from './skill-state.js';
-import { childCap } from './transitions.js';
+import { childCap, reportedByAgent } from './transitions.js';
 
 /** How describe says to start: as is, after one question to the person, or with the local driver. */
 export type DescribeAsk =
@@ -105,11 +105,12 @@ export type SkillAnswer =
   | { data: { describe: { workflow: WorkflowDescription; ask: DescribeAsk } } }
   | { data: { turn: Turn } }
   /**
-   * What a runner answers once it is done with its attempt: `reported`; `offered` to the agent; `queued` behind the
-   * attempt that holds its place; `gone` when the attempt closed without its report; or `held` when another live
-   * runner of the attempt holds its lock and this call did nothing.
+   * What a runner answers once it is done with its attempt, and what an agent's report answers: `reported`; `repeated`
+   * when the attempt was settled before; `offered` to the agent; `queued` behind the attempt that holds its place;
+   * `gone` when the attempt closed without its report; or `held` when another live runner of the attempt holds its lock
+   * and this call did nothing.
    */
-  | { data: { runner: { attempt: AttemptId; status: 'reported' | 'offered' | 'queued' | 'gone' | 'held' } } }
+  | { data: { runner: { attempt: AttemptId; status: 'reported' | 'repeated' | 'offered' | 'queued' | 'gone' | 'held' } } }
   | { error: SkillError };
 
 /** The skill-data reference the host question points to. */
@@ -132,11 +133,6 @@ function dispatchOf(state: SkillState, open: Extract<AttemptState, { phase: 'off
     ...(dispatch.model.by !== 'definition' ? { unavailable: unavailableLiteral(invocation, run, attempt) } : {}),
     ...(open.phase === 'offered' && open.reissued ? { reissued: `An earlier session was given this dispatch, and its child may still run as ${titleOf(run, open)}. Stop that child if you can reach it, then dispatch this one.` } : {}),
   };
-}
-
-/** Whether the agent reports `open`: its child works it, or the agent must stop that child. */
-function reportedByAgent(open: AttemptState): boolean {
-  return open.phase === 'offered' || open.phase === 'dispatched' || (open.phase === 'stopping' && open.by === 'agent');
 }
 
 /**

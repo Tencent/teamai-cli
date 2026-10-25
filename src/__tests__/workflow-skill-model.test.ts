@@ -52,6 +52,8 @@ type StopAction = Extract<Turn['actions'][number], { kind: 'stop' }>;
 interface Real {
   made: Made;
   run: RunId;
+  /** The session that drives the run. */
+  session: string;
   /** Every engine `next` whose `running` was not the attempts the engine had leased, and ones it stopped (invariant 1). */
   drift: string[];
 }
@@ -69,6 +71,8 @@ interface Model {
   stopped: Set<AttemptId>;
   /** Steps the person cancelled. */
   cancelled: Set<string>;
+  /** Events a report settled that the session's next turn must show. */
+  unseen: unknown[];
 }
 
 function turnOf(answer: SkillAnswer): Turn {
@@ -76,8 +80,15 @@ function turnOf(answer: SkillAnswer): Turn {
   return answer.data.turn;
 }
 
+/** Checks that `events` show every event a report settled since the session's last turn that showed events. */
+function sawEvents(model: Model, events: Turn['events']): void {
+  for (const expected of model.unseen) expect(events).toContainEqual(expected);
+  model.unseen = [];
+}
+
 /** Takes what a foreground turn shows into the model, and checks invariants 3 and 6 on it. */
 function sawForeground(model: Model, turn: Turn): void {
+  sawEvents(model, turn.events);
   model.done = turn.status === 'done';
   model.hostPending = turn.actions.some((action) => action.kind === 'choose');
   const kinds = turn.actions.map((action) => action.kind);
@@ -100,9 +111,10 @@ function sawForeground(model: Model, turn: Turn): void {
   expect(turn.running.filter((entry) => entry.phase === 'offered').map((entry) => entry.attempt).sort()).toEqual(unacked.sort());
 }
 
-/** Takes what a poll shows into the model, and checks invariant 5 on it. */
+/** Takes what a poll shows into the model, and checks invariant 5 on it. Only the poll that ends the run shows events. */
 function sawPoll(model: Model, turn: Turn): void {
   expect(turn.actions.filter((action) => action.kind !== 'done')).toEqual([]);
+  if (turn.then === undefined) sawEvents(model, turn.events);
   model.done = turn.status === 'done';
 }
 
@@ -118,9 +130,9 @@ function cancelledStep(model: Model, action: DispatchAction): boolean {
   return model.cancelled.has(action.step);
 }
 
-/** Makes `call` as the session, and checks invariant 1 on every engine `next` it led to. */
-async function called(real: Pick<Real, 'made' | 'drift'>, call: Parameters<Made['call']>[0]): Promise<SkillAnswer> {
-  const answer = await real.made.call(call);
+/** Makes `call` as the session, or as `session`, and checks invariant 1 on every engine `next` it led to. */
+async function called(real: Pick<Real, 'made' | 'drift' | 'session'>, call: Parameters<Made['call']>[0], session = real.session): Promise<SkillAnswer> {
+  const answer = await real.made.call(call, { session });
   expect(real.drift).toEqual([]);
   return answer;
 }
@@ -217,8 +229,20 @@ class Ack implements fc.AsyncCommand<Model, Real> {
   toString = (): string => `ack #${this.pick}`;
 }
 
+/**
+ * Reports `attempt` as `session` twice, and checks the runner answers: `reported`, then `repeated`. The answer is not a
+ * turn, so the session's next turn must show `event`.
+ */
+async function reportTwice(model: Model, real: Real, input: { attempt: AttemptId; session: string; event: unknown }): Promise<void> {
+  const call = { kind: 'report', run: real.run, attempt: input.attempt, role: 'agent', modelUnavailable: false } as const;
+  expect(await called(real, call, input.session)).toEqual({ data: { runner: { attempt: input.attempt, status: 'reported' } } });
+  expect(await called(real, call, input.session)).toEqual({ data: { runner: { attempt: input.attempt, status: 'repeated' } } });
+  model.unseen.push(input.event);
+}
+
+/** The child of a dispatch reports, from the session's own session (a native subagent) or its own (an app's child task). */
 class Report implements fc.AsyncCommand<Model, Real> {
-  constructor(readonly pick: number, readonly result: 'output' | 'failure' | 'none') {}
+  constructor(readonly pick: number, readonly result: 'output' | 'failure' | 'none', readonly own: boolean) {}
   check = (model: Readonly<Model>): boolean => !model.done && model.open.size > 0;
   async run(model: Model, real: Real): Promise<void> {
     const action = [...model.open.values()][this.pick % model.open.size];
@@ -227,14 +251,15 @@ class Report implements fc.AsyncCommand<Model, Real> {
     if (this.result === 'failure') childWrites(action, { kind: 'failure', failure: { code: 'blocked', message: 'The fixture blocks it.' } });
     model.open.delete(action.attempt);
     model.acked.delete(action.attempt);
-    const { first, second } = await twice(real, { kind: 'report', run: real.run, attempt: action.attempt, role: 'agent', modelUnavailable: false });
-    expect(first.events).toContainEqual(cancelledStep(model, action)
-      ? { kind: 'stopped', step: action.step, attempt: action.attempt, why: 'cancelled' }
-      : expect.objectContaining({ kind: 'settled', step: action.step, outcome: this.result === 'output' ? 'success' : 'failed' }));
-    expect(second.events).toEqual([{ kind: 'repeated', attempt: action.attempt }]);
-    sawForeground(model, first);
+    await reportTwice(model, real, {
+      attempt: action.attempt,
+      session: this.own ? `child-${action.attempt}` : real.session,
+      event: cancelledStep(model, action)
+        ? { kind: 'stopped', step: action.step, attempt: action.attempt, why: 'cancelled' }
+        : expect.objectContaining({ kind: 'settled', step: action.step, outcome: this.result === 'output' ? 'success' : 'failed' }),
+    });
   }
-  toString = (): string => `report #${this.pick} ${this.result}`;
+  toString = (): string => `report #${this.pick} ${this.result}${this.own ? ' from its own session' : ''}`;
 }
 
 /** The session relays a stop to its child and reports it, as the guide says. */
@@ -245,10 +270,7 @@ class ReportStop implements fc.AsyncCommand<Model, Real> {
     const action = [...model.stopping.values()][this.pick % model.stopping.size];
     if (action === undefined) throw new Error('no open stop');
     model.stopping.delete(action.attempt);
-    const { first, second } = await twice(real, { kind: 'report', run: real.run, attempt: action.attempt, role: 'agent', modelUnavailable: false });
-    expect(first.events).toContainEqual({ kind: 'stopped', step: action.step, attempt: action.attempt, why: action.why });
-    expect(second.events).toEqual([{ kind: 'repeated', attempt: action.attempt }]);
-    sawForeground(model, first);
+    await reportTwice(model, real, { attempt: action.attempt, session: real.session, event: { kind: 'stopped', step: action.step, attempt: action.attempt, why: action.why } });
   }
   toString = (): string => `report stop #${this.pick}`;
 }
@@ -262,7 +284,7 @@ const COMMANDS = [
   fc.nat(3).map((pick) => new ReportStop(pick)),
   fc.constantFrom<'h1' | 'h2'>('h1', 'h2').map((choice) => new Choose(choice)),
   fc.nat(3).map((pick) => new Ack(pick)),
-  fc.tuple(fc.nat(3), fc.constantFrom<'output' | 'failure' | 'none'>('output', 'output', 'failure', 'none')).map(([pick, result]) => new Report(pick, result)),
+  fc.tuple(fc.nat(3), fc.constantFrom<'output' | 'failure' | 'none'>('output', 'output', 'failure', 'none'), fc.boolean()).map(([pick, result, own]) => new Report(pick, result, own)),
 ];
 
 /** Plays a fair session from where the commands left the run, and checks invariant 10: it reaches `done` with nothing open. */
@@ -280,7 +302,7 @@ async function driveToDone(model: Model, real: Real): Promise<Turn> {
       continue;
     }
     if (model.open.size > 0) {
-      while (model.open.size > 0 && !model.done) await new Report(0, 'output').run(model, real);
+      while (model.open.size > 0 && !model.done) await new Report(0, 'output', false).run(model, real);
       continue;
     }
     sawPoll(model, turnOf(await called(real, { kind: 'next', run: real.run, wait: true })));
@@ -326,11 +348,11 @@ describe('skill driver model', () => {
       });
       roots.push(made.root);
       config = made.config;
-      const started = turnOf(await called({ made, drift }, { kind: 'start', name: 'build', answers: { parallel: 2, confirmed: false }, inputs: undefined }));
-      const model: Model = { hostPending: false, done: false, open: new Map(), acked: new Set(), stopping: new Map(), stopped: new Set(), cancelled: new Set() };
+      const started = turnOf(await called({ made, drift, session: 'session-a' }, { kind: 'start', name: 'build', answers: { parallel: 2, confirmed: false }, inputs: undefined }));
+      const model: Model = { hostPending: false, done: false, open: new Map(), acked: new Set(), stopping: new Map(), stopped: new Set(), cancelled: new Set(), unseen: [] };
       sawForeground(model, started);
       expect(model.hostPending).toBe(true);
-      const real: Real = { made, run: started.run, drift };
+      const real: Real = { made, run: started.run, session: 'session-a', drift };
       if (host) await new Choose(host).run(model, real);
       await fc.asyncModelRun(() => ({ model, real }), commands);
       const done = await driveToDone(model, real);

@@ -38,6 +38,7 @@ export const TRANSITIONS = [
   { id: 'S3', state: 'host, drive, done', input: 'an agent call from session s without `--takeover`', guard: 'owner o is not s, both are known, and o\'s last call is older than `TAKEOVER_STALE_MS`', effects: 'owner := s; `lastCallAt` := now; every offered or dispatched attempt becomes offered with `reissued`', next: 'unchanged', action: 'event `takeover`; the input\'s row' },
   { id: 'S4', state: 'host, drive, done', input: 'next `--takeover` from session s', guard: '', effects: 'as S3, whatever the owner\'s age', next: 'unchanged', action: 'event `takeover`; the turn of a tick' },
   { id: 'S5', state: 'any', input: 'a runner call (`report --attempt a` with the marker `<run>/a`)', guard: '', effects: 'no session check, no `lastCallAt`', next: 'unchanged', action: 'C rows' },
+  { id: 'S6', state: 'host, drive, done', input: 'an agent `report --attempt a`, from any session', guard: 'a is settled, or open offered, dispatched, reporting, or stopping by the agent', effects: 'no session check, no `lastCallAt`', next: 'unchanged', action: 'the input\'s row' },
   { id: 'D1', state: 'drive', input: 'tick', guard: '', effects: 'engine `next {driver: identity + SKILL_CAN, running: every open attempt, canTakeLease: fewer open than options.parallel, and than one under a serial host; false in a runner\'s check}`', next: 'drive', action: '' },
   { id: 'D2', state: 'drive', input: 'reply `cancelled` holds a', guard: 'a queued', effects: 'drop a', next: 'drive', action: 'event `stopped`' },
   { id: 'D3', state: 'drive', input: 'reply `cancelled` holds a', guard: 'a preparing or running', effects: 'phase stopping by its runner, why `timeout` once its `expiresAt` passed, else `cancelled`', next: 'drive', action: '' },
@@ -68,17 +69,17 @@ export const TRANSITIONS = [
   { id: 'K1', state: 'drive', input: 'next `--ack dispatch.a`', guard: 'a offered', effects: 'phase dispatched', next: 'drive', action: 'the turn of a tick' },
   { id: 'K2', state: 'drive', input: 'next `--ack dispatch.a`', guard: 'a dispatched', effects: 'none', next: 'drive', action: 'the turn of a tick' },
   { id: 'K3', state: 'drive, done', input: 'next `--ack dispatch.a`', guard: 'a neither offered nor dispatched', effects: 'none', next: 'unchanged', action: 'error `unknown_offer`, next: the next literal' },
-  { id: 'P1', state: 'drive, done', input: 'report a', guard: 'a is in the settled list', effects: 'none', next: 'unchanged', action: 'the turn of a tick with event `repeated`' },
+  { id: 'P1', state: 'drive, done', input: 'report a', guard: 'a is in the settled list', effects: 'none', next: 'unchanged', action: 'runner answer `repeated`' },
   { id: 'P2', state: 'drive', input: 'report a', guard: 'a is unknown', effects: 'none', next: 'drive', action: 'error `unknown_attempt`, next: the next literal' },
-  { id: 'P3', state: 'drive', input: 'report a', guard: 'a preparing, queued, running, reporting, or stopping by its runner', effects: 'none', next: 'drive', action: 'error `not_dispatched`, next: the next literal' },
-  { id: 'P4', state: 'drive', input: 'report a `--model-unavailable`', guard: 'a offered or dispatched, its dispatch printed `unavailable`', effects: 'write-ahead `failed` `model_unavailable` naming the model', next: 'reporting', action: 'P7 to P10, then the turn of a tick' },
-  { id: 'P5', state: 'drive', input: 'report a', guard: 'a offered or dispatched, otherwise', effects: 'read `result.json`: an output gives `success` with it as outputs, a failure gives `failed` with it, none or an unreadable one gives `failed` `tool_failed`; write-ahead', next: 'reporting', action: 'P7 to P10, then the turn of a tick' },
-  { id: 'P6', state: 'drive, done', input: 'report a', guard: 'a stopping by the agent', effects: 'write-ahead `released`', next: 'reporting', action: 'P7 to P10, then the turn of a tick' },
+  { id: 'P3', state: 'drive', input: 'report a', guard: 'a preparing, queued, running, or stopping by its runner', effects: 'none', next: 'drive', action: 'error `not_dispatched`, next: the next literal' },
+  { id: 'P4', state: 'drive', input: 'report a `--model-unavailable`', guard: 'a offered or dispatched, its dispatch printed `unavailable`', effects: 'write-ahead `failed` `model_unavailable` naming the model', next: 'reporting', action: 'P7 to P10; after P7 to P9, runner answer `reported`' },
+  { id: 'P5', state: 'drive', input: 'report a', guard: 'a offered or dispatched, otherwise', effects: 'read `result.json`: an output gives `success` with it as outputs, a failure gives `failed` with it, none or an unreadable one gives `failed` `tool_failed`; write-ahead', next: 'reporting', action: 'P7 to P10; after P7 to P9, runner answer `reported`' },
+  { id: 'P6', state: 'drive, done', input: 'report a', guard: 'a stopping by the agent', effects: 'write-ahead `released`', next: 'reporting', action: 'P7 to P10; after P7 to P9, runner answer `reported`' },
   { id: 'P7', state: 'reporting', input: 'engine: reported, any status', guard: '', effects: 'drop a; add to settled', next: 'drive', action: 'event `settled`' },
   { id: 'P8', state: 'reporting', input: 'engine: `repeated_report`', guard: '', effects: 'as P7', next: 'drive', action: 'event `settled`' },
   { id: 'P9', state: 'reporting', input: 'engine: `lease_cancelled`', guard: '', effects: 'drop a (the protocol abandoned its place); add to settled, so a late report of its child is P1', next: 'unchanged', action: 'event `stopped`, why as its stop said, else as D3' },
   { id: 'P10', state: 'reporting', input: 'engine: another error', guard: '', effects: 'keep the body', next: 'reporting', action: 'error, next: the same report literal (a runner retries at its next check)' },
-  { id: 'P11', state: 'reporting', input: 'tick', guard: 'a body is stored (a crash came between write and send)', effects: 'send it again', next: 'reporting', action: 'P7 to P10' },
+  { id: 'P11', state: 'reporting', input: 'tick, or report a', guard: 'a body is stored (a crash or a refusal came between write and send)', effects: 'send it again', next: 'reporting', action: 'P7 to P10' },
   { id: 'X2', state: 'done', input: 'next', guard: 'no attempt is open', effects: 'none', next: 'done', action: '`done`, no `then`' },
   { id: 'X4', state: 'done', input: 'next', guard: 'an attempt is still open: the engine cancelled it with the run', effects: 'none', next: 'done', action: 'every `stop`, then `done`; `then: poll`' },
 ] as const satisfies readonly TransitionRow[];
@@ -107,6 +108,8 @@ export type MachineInput =
   /** `takeover`: the call is `next --takeover`. `staleMs`: how long the owner may go without a call before another session takes over. */
   | { kind: 'call'; run: RunId; session: string | undefined; at: string; takeover: boolean; staleMs: number }
   | { kind: 'runner-call' }
+  /** An agent's `report --attempt a`, before the session check: the child of `a` may run in a session of its own. */
+  | { kind: 'report-call'; attempt: AttemptId }
   /** `runner`: the check a runner makes while its attempt runs, which takes no lease. */
   | { kind: 'tick'; role: 'call' | 'runner' }
   | { kind: 'next' }
@@ -201,6 +204,11 @@ function released(state: SkillState, open: Extract<AttemptState, { phase: 'stopp
   return { row, state: withAttempt(state, { ...baseOf(open), phase: 'reporting', body, stopped: open.why }), effects: [{ kind: 'send', attempt: open.attempt, body }] };
 }
 
+/** Whether the agent reports `open`: its child works it, or the agent must stop that child. */
+export function reportedByAgent(open: AttemptState): boolean {
+  return open.phase === 'offered' || open.phase === 'dispatched' || (open.phase === 'stopping' && open.by === 'agent');
+}
+
 /** Whether something waits for the agent: the host question, a dispatch to ack, or a child to stop. */
 export function waitsForAgent(state: SkillState): boolean {
   return state.host.kind === 'pending' || state.attempts.some((open) => open.phase === 'offered' || (open.phase === 'stopping' && open.by === 'agent'));
@@ -251,6 +259,12 @@ export function step(state: SkillState | undefined, input: MachineInput): Step |
     case 'runner-call':
       if (!state) return undefined;
       return { row: 'S5', state, effects: [] };
+    case 'report-call': {
+      const open = state && openAttempt(state, input.attempt);
+      // A report already stored may come again: its send was refused, and the child runs the same literal.
+      if (!state || (!state.settled.includes(input.attempt) && !(open && (reportedByAgent(open) || open.phase === 'reporting')))) return undefined;
+      return { row: 'S6', state, effects: [] };
+    }
     case 'next':
       if (!state) return undefined;
       if (state.done) return { row: state.attempts.length > 0 ? 'X4' : 'X2', state, effects: [] };
@@ -388,9 +402,10 @@ export function step(state: SkillState | undefined, input: MachineInput): Step |
     }
     case 'report': {
       if (!state) return undefined;
-      if (state.settled.includes(input.attempt)) return { row: 'P1', state: withEvent(state, { kind: 'repeated', attempt: input.attempt }), effects: [] };
+      if (state.settled.includes(input.attempt)) return { row: 'P1', state, effects: [] };
       const open = openAttempt(state, input.attempt);
       if (open?.phase === 'stopping' && open.by === 'agent') return released(state, open, 'P6');
+      if (open?.phase === 'reporting') return { row: 'P11', state, effects: [{ kind: 'send', attempt: open.attempt, body: open.body }] };
       if (state.done) return undefined;
       if (state.host.kind === 'pending') return choicePending(state);
       if (!open) return { row: 'P2', state, effects: [], answer: { kind: 'error', refusal: { code: 'unknown_attempt', run: state.run, attempt: input.attempt }, next: 'next' } };

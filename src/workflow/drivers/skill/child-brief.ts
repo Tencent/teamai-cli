@@ -57,7 +57,7 @@ export async function writeChildBrief(input: {
     `1. Write \`${resultPath(config, run, attempt)}\` with one JSON object:`,
     `   - When the step is done: \`{"kind":"output","output":...}\`, where \`output\` is ${shape}.`,
     '   - When you cannot do it: `{"kind":"failure","failure":{"code":"blocked","message":"..."}}`, with a short code and a message that says what stopped you.',
-    `2. Run \`${report}\`, and end with its reply as your last message: it is for the orchestrator.`,
+    `2. Run \`${report}\` once, and end with its reply as your last message. The orchestrator learns from TeamAI that you reported.`,
     '',
   ].join('\n');
   const file = path.join(attemptDir(config, run, attempt), 'brief.md');

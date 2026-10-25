@@ -18,7 +18,7 @@ import { describeLiteral, invocationOf, type Invocation } from './literals.js';
 import { askFor, checkStartAnswers, localOnlySteps, neededAnswers } from './preflight.js';
 import { writeSkillState, type SkillState } from './skill-state.js';
 import { detachedRunners, runRunner } from './skill-runner.js';
-import { ceilingOf, errorOf, foreground, poll, startRefused, take } from './tick.js';
+import { agentReport, ceilingOf, errorOf, foreground, poll, startRefused, take } from './tick.js';
 import type { RowId } from './transitions.js';
 import type { SkillAnswer, SkillError } from './turn.js';
 
@@ -189,7 +189,7 @@ export async function runSkillCall(call: SkillCall, context: SkillContext): Prom
       return foreground(context, call.run, { kind: 'ack', attempt: call.attempt });
     case 'report':
       if (call.role === 'runner') return runRunner(context, call.run, call.attempt);
-      return foreground(context, call.run, { kind: 'report', attempt: call.attempt, modelUnavailable: call.modelUnavailable });
+      return agentReport(context, call.run, call);
     default: {
       const unhandled: never = call;
       return unhandled;

@@ -74,8 +74,6 @@ export const TurnEventSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('takeover'), from: z.string().optional() }),
   /** The engine cancelled the attempt's lease, or its deadline passed, so its report was not recorded. */
   z.object({ kind: z.literal('stopped'), step: z.string(), attempt: AttemptIdSchema, why: z.enum(STOP_REASONS) }),
-  /** A report came again for an attempt already settled. */
-  z.object({ kind: z.literal('repeated'), attempt: AttemptIdSchema }),
   z.object({
     kind: z.literal('settled'),
     step: z.string(),
