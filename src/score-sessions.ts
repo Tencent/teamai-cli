@@ -5,6 +5,7 @@
  */
 import path from 'node:path';
 import { detectProjectConfig, loadLocalConfig } from './config.js';
+import { driverIdentity } from './driver-identity.js';
 import { scoresDir } from './scorers/attempts.js';
 import { scoringUnavailable } from './scorers/home.js';
 import { judgeToolLevels } from './scorers/judge.js';
@@ -16,7 +17,6 @@ import { acquireLock, releaseLock } from './update.js';
 import { pathExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import { readWorkspaceChildren } from './workspace-children.js';
-import { localDriver } from './workflow/local-driver.js';
 import { judgeLease, takeJudgeLease } from './workflow/scoring.js';
 
 /** How long one run takes new work for; a judge it started then still finishes. */
@@ -50,7 +50,7 @@ export async function scoreSessions(configs: readonly LocalConfig[], { clock = (
     const lock = path.join(scoresDir(config), 'score-sessions.lock');
     if (!await acquireLock(lock)) continue;
     try {
-      const driver = localDriver(SessionWork.leaseCwd(config));
+      const driver = driverIdentity('local', SessionWork.leaseCwd(config));
       for (const judge of offers) {
         for (;;) {
           const now = clock();
