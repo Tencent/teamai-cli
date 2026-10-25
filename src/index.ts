@@ -801,7 +801,7 @@ const workflowCmd = program
 
 workflowCmd
   .command('start <name>')
-  .description('Create a run. With --driver local, execute command and prompt steps in this process.')
+  .description('Create a run. With --driver skill, the current coding session drives it; with --driver local, this process runs it headless.')
   .option('--describe', 'Show workflow metadata and required input schemas without creating a run. With --driver skill, also say how to start it: the start command, a question for the person, or the local driver.')
   .option('--driver <kind>', 'Select local for headless execution in this process, or skill for the current coding session, which then runs the commands each reply prints.')
   .option('--parallel <n>', 'With --driver skill: the most steps that run at once, as the describe reply offered')
