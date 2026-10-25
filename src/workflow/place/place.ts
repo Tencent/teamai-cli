@@ -239,7 +239,7 @@ export async function runPlaceSetup(input: { config: LocalConfig; run: RunId; at
   const scope = setup.envScope ?? { provide: [], withhold: [] };
   const scoped = await stepEnvironment(values, scope);
   const failure = scoped.ok
-    ? await runSetup({ command: setup.command, dir: recorded.dir, env: scoped.env, keys: scope.provide, signal, ...(expiresAt !== undefined ? { expiresAt } : {}) })
+    ? await runSetup({ command: setup.command, dir: recorded.dir, env: scoped.env, keys: scope.provide, signal, groupDir: attemptDir(config, run, attempt), ...(expiresAt !== undefined ? { expiresAt } : {}) })
     : scoped.failure;
   if (failure) {
     await removeWorktree(recorded.root, recorded.dir);

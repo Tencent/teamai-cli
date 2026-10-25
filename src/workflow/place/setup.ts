@@ -6,7 +6,7 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { stopProcess } from '../../tool-launch/process-stop.js';
+import { recordGroup, stopProcess } from '../../tool-launch/process-stop.js';
 import { redact } from '../../utils/redact.js';
 import type { WorkflowFailure } from '../types.js';
 import { changedPaths, snapshotWorktree } from './worktree-snapshot.js';
@@ -23,6 +23,8 @@ export interface SetupRun {
   signal?: AbortSignal;
   /** The lease's deadline, which stops setup the same way for a caller that has no loop to cancel it. */
   expiresAt?: string;
+  /** The directory that records setup's process group as it starts, so the group can be stopped once a process killed while running setup is gone. */
+  groupDir?: string;
 }
 
 /** The last characters of setup's output a failure quotes. */
@@ -58,14 +60,14 @@ export async function runSetup({ expiresAt, signal: caller, ...run }: SetupRun):
   }
 }
 
-async function checkedSetup({ command, dir, env, keys, signal }: Omit<SetupRun, 'expiresAt'>): Promise<WorkflowFailure | undefined> {
+async function checkedSetup({ command, dir, env, keys, signal, groupDir }: Omit<SetupRun, 'expiresAt'>): Promise<WorkflowFailure | undefined> {
   const stopped: WorkflowFailure = { code: 'setup_failed', message: `Setup "${command}" was stopped, so the step did not run.` };
   if (signal?.aborted) return stopped;
   const tracked = await snapshotWorktree(dir);
   const stamps = await fileStamps(dir);
   // An abort while the workspace was read is not replayed to the listener `runCommand` adds.
   if (signal?.aborted) return stopped;
-  const exit = await runCommand(command, dir, env, signal);
+  const exit = await runCommand(command, dir, env, signal, groupDir);
   if (signal?.aborted) return stopped;
   const values = keys.flatMap((key) => {
     const value = env[key];
@@ -118,9 +120,10 @@ async function fileStamps(dir: string): Promise<Map<string, FileStamp>> {
 }
 
 /** Runs `command` in a process group of its own, so an abort stops everything it started. */
-async function runCommand(command: string, cwd: string, env: NodeJS.ProcessEnv, signal: AbortSignal | undefined): Promise<{ code: number; output: string }> {
+async function runCommand(command: string, cwd: string, env: NodeJS.ProcessEnv, signal: AbortSignal | undefined, groupDir: string | undefined): Promise<{ code: number; output: string }> {
   const detached = process.platform !== 'win32';
   const child = spawn(command, { cwd, env, shell: true, windowsHide: true, detached, stdio: ['ignore', 'pipe', 'pipe'] });
+  if (detached && groupDir !== undefined) recordGroup(child, groupDir);
   const exit = new Promise<{ code: number; output: string }>((resolve) => {
     let output = '';
     const keep = (chunk: string): void => { output = (output + chunk).slice(-OUTPUT_TAIL * 2); };

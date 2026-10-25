@@ -1,8 +1,12 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
-import { skillHarness, untilStopped } from './helpers/skill-harness.js';
+import { skillContext } from '../workflow/drivers/skill/skill-driver.js';
+import { AttemptIdSchema, RunIdSchema } from '../workflow/store.js';
+import { Crash, skillHarness, untilStopped } from './helpers/skill-harness.js';
 
 const CHECK = `schemaVersion: v1alpha1
 name: check
@@ -312,5 +316,44 @@ describe('skill driver', () => {
     const later = calls.slice(released).flatMap((call) => ('next' in call ? [call.next] : []));
     expect(later.length).toBeGreaterThan(0);
     for (const running of later) expect(running).not.toContain(serve.attempt);
+  });
+
+  it('stops the setup a killed runner left running, as it stops a command one left', async () => {
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-setup-group-'));
+    roots.push(scratch);
+    const pidFile = path.join(scratch, 'sleep.pid');
+    let setup: Promise<unknown> | undefined;
+    const harness = await skillHarness({ build: `schemaVersion: v1alpha1
+name: build
+description: Build in a set-up workspace
+invoke: allow
+setup:
+  command: 'sleep 300 & echo $! > ${pidFile}; wait'
+steps:
+  - id: build
+    workspace: new
+    command: node -e "process.exit(0)"
+` }, {
+      // The runner is killed once setup started, and setup runs on in its own process group.
+      client: (client) => ({ ...client, setup: async (run, attempt) => {
+        setup = client.setup(run, attempt);
+        for (let wait = 0; wait < 100 && !fs.existsSync(pidFile); wait += 1) await new Promise((resolve) => { setTimeout(resolve, 50); });
+        throw new Crash('killed during setup');
+      } }),
+    });
+    roots.push(harness.root);
+    const started = await harness.call({ kind: 'start', name: 'build', answers: { parallel: 1, confirmed: false }, inputs: undefined });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+    const run = RunIdSchema.parse(started.data.turn.run);
+    const attempt = AttemptIdSchema.parse(started.data.turn.running[0]?.attempt);
+    await harness.context.runners.sleep(1_000);
+    const pid = Number(fs.readFileSync(pidFile, 'utf8'));
+    const alive = (): boolean => { try { return process.kill(pid, 0); } catch { return false; } };
+    expect(alive()).toBe(true);
+
+    const { runners } = await skillContext({ config: harness.config, env: harness.context.env, cwd: harness.work });
+    await runners.stopLeft(run, attempt);
+    expect(alive()).toBe(false);
+    expect(await setup).toMatchObject({ code: 'setup_failed' });
   });
 });

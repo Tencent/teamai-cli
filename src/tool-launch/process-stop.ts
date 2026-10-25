@@ -1,4 +1,7 @@
 import { execFile, execFileSync, type ChildProcess } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import { z } from 'zod';
 
 /** The start time of every process, as `ps -o lstart=` prints it, by pid; undefined when ps cannot run. */
 export function processStarts(): Map<number, string> | undefined {
@@ -18,6 +21,41 @@ export function processStarts(): Map<number, string> | undefined {
 export interface ProcessGroup {
   pid: number;
   start: string;
+}
+
+const ProcessGroupSchema = z.object({ pid: z.number().int().positive(), start: z.string().min(1) });
+
+/** The file in a directory that records the last process group started for it. */
+const GROUP_FILE = 'group.json';
+
+/**
+ * Records in `dir` the process group `child` leads, for `stopRecordedGroup` to stop once whatever started it is gone.
+ * Synchronous on purpose: a starter killed right after the spawn still leaves the record, which an await would widen.
+ */
+export function recordGroup(child: ChildProcess, dir: string): void {
+  const start = child.pid === undefined ? undefined : processStarts()?.get(child.pid);
+  if (child.pid === undefined || start === undefined) return;
+  const file = path.join(dir, GROUP_FILE);
+  const temporary = `${file}.${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(temporary, JSON.stringify({ pid: child.pid, start }));
+    fs.renameSync(temporary, file);
+  } catch {
+    // The starter still stops its child itself; only a starter killed with it would leave the group running.
+  }
+}
+
+/** Stops the process group `recordGroup` last recorded in `dir`, when one is, and removes the record. */
+export async function stopRecordedGroup(dir: string): Promise<void> {
+  const file = path.join(dir, GROUP_FILE);
+  let recorded: ProcessGroup;
+  try {
+    recorded = ProcessGroupSchema.parse(JSON.parse(await fs.promises.readFile(file, 'utf8')));
+  } catch {
+    return;
+  }
+  await stopGroup(recorded);
+  await fs.promises.rm(file, { force: true });
 }
 
 /** Whether a signal reached any process of group `pid`. */
