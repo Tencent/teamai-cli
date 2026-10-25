@@ -355,6 +355,13 @@ async function creditRoot(config: LocalConfig, index: LogIndex, sessionId: strin
   return { credited, recalled };
 }
 
+/** Eligible docs from this session's settled, linked recall runs, keyed for voting. */
+export async function recalledDocsForSession(config: LocalConfig, sessionId: string): Promise<RecalledDoc[]> {
+  const index = indexLog(await readRecallLog(config));
+  const { runs } = viewRoot(index, index.rootOf(sessionId));
+  return [...new Map(runs.flatMap(r => r.docs.filter(d => d.eligible).map(d => [d.key, d] as const))).values()];
+}
+
 /**
  * The vote key of a doc `sessionId`'s runs printed, by the path they printed
  * it at (however it is written), settled and linked as the reducer does; or

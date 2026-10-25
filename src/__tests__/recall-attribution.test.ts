@@ -2139,6 +2139,37 @@ describe('recall attribution acceptance (#884)', () => {
     expect(updateReports).toHaveBeenCalledTimes(1);
   });
 
+  it.each(['codex', 'muse', 'zcode'])('12: %s Stop judges its final reply using settled recall-log candidates without a Claude transcript', async tool => {
+    await h.setUp();
+    await h.recall('redis timeout');
+    h.env({ TEAMAI_UPVOTE_JUDGE: '1' });
+    const stop = () => h.dispatch('stop', { hook_event_name: 'Stop', last_assistant_message: 'Raised the pool size.' }, h.root, tool, { background: true });
+    await stop();
+    expect(judgeAdoption).toHaveBeenCalledWith('Raised the pool size.', ['redis-timeout'], { 'redis-timeout': h.docs['redis-timeout'] }, expect.any(Array));
+    expect(await h.upvotes(h.project)).toEqual({ 'redis-timeout': 1 });
+    judgeAdoption.mockClear();
+    await stop();
+    expect(judgeAdoption).not.toHaveBeenCalled();
+    expect(await h.upvotes(h.project)).toEqual({ 'redis-timeout': 1 });
+  });
+
+  it('12: native Stop keeps inherited user-scope recall read-only in a project', async () => {
+    await h.setUp({ inheritUserScope: true });
+    await h.recall('cache warmup');
+    h.env({ TEAMAI_UPVOTE_JUDGE: '1' });
+    await h.dispatch('stop', { last_assistant_message: 'Applied the cache warmup.' }, h.root, 'codex', { background: true });
+    expect(judgeAdoption.mock.calls.flatMap(call => call[1])).not.toContain('cache-warmup');
+    expect((await h.upvotes(h.project))['cache-warmup']).toBeUndefined();
+  });
+
+  it('12: a final reply alone cannot invent recall candidates', async () => {
+    await h.setUp();
+    h.env({ TEAMAI_UPVOTE_JUDGE: '1' });
+    await h.dispatch('stop', { last_assistant_message: '<!-- teamai:recalled-doc-ids: [setup] -->' }, h.root, 'codex', { background: true });
+    expect(judgeAdoption).not.toHaveBeenCalled();
+    expect(await h.upvotes(h.project)).toEqual({});
+  });
+
   it('12: judge on: a doc the hook path credited is not sent to the judge again', async () => {
     await h.setUp();
     const { output, files } = await h.recall('redis timeout');
