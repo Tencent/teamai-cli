@@ -125,7 +125,7 @@ function ompSettingsPath(): string {
 
 /** Muse Code reads `model` and `endpoint_transport` from its user settings.json. */
 function museSettingsPath(): string {
-  return path.join(getUserHome(), '.config', 'muse', 'settings.json');
+  return path.join(toolHome('muse'), 'settings.json');
 }
 
 function agentSettingsPath(agent: ModelAgent): string {
