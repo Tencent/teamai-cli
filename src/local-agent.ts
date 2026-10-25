@@ -81,6 +81,7 @@ import {
   resolveBaseDir,
   resolveToolBaseDir,
   scopedToolPaths,
+  hookSettingsPath,
   applyToolRoots,
   getDataHome,
   isGitExcludeEnabled,
@@ -571,7 +572,7 @@ async function agentHookSettingsPaths(config: LocalAgentConfig | null, tool: str
     throw new Error(`unsupported tool: ${tool} (no settings path)`);
   }
   const legacy = applyToolRoots(teamConfig.toolPaths, toolRoots)[tool]?.settings;
-  return [...new Set([settings, legacy ?? settings])].map((rel) => path.join(getUserHome(), rel));
+  return [...new Set([settings, legacy ?? settings])].map((rel) => hookSettingsPath(tool, getUserHome(), rel));
 }
 
 async function memberCodexTrust(): Promise<CodexTrustPolicy> {

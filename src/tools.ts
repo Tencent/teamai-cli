@@ -745,7 +745,8 @@ export const TOOLS = {
       },
     },
   },
-  // muse-bin 1.4.11: $XDG_CONFIG_HOME/muse, else ~/.config/muse; with XDG_CONFIG_HOME set, ~/.config/muse is never read.
+  // muse-bin 1.4.11: $XDG_CONFIG_HOME/muse, else ~/.config/muse; hooks follow this home too.
+  // Model switching still uses the default settings file until its separate migration.
   muse: {
     home: { dir: '.config/muse', moves: { by: [{ kind: 'xdg', child: 'muse', evidence: 'source' }], settingsAtDefault: true } },
     installedBy: 'home',

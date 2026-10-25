@@ -14,6 +14,7 @@ import {
   isAgentExcluded,
   resolveToolBaseDir,
   resolveHookScope,
+  hookSettingsPath,
   scopedToolPaths,
   TEAMAI_CLAUDEMD_END,
   TEAMAI_CLAUDEMD_START,
@@ -283,7 +284,7 @@ function hooksFileOf(tool: string, context: { teamConfig: TeamaiConfig; localCon
   if (context === undefined) return undefined;
   const hookScope = resolveHookScope(context.localConfig);
   const settings = scopedToolPaths(context.teamConfig, { ...context.localConfig, scope: hookScope.scope })[tool]?.settings;
-  return settings === undefined ? undefined : path.resolve(hookScope.baseDir, settings);
+  return settings === undefined ? undefined : hookSettingsPath(tool, hookScope.baseDir, settings);
 }
 
 async function hooksInstalled(file: string, tool: string): Promise<boolean> {

@@ -3216,8 +3216,14 @@ export function resolveHookScope(
   };
 }
 
-/** ZCode reads CLI hooks only from HOME, including in self/project mode. */
+/** Hook settings follow the tool's recorded user home; project paths stay local. */
 export function hookSettingsPath(tool: string, baseDir: string, settings: string): string {
+  if (tool === 'muse' && path.resolve(baseDir) === path.resolve(getUserHome())) {
+    const root = '.config/muse';
+    if (settings === root || settings.startsWith(`${root}/`)) {
+      return path.join(toolHome('muse'), settings.slice(root.length));
+    }
+  }
   return path.join(tool === 'zcode' ? getUserHome() : baseDir, settings);
 }
 
