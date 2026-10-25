@@ -25,20 +25,31 @@ Done when a reply carries `data.turn` with a `run` id.
 
 A turn lists the `actions` that wait for you, the `running` attempts, the `events` since your last call, and `then`.
 
-1. Act on each action by its `kind`: `choose`, `dispatch` or `done`, as their sections say.
-2. Tell the person in one line what the events say: a step started, or settled with its outcome.
+1. Act on each action by its `kind`: `choose`, `stop`, `dispatch` or `done`, as their sections say.
+2. Tell the person in one line what the events say: a step started, settled with its outcome, or stopped with its `why`.
 3. Run `then.run` of the newest turn you have:
    - `poll`: in the background when your host can, so you stay free to talk with the person; otherwise in the foreground. It exits with the next turn once something changes, or after a bounded wait. Keep one poll of the run going at a time.
    - `wake`: in the foreground. Work waits for you, and the turn it returns carries it.
 4. Repeat with that turn.
 
-Done when a turn has `status: done`.
+Done when a turn has no `then`.
 
 When you have lost the last turn, after a compaction for instance, run `teamai workflow next <run> --driver skill` once for the current one.
 
 ## Choose
 
 A `choose` action with `about: host` comes once per run that has prompt steps. Follow `reference`: it says which option fits your host and how to run it.
+
+## Stop
+
+A `stop` action names a child you started whose step the run no longer wants. `why` says why: `cancelled` or `timeout`. For each one:
+
+1. When the child named `title` still runs, tell it to stop its work and end.
+2. Run `report`. The action stays in every turn until you do.
+
+Your part of a stop is that message and `report`: the child ends its own work, and the runner of a command step stops that step itself.
+
+Done when every `stop` in the turn is reported.
 
 ## Dispatch
 
