@@ -3,38 +3,20 @@
  * parsed once into the reply its row takes, and a lease, read as the step this driver runs.
  */
 import { z } from 'zod';
-import type { EnvScope } from '../../requirements.js';
+import { LeaseWireSchema } from '../../lease-wire.js';
 import { AttemptIdSchema, type AttemptId, type RunId } from '../../store.js';
 import type { WorkflowEnvelope } from '../../types.js';
 import type { EngineReply, ReadLease, ReportReply, RespondReply, ScoreReply } from './transitions.js';
 
-const EnvScopeShape = z.object({ provide: z.array(z.string()), withhold: z.array(z.string()) }) satisfies z.ZodType<EnvScope>;
-const LeaseBase = {
-  attempt: AttemptIdSchema,
-  step: z.string(),
-  revision: z.number().int(),
-  expiresAt: z.string().optional(),
-  interactive: z.literal(true).optional(),
-};
-const LeaseSchema = z.union([
-  z.object({ ...LeaseBase, command: z.string(), env: z.record(z.string()).optional(), envScope: EnvScopeShape.optional() }),
-  z.object({
-    ...LeaseBase, prompt: z.string(), workspace: z.object({ mode: z.string() }).optional(),
-    agent: z.string().optional(), model: z.string().optional(), defaultModel: z.string().optional(), output: z.unknown().optional(),
-  }),
-]);
-
 /** The lease `raw` the engine sent, as this driver runs it. Undefined when this teamai cannot run it. */
 export function readLease(raw: unknown): ReadLease | undefined {
-  const read = LeaseSchema.safeParse(raw);
+  const read = LeaseWireSchema.safeParse(raw);
   if (!read.success) return undefined;
-  const { attempt, step: id, revision, expiresAt } = read.data;
+  const { attempt, step: id, revision, expiresAt, command, env, envScope, prompt, workspace, agent, model, defaultModel, output, interactive } = read.data;
   const base = { attempt, step: id, revision, ...(expiresAt !== undefined ? { expiresAt } : {}) };
-  if ('command' in read.data) {
-    const { command, env, envScope } = read.data;
-    return { ...base, executor: 'command', command, env: env ?? {}, ...(envScope ? { envScope } : {}) };
-  }
-  const { prompt, workspace, agent, model, defaultModel, output, interactive } = read.data;
+  if (command !== undefined) return { ...base, executor: 'command', command, env: env ?? {}, ...(envScope ? { envScope } : {}) };
+  // The schema reads a lease with a command or a prompt, so one without a command has its prompt.
+  if (prompt === undefined) return undefined;
   return {
     ...base, executor: 'prompt', prompt, place: workspace === undefined ? 'checkout' : 'workspace', writes: workspace?.mode === 'new' || workspace?.mode === 'continue',
     ...(interactive ? { interactive } : {}),

@@ -18,7 +18,8 @@ import { openSessionArchive, type SessionArchive } from '../../../session-flow/a
 import { deliveredTeamSkills, usedSkills } from '../../../skill-use.js';
 import { attemptEnv } from '../../attempt-marker.js';
 import { leaseNext, type ReportInput } from '../../engine.js';
-import { EnvScopeSchema, LeaseSetupSchema, type DriverCan, type EnvScope, type LeaseSetup } from '../../requirements.js';
+import { LeaseWireSchema, type LeaseWire } from '../../lease-wire.js';
+import type { DriverCan } from '../../requirements.js';
 import { callerProvenance, respondProvenance, respondToHitl } from '../../run-controls.js';
 import { isRecord } from '../../expression.js';
 import {
@@ -28,14 +29,14 @@ import {
   type LocalToolRun,
 } from './local-tool-adapter.js';
 import { attemptDir, AttemptIdSchema, attemptsDir, readRun, RunIdSchema, updateRun, withRunLock, type AttemptId, type RunId, type RunLock } from '../../store.js';
-import { abandonPlace, placeOf, placeRoot, preparePlace, runPlaceSetup, type PlaceLease, type StepEnd } from '../../place/place.js';
+import { abandonPlace, placeLeaseOf, placeOf, placeRoot, preparePlace, runPlaceSetup, type StepEnd } from '../../place/place.js';
 import { commandOutputs, managedReport } from '../../protocol.js';
 import { stopProcess } from '../../../tool-launch/process-stop.js';
 import { isLaunchTool, localToolFamily, type LaunchTool } from '../../../tool-launch/tools.js';
 import { chooseStepModel, loadDeployedAgent } from '../../step-model.js';
 import type { DriverIdentity, StepHitl, WorkflowEnvelope, WorkflowFailure } from '../../types.js';
 import { isWorkflowError, WORKSPACE_MODES } from '../../types.js';
-import { WorkspaceContractSchema, type LeaseSession, type SessionRef, type WorkspaceContract } from '../../workspace.js';
+import type { SessionRef } from '../../workspace.js';
 import { fetchMissingCommits, headCommit, reconcileCopy } from '../../worktree.js';
 
 interface CommandResult {
@@ -163,43 +164,14 @@ export interface LocalDriverOptions {
   adapter?: LocalToolAdapter;
 }
 
-interface Lease {
-  /** The step path, such as `check.classify` inside a sub-workflow. */
-  step: string;
-  attempt: AttemptId;
-  revision: number;
-  command?: string;
-  env?: Record<string, string>;
-  prompt?: string;
-  agent?: string;
-  model?: string;
-  defaultModel?: string;
-  workspace?: WorkspaceContract;
+/** A lease as this driver runs it: what the engine sent, and what staging it adds. A step staged after `expiresAt` does not start. */
+interface Lease extends LeaseWire {
   /** The lease named a workspace this driver cannot read. The step fails instead of running in the active checkout. */
   unreadableWorkspace?: true;
-  session?: LeaseSession;
-  /** The env keys the step gets and the ones kept from it, by name. */
-  envScope?: EnvScope;
-  /** The most agent turns the prompt's tool may take. */
-  maxTurns?: number;
-  /** What to run in a workspace this driver creates, before the step. */
-  setup?: LeaseSetup;
-  /** When the engine cancels the lease. A step staged after it does not start. */
-  expiresAt?: string;
   /** The environment the step's command or tool runs with, built from `envScope` when the lease is staged. */
   processEnv?: NodeJS.ProcessEnv;
   /** Set once the step has a directory to run in. */
   cwd?: string;
-  /** Whether this lease gives the foreground terminal to its tool. */
-  interactive?: true;
-  /** The step set `workspace: read-only`. An interactive prompt is checked only then. */
-  readOnly?: true;
-}
-
-function stringMap(value: unknown): Record<string, string> | undefined {
-  if (!isRecord(value)) return undefined;
-  const entries = Object.entries(value);
-  return entries.every(([, item]) => typeof item === 'string') ? Object.fromEntries(entries) as Record<string, string> : undefined;
 }
 
 function resultPath(config: LocalConfig, run: RunId, attempt: AttemptId): string {
@@ -257,56 +229,16 @@ function failureReport(failure: WorkflowFailure): { outcome: 'failed'; message: 
 
 type ReportBody = ReportInput;
 
-function parseLease(rawLease: unknown): Lease | undefined {
-  if (!isRecord(rawLease) || typeof rawLease.step !== 'string' || typeof rawLease.revision !== 'number') return undefined;
-  const attempt = AttemptIdSchema.safeParse(rawLease.attempt);
-  if (!attempt.success) return undefined;
-  const env = stringMap(rawLease.env);
-  const envScope = EnvScopeSchema.safeParse(rawLease.envScope);
-  const setup = LeaseSetupSchema.safeParse(rawLease.setup);
-  const workspace = WorkspaceContractSchema.safeParse(rawLease.workspace);
-  const session = sessionRefOf(rawLease.session);
-  const earlier = isRecord(rawLease.session) && Array.isArray(rawLease.session.earlier)
-    ? rawLease.session.earlier.map(sessionRefOf).filter((ref) => ref !== undefined) : [];
-  const lease: Lease = {
-    step: rawLease.step,
-    attempt: attempt.data,
-    revision: rawLease.revision,
-    ...(typeof rawLease.command === 'string' ? { command: rawLease.command } : {}),
-    ...(env ? { env } : {}),
-    ...(envScope.success ? { envScope: envScope.data } : {}),
-    ...(typeof rawLease.maxTurns === 'number' ? { maxTurns: rawLease.maxTurns } : {}),
-    ...(setup.success ? { setup: setup.data } : {}),
-    ...(typeof rawLease.expiresAt === 'string' ? { expiresAt: rawLease.expiresAt } : {}),
-    ...(typeof rawLease.prompt === 'string' ? { prompt: rawLease.prompt } : {}),
-    ...(typeof rawLease.agent === 'string' ? { agent: rawLease.agent } : {}),
-    ...(typeof rawLease.model === 'string' ? { model: rawLease.model } : {}),
-    ...(rawLease.interactive === true ? { interactive: true } : {}),
-    ...(rawLease.readOnly === true ? { readOnly: true } : {}),
-    ...(typeof rawLease.defaultModel === 'string' ? { defaultModel: rawLease.defaultModel } : {}),
-    ...(workspace.success ? { workspace: workspace.data } : rawLease.workspace !== undefined ? { unreadableWorkspace: true } : {}),
-    ...(session ? { session: { ...session, ...(earlier.length > 0 ? { earlier } : {}) } } : {}),
-  };
-  return (lease.command === undefined) === (lease.prompt === undefined) ? undefined : lease;
-}
-
-function sessionRefOf(value: unknown): SessionRef | undefined {
-  return isRecord(value) && typeof value.tool === 'string' && typeof value.id === 'string' ? { tool: value.tool, id: value.id } : undefined;
-}
-
-/** The place fields of `lease`. */
-function placeLease(lease: Lease): PlaceLease {
-  return {
-    attempt: lease.attempt,
-    step: lease.step,
-    executor: lease.command !== undefined ? 'command' : 'prompt',
-    ...(lease.prompt !== undefined ? { prompt: lease.prompt } : {}),
-    ...(lease.interactive ? { interactive: true } : {}),
-    ...(lease.readOnly ? { readOnly: true } : {}),
-    ...(lease.workspace ? { workspace: lease.workspace } : {}),
-    ...(lease.setup ? { setup: lease.setup } : {}),
-    ...(lease.expiresAt !== undefined ? { expiresAt: lease.expiresAt } : {}),
-  };
+/**
+ * The lease `raw` as this driver runs it, or undefined when it cannot. A lease whose workspace alone it cannot read is
+ * kept, marked, so its step fails instead of running in the active checkout.
+ */
+function parseLease(raw: unknown): Lease | undefined {
+  const parsed = LeaseWireSchema.safeParse(raw);
+  if (parsed.success) return parsed.data;
+  if (!isRecord(raw) || !parsed.error.issues.every((issue) => issue.path[0] === 'workspace')) return undefined;
+  const bare = LeaseWireSchema.safeParse({ ...raw, workspace: undefined });
+  return bare.success ? { ...bare.data, unreadableWorkspace: true } : undefined;
 }
 
 /**
@@ -329,7 +261,7 @@ async function stageLease(lease: Lease, { config, lock, root, values, mode, sign
     if (!scoped.ok) return scoped.failure;
     lease.processEnv = scoped.env;
   }
-  const prepared = await preparePlace({ config, lock, root, lease: placeLease(lease) });
+  const prepared = await preparePlace({ config, lock, root, lease: placeLeaseOf(lease) });
   if (prepared.kind !== 'prepared') return prepared.failure;
   lease.cwd = prepared.dir;
   if (prepared.prompt !== undefined) lease.prompt = prepared.prompt;

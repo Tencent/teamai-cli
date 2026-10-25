@@ -6,10 +6,10 @@ import type { RunMode } from '../../launch-context.js';
 import type { LocalConfig } from '../../types.js';
 import { redactJson } from '../../utils/redact.js';
 import { attemptEnv } from '../attempt-marker.js';
-import { LeaseSetupSchema, type LeaseSetup } from '../requirements.js';
 import { attemptDir, AttemptIdSchema, attemptsDir, type AttemptId, type RunId, type RunLock } from '../store.js';
 import type { WorkflowFailure } from '../types.js';
-import { WorkspaceContractSchema, type WorkspaceContract } from '../workspace.js';
+import type { LeaseWire } from '../lease-wire.js';
+import type { WorkspaceContract } from '../workspace.js';
 import { commonDir, headCommit, markReadCopy, markSetup, removeWorktree, reopenConfigConflicts, stepCheckout, worktreePath } from '../worktree.js';
 import { adoptRefusal, takeAdopted } from './adopted.js';
 import { openWorktree } from './created.js';
@@ -66,40 +66,12 @@ export async function adoptedPlaceOf(input: { config: LocalConfig; run: RunId; b
   return last?.dir;
 }
 
-/** The lease fields a place reads. */
-export interface PlaceLease {
-  attempt: AttemptId;
-  /** The step path, such as `check.classify` inside a sub-workflow. */
-  step: string;
-  executor: 'command' | 'prompt';
-  prompt?: string;
-  interactive?: true;
-  /** The step set `workspace: read-only`. An interactive prompt is checked only then. */
-  readOnly?: true;
-  workspace?: WorkspaceContract;
-  /** What to run in a worktree prepare creates, before the step. */
-  setup?: LeaseSetup;
-  /** When the engine cancels the lease, which bounds setup. */
-  expiresAt?: string;
-}
+/** The lease fields a place reads. Its `expiresAt` bounds setup. */
+export type PlaceLease = Pick<LeaseWire, 'attempt' | 'step' | 'prompt' | 'interactive' | 'readOnly' | 'workspace' | 'setup' | 'expiresAt'> & { executor: 'command' | 'prompt' };
 
-const LeasedSchema = z.object({
-  attempt: AttemptIdSchema,
-  step: z.string(),
-  command: z.string().optional(),
-  prompt: z.string().optional(),
-  interactive: z.boolean().optional(),
-  readOnly: z.boolean().optional(),
-  workspace: WorkspaceContractSchema.optional(),
-  setup: LeaseSetupSchema.optional(),
-  expiresAt: z.string().optional(),
-});
-
-/** The place fields of `raw`, a lease `next` answered with. Undefined when this teamai cannot read them. */
-export function placeLeaseOf(raw: unknown): PlaceLease | undefined {
-  const parsed = LeasedSchema.safeParse(raw);
-  if (!parsed.success || (parsed.data.command === undefined) === (parsed.data.prompt === undefined)) return undefined;
-  const { attempt, step, command, prompt, interactive, readOnly, workspace, setup, expiresAt } = parsed.data;
+/** The place fields of `lease`, a lease `next` answered with. */
+export function placeLeaseOf(lease: LeaseWire): PlaceLease {
+  const { attempt, step, command, prompt, interactive, readOnly, workspace, setup, expiresAt } = lease;
   return {
     attempt, step, executor: command !== undefined ? 'command' : 'prompt',
     ...(prompt !== undefined ? { prompt } : {}),

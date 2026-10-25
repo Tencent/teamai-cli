@@ -1,6 +1,5 @@
 /** The workflow protocol in process: the calls behind `workflow start`, `next`, `report`, `respond`, `retry` and `cancel`, for every driver. */
 import path from 'node:path';
-import { z } from 'zod';
 import { sameDriver } from '../driver-identity.js';
 import type { WorkflowEnv } from '../env-resolution.js';
 import { scoringUnavailable } from '../scorers/home.js';
@@ -10,6 +9,7 @@ import type { LocalConfig } from '../types.js';
 import { nestedWorkflowError, type AgentEvidence } from './attempt-marker.js';
 import { loadCachedWorkflow, loadWorkflowTree } from './cache.js';
 import { describeWorkflow, type WorkflowDescription } from './describe.js';
+import { LeaseIdSchema, LeaseWireSchema } from './lease-wire.js';
 import { leaseNext, parseNextPayload, parseReport, parseResponsePayload, reconcileRun, reportAttempt, startRun, withIgnored, type NextOptions, type ReportInput } from './engine.js';
 import {
   abandonPlace, adoptedPlaceOf, finishPlace, placeHeldBy, placeLeaseOf, placeOf, placeRecorded, preparePlace, releasePlace, runPlaceSetup, type PlaceLease, type PlacePrepared,
@@ -180,8 +180,9 @@ export type HostPlacePrepared =
 
 /** The lease `raw` names, as the run leases it now, with the checkout its place goes in and the run's other leased attempts. */
 async function leasedPlace(config: LocalConfig, lock: RunLock, raw: unknown): Promise<{ lease: PlaceLease; root: string; others: AttemptId[] } | { kind: 'failed'; failure: WorkflowFailure }> {
-  const lease = placeLeaseOf(raw);
-  if (!lease) return { kind: 'failed', failure: { code: 'workspace_base', message: `Run ${lock.run} leased a place this teamai cannot read. Update teamai.` } };
+  const wire = LeaseWireSchema.safeParse(raw);
+  if (!wire.success) return { kind: 'failed', failure: { code: 'workspace_base', message: `Run ${lock.run} leased a place this teamai cannot read. Update teamai.` } };
+  const lease = placeLeaseOf(wire.data);
   const run = await readRun(config, lock.run);
   if (typeof run !== 'object') return { kind: 'failed', failure: { code: 'run_unreadable', message: `Run ${lock.run} cannot be read, so attempt ${lease.attempt} has no place to run in` } };
   const leased = run.steps.find((step) => step.status === 'leased' && step.lease.attempt === lease.attempt);
@@ -296,8 +297,6 @@ function noCheckout(run: string, attempt: string): WorkflowFailure {
   return { code: 'workspace_base', message: `Run ${run} records no checkout it started from, so attempt ${attempt} has no place to run in. Drive it with teamai workflow resume ${run}.` };
 }
 
-const LeasedSchema = z.object({ attempt: z.string(), revision: z.number() }).passthrough();
-
 /**
  * Prepares `attempt`, which the run already leased to `driver`, holding the run's lock, as `prepareLeased` prepares a
  * new lease, in the place the host made at `adopt` when given. Every other lease of the run is listed as running, so
@@ -313,12 +312,12 @@ async function prepareAttempt(input: {
   const running = run.steps.flatMap((step) => (step.status === 'leased' && step.lease.attempt !== attempt ? [step.lease.attempt] : []));
   const answer = await leaseNext(config, lock.run, driver, { ...next, env, running, canTakeLease: false });
   if (!('data' in answer) || answer.data.done !== undefined) return answer;
-  const leased = LeasedSchema.safeParse(answer.data.lease);
+  const leased = LeaseIdSchema.safeParse(answer.data.lease);
   if (!leased.success || leased.data.attempt !== attempt) {
     return { error: { code: 'wrong_attempt', message: `Run ${lock.run} does not lease attempt ${attempt} to this driver, so it was not prepared. Prepare an attempt next leased this driver, or call next without --attempt.` } };
   }
   if (adopt !== undefined) {
-    const place = await leasedPlace(config, lock, leased.data);
+    const place = await leasedPlace(config, lock, answer.data.lease);
     const behind = 'kind' in place ? undefined : await placeHeldBy({ config, run: lock.run, ...place, adopt });
     if (behind) return { error: { code: 'adopt_mismatch', message: heldPlaceRefusal({ dir: adopt, behind, run: lock.run, attempt }) } };
   }
@@ -334,9 +333,11 @@ async function prepareAttempt(input: {
 async function prepareLeased(input: { config: LocalConfig; lock: RunLock; driver: DriverIdentity; env: WorkflowEnv; answer: WorkflowEnvelope; adopt?: string }): Promise<WorkflowEnvelope> {
   const { config, lock, driver, env, answer, adopt } = input;
   if (!('data' in answer) || answer.data.lease === undefined) return answer;
-  const leased = LeasedSchema.safeParse(answer.data.lease);
+  // What names the lease is read first, so a lease whose place this teamai cannot read is still reported.
+  const leased = LeaseIdSchema.passthrough().safeParse(answer.data.lease);
   if (!leased.success) return { error: { code: 'run_unreadable', message: `Run ${lock.run} returned a lease this teamai cannot read` } };
-  const lease = placeLeaseOf(leased.data);
+  const wire = LeaseWireSchema.safeParse(answer.data.lease);
+  const lease = wire.success ? placeLeaseOf(wire.data) : undefined;
   const placed: PlacePrepared = lease
     ? await prepareWithSetup({ config, lock, env, lease, ...(adopt !== undefined ? { adopt } : {}) })
     : { kind: 'failed', failure: { code: 'workspace_base', message: `Attempt ${leased.data.attempt} was leased a place this teamai cannot read. Update teamai.` } };

@@ -26,6 +26,8 @@ const SKILL_IMPORTS: Record<string, { typeOnly?: true; names?: string[] }> = {
   'src/workflow/requirements.ts': { typeOnly: true },
   'src/workflow/describe.ts': { typeOnly: true },
   'src/workflow/attempt-marker.ts': {},
+  // The wire shapes the engine answers with, which every driver parses with the same schema.
+  'src/workflow/lease-wire.ts': { names: ['LeaseWireSchema'] },
   'src/workflow/store.ts': { names: ['withRunLock', 'RunLock', 'attemptDir', 'skillStatePath', 'RunIdSchema', 'RunId', 'AttemptIdSchema', 'AttemptId', 'withRunnerLock', 'runnerAlive'] },
   'src/workflow/step-model.ts': {},
   'src/env-resolution.ts': {},
