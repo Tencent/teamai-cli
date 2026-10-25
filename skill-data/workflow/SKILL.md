@@ -111,11 +111,13 @@ The `done` action carries the `outcome`, the pull requests the run opened in `pr
 
 ## Errors
 
-A reply with `error` carries `code`, `message` and `next`. When `next` is a literal, run it, except for `orchestrator_active`. When it is null, tell the person `message`: only they can act on it.
+A reply with `error` carries `code`, `message` and `next`. When `next` is a literal, run it, except for `orchestrator_active`, `not_skill_run`, `not_owner` and `run_not_found`. When it is null, tell the person `message`: only they can act on it.
 
 `agent_in_path` means an answer only the person can give came from your session. Hand the person the command `message` names, for their own terminal.
 
 `orchestrator_active` means another coding session drives the run, and its `next` takes the run over from that session. Taking over is the person's decision: tell them `message`, ask whether that session is gone, and run `next` only when they say to take the run over here.
+
+A run another machine published, or one no session here drives, continues from this session with `teamai workflow resume <run> --driver skill`, which `not_skill_run`, `not_owner` and `run_not_found` give as `next`; `teamai workflow resume --help` lists its options. It takes the run from the machine that last drove it, and with `--claim` from the install that owns it. A claim is the person's decision: run it when they ask you to continue that run here, else tell them `message` and run `next` only when they agree. Its reply is a turn: go on with the loop.
 
 ## Guardrails
 

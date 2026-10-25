@@ -286,6 +286,8 @@ teamai workflow resume <run>      # on the other machine, in a checkout of the s
 
 Only the owner continues a published run. On another install that has the run, `resume` and `publish` answer `not_owner` with the owner's user name and install id. Two installs of one member show the same user name, and the install id tells them apart. To take the run over, run `teamai workflow resume <run> --claim`. The claim replaces this machine's copy of the run and releases the leases other machines held. The previous owner can then no longer publish or resume the run, unless it claims it back.
 
+To continue the run from a coding session, the agent runs `teamai workflow resume <run> --driver skill`, with `--claim` to take it from the owner. It claims the run the same way, then drives it with the skill driver in the session's run mode, with the options of a skill start: `--parallel`, `--hitl` or `--auto-approve`, and `--no-judge`. Without them, one step runs at a time and the agent asks you before it answers an optional gate. Its first turn asks the host question when prompt steps are left, and dispatches again the steps the other machine had leased. A workflow that must run with the local driver comes back to you as `teamai workflow resume <run>`. Taking the run over is your decision, so the agent asks you before it runs either command.
+
 When a published run ends, teamai publishes how it ended, without `--sessions`. A member who then takes the run over runs none of its steps again.
 
 `publish` writes the run's state with [usage reporting](reporting.md) on or off: it is the state another machine needs to continue the run, not a usage report. A run you never publish stays on this machine. While usage reporting is on, only its [run records](#run-records) reach `teamai-reports`.
@@ -375,7 +377,11 @@ A run is attended when a person is there to answer, and unattended in CI or a cl
 
 In an unattended run, describe asks no question. It answers the start of the recommended option with `--auto-approve`, and the agent fills `{inputs}` from its task. It refuses a workflow that needs a person (`denied`), naming why: `invoke: ask`, an `interactive` step, a required approval, or a choice without a default.
 
+<<<<<<< HEAD
 Every process TeamAI starts for a step, setup included, gets the run's `TEAMAI_MODE`, with either driver. The skill driver keeps the mode its start resolved. The local driver resolves it each time it starts driving, with `start` or `resume`.
+=======
+Every process of a step, setup included, gets the run's `TEAMAI_MODE`, with either driver. The skill driver keeps the mode that its start, or a `resume --driver skill`, resolved. The local driver resolves it each time it starts driving, with `start` or `resume`.
+>>>>>>> 03d7f7652 (docs(workflow): continue a published run with resume --driver skill)
 
 ### Answers only the person gives
 
