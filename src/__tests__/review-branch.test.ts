@@ -32,6 +32,7 @@ vi.mock('../utils/logger.js', () => {
 
 import { localAliasesPath } from '../models/aliases.js';
 import { reviewBranchDir, materializeRef, type BranchReview } from '../review-branch.js';
+import { INVOKE_ALIAS_SINCE } from '../workflow/parse.js';
 
 const BRANCH = 'teamai/push/tester/20260101-000000';
 
@@ -538,6 +539,28 @@ describe('reviewBranchDir — read-only health checks for a pushed branch (#776)
     expect(review.ok).toBe(true);
     expect(review.findings).toEqual([]);
     expect(await relativeListing(repoDir)).toEqual(before);
+  });
+
+  it('fails bad invoke, bad alias and alias conflicts, and warns that older CLIs drop a workflow setting either key', async () => {
+    const header = (name: string, keys: string) => `schemaVersion: v1alpha1\nname: ${name}\ndescription: Ship.\n${keys}\nsteps:\n  - id: work\n    command: echo work\n`;
+    await writeWorkflow(repoDir, 'ship', header('ship', 'invoke: allow\nalias: go'));
+    await writeWorkflow(repoDir, 'land', header('land', 'alias: go'));
+    await writeWorkflow(repoDir, 'odd', header('odd', 'invoke: always'));
+    await writeWorkflow(repoDir, 'self', header('self', 'alias: self'));
+    await writeWorkflow(repoDir, 'plain', header('plain', ''));
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    const since = `teamai before ${INVOKE_ALIAS_SINCE} drops a workflow that sets invoke or alias, so members and CI jobs must run at least ${INVOKE_ALIAS_SINCE}.`;
+    expect(review.findings).toEqual(expect.arrayContaining([
+      { level: 'fail', check: 'workflows', path: 'workflows/odd.yaml', message: 'workflows/odd.yaml:4: field "invoke": invoke must be allow, ask or deny' },
+      { level: 'fail', check: 'workflows', path: 'workflows/self.yaml', message: 'workflows/self.yaml:4: field "alias": alias must differ from the workflow name "self"' },
+      { level: 'fail', check: 'workflows', path: 'workflows/land.yaml', message: 'workflows/land.yaml:4: field "alias": alias "go" is also the alias of workflows/ship.yaml, so it starts neither; start them by name' },
+      { level: 'fail', check: 'workflows', path: 'workflows/ship.yaml', message: 'workflows/ship.yaml:5: field "alias": alias "go" is also the alias of workflows/land.yaml, so it starts neither; start them by name' },
+      { level: 'warn', check: 'workflows', path: 'workflows/land.yaml', message: `workflows/land.yaml sets alias: ${since}` },
+      { level: 'warn', check: 'workflows', path: 'workflows/ship.yaml', message: `workflows/ship.yaml sets invoke and alias: ${since}` },
+    ]));
+    expect(review.counts).toEqual({ fail: 4, warn: 2, info: 0 });
   });
 
   it('fails a workflow whose prompt file is missing', async () => {

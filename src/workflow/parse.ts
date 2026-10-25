@@ -19,6 +19,12 @@ import { loopProblems } from './loop.js';
 import { modelValueProblem } from '../models/aliases.js';
 import { REQUIREMENT_KEYS, RequirementsSchema, SetupSchema, type Requirements, type Setup } from './requirements.js';
 
+/**
+ * The first release that reads `invoke` and `alias`. An older CLI refuses either as an unknown key and drops the
+ * workflow (`dropsKeptVersion`), which `review --branch` warns about.
+ */
+export const INVOKE_ALIAS_SINCE = '0.28.0';
+
 const HEADER_KEYS = new Set(['schemaVersion', 'name', 'description', 'inputs', 'defaults', 'ends', 'outputs', 'loop', 'timeout', 'budget', 'setup', 'steps', 'invoke', 'alias']);
 const ACTION_KEYS = Object.keys(STEP_ACTIONS);
 const STEP_KEYS = new Set(['id', 'needs', 'if', ...ACTION_KEYS, 'env', 'with', 'agent', 'model', 'output', 'end', 'loop', 'break', 'for_each', 'approve', 'choose', 'interactive', 'workspace', 'session', 'scorers', 'requires', 'timeout', 'budget', 'max_turns', 'deliver']);

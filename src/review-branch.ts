@@ -48,7 +48,7 @@ import { getFileContentAtRev, getHeadCommit, listTreeAtRev } from './utils/git.j
 import { isSilent, log, setSilent } from './utils/logger.js';
 import { redact } from './utils/redact.js';
 import { formatUnknownScorer, loadCachedWorkflow, loadWorkflowTree, syncWorkflowDefinitions } from './workflow/cache.js';
-import { formatDiagnostic } from './workflow/parse.js';
+import { formatDiagnostic, INVOKE_ALIAS_SINCE, parseWorkflow } from './workflow/parse.js';
 import { stepModelUnavailableText } from './workflow/step-model.js';
 import type { WorkflowDefinition, WorkflowStep } from './workflow/types.js';
 import { formatScorerDiagnostic } from './scorers/definition.js';
@@ -596,11 +596,43 @@ async function workflowFindings(repoDir: string): Promise<Finding[]> {
         path: unknown.file,
         message: formatUnknownScorer(unknown),
       })),
+      // Each still starts by name; the alias starts nothing, or another workflow.
+      ...result.aliasConflicts.map((diagnostic): Finding => ({
+        level: 'fail',
+        check: 'workflows',
+        path: diagnostic.file,
+        message: formatDiagnostic(diagnostic),
+      })),
+      ...await invokeAliasFindings(repoDir),
     ];
   } finally {
     setSilent(wasSilent);
     await fse.remove(dataHome);
   }
+}
+
+/**
+ * A warning on each valid workflow file that sets `invoke` or `alias`: a member or CI job on an older CLI drops the
+ * whole workflow, and nothing refuses that older CLI.
+ */
+async function invokeAliasFindings(repoDir: string): Promise<Finding[]> {
+  const findings: Finding[] = [];
+  const files = (await listRepoFilesRecursive(path.join(repoDir, 'workflows'))).filter((file) => file.endsWith('.yaml')).sort();
+  for (const file of files) {
+    const relativePath = `workflows/${file}`;
+    const content = await readFileIfExists(path.join(repoDir, 'workflows', ...file.split('/')));
+    const parsed = content === null ? null : parseWorkflow(relativePath, content);
+    if (!parsed?.ok) continue;
+    const keys = [parsed.definition.invoke !== undefined && 'invoke', parsed.definition.alias !== undefined && 'alias'].filter((key) => key !== false);
+    if (keys.length === 0) continue;
+    findings.push({
+      level: 'warn',
+      check: 'workflows',
+      path: relativePath,
+      message: `${relativePath} sets ${keys.join(' and ')}: teamai before ${INVOKE_ALIAS_SINCE} drops a workflow that sets invoke or alias, so members and CI jobs must run at least ${INVOKE_ALIAS_SINCE}.`,
+    });
+  }
+  return findings;
 }
 
 /** Every `scorers/scoring.yaml` and `scorers/<dir>/scoring.yaml` of the branch, active for anyone or not: what it cannot parse, a key or value it ignores, and an isolation teamai does not know. */
