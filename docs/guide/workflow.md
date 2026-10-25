@@ -369,6 +369,14 @@ The skill driver declares `env: "commands"` (see [Requirements and limits](workf
 
 When a step that waits for env or a budget works in a workspace that an earlier step of the run opens, describe sends the whole run to the local driver, for the person to start in their own terminal. Otherwise the session runs what it can. Once only waiting steps are left, it hands the run to the person, who continues it with `teamai workflow resume <run>` in their own terminal. The local driver runs its prompt steps with the headless tool that `workflows.tools` in local config names, or that `--tools` picks. When local config names no default tool, the local start and the `resume` command the session gives carry `--tools default=<the session's tool>`.
 
+### Attended and unattended runs
+
+A run is attended when a person is there to answer, and unattended in CI or a cloud agent. TeamAI takes the mode from `TEAMAI_MODE` (`attended` or `unattended`), else from `CI` (set, and not `0` or `false`, means unattended), else attended. It warns about any other `TEAMAI_MODE` value and ignores it.
+
+In an unattended run, describe asks no question. It answers the start of the recommended option with `--auto-approve`, and the agent fills `{inputs}` from its task. It refuses a workflow that needs a person (`denied`), naming why: `invoke: ask`, an `interactive` step, a required approval, or a choice without a default.
+
+Every process of a step, setup included, gets the run's `TEAMAI_MODE`, with either driver. The skill driver keeps the mode its start resolved. The local driver resolves it each time it starts driving, with `start` or `resume`.
+
 ### Answers only the person gives
 
 A required approval reaches only the person. The session shows it and gives them the `teamai workflow respond` command for their own terminal, or they answer in [`teamai dashboard`](dashboard.md#workflow-runs). TeamAI decides who answered from the process that sends the answer. Any answer sent from inside an agent session counts as the agent's: `respond --driver skill`, `respond --json` with a driver identity, and a dashboard started from that session. A required approval refuses it with `agent_in_path`. These variables are evidence, not proof: a process that unsets them, or opens a terminal, passes as the person.

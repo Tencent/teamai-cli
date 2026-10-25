@@ -369,6 +369,14 @@ skill 驱动声明 `env: "commands"`（见[要求和限制](workflow-advanced.md
 
 当一个因 env 或 budget 而等待的步骤，在同一次运行中较早步骤打开的工作区里工作时，describe 会把整个运行交给本地驱动，由本人在自己的终端启动。否则会话先运行它能运行的部分。只剩等待的步骤时，它把运行交给本人，由本人在自己的终端用 `teamai workflow resume <run>` 继续。本地驱动用本地配置中 `workflows.tools` 指定的、或 `--tools` 选择的无头工具运行提示词步骤。本地配置没有指定默认工具时，会话给出的本地启动命令和 `resume` 命令会带上 `--tools default=<会话的工具>`。
 
+### 有人值守与无人值守的运行
+
+有人在场回答时，运行是有人值守的；在 CI 或云端 agent 中，运行是无人值守的。TeamAI 先看 `TEAMAI_MODE`（`attended` 或 `unattended`），再看 `CI`（已设置且不是 `0` 或 `false` 即为无人值守），都没有时按有人值守处理。`TEAMAI_MODE` 为其他值时，TeamAI 给出警告并忽略它。
+
+在无人值守的运行中，describe 不提问。它给出推荐选项的启动命令，并带上 `--auto-approve`，由 agent 根据自己的任务填写 `{inputs}`。需要人参与的工作流会被拒绝（`denied`），并说明原因：`invoke: ask`、`interactive` 步骤、必需审批，或没有默认值的选择。
+
+无论用哪种驱动，步骤的每个进程（包括 setup）都会拿到这次运行的 `TEAMAI_MODE`。skill 驱动沿用启动时解析出的模式；本地驱动在每次开始驱动时（`start` 或 `resume`）重新解析。
+
 ### 只有本人能给的回答
 
 必需审批只交给本人。会话展示它，并把 `teamai workflow respond` 命令交给本人在自己的终端运行，或由本人在 [`teamai dashboard`](dashboard.md#工作流运行workflow-runs) 中回答。TeamAI 根据发送回答的进程判断是谁回答的。从 agent 会话内发出的回答都算 agent 的：`respond --driver skill`、带驱动身份的 `respond --json`，以及从该会话启动的 dashboard。必需审批会以 `agent_in_path` 拒绝这样的回答。这些变量是证据，不是证明：取消这些变量或打开终端的进程可以冒充本人。
