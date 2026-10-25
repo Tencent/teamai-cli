@@ -8,7 +8,7 @@ import { LeaseSetupSchema, type LeaseSetup } from '../requirements.js';
 import { attemptDir, AttemptIdSchema, type AttemptId, type RunId, type RunLock } from '../store.js';
 import type { WorkflowFailure } from '../types.js';
 import { WorkspaceContractSchema, type WorkspaceContract } from '../workspace.js';
-import { git, headCommit, markReadCopy, markSetup, removeWorktree, reopenConfigConflicts, stepCheckout } from '../worktree.js';
+import { git, headCommit, markReadCopy, markSetup, removeWorktree, reopenConfigConflicts, stepCheckout, worktreePath } from '../worktree.js';
 import { openWorktree } from './created.js';
 import { applyOverlay, restoreOverlay, unrestoredConfig } from './overlay.js';
 import { finishReader, leaveReadCopy, readCopyFailure, stageReader } from './reader.js';
@@ -101,6 +101,9 @@ export function placeLeaseOf(raw: unknown): PlaceLease | undefined {
 /** The directory the step runs in, and its prompt with what the place adds to it: a merge conflict to resolve. */
 export type PlacePrepared = { kind: 'prepared'; dir: string; prompt?: string } | { kind: 'failed'; failure: WorkflowFailure };
 
+/** A record of a place whose git is done, from `preparing` on. */
+type Placed = Exclude<PlaceRecord, { phase: 'opening' }>;
+
 /** A record of every phase but its phase fields. */
 type PlaceRecordBase = Omit<Extract<PlaceRecord, { phase: 'ready' }>, 'phase'>;
 
@@ -110,12 +113,12 @@ function placeFiles(config: LocalConfig, run: RunId, attempt: AttemptId): { snap
   return { snapshot: path.join(dir, 'before.json'), overlay: path.join(dir, 'overlay') };
 }
 
-function preparedOf(record: PlaceRecord, prompt: string | undefined): PlacePrepared {
+function preparedOf(record: Placed, prompt: string | undefined): PlacePrepared {
   const note = record.place.role === 'writer' ? record.place.conflictNote ?? '' : '';
   return { kind: 'prepared', dir: record.dir, ...(prompt !== undefined ? { prompt: `${prompt}${note}` } : {}) };
 }
 
-function baseOf(record: PlaceRecord): PlaceRecordBase {
+function baseOf(record: Placed): PlaceRecordBase {
   const { version, run, attempt, step, executor, root, dir, interactive, readOnly, place } = record;
   return { version, run, attempt, step, executor, root, dir, place, ...(interactive ? { interactive } : {}), ...(readOnly ? { readOnly } : {}) };
 }
@@ -125,8 +128,8 @@ function baseOf(record: PlaceRecord): PlaceRecordBase {
  * `attempts/<a>/place.json`, so any process can finish it. A lease without a workspace contract runs in `root`. Any
  * other gets the worktree of its branch, with its start, merges and the base agent configuration in place, and setup
  * left to `runPlaceSetup`. A second prepare of the attempt returns the recorded place, unless it was abandoned: then
- * the place is as prepare found it, and a resumed lease whose step stopped prepares it again. A prepare killed while it
- * put the base agent configuration in place is finished by the next.
+ * the place is as prepare found it, and a resumed lease whose step stopped prepares it again. A prepare killed before
+ * the place is ready is finished by the next.
  */
 export async function preparePlace(input: { config: LocalConfig; lock: RunLock; root: string; lease: PlaceLease }): Promise<PlacePrepared> {
   const { config, lock: { run }, lease } = input;
@@ -136,7 +139,7 @@ export async function preparePlace(input: { config: LocalConfig; lock: RunLock; 
     return { kind: 'failed', failure: { code: 'workspace_base', message: `The place record of attempt ${lease.attempt} cannot be read (${recorded.reason}). Retry the step with teamai workflow retry ${run} ${lease.step}.` } };
   }
   if (!('kind' in recorded) && recorded.phase === 'preparing') return overlaid(config, recorded, lease.prompt, { resume: true });
-  if (!('kind' in recorded) && recorded.phase !== 'abandoned') return preparedOf(recorded, lease.prompt);
+  if (!('kind' in recorded) && recorded.phase !== 'abandoned' && recorded.phase !== 'opening') return preparedOf(recorded, lease.prompt);
   const files = placeFiles(config, run, lease.attempt);
   const base = {
     version: 1 as const, run, attempt: lease.attempt, step: lease.step, executor: lease.executor, root,
@@ -149,28 +152,38 @@ export async function preparePlace(input: { config: LocalConfig; lock: RunLock; 
     return preparedOf(record, lease.prompt);
   }
   const { workspace } = lease;
+  let opening: Opening;
+  if (!('kind' in recorded) && recorded.phase === 'opening') opening = recorded;
+  else {
+    const dir = worktreePath(root, workspace.branch);
+    const present = await fs.stat(dir).then(() => true, () => false);
+    opening = { ...base, dir, phase: 'opening', ...(present ? {} : { created: true as const }) };
+    await writePlaceRecord(config, opening);
+  }
   const opened = await openWorktree({ root, run, step: lease.step, workspace, setup: lease.setup !== undefined });
   if ('code' in opened) return { kind: 'failed', failure: opened };
   const { dir } = opened;
-  let place: PlaceRecord['place'];
+  let place: Placed['place'];
   if (workspace.mode === 'read-only') {
     const marked = await markReadCopy(dir, { branch: workspace.branch, step: lease.step });
     if ('error' in marked) return { kind: 'failed', failure: { code: 'workspace_base', message: `Step "${lease.step}" cannot mark workspace ${dir} as in use by a reader: ${marked.error}` } };
     place = { role: 'reader', workspace, found: marked.found };
   } else {
-    const rangeFrom = (await headCommit(dir))?.commit;
+    const rangeFrom = opening.rangeFrom ?? (await headCommit(dir))?.commit;
+    if (rangeFrom !== undefined && opening.rangeFrom === undefined) await writePlaceRecord(config, { ...opening, rangeFrom });
     const merged = await mergeBranches({ dir, run, step: lease.step, executor: lease.executor, merge: workspace.merge });
     if (merged.kind === 'failed') return merged;
     place = { role: 'writer', workspace, ...(rangeFrom ? { rangeFrom } : {}), conflicts: {}, ...(merged.note ? { conflictNote: merged.note } : {}) };
   }
   const preparing: Preparing = {
     ...base, dir, place, phase: 'preparing',
-    ...(lease.setup && opened.created ? { setup: lease.setup, ...(lease.expiresAt !== undefined ? { expiresAt: lease.expiresAt } : {}) } : {}),
+    ...(lease.setup && (opened.created || opening.created) ? { setup: lease.setup, ...(lease.expiresAt !== undefined ? { expiresAt: lease.expiresAt } : {}) } : {}),
   };
   await writePlaceRecord(config, preparing);
   return overlaid(config, preparing, lease.prompt);
 }
 
+type Opening = Extract<PlaceRecord, { phase: 'opening' }>;
 type Preparing = Extract<PlaceRecord, { phase: 'preparing' }>;
 
 /**
@@ -197,7 +210,7 @@ async function overlaid(config: LocalConfig, record: Preparing, prompt: string |
  * Takes what the step is checked against once its place is set up, and records the place `ready`: a reader's snapshot,
  * taken over the base overlay so only what the step itself changes differs from it, or the conflicts a writer gets.
  */
-async function settle(config: LocalConfig, record: PlaceRecordBase): Promise<PlaceRecord | WorkflowFailure> {
+async function settle(config: LocalConfig, record: PlaceRecordBase): Promise<Placed | WorkflowFailure> {
   const files = placeFiles(config, record.run, record.attempt);
   const { place } = record;
   let settled = record;
@@ -221,7 +234,7 @@ async function settle(config: LocalConfig, record: PlaceRecordBase): Promise<Pla
       return unhandled;
     }
   }
-  const ready: PlaceRecord = { ...settled, phase: 'ready' };
+  const ready: Placed = { ...settled, phase: 'ready' };
   await writePlaceRecord(config, ready);
   return ready;
 }
@@ -277,8 +290,8 @@ export async function finishPlace(input: { config: LocalConfig; lock: RunLock; a
     return { outcome: 'failed', message: failure.message, failure };
   }
   if (recorded.phase === 'finished') return recorded.finished;
-  // A setup that failed gave the place up, and the step's report carries that failure.
-  if (recorded.phase === 'abandoned' && end.outcome === 'failed') return end;
+  // A setup that failed gave the place up, and a prepare that failed in git made none: the report carries that failure.
+  if ((recorded.phase === 'abandoned' || recorded.phase === 'opening') && end.outcome === 'failed') return end;
   if (recorded.phase !== 'ready') {
     const failure = { code: 'workspace_base', message: `Step "${recorded.step}" has no place to finish: ${unfinishedPlace(recorded.phase)}.` };
     return { outcome: 'failed', message: failure.message, failure };
@@ -289,8 +302,9 @@ export async function finishPlace(input: { config: LocalConfig; lock: RunLock; a
 }
 
 /** Why a place in `phase` has nothing to finish. */
-function unfinishedPlace(phase: 'preparing' | 'staged' | 'abandoned'): string {
+function unfinishedPlace(phase: 'opening' | 'preparing' | 'staged' | 'abandoned'): string {
   switch (phase) {
+    case 'opening':
     case 'preparing':
       return 'its prepare was cut short before the step got it';
     case 'staged':
@@ -304,7 +318,7 @@ function unfinishedPlace(phase: 'preparing' | 'staged' | 'abandoned'): string {
   }
 }
 
-async function finishRole(files: { snapshot: string; overlay: string }, record: PlaceRecord, end: StepEnd): Promise<PlaceFinished> {
+async function finishRole(files: { snapshot: string; overlay: string }, record: Placed, end: StepEnd): Promise<PlaceFinished> {
   const { place, dir, step, executor } = record;
   switch (place.role) {
     case 'checkout': {
@@ -355,7 +369,8 @@ async function finishRole(files: { snapshot: string; overlay: string }, record: 
 export async function abandonPlace(input: { config: LocalConfig; lock: RunLock; attempt: AttemptId }): Promise<string | undefined> {
   const { config, lock: { run }, attempt } = input;
   const recorded = await readPlaceRecord(config, run, attempt);
-  if ('kind' in recorded || recorded.phase === 'finished' || recorded.phase === 'abandoned') return undefined;
+  // A prepare cut short in git put nothing over the copy, and the next prepare of the attempt goes on from its record.
+  if ('kind' in recorded || recorded.phase === 'opening' || recorded.phase === 'finished' || recorded.phase === 'abandoned') return undefined;
   const files = placeFiles(config, run, attempt);
   const { place, dir } = recorded;
   const abandoned: PlaceRecord = { ...baseOf(recorded), phase: 'abandoned', at: new Date().toISOString() };
@@ -395,7 +410,7 @@ export async function placeRecorded(input: { config: LocalConfig; run: RunId; at
 /** After an accepted success with `cleanup`: removes the worktree prepare created. A step in the checkout leaves it. */
 export async function releasePlace(input: { config: LocalConfig; lock: RunLock; attempt: AttemptId }): Promise<'removed' | 'left'> {
   const recorded = await readPlaceRecord(input.config, input.lock.run, input.attempt);
-  if ('kind' in recorded || recorded.place.role === 'checkout') return 'left';
+  if ('kind' in recorded || recorded.phase === 'opening' || recorded.place.role === 'checkout') return 'left';
   await removeWorktree(recorded.root, recorded.dir);
   return 'removed';
 }

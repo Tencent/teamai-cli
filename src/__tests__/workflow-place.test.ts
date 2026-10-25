@@ -17,8 +17,25 @@ import { cancelRun } from '../workflow/run-controls.js';
 import { readRun } from '../workflow/store.js';
 
 vi.mock('../pull.js', () => ({ pull: vi.fn() }));
+/** The git steps of a prepare to kill the process after, each once. */
+const killAfter = vi.hoisted(() => new Set<string>());
+vi.mock('../workflow/worktree.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../workflow/worktree.js')>();
+  const killable = <A extends unknown[], R>(name: string, run: (...args: A) => Promise<R>) => async (...args: A): Promise<R> => {
+    const result = await run(...args);
+    if (killAfter.delete(name)) throw new Error(`killed after ${name}`);
+    return result;
+  };
+  return {
+    ...real,
+    ensureWorktree: killable('ensureWorktree', real.ensureWorktree),
+    markSetup: killable('markSetup', real.markSetup),
+    markReadCopy: killable('markReadCopy', real.markReadCopy),
+    mergeBranch: killable('mergeBranch', real.mergeBranch),
+  };
+});
 const dirs: string[] = [];
-afterEach(() => { vi.unstubAllEnvs(); for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }); });
+afterEach(() => { vi.unstubAllEnvs(); killAfter.clear(); for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }); });
 function git(cwd: string, ...args: string[]) { return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: 'pipe' }).trim(); }
 async function fixture(yaml?: string) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-place-'))); dirs.push(root);
@@ -56,7 +73,7 @@ steps:
   return { config, env, client, work, remote, runId: String(started.data.run), driver: { kind: 'skill', machine: 'fixture', workspace: work } };
 }
 async function next(f: Awaited<ReturnType<typeof fixture>>) {
-  const answer = await f.client.next(f.runId, { driver: { ...f.driver, can: { hitl: true, workspace: ['read-only', 'new', 'continue'] } } }, { prepare: true });
+  const answer = await f.client.next(f.runId, { driver: { ...f.driver, can: { hitl: true, setup: true, workspace: ['read-only', 'new', 'continue'] } } }, { prepare: true });
   if ('error' in answer || !answer.data.lease) throw new Error(JSON.stringify({ answer, run: await readRun(f.config, f.runId) }));
   return answer.data.lease as { attempt: string; revision: number; step: string; cwd: string; workspace: { branch: string } };
 }
@@ -104,6 +121,95 @@ describe('prepared places through the workflow client', () => {
     expect(run).toMatchObject({ steps: expect.arrayContaining([expect.objectContaining({ id: 'change.write', status: 'failed', failure: { code: outcome === 'success' ? 'push_failed' : 'tool_failed', message: expect.stringContaining('push') } })]) });
     expect(fs.existsSync(lease.cwd)).toBe(true);
     expect(git(f.work, 'show', `${lease.workspace.branch}:code.txt`)).toBe('keep this work');
+  });
+
+  describe('a process killed after a git step of a prepare, before the place is recorded', () => {
+    const SETUP = `schemaVersion: v1alpha1
+name: build
+description: Build in a set-up workspace.
+alias: ship
+setup:
+  command: touch "$(git rev-parse --git-path setup-ran)"
+steps:
+  - id: build
+    workspace: new
+    prompt: Build it.
+`;
+    const setupRan = (dir: string): boolean => fs.existsSync(path.resolve(dir, git(dir, 'rev-parse', '--git-path', 'setup-ran')));
+
+    it.each(['ensureWorktree', 'markSetup'])('runs setup in the place the next prepare of the attempt makes, after a kill after %s', async (step) => {
+      const f = await fixture(SETUP);
+      killAfter.add(step);
+      await expect(next(f)).rejects.toThrow(`killed after ${step}`);
+      const lease = await next(f);
+      expect(setupRan(lease.cwd)).toBe(true);
+      expect(await f.client.report(f.runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: f.driver })).toMatchObject({ data: { accepted: true } });
+    });
+
+    it('lets the next prepare of a reader use the copy it marked', async () => {
+      const f = await fixture(`schemaVersion: v1alpha1
+name: build
+description: A reader of the copy a writer made.
+alias: ship
+steps:
+  - id: change
+    workspace: new
+    workflow:
+      steps:
+        - id: write
+          prompt: Write the code.
+        - id: check
+          needs: [write]
+          workspace: read-only
+          prompt: Check the code.
+`);
+      const write = await next(f);
+      fs.writeFileSync(path.join(write.cwd, 'code.txt'), 'written\n');
+      expect(await f.client.report(f.runId, { attempt: write.attempt, revision: write.revision, outcome: 'success', driver: f.driver })).toMatchObject({ data: { accepted: true } });
+      killAfter.add('markReadCopy');
+      await expect(next(f)).rejects.toThrow('killed after markReadCopy');
+      const check = await next(f);
+      expect(check.step).toBe('change.check');
+      expect(await f.client.report(f.runId, { attempt: check.attempt, revision: check.revision, outcome: 'success', driver: f.driver }))
+        .toMatchObject({ data: { accepted: true, step: { status: 'succeeded' } } });
+    });
+
+    it('reports the merge a killed prepare made among the changes of the attempt', async () => {
+      const f = await fixture(`schemaVersion: v1alpha1
+name: build
+description: A step starts from one branch and merges another.
+alias: ship
+steps:
+  - id: right
+    workspace: new
+    prompt: Write the right side.
+  - id: left
+    needs: []
+    workspace: new
+    prompt: Write the left side.
+  - id: join
+    needs: [left, right]
+    workspace: new
+    prompt: Join both sides.
+`);
+      for (let side = 0; side < 2; side += 1) {
+        const lease = await next(f);
+        fs.writeFileSync(path.join(lease.cwd, `${lease.step}.txt`), `${lease.step}\n`);
+        expect(await f.client.report(f.runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: f.driver })).toMatchObject({ data: { accepted: true } });
+      }
+      killAfter.add('mergeBranch');
+      await expect(next(f)).rejects.toThrow('killed after mergeBranch');
+      const join = await next(f);
+      const merge = git(join.cwd, 'rev-parse', 'HEAD');
+      const start = git(join.cwd, 'rev-parse', 'HEAD^1');
+      fs.writeFileSync(path.join(join.cwd, 'joined.txt'), 'joined\n');
+      expect(await f.client.report(f.runId, { attempt: join.attempt, revision: join.revision, outcome: 'success', driver: f.driver })).toMatchObject({ data: { accepted: true } });
+      const run = await readRun(f.config, f.runId);
+      const joined = typeof run === 'object' ? run.steps.find((step) => step.id === 'join') : undefined;
+      if (joined?.status !== 'succeeded') throw new Error(JSON.stringify(joined));
+      expect(joined.changes?.from).toBe(start);
+      expect(joined.changes?.commits).toContain(merge);
+    });
   });
 
   describe('a process killed while it puts the base agent files over the branch', () => {

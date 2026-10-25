@@ -37,7 +37,7 @@ export const PlaceFinishedSchema = z.object({
   read: ReadSchema.optional(),
 });
 
-const PlaceBase = {
+const PlaceFields = {
   version: z.literal(1),
   run: RunIdSchema,
   attempt: AttemptIdSchema,
@@ -48,10 +48,16 @@ const PlaceBase = {
   dir: z.string(),
   interactive: z.literal(true).optional(),
   readOnly: z.literal(true).optional(),
-  place: PlaceRoleSchema,
 };
+const PlaceBase = { ...PlaceFields, place: PlaceRoleSchema };
 
 export const PlaceRecordSchema = z.discriminatedUnion('phase', [
+  /**
+   * Git is not done in the copy at `dir`. Recorded before git touches it, so the next prepare of an attempt killed
+   * meanwhile knows what this one did there: `created` when the copy did not exist, so its setup still runs, and a
+   * writer's `rangeFrom` once the copy is open, taken before any merge, so the merges stay in the step's changes.
+   */
+  z.object({ ...PlaceFields, phase: z.literal('opening'), created: z.literal(true).optional(), rangeFrom: z.string().optional() }),
   /**
    * Git is done in a copy, and the base overlay goes in next. Recorded before the overlay, so a prepare cut short is
    * finished by the next one, or given up. `setup` is what runs once it is staged, in a worktree prepare created.
