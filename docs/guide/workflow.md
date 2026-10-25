@@ -377,11 +377,7 @@ A run is attended when a person is there to answer, and unattended in CI or a cl
 
 In an unattended run, describe asks no question. It answers the start of the recommended option with `--auto-approve`, and the agent fills `{inputs}` from its task. It refuses a workflow that needs a person (`denied`), naming why: `invoke: ask`, an `interactive` step, a required approval, or a choice without a default.
 
-<<<<<<< HEAD
-Every process TeamAI starts for a step, setup included, gets the run's `TEAMAI_MODE`, with either driver. The skill driver keeps the mode its start resolved. The local driver resolves it each time it starts driving, with `start` or `resume`.
-=======
-Every process of a step, setup included, gets the run's `TEAMAI_MODE`, with either driver. The skill driver keeps the mode that its start, or a `resume --driver skill`, resolved. The local driver resolves it each time it starts driving, with `start` or `resume`.
->>>>>>> 03d7f7652 (docs(workflow): continue a published run with resume --driver skill)
+Every process TeamAI starts for a step, setup included, gets the run's `TEAMAI_MODE`, with either driver. The skill driver keeps the mode that its start, or a `resume --driver skill`, resolved. The local driver resolves it each time it starts driving, with `start` or `resume`.
 
 ### Answers only the person gives
 
