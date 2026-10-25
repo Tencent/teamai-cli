@@ -1838,7 +1838,7 @@ async function pullForScope(
           // on the fast path too, or an ordinary pull never surfaces a teammate's
           // learning until `pull --force` (#704).
           await syncLearningsAndRebuildIndex();
-          await syncWorkflows(localConfig, freshConfig, !!options.dryRun, scopeLabel);
+          await syncWorkflows(localConfig, freshConfig, !!options.dryRun, scopeLabel, recorder);
           if (result && result.delivery !== 'failed') result.delivery = 'complete';
           return;
         }
@@ -2514,7 +2514,7 @@ async function pullForScope(
     }
   }
 
-  await syncWorkflows(localConfig, freshConfig, !!options.dryRun, scopeLabel);
+  await syncWorkflows(localConfig, freshConfig, !!options.dryRun, scopeLabel, recorder);
 
   // A real sync ran to completion for this scope. The "Already synced" fast path
   // and every error/skip path return before here, and dry-run is excluded so a
@@ -2913,15 +2913,21 @@ async function reinjectLegacyHooks(localConfig: LocalConfig): Promise<void> {
   log.debug('Hooks migrated to dispatch format');
 }
 
-/** Validate workflows, and write a skill for each one an agent may start, without failing this pull when one file is invalid. */
-async function syncWorkflows(localConfig: LocalConfig, teamConfig: TeamaiConfig, dryRun: boolean, scopeLabel: string): Promise<void> {
+/**
+ * Validate workflows, and write a skill for each one an agent may start, without failing this pull when one file is
+ * invalid. The skills it writes are delivered paths (#915).
+ */
+async function syncWorkflows(
+  localConfig: LocalConfig, teamConfig: TeamaiConfig, dryRun: boolean, scopeLabel: string, recorder?: DeliveryRecorder,
+): Promise<void> {
   try {
     const { syncWorkflowDefinitions } = await import('./workflow/cache.js');
     await syncWorkflowDefinitions(localConfig, { dryRun, scopeLabel });
     if (dryRun) return;
     const { deployWorkflowSkills } = await import('./workflow/discovery/workflow-skills.js');
-    await deployWorkflowSkills({ teamConfig, localConfig });
+    await deployWorkflowSkills({ teamConfig, localConfig, recorder });
   } catch (error) {
+    recorder?.failed('workflow-skills');
     log.warn(`[${scopeLabel}] Workflows were not updated: ${error instanceof Error ? error.message : String(error)}`);
   }
 }

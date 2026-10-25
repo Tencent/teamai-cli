@@ -31,6 +31,7 @@ import { log } from './utils/logger.js';
 /** The writers of a pull, as `gitExcludePaths` keys them. */
 export const WRITER_IDS = [
   'skills', 'rules', 'agents', 'docs', 'builtin', 'sources', 'instructions', 'hooks', 'coauthor', 'teamai-only',
+  'workflow-skills',
 ] as const;
 export type WriterId = (typeof WRITER_IDS)[number];
 

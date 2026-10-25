@@ -886,6 +886,7 @@ export async function doctor(options: DoctorOptions): Promise<boolean> {
   const { ruleChannelNotes } = await import('./resources/rules.js');
   const { dshSandboxNote } = await import('./dsh-hooks.js');
   const { scorerNotes } = await import('./doctor-scorers.js');
+  const { shadowedWorkflowSkills } = await import('./workflow/discovery/workflow-skills.js');
   const notes = [
     ...await buildNamespaceNotes(ctx),
     ...await entryNamespaceNotes(ctx),
@@ -895,6 +896,8 @@ export async function doctor(options: DoctorOptions): Promise<boolean> {
     ...await agentModelNotes(ctx),
     // Invalid scorer files and scorers a workflow step lists without one, which a silent hook pull never shows.
     ...await scorerNotes(localConfig),
+    // A team or member skill named workflow-<name> stands in for the skill pull generates (#1086).
+    ...ctx.teamConfig ? await shadowedWorkflowSkills({ teamConfig: ctx.teamConfig, localConfig }) : [],
     ...(await envAdvisories(localConfig, ctx.teamConfig, ctx.teamEnv)).map(describeEnvAdvisory),
     // A team MCP server a tool cannot use over its transport.
     ...await mcpTransportNotes(ctx),
