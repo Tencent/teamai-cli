@@ -318,6 +318,16 @@ export async function workflowNext(runId: string, options: {
     return;
   }
   const { config, env, secrets } = loaded;
+  const run = RunIdSchema.safeParse(runId);
+  // A claim continues the run as a resume does, so it makes the resume's check first.
+  if (parsed.request.claim === true && run.success && !await sessionDrivesRun(config, run.data)) {
+    const caller = { evidence: agentEvidence(process.env), confirmed: false, mode: resolveRunMode(process.env) };
+    const refused = await resumeRefusal(config, run.data, caller, { published: true, act: 'claim' });
+    if (refused) {
+      writeEnvelope({ error: refused }, secrets);
+      return;
+    }
+  }
   writeEnvelope(await inProcessClient({ config, env }).next(runId, payload.value, prepare ? { prepare } : undefined), secrets);
 }
 

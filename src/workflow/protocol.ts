@@ -121,8 +121,11 @@ export interface InvokeCaller {
   mode: RunMode;
 }
 
-/** What a caller asks of a workflow: to start a run, or to continue run `run`, by `workflow resume` or a takeover. */
-export type InvokeAct = { kind: 'start' } | { kind: 'continue'; run: RunId };
+/**
+ * What a caller asks of a workflow: to start a run; to continue run `run`, by `workflow resume` or a takeover; or to
+ * claim it with a `next` payload, which has no field for the person's yes.
+ */
+export type InvokeAct = { kind: 'start' } | { kind: 'continue'; run: RunId } | { kind: 'claim'; run: RunId };
 
 /** What shows an agent runs the calling process, as the clause the `invoke` refusals end their first sentence with. */
 function agentClause(evidence: Exclude<AgentEvidence, { kind: 'none' }>): string {
@@ -146,6 +149,7 @@ export function invokeDeniedMessage(name: string, evidence: Exclude<AgentEvidenc
     case 'start':
       return `Workflow "${name}" has invoke: deny, so no coding agent starts it, with any driver, and ${agentClause(evidence)}. The person can start it from their own terminal with teamai workflow start ${name} --driver local. To let agents start it, the team sets invoke: allow, or invoke: ask for a start after the person agrees, in workflows/${name}.yaml.`;
     case 'continue':
+    case 'claim':
       return `Workflow "${name}" has invoke: deny, so no coding agent continues it, with any driver, and ${agentClause(evidence)}. The person can continue it from their own terminal with teamai workflow resume ${act.run}. To let agents continue it, the team sets invoke: allow, or invoke: ask for a resume after the person agrees, in workflows/${name}.yaml.`;
     default: {
       const unhandled: never = act;
@@ -189,9 +193,13 @@ function invokeRefusal(definition: WorkflowDefinition | undefined, caller: Invok
             ? { code: 'unattended_denied', message: unattendedReason(name, INVOKE_ASK_NEED) }
             : { code: 'confirm_needed', message: `Workflow "${name}" has invoke: ask, so a coding agent starts it only after the person agrees, and ${agentClause(evidence)}. Ask the person whether to start ${name}; once they agree, run the same command with --confirmed.` };
         case 'continue':
-          return caller.mode === 'unattended'
-            ? { code: 'unattended_denied', message: `Workflow ${name} needs a person, and this run is unattended (TEAMAI_MODE or CI says so): the team asks that a person agree before an agent continues it (invoke: ask). Continue it from a session a person attends, or set TEAMAI_MODE=attended where one does.` }
-            : { code: 'confirm_needed', message: `Workflow "${name}" has invoke: ask, so a coding agent continues it only after the person agrees, and ${agentClause(evidence)}. Ask the person whether to continue ${name}; once they agree, run the same command with --confirmed.` };
+        case 'claim':
+          if (caller.mode === 'unattended') {
+            return { code: 'unattended_denied', message: `Workflow ${name} needs a person, and this run is unattended (TEAMAI_MODE or CI says so): the team asks that a person agree before an agent continues it (invoke: ask). Continue it from a session a person attends, or set TEAMAI_MODE=attended where one does.` };
+          }
+          return act.kind === 'continue'
+            ? { code: 'confirm_needed', message: `Workflow "${name}" has invoke: ask, so a coding agent continues it only after the person agrees, and ${agentClause(evidence)}. Ask the person whether to continue ${name}; once they agree, run the same command with --confirmed.` }
+            : { code: 'confirm_needed', message: `Workflow "${name}" has invoke: ask, so a coding agent continues it only after the person agrees, and ${agentClause(evidence)}. A next payload cannot say the person agreed. Ask the person whether to continue ${name}; once they agree, run teamai workflow resume ${act.run} --claim --confirmed.` };
         default: {
           const unhandled: never = act;
           return unhandled;
@@ -206,17 +214,22 @@ function invokeRefusal(definition: WorkflowDefinition | undefined, caller: Invok
 }
 
 /**
- * Why `caller` may not continue run `runId`, by `workflow resume` or a takeover: the check `start` makes, of the
- * definition the run carries rather than the cache's, before anything claims or changes the run. `--driver skill` counts
- * as an agent's, as it does for a start; the caller skips this check for the session that drives the run. `published`
- * reads a run this machine lacks from teamai-reports, as a resume that claims it does. Reads nothing for a caller
- * without agent evidence.
+ * Why `caller` may not continue run `runId`, by `workflow resume` or a takeover, or, with `act: 'claim'`, by a `next`
+ * payload's claim: the check `start` makes, of the definition the run carries rather than the cache's, before anything
+ * claims or changes the run. `--driver skill` counts as an agent's, as it does for a start; the caller skips this check
+ * for the session that drives the run. `published` reads a run this machine lacks from teamai-reports, as a resume that
+ * claims it does. Reads nothing for a caller without agent evidence.
  */
-export async function resumeRefusal(config: LocalConfig, runId: RunId, caller: InvokeCaller, { published }: { published: boolean }): Promise<WorkflowFailure | undefined> {
+export async function resumeRefusal(
+  config: LocalConfig,
+  runId: RunId,
+  caller: InvokeCaller,
+  { published, act = 'continue' }: { published: boolean; act?: 'continue' | 'claim' },
+): Promise<WorkflowFailure | undefined> {
   if (caller.evidence.kind === 'none') return undefined;
   const carried = await carriedDefinition(config, runId, { published });
   if (!carried.ok) return { code: carried.error.code, message: carried.error.message };
-  return invokeRefusal(carried.value, caller, { kind: 'continue', run: runId });
+  return invokeRefusal(carried.value, caller, { kind: act, run: runId });
 }
 
 /** The failure a call answers when the cache holds no unambiguous runnable version of workflow or alias `name`. */

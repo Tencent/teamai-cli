@@ -324,7 +324,7 @@ Claude Code、Codex 等编程会话可以替与它协作的人运行团队工作
 | `ask` | 本人同意后启动（先 describe，再 `--confirmed`）。无人值守时为 `denied`，带 `--confirmed` 也一样 | 启动 | 启动 | 启动 |
 | `deny`（默认） | 拒绝 | 启动 | 启动 | 启动 |
 
-`resume` 和 `next --takeover` 遵循同一规则。
+`resume`、`next --takeover` 和驱动在 `next` 中的认领遵循同一规则。
 
 `alias` 是 `workflow start` 可选的第二个名称，必须是单个 token。别名若与另一个工作流的别名或名称相同，就不启动任何工作流（`alias_conflict`）。请用名称启动这些工作流。
 

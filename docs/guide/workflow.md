@@ -324,7 +324,7 @@ A coding session, such as Claude Code or Codex, can run a team workflow for the 
 | `ask` | Starts once the person agrees (describe, then `--confirmed`). Unattended: `denied`, also with `--confirmed` | Starts | Starts | Starts |
 | `deny`, the default | Refused | Starts | Starts | Starts |
 
-`resume` and `next --takeover` follow the same rule.
+`resume`, `next --takeover`, and a driver's `next` claim follow the same rule.
 
 `alias` is an optional second name for `workflow start`, a single token. An alias that another workflow also uses, or takes as its name, starts nothing (`alias_conflict`). Start those workflows by name.
 

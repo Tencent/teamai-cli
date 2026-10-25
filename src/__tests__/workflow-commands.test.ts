@@ -519,4 +519,28 @@ steps:
     expect(await capture(() => workflowResume(locked, {}))).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
     expect(await capture(() => workflowResume(gated, {}))).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
   });
+
+  it('checks a driver\'s next claim from an agent session as a resume, and names the resume that carries the person\'s yes, which a payload cannot', async () => {
+    const { config, locked, gated, open } = await runs();
+    const engine = await import('../workflow/engine.js');
+    const next = vi.spyOn(engine, 'leaseNext').mockResolvedValue({ data: { wait: { reason: 'claimed' } } });
+    const claim = { json: JSON.stringify({ driver, claim: true }) };
+    vi.stubEnv('TEAMAI_MODE', 'attended');
+    vi.stubEnv('CLAUDE_CODE_SESSION_ID', 'session-a');
+
+    expect(await capture(() => workflowNext(locked, claim))).toEqual({ error: {
+      code: 'invoke_denied', message: expect.stringContaining(`The person can continue it from their own terminal with teamai workflow resume ${locked}.`),
+    } });
+    expect(await capture(() => workflowNext(gated, claim))).toEqual({ error: {
+      code: 'confirm_needed', message: expect.stringContaining(`Ask the person whether to continue gated; once they agree, run teamai workflow resume ${gated} --claim --confirmed.`),
+    } });
+    vi.stubEnv('TEAMAI_MODE', 'unattended');
+    expect(await capture(() => workflowNext(gated, claim))).toMatchObject({ error: { code: 'unattended_denied' } });
+    expect(next).not.toHaveBeenCalled();
+    expect(await capture(() => workflowNext(open, claim))).toMatchObject({ data: { wait: { reason: 'claimed' } } });
+    vi.stubEnv('CLAUDE_CODE_SESSION_ID', '');
+    expect(await capture(() => workflowNext(locked, claim))).toMatchObject({ data: { wait: { reason: 'claimed' } } });
+    expect(next.mock.calls.map(([, run, , options]) => [run, options?.claim])).toEqual([[open, true], [locked, true]]);
+    expect(await readRun(config, locked)).toMatchObject({ steps: [{ id: 'one', status: 'pending' }] });
+  });
 });
