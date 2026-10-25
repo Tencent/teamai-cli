@@ -11,7 +11,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { resolveCliEntry } from '../../../builtin-hooks.js';
 import { stepEnvironment } from '../../../env-exec.js';
-import { startGroupedCommand, stopRecordedGroup } from '../../../tool-launch/process-stop.js';
+import { startGroupedCommand, stopRecordedGroup, type CommandExit } from '../../../tool-launch/process-stop.js';
 import type { RunMode } from '../../../launch-context.js';
 import type { LocalConfig } from '../../../types.js';
 import { writeFileAtomic } from '../../../utils/fs.js';
@@ -30,7 +30,7 @@ import { applyEffects, RUNNER_POLL_MS, runTick, traced, WAIT_BOUND_MS } from './
 import {
   exitedRow, judgeAnsweredRow, offerRow, openAttempt, placeBusyRow, placingRow, preparedRow, prepareFailedRow, resendRow, runnerCallRow, runnerStopRow, type JudgeAnswer, type MovedWithEffects, type RowId,
 } from './transitions.js';
-import type { CommandRun, Runners, SkillContext } from './skill-driver.js';
+import type { Runners, SkillContext } from './skill-driver.js';
 import type { SkillAnswer } from './turn.js';
 
 /** Runners as detached teamai processes, alive while they hold their runner lock. */
@@ -272,14 +272,6 @@ async function begin(context: SkillContext, lock: RunLock, attempt: AttemptId, p
   return { kind: 'gone', status: 'offered' };
 }
 
-interface Exited {
-  exitCode: number;
-  stdout: string;
-  stderr: string;
-  /** The masked output, as it came, stdout and stderr together. */
-  output: string;
-}
-
 /** How long a runner waits for its next check: `RUNNER_POLL_MS`, or less, so one check falls on `expiresAt`. */
 function checkIn(context: SkillContext, expiresAt: string | undefined): number {
   const left = expiresAt === undefined ? RUNNER_POLL_MS : Date.parse(expiresAt) - context.now().getTime();
@@ -300,11 +292,11 @@ async function check(context: SkillContext, lock: RunLock, attempt: AttemptId): 
 
 /**
  * Runs the job's command in `dir`, outside the run lock, until it exits or a check finds its attempt stopped, which
- * stops it. Keeps its masked output in `output.log`.
+ * stops it. Keeps its masked output in `output.log`, and answers with that masked `output`.
  */
-async function runCommand(context: SkillContext, run: RunId, attempt: AttemptId, stage: Extract<Stage, { kind: 'run' }>): Promise<Exited> {
+async function runCommand(context: SkillContext, run: RunId, attempt: AttemptId, stage: Extract<Stage, { kind: 'run' }>): Promise<CommandExit> {
   const command = context.runners.command({ run, attempt, command: stage.command, cwd: stage.dir, env: { ...stage.env, ...attemptEnv(run, attempt, stage.mode) } });
-  let exited: Awaited<CommandRun['exit']> | undefined;
+  let exited: CommandExit | undefined;
   while (!exited) {
     const checking = new AbortController();
     exited = await Promise.race([command.exit, context.runners.sleep(checkIn(context, stage.expiresAt), checking.signal).then(() => undefined)]);
@@ -317,7 +309,7 @@ async function runCommand(context: SkillContext, run: RunId, attempt: AttemptId,
 }
 
 /** Under the lock: stores the report of the exited command (C8), or gives up a stopped attempt (C9), then sends it. */
-async function report(context: SkillContext, lock: RunLock, attempt: AttemptId, exited: Exited): Promise<Stage> {
+async function report(context: SkillContext, lock: RunLock, attempt: AttemptId, exited: CommandExit): Promise<Stage> {
   const state = await readState(context, lock);
   const open = state && openAttempt(state, attempt);
   if (state && open?.phase === 'stopping') return stopped(context, lock, state, attempt);
