@@ -2,12 +2,6 @@ import { log } from '../../utils/logger.js';
 import type { OrgRepoInfo } from '../types.js';
 import { ghExec, isGhInstalled, getGitHubToken } from './gh-cli.js';
 
-const DEFAULT_GITHUB_API_URL = 'https://api.github.com';
-
-function githubApiBaseUrl(): string {
-  return process.env.GITHUB_API_URL?.trim().replace(/\/+$/, '') || DEFAULT_GITHUB_API_URL;
-}
-
 // ─── GitHub API types ────────────────────────────────────
 
 interface GhRepoApiItem {
@@ -130,15 +124,13 @@ function mapToOrgRepoInfo(item: GhRepoApiItem): OrgRepoInfo {
  */
 export async function ghListOrgRepos(
   org: string,
-  opts?: { maxRepos?: number },
+  opts?: { maxRepos?: number; apiBaseUrl?: string },
 ): Promise<OrgRepoInfo[]> {
   const maxRepos = opts?.maxRepos ?? 200;
   const perPage = 100;
   const results: OrgRepoInfo[] = [];
 
-  const BASE = githubApiBaseUrl();
-
-  if (BASE === DEFAULT_GITHUB_API_URL && isGhInstalled()) {
+  if (!opts?.apiBaseUrl && isGhInstalled()) {
     // 使用 gh CLI 分页拉取
     const tryEndpointPrefix = async (prefix: string, allowFallback = false): Promise<boolean> => {
       let page = 1;
@@ -179,6 +171,7 @@ export async function ghListOrgRepos(
       );
     }
 
+    const BASE = opts?.apiBaseUrl ?? 'https://api.github.com';
     const tryUrl = async (urlPrefix: string, allowFallback = false): Promise<boolean> => {
       let page = 1;
       while (results.length < maxRepos) {
@@ -188,7 +181,7 @@ export async function ghListOrgRepos(
         try {
           items = await fetchApiPage(url, token);
         } catch (err) {
-          if (page === 1 && allowFallback && (err as Error)?.name !== 'TimeoutError') {
+          if (page === 1 && allowFallback && !(err instanceof Error && err.name === 'TimeoutError')) {
             log.debug(`fetch ${urlPrefix} failed: ${String(err)}`);
             return false;
           }

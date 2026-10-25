@@ -11,9 +11,9 @@ afterEach(() => {
 });
 
 describe.each([
-  ['GitLab', () => import('../providers/gitlab/org.js').then((m) => m.gitlabListOrgRepos)],
-  ['GitHub', () => import('../providers/github/gh-org.js').then((m) => m.ghListOrgRepos)],
-] as const)('%s organization request deadlines', (_label, loadListOrgRepos) => {
+  ['GitLab', () => import('../providers/gitlab/org.js').then((m) => m.gitlabListOrgRepos('g'))],
+  ['GitHub', (origin: string) => import('../providers/github/gh-org.js').then((m) => m.ghListOrgRepos('g', { apiBaseUrl: origin }))],
+] as const)('%s organization request deadlines', (_label, listOrgRepos) => {
   it.each([
     [1, 'headers'], [1, 'body'], [1, 'error-body'],
     [2, 'headers'], [2, 'body'], [2, 'error-body'],
@@ -39,15 +39,14 @@ describe.each([
     try {
       const address = server.address();
       if (!address || typeof address === 'string') throw new Error('Expected a TCP address');
-      vi.stubEnv('GITLAB_URL', `http://127.0.0.1:${address.port}`);
+      const origin = `http://127.0.0.1:${address.port}`;
+      vi.stubEnv('GITLAB_URL', origin);
       vi.stubEnv('TEAMAI_GITLAB_HOST', `127.0.0.1:${address.port}`);
       vi.stubEnv('GITLAB_TOKEN', 'fixture-token');
-      vi.stubEnv('GITHUB_API_URL', `http://127.0.0.1:${address.port}`);
       vi.stubEnv('GITHUB_TOKEN', 'fixture-token');
       vi.resetModules();
-      const listOrgRepos = await loadListOrgRepos();
       const result = await Promise.race([
-        listOrgRepos('g').then((repos) => ({ repos }), (error: unknown) => ({ error })),
+        listOrgRepos(origin).then((repos) => ({ repos }), (error: unknown) => ({ error })),
         delay(1500, 'request did not settle'),
       ]);
       expect(result).not.toBe('request did not settle');
