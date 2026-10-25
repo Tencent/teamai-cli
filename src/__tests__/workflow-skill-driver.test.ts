@@ -14,6 +14,24 @@ steps:
     command: node -e "console.log('Tests 42 passed (42)')"
 `;
 
+const FEATURE = `schemaVersion: v1alpha1
+name: feature
+description: Build the API and the UI, then integrate them
+invoke: allow
+steps:
+  - id: api
+    workspace: new
+    prompt: Build the API.
+  - id: ui
+    needs: []
+    workspace: new
+    prompt: Build the UI.
+  - id: integrate
+    needs: [api, ui]
+    workspace: new
+    prompt: Integrate the API and the UI.
+`;
+
 const roots: string[] = [];
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -74,5 +92,54 @@ describe('skill driver', () => {
     if (!('data' in done) || !('turn' in done.data)) throw new Error(JSON.stringify(done));
     expect(done.data.turn.events.filter((event) => event.kind === 'settled' && event.step === 'lint')).toHaveLength(1);
     expect(done.data.turn.actions).toEqual([{ kind: 'done', outcome: 'succeeded', prs: [] }]);
+  });
+
+  it('offers two parallel new prompt steps with acks, keeps an unacked one offered, and a poll answers wake', async () => {
+    const harness = await skillHarness({ feature: FEATURE });
+    roots.push(harness.root);
+
+    const started = await harness.call({ kind: 'start', name: 'feature', answers: { parallel: 2, confirmed: false }, inputs: undefined });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+    const { run } = started.data.turn;
+    const host = started.data.turn.actions.find((action) => action.kind === 'choose');
+    if (host?.kind !== 'choose') throw new Error(JSON.stringify(started));
+    expect(host.options.find((option) => option.id === 'h1')?.run).toBe(`teamai workflow next ${run} --driver skill --choice h1`);
+    expect(fs.existsSync(host.reference), host.reference).toBe(true);
+
+    const chosen = await harness.call({ kind: 'choose', run, choice: 'h1' });
+    if (!('data' in chosen) || !('turn' in chosen.data)) throw new Error(JSON.stringify(chosen));
+    const offered = chosen.data.turn.actions.filter((action) => action.kind === 'dispatch');
+    expect(offered.map((action) => action.step).sort()).toEqual(['api', 'ui']);
+    for (const action of offered) {
+      expect(action).toMatchObject({
+        offer: `dispatch.${action.attempt}`,
+        ack: `teamai workflow next ${run} --driver skill --ack dispatch.${action.attempt}`,
+        report: `teamai workflow report ${run} --driver skill --attempt ${action.attempt}`,
+        needs: { place: 'workspace', parallel: true },
+      });
+      expect(fs.existsSync(action.dir), action.dir).toBe(true);
+      expect(fs.existsSync(action.brief), action.brief).toBe(true);
+    }
+    expect(new Set(offered.map((action) => action.dir)).size).toBe(2);
+
+    const polled = await harness.call({ kind: 'next', run, wait: true });
+    expect(polled).toEqual({ data: { turn: expect.objectContaining({
+      actions: [],
+      // oxlint-disable-next-line unicorn/no-thenable
+      then: { kind: 'wake', run: `teamai workflow next ${run} --driver skill` },
+    }) } });
+
+    const [first, second] = offered;
+    if (!first || !second) throw new Error('two dispatches expected');
+    const acked = await harness.call({ kind: 'ack', run, attempt: first.attempt });
+    if (!('data' in acked) || !('turn' in acked.data)) throw new Error(JSON.stringify(acked));
+    expect(acked.data.turn.actions).toEqual([second]);
+    const again = await harness.call({ kind: 'next', run, wait: false });
+    if (!('data' in again) || !('turn' in again.data)) throw new Error(JSON.stringify(again));
+    expect(again.data.turn.actions).toEqual([second]);
+    expect(again.data.turn.running.map(({ attempt, phase }) => ({ attempt, phase }))).toEqual(expect.arrayContaining([
+      { attempt: first.attempt, phase: 'dispatched' },
+      { attempt: second.attempt, phase: 'offered' },
+    ]));
   });
 });

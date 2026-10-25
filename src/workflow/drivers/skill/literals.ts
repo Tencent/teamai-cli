@@ -57,8 +57,23 @@ export function pollLiteral(invocation: Invocation, run: string): Literal {
   return LiteralSchema.parse(`${invocation} workflow next ${run} --driver skill --wait`);
 }
 
+/** Answers the host question with profile `choice`. */
+export function chooseHostLiteral(invocation: Invocation, run: string, choice: string): Literal {
+  return LiteralSchema.parse(`${invocation} workflow next ${run} --driver skill --choice ${choice}`);
+}
+
+/** Acks the dispatch of `attempt` once its child started. */
+export function ackLiteral(invocation: Invocation, run: string, attempt: string): Literal {
+  return LiteralSchema.parse(`${invocation} workflow next ${run} --driver skill --ack dispatch.${attempt}`);
+}
+
 export function reportLiteral(invocation: Invocation, run: string, attempt: string): Literal {
   return LiteralSchema.parse(`${invocation} workflow report ${run} --driver skill --attempt ${attempt}`);
+}
+
+/** Reports that the host cannot run the model the dispatch of `attempt` names. */
+export function unavailableLiteral(invocation: Invocation, run: string, attempt: string): Literal {
+  return LiteralSchema.parse(`${invocation} workflow report ${run} --driver skill --attempt ${attempt} --model-unavailable`);
 }
 
 /** The arguments, after the teamai entry script, that start the runner of `attempt`. */

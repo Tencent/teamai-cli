@@ -22,11 +22,40 @@ steps:
 
 const DRAFT = `schemaVersion: v1alpha1
 name: draft
-description: Draft the notes
+description: Draft the notes with the person
 invoke: allow
 steps:
   - id: write
     prompt: Write the notes.
+    interactive: true
+`;
+
+const PAIR = `schemaVersion: v1alpha1
+name: pair
+description: Write the API and the UI
+invoke: allow
+steps:
+  - id: api
+    workspace: new
+    prompt: Write the API.
+  - id: ui
+    needs: []
+    workspace: new
+    model: claude-haiku-4-5
+    prompt: Write the UI.
+`;
+
+const SETUP = `schemaVersion: v1alpha1
+name: build
+description: Build in a set-up workspace
+invoke: allow
+setup:
+  command: test "$\{#SETUP_TOKEN}" = 22
+  requires: { env: [SETUP_TOKEN] }
+steps:
+  - id: build
+    workspace: new
+    prompt: Build it.
 `;
 
 const GATED = `schemaVersion: v1alpha1
@@ -79,6 +108,29 @@ async function started(made: Awaited<ReturnType<typeof harness>>) {
   const answer = await made.call({ kind: 'start', name: 'check', answers: { confirmed: false }, inputs: undefined });
   if (!('data' in answer) || !('turn' in answer.data)) throw new Error(JSON.stringify(answer));
   return answer.data.turn;
+}
+
+async function turnOf(answer: Awaited<ReturnType<Awaited<ReturnType<typeof harness>>['call']>>) {
+  if (!('data' in answer) || !('turn' in answer.data)) throw new Error(JSON.stringify(answer));
+  return answer.data.turn;
+}
+
+/** Starts `name` and answers the host question with `choice`: the turn of the answer. */
+async function chosen(made: Awaited<ReturnType<typeof harness>>, name: string, parallel: number, choice: 'h1' | 'h2' = 'h1') {
+  const { run } = await turnOf(await made.call({ kind: 'start', name, answers: { parallel, confirmed: false }, inputs: undefined }));
+  return turnOf(await made.call({ kind: 'choose', run, choice }));
+}
+
+/** The dispatches of `turn`. */
+function dispatches(turn: Awaited<ReturnType<typeof turnOf>>) {
+  return turn.actions.flatMap((action) => (action.kind === 'dispatch' ? [action] : []));
+}
+
+/** Plays the child of `brief`: it writes `result` where the brief says. */
+function childWrites(brief: string, result: unknown): void {
+  const file = /Write `([^`]+result\.json)`/.exec(fs.readFileSync(brief, 'utf8'))?.[1];
+  if (!file) throw new Error(`the brief ${brief} names no result file`);
+  fs.writeFileSync(file, JSON.stringify(result));
 }
 
 async function polledToDone(made: Awaited<ReturnType<typeof harness>>, run: RunId) {
@@ -145,7 +197,7 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     },
   },
   {
-    name: 'a workflow with a prompt step is routed to the local driver',
+    name: 'a workflow with an interactive step is routed to the local driver',
     rows: ['R2', 'R8'],
     run: async () => {
       const made = await harness({ draft: DRAFT });
@@ -245,8 +297,8 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       const turn = await started(made);
       const open = turn.running[0];
       if (!open) throw new Error('no attempt running');
-      expect(await made.call({ kind: 'report', run: turn.run, attempt: AttemptIdSchema.parse('a00000000'), role: 'agent' })).toMatchObject({ error: { code: 'unknown_attempt', next: `teamai workflow next ${turn.run} --driver skill` } });
-      expect(await made.call({ kind: 'report', run: turn.run, attempt: open.attempt, role: 'agent' })).toMatchObject({ error: { code: 'not_dispatched', next: `teamai workflow next ${turn.run} --driver skill` } });
+      expect(await made.call({ kind: 'report', run: turn.run, attempt: AttemptIdSchema.parse('a00000000'), role: 'agent', modelUnavailable: false })).toMatchObject({ error: { code: 'unknown_attempt', next: `teamai workflow next ${turn.run} --driver skill` } });
+      expect(await made.call({ kind: 'report', run: turn.run, attempt: open.attempt, role: 'agent', modelUnavailable: false })).toMatchObject({ error: { code: 'not_dispatched', next: `teamai workflow next ${turn.run} --driver skill` } });
       return made.rows;
     },
   },
@@ -289,6 +341,100 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       const { run } = await started(made);
       const done = await polledToDone(made, run);
       expect(done.actions).toMatchObject([{ kind: 'done', outcome: 'succeeded' }]);
+      return made.rows;
+    },
+  },
+  {
+    name: 'two prompt steps: the host question, dispatches, a wake, acks, reports from result.json, and a repeated report',
+    rows: ['R12', 'R13', 'D7', 'C2', 'D22', 'K1', 'K2', 'P5', 'P1'],
+    run: async () => {
+      const made = await harness({ pair: PAIR });
+      const turn = await chosen(made, 'pair', 2);
+      const { run } = turn;
+      // Each runner offers its step when it is ready, so the dispatches come in either order.
+      const api = dispatches(turn).find((action) => action.step === 'api');
+      const ui = dispatches(turn).find((action) => action.step === 'ui');
+      if (!api || !ui) throw new Error(JSON.stringify(turn));
+      expect(ui.model).toEqual({ by: 'step', name: 'claude-haiku-4-5' });
+      const woken = await turnOf(await made.call({ kind: 'next', run, wait: true }));
+      expect([woken.actions, woken.then]).toEqual([[], { kind: 'wake', run: `teamai workflow next ${run} --driver skill` }]);
+      await made.call({ kind: 'ack', run, attempt: api.attempt });
+      expect(dispatches(await turnOf(await made.call({ kind: 'ack', run, attempt: api.attempt })))).toEqual([ui]);
+      childWrites(api.brief, { kind: 'output', output: 'Wrote the API.' });
+      const reported = await turnOf(await made.call({ kind: 'report', run, attempt: api.attempt, role: 'agent', modelUnavailable: false }));
+      expect(reported.events).toContainEqual(expect.objectContaining({ kind: 'settled', step: 'api', outcome: 'success' }));
+      expect((await turnOf(await made.call({ kind: 'report', run, attempt: api.attempt, role: 'agent', modelUnavailable: false }))).events)
+        .toEqual([{ kind: 'repeated', attempt: api.attempt }]);
+      return made.rows;
+    },
+  },
+  {
+    name: 'the host question first: an ack or a report waits for it, and a second answer is refused',
+    rows: ['R14', 'R15', 'K3'],
+    run: async () => {
+      const made = await harness({ pair: PAIR });
+      const { run } = await turnOf(await made.call({ kind: 'start', name: 'pair', answers: { parallel: 2, confirmed: false }, inputs: undefined }));
+      const attempt = AttemptIdSchema.parse('a00000000');
+      expect(await made.call({ kind: 'ack', run, attempt })).toMatchObject({ error: { code: 'choice_pending', next: `teamai workflow next ${run} --driver skill` } });
+      expect(await made.call({ kind: 'report', run, attempt, role: 'agent', modelUnavailable: false })).toMatchObject({ error: { code: 'choice_pending' } });
+      await made.call({ kind: 'choose', run, choice: 'h2' });
+      expect(await made.call({ kind: 'choose', run, choice: 'h1' })).toMatchObject({ error: { code: 'unknown_choice', next: `teamai workflow next ${run} --driver skill` } });
+      expect(await made.call({ kind: 'ack', run, attempt })).toMatchObject({ error: { code: 'unknown_offer', next: `teamai workflow next ${run} --driver skill` } });
+      return made.rows;
+    },
+  },
+  {
+    name: 'a model the host cannot run fails the step: an alias with no model for the tool, and a model the agent reports unavailable',
+    rows: ['C3', 'P4'],
+    run: async () => {
+      const aliased = await harness({ pair: PAIR.replace('model: claude-haiku-4-5', 'model: fast') });
+      const turn = await chosen(aliased, 'pair', 2);
+      // `fast` names no model for claude, so ui fails before a child starts, and api is offered alone.
+      expect(turn.events).toContainEqual(expect.objectContaining({ kind: 'settled', step: 'ui', outcome: 'failed', failure: expect.objectContaining({ code: 'model_unavailable' }) }));
+      expect(dispatches(turn).map((action) => action.step)).toEqual(['api']);
+      const pinned = await harness({ pair: PAIR });
+      const offered = await chosen(pinned, 'pair', 2);
+      const ui = dispatches(offered).find((action) => action.step === 'ui');
+      if (!ui?.unavailable) throw new Error(JSON.stringify(offered));
+      const reported = await turnOf(await pinned.call({ kind: 'report', run: offered.run, attempt: ui.attempt, role: 'agent', modelUnavailable: true }));
+      expect(reported.events).toContainEqual(expect.objectContaining({ kind: 'settled', step: 'ui', outcome: 'failed', failure: expect.objectContaining({ code: 'model_unavailable' }) }));
+      return [...aliased.rows, ...pinned.rows];
+    },
+  },
+  {
+    name: 'two steps in the checkout take turns: the second waits behind the first, and runs once it settled',
+    rows: ['C4', 'D9'],
+    run: async () => {
+      const made = await harness({ check: ROOTS });
+      const { run } = await turnOf(await made.call({ kind: 'start', name: 'check', answers: { parallel: 2, confirmed: false }, inputs: undefined }));
+      const done = await polledToDone(made, run);
+      expect(done.actions).toMatchObject([{ kind: 'done', outcome: 'succeeded' }]);
+      return made.rows;
+    },
+  },
+  {
+    name: 'a prompt step in a new workspace is offered once its setup ran with the env it requires, and its brief has no env value',
+    rows: ['C2'],
+    run: async () => {
+      vi.stubEnv('SETUP_TOKEN', 'setup-token-value-1304');
+      const made = await harness({ build: SETUP });
+      const turn = await chosen(made, 'build', 1);
+      const [build] = dispatches(turn);
+      if (!build) throw new Error(JSON.stringify(turn));
+      expect(fs.readFileSync(build.brief, 'utf8')).not.toContain('setup-token-value-1304');
+      return made.rows;
+    },
+  },
+  {
+    name: 'a setup that fails settles the step with its own failure',
+    rows: ['C7'],
+    run: async () => {
+      vi.stubEnv('SETUP_TOKEN', 'setup-token-value-1304');
+      const made = await harness({ build: SETUP.replace('= 22', '= 0') });
+      const turn = await chosen(made, 'build', 1);
+      const done = turn.status === 'done' ? turn : await polledToDone(made, turn.run);
+      expect(done.actions).toMatchObject([{ kind: 'done', outcome: 'failed' }]);
+      expect([...turn.events, ...done.events]).toContainEqual(expect.objectContaining({ kind: 'settled', step: 'build', failure: expect.objectContaining({ code: 'setup_failed' }) }));
       return made.rows;
     },
   },

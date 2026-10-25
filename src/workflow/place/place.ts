@@ -40,6 +40,19 @@ export function placeOf(lease: { cwd?: string; workspace?: Pick<WorkspaceContrac
   return lease.cwd ?? stepCheckout(root, lease.workspace?.branch);
 }
 
+/**
+ * The attempt among `others` that holds the place `lease` would get under `root`: one whose place is prepared and not
+ * finished or given up. Two attempts of one driver never share a place.
+ */
+export async function placeHeldBy(input: { config: LocalConfig; run: RunId; root: string; lease: Pick<PlaceLease, 'workspace'>; others: AttemptId[] }): Promise<AttemptId | undefined> {
+  const place = placeOf(input.lease, path.resolve(input.root));
+  for (const other of input.others) {
+    const recorded = await readPlaceRecord(input.config, input.run, other);
+    if (!('kind' in recorded) && (recorded.phase === 'staged' || recorded.phase === 'ready') && recorded.dir === place) return other;
+  }
+  return undefined;
+}
+
 /** The lease fields a place reads. */
 export interface PlaceLease {
   attempt: AttemptId;
@@ -243,6 +256,8 @@ export async function finishPlace(input: { config: LocalConfig; lock: RunLock; a
     return { outcome: 'failed', message: failure.message, failure };
   }
   if (recorded.phase === 'finished') return recorded.finished;
+  // A setup that failed gave the place up, and the step's report carries that failure.
+  if (recorded.phase === 'abandoned' && end.outcome === 'failed') return end;
   if (recorded.phase !== 'ready') {
     const failure = { code: 'workspace_base', message: `Step "${recorded.step}" has no place to finish: ${recorded.phase === 'staged' ? 'its setup never ran' : 'it was given up when the step stopped'}.` };
     return { outcome: 'failed', message: failure.message, failure };

@@ -235,10 +235,13 @@ Generated: do not edit by hand. Regenerate with
     - `--json <payload>` — Driver identity, for example {"driver":{"kind":"local","machine":"host","workspace":"/work"}}. Optional: running, the attempt ids of its open leases the driver still runs (an open lease left out is handed back), canTakeLease, false to poll while a tool runs without taking a new lease, and driver.can, what the driver can do on this request: hitl (a person can answer HITL requests and work interactively), workspace, env, setup, tokens, max_turns, network, isolation. An omitted key is not offered, so a step that needs it waits, and wait.held names what it lacks. Send driver.can on every next request, including busy polls. claim, true to take a run another install published from teamai-reports before leasing; a run this install owns stays as it is. Every answer lists in cancelled the running attempts whose tools the driver must stop.
     - `--driver <kind>` — skill: advance a run the current coding session drives, and print its turn: the actions to carry out and the command to run next
     - `--wait` — With --driver skill: wait until the run has something to show, up to 100 s. Run it in the background.
+    - `--choice <id>` — With --driver skill: answer the host question with the id of one of its options, as its run prints it
+    - `--ack <offer>` — With --driver skill: acknowledge that the child of a dispatch started, as its ack prints it, so later turns stop offering it
   - `teamai workflow report <run>` — Report the outcome of a leased step. Prints a JSON envelope.
     - `--json <payload>` — attempt, revision, outcome (success, failed, or released), and driver
     - `--driver <kind>` — skill: report an attempt of a run the current coding session drives, as its turn printed the command
     - `--attempt <id>` — With --driver skill: the attempt to report
+    - `--model-unavailable` — With --driver skill and --attempt: the host cannot run the model the dispatch names, so the step fails model_unavailable
   - `teamai workflow respond <run> <step> <choice>` — Answer a waiting approve (yes/no) or choose HITL request. Required HITL requests accept terminal answers or declared person answers from a driver UI. Prints one JSON envelope.
     - `--json <payload>` — Driver identity {"driver":{"kind":"ide","machine":"host","workspace":"/work"}} declares an answer a person gave in the driver UI, never one its agent chose. Records channel driver with agent false; accepts required HITL requests.
     - `--note <text>` — Keep a note with the answer, readable as steps.<id>.note

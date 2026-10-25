@@ -8,12 +8,16 @@ import { z } from 'zod';
 import type { LocalConfig } from '../../../types.js';
 import { readFileSafe, writeJsonAtomic } from '../../../utils/fs.js';
 import { redactJson } from '../../../utils/redact.js';
-import type { DriverCan, EnvScope } from '../../requirements.js';
+import type { EnvScope } from '../../requirements.js';
 import { AttemptIdSchema, attemptDir, type AttemptId, type RunId, type RunLock } from '../../store.js';
 import type { WorkflowEnvelope, WorkflowFailure } from '../../types.js';
-import { describeLiteral, localStartLiteral, nextLiteral, pollLiteral, reportLiteral, type Invocation, type Literal } from './literals.js';
+import { readChildResult } from './child-brief.js';
+import { HOST_PROFILES, SKILL_CAN, type HostChoice } from './host-profiles.js';
+import {
+  ackLiteral, chooseHostLiteral, describeLiteral, localStartLiteral, nextLiteral, pollLiteral, reportLiteral, unavailableLiteral, type Invocation, type Literal,
+} from './literals.js';
 import { readSkillState, writeSkillState, type ReportBody, type SkillState } from './skill-state.js';
-import { hasSlot, step, unseenEvents, type Answer, type EngineReply, type MachineInput, type Refusal, type ReportReply, type Step } from './transitions.js';
+import { hasSlot, step, unseenEvents, type Answer, type EngineReply, type MachineInput, type ReadLease, type Refusal, type ReportReply, type Step } from './transitions.js';
 import { turnOf, type SkillAnswer, type SkillError } from './turn.js';
 import type { SkillContext } from './skill-driver.js';
 
@@ -31,12 +35,6 @@ export const RUNNER_POLL_MS = 10_000;
 export const SKILL_MAX_CHILDREN = 3;
 const GRACE_CHECK_MS = 250;
 
-/**
- * What the skill driver declares on every `next`: it runs commands in the checkout and scopes their env in its own
- * processes, and no person answers through it.
- */
-const CAN: DriverCan = { hitl: false, workspace: ['read-only'], env: 'commands' };
-
 /** The most steps the skill driver runs at once for `config`. */
 export function ceilingOf(config: LocalConfig): number {
   return config.workflows?.max_parallel ?? SKILL_MAX_CHILDREN;
@@ -50,9 +48,44 @@ export function take(context: SkillContext, state: SkillState | undefined, input
 }
 
 const EnvScopeShape = z.object({ provide: z.array(z.string()), withhold: z.array(z.string()) }) satisfies z.ZodType<EnvScope>;
-const JobSchema = z.object({ command: z.string(), env: z.record(z.string()), envScope: EnvScopeShape.optional() });
-/** What a runner runs: the leased command, the env the lease rendered for it, and the team env keys it gives or keeps. */
-export type Job = z.infer<typeof JobSchema>;
+const LeaseBase = {
+  attempt: AttemptIdSchema,
+  step: z.string(),
+  revision: z.number().int(),
+  // No person answers through this driver, so the engine holds every interactive step back from it.
+  interactive: z.undefined(),
+};
+const LeaseSchema = z.union([
+  z.object({ ...LeaseBase, command: z.string(), env: z.record(z.string()).optional(), envScope: EnvScopeShape.optional() }),
+  z.object({
+    ...LeaseBase, prompt: z.string(), workspace: z.unknown().optional(),
+    agent: z.string().optional(), model: z.string().optional(), defaultModel: z.string().optional(), output: z.unknown().optional(),
+  }),
+]);
+
+/** The lease `raw` the engine sent, as this driver runs it. Undefined when this teamai cannot run it. */
+function readLease(raw: unknown): ReadLease | undefined {
+  const read = LeaseSchema.safeParse(raw);
+  if (!read.success) return undefined;
+  const { attempt, step: id, revision } = read.data;
+  if ('command' in read.data) {
+    const { command, env, envScope } = read.data;
+    return { attempt, step: id, revision, executor: 'command', command, env: env ?? {}, ...(envScope ? { envScope } : {}) };
+  }
+  const { prompt, workspace, agent, model, defaultModel, output } = read.data;
+  return {
+    attempt, step: id, revision, executor: 'prompt', prompt, place: workspace === undefined ? 'checkout' : 'workspace',
+    ...(agent !== undefined ? { agent } : {}), ...(model !== undefined ? { model } : {}), ...(defaultModel !== undefined ? { defaultModel } : {}),
+    ...(output !== undefined ? { output } : {}),
+  };
+}
+
+const JobSchema = z.object({ lease: z.unknown() });
+/** What a runner runs: its attempt's lease, masked, as the engine sent it (`raw`) and as this driver reads it. */
+export interface Job {
+  raw: unknown;
+  lease: ReadLease;
+}
 
 function jobPath(config: LocalConfig, run: RunId, attempt: AttemptId): string {
   return path.join(attemptDir(config, run, attempt), 'job.json');
@@ -61,13 +94,14 @@ function jobPath(config: LocalConfig, run: RunId, attempt: AttemptId): string {
 export async function readJob(config: LocalConfig, run: RunId, attempt: AttemptId): Promise<Job | undefined> {
   try {
     const parsed = JobSchema.safeParse(JSON.parse(await readFileSafe(jobPath(config, run, attempt)) ?? 'null'));
-    return parsed.success ? parsed.data : undefined;
+    const lease = parsed.success ? readLease(parsed.data.lease) : undefined;
+    return parsed.success && lease ? { raw: parsed.data.lease, lease } : undefined;
   } catch {
     return undefined;
   }
 }
 
-async function spawnRunner(context: SkillContext, state: SkillState, attempt: AttemptId, job: Job | undefined): Promise<void> {
+async function spawnRunner(context: SkillContext, state: SkillState, attempt: AttemptId, job: { lease: unknown } | undefined): Promise<void> {
   if (job) {
     await fs.mkdir(attemptDir(context.config, state.run, attempt), { recursive: true });
     await writeJsonAtomic(jobPath(context.config, state.run, attempt), redactJson(job, context.env.secrets));
@@ -76,16 +110,6 @@ async function spawnRunner(context: SkillContext, state: SkillState, attempt: At
 }
 
 const FailureSchema = z.object({ code: z.string(), message: z.string() });
-const LeaseSchema = z.object({
-  attempt: AttemptIdSchema,
-  step: z.string(),
-  revision: z.number().int(),
-  command: z.string(),
-  env: z.record(z.string()).optional(),
-  envScope: EnvScopeShape.optional(),
-  prompt: z.undefined(),
-  workspace: z.undefined(),
-});
 const NextDataSchema = z.object({
   lease: z.unknown().optional(),
   wait: z.object({ reason: z.string() }).optional(),
@@ -101,12 +125,11 @@ function engineReply(run: RunId, answer: WorkflowEnvelope): EngineReply {
   const { done, lease, wait } = data.data;
   if (done) return { kind: 'done', outcome: done.outcome, ...(done.failure ? { failure: done.failure } : {}) };
   if (lease === undefined) return { kind: 'wait', reason: wait?.reason ?? 'the next step is not available' };
-  const read = LeaseSchema.safeParse(lease);
-  if (!read.success) {
+  const read = readLease(lease);
+  if (!read) {
     return { kind: 'error', error: { code: 'run_unreadable', message: `Run ${run} leased a step the skill driver cannot run. Ask the person to continue it in a terminal with teamai workflow resume ${run}.` } };
   }
-  const { attempt, step: id, revision, command, env, envScope } = read.data;
-  return { kind: 'lease', lease: { attempt, step: id, revision, command, env: env ?? {}, ...(envScope ? { envScope } : {}) } };
+  return { kind: 'lease', lease: read, raw: lease };
 }
 
 const ReportDataSchema = z.object({ step: z.object({ outcome: z.enum(['success', 'failed', 'released']) }) });
@@ -145,7 +168,7 @@ export function errorOf(answer: Extract<Answer, { kind: 'error' | 'engine-error'
 function refusalMessage(refusal: Refusal, invocation: Invocation): string {
   switch (refusal.code) {
     case 'needs_local_driver':
-      return `${refusal.name} has steps the skill driver does not run in a coding session yet: ${refusal.steps.join(', ')}. Prompt steps and steps outside the checkout need the local driver for now. The person can run it in a terminal with ${localStartLiteral(invocation, refusal.name)}.`;
+      return `${refusal.name} has steps the skill driver does not run in a coding session yet: ${refusal.steps.join(', ')}. Interactive steps need the local driver for now. The person can run it in a terminal with ${localStartLiteral(invocation, refusal.name)}.`;
     case 'confirm_needed': {
       const lacks = refusal.missing.map((answer) => ({ confirmed: '--confirmed, the person\'s yes', inputs: '--inputs', parallel: '--parallel' })[answer]);
       const said = [
@@ -158,6 +181,12 @@ function refusalMessage(refusal: Refusal, invocation: Invocation): string {
       return `Run ${refusal.run} is not driven by the skill driver on this machine. The person can continue it in a terminal with teamai workflow resume ${refusal.run}.`;
     case 'orchestrator_active':
       return `Run ${refusal.run} is driven by another coding session. Continue it from that session.`;
+    case 'choice_pending':
+      return `Run ${refusal.run} waits for the host question. Run the next literal, then the run of the option that fits your host.`;
+    case 'unknown_choice':
+      return `Run ${refusal.run} asks no host question now: its host is already chosen, or it has no prompt step. Run the next literal to see the run.`;
+    case 'unknown_offer':
+      return `Attempt ${refusal.attempt} of run ${refusal.run} has no dispatch to ack. Run the next literal to see the run.`;
     case 'unknown_attempt':
       return `Attempt ${refusal.attempt} is not open in run ${refusal.run}. Run the next literal to see the run.`;
     case 'not_dispatched':
@@ -184,6 +213,15 @@ async function runTick(context: SkillContext, lock: RunLock, start: SkillState):
       if (resent?.state) state = (await sendReport(context, lock, resent.state, open.attempt, open.body)).state;
       continue;
     }
+    if (open.phase === 'queued') {
+      const unqueued = take(context, state, { kind: 'unqueue', attempt: open.attempt, at: context.now().toISOString() });
+      if (!unqueued?.state) continue;
+      state = unqueued.state;
+      await spawnRunner(context, state, open.attempt, undefined);
+      spawned = true;
+      continue;
+    }
+    if (open.phase !== 'preparing' && open.phase !== 'running') continue;
     if (await context.runners.alive(state.run, open.attempt)) continue;
     const respawned = take(context, state, { kind: 'runner-free', attempt: open.attempt, at: context.now().toISOString(), graceMs: WAIT_GRACE_MS });
     if (!respawned?.state) continue;
@@ -195,7 +233,7 @@ async function runTick(context: SkillContext, lock: RunLock, start: SkillState):
     const ticked = take(context, state, { kind: 'tick' });
     const next = ticked?.effects.find((effect) => effect.kind === 'next');
     if (!next || next.kind !== 'next') return { state, spawned };
-    const answer = await context.client.next(state.run, { driver: { ...state.driver, can: CAN }, running: next.running, canTakeLease: next.canTakeLease });
+    const answer = await context.client.next(state.run, { driver: { ...state.driver, can: SKILL_CAN }, running: next.running, canTakeLease: next.canTakeLease });
     const replied = take(context, state, { kind: 'reply', reply: engineReply(state.run, answer), at: context.now().toISOString() });
     if (!replied) return { state, spawned };
     state = replied.state ?? state;
@@ -207,7 +245,7 @@ async function runTick(context: SkillContext, lock: RunLock, start: SkillState):
     if (replied.answer?.kind === 'engine-error') {
       return { state, spawned, error: errorOf(replied.answer, { invocation: state.invocation, same: nextLiteral(state.invocation, state.run), run: state.run }) };
     }
-    if (replied.row !== 'D6' || !hasSlot(state)) return { state, spawned, ...(replied.waiting ? { waiting: replied.waiting } : {}) };
+    if ((replied.row !== 'D6' && replied.row !== 'D7') || !hasSlot(state)) return { state, spawned, ...(replied.waiting ? { waiting: replied.waiting } : {}) };
   }
 }
 
@@ -243,29 +281,84 @@ async function finish(context: SkillContext, lock: RunLock, state: SkillState, w
   const events = unseenEvents(state, context.session);
   const shown = take(context, state, { kind: 'turn', session: context.session })?.state ?? state;
   await writeSkillState(context.config, lock, shown, context.env.secrets);
-  return { data: { turn: turnOf(shown, { events, poll: pollLiteral(shown.invocation, shown.run), ...(waiting ? { waiting } : {}) }) } };
+  return { data: { turn: turnOf(shown, { events, after: { kind: 'poll', run: pollLiteral(shown.invocation, shown.run) }, ...(waiting ? { waiting } : {}) }) } };
+}
+
+/** A call that answers at once: `next`, an answer to the host question, an ack, or a report from the agent. */
+export type ForegroundCall =
+  | { kind: 'next' }
+  | { kind: 'choose'; choice: HostChoice }
+  | { kind: 'ack'; attempt: AttemptId }
+  | { kind: 'report'; attempt: AttemptId; modelUnavailable: boolean };
+
+function literalOf(invocation: Invocation, run: RunId, call: ForegroundCall): Literal {
+  switch (call.kind) {
+    case 'next':
+      return nextLiteral(invocation, run);
+    case 'choose':
+      return chooseHostLiteral(invocation, run, call.choice);
+    case 'ack':
+      return ackLiteral(invocation, run, call.attempt);
+    case 'report':
+      return (call.modelUnavailable ? unavailableLiteral : reportLiteral)(invocation, run, call.attempt);
+    default: {
+      const unhandled: never = call;
+      return unhandled;
+    }
+  }
+}
+
+/** The row `call` takes before the tick, under the lock: the state the tick starts from, or the answer it gives instead. */
+async function applyCall(context: SkillContext, lock: RunLock, state: SkillState, call: ForegroundCall, same: Literal): Promise<{ state: SkillState } | { answer: SkillAnswer }> {
+  let taken: Step | undefined;
+  switch (call.kind) {
+    case 'next':
+      return { state: state.done ? take(context, state, { kind: 'next' })?.state ?? state : state };
+    case 'choose':
+      taken = take(context, state, { kind: 'choose', choice: call.choice, profile: HOST_PROFILES[call.choice] });
+      break;
+    case 'ack':
+      taken = take(context, state, { kind: 'ack', attempt: call.attempt });
+      break;
+    case 'report': {
+      const result = await readChildResult({ config: context.config, run: state.run, attempt: call.attempt });
+      taken = take(context, state, { kind: 'report', attempt: call.attempt, modelUnavailable: call.modelUnavailable, result });
+      const send = taken?.effects.find((effect) => effect.kind === 'send');
+      if (taken?.state && send?.kind === 'send') {
+        const sent = await sendReport(context, lock, taken.state, call.attempt, send.body);
+        if (sent.refused) {
+          await writeSkillState(context.config, lock, sent.state, context.env.secrets);
+          return { answer: { error: { ...sent.refused, next: same } } };
+        }
+        return { state: sent.state };
+      }
+      break;
+    }
+    default: {
+      const unhandled: never = call;
+      return unhandled;
+    }
+  }
+  if (taken?.answer?.kind === 'error' || taken?.answer?.kind === 'engine-error') {
+    await writeSkillState(context.config, lock, state, context.env.secrets);
+    return { answer: { error: errorOf(taken.answer, { invocation: state.invocation, same, run: state.run }) } };
+  }
+  return { state: taken?.state ?? state };
 }
 
 /**
- * A foreground call: `next` ticks the run, `report` from the agent answers an error. Either answers at once, or, when
- * the tick spawned runners, after they prepared or `WAIT_GRACE_MS` passed (D18).
+ * A foreground call answers at once, after the tick its row leads to, or, when the tick spawned runners, after they
+ * prepared or `WAIT_GRACE_MS` passed (D18).
  */
-export async function foreground(context: SkillContext, run: RunId, call: { kind: 'next' } | { kind: 'report'; attempt: AttemptId }): Promise<SkillAnswer> {
-  const same = call.kind === 'report' ? reportLiteral(context.invocation, run, call.attempt) : nextLiteral(context.invocation, run);
+export async function foreground(context: SkillContext, run: RunId, call: ForegroundCall): Promise<SkillAnswer> {
+  const same = literalOf(context.invocation, run, call);
   const first = await context.locks.take(run, async (lock): Promise<{ answer: SkillAnswer } | { grace: { waiting?: { reason: string } } }> => {
     const read = await called(context, run, same);
     if ('answer' in read) return read;
-    let state = read.state;
-    if (call.kind === 'report') {
-      const refused = take(context, state, { kind: 'report', attempt: call.attempt });
-      await writeSkillState(context.config, lock, state, context.env.secrets);
-      if (refused?.answer?.kind === 'error') return { answer: { error: errorOf(refused.answer, { invocation: state.invocation, same }) } };
-      return { answer: await finish(context, lock, state, undefined) };
-    }
-    if (state.done) {
-      state = take(context, state, { kind: 'next' })?.state ?? state;
-      return { answer: await finish(context, lock, state, undefined) };
-    }
+    const applied = await applyCall(context, lock, read.state, call, same);
+    if ('answer' in applied) return applied;
+    let { state } = applied;
+    if (state.done) return { answer: await finish(context, lock, state, undefined) };
     const ticked = await runTick(context, lock, state);
     state = ticked.state;
     if (ticked.error) {
@@ -316,12 +409,13 @@ export async function poll(context: SkillContext, run: RunId): Promise<SkillAnsw
       last = polled?.state ?? state;
       await writeSkillState(context.config, lock, last, context.env.secrets);
       if (polled?.row === 'D23') return { data: { turn: turnOf(last, { events }) } };
-      if (polled?.row === 'D24') return { data: { turn: turnOf(last, { events: [], poll: same, quiet: true }) } };
+      if (polled?.row === 'D22') return { data: { turn: turnOf(last, { events: [], after: { kind: 'wake', run: nextLiteral(last.invocation, run) }, quiet: true }) } };
+      if (polled?.row === 'D24') return { data: { turn: turnOf(last, { events: [], after: { kind: 'poll', run: same }, quiet: true }) } };
       return 'sleep';
     }, 0);
     if (busy(ticked)) {
       const polled = take(context, last, { kind: 'poll', session: context.session, busy: true, boundReached });
-      if (polled?.row === 'D24') return last ? { data: { turn: turnOf(last, { events: [], poll: same, quiet: true }) } } : lockBusy(context, run, same);
+      if (polled?.row === 'D24') return last ? { data: { turn: turnOf(last, { events: [], after: { kind: 'poll', run: same }, quiet: true }) } } : lockBusy(context, run, same);
     } else if (ticked !== 'sleep') {
       return ticked;
     }

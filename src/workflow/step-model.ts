@@ -6,9 +6,9 @@
  * does not start a subagent, which is how pull deploys OpenCode agents.
  */
 import { isModelAlias, loadModelAliases, noModelCause, noModelReason, resolveModelValue, type NoModel } from '../models/aliases.js';
-import { toolExtrasFor, type AgentSpec } from '../resources/agent-format.js';
+import { toolExtrasFor, type AgentSpec, type ToolName } from '../resources/agent-format.js';
 import type { LocalConfig } from '../types.js';
-import { localToolFamily, type LaunchTool } from '../tool-launch/tools.js';
+import { isLaunchTool, localToolFamily } from '../tool-launch/tools.js';
 import type { WorkflowFailure } from './types.js';
 
 /** The model a prompt step's tool runs on, with the reasoning effort it takes. */
@@ -27,7 +27,8 @@ export type StepModelChoice =
 export interface StepModelRequest {
   /** The step path the lease names, such as `check.classify`. */
   step: string;
-  tool: LaunchTool;
+  /** The tool the step runs on: a launch tool, or the coding session's own for a child it starts. */
+  tool: ToolName;
   /** The lease's `model`, as written. */
   model?: string;
   /** The lease's `defaultModel`, as written. */
@@ -67,8 +68,9 @@ export async function chooseStepModel(request: StepModelRequest): Promise<StepMo
     ? { origin: 'step', value: request.model }
     : agent?.model === undefined && request.defaultModel !== undefined ? { origin: 'defaults', value: request.defaultModel } : undefined;
   if (!chosen) {
-    const family = localToolFamily(tool);
-    if (!agent?.model || family === 'claude') return { ok: true };
+    // A tool teamai does not launch starts the agent itself, from the file it reads the model from.
+    const family = isLaunchTool(tool) ? localToolFamily(tool) : undefined;
+    if (!agent?.model || family === undefined || family === 'claude') return { ok: true };
     const variant = family === 'opencode' ? toolExtrasFor(agent, 'opencode')?.['variant'] : undefined;
     return { ok: true, by: 'definition', model: { name: agent.model, ...(variant !== undefined ? { effort: String(variant) } : {}) } };
   }

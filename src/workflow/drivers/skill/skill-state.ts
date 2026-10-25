@@ -5,6 +5,7 @@ import type { LocalConfig } from '../../../types.js';
 import { readFileSafe, writeJsonAtomic } from '../../../utils/fs.js';
 import { redactJson } from '../../../utils/redact.js';
 import { AttemptIdSchema, RunIdSchema, skillStatePath, type RunId, type RunLock } from '../../store.js';
+import { HOST_CHOICES } from './host-profiles.js';
 import { INVOCATIONS } from './literals.js';
 
 const FailureSchema = z.object({ code: z.string(), message: z.string() });
@@ -22,11 +23,37 @@ export const ReportBodySchema = z.object({
 });
 export type ReportBody = z.infer<typeof ReportBodySchema>;
 
+/**
+ * The model a child must run. `definition`: neither the step nor `defaults.model` named one, so the child runs the team
+ * agent's own model, or the host's default.
+ */
+export const ModelPickSchema = z.union([
+  z.object({ by: z.literal('definition') }),
+  z.object({ by: z.enum(['step', 'defaults']), name: z.string(), effort: z.string().optional(), alias: z.string().optional() }),
+]);
+export type ModelPick = z.infer<typeof ModelPickSchema>;
+
+/** A prompt step's work as a child gets it: the place it works in, its brief, and the agent and model it runs as. */
+const DispatchSchema = z.object({
+  place: z.enum(['workspace', 'checkout']),
+  dir: z.string(),
+  brief: z.string(),
+  agent: z.string().optional(),
+  model: ModelPickSchema,
+});
+export type Dispatch = z.infer<typeof DispatchSchema>;
+
 const AttemptBase = { attempt: AttemptIdSchema, step: z.string(), revision: z.number().int(), spawnedAt: z.string() };
-/** An open attempt: its runner prepares its place, runs its command, or has a report to send. */
+/**
+ * An open attempt: its runner prepares its place or runs its command; it waits for the place another attempt holds;
+ * its dispatch is offered to the agent, or acked; or it has a report to send.
+ */
 export const AttemptStateSchema = z.discriminatedUnion('phase', [
   z.object({ ...AttemptBase, phase: z.literal('preparing') }),
+  z.object({ ...AttemptBase, phase: z.literal('queued'), behind: AttemptIdSchema }),
   z.object({ ...AttemptBase, phase: z.literal('running') }),
+  z.object({ ...AttemptBase, phase: z.literal('offered'), dispatch: DispatchSchema }),
+  z.object({ ...AttemptBase, phase: z.literal('dispatched'), dispatch: DispatchSchema }),
   z.object({ ...AttemptBase, phase: z.literal('reporting'), body: ReportBodySchema, tail: z.string().optional() }),
 ]);
 export type AttemptState = z.infer<typeof AttemptStateSchema>;
@@ -36,6 +63,8 @@ export const TurnEventSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('restarted'), step: z.string(), attempt: AttemptIdSchema }),
   /** The engine cancelled the attempt's lease, so its report was not recorded. */
   z.object({ kind: z.literal('stopped'), step: z.string(), attempt: AttemptIdSchema }),
+  /** A report came again for an attempt already settled. */
+  z.object({ kind: z.literal('repeated'), attempt: AttemptIdSchema }),
   z.object({
     kind: z.literal('settled'),
     step: z.string(),
@@ -55,6 +84,12 @@ export const SkillStateSchema = z.object({
   driver: DriverSchema,
   invocation: z.enum(INVOCATIONS),
   options: z.object({ parallel: z.number().int().min(1) }),
+  /** `none`: the run has no prompt step. `pending`: the agent has not answered the host question yet. */
+  host: z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('none') }),
+    z.object({ kind: z.literal('pending') }),
+    z.object({ kind: z.literal('chosen'), id: z.enum(HOST_CHOICES), children: z.enum(['parallel', 'serial']) }),
+  ]),
   /** The session that drives the run, when its host names one, and when it last called. */
   orchestrator: z.object({ session: z.string().optional(), lastCallAt: z.string() }),
   attempts: z.array(AttemptStateSchema),

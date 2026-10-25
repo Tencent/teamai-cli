@@ -3,11 +3,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import { resolveWorkflowEnv } from '../env-resolution.js';
 import type { LocalConfig } from '../types.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { inProcessClient, type WorkflowClient } from '../workflow/protocol.js';
-import { AttemptIdSchema, readRun, RunIdSchema, withRunLock, type RunLock } from '../workflow/store.js';
+import { readRun, RunIdSchema, withRunLock, type RunLock } from '../workflow/store.js';
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }); });
@@ -71,15 +72,17 @@ async function protocol(config: LocalConfig): Promise<WorkflowClient> {
 
 const driver = { kind: 'skill', machine: 'test', workspace: '/work', can: { hitl: false, workspace: ['read-only'] } };
 
-async function leased(config: LocalConfig, checkout: string): Promise<{ run: RunLock['run']; attempt: string; revision: number }> {
+const LeaseSchema = z.object({ attempt: z.string(), revision: z.number() }).passthrough();
+
+async function leased(config: LocalConfig, checkout: string): Promise<{ run: RunLock['run']; attempt: string; revision: number; lease: z.infer<typeof LeaseSchema> }> {
   const client = await protocol(config);
   const started = await client.start('check', { checkout });
   if (!('data' in started)) throw new Error(JSON.stringify(started));
   const run = RunIdSchema.parse(started.data.run);
   const next = await client.next(run, { driver });
   if (!('data' in next) || !('lease' in next.data)) throw new Error(JSON.stringify(next));
-  const lease = next.data.lease as { attempt: string; revision: number };
-  return { run, attempt: lease.attempt, revision: lease.revision };
+  const lease = LeaseSchema.parse(next.data.lease);
+  return { run, attempt: lease.attempt, revision: lease.revision, lease };
 }
 
 describe('workflow protocol in process', () => {
@@ -87,7 +90,7 @@ describe('workflow protocol in process', () => {
     const { config } = await fixture({ wide: WIDE });
     expect(await (await protocol(config)).describe('fan', { ceiling: 3 })).toEqual({ description: {
       name: 'wide', description: 'Fan out, review, ship.', alias: 'fan', invoke: 'ask', inputs: { targets: { type: 'array', items: { type: 'string' } } },
-      facts: { prompts: ['review'], width: 3, gates: [{ step: 'review', kind: 'approve', required: false, hasDefault: false }], inWorkspace: ['ship'] },
+      facts: { prompts: ['review'], interactive: [], width: 3, gates: [{ step: 'review', kind: 'approve', required: false, hasDefault: false }], inWorkspace: ['ship'] },
     } });
     expect(await (await protocol(config)).describe('wide', { ceiling: 20 })).toMatchObject({ description: { facts: { width: 7 } } });
   });
@@ -96,7 +99,7 @@ describe('workflow protocol in process', () => {
     const each = CHECK.replace('name: check', 'name: each\ninputs:\n  targets: [string]').replace('  - id: lint\n', '  - id: lint\n    for_each: inputs.targets\n');
     const { config } = await fixture({ check: CHECK, each });
     expect(await (await protocol(config)).describe('each', { ceiling: 5 })).toMatchObject({ description: { facts: { width: 5 } } });
-    expect(await (await protocol(config)).describe('check', { ceiling: 5 })).toMatchObject({ description: { invoke: 'deny', facts: { width: 1, prompts: [], gates: [], inWorkspace: [] } } });
+    expect(await (await protocol(config)).describe('check', { ceiling: 5 })).toMatchObject({ description: { invoke: 'deny', facts: { width: 1, prompts: [], interactive: [], gates: [], inWorkspace: [] } } });
   });
 
   it('answers workflow_not_found for a name with no runnable version', async () => {
@@ -106,10 +109,10 @@ describe('workflow protocol in process', () => {
 
   it('fails a reader step that changed the checkout it was prepared in, when its report says it succeeded', async () => {
     const { config, checkout } = await fixture({ check: CHECK });
-    const { run, attempt, revision } = await leased(config, checkout);
+    const { run, attempt, revision, lease } = await leased(config, checkout);
     const client = await protocol(config);
     const answer = await withRunLock(config, run, async (lock) => {
-      expect(await client.prepare(lock, { attempt: AttemptIdSchema.parse(attempt), executor: 'command' })).toEqual({ kind: 'prepared', dir: checkout });
+      expect(await client.prepare(lock, lease)).toEqual({ kind: 'prepared', dir: checkout });
       fs.writeFileSync(path.join(checkout, 'README.md'), 'changed\n');
       return client.report(run, { attempt, revision, outcome: 'success', driver }, { lock });
     }, { waitMs: 0 });
@@ -120,8 +123,7 @@ describe('workflow protocol in process', () => {
 
   it('keeps the first snapshot when an attempt is prepared again, so a change made in between still fails it', async () => {
     const { config, checkout } = await fixture({ check: CHECK });
-    const { run, attempt, revision } = await leased(config, checkout);
-    const lease = { attempt: AttemptIdSchema.parse(attempt), executor: 'command' as const };
+    const { run, attempt, revision, lease } = await leased(config, checkout);
     const client = await protocol(config);
     await withRunLock(config, run, (lock) => client.prepare(lock, lease), { waitMs: 0 });
     fs.writeFileSync(path.join(checkout, 'new.txt'), 'new\n');
@@ -131,10 +133,10 @@ describe('workflow protocol in process', () => {
 
   it('does not check a reader step that failed, so it keeps its own failure', async () => {
     const { config, checkout } = await fixture({ check: CHECK });
-    const { run, attempt, revision } = await leased(config, checkout);
+    const { run, attempt, revision, lease } = await leased(config, checkout);
     const client = await protocol(config);
     await withRunLock(config, run, async (lock) => {
-      await client.prepare(lock, { attempt: AttemptIdSchema.parse(attempt), executor: 'command' });
+      await client.prepare(lock, lease);
       fs.writeFileSync(path.join(checkout, 'README.md'), 'changed\n');
       return client.report(run, { attempt, revision, outcome: 'failed', driver, message: 'command exited with status 1', failure: { code: 'command_failed', message: 'command exited with status 1' } }, { lock });
     }, { waitMs: 0 });
@@ -144,9 +146,10 @@ describe('workflow protocol in process', () => {
 
   it('refuses to prepare an attempt the run has not leased', async () => {
     const { config, checkout } = await fixture({ check: CHECK });
-    const { run } = await leased(config, checkout);
+    const { run, lease } = await leased(config, checkout);
     const client = await protocol(config);
-    expect(await withRunLock(config, run, (lock) => client.prepare(lock, { attempt: AttemptIdSchema.parse('a00000000'), executor: 'command' }), { waitMs: 0 }))
+    const other = { ...lease, attempt: 'a00000000' };
+    expect(await withRunLock(config, run, (lock) => client.prepare(lock, other), { waitMs: 0 }))
       .toEqual({ kind: 'failed', failure: { code: 'wrong_attempt', message: 'Attempt a00000000 is not the leased attempt' } });
   });
 });

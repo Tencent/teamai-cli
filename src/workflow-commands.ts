@@ -172,15 +172,19 @@ export async function workflowStart(name: string, options: { driver?: string; to
   writeEnvelope(await runLocalDriver(config, runId, process.cwd(), { tools, toolPaths: teamConfig.toolPaths, autoApprove: options.autoApprove }), secrets);
 }
 
-export async function workflowNext(runId: string, options: { json?: string; prepare?: boolean; driver?: string; wait?: boolean }): Promise<void> {
+export async function workflowNext(runId: string, options: { json?: string; prepare?: boolean; driver?: string; wait?: boolean; choice?: string; ack?: string }): Promise<void> {
   const { driver: kind, ...rest } = options;
   if (kind === 'skill') {
     await workflowSkill({ kind: 'next', run: runId, options: rest });
     return;
   }
   setStderrOnly(true);
-  if (kind !== undefined || options.wait) {
-    writeEnvelope({ error: { code: 'invalid_arguments', message: kind !== undefined ? `next takes --driver skill, not --driver ${kind}` : '--wait needs --driver skill' } }, collectEnvSecrets());
+  const skillOnly = options.wait ? '--wait needs --driver skill'
+    : options.choice !== undefined ? '--choice needs --driver skill'
+      : options.ack !== undefined ? '--ack needs --driver skill' : undefined;
+  const refused = kind !== undefined ? `next takes --driver skill, not --driver ${kind}` : skillOnly;
+  if (refused !== undefined) {
+    writeEnvelope({ error: { code: 'invalid_arguments', message: refused } }, collectEnvSecrets());
     return;
   }
   const payload = readJson(options.json, 'Pass --json with a driver object');
@@ -199,15 +203,18 @@ export async function workflowNext(runId: string, options: { json?: string; prep
   writeEnvelope(await inProcessClient({ config, env }).next(runId, payload.value, { prepare: options.prepare === true }), secrets);
 }
 
-export async function workflowReport(runId: string, options: { json?: string; driver?: string; attempt?: string }): Promise<void> {
+export async function workflowReport(runId: string, options: { json?: string; driver?: string; attempt?: string; modelUnavailable?: boolean }): Promise<void> {
   const { driver: kind, ...rest } = options;
   if (kind === 'skill') {
     await workflowSkill({ kind: 'report', run: runId, options: rest });
     return;
   }
   setStderrOnly(true);
-  if (kind !== undefined || options.attempt !== undefined) {
-    writeEnvelope({ error: { code: 'invalid_arguments', message: kind !== undefined ? `report takes --driver skill, not --driver ${kind}` : '--attempt needs --driver skill' } }, collectEnvSecrets());
+  const skillOnly = options.attempt !== undefined ? '--attempt needs --driver skill'
+    : options.modelUnavailable ? '--model-unavailable needs --driver skill' : undefined;
+  const refused = kind !== undefined ? `report takes --driver skill, not --driver ${kind}` : skillOnly;
+  if (refused !== undefined) {
+    writeEnvelope({ error: { code: 'invalid_arguments', message: refused } }, collectEnvSecrets());
     return;
   }
   if (isLeaseRef(runId)) {

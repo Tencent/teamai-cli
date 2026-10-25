@@ -11,6 +11,7 @@ import { leaseNext, parseNextPayload, parseReport, reportAttempt, resumableSessi
 import { _setDriverPollMs, runLocalDriver } from '../workflow/drivers/local/local-driver.js';
 import { getCurrentVersion } from '../package-info.js';
 import { outputMismatch } from '../workflow/output.js';
+import { CAN_KEYS } from '../workflow/requirements.js';
 import { pendingRecords, type WorkflowRunRecord } from '../workflow/records.js';
 import { cancelRun, retryStep } from '../workflow/run-controls.js';
 import { getTeamSecretsPath, writeSecretStore } from '../secret-store.js';
@@ -152,6 +153,15 @@ describe('workflow engine', () => {
     const nextKnown = parseNextPayload({ driver: driverA, running: ['a00000000'], canTakeLease: true });
     if (typeof nextKnown === 'string') throw new Error(nextKnown);
     expect(nextKnown.ignored).toEqual([]);
+  });
+
+  it('says what a driver.can key takes when a next payload gives it a value it does not', () => {
+    for (const key of CAN_KEYS) {
+      const answer = parseNextPayload({ driver: { ...driverA, can: { [key]: 42 } } });
+      expect(answer, key).toEqual(expect.stringMatching(new RegExp(`^driver\\.can\\.${key}: `)));
+      // Zod answers a union without its own message with only this, which names no value the key takes.
+      expect(answer, key).not.toMatch(/: Invalid input$/);
+    }
   });
 
   it('leases steps in order and stores the outcome', async () => {

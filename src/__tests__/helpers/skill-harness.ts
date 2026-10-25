@@ -95,7 +95,7 @@ export async function skillHarness(workflows: Record<string, string>, options: H
   const client = inProcessClient({ config, env });
   const rows: string[] = [];
   const context: SkillContext = {
-    config, env, client: options.client ? options.client(client) : client, session: options.session ?? 'session-a', invocation: 'teamai', cwd: work,
+    config, env, client: options.client ? options.client(client) : client, session: options.session ?? 'session-a', tool: 'claude', invocation: 'teamai', cwd: work,
     now: scheduler.now, runners: options.runners ? options.runners(scheduler.runners) : scheduler.runners,
     locks: { take: (run, body, waitMs) => withRunLock(config, run, body, { waitMs }) },
     trace: (row) => { rows.push(row); },

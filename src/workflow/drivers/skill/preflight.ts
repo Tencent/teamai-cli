@@ -19,9 +19,9 @@ export function neededAnswers(description: WorkflowDescription): StartAnswer[] {
   ];
 }
 
-/** Steps this driver does not run, by path: prompt steps, and steps outside the checkout. */
+/** Steps this driver does not run, by path: interactive steps, which no person answers through it. */
 export function localOnlySteps(description: WorkflowDescription): string[] {
-  return [...new Set([...description.facts.prompts, ...description.facts.inWorkspace])];
+  return description.facts.interactive;
 }
 
 /** Checks a start of `description` against what describe asked. `ceiling` is the most steps the driver runs at once. */

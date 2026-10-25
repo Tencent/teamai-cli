@@ -6,11 +6,14 @@ import { z } from 'zod';
 import { resolveCliEntry } from '../../../builtin-hooks.js';
 import { driverIdentity } from '../../../driver-identity.js';
 import type { WorkflowEnv } from '../../../env-resolution.js';
+import type { ToolName } from '../../../resources/agent-format.js';
+import { isAgentToolId } from '../../../tools.js';
 import type { LocalConfig } from '../../../types.js';
-import { agentSessionIdFromEnv } from '../../../utils/session-id.js';
+import { agentSessionFromEnv } from '../../../utils/session-id.js';
 import { isAttemptRunner } from '../../attempt-marker.js';
 import { inProcessClient, type WorkflowClient } from '../../protocol.js';
 import { AttemptIdSchema, RunIdSchema, withRunLock, type AttemptId, type RunId, type RunLock } from '../../store.js';
+import { HOST_CHOICES, type HostChoice } from './host-profiles.js';
 import { describeLiteral, invocationOf, type Invocation } from './literals.js';
 import { askFor, checkStartAnswers, localOnlySteps, neededAnswers } from './preflight.js';
 import { writeSkillState, type SkillState } from './skill-state.js';
@@ -23,8 +26,13 @@ export type SkillCall =
   | { kind: 'describe'; name: string }
   | { kind: 'start'; name: string; answers: { parallel?: number; confirmed: boolean }; inputs: unknown }
   | { kind: 'next'; run: RunId; wait: boolean }
-  /** `runner` when the call carries the attempt's marker: the runner reports itself. */
-  | { kind: 'report'; run: RunId; attempt: AttemptId; role: 'runner' | 'agent' };
+  /** `next --choice`: the agent's answer to the host question. */
+  | { kind: 'choose'; run: RunId; choice: HostChoice }
+  /** `next --ack dispatch.<a>`: the child of attempt `a` started. */
+  | { kind: 'ack'; run: RunId; attempt: AttemptId }
+  /** The runner's call carries the attempt's marker: the runner reports itself. */
+  | { kind: 'report'; run: RunId; attempt: AttemptId; role: 'runner' }
+  | { kind: 'report'; run: RunId; attempt: AttemptId; role: 'agent'; modelUnavailable: boolean };
 
 /** Where the runner of an attempt starts. */
 export interface RunnerJob {
@@ -46,6 +54,8 @@ export interface SkillContext {
   client: WorkflowClient;
   /** The calling agent session, undefined when its host names none. */
   session: string | undefined;
+  /** The tool of that session, which a child's model is resolved for; undefined when its host names none. */
+  tool: ToolName | undefined;
   invocation: Invocation;
   /** The checkout a start runs from. */
   cwd: string;
@@ -62,9 +72,11 @@ export interface SkillContext {
  */
 export async function skillContext(input: Pick<SkillContext, 'config' | 'env' | 'cwd' | 'trace'>): Promise<SkillContext> {
   const { config, env } = input;
+  const session = await agentSessionFromEnv();
   return {
     ...input,
-    session: await agentSessionIdFromEnv(),
+    session: session.id,
+    tool: session.agent !== undefined && isAgentToolId(session.agent) ? session.agent : undefined,
     invocation: invocationOf(resolveCliEntry() ?? undefined),
     client: inProcessClient({ config, env }),
     now: () => new Date(),
@@ -82,13 +94,24 @@ const StartOptionsSchema = z.object({
   tools: z.undefined({ invalid_type_error: '--tools is for --driver local' }),
   autoApprove: z.undefined({ invalid_type_error: '--auto-approve is for --driver local' }),
 });
+const OFFER = /^dispatch\.(.+)$/;
 const NextOptionsSchema = z.object({
   wait: z.boolean().optional(),
+  choice: z.enum(HOST_CHOICES, { errorMap: () => ({ message: `--choice takes the id of a host question option: ${HOST_CHOICES.join(', ')}` }) }).optional(),
+  ack: z.string().transform((offer, ctx) => {
+    const attempt = AttemptIdSchema.safeParse(OFFER.exec(offer)?.[1]);
+    if (attempt.success) return attempt.data;
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: `--ack takes the offer of a dispatch action, such as dispatch.a1b2c3d4e; got ${offer}` });
+    return z.NEVER;
+  }).optional(),
   json: z.undefined({ invalid_type_error: '--driver skill takes no --json: the skill driver composes every request itself' }),
   prepare: z.undefined({ invalid_type_error: '--prepare is for --json drivers' }),
+}).refine((options) => [options.wait, options.choice, options.ack].filter((given) => given !== undefined && given !== false).length <= 1, {
+  message: 'next takes at most one of --wait, --choice and --ack',
 });
 const ReportOptionsSchema = z.object({
   attempt: AttemptIdSchema,
+  modelUnavailable: z.boolean().optional(),
   json: z.undefined({ invalid_type_error: '--driver skill takes no --json: the skill driver composes every report itself' }),
 });
 
@@ -124,11 +147,17 @@ export function parseSkillCall(
   if (!run.success) return invalid(run.error);
   if (raw.kind === 'next') {
     const options = NextOptionsSchema.safeParse(raw.options);
-    return options.success ? { kind: 'next', run: run.data, wait: options.data.wait === true } : invalid(options.error);
+    if (!options.success) return invalid(options.error);
+    const { choice, ack, wait } = options.data;
+    if (choice !== undefined) return { kind: 'choose', run: run.data, choice };
+    if (ack !== undefined) return { kind: 'ack', run: run.data, attempt: ack };
+    return { kind: 'next', run: run.data, wait: wait === true };
   }
   const options = ReportOptionsSchema.safeParse(raw.options);
   if (!options.success) return invalid(options.error);
-  return { kind: 'report', run: run.data, attempt: options.data.attempt, role: isAttemptRunner(env, run.data, options.data.attempt) ? 'runner' : 'agent' };
+  const { attempt, modelUnavailable } = options.data;
+  if (isAttemptRunner(env, run.data, attempt)) return { kind: 'report', run: run.data, attempt, role: 'runner' };
+  return { kind: 'report', run: run.data, attempt, role: 'agent', modelUnavailable: modelUnavailable === true };
 }
 
 export async function runSkillCall(call: SkillCall, context: SkillContext): Promise<SkillAnswer> {
@@ -138,8 +167,13 @@ export async function runSkillCall(call: SkillCall, context: SkillContext): Prom
       return start(call, context);
     case 'next':
       return call.wait ? poll(context, call.run) : foreground(context, call.run, { kind: 'next' });
+    case 'choose':
+      return foreground(context, call.run, { kind: 'choose', choice: call.choice });
+    case 'ack':
+      return foreground(context, call.run, { kind: 'ack', attempt: call.attempt });
     case 'report':
-      return call.role === 'runner' ? runRunner(context, call.run, call.attempt) : foreground(context, call.run, { kind: 'report', attempt: call.attempt });
+      if (call.role === 'runner') return runRunner(context, call.run, call.attempt);
+      return foreground(context, call.run, { kind: 'report', attempt: call.attempt, modelUnavailable: call.modelUnavailable });
     default: {
       const unhandled: never = call;
       return unhandled;
@@ -159,7 +193,7 @@ async function start(call: Extract<SkillCall, { kind: 'describe' | 'start' }>, c
     return { data: { describe: { workflow: description, ask: askFor(kind, description, context.invocation) } } };
   }
   const check = checkStartAnswers({ description, answers: call.answers, inputs: call.inputs, ceiling });
-  const taken = take(context, undefined, { kind: 'start', name: description.name, check, localOnly });
+  const taken = take(context, undefined, { kind: 'start', name: description.name, check, localOnly, prompts: description.facts.prompts.length > 0 });
   const effect = taken?.effects.find((planned) => planned.kind === 'start');
   if (taken?.answer?.kind === 'error') return { error: errorOf(taken.answer, { invocation: context.invocation, same: describeLiteral(context.invocation, description.name) }) };
   if (!effect || effect.kind !== 'start') return { error: { code: 'run_unreadable', message: `The skill driver took no start row for ${description.name}.`, next: null } };
@@ -168,7 +202,7 @@ async function start(call: Extract<SkillCall, { kind: 'describe' | 'start' }>, c
   const run = RunIdSchema.safeParse(started.data.run);
   if (!run.success) return { error: { code: 'run_unreadable', message: 'The new run id was missing', next: null } };
   const state: SkillState = {
-    version: 1, run: run.data, driver: driverIdentity('skill', context.cwd), invocation: context.invocation, options: { parallel: effect.parallel },
+    version: 1, run: run.data, driver: driverIdentity('skill', context.cwd), invocation: context.invocation, options: { parallel: effect.parallel }, host: { kind: effect.host },
     orchestrator: { ...(context.session !== undefined ? { session: context.session } : {}), lastCallAt: context.now().toISOString() },
     attempts: [], seq: 0, events: [], seen: {}, settled: [],
   };

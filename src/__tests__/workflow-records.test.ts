@@ -222,7 +222,7 @@ describe('#1083 workflow run records', () => {
       // Refusals of teamai workflow start for a run whose pull requests would have no branch to target.
       'no_base_branch',
       // Refusals of a --driver skill call, answered to the agent with the command it can run instead.
-      'confirm_needed', 'needs_local_driver', 'not_skill_run', 'orchestrator_active', 'unknown_attempt', 'not_dispatched',
+      'confirm_needed', 'needs_local_driver', 'not_skill_run', 'orchestrator_active', 'choice_pending', 'unknown_choice', 'unknown_offer', 'unknown_attempt', 'not_dispatched',
       // Refusals of teamai score --run, answered to the member who asked for a pass to be judged.
       'scoring_unavailable', 'pass_not_found', 'scorer_not_found', 'entry_leased',
       // Refusals of teamai score --session, answered to the member who asked for a session to be judged.

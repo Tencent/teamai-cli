@@ -7,10 +7,10 @@ import { loadCachedWorkflow, loadWorkflowTree } from './cache.js';
 import { describeWorkflow, type WorkflowDescription } from './describe.js';
 import { leaseNext, parseNextPayload, parseReport, parseResponsePayload, reconcileRun, reportAttempt, startRun, withIgnored, type ReportInput } from './engine.js';
 import {
-  abandonPlace, finishPlace, placeLeaseOf, placeRecorded, preparePlace, releasePlace, runPlaceSetup, type PlaceLease, type PlacePrepared, type StepEnd,
+  abandonPlace, finishPlace, placeHeldBy, placeLeaseOf, placeRecorded, preparePlace, releasePlace, runPlaceSetup, type PlaceLease, type PlacePrepared, type StepEnd,
 } from './place/place.js';
 import { cancelRun, respondToHitl, retryStep } from './run-controls.js';
-import { AttemptIdSchema, readRun, RunIdSchema, withRunLock, type AttemptId, type RunLock } from './store.js';
+import { AttemptIdSchema, readRun, RunIdSchema, withRunLock, type AttemptId, type RunId, type RunLock } from './store.js';
 import { isWorkflowError, type DriverIdentity, type WorkflowEnvelope, type WorkflowFailure } from './types.js';
 import { headCommit } from './worktree.js';
 
@@ -25,10 +25,12 @@ export interface WorkflowClient {
    */
   describe(name: string, options: { ceiling: number }): Promise<{ description: WorkflowDescription } | { error: WorkflowFailure }>;
   /**
-   * Prepares the place of `lease`, an attempt the run has leased without a workspace contract, in the checkout the run
-   * started from.
+   * Prepares the place of `lease`, the lease `next` answered with, in the checkout the run started from. `busy` when
+   * another attempt the run leased holds that place: `behind` is that attempt.
    */
-  prepare(lock: RunLock, lease: Pick<PlaceLease, 'attempt' | 'executor' | 'interactive' | 'readOnly'>): Promise<PlacePrepared>;
+  prepare(lock: RunLock, lease: unknown): Promise<PlacePrepared | { kind: 'busy'; behind: AttemptId }>;
+  /** Runs the setup of the place `prepare` made for `attempt`, outside the run lock. Nothing for a place without setup. */
+  setup(run: RunId, attempt: AttemptId): Promise<WorkflowFailure | undefined>;
   /** Starts `name` with `inputs`, from `checkout` when given: the run's workspaces start from its HEAD. */
   start(name: string, options?: { inputs?: unknown; checkout?: string }): Promise<WorkflowEnvelope>;
   /**
@@ -56,14 +58,23 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
       if ('failed' in tree) return { error: tree.failed };
       return { description: describeWorkflow({ definition: cached.definition, workflows: tree.workflows, ceiling }) };
     },
-    prepare: async (lock, lease) => {
+    prepare: async (lock, raw) => {
+      const lease = placeLeaseOf(raw);
+      if (!lease) return { kind: 'failed', failure: { code: 'workspace_base', message: `Run ${lock.run} leased a place this teamai cannot read. Update teamai.` } };
       const run = await readRun(config, lock.run);
       if (typeof run !== 'object') return { kind: 'failed', failure: { code: 'run_unreadable', message: `Run ${lock.run} cannot be read, so attempt ${lease.attempt} has no place to run in` } };
       const leased = run.steps.find((step) => step.status === 'leased' && step.lease.attempt === lease.attempt);
       if (!leased) return { kind: 'failed', failure: { code: 'wrong_attempt', message: `Attempt ${lease.attempt} is not the leased attempt` } };
       if (run.checkout === undefined) return { kind: 'failed', failure: noCheckout(lock.run, lease.attempt) };
+      const others = run.steps.flatMap((step) => {
+        const other = step.status === 'leased' && step.lease.attempt !== lease.attempt ? AttemptIdSchema.safeParse(step.lease.attempt) : undefined;
+        return other?.success ? [other.data] : [];
+      });
+      const behind = await placeHeldBy({ config, run: lock.run, root: run.checkout, lease, others });
+      if (behind) return { kind: 'busy', behind };
       return preparePlace({ config, lock, root: run.checkout, lease: { ...lease, step: leased.id } });
     },
+    setup: (run, attempt) => runPlaceSetup({ config, run, attempt, values: env.values }),
     start: async (name, options) => {
       const checkout = options?.checkout;
       const base = checkout === undefined ? undefined : await headCommit(checkout);

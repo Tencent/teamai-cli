@@ -820,7 +820,9 @@ workflowCmd
   .option('--json <payload>', 'Driver identity, for example {"driver":{"kind":"local","machine":"host","workspace":"/work"}}. Optional: running, the attempt ids of its open leases the driver still runs (an open lease left out is handed back), canTakeLease, false to poll while a tool runs without taking a new lease, and driver.can, what the driver can do on this request: hitl (a person can answer HITL requests and work interactively), workspace, env, setup, tokens, max_turns, network, isolation. An omitted key is not offered, so a step that needs it waits, and wait.held names what it lacks. Send driver.can on every next request, including busy polls. claim, true to take a run another install published from teamai-reports before leasing; a run this install owns stays as it is. Every answer lists in cancelled the running attempts whose tools the driver must stop.')
   .option('--driver <kind>', 'skill: advance a run the current coding session drives, and print its turn: the actions to carry out and the command to run next')
   .option('--wait', 'With --driver skill: wait until the run has something to show, up to 100 s. Run it in the background.')
-  .action(async (run: string, cmdOpts: { json?: string; prepare?: boolean; driver?: string; wait?: boolean }) => {
+  .option('--choice <id>', 'With --driver skill: answer the host question with the id of one of its options, as its run prints it')
+  .option('--ack <offer>', 'With --driver skill: acknowledge that the child of a dispatch started, as its ack prints it, so later turns stop offering it')
+  .action(async (run: string, cmdOpts: { json?: string; prepare?: boolean; driver?: string; wait?: boolean; choice?: string; ack?: string }) => {
     const { workflowNext } = await import('./workflow-commands.js');
     await workflowNext(run, cmdOpts);
   });
@@ -831,7 +833,8 @@ workflowCmd
   .option('--json <payload>', 'attempt, revision, outcome (success, failed, or released), and driver')
   .option('--driver <kind>', 'skill: report an attempt of a run the current coding session drives, as its turn printed the command')
   .option('--attempt <id>', 'With --driver skill: the attempt to report')
-  .action(async (run: string, cmdOpts: { json?: string; driver?: string; attempt?: string }) => {
+  .option('--model-unavailable', 'With --driver skill and --attempt: the host cannot run the model the dispatch names, so the step fails model_unavailable')
+  .action(async (run: string, cmdOpts: { json?: string; driver?: string; attempt?: string; modelUnavailable?: boolean }) => {
     const { workflowReport } = await import('./workflow-commands.js');
     await workflowReport(run, cmdOpts);
   });

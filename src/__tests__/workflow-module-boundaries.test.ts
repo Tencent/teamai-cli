@@ -35,6 +35,9 @@ const SKILL_IMPORTS: Record<string, { typeOnly?: true; names?: string[] }> = {
   'src/resources/agent-format.ts': {},
   'src/tool-launch/process-stop.ts': {},
   'src/builtin-hooks.ts': { names: ['resolveCliEntry'] },
+  // The session tool a child's model resolves for, and the skill-data root the host question's reference is under.
+  'src/tools.ts': { names: ['isAgentToolId'] },
+  'src/skill-content.ts': { names: ['packagedSkillRoots'] },
   // The identity every driver reports, the repository's atomic file writes, and the shared config types.
   'src/driver-identity.ts': {},
   'src/utils/fs.ts': {},
