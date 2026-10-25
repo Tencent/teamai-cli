@@ -9,7 +9,7 @@ import type { ChildResult } from './child-brief.js';
 import type { HostChoice, HostProfile } from './host-profiles.js';
 import type { HitlMode, StartAnswer, StartCheck } from './preflight.js';
 import type { AttemptState, Dispatch, Gate, Judge, ReportBody, SkillState, StopReason, TurnEvent } from './skill-state.js';
-import type { DescribeAsk, Waiting } from './turn.js';
+import type { Waiting } from './turn.js';
 
 export interface TransitionRow {
   id: string;
@@ -22,10 +22,10 @@ export interface TransitionRow {
 }
 
 export const TRANSITIONS = [
-  { id: 'R2', state: 'none', input: 'describe', guard: 'the definition has an interactive step', effects: 'none', next: 'none', action: 'describe `ask.kind: local` with the reason and the `--driver local` start literal' },
+  { id: 'R2', state: 'none', input: 'describe', guard: 'the definition has an interactive step, or a local route: a step this driver takes and a later one it is held from for env or tokens work in one workspace copy', effects: 'none', next: 'none', action: 'describe `ask.kind: local` with the reason and the `--driver local` start literal' },
   { id: 'R3', state: 'none', input: 'describe', guard: 'something to ask: `invoke: ask`, a required input, width above 1, an optional gate, or judging here', effects: 'none', next: 'none', action: 'describe `ask.kind: ask`: one question, and the start literal of each option' },
   { id: 'R4', state: 'none', input: 'describe', guard: 'nothing to ask', effects: 'none', next: 'none', action: 'describe `ask.kind: start` with the one start literal' },
-  { id: 'R8', state: 'none', input: 'start `--driver skill`', guard: 'the definition has an interactive step', effects: 'none', next: 'none', action: 'error `needs_local_driver`, next null' },
+  { id: 'R8', state: 'none', input: 'start `--driver skill`', guard: 'the definition has an interactive step, or a local route', effects: 'none', next: 'none', action: 'error `needs_local_driver` with the reason, next null' },
   { id: 'R9', state: 'none', input: 'start `--driver skill`', guard: '`checkStartAnswers` answers `confirm-needed`', effects: 'none', next: 'none', action: 'error `confirm_needed`, next: the describe literal' },
   { id: 'R10', state: 'none', input: 'start `--driver skill`', guard: '`checkStartAnswers` answers `ok`', effects: '`WorkflowClient.start`; write skill.json: identity `{skill, machine, run checkout}`, invocation, options (`--parallel`, the HITL mode), host `pending` when the definition has a prompt step, owner := the caller\'s session; judging on with the session tool when describe judges here and the start has no `--no-judge`', next: 'host when it has a prompt step, else drive', action: 'the turn of a tick' },
   { id: 'R11', state: 'none', input: 'next, report `--driver skill`', guard: 'this machine has no skill.json for the run', effects: 'none', next: 'none', action: 'error `not_skill_run`, next null' },
@@ -135,10 +135,10 @@ export type RespondReply = { kind: 'answered'; step: string; pass: number; choic
 export type ReportReply = { kind: 'reported'; outcome: Extract<TurnEvent, { kind: 'settled' }>['outcome']; failure?: WorkflowFailure } | { kind: 'error'; error: WorkflowFailure };
 
 export type MachineInput =
-  /** `judgingHere`: the session tool's confined judge would judge the scored steps here. */
-  | { kind: 'describe'; needed: StartAnswer[]; localOnly: string[]; judgingHere: boolean }
+  /** `local`: why the local driver must run the workflow. `judgingHere`: the session tool's confined judge would judge the scored steps here. */
+  | { kind: 'describe'; needed: StartAnswer[]; local?: string; judgingHere: boolean }
   /** `judge`: the session tool whose confined judge judges the run, when describe judges here and the start keeps judging. */
-  | { kind: 'start'; name: string; check: StartCheck; localOnly: string[]; prompts: boolean; judge?: string }
+  | { kind: 'start'; name: string; check: StartCheck; local?: string; prompts: boolean; judge?: string }
   /** `takeover`: the call is `next --takeover`. */
   | { kind: 'call'; run: RunId; session: string | undefined; at: string; takeover: boolean }
   | { kind: 'runner-call' }
@@ -199,7 +199,7 @@ export type Effect =
 
 /** A call the skill driver refuses, with what its message names. */
 export type Refusal =
-  | { code: 'needs_local_driver'; name: string; steps: string[] }
+  | { code: 'needs_local_driver'; name: string; reason: string }
   | { code: 'confirm_needed'; name: string; missing: StartAnswer[]; outOfRange?: { parallel: number; ceiling: number } }
   | { code: 'not_skill_run'; run: RunId }
   /** `idleSeconds`: the seconds since the owner's last call. */
@@ -211,9 +211,12 @@ export type Refusal =
   | { code: 'not_dispatched'; run: RunId; attempt: AttemptId; phase: AttemptState['phase'] }
   | { code: 'driver_running'; run: RunId };
 
+/** How describe says to start, and why, for the kinds that start no run here. */
+export type DescribeVerdict = { kind: 'describe'; ask: 'start' | 'ask' } | { kind: 'describe'; ask: 'local'; reason: string };
+
 /** What the call answers, when the row decides it. */
 export type Answer =
-  | { kind: 'describe'; ask: DescribeAsk['kind'] }
+  | DescribeVerdict
   | { kind: 'error'; refusal: Refusal; next: 'describe' | 'next' | 'takeover' | 'same' | null }
   | { kind: 'engine-error'; error: WorkflowFailure; next: 'next' | 'same' | 'poll' }
   | { kind: 'turn'; events: 'unseen' | 'none'; poll: boolean };
@@ -302,12 +305,12 @@ export function unseenEvents(state: SkillState, session: string | undefined): Tu
 export function step(state: SkillState | undefined, input: MachineInput): Step | undefined {
   switch (input.kind) {
     case 'describe':
-      if (input.localOnly.length > 0) return { row: 'R2', state, effects: [], answer: { kind: 'describe', ask: 'local' } };
+      if (input.local !== undefined) return { row: 'R2', state, effects: [], answer: { kind: 'describe', ask: 'local', reason: input.local } };
       if (input.needed.length > 0 || input.judgingHere) return { row: 'R3', state, effects: [], answer: { kind: 'describe', ask: 'ask' } };
       return { row: 'R4', state, effects: [], answer: { kind: 'describe', ask: 'start' } };
     case 'start':
-      if (input.localOnly.length > 0) {
-        return { row: 'R8', state, effects: [], answer: { kind: 'error', refusal: { code: 'needs_local_driver', name: input.name, steps: input.localOnly }, next: null } };
+      if (input.local !== undefined) {
+        return { row: 'R8', state, effects: [], answer: { kind: 'error', refusal: { code: 'needs_local_driver', name: input.name, reason: input.local }, next: null } };
       }
       if (input.check.kind === 'confirm-needed') {
         const { missing, outOfRange } = input.check;

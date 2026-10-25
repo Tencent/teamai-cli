@@ -13,13 +13,13 @@ import { agentSessionFromEnv } from '../../../utils/session-id.js';
 import { isAttemptRunner } from '../../attempt-marker.js';
 import { inProcessClient, type WorkflowClient } from '../../protocol.js';
 import { AttemptIdSchema, RunIdSchema, withRunLock, type AttemptId, type RunId, type RunLock } from '../../store.js';
-import { HOST_CHOICES, type HostChoice } from './host-profiles.js';
+import { HOST_CHOICES, SKILL_CAN, type HostChoice } from './host-profiles.js';
 import { describeLiteral, invocationOf, type Invocation } from './literals.js';
-import { askFor, checkStartAnswers, localOnlySteps, neededAnswers, type HitlMode } from './preflight.js';
+import { askFor, checkStartAnswers, localReason, neededAnswers, type HitlMode } from './preflight.js';
 import { writeSkillState, type SkillState } from './skill-state.js';
 import { detachedRunners, runRunner } from './skill-runner.js';
 import { agentReport, ceilingOf, errorOf, foreground, poll, startRefused, take } from './tick.js';
-import type { RowId } from './transitions.js';
+import type { DescribeVerdict, RowId } from './transitions.js';
 import type { SkillAnswer, SkillError } from './turn.js';
 
 export type SkillCall =
@@ -230,18 +230,19 @@ export async function runSkillCall(call: SkillCall, context: SkillContext): Prom
 
 async function start(call: Extract<SkillCall, { kind: 'describe' | 'start' }>, context: SkillContext): Promise<SkillAnswer> {
   const ceiling = ceilingOf(context.config);
-  const described = await context.client.describe(call.name, { ceiling, ...(context.tool !== undefined ? { tool: context.tool } : {}) });
+  const described = await context.client.describe(call.name, { ceiling, can: SKILL_CAN, ...(context.tool !== undefined ? { tool: context.tool } : {}) });
   if ('error' in described) return { error: { ...described.error, next: null } };
   const { description, judging } = described;
-  const localOnly = localOnlySteps(description);
+  const local = localReason(description);
+  const why = local !== undefined ? { local } : {};
   if (call.kind === 'describe') {
-    const taken = take(context, undefined, { kind: 'describe', needed: neededAnswers(description), localOnly, judgingHere: judging.kind === 'here' });
-    const kind = taken?.answer?.kind === 'describe' ? taken.answer.ask : 'start';
-    return { data: { describe: { workflow: description, judging, ask: askFor(kind, description, context.invocation, judging) } } };
+    const taken = take(context, undefined, { kind: 'describe', needed: neededAnswers(description), ...why, judgingHere: judging.kind === 'here' });
+    const verdict: DescribeVerdict = taken?.answer?.kind === 'describe' ? taken.answer : { kind: 'describe', ask: 'start' };
+    return { data: { describe: { workflow: description, judging, ask: askFor(verdict, description, context.invocation, judging) } } };
   }
   const check = checkStartAnswers({ description, answers: call.answers, inputs: call.inputs, ceiling });
   const judge = judging.kind === 'here' && call.answers.judge !== false ? judging.tool : undefined;
-  const taken = take(context, undefined, { kind: 'start', name: description.name, check, localOnly, prompts: description.facts.prompts.length > 0, ...(judge !== undefined ? { judge } : {}) });
+  const taken = take(context, undefined, { kind: 'start', name: description.name, check, ...why, prompts: description.facts.prompts.length > 0, ...(judge !== undefined ? { judge } : {}) });
   const effect = taken?.effects.find((planned) => planned.kind === 'start');
   if (taken?.answer?.kind === 'error') return { error: errorOf(taken.answer, { invocation: context.invocation, same: describeLiteral(context.invocation, description.name) }) };
   if (!effect || effect.kind !== 'start') return { error: { code: 'run_unreadable', message: `The skill driver took no start row for ${description.name}.`, next: null } };

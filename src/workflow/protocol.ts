@@ -14,6 +14,7 @@ import {
 import { cancelRun, respondProvenance, respondToHitl, retryStep, type CallerProvenance } from './run-controls.js';
 import { nextJudgeLease, parseJudgeRequest, runJudgeLease } from './scoring.js';
 import { AttemptIdSchema, readRun, RunIdSchema, withRunLock, type AttemptId, type RunId, type RunLock } from './store.js';
+import type { DriverCan } from './requirements.js';
 import { isWorkflowError, type DriverIdentity, type WorkflowEnvelope, type WorkflowFailure } from './types.js';
 import { headCommit } from './worktree.js';
 
@@ -31,11 +32,11 @@ export type RespondVia =
  */
 export interface WorkflowClient {
   /**
-   * Describes workflow or alias `name` from the cache, with every workflow it runs. `ceiling` is the most steps the
-   * caller's driver runs at once; `tool` is the tool of the caller's coding session, whose confined judge would judge
-   * the scored steps here.
+   * Describes workflow or alias `name` from the cache, with every workflow it runs, for the caller's driver, which
+   * declares `can` and runs at most `ceiling` steps at once. `tool` is the tool of the caller's coding session, whose
+   * confined judge would judge the scored steps here.
    */
-  describe(name: string, options: { ceiling: number; tool?: string }): Promise<{ description: WorkflowDescription; judging: Judging } | { error: WorkflowFailure }>;
+  describe: (name: string, options: { ceiling: number; can: DriverCan; tool?: string }) => Promise<{ description: WorkflowDescription; judging: Judging } | { error: WorkflowFailure }>;
   /**
    * Prepares the place of `lease`, the lease `next` answered with, in the checkout the run started from. `busy` when
    * another attempt the run leased holds that place: `behind` is that attempt.
@@ -95,12 +96,12 @@ export type NextPrepare = true | { attempt: AttemptId; adopt?: string };
 /** The client whose calls run in this process, against `config`, masking with `env`. */
 export function inProcessClient({ config, env }: { config: LocalConfig; env: WorkflowEnv }): WorkflowClient {
   return {
-    describe: async (name, { ceiling, tool }) => {
+    describe: async (name, { ceiling, can, tool }) => {
       const cached = await loadCachedWorkflow(config, name);
       if (!cached) return { error: { code: 'workflow_not_found', message: `Workflow or alias ${name} has no unambiguous runnable version` } };
       const tree = await loadWorkflowTree(config, cached);
       if ('failed' in tree) return { error: tree.failed };
-      const description = describeWorkflow({ definition: cached.definition, workflows: tree.workflows, ceiling });
+      const description = describeWorkflow({ definition: cached.definition, workflows: tree.workflows, ceiling, can, allow: config.workflows?.allow ?? {}, env: env.facts });
       return { description, judging: await judgingOf(config, description, tool) };
     },
     prepare: async (lock, raw) => {

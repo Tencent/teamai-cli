@@ -204,7 +204,7 @@ export function errorOf(answer: Extract<Answer, { kind: 'error' | 'engine-error'
 function refusalMessage(refusal: Refusal, invocation: Invocation): string {
   switch (refusal.code) {
     case 'needs_local_driver':
-      return `${refusal.name} has steps the skill driver does not run in a coding session yet: ${refusal.steps.join(', ')}. Interactive steps need the local driver for now. The person can run it in a terminal with ${localStartLiteral(invocation, refusal.name)}.`;
+      return `Workflow ${refusal.name} must run with the local driver. ${refusal.reason} Ask the person to run ${localStartLiteral(invocation, refusal.name)} in their own terminal.`;
     case 'confirm_needed': {
       const lacks = refusal.missing.map((answer) => ({ confirmed: '--confirmed, the person\'s yes', inputs: '--inputs', parallel: '--parallel', hitl: '--hitl or --auto-approve' })[answer]);
       const said = [

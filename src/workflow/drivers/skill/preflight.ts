@@ -2,6 +2,7 @@
 import type { WorkflowDescription } from '../../describe.js';
 import type { Judging } from '../../protocol.js';
 import { localStartLiteral, startLiteral, type Invocation } from './literals.js';
+import type { DescribeVerdict } from './transitions.js';
 import type { DescribeAsk } from './turn.js';
 
 /**
@@ -32,9 +33,24 @@ export function neededAnswers(description: WorkflowDescription): StartAnswer[] {
   ];
 }
 
-/** Steps this driver does not run, by path: interactive steps, which no person answers through it. */
-export function localOnlySteps(description: WorkflowDescription): string[] {
-  return description.facts.interactive;
+/**
+ * Why `description` must run with the local driver, or undefined when this driver runs it: it has interactive steps,
+ * which no person works in through this driver yet, or a local route.
+ */
+export function localReason(description: WorkflowDescription): string | undefined {
+  const { name, facts } = description;
+  const route = facts.localRoute;
+  if (route) {
+    const keys = facts.held.find((held) => held.step === route.held)?.env ?? [];
+    const lacks = route.missing === 'env'
+      ? `needs env ${keys.join(', ')}, which a coding session keeps from its agents`
+      : 'runs under a token budget, which no coding session meters for teamai';
+    return `Step ${route.held} works in the workspace ${route.opener} opened, and ${lacks}. Only the driver that opened that workspace may go on in it, so the local driver runs the whole of ${name}.`;
+  }
+  if (facts.interactive.length > 0) {
+    return `${name} has steps this driver does not run in a coding session yet: ${facts.interactive.join(', ')}. The person can run it in a terminal with the local driver.`;
+  }
+  return undefined;
 }
 
 /** Checks a start of `description` against what describe asked. `ceiling` is the most steps the driver runs at once. */
@@ -61,22 +77,16 @@ function optionalGatesNoun(description: WorkflowDescription): string {
 }
 
 /**
- * The describe reply's `ask` of kind `kind`, the one the transitions chose. With `judging` here, each option comes
+ * The describe reply's `ask` of the kind the transitions chose. With `judging` here, each option comes
  * again without judging.
  */
-export function askFor(kind: DescribeAsk['kind'], description: WorkflowDescription, invocation: Invocation, judging: Judging): DescribeAsk {
+export function askFor(verdict: DescribeVerdict, description: WorkflowDescription, invocation: Invocation, judging: Judging): DescribeAsk {
   const { name, facts } = description;
-  switch (kind) {
+  switch (verdict.ask) {
     case 'start':
-      return { kind, start: startLiteral(invocation, name) };
-    case 'local': {
-      const steps = localOnlySteps(description).join(', ');
-      return {
-        kind,
-        reason: `${name} has steps this driver does not run in a coding session yet: ${steps}. The person can run it in a terminal with the local driver.`,
-        start: localStartLiteral(invocation, name),
-      };
-    }
+      return { kind: 'start', start: startLiteral(invocation, name) };
+    case 'local':
+      return { kind: 'local', reason: verdict.reason, start: localStartLiteral(invocation, name) };
     case 'ask': {
       const needed = neededAnswers(description);
       const inputNames = Object.keys(description.inputs);
@@ -114,10 +124,10 @@ export function askFor(kind: DescribeAsk['kind'], description: WorkflowDescripti
         { label, start: startLiteral(invocation, name, { ...flags, ...option }) },
         ...(here ? [{ label: `${label}, without judging`, start: startLiteral(invocation, name, { ...flags, ...option, noJudge: true }) }] : []),
       ]);
-      return { kind, question: { text, inputs: Object.entries(description.inputs).map(([input, type]) => ({ name: input, type })), options: starts } };
+      return { kind: 'ask', question: { text, inputs: Object.entries(description.inputs).map(([input, type]) => ({ name: input, type })), options: starts } };
     }
     default: {
-      const unhandled: never = kind;
+      const unhandled: never = verdict;
       return unhandled;
     }
   }

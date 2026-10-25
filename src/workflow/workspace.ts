@@ -504,7 +504,7 @@ export function planWorkspace(
 }
 
 /** Whether the steps inside `step` run in a copy it opens rather than in the one around it. */
-function opensCopy(step: WorkflowStep): boolean {
+export function opensCopy(step: WorkflowStep): boolean {
   return step.workspace === 'new' || (step.forEach !== undefined && step.workspace === 'continue');
 }
 

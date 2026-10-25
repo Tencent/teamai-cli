@@ -88,23 +88,24 @@ async function leased(config: LocalConfig, checkout: string): Promise<{ run: Run
 describe('workflow protocol in process', () => {
   it('describes a workflow before any run: inputs, invoke, gates, prompts, steps outside the checkout, and its width', async () => {
     const { config } = await fixture({ wide: WIDE });
-    expect(await (await protocol(config)).describe('fan', { ceiling: 3 })).toEqual({ description: {
+    expect(await (await protocol(config)).describe('fan', { ceiling: 3, can: {} })).toEqual({ description: {
       name: 'wide', description: 'Fan out, review, ship.', alias: 'fan', invoke: 'ask', inputs: { targets: { type: 'array', items: { type: 'string' } } },
-      facts: { prompts: ['review'], interactive: [], width: 3, gates: [{ step: 'review', kind: 'approve', required: false, hasDefault: false }], inWorkspace: ['ship'], scored: [] },
+      facts: { prompts: ['review'], interactive: [], width: 3, gates: [{ step: 'review', kind: 'approve', required: false, hasDefault: false }], inWorkspace: ['ship'], scored: [],
+        deliver: [], requiresEnv: { keys: [], missingHere: [] }, held: [] },
     }, judging: { kind: 'none' } });
-    expect(await (await protocol(config)).describe('wide', { ceiling: 20 })).toMatchObject({ description: { facts: { width: 7 } } });
+    expect(await (await protocol(config)).describe('wide', { ceiling: 20, can: {} })).toMatchObject({ description: { facts: { width: 7 } } });
   });
 
   it('counts a for_each with no max_parallel as wide as the ceiling, and one command as one', async () => {
     const each = CHECK.replace('name: check', 'name: each\ninputs:\n  targets: [string]').replace('  - id: lint\n', '  - id: lint\n    for_each: inputs.targets\n');
     const { config } = await fixture({ check: CHECK, each });
-    expect(await (await protocol(config)).describe('each', { ceiling: 5 })).toMatchObject({ description: { facts: { width: 5 } } });
-    expect(await (await protocol(config)).describe('check', { ceiling: 5 })).toMatchObject({ description: { invoke: 'deny', facts: { width: 1, prompts: [], interactive: [], gates: [], inWorkspace: [] } } });
+    expect(await (await protocol(config)).describe('each', { ceiling: 5, can: {} })).toMatchObject({ description: { facts: { width: 5 } } });
+    expect(await (await protocol(config)).describe('check', { ceiling: 5, can: {} })).toMatchObject({ description: { invoke: 'deny', facts: { width: 1, prompts: [], interactive: [], gates: [], inWorkspace: [] } } });
   });
 
   it('answers workflow_not_found for a name with no runnable version', async () => {
     const { config } = await fixture({ check: CHECK });
-    expect(await (await protocol(config)).describe('missing', { ceiling: 3 })).toEqual({ error: { code: 'workflow_not_found', message: 'Workflow or alias missing has no unambiguous runnable version' } });
+    expect(await (await protocol(config)).describe('missing', { ceiling: 3, can: {} })).toEqual({ error: { code: 'workflow_not_found', message: 'Workflow or alias missing has no unambiguous runnable version' } });
   });
 
   it('fails a reader step that changed the checkout it was prepared in, when its report says it succeeded', async () => {
