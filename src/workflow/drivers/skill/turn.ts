@@ -12,7 +12,8 @@ import { childCap, reportedByAgent } from './transitions.js';
 
 /** How describe says to start: as is, after one question to the person, or with the local driver. */
 export type DescribeAsk =
-  | { kind: 'start'; start: Literal }
+  /** `say`: the facts to tell the person before running `start`, a line each. */
+  | { kind: 'start'; say?: string; start: Literal }
   | {
     kind: 'ask';
     question: {
@@ -22,7 +23,9 @@ export type DescribeAsk =
       options: Array<{ label: string; start: Literal }>;
     };
   }
-  | { kind: 'local'; reason: string; start: Literal };
+  | { kind: 'local'; reason: string; start: Literal }
+  /** `invoke: deny` asked from an agent session: no literal. */
+  | { kind: 'denied'; reason: string };
 
 /** A prompt step for a child agent, shown in every foreground turn until its `ack` runs. */
 export interface DispatchAction {

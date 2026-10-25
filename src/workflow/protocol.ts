@@ -33,10 +33,10 @@ export type RespondVia =
 export interface WorkflowClient {
   /**
    * Describes workflow or alias `name` from the cache, with every workflow it runs, for the caller's driver, which
-   * declares `can` and runs at most `ceiling` steps at once. `tool` is the tool of the caller's coding session, whose
-   * confined judge would judge the scored steps here.
+   * declares `can` and runs at most `ceiling` steps at once, as a run started from `checkout` would go. `tool` is the
+   * tool of the caller's coding session, whose confined judge would judge the scored steps here.
    */
-  describe: (name: string, options: { ceiling: number; can: DriverCan; tool?: string }) => Promise<{ description: WorkflowDescription; judging: Judging } | { error: WorkflowFailure }>;
+  describe: (name: string, options: { ceiling: number; can: DriverCan; checkout?: string; tool?: string }) => Promise<{ description: WorkflowDescription; judging: Judging } | { error: WorkflowFailure }>;
   /**
    * Prepares the place of `lease`, the lease `next` answered with, in the checkout the run started from. `busy` when
    * another attempt the run leased holds that place: `behind` is that attempt.
@@ -96,12 +96,15 @@ export type NextPrepare = true | { attempt: AttemptId; adopt?: string };
 /** The client whose calls run in this process, against `config`, masking with `env`. */
 export function inProcessClient({ config, env }: { config: LocalConfig; env: WorkflowEnv }): WorkflowClient {
   return {
-    describe: async (name, { ceiling, can, tool }) => {
+    describe: async (name, { ceiling, can, checkout, tool }) => {
       const cached = await loadCachedWorkflow(config, name);
       if (!cached) return { error: { code: 'workflow_not_found', message: `Workflow or alias ${name} has no unambiguous runnable version` } };
       const tree = await loadWorkflowTree(config, cached);
       if ('failed' in tree) return { error: tree.failed };
-      const description = describeWorkflow({ definition: cached.definition, workflows: tree.workflows, ceiling, can, allow: config.workflows?.allow ?? {}, env: env.facts });
+      const base = checkout === undefined ? undefined : (await headCommit(checkout))?.ref;
+      const description = describeWorkflow({
+        definition: cached.definition, workflows: tree.workflows, ceiling, can, allow: config.workflows?.allow ?? {}, env: env.facts, ...(base !== undefined ? { base } : {}),
+      });
       return { description, judging: await judgingOf(config, description, tool) };
     },
     prepare: async (lock, raw) => {

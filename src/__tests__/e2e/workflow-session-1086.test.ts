@@ -140,8 +140,8 @@ console.log(JSON.stringify({ type: 'result', structured_output: { label: 'thorou
 
       const described = literal('teamai workflow start --describe review --driver skill');
       expect(described).toMatchObject({ data: { describe: { judging: { kind: 'here', tool: 'claude' }, ask: { kind: 'ask', question: { options: [
-        { label: 'Start it', start: 'teamai workflow start review --driver skill' },
-        { label: 'Start it, without judging', start: 'teamai workflow start review --driver skill --no-judge' },
+        { label: 'Recommended: with judging', start: 'teamai workflow start review --driver skill' },
+        { label: 'Same, but without judging', start: 'teamai workflow start review --driver skill --no-judge' },
       ] } } } } });
       let turn = literal(described.data.describe.ask.question.options[0].start).data.turn;
       turn = literal(turn.actions[0].options[0].run).data.turn;

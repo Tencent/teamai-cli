@@ -36,15 +36,17 @@ export interface WorkflowDescription {
     scored: Array<{ step: string; scorers: string[] }>;
     /**
      * Steps that open a pull request once they succeed, by path. `onto`: the delivering step whose branch the step's
-     * own starts from, whose pull request it targets; without it, the pull request targets the branch the run starts on.
+     * own starts from, whose pull request it targets; without it, the pull request targets `base`.
      */
     deliver: Array<{ step: string; onto?: string }>;
+    /** The branch of the checkout a run would start from. Absent on a detached HEAD, from which no run delivers. */
+    base?: string;
     /** The `requires.env` keys of every step and setup, by name, and those with no value on this machine. */
     requiresEnv: { keys: string[]; missingHere: string[] };
     /** Milliseconds a run may take. */
     timeout?: number;
-    /** Tokens a run may spend. */
-    budget?: number;
+    /** The tokens a run may spend, and those a workflow step may each time it starts, by path. */
+    budgets: Array<{ step?: string; tokens: number }>;
     /** Steps the describing driver is held from, by path, with what it lacks, and the `requires.env` keys they need. */
     held: Array<{ step: string; missing: Missing[]; env: string[] }>;
     localRoute?: LocalRoute;
@@ -76,15 +78,15 @@ function writes(step: WorkflowStep, ancestors: WorkflowStep[], childOf: (step: W
  * run wider than it.
  */
 export function describeWorkflow(input: {
-  definition: WorkflowDefinition; workflows: Record<string, WorkflowDefinition>; ceiling: number; can: DriverCan; allow: Allow; env: EnvFacts;
+  definition: WorkflowDefinition; workflows: Record<string, WorkflowDefinition>; ceiling: number; can: DriverCan; allow: Allow; env: EnvFacts; base?: string;
 }): WorkflowDescription {
-  const { definition, workflows, ceiling, can, allow, env } = input;
+  const { definition, workflows, ceiling, can, allow, env, base } = input;
   const runEnvKeys = requiredEnvKeys([definition, ...Object.values(workflows)]);
   const facts: WorkflowDescription['facts'] = {
-    prompts: [], interactive: [], width: 0, gates: [], inWorkspace: [], scored: [], deliver: [],
+    prompts: [], interactive: [], width: 0, gates: [], inWorkspace: [], scored: [], deliver: [], ...(base !== undefined ? { base } : {}),
     requiresEnv: { keys: [...runEnvKeys], missingHere: [...runEnvKeys].filter((key) => sameEnvName(env.present, key) === undefined) },
     ...(definition.timeout !== undefined ? { timeout: definition.timeout } : {}),
-    ...(definition.budget ? { budget: definition.budget.tokens } : {}),
+    budgets: definition.budget ? [{ tokens: definition.budget.tokens }] : [],
     held: [],
   };
   /** By the step that opened each copy: whether the driver takes a step in it, and the first step in it the driver is held from. */
@@ -140,6 +142,8 @@ export function describeWorkflow(input: {
       if (child) {
         const named = typeof step.workflow === 'string' ? workflows[step.workflow] : undefined;
         const setup = named?.setup ?? scope.setup;
+        const limits = [step.forEach ? undefined : step.budget, named?.budget].flatMap((budget) => (budget ? [budget.tokens] : []));
+        if (limits.length > 0) facts.budgets.push({ step: path, tokens: Math.min(...limits) });
         own = visit(child.steps, {
           prefix: `${path}.`, ancestors: [...scope.ancestors, step],
           requires: mergeRequirements(scope.requires, step.requires, named?.defaults?.requires),

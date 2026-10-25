@@ -10,16 +10,16 @@ import type { ToolName } from '../../../resources/agent-format.js';
 import { isAgentToolId } from '../../../tools.js';
 import type { LocalConfig } from '../../../types.js';
 import { agentSessionFromEnv } from '../../../utils/session-id.js';
-import { isAttemptRunner } from '../../attempt-marker.js';
+import { agentEvidence, isAttemptRunner, type AgentEvidence } from '../../attempt-marker.js';
 import { inProcessClient, type WorkflowClient } from '../../protocol.js';
 import { AttemptIdSchema, RunIdSchema, withRunLock, type AttemptId, type RunId, type RunLock } from '../../store.js';
 import { HOST_CHOICES, SKILL_CAN, type HostChoice } from './host-profiles.js';
 import { describeLiteral, invocationOf, type Invocation } from './literals.js';
-import { askFor, checkStartAnswers, localReason, neededAnswers, type HitlMode } from './preflight.js';
+import { askFor, checkStartAnswers, deniedReason, localReason, neededAnswers, type HitlMode } from './preflight.js';
 import { writeSkillState, type SkillState } from './skill-state.js';
 import { detachedRunners, runRunner } from './skill-runner.js';
-import { agentReport, ceilingOf, errorOf, foreground, poll, startRefused, take } from './tick.js';
-import type { DescribeVerdict, RowId } from './transitions.js';
+import { agentReport, ceilingOf, errorOf, foreground, poll, startRefused } from './tick.js';
+import { describeRow, startRow, type RowId } from './transitions.js';
 import type { SkillAnswer, SkillError } from './turn.js';
 
 export type SkillCall =
@@ -75,6 +75,8 @@ export interface SkillContext {
   /** The tool of that session, which a child's model is resolved for; undefined when its host names none. */
   tool: ToolName | undefined;
   invocation: Invocation;
+  /** Why the caller counts as an agent's, as `agentEvidence` reads it from the process. */
+  evidence: AgentEvidence;
   /** The checkout a start runs from. */
   cwd: string;
   now: () => Date;
@@ -96,6 +98,7 @@ export async function skillContext(input: Pick<SkillContext, 'config' | 'env' | 
     session: session.id,
     tool: session.agent !== undefined && isAgentToolId(session.agent) ? session.agent : undefined,
     invocation: invocationOf(resolveCliEntry() ?? undefined),
+    evidence: agentEvidence(process.env),
     client: inProcessClient({ config, env }),
     now: () => new Date(),
     runners: detachedRunners(config),
@@ -230,30 +233,33 @@ export async function runSkillCall(call: SkillCall, context: SkillContext): Prom
 
 async function start(call: Extract<SkillCall, { kind: 'describe' | 'start' }>, context: SkillContext): Promise<SkillAnswer> {
   const ceiling = ceilingOf(context.config);
-  const described = await context.client.describe(call.name, { ceiling, can: SKILL_CAN, ...(context.tool !== undefined ? { tool: context.tool } : {}) });
+  const described = await context.client.describe(call.name, { ceiling, can: SKILL_CAN, checkout: context.cwd, ...(context.tool !== undefined ? { tool: context.tool } : {}) });
   if ('error' in described) return { error: { ...described.error, next: null } };
   const { description, judging } = described;
   const local = localReason(description);
   const why = local !== undefined ? { local } : {};
   if (call.kind === 'describe') {
-    const taken = take(context, undefined, { kind: 'describe', needed: neededAnswers(description), ...why, judgingHere: judging.kind === 'here' });
-    const verdict: DescribeVerdict = taken?.answer?.kind === 'describe' ? taken.answer : { kind: 'describe', ask: 'start' };
+    const denied = description.invoke === 'deny' && context.evidence.kind !== 'none' ? { denied: deniedReason(description.name) } : {};
+    const { row, verdict } = describeRow({ needed: neededAnswers(description), ...denied, ...why, judgingHere: judging.kind === 'here' });
+    context.trace?.(row);
     return { data: { describe: { workflow: description, judging, ask: askFor(verdict, description, context.invocation, judging) } } };
   }
   const check = checkStartAnswers({ description, answers: call.answers, inputs: call.inputs, ceiling });
   const judge = judging.kind === 'here' && call.answers.judge !== false ? judging.tool : undefined;
-  const taken = take(context, undefined, { kind: 'start', name: description.name, check, ...why, prompts: description.facts.prompts.length > 0, ...(judge !== undefined ? { judge } : {}) });
-  const effect = taken?.effects.find((planned) => planned.kind === 'start');
-  if (taken?.answer?.kind === 'error') return { error: errorOf(taken.answer, { invocation: context.invocation, same: describeLiteral(context.invocation, description.name) }) };
-  if (!effect || effect.kind !== 'start') return { error: { code: 'run_unreadable', message: `The skill driver took no start row for ${description.name}.`, next: null } };
+  const taken = startRow({ name: description.name, check, ...why, prompts: description.facts.prompts.length > 0, ...(judge !== undefined ? { judge } : {}) });
+  context.trace?.(taken.row);
+  if (taken.row !== 'R10') {
+    return { error: errorOf({ kind: 'error', refusal: taken.refusal, next: taken.next }, { invocation: context.invocation, same: describeLiteral(context.invocation, description.name) }) };
+  }
+  const planned = taken.start;
   const started = await context.client.start(description.name, { ...(call.inputs !== undefined ? { inputs: call.inputs } : {}), checkout: context.cwd });
   if ('error' in started) return startRefused(context, description.name, started.error);
   const run = RunIdSchema.safeParse(started.data.run);
   if (!run.success) return { error: { code: 'run_unreadable', message: 'The new run id was missing', next: null } };
   const state: SkillState = {
-    version: 1, run: run.data, driver: driverIdentity('skill', context.cwd), invocation: context.invocation, options: { parallel: effect.parallel, hitl: effect.hitl }, host: { kind: effect.host },
+    version: 1, run: run.data, driver: driverIdentity('skill', context.cwd), invocation: context.invocation, options: { parallel: planned.parallel, hitl: planned.hitl }, host: { kind: planned.host },
     orchestrator: { ...(context.session !== undefined ? { session: context.session } : {}), lastCallAt: context.now().toISOString() },
-    attempts: [], ...(effect.judge !== undefined ? { judging: { tool: effect.judge } } : {}), seq: 0, events: [], seen: {}, settled: [],
+    attempts: [], ...(planned.judge !== undefined ? { judging: { tool: planned.judge } } : {}), seq: 0, events: [], seen: {}, settled: [],
   };
   const saved = await context.locks.take(run.data, (lock) => writeSkillState(context.config, lock, state, context.env.secrets), 0);
   if (saved !== undefined) return { error: { ...saved.error, next: null } };

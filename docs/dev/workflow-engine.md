@@ -63,9 +63,10 @@ Test parsing through `parseWorkflow` and `syncWorkflowDefinitions`. Test the eng
 
 | Row | State | Input | Guard | Effects | Next | Action |
 |---|---|---|---|---|---|---|
+| R1 | none | describe | `invoke: deny` and the caller has agent evidence | none | none | describe `ask.kind: denied` with the reason, no literal |
 | R2 | none | describe | the definition has a local route: a step this driver takes and a later one it is held from for env or tokens work in one workspace copy | none | none | describe `ask.kind: local` with the reason and the `--driver local` start literal |
-| R3 | none | describe | something to ask: `invoke: ask`, a required input, width above 1, an optional gate, or judging here | none | none | describe `ask.kind: ask`: one question, and the start literal of each option |
-| R4 | none | describe | nothing to ask | none | none | describe `ask.kind: start` with the one start literal |
+| R3 | none | describe | something to ask: `invoke: ask`, a required input, width above 1, an optional gate, or judging here | none | none | describe `ask.kind: ask`: one question stating every fact, and at most five start literals, the recommended first |
+| R4 | none | describe | nothing to ask | none | none | describe `ask.kind: start` with the one start literal, and the facts to tell the person |
 | R8 | none | start `--driver skill` | the definition has a local route | none | none | error `needs_local_driver` with the reason, next null |
 | R9 | none | start `--driver skill` | `checkStartAnswers` answers `confirm-needed` | none | none | error `confirm_needed`, next: the describe literal |
 | R10 | none | start `--driver skill` | `checkStartAnswers` answers `ok` | `WorkflowClient.start`; write skill.json: identity `{skill, machine, run checkout}`, invocation, options (`--parallel`, the HITL mode), host `pending` when the definition has a prompt step, owner := the caller's session; judging on with the session tool when describe judges here and the start has no `--no-judge` | host when it has a prompt step, else drive | the turn of a tick |

@@ -15,13 +15,12 @@ Run `teamai workflow start --describe <name> --driver skill` with the workflow n
 
 Act on `data.describe.ask.kind`:
 
-- `start`: run `ask.start`.
-- `ask`: put `ask.question.text` and each entry of `ask.question.inputs` to the person in one message. In the `start` of the option they pick, replace `{inputs}` with their answers as one JSON object, and run it.
+- `start`: tell the person `ask.say` when the reply has it, then run `ask.start`.
+- `ask`: the question is the person's to answer, once, so the run goes on without them after. In one message, give them `ask.question.text` as it is, each entry of `ask.question.inputs` to fill in, and the `label` of each option as their choices. Wait for their pick, also when an option is marked recommended. In the `start` of the option they pick, replace `{inputs}` with their answers as one JSON object, and run it. Those options are the whole choice: when the person wants a start none of them offers, show them the options again.
 - `local`: tell the person `ask.reason` and give them `ask.start` for their own terminal. It is theirs to run.
+- `denied`: tell the person `ask.reason`. Nothing is left to run here.
 
-When `data.describe.judging.kind` is `elsewhere`, tell the person `judging.reason`: the scored steps are not judged on this machine.
-
-Done when a reply carries `data.turn` with a `run` id.
+Done when a reply carries `data.turn` with a `run` id, or the person has `ask.reason`.
 
 ## The loop
 
@@ -86,7 +85,7 @@ A `dispatch` action is one prompt step for one child agent. For each one:
 
 When your host cannot run `model.name`, run `unavailable` in place of both steps.
 
-A dispatch whose `needs.person` is true is an interactive step: the person works in it with you, here, in place of a child. Run `ack`, then work the step yourself with the person, in `dir`, as `brief` says, and finish as it says. When `model` names a model this session does not run on, run `unavailable` instead.
+A dispatch whose `needs.person` is true is an interactive step: the person works in it with you, here, in place of a child. Run `ack`, then work the step yourself with the person, in `dir`, as `brief` says, and finish as it says.
 
 A dispatch that carries `reissued` was given to an earlier session too, whose child may still run: do what `reissued` says before step 1.
 

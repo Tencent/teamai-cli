@@ -5,6 +5,7 @@ import path from 'node:path';
 import { onTestFinished, vi } from 'vitest';
 import { resolveWorkflowEnv } from '../../env-resolution.js';
 import type { LocalConfig } from '../../types.js';
+import type { AgentEvidence } from '../../workflow/attempt-marker.js';
 import { syncWorkflowDefinitions } from '../../workflow/cache.js';
 import { inProcessClient, type WorkflowClient } from '../../workflow/protocol.js';
 import { runSkillCall, skillContext, type CommandRun, type Runners, type SkillCall, type SkillContext } from '../../workflow/drivers/skill/skill-driver.js';
@@ -192,6 +193,8 @@ function memoryRunners(command: Runners['command']): {
 
 interface HarnessOptions {
   session?: string;
+  /** Why the caller counts as an agent's; none unless a test sets it. */
+  evidence?: AgentEvidence;
   /** Wraps the in-process protocol, to script an engine answer. */
   client?: (client: WorkflowClient) => WorkflowClient;
   /** Wraps the in-memory runners, to drop or hold a runner. */
@@ -236,7 +239,7 @@ export async function skillHarness(workflows: Record<string, string>, options: H
   const client = inProcessClient({ config, env });
   const rows: string[] = [];
   const context: SkillContext = {
-    config, env, client: scheduler.judging(options.client ? options.client(client) : client), session: options.session ?? 'session-a', tool: 'claude', invocation: 'teamai', cwd: work,
+    config, env, client: scheduler.judging(options.client ? options.client(client) : client), session: options.session ?? 'session-a', tool: 'claude', invocation: 'teamai', evidence: options.evidence ?? { kind: 'none' }, cwd: work,
     now: scheduler.now, runners: scheduler.track(options.runners ? options.runners(scheduler.runners) : scheduler.runners),
     locks: { take: (run, body, waitMs) => withRunLock(config, run, body, { waitMs }) },
     trace: (row) => { rows.push(row); },

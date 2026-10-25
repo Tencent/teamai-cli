@@ -86,6 +86,15 @@ steps:
     command: node -e "process.exit(0)"
 `;
 
+const LOCKED = `schemaVersion: v1alpha1
+name: locked
+description: Lint, only from the person's own terminal
+invoke: deny
+steps:
+  - id: lint
+    command: node -e "process.exit(0)"
+`;
+
 const SHIP = `schemaVersion: v1alpha1
 name: check
 description: Publish, then lint
@@ -331,11 +340,11 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     run: async () => {
       const made = await harness({ release: RELEASE });
       expect(await made.call({ kind: 'describe', name: 'release' })).toMatchObject({ data: { describe: { ask: { kind: 'ask', question: {
-        text: 'Only you can answer the approval at go-live, from your own terminal or teamai dashboard. Optional approvals: plan-review. How should optional approvals be answered?',
+        text: '- Only you can answer the approval at go-live, from your own terminal or teamai dashboard.\n- Optional approvals: plan-review.\nHow should it run?',
         options: [
-          { label: 'Ask me at optional approvals', start: 'teamai workflow start release --driver skill --hitl person' },
-          { label: 'You decide optional approvals', start: 'teamai workflow start release --driver skill --hitl recommend' },
-          { label: 'Answer optional approvals automatically', start: 'teamai workflow start release --driver skill --auto-approve' },
+          { label: 'Recommended: you decide optional approvals', start: 'teamai workflow start release --driver skill --hitl recommend' },
+          { label: 'Same, but ask me at optional approvals', start: 'teamai workflow start release --driver skill --hitl person' },
+          { label: 'Same, but answer optional approvals automatically', start: 'teamai workflow start release --driver skill --auto-approve' },
         ],
       } } } } });
       expect(await made.call({ kind: 'start', name: 'release', answers: { confirmed: false }, inputs: undefined }))
@@ -488,6 +497,19 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     },
   },
   {
+    name: 'an agent session asking about an invoke: deny workflow is told why, with nothing to run',
+    rows: ['R1'],
+    run: async () => {
+      const made = await harness({ locked: LOCKED }, { evidence: { kind: 'session', variable: 'CLAUDE_CODE_SESSION_ID' } });
+      const answer = await made.call({ kind: 'describe', name: 'locked' });
+      expect(answer).toMatchObject({ data: { describe: { ask: {
+        kind: 'denied', reason: 'Workflow "locked" has invoke: deny, so an agent session cannot start it with any driver. Run it from your own terminal or CI, or set invoke: allow or invoke: ask in workflows/locked.yaml.',
+      } } } });
+      expect(JSON.stringify(answer)).not.toContain('teamai workflow start locked');
+      return made.rows;
+    },
+  },
+  {
     name: 'an interactive step is offered for the agent to work with the person, here, one at a time',
     rows: ['D7', 'C2'],
     run: async () => {
@@ -505,7 +527,7 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     run: async () => {
       const made = await harness({ gated: GATED });
       expect(await made.call({ kind: 'describe', name: 'gated' })).toMatchObject({ data: { describe: { ask: {
-        kind: 'ask', question: { text: 'The team asks that you agree before it starts. Start it?', options: [{ label: 'Start it', start: 'teamai workflow start gated --driver skill --confirmed' }] },
+        kind: 'ask', question: { text: '- The team asks that you agree before it starts.\nStart it?', options: [{ label: 'Yes, start it', start: 'teamai workflow start gated --driver skill --confirmed' }] },
       } } } });
       expect(await made.call({ kind: 'start', name: 'gated', answers: { confirmed: false }, inputs: undefined }))
         .toMatchObject({ error: { code: 'confirm_needed', next: 'teamai workflow start --describe gated --driver skill' } });
@@ -920,8 +942,8 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       const made = await harness({ review: REVIEW }, { scorers: SCORERS });
       fakeJudge(made.root, 'thorough');
       expect(await made.call({ kind: 'describe', name: 'review' })).toMatchObject({ data: { describe: { judging: { kind: 'here', tool: 'claude' }, ask: { kind: 'ask', question: {
-        text: 'claude judges review here, with one confined judge call per pass. Start it?',
-        options: [{ label: 'Start it', start: 'teamai workflow start review --driver skill' }, { label: 'Start it, without judging', start: 'teamai workflow start review --driver skill --no-judge' }],
+        text: '- claude judges review here, with one confined judge call per pass.\nHow should it run?',
+        options: [{ label: 'Recommended: with judging', start: 'teamai workflow start review --driver skill' }, { label: 'Same, but without judging', start: 'teamai workflow start review --driver skill --no-judge' }],
       } } } } });
       expect(await reviewed(made, { judge: false })).toEqual(expect.objectContaining({ status: 'done', actions: [{ kind: 'done', outcome: 'succeeded', prs: [] }], events: [expect.objectContaining({ kind: 'settled' })] }));
       expect(made.rows).not.toContain('J1');

@@ -22,9 +22,10 @@ export interface TransitionRow {
 }
 
 export const TRANSITIONS = [
+  { id: 'R1', state: 'none', input: 'describe', guard: '`invoke: deny` and the caller has agent evidence', effects: 'none', next: 'none', action: 'describe `ask.kind: denied` with the reason, no literal' },
   { id: 'R2', state: 'none', input: 'describe', guard: 'the definition has a local route: a step this driver takes and a later one it is held from for env or tokens work in one workspace copy', effects: 'none', next: 'none', action: 'describe `ask.kind: local` with the reason and the `--driver local` start literal' },
-  { id: 'R3', state: 'none', input: 'describe', guard: 'something to ask: `invoke: ask`, a required input, width above 1, an optional gate, or judging here', effects: 'none', next: 'none', action: 'describe `ask.kind: ask`: one question, and the start literal of each option' },
-  { id: 'R4', state: 'none', input: 'describe', guard: 'nothing to ask', effects: 'none', next: 'none', action: 'describe `ask.kind: start` with the one start literal' },
+  { id: 'R3', state: 'none', input: 'describe', guard: 'something to ask: `invoke: ask`, a required input, width above 1, an optional gate, or judging here', effects: 'none', next: 'none', action: 'describe `ask.kind: ask`: one question stating every fact, and at most five start literals, the recommended first' },
+  { id: 'R4', state: 'none', input: 'describe', guard: 'nothing to ask', effects: 'none', next: 'none', action: 'describe `ask.kind: start` with the one start literal, and the facts to tell the person' },
   { id: 'R8', state: 'none', input: 'start `--driver skill`', guard: 'the definition has a local route', effects: 'none', next: 'none', action: 'error `needs_local_driver` with the reason, next null' },
   { id: 'R9', state: 'none', input: 'start `--driver skill`', guard: '`checkStartAnswers` answers `confirm-needed`', effects: 'none', next: 'none', action: 'error `confirm_needed`, next: the describe literal' },
   { id: 'R10', state: 'none', input: 'start `--driver skill`', guard: '`checkStartAnswers` answers `ok`', effects: '`WorkflowClient.start`; write skill.json: identity `{skill, machine, run checkout}`, invocation, options (`--parallel`, the HITL mode), host `pending` when the definition has a prompt step, owner := the caller\'s session; judging on with the session tool when describe judges here and the start has no `--no-judge`', next: 'host when it has a prompt step, else drive', action: 'the turn of a tick' },
@@ -135,11 +136,16 @@ export type RespondReply = { kind: 'answered'; step: string; pass: number; choic
 /** What the engine answered a sent report: the step it settled, with the failure it recorded, or an error. */
 export type ReportReply = { kind: 'reported'; outcome: Extract<TurnEvent, { kind: 'settled' }>['outcome']; failure?: WorkflowFailure } | { kind: 'error'; error: WorkflowFailure };
 
+/**
+ * What describe knows before the rows choose how to start. `denied`: why an agent session may not start the workflow.
+ * `local`: why the local driver must run it. `judgingHere`: the session tool's confined judge would judge the scored steps here.
+ */
+export interface DescribeInput { needed: StartAnswer[]; denied?: string; local?: string; judgingHere: boolean }
+
+/** What a start knows before the rows decide it. `judge`: the session tool whose confined judge judges the run, when describe judges here and the start keeps judging. */
+export interface StartInput { name: string; check: StartCheck; local?: string; prompts: boolean; judge?: string }
+
 export type MachineInput =
-  /** `local`: why the local driver must run the workflow. `judgingHere`: the session tool's confined judge would judge the scored steps here. */
-  | { kind: 'describe'; needed: StartAnswer[]; local?: string; judgingHere: boolean }
-  /** `judge`: the session tool whose confined judge judges the run, when describe judges here and the start keeps judging. */
-  | { kind: 'start'; name: string; check: StartCheck; local?: string; prompts: boolean; judge?: string }
   /** `takeover`: the call is `next --takeover`. */
   | { kind: 'call'; run: RunId; session: string | undefined; at: string; takeover: boolean }
   | { kind: 'runner-call' }
@@ -185,7 +191,6 @@ export type MachineInput =
 
 /** What the caller does for a row, beyond saving its state. */
 export type Effect =
-  | { kind: 'start'; parallel: number; hitl: HitlMode; host: 'none' | 'pending'; judge?: string }
   | { kind: 'next'; running: AttemptId[]; canTakeLease: boolean; autoApprove: boolean }
   /** `score --next` as the confined judge of `tool`. */
   | { kind: 'score'; tool: string; running: string[]; canTakeLease: boolean }
@@ -213,11 +218,13 @@ export type Refusal =
   | { code: 'driver_running'; run: RunId };
 
 /** How describe says to start, and why, for the kinds that start no run here. */
-export type DescribeVerdict = { kind: 'describe'; ask: 'start' | 'ask' } | { kind: 'describe'; ask: 'local'; reason: string };
+export type DescribeVerdict = { ask: 'start' | 'ask' } | { ask: 'local' | 'denied'; reason: string };
+
+/** The run R10 starts: its options, whether it asks the host question first, and the tool that judges it. */
+export interface StartRun { parallel: number; hitl: HitlMode; host: 'none' | 'pending'; judge?: string }
 
 /** What the call answers, when the row decides it. */
 export type Answer =
-  | DescribeVerdict
   | { kind: 'error'; refusal: Refusal; next: 'describe' | 'next' | 'takeover' | 'same' | null }
   | { kind: 'engine-error'; error: WorkflowFailure; next: 'next' | 'same' | 'poll' }
   | { kind: 'turn'; events: 'unseen' | 'none'; poll: boolean };
@@ -302,22 +309,28 @@ export function unseenEvents(state: SkillState, session: string | undefined): Tu
   return state.events.filter((entry) => entry.seq > seen).map((entry) => entry.event);
 }
 
+/** The describe row `input` matches, with how describe says to start. */
+export function describeRow(input: DescribeInput): { row: 'R1' | 'R2' | 'R3' | 'R4'; verdict: DescribeVerdict } {
+  if (input.denied !== undefined) return { row: 'R1', verdict: { ask: 'denied', reason: input.denied } };
+  if (input.local !== undefined) return { row: 'R2', verdict: { ask: 'local', reason: input.local } };
+  if (input.needed.length > 0 || input.judgingHere) return { row: 'R3', verdict: { ask: 'ask' } };
+  return { row: 'R4', verdict: { ask: 'start' } };
+}
+
+/** The start row `input` matches: the refusal of a start that may not run here, or the run to start. */
+export function startRow(input: StartInput): { row: 'R8' | 'R9'; refusal: Refusal; next: 'describe' | null } | { row: 'R10'; start: StartRun } {
+  if (input.local !== undefined) return { row: 'R8', refusal: { code: 'needs_local_driver', name: input.name, reason: input.local }, next: null };
+  if (input.check.kind === 'confirm-needed') {
+    const { missing, outOfRange } = input.check;
+    return { row: 'R9', refusal: { code: 'confirm_needed', name: input.name, missing, ...(outOfRange ? { outOfRange } : {}) }, next: 'describe' };
+  }
+  const { parallel, hitl } = input.check;
+  return { row: 'R10', start: { parallel, hitl, host: input.prompts ? 'pending' : 'none', ...(input.judge !== undefined ? { judge: input.judge } : {}) } };
+}
+
 /** Takes the row `input` matches in `state`. Undefined when no row applies, which leaves everything as it was. */
 export function step(state: SkillState | undefined, input: MachineInput): Step | undefined {
   switch (input.kind) {
-    case 'describe':
-      if (input.local !== undefined) return { row: 'R2', state, effects: [], answer: { kind: 'describe', ask: 'local', reason: input.local } };
-      if (input.needed.length > 0 || input.judgingHere) return { row: 'R3', state, effects: [], answer: { kind: 'describe', ask: 'ask' } };
-      return { row: 'R4', state, effects: [], answer: { kind: 'describe', ask: 'start' } };
-    case 'start':
-      if (input.local !== undefined) {
-        return { row: 'R8', state, effects: [], answer: { kind: 'error', refusal: { code: 'needs_local_driver', name: input.name, reason: input.local }, next: null } };
-      }
-      if (input.check.kind === 'confirm-needed') {
-        const { missing, outOfRange } = input.check;
-        return { row: 'R9', state, effects: [], answer: { kind: 'error', refusal: { code: 'confirm_needed', name: input.name, missing, ...(outOfRange ? { outOfRange } : {}) }, next: 'describe' } };
-      }
-      return { row: 'R10', state, effects: [{ kind: 'start', parallel: input.check.parallel, hitl: input.check.hitl, host: input.prompts ? 'pending' : 'none', ...(input.judge !== undefined ? { judge: input.judge } : {}) }] };
     case 'call': {
       if (!state) return { row: 'R11', state, effects: [], answer: { kind: 'error', refusal: { code: 'not_skill_run', run: input.run }, next: null } };
       if (input.takeover) return { row: 'S4', state: takenOver(state, input.session, input.at), effects: [] };
