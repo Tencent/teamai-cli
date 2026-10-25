@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { isDeepStrictEqual } from 'node:util';
 import fc from 'fast-check';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
@@ -221,13 +222,17 @@ async function called(real: Pick<Real, 'made' | 'drift' | 'session' | 'commands'
   return answer;
 }
 
-/** Makes `call` twice with the runners held, and checks invariant 9: the second turn is the first apart from events. */
+/**
+ * Makes `call` twice with the runners held, and checks invariant 9: the second turn is the first apart from events, and
+ * shows none the first showed. The clock still moves, so the second may show what happened since, such as a restart.
+ */
 async function twice(real: Real, call: Parameters<Made['call']>[0]): Promise<{ first: Turn; second: Turn }> {
   real.made.hold(true);
   try {
     const first = turnOf(await called(real, call));
     const second = turnOf(await called(real, call));
     expect({ ...second, events: [] }).toEqual({ ...first, events: [] });
+    expect(second.events.filter((event) => first.events.some((shown) => isDeepStrictEqual(shown, event)))).toEqual([]);
     return { first, second };
   } finally {
     real.made.hold(false);
@@ -237,8 +242,7 @@ async function twice(real: Real, call: Parameters<Made['call']>[0]): Promise<{ f
 class Next implements fc.AsyncCommand<Model, Real> {
   check = (): boolean => true;
   async run(model: Model, real: Real): Promise<void> {
-    const { first, second } = await twice(real, { kind: 'next', run: real.run, wait: false });
-    expect(second.events).toEqual([]);
+    const { first } = await twice(real, { kind: 'next', run: real.run, wait: false });
     sawForeground(model, first);
   }
   toString = (): string => 'next';
@@ -403,8 +407,7 @@ class Ack implements fc.AsyncCommand<Model, Real> {
       else sawForeground(model, turnOf(answer));
       return;
     }
-    const { first, second } = await twice(real, { kind: 'ack', run: real.run, attempt });
-    expect(second.events).toEqual([]);
+    const { first } = await twice(real, { kind: 'ack', run: real.run, attempt });
     sawForeground(model, first);
   }
   toString = (): string => `ack #${this.pick}`;

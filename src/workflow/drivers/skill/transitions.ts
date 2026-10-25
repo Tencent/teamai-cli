@@ -185,8 +185,10 @@ function withEvent(state: SkillState, event: TurnEvent): SkillState {
   return { ...state, seq, events: [...state.events, { seq, event }] };
 }
 
+/** `state` with `attempt` in the place it holds, or last when it is new, so a turn lists attempts in the order they opened. */
 function withAttempt(state: SkillState, attempt: AttemptState): SkillState {
-  return { ...state, attempts: [...state.attempts.filter((open) => open.attempt !== attempt.attempt), attempt] };
+  const held = state.attempts.some((open) => open.attempt === attempt.attempt);
+  return { ...state, attempts: held ? state.attempts.map((open) => (open.attempt === attempt.attempt ? attempt : open)) : [...state.attempts, attempt] };
 }
 
 /** The attempt `open` with only what every phase keeps. */
