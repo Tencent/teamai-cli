@@ -186,8 +186,9 @@ export async function respondToHitl(config: LocalConfig, runId: string, secrets:
     if (!hitl.options.includes(input.choice)) return error('invalid_choice', `Step "${state.id}" accepts these choices: ${hitl.options.join(', ')}`);
     const { channel, driver, agentCause } = input.provenance;
     if (hitl.required && agentCause) return agentInPath(run, state, hitl.options, agentCause);
-    const answered = { step: state.id, pass: state.pass ?? 1, choice: input.choice, channel };
-    answerHitl(state, { choice: input.choice, ...(input.note !== undefined ? { note: input.note } : {}), at: now, channel, agent: agentCause !== undefined, ...(driver ? { driver } : {}) });
+    const agent = agentCause !== undefined;
+    const answered = { step: state.id, pass: state.pass ?? 1, choice: input.choice, channel, agent };
+    answerHitl(state, { choice: input.choice, ...(input.note !== undefined ? { note: input.note } : {}), at: now, channel, agent, ...(driver ? { driver } : {}) });
     const reconciled = reconcileRun(run, now);
     if ('unreadable' in reconciled) return error('run_unreadable', reconciled.unreadable);
     if ('outcome' in reconciled) await finish(reconciled);

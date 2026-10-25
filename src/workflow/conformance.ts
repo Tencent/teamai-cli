@@ -731,7 +731,7 @@ workflowConformanceScenarios.push({
       { kind: 'respond', step: 'work', choice: 'yes', pass: 1, json: UI, env: { [name]: 'agent-1304' }, expect: { error: { code: 'agent_in_path' } } }
     )),
     { kind: 'respond', step: 'work', choice: 'yes', pass: 1, env: { CLAUDE_CODE_SESSION_ID: 'agent-1304' }, expect: { error: { code: 'agent_in_path' } } },
-    { kind: 'respond', step: 'work', choice: 'yes', pass: 1, json: UI, expect: { data: { answered: { step: 'work', choice: 'yes', channel: 'driver' } } } },
+    { kind: 'respond', step: 'work', choice: 'yes', pass: 1, json: UI, expect: { data: { answered: { step: 'work', choice: 'yes', channel: 'driver', agent: false } } } },
   ],
   expectState: { steps: [{ id: 'work', status: 'pending', answer: { choice: 'yes', channel: 'driver', agent: false, driver: UI.driver } }, { id: 'later', status: 'pending' }] },
 });

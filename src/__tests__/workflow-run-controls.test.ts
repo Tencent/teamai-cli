@@ -80,7 +80,7 @@ describe('workflow HITL', () => {
     expect(hitl).toEqual({ run: f.id, step: 'build', pass: 1, kind: 'approve', message: 'Build it?', options: ['yes', 'no'], required: false, respond: `teamai workflow respond ${f.id} build <option> --pass 1` });
     expect((await f.state()).revision).toBe(1);
     const answered = data(await f.respond('build', 'yes', { note: 'Ready' }));
-    expect(answered).toEqual({ answered: { step: 'build', pass: 1, choice: 'yes', channel: 'tty' }, run: { id: f.id, status: 'running', revision: 1 } });
+    expect(answered).toEqual({ answered: { step: 'build', pass: 1, choice: 'yes', channel: 'tty', agent: false }, run: { id: f.id, status: 'running', revision: 1 } });
     expect(data(await f.next()).lease.step).toBe('build');
     expect((await f.state()).steps[0]?.answer).toMatchObject({ choice: 'yes', note: 'Ready', channel: 'tty', agent: false, at: expect.any(String) });
     expect(await f.respond('build', 'no')).toMatchObject({ error: { code: 'repeated_response', message: expect.stringContaining('yes') } });

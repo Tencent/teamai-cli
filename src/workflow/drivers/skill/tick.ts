@@ -152,7 +152,7 @@ function engineReply(run: RunId, answer: WorkflowEnvelope): { reply: EngineReply
   return { reply: { kind: 'lease', lease: read, raw: lease }, cancelled };
 }
 
-const AnsweredDataSchema = z.object({ answered: z.object({ step: z.string(), pass: z.number().int(), choice: z.string(), channel: z.string() }) });
+const AnsweredDataSchema = z.object({ answered: z.object({ step: z.string(), pass: z.number().int(), choice: z.string(), channel: z.string(), agent: z.boolean() }) });
 
 function respondReply(answer: WorkflowEnvelope): RespondReply {
   if ('error' in answer) return { kind: 'error', error: { code: answer.error.code, message: answer.error.message } };
@@ -162,14 +162,14 @@ function respondReply(answer: WorkflowEnvelope): RespondReply {
     : { kind: 'error', error: { code: 'run_unreadable', message: 'The engine answered respond with a reply this teamai cannot read. Update teamai.' } };
 }
 
-const ReportDataSchema = z.object({ step: z.object({ outcome: z.enum(['success', 'failed', 'released']) }) });
+const ReportDataSchema = z.object({ step: z.object({ outcome: z.enum(['success', 'failed', 'released']), failure: FailureSchema.optional() }) });
 
 function reportReply(answer: WorkflowEnvelope): ReportReply {
   if ('error' in answer) return { kind: 'error', error: { code: answer.error.code, message: answer.error.message } };
   const data = ReportDataSchema.safeParse(answer.data);
-  return data.success
-    ? { kind: 'reported', outcome: data.data.step.outcome }
-    : { kind: 'error', error: { code: 'run_unreadable', message: 'The engine answered a report with a reply this teamai cannot read. Update teamai.' } };
+  if (!data.success) return { kind: 'error', error: { code: 'run_unreadable', message: 'The engine answered a report with a reply this teamai cannot read. Update teamai.' } };
+  const { outcome, failure } = data.data.step;
+  return { kind: 'reported', outcome, ...(failure ? { failure } : {}) };
 }
 
 /**

@@ -82,6 +82,15 @@ steps:
     command: node -e "console.log('lint sees ' + (process.env.DEPLOY_TOKEN ?? 'no token'))"
 `;
 
+const DIRTY = `schemaVersion: v1alpha1
+name: check
+description: Write the notes into the checkout
+invoke: allow
+steps:
+  - id: notes
+    command: node -e "require('fs').writeFileSync('NOTES.txt', 'notes')"
+`;
+
 const ROOTS = `schemaVersion: v1alpha1
 name: check
 description: Lint and test
@@ -435,6 +444,19 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       const after = await made.call({ kind: 'next', run, wait: false });
       expect(after).toMatchObject({ data: { turn: { status: 'done', actions: [{ kind: 'done', outcome: 'succeeded' }] } } });
       expect(JSON.stringify(after)).not.toContain('"then"');
+      return made.rows;
+    },
+  },
+  {
+    name: 'a command that exits 0 but writes into the checkout it only reads settles failed with the engine\'s failure',
+    rows: ['P7'],
+    run: async () => {
+      const made = await harness({ check: DIRTY });
+      const { run } = await started(made);
+      const done = await polledToDone(made, run);
+      expect(done.events).toContainEqual(expect.objectContaining({
+        kind: 'settled', step: 'notes', outcome: 'failed', exitCode: 0, failure: expect.objectContaining({ code: 'read_only_dirty' }),
+      }));
       return made.rows;
     },
   },

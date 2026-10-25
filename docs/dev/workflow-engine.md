@@ -147,7 +147,7 @@ Test parsing through `parseWorkflow` and `syncWorkflowDefinitions`. Test the eng
 | P4 | drive | report a `--model-unavailable` | a offered or dispatched, its dispatch printed `unavailable` | write-ahead `failed` `model_unavailable` naming the model | reporting | P7 to P10; after P7 to P9, runner answer `reported` |
 | P5 | drive | report a | a offered or dispatched, otherwise | read `result.json`: an output gives `success` with it as outputs, a failure gives `failed` with it, none or an unreadable one gives `failed` `tool_failed`; write-ahead | reporting | P7 to P10; after P7 to P9, runner answer `reported` |
 | P6 | drive, done | report a | a stopping by the agent | write-ahead `released` | reporting | P7 to P10; after P7 to P9, runner answer `reported` |
-| P7 | reporting | engine: reported, any status | | drop a; add to settled | drive | event `settled` |
+| P7 | reporting | engine: reported, any status | | drop a; add to settled | drive | event `settled`, with the failure the engine recorded, else the body's |
 | P8 | reporting | engine: `repeated_report` | | as P7 | drive | event `settled` |
 | P9 | reporting | engine: `lease_cancelled` | | drop a (the protocol abandoned its place); add to settled, so a late report of its child is P1 | unchanged | event `stopped`, why as its stop said, else as D3 |
 | P10 | reporting | engine: another error | | keep the body | reporting | error, next: the same report literal (a runner retries at its next check) |

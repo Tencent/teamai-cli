@@ -75,7 +75,7 @@ describe('dashboard workflow runs', () => {
   it('answers a required HITL request through the non-agent dashboard channel', async () => {
     const run = await waitingRun();
     expect(await answerFromDashboard(run.config, { run: run.id, step: 'ship', pass: 1, choice: 'yes' }))
-      .toEqual({ answered: { step: 'ship', pass: 1, choice: 'yes', channel: 'dashboard' } });
+      .toEqual({ answered: { step: 'ship', pass: 1, choice: 'yes', channel: 'dashboard', agent: false } });
     expect((await run.state()).steps.find((step) => step.id === 'ship')?.answer).toMatchObject({ choice: 'yes', channel: 'dashboard', agent: false });
     const [row] = await listLocalRuns(run.config);
     expect(row?.waiting).toEqual([]);

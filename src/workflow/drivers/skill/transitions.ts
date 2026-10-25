@@ -81,7 +81,7 @@ export const TRANSITIONS = [
   { id: 'P4', state: 'drive', input: 'report a `--model-unavailable`', guard: 'a offered or dispatched, its dispatch printed `unavailable`', effects: 'write-ahead `failed` `model_unavailable` naming the model', next: 'reporting', action: 'P7 to P10; after P7 to P9, runner answer `reported`' },
   { id: 'P5', state: 'drive', input: 'report a', guard: 'a offered or dispatched, otherwise', effects: 'read `result.json`: an output gives `success` with it as outputs, a failure gives `failed` with it, none or an unreadable one gives `failed` `tool_failed`; write-ahead', next: 'reporting', action: 'P7 to P10; after P7 to P9, runner answer `reported`' },
   { id: 'P6', state: 'drive, done', input: 'report a', guard: 'a stopping by the agent', effects: 'write-ahead `released`', next: 'reporting', action: 'P7 to P10; after P7 to P9, runner answer `reported`' },
-  { id: 'P7', state: 'reporting', input: 'engine: reported, any status', guard: '', effects: 'drop a; add to settled', next: 'drive', action: 'event `settled`' },
+  { id: 'P7', state: 'reporting', input: 'engine: reported, any status', guard: '', effects: 'drop a; add to settled', next: 'drive', action: 'event `settled`, with the failure the engine recorded, else the body\'s' },
   { id: 'P8', state: 'reporting', input: 'engine: `repeated_report`', guard: '', effects: 'as P7', next: 'drive', action: 'event `settled`' },
   { id: 'P9', state: 'reporting', input: 'engine: `lease_cancelled`', guard: '', effects: 'drop a (the protocol abandoned its place); add to settled, so a late report of its child is P1', next: 'unchanged', action: 'event `stopped`, why as its stop said, else as D3' },
   { id: 'P10', state: 'reporting', input: 'engine: another error', guard: '', effects: 'keep the body', next: 'reporting', action: 'error, next: the same report literal (a runner retries at its next check)' },
@@ -129,10 +129,10 @@ export type EngineReply =
 export type ScoreReply = { kind: 'lease'; judge: Omit<Judge, 'spawnedAt'> } | { kind: 'idle' } | { kind: 'error'; error: WorkflowFailure };
 
 /** What the engine answered the agent's answer to a gate: the answer it recorded, or an error. */
-export type RespondReply = { kind: 'answered'; step: string; pass: number; choice: string; channel: string } | { kind: 'error'; error: WorkflowFailure };
+export type RespondReply = { kind: 'answered'; step: string; pass: number; choice: string; channel: string; agent: boolean } | { kind: 'error'; error: WorkflowFailure };
 
-/** What the engine answered a sent report: the step it settled, or an error. */
-export type ReportReply = { kind: 'reported'; outcome: Extract<TurnEvent, { kind: 'settled' }>['outcome'] } | { kind: 'error'; error: WorkflowFailure };
+/** What the engine answered a sent report: the step it settled, with the failure it recorded, or an error. */
+export type ReportReply = { kind: 'reported'; outcome: Extract<TurnEvent, { kind: 'settled' }>['outcome']; failure?: WorkflowFailure } | { kind: 'error'; error: WorkflowFailure };
 
 export type MachineInput =
   /** `judgingHere`: the session tool's confined judge would judge the scored steps here. */
@@ -394,7 +394,7 @@ export function step(state: SkillState | undefined, input: MachineInput): Step |
       if (engine.kind === 'answered') {
         const { gate, ...rest } = state;
         const kept = gate && !sameGate(gate, engine) ? { ...rest, gate } : rest;
-        return { row: 'H2', state: withEvent(kept, { kind: 'answered', step: engine.step, choice: engine.choice, channel: engine.channel, agent: true }), effects: [] };
+        return { row: 'H2', state: withEvent(kept, { kind: 'answered', step: engine.step, choice: engine.choice, channel: engine.channel, agent: engine.agent }), effects: [] };
       }
       if (engine.error.code === 'repeated_response') return { row: 'H1', state, effects: [] };
       if (engine.error.code === 'agent_in_path') return { row: 'H3', state, effects: [], answer: { kind: 'engine-error', error: engine.error, next: 'poll' } };
@@ -508,11 +508,13 @@ export function step(state: SkillState | undefined, input: MachineInput): Step |
         return { row: 'P10', state, effects: [], answer: { kind: 'engine-error', error: input.reply.error, next: 'same' } };
       }
       const outcome = input.reply.kind === 'reported' ? input.reply.outcome : open.body.outcome;
+      // The engine's verdict wins: it may fail a step whose runner saw it succeed, as a read-only step that wrote.
+      const failure = (input.reply.kind === 'reported' ? input.reply.failure : undefined) ?? open.body.failure;
       const dropped = { ...state, attempts: others, settled: [...state.settled, open.attempt] };
       const settled = withEvent(dropped, {
         kind: 'settled', step: open.step, outcome,
         ...(open.body.exitCode !== undefined ? { exitCode: open.body.exitCode } : {}),
-        ...(open.body.failure ? { failure: open.body.failure } : {}),
+        ...(failure ? { failure } : {}),
         ...(open.tail ? { tail: open.tail } : {}),
       });
       return { row: input.reply.kind === 'reported' ? 'P7' : 'P8', state: settled, effects: [] };

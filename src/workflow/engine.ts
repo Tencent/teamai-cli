@@ -1704,7 +1704,10 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
       envelope: ok({
         accepted: true,
         revision: run.revision,
-        step: { id: settledStep.id, status: settledStep.status, outcome, ...(settlement.unenforced ? { unenforced: settlement.unenforced } : {}) },
+        step: {
+          id: settledStep.id, status: settledStep.status, outcome, ...(settledStep.status === 'failed' ? { failure: settledStep.failure } : {}),
+          ...(settlement.unenforced ? { unenforced: settlement.unenforced } : {}),
+        },
         ...(cleanup ? { cleanup: true } : {}),
         ...(dropReason ? { dropped: [{ field: 'changes.pr_url', reason: dropReason }] } : {}),
       }),
