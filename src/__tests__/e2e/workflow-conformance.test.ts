@@ -94,7 +94,7 @@ describe('workflow protocol conformance through the CLI', () => {
         // Each CLI call reads the system clock, so the runner waits for real.
         advance: (ms) => new Promise((resolve) => { setTimeout(resolve, ms); }),
         expect,
-      });
+      }, 'local');
     });
   }
 });
@@ -187,7 +187,7 @@ describe('workflow place conformance through the CLI', () => {
         advance: (ms) => new Promise((resolve) => { setTimeout(resolve, ms); }),
         expect,
         place: { checkout, origin },
-      });
+      }, 'local');
     });
   }
 });

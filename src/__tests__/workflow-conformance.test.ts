@@ -4,7 +4,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { LocalConfig } from '../types.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
-import { inProcessConformanceClient, runConformanceScenario } from '../workflow/conformance-interpreter.js';
+import { DRIVERS_UNDER_TEST, inProcessConformanceClient, runConformanceScenario } from '../workflow/conformance-interpreter.js';
 import { workflowConformanceScenarios } from '../workflow/conformance.js';
 import { inProcessClient } from '../workflow/protocol.js';
 import { pendingRecords } from '../workflow/records.js';
@@ -19,7 +19,7 @@ afterEach(() => {
   for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
-describe('workflow protocol conformance in process', () => {
+describe.each(DRIVERS_UNDER_TEST)('workflow protocol conformance in process as %s', (profile) => {
   for (const scenario of workflowConformanceScenarios) {
     it(scenario.name, async () => {
       for (const [name, value] of Object.entries(scenario.env ?? {})) vi.stubEnv(name, value);
@@ -55,7 +55,7 @@ describe('workflow protocol conformance in process', () => {
           vi.setSystemTime(Date.now() + ms);
         },
         expect,
-      });
+      }, profile);
     });
   }
 });

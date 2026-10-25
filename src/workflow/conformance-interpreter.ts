@@ -46,32 +46,60 @@ export interface ConformanceScenario {
    * origin, and the tip holds these files. Needs a runner with a `place`.
    */
   expectPushed?: Record<string, Record<string, string>>;
+  /**
+   * The profiles designed to refuse what the scenario needs of the driver under test, such as env for a prompt step
+   * under `skill`. Under one of them the first `next` saved as `at` answers `expect`, and the scenario ends there: its
+   * end expectations are for the profiles that hold it.
+   */
+  refusedBy?: Partial<Record<DriverProfile, ConformanceRefusal>>;
+}
+
+/** Where a profile refuses a scenario, and the answer it gets there instead. */
+export interface ConformanceRefusal {
+  at: string;
+  expect: Record<string, unknown>;
+}
+
+/** The same refusal from both skill profiles: each declares a person, and neither declares tokens or turns. */
+export function skillProfilesRefuse(refusal: ConformanceRefusal): Partial<Record<DriverProfile, ConformanceRefusal>> {
+  return { skill: refusal, 'skill-bare': refusal };
 }
 
 /**
- * The kinds of driver a scenario speaks as. Each is its own driver identity, so a lease one holds is another driver's
- * to the rest, and each declares what it can do in `driver.can`. `hitl` comes from the operation, since a local driver
- * has a person only when it runs in a terminal.
+ * The kinds of driver a scenario speaks as. Each sends the driver identity of its `kind`, so a lease one holds is
+ * another kind's to the rest, and each declares what it can do in `driver.can`. A local driver's `hitl` comes from the
+ * operation, since it has a person only when it runs in a terminal.
  */
 export const DRIVER_PROFILES = {
   /** The in-process driver `workflow start --driver local` and `workflow resume` run. */
-  local: { can: { workspace: ['read-only', 'new', 'continue'], env: true, tokens: true, max_turns: true, setup: true } },
+  local: { kind: 'local', can: { workspace: ['read-only', 'new', 'continue'], env: true, tokens: true, max_turns: true, setup: true } },
   /** An agent session that runs the protocol itself, with a person in the chat. */
-  session: { can: { hitl: true, workspace: ['read-only', 'new', 'continue'] } },
+  session: { kind: 'session', can: { hitl: true, workspace: ['read-only', 'new', 'continue'] } },
   /** A program that speaks only the CLI JSON protocol, such as an IDE or an orchestrator. */
-  external: { can: { workspace: ['read-only', 'new', 'continue'] } },
-} as const satisfies Record<string, { can: Record<string, unknown> }>;
+  external: { kind: 'external', can: { workspace: ['read-only', 'new', 'continue'] } },
+  /** The skill driver, `workflow ... --driver skill`, as it declares itself on every `next`. */
+  skill: {
+    kind: 'skill',
+    can: { hitl: true, workspace: ['read-only', 'new', 'continue'], network: false, isolation: 'none', env: 'commands', tokens: false, max_turns: false, setup: true },
+  },
+  /** The skill driver's identity declaring only a person and workspaces, so a run owes it no env, setup or tokens. */
+  'skill-bare': { kind: 'skill', can: { hitl: true, workspace: ['read-only', 'new', 'continue'] } },
+} as const satisfies Record<string, { kind: string; can: DriverCan }>;
 export type DriverProfile = keyof typeof DRIVER_PROFILES;
+
+/** The drivers under test every protocol, place, git and limits scenario runs as. */
+export const DRIVERS_UNDER_TEST = ['local', 'skill', 'skill-bare'] as const satisfies readonly DriverProfile[];
 
 /** The identity a scenario's `as` profile sends. */
 export function profileDriver(profile: DriverProfile): DriverIdentity {
-  return { kind: profile, machine: 'conformance', workspace: '/work' };
+  return { kind: DRIVER_PROFILES[profile].kind, machine: 'conformance', workspace: '/work' };
 }
 
 /**
  * `running` and `cancelled` name leases that earlier operations saved; `cancelled` must match exactly.
- * `absent` lists fields the lease must not carry. `as` picks the driver profile, `local` when omitted, and `can` replaces
- * the keys of the profile's `can` it names.
+ * `absent` lists fields the lease must not carry. `as` picks the driver profile, `local` when omitted, which stands for
+ * the driver under test: the profile a runner runs the scenario under replaces it. `can` replaces the keys of the
+ * profile's `can` it names, and `hitl` sets it for a profile that does not decide it.
  * `state` is matched against the persisted run after the operation. `advance` moves the clock the engine reads.
  * `prepare` asks `next` to prepare the lease's place; `promptHas` lists text its prompt contains. With `prepare`,
  * `attempt` names the saved lease whose attempt `next` prepares, which it must answer with, and `adopt` the `host`
@@ -181,10 +209,12 @@ async function readOrNull(file: string): Promise<string | null> {
 
 /**
  * Runs one scenario as a driver that speaks only the protocol: it keeps each lease's attempt and revision, and lists
- * the attempts an operation names in `running`.
+ * the attempts an operation names in `running`. `profile` is the driver under test, which every operation that speaks
+ * as `local` speaks as.
  */
-export async function runConformanceScenario(scenario: ConformanceScenario, runner: ConformanceRunner): Promise<void> {
+export async function runConformanceScenario(scenario: ConformanceScenario, runner: ConformanceRunner, profile: DriverProfile): Promise<void> {
   const { client, expect } = runner;
+  const speaker = (as: DriverProfile | undefined): DriverProfile => (as === undefined || as === 'local' ? profile : as);
   const started = await client.start(scenario.workflowName);
   if ('error' in started) throw new Error(started.error.message);
   const runId = String(started.data.run);
@@ -198,6 +228,8 @@ export async function runConformanceScenario(scenario: ConformanceScenario, runn
     if (cwd === undefined) throw new Error(`Lease ${name} was not prepared`);
     return cwd;
   };
+  const refusal = scenario.refusedBy?.[profile];
+  let refused = false;
   const hosts = new Map<string, string>();
   const hostOf = (name: string): string => {
     const dir = hosts.get(name);
@@ -207,19 +239,24 @@ export async function runConformanceScenario(scenario: ConformanceScenario, runn
   for (const operation of scenario.operations) {
     switch (operation.kind) {
       case 'next': {
-        const profile = operation.as ?? 'local';
-        const { can } = DRIVER_PROFILES[profile];
+        const as = speaker(operation.as);
+        const { can } = DRIVER_PROFILES[as];
         const prepare: NextPrepare | undefined = operation.prepare && operation.attempt !== undefined
           ? { attempt: AttemptIdSchema.parse(attemptOf(operation.attempt)), ...(operation.adopt !== undefined ? { adopt: hostOf(operation.adopt) } : {}) }
           : operation.prepare;
         const envelope = await client.next(runId, {
-          driver: { ...profileDriver(profile), can: { ...can, ...operation.can, ...(operation.hitl !== undefined ? { hitl: operation.hitl } : {}) } },
+          driver: { ...profileDriver(as), can: { ...(operation.hitl !== undefined ? { hitl: operation.hitl } : {}), ...can, ...operation.can } },
           ...(operation.running ? { running: operation.running.map(attemptOf) } : {}),
           ...(operation.canTakeLease !== undefined ? { canTakeLease: operation.canTakeLease } : {}),
           ...(operation.claim !== undefined ? { claim: operation.claim } : {}),
           ...(operation.autoApprove !== undefined ? { autoApprove: operation.autoApprove } : {}),
           ...(operation.base ? { base: operation.base } : {}),
         }, prepare ? { prepare } : undefined);
+        if (refusal?.at === operation.saveAs) {
+          expect(envelope, `${profile} refuses the scenario at ${operation.saveAs}`).toMatchObject(refusal.expect);
+          refused = true;
+          break;
+        }
         expect(envelope).toMatchObject(operation.expect);
         if (operation.state) expect(await runner.readRun(runId)).toMatchObject(operation.state);
         if ('data' in envelope && envelope.data.hitl) {
@@ -269,7 +306,7 @@ export async function runConformanceScenario(scenario: ConformanceScenario, runn
         break;
       }
       case 'respond': {
-        const json = 'json' in operation || !operation.as ? operation.json : { driver: profileDriver(operation.as) };
+        const json = 'json' in operation || !operation.as ? operation.json : { driver: profileDriver(speaker(operation.as)) };
         expect(await client.respond(runId, operation.step, operation.choice, { note: operation.note, pass: operation.pass, json, env: operation.env })).toMatchObject(operation.expect);
         break;
       }
@@ -287,7 +324,7 @@ export async function runConformanceScenario(scenario: ConformanceScenario, runn
         expect(await client.report(runId, {
           attempt: operation.attempt ?? lease?.attempt,
           revision: operation.revision ?? lease?.revision,
-          driver: profileDriver(operation.as ?? 'local'),
+          driver: profileDriver(speaker(operation.as)),
           ...operation.body,
           ...(operation.changes ? { changes: leasedChanges(lease, operation.changes) } : {}),
         })).toMatchObject(operation.expect);
@@ -298,7 +335,23 @@ export async function runConformanceScenario(scenario: ConformanceScenario, runn
         throw new Error(`unknown conformance operation ${JSON.stringify(unhandled)}`);
       }
     }
+    if (refused) break;
   }
+  if (refusal && !refused) throw new Error(`The scenario says ${profile} refuses it at ${refusal.at}, but no next saved as ${refusal.at} ran`);
+  if (!refused) await expectEnd(scenario, runner, runId, leases);
+  const secrets = Object.entries(scenario.env ?? {});
+  if (secrets.length === 0) return;
+  const stored = JSON.stringify(await runner.readRun(runId));
+  const record = JSON.stringify(await runner.readEndRecord(runId)) ?? '';
+  for (const [name, value] of secrets) {
+    expect(stored.includes(value), `the run file holds the value of ${name}`).toEqual(false);
+    expect(record.includes(value), `the end record holds the value of ${name}`).toEqual(false);
+  }
+}
+
+/** The end expectations of a scenario that held: the persisted run, its end record, and what origin got. */
+async function expectEnd(scenario: ConformanceScenario, runner: ConformanceRunner, runId: string, leases: Map<string, SavedLease>): Promise<void> {
+  const { expect } = runner;
   if (scenario.expectState) expect(await runner.readRun(runId)).toMatchObject(scenario.expectState);
   if (scenario.expectRecord) expect(await runner.readEndRecord(runId)).toMatchObject(scenario.expectRecord);
   for (const [name, files] of Object.entries(scenario.expectPushed ?? {})) {
@@ -311,13 +364,5 @@ export async function runConformanceScenario(scenario: ConformanceScenario, runn
     const tip = (await git(origin, ['rev-parse', `refs/heads/${lease.workspace.branch}`])).stdout.trim();
     expect(tip, `${lease.workspace.branch} on origin is the commit ${lease.step} reported`).toEqual(changes?.to);
     for (const [file, text] of Object.entries(files)) expect((await git(origin, ['show', `${tip}:${file}`])).stdout).toEqual(text);
-  }
-  const secrets = Object.entries(scenario.env ?? {});
-  if (secrets.length === 0) return;
-  const stored = JSON.stringify(await runner.readRun(runId));
-  const record = JSON.stringify(await runner.readEndRecord(runId)) ?? '';
-  for (const [name, value] of secrets) {
-    expect(stored.includes(value), `the run file holds the value of ${name}`).toEqual(false);
-    expect(record.includes(value), `the end record holds the value of ${name}`).toEqual(false);
   }
 }

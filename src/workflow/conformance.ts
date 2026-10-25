@@ -1,4 +1,4 @@
-import { PARALLEL_ROOTS, controlsYaml, type ConformanceOperation, type ConformanceScenario, type DriverProfile } from './conformance-interpreter.js';
+import { PARALLEL_ROOTS, controlsYaml, skillProfilesRefuse, type ConformanceOperation, type ConformanceScenario, type DriverProfile } from './conformance-interpreter.js';
 import { AGENT_SESSION_ENV } from '../utils/session-id.js';
 import { ATTEMPT_ENV } from './attempt-marker.js';
 import { limitsConformanceScenarios } from './limits-conformance.js';
@@ -569,6 +569,7 @@ workflowConformanceScenarios.push(
       { kind: 'next', saveAs: 'again', hitl: true, expect: { data: { lease: { step: 'pair', interactive: true } } } },
     ],
     expectState: { status: 'running', steps: [{ id: 'pair', status: 'leased' }] },
+    refusedBy: skillProfilesRefuse({ at: 'held', expect: { data: { lease: { step: 'pair', interactive: true } } } }),
   },
   {
     name: 'retry after the final failure does not provisionally finish the run', workflowName: 'build', yaml: TWO_STEPS,
@@ -590,6 +591,7 @@ workflowConformanceScenarios.push(
       { kind: 'respond', step: 'work', choice: 'no', expect: { error: { code: 'repeated_response' } } },
       { kind: 'next', saveAs: 'work', hitl: true, running: ['parallel'], expect: { data: { lease: { step: 'work' } } } },
     ],
+    refusedBy: skillProfilesRefuse({ at: 'busy', expect: { data: { hitl: { step: 'work' } } } }),
   },
   {
     name: 'refused approve skips and can be answered again', workflowName: 'build', yaml: APPROVE,
@@ -606,6 +608,7 @@ workflowConformanceScenarios.push(
   {
     name: 'optional approve without HITL skips', workflowName: 'build', yaml: APPROVE,
     operations: [{ kind: 'next', saveAs: 'done', expect: { data: { done: { outcome: 'succeeded' } } } }],
+    refusedBy: skillProfilesRefuse({ at: 'done', expect: { data: { hitl: { step: 'work', kind: 'approve' } } } }),
   },
   {
     name: 'required approve refuses drivers without HITL and agent answers', workflowName: 'build', yaml: APPROVE.replace('approve: Build it?', 'approve: { message: Build it?, required: true }'),
@@ -615,6 +618,7 @@ workflowConformanceScenarios.push(
       { kind: 'next', saveAs: 'done', expect: { data: { done: { outcome: 'failed' } } } },
     ],
     expectState: { steps: [{ id: 'work', status: 'failed', failure: { code: 'hitl_required' } }, { id: 'later', status: 'skipped' }] },
+    refusedBy: skillProfilesRefuse({ at: 'done', expect: { data: { hitl: { step: 'work', required: true } } } }),
   },
   {
     name: 'choose exposes choice and rejects stale pass', workflowName: 'build', yaml: CHOOSE,
@@ -679,6 +683,7 @@ workflowConformanceScenarios.push(
       { kind: 'next', saveAs: 'pair', as: 'session', expect: { data: { lease: { step: 'pair', interactive: true } } } },
     ],
     expectState: { status: 'running', steps: [{ id: 'pair', status: 'leased', lease: { driver: { kind: 'session' } } }] },
+    refusedBy: skillProfilesRefuse({ at: 'local', expect: { data: { lease: { step: 'pair', interactive: true } } } }),
   },
   {
     name: 'a held step does not block a ready sibling', workflowName: 'build',

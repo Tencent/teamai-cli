@@ -478,7 +478,7 @@ describe('workflow place conformance in process', () => {
         },
         expect,
         place: { checkout, origin },
-      });
+      }, 'local');
     });
   }
 });
