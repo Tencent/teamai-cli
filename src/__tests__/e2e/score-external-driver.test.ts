@@ -134,6 +134,10 @@ describe('teamai score with an external driver', () => {
     const reportedJudge = await runCLI(['workflow', 'report', lease.ref, '--json', '{}'], app, env);
     expect(reportedJudge.code).toBe(1);
     expect(envelope(reportedJudge.stdout).error?.code).toBe('judge_lease');
+    const listed = await runCLI(['workflow', 'next', runId, '--json', JSON.stringify({ driver, running: [lease.ref] })], app, env);
+    expect(envelope(listed.stdout).error?.code, listed.stdout).toBe('judge_lease');
+    const renewOnly = await runCLI(['score', '--next', '--json', JSON.stringify({ ...judge, running: [lease.ref], canTakeLease: false })], app, env);
+    expect(envelope(renewOnly.stdout).data, renewOnly.stdout).toEqual({ idle: { open: 0, leased: 1 } });
 
     const answer = (label: string) => JSON.stringify({ driver, outcome: 'success', answer: { label, reasoning: `${PHRASE}: the reviewer named the off-by-one.` }, judge: { tool: 'claude' } });
     const bad = await runCLI(['score', '--lease', lease.ref, '--submit', '--stdin'], app, env, answer('great'));

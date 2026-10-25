@@ -1221,17 +1221,16 @@ export const workflowDeliveryConformanceScenarios: DeliveryConformanceScenario[]
   },
 ];
 
-export const judgeLeaseConformanceScenario = {
-  name: 'a judge lease renews through running and settles only through score submission',
-  yaml: `schemaVersion: v1alpha1
+const JUDGED_WORKFLOW = `schemaVersion: v1alpha1
 name: judged
 description: A pass with a quality scorer.
 steps:
   - id: work
     prompt: Review the change.
     scorers: [quality]
-`,
-  scorer: `---
+`;
+
+const QUALITY_SCORER = `---
 labels:
   - { value: good, score: 1, description: Did the work }
   - { value: bad, score: 0, description: Missed the work }
@@ -1239,13 +1238,63 @@ passingScore: 0.5
 samplingRate: 100
 ---
 Judge the work.
-`,
-  operations: [
-    { kind: 'take', at: '2026-10-22T12:00:00.000Z', expect: { data: { lease: { expiresAt: '2026-10-22T12:30:00.000Z' } } } },
-    { kind: 'renew', at: '2026-10-22T12:20:00.000Z', expect: { data: { idle: { open: 0, leased: 1 } } } },
-    { kind: 'take', at: '2026-10-22T12:45:00.000Z', expect: { data: { lease: { expiresAt: '2026-10-22T12:50:00.000Z', handedBack: true } } } },
-    { kind: 'report', expect: { error: { code: 'judge_lease' } } },
-    { kind: 'submit', expect: { data: { label: { label: 'good', score: 1, passed: true } } } },
-    { kind: 'idle', at: '2026-10-22T12:46:00.000Z', expect: { data: { idle: { open: 0, leased: 0 } } } },
-  ],
-} as const;
+`;
+
+/**
+ * One step of a judge lease scenario. `take` and `renew` are `score --next`: `take` lists nothing in running, or the
+ * lease it took last with `running`; `renew` lists that lease, and `canTakeLease: false` asks it to take nothing.
+ * `next` is a workflow next that lists that lease in its running, which leaves the run as it was.
+ */
+export type JudgeConformanceOperation =
+  | { kind: 'take'; at: string; running?: true; expect: Record<string, unknown> }
+  | { kind: 'renew'; at: string; canTakeLease?: false; expect: Record<string, unknown> }
+  | { kind: 'next'; expect: Record<string, unknown> }
+  | { kind: 'report'; expect: Record<string, unknown> }
+  | { kind: 'submit'; expect: Record<string, unknown> }
+  | { kind: 'idle'; at: string; expect: Record<string, unknown> };
+
+export interface JudgeConformanceScenario {
+  name: string;
+  yaml: string;
+  /** The scorer files by name. */
+  scorers: Record<string, string>;
+  operations: JudgeConformanceOperation[];
+}
+
+export const judgeConformanceScenarios: JudgeConformanceScenario[] = [
+  {
+    name: 'a judge lease renews through running and settles only through score submission',
+    yaml: JUDGED_WORKFLOW,
+    scorers: { quality: QUALITY_SCORER },
+    operations: [
+      { kind: 'take', at: '2026-10-22T12:00:00.000Z', expect: { data: { lease: { expiresAt: '2026-10-22T12:30:00.000Z' } } } },
+      { kind: 'renew', at: '2026-10-22T12:20:00.000Z', expect: { data: { idle: { open: 0, leased: 1 } } } },
+      { kind: 'take', at: '2026-10-22T12:45:00.000Z', expect: { data: { lease: { expiresAt: '2026-10-22T12:50:00.000Z', handedBack: true } } } },
+      { kind: 'report', expect: { error: { code: 'judge_lease' } } },
+      { kind: 'submit', expect: { data: { label: { label: 'good', score: 1, passed: true } } } },
+      { kind: 'idle', at: '2026-10-22T12:46:00.000Z', expect: { data: { idle: { open: 0, leased: 0 } } } },
+    ],
+  },
+  {
+    name: 'judge-ref-in-workflow-running: workflow next refuses a judge lease in running, leaves the run as it was, and the lease still renews',
+    yaml: JUDGED_WORKFLOW,
+    scorers: { quality: QUALITY_SCORER },
+    operations: [
+      { kind: 'take', at: '2026-10-22T12:00:00.000Z', expect: { data: { lease: { expiresAt: '2026-10-22T12:30:00.000Z' } } } },
+      { kind: 'next', expect: { error: { code: 'judge_lease' } } },
+      { kind: 'renew', at: '2026-10-22T12:20:00.000Z', expect: { data: { idle: { open: 0, leased: 1 } } } },
+      { kind: 'take', at: '2026-10-22T12:45:00.000Z', expect: { data: { lease: { expiresAt: '2026-10-22T12:50:00.000Z', handedBack: true } } } },
+    ],
+  },
+  {
+    name: 'judge-renew-without-take: canTakeLease false renews the lease in running and takes no open work',
+    yaml: JUDGED_WORKFLOW.replace('scorers: [quality]', 'scorers: [quality, depth]'),
+    scorers: { quality: QUALITY_SCORER, depth: QUALITY_SCORER.replace('Judge the work.', 'Judge how deep the work goes.') },
+    operations: [
+      { kind: 'take', at: '2026-10-22T12:00:00.000Z', expect: { data: { lease: { scorer: 'quality', expiresAt: '2026-10-22T12:30:00.000Z' } } } },
+      { kind: 'renew', at: '2026-10-22T12:20:00.000Z', canTakeLease: false, expect: { data: { idle: { open: 1, leased: 1 } } } },
+      { kind: 'take', at: '2026-10-22T12:45:00.000Z', running: true, expect: { data: { lease: { scorer: 'depth', expiresAt: '2026-10-22T13:15:00.000Z' } } } },
+      { kind: 'renew', at: '2026-10-22T12:46:00.000Z', canTakeLease: false, expect: { data: { idle: { open: 0, leased: 2 } } } },
+    ],
+  },
+];

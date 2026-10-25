@@ -6,7 +6,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
-import { DriverSchema, driverIdentity } from '../driver-identity.js';
+import { DriverSchema, driverIdentity, sameDriver } from '../driver-identity.js';
 import type { LocalConfig } from '../types.js';
 import { log } from '../utils/logger.js';
 import {
@@ -96,8 +96,12 @@ export interface JudgeRequest {
   running: string[];
   /** On demand: only these entries. Never a session. */
   entries?: readonly string[];
+  /** Only the workflow work of this run, never a session: a driver that judges the run it drives. */
+  run?: string;
   /** `session`: only finished sessions, as the background driver judges. Else workflow work first, then sessions. */
   only?: 'session';
+  /** False: renew the leases in `running` and take nothing, neither a new lease nor one handed back. */
+  canTakeLease?: boolean;
 }
 
 const NextPayloadSchema = z.object({
@@ -109,6 +113,8 @@ const NextPayloadSchema = z.object({
     }, { required_error: 'driver.can.judge is required: {"isolation":"verified" or "best-effort","tools":["claude",…]}' }),
   }),
   running: z.array(z.string()).default([]),
+  run: z.string().min(1).optional(),
+  canTakeLease: z.boolean().optional(),
 });
 
 const SubmitPayloadSchema = z.object({
@@ -132,7 +138,8 @@ export function parseJudgeRequest(value: unknown): JudgeRequest | string {
   const parsed = NextPayloadSchema.safeParse(value);
   if (!parsed.success) return issueText(parsed.error.issues);
   const { can, ...driver } = parsed.data.driver;
-  return { driver, judge: can.judge, running: parsed.data.running };
+  const { running, run, canTakeLease } = parsed.data;
+  return { driver, judge: can.judge, running, ...(run !== undefined ? { run } : {}), ...(canTakeLease !== undefined ? { canTakeLease } : {}) };
 }
 
 export function parseJudgeSubmission(value: unknown): JudgeSubmission | string {
@@ -141,10 +148,6 @@ export function parseJudgeSubmission(value: unknown): JudgeSubmission | string {
   const { outcome, answer, ...submission } = parsed.data;
   if (outcome !== 'success') return { ...submission, outcome };
   return answer ? { ...submission, outcome, answer } : 'answer: a success needs answer.label and answer.reasoning, or one of those per scorer of a batch';
-}
-
-function sameDriver(left: JudgeDriver, right: JudgeDriver): boolean {
-  return left.kind === right.kind && left.machine === right.machine && left.workspace === right.workspace;
 }
 
 /** One sampled (scorer, pass) with its derived state. */
@@ -373,8 +376,8 @@ export type TakenLease = (OneLease & { closed: ClosedEntry[] }) | { kind: 'busy'
 
 /**
  * The one way to get judge work; `workflow next` never hands it out. Releases a live lease of this driver that it no
- * longer offers the tool or isolation for, or whose kept rubric is gone, renews the leases it lists in `running`, hands
- * back one it left out with the rubric it was taken with, else
+ * longer offers the tool or isolation for, or whose kept rubric is gone, renews the leases it lists in `running`, and
+ * with `canTakeLease: false` stops there. Else it hands back one it left out with the rubric it was taken with, else
  * leases the first open entry, oldest run first, whose isolation the driver meets. When its step batches scorers, the
  * other open entries of the same pass that resolve to the same tool and model join that lease. Answers `idle` with
  * counts when there is none. An entry whose evidence is empty closes, and the next one is tried. An entry whose scorer's
@@ -426,8 +429,8 @@ async function takeOneLease(config: LocalConfig, request: JudgeRequest, now: str
     return { kind: 'idle', open: 0, leased: 0, skipped: [] };
   }
   const all = request.only === 'session' ? [] : await scoreEntries(config, now, scoring.batch);
-  const runs = all.filter((entry) => !request.entries || request.entries.includes(entry.id));
-  const { entries: sessions, captured } = request.entries ? { entries: [], captured: undefined } : await SessionWork.entries(config, now, scoring);
+  const runs = all.filter((entry) => (!request.entries || request.entries.includes(entry.id)) && (request.run === undefined || entry.subject.runId === request.run));
+  const { entries: sessions, captured } = request.entries || request.run !== undefined ? { entries: [], captured: undefined } : await SessionWork.entries(config, now, scoring);
   const found: ScoreEntry[] = [...runs, ...sessions];
   const dailyLimit = scoring.sessions.enabled ? scoring.sessions.dailyLimit : 0;
   const aliases = await loadModelAliases(config);
@@ -455,7 +458,7 @@ async function takeOneLease(config: LocalConfig, request: JudgeRequest, now: str
   const judges = (entry: ScoreEntry) => leasable(entry) && chooseJudgeModel(aliases, entry.definition, request.judge.tools).ok;
   const running = new Set(request.running.flatMap((ref) => parseLeaseRef(ref)?.attempt ?? []));
   // A session is read before the lock, which a slow read must not hold: the first one this lock would lease.
-  const next = runs.some(judges) ? undefined : sessions.find(judges);
+  const next = request.canTakeLease === false || runs.some(judges) ? undefined : sessions.find(judges);
   const prepared = next && { entry: next, read: await SessionWork.read(config, next.subject) };
   const outcome = await AttemptStore.locked(config, async (): Promise<LockedLease> => {
     for (const entry of all) {
@@ -498,6 +501,7 @@ async function takeOneLease(config: LocalConfig, request: JudgeRequest, now: str
       }
     }
     const [back] = mine.values();
+    if (request.canTakeLease === false) return { kind: 'none' };
     if (back) return { kind: 'workflow', members: back, handedBack: true };
     const untried = async (entry: SessionEntry) => (await AttemptStore.ofEntry(config, entry.id)).length === 0 && !await SessionWork.isLabelled(config, entry);
     // A session key is leased once: still untried, while the day has launches left, and only as read before the lock.

@@ -949,7 +949,10 @@ function offerTerms(
 
 /** What a driver tells `next` besides who it is. */
 export interface NextOptions {
-  /** The attempts of its open leases the driver is still running. An open lease it does not list is handed back to it. */
+  /**
+   * The attempts of its open leases the driver is still running. An open lease it does not list is handed back to it.
+   * A judge lease ref answers `judge_lease`: those renew through `teamai score --next`.
+   */
   running?: string[];
   /** False to reconcile without issuing a new lease: `next` answers `done`, an unlisted lease, `hitl`, or `wait`. */
   canTakeLease?: boolean;
@@ -1048,6 +1051,10 @@ async function drainDeliveries(config: LocalConfig, runId: string, secrets: Reco
 }
 
 export async function leaseNext(config: LocalConfig, runId: string, driver: DriverIdentity, options: NextOptions = {}): Promise<WorkflowEnvelope> {
+  const judgeRef = options.running?.find(isLeaseRef);
+  if (judgeRef !== undefined) {
+    return error('judge_lease', `running lists judge lease ${judgeRef}. Renew judge leases with teamai score --next and its running list, never with teamai workflow next.`);
+  }
   driver = { kind: driver.kind, machine: driver.machine, workspace: driver.workspace };
   if (options.claim) {
     const claimed = await claimRun(config, runId, { checkout: driver.workspace });

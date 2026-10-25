@@ -10,6 +10,7 @@ import {
   abandonPlace, finishPlace, placeHeldBy, placeLeaseOf, placeRecorded, preparePlace, releasePlace, runPlaceSetup, type PlaceLease, type PlacePrepared, type StepEnd,
 } from './place/place.js';
 import { cancelRun, respondToHitl, retryStep } from './run-controls.js';
+import { nextJudgeLease, parseJudgeRequest } from './scoring.js';
 import { AttemptIdSchema, readRun, RunIdSchema, withRunLock, type AttemptId, type RunId, type RunLock } from './store.js';
 import { isWorkflowError, type DriverIdentity, type WorkflowEnvelope, type WorkflowFailure } from './types.js';
 import { headCommit } from './worktree.js';
@@ -46,6 +47,8 @@ export interface WorkflowClient {
   retry(runId: string, step: string): Promise<WorkflowEnvelope>;
   /** Stops the run or the named step. */
   cancel(runId: string, step?: string): Promise<WorkflowEnvelope>;
+  /** Takes or renews judge work, as `teamai score --next` does with `body` as its payload. */
+  scoreNext(body: unknown): Promise<WorkflowEnvelope>;
 }
 
 /**
@@ -112,6 +115,10 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
     },
     retry: (runId, step) => retryStep(config, runId, env.secrets, step),
     cancel: (runId, step) => cancelRun(config, runId, env.secrets, step),
+    scoreNext: async (body) => {
+      const request = parseJudgeRequest(body);
+      return typeof request === 'string' ? { error: { code: 'invalid_json', message: request } } : nextJudgeLease(config, request);
+    },
   };
 }
 
