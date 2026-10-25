@@ -397,6 +397,42 @@ steps:
     expect(git(dir, 'symbolic-ref', '--short', 'HEAD')).toBe(workspace.branch);
   });
 
+  it('refuses through next --prepare a place another open attempt began to adopt, as a host-place prepare does, and the attempt stays leased', async () => {
+    const f = await fixture(`schemaVersion: v1alpha1
+name: build
+description: Build the API and the UI.
+alias: ship
+steps:
+  - id: api
+    workspace: new
+    prompt: Build the API.
+  - id: ui
+    needs: []
+    workspace: new
+    prompt: Build the UI.
+`);
+    const raw = async (running: string[]): Promise<unknown> => {
+      const answer = await f.client.next(f.runId, { ...body(f), running });
+      if (!('data' in answer) || !answer.data.lease) throw new Error(JSON.stringify(answer));
+      return answer.data.lease;
+    };
+    const api = LeaseSchema.parse(await raw([]));
+    const ui = LeaseSchema.parse(await raw([api.attempt]));
+    const dir = path.join(path.dirname(f.work), 'hosts', 'shared');
+    git(f.work, 'worktree', 'add', '-q', '--detach', dir, api.workspace.start.commit);
+    const prepare = (attempt: string) => f.client.next(f.runId, body(f), { prepare: { attempt: AttemptIdSchema.parse(attempt), adopt: dir } });
+
+    killAfter.add('worktreeHooks');
+    await expect(prepare(api.attempt)).rejects.toThrow('killed after worktreeHooks');
+    expect(await prepare(ui.attempt)).toMatchObject({ error: {
+      code: 'adopt_mismatch',
+      message: `${dir} is the place of attempt ${api.attempt} of run ${f.runId}, which is still open, so attempt ${ui.attempt} was not prepared there. Make another place for it, then adopt that one.`,
+    } });
+    const run = await readRun(f.config, f.runId);
+    expect(typeof run === 'object' && run.steps.find((step) => step.id === 'ui')?.status).toBe('leased');
+    expect(await prepare(api.attempt)).toMatchObject({ data: { lease: { attempt: api.attempt, cwd: dir } } });
+  });
+
   it('refuses a place on the lease\'s branch whose history lacks the start, and the attempt stays leased', async () => {
     const f = await fixture();
     const lease = await leased(f);

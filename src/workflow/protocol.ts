@@ -190,6 +190,11 @@ async function leasedPlace(config: LocalConfig, lock: RunLock, raw: unknown): Pr
   return { lease: { ...lease, step: leased.id }, root: run.checkout, others };
 }
 
+/** Why `attempt` was not prepared in `dir`, the place of `behind`, another open attempt of `run`: as every adopt refuses it. */
+function heldPlaceRefusal(input: { dir: string; behind: AttemptId; run: RunId; attempt: AttemptId }): string {
+  return `${input.dir} is the place of attempt ${input.behind} of run ${input.run}, which is still open, so attempt ${input.attempt} was not prepared there. Make another place for it, then adopt that one.`;
+}
+
 /**
  * What `next` prepares: with `true`, the lease it answers with; else `attempt`, which the run already leased to the
  * caller, in a place TeamAI creates, or in the one the host made at `adopt`.
@@ -230,7 +235,7 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
       if (ask && adopt === undefined) return ask;
       const behind = await placeHeldBy({ config, run: lock.run, root, lease, others, ...(adopt !== undefined ? { adopt } : {}) });
       if (behind && ask && request.kind === 'adopt') {
-        return { ...ask, refused: `${request.dir} is the place of attempt ${behind} of run ${lock.run}, which is still open, so attempt ${lease.attempt} was not prepared there. Make another place for it, then adopt that one.` };
+        return { ...ask, refused: heldPlaceRefusal({ dir: request.dir, behind, run: lock.run, attempt: lease.attempt }) };
       }
       if (behind) return { kind: 'busy', behind };
       const placed = await preparePlace({ config, lock, root, lease, ...(adopt !== undefined ? { adopt } : {}) });
@@ -292,7 +297,8 @@ const LeasedSchema = z.object({ attempt: z.string(), revision: z.number() }).pas
 /**
  * Prepares `attempt`, which the run already leased to `driver`, holding the run's lock, as `prepareLeased` prepares a
  * new lease, in the place the host made at `adopt` when given. Every other lease of the run is listed as running, so
- * the engine hands this one back and leases nothing new. `wrong_attempt` when the run no longer leases it to `driver`.
+ * the engine hands this one back and leases nothing new. `wrong_attempt` when the run no longer leases it to `driver`;
+ * `adopt_mismatch`, with the attempt still leased, when another open attempt of the run holds `adopt`.
  */
 async function prepareAttempt(input: {
   config: LocalConfig; lock: RunLock; driver: DriverIdentity; env: WorkflowEnv; next: Omit<NextOptions, 'env'>; attempt: AttemptId; adopt?: string;
@@ -306,6 +312,11 @@ async function prepareAttempt(input: {
   const leased = LeasedSchema.safeParse(answer.data.lease);
   if (!leased.success || leased.data.attempt !== attempt) {
     return { error: { code: 'wrong_attempt', message: `Run ${lock.run} does not lease attempt ${attempt} to this driver, so it was not prepared. Prepare an attempt next leased this driver, or call next without --attempt.` } };
+  }
+  if (adopt !== undefined) {
+    const place = await leasedPlace(config, lock, leased.data);
+    const behind = 'kind' in place ? undefined : await placeHeldBy({ config, run: lock.run, ...place, adopt });
+    if (behind) return { error: { code: 'adopt_mismatch', message: heldPlaceRefusal({ dir: adopt, behind, run: lock.run, attempt }) } };
   }
   return prepareLeased({ config, lock, driver, env, answer, ...(adopt !== undefined ? { adopt } : {}) });
 }
