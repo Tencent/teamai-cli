@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
+import { LabelStore } from '../scorers/label-store.js';
 import { encodeCwdClaude } from '../session-flow/fs.js';
 import type { RunMode } from '../launch-context.js';
 import { acquireLock, releaseLock } from '../update.js';
@@ -844,6 +845,25 @@ steps:
     const now = new Date().toISOString();
     expect(await takeJudgeLease(harness.config, { driver: external, judge, running: [], run: other }, now)).toMatchObject({ kind: 'lease', lease: { subject: { runId: other } } });
     expect(await takeJudgeLease(harness.config, { driver: external, judge, running: [], only: 'session' }, now)).toMatchObject({ kind: 'lease', lease: { source: 'session' } });
+  });
+
+  it('declares what its session tool\'s judge can do, so the judge lease and the label record that it only reads', async () => {
+    const leases: unknown[] = [];
+    const harness = await skillHarness({ review: REVIEW }, {
+      scorers: { 'review-quality': REVIEW_QUALITY },
+      client: (client) => ({ ...client, scoreNext: async (body) => {
+        const answer = await client.scoreNext(body);
+        if ('data' in answer && answer.data.lease !== undefined) leases.push(answer.data.lease);
+        return answer;
+      } }),
+    });
+    roots.push(harness.root);
+    fakeJudge(harness.root, 'thorough');
+    const { run } = await reviewed(harness);
+    expect(await harness.call({ kind: 'next', run, wait: true })).toMatchObject({ data: { turn: { events: [{ kind: 'judged', step: 'review' }] } } });
+
+    expect(leases).toEqual([expect.objectContaining({ judge: expect.objectContaining({ tool: 'claude', access: 'read' }) })]);
+    expect(await LabelStore.local(harness.config)).toEqual([expect.objectContaining({ judge: expect.objectContaining({ tool: 'claude', access: 'read' }) })]);
   });
 
   it('a deliver: pr step shows waiting delivering, and the poll returns done with the PR', async () => {

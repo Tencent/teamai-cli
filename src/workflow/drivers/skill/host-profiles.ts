@@ -1,4 +1,6 @@
 /** The host question the agent answers once per run with prompt steps, and what the skill driver declares on every `next`. */
+import type { JudgeAccess } from '../../../scorers/label.js';
+import { isJudgeTool, judgeAccess } from '../../../scorers/judge.js';
 import type { DriverCan } from '../../requirements.js';
 
 export const HOST_CHOICES = ['h1', 'h2', 'h3', 'h4'] as const;
@@ -47,7 +49,10 @@ export function canFor(host: HostChoice | undefined): Required<DriverCan> {
   return HOST_PROFILES[host ?? 'h1'].can;
 }
 
-/** What the skill driver declares on `score --next`: the confined judge of the session tool, which describe found verified. */
-export function judgeCan(tool: string): { isolation: 'verified'; tools: [string] } {
-  return { isolation: 'verified', tools: [tool] };
+/**
+ * What the skill driver declares on `score --next`: the confined judge of the session tool, which describe found
+ * verified, and what that judge can do. A tool with no judge profile declares `full`, as a judge that does not say counts.
+ */
+export function judgeCan(tool: string): { isolation: 'verified'; access: JudgeAccess; tools: [string] } {
+  return { isolation: 'verified', access: isJudgeTool(tool) ? judgeAccess(tool) : 'full', tools: [tool] };
 }

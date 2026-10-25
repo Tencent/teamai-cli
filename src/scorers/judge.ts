@@ -51,6 +51,11 @@ function judgeFamily(tool: JudgeTool): keyof typeof TOOL_ENV {
   return tool === 'codebuddy' ? 'codebuddy' : localToolFamily(tool);
 }
 
+/** What the judge teamai launches for `tool` can do beyond answering, by its family's profile. */
+export function judgeAccess(tool: JudgeTool): JudgeAccess {
+  return ACCESS[judgeFamily(tool)];
+}
+
 function profileIsolation(tool: JudgeTool, version: string, insideCheckout: boolean): Isolation {
   return VERIFIED[judgeFamily(tool)]?.test(version) && !insideCheckout ? 'verified' : 'best-effort';
 }

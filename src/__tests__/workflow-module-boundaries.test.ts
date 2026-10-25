@@ -43,6 +43,9 @@ const SKILL_IMPORTS: Record<string, { typeOnly?: true; names?: string[] }> = {
   // The session tool a child's model resolves for, and the skill-data root the host question's reference is under.
   'src/tools.ts': { names: ['isAgentToolId'] },
   'src/skill-content.ts': { names: ['packagedSkillRoots'] },
+  // What the confined judge of the session tool can do, which the driver declares on `score --next`.
+  'src/scorers/judge.ts': { names: ['isJudgeTool', 'judgeAccess'] },
+  'src/scorers/label.ts': { typeOnly: true },
   // The identity every driver reports, the repository's atomic file writes, and the shared config types.
   'src/driver-identity.ts': {},
   // The run mode: whether a person attends the run, which describe answers for and every attempt's process gets.

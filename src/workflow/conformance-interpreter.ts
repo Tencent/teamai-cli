@@ -485,11 +485,11 @@ const CLAUDE_JUDGE: { isolation: 'verified'; tools: string[] } = { isolation: 'v
  * `score --next` for judge work with the judge it declares, if any. `ownRun` names the run, so it takes that run's
  * judge work only.
  */
-export const JUDGE_PROFILES: Record<JudgeProfile, { as: DriverProfile; judge?: { isolation: 'verified'; tools: string[] }; ownRun: boolean }> = {
+export const JUDGE_PROFILES: Record<JudgeProfile, { as: DriverProfile; judge?: { isolation: 'verified'; access?: 'read'; tools: string[] }; ownRun: boolean }> = {
   /** A program that judges any pass of the install with a verified Claude Code. */
   external: { as: 'external', judge: CLAUDE_JUDGE, ownRun: false },
-  /** The skill driver, which judges its own run with the confined judge of its session's tool, found verified here. */
-  skill: { as: 'skill', judge: CLAUDE_JUDGE, ownRun: true },
+  /** The skill driver, which judges its own run with the confined judge of its session's tool, found verified here, which only reads. */
+  skill: { as: 'skill', judge: { ...CLAUDE_JUDGE, access: 'read' }, ownRun: true },
   /** The skill driver of a run that does not judge here: it declares no judge. */
   'skill-no-judge': { as: 'skill', ownRun: true },
 };
