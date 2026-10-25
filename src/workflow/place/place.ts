@@ -1,9 +1,30 @@
+import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { LocalConfig } from '../../types.js';
 import type { WorkflowFailure } from '../types.js';
 import { attemptDir, type AttemptId, type RunLock } from '../store.js';
+import { git } from '../worktree.js';
 import { finishReader, stageReader } from './reader.js';
 import { readPlaceRecord, writePlaceRecord } from './record.js';
+
+/**
+ * The checkout a driver working from `cwd` makes its places in: `checkout`, the one the run started from, unless `cwd`
+ * is a checkout of another repository, as a clone on a machine that took the run over is. A run that records no
+ * checkout uses `cwd`.
+ */
+export async function placeRoot({ cwd, checkout }: { cwd: string; checkout: string | undefined }): Promise<string> {
+  if (checkout === undefined) return cwd;
+  const [here, there] = await Promise.all([commonDir(cwd), commonDir(checkout)]);
+  return here !== undefined && here !== there ? cwd : checkout;
+}
+
+/** The git directory every worktree of the repository at `dir` shares. */
+async function commonDir(dir: string): Promise<string | undefined> {
+  const printed = await git(dir, ['rev-parse', '--path-format=absolute', '--git-common-dir']);
+  if (printed.code !== 0) return undefined;
+  const common = printed.stdout.trim();
+  return fs.realpath(common).catch(() => common);
+}
 
 /** The lease fields a place reads. A lease with a workspace contract does not come here yet. */
 export interface PlaceLease {

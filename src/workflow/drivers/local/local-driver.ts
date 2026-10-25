@@ -38,7 +38,7 @@ import {
   type LocalToolRun,
 } from './local-tool-adapter.js';
 import { AttemptIdSchema, readRun, RunIdSchema, updateRun, withRunLock, type RunLock } from '../../store.js';
-import { finishPlace, preparePlace } from '../../place/place.js';
+import { finishPlace, placeRoot, preparePlace } from '../../place/place.js';
 import { commandOutputs } from '../../protocol.js';
 import { stopProcess } from '../../../tool-launch/process-stop.js';
 import { isLaunchTool, localToolFamily, type LaunchTool } from '../../../tool-launch/tools.js';
@@ -965,7 +965,10 @@ function localCan(config: LocalConfig, hitl: boolean): Required<DriverCan> {
 
 async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options: LocalDriverOptions): Promise<WorkflowEnvelope> {
   const runId = lock.run;
-  const unreconciled = await reconcileTakenCopies(config, runId, cwd);
+  const started = await readRun(config, runId);
+  // Places go under the checkout the run started from, wherever in it the driver runs.
+  const root = await placeRoot({ cwd, checkout: typeof started === 'object' ? started.checkout : undefined });
+  const unreconciled = await reconcileTakenCopies(config, runId, root);
   if (unreconciled) return { error: unreconciled };
   const canHitl = options.hitl ?? (process.stdin.isTTY === true && process.stderr.isTTY === true);
   const can = localCan(config, canHitl);
@@ -985,7 +988,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options
   // them again. They still take a slot, and a new attempt of their step waits until they are gone, so a retried step
   // never runs beside its cancelled attempt.
   const dying = new Map<string, { step: string; lease: Lease; command: StagedCommand }>();
-  const base = await headCommit(cwd);
+  const base = await headCommit(root);
   // A prompt that was stopped before its tool started has nothing to report.
   let prompt: { lease: Lease; controller: AbortController; exit: Promise<ReportBody | undefined> } | undefined;
   let question: { hitl: LocalHitl; controller: AbortController; exit: Promise<{ kind: 'question'; line?: string }> } | undefined;
@@ -1038,7 +1041,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options
     // Cancelled while it ran: the next `next` lists it in `cancelled`, and the run goes on without it.
     if (isWorkflowError(answer)) return answer.error.code === 'lease_cancelled' ? undefined : answer;
     if (lease?.workspace && 'data' in answer && answer.data.cleanup === true) {
-      await removeWorktree(cwd, worktreePath(cwd, lease.workspace.branch));
+      await removeWorktree(root, worktreePath(root, lease.workspace.branch));
     }
     reported.add(body.attempt);
     return undefined;
@@ -1087,17 +1090,17 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options
         held.push(lease);
       }
       const placesBusy = (): Set<string> => new Set([
-        ...[...inFlight.values()].map(({ lease }) => placeOf(lease, cwd)),
-        ...[...dying.values()].map(({ lease }) => placeOf(lease, cwd)),
-        ...(prompt ? [placeOf(prompt.lease, cwd)] : []),
+        ...[...inFlight.values()].map(({ lease }) => placeOf(lease, root)),
+        ...[...dying.values()].map(({ lease }) => placeOf(lease, root)),
+        ...(prompt ? [placeOf(prompt.lease, root)] : []),
       ]);
       for (let index = 0; !prompt?.lease.interactive && busy() < maxParallel;) {
         const lease = held[index];
         const command = lease?.command;
         if (lease === undefined || command === undefined) break;
         if ([...dying.values()].some((stopping) => stopping.step === lease.step)
-          || placesBusy().has(placeOf(lease, cwd))
-          || held.slice(0, index).some((earlier) => earlier.prompt !== undefined && placeOf(earlier, cwd) === placeOf(lease, cwd))) {
+          || placesBusy().has(placeOf(lease, root))
+          || held.slice(0, index).some((earlier) => earlier.prompt !== undefined && placeOf(earlier, root) === placeOf(lease, root))) {
           index += 1;
           continue;
         }
@@ -1109,16 +1112,16 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options
         if (forwarded) handle(STOP_SIGNALS);
         inFlight.set(lease.attempt, { lease, command: stageThenStart(
           lease,
-          (signal) => stageLease(lease, { active: cwd, runId, values: turn.values, signal, overlay: overlayPath(config, runId, lease.attempt), checkout: (staged) => placeInCheckout(config, lock, cwd, staged) }),
+          (signal) => stageLease(lease, { active: root, runId, values: turn.values, signal, overlay: overlayPath(config, runId, lease.attempt), checkout: (staged) => placeInCheckout(config, lock, root, staged) }),
           () => {
             if (forwarded) handle(forwarded);
-            return startCommand(command, lease.cwd ?? cwd, { ...lease.processEnv ?? process.env, ...lease.env }, detached);
+            return startCommand(command, lease.cwd ?? root, { ...lease.processEnv ?? process.env, ...lease.env }, detached);
           },
         ) });
       }
       if (!prompt && busy() < maxParallel) {
         const promptAt = held.findIndex((lease) => lease.prompt !== undefined
-          && !placesBusy().has(placeOf(lease, cwd))
+          && !placesBusy().has(placeOf(lease, root))
           && ![...dying.values()].some((stopping) => stopping.step === lease.step)
           && (!lease.interactive || (inFlight.size === 0 && dying.size === 0)));
         if (promptAt !== -1) {
@@ -1134,7 +1137,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options
           const controller = new AbortController();
           if (maxParallel === 1) handle(STOP_SIGNALS);
           prompt = { lease, controller, exit: (async () => {
-            const failure = await stageLease(lease, { active: cwd, runId, values: turn.values, signal: controller.signal, overlay: overlayPath(config, runId, lease.attempt), checkout: (staged) => placeInCheckout(config, lock, cwd, staged) });
+            const failure = await stageLease(lease, { active: root, runId, values: turn.values, signal: controller.signal, overlay: overlayPath(config, runId, lease.attempt), checkout: (staged) => placeInCheckout(config, lock, root, staged) });
             if (!startable(lease, controller.signal)) {
               await (lease.workspace?.mode === 'read-only' ? leaveReadCopy(lease) : restoreLeaseOverlay(lease));
               return undefined;

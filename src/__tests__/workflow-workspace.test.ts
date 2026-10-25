@@ -185,6 +185,31 @@ steps:
     expect(missing.diagnostics.map((item) => item.code)).toContain('bad_session');
   });
 
+  it('roots worktrees at run.checkout when driven from another directory', async () => {
+    const yaml = `schemaVersion: v1alpha1
+name: build
+description: A step records the directory it ran in.
+steps:
+  - id: change
+    workspace: new
+    command: node -e "require('fs').writeFileSync('where.txt', process.cwd())"
+`;
+    const { config, workspace } = await fixture(yaml);
+    const side = path.join(path.dirname(workspace), 'side');
+    git(['worktree', 'add', '-q', '-b', 'side', side], workspace);
+    const started = await startRun(config, 'build', {}, { secrets: await knownSecrets(config), checkout: workspace });
+    if ('error' in started) throw new Error(started.error.message);
+    const runId = String(started.data.run);
+
+    await runLocalDriver(config, runId, side);
+
+    const run = await readRun(config, runId);
+    expect(run).toMatchObject({ steps: [{ id: 'change', status: 'succeeded' }] });
+    const branch = branchName(runId, 'change', 1);
+    expect(git(['show', `${branch}:where.txt`], workspace)).toBe(path.join(fs.realpathSync(workspace), path.relative(workspace, worktreePath(workspace, branch))));
+    expect(fs.existsSync(path.join(side, '.teamai', 'workflow-worktrees'))).toBe(false);
+  });
+
   it('fails a command with no workspace when it changes the checkout, and leaves the file', async () => {
     const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
 name: build
