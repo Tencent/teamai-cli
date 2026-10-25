@@ -174,8 +174,8 @@ async function workflowSkill(raw: Parameters<typeof parseSkillCall>[0]): Promise
   writeEnvelope(await runSkillCall(call, context), loaded.secrets);
 }
 
-/** The flags of `workflow start` without `--driver skill`. The skill driver's flags are refused, the first given in this order. */
-const NonSkillStartOptionsSchema = z.object({
+/** The flags of `workflow start` and `resume` without `--driver skill`. The skill driver's flags are refused, the first given in this order. */
+const NonSkillRunOptionsSchema = z.object({
   parallel: z.undefined({ invalid_type_error: '--parallel needs --driver skill' }),
   hitl: z.undefined({ invalid_type_error: '--hitl needs --driver skill' }),
   judge: z.boolean().optional().refine((judged) => judged !== false, '--no-judge needs --driver skill'),
@@ -192,7 +192,7 @@ export async function workflowStart(name: string, options: {
     return;
   }
   setStderrOnly(true);
-  const nonSkill = NonSkillStartOptionsSchema.safeParse(options);
+  const nonSkill = NonSkillRunOptionsSchema.safeParse(options);
   if (!nonSkill.success) {
     refuseOptions(nonSkill.error);
     return;
@@ -214,7 +214,7 @@ export async function workflowStart(name: string, options: {
     return;
   }
   if (options.driver !== undefined && options.driver !== 'local') {
-    writeEnvelope({ error: { code: 'unsupported_driver', message: `Driver "${options.driver}" is not available. Use --driver local or --driver skill.` } }, secrets);
+    writeEnvelope({ error: unsupportedDriver(options.driver) }, secrets);
     return;
   }
   const tools = parseTools(options.tools);
@@ -287,6 +287,11 @@ const JsonReportOptionsSchema = z.object({
 });
 
 /** Answers the first issue of a `--json` driver's flags, as `invalid_arguments`. */
+/** The refusal of a `--driver` that is neither `local` nor `skill`. */
+function unsupportedDriver(driver: string): WorkflowFailure {
+  return { code: 'unsupported_driver', message: `Driver "${driver}" is not available. Use --driver local or --driver skill.` };
+}
+
 function refuseOptions(error: z.ZodError): void {
   writeEnvelope({ error: { code: 'invalid_arguments', message: error.issues[0]?.message ?? 'invalid options' } }, collectEnvSecrets());
 }
@@ -467,12 +472,13 @@ export async function workflowResume(runId: string, options: {
     return;
   }
   setStderrOnly(true);
-  if (options.parallel !== undefined || options.hitl !== undefined || options.judge === false) {
-    writeEnvelope({ error: { code: 'invalid_arguments', message: '--parallel, --hitl and --no-judge need --driver skill' } }, collectEnvSecrets());
+  const nonSkill = NonSkillRunOptionsSchema.safeParse(options);
+  if (!nonSkill.success) {
+    refuseOptions(nonSkill.error);
     return;
   }
   if (options.driver !== undefined && options.driver !== 'local') {
-    writeEnvelope({ error: { code: 'unsupported_driver', message: `Driver "${options.driver}" is not available. Use --driver local or --driver skill.` } }, collectEnvSecrets());
+    writeEnvelope({ error: unsupportedDriver(options.driver) }, collectEnvSecrets());
     return;
   }
   const loaded = await readyRunConfig(runId, { allowRemote: true });

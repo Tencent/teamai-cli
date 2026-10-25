@@ -167,7 +167,7 @@ describe('workflow json payloads', () => {
   });
 });
 
-describe('workflow next, report and start without --driver skill', () => {
+describe('workflow next, report, start and resume without --driver skill', () => {
   it.each([
     ['next', { driver: 'local' }, 'next takes --driver skill, not --driver local'],
     ['next', { wait: true, adopt: '/place' }, '--wait needs --driver skill'],
@@ -191,10 +191,9 @@ describe('workflow next, report and start without --driver skill', () => {
     [{ hitl: 'person' }, '--hitl needs --driver skill'],
     [{ judge: false }, '--no-judge needs --driver skill'],
     [{ driver: 'local', parallel: '2', hitl: 'person' }, '--parallel needs --driver skill'],
-  ] as const)('refuses start with %j before it reads the workflow', async (options, message) => {
-    const answer = await capture(() => workflowStart('missing', options));
-
-    expect(answer).toEqual({ error: { code: 'invalid_arguments', message } });
+  ] as const)('refuses start and resume with %j before it reads the workflow or the run', async (options, message) => {
+    expect(await capture(() => workflowStart('missing', options))).toEqual({ error: { code: 'invalid_arguments', message } });
+    expect(await capture(() => workflowResume('r00000000', options))).toEqual({ error: { code: 'invalid_arguments', message } });
   });
 });
 
