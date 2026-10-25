@@ -15,7 +15,7 @@ import { AgentSession, noAdapter, recordedToolRoots, writeCopyOnce } from './age
 import type { Session } from './ir.js';
 import { degradeThinkingBlocks } from './migrate.js';
 import { archiveBusyMessage, authorForCwd, pushArchive, sessionArchiveRoot } from './session-cmd-shared.js';
-import { SyncManager, defaultSyncMeta, getRepoIdentity, type SessionSyncMeta } from './sync.js';
+import { SyncManager, defaultSyncMeta, getRepoIdentity, withSessionPublicationLock, type SessionSyncMeta } from './sync.js';
 
 /** A session in one tool, by the id that tool gave it. */
 export type ArchiveSessionRef = { platform: string; sessionId: string };
@@ -171,21 +171,25 @@ export async function archiveSessions<T extends ArchiveSessionRef>(
   if (read.length === 0) return outcome({ status: 'archived' });
   const message = `sync: archive ${read.length} session(s) of workflow run ${run}`;
   if (isSelfMode(config)) return outcome(await archiveOnReports(config, read, message));
-  const archive = new SyncManager(root);
-  const unsaved = await saveAll(archive, root, read);
-  if (unsaved) return { status: 'failed', message: unsaved };
-  let commit;
-  try {
-    commit = archive.gitCommit(message);
-  } catch (error) {
-    commit = { status: 'failed' as const, reason: error instanceof Error ? error.message : String(error) };
-  }
-  if (commit.status === 'failed') return { status: 'failed', message: `Committing the sessions in ${root} failed: ${commit.reason}` };
-  const pushed = await pushArchive(archive, root);
-  if (pushed.status === 'failed') {
-    return { status: 'failed', message: `The sessions were committed in ${root} but not pushed: ${pushed.reason}` };
-  }
-  return outcome({ status: 'archived' });
+  const published = await withSessionPublicationLock(root, async (): Promise<Delivered> => {
+    const archive = new SyncManager(root);
+    const unsaved = await saveAll(archive, root, read);
+    if (unsaved) return { status: 'failed', message: unsaved };
+    let commit;
+    try {
+      commit = archive.gitCommit(message);
+    } catch (error) {
+      commit = { status: 'failed' as const, reason: error instanceof Error ? error.message : String(error) };
+    }
+    if (commit.status === 'failed') return { status: 'failed', message: `Committing the sessions in ${root} failed: ${commit.reason}` };
+    const pushed = await pushArchive(archive, root);
+    if (pushed.status === 'failed') {
+      return { status: 'failed', message: `The sessions were committed in ${root} but not pushed: ${pushed.reason}` };
+    }
+    return { status: 'archived' };
+  });
+  if (published.status === 'busy') return { status: 'failed', message: archiveBusyMessage(root, published.lockPath) };
+  return outcome(published.value);
 }
 
 /** The newest session of `chain` the archive at `root` holds, read on a git-kind team from origin's latest commit. */
