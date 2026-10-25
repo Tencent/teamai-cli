@@ -95,6 +95,8 @@ A dispatch whose `needs.person` is true is an interactive step: the person works
 
 On `h4` you are the child, so no child starts and nothing runs in the background. Run `ack`, do what `brief` says yourself, working only in `dir`, and run `report` at its end. The next dispatch comes after this one is reported. A `model.name` that is not your own model is one your host cannot run.
 
+A dispatch whose `needs.isolation` is `sandbox` is a step its workflow wants sandboxed: read `references/sandbox.md` before step 1.
+
 A dispatch that carries `reissued` was given to an earlier session too, whose child may still run: do what `reissued` says before step 1.
 
 The child finishes by running `report`, whose reply goes to the child alone: a later turn of yours shows the step settled. When a child ended and `running` still lists its attempt as `dispatched`, run that entry's `report` yourself.

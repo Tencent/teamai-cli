@@ -39,11 +39,13 @@ export type ModelPick = z.infer<typeof ModelPickSchema>;
 
 /**
  * A prompt step's work as a child gets it: the place it works in, its brief, and the agent and model it runs as.
- * `person`: an interactive step, which the agent works itself with the person instead of a child.
+ * `person`: an interactive step, which the agent works itself with the person instead of a child. `isolation`: the step
+ * requires a sandbox, which no skill host enforces.
  */
 const DispatchSchema = z.object({
   place: z.enum(['workspace', 'checkout']),
   person: z.literal(true).optional(),
+  isolation: z.literal('sandbox').optional(),
   dir: z.string(),
   brief: z.string(),
   agent: z.string().optional(),

@@ -41,8 +41,11 @@ export interface DispatchAction {
   step: string;
   /** `<step>-<attempt>`, a valid agent name: the child's name, so an agent that lost the ack can tell the child exists. */
   title: string;
-  /** `parallel`: the child may run beside other children of the run. `person`: the agent works the step itself, with the person. */
-  needs: { place: Dispatch['place']; parallel: boolean; person: boolean };
+  /**
+   * `parallel`: the child may run beside other children of the run. `person`: the agent works the step itself, with the
+   * person. `isolation`: the step requires a sandbox, which TeamAI does not enforce.
+   */
+  needs: { place: Dispatch['place']; parallel: boolean; person: boolean; isolation?: 'sandbox' };
   dir: string;
   /** The masked brief the child works from: the prompt, where to work, the result to write and the report to run. */
   brief: string;
@@ -307,7 +310,7 @@ function dispatchOf(state: SkillState, open: Extract<AttemptState, { phase: 'off
   const { invocation, run } = state;
   return {
     kind: 'dispatch', offer: `dispatch.${attempt}`, attempt, step, title: titleOf(open),
-    needs: { place: dispatch.place, parallel: childCap(state) > 1 && !dispatch.person, person: dispatch.person === true },
+    needs: { place: dispatch.place, parallel: childCap(state) > 1 && !dispatch.person, person: dispatch.person === true, ...(dispatch.isolation ? { isolation: dispatch.isolation } : {}) },
     dir: dispatch.dir, brief: dispatch.brief, ...(dispatch.agent !== undefined ? { agent: dispatch.agent } : {}), model: dispatch.model,
     ack: ackLiteral(invocation, run, attempt), report: reportLiteral(invocation, run, attempt),
     ...(dispatch.model.by !== 'definition' ? { unavailable: unavailableLiteral(invocation, run, attempt) } : {}),

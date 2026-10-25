@@ -13,14 +13,14 @@ import type { EngineReply, ReadLease, ReportReply, RespondReply, ScoreReply } fr
 export function readLease(raw: unknown): ReadLease | undefined {
   const read = LeaseWireSchema.safeParse(raw);
   if (!read.success) return undefined;
-  const { attempt, step: id, revision, expiresAt, command, env, envScope, prompt, workspace, agent, model, defaultModel, output, interactive, readOnly } = read.data;
+  const { attempt, step: id, revision, expiresAt, command, env, envScope, prompt, workspace, agent, model, defaultModel, output, interactive, readOnly, requires } = read.data;
   const base = { attempt, step: id, revision, ...(expiresAt !== undefined ? { expiresAt } : {}) };
   if (command !== undefined) return { ...base, executor: 'command', command, env: env ?? {}, ...(envScope ? { envScope } : {}) };
   // The schema reads a lease with a command or a prompt, so one without a command has its prompt.
   if (prompt === undefined) return undefined;
   return {
     ...base, executor: 'prompt', prompt, place: workspace === undefined ? 'checkout' : 'workspace', writes: workspace?.mode === 'new' || workspace?.mode === 'continue',
-    ...(interactive ? { interactive } : {}), ...(readOnly ? { readOnly } : {}),
+    ...(interactive ? { interactive } : {}), ...(readOnly ? { readOnly } : {}), ...(requires?.isolation === 'sandbox' ? { isolation: requires.isolation } : {}),
     ...(agent !== undefined ? { agent } : {}), ...(model !== undefined ? { model } : {}), ...(defaultModel !== undefined ? { defaultModel } : {}),
     ...(output !== undefined ? { output } : {}),
   };

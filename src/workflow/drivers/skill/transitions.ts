@@ -129,9 +129,9 @@ export type ReadLease = { attempt: AttemptId; step: string; revision: number; ex
   | { executor: 'command'; command: string; env: Record<string, string>; envScope?: EnvScope }
   /**
    * `writes`: the step commits to a branch, in a workspace `new` or `continue`. `interactive`: the person works in the step.
-   * `readOnly`: the step set `workspace: read-only`.
+   * `readOnly`: the step set `workspace: read-only`. `isolation`: the step requires a sandbox, which no skill host enforces.
    */
-  | { executor: 'prompt'; prompt: string; place: Dispatch['place']; writes: boolean; interactive?: true; readOnly?: true; agent?: string; model?: string; defaultModel?: string; output?: unknown }
+  | { executor: 'prompt'; prompt: string; place: Dispatch['place']; writes: boolean; interactive?: true; readOnly?: true; isolation?: 'sandbox'; agent?: string; model?: string; defaultModel?: string; output?: unknown }
 );
 
 /** A gate as the engine asks it. */

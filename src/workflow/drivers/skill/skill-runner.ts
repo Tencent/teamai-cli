@@ -263,7 +263,7 @@ async function begin(context: SkillContext, lock: RunLock, attempt: AttemptId, p
     return { kind: 'run', dir, command: lease.command, env: { ...scoped.env, ...lease.env }, mode: state.options.mode, ...(open.expiresAt !== undefined ? { expiresAt: open.expiresAt } : {}) };
   }
   if (open.phase !== 'preparing') return { kind: 'gone', status: 'gone' };
-  const { agent, model, defaultModel, output, place, writes, interactive, readOnly } = lease;
+  const { agent, model, defaultModel, output, place, writes, interactive, readOnly, isolation } = lease;
   const picked = await pickChildModel({
     config: context.config, toolPaths: context.toolPaths, step: open.step, tool: context.tool,
     ...(agent !== undefined ? { agent } : {}), ...(model !== undefined ? { model } : {}), ...(defaultModel !== undefined ? { defaultModel } : {}),
@@ -276,7 +276,7 @@ async function begin(context: SkillContext, lock: RunLock, attempt: AttemptId, p
     ...(output !== undefined ? { output } : {}), report: reportLiteral(state.invocation, lock.run, attempt), secrets: context.env.secrets,
   });
   const offered = traced(context, offerRow(state, {
-    attempt, dispatch: { place, ...(interactive ? { person: true } : {}), dir, brief, ...(agent !== undefined ? { agent } : {}), model: picked.model },
+    attempt, dispatch: { place, ...(interactive ? { person: true } : {}), ...(isolation ? { isolation } : {}), dir, brief, ...(agent !== undefined ? { agent } : {}), model: picked.model },
   }));
   if (offered) await writeSkillState(context.config, lock, offered.state, context.env.secrets);
   return { kind: 'gone', status: 'offered' };

@@ -37,6 +37,17 @@ steps:
     interactive: true
 `;
 
+// A prompt step its workflow wants sandboxed, which no skill host enforces.
+const BOXED = `schemaVersion: v1alpha1
+name: boxed
+description: Try the untrusted script
+invoke: allow
+steps:
+  - id: try
+    requires: { isolation: sandbox }
+    prompt: Run the script and say what it did.
+`;
+
 // DRAFT, with the person reading only.
 const DRAFT_READ = DRAFT.replace('name: draft', 'name: draft-read').replace('    interactive: true\n', '    interactive: true\n    workspace: read-only\n');
 
@@ -841,6 +852,17 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       expect(kept).toContain('What you change stays there; TeamAI commits nothing.');
       expect(kept).not.toContain('Do not change files here');
       expect(await briefOf('draft-read')).toContain('Do not change files here');
+      return made.rows;
+    },
+  },
+  {
+    name: 'a dispatch of a step that requires a sandbox says so in its needs',
+    rows: ['C2'],
+    run: async () => {
+      const made = await harness({ boxed: BOXED });
+      const boxed = await turnOf(await made.call({ kind: 'start', name: 'boxed', answers: { confirmed: false }, inputs: undefined }));
+      const [dispatch] = dispatches(await turnOf(await made.call({ kind: 'choose', run: boxed.run, choice: 'h1' })));
+      expect(dispatch?.needs).toEqual({ place: 'checkout', parallel: false, person: false, isolation: 'sandbox' });
       return made.rows;
     },
   },
