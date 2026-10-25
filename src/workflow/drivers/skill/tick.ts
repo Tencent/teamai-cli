@@ -425,7 +425,10 @@ export async function agentReport(context: SkillContext, run: RunId, call: { att
   return busy(answered) ? lockBusy(context, run, same) : answered;
 }
 
-/** `next --wait`: ticks every `WAIT_POLL_MS`, holding the lock only while it ticks, until the run is done or the bound. */
+/**
+ * `next --wait`: ticks every `WAIT_POLL_MS`, holding the lock only while it ticks, until work waits for the agent, a step
+ * settled or stopped, the run is done, or the bound.
+ */
 export async function poll(context: SkillContext, run: RunId): Promise<SkillAnswer> {
   const same = pollLiteral(context.invocation, run);
   const started = context.now().getTime();
@@ -448,6 +451,7 @@ export async function poll(context: SkillContext, run: RunId): Promise<SkillAnsw
       if (polled?.row === 'D23') return { data: { turn: turnOf(last, { events }) } };
       if (polled?.row === 'D22') return { data: { turn: turnOf(last, { events: [], after: { kind: 'wake', run: nextLiteral(last.invocation, run) }, quiet: true }) } };
       if (polled?.row === 'D24') return { data: { turn: turnOf(last, { events: [], after: { kind: 'poll', run: same }, quiet: true }) } };
+      if (polled?.row === 'D25') return { data: { turn: turnOf(last, { events, after: { kind: 'poll', run: same }, quiet: true }) } };
       return 'sleep';
     }, 0);
     if (busy(ticked)) {

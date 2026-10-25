@@ -197,10 +197,13 @@ function sawForeground(model: Model, turn: Turn): void {
   expect(turn.running.filter((entry) => entry.phase === 'offered').map((entry) => entry.attempt).sort()).toEqual(unacked.sort());
 }
 
-/** Takes what a poll shows into the model, and checks invariant 5 on it. Only the poll that ends the run shows events. */
+/**
+ * Takes what a poll shows into the model, and checks invariant 5 on it. A poll that shows events shows every one the
+ * session has not seen: it returns once a step settled or stopped, or the run ended.
+ */
 function sawPoll(model: Model, turn: Turn): void {
   expect(turn.actions.filter((action) => action.kind !== 'done')).toEqual([]);
-  if (turn.then === undefined) sawEvents(model, turn.events);
+  if (turn.then === undefined || turn.events.length > 0) sawEvents(model, turn.events);
   model.done = turn.status === 'done';
 }
 
@@ -250,10 +253,19 @@ class Next implements fc.AsyncCommand<Model, Real> {
   toString = (): string => 'next';
 }
 
+/** The session polls. A step that settled or stopped since its last turn makes the poll return at its first tick. */
+async function polled(model: Model, real: Real): Promise<void> {
+  const news = model.unseen.length > 0;
+  const from = real.made.context.now().getTime();
+  const turn = turnOf(await called(real, { kind: 'next', run: real.run, wait: true }));
+  if (news) expect(real.made.context.now().getTime() - from, 'a poll slept while a settled or stopped step waited to be shown').toBe(0);
+  sawPoll(model, turn);
+}
+
 class Poll implements fc.AsyncCommand<Model, Real> {
   check = (): boolean => true;
   async run(model: Model, real: Real): Promise<void> {
-    sawPoll(model, turnOf(await called(real, { kind: 'next', run: real.run, wait: true })));
+    await polled(model, real);
   }
   toString = (): string => 'poll';
 }
@@ -546,7 +558,7 @@ async function driveToDone(model: Model, real: Real): Promise<Turn> {
       continue;
     }
     killed ||= await killRunner(real, call);
-    sawPoll(model, turnOf(await called(real, { kind: 'next', run: real.run, wait: true })));
+    await polled(model, real);
   }
   throw new Error('a fair session did not reach done in 40 calls');
 }

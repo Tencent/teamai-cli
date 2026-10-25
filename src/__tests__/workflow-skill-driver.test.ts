@@ -54,7 +54,7 @@ afterEach(() => {
 });
 
 describe('skill driver', () => {
-  it('drives a command-only workflow from start to done with one poll', async () => {
+  it('drives a command-only workflow from start to done, with a poll that returns as each step settles', async () => {
     const harness = await skillHarness({ check: CHECK });
     roots.push(harness.root);
 
@@ -77,17 +77,24 @@ describe('skill driver', () => {
 
     const polled = await harness.call({ kind: 'next', run, wait: true });
     expect(polled).toEqual({ data: { turn: {
-      run, status: 'done', running: [],
-      actions: [{ kind: 'done', outcome: 'succeeded', prs: [] }],
+      run, status: 'driving', actions: [],
+      running: [{ attempt: expect.stringMatching(/^a[0-9a-f]{8}$/), step: 'test', phase: 'preparing' }],
       events: [
         { kind: 'settled', step: 'lint', outcome: 'success', exitCode: 0 },
         { kind: 'started', step: 'test', attempt: expect.stringMatching(/^a[0-9a-f]{8}$/) },
-        { kind: 'settled', step: 'test', outcome: 'success', exitCode: 0, tail: 'Tests 42 passed (42)' },
       ],
+      // oxlint-disable-next-line unicorn/no-thenable
+      then: { kind: 'poll', run: `teamai workflow next ${run} --driver skill --wait` },
+    } } });
+    const ended = await harness.call({ kind: 'next', run, wait: true });
+    expect(ended).toEqual({ data: { turn: {
+      run, status: 'done', running: [],
+      actions: [{ kind: 'done', outcome: 'succeeded', prs: [] }],
+      events: [{ kind: 'settled', step: 'test', outcome: 'success', exitCode: 0, tail: 'Tests 42 passed (42)' }],
     } } });
 
     // Every command the session ran came whole from a reply: no slot or placeholder was left for it to fill.
-    expect(JSON.stringify([described, started, polled])).not.toMatch(/\{inputs\}|\{dir\}|<[a-z]+>/);
+    expect(JSON.stringify([described, started, polled, ended])).not.toMatch(/\{inputs\}|\{dir\}|<[a-z]+>/);
   });
 
   it('answers held to a step command that reports its own attempt, and the runner alone reports it', async () => {
@@ -103,10 +110,16 @@ describe('skill driver', () => {
     expect(await harness.call({ kind: 'report', run, attempt: lint.attempt, role: 'runner' }))
       .toEqual({ data: { runner: { attempt: lint.attempt, status: 'held' } } });
 
-    const done = await harness.call({ kind: 'next', run, wait: true });
-    if (!('data' in done) || !('turn' in done.data)) throw new Error(JSON.stringify(done));
-    expect(done.data.turn.events.filter((event) => event.kind === 'settled' && event.step === 'lint')).toHaveLength(1);
-    expect(done.data.turn.actions).toEqual([{ kind: 'done', outcome: 'succeeded', prs: [] }]);
+    const settled: string[] = [];
+    let actions: unknown;
+    for (let poll = 0; poll < 10 && actions === undefined; poll += 1) {
+      const turn = await harness.call({ kind: 'next', run, wait: true });
+      if (!('data' in turn) || !('turn' in turn.data)) throw new Error(JSON.stringify(turn));
+      settled.push(...turn.data.turn.events.flatMap((event) => (event.kind === 'settled' ? [event.step] : [])));
+      if (turn.data.turn.status === 'done') actions = turn.data.turn.actions;
+    }
+    expect(settled).toEqual(['lint', 'test']);
+    expect(actions).toEqual([{ kind: 'done', outcome: 'succeeded', prs: [] }]);
   });
 
   it('offers two parallel new prompt steps with acks, keeps an unacked one offered, and a poll answers wake', async () => {

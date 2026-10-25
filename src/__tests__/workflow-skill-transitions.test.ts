@@ -156,12 +156,15 @@ function childWrites(brief: string, result: unknown): void {
   fs.writeFileSync(file, JSON.stringify(result));
 }
 
+/** Polls until the run is done: its last turn, with every event the polls showed on the way. */
 async function polledToDone(made: Awaited<ReturnType<typeof harness>>, run: RunId) {
-  for (let poll = 0; poll < 5; poll += 1) {
-    const answer = await made.call({ kind: 'next', run, wait: true });
-    if ('data' in answer && 'turn' in answer.data && answer.data.turn.status === 'done') return answer.data.turn;
+  const events: Awaited<ReturnType<typeof turnOf>>['events'] = [];
+  for (let poll = 0; poll < 10; poll += 1) {
+    const turn = await turnOf(await made.call({ kind: 'next', run, wait: true }));
+    events.push(...turn.events);
+    if (turn.status === 'done') return { ...turn, events };
   }
-  throw new Error('the run did not reach done in five polls');
+  throw new Error('the run did not reach done in ten polls');
 }
 
 /** The runners with `sleep 300` faked: it runs until it is stopped, and `stops` gets the attempt of each stop. */
@@ -213,7 +216,7 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       const made = await harness({ check: SHIP });
       const tails: Record<string, string | undefined> = {};
       const { run } = await started(made);
-      for (let poll = 0; poll < 5 && !('lint' in tails); poll += 1) {
+      for (let poll = 0; poll < 10 && !('lint' in tails); poll += 1) {
         const answer = await made.call({ kind: 'next', run, wait: true });
         if (!('data' in answer) || !('turn' in answer.data)) throw new Error(JSON.stringify(answer));
         for (const event of answer.data.turn.events) if (event.kind === 'settled') tails[event.step] = event.tail;
@@ -551,6 +554,26 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       expect(await made.call(report)).toEqual({ data: { runner: { attempt: api.attempt, status: 'reported' } } });
       expect(await made.call(report)).toEqual({ data: { runner: { attempt: api.attempt, status: 'repeated' } } });
       expect((await turnOf(await made.call({ kind: 'next', run, wait: false }))).events).toContainEqual(expect.objectContaining({ kind: 'settled', step: 'api', outcome: 'success' }));
+      return made.rows;
+    },
+  },
+  {
+    name: 'a poll returns once a child in its own session settles its step, with the events and no action, and the next turn does not show them again',
+    rows: ['D25'],
+    run: async () => {
+      const made = await harness({ pair: PAIR });
+      const turn = await chosen(made, 'pair', 2);
+      const { run } = turn;
+      for (const action of dispatches(turn)) await made.call({ kind: 'ack', run, attempt: action.attempt });
+      const api = dispatches(turn).find((action) => action.step === 'api');
+      if (!api) throw new Error(JSON.stringify(turn));
+      childWrites(api.brief, { kind: 'output', output: 'Wrote the API.' });
+      expect(await made.call({ kind: 'report', run, attempt: api.attempt, role: 'agent', modelUnavailable: false }, { session: 'child-session' }))
+        .toEqual({ data: { runner: { attempt: api.attempt, status: 'reported' } } });
+      const polled = await turnOf(await made.call({ kind: 'next', run, wait: true }));
+      expect(polled).toMatchObject({ status: 'driving', actions: [], events: [{ kind: 'settled', step: 'api', outcome: 'success' }] });
+      expect(polled.then).toEqual({ kind: 'poll', run: `teamai workflow next ${run} --driver skill --wait` });
+      expect((await turnOf(await made.call({ kind: 'next', run, wait: false }))).events).toEqual([]);
       return made.rows;
     },
   },
