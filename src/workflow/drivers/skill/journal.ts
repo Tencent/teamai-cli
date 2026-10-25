@@ -9,6 +9,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { readFileSafe } from '../../../utils/fs.js';
+import { redactJson } from '../../../utils/redact.js';
 import { AttemptIdSchema, skillStatePath, type RunId } from '../../store.js';
 import type { SkillCall, SkillContext } from './skill-driver.js';
 import { readSkillState } from './skill-state.js';
@@ -125,7 +126,8 @@ async function askedKeys(file: string): Promise<Set<string>> {
   return keys;
 }
 
-const lines = (entries: JournalLine[]): string => entries.map((entry) => `${JSON.stringify(entry)}\n`).join('');
+/** The journal lines of `entries`, masked with `secrets`: a rejected argument may hold a secret value. */
+const lines = (entries: JournalLine[], secrets: Record<string, string>): string => entries.map((entry) => `${JSON.stringify(redactJson(entry, secrets))}\n`).join('');
 
 /**
  * Appends the line of `call`, then a line for each dispatch or person action `answer`'s turn shows that the journal
@@ -154,8 +156,8 @@ export async function journalCall(context: SkillContext, call: SkillCall, answer
       asked.add(askedKey(entry));
       return [entry];
     });
-    await fs.appendFile(file, lines([line, ...fresh]));
+    await fs.appendFile(file, lines([line, ...fresh], context.env.secrets));
     return 'written' as const;
   }, TICK_LOCK_WAIT_MS);
-  if (written !== 'written') await fs.appendFile(file, lines([line]));
+  if (written !== 'written') await fs.appendFile(file, lines([line], context.env.secrets));
 }

@@ -3,7 +3,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { WorkflowClient } from '../workflow/protocol.js';
 import type { Runners } from '../workflow/drivers/skill/skill-driver.js';
-import { readRun } from '../workflow/store.js';
+import { readRun, skillStatePath } from '../workflow/store.js';
 import { skillHarness } from './helpers/skill-harness.js';
 
 // A fake value, distinctive enough that finding it anywhere means it leaked.
@@ -141,6 +141,22 @@ describe('a secret value through a skill run', () => {
     expect(await readRun(made.config, turnOf(started).run)).toMatchObject({ steps: [expect.objectContaining({ id: 'publish', status: 'failed', message: 'command exited with status 3: auth <REDACTED:SHIP_TOKEN> refused' })] });
     expect(answers.filter((answer) => JSON.stringify(answer).includes(SECRET))).toEqual([]);
     expect(whileReporting).toEqual([]);
+    expect(filesHolding(made.root, SECRET)).toEqual([]);
+  });
+
+  it('keeps it out of the journal of a call that passed it as an argument, with the run lock free or busy', async () => {
+    const { made } = await shipping(REFUSED);
+    const { run } = turnOf(await made.call({ kind: 'start', name: 'ship', answers: { confirmed: false }, inputs: undefined }));
+    const respond = { kind: 'respond', run, step: SECRET, choice: SECRET, pass: 1 } as const;
+    expect(await made.call(respond)).toMatchObject({ error: { code: 'step_not_found' } });
+    const busy: Parameters<Made['call']>[1] = { locks: { take: async () => ({ error: { code: 'driver_running', message: 'busy' } }) } };
+    expect(await made.call(respond, busy)).toMatchObject({ error: { code: 'driver_running' } });
+
+    const journal = fs.readFileSync(path.join(path.dirname(skillStatePath(made.config, run)), 'journal.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    expect(journal.filter((line) => line.call === 'respond')).toEqual([
+      expect.objectContaining({ step: '<REDACTED:SHIP_TOKEN>', choice: '<REDACTED:SHIP_TOKEN>', answer: 'step_not_found' }),
+      expect.objectContaining({ step: '<REDACTED:SHIP_TOKEN>', choice: '<REDACTED:SHIP_TOKEN>', answer: 'driver_running' }),
+    ]);
     expect(filesHolding(made.root, SECRET)).toEqual([]);
   });
 });
