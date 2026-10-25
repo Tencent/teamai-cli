@@ -166,6 +166,26 @@ describe('workflow json payloads', () => {
   });
 });
 
+describe('workflow next and report without --driver skill', () => {
+  it.each([
+    ['next', { driver: 'local' }, 'next takes --driver skill, not --driver local'],
+    ['next', { wait: true, adopt: '/place' }, '--wait needs --driver skill'],
+    ['next', { takeover: true }, '--takeover needs --driver skill'],
+    ['next', { choice: 'h1' }, '--choice needs --driver skill'],
+    ['next', { ack: 'dispatch.a00000000' }, '--ack needs --driver skill'],
+    ['next', { adopt: '/place' }, '--adopt needs --attempt, the attempt whose place the host made'],
+    ['next', { attempt: 'bogus' }, '--attempt needs --prepare'],
+    ['next', { prepare: true, attempt: 'bogus' }, '--attempt takes the attempt of a lease, such as a1b2c3d4e; got bogus'],
+    ['report', { driver: 'local' }, 'report takes --driver skill, not --driver local'],
+    ['report', { attempt: 'a00000000' }, '--attempt needs --driver skill'],
+    ['report', { modelUnavailable: true }, '--model-unavailable needs --driver skill'],
+  ] as const)('refuses %s with %j before it reads the run', async (command, options, message) => {
+    const answer = await capture(() => (command === 'next' ? workflowNext('r00000000', options) : workflowReport('r00000000', options)));
+
+    expect(answer).toEqual({ error: { code: 'invalid_arguments', message } });
+  });
+});
+
 describe('workflow start --inputs', () => {
   function inputsConfig(): LocalConfig {
     const config = testConfig();
