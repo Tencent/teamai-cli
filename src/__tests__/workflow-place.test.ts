@@ -474,6 +474,50 @@ steps:
     expect(fs.readFileSync(path.resolve(dir, git(dir, 'rev-parse', '--git-path', 'setup-runs')), 'utf8')).toBe('ran\n');
   });
 
+  it('goes on in the place the host made for a later command and reader on its branch, and leaves it after the last with its own hooks', async () => {
+    const f = await fixture(`schemaVersion: v1alpha1
+name: build
+description: Write a change, check it, then review it, in a place the host makes.
+alias: ship
+steps:
+  - id: change
+    workspace: new
+    workflow:
+      steps:
+        - id: write
+          prompt: Write the change.
+        - id: check
+          needs: [write]
+          command: cat change.txt
+        - id: review
+          needs: [check]
+          workspace: read-only
+          prompt: Review the change.
+`);
+    const run = RunIdSchema.parse(f.runId);
+    const lease = async (): Promise<{ raw: unknown } & z.infer<typeof LeaseSchema>> => {
+      const answer = await f.client.next(f.runId, body(f));
+      if (!('data' in answer) || !answer.data.lease) throw new Error(JSON.stringify(answer));
+      return { raw: answer.data.lease, ...LeaseSchema.parse(answer.data.lease) };
+    };
+    const write = await lease();
+    const dir = path.join(path.dirname(f.work), 'hosts', 'place');
+    git(f.work, 'worktree', 'add', '-q', '--detach', dir, write.workspace.start.commit);
+    expect(await withRunLock(f.config, run, (lock) => f.client.prepareHostPlace(lock, write.raw, { kind: 'adopt', dir }), { waitMs: 0 })).toMatchObject({ kind: 'prepared', dir });
+    fs.writeFileSync(path.join(dir, 'change.txt'), 'written\n');
+    expect(await f.client.report(f.runId, { attempt: write.attempt, revision: write.revision, outcome: 'success', driver: f.driver })).toMatchObject({ data: { accepted: true } });
+
+    for (const step of ['check', 'review']) {
+      const later = await lease();
+      expect(later.workspace.branch).toBe(write.workspace.branch);
+      expect(await withRunLock(f.config, run, (lock) => f.client.prepare(lock, later.raw), { waitMs: 0 }), step).toMatchObject({ kind: 'prepared', dir });
+      expect(await f.client.report(f.runId, { attempt: later.attempt, revision: later.revision, outcome: 'success', driver: f.driver }), step).toMatchObject({ data: { accepted: true } });
+    }
+    expect(fs.readFileSync(path.join(dir, 'change.txt'), 'utf8')).toBe('written\n');
+    expect(git(dir, 'status', '--porcelain')).toBe('');
+    expect(git(dir, 'config', '--worktree', '--default', '', '--get', 'core.hooksPath')).toBe('');
+  });
+
   it('refuses a place another open attempt began to adopt, even when its prepare was killed before it made its branch there', async () => {
     const f = await fixture(`schemaVersion: v1alpha1
 name: build

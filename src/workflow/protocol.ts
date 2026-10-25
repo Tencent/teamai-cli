@@ -45,10 +45,11 @@ export interface WorkflowClient {
    */
   describe: (name: string, options: { ceiling: number; can: DriverCan; checkout?: string; tool?: string }) => Promise<{ description: WorkflowDescription; judging: Judging; undeliverable?: WorkflowFailure } | { error: WorkflowFailure }>;
   /**
-   * Prepares the place of `lease`, the lease `next` answered with, in the checkout the run started from. `busy` when
-   * another attempt the run leased holds that place: `behind` is that attempt.
+   * Prepares the place of `lease`, the lease `next` answered with, in the checkout the run started from, or in the place
+   * the host made for its branch, while that passes the adopt checks. `busy` when another attempt the run leased holds
+   * that place.
    */
-  prepare(lock: RunLock, lease: unknown): Promise<PlacePrepared | { kind: 'busy'; behind: AttemptId }>;
+  prepare(lock: RunLock, lease: unknown): Promise<PlacePrepared | PlaceBusy>;
   /**
    * Prepares the place of `lease` in a place its host made, when the lease commits to a branch, and as `prepare` does
    * when it does not. `host` asks for the place the last attempt to finish on the branch was prepared in, while it
@@ -245,17 +246,23 @@ async function judgingOf(config: LocalConfig, description: WorkflowDescription, 
 /** Where the host made the place of a lease: `host`, the place an earlier attempt adopted for its branch; `adopt`, `dir`. */
 export type HostPlaceRequest = { kind: 'host' } | { kind: 'adopt'; dir: string };
 
+/** Another open attempt of the run holds the place a lease would get: `behind` is that attempt, and `dir` the place. */
+type PlaceBusy = { kind: 'busy'; behind: AttemptId; dir: string };
+
 /**
  * `needs-place` when the host must make the place: a worktree of the checkout's repository named `name`, on `branch`
  * from commit `start`. `refused` says why the place the request named was not prepared.
  */
 export type HostPlacePrepared =
   | Exclude<PlacePrepared, { kind: 'refused' }>
-  | { kind: 'busy'; behind: AttemptId }
+  | PlaceBusy
   | { kind: 'needs-place'; name: string; branch: string; start: string; refused?: string };
 
-/** The lease `raw` names, as the run leases it now, with the checkout its place goes in and the run's other leased attempts. */
-async function leasedPlace(config: LocalConfig, lock: RunLock, raw: unknown): Promise<{ lease: PlaceLease; root: string; others: AttemptId[] } | { kind: 'failed'; failure: WorkflowFailure }> {
+/** A lease as the run leases it now, with the checkout its place goes in and the run's other leased attempts. */
+type Leased = { kind: 'leased'; lease: PlaceLease; root: string; others: AttemptId[] };
+
+/** The lease `raw` names, as the run leases it now. */
+async function leasedPlace(config: LocalConfig, lock: RunLock, raw: unknown): Promise<Leased | { kind: 'failed'; failure: WorkflowFailure }> {
   const wire = LeaseWireSchema.safeParse(raw);
   if (!wire.success) return { kind: 'failed', failure: { code: 'workspace_base', message: `Run ${lock.run} leased a place this teamai cannot read. Update teamai.` } };
   const lease = placeLeaseOf(wire.data);
@@ -264,7 +271,18 @@ async function leasedPlace(config: LocalConfig, lock: RunLock, raw: unknown): Pr
   const leased = run.steps.find((step) => step.status === 'leased' && step.lease.attempt === lease.attempt);
   if (!leased) return { kind: 'failed', failure: { code: 'wrong_attempt', message: `Attempt ${lease.attempt} is not the leased attempt` } };
   if (run.checkout === undefined) return { kind: 'failed', failure: noCheckout(lock.run, lease.attempt) };
-  return { lease: { ...lease, step: leased.id }, root: run.checkout, others: otherLeases(run, lease.attempt) };
+  return { kind: 'leased', lease: { ...lease, step: leased.id }, root: run.checkout, others: otherLeases(run, lease.attempt) };
+}
+
+/**
+ * Prepares the place of `leased`, in the place the host made at `adopt` when given, unless another open attempt of the
+ * run holds it (`placeHeldBy`). Every prepare of a lease goes through here.
+ */
+async function placeLeased(config: LocalConfig, lock: RunLock, leased: Leased, adopt?: string): Promise<PlacePrepared | PlaceBusy> {
+  const { lease, root, others } = leased;
+  const held = await placeHeldBy({ config, run: lock.run, root, lease, others, ...(adopt !== undefined ? { adopt } : {}) });
+  if (held) return { kind: 'busy', ...held };
+  return preparePlace({ config, lock, root, lease, ...(adopt !== undefined ? { adopt } : {}) });
 }
 
 /** The attempts `run` leases besides `attempt`. */
@@ -303,31 +321,25 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
     },
     prepare: async (lock, raw) => {
       const leased = await leasedPlace(config, lock, raw);
-      if ('kind' in leased) return leased;
-      const { lease, root, others } = leased;
-      const behind = await placeHeldBy({ config, run: lock.run, root, lease, others });
-      if (behind) return { kind: 'busy', behind };
-      return preparePlace({ config, lock, root, lease });
+      return leased.kind === 'leased' ? placeLeased(config, lock, leased) : leased;
     },
     prepareHostPlace: async (lock, raw, request) => {
       const leased = await leasedPlace(config, lock, raw);
-      if ('kind' in leased) return leased;
-      const { lease, root, others } = leased;
+      if (leased.kind === 'failed') return leased;
+      const { lease, root } = leased;
       const { workspace } = lease;
-      const writes = workspace?.mode === 'new' || workspace?.mode === 'continue';
-      const adopt = !writes ? undefined : request.kind === 'adopt' ? request.dir : await adoptedPlaceOf({ config, run: lock.run, branch: workspace.branch });
-      const ask = writes ? { kind: 'needs-place' as const, name: path.basename(placeOf(lease, root)), branch: workspace.branch, start: workspace.start.commit } : undefined;
-      if (ask && adopt === undefined) return ask;
-      const behind = await placeHeldBy({ config, run: lock.run, root, lease, others, ...(adopt !== undefined ? { adopt } : {}) });
-      if (behind && ask && request.kind === 'adopt') {
-        return { ...ask, refused: heldPlaceRefusal({ dir: request.dir, behind, run: lock.run, attempt: lease.attempt }) };
+      if (workspace?.mode !== 'new' && workspace?.mode !== 'continue') {
+        const placed = await placeLeased(config, lock, leased);
+        return placed.kind === 'refused' ? { kind: 'failed', failure: placed.failure } : placed;
       }
-      if (behind) return { kind: 'busy', behind };
-      const placed = await preparePlace({ config, lock, root, lease, ...(adopt !== undefined ? { adopt } : {}) });
+      const ask = { kind: 'needs-place' as const, name: path.basename(placeOf(lease, root)), branch: workspace.branch, start: workspace.start.commit };
+      const adopt = request.kind === 'adopt' ? request.dir : await adoptedPlaceOf({ config, run: lock.run, branch: workspace.branch });
+      if (adopt === undefined) return ask;
+      const placed = await placeLeased(config, lock, leased, adopt);
+      if (placed.kind === 'busy' && request.kind === 'adopt') return { ...ask, refused: heldPlaceRefusal({ ...placed, run: lock.run, attempt: lease.attempt }) };
       if (placed.kind !== 'refused') return placed;
       // The place an earlier attempt adopted no longer passes the checks, so the host makes another.
-      if (ask) return request.kind === 'adopt' ? { ...ask, refused: placed.failure.message } : ask;
-      return { kind: 'failed', failure: placed.failure };
+      return request.kind === 'adopt' ? { ...ask, refused: placed.failure.message } : ask;
     },
     setup: (run, attempt, mode) => runPlaceSetup({ config, run, attempt, mode, values: env.values }),
     start: async (name, { inputs, checkout, caller }) => {
@@ -405,8 +417,7 @@ function noCheckout(run: string, attempt: string): WorkflowFailure {
  * Prepares `attempt`, which the run already leased to `driver`, holding the run's lock, as `prepareLeased` prepares a
  * new lease, in the place the host made at `adopt` when given. Every other lease of the run is listed as running, so
  * the engine hands this one back and leases nothing new. `wrong_attempt` when the run no longer leases it to `driver`,
- * or released it just now for a `can` that no longer covers its step; `adopt_mismatch`, with the attempt still leased,
- * when another open attempt of the run holds `adopt`.
+ * or released it just now for a `can` that no longer covers its step.
  */
 async function prepareAttempt(input: {
   config: LocalConfig; lock: RunLock; driver: DriverIdentity; env: WorkflowEnv; next: Omit<NextOptions, 'env'>; attempt: AttemptId; adopt?: string;
@@ -427,59 +438,39 @@ async function prepareAttempt(input: {
     }
     return { error: { code: 'wrong_attempt', message: `Run ${lock.run} does not lease attempt ${attempt} to this driver, so it was not prepared. Prepare an attempt next leased this driver, or call next without --attempt.` } };
   }
-  if (adopt !== undefined) {
-    const place = await leasedPlace(config, lock, answer.data.lease);
-    const behind = 'kind' in place ? undefined : await placeHeldBy({ config, run: lock.run, ...place, adopt });
-    if (behind) return { error: { code: 'adopt_mismatch', message: heldPlaceRefusal({ dir: adopt, behind, run: lock.run, attempt }) } };
-  }
   return prepareLeased({ config, lock, driver, env, answer, ...(adopt !== undefined ? { adopt } : {}) });
 }
 
 /**
- * Prepares the place of the lease `answer` carries, holding the run's lock: a lease with a workspace contract gets its
- * worktree set up, or adopts the place the host made at `adopt`. A prepare that fails reports the attempt `failed` with
- * its own code, and answers with that failure; an adopt the place does not pass answers `adopt_mismatch`, and a place
- * another open attempt holds answers `busy`, and the attempt stays leased.
+ * Prepares the place of the lease `answer` carries, holding the run's lock, and runs its setup: a lease with a
+ * workspace contract gets its worktree set up, or adopts the place the host made at `adopt`. A prepare that fails
+ * reports the attempt `failed` with its own code, and answers with that failure; an adopt the place does not pass, or
+ * another open attempt holds, answers `adopt_mismatch`, and any other place that one holds answers `busy`, and the
+ * attempt stays leased.
  */
 async function prepareLeased(input: { config: LocalConfig; lock: RunLock; driver: DriverIdentity; env: WorkflowEnv; answer: WorkflowEnvelope; adopt?: string }): Promise<WorkflowEnvelope> {
   const { config, lock, driver, env, answer, adopt } = input;
   if (!('data' in answer) || answer.data.lease === undefined) return answer;
   // What names the lease is read first, so a lease whose place this teamai cannot read is still reported.
-  const leased = LeaseIdSchema.passthrough().safeParse(answer.data.lease);
-  if (!leased.success) return { error: { code: 'run_unreadable', message: `Run ${lock.run} returned a lease this teamai cannot read` } };
-  const wire = LeaseWireSchema.safeParse(answer.data.lease);
-  const lease = wire.success ? placeLeaseOf(wire.data) : undefined;
-  const placed: Awaited<ReturnType<typeof prepareWithSetup>> = lease
-    ? await prepareWithSetup({ config, lock, env, lease, ...(adopt !== undefined ? { adopt } : {}) })
-    : { kind: 'failed', failure: { code: 'workspace_base', message: `Attempt ${leased.data.attempt} was leased a place this teamai cannot read. Update teamai.` } };
+  const named = LeaseIdSchema.passthrough().safeParse(answer.data.lease);
+  if (!named.success) return { error: { code: 'run_unreadable', message: `Run ${lock.run} returned a lease this teamai cannot read` } };
+  const { attempt, revision } = named.data;
+  const failed = async (failure: WorkflowFailure): Promise<WorkflowEnvelope> => {
+    await reportAttempt(config, lock.run, { attempt, revision, driver, outcome: 'failed', message: failure.message, failure }, env.secrets);
+    return { error: failure };
+  };
+  const leased = await leasedPlace(config, lock, answer.data.lease);
+  const placed = leased.kind === 'leased' ? await placeLeased(config, lock, leased, adopt) : leased;
   if (placed.kind === 'refused') return { error: placed.failure };
   if (placed.kind === 'busy') {
-    const { attempt } = leased.data;
+    if (adopt !== undefined) return { error: { code: 'adopt_mismatch', message: heldPlaceRefusal({ ...placed, run: lock.run, attempt }) } };
     return { error: { code: 'busy', message: `Attempt ${attempt} of run ${lock.run} runs in ${placed.dir}, the place of attempt ${placed.behind}, which is still open, so it was not prepared. Report attempt ${placed.behind}, then prepare this one with next --prepare --attempt ${attempt}.` } };
   }
-  if (placed.kind === 'failed') {
-    const { failure } = placed;
-    await reportAttempt(config, lock.run, { attempt: leased.data.attempt, revision: leased.data.revision, driver, outcome: 'failed', message: failure.message, failure }, env.secrets);
-    return { error: failure };
-  }
-  return { data: { ...answer.data, lease: { ...leased.data, cwd: placed.dir, ...(placed.prompt !== undefined ? { prompt: placed.prompt } : {}) } } };
-}
-
-async function prepareWithSetup(input: {
-  config: LocalConfig; lock: RunLock; env: WorkflowEnv; lease: PlaceLease; adopt?: string;
-}): Promise<PlacePrepared | { kind: 'busy'; dir: string; behind: AttemptId }> {
-  const { config, lock, env, lease, adopt } = input;
-  const run = await readRun(config, lock.run);
-  if (typeof run !== 'object' || run.checkout === undefined) return { kind: 'failed', failure: noCheckout(lock.run, lease.attempt) };
-  const { checkout } = run;
-  // As the local and skill drivers' prepare does; prepareAttempt checked an adopt against the place the host made.
-  const behind = adopt === undefined ? await placeHeldBy({ config, run: lock.run, root: checkout, lease, others: otherLeases(run, lease.attempt) }) : undefined;
-  if (behind) return { kind: 'busy', dir: placeOf(lease, checkout), behind };
-  const placed = await preparePlace({ config, lock, root: checkout, lease, ...(adopt !== undefined ? { adopt } : {}) });
-  if (placed.kind !== 'prepared') return placed;
+  if (placed.kind === 'failed') return failed(placed.failure);
   // A --json driver's run keeps no mode, so its setup runs in the mode of the process that prepares it.
-  const failure = await runPlaceSetup({ config, run: lock.run, attempt: lease.attempt, mode: resolveRunMode(process.env), values: env.values });
-  return failure ? { kind: 'failed', failure } : placed;
+  const failure = await runPlaceSetup({ config, run: lock.run, attempt, mode: resolveRunMode(process.env), values: env.values });
+  if (failure) return failed(failure);
+  return { data: { ...answer.data, lease: { ...named.data, cwd: placed.dir, ...(placed.prompt !== undefined ? { prompt: placed.prompt } : {}) } } };
 }
 
 /**

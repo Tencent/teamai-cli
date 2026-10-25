@@ -23,7 +23,7 @@ interface Adoption {
 /**
  * Why attempt `lease.attempt` cannot adopt `adopt`, as the message `adopt_mismatch` answers with, or undefined when it
  * can, or adopts nothing. A place recorded for the attempt answers for itself, so only that place may be adopted again.
- * A lease with no copy of its own, in the checkout or reading a copy TeamAI keeps, adopts none.
+ * A lease in the checkout adopts none, and a reader only `hosted`, the place the host made for its branch.
  */
 export async function adoptRefusal(input: {
   /** The checkout the run started from. */
@@ -32,8 +32,9 @@ export async function adoptRefusal(input: {
   recorded: PlaceRecord | undefined;
   lease: { attempt: string; step: string; workspace?: WorkspaceContract };
   adopt: string | undefined;
+  hosted: string | undefined;
 }): Promise<string | undefined> {
-  const { root, run, recorded, lease, adopt } = input;
+  const { root, run, recorded, lease, adopt, hosted } = input;
   if (adopt === undefined) return undefined;
   if (recorded !== undefined && recorded.phase !== 'abandoned') {
     if (recorded.dir !== adopt) return `Attempt ${lease.attempt} is already prepared in ${recorded.dir}, so it cannot adopt ${adopt}. Prepare it again without --adopt, which answers with that place.`;
@@ -41,7 +42,7 @@ export async function adoptRefusal(input: {
   }
   const { workspace } = lease;
   if (!workspace) return `Step "${lease.step}" runs in the checkout itself, so attempt ${lease.attempt} cannot adopt a place. Prepare it without --adopt.`;
-  if (workspace.mode === 'read-only') return `Step "${lease.step}" reads a copy TeamAI keeps, so attempt ${lease.attempt} cannot adopt a place. Prepare it without --adopt.`;
+  if (workspace.mode === 'read-only' && adopt !== hosted) return `Step "${lease.step}" reads a copy TeamAI keeps, so attempt ${lease.attempt} cannot adopt a place. Prepare it without --adopt.`;
   return adoptedMismatch({ root, dir: adopt, run, attempt: lease.attempt, workspace });
 }
 

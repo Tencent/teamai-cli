@@ -27,6 +27,6 @@ A step that was stopped leaves its edits in its place for your host to keep or d
 
 ## Later steps
 
-A later step on the same branch goes on in the place the last step on it finished in, while that place passes the checks: its dispatch comes with that `dir`, and no `place` action. When the place no longer passes, because your host removed it or it has changes, a `place` action asks for another.
+A later step on the same branch, a command or a read-only step included, goes on in the place the last step on it finished in, while that place passes the checks: a prompt's dispatch comes with that `dir`, and no `place` action. When the place no longer passes, because your host removed it or it has changes, a `place` action asks for another.
 
 TeamAI commits each step's work in the place and never removes it. Remove it with your host once the run is done.

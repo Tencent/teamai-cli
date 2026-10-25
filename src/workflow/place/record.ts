@@ -12,13 +12,11 @@ const CheckoutRoleSchema = z.object({ role: z.literal('checkout') });
 const ReaderRoleSchema = z.object({ role: z.literal('reader'), workspace: WorkspaceContractSchema, found: z.array(z.string()) });
 /**
  * A lease that commits to `workspace.branch`, reporting the range from `rangeFrom`. `conflicts` hashes each file
- * that was unmerged when the step got it, and `conflictNote` is what its prompt adds about them. `adopted` when the
- * host made the place, which TeamAI then never removes.
+ * that was unmerged when the step got it, and `conflictNote` is what its prompt adds about them.
  */
 const WriterRoleSchema = z.object({
   role: z.literal('writer'),
   workspace: WorkspaceContractSchema,
-  adopted: z.literal(true).optional(),
   rangeFrom: z.string().optional(),
   conflicts: z.record(z.string()),
   conflictNote: z.string().optional(),
@@ -48,6 +46,8 @@ const PlaceFields = {
   /** The checkout the place belongs to: a copy is one of its worktrees. */
   root: z.string(),
   dir: z.string(),
+  /** The host made the place at `dir`, whatever the lease does there, so TeamAI never removes it. */
+  adopted: z.literal(true).optional(),
   interactive: z.literal(true).optional(),
   readOnly: z.literal(true).optional(),
 };
@@ -57,13 +57,10 @@ const PlaceRecordSchema = z.discriminatedUnion('phase', [
   /**
    * Git is not done in the copy at `dir`. Recorded before git touches it, so the next prepare of an attempt killed
    * meanwhile knows what this one did there: `created` when the copy is new to TeamAI, so its setup still runs: one
-   * that did not exist, or one the host made that no earlier attempt of the run finished in; `adopted` when the host
-   * made it; and a writer's `rangeFrom` once the copy is open, taken before any merge, so the merges stay in the
-   * step's changes.
+   * that did not exist, or one the host made that no earlier attempt of the run finished in; and a writer's
+   * `rangeFrom` once the copy is open, taken before any merge, so the merges stay in the step's changes.
    */
-  z.object({
-    ...PlaceFields, phase: z.literal('opening'), created: z.literal(true).optional(), adopted: z.literal(true).optional(), rangeFrom: z.string().optional(),
-  }),
+  z.object({ ...PlaceFields, phase: z.literal('opening'), created: z.literal(true).optional(), rangeFrom: z.string().optional() }),
   /**
    * Git is done in a copy, and the base overlay goes in next. Recorded before the overlay, so a prepare cut short is
    * finished by the next one, or given up. `setup` is what runs once it is staged, in a worktree prepare created.
