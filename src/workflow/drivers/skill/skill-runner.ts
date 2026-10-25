@@ -20,12 +20,11 @@ import { attemptEnv } from '../../attempt-marker.js';
 import { commandEnd, type WorkflowClient } from '../../protocol.js';
 import { attemptDir, runnerAlive, withRunnerLock, type AttemptId, type RunId, type RunLock } from '../../store.js';
 import type { WorkflowEnvelope, WorkflowFailure } from '../../types.js';
-import { runnerArgs } from './literals.js';
 import { judgeCan } from './host-profiles.js';
 import { writeSkillState, readSkillState, type Judge, type ReportBody, type SkillState } from './skill-state.js';
 import { pickChildModel } from './child-model.js';
 import { writeChildBrief } from './child-brief.js';
-import { reportLiteral } from './literals.js';
+import { reportLiteral, runnerArgs } from './literals.js';
 import { readJob, type Job } from './job.js';
 import { applyEffects, RUNNER_POLL_MS, runTick, traced, WAIT_BOUND_MS } from './tick.js';
 import {

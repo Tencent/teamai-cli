@@ -53,7 +53,7 @@ const PlaceFields = {
 };
 const PlaceBase = { ...PlaceFields, place: PlaceRoleSchema };
 
-export const PlaceRecordSchema = z.discriminatedUnion('phase', [
+const PlaceRecordSchema = z.discriminatedUnion('phase', [
   /**
    * Git is not done in the copy at `dir`. Recorded before git touches it, so the next prepare of an attempt killed
    * meanwhile knows what this one did there: `created` when the copy is new to TeamAI, so its setup still runs: one

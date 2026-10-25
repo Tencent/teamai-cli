@@ -424,7 +424,7 @@ async function settleManaged(input: { config: LocalConfig; lock: RunLock; attemp
   }
   const end: StepEnd = { outcome: report.outcome, ...(report.message !== undefined ? { message: report.message } : {}), ...(report.failure ? { failure: report.failure } : {}) };
   const finished = await finishPlace({ config, lock, attempt, end, secrets });
-  const body = finished === 'unmanaged' ? report : { ...report, ...finished };
+  const body = { ...report, ...finished };
   const answer = await reportAttempt(config, lock.run, body, secrets);
   if ('data' in answer && answer.data.cleanup === true) await releasePlace({ config, lock, attempt });
   return answer;

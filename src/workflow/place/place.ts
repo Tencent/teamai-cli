@@ -319,20 +319,19 @@ export interface StepEnd {
 }
 
 /** The step's end once its place is finished: what the attempt reports, with its `changes` or `read`. */
-export type PlaceFinished = z.infer<typeof PlaceFinishedSchema>;
+type PlaceFinished = z.infer<typeof PlaceFinishedSchema>;
 
 /**
  * Finishes the place of `attempt` once its step ended with `end`, and returns the report the attempt settles with. A
  * reader that changed the checkout or its copy fails; a writer's copy gets its branch agent files back and is
  * committed and pushed, failed steps included. The result is recorded masked with `secrets`, and a second finish
- * returns it. `unmanaged` when no place was prepared for the attempt.
+ * returns it. Only an attempt `preparePlace` recorded is finished, so a record gone since fails like an unreadable one.
  */
-export async function finishPlace(input: { config: LocalConfig; lock: RunLock; attempt: AttemptId; end: StepEnd; secrets: Record<string, string> }): Promise<PlaceFinished | 'unmanaged'> {
+export async function finishPlace(input: { config: LocalConfig; lock: RunLock; attempt: AttemptId; end: StepEnd; secrets: Record<string, string> }): Promise<PlaceFinished> {
   const { config, lock: { run }, attempt, end, secrets } = input;
   const read = await readPlaceRecord(config, run, attempt);
-  if (read.kind === 'missing') return 'unmanaged';
-  if (read.kind === 'unreadable') {
-    const failure = { code: 'workspace_base', message: `The place record of attempt ${attempt} cannot be read (${read.reason}), so the step's changes cannot be checked.` };
+  if (read.kind !== 'found') {
+    const failure = { code: 'workspace_base', message: `The place record of attempt ${attempt} cannot be read (${read.kind === 'missing' ? 'it is missing' : read.reason}), so the step's changes cannot be checked.` };
     return { outcome: 'failed', message: failure.message, failure };
   }
   const recorded = read.record;
