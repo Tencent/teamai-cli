@@ -31,7 +31,9 @@ Without a terminal, nobody answers a gate during the run:
 
 ## From an agent session
 
-A coding agent's session may start only a workflow whose `invoke` allows it. `invoke: allow` starts. `invoke: ask` starts once the person agreed, with `--confirmed`. `invoke: deny`, the default, answers `invoke_denied`: give the person the start command for their own terminal or CI job.
+A coding agent's session may start only a workflow whose `invoke` allows it. `invoke: allow` starts. `invoke: ask` starts once the person agreed, with `--confirmed`. `invoke: deny`, the default, answers `invoke_denied`: tell the person its `message`, which names the command for their own terminal.
+
+Inside a workflow step, every `teamai workflow` command that changes a run answers `nested_workflow`. Do the step's own work there instead.
 
 ## Env and secrets
 

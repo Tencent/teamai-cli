@@ -24,10 +24,10 @@ Done when a reply carries `data.turn` with a `run` id, or the person has `ask.re
 
 ## The loop
 
-A turn lists the `actions` that wait for you, the `running` attempts, the `events` since your last call, and `then`.
+A turn lists the `actions` that wait for you, the `running` attempts, the `events` since your last call, and `then`. When nothing runs, `waiting.reason` says why.
 
 1. Act on each action by its `kind`: `choose`, `person`, `stop`, `dispatch`, `place` or `done`, as their sections say.
-2. Tell the person in one line what the events say: a step started, settled with its outcome, or stopped with its `why`, or a gate was `answered`. For `judging`, `judged` and `judging-off`, follow `references/judging.md`.
+2. Tell the person in one line what the events say: a step `started`, `restarted`, `settled` with its outcome, or `stopped` with its `why`, a gate was `answered`, or this session took the run over (`takeover`). Tell them `waiting.reason` when it changes. For `judging`, `judged` and `judging-off`, follow `references/judging.md`.
 3. Run `then.run` of the newest turn you have:
    - `poll`: in the background when your host can, so you stay free to talk with the person; otherwise in the foreground. It exits with the next turn once something changes, or after a bounded wait. Keep one poll of the run going at a time.
    - `wake`: in the foreground. Work waits for you, and the turn it returns carries it.
@@ -36,6 +36,8 @@ A turn lists the `actions` that wait for you, the `running` attempts, the `event
 Done when a turn has no `then`.
 
 When you have lost the last turn, after a compaction or in a new session, run `teamai workflow next <run> --driver skill` once for the current one.
+
+A `report` you run answers with `data.runner`, not a turn. After one, go on with `then` of your newest turn.
 
 ## Choose
 
@@ -85,19 +87,21 @@ A `dispatch` action is one prompt step for one child agent. For each one:
 
 When your host cannot run `model.name`, run `unavailable` in place of both steps.
 
+A dispatch whose `needs.place` is `checkout` and whose `needs.person` is false only reads the checkout: TeamAI fails the step with `read_only_dirty` when it leaves a file there changed. Add "Change no file there." to the child's prompt.
+
 A dispatch whose `needs.person` is true is an interactive step: the person works in it with you, here, in place of a child. Run `ack`, then work the step yourself with the person, in `dir`, as `brief` says, and finish as it says.
 
-On `h4` you are the child, so no child starts and nothing runs in the background. Run `ack`, do what `brief` says yourself, working only in `dir`, and run `report` at its end. Then go on with `then` of your newest turn: the next dispatch comes after this one is reported. A `model.name` that is not your own model is one your host cannot run.
+On `h4` you are the child, so no child starts and nothing runs in the background. Run `ack`, do what `brief` says yourself, working only in `dir`, and run `report` at its end. The next dispatch comes after this one is reported. A `model.name` that is not your own model is one your host cannot run.
 
 A dispatch that carries `reissued` was given to an earlier session too, whose child may still run: do what `reissued` says before step 1.
 
-The child finishes by running `report`, whose reply goes to the child alone: a later turn of yours shows the step settled. When a child ended and `running` still lists its attempt as `dispatched`, run that entry's `report` yourself, then go on with `then` of your newest turn.
+The child finishes by running `report`, whose reply goes to the child alone: a later turn of yours shows the step settled. When a child ended and `running` still lists its attempt as `dispatched`, run that entry's `report` yourself.
 
 Done when every `dispatch` in the turn is acked.
 
 ## Place
 
-A `place` action comes when your host makes the worktrees children work in (`h3`): it asks your host for the place of one step, before its dispatch. Follow `reference`: your host makes the worktree, and you run `adopt` with its directory in place of `{dir}`. The action stays in every turn until a place is adopted, and `refused` says why the last one was not.
+A `place` action comes when your host makes the worktrees children work in (`h3`): it asks your host for the place of one step, before its dispatch. Follow `reference`. The action stays in every turn until a place is adopted.
 
 Done when the turn carries a `dispatch` for its `attempt`.
 

@@ -5,7 +5,7 @@ On `h3`, your host makes the worktree a prompt step works in, and TeamAI adopts 
 1. Have your host make a worktree of this repository named `name`, on branch `branch` from commit `start`. When your host takes only a starting point, make it detached at `start`: TeamAI creates `branch` there when it adopts it.
 2. Run `adopt` with the worktree's absolute directory in place of `{dir}`.
 3. Act on the turn it returns:
-   - A `dispatch` for the same `attempt`: start the child in that worktree, as the guide's Dispatch section says. Its `dir` is the place.
+   - A `dispatch` for the same `attempt`: start the child in that worktree, as the workflow skill's Dispatch section says. Its `dir` is the place.
    - The `place` action again, with `refused`: the place was not adopted, and `refused` says why and what to fix. Fix that place or make another, then run `adopt` again. The step keeps waiting, and a refusal costs it nothing.
 
 Done when the turn carries a `dispatch` for the `attempt`.
