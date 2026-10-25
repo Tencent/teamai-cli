@@ -58,6 +58,60 @@ describe('importFromRepoList', () => {
         return filePath;
     }
 
+    it.each([0, -1, 1.5, NaN, Infinity, -Infinity, Number.MAX_SAFE_INTEGER + 1])(
+        'rejects invalid concurrency %s before reading the list or preparing output', async (concurrency) => {
+            const output = path.join(tmpDir, 'out');
+            await expect(importFromRepoList({ listPath: path.join(tmpDir, 'missing.yaml'), concurrency, output }))
+                .rejects.toThrow('--concurrency must be a positive safe integer');
+            expect(importFromRepo).not.toHaveBeenCalled();
+            expect(await fs.pathExists(output)).toBe(false);
+        },
+    );
+
+    it('rejects zero instead of leaving a nonempty batch pending', async () => {
+        const listPath = await writeYaml('repos.yaml', { version: 1, repos: [{ url: 'https://github.com/org/repo' }] });
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+            await expect(Promise.race([
+                importFromRepoList({ listPath, concurrency: 0, dryRun: true }),
+                new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Batch is still pending')), 250); }),
+            ])).rejects.toThrow('--concurrency must be a positive safe integer');
+            expect(importFromRepo).not.toHaveBeenCalled();
+        } finally {
+            clearTimeout(timer);
+        }
+    });
+
+    it.each([1, 2, 3])('keeps at most %i imports active and releases a failed import\'s slot', async (concurrency) => {
+        const repos = Array.from({ length: 5 }, (_, i) => ({ url: `https://github.com/org/repo-${i}` }));
+        const listPath = await writeYaml('repos.yaml', { version: 1, repos });
+        const releases: Array<() => void> = [];
+        let active = 0;
+        let peak = 0;
+        vi.mocked(importFromRepo).mockImplementation(async ({ url }) => {
+            active++;
+            peak = Math.max(peak, active);
+            try {
+                await new Promise<void>((resolve, reject) => {
+                    releases.push(() => url.endsWith('repo-0') ? reject(new Error('Fixture failure')) : resolve());
+                });
+            } finally {
+                active--;
+            }
+        });
+
+        const batch = importFromRepoList({ listPath, concurrency, dryRun: true });
+        await vi.waitFor(() => expect(importFromRepo).toHaveBeenCalledTimes(concurrency));
+        for (let settled = 0; settled < repos.length; settled++) {
+            await vi.waitFor(() => expect(releases.length).toBeGreaterThan(0));
+            releases.shift()!();
+        }
+        expect(await batch).toEqual({ succeeded: 4, failed: [{ url: repos[0].url, error: 'Fixture failure' }], skipped: [] });
+        expect(peak).toBe(concurrency);
+        expect(active).toBe(0);
+        vi.mocked(importFromRepo).mockResolvedValue(undefined);
+    });
+
     it('加载 yaml → 调度 → 汇总数字正确（2 个成功）', async () => {
         const filePath = await writeYaml('repos.yaml', {
             version: 1,

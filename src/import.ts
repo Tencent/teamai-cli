@@ -46,7 +46,7 @@ interface ImportOptions extends GlobalOptions {
   domain?: string;
   /** Batch import multiple repos from a yaml whitelist */
   fromRepoList?: string;
-  /** Concurrency for --from-repo-list (string, requires parseInt), default 3 */
+  /** Maximum concurrent repositories for --from-repo-list, default 3. */
   concurrency?: string;
   /** Incremental mode: re-extract only what changed since the published baseline (--from-repo also fetch+resets its cache) */
   incremental?: boolean;
@@ -164,7 +164,7 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
             task.output = `List: ${opts.fromRepoList}`;
             const result = await importFromRepoList({
               listPath: opts.fromRepoList!,
-              concurrency: opts.concurrency ? parseInt(opts.concurrency, 10) : 3,
+              concurrency: Number(opts.concurrency ?? 3),
               forceSsh: opts.ssh ?? false,
               dryRun: opts.dryRun,
               output: opts.output,

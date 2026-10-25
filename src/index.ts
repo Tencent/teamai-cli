@@ -1354,7 +1354,7 @@ program
   .addOption(new Option('--ssh', 'Force SSH clone even if HTTPS token is available').hideHelp())
   .addOption(new Option('--domain <name>', 'Skip AI recommendation and assign repo to this domain explicitly').hideHelp())
   .option('--from-repo-list <path>', 'Batch import repos from a YAML whitelist')
-  .addOption(new Option('--concurrency <n>', 'Concurrent repos for --from-repo-list (default 3)').default('3').hideHelp())
+  .addOption(new Option('--concurrency <n>', 'Concurrent repos for --from-repo-list (positive safe integer, default 3)').default('3').hideHelp())
   .option('--incremental', 'Re-extract only files changed since the last import (with --dir, --from-repo or --from-repo-list; remote repos also reuse the cached clone)')
   .option('--skip-enrich', 'Skip AI enrichment (only clone + extract + graph, no LLM calls)')
   .option('--max-files <n>', 'Max source files collected per repository (default 200)')

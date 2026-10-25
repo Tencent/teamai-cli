@@ -132,6 +132,8 @@ teamai import --from-repo https://github.com/org/repo --incremental
 teamai import --from-repo https://github.com/org/repo --skip-enrich
 ```
 
+`--from-repo-list` runs up to 3 imports at once by default. `--concurrency <n>` sets this limit and must be a positive safe integer. Invalid values fail before the repo list is read or output is prepared.
+
 `--from-mr` takes several MR URLs. Each draft is still confirmed on its own (or none with `--all`), the accepted learnings are published once at the end, and each repository's teamwiki is updated once. An MR that fails does not stop the rest; the run ends with a summary and exits non-zero if any failed.
 
 When GitHub import falls back from `gh` to REST, it reads commit pages of 100, up to the [GitHub endpoint's 250-commit limit](https://docs.github.com/en/rest/pulls/pulls#list-commits-on-a-pull-request). A failed commit page fails that PR before AI extraction.

@@ -132,6 +132,8 @@ teamai import --from-repo https://github.com/org/repo --incremental
 teamai import --from-repo https://github.com/org/repo --skip-enrich
 ```
 
+`--from-repo-list` 默认最多同时导入 3 个仓库。可用 `--concurrency <n>` 设置上限，值必须是正的安全整数。非法值会在读取仓库清单、准备输出目录之前报错。
+
 `--from-mr` 可以一次传多个 MR URL：每个草稿照旧单独确认（`--all` 则都不问），接受的 learning 在最后一次性发布，每个仓库的 teamwiki 只更新一次。其中一个 MR 失败不影响其余，运行结束时给出汇总，有失败则退出码非零。
 
 GitHub 导入从 `gh` 回退到 REST 时，会按每页 100 个提交继续读取，最多返回 [GitHub 此接口限制的 250 个提交](https://docs.github.com/en/rest/pulls/pulls#list-commits-on-a-pull-request)。任一提交页失败都会使该 PR 在 AI 提炼前失败。

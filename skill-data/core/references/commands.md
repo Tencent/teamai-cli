@@ -434,7 +434,7 @@ Generated: do not edit by hand. Regenerate with
   - `--ssh` (hidden) — Force SSH clone even if HTTPS token is available
   - `--domain <name>` (hidden) — Skip AI recommendation and assign repo to this domain explicitly
   - `--from-repo-list <path>` — Batch import repos from a YAML whitelist
-  - `--concurrency <n>` (hidden) — Concurrent repos for --from-repo-list (default 3)
+  - `--concurrency <n>` (hidden) — Concurrent repos for --from-repo-list (positive safe integer, default 3)
   - `--incremental` — Re-extract only files changed since the last import (with --dir, --from-repo or --from-repo-list; remote repos also reuse the cached clone)
   - `--skip-enrich` — Skip AI enrichment (only clone + extract + graph, no LLM calls)
   - `--max-files <n>` — Max source files collected per repository (default 200)
