@@ -546,7 +546,7 @@ export const TOOLS = {
     },
   },
   pi: {
-    home: { dir: '.pi', moves: { root: '.pi/agent', by: [{ kind: 'env', name: 'PI_CODING_AGENT_DIR', evidence: 'verified' }], settingsAtDefault: true } },
+    home: { dir: '.pi', moves: { root: '.pi/agent', by: [{ kind: 'env', name: 'PI_CODING_AGENT_DIR', evidence: 'verified' }] } },
     skillLoad: { calls: [], promptForm: 'skill-block' },
     skills: {
       user: [{ base: 'home', path: '.pi/agent/skills', evidence: 'verified' }],

@@ -43,6 +43,7 @@ import {
   resolvePiProjectExtensionsDir,
   injectPiHooks,
   removePiHooks,
+  hasPiHooks,
   buildPiExtensionSource,
   buildPiAgentHookExtensionSource,
   applyPiAgentHook,
@@ -52,6 +53,7 @@ import {
 } from '../pi-hooks.js';
 import { reconcileHooksToAllTools } from '../hooks.js';
 import { log } from '../utils/logger.js';
+import { saveToolHomes } from '../tool-home.js';
 import type { HookDef } from '../types.js';
 import { loadPiExtension, type ExtensionDispatch } from './helpers/pi-extensions.js';
 
@@ -67,6 +69,7 @@ describe('Pi hook extension', () => {
   });
 
   afterEach(async () => {
+    vi.unstubAllEnvs();
     if (previousHome === undefined) delete process.env.HOME;
     else process.env.HOME = previousHome;
     await fse.remove(tmp);
@@ -75,6 +78,27 @@ describe('Pi hook extension', () => {
   it('resolves global and project extension directories', () => {
     expect(resolvePiExtensionsDir()).toBe(path.join(tmp, '.pi', 'agent', 'extensions'));
     expect(resolvePiProjectExtensionsDir('/repo')).toBe(path.join('/repo', '.pi', 'extensions'));
+  });
+
+  it.each(['environment', 'recorded'] as const)('installs and removes both hook kinds in the %s Pi home', async (source) => {
+    const moved = path.join(tmp, 'moved-agent');
+    if (source === 'environment') vi.stubEnv('PI_CODING_AGENT_DIR', moved);
+    else await saveToolHomes({ pi: moved });
+    const old = path.join(tmp, '.pi', 'agent', 'extensions', PI_HOOK_FILE);
+    await fse.outputFile(old, '// personal default extension');
+    const personal = path.join(moved, 'extensions', 'personal.ts');
+    await fse.outputFile(personal, '// personal moved extension');
+    await injectPiHooks();
+    await applyPiAgentHook({ slug: 'scan', event: 'Stop', command: 'echo scan' });
+    expect(await fse.pathExists(path.join(moved, 'extensions', PI_HOOK_FILE))).toBe(true);
+    expect(await hasPiHooks()).toBe(true);
+    expect(await hasPiAgentHook('scan')).toBe(true);
+    await removePiHooks();
+    await removePiAgentHook('scan');
+    expect(await fse.readFile(old, 'utf8')).toBe('// personal default extension');
+    expect(await fse.readFile(personal, 'utf8')).toBe('// personal moved extension');
+    expect(await fse.pathExists(path.join(moved, 'extensions', PI_HOOK_FILE))).toBe(false);
+    expect(await hasPiAgentHook('scan')).toBe(false);
   });
 
   it('maps Pi lifecycle events to TeamAI dispatch events', () => {

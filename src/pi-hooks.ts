@@ -16,14 +16,14 @@
  * `hooks remove`) therefore deletes this one global copy outright, same as
  * the OMP adapter. The extension bridges TeamAI's built-in lifecycle events
  * only; custom team hooks declared in hooks/hooks.yaml are outside this
- * adapter's current scope. Pi profile overrides (`PI_CODING_AGENT_DIR` /
- * `PI_CONFIG_DIR`), which relocate the agent directory, are not supported —
- * same as the OMP adapter — and the default `~/.pi/agent/` layout is used.
+ * adapter's current scope. The user extension follows Pi's recorded agent
+ * directory, then PI_CODING_AGENT_DIR, then ~/.pi/agent. Copies in a previous
+ * agent directory are left in place; that directory may still serve a profile.
  */
 
 import path from 'node:path';
 import { generatedFileState, writeFile, writeIfChanged, ensureDir, remove } from './utils/fs.js';
-import { getUserHome } from './utils/home.js';
+import { toolHome } from './tool-home.js';
 import { log } from './utils/logger.js';
 import { resolveCliEntry } from './builtin-hooks.js';
 
@@ -42,7 +42,7 @@ const CLAUDE_TO_PI_EVENTS: Record<string, string> = {
 
 /** The global Pi agent extension directory. */
 export function resolvePiExtensionsDir(): string {
-  return path.join(getUserHome(), '.pi', 'agent', 'extensions');
+  return path.join(toolHome('pi'), 'extensions');
 }
 
 /** Project-local Pi extension directory used only to clean up legacy copies. */
