@@ -314,13 +314,13 @@ Workflow totals (runs, succeeded, failed, cumulative duration) are folded into `
 
 ## Run from a coding session
 
-Opt a workflow into SessionStart discovery with `invocable: true`. An optional token `alias` is another entry name for `workflow start`; an exact workflow name wins over an alias, and duplicate aliases do not resolve. Workflows without the opt-in can still be started explicitly but are not advertised.
+`invoke` says whether an agent session may start a workflow: `allow` (it starts it when the task matches), `ask` (after the person agrees) or `deny`, the default. Only `allow` and `ask` workflows are advertised to sessions. An optional token `alias` is another entry name for `workflow start`. An alias that another workflow also uses, or takes as its name, starts nothing (`alias_conflict`); start those workflows by name.
 
 ```yaml
 schemaVersion: v1alpha1
 name: session-change
 description: Implement a requested task in a separate branch.
-invocable: true
+invoke: allow
 alias: session-fix
 inputs: { task: string }
 steps:

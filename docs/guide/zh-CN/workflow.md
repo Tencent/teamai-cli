@@ -314,13 +314,13 @@ Run id 是 `r` 加 16 位十六进制。此方案之前创建的运行用 8 位�
 
 ## 在编程会话中运行
 
-设置 `invocable: true` 后，工作流才进入 SessionStart 发现列表。可选的 token `alias` 是 `workflow start` 的另一个入口名；完整工作流名优先于别名，重复别名不解析。没有启用发现的工作流仍可显式启动，但不会被广告给 agent。
+`invoke` 决定 agent 会话能否启动工作流：`allow`（任务匹配时直接启动）、`ask`（征得本人同意后启动）或 `deny`（默认）。只有 `allow` 和 `ask` 的工作流会提供给会话。可选的 token `alias` 是 `workflow start` 的另一个入口名。别名若与另一个工作流的别名或名称相同，就不启动任何工作流（`alias_conflict`），请用名称启动它们。
 
 ```yaml
 schemaVersion: v1alpha1
 name: session-change
 description: Implement a requested task in a separate branch.
-invocable: true
+invoke: allow
 alias: session-fix
 inputs: { task: string }
 steps:

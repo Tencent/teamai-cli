@@ -31,7 +31,7 @@ async function fixture(yaml?: string) {
   fs.writeFileSync(path.join(repo, 'workflows', 'build.yaml'), yaml ?? `schemaVersion: v1alpha1
 name: build
 description: Session work.
-invocable: true
+invoke: allow
 alias: ship
 steps:
   - id: change

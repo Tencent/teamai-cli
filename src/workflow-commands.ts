@@ -113,7 +113,7 @@ export async function workflowStart(name: string, options: { driver?: string; to
   if (options.describe) {
     const cached = await loadCachedWorkflow(config, name);
     if (!cached) writeEnvelope({ error: { code: 'workflow_not_found', message: `Workflow or alias ${name} has no unambiguous runnable version` } }, secrets);
-    else { const { name, description, alias, invocable, inputs } = cached.definition; writeEnvelope({ data: { name, description, ...(alias ? { alias } : {}), invocable: invocable === true, inputs: inputs ?? {} } }, secrets); }
+    else { const { name, description, alias, invoke, inputs } = cached.definition; writeEnvelope({ data: { name, description, ...(alias ? { alias } : {}), invoke: invoke ?? 'deny', inputs: inputs ?? {} } }, secrets); }
     return;
   }
   if (options.driver !== undefined && options.driver !== 'local' && options.driver !== 'skill') {

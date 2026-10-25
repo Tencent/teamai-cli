@@ -6,7 +6,7 @@ export const WORKFLOW_HINT_LIMIT = 2400;
 /** Metadata only: the session never receives the workflow graph or command bodies. */
 export async function workflowHint(config: LocalConfig): Promise<string | null> {
   const cached = await listCachedWorkflows(config);
-  const advertised = cached.filter(({ definition }) => definition.invocable === true);
+  const advertised = cached.filter(({ definition }) => definition.invoke === 'allow' || definition.invoke === 'ask');
   if (!advertised.length) return null;
   const names = new Set(cached.map(({ definition }) => definition.name));
   const aliases = new Map<string, number>();

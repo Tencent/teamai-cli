@@ -658,7 +658,7 @@ steps:
 
     const result = await syncWorkflowDefinitions(config);
 
-    expect(result).toEqual({ cached: [], kept: [], invalid: [], unrunnable: [], scorers: { cached: [], invalid: [], verified: [] }, unknownScorers: [] });
+    expect(result).toEqual({ cached: [], kept: [], invalid: [], unrunnable: [], scorers: { cached: [], invalid: [], verified: [] }, unknownScorers: [], aliasConflicts: [] });
     expect(await startRun(config, 'build', {}, { secrets: await knownSecrets(config) })).toMatchObject({ error: { code: 'workflow_not_found' } });
   });
 

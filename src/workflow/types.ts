@@ -173,8 +173,14 @@ export interface StepScorers {
   batch?: boolean;
 }
 
+/** Whether an agent session may start a workflow: on its own (`allow`), after the person's yes (`ask`), or never (`deny`). */
+export const INVOKE_VALUES = ['allow', 'ask', 'deny'] as const;
+export type Invoke = typeof INVOKE_VALUES[number];
+
 export interface WorkflowDefinition {
-  invocable?: boolean;
+  /** Absent means `deny`. */
+  invoke?: Invoke;
+  /** Another name `workflow start` accepts. It starts nothing while another workflow has it as alias or name. */
   alias?: string;
   schemaVersion: 'v1alpha1';
   name: string;
@@ -220,8 +226,12 @@ export interface WorkflowDiagnostic {
    * `bad_session`: a `session.from` pull rejects; the kept copy would resume a step the author did not name.
    * `bad_workspace`: `workspace` is not read-only, new, or continue; the kept copy would run the step in the wrong place.
    * `bad_delivery`: delivery is not PR creation on a writable branch; the kept copy would apply a different policy.
+   * `bad_invoke`, `bad_alias`: the kept copy would let agents start the workflow, or start it by a name, the author
+   *   changed.
+   * `alias_conflict`: another workflow has the same alias, or takes it as its name. The workflow is cached and starts by
+   *   name; only the alias starts nothing.
    */
-  code?: 'unknown_key' | 'missing_needs' | 'false_if' | 'bad_template' | 'dotted_name' | 'undeclared_output' | 'undeclared_end' | 'bad_loop' | 'bad_session' | 'bad_workspace' | 'workflow_namespace_conflict' | 'prompt_namespace_conflict' | 'bad_delivery' | 'bad_invocable';
+  code?: 'unknown_key' | 'missing_needs' | 'false_if' | 'bad_template' | 'dotted_name' | 'undeclared_output' | 'undeclared_end' | 'bad_loop' | 'bad_session' | 'bad_workspace' | 'workflow_namespace_conflict' | 'prompt_namespace_conflict' | 'bad_delivery' | 'bad_invoke' | 'bad_alias' | 'alias_conflict';
 }
 
 export type StepOutcome = 'success' | 'failed' | 'released';

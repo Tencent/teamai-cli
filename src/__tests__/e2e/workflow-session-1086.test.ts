@@ -32,7 +32,7 @@ describe('session workflow public CLI (#1086)', () => {
       fs.writeFileSync(path.join(workflows, 'change.yaml'), `schemaVersion: v1alpha1
 name: change
 description: Make a reviewed change.
-invocable: true
+invoke: allow
 alias: ship
 inputs: { task: string }
 steps:

@@ -16,8 +16,9 @@ import {
   managedMcpWorkspaceId,
   type LocalConfig,
 } from '../types.js';
+import { LineCounter, parseDocument } from 'yaml';
 import { formatDiagnostic, parseWorkflow, promptFileDiagnostics, stepField } from './parse.js';
-import type { WorkflowFiles } from './parse-context.js';
+import { locate, valueNode, type WorkflowFiles } from './parse-context.js';
 import type { CachedWorkflow, WorkflowDefinition, WorkflowDiagnostic, WorkflowStep } from './types.js';
 import { assertSafePath, assertWithinRoot } from '../utils/path-safety.js';
 import { createGit } from '../utils/git.js';
@@ -36,6 +37,8 @@ export interface SyncWorkflowResult {
   scorers: SyncScorerResult;
   /** Scorers a step lists that `scorers` has no valid version of. The workflow still runs; the step runs without them. */
   unknownScorers: UnknownScorer[];
+  /** `alias_conflict` on each cached workflow whose alias another one has as alias or name. Each still starts by name. */
+  aliasConflicts: WorkflowDiagnostic[];
 }
 
 export interface UnknownScorer {
@@ -165,7 +168,7 @@ export async function syncWorkflowDefinitions(
   options: SyncWorkflowOptions = {},
 ): Promise<SyncWorkflowResult> {
   const scorers = await syncScorerDefinitions(config, options);
-  const result: SyncWorkflowResult = { cached: [], kept: [], invalid: [], unrunnable: [], scorers, unknownScorers: [] };
+  const result: SyncWorkflowResult = { cached: [], kept: [], invalid: [], unrunnable: [], scorers, unknownScorers: [], aliasConflicts: [] };
   const dir = path.join(getKnowledgeDir(config), 'workflows');
   const knowledgeRoot = getKnowledgeDir(config);
   // Asked on the first valid file: a team without workflows starts no git here.
@@ -397,6 +400,15 @@ export async function syncWorkflowDefinitions(
     }
   }
   for (const unknown of result.unknownScorers) log.warn(`[workflows] ${formatUnknownScorer(unknown)}`);
+  const versions = checked.flatMap((file): AliasSource[] => {
+    const { definition, revision } = settle(file.stem);
+    if (!definition) return [];
+    if (!('diagnostics' in file) && revision.length === 0) return [{ relativePath: file.relativePath, content: file.content, definition }];
+    const copy = kept.get(file.stem);
+    return copy ? [{ relativePath: copy.relativePath, content: copy.content, definition }] : [];
+  });
+  result.aliasConflicts = aliasConflicts(versions);
+  for (const conflict of result.aliasConflicts) log.warn(`[workflows] ${formatDiagnostic(conflict)}`);
 
   const scope = options.scopeLabel ?? config.scope;
   if (options.dryRun && result.cached.length > 0) {
@@ -405,6 +417,24 @@ export async function syncWorkflowDefinitions(
     log.success(`[${scope}] Synced ${wrote} workflow${wrote === 1 ? '' : 's'}`);
   }
   return result;
+}
+
+/** The version of a file a sync settled on, with the YAML that locates its alias. */
+type AliasSource = { relativePath: string; content: string | undefined; definition: WorkflowDefinition };
+
+/** Each workflow whose alias another settled workflow has as alias or name. `loadCachedWorkflow` resolves such an alias to no other workflow. */
+function aliasConflicts(versions: AliasSource[]): WorkflowDiagnostic[] {
+  return versions.flatMap(({ relativePath, content, definition: { name, alias } }) => {
+    if (alias === undefined) return [];
+    const named = versions.find((other) => other.definition.name === alias);
+    const twin = versions.find((other) => other.definition.name !== name && other.definition.alias === alias);
+    const message = named ? `alias "${alias}" is also the name of ${named.relativePath}, so it starts that workflow; start ${name} by name`
+      : twin ? `alias "${alias}" is also the alias of ${twin.relativePath}, so it starts neither; start them by name` : undefined;
+    if (!message) return [];
+    const lineCounter = new LineCounter();
+    const document = parseDocument(content ?? '', { lineCounter });
+    return [{ ...locate(relativePath, lineCounter, valueNode(document.contents, 'alias'), 'alias', message), code: 'alias_conflict' }];
+  });
 }
 
 /**
