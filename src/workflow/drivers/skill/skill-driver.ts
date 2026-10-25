@@ -122,6 +122,8 @@ const NextOptionsSchema = z.object({
   }).optional(),
   json: z.undefined({ invalid_type_error: '--driver skill takes no --json: the skill driver composes every request itself' }),
   prepare: z.undefined({ invalid_type_error: '--prepare is for --json drivers' }),
+  attempt: z.undefined({ invalid_type_error: '--attempt is for --json drivers, with --prepare' }),
+  adopt: z.undefined({ invalid_type_error: '--adopt is for --json drivers, with --prepare --attempt' }),
 }).refine((options) => [options.wait, options.takeover, options.choice, options.ack].filter((given) => given !== undefined && given !== false).length <= 1, {
   message: 'next takes at most one of --wait, --takeover, --choice and --ack',
 });

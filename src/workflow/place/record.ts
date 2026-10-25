@@ -12,11 +12,13 @@ const CheckoutRoleSchema = z.object({ role: z.literal('checkout') });
 const ReaderRoleSchema = z.object({ role: z.literal('reader'), workspace: WorkspaceContractSchema, found: z.array(z.string()) });
 /**
  * A lease that commits to `workspace.branch`, reporting the range from `rangeFrom`. `conflicts` hashes each file
- * that was unmerged when the step got it, and `conflictNote` is what its prompt adds about them.
+ * that was unmerged when the step got it, and `conflictNote` is what its prompt adds about them. `adopted` when the
+ * host made the place, which TeamAI then never removes.
  */
 const WriterRoleSchema = z.object({
   role: z.literal('writer'),
   workspace: WorkspaceContractSchema,
+  adopted: z.literal(true).optional(),
   rangeFrom: z.string().optional(),
   conflicts: z.record(z.string()),
   conflictNote: z.string().optional(),
@@ -54,10 +56,13 @@ const PlaceBase = { ...PlaceFields, place: PlaceRoleSchema };
 export const PlaceRecordSchema = z.discriminatedUnion('phase', [
   /**
    * Git is not done in the copy at `dir`. Recorded before git touches it, so the next prepare of an attempt killed
-   * meanwhile knows what this one did there: `created` when the copy did not exist, so its setup still runs, and a
-   * writer's `rangeFrom` once the copy is open, taken before any merge, so the merges stay in the step's changes.
+   * meanwhile knows what this one did there: `created` when the copy is new to TeamAI, one that did not exist or the
+   * host made, so its setup still runs; `adopted` when the host made it; and a writer's `rangeFrom` once the copy is
+   * open, taken before any merge, so the merges stay in the step's changes.
    */
-  z.object({ ...PlaceFields, phase: z.literal('opening'), created: z.literal(true).optional(), rangeFrom: z.string().optional() }),
+  z.object({
+    ...PlaceFields, phase: z.literal('opening'), created: z.literal(true).optional(), adopted: z.literal(true).optional(), rangeFrom: z.string().optional(),
+  }),
   /**
    * Git is done in a copy, and the base overlay goes in next. Recorded before the overlay, so a prepare cut short is
    * finished by the next one, or given up. `setup` is what runs once it is staged, in a worktree prepare created.

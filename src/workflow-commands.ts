@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { autoDetectInit, loadTeamConfig } from './config.js';
 import { resolveWorkflowEnv, type WorkflowEnv } from './env-resolution.js';
 import { isLeaseRef } from './scorers/entry.js';
@@ -9,8 +10,8 @@ import { cancelRun, respondToHitl, retryStep } from './workflow/run-controls.js'
 import { runLocalDriver, withDriverLock } from './workflow/drivers/local/local-driver.js';
 import { driverIdentity } from './driver-identity.js';
 import { getBusinessRoot, getDataHome, scopedToolPaths, type LocalConfig, type TeamaiConfig } from './types.js';
-import { isRunId, readRun } from './workflow/store.js';
-import { inProcessClient } from './workflow/protocol.js';
+import { AttemptIdSchema, isRunId, readRun } from './workflow/store.js';
+import { inProcessClient, type NextPrepare } from './workflow/protocol.js';
 import { parseSkillCall, runSkillCall, skillContext } from './workflow/drivers/skill/skill-driver.js';
 import { loadCachedWorkflow } from './workflow/cache.js';
 import { findRunConfig } from './workflow/run-location.js';
@@ -172,7 +173,9 @@ export async function workflowStart(name: string, options: { driver?: string; to
   writeEnvelope(await runLocalDriver(config, runId, process.cwd(), { tools, toolPaths: teamConfig.toolPaths, autoApprove: options.autoApprove }), secrets);
 }
 
-export async function workflowNext(runId: string, options: { json?: string; prepare?: boolean; driver?: string; wait?: boolean; takeover?: boolean; choice?: string; ack?: string }): Promise<void> {
+export async function workflowNext(runId: string, options: {
+  json?: string; prepare?: boolean; attempt?: string; adopt?: string; driver?: string; wait?: boolean; takeover?: boolean; choice?: string; ack?: string;
+}): Promise<void> {
   const { driver: kind, ...rest } = options;
   if (kind === 'skill') {
     await workflowSkill({ kind: 'next', run: runId, options: rest });
@@ -183,11 +186,21 @@ export async function workflowNext(runId: string, options: { json?: string; prep
     : options.takeover ? '--takeover needs --driver skill'
       : options.choice !== undefined ? '--choice needs --driver skill'
         : options.ack !== undefined ? '--ack needs --driver skill' : undefined;
-  const refused = kind !== undefined ? `next takes --driver skill, not --driver ${kind}` : skillOnly;
+  const prepareOnly = options.adopt !== undefined && options.attempt === undefined ? '--adopt needs --attempt, the attempt whose place the host made'
+    : options.attempt !== undefined && !options.prepare ? '--attempt needs --prepare' : undefined;
+  const refused = kind !== undefined ? `next takes --driver skill, not --driver ${kind}` : skillOnly ?? prepareOnly;
   if (refused !== undefined) {
     writeEnvelope({ error: { code: 'invalid_arguments', message: refused } }, collectEnvSecrets());
     return;
   }
+  const attempt = options.attempt === undefined ? undefined : AttemptIdSchema.safeParse(options.attempt);
+  if (attempt && !attempt.success) {
+    writeEnvelope({ error: { code: 'invalid_arguments', message: `--attempt takes the attempt of a lease, such as a1b2c3d4e; got ${options.attempt}` } }, collectEnvSecrets());
+    return;
+  }
+  const prepare: NextPrepare | undefined = attempt
+    ? { attempt: attempt.data, ...(options.adopt !== undefined ? { adopt: path.resolve(options.adopt) } : {}) }
+    : options.prepare ? true : undefined;
   const payload = readJson(options.json, 'Pass --json with a driver object');
   if (!payload.ok) {
     writeEnvelope(payload.envelope, collectEnvSecrets());
@@ -201,7 +214,7 @@ export async function workflowNext(runId: string, options: { json?: string; prep
   const loaded = await readyRunConfig(runId, parsed.request.claim === true);
   if (!loaded) return;
   const { config, env, secrets } = loaded;
-  writeEnvelope(await inProcessClient({ config, env }).next(runId, payload.value, { prepare: options.prepare === true }), secrets);
+  writeEnvelope(await inProcessClient({ config, env }).next(runId, payload.value, prepare ? { prepare } : undefined), secrets);
 }
 
 export async function workflowReport(runId: string, options: { json?: string; driver?: string; attempt?: string; modelUnavailable?: boolean }): Promise<void> {

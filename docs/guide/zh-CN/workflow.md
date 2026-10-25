@@ -342,6 +342,8 @@ teamai workflow report <run> --json '<attempt report>'
 
 使用 `next --prepare` 时，CLI 在运行最初保留的检出目录中创建或复用租约工作树，应用基线 agent 配置和团队资源，并返回 `lease.cwd`。重复准备不会覆盖已有编辑。会话只在那里工作，不自己运行工作区 git 操作。`report` 负责 commit、push、填充 `changes` 或 `read`；只有报告成功接受且允许 cleanup 时才删除工作树。对这类托管 attempt，不要自己提供 `changes` 和 `read`。失败时保留工作以便恢复。自行准备工作区的其他驱动不使用 `--prepare`。
 
+未使用 `--prepare` 获取租约的驱动，可以稍后用 `next <run> --prepare --attempt <attempt>` 准备它。加上 `--adopt <dir>` 时，attempt 改在宿主创建的位置运行：该仓库的一个干净 worktree，位于租约的工作区分支上，或分离在其起点，就像 `git worktree add` 创建的那样。不符合的位置返回 `adopt_mismatch`，attempt 仍保持租约。TeamAI 在那里像在自己的工作树中一样 commit 和 push，但从不删除该位置。
+
 会话只声明宿主真正提供的工作区、人机交互、模型和执行能力，不能声称支持无法执行的环境隔离、setup 凭据、token 计量、网络控制或轮次限制。引擎支持要求字段时，能力协商遵循其要求契约。普通会话不能接收新注入的受限密钥，应关闭 env/setup 能力。worktree 本身不是 sandbox。必需审批由人执行返回的字面响应命令，或通过可信驱动 UI 回答；由 agent 转述的 CLI 回答以 `agent_in_path` 拒绝。
 
 运行 id 跨本机已配置 scope 定位。重复 id 以 `ambiguous_run` 失败，当前目录不参与选择。原始检出目录只保存在本机。attempt 准备记录只保存路径和文件指纹，不保存提示词、环境变量值或图。

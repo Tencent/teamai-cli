@@ -2,8 +2,9 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
-import type { WorkflowClient } from './protocol.js';
+import type { NextPrepare, WorkflowClient } from './protocol.js';
 import type { DriverCan } from './requirements.js';
+import { AttemptIdSchema } from './store.js';
 import type { DriverIdentity, RunState } from './types.js';
 import { git } from './worktree.js';
 
@@ -70,16 +71,21 @@ export function profileDriver(profile: DriverProfile): DriverIdentity {
  * `absent` lists fields the lease must not carry. `as` picks the driver profile, `local` when omitted, and `can` replaces
  * the keys of the profile's `can` it names.
  * `state` is matched against the persisted run after the operation. `advance` moves the clock the engine reads.
- * `prepare` asks `next` to prepare the lease's place; `promptHas` lists text its prompt contains. `edit` writes files in
- * a prepared lease's place, and `files` checks them there, or in the checkout without a lease: `null` is a path that
- * does not exist.
+ * `prepare` asks `next` to prepare the lease's place; `promptHas` lists text its prompt contains. With `prepare`,
+ * `attempt` names the saved lease whose attempt `next` prepares, which it must answer with, and `adopt` the `host`
+ * place it prepares it in, where the lease must run. `host` makes a place as a host would, at `name` beside the
+ * checkout: a worktree on the workspace branch of `lease` (`on: 'branch'`), detached at its start (`'start'`), or on
+ * another branch made there (`'other'`), or a repository of its own (`'foreign'`), with `files` written in it. `edit`
+ * writes files in a prepared lease's place, and `files` checks them there, or in the checkout without a lease: `null`
+ * is a path that does not exist.
  */
 export type ConformanceOperation =
   | {
     kind: 'next'; saveAs: string; as?: DriverProfile; can?: DriverCan; running?: string[]; canTakeLease?: boolean; hitl?: boolean; claim?: boolean;
-    base?: { ref?: string; commit: string }; prepare?: true; promptHas?: string[];
+    base?: { ref?: string; commit: string }; prepare?: true; attempt?: string; adopt?: string; promptHas?: string[];
     cancelled?: string[]; absent?: string[]; expect: Record<string, unknown>; state?: Record<string, unknown>;
   }
+  | { kind: 'host'; name: string; lease: string; on: 'branch' | 'start' | 'other' | 'foreign'; files?: Record<string, string> }
   | { kind: 'edit'; lease: string; files: Record<string, string> }
   | { kind: 'files'; lease?: string; expect: Record<string, string | null> }
   | { kind: 'respond'; step: string; choice: string; as?: DriverProfile; note?: string; pass?: number; json?: unknown; expect: Record<string, unknown> }
@@ -100,7 +106,7 @@ export type ConformanceOperation =
 
 const SavedLeaseSchema = z.object({
   attempt: z.string(), revision: z.number(), step: z.string(), cwd: z.string().optional(), prompt: z.string().optional(),
-  workspace: z.object({ branch: z.string(), base: z.object({ commit: z.string() }) }).optional(),
+  workspace: z.object({ branch: z.string(), base: z.object({ commit: z.string() }), start: z.object({ commit: z.string() }) }).optional(),
 });
 type SavedLease = z.infer<typeof SavedLeaseSchema>;
 
@@ -157,18 +163,27 @@ export async function runConformanceScenario(scenario: ConformanceScenario, runn
     if (cwd === undefined) throw new Error(`Lease ${name} was not prepared`);
     return cwd;
   };
+  const hosts = new Map<string, string>();
+  const hostOf = (name: string): string => {
+    const dir = hosts.get(name);
+    if (dir === undefined) throw new Error(`No host operation made place ${name}`);
+    return dir;
+  };
   for (const operation of scenario.operations) {
     switch (operation.kind) {
       case 'next': {
         const profile = operation.as ?? 'local';
         const { can } = DRIVER_PROFILES[profile];
+        const prepare: NextPrepare | undefined = operation.prepare && operation.attempt !== undefined
+          ? { attempt: AttemptIdSchema.parse(attemptOf(operation.attempt)), ...(operation.adopt !== undefined ? { adopt: hostOf(operation.adopt) } : {}) }
+          : operation.prepare;
         const envelope = await client.next(runId, {
           driver: { ...profileDriver(profile), can: { ...can, ...operation.can, ...(operation.hitl !== undefined ? { hitl: operation.hitl } : {}) } },
           ...(operation.running ? { running: operation.running.map(attemptOf) } : {}),
           ...(operation.canTakeLease !== undefined ? { canTakeLease: operation.canTakeLease } : {}),
           ...(operation.claim !== undefined ? { claim: operation.claim } : {}),
           ...(operation.base ? { base: operation.base } : {}),
-        }, operation.prepare ? { prepare: true } : undefined);
+        }, prepare ? { prepare } : undefined);
         expect(envelope).toMatchObject(operation.expect);
         if (operation.state) expect(await runner.readRun(runId)).toMatchObject(operation.state);
         if ('data' in envelope && envelope.data.hitl) {
@@ -180,8 +195,28 @@ export async function runConformanceScenario(scenario: ConformanceScenario, runn
         if ('data' in envelope && envelope.data.lease) {
           const lease = SavedLeaseSchema.parse(envelope.data.lease);
           for (const text of operation.promptHas ?? []) expect(lease.prompt?.includes(text), `the prompt of ${operation.saveAs} has ${text}`).toEqual(true);
+          if (operation.attempt !== undefined) expect(lease.attempt, `next prepared the attempt of ${operation.attempt}`).toEqual(attemptOf(operation.attempt));
+          if (operation.adopt !== undefined) expect(lease.cwd, `the lease runs in host place ${operation.adopt}`).toEqual(hostOf(operation.adopt));
           leases.set(operation.saveAs, lease);
         }
+        break;
+      }
+      case 'host': {
+        const checkout = placeOf(undefined);
+        const workspace = leases.get(operation.lease)?.workspace;
+        if (!workspace) throw new Error(`Host place ${operation.name} needs lease ${operation.lease} with a workspace`);
+        const dir = path.join(path.dirname(checkout), 'hosts', operation.name);
+        await fs.mkdir(path.dirname(dir), { recursive: true });
+        const { branch, start: { commit } } = workspace;
+        const steps: Array<[string, string[]]> = operation.on === 'foreign'
+          ? [[path.dirname(dir), ['init', '-q', dir]], [dir, ['-c', 'user.name=Host', '-c', 'user.email=host@example.invalid', 'commit', '-q', '--allow-empty', '-m', 'host']]]
+          : [[checkout, ['worktree', 'add', '-q', ...{ branch: ['-b', branch], start: ['--detach'], other: ['-b', `host/${operation.name}`] }[operation.on], dir, commit]]];
+        for (const [cwd, args] of steps) {
+          const made = await git(cwd, args);
+          if (made.code !== 0) throw new Error(`git ${args.join(' ')} failed: ${made.stderr}`);
+        }
+        for (const [file, text] of Object.entries(operation.files ?? {})) await fs.writeFile(path.join(dir, file), text);
+        hosts.set(operation.name, dir);
         break;
       }
       case 'edit':

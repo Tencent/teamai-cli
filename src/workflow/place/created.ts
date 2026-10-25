@@ -3,7 +3,7 @@ import type { WorkspaceContract } from '../workspace.js';
 import { ensureWorktree, fetchMissingCommits, markSetup, removeWorktree, setupUnfinished, unrestoredCopy, worktreePath } from '../worktree.js';
 
 /** Each commit a lease starts from, merges, or restores agent files from, with the branch that holds it. */
-function leaseCommits(workspace: WorkspaceContract): Array<{ commit: string; branch?: string }> {
+export function leaseCommits(workspace: WorkspaceContract): Array<{ commit: string; branch?: string }> {
   const { base, start } = workspace;
   const startBranch = start.branch ?? (start.commit === base.commit ? base.ref : workspace.branch);
   return [{ commit: start.commit, branch: startBranch }, ...workspace.merge, { commit: workspace.configCommit, branch: base.ref }];

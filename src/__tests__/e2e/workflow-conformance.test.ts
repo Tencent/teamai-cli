@@ -9,6 +9,7 @@ import { runConformanceScenario, type ConformanceClient } from '../../workflow/c
 import {
   PLACE_CHECKOUT_FILES, workflowConformanceScenarios, workflowGitConformanceScenarios, workflowPlaceConformanceScenarios, type GitConformanceName,
 } from '../../workflow/conformance.js';
+import type { NextPrepare } from '../../workflow/protocol.js';
 import type { StepState } from '../../workflow/step-state.js';
 import type { RunState, WorkflowEnvelope } from '../../workflow/types.js';
 import type { WorkspaceContract } from '../../workflow/workspace.js';
@@ -98,6 +99,13 @@ describe('workflow protocol conformance through the CLI', () => {
   }
 });
 
+/** The `next` flags that ask for `prepare`. */
+function prepareArgs(prepare: NextPrepare | undefined): string[] {
+  if (prepare === undefined) return [];
+  if (prepare === true) return ['--prepare'];
+  return ['--prepare', '--attempt', prepare.attempt, ...(prepare.adopt !== undefined ? ['--adopt', prepare.adopt] : [])];
+}
+
 /** `relative` in the data home of the one project `home` has, undefined when it has no such file. */
 function fileUnder(home: string, relative: string): string | undefined {
   const projects = path.join(home, '.teamai', 'projects');
@@ -159,7 +167,7 @@ describe('workflow place conformance through the CLI', () => {
       };
       const client: ConformanceClient = {
         start: (name) => call(['start', name]),
-        next: (run, body, options) => call(['next', run, ...(options?.prepare ? ['--prepare'] : []), '--json', JSON.stringify(body)]),
+        next: (run, body, options) => call(['next', run, ...prepareArgs(options?.prepare), '--json', JSON.stringify(body)]),
         report: (run, body) => call(['report', run, '--json', JSON.stringify(body)]),
         respond: (run, step, choice, options) => call(['respond', run, step, choice, ...(options?.note !== undefined ? ['--note', options.note] : []), ...(options?.pass !== undefined ? ['--pass', String(options.pass)] : []), ...(options?.json !== undefined ? ['--json', JSON.stringify(options.json)] : [])]),
         retry: (run, step) => call(['retry', run, step]),

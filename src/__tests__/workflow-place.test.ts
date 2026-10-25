@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import YAML from 'yaml';
+import { z } from 'zod';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { resolveWorkflowEnv } from '../env-resolution.js';
 import type { LocalConfig } from '../types.js';
@@ -14,7 +15,7 @@ import { pull } from '../pull.js';
 import { pendingRecords } from '../workflow/records.js';
 import { findRunConfig } from '../workflow/run-location.js';
 import { cancelRun } from '../workflow/run-controls.js';
-import { readRun } from '../workflow/store.js';
+import { AttemptIdSchema, readRun } from '../workflow/store.js';
 
 vi.mock('../pull.js', () => ({ pull: vi.fn() }));
 /** The git steps of a prepare to kill the process after, each once. */
@@ -251,6 +252,82 @@ steps:
     expect(await f.client.report(f.runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: f.driver })).toMatchObject({ error: { code: 'lease_cancelled' } });
     expect(git(f.work, 'rev-parse', lease.workspace.branch)).toBe(before);
     expect(fs.readFileSync(path.join(lease.cwd, 'code.txt'), 'utf8')).toBe('preserve me');
+  });
+});
+
+describe('places the host made', () => {
+  const SETUP = (command: string) => `schemaVersion: v1alpha1
+name: build
+description: Build in a set-up place the host makes.
+alias: ship
+setup:
+  command: ${command}
+steps:
+  - id: build
+    workspace: new
+    prompt: Build it.
+`;
+  const LeaseSchema = z.object({ attempt: AttemptIdSchema, revision: z.number(), workspace: z.object({ branch: z.string(), start: z.object({ commit: z.string() }) }) });
+  const body = (f: Awaited<ReturnType<typeof fixture>>) => ({ driver: { ...f.driver, can: { hitl: true, setup: true, workspace: ['read-only', 'new', 'continue'] } } });
+  /** A lease the run gives without preparing it, and a place for it the host makes with `git worktree add` and `args`. */
+  async function leased(f: Awaited<ReturnType<typeof fixture>>) {
+    const answer = await f.client.next(f.runId, body(f));
+    if (!('data' in answer) || !answer.data.lease) throw new Error(JSON.stringify(answer));
+    const lease = LeaseSchema.parse(answer.data.lease);
+    const host = (name: string, ...args: string[]): string => {
+      const dir = path.join(path.dirname(f.work), 'hosts', name);
+      git(f.work, 'worktree', 'add', '-q', ...args, dir, lease.workspace.start.commit);
+      return dir;
+    };
+    return { ...lease, host };
+  }
+  const setupRan = (dir: string): boolean => fs.existsSync(path.resolve(dir, git(dir, 'rev-parse', '--git-path', 'setup-ran')));
+
+  it('gives a place detached at the start the lease\'s branch, runs setup there, and leaves it after the step', async () => {
+    const f = await fixture(SETUP('touch "$(git rev-parse --git-path setup-ran)"'));
+    const lease = await leased(f);
+    const dir = lease.host('detached', '--detach');
+    expect(await f.client.next(f.runId, body(f), { prepare: { attempt: lease.attempt, adopt: dir } })).toMatchObject({ data: { lease: { attempt: lease.attempt, cwd: dir } } });
+    expect(git(dir, 'symbolic-ref', '--short', 'HEAD')).toBe(lease.workspace.branch);
+    expect(setupRan(dir)).toBe(true);
+    fs.writeFileSync(path.join(dir, 'code.txt'), 'adopted\n');
+    expect(await f.client.report(f.runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: f.driver })).toMatchObject({ data: { accepted: true, cleanup: true } });
+    expect(git(f.remote, 'show', `${lease.workspace.branch}:code.txt`)).toBe('adopted');
+    expect(git(dir, 'status', '--porcelain')).toBe('');
+  });
+
+  it('keeps a place whose setup failed, with the branch agent files back', async () => {
+    const f = await fixture(SETUP('exit 3'));
+    const lease = await leased(f);
+    const dir = lease.host('failing', '-b', lease.workspace.branch);
+    fs.writeFileSync(path.join(dir, 'AGENTS.md'), 'Host instructions.\n');
+    git(dir, 'commit', '-qam', 'host instructions');
+    expect(await f.client.next(f.runId, body(f), { prepare: { attempt: lease.attempt, adopt: dir } })).toMatchObject({ error: { code: 'setup_failed' } });
+    expect(fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf8')).toBe('Host instructions.\n');
+    expect(git(dir, 'status', '--porcelain')).toBe('');
+  });
+
+  it('refuses a second place for an attempt it adopted one for, and a prepare without --adopt answers with the first', async () => {
+    const f = await fixture();
+    const lease = await leased(f);
+    const first = lease.host('first', '-b', lease.workspace.branch);
+    expect(await f.client.next(f.runId, body(f), { prepare: { attempt: lease.attempt, adopt: first } })).toMatchObject({ data: { lease: { cwd: first } } });
+    const second = lease.host('second', '--detach');
+    expect(await f.client.next(f.runId, body(f), { prepare: { attempt: lease.attempt, adopt: second } }))
+      .toMatchObject({ error: { code: 'adopt_mismatch', message: expect.stringContaining(`already prepared in ${first}`) } });
+    expect(await f.client.next(f.runId, body(f), { prepare: { attempt: lease.attempt } })).toMatchObject({ data: { lease: { attempt: lease.attempt, cwd: first } } });
+  });
+
+  it('refuses a place on the lease\'s branch whose history lacks the start, and the attempt stays leased', async () => {
+    const f = await fixture();
+    const lease = await leased(f);
+    const dir = lease.host('orphan', '--detach');
+    git(dir, 'checkout', '-q', '--orphan', lease.workspace.branch);
+    git(dir, 'commit', '-qm', 'unrelated');
+    expect(await f.client.next(f.runId, body(f), { prepare: { attempt: lease.attempt, adopt: dir } }))
+      .toMatchObject({ error: { code: 'adopt_mismatch', message: expect.stringContaining(`does not contain ${lease.workspace.start.commit}`) } });
+    const run = await readRun(f.config, f.runId);
+    expect(typeof run === 'object' && run.steps.find((step) => step.id === 'change.write')?.status).toBe('leased');
   });
 });
 

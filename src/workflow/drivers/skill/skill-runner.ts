@@ -156,7 +156,8 @@ async function prepare(context: SkillContext, lock: RunLock, attempt: AttemptId)
     return failed({ code: 'run_unreadable', message: `The lease of attempt ${attempt} was not saved where its runner reads it, so the step did not run. Retry it with teamai workflow retry ${lock.run} ${open.step}.` });
   }
   const prepared = await context.client.prepare(lock, job.raw);
-  if (prepared.kind === 'failed') return failed(prepared.failure);
+  // Nothing this runner prepares is adopted, so nothing is refused.
+  if (prepared.kind === 'failed' || prepared.kind === 'refused') return failed(prepared.failure);
   if (prepared.kind === 'busy') {
     const queued = take(context, state, { kind: 'place-busy', attempt, behind: prepared.behind });
     if (queued?.state) await writeSkillState(context.config, lock, queued.state, context.env.secrets);

@@ -1,4 +1,4 @@
-import { PARALLEL_ROOTS, controlsYaml, type ConformanceOperation, type ConformanceScenario } from './conformance-interpreter.js';
+import { PARALLEL_ROOTS, controlsYaml, type ConformanceOperation, type ConformanceScenario, type DriverProfile } from './conformance-interpreter.js';
 import { limitsConformanceScenarios } from './limits-conformance.js';
 
 const TWO_STEPS = `schemaVersion: v1alpha1
@@ -919,7 +919,81 @@ const conflictingSides: ConformanceOperation[] = [
  * prepared its lease. The runner starts the run in a git checkout holding `PLACE_CHECKOUT_FILES`, whose origin is a
  * bare repository, and a runner through the CLI gives every call a temporary directory of its own.
  */
+const TWO_WRITERS = `schemaVersion: v1alpha1
+name: build
+description: Two changes, each in a copy of its own.
+steps:
+  - id: work
+    workspace: new
+    prompt: Change the code.
+  - id: more
+    needs: []
+    workspace: new
+    prompt: Change more code.
+`;
+
+/** A driver that took a lease prepares that attempt later, and only that attempt. */
+function prepareLeasedAttempt(profile: DriverProfile): ConformanceScenario {
+  return {
+    name: `prepare-leased-attempt (${profile}): next --prepare --attempt prepares the attempt it names, never another, and refuses one the run no longer leases`,
+    workflowName: 'build',
+    yaml: TWO_WRITERS,
+    operations: [
+      { kind: 'next', saveAs: 'work', as: profile, absent: ['cwd'], expect: { data: { lease: { step: 'work' } } } },
+      { kind: 'next', saveAs: 'more', as: profile, running: ['work'], absent: ['cwd'], expect: { data: { lease: { step: 'more' } } } },
+      { kind: 'next', saveAs: 'work', as: profile, prepare: true, attempt: 'work', expect: { data: { lease: { step: 'work' } } } },
+      { kind: 'edit', lease: 'work', files: { 'code.txt': 'prepared\n' } },
+      { kind: 'report', lease: 'work', as: profile, body: { outcome: 'success' }, expect: { data: { accepted: true, cleanup: true } } },
+      { kind: 'files', lease: 'work', expect: { 'code.txt': null } },
+      {
+        kind: 'next', saveAs: 'reported', as: profile, prepare: true, attempt: 'work', expect: { error: { code: 'wrong_attempt' } },
+        state: { steps: [{ id: 'work', status: 'succeeded' }, { id: 'more', status: 'leased' }] },
+      },
+    ],
+    expectPushed: { work: { 'code.txt': 'prepared\n' } },
+  };
+}
+
+const ONE_WRITER = `schemaVersion: v1alpha1
+name: build
+description: One change in a place the host makes.
+steps:
+  - id: work
+    workspace: new
+    prompt: Change the code.
+`;
+
+/** A host makes the place of a leased attempt, and TeamAI adopts it, or refuses it and keeps the attempt leased. */
+function adoptHostPlace(profile: DriverProfile): ConformanceScenario {
+  const refused = (adopt: string): ConformanceOperation => ({
+    kind: 'next', saveAs: 'work', as: profile, prepare: true, attempt: 'work', adopt,
+    expect: { error: { code: 'adopt_mismatch' } }, state: { steps: [{ id: 'work', status: 'leased' }] },
+  });
+  return {
+    name: `adopt-host-place (${profile}): a host worktree on the lease's branch is adopted, reported with its changes and left after cleanup; a wrong branch, a dirty tree and another repository answer adopt_mismatch, and the attempt stays leased`,
+    workflowName: 'build',
+    yaml: ONE_WRITER,
+    operations: [
+      { kind: 'next', saveAs: 'work', as: profile, absent: ['cwd'], expect: { data: { lease: { step: 'work' } } } },
+      { kind: 'host', name: 'other', lease: 'work', on: 'other' },
+      refused('other'),
+      { kind: 'host', name: 'dirty', lease: 'work', on: 'start', files: { 'stray.txt': 'stray\n' } },
+      refused('dirty'),
+      { kind: 'host', name: 'foreign', lease: 'work', on: 'foreign' },
+      refused('foreign'),
+      { kind: 'host', name: 'host', lease: 'work', on: 'branch' },
+      { kind: 'next', saveAs: 'work', as: profile, prepare: true, attempt: 'work', adopt: 'host', expect: { data: { lease: { step: 'work' } } } },
+      { kind: 'files', lease: 'work', expect: { 'AGENTS.md': 'Trusted base instructions.\n' } },
+      { kind: 'edit', lease: 'work', files: { 'code.txt': 'adopted\n' } },
+      { kind: 'report', lease: 'work', as: profile, body: { outcome: 'success' }, expect: { data: { accepted: true, cleanup: true } } },
+      { kind: 'files', lease: 'work', expect: { 'code.txt': 'adopted\n' } },
+    ],
+    expectPushed: { work: { 'code.txt': 'adopted\n' } },
+  };
+}
+
 export const workflowPlaceConformanceScenarios: ConformanceScenario[] = [
+  ...(['local', 'session', 'external'] as const).flatMap((profile) => [prepareLeasedAttempt(profile), adoptHostPlace(profile)]),
   {
     name: 'a prepared lease is reported from another process, which commits and pushes its changes and puts the branch agent files back',
     workflowName: 'build',

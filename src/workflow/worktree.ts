@@ -124,6 +124,14 @@ async function hideTeamaiWorktrees(main: string): Promise<void> {
   await fs.appendFile(exclude, `${current.endsWith('\n') || current === '' ? '' : '\n'}${marker}\n.teamai/workflow-worktrees/\n.teamai/workflow-hooks/\n`);
 }
 
+/** The git directory every worktree of the repository at `dir` shares. */
+export async function commonDir(dir: string): Promise<string | undefined> {
+  const printed = await git(dir, ['rev-parse', '--path-format=absolute', '--git-common-dir']);
+  if (printed.code !== 0) return undefined;
+  const common = printed.stdout.trim();
+  return fs.realpath(common).catch(() => common);
+}
+
 export function hooksPath(main: string): string {
   return path.join(main, '.teamai', 'workflow-hooks');
 }
@@ -157,7 +165,7 @@ export async function ensureWorktree(main: string, branch: string, start: string
     }
     const on = await offBranch(dir, branch);
     if (on) return { error: `Workspace ${dir} is ${on}, not on branch ${branch}. Check out ${branch} in ${dir}, then retry the step.` };
-    await worktreeHooks(main, dir, hooks);
+    await worktreeHooks(dir, hooks);
     return { dir, created: false };
   }
   await fs.mkdir(path.dirname(dir), { recursive: true });
@@ -167,7 +175,7 @@ export async function ensureWorktree(main: string, branch: string, start: string
     ? await git(main, [...config, 'worktree', 'add', dir, branch])
     : await git(main, [...config, 'worktree', 'add', '-b', branch, dir, start]);
   if (created.code !== 0) return { error: created.stderr.trim() || created.stdout.trim() || 'git worktree add failed' };
-  await worktreeHooks(main, dir, hooks);
+  await worktreeHooks(dir, hooks);
   return { dir, created: true };
 }
 
@@ -235,8 +243,10 @@ export async function reconcileCopy(main: string, branch: string, expected: stri
 }
 
 /** Points this worktree's hooks at `hooks` without changing the active checkout's hooks. */
-async function worktreeHooks(main: string, dir: string, hooks: string): Promise<void> {
-  await git(main, ['config', 'extensions.worktreeConfig', 'true']);
+/** Points the hooks of worktree `dir` at `hooks`, an empty directory, so no hook of the repository runs in a step's git. */
+export async function worktreeHooks(dir: string, hooks: string): Promise<void> {
+  // Set in the configuration every worktree of the repository shares.
+  await git(dir, ['config', 'extensions.worktreeConfig', 'true']);
   await git(dir, ['config', '--worktree', 'core.hooksPath', hooks]);
 }
 

@@ -362,7 +362,7 @@ async function stageLease(lease: Lease, { config, lock, root, values, signal }: 
     lease.processEnv = scoped.env;
   }
   const prepared = await preparePlace({ config, lock, root, lease: placeLease(lease) });
-  if (prepared.kind === 'failed') return prepared.failure;
+  if (prepared.kind !== 'prepared') return prepared.failure;
   lease.cwd = prepared.dir;
   if (prepared.prompt !== undefined) lease.prompt = prepared.prompt;
   return runPlaceSetup({ config, run: lock.run, attempt: lease.attempt, values, ...(signal ? { signal } : {}) });
