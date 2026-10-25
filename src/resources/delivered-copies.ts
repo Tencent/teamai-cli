@@ -8,6 +8,7 @@ import { fileHash, listFilesRecursive } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { resolveReal } from '../utils/path-safety.js';
 import { historicalVersions, matchesHistory, readBlob } from '../utils/team-history.js';
+import { isUneditedGeneratedSkill } from '../workflow/discovery/generated-marker.js';
 import { warnOnce } from '../utils/warn-once.js';
 
 /**
@@ -308,6 +309,8 @@ export async function isTeamaiSkillCopy(
 ): Promise<boolean> {
   // A link in place of the directory, or any non-regular entry inside it, is the member's.
   if (await isLink(dir) || !await isDirectory(dir) || await holdsNonRegular(dir) || await holdsGitDir(dir)) return false;
+  // A skill pull generated from a workflow, untouched since: teamai's by its own marker, not by the team history.
+  if (await isUneditedGeneratedSkill(dir)) return true;
   // A CONTRIBUTORS file too: teamai's only on the same proof, never by its name.
   for (const rel of await listFilesRecursive(dir)) {
     const file = path.join(dir, rel);

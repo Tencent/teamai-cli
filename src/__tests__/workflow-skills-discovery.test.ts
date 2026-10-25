@@ -8,6 +8,8 @@ import { deployWorkflowSkills, shadowedWorkflowSkills } from '../workflow/discov
 import { readGenerated } from '../workflow/discovery/generated-marker.js';
 import { log } from '../utils/logger.js';
 import { createDeliveryRecorder, type DeliveryRecorder } from '../git-exclude-delivered.js';
+import { isTeamaiSkillCopy } from '../resources/delivered-copies.js';
+import { skillOrigin } from '../resources/skills.js';
 
 const workflow = (name: string, invoke: string, extra = '') => `schemaVersion: v1alpha1
 name: ${name}
@@ -49,7 +51,8 @@ async function team(workflows: Record<string, string>, tools: TeamaiConfig['tool
     await syncWorkflowDefinitions(localConfig);
   };
   const skill = (name: string) => path.join(home, '.claude', 'skills', `workflow-${name}`, 'SKILL.md');
-  return { deploy: (recorder?: DeliveryRecorder) => deployWorkflowSkills({ teamConfig, localConfig, recorder }), skill, home, put, shadowed: () => shadowedWorkflowSkills({ teamConfig, localConfig }) };
+  const owned = (name: string) => isTeamaiSkillCopy(path.dirname(skill(name)), skillOrigin(repo, `workflow-${name}`));
+  return { owned, deploy: (recorder?: DeliveryRecorder) => deployWorkflowSkills({ teamConfig, localConfig, recorder }), skill, home, put, shadowed: () => shadowedWorkflowSkills({ teamConfig, localConfig }) };
 }
 
 describe('generated workflow skills', () => {
@@ -99,7 +102,7 @@ describe('generated workflow skills', () => {
     await deploy();
     expect(fs.readFileSync(skill('check'), 'utf8')).toBe('---\nname: workflow-check\ndescription: Our own.\n---\nMine.\n');
     expect(fs.readFileSync(skill('build'), 'utf8')).toBe(edited);
-    const shadowedLine = `${path.dirname(skill('check'))} is a skill teamai did not generate, so agents read it in place of the generated skill of workflow check (claude). Rename or remove it to receive the generated one.`;
+    const shadowedLine = `${path.dirname(skill('check'))} is a skill teamai did not generate, so agents read it in place of the generated skill of workflow check (claude). To receive the generated skill, rename or remove that skill, in the team repository when the team ships it.`;
     expect(await shadowed()).toEqual([shadowedLine]);
     expect(warn.mock.calls.map(([message]) => message)).toEqual(expect.arrayContaining([
       shadowedLine,
@@ -178,5 +181,13 @@ describe('generated workflow skills', () => {
     await deploy();
     expect(fs.readFileSync(skill('check'), 'utf8')).toContain('allowed-tools: Bash(teamai workflow start check --driver skill:*), Bash(npx teamai-cli workflow start check --driver skill:*)\n');
     for (const name of ['check', 'a', 'b']) expect(fs.readFileSync(skill(name), 'utf8')).not.toContain('Alias:');
+  });
+
+  it('lets a team skill of the same name replace an unedited generated skill, and nothing else of it', async () => {
+    const { deploy, skill, owned } = await team({ check: workflow('check', 'allow'), build: workflow('build', 'allow'), lint: workflow('lint', 'allow') });
+    await deploy();
+    fs.appendFileSync(skill('build'), 'Mine.\n');
+    fs.writeFileSync(path.join(path.dirname(skill('lint')), 'notes.md'), 'Mine.\n');
+    expect([await owned('check'), await owned('build'), await owned('lint')]).toEqual([true, false, false]);
   });
 });

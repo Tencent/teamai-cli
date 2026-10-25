@@ -87,7 +87,7 @@ async function generatedAt(dir: string): Promise<{ name: string; edited: boolean
 }
 
 function shadowed({ tool, workflow, dir }: Pick<Placement, 'tool' | 'workflow' | 'dir'>): string {
-  return `${dir} is a skill teamai did not generate, so agents read it in place of the generated skill of workflow ${workflow} (${tool}). Rename or remove it to receive the generated one.`;
+  return `${dir} is a skill teamai did not generate, so agents read it in place of the generated skill of workflow ${workflow} (${tool}). To receive the generated skill, rename or remove that skill, in the team repository when the team ships it.`;
 }
 
 function keptEdited(file: string, workflow: string, advertised: boolean): string {

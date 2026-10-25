@@ -5,8 +5,9 @@
  * pull needs before it rewrites or removes it.
  */
 import { createHash } from 'node:crypto';
+import fs from 'node:fs/promises';
 import path from 'node:path';
-import { readFileIfExists } from '../../utils/fs.js';
+import { readFileIfExists, readFileSafe } from '../../utils/fs.js';
 
 const MARKER = /^( {2}teamai-generated: )(.*)$/m;
 const VALUE = /^workflow\/([A-Za-z0-9][A-Za-z0-9._-]*) sha256:([0-9a-f]{64})$/;
@@ -41,4 +42,13 @@ export async function generatedWorkflowOf(skillDir: string): Promise<string | nu
   const content = await readFileIfExists(path.join(skillDir, 'SKILL.md'));
   const generated = content === null ? null : readGenerated(content);
   return generated?.kind === 'ours' ? generated.name : null;
+}
+
+/** Whether `skillDir` holds nothing but a generated SKILL.md as pull wrote it, so pull may replace or remove it. */
+export async function isUneditedGeneratedSkill(skillDir: string): Promise<boolean> {
+  const entries = await fs.readdir(skillDir).catch(() => null);
+  if (entries === null || entries.length !== 1 || entries[0] !== 'SKILL.md') return false;
+  const content = await readFileSafe(path.join(skillDir, 'SKILL.md'));
+  const generated = content === null ? null : readGenerated(content);
+  return generated?.kind === 'ours' && !generated.edited;
 }
