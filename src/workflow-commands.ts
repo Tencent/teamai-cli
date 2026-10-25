@@ -16,6 +16,7 @@ import { inProcessClient, type NextPrepare } from './workflow/protocol.js';
 import { parseSkillCall, runSkillCall, skillContext } from './workflow/drivers/skill/skill-driver.js';
 import { loadCachedWorkflow } from './workflow/cache.js';
 import { findRunConfig } from './workflow/run-location.js';
+import { resolveRunMode } from './launch-context.js';
 import { agentEvidence, isAttemptRunner, nestedCall, nestedStart, nestedWorkflowError, type Nested } from './workflow/attempt-marker.js';
 import type { WorkflowEnvelope, WorkflowFailure } from './workflow/types.js';
 
@@ -204,7 +205,7 @@ export async function workflowStart(name: string, options: {
       return;
     }
   }
-  const caller = { evidence: agentEvidence(process.env), confirmed: options.confirmed === true };
+  const caller = { evidence: agentEvidence(process.env), confirmed: options.confirmed === true, mode: resolveRunMode(process.env) };
   const started = await inProcessClient({ config, env }).start(name, { inputs, checkout: process.cwd(), caller });
   if ('error' in started || options.driver !== 'local') {
     writeEnvelope(started, secrets);

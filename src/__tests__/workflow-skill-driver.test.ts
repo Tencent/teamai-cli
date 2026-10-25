@@ -364,6 +364,25 @@ describe('skill driver', () => {
     expect(fs.existsSync(path.join(getDataHome(harness.config), 'workflows', 'runs'))).toBe(false);
   });
 
+  it('refuses an unattended agent start of an invoke: ask workflow even with --confirmed, with the reason describe gives', async () => {
+    const gated = CHECK.replace('invoke: allow', 'invoke: ask');
+    const harness = await skillHarness({ check: gated });
+    roots.push(harness.root);
+    const session = { evidence: { kind: 'session', variable: 'CLAUDE_CODE_SESSION_ID' }, mode: 'unattended' } as const;
+    const described = await harness.call({ kind: 'describe', name: 'check' }, session);
+    if (!('data' in described) || !('describe' in described.data) || described.data.describe.ask.kind !== 'denied') throw new Error(JSON.stringify(described));
+    const { reason } = described.data.describe.ask;
+    expect(await harness.call({ kind: 'start', name: 'check', answers: { confirmed: true }, inputs: undefined }, session))
+      .toEqual({ error: { code: 'unattended_denied', message: reason, next: null } });
+    // The local driver's start, from the same session, is refused alike.
+    expect(await harness.context.client.start('check', { checkout: harness.work, caller: { evidence: session.evidence, confirmed: true, mode: 'unattended' } }))
+      .toEqual({ error: { code: 'unattended_denied', message: reason } });
+    expect(fs.existsSync(path.join(getDataHome(harness.config), 'workflows', 'runs'))).toBe(false);
+    // A person's terminal or a CI job without an agent starts it.
+    expect(await harness.context.client.start('check', { checkout: harness.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'unattended' } }))
+      .toMatchObject({ data: { run: expect.any(String) } });
+  });
+
   it('refuses a start from inside a workflow attempt, even of a workflow agents may start, and offers no describe to retry it', async () => {
     const harness = await skillHarness({ check: CHECK });
     roots.push(harness.root);
@@ -829,7 +848,7 @@ steps:
     // An older run whose pass another driver settled: it is open for judging, and a driver of any run would take it first.
     const external = { kind: 'external', machine: 'm2', workspace: '/w' };
     const engine = inProcessClient({ config: harness.config, env: harness.context.env });
-    const started = await engine.start('review', { caller: { evidence: { kind: 'none' }, confirmed: false } });
+    const started = await engine.start('review', { caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
     const other = 'data' in started ? String(started.data.run) : '';
     const next = await engine.next(other, { driver: external });
     const work = z.object({ attempt: z.string(), revision: z.number() }).parse('data' in next ? next.data.lease : undefined);
@@ -933,7 +952,7 @@ steps:
   it('points the person at the resume literal for a run it does not drive, and for one whose state it cannot read', async () => {
     const harness = await skillHarness({ check: CHECK });
     roots.push(harness.root);
-    const other = await harness.context.client.start('check', { checkout: harness.work, caller: { evidence: { kind: 'none' }, confirmed: false } });
+    const other = await harness.context.client.start('check', { checkout: harness.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
     if (!('data' in other) || typeof other.data.run !== 'string') throw new Error(JSON.stringify(other));
     const run = RunIdSchema.parse(other.data.run);
     expect(await harness.call({ kind: 'next', run, wait: false })).toEqual({ error: {

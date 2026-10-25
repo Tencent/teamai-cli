@@ -314,13 +314,13 @@ Workflow totals (runs, succeeded, failed, cumulative duration) are folded into `
 
 ## Run from a coding session
 
-A coding session, such as Claude Code or Codex, can run a team workflow for the person it works with. `invoke` in the workflow file says whether it may:
+A coding session, such as Claude Code or Codex, can run a team workflow for the person it works with. `invoke` in the workflow file says whether it may. It limits agents only:
 
-| `invoke` | An agent session |
-|---|---|
-| `allow` | Starts the workflow when the task matches. |
-| `ask` | Proposes it, and starts it once the person agrees. |
-| `deny`, the default | Cannot start it, with any driver. |
+| `invoke` | Agent session (any driver; `--driver skill` always counts) | A person's terminal, local driver | CI without an agent session, local driver | Sub-workflow |
+|---|---|---|---|---|
+| `allow` | Starts | Starts | Starts | Starts |
+| `ask` | Starts once the person agrees (describe, then `--confirmed`). Unattended: `denied`, also with `--confirmed` | Starts | Starts | Starts |
+| `deny`, the default | Refused | Starts | Starts | Starts |
 
 `alias` is an optional second name for `workflow start`, a single token. An alias that another workflow also uses, or takes as its name, starts nothing (`alias_conflict`). Start those workflows by name.
 
@@ -339,7 +339,7 @@ steps:
 
 teamai before 0.28.0 drops a workflow that sets `invoke` or `alias`, so members and CI jobs need 0.28.0 or later. `teamai review --branch` warns about each workflow that adds either key.
 
-A process runs inside an agent session when an agent's session variable, such as `CLAUDE_CODE_SESSION_ID`, is set. From there, `workflow start` of a `deny` workflow answers `invoke_denied`. The message names the command the person runs in their own terminal, and the `invoke` setting that lets agents start the workflow. An `ask` workflow answers `confirm_needed` without `--confirmed`, which the session adds once the person agreed. Both hold with every driver, and with no driver. `CI` exempts nothing: a CI job starts any workflow because it sets no session variable. A `workflow start --driver skill` counts as an agent's even when its host sets no such variable, since only a coding agent drives the skill driver.
+A process runs inside an agent session when an agent's session variable, such as `CLAUDE_CODE_SESSION_ID`, is set. From there, `workflow start` of a `deny` workflow answers `invoke_denied`. The message names the command the person runs in their own terminal, and the `invoke` setting that lets agents start the workflow. An `ask` workflow answers `confirm_needed` without `--confirmed`, which the session adds once the person agreed. In an unattended run (`TEAMAI_MODE=unattended`, or `CI`), it answers `unattended_denied`, also with `--confirmed`, since no person is there to agree. These hold with every driver, and with no driver. `CI` exempts nothing: a CI job starts any workflow because it sets no session variable. A `workflow start --driver skill` counts as an agent's even when its host sets no such variable, since only a coding agent drives the skill driver.
 
 No run starts or is driven from inside a step of another run. The process of a step carries `TEAMAI_WORKFLOW_ATTEMPT`: the local driver sets it for the commands it runs and the tools of its prompt steps, the skill driver for its runners and their commands, and every driver for setup. With it set, every `workflow` command that changes a run (`start`, `next`, `report`, `respond`, `retry`, `cancel`, `resume`, and `publish`) answers `nested_workflow`, except a skill driver runner's report of its own attempt. `start` also answers `nested_workflow` in a workflow worktree under `.teamai/workflow-worktrees`, and in a checkout on a `teamai/<run>/...` branch. The other commands still work there, since a step's child reports from its place. To run another workflow as part of a run, add it to the definition as a `workflow` step.
 

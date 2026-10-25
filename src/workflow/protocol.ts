@@ -87,12 +87,14 @@ export interface WorkflowClient {
 }
 
 /**
- * The process that asks to start a run: the evidence it carries that an agent runs it, and whether it passed
- * `--confirmed`, an agent's word that the person agreed to start the run, which teamai cannot verify.
+ * The process that asks to start a run: the evidence it carries that an agent runs it, whether it passed
+ * `--confirmed`, an agent's word that the person agreed to start the run, which teamai cannot verify, and its run mode:
+ * in an unattended one no person is there to agree.
  */
 export interface StartCaller {
   evidence: AgentEvidence;
   confirmed: boolean;
+  mode: RunMode;
 }
 
 /** What shows an agent runs the calling process, as the clause the `invoke` refusals end their first sentence with. */
@@ -116,9 +118,18 @@ export function invokeDeniedMessage(name: string, evidence: Exclude<AgentEvidenc
   return `Workflow "${name}" has invoke: deny, so no coding agent starts it, with any driver, and ${agentClause(evidence)}. The person can start it from their own terminal with teamai workflow start ${name} --driver local. To let agents start it, the team sets invoke: allow, or invoke: ask for a start after the person agrees, in workflows/${name}.yaml.`;
 }
 
+/** What `invoke: ask` needs, as an unattended run's refusal lists it. */
+export const INVOKE_ASK_NEED = 'the team asks that a person agree before it starts (invoke: ask)';
+
+/** Why an unattended run cannot start workflow `name`: `needs`, the list of what needs a person. */
+export function unattendedReason(name: string, needs: string): string {
+  return `Workflow ${name} needs a person, and this run is unattended (TEAMAI_MODE or CI says so): ${needs}. Start it from a session a person attends, or set TEAMAI_MODE=attended where one does.`;
+}
+
 /**
  * Why `caller` may not start `definition`: inside a workflow attempt nothing starts, and from an agent session
- * `invoke: deny` refuses every start, and `invoke: ask` one without the person's yes. Undefined for a process without
+ * `invoke: deny` refuses every start, and `invoke: ask` one without the person's yes, and every one in an unattended
+ * run, where `--confirmed` vouches for a person who is not there. Undefined for a process without
  * agent evidence, such as the person's terminal or CI, and for a session's start of a workflow the cache lacks, which
  * the start answers.
  */
@@ -134,6 +145,7 @@ function startRefusal(definition: WorkflowDefinition | undefined, caller: StartC
       if (definition === undefined) return undefined;
       const { name } = definition;
       const invoke = definition.invoke ?? 'deny';
+      if (invoke === 'ask' && caller.mode === 'unattended') return { code: 'unattended_denied', message: unattendedReason(name, INVOKE_ASK_NEED) };
       if (invoke === 'allow' || (invoke === 'ask' && caller.confirmed)) return undefined;
       return invoke === 'deny'
         ? { code: 'invoke_denied', message: invokeDeniedMessage(name, evidence) }

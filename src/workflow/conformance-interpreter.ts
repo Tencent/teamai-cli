@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
+import { resolveRunMode } from '../launch-context.js';
 import { agentEvidence } from './attempt-marker.js';
 import { commandOutputs, type NextPrepare, type WorkflowClient } from './protocol.js';
 import type { DriverCan } from './requirements.js';
@@ -181,7 +182,7 @@ export type ConformanceClient = Pick<WorkflowClient, 'next' | 'report' | 'retry'
 export function inProcessConformanceClient(client: WorkflowClient): ConformanceClient {
   return {
     start: (name, { env, confirmed, checkout } = {}) => client.start(name, {
-      ...(checkout !== undefined ? { checkout } : {}), caller: { evidence: agentEvidence({ ...process.env, ...env }), confirmed: confirmed === true },
+      ...(checkout !== undefined ? { checkout } : {}), caller: { evidence: agentEvidence({ ...process.env, ...env }), confirmed: confirmed === true, mode: resolveRunMode({ ...process.env, ...env }) },
     }),
     next: (runId, body, options) => client.next(runId, body, options),
     report: (runId, body, options) => client.report(runId, body, options),

@@ -779,7 +779,7 @@ workflowConformanceScenarios.push({
 const AGENT_SESSION = { CLAUDE_CODE_SESSION_ID: 'agent-1304' };
 
 workflowConformanceScenarios.push({
-  name: 'invoke-from-agent: an agent session cannot start a workflow without invoke with any driver, CI or not, and starts an invoke: ask one only with --confirmed; a process without agent evidence starts both',
+  name: 'invoke-from-agent: an agent session cannot start a workflow without invoke with any driver, CI or not, and starts an invoke: ask one only with --confirmed and never unattended; a process without agent evidence starts both',
   workflowName: 'build',
   yaml: controlsYaml('  - id: work\n    command: echo work'),
   workflows: { gated: 'schemaVersion: v1alpha1\nname: gated\ndescription: Starts after the person agrees.\ninvoke: ask\nsteps:\n  - id: work\n    command: echo work\n' },
@@ -789,7 +789,8 @@ workflowConformanceScenarios.push({
     { kind: 'start', driver: 'skill', env: AGENT_SESSION, expect: { error: { code: 'invoke_denied' } } },
     { kind: 'start', driver: 'local', env: { ...AGENT_SESSION, CI: '1' }, expect: { error: { code: 'invoke_denied' } } },
     { kind: 'start', workflow: 'gated', env: AGENT_SESSION, expect: { error: { code: 'confirm_needed' } } },
-    { kind: 'start', workflow: 'gated', env: AGENT_SESSION, confirmed: true, expect: { data: {} } },
+    { kind: 'start', workflow: 'gated', env: { ...AGENT_SESSION, TEAMAI_MODE: 'unattended' }, confirmed: true, expect: { error: { code: 'unattended_denied' } } },
+    { kind: 'start', workflow: 'gated', env: { ...AGENT_SESSION, TEAMAI_MODE: 'attended' }, confirmed: true, expect: { data: {} } },
     { kind: 'start', workflow: 'gated', expect: { data: {} } },
     { kind: 'start', expect: { data: {} } },
   ],

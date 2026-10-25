@@ -64,7 +64,7 @@ describe('a report through the protocol', () => {
   it('changes only its own attempt: a sibling that waits to be delivered and one still leased stay as they were, and the revision moves by one', async () => {
     const { config, work, client } = await fixture({ three: THREE });
     const driver = { kind: 'external', machine: 'test', workspace: work, can: { workspace: ['read-only', 'new', 'continue'] } };
-    const started = await client.start('three', { checkout: work, caller: { evidence: { kind: 'none' }, confirmed: false } });
+    const started = await client.start('three', { checkout: work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
     if (!('data' in started)) throw new Error(JSON.stringify(started));
     const run = RunIdSchema.parse(started.data.run);
     const a = LeaseSchema.parse(await client.next(run, { driver, running: [] })).data.lease;

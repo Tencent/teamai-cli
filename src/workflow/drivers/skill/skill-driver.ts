@@ -286,7 +286,7 @@ async function start(call: Extract<SkillCall, { kind: 'describe' | 'start' }>, c
   }
   const planned = taken.start;
   const started = await context.client.start(description.name, {
-    ...(call.inputs !== undefined ? { inputs: call.inputs } : {}), checkout: context.cwd, caller: { evidence: context.evidence, confirmed: call.answers.confirmed },
+    ...(call.inputs !== undefined ? { inputs: call.inputs } : {}), checkout: context.cwd, caller: { evidence: context.evidence, confirmed: call.answers.confirmed, mode: context.mode },
   });
   if ('error' in started) {
     // No literal for a refusal no other answer fixes: a new describe would only lead back to it.

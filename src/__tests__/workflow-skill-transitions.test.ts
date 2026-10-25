@@ -682,7 +682,7 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     rows: ['R11'],
     run: async () => {
       const made = await harness({ check: CHECK });
-      const other = await made.context.client.start('check', { checkout: made.work, caller: { evidence: { kind: 'none' }, confirmed: false } });
+      const other = await made.context.client.start('check', { checkout: made.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
       if (!('data' in other) || typeof other.data.run !== 'string') throw new Error(JSON.stringify(other));
       expect(await made.call({ kind: 'next', run: RunIdSchema.parse(other.data.run), wait: false })).toMatchObject({ error: { code: 'not_skill_run', next: null } });
       return made.rows;

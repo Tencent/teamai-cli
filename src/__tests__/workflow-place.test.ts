@@ -70,7 +70,7 @@ steps:
   await syncWorkflowDefinitions(config);
   const env = await resolveWorkflowEnv(config);
   const client = inProcessClient({ config, env });
-  const started = await client.start('ship', { checkout: work, caller: { evidence: { kind: 'none' }, confirmed: false } });
+  const started = await client.start('ship', { checkout: work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
   if ('error' in started) throw new Error(started.error.message);
   return { config, env, client, work, remote, runId: String(started.data.run), driver: { kind: 'skill', machine: 'fixture', workspace: work } };
 }
@@ -533,7 +533,7 @@ describe.each(DRIVERS_UNDER_TEST)('workflow place conformance in process as %s',
       };
       const scenarioClient = inProcessConformanceClient(inner);
       const client: ConformanceClient = {
-        start: (name) => own(() => inner.start(name, { checkout, caller: { evidence: { kind: 'none' }, confirmed: false } })),
+        start: (name) => own(() => inner.start(name, { checkout, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } })),
         next: (run, body, options) => own(() => inner.next(run, body, options)),
         report: (run, body) => own(() => inner.report(run, body)),
         respond: (run, step, choice, options) => own(() => scenarioClient.respond(run, step, choice, options)),

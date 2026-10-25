@@ -76,7 +76,7 @@ const LeaseSchema = z.object({ attempt: z.string(), revision: z.number() }).pass
 
 async function leased(config: LocalConfig, checkout: string): Promise<{ run: RunLock['run']; attempt: string; revision: number; lease: z.infer<typeof LeaseSchema> }> {
   const client = await protocol(config);
-  const started = await client.start('check', { checkout, caller: { evidence: { kind: 'none' }, confirmed: false } });
+  const started = await client.start('check', { checkout, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
   if (!('data' in started)) throw new Error(JSON.stringify(started));
   const run = RunIdSchema.parse(started.data.run);
   const next = await client.next(run, { driver });
@@ -112,7 +112,7 @@ describe('workflow protocol in process', () => {
     const { config } = await fixture({ check: CHECK });
     const client = await protocol(config);
     const nested = { code: 'nested_workflow', message: "This process runs inside workflow attempt r0123456789abcdef/a0000000a (TEAMAI_WORKFLOW_ATTEMPT is set), so it cannot start or drive a workflow run. Do the step's own work here; to run another workflow as part of a run, add it to the definition as a workflow step." };
-    const caller = { evidence: { kind: 'attempt', attempt: 'r0123456789abcdef/a0000000a' }, confirmed: true } as const;
+    const caller = { evidence: { kind: 'attempt', attempt: 'r0123456789abcdef/a0000000a' }, confirmed: true, mode: 'attended' } as const;
     expect(await client.start('missing', { caller })).toEqual({ error: nested });
     expect(await client.respond('r0123456789abcdef', 'lint', 'yes', { via: { kind: 'process', caller: { tty: true, evidence: caller.evidence } } })).toEqual({ error: nested });
   });

@@ -3,7 +3,7 @@ import type { ToolName } from '../../../resources/agent-format.js';
 import { isLaunchTool, type LaunchTool } from '../../../tool-launch/tools.js';
 import type { LocalConfig } from '../../../types.js';
 import type { WorkflowDescription } from '../../describe.js';
-import type { Judging } from '../../protocol.js';
+import { INVOKE_ASK_NEED, unattendedReason, type Judging } from '../../protocol.js';
 import type { OutputSchema } from '../../types.js';
 import { localStartLiteral, startLiteral, type Invocation, type Literal } from './literals.js';
 import type { DescribeVerdict } from './transitions.js';
@@ -59,13 +59,13 @@ export function attendedReason(description: WorkflowDescription): string | undef
   const required = facts.gates.filter((gate) => gate.required);
   const open = facts.gates.filter((gate) => !gate.required && gate.kind === 'choose' && !gate.hasDefault);
   const needs = [
-    ...(description.invoke === 'ask' ? ['the team asks that a person agree before it starts (invoke: ask)'] : []),
+    ...(description.invoke === 'ask' ? [INVOKE_ASK_NEED] : []),
     ...(interactive.length > 0 ? [`${listOf(interactive)} ${interactive.length > 1 ? 'are' : 'is'} interactive, worked with a person`] : []),
     ...(required.length > 0 ? [`only a person can answer the ${gatesNoun(required)} at ${listOf(required.map((gate) => gate.step))}`] : []),
     ...(open.length > 0 ? [`the ${open.length > 1 ? 'choices' : 'choice'} at ${listOf(open.map((gate) => gate.step))} ${open.length > 1 ? 'have' : 'has'} no default, so --auto-approve leaves ${open.length > 1 ? 'them' : 'it'} to a person`] : []),
   ];
   if (needs.length === 0) return undefined;
-  return `Workflow ${name} needs a person, and this run is unattended (TEAMAI_MODE or CI says so): ${listOf(needs)}. Start it from a session a person attends, or set TEAMAI_MODE=attended where one does.`;
+  return unattendedReason(name, listOf(needs));
 }
 
 /** Checks a start of `description` against what describe asked. `ceiling` is the most steps the driver runs at once. */

@@ -314,13 +314,13 @@ Run id 是 `r` 加 16 位十六进制。此方案之前创建的运行用 8 位�
 
 ## 在编程会话中运行
 
-Claude Code、Codex 等编程会话可以替与它协作的人运行团队工作流。工作流文件中的 `invoke` 决定它能否这样做：
+Claude Code、Codex 等编程会话可以替与它协作的人运行团队工作流。工作流文件中的 `invoke` 决定它能否这样做。它只限制 agent：
 
-| `invoke` | agent 会话 |
-|---|---|
-| `allow` | 任务匹配时直接启动工作流。 |
-| `ask` | 先提议，本人同意后再启动。 |
-| `deny`（默认） | 用任何驱动都不能启动。 |
+| `invoke` | agent 会话（任何驱动；`--driver skill` 始终算作 agent） | 本人的终端，本地驱动 | 没有 agent 会话的 CI，本地驱动 | 子工作流 |
+|---|---|---|---|---|
+| `allow` | 启动 | 启动 | 启动 | 启动 |
+| `ask` | 本人同意后启动（先 describe，再 `--confirmed`）。无人值守时为 `denied`，带 `--confirmed` 也一样 | 启动 | 启动 | 启动 |
+| `deny`（默认） | 拒绝 | 启动 | 启动 | 启动 |
 
 `alias` 是 `workflow start` 可选的第二个名称，必须是单个 token。别名若与另一个工作流的别名或名称相同，就不启动任何工作流（`alias_conflict`）。请用名称启动这些工作流。
 
@@ -339,7 +339,7 @@ steps:
 
 0.28.0 之前的 teamai 会丢弃设置了 `invoke` 或 `alias` 的工作流，所以成员和 CI 任务需要 0.28.0 或更高版本。`teamai review --branch` 会对每个新增这两个键之一的工作流给出警告。
 
-设置了 agent 的会话变量（如 `CLAUDE_CODE_SESSION_ID`）的进程，就算在 agent 会话内运行。在这样的进程中，`workflow start` 启动 `deny` 工作流时返回 `invoke_denied`。消息会给出本人在自己终端运行的命令，以及让 agent 能启动该工作流的 `invoke` 设置。启动 `ask` 工作流时，没有 `--confirmed` 就返回 `confirm_needed`；会话在本人同意后加上它。两者对所有驱动都成立，不指定驱动时也一样。`CI` 不豁免任何东西：CI 任务能启动任何工作流，是因为它不设置会话变量。`workflow start --driver skill` 即使宿主没有设置这类变量也算 agent 发起，因为只有编码 agent 会驱动 skill 驱动。
+设置了 agent 的会话变量（如 `CLAUDE_CODE_SESSION_ID`）的进程，就算在 agent 会话内运行。在这样的进程中，`workflow start` 启动 `deny` 工作流时返回 `invoke_denied`。消息会给出本人在自己终端运行的命令，以及让 agent 能启动该工作流的 `invoke` 设置。启动 `ask` 工作流时，没有 `--confirmed` 就返回 `confirm_needed`；会话在本人同意后加上它。在无人值守的运行中（`TEAMAI_MODE=unattended` 或 `CI`），即使带 `--confirmed` 也返回 `unattended_denied`，因为没有人能同意。这些规则对所有驱动都成立，不指定驱动时也一样。`CI` 不豁免任何东西：CI 任务能启动任何工作流，是因为它不设置会话变量。`workflow start --driver skill` 即使宿主没有设置这类变量也算 agent 发起，因为只有编码 agent 会驱动 skill 驱动。
 
 运行的步骤内不能启动或驱动另一次运行。步骤的进程带有 `TEAMAI_WORKFLOW_ATTEMPT`：本地驱动为它运行的命令和提示词步骤的工具设置它，skill 驱动为它的 runner 及其命令设置它，所有驱动都为 setup 设置它。设置了它时，每个会改变运行的 `workflow` 命令（`start`、`next`、`report`、`respond`、`retry`、`cancel`、`resume` 和 `publish`）都返回 `nested_workflow`，只有 skill 驱动的 runner 上报它自己的 attempt 除外。在 `.teamai/workflow-worktrees` 下的工作流 worktree 中，以及在 `teamai/<run>/...` 分支上的检出中，`start` 也返回 `nested_workflow`。其他命令在那里仍然可用，因为步骤的子 agent 从它的位置上报。要让另一个工作流成为运行的一部分，把它作为 `workflow` 步骤加入定义。
 
