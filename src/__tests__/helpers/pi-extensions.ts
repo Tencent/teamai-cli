@@ -39,7 +39,9 @@ function register(source: string, context: Record<string, unknown>): Record<stri
 /** The generated Pi extension, whose `child_process.spawn` records each dispatch instead of running `teamai`. */
 export function loadPiExtension(stdoutFor: (args: string[]) => string = () => ''): LoadedExtension {
   const dispatches: ExtensionDispatch[] = [];
-  const spawn = (_command: string, args: string[]) => {
+  const spawn = (_command: string, argv: string[]) => {
+    // Node now receives the installed CLI entry before the dispatcher arguments.
+    const args = argv.slice(1);
     const child = new EventEmitter() as EventEmitter & { stdin: EventEmitter & { end: (s: string) => void }; stdout: EventEmitter; kill: () => void };
     child.stdout = new EventEmitter();
     child.stdin = Object.assign(new EventEmitter(), {

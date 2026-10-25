@@ -93,7 +93,7 @@ describe('Pi hook extension', () => {
   it('forwards cwd, prompt and tool payload through a child stdin pipe', () => {
     const src = buildPiExtensionSource();
     expect(src).toContain('["hook-dispatch", event, "--tool", "pi"]');
-    expect(src).toContain('shell: process.platform === "win32"');
+    expect(src).toContain('shell: false');
     expect(src).toContain('JSON.stringify({ cwd');
     expect(src.indexOf('child.stdin?.on("error"')).toBeLessThan(src.indexOf('child.stdin?.end(stdin)'));
     expect(src).toContain('child.stdin?.end(stdin)');
