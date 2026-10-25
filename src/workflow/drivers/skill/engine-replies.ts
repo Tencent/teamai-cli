@@ -57,7 +57,7 @@ export function engineReply(run: RunId, answer: WorkflowEnvelope): { reply: Engi
   }
   const read = readLease(lease);
   if (!read) {
-    return { reply: { kind: 'error', error: { code: 'run_unreadable', message: `Run ${run} leased a step the skill driver cannot run. Ask the person to continue it in a terminal with teamai workflow resume ${run}.` } }, cancelled };
+    return { reply: { kind: 'error', error: { code: 'run_unreadable', message: `Run ${run} leased a step this teamai cannot read. Update teamai.` } }, cancelled };
   }
   return { reply: { kind: 'lease', lease: read, raw: lease }, cancelled };
 }

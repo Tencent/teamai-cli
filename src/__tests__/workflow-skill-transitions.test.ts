@@ -736,6 +736,16 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     },
   },
   {
+    name: 'a lease this teamai cannot read answers run_unreadable, which an update of teamai fixes',
+    rows: ['D17'],
+    run: async () => {
+      const made = await harness({ check: CHECK }, { client: scriptedOnce(() => ({ next: async () => ({ data: { lease: { attempt: 'a0000000a', step: 'check' } } }) })) });
+      const answer = await made.call({ kind: 'start', name: 'check', answers: { confirmed: false }, inputs: undefined });
+      expect(answer).toMatchObject({ error: { code: 'run_unreadable', message: expect.stringMatching(/^Run r[0-9a-f]+ leased a step this teamai cannot read\. Update teamai\.$/) } });
+      return made.rows;
+    },
+  },
+  {
     name: 'a runner that never took its lock is started again',
     rows: ['C10'],
     run: async () => {
