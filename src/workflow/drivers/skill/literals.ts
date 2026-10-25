@@ -15,14 +15,6 @@ export function invocationOf(entry: string | undefined): Invocation {
   return entry !== undefined && /[\\/]_npx[\\/]/.test(entry) ? 'npx teamai-cli' : 'teamai';
 }
 
-/** The subcommands the teamai skill pre-approves. None of them can start a run: `--describe` comes before the name. */
-export const PREAPPROVED_WORKFLOW_SUBCOMMANDS = ['workflow start --describe', 'workflow next', 'workflow report', 'workflow respond'] as const;
-
-/** The `allowed-tools` patterns of `PREAPPROVED_WORKFLOW_SUBCOMMANDS`, in each invocation. */
-export function preapprovedPatterns(): string[] {
-  return INVOCATIONS.flatMap((invocation) => PREAPPROVED_WORKFLOW_SUBCOMMANDS.map((subcommand) => `Bash(${invocation} ${subcommand}:*)`));
-}
-
 /**
  * The patterns a generated `invoke: allow` skill adds, so the agent starts its workflow, by name or alias, without a
  * prompt. The trailing `--driver` keeps `ship` from matching `ship-issue`.
