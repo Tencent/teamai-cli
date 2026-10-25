@@ -83,7 +83,7 @@ export function recorded(client: ConformanceClient): { client: ConformanceClient
   return {
     envelopes,
     client: {
-      start: (name, options) => keep('start', client.start(name, options)),
+      start: (name, options) => keep('start', client.start(name, options).then((envelope) => (options?.driver === 'skill' ? withoutSkillNext(envelope) : envelope))),
       next: (runId, body, options) => keep('next', client.next(runId, body, options)),
       report: (runId, body, options) => keep('report', client.report(runId, body, options)),
       respond: (runId, step, choice, options) => keep('respond', client.respond(runId, step, choice, options)),
@@ -91,6 +91,13 @@ export function recorded(client: ConformanceClient): { client: ConformanceClient
       cancel: (runId, step) => keep('cancel', client.cancel(runId, step)),
     },
   };
+}
+
+/** The skill driver adds `next` to every error it answers through the CLI; the in-process client has no skill driver. */
+function withoutSkillNext(envelope: WorkflowEnvelope): WorkflowEnvelope {
+  if (!('error' in envelope) || !('next' in envelope.error)) return envelope;
+  const { next: _next, ...error } = envelope.error;
+  return { error };
 }
 
 /**
