@@ -60,18 +60,18 @@ export class Crash extends Error {}
 
 /** How many turns a settle waits for a runner to park before it fails, naming the runner, instead of hanging. */
 const SETTLE_TURNS = 5_000;
-/** How long a settle waits for a real command to exit on its own. */
+/** How long a settle waits for a real setup or command to end on its own. */
 const COMMAND_EXIT_MS = 10_000;
 
 /**
  * Runners in this process on a fake clock, which is also the engine's: `Date` follows it. A runner is the same
  * `report --driver skill --attempt` call the detached process makes, and it parks at each run lock it takes and each
  * sleep until the next `sleep` of the session, so a test sees each phase a real runner passes through: preparing, then
- * running, then reported. A command runs for real, and a session's sleep waits for it to exit; a test fakes one that
- * runs until it is stopped. A runner that throws `Crash` is gone, as a killed one is; any other error fails the next sleep.
+ * running, then reported. A setup or a command runs for real, and a session's sleep waits for it to end; a test fakes
+ * one that runs until it is stopped. A runner that throws `Crash` is gone, as a killed one is; any other error fails the next sleep.
  */
 function memoryRunners(command: Runners['command']): {
-  runners: Runners; track(runners: Runners): Runners; judging(client: WorkflowClient): WorkflowClient; now: () => Date; bind(context: SkillContext): void; hold(held: boolean): void; crash(run: string, attempt: string): boolean;
+  runners: Runners; track(runners: Runners): Runners; settingUp(client: WorkflowClient): WorkflowClient; judging(client: WorkflowClient): WorkflowClient; now: () => Date; bind(context: SkillContext): void; hold(held: boolean): void; crash(run: string, attempt: string): boolean;
 } {
   let clock = Date.now();
   vi.useFakeTimers({ toFake: ['Date'] });
@@ -88,7 +88,7 @@ function memoryRunners(command: Runners['command']): {
   const doomed = new Set<string>();
   const failures: unknown[] = [];
   const attemptOf = (id: string): string => id.slice(0, id.lastIndexOf('#'));
-  /** Every real command and judge still running, by what it runs. */
+  /** Every real setup, command and judge still running, by what it runs. */
   const commands = new Map<Promise<unknown>, string>();
   /** The stop of every command, real or faked, still running, by `<run>/<attempt>`. */
   const started = new Map<string, Set<CommandRun['stop']>>();
@@ -109,7 +109,7 @@ function memoryRunners(command: Runners['command']): {
         const late = new Promise<'late'>((resolve) => { timer = setTimeout(() => resolve('late'), COMMAND_EXIT_MS); });
         const exited = await Promise.race([Promise.all(commands.keys()), late]);
         clearTimeout(timer);
-        if (exited === 'late') throw new Error(`${[...commands.values()].join('; ')} did not exit within ${COMMAND_EXIT_MS} ms. Fake a command that runs until it is stopped with the harness's runners option.`);
+        if (exited === 'late') throw new Error(`${[...commands.values()].join('; ')} did not end within ${COMMAND_EXIT_MS} ms. Fake a setup or a command that runs until it is stopped with the harness's client or runners option.`);
       }
       const moving = [...live.keys()].filter((id) => !parked.has(id));
       if (moving.length === 0 && commands.size === 0 && turn > 0 && failures.length === 0) return;
@@ -135,6 +135,18 @@ function memoryRunners(command: Runners['command']): {
       },
       stopLeft: async (run, attempt) => {
         for (const stop of started.get(`${run}/${attempt}`) ?? []) await stop();
+      },
+    }),
+    /**
+     * Wraps the in-process client, so a settle waits for a real setup, as it waits for a real command. A test that fakes
+     * setup with the client option replaces this one.
+     */
+    settingUp: (client) => ({
+      ...client,
+      setup: (run, attempt, mode, signal) => {
+        const running = client.setup(run, attempt, mode, signal).finally(() => commands.delete(running));
+        commands.set(running, `The setup of ${run}/${attempt}`);
+        return running;
       },
     }),
     /** Wraps the client a test ends with, so a settle waits for a judge it runs, as it waits for a real command. */
@@ -296,7 +308,7 @@ export async function skillHarness(workflows: Record<string, string>, options: H
   const toolPaths = TeamaiConfigBaseSchema.shape.toolPaths.parse(undefined);
   const production = await skillContext({ config, toolPaths, env, cwd: work });
   const scheduler = memoryRunners(production.runners.command);
-  const client = inProcessClient({ config, env });
+  const client = scheduler.settingUp(inProcessClient({ config, env }));
   const rows: string[] = [];
   const context: SkillContext = {
     config, toolPaths, env, client: scheduler.judging(options.client ? options.client(client) : client), session: options.session ?? 'session-a', tool: 'claude', invocation: 'teamai', evidence: options.evidence ?? { kind: 'none' }, mode: options.mode ?? 'attended', cwd: work,

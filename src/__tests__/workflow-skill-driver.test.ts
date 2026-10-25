@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { LabelStore } from '../scorers/label-store.js';
 import { encodeCwdClaude } from '../session-flow/fs.js';
@@ -823,9 +823,9 @@ steps:
     workspace: new
     command: node -e "process.exit(0)"
 ` }, {
-      // The runner is killed once setup started, and setup runs on in its own process group.
+      // The runner is killed once setup started, and setup runs on in its own process group, which no sleep of the session waits for.
       client: (client) => ({ ...client, setup: async (run, attempt, mode) => {
-        setup = client.setup(run, attempt, mode);
+        setup = inProcessClient({ config: harness.config, env: harness.context.env }).setup(run, attempt, mode);
         for (let wait = 0; wait < 100 && !fs.existsSync(pidFile); wait += 1) await new Promise((resolve) => { setTimeout(resolve, 50); });
         throw new Crash('killed during setup');
       } }),
@@ -847,32 +847,31 @@ steps:
   });
 
   it('stops a setup that never ends once the run is cancelled, and never starts its command', async () => {
-    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-setup-hang-'));
-    const pidFile = path.join(scratch, 'sleep.pid');
-    const alive = (pid: number): boolean => { try { return process.kill(pid, 0); } catch { return false; } };
-    // A setup left running would outlive the test.
-    onTestFinished(() => {
-      const pid = fs.existsSync(pidFile) ? Number(fs.readFileSync(pidFile, 'utf8')) : undefined;
-      if (pid !== undefined && alive(pid)) process.kill(pid);
-      fs.rmSync(scratch, { recursive: true, force: true });
-    });
     const commands: string[] = [];
     const reports: string[] = [];
+    let stopped = false;
     const harness = await skillHarness({ build: `schemaVersion: v1alpha1
 name: build
 description: Build in a set-up workspace
 invoke: allow
 setup:
-  command: 'sleep 300 & echo $! > ${pidFile}; wait'
+  command: node -e "process.exit(0)"
 steps:
   - id: build
     workspace: new
     command: node -e "process.exit(0)"
 ` }, {
-      client: (client) => ({ ...client, report: async (runId, body, options) => {
-        reports.push(z.object({ outcome: z.string() }).parse(body).outcome);
-        return client.report(runId, body, options);
-      } }),
+      client: (client) => ({
+        ...client,
+        // A setup that never ends on its own, as one waiting on a service does: only its signal stops it.
+        setup: (_run, _attempt, _mode, signal) => new Promise((resolve) => {
+          signal?.addEventListener('abort', () => { stopped = true; resolve({ code: 'setup_failed', message: 'Setup was stopped.' }); }, { once: true });
+        }),
+        report: async (runId, body, options) => {
+          reports.push(z.object({ outcome: z.string() }).parse(body).outcome);
+          return client.report(runId, body, options);
+        },
+      }),
       runners: (runners) => ({ ...runners, command: (input) => { commands.push(input.command); return runners.command(input); } }),
     });
     roots.push(harness.root);
@@ -880,13 +879,11 @@ steps:
     if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
     const run = RunIdSchema.parse(started.data.turn.run);
     await harness.context.runners.sleep(1_000);
-    for (let wait = 0; wait < 100 && !fs.existsSync(pidFile); wait += 1) await new Promise((resolve) => { setTimeout(resolve, 50); });
-    const pid = Number(fs.readFileSync(pidFile, 'utf8'));
-    expect(alive(pid)).toBe(true);
+    expect(stopped).toBe(false);
 
     await harness.context.client.cancel(run);
     await eventsToDone(harness, run);
-    expect(alive(pid)).toBe(false);
+    expect(stopped).toBe(true);
     expect(commands).toEqual([]);
     expect(reports).toEqual(['released']);
     const stored = await readRun(harness.config, run);
