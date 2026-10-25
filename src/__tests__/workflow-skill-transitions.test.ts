@@ -334,6 +334,17 @@ steps:
 
 const SHIP_OPTIONAL = SHIP_AFTER.replace('approve: { message: Ship it?, required: true }', 'approve: Ship it?');
 
+// Only an optional approval: an unattended run answers it as --auto-approve does.
+const APPROVED = `schemaVersion: v1alpha1
+name: approved
+description: Lint once it is approved
+invoke: allow
+steps:
+  - id: lint
+    approve: Lint now?
+    command: node -e "process.exit(0)"
+`;
+
 // An approval beside a step this driver is held from: the engine answers the held step first.
 const SHIP_BESIDE = SHIP_AFTER.replace('needs: [go]', 'needs: []');
 
@@ -960,6 +971,31 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       // Only a coding agent drives --driver skill, so a host that sets no agent variable is refused alike.
       expect(await made.call({ kind: 'takeover', run: locked, confirmed: false }, { evidence: { kind: 'skill-driver' } }))
         .toMatchObject({ error: { code: 'invoke_denied', message: expect.stringContaining('this command uses --driver skill'), next: null } });
+      return made.rows;
+    },
+  },
+  {
+    name: 'an unattended resume or takeover decides as describe does: a run that needs a person is refused, and any other runs with its optional gates auto-approved',
+    rows: ['R24', 'R19'],
+    run: async () => {
+      const made = await harness({ release: RELEASE, approved: APPROVED }, { mode: 'unattended' });
+      const runOf = async (name: string): Promise<RunId> => {
+        const created = await made.context.client.start(name, { checkout: made.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
+        if (!('data' in created)) throw new Error(JSON.stringify(created));
+        return RunIdSchema.parse(created.data.run);
+      };
+      const release = await runOf('release');
+      expect(await made.call({ kind: 'resume', run: release, claim: false, confirmed: false, answers: {} })).toEqual({ error: {
+        code: 'unattended_denied',
+        message: 'Workflow release needs a person, and this run is unattended (TEAMAI_MODE or CI says so): only a person can answer the approval at go-live. Continue it from a session a person attends, or set TEAMAI_MODE=attended where one does.',
+        next: null,
+      } });
+      expect(await made.call({ kind: 'takeover', run: release, confirmed: false })).toMatchObject({ error: { code: 'unattended_denied', next: null } });
+      expect(fs.existsSync(skillStatePath(made.config, release))).toBe(false);
+      const approved = await runOf('approved');
+      expect(await turnOf(await made.call({ kind: 'resume', run: approved, claim: false, confirmed: false, answers: {} }))).toMatchObject({ run: approved, actions: [] });
+      expect(JSON.parse(fs.readFileSync(skillStatePath(made.config, approved), 'utf8'))).toMatchObject({ options: { hitl: 'auto-approve', mode: 'unattended' } });
+      expect(await polledToDone(made, approved)).toMatchObject({ actions: [{ kind: 'done', outcome: 'succeeded' }] });
       return made.rows;
     },
   },

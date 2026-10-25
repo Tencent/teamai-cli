@@ -37,10 +37,11 @@ export const TRANSITIONS = [
   { id: 'R9', state: 'none', input: 'start `--driver skill`', guard: '`checkStartAnswers` answers `confirm-needed`', effects: 'none', next: 'none', action: 'error `confirm_needed`, next: the describe literal' },
   { id: 'R10', state: 'none', input: 'start `--driver skill`', guard: '`checkStartAnswers` answers `ok`', effects: '`WorkflowClient.start`; write skill.json: identity `{skill, machine, run checkout}`, invocation, options (`--parallel`, the HITL mode, the caller\'s run mode), host `pending` when the definition has a prompt step, owner := the caller\'s session; judging on with the session tool when describe judges here and the start has no `--no-judge`', next: 'host when it has a prompt step, else drive', action: 'the turn of a tick' },
   { id: 'R11', state: 'none', input: 'next, report `--driver skill`', guard: 'this machine has no skill.json for the run', effects: 'none', next: 'none', action: 'error `not_skill_run`, next: the `resume <run> --driver skill` literal' },
-  { id: 'R19', state: 'any', input: 'resume `--driver skill`; `next --takeover` with no skill.json here', guard: '`WorkflowClient.resume` readied the run: it took a run this machine lacks, or with `--claim` one another install owns, or found the run here and this install its owner, and released each lease this machine\'s local driver left on it; no skill.json is kept here, or the claim installed the published state; R8 does not apply', effects: 'write skill.json as R10 does, with the caller\'s run mode and the options of `--parallel`, `--hitl` or `--auto-approve` and `--no-judge`, else a start\'s: one step at a time, HITL mode `person`', next: 'host when the run has a prompt step, else drive', action: 'the turn of a tick' },
+  { id: 'R19', state: 'any', input: 'resume `--driver skill`; `next --takeover` with no skill.json here', guard: '`WorkflowClient.resume` readied the run: it took a run this machine lacks, or with `--claim` one another install owns, or found the run here and this install its owner, and released each lease this machine\'s local driver left on it; no skill.json is kept here, or the claim installed the published state; R8 and R24 do not apply', effects: 'write skill.json as R10 does, with the caller\'s run mode and the options of `--parallel`, `--hitl` or `--auto-approve` and `--no-judge`, else a start\'s: one step at a time, HITL mode `person`, or `auto-approve` in an unattended run', next: 'host when the run has a prompt step, else drive', action: 'the turn of a tick' },
   { id: 'R20', state: 'any', input: 'R19\'s input', guard: '`WorkflowClient.resume` answers that another install owns the run (a resume without `--claim`, or a takeover), or that this machine lacks it (a takeover)', effects: 'none', next: 'unchanged', action: 'error `not_owner` or `run_not_found`, next: the `resume <run> --driver skill --claim` literal, run only when the person agrees' },
   { id: 'R21', state: 'any', input: 'R19\'s input', guard: '`WorkflowClient.resume` refuses the run otherwise: teamai-reports does not hold it or moved while it was claimed, its definition cannot be read here, or its copies cannot be brought to the commits it recorded', effects: 'none', next: 'unchanged', action: 'error with the refusal\'s code and message, next null' },
   { id: 'R22', state: 'any', input: 'resume `--driver skill`, `next --takeover`', guard: 'the caller is not the session skill.json here names as the run\'s owner, and `WorkflowClient.resumeRefusal` refuses it by the `invoke` of the run\'s own definition, as a start is refused: agent evidence (a session variable, or `--driver skill` itself), and `invoke: deny`, or `invoke: ask` without `--confirmed` or in an unattended run', effects: 'none', next: 'unchanged', action: 'error `invoke_denied`, `unattended_denied` or `confirm_needed`; next: for `confirm_needed` the same call with `--confirmed`, run only when the person agrees, else null' },
+  { id: 'R24', state: 'any', input: 'R19\'s input', guard: 'run mode `unattended`, R8, R20 and R21 do not apply, and `attendedReason` names what in the run\'s own definition needs a person, as R17\'s', effects: 'none', next: 'unchanged', action: 'error `unattended_denied` with that reason, next null; the run stays readied here' },
   { id: 'R12', state: 'host', input: 'tick', guard: '', effects: 'none', next: 'host', action: '`choose about:host decide:agent`' },
   { id: 'R13', state: 'host', input: 'next `--choice h`', guard: '', effects: 'host := `HOST_PROFILES[h]`', next: 'drive', action: 'the turn of a tick' },
   { id: 'R14', state: 'host', input: 'report, next `--ack` or `--adopt`', guard: '', effects: 'none', next: 'host', action: 'error `choice_pending`, next: the next literal' },
@@ -343,16 +344,18 @@ export interface ResumeAnswers { parallel?: number; hitl?: HitlMode; judge?: fal
 
 /**
  * The row of a resume, or of a takeover of a run this machine keeps no skill state of, once `WorkflowClient.resume`
- * answered `readied`: R20 or R21 when it refused the run, R8 for a run with a local route, else R19 and the run this
- * session drives anew. Undefined for a resume of a run whose skill state is `kept` here, as the claim installed nothing
- * over it: the session rows take the call as a `next`.
+ * answered `readied`: R20 or R21 when it refused the run, R8 for a run with a local route, R24 for an unattended run
+ * that needs a person, as `attended` says, else R19 and the run this session drives anew in run mode `mode`. Undefined
+ * for a resume of a run whose skill state is `kept` here, as the claim installed nothing over it: the session rows take
+ * the call as a `next`.
  */
-export function readiedRow(input: { run: RunId; readied: RunReadied; kept: boolean; local?: string; answers: ResumeAnswers }):
+export function readiedRow(input: { run: RunId; readied: RunReadied; kept: boolean; local?: string; mode: RunMode; attended?: string; answers: ResumeAnswers }):
   | { row: 'R19'; start: StartRun }
   | Answered<'R8' | 'R20'>
-  | Answered<'R21', Relayed>
+  | Answered<'R21' | 'R24', Relayed>
   | undefined {
   const { run, readied, answers } = input;
+  const unattended = input.mode === 'unattended';
   switch (readied.kind) {
     case 'not-owner':
       return { row: 'R20', answer: { kind: 'error', refusal: { code: 'not_owner', run, owner: readied.owner, since: readied.since } } };
@@ -364,10 +367,14 @@ export function readiedRow(input: { run: RunId; readied: RunReadied; kept: boole
       if (input.kept && !readied.installed) return undefined;
       const { description, judging } = readied;
       if (input.local !== undefined) return { row: 'R8', answer: { kind: 'error', refusal: { code: 'needs_local_driver', name: description.name, reason: input.local, run } } };
+      if (unattended && input.attended !== undefined) return { row: 'R24', answer: { kind: 'engine-error', error: { code: 'unattended_denied', message: input.attended }, next: null } };
       const judge = judging.kind === 'here' && answers.judge !== false ? judging.tool : undefined;
       return {
         row: 'R19',
-        start: { parallel: answers.parallel ?? 1, hitl: answers.hitl ?? 'person', host: description.facts.prompts.length > 0 ? 'pending' : 'none', ...(judge !== undefined ? { judge } : {}) },
+        start: {
+          parallel: answers.parallel ?? 1, hitl: answers.hitl ?? (unattended ? 'auto-approve' : 'person'), host: description.facts.prompts.length > 0 ? 'pending' : 'none',
+          ...(judge !== undefined ? { judge } : {}),
+        },
       };
     }
     default: {

@@ -325,7 +325,7 @@ async function start(call: Extract<SkillCall, { kind: 'describe' | 'start' }>, c
   const why = local !== undefined ? { local } : {};
   if (call.kind === 'describe') {
     const denied = description.invoke === 'deny' && context.evidence.kind !== 'none' ? { denied: invokeDeniedMessage(description.name, context.evidence, { kind: 'start' }) } : {};
-    const attended = attendedReason(description);
+    const attended = attendedReason(description, 'start');
     const { row, verdict } = describeRow({
       needed: neededAnswers(description), ...denied, ...(undeliverable ? { undeliverable: undeliverable.message } : {}), ...why, judgingHere: judging.kind === 'here',
       mode: context.mode, ...(attended !== undefined ? { attended } : {}),

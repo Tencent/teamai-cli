@@ -161,9 +161,11 @@ export function invokeDeniedMessage(name: string, evidence: Exclude<AgentEvidenc
 /** What `invoke: ask` needs, as an unattended run's refusal lists it. */
 export const INVOKE_ASK_NEED = 'the team asks that a person agree before it starts (invoke: ask)';
 
-/** Why an unattended run cannot start workflow `name`: `needs`, the list of what needs a person. */
-export function unattendedReason(name: string, needs: string): string {
-  return `Workflow ${name} needs a person, and this run is unattended (TEAMAI_MODE or CI says so): ${needs}. Start it from a session a person attends, or set TEAMAI_MODE=attended where one does.`;
+/** Why an unattended run cannot `act` on workflow `name`, start it or continue a run of it: `needs`, the list of what needs a person. */
+export function unattendedReason(name: string, needs: string, act: 'start' | 'continue'): string {
+  return act === 'start'
+    ? `Workflow ${name} needs a person, and this run is unattended (TEAMAI_MODE or CI says so): ${needs}. Start it from a session a person attends, or set TEAMAI_MODE=attended where one does.`
+    : `Workflow ${name} needs a person, and this run is unattended (TEAMAI_MODE or CI says so): ${needs}. Continue it from a session a person attends, or set TEAMAI_MODE=attended where one does.`;
 }
 
 /**
@@ -190,12 +192,12 @@ function invokeRefusal(definition: WorkflowDefinition | undefined, caller: Invok
       switch (act.kind) {
         case 'start':
           return caller.mode === 'unattended'
-            ? { code: 'unattended_denied', message: unattendedReason(name, INVOKE_ASK_NEED) }
+            ? { code: 'unattended_denied', message: unattendedReason(name, INVOKE_ASK_NEED, 'start') }
             : { code: 'confirm_needed', message: `Workflow "${name}" has invoke: ask, so a coding agent starts it only after the person agrees, and ${agentClause(evidence)}. Ask the person whether to start ${name}; once they agree, run the same command with --confirmed.` };
         case 'continue':
         case 'claim':
           if (caller.mode === 'unattended') {
-            return { code: 'unattended_denied', message: `Workflow ${name} needs a person, and this run is unattended (TEAMAI_MODE or CI says so): the team asks that a person agree before an agent continues it (invoke: ask). Continue it from a session a person attends, or set TEAMAI_MODE=attended where one does.` };
+            return { code: 'unattended_denied', message: unattendedReason(name, 'the team asks that a person agree before an agent continues it (invoke: ask)', 'continue') };
           }
           return act.kind === 'continue'
             ? { code: 'confirm_needed', message: `Workflow "${name}" has invoke: ask, so a coding agent continues it only after the person agrees, and ${agentClause(evidence)}. Ask the person whether to continue ${name}; once they agree, run the same command with --confirmed.` }

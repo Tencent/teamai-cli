@@ -48,10 +48,10 @@ export function localReason(description: WorkflowDescription): string | undefine
 }
 
 /**
- * Why a run of `description` needs a person, which an unattended run lacks: undefined when it can do without one, its
- * optional gates auto-approved.
+ * Why a run of `description` needs a person, which an unattended run lacks, as a refusal to `act` on it says it:
+ * undefined when it can do without one, its optional gates auto-approved.
  */
-export function attendedReason(description: WorkflowDescription): string | undefined {
+export function attendedReason(description: WorkflowDescription, act: 'start' | 'continue'): string | undefined {
   const { name, facts } = description;
   const { interactive } = facts;
   const required = facts.gates.filter((gate) => gate.required);
@@ -63,7 +63,7 @@ export function attendedReason(description: WorkflowDescription): string | undef
     ...(open.length > 0 ? [`the ${open.length > 1 ? 'choices' : 'choice'} at ${listOf(open.map((gate) => gate.step))} ${open.length > 1 ? 'have' : 'has'} no default, so --auto-approve leaves ${open.length > 1 ? 'them' : 'it'} to a person`] : []),
   ];
   if (needs.length === 0) return undefined;
-  return unattendedReason(name, listOf(needs));
+  return unattendedReason(name, listOf(needs), act);
 }
 
 /** Checks a start of `description` against what describe asked. `ceiling` is the most steps the driver runs at once. */
