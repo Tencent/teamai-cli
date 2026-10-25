@@ -1583,6 +1583,53 @@ function countStoppedTokens(run: RunState, report: ReportInput): boolean {
   return true;
 }
 
+/**
+ * The leased step `report` settles, or how the run refuses it once the deadlines passed at `now` apply: the checks
+ * `reportAttempt` makes before it reads the report itself. `save` says whether what they changed in `run`, the
+ * deadlines or a stopped attempt's late tokens, is saved.
+ */
+function reportedStep(run: RunState, report: ReportInput, now: string): { step: LeasedStep } | { refused: { save: boolean; envelope: WorkflowEnvelope } } {
+  // Settled membership wins. An old revision of a settled attempt is still repeated_report.
+  if (run.settledAttempts.includes(report.attempt)) {
+    return { refused: { save: false, envelope: error('repeated_report', `Attempt ${report.attempt} was already reported`) } };
+  }
+  // Before the driver check, so any driver learns that the attempt was cancelled.
+  if (run.cancelledAttempts?.includes(report.attempt)) {
+    return { refused: { save: countStoppedTokens(run, report), envelope: error('lease_cancelled', `Attempt ${report.attempt} was cancelled; its report is not recorded`) } };
+  }
+  const step = run.steps.find((item): item is LeasedStep => item.status === 'leased' && item.lease.attempt === report.attempt);
+  if (!step) {
+    if (report.revision !== run.revision) {
+      return { refused: { save: false, envelope: error('stale_revision', `Revision ${report.revision} is stale; the run is at ${run.revision}`) } };
+    }
+    return { refused: { save: false, envelope: error('wrong_attempt', `Attempt ${report.attempt} is not the leased attempt`) } };
+  }
+  const reconciled = reconcileRun(run, now);
+  if ('unreadable' in reconciled) return { refused: { save: false, envelope: error('run_unreadable', reconciled.unreadable) } };
+  if (run.cancelledAttempts?.includes(report.attempt)) {
+    countStoppedTokens(run, report);
+    return { refused: { save: true, envelope: error('lease_cancelled', `Attempt ${report.attempt} was cancelled; its report is not recorded`) } };
+  }
+
+  // A lease is checked against the revision it was handed out at, so a report of a parallel lease does not make it stale.
+  if (report.revision !== step.lease.revision) {
+    return { refused: { save: false, envelope: error('stale_revision', `Revision ${report.revision} is stale; attempt ${report.attempt} was leased at ${step.lease.revision}`) } };
+  }
+  if (!sameDriver(step.lease.driver, report.driver)) {
+    return { refused: { save: false, envelope: error('wrong_driver', 'This lease belongs to a different driver') } };
+  }
+  return { step };
+}
+
+/**
+ * Whether the run of `runId` takes `report` now, by the checks `reportAttempt` makes before it reads the report: the
+ * attempt is leased to its driver at its revision once the deadlines that passed apply. It saves nothing.
+ */
+export async function reportable(config: LocalConfig, runId: string, report: ReportInput): Promise<boolean> {
+  const run = await readRun(config, runId);
+  return typeof run === 'object' && 'step' in reportedStep(run, report, new Date().toISOString());
+}
+
 /** `secrets`: what the run file masks, when the caller already resolved them for this operation. */
 export async function reportAttempt(config: LocalConfig, runId: string, report: ReportInput, secrets?: Record<string, string>): Promise<WorkflowEnvelope> {
   if (isLeaseRef(report.attempt)) {
@@ -1592,35 +1639,9 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
   const reported = report.prUrl === undefined ? undefined : sanitizePrUrl(report.prUrl);
   const unmatched = reported?.url ? await reportedPrUnmatched(config, runId, report, reported.url) : undefined;
   return withRun(config, runId, secrets ?? await knownSecrets(config), async (run, now) => {
-    // Settled membership wins. An old revision of a settled attempt is still repeated_report.
-    if (run.settledAttempts.includes(report.attempt)) {
-      return { save: false, envelope: error('repeated_report', `Attempt ${report.attempt} was already reported`) };
-    }
-    // Before the driver check, so any driver learns that the attempt was cancelled.
-    if (run.cancelledAttempts?.includes(report.attempt)) {
-      return { save: countStoppedTokens(run, report), envelope: error('lease_cancelled', `Attempt ${report.attempt} was cancelled; its report is not recorded`) };
-    }
-    const step = run.steps.find((item): item is LeasedStep => item.status === 'leased' && item.lease.attempt === report.attempt);
-    if (!step) {
-      if (report.revision !== run.revision) {
-        return { save: false, envelope: error('stale_revision', `Revision ${report.revision} is stale; the run is at ${run.revision}`) };
-      }
-      return { save: false, envelope: error('wrong_attempt', `Attempt ${report.attempt} is not the leased attempt`) };
-    }
-    const reconciled = reconcileRun(run, now);
-    if ('unreadable' in reconciled) return { save: false, envelope: error('run_unreadable', reconciled.unreadable) };
-    if (run.cancelledAttempts?.includes(report.attempt)) {
-      countStoppedTokens(run, report);
-      return { save: true, envelope: error('lease_cancelled', `Attempt ${report.attempt} was cancelled; its report is not recorded`) };
-    }
-
-    // A lease is checked against the revision it was handed out at, so a report of a parallel lease does not make it stale.
-    if (report.revision !== step.lease.revision) {
-      return { save: false, envelope: error('stale_revision', `Revision ${report.revision} is stale; attempt ${report.attempt} was leased at ${step.lease.revision}`) };
-    }
-    if (!sameDriver(step.lease.driver, report.driver)) {
-      return { save: false, envelope: error('wrong_driver', 'This lease belongs to a different driver') };
-    }
+    const checked = reportedStep(run, report, now);
+    if ('refused' in checked) return checked.refused;
+    const { step } = checked;
 
     const located = locateStep(run, step.id);
     const defined = located?.step;

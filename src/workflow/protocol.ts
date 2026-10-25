@@ -1,6 +1,5 @@
 /** The workflow protocol in process: the calls behind `workflow start`, `next`, `report`, `respond`, `retry` and `cancel`, for every driver. */
 import path from 'node:path';
-import { sameDriver } from '../driver-identity.js';
 import type { WorkflowEnv } from '../env-resolution.js';
 import { scoringUnavailable } from '../scorers/home.js';
 import { isJudgeTool, judgeToolLevel } from '../scorers/judge.js';
@@ -10,7 +9,7 @@ import { nestedWorkflowError, type AgentEvidence } from './attempt-marker.js';
 import { loadCachedWorkflow, loadWorkflowTree } from './cache.js';
 import { describeWorkflow, type WorkflowDescription } from './describe.js';
 import { LeaseIdSchema, LeaseWireSchema } from './lease-wire.js';
-import { leaseNext, parseNextPayload, parseReport, parseResponsePayload, reconcileRun, reportAttempt, startRun, withIgnored, type NextOptions, type ReportInput } from './engine.js';
+import { leaseNext, parseNextPayload, parseReport, parseResponsePayload, reportable, reportAttempt, startRun, withIgnored, type NextOptions, type ReportInput } from './engine.js';
 import {
   abandonPlace, adoptedPlaceOf, finishPlace, placeHeldBy, placeLeaseOf, placeOf, placeRecorded, preparePlace, releasePlace, runPlaceSetup, type PlaceLease, type PlacePrepared,
   type StepEnd,
@@ -363,20 +362,6 @@ async function prepareWithSetup(input: { config: LocalConfig; lock: RunLock; env
 }
 
 /**
- * Whether `report` is for an attempt the run still leases to its driver at its revision, once the deadlines that have
- * passed apply, so finishing its place does not commit for an attempt the run would refuse.
- */
-async function reportable(config: LocalConfig, runId: string, report: ReportInput): Promise<boolean> {
-  const run = await readRun(config, runId);
-  if (typeof run !== 'object') return false;
-  // Applied to this copy only; reportAttempt applies and saves them.
-  reconcileRun(run, new Date().toISOString());
-  if (run.cancelledAttempts?.includes(report.attempt)) return false;
-  const step = run.steps.find((item) => item.status === 'leased' && item.lease.attempt === report.attempt);
-  return step?.status === 'leased' && step.lease.revision === report.revision && sameDriver(step.lease.driver, report.driver);
-}
-
-/**
  * Reports an attempt, after finishing the place `prepare` gave it, under the run's lock, and removes that place once the
  * engine answers `cleanup`. Every driver reports through it. An attempt without a place is reported as it is. A report
  * the run would refuse is sent as it is, and a cancelled one leaves the place as prepare found it; so does a
@@ -394,6 +379,7 @@ export async function managedReport(input: { config: LocalConfig; runId: string;
 
 async function settleManaged(input: { config: LocalConfig; lock: RunLock; attempt: AttemptId; report: ReportInput; secrets: Record<string, string> }): Promise<WorkflowEnvelope> {
   const { config, lock, attempt, report, secrets } = input;
+  // Checked first, so finishing the place does not commit for an attempt the run would refuse.
   if (!await reportable(config, lock.run, report)) {
     const answer = await reportAttempt(config, lock.run, report, secrets);
     if (isWorkflowError(answer) && answer.error.code === 'lease_cancelled') await abandonPlace({ config, lock, attempt });
