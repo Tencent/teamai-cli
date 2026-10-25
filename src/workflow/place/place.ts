@@ -12,7 +12,7 @@ import { git, headCommit, markReadCopy, markSetup, removeWorktree, reopenConfigC
 import { openWorktree } from './created.js';
 import { applyOverlay, restoreOverlay, unrestoredConfig } from './overlay.js';
 import { finishReader, leaveReadCopy, readCopyFailure, stageReader } from './reader.js';
-import { PlaceFinishedSchema, readPlaceRecord, writePlaceRecord, type PlaceFinished, type PlaceRecord } from './record.js';
+import { PlaceFinishedSchema, readPlaceRecord, writePlaceRecord, type PlaceRecord } from './record.js';
 import { runSetup } from './setup.js';
 import { finishWriter, mergeBranches, rememberConflicts, withUnpushed } from './writer.js';
 
@@ -111,7 +111,8 @@ function baseOf(record: PlaceRecord): PlaceRecordBase {
  * Prepares the place of `lease` under `root`, the checkout the run started from, and records it in
  * `attempts/<a>/place.json`, so any process can finish it. A lease without a workspace contract runs in `root`. Any
  * other gets the worktree of its branch, with its start, merges and the base agent configuration in place, and setup
- * left to `runPlaceSetup`. A second prepare of the attempt returns the recorded place.
+ * left to `runPlaceSetup`. A second prepare of the attempt returns the recorded place, unless it was abandoned: then
+ * the place is as prepare found it, and a resumed lease whose step stopped prepares it again.
  */
 export async function preparePlace(input: { config: LocalConfig; lock: RunLock; root: string; lease: PlaceLease }): Promise<PlacePrepared> {
   const { config, lock: { run }, lease } = input;
@@ -120,10 +121,7 @@ export async function preparePlace(input: { config: LocalConfig; lock: RunLock; 
   if ('kind' in recorded && recorded.kind === 'unreadable') {
     return { kind: 'failed', failure: { code: 'workspace_base', message: `The place record of attempt ${lease.attempt} cannot be read (${recorded.reason}). Retry the step with teamai workflow retry ${run} ${lease.step}.` } };
   }
-  if (!('kind' in recorded)) {
-    if (recorded.phase !== 'abandoned') return preparedOf(recorded, lease.prompt);
-    return { kind: 'failed', failure: { code: 'workspace_base', message: `The place of attempt ${lease.attempt} was given up when its step stopped. Retry the step with teamai workflow retry ${run} ${lease.step}.` } };
-  }
+  if (!('kind' in recorded) && recorded.phase !== 'abandoned') return preparedOf(recorded, lease.prompt);
   const files = placeFiles(config, run, lease.attempt);
   const base = {
     version: 1 as const, run, attempt: lease.attempt, step: lease.step, executor: lease.executor, root,
@@ -226,6 +224,9 @@ export interface StepEnd {
   message?: string;
   failure?: WorkflowFailure;
 }
+
+/** The step's end once its place is finished: what the attempt reports, with its `changes` or `read`. */
+export type PlaceFinished = z.infer<typeof PlaceFinishedSchema>;
 
 /**
  * Finishes the place of `attempt` once its step ended with `end`, and returns the report the attempt settles with. A

@@ -1,7 +1,7 @@
 /**
- * A workflow's `setup`, run by a driver in a workspace it just created, before the step. Both the local driver and a
- * driver that prepares workspaces for a session reach it through `stageLease`, so setup's key values stay in the teamai
- * process and never reach whatever runs the step.
+ * A workflow's `setup`, run in a workspace prepare just created, before the step. The local driver and `next --prepare`
+ * both reach it through `runPlaceSetup`, so setup's key values stay in the teamai process and never reach whatever runs
+ * the step.
  */
 import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';

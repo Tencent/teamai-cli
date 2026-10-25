@@ -36,7 +36,6 @@ export const PlaceFinishedSchema = z.object({
   changes: ChangesSchema.optional(),
   read: ReadSchema.optional(),
 });
-export type PlaceFinished = z.infer<typeof PlaceFinishedSchema>;
 
 const PlaceBase = {
   version: z.literal(1),

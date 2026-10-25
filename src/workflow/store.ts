@@ -57,9 +57,14 @@ export function driverLockPath(config: LocalConfig, runId: string): string {
   return path.join(runsDir(config), runId, 'driver.lock');
 }
 
+/** `runs/<run>/attempts/`: a directory for each attempt of the run. */
+export function attemptsDir(config: LocalConfig, run: RunId): string {
+  return path.join(runsDir(config), run, 'attempts');
+}
+
 /** `runs/<run>/attempts/<attempt>/`: what a driver keeps for one attempt. */
 export function attemptDir(config: LocalConfig, run: RunId, attempt: AttemptId): string {
-  return path.join(runsDir(config), run, 'attempts', attempt);
+  return path.join(attemptsDir(config, run), attempt);
 }
 
 /** `runs/<run>/skill.json`: the skill driver's state of a run. */

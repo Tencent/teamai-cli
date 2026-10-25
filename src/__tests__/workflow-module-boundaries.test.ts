@@ -51,10 +51,8 @@ const ENTRIES: Array<{ folder: string; entries: Record<string, string[] | 'any'>
 
 /** Edges a rule would refuse that stay until the named change removes them. Each must match exactly `count` edges. */
 const ALLOWED: Array<{ from: string; to: string; count: number; why: string }> = [
-  { from: 'src/workflow/drivers/local/local-driver.ts', to: 'src/workflow/place/setup.ts', count: 1, why: 'setup runs outside place.ts until place/ owns created places' },
-  { from: 'src/workflow/drivers/local/local-driver.ts', to: 'src/workflow/place/worktree-snapshot.ts', count: 1, why: 'the session flow snapshots outside place.ts until it moves onto place/' },
-  { from: 'src/__tests__/workflow-setup.test.ts', to: 'src/workflow/place/setup.ts', count: 1, why: 'tests setup directly until place.ts runs it' },
-  { from: 'src/__tests__/workflow-local-driver.test.ts', to: 'src/workflow/place/worktree-snapshot.ts', count: 1, why: 'checks the snapshot the session flow takes' },
+  { from: 'src/__tests__/workflow-setup.test.ts', to: 'src/workflow/place/setup.ts', count: 1, why: 'tests setup, the unit place.ts runs, directly' },
+  { from: 'src/__tests__/workflow-local-driver.test.ts', to: 'src/workflow/place/worktree-snapshot.ts', count: 1, why: 'fails the snapshot a reader in the checkout takes' },
   { from: 'src/__tests__/workflow-skill-transitions.test.ts', to: 'src/workflow/drivers/skill/transitions.ts', count: 1, why: 'compares TRANSITIONS with the doc tables' },
 ];
 
