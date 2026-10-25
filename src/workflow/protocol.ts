@@ -305,10 +305,15 @@ async function placeLeased(config: LocalConfig, lock: RunLock, leased: Leased, a
   return preparePlace({ config, lock, root, lease, ...(adopt !== undefined ? { adopt } : {}) });
 }
 
-/** The attempts `run` leases besides `attempt`. */
+/**
+ * The attempts `run` leases besides `attempt`, and those it stopped whose driver has not reported them: what a stopped
+ * one started may still run in its place, until that report abandons the place.
+ */
 function otherLeases(run: RunState, attempt: AttemptId): AttemptId[] {
-  return run.steps.flatMap((step) => {
-    const other = step.status === 'leased' && step.lease.attempt !== attempt ? AttemptIdSchema.safeParse(step.lease.attempt) : undefined;
+  const leased = run.steps.flatMap((step) => (step.status === 'leased' ? [step.lease.attempt] : []));
+  const stopped = (run.stoppedAttempts ?? []).map((entry) => entry.attempt);
+  return [...leased, ...stopped].flatMap((candidate) => {
+    const other = candidate !== attempt ? AttemptIdSchema.safeParse(candidate) : undefined;
     return other?.success ? [other.data] : [];
   });
 }

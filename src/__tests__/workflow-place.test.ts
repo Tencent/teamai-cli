@@ -328,6 +328,31 @@ steps:
     expect(await f.client.report(f.runId, { attempt: review.attempt, revision: review.revision, outcome: 'success', driver: f.driver })).toMatchObject({ data: { accepted: true } });
     expect(await f.client.next(f.runId, { driver: { ...f.driver, can } }, { prepare: { attempt } })).toMatchObject({ data: { lease: { attempt, cwd: f.work } } });
   });
+  it('holds the place of an attempt the run cancelled until its driver reports it stopped, so nothing runs beside what it left running', async () => {
+    const f = await fixture(`schemaVersion: v1alpha1
+name: build
+description: Read the code twice.
+alias: ship
+steps:
+  - id: review
+    prompt: Review the code.
+  - id: audit
+    needs: []
+    prompt: Audit the code.
+`);
+    const can = { hitl: true, setup: true, workspace: ['read-only', 'new', 'continue'] };
+    const review = await next(f);
+    expect(await f.client.cancel(f.runId, 'review')).toMatchObject({ data: { cancelled: { attempts: [review.attempt] } } });
+    const audit = await f.client.next(f.runId, { driver: { ...f.driver, can }, running: [review.attempt] }, { prepare: true });
+    expect(audit).toMatchObject({ error: { code: 'busy', message: expect.stringContaining(`the place of attempt ${review.attempt}, which is still open`) } });
+
+    expect(await f.client.report(f.runId, { attempt: review.attempt, revision: review.revision, outcome: 'released', driver: f.driver })).toMatchObject({ error: { code: 'lease_cancelled' } });
+    const run = await readRun(f.config, f.runId);
+    const leased = typeof run === 'object' ? run.steps.find((step) => step.id === 'audit') : undefined;
+    if (leased?.status !== 'leased') throw new Error(JSON.stringify({ audit, run }));
+    const attempt = AttemptIdSchema.parse(leased.lease.attempt);
+    expect(await f.client.next(f.runId, { driver: { ...f.driver, can } }, { prepare: { attempt } })).toMatchObject({ data: { lease: { attempt, cwd: f.work } } });
+  });
 });
 
 describe('places the host made', () => {
