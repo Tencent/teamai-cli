@@ -6,7 +6,7 @@ import { log, setStderrOnly } from './utils/logger.js';
 import { collectEnvSecrets, redactJson } from './utils/redact.js';
 import { parseNextPayload, parseReport, parseResponsePayload, resumableSessions, withIgnored, type ParsedResponsePayload } from './workflow/engine.js';
 import { publishRun, resumeRun } from './workflow/handoff.js';
-import { cancelRun, respondToHitl, retryStep } from './workflow/run-controls.js';
+import { callerProvenance, cancelRun, respondProvenance, respondToHitl, retryStep } from './workflow/run-controls.js';
 import { runLocalDriver, withDriverLock } from './workflow/drivers/local/local-driver.js';
 import { driverIdentity } from './driver-identity.js';
 import { getBusinessRoot, getDataHome, scopedToolPaths, type LocalConfig, type TeamaiConfig } from './types.js';
@@ -259,7 +259,7 @@ async function workflowControl(runId: string, operation: (config: LocalConfig, s
   if (loaded) writeEnvelope(await operation(loaded.config, loaded.secrets), loaded.secrets);
 }
 
-/** Records a HITL answer with terminal or declared driver UI provenance. */
+/** Records a HITL answer with the provenance decided from this process and the driver UI `--json` declares. */
 export async function workflowRespond(runId: string, step: string, choice: string, options: { note?: string; pass?: string; json?: string }): Promise<void> {
   const pass = options.pass === undefined ? undefined : Number(options.pass);
   if (pass !== undefined && (!/^\d+$/.test(options.pass!) || !Number.isSafeInteger(pass) || pass < 1)) {
@@ -280,10 +280,10 @@ export async function workflowRespond(runId: string, step: string, choice: strin
     }
     driverAnswer = declared;
   }
+  const caller = callerProvenance(process.env, process.stdin);
+  const provenance = respondProvenance(driverAnswer ? { kind: 'driver-json', driver: driverAnswer.driver, caller } : { kind: 'terminal', caller });
   await workflowControl(runId, async (config, secrets) => withIgnored(await respondToHitl(config, runId, secrets, {
-    step, choice, ...(options.note !== undefined ? { note: options.note } : {}), ...(pass !== undefined ? { pass } : {}),
-    ...(driverAnswer ? driverAnswer.response
-      : { channel: process.stdin.isTTY ? 'tty' : 'cli', agent: !process.stdin.isTTY }),
+    step, choice, ...(options.note !== undefined ? { note: options.note } : {}), ...(pass !== undefined ? { pass } : {}), provenance,
   }), driverAnswer?.ignored ?? []));
 }
 

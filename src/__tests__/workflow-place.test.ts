@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { resolveWorkflowEnv } from '../env-resolution.js';
 import type { LocalConfig } from '../types.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
-import { runConformanceScenario, type ConformanceClient } from '../workflow/conformance-interpreter.js';
+import { inProcessConformanceClient, runConformanceScenario, type ConformanceClient } from '../workflow/conformance-interpreter.js';
 import { PLACE_CHECKOUT_FILES, workflowPlaceConformanceScenarios } from '../workflow/conformance.js';
 import { inProcessClient } from '../workflow/protocol.js';
 import { pull } from '../pull.js';
@@ -376,11 +376,12 @@ describe('workflow place conformance in process', () => {
           fs.rmSync(tmp, { recursive: true, force: true });
         }
       };
+      const scenarioClient = inProcessConformanceClient(inner);
       const client: ConformanceClient = {
         start: (name) => own(() => inner.start(name, { checkout })),
         next: (run, body, options) => own(() => inner.next(run, body, options)),
         report: (run, body) => own(() => inner.report(run, body)),
-        respond: (run, step, choice, options) => own(() => inner.respond(run, step, choice, options)),
+        respond: (run, step, choice, options) => own(() => scenarioClient.respond(run, step, choice, options)),
         retry: (run, step) => own(() => inner.retry(run, step)),
         cancel: (run, step) => own(() => inner.cancel(run, step)),
       };

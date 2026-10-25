@@ -17,7 +17,7 @@ The Workflow Runs page has two lists for the selected workspace. **Local runs** 
 
 The page shows what a run record publishes, plus each step's live status and the options of a waiting HITL request. Inputs, `for_each` items, outputs, prompts, HITL messages, and local paths stay in the run file. Read a HITL question where the run's driver asks it.
 
-A waiting approve or choose request can be answered from the run's details. The answer goes through the same `respond` operation as the CLI, with channel `dashboard` and `agent: false`, so it can answer a required approval. It carries the pass the page showed: if that request was answered or replaced in the meantime, the page shows the refusal and reloads. Another website cannot send an answer. A request without an `Origin` header, such as a plain `curl`, is refused too. This marks an answer as sent from a browser; it does not stop a local script that sets the header.
+A waiting approve or choose request can be answered from the run's details. The answer goes through the same `respond` operation as the CLI, with channel `dashboard` and `agent: false`, so it can answer a required approval. A dashboard started inside an agent session records `agent: true`, as an answer from that shell would, and cannot answer a required approval. It carries the pass the page showed: if that request was answered or replaced in the meantime, the page shows the refusal and reloads. Another website cannot send an answer. A request without an `Origin` header, such as a plain `curl`, is refused too. This marks an answer as sent from a browser; it does not stop a local script that sets the header.
 
 ## Resources
 

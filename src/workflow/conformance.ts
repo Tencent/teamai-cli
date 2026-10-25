@@ -1,4 +1,6 @@
 import { PARALLEL_ROOTS, controlsYaml, type ConformanceOperation, type ConformanceScenario, type DriverProfile } from './conformance-interpreter.js';
+import { AGENT_SESSION_ENV } from '../utils/session-id.js';
+import { ATTEMPT_ENV } from './attempt-marker.js';
 import { limitsConformanceScenarios } from './limits-conformance.js';
 
 const TWO_STEPS = `schemaVersion: v1alpha1
@@ -714,6 +716,24 @@ workflowConformanceScenarios.push({
   ],
   expectState: { steps: [{ id: 'work', status: 'leased', answer: { choice: 'yes', channel: 'driver', agent: false,
     note: 'Person approved in the UI', driver: { kind: 'ide', machine: 'host', workspace: '/ui' } } }, { id: 'later', status: 'pending' }] },
+});
+
+const REQUIRED_APPROVE = APPROVE.replace('approve: Build it?', 'approve: { message: Build it?, required: true }');
+const UI = { driver: { kind: 'ide', machine: 'host', workspace: '/ui' } };
+
+workflowConformanceScenarios.push({
+  name: 'required-gate-provenance: an answer sent from inside an agent session never settles a required gate, with or without a driver, and the same answer from outside one is recorded as the person\'s',
+  workflowName: 'build',
+  yaml: REQUIRED_APPROVE,
+  operations: [
+    { kind: 'next', saveAs: 'hitl', hitl: true, expect: { data: { hitl: { step: 'work', required: true } } } },
+    ...[...AGENT_SESSION_ENV, ATTEMPT_ENV].map((name): ConformanceOperation => (
+      { kind: 'respond', step: 'work', choice: 'yes', pass: 1, json: UI, env: { [name]: 'agent-1304' }, expect: { error: { code: 'agent_in_path' } } }
+    )),
+    { kind: 'respond', step: 'work', choice: 'yes', pass: 1, env: { CLAUDE_CODE_SESSION_ID: 'agent-1304' }, expect: { error: { code: 'agent_in_path' } } },
+    { kind: 'respond', step: 'work', choice: 'yes', pass: 1, json: UI, expect: { data: { answered: { step: 'work', choice: 'yes', channel: 'driver' } } } },
+  ],
+  expectState: { steps: [{ id: 'work', status: 'pending', answer: { choice: 'yes', channel: 'driver', agent: false, driver: UI.driver } }, { id: 'later', status: 'pending' }] },
 });
 
 workflowConformanceScenarios.push(...limitsConformanceScenarios);

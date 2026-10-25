@@ -1,6 +1,7 @@
 import type { LocalConfig } from '../types.js';
+import { agentEvidence, type AgentEvidence } from './attempt-marker.js';
 import {
-  error, finishRun, locateStep, ok, parseReads, reconcileRun, runData, withRun, workflowLabel,
+  error, finishRun, locateStep, ok, parseReads, reconcileRun, respondCommand, runData, withRun, workflowLabel,
   type RunReads, type WorkflowResult,
 } from './engine.js';
 import { evaluateExpression, isTruthy } from './expression.js';
@@ -10,8 +11,8 @@ import { archiveUnder, isUnder } from './loop.js';
 import { spentTokens, startLimits } from './limits.js';
 import { publishRunRecords, removeQueuedEndRecord } from './records.js';
 import { contextOf, localId, statesIn } from './scope.js';
-import { answerHitl, cancel, cancellable, redeliver, repend, resetIteration, resetPending, settled, start, stopAttempt, stopWhere, stopped, type HitlAnswer, type StepState } from './step-state.js';
-import type { RunState, WorkflowEnvelope } from './types.js';
+import { answerHitl, cancel, cancellable, redeliver, repend, resetIteration, resetPending, settled, start, stopAttempt, stopWhere, stopped, type StepState } from './step-state.js';
+import type { DriverIdentity, RunState, WorkflowEnvelope } from './types.js';
 
 async function controlRun(
   config: LocalConfig,
@@ -48,7 +49,86 @@ function missingStepError(run: RunState, step: string): WorkflowEnvelope {
   return error('step_not_found', `Step "${step}" is not in run ${run.id}. A step inside a sub-workflow exists only after that workflow starts.`);
 }
 
-/** An answer tied to one HITL request pass and the channel that carried it. */
+/** What is known about the process that sent an answer. Read once from that process by `callerProvenance`. */
+export interface CallerProvenance {
+  tty: boolean;
+  evidence: AgentEvidence;
+}
+
+export function callerProvenance(env: NodeJS.ProcessEnv, stdin: { isTTY?: boolean }): CallerProvenance {
+  return { tty: stdin.isTTY === true, evidence: agentEvidence(env) };
+}
+
+/** Where an answer came in, with what is known about the process that sent it. */
+export type Via =
+  | { kind: 'terminal'; caller: CallerProvenance }
+  /** The dashboard's server process sent it. */
+  | { kind: 'dashboard'; caller: CallerProvenance }
+  /** `respond --json {driver}`: an external driver's UI. */
+  | { kind: 'driver-json'; driver: DriverIdentity; caller: CallerProvenance }
+  /** `respond --driver skill`: the run's skill driver carries the agent's answer. */
+  | { kind: 'skill'; driver: DriverIdentity };
+
+/** Why an agent may have sent an answer. */
+type AgentCause = Exclude<AgentEvidence, { kind: 'none' }> | { kind: 'no-terminal' } | { kind: 'skill-driver' };
+
+/**
+ * The HITL provenance `respondToHitl` records. The class is not exported, so `respondProvenance` is its only
+ * constructor and a hand-written `{ channel: 'dashboard', agent: false }` does not compile.
+ */
+class Provenance {
+  /** An ES private field makes the class nominal: an object literal of the same shape is not a Provenance. */
+  readonly #agentCause: AgentCause | undefined;
+
+  private constructor(
+    readonly channel: 'tty' | 'cli' | 'driver' | 'dashboard',
+    readonly driver: DriverIdentity | undefined,
+    agentCause: AgentCause | undefined,
+  ) {
+    this.#agentCause = agentCause;
+  }
+
+  /** Evidence, not proof: an agent can unset its variable and allocate a terminal. */
+  static decide(via: Via): Provenance {
+    switch (via.kind) {
+      case 'terminal': {
+        const cause = agentHere(via.caller) ?? (via.caller.tty ? undefined : { kind: 'no-terminal' });
+        return new Provenance(via.caller.tty ? 'tty' : 'cli', undefined, cause);
+      }
+      case 'dashboard':
+        return new Provenance('dashboard', undefined, agentHere(via.caller));
+      case 'driver-json':
+        return new Provenance('driver', via.driver, agentHere(via.caller));
+      case 'skill':
+        return new Provenance('driver', via.driver, { kind: 'skill-driver' });
+      default: {
+        const unhandled: never = via;
+        return unhandled;
+      }
+    }
+  }
+
+  /** Whether an agent may have sent the answer. */
+  get agent(): boolean {
+    return this.#agentCause !== undefined;
+  }
+
+  get agentCause(): AgentCause | undefined {
+    return this.#agentCause;
+  }
+}
+
+function agentHere(caller: CallerProvenance): AgentCause | undefined {
+  return caller.evidence.kind === 'none' ? undefined : caller.evidence;
+}
+
+export type { Provenance };
+
+export function respondProvenance(via: Via): Provenance {
+  return Provenance.decide(via);
+}
+
+/** An answer tied to one HITL request pass and the provenance decided for it. */
 export interface ResponseInput {
   /** Full path of the waiting step. */
   step: string;
@@ -58,12 +138,26 @@ export interface ResponseInput {
   note?: string;
   /** The expected HITL pass, when the caller observed one. */
   pass?: number;
-  /** The channel that carried the answer. */
-  channel: HitlAnswer['channel'];
-  /** Whether an agent may have carried this answer. */
-  agent: boolean;
-  /** Identity of the driver UI that carried the person's answer. */
-  driver?: HitlAnswer['driver'];
+  /** A required gate refuses an answer an agent may have sent. */
+  provenance: Provenance;
+}
+
+function agentInPath(run: RunState, state: StepState, options: readonly string[], cause: AgentCause): WorkflowEnvelope {
+  const command = respondCommand(run.id, state.id, `<${options.join('|')}>`, state.pass ?? 1);
+  switch (cause.kind) {
+    case 'session':
+      return error('agent_in_path', `Step "${state.id}" needs an answer from the person, and the process that sent this one runs inside an agent session (${cause.variable} is set). The person runs ${command} in their own terminal, or answers in a teamai dashboard started there.`);
+    case 'attempt':
+      return error('agent_in_path', `Step "${state.id}" needs an answer from the person, and the process that sent this one runs inside workflow attempt ${cause.attempt}. The person runs ${command} in their own terminal, or answers in a teamai dashboard started there.`);
+    case 'no-terminal':
+      return error('agent_in_path', `Step "${state.id}" needs an answer from the person, and this command has no terminal, so an agent may have sent it. The person runs ${command} in their own terminal, or answers in a teamai dashboard started there.`);
+    case 'skill-driver':
+      return error('agent_in_path', `Step "${state.id}" needs an answer from the person, and respond --driver skill carries an agent's answer. The person runs ${command} in their own terminal, or answers in a teamai dashboard started there.`);
+    default: {
+      const unhandled: never = cause;
+      return unhandled;
+    }
+  }
 }
 
 /** Records a HITL request answer under the run lock and settles any work it enables. */
@@ -90,9 +184,10 @@ export async function respondToHitl(config: LocalConfig, runId: string, secrets:
     }
     if (!hitl) return error('not_hitl', `Step "${state.id}" has no approve or choose HITL request`);
     if (!hitl.options.includes(input.choice)) return error('invalid_choice', `Step "${state.id}" accepts these choices: ${hitl.options.join(', ')}`);
-    if (hitl.required && input.agent) return error('agent_in_path', `Step "${state.id}" needs an answer from a terminal with no agent in the path. Run teamai workflow respond yourself in a terminal.`);
-    const answered = { step: state.id, pass: state.pass ?? 1, choice: input.choice, channel: input.channel };
-    answerHitl(state, { choice: input.choice, ...(input.note !== undefined ? { note: input.note } : {}), at: now, channel: input.channel, agent: input.agent, ...(input.driver ? { driver: input.driver } : {}) });
+    const { channel, driver, agentCause } = input.provenance;
+    if (hitl.required && agentCause) return agentInPath(run, state, hitl.options, agentCause);
+    const answered = { step: state.id, pass: state.pass ?? 1, choice: input.choice, channel };
+    answerHitl(state, { choice: input.choice, ...(input.note !== undefined ? { note: input.note } : {}), at: now, channel, agent: agentCause !== undefined, ...(driver ? { driver } : {}) });
     const reconciled = reconcileRun(run, now);
     if ('unreadable' in reconciled) return error('run_unreadable', reconciled.unreadable);
     if ('outcome' in reconciled) await finish(reconciled);

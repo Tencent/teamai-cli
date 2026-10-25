@@ -27,7 +27,7 @@ import { openSessionArchive, type SessionArchive } from '../../../session-flow/a
 import { deliveredTeamSkills, usedSkills } from '../../../skill-use.js';
 import { leaseNext, reportAttempt } from '../../engine.js';
 import { EnvScopeSchema, LeaseSetupSchema, type DriverCan, type EnvScope, type LeaseSetup } from '../../requirements.js';
-import { respondToHitl } from '../../run-controls.js';
+import { callerProvenance, respondProvenance, respondToHitl } from '../../run-controls.js';
 import { isRecord } from '../../expression.js';
 import {
   createLocalToolAdapter,
@@ -852,9 +852,11 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options
         question = undefined;
         if (exited.line === undefined) return { error: { code: 'interrupted', message: 'The HITL question closed without an answer. Continue with teamai workflow resume.' } };
         const [choice = '', ...words] = exited.line.trim().split(/\s+/);
-        const answer = await respondToHitl(config, runId, turn.secrets, { step: hitl.step, pass: hitl.pass, choice, ...(words.length > 0 ? { note: words.join(' ') } : {}), channel: 'tty', agent: false });
+        const provenance = respondProvenance({ kind: 'terminal', caller: callerProvenance(process.env, { isTTY: true }) });
+        const answer = await respondToHitl(config, runId, turn.secrets, { step: hitl.step, pass: hitl.pass, choice, ...(words.length > 0 ? { note: words.join(' ') } : {}), provenance });
         if (isWorkflowError(answer)) {
-          if (!['repeated_response', 'stale_response', 'invalid_choice', 'not_waiting', 'run_settled'].includes(answer.error.code)) return answer;
+          // agent_in_path: the driver runs inside an agent session; it keeps waiting for the person's answer from elsewhere.
+          if (!['repeated_response', 'stale_response', 'invalid_choice', 'not_waiting', 'run_settled', 'agent_in_path'].includes(answer.error.code)) return answer;
           log.warn(answer.error.message);
         }
         continue;

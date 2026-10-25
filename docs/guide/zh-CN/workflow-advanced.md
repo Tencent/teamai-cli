@@ -681,7 +681,7 @@ steps:
 
 后续步骤读取 `steps.decide.choice` 和 `steps.decide.note`，也可以通过 `passes[n]` 读取历史。每个新 pass 都重新询问。无动作结局步骤上的 approve 必须得到 `yes` 才会到达结局。
 
-必须由人直接回答的审批使用 `approve: { message: Publish?, required: true }`，永远不自动回答。`respond` 保存时间、渠道、选择和可选备注。使用 `--json` 时渠道为 `driver`，`agent: false`。不使用 `--json` 时，stdin 是 TTY 则渠道为 `tty`，`agent: false`；否则为 `cli`，`agent: true`。必需审批以 `agent_in_path` 拒绝 cli 回答。TTY 是渠道约定，不能防止有能力创建 PTY 的调用者。从[仪表盘](dashboard.md#工作流运行workflow-runs)回答时渠道为 `dashboard`，`agent: false`。
+必须由人直接回答的审批使用 `approve: { message: Publish?, required: true }`，永远不自动回答。`respond` 保存时间、渠道、选择和可选备注。使用 `--json` 时渠道为 `driver`。不使用 `--json` 时，stdin 是 TTY 则渠道为 `tty`；否则为 `cli`。渠道为 `cli`，或发送回答的进程运行在 agent 会话中（设置了 `CLAUDE_CODE_SESSION_ID` 这类 agent 会话变量）或工作流 attempt 中（设置了 `TEAMAI_WORKFLOW_ATTEMPT`）时，回答记录为 `agent: true`；否则为 `agent: false`。必需审批以 `agent_in_path` 拒绝 `agent: true` 的回答，错误信息会给出用户应在自己终端里运行的命令。TTY 和这些变量只是证据，不能防止有能力创建 PTY 或取消变量的调用者。从[仪表盘](dashboard.md#工作流运行workflow-runs)回答时渠道为 `dashboard`，`agent: false`，除非 `teamai dashboard` 运行在 agent 会话中。
 
 ```sh
 teamai workflow respond <run> decide build --note "Ready" --pass 1
@@ -690,7 +690,7 @@ teamai workflow resume <run>
 
 `--pass` 拒绝已经被后续 pass 替代的 HITL 请求回答。同一个 pass 重复回答返回 `repeated_response`。
 
-非 `local` 驱动使用相同的 HITL 契约。每次 `next` 请求都发送 `driver.can.hitl`，包括忙碌时的轮询。有人可以回答 HITL 请求并参与交互步骤时，将其设为 `true`。没有可租出的工作时，`next` 返回 `hitl`，包括 `run`、`step`、`pass`、`kind`、渲染后的 `message`、`options`、可选 `default`、`required`，以及 `respond` 命令模板。向该用户展示 `hitl.message` 和 `hitl.respond`，由其将 `<option>` 替换为选择后运行 `teamai workflow respond`。模板会给 `'items[0].ask'` 这样的 fan-out 步骤路径加上引号；运行时保留这些引号。`cli` 渠道只能回答可选 HITL 请求。有自己 UI 的驱动可以用 `respond --json '{"driver":{"kind":"ide","machine":"host","workspace":"/work"}}'` 提交用户的回答，包括必需审批；这会记录渠道 `driver`、`agent: false`，并在本地保留驱动身份。驱动声明答案由用户在其 UI 中给出，绝不能提交 agent 自己选择的答案；与 TTY 约定一样，这只是声明，不是保护机制。
+非 `local` 驱动使用相同的 HITL 契约。每次 `next` 请求都发送 `driver.can.hitl`，包括忙碌时的轮询。有人可以回答 HITL 请求并参与交互步骤时，将其设为 `true`。没有可租出的工作时，`next` 返回 `hitl`，包括 `run`、`step`、`pass`、`kind`、渲染后的 `message`、`options`、可选 `default`、`required`，以及 `respond` 命令模板。向该用户展示 `hitl.message` 和 `hitl.respond`，由其将 `<option>` 替换为选择后运行 `teamai workflow respond`。模板会给 `'items[0].ask'` 这样的 fan-out 步骤路径加上引号；运行时保留这些引号。`cli` 渠道只能回答可选 HITL 请求。有自己 UI 的驱动可以用 `respond --json '{"driver":{"kind":"ide","machine":"host","workspace":"/work"}}'` 提交用户的回答，包括必需审批；这会记录渠道 `driver`、`agent: false`，并在本地保留驱动身份。从 agent 会话中发送时记录为 `agent: true`，因此必需审批会拒绝它。驱动声明答案由用户在其 UI 中给出，绝不能提交 agent 自己选择的答案；与 TTY 约定一样，这只是声明，不是保护机制。
 
 有就绪租约时优先返回租约。工具运行期间，将其 attempt id 放入 `running`，以 `canTakeLease: false` 轮询 `next`，展示返回的 HITL 请求，并停止 attempt id 出现在 `cancelled` 中的工具。只有支持 HITL 的驱动才能获取 `interactive` 租约；交互步骤会等待这样的驱动。
 

@@ -4,7 +4,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { LocalConfig } from '../types.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
-import { runConformanceScenario } from '../workflow/conformance-interpreter.js';
+import { inProcessConformanceClient, runConformanceScenario } from '../workflow/conformance-interpreter.js';
 import { workflowConformanceScenarios } from '../workflow/conformance.js';
 import { inProcessClient } from '../workflow/protocol.js';
 import { pendingRecords } from '../workflow/records.js';
@@ -40,7 +40,7 @@ describe('workflow protocol conformance in process', () => {
         fs.writeFileSync(path.join(knowledge, 'workflows', `${name}.yaml`), yaml);
       }
       await syncWorkflowDefinitions(config);
-      const client = inProcessClient({ config, env: await resolveWorkflowEnv(config) });
+      const client = inProcessConformanceClient(inProcessClient({ config, env: await resolveWorkflowEnv(config) }));
       await runConformanceScenario(scenario, {
         client,
         readRun: async (runId) => {

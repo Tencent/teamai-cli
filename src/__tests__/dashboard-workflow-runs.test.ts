@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { answerFromDashboard, listLocalRuns, listReportedRuns, workflowRunDetail } from '../dashboard/workflow-runs.js';
 import { HttpError } from '../dashboard/http.js';
 import { getReportsDir, type LocalConfig } from '../types.js';
@@ -81,6 +81,20 @@ describe('dashboard workflow runs', () => {
     expect(row?.waiting).toEqual([]);
     expect((await workflowRunDetail(run.config, 'local', run.id))?.steps.find((step) => step.step === 'ship'))
       .toEqual({ step: 'ship', pass: 1, status: 'pending', answer: { choice: 'yes', channel: 'dashboard' } });
+  });
+
+  it('refuses a required answer from a dashboard served inside an agent session, naming what the person runs', async () => {
+    const run = await waitingRun();
+    vi.stubEnv('CLAUDE_CODE_SESSION_ID', 'agent-1304');
+    try {
+      expect(await refusal(answerFromDashboard(run.config, { run: run.id, step: 'ship', pass: 1, choice: 'yes' }))).toEqual({
+        status: 400,
+        message: `Step "ship" needs an answer from the person, and the process that sent this one runs inside an agent session (CLAUDE_CODE_SESSION_ID is set). The person runs teamai workflow respond ${run.id} ship <yes|no> --pass 1 in their own terminal, or answers in a teamai dashboard started there.`,
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    expect((await run.state()).steps.find((step) => step.id === 'ship')).toMatchObject({ status: 'waiting' });
   });
 
   it('refuses an answer to a pass the page no longer shows, and a repeated one', async () => {

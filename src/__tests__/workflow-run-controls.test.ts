@@ -6,7 +6,7 @@ import { log } from '../utils/logger.js';
 import type { LocalConfig } from '../types.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, parseNextPayload, parseReport, reportAttempt, startRun, type NextOptions } from '../workflow/engine.js';
-import { cancelRun, respondToHitl, retryStep } from '../workflow/run-controls.js';
+import { callerProvenance, cancelRun, respondProvenance, respondToHitl, retryStep } from '../workflow/run-controls.js';
 import { pendingRecords } from '../workflow/records.js';
 import { projectRun } from '../workflow/snapshot.js';
 import { readRun, runFilePath } from '../workflow/store.js';
@@ -44,11 +44,34 @@ async function fixture(steps: string, header = '') {
   if ('error' in started) throw new Error(started.error.message);
   const id = String(started.data.run);
   return { config, id, next: (options: NextOptions = {}) => leaseNext(config, id, driver, { ...hitl, ...options }),
-    respond: async (step: string, choice: string, extra = {}) => respondToHitl(config, id, await knownSecrets(config), { step, choice, channel: 'tty', agent: false, ...extra }),
+    respond: async (step: string, choice: string, extra = {}) => respondToHitl(config, id, await knownSecrets(config), { step, choice, provenance: respondProvenance({ kind: 'terminal', caller: { tty: true, evidence: { kind: 'none' } } }), ...extra }),
     report: (lease: { attempt: string; revision: number }, outcome: 'success' | 'failed' = 'success') => reportAttempt(config, id, { attempt: lease.attempt, revision: lease.revision, driver, outcome }),
     state: async () => await readRun(config, id) as RunState };
 }
 afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
+
+describe('HITL provenance', () => {
+  const ui = { kind: 'ide', machine: 'host', workspace: '/ui' };
+  it.each([
+    ['terminal', true, {}, 'tty', false],
+    ['terminal', false, {}, 'cli', true],
+    ['terminal', true, { CLAUDE_CODE_SESSION_ID: 's1' }, 'tty', true],
+    ['terminal', true, { TEAMAI_WORKFLOW_ATTEMPT: 'a1' }, 'tty', true],
+    ['dashboard', false, {}, 'dashboard', false],
+    ['dashboard', false, { TEAMAI_AGENT_SESSION_ID: 's1' }, 'dashboard', true],
+    ['driver-json', false, {}, 'driver', false],
+    ['driver-json', true, { CODEX_SESSION_ID: 's1' }, 'driver', true],
+  ] as const)('an answer via %s from a process with a terminal %s and env %o is channel %s, agent %s', (kind, isTTY, env, channel, agent) => {
+    const caller = callerProvenance(env, { isTTY });
+    const provenance = respondProvenance(kind === 'driver-json' ? { kind, driver: ui, caller } : { kind, caller });
+    expect({ channel: provenance.channel, agent: provenance.agent }).toEqual({ channel, agent });
+  });
+
+  it('takes an answer respond --driver skill carries for an agent\'s', () => {
+    const provenance = respondProvenance({ kind: 'skill', driver: ui });
+    expect({ channel: provenance.channel, agent: provenance.agent, driver: provenance.driver }).toEqual({ channel: 'driver', agent: true, driver: ui });
+  });
+});
 
 describe('workflow HITL', () => {
   it('opens a HITL request without a lease or revision bump, answers, then leases', async () => {
@@ -100,7 +123,7 @@ describe('workflow HITL', () => {
 
   it('requires a terminal answer for a required HITL request, and validates choice and pass', async () => {
     const f = await fixture('  - id: ask\n    approve: { message: Go?, required: true }\n    command: echo work');
-    expect(await f.respond('ask', 'yes', { channel: 'cli', agent: true })).toMatchObject({ error: { code: 'agent_in_path' } });
+    expect(await f.respond('ask', 'yes', { provenance: respondProvenance({ kind: 'terminal', caller: { tty: false, evidence: { kind: 'none' } } }) })).toMatchObject({ error: { code: 'agent_in_path' } });
     expect(await f.respond('ask', 'wrong')).toMatchObject({ error: { code: 'invalid_choice' } });
     expect(await f.respond('ask', 'yes', { pass: 2 })).toMatchObject({ error: { code: 'stale_response' } });
     expect(data(await f.respond('ask', 'yes')).answered.choice).toBe('yes');

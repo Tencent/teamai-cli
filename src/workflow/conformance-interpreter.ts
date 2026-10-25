@@ -4,8 +4,9 @@ import path from 'node:path';
 import { z } from 'zod';
 import type { NextPrepare, WorkflowClient } from './protocol.js';
 import type { DriverCan } from './requirements.js';
+import { callerProvenance } from './run-controls.js';
 import { AttemptIdSchema } from './store.js';
-import type { DriverIdentity, RunState } from './types.js';
+import type { DriverIdentity, RunState, WorkflowEnvelope } from './types.js';
 import { git } from './worktree.js';
 
 export const PARALLEL_ROOTS = `schemaVersion: v1alpha1
@@ -88,7 +89,8 @@ export type ConformanceOperation =
   | { kind: 'host'; name: string; lease: string; on: 'branch' | 'start' | 'other' | 'foreign'; files?: Record<string, string> }
   | { kind: 'edit'; lease: string; files: Record<string, string> }
   | { kind: 'files'; lease?: string; expect: Record<string, string | null> }
-  | { kind: 'respond'; step: string; choice: string; as?: DriverProfile; note?: string; pass?: number; json?: unknown; expect: Record<string, unknown> }
+  /** `env`: variables the answering process has beside the scenario's, such as an agent session's. */
+  | { kind: 'respond'; step: string; choice: string; as?: DriverProfile; note?: string; pass?: number; json?: unknown; env?: Record<string, string>; expect: Record<string, unknown> }
   | { kind: 'retry'; step: string; expect: Record<string, unknown> }
   | { kind: 'cancel'; step?: string; expect: Record<string, unknown> }
   | { kind: 'advance'; ms: number }
@@ -123,8 +125,28 @@ export type ConformanceExpect = (actual: unknown, message?: string) => {
   not: { toHaveProperty(property: string): void };
 };
 
-/** The protocol calls a scenario makes, which the in-process client and the built CLI both answer. */
-export type ConformanceClient = Pick<WorkflowClient, 'start' | 'next' | 'report' | 'respond' | 'retry' | 'cancel'>;
+/**
+ * The protocol calls a scenario makes, which the in-process client and the built CLI both answer. `respond` answers
+ * from a process of its own without a terminal, whose environment adds `env` to the scenario's.
+ */
+export type ConformanceClient = Pick<WorkflowClient, 'start' | 'next' | 'report' | 'retry' | 'cancel'> & {
+  // A property, not a method, so a WorkflowClient's respond is not taken for this one.
+  respond: (runId: string, step: string, choice: string, options: { note?: string; pass?: number; json?: unknown; env?: Record<string, string> }) => Promise<WorkflowEnvelope>;
+};
+
+/** The in-process client as a scenario's, answering `respond` as a process without a terminal would with `env` added to this one's. */
+export function inProcessConformanceClient(client: WorkflowClient): ConformanceClient {
+  return {
+    start: (name, options) => client.start(name, options),
+    next: (runId, body, options) => client.next(runId, body, options),
+    report: (runId, body, options) => client.report(runId, body, options),
+    retry: (runId, step) => client.retry(runId, step),
+    cancel: (runId, step) => client.cancel(runId, step),
+    respond: (runId, step, choice, { env, json, ...answer }) => client.respond(runId, step, choice, {
+      ...answer, via: { kind: 'process', caller: callerProvenance({ ...process.env, ...env }, { isTTY: false }), json },
+    }),
+  };
+}
 
 /** What a runner provides: its client, how it reads the run file and the queued end record, and how it moves the clock. */
 export interface ConformanceRunner {
@@ -229,7 +251,7 @@ export async function runConformanceScenario(scenario: ConformanceScenario, runn
         break;
       case 'respond': {
         const json = 'json' in operation || !operation.as ? operation.json : { driver: profileDriver(operation.as) };
-        expect(await client.respond(runId, operation.step, operation.choice, { note: operation.note, pass: operation.pass, json })).toMatchObject(operation.expect);
+        expect(await client.respond(runId, operation.step, operation.choice, { note: operation.note, pass: operation.pass, json, env: operation.env })).toMatchObject(operation.expect);
         break;
       }
       case 'retry':

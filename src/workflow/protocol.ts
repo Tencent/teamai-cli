@@ -11,11 +11,19 @@ import { leaseNext, parseNextPayload, parseReport, parseResponsePayload, reconci
 import {
   abandonPlace, finishPlace, placeHeldBy, placeLeaseOf, placeRecorded, preparePlace, releasePlace, runPlaceSetup, type PlaceLease, type PlacePrepared, type StepEnd,
 } from './place/place.js';
-import { cancelRun, respondToHitl, retryStep } from './run-controls.js';
+import { cancelRun, respondProvenance, respondToHitl, retryStep, type CallerProvenance } from './run-controls.js';
 import { nextJudgeLease, parseJudgeRequest, runJudgeLease } from './scoring.js';
 import { AttemptIdSchema, readRun, RunIdSchema, withRunLock, type AttemptId, type RunId, type RunLock } from './store.js';
 import { isWorkflowError, type DriverIdentity, type WorkflowEnvelope, type WorkflowFailure } from './types.js';
 import { headCommit } from './worktree.js';
+
+/**
+ * Who sent an answer: a process, with the driver UI its `--json` payload declares the person answered in, or the run's
+ * skill driver, which carries the agent's answer.
+ */
+export type RespondVia =
+  | { kind: 'process'; caller: CallerProvenance; json?: unknown }
+  | { kind: 'skill'; driver: DriverIdentity };
 
 /**
  * The protocol as one client, in process or through the built CLI. A report made with the run's `RunLock` does not take
@@ -44,8 +52,8 @@ export interface WorkflowClient {
   next(runId: string, body: unknown, options?: { prepare?: NextPrepare }): Promise<WorkflowEnvelope>;
   /** Reports an attempt. A prepared one is finished first: its `changes` or `read` come from its place. */
   report(runId: string, body: unknown, options?: { lock?: RunLock }): Promise<WorkflowEnvelope>;
-  /** Records an answer through the client's channel. */
-  respond(runId: string, step: string, choice: string, options?: { note?: string; pass?: number; json?: unknown }): Promise<WorkflowEnvelope>;
+  /** Records an answer, with the provenance decided from the process or driver `via` names. */
+  respond(runId: string, step: string, choice: string, options: { note?: string; pass?: number; via: RespondVia }): Promise<WorkflowEnvelope>;
   /** Reopens the target step's dependency cone. */
   retry(runId: string, step: string): Promise<WorkflowEnvelope>;
   /** Stops the run or the named step. */
@@ -134,12 +142,12 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
       if (typeof parsed === 'string') return { error: { code: 'invalid_report', message: parsed } };
       return withIgnored(await managedReport({ config, runId, report: parsed.report, secrets: env.secrets, lock: options?.lock }), parsed.ignored);
     },
-    respond: async (runId, step, choice, options) => {
-      const declared = options?.json !== undefined ? parseResponsePayload(options.json) : undefined;
+    respond: async (runId, step, choice, { via, ...answer }) => {
+      if (via.kind === 'skill') return respondToHitl(config, runId, env.secrets, { step, choice, ...answer, provenance: respondProvenance(via) });
+      const declared = via.json !== undefined ? parseResponsePayload(via.json) : undefined;
       if (typeof declared === 'string') return { error: { code: 'invalid_json', message: declared } };
-      return withIgnored(await respondToHitl(config, runId, env.secrets, {
-        step, choice, note: options?.note, pass: options?.pass, ...(declared ? declared.response : { channel: 'cli', agent: true }),
-      }), declared?.ignored ?? []);
+      const provenance = respondProvenance(declared ? { kind: 'driver-json', driver: declared.driver, caller: via.caller } : { kind: 'terminal', caller: via.caller });
+      return withIgnored(await respondToHitl(config, runId, env.secrets, { step, choice, ...answer, provenance }), declared?.ignored ?? []);
     },
     retry: (runId, step) => retryStep(config, runId, env.secrets, step),
     cancel: (runId, step) => cancelRun(config, runId, env.secrets, step),

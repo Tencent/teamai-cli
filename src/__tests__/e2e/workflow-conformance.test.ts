@@ -67,8 +67,8 @@ describe('workflow protocol conformance through the CLI', () => {
       const pulled = await runCLI(['pull'], repo);
       expect(pulled.code, `${pulled.stdout}\n${pulled.stderr}`).toBe(0);
       const env = { ...process.env, ...scenario.env };
-      const call = async (args: string[]): Promise<WorkflowEnvelope> => {
-        const { stdout } = await runCLI(['workflow', ...args], repo, env);
+      const call = async (args: string[], extra: Record<string, string> = {}): Promise<WorkflowEnvelope> => {
+        const { stdout } = await runCLI(['workflow', ...args], repo, { ...env, ...extra });
         for (const [name, value] of Object.entries(scenario.env ?? {})) expect(stdout.includes(value), `workflow ${args[0]} printed the value of ${name}`).toBe(false);
         return envelope(stdout);
       };
@@ -76,7 +76,7 @@ describe('workflow protocol conformance through the CLI', () => {
         start: (name) => call(['start', name]),
         next: (run, body) => call(['next', run, '--json', JSON.stringify(body)]),
         report: (run, body) => call(['report', run, '--json', JSON.stringify(body)]),
-        respond: (run, step, choice, options) => call(['respond', run, step, choice, ...(options?.note !== undefined ? ['--note', options.note] : []), ...(options?.pass !== undefined ? ['--pass', String(options.pass)] : []), ...(options?.json !== undefined ? ['--json', JSON.stringify(options.json)] : [])]),
+        respond: (run, step, choice, options) => call(['respond', run, step, choice, ...(options.note !== undefined ? ['--note', options.note] : []), ...(options.pass !== undefined ? ['--pass', String(options.pass)] : []), ...(options.json !== undefined ? ['--json', JSON.stringify(options.json)] : [])], options.env),
         retry: (run, step) => call(['retry', run, step]),
         cancel: (run, step) => call(['cancel', run, ...(step !== undefined ? [step] : [])]),
       };
@@ -153,12 +153,12 @@ describe('workflow place conformance through the CLI', () => {
       expect(pulled.code, `${pulled.stdout}\n${pulled.stderr}`).toBe(0);
       // Every call is a process of its own with a temporary directory of its own, gone once it exits.
       let calls = 0;
-      const call = async (args: string[]): Promise<WorkflowEnvelope> => {
+      const call = async (args: string[], extra: Record<string, string> = {}): Promise<WorkflowEnvelope> => {
         calls += 1;
         const tmp = path.join(root, `tmp-${calls}`);
         fs.mkdirSync(tmp);
         try {
-          const { stdout, stderr } = await runCLI(['workflow', ...args], checkout, { ...env, TMPDIR: tmp, TMP: tmp, TEMP: tmp });
+          const { stdout, stderr } = await runCLI(['workflow', ...args], checkout, { ...env, ...extra, TMPDIR: tmp, TMP: tmp, TEMP: tmp });
           if (!stdout.includes('{')) throw new Error(`workflow ${args[0]} printed no JSON envelope:\n${stdout}\n${stderr}`);
           return envelope(stdout);
         } finally {
@@ -169,7 +169,7 @@ describe('workflow place conformance through the CLI', () => {
         start: (name) => call(['start', name]),
         next: (run, body, options) => call(['next', run, ...prepareArgs(options?.prepare), '--json', JSON.stringify(body)]),
         report: (run, body) => call(['report', run, '--json', JSON.stringify(body)]),
-        respond: (run, step, choice, options) => call(['respond', run, step, choice, ...(options?.note !== undefined ? ['--note', options.note] : []), ...(options?.pass !== undefined ? ['--pass', String(options.pass)] : []), ...(options?.json !== undefined ? ['--json', JSON.stringify(options.json)] : [])]),
+        respond: (run, step, choice, options) => call(['respond', run, step, choice, ...(options.note !== undefined ? ['--note', options.note] : []), ...(options.pass !== undefined ? ['--pass', String(options.pass)] : []), ...(options.json !== undefined ? ['--json', JSON.stringify(options.json)] : [])], options.env),
         retry: (run, step) => call(['retry', run, step]),
         cancel: (run, step) => call(['cancel', run, ...(step !== undefined ? [step] : [])]),
       };

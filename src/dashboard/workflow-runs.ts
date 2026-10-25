@@ -18,7 +18,7 @@ import { knownSecrets } from '../env-resolution.js';
 import { LabelStore, type PassScore } from '../scorers/label-store.js';
 import { locateStep } from '../workflow/engine.js';
 import { buildEndRecord, RECORDS_DIR, runRecordStates, type RecordState, type WorkflowRunRecord } from '../workflow/records.js';
-import { respondToHitl } from '../workflow/run-controls.js';
+import { callerProvenance, respondProvenance, respondToHitl } from '../workflow/run-controls.js';
 import { isRunId, readRun, runsDir } from '../workflow/store.js';
 import type { TokenUsage } from '../tool-launch/stdout.js';
 import type { StepHitl, RunState } from '../workflow/types.js';
@@ -292,14 +292,16 @@ const AnswerSchema = z.object({
 const STALE_CODES = new Set(['stale_response', 'repeated_response', 'not_waiting', 'run_settled']);
 
 /**
- * Records a person's answer from the page through the engine's `respond`, as channel `dashboard` with no agent in
- * the path. The page must send the pass it showed. Throws an HttpError the page shows when the engine refuses it.
+ * Records a person's answer from the page through the engine's `respond`, as channel `dashboard`. An agent session in
+ * the server's environment makes it an agent's answer, as it would make one from that shell. The page must send the
+ * pass it showed. Throws an HttpError the page shows when the engine refuses it.
  */
 export async function answerFromDashboard(config: LocalConfig, body: Record<string, unknown>): Promise<{ answered: unknown }> {
   const parsed = AnswerSchema.safeParse(body);
   if (!parsed.success) throw new HttpError(400, 'Send run, step, pass and choice of the HITL request you answer.');
   const { run, step, pass, choice } = parsed.data;
-  const envelope = await respondToHitl(config, run, await knownSecrets(config), { step, choice, pass, channel: 'dashboard', agent: false });
+  const provenance = respondProvenance({ kind: 'dashboard', caller: callerProvenance(process.env, process.stdin) });
+  const envelope = await respondToHitl(config, run, await knownSecrets(config), { step, choice, pass, provenance });
   if ('error' in envelope) throw new HttpError(STALE_CODES.has(envelope.error.code) ? 409 : 400, envelope.error.message);
   return { answered: envelope.data.answered };
 }

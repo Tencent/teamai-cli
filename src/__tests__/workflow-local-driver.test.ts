@@ -16,7 +16,7 @@ import { getDataHome, getReportsDir, type LocalConfig, type TeamaiConfig } from 
 import { log } from '../utils/logger.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
-import { cancelRun, respondToHitl, retryStep } from '../workflow/run-controls.js';
+import { cancelRun, respondProvenance, respondToHitl, retryStep } from '../workflow/run-controls.js';
 import { createLocalToolAdapter, type LocalToolAdapter, type LocalToolResult, type LocalToolRun, type ToolSpawn } from '../workflow/drivers/local/local-tool-adapter.js';
 import { _setDriverPollMs, runLocalDriver } from '../workflow/drivers/local/local-driver.js';
 import { driverIdentity } from '../driver-identity.js';
@@ -1381,7 +1381,7 @@ fs.writeFileSync(file('first.pid'), String(process.pid));
 fs.writeFileSync(file('first.started'), '');
 setInterval(() => {}, 1000);
 `);
-      expect(await respondToHitl(config, runId, await knownSecrets(config), { step: 'plan', choice: 'small', channel: 'cli', agent: false }))
+      expect(await respondToHitl(config, runId, await knownSecrets(config), { step: 'plan', choice: 'small', provenance: respondProvenance({ kind: 'terminal', caller: { tty: true, evidence: { kind: 'none' } } }) }))
         .not.toHaveProperty('error');
       const options = { hitl: true, question: async () => 'big' };
       const driving = runLocalDriver(config, runId, workspace, options);
@@ -1825,7 +1825,7 @@ steps:
     let aborted = false;
     const question = vi.fn((_hitl, signal: AbortSignal) => new Promise<string>((_resolve, reject) => {
       signal.addEventListener('abort', () => { aborted = true; reject(new Error('aborted')); });
-      void knownSecrets(config).then((secrets) => respondToHitl(config, runId, secrets, { step: 'ask', choice: 'one', channel: 'cli', agent: true }));
+      void knownSecrets(config).then((secrets) => respondToHitl(config, runId, secrets, { step: 'ask', choice: 'one', provenance: respondProvenance({ kind: 'terminal', caller: { tty: false, evidence: { kind: 'none' } } }) }));
     }));
     expect(await runLocalDriver(config, runId, workspace, { hitl: true, question })).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
     expect(aborted).toBe(true);
@@ -1932,7 +1932,7 @@ steps:
     }) });
     await asked;
     expect(await runLocalDriver(config, runId, workspace)).toEqual({ error: { code: 'driver_running', message: `Run ${runId} is already driven by process ${process.pid} on this machine. Stop that driver, or wait for it.` } });
-    await respondToHitl(config, runId, await knownSecrets(config), { step: 'ask', choice: 'no', channel: 'cli', agent: true });
+    await respondToHitl(config, runId, await knownSecrets(config), { step: 'ask', choice: 'no', provenance: respondProvenance({ kind: 'terminal', caller: { tty: false, evidence: { kind: 'none' } } }) });
     expect(await first).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
     expect(fs.existsSync(driverLockPath(config, runId))).toBe(false);
     expect(await runLocalDriver(config, runId, workspace)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
@@ -2170,7 +2170,7 @@ steps:
     let abortedBeforeLaunch = false;
     const question = vi.fn((_hitl, signal: AbortSignal) => new Promise<string>((_resolve, reject) => {
       signal.addEventListener('abort', () => { aborted = true; reject(new Error('aborted')); });
-      void knownSecrets(config).then((secrets) => respondToHitl(config, runId, secrets, { step: 'pair', choice: 'yes', channel: 'cli', agent: true }));
+      void knownSecrets(config).then((secrets) => respondToHitl(config, runId, secrets, { step: 'pair', choice: 'yes', provenance: respondProvenance({ kind: 'terminal', caller: { tty: false, evidence: { kind: 'none' } } }) }));
     }));
     const adapter: LocalToolAdapter = { run: vi.fn(), runInteractive: vi.fn<LocalToolAdapter['runInteractive']>(async () => {
       abortedBeforeLaunch = aborted;

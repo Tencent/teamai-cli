@@ -10,7 +10,6 @@ import {
   type Expression, type ExpressionPath,
 } from './expression.js';
 import { outputMismatch } from './output.js';
-import type { ResponseInput } from './run-controls.js';
 import { publishRunRecords, queueRunRecord, runRecordState } from './records.js';
 import {
   parseTemplate, renderStrings, renderText, stepExpressions, templatedTexts, templatePaths,
@@ -220,13 +219,21 @@ function hitlMessage(scope: Scope, states: StepState[], state: StepState, defini
   return renderText(parsed.template, context);
 }
 
+/**
+ * The command the person runs to answer step `step` of run `run` at `pass`, with `choice` written as it should appear:
+ * a placeholder such as `<option>`. A fan-out step path such as `items[0].ask` is quoted.
+ */
+export function respondCommand(run: string, step: string, choice: string, pass: number): string {
+  const stepArgument = /^[A-Za-z0-9_.-]+$/.test(step) ? step : `'${step}'`;
+  return `teamai workflow respond ${run} ${stepArgument} ${choice} --pass ${pass}`;
+}
+
 function waitingHitl(run: RunState): Record<string, unknown> | undefined {
   const state = run.steps.find((step) => step.status === 'waiting');
   const located = state && locateStep(run, state.id);
   if (!state || !located?.step.hitl) return undefined;
-  const stepArgument = /^[A-Za-z0-9_.-]+$/.test(state.id) ? state.id : `'${state.id}'`;
   return { run: run.id, step: state.id, pass: state.pass ?? 1, ...located.step.hitl,
-    respond: `teamai workflow respond ${run.id} ${stepArgument} <option> --pass ${state.pass ?? 1}`,
+    respond: respondCommand(run.id, state.id, '<option>', state.pass ?? 1),
     message: hitlMessage(located.scope, statesIn(run, located.scope), state, located.step) };
 }
 
@@ -1249,9 +1256,9 @@ function unreadFields(record: Record<string, unknown>, known: ReadonlySet<string
   return ignored;
 }
 
-/** A declared driver UI answer's provenance and unread payload fields. */
+/** The driver UI a `respond --json` payload declares the person answered in, and the payload fields it did not read. */
 export interface ParsedResponsePayload {
-  response: Pick<ResponseInput, 'channel' | 'agent' | 'driver'>;
+  driver: DriverIdentity;
   ignored: string[];
 }
 
@@ -1259,7 +1266,7 @@ export function parseResponsePayload(value: unknown): ParsedResponsePayload | st
   if (!isRecord(value)) return 'respond payload must be a JSON object';
   const driver = driverFrom(value.driver);
   if (!driver) return 'driver must include kind, machine, and workspace';
-  return { response: { channel: 'driver', agent: false, driver }, ignored: unreadFields(value, new Set(['driver'])) };
+  return { driver, ignored: unreadFields(value, new Set(['driver'])) };
 }
 
 /** A parsed report and the payload fields the CLI did not read from it. */

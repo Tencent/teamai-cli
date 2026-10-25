@@ -16,7 +16,7 @@ import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import * as engine from '../workflow/engine.js';
 import { leaseNext, parseReport, reportAttempt, startRun } from '../workflow/engine.js';
 import { _setDriverPollMs, runLocalDriver } from '../workflow/drivers/local/local-driver.js';
-import { cancelRun, respondToHitl, retryStep } from '../workflow/run-controls.js';
+import { cancelRun, respondProvenance, respondToHitl, retryStep } from '../workflow/run-controls.js';
 import type { LocalToolAdapter } from '../workflow/drivers/local/local-tool-adapter.js';
 import { parseWorkflow } from '../workflow/parse.js';
 import { readRun, updateRun } from '../workflow/store.js';
@@ -2950,7 +2950,7 @@ ${steps}`, steps.startsWith('inputs:') ? { items: ['a', 'b'] } : undefined);
       if (!lease) {
         const hitl = next.data.hitl as { step: string } | undefined;
         if (!hitl) throw new Error(JSON.stringify(next));
-        await respondToHitl(config, runId, await knownSecrets(config), { step: hitl.step, choice: 'yes', channel: 'cli', agent: false });
+        await respondToHitl(config, runId, await knownSecrets(config), { step: hitl.step, choice: 'yes', provenance: respondProvenance({ kind: 'terminal', caller: { tty: true, evidence: { kind: 'none' } } }) });
         continue;
       }
       const contract = lease.workspace;
