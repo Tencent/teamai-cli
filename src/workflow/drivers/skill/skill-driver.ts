@@ -9,6 +9,7 @@ import { driverIdentity } from '../../../driver-identity.js';
 import type { WorkflowEnv } from '../../../env-resolution.js';
 import type { ToolName } from '../../../resources/agent-format.js';
 import { resolveRunMode, type RunMode } from '../../../launch-context.js';
+import type { CommandExit } from '../../../tool-launch/process-stop.js';
 import { isAgentToolId } from '../../../tools.js';
 import type { LocalConfig, TeamaiConfig } from '../../../types.js';
 import { agentSessionFromEnv } from '../../../utils/session-id.js';
@@ -60,9 +61,9 @@ export interface RunnerJob {
 /** A step's command as its runner started it. */
 export interface CommandRun {
   /** Settles once the command exited and closed its output. `output` is stdout and stderr as they came, unmasked. */
-  exit: Promise<{ exitCode: number; stdout: string; stderr: string; output: string }>;
+  exit: Promise<CommandExit>;
   /** Stops the command and every process it started, and settles once they are gone. A second call changes nothing. */
-  stop(): Promise<Awaited<CommandRun['exit']>>;
+  stop(): Promise<CommandExit>;
 }
 
 /** How runners start, how a tick tells one is alive, how a runner runs its command, and how a call waits. */
