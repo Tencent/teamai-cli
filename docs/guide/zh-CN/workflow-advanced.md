@@ -703,7 +703,7 @@ teamai workflow resume <run>
 | 有 default 的 choose | 选择 default，渠道 `auto_approve` | 失败 `hitl_required` |
 | 无 default 的 choose | 失败 `hitl_required` | 失败 `hitl_required` |
 
-每次无 HITL 决策和 hitl_required 失败都会向 stderr 写警告。在本地配置中与 `workflows.max_parallel` 一起设置 `workflows.auto_approve`，或给 `start --driver local`、`resume` 传 `--auto-approve`，仅对当前进程生效。JSON next 不能设置此覆盖。本地驱动仅在 stdin 和 stderr 都是 TTY 时声明支持 HITL，通过 stderr 提问，接受选择及其后的可选备注，并在提问期间继续轮询。其他进程回答或取消 HITL 请求会关闭问题。交互工具占用终端时，HITL 请求提问会等待。
+每次无 HITL 决策和 hitl_required 失败都会向 stderr 写警告。在本地配置中与 `workflows.max_parallel` 一起设置 `workflows.auto_approve`，或给 `start --driver local`、`resume` 传 `--auto-approve`，仅对当前进程生效。没有 HITL 的驱动不能通过 JSON next 设置此覆盖。支持 HITL 的驱动忽略 `workflows.auto_approve`：用户为这次运行选择自动批准时，它在 `next` 中发送 `autoApprove: true`，终端中的本地驱动在传入 `--auto-approve` 时也这样做。此时可选 approve 和有 default 的 choose 按 `auto_approve: true` 一列回答；必需 approve 和无 default 的 choose 仍以 `hitl` 返回。本地驱动仅在 stdin 和 stderr 都是 TTY 时声明支持 HITL，通过 stderr 提问，接受选择及其后的可选备注，并在提问期间继续轮询。其他进程回答或取消 HITL 请求会关闭问题。交互工具占用终端时，HITL 请求提问会等待。
 
 `interactive: true` 要求 `prompt` 或 `prompt_file`。步骤会等待支持 HITL 的驱动。没有终端时，`--driver local` 以 `busy` 停止，原因中指出 `hitl`；请在终端中运行 `resume`。本地驱动在工作目录以前台方式打开工具，继承 stdio，并把 prompt 作为第一条消息。人对仓库的修改会保留，步骤成功。设置了 `workspace: read-only` 的交互步骤和命令一样检查：改了检出目录就以 `read_only_dirty` 失败，改动留在原地。在外层步骤打开的工作区里，改动保存在 `refs/teamai/kept/<attempt>`，并从工作区移除。在自己工作区里的交互步骤仍可以改那个工作区。无头 prompt 仍然只读。终端的 Ctrl-C 和 Ctrl-\ 交给交互工具处理；SIGTERM 和 SIGHUP 会停止工具和驱动。交互工具以 0 退出且没有输出时可以不写结果文件。驱动在 prompt 运行时每两秒轮询，发现取消后停止工具。
 

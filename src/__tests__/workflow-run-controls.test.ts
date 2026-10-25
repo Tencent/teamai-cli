@@ -466,7 +466,13 @@ it('accepts interactive success without outputs but validates outputs that were 
 
 it('ignores the process override and top-level capabilities in JSON, and leaves report capabilities opaque', () => {
   expect(parseNextPayload({ driver, can: { hitl: true }, autoApprove: true })).toEqual({ request: { driver }, ignored: ['can', 'autoApprove'] });
+  expect(parseNextPayload({ driver: { ...driver, can: { hitl: false } }, autoApprove: true })).toEqual({ request: { driver, can: { hitl: false } }, ignored: ['autoApprove'] });
   expect(parseReport({ driver: { ...driver, can: { hitl: true, future: 'secret' } }, attempt: 'a1', revision: 1, outcome: 'success' })).toMatchObject({ ignored: [] });
+});
+
+it('reads auto-approve from a driver with HITL', () => {
+  expect(parseNextPayload({ driver: { ...driver, can: { hitl: true } }, autoApprove: true })).toEqual({ request: { driver, can: { hitl: true }, autoApprove: true }, ignored: [] });
+  expect(parseNextPayload({ driver: { ...driver, can: { hitl: true } }, autoApprove: 'yes' })).toBe('autoApprove must be a boolean');
 });
 
 it('fails a HITL request message changed after pull with invalid_template', async () => {

@@ -237,25 +237,40 @@ function waitingHitl(run: RunState): Record<string, unknown> | undefined {
     message: hitlMessage(located.scope, statesIn(run, located.scope), state, located.step) };
 }
 
-function answerWithoutHitl(config: LocalConfig, run: RunState, now: string, autoApprove?: boolean): boolean {
+/** Answers each waiting optional approval `yes` and each waiting choice with a default by it, as auto-approve. */
+function answerOptionalGates(run: RunState, now: string): boolean {
   let changed = false;
   const definitionOf = stepDefinitions(run);
   for (const state of run.steps) {
     if (state.status !== 'waiting') continue;
     const hitl = definitionOf(state.id)?.hitl;
+    if (!hitl || hitl.required) continue;
+    if (hitl.kind === 'approve') {
+      log.warn(`Step "${state.id}" was approved by auto_approve.`);
+      answerHitl(state, { choice: 'yes', at: now, channel: 'auto_approve', agent: false });
+    } else if (hitl.default !== undefined) {
+      log.warn(`Step "${state.id}" chose "${hitl.default}" by auto_approve.`);
+      answerHitl(state, { choice: hitl.default, at: now, channel: 'auto_approve', agent: false });
+    } else continue;
+    changed = true;
+  }
+  return changed;
+}
+
+function answerWithoutHitl(config: LocalConfig, run: RunState, now: string, autoApprove?: boolean): boolean {
+  let changed = autoApprove ?? config.workflows?.auto_approve === true ? answerOptionalGates(run, now) : false;
+  const definitionOf = stepDefinitions(run);
+  for (const state of run.steps) {
+    if (state.status !== 'waiting') continue;
+    const hitl = definitionOf(state.id)?.hitl;
     if (!hitl) continue;
-    const auto = autoApprove ?? config.workflows?.auto_approve === true;
-    if (hitl.required || (hitl.kind === 'choose' && (!auto || hitl.default === undefined))) {
+    if (hitl.required || hitl.kind === 'choose') {
       const failure = { code: 'hitl_required', message: `Step "${state.id}" needs a person's answer, and the driver declares no HITL (driver.can.hitl). Retry it from a terminal: teamai workflow retry ${run.id} ${state.id}; then teamai workflow resume ${run.id}` };
       log.warn(failure.message);
       failStep(state, failure, run.revision);
     } else {
-      if (hitl.kind === 'approve') {
-        log.warn(auto ? `Step "${state.id}" was approved by auto_approve.`
-          : `Step "${state.id}" was skipped: its approve HITL request needs a person, and the driver declares no HITL (driver.can.hitl). Set workflows.auto_approve, pass --auto-approve, or run the workflow from a terminal.`);
-      } else log.warn(`Step "${state.id}" chose "${hitl.default}" by auto_approve.`);
-      answerHitl(state, { choice: hitl.kind === 'approve' ? auto ? 'yes' : 'no' : hitl.default!, at: now,
-        channel: auto ? 'auto_approve' : 'no_hitl', agent: false });
+      log.warn(`Step "${state.id}" was skipped: its approve HITL request needs a person, and the driver declares no HITL (driver.can.hitl). Set workflows.auto_approve, pass --auto-approve, or run the workflow from a terminal.`);
+      answerHitl(state, { choice: 'no', at: now, channel: 'no_hitl', agent: false });
     }
     changed = true;
   }
@@ -967,7 +982,11 @@ export interface NextOptions {
   base?: { ref?: string; commit: string };
   /** What the driver can do on this request. An omitted `workspace` means read-only, so a `new` or `continue` step waits. */
   can?: DriverCan;
-  /** Process-only override of the member's automatic HITL approval setting. */
+  /**
+   * Answer optional approvals `yes` and choices with a default by it, recorded `auto_approve`. For a driver without HITL
+   * it overrides `workflows.auto_approve`; a driver with HITL sends it when the person chose auto-approve for the run.
+   * Required approvals, and choices without a default, are never answered this way.
+   */
   autoApprove?: boolean;
   /** Take the run over from the install that published it before leasing; a run this install owns stays as it is. */
   claim?: boolean;
@@ -1121,6 +1140,9 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
       const other = run.steps.find((step): step is LeasedStep => step.status === 'leased' && !sameDriver(step.lease.driver, driver));
       if (other) return wait(other);
       run.driver = driver;
+      // A driver with HITL answers optional gates itself unless the person chose auto-approve for this run; it never
+      // follows workflows.auto_approve.
+      if (can.hitl && options.autoApprove === true && answerOptionalGates(run, now)) continue;
       if (options.canTakeLease !== false && !can.hitl && answerWithoutHitl(config, run, now, options.autoApprove)) continue;
       // An open lease the driver does not list is handed back before another lease is issued, as a restarted driver expects.
       const leased = run.steps.find((step): step is LeasedStep => step.status === 'leased' && !running.has(step.lease.attempt));
@@ -1233,7 +1255,7 @@ function driverFrom(value: unknown): DriverIdentity | undefined {
 const DRIVER_FIELDS = new Set(['kind', 'machine', 'workspace', 'can']);
 
 /** The top-level payload fields `parseNextPayload` reads. */
-const NEXT_PAYLOAD_FIELDS = new Set(['driver', 'running', 'canTakeLease', 'base', 'claim']);
+const NEXT_PAYLOAD_FIELDS = new Set(['driver', 'running', 'canTakeLease', 'base', 'claim', 'autoApprove']);
 
 /** The top-level payload fields `parseReport` reads. Keep in sync with the fields it picks. */
 const REPORT_FIELDS = new Set([
@@ -1416,6 +1438,11 @@ export function parseNextPayload(value: unknown): ParsedNextPayload | string {
     request.can = parsed.data;
     ignored.push(...Object.keys(can).filter((key) => !CAN_KEYS.has(key)).map((key) => `driver.can.${key}`));
   }
+  // Only a driver with HITL reads it: for one without, workflows.auto_approve is the member's own setting.
+  if (record.autoApprove !== undefined && request.can?.hitl === true) {
+    if (typeof record.autoApprove !== 'boolean') return 'autoApprove must be a boolean';
+    request.autoApprove = record.autoApprove;
+  } else if (record.autoApprove !== undefined) ignored.push('autoApprove');
   return { request, ignored };
 }
 

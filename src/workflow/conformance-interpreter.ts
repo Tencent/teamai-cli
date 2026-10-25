@@ -82,7 +82,7 @@ export function profileDriver(profile: DriverProfile): DriverIdentity {
  */
 export type ConformanceOperation =
   | {
-    kind: 'next'; saveAs: string; as?: DriverProfile; can?: DriverCan; running?: string[]; canTakeLease?: boolean; hitl?: boolean; claim?: boolean;
+    kind: 'next'; saveAs: string; as?: DriverProfile; can?: DriverCan; running?: string[]; canTakeLease?: boolean; hitl?: boolean; claim?: boolean; autoApprove?: boolean;
     base?: { ref?: string; commit: string }; prepare?: true; attempt?: string; adopt?: string; promptHas?: string[];
     cancelled?: string[]; absent?: string[]; expect: Record<string, unknown>; state?: Record<string, unknown>;
   }
@@ -204,6 +204,7 @@ export async function runConformanceScenario(scenario: ConformanceScenario, runn
           ...(operation.running ? { running: operation.running.map(attemptOf) } : {}),
           ...(operation.canTakeLease !== undefined ? { canTakeLease: operation.canTakeLease } : {}),
           ...(operation.claim !== undefined ? { claim: operation.claim } : {}),
+          ...(operation.autoApprove !== undefined ? { autoApprove: operation.autoApprove } : {}),
           ...(operation.base ? { base: operation.base } : {}),
         }, prepare ? { prepare } : undefined);
         expect(envelope).toMatchObject(operation.expect);

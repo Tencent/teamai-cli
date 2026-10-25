@@ -736,6 +736,38 @@ workflowConformanceScenarios.push({
   expectState: { steps: [{ id: 'work', status: 'pending', answer: { choice: 'yes', channel: 'driver', agent: false, driver: UI.driver } }, { id: 'later', status: 'pending' }] },
 });
 
+workflowConformanceScenarios.push({
+  name: 'auto-approve-with-hitl: a driver with HITL that asks for auto-approve gets optional approvals and choices with a default answered, and still gets required approvals and choices without a default',
+  workflowName: 'build',
+  yaml: controlsYaml(`  - id: plan
+    approve: Plan it?
+    command: echo plan
+  - id: pick
+    needs: []
+    choose: { message: Pick one, options: [fast, slow], default: fast }
+  - id: ship
+    needs: [plan, pick]
+    approve: { message: Ship it?, required: true }
+    command: echo ship
+  - id: name
+    needs: [ship]
+    choose: { message: Name it, options: [one, two] }`),
+  operations: [
+    { kind: 'next', saveAs: 'plan', as: 'session', autoApprove: true, expect: { data: { lease: { step: 'plan' } } }, state: { steps: [
+      { id: 'plan', answer: { choice: 'yes', channel: 'auto_approve', agent: false } },
+      { id: 'pick', answer: { choice: 'fast', channel: 'auto_approve', agent: false } },
+      { id: 'ship', status: 'pending' }, { id: 'name', status: 'pending' }] } },
+    { kind: 'report', lease: 'plan', as: 'session', body: { outcome: 'success' }, expect: { data: { accepted: true } } },
+    { kind: 'next', saveAs: 'ship-gate', as: 'session', autoApprove: true, expect: { data: { hitl: { step: 'ship', required: true } } } },
+    { kind: 'respond', step: 'ship', choice: 'yes', pass: 1, json: UI, expect: { data: { answered: { step: 'ship', channel: 'driver' } } } },
+    { kind: 'next', saveAs: 'ship', as: 'session', autoApprove: true, expect: { data: { lease: { step: 'ship' } } } },
+    { kind: 'report', lease: 'ship', as: 'session', body: { outcome: 'success' }, expect: { data: { accepted: true } } },
+    { kind: 'next', saveAs: 'name-gate', as: 'session', autoApprove: true, expect: { data: { hitl: { step: 'name', options: ['one', 'two'] } } } },
+  ],
+  expectState: { status: 'running', steps: [{ id: 'plan', status: 'succeeded' }, { id: 'pick', status: 'succeeded' },
+    { id: 'ship', status: 'succeeded', answer: { choice: 'yes', channel: 'driver', agent: false } }, { id: 'name', status: 'waiting' }] },
+});
+
 workflowConformanceScenarios.push(...limitsConformanceScenarios);
 
 /** A value a scenario reads from the run once it is done: its base, or what a step reported in `changes`. */
