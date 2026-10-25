@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { z } from 'zod';
 import type { WorkflowFailure } from '../types.js';
 import type { StepChanges } from '../workspace.js';
 import { commitWork, git, mergeBranch, offBranch, pushIfOrigin } from '../worktree.js';
@@ -59,8 +60,8 @@ export async function rememberConflicts(dir: string): Promise<Record<string, str
   const file = await conflictsPath(dir);
   let saved = new Map<string, string>();
   try {
-    const parsed = JSON.parse(await fs.readFile(file, 'utf8')) as Record<string, string>;
-    if (parsed && typeof parsed === 'object') saved = new Map(Object.entries(parsed).filter((entry) => typeof entry[1] === 'string'));
+    const parsed = z.record(z.unknown()).safeParse(JSON.parse(await fs.readFile(file, 'utf8')));
+    if (parsed.success) saved = new Map(Object.entries(parsed.data).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
   } catch {
     saved = new Map();
   }
