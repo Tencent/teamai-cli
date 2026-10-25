@@ -262,8 +262,19 @@ export function parseSkillCall(
 }
 
 /** Answers `call`, then journals it beside the run's skill state (`journal.ts`). */
+/**
+ * Answers `call` with one envelope, and journals it. An error thrown inside an agent's call answers `skill_call_failed`
+ * with its message, as the agent reads only the envelope. A runner's own call answers nobody, so its error goes on up: the
+ * runner is gone, which the next tick finds.
+ */
 export async function runSkillCall(call: SkillCall, context: SkillContext): Promise<SkillAnswer> {
-  const answer = await answerOf(call, context);
+  let answer: SkillAnswer;
+  try {
+    answer = await answerOf(call, context);
+  } catch (error) {
+    if (call.kind === 'report' && call.role === 'runner') throw error;
+    answer = { error: { code: 'skill_call_failed', message: error instanceof Error ? error.message : String(error), next: null } };
+  }
   await journalCall(context, call, answer);
   return answer;
 }

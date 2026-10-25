@@ -231,6 +231,8 @@ describe('#1083 workflow run records', () => {
       'adopt_mismatch',
       // Refusals of a --driver skill call, answered to the agent with the command it can run instead.
       'confirm_needed', 'needs_local_driver', 'not_skill_run', 'orchestrator_active', 'choice_pending', 'unknown_choice', 'unknown_offer', 'unknown_attempt', 'not_dispatched',
+      // An error thrown inside a --driver skill call, answered to the agent as one envelope with its message.
+      'skill_call_failed',
       // Why the skill driver stopped judging a run, told to the agent in a judging-off event.
       'judge_runner_gone',
       // Refusals of teamai score --run, answered to the member who asked for a pass to be judged.

@@ -541,7 +541,8 @@ class ReportStop implements fc.AsyncCommand<Model, Real> {
 
 /**
  * A crash after the engine answered a `next` or a `report`, before skill.json is written: in the session's call, or in
- * a runner its call lets go on. The session's call either fails, and the session lost that turn, or returns.
+ * a runner its call lets go on. The session's call either answers `skill_call_failed`, and the session lost that turn,
+ * or returns.
  */
 class CrashAfterEngine implements fc.AsyncCommand<Model, Real> {
   constructor(readonly call: 'next' | 'poll' | 'report', readonly pick: number) {}
@@ -558,13 +559,11 @@ class CrashAfterEngine implements fc.AsyncCommand<Model, Real> {
           ? { kind: 'stopped', step: action.step, attempt: action.attempt, why: 'cancelled' }
           : expect.objectContaining({ kind: 'settled', step: action.step, outcome: 'failed' }));
         await called(real, { kind: 'report', run: real.run, attempt: action.attempt, role: 'agent', modelUnavailable: false });
-      } else if (this.call === 'poll') {
-        sawPoll(model, turnOf(await called(real, { kind: 'next', run: real.run, wait: true })));
       } else {
-        sawForeground(model, turnOf(await called(real, { kind: 'next', run: real.run, wait: false })));
+        const answer = await called(real, { kind: 'next', run: real.run, wait: this.call === 'poll' });
+        const lost = 'error' in answer && answer.error.code === 'skill_call_failed';
+        if (!lost) (this.call === 'poll' ? sawPoll : sawForeground)(model, turnOf(answer));
       }
-    } catch (error) {
-      if (!(error instanceof Crash)) throw error;
     } finally {
       real.crash.disarm();
     }

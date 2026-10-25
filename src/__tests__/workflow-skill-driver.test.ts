@@ -340,6 +340,14 @@ describe('skill driver', () => {
     expect(actions).toEqual([{ kind: 'done', outcome: 'succeeded', prs: [] }]);
   });
 
+  it('answers an error thrown inside a call as one error envelope with its message and nothing to run', async () => {
+    const lost = 'The runner of attempt a1 cannot start in /gone, the checkout run r1 started from: it does not exist.';
+    const harness = await skillHarness({ check: CHECK }, { runners: (runners) => ({ ...runners, spawn: async () => { throw new Error(lost); } }) });
+    roots.push(harness.root);
+
+    expect(await harness.call({ kind: 'start', name: 'check', answers: { confirmed: false }, inputs: undefined })).toEqual({ error: { code: 'skill_call_failed', message: lost, next: null } });
+  });
+
   it('refuses a start from an agent session of a workflow without invoke, and leaves the person nothing but their own terminal', async () => {
     const harness = await skillHarness({ check: CHECK.replace('invoke: allow\n', '') });
     roots.push(harness.root);
