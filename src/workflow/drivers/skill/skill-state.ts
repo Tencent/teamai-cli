@@ -168,12 +168,12 @@ const SkillStateSchema = z.object({
 });
 export type SkillState = z.infer<typeof SkillStateSchema>;
 
-export async function readSkillState(config: LocalConfig, run: RunId): Promise<SkillState | { kind: 'missing' } | { kind: 'unreadable'; reason: string }> {
+export async function readSkillState(config: LocalConfig, run: RunId): Promise<{ kind: 'found'; state: SkillState } | { kind: 'missing' } | { kind: 'unreadable'; reason: string }> {
   const raw = await readFileSafe(skillStatePath(config, run));
   if (raw === null) return { kind: 'missing' };
   try {
     const parsed = SkillStateSchema.safeParse(JSON.parse(raw));
-    return parsed.success ? parsed.data : { kind: 'unreadable', reason: parsed.error.issues[0]?.message ?? 'invalid' };
+    return parsed.success ? { kind: 'found', state: parsed.data } : { kind: 'unreadable', reason: parsed.error.issues[0]?.message ?? 'invalid' };
   } catch (error) {
     return { kind: 'unreadable', reason: error instanceof Error ? error.message : String(error) };
   }

@@ -135,8 +135,9 @@ const lines = (entries: JournalLine[]): string => entries.map((entry) => `${JSON
 export async function journalCall(context: SkillContext, call: SkillCall, answer: SkillAnswer): Promise<void> {
   const run = call.kind === 'start' ? ('data' in answer && 'turn' in answer.data ? answer.data.turn.run : undefined) : call.kind === 'describe' ? undefined : call.run;
   if (run === undefined) return;
-  const state = await readSkillState(context.config, run);
-  if ('kind' in state) return;
+  const read = await readSkillState(context.config, run);
+  if (read.kind !== 'found') return;
+  const { state } = read;
   const at = context.now().toISOString();
   const by = context.session === undefined ? 'none' : state.orchestrator.session === context.session ? 'orchestrator' : 'session';
   const inCheckout = path.resolve(context.cwd) === state.driver.workspace;

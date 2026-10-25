@@ -82,12 +82,12 @@ export const PlaceRecordSchema = z.discriminatedUnion('phase', [
 export type PlaceRecord = z.infer<typeof PlaceRecordSchema>;
 
 /** The place an attempt was prepared in, from `attempts/<a>/place.json`. */
-export async function readPlaceRecord(config: LocalConfig, run: RunId, attempt: AttemptId): Promise<PlaceRecord | { kind: 'missing' } | { kind: 'unreadable'; reason: string }> {
+export async function readPlaceRecord(config: LocalConfig, run: RunId, attempt: AttemptId): Promise<{ kind: 'found'; record: PlaceRecord } | { kind: 'missing' } | { kind: 'unreadable'; reason: string }> {
   const raw = await readFileSafe(placeRecordPath(config, run, attempt));
   if (raw === null) return { kind: 'missing' };
   try {
     const parsed = PlaceRecordSchema.safeParse(JSON.parse(raw));
-    return parsed.success ? parsed.data : { kind: 'unreadable', reason: parsed.error.issues[0]?.message ?? 'invalid' };
+    return parsed.success ? { kind: 'found', record: parsed.data } : { kind: 'unreadable', reason: parsed.error.issues[0]?.message ?? 'invalid' };
   } catch (error) {
     return { kind: 'unreadable', reason: error instanceof Error ? error.message : String(error) };
   }

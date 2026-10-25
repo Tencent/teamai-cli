@@ -223,10 +223,10 @@ function lockBusy(context: SkillContext, run: RunId, same: Literal): SkillAnswer
  */
 async function called(context: SkillContext, run: RunId, same: Literal, input: { takeover?: true; report?: AttemptId } = {}): Promise<{ state: SkillState } | { answer: SkillAnswer }> {
   const read = await readSkillState(context.config, run);
-  if ('kind' in read && read.kind === 'unreadable') {
+  if (read.kind === 'unreadable') {
     return { answer: { error: { code: 'run_unreadable', message: `The skill driver's state of run ${run} cannot be read (${read.reason}). The person can continue the run in a terminal with teamai workflow resume ${run}.`, next: null } } };
   }
-  const state = 'kind' in read ? undefined : read;
+  const state = read.kind === 'found' ? read.state : undefined;
   if (state && input.report !== undefined && traced(context, reportCallRow(state, input.report))) return { state };
   const taken = traced(context, callRow(state, { run, session: context.session, at: context.now().toISOString(), takeover: input.takeover === true }));
   if ('answer' in taken) return { answer: { error: errorOf(taken.answer, { invocation: context.invocation, same, run }) } };
@@ -351,10 +351,10 @@ export async function foreground(context: SkillContext, run: RunId, call: Foregr
     await context.runners.sleep(GRACE_CHECK_MS);
     const checked = await context.locks.take(run, async (lock): Promise<SkillAnswer | 'again'> => {
       const read = await readSkillState(context.config, run);
-      if ('kind' in read) return { error: { code: 'run_unreadable', message: `The skill driver's state of run ${run} went missing while it ran.`, next: null } };
-      if (read.attempts.some((open) => open.phase === 'preparing') && context.now().getTime() < until) return 'again';
+      if (read.kind !== 'found') return { error: { code: 'run_unreadable', message: `The skill driver's state of run ${run} went missing while it ran.`, next: null } };
+      if (read.state.attempts.some((open) => open.phase === 'preparing') && context.now().getTime() < until) return 'again';
       // The tick's reason to wait is stale once its runners moved, and while they have not, an attempt is open.
-      return finish(context, lock, read, {});
+      return finish(context, lock, read.state, {});
     }, TICK_LOCK_WAIT_MS);
     if (checked === 'again') continue;
     return busy(checked) ? lockBusy(context, run, same) : checked;

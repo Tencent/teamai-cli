@@ -44,8 +44,9 @@ export function placeOf(lease: { cwd?: string; workspace?: Pick<WorkspaceContrac
 export async function placeHeldBy(input: { config: LocalConfig; run: RunId; root: string; lease: Pick<PlaceLease, 'workspace'>; others: AttemptId[]; adopt?: string }): Promise<AttemptId | undefined> {
   const places = [placeOf(input.lease, path.resolve(input.root)), ...(input.adopt !== undefined ? [path.resolve(input.adopt)] : [])];
   for (const other of input.others) {
-    const recorded = await readPlaceRecord(input.config, input.run, other);
-    if ('kind' in recorded || recorded.phase === 'finished' || recorded.phase === 'abandoned') continue;
+    const read = await readPlaceRecord(input.config, input.run, other);
+    const recorded = read.kind === 'found' ? read.record : undefined;
+    if (!recorded || recorded.phase === 'finished' || recorded.phase === 'abandoned') continue;
     if (places.includes(recorded.dir)) return other;
   }
   return undefined;
@@ -60,8 +61,9 @@ export async function adoptedPlaceOf(input: { config: LocalConfig; run: RunId; b
   let last: { dir: string; at: string } | undefined;
   for (const name of await fs.readdir(attemptsDir(config, run)).catch(() => [])) {
     const attempt = AttemptIdSchema.safeParse(name);
-    const recorded = attempt.success ? await readPlaceRecord(config, run, attempt.data) : undefined;
-    if (!recorded || 'kind' in recorded || recorded.phase !== 'finished' || recorded.place.role !== 'writer' || !recorded.place.adopted) continue;
+    const read = attempt.success ? await readPlaceRecord(config, run, attempt.data) : undefined;
+    const recorded = read?.kind === 'found' ? read.record : undefined;
+    if (!recorded || recorded.phase !== 'finished' || recorded.place.role !== 'writer' || !recorded.place.adopted) continue;
     if (recorded.place.workspace.branch === branch && (last === undefined || recorded.at > last.at)) last = { dir: recorded.dir, at: recorded.at };
   }
   return last?.dir;
@@ -128,10 +130,10 @@ export async function preparePlace(input: { config: LocalConfig; lock: RunLock; 
   const { config, lock: { run }, lease } = input;
   const root = path.resolve(input.root);
   const read = await readPlaceRecord(config, run, lease.attempt);
-  if ('kind' in read && read.kind === 'unreadable') {
+  if (read.kind === 'unreadable') {
     return { kind: 'failed', failure: { code: 'workspace_base', message: `The place record of attempt ${lease.attempt} cannot be read (${read.reason}). Retry the step with teamai workflow retry ${run} ${lease.step}.` } };
   }
-  const recorded = 'kind' in read ? undefined : read;
+  const recorded = read.kind === 'found' ? read.record : undefined;
   const reopened = recorded?.phase === 'opening' ? recorded : undefined;
   // A prepare killed while it adopted a place goes on in that place.
   const adopt = input.adopt !== undefined ? path.resolve(input.adopt) : reopened?.adopted ? reopened.dir : undefined;
@@ -285,8 +287,9 @@ async function settle(config: LocalConfig, record: PlaceRecordBase): Promise<Pla
  */
 export async function runPlaceSetup(input: { config: LocalConfig; run: RunId; attempt: AttemptId; mode: RunMode; values: ReadonlyMap<string, string>; signal?: AbortSignal }): Promise<WorkflowFailure | undefined> {
   const { config, run, attempt, mode, values, signal } = input;
-  const recorded = await readPlaceRecord(config, run, attempt);
-  if ('kind' in recorded || recorded.phase !== 'staged') return undefined;
+  const read = await readPlaceRecord(config, run, attempt);
+  const recorded = read.kind === 'found' ? read.record : undefined;
+  if (recorded?.phase !== 'staged') return undefined;
   const { setup, expiresAt } = recorded;
   const scope = setup.envScope ?? { provide: [], withhold: [] };
   const scoped = await stepEnvironment(values, scope);
@@ -326,12 +329,13 @@ export type PlaceFinished = z.infer<typeof PlaceFinishedSchema>;
  */
 export async function finishPlace(input: { config: LocalConfig; lock: RunLock; attempt: AttemptId; end: StepEnd; secrets: Record<string, string> }): Promise<PlaceFinished | 'unmanaged'> {
   const { config, lock: { run }, attempt, end, secrets } = input;
-  const recorded = await readPlaceRecord(config, run, attempt);
-  if ('kind' in recorded) {
-    if (recorded.kind === 'missing') return 'unmanaged';
-    const failure = { code: 'workspace_base', message: `The place record of attempt ${attempt} cannot be read (${recorded.reason}), so the step's changes cannot be checked.` };
+  const read = await readPlaceRecord(config, run, attempt);
+  if (read.kind === 'missing') return 'unmanaged';
+  if (read.kind === 'unreadable') {
+    const failure = { code: 'workspace_base', message: `The place record of attempt ${attempt} cannot be read (${read.reason}), so the step's changes cannot be checked.` };
     return { outcome: 'failed', message: failure.message, failure };
   }
+  const recorded = read.record;
   if (recorded.phase === 'finished') return recorded.finished;
   // A setup that failed gave the place up, and a prepare that failed in git made none: the report carries that failure.
   if ((recorded.phase === 'abandoned' || recorded.phase === 'opening') && end.outcome === 'failed') return end;
@@ -411,9 +415,10 @@ async function finishRole(files: { snapshot: string; overlay: string }, record: 
  */
 export async function abandonPlace(input: { config: LocalConfig; lock: RunLock; attempt: AttemptId }): Promise<string | undefined> {
   const { config, lock: { run }, attempt } = input;
-  const recorded = await readPlaceRecord(config, run, attempt);
+  const read = await readPlaceRecord(config, run, attempt);
+  const recorded = read.kind === 'found' ? read.record : undefined;
   // A prepare cut short in git put nothing over the copy, and the next prepare of the attempt goes on from its record.
-  if ('kind' in recorded || recorded.phase === 'opening' || recorded.phase === 'finished' || recorded.phase === 'abandoned') return undefined;
+  if (!recorded || recorded.phase === 'opening' || recorded.phase === 'finished' || recorded.phase === 'abandoned') return undefined;
   const files = placeFiles(config, run, attempt);
   const { place, dir } = recorded;
   const abandoned: PlaceRecord = { ...baseOf(recorded), phase: 'abandoned', at: new Date().toISOString() };
@@ -446,8 +451,7 @@ export async function abandonPlace(input: { config: LocalConfig; lock: RunLock; 
 
 /** Whether `preparePlace` recorded a place for `attempt`, readable or not. */
 export async function placeRecorded(input: { config: LocalConfig; run: RunId; attempt: AttemptId }): Promise<boolean> {
-  const recorded = await readPlaceRecord(input.config, input.run, input.attempt);
-  return !('kind' in recorded) || recorded.kind !== 'missing';
+  return (await readPlaceRecord(input.config, input.run, input.attempt)).kind !== 'missing';
 }
 
 /**
@@ -455,8 +459,9 @@ export async function placeRecorded(input: { config: LocalConfig; run: RunId; at
  * so does one in a place the host made.
  */
 export async function releasePlace(input: { config: LocalConfig; lock: RunLock; attempt: AttemptId }): Promise<'removed' | 'left'> {
-  const recorded = await readPlaceRecord(input.config, input.lock.run, input.attempt);
-  if ('kind' in recorded || recorded.phase === 'opening' || recorded.place.role === 'checkout') return 'left';
+  const read = await readPlaceRecord(input.config, input.lock.run, input.attempt);
+  const recorded = read.kind === 'found' ? read.record : undefined;
+  if (!recorded || recorded.phase === 'opening' || recorded.place.role === 'checkout') return 'left';
   if (recorded.place.role === 'writer' && recorded.place.adopted) return 'left';
   await removeWorktree(recorded.root, recorded.dir);
   return 'removed';

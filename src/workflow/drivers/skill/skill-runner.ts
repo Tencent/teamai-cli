@@ -157,9 +157,9 @@ async function locked<T extends object>(context: SkillContext, run: RunId, body:
 
 async function readState(context: SkillContext, lock: RunLock): Promise<SkillState | undefined> {
   const read = await readSkillState(context.config, lock.run);
-  if ('kind' in read) return undefined;
+  if (read.kind !== 'found') return undefined;
   traced(context, runnerCallRow());
-  return read;
+  return read.state;
 }
 
 /** Applies the effects of `taken`, a row that stored the report of `attempt`, and saves what the engine's answer left. */
