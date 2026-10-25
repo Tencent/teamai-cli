@@ -482,9 +482,10 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options
   const root = await placeRoot({ cwd, checkout: typeof started === 'object' ? started.checkout : undefined });
   const unreconciled = await reconcileTakenCopies(config, runId, root);
   if (unreconciled) return { error: unreconciled };
-  const canHitl = options.hitl ?? (process.stdin.isTTY === true && process.stderr.isTTY === true);
   // Resolved once per drive, so a resume where a person attends runs attended whatever mode the run started in.
   const mode = resolveRunMode(process.env);
+  // A terminal alone is not a person: an unattended run under a pseudo-terminal asks nobody.
+  const canHitl = options.hitl ?? (mode === 'attended' && process.stdin.isTTY === true && process.stderr.isTTY === true);
   const can = localCan(config, canHitl);
   const driver = driverIdentity('local', cwd);
   const tools = { ...config.workflows?.tools, ...options.tools };

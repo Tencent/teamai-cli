@@ -1943,6 +1943,33 @@ ${interactive ? '    interactive: true\n' : ''}`;
     expect(await unenforced(interactive)).toEqual([{ requirement: 'max_turns', asked: 3 }]);
   });
 
+  it.each([
+    ['attended', false, { choice: 'yes', channel: 'tty' }],
+    ['unattended', false, { choice: 'no', channel: 'no_hitl' }],
+    ['unattended', true, { choice: 'yes', channel: 'auto_approve' }],
+  ] as const)('on a terminal, answers an optional approval in a run that is %s, auto-approving %s, with %o', async (mode, autoApprove, answer) => {
+    for (const stream of [process.stdin, process.stderr]) {
+      const { isTTY } = stream;
+      Object.defineProperty(stream, 'isTTY', { value: true, configurable: true });
+      onTestFinished(() => { Object.defineProperty(stream, 'isTTY', { value: isTTY, configurable: true }); });
+    }
+    vi.stubEnv('TEAMAI_MODE', mode);
+    onTestFinished(() => { vi.unstubAllEnvs(); });
+    const { config, workspace, runId } = await workflowFixture(`schemaVersion: v1alpha1
+name: build
+description: Ask only a person who is there.
+steps:
+  - id: ask
+    approve: Continue?
+    command: echo ok
+`);
+    const question = vi.fn(async () => 'yes');
+    expect(await runLocalDriver(config, runId, workspace, { question, autoApprove })).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(question).toHaveBeenCalledTimes(answer.channel === 'tty' ? 1 : 0);
+    const run = await readRun(config, runId);
+    expect(typeof run === 'object' && run.steps[0]?.answer).toMatchObject(answer);
+  });
+
   it('auto-approves only for this driver process without HITL', async () => {
     const { config, workspace, runId } = await workflowFixture(`schemaVersion: v1alpha1
 name: build
