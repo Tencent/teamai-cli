@@ -1,4 +1,4 @@
-import { PARALLEL_ROOTS, controlsYaml, type ConformanceScenario } from './conformance-interpreter.js';
+import { PARALLEL_ROOTS, controlsYaml, type ConformanceOperation, type ConformanceScenario } from './conformance-interpreter.js';
 import { limitsConformanceScenarios } from './limits-conformance.js';
 
 const TWO_STEPS = `schemaVersion: v1alpha1
@@ -885,6 +885,35 @@ steps:
           prompt: Polish the project.
 `;
 
+/** Two roots that each add `shared.txt`, then `join`, which merges both. */
+function conflictingJoin(join: string): string {
+  return `schemaVersion: v1alpha1
+name: build
+description: Two copies add the same file, and a step joins them.
+steps:
+  - id: left
+    workspace: new
+    prompt: Write the left side.
+  - id: right
+    needs: []
+    workspace: new
+    prompt: Write the right side.
+  - id: join
+    needs: [left, right]
+    workspace: new
+    ${join}
+`;
+}
+
+const conflictingSides: ConformanceOperation[] = [
+  { kind: 'next', saveAs: 'left', as: 'external', prepare: true, expect: { data: { lease: { step: 'left' } } } },
+  { kind: 'edit', lease: 'left', files: { 'shared.txt': 'left\n' } },
+  { kind: 'report', lease: 'left', as: 'external', body: { outcome: 'success' }, expect: { data: { accepted: true } } },
+  { kind: 'next', saveAs: 'right', as: 'external', prepare: true, expect: { data: { lease: { step: 'right' } } } },
+  { kind: 'edit', lease: 'right', files: { 'shared.txt': 'right\n' } },
+  { kind: 'report', lease: 'right', as: 'external', body: { outcome: 'success' }, expect: { data: { accepted: true } } },
+];
+
 /**
  * The places `next --prepare` makes, for a driver that runs the protocol from other processes than the one that
  * prepared its lease. The runner starts the run in a git checkout holding `PLACE_CHECKOUT_FILES`, whose origin is a
@@ -910,6 +939,118 @@ export const workflowPlaceConformanceScenarios: ConformanceScenario[] = [
       { kind: 'files', expect: { 'code.txt': null } },
     ],
     expectPushed: { second: { 'code.txt': 'first\nsecond\n', 'AGENTS.md': 'Untrusted branch instructions.\n' } },
+  },
+  {
+    name: 'a prepared reader whose run is cancelled gets lease_cancelled, and its copy is put back as it found it',
+    workflowName: 'build',
+    yaml: `schemaVersion: v1alpha1
+name: build
+description: A reader of a copy whose run is cancelled while it runs.
+steps:
+  - id: change
+    workspace: new
+    workflow:
+      steps:
+        - id: write
+          prompt: Change the agent rules.
+        - id: check
+          needs: [write]
+          workspace: read-only
+          prompt: Check the change.
+`,
+    operations: [
+      { kind: 'next', saveAs: 'write', as: 'external', prepare: true, expect: { data: { lease: { step: 'change.write' } } } },
+      { kind: 'edit', lease: 'write', files: { 'AGENTS.md': 'Branch rules.\n' } },
+      { kind: 'report', lease: 'write', as: 'external', body: { outcome: 'success' }, expect: { data: { accepted: true } } },
+      { kind: 'next', saveAs: 'check', as: 'external', prepare: true, expect: { data: { lease: { step: 'change.check' } } } },
+      { kind: 'files', lease: 'check', expect: { 'AGENTS.md': 'Trusted base instructions.\n' } },
+      { kind: 'edit', lease: 'check', files: { 'junk.txt': 'reader\n' } },
+      { kind: 'cancel', expect: { data: { run: { status: 'cancelled' } } } },
+      { kind: 'report', lease: 'check', as: 'external', body: { outcome: 'success' }, expect: { error: { code: 'lease_cancelled' } } },
+      { kind: 'files', lease: 'check', expect: { 'AGENTS.md': 'Branch rules.\n', 'junk.txt': null } },
+    ],
+  },
+  {
+    name: 'a lease from next without --prepare has no place: no cwd, and no worktree in the checkout',
+    workflowName: 'build',
+    yaml: PREPARED_CHANGE,
+    operations: [
+      { kind: 'next', saveAs: 'write', as: 'external', absent: ['cwd'], expect: { data: { lease: { step: 'change.write' } } } },
+      { kind: 'files', expect: { '.teamai/workflow-worktrees': null } },
+    ],
+  },
+  {
+    name: 'a prepare whose setup fails settles the attempt failed with setup_failed',
+    workflowName: 'build',
+    yaml: `schemaVersion: v1alpha1
+name: build
+description: A step whose setup fails.
+setup:
+  command: exit 3
+steps:
+  - id: change
+    workspace: new
+    command: echo change
+`,
+    operations: [
+      {
+        kind: 'next', saveAs: 'change', as: 'local', prepare: true, expect: { error: { code: 'setup_failed' } },
+        state: { steps: [{ id: 'change', status: 'failed', failure: { code: 'setup_failed' } }] },
+      },
+    ],
+  },
+  {
+    name: 'a prepare whose start commit is on no branch of origin settles the attempt failed with workspace_base',
+    workflowName: 'build',
+    yaml: `schemaVersion: v1alpha1
+name: build
+description: A copy continued from a commit nobody pushed.
+steps:
+  - id: change
+    workspace: new
+    workflow:
+      steps:
+        - id: write
+          workspace: continue
+          command: echo write
+        - id: more
+          needs: [write]
+          workspace: continue
+          command: echo more
+`,
+    operations: [
+      { kind: 'next', saveAs: 'write', as: 'external', expect: { data: { lease: { step: 'change.write' } } } },
+      { kind: 'report', lease: 'write', as: 'external', changes: {}, body: { outcome: 'success' }, expect: { data: { accepted: true } } },
+      {
+        kind: 'next', saveAs: 'more', as: 'external', prepare: true, expect: { error: { code: 'workspace_base' } },
+        state: { steps: [{ id: 'change' }, { id: 'change.write', status: 'succeeded' }, { id: 'change.more', status: 'failed', failure: { code: 'workspace_base' } }] },
+      },
+    ],
+  },
+  {
+    name: 'a prepared command whose merge conflicts settles the attempt failed with merge_conflict',
+    workflowName: 'build',
+    yaml: conflictingJoin('command: echo join'),
+    operations: [
+      ...conflictingSides,
+      {
+        kind: 'next', saveAs: 'join', as: 'external', prepare: true, expect: { error: { code: 'merge_conflict' } },
+        state: { steps: [{ id: 'left', status: 'succeeded' }, { id: 'right', status: 'succeeded' }, { id: 'join', status: 'failed', failure: { code: 'merge_conflict' } }] },
+      },
+    ],
+  },
+  {
+    name: 'a prepared prompt whose merge conflicts is told about the conflict on every prepare, and its resolution is committed',
+    workflowName: 'build',
+    yaml: conflictingJoin('prompt: Join both sides.'),
+    operations: [
+      ...conflictingSides,
+      { kind: 'next', saveAs: 'join', as: 'external', prepare: true, promptHas: ['Join both sides.\n\nMerge conflict with teamai/', '(shared.txt). Resolve the conflict in the workspace.'], expect: { data: { lease: { step: 'join' } } } },
+      { kind: 'next', saveAs: 'again', as: 'external', prepare: true, promptHas: ['(shared.txt). Resolve the conflict in the workspace.'], expect: { data: { lease: { step: 'join' } } } },
+      { kind: 'edit', lease: 'join', files: { 'shared.txt': 'left\nright\n' } },
+      { kind: 'report', lease: 'join', as: 'external', body: { outcome: 'success' }, expect: { data: { accepted: true } } },
+    ],
+    expectPushed: { join: { 'shared.txt': 'left\nright\n' } },
   },
 ];
 

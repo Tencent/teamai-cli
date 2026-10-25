@@ -1,13 +1,17 @@
 /** The workflow protocol in process: the calls behind `workflow start`, `next`, `report`, `respond`, `retry` and `cancel`, for every driver. */
+import { z } from 'zod';
+import { sameDriver } from '../driver-identity.js';
 import type { WorkflowEnv } from '../env-resolution.js';
 import type { LocalConfig } from '../types.js';
 import { loadCachedWorkflow, loadWorkflowTree } from './cache.js';
 import { describeWorkflow, type WorkflowDescription } from './describe.js';
-import { leaseNext, parseNextPayload, parseReport, parseResponsePayload, reportAttempt, startRun, withIgnored, type ReportInput } from './engine.js';
-import { finishPlace, preparePlace, type PlaceLease, type PlacePrepared } from './place/place.js';
+import { leaseNext, parseNextPayload, parseReport, parseResponsePayload, reconcileRun, reportAttempt, startRun, withIgnored, type ReportInput } from './engine.js';
+import {
+  abandonPlace, finishPlace, placeLeaseOf, placeRecorded, preparePlace, releasePlace, runPlaceSetup, type PlaceLease, type PlacePrepared, type StepEnd,
+} from './place/place.js';
 import { cancelRun, respondToHitl, retryStep } from './run-controls.js';
-import { AttemptIdSchema, readRun, RunIdSchema, withRunLock, type RunLock } from './store.js';
-import type { WorkflowEnvelope, WorkflowFailure } from './types.js';
+import { AttemptIdSchema, readRun, RunIdSchema, withRunLock, type AttemptId, type RunLock } from './store.js';
+import { isWorkflowError, type DriverIdentity, type WorkflowEnvelope, type WorkflowFailure } from './types.js';
 import { headCommit } from './worktree.js';
 
 /**
@@ -21,13 +25,18 @@ export interface WorkflowClient {
    */
   describe(name: string, options: { ceiling: number }): Promise<{ description: WorkflowDescription } | { error: WorkflowFailure }>;
   /**
-   * Prepares the place of `lease`, an attempt the run has leased, in the checkout the run started from. A lease without
-   * a workspace contract only, for now.
+   * Prepares the place of `lease`, an attempt the run has leased without a workspace contract, in the checkout the run
+   * started from.
    */
-  prepare(lock: RunLock, lease: PlaceLease): Promise<PlacePrepared>;
+  prepare(lock: RunLock, lease: Pick<PlaceLease, 'attempt' | 'executor' | 'interactive' | 'readOnly'>): Promise<PlacePrepared>;
   /** Starts `name` with `inputs`, from `checkout` when given: the run's workspaces start from its HEAD. */
   start(name: string, options?: { inputs?: unknown; checkout?: string }): Promise<WorkflowEnvelope>;
-  next(runId: string, body: unknown): Promise<WorkflowEnvelope>;
+  /**
+   * Asks the run what to do. With `prepare`, a lease comes with `cwd`, its place in the checkout the run started from,
+   * made under the run's lock, and a prepare that fails settles the attempt `failed` with its own code.
+   */
+  next(runId: string, body: unknown, options?: { prepare?: boolean }): Promise<WorkflowEnvelope>;
+  /** Reports an attempt. A prepared one is finished first: its `changes` or `read` come from its place. */
   report(runId: string, body: unknown, options?: { lock?: RunLock }): Promise<WorkflowEnvelope>;
   /** Records an answer through the client's channel. */
   respond(runId: string, step: string, choice: string, options?: { note?: string; pass?: number; json?: unknown }): Promise<WorkflowEnvelope>;
@@ -50,24 +59,24 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
     prepare: async (lock, lease) => {
       const run = await readRun(config, lock.run);
       if (typeof run !== 'object') return { kind: 'failed', failure: { code: 'run_unreadable', message: `Run ${lock.run} cannot be read, so attempt ${lease.attempt} has no place to run in` } };
-      if (!run.steps.some((step) => step.status === 'leased' && step.lease.attempt === lease.attempt)) {
-        return { kind: 'failed', failure: { code: 'wrong_attempt', message: `Attempt ${lease.attempt} is not the leased attempt` } };
-      }
-      if (run.checkout === undefined) {
-        return { kind: 'failed', failure: { code: 'workspace_base', message: `Run ${lock.run} records no checkout it started from, so attempt ${lease.attempt} has no place to run in. Drive it with teamai workflow resume ${lock.run}.` } };
-      }
-      return preparePlace({ config, lock, root: run.checkout, lease });
+      const leased = run.steps.find((step) => step.status === 'leased' && step.lease.attempt === lease.attempt);
+      if (!leased) return { kind: 'failed', failure: { code: 'wrong_attempt', message: `Attempt ${lease.attempt} is not the leased attempt` } };
+      if (run.checkout === undefined) return { kind: 'failed', failure: noCheckout(lock.run, lease.attempt) };
+      return preparePlace({ config, lock, root: run.checkout, lease: { ...lease, step: leased.id } });
     },
     start: async (name, options) => {
       const checkout = options?.checkout;
       const base = checkout === undefined ? undefined : await headCommit(checkout);
       return startRun(config, name, options?.inputs ?? {}, { secrets: env.secrets, ...(checkout !== undefined ? { checkout } : {}), ...(base ? { base } : {}) });
     },
-    next: async (runId, body) => {
+    next: async (runId, body, options) => {
       const parsed = parseNextPayload(body);
       if (typeof parsed === 'string') return { error: { code: 'invalid_json', message: parsed } };
       const { driver, ...next } = parsed.request;
-      return withIgnored(await leaseNext(config, runId, driver, { ...next, env }), parsed.ignored);
+      const lease = (): Promise<WorkflowEnvelope> => leaseNext(config, runId, driver, { ...next, env });
+      const run = RunIdSchema.safeParse(runId);
+      if (!options?.prepare || !run.success) return withIgnored(await lease(), parsed.ignored);
+      return withIgnored(await withRunLock(config, run.data, async (lock) => prepareLeased({ config, lock, driver, env, answer: await lease() }), { waitMs: 0 }), parsed.ignored);
     },
     report: async (runId, body, options) => {
       const parsed = parseReport(body);
@@ -86,21 +95,91 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
   };
 }
 
+function noCheckout(run: string, attempt: string): WorkflowFailure {
+  return { code: 'workspace_base', message: `Run ${run} records no checkout it started from, so attempt ${attempt} has no place to run in. Drive it with teamai workflow resume ${run}.` };
+}
+
+const LeasedSchema = z.object({ attempt: z.string(), revision: z.number() }).passthrough();
+
 /**
- * Reports an attempt, after finishing the place `prepare` gave it: a reader that changed the checkout fails. An
- * attempt without a place is reported as it is.
+ * Prepares the place of the lease `answer` carries, holding the run's lock: a lease with a workspace contract gets its
+ * worktree set up. A prepare that fails reports the attempt `failed` with its own code, and answers with that failure.
+ */
+async function prepareLeased(input: { config: LocalConfig; lock: RunLock; driver: DriverIdentity; env: WorkflowEnv; answer: WorkflowEnvelope }): Promise<WorkflowEnvelope> {
+  const { config, lock, driver, env, answer } = input;
+  if (!('data' in answer) || answer.data.lease === undefined) return answer;
+  const leased = LeasedSchema.safeParse(answer.data.lease);
+  if (!leased.success) return { error: { code: 'run_unreadable', message: `Run ${lock.run} returned a lease this teamai cannot read` } };
+  const lease = placeLeaseOf(leased.data);
+  const placed: PlacePrepared = lease
+    ? await prepareWithSetup({ config, lock, env, lease })
+    : { kind: 'failed', failure: { code: 'workspace_base', message: `Attempt ${leased.data.attempt} was leased a place this teamai cannot read. Update teamai.` } };
+  if (placed.kind === 'failed') {
+    const { failure } = placed;
+    await reportAttempt(config, lock.run, { attempt: leased.data.attempt, revision: leased.data.revision, driver, outcome: 'failed', message: failure.message, failure }, env.secrets);
+    return { error: failure };
+  }
+  return { data: { ...answer.data, lease: { ...leased.data, cwd: placed.dir, ...(placed.prompt !== undefined ? { prompt: placed.prompt } : {}) } } };
+}
+
+async function prepareWithSetup(input: { config: LocalConfig; lock: RunLock; env: WorkflowEnv; lease: PlaceLease }): Promise<PlacePrepared> {
+  const { config, lock, env, lease } = input;
+  const run = await readRun(config, lock.run);
+  const checkout = typeof run === 'object' ? run.checkout : undefined;
+  if (checkout === undefined) return { kind: 'failed', failure: noCheckout(lock.run, lease.attempt) };
+  const placed = await preparePlace({ config, lock, root: checkout, lease });
+  if (placed.kind === 'failed') return placed;
+  const failure = await runPlaceSetup({ config, run: lock.run, attempt: lease.attempt, values: env.values });
+  return failure ? { kind: 'failed', failure } : placed;
+}
+
+/**
+ * Whether `report` is for an attempt the run still leases to its driver at its revision, once the deadlines that have
+ * passed apply, so finishing its place does not commit for an attempt the run would refuse.
+ */
+async function reportable(config: LocalConfig, runId: string, report: ReportInput): Promise<boolean> {
+  const run = await readRun(config, runId);
+  if (typeof run !== 'object') return false;
+  // Applied to this copy only; reportAttempt applies and saves them.
+  reconcileRun(run, new Date().toISOString());
+  if (run.cancelledAttempts?.includes(report.attempt)) return false;
+  const step = run.steps.find((item) => item.status === 'leased' && item.lease.attempt === report.attempt);
+  return step?.status === 'leased' && step.lease.revision === report.revision && sameDriver(step.lease.driver, report.driver);
+}
+
+/**
+ * Reports an attempt, after finishing the place `prepare` gave it, under the run's lock. An attempt without a place is
+ * reported as it is. A report the run would refuse is sent as it is, and a cancelled one leaves the place as prepare
+ * found it; so does a `released` attempt.
  */
 async function managedReport(input: { config: LocalConfig; runId: string; report: ReportInput; secrets: Record<string, string>; lock: RunLock | undefined }): Promise<WorkflowEnvelope> {
   const { config, runId, report, secrets, lock } = input;
   const attempt = AttemptIdSchema.safeParse(report.attempt);
   const run = RunIdSchema.safeParse(runId);
   if (!attempt.success || !run.success) return reportAttempt(config, runId, report, secrets);
-  const finished = async (held: RunLock): Promise<WorkflowEnvelope> => {
-    const place = await finishPlace({ config, lock: held, attempt: attempt.data, outcome: report.outcome });
-    const failure = place === 'unmanaged' ? undefined : place.failure;
-    return reportAttempt(config, runId, failure ? { ...report, outcome: 'failed', message: failure.message, failure } : report, secrets);
-  };
-  return lock ? finished(lock) : withRunLock(config, run.data, finished, { waitMs: 0 });
+  if (!await placeRecorded({ config, run: run.data, attempt: attempt.data })) return reportAttempt(config, runId, report, secrets);
+  const settle = (held: RunLock): Promise<WorkflowEnvelope> => settleManaged({ config, lock: held, attempt: attempt.data, report, secrets });
+  return lock ? settle(lock) : withRunLock(config, run.data, settle, { waitMs: 0 });
+}
+
+async function settleManaged(input: { config: LocalConfig; lock: RunLock; attempt: AttemptId; report: ReportInput; secrets: Record<string, string> }): Promise<WorkflowEnvelope> {
+  const { config, lock, attempt, report, secrets } = input;
+  if (!await reportable(config, lock.run, report)) {
+    const answer = await reportAttempt(config, lock.run, report, secrets);
+    if (isWorkflowError(answer) && answer.error.code === 'lease_cancelled') await abandonPlace({ config, lock, attempt });
+    return answer;
+  }
+  if (report.changes || report.read) return { error: { code: 'invalid_report', message: 'Prepared workspace reports fill changes/read automatically; omit those fields' } };
+  if (report.outcome === 'released') {
+    await abandonPlace({ config, lock, attempt });
+    return reportAttempt(config, lock.run, report, secrets);
+  }
+  const end: StepEnd = { outcome: report.outcome, ...(report.message !== undefined ? { message: report.message } : {}), ...(report.failure ? { failure: report.failure } : {}) };
+  const finished = await finishPlace({ config, lock, attempt, end, secrets });
+  const body = finished === 'unmanaged' ? report : { ...report, ...finished };
+  const answer = await reportAttempt(config, lock.run, body, secrets);
+  if ('data' in answer && answer.data.cleanup === true && body.outcome === 'success') await releasePlace({ config, lock, attempt });
+  return answer;
 }
 
 /** The outputs a command step reports: its whole stdout, when that is JSON. */

@@ -31,7 +31,7 @@ export type ReleasedTokens = z.infer<typeof ReleasedTokensSchema>;
 export const StoppedAttemptSchema = z.object({ attempt: z.string(), step: z.string(), driver: DriverSchema, stoppedAt: z.string() });
 export type StoppedAttempt = z.infer<typeof StoppedAttemptSchema>;
 
-const FailureSchema: z.ZodType<WorkflowFailure> = z.object({ code: z.string(), message: z.string() });
+export const FailureSchema: z.ZodType<WorkflowFailure> = z.object({ code: z.string(), message: z.string() });
 
 const SessionRefSchema = z.object({ tool: z.string().min(1), id: z.string().min(1) });
 
@@ -46,7 +46,7 @@ const LeaseSchema: z.ZodType<StepLease> = z.object({
   unenforced: z.array(UnenforcedSchema).optional(), expiresAt: z.string().optional(),
 });
 
-const ChangesSchema = z.object({
+export const ChangesSchema = z.object({
   branch: z.string(),
   base: z.string(),
   from: z.string(),

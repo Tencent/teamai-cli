@@ -15,3 +15,8 @@ export function driverIdentity(kind: string, workspace: string): z.infer<typeof 
   }
   return { kind, machine, workspace: path.resolve(workspace) };
 }
+
+/** Whether `left` and `right` name the same driver: one kind, on one machine, in one workspace. */
+export function sameDriver(left: z.infer<typeof DriverSchema>, right: z.infer<typeof DriverSchema>): boolean {
+  return left.kind === right.kind && left.machine === right.machine && left.workspace === right.workspace;
+}

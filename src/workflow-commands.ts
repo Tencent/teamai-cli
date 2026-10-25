@@ -3,7 +3,7 @@ import { resolveWorkflowEnv, type WorkflowEnv } from './env-resolution.js';
 import { isLeaseRef } from './scorers/entry.js';
 import { log, setStderrOnly } from './utils/logger.js';
 import { collectEnvSecrets, redactJson } from './utils/redact.js';
-import { leaseNext, parseNextPayload, parseReport, parseResponsePayload, reportAttempt, resumableSessions, withIgnored, type ParsedResponsePayload } from './workflow/engine.js';
+import { parseNextPayload, parseReport, parseResponsePayload, resumableSessions, withIgnored, type ParsedResponsePayload } from './workflow/engine.js';
 import { publishRun, resumeRun } from './workflow/handoff.js';
 import { cancelRun, respondToHitl, retryStep } from './workflow/run-controls.js';
 import { runLocalDriver, withDriverLock } from './workflow/drivers/local/local-driver.js';
@@ -14,7 +14,6 @@ import { inProcessClient } from './workflow/protocol.js';
 import { parseSkillCall, runSkillCall, skillContext } from './workflow/drivers/skill/skill-driver.js';
 import { loadCachedWorkflow } from './workflow/cache.js';
 import { findRunConfig } from './workflow/run-location.js';
-import { prepareSessionLease, reportSessionLease } from './workflow/session-driver.js';
 import type { WorkflowEnvelope } from './workflow/types.js';
 
 /** Prints `envelope` with each of `secrets` masked, and sets the exit code from the envelope as the operation returned it. */
@@ -197,13 +196,7 @@ export async function workflowNext(runId: string, options: { json?: string; prep
   const loaded = await readyRunConfig(runId, parsed.request.claim === true);
   if (!loaded) return;
   const { config, env, secrets } = loaded;
-  const { driver, ...next } = parsed.request;
-  let answer = await leaseNext(config, runId, driver, { ...next, env });
-  if (options.prepare && 'data' in answer && answer.data.lease) {
-    const prepared = await prepareSessionLease(config, runId, driver, answer.data.lease as Record<string, unknown>, env);
-    answer = 'data' in prepared ? { data: { ...answer.data, ...prepared.data } } : prepared;
-  }
-  writeEnvelope(withIgnored(answer, parsed.ignored), secrets);
+  writeEnvelope(await inProcessClient({ config, env }).next(runId, payload.value, { prepare: options.prepare === true }), secrets);
 }
 
 export async function workflowReport(runId: string, options: { json?: string; driver?: string; attempt?: string }): Promise<void> {
@@ -234,7 +227,7 @@ export async function workflowReport(runId: string, options: { json?: string; dr
   const loaded = await readyRunConfig(runId);
   if (!loaded) return;
   const { config, env, secrets } = loaded;
-  writeEnvelope(withIgnored(await reportSessionLease(config, runId, parsed.report, env) ?? await reportAttempt(config, runId, parsed.report, secrets), parsed.ignored), secrets);
+  writeEnvelope(await inProcessClient({ config, env }).report(runId, payload.value), secrets);
 }
 
 

@@ -1,0 +1,46 @@
+import { pathExists } from '../../utils/fs.js';
+import type { WorkflowFailure } from '../types.js';
+import { applyBaseConfig, hooksPath, recordConfigOverlay, restoreUneditedConfig } from '../worktree.js';
+
+/**
+ * Puts the base agent configuration at `configCommit` over the copy `dir` of `root`, with the branch's own files kept
+ * in `saved`, then delivers the team's assets into it. The delivery is recorded as part of the overlay, so it is not
+ * the step's edit.
+ */
+export async function applyOverlay({ root, dir, configCommit, saved }: { root: string; dir: string; configCommit: string; saved: string }): Promise<WorkflowFailure | undefined> {
+  const applied = await applyBaseConfig(dir, configCommit, hooksPath(root), saved);
+  if (!applied.ok) return { code: 'base_config', message: applied.message };
+  await deliverTeamAssets(dir);
+  await recordConfigOverlay(dir, saved);
+  return undefined;
+}
+
+/**
+ * Puts back each branch agent file the step left unchanged. Why they are not back, when git could not list the copy's
+ * files. An overlay already restored, whose `saved` is gone, has nothing left to put back.
+ */
+export async function restoreOverlay({ dir, configCommit, saved }: { dir: string; configCommit: string; saved: string }): Promise<string | undefined> {
+  if (!await pathExists(saved)) return undefined;
+  return restoreUneditedConfig(dir, configCommit, saved);
+}
+
+/** What a step's failure adds when git could not list its copy `dir` to put the branch's agent files back. */
+export function unrestoredConfig(reason: string, dir: string): string {
+  return `The branch's agent files were not put back: ${reason}. Fix what git reported and copy those files into ${dir}, then retry the step.`;
+}
+
+/**
+ * Gives a workflow worktree the skills, rules, agents and MCP a new worktree of this checkout gets. It runs after the
+ * base agent files are in place and before their overlay is recorded, so the delivered files are not the step's edits.
+ */
+async function deliverTeamAssets(dir: string): Promise<void> {
+  const exitCode = process.exitCode;
+  try {
+    const { createProjectToolRoots } = await import('../../project-agent-root.js');
+    await createProjectToolRoots({ cwd: dir });
+    const { pull } = await import('../../pull.js');
+    await pull({ silent: true, inline: true, gitHook: 'post-checkout', prepareCheckout: true, cwd: dir });
+  } finally {
+    process.exitCode = exitCode;
+  }
+}

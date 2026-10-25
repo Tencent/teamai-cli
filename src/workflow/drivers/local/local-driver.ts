@@ -900,7 +900,7 @@ async function placeInCheckout(config: LocalConfig, lock: RunLock, active: strin
   const attempt = AttemptIdSchema.safeParse(lease.attempt);
   if (!attempt.success) return { code: 'workspace_base', message: `Attempt ${lease.attempt} of step "${lease.step}" has an id this teamai cannot read. Update teamai.` };
   const prepared = await preparePlace({ config, lock, root: active, lease: {
-    attempt: attempt.data, executor: lease.command !== undefined ? 'command' : 'prompt',
+    attempt: attempt.data, step: lease.step, executor: lease.command !== undefined ? 'command' : 'prompt',
     ...(lease.interactive ? { interactive: true } : {}), ...(lease.readOnly ? { readOnly: true } : {}),
   } });
   return prepared.kind === 'failed' ? prepared.failure : undefined;
@@ -910,7 +910,7 @@ async function placeInCheckout(config: LocalConfig, lock: RunLock, active: strin
 async function finishCheckout(config: LocalConfig, lock: RunLock, lease: Lease, outcome: 'success' | 'failed'): Promise<WorkflowFailure | undefined> {
   const attempt = AttemptIdSchema.safeParse(lease.attempt);
   if (lease.workspace || !attempt.success) return undefined;
-  const finished = await finishPlace({ config, lock, attempt: attempt.data, outcome });
+  const finished = await finishPlace({ config, lock, attempt: attempt.data, end: { outcome }, secrets: await knownSecrets(config) });
   return finished === 'unmanaged' ? undefined : finished.failure;
 }
 
@@ -1237,50 +1237,4 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options
     if (signalled) exitOn(signalled);
     handle([]);
   }
-}
-
-/** Local preparation data retained between the session's public next/report calls. No prompt, env value or graph. */
-export interface PreparedSessionWorkspace {
-  step: string; attempt: string; revision: number; cwd?: string; workspace?: WorkspaceContract;
-  interactive?: true; readOnly?: true;
-  before?: { ok: boolean; head?: string; branch: string; files: Array<[string, string]> };
-  found?: string[]; overlay?: string; rangeFrom?: string; conflicts?: Array<[string, string]>;
-}
-
-export async function prepareSessionWorkspace(raw: unknown, active: string, runId: string, values: ReadonlyMap<string, string>, overlay: string): Promise<PreparedSessionWorkspace | WorkflowFailure> {
-  const lease = parseLease(raw);
-  if (!lease) return { code: 'workspace_base', message: 'The session driver received an unreadable lease' };
-  const failure = await stageLease(lease, { active, runId, values, overlay, checkout: async (staged) => {
-    staged.before = await snapshotWorktree(active);
-    return undefined;
-  } });
-  if (failure) return failure;
-  return { step: lease.step, attempt: lease.attempt, revision: lease.revision, cwd: lease.cwd, workspace: lease.workspace,
-    ...(lease.interactive ? { interactive: true } : {}), ...(lease.readOnly ? { readOnly: true } : {}),
-    ...(lease.before ? { before: { ...lease.before, files: [...lease.before.files] } } : {}),
-    found: lease.found, overlay: lease.overlay, rangeFrom: lease.rangeFrom,
-    ...(lease.conflicts ? { conflicts: [...lease.conflicts].map(([file, content]): [string, string] => [file, createHash('sha256').update(content).digest('hex')]) } : {}) };
-}
-
-export async function finishSessionWorkspace(prepared: PreparedSessionWorkspace, report: ReportBody): Promise<ReportBody> {
-  const { before, conflicts, ...fields } = prepared;
-  const lease: Lease = { ...fields, ...(before ? { before: { ...before, files: new Map(before.files) } } : {}),
-    ...(conflicts ? { conflicts: new Map(conflicts), conflictsHashed: true } : {}) };
-  if (report.outcome === 'released') {
-    await (lease.workspace?.mode === 'read-only' ? leaveReadCopy(lease) : restoreLeaseOverlay(lease));
-    prepared.overlay = undefined;
-    return report;
-  }
-  const left = await leaveReadCopy(lease);
-  const paths = !left && lease.before && lease.cwd && !lease.workspace && !(lease.interactive && !lease.readOnly) ? changedPaths(lease.before, await snapshotWorktree(lease.cwd)) : [];
-  const dirty = left && left.state !== 'untouched' ? readCopyFailure(left, `Read-only session step changed repository paths: ${left.changed.join(', ')}.`)
-    : paths.length ? { code: 'read_only_dirty', message: `Read-only session step changed repository paths: ${paths.join(', ')}` } : undefined;
-  const finished = lease.workspace && !left && !dirty ? await finishWorkspace(lease, report.outcome === 'failed') : {};
-  prepared.overlay = lease.overlay;
-  const { changes: _changes, read: _read, ...body } = report;
-  const reportedFailure = report.outcome === 'failed' ? report.failure : undefined;
-  const failure = dirty ?? finished.failure ?? (reportedFailure && { ...reportedFailure, message: withUnpushed(reportedFailure.message, finished.unpushed) });
-  const message = finished.unpushed ? withUnpushed(report.message ?? reportedFailure?.message ?? 'Step failed', finished.unpushed) : report.message;
-  return { ...body, ...(message ? { message } : {}), ...(finished.changes ? { changes: finished.changes } : {}), ...(left ? { read: left.read } : {}),
-    ...(failure ? failureReport(failure) : {}) };
 }

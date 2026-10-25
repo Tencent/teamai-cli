@@ -4,7 +4,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import type { WorkflowClient } from './protocol.js';
 import type { DriverCan } from './requirements.js';
-import type { DriverIdentity, RunState, WorkflowEnvelope } from './types.js';
+import type { DriverIdentity, RunState } from './types.js';
 import { git } from './worktree.js';
 
 export const PARALLEL_ROOTS = `schemaVersion: v1alpha1
@@ -118,9 +118,7 @@ export type ConformanceExpect = (actual: unknown, message?: string) => {
 };
 
 /** The protocol calls a scenario makes, which the in-process client and the built CLI both answer. */
-export type ConformanceClient = Pick<WorkflowClient, 'start' | 'report' | 'respond' | 'retry' | 'cancel'> & {
-  next(runId: string, body: unknown, options?: { prepare?: true }): Promise<WorkflowEnvelope>;
-};
+export type ConformanceClient = Pick<WorkflowClient, 'start' | 'next' | 'report' | 'respond' | 'retry' | 'cancel'>;
 
 /** What a runner provides: its client, how it reads the run file and the queued end record, and how it moves the clock. */
 export interface ConformanceRunner {

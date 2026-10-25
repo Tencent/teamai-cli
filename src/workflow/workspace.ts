@@ -2,6 +2,7 @@
  * Workspace planning. The engine names the branch and lists the commits to merge.
  * A driver creates the worktree. This module does not run git.
  */
+import { z } from 'zod';
 import { itemsAfter, itemsOf } from './fan-out.js';
 import { localId, statesIn, stepDefinitions, type Scope } from './scope.js';
 import { parseStepPath } from './step-path.js';
@@ -33,6 +34,18 @@ export type WorkspaceContract = {
   | { mode: 'new' | 'continue'; merge: Array<{ branch: string; commit: string }> }
   | { mode: 'read-only'; merge: [] }
 );
+
+const ContractFields = {
+  base: z.object({ ref: z.string().optional(), commit: z.string() }),
+  configCommit: z.string(),
+  branch: z.string(),
+  start: z.object({ commit: z.string(), branch: z.string().optional() }),
+};
+
+export const WorkspaceContractSchema = z.discriminatedUnion('mode', [
+  z.object({ ...ContractFields, mode: z.enum(['new', 'continue']), merge: z.array(z.object({ branch: z.string(), commit: z.string() })) }),
+  z.object({ ...ContractFields, mode: z.literal('read-only'), merge: z.tuple([]) }),
+]) satisfies z.ZodType<WorkspaceContract>;
 
 export interface SessionRef {
   tool: string;
