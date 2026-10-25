@@ -242,6 +242,11 @@ export async function worktreeHooks(dir: string, hooks: string): Promise<void> {
   await git(dir, ['config', '--worktree', 'core.hooksPath', hooks]);
 }
 
+/** Drops what `worktreeHooks` set in worktree `dir`, so the repository's own hooks run there again. */
+export async function clearWorktreeHooks(dir: string): Promise<void> {
+  await git(dir, ['config', '--worktree', '--unset', 'core.hooksPath']);
+}
+
 /**
  * The commits among `commits` this checkout still lacks after fetching run `run`'s branches from origin. A fetch whose
  * refspec matches no branch exits 0, so each commit is checked again after it. `fetchError` is git's message when the

@@ -11,7 +11,7 @@ import type { LeaseWire } from '../lease-wire.js';
 import { attemptDir, AttemptIdSchema, attemptsDir, type AttemptId, type RunId, type RunLock } from '../store.js';
 import type { WorkflowFailure } from '../types.js';
 import type { WorkspaceContract } from '../workspace.js';
-import { headCommit, markReadCopy, markSetup, removeWorktree, reopenConfigConflicts, stepCheckout, worktreePath } from '../worktree.js';
+import { clearWorktreeHooks, headCommit, markReadCopy, markSetup, removeWorktree, reopenConfigConflicts, stepCheckout, worktreePath } from '../worktree.js';
 import { adoptRefusal, takeAdopted } from './adopted.js';
 import { openWorktree } from './created.js';
 import { applyOverlay, restoreOverlay, unrestoredConfig } from './overlay.js';
@@ -456,13 +456,16 @@ export async function placeRecorded(input: { config: LocalConfig; run: RunId; at
 
 /**
  * After an accepted success with `cleanup`: removes the worktree prepare created. A step in the checkout leaves it, and
- * so does one in a place the host made.
+ * so does one in a place the host made, whose own hooks run there again.
  */
 export async function releasePlace(input: { config: LocalConfig; lock: RunLock; attempt: AttemptId }): Promise<'removed' | 'left'> {
   const read = await readPlaceRecord(input.config, input.lock.run, input.attempt);
   const recorded = read.kind === 'found' ? read.record : undefined;
   if (!recorded || recorded.phase === 'opening' || recorded.place.role === 'checkout') return 'left';
-  if (recorded.place.role === 'writer' && recorded.place.adopted) return 'left';
+  if (recorded.place.role === 'writer' && recorded.place.adopted) {
+    await clearWorktreeHooks(recorded.dir);
+    return 'left';
+  }
   await removeWorktree(recorded.root, recorded.dir);
   return 'removed';
 }

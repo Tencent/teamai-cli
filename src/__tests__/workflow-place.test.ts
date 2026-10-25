@@ -312,17 +312,20 @@ steps:
   }
   const setupRan = (dir: string): boolean => fs.existsSync(path.resolve(dir, git(dir, 'rev-parse', '--git-path', 'setup-ran')));
 
-  it('gives a place detached at the start the lease\'s branch, runs setup there, and leaves it after the step', async () => {
+  it('gives a place detached at the start the lease\'s branch, runs setup there, and leaves it after the step with its own hooks', async () => {
     const f = await fixture(SETUP('touch "$(git rev-parse --git-path setup-ran)"'));
     const lease = await leased(f);
     const dir = lease.host('detached', '--detach');
+    const hooks = (): string => git(dir, 'config', '--worktree', '--default', '', '--get', 'core.hooksPath');
     expect(await f.client.next(f.runId, body(f), { prepare: { attempt: lease.attempt, adopt: dir } })).toMatchObject({ data: { lease: { attempt: lease.attempt, cwd: dir } } });
     expect(git(dir, 'symbolic-ref', '--short', 'HEAD')).toBe(lease.workspace.branch);
     expect(setupRan(dir)).toBe(true);
+    expect(hooks()).not.toBe('');
     fs.writeFileSync(path.join(dir, 'code.txt'), 'adopted\n');
     expect(await f.client.report(f.runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: f.driver })).toMatchObject({ data: { accepted: true, cleanup: true } });
     expect(git(f.remote, 'show', `${lease.workspace.branch}:code.txt`)).toBe('adopted');
     expect(git(dir, 'status', '--porcelain')).toBe('');
+    expect(hooks()).toBe('');
   });
 
   it('keeps a place whose setup failed, with the branch agent files back', async () => {
