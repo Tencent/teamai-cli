@@ -124,9 +124,8 @@ function agentHere(caller: CallerProvenance): AgentCause | undefined {
 
 export type { Provenance };
 
-export function respondProvenance(via: Via): Provenance {
-  return Provenance.decide(via);
-}
+/** Decides the provenance of an answer from where it came in: the only way to make a `Provenance`. */
+export const respondProvenance = Provenance.decide;
 
 /** An answer tied to one HITL request pass and the provenance decided for it. */
 export interface ResponseInput {
