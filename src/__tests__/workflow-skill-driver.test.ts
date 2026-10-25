@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { z } from 'zod';
 import { LabelStore } from '../scorers/label-store.js';
 import { encodeCwdClaude } from '../session-flow/fs.js';
@@ -844,6 +844,53 @@ steps:
     await runners.stopLeft(run, attempt);
     expect(alive()).toBe(false);
     expect(await setup).toMatchObject({ code: 'setup_failed' });
+  });
+
+  it('stops a setup that never ends once the run is cancelled, and never starts its command', async () => {
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-setup-hang-'));
+    const pidFile = path.join(scratch, 'sleep.pid');
+    const alive = (pid: number): boolean => { try { return process.kill(pid, 0); } catch { return false; } };
+    // A setup left running would outlive the test.
+    onTestFinished(() => {
+      const pid = fs.existsSync(pidFile) ? Number(fs.readFileSync(pidFile, 'utf8')) : undefined;
+      if (pid !== undefined && alive(pid)) process.kill(pid);
+      fs.rmSync(scratch, { recursive: true, force: true });
+    });
+    const commands: string[] = [];
+    const reports: string[] = [];
+    const harness = await skillHarness({ build: `schemaVersion: v1alpha1
+name: build
+description: Build in a set-up workspace
+invoke: allow
+setup:
+  command: 'sleep 300 & echo $! > ${pidFile}; wait'
+steps:
+  - id: build
+    workspace: new
+    command: node -e "process.exit(0)"
+` }, {
+      client: (client) => ({ ...client, report: async (runId, body, options) => {
+        reports.push(z.object({ outcome: z.string() }).parse(body).outcome);
+        return client.report(runId, body, options);
+      } }),
+      runners: (runners) => ({ ...runners, command: (input) => { commands.push(input.command); return runners.command(input); } }),
+    });
+    roots.push(harness.root);
+    const started = await harness.call({ kind: 'start', name: 'build', answers: { parallel: 1, confirmed: false }, inputs: undefined });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+    const run = RunIdSchema.parse(started.data.turn.run);
+    await harness.context.runners.sleep(1_000);
+    for (let wait = 0; wait < 100 && !fs.existsSync(pidFile); wait += 1) await new Promise((resolve) => { setTimeout(resolve, 50); });
+    const pid = Number(fs.readFileSync(pidFile, 'utf8'));
+    expect(alive(pid)).toBe(true);
+
+    await harness.context.client.cancel(run);
+    await eventsToDone(harness, run);
+    expect(alive(pid)).toBe(false);
+    expect(commands).toEqual([]);
+    expect(reports).toEqual(['released']);
+    const stored = await readRun(harness.config, run);
+    expect(typeof stored === 'object' && stored.steps.find((item) => item.id === 'build')).toMatchObject({ status: 'cancelled' });
   });
 
   it('a scored step settles with judging open, and the poll returns judged', async () => {

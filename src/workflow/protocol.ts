@@ -57,10 +57,10 @@ export interface WorkflowClient {
    */
   prepareHostPlace(lock: RunLock, lease: unknown, request: HostPlaceRequest): Promise<HostPlacePrepared>;
   /**
-   * Runs the setup of the place `prepare` made for `attempt`, outside the run lock, in the run's `mode`. Nothing for a
-   * place without setup.
+   * Runs the setup of the place `prepare` made for `attempt`, outside the run lock, in the run's `mode`, until it ends
+   * or `signal` stops it. Nothing for a place without setup.
    */
-  setup(run: RunId, attempt: AttemptId, mode: RunMode): Promise<WorkflowFailure | undefined>;
+  setup(run: RunId, attempt: AttemptId, mode: RunMode, signal?: AbortSignal): Promise<WorkflowFailure | undefined>;
   /**
    * Starts `name` with `inputs`, from `checkout` when given: the run's workspaces start from its HEAD. A `caller`
    * inside a workflow attempt starts none, `nested_workflow`, and an agent one only a workflow whose `invoke` lets it:
@@ -366,7 +366,7 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
       // The place an earlier attempt adopted no longer passes the checks, so the host makes another.
       return request.kind === 'adopt' ? { ...ask, refused: placed.failure.message } : ask;
     },
-    setup: (run, attempt, mode) => runPlaceSetup({ config, run, attempt, mode, values: env.values }),
+    setup: (run, attempt, mode, signal) => runPlaceSetup({ config, run, attempt, mode, values: env.values, ...(signal ? { signal } : {}) }),
     start: async (name, { inputs, checkout, caller }) => {
       const cached = await loadCachedWorkflow(config, name);
       const refused = invokeRefusal(cached?.definition, caller, { kind: 'start' });

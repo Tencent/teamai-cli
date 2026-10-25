@@ -21,7 +21,7 @@ import { commandEnd, type WorkflowClient } from '../../protocol.js';
 import { attemptDir, runnerAlive, withRunnerLock, type AttemptId, type RunId, type RunLock } from '../../store.js';
 import type { WorkflowEnvelope, WorkflowFailure } from '../../types.js';
 import { judgeCan } from './host-profiles.js';
-import { writeSkillState, readSkillState, type Judge, type ReportBody, type SkillState } from './skill-state.js';
+import { writeSkillState, readSkillState, type AttemptState, type Judge, type ReportBody, type SkillState } from './skill-state.js';
 import { pickChildModel } from './child-model.js';
 import { writeChildBrief } from './child-brief.js';
 import { reportLiteral, runnerArgs } from './literals.js';
@@ -64,9 +64,9 @@ export function detachedRunners(config: LocalConfig): Runners {
 type Stage =
   /**
    * The place is prepared; `prompt` is the step's prompt with what the place adds to it, a merge conflict to resolve.
-   * `mode` is the run's, which its setup gets.
+   * `mode` is the run's, which its setup gets. `expiresAt` is the lease's deadline, when it has one.
    */
-  | { kind: 'prepared'; dir: string; job: Job; mode: RunMode; prompt?: string }
+  | { kind: 'prepared'; dir: string; job: Job; mode: RunMode; prompt?: string; expiresAt?: string }
   /**
    * `env` is the environment the command runs with: the job's `envScope` applied, else this process's, and its own env.
    * `mode` is the run's. `expiresAt` is the lease's deadline, when it has one.
@@ -139,7 +139,7 @@ async function runAttempt(context: SkillContext, run: RunId, attempt: AttemptId)
     const prepared = await locked(context, run, (lock) => prepare(context, lock, attempt));
     if (prepared.kind === 'gone') return { data: { runner: { attempt, status: prepared.status } } };
     if (prepared.kind === 'prepared') {
-      const failure = await context.client.setup(run, attempt, prepared.mode);
+      const failure = await setUp(context, run, attempt, prepared);
       const stage = await locked(context, run, (lock) => (failure ? setupFailed(context, lock, attempt, failure) : begin(context, lock, attempt, prepared)));
       if (stage.kind === 'gone') return { data: { runner: { attempt, status: stage.status } } };
       if (stage.kind === 'run') {
@@ -223,7 +223,10 @@ async function prepare(context: SkillContext, lock: RunLock, attempt: AttemptId)
       if (queued) await writeSkillState(context.config, lock, queued.state, context.env.secrets);
       return { kind: 'gone', status: 'queued' };
     }
-    return { kind: 'prepared', dir: prepared.dir, job, mode: state.options.mode, ...(prepared.prompt !== undefined ? { prompt: prepared.prompt } : {}) };
+    return {
+      kind: 'prepared', dir: prepared.dir, job, mode: state.options.mode,
+      ...(prepared.prompt !== undefined ? { prompt: prepared.prompt } : {}), ...(open.expiresAt !== undefined ? { expiresAt: open.expiresAt } : {}),
+    };
   };
   if (open.phase !== 'preparing' || !open.request) return placed(await context.client.prepare(lock, job.raw));
   const hosted = await context.client.prepareHostPlace(lock, job.raw, open.request);
@@ -301,10 +304,38 @@ async function ticked(context: SkillContext, lock: RunLock): Promise<SkillState 
   return after;
 }
 
-/** Under the lock: whether the attempt still runs, once the run is ticked. */
-async function check(context: SkillContext, lock: RunLock, attempt: AttemptId): Promise<{ running: boolean }> {
+/** Under the lock: whether the attempt is still in one of `phases`, once the run is ticked. */
+async function check(context: SkillContext, lock: RunLock, attempt: AttemptId, phases: readonly AttemptState['phase'][]): Promise<{ open: boolean }> {
   const state = await ticked(context, lock);
-  return { running: state !== undefined && openAttempt(state, attempt)?.phase === 'running' };
+  const phase = state && openAttempt(state, attempt)?.phase;
+  return { open: phase !== undefined && phases.includes(phase) };
+}
+
+/**
+ * Waits for `work`, which runs outside the run lock, checking the run every `RUNNER_POLL_MS` and at `expiresAt`, since
+ * a cancel or a deadline reaches only the engine. Undefined once a check finds the attempt out of `phases`: stopped.
+ */
+async function whileOpen<T>(context: SkillContext, run: RunId, attempt: AttemptId, input: { work: Promise<T>; phases: readonly AttemptState['phase'][]; expiresAt?: string }): Promise<T | undefined> {
+  for (;;) {
+    const checking = new AbortController();
+    const ended = await Promise.race([input.work.then((value) => ({ value })), context.runners.sleep(checkIn(context, input.expiresAt), checking.signal).then(() => undefined)]);
+    checking.abort();
+    if (ended) return ended.value;
+    if (!(await locked(context, run, (lock) => check(context, lock, attempt, input.phases))).open) return undefined;
+  }
+}
+
+/**
+ * Runs the setup of the attempt's place until it ends, or a check finds the attempt stopped, which stops it and waits
+ * for it to end. A runner that restarts a command already running finds its attempt `running` while setup does nothing.
+ */
+async function setUp(context: SkillContext, run: RunId, attempt: AttemptId, prepared: Extract<Stage, { kind: 'prepared' }>): Promise<WorkflowFailure | undefined> {
+  const stop = new AbortController();
+  const setup = context.client.setup(run, attempt, prepared.mode, stop.signal);
+  const ended = await whileOpen(context, run, attempt, { work: setup.then((failure) => ({ failure })), phases: ['preparing', 'running'], ...(prepared.expiresAt !== undefined ? { expiresAt: prepared.expiresAt } : {}) });
+  if (ended) return ended.failure;
+  stop.abort();
+  return setup;
 }
 
 /**
@@ -313,13 +344,7 @@ async function check(context: SkillContext, lock: RunLock, attempt: AttemptId): 
  */
 async function runCommand(context: SkillContext, run: RunId, attempt: AttemptId, stage: Extract<Stage, { kind: 'run' }>): Promise<CommandExit> {
   const command = context.runners.command({ run, attempt, command: stage.command, cwd: stage.dir, env: { ...stage.env, ...attemptEnv(run, attempt, stage.mode) } });
-  let exited: CommandExit | undefined;
-  while (!exited) {
-    const checking = new AbortController();
-    exited = await Promise.race([command.exit, context.runners.sleep(checkIn(context, stage.expiresAt), checking.signal).then(() => undefined)]);
-    checking.abort();
-    if (!exited && !(await locked(context, run, (lock) => check(context, lock, attempt))).running) exited = await command.stop();
-  }
+  const exited = (await whileOpen(context, run, attempt, { work: command.exit, phases: ['running'], ...(stage.expiresAt !== undefined ? { expiresAt: stage.expiresAt } : {}) })) ?? (await command.stop());
   const output = redact(exited.output, { envSecrets: context.env.secrets, patterns: false });
   await writeFileAtomic(path.join(attemptDir(context.config, run, attempt), 'output.log'), output);
   return { exitCode: exited.exitCode, stdout: exited.stdout, stderr: exited.stderr, output };
