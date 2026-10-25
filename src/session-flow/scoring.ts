@@ -5,7 +5,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { observedModel } from '../agent-observation.js';
-import { collectTeamSecrets } from '../env-resolution.js';
+import { knownSecrets } from '../env-resolution.js';
 import { loadModelAliases } from '../models/aliases.js';
 import { AttemptStore, newAttemptId, scoresDir } from '../scorers/attempts.js';
 import { batchesScorers, verdictsOf } from '../scorers/batch.js';
@@ -23,7 +23,7 @@ import { pinnedDefinition, type PinnedScorer } from '../scorers/pin.js';
 import type { LocalConfig } from '../types.js';
 import { readWorkspaceChildren } from '../workspace-children.js';
 import { log } from '../utils/logger.js';
-import { collectEnvSecrets, redact } from '../utils/redact.js';
+import { redact } from '../utils/redact.js';
 import type { WorkflowEnvelope } from '../workflow/types.js';
 import { agentSessionFromEnv } from '../utils/session-id.js';
 import { AgentSession } from './agent-session.js';
@@ -115,7 +115,7 @@ export async function scoreSession(from: LocalConfig, demand: SessionDemand, now
     asked.push({ scorer, pin, definition });
   }
   log.info(`Scoring ${platform} session ${session.sessionId} in ${session.cwd || '(directory unknown)'}`);
-  const envSecrets = { ...collectEnvSecrets(), ...await collectTeamSecrets(config) };
+  const envSecrets = await knownSecrets(config);
   const mask = (text: string): string => redact(text, { envSecrets });
   const judged = judgeSession({ platform, found, captures: await SessionCaptures.read(config, platform, session.sessionId), mask });
   const { subject, context: { prompt, used } } = judged;

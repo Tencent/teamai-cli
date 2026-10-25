@@ -4,9 +4,9 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { AgentSession } from '../session-flow/agent-session.js';
 import { judgedTranscript } from '../session-flow/session-work.js';
-import { collectTeamSecrets } from '../env-resolution.js';
+import { knownSecrets } from '../env-resolution.js';
 import type { LocalConfig } from '../types.js';
-import { collectEnvSecrets, redact } from '../utils/redact.js';
+import { redact } from '../utils/redact.js';
 import {
   fencedEvidence, isEvidenceReady, rubricPrompt, writeEvidence, SESSION_MAX_CHARS, SUBAGENT_MAX_CHARS, type EvidenceGap, type Rubrics,
 } from '../scorers/evidence.js';
@@ -100,7 +100,7 @@ async function exportRepo(checkout: string, commit: string, dir: string, omitted
 /** Evidence is redacted of secret shapes, secret-named env values, and the values of the secrets the team declares. */
 export async function buildEvidence(config: LocalConfig, run: RunState, subject: RunSubject, rubrics: Rubrics, dir: string): Promise<{ ok: true } | { ok: false; code: 'evidence_empty' }> {
   if (await isEvidenceReady(dir)) return { ok: true };
-  const envSecrets = { ...collectEnvSecrets(), ...await collectTeamSecrets(config) };
+  const envSecrets = await knownSecrets(config);
   const mask = (text: string): string => redact(text, { envSecrets });
   const plan = evidencePlan(run, subject);
   const gaps = new Set(plan.gaps);

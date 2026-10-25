@@ -23,6 +23,7 @@ import { branchName } from '../workflow/workspace.js';
 import { worktreePath } from '../workflow/worktree.js';
 import type { DriverIdentity, WorkflowEnvelope } from '../workflow/types.js';
 import { knownSecrets } from '../env-resolution.js';
+import { getTeamSecretsPath, writeSecretStore } from '../secret-store.js';
 
 const SECRET = 'sk-ABCDEFGH1234567890abcdefghij';
 
@@ -251,6 +252,23 @@ describe('judge evidence', () => {
     const prompt = read(lease.prompt);
     expect(prompt).toContain('Fail any change that connects with');
     expect(prompt).not.toContain(dsn);
+  });
+
+  it('masks both the environment value of a secret and the different value the team gives it', async () => {
+    const personal = 'personal-token-value-1362';
+    const team = 'team-token-value-1362';
+    const { config, checkout } = await scoredRun('external', { 'deploy.env': `DEPLOY_HOOK=${team}\n` });
+    fs.mkdirSync(path.join(config.repo.localPath, 'env'), { 'recursive': true });
+    fs.writeFileSync(path.join(config.repo.localPath, 'env', 'secrets.yaml'), 'secrets:\n - key: DEPLOY_HOOK\n');
+    await writeSecretStore(getTeamSecretsPath(config), { DEPLOY_HOOK: { value: team } });
+    vi.stubEnv('DEPLOY_HOOK', personal);
+    plantSession(checkout, 'session-write', `Push with ${personal}`);
+
+    const lease = LeaseSchema.parse(data(await nextJudgeLease(config, request)).lease);
+
+    const files = fs.readdirSync(lease.evidence, { recursive: true, encoding: 'utf8' }).filter((name) => fs.statSync(path.join(lease.evidence, name)).isFile());
+    expect(files.filter((name) => [personal, team].some((value) => read(path.join(lease.evidence, name)).includes(value)))).toEqual([]);
+    expect(read(path.join(lease.evidence, 'transcripts', 'write#1.md'))).toContain('Push with');
   });
 
   it('reads the transcript of a pass the local driver ran in its own worktree', async () => {
