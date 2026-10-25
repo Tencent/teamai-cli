@@ -158,10 +158,10 @@ async function attemptCheckRow(context: SkillContext, state: SkillState, open: A
 
 /**
  * The steps' tick: sends the reports a crash left stored, respawns runners that are gone and gives up the attempts a
- * gone runner was stopping, then, while the run drives, calls `next` while a lease comes back and a slot is free, and
- * once more after the last lease while a gate is journalled: with no slot, that reply says whether the gate still
- * waits. Each reply's `cancelled`, then its gate check, are taken before the reply itself. A runner's check
- * (`role: 'runner'`) takes no lease.
+ * gone runner was stopping, then, while the run drives, calls `next` while a lease comes back and a slot is free, once
+ * more when a reply to a `next` with no slot freed one (D2), and once more after the last lease while a gate is
+ * journalled: with no slot, that reply says whether the gate still waits. Each reply's `cancelled`, then its gate
+ * check, are taken before the reply itself. A runner's check (`role: 'runner'`) takes no lease.
  */
 async function stepTick(context: SkillContext, lock: RunLock, start: SkillState, role: 'call' | 'runner'): Promise<Ticked> {
   let state = start;
@@ -199,7 +199,9 @@ async function stepTick(context: SkillContext, lock: RunLock, start: SkillState,
     state = replied.state;
     await apply(replied.effects);
     const leased = reply.kind === 'lease';
-    if (!leased || (!hasSlot(state) && (state.gate === undefined || probed))) {
+    // A cancel in this reply gave up an attempt that waited, so a slot the request had no room for is free now.
+    const freed = !request.canTakeLease && role === 'call' && hasSlot(state);
+    if (!freed && (!leased || (!hasSlot(state) && (state.gate === undefined || probed)))) {
       return { state, spawned, ...(replied.waiting ? { waiting: replied.waiting } : {}), ...(replied.turn ? { turn: replied.turn } : {}) };
     }
   }

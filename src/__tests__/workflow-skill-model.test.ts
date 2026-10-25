@@ -679,6 +679,12 @@ describe('skill driver model', () => {
     await fc.assert(fc.asyncProperty(answered, fc.commands(COMMANDS, { maxCommands: 14 }), sessionRun), { numRuns: RUNS });
   }, TIMEOUT_MS);
 
+  // Seeds 2095630968 and 1588576158 of the property above: a cancel of an attempt that waits for its place frees a slot
+  // in the reply to a `next` that could take no lease, so the same call must ask again, or the next call leases into it.
+  it('leases into the slot a cancel frees in the same call, so a second next with the runners held shows the same turn', async () => {
+    await sessionRun('h3', [new Cancel(0, false), new Next()]);
+  }, TIMEOUT_MS);
+
   // The property above answers h3 first in about a quarter of its runs, so a few runs can miss a host that makes places.
   it('keeps them, and a fair session reaches done, on a host that makes its own places (h3)', async () => {
     await fc.assert(fc.asyncProperty(fc.constant('h3' as const), fc.commands(COMMANDS, { maxCommands: 14 }), sessionRun), { numRuns: RUNS });
