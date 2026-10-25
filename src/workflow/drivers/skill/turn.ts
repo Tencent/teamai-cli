@@ -186,7 +186,7 @@ export interface SkillError {
 
 /**
  * The error a row answers, with its message and the literal to run instead. `run` names the run of an engine error;
- * `localTool`, the prompt tool a local start the refusal prints names (`localPromptTool`).
+ * `localTool`, the prompt tool a local start or resume the refusal prints names (`localPromptTool`).
  */
 export function errorOf(answer: Answer, context: { invocation: Invocation; same: Literal; run?: RunId; localTool?: string }): SkillError {
   const { invocation, same } = context;
@@ -217,7 +217,7 @@ function refusalMessage(refusal: Refusal, local: { invocation: Invocation; tool?
       return `Start ${refusal.name} from its describe reply: ${said.join('; ')}. Run the describe literal and ask the person.`;
     }
     case 'not_skill_run':
-      return `Run ${refusal.run} is not driven by the skill driver on this machine. The person can continue it in a terminal with teamai workflow resume ${refusal.run}.`;
+      return `Run ${refusal.run} is not driven by the skill driver on this machine. The person can continue it in a terminal with ${resumeLiteral(local.invocation, refusal.run, { tool: local.tool })}.`;
     case 'orchestrator_active':
       return `Run ${refusal.run} is driven by another coding session, which last called ${refusal.idleSeconds} s ago. Ask the person whether that session is gone, and run the command in next only when they agree to take the run over here; otherwise the run goes on from that session.`;
     case 'choice_pending':

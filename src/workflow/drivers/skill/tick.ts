@@ -10,7 +10,7 @@ import { engineReply, reportReply, respondReply, scoreReply } from './engine-rep
 import { canFor, HOST_PROFILES, judgeCan, type HostChoice } from './host-profiles.js';
 import { writeJob } from './job.js';
 import {
-  ackLiteral, adoptLiteral, chooseHostLiteral, nextLiteral, pollLiteral, reportLiteral, respondLiteral, takeoverLiteral, unavailableLiteral, type Invocation, type Literal,
+  ackLiteral, adoptLiteral, chooseHostLiteral, nextLiteral, pollLiteral, reportLiteral, respondLiteral, resumeLiteral, takeoverLiteral, unavailableLiteral, type Invocation, type Literal,
 } from './literals.js';
 import { localPromptTool } from './preflight.js';
 import { readSkillState, writeSkillState, type AttemptState, type ReportBody, type SkillState, type TurnEvent } from './skill-state.js';
@@ -224,12 +224,12 @@ function lockBusy(context: SkillContext, run: RunId, same: Literal): SkillAnswer
 async function called(context: SkillContext, run: RunId, same: Literal, input: { takeover?: true; report?: AttemptId } = {}): Promise<{ state: SkillState } | { answer: SkillAnswer }> {
   const read = await readSkillState(context.config, run);
   if (read.kind === 'unreadable') {
-    return { answer: { error: { code: 'run_unreadable', message: `The skill driver's state of run ${run} cannot be read (${read.reason}). The person can continue the run in a terminal with teamai workflow resume ${run}.`, next: null } } };
+    return { answer: { error: { code: 'run_unreadable', message: `The skill driver's state of run ${run} cannot be read (${read.reason}). The person can continue the run in a terminal with ${resumeLiteral(context.invocation, run, { tool: localPromptTool(context.config, context.tool) })}.`, next: null } } };
   }
   const state = read.kind === 'found' ? read.state : undefined;
   if (state && input.report !== undefined && traced(context, reportCallRow(state, input.report))) return { state };
   const taken = traced(context, callRow(state, { run, session: context.session, at: context.now().toISOString(), takeover: input.takeover === true }));
-  if ('answer' in taken) return { answer: { error: errorOf(taken.answer, { invocation: context.invocation, same, run }) } };
+  if ('answer' in taken) return { answer: { error: errorOf(taken.answer, { invocation: context.invocation, same, run, localTool: localPromptTool(context.config, context.tool) }) } };
   return { state: taken.state };
 }
 

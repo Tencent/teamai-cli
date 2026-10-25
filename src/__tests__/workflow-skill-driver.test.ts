@@ -909,4 +909,24 @@ steps:
       waiting: { reason, held },
     } } });
   });
+
+  it('points the person at the resume literal for a run it does not drive, and for one whose state it cannot read', async () => {
+    const harness = await skillHarness({ check: CHECK });
+    roots.push(harness.root);
+    const other = await harness.context.client.start('check', { checkout: harness.work, caller: { evidence: { kind: 'none' }, confirmed: false } });
+    if (!('data' in other) || typeof other.data.run !== 'string') throw new Error(JSON.stringify(other));
+    const run = RunIdSchema.parse(other.data.run);
+    expect(await harness.call({ kind: 'next', run, wait: false })).toEqual({ error: {
+      code: 'not_skill_run',
+      message: `Run ${run} is not driven by the skill driver on this machine. The person can continue it in a terminal with teamai workflow resume ${run} --tools default=claude.`,
+      next: null,
+    } });
+
+    fs.writeFileSync(skillStatePath(harness.config, run), '{');
+    expect(await harness.call({ kind: 'next', run, wait: false })).toEqual({ error: {
+      code: 'run_unreadable',
+      message: expect.stringMatching(new RegExp(`^The skill driver's state of run ${run} cannot be read \\(.+\\)\\. The person can continue the run in a terminal with teamai workflow resume ${run} --tools default=claude\\.$`)),
+      next: null,
+    } });
+  });
 });
