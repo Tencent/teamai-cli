@@ -706,7 +706,7 @@ async function driveInline(model: Model, real: Real): Promise<Turn> {
       while (model.stopping.size > 0) await new ReportStop(0).run(model, real);
       continue;
     }
-    for (const action of model.open.values()) expect(action).toEqual(expect.objectContaining({ dir: real.made.work, needs: { place: 'checkout', parallel: false } }));
+    for (const action of model.open.values()) expect(action).toEqual(expect.objectContaining({ dir: real.made.work, needs: { place: 'checkout', parallel: false, person: false } }));
     expect(model.open.size).toBeLessThanOrEqual(1);
     if (model.open.size > 0) {
       for (const [pick, attempt] of [...model.open.keys()].entries()) if (!model.acked.has(attempt)) await new Ack(pick).run(model, real);

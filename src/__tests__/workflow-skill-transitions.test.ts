@@ -950,7 +950,7 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       const { run } = await turnOf(await made.call({ kind: 'start', name: 'inline', answers: { confirmed: false }, inputs: undefined }));
       const turn = await turnOf(await made.call({ kind: 'choose', run, choice: 'h4' }));
       const [notes] = dispatches(turn);
-      expect(notes).toEqual(expect.objectContaining({ step: 'notes', dir: made.work, needs: { place: 'checkout', parallel: false } }));
+      expect(notes).toEqual(expect.objectContaining({ step: 'notes', dir: made.work, needs: { place: 'checkout', parallel: false, person: false } }));
       if (!notes) throw new Error(JSON.stringify(turn));
       await made.call({ kind: 'ack', run, attempt: notes.attempt });
       childWrites(notes.brief, { kind: 'output', output: 'Wrote the notes.' });
