@@ -353,6 +353,25 @@ steps:
     const attempt = AttemptIdSchema.parse(leased.lease.attempt);
     expect(await f.client.next(f.runId, { driver: { ...f.driver, can } }, { prepare: { attempt } })).toMatchObject({ data: { lease: { attempt, cwd: f.work } } });
   });
+
+  it('leaves the place of an attempt another driver had to the next driver, as that driver may never report it stopped', async () => {
+    const f = await fixture(`schemaVersion: v1alpha1
+name: build
+description: Read the code twice.
+alias: ship
+steps:
+  - id: review
+    prompt: Review the code.
+  - id: audit
+    needs: []
+    prompt: Audit the code.
+`);
+    const can = { hitl: true, setup: true, workspace: ['read-only', 'new', 'continue'] };
+    const review = await next(f);
+    expect(await f.client.cancel(f.runId, 'review')).toMatchObject({ data: { cancelled: { attempts: [review.attempt] } } });
+    const audit = await f.client.next(f.runId, { driver: { ...f.driver, kind: 'other', can } }, { prepare: true });
+    expect(audit).toMatchObject({ data: { lease: { step: 'audit', cwd: f.work } } });
+  });
 });
 
 describe('places the host made', () => {

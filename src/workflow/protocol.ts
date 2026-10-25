@@ -1,6 +1,6 @@
 /** The workflow protocol in process: the calls behind `workflow start`, `next`, `report`, `respond`, `retry` and `cancel`, for every driver. */
 import path from 'node:path';
-import { driverIdentity } from '../driver-identity.js';
+import { driverIdentity, sameDriver } from '../driver-identity.js';
 import type { WorkflowEnv } from '../env-resolution.js';
 import { scoringUnavailable } from '../scorers/home.js';
 import { isJudgeTool, judgeToolLevel } from '../scorers/judge.js';
@@ -298,9 +298,9 @@ async function leasedPlace(config: LocalConfig, lock: RunLock, raw: unknown): Pr
   const run = await readRun(config, lock.run);
   if (typeof run !== 'object') return { kind: 'failed', failure: { code: 'run_unreadable', message: `Run ${lock.run} cannot be read, so attempt ${lease.attempt} has no place to run in` } };
   const leased = run.steps.find((step) => step.status === 'leased' && step.lease.attempt === lease.attempt);
-  if (!leased) return { kind: 'failed', failure: { code: 'wrong_attempt', message: `Attempt ${lease.attempt} is not the leased attempt` } };
+  if (leased?.status !== 'leased') return { kind: 'failed', failure: { code: 'wrong_attempt', message: `Attempt ${lease.attempt} is not the leased attempt` } };
   if (run.checkout === undefined) return { kind: 'failed', failure: noCheckout(lock.run, lease.attempt) };
-  return { kind: 'leased', lease: { ...lease, step: leased.id }, root: run.checkout, others: otherLeases(run, lease.attempt) };
+  return { kind: 'leased', lease: { ...lease, step: leased.id }, root: run.checkout, others: otherLeases(run, { attempt: lease.attempt, driver: leased.lease.driver }) };
 }
 
 /**
@@ -315,12 +315,13 @@ async function placeLeased(config: LocalConfig, lock: RunLock, leased: Leased, a
 }
 
 /**
- * The attempts `run` leases besides `attempt`, and those it stopped whose driver has not reported them: what a stopped
- * one started may still run in its place, until that report abandons the place.
+ * The attempts `run` leases besides `attempt`, and those it stopped while `driver`, the driver of `attempt`, held them:
+ * what one of those started may still run in its place, until the driver's report abandons the place. Another driver's
+ * stopped attempt holds nothing, as that driver may be gone and never report it.
  */
-function otherLeases(run: RunState, attempt: AttemptId): AttemptId[] {
+function otherLeases(run: RunState, { attempt, driver }: { attempt: AttemptId; driver: DriverIdentity }): AttemptId[] {
   const leased = run.steps.flatMap((step) => (step.status === 'leased' ? [step.lease.attempt] : []));
-  const stopped = (run.stoppedAttempts ?? []).map((entry) => entry.attempt);
+  const stopped = (run.stoppedAttempts ?? []).flatMap((entry) => (sameDriver(entry.driver, driver) ? [entry.attempt] : []));
   return [...leased, ...stopped].flatMap((candidate) => {
     const other = candidate !== attempt ? AttemptIdSchema.safeParse(candidate) : undefined;
     return other?.success ? [other.data] : [];
