@@ -54,6 +54,7 @@ describe.each(INVOCATIONS)('skill driver literals run as %s', (invocation) => {
     const filled = startLiteral(invocation, 'check', { parallel: 2, confirmed: true, inputs: true }).replace('{inputs}', '{"task":"a fix"}');
     expect(filled).not.toBe(startLiteral(invocation, 'check', { parallel: 2, confirmed: true, inputs: true }));
     expect(skillCall(filled, invocation)).toEqual({ kind: 'start', name: 'check', answers: { parallel: 2, confirmed: true }, inputs: { task: 'a fix' } });
+    expect(skillCall(startLiteral(invocation, 'check', { noJudge: true }), invocation)).toEqual({ kind: 'start', name: 'check', answers: { confirmed: false, judge: false }, inputs: undefined });
     expect(skillCall(nextLiteral(invocation, RUN), invocation)).toEqual({ kind: 'next', run: RUN, wait: false });
     expect(skillCall(pollLiteral(invocation, RUN), invocation)).toEqual({ kind: 'next', run: RUN, wait: true });
     expect(skillCall(takeoverLiteral(invocation, RUN), invocation)).toEqual({ kind: 'takeover', run: RUN });

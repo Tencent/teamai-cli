@@ -227,6 +227,7 @@ Generated: do not edit by hand. Regenerate with
     - `--driver <kind>` — Select local for headless execution in this process, or skill for the current coding session, which then runs the commands each reply prints.
     - `--parallel <n>` — With --driver skill: the most steps that run at once, as the describe reply offered
     - `--confirmed` — With --driver skill: the person agreed to start this run, as the describe reply asked
+    - `--no-judge` — With --driver skill: leave the scored steps unjudged on this machine, as the describe reply offered
     - `--tools <list>` — Override local prompt tools for this run, as comma-separated name=tool pairs
     - `--auto-approve` — With --driver local, automatically answer optional approve HITL requests and choose defaults in this process
     - `--inputs <json>` — Values for the inputs the workflow declares, as a JSON object, for example {"issue":42}. Every declared input is required.

@@ -19,6 +19,8 @@ Act on `data.describe.ask.kind`:
 - `ask`: put `ask.question.text` and each entry of `ask.question.inputs` to the person in one message. In the `start` of the option they pick, replace `{inputs}` with their answers as one JSON object, and run it.
 - `local`: tell the person `ask.reason` and give them `ask.start` for their own terminal. It is theirs to run.
 
+When `data.describe.judging.kind` is `elsewhere`, tell the person `judging.reason`: the scored steps are not judged on this machine.
+
 Done when a reply carries `data.turn` with a `run` id.
 
 ## The loop
@@ -26,7 +28,7 @@ Done when a reply carries `data.turn` with a `run` id.
 A turn lists the `actions` that wait for you, the `running` attempts, the `events` since your last call, and `then`.
 
 1. Act on each action by its `kind`: `choose`, `stop`, `dispatch` or `done`, as their sections say.
-2. Tell the person in one line what the events say: a step started, settled with its outcome, or stopped with its `why`.
+2. Tell the person in one line what the events say: a step started, settled with its outcome, or stopped with its `why`. For `judging`, `judged` and `judging-off`, follow `references/judging.md`.
 3. Run `then.run` of the newest turn you have:
    - `poll`: in the background when your host can, so you stay free to talk with the person; otherwise in the foreground. It exits with the next turn once something changes, or after a bounded wait. Keep one poll of the run going at a time.
    - `wake`: in the foreground. Work waits for you, and the turn it returns carries it.
@@ -68,7 +70,7 @@ Done when every `dispatch` in the turn is acked.
 
 ## Done
 
-The `done` action carries the `outcome`, and the `failure` when there is one. Tell the person the outcome; for a failure, its message and the step it names. The run is over.
+The `done` action carries the `outcome`, and the `failure` when there is one. Tell the person the outcome; for a failure, its message and the step it names. The steps are over. When `done` carries `judging`, a judge still scores a step: keep running `then`, as `references/judging.md` says.
 
 ## Errors
 

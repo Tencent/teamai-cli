@@ -1,5 +1,6 @@
 /** Before a run: what describe asks the person, and whether a start carries every answer it needs. */
 import type { WorkflowDescription } from '../../describe.js';
+import type { Judging } from '../../protocol.js';
 import { localStartLiteral, startLiteral, type Invocation } from './literals.js';
 import type { DescribeAsk } from './turn.js';
 
@@ -39,8 +40,11 @@ export function checkStartAnswers(input: {
   return { kind: 'ok', parallel: answers.parallel ?? 1 };
 }
 
-/** The describe reply's `ask` of kind `kind`, the one the transitions chose. */
-export function askFor(kind: DescribeAsk['kind'], description: WorkflowDescription, invocation: Invocation): DescribeAsk {
+/**
+ * The describe reply's `ask` of kind `kind`, the one the transitions chose. With `judging` here, each option comes
+ * again without judging.
+ */
+export function askFor(kind: DescribeAsk['kind'], description: WorkflowDescription, invocation: Invocation, judging: Judging): DescribeAsk {
   const { name, facts } = description;
   switch (kind) {
     case 'start':
@@ -57,19 +61,25 @@ export function askFor(kind: DescribeAsk['kind'], description: WorkflowDescripti
       const needed = neededAnswers(description);
       const inputNames = Object.keys(description.inputs);
       const flags = { confirmed: needed.includes('confirmed'), inputs: needed.includes('inputs') };
+      const here = judging.kind === 'here';
       const text = [
         ...(inputNames.length > 0 ? [`${name} needs the input${inputNames.length > 1 ? 's' : ''} ${inputNames.join(', ')}.`] : []),
         ...(needed.includes('parallel') ? [`It can run up to ${facts.width} steps at once.`] : []),
         ...(needed.includes('confirmed') ? ['The team asks that you agree before it starts.'] : []),
+        ...(here ? [`${judging.tool} judges ${facts.scored.map((scored) => scored.step).join(', ')} here, with one confined judge call per pass.`] : []),
         needed.includes('parallel') ? 'How should it run?' : 'Start it?',
       ].join(' ');
       const options = needed.includes('parallel')
         ? [
-          { label: `Up to ${facts.width} steps at once`, start: startLiteral(invocation, name, { ...flags, parallel: facts.width }) },
-          { label: 'One step at a time', start: startLiteral(invocation, name, { ...flags, parallel: 1 }) },
+          { label: `Up to ${facts.width} steps at once`, parallel: facts.width },
+          { label: 'One step at a time', parallel: 1 },
         ]
-        : [{ label: 'Start it', start: startLiteral(invocation, name, flags) }];
-      return { kind, question: { text, inputs: Object.entries(description.inputs).map(([input, type]) => ({ name: input, type })), options } };
+        : [{ label: 'Start it' }];
+      const starts = options.flatMap(({ label, ...option }) => [
+        { label, start: startLiteral(invocation, name, { ...flags, ...option }) },
+        ...(here ? [{ label: `${label}, without judging`, start: startLiteral(invocation, name, { ...flags, ...option, noJudge: true }) }] : []),
+      ]);
+      return { kind, question: { text, inputs: Object.entries(description.inputs).map(([input, type]) => ({ name: input, type })), options: starts } };
     }
     default: {
       const unhandled: never = kind;

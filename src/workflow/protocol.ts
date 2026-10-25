@@ -2,6 +2,8 @@
 import { z } from 'zod';
 import { sameDriver } from '../driver-identity.js';
 import type { WorkflowEnv } from '../env-resolution.js';
+import { scoringUnavailable } from '../scorers/home.js';
+import { isJudgeTool, judgeToolLevel } from '../scorers/judge.js';
 import type { LocalConfig } from '../types.js';
 import { loadCachedWorkflow, loadWorkflowTree } from './cache.js';
 import { describeWorkflow, type WorkflowDescription } from './describe.js';
@@ -10,7 +12,7 @@ import {
   abandonPlace, finishPlace, placeHeldBy, placeLeaseOf, placeRecorded, preparePlace, releasePlace, runPlaceSetup, type PlaceLease, type PlacePrepared, type StepEnd,
 } from './place/place.js';
 import { cancelRun, respondToHitl, retryStep } from './run-controls.js';
-import { nextJudgeLease, parseJudgeRequest } from './scoring.js';
+import { nextJudgeLease, parseJudgeRequest, runJudgeLease } from './scoring.js';
 import { AttemptIdSchema, readRun, RunIdSchema, withRunLock, type AttemptId, type RunId, type RunLock } from './store.js';
 import { isWorkflowError, type DriverIdentity, type WorkflowEnvelope, type WorkflowFailure } from './types.js';
 import { headCommit } from './worktree.js';
@@ -22,9 +24,10 @@ import { headCommit } from './worktree.js';
 export interface WorkflowClient {
   /**
    * Describes workflow or alias `name` from the cache, with every workflow it runs. `ceiling` is the most steps the
-   * caller's driver runs at once.
+   * caller's driver runs at once; `tool` is the tool of the caller's coding session, whose confined judge would judge
+   * the scored steps here.
    */
-  describe(name: string, options: { ceiling: number }): Promise<{ description: WorkflowDescription } | { error: WorkflowFailure }>;
+  describe(name: string, options: { ceiling: number; tool?: string }): Promise<{ description: WorkflowDescription; judging: Judging } | { error: WorkflowFailure }>;
   /**
    * Prepares the place of `lease`, the lease `next` answered with, in the checkout the run started from. `busy` when
    * another attempt the run leased holds that place: `behind` is that attempt.
@@ -49,6 +52,30 @@ export interface WorkflowClient {
   cancel(runId: string, step?: string): Promise<WorkflowEnvelope>;
   /** Takes or renews judge work, as `teamai score --next` does with `body` as its payload. */
   scoreNext(body: unknown): Promise<WorkflowEnvelope>;
+  /**
+   * Judges lease `ref` with the confined judge of the tool it was leased for, as `teamai score --lease <ref>` does with
+   * `body` as its payload, and records the judge tool's process group in the directory `group`.
+   */
+  judge(ref: string, body: unknown, options: { group: string }): Promise<WorkflowEnvelope>;
+}
+
+/**
+ * Who judges a run's scored steps as the skill driver drives it: no step is scored; the confined judge of `tool`, the
+ * session's tool, here; or no judge here, for `reason`.
+ */
+export type Judging = { kind: 'none' } | { kind: 'here'; tool: string } | { kind: 'elsewhere'; reason: string };
+
+/** Whether the confined judge of `tool` judges `description`'s scored steps on this machine. */
+async function judgingOf(config: LocalConfig, description: WorkflowDescription, tool: string | undefined): Promise<Judging> {
+  if (description.facts.scored.length === 0) return { kind: 'none' };
+  const unavailable = scoringUnavailable(config);
+  if (unavailable) return { kind: 'elsewhere', reason: unavailable };
+  if (tool === undefined || !isJudgeTool(tool)) return { kind: 'elsewhere', reason: `The coding session's tool${tool === undefined ? '' : `, ${tool},`} has no confined judge teamai runs.` };
+  const level = await judgeToolLevel(tool);
+  if (level?.isolation !== 'verified') {
+    return { kind: 'elsewhere', reason: level ? `${tool} ${level.version || '(version unknown)'} has no verified judge profile.` : `The ${tool} executable is not on PATH.` };
+  }
+  return { kind: 'here', tool };
 }
 
 /**
@@ -60,12 +87,13 @@ export type NextPrepare = true | { attempt: AttemptId; adopt?: string };
 /** The client whose calls run in this process, against `config`, masking with `env`. */
 export function inProcessClient({ config, env }: { config: LocalConfig; env: WorkflowEnv }): WorkflowClient {
   return {
-    describe: async (name, { ceiling }) => {
+    describe: async (name, { ceiling, tool }) => {
       const cached = await loadCachedWorkflow(config, name);
       if (!cached) return { error: { code: 'workflow_not_found', message: `Workflow or alias ${name} has no unambiguous runnable version` } };
       const tree = await loadWorkflowTree(config, cached);
       if ('failed' in tree) return { error: tree.failed };
-      return { description: describeWorkflow({ definition: cached.definition, workflows: tree.workflows, ceiling }) };
+      const description = describeWorkflow({ definition: cached.definition, workflows: tree.workflows, ceiling });
+      return { description, judging: await judgingOf(config, description, tool) };
     },
     prepare: async (lock, raw) => {
       const lease = placeLeaseOf(raw);
@@ -119,6 +147,7 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
       const request = parseJudgeRequest(body);
       return typeof request === 'string' ? { error: { code: 'invalid_json', message: request } } : nextJudgeLease(config, request);
     },
+    judge: (ref, body, { group }) => runJudgeLease(config, ref, body, { group }),
   };
 }
 

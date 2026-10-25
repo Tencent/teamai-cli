@@ -121,15 +121,16 @@ async function workflowSkill(raw: Parameters<typeof parseSkillCall>[0]): Promise
   writeEnvelope(await runSkillCall(call, context), loaded.secrets);
 }
 
-export async function workflowStart(name: string, options: { driver?: string; tools?: string; inputs?: string; autoApprove?: boolean; describe?: boolean; parallel?: string; confirmed?: boolean }): Promise<void> {
+/** `judge` is false with `--no-judge`. */
+export async function workflowStart(name: string, options: { driver?: string; tools?: string; inputs?: string; autoApprove?: boolean; describe?: boolean; parallel?: string; confirmed?: boolean; judge?: boolean }): Promise<void> {
   if (options.driver === 'skill') {
     const { driver: _skill, ...rest } = options;
     await workflowSkill({ kind: 'start', name, options: rest });
     return;
   }
   setStderrOnly(true);
-  if (options.parallel !== undefined || options.confirmed) {
-    writeEnvelope({ error: { code: 'invalid_arguments', message: '--parallel and --confirmed need --driver skill' } }, collectEnvSecrets());
+  if (options.parallel !== undefined || options.confirmed || options.judge === false) {
+    writeEnvelope({ error: { code: 'invalid_arguments', message: '--parallel, --confirmed and --no-judge need --driver skill' } }, collectEnvSecrets());
     return;
   }
   const loaded = await readyConfig();

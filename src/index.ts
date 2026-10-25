@@ -805,10 +805,11 @@ workflowCmd
   .option('--driver <kind>', 'Select local for headless execution in this process, or skill for the current coding session, which then runs the commands each reply prints.')
   .option('--parallel <n>', 'With --driver skill: the most steps that run at once, as the describe reply offered')
   .option('--confirmed', 'With --driver skill: the person agreed to start this run, as the describe reply asked')
+  .option('--no-judge', 'With --driver skill: leave the scored steps unjudged on this machine, as the describe reply offered')
   .option('--tools <list>', 'Override local prompt tools for this run, as comma-separated name=tool pairs')
   .option('--auto-approve', 'With --driver local, automatically answer optional approve HITL requests and choose defaults in this process')
   .option('--inputs <json>', 'Values for the inputs the workflow declares, as a JSON object, for example {"issue":42}. Every declared input is required.')
-  .action(async (name: string, cmdOpts: { driver?: string; tools?: string; inputs?: string; autoApprove?: boolean; describe?: boolean; parallel?: string; confirmed?: boolean }) => {
+  .action(async (name: string, cmdOpts: { driver?: string; tools?: string; inputs?: string; autoApprove?: boolean; describe?: boolean; parallel?: string; confirmed?: boolean; judge?: boolean }) => {
     const { workflowStart } = await import('./workflow-commands.js');
     await workflowStart(name, cmdOpts);
   });

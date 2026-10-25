@@ -5,6 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { trackDetachedProcesses } from '../helpers/detached-processes.js';
+import { AGENT_SESSION_ENV } from '../../utils/session-id.js';
 
 const cli = fileURLToPath(new URL('../../../dist/index.js', import.meta.url));
 
@@ -99,6 +100,65 @@ steps:
       const pairReport = call(['workflow', 'report', pairId, '--json', JSON.stringify({ driver, attempt: pairLease.attempt, revision: pairLease.revision, outcome: 'success' })]);
       expect(envelope(pairReport.stdout)).toMatchObject({ data: { step: { status: 'succeeded' } } });
       expect(fs.readFileSync(path.join(repo, 'pair.txt'), 'utf8')).toBe('human edits\n');
+    } finally { await detached.waitForExit(); fs.rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('judges a scored step of a skill run in the background with the session tool\'s confined judge, and the poll after done returns judged', async () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-session-judged-')));
+    const home = path.join(root, 'home'); const repo = path.join(root, 'product'); const bin = path.join(root, 'bin');
+    for (const dir of [home, repo, bin]) fs.mkdirSync(dir);
+    fs.writeFileSync(path.join(bin, 'claude'), `#!${process.execPath}
+if (process.argv.includes('--version')) { console.log('2.1.308 (Claude Code)'); process.exit(); }
+process.stdin.resume(); process.stdin.on('end', () => {
+console.log(JSON.stringify({ type: 'system', subtype: 'init', model: 'm1' }));
+console.log(JSON.stringify({ type: 'result', structured_output: { label: 'thorough', reasoning: 'It read the change.' } }));
+});\n`, { mode: 0o755 });
+    const detached = trackDetachedProcesses(root);
+    const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, USERPROFILE: home, FORCE_COLOR: '0', PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}`,
+      NODE_OPTIONS: [process.env.NODE_OPTIONS, detached.nodeOptions].filter(Boolean).join(' '),
+      GIT_AUTHOR_NAME: 'Fixture', GIT_AUTHOR_EMAIL: 'fixture@example.invalid', GIT_COMMITTER_NAME: 'Fixture', GIT_COMMITTER_EMAIL: 'fixture@example.invalid' };
+    for (const name of ['CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'TEAMAI_WORKFLOW_ATTEMPT', ...AGENT_SESSION_ENV]) delete env[name];
+    env.CLAUDE_CODE_SESSION_ID = 'session-judged';
+    const run = (command: string, args: string[], timeout = 30_000) => spawnSync(command, args, { cwd: repo, env, encoding: 'utf8', timeout });
+    const git = (...args: string[]) => { const result = run('git', args); expect(result.status, result.stderr).toBe(0); };
+    const envelope = (stdout: string) => JSON.parse(stdout.trim().split('\n').filter((line) => line.startsWith('{')).at(-1) ?? 'null');
+    /** Runs a literal the CLI printed, `teamai …`, with the built CLI: its answer. */
+    const literal = (line: string, timeout?: number) => {
+      const result = run(process.execPath, [cli, ...line.split(' ').slice(1)], timeout); expect(result.status, result.stderr).toBe(0);
+      return envelope(result.stdout);
+    };
+    try {
+      git('init', '-q', '-b', 'main'); fs.writeFileSync(path.join(repo, 'README.md'), 'fixture\n'); git('add', '.'); git('commit', '-qm', 'fixture');
+      const bare = path.join(root, 'origin.git'); git('init', '-q', '--bare', '-b', 'main', bare); git('remote', 'add', 'origin', 'http://127.0.0.1:9/team/workflow.git');
+      const initialized = run(process.execPath, [cli, 'init', '--self', '--agent', 'claude', '--force']); expect(initialized.status, initialized.stderr).toBe(0);
+      git('remote', 'set-url', 'origin', bare);
+      for (const dir of ['workflows', 'scorers']) fs.mkdirSync(path.join(repo, '.teamai', dir), { recursive: true });
+      fs.writeFileSync(path.join(repo, '.teamai', 'workflows', 'review.yaml'), 'schemaVersion: v1alpha1\nname: review\ndescription: Review the change.\ninvoke: allow\nsteps:\n  - id: review\n    prompt: Review the change.\n    scorers: [review-quality]\n');
+      fs.writeFileSync(path.join(repo, '.teamai', 'scorers', 'review-quality.md'), '---\nlabels:\n  - { value: thorough, score: 1, description: Did the work }\n  - { value: shallow, score: 0, description: Did not }\npassingScore: 0.5\nsamplingRate: 100\n---\nJudge the review.\n');
+      git('add', '.teamai'); git('commit', '-qm', 'workflows');
+      literal('teamai pull');
+
+      const described = literal('teamai workflow start --describe review --driver skill');
+      expect(described).toMatchObject({ data: { describe: { judging: { kind: 'here', tool: 'claude' }, ask: { kind: 'ask', question: { options: [
+        { label: 'Start it', start: 'teamai workflow start review --driver skill' },
+        { label: 'Start it, without judging', start: 'teamai workflow start review --driver skill --no-judge' },
+      ] } } } } });
+      let turn = literal(described.data.describe.ask.question.options[0].start).data.turn;
+      turn = literal(turn.actions[0].options[0].run).data.turn;
+      const [dispatch] = turn.actions;
+      expect(dispatch).toMatchObject({ kind: 'dispatch', step: 'review' });
+      literal(dispatch.ack);
+      const result = /Write `([^`]+result\.json)`/.exec(fs.readFileSync(dispatch.brief, 'utf8'))?.[1] ?? '';
+      fs.writeFileSync(result, JSON.stringify({ kind: 'output', output: 'Reviewed the change.' }));
+      expect(literal(dispatch.report)).toMatchObject({ data: { runner: { status: 'reported' } } });
+
+      const done = literal(`teamai workflow next ${turn.run} --driver skill`).data.turn;
+      expect(done).toMatchObject({ status: 'done', events: [{ kind: 'settled', step: 'review', outcome: 'success' }, { kind: 'judging', step: 'review', scorers: ['review-quality'] }],
+        actions: [{ kind: 'done', outcome: 'succeeded', judging: { step: 'review', scorers: ['review-quality'] } }],
+        // oxlint-disable-next-line unicorn/no-thenable
+        then: { kind: 'poll' } });
+      const judged = literal(done.then.run, 120_000).data.turn;
+      expect(judged).toEqual({ run: turn.run, status: 'done', running: [], events: [{ kind: 'judged', step: 'review', scorer: 'review-quality', label: 'thorough' }], actions: [{ kind: 'done', outcome: 'succeeded', prs: [] }] });
     } finally { await detached.waitForExit(); fs.rmSync(root, { recursive: true, force: true }); }
   });
 });

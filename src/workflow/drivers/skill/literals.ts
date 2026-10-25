@@ -34,12 +34,16 @@ export function describeLiteral(invocation: Invocation, name: string): Literal {
   return LiteralSchema.parse(`${invocation} workflow start --describe ${name} --driver skill`);
 }
 
-/** Starts `name` for the skill driver. `inputs` leaves the `{inputs}` slot the agent fills with the person's answers. */
-export function startLiteral(invocation: Invocation, name: string, options: { parallel?: number; confirmed?: boolean; inputs?: boolean } = {}): Literal {
+/**
+ * Starts `name` for the skill driver. `inputs` leaves the `{inputs}` slot the agent fills with the person's answers;
+ * `noJudge` leaves the scored steps unjudged here.
+ */
+export function startLiteral(invocation: Invocation, name: string, options: { parallel?: number; confirmed?: boolean; inputs?: boolean; noJudge?: boolean } = {}): Literal {
   return LiteralSchema.parse([
     `${invocation} workflow start ${name} --driver skill`,
     ...(options.parallel !== undefined ? [`--parallel ${options.parallel}`] : []),
     ...(options.confirmed ? ['--confirmed'] : []),
+    ...(options.noJudge ? ['--no-judge'] : []),
     ...(options.inputs ? ["--inputs '{inputs}'"] : []),
   ].join(' '));
 }

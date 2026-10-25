@@ -24,7 +24,8 @@ import type { SkillAnswer, SkillError } from './turn.js';
 
 export type SkillCall =
   | { kind: 'describe'; name: string }
-  | { kind: 'start'; name: string; answers: { parallel?: number; confirmed: boolean }; inputs: unknown }
+  /** `judge: false`: `--no-judge`, which leaves the scored steps unjudged here. */
+  | { kind: 'start'; name: string; answers: { parallel?: number; confirmed: boolean; judge?: false }; inputs: unknown }
   | { kind: 'next'; run: RunId; wait: boolean }
   /** `next --takeover`: this session drives the run from now on, as the person agreed. */
   | { kind: 'takeover'; run: RunId }
@@ -105,6 +106,7 @@ const StartOptionsSchema = z.object({
   describe: z.boolean().optional(),
   parallel: z.string().regex(/^[1-9][0-9]*$/, '--parallel takes a whole number of steps, 1 or more').transform(Number).optional(),
   confirmed: z.boolean().optional(),
+  judge: z.boolean().optional(),
   inputs: z.string().optional(),
   tools: z.undefined({ invalid_type_error: '--tools is for --driver local' }),
   autoApprove: z.undefined({ invalid_type_error: '--auto-approve is for --driver local' }),
@@ -158,8 +160,8 @@ export function parseSkillCall(
         return { error: { code: 'invalid_json', message: 'Could not parse --inputs as JSON', next: null } };
       }
     }
-    const { parallel, confirmed } = options.data;
-    return { kind: 'start', name: raw.name, answers: { ...(parallel !== undefined ? { parallel } : {}), confirmed: confirmed === true }, inputs };
+    const { parallel, confirmed, judge } = options.data;
+    return { kind: 'start', name: raw.name, answers: { ...(parallel !== undefined ? { parallel } : {}), confirmed: confirmed === true, ...(judge === false ? { judge } : {}) }, inputs };
   }
   const run = RunIdSchema.safeParse(raw.run);
   if (!run.success) return invalid(run.error);
@@ -204,17 +206,18 @@ export async function runSkillCall(call: SkillCall, context: SkillContext): Prom
 
 async function start(call: Extract<SkillCall, { kind: 'describe' | 'start' }>, context: SkillContext): Promise<SkillAnswer> {
   const ceiling = ceilingOf(context.config);
-  const described = await context.client.describe(call.name, { ceiling });
+  const described = await context.client.describe(call.name, { ceiling, ...(context.tool !== undefined ? { tool: context.tool } : {}) });
   if ('error' in described) return { error: { ...described.error, next: null } };
-  const { description } = described;
+  const { description, judging } = described;
   const localOnly = localOnlySteps(description);
   if (call.kind === 'describe') {
-    const taken = take(context, undefined, { kind: 'describe', needed: neededAnswers(description), localOnly });
+    const taken = take(context, undefined, { kind: 'describe', needed: neededAnswers(description), localOnly, judgingHere: judging.kind === 'here' });
     const kind = taken?.answer?.kind === 'describe' ? taken.answer.ask : 'start';
-    return { data: { describe: { workflow: description, ask: askFor(kind, description, context.invocation) } } };
+    return { data: { describe: { workflow: description, judging, ask: askFor(kind, description, context.invocation, judging) } } };
   }
   const check = checkStartAnswers({ description, answers: call.answers, inputs: call.inputs, ceiling });
-  const taken = take(context, undefined, { kind: 'start', name: description.name, check, localOnly, prompts: description.facts.prompts.length > 0 });
+  const judge = judging.kind === 'here' && call.answers.judge !== false ? judging.tool : undefined;
+  const taken = take(context, undefined, { kind: 'start', name: description.name, check, localOnly, prompts: description.facts.prompts.length > 0, ...(judge !== undefined ? { judge } : {}) });
   const effect = taken?.effects.find((planned) => planned.kind === 'start');
   if (taken?.answer?.kind === 'error') return { error: errorOf(taken.answer, { invocation: context.invocation, same: describeLiteral(context.invocation, description.name) }) };
   if (!effect || effect.kind !== 'start') return { error: { code: 'run_unreadable', message: `The skill driver took no start row for ${description.name}.`, next: null } };
@@ -225,7 +228,7 @@ async function start(call: Extract<SkillCall, { kind: 'describe' | 'start' }>, c
   const state: SkillState = {
     version: 1, run: run.data, driver: driverIdentity('skill', context.cwd), invocation: context.invocation, options: { parallel: effect.parallel }, host: { kind: effect.host },
     orchestrator: { ...(context.session !== undefined ? { session: context.session } : {}), lastCallAt: context.now().toISOString() },
-    attempts: [], seq: 0, events: [], seen: {}, settled: [],
+    attempts: [], ...(effect.judge !== undefined ? { judging: { tool: effect.judge } } : {}), seq: 0, events: [], seen: {}, settled: [],
   };
   const saved = await context.locks.take(run.data, (lock) => writeSkillState(context.config, lock, state, context.env.secrets), 0);
   if (saved !== undefined) return { error: { ...saved.error, next: null } };

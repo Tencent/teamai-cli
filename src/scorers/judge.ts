@@ -10,7 +10,7 @@ import { movedToolHome, realHost, toolHome } from '../tool-home.js';
 import { isToolId } from '../tools.js';
 import { resolveCliPath } from '../utils/cli-path.js';
 import { execCommand, probeBinary } from '../utils/exec.js';
-import { stopProcess } from '../tool-launch/process-stop.js';
+import { recordGroup, stopProcess } from '../tool-launch/process-stop.js';
 import { toolStdout } from '../tool-launch/stdout.js';
 import { LAUNCH_TOOLS, localToolFamily, opencodeModelArgs, type LaunchTool } from '../tool-launch/tools.js';
 import { JudgeAnswerSchema, type JudgeAnswer } from './batch.js';
@@ -55,16 +55,25 @@ function profileIsolation(tool: JudgeTool, version: string, insideCheckout: bool
   return VERIFIED[judgeFamily(tool)]?.test(version) && !insideCheckout ? 'verified' : 'best-effort';
 }
 
-/** Each judge tool on PATH, its version, and the isolation its judge profile reaches on this machine. */
-export async function judgeToolLevels({ resolveTool = resolveCliPath }: { resolveTool?: (tool: string) => string | null } = {}): Promise<Array<{ tool: JudgeTool; version: string; isolation: Isolation }>> {
+export interface JudgeToolLevel {
+  tool: JudgeTool;
+  version: string;
+  isolation: Isolation;
+}
+
+/** The version of `tool` and the isolation its judge profile reaches on this machine; undefined when it is not on PATH. */
+export async function judgeToolLevel(tool: JudgeTool, { resolveTool = resolveCliPath }: { resolveTool?: (tool: string) => string | null } = {}): Promise<JudgeToolLevel | undefined> {
+  const executable = resolveTool(tool);
+  if (executable === null) return undefined;
   const tmp = await fs.realpath(os.tmpdir());
-  return Promise.all(installedJudgeTools([], { resolveTool }).flatMap((tool) => {
-    const executable = resolveTool(tool);
-    return executable === null ? [] : [(async () => {
-      const version = await probeBinary(executable, ['--version'], (command, args, options) => execCommand(command, args, { ...options, env: judgeEnv(tool), cwd: tmp }));
-      return { tool, version, isolation: profileIsolation(tool, version, judgeFamily(tool) === 'opencode' && await insideCheckout(tmp)) };
-    })()];
-  }));
+  const version = await probeBinary(executable, ['--version'], (command, args, options) => execCommand(command, args, { ...options, env: judgeEnv(tool), cwd: tmp }));
+  return { tool, version, isolation: profileIsolation(tool, version, judgeFamily(tool) === 'opencode' && await insideCheckout(tmp)) };
+}
+
+/** Each judge tool on PATH, its version, and the isolation its judge profile reaches on this machine. */
+export async function judgeToolLevels({ resolveTool = resolveCliPath }: { resolveTool?: (tool: string) => string | null } = {}): Promise<JudgeToolLevel[]> {
+  const levels = await Promise.all(installedJudgeTools([], { resolveTool }).map((tool) => judgeToolLevel(tool, { resolveTool })));
+  return levels.flatMap((level) => level ?? []);
 }
 
 export interface JudgeInput {
@@ -73,6 +82,8 @@ export interface JudgeInput {
   evidence: string;
   schema: Record<string, unknown>;
   isolation?: Isolation;
+  /** The directory the judge tool's process group is recorded in, where `stopRecordedGroup` finds it if its caller dies. */
+  group?: string;
 }
 
 export type LocalJudgeResult =
@@ -217,9 +228,10 @@ function parseAnswer(text: string): JudgeAnswer | undefined {
   } catch { return undefined; }
 }
 
-async function run(executable: string, args: string[], cwd: string, env: NodeJS.ProcessEnv, prompt: string): Promise<{ stdout: string; stderr: string; code: number }> {
+async function run(executable: string, args: string[], cwd: string, env: NodeJS.ProcessEnv, prompt: string, group?: string): Promise<{ stdout: string; stderr: string; code: number }> {
   const detached = process.platform !== 'win32';
   const child = crossSpawn(executable, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'], detached, windowsHide: true });
+  if (detached && group !== undefined) recordGroup(child, group);
   const stdout: string[] = [];
   const stderr: string[] = [];
   child.stdout?.setEncoding('utf8').on('data', (text: string) => stdout.push(text));
@@ -297,7 +309,7 @@ export async function runLocalJudge(input: JudgeInput, { resolveTool = resolveCl
       args = ['run', '--standalone', '--format', 'json', ...opencodeModelArgs(input.model, input.model?.effort ? await opencodeMajorVersion(executable) : 2)];
       prompt += await fs.readFile(path.join(cwd, 'prompt.md'), 'utf8');
     }
-    const result = await run(executable, args, cwd, env, prompt);
+    const result = await run(executable, args, cwd, env, prompt, input.group);
     if (family === 'codebuddy' && /Authentication required/.test(result.stdout + result.stderr)) {
       return { ok: false, code: 'judge_tool_unavailable', message: 'CodeBuddy is not signed in. Sign in with codebuddy /login or set CODEBUDDY_API_KEY, then retry, or submit this lease through another driver.', raw: result.stdout + '\n' + result.stderr };
     }

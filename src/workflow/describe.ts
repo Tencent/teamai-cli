@@ -20,6 +20,8 @@ export interface WorkflowDescription {
     gates: Array<{ step: string; kind: StepHitl['kind']; required: boolean; hasDefault: boolean }>;
     /** Steps that run in a workspace copy rather than in the checkout, by path. */
     inWorkspace: string[];
+    /** Steps whose succeeded passes a scorer judges, by path, with the scorers it lists. */
+    scored: Array<{ step: string; scorers: string[] }>;
   };
 }
 
@@ -29,7 +31,7 @@ export interface WorkflowDescription {
  */
 export function describeWorkflow(input: { definition: WorkflowDefinition; workflows: Record<string, WorkflowDefinition>; ceiling: number }): WorkflowDescription {
   const { definition, workflows, ceiling } = input;
-  const facts: WorkflowDescription['facts'] = { prompts: [], interactive: [], width: 0, gates: [], inWorkspace: [] };
+  const facts: WorkflowDescription['facts'] = { prompts: [], interactive: [], width: 0, gates: [], inWorkspace: [], scored: [] };
   const childOf = (step: WorkflowStep): { steps: WorkflowStep[] } | undefined => (typeof step.workflow === 'string' ? workflows[step.workflow] : step.workflow);
   const visit = (steps: WorkflowStep[], ancestors: WorkflowStep[], prefix: string): number => {
     const levels = new Map<string, number>();
@@ -41,6 +43,7 @@ export function describeWorkflow(input: { definition: WorkflowDefinition; workfl
       if (!child && step.end === undefined && !runsInCheckout(step, ancestors)) facts.inWorkspace.push(path);
       if (step.prompt !== undefined || step.promptFile !== undefined) facts.prompts.push(path);
       if (step.interactive) facts.interactive.push(path);
+      if (step.scorers && step.scorers.names.length > 0) facts.scored.push({ step: path, scorers: step.scorers.names });
       const own = child ? visit(child.steps, [...ancestors, step], `${path}.`) : step.command !== undefined || step.prompt !== undefined || step.promptFile !== undefined ? 1 : 0;
       const level = Math.max(-1, ...(step.needs ?? []).map((need) => levels.get(need) ?? -1)) + 1;
       levels.set(step.id, level);

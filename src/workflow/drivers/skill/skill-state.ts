@@ -67,6 +67,10 @@ export const AttemptStateSchema = z.discriminatedUnion('phase', [
 ]);
 export type AttemptState = z.infer<typeof AttemptStateSchema>;
 
+/** The judge running now: lease `ref`, its runner keyed by the attempt in that ref, on the pass of `step` that `scorers` judge. */
+const JudgeSchema = z.object({ ref: z.string(), attempt: AttemptIdSchema, step: z.string(), scorers: z.array(z.string()), spawnedAt: z.string() });
+export type Judge = z.infer<typeof JudgeSchema>;
+
 export const TurnEventSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('started'), step: z.string(), attempt: AttemptIdSchema }),
   z.object({ kind: z.literal('restarted'), step: z.string(), attempt: AttemptIdSchema }),
@@ -74,6 +78,11 @@ export const TurnEventSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('takeover'), from: z.string().optional() }),
   /** The engine cancelled the attempt's lease, or its deadline passed, so its report was not recorded. */
   z.object({ kind: z.literal('stopped'), step: z.string(), attempt: AttemptIdSchema, why: z.enum(STOP_REASONS) }),
+  /** The judge of lease `ref` started on the pass of `step` that `scorers` judge. */
+  z.object({ kind: z.literal('judging'), step: z.string(), scorers: z.array(z.string()), ref: z.string() }),
+  z.object({ kind: z.literal('judged'), step: z.string(), scorer: z.string(), label: z.string() }),
+  /** This driver judges no more of the run, for `failure`; the open judge lease lapses back to the queue. */
+  z.object({ kind: z.literal('judging-off'), failure: FailureSchema }),
   z.object({
     kind: z.literal('settled'),
     step: z.string(),
@@ -102,6 +111,8 @@ export const SkillStateSchema = z.object({
   /** The session that drives the run, when its host names one, and when it last called. */
   orchestrator: z.object({ session: z.string().optional(), lastCallAt: z.string() }),
   attempts: z.array(AttemptStateSchema),
+  /** Present while this driver judges the run's scored steps with the confined judge of `tool`. `open`: the judge running now. */
+  judging: z.object({ tool: z.string(), open: JudgeSchema.optional() }).optional(),
   /** The sequence number of the last event. */
   seq: z.number().int(),
   events: z.array(z.object({ seq: z.number().int(), event: TurnEventSchema })),

@@ -21,6 +21,23 @@ export function untilStopped(stopped: () => void): CommandRun {
   return { exit, stop: async () => { stopped(); end({ exitCode: 143, stdout: '', stderr: '', output: '' }); return exit; } };
 }
 
+/**
+ * Puts on PATH a `claude` whose confined judge profile verifies, and that labels every pass `label`, or exits
+ * `exitCode` without an answer.
+ */
+export function fakeJudge(root: string, label: string, exitCode = 0): void {
+  const bin = path.join(root, 'bin');
+  fs.mkdirSync(bin, { recursive: true });
+  fs.writeFileSync(path.join(bin, 'claude'), `#!${process.execPath}
+if (process.argv.includes('--version')) { console.log('2.1.308 (Claude Code)'); process.exit(); }
+process.stdin.resume(); process.stdin.on('end', () => {
+if (${exitCode} !== 0) process.exit(${exitCode});
+console.log(JSON.stringify({ type: 'system', subtype: 'init', model: 'm1' }));
+console.log(JSON.stringify({ type: 'result', structured_output: { label: ${JSON.stringify(label)}, reasoning: 'It read the change.' } }));
+});\n`, { mode: 0o755 });
+  vi.stubEnv('PATH', `${bin}${path.delimiter}${process.env.PATH ?? ''}`);
+}
+
 /** A crash a test injects: the call or the runner that throws it stops there, as a process killed at that point does. */
 export class Crash extends Error {}
 
@@ -37,7 +54,7 @@ const COMMAND_EXIT_MS = 10_000;
  * runs until it is stopped. A runner that throws `Crash` is gone, as a killed one is; any other error fails the next sleep.
  */
 function memoryRunners(command: Runners['command']): {
-  runners: Runners; track(runners: Runners): Runners; now: () => Date; bind(context: SkillContext): void; hold(held: boolean): void; crash(run: string, attempt: string): boolean;
+  runners: Runners; track(runners: Runners): Runners; judging(client: WorkflowClient): WorkflowClient; now: () => Date; bind(context: SkillContext): void; hold(held: boolean): void; crash(run: string, attempt: string): boolean;
 } {
   let clock = Date.now();
   vi.useFakeTimers({ toFake: ['Date'] });
@@ -54,7 +71,7 @@ function memoryRunners(command: Runners['command']): {
   const doomed = new Set<string>();
   const failures: unknown[] = [];
   const attemptOf = (id: string): string => id.slice(0, id.lastIndexOf('#'));
-  /** Every real command still running, by what it runs. */
+  /** Every real command and judge still running, by what it runs. */
   const commands = new Map<Promise<unknown>, string>();
   /** The stop of every command, real or faked, still running, by `<run>/<attempt>`. */
   const started = new Map<string, Set<CommandRun['stop']>>();
@@ -101,6 +118,16 @@ function memoryRunners(command: Runners['command']): {
       },
       stopLeft: async (run, attempt) => {
         for (const stop of started.get(`${run}/${attempt}`) ?? []) await stop();
+      },
+    }),
+    /** Wraps the client a test ends with, so a settle waits for a judge it runs, as it waits for a real command. */
+    judging: (client) => ({
+      ...client,
+      judge: (ref, body, options) => {
+        const judged = client.judge(ref, body, options);
+        const running = judged.finally(() => commands.delete(running));
+        commands.set(running, `The judge of ${ref}`);
+        return judged;
       },
     }),
     crash: (run, attempt) => {
@@ -154,6 +181,10 @@ interface HarnessOptions {
   client?: (client: WorkflowClient) => WorkflowClient;
   /** Wraps the in-memory runners, to drop or hold a runner. */
   runners?: (runners: Runners) => Runners;
+  /** The team repository's scorers, by name, as the text of `scorers/<name>.md`. */
+  scorers?: Record<string, string>;
+  /** The member's `scoring` settings. */
+  scoring?: LocalConfig['scoring'];
 }
 
 /**
@@ -170,6 +201,8 @@ export async function skillHarness(workflows: Record<string, string>, options: H
   const repo = path.join(root, 'knowledge');
   fs.mkdirSync(work);
   fs.mkdirSync(path.join(repo, 'workflows'), { recursive: true });
+  fs.mkdirSync(path.join(repo, 'scorers'));
+  for (const [name, text] of Object.entries(options.scorers ?? {})) fs.writeFileSync(path.join(repo, 'scorers', `${name}.md`), text);
   git(work, 'init', '-q', '-b', 'main');
   git(work, 'config', 'user.name', 'Test');
   git(work, 'config', 'user.email', 'test@example.invalid');
@@ -178,7 +211,7 @@ export async function skillHarness(workflows: Record<string, string>, options: H
   git(work, 'commit', '-qm', 'fixture');
   const config: LocalConfig = {
     repo: { kind: 'self', localPath: repo, remote: 'local' }, username: 'test', scope: 'project', projectRoot: work,
-    additionalRoles: [], dataHome: path.join(root, 'data'),
+    additionalRoles: [], dataHome: path.join(root, 'data'), ...(options.scoring ? { scoring: options.scoring } : {}),
   };
   for (const [name, yaml] of Object.entries(workflows)) fs.writeFileSync(path.join(repo, 'workflows', `${name}.yaml`), yaml);
   await syncWorkflowDefinitions(config);
@@ -188,7 +221,7 @@ export async function skillHarness(workflows: Record<string, string>, options: H
   const client = inProcessClient({ config, env });
   const rows: string[] = [];
   const context: SkillContext = {
-    config, env, client: options.client ? options.client(client) : client, session: options.session ?? 'session-a', tool: 'claude', invocation: 'teamai', cwd: work,
+    config, env, client: scheduler.judging(options.client ? options.client(client) : client), session: options.session ?? 'session-a', tool: 'claude', invocation: 'teamai', cwd: work,
     now: scheduler.now, runners: scheduler.track(options.runners ? options.runners(scheduler.runners) : scheduler.runners),
     locks: { take: (run, body, waitMs) => withRunLock(config, run, body, { waitMs }) },
     trace: (row) => { rows.push(row); },

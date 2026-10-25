@@ -57,18 +57,18 @@ Test parsing through `parseWorkflow` and `syncWorkflowDefinitions`. Test the eng
 
 **Run states**, derived from skill.json and never stored as a field: `none` (no skill.json for this run, or no run yet), `host` (the run has prompt steps and the agent has not answered the host question), `drive`, and `done` (the engine answered `done`). **Attempt phases**: `preparing` (its runner prepares its place), `queued` (another open attempt of the run holds its place), `running` (its runner runs the command), `offered` (its dispatch is shown, not acked), `dispatched` (acked: a child works it), `stopping` (the engine cancelled it, or its `expiresAt` passed: its runner stops its command, or the agent stops its child and reports it), and `reporting` (a write-ahead report body is stored).
 
-**Order of one call.** Parse options with zod; take the run lock (D19); S rows; the row of the input; a tick; build the turn; save; release. **A tick** sends the reports a crash left stored (P11), gives up attempts stopping by a runner that is gone (C11), respawns the runners of queued attempts whose place is free (D9) and of attempts whose lock is free (C10), then calls the engine `next` (D1), takes D2 to D5 for each attempt its `cancelled` lists, and applies its reply, repeating while a lease comes back and a slot is free. **A poll** (`--wait`) repeats lock, tick, release and a `WAIT_POLL_MS` sleep until one of D22 to D25 applies. Runners take C rows under the same lock and never take S rows. **An agent's report** (`report --attempt` without the marker) skips the session check when the agent reports the attempt (S6), since a child an app's orchestration tools start has a session of its own; it takes its P row, sends the report and saves under the lock, then answers as a runner does, with no tick and no turn, so it leaves the session's events for the orchestrator's next call. **A runner's check**: while its command runs, a runner ticks every `RUNNER_POLL_MS`, and once at the attempt's `expiresAt`, with `canTakeLease` false. The engine applies deadlines only when it is called, so the check at `expiresAt` is what turns an expired attempt into a stop (D3, C9).
+**Order of one call.** Parse options with zod; take the run lock (D19); S rows; the row of the input; a tick; build the turn; save; release. **A tick** sends the reports a crash left stored (P11), gives up attempts stopping by a runner that is gone (C11), respawns the runners of queued attempts whose place is free (D9) and of attempts whose lock is free (C10), then calls the engine `next` (D1), takes D2 to D5 for each attempt its `cancelled` lists, and applies its reply, repeating while a lease comes back and a slot is free; then, while judging is on, it takes J5 and J1, in `drive` and in `done`. **A poll** (`--wait`) repeats lock, tick, release and a `WAIT_POLL_MS` sleep until one of D22 to D25 applies. Runners take C rows under the same lock and never take S rows. **An agent's report** (`report --attempt` without the marker) skips the session check when the agent reports the attempt (S6), since a child an app's orchestration tools start has a session of its own; it takes its P row, sends the report and saves under the lock, then answers as a runner does, with no tick and no turn, so it leaves the session's events for the orchestrator's next call. **A runner's check**: while its command runs, a runner ticks every `RUNNER_POLL_MS`, and once at the attempt's `expiresAt`, with `canTakeLease` false. The engine applies deadlines only when it is called, so the check at `expiresAt` is what turns an expired attempt into a stop (D3, C9).
 
 ### Describe and start
 
 | Row | State | Input | Guard | Effects | Next | Action |
 |---|---|---|---|---|---|---|
 | R2 | none | describe | the definition has an interactive step | none | none | describe `ask.kind: local` with the reason and the `--driver local` start literal |
-| R3 | none | describe | something to ask: `invoke: ask`, a required input, or width above 1 | none | none | describe `ask.kind: ask`: one question, and the start literal of each option |
+| R3 | none | describe | something to ask: `invoke: ask`, a required input, width above 1, or judging here | none | none | describe `ask.kind: ask`: one question, and the start literal of each option |
 | R4 | none | describe | nothing to ask | none | none | describe `ask.kind: start` with the one start literal |
 | R8 | none | start `--driver skill` | the definition has an interactive step | none | none | error `needs_local_driver`, next null |
 | R9 | none | start `--driver skill` | `checkStartAnswers` answers `confirm-needed` | none | none | error `confirm_needed`, next: the describe literal |
-| R10 | none | start `--driver skill` | `checkStartAnswers` answers `ok` | `WorkflowClient.start`; write skill.json: identity `{skill, machine, run checkout}`, invocation, options, host `pending` when the definition has a prompt step, owner := the caller's session | host when it has a prompt step, else drive | the turn of a tick |
+| R10 | none | start `--driver skill` | `checkStartAnswers` answers `ok` | `WorkflowClient.start`; write skill.json: identity `{skill, machine, run checkout}`, invocation, options, host `pending` when the definition has a prompt step, owner := the caller's session; judging on with the session tool when describe judges here and the start has no `--no-judge` | host when it has a prompt step, else drive | the turn of a tick |
 | R11 | none | next, report `--driver skill` | this machine has no skill.json for the run | none | none | error `not_skill_run`, next null |
 | R12 | host | tick | | none | host | `choose about:host decide:agent` |
 | R13 | host | next `--choice h` | | host := `HOST_PROFILES[h]` | drive | the turn of a tick |
@@ -98,14 +98,14 @@ Test parsing through `parseWorkflow` and `syncWorkflowDefinitions`. Test the eng
 | D7 | drive | reply lease | executor prompt | phase preparing; spawn runner job `prompt` | drive | event `started` |
 | D9 | drive | tick | a queued attempt whose `behind` is no longer open | phase preparing; spawn its job again | drive | |
 | D15 | drive | reply wait | | none | drive | waiting |
-| D16 | drive | reply done | | `seq` := seq + 1, so every session has the end to see | done | `done {outcome, failure, prs}` |
+| D16 | drive | reply done | | `seq` := seq + 1, so every session has the end to see | done | `done {outcome, failure, prs, judging}` |
 | D17 | drive | reply error | | none | drive | error with the engine's code, next: the next literal |
 | D18 | drive | a foreground call | it spawned runners | release the lock; wait up to `WAIT_GRACE_MS` for them, re-taking the lock per check | drive | |
 | D19 | any | a foreground call | the lock is not free within `TICK_LOCK_WAIT_MS` (`report`: `WAIT_BOUND_MS`) | none | unchanged | error `driver_running`, next: the same literal |
-| D20 | host, drive, done | a foreground call, after its tick | | `seen[s]` := seq | unchanged | the turn: the host question, or every `stop` then every unacked dispatch; events after the old `seen[s]`; `then: poll` until the run is done and no attempt is open |
+| D20 | host, drive, done | a foreground call, after its tick | | `seen[s]` := seq | unchanged | the turn: the host question, or every `stop` then every unacked dispatch; events after the old `seen[s]`; `then: poll` until the run is done and no attempt or judge is open |
 | D21 | host, drive, done | a poll tick | the lock was busy, or nothing below applies, and the bound is not reached | release; sleep `WAIT_POLL_MS`; tick again | unchanged | |
 | D22 | host, drive, done | a poll tick | the host question is unanswered, a dispatch is unacked, or a `stop` is not reported | none | unchanged | `then: wake` with the next literal, no actions |
-| D23 | done | a poll tick | `seen[s]` is below seq, and no attempt is open | `seen[s]` := seq | done | `done` with its events |
+| D23 | done | a poll tick | `seen[s]` is below seq, and no attempt is open | `seen[s]` := seq | done | `done` with its events; `then: poll` while a judge is open |
 | D24 | host, drive, done | a poll tick | the bound is reached, and D25 does not apply | none | unchanged | `then: poll`, no actions |
 | D25 | drive, done | a poll tick | a `settled` or `stopped` event came after `seen[s]`, and neither D22 nor D23 applies | `seen[s]` := seq | unchanged | the events after the old `seen[s]`, no actions; `then: poll` |
 
@@ -147,9 +147,23 @@ Test parsing through `parseWorkflow` and `syncWorkflowDefinitions`. Test the eng
 | P10 | reporting | engine: another error | | keep the body | reporting | error, next: the same report literal (a runner retries at its next check) |
 | P11 | reporting | tick, or report a | a body is stored (a crash or a refusal came between write and send) | send it again | reporting | P7 to P10 |
 
+### Judges
+
+While judging is on, a tick asks `score --next` for judge work of its own run only (`run`), never a session's, and lists the open judge's lease ref in `running` to renew it (J1). At most one judge is open. Its runner is the same `workflow report --attempt` call, keyed by the attempt in the lease ref: it runs the confined judge outside the lock, with the judge tool's process group in that attempt's `group.json`, and renews the lease through `score --next` with `canTakeLease: false` every 10 minutes until the judge answers, then takes J3 or J4. Judge refs never enter `workflow next` `running`. The first failure turns judging off, so a judge that keeps failing does not run again on every tick, and its lease lapses back to the queue for another driver.
+
+| Row | State | Input | Guard | Effects | Next | Action |
+|---|---|---|---|---|---|---|
+| J1 | drive, done | tick | judging is on | `score --next {driver: identity + can.judge of the session tool, run, running: the open judge ref, canTakeLease: no judge open; false in a runner's check}` | unchanged | |
+| J2 | drive, done | score reply: a lease | judging is on, and no judge is open | the judge is open; spawn its runner, keyed by the attempt in its ref | unchanged | event `judging` |
+| J3 | drive, done | judge runner: labelled | its judge is open | drop the judge | unchanged | event `judged` per scorer |
+| J4 | drive, done | judge runner: failed | its judge is open | judging := off; its lease lapses back to the queue | unchanged | event `judging-off` with the failure |
+| J5 | drive, done | tick: the open judge's `runner.lock` is free | it was spawned more than `WAIT_GRACE_MS` ago | stop the process group its judge left; judging := off; its lease lapses back to the queue | unchanged | event `judging-off` `judge_runner_gone` |
+| J6 | drive, done | score reply: an error | the error is not `busy` | judging := off | unchanged | event `judging-off` with the error |
+
 ### Done
 
 | Row | State | Input | Guard | Effects | Next | Action |
 |---|---|---|---|---|---|---|
-| X2 | done | next | no attempt is open | none | done | `done`, no `then` |
+| X1 | done | next | no attempt is open, and a judge is | none | done | `done` with `judging`; `then: poll` |
+| X2 | done | next | no attempt or judge is open | none | done | `done`, no `then` |
 | X4 | done | next | an attempt is still open: the engine cancelled it with the run | none | done | every `stop`, then `done`; `then: poll` |

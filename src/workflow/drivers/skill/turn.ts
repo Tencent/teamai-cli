@@ -2,6 +2,7 @@
 import path from 'node:path';
 import { packagedSkillRoots } from '../../../skill-content.js';
 import type { WorkflowDescription } from '../../describe.js';
+import type { Judging } from '../../protocol.js';
 import type { AttemptId, RunId } from '../../store.js';
 import type { OutputSchema, WorkflowFailure } from '../../types.js';
 import { HOST_CHOICES, HOST_PROFILES, HOST_QUESTION, type HostChoice } from './host-profiles.js';
@@ -63,7 +64,8 @@ export type Action =
   | { kind: 'choose'; about: 'host'; decide: 'agent'; question: string; options: Array<{ id: HostChoice; label: string; run: Literal }>; reference: string }
   | StopAction
   | DispatchAction
-  | { kind: 'done'; outcome: NonNullable<SkillState['done']>['outcome']; failure?: WorkflowFailure; prs: string[] };
+  /** `judging`: the judge running now, on the pass of `step` that `scorers` judge. */
+  | { kind: 'done'; outcome: NonNullable<SkillState['done']>['outcome']; failure?: WorkflowFailure; prs: string[]; judging?: { step: string; scorers: string[] } };
 
 export interface RunningEntry {
   attempt: AttemptId;
@@ -86,7 +88,7 @@ export interface Turn {
   waiting?: { reason: string };
   /**
    * The call to make next: `poll` in the background, or `wake` in the foreground when work waits for the agent.
-   * Absent once the run is done and none of its attempts is open.
+   * Absent once the run is done and none of its attempts, and no judge of it, is open.
    */
   then?: { kind: 'poll' | 'wake'; run: Literal };
 }
@@ -104,7 +106,7 @@ export interface SkillError {
 }
 
 export type SkillAnswer =
-  | { data: { describe: { workflow: WorkflowDescription; ask: DescribeAsk } } }
+  | { data: { describe: { workflow: WorkflowDescription; judging: Judging; ask: DescribeAsk } } }
   | { data: { turn: Turn } }
   /**
    * What a runner answers once it is done with its attempt, and what an agent's report answers: `reported`; `repeated`
@@ -150,13 +152,16 @@ function actionsOf(state: SkillState): Action[] {
     ? [{ kind: 'stop', attempt: open.attempt, step: open.step, title: titleOf(state.run, open), why: open.why, report: reportLiteral(state.invocation, state.run, open.attempt) }]
     : []));
   const offers = state.attempts.flatMap((open) => (open.phase === 'offered' ? [dispatchOf(state, open)] : []));
-  const end: Action[] = state.done ? [{ kind: 'done', outcome: state.done.outcome, ...(state.done.failure ? { failure: state.done.failure } : {}), prs: [] }] : [];
+  const judge = state.judging?.open;
+  const end: Action[] = state.done ? [{
+    kind: 'done', outcome: state.done.outcome, ...(state.done.failure ? { failure: state.done.failure } : {}), prs: [], ...(judge ? { judging: { step: judge.step, scorers: judge.scorers } } : {}),
+  }] : [];
   return [...stops, ...offers, ...end];
 }
 
 /**
- * The turn of `state` that shows `events`, with `after` as its `then` while the run drives or an attempt of it is open.
- * A `quiet` turn carries no action.
+ * The turn of `state` that shows `events`, with `after` as its `then` while the run drives, or an attempt or a judge of
+ * it is open. A `quiet` turn carries no action.
  */
 export function turnOf(state: SkillState, input: { events: TurnEvent[]; after?: NonNullable<Turn['then']>; waiting?: { reason: string }; quiet?: true }): Turn {
   const running = state.attempts.map((open): RunningEntry => ({
@@ -171,6 +176,6 @@ export function turnOf(state: SkillState, input: { events: TurnEvent[]; after?: 
     ...(input.waiting && !state.done && state.attempts.length === 0 ? { waiting: input.waiting } : {}),
     // `then` is a value, never a function, so awaiting a turn does not treat it as a promise.
     // oxlint-disable-next-line unicorn/no-thenable
-    ...(input.after && (!state.done || state.attempts.length > 0) ? { then: input.after } : {}),
+    ...(input.after && (!state.done || state.attempts.length > 0 || state.judging?.open) ? { then: input.after } : {}),
   };
 }

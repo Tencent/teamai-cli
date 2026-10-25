@@ -12,13 +12,13 @@ import type { EnvScope } from '../../requirements.js';
 import { AttemptIdSchema, attemptDir, type AttemptId, type RunId, type RunLock } from '../../store.js';
 import type { WorkflowEnvelope, WorkflowFailure } from '../../types.js';
 import { readChildResult } from './child-brief.js';
-import { HOST_PROFILES, SKILL_CAN, type HostChoice } from './host-profiles.js';
+import { HOST_PROFILES, judgeCan, SKILL_CAN, type HostChoice } from './host-profiles.js';
 import {
   ackLiteral, chooseHostLiteral, describeLiteral, localStartLiteral, nextLiteral, pollLiteral, reportLiteral, takeoverLiteral, unavailableLiteral, type Invocation,
   type Literal,
 } from './literals.js';
 import { readSkillState, writeSkillState, type ReportBody, type SkillState } from './skill-state.js';
-import { hasSlot, step, unseenEvents, type Answer, type EngineReply, type MachineInput, type ReadLease, type Refusal, type ReportReply, type Step } from './transitions.js';
+import { hasSlot, step, unseenEvents, type Answer, type EngineReply, type MachineInput, type ReadLease, type Refusal, type ReportReply, type ScoreReply, type Step } from './transitions.js';
 import { turnOf, type SkillAnswer, type SkillError } from './turn.js';
 import type { SkillContext } from './skill-driver.js';
 
@@ -211,12 +211,62 @@ function refusalMessage(refusal: Refusal, invocation: Invocation): string {
   }
 }
 
+const ScoreDataSchema = z.object({
+  lease: z.object({ ref: z.string(), subject: z.object({ step: z.string() }), scorer: z.string().optional(), scorers: z.array(z.string()).optional() }).optional(),
+});
+
+/** What `score --next` answered, with the lease read as the judge it opens. */
+function scoreReply(answer: WorkflowEnvelope): ScoreReply {
+  if ('error' in answer) return { kind: 'error', error: { code: answer.error.code, message: answer.error.message } };
+  const data = ScoreDataSchema.safeParse(answer.data);
+  if (!data.success) return { kind: 'error', error: { code: 'run_unreadable', message: `score --next answered with a reply this teamai cannot read: ${data.error.issues[0]?.message ?? 'invalid'}. Update teamai.` } };
+  const { lease } = data.data;
+  if (!lease) return { kind: 'idle' };
+  // A lease ref is `<entry>/<attempt>`: its attempt keys the judge's runner as a step's attempt keys its own.
+  const attempt = AttemptIdSchema.safeParse(lease.ref.slice(lease.ref.indexOf('/') + 1));
+  const scorers = lease.scorers ?? (lease.scorer !== undefined ? [lease.scorer] : []);
+  if (!attempt.success || scorers.length === 0) return { kind: 'error', error: { code: 'run_unreadable', message: `score --next answered with judge lease ${lease.ref}, which this teamai cannot read. Update teamai.` } };
+  return { kind: 'lease', judge: { ref: lease.ref, attempt: attempt.data, step: lease.subject.step, scorers } };
+}
+
 /**
- * One tick under `lock`: sends the reports a crash left stored, respawns runners that are gone and gives up the
- * attempts a gone runner was stopping, then, while the run drives, calls `next` while a lease comes back and a slot is
- * free. Each reply's `cancelled` is taken before the reply itself. A runner's check (`role: 'runner'`) takes no lease.
+ * The judge work of a tick: gives judging up when the open judge's runner is gone (J5), then renews its lease, or,
+ * with no judge open, takes the next pass of this run to judge and spawns its runner (J1, J2).
+ */
+async function judgeTick(context: SkillContext, start: SkillState, role: 'call' | 'runner'): Promise<SkillState> {
+  let state = start;
+  const open = state.judging?.open;
+  if (open && !(await context.runners.alive(state.run, open.attempt))) {
+    const freed = take(context, state, { kind: 'judge-free', at: context.now().toISOString(), graceMs: WAIT_GRACE_MS });
+    if (freed?.state) {
+      state = freed.state;
+      for (const effect of freed.effects) if (effect.kind === 'stop-left') await context.runners.stopLeft(state.run, effect.attempt);
+    }
+  }
+  const score = take(context, state, { kind: 'judge-tick', role })?.effects.find((effect) => effect.kind === 'score');
+  if (score?.kind !== 'score') return state;
+  const answer = await context.client.scoreNext({ driver: { ...state.driver, can: { judge: judgeCan(score.tool) } }, run: state.run, running: score.running, canTakeLease: score.canTakeLease });
+  const replied = take(context, state, { kind: 'score-reply', reply: scoreReply(answer), at: context.now().toISOString() });
+  if (!replied?.state) return state;
+  for (const effect of replied.effects) if (effect.kind === 'spawn') await spawnRunner(context, replied.state, effect.attempt, undefined);
+  return replied.state;
+}
+
+/**
+ * One tick under `lock`: the steps' tick, then the judge work's. Judge runners count as no spawn: a turn waits for
+ * nothing of theirs.
  */
 export async function runTick(context: SkillContext, lock: RunLock, start: SkillState, role: 'call' | 'runner'): Promise<{ state: SkillState; spawned: boolean; waiting?: { reason: string }; error?: SkillError }> {
+  const stepped = await stepTick(context, lock, start, role);
+  return { ...stepped, state: await judgeTick(context, stepped.state, role) };
+}
+
+/**
+ * The steps' tick: sends the reports a crash left stored, respawns runners that are gone and gives up the attempts a
+ * gone runner was stopping, then, while the run drives, calls `next` while a lease comes back and a slot is free. Each
+ * reply's `cancelled` is taken before the reply itself. A runner's check (`role: 'runner'`) takes no lease.
+ */
+async function stepTick(context: SkillContext, lock: RunLock, start: SkillState, role: 'call' | 'runner'): Promise<{ state: SkillState; spawned: boolean; waiting?: { reason: string }; error?: SkillError }> {
   let state = start;
   let spawned = false;
   for (const open of start.attempts) {
@@ -448,7 +498,7 @@ export async function poll(context: SkillContext, run: RunId): Promise<SkillAnsw
       const polled = take(context, state, { kind: 'poll', session: context.session, busy: false, boundReached });
       last = polled?.state ?? state;
       await writeSkillState(context.config, lock, last, context.env.secrets);
-      if (polled?.row === 'D23') return { data: { turn: turnOf(last, { events }) } };
+      if (polled?.row === 'D23') return { data: { turn: turnOf(last, { events, after: { kind: 'poll', run: same } }) } };
       if (polled?.row === 'D22') return { data: { turn: turnOf(last, { events: [], after: { kind: 'wake', run: nextLiteral(last.invocation, run) }, quiet: true }) } };
       if (polled?.row === 'D24') return { data: { turn: turnOf(last, { events: [], after: { kind: 'poll', run: same }, quiet: true }) } };
       if (polled?.row === 'D25') return { data: { turn: turnOf(last, { events, after: { kind: 'poll', run: same }, quiet: true }) } };

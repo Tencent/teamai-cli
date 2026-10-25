@@ -5,6 +5,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { parse as parseToml } from 'smol-toml';
 import { installedJudgeTools, runLocalJudge } from '../scorers/judge.js';
+import { stopRecordedGroup } from '../tool-launch/process-stop.js';
 
 let root = '';
 afterEach(async () => { vi.unstubAllEnvs(); if (root) await fs.rm(root, { recursive: true, force: true }); });
@@ -329,4 +330,31 @@ console.log(JSON.stringify({type:'result',structured_output:{label:'good',reason
 
   expect(await runLocalJudge({ tool: 'claude', evidence, schema: { type: 'object' } }, { resolveTool: () => executable })).toMatchObject({ ok: true });
   expect(JSON.parse(await fs.readFile(path.join(evidence, 'invocation.json'), 'utf8'))).toEqual({ home: moved, settings: { env: { ANTHROPIC_BASE_URL: 'https://moved.test' } } });
+});
+
+it.skipIf(process.platform === 'win32')('records the judge tool\'s process group where its caller asks, so a judge its dead caller left can be stopped', async () => {
+  root = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-judge-'));
+  const evidence = path.join(root, 'evidence');
+  const group = path.join(root, 'attempt');
+  await fs.mkdir(evidence);
+  await fs.mkdir(group);
+  await fs.writeFile(path.join(evidence, 'prompt.md'), 'Judge it.');
+  const pidFile = path.join(root, 'sleep.pid');
+  const executable = path.join(root, 'claude-fake');
+  await fs.writeFile(executable, `#!${process.execPath}
+if (process.argv.includes('--version')) { console.log('2.1.308 (Claude Code)'); process.exit(); }
+const sleeper = require('child_process').spawn('sleep', ['300'], { stdio: 'ignore' });
+require('fs').writeFileSync(${JSON.stringify(pidFile)}, String(sleeper.pid));
+setInterval(() => {}, 1000);
+\n`, { mode: 0o755 });
+
+  const judged = runLocalJudge({ tool: 'claude', evidence, schema: { type: 'object' }, group }, { resolveTool: () => executable });
+  for (let wait = 0; wait < 100 && !await fs.access(pidFile).then(() => true, () => false); wait += 1) await new Promise((resolve) => { setTimeout(resolve, 50); });
+  const pid = Number(await fs.readFile(pidFile, 'utf8'));
+  const alive = (): boolean => { try { return process.kill(pid, 0); } catch { return false; } };
+  expect(alive()).toBe(true);
+
+  await stopRecordedGroup(group);
+  expect(await judged).toMatchObject({ ok: false, code: 'judge_failed' });
+  expect(alive()).toBe(false);
 });

@@ -1057,10 +1057,12 @@ async function closeSessionLease(config: LocalConfig, members: JudgedMembers<Ses
 
 /**
  * Runs the lease's judge with its local tool profile, then settles the lease through the same path as `--submit`, at the
- * time `clock` gives once the judge returned. With `publish: false` its labels stay pending.
+ * time `clock` gives once the judge returned. With `publish: false` its labels stay pending. With `group`, the judge
+ * tool's process group is recorded in that directory.
  */
 export async function judgeLease(
-  config: LocalConfig, ref: string, driver: JudgeDriver, { clock = () => new Date().toISOString(), publish = true }: { clock?: () => string; publish?: boolean } = {},
+  config: LocalConfig, ref: string, driver: JudgeDriver,
+  { clock = () => new Date().toISOString(), publish = true, group }: { clock?: () => string; publish?: boolean; group?: string } = {},
 ): Promise<SettledLease> {
   const key = parseLeaseRef(ref);
   const attempt = key && await AttemptStore.get(config, key.entry, key.attempt);
@@ -1088,7 +1090,7 @@ export async function judgeLease(
     const refused = await claimSessionJudge(config, lease.members, ref, clock());
     if (refused) return refused;
   }
-  const result = await runLocalJudge({ tool: attempt.judge.tool, model: attempt.judge.model, evidence, schema: answerSchema(rubrics), isolation });
+  const result = await runLocalJudge({ tool: attempt.judge.tool, model: attempt.judge.model, evidence, schema: answerSchema(rubrics), isolation, ...(group !== undefined ? { group } : {}) });
   const verdicts = result.ok ? verdictsOf(members, (member) => member.definition, result.answer) : undefined;
   if (!result.ok || !verdicts?.ok) {
     const spent = result.ok ? result.judge.usage : result.usage;
@@ -1124,10 +1126,11 @@ export async function judgeLease(
   return labelled;
 }
 
-export async function runJudgeLease(config: LocalConfig, ref: string, value: unknown, clock?: () => string): Promise<WorkflowEnvelope> {
+/** `teamai score --lease <ref>` with `value` as its payload: `judgeLease` for the driver it names. */
+export async function runJudgeLease(config: LocalConfig, ref: string, value: unknown, options: { clock?: () => string; group?: string } = {}): Promise<WorkflowEnvelope> {
   const parsed = z.object({ driver: DriverSchema }).safeParse(value);
   if (!parsed.success) return error('invalid_json', issueText(parsed.error.issues));
-  return settledAnswer(config, ref, await judgeLease(config, ref, parsed.data.driver, clock ? { clock } : {}));
+  return settledAnswer(config, ref, await judgeLease(config, ref, parsed.data.driver, options));
 }
 
 /** What `teamai score --run <id> --step <path> [--pass <n>] --scorer <name>… [--queue] [--batch]` asks for. */

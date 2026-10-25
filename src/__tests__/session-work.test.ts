@@ -195,7 +195,7 @@ describe('a finished session as judge work', () => {
     fakeClaude(undefined);
     const lease = leaseOf(await nextJudgeLease(config, request(), NOW));
 
-    expect(errorOf(await runJudgeLease(config, lease.ref, { driver }, () => NOW))).toMatchObject({ code: 'judge_failed', message: expect.stringContaining('not judged again') });
+    expect(errorOf(await runJudgeLease(config, lease.ref, { driver }, { clock: () => NOW }))).toMatchObject({ code: 'judge_failed', message: expect.stringContaining('not judged again') });
     expect(await attemptOf(config, lease.ref)).toMatchObject({ status: 'failed', code: 'judge_failed' });
     expect(data(await nextJudgeLease(config, request(), at(HOUR)))).toEqual(IDLE);
   });
@@ -207,11 +207,11 @@ describe('a finished session as judge work', () => {
     fs.writeFileSync(claude, fs.readFileSync(claude, 'utf8').replace('process.stdin.resume();', `require('fs').appendFileSync(${JSON.stringify(path.join(root, 'calls'))}, 'x'); process.stdin.resume();`));
     const lease = leaseOf(await nextJudgeLease(config, request(), NOW));
 
-    const results = await Promise.all([runJudgeLease(config, lease.ref, { driver }, () => NOW), runJudgeLease(config, lease.ref, { driver }, () => NOW)]);
+    const results = await Promise.all([runJudgeLease(config, lease.ref, { driver }, { clock: () => NOW }), runJudgeLease(config, lease.ref, { driver }, { clock: () => NOW })]);
 
     expect(fs.readFileSync(path.join(root, 'calls'), 'utf8')).toBe('x');
     expect(results.filter((result) => 'error' in result).map(errorOf)).toMatchObject([{ code: 'lease_judging' }]);
-    expect(errorOf(await runJudgeLease(config, lease.ref, { driver }, () => NOW))).toMatchObject({ code: 'lease_settled' });
+    expect(errorOf(await runJudgeLease(config, lease.ref, { driver }, { clock: () => NOW }))).toMatchObject({ code: 'lease_settled' });
   });
 
   it('keeps the local judge\'s answer while another process holds the attempts lock for a while', async () => {
@@ -222,7 +222,7 @@ describe('a finished session as judge work', () => {
     expect(await acquireLock(lock)).toBe(true);
     const held = new Promise((resolve) => setTimeout(resolve, 1500)).then(() => releaseLock(lock));
 
-    const judged = await runJudgeLease(config, lease.ref, { driver }, () => NOW);
+    const judged = await runJudgeLease(config, lease.ref, { driver }, { clock: () => NOW });
     await held;
 
     expect(data(judged)).toMatchObject({ label: { label: 'good' } });
@@ -266,7 +266,7 @@ describe('a finished session as judge work', () => {
     plantSession('7c1e0000-0000-4000-8000-000000000003', 8 * HOUR);
     fakeClaude(undefined);
     const lease = leaseOf(await nextJudgeLease(config, request(), NOW));
-    errorOf(await runJudgeLease(config, lease.ref, { driver }, () => NOW));
+    errorOf(await runJudgeLease(config, lease.ref, { driver }, { clock: () => NOW }));
 
     expect(data(await nextJudgeLease(config, request(), at(HOUR)))).toEqual(IDLE);
   });

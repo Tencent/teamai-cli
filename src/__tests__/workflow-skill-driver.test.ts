@@ -4,9 +4,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
+import { encodeCwdClaude } from '../session-flow/fs.js';
 import { skillContext } from '../workflow/drivers/skill/skill-driver.js';
-import { AttemptIdSchema, RunIdSchema } from '../workflow/store.js';
-import { Crash, skillHarness, untilStopped } from './helpers/skill-harness.js';
+import { inProcessClient } from '../workflow/protocol.js';
+import { takeJudgeLease, type JudgeRequest } from '../workflow/scoring.js';
+import { AttemptIdSchema, RunIdSchema, type RunId } from '../workflow/store.js';
+import { Crash, fakeJudge, skillHarness, untilStopped } from './helpers/skill-harness.js';
 
 const CHECK = `schemaVersion: v1alpha1
 name: check
@@ -50,6 +53,76 @@ steps:
     needs: []
     command: node -e "process.exit(0)"
 `;
+
+const REVIEW = `schemaVersion: v1alpha1
+name: review
+description: Review the change
+invoke: allow
+steps:
+  - id: review
+    prompt: Review the change.
+    scorers: [review-quality]
+`;
+
+const REVIEW_QUALITY = `---
+labels:
+  - { value: thorough, score: 1, description: Did the work it was asked for }
+  - { value: shallow, score: 0, description: Did not }
+passingScore: 0.5
+samplingRate: 100
+---
+Judge the review.
+`;
+
+const SESSION_QUALITY = `---
+labels:
+  - { value: good, score: 1, description: Did the work }
+  - { value: bad, score: 0, description: Did not }
+passingScore: 0.5
+samplingRate: 100
+sessions: true
+---
+Judge the session.
+`;
+
+type Harness = Awaited<ReturnType<typeof skillHarness>>;
+
+/** Starts `review` with the skill driver, has its child review the change and report, and answers the turn that follows. */
+async function reviewed(harness: Harness): Promise<{ run: RunId; turn: unknown }> {
+  const started = await harness.call({ kind: 'start', name: 'review', answers: { confirmed: false }, inputs: undefined });
+  if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+  const run = RunIdSchema.parse(started.data.turn.run);
+  const chosen = await harness.call({ kind: 'choose', run, choice: 'h1' });
+  if (!('data' in chosen) || !('turn' in chosen.data)) throw new Error(JSON.stringify(chosen));
+  const [dispatch] = chosen.data.turn.actions.flatMap((action) => (action.kind === 'dispatch' ? [action] : []));
+  if (!dispatch) throw new Error(JSON.stringify(chosen));
+  await harness.call({ kind: 'ack', run, attempt: dispatch.attempt });
+  const file = /Write `([^`]+result\.json)`/.exec(fs.readFileSync(dispatch.brief, 'utf8'))?.[1];
+  if (!file) throw new Error(`${dispatch.brief} names no result file`);
+  fs.writeFileSync(file, JSON.stringify({ kind: 'output', output: 'Reviewed the change.' }));
+  expect(await harness.call({ kind: 'report', run, attempt: dispatch.attempt, role: 'agent', modelUnavailable: false })).toMatchObject({ data: { runner: { status: 'reported' } } });
+  return { run, turn: await harness.call({ kind: 'next', run, wait: false }) };
+}
+
+/** A Claude Code session of the harness's checkout, captured and idle for 7 hours: finished, for session scoring to judge. */
+function idleSession(harness: Harness): void {
+  const sessionId = '7c1e0000-0000-4000-8000-000000000021';
+  const project = path.join(harness.root, 'home', '.claude', 'projects', encodeCwdClaude(harness.work));
+  fs.mkdirSync(project, { recursive: true });
+  const file = path.join(project, `${sessionId}.jsonl`);
+  const line = (record: unknown): string => `${JSON.stringify(record)}\n`;
+  fs.writeFileSync(file,
+    line({ type: 'user', uuid: 'u1', parentUuid: null, cwd: harness.work, sessionId, timestamp: '2026-10-20T10:00:00.000Z', message: { role: 'user', content: 'Add retries to the client' } })
+    + line({ type: 'assistant', uuid: 'u2', parentUuid: 'u1', cwd: harness.work, sessionId, timestamp: '2026-10-20T10:00:01.000Z', message: { role: 'assistant', model: 'claude-x', content: [{ type: 'text', text: 'Added the retries.' }] } }));
+  const idleSince = new Date(Date.now() - 7 * 60 * 60 * 1000);
+  fs.utimesSync(file, idleSince, idleSince);
+  const captures = path.join(harness.config.dataHome ?? '', 'sessions', 'captures', 'claude-code', sessionId);
+  fs.mkdirSync(captures, { recursive: true });
+  const captureId = '0b6f2a52-5d7e-4c7e-9a43-000000000021';
+  fs.writeFileSync(path.join(captures, `${captureId}.json`), JSON.stringify({
+    captureId, platform: 'claude-code', sessionId, capturedAt: idleSince.toISOString(), agent: { v: 1, tool: { name: 'claude' }, teamai: '1.0.0', driver: 'session' }, sessionFile: file,
+  }));
+}
 
 const roots: string[] = [];
 afterEach(() => {
@@ -355,5 +428,61 @@ steps:
     await runners.stopLeft(run, attempt);
     expect(alive()).toBe(false);
     expect(await setup).toMatchObject({ code: 'setup_failed' });
+  });
+
+  it('a scored step settles with judging open, and the poll returns judged', async () => {
+    const harness = await skillHarness({ review: REVIEW }, { scorers: { 'review-quality': REVIEW_QUALITY } });
+    roots.push(harness.root);
+    fakeJudge(harness.root, 'thorough');
+    const { run, turn: done } = await reviewed(harness);
+    expect(done).toMatchObject({ data: { turn: {
+      status: 'done',
+      events: [{ kind: 'settled', step: 'review', outcome: 'success' }, { kind: 'judging', step: 'review', scorers: ['review-quality'], ref: expect.stringMatching(/^s[0-9a-f]+\/a[0-9a-f]{8}$/) }],
+      actions: [{ kind: 'done', outcome: 'succeeded', prs: [], judging: { step: 'review', scorers: ['review-quality'] } }],
+      // oxlint-disable-next-line unicorn/no-thenable
+      then: { kind: 'poll', run: `teamai workflow next ${run} --driver skill --wait` },
+    } } });
+
+    const judged = await harness.call({ kind: 'next', run, wait: true });
+    if (!('data' in judged) || !('turn' in judged.data)) throw new Error(JSON.stringify(judged));
+    expect(judged.data.turn).toEqual({
+      run, status: 'done', running: [],
+      events: [{ kind: 'judged', step: 'review', scorer: 'review-quality', label: 'thorough' }],
+      actions: [{ kind: 'done', outcome: 'succeeded', prs: [] }],
+    });
+  });
+
+  it('a skill run judges only its own passes: never a finished session, never another run\'s pass', async () => {
+    const leases: unknown[] = [];
+    const harness = await skillHarness({ review: REVIEW }, {
+      scorers: { 'review-quality': REVIEW_QUALITY, 'session-quality': SESSION_QUALITY }, scoring: { sessions: true },
+      client: (client) => ({ ...client, scoreNext: async (body) => {
+        const answer = await client.scoreNext(body);
+        if ('data' in answer && answer.data.lease !== undefined) leases.push(answer.data.lease);
+        return answer;
+      } }),
+    });
+    roots.push(harness.root);
+    fakeJudge(harness.root, 'thorough');
+    idleSession(harness);
+    // An older run whose pass another driver settled: it is open for judging, and a driver of any run would take it first.
+    const external = { kind: 'external', machine: 'm2', workspace: '/w' };
+    const engine = inProcessClient({ config: harness.config, env: harness.context.env });
+    const started = await engine.start('review');
+    const other = 'data' in started ? String(started.data.run) : '';
+    const next = await engine.next(other, { driver: external });
+    const work = z.object({ attempt: z.string(), revision: z.number() }).parse('data' in next ? next.data.lease : undefined);
+    expect(await engine.report(other, { ...work, driver: external, outcome: 'success', outputs: 'Reviewed.' })).toMatchObject({ data: {} });
+
+    const { run } = await reviewed(harness);
+    expect(await harness.call({ kind: 'next', run, wait: true })).toMatchObject({ data: { turn: { events: [{ kind: 'judged', step: 'review' }] } } });
+    // A tick after its own pass is judged: a driver that took any judge work would take the other run's pass now.
+    await harness.call({ kind: 'next', run, wait: false });
+
+    expect(leases).toEqual([expect.objectContaining({ source: 'workflow', subject: { runId: run, step: 'review', pass: 1 } })]);
+    const judge = { isolation: 'verified', tools: ['claude'] } satisfies JudgeRequest['judge'];
+    const now = new Date().toISOString();
+    expect(await takeJudgeLease(harness.config, { driver: external, judge, running: [], run: other }, now)).toMatchObject({ kind: 'lease', lease: { subject: { runId: other } } });
+    expect(await takeJudgeLease(harness.config, { driver: external, judge, running: [], only: 'session' }, now)).toMatchObject({ kind: 'lease', lease: { source: 'session' } });
   });
 });
