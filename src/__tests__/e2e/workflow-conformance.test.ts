@@ -2,12 +2,13 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { resolveProjectDataHome } from '../../config.js';
 import { DRIVERS_UNDER_TEST, runConformanceScenario } from '../../workflow/conformance-interpreter.js';
 import { workflowConformanceScenarios } from '../../workflow/conformance.js';
 import type { RunState, WorkflowEnvelope } from '../../workflow/types.js';
 import { cliConformanceClient, envelope, runCLI } from '../helpers/cli-conformance.js';
+import { inProcessConformanceRunner, normalized, recorded } from '../helpers/in-process-conformance.js';
 
 describe.each(DRIVERS_UNDER_TEST)('workflow protocol conformance through the CLI as %s', (profile) => {
   let repo: string;
@@ -23,8 +24,16 @@ describe.each(DRIVERS_UNDER_TEST)('workflow protocol conformance through the CLI
     expect(initialized.code, `${initialized.stdout}\n${initialized.stderr}`).toBe(0);
   });
 
+  const dirs: string[] = [];
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
+  });
+
   afterAll(() => {
     if (repo) fs.rmSync(repo, { recursive: true, force: true });
+    for (const dir of dirs) fs.rmSync(dir, { recursive: true, force: true });
   });
 
   for (const scenario of workflowConformanceScenarios) {
@@ -43,8 +52,9 @@ describe.each(DRIVERS_UNDER_TEST)('workflow protocol conformance through the CLI
         for (const [name, value] of Object.entries(scenario.env ?? {})) expect(stdout.includes(value), `workflow ${args[0]} printed the value of ${name}`).toBe(false);
         return envelope(stdout);
       };
+      const cli = recorded(cliConformanceClient(call));
       await runConformanceScenario(scenario, {
-        client: cliConformanceClient(call),
+        client: cli.client,
         readRun: async (runId) => {
           const dataHome = await resolveProjectDataHome(repo);
           return JSON.parse(fs.readFileSync(path.join(dataHome, 'workflows', 'runs', `${runId}.json`), 'utf8')) as RunState;
@@ -58,6 +68,15 @@ describe.each(DRIVERS_UNDER_TEST)('workflow protocol conformance through the CLI
         advance: (ms) => new Promise((resolve) => { setTimeout(resolve, ms); }),
         expect,
       }, profile);
+
+      // The in-process client answers the same scenario with the same envelopes.
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-workflow-conformance-'));
+      dirs.push(root);
+      const inProcess = await inProcessConformanceRunner(scenario, root);
+      const local = recorded(inProcess.runner.client);
+      await runConformanceScenario(scenario, { ...inProcess.runner, client: local.client, expect }, profile);
+      const places = { knowledge: path.join(repo, '.teamai'), data: await resolveProjectDataHome(repo), project: repo };
+      expect(normalized(cli.envelopes, places), 'the CLI and the in-process client answer alike').toEqual(normalized(local.envelopes, inProcess.places));
     });
   }
 });
