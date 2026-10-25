@@ -785,6 +785,34 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     },
   },
   {
+    name: 'an unattended describe of a workflow the local driver must run denies it, saying why, with nothing to run',
+    rows: ['R23'],
+    run: async () => {
+      const made = await harness({ 'release-docs': RELEASE_DOCS }, { mode: 'unattended' });
+      const answer = await made.call({ kind: 'describe', name: 'release-docs' });
+      expect(answer).toMatchObject({ data: { describe: { ask: { kind: 'denied', reason: expect.stringContaining('so the local driver runs the whole of release-docs.') } } } });
+      expect(answer).not.toMatchObject({ data: { describe: { ask: { start: expect.anything() } } } });
+      return made.rows;
+    },
+  },
+  {
+    name: 'an unattended run on a host that starts no child hands a step that needs a worktree to the person, and the turn ends the loop',
+    rows: ['R13', 'D14'],
+    run: async () => {
+      const made = await harness({ inline: INLINE }, { mode: 'unattended' });
+      const { run } = await turnOf(await made.call({ kind: 'start', name: 'inline', answers: { confirmed: false, hitl: 'auto-approve' }, inputs: undefined }));
+      const [notes] = dispatches(await turnOf(await made.call({ kind: 'choose', run, choice: 'h4' })));
+      if (!notes) throw new Error('no dispatch of notes');
+      await made.call({ kind: 'ack', run, attempt: notes.attempt });
+      childWrites(notes.brief, { kind: 'output', output: 'Wrote the notes.' });
+      await made.call({ kind: 'report', run, attempt: notes.attempt, role: 'agent', modelUnavailable: false });
+      const handed = await turnOf(await made.call({ kind: 'next', run, wait: false }));
+      expect(handed.actions).toEqual([expect.objectContaining({ kind: 'person', why: 'handoff', held: [{ step: 'change', missing: ['workspace.new'] }] })]);
+      expect(handed.then).toBeUndefined();
+      return made.rows;
+    },
+  },
+  {
     name: 'an interactive step is offered for the agent to work with the person, here, one at a time',
     rows: ['D7', 'C2'],
     run: async () => {

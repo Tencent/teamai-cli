@@ -37,6 +37,8 @@ Done when a turn has no `then`.
 
 In an unattended run nobody reads you: step 2 is for your own log, and you ask nothing. Keep running `then` until a turn has none, also after `done` while it carries `judging`, so the judge's label lands before your session ends.
 
+An unattended session that reaches a `handoff` reports that the run waits for a person, and stops.
+
 When you have lost the last turn, after a compaction or in a new session, run `teamai workflow next <run> --driver skill` once for the current one.
 
 A `report` you run answers with `data.runner`, not a turn. After one, go on with `then` of your newest turn.

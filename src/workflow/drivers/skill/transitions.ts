@@ -26,12 +26,13 @@ export interface TransitionRow {
 
 export const TRANSITIONS = [
   { id: 'R1', state: 'none', input: 'describe', guard: '`invoke: deny` and the caller has agent evidence', effects: 'none', next: 'none', action: 'describe `ask.kind: denied` with the reason, no literal' },
-  { id: 'R2', state: 'none', input: 'describe', guard: 'the definition has a local route: a step this driver takes and a later one it is held from for env or tokens work in one workspace copy', effects: 'none', next: 'none', action: 'describe `ask.kind: local` with the reason and the `--driver local` start literal, with `--tools default=<session tool>` when `localPromptTool` names one' },
+  { id: 'R2', state: 'none', input: 'describe', guard: 'run mode `attended`, and the definition has a local route: a step this driver takes and a later one it is held from for env or tokens work in one workspace copy', effects: 'none', next: 'none', action: 'describe `ask.kind: local` with the reason and the `--driver local` start literal, with `--tools default=<session tool>` when `localPromptTool` names one' },
   { id: 'R3', state: 'none', input: 'describe', guard: 'something to ask: `invoke: ask`, a required input, width above 1, an optional gate, or judging here', effects: 'none', next: 'none', action: 'describe `ask.kind: ask`: one question stating every fact, and at most five start literals, the recommended first' },
   { id: 'R4', state: 'none', input: 'describe', guard: 'nothing to ask', effects: 'none', next: 'none', action: 'describe `ask.kind: start` with the one start literal, and the facts to tell the person' },
   { id: 'R16', state: 'none', input: 'describe', guard: '`deliveryProblem` answers for the checkout: a `deliver: pr` step the definition cannot deliver (`bad_delivery`), or a detached HEAD (`no_base_branch`)', effects: 'none', next: 'none', action: 'describe `ask.kind: denied` with its message, no literal' },
-  { id: 'R17', state: 'none', input: 'describe', guard: 'run mode `unattended`, R1, R16 and R2 do not apply, and `attendedReason` names what needs a person: `invoke: ask`, an interactive step, a required approval, or a choice without a default', effects: 'none', next: 'none', action: 'describe `ask.kind: denied` with that reason, no literal' },
-  { id: 'R18', state: 'none', input: 'describe', guard: 'run mode `unattended`, and R1, R16, R2 and R17 do not apply', effects: 'none', next: 'none', action: 'describe `ask.kind: start` with the start of R3\'s recommended option under `--auto-approve`; `{inputs}` kept and `inputs` listed when the workflow has inputs' },
+  { id: 'R23', state: 'none', input: 'describe', guard: 'run mode `unattended`, R1 and R16 do not apply, and the definition has a local route, as R2\'s', effects: 'none', next: 'none', action: 'describe `ask.kind: denied` with the local route\'s reason, no literal: nobody is there to run the local driver' },
+  { id: 'R17', state: 'none', input: 'describe', guard: 'run mode `unattended`, R1, R16 and R23 do not apply, and `attendedReason` names what needs a person: `invoke: ask`, an interactive step, a required approval, or a choice without a default', effects: 'none', next: 'none', action: 'describe `ask.kind: denied` with that reason, no literal' },
+  { id: 'R18', state: 'none', input: 'describe', guard: 'run mode `unattended`, and R1, R16, R23 and R17 do not apply', effects: 'none', next: 'none', action: 'describe `ask.kind: start` with the start of R3\'s recommended option under `--auto-approve`; `{inputs}` kept and `inputs` listed when the workflow has inputs' },
   { id: 'R8', state: 'none', input: 'start `--driver skill`, or R19\'s input', guard: 'the definition has a local route; for R19\'s input, the run\'s own definition, once R20 and R21 do not apply', effects: 'none', next: 'none', action: 'error `needs_local_driver` with the reason, next null; for R19\'s input it names the person\'s `teamai workflow resume <run>` literal, and the run stays readied here' },
   { id: 'R9', state: 'none', input: 'start `--driver skill`', guard: '`checkStartAnswers` answers `confirm-needed`', effects: 'none', next: 'none', action: 'error `confirm_needed`, next: the describe literal' },
   { id: 'R10', state: 'none', input: 'start `--driver skill`', guard: '`checkStartAnswers` answers `ok`', effects: '`WorkflowClient.start`; write skill.json: identity `{skill, machine, run checkout}`, invocation, options (`--parallel`, the HITL mode, the caller\'s run mode), host `pending` when the definition has a prompt step, owner := the caller\'s session; judging on with the session tool when describe judges here and the start has no `--no-judge`', next: 'host when it has a prompt step, else drive', action: 'the turn of a tick' },
@@ -315,10 +316,10 @@ export function unseenEvents(state: SkillState, session: string | undefined): Tu
 }
 
 /** The describe row `input` matches, with how describe says to start. */
-export function describeRow(input: DescribeInput): { row: 'R1' | 'R16' | 'R2' | 'R17' | 'R18' | 'R3' | 'R4'; verdict: DescribeVerdict } {
+export function describeRow(input: DescribeInput): { row: 'R1' | 'R16' | 'R2' | 'R23' | 'R17' | 'R18' | 'R3' | 'R4'; verdict: DescribeVerdict } {
   if (input.denied !== undefined) return { row: 'R1', verdict: { ask: 'denied', reason: input.denied } };
   if (input.undeliverable !== undefined) return { row: 'R16', verdict: { ask: 'denied', reason: input.undeliverable } };
-  if (input.local !== undefined) return { row: 'R2', verdict: { ask: 'local', reason: input.local } };
+  if (input.local !== undefined) return input.mode === 'unattended' ? { row: 'R23', verdict: { ask: 'denied', reason: input.local } } : { row: 'R2', verdict: { ask: 'local', reason: input.local } };
   if (input.mode === 'unattended') {
     return input.attended !== undefined ? { row: 'R17', verdict: { ask: 'denied', reason: input.attended } } : { row: 'R18', verdict: { ask: 'unattended' } };
   }

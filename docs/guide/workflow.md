@@ -377,7 +377,7 @@ When a step that waits for env or a budget works in a workspace that an earlier 
 
 A run is attended when a person is there to answer, and unattended in CI or a cloud agent. TeamAI takes the mode from `TEAMAI_MODE` (`attended` or `unattended`), else from `CI` (set, and not `0` or `false`, means unattended), else attended. It warns about any other `TEAMAI_MODE` value and ignores it.
 
-In an unattended run, describe asks no question. It answers the start of the recommended option with `--auto-approve`, and the agent fills `{inputs}` from its task. It refuses a workflow that needs a person (`denied`), naming why: `invoke: ask`, an `interactive` step, a required approval, or a choice without a default.
+In an unattended run, describe asks no question. It answers the start of the recommended option with `--auto-approve`, and the agent fills `{inputs}` from its task. It refuses a workflow that needs a person (`denied`), naming why: `invoke: ask`, an `interactive` step, a required approval, a choice without a default, or a route only the local driver can run.
 
 Every process TeamAI starts for a step, setup included, gets the run's `TEAMAI_MODE`, with either driver. The skill driver keeps the mode that its start, or a `resume --driver skill`, resolved. The local driver resolves it each time it starts driving, with `start` or `resume`.
 
