@@ -1,5 +1,5 @@
 import {
-  PARALLEL_ROOTS, bothSkillProfiles, controlsYaml, type ConformanceOperation, type ConformanceScenario, type DriverProfile,
+  PARALLEL_ROOTS, bothSkillProfiles, controlsYaml, type ConformanceOperation, type ConformanceScenario, type DriverProfile, type JudgeConformanceScenario,
 } from './conformance-interpreter.js';
 import { AGENT_SESSION_ENV } from '../utils/session-id.js';
 import { ATTEMPT_ENV } from './attempt-marker.js';
@@ -1334,26 +1334,8 @@ samplingRate: 100
 Judge the work.
 `;
 
-/**
- * One step of a judge lease scenario. `take` and `renew` are `score --next`: `take` lists nothing in running, or the
- * lease it took last with `running`; `renew` lists that lease, and `canTakeLease: false` asks it to take nothing.
- * `next` is a workflow next that lists that lease in its running, which leaves the run as it was.
- */
-export type JudgeConformanceOperation =
-  | { kind: 'take'; at: string; running?: true; expect: Record<string, unknown> }
-  | { kind: 'renew'; at: string; canTakeLease?: false; expect: Record<string, unknown> }
-  | { kind: 'next'; expect: Record<string, unknown> }
-  | { kind: 'report'; expect: Record<string, unknown> }
-  | { kind: 'submit'; expect: Record<string, unknown> }
-  | { kind: 'idle'; at: string; expect: Record<string, unknown> };
-
-export interface JudgeConformanceScenario {
-  name: string;
-  yaml: string;
-  /** The scorer files by name. */
-  scorers: Record<string, string>;
-  operations: JudgeConformanceOperation[];
-}
+/** What `score --next` answers a driver that declares no judge, which never gets judge work. */
+const NO_JUDGE = { error: { code: 'invalid_json' } };
 
 export const judgeConformanceScenarios: JudgeConformanceScenario[] = [
   {
@@ -1368,6 +1350,7 @@ export const judgeConformanceScenarios: JudgeConformanceScenario[] = [
       { kind: 'submit', expect: { data: { label: { label: 'good', score: 1, passed: true } } } },
       { kind: 'idle', at: '2026-10-22T12:46:00.000Z', expect: { data: { idle: { open: 0, leased: 0 } } } },
     ],
+    refusedBy: { 'skill-no-judge': NO_JUDGE },
   },
   {
     name: 'judge-ref-in-workflow-running: workflow next refuses a judge lease in running, leaves the run as it was, and the lease still renews',
@@ -1379,6 +1362,7 @@ export const judgeConformanceScenarios: JudgeConformanceScenario[] = [
       { kind: 'renew', at: '2026-10-22T12:20:00.000Z', expect: { data: { idle: { open: 0, leased: 1 } } } },
       { kind: 'take', at: '2026-10-22T12:45:00.000Z', expect: { data: { lease: { expiresAt: '2026-10-22T12:50:00.000Z', handedBack: true } } } },
     ],
+    refusedBy: { 'skill-no-judge': NO_JUDGE },
   },
   {
     name: 'judge-renew-without-take: canTakeLease false renews the lease in running and takes no open work',
@@ -1390,5 +1374,6 @@ export const judgeConformanceScenarios: JudgeConformanceScenario[] = [
       { kind: 'take', at: '2026-10-22T12:45:00.000Z', running: true, expect: { data: { lease: { scorer: 'depth', expiresAt: '2026-10-22T13:15:00.000Z' } } } },
       { kind: 'renew', at: '2026-10-22T12:46:00.000Z', canTakeLease: false, expect: { data: { idle: { open: 0, leased: 2 } } } },
     ],
+    refusedBy: { 'skill-no-judge': NO_JUDGE },
   },
 ];

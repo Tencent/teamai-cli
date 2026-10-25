@@ -414,3 +414,129 @@ export async function driveByProtocol(input: {
   }
   throw new Error(`Run ${runId} did not end within 20 calls`);
 }
+
+/**
+ * One step of a judge lease scenario. `take` and `renew` are `score --next`: `take` lists nothing in running, or the
+ * lease it took last with `running`; `renew` lists that lease, and `canTakeLease: false` asks it to take nothing.
+ * `next` is a workflow next that lists that lease in its running, which leaves the run as it was. `at` sets the clock.
+ */
+export type JudgeConformanceOperation =
+  | { kind: 'take'; at: string; running?: true; expect: Record<string, unknown> }
+  | { kind: 'renew'; at: string; canTakeLease?: false; expect: Record<string, unknown> }
+  | { kind: 'next'; expect: Record<string, unknown> }
+  | { kind: 'report'; expect: Record<string, unknown> }
+  | { kind: 'submit'; expect: Record<string, unknown> }
+  | { kind: 'idle'; at: string; expect: Record<string, unknown> };
+
+/** A run of workflow `judged` whose scored pass a driver runs to its end, then the judge work of that pass. */
+export interface JudgeConformanceScenario {
+  name: string;
+  yaml: string;
+  /** The scorer files by name. */
+  scorers: Record<string, string>;
+  operations: JudgeConformanceOperation[];
+  /** The profiles designed to refuse judge work, each with what its first `score --next` answers, where the scenario ends. */
+  refusedBy?: Partial<Record<JudgeProfile, Record<string, unknown>>>;
+}
+
+/** The drivers every judge scenario runs as. */
+export const JUDGES_UNDER_TEST = ['external', 'skill', 'skill-no-judge'] as const;
+export type JudgeProfile = typeof JUDGES_UNDER_TEST[number];
+
+const CLAUDE_JUDGE: { isolation: 'verified'; tools: string[] } = { isolation: 'verified', tools: ['claude'] };
+
+/**
+ * The drivers a judge scenario speaks as: the workflow driver profile `as` runs the scored pass, then asks
+ * `score --next` for judge work with the judge it declares, if any. `ownRun` names the run, so it takes that run's
+ * judge work only.
+ */
+export const JUDGE_PROFILES: Record<JudgeProfile, { as: DriverProfile; judge?: { isolation: 'verified'; tools: string[] }; ownRun: boolean }> = {
+  /** A program that judges any pass of the install with a verified Claude Code. */
+  external: { as: 'external', judge: CLAUDE_JUDGE, ownRun: false },
+  /** The skill driver, which judges its own run with the confined judge of its session's tool, found verified here. */
+  skill: { as: 'skill', judge: CLAUDE_JUDGE, ownRun: true },
+  /** The skill driver of a run that does not judge here: it declares no judge. */
+  'skill-no-judge': { as: 'skill', ownRun: true },
+};
+
+/** What a runner of judge scenarios provides: its clients, the revision its run file holds, and the clock its calls read. */
+export interface JudgeConformanceRunner {
+  client: Pick<ConformanceClient, 'start' | 'next' | 'report'> & {
+    scoreNext: (body: unknown) => Promise<WorkflowEnvelope>;
+    /** Settles judge lease `ref` with `body`, as `teamai score --lease <ref> --submit` does. */
+    submit: (ref: string, body: unknown) => Promise<WorkflowEnvelope>;
+  };
+  readRevision(runId: string): Promise<number>;
+  /** Sets the time every later call reads. */
+  setClock(at: string): Promise<void>;
+  expect: ConformanceExpect;
+}
+
+function dataOf(envelope: WorkflowEnvelope): Record<string, unknown> {
+  if ('error' in envelope) throw new Error(envelope.error.message);
+  return envelope.data;
+}
+
+const LeasedSchema = z.object({ attempt: z.string(), revision: z.number() });
+const JudgeLeaseSchema = z.object({ ref: z.string() });
+
+/** Runs one judge scenario as `profile`: its driver runs the scored pass to the run's end, then takes the judge work. */
+export async function runJudgeConformanceScenario(scenario: JudgeConformanceScenario, runner: JudgeConformanceRunner, profile: JudgeProfile): Promise<void> {
+  const { client, expect } = runner;
+  const judging = JUDGE_PROFILES[profile];
+  const driver = profileDriver(judging.as);
+  await runner.setClock('2026-10-22T11:00:00.000Z');
+  const runId = String(dataOf(await client.start('judged')).run);
+  const work = LeasedSchema.parse(dataOf(await client.next(runId, { driver: { ...driver, can: DRIVER_PROFILES[judging.as].can } })).lease);
+  dataOf(await client.report(runId, { ...work, driver, outcome: 'success', outputs: { reviewed: true } }));
+  expect(await client.next(runId, { driver })).toMatchObject({ data: { done: {} } });
+  const request = (fields: { running: string[]; canTakeLease?: false }): unknown => ({
+    driver: { ...driver, can: judging.judge ? { judge: judging.judge } : {} }, ...(judging.ownRun ? { run: runId } : {}), ...fields,
+  });
+  const refusal = scenario.refusedBy?.[profile];
+  /** The answer of `score --next`, or undefined once `profile` refused it as the scenario says. */
+  const scoreNext = async (body: unknown): Promise<WorkflowEnvelope | undefined> => {
+    const answer = await client.scoreNext(body);
+    if (!refusal) return answer;
+    expect(answer, `${profile} is refused judge work`).toMatchObject(refusal);
+    return undefined;
+  };
+  let ref = '';
+  for (const operation of scenario.operations) {
+    let answer: WorkflowEnvelope | undefined;
+    switch (operation.kind) {
+      case 'take':
+        await runner.setClock(operation.at);
+        answer = await scoreNext(request({ running: operation.running ? [ref] : [] }));
+        break;
+      case 'renew':
+        await runner.setClock(operation.at);
+        answer = await scoreNext(request({ running: [ref], ...(operation.canTakeLease === false ? { canTakeLease: false } : {}) }));
+        break;
+      case 'idle':
+        await runner.setClock(operation.at);
+        answer = await scoreNext(request({ running: [] }));
+        break;
+      case 'next': {
+        const before = await runner.readRevision(runId);
+        answer = await client.next(runId, { driver, running: [ref] });
+        expect(await runner.readRevision(runId), 'the run as it was').toEqual(before);
+        break;
+      }
+      case 'report':
+        answer = await client.report(runId, { attempt: ref, revision: 1, driver, outcome: 'success' });
+        break;
+      case 'submit':
+        answer = await client.submit(ref, { driver, outcome: 'success', answer: { label: 'good', reasoning: 'done' } });
+        break;
+      default: {
+        const unhandled: never = operation;
+        throw new Error(`unknown judge conformance operation ${JSON.stringify(unhandled)}`);
+      }
+    }
+    if (!answer) return;
+    expect(answer).toMatchObject(operation.expect);
+    if (operation.kind === 'take') ref = JudgeLeaseSchema.parse(dataOf(answer).lease).ref;
+  }
+  if (refusal) throw new Error(`The scenario says ${profile} is refused judge work, but it made no score --next`);
+}
