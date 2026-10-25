@@ -11,7 +11,6 @@ import {
   SyncManager,
   getGitAuthor,
   defaultSyncMeta,
-  withSessionIndexLock,
   withSessionPublicationLock,
 } from './sync.js';
 import { isInteractive } from '../utils/prompt.js';
@@ -489,7 +488,7 @@ async function migrateSession(sessionId: string | undefined, opts: MigrationOpti
           meta.migration.targetPlatform = target;
           meta.migration.fidelityScore = t.fidelityScore;
           try {
-            const write = await withSessionIndexLock(root, async () => syncMgr.saveSession(session, meta));
+            const write = await syncMgr.saveSession(session, meta);
             if (write.status === 'busy') {
               stopped = archiveFailed('busy', `${archiveBusyMessage(root, write.lockPath)} Run it again once that has finished.`, t);
               return undefined;

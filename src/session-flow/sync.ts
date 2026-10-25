@@ -31,7 +31,6 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { AsyncLocalStorage } from 'node:async_hooks';
 import { getTeamaiHomeDir } from '../types.js';
 import { acquireLock, releaseLock } from '../update.js';
 import type { Session } from './ir.js';
@@ -320,7 +319,7 @@ export type GitCommitResult =
 /**
  * The outcomes of `gitPull`. `stopped` merged nothing, so the checkout is as it was before the pull.
  * `indexes-conflicted` leaves the merge in progress with only these session indexes unmerged: the caller
- * finishes it with `commitRebuiltIndexes` under `withSessionIndexLock`. `pending` means an earlier pull left
+ * finishes it with the self-locking `commitRebuiltIndexes`. `pending` means an earlier pull left
  * that merge: the requested pull has not run yet, so the caller pulls again once the merge is finished.
  */
 export type PullResult =
@@ -381,7 +380,10 @@ function assertNoSymlinkedAncestors(target: string, root: string): void {
 // archive. Ten seconds covers both without leaving a command stuck.
 const INDEX_LOCK_ATTEMPTS = 100;
 const INDEX_LOCK_RETRY_MS = 100;
-const indexLockOwner = new AsyncLocalStorage<{ path: string; active: boolean }>();
+/** A self-locking archive write either completed or timed out without mutating the archive. */
+export type ArchiveWriteResult<T> =
+  | { status: 'written'; value: T }
+  | { status: 'busy'; lockPath: string };
 
 /** Serialize a command's archive writes and Git publication, including pull/merge. */
 export async function withSessionPublicationLock<T>(
@@ -410,8 +412,7 @@ export async function withSessionPublicationLock<T>(
  *
  * The lock lives under `~/.teamai/locks/`, keyed by the archive's real path,
  * not beside `_index.json`: there the commit and `pull --all`'s directory
- * renames would reach it. Public archive writes take this lock themselves;
- * an existing caller holding it can safely invoke them within its operation.
+ * renames would reach it. Public archive writes take this lock themselves.
  */
 export async function withSessionIndexLock<T>(
   repoRoot: string,
@@ -420,17 +421,13 @@ export async function withSessionIndexLock<T>(
   const real = await fs.promises.realpath(repoRoot).catch(() => path.resolve(repoRoot));
   const key = createHash('sha256').update(path.join(real, 'sessions')).digest('hex').slice(0, 16);
   const lockPath = path.join(getTeamaiHomeDir(), 'locks', `sessions-${key}.lock`);
-  const owner = indexLockOwner.getStore();
-  if (owner?.active && owner.path === lockPath) return { status: 'done', value: await fn() };
   for (let attempt = 1; !(await acquireLock(lockPath)); attempt++) {
     if (attempt === INDEX_LOCK_ATTEMPTS) return { status: 'busy', lockPath };
     await new Promise((resolve) => setTimeout(resolve, INDEX_LOCK_RETRY_MS));
   }
-  const held = { path: lockPath, active: true };
   try {
-    return { status: 'done', value: await indexLockOwner.run(held, fn) };
+    return { status: 'done', value: await fn() };
   } finally {
-    held.active = false;
     await releaseLock(lockPath);
   }
 }
@@ -444,30 +441,29 @@ export async function withSessionIndexLock<T>(
  * - pull only fetches the repo subdirectory that matches the current cwd
  */
 export class SyncManager {
-  private async writeArchive<T>(fn: () => T): Promise<T> {
+  private async writeArchive<T>(fn: () => T): Promise<ArchiveWriteResult<T>> {
     const result = await withSessionIndexLock(this.repoRoot, async () => fn());
-    if (result.status === 'busy') throw new Error(`Session archive is busy; index lock: ${result.lockPath}`);
-    return result.value;
+    return result.status === 'busy' ? result : { status: 'written', value: result.value };
   }
 
   /** Save through the archive lock, including deduplication and index repair. */
-  saveSession(session: Session, meta: SessionSyncMeta): Promise<string> {
+  saveSession(session: Session, meta: SessionSyncMeta): Promise<ArchiveWriteResult<string>> {
     return this.writeArchive(() => this.saveSessionLocked(session, meta));
   }
 
-  rebuildIndex(repoIdentity: string | null, dirOverride?: string): Promise<number> {
+  rebuildIndex(repoIdentity: string | null, dirOverride?: string): Promise<ArchiveWriteResult<number>> {
     return this.writeArchive(() => this.rebuildIndexLocked(repoIdentity, dirOverride));
   }
 
-  rebuildAllIndexes(): Promise<{ repos: number; sessions: number }> {
+  rebuildAllIndexes(): Promise<ArchiveWriteResult<{ repos: number; sessions: number }>> {
     return this.writeArchive(() => this.rebuildAllIndexesLocked());
   }
 
-  commitRebuiltIndexes(indexes: string[]): Promise<void> {
+  commitRebuiltIndexes(indexes: string[]): Promise<ArchiveWriteResult<void>> {
     return this.writeArchive(() => this.commitRebuiltIndexesLocked(indexes));
   }
 
-  deleteSession(repoIdentity: string | null, sessionName: string, author?: string): Promise<void> {
+  deleteSession(repoIdentity: string | null, sessionName: string, author?: string): Promise<ArchiveWriteResult<void>> {
     return this.writeArchive(() => this.deleteSessionLocked(repoIdentity, sessionName, author));
   }
   private readonly sessionsDir: string;

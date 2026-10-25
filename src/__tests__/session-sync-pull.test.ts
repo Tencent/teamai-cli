@@ -15,12 +15,16 @@ const lock = vi.hoisted(() => ({
 
 vi.mock('../session-flow/sync.js', async (importOriginal) => {
   const actual = (await importOriginal()) as typeof import('../session-flow/sync.js');
+  class MockSyncManager extends actual.SyncManager {
+    override commitRebuiltIndexes(indexes: string[]) {
+      return lock.heldBy
+        ? Promise.resolve({ status: 'busy' as const, lockPath: lock.heldBy })
+        : super.commitRebuiltIndexes(indexes);
+    }
+  }
   return {
     ...actual,
-    withSessionIndexLock: (async (repo, fn) =>
-      lock.heldBy
-        ? { status: 'busy', lockPath: lock.heldBy }
-        : actual.withSessionIndexLock(repo, fn)) as typeof actual.withSessionIndexLock,
+    SyncManager: MockSyncManager,
   };
 });
 
