@@ -26,7 +26,8 @@ import { writeSkillState, readSkillState, type Judge, type ReportBody, type Skil
 import { pickChildModel } from './child-model.js';
 import { writeChildBrief } from './child-brief.js';
 import { reportLiteral } from './literals.js';
-import { applyEffects, readJob, RUNNER_POLL_MS, runTick, traced, WAIT_BOUND_MS, type Job } from './tick.js';
+import { readJob, type Job } from './job.js';
+import { applyEffects, RUNNER_POLL_MS, runTick, traced, WAIT_BOUND_MS } from './tick.js';
 import {
   exitedRow, judgeAnsweredRow, offerRow, openAttempt, placeBusyRow, placingRow, preparedRow, prepareFailedRow, resendRow, runnerCallRow, runnerStopRow, type JudgeAnswer, type MovedWithEffects, type RowId,
 } from './transitions.js';

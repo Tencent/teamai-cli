@@ -6,9 +6,12 @@ import type { Judging } from '../../protocol.js';
 import type { AttemptId, RunId } from '../../store.js';
 import type { OutputSchema, WorkflowFailure } from '../../types.js';
 import { HOST_CHOICES, HOST_PROFILES, HOST_QUESTION, type HostChoice } from './host-profiles.js';
-import { ackLiteral, adoptLiteral, chooseHostLiteral, personRespondLiteral, reportLiteral, respondLiteral, resumeLiteral, unavailableLiteral, type Literal } from './literals.js';
+import {
+  ackLiteral, adoptLiteral, chooseHostLiteral, describeLiteral, localStartLiteral, nextLiteral, personRespondLiteral, pollLiteral, reportLiteral, respondLiteral, resumeLiteral,
+  takeoverLiteral, unavailableLiteral, type Invocation, type Literal,
+} from './literals.js';
 import type { AttemptState, Dispatch, Gate, ModelPick, SkillState, StopReason, TurnEvent } from './skill-state.js';
-import { childCap, reportedByAgent } from './transitions.js';
+import { childCap, reportedByAgent, type Answer, type Refusal } from './transitions.js';
 
 /** How describe says to start: as is, after one question to the person, or with the local driver. */
 export type DescribeAsk =
@@ -181,6 +184,63 @@ export interface SkillError {
   /** `orchestrator_active`: the seconds since the session that drives the run last called, for the person to judge whether it is gone. */
   idleSeconds?: number;
   next: Literal | null;
+}
+
+/**
+ * The error a row answers, with its message and the literal to run instead. `run` names the run of an engine error;
+ * `localTool`, the prompt tool a local start the refusal prints names (`localPromptTool`).
+ */
+export function errorOf(answer: Answer, context: { invocation: Invocation; same: Literal; run?: RunId; localTool?: string }): SkillError {
+  const { invocation, same } = context;
+  if (answer.kind === 'engine-error') {
+    const next = context.run === undefined || answer.next === 'same' ? same : answer.next === 'poll' ? pollLiteral(invocation, context.run) : nextLiteral(invocation, context.run);
+    return { ...answer.error, next };
+  }
+  const { refusal } = answer;
+  const next = answer.next === null ? null
+    : answer.next === 'next' && 'run' in refusal ? nextLiteral(invocation, refusal.run)
+      : answer.next === 'takeover' && 'run' in refusal ? takeoverLiteral(invocation, refusal.run)
+        : answer.next === 'describe' && 'name' in refusal ? describeLiteral(invocation, refusal.name)
+          : same;
+  return { code: refusal.code, message: refusalMessage(refusal, { invocation, tool: context.localTool }), ...(refusal.code === 'orchestrator_active' ? { idleSeconds: refusal.idleSeconds } : {}), next };
+}
+
+/** The message of each refusal: what happened, and what the agent or the person does next. */
+function refusalMessage(refusal: Refusal, local: { invocation: Invocation; tool?: string | undefined }): string {
+  switch (refusal.code) {
+    case 'needs_local_driver':
+      return `Workflow ${refusal.name} must run with the local driver. ${refusal.reason} Ask the person to run ${localStartLiteral(local.invocation, refusal.name, { tool: local.tool })} in their own terminal.`;
+    case 'confirm_needed': {
+      const lacks = refusal.missing.map((answer) => ({ confirmed: '--confirmed, the person\'s yes', inputs: '--inputs', parallel: '--parallel', hitl: '--hitl or --auto-approve' })[answer]);
+      const said = [
+        ...(lacks.length > 0 ? [`it needs ${lacks.join(', ')}`] : []),
+        ...(refusal.outOfRange ? [`--parallel ${refusal.outOfRange.parallel} is above the most this machine runs at once, ${refusal.outOfRange.ceiling}`] : []),
+      ];
+      return `Start ${refusal.name} from its describe reply: ${said.join('; ')}. Run the describe literal and ask the person.`;
+    }
+    case 'not_skill_run':
+      return `Run ${refusal.run} is not driven by the skill driver on this machine. The person can continue it in a terminal with teamai workflow resume ${refusal.run}.`;
+    case 'orchestrator_active':
+      return `Run ${refusal.run} is driven by another coding session, which last called ${refusal.idleSeconds} s ago. Ask the person whether that session is gone, and run the command in next only when they agree to take the run over here; otherwise the run goes on from that session.`;
+    case 'choice_pending':
+      return `Run ${refusal.run} waits for the host question. Run the next literal, then the run of the option that fits your host.`;
+    case 'unknown_choice':
+      return `Run ${refusal.run} asks no host question now: its host is already chosen, or it has no prompt step. Run the next literal to see the run.`;
+    case 'unknown_offer':
+      return `Attempt ${refusal.attempt} of run ${refusal.run} has no dispatch to ack. Run the next literal to see the run.`;
+    case 'unknown_attempt':
+      return refusal.phase === undefined
+        ? `Attempt ${refusal.attempt} is not open in run ${refusal.run}. Run the next literal to see the run.`
+        : `Attempt ${refusal.attempt} of run ${refusal.run} is ${refusal.phase} and waits for no place, so nothing was adopted. Run the next literal to see the run.`;
+    case 'not_dispatched':
+      return `Attempt ${refusal.attempt} of run ${refusal.run} is ${refusal.phase}: teamai runs it and reports it, so there is nothing to report yet. Run the next literal to see the run.`;
+    case 'driver_running':
+      return `Run ${refusal.run} is busy: another teamai process holds its driver lock. Run the same call again.`;
+    default: {
+      const unhandled: never = refusal;
+      return unhandled;
+    }
+  }
 }
 
 export type SkillAnswer =

@@ -254,3 +254,11 @@ export function askFor(verdict: DescribeVerdict, description: WorkflowDescriptio
     }
   }
 }
+
+/** The most steps the skill driver runs at once when the member set no `workflows.max_parallel`. */
+const SKILL_MAX_CHILDREN = 3;
+
+/** The most steps the skill driver runs at once for `config`. */
+export function ceilingOf(config: LocalConfig): number {
+  return config.workflows?.max_parallel ?? SKILL_MAX_CHILDREN;
+}

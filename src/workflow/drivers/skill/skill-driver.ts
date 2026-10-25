@@ -15,15 +15,16 @@ import { agentSessionFromEnv } from '../../../utils/session-id.js';
 import { agentEvidence, isAttemptRunner, type AgentEvidence } from '../../attempt-marker.js';
 import { inProcessClient, invokeDeniedMessage, type WorkflowClient } from '../../protocol.js';
 import { AttemptIdSchema, RunIdSchema, withRunLock, type AttemptId, type RunId, type RunLock } from '../../store.js';
+import type { WorkflowFailure } from '../../types.js';
 import { canFor, HOST_CHOICES, type HostChoice } from './host-profiles.js';
 import { journalCall } from './journal.js';
 import { describeLiteral, invocationOf, type Invocation } from './literals.js';
-import { askFor, attendedReason, checkStartAnswers, localPromptTool, localReason, neededAnswers, type HitlMode } from './preflight.js';
+import { askFor, attendedReason, ceilingOf, checkStartAnswers, localPromptTool, localReason, neededAnswers, type HitlMode } from './preflight.js';
 import { writeSkillState, type SkillState } from './skill-state.js';
 import { detachedRunners, runRunner } from './skill-runner.js';
-import { agentReport, ceilingOf, errorOf, foreground, poll, startRefused } from './tick.js';
+import { agentReport, foreground, poll } from './tick.js';
 import { describeRow, startRow, type RowId } from './transitions.js';
-import type { SkillAnswer, SkillError } from './turn.js';
+import { errorOf, type SkillAnswer, type SkillError } from './turn.js';
 
 export type SkillCall =
   | { kind: 'describe'; name: string }
@@ -296,4 +297,15 @@ async function start(call: Extract<SkillCall, { kind: 'describe' | 'start' }>, c
   const saved = await context.locks.take(run.data, (lock) => writeSkillState(context.config, lock, state, context.env.secrets), 0);
   if (saved !== undefined) return { error: { ...saved.error, next: null } };
   return foreground(context, run.data, { kind: 'next' });
+}
+
+/** The refusals of a protocol start that another answer to describe fixes: other inputs, or the person's yes. */
+const ANSWERABLE_START_REFUSALS: ReadonlySet<string> = new Set(['invalid_inputs', 'confirm_needed']);
+
+/**
+ * The error a start answers when the protocol refused it: describe again for a refusal another answer fixes, and no
+ * literal for the rest, which a new describe would only lead back to.
+ */
+function startRefused(context: SkillContext, name: string, error: WorkflowFailure): SkillAnswer {
+  return { error: { ...error, next: ANSWERABLE_START_REFUSALS.has(error.code) ? describeLiteral(context.invocation, name) : null } };
 }
