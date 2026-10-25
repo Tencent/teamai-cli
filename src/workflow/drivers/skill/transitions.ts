@@ -1,6 +1,7 @@
 /**
- * The skill driver's state machine: `step(state, input)` returns the row it took, the new state and what the caller
- * must do. The rows are the tables under `## The skill driver` in docs/dev/workflow-engine.md, cell by cell.
+ * The skill driver's state machine. Each row function takes the input of one kind and returns the row it took with
+ * only what its caller needs: the new state and the effects the shell applies, or the error the call answers. The rows
+ * are the tables under `## The skill driver` in docs/dev/workflow-engine.md, cell by cell.
  */
 import type { RunMode } from '../../../launch-context.js';
 import type { EnvScope } from '../../requirements.js';
@@ -145,9 +146,13 @@ export type RespondReply = { kind: 'answered'; step: string; pass: number; choic
 /** What the engine answered a sent report: the step it settled, with the failure it recorded, or an error. */
 export type ReportReply = { kind: 'reported'; outcome: Extract<TurnEvent, { kind: 'settled' }>['outcome']; failure?: WorkflowFailure } | { kind: 'error'; error: WorkflowFailure };
 
+/** What the open judge's runner learned: the label of each scorer, or why the judge gave none. */
+export type JudgeAnswer = { kind: 'judged'; labels: Array<{ scorer: string; label: string }> } | { kind: 'failed'; failure: WorkflowFailure };
+
 /**
  * What describe knows before the rows choose how to start. `denied`: why an agent session may not start the workflow.
- * `local`: why the local driver must run it. `judgingHere`: the session tool's confined judge would judge the scored steps here.
+ * `local`: why the local driver must run it. `judgingHere`: the session tool's confined judge would judge the scored
+ * steps here. `undeliverable`: why a start from the checkout would be refused for its delivery.
  */
 /**
  * `undeliverable`: why a start from the checkout would be refused for its delivery. `mode`: the run mode of the caller.
@@ -158,63 +163,14 @@ export interface DescribeInput { needed: StartAnswer[]; denied?: string; undeliv
 /** What a start knows before the rows decide it. `judge`: the session tool whose confined judge judges the run, when describe judges here and the start keeps judging. */
 export interface StartInput { name: string; check: StartCheck; local?: string; prompts: boolean; judge?: string }
 
-export type MachineInput =
-  /** `takeover`: the call is `next --takeover`. */
-  | { kind: 'call'; run: RunId; session: string | undefined; at: string; takeover: boolean }
-  | { kind: 'runner-call' }
-  /** An agent's `report --attempt a`, before the session check: the child of `a` may run in a session of its own. */
-  | { kind: 'report-call'; attempt: AttemptId }
-  /** `runner`: the check a runner makes while its attempt runs, which takes no lease. */
-  | { kind: 'tick'; role: 'call' | 'runner' }
-  | { kind: 'judge-tick'; role: 'call' | 'runner' }
-  | { kind: 'score-reply'; reply: ScoreReply; at: string }
-  /** The open judge's runner found it gone: its `runner.lock` is free. */
-  | { kind: 'judge-free'; at: string; graceMs: number }
-  | { kind: 'judged'; attempt: AttemptId; labels: Array<{ scorer: string; label: string }> }
-  | { kind: 'judge-failed'; attempt: AttemptId; failure: WorkflowFailure }
-  | { kind: 'next' }
-  | { kind: 'choose'; choice: HostChoice; profile: HostProfile }
-  | { kind: 'ack'; attempt: AttemptId }
-  | { kind: 'reply'; reply: EngineReply; at: string }
-  /** The reply of a `next`, before its own row: whether it shows the journalled gate answered elsewhere. */
-  | { kind: 'gate-check'; reply: EngineReply }
-  /** The engine's answer to `respond --driver skill`. */
-  | { kind: 'responded'; reply: RespondReply }
-  /** The engine no longer leases `attempt` to this driver: it was cancelled, or it passed its deadline. */
-  | { kind: 'cancelled'; attempt: AttemptId; at: string }
-  | { kind: 'spawned' }
-  | { kind: 'lock-busy'; run: RunId }
-  | { kind: 'turn'; session: string | undefined }
-  /** `ticked`: the turn the poll's tick decided, when a row of that tick answered one. */
-  | { kind: 'poll'; session: string | undefined; busy: boolean; boundReached: boolean; ticked?: TurnAnswer }
-  | { kind: 'prepared'; attempt: AttemptId }
-  | { kind: 'offer'; attempt: AttemptId; dispatch: Dispatch }
-  | { kind: 'place-busy'; attempt: AttemptId; behind: AttemptId }
-  | { kind: 'unqueue'; attempt: AttemptId; at: string }
-  | { kind: 'prepare-failed'; attempt: AttemptId; body: ReportBody }
-  | { kind: 'model-failed'; attempt: AttemptId; body: ReportBody }
-  | { kind: 'exited'; attempt: AttemptId; body: ReportBody; tail?: string }
-  | { kind: 'runner-free'; attempt: AttemptId; at: string; graceMs: number }
-  /** The runner found its attempt stopping, and its command, if it started one, is stopped. */
-  | { kind: 'runner-stop'; attempt: AttemptId }
-  | { kind: 'reported'; attempt: AttemptId; reply: ReportReply; at: string }
-  | { kind: 'resend'; attempt: AttemptId }
-  /** `result` is what the attempt's child left, read before the row is taken. */
-  | { kind: 'report'; attempt: AttemptId; modelUnavailable: boolean; result: ChildResult };
-
-/** What the caller does for a row, beyond saving its state. */
+/** What the shell does for a row, beyond saving its state. `applyEffects` applies each kind, in order. */
 export type Effect =
-  | { kind: 'next'; running: AttemptId[]; canTakeLease: boolean; autoApprove: boolean }
-  /** `score --next` as the confined judge of `tool`. */
-  | { kind: 'score'; tool: string; running: string[]; canTakeLease: boolean }
   /** `job` is the lease of a new attempt; a respawn reuses the job already saved. */
   | { kind: 'spawn'; attempt: AttemptId; job?: { lease: unknown } }
-  | { kind: 'run'; attempt: AttemptId }
   /** Stops what the command of `attempt` left running when its runner died, before anything else runs in its place. */
   | { kind: 'stop-left'; attempt: AttemptId }
-  | { kind: 'send'; attempt: AttemptId; body: ReportBody }
-  | { kind: 'grace' }
-  | { kind: 'sleep' };
+  /** Saves the state, which holds `body` as the report of `attempt`, then sends it. */
+  | { kind: 'send'; attempt: AttemptId; body: ReportBody };
 
 /** A call the skill driver refuses, with what its message names. */
 export type Refusal =
@@ -240,11 +196,12 @@ export type DescribeVerdict = { ask: 'start' | 'ask' | 'unattended' } | { ask: '
 /** The run R10 starts: its options, whether it asks the host question first, and the tool that judges it. */
 export interface StartRun { parallel: number; hitl: HitlMode; host: 'none' | 'pending'; judge?: string }
 
-/** What the call answers, when the row decides it. */
-export type Answer =
-  | { kind: 'error'; refusal: Refusal; next: 'describe' | 'next' | 'takeover' | 'same' | null }
-  | { kind: 'engine-error'; error: WorkflowFailure; next: 'next' | 'same' | 'poll' }
-  | { kind: 'turn'; events: 'unseen' | 'none'; poll: boolean };
+/** A refusal of the skill driver, and the literal it names to run instead. */
+type Refused = { kind: 'error'; refusal: Refusal; next: 'describe' | 'next' | 'takeover' | 'same' | null };
+/** An engine error the skill driver relays, and the literal it names to run instead. */
+type Relayed = { kind: 'engine-error'; error: WorkflowFailure; next: 'next' | 'same' | 'poll' };
+/** The error a row answers the call with. */
+export type Answer = Refused | Relayed;
 
 /**
  * How the shell renders the turn a row decides: the events it shows, the call it shows `after` as the turn's `then`
@@ -257,14 +214,26 @@ export interface TurnAnswer {
   quiet: boolean;
 }
 
-export interface Step {
-  row: RowId;
-  state: SkillState | undefined;
+/** A row that moves the run to `state`. */
+export interface Moved<R extends RowId> {
+  row: R;
+  state: SkillState;
+}
+
+/** A row that moves the run to `state`, and the effects the shell applies for it. */
+export interface MovedWithEffects<R extends RowId> extends Moved<R> {
   effects: Effect[];
-  answer?: Answer;
-  /** Why the run leased nothing more (D10, D13, D14, D15). */
+}
+
+/** A row that answers the call with an error, and leaves the run as it was. */
+export interface Answered<R extends RowId, A extends Answer = Answer> {
+  row: R;
+  answer: A;
+}
+
+/** What a tick leaves for the turn of its call: why the run leases nothing more, and the turn a row of it decided. */
+export interface TickTurn {
   waiting?: Waiting;
-  /** The turn this row decides, for the rows the shell renders from it (D13, D14, D26). */
   turn?: TurnAnswer;
 }
 
@@ -291,7 +260,7 @@ function stopReason(open: AttemptState, at: string): StopReason {
 }
 
 /** Gives up stopped attempt `open` with a `released` report, which the protocol answers by abandoning its place. */
-function released(state: SkillState, open: Extract<AttemptState, { phase: 'stopping' }>, row: 'C9' | 'C11' | 'P6'): Step {
+function released<R extends 'C9' | 'C11' | 'P6'>(state: SkillState, open: Extract<AttemptState, { phase: 'stopping' }>, row: R): MovedWithEffects<R> {
   const body: ReportBody = { attempt: open.attempt, revision: open.revision, driver: state.driver, outcome: 'released' };
   return { row, state: withAttempt(state, { ...baseOf(open), phase: 'reporting', body, stopped: open.why }), effects: [{ kind: 'send', attempt: open.attempt, body }] };
 }
@@ -302,7 +271,7 @@ export function reportedByAgent(open: AttemptState): boolean {
 }
 
 /** Whether something waits for the agent: the host question, a dispatch to ack, a place to adopt, or a child to stop. */
-export function waitsForAgent(state: SkillState): boolean {
+function waitsForAgent(state: SkillState): boolean {
   return state.host.kind === 'pending'
     || state.attempts.some((open) => open.phase === 'offered' || open.phase === 'placing' || (open.phase === 'stopping' && open.by === 'agent'));
 }
@@ -314,6 +283,11 @@ function sameGate(gate: Pick<Gate, 'step' | 'pass'>, asked: Pick<Gate, 'step' | 
 
 function seenBy(session: string | undefined): string {
   return session ?? '';
+}
+
+/** `state` as shown to `session`: every event up to now is seen. */
+function shownTo(state: SkillState, session: string | undefined): SkillState {
+  return { ...state, seen: { ...state.seen, [seenBy(session)]: state.seq } };
 }
 
 /** The open attempt `attempt` of `state`. */
@@ -350,249 +324,41 @@ export function startRow(input: StartInput): { row: 'R8' | 'R9'; refusal: Refusa
   return { row: 'R10', start: { parallel, hitl, host: input.prompts ? 'pending' : 'none', ...(input.judge !== undefined ? { judge: input.judge } : {}) } };
 }
 
-/** Takes the row `input` matches in `state`. Undefined when no row applies, which leaves everything as it was. */
-export function step(state: SkillState | undefined, input: MachineInput): Step | undefined {
-  switch (input.kind) {
-    case 'call': {
-      if (!state) return { row: 'R11', state, effects: [], answer: { kind: 'error', refusal: { code: 'not_skill_run', run: input.run }, next: null } };
-      if (input.takeover) return { row: 'S4', state: takenOver(state, input.session, input.at), effects: [] };
-      const owner = state.orchestrator.session;
-      if (owner !== undefined && input.session !== undefined && owner !== input.session) {
-        const idleSeconds = Math.round((Date.parse(input.at) - Date.parse(state.orchestrator.lastCallAt)) / 1000);
-        return { row: 'S2', state, effects: [], answer: { kind: 'error', refusal: { code: 'orchestrator_active', run: state.run, idleSeconds }, next: 'takeover' } };
-      }
-      return { row: 'S1', state: { ...state, orchestrator: { session: state.orchestrator.session ?? input.session, lastCallAt: input.at } }, effects: [] };
-    }
-    case 'runner-call':
-      if (!state) return undefined;
-      return { row: 'S5', state, effects: [] };
-    case 'report-call': {
-      const open = state && openAttempt(state, input.attempt);
-      // A report already stored may come again: its send was refused, and the child runs the same literal.
-      if (!state || (!state.settled.includes(input.attempt) && !(open && (reportedByAgent(open) || open.phase === 'reporting')))) return undefined;
-      return { row: 'S6', state, effects: [] };
-    }
-    case 'next':
-      if (!state) return undefined;
-      if (state.done) return { row: state.attempts.length > 0 ? 'X4' : state.judging?.open ? 'X1' : 'X2', state, effects: [] };
-      return tick(state, 'call');
-    case 'tick':
-      if (!state || state.done) return undefined;
-      return tick(state, input.role);
-    case 'judge-tick': {
-      if (!state?.judging || state.host.kind === 'pending') return undefined;
-      const { tool, open } = state.judging;
-      return { row: 'J1', state, effects: [{ kind: 'score', tool, running: open ? [open.ref] : [], canTakeLease: input.role === 'call' && !open }] };
-    }
-    case 'score-reply':
-      return state?.judging ? scoreReplied(state, state.judging, input.reply, input.at) : undefined;
-    case 'judge-free': {
-      const open = state?.judging?.open;
-      if (!state || !open || Date.parse(input.at) - Date.parse(open.spawnedAt) <= input.graceMs) return undefined;
-      const failure = { code: 'judge_runner_gone', message: `The judge of step ${open.step} stopped before it answered, so this run judges nothing more here. Its lease lapses back to the queue for another driver.` };
-      return { row: 'J5', state: judgingOff(state, failure), effects: [{ kind: 'stop-left', attempt: open.attempt }] };
-    }
-    case 'judged': {
-      const open = state?.judging?.open;
-      if (!state?.judging || open?.attempt !== input.attempt) return undefined;
-      const dropped: SkillState = { ...state, judging: { tool: state.judging.tool } };
-      return { row: 'J3', state: input.labels.reduce((shown, { scorer, label }) => withEvent(shown, { kind: 'judged', step: open.step, scorer, label }), dropped), effects: [] };
-    }
-    case 'judge-failed':
-      if (!state || state.judging?.open?.attempt !== input.attempt) return undefined;
-      return { row: 'J4', state: judgingOff(state, input.failure), effects: [] };
-    case 'choose':
-      if (!state) return undefined;
-      if (state.host.kind !== 'pending') return { row: 'R15', state, effects: [], answer: { kind: 'error', refusal: { code: 'unknown_choice', run: state.run }, next: 'next' } };
-      return { row: 'R13', state: { ...state, host: { kind: 'chosen', id: input.choice, children: input.profile.children, places: input.profile.places } }, effects: [] };
-    case 'ack': {
-      if (!state) return undefined;
-      if (state.host.kind === 'pending') return choicePending(state);
-      const open = openAttempt(state, input.attempt);
-      if (open?.phase === 'offered') {
-        const { reissued: _reissued, ...rest } = open;
-        return { row: 'K1', state: withAttempt(state, { ...rest, phase: 'dispatched' }), effects: [] };
-      }
-      if (open?.phase === 'dispatched') return { row: 'K2', state, effects: [] };
-      return { row: 'K3', state, effects: [], answer: { kind: 'error', refusal: { code: 'unknown_offer', run: state.run, attempt: input.attempt }, next: 'next' } };
-    }
-    case 'reply':
-      return state && !state.done ? reply(state, input.reply, input.at) : undefined;
-    case 'gate-check': {
-      const gate = state?.gate;
-      if (!state || state.done || !gate) return undefined;
-      const { reply: engine } = input;
-      const gone = engine.kind === 'done' || (engine.kind === 'wait' && engine.held.length === 0) || (engine.kind === 'hitl' && !sameGate(gate, engine.gate));
-      if (!gone) return undefined;
-      const { gate: _gate, ...rest } = state;
-      return { row: 'H5', state: rest, effects: [] };
-    }
-    case 'responded': {
-      if (!state) return undefined;
-      const { reply: engine } = input;
-      if (engine.kind === 'answered') {
-        const { gate, ...rest } = state;
-        const kept = gate && !sameGate(gate, engine) ? { ...rest, gate } : rest;
-        return { row: 'H2', state: withEvent(kept, { kind: 'answered', step: engine.step, choice: engine.choice, channel: engine.channel, agent: engine.agent }), effects: [] };
-      }
-      if (engine.error.code === 'repeated_response') return { row: 'H1', state, effects: [] };
-      if (engine.error.code === 'agent_in_path') return { row: 'H3', state, effects: [], answer: { kind: 'engine-error', error: engine.error, next: 'poll' } };
-      return { row: 'H4', state, effects: [], answer: { kind: 'engine-error', error: engine.error, next: 'next' } };
-    }
-    case 'cancelled': {
-      const open = state && !state.done ? openAttempt(state, input.attempt) : undefined;
-      if (!state || !open) return undefined;
-      const stopping = (by: 'runner' | 'agent'): AttemptState => ({ ...baseOf(open), phase: 'stopping', by, why: stopReason(open, input.at) });
-      switch (open.phase) {
-        case 'queued':
-        case 'placing': {
-          const others = state.attempts.filter((other) => other.attempt !== open.attempt);
-          return { row: 'D2', state: withEvent({ ...state, attempts: others }, { kind: 'stopped', step: open.step, attempt: open.attempt, why: stopReason(open, input.at) }), effects: [] };
-        }
-        case 'preparing':
-        case 'running':
-          return { row: 'D3', state: withAttempt(state, stopping('runner')), effects: [] };
-        case 'offered':
-        case 'dispatched':
-          return { row: 'D4', state: withAttempt(state, stopping('agent')), effects: [] };
-        case 'stopping':
-        case 'reporting':
-          return { row: 'D5', state, effects: [] };
-        default: {
-          const unhandled: never = open;
-          return unhandled;
-        }
-      }
-    }
-    case 'spawned':
-      return state && !state.done ? { row: 'D18', state, effects: [{ kind: 'grace' }] } : undefined;
-    case 'lock-busy':
-      return { row: 'D19', state, effects: [], answer: { kind: 'error', refusal: { code: 'driver_running', run: input.run }, next: 'same' } };
-    case 'turn':
-      if (!state) return undefined;
-      return { row: 'D20', state: { ...state, seen: { ...state.seen, [seenBy(input.session)]: state.seq } }, effects: [], answer: { kind: 'turn', events: 'unseen', poll: !state.done } };
-    case 'poll': {
-      const unseenGate = state?.gate !== undefined && state.gate.seq > (state.seen[seenBy(input.session)] ?? 0);
-      if (state && !input.busy && (waitsForAgent(state) || unseenGate)) return { row: 'D22', state, effects: [], answer: { kind: 'turn', events: 'none', poll: false } };
-      if (state && input.ticked?.after === 'none') return { row: 'D26', state, effects: [], turn: { kind: 'turn', events: 'none', after: 'wake', quiet: true } };
-      if (state?.done && !input.busy && state.attempts.length === 0 && (state.seen[seenBy(input.session)] ?? 0) < state.seq) {
-        return { row: 'D23', state: { ...state, seen: { ...state.seen, [seenBy(input.session)]: state.seq } }, effects: [], answer: { kind: 'turn', events: 'unseen', poll: false } };
-      }
-      if (state && !input.busy && unseenEvents(state, input.session).some((event) => event.kind === 'settled' || event.kind === 'stopped')) {
-        return { row: 'D25', state: { ...state, seen: { ...state.seen, [seenBy(input.session)]: state.seq } }, effects: [], answer: { kind: 'turn', events: 'unseen', poll: true } };
-      }
-      if (input.boundReached) return { row: 'D24', state, effects: [], answer: { kind: 'turn', events: 'none', poll: true } };
-      return { row: 'D21', state, effects: [{ kind: 'sleep' }] };
-    }
-    case 'prepared': {
-      const open = state && openAttempt(state, input.attempt);
-      if (!state || open?.phase !== 'preparing') return undefined;
-      return { row: 'C1', state: withAttempt(state, { ...open, phase: 'running' }), effects: [{ kind: 'run', attempt: input.attempt }] };
-    }
-    case 'offer': {
-      const open = state && openAttempt(state, input.attempt);
-      if (!state || open?.phase !== 'preparing') return undefined;
-      return { row: 'C2', state: withAttempt(state, { ...open, phase: 'offered', dispatch: input.dispatch }), effects: [] };
-    }
-    case 'place-busy': {
-      const open = state && openAttempt(state, input.attempt);
-      if (!state || open?.phase !== 'preparing') return undefined;
-      return { row: 'C4', state: withAttempt(state, { ...open, phase: 'queued', behind: input.behind }), effects: [] };
-    }
-    case 'unqueue': {
-      const open = state && openAttempt(state, input.attempt);
-      if (!state || open?.phase !== 'queued' || openAttempt(state, open.behind)) return undefined;
-      const { behind: _behind, ...rest } = open;
-      return { row: 'D9', state: withAttempt(state, { ...rest, phase: 'preparing', spawnedAt: input.at }), effects: [{ kind: 'spawn', attempt: open.attempt }] };
-    }
-    case 'prepare-failed':
-    case 'model-failed': {
-      const open = state && openAttempt(state, input.attempt);
-      if (!state || (open?.phase !== 'preparing' && open?.phase !== 'running')) return undefined;
-      const reporting: AttemptState = { ...baseOf(open), phase: 'reporting', body: input.body };
-      return { row: input.kind === 'prepare-failed' ? 'C7' : 'C3', state: withAttempt(state, reporting), effects: [{ kind: 'send', attempt: input.attempt, body: input.body }] };
-    }
-    case 'exited': {
-      const open = state && openAttempt(state, input.attempt);
-      if (!state || open?.phase !== 'running') return undefined;
-      const reporting: AttemptState = { ...open, phase: 'reporting', body: input.body, ...(input.tail ? { tail: input.tail } : {}) };
-      return { row: 'C8', state: withAttempt(state, reporting), effects: [{ kind: 'send', attempt: input.attempt, body: input.body }] };
-    }
-    case 'runner-free': {
-      const open = state && openAttempt(state, input.attempt);
-      if (state && open?.phase === 'stopping' && open.by === 'runner') {
-        const given = released(state, open, 'C11');
-        return { ...given, effects: [{ kind: 'stop-left', attempt: open.attempt }, ...given.effects] };
-      }
-      if (!state || (open?.phase !== 'preparing' && open?.phase !== 'running') || Date.parse(input.at) - Date.parse(open.spawnedAt) <= input.graceMs) return undefined;
-      const respawned = withAttempt(state, { ...open, spawnedAt: input.at });
-      return {
-        row: 'C10', state: withEvent(respawned, { kind: 'restarted', step: open.step, attempt: open.attempt }),
-        effects: [{ kind: 'stop-left', attempt: open.attempt }, { kind: 'spawn', attempt: open.attempt }],
-      };
-    }
-    case 'runner-stop': {
-      const open = state && openAttempt(state, input.attempt);
-      if (!state || open?.phase !== 'stopping' || open.by !== 'runner') return undefined;
-      return released(state, open, 'C9');
-    }
-    case 'reported': {
-      const open = state && openAttempt(state, input.attempt);
-      if (!state || open?.phase !== 'reporting') return undefined;
-      const others = state.attempts.filter((other) => other.attempt !== open.attempt);
-      if (input.reply.kind === 'error' && input.reply.error.code === 'lease_cancelled') {
-        const why = open.stopped ?? stopReason(open, input.at);
-        return { row: 'P9', state: withEvent({ ...state, attempts: others, settled: [...state.settled, open.attempt] }, { kind: 'stopped', step: open.step, attempt: open.attempt, why }), effects: [] };
-      }
-      if (input.reply.kind === 'error' && input.reply.error.code !== 'repeated_report') {
-        return { row: 'P10', state, effects: [], answer: { kind: 'engine-error', error: input.reply.error, next: 'same' } };
-      }
-      const outcome = input.reply.kind === 'reported' ? input.reply.outcome : open.body.outcome;
-      // The engine's verdict wins: it may fail a step whose runner saw it succeed, as a read-only step that wrote.
-      const failure = (input.reply.kind === 'reported' ? input.reply.failure : undefined) ?? open.body.failure;
-      const dropped = { ...state, attempts: others, settled: [...state.settled, open.attempt] };
-      const settled = withEvent(dropped, {
-        kind: 'settled', step: open.step, outcome,
-        ...(open.body.exitCode !== undefined ? { exitCode: open.body.exitCode } : {}),
-        ...(failure ? { failure } : {}),
-        ...(open.tail ? { tail: open.tail } : {}),
-      });
-      return { row: input.reply.kind === 'reported' ? 'P7' : 'P8', state: settled, effects: [] };
-    }
-    case 'resend': {
-      const open = state && openAttempt(state, input.attempt);
-      if (!state || open?.phase !== 'reporting') return undefined;
-      return { row: 'P11', state, effects: [{ kind: 'send', attempt: input.attempt, body: open.body }] };
-    }
-    case 'report': {
-      if (!state) return undefined;
-      if (state.settled.includes(input.attempt)) return { row: 'P1', state, effects: [] };
-      const open = openAttempt(state, input.attempt);
-      if (open?.phase === 'stopping' && open.by === 'agent') return released(state, open, 'P6');
-      if (open?.phase === 'reporting') return { row: 'P11', state, effects: [{ kind: 'send', attempt: open.attempt, body: open.body }] };
-      if (state.done) return undefined;
-      if (state.host.kind === 'pending') return choicePending(state);
-      if (!open) return { row: 'P2', state, effects: [], answer: { kind: 'error', refusal: { code: 'unknown_attempt', run: state.run, attempt: input.attempt }, next: 'next' } };
-      if (open.phase !== 'offered' && open.phase !== 'dispatched') {
-        return { row: 'P3', state, effects: [], answer: { kind: 'error', refusal: { code: 'not_dispatched', run: state.run, attempt: input.attempt, phase: open.phase }, next: 'next' } };
-      }
-      const { model } = open.dispatch;
-      const base = { attempt: open.attempt, revision: open.revision, driver: state.driver };
-      const unavailable = input.modelUnavailable && model.by !== 'definition';
-      const failure = unavailable
-        ? { code: 'model_unavailable', message: `Step "${open.step}" needs model ${model.name}, which the host of this coding session cannot run.` }
-        : input.result.kind === 'failure' ? input.result.failure : undefined;
-      const body: ReportBody = failure
-        ? { ...base, outcome: 'failed', message: failure.message, failure }
-        : { ...base, outcome: 'success', ...(input.result.kind === 'output' ? { outputs: input.result.output } : {}) };
-      const { dispatch: _dispatch, ...rest } = open;
-      return { row: unavailable ? 'P4' : 'P5', state: withAttempt(state, { ...rest, phase: 'reporting', body }), effects: [{ kind: 'send', attempt: open.attempt, body }] };
-    }
-    default: {
-      const unhandled: never = input;
-      return unhandled;
-    }
+/**
+ * The session row of an agent call from `input.session` (S1, S2, S4), or R11 when this machine keeps no skill state of
+ * the run. `takeover`: the call is `next --takeover`.
+ */
+export function callRow(state: SkillState | undefined, input: { run: RunId; session: string | undefined; at: string; takeover: boolean }): Moved<'S1' | 'S4'> | Answered<'R11' | 'S2'> {
+  if (!state) return { row: 'R11', answer: { kind: 'error', refusal: { code: 'not_skill_run', run: input.run }, next: null } };
+  if (input.takeover) return { row: 'S4', state: takenOver(state, input.session, input.at) };
+  const owner = state.orchestrator.session;
+  if (owner !== undefined && input.session !== undefined && owner !== input.session) {
+    const idleSeconds = Math.round((Date.parse(input.at) - Date.parse(state.orchestrator.lastCallAt)) / 1000);
+    return { row: 'S2', answer: { kind: 'error', refusal: { code: 'orchestrator_active', run: state.run, idleSeconds }, next: 'takeover' } };
   }
+  return { row: 'S1', state: { ...state, orchestrator: { session: state.orchestrator.session ?? input.session, lastCallAt: input.at } } };
+}
+
+/** S5: a runner's call, which takes no session row. */
+export function runnerCallRow(): { row: 'S5' } {
+  return { row: 'S5' };
+}
+
+/**
+ * S6: an agent's report of `attempt` skips the session check, since the child of `attempt` may run in a session of its
+ * own. Undefined when the agent does not report `attempt`, which then takes the session rows.
+ */
+export function reportCallRow(state: SkillState, attempt: AttemptId): { row: 'S6' } | undefined {
+  const open = openAttempt(state, attempt);
+  // A report already stored may come again: its send was refused, and the child runs the same literal.
+  if (!state.settled.includes(attempt) && !(open && (reportedByAgent(open) || open.phase === 'reporting'))) return undefined;
+  return { row: 'S6' };
+}
+
+/** The row of `next` once the engine answered `done`: X4 while an attempt is open, else X1 while a judge is, else X2. */
+export function doneRow(state: SkillState): { row: 'X1' | 'X2' | 'X4' } | undefined {
+  if (!state.done) return undefined;
+  return { row: state.attempts.length > 0 ? 'X4' : state.judging?.open ? 'X1' : 'X2' };
 }
 
 /** The most attempts `state` keeps open at once: `--parallel`, and one under a serial host. */
@@ -605,39 +371,31 @@ export function hasSlot(state: SkillState): boolean {
   return state.attempts.length < childCap(state);
 }
 
-function tick(state: SkillState, role: 'call' | 'runner'): Step {
-  if (state.host.kind === 'pending') return { row: 'R12', state, effects: [] };
+/**
+ * The engine `next` of a tick (D1), or R12 while the host question waits; undefined once the run is done. A runner's
+ * check (`role: 'runner'`) takes no lease.
+ */
+export function tickRow(state: SkillState, role: 'call' | 'runner'): { row: 'R12' } | { row: 'D1'; request: { running: AttemptId[]; canTakeLease: boolean; autoApprove: boolean } } | undefined {
+  if (state.done) return undefined;
+  if (state.host.kind === 'pending') return { row: 'R12' };
   return {
-    row: 'D1', state,
-    effects: [{ kind: 'next', running: state.attempts.map((open) => open.attempt), canTakeLease: role === 'call' && hasSlot(state), autoApprove: state.options.hitl === 'auto-approve' }],
+    row: 'D1',
+    request: { running: state.attempts.map((open) => open.attempt), canTakeLease: role === 'call' && hasSlot(state), autoApprove: state.options.hitl === 'auto-approve' },
   };
 }
 
-/**
- * `state` driven from session `session` from `at` on. Every dispatch an earlier session was shown is offered again, as
- * reissued, since that session may have started its child. The new session is told only what the earlier one was not.
- */
-function takenOver(state: SkillState, session: string | undefined, at: string): SkillState {
-  const attempts = state.attempts.map((open): AttemptState => {
-    if (open.phase !== 'offered' && open.phase !== 'dispatched') return open;
-    return { ...open, phase: 'offered', reissued: true };
-  });
-  const from = state.orchestrator.session;
-  const told = Math.max(state.seen[seenBy(from)] ?? 0, state.seen[seenBy(session)] ?? 0);
-  return withEvent(
-    { ...state, attempts, orchestrator: { ...(session !== undefined ? { session } : {}), lastCallAt: at }, seen: { ...state.seen, [seenBy(session)]: told } },
-    { kind: 'takeover', ...(from !== undefined ? { from } : {}) },
-  );
-}
-
-/** `state` with judging off for `failure`: nothing more is judged here, and an open judge's lease lapses. */
-function judgingOff(state: SkillState, failure: WorkflowFailure): SkillState {
-  const { judging: _judging, ...rest } = state;
-  return withEvent(rest, { kind: 'judging-off', failure: { code: failure.code, message: failure.message } });
+/** J1: the `score --next` of a tick while judging is on and the host is chosen. A runner's check takes no judge work. */
+export function judgeTickRow(state: SkillState, role: 'call' | 'runner'): { row: 'J1'; request: { tool: string; running: string[]; canTakeLease: boolean } } | undefined {
+  if (!state.judging || state.host.kind === 'pending') return undefined;
+  const { tool, open } = state.judging;
+  return { row: 'J1', request: { tool, running: open ? [open.ref] : [], canTakeLease: role === 'call' && !open } };
 }
 
 /** J2 and J6: what `score --next` answered while judging is on. */
-function scoreReplied(state: SkillState, judging: NonNullable<SkillState['judging']>, reply: ScoreReply, at: string): Step | undefined {
+export function scoreReplyRow(state: SkillState, input: { reply: ScoreReply; at: string }): MovedWithEffects<'J2' | 'J6'> | undefined {
+  const { judging } = state;
+  const { reply, at } = input;
+  if (!judging) return undefined;
   switch (reply.kind) {
     case 'lease': {
       if (judging.open) return undefined;
@@ -658,36 +416,72 @@ function scoreReplied(state: SkillState, judging: NonNullable<SkillState['judgin
   }
 }
 
-/**
- * The row the runner of `open`, an attempt whose host makes its place, takes when that place is still to make: C6 when
- * the place the agent adopted was `refused`, else C5. Either way the attempt waits for the agent to adopt one.
- */
-export function placingRow(state: SkillState, open: Extract<AttemptState, { phase: 'preparing' }>, input: { ask: PlaceAsk; refused?: string }): { row: 'C5' | 'C6'; state: SkillState } {
-  const placing: AttemptState = { ...baseOf(open), phase: 'placing', ask: input.ask, ...(input.refused !== undefined ? { refused: input.refused } : {}) };
-  return { row: input.refused !== undefined ? 'C6' : 'C5', state: withAttempt(state, placing) };
+/** J5: the open judge's `runner.lock` is free, and it was spawned more than `graceMs` before `at`. */
+export function judgeFreeRow(state: SkillState, input: { at: string; graceMs: number }): MovedWithEffects<'J5'> | undefined {
+  const open = state.judging?.open;
+  if (!open || Date.parse(input.at) - Date.parse(open.spawnedAt) <= input.graceMs) return undefined;
+  const failure = { code: 'judge_runner_gone', message: `The judge of step ${open.step} stopped before it answered, so this run judges nothing more here. Its lease lapses back to the queue for another driver.` };
+  return { row: 'J5', state: judgingOff(state, failure), effects: [{ kind: 'stop-left', attempt: open.attempt }] };
+}
+
+/** J3 and J4: what the runner of the open judge, keyed by `attempt`, learned. */
+export function judgeAnsweredRow(state: SkillState, input: { attempt: AttemptId; answer: JudgeAnswer }): Moved<'J3' | 'J4'> | undefined {
+  const { judging } = state;
+  const open = judging?.open;
+  if (!judging || open?.attempt !== input.attempt) return undefined;
+  const { answer } = input;
+  if (answer.kind === 'failed') return { row: 'J4', state: judgingOff(state, answer.failure) };
+  const dropped: SkillState = { ...state, judging: { tool: judging.tool } };
+  return { row: 'J3', state: answer.labels.reduce((shown, { scorer, label }) => withEvent(shown, { kind: 'judged', step: open.step, scorer, label }), dropped) };
+}
+
+/** R13: the agent's answer to the host question; R15 when the run asks none now. */
+export function chooseRow(state: SkillState, input: { choice: HostChoice; profile: HostProfile }): Moved<'R13'> | Answered<'R15'> {
+  if (state.host.kind !== 'pending') return { row: 'R15', answer: { kind: 'error', refusal: { code: 'unknown_choice', run: state.run }, next: 'next' } };
+  return { row: 'R13', state: { ...state, host: { kind: 'chosen', id: input.choice, children: input.profile.children, places: input.profile.places } } };
+}
+
+/** K1 to K3: the ack of the dispatch of `attempt`; R14 while the host question waits. */
+export function ackRow(state: SkillState, attempt: AttemptId): Moved<'K1' | 'K2'> | Answered<'K3' | 'R14'> {
+  if (state.host.kind === 'pending') return choicePending(state);
+  const open = openAttempt(state, attempt);
+  if (open?.phase === 'offered') {
+    const { reissued: _reissued, ...rest } = open;
+    return { row: 'K1', state: withAttempt(state, { ...rest, phase: 'dispatched' }) };
+  }
+  if (open?.phase === 'dispatched') return { row: 'K2', state };
+  return { row: 'K3', answer: { kind: 'error', refusal: { code: 'unknown_offer', run: state.run, attempt }, next: 'next' } };
 }
 
 /**
  * The row of `next --attempt a --adopt dir`: K4 gives `dir` to a new runner of `a`, an attempt that waits for its
  * place, which prepares it there; K5 refuses any other attempt; R14 waits for the host question.
  */
-export function adoptRow(state: SkillState, input: { attempt: AttemptId; dir: string; at: string }):
-  | { row: 'K4'; state: SkillState; spawn: AttemptId }
-  | { row: 'K5' | 'R14'; answer: Extract<Answer, { kind: 'error' }> } {
-  if (state.host.kind === 'pending') return { row: 'R14', answer: { kind: 'error', refusal: { code: 'choice_pending', run: state.run }, next: 'next' } };
+export function adoptRow(state: SkillState, input: { attempt: AttemptId; dir: string; at: string }): MovedWithEffects<'K4'> | Answered<'K5' | 'R14'> {
+  if (state.host.kind === 'pending') return choicePending(state);
   const open = openAttempt(state, input.attempt);
   if (open?.phase !== 'placing') {
     return { row: 'K5', answer: { kind: 'error', refusal: { code: 'unknown_attempt', run: state.run, attempt: input.attempt, ...(open ? { phase: open.phase } : {}) }, next: 'next' } };
   }
   const preparing: AttemptState = { ...baseOf(open), spawnedAt: input.at, phase: 'preparing', request: { kind: 'adopt', dir: input.dir } };
-  return { row: 'K4', state: withAttempt(state, preparing), spawn: open.attempt };
+  return { row: 'K4', state: withAttempt(state, preparing), effects: [{ kind: 'spawn', attempt: open.attempt }] };
 }
 
-function choicePending(state: SkillState): Step {
-  return { row: 'R14', state, effects: [], answer: { kind: 'error', refusal: { code: 'choice_pending', run: state.run }, next: 'next' } };
+function choicePending(state: SkillState): Answered<'R14'> {
+  return { row: 'R14', answer: { kind: 'error', refusal: { code: 'choice_pending', run: state.run }, next: 'next' } };
 }
 
-function reply(state: SkillState, engine: EngineReply, at: string): Step {
+/**
+ * The row of the engine's reply to a tick's `next`: a lease (D6 to D8), a gate (D10 to D12), a wait (D13 to D15), the
+ * end (D16), or an error (D17). Undefined once the run is done. `waiting` says why the run leases nothing more; `turn`
+ * is the turn a row decides for its call.
+ */
+export function replyRow(state: SkillState, input: { reply: EngineReply; at: string }):
+  | (MovedWithEffects<'D6' | 'D7' | 'D8' | 'D10' | 'D11' | 'D12' | 'D13' | 'D14' | 'D15' | 'D16'> & TickTurn)
+  | Answered<'D17', Relayed>
+  | undefined {
+  if (state.done) return undefined;
+  const { reply: engine, at } = input;
   switch (engine.kind) {
     case 'lease': {
       const { lease } = engine;
@@ -718,10 +512,267 @@ function reply(state: SkillState, engine: EngineReply, at: string): Step {
     case 'done':
       return { row: 'D16', state: { ...state, seq: state.seq + 1, done: { outcome: engine.outcome, ...(engine.failure ? { failure: engine.failure } : {}), prs: engine.prs } }, effects: [] };
     case 'error':
-      return { row: 'D17', state, effects: [], answer: { kind: 'engine-error', error: engine.error, next: 'next' } };
+      return { row: 'D17', answer: { kind: 'engine-error', error: engine.error, next: 'next' } };
     default: {
       const unhandled: never = engine;
       return unhandled;
     }
   }
+}
+
+/**
+ * H5: the reply of a `next`, before its own row, shows the journalled gate answered elsewhere: it is done, a wait that
+ * holds nothing, or another gate.
+ */
+export function gateCheckRow(state: SkillState, reply: EngineReply): Moved<'H5'> | undefined {
+  const { gate } = state;
+  if (state.done || !gate) return undefined;
+  const gone = reply.kind === 'done' || (reply.kind === 'wait' && reply.held.length === 0) || (reply.kind === 'hitl' && !sameGate(gate, reply.gate));
+  if (!gone) return undefined;
+  const { gate: _gate, ...rest } = state;
+  return { row: 'H5', state: rest };
+}
+
+/** H1 to H4: the engine's answer to `respond --driver skill`. */
+export function respondedRow(state: SkillState, reply: RespondReply): Moved<'H1' | 'H2'> | Answered<'H3' | 'H4', Relayed> {
+  if (reply.kind === 'answered') {
+    const { gate, ...rest } = state;
+    const kept = gate && !sameGate(gate, reply) ? { ...rest, gate } : rest;
+    return { row: 'H2', state: withEvent(kept, { kind: 'answered', step: reply.step, choice: reply.choice, channel: reply.channel, agent: reply.agent }) };
+  }
+  if (reply.error.code === 'repeated_response') return { row: 'H1', state };
+  if (reply.error.code === 'agent_in_path') return { row: 'H3', answer: { kind: 'engine-error', error: reply.error, next: 'poll' } };
+  return { row: 'H4', answer: { kind: 'engine-error', error: reply.error, next: 'next' } };
+}
+
+/** D2 to D5: the engine no longer leases `attempt` to this driver: it was cancelled, or it passed its deadline. */
+export function cancelledRow(state: SkillState, input: { attempt: AttemptId; at: string }): Moved<'D2' | 'D3' | 'D4' | 'D5'> | undefined {
+  const open = state.done ? undefined : openAttempt(state, input.attempt);
+  if (!open) return undefined;
+  const stopping = (by: 'runner' | 'agent'): AttemptState => ({ ...baseOf(open), phase: 'stopping', by, why: stopReason(open, input.at) });
+  switch (open.phase) {
+    case 'queued':
+    case 'placing': {
+      const others = state.attempts.filter((other) => other.attempt !== open.attempt);
+      return { row: 'D2', state: withEvent({ ...state, attempts: others }, { kind: 'stopped', step: open.step, attempt: open.attempt, why: stopReason(open, input.at) }) };
+    }
+    case 'preparing':
+    case 'running':
+      return { row: 'D3', state: withAttempt(state, stopping('runner')) };
+    case 'offered':
+    case 'dispatched':
+      return { row: 'D4', state: withAttempt(state, stopping('agent')) };
+    case 'stopping':
+    case 'reporting':
+      return { row: 'D5', state };
+    default: {
+      const unhandled: never = open;
+      return unhandled;
+    }
+  }
+}
+
+/** D18: a foreground call that spawned runners waits for them before it answers, unless the run is done. */
+export function graceRow(state: SkillState): { row: 'D18' } | undefined {
+  return state.done ? undefined : { row: 'D18' };
+}
+
+/** D19: the run lock stayed busy. */
+export function lockBusyRow(run: RunId): Answered<'D19', Refused> {
+  return { row: 'D19', answer: { kind: 'error', refusal: { code: 'driver_running', run }, next: 'same' } };
+}
+
+/** D20: the turn of a foreground call, after its tick: the turn a row of that tick decided, else a turn with `then: poll`. */
+export function turnRow(state: SkillState, input: { session: string | undefined; ticked: TickTurn }): Moved<'D20'> & { turn: TurnAnswer; waiting?: Waiting } {
+  const { waiting, turn } = input.ticked;
+  return { row: 'D20', state: shownTo(state, input.session), turn: turn ?? { kind: 'turn', events: 'unseen', after: 'poll', quiet: false }, ...(waiting ? { waiting } : {}) };
+}
+
+/**
+ * The row of a poll tick: the turn it answers (D22 to D26), or D21, which sleeps and ticks again. `busy`: the lock was
+ * busy, so nothing ticked; `ticked`: what the tick left, when one ran.
+ */
+export function pollRow(state: SkillState, input: { session: string | undefined; busy: boolean; boundReached: boolean; ticked: TickTurn }):
+  | { row: 'D21' }
+  | (Moved<'D22' | 'D23' | 'D24' | 'D25' | 'D26'> & { turn: TurnAnswer; waiting?: Waiting }) {
+  const { session, busy, boundReached, ticked } = input;
+  const waiting = ticked.waiting ? { waiting: ticked.waiting } : {};
+  const seen = state.seen[seenBy(session)] ?? 0;
+  const unseenGate = state.gate !== undefined && state.gate.seq > seen;
+  if (!busy && (waitsForAgent(state) || unseenGate)) return { row: 'D22', state, turn: { kind: 'turn', events: 'none', after: 'wake', quiet: true } };
+  if (ticked.turn?.after === 'none') return { row: 'D26', state, turn: { kind: 'turn', events: 'none', after: 'wake', quiet: true }, ...waiting };
+  if (state.done && !busy && state.attempts.length === 0 && seen < state.seq) {
+    return { row: 'D23', state: shownTo(state, session), turn: { kind: 'turn', events: 'unseen', after: 'poll', quiet: false } };
+  }
+  if (!busy && unseenEvents(state, session).some((event) => event.kind === 'settled' || event.kind === 'stopped')) {
+    return { row: 'D25', state: shownTo(state, session), turn: { kind: 'turn', events: 'unseen', after: 'poll', quiet: true }, ...waiting };
+  }
+  if (boundReached) return { row: 'D24', state, turn: { kind: 'turn', events: 'none', after: 'poll', quiet: true }, ...waiting };
+  return { row: 'D21' };
+}
+
+/** C1: the command of `attempt` runs in its prepared place. */
+export function preparedRow(state: SkillState, attempt: AttemptId): Moved<'C1'> | undefined {
+  const open = openAttempt(state, attempt);
+  if (open?.phase !== 'preparing') return undefined;
+  return { row: 'C1', state: withAttempt(state, { ...open, phase: 'running' }) };
+}
+
+/** C2: the prompt of `attempt` is offered to the agent as `dispatch`. */
+export function offerRow(state: SkillState, input: { attempt: AttemptId; dispatch: Dispatch }): Moved<'C2'> | undefined {
+  const open = openAttempt(state, input.attempt);
+  if (open?.phase !== 'preparing') return undefined;
+  return { row: 'C2', state: withAttempt(state, { ...open, phase: 'offered', dispatch: input.dispatch }) };
+}
+
+/** C4: the place of `attempt` is held by `behind`, another open attempt, so it waits for it. */
+export function placeBusyRow(state: SkillState, input: { attempt: AttemptId; behind: AttemptId }): Moved<'C4'> | undefined {
+  const open = openAttempt(state, input.attempt);
+  if (open?.phase !== 'preparing') return undefined;
+  return { row: 'C4', state: withAttempt(state, { ...open, phase: 'queued', behind: input.behind }) };
+}
+
+/** D9: `attempt` waited for a place whose holder is no longer open, so its runner starts again. */
+export function unqueueRow(state: SkillState, input: { attempt: AttemptId; at: string }): MovedWithEffects<'D9'> | undefined {
+  const open = openAttempt(state, input.attempt);
+  if (open?.phase !== 'queued' || openAttempt(state, open.behind)) return undefined;
+  const { behind: _behind, ...rest } = open;
+  return { row: 'D9', state: withAttempt(state, { ...rest, phase: 'preparing', spawnedAt: input.at }), effects: [{ kind: 'spawn', attempt: open.attempt }] };
+}
+
+/** C7 and C3: `attempt` failed before its step ran: its place or setup (`cause: 'place'`), or its child's model. */
+export function prepareFailedRow(state: SkillState, input: { attempt: AttemptId; body: ReportBody; cause: 'place' | 'model' }): MovedWithEffects<'C3' | 'C7'> | undefined {
+  const open = openAttempt(state, input.attempt);
+  if (open?.phase !== 'preparing' && open?.phase !== 'running') return undefined;
+  const reporting: AttemptState = { ...baseOf(open), phase: 'reporting', body: input.body };
+  return { row: input.cause === 'place' ? 'C7' : 'C3', state: withAttempt(state, reporting), effects: [{ kind: 'send', attempt: input.attempt, body: input.body }] };
+}
+
+/** C8: the command of `attempt` exited, and `body` reports it. */
+export function exitedRow(state: SkillState, input: { attempt: AttemptId; body: ReportBody; tail?: string }): MovedWithEffects<'C8'> | undefined {
+  const open = openAttempt(state, input.attempt);
+  if (open?.phase !== 'running') return undefined;
+  const reporting: AttemptState = { ...open, phase: 'reporting', body: input.body, ...(input.tail ? { tail: input.tail } : {}) };
+  return { row: 'C8', state: withAttempt(state, reporting), effects: [{ kind: 'send', attempt: input.attempt, body: input.body }] };
+}
+
+/**
+ * C10 and C11: the `runner.lock` of `attempt` is free. Its runner was stopping it, so it is given up (C11), or it
+ * prepared or ran it and was spawned more than `graceMs` before `at`, so it starts again (C10).
+ */
+export function runnerFreeRow(state: SkillState, input: { attempt: AttemptId; at: string; graceMs: number }): MovedWithEffects<'C10' | 'C11'> | undefined {
+  const open = openAttempt(state, input.attempt);
+  if (open?.phase === 'stopping' && open.by === 'runner') {
+    const given = released(state, open, 'C11');
+    return { ...given, effects: [{ kind: 'stop-left', attempt: open.attempt }, ...given.effects] };
+  }
+  if ((open?.phase !== 'preparing' && open?.phase !== 'running') || Date.parse(input.at) - Date.parse(open.spawnedAt) <= input.graceMs) return undefined;
+  const respawned = withAttempt(state, { ...open, spawnedAt: input.at });
+  return {
+    row: 'C10', state: withEvent(respawned, { kind: 'restarted', step: open.step, attempt: open.attempt }),
+    effects: [{ kind: 'stop-left', attempt: open.attempt }, { kind: 'spawn', attempt: open.attempt }],
+  };
+}
+
+/** C9: the runner found its attempt stopping, and its command, if it started one, is stopped. */
+export function runnerStopRow(state: SkillState, attempt: AttemptId): MovedWithEffects<'C9'> | undefined {
+  const open = openAttempt(state, attempt);
+  if (open?.phase !== 'stopping' || open.by !== 'runner') return undefined;
+  return released(state, open, 'C9');
+}
+
+/** P7 to P10: the engine's answer to the report of `attempt` that was sent. */
+export function reportedRow(state: SkillState, input: { attempt: AttemptId; reply: ReportReply; at: string }): Moved<'P7' | 'P8' | 'P9'> | Answered<'P10', Relayed> | undefined {
+  const open = openAttempt(state, input.attempt);
+  if (open?.phase !== 'reporting') return undefined;
+  const others = state.attempts.filter((other) => other.attempt !== open.attempt);
+  if (input.reply.kind === 'error' && input.reply.error.code === 'lease_cancelled') {
+    const why = open.stopped ?? stopReason(open, input.at);
+    return { row: 'P9', state: withEvent({ ...state, attempts: others, settled: [...state.settled, open.attempt] }, { kind: 'stopped', step: open.step, attempt: open.attempt, why }) };
+  }
+  if (input.reply.kind === 'error' && input.reply.error.code !== 'repeated_report') {
+    return { row: 'P10', answer: { kind: 'engine-error', error: input.reply.error, next: 'same' } };
+  }
+  const outcome = input.reply.kind === 'reported' ? input.reply.outcome : open.body.outcome;
+  // The engine's verdict wins: it may fail a step whose runner saw it succeed, as a read-only step that wrote.
+  const failure = (input.reply.kind === 'reported' ? input.reply.failure : undefined) ?? open.body.failure;
+  const dropped = { ...state, attempts: others, settled: [...state.settled, open.attempt] };
+  const settled = withEvent(dropped, {
+    kind: 'settled', step: open.step, outcome,
+    ...(open.body.exitCode !== undefined ? { exitCode: open.body.exitCode } : {}),
+    ...(failure ? { failure } : {}),
+    ...(open.tail ? { tail: open.tail } : {}),
+  });
+  return { row: input.reply.kind === 'reported' ? 'P7' : 'P8', state: settled };
+}
+
+/** P11: the report a crash or a refusal left stored for `attempt` is sent again. */
+export function resendRow(state: SkillState, attempt: AttemptId): MovedWithEffects<'P11'> | undefined {
+  const open = openAttempt(state, attempt);
+  if (open?.phase !== 'reporting') return undefined;
+  return { row: 'P11', state, effects: [{ kind: 'send', attempt, body: open.body }] };
+}
+
+/**
+ * P1 to P6, and P11: an agent's `report --attempt`. `result` is what the attempt's child left, read before the row is
+ * taken. Undefined once the run is done and the attempt is neither settled nor open.
+ */
+export function reportRow(state: SkillState, input: { attempt: AttemptId; modelUnavailable: boolean; result: ChildResult }):
+  | { row: 'P1'; repeated: true }
+  | MovedWithEffects<'P4' | 'P5' | 'P6' | 'P11'>
+  | Answered<'P2' | 'P3' | 'R14'>
+  | undefined {
+  if (state.settled.includes(input.attempt)) return { row: 'P1', repeated: true };
+  const open = openAttempt(state, input.attempt);
+  if (open?.phase === 'stopping' && open.by === 'agent') return released(state, open, 'P6');
+  if (open?.phase === 'reporting') return resendRow(state, open.attempt);
+  if (state.done) return undefined;
+  if (state.host.kind === 'pending') return choicePending(state);
+  if (!open) return { row: 'P2', answer: { kind: 'error', refusal: { code: 'unknown_attempt', run: state.run, attempt: input.attempt }, next: 'next' } };
+  if (open.phase !== 'offered' && open.phase !== 'dispatched') {
+    return { row: 'P3', answer: { kind: 'error', refusal: { code: 'not_dispatched', run: state.run, attempt: input.attempt, phase: open.phase }, next: 'next' } };
+  }
+  const { model } = open.dispatch;
+  const base = { attempt: open.attempt, revision: open.revision, driver: state.driver };
+  const unavailable = input.modelUnavailable && model.by !== 'definition';
+  const failure = unavailable
+    ? { code: 'model_unavailable', message: `Step "${open.step}" needs model ${model.name}, which the host of this coding session cannot run.` }
+    : input.result.kind === 'failure' ? input.result.failure : undefined;
+  const body: ReportBody = failure
+    ? { ...base, outcome: 'failed', message: failure.message, failure }
+    : { ...base, outcome: 'success', ...(input.result.kind === 'output' ? { outputs: input.result.output } : {}) };
+  const { dispatch: _dispatch, ...rest } = open;
+  return { row: unavailable ? 'P4' : 'P5', state: withAttempt(state, { ...rest, phase: 'reporting', body }), effects: [{ kind: 'send', attempt: open.attempt, body }] };
+}
+
+/**
+ * `state` driven from session `session` from `at` on. Every dispatch an earlier session was shown is offered again, as
+ * reissued, since that session may have started its child. The new session is told only what the earlier one was not.
+ */
+function takenOver(state: SkillState, session: string | undefined, at: string): SkillState {
+  const attempts = state.attempts.map((open): AttemptState => {
+    if (open.phase !== 'offered' && open.phase !== 'dispatched') return open;
+    return { ...open, phase: 'offered', reissued: true };
+  });
+  const from = state.orchestrator.session;
+  const told = Math.max(state.seen[seenBy(from)] ?? 0, state.seen[seenBy(session)] ?? 0);
+  return withEvent(
+    { ...state, attempts, orchestrator: { ...(session !== undefined ? { session } : {}), lastCallAt: at }, seen: { ...state.seen, [seenBy(session)]: told } },
+    { kind: 'takeover', ...(from !== undefined ? { from } : {}) },
+  );
+}
+
+/** `state` with judging off for `failure`: nothing more is judged here, and an open judge's lease lapses. */
+function judgingOff(state: SkillState, failure: WorkflowFailure): SkillState {
+  const { judging: _judging, ...rest } = state;
+  return withEvent(rest, { kind: 'judging-off', failure: { code: failure.code, message: failure.message } });
+}
+
+/**
+ * The row the runner of `open`, an attempt whose host makes its place, takes when that place is still to make: C6 when
+ * the place the agent adopted was `refused`, else C5. Either way the attempt waits for the agent to adopt one.
+ */
+export function placingRow(state: SkillState, open: Extract<AttemptState, { phase: 'preparing' }>, input: { ask: PlaceAsk; refused?: string }): Moved<'C5' | 'C6'> {
+  const placing: AttemptState = { ...baseOf(open), phase: 'placing', ask: input.ask, ...(input.refused !== undefined ? { refused: input.refused } : {}) };
+  return { row: input.refused !== undefined ? 'C6' : 'C5', state: withAttempt(state, placing) };
 }

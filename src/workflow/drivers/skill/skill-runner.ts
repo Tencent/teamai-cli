@@ -26,8 +26,10 @@ import { writeSkillState, readSkillState, type Judge, type ReportBody, type Skil
 import { pickChildModel } from './child-model.js';
 import { writeChildBrief } from './child-brief.js';
 import { reportLiteral } from './literals.js';
-import { readJob, RUNNER_POLL_MS, runTick, sendReport, take, traced, WAIT_BOUND_MS, type Job } from './tick.js';
-import { openAttempt, placingRow, type Step } from './transitions.js';
+import { applyEffects, readJob, RUNNER_POLL_MS, runTick, traced, WAIT_BOUND_MS, type Job } from './tick.js';
+import {
+  exitedRow, judgeAnsweredRow, offerRow, openAttempt, placeBusyRow, placingRow, preparedRow, prepareFailedRow, resendRow, runnerCallRow, runnerStopRow, type JudgeAnswer, type MovedWithEffects, type RowId,
+} from './transitions.js';
 import type { CommandRun, Runners, SkillContext } from './skill-driver.js';
 import type { SkillAnswer } from './turn.js';
 
@@ -102,7 +104,7 @@ const LabelSchema = z.object({ scorer: z.string(), label: z.string() });
 const JudgedSchema = z.union([z.object({ label: LabelSchema }), z.object({ labels: z.array(LabelSchema) })]);
 
 /** What the judge answered: the label of each scorer, or why it gave none. */
-function judgedOf(answer: WorkflowEnvelope): { kind: 'judged'; labels: Array<{ scorer: string; label: string }> } | { kind: 'failed'; failure: WorkflowFailure } {
+function judgedOf(answer: WorkflowEnvelope): JudgeAnswer {
   if ('error' in answer) return { kind: 'failed', failure: { code: answer.error.code, message: answer.error.message } };
   const judged = JudgedSchema.safeParse(answer.data);
   if (!judged.success) return { kind: 'failed', failure: { code: 'run_unreadable', message: 'The judge answered with a reply this teamai cannot read. Update teamai.' } };
@@ -132,10 +134,8 @@ async function runJudge(context: SkillContext, state: SkillState, judging: { too
   await renewing;
   return locked(context, run, async (lock): Promise<SkillAnswer> => {
     const current = await readState(context, lock);
-    const taken = current && take(context, current, judged.kind === 'judged'
-      ? { kind: 'judged', attempt: open.attempt, labels: judged.labels }
-      : { kind: 'judge-failed', attempt: open.attempt, failure: judged.failure });
-    if (!taken?.state) return { data: { runner: { attempt: open.attempt, status: 'gone' } } };
+    const taken = current && traced(context, judgeAnsweredRow(current, { attempt: open.attempt, answer: judged }));
+    if (!taken) return { data: { runner: { attempt: open.attempt, status: 'gone' } } };
     await writeSkillState(context.config, lock, taken.state, context.env.secrets);
     return { data: { runner: { attempt: open.attempt, status: 'reported' } } };
   });
@@ -171,36 +171,33 @@ async function locked<T extends object>(context: SkillContext, run: RunId, body:
 async function readState(context: SkillContext, lock: RunLock): Promise<SkillState | undefined> {
   const read = await readSkillState(context.config, lock.run);
   if ('kind' in read) return undefined;
-  return take(context, read, { kind: 'runner-call' })?.state ?? read;
+  traced(context, runnerCallRow());
+  return read;
 }
 
-/** Sends the report a row stored, and saves what the engine's answer left. */
-async function send(context: SkillContext, lock: RunLock, state: SkillState, attempt: AttemptId, body: ReportBody): Promise<Stage> {
-  const sent = await sendReport(context, lock, state, attempt, body);
+/** Applies the effects of `taken`, a row that stored the report of `attempt`, and saves what the engine's answer left. */
+async function send(context: SkillContext, lock: RunLock, taken: MovedWithEffects<RowId> | undefined, attempt: AttemptId): Promise<Stage> {
+  const moved = traced(context, taken);
+  if (!moved) return { kind: 'gone', status: 'gone' };
+  const sent = await applyEffects(context, lock, moved.state, moved.effects);
   await writeSkillState(context.config, lock, sent.state, context.env.secrets);
   if (sent.refused) return { kind: 'retry' };
   return { kind: 'gone', status: sent.state.settled.includes(attempt) ? 'reported' : 'gone' };
 }
 
-/** Sends the report row `taken` stored, when it took one. */
-async function sendTaken(context: SkillContext, lock: RunLock, taken: Step | undefined, attempt: AttemptId): Promise<Stage> {
-  const body = taken?.effects.find((effect) => effect.kind === 'send');
-  return taken?.state && body?.kind === 'send' ? send(context, lock, taken.state, attempt, body.body) : { kind: 'gone', status: 'gone' };
-}
-
 /** Gives up the attempt the engine stopped, once nothing of it runs (C9). */
 function stopped(context: SkillContext, lock: RunLock, state: SkillState, attempt: AttemptId): Promise<Stage> {
-  return sendTaken(context, lock, take(context, state, { kind: 'runner-stop', attempt }), attempt);
+  return send(context, lock, runnerStopRow(state, attempt), attempt);
 }
 
 function failedBody(state: SkillState, attempt: AttemptId, revision: number, failure: WorkflowFailure): ReportBody {
   return { attempt, revision, outcome: 'failed', driver: state.driver, message: failure.message, failure };
 }
 
-/** Takes the row `failed` names for a failure before the step ran (C3, C7), and sends its report. */
-async function fail(context: SkillContext, lock: RunLock, input: { state: SkillState; attempt: AttemptId; revision: number; failure: WorkflowFailure; kind: 'prepare-failed' | 'model-failed' }): Promise<Stage> {
-  const { state, attempt, revision, failure, kind } = input;
-  return sendTaken(context, lock, take(context, state, { kind, attempt, body: failedBody(state, attempt, revision, failure) }), attempt);
+/** Takes the row of a failure before the step ran, of its place (C7) or its child's model (C3), and sends its report. */
+async function fail(context: SkillContext, lock: RunLock, input: { state: SkillState; attempt: AttemptId; revision: number; failure: WorkflowFailure; cause: 'place' | 'model' }): Promise<Stage> {
+  const { state, attempt, revision, failure, cause } = input;
+  return send(context, lock, prepareFailedRow(state, { attempt, body: failedBody(state, attempt, revision, failure), cause }), attempt);
 }
 
 /** Under the lock: prepares the attempt's place (C4 to C7), or sends the report it already has. */
@@ -208,10 +205,10 @@ async function prepare(context: SkillContext, lock: RunLock, attempt: AttemptId)
   const state = await readState(context, lock);
   const open = state && openAttempt(state, attempt);
   if (!state || !open) return { kind: 'gone', status: state?.settled.includes(attempt) ? 'reported' : 'gone' };
-  if (open.phase === 'reporting') return send(context, lock, state, attempt, open.body);
+  if (open.phase === 'reporting') return send(context, lock, resendRow(state, attempt), attempt);
   if (open.phase === 'stopping') return stopped(context, lock, state, attempt);
   if (open.phase !== 'preparing' && open.phase !== 'running') return { kind: 'gone', status: 'gone' };
-  const failed = (failure: WorkflowFailure): Promise<Stage> => fail(context, lock, { state, attempt, revision: open.revision, failure, kind: 'prepare-failed' });
+  const failed = (failure: WorkflowFailure): Promise<Stage> => fail(context, lock, { state, attempt, revision: open.revision, failure, cause: 'place' });
   const job = await readJob(context.config, lock.run, attempt);
   if (!job) {
     return failed({ code: 'run_unreadable', message: `The lease of attempt ${attempt} was not saved where its runner reads it, so the step did not run. Retry it with teamai workflow retry ${lock.run} ${open.step}.` });
@@ -220,8 +217,8 @@ async function prepare(context: SkillContext, lock: RunLock, attempt: AttemptId)
     // Only a place the host made is refused, and prepareHostPlace answers that as a place to make.
     if (prepared.kind === 'failed' || prepared.kind === 'refused') return failed(prepared.failure);
     if (prepared.kind === 'busy') {
-      const queued = take(context, state, { kind: 'place-busy', attempt, behind: prepared.behind });
-      if (queued?.state) await writeSkillState(context.config, lock, queued.state, context.env.secrets);
+      const queued = traced(context, placeBusyRow(state, { attempt, behind: prepared.behind }));
+      if (queued) await writeSkillState(context.config, lock, queued.state, context.env.secrets);
       return { kind: 'gone', status: 'queued' };
     }
     return { kind: 'prepared', dir: prepared.dir, job, mode: state.options.mode, ...(prepared.prompt !== undefined ? { prompt: prepared.prompt } : {}) };
@@ -241,7 +238,7 @@ async function setupFailed(context: SkillContext, lock: RunLock, attempt: Attemp
   const open = state && openAttempt(state, attempt);
   if (state && open?.phase === 'stopping') return stopped(context, lock, state, attempt);
   if (!state || (open?.phase !== 'preparing' && open?.phase !== 'running')) return { kind: 'gone', status: 'gone' };
-  return fail(context, lock, { state, attempt, revision: open.revision, failure, kind: 'prepare-failed' });
+  return fail(context, lock, { state, attempt, revision: open.revision, failure, cause: 'place' });
 }
 
 /**
@@ -254,12 +251,12 @@ async function begin(context: SkillContext, lock: RunLock, attempt: AttemptId, p
   if (state && open?.phase === 'stopping') return stopped(context, lock, state, attempt);
   if (!state || (open?.phase !== 'preparing' && open?.phase !== 'running')) return { kind: 'gone', status: 'gone' };
   const { dir, job: { lease } } = prepared;
-  const failed = (failure: WorkflowFailure, kind: 'prepare-failed' | 'model-failed'): Promise<Stage> => fail(context, lock, { state, attempt, revision: open.revision, failure, kind });
+  const failed = (failure: WorkflowFailure, cause: 'place' | 'model'): Promise<Stage> => fail(context, lock, { state, attempt, revision: open.revision, failure, cause });
   if (lease.executor === 'command') {
     const scoped = lease.envScope ? await stepEnvironment(context.env.values, lease.envScope) : { ok: true as const, env: process.env };
-    if (!scoped.ok) return failed(scoped.failure, 'prepare-failed');
+    if (!scoped.ok) return failed(scoped.failure, 'place');
     // A runner that restarts a command already running starts it again in the place it was prepared in.
-    const running = open.phase === 'preparing' ? take(context, state, { kind: 'prepared', attempt })?.state ?? state : state;
+    const running = open.phase === 'preparing' ? traced(context, preparedRow(state, attempt))?.state ?? state : state;
     await writeSkillState(context.config, lock, running, context.env.secrets);
     return { kind: 'run', dir, command: lease.command, env: { ...scoped.env, ...lease.env }, mode: state.options.mode, ...(open.expiresAt !== undefined ? { expiresAt: open.expiresAt } : {}) };
   }
@@ -269,15 +266,15 @@ async function begin(context: SkillContext, lock: RunLock, attempt: AttemptId, p
     config: context.config, toolPaths: context.toolPaths, step: open.step, tool: context.tool,
     ...(agent !== undefined ? { agent } : {}), ...(model !== undefined ? { model } : {}), ...(defaultModel !== undefined ? { defaultModel } : {}),
   });
-  if (!picked.ok) return failed(picked.failure, 'model-failed');
+  if (!picked.ok) return failed(picked.failure, 'model');
   const brief = await writeChildBrief({
     config: context.config, run: lock.run, attempt, step: open.step, dir, writes, prompt: prepared.prompt ?? lease.prompt, ...(interactive ? { person: true } : {}),
     ...(output !== undefined ? { output } : {}), report: reportLiteral(state.invocation, lock.run, attempt), secrets: context.env.secrets,
   });
-  const offered = take(context, state, {
-    kind: 'offer', attempt, dispatch: { place, ...(interactive ? { person: true } : {}), dir, brief, ...(agent !== undefined ? { agent } : {}), model: picked.model },
-  });
-  if (offered?.state) await writeSkillState(context.config, lock, offered.state, context.env.secrets);
+  const offered = traced(context, offerRow(state, {
+    attempt, dispatch: { place, ...(interactive ? { person: true } : {}), dir, brief, ...(agent !== undefined ? { agent } : {}), model: picked.model },
+  }));
+  if (offered) await writeSkillState(context.config, lock, offered.state, context.env.secrets);
   return { kind: 'gone', status: 'offered' };
 }
 
@@ -339,5 +336,5 @@ async function report(context: SkillContext, lock: RunLock, attempt: AttemptId, 
     ...(exited.exitCode !== 0 ? { message: snippet === '' ? `command exited with status ${exited.exitCode}` : `command exited with status ${exited.exitCode}: ${snippet}` } : {}),
   };
   const tail = exited.output.trim().slice(-400);
-  return sendTaken(context, lock, take(context, state, { kind: 'exited', attempt, body, ...(tail ? { tail } : {}) }), attempt);
+  return send(context, lock, exitedRow(state, { attempt, body, ...(tail ? { tail } : {}) }), attempt);
 }
