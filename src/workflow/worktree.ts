@@ -234,8 +234,10 @@ export async function reconcileCopy(main: string, branch: string, expected: stri
   return merged.code === 0 ? undefined : { error: `Workspace ${dir} could not be moved to ${expected}: ${merged.stderr.trim()}` };
 }
 
-/** Points this worktree's hooks at `hooks` without changing the active checkout's hooks. */
-/** Points the hooks of worktree `dir` at `hooks`, an empty directory, so no hook of the repository runs in a step's git. */
+/**
+ * Points the hooks of worktree `dir` at `hooks`, an empty directory, so no hook of the repository runs in a step's git,
+ * without changing the hooks of any other worktree.
+ */
 export async function worktreeHooks(dir: string, hooks: string): Promise<void> {
   // Set in the configuration every worktree of the repository shares.
   await git(dir, ['config', 'extensions.worktreeConfig', 'true']);
