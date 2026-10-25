@@ -10,12 +10,12 @@ import type { LocalConfig } from '../types.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { inProcessConformanceClient, runConformanceScenario, type ConformanceClient } from '../workflow/conformance-interpreter.js';
 import { PLACE_CHECKOUT_FILES, workflowPlaceConformanceScenarios } from '../workflow/conformance.js';
-import { inProcessClient } from '../workflow/protocol.js';
+import { inProcessClient, type HostPlaceRequest } from '../workflow/protocol.js';
 import { pull } from '../pull.js';
 import { pendingRecords } from '../workflow/records.js';
 import { findRunConfig } from '../workflow/run-location.js';
 import { cancelRun } from '../workflow/run-controls.js';
-import { AttemptIdSchema, readRun } from '../workflow/store.js';
+import { AttemptIdSchema, readRun, RunIdSchema, withRunLock } from '../workflow/store.js';
 
 vi.mock('../pull.js', () => ({ pull: vi.fn() }));
 /** The git steps of a prepare to kill the process after, each once. */
@@ -33,6 +33,7 @@ vi.mock('../workflow/worktree.js', async (importOriginal) => {
     markSetup: killable('markSetup', real.markSetup),
     markReadCopy: killable('markReadCopy', real.markReadCopy),
     mergeBranch: killable('mergeBranch', real.mergeBranch),
+    worktreeHooks: killable('worktreeHooks', real.worktreeHooks),
   };
 });
 const dirs: string[] = [];
@@ -316,6 +317,84 @@ steps:
     expect(await f.client.next(f.runId, body(f), { prepare: { attempt: lease.attempt, adopt: second } }))
       .toMatchObject({ error: { code: 'adopt_mismatch', message: expect.stringContaining(`already prepared in ${first}`) } });
     expect(await f.client.next(f.runId, body(f), { prepare: { attempt: lease.attempt } })).toMatchObject({ data: { lease: { attempt: lease.attempt, cwd: first } } });
+  });
+
+  it('asks the host for the place of a new branch, and goes on in it for a later step on the branch, without its setup again', async () => {
+    const f = await fixture(`schemaVersion: v1alpha1
+name: build
+description: Write a change, then polish it, in a set-up place the host makes.
+alias: ship
+setup:
+  command: echo ran >> "$(git rev-parse --git-path setup-runs)"
+steps:
+  - id: change
+    workspace: new
+    workflow:
+      steps:
+        - id: write
+          prompt: Write the change.
+        - id: polish
+          needs: [write]
+          prompt: Polish the change.
+`);
+    const run = RunIdSchema.parse(f.runId);
+    const prepare = (lease: unknown, request: HostPlaceRequest) => withRunLock(f.config, run, (lock) => f.client.prepareHostPlace(lock, lease, request), { waitMs: 0 });
+    const lease = async (): Promise<{ raw: unknown } & z.infer<typeof LeaseSchema>> => {
+      const answer = await f.client.next(f.runId, body(f));
+      if (!('data' in answer) || !answer.data.lease) throw new Error(JSON.stringify(answer));
+      return { raw: answer.data.lease, ...LeaseSchema.parse(answer.data.lease) };
+    };
+    const write = await lease();
+    expect(await prepare(write.raw, { kind: 'host' })).toEqual({
+      kind: 'needs-place', name: expect.stringMatching(/^teamai-/), branch: write.workspace.branch, start: write.workspace.start.commit,
+    });
+    const dir = path.join(path.dirname(f.work), 'hosts', 'place');
+    git(f.work, 'worktree', 'add', '-q', '--detach', dir, write.workspace.start.commit);
+    expect(await prepare(write.raw, { kind: 'adopt', dir })).toMatchObject({ kind: 'prepared', dir });
+    expect(await f.client.setup(run, write.attempt)).toBeUndefined();
+    fs.writeFileSync(path.join(dir, 'change.txt'), 'written\n');
+    expect(await f.client.report(f.runId, { attempt: write.attempt, revision: write.revision, outcome: 'success', driver: f.driver })).toMatchObject({ data: { accepted: true } });
+
+    const polish = await lease();
+    expect(polish.workspace.branch).toBe(write.workspace.branch);
+    expect(await prepare(polish.raw, { kind: 'host' })).toMatchObject({ kind: 'prepared', dir });
+    expect(await f.client.setup(run, polish.attempt)).toBeUndefined();
+    expect(fs.readFileSync(path.resolve(dir, git(dir, 'rev-parse', '--git-path', 'setup-runs')), 'utf8')).toBe('ran\n');
+  });
+
+  it('refuses a place another open attempt began to adopt, even when its prepare was killed before it made its branch there', async () => {
+    const f = await fixture(`schemaVersion: v1alpha1
+name: build
+description: Build the API and the UI.
+alias: ship
+steps:
+  - id: api
+    workspace: new
+    prompt: Build the API.
+  - id: ui
+    needs: []
+    workspace: new
+    prompt: Build the UI.
+`);
+    const run = RunIdSchema.parse(f.runId);
+    const raw = async (running: string[]): Promise<unknown> => {
+      const answer = await f.client.next(f.runId, { ...body(f), running });
+      if (!('data' in answer) || !answer.data.lease) throw new Error(JSON.stringify(answer));
+      return answer.data.lease;
+    };
+    const api = await raw([]);
+    const { attempt, workspace } = LeaseSchema.parse(api);
+    const ui = await raw([attempt]);
+    const dir = path.join(path.dirname(f.work), 'hosts', 'shared');
+    git(f.work, 'worktree', 'add', '-q', '--detach', dir, workspace.start.commit);
+    const prepare = (lease: unknown) => withRunLock(f.config, run, (lock) => f.client.prepareHostPlace(lock, lease, { kind: 'adopt', dir }), { waitMs: 0 });
+
+    killAfter.add('worktreeHooks');
+    await expect(prepare(api)).rejects.toThrow('killed after worktreeHooks');
+    expect(git(dir, 'rev-parse', '--abbrev-ref', 'HEAD')).toBe('HEAD');
+    expect(await prepare(ui)).toMatchObject({ kind: 'needs-place', refused: expect.stringContaining(`is the place of attempt ${attempt}`) });
+    expect(await prepare(api)).toMatchObject({ kind: 'prepared', dir });
+    expect(git(dir, 'symbolic-ref', '--short', 'HEAD')).toBe(workspace.branch);
   });
 
   it('refuses a place on the lease\'s branch whose history lacks the start, and the attempt stays leased', async () => {

@@ -56,9 +56,10 @@ const PlaceBase = { ...PlaceFields, place: PlaceRoleSchema };
 export const PlaceRecordSchema = z.discriminatedUnion('phase', [
   /**
    * Git is not done in the copy at `dir`. Recorded before git touches it, so the next prepare of an attempt killed
-   * meanwhile knows what this one did there: `created` when the copy is new to TeamAI, one that did not exist or the
-   * host made, so its setup still runs; `adopted` when the host made it; and a writer's `rangeFrom` once the copy is
-   * open, taken before any merge, so the merges stay in the step's changes.
+   * meanwhile knows what this one did there: `created` when the copy is new to TeamAI, so its setup still runs: one
+   * that did not exist, or one the host made that no earlier attempt of the run finished in; `adopted` when the host
+   * made it; and a writer's `rangeFrom` once the copy is open, taken before any merge, so the merges stay in the
+   * step's changes.
    */
   z.object({
     ...PlaceFields, phase: z.literal('opening'), created: z.literal(true).optional(), adopted: z.literal(true).optional(), rangeFrom: z.string().optional(),

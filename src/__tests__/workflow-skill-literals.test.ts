@@ -5,7 +5,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { attemptEnv } from '../workflow/attempt-marker.js';
 import { parseSkillCall } from '../workflow/drivers/skill/skill-driver.js';
 import {
-  ackLiteral, chooseHostLiteral, describeLiteral, generatedStartPatterns, INVOCATIONS, localStartLiteral, nextLiteral, personRespondLiteral, pollLiteral, preapprovedPatterns,
+  ackLiteral, adoptLiteral, chooseHostLiteral, describeLiteral, generatedStartPatterns, INVOCATIONS, localStartLiteral, nextLiteral, personRespondLiteral, pollLiteral, preapprovedPatterns,
   reportLiteral, respondLiteral, resumeLiteral, runnerArgs, startLiteral, takeoverLiteral, unavailableLiteral, type Invocation,
 } from '../workflow/drivers/skill/literals.js';
 import { loadCommandTable } from './helpers/command-table.js';
@@ -66,6 +66,10 @@ describe.each(INVOCATIONS)('skill driver literals run as %s', (invocation) => {
     expect(skillCall(unavailableLiteral(invocation, RUN, ATTEMPT), invocation)).toEqual({ kind: 'report', run: RUN, attempt: ATTEMPT, role: 'agent', modelUnavailable: true });
     expect(skillCall(chooseHostLiteral(invocation, RUN, 'h2'), invocation)).toEqual({ kind: 'choose', run: RUN, choice: 'h2' });
     expect(skillCall(ackLiteral(invocation, RUN, ATTEMPT), invocation)).toEqual({ kind: 'ack', run: RUN, attempt: ATTEMPT });
+    const adopt = adoptLiteral(invocation, RUN, ATTEMPT).replace('{dir}', '/hosts/the place');
+    expect(adopt).not.toBe(adoptLiteral(invocation, RUN, ATTEMPT));
+    expect(skillCall(adopt, invocation)).toEqual({ kind: 'adopt', run: RUN, attempt: ATTEMPT, dir: '/hosts/the place' });
+    expect(skillCall(adoptLiteral(invocation, RUN, ATTEMPT, '/hosts/the place'), invocation)).toEqual({ kind: 'adopt', run: RUN, attempt: ATTEMPT, dir: '/hosts/the place' });
     expect(skillCall(startLiteral(invocation, 'check', { hitl: 'recommend' }), invocation)).toEqual({ kind: 'start', name: 'check', answers: { confirmed: false, hitl: 'recommend' }, inputs: undefined });
     expect(skillCall(startLiteral(invocation, 'check', { hitl: 'auto-approve' }), invocation)).toEqual({ kind: 'start', name: 'check', answers: { confirmed: false, hitl: 'auto-approve' }, inputs: undefined });
     expect(skillCall(respondLiteral(invocation, RUN, { step: 'items[0].ask', pass: 2, choice: 'yes' }), invocation))
@@ -115,13 +119,22 @@ describe('start and respond options of the skill driver', () => {
 describe('next options of the skill driver', () => {
   it('name the host choices, the shape of an offer, and that one call takes one of --wait, --takeover, --choice and --ack', () => {
     expect(parseSkillCall({ kind: 'next', run: RUN, options: { choice: 'h9' } }, {}))
-      .toEqual({ error: { code: 'invalid_arguments', message: '--choice takes the id of a host question option: h1, h2', next: null } });
+      .toEqual({ error: { code: 'invalid_arguments', message: '--choice takes the id of a host question option: h1, h2, h3', next: null } });
     expect(parseSkillCall({ kind: 'next', run: RUN, options: { ack: ATTEMPT } }, {}))
       .toEqual({ error: { code: 'invalid_arguments', message: `--ack takes the offer of a dispatch action, such as dispatch.a1b2c3d4e; got ${ATTEMPT}`, next: null } });
     expect(parseSkillCall({ kind: 'next', run: RUN, options: { wait: true, ack: `dispatch.${ATTEMPT}` } }, {}))
-      .toEqual({ error: { code: 'invalid_arguments', message: 'next takes at most one of --wait, --takeover, --choice and --ack', next: null } });
+      .toEqual({ error: { code: 'invalid_arguments', message: 'next takes at most one of --wait, --takeover, --choice, --ack and --adopt', next: null } });
     expect(parseSkillCall({ kind: 'next', run: RUN, options: { wait: true, takeover: true } }, {}))
-      .toEqual({ error: { code: 'invalid_arguments', message: 'next takes at most one of --wait, --takeover, --choice and --ack', next: null } });
+      .toEqual({ error: { code: 'invalid_arguments', message: 'next takes at most one of --wait, --takeover, --choice, --ack and --adopt', next: null } });
+  });
+});
+
+describe('the adopt of the skill driver', () => {
+  it('takes --attempt and --adopt together, and no other next option beside them', () => {
+    expect(parseSkillCall({ kind: 'next', run: RUN, options: { attempt: ATTEMPT } }, {}))
+      .toEqual({ error: { code: 'invalid_arguments', message: '--driver skill takes --attempt and --adopt together, as the adopt of a place action prints them', next: null } });
+    expect(parseSkillCall({ kind: 'next', run: RUN, options: { attempt: ATTEMPT, adopt: '/hosts/place', ack: `dispatch.${ATTEMPT}` } }, {}))
+      .toEqual({ error: { code: 'invalid_arguments', message: 'next takes at most one of --wait, --takeover, --choice, --ack and --adopt', next: null } });
   });
 });
 

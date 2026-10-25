@@ -6,12 +6,15 @@ The host question asks how this coding session starts a child agent, and so how 
    1. App orchestration tools: a tool of the app you run in that starts a child task or thread with a prompt and a model.
    2. Team agents: agents your host starts by name, such as the files in `.claude/agents/`.
    3. Native subagents: the host's own subagent tool.
-2. Pick the option that way fits:
+2. Pick the first option whose row fits that way:
 
    | Option | Pick it when that way | Children at once |
    |---|---|---|
+   | `h3` | makes a worktree of its own for each child to work in, as T3 worktree tasks, Claude Code agent teams with worktrees and Codex worktrees do | up to the run's `--parallel` |
    | `h1` | runs several children in the background while you keep working | up to the run's `--parallel` |
    | `h2` | runs one child at a time, or only in the foreground | one |
+
+   On `h3`, a step that commits to a branch first comes as a `place` action: your host makes the worktree, and TeamAI adopts it before the step's dispatch comes.
 
 3. Run the option's `run`.
 

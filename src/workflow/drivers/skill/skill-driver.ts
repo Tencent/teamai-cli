@@ -2,6 +2,7 @@
  * The skill driver: a coding session drives a run through `workflow start|next|report --driver skill`, running only
  * the literals each reply prints, while detached runners run its command steps. This module is its entry.
  */
+import path from 'node:path';
 import { z } from 'zod';
 import { resolveCliEntry } from '../../../builtin-hooks.js';
 import { driverIdentity } from '../../../driver-identity.js';
@@ -33,6 +34,8 @@ export type SkillCall =
   | { kind: 'choose'; run: RunId; choice: HostChoice }
   /** `next --ack dispatch.<a>`: the child of attempt `a` started. */
   | { kind: 'ack'; run: RunId; attempt: AttemptId }
+  /** `next --attempt <a> --adopt <dir>`: the host made `dir`, an absolute path, for the place attempt `a` asked for. */
+  | { kind: 'adopt'; run: RunId; attempt: AttemptId; dir: string }
   /** `respond --driver skill`: the agent's answer to an optional gate. */
   | { kind: 'respond'; run: RunId; step: string; pass: number; choice: string }
   /** The runner's call carries the attempt's marker: the runner reports itself. */
@@ -130,12 +133,14 @@ const NextOptionsSchema = z.object({
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: `--ack takes the offer of a dispatch action, such as dispatch.a1b2c3d4e; got ${offer}` });
     return z.NEVER;
   }).optional(),
+  attempt: AttemptIdSchema.optional(),
+  adopt: z.string().min(1, '--adopt takes the directory the host made').optional(),
   json: z.undefined({ invalid_type_error: '--driver skill takes no --json: the skill driver composes every request itself' }),
   prepare: z.undefined({ invalid_type_error: '--prepare is for --json drivers' }),
-  attempt: z.undefined({ invalid_type_error: '--attempt is for --json drivers, with --prepare' }),
-  adopt: z.undefined({ invalid_type_error: '--adopt is for --json drivers, with --prepare --attempt' }),
-}).refine((options) => [options.wait, options.takeover, options.choice, options.ack].filter((given) => given !== undefined && given !== false).length <= 1, {
-  message: 'next takes at most one of --wait, --takeover, --choice and --ack',
+}).refine((options) => (options.attempt === undefined) === (options.adopt === undefined), {
+  message: '--driver skill takes --attempt and --adopt together, as the adopt of a place action prints them',
+}).refine((options) => [options.wait, options.takeover, options.choice, options.ack, options.adopt].filter((given) => given !== undefined && given !== false).length <= 1, {
+  message: 'next takes at most one of --wait, --takeover, --choice, --ack and --adopt',
 });
 const RespondOptionsSchema = z.object({
   pass: z.string({ required_error: '--driver skill needs --pass, as the choose action printed it' }).regex(/^[1-9][0-9]*$/, '--pass takes the pass the choose action printed').transform(Number),
@@ -188,10 +193,11 @@ export function parseSkillCall(
   if (raw.kind === 'next') {
     const options = NextOptionsSchema.safeParse(raw.options);
     if (!options.success) return invalid(options.error);
-    const { choice, ack, wait, takeover } = options.data;
+    const { choice, ack, wait, takeover, attempt, adopt } = options.data;
     if (takeover) return { kind: 'takeover', run: run.data };
     if (choice !== undefined) return { kind: 'choose', run: run.data, choice };
     if (ack !== undefined) return { kind: 'ack', run: run.data, attempt: ack };
+    if (attempt !== undefined && adopt !== undefined) return { kind: 'adopt', run: run.data, attempt, dir: path.resolve(adopt) };
     return { kind: 'next', run: run.data, wait: wait === true };
   }
   if (raw.kind === 'respond') {
@@ -219,6 +225,8 @@ export async function runSkillCall(call: SkillCall, context: SkillContext): Prom
       return foreground(context, call.run, { kind: 'choose', choice: call.choice });
     case 'ack':
       return foreground(context, call.run, { kind: 'ack', attempt: call.attempt });
+    case 'adopt':
+      return foreground(context, call.run, { kind: 'adopt', attempt: call.attempt, dir: call.dir });
     case 'respond':
       return foreground(context, call.run, { kind: 'respond', step: call.step, pass: call.pass, choice: call.choice });
     case 'report':

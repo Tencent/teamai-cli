@@ -42,6 +42,23 @@ steps:
     prompt: Integrate the API and the UI.
 `;
 
+// `polish` continues the branch `write` committed to.
+const CHANGE = `schemaVersion: v1alpha1
+name: change
+description: Write a change, then polish it
+invoke: allow
+steps:
+  - id: work
+    workspace: new
+    workflow:
+      steps:
+        - id: write
+          prompt: Write the change.
+        - id: polish
+          needs: [write]
+          prompt: Polish the change.
+`;
+
 // `serve` runs until it is stopped; `lint` shares the checkout, so it waits behind it.
 const SERVE = `schemaVersion: v1alpha1
 name: serve
@@ -334,6 +351,79 @@ describe('skill driver', () => {
       expect.objectContaining({ kind: 'settled', step: 'ui', outcome: 'success' }),
     ]));
     expect(next.data.turn.actions.map((action) => action.kind === 'dispatch' && action.step)).toEqual(['integrate']);
+  });
+
+  it('h3 asks the host for a place, adopts it, and a continue step reuses it', async () => {
+    const harness = await skillHarness({ change: CHANGE });
+    roots.push(harness.root);
+    const started = await harness.call({ kind: 'start', name: 'change', answers: { confirmed: false }, inputs: undefined });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+    const { run } = started.data.turn;
+    const host = started.data.turn.actions.find((action) => action.kind === 'choose' && action.about === 'host');
+    if (host?.kind !== 'choose' || host.about !== 'host') throw new Error(JSON.stringify(started));
+    expect(host.options.find((option) => option.id === 'h3')?.run).toBe(`teamai workflow next ${run} --driver skill --choice h3`);
+
+    const chosen = await harness.call({ kind: 'choose', run, choice: 'h3' });
+    if (!('data' in chosen) || !('turn' in chosen.data)) throw new Error(JSON.stringify(chosen));
+    const [place] = chosen.data.turn.actions;
+    if (place?.kind !== 'place') throw new Error(JSON.stringify(chosen));
+    const start = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: harness.work, encoding: 'utf8' }).trim();
+    const adopt = `teamai workflow next ${run} --driver skill --attempt ${place.attempt} --adopt '{dir}'`;
+    expect(place).toEqual({
+      kind: 'place', attempt: place.attempt, step: 'work.write', name: expect.stringMatching(/^teamai-/), branch: `teamai/${run}/work/p1`, start, adopt,
+      reference: expect.stringMatching(/places\.md$/),
+    });
+    expect(fs.existsSync(place.reference), place.reference).toBe(true);
+    expect(chosen.data.turn.running).toEqual([{ attempt: place.attempt, step: 'work.write', phase: 'placing' }]);
+    expect(await harness.call({ kind: 'next', run, wait: true })).toEqual({ data: { turn: expect.objectContaining({
+      actions: [],
+      // oxlint-disable-next-line unicorn/no-thenable
+      then: { kind: 'wake', run: `teamai workflow next ${run} --driver skill` },
+    }) } });
+
+    // The host makes a place on a branch of its own: it is refused, and the attempt waits for another.
+    const hosts = path.join(harness.root, 'hosts');
+    execFileSync('git', ['worktree', 'add', '-q', '-b', 'host/other', path.join(hosts, 'other'), start], { cwd: harness.work });
+    const refused = await harness.call({ kind: 'adopt', run, attempt: place.attempt, dir: path.join(hosts, 'other') });
+    if (!('data' in refused) || !('turn' in refused.data)) throw new Error(JSON.stringify(refused));
+    expect(refused.data.turn.actions).toEqual([{ ...place, refused: expect.stringContaining(`not on branch teamai/${run}/work/p1`) }]);
+    expect(refused.data.turn.running).toEqual([{ attempt: place.attempt, step: 'work.write', phase: 'placing' }]);
+
+    const dir = path.join(hosts, 'place');
+    execFileSync('git', ['worktree', 'add', '-q', '--detach', dir, start], { cwd: harness.work });
+    const adopted = await harness.call({ kind: 'adopt', run, attempt: place.attempt, dir });
+    if (!('data' in adopted) || !('turn' in adopted.data)) throw new Error(JSON.stringify(adopted));
+    const [write] = adopted.data.turn.actions;
+    if (write?.kind !== 'dispatch') throw new Error(JSON.stringify(adopted));
+    expect(write).toMatchObject({ attempt: place.attempt, step: 'work.write', dir, needs: { place: 'workspace' } });
+
+    await harness.call({ kind: 'ack', run, attempt: write.attempt });
+    fs.writeFileSync(path.join(dir, 'change.txt'), 'written\n');
+    const result = (brief: string): string => {
+      const file = /Write `([^`]+result\.json)`/.exec(fs.readFileSync(brief, 'utf8'))?.[1];
+      if (!file) throw new Error(`${brief} names no result file`);
+      return file;
+    };
+    fs.writeFileSync(result(write.brief), JSON.stringify({ kind: 'output', output: 'Wrote the change.' }));
+    expect(await harness.call({ kind: 'report', run, attempt: write.attempt, role: 'agent', modelUnavailable: false })).toMatchObject({ data: { runner: { status: 'reported' } } });
+
+    // polish continues the branch in the place the host made, and nobody is asked for another.
+    const next = await harness.call({ kind: 'next', run, wait: false });
+    if (!('data' in next) || !('turn' in next.data)) throw new Error(JSON.stringify(next));
+    const [polish] = next.data.turn.actions;
+    if (polish?.kind !== 'dispatch') throw new Error(JSON.stringify(next));
+    expect(next.data.turn.actions).toHaveLength(1);
+    expect(polish).toMatchObject({ step: 'work.polish', dir });
+
+    await harness.call({ kind: 'ack', run, attempt: polish.attempt });
+    fs.appendFileSync(path.join(dir, 'change.txt'), 'polished\n');
+    fs.writeFileSync(result(polish.brief), JSON.stringify({ kind: 'output', output: 'Polished the change.' }));
+    await harness.call({ kind: 'report', run, attempt: polish.attempt, role: 'agent', modelUnavailable: false });
+    const done = await harness.call({ kind: 'next', run, wait: false });
+    expect(done).toMatchObject({ data: { turn: { status: 'done', actions: [{ kind: 'done', outcome: 'succeeded' }] } } });
+    // TeamAI leaves the place to its host, with both steps committed on the branch.
+    expect(fs.readFileSync(path.join(dir, 'change.txt'), 'utf8')).toBe('written\npolished\n');
+    expect(execFileSync('git', ['log', '--format=%s', `teamai/${run}/work/p1`], { cwd: dir, encoding: 'utf8' }).trim().split('\n')).toHaveLength(3);
   });
 
   it('a cancelled command is stopped by its runner and reported released; a cancelled prompt step shows stop until reported', async () => {

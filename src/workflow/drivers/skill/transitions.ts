@@ -8,7 +8,7 @@ import type { WorkflowFailure } from '../../types.js';
 import type { ChildResult } from './child-brief.js';
 import type { HostChoice, HostProfile } from './host-profiles.js';
 import type { HitlMode, StartAnswer, StartCheck } from './preflight.js';
-import type { AttemptState, Dispatch, Gate, Judge, ReportBody, SkillState, StopReason, TurnEvent } from './skill-state.js';
+import type { AttemptState, Dispatch, Gate, Judge, PlaceAsk, ReportBody, SkillState, StopReason, TurnEvent } from './skill-state.js';
 import type { Waiting } from './turn.js';
 
 export interface TransitionRow {
@@ -32,7 +32,7 @@ export const TRANSITIONS = [
   { id: 'R11', state: 'none', input: 'next, report `--driver skill`', guard: 'this machine has no skill.json for the run', effects: 'none', next: 'none', action: 'error `not_skill_run`, next null' },
   { id: 'R12', state: 'host', input: 'tick', guard: '', effects: 'none', next: 'host', action: '`choose about:host decide:agent`' },
   { id: 'R13', state: 'host', input: 'next `--choice h`', guard: '', effects: 'host := `HOST_PROFILES[h]`', next: 'drive', action: 'the turn of a tick' },
-  { id: 'R14', state: 'host', input: 'report, next `--ack`', guard: '', effects: 'none', next: 'host', action: 'error `choice_pending`, next: the next literal' },
+  { id: 'R14', state: 'host', input: 'report, next `--ack` or `--adopt`', guard: '', effects: 'none', next: 'host', action: 'error `choice_pending`, next: the next literal' },
   { id: 'R15', state: 'drive, done', input: 'next `--choice h`', guard: '', effects: 'none', next: 'unchanged', action: 'error `unknown_choice`, next: the next literal' },
   { id: 'S1', state: 'host, drive, done', input: 'an agent call from session s', guard: 'the owner is s, or either session is unknown', effects: '`lastCallAt` := now; owner := s when unknown', next: 'unchanged', action: 'the input\'s row' },
   { id: 'S2', state: 'host, drive, done', input: 'an agent call from session s without `--takeover`', guard: 'owner o is not s, and both are known, however long o has been idle', effects: 'none', next: 'unchanged', action: 'error `orchestrator_active` with `idleSeconds`, the seconds since o\'s last call, next: the takeover literal' },
@@ -40,12 +40,13 @@ export const TRANSITIONS = [
   { id: 'S5', state: 'any', input: 'a runner call (`report --attempt a` with the marker `<run>/a`)', guard: '', effects: 'no session check, no `lastCallAt`', next: 'unchanged', action: 'C rows' },
   { id: 'S6', state: 'host, drive, done', input: 'an agent `report --attempt a`, from any session', guard: 'a is settled, or open offered, dispatched, reporting, or stopping by the agent', effects: 'no session check, no `lastCallAt`', next: 'unchanged', action: 'the input\'s row' },
   { id: 'D1', state: 'drive', input: 'tick', guard: '', effects: 'engine `next {driver: identity + SKILL_CAN, running: every open attempt, canTakeLease: fewer open than options.parallel, and than one under a serial host; false in a runner\'s check, autoApprove: true under HITL mode `auto-approve`}`', next: 'drive', action: '' },
-  { id: 'D2', state: 'drive', input: 'reply `cancelled` holds a', guard: 'a queued', effects: 'drop a', next: 'drive', action: 'event `stopped`' },
+  { id: 'D2', state: 'drive', input: 'reply `cancelled` holds a', guard: 'a queued or placing', effects: 'drop a', next: 'drive', action: 'event `stopped`' },
   { id: 'D3', state: 'drive', input: 'reply `cancelled` holds a', guard: 'a preparing or running', effects: 'phase stopping by its runner, why `timeout` once its `expiresAt` passed, else `cancelled`', next: 'drive', action: '' },
   { id: 'D4', state: 'drive', input: 'reply `cancelled` holds a', guard: 'a offered or dispatched', effects: 'phase stopping by the agent, why as D3', next: 'drive', action: '`stop {why, report}` in each foreground turn until reported' },
   { id: 'D5', state: 'drive', input: 'reply `cancelled` holds a', guard: 'a stopping or reporting', effects: 'none', next: 'drive', action: '' },
   { id: 'D6', state: 'drive', input: 'reply lease', guard: 'executor command', effects: 'phase preparing; spawn runner job `command`', next: 'drive', action: 'event `started`' },
-  { id: 'D7', state: 'drive', input: 'reply lease', guard: 'executor prompt', effects: 'phase preparing; spawn runner job `prompt`', next: 'drive', action: 'event `started`' },
+  { id: 'D7', state: 'drive', input: 'reply lease', guard: 'executor prompt, and D8 does not apply', effects: 'phase preparing; spawn runner job `prompt`', next: 'drive', action: 'event `started`' },
+  { id: 'D8', state: 'drive', input: 'reply lease', guard: 'executor prompt, workspace `new` or `continue`, and a host that makes places (h3)', effects: 'phase preparing with request `host`; spawn runner job `prompt`', next: 'drive', action: 'event `started`' },
   { id: 'D9', state: 'drive', input: 'tick', guard: 'a queued attempt whose `behind` is no longer open', effects: 'phase preparing; spawn its job again', next: 'drive', action: '' },
   { id: 'D10', state: 'drive', input: 'reply hitl', guard: 'a required approval', effects: 'journal the gate: `seq` := seq + 1, unless it is the gate journalled already', next: 'drive', action: '`person why:approval` with the person\'s literals; waiting `<step> waits for the person\'s answer`' },
   { id: 'D11', state: 'drive', input: 'reply hitl', guard: 'an optional gate; HITL mode `person`, or `auto-approve`, under which only a choice without a default comes back', effects: 'as D10', next: 'drive', action: '`choose about:gate decide:person`' },
@@ -57,9 +58,9 @@ export const TRANSITIONS = [
   { id: 'D17', state: 'drive', input: 'reply error', guard: '', effects: 'none', next: 'drive', action: 'error with the engine\'s code, next: the next literal' },
   { id: 'D18', state: 'drive', input: 'a foreground call', guard: 'it spawned runners', effects: 'release the lock; wait up to `WAIT_GRACE_MS` for them, re-taking the lock per check', next: 'drive', action: '' },
   { id: 'D19', state: 'any', input: 'a foreground call', guard: 'the lock is not free within `TICK_LOCK_WAIT_MS` (`report`: `WAIT_BOUND_MS`)', effects: 'none', next: 'unchanged', action: 'error `driver_running`, next: the same literal' },
-  { id: 'D20', state: 'host, drive, done', input: 'a foreground call, after its tick', guard: '', effects: '`seen[s]` := seq', next: 'unchanged', action: 'the turn: the host question, or every `stop`, then every unacked dispatch, then the gate\'s `choose` or `person`; events after the old `seen[s]`; `then: poll` until the run is done and no attempt or judge is open' },
+  { id: 'D20', state: 'host, drive, done', input: 'a foreground call, after its tick', guard: '', effects: '`seen[s]` := seq', next: 'unchanged', action: 'the turn: the host question, or every `stop`, then every unacked dispatch, then every `place`, then the gate\'s `choose` or `person`; events after the old `seen[s]`; `then: poll` until the run is done and no attempt or judge is open' },
   { id: 'D21', state: 'host, drive, done', input: 'a poll tick', guard: 'the lock was busy, or nothing below applies, and the bound is not reached', effects: 'release; sleep `WAIT_POLL_MS`; tick again', next: 'unchanged', action: '' },
-  { id: 'D22', state: 'host, drive, done', input: 'a poll tick', guard: 'the host question is unanswered, a dispatch is unacked, a `stop` is not reported, or the gate was journalled after `seen[s]`', effects: 'none', next: 'unchanged', action: '`then: wake` with the next literal, no actions' },
+  { id: 'D22', state: 'host, drive, done', input: 'a poll tick', guard: 'the host question is unanswered, a dispatch is unacked, a place is not adopted, a `stop` is not reported, or the gate was journalled after `seen[s]`', effects: 'none', next: 'unchanged', action: '`then: wake` with the next literal, no actions' },
   { id: 'D23', state: 'done', input: 'a poll tick', guard: '`seen[s]` is below seq, and no attempt is open', effects: '`seen[s]` := seq', next: 'done', action: '`done` with its events; `then: poll` while a judge is open' },
   { id: 'D24', state: 'host, drive, done', input: 'a poll tick', guard: 'the bound is reached, and D25 does not apply', effects: 'none', next: 'unchanged', action: '`then: poll`, no actions' },
   { id: 'D25', state: 'drive, done', input: 'a poll tick', guard: 'a `settled` or `stopped` event came after `seen[s]`, and neither D22 nor D23 applies', effects: '`seen[s]` := seq', next: 'unchanged', action: 'the events after the old `seen[s]`, no actions; `then: poll`' },
@@ -68,6 +69,8 @@ export const TRANSITIONS = [
   { id: 'C2', state: 'preparing', input: 'runner: prepared', guard: 'job `prompt`', effects: '`pickChildModel`; `writeChildBrief`', next: 'offered', action: '`dispatch` in each foreground turn until acked' },
   { id: 'C3', state: 'preparing', input: 'runner: prepared', guard: 'job `prompt`; `pickChildModel` fails `model_unavailable`', effects: 'write-ahead `failed` with that failure', next: 'reporting', action: '' },
   { id: 'C4', state: 'preparing', input: 'runner: place busy, behind b', guard: '', effects: '`behind` := b', next: 'queued', action: '' },
+  { id: 'C5', state: 'preparing', input: 'runner: needs a place', guard: 'request `host`, and no place an earlier attempt adopted for the branch passes the adopt checks', effects: 'the place to ask for: `name`, `branch`, `start`', next: 'placing', action: '`place` in each foreground turn until adopted' },
+  { id: 'C6', state: 'preparing', input: 'runner: adopt refused', guard: 'request `adopt dir`', effects: '`refused` := why; the engine still leases a', next: 'placing', action: '`place` with `refused`' },
   { id: 'C7', state: 'preparing', input: 'runner: prepare or setup failed', guard: '', effects: 'write-ahead `failed` with its failure', next: 'reporting', action: '' },
   { id: 'C8', state: 'running', input: 'runner: the command exited', guard: '', effects: 'write-ahead: `success` on exit 0, else `failed`; outputs, exit code, masked tail', next: 'reporting', action: '' },
   { id: 'C9', state: 'stopping by its runner', input: 'runner: its check every `RUNNER_POLL_MS` and at `expiresAt`, its setup ending, or its command exiting', guard: '', effects: 'stop the command and every process it started (`tool-launch/process-stop.ts`); write-ahead `released`', next: 'reporting', action: '' },
@@ -76,9 +79,11 @@ export const TRANSITIONS = [
   { id: 'K1', state: 'drive', input: 'next `--ack dispatch.a`', guard: 'a offered', effects: 'phase dispatched', next: 'drive', action: 'the turn of a tick' },
   { id: 'K2', state: 'drive', input: 'next `--ack dispatch.a`', guard: 'a dispatched', effects: 'none', next: 'drive', action: 'the turn of a tick' },
   { id: 'K3', state: 'drive, done', input: 'next `--ack dispatch.a`', guard: 'a neither offered nor dispatched', effects: 'none', next: 'unchanged', action: 'error `unknown_offer`, next: the next literal' },
+  { id: 'K4', state: 'drive', input: 'next `--attempt a --adopt dir`', guard: 'a placing', effects: 'phase preparing with request `adopt dir`; spawn its job again', next: 'drive', action: 'the turn of a tick' },
+  { id: 'K5', state: 'drive, done', input: 'next `--attempt a --adopt dir`', guard: 'a not placing', effects: 'none', next: 'unchanged', action: 'error `unknown_attempt`, next: the next literal' },
   { id: 'P1', state: 'drive, done', input: 'report a', guard: 'a is in the settled list', effects: 'none', next: 'unchanged', action: 'runner answer `repeated`' },
   { id: 'P2', state: 'drive', input: 'report a', guard: 'a is unknown', effects: 'none', next: 'drive', action: 'error `unknown_attempt`, next: the next literal' },
-  { id: 'P3', state: 'drive', input: 'report a', guard: 'a preparing, queued, running, or stopping by its runner', effects: 'none', next: 'drive', action: 'error `not_dispatched`, next: the next literal' },
+  { id: 'P3', state: 'drive', input: 'report a', guard: 'a preparing, queued, placing, running, or stopping by its runner', effects: 'none', next: 'drive', action: 'error `not_dispatched`, next: the next literal' },
   { id: 'P4', state: 'drive', input: 'report a `--model-unavailable`', guard: 'a offered or dispatched, its dispatch printed `unavailable`', effects: 'write-ahead `failed` `model_unavailable` naming the model', next: 'reporting', action: 'P7 to P10; after P7 to P9, runner answer `reported`' },
   { id: 'P5', state: 'drive', input: 'report a', guard: 'a offered or dispatched, otherwise', effects: 'read `result.json`: an output gives `success` with it as outputs, a failure gives `failed` with it, none or an unreadable one gives `failed` `tool_failed`; write-ahead', next: 'reporting', action: 'P7 to P10; after P7 to P9, runner answer `reported`' },
   { id: 'P6', state: 'drive, done', input: 'report a', guard: 'a stopping by the agent', effects: 'write-ahead `released`', next: 'reporting', action: 'P7 to P10; after P7 to P9, runner answer `reported`' },
@@ -108,8 +113,8 @@ export type RowId = typeof TRANSITIONS[number]['id'];
 /** A lease the engine handed out, as the tick read it: a command, or a prompt for a child. */
 export type ReadLease = { attempt: AttemptId; step: string; revision: number; expiresAt?: string } & (
   | { executor: 'command'; command: string; env: Record<string, string>; envScope?: EnvScope }
-  /** `interactive`: the person works in the step. */
-  | { executor: 'prompt'; prompt: string; place: Dispatch['place']; interactive?: true; agent?: string; model?: string; defaultModel?: string; output?: unknown }
+  /** `writes`: the step commits to a branch, in a workspace `new` or `continue`. `interactive`: the person works in the step. */
+  | { executor: 'prompt'; prompt: string; place: Dispatch['place']; writes: boolean; interactive?: true; agent?: string; model?: string; defaultModel?: string; output?: unknown }
 );
 
 /** A gate as the engine asks it. */
@@ -213,7 +218,8 @@ export type Refusal =
   | { code: 'choice_pending'; run: RunId }
   | { code: 'unknown_choice'; run: RunId }
   | { code: 'unknown_offer'; run: RunId; attempt: AttemptId }
-  | { code: 'unknown_attempt'; run: RunId; attempt: AttemptId }
+  /** `phase`: the attempt is open, in that phase, and waits for no place. */
+  | { code: 'unknown_attempt'; run: RunId; attempt: AttemptId; phase?: AttemptState['phase'] }
   | { code: 'not_dispatched'; run: RunId; attempt: AttemptId; phase: AttemptState['phase'] }
   | { code: 'driver_running'; run: RunId };
 
@@ -284,9 +290,10 @@ export function reportedByAgent(open: AttemptState): boolean {
   return open.phase === 'offered' || open.phase === 'dispatched' || (open.phase === 'stopping' && open.by === 'agent');
 }
 
-/** Whether something waits for the agent: the host question, a dispatch to ack, or a child to stop. */
+/** Whether something waits for the agent: the host question, a dispatch to ack, a place to adopt, or a child to stop. */
 export function waitsForAgent(state: SkillState): boolean {
-  return state.host.kind === 'pending' || state.attempts.some((open) => open.phase === 'offered' || (open.phase === 'stopping' && open.by === 'agent'));
+  return state.host.kind === 'pending'
+    || state.attempts.some((open) => open.phase === 'offered' || open.phase === 'placing' || (open.phase === 'stopping' && open.by === 'agent'));
 }
 
 /** Whether `gate` is the gate the engine asks about in `asked`: the same step, at the same pass. */
@@ -382,7 +389,7 @@ export function step(state: SkillState | undefined, input: MachineInput): Step |
     case 'choose':
       if (!state) return undefined;
       if (state.host.kind !== 'pending') return { row: 'R15', state, effects: [], answer: { kind: 'error', refusal: { code: 'unknown_choice', run: state.run }, next: 'next' } };
-      return { row: 'R13', state: { ...state, host: { kind: 'chosen', id: input.choice, children: input.profile.children } }, effects: [] };
+      return { row: 'R13', state: { ...state, host: { kind: 'chosen', id: input.choice, children: input.profile.children, places: input.profile.places } }, effects: [] };
     case 'ack': {
       if (!state) return undefined;
       if (state.host.kind === 'pending') return choicePending(state);
@@ -422,7 +429,8 @@ export function step(state: SkillState | undefined, input: MachineInput): Step |
       if (!state || !open) return undefined;
       const stopping = (by: 'runner' | 'agent'): AttemptState => ({ ...baseOf(open), phase: 'stopping', by, why: stopReason(open, input.at) });
       switch (open.phase) {
-        case 'queued': {
+        case 'queued':
+        case 'placing': {
           const others = state.attempts.filter((other) => other.attempt !== open.attempt);
           return { row: 'D2', state: withEvent({ ...state, attempts: others }, { kind: 'stopped', step: open.step, attempt: open.attempt, why: stopReason(open, input.at) }), effects: [] };
         }
@@ -635,6 +643,31 @@ function scoreReplied(state: SkillState, judging: NonNullable<SkillState['judgin
   }
 }
 
+/**
+ * The row the runner of `open`, an attempt whose host makes its place, takes when that place is still to make: C6 when
+ * the place the agent adopted was `refused`, else C5. Either way the attempt waits for the agent to adopt one.
+ */
+export function placingRow(state: SkillState, open: Extract<AttemptState, { phase: 'preparing' }>, input: { ask: PlaceAsk; refused?: string }): { row: 'C5' | 'C6'; state: SkillState } {
+  const placing: AttemptState = { ...baseOf(open), phase: 'placing', ask: input.ask, ...(input.refused !== undefined ? { refused: input.refused } : {}) };
+  return { row: input.refused !== undefined ? 'C6' : 'C5', state: withAttempt(state, placing) };
+}
+
+/**
+ * The row of `next --attempt a --adopt dir`: K4 gives `dir` to a new runner of `a`, an attempt that waits for its
+ * place, which prepares it there; K5 refuses any other attempt; R14 waits for the host question.
+ */
+export function adoptRow(state: SkillState, input: { attempt: AttemptId; dir: string; at: string }):
+  | { row: 'K4'; state: SkillState; spawn: AttemptId }
+  | { row: 'K5' | 'R14'; answer: Extract<Answer, { kind: 'error' }> } {
+  if (state.host.kind === 'pending') return { row: 'R14', answer: { kind: 'error', refusal: { code: 'choice_pending', run: state.run }, next: 'next' } };
+  const open = openAttempt(state, input.attempt);
+  if (open?.phase !== 'placing') {
+    return { row: 'K5', answer: { kind: 'error', refusal: { code: 'unknown_attempt', run: state.run, attempt: input.attempt, ...(open ? { phase: open.phase } : {}) }, next: 'next' } };
+  }
+  const preparing: AttemptState = { ...baseOf(open), spawnedAt: input.at, phase: 'preparing', request: { kind: 'adopt', dir: input.dir } };
+  return { row: 'K4', state: withAttempt(state, preparing), spawn: open.attempt };
+}
+
 function choicePending(state: SkillState): Step {
   return { row: 'R14', state, effects: [], answer: { kind: 'error', refusal: { code: 'choice_pending', run: state.run }, next: 'next' } };
 }
@@ -642,9 +675,13 @@ function choicePending(state: SkillState): Step {
 function reply(state: SkillState, engine: EngineReply, at: string): Step {
   switch (engine.kind) {
     case 'lease': {
-      const { attempt, step: id, revision, executor, expiresAt } = engine.lease;
-      const preparing = withAttempt(state, { attempt, step: id, revision, spawnedAt: at, ...(expiresAt !== undefined ? { expiresAt } : {}), phase: 'preparing' });
-      return { row: executor === 'command' ? 'D6' : 'D7', state: withEvent(preparing, { kind: 'started', step: id, attempt }), effects: [{ kind: 'spawn', attempt, job: { lease: engine.raw } }] };
+      const { lease } = engine;
+      const { attempt, step: id, revision, expiresAt } = lease;
+      const hosted = lease.executor === 'prompt' && lease.writes && state.host.kind === 'chosen' && state.host.places === 'host';
+      const preparing = withAttempt(state, {
+        attempt, step: id, revision, spawnedAt: at, ...(expiresAt !== undefined ? { expiresAt } : {}), phase: 'preparing', ...(hosted ? { request: { kind: 'host' } } : {}),
+      });
+      return { row: lease.executor === 'command' ? 'D6' : hosted ? 'D8' : 'D7', state: withEvent(preparing, { kind: 'started', step: id, attempt }), effects: [{ kind: 'spawn', attempt, job: { lease: engine.raw } }] };
     }
     case 'wait':
       if (engine.held.length > 0 && state.attempts.length === 0) {

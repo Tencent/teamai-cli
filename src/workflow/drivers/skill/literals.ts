@@ -102,6 +102,14 @@ export function reportLiteral(invocation: Invocation, run: string, attempt: stri
   return LiteralSchema.parse(`${invocation} workflow report ${run} --driver skill --attempt ${attempt}`);
 }
 
+/**
+ * Adopts `dir`, the place the host made for `attempt`, as its turn printed it. Without `dir`, the agent fills the
+ * `{dir}` slot with that directory.
+ */
+export function adoptLiteral(invocation: Invocation, run: string, attempt: string, dir?: string): Literal {
+  return LiteralSchema.parse(`${invocation} workflow next ${run} --driver skill --attempt ${attempt} --adopt ${dir === undefined ? "'{dir}'" : shellWord(dir)}`);
+}
+
 /** Reports that the host cannot run the model the dispatch of `attempt` names. */
 export function unavailableLiteral(invocation: Invocation, run: string, attempt: string): Literal {
   return LiteralSchema.parse(`${invocation} workflow report ${run} --driver skill --attempt ${attempt} --model-unavailable`);

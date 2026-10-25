@@ -16,7 +16,7 @@ import type { LocalConfig } from '../../../types.js';
 import { writeFileAtomic } from '../../../utils/fs.js';
 import { redact } from '../../../utils/redact.js';
 import { attemptEnv } from '../../attempt-marker.js';
-import { commandOutputs } from '../../protocol.js';
+import { commandOutputs, type WorkflowClient } from '../../protocol.js';
 import { attemptDir, runnerAlive, withRunnerLock, type AttemptId, type RunId, type RunLock } from '../../store.js';
 import type { WorkflowEnvelope, WorkflowFailure } from '../../types.js';
 import { runnerArgs } from './literals.js';
@@ -25,8 +25,8 @@ import { writeSkillState, readSkillState, type Judge, type ReportBody, type Skil
 import { pickChildModel } from './child-model.js';
 import { writeChildBrief } from './child-brief.js';
 import { reportLiteral } from './literals.js';
-import { readJob, RUNNER_POLL_MS, runTick, sendReport, take, WAIT_BOUND_MS, type Job } from './tick.js';
-import { openAttempt, type Step } from './transitions.js';
+import { readJob, RUNNER_POLL_MS, runTick, sendReport, take, traced, WAIT_BOUND_MS, type Job } from './tick.js';
+import { openAttempt, placingRow, type Step } from './transitions.js';
 import type { CommandRun, Runners, SkillContext } from './skill-driver.js';
 import type { SkillAnswer } from './turn.js';
 
@@ -75,8 +75,11 @@ type Stage =
   | { kind: 'run'; dir: string; command: string; env: NodeJS.ProcessEnv; expiresAt?: string }
   /** The engine refused the report; it stays stored, and the runner sends it again. */
   | { kind: 'retry' }
-  /** Nothing is left for this runner: its attempt waits for a place, waits for the agent, or was reported or closed. */
-  | { kind: 'gone'; status: 'reported' | 'offered' | 'queued' | 'gone' };
+  /**
+   * Nothing is left for this runner: its attempt waits for a place another attempt holds, waits for the agent to adopt
+   * one or to start its child, or was reported or closed.
+   */
+  | { kind: 'gone'; status: 'reported' | 'offered' | 'queued' | 'placing' | 'gone' };
 
 /** How often the judge's runner renews its lease while the judge runs: three times inside the lease's 30 minutes. */
 const JUDGE_RENEW_MS = 10 * 60_000;
@@ -196,7 +199,7 @@ async function fail(context: SkillContext, lock: RunLock, input: { state: SkillS
   return sendTaken(context, lock, take(context, state, { kind, attempt, body: failedBody(state, attempt, revision, failure) }), attempt);
 }
 
-/** Under the lock: prepares the attempt's place (C4, C7), or sends the report it already has. */
+/** Under the lock: prepares the attempt's place (C4 to C7), or sends the report it already has. */
 async function prepare(context: SkillContext, lock: RunLock, attempt: AttemptId): Promise<Stage> {
   const state = await readState(context, lock);
   const open = state && openAttempt(state, attempt);
@@ -209,15 +212,23 @@ async function prepare(context: SkillContext, lock: RunLock, attempt: AttemptId)
   if (!job) {
     return failed({ code: 'run_unreadable', message: `The lease of attempt ${attempt} was not saved where its runner reads it, so the step did not run. Retry it with teamai workflow retry ${lock.run} ${open.step}.` });
   }
-  const prepared = await context.client.prepare(lock, job.raw);
-  // Nothing this runner prepares is adopted, so nothing is refused.
-  if (prepared.kind === 'failed' || prepared.kind === 'refused') return failed(prepared.failure);
-  if (prepared.kind === 'busy') {
-    const queued = take(context, state, { kind: 'place-busy', attempt, behind: prepared.behind });
-    if (queued?.state) await writeSkillState(context.config, lock, queued.state, context.env.secrets);
-    return { kind: 'gone', status: 'queued' };
-  }
-  return { kind: 'prepared', dir: prepared.dir, job, ...(prepared.prompt !== undefined ? { prompt: prepared.prompt } : {}) };
+  const placed = async (prepared: Awaited<ReturnType<WorkflowClient['prepare']>>): Promise<Stage> => {
+    // Only a place the host made is refused, and prepareHostPlace answers that as a place to make.
+    if (prepared.kind === 'failed' || prepared.kind === 'refused') return failed(prepared.failure);
+    if (prepared.kind === 'busy') {
+      const queued = take(context, state, { kind: 'place-busy', attempt, behind: prepared.behind });
+      if (queued?.state) await writeSkillState(context.config, lock, queued.state, context.env.secrets);
+      return { kind: 'gone', status: 'queued' };
+    }
+    return { kind: 'prepared', dir: prepared.dir, job, ...(prepared.prompt !== undefined ? { prompt: prepared.prompt } : {}) };
+  };
+  if (open.phase !== 'preparing' || !open.request) return placed(await context.client.prepare(lock, job.raw));
+  const hosted = await context.client.prepareHostPlace(lock, job.raw, open.request);
+  if (hosted.kind !== 'needs-place') return placed(hosted);
+  const { name, branch, start, refused } = hosted;
+  const placing = traced(context, placingRow(state, open, { ask: { name, branch, start }, ...(refused !== undefined ? { refused } : {}) }));
+  await writeSkillState(context.config, lock, placing.state, context.env.secrets);
+  return { kind: 'gone', status: 'placing' };
 }
 
 /** Under the lock: reports a setup that failed (C7), or gives up an attempt stopped while it ran (C9). */

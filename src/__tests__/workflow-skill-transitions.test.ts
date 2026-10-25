@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -75,6 +76,16 @@ steps:
   - id: build
     workspace: new
     prompt: Build it.
+`;
+
+const WRITE = `schemaVersion: v1alpha1
+name: write
+description: Write a change
+invoke: allow
+steps:
+  - id: write
+    workspace: new
+    prompt: Write the change.
 `;
 
 const GATED = `schemaVersion: v1alpha1
@@ -891,6 +902,46 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       const { run } = await turnOf(await made.call({ kind: 'start', name: 'check', answers: { parallel: 2, confirmed: false }, inputs: undefined }));
       const done = await polledToDone(made, run);
       expect(done.actions).toMatchObject([{ kind: 'done', outcome: 'succeeded' }]);
+      return made.rows;
+    },
+  },
+  {
+    name: 'on a host that makes places, a step that commits to a branch asks for one; a refused place is asked for again, an adopted one is dispatched, and an adopt for an attempt that waits for none is refused',
+    rows: ['D8', 'C5', 'C6', 'K4', 'K5'],
+    run: async () => {
+      const made = await harness({ write: WRITE });
+      const { run } = await turnOf(await made.call({ kind: 'start', name: 'write', answers: { confirmed: false }, inputs: undefined }));
+      const turn = await turnOf(await made.call({ kind: 'choose', run, choice: 'h3' }));
+      const [place] = turn.actions;
+      if (place?.kind !== 'place') throw new Error(JSON.stringify(turn));
+      const dir = path.join(made.root, 'hosts', 'place');
+      execFileSync('git', ['worktree', 'add', '-q', '--detach', dir, place.start], { cwd: made.work });
+      fs.writeFileSync(path.join(dir, 'stray.txt'), 'stray\n');
+      const refused = await turnOf(await made.call({ kind: 'adopt', run, attempt: place.attempt, dir }));
+      expect(refused.actions).toEqual([{ ...place, refused: expect.stringContaining('has changes the step would commit (?? stray.txt)') }]);
+      fs.rmSync(path.join(dir, 'stray.txt'));
+      const adopted = await turnOf(await made.call({ kind: 'adopt', run, attempt: place.attempt, dir }));
+      expect(adopted.actions).toEqual([expect.objectContaining({ kind: 'dispatch', attempt: place.attempt, dir })]);
+      expect(await made.call({ kind: 'adopt', run, attempt: place.attempt, dir })).toEqual({ error: {
+        code: 'unknown_attempt', message: `Attempt ${place.attempt} of run ${run} is offered and waits for no place, so nothing was adopted. Run the next literal to see the run.`,
+        next: `teamai workflow next ${run} --driver skill`,
+      } });
+      return made.rows;
+    },
+  },
+  {
+    name: 'a step the person cancels while it waits for a place is dropped, and its place action goes',
+    rows: ['D2'],
+    run: async () => {
+      const made = await harness({ write: WRITE });
+      const { run } = await turnOf(await made.call({ kind: 'start', name: 'write', answers: { confirmed: false }, inputs: undefined }));
+      const [place] = (await turnOf(await made.call({ kind: 'choose', run, choice: 'h3' }))).actions;
+      if (place?.kind !== 'place') throw new Error(JSON.stringify(place));
+      await made.context.client.cancel(run, 'write');
+      const after = await turnOf(await made.call({ kind: 'next', run, wait: false }));
+      expect(after.events).toContainEqual({ kind: 'stopped', step: 'write', attempt: place.attempt, why: 'cancelled' });
+      expect(after.actions.filter((action) => action.kind === 'place')).toEqual([]);
+      expect(after.running).toEqual([]);
       return made.rows;
     },
   },

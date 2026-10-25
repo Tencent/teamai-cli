@@ -26,7 +26,7 @@ Done when a reply carries `data.turn` with a `run` id, or the person has `ask.re
 
 A turn lists the `actions` that wait for you, the `running` attempts, the `events` since your last call, and `then`.
 
-1. Act on each action by its `kind`: `choose`, `person`, `stop`, `dispatch` or `done`, as their sections say.
+1. Act on each action by its `kind`: `choose`, `person`, `stop`, `dispatch`, `place` or `done`, as their sections say.
 2. Tell the person in one line what the events say: a step started, settled with its outcome, or stopped with its `why`, or a gate was `answered`. For `judging`, `judged` and `judging-off`, follow `references/judging.md`.
 3. Run `then.run` of the newest turn you have:
    - `poll`: in the background when your host can, so you stay free to talk with the person; otherwise in the foreground. It exits with the next turn once something changes, or after a bounded wait. Keep one poll of the run going at a time.
@@ -92,6 +92,12 @@ A dispatch that carries `reissued` was given to an earlier session too, whose ch
 The child finishes by running `report`, whose reply goes to the child alone: a later turn of yours shows the step settled. When a child ended and `running` still lists its attempt as `dispatched`, run that entry's `report` yourself, then go on with `then` of your newest turn.
 
 Done when every `dispatch` in the turn is acked.
+
+## Place
+
+A `place` action comes when your host makes the worktrees children work in (`h3`): it asks your host for the place of one step, before its dispatch. Follow `reference`: your host makes the worktree, and you run `adopt` with its directory in place of `{dir}`. The action stays in every turn until a place is adopted, and `refused` says why the last one was not.
+
+Done when the turn carries a `dispatch` for its `attempt`.
 
 ## Done
 

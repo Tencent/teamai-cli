@@ -5,7 +5,7 @@ import { stepEnvironment } from '../../env-exec.js';
 import type { LocalConfig } from '../../types.js';
 import { redactJson } from '../../utils/redact.js';
 import { LeaseSetupSchema, type LeaseSetup } from '../requirements.js';
-import { attemptDir, AttemptIdSchema, type AttemptId, type RunId, type RunLock } from '../store.js';
+import { attemptDir, AttemptIdSchema, attemptsDir, type AttemptId, type RunId, type RunLock } from '../store.js';
 import type { WorkflowFailure } from '../types.js';
 import { WorkspaceContractSchema, type WorkspaceContract } from '../workspace.js';
 import { commonDir, headCommit, markReadCopy, markSetup, removeWorktree, reopenConfigConflicts, stepCheckout, worktreePath } from '../worktree.js';
@@ -34,16 +34,34 @@ export function placeOf(lease: { cwd?: string; workspace?: Pick<WorkspaceContrac
 }
 
 /**
- * The attempt among `others` that holds the place `lease` would get under `root`: one whose place is prepared and not
- * finished or given up. Two attempts of one driver never share a place.
+ * The attempt among `others` that holds the place `lease` would get under `root`, or the place the host made at
+ * `adopt`: one whose prepare began there and whose place is not finished or given up, so a prepare killed before its
+ * git was done still holds it. Two attempts of one driver never share a place.
  */
-export async function placeHeldBy(input: { config: LocalConfig; run: RunId; root: string; lease: Pick<PlaceLease, 'workspace'>; others: AttemptId[] }): Promise<AttemptId | undefined> {
-  const place = placeOf(input.lease, path.resolve(input.root));
+export async function placeHeldBy(input: { config: LocalConfig; run: RunId; root: string; lease: Pick<PlaceLease, 'workspace'>; others: AttemptId[]; adopt?: string }): Promise<AttemptId | undefined> {
+  const places = [placeOf(input.lease, path.resolve(input.root)), ...(input.adopt !== undefined ? [path.resolve(input.adopt)] : [])];
   for (const other of input.others) {
     const recorded = await readPlaceRecord(input.config, input.run, other);
-    if (!('kind' in recorded) && (recorded.phase === 'preparing' || recorded.phase === 'staged' || recorded.phase === 'ready') && recorded.dir === place) return other;
+    if ('kind' in recorded || recorded.phase === 'finished' || recorded.phase === 'abandoned') continue;
+    if (places.includes(recorded.dir)) return other;
   }
   return undefined;
+}
+
+/**
+ * The place the host made that the last attempt of `run` to finish on `branch` was prepared in: a later step on that
+ * branch goes on there while it passes the adopt checks, as a later step goes on in a worktree TeamAI made.
+ */
+export async function adoptedPlaceOf(input: { config: LocalConfig; run: RunId; branch: string }): Promise<string | undefined> {
+  const { config, run, branch } = input;
+  let last: { dir: string; at: string } | undefined;
+  for (const name of await fs.readdir(attemptsDir(config, run)).catch(() => [])) {
+    const attempt = AttemptIdSchema.safeParse(name);
+    const recorded = attempt.success ? await readPlaceRecord(config, run, attempt.data) : undefined;
+    if (!recorded || 'kind' in recorded || recorded.phase !== 'finished' || recorded.place.role !== 'writer' || !recorded.place.adopted) continue;
+    if (recorded.place.workspace.branch === branch && (last === undefined || recorded.at > last.at)) last = { dir: recorded.dir, at: recorded.at };
+  }
+  return last?.dir;
 }
 
 /** The lease fields a place reads. */
@@ -179,7 +197,9 @@ async function openCopy(input: {
   let opening: Opening;
   if (reopened) opening = reopened;
   else if (adopt !== undefined) {
-    opening = { ...base, dir: adopt, phase: 'opening', created: true, adopted: true };
+    // A place an earlier attempt set up for the branch is not set up again, as a worktree TeamAI made is not.
+    const reused = await adoptedPlaceOf({ config, run: base.run, branch: workspace.branch }) === adopt;
+    opening = { ...base, dir: adopt, phase: 'opening', ...(reused ? {} : { created: true as const }), adopted: true };
     await writePlaceRecord(config, opening);
   } else {
     const dir = worktreePath(base.root, workspace.branch);
@@ -191,7 +211,7 @@ async function openCopy(input: {
     ? await takeAdopted({ root: base.root, dir: adopt, workspace })
     : await openWorktree({ root: base.root, run: base.run, step: lease.step, workspace, setup: lease.setup !== undefined });
   if ('code' in opened) return opened;
-  return { opening, dir: opened.dir, created: opened.created === true || opening.created === true };
+  return { opening, dir: opened.dir, created: opening.created === true || ('created' in opened && opened.created === true) };
 }
 
 /**

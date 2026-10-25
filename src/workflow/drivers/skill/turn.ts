@@ -6,7 +6,7 @@ import type { Judging } from '../../protocol.js';
 import type { AttemptId, RunId } from '../../store.js';
 import type { OutputSchema, WorkflowFailure } from '../../types.js';
 import { HOST_CHOICES, HOST_PROFILES, HOST_QUESTION, type HostChoice } from './host-profiles.js';
-import { ackLiteral, chooseHostLiteral, personRespondLiteral, reportLiteral, respondLiteral, resumeLiteral, unavailableLiteral, type Literal } from './literals.js';
+import { ackLiteral, adoptLiteral, chooseHostLiteral, personRespondLiteral, reportLiteral, respondLiteral, resumeLiteral, unavailableLiteral, type Literal } from './literals.js';
 import type { AttemptState, Dispatch, Gate, ModelPick, SkillState, StopReason, TurnEvent } from './skill-state.js';
 import { childCap, reportedByAgent } from './transitions.js';
 
@@ -48,6 +48,25 @@ export interface DispatchAction {
   unavailable?: Literal;
   /** Present when an earlier session was shown this dispatch: what to do about the child it may have started. */
   reissued?: string;
+}
+
+/**
+ * A step whose child works in a place the host makes: shown in every foreground turn until `adopt` runs. The host
+ * makes a worktree of this repository named `name`, on `branch` from commit `start`, and `adopt`, with its directory
+ * in the `{dir}` slot, hands it to TeamAI.
+ */
+export interface PlaceAction {
+  kind: 'place';
+  attempt: AttemptId;
+  step: string;
+  name: string;
+  branch: string;
+  start: string;
+  adopt: Literal;
+  /** Why the place adopted last was refused: what to fix in it, or make another. */
+  refused?: string;
+  /** The skill-data reference on host places. */
+  reference: string;
 }
 
 /** A child the agent started whose attempt the engine stopped: shown in every foreground turn until `report` runs. */
@@ -106,6 +125,7 @@ export type Action =
   | { kind: 'choose'; about: 'host'; decide: 'agent'; question: string; options: Array<{ id: HostChoice; label: string; run: Literal }>; reference: string }
   | StopAction
   | DispatchAction
+  | PlaceAction
   | GateAction
   | PersonAction
   | HandoffAction
@@ -166,15 +186,15 @@ export type SkillAnswer =
   /**
    * What a runner answers once it is done with its attempt, and what an agent's report answers: `reported`; `repeated`
    * when the attempt was settled before; `offered` to the agent; `queued` behind the attempt that holds its place;
-   * `gone` when the attempt closed without its report; or `held` when another live runner of the attempt holds its lock
-   * and this call did nothing.
+   * `placing` when it waits for the agent to adopt a place its host made; `gone` when the attempt closed without its
+   * report; or `held` when another live runner of the attempt holds its lock and this call did nothing.
    */
-  | { data: { runner: { attempt: AttemptId; status: 'reported' | 'repeated' | 'offered' | 'queued' | 'gone' | 'held' } } }
+  | { data: { runner: { attempt: AttemptId; status: 'reported' | 'repeated' | 'offered' | 'queued' | 'placing' | 'gone' | 'held' } } }
   | { error: SkillError };
 
-/** The skill-data reference the host question points to. */
-function hostsReference(): string {
-  return path.join(packagedSkillRoots().dataRoot, 'workflow', 'references', 'hosts.md');
+/** The skill-data reference `name` of the workflow guide. */
+function reference(name: 'hosts.md' | 'places.md'): string {
+  return path.join(packagedSkillRoots().dataRoot, 'workflow', 'references', name);
 }
 
 function titleOf(run: RunId, open: AttemptState): string {
@@ -211,24 +231,30 @@ function gateAction(state: SkillState, gate: Gate): GateAction | PersonAction {
 }
 
 /**
- * What waits for the agent: the host question; else every child to stop, then every dispatch not acked yet, then the
- * gate; and the end once the run is done.
+ * What waits for the agent: the host question; else every child to stop, then every dispatch not acked yet, then every
+ * place to adopt, then the gate; and the end once the run is done.
  */
 function actionsOf(state: SkillState): Action[] {
   if (state.host.kind === 'pending') {
     const options = HOST_CHOICES.map((id) => ({ id, label: HOST_PROFILES[id].label, run: chooseHostLiteral(state.invocation, state.run, id) }));
-    return [{ kind: 'choose', about: 'host', decide: 'agent', question: HOST_QUESTION, options, reference: hostsReference() }];
+    return [{ kind: 'choose', about: 'host', decide: 'agent', question: HOST_QUESTION, options, reference: reference('hosts.md') }];
   }
   const stops = state.attempts.flatMap((open): StopAction[] => (open.phase === 'stopping' && open.by === 'agent'
     ? [{ kind: 'stop', attempt: open.attempt, step: open.step, title: titleOf(state.run, open), why: open.why, report: reportLiteral(state.invocation, state.run, open.attempt) }]
     : []));
   const offers = state.attempts.flatMap((open) => (open.phase === 'offered' ? [dispatchOf(state, open)] : []));
+  const places = state.attempts.flatMap((open): PlaceAction[] => (open.phase === 'placing'
+    ? [{
+      kind: 'place', attempt: open.attempt, step: open.step, ...open.ask, adopt: adoptLiteral(state.invocation, state.run, open.attempt),
+      ...(open.refused !== undefined ? { refused: open.refused } : {}), reference: reference('places.md'),
+    }]
+    : []));
   const judge = state.judging?.open;
   const end: Action[] = state.done ? [{
     kind: 'done', outcome: state.done.outcome, ...(state.done.failure ? { failure: state.done.failure } : {}), prs: state.done.prs, ...(judge ? { judging: { step: judge.step, scorers: judge.scorers } } : {}),
   }] : [];
   const gate = state.gate && !state.done ? [gateAction(state, state.gate)] : [];
-  return [...stops, ...offers, ...gate, ...end];
+  return [...stops, ...offers, ...places, ...gate, ...end];
 }
 
 /**

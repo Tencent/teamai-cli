@@ -4,6 +4,7 @@ import { DriverSchema } from '../../../driver-identity.js';
 import type { LocalConfig } from '../../../types.js';
 import { readFileSafe, writeJsonAtomic } from '../../../utils/fs.js';
 import { redactJson } from '../../../utils/redact.js';
+import type { HostPlaceRequest } from '../../protocol.js';
 import { AttemptIdSchema, RunIdSchema, skillStatePath, type RunId, type RunLock } from '../../store.js';
 import { HOST_CHOICES } from './host-profiles.js';
 import { INVOCATIONS } from './literals.js';
@@ -53,15 +54,27 @@ export type Dispatch = z.infer<typeof DispatchSchema>;
 export const STOP_REASONS = ['cancelled', 'timeout'] as const;
 export type StopReason = typeof STOP_REASONS[number];
 
+/** The place the host is asked to make for a step: `name` for it, on `branch`, from commit `start`. */
+const PlaceAskSchema = z.object({ name: z.string(), branch: z.string(), start: z.string() });
+export type PlaceAsk = z.infer<typeof PlaceAskSchema>;
+
+/** Where a runner prepares the place of its attempt when the host makes it. Absent: where TeamAI makes it. */
+const HostRequestSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('host') }),
+  z.object({ kind: z.literal('adopt'), dir: z.string() }),
+]) satisfies z.ZodType<HostPlaceRequest>;
+
 const AttemptBase = { attempt: AttemptIdSchema, step: z.string(), revision: z.number().int(), spawnedAt: z.string(), expiresAt: z.string().optional() };
 /**
  * An open attempt: its runner prepares its place or runs its command; it waits for the place another attempt holds;
- * its dispatch is offered to the agent, or acked; it is being stopped, by its runner or by the agent that started its
- * child; or it has a report to send.
+ * it waits for the agent to adopt a place its host made; its dispatch is offered to the agent, or acked; it is being
+ * stopped, by its runner or by the agent that started its child; or it has a report to send.
  */
 export const AttemptStateSchema = z.discriminatedUnion('phase', [
-  z.object({ ...AttemptBase, phase: z.literal('preparing') }),
-  z.object({ ...AttemptBase, phase: z.literal('queued'), behind: AttemptIdSchema }),
+  z.object({ ...AttemptBase, phase: z.literal('preparing'), request: HostRequestSchema.optional() }),
+  z.object({ ...AttemptBase, phase: z.literal('queued'), behind: AttemptIdSchema, request: HostRequestSchema.optional() }),
+  /** `refused`: why the place the agent adopted last was not prepared. */
+  z.object({ ...AttemptBase, phase: z.literal('placing'), ask: PlaceAskSchema, refused: z.string().optional() }),
   z.object({ ...AttemptBase, phase: z.literal('running') }),
   /** `reissued`: an earlier session was shown this dispatch, and a child it started may still run. */
   z.object({ ...AttemptBase, phase: z.literal('offered'), dispatch: DispatchSchema, reissued: z.literal(true).optional() }),
@@ -133,7 +146,7 @@ export const SkillStateSchema = z.object({
   host: z.discriminatedUnion('kind', [
     z.object({ kind: z.literal('none') }),
     z.object({ kind: z.literal('pending') }),
-    z.object({ kind: z.literal('chosen'), id: z.enum(HOST_CHOICES), children: z.enum(['parallel', 'serial']) }),
+    z.object({ kind: z.literal('chosen'), id: z.enum(HOST_CHOICES), children: z.enum(['parallel', 'serial']), places: z.enum(['teamai', 'host']) }),
   ]),
   gate: GateSchema.optional(),
   /** The session that drives the run, when its host names one, and when it last called. */

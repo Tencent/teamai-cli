@@ -1,18 +1,21 @@
 /** The host question the agent answers once per run with prompt steps, and what the skill driver declares on every `next`. */
 import type { DriverCan } from '../../requirements.js';
 
-export const HOST_CHOICES = ['h1', 'h2'] as const;
+export const HOST_CHOICES = ['h1', 'h2', 'h3'] as const;
 export type HostChoice = typeof HOST_CHOICES[number];
 
 export interface HostProfile {
   label: string;
   /** `parallel`: as many children at once as the run's `--parallel`. `serial`: one. */
   children: 'parallel' | 'serial';
+  /** `teamai`: TeamAI makes the worktree a step works in. `host`: the host makes it, and TeamAI adopts it. */
+  places: 'teamai' | 'host';
 }
 
 export const HOST_PROFILES: Record<HostChoice, HostProfile> = {
-  h1: { label: 'Children that work in a directory TeamAI names, several at once', children: 'parallel' },
-  h2: { label: 'Children that work in a directory TeamAI names, one at a time', children: 'serial' },
+  h1: { label: 'Children that work in a directory TeamAI names, several at once', children: 'parallel', places: 'teamai' },
+  h2: { label: 'Children that work in a directory TeamAI names, one at a time', children: 'serial', places: 'teamai' },
+  h3: { label: 'Children that work in a worktree your host makes for them, several at once', children: 'parallel', places: 'host' },
 };
 
 export const HOST_QUESTION = 'Pick how your host runs a child agent, the most specialized way it has: app orchestration tools, then team agents, then native subagents.';

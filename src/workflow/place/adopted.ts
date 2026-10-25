@@ -88,7 +88,7 @@ async function adoptedMismatch({ root, dir, run, attempt, workspace }: Adoption)
  * Makes `dir`, which `adoptRefusal` accepted, the copy of `workspace.branch`: its hooks point at the checkout's empty
  * hooks directory, and a place detached at the start gets the branch there.
  */
-export async function takeAdopted({ root, dir, workspace }: Omit<Adoption, 'run' | 'attempt'>): Promise<{ dir: string; created: true } | WorkflowFailure> {
+export async function takeAdopted({ root, dir, workspace }: Omit<Adoption, 'run' | 'attempt'>): Promise<{ dir: string } | WorkflowFailure> {
   const hooks = hooksPath(root);
   await fs.mkdir(hooks, { recursive: true });
   await worktreeHooks(dir, hooks);
@@ -98,7 +98,7 @@ export async function takeAdopted({ root, dir, workspace }: Omit<Adoption, 'run'
       return { code: 'workspace_base', message: `git could not make branch ${workspace.branch} in ${dir}: ${switched.stderr.trim()}. Check out ${workspace.branch} in ${dir}, then retry the step.` };
     }
   }
-  return { dir, created: true };
+  return { dir };
 }
 
 async function realpath(dir: string): Promise<string> {

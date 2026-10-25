@@ -14,13 +14,13 @@ import type { WorkflowEnvelope, WorkflowFailure } from '../../types.js';
 import { readChildResult } from './child-brief.js';
 import { HOST_PROFILES, judgeCan, SKILL_CAN, type HostChoice } from './host-profiles.js';
 import {
-  ackLiteral, chooseHostLiteral, describeLiteral, localStartLiteral, nextLiteral, pollLiteral, reportLiteral, respondLiteral, takeoverLiteral, unavailableLiteral, type Invocation,
+  ackLiteral, adoptLiteral, chooseHostLiteral, describeLiteral, localStartLiteral, nextLiteral, pollLiteral, reportLiteral, respondLiteral, takeoverLiteral, unavailableLiteral, type Invocation,
   type Literal,
 } from './literals.js';
 import { readSkillState, writeSkillState, type ReportBody, type SkillState, type TurnEvent } from './skill-state.js';
 import {
-  hasSlot, step, unseenEvents, type Answer, type EngineReply, type MachineInput, type ReadLease, type Refusal, type ReportReply, type RespondReply, type ScoreReply, type Step,
-  type TurnAnswer,
+  adoptRow, hasSlot, step, unseenEvents, type Answer, type EngineReply, type MachineInput, type ReadLease, type Refusal, type ReportReply, type RespondReply, type RowId, type ScoreReply,
+  type Step, type TurnAnswer,
 } from './transitions.js';
 import { turnOf, type SkillAnswer, type SkillError, type Turn, type Waiting } from './turn.js';
 import type { SkillContext } from './skill-driver.js';
@@ -47,7 +47,12 @@ export function ceilingOf(config: LocalConfig): number {
 /** Takes the row `input` matches, and tells the context's trace which one. */
 export function take(context: SkillContext, state: SkillState | undefined, input: MachineInput): Step | undefined {
   const taken = step(state, input);
-  if (taken) context.trace?.(taken.row);
+  return taken && traced(context, taken);
+}
+
+/** Tells the context's trace the row `taken` names, for a row that answers with its own result. */
+export function traced<T extends { row: RowId }>(context: SkillContext, taken: T): T {
+  context.trace?.(taken.row);
   return taken;
 }
 
@@ -62,7 +67,7 @@ const LeaseBase = {
 const LeaseSchema = z.union([
   z.object({ ...LeaseBase, command: z.string(), env: z.record(z.string()).optional(), envScope: EnvScopeShape.optional() }),
   z.object({
-    ...LeaseBase, prompt: z.string(), workspace: z.unknown().optional(),
+    ...LeaseBase, prompt: z.string(), workspace: z.object({ mode: z.string() }).optional(),
     agent: z.string().optional(), model: z.string().optional(), defaultModel: z.string().optional(), output: z.unknown().optional(),
   }),
 ]);
@@ -79,7 +84,8 @@ function readLease(raw: unknown): ReadLease | undefined {
   }
   const { prompt, workspace, agent, model, defaultModel, output, interactive } = read.data;
   return {
-    ...base, executor: 'prompt', prompt, place: workspace === undefined ? 'checkout' : 'workspace', ...(interactive ? { interactive } : {}),
+    ...base, executor: 'prompt', prompt, place: workspace === undefined ? 'checkout' : 'workspace', writes: workspace?.mode === 'new' || workspace?.mode === 'continue',
+    ...(interactive ? { interactive } : {}),
     ...(agent !== undefined ? { agent } : {}), ...(model !== undefined ? { model } : {}), ...(defaultModel !== undefined ? { defaultModel } : {}),
     ...(output !== undefined ? { output } : {}),
   };
@@ -223,7 +229,9 @@ function refusalMessage(refusal: Refusal, invocation: Invocation): string {
     case 'unknown_offer':
       return `Attempt ${refusal.attempt} of run ${refusal.run} has no dispatch to ack. Run the next literal to see the run.`;
     case 'unknown_attempt':
-      return `Attempt ${refusal.attempt} is not open in run ${refusal.run}. Run the next literal to see the run.`;
+      return refusal.phase === undefined
+        ? `Attempt ${refusal.attempt} is not open in run ${refusal.run}. Run the next literal to see the run.`
+        : `Attempt ${refusal.attempt} of run ${refusal.run} is ${refusal.phase} and waits for no place, so nothing was adopted. Run the next literal to see the run.`;
     case 'not_dispatched':
       return `Attempt ${refusal.attempt} of run ${refusal.run} is ${refusal.phase}: teamai runs it and reports it, so there is nothing to report yet. Run the next literal to see the run.`;
     case 'driver_running':
@@ -359,7 +367,7 @@ async function stepTick(context: SkillContext, lock: RunLock, start: SkillState,
     if (replied.answer?.kind === 'engine-error') {
       return { state, spawned, error: errorOf(replied.answer, { invocation: state.invocation, same: nextLiteral(state.invocation, state.run), run: state.run }) };
     }
-    const leased = replied.row === 'D6' || replied.row === 'D7';
+    const leased = reply.kind === 'lease';
     if (!leased || (!hasSlot(state) && (state.gate === undefined || probed))) {
       return { state, spawned, ...(replied.waiting ? { waiting: replied.waiting } : {}), ...(replied.turn ? { turn: replied.turn } : {}) };
     }
@@ -417,12 +425,16 @@ async function finish(context: SkillContext, lock: RunLock, state: SkillState, t
   return { data: { turn: turnOf(shown, { events, after: { kind: 'poll', run: pollLiteral(shown.invocation, shown.run) }, ...(waiting ? { waiting } : {}) }) } };
 }
 
-/** A call that answers with a turn at once: `next`, a takeover, an answer to the host question, an ack, or an answer to a gate. */
+/**
+ * A call that answers with a turn at once: `next`, a takeover, an answer to the host question, an ack, a place the host
+ * made, or an answer to a gate.
+ */
 export type ForegroundCall =
   | { kind: 'next' }
   | { kind: 'takeover' }
   | { kind: 'choose'; choice: HostChoice }
   | { kind: 'ack'; attempt: AttemptId }
+  | { kind: 'adopt'; attempt: AttemptId; dir: string }
   | { kind: 'respond'; step: string; pass: number; choice: string };
 
 function literalOf(invocation: Invocation, run: RunId, call: ForegroundCall): Literal {
@@ -435,6 +447,8 @@ function literalOf(invocation: Invocation, run: RunId, call: ForegroundCall): Li
       return chooseHostLiteral(invocation, run, call.choice);
     case 'ack':
       return ackLiteral(invocation, run, call.attempt);
+    case 'adopt':
+      return adoptLiteral(invocation, run, call.attempt, call.dir);
     case 'respond':
       return respondLiteral(invocation, run, call);
     default: {
@@ -444,8 +458,11 @@ function literalOf(invocation: Invocation, run: RunId, call: ForegroundCall): Li
   }
 }
 
-/** The row `call` takes before the tick, under the lock: the state the tick starts from, or the answer it gives instead. */
-async function applyCall(context: SkillContext, lock: RunLock, state: SkillState, call: ForegroundCall, same: Literal): Promise<{ state: SkillState } | { answer: SkillAnswer }> {
+/**
+ * The row `call` takes before the tick, under the lock: the state the tick starts from, and whether the row spawned a
+ * runner, or the answer it gives instead.
+ */
+async function applyCall(context: SkillContext, lock: RunLock, state: SkillState, call: ForegroundCall, same: Literal): Promise<{ state: SkillState; spawned?: true } | { answer: SkillAnswer }> {
   let taken: Step | undefined;
   switch (call.kind) {
     case 'next':
@@ -457,6 +474,15 @@ async function applyCall(context: SkillContext, lock: RunLock, state: SkillState
     case 'ack':
       taken = take(context, state, { kind: 'ack', attempt: call.attempt });
       break;
+    case 'adopt': {
+      const adopted = traced(context, adoptRow(state, { attempt: call.attempt, dir: call.dir, at: context.now().toISOString() }));
+      if ('answer' in adopted) {
+        await writeSkillState(context.config, lock, state, context.env.secrets);
+        return { answer: { error: errorOf(adopted.answer, { invocation: state.invocation, same, run: state.run }) } };
+      }
+      await spawnRunner(context, adopted.state, adopted.spawn, undefined);
+      return { state: adopted.state, spawned: true };
+    }
     case 'respond': {
       const answer = await context.client.respond(state.run, call.step, call.choice, { pass: call.pass, via: { kind: 'skill', driver: state.driver } });
       taken = take(context, state, { kind: 'responded', reply: respondReply(answer) });
@@ -491,7 +517,7 @@ export async function foreground(context: SkillContext, run: RunId, call: Foregr
       await writeSkillState(context.config, lock, state, context.env.secrets);
       return { answer: { error: ticked.error } };
     }
-    if (!ticked.spawned || !take(context, state, { kind: 'spawned' })) return { answer: await finish(context, lock, state, ticked) };
+    if (!(ticked.spawned || applied.spawned) || !take(context, state, { kind: 'spawned' })) return { answer: await finish(context, lock, state, ticked) };
     await writeSkillState(context.config, lock, state, context.env.secrets);
     return { grace: true };
   }, TICK_LOCK_WAIT_MS);
