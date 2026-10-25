@@ -98,10 +98,12 @@ export interface SkillContext {
 export async function skillContext(input: Pick<SkillContext, 'config' | 'toolPaths' | 'env' | 'cwd' | 'trace'>): Promise<SkillContext> {
   const { config, env } = input;
   const session = await agentSessionFromEnv();
+  const evidence = agentEvidence(process.env);
   return {
     ...input,
     session: session.id,
-    evidence: agentEvidence(process.env),
+    // Only a coding agent drives --driver skill, so a host that sets no session variable is still an agent's.
+    evidence: evidence.kind === 'none' ? { kind: 'skill-driver' } : evidence,
     tool: session.agent !== undefined && isAgentToolId(session.agent) ? session.agent : undefined,
     invocation: invocationOf(resolveCliEntry() ?? undefined),
     client: inProcessClient({ config, env }),

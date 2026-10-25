@@ -90,10 +90,25 @@ export interface StartCaller {
   confirmed: boolean;
 }
 
+/** What shows an agent runs the calling process, as the clause the `invoke` refusals end their first sentence with. */
+function agentClause(evidence: Exclude<AgentEvidence, { kind: 'none' }>): string {
+  switch (evidence.kind) {
+    case 'session':
+      return `this command runs inside an agent session (${evidence.variable} is set)`;
+    case 'attempt':
+      return `this command runs inside workflow attempt ${evidence.attempt}`;
+    case 'skill-driver':
+      return 'this start uses --driver skill, which only a coding agent drives';
+    default: {
+      const unhandled: never = evidence;
+      return unhandled;
+    }
+  }
+}
+
 /** Why an agent, as `evidence` shows it, may not start workflow `name`, whose definition has `invoke: deny`. */
 export function invokeDeniedMessage(name: string, evidence: Exclude<AgentEvidence, { kind: 'none' }>): string {
-  const where = evidence.kind === 'session' ? `an agent session (${evidence.variable} is set)` : `workflow attempt ${evidence.attempt}`;
-  return `Workflow "${name}" has invoke: deny, so no coding agent starts it, with any driver, and this command runs inside ${where}. The person can start it from their own terminal with teamai workflow start ${name} --driver local. To let agents start it, the team sets invoke: allow, or invoke: ask for a start after the person agrees, in workflows/${name}.yaml.`;
+  return `Workflow "${name}" has invoke: deny, so no coding agent starts it, with any driver, and ${agentClause(evidence)}. The person can start it from their own terminal with teamai workflow start ${name} --driver local. To let agents start it, the team sets invoke: allow, or invoke: ask for a start after the person agrees, in workflows/${name}.yaml.`;
 }
 
 /**
@@ -109,14 +124,15 @@ function startRefusal(definition: WorkflowDefinition | undefined, caller: StartC
       return undefined;
     case 'attempt':
       return nestedWorkflowError({ kind: 'marker', attempt: evidence.attempt });
-    case 'session': {
+    case 'session':
+    case 'skill-driver': {
       if (definition === undefined) return undefined;
       const { name } = definition;
       const invoke = definition.invoke ?? 'deny';
       if (invoke === 'allow' || (invoke === 'ask' && caller.confirmed)) return undefined;
       return invoke === 'deny'
         ? { code: 'invoke_denied', message: invokeDeniedMessage(name, evidence) }
-        : { code: 'confirm_needed', message: `Workflow "${name}" has invoke: ask, so a coding agent starts it only after the person agrees, and this command runs inside an agent session (${evidence.variable} is set). Ask the person whether to start ${name}; once they agree, run the same command with --confirmed.` };
+        : { code: 'confirm_needed', message: `Workflow "${name}" has invoke: ask, so a coding agent starts it only after the person agrees, and ${agentClause(evidence)}. Ask the person whether to start ${name}; once they agree, run the same command with --confirmed.` };
     }
     default: {
       const unhandled: never = evidence;

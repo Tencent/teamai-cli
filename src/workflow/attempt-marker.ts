@@ -18,11 +18,15 @@ export function isAttemptRunner(env: NodeJS.ProcessEnv, run: string, attempt: st
   return env[ATTEMPT_ENV] === `${run}/${attempt}`;
 }
 
-/** Why a process counts as an agent's: it runs inside a workflow attempt, or inside an agent session. */
+/**
+ * Why a process counts as an agent's: it runs inside a workflow attempt, or inside an agent session, or it is a
+ * `--driver skill` call, which only a coding agent makes, whatever variables its host sets.
+ */
 export type AgentEvidence =
   | { kind: 'none' }
   | { kind: 'attempt'; attempt: string }
-  | { kind: 'session'; variable: typeof AGENT_SESSION_ENV[number] };
+  | { kind: 'session'; variable: typeof AGENT_SESSION_ENV[number] }
+  | { kind: 'skill-driver' };
 
 /** The evidence `env` holds that an agent runs its process: the attempt marker, else the first agent session variable set. */
 export function agentEvidence(env: NodeJS.ProcessEnv): AgentEvidence {
