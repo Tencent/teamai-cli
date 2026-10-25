@@ -101,6 +101,25 @@ steps:
     prompt: Change the code.
 `;
 
+// Two copies that each add shared.txt, then a step that merges both and resolves what conflicts.
+const JOIN = `schemaVersion: v1alpha1
+name: join
+description: Write both sides, then join them
+invoke: allow
+steps:
+  - id: left
+    workspace: new
+    prompt: Write the left side.
+  - id: right
+    needs: []
+    workspace: new
+    prompt: Write the right side.
+  - id: join
+    needs: [left, right]
+    workspace: new
+    prompt: Join both sides.
+`;
+
 const GATED = `schemaVersion: v1alpha1
 name: gated
 description: Lint once the person agrees
@@ -130,6 +149,18 @@ steps:
   - id: lint
     needs: [publish]
     command: node -e "console.log('lint sees ' + (process.env.DEPLOY_TOKEN ?? 'no token'))"
+`;
+
+// The input reaches the command only through its env: a value a shell would expand stays plain text.
+const GREET = `schemaVersion: v1alpha1
+name: check
+description: Greet someone
+invoke: allow
+inputs: { who: string }
+steps:
+  - id: greet
+    env: { NAME: "{{ inputs.who }}" }
+    command: node -e "console.log(process.env.NAME)"
 `;
 
 const DIRTY = `schemaVersion: v1alpha1
@@ -480,6 +511,20 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
         for (const event of answer.data.turn.events) if (event.kind === 'settled') tails[event.step] = event.tail;
       }
       expect(tails).toEqual({ publish: 'token length 17', lint: 'lint sees no token' });
+      return made.rows;
+    },
+  },
+  {
+    name: 'a step env value reaches the command as its env, never as command text',
+    rows: ['D6', 'C1'],
+    run: async () => {
+      const commands: Array<{ command: string; name: string | undefined }> = [];
+      const made = await harness({ check: GREET }, { runners: (runners) => ({ ...runners, command: (input) => { commands.push({ command: input.command, name: input.env.NAME }); return runners.command(input); } }) });
+      const who = '$(echo pwned) Ada';
+      const { run } = await turnOf(await made.call({ kind: 'start', name: 'check', answers: { confirmed: false }, inputs: { who } }));
+      const done = await polledToDone(made, run);
+      expect(done.events).toContainEqual(expect.objectContaining({ kind: 'settled', step: 'greet', outcome: 'success', tail: who }));
+      expect(commands).toEqual([{ command: 'node -e "console.log(process.env.NAME)"', name: who }]);
       return made.rows;
     },
   },
@@ -988,6 +1033,30 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       const [build] = dispatches(turn);
       if (!build) throw new Error(JSON.stringify(turn));
       expect(fs.readFileSync(build.brief, 'utf8')).not.toContain('setup-token-value-1304');
+      return made.rows;
+    },
+  },
+  {
+    name: 'a prompt step whose merge conflicts is told so in its brief, which names the files to resolve',
+    rows: ['D7', 'C2'],
+    run: async () => {
+      const made = await harness({ join: JOIN });
+      const turn = await chosen(made, 'join', 2);
+      for (const side of dispatches(turn)) {
+        await made.call({ kind: 'ack', run: turn.run, attempt: side.attempt });
+        fs.writeFileSync(path.join(side.dir, 'shared.txt'), `${side.step}\n`);
+        childWrites(side.brief, { kind: 'output', output: `Wrote the ${side.step} side.` });
+        expect(await made.call({ kind: 'report', run: turn.run, attempt: side.attempt, role: 'agent', modelUnavailable: false })).toEqual({ data: { runner: { attempt: side.attempt, status: 'reported' } } });
+      }
+      let joined = await turnOf(await made.call({ kind: 'next', run: turn.run, wait: false }));
+      for (let poll = 0; poll < 5 && dispatches(joined).length === 0; poll += 1) {
+        joined = await turnOf(await made.call({ kind: 'next', run: turn.run, wait: joined.then?.kind === 'poll' }));
+      }
+      const [join] = dispatches(joined);
+      if (join?.step !== 'join') throw new Error(JSON.stringify(joined));
+      const brief = fs.readFileSync(join.brief, 'utf8');
+      expect(brief).toContain('Join both sides.\n\nMerge conflict with teamai/');
+      expect(brief).toContain('(shared.txt). Resolve the conflict in the workspace.');
       return made.rows;
     },
   },
