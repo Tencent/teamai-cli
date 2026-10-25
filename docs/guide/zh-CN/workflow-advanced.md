@@ -681,7 +681,7 @@ steps:
 
 后续步骤读取 `steps.decide.choice` 和 `steps.decide.note`，也可以通过 `passes[n]` 读取历史。每个新 pass 都重新询问。无动作结局步骤上的 approve 必须得到 `yes` 才会到达结局。
 
-必须由人直接回答的审批使用 `approve: { message: Publish?, required: true }`，永远不自动回答。`respond` 保存时间、渠道、选择和可选备注。使用 `--json` 时渠道为 `driver`。不使用 `--json` 时，stdin 是 TTY 则渠道为 `tty`；否则为 `cli`。渠道为 `cli`，或发送回答的进程运行在 agent 会话中（设置了 `CLAUDE_CODE_SESSION_ID` 这类 agent 会话变量）或工作流 attempt 中（设置了 `TEAMAI_WORKFLOW_ATTEMPT`）时，回答记录为 `agent: true`；否则为 `agent: false`。必需审批以 `agent_in_path` 拒绝 `agent: true` 的回答，错误信息会给出用户应在自己终端里运行的命令。TTY 和这些变量只是证据，不能防止有能力创建 PTY 或取消变量的调用者。从[仪表盘](dashboard.md#工作流运行workflow-runs)回答时渠道为 `dashboard`，`agent: false`，除非 `teamai dashboard` 运行在 agent 会话中。
+必须由人直接回答的审批使用 `approve: { message: Publish?, required: true }`，永远不自动回答。`respond` 保存时间、渠道、选择和可选备注。使用 `--json` 时渠道为 `driver`。不使用 `--json` 时，stdin 是 TTY 则渠道为 `tty`；否则为 `cli`。渠道为 `cli`，或发送回答的进程运行在 agent 会话中（设置了 `CLAUDE_CODE_SESSION_ID` 这类 agent 会话变量）时，回答记录为 `agent: true`；否则为 `agent: false`。在工作流 attempt 中（设置了 `TEAMAI_WORKFLOW_ATTEMPT`），`respond` 不记录任何回答，返回 `nested_workflow`。必需审批以 `agent_in_path` 拒绝 `agent: true` 的回答，错误信息会给出用户应在自己终端里运行的命令。TTY 和这些变量只是证据，不能防止有能力创建 PTY 或取消变量的调用者。从[仪表盘](dashboard.md#工作流运行workflow-runs)回答时渠道为 `dashboard`，`agent: false`，除非 `teamai dashboard` 运行在 agent 会话中。
 
 ```sh
 teamai workflow respond <run> decide build --note "Ready" --pass 1

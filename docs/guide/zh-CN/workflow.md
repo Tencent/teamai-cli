@@ -339,7 +339,9 @@ steps:
 
 0.28.0 之前的 teamai 会丢弃设置了 `invoke` 或 `alias` 的工作流，所以成员和 CI 任务需要 0.28.0 或更高版本。`teamai review --branch` 会对每个新增这两个键之一的工作流给出警告。
 
-设置了 agent 的会话变量（如 `CLAUDE_CODE_SESSION_ID`），或在工作流 attempt 内运行（设置了 `TEAMAI_WORKFLOW_ATTEMPT`）的进程，就算在 agent 会话内运行。在这样的进程中，`workflow start` 启动 `deny` 工作流时返回 `invoke_denied`；启动 `ask` 工作流需要 `--confirmed`，会话在本人同意后加上它。使用 `--driver local` 或不指定驱动时也一样。CI 任务不设置这些变量，所以可以启动任何工作流。
+设置了 agent 的会话变量（如 `CLAUDE_CODE_SESSION_ID`）的进程，就算在 agent 会话内运行。在这样的进程中，`workflow start` 启动 `deny` 工作流时返回 `invoke_denied`。消息会给出本人在自己终端运行的命令，以及让 agent 能启动该工作流的 `invoke` 设置。启动 `ask` 工作流时，没有 `--confirmed` 就返回 `confirm_needed`；会话在本人同意后加上它。两者对所有驱动都成立，不指定驱动时也一样。`CI` 不豁免任何东西：CI 任务能启动任何工作流，是因为它不设置会话变量。
+
+运行的步骤内不能启动或驱动另一次运行。步骤的进程带有 `TEAMAI_WORKFLOW_ATTEMPT`：本地驱动为它运行的命令和提示词步骤的工具设置它，skill 驱动为它的 runner 及其命令设置它，所有驱动都为 setup 设置它。设置了它时，每个会改变运行的 `workflow` 命令（`start`、`next`、`report`、`respond`、`retry`、`cancel`、`resume` 和 `publish`）都返回 `nested_workflow`，只有 skill 驱动的 runner 上报它自己的 attempt 除外。在 `.teamai/workflow-worktrees` 下的工作流 worktree 中，以及在 `teamai/<run>/...` 分支上的检出中，`start` 也返回 `nested_workflow`。其他命令在那里仍然可用，因为步骤的子 agent 从它的位置上报。要让另一个工作流成为运行的一部分，把它作为 `workflow` 步骤加入定义。
 
 ### 工作流 skill
 
@@ -351,17 +353,21 @@ self 模式下，工作流 worktree 中的团队文件是已提交的版本。�
 
 ### 会话做什么
 
-agent 运行 `teamai workflow start --describe <name> --driver skill`。回复说明如何启动运行：直接启动、先问本人一个问题，或交给本地驱动。这个问题涵盖输入、同时运行几个步骤、谁回答可选审批，以及是否评审。含 `interactive` 步骤的工作流交给本地驱动，由本人在自己的终端运行。
+agent 运行 `teamai workflow start --describe <name> --driver skill`。回复说明如何启动运行：直接启动、先问本人一个问题，或交给本地驱动。这个问题涵盖输入、同时运行几个步骤、谁回答可选审批，以及是否评审。
 
 启动后，每次回复都是一个 turn：agent 要做的 action、正在运行的步骤、上次调用以来发生的事，以及下一条要运行的命令。运行状态保存在 CLI 中，agent 在两次调用之间不需要记住任何东西。上下文压缩后或在新会话中，`teamai workflow next <run> --driver skill` 会打印当前 turn。如果另一个会话仍在驱动这次运行，它返回 `orchestrator_active`，由本人决定是否让本会话用 `--takeover` 接管。
 
 - 命令步骤在 TeamAI 于本机启动的后台进程中运行。
 - 提示词步骤交给会话启动的子 agent，附带任务说明和工作目录。子 agent 完成后自行上报。步骤有工作区时，TeamAI 会 commit 并 push 子 agent 的工作。
+- `interactive` 步骤由会话的 agent 自己和本人一起完成，一次一个。
+- 每次运行，agent 会说明一次它的宿主如何启动子 agent。宿主为每个子 agent 创建 worktree 时，TeamAI 检查并接管该 worktree。宿主不启动子 agent 时，agent 自己在检出中完成每个步骤，需要 worktree 的步骤则等本人在自己的终端运行。
 - 会话告诉本人发生了什么，提出问题，并给出结果和 PR。
 
 `teamai skill get workflow` 打印 agent 遵循的指令。`teamai workflow <command> --help` 列出所有选项。
 
-skill 驱动声明 `env: "commands"`（见[要求和限制](workflow-advanced.md#要求和限制)）。命令步骤和 setup 像在本地驱动中一样获得各自的 `requires.env` 键。带 `requires.env` 的提示词步骤会等待，因为 TeamAI 只在自己启动的进程中限定团队 env。该驱动从不声明 `tokens`、`max_turns` 或 `network`，因为没有宿主会把子 agent 的 token 或轮次报告给 TeamAI。处于 `budget` 下的提示词步骤会等待，`max_turns` 和 `requires.network: false` 会列入 `unenforced`。需要这些能力的工作流请用本地驱动运行。worktree 不是 sandbox：`requires.isolation: sandbox` 也会列入 `unenforced`。
+skill 驱动声明 `env: "commands"`（见[要求和限制](workflow-advanced.md#要求和限制)）。命令步骤和 setup 像在本地驱动中一样获得各自的 `requires.env` 键。带 `requires.env` 的提示词步骤会等待，因为 TeamAI 只在自己启动的进程中限定团队 env。该驱动从不声明 `tokens`、`max_turns` 或 `network`，因为没有宿主会把子 agent 的 token 或轮次报告给 TeamAI。处于 `budget` 下的无头提示词步骤会等待，所以运行级的 `budget` 会让该运行的所有无头提示词步骤等待。`max_turns` 和 `requires.network: false` 会列入 `unenforced`。worktree 不是 sandbox：`requires.isolation: sandbox` 也会列入 `unenforced`。
+
+当一个因 env 或 budget 而等待的步骤，在同一次运行中较早步骤打开的工作区里工作时，describe 会把整个运行交给本地驱动，由本人在自己的终端启动。否则会话先运行它能运行的部分。只剩等待的步骤时，它把运行交给本人，由本人在自己的终端用 `teamai workflow resume <run>` 继续。本地驱动用本地配置中 `workflows.tools` 指定的、或 `--tools` 选择的无头工具运行提示词步骤。
 
 ### 只有本人能给的回答
 

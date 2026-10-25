@@ -339,7 +339,9 @@ steps:
 
 teamai before 0.28.0 drops a workflow that sets `invoke` or `alias`, so members and CI jobs need 0.28.0 or later. `teamai review --branch` warns about each workflow that adds either key.
 
-A process runs inside an agent session when an agent's session variable, such as `CLAUDE_CODE_SESSION_ID`, is set, or when it runs inside a workflow attempt (`TEAMAI_WORKFLOW_ATTEMPT`). From there, `workflow start` of a `deny` workflow answers `invoke_denied`, and an `ask` workflow needs `--confirmed`, which the session adds once the person agreed. The same holds with `--driver local` and with no driver. A CI job sets none of these variables, so it starts any workflow.
+A process runs inside an agent session when an agent's session variable, such as `CLAUDE_CODE_SESSION_ID`, is set. From there, `workflow start` of a `deny` workflow answers `invoke_denied`. The message names the command the person runs in their own terminal, and the `invoke` setting that lets agents start the workflow. An `ask` workflow answers `confirm_needed` without `--confirmed`, which the session adds once the person agreed. Both hold with every driver, and with no driver. `CI` exempts nothing: a CI job starts any workflow because it sets no session variable.
+
+No run starts or is driven from inside a step of another run. The process of a step carries `TEAMAI_WORKFLOW_ATTEMPT`: the local driver sets it for the commands it runs and the tools of its prompt steps, the skill driver for its runners and their commands, and every driver for setup. With it set, every `workflow` command that changes a run (`start`, `next`, `report`, `respond`, `retry`, `cancel`, `resume`, and `publish`) answers `nested_workflow`, except a skill driver runner's report of its own attempt. `start` also answers `nested_workflow` in a workflow worktree under `.teamai/workflow-worktrees`, and in a checkout on a `teamai/<run>/...` branch. The other commands still work there, since a step's child reports from its place. To run another workflow as part of a run, add it to the definition as a `workflow` step.
 
 ### Workflow skills
 
@@ -351,17 +353,21 @@ In self mode, a workflow worktree holds the team files as committed. Commit a wo
 
 ### What the session does
 
-The agent runs `teamai workflow start --describe <name> --driver skill`. The reply says how to start the run: directly, after one question to the person, or with the local driver. The question covers the inputs, how many steps run at once, who answers optional approvals, and whether to judge. A workflow with an `interactive` step goes to the local driver, which the person runs in their own terminal.
+The agent runs `teamai workflow start --describe <name> --driver skill`. The reply says how to start the run: directly, after one question to the person, or with the local driver. The question covers the inputs, how many steps run at once, who answers optional approvals, and whether to judge.
 
 After the start, every reply is a turn: the actions for the agent, the steps that run, what happened since the last call, and the command to run next. The run's state stays in the CLI, so the agent keeps nothing between calls. After a compaction, or in a new session, `teamai workflow next <run> --driver skill` prints the current turn. When another session still drives the run, it answers `orchestrator_active`, and the person decides whether this session takes over with `--takeover`.
 
 - A command step runs in a background process that TeamAI starts on this machine.
 - A prompt step goes to a child agent that the session starts, with a brief and the directory to work in. The child reports when it is done. When the step has a workspace, TeamAI commits and pushes the child's work.
+- An `interactive` step is worked by the session's agent itself, with the person, one at a time.
+- Once per run, the agent says how its host starts children. When the host makes a worktree for each child, TeamAI checks that worktree and adopts it. When the host starts no child, the agent works each step in the checkout itself, and a step that needs a worktree waits for the person's terminal.
 - The session tells the person what happened, asks the questions, and gives the outcome and the pull requests.
 
 `teamai skill get workflow` prints the instructions the agent follows. `teamai workflow <command> --help` lists every option.
 
-The skill driver declares `env: "commands"` (see [Requirements and limits](workflow-advanced.md#requirements-and-limits)). A command step and setup get their `requires.env` keys as with the local driver. A prompt step with `requires.env` waits, because TeamAI scopes team env only in the processes it starts. The driver never declares `tokens`, `max_turns`, or `network`, since no host reports a child's tokens or turns to TeamAI. A prompt step under a `budget` waits, and `max_turns` and `requires.network: false` are listed in `unenforced`. Run a workflow that needs these with the local driver. A worktree is not a sandbox: `requires.isolation: sandbox` is listed in `unenforced` too.
+The skill driver declares `env: "commands"` (see [Requirements and limits](workflow-advanced.md#requirements-and-limits)). A command step and setup get their `requires.env` keys as with the local driver. A prompt step with `requires.env` waits, because TeamAI scopes team env only in the processes it starts. The driver never declares `tokens`, `max_turns`, or `network`, since no host reports a child's tokens or turns to TeamAI. A headless prompt step under a `budget` waits, so a run-level `budget` holds every headless prompt step of the run. `max_turns` and `requires.network: false` are listed in `unenforced`. A worktree is not a sandbox: `requires.isolation: sandbox` is listed in `unenforced` too.
+
+When a step that waits for env or a budget works in a workspace that an earlier step of the run opens, describe sends the whole run to the local driver, for the person to start in their own terminal. Otherwise the session runs what it can. Once only waiting steps are left, it hands the run to the person, who continues it with `teamai workflow resume <run>` in their own terminal. The local driver runs its prompt steps with the headless tool that `workflows.tools` in local config names, or that `--tools` picks.
 
 ### Answers only the person gives
 
