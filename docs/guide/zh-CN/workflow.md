@@ -329,7 +329,7 @@ steps:
     prompt: "Implement {{ inputs.task }}."
 ```
 
-SessionStart 注入有长度上限的名称、描述列表，引导 agent 读取 `teamai skill get workflow`，不携带图、提示词或命令体。Cursor 合并上下文超限时，发现提示先让出空间，保留原有用户规则。只部署现有 TeamAI 发现入口，工作流指令由已安装 CLI 提供。
+`teamai pull` 为每个 `invoke: allow` 或 `ask` 的工作流写入一个 `workflow-<name>` skill，引导 agent 读取 `teamai skill get workflow`。该 skill 不携带图、提示词或命令体，`teamai push` 也从不发布它。请修改工作流而不是 skill：pull 会原样保留被编辑过的 skill，同名但没有生成标记的 skill 会取代它。工作流指令由已安装 CLI 提供。
 
 ```bash
 teamai workflow start session-fix --describe

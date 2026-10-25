@@ -169,4 +169,14 @@ describe('generated workflow skills', () => {
     expect(fs.existsSync(path.join(elsewhere, 'build', 'SKILL.md'))).toBe(true);
     expect(fs.lstatSync(path.dirname(skill('build'))).isSymbolicLink()).toBe(true);
   });
+
+  it('leaves out an alias that starts another workflow, or none', async () => {
+    const { deploy, skill } = await team({
+      check: workflow('check', 'allow', 'alias: build\n'), build: workflow('build', 'allow'),
+      a: workflow('a', 'ask', 'alias: shared\n'), b: workflow('b', 'ask', 'alias: shared\n'),
+    });
+    await deploy();
+    expect(fs.readFileSync(skill('check'), 'utf8')).toContain('allowed-tools: Bash(teamai workflow start check --driver skill:*), Bash(npx teamai-cli workflow start check --driver skill:*)\n');
+    for (const name of ['check', 'a', 'b']) expect(fs.readFileSync(skill(name), 'utf8')).not.toContain('Alias:');
+  });
 });

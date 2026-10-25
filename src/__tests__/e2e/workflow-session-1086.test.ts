@@ -54,7 +54,9 @@ steps:
       const pulled = call(['pull']); expect(pulled.status, pulled.stderr).toBe(0);
       const hook = call(['hook-dispatch', 'session-start', '--tool', 'claude'], repo, JSON.stringify({ cwd: repo, session_id: 'session-fixture', hook_event_name: 'SessionStart' }));
       expect(hook.status, hook.stderr).toBe(0);
-      expect(hook.stdout).toContain('change (alias ship): Make a reviewed change.'); expect(hook.stdout).not.toContain('Not advertised.');
+      expect(hook.stdout).not.toContain('Make a reviewed change.');
+      expect(fs.readFileSync(path.join(repo, '.claude', 'skills', 'workflow-change', 'SKILL.md'), 'utf8')).toContain('Alias: ship.');
+      expect(fs.existsSync(path.join(repo, '.claude', 'skills', 'workflow-private'))).toBe(false);
       await detached.waitForExit();
       const described = call(['workflow', 'start', 'ship', '--describe']); expect(described.status, described.stderr).toBe(0);
       expect(envelope(described.stdout)).toMatchObject({ data: { name: 'change', inputs: { task: { type: 'string' } } } });

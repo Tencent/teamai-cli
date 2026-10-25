@@ -329,7 +329,7 @@ steps:
     prompt: "Implement {{ inputs.task }}."
 ```
 
-SessionStart adds a bounded name/description list and points the agent at `teamai skill get workflow`. The list carries no graph, prompt or command bodies. Discovery yields before existing user rules when Cursor's combined context would exceed its limit. Only the existing TeamAI discovery stub is deployed; the workflow instructions are served by the installed CLI.
+`teamai pull` writes a `workflow-<name>` skill for each workflow with `invoke: allow` or `ask`, which points the agent at `teamai skill get workflow`. The skill carries no graph, prompt or command bodies, and `teamai push` never publishes it. Edit the workflow, not the skill: pull keeps an edited skill as it is, and a skill of the same name without the generated marker takes its place. The workflow instructions are served by the installed CLI.
 
 ```bash
 teamai workflow start session-fix --describe

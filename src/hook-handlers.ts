@@ -31,7 +31,7 @@ export interface HandlerRegistration {
   /** Fire-and-forget: run detached so it can't delay host hook completion. */
   background?: boolean;
   /** Left out first when the merged reply is over the host's context limit (see hook-dispatch.ts). */
-  yieldsToContextLimit?: true | 'first';
+  yieldsToContextLimit?: true;
   /**
    * Git-provider-only handler. When teamai is configured with an HTTP source
    * (localConfig.repo.kind === 'http'), these are filtered out at the dispatch
@@ -905,16 +905,6 @@ const packageHintHandler: HookHandler = {
  * when the scope delivers neither, and no secret while its secret
  * declarations fail (doctor and pull say so).
  */
-const workflowHintHandler: HookHandler = {
-  name: 'workflow-hint',
-  async execute(_stdin, _tool, config) {
-    if (!config) return null;
-    const { workflowHint } = await import('./workflow/discovery.js');
-    const additionalContext = await workflowHint(config);
-    return additionalContext ? JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext } }) : null;
-  },
-};
-
 const teamEnvHintHandler: HookHandler = {
   name: 'team-env-hint',
   async execute(_stdin, _tool, config) {
@@ -1167,7 +1157,6 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     { event: 'session-start', matcher: '*', handler: cursorUserRulesHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true, yieldsToContextLimit: true },
     { event: 'session-start', matcher: '*', handler: mrHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true, requiresConfig: true },
     { event: 'session-start', matcher: '*', handler: packageHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },
-    { event: 'session-start', matcher: '*', handler: workflowHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true, yieldsToContextLimit: 'first' },
     { event: 'session-start', matcher: '*', handler: teamEnvHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },
     { event: 'session-start', matcher: '*', handler: localAgentHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
     // Asked for by the Pi and OMP extensions and the Hermes plugin, which add the result to the prompt.
