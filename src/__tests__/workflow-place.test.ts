@@ -36,6 +36,22 @@ vi.mock('../workflow/worktree.js', async (importOriginal) => {
     worktreeHooks: killable('worktreeHooks', real.worktreeHooks),
   };
 });
+// Setup's process runs on once the process that started it is killed, as it does when a runner is killed.
+vi.mock('../tool-launch/process-stop.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../tool-launch/process-stop.js')>();
+  return {
+    ...real,
+    recordGroup: (...args: Parameters<typeof real.recordGroup>) => {
+      real.recordGroup(...args);
+      if (killAfter.delete('recordGroup')) throw new Error('killed while setup ran');
+    },
+  };
+});
+/** Waits for `file`, which a setup that outlived its process writes. */
+async function written(file: string): Promise<void> {
+  for (let wait = 0; wait < 100 && !fs.existsSync(file); wait += 1) await new Promise((resolve) => { setTimeout(resolve, 50); });
+  if (!fs.existsSync(file)) throw new Error(`${file} was not written`);
+}
 const dirs: string[] = [];
 afterEach(() => { vi.unstubAllEnvs(); killAfter.clear(); for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }); });
 function git(cwd: string, ...args: string[]) { return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: 'pipe' }).trim(); }
@@ -214,6 +230,36 @@ steps:
     });
   });
 
+  describe('a process killed while setup runs', () => {
+    // Setup caches its key in a file git ignores, and skips the write once the file is there.
+    const CACHE = `schemaVersion: v1alpha1
+name: build
+description: Build in a set-up workspace.
+alias: ship
+setup:
+  requires: { env: [CACHE_TOKEN] }
+  command: test -f .cache || printf %s "$CACHE_TOKEN" > .cache
+steps:
+  - id: build
+    workspace: new
+    prompt: Build it.
+`;
+    const TOKEN = 'cache-token-value-1304';
+    const body = (f: Awaited<ReturnType<typeof fixture>>) => ({ driver: { ...f.driver, can: { hitl: true, setup: true, env: true, workspace: ['read-only', 'new', 'continue'] } } });
+
+    it('makes the place again for the next prepare of the attempt, whose setup is checked from the start', async () => {
+      vi.stubEnv('CACHE_TOKEN', TOKEN);
+      const f = await fixture(CACHE);
+      fs.appendFileSync(path.join(f.work, '.git', 'info', 'exclude'), '.cache\n');
+      killAfter.add('recordGroup');
+      await expect(f.client.next(f.runId, body(f), { prepare: true })).rejects.toThrow('killed while setup ran');
+      const copy = git(f.work, 'worktree', 'list', '--porcelain').split('\n').flatMap((line) => (line.startsWith('worktree ') ? [line.slice('worktree '.length)] : [])).find((dir) => dir !== f.work);
+      await written(path.join(copy ?? '', '.cache'));
+      expect(await f.client.next(f.runId, body(f), { prepare: true }))
+        .toMatchObject({ error: { code: 'setup_secret', message: expect.stringContaining('CACHE_TOKEN in .cache') } });
+    });
+  });
+
   describe('a process killed while it puts the base agent files over the branch', () => {
     /** Runs the first step, which commits its own AGENTS.md, then crashes the prepare of the second while it delivers the team's assets. */
     async function crashedPrepare() {
@@ -337,6 +383,41 @@ steps:
     expect(await f.client.next(f.runId, body(f), { prepare: { attempt: lease.attempt, adopt: dir } })).toMatchObject({ error: { code: 'setup_failed' } });
     expect(fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf8')).toBe('Host instructions.\n');
     expect(git(dir, 'status', '--porcelain')).toBe('');
+  });
+
+  it('refuses a place whose setup was cut short until the host makes it again, and checks the setup of the new one from the start', async () => {
+    vi.stubEnv('CACHE_TOKEN', 'cache-token-value-1304');
+    const f = await fixture(`schemaVersion: v1alpha1
+name: build
+description: Build in a set-up place the host makes.
+alias: ship
+setup:
+  requires: { env: [CACHE_TOKEN] }
+  command: test -f .cache || printf %s "$CACHE_TOKEN" > .cache
+steps:
+  - id: build
+    workspace: new
+    prompt: Build it.
+`);
+    fs.appendFileSync(path.join(f.work, '.git', 'info', 'exclude'), '.cache\n');
+    const withEnv = { driver: { ...f.driver, can: { hitl: true, setup: true, env: true, workspace: ['read-only', 'new', 'continue'] } } };
+    const answer = await f.client.next(f.runId, withEnv);
+    if (!('data' in answer) || !answer.data.lease) throw new Error(JSON.stringify(answer));
+    const lease = LeaseSchema.parse(answer.data.lease);
+    const dir = path.join(path.dirname(f.work), 'hosts', 'cut');
+    git(f.work, 'worktree', 'add', '-q', '--detach', dir, lease.workspace.start.commit);
+    const prepare = () => f.client.next(f.runId, withEnv, { prepare: { attempt: lease.attempt, adopt: dir } });
+
+    killAfter.add('recordGroup');
+    await expect(prepare()).rejects.toThrow('killed while setup ran');
+    await written(path.join(dir, '.cache'));
+    expect(await prepare()).toMatchObject({ error: { code: 'adopt_mismatch', message: expect.stringContaining(`Setup did not finish in ${dir}`) } });
+    const run = await readRun(f.config, f.runId);
+    expect(typeof run === 'object' && run.steps.find((step) => step.id === 'build')?.status).toBe('leased');
+
+    git(f.work, 'worktree', 'remove', '--force', dir);
+    git(f.work, 'worktree', 'add', '-q', dir, lease.workspace.branch);
+    expect(await prepare()).toMatchObject({ error: { code: 'setup_secret', message: expect.stringContaining('CACHE_TOKEN in .cache') } });
   });
 
   it('refuses a second place for an attempt it adopted one for, and a prepare without --adopt answers with the first', async () => {

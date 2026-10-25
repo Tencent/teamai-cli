@@ -74,6 +74,11 @@ const PlaceRecordSchema = z.discriminatedUnion('phase', [
   }),
   /** Git and the overlay are done in a worktree prepare created, and `setup` runs there before the step. */
   z.object({ ...PlaceBase, phase: z.literal('staged'), setup: LeaseSetupSchema, expiresAt: z.string().optional() }),
+  /**
+   * Setup started in the place. Recorded before it starts, so a prepare that finds this phase gives the place up: what
+   * a setup cut short left there would pass the next setup's checks as the place's own files.
+   */
+  z.object({ ...PlaceBase, phase: z.literal('setting-up') }),
   z.object({ ...PlaceBase, phase: z.literal('ready') }),
   z.object({ ...PlaceBase, phase: z.literal('finished'), at: z.string(), finished: PlaceFinishedSchema }),
   /** The step ended without a report to finish it: the copy is as it was found, and nothing was committed. */

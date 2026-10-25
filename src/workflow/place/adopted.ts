@@ -6,7 +6,7 @@ import fs from 'node:fs/promises';
 import { gitCommonDir } from '../../utils/git.js';
 import type { WorkflowFailure } from '../types.js';
 import type { WorkspaceContract } from '../workspace.js';
-import { fetchMissingCommits, git, hooksPath, offBranch, worktreeHooks } from '../worktree.js';
+import { fetchMissingCommits, git, hooksPath, offBranch, setupUnfinished, worktreeHooks } from '../worktree.js';
 import { leaseCommits } from './created.js';
 import type { PlaceRecord } from './record.js';
 
@@ -59,6 +59,9 @@ async function adoptedMismatch({ root, dir, run, attempt, workspace }: Adoption)
   }
   if (await gitCommonDir(dir) !== await gitCommonDir(root)) {
     return `${dir} is not a worktree of the repository of ${root}, so attempt ${attempt} was not prepared there. Adopt a worktree of ${root} on branch ${branch}, as git worktree add makes.`;
+  }
+  if (await setupUnfinished(dir)) {
+    return `Setup did not finish in ${dir} the last time it ran there. What it left would pass the next setup's checks, and may hold a key the step must not read, so attempt ${attempt} was not prepared there. Remove that worktree with git worktree remove --force ${dir}, make the place again on branch ${branch}, then adopt it.`;
   }
   const status = await git(dir, ['status', '--porcelain', '--untracked-files=all']);
   const changed = status.stdout.split('\n').filter((line) => line.trim() !== '');

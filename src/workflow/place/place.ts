@@ -133,7 +133,15 @@ export async function preparePlace(input: { config: LocalConfig; lock: RunLock; 
   if (read.kind === 'unreadable') {
     return { kind: 'failed', failure: { code: 'workspace_base', message: `The place record of attempt ${lease.attempt} cannot be read (${read.reason}). Retry the step with teamai workflow retry ${run} ${lease.step}.` } };
   }
-  const recorded = read.kind === 'found' ? read.record : undefined;
+  let recorded = read.kind === 'found' ? read.record : undefined;
+  if (recorded?.phase === 'setting-up') {
+    // A setup cut short is given up as a failed one is, so this prepare starts over from a place no setup touched.
+    const given = await giveUpSetup(config, recorded);
+    if (given.unrestored) {
+      return { kind: 'failed', failure: { code: 'workspace_base', message: `Setup was cut short in ${recorded.dir}, so the step did not run there. ${given.unrestored}` } };
+    }
+    recorded = given.abandoned;
+  }
   const reopened = recorded?.phase === 'opening' ? recorded : undefined;
   // A prepare killed while it adopted a place goes on in that place.
   const adopt = input.adopt !== undefined ? path.resolve(input.adopt) : reopened?.adopted ? reopened.dir : undefined;
@@ -293,22 +301,40 @@ export async function runPlaceSetup(input: { config: LocalConfig; run: RunId; at
   const { setup, expiresAt } = recorded;
   const scope = setup.envScope ?? { provide: [], withhold: [] };
   const scoped = await stepEnvironment(values, scope);
-  const failure = scoped.ok
-    ? await runSetup({ command: setup.command, dir: recorded.dir, env: { ...scoped.env, ...attemptEnv(run, attempt, mode) }, keys: scope.provide, signal, groupDir: attemptDir(config, run, attempt), ...(expiresAt !== undefined ? { expiresAt } : {}) })
-    : scoped.failure;
-  if (failure) {
-    const { place } = recorded;
-    const { overlay } = placeFiles(config, run, attempt);
-    let unrestored: string | undefined;
-    if (place.role === 'writer' && place.adopted) unrestored = await restoreOverlay({ dir: recorded.dir, configCommit: place.workspace.configCommit, saved: overlay });
-    else await removeWorktree(recorded.root, recorded.dir);
-    await fs.rm(overlay, { recursive: true, force: true });
-    await writePlaceRecord(config, { ...baseOf(recorded), phase: 'abandoned', at: new Date().toISOString() });
-    return unrestored ? { ...failure, message: `${failure.message} ${unrestoredConfig(unrestored, recorded.dir)}` } : failure;
-  }
+  if (!scoped.ok) return setupFailed(config, recorded, scoped.failure);
+  // The mark stays in the place until setup finishes, so a place the host made is not adopted again after a setup that did not.
+  await markSetup(recorded.dir, 'unfinished');
+  const settingUp: SettingUp = { ...baseOf(recorded), phase: 'setting-up' };
+  await writePlaceRecord(config, settingUp);
+  const failure = await runSetup({ command: setup.command, dir: recorded.dir, env: { ...scoped.env, ...attemptEnv(run, attempt, mode) }, keys: scope.provide, signal, groupDir: attemptDir(config, run, attempt), ...(expiresAt !== undefined ? { expiresAt } : {}) });
+  if (failure) return setupFailed(config, settingUp, failure);
   await markSetup(recorded.dir, 'finished');
   const ready = await settle(config, baseOf(recorded));
   return 'code' in ready ? ready : undefined;
+}
+
+type SettingUp = Extract<PlaceRecord, { phase: 'setting-up' }>;
+
+/** `failure`, the failure of the setup of `record`, once its place is given up. */
+async function setupFailed(config: LocalConfig, record: Extract<PlaceRecord, { phase: 'staged' }> | SettingUp, failure: WorkflowFailure): Promise<WorkflowFailure> {
+  const { unrestored } = await giveUpSetup(config, record);
+  return unrestored ? { ...failure, message: `${failure.message} ${unrestored}` } : failure;
+}
+
+/**
+ * Gives up the place of a setup that failed or was cut short: the worktree prepare created is removed, and a place
+ * the host made gets the branch agent files back. `unrestored` is the sentence a failure adds when they are not back.
+ */
+async function giveUpSetup(config: LocalConfig, record: Extract<PlaceRecord, { phase: 'staged' }> | SettingUp): Promise<{ abandoned: PlaceRecord; unrestored?: string }> {
+  const { place, dir } = record;
+  const { overlay } = placeFiles(config, record.run, record.attempt);
+  let unrestored: string | undefined;
+  if (place.role === 'writer' && place.adopted) unrestored = await restoreOverlay({ dir, configCommit: place.workspace.configCommit, saved: overlay });
+  else await removeWorktree(record.root, dir);
+  await fs.rm(overlay, { recursive: true, force: true });
+  const abandoned: PlaceRecord = { ...baseOf(record), phase: 'abandoned', at: new Date().toISOString() };
+  await writePlaceRecord(config, abandoned);
+  return { abandoned, ...(unrestored ? { unrestored: unrestoredConfig(unrestored, dir) } : {}) };
 }
 
 /** How a step ended, as its driver reports it, before its place is finished. */
@@ -348,13 +374,15 @@ export async function finishPlace(input: { config: LocalConfig; lock: RunLock; a
 }
 
 /** Why a place in `phase` has nothing to finish. */
-function unfinishedPlace(phase: 'opening' | 'preparing' | 'staged' | 'abandoned'): string {
+function unfinishedPlace(phase: 'opening' | 'preparing' | 'staged' | 'setting-up' | 'abandoned'): string {
   switch (phase) {
     case 'opening':
     case 'preparing':
       return 'its prepare was cut short before the step got it';
     case 'staged':
       return 'its setup never ran';
+    case 'setting-up':
+      return 'its setup never finished';
     case 'abandoned':
       return 'it was given up when the step stopped';
     default: {

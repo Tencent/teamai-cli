@@ -20,6 +20,7 @@ When your host makes a worktree only as it starts a child there, start that chil
 - clean: no uncommitted or untracked changes;
 - on `branch`, or detached at `start` while `branch` does not exist yet;
 - holding `start` in its history;
+- left by no setup that failed or was cut short there: remove that worktree and make it again;
 - free: no other open step of the run works there.
 
 A step that was stopped leaves its edits in its place for your host to keep or drop. Commit, stash or remove them before you adopt that place again.
