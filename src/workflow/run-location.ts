@@ -44,8 +44,8 @@ export async function findRunConfig(runId: string, current?: LocalConfig): Promi
       matches.push({ config: anchored ?? config, run });
     }
   }
-  if (matches.length > 1) return { error: { code: 'ambiguous_run', message: `Run ${runId} exists in more than one local scope; resolve the duplicate before continuing` } };
-  if (!matches.length) return { error: { code: 'run_not_found', message: `Run ${runId} was not found in the configured local scopes` } };
-  const match = matches[0]!;
+  const [match, ...others] = matches;
+  if (others.length > 0) return { error: { code: 'ambiguous_run', message: `Run ${runId} exists in more than one local scope; resolve the duplicate before continuing` } };
+  if (!match) return { error: { code: 'run_not_found', message: `Run ${runId} was not found in the configured local scopes` } };
   return match.run === 'corrupt' ? { error: { code: 'run_unreadable', message: `Run ${runId} could not be read` } } : { config: match.config, run: match.run };
 }
