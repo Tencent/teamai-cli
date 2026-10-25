@@ -71,6 +71,58 @@ steps:
     scorers: [review-quality]
 `;
 
+/**
+ * A team repository `team` holding WORKFLOW and the scorer, and a member's checkout `app` joined to it in `scope`, under `root`.
+ */
+async function joinedApp(root: string, scope: 'user' | 'project'): Promise<{ team: string; app: string; home: string; env: NodeJS.ProcessEnv }> {
+  const knowledge = path.join(root, 'knowledge');
+  const team = path.join(root, 'team.git');
+  fs.mkdirSync(path.join(knowledge, 'workflows'), { recursive: true });
+  fs.mkdirSync(path.join(knowledge, 'scorers'), { recursive: true });
+  fs.writeFileSync(path.join(knowledge, 'teamai.yaml'), `team: acme\nrepo: ${TEAM_URL}\nprovider: github\n`);
+  fs.writeFileSync(path.join(knowledge, 'workflows', 'review.yaml'), WORKFLOW);
+  fs.writeFileSync(path.join(knowledge, 'scorers', 'review-quality.md'), SCORER);
+  git(root, 'init', '-q', '-b', 'main', knowledge);
+  git(knowledge, 'add', '-A');
+  git(knowledge, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'team');
+  git(root, 'clone', '-q', '--bare', knowledge, team);
+  const app = path.join(root, 'app');
+  fs.mkdirSync(app);
+  git(app, 'init', '-q', '-b', 'main');
+
+  const home = path.join(root, 'home');
+  fs.mkdirSync(home);
+  fs.writeFileSync(path.join(home, '.gitconfig'), `[user]\n\tname = tester\n\temail = tester@example.com\n[url "file://${team}"]\n\tinsteadOf = ${TEAM_URL}\n`);
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, USERPROFILE: home, GIT_CONFIG_GLOBAL: path.join(home, '.gitconfig') };
+  delete env.CLAUDE_CONFIG_DIR;
+  delete env.CODEX_HOME;
+  for (const command of [['init', TEAM_URL, '--provider', 'git', '--agent', 'claude', '--scope', scope, '--force'], ['pull']]) {
+    const result = await runCLI(command, app, env);
+    expect(result.code, `${result.stdout}\n${result.stderr}`).toBe(0);
+  }
+  return { team, app, home, env };
+}
+
+/** Starts WORKFLOW in `app` and drives it to its end as `driver`, from `app`. The run id. */
+async function drivenToDone(input: { app: string; home: string; env: NodeJS.ProcessEnv; driver: { kind: string; machine: string; workspace: string } }): Promise<string> {
+  const { app, home, env, driver } = input;
+  const runId = String(envelope((await runCLI(['workflow', 'start', 'review'], app, env)).stdout).data?.run);
+  let done: unknown;
+  for (let turn = 0; turn < 10 && done === undefined; turn += 1) {
+    const next = envelope((await runCLI(['workflow', 'next', runId, '--json', JSON.stringify({ driver })], app, env)).stdout);
+    expect(next.data, JSON.stringify(next)).toBeDefined();
+    expect(JSON.stringify(next)).not.toContain('judge');
+    done = next.data?.done;
+    const lease = z.object({ attempt: z.string(), revision: z.number(), step: z.string() }).optional().parse(next.data?.lease);
+    if (!lease) continue;
+    const used = lease.step === 'review' ? { used: { skills: ['review-notes', path.join(home, '.claude', 'skills', 'deploy-notes', 'SKILL.md')] } } : {};
+    const reported = envelope((await runCLI(['workflow', 'report', runId, '--json', JSON.stringify({ attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver, outputs: { reviewed: true }, ...used })], app, env)).stdout);
+    expect(reported.data, JSON.stringify(reported)).toMatchObject({ accepted: true });
+  }
+  expect(done).toMatchObject({ outcome: 'succeeded' });
+  return runId;
+}
+
 describe('teamai score with an external driver', () => {
   let root: string;
 
@@ -83,47 +135,9 @@ describe('teamai score with an external driver', () => {
   });
 
   it('settles the run first, then leases, refuses a bad label, publishes the label without the judge\'s words, and queues the pass again on demand', async () => {
-    const knowledge = path.join(root, 'knowledge');
-    const team = path.join(root, 'team.git');
-    fs.mkdirSync(path.join(knowledge, 'workflows'), { recursive: true });
-    fs.mkdirSync(path.join(knowledge, 'scorers'), { recursive: true });
-    fs.writeFileSync(path.join(knowledge, 'teamai.yaml'), `team: acme\nrepo: ${TEAM_URL}\nprovider: github\n`);
-    fs.writeFileSync(path.join(knowledge, 'workflows', 'review.yaml'), WORKFLOW);
-    fs.writeFileSync(path.join(knowledge, 'scorers', 'review-quality.md'), SCORER);
-    git(root, 'init', '-q', '-b', 'main', knowledge);
-    git(knowledge, 'add', '-A');
-    git(knowledge, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'team');
-    git(root, 'clone', '-q', '--bare', knowledge, team);
-    const app = path.join(root, 'app');
-    fs.mkdirSync(app);
-    git(app, 'init', '-q', '-b', 'main');
-
-    const home = path.join(root, 'home');
-    fs.mkdirSync(home);
-    fs.writeFileSync(path.join(home, '.gitconfig'), `[user]\n\tname = tester\n\temail = tester@example.com\n[url "file://${team}"]\n\tinsteadOf = ${TEAM_URL}\n`);
-    const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, USERPROFILE: home, GIT_CONFIG_GLOBAL: path.join(home, '.gitconfig') };
-    delete env.CLAUDE_CONFIG_DIR;
-    delete env.CODEX_HOME;
-    for (const command of [['init', TEAM_URL, '--provider', 'git', '--agent', 'claude', '--scope', 'user', '--force'], ['pull']]) {
-      const result = await runCLI(command, app, env);
-      expect(result.code, `${result.stdout}\n${result.stderr}`).toBe(0);
-    }
-
-    const runId = String(envelope((await runCLI(['workflow', 'start', 'review'], app, env)).stdout).data?.run);
+    const { team, app, home, env } = await joinedApp(root, 'user');
     const driver = { kind: 'ext', machine: 'e2e', workspace: app };
-    let done: unknown;
-    for (let turn = 0; turn < 10 && done === undefined; turn += 1) {
-      const next = envelope((await runCLI(['workflow', 'next', runId, '--json', JSON.stringify({ driver })], app, env)).stdout);
-      expect(next.data, JSON.stringify(next)).toBeDefined();
-      expect(JSON.stringify(next)).not.toContain('judge');
-      done = next.data?.done;
-      const lease = z.object({ attempt: z.string(), revision: z.number(), step: z.string() }).optional().parse(next.data?.lease);
-      if (!lease) continue;
-      const used = lease.step === 'review' ? { used: { skills: ['review-notes', path.join(home, '.claude', 'skills', 'deploy-notes', 'SKILL.md')] } } : {};
-      const reported = envelope((await runCLI(['workflow', 'report', runId, '--json', JSON.stringify({ attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver, outputs: { reviewed: true }, ...used })], app, env)).stdout);
-      expect(reported.data, JSON.stringify(reported)).toMatchObject({ accepted: true });
-    }
-    expect(done).toMatchObject({ outcome: 'succeeded' });
+    const runId = await drivenToDone({ app, home, env, driver });
 
     const judge = { driver: { ...driver, can: { judge: { isolation: 'verified', tools: ['claude'] } } }, running: [] };
     const next = await runCLI(['score', '--next', '--json', JSON.stringify(judge)], app, env);
@@ -176,5 +190,15 @@ describe('teamai score with an external driver', () => {
     const unknown = await runCLI(['score', '--run', runId, '--step', 'nope', '--scorer', 'review-quality'], app, env);
     expect(unknown.code).toBe(1);
     expect(envelope(unknown.stdout).error).toMatchObject({ code: 'step_not_found', message: expect.stringContaining('plan, review') });
+  });
+
+  it('takes the judge work of the run it names from outside the checkout that run started in', async () => {
+    const scoped = fs.mkdtempSync(path.join(root, 'project-'));
+    const { app, home, env } = await joinedApp(scoped, 'project');
+    const driver = { kind: 'ext', machine: 'e2e', workspace: app };
+    const runId = await drivenToDone({ app, home, env, driver });
+    const judge = { driver: { ...driver, can: { judge: { isolation: 'verified', tools: ['claude'] } } }, running: [], run: runId };
+    const next = await runCLI(['score', '--next', '--json', JSON.stringify(judge)], scoped, env);
+    expect(envelope(next.stdout).data?.lease, next.stdout + next.stderr).toMatchObject({ subject: { runId, step: 'review', pass: 1 } });
   });
 });
