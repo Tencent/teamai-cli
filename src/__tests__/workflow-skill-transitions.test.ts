@@ -1,17 +1,19 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { z } from 'zod';
 import { driverIdentity } from '../driver-identity.js';
 import { resolveWorkflowEnv } from '../env-resolution.js';
 import { publishRun } from '../workflow/handoff.js';
+import { recordGroup } from '../tool-launch/process-stop.js';
 import { reportsBranch } from '../utils/reports-branch.js';
 import { inProcessClient, type WorkflowClient } from '../workflow/protocol.js';
 import type { LocalConfig } from '../types.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { WORKSPACE_MODES } from '../workflow/types.js';
 import { respondProvenance, respondToHitl } from '../workflow/run-controls.js';
-import { AttemptIdSchema, deliveryLockPath, readRun, RunIdSchema, runsDir, skillStatePath, type RunId } from '../workflow/store.js';
+import { attemptDir, AttemptIdSchema, deliveryLockPath, readRun, RunIdSchema, runsDir, skillStatePath, type RunId } from '../workflow/store.js';
 import type { Runners } from '../workflow/drivers/skill/skill-driver.js';
 // The doc comparison reads the table itself; every behaviour below goes through runSkillCall.
 import { TRANSITIONS, type TransitionRow } from '../workflow/drivers/skill/transitions.js';
@@ -1019,20 +1021,30 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     rows: ['R19'],
     run: async () => {
       const made = await harness({ check: CHECK });
-      const stopped = async (): Promise<RunId> => {
+      // What the killed local driver left: its command, still running in a process group of its own, recorded where its attempt keeps it.
+      const stopped = async (): Promise<{ run: RunId; left: Promise<NodeJS.Signals | null> }> => {
         const started = await made.context.client.start('check', { checkout: made.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
         if (!('data' in started)) throw new Error(JSON.stringify(started));
         const run = RunIdSchema.parse(started.data.run);
         const leased = await made.context.client.next(run, { driver: { ...driverIdentity('local', made.work), can: { workspace: [...WORKSPACE_MODES] } } });
-        expect(leased).toMatchObject({ data: { lease: { step: 'lint' } } });
-        return run;
+        const { attempt } = z.object({ data: z.object({ lease: z.object({ step: z.literal('lint'), attempt: AttemptIdSchema }) }) }).parse(leased).data.lease;
+        const dir = attemptDir(made.config, run, attempt);
+        fs.mkdirSync(dir, { recursive: true });
+        const child = spawn('sleep', ['30'], { detached: true, stdio: 'ignore' });
+        onTestFinished(() => { child.kill('SIGKILL'); });
+        const left = new Promise<NodeJS.Signals | null>((resolve) => child.on('exit', (_code, signal) => resolve(signal)));
+        recordGroup(child, dir);
+        return { run, left };
       };
+      const stillRunning = (left: Promise<NodeJS.Signals | null>): Promise<unknown> => Promise.race([left, new Promise((resolve) => { setTimeout(() => resolve('still running'), 2000); })]);
       const resumed = await stopped();
-      await turnOf(await made.call({ kind: 'resume', run: resumed, claim: false, confirmed: false, answers: {} }));
-      expect(await polledToDone(made, resumed)).toMatchObject({ status: 'done', actions: [{ kind: 'done', outcome: 'succeeded' }] });
+      await turnOf(await made.call({ kind: 'resume', run: resumed.run, claim: false, confirmed: false, answers: {} }));
+      expect(await stillRunning(resumed.left)).toBe('SIGTERM');
+      expect(await polledToDone(made, resumed.run)).toMatchObject({ status: 'done', actions: [{ kind: 'done', outcome: 'succeeded' }] });
       const taken = await stopped();
-      await turnOf(await made.call({ kind: 'takeover', run: taken, confirmed: false }));
-      expect(await polledToDone(made, taken)).toMatchObject({ status: 'done', actions: [{ kind: 'done', outcome: 'succeeded' }] });
+      await turnOf(await made.call({ kind: 'takeover', run: taken.run, confirmed: false }));
+      expect(await stillRunning(taken.left)).toBe('SIGTERM');
+      expect(await polledToDone(made, taken.run)).toMatchObject({ status: 'done', actions: [{ kind: 'done', outcome: 'succeeded' }] });
       return made.rows;
     },
   },

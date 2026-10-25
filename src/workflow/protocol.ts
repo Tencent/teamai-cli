@@ -5,6 +5,7 @@ import type { WorkflowEnv } from '../env-resolution.js';
 import { scoringUnavailable } from '../scorers/home.js';
 import { isJudgeTool, judgeToolLevel } from '../scorers/judge.js';
 import { resolveRunMode, type RunMode } from '../launch-context.js';
+import { stopRecordedGroup } from '../tool-launch/process-stop.js';
 import type { LocalConfig } from '../types.js';
 import { nestedWorkflowError, type AgentEvidence } from './attempt-marker.js';
 import { loadCachedWorkflow, loadWorkflowTree } from './cache.js';
@@ -18,7 +19,7 @@ import {
 } from './place/place.js';
 import { cancelRun, respondProvenance, respondToHitl, retryStep, type CallerProvenance, type Via } from './run-controls.js';
 import { nextJudgeLease, parseJudgeRequest, runJudgeLease } from './scoring.js';
-import { AttemptIdSchema, readRun, RunIdSchema, withRunLock, type AttemptId, type RunId, type RunLock } from './store.js';
+import { attemptDir, AttemptIdSchema, readRun, RunIdSchema, withRunLock, type AttemptId, type RunId, type RunLock } from './store.js';
 import type { DriverCan } from './requirements.js';
 import { isWorkflowError, type DriverIdentity, type RunState, type WorkflowDefinition, type WorkflowEnvelope, type WorkflowFailure } from './types.js';
 import { deliveryProblem } from './workspace.js';
@@ -417,6 +418,10 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
       for (const step of run.steps) {
         if (step.status !== 'leased' || step.lease.driver.kind !== 'local' || step.lease.driver.machine !== machine) continue;
         const { attempt, revision, driver } = step.lease;
+        // That driver is gone, but the setup or command it detached may not be: it is stopped before the step is leased
+        // again. An attempt id no lease could carry has no group recorded.
+        const left = AttemptIdSchema.safeParse(attempt);
+        if (left.success) await stopRecordedGroup(attemptDir(config, runId, left.data));
         const released = await managedReport({ config, runId, report: { attempt, revision, outcome: 'released', driver }, secrets: env.secrets, lock });
         if (isWorkflowError(released)) return { kind: 'failed', failure: released.error };
       }
