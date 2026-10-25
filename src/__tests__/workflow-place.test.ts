@@ -351,14 +351,14 @@ steps:
     const dir = path.join(path.dirname(f.work), 'hosts', 'place');
     git(f.work, 'worktree', 'add', '-q', '--detach', dir, write.workspace.start.commit);
     expect(await prepare(write.raw, { kind: 'adopt', dir })).toMatchObject({ kind: 'prepared', dir });
-    expect(await f.client.setup(run, write.attempt)).toBeUndefined();
+    expect(await f.client.setup(run, write.attempt, 'attended')).toBeUndefined();
     fs.writeFileSync(path.join(dir, 'change.txt'), 'written\n');
     expect(await f.client.report(f.runId, { attempt: write.attempt, revision: write.revision, outcome: 'success', driver: f.driver })).toMatchObject({ data: { accepted: true } });
 
     const polish = await lease();
     expect(polish.workspace.branch).toBe(write.workspace.branch);
     expect(await prepare(polish.raw, { kind: 'host' })).toMatchObject({ kind: 'prepared', dir });
-    expect(await f.client.setup(run, polish.attempt)).toBeUndefined();
+    expect(await f.client.setup(run, polish.attempt, 'attended')).toBeUndefined();
     expect(fs.readFileSync(path.resolve(dir, git(dir, 'rev-parse', '--git-path', 'setup-runs')), 'utf8')).toBe('ran\n');
   });
 

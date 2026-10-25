@@ -166,7 +166,41 @@ steps:
     prompt: Change the code.
 `;
 
+// Setup passes only when it gets the run mode the start kept, and the command prints the one it gets.
+const MODE = `schemaVersion: v1alpha1
+name: mode
+description: Show the run mode
+invoke: allow
+setup:
+  command: test "$TEAMAI_MODE" = unattended
+steps:
+  - id: show
+    workspace: new
+    command: node -e "console.log('TEAMAI_MODE=' + process.env.TEAMAI_MODE)"
+`;
+
+const SHOW = `schemaVersion: v1alpha1
+name: show
+description: Show the run mode
+invoke: allow
+steps:
+  - id: show
+    command: node -e "console.log('TEAMAI_MODE=' + process.env.TEAMAI_MODE)"
+`;
+
 type Harness = Awaited<ReturnType<typeof skillHarness>>;
+
+/** Polls `run` until it is done: every event the polls showed. */
+async function eventsToDone(harness: Harness, run: RunId): Promise<unknown[]> {
+  const events: unknown[] = [];
+  for (let poll = 0; poll < 10; poll += 1) {
+    const turn = await harness.call({ kind: 'next', run, wait: true });
+    if (!('data' in turn) || !('turn' in turn.data)) throw new Error(JSON.stringify(turn));
+    events.push(...turn.data.turn.events);
+    if (turn.data.turn.status === 'done') return events;
+  }
+  throw new Error('the run did not reach done in ten polls');
+}
 
 /** Starts `review` with the skill driver, has its child review the change and report, and answers the turn that follows. */
 async function reviewed(harness: Harness): Promise<{ run: RunId; turn: unknown }> {
@@ -253,6 +287,29 @@ describe('skill driver', () => {
 
     // Every command the session ran came whole from a reply: no slot or placeholder was left for it to fill.
     expect(JSON.stringify([described, started, polled, ended])).not.toMatch(/\{inputs\}|\{dir\}|<[a-z]+>/);
+  });
+
+  it('gives setup and the command of an attempt the run mode its start kept, whatever mode a later call has', async () => {
+    const harness = await skillHarness({ mode: MODE });
+    roots.push(harness.root);
+    const started = await harness.call({ kind: 'start', name: 'mode', answers: { confirmed: false, hitl: 'auto-approve' }, inputs: undefined }, { mode: 'unattended' });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+    expect(await eventsToDone(harness, started.data.turn.run)).toContainEqual(expect.objectContaining({ kind: 'settled', step: 'show', outcome: 'success', tail: 'TEAMAI_MODE=unattended' }));
+  });
+
+  it('runs a run whose skill state was written before the run mode existed as attended', async () => {
+    const harness = await skillHarness({ show: SHOW }, { mode: 'unattended' });
+    roots.push(harness.root);
+    harness.hold(true);
+    const started = await harness.call({ kind: 'start', name: 'show', answers: { confirmed: false }, inputs: undefined });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+    const { run } = started.data.turn;
+    const file = skillStatePath(harness.config, run);
+    const state = z.object({ options: z.record(z.unknown()) }).passthrough().parse(JSON.parse(fs.readFileSync(file, 'utf8')));
+    const { mode: _mode, ...options } = state.options;
+    fs.writeFileSync(file, JSON.stringify({ ...state, options }));
+    harness.hold(false);
+    expect(await eventsToDone(harness, run)).toContainEqual(expect.objectContaining({ kind: 'settled', step: 'show', outcome: 'success', tail: 'TEAMAI_MODE=attended' }));
   });
 
   it('answers held to a step command that reports its own attempt, and the runner alone reports it', async () => {
@@ -671,8 +728,8 @@ steps:
     command: node -e "process.exit(0)"
 ` }, {
       // The runner is killed once setup started, and setup runs on in its own process group.
-      client: (client) => ({ ...client, setup: async (run, attempt) => {
-        setup = client.setup(run, attempt);
+      client: (client) => ({ ...client, setup: async (run, attempt, mode) => {
+        setup = client.setup(run, attempt, mode);
         for (let wait = 0; wait < 100 && !fs.existsSync(pidFile); wait += 1) await new Promise((resolve) => { setTimeout(resolve, 50); });
         throw new Crash('killed during setup');
       } }),

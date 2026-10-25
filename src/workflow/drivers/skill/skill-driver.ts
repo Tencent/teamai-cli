@@ -44,11 +44,12 @@ export type SkillCall =
   | { kind: 'report'; run: RunId; attempt: AttemptId; role: 'runner' }
   | { kind: 'report'; run: RunId; attempt: AttemptId; role: 'agent'; modelUnavailable: boolean };
 
-/** Where the runner of an attempt starts. */
+/** Where the runner of an attempt starts, and the run mode it runs in. */
 export interface RunnerJob {
   run: RunId;
   attempt: AttemptId;
   checkout: string;
+  mode: RunMode;
 }
 
 /** A step's command as its runner started it. */
@@ -288,7 +289,7 @@ async function start(call: Extract<SkillCall, { kind: 'describe' | 'start' }>, c
   const run = RunIdSchema.safeParse(started.data.run);
   if (!run.success) return { error: { code: 'run_unreadable', message: 'The new run id was missing', next: null } };
   const state: SkillState = {
-    version: 1, run: run.data, driver: driverIdentity('skill', context.cwd), invocation: context.invocation, options: { parallel: planned.parallel, hitl: planned.hitl }, host: { kind: planned.host },
+    version: 1, run: run.data, driver: driverIdentity('skill', context.cwd), invocation: context.invocation, options: { parallel: planned.parallel, hitl: planned.hitl, mode: context.mode }, host: { kind: planned.host },
     orchestrator: { ...(context.session !== undefined ? { session: context.session } : {}), lastCallAt: context.now().toISOString() },
     attempts: [], ...(planned.judge !== undefined ? { judging: { tool: planned.judge } } : {}), seq: 0, events: [], seen: {}, settled: [],
   };

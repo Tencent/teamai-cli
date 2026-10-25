@@ -1,3 +1,4 @@
+import { RUN_MODE_ENV, type RunMode } from '../launch-context.js';
 import { AGENT_SESSION_ENV } from '../utils/session-id.js';
 import { isRunId } from './store.js';
 import type { WorkflowFailure } from './types.js';
@@ -9,8 +10,9 @@ import { git, worktreeCheckout } from './worktree.js';
  */
 export const ATTEMPT_ENV = 'TEAMAI_WORKFLOW_ATTEMPT';
 
-export function attemptEnv(run: string, attempt: string): Record<typeof ATTEMPT_ENV, string> {
-  return { [ATTEMPT_ENV]: `${run}/${attempt}` };
+/** What every process of an attempt of `run` gets: the attempt marker, and the run's mode. */
+export function attemptEnv(run: string, attempt: string, mode: RunMode): Record<typeof ATTEMPT_ENV | typeof RUN_MODE_ENV, string> {
+  return { [ATTEMPT_ENV]: `${run}/${attempt}`, [RUN_MODE_ENV]: mode };
 }
 
 /** Whether `env` marks its process as the runner of `attempt` of `run`. */

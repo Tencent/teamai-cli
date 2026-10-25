@@ -8,7 +8,7 @@ import { detectProjectConfig } from '../../../config.js';
 import { driverIdentity } from '../../../driver-identity.js';
 import { commandSignalPolicy, exitLike, stepEnvironment, terminalReachesCommand } from '../../../env-exec.js';
 import { knownSecrets, resolveWorkflowEnv, type WorkflowEnv } from '../../../env-resolution.js';
-import { workflowLaunch } from '../../../launch-context.js';
+import { resolveRunMode, workflowLaunch, type RunMode } from '../../../launch-context.js';
 import type { LocalConfig, TeamaiConfig } from '../../../types.js';
 import { readFileSafe, writeFileAtomic, writeJsonAtomic } from '../../../utils/fs.js';
 import { log } from '../../../utils/logger.js';
@@ -313,11 +313,12 @@ function placeLease(lease: Lease): PlaceLease {
  * Gets the lease a place to run under `root`, with the team env `values` resolved for it. `signal` stops setup, which
  * then fails, and the workspace it was preparing is removed.
  */
-async function stageLease(lease: Lease, { config, lock, root, values, signal }: {
+async function stageLease(lease: Lease, { config, lock, root, values, mode, signal }: {
   config: LocalConfig;
   lock: RunLock;
   root: string;
   values: ReadonlyMap<string, string>;
+  mode: RunMode;
   signal?: AbortSignal;
 }): Promise<WorkflowFailure | undefined> {
   if (lease.unreadableWorkspace) {
@@ -332,7 +333,7 @@ async function stageLease(lease: Lease, { config, lock, root, values, signal }: 
   if (prepared.kind !== 'prepared') return prepared.failure;
   lease.cwd = prepared.dir;
   if (prepared.prompt !== undefined) lease.prompt = prepared.prompt;
-  return runPlaceSetup({ config, run: lock.run, attempt: lease.attempt, values, ...(signal ? { signal } : {}) });
+  return runPlaceSetup({ config, run: lock.run, attempt: lease.attempt, mode, values, ...(signal ? { signal } : {}) });
 }
 
 /**
@@ -418,6 +419,7 @@ async function promptReport(
   archive: SessionArchive,
   signal: AbortSignal,
   secrets: Record<string, string>,
+  mode: RunMode,
 ): Promise<ReportBody> {
   const selected = lease.agent && tools[lease.agent] ? tools[lease.agent] : tools.default;
   const giveUp = async (failure: WorkflowFailure, tool?: string): Promise<ReportBody> => {
@@ -483,7 +485,7 @@ async function promptReport(
       prompt: lease.prompt!,
       cwd,
       resultPath: attemptResultPath,
-      env: { ...lease.processEnv ?? process.env, ...attemptEnv(lock.run, lease.attempt) },
+      env: { ...lease.processEnv ?? process.env, ...attemptEnv(lock.run, lease.attempt, mode) },
       ...(launch ? { launch } : {}),
       ...(resume ? { resume: resume.id } : {}),
       ...(agent ? { agent: definitionRun(selected, lease.agent!, agent) } : {}),
@@ -609,6 +611,8 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options
   const unreconciled = await reconcileTakenCopies(config, runId, root);
   if (unreconciled) return { error: unreconciled };
   const canHitl = options.hitl ?? (process.stdin.isTTY === true && process.stderr.isTTY === true);
+  // Resolved once per drive, so a resume where a person attends runs attended whatever mode the run started in.
+  const mode = resolveRunMode(process.env);
   const can = localCan(config, canHitl);
   const driver = driverIdentity('local', cwd);
   const tools = { ...config.workflows?.tools, ...options.tools };
@@ -748,10 +752,10 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options
         if (forwarded) handle(STOP_SIGNALS);
         inFlight.set(lease.attempt, { lease, command: stageThenStart(
           lease,
-          (signal) => stageLease(lease, { config, lock, root, values: turn.values, signal }),
+          (signal) => stageLease(lease, { config, lock, root, values: turn.values, mode, signal }),
           () => {
             if (forwarded) handle(forwarded);
-            return startCommand(command, lease.cwd ?? root, { ...lease.processEnv ?? process.env, ...lease.env, ...attemptEnv(runId, lease.attempt) }, detached);
+            return startCommand(command, lease.cwd ?? root, { ...lease.processEnv ?? process.env, ...lease.env, ...attemptEnv(runId, lease.attempt, mode) }, detached);
           },
         ) });
       }
@@ -773,14 +777,14 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options
           const controller = new AbortController();
           if (maxParallel === 1) handle(STOP_SIGNALS);
           prompt = { lease, controller, exit: (async () => {
-            const failure = await stageLease(lease, { config, lock, root, values: turn.values, signal: controller.signal });
+            const failure = await stageLease(lease, { config, lock, root, values: turn.values, mode, signal: controller.signal });
             if (!startable(lease, controller.signal)) {
               await abandonPlace({ config, lock, attempt: lease.attempt });
               return undefined;
             }
             if (failure) return unstaged(lease, failure);
             interactiveIgnores = ignored;
-            return promptReport(config, lock, driver, lease, tools, adapter, options, archive, controller.signal, seen);
+            return promptReport(config, lock, driver, lease, tools, adapter, options, archive, controller.signal, seen, mode);
           })() };
         }
       }

@@ -12,6 +12,7 @@ import { z } from 'zod';
 import { resolveCliEntry } from '../../../builtin-hooks.js';
 import { stepEnvironment } from '../../../env-exec.js';
 import { recordGroup, stopProcess, stopRecordedGroup } from '../../../tool-launch/process-stop.js';
+import type { RunMode } from '../../../launch-context.js';
 import type { LocalConfig } from '../../../types.js';
 import { writeFileAtomic } from '../../../utils/fs.js';
 import { redact } from '../../../utils/redact.js';
@@ -33,11 +34,11 @@ import type { SkillAnswer } from './turn.js';
 /** Runners as detached teamai processes, alive while they hold their runner lock. */
 export function detachedRunners(config: LocalConfig): Runners {
   return {
-    spawn: async ({ run, attempt, checkout }) => {
+    spawn: async ({ run, attempt, checkout, mode }) => {
       const entry = resolveCliEntry();
       if (!entry) throw new Error('The teamai entry script is unknown, so the runner of a workflow step cannot start. Reinstall teamai.');
       spawn(process.execPath, [entry, ...runnerArgs(run, attempt)], {
-        cwd: checkout, detached: true, stdio: 'ignore', windowsHide: true, env: { ...process.env, ...attemptEnv(run, attempt) },
+        cwd: checkout, detached: true, stdio: 'ignore', windowsHide: true, env: { ...process.env, ...attemptEnv(run, attempt, mode) },
       }).unref();
     },
     alive: (run, attempt) => runnerAlive(config, run, attempt),
@@ -66,13 +67,16 @@ export function detachedRunners(config: LocalConfig): Runners {
 }
 
 type Stage =
-  /** The place is prepared; `prompt` is the step's prompt with what the place adds to it, a merge conflict to resolve. */
-  | { kind: 'prepared'; dir: string; job: Job; prompt?: string }
+  /**
+   * The place is prepared; `prompt` is the step's prompt with what the place adds to it, a merge conflict to resolve.
+   * `mode` is the run's, which its setup gets.
+   */
+  | { kind: 'prepared'; dir: string; job: Job; mode: RunMode; prompt?: string }
   /**
    * `env` is the environment the command runs with: the job's `envScope` applied, else this process's, and its own env.
-   * `expiresAt` is the lease's deadline, when it has one.
+   * `mode` is the run's. `expiresAt` is the lease's deadline, when it has one.
    */
-  | { kind: 'run'; dir: string; command: string; env: NodeJS.ProcessEnv; expiresAt?: string }
+  | { kind: 'run'; dir: string; command: string; env: NodeJS.ProcessEnv; mode: RunMode; expiresAt?: string }
   /** The engine refused the report; it stays stored, and the runner sends it again. */
   | { kind: 'retry' }
   /**
@@ -142,7 +146,7 @@ async function runAttempt(context: SkillContext, run: RunId, attempt: AttemptId)
     const prepared = await locked(context, run, (lock) => prepare(context, lock, attempt));
     if (prepared.kind === 'gone') return { data: { runner: { attempt, status: prepared.status } } };
     if (prepared.kind === 'prepared') {
-      const failure = await context.client.setup(run, attempt);
+      const failure = await context.client.setup(run, attempt, prepared.mode);
       const stage = await locked(context, run, (lock) => (failure ? setupFailed(context, lock, attempt, failure) : begin(context, lock, attempt, prepared)));
       if (stage.kind === 'gone') return { data: { runner: { attempt, status: stage.status } } };
       if (stage.kind === 'run') {
@@ -220,7 +224,7 @@ async function prepare(context: SkillContext, lock: RunLock, attempt: AttemptId)
       if (queued?.state) await writeSkillState(context.config, lock, queued.state, context.env.secrets);
       return { kind: 'gone', status: 'queued' };
     }
-    return { kind: 'prepared', dir: prepared.dir, job, ...(prepared.prompt !== undefined ? { prompt: prepared.prompt } : {}) };
+    return { kind: 'prepared', dir: prepared.dir, job, mode: state.options.mode, ...(prepared.prompt !== undefined ? { prompt: prepared.prompt } : {}) };
   };
   if (open.phase !== 'preparing' || !open.request) return placed(await context.client.prepare(lock, job.raw));
   const hosted = await context.client.prepareHostPlace(lock, job.raw, open.request);
@@ -257,7 +261,7 @@ async function begin(context: SkillContext, lock: RunLock, attempt: AttemptId, p
     // A runner that restarts a command already running starts it again in the place it was prepared in.
     const running = open.phase === 'preparing' ? take(context, state, { kind: 'prepared', attempt })?.state ?? state : state;
     await writeSkillState(context.config, lock, running, context.env.secrets);
-    return { kind: 'run', dir, command: lease.command, env: { ...scoped.env, ...lease.env }, ...(open.expiresAt !== undefined ? { expiresAt: open.expiresAt } : {}) };
+    return { kind: 'run', dir, command: lease.command, env: { ...scoped.env, ...lease.env }, mode: state.options.mode, ...(open.expiresAt !== undefined ? { expiresAt: open.expiresAt } : {}) };
   }
   if (open.phase !== 'preparing') return { kind: 'gone', status: 'gone' };
   const { agent, model, defaultModel, output, place, writes, interactive } = lease;
@@ -308,7 +312,7 @@ async function check(context: SkillContext, lock: RunLock, attempt: AttemptId): 
  * stops it. Keeps its masked output in `output.log`.
  */
 async function runCommand(context: SkillContext, run: RunId, attempt: AttemptId, stage: Extract<Stage, { kind: 'run' }>): Promise<Exited> {
-  const command = context.runners.command({ run, attempt, command: stage.command, cwd: stage.dir, env: { ...stage.env, ...attemptEnv(run, attempt) } });
+  const command = context.runners.command({ run, attempt, command: stage.command, cwd: stage.dir, env: { ...stage.env, ...attemptEnv(run, attempt, stage.mode) } });
   let exited: Awaited<CommandRun['exit']> | undefined;
   while (!exited) {
     const checking = new AbortController();

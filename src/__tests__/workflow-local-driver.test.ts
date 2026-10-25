@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import * as envExec from '../env-exec.js';
 import { loadStateForScope, saveStateForScope } from '../config.js';
 import { checkoutRecordKey, type CheckoutRecord } from '../pull.js';
@@ -114,6 +114,24 @@ describe('local workflow prompt driver', () => {
         outputs: { ok: true },
       }],
     });
+  });
+
+  it.each([
+    [{}, 'attended'],
+    [{ CI: '1' }, 'unattended'],
+  ])('launches the tool with the run mode of the process that drives the run: %o gives %s', async (env, mode) => {
+    for (const [name, value] of Object.entries(env)) vi.stubEnv(name, value);
+    onTestFinished(() => { vi.unstubAllEnvs(); });
+    const { config, workspace, runId } = await fixture();
+    let input: LocalToolRun | undefined;
+    const adapter: LocalToolAdapter = { runInteractive: vi.fn(), run: vi.fn(async (_tool, value) => {
+      input = value;
+      return { started: true as const, exitCode: 0 };
+    }) };
+
+    await runLocalDriver(config, runId, workspace, { adapter, toolPaths });
+
+    expect(input?.env?.TEAMAI_MODE).toBe(mode);
   });
 
   it('fails without a configured tool and does not invoke the adapter', async () => {
@@ -2512,6 +2530,16 @@ ${steps}`);
     const done = await runLocalDriver(config, runId, workspace, { hitl: false });
     expect(done, JSON.stringify(await readRun(config, runId))).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
     expect(fs.readFileSync(log, 'utf8')).toBe('ran\n');
+  });
+
+  it('gives setup and the step\'s command the run mode of the process that drives the run', async () => {
+    vi.stubEnv('CI', '1');
+    const { config, workspace, runId } = await setupFixture('  command: test "$TEAMAI_MODE" = unattended', `  - id: change
+    workspace: new
+    command: test "$TEAMAI_MODE" = unattended
+`);
+    const done = await runLocalDriver(config, runId, workspace, { hitl: false });
+    expect(done, JSON.stringify(await readRun(config, runId))).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
   });
 
   it('runs setup again when a retried step finds the workspace of a copy a step already ran in gone', async () => {

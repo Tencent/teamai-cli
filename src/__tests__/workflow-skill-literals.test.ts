@@ -148,9 +148,9 @@ describe('the runner', () => {
     const args = runnerArgs(RUN, ATTEMPT);
     const { sub, operands, options: { driver, ...options } } = parsed(args);
     expect([sub, driver]).toEqual(['report', 'skill']);
-    expect(parseSkillCall({ kind: 'report', run: operands[0] ?? '', options }, attemptEnv(RUN, ATTEMPT)))
+    expect(parseSkillCall({ kind: 'report', run: operands[0] ?? '', options }, attemptEnv(RUN, ATTEMPT, 'attended')))
       .toEqual({ kind: 'report', run: RUN, attempt: ATTEMPT, role: 'runner' });
-    expect(parseSkillCall({ kind: 'report', run: operands[0] ?? '', options }, attemptEnv(RUN, 'a76543210')))
+    expect(parseSkillCall({ kind: 'report', run: operands[0] ?? '', options }, attemptEnv(RUN, 'a76543210', 'attended')))
       .toEqual({ kind: 'report', run: RUN, attempt: ATTEMPT, role: 'agent', modelUnavailable: false });
   });
 });

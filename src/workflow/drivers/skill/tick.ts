@@ -118,7 +118,7 @@ async function spawnRunner(context: SkillContext, state: SkillState, attempt: At
     await fs.mkdir(attemptDir(context.config, state.run, attempt), { recursive: true });
     await writeJsonAtomic(jobPath(context.config, state.run, attempt), redactJson(job, context.env.secrets));
   }
-  await context.runners.spawn({ run: state.run, attempt, checkout: state.driver.workspace });
+  await context.runners.spawn({ run: state.run, attempt, checkout: state.driver.workspace, mode: state.options.mode });
 }
 
 const FailureSchema = z.object({ code: z.string(), message: z.string() });

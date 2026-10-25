@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { stepEnvironment } from '../../env-exec.js';
+import type { RunMode } from '../../launch-context.js';
 import type { LocalConfig } from '../../types.js';
 import { redactJson } from '../../utils/redact.js';
 import { attemptEnv } from '../attempt-marker.js';
@@ -306,18 +307,18 @@ async function settle(config: LocalConfig, record: PlaceRecordBase): Promise<Pla
 
 /**
  * Runs the setup of a place `preparePlace` left `staged`, with the env `values` resolved for it, then makes it ready.
- * Setup gets its own keys and none of the step's, and the attempt marker. `signal` stops setup, which then fails, and the worktree it was
+ * Setup gets its own keys and none of the step's, the attempt marker and the run's `mode`. `signal` stops setup, which then fails, and the worktree it was
  * preparing is removed, or, when the host made it, gets the branch agent files back. Nothing to do for any other place.
  */
-export async function runPlaceSetup(input: { config: LocalConfig; run: RunId; attempt: AttemptId; values: ReadonlyMap<string, string>; signal?: AbortSignal }): Promise<WorkflowFailure | undefined> {
-  const { config, run, attempt, values, signal } = input;
+export async function runPlaceSetup(input: { config: LocalConfig; run: RunId; attempt: AttemptId; mode: RunMode; values: ReadonlyMap<string, string>; signal?: AbortSignal }): Promise<WorkflowFailure | undefined> {
+  const { config, run, attempt, mode, values, signal } = input;
   const recorded = await readPlaceRecord(config, run, attempt);
   if ('kind' in recorded || recorded.phase !== 'staged') return undefined;
   const { setup, expiresAt } = recorded;
   const scope = setup.envScope ?? { provide: [], withhold: [] };
   const scoped = await stepEnvironment(values, scope);
   const failure = scoped.ok
-    ? await runSetup({ command: setup.command, dir: recorded.dir, env: { ...scoped.env, ...attemptEnv(run, attempt) }, keys: scope.provide, signal, groupDir: attemptDir(config, run, attempt), ...(expiresAt !== undefined ? { expiresAt } : {}) })
+    ? await runSetup({ command: setup.command, dir: recorded.dir, env: { ...scoped.env, ...attemptEnv(run, attempt, mode) }, keys: scope.provide, signal, groupDir: attemptDir(config, run, attempt), ...(expiresAt !== undefined ? { expiresAt } : {}) })
     : scoped.failure;
   if (failure) {
     const { place } = recorded;

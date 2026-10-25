@@ -5,6 +5,7 @@ import { sameDriver } from '../driver-identity.js';
 import type { WorkflowEnv } from '../env-resolution.js';
 import { scoringUnavailable } from '../scorers/home.js';
 import { isJudgeTool, judgeToolLevel } from '../scorers/judge.js';
+import { resolveRunMode, type RunMode } from '../launch-context.js';
 import type { LocalConfig } from '../types.js';
 import { nestedWorkflowError, type AgentEvidence } from './attempt-marker.js';
 import { loadCachedWorkflow, loadWorkflowTree } from './cache.js';
@@ -53,8 +54,11 @@ export interface WorkflowClient {
    * passes the adopt checks, and is `busy` while another open attempt holds it. `adopt` asks for the place at `dir`.
    */
   prepareHostPlace(lock: RunLock, lease: unknown, request: HostPlaceRequest): Promise<HostPlacePrepared>;
-  /** Runs the setup of the place `prepare` made for `attempt`, outside the run lock. Nothing for a place without setup. */
-  setup(run: RunId, attempt: AttemptId): Promise<WorkflowFailure | undefined>;
+  /**
+   * Runs the setup of the place `prepare` made for `attempt`, outside the run lock, in the run's `mode`. Nothing for a
+   * place without setup.
+   */
+  setup(run: RunId, attempt: AttemptId, mode: RunMode): Promise<WorkflowFailure | undefined>;
   /**
    * Starts `name` with `inputs`, from `checkout` when given: the run's workspaces start from its HEAD. A `caller`
    * inside a workflow attempt starts none, `nested_workflow`, and an agent one only a workflow whose `invoke` lets it:
@@ -244,7 +248,7 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
       if (ask) return request.kind === 'adopt' ? { ...ask, refused: placed.failure.message } : ask;
       return { kind: 'failed', failure: placed.failure };
     },
-    setup: (run, attempt) => runPlaceSetup({ config, run, attempt, values: env.values }),
+    setup: (run, attempt, mode) => runPlaceSetup({ config, run, attempt, mode, values: env.values }),
     start: async (name, { inputs, checkout, caller }) => {
       const cached = await loadCachedWorkflow(config, name);
       const refused = startRefusal(cached?.definition, caller);
@@ -352,7 +356,8 @@ async function prepareWithSetup(input: { config: LocalConfig; lock: RunLock; env
   if (checkout === undefined) return { kind: 'failed', failure: noCheckout(lock.run, lease.attempt) };
   const placed = await preparePlace({ config, lock, root: checkout, lease, ...(adopt !== undefined ? { adopt } : {}) });
   if (placed.kind !== 'prepared') return placed;
-  const failure = await runPlaceSetup({ config, run: lock.run, attempt: lease.attempt, values: env.values });
+  // A --json driver's run keeps no mode, so its setup runs in the mode of the process that prepares it.
+  const failure = await runPlaceSetup({ config, run: lock.run, attempt: lease.attempt, mode: resolveRunMode(process.env), values: env.values });
   return failure ? { kind: 'failed', failure } : placed;
 }
 
