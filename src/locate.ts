@@ -398,13 +398,13 @@ async function userViewOf(install: Install, host: Host): Promise<Install> {
   return { toolPaths: install.toolPaths, agents: install.agents, toolRoots, gitExclude: install.gitExclude, scope: 'user' };
 }
 
-async function gatesOf(tool: string, install: Install, host: Host, roots: Roots = rootsOf(tool, install, host)): Promise<Gate[]> {
+async function gatesOf(tool: string, install: Install, host: Host, roots: Roots = rootsOf(tool, install, host), resource?: Resource): Promise<Gate[]> {
   const selected: Gate = { kind: 'selected', met: !isAgentExcluded(install.agents, tool) };
-  const installed = await installedGateOf(tool, install, host, roots);
+  const installed = await installedGateOf(tool, install, host, roots, resource);
   return installed === null ? [selected] : [selected, installed];
 }
 
-async function installedGateOf(tool: string, install: Install, host: Host, roots: Roots): Promise<Gate | null> {
+async function installedGateOf(tool: string, install: Install, host: Host, roots: Roots, resource?: Resource): Promise<Gate | null> {
   const { home, join } = roots;
   const enabled = install.agents.enabledAgents?.includes(tool) === true;
   const probe = async (dir: string, met?: boolean): Promise<Gate> => ({ kind: 'installed', probe: dir, met: met ?? await host.exists(dir) });
@@ -437,8 +437,13 @@ async function installedGateOf(tool: string, install: Install, host: Host, roots
         // WorkBuddy 5.7+ moved its runtime to `.workbuddy-ai/` and stops
         // reading `.workbuddy/` (#1273): the new root present means 5.7+ is
         // the live generation (an upgrade leaves the old root behind as an
-        // unread leftover), so it is the install proof even when both exist.
-        if (tool === WORKBUDDY_TOOL_ID && await host.exists(join(roots.base, WORKBUDDY_NEW_GENERATION_ROOT))) {
+        // unread leftover), so it is the install proof even when both exist —
+        // but only for skills, the one surface with verified 5.7+ delivery
+        // evidence (the 13-skill `/` menu check in #1273). Every other
+        // surface keeps requiring the old root and fails closed on a
+        // 5.7-only member until its real 5.7+ path is confirmed (#1290).
+        if (resource === 'skills' && tool === WORKBUDDY_TOOL_ID
+          && await host.exists(join(roots.base, WORKBUDDY_NEW_GENERATION_ROOT))) {
           return probe(join(roots.base, WORKBUDDY_NEW_GENERATION_ROOT));
         }
         return probe(join(roots.base, home.root));
@@ -584,7 +589,7 @@ async function locateSkills(tool: string, install: Install, host: Host): Promise
     reads: await readsOf(isToolId(tool) ? TOOLS[tool].skills[install.scope] : 'unknown', roots, host),
     readGates: [],
     retired: [],
-    gates: await gatesOf(tool, install, host, roots),
+    gates: await gatesOf(tool, install, host, roots, 'skills'),
   };
 }
 

@@ -6,7 +6,7 @@ import type { ResourceType, ResourceItem, ResourceDiff, DeliveryTarget, TeamaiCo
 export type PlacementRecords = Pick<State, 'placedRules' | 'placedAgents'>;
 import { readFileSafe, writeFile, ensureDir, pathExists } from '../utils/fs.js';
 import { getUserHome } from '../utils/home.js';
-import { installGateOf, isToolId, NEW_GENERATION_INSTALL_ROOTS } from '../tools.js';
+import { installGateOf, isToolId } from '../tools.js';
 import { defaultToolHome, homeRoot } from '../tool-home.js';
 import type { DeliveryLedger } from './delivered-copies.js';
 
@@ -36,11 +36,7 @@ export async function isToolInstalledForConfig(
         return pathExists(defaultToolHome(tool, { home: getUserHome(), path }));
       case 'own-root': {
         const root = homeRoot(tool);
-        if (await ResourceHandler.isToolInstalled(root, baseDir, toolGateRoot(tool, root, localConfig.toolRoots))) return true;
-        for (const nextRoot of NEW_GENERATION_INSTALL_ROOTS[tool] ?? []) {
-          if (await ResourceHandler.isToolInstalled(nextRoot, baseDir, toolGateRoot(tool, nextRoot, localConfig.toolRoots))) return true;
-        }
-        return false;
+        return ResourceHandler.isToolInstalled(root, baseDir, toolGateRoot(tool, root, localConfig.toolRoots));
       }
       case undefined:
         break;

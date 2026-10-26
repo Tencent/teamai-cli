@@ -8,6 +8,7 @@
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { installOf, locate, ownOf, writable } from '../locate.js';
+import { DEFAULT_TOOL_PATHS } from '../types.js';
 import type { Host } from '../tool-home.js';
 
 const HOME = '/home/member';
@@ -81,5 +82,62 @@ describe('locate carries the WorkBuddy 5.7+ generation (#1273)', () => {
     const install = installOf({ toolPaths: DEFAULT_PATHS }, { scope: 'user', repo: {} });
     const where = await locate('workbuddy', 'skills', install, host);
     expect(ownOf(where)?.path).toBe(`${HOME}/.workbuddy/skills`);
+  });
+});
+
+describe('only skills accept the new root as install proof (#1290)', () => {
+  // Only skills have verified 5.7+ delivery evidence (the 13-skill `/` menu
+  // check in #1273). Every other surface keeps requiring `.workbuddy/`, so a
+  // 5.7-only member fails closed instead of writing into the dead layout.
+  const PATHS = {
+    workbuddy: {
+      skills: '.workbuddy/skills',
+      rules: '.codebuddy/rules',
+      mcp: '.workbuddy/mcp.json',
+      mcpProject: '.mcp.json',
+    },
+  };
+
+  it('rules stay fail-closed when only .workbuddy-ai exists', async () => {
+    const host = hostWith([`${ROOT}/.workbuddy-ai`]);
+    const install = installOf({ toolPaths: PATHS }, { scope: 'project', projectRoot: ROOT, repo: {} });
+    const where = await locate('workbuddy', 'rules', install, host);
+    expect(where.gates).toContainEqual({ kind: 'installed', probe: `${ROOT}/.workbuddy`, met: false });
+    expect(writable(where)).toBeNull();
+  });
+
+  it('mcp stays fail-closed when only .workbuddy-ai exists', async () => {
+    const host = hostWith([`${ROOT}/.workbuddy-ai`]);
+    const install = installOf({ toolPaths: PATHS }, { scope: 'project', projectRoot: ROOT, repo: {} });
+    const where = await locate('workbuddy', 'mcp', install, host);
+    expect(where.gates).toContainEqual({ kind: 'installed', probe: `${ROOT}/.workbuddy`, met: false });
+    expect(writable(where)).toBeNull();
+  });
+
+  it('rules keep working from the old root alone (no regression)', async () => {
+    const host = hostWith([`${ROOT}/.workbuddy`]);
+    const install = installOf({ toolPaths: PATHS }, { scope: 'project', projectRoot: ROOT, repo: {} });
+    const where = await locate('workbuddy', 'rules', install, host);
+    expect(where.gates).toContainEqual({ kind: 'installed', probe: `${ROOT}/.workbuddy`, met: true });
+    expect(writable(where)).not.toBeNull();
+  });
+
+  it('user scope, .workbuddy-ai-only home: a team rule and an MCP server find no target, so no .workbuddy/ is created (#1290)', async () => {
+    // The reviewer's exact scenario: every surface configured (rules and an
+    // MCP server, via the default entry that carries them all), the home
+    // holding only the 5.7+ root. Rules and MCP stay fail-closed — pull
+    // finds no writable target for either, so nothing ever creates
+    // `.workbuddy/` — while skills still take the new root on the same
+    // member.
+    const host = hostWith([`${HOME}/.workbuddy-ai`]);
+    const install = installOf({ toolPaths: DEFAULT_TOOL_PATHS }, { scope: 'user', repo: {} });
+    for (const resource of ['rules', 'mcp'] as const) {
+      const where = await locate('workbuddy', resource, install, host);
+      expect(where.gates).toContainEqual({ kind: 'installed', probe: `${HOME}/.workbuddy`, met: false });
+      expect(writable(where)).toBeNull();
+    }
+    const skills = await locate('workbuddy', 'skills', install, host);
+    expect(ownOf(skills)?.path).toBe(`${HOME}/.workbuddy-ai/skills`);
+    expect(writable(skills)).not.toBeNull();
   });
 });

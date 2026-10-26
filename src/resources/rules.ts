@@ -1383,6 +1383,17 @@ async function rulesLocations(
 }
 
 /**
+ * Tools of the team's `toolPaths` whose rules directory this pull can write in
+ * this scope. An empty list means every rules surface is fail-closed — not
+ * installed, excluded, or a WorkBuddy 5.7-only member whose old root is gone
+ * (#1290) — so nothing was written, whatever the desired count said.
+ */
+export async function writableRulesTools(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<readonly string[]> {
+  const locations = await rulesLocations(teamConfig, localConfig);
+  return locations.filter(({ location }) => rulesDirOf(location) !== null && writable(location) !== null).map(({ tool }) => tool);
+}
+
+/**
  * Files whose legacy `TEAMAI_RULES` section this pull strips.
  * The configured claudemd, including when `locate` retired it, and the blocks
  * file when that file is the claudemd. A live rules file that is not the

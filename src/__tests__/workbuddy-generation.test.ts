@@ -41,9 +41,9 @@ describe('WorkBuddy install probe across generations (#1273)', () => {
     expect(await isToolInstalledForConfig('workbuddy', '.workbuddy/skills', projectConfig())).toBe(true);
   });
 
-  it('finds new-generation WorkBuddy 5.7+ by .workbuddy-ai alone', async () => {
+  it('does not treat .workbuddy-ai alone as installed outside the skills surface (#1290)', async () => {
     await fse.ensureDir(path.join(projectRoot, '.workbuddy-ai'));
-    expect(await isToolInstalledForConfig('workbuddy', '.workbuddy/skills', projectConfig())).toBe(true);
+    expect(await isToolInstalledForConfig('workbuddy', '.workbuddy/skills', projectConfig())).toBe(false);
   });
 
   it('takes the old root as proof when both generations left directories behind', async () => {
