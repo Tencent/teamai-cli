@@ -446,12 +446,10 @@ export function builtinHookDefs(tool: string): HookDef[] {
  * cover a narrower slice, and spawn the dispatcher directly — so the shell
  * wrapper the settings tools carry would misreport what is on disk.
  *
- * A tool in neither place is not listed: JoyCode has no hook surface at all,
- * and Kiro's session-start command is embedded per agent by the agent sync
- * (`renderForKiro`), so it exists only for agents that were actually synced
- * rather than coming from the hook pipeline.
+ * A tool in neither place is not listed: JoyCode has no hook surface at all.
  */
 const ADAPTER_BUILTIN_HOOKS: Record<string, { keys: string[]; suffix?: string }> = {
+  kiro: { keys: ['Hook dispatch session-start'] },
   // hermes-hooks.ts registers one on_session_start script whose single line is
   // the dispatch command with errors swallowed (buildReportScript).
   hermes: { keys: ['Hook dispatch session-start'], suffix: ' >/dev/null 2>&1 || true' },

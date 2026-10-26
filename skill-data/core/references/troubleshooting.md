@@ -458,6 +458,10 @@ Pi reads `AGENTS.override.md` before `AGENTS.md` in the same directory. In user 
 
 When a file occupies a tool skills directory, doctor fails the directory check even if delivery skipped that tool. Move the file aside and run `teamai pull`. Uninstall keeps the blocking file and cleans the other managed resources.
 
+## Kiro default-agent synchronization
+
+Kiro CLI V3 uses the generated user hook `~/.kiro/hooks/teamai.json`, independently of custom agents. Missing or edited hooks appear in doctor; reinject after moving aside a same-named personal file. User uninstall removes the managed file, project uninstall keeps it, and personal hook files remain. Upgrade Kiro 2.x to V3 for this lifecycle integration.
+
 ## Placed agent format changes behind the default branch
 
 A `.md`/`.yaml` conversion may retire the agent this machine placed after its merge is proven. If the team changed that original, the push stops and prints a `teamai push --carried <path>@<blob>` command: update the checkout, carry its changes into the conversion, then run it. The option accepts only that version, so a plain retry or a later team change stops again. If the team deleted it, the remaining root copy is not a new agent to publish. Older records without a delivered blob catch a team change only while the checkout is behind it, so compare with the team file before converting.

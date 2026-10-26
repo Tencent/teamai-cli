@@ -208,7 +208,7 @@ export function renderForWorkbuddy(spec: AgentSpec): RenderResult {
   };
 }
 
-/** TeamAI-managed Kiro CLI session-start hook embedded in each agent config. */
+/** Legacy embedded entry, recognized when migrating pre-V3 teamai agents. */
 export const KIRO_SESSION_START_COMMAND = getDispatchCommand('session-start', 'kiro');
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -223,21 +223,21 @@ function isManagedKiroSessionHook(value: unknown): boolean {
 
 /**
  * Render a Kiro custom agent as JSON. JSON is supported by both the 2.x and 3.x
- * agent harnesses, while 2.x requires this format for embedded `agentSpawn`
- * hooks. TeamAI owns only its session-start entry and preserves all other
- * Kiro-private fields and hook entries from `tool_extras.kiro`.
+ * agent harnesses. Lifecycle hooks live in the V3 standalone user file, so
+ * remove the old managed agentSpawn entry to avoid running it twice.
  */
 export function renderForKiro(spec: AgentSpec): RenderResult {
   const extras = { ...spec.tool_extras?.['kiro'] };
-  const existingHooks = isRecord(extras['hooks']) ? { ...extras['hooks'] } : {};
-  const existingAgentSpawn = Array.isArray(existingHooks['agentSpawn'])
-    ? existingHooks['agentSpawn'].filter((entry) => !isManagedKiroSessionHook(entry))
-    : [];
-  existingHooks['agentSpawn'] = [
-    ...existingAgentSpawn,
-    { command: KIRO_SESSION_START_COMMAND },
-  ];
-  extras['hooks'] = existingHooks;
+  if (isRecord(extras['hooks'])) {
+    const hooks = { ...extras['hooks'] };
+    if (Array.isArray(hooks['agentSpawn'])) {
+      const kept = hooks['agentSpawn'].filter((entry) => !isManagedKiroSessionHook(entry));
+      if (kept.length === 0) delete hooks['agentSpawn'];
+      else hooks['agentSpawn'] = kept;
+    }
+    if (Object.keys(hooks).length > 0) extras['hooks'] = hooks;
+    else delete extras['hooks'];
+  }
 
   const json: Record<string, unknown> = {
     name: spec.name,

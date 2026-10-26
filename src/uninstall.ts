@@ -117,6 +117,7 @@ interface RemovalPlan {
   opencodeHookScopes: Array<{ baseDir: string; scope: Scope }>;
   /** teamai-managed OMP extension file (~/.omp/agent/extensions/teamai-hooks.ts), if present. */
   ompHookFile: string | null;
+  kiroHookFile: string | null;
   /** Pi extension files owned by this scope (global for user, legacy project copy for project). */
   piHookFiles: string[];
   /** DeepSeek Harness home mount, generated hook config, or legacy overlay, if present. */
@@ -243,6 +244,7 @@ interface ToolResources {
   openclawHookDirs: Array<{ hooksDir: string; tool: string }>;
   opencodeHookScopes: Array<{ baseDir: string; scope: Scope }>;
   ompHookFile: string | null;
+  kiroHookFile: string | null;
   piHookFiles: string[];
   dshHookFile: string | null;
   claudeMdFiles: string[];
@@ -275,6 +277,7 @@ function hasToolResources(r: ToolResources): boolean {
     r.openclawHookDirs.length > 0 ||
     r.opencodeHookScopes.length > 0 ||
     r.ompHookFile !== null ||
+    r.kiroHookFile !== null ||
     r.piHookFiles.length > 0 ||
     r.dshHookFile !== null ||
     r.claudeMdFiles.length > 0 ||
@@ -479,7 +482,7 @@ async function discoverToolResources(
   globalAdapters = scope === 'user',
 ): Promise<ToolResources> {
   const res: ToolResources = {
-    hookFiles: [], openclawHookDirs: [], opencodeHookScopes: [], ompHookFile: null, piHookFiles: [], dshHookFile: null,
+    hookFiles: [], openclawHookDirs: [], opencodeHookScopes: [], ompHookFile: null, kiroHookFile: null, piHookFiles: [], dshHookFile: null,
     claudeMdFiles: [], retiredInstructionFiles: [], opencodeInstructions: [], keptGlobal: [], skillDirs: [], keptSkillDirs: [], keptFiles: [], ruleFiles: [], keptRuleFiles: [], opencodeOwnedGlobs: [], agentFiles: [],
   };
 
@@ -532,6 +535,12 @@ async function discoverToolResources(
           res.opencodeHookScopes.push(target);
         }
       }
+    }
+  } else if (tool === 'kiro') {
+    const { ownsKiroHooks, kiroHookFile } = await import('./kiro-hooks.js');
+    if (await ownsKiroHooks()) {
+      if (globalAdapters) res.kiroHookFile = kiroHookFile();
+      else res.keptGlobal.push(kiroHookFile());
     }
   } else if (tool === 'omp') {
     // OMP hooks are a single teamai-managed TS extension in the user agent dir
@@ -1203,6 +1212,7 @@ async function buildRemovalPlan(
     openclawHookDirs: [],
     opencodeHookScopes: [],
     ompHookFile: null,
+    kiroHookFile: null,
     piHookFiles: [],
     dshHookFile: null,
     hookManifestPath: hookTargets[0].manifestPath,
@@ -1296,6 +1306,7 @@ async function buildRemovalPlan(
     plan.openclawHookDirs.push(...res.openclawHookDirs);
     plan.opencodeHookScopes.push(...res.opencodeHookScopes);
     if (res.ompHookFile) plan.ompHookFile = res.ompHookFile;
+    if (res.kiroHookFile) plan.kiroHookFile = res.kiroHookFile;
     plan.piHookFiles.push(...res.piHookFiles);
     if (res.dshHookFile) plan.dshHookFile = res.dshHookFile;
     plan.opencodeInstructions.push(...res.opencodeInstructions);
@@ -1461,6 +1472,7 @@ function isPlanEmpty(plan: RemovalPlan): boolean {
     plan.openclawHookDirs.length === 0 &&
     plan.opencodeHookScopes.length === 0 &&
     plan.ompHookFile === null &&
+    plan.kiroHookFile === null &&
     plan.piHookFiles.length === 0 &&
     plan.dshHookFile === null &&
     !plan.hermesCleanup &&
@@ -1530,6 +1542,8 @@ function printSummary(plan: RemovalPlan, agentFilter?: string): void {
     console.log(`     ${plan.ompHookFile}`);
     console.log('');
   }
+  if (plan.kiroHookFile !== null) console.log(`   Kiro Hooks: ${plan.kiroHookFile}`);
+
   if (plan.piHookFiles.length > 0) {
     console.log(`   Pi Hooks (${plan.piHookFiles.length} files):`);
     for (const p of plan.piHookFiles) console.log(`     ${p}`);
@@ -2143,6 +2157,11 @@ async function executeRemoval(
     } catch (e) {
       log.warn(`Failed to remove OMP hook: ${(e as Error).message}`);
     }
+  }
+
+  if (plan.kiroHookFile !== null) {
+    const { removeKiroHooks } = await import('./kiro-hooks.js');
+    await removeKiroHooks();
   }
 
   // (a2c) Remove the generated Pi extension.
