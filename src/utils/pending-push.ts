@@ -250,11 +250,13 @@ export async function toPendingItems(items: ResourceItem[], repoPath: string): P
  * (`supersedes`), the record has to follow it to the new path; edited where
  * the record holds what this machine delivered (`deliveredBlob`), that blob
  * has to follow the edit, or the member's next push reads their own merged
- * edit as a teammate's.
+ * edit as a teammate's; edited where the record holds no blob yet
+ * (`needsDeliveredBlob`), the edit gives it one.
  */
 export function isPlacement(item: ResourceItem): boolean {
   if (item.type === 'agents' && 'supersedes' in item && typeof item.supersedes === 'string') return true;
   if (item.type === 'agents' && 'deliveredBlob' in item && typeof item.deliveredBlob === 'string') return true;
+  if (item.type === 'agents' && 'needsDeliveredBlob' in item && item.needsDeliveredBlob === true) return true;
   if (item.status !== 'new' || !item.namespace) return false;
   // A rule the scanner already found in a subdirectory carries the namespace
   // in its name and matches by full path, so it needs no record.

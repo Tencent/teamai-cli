@@ -83,6 +83,12 @@ export interface AgentResourceItem extends ResourceItem {
    * else `relativePath`), when its merge was proven.
    */
   deliveredBlob?: string;
+  /**
+   * Set when the scan reached the agent through a placement record that holds
+   * no delivered blob yet (one an older CLI wrote), so this push's blob can
+   * become that record's once it lands.
+   */
+  needsDeliveredBlob?: boolean;
 }
 
 /**
@@ -274,6 +280,7 @@ export class AgentsHandler extends ResourceHandler {
             let baseExists = await pathExists(basePath);
             let supersedes: string | undefined;
             let deliveredBlob: string | undefined;
+            let needsDeliveredBlob = false;
             // A canonical source authored at .teamai/agents/ root and placed
             // under agents/<ns>/ has nothing at agents/<stem>.yaml, so without
             // the record it reads as brand new — and the collision check then
@@ -289,6 +296,7 @@ export class AgentsHandler extends ResourceHandler {
                 if (teamRelPath !== placed) supersedes = placed;
                 const delivered = state.placedAgentSources?.[stem];
                 if (delivered?.path === placed) deliveredBlob = delivered.blob;
+                else needsDeliveredBlob = true;
                 basePath = path.join(localConfig.repo.localPath, placed);
                 baseExists = true;
                 // Nothing refreshes this root file after placement — pull
@@ -322,6 +330,7 @@ export class AgentsHandler extends ResourceHandler {
                 : {}),
               ...(supersedes ? { supersedes } : {}),
               ...(deliveredBlob ? { deliveredBlob } : {}),
+              ...(needsDeliveredBlob ? { needsDeliveredBlob } : {}),
             });
             directStems.add(stem);
           }
