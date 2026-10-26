@@ -430,7 +430,7 @@ async function formatFindings(resources: ReviewResource[], readText: (p: string)
           check: 'format',
           path: resource.relativePath,
           message: `${resource.relativePath}/SKILL.md has the name "${name}"; the Agent Skills format allows 1 to 64 lowercase letters, `
-            + 'digits and hyphens, with no leading, trailing or doubled hyphen.',
+            + 'digits and hyphens, with no leading, trailing or doubled hyphen. Rename the skill directory and its name together.',
         });
       }
       const description = data['description'];
@@ -976,6 +976,8 @@ function writesToStdout(downloader: 'curl' | 'wget', args: string): boolean {
       }
       continue;
     }
+    // A `$` expansion stands for a URL, as in `curl "$INSTALL_URL"`.
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(word) || SCHEMELESS_URL.test(word) || word.startsWith('--url=') || word.startsWith('$')) urls++;
     if (downloader === 'wget') {
       const long = /^--output-document(?:=(.*))?$/.exec(word);
       if (long) wgetOutput = valueOf(long[1] ?? '');
@@ -986,12 +988,13 @@ function writesToStdout(downloader: 'curl' | 'wget', args: string): boolean {
     const long = /^--output(?:=(.*))?$/.exec(word);
     if (long) countOutput(valueOf(long[1] ?? ''));
     if (CURL_LONG_OPTION_WITH_VALUE.test(word)) index++;
-    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(word) || SCHEMELESS_URL.test(word) || word.startsWith('--url=')) urls++;
   }
+  // Without a URL it is text that names the command, such as "we avoid curl | sh".
+  if (urls === 0) return false;
   if (downloader === 'wget') return isStdout(wgetOutput);
   // curl pairs output options with URLs in order: `-o -` sends its URL to stdout,
   // and a URL left without an output goes there too unless --remote-name-all saves it.
-  return (stdoutOutputs > 0 || (!remoteNameAll && Math.max(urls, 1) > savedOutputs + stdoutOutputs));
+  return stdoutOutputs > 0 || (!remoteNameAll && urls > savedOutputs + stdoutOutputs);
 }
 
 /**
@@ -1034,12 +1037,16 @@ function closingQuote(line: string, open: number): number {
   return -1;
 }
 
+/** A shell that runs a download through process or command substitution: `bash <(curl …)`, `sh -c "$(curl …)"`. */
+const SUBSTITUTED_INSTALL = /(?<![\w.-])((?:ba|da|k|z)?sh)\s+(?:-\S+\s+)*(<\(|["']?\$\()\s*(curl|wget)(?=\s)/;
+
 /**
- * The first `curl` or `wget` whose output a later stage of the same pipeline
- * runs as a shell script. Commands are split on newlines, `;`, `&&` and `||`
- * and then into stages on `|`, so the scan stays linear in the file size.
+ * The first `curl` or `wget` whose output a shell runs, written as the install
+ * reads (`curl … | sh`): a later stage of the same pipeline, or a shell around a
+ * substitution. Commands are split on newlines, `;`, `&&` and `||` and then into
+ * stages on `|`, so the scan stays linear in the file size.
  */
-function findPipedInstall(text: string): { downloader: string; shell: string } | null {
+function findPipedInstall(text: string): string | null {
   const commands = text
     // A trailing backslash or pipe continues the command on the next line.
     .replace(/\\\r?\n/g, ' ')
@@ -1047,12 +1054,20 @@ function findPipedInstall(text: string): { downloader: string; shell: string } |
     .split('\n')
     .flatMap((line) => blankQuotedSeparators(line).split(/;|&&|\|\|/));
   for (const command of commands) {
+    const substituted = SUBSTITUTED_INSTALL.exec(command);
+    const [, substitutingShell, opener, substitutedDownloader] = substituted ?? [];
+    if (substituted && substitutingShell !== undefined && (substitutedDownloader === 'curl' || substitutedDownloader === 'wget')) {
+      const args = command.slice(substituted.index + substituted[0].length).split(')')[0] ?? '';
+      if (writesToStdout(substitutedDownloader, args)) {
+        return opener === '<(' ? `${substitutingShell} <(${substitutedDownloader} …)` : `${substitutingShell} -c "$(${substitutedDownloader} …)"`;
+      }
+    }
     let downloader: string | undefined;
     for (const stage of command.split('|')) {
       const shellStage = downloader === undefined ? null : SHELL_STAGE.exec(stage);
       const shell = shellStage?.[1];
       if (downloader !== undefined && shellStage && shell !== undefined && shellReadsStdin(stage.slice(shellStage[0].length))) {
-        return { downloader, shell };
+        return `${downloader} … | ${shell}`;
       }
       const download = downloaderOf(stage);
       if (downloader === undefined && download !== undefined && writesToStdout(download.word, stage.slice(download.argsAt))) downloader = download.word;
@@ -1064,13 +1079,15 @@ function findPipedInstall(text: string): { downloader: string; shell: string } |
 function pipedInstallFindings(files: SkillFile[]): Finding[] {
   const findings: Finding[] = [];
   for (const file of files) {
-    const pipedInstall = findPipedInstall(file.content);
+    // A script's comment lines are not run; a Markdown `#` line is a heading.
+    const runnable = /\.(md|markdown)$/i.test(file.relativePath) ? file.content : file.content.replace(/^[ \t]*#.*$/gm, '');
+    const pipedInstall = findPipedInstall(runnable);
     if (!pipedInstall) continue;
     findings.push({
       level: 'warn',
       check: 'safety',
       path: file.relativePath,
-      message: `${file.relativePath} pipes a download into a shell (${pipedInstall.downloader} … | ${pipedInstall.shell}); `
+      message: `${file.relativePath} runs a download in a shell (${pipedInstall}); `
         + 'ship the script in the skill or pin what it runs.',
     });
   }

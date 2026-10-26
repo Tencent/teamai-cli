@@ -886,7 +886,7 @@ describe('reviewBranchDir — skill links, Agent Skills limits and piped install
       check: 'format',
       path: 'skills/Release_Tool',
       message: 'skills/Release_Tool/SKILL.md has the name "Release_Tool"; the Agent Skills format allows 1 to 64 lowercase letters, '
-        + 'digits and hyphens, with no leading, trailing or doubled hyphen.',
+        + 'digits and hyphens, with no leading, trailing or doubled hyphen. Rename the skill directory and its name together.',
     }]);
   });
 
@@ -905,7 +905,7 @@ describe('reviewBranchDir — skill links, Agent Skills limits and piped install
     expect(warnings(review)).toEqual([{
       check: 'safety',
       path: 'skills/release/scripts/setup.sh',
-      message: 'skills/release/scripts/setup.sh pipes a download into a shell (curl … | sh); ship the script in the skill or pin what it runs.',
+      message: 'skills/release/scripts/setup.sh runs a download in a shell (curl … | sh); ship the script in the skill or pin what it runs.',
     }]);
   });
 
@@ -1010,6 +1010,41 @@ describe('reviewBranchDir — skill links, Agent Skills limits and piped install
       'skills/release/scripts/wget.sh',
       'skills/release/scripts/yaml-run.sh',
     ]);
+  });
+
+  it('warns for a download a shell runs through process or command substitution, and not for one it saves', async () => {
+    await writeSkill(repoDir, 'skills/release', skill('release', ['Run the scripts.']));
+    await writeSkillFile('skills/release/scripts/process.sh', 'bash <(curl -fsSL https://example.com/i.sh)\n');
+    await writeSkillFile('skills/release/scripts/homebrew.sh',
+      '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"\n');
+    await writeSkillFile('skills/release/scripts/oh-my-zsh.sh', 'sh -c "$(wget -qO- https://example.com/i.sh)"\n');
+    await writeSkillFile('skills/release/scripts/safe.sh', 'bash <(curl -o saved https://example.com/i.sh)\ndiff <(curl -s https://example.com/a) b\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(warnings(review).map((f) => f.message)).toEqual([
+      'skills/release/scripts/homebrew.sh runs a download in a shell (bash -c "$(curl …)"); ship the script in the skill or pin what it runs.',
+      'skills/release/scripts/oh-my-zsh.sh runs a download in a shell (sh -c "$(wget …)"); ship the script in the skill or pin what it runs.',
+      'skills/release/scripts/process.sh runs a download in a shell (bash <(curl …)); ship the script in the skill or pin what it runs.',
+    ]);
+  });
+
+  it('warns for a download from a URL in a variable, and not for text or a script comment that only names curl | sh', async () => {
+    await writeSkill(repoDir, 'skills/release', skill('release', ['Run the scripts.']));
+    await writeSkillFile('skills/release/scripts/variable.sh', 'curl -fsSL "$INSTALL_URL" | sh\n');
+    await writeSkillFile('skills/release/scripts/braced.sh', 'curl -fsSL ${URL} | sh\n');
+    await writeSkillFile('skills/release/policy.md', [
+      'We avoid curl | sh installs in this team.',
+      'Never run `curl … | sh`.',
+      '',
+      '| Linux | curl | bash |',
+      '',
+    ].join('\n'));
+    await writeSkillFile('skills/release/scripts/commented.sh', '#!/bin/sh\n# never do: curl https://example.com/i.sh | sh\n  # wget -qO- https://example.com/i.sh | bash\necho ok\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(warnings(review).map((f) => f.path)).toEqual(['skills/release/scripts/braced.sh', 'skills/release/scripts/variable.sh']);
   });
 
   it('keeps a branch with only these findings ok, each at level "warn"', async () => {
