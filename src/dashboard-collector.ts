@@ -2402,9 +2402,11 @@ function recordedScope(sessionId: string, cwd: string): Promise<RecordedScope> {
   return known;
 }
 
-/** Recover the last recorded directory only when the launcher's process cwd is gone. */
+/** Recover the latest missing directory when the launcher's process cwd is gone. */
 export async function recordedHookCwd(hookData: Record<string, unknown>, tool: string): Promise<string | undefined> {
-  return (await recordedScope(deriveDispatchSessionId(hookData, tool), '')).cwd;
+  const sessionId = deriveDispatchSessionId(hookData, tool);
+  const events = (await readEvents()).filter(event => event.sessionId === sessionId).reverse();
+  return (events.find(event => event.cwd && !fs.existsSync(event.cwd)) ?? events.find(event => event.cwd))?.cwd;
 }
 
 /**

@@ -442,8 +442,8 @@ export async function hookDispatchCli(
     const stdin = parseStdin(raw, event);
 
     // Dynamic imports and handlers may resolve paths through process.cwd().
-    // A removed worktree has no usable process cwd; keep its payload intact
-    // for recorded-scope recovery, but run the dispatcher from a live directory.
+    // A removed worktree has no usable process cwd. Preserve a supplied payload
+    // cwd; recover an omitted one from session history before using a live directory.
     try {
       process.cwd();
     } catch {

@@ -380,11 +380,21 @@ describe('hook events after their worktree is deleted (#810)', () => {
 });
 
 
-it.runIf(process.platform !== 'win32').each([false, true])('recovers an omitted cwd from the recorded session after process cwd deletion, user scope: %s', async (userScope) => {
+it.runIf(process.platform !== 'win32').each([[false, false], [true, false], [true, true]])('recovers an omitted cwd after deletion, user scope %s, moved on %s', async (userScope, movedOn) => {
   const fixture = scenario({ userScope });
   try {
     await fixture.setup();
     const { state } = fixture;
+    if (movedOn) {
+      const elsewhere = path.join(state.home, 'elsewhere');
+      fs.mkdirSync(elsewhere);
+      git(['init', '-q', '-b', 'main'], elsewhere);
+      git(['commit', '-q', '--allow-empty', '-m', 'fixture'], elsewhere);
+      const prompt = await runCLI(['hook-dispatch', 'prompt-submit', '--tool', 'claude'], elsewhere, state.home,
+        JSON.stringify({ session_id: SESSION, cwd: elsewhere, prompt: 'work elsewhere' }));
+      expect(prompt.code, prompt.output).toBe(0);
+      expect(readJsonl<RecordedEvent & { cwd: string }>(state.eventsFile).at(-1)?.cwd).toBe(elsewhere);
+    }
     const before = readJsonl<RecordedEvent>(state.eventsFile).length;
     fs.mkdirSync(state.worktree);
     const stopped = spawnSync('/bin/sh', ['-c', 'rmdir "$REMOVED_WORK" && exec "$TEST_NODE" "$TEST_CLI" hook-dispatch stop --tool claude --bg-only'], {
