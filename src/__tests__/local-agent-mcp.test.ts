@@ -85,7 +85,7 @@ describe('local-agent: MCP install/uninstall commands', () => {
     expect(acks[0].status).toBe('success');
     const settings = await fse.readJson(file);
     delete settings.mcpServers['muse-fixture'].type;
-    settings.mcpServers['muse-fixture'] = Object.fromEntries(Object.entries(settings.mcpServers['muse-fixture']).reverse());
+    settings.mcpServers['muse-fixture'] = Object.fromEntries(Object.entries(settings.mcpServers['muse-fixture']).toReversed());
     await fse.writeJson(file, settings);
     const { reconcileMcpForConfig } = await import('../mcp-reconcile.js');
     const { TeamaiConfigSchema } = await import('../types.js');

@@ -377,7 +377,7 @@ describe('Muse Code resource delivery', () => {
     expect(inject.code, inject.output).toBe(0);
     const settings = JSON.parse(fs.readFileSync(file, 'utf8'));
     delete settings.mcpServers.local.type;
-    settings.mcpServers.local = Object.fromEntries(Object.entries(settings.mcpServers.local).reverse());
+    settings.mcpServers.local = Object.fromEntries(Object.entries(settings.mcpServers.local).toReversed());
     settings.mcpServers.personal = { type: 'stdio', command: 'personal-server' };
     fs.writeFileSync(file, JSON.stringify(settings));
 

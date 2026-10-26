@@ -175,9 +175,9 @@ describe('Muse Code MCP', () => {
     const server = settings.mcpServers[name];
     if (name === 'local') {
       delete server.type;
-      server.env = Object.fromEntries(Object.entries(server.env).reverse());
+      server.env = Object.fromEntries(Object.entries(server.env).toReversed());
     }
-    settings.mcpServers[name] = Object.fromEntries(Object.entries(server).reverse());
+    settings.mcpServers[name] = Object.fromEntries(Object.entries(server).toReversed());
     await fse.writeJson(settingsPath, settings);
 
     const context = { localConfig: config, teamConfig: team, toolPaths: team.toolPaths, hookToolPaths: team.toolPaths, baseDir: home };
@@ -194,7 +194,7 @@ describe('Muse Code MCP', () => {
     const server = settings.mcpServers.local;
     delete server.type;
     server[field] = field === 'command' ? 'my-node' : field === 'args' ? ['my-server.mjs'] : { MODE: 'personal' };
-    settings.mcpServers.local = Object.fromEntries(Object.entries(server).reverse());
+    settings.mcpServers.local = Object.fromEntries(Object.entries(server).toReversed());
     await fse.writeJson(settingsPath, settings);
 
     await reconcileMcpForConfig(team, config, { removeAll: true });
@@ -220,7 +220,7 @@ describe('Muse Code MCP', () => {
     const server = settings.mcpServers.local;
     delete server.type;
     if (edited) server.command = 'different-node';
-    settings.mcpServers.local = Object.fromEntries(Object.entries(server).reverse());
+    settings.mcpServers.local = Object.fromEntries(Object.entries(server).toReversed());
     await fse.writeJson(settingsPath, settings);
 
     await reconcileMcpForConfig(team, config, { removeAll: true });
@@ -234,7 +234,7 @@ describe('Muse Code MCP', () => {
     for (const record of manifest.muse) delete record.valueHash;
     await fse.writeJson(manifestPath, manifest);
     const settings = await fse.readJson(settingsPath);
-    settings.mcpServers.local = Object.fromEntries(Object.entries(settings.mcpServers.local).reverse());
+    settings.mcpServers.local = Object.fromEntries(Object.entries(settings.mcpServers.local).toReversed());
     await fse.writeJson(settingsPath, settings);
     await reconcileMcpForConfig(team, config, { removeAll: true });
     expect((await fse.readJson(settingsPath)).mcpServers.local).toEqual(settings.mcpServers.local);
