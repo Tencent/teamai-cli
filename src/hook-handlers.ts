@@ -14,7 +14,7 @@ import path from 'node:path';
 
 import type { ResolvedEntry } from './namespaced-entries.js';
 import type { HookHandler } from './hook-dispatch.js';
-import type { LocalConfig } from './types.js';
+import type { GlobalOptions, LocalConfig } from './types.js';
 import type { GitHookEvent } from './git-hook.js';
 import { deriveDispatchSessionId, deriveSessionId } from './utils/session-id.js';
 import { log } from './utils/logger.js';
@@ -138,11 +138,9 @@ const pullHandler: HookHandler = {
     const { pull, settleLateUsageReport } = await import('./pull.js');
     const { SessionCaptures } = await import('./session-flow/captures.js');
     const before = config && await SessionCaptures.checkoutDelivery(config, tool);
-    // A checkout no pull delivered into yet is prepared as a new worktree is, then pulled as usual.
-    if (config && await hasNoDeliveryRecord(config)) {
-      await prepareCheckout(hintCwd, config).catch((e: unknown) => log.debug(`hook-dispatch: could not prepare ${hintCwd}: ${e instanceof Error ? e.message : String(e)}`));
-    }
-    await pull({ silent: true });
+    // A checkout no pull delivered into yet is prepared as a new worktree is, by this full pull.
+    if (config && await needsPreparation(hintCwd, config)) await prepareCheckout(hintCwd, {});
+    else await pull({ silent: true });
     if (config && before) await SessionCaptures.markTeamChanged(config, tool, stdin, before);
     await packageHints.stashPackageHintAfterPull(
       hintCwd,
@@ -182,39 +180,42 @@ const sessionCaptureHandler: HookHandler = {
 
 /**
  * Prepare a new checkout of a project-scope repository: its tool roots, then
- * the team's resources from the team clone, then `scripts.postDeploy` on its
- * first delivery. Every trigger calls this: git's `post-checkout`, while git
- * waits, and a tool hook's background pass in a checkout with no delivery
- * record, for tools that create worktrees without any git hook. Checkouts
- * teamai itself creates (its knowledge and reports worktrees, under the
- * scope's data home or team clone) are left alone. Returns whether it ran.
+ * the team's resources, then `scripts.postDeploy` on its first delivery.
+ * Every trigger calls this, with the pull it can afford (`how`): git's
+ * `post-checkout` an inline one while git waits; a session start a full one,
+ * and a tool use in the background pass one from the team clone as it is,
+ * in a checkout that needs it (needsPreparation), for tools that create
+ * worktrees without any git hook. Init does not run on this path.
  */
-async function prepareCheckout(
-  cwd: string, config: LocalConfig, gitHook?: 'post-checkout',
-): Promise<boolean> {
-  const { getDataHome } = await import('./types.js');
-  if (await isWithin(cwd, [getDataHome(config), config.repo.localPath, ...await ownCheckoutsDir(cwd)])) return false;
+async function prepareCheckout(cwd: string, how: Pick<GlobalOptions, 'inline' | 'gitHook' | 'localOnly'>): Promise<void> {
   const { createProjectToolRoots } = await import('./project-agent-root.js');
   await createProjectToolRoots({ cwd });
   const { pull } = await import('./pull.js');
-  // Init does not run on this path. Under the sync lock, the pull runs
-  // postDeploy only when this checkout still has no record, so a second
-  // trigger for the same checkout delivers nothing twice.
-  await pull({ silent: true, inline: true, prepareCheckout: true, ...gitHook ? { gitHook } : {} });
-  return true;
+  await pull({ silent: true, prepareCheckout: true, ...how });
 }
 
-/** Whether no pull has delivered into the checkout `config`'s pulls deliver into yet. */
-async function hasNoDeliveryRecord(config: LocalConfig): Promise<boolean> {
+/**
+ * Whether a tool hook prepares the checkout at `cwd`: a project-scope one no
+ * pull delivered into yet, which is not teamai's own. An HTTP team's checkout
+ * keeps no such record; its resources come through the local agent's sync.
+ */
+async function needsPreparation(cwd: string, config: LocalConfig): Promise<boolean> {
+  if (config.scope !== 'project' || config.repo.kind === 'http') return false;
   const { deliveringCheckoutRecord } = await import('./pull.js');
-  return config.scope === 'project' && !await deliveringCheckoutRecord(config);
+  return !await deliveringCheckoutRecord(config) && !await isOwnCheckout(cwd, config);
+}
+
+/** Checkouts teamai itself creates: its knowledge and reports worktrees, under the scope's data home or team clone. */
+async function isOwnCheckout(cwd: string, config: LocalConfig): Promise<boolean> {
+  const { getDataHome } = await import('./types.js');
+  return isWithin(cwd, [getDataHome(config), config.repo.localPath, ...await ownCheckoutsDir(cwd)]);
 }
 
 /**
  * `post-checkout` from the git hook: a new checkout (a linked worktree, a
  * submodule's first checkout) is prepared before git returns
- * (prepareCheckout). A branch switch and user scope (whose resources live in
- * HOME) do nothing.
+ * (prepareCheckout). A branch switch, user scope (whose resources live in
+ * HOME), and teamai's own checkouts do nothing.
  */
 const newWorktreeHandler: HookHandler = {
   name: 'new-worktree',
@@ -223,14 +224,13 @@ const newWorktreeHandler: HookHandler = {
     const args = Array.isArray(stdin.git_args) ? stdin.git_args.map(String) : [];
     if (!config || config.scope !== 'project' || !isNewCheckout(args)) return null;
     const cwd = resolveHookCwd(stdin) ?? process.cwd();
-    let ownCheckout = false;
-    await recordingFailure(config, 'post-checkout', async () => {
-      ownCheckout = !await prepareCheckout(cwd, config, 'post-checkout');
-    });
+    if (await isOwnCheckout(cwd, config)) return null;
+
+    await recordingFailure(config, 'post-checkout', () => prepareCheckout(cwd, { inline: true, gitHook: 'post-checkout' }));
     // Learnings, reports, sources and the team repo itself refresh after
     // `git worktree add` returns; it also retries what failed above.
     // postDeploy already ran inside the pull.
-    if (!ownCheckout) await spawnDetachedPull(cwd, 'post-checkout');
+    await spawnDetachedPull(cwd, 'post-checkout');
     return null;
   },
 };
@@ -245,8 +245,9 @@ const newWorktreeHandler: HookHandler = {
 const newCheckoutHandler: HookHandler = {
   name: 'new-checkout',
   async execute(stdin, tool, config) {
-    if (!config || !await toolMayDeliver(stdin, tool, config) || !await hasNoDeliveryRecord(config)) return null;
-    await prepareCheckout(resolveHookCwd(stdin) ?? process.cwd(), config);
+    const cwd = resolveHookCwd(stdin) ?? process.cwd();
+    if (!config || !await needsPreparation(cwd, config) || !await toolMayDeliver(stdin, tool, config)) return null;
+    await prepareCheckout(cwd, { inline: true, localOnly: true });
     return null;
   },
 };

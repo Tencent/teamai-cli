@@ -145,7 +145,7 @@ scripts:
 - `postInit` runs after hooks are installed. Init waits, then syncs MCP, so a value the script collected takes effect. The same skip rule applies. `teamai script run postInit` runs it again and syncs MCP.
 - `prePull` runs at the start of a full pull, before that scope is synced. It cannot read the terminal. Pull waits up to 90 seconds, then leaves it running. An inline pull does not run it.
 - `postPull` runs after a full pull. A session start waits up to 90 seconds, then leaves it running. An interactive `teamai pull` does not wait. An inline pull does not run it. A failure is a line in `~/.teamai/debug.log`.
-- `postDeploy` runs once per new checkout, when its first delivery finishes: for a new linked worktree, or a submodule's first checkout, before that git command returns; for a worktree an agent tool created without Git hooks, in the background. That path does not run `teamai init`. Pull waits up to 15 seconds. Run the script again with `teamai script run postDeploy`. It should be safe to repeat, and it should leave an existing personal file alone.
+- `postDeploy` runs once per checkout, when its first delivery finishes: for a new linked worktree, or a submodule's first checkout, before that git command returns; for a worktree an agent tool created without Git hooks, or a checkout made before TeamAI was set up, in the background. That path does not run `teamai init`. Pull waits up to 15 seconds. Run the script again with `teamai script run postDeploy`. It should be safe to repeat, and it should leave an existing personal file alone.
 
 ## Roles and projects
 

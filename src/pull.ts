@@ -156,7 +156,7 @@ async function teamFetchedWithinTtl(localConfig: LocalConfig): Promise<boolean> 
  */
 async function refreshTeamRepo(
   localConfig: LocalConfig,
-  options: Pick<GlobalOptions, 'inline' | 'fetchTimeoutMs' | 'dryRun' | 'teamRef' | 'silent'> = {},
+  options: Pick<GlobalOptions, 'inline' | 'localOnly' | 'fetchTimeoutMs' | 'dryRun' | 'teamRef' | 'silent'> = {},
 ): Promise<{ label: string; version: string | null; submodulesFailed: boolean; submodulesChanged: boolean }> {
   if (localConfig.repo.kind === 'http') {
     const { resolveApiKey } = await import('./api-key.js');
@@ -205,10 +205,12 @@ async function refreshTeamRepo(
   // the reconcile/source/report stages — so there is no unlocked window in which
   // another writer could reset/checkout the tree. We must NOT lock here: the lock
   // is non-reentrant, so re-acquiring it in the same process would fail.
-  // The new-worktree hook reads a recently fetched clone as it is.
-  if (options.teamRef === undefined && options.inline && options.fetchTimeoutMs === undefined && await teamFetchedWithinTtl(localConfig)) {
+  // The new-worktree hook reads a recently fetched clone as it is; a tool use preparing a checkout, any clone.
+  if (options.teamRef === undefined && options.inline && options.fetchTimeoutMs === undefined
+    && (options.localOnly || await teamFetchedWithinTtl(localConfig))) {
     const version = await getHeadRev(localConfig.repo.localPath).catch(() => null);
-    return { label: 'fetched within the TTL, not refetched', version, submodulesFailed: false, submodulesChanged: false };
+    const label = options.localOnly ? 'read as last fetched, not refetched' : 'fetched within the TTL, not refetched';
+    return { label, version, submodulesFailed: false, submodulesChanged: false };
   }
   // The git-pull hook caps the fetch: git pull is waiting on it.
   const cap = options.fetchTimeoutMs === undefined ? undefined : AbortSignal.timeout(options.fetchTimeoutMs);
@@ -3058,7 +3060,7 @@ export async function pull(
   let projectConfig: LocalConfig | null = null;
   let postPullRepo: string | null = null;
   let scriptOwner: LocalConfig | null = null;
-  // Checkout preparation found no record of this checkout under the lock: its first delivery, which runs postDeploy.
+  // Checkout preparation found no record of this checkout under the lock, and its sync wrote one: its first delivery, which runs postDeploy.
   let firstDelivery = false;
   const lockScope = async (config: LocalConfig): Promise<boolean> => {
     // git-mode guards its shared team clone; self mode guards its machine-data
@@ -3223,8 +3225,9 @@ export async function pull(
     try {
       if (await lockScope(projectConfig)) {
         if (!options.dryRun && !options.inline) await runTeamScript(projectConfig, 'prePull');
-        firstDelivery = options.prepareCheckout === true && !await deliveringCheckoutRecord(projectConfig);
+        const undelivered = options.prepareCheckout === true && !await deliveringCheckoutRecord(projectConfig);
         await pullForScope(projectConfig, options, reported, { recorder: deliveryRecorder }, syncResult, teamEnvs, instructions);
+        firstDelivery = undelivered && await deliveringCheckoutRecord(projectConfig) !== undefined;
         if (pinRequired && syncResult.teamRepoFailed) return;
         await excludeWorkspaceInstructions(projectConfig, options);
       }
@@ -3506,8 +3509,9 @@ export async function pull(
   }
 
   // 6. Checkout preparation waits for `scripts.postDeploy` before git returns,
-  //    once per checkout: a second trigger for the same new checkout finds its
-  //    record. Inline pulls otherwise skip team scripts. Nothing here can fail the pull.
+  //    once per checkout: a sync that wrote no record leaves it to the next
+  //    trigger, which a second trigger for a delivered checkout finds. Inline
+  //    pulls otherwise skip team scripts. Nothing here can fail the pull.
   if (!options.dryRun && firstDelivery && scriptOwner) {
     await runTeamScript(scriptOwner, 'postDeploy');
   }
