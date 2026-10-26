@@ -17,6 +17,7 @@ import { shellQuoteValue } from './utils/shell-profile.js';
 import {
   upsertHermesHook,
   removeHermesHookByCommand,
+  hasHermesHookCommands,
   addHermesAllowlist,
   removeHermesAllowlist,
   enableHermesPlugin,
@@ -177,6 +178,13 @@ export async function injectHermesHooks(): Promise<void> {
   }
 }
 
+/** Managed Hermes artifacts still requiring cleanup, including dangling registrations. */
+export async function hasHermesHooks(): Promise<boolean> {
+  const script = getReportScriptPath();
+  return await pathExists(script) || (await pathExists(getInstructionsPluginDir()) && await ownsInstructionsPlugin())
+    || await hasHermesHookCommands([script, reportCommand(script)]);
+}
+
 /**
  * Remove the teamai Hermes status-report hook.
  *
@@ -186,6 +194,7 @@ export async function injectHermesHooks(): Promise<void> {
  * 3. Delete the script file if it exists.
  */
 export async function removeHermesHooks(): Promise<void> {
+  const existed = await hasHermesHooks();
   const scriptPath = getReportScriptPath();
   for (const command of [scriptPath, reportCommand(scriptPath)]) {
     await removeHermesHookByCommand(command);
@@ -198,7 +207,7 @@ export async function removeHermesHooks(): Promise<void> {
     await disableHermesPlugin(HERMES_INSTRUCTIONS_PLUGIN);
     await remove(getInstructionsPluginDir());
   }
-  log.success('Removed teamai Hermes hook from ' + scriptPath);
+  if (existed) log.success('Removed teamai Hermes hook from ' + scriptPath);
 }
 
 /**

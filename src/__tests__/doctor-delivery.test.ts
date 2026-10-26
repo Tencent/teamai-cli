@@ -119,6 +119,23 @@ describe('doctor — skills delivered on disk', () => {
     expect(check.source).toBe('local');
   });
 
+  it('fails when a file blocks a tool skills directory instead of silently skipping its delivery', async () => {
+    teamConfig.toolPaths = { hermes: { skills: '.hermes/skills' } };
+    localConfig.enabledAgents = ['hermes'];
+    await fse.ensureDir(path.join(homeDir, '.hermes'));
+    const blocked = path.join(homeDir, '.hermes', 'skills');
+    await fse.writeFile(blocked, 'member file');
+    const ctx = await resolveDoctorContext();
+    if (!ctx) throw new Error('expected a resolved doctor context');
+    const checks = await buildChecks(ctx);
+    const check = checks.find((c) => c.name === 'hermes skills directory is usable');
+    expect(check).toBeDefined();
+    expect(await check!.check()).toBe(false);
+    expect(check!.fix).toContain(blocked);
+    expect(check!.fix).toContain('Move the file aside');
+    expect(await fse.readFile(blocked, 'utf8')).toBe('member file');
+  });
+
   it('fails and names the skill the tool never received', async () => {
     await deliver(CLAUDE_SKILLS, 'alpha');
 

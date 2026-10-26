@@ -194,6 +194,26 @@ describe('GitLab (written by default, 👎 thumbsdown = reject)', () => {
     expect(shouldWrite('learning', result, 'gitlab')).toBe(false);
   });
 
+  it.each(['notes', 'awards'])('still refuses incomplete %s when rejection data exceeds the page limit', async (endpoint) => {
+    vi.stubEnv('GITLAB_TOKEN', 'test-token');
+    const fetchMock = vi.fn(async (url: string) => {
+      const isNotes = url.includes('/notes?');
+      const page = Number(new URL(url).searchParams.get('page'));
+      const body = isNotes && page === 1
+        ? [{ id: 1, body: '<!-- teamai:ci-extract:learning -->\ncontent' }] : [];
+      // Finding a marker does not finish a rejection check: older notes or
+      // later awards may still contain a veto.
+      return new Response(JSON.stringify(body), {
+        headers: isNotes && endpoint === 'awards' ? {} : { 'x-next-page': String(page + 1) },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(readRejections('https://gitlab.com/acme/app/-/merge_requests/7'))
+      .rejects.toThrow('has more than 20 pages');
+    expect(fetchMock).toHaveBeenCalledTimes(endpoint === 'notes' ? 20 : 21);
+  });
+
   it('never follows redirects when reading GitLab notes (token must not leak)', async () => {
     vi.stubEnv('GITLAB_TOKEN', 'test-token');
     const fetchMock = vi.fn().mockResolvedValue(

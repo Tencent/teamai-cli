@@ -454,6 +454,10 @@ Doctor checks the serialized rules reply against the user config `hooks.maxOutpu
 
 Pi reads `AGENTS.override.md` before `AGENTS.md` in the same directory. In user scope, pull writes rules and instruction blocks into the existing override and strips only TeamAI blocks from the older configured file. Personal text in both files is preserved, including on uninstall. Without an override, the configured user file remains the target.
 
+## A file blocks skill delivery
+
+When a file occupies a tool skills directory, doctor fails the directory check even if delivery skipped that tool. Move the file aside and run `teamai pull`. Uninstall keeps the blocking file and cleans the other managed resources.
+
 ## Kiro default-agent synchronization
 
 Kiro CLI V3 uses the generated user hook `~/.kiro/hooks/teamai.json`, independently of custom agents. Missing or edited hooks appear in doctor; reinject after moving aside a same-named personal file. User uninstall removes the managed file, project uninstall keeps it, and personal hook files remain. Upgrade Kiro 2.x to V3 for this lifecycle integration.

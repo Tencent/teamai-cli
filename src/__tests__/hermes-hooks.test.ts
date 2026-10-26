@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import YAML from 'yaml';
-import { injectHermesHooks, removeHermesHooks, getReportScriptPath, getInstructionsPluginDir } from '../hermes-hooks.js';
+import { injectHermesHooks, removeHermesHooks, hasHermesHooks, getReportScriptPath, getInstructionsPluginDir } from '../hermes-hooks.js';
 import { log } from '../utils/logger.js';
 import { channelReadiness } from '../instruction-targets.js';
 
@@ -57,6 +57,37 @@ describe('injectHermesHooks', () => {
     } finally {
       success.mockRestore();
     }
+  });
+});
+
+describe('hasHermesHooks', () => {
+  const configPath = () => path.join(tmpDir, 'config.yaml');
+  const allowlistPath = () => path.join(tmpDir, 'shell-hooks-allowlist.json');
+
+  beforeEach(async () => {
+    vi.spyOn(log, 'success').mockImplementation(() => {});
+    await injectHermesHooks();
+    fs.rmSync(getReportScriptPath());
+    fs.rmSync(getInstructionsPluginDir(), { recursive: true });
+  });
+
+  it('is false for a Hermes home teamai never wrote to', async () => {
+    process.env.HERMES_HOME = fs.mkdtempSync(path.join(tmpDir, 'fresh-'));
+    expect(await hasHermesHooks()).toBe(false);
+  });
+
+  it('counts a hook registration left without its script or approval', async () => {
+    fs.rmSync(allowlistPath());
+    expect(await hasHermesHooks()).toBe(true);
+    await removeHermesHooks();
+    expect(await hasHermesHooks()).toBe(false);
+  });
+
+  it('counts an approval left without its script or hook registration', async () => {
+    fs.writeFileSync(configPath(), YAML.stringify({ hooks: { on_session_start: [{ command: 'echo mine' }] } }));
+    expect(await hasHermesHooks()).toBe(true);
+    await removeHermesHooks();
+    expect(await hasHermesHooks()).toBe(false);
   });
 });
 
