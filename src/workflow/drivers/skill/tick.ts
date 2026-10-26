@@ -19,7 +19,7 @@ import { attendedReason, ceilingOf, localPromptTool, localReason } from './prefl
 import { drivesRun, newSkillState, readSkillState, writeSkillState, type AttemptState, type ReportBody, type SkillState, type TurnEvent } from './skill-state.js';
 import {
   ackRow, adoptRow, callRow, cancelledRow, chooseRow, doneRow, gateCheckRow, graceRow, hasSlot, heldProbeRow, invokeRow, judgeFreeRow, judgeTickRow, lockBusyRow, pollRow, readiedRow, reopenedRow, replyRow,
-  reportCallRow, reportedRow, reportRow, resendRow, respondedRow, runnerFreeRow, scoreReplyRow, tickRow, turnRow, unqueueRow, unseenEvents, type Answer,
+  reportCallRow, reportedRow, reportRow, resendRow, respondedRow, runnerFreeRow, scoreReplyRow, tickRow, turnRow, unattendedRow, unqueueRow, unseenEvents, type Answer,
   type Effect, type MovedWithEffects, type ResumeAnswers, type RowId, type StartRun, type TickTurn, type TurnAnswer,
 } from './transitions.js';
 import { errorOf, turnOf, type SkillAnswer, type SkillError, type Turn, type Waiting } from './turn.js';
@@ -253,7 +253,8 @@ function lockBusy(context: SkillContext, run: RunId, same: Literal): SkillAnswer
  * Reads skill.json under the run's `lock`, and takes its S row, or R11 when there is none. `takeover` is a
  * `next --takeover`; `report` is the attempt an agent's report names, which skips the session check when the agent
  * reports it (S6). `resume`, and a takeover with no skill.json, first ready the run here, claiming it as
- * `WorkflowClient.resume` does, and take R19, R20 or R21, or R8.
+ * `WorkflowClient.resume` does, and take R19, R20 or R21, or R8. An unattended resume or takeover of the skill.json kept
+ * here takes R26 first.
  */
 async function called(context: SkillContext, lock: RunLock, same: Literal, input: { takeover?: { confirmed: boolean }; report?: AttemptId; resume?: Resume } = {}): Promise<{ state: SkillState } | { answer: SkillAnswer }> {
   const { run } = lock;
@@ -293,8 +294,10 @@ async function called(context: SkillContext, lock: RunLock, same: Literal, input
       return { state: plannedState(context, run, taken.start) };
     }
   }
-  if (state && input.report !== undefined && traced(context, reportCallRow(state, input.report))) return { state };
-  const taken = traced(context, callRow(state, { run, session: context.session, at: context.now().toISOString(), takeover: input.takeover !== undefined }));
+  const unattended = state && context.mode === 'unattended' && (input.resume !== undefined || input.takeover) ? traced(context, unattendedRow(state, answers)) : undefined;
+  const kept = unattended?.state ?? state;
+  if (kept && input.report !== undefined && traced(context, reportCallRow(kept, input.report))) return { state: kept };
+  const taken = traced(context, callRow(kept, { run, session: context.session, at: context.now().toISOString(), takeover: input.takeover !== undefined }));
   if ('answer' in taken) return { answer: { error: errorOf(taken.answer, { invocation: context.invocation, same, run, localTool }) } };
   return { state: taken.state };
 }

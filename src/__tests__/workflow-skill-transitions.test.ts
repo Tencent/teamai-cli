@@ -1133,11 +1133,14 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       return made.rows;
     },
   },
-  {
-    name: 'an unattended resume counts only the steps left: a run whose required approval already ran continues with its optional gates auto-approved',
-    rows: ['R19'],
+  ...([
+    { announce: ANNOUNCE, rows: ['R19'], name: 'an unattended resume counts only the steps left: a run whose required approval already ran continues with its optional gates auto-approved' },
+    { announce: `${ANNOUNCE}    loop: { back_to: go-live, max_iterations: 2 }\n`, rows: ['R24'], name: 'an unattended resume still counts a required approval that ran when a loop can run it again' },
+  ] as const).map(({ announce, rows, name }) => ({
+    name,
+    rows: [...rows],
     run: async () => {
-      const made = await harness({ released: RELEASE.replace('name: release', 'name: released') + ANNOUNCE }, { mode: 'unattended' });
+      const made = await harness({ released: RELEASE.replace('name: release', 'name: released') + announce }, { mode: 'unattended' });
       const { client, env } = made.context;
       const created = await client.start('released', { checkout: made.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
       if (!('data' in created)) throw new Error(JSON.stringify(created));
@@ -1159,9 +1162,34 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
         if (outcome === 'released') break;
       }
       expect(await readRun(made.config, run)).toMatchObject({ status: 'running', steps: expect.arrayContaining([expect.objectContaining({ id: 'go-live', status: 'succeeded' })]) });
-      expect(await turnOf(await made.call({ kind: 'resume', run, claim: false, confirmed: false, answers: {} }))).toMatchObject({ run });
+      const resumed = await made.call({ kind: 'resume', run, claim: false, confirmed: false, answers: {} });
+      if (rows[0] === 'R24') {
+        expect(resumed).toMatchObject({ error: { code: 'unattended_denied', message: expect.stringContaining('the approval at go-live'), next: null } });
+        return made.rows;
+      }
+      expect(await turnOf(resumed)).toMatchObject({ run });
       expect(JSON.parse(fs.readFileSync(skillStatePath(made.config, run), 'utf8'))).toMatchObject({ options: { hitl: 'auto-approve', mode: 'unattended' } });
       return made.rows;
+    },
+  })),
+  {
+    name: 'an unattended takeover of a run a person attends gives its kept options no person: the optional gate is auto-approved',
+    rows: ['R26'],
+    run: async () => {
+      const made = await harness({ approved: APPROVED });
+      const { run } = await turnOf(await made.call({ kind: 'start', name: 'approved', answers: { confirmed: false, hitl: 'person' }, inputs: undefined }));
+      const options = (): unknown => JSON.parse(fs.readFileSync(skillStatePath(made.config, run), 'utf8')).options;
+      expect(options()).toMatchObject({ hitl: 'person', mode: 'attended' });
+      expect(await turnOf(await made.call({ kind: 'takeover', run, confirmed: false }, { mode: 'unattended', session: 'session-b' }))).toMatchObject({ run });
+      expect(options()).toMatchObject({ hitl: 'auto-approve', mode: 'unattended' });
+      for (let poll = 0; poll < 10; poll += 1) {
+        const turn = await turnOf(await made.call({ kind: 'next', run, wait: true }, { mode: 'unattended', session: 'session-b' }));
+        if (turn.status === 'done') {
+          expect(turn).toMatchObject({ actions: [{ kind: 'done', outcome: 'succeeded' }] });
+          return made.rows;
+        }
+      }
+      throw new Error('the run did not reach done in ten polls');
     },
   },
   {

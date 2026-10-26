@@ -18,7 +18,7 @@ import {
 } from './snapshot.js';
 import { takeOver, type UnleasedStep } from './step-state.js';
 import { installOwner, isRunId, readRun, updateRun } from './store.js';
-import type { RunState, WorkflowDefinition, WorkflowFailure } from './types.js';
+import type { RunState, WorkflowDefinition, WorkflowFailure, WorkflowStep } from './types.js';
 import { branchName, stepMode, type LeaseSession, type SessionRef } from './workspace.js';
 import { fetchMissingCommits, git, reconcileCopy } from './worktree.js';
 
@@ -562,22 +562,34 @@ export async function resumeRun(config: LocalConfig, runId: string, options: { c
 }
 
 /**
- * The steps of `steps` settled for good, succeeded or skipped, so no person is needed for them again. A step inside the
- * items of a `for_each` step, such as `items[0].approve`, is also listed by its definition's path, `items.approve`, once
- * every item settled it or settled whole. Items within items are not.
+ * The steps of `run` settled for good, succeeded or skipped, so no person is needed for them again, each listed by
+ * its definition's path: a step inside the items of a `for_each` step, such as `items.approve`, once every item
+ * settled it, or settled a step that holds it, or settled whole. None while the run's definitions loop anywhere, since
+ * a loop can run a settled step again.
  */
-export function settledSteps(steps: ReadonlyArray<{ id: string; status: string }>): string[] {
+export function settledSteps({ steps, definition, workflows = {} }: { steps: ReadonlyArray<{ id: string; status: string }>; definition: WorkflowDefinition; workflows?: Record<string, WorkflowDefinition> }): string[] {
+  if (loops({ definition, workflows })) return [];
   const settled = new Set(steps.filter((step) => step.status === 'succeeded' || step.status === 'skipped').map((step) => step.id));
-  const inItems = new Map<string, { container: string; rest: string }>();
-  for (const id of settled) {
-    const item = /^([^[\]]+)\[\d+\](\..+)$/.exec(id);
-    if (item?.[1] !== undefined && item[2] !== undefined && !item[2].includes('[')) inItems.set(`${item[1]}${item[2]}`, { container: item[1], rest: item[2] });
-  }
-  const paths = [...inItems].filter(([, { container, rest }]) => {
-    const items = steps.filter((step) => step.id.startsWith(`${container}[`) && /^\[\d+\]$/.test(step.id.slice(container.length)));
-    return items.length > 0 && items.every((item) => settled.has(item.id) || settled.has(`${item.id}${rest}`));
-  }).map(([path]) => path);
-  return [...settled, ...paths];
+  const items = (container: string) => steps.filter((step) => step.id.startsWith(`${container}[`) && /^\[\d+\]$/.test(step.id.slice(container.length)));
+  const covered = (at: string, rest: string[]): boolean => {
+    if (settled.has(at)) return true;
+    const [segment, ...after] = rest;
+    if (segment === undefined) return false;
+    const next = at === '' ? segment : `${at}.${segment}`;
+    const instances = items(next);
+    return settled.has(next) || (instances.length > 0 ? instances.every((item) => covered(item.id, after)) : covered(next, after));
+  };
+  const paths = new Set(steps.flatMap((step) => {
+    const segments = step.id.replace(/\[\d+\]/g, '').split('.');
+    return segments.map((_, at) => segments.slice(0, at + 1).join('.'));
+  }));
+  return [...paths].filter((path) => covered('', path.split('.')));
+}
+
+/** Whether a workflow or step loop appears in `definitions`, inline workflows included. */
+function loops({ definition, workflows }: Definitions): boolean {
+  const inSteps = (steps: WorkflowStep[]): boolean => steps.some((step) => step.loop !== undefined || (typeof step.workflow === 'object' && (step.workflow.loop !== undefined || inSteps(step.workflow.steps))));
+  return [definition, ...Object.values(workflows)].some((workflow) => workflow.loop !== undefined || inSteps(workflow.steps));
 }
 
 /** What a run carries: its definitions, and the steps it settled for good. */
@@ -593,14 +605,14 @@ export interface CarriedRun extends Definitions {
 export async function carriedRun(config: LocalConfig, runId: string, { published, claim = false }: { published: boolean; claim?: boolean }): Promise<Result<CarriedRun | undefined>> {
   const stored = await readRun(config, runId);
   if (stored === 'corrupt') return refused(runUnreadable(runId));
-  const local = stored === 'missing' ? undefined : { definition: stored.definition, workflows: stored.workflows ?? {}, settled: settledSteps(stored.steps) };
+  const local = stored === 'missing' ? undefined : { definition: stored.definition, workflows: stored.workflows ?? {}, settled: settledSteps(stored) };
   if (local && !claim) return ok(local);
   if (!published) return ok(local);
   // Read from the team repository rather than the reports checkout, which a refused resume would otherwise leave synced.
   const origin = await publishedRun(config, runId, { checkout: false });
   if (!origin.ok || origin.value === 'absent') return origin.ok || local ? ok(local) : origin;
   const definitions = await definitionsOf(config, origin.value);
-  return definitions.ok ? ok({ ...definitions.value, settled: settledSteps(origin.value.steps) }) : definitions;
+  return definitions.ok ? ok({ ...definitions.value, settled: settledSteps({ ...definitions.value, steps: origin.value.steps }) }) : definitions;
 }
 
 /**

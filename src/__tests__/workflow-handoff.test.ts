@@ -20,7 +20,7 @@ import { cancelRun, retryStep } from '../workflow/run-controls.js';
 import type { LocalToolAdapter } from '../workflow/drivers/local/local-tool-adapter.js';
 import type { StepPass, StepState } from '../workflow/step-state.js';
 import { readRun, runLockPath, updateRun } from '../workflow/store.js';
-import type { DriverIdentity, RunState, WorkflowEnvelope } from '../workflow/types.js';
+import type { DriverIdentity, RunState, WorkflowDefinition, WorkflowEnvelope } from '../workflow/types.js';
 import { ensureWorktree, fetchMissingCommits, headCommit, markReadCopy, worktreePath } from '../workflow/worktree.js';
 import { knownSecrets } from '../env-resolution.js';
 import { fakeGh } from './helpers/fake-gh.js';
@@ -2531,16 +2531,39 @@ steps:
 });
 
 describe('settledSteps', () => {
+  const definition: WorkflowDefinition = { schemaVersion: 'v1alpha1', name: 'w', description: 'w', steps: [{ id: 'items', command: 'true' }] };
+  const settled = (steps: Array<{ id: string; status: string }>) => settledSteps({ steps, definition });
+
   it('lists a step inside for_each items by its definition path once every item settled it or settled whole', () => {
     const items = (statuses: string[]) => [
       { id: 'items', status: 'running' },
       ...statuses.map((status, index) => ({ id: `items[${index}]`, status: status === 'skipped' ? 'skipped' : 'running' })),
       ...statuses.flatMap((status, index) => (status === 'skipped' || status === 'unstarted' ? [] : [{ id: `items[${index}].approve`, status }])),
     ];
-    expect(settledSteps(items(['succeeded', 'succeeded']))).toContain('items.approve');
-    expect(settledSteps(items(['succeeded', 'skipped']))).toContain('items.approve');
-    expect(settledSteps(items(['succeeded', 'pending']))).not.toContain('items.approve');
-    expect(settledSteps(items(['succeeded', 'unstarted']))).not.toContain('items.approve');
-    expect(settledSteps([{ id: 'a', status: 'running' }, { id: 'a[0]', status: 'running' }, { id: 'a[0].b[0].c', status: 'succeeded' }])).not.toContain('a.b.c');
+    expect(settled(items(['succeeded', 'succeeded']))).toContain('items.approve');
+    expect(settled(items(['succeeded', 'skipped']))).toContain('items.approve');
+    expect(settled(items(['succeeded', 'pending']))).not.toContain('items.approve');
+    expect(settled(items(['succeeded', 'unstarted']))).not.toContain('items.approve');
+    expect(settled([{ id: 'a', status: 'running' }, { id: 'a[0]', status: 'running' }, { id: 'a[0].b[0].c', status: 'succeeded' }])).not.toContain('a.b.c');
+  });
+
+  it('counts a step inside an item settled when the item settled a step that holds it', () => {
+    const steps = [
+      { id: 'items', status: 'running' },
+      { id: 'items[0]', status: 'running' },
+      { id: 'items[0].review', status: 'skipped' },
+      { id: 'items[1]', status: 'running' },
+      { id: 'items[1].review', status: 'running' },
+      { id: 'items[1].review.approve', status: 'succeeded' },
+    ];
+    expect(settled(steps)).toContain('items.review.approve');
+    expect(settled(steps)).not.toContain('items.review');
+  });
+
+  it('settles nothing while a loop could run a settled step again', () => {
+    const looping: WorkflowDefinition = { ...definition, steps: [{ id: 'review', command: 'true' }, { id: 'fix', needs: ['review'], command: 'true', loop: { backTo: 'review', maxIterations: 2 } }] };
+    expect(settledSteps({ steps: [{ id: 'review', status: 'succeeded' }], definition: looping })).toEqual([]);
+    const inline: WorkflowDefinition = { ...definition, steps: [{ id: 'sub', workflow: { loop: { maxIterations: 2 }, steps: [{ id: 'review', command: 'true' }] } }] };
+    expect(settledSteps({ steps: [{ id: 'sub.review', status: 'succeeded' }], definition: inline })).toEqual([]);
   });
 });

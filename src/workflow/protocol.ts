@@ -459,7 +459,7 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
       const unreconciled = await reconcileTakenCopies(config, runId, run.checkout ?? checkout);
       if (unreconciled) return { kind: 'failed', failure: unreconciled };
       const description = describeWorkflow({ definition: run.definition, workflows: run.workflows ?? {}, ceiling, can, allow: config.workflows?.allow ?? {}, env: env.facts });
-      return { kind: 'ready', installed: resumed.value?.ownership === 'claimed', description, settled: settledSteps(run.steps), judging: await judgingOf(config, description, tool) };
+      return { kind: 'ready', installed: resumed.value?.ownership === 'claimed', description, settled: settledSteps(run), judging: await judgingOf(config, description, tool) };
     },
     carried: async (runId, { published, claim, ceiling, can }) => {
       const carried = await carriedRun(config, runId, { published, claim });
