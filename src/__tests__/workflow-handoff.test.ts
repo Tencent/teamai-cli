@@ -2531,7 +2531,13 @@ steps:
 });
 
 describe('settledSteps', () => {
-  const definition: WorkflowDefinition = { schemaVersion: 'v1alpha1', name: 'w', description: 'w', steps: [{ id: 'items', command: 'true' }] };
+  const definition: WorkflowDefinition = {
+    schemaVersion: 'v1alpha1', name: 'w', description: 'w',
+    steps: [{
+      id: 'items', forEach: { items: 'inputs.list' },
+      workflow: { steps: [{ id: 'approve', command: 'true' }, { id: 'review', needs: ['approve'], workflow: { steps: [{ id: 'approve', command: 'true' }] } }] },
+    }],
+  };
   const settled = (steps: Array<{ id: string; status: string }>) => settledSteps({ steps, definition });
 
   it('lists a step inside for_each items by its definition path once every item settled it or settled whole', () => {
@@ -2565,5 +2571,29 @@ describe('settledSteps', () => {
     expect(settledSteps({ steps: [{ id: 'review', status: 'succeeded' }], definition: looping })).toEqual([]);
     const inline: WorkflowDefinition = { ...definition, steps: [{ id: 'sub', workflow: { loop: { maxIterations: 2 }, steps: [{ id: 'review', command: 'true' }] } }] };
     expect(settledSteps({ steps: [{ id: 'sub.review', status: 'succeeded' }], definition: inline })).toEqual([]);
+  });
+
+  it('settles a step once no loop that reaches it can run again', () => {
+    const looping: WorkflowDefinition = {
+      ...definition,
+      steps: [
+        { id: 'sub', workflow: { loop: { maxIterations: 2 }, steps: [{ id: 'draft', command: 'true' }] } },
+        { id: 'review', needs: ['sub'], command: 'true' },
+        { id: 'fix', needs: ['review'], command: 'true', loop: { backTo: 'review', maxIterations: 2 } },
+        { id: 'gate', needs: ['fix'], command: 'true' },
+        { id: 'final', needs: ['gate'], command: 'true' },
+      ],
+    };
+    const of = (fix: { status: string; loopFinal?: boolean }) => settledSteps({
+      definition: looping,
+      steps: [
+        { id: 'sub', status: 'succeeded' }, { id: 'sub.draft', status: 'succeeded' }, { id: 'review', status: 'succeeded' },
+        { id: 'fix', ...fix }, { id: 'gate', status: 'succeeded' }, { id: 'final', status: 'running' },
+      ],
+    });
+    expect(of({ status: 'succeeded', loopFinal: true })).toEqual(expect.arrayContaining(['sub', 'sub.draft', 'review', 'fix', 'gate']));
+    expect(of({ status: 'running' })).toEqual(expect.arrayContaining(['sub', 'sub.draft', 'gate']));
+    expect(of({ status: 'running' })).not.toContain('review');
+    expect(of({ status: 'succeeded' })).not.toContain('review');
   });
 });
