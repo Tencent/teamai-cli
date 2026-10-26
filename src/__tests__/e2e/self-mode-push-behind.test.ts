@@ -411,6 +411,31 @@ describe('single-repo push from a checkout behind the default branch', () => {
     expect(git(['show', `${branch}:.teamai/agents/ops/sample.yaml`], remote)).toContain('Teammate review step.');
   });
 
+  it.each(['edit', 'conversion'])('pushes the next %s of a placed agent after this machine\'s own edit landed', async (next) => {
+    expect((await runCLI(['pull'], projectRoot, home)).code).toBe(0);
+    const AGENT = '---\nname: sample\ndescription: A sample agent\n---\n\nSample instructions.\n';
+    fs.mkdirSync(active('.teamai/agents'), { recursive: true });
+    fs.writeFileSync(active('.teamai/agents/sample.md'), AGENT);
+    expect((await runCLI(['push', '--all', '--role', 'ops'], projectRoot, home)).output).toContain('Pushed branch');
+    await mergePushAndPull();
+    fs.writeFileSync(active('.teamai/agents/sample.md'), `${AGENT}First member edit.\n`);
+    expect((await runCLI(['push', '--all', '--role', 'ops'], projectRoot, home)).output).toContain('Pushed branch');
+    await mergePushAndPull();
+    if (next === 'edit') {
+      fs.writeFileSync(active('.teamai/agents/sample.md'), `${AGENT}First member edit.\nSecond member edit.\n`);
+    } else {
+      fs.rmSync(active('.teamai/agents/sample.md'));
+      fs.writeFileSync(active('.teamai/agents/sample.yaml'), 'name: sample\ndescription: A sample agent\ninstructions: Second member edit.\n');
+    }
+
+    const push = await runCLI(['push', '--all', '--role', 'ops'], projectRoot, home);
+
+    expect(push.output).toContain('Pushed branch');
+    const [branch] = pushBranches();
+    const destination = `.teamai/agents/ops/sample.${next === 'edit' ? 'md' : 'yaml'}`;
+    expect(git(['show', `${branch}:${destination}`], remote)).toContain('Second member edit.');
+  });
+
   it('stops a --carried agent conversion when a teammate added its destination file', async () => {
     expect((await runCLI(['pull'], projectRoot, home)).code).toBe(0);
     const AGENT = '---\nname: sample\ndescription: A sample agent\n---\n\nSample instructions.\n';
