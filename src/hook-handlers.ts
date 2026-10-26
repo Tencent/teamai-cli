@@ -206,12 +206,17 @@ async function prepareCheckout(cwd: string, trigger: keyof typeof PREPARING_PULL
 }
 
 /**
- * Whether a tool's hook prepares the checkout at `cwd`: a project-scope one no
- * pull delivered into yet, which is not teamai's own. An HTTP team's checkout
- * keeps no such record; its resources come through the local agent's sync.
+ * Whether a tool's hook prepares the checkout at `cwd`: a project-scope one
+ * git's post-checkout would have prepared (a linked worktree or a submodule,
+ * whose `.git` is a file; a main checkout is where init runs), no pull
+ * delivered into yet, and not teamai's own. An HTTP team's checkout keeps no
+ * such record; its resources come through the local agent's sync.
  */
 async function needsPreparation(cwd: string, config: LocalConfig): Promise<boolean> {
-  if (config.scope !== 'project' || config.repo.kind === 'http') return false;
+  if (config.scope !== 'project' || config.repo.kind === 'http' || !config.projectRoot) return false;
+  const { stat } = await import('node:fs/promises');
+  const dotGit = await stat(path.join(config.projectRoot, '.git')).catch(() => null);
+  if (!dotGit?.isFile()) return false;
   const { deliveringCheckoutRecord } = await import('./pull.js');
   return !await deliveringCheckoutRecord(config) && !await isOwnCheckout(cwd, config);
 }
@@ -247,8 +252,8 @@ const newWorktreeHandler: HookHandler = {
 };
 
 /**
- * A tool used in a checkout teamai has not delivered into: one an agent tool
- * created without any git hook (Claude Code's `EnterWorktree`, Codex CLI's
+ * A tool used in a linked worktree teamai has not delivered into: one an agent
+ * tool created without any git hook (Claude Code's `EnterWorktree`, Codex CLI's
  * worktrees), or one made before teamai was set up. It is prepared in the
  * background pass (prepareCheckout); the session's tool hooks find its record
  * afterwards and do nothing.

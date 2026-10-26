@@ -145,7 +145,7 @@ scripts:
 - `postInit` 在 hook 装好之后跑。init 等它结束，再同步一次 MCP，这样脚本里填的值会生效。跳过规则和 `preInit` 一样。`teamai script run postInit` 会再跑一次并同步 MCP。
 - `prePull` 在一次完整 pull 的开头、该 scope 同步之前跑。它不能读终端。pull 最多等 90 秒，超时后让它继续在后台跑。inline pull 不跑它。
 - `postPull` 在完整 pull 结束之后跑。会话启动最多等 90 秒，超时后留在后台。交互式 `teamai pull` 不等。inline pull 不跑。失败记在 `~/.teamai/debug.log`。
-- `postDeploy` 每个 checkout 只跑一次，在它第一次交付做完后跑：新建的 linked worktree，或 submodule 第一次检出时，在那条 git 命令返回前跑；agent 工具不经 Git hooks 创建的 worktree，或在设置 TeamAI 之前就有的 checkout，在后台跑。这条路径不会跑 `teamai init`。pull 最多等 15 秒。用 `teamai script run postDeploy` 再跑。脚本应当可以重复执行，并且保留已经存在的个人文件。
+- `postDeploy` 对每个新建的 linked worktree 或 submodule checkout 只跑一次，在它第一次交付做完后跑。Git hook 在那条 git 命令返回前跑它。agent 工具不经 Git hooks 创建的 worktree，或在设置 TeamAI 之前就有的 worktree，由工具在那里的第一次会话或工具调用在后台跑。这条路径不会跑 `teamai init`。pull 最多等 15 秒。用 `teamai script run postDeploy` 再跑。脚本应当可以重复执行，并且保留已经存在的个人文件。
 
 ## 角色和项目
 

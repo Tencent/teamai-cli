@@ -10,7 +10,7 @@ const { mockPull, mockSeed } = vi.hoisted(() => ({
   mockSeed: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock('../pull.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../pull.js')>()), pull: mockPull }));
-vi.mock('../project-agent-root.js', () => ({ seedProjectAgentRoot: mockSeed, createProjectToolRoots: vi.fn().mockResolvedValue(undefined) }));
+vi.mock('../project-agent-root.js', () => ({ seedProjectAgentRoot: mockSeed }));
 vi.mock('../pkg/pkg-hint.js', () => ({
   packageManifestHashForCwd: vi.fn().mockResolvedValue(null),
   stashPackageHintAfterPull: vi.fn().mockResolvedValue(undefined),
@@ -133,11 +133,10 @@ describe('the session-start pull of a tool a workflow launched (#1176)', () => {
   });
 
   it.each([
-    // A checkout no pull delivered into is prepared as a new one (#1424).
-    ['no record', async (config: LocalConfig) => { fs.rmSync(path.join(config.dataHome!, 'state.json')); }, { silent: true, prepareCheckout: 'once' }],
-    ['a pending full sync', async (config: LocalConfig) => recordDelivery(config, { rev: 'HEAD', targets: ['claude'], lastPullRev: null }), { silent: true }],
-    ['targets without the tool', async (config: LocalConfig) => recordDelivery(config, { rev: 'HEAD', targets: ['codex'] }), { silent: true }],
-  ])('seeds and pulls a checkout with %s', async (_case, change, pulled) => {
+    ['no record', async (config: LocalConfig) => { fs.rmSync(path.join(config.dataHome!, 'state.json')); }],
+    ['a pending full sync', async (config: LocalConfig) => recordDelivery(config, { rev: 'HEAD', targets: ['claude'], lastPullRev: null })],
+    ['targets without the tool', async (config: LocalConfig) => recordDelivery(config, { rev: 'HEAD', targets: ['codex'] })],
+  ])('seeds and pulls a checkout with %s', async (_case, change) => {
     const { config, project } = await delivered();
     const launch = (await workflowLaunch(config, 'claude'))!;
     await change(config);
@@ -145,6 +144,6 @@ describe('the session-start pull of a tool a workflow launched (#1176)', () => {
     await pullHandler().execute({ cwd: project, [LAUNCH_PAYLOAD_KEY]: launchEnv(launch) }, 'claude', config);
 
     expect(mockSeed).toHaveBeenCalledWith('claude', project);
-    expect(mockPull).toHaveBeenCalledWith(pulled);
+    expect(mockPull).toHaveBeenCalledWith({ silent: true });
   });
 });

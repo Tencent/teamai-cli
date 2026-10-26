@@ -1688,6 +1688,9 @@ describe('a checkout no pull delivered into (#1424)', () => {
     vi.clearAllMocks();
     root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'new-checkout-')));
     mockDeliveringCheckoutRecord.mockResolvedValue(undefined);
+    // A linked worktree: its `.git` is a file naming the repository's git dir.
+    fs.mkdirSync(path.join(root, 'project'));
+    fs.writeFileSync(path.join(root, 'project', '.git'), `gitdir: ${path.join(root, 'repo.git', 'worktrees', 'project')}\n`);
   });
   afterEach(() => {
     mockDeliveringCheckoutRecord.mockResolvedValue({ rev: 'abc', targets: [] });
@@ -1704,6 +1707,15 @@ describe('a checkout no pull delivered into (#1424)', () => {
     await toolUse(projectConfig('git'));
 
     expect(mockPull).toHaveBeenCalledWith({ silent: true, prepareCheckout: 'once', inline: true, localOnly: true });
+  });
+
+  it('prepares nothing in a main checkout, where init runs', async () => {
+    fs.rmSync(path.join(root, 'project', '.git'));
+    fs.mkdirSync(path.join(root, 'project', '.git'));
+
+    await toolUse(projectConfig('git'));
+
+    expect(mockPull).not.toHaveBeenCalled();
   });
 
   it('prepares nothing for an HTTP team, whose checkouts keep no delivery record', async () => {
