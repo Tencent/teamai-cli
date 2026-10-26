@@ -1219,17 +1219,16 @@ async function defaultBranchGuard(
   // item that is going out: a file left out by --skill, a filter or the
   // selection must not hold back the rest.
   const stops = async (going: readonly ResourceItem[]): Promise<boolean> => {
-    const carried = carriedVersions(carriedValues, changes.history === 'complete' ? changes.retiring : []);
-    if (!carried) return true;
     const goingOut = (list: readonly ResourceItem[]): ResourceItem[] => list.filter((item) => going.includes(item));
+    const retiringOut = changes.history === 'complete' ? changes.retiring.filter(({ item }) => going.includes(item)) : [];
+    const carried = carriedVersions(carriedValues, retiringOut);
+    if (!carried) return true;
     const edited = goingOut(changes.history === 'complete' ? changes.edited : changes.unclassified);
     // Pull never refreshes the member's root copy, so only the member can say
     // a conversion carries the team's edit. --carried says it for the version
     // a stop printed; a later team edit stops the push again.
-    const retiring = changes.history === 'complete'
-      ? changes.retiring.filter(({ item, retired, tip }) => going.includes(item)
-        && !carried.some((version) => version.retired === retired && version.tip === tip))
-      : [];
+    const retiring = retiringOut.filter(({ retired, tip }) =>
+      !carried.some((version) => version.retired === retired && version.tip === tip));
     if (edited.length === 0 && retiring.length === 0) return false;
     const defaultBranch = await getDefaultBranch(memberRoot);
     if (changes.history === 'missing') {
