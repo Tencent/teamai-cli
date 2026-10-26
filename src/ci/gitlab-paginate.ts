@@ -21,16 +21,15 @@ export type GitLabPageParser<T> = (json: unknown) => T[];
  * @param fetchPage - fetches one page (must set `redirect: 'manual'` itself)
  * @param maxPages - page limit (GitLab returns up to 100 items per page)
  * @param label - endpoint name used in error messages
- * @param parse - parses the response body (an array by default)
- * @param stopWhen - ends a lookup once a page contains a matching item; omit when all items are needed
+ * @param options - custom page parser and a stop condition for item lookups; omit when all items are needed
  */
 export async function paginateGitLab<T>(
   fetchPage: (page: number) => Promise<Response>,
   maxPages: number,
   label: string,
-  parse: GitLabPageParser<T> = (json) => json as T[],
-  stopWhen?: (item: T) => boolean,
+  options: { parse?: GitLabPageParser<T>; stopWhen?: (item: T) => boolean } = {},
 ): Promise<T[]> {
+  const { parse = (json: unknown) => json as T[], stopWhen } = options;
   const all: T[] = [];
   for (let page = 1; page <= maxPages; page++) {
     const resp = await fetchPage(page);

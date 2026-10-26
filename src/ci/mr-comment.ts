@@ -330,14 +330,13 @@ async function gitlabRequest(mrUrl: string, path: string, method: string, body?:
 async function findGitLabComment(mrUrl: string, marker: string): Promise<GitLabNote | null> {
   // Markers sit on their own line. Ignore mentions quoted in a sentence.
   const matchesMarker = (note: GitLabNote) => note.body.split('\n').some((line) => line.trim() === marker);
-  // Stop when found: later pages cannot change which newest matching note to
-  // update, and a busy MR may have more notes than the pagination cap allows.
+  // Pipeline updates edit the original comment without changing created_at.
+  // Search recent edits first, then stop at the most recently updated marker.
   const notes = await paginateGitLab<GitLabNote>(
-    (page) => gitlabRequest(mrUrl, `?per_page=100&page=${page}`, 'GET'),
+    (page) => gitlabRequest(mrUrl, `?per_page=100&order_by=updated_at&sort=desc&page=${page}`, 'GET'),
     MAX_NOTE_PAGES,
     'GitLab note list',
-    undefined,
-    matchesMarker,
+    { stopWhen: matchesMarker },
   );
   return notes.find(matchesMarker) ?? null;
 }

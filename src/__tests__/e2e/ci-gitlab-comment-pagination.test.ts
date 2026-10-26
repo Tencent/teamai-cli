@@ -14,6 +14,19 @@ describe('ci extract-mr GitLab comment pagination (real CLI)', () => {
     const pages: number[] = [];
     const writes: string[] = [];
     let updatedBody = '';
+    const notes = Array.from({ length: 2_500 }, (_, i) => ({
+      id: 100 + i,
+      body: `chat ${i}`,
+      created_at: new Date(Date.UTC(2026, 0, 1) + i * 1_000).toISOString(),
+      updated_at: new Date(Date.UTC(2026, 0, 1) + i * 1_000).toISOString(),
+    }));
+    if (markerPresent) {
+      // Editing the original pipeline's comment does not change created_at.
+      for (const [index, id] of [9, 8].entries()) {
+        notes[index] = { ...notes[index], id, body: '<!-- teamai:ci-extract -->\nold content',
+          updated_at: new Date(Date.UTC(2026, 9, 26) - index * 1_000).toISOString() };
+      }
+    }
     const server = http.createServer((req, res) => {
       const url = new URL(req.url!, 'http://fixture');
       res.setHeader('Content-Type', 'application/json');
@@ -28,10 +41,11 @@ describe('ci extract-mr GitLab comment pagination (real CLI)', () => {
       } else if (url.pathname.endsWith('/notes')) {
         const page = Number(url.searchParams.get('page'));
         pages.push(page);
-        const notes = Array.from({ length: 100 }, (_, i) => ({ id: page * 100 + i, body: `chat ${i}` }));
-        if (markerPresent && page === 1) notes[0] = { id: 9, body: '<!-- teamai:ci-extract -->\nold content' };
-        res.setHeader('x-next-page', String(page + 1));
-        res.end(JSON.stringify(notes));
+        const orderBy = url.searchParams.get('order_by') === 'updated_at' ? 'updated_at' : 'created_at';
+        const direction = url.searchParams.get('sort') === 'asc' ? 1 : -1;
+        const sorted = [...notes].sort((a, b) => direction * a[orderBy].localeCompare(b[orderBy]));
+        if (page * 100 < notes.length) res.setHeader('x-next-page', String(page + 1));
+        res.end(JSON.stringify(sorted.slice((page - 1) * 100, page * 100)));
       } else if (url.pathname.endsWith('/commits')) res.end('[]');
       else if (url.pathname.endsWith('/changes')) res.end('{"changes":[]}');
       else if (url.pathname.endsWith('/7')) {
