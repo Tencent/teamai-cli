@@ -39,7 +39,19 @@ it('doctor accepts the live launcher saved by another entry to the same built CL
     };
     expect(ready()).toBe(true);
     expect(fs.readFileSync(file, 'utf8')).toBe(before);
+    const shell = path.join(root, 'sh');
+    fs.writeFileSync(shell, '#!/bin/sh\n');
+    fs.writeFileSync(file, before.replace(`const NODE = ${JSON.stringify(process.execPath)};`, `const NODE = ${JSON.stringify(shell)};`));
+    expect(ready()).toBe(false);
+    fs.writeFileSync(file, before.replace(`const NODE = ${JSON.stringify(process.execPath)};`, `const NODE = ${JSON.stringify(first)};`)
+      .replace(`const ENTRY = ${JSON.stringify(first)};`, `const ENTRY = ${JSON.stringify(process.execPath)};`));
+    expect(ready()).toBe(false);
+    fs.writeFileSync(file, before);
+    expect(ready()).toBe(true);
     fs.unlinkSync(first);
+    fs.mkdirSync(first);
+    expect(ready()).toBe(false);
+    fs.rmdirSync(first);
     expect(ready()).toBe(false);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 }, 60000);
