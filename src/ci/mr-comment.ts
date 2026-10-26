@@ -10,6 +10,7 @@ import type { LearningDraft, CodebaseSuggestion } from '../types.js';
 import { tgitFetch } from '../providers/tgit/rest-auth.js';
 import { getGitLabToken } from '../providers/gitlab/gitlab-api.js';
 import { parseGitLabMRUrl } from '../providers/gitlab/mr-fetch.js';
+import { paginateGitLab } from './gitlab-paginate.js';
 import { log } from '../utils/logger.js';
 
 // ─── 常量 ────────────────────────────────────────────────
@@ -317,6 +318,10 @@ async function gitlabRequest(mrUrl: string, path: string, method: string, body?:
     headers: { 'PRIVATE-TOKEN': token, 'Content-Type': 'application/json', 'Accept': 'application/json' },
     body: body ? JSON.stringify(body) : undefined,
     signal: AbortSignal.timeout(API_TIMEOUT_MS),
+    // Never follow redirects: the PRIVATE-TOKEN header would be forwarded to
+    // whatever origin the 3xx points at. The host check in parseGitLabMRUrl
+    // only covers the first URL.
+    redirect: 'manual',
   });
 }
 
@@ -324,17 +329,14 @@ async function findGitLabComment(mrUrl: string, marker: string): Promise<GitLabN
   // GitLab returns notes newest-first, capped at 100 per page. Page through all
   // of them: a marker note pushed far back by newer discussion is still the one
   // to update in place, and missing it would post a duplicate instead.
-  for (let page = 1; page <= MAX_NOTE_PAGES; page++) {
-    const resp = await gitlabRequest(mrUrl, `?per_page=100&page=${page}`, 'GET');
-    if (!resp.ok) {
-      throw new Error(`GitLab note list request failed (${resp.status})`);
-    }
-    const notes = (await resp.json()) as GitLabNote[];
-    const found = notes.find((n) => n.body.includes(marker));
-    if (found) return found;
-    if (!resp.headers.get('x-next-page')) break;
-  }
-  return null;
+  const notes = await paginateGitLab<GitLabNote>(
+    (page) => gitlabRequest(mrUrl, `?per_page=100&page=${page}`, 'GET'),
+    MAX_NOTE_PAGES,
+    'GitLab note list',
+  );
+  // Our own notes start with the marker; a human note that merely quotes it
+  // must not be mistaken for the comment to update in place.
+  return notes.find((n) => n.body.trimStart().startsWith(marker)) ?? null;
 }
 
 async function postGitLabComment(mrUrl: string, body: string): Promise<CommentResult> {

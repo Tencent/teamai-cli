@@ -75,9 +75,18 @@ teamai-post-merge-write:
       echo "=== [TeamAI] Writing knowledge for $MR_URL ==="
       # 团队知识仓库克隆到源码 checkout 之外：克隆在 checkout 内会被当成源码提取，
       # CLI 会跳过 teamwiki/ 更新，只写 learning。
+      # clone URL 由 CI_SERVER_URL 拼装（保留 scheme/端口/相对根路径）：
+      # CI_SERVER_HOST 不含协议与路径，自建实例（如 https://host:8443/gitlab）会拼错。
       TEAM_REPO_DIR=/tmp/teamai-team-repo
+      CI_BASE="${CI_SERVER_URL%/}"
+      CI_HOSTPART="${CI_BASE#*://}"
+      CI_HOST="${CI_HOSTPART%%/*}"
+      CI_ROOT=""
+      case "$CI_HOSTPART" in
+        */*) CI_ROOT="/${CI_HOSTPART#*/}" ;;
+      esac
       git clone --branch "${TEAMAI_KNOWLEDGE_BRANCH}" \
-        "https://oauth2:${GITLAB_TOKEN}@${CI_SERVER_HOST}/${TEAMAI_KNOWLEDGE_REPO}.git" \
+        "https://oauth2:${GITLAB_TOKEN}@${CI_HOST}${CI_ROOT}/${TEAMAI_KNOWLEDGE_REPO}.git" \
         "$TEAM_REPO_DIR"
       # 在合入后的源码 checkout（GitLab 已自动 clone 到 CI_PROJECT_DIR）中运行：
       # teamwiki/ 走 `teamai import --dir . --incremental` 的同一流程，

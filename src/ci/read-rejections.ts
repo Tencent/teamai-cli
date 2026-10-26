@@ -11,6 +11,7 @@ import { parseMrUrl } from './mr-comment.js';
 import { tgitFetch } from '../providers/tgit/rest-auth.js';
 import { getGitLabToken } from '../providers/gitlab/gitlab-api.js';
 import { parseGitLabMRUrl } from '../providers/gitlab/mr-fetch.js';
+import { paginateGitLab } from './gitlab-paginate.js';
 import { log } from '../utils/logger.js';
 
 const API_TIMEOUT_MS = 15_000;
@@ -183,32 +184,35 @@ async function readGitLabRejections(mrUrl: string): Promise<RejectionResult> {
   const doFetch = (path: string) => fetch(`${apiBase}${path}`, {
     headers,
     signal: AbortSignal.timeout(API_TIMEOUT_MS),
+    // Never follow redirects: the PRIVATE-TOKEN header would be forwarded to
+    // whatever origin the 3xx points at. The host check in parseGitLabMRUrl
+    // only covers the first URL.
+    redirect: 'manual',
   });
 
   // GitLab returns notes newest-first, capped at 100 per page. Page through
   // all of them: a 👎 on an older note (pushed past page 1 by newer discussion)
   // must still reject the learning, same as fetchGitLabDiscussions paging.
-  const notes: GitLabNote[] = [];
-  for (let page = 1; page <= MAX_NOTE_PAGES; page++) {
-    const resp = await doFetch(`/projects/${enc}/merge_requests/${mrIid}/notes?per_page=100&page=${page}`);
-    if (!resp.ok) throw new Error(`GitLab notes request failed (${resp.status})`);
-    const pageNotes = (await resp.json()) as GitLabNote[];
-    notes.push(...pageNotes);
-    if (!resp.headers.get('x-next-page')) break;
-  }
+  const notes = await paginateGitLab<GitLabNote>(
+    (page) => doFetch(`/projects/${enc}/merge_requests/${mrIid}/notes?per_page=100&page=${page}`),
+    MAX_NOTE_PAGES,
+    'GitLab notes',
+  );
 
   for (const note of notes) {
     const markerId = extractMarkerId(note.body);
     if (!markerId) continue;
     result.allIds.add(markerId);
 
-    const reactResp = await doFetch(
-      `/projects/${enc}/merge_requests/${mrIid}/notes/${note.id}/award_emoji?per_page=100`,
+    // A note can carry more than 100 awards; a thumbsdown past the first page
+    // still means the suggestion is rejected.
+    const awards = await paginateGitLab<GitLabAward>(
+      (page) => doFetch(
+        `/projects/${enc}/merge_requests/${mrIid}/notes/${note.id}/award_emoji?per_page=100&page=${page}`,
+      ),
+      MAX_NOTE_PAGES,
+      `GitLab award_emoji for note ${note.id}`,
     );
-    if (!reactResp.ok) {
-      throw new Error(`GitLab award_emoji request failed for note ${note.id} (${reactResp.status})`);
-    }
-    const awards = (await reactResp.json()) as GitLabAward[];
 
     // GitLab: 👎 (thumbsdown) = reject，无 emoji = approve（默认写入，与 GitHub 一致）
     if (awards.some((a) => a.name === 'thumbsdown')) {

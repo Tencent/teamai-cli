@@ -120,6 +120,76 @@ describe('postOrUpdateMrComment API failures', () => {
     expect(fetchMock.mock.calls[0][1]?.method).toBe('GET');
   });
 
+  it('never follows redirects when calling the GitLab notes API (token must not leak)', async () => {
+    vi.stubEnv('GITLAB_TOKEN', 'test-token');
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(null, { status: 302, headers: { location: 'https://evil.example/x' } }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(postOrUpdateMrComment(
+      'https://gitlab.com/acme/app/-/merge_requests/7', undefined, undefined,
+    )).rejects.toThrow(/redirect/i);
+
+    // Every request must opt out of redirect following.
+    for (const [, init] of fetchMock.mock.calls) {
+      expect(init?.redirect).toBe('manual');
+    }
+  });
+
+  it('finds a marker note on a later page and updates it in place', async () => {
+    vi.stubEnv('GITLAB_TOKEN', 'test-token');
+    const marker = '<!-- teamai:ci-extract -->';
+    const page1 = JSON.stringify(Array.from({ length: 100 }, (_, i) => ({ id: 200 + i, body: `chat ${i}` })));
+    const page2 = JSON.stringify([{ id: 9, body: `${marker}\nlearning body` }]);
+    const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
+      if (url.includes('&page=1')) {
+        return new Response(page1, { status: 200, headers: { 'x-next-page': '2' } });
+      }
+      if (url.includes('&page=2')) return new Response(page2, { status: 200 });
+      if (url.includes('/notes/9')) {
+        return new Response(JSON.stringify({}), { status: 200 });
+      }
+      throw new Error(`unexpected ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await postOrUpdateMrComment(
+      'https://gitlab.com/acme/app/-/merge_requests/7',
+      { learning: { title: 'T', content: 'C' } } as never,
+      undefined,
+    );
+
+    const put = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT');
+    expect(put?.[0]).toContain('/notes/9');
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+  });
+
+  it('ignores a human note that only quotes the marker', async () => {
+    vi.stubEnv('GITLAB_TOKEN', 'test-token');
+    const marker = '<!-- teamai:ci-extract -->';
+    const notes = JSON.stringify([
+      { id: 5, body: `I think ${marker} is wrong` },
+    ]);
+    const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
+      if (url.includes('/notes?')) return new Response(notes, { status: 200 });
+      if (url.includes('/notes/')) return new Response(JSON.stringify({}), { status: 200 });
+      if (url.endsWith('/notes')) return new Response(JSON.stringify({ id: 42 }), { status: 201 });
+      throw new Error(`unexpected ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await postOrUpdateMrComment(
+      'https://gitlab.com/acme/app/-/merge_requests/7',
+      { learning: { title: 'T', content: 'C' } } as never,
+      undefined,
+    );
+
+    // The quoted mention must not be treated as our own comment: post a new one.
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(true);
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'PUT')).toBe(false);
+  });
+
   it('refuses a GitLab MR URL whose host is not the configured instance', async () => {
     vi.stubEnv('GITLAB_TOKEN', 'test-token');
     const fetchMock = vi.fn();

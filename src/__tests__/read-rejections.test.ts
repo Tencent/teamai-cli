@@ -111,7 +111,7 @@ describe('GitLab (默认写入，👎 thumbsdown = reject)', () => {
   ]);
   const notesUrl = 'https://gitlab.com/api/v4/projects/acme%2Fapp/merge_requests/7/notes?per_page=100&page=1';
   const emojiUrl = (noteId: number) =>
-    `https://gitlab.com/api/v4/projects/acme%2Fapp/merge_requests/7/notes/${noteId}/award_emoji?per_page=100`;
+    `https://gitlab.com/api/v4/projects/acme%2Fapp/merge_requests/7/notes/${noteId}/award_emoji?per_page=100&page=1`;
 
   it('thumbsdown award 标记为 reject，无 emoji 默认 approve', async () => {
     vi.stubEnv('GITLAB_TOKEN', 'test-token');
@@ -150,6 +150,42 @@ describe('GitLab (默认写入，👎 thumbsdown = reject)', () => {
     const result = await readRejections('https://gitlab.com/acme/app/-/merge_requests/7');
     expect(result.rejectedIds).toEqual(new Set(['learning']));
     expect(shouldWrite('learning', result, 'gitlab')).toBe(false);
+  });
+
+  it('honours a thumbsdown that is beyond the first page of awards', async () => {
+    vi.stubEnv('GITLAB_TOKEN', 'test-token');
+    const note = JSON.stringify([{ id: 1, body: '<!-- teamai:ci-extract:learning -->\ncontent' }]);
+    const awardPage1 = JSON.stringify(Array.from({ length: 100 }, (_, i) => ({ name: `emoji_${i}` })));
+    const awardPage2 = JSON.stringify([{ name: 'thumbsdown' }]);
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.includes('/notes?')) return new Response(note, { status: 200 });
+      if (url.includes('/award_emoji?per_page=100&page=1')) {
+        return new Response(awardPage1, { status: 200, headers: { 'x-next-page': '2' } });
+      }
+      if (url.includes('/award_emoji?per_page=100&page=2')) {
+        return new Response(awardPage2, { status: 200 });
+      }
+      throw new Error(`unexpected ${url}`);
+    }));
+
+    const result = await readRejections('https://gitlab.com/acme/app/-/merge_requests/7');
+    expect(result.rejectedIds).toEqual(new Set(['learning']));
+    expect(shouldWrite('learning', result, 'gitlab')).toBe(false);
+  });
+
+  it('never follows redirects when reading GitLab notes (token must not leak)', async () => {
+    vi.stubEnv('GITLAB_TOKEN', 'test-token');
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(null, { status: 302, headers: { location: 'https://evil.example/x' } }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(readRejections('https://gitlab.com/acme/app/-/merge_requests/7'))
+      .rejects.toThrow(/redirect/i);
+
+    for (const [, init] of fetchMock.mock.calls) {
+      expect(init?.redirect).toBe('manual');
+    }
   });
 
   it('fails when the GitLab note list cannot be read', async () => {
