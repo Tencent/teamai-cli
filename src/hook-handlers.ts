@@ -252,9 +252,9 @@ const newWorktreeHandler: HookHandler = {
 
     await recordingFailure(config, 'post-checkout', () => prepareCheckout(cwd, 'post-checkout'));
     // Learnings, reports, sources and the team repo itself refresh after
-    // `git worktree add` returns; it also retries what failed above.
-    // postDeploy already ran inside the pull.
-    await spawnDetachedPull(cwd, 'post-checkout');
+    // `git worktree add` returns; it also retries what failed above, and
+    // runs postDeploy when it, not the pull above, writes the first record.
+    await spawnDetachedPull(cwd, 'post-checkout', { prepareCheckout: 'once' });
     return null;
   },
 };
@@ -349,14 +349,17 @@ async function recordingFailure(
 
 /**
  * Start a full `teamai pull --silent` in `cwd` that this process does not wait
- * for. TEAMAI_GIT_HOOK makes it record its failure, and clear the record when it
+ * for. TEAMAI_PREPARE_CHECKOUT hands it the checkout to prepare, since a
+ * fast-forward `git pull` hands over with the same event.
+ * TEAMAI_GIT_HOOK makes it record its failure, and clear the record when it
  * succeeds.
  */
-async function spawnDetachedPull(cwd: string, event: GitHookEvent): Promise<void> {
+async function spawnDetachedPull(cwd: string, event: GitHookEvent, how: { prepareCheckout?: 'once' } = {}): Promise<void> {
   const { resolveCliEntry } = await import('./builtin-hooks.js');
   const { spawn } = await import('node:child_process');
+  const prepare = how.prepareCheckout ? { TEAMAI_PREPARE_CHECKOUT: how.prepareCheckout } : {};
   spawn(process.execPath, [resolveCliEntry() ?? '', 'pull', '--silent'], {
-    cwd, detached: true, stdio: 'ignore', windowsHide: true, env: { ...process.env, TEAMAI_GIT_HOOK: event },
+    cwd, detached: true, stdio: 'ignore', windowsHide: true, env: { ...process.env, TEAMAI_GIT_HOOK: event, ...prepare },
   }).on('error', (e) => log.debug(`git hook: detached pull failed to start: ${e.message}`)).unref();
 }
 

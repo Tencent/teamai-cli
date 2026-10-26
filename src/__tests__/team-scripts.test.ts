@@ -115,22 +115,26 @@ describe('runTeamScript', () => {
         repo: process.env.TEAMAI_REPO,
         checkout: process.env.TEAMAI_CHECKOUT ?? null,
         hook: process.env.TEAMAI_GIT_HOOK ?? null,
+        prepare: process.env.TEAMAI_PREPARE_CHECKOUT ?? null,
       }));
     `);
     process.env.TEAMAI_GIT_HOOK = 'post-merge';
+    process.env.TEAMAI_PREPARE_CHECKOUT = 'once';
     try {
       const result = await runTeamScript(config(dir), 'postInit', { interactive: true });
       expect(result).toEqual({ status: 'ran', code: 0 });
     } finally {
       delete process.env.TEAMAI_GIT_HOOK;
+      delete process.env.TEAMAI_PREPARE_CHECKOUT;
     }
     const recorded = JSON.parse(fs.readFileSync(out, 'utf8')) as {
-      scope: string; repo: string; checkout: string | null; hook: string | null;
+      scope: string; repo: string; checkout: string | null; hook: string | null; prepare: string | null;
     };
     expect(recorded.scope).toBe('user');
     expect(recorded.repo).toBe(dir);
     expect(recorded.checkout).toBeNull();
     expect(recorded.hook).toBeNull();
+    expect(recorded.prepare).toBeNull();
     const options = mockSpawn.mock.calls.at(-1)![2] as { stdio: string[] };
     expect(options.stdio).toEqual(['inherit', 'inherit', 'inherit']);
   });

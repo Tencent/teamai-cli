@@ -3016,9 +3016,13 @@ export async function pull(
   // A pull a git hook started: inline, or the detached one it hands over to.
   const { isGitHookEvent } = await import('./git-hook.js');
   const hookEnv = process.env.TEAMAI_GIT_HOOK;
-  // Read once; the scripts this pull runs (postPull) must not inherit it.
+  const prepareEnv = process.env.TEAMAI_PREPARE_CHECKOUT;
+  // Read once; the scripts this pull runs (postPull, postDeploy) must not inherit them.
   delete process.env.TEAMAI_GIT_HOOK;
+  delete process.env.TEAMAI_PREPARE_CHECKOUT;
   if (!options.gitHook && isGitHookEvent(hookEnv)) options = { ...options, gitHook: hookEnv };
+  // The pull a new checkout's hook hands over to writes its first record when the hook's own could not.
+  if (!options.prepareCheckout && prepareEnv === 'once') options = { ...options, prepareCheckout: 'once' };
   // What the scopes below say in their own words, so the post-pull pass does
   // not repeat it. Owned here rather than at module scope so nothing survives
   // into another call.

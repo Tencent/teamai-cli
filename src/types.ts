@@ -1585,7 +1585,8 @@ export interface GlobalOptions {
    * - `always`: a workflow worktree whose agent files were just put back to a
    *   base commit. postDeploy runs on every such pull.
    * - `once`: a linked worktree, a submodule's first checkout when that repo
-   *   already has teamai's git hooks, or a worktree an agent tool created
+   *   already has teamai's git hooks (and the pull that hook hands over to,
+   *   through TEAMAI_PREPARE_CHECKOUT), or a worktree an agent tool created
    *   without git hooks. Only the pull that writes the checkout's first record
    *   runs postDeploy; an inline one finding a record under the sync lock
    *   delivers nothing.
