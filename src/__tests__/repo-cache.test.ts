@@ -6,11 +6,15 @@ import fs from 'fs-extra';
 
 import {
     getRepoCacheDir,
+    assertSafeRepoCachePath,
     getRepoSlug,
     writeLastSync,
     readLastSync,
     ensureCacheRoot,
 } from '../utils/repo-cache.js';
+import { parseGitHubRepoInput } from '../providers/github/repo-url.js';
+import { parseGitLabRepoInput } from '../providers/gitlab/repo-url.js';
+import { parseTGitRepoInput } from '../providers/tgit/repo-url.js';
 
 describe('repo-cache', () => {
     let tmpDir: string;
@@ -46,6 +50,89 @@ describe('repo-cache', () => {
             const github = getRepoCacheDir('github', 'org', 'repo');
             const tgit = getRepoCacheDir('tgit', 'org', 'repo');
             expect(github).not.toBe(tgit);
+        });
+
+        it.each([
+            ['../github', 'org', 'repo'],
+            ['github/other', 'org', 'repo'],
+            ['github', '../../../victim', 'repo'],
+            ['github', 'team/../other', 'repo'],
+            ['github', 'team/./sub', 'repo'],
+            ['github', 'org', '../victim'],
+            ['github', 'org', 'nested/repo'],
+            ['github', '..\\..\\victim', 'repo'],
+            ['github', 'org', '..\\victim'],
+            ['github', '/absolute', 'repo'],
+            ['github', 'org', '/absolute'],
+            ['github', 'C:\\victim', 'repo'],
+            ['github', 'org', 'C:victim'],
+            ['github', 'team//sub', 'repo'],
+            ['github', 'team/', 'repo'],
+            ['github', 'org', '.'],
+            ['github', 'org', '..'],
+            ['github', 'org', '.. '],
+            ['github', 'org', '...'],
+            ['github', 'org', 'repo\0name'],
+            ['', 'org', 'repo'],
+            ['github', '', 'repo'],
+            ['github', 'org', ''],
+        ])('rejects unsafe cache components %j/%j/%j', (provider, owner, repo) => {
+            expect(() => getRepoCacheDir(provider, owner, repo)).toThrow('Invalid repository cache path');
+        });
+
+        it.each(['my.repo-name_1', '.hidden', 'repo..name', 'r'.repeat(100), '项目'])('preserves valid repository name %s', (repo) => {
+            expect(getRepoCacheDir('gitlab', 'team/sub/group', repo))
+                .toBe(path.join(tmpDir, 'gitlab', 'team', 'sub', 'group', repo));
+        });
+
+        it.each([
+            { provider: 'github', parse: parseGitHubRepoInput, url: 'https://github.com/team/service.git', owner: 'team' },
+            { provider: 'github', parse: parseGitHubRepoInput, url: 'git@github.com:team/service.git', owner: 'team' },
+            { provider: 'gitlab', parse: parseGitLabRepoInput, url: 'https://gitlab.com/team/sub/service.git', owner: 'team/sub' },
+            { provider: 'gitlab', parse: parseGitLabRepoInput, url: 'git@gitlab.com:team/sub/service.git', owner: 'team/sub' },
+            { provider: 'tgit', parse: parseTGitRepoInput, url: 'https://git.woa.com/team/sub/service.git', owner: 'team/sub' },
+            { provider: 'tgit', parse: parseTGitRepoInput, url: 'git@git.woa.com:team/sub/service.git', owner: 'team/sub' },
+        ])('preserves the parsed cache path for $url', ({ provider, parse, url, owner }) => {
+            const info = parse(url);
+            expect(getRepoCacheDir(provider, info.owner, info.repo)).toBe(path.join(tmpDir, provider, owner, 'service'));
+        });
+
+        it('rejects the cache root itself and paths outside it', () => {
+            expect(() => assertSafeRepoCachePath(tmpDir)).toThrow('Invalid repository cache path');
+            expect(() => assertSafeRepoCachePath(path.join(tmpDir, '..', 'outside'))).toThrow(/path traversal/i);
+        });
+
+        it('rejects an existing or missing cache reached through a link outside the cache root', async () => {
+            const cache = path.join(tmpDir, 'cache');
+            const outside = path.join(tmpDir, 'outside');
+            await fs.ensureDir(cache);
+            await fs.ensureDir(path.join(outside, 'org', 'existing'));
+            await fs.symlink(outside, path.join(cache, 'gitlab'), process.platform === 'win32' ? 'junction' : 'dir');
+            process.env.TEAMAI_CACHE_DIR = cache;
+
+            for (const repo of ['existing', 'missing']) {
+                expect(() => getRepoCacheDir('gitlab', 'org', repo)).toThrow('Path traversal detected');
+            }
+        });
+
+        it('allows a cache root that is itself a directory link', async () => {
+            const cache = path.join(tmpDir, 'cache');
+            const link = path.join(tmpDir, 'cache-link');
+            await fs.ensureDir(cache);
+            await fs.symlink(cache, link, process.platform === 'win32' ? 'junction' : 'dir');
+            process.env.TEAMAI_CACHE_DIR = link;
+
+            expect(getRepoCacheDir('gitlab', 'team/sub', 'repo'))
+                .toBe(path.join(link, 'gitlab', 'team', 'sub', 'repo'));
+        });
+
+        it('allows an intermediate directory link whose target stays inside the cache root', async () => {
+            const provider = path.join(tmpDir, 'provider');
+            await fs.ensureDir(provider);
+            await fs.symlink(provider, path.join(tmpDir, 'gitlab'), process.platform === 'win32' ? 'junction' : 'dir');
+
+            expect(getRepoCacheDir('gitlab', 'team/sub', 'repo'))
+                .toBe(path.join(tmpDir, 'gitlab', 'team', 'sub', 'repo'));
         });
     });
 
