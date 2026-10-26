@@ -6,6 +6,7 @@ import path from 'node:path';
 let mockFiles: Record<string, unknown> = {};
 
 vi.mock('../utils/fs.js', () => ({
+  readFileSafe: vi.fn(async () => null),
   readJson: vi.fn(async (filePath: string) => mockFiles[filePath] ?? null),
   readJsonObject: vi.fn(async (filePath: string) => (filePath in mockFiles
     ? { kind: 'ok', value: mockFiles[filePath] } : { kind: 'missing' })),
