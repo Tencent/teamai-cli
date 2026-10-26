@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
-import { RUN_MODES } from '../launch-context.js';
+import { RunModeSchema } from '../launch-context.js';
 import { canonicalJson } from '../utils/canonical-json.js';
 import { redact } from '../utils/redact.js';
 import { isRecord } from './expression.js';
@@ -46,7 +46,7 @@ const BodySchema = z.object({
   sourceHash: z.string(),
   definitionHash: z.string(),
   teamRevision: CommitIdSchema.optional(),
-  runMode: z.enum(RUN_MODES).optional(),
+  runMode: RunModeSchema.optional(),
   settledCount: z.number().int(),
   cancelledAttempts: z.array(z.string()),
   archive: z.array(withCommitIds(ArchivedPassSchema)),

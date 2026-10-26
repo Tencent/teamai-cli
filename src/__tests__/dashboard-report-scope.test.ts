@@ -1383,10 +1383,14 @@ describe('the usage report counts the member\'s own sessions, split by run mode 
       const payload = { ...base, hook_event_name: name, ...(event === 'prompt-submit' ? { prompt: 'hello' } : {}) };
       const stdinFile = path.join(tmp, `stdin-${Date.now()}-${Math.random()}.json`);
       for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value);
-      fs.writeFileSync(stdinFile, JSON.stringify(payload));
-      await hookDispatchCli(event, 'claude', '*', { stdinFile });
-      const forwarded = sessionRun(process.env);
-      vi.unstubAllEnvs();
+      let forwarded: ReturnType<typeof sessionRun>;
+      try {
+        fs.writeFileSync(stdinFile, JSON.stringify(payload));
+        await hookDispatchCli(event, 'claude', '*', { stdinFile });
+        forwarded = sessionRun(process.env);
+      } finally {
+        vi.unstubAllEnvs();
+      }
       fs.writeFileSync(stdinFile, JSON.stringify({ ...payload, [SESSION_RUN_PAYLOAD_KEY]: forwarded }));
       await hookDispatchCli(event, 'claude', '*', { bgOnly: true, stdinFile });
     }

@@ -112,10 +112,14 @@ describe('the source of a run mode (#1384)', () => {
     expect(explainRunMode(env)).toEqual(explained);
   });
 
-  it('names the TEAMAI_MODE value it ignored', () => {
+  it('names the TEAMAI_MODE value it ignored, and leaves the warning to its caller', () => {
     const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
-    expect(explainRunMode({ TEAMAI_MODE: 'robot', CI: '1' })).toEqual({ mode: 'unattended', source: 'CI', ignored: 'robot' });
-    stderr.mockRestore();
+    try {
+      expect(explainRunMode({ TEAMAI_MODE: 'robot', CI: '1' })).toEqual({ mode: 'unattended', source: 'CI', ignored: 'robot' });
+      expect(stderr).not.toHaveBeenCalled();
+    } finally {
+      stderr.mockRestore();
+    }
   });
 });
 
@@ -141,7 +145,7 @@ describe('who launched a session (#1384)', () => {
   });
 });
 
-describe('the run mode variable has one spelling (#1384)', () => {
+describe('the launch variables have one spelling (#1384)', () => {
   const srcRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
   const sourceFiles = (dir: string): string[] => fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
     const full = path.join(dir, entry.name);
@@ -149,9 +153,9 @@ describe('the run mode variable has one spelling (#1384)', () => {
     return entry.isFile() && entry.name.endsWith('.ts') ? [full] : [];
   });
 
-  it('is quoted only in launch-context.ts, so other code imports RUN_MODE_ENV', () => {
+  it('are quoted only in launch-context.ts, so other code imports RUN_MODE_ENV, LAUNCHED_BY_ENV and ATTEMPT_ENV', () => {
     const owner = path.join(srcRoot, 'launch-context.ts');
-    const quoted = /['"`]TEAMAI_MODE['"`]/;
+    const quoted = /['"`](TEAMAI_MODE|TEAMAI_LAUNCHED_BY|TEAMAI_WORKFLOW_ATTEMPT)['"`]/;
     const offenders = sourceFiles(srcRoot).filter((file) => file !== owner && quoted.test(fs.readFileSync(file, 'utf8')));
 
     expect(offenders.map((file) => path.relative(srcRoot, file))).toEqual([]);

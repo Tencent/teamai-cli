@@ -4,13 +4,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { log } from './utils/logger.js';
 import { ensureDir } from './utils/fs.js';
-import { readEvents, rebuildSessions, appendEvent, memberEvents, sessionRunModes } from './dashboard-collector.js';
+import { readEvents, rebuildSessions, appendEvent, memberEvents, sessionRuns } from './dashboard-collector.js';
 import { isProcessAlive } from './pid-monitor.js';
 import {
   DASHBOARD_DEFAULT_PORT,
   DASHBOARD_PID_CHECK_INTERVAL_MS,
   type DashboardEvent,
   type LocalConfig,
+  type RunModeSplit,
 } from './types.js';
 import { getDashboardHtml } from './dashboard-html.js';
 import { getUserHome } from './utils/home.js';
@@ -135,6 +136,7 @@ export async function startDashboard(port?: number): Promise<void> {
     try {
       const events = await readEvents(eventsPath);
       const sessions = rebuildSessions(events);
+      const runs = sessionRuns(events);
 
       for (const session of sessions) {
         // Only check non-stopped sessions with a monitorPid
@@ -142,7 +144,6 @@ export async function startDashboard(port?: number): Promise<void> {
         if (!session.monitorPid) continue;
 
         if (!isProcessAlive(session.monitorPid)) {
-          const run = [...events].reverse().find((e) => e.sessionId === session.sessionId && e.runMode);
           const exitEvent: DashboardEvent = {
             type: 'process_exit',
             timestamp: new Date().toISOString(),
@@ -155,8 +156,7 @@ export async function startDashboard(port?: number): Promise<void> {
             // And its repo, which the cwd may no longer lead to (a removed worktree).
             projectAnchor: [...events].reverse().find((e) => e.sessionId === session.sessionId && e.projectAnchor)?.projectAnchor,
             // And its mode and who launched it, so a step's exit stays out of the member's sessions.
-            ...(run?.runMode ? { runMode: run.runMode } : {}),
-            ...(run?.launchedBy ? { launchedBy: run.launchedBy } : {}),
+            ...runs.get(session.sessionId),
           };
           await appendEvent(exitEvent);
           log.info(
@@ -357,18 +357,19 @@ export async function startDashboard(port?: number): Promise<void> {
         const trends = summarizeTrendWindow(daily);
         const costs = summarizeSessionCosts(snapshots);
         // The sessions that ended in the current window, by the run mode they recorded.
-        const modes = sessionRunModes(events);
+        const runs = sessionRuns(events);
         const ended = (keep: (sessionId: string) => boolean) =>
           summarizeTrendWindow(computeDailyStatsDelta(new Map([...snapshots].filter(([sessionId]) => keep(sessionId))), {}).delta).current.sessionsEnded;
+        const runModes: RunModeSplit = {
+          attended: ended((sessionId) => runs.get(sessionId)?.runMode === 'attended'),
+          unattended: ended((sessionId) => runs.get(sessionId)?.runMode === 'unattended'),
+          notRecorded: ended((sessionId) => !runs.has(sessionId)),
+        };
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           current: { ...trends.current, ...costs.current },
           previous: { ...trends.previous, ...costs.previous },
-          runModes: {
-            attended: ended((sessionId) => modes.get(sessionId) === 'attended'),
-            unattended: ended((sessionId) => modes.get(sessionId) === 'unattended'),
-            notRecorded: ended((sessionId) => !modes.has(sessionId)),
-          },
+          runModes,
         }));
       } catch (e) {
         res.writeHead(500, { 'Content-Type': 'application/json' });

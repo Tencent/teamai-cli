@@ -41,7 +41,7 @@ import {
 } from './types.js';
 import { getUserHome } from './utils/home.js';
 import type { HeadState } from './utils/git.js';
-import type { RunMode } from './launch-context.js';
+import type { SessionRun } from './launch-context.js';
 import { estimateClaudeRequest } from './model-pricing.js';
 
 // ─── Event collection data flow ─────────────────────────
@@ -2076,13 +2076,13 @@ export function memberEvents(events: DashboardEvent[]): DashboardEvent[] {
 }
 
 /**
- * Each session's run mode: the one its latest event that recorded one says. A session with no such event, such as one
- * recorded before the mode was, has none, and counts as not recorded.
+ * Each session's run: the mode and launcher its latest event that recorded a mode says. A session with no such event,
+ * such as one recorded before the mode was, has none, and counts as not recorded.
  */
-export function sessionRunModes(events: DashboardEvent[]): Map<string, RunMode> {
-  const modes = new Map<string, RunMode>();
-  for (const event of events) if (event.runMode) modes.set(event.sessionId, event.runMode);
-  return modes;
+export function sessionRuns(events: DashboardEvent[]): Map<string, SessionRun> {
+  const runs = new Map<string, SessionRun>();
+  for (const { sessionId, runMode, launchedBy } of events) if (runMode) runs.set(sessionId, { runMode, ...(launchedBy ? { launchedBy } : {}) });
+  return runs;
 }
 
 /**

@@ -534,7 +534,8 @@ async function prepareLeased(input: { config: LocalConfig; lock: RunLock; driver
     return { error: { code: 'busy', message: `Attempt ${attempt} of run ${lock.run} runs in ${placed.dir}, the place of attempt ${placed.behind}, which is still open, so it was not prepared. Report attempt ${placed.behind}, then prepare this one with next --prepare --attempt ${attempt}.` } };
   }
   if (placed.kind === 'failed') return failed(placed.failure);
-  // A --json driver's run keeps no mode, so its setup runs in the mode of the process that prepares it.
+  // Setup runs in the mode of the process that prepares the attempt, not the mode the run started in: a run
+  // another machine claimed can run its passes in another mode.
   const failure = await runPlaceSetup({ config, run: lock.run, attempt, mode: resolveRunMode(process.env), values: env.values });
   if (failure) return failed(failure);
   return { data: { ...answer.data, lease: { ...named.data, cwd: placed.dir, ...(placed.prompt !== undefined ? { prompt: placed.prompt } : {}) } } };

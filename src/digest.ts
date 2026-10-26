@@ -7,7 +7,7 @@ import { parseLearningDoc, titleFromFilename } from './utils/search-index.js';
 import { requireInit, detectProjectConfig } from './config.js';
 import { calculateTeamHealth } from './skill-health.js';
 import { createGit } from './utils/git.js';
-import type { UserStats, UserModeStats, TokenUsage } from './types.js';
+import type { RunModeSplit, UserStats, UserModeStats, TokenUsage } from './types.js';
 import { totalTokens } from './types.js';
 import { mergeDailyStats, summarizeTrendWindow, type TrendPeriod } from './session-trends.js';
 
@@ -318,13 +318,6 @@ export function summarizeInterventions(teamStats: UserStats[]): InterventionSumm
   };
 }
 
-/** A team total split by the run mode it was recorded in; `notRecorded` is the rest, recorded without one. */
-export interface RunModeSplit {
-  attended: number;
-  unattended: number;
-  notRecorded: number;
-}
-
 /**
  * The team's `count` split by run mode. A member's top-level counter holds every count of their own sessions, and what
  * neither mode holds was recorded without one, so it is shown apart, never as a mode.
@@ -341,8 +334,8 @@ export function splitByRunMode(teamStats: UserStats[], count: (stats: UserModeSt
   return split;
 }
 
-function formatRunModeSplit(split: RunModeSplit, unit: string): string {
-  return `  By run mode: attended ${split.attended} · unattended ${split.unattended} · not recorded ${split.notRecorded} ${unit}`;
+function formatRunModeSplit(split: RunModeSplit, unit: string, format: (count: number) => string = String): string {
+  return `  By run mode: attended ${format(split.attended)} · unattended ${format(split.unattended)} · not recorded ${format(split.notRecorded)} ${unit}`;
 }
 
 /** Aggregated team-wide conversation-turn + token-usage summary (Issue #75). */
@@ -603,6 +596,7 @@ export async function generateDigest(): Promise<void> {
         `(input ${formatTokenCount(t.input)} · output ${formatTokenCount(t.output)} · ` +
         `cache read ${formatTokenCount(t.cacheRead)} · cache write ${formatTokenCount(t.cacheCreation)})`,
       );
+      console.log(formatRunModeSplit(splitByRunMode(teamStats, (stats) => totalTokens(stats?.tokens)), 'tokens', formatTokenCount));
       console.log('');
     }
 

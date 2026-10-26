@@ -154,8 +154,8 @@ export interface DoctorReport {
   ok: boolean;
   /** null before initialization, when there is no config to scope. */
   scope: string | null;
-  /** The run mode this process resolves, and its source. Absent before initialization. */
-  runMode?: ExplainedRunMode;
+  /** The run mode this process resolves, and its source. */
+  runMode: ExplainedRunMode;
   checks: CheckResult[];
   /** Present only when the team repo declares packages. Human text, not checks. */
   packages?: { ok: boolean; lines: string[] };
@@ -891,10 +891,11 @@ export function formatCheckResult({ name, ok, fix }: CheckResult): string[] {
 }
 
 /** The run mode row: the mode and its source, with a warning when TEAMAI_MODE held a value it ignored. */
-export function formatRunMode({ mode, source, ignored }: ExplainedRunMode): string {
-  return ignored === undefined
-    ? `  ✔ Run mode: ${mode} (${source})`
-    : `  ⚠ Run mode: ${mode} (${source}). TEAMAI_MODE="${ignored}" is not attended or unattended, so it is ignored.`;
+function formatRunMode(runMode: ExplainedRunMode): string {
+  const { mode, source } = runMode;
+  return 'ignored' in runMode && runMode.ignored !== undefined
+    ? `  ⚠ Run mode: ${mode} (${source}). TEAMAI_MODE="${runMode.ignored}" is not attended or unattended, so it is ignored.`
+    : `  ✔ Run mode: ${mode} (${source})`;
 }
 
 function renderResult(result: CheckResult): void {
@@ -908,6 +909,8 @@ export async function doctor(options: DoctorOptions): Promise<boolean> {
   if (jsonMode) setStderrOnly(true);
 
   log.info('Running diagnostics...\n');
+  // Information, not a check: an unknown TEAMAI_MODE fails nothing.
+  const runMode = explainRunMode(process.env);
   const ctx = await resolveDoctorContext();
   if (!ctx) {
     const notInitialized: CheckResult = {
@@ -916,9 +919,10 @@ export async function doctor(options: DoctorOptions): Promise<boolean> {
       fix: 'Run `teamai init <repo-url>` in a project, or add `--scope user` for all projects',
     };
     if (jsonMode) {
-      emitReport({ ok: false, scope: null, checks: [notInitialized] });
+      emitReport({ ok: false, scope: null, runMode, checks: [notInitialized] });
     } else {
       console.log('  Scope: not initialized\n');
+      console.log(formatRunMode(runMode));
       renderResult(notInitialized);
       console.log('');
     }
@@ -928,8 +932,6 @@ export async function doctor(options: DoctorOptions): Promise<boolean> {
 
   const { localConfig } = ctx;
   const scope = localConfig.scope ?? 'user';
-  // Information, not a check: an unknown TEAMAI_MODE fails nothing.
-  const runMode = explainRunMode(process.env);
   if (!jsonMode) {
     const scopeLabel = `${installScopeName(scope)}${scope === 'project' && localConfig.projectRoot ? ` (${localConfig.projectRoot})` : ''}`;
     console.log(`  Scope: ${scopeLabel}\n`);

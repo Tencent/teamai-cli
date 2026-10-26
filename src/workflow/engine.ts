@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { parseReportedAgent, parseReportedUsed, settleObservation, type ReportedAgent, type Used } from '../agent-observation.js';
 import { DriverSchema, sameDriver } from '../driver-identity.js';
-import { RUN_MODES, type RunMode } from '../launch-context.js';
+import { RunModeSchema, type RunMode } from '../launch-context.js';
 import { log } from '../utils/logger.js';
 import type { LocalConfig } from '../types.js';
 import { loadCachedWorkflow, loadWorkflowTree } from './cache.js';
@@ -1394,9 +1394,9 @@ export function parseReport(value: unknown): ParsedReport | string {
     report.unenforced = unenforced.data;
   }
   if (record.runMode !== undefined) {
-    const runMode = RUN_MODES.find((mode) => mode === record.runMode);
-    if (!runMode) return 'runMode must be attended or unattended';
-    report.runMode = runMode;
+    const runMode = RunModeSchema.safeParse(record.runMode);
+    if (!runMode.success) return 'runMode must be attended or unattended';
+    report.runMode = runMode.data;
   }
   const ignored = unreadFields(record, REPORT_FIELDS);
   if (isRecord(record.changes)) {

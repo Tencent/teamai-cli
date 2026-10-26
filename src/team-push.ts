@@ -6,8 +6,8 @@ import { readUsageEvents, truncateUsageAfterReport } from './usage-tracker.js';
 import { aggregateUsage } from './stats.js';
 import { collectTeamRepoSkills } from './agent-skills.js';
 import { BUILTIN_SKILL_NAMES } from './builtin-skills.js';
-import { readEvents, aggregateSessionMetrics, dataHomeKey, memberEvents, sessionRunModes } from './dashboard-collector.js';
-import { RUN_MODES, type RunMode } from './launch-context.js';
+import { readEvents, aggregateSessionMetrics, dataHomeKey, memberEvents, sessionRuns } from './dashboard-collector.js';
+import { RUN_MODES, type RunMode, type SessionRun } from './launch-context.js';
 import { writeFile, readFileSafe, ensureDir, pathExists, readJson, writeJson } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import type {
@@ -914,8 +914,8 @@ export function adoptBareKeys<T>(
   return adopted;
 }
 
-/** What one report adds to the counters of one run mode. */
-type ModeDelta = {
+/** What one report adds to a member's counters, in total or in one run mode. */
+type UsageDelta = {
   interventions: UserInterventionStats;
   promptTokens: PromptTokenDelta;
   daily: ReturnType<typeof computeDailyStatsDelta>['delta'];
@@ -928,12 +928,12 @@ type ModeDelta = {
  */
 function modeDelta(
   mode: RunMode,
-  modes: Map<string, RunMode>,
+  runs: Map<string, SessionRun>,
   current: { interventions: Map<string, ReportedInterventions[string]>; metrics: Map<string, SessionMetrics>; daily: Map<string, DailySessionSnapshot> },
   reported: { interventions: ReportedInterventions; promptTokens: ReportedPromptTokens; daily: ReportedDailySessions },
   dropped: Map<string, DroppedRollout[]>,
-): ModeDelta {
-  const inMode = <T>(sessions: Map<string, T>) => new Map([...sessions].filter(([sid]) => modes.get(sid) === mode));
+): UsageDelta {
+  const inMode = <T>(sessions: Map<string, T>) => new Map([...sessions].filter(([sid]) => runs.get(sid)?.runMode === mode));
   return {
     interventions: computeInterventionDelta(inMode(current.interventions), reported.interventions).delta,
     promptTokens: computePromptTokenDelta(inMode(current.metrics), reported.promptTokens, dropped).delta,
@@ -941,17 +941,17 @@ function modeDelta(
   };
 }
 
-/** One mode's counters of `existing` with `delta` added, or undefined when neither holds any. */
-function mergeModeStats(existing: UserModeStats | undefined, delta: ModeDelta): UserModeStats | undefined {
-  const merged: UserModeStats = { ...existing };
-  if (hasInterventionDelta(delta.interventions)) merged.interventions = mergeInterventionStats(existing?.interventions, delta.interventions);
+/** The counters `delta` changes, each as `existing` holds it with `delta` added. A counter it leaves alone is absent. */
+function changedCounters(existing: UserModeStats | undefined, delta: UsageDelta): UserModeStats {
+  const changed: UserModeStats = {};
+  if (hasInterventionDelta(delta.interventions)) changed.interventions = mergeInterventionStats(existing?.interventions, delta.interventions);
   if (hasPromptTokenDelta(delta.promptTokens)) {
     const pt = mergePromptTokenStats(existing?.prompts, existing?.tokens, delta.promptTokens);
-    merged.prompts = pt.prompts;
-    merged.tokens = pt.tokens;
+    changed.prompts = pt.prompts;
+    changed.tokens = pt.tokens;
   }
-  if (hasDailyDelta(delta.daily)) merged.daily = mergeDailyStats(existing?.daily, delta.daily);
-  return Object.keys(merged).length > 0 ? merged : undefined;
+  if (hasDailyDelta(delta.daily)) changed.daily = mergeDailyStats(existing?.daily, delta.daily);
+  return changed;
 }
 
 /**
@@ -1014,9 +1014,9 @@ export async function reportUsageToTeam(
       effective.daily,
       reportedDailySessions,
     );
-    const modes = sessionRunModes(dashboardEvents);
+    const runs = sessionRuns(dashboardEvents);
     const modeDeltas = RUN_MODES.map((mode) => [mode, modeDelta(
-      mode, modes, { interventions: effective.interventions, metrics, daily: effective.daily },
+      mode, runs, { interventions: effective.interventions, metrics, daily: effective.daily },
       { interventions: reportedInterventions, promptTokens: reportedPromptTokens, daily: reportedDailySessions }, dropped,
     )] as const);
     // This scope's sessions, and those of its snapshots no owner claims yet
@@ -1067,20 +1067,10 @@ export async function reportUsageToTeam(
         // default-branch repo path, never from writeRoot (the reports branch
         // is an orphan without skills/).
         const merged = mergeStatsWithinTeamSkills(existing, username, newStats, teamSkillNames);
-        if (hasInterventions) {
-          merged.interventions = mergeInterventionStats(existing?.interventions, interventionDelta);
-        }
-        if (hasPromptTokens) {
-          const pt = mergePromptTokenStats(existing?.prompts, existing?.tokens, promptTokenDelta);
-          merged.prompts = pt.prompts;
-          merged.tokens = pt.tokens;
-        }
-        if (hasDaily) {
-          merged.daily = mergeDailyStats(existing?.daily, dailyDelta);
-        }
+        Object.assign(merged, changedCounters(existing ?? undefined, { interventions: interventionDelta, promptTokens: promptTokenDelta, daily: dailyDelta }));
         for (const [mode, delta] of modeDeltas) {
-          const counters = mergeModeStats(existing?.[mode], delta);
-          if (counters) merged[mode] = counters;
+          const counters = { ...existing?.[mode], ...changedCounters(existing?.[mode], delta) };
+          if (Object.keys(counters).length > 0) merged[mode] = counters;
         }
 
         await writeFile(statsPath, YAML.stringify(merged));

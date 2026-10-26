@@ -9,7 +9,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import { AgentObservationSchema, observeCheckout, settleObservation, type AgentObservation } from '../agent-observation.js';
 import { getAgentVersion } from '../agent-version.js';
-import { launchedBy, resolveRunMode, RUN_MODES, type RunMode } from '../launch-context.js';
+import { agreedRunMode, launchedBy, resolveRunMode, RunModeSchema, type RunMode } from '../launch-context.js';
 import type { CheckoutRecord } from '../pull.js';
 import { deliveredTeamSkills } from '../skill-use.js';
 import { getDataHome, type DeliverySelection, type LocalConfig } from '../types.js';
@@ -23,7 +23,7 @@ export const SessionCaptureSchema = z.object({
   sessionId: z.string().min(1),
   capturedAt: z.string().datetime(),
   /** The run mode the session started in. Absent on captures written before it was recorded. */
-  runMode: z.enum(RUN_MODES).optional(),
+  runMode: RunModeSchema.optional(),
   agent: AgentObservationSchema,
   /** The session's own pull delivered a new revision to its checkout, so it may have loaded assets of either. */
   teamChanged: z.literal(true).optional(),
@@ -274,9 +274,7 @@ function agentOf(captures: readonly SessionCapture[], reportedModel: string | un
 
 /** The run mode every capture of a session recorded, or undefined when they differ or one recorded none. */
 function runModeOf(captures: readonly SessionCapture[]): RunMode | undefined {
-  const modes = new Set(captures.map((capture) => capture.runMode));
-  const [only] = modes;
-  return modes.size === 1 ? only : undefined;
+  return agreedRunMode(captures.map((capture) => capture.runMode));
 }
 
 export const SessionCaptures = { atStart, addToolVersion, checkoutDelivery, markTeamChanged, read, list, platformsOf, agentOf, runModeOf, sweep } as const;

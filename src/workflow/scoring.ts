@@ -34,6 +34,7 @@ import { scoringUnavailable } from '../scorers/home.js';
 import { requiredIsolation, scorerIsolationSource, unknownIsolationText, type IsolationSetting } from '../scorers/isolation.js';
 import { scopeScoring } from '../scorers/settings.js';
 import { answerSchema, evidenceDirOf, sweepEvidence, type Rubrics } from '../scorers/evidence.js';
+import { agreedRunMode } from '../launch-context.js';
 import { sessionLabel, SessionWork, writeSessionEvidence, type JudgedSession, type SessionEntry } from '../session-flow/session-work.js';
 import { buildEvidence, evidencePlan } from './scoring-evidence.js';
 import { error, ok } from './engine.js';
@@ -872,8 +873,7 @@ async function labelJudgeLease(
           const reported = judged.flatMap((pass) => pass.used ?? []);
           const used = reported.length > 0 ? { skills: [...new Set(reported.flatMap((each) => each.skills))].sort() } : undefined;
           // The pass's mode, or the one every pass a workflow step ran agrees on: never the judge's.
-          const modes = new Set(judged.map((pass) => pass.runMode));
-          const [runMode] = modes.size === 1 ? modes : [];
+          const runMode = agreedRunMode(judged.map((pass) => pass.runMode));
           return { label: { scorer, rubric, label, score, passed, source: 'workflow', subject: attempt.subject, ...(used ? { used } : {}), judge, ...(runMode ? { runMode } : {}), scoredAt } };
         } });
       case 'session':

@@ -564,14 +564,27 @@ describe('doctor — hook checks', () => {
         [{ TEAMAI_MODE: 'robot' }, '  ⚠ Run mode: attended (default). TEAMAI_MODE="robot" is not attended or unattended, so it is ignored.'],
     ])('prints the run mode with %o as a row that fails nothing (#1384)', async (env, row) => {
         for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value);
-        const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
+        try {
+            const allPassed = await doctor({});
 
-        const allPassed = await doctor({});
+            expect(consoleSpy.mock.calls.map((c) => String(c[0]))).toContain(row);
+            expect(allPassed).toBe(true);
+        } finally {
+            vi.unstubAllEnvs();
+        }
+    });
 
-        stderr.mockRestore();
-        vi.unstubAllEnvs();
-        expect(consoleSpy.mock.calls.map((c) => String(c[0]))).toContain(row);
-        expect(allPassed).toBe(true);
+    it('prints the run mode before initialization (#1384)', async () => {
+        mockedLoadLocalConfig.mockResolvedValue(null);
+        mockedLoadTeamConfig.mockResolvedValue(null);
+        vi.stubEnv('CI', 'true');
+        try {
+            await doctor({});
+
+            expect(consoleSpy.mock.calls.map((c) => String(c[0]))).toContain('  ✔ Run mode: unattended (CI)');
+        } finally {
+            vi.unstubAllEnvs();
+        }
     });
 
     it('does not assume a provider before initialization', async () => {
@@ -709,11 +722,13 @@ describe('doctor — JSON report', () => {
         [{}, { mode: 'attended', source: 'default' }],
     ])('reports the run mode %o resolves, and what set it (#1384)', async (env, runMode) => {
         for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value);
+        try {
+            await doctor({ json: true });
 
-        await doctor({ json: true });
-
-        vi.unstubAllEnvs();
-        expect(emittedReport().runMode).toEqual(runMode);
+            expect(emittedReport().runMode).toEqual(runMode);
+        } finally {
+            vi.unstubAllEnvs();
+        }
     });
 
     it('emits the same envelope before initialization', async () => {
@@ -726,6 +741,7 @@ describe('doctor — JSON report', () => {
         expect(allPassed).toBe(false);
         expect(report.ok).toBe(false);
         expect(report.scope).toBeNull();
+        expect(report.runMode).toEqual({ mode: 'attended', source: 'default' });
         expect(report.checks).toHaveLength(1);
         expect(report.checks[0]).toMatchObject({ name: 'TeamAI is not initialized', ok: false });
         expect(report.checks[0].fix).toContain('teamai init');

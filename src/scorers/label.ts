@@ -5,7 +5,7 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { AgentObservationSchema, ObservedEffortSchema, ObservedModelSchema, UsedSchema } from '../agent-observation.js';
-import { RUN_MODES } from '../launch-context.js';
+import { RunModeSchema } from '../launch-context.js';
 import { canonicalJson } from '../utils/canonical-json.js';
 
 export const RunSubjectSchema = z.object({ runId: z.string().min(1), step: z.string().min(1), pass: z.number().int().positive() });
@@ -64,7 +64,7 @@ const LabelFields = {
   passed: z.boolean(),
   judge: JudgeSchema,
   /** The run mode of the subject, never of the judge: the pass's for a pass, the session's for a session. Absent when unknown. */
-  runMode: z.enum(RUN_MODES).optional(),
+  runMode: RunModeSchema.optional(),
   scoredAt: z.string().datetime(),
 };
 

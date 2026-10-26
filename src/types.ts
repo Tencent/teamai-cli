@@ -1799,6 +1799,9 @@ export interface UserStats {
 /** The counters of {@link UserStats} one run mode holds. */
 export type UserModeStats = Pick<UserStats, 'interventions' | 'prompts' | 'tokens' | 'daily'>;
 
+/** A count split by the run mode it was recorded in; `notRecorded` is the rest, recorded without one. */
+export type RunModeSplit = Record<RunMode | 'notRecorded', number>;
+
 /** Aggregated, privacy-preserving activity for one UTC day. */
 export interface DailyUserStats {
   sessionsEnded: number;
