@@ -25,9 +25,9 @@ export type HomeMove =
  * `dir` is relative to `$HOME`. The first of `moves.by` that applies moves the
  * home; `moves.root` is the `$HOME`-relative directory a move replaces when it
  * is not `dir` (Pi's variable moves `.pi/agent`). `moves.settingsAtDefault`:
- * teamai still writes the tool's hooks (OpenCode's plugin, Pi's extension,
- * Muse's and CodeBuddy's settings.json hooks) and `models switch` settings under the default
- * home when the home moves, until B4 of #1221 moves them too.
+ * teamai still writes current hooks/settings under the default home when
+ * the home moves. Earlier file-less MCP records use `legacyDefaultHome`
+ * independently, including after hook migration.
  */
 export type Home = {
   readonly dir: string;
@@ -171,6 +171,8 @@ export type McpProject = McpCommon<HomeRead | ProjectRead | FirstExistingRead> &
 };
 
 export type McpChannels = Scoped<McpUser, McpProject> & {
+  /** Earlier releases wrote ownership records without a file under the default home. */
+  readonly legacyDefaultHome?: true;
   /** Files earlier releases wrote the servers to, per scope: pull moves teamai's servers out of them. */
   readonly retired?: { readonly user?: readonly string[]; readonly project?: readonly string[] };
 };
@@ -563,6 +565,7 @@ export const TOOLS = {
     },
     agents: NONE,
     mcp: {
+      legacyDefaultHome: true,
       user: { format: 'pi', reads: [{ base: 'home', path: '.pi/agent/mcp.json', evidence: 'verified' }] },
       project: { format: 'pi', reads: [{ base: 'project', path: '.pi/mcp.json', when: 'cwdOnly', evidence: 'verified' }] },
     },
@@ -894,4 +897,10 @@ export function mcpFormatOf(tool: string): McpFormat | null {
   const { mcp } = channelsOf(tool);
   for (const channel of [mcp.user, mcp.project]) if (typeof channel === 'object') return channel.format;
   return null;
+}
+
+/** File-less MCP records retain their default-home fallback after hooks move. */
+export function legacyDefaultMcp(tool: ToolId): boolean {
+  const mcp: McpChannels = TOOLS[tool].mcp;
+  return mcp.legacyDefaultHome === true || settingsAtDefault(tool);
 }
