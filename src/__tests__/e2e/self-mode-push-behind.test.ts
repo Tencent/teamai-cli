@@ -463,6 +463,18 @@ describe('single-repo push from a checkout behind the default branch', () => {
     expect(pushBranches()).toEqual([]);
   });
 
+  it.each([false, true])('rejects --carried when no resource goes out, teamai.yaml changed: %s', async (configChanged) => {
+    expect((await runCLI(['pull'], projectRoot, home)).code).toBe(0);
+    if (configChanged) fs.appendFileSync(active('.teamai/teamai.yaml'), '\n# pending config change\n');
+    const carried = `.teamai/agents/ops/sample.md@${'a'.repeat(40)}`;
+
+    const push = await runCLI(['push', '--all', '--carried', carried], projectRoot, home);
+
+    expect(push.code, push.output).toBe(2);
+    expect(push.output).toContain(`--carried ${carried} names no agent conversion this push stops for. Nothing was pushed.`);
+    expect(pushBranches()).toEqual([]);
+  });
+
   it('publishes an edited root agent re-added after the placed agent was deleted', async () => {
     expect((await runCLI(['pull'], projectRoot, home)).code).toBe(0);
     fs.mkdirSync(active('.teamai/agents'), { recursive: true });
