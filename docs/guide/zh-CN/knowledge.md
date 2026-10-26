@@ -193,6 +193,8 @@ write 模式在合并后的源码 checkout 里运行，代码知识走和 `teama
 
 不要的建议打上拒绝标记：GitHub 和 GitLab 用 👎，工蜂用 ☝️。模板（GitHub Actions、GitLab CI、智研 / Coding CI）在 [`examples/ci/`](../../../examples/ci/README.md)。
 
+GitLab 更新评论时，先查最近更新的评论，找到第一个匹配的标记就停止翻页，让最初流水线发布、之后一直原地编辑的评论仍能被找到。若查完 20 页仍未找到且还有下一页，命令会报错，避免发出重复评论。
+
 ## 知识库健康报告
 
 ```bash

@@ -454,6 +454,10 @@ Doctor checks the serialized rules reply against the user config `hooks.maxOutpu
 
 Pi reads `AGENTS.override.md` before `AGENTS.md` in the same directory. In user scope, pull writes rules and instruction blocks into the existing override and strips only TeamAI blocks from the older configured file. Personal text in both files is preserved, including on uninstall. Without an override, the configured user file remains the target.
 
+## A file blocks skill delivery
+
+When a file occupies a tool skills directory, doctor fails the directory check even if delivery skipped that tool. Move the file aside and run `teamai pull`. Uninstall keeps the blocking file and cleans the other managed resources.
+
 ## Placed agent format changes behind the default branch
 
 A `.md`/`.yaml` conversion may retire the agent this machine placed after its merge is proven. If the team changed that original, the push stops once and names it: update the checkout, carry its changes into the conversion, then push again. The next push does not stop for that version again. If the team deleted it, the remaining root copy is not a new agent to publish. Older records without a delivered blob catch a team change only while the checkout is behind it, so compare with the team file before converting.

@@ -19,7 +19,7 @@ teamai remove rules <name> --force
 
 Generated-hook checks compare the handler logic and accept an existing absolute launcher recorded by another installation of the same build. Running `doctor` from a different CLI path alone does not require reinstalling hooks. A missing saved launcher or changed handler still requires `teamai hooks inject` or `teamai pull`.
 
-If a file occupies a tool's skills directory, `pull` keeps it, names the blocked path, and continues delivering to other tools. Move the file aside, then run `teamai pull` again to deliver the missing skills.
+If a file occupies a tool's skills directory, `pull` keeps it, names the blocked path, and continues delivering to other tools. `doctor` fails the skills-directory check instead of treating the skipped tool as delivered. Move the file aside, then run `teamai pull` again to deliver the missing skills. `uninstall` preserves the blocking file and continues cleaning the tool's other managed resources.
 
 ZCode's CLI reads hooks from `~/.zcode/cli/config.json` even in single-repo mode. `hooks inject` moves teamai's old project-file entries there, keeps personal settings, and gates team hooks to their project. `hooks list` and `doctor` check that same HOME file.
 
