@@ -359,6 +359,37 @@ steps:
     expect(await readRun(project, runId)).toBe('missing');
   });
 
+  it('publishes a user-scope run from the project it was started in as a run of the user scope', async () => {
+    const { user } = await installs();
+    // The user scope's team repository, with an origin to publish to.
+    const git = (cwd: string, ...args: string[]): string => execFileSync('git', ['-c', 'user.name=T', '-c', 'user.email=t@t', ...args], { cwd, encoding: 'utf8' }).trim();
+    const knowledge = user.repo.localPath;
+    const origin = path.join(path.dirname(knowledge), 'user-team.git');
+    git(knowledge, 'init', '-q', '-b', 'main');
+    git(knowledge, 'add', '-A');
+    git(knowledge, 'commit', '-qm', 'team');
+    git(path.dirname(knowledge), 'clone', '-q', '--bare', knowledge, origin);
+    git(knowledge, 'remote', 'add', 'origin', origin);
+    // The business checkout the run starts in, with its own origin.
+    const work = path.join(path.dirname(knowledge), 'work');
+    fs.mkdirSync(work);
+    git(work, 'init', '-q', '-b', 'main');
+    git(work, 'commit', '-q', '--allow-empty', '-m', 'business');
+    git(path.dirname(knowledge), 'clone', '-q', '--bare', work, `${work}.git`);
+    git(work, 'remote', 'add', 'origin', `${work}.git`);
+    vi.spyOn(process, 'cwd').mockReturnValue(work);
+    fs.writeFileSync(path.join(process.env.HOME ?? '', '.teamai', 'config.yaml'), `repo:\n  localPath: ${JSON.stringify(knowledge)}\n  remote: ${JSON.stringify(origin)}\n  kind: git\nusername: tester\nscope: user\nadditionalRoles: []\n`);
+    const published = await loadLocalConfigForScope('user');
+    if (!published) throw new Error('the user config did not load');
+    await syncWorkflowDefinitions(published);
+    const started = await capture(() => workflowStart('ship', {}));
+    expect(started).toMatchObject({ data: { name: 'ship' } });
+    const runId = String(started.data?.run);
+
+    expect(await capture(() => workflowPublish(runId))).toMatchObject({ data: { publication: 'published' } });
+    expect(git(knowledge, '--git-dir', origin, 'ls-tree', '-r', '--name-only', 'teamai-reports')).toContain(runId);
+  });
+
   it('drives a user-scope run started there as the skill driver of that scope', async () => {
     const { project, user } = await installs();
     fs.writeFileSync(path.join(user.repo.localPath, 'workflows', 'review.yaml'), `schemaVersion: v1alpha1

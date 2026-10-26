@@ -15,6 +15,7 @@ import { z } from 'zod';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const CLI = path.join(ROOT, 'dist', 'index.js');
 const TEAM_URL = 'https://github.com/acme/team.git';
+const OTHER_URL = 'https://github.com/acme/other.git';
 const PHRASE = 'Only-the-judge-wrote-this-quokka';
 
 const EnvelopeSchema = z.object({ data: z.record(z.unknown()).optional(), error: z.object({ code: z.string(), message: z.string() }).optional() });
@@ -200,5 +201,29 @@ describe('teamai score with an external driver', () => {
     const judge = { driver: { ...driver, can: { judge: { isolation: 'verified', tools: ['claude'] } } }, running: [], run: runId };
     const next = await runCLI(['score', '--next', '--json', JSON.stringify(judge)], scoped, env);
     expect(envelope(next.stdout).data?.lease, next.stdout + next.stderr).toMatchObject({ subject: { runId, step: 'review', pass: 1 } });
+  });
+
+  it('settles the judge work of a user-scope run from the project it started in, whose own team lacks the workflow', async () => {
+    const scoped = fs.mkdtempSync(path.join(root, 'shadowed-'));
+    const { app, home, env } = await joinedApp(scoped, 'user');
+    // The project joins another team, which has no review workflow, so `workflow start review` runs the user scope's.
+    const other = path.join(scoped, 'other');
+    fs.mkdirSync(other);
+    fs.writeFileSync(path.join(other, 'teamai.yaml'), `team: other\nrepo: ${OTHER_URL}\nprovider: github\n`);
+    git(scoped, 'init', '-q', '-b', 'main', other);
+    git(other, 'add', '-A');
+    git(other, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'other');
+    git(scoped, 'clone', '-q', '--bare', other, `${other}.git`);
+    fs.appendFileSync(path.join(home, '.gitconfig'), `[url "file://${other}.git"]\n\tinsteadOf = ${OTHER_URL}\n`);
+    const joined = await runCLI(['init', OTHER_URL, '--provider', 'git', '--agent', 'claude', '--scope', 'project', '--force'], app, env);
+    expect(joined.code, `${joined.stdout}\n${joined.stderr}`).toBe(0);
+    const driver = { kind: 'ext', machine: 'e2e', workspace: app };
+    const runId = await drivenToDone({ app, home, env, driver });
+
+    const judge = { driver: { ...driver, can: { judge: { isolation: 'verified', tools: ['claude'] } } }, running: [], run: runId };
+    const lease = JudgeLeaseSchema.parse(envelope((await runCLI(['score', '--next', '--json', JSON.stringify(judge)], app, env)).stdout).data?.lease);
+    const answer = JSON.stringify({ driver, outcome: 'success', answer: { label: 'thorough', reasoning: 'Named the off-by-one.' }, judge: { tool: 'claude' } });
+    const settled = await runCLI(['score', '--lease', lease.ref, '--submit', '--stdin'], z.string().parse(lease.cwd), env, answer);
+    expect(envelope(settled.stdout).data, settled.stdout + settled.stderr).toMatchObject({ label: { scorer: 'review-quality', label: 'thorough' } });
   });
 });

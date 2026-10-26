@@ -1,4 +1,6 @@
-import { autoDetectInit } from './config.js';
+import { autoDetectInit, loadLocalConfigForScope } from './config.js';
+import { AttemptStore } from './scorers/attempts.js';
+import { parseLeaseRef } from './scorers/entry.js';
 import { scoreSession, type SessionDemand } from './session-flow/scoring.js';
 import type { LocalConfig } from './types.js';
 import { LabelStore } from './scorers/label-store.js';
@@ -101,6 +103,18 @@ async function runConfig(run: string): Promise<{ ok: true; config: LocalConfig }
   return 'config' in found ? { ok: true, config: found.config } : { ok: false, envelope: found };
 }
 
+/**
+ * The config of the scope that holds judge lease `ref`: this directory's, else the user scope's. A lease's cwd is its
+ * run's checkout, and a run of the user scope may start in a project with its own scope.
+ */
+async function leaseConfig(ref: string): Promise<{ ok: true; config: LocalConfig } | { ok: false; envelope: WorkflowEnvelope }> {
+  const current = await localConfig();
+  const lease = parseLeaseRef(ref);
+  if (lease === undefined || (current.ok && await AttemptStore.get(current.config, lease.entry, lease.attempt))) return current;
+  const user = await loadLocalConfigForScope('user', undefined, { dryRun: true });
+  return user && await AttemptStore.get(user, lease.entry, lease.attempt) ? { ok: true, config: user } : current;
+}
+
 async function score(options: ScoreOptions): Promise<WorkflowEnvelope> {
   const asksForPass = options.run !== undefined || options.step !== undefined || options.pass !== undefined || options.queue;
   const asksForSession = options.session !== undefined || options.source !== undefined || (!asksForPass && (options.scorer?.length || options.batch));
@@ -137,7 +151,7 @@ async function score(options: ScoreOptions): Promise<WorkflowEnvelope> {
     const scoped = request.run !== undefined ? await runConfig(request.run) : await localConfig();
     return scoped.ok ? nextJudgeLease(scoped.config, request) : scoped.envelope;
   }
-  const loaded = await localConfig();
+  const loaded = await leaseConfig(options.lease ?? '');
   if (!loaded.ok) return loaded.envelope;
   const { config } = loaded;
   if (options.lease !== undefined && !options.submit) return runJudgeLease(config, options.lease, payload.value);

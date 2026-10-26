@@ -447,7 +447,7 @@ export async function workflowCancel(runId: string, step?: string): Promise<void
 export async function workflowPublish(runId: string, options: { sessions?: boolean } = {}): Promise<void> {
   setStderrOnly(true);
   if (refusedNested(nestedCall(process.env), false)) return;
-  const loaded = await readyConfig();
+  const loaded = await readyRunConfig(runId);
   if (!('config' in loaded)) {
     refuse(loaded);
     return;
