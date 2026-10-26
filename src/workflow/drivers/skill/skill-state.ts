@@ -67,7 +67,7 @@ const HostRequestSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('adopt'), dir: z.string() }),
 ]) satisfies z.ZodType<HostPlaceRequest>;
 
-const RunVersionSchema: z.ZodType<RunVersion> = z.object({ status: z.enum(['running', 'succeeded', 'failed', 'cancelled']), revision: z.number().int() });
+const RunVersionSchema: z.ZodType<RunVersion> = z.object({ status: z.enum(['running', 'succeeded', 'failed', 'cancelled']), revision: z.number().int(), receipts: z.number().int(), creating: z.boolean() });
 const AttemptBase = { attempt: AttemptIdSchema, step: z.string(), revision: z.number().int(), spawnedAt: z.string(), expiresAt: z.string().optional() };
 /**
  * An open attempt: its runner prepares its place or runs its command; it waits for the place another attempt holds;

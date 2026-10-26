@@ -14,7 +14,8 @@ import { acquireLock, releaseLock } from '../update.js';
 import { WORKSPACE_MODES } from '../workflow/types.js';
 import { runLocalDriver } from '../workflow/drivers/local/local-driver.js';
 import { respondProvenance, respondToHitl } from '../workflow/run-controls.js';
-import { attemptDir, AttemptIdSchema, deliveryLockPath, readRun, RunIdSchema, runsDir, skillStatePath, type RunId } from '../workflow/store.js';
+import { attemptDir, AttemptIdSchema, deliveryLockPath, readRun, RunIdSchema, runsDir, skillStatePath, updateRun, type RunId } from '../workflow/store.js';
+import { DeliveryReceiptSchema } from '../workflow/delivery-schema.js';
 import type { Runners } from '../workflow/drivers/skill/skill-driver.js';
 // The doc comparison reads the table itself; every behaviour below goes through runSkillCall.
 import { TRANSITIONS, type TransitionRow } from '../workflow/drivers/skill/transitions.js';
@@ -761,6 +762,43 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       const before = asked;
       for (let call = 0; call < 3; call += 1) expect(await turnOf(await made.call({ kind: 'next', run, wait: false }))).toMatchObject({ status: 'done', actions: [{ kind: 'done', outcome: 'succeeded' }] });
       expect(asked).toBe(before);
+      return made.rows;
+    },
+  },
+  {
+    name: 'a retry that lands while the engine answers done is still driven: the kept end never takes the retried run\'s version',
+    rows: ['D16', 'X5', 'X6', 'D6'],
+    run: async () => {
+      let flag = '';
+      let retried = false;
+      const made = await harness({ check: FLAGGED }, { client: (client) => ({ ...client, next: async (...args) => {
+        const answer = await client.next(...args);
+        if (!retried && JSON.stringify(answer).includes('"done"')) {
+          retried = true;
+          fs.writeFileSync(flag, 'set');
+          await client.retry(args[0], 'flag');
+        }
+        return answer;
+      } }) });
+      flag = path.join(made.root, 'flag');
+      vi.stubEnv('RETRY_FLAG', flag);
+      const { run } = await started(made);
+      expect((await polledToDone(made, run)).actions).toEqual([expect.objectContaining({ kind: 'done', outcome: 'failed' })]);
+      expect(await turnOf(await made.call({ kind: 'next', run, wait: false }))).toMatchObject({ status: 'driving', events: [{ kind: 'started', step: 'flag' }] });
+      expect((await polledToDone(made, run)).actions).toEqual([{ kind: 'done', outcome: 'succeeded', prs: [] }]);
+      return made.rows;
+    },
+  },
+  {
+    name: 'a done run asks the engine again once a pull request receipt reaches its run file, and lists that pull request',
+    rows: ['X5', 'X6', 'D16'],
+    run: async () => {
+      const made = await harness({ check: CHECK });
+      const { run } = await started(made);
+      expect((await polledToDone(made, run)).actions).toEqual([expect.objectContaining({ kind: 'done', outcome: 'succeeded', prs: [] })]);
+      const receipt = DeliveryReceiptSchema.parse({ url: 'https://github.com/acme/app/pull/7', branch: 'teamai/check', base: 'main', step: 'greet', pass: 1 });
+      await updateRun(made.config, run, {}, async (loaded) => (typeof loaded === 'object' ? { value: undefined, write: { ...loaded, deliveries: [receipt] } } : { value: undefined }));
+      expect(await turnOf(await made.call({ kind: 'next', run, wait: false }))).toMatchObject({ status: 'done', actions: [{ kind: 'done', outcome: 'succeeded', prs: ['https://github.com/acme/app/pull/7'] }] });
       return made.rows;
     },
   },

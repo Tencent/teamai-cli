@@ -67,7 +67,7 @@ export const TRANSITIONS = [
   { id: 'D14', state: 'drive', input: 'reply wait', guard: 'it lists `held`, and no attempt is open', effects: 'none', next: 'drive', action: '`person why:handoff` with the person\'s `teamai workflow resume <run>` literal, with `--tools default=<session tool>` when `localPromptTool` names one; waiting `held`; no `then`' },
   { id: 'D15', state: 'drive', input: 'reply wait', guard: '', effects: 'none', next: 'drive', action: 'waiting' },
   { id: 'D27', state: 'drive', input: 'reply wait, after its row', guard: 'it lists `held`, and no reply of this tick came to a `next` that took no lease', effects: 'engine `next` as D1, with `canTakeLease: false`, since the engine answers a held step before a gate; H5, then D10 to D12 for a gate, take its reply', next: 'drive', action: '' },
-  { id: 'D16', state: 'drive', input: 'reply done', guard: '', effects: '`seq` := seq + 1, so every session has the end to see; keep the run file\'s status and revision with the end', next: 'done', action: '`done {outcome, failure, prs, judging}`' },
+  { id: 'D16', state: 'drive', input: 'reply done', guard: '', effects: '`seq` := seq + 1, so every session has the end to see; keep with the end the run file\'s version, read after, when its status and receipts agree with the end', next: 'done', action: '`done {outcome, failure, prs, judging}`' },
   { id: 'D17', state: 'drive', input: 'reply error', guard: '', effects: 'none', next: 'drive', action: 'error with the engine\'s code, next: the next literal' },
   { id: 'D18', state: 'drive', input: 'a foreground call', guard: 'it spawned runners', effects: 'release the lock; wait up to `WAIT_GRACE_MS` for them, re-taking the lock per check', next: 'drive', action: '' },
   { id: 'D19', state: 'any', input: 'a foreground call', guard: 'the lock is not free within `TICK_LOCK_WAIT_MS` (`report`: `WAIT_BOUND_MS`)', effects: 'none', next: 'unchanged', action: 'error `driver_running`, next: the same literal' },
@@ -119,9 +119,9 @@ export const TRANSITIONS = [
   { id: 'X1', state: 'done', input: 'next', guard: 'no attempt is open, and a judge is', effects: 'none', next: 'done', action: '`done` with `judging`; `then: poll`' },
   { id: 'X2', state: 'done', input: 'next', guard: 'no attempt or judge is open', effects: 'none', next: 'done', action: '`done`, no `then`' },
   { id: 'X4', state: 'done', input: 'next', guard: 'an attempt is still open: the engine cancelled it with the run', effects: 'none', next: 'done', action: 'every `stop`, then `done`; `then: poll`' },
-  { id: 'X5', state: 'done', input: 'tick', guard: 'the run file shows a status or revision other than those kept with the end, or none were kept', effects: 'keep the run file\'s status and revision with the end; engine `next` as D1, with `canTakeLease: false`', next: 'done', action: '' },
+  { id: 'X5', state: 'done', input: 'tick', guard: 'the run file shows a version other than the one kept with the end, or a create still unresolved, or none was kept', effects: 'keep the run file\'s version with the end; engine `next` as D1, with `canTakeLease: false`', next: 'done', action: '' },
   { id: 'X6', state: 'done', input: 'reply, before its row', guard: 'the reply is not `done`, or is a `done` whose outcome, failure or PRs differ from the kept end (`canonicalJson`): the engine reopened the run, as `workflow retry` does, or another driver ended it again', effects: 'drop `done`', next: 'drive', action: 'the reply\'s row; the tick goes on as in drive' },
-  { id: 'X7', state: 'done', input: 'tick', guard: 'the run file shows the status and revision kept with the end', effects: 'none: no engine `next`, so no tick publishes an end already out again', next: 'done', action: '' },
+  { id: 'X7', state: 'done', input: 'tick', guard: 'the run file shows the version kept with the end (status, revision, pull request receipts), and no create unresolved', effects: 'none: no engine `next`, so no tick publishes an end already out again', next: 'done', action: '' },
 ] as const satisfies readonly TransitionRow[];
 
 export type RowId = typeof TRANSITIONS[number]['id'];
@@ -448,6 +448,14 @@ interface TickRequest {
 }
 
 /**
+ * Whether `version`, read after the engine answered `end`, is the run file that end came from. A retry can land between
+ * the two, so a version that disagrees is not kept, and X5 asks the engine again.
+ */
+function agrees(version: RunVersion, end: { outcome: string; prs: string[] }): boolean {
+  return version.status === end.outcome && version.receipts === end.prs.length;
+}
+
+/**
  * The engine `next` of a tick (D1), or R12 while the host question waits. Once the run is done, a `next` that takes no
  * lease (X5) asks whether the engine reopened it or another driver ended it again, but only once `version`, what the
  * run file says now, moved from what the end kept (X7). A runner's check (`role: 'runner'`) takes no lease.
@@ -458,7 +466,8 @@ export function tickRow(state: SkillState, input: { role: 'call' | 'runner'; ver
   const autoApprove = state.options.hitl === 'auto-approve';
   const { done } = state;
   if (done) {
-    if (version && version.status === done.version?.status && version.revision === done.version.revision) return { row: 'X7' };
+    const kept = done.version;
+    if (version && kept && !version.creating && version.status === kept.status && version.revision === kept.revision && version.receipts === kept.receipts) return { row: 'X7' };
     return { row: 'X5', request: { running, canTakeLease: false, autoApprove }, state: version ? { ...state, done: { ...done, version } } : state };
   }
   if (state.host.kind === 'pending') return { row: 'R12' };
@@ -603,7 +612,7 @@ export function replyRow(state: SkillState, input: { reply: EngineReply; at: str
     case 'done':
       return {
         row: 'D16', effects: [],
-        state: { ...state, seq: state.seq + 1, done: { outcome: engine.outcome, ...(engine.failure ? { failure: engine.failure } : {}), prs: engine.prs, ...(input.version ? { version: input.version } : {}) } },
+        state: { ...state, seq: state.seq + 1, done: { outcome: engine.outcome, ...(engine.failure ? { failure: engine.failure } : {}), prs: engine.prs, ...(input.version && agrees(input.version, engine) ? { version: input.version } : {}) } },
       };
     case 'error':
       return { row: 'D17', answer: { kind: 'engine-error', error: engine.error, next: 'next' } };

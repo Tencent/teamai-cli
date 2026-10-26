@@ -117,7 +117,7 @@ Test parsing through `parseWorkflow` and `syncWorkflowDefinitions`. Test the eng
 | D14 | drive | reply wait | it lists `held`, and no attempt is open | none | drive | `person why:handoff` with the person's `teamai workflow resume <run>` literal, with `--tools default=<session tool>` when `localPromptTool` names one; waiting `held`; no `then` |
 | D15 | drive | reply wait | | none | drive | waiting |
 | D27 | drive | reply wait, after its row | it lists `held`, and no reply of this tick came to a `next` that took no lease | engine `next` as D1, with `canTakeLease: false`, since the engine answers a held step before a gate; H5, then D10 to D12 for a gate, take its reply | drive | |
-| D16 | drive | reply done | | `seq` := seq + 1, so every session has the end to see; keep the run file's status and revision with the end | done | `done {outcome, failure, prs, judging}` |
+| D16 | drive | reply done | | `seq` := seq + 1, so every session has the end to see; keep with the end the run file's version, read after, when its status and receipts agree with the end | done | `done {outcome, failure, prs, judging}` |
 | D17 | drive | reply error | | none | drive | error with the engine's code, next: the next literal |
 | D18 | drive | a foreground call | it spawned runners | release the lock; wait up to `WAIT_GRACE_MS` for them, re-taking the lock per check | drive | |
 | D19 | any | a foreground call | the lock is not free within `TICK_LOCK_WAIT_MS` (`report`: `WAIT_BOUND_MS`) | none | unchanged | error `driver_running`, next: the same literal |
@@ -203,6 +203,6 @@ While judging is on, a tick asks `score --next` for judge work of its own run on
 | X1 | done | next | no attempt is open, and a judge is | none | done | `done` with `judging`; `then: poll` |
 | X2 | done | next | no attempt or judge is open | none | done | `done`, no `then` |
 | X4 | done | next | an attempt is still open: the engine cancelled it with the run | none | done | every `stop`, then `done`; `then: poll` |
-| X5 | done | tick | the run file shows a status or revision other than those kept with the end, or none were kept | keep the run file's status and revision with the end; engine `next` as D1, with `canTakeLease: false` | done | |
+| X5 | done | tick | the run file shows a version other than the one kept with the end, or a create still unresolved, or none was kept | keep the run file's version with the end; engine `next` as D1, with `canTakeLease: false` | done | |
 | X6 | done | reply, before its row | the reply is not `done`, or is a `done` whose outcome, failure or PRs differ from the kept end (`canonicalJson`): the engine reopened the run, as `workflow retry` does, or another driver ended it again | drop `done` | drive | the reply's row; the tick goes on as in drive |
-| X7 | done | tick | the run file shows the status and revision kept with the end | none: no engine `next`, so no tick publishes an end already out again | done | |
+| X7 | done | tick | the run file shows the version kept with the end (status, revision, pull request receipts), and no create unresolved | none: no engine `next`, so no tick publishes an end already out again | done | |

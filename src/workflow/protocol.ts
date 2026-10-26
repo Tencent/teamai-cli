@@ -33,10 +33,16 @@ export type RespondVia =
   | { kind: 'process'; caller: CallerProvenance; json?: unknown }
   | Extract<Via, { kind: 'skill' }>;
 
-/** A run file's status, and its revision, which each settled report and each retry bumps: what an engine `done` answers from. */
+/**
+ * What an engine `done` answers from: a run file's status; its revision, which each settled report and each retry bumps;
+ * how many pull request receipts it lists, which a delivery adds without a bump; and whether a create it started is
+ * still unresolved, which only an engine `next` looks up.
+ */
 export interface RunVersion {
   status: RunState['status'];
   revision: number;
+  receipts: number;
+  creating: boolean;
 }
 
 /**
@@ -386,7 +392,7 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
     },
     runVersion: async (runId) => {
       const run = await readRun(config, runId);
-      return typeof run === 'object' ? { status: run.status, revision: run.revision } : undefined;
+      return typeof run === 'object' ? { status: run.status, revision: run.revision, receipts: run.deliveries?.length ?? 0, creating: (run.creating?.length ?? 0) > 0 } : undefined;
     },
     next: async (runId, body, options) => {
       const parsed = parseNextPayload(body);
