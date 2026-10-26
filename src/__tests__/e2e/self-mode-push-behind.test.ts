@@ -488,6 +488,34 @@ describe('single-repo push from a checkout behind the default branch', () => {
     expect(git(['show', `${branch}:${destination}`], remote)).toContain('Second member edit.');
   });
 
+  it('stops an edit over a teammate\'s change once an older placement record took the blob of a merged edit', async () => {
+    expect((await runCLI(['pull'], projectRoot, home)).code).toBe(0);
+    const AGENT = '---\nname: sample\ndescription: A sample agent\n---\n\nSample instructions.\n';
+    fs.mkdirSync(active('.teamai/agents'), { recursive: true });
+    fs.writeFileSync(active('.teamai/agents/sample.md'), AGENT);
+    expect((await runCLI(['push', '--all', '--role', 'ops'], projectRoot, home)).output).toContain('Pushed branch');
+    await mergePushAndPull();
+    const statePath = path.join(home, '.teamai', 'projects', projectSlug(projectRoot), 'state.json');
+    const olderState: Record<string, unknown> = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    delete olderState.placedAgentSources;
+    fs.writeFileSync(statePath, JSON.stringify(olderState));
+    fs.writeFileSync(active('.teamai/agents/sample.md'), `${AGENT}First member edit.\n`);
+    expect((await runCLI(['push', '--all', '--role', 'ops'], projectRoot, home)).output).toContain('Pushed branch');
+    await mergePushAndPull();
+
+    teammateLandsOnMain({ '.teamai/agents/ops/sample.md': `${AGENT}First member edit.\nTeammate safety instructions.\n` });
+    git(['pull', '-q', '--ff-only', 'origin', 'main'], projectRoot);
+    fs.writeFileSync(active('.teamai/agents/sample.md'), `${AGENT}First member edit.\nSecond member edit.\n`);
+    const push = await runCLI(['push', '--all', '--role', 'ops'], projectRoot, home);
+
+    expect(push.code, push.output).toBe(2);
+    expect(push.output).toContain(
+      '.teamai/agents/sample.md (pushed to .teamai/agents/ops/sample.md) would overwrite .teamai/agents/ops/sample.md, '
+        + 'which changed on origin/main since this machine delivered it.',
+    );
+    expect(pushBranches()).toEqual([]);
+  });
+
   it('stops a --carried agent conversion when a teammate added its destination file', async () => {
     expect((await runCLI(['pull'], projectRoot, home)).code).toBe(0);
     const AGENT = '---\nname: sample\ndescription: A sample agent\n---\n\nSample instructions.\n';
