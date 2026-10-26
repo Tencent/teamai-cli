@@ -618,6 +618,7 @@ const REFERENCE_DEFINITION = new RegExp(
   'gm',
 );
 const LIST_ITEM = /^ {0,3}(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$)/;
+const LIST_MARKER = /^ {0,3}(?:[-*+]|\d{1,9}[.)])[ \t]+/;
 /** A line that starts a block of its own, so a code span cannot continue into it; a blockquote starts one only after a line outside it. */
 const BLOCK_START = /^ {0,3}(?:#{1,6}(?:[ \t]|$)|(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$))/;
 const BLOCKQUOTE = /^ {0,3}>/;
@@ -633,6 +634,7 @@ function withoutCode(markdown: string): string {
   let inCode = false;
   let inList = false;
   let previousQuoted = false;
+  let inCommentBlock = false;
   const blocks: string[][] = [[]];
   const startBlock = (): void => {
     if ((blocks[blocks.length - 1] ?? []).length > 0) blocks.push([]);
@@ -641,7 +643,16 @@ function withoutCode(markdown: string): string {
     blocks[blocks.length - 1]?.push(line);
   };
   for (const line of markdown.split(/\r?\n/)) {
-    const fenceMarker = (inList ? /^\s*(`{3,}|~{3,})/ : /^ {0,3}(`{3,}|~{3,})/).exec(line)?.[1];
+    // A line that starts with `<!--` opens an HTML block that runs to its `-->`;
+    // what it holds, a fence included, is comment text the final pass removes.
+    if (fence === null && (inCommentBlock || /^ {0,3}<!--/.test(line))) {
+      inCommentBlock = !line.includes('-->', inCommentBlock ? 0 : line.indexOf('<!--') + 4);
+      keep(line);
+      continue;
+    }
+    const isListItem = LIST_ITEM.test(line);
+    const fenceLine = isListItem ? line.replace(LIST_MARKER, '') : line;
+    const fenceMarker = (inList || isListItem ? /^\s*(`{3,}|~{3,})/ : /^ {0,3}(`{3,}|~{3,})/).exec(fenceLine)?.[1];
     if (fence !== null) {
       const closing = (inList ? /^\s*(`{3,}|~{3,})[ \t]*$/ : /^ {0,3}(`{3,}|~{3,})[ \t]*$/).exec(line)?.[1];
       if (closing?.[0] === fence[0] && closing.length >= fence.length) fence = null;
@@ -649,6 +660,7 @@ function withoutCode(markdown: string): string {
     }
     if (fenceMarker) {
       fence = fenceMarker;
+      if (isListItem) inList = true;
       startBlock();
       previousBlank = false;
       continue;
@@ -658,7 +670,7 @@ function withoutCode(markdown: string): string {
       startBlock();
       previousQuoted = false;
     } else {
-      if (LIST_ITEM.test(line)) inList = true;
+      if (isListItem) inList = true;
       else if (previousBlank && !/^\s/.test(line)) inList = false;
       if (!inList && (inCode || previousBlank) && /^(?: {4}|\t)/.test(line)) {
         inCode = true;
@@ -705,6 +717,10 @@ function withoutSpansAndComments(text: string): string {
   let at = 0;
   let blockEnd = -1;
   for (let match = opener.exec(text); match !== null; match = opener.exec(text)) {
+    // A backslash escapes the first backtick of a run; the rest may still open a span.
+    let escapedBackslashes = 0;
+    while (text.charAt(match.index - 1 - escapedBackslashes) === '\\') escapedBackslashes++;
+    const escaped = match[0] !== '<!--' && escapedBackslashes % 2 === 1;
     if (match[0] === '<!--') {
       const close = text.indexOf('-->', match.index + 4);
       kept += text.slice(at, match.index);
@@ -714,10 +730,11 @@ function withoutSpansAndComments(text: string): string {
         blockEnd = text.indexOf('\n\n', match.index);
         if (blockEnd < 0) blockEnd = text.length;
       }
-      const run = match[0].length;
-      const close = closingRun(run, match.index + run, blockEnd);
+      const start = match.index + (escaped ? 1 : 0);
+      const run = match[0].length - (escaped ? 1 : 0);
+      const close = run === 0 ? -1 : closingRun(run, start + run, blockEnd);
       if (close < 0) continue;
-      kept += text.slice(at, match.index);
+      kept += text.slice(at, start);
       at = close + run;
     }
     opener.lastIndex = at;
@@ -725,12 +742,23 @@ function withoutSpansAndComments(text: string): string {
   return kept + text.slice(at);
 }
 
+const NAMED_CHARACTER_REFERENCES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: '\u00a0' };
+
+/** `text` with numeric character references and the common named ones (`&amp;`, `&lt;`, …) decoded, as Markdown reads a destination. */
+function decodeCharacterReferences(text: string): string {
+  return text.replace(/&(?:#(\d{1,7})|#[xX]([\da-fA-F]{1,6})|([a-zA-Z]+));/g, (reference, decimal?: string, hex?: string, name?: string) => {
+    const codePoint = decimal !== undefined ? Number(decimal) : hex !== undefined ? Number.parseInt(hex, 16) : undefined;
+    if (codePoint !== undefined) return codePoint > 0 && codePoint <= 0x10ffff ? String.fromCodePoint(codePoint) : '\ufffd';
+    return (name !== undefined ? NAMED_CHARACTER_REFERENCES[name] : undefined) ?? reference;
+  });
+}
+
 /** The local link targets of a Markdown file, without `#anchor` or `?query`; links with a scheme or a leading `/` are left out. */
 function localLinkTargets(markdown: string): string[] {
   const text = withoutCode(markdown);
   const targets = new Set<string>();
   for (const match of [...text.matchAll(INLINE_LINK), ...text.matchAll(REFERENCE_DEFINITION)]) {
-    const written = (match[1] ?? '').replace(/^<(.*)>$/, '$1').replace(/\\([!-/:-@[-`{-~])/g, '$1');
+    const written = decodeCharacterReferences((match[1] ?? '').replace(/^<(.*)>$/, '$1').replace(/\\([!-/:-@[-`{-~])/g, '$1'));
     if (/^[a-z][a-z0-9+.-]*:/i.test(written) || written.startsWith('/')) continue;
     const target = written.replace(/[#?].*$/, '');
     if (target === '') continue;
@@ -828,10 +856,18 @@ function downloaderOf(stage: string): { word: 'curl' | 'wget'; argsAt: number } 
   return { word, argsAt: found.index + word.length };
 }
 
-/** The words of a command, a quoted word unquoted. */
+/** The words of a command as the shell splits them, quotes still in place. */
 function commandWords(command: string): string[] {
-  return (command.match(/"(?:[^"\\]|\\.)*"|'[^']*'|\S+/g) ?? []).map((word) => word.replace(/^(["'])([\s\S]*)\1$/, '$2'));
+  return command.match(/(?:"(?:[^"\\]|\\.)*"|'[^']*'|[^\s"'])+/g) ?? [];
 }
+
+/** A word with its quotes removed, as the command receives it. */
+function unquote(word: string): string {
+  return word.replace(/"((?:[^"\\]|\\.)*)"|'([^']*)'/g, (_quoted, double?: string, single?: string) => double ?? single ?? '');
+}
+
+/** A download URL without a scheme, such as `example.com/i.sh`; a bare number such as a `--retry` count is not one. */
+const SCHEMELESS_URL = /^(?!\d+(?:\.\d+)*$)[\w-]+(?:\.[\w-]+)+(?::\d+)?(?:\/\S*)?$/;
 
 /** Short options that take a value, attached or as the next word; the rest of a bundle after one is that value. */
 const SHORT_OPTIONS_WITH_VALUE: Record<'curl' | 'wget', ReadonlySet<string>> = {
@@ -848,10 +884,19 @@ const CURL_URL_VALUED_OPTION = /^--(?:proxy|preproxy|referer|doh-url)$/;
  * it; wget writes to stdout only with `-O -`.
  */
 function writesToStdout(downloader: 'curl' | 'wget', args: string): boolean {
-  const words = commandWords(args);
+  const rawWords = commandWords(args);
+  // `> file`, `1> file`, `&> file` or `>&2` send standard output somewhere other than the pipe.
+  if (rawWords.some((word) => /^(?:1|&)?>/.test(word))) return false;
+  const words = rawWords.map(unquote);
   const withValue = SHORT_OPTIONS_WITH_VALUE[downloader];
   let urls = 0;
   let savedOutputs = 0;
+  let stdoutOutputs = 0;
+  let remoteNameAll = false;
+  const countOutput = (value: string): void => {
+    if (value === '-') stdoutOutputs++;
+    else savedOutputs++;
+  };
   for (let index = 0; index < words.length; index++) {
     const word = words[index] ?? '';
     const valueOf = (attached: string): string => (attached !== '' ? attached : words[++index] ?? '');
@@ -862,7 +907,7 @@ function writesToStdout(downloader: 'curl' | 'wget', args: string): boolean {
         if (!withValue.has(letter)) continue;
         const value = valueOf(word.slice(at + 1));
         if (downloader === 'wget' && letter === 'O' && value === '-') return true;
-        if (downloader === 'curl' && letter === 'o' && value !== '-') savedOutputs++;
+        if (downloader === 'curl' && letter === 'o') countOutput(value);
         break;
       }
       continue;
@@ -872,19 +917,21 @@ function writesToStdout(downloader: 'curl' | 'wget', args: string): boolean {
       if (long && valueOf(long[1] ?? '') === '-') return true;
       continue;
     }
-    if (word === '--remote-name-all') return false;
+    if (word === '--remote-name-all') remoteNameAll = true;
     if (word === '--remote-name') savedOutputs++;
     const long = /^--output(?:=(.*))?$/.exec(word);
-    if (long && valueOf(long[1] ?? '') !== '-') savedOutputs++;
+    if (long) countOutput(valueOf(long[1] ?? ''));
     if (CURL_URL_VALUED_OPTION.test(word)) index++;
-    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(word)) urls++;
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(word) || SCHEMELESS_URL.test(word)) urls++;
   }
-  return downloader === 'curl' && Math.max(urls, 1) > savedOutputs;
+  // curl pairs output options with URLs in order: `-o -` sends its URL to stdout,
+  // and a URL left without an output goes there too unless --remote-name-all saves it.
+  return downloader === 'curl' && (stdoutOutputs > 0 || (!remoteNameAll && Math.max(urls, 1) > savedOutputs + stdoutOutputs));
 }
 
 /**
- * `line` with `;` and `&` inside a closed quote blanked, since there they are part
- * of an argument rather than the end of a command. A quote with no closing match
+ * `line` with `;`, `&` and `|` inside a closed quote blanked, since there they are
+ * part of an argument rather than the end of a command. A quote with no closing match
  * on the line is literal, and so is every later one of that kind, which keeps the
  * scan linear.
  */
@@ -901,7 +948,9 @@ function blankQuotedSeparators(line: string): string {
       at++;
       continue;
     }
-    blanked += line.slice(at, close + 1).replace(/[;&]/g, ' ');
+    // A quote that holds a download, such as a package.json script, is still read as a command.
+    const quoted = line.slice(at, close + 1);
+    blanked += quoted.replace(/\b(?:curl|wget)\b/.test(quoted) ? /[;&]/g : /[;&|]/g, ' ');
     at = close + 1;
   }
   return blanked;
