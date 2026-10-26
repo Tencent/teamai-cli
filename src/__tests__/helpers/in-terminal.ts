@@ -1,13 +1,15 @@
 import { spawnSync } from 'node:child_process';
 
 /**
- * Runs argv[2:] as the foreground job of a new terminal (os.forkpty), writes
- * its pid to argv[1], and exits as it did.
+ * Runs argv[2:] as the foreground job of a new terminal (os.forkpty), sized
+ * 80x24 as a terminal window is, writes its pid to argv[1], and exits as it
+ * did. A terminal with no columns makes a spinner clear lines without end.
  */
 export const IN_TERMINAL = [
-  'import os, sys',
+  'import fcntl, os, struct, sys, termios',
   'pid, fd = os.forkpty()',
   'if pid == 0:',
+  '    fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))',
   '    os.execvp(sys.argv[2], sys.argv[2:])',
   'open(sys.argv[1], "w").write(str(pid))',
   'while True:',
