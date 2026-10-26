@@ -2069,10 +2069,20 @@ function setLatestTokenSnapshot(
 
 /**
  * The events of the member's own sessions: an event a session teamai launched recorded (`launchedBy`) never counts as
- * the member's, in either mode. A step that continued a member's session leaves the member's earlier turns theirs.
+ * the member's, in either mode. A step that continued a member's session leaves the member's earlier turns theirs, and
+ * ends what counts of that session: a Stop's snapshot covers the whole transcript, so a later one holds the step's turns.
  */
 export function memberEvents(events: DashboardEvent[]): DashboardEvent[] {
-  return events.filter((event) => !event.launchedBy);
+  const launchedFrom = new Map<string, number>();
+  for (const event of events) {
+    const at = Date.parse(event.timestamp);
+    if (event.launchedBy && Number.isFinite(at)) launchedFrom.set(event.sessionId, Math.min(at, launchedFrom.get(event.sessionId) ?? at));
+  }
+  return events.filter((event) => {
+    if (event.launchedBy) return false;
+    const from = launchedFrom.get(event.sessionId);
+    return from === undefined || Date.parse(event.timestamp) < from;
+  });
 }
 
 /**

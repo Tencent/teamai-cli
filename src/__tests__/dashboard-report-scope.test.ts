@@ -1445,4 +1445,31 @@ describe('the usage report counts the member\'s own sessions, split by run mode 
     // A second report adds nothing: each mode compares against the same baselines.
     expect(await report(project)).toEqual(stats);
   });
+
+  it('counts a session a workflow step continued only up to the step, so none of the step\'s turns reach the member', async () => {
+    const { root, project } = await setup();
+    const transcript = path.join(tmp, 'continued.jsonl');
+    let turns = 0;
+    const turn = (inputTokens: number): void => {
+      turns += 1;
+      fs.appendFileSync(transcript, [
+        { type: 'user', message: { content: [{ type: 'text', text: 'please continue' }] } },
+        { type: 'assistant', message: { id: `msg-${turns}`, content: [{ type: 'text', text: 'done' }], usage: { input_tokens: inputTokens, output_tokens: 5 } } },
+      ].map((line) => JSON.stringify(line)).join('\n') + '\n');
+    };
+    const continued = { session_id: 'sid-continued', cwd: root, transcript_path: transcript };
+
+    turn(10);
+    await sessionIn({}, continued);
+    turn(20);
+    await sessionIn({ TEAMAI_LAUNCHED_BY: 'workflow' }, continued);
+    // The member resumes the session: its transcript now holds the step's turn too.
+    turn(10);
+    await sessionIn({}, continued);
+
+    expect(await report(project)).toMatchObject({
+      prompts: 1, tokens: { input: 10, output: 5 },
+      attended: { prompts: 1, tokens: { input: 10, output: 5 } },
+    });
+  });
 });

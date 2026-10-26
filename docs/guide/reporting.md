@@ -73,7 +73,7 @@ With no reported data yet, the command prints `No team usage data available yet.
 
 ### Your sessions, by run mode
 
-The counts cover only your own sessions. A session teamai launched itself, such as a workflow step or a judge, counts in none of them. A session your tool started for a skill-driven run, such as a subagent or a worktree task, still counts as yours: only its worktree or its `teamai/<run>/…` branch shows where it came from.
+The counts cover only your own sessions. A session teamai launched itself, such as a workflow step or a judge, counts in none of them, and a session of yours that a step continued counts only up to that step. A session your tool started for a skill-driven run, such as a subagent or a worktree task, still counts as yours: only its worktree or its `teamai/<run>/…` branch shows where it came from.
 
 Each session records its [run mode](workflow.md#attended-and-unattended-runs), and `stats/<member>.yaml` splits the counts by it:
 
