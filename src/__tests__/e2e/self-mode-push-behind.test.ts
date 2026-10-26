@@ -411,6 +411,58 @@ describe('single-repo push from a checkout behind the default branch', () => {
     expect(git(['show', `${branch}:.teamai/agents/ops/sample.yaml`], remote)).toContain('Teammate review step.');
   });
 
+  it('overwrites a placed agent a teammate changed only with --carried naming the version the stop printed', async () => {
+    expect((await runCLI(['pull'], projectRoot, home)).code).toBe(0);
+    const AGENT = '---\nname: sample\ndescription: A sample agent\n---\n\nSample instructions.\n';
+    fs.mkdirSync(active('.teamai/agents'), { recursive: true });
+    fs.writeFileSync(active('.teamai/agents/sample.md'), AGENT);
+    expect((await runCLI(['push', '--all', '--role', 'ops'], projectRoot, home)).output).toContain('Pushed branch');
+    await mergePushAndPull();
+    const push = ['push', '--all', '--role', 'ops'];
+    const teamVersion = (): string => git(['rev-parse', 'main:.teamai/agents/ops/sample.md'], remote);
+    const carried = (version: string): string => `.teamai/agents/ops/sample.md@${version}`;
+
+    teammateLandsOnMain({ '.teamai/agents/ops/sample.md': `${AGENT}Teammate safety instructions.\n` });
+    git(['pull', '-q', '--ff-only', 'origin', 'main'], projectRoot);
+    fs.writeFileSync(active('.teamai/agents/sample.md'), `${AGENT}Member instructions.\n`);
+    const first = teamVersion();
+    for (const args of [[...push, '--dry-run'], push, push]) {
+      const stop = await runCLI(args, projectRoot, home);
+      expect(stop.code, stop.output).toBe(2);
+      expect(stop.output).toContain(
+        '.teamai/agents/sample.md (pushed to .teamai/agents/ops/sample.md) would overwrite .teamai/agents/ops/sample.md, '
+          + 'which changed on origin/main since this machine delivered it.',
+      );
+      expect(stop.output).toContain(`\`teamai push --carried ${carried(first)}\``);
+    }
+
+    teammateLandsOnMain({ '.teamai/agents/ops/sample.md': `${AGENT}Teammate safety instructions.\nTeammate review step.\n` });
+    const second = teamVersion();
+    const outdated = await runCLI([...push, '--carried', carried(first)], projectRoot, home);
+    expect(outdated.code, outdated.output).toBe(2);
+    expect(outdated.output).toContain(`\`teamai push --carried ${carried(second)}\``);
+    expect(pushBranches()).toEqual([]);
+
+    git(['pull', '-q', '--ff-only', 'origin', 'main'], projectRoot);
+    fs.writeFileSync(
+      active('.teamai/agents/sample.md'),
+      `${AGENT}Teammate safety instructions.\nTeammate review step.\nMember instructions.\n`,
+    );
+    const preview = await runCLI([...push, '--carried', carried(second), '--dry-run'], projectRoot, home);
+    expect(preview.code, preview.output).toBe(0);
+    expect(preview.output).toContain('Dry run — no changes made');
+    const retry = await runCLI(push, projectRoot, home);
+    expect(retry.code, retry.output).toBe(2);
+    expect(pushBranches()).toEqual([]);
+    const pushed = await runCLI([...push, '--carried', carried(second)], projectRoot, home);
+
+    expect(pushed.output).toContain('Pushed branch');
+    const [branch] = pushBranches();
+    const sent = git(['show', `${branch}:.teamai/agents/ops/sample.md`], remote);
+    expect(sent).toContain('Teammate review step.');
+    expect(sent).toContain('Member instructions.');
+  });
+
   it.each(['edit', 'conversion'])('pushes the next %s of a placed agent after this machine\'s own edit landed', async (next) => {
     expect((await runCLI(['pull'], projectRoot, home)).code).toBe(0);
     const AGENT = '---\nname: sample\ndescription: A sample agent\n---\n\nSample instructions.\n';
