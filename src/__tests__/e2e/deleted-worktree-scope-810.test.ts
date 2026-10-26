@@ -195,11 +195,9 @@ function scenario({ userScope, breakProjectConfig = false, bare = false, project
     // Each turn carries Claude Code's `prompt_id`; a skill counts once per turn (#1221).
     await hook('prompt-submit', { hook_event_name: 'UserPromptSubmit', prompt: 'work in b', prompt_id: 'p1' });
     await hook('post-tool-use', { ...skillUse, prompt_id: 'p1' });
-    // Its credit is written by the detached pass; the turn ends before the worktree goes.
-    const credited = Date.now() + 20_000;
-    while (!fs.existsSync(path.join(partition, 'usage.jsonl')) && Date.now() < credited) {
-      await new Promise((r) => setTimeout(r, 100));
-    }
+    // Its credit is written by the detached pass, which also prepares the new
+    // worktree (#1424); the turn ends before the worktree goes.
+    await detached.waitForExit();
     if (movedOn) {
       // Another repo, in the user scope: it records a scope and an anchor of its own.
       const elsewhere = path.join(sandbox, 'elsewhere');
