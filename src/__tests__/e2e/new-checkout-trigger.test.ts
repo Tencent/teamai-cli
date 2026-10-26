@@ -201,6 +201,33 @@ describe.skipIf(!configHooks || process.platform === 'win32')('a worktree create
     expect(deploys(dir)).toBe(1);
   }, 60_000);
 
+  it('a new worktree whose git hook could not fetch runs postDeploy in the pull that hook hands over to, once it can', async () => {
+    const remote = path.join(sandbox, 'team.git');
+    const projectsDir = path.join(home, '.teamai', 'projects');
+    const stamp = path.join(projectsDir, fs.readdirSync(projectsDir)[0], 'last-fetch.json');
+    const fetched = fs.readFileSync(stamp, 'utf8');
+    const dir = path.join(sandbox, 'wt-handover');
+    fs.writeFileSync(stamp, JSON.stringify({ lastFetch: new Date(Date.now() - 72 * 3600_000).toISOString() }));
+    fs.renameSync(remote, `${remote}.away`);
+    try {
+      gitOk(['worktree', 'add', '-q', '--detach', dir, 'HEAD'], project);
+      await detached.waitForExit();
+    } finally {
+      fs.renameSync(`${remote}.away`, remote);
+      fs.writeFileSync(stamp, fetched);
+    }
+    expect(deploys(dir)).toBe(0);
+
+    // What git's hook starts after `git worktree add` returns, reaching the team repo this time.
+    const handover = spawnSync('node', [CLI, 'pull', '--silent'], {
+      cwd: dir, encoding: 'utf8', env: { ...env(), TEAMAI_GIT_HOOK: 'post-checkout', TEAMAI_PREPARE_CHECKOUT: 'once' },
+    });
+
+    expect(handover.status).toBe(0);
+    expect(fs.existsSync(skill(dir))).toBe(true);
+    expect(deploys(dir)).toBe(1);
+  }, 60_000);
+
   it('a session started in the worktree prepares it as a new worktree, postDeploy included', async () => {
     const dir = hooklessWorktree('wt-session');
 

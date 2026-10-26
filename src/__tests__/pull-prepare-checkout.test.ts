@@ -89,7 +89,7 @@ describe('checkout preparation runs postDeploy (#1424)', () => {
     await fse.ensureDir(path.join(projectRoot, '.claude'));
     vi.stubEnv('HOME', path.join(tmpDir, 'home'));
     state.current = { lastPull: null, lastPullRev: null };
-    mockRunTeamScript.mockClear();
+    mockRunTeamScript.mockReset().mockResolvedValue(undefined);
     vi.mocked(getHeadRev).mockResolvedValue('abc1234');
     const teamConfig: TeamaiConfig = {
       team: 'test', description: '', repo: 'https://git.example.com/test/repo.git', provider: 'git', reviewers: [],
@@ -107,6 +107,8 @@ describe('checkout preparation runs postDeploy (#1424)', () => {
 
   afterEach(async () => {
     vi.unstubAllEnvs();
+    delete process.env.TEAMAI_GIT_HOOK;
+    delete process.env.TEAMAI_PREPARE_CHECKOUT;
     await fse.remove(tmpDir);
   });
 
@@ -122,6 +124,28 @@ describe('checkout preparation runs postDeploy (#1424)', () => {
 
     expect(fse.existsSync(skill('later'))).toBe(false);
     expect(postDeploys()).toBe(1);
+  });
+
+  it('the pull a new checkout\'s git hook hands over to runs it when it writes the first record, and hands the marker to no script', async () => {
+    process.env.TEAMAI_GIT_HOOK = 'post-checkout';
+    process.env.TEAMAI_PREPARE_CHECKOUT = 'once';
+    let markerInScript: string | undefined = 'unread';
+    mockRunTeamScript.mockImplementation(async () => { markerInScript = process.env.TEAMAI_PREPARE_CHECKOUT; });
+
+    await pull({ silent: true });
+
+    expect(fse.existsSync(skill())).toBe(true);
+    expect(postDeploys()).toBe(1);
+    expect(markerInScript).toBeUndefined();
+  });
+
+  it('the pull `git pull` hands over to writes the first record without it', async () => {
+    process.env.TEAMAI_GIT_HOOK = 'post-checkout';
+
+    await pull({ silent: true });
+
+    expect(fse.existsSync(skill())).toBe(true);
+    expect(postDeploys()).toBe(0);
   });
 
   it('always: a workflow overlay runs it again in a checkout with a record', async () => {

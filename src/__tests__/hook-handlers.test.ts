@@ -1734,6 +1734,18 @@ describe('a checkout no pull delivered into (#1424)', () => {
     expect(mockPull).not.toHaveBeenCalled();
   });
 
+  it('git\'s hook for a new worktree hands the pull it starts after git returns the checkout to prepare', async () => {
+    const dispatcher = createDispatcher({ handlers: buildHandlerRegistry(), localConfig: projectConfig('git') });
+
+    await dispatcher.dispatch('post-checkout', '*', {
+      cwd: path.join(root, 'project'), hook_event_name: 'post-checkout', git_args: ['0'.repeat(40), 'a'.repeat(40), '1'],
+    }, 'git');
+
+    expect(mockSpawn).toHaveBeenCalledWith(process.execPath, [expect.any(String), 'pull', '--silent'], expect.objectContaining({
+      env: expect.objectContaining({ TEAMAI_GIT_HOOK: 'post-checkout', TEAMAI_PREPARE_CHECKOUT: 'once' }),
+    }));
+  });
+
   it('a session start still pulls when the tool roots cannot be created', async () => {
     mockCreateProjectToolRoots.mockRejectedValueOnce(new Error('EACCES'));
     const handler = buildHandlerRegistry().find((r) => r.event === 'session-start' && r.handler.name === 'pull')?.handler;
