@@ -14,6 +14,7 @@ import {
   aggregateSessionInterventions,
   aggregateSessionMetrics,
   compactEvents,
+  memberEvents,
   reconcileRequestLog,
   dedupeEvents,
   dashboardReport,
@@ -2265,6 +2266,28 @@ describe('compactEvents', () => {
 
     const kept = fs.readFileSync(eventsPath, 'utf-8').split('\n').filter(Boolean).map((line) => JSON.parse(line).sessionId);
     expect(kept).toEqual(['pid-live', 'pid-live']);
+  });
+
+  it('keeps a member session a workflow step continued, so its resumed turns stay cut off from the step (#1384)', async () => {
+    const eventsPath = path.join(tmpDir, '.teamai', 'dashboard', 'events.jsonl');
+    fs.mkdirSync(path.dirname(eventsPath), { recursive: true });
+    const old = Date.now() - 3_600_000;
+    const at = (sessionId: string, type: string, second: number, extra: Record<string, unknown> = {}) =>
+      JSON.stringify({ type, timestamp: new Date(old + second * 1_000).toISOString(), sessionId, tool: 'claude', runMode: 'attended', ...extra });
+    const lines = [
+      at('continued', 'stop', 1), at('continued', 'stop', 2, { launchedBy: 'workflow' }), at('continued', 'session_end', 3, { launchedBy: 'workflow' }),
+      at('member', 'stop', 1), at('member', 'session_end', 2),
+      at('step', 'stop', 1, { launchedBy: 'workflow' }), at('step', 'session_end', 2, { launchedBy: 'workflow' }),
+      ...Array.from({ length: 5_000 }, (_, i) => at(`filler-${i}`, 'session_end', 0)),
+    ];
+    fs.writeFileSync(eventsPath, lines.join('\n') + '\n');
+
+    await compactEvents(eventsPath);
+
+    const kept = fs.readFileSync(eventsPath, 'utf-8').split('\n').filter(Boolean).map((line) => JSON.parse(line) as DashboardEvent);
+    expect(kept.map((event) => event.sessionId)).toEqual(['continued', 'continued', 'continued']);
+    const resumed: DashboardEvent = { type: 'stop', timestamp: new Date().toISOString(), sessionId: 'continued', tool: 'claude', runMode: 'attended' };
+    expect(memberEvents([...kept, resumed]).map((event) => event.timestamp)).toEqual([new Date(old + 1_000).toISOString()]);
   });
 });
 

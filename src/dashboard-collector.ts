@@ -2368,6 +2368,11 @@ export async function compactEvents(eventsPath?: string): Promise<void> {
         if (isProcessAlive(pid)) activeIds.add(sessionId);
       }
 
+      // A member session a workflow step continued keeps its events too: a resume of it must still find where the step
+      // started, or its Stop would bring the step's turns back to the member (memberEvents).
+      const launched = new Set(events.filter((e) => e.launchedBy).map((e) => e.sessionId));
+      for (const e of events) if (!e.launchedBy && launched.has(e.sessionId)) activeIds.add(e.sessionId);
+
       // Keep only events for active sessions
       const kept = events.filter(e => activeIds.has(e.sessionId));
       const compacted = kept.map(e => JSON.stringify(e)).join('\n') + '\n';
