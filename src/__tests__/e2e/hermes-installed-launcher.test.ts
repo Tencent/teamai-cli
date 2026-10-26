@@ -8,7 +8,7 @@ import { trackDetachedProcesses } from '../helpers/detached-processes.js';
 
 const CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../dist/index.js');
 
-it('loads project instructions through the installed Hermes plugin and status hook without teamai on PATH', async () => {
+it.runIf(process.platform !== 'win32')('loads project instructions through the installed Hermes plugin and status hook without teamai on PATH', async () => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-hermes-launch-')));
   const home = path.join(root, 'home');
   const project = path.join(root, 'project');

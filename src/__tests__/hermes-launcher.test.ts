@@ -19,7 +19,7 @@ afterEach(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
-describe('Hermes installed launcher runtime', () => {
+describe.runIf(process.platform !== 'win32')('Hermes installed launcher runtime', () => {
   it.each(['status', 'instructions'] as const)('runs the %s entry without teamai on PATH', async (kind) => {
     const entry = path.join(tmpDir, "CLI with spaces and 'quotes.mjs");
     const observed = path.join(tmpDir, 'observed.json');
