@@ -1580,14 +1580,17 @@ export interface GlobalOptions {
    */
   inline?: boolean;
   /**
-   * Internal (checkout preparation, `pull` only): when this pull finds no
-   * record of the checkout under the sync lock and its delivery writes one,
-   * the checkout's first delivery, wait for `scripts.postDeploy` before returning. A new checkout does not run init,
-   * so `postInit` never runs for it: a linked worktree, a submodule's first
-   * checkout when that repo already has teamai's git hooks, or a worktree an
-   * agent tool created without git hooks.
+   * Internal (`pull` only): deliver as into a new checkout, which does not run
+   * init, so `postInit` never runs for it, and wait for `scripts.postDeploy`.
+   * - `always`: a workflow worktree whose agent files were just put back to a
+   *   base commit. postDeploy runs on every such pull.
+   * - `once`: a linked worktree, a submodule's first checkout when that repo
+   *   already has teamai's git hooks (git's hook, and the pull it hands over
+   *   to), or a worktree an agent tool created without git hooks. Only the
+   *   pull that writes the checkout's first record runs postDeploy; an inline
+   *   one finding a record under the sync lock delivers nothing.
    */
-  prepareCheckout?: boolean;
+  prepareCheckout?: 'always' | 'once';
   /**
    * Internal (checkout preparation from a tool use, with `inline`): deliver
    * from the team clone as last fetched, however long ago. A tool use then

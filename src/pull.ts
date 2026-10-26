@@ -3019,6 +3019,8 @@ export async function pull(
   // Read once; the scripts this pull runs (postPull) must not inherit it.
   delete process.env.TEAMAI_GIT_HOOK;
   if (!options.gitHook && isGitHookEvent(hookEnv)) options = { ...options, gitHook: hookEnv };
+  // The pull a new checkout's hook hands over to delivers first when the hook's could not.
+  if (hookEnv === 'post-checkout') options = { ...options, prepareCheckout: 'once' };
   // What the scopes below say in their own words, so the post-pull pass does
   // not repeat it. Owned here rather than at module scope so nothing survives
   // into another call.
@@ -3060,7 +3062,7 @@ export async function pull(
   let projectConfig: LocalConfig | null = null;
   let postPullRepo: string | null = null;
   let scriptOwner: LocalConfig | null = null;
-  // Checkout preparation found no record of this checkout under the lock, and its sync wrote one: its first delivery, which runs postDeploy.
+  // A `once` preparation found no record of the checkout under the lock and wrote one: its first delivery, which runs postDeploy.
   let firstDelivery = false;
   const lockScope = async (config: LocalConfig): Promise<boolean> => {
     // git-mode guards its shared team clone; self mode guards its machine-data
@@ -3225,7 +3227,9 @@ export async function pull(
     try {
       if (await lockScope(projectConfig)) {
         if (!options.dryRun && !options.inline) await runTeamScript(projectConfig, 'prePull');
-        const undelivered = options.prepareCheckout === true && !await deliveringCheckoutRecord(projectConfig);
+        const undelivered = options.prepareCheckout === 'once' && !await deliveringCheckoutRecord(projectConfig);
+        // An inline preparation that waited out another trigger's finds nothing left to deliver.
+        if (options.prepareCheckout === 'once' && options.inline && !undelivered) return;
         await pullForScope(projectConfig, options, reported, { recorder: deliveryRecorder }, syncResult, teamEnvs, instructions);
         firstDelivery = undelivered && await deliveringCheckoutRecord(projectConfig) !== undefined;
         if (pinRequired && syncResult.teamRepoFailed) return;
@@ -3508,11 +3512,10 @@ export async function pull(
     }
   }
 
-  // 6. Checkout preparation waits for `scripts.postDeploy` before git returns,
-  //    once per checkout: a sync that wrote no record leaves it to the next
-  //    trigger, which a second trigger for a delivered checkout finds. Inline
+  // 6. Checkout preparation waits for `scripts.postDeploy` before returning;
+  //    a `once` one only when it wrote the checkout's first record. Inline
   //    pulls otherwise skip team scripts. Nothing here can fail the pull.
-  if (!options.dryRun && firstDelivery && scriptOwner) {
+  if (!options.dryRun && (options.prepareCheckout === 'always' || firstDelivery) && scriptOwner) {
     await runTeamScript(scriptOwner, 'postDeploy');
   }
 

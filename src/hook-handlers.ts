@@ -138,8 +138,7 @@ const pullHandler: HookHandler = {
     const { pull, settleLateUsageReport } = await import('./pull.js');
     const { SessionCaptures } = await import('./session-flow/captures.js');
     const before = config && await SessionCaptures.checkoutDelivery(config, tool);
-    // A checkout no pull delivered into yet is prepared as a new worktree is, by this full pull.
-    if (config && await needsPreparation(hintCwd, config)) await prepareCheckout(hintCwd, {});
+    if (config && await needsPreparation(hintCwd, config)) await prepareCheckout(hintCwd, 'session-start');
     else await pull({ silent: true });
     if (config && before) await SessionCaptures.markTeamChanged(config, tool, stdin, before);
     await packageHints.stashPackageHintAfterPull(
@@ -179,23 +178,35 @@ const sessionCaptureHandler: HookHandler = {
 };
 
 /**
- * Prepare a new checkout of a project-scope repository: its tool roots, then
- * the team's resources, then `scripts.postDeploy` on its first delivery.
- * Every trigger calls this, with the pull it can afford (`how`): git's
- * `post-checkout` an inline one while git waits; a session start a full one,
- * and a tool use in the background pass one from the team clone as it is,
- * in a checkout that needs it (needsPreparation), for tools that create
- * worktrees without any git hook. Init does not run on this path.
+ * The pull each trigger of checkout preparation can afford:
+ * - `post-checkout`, git's hook for a new checkout: inline, while git waits.
+ * - `session-start`, in a checkout that needs it (needsPreparation): the session's full pull.
+ * - `tool-use`, likewise, in the background pass: inline, from the team clone as last fetched.
+ * The last two serve worktrees an agent tool created without any git hook.
  */
-async function prepareCheckout(cwd: string, how: Pick<GlobalOptions, 'inline' | 'gitHook' | 'localOnly'>): Promise<void> {
+const PREPARING_PULL = {
+  'post-checkout': { inline: true, gitHook: 'post-checkout' },
+  'session-start': {},
+  'tool-use': { inline: true, localOnly: true },
+} as const satisfies Record<string, GlobalOptions>;
+
+/**
+ * Prepare a new checkout of a project-scope repository: its tool roots, then
+ * the team's resources, then `scripts.postDeploy` on its first delivery. Init
+ * does not run on this path. Git's hook records a failure for doctor; a tool's
+ * hook pulls without the roots it could not create, as its seeding does.
+ */
+async function prepareCheckout(cwd: string, trigger: keyof typeof PREPARING_PULL): Promise<void> {
   const { createProjectToolRoots } = await import('./project-agent-root.js');
-  await createProjectToolRoots({ cwd });
+  const roots = createProjectToolRoots({ cwd });
+  if (trigger === 'post-checkout') await roots;
+  else await roots.catch((e: unknown) => log.debug(`hook-dispatch: could not create tool roots in ${cwd}: ${e instanceof Error ? e.message : String(e)}`));
   const { pull } = await import('./pull.js');
-  await pull({ silent: true, prepareCheckout: true, ...how });
+  await pull({ silent: true, prepareCheckout: 'once', ...PREPARING_PULL[trigger] });
 }
 
 /**
- * Whether a tool hook prepares the checkout at `cwd`: a project-scope one no
+ * Whether a tool's hook prepares the checkout at `cwd`: a project-scope one no
  * pull delivered into yet, which is not teamai's own. An HTTP team's checkout
  * keeps no such record; its resources come through the local agent's sync.
  */
@@ -226,7 +237,7 @@ const newWorktreeHandler: HookHandler = {
     const cwd = resolveHookCwd(stdin) ?? process.cwd();
     if (await isOwnCheckout(cwd, config)) return null;
 
-    await recordingFailure(config, 'post-checkout', () => prepareCheckout(cwd, { inline: true, gitHook: 'post-checkout' }));
+    await recordingFailure(config, 'post-checkout', () => prepareCheckout(cwd, 'post-checkout'));
     // Learnings, reports, sources and the team repo itself refresh after
     // `git worktree add` returns; it also retries what failed above.
     // postDeploy already ran inside the pull.
@@ -247,7 +258,7 @@ const newCheckoutHandler: HookHandler = {
   async execute(stdin, tool, config) {
     const cwd = resolveHookCwd(stdin) ?? process.cwd();
     if (!config || !await needsPreparation(cwd, config) || !await toolMayDeliver(stdin, tool, config)) return null;
-    await prepareCheckout(cwd, { inline: true, localOnly: true });
+    await prepareCheckout(cwd, 'tool-use');
     return null;
   },
 };

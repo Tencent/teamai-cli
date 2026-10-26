@@ -190,9 +190,10 @@ vi.mock('../utils/reports-branch.js', () => ({
 }));
 
 const mockSeedProjectAgentRoot = vi.fn().mockResolvedValue(undefined);
+const mockCreateProjectToolRoots = vi.fn().mockResolvedValue(undefined);
 vi.mock('../project-agent-root.js', () => ({
   seedProjectAgentRoot: mockSeedProjectAgentRoot,
-  createProjectToolRoots: vi.fn().mockResolvedValue(undefined),
+  createProjectToolRoots: mockCreateProjectToolRoots,
 }));
 
 // No scope scores finished sessions unless a test says so; a detached process is never started for real.
@@ -1681,7 +1682,7 @@ describe('post-tool-use dispatch — local-agent runs detached, never blocks hos
   });
 });
 
-describe('post-tool-use in a checkout no pull delivered into (#1424)', () => {
+describe('a checkout no pull delivered into (#1424)', () => {
   let root: string;
   beforeEach(() => {
     vi.clearAllMocks();
@@ -1702,13 +1703,22 @@ describe('post-tool-use in a checkout no pull delivered into (#1424)', () => {
   it('prepares it from the team clone as last fetched', async () => {
     await toolUse(projectConfig('git'));
 
-    expect(mockPull).toHaveBeenCalledWith({ silent: true, prepareCheckout: true, inline: true, localOnly: true });
+    expect(mockPull).toHaveBeenCalledWith({ silent: true, prepareCheckout: 'once', inline: true, localOnly: true });
   });
 
   it('prepares nothing for an HTTP team, whose checkouts keep no delivery record', async () => {
     await toolUse(projectConfig('http'));
 
     expect(mockPull).not.toHaveBeenCalled();
+  });
+
+  it('a session start still pulls when the tool roots cannot be created', async () => {
+    mockCreateProjectToolRoots.mockRejectedValueOnce(new Error('EACCES'));
+    const handler = buildHandlerRegistry().find((r) => r.event === 'session-start' && r.handler.name === 'pull')?.handler;
+
+    await handler?.execute({ session_id: 's-roots', cwd: path.join(root, 'project') }, 'claude', projectConfig('git'));
+
+    expect(mockPull).toHaveBeenCalledWith({ silent: true, prepareCheckout: 'once' });
   });
 });
 

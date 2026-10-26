@@ -177,6 +177,30 @@ describe.skipIf(!configHooks || process.platform === 'win32')('a worktree create
     }
   }, 60_000);
 
+  it('a new worktree whose git hook could not fetch runs postDeploy on the delivery a later tool use makes', async () => {
+    const remote = path.join(sandbox, 'team.git');
+    const projectsDir = path.join(home, '.teamai', 'projects');
+    const stamp = path.join(projectsDir, fs.readdirSync(projectsDir)[0], 'last-fetch.json');
+    const fetched = fs.readFileSync(stamp, 'utf8');
+    const dir = path.join(sandbox, 'wt-unfetched');
+    fs.writeFileSync(stamp, JSON.stringify({ lastFetch: new Date(Date.now() - 72 * 3600_000).toISOString() }));
+    fs.renameSync(remote, `${remote}.away`);
+    try {
+      gitOk(['worktree', 'add', '-q', '--detach', dir, 'HEAD'], project);
+      await detached.waitForExit();
+      expect(deploys(dir)).toBe(0);
+    } finally {
+      fs.renameSync(`${remote}.away`, remote);
+      fs.writeFileSync(stamp, fetched);
+    }
+
+    await enterWorktree(dir);
+    await detached.waitForExit();
+
+    expect(fs.existsSync(skill(dir))).toBe(true);
+    expect(deploys(dir)).toBe(1);
+  }, 60_000);
+
   it('a session started in the worktree prepares it as a new worktree, postDeploy included', async () => {
     const dir = hooklessWorktree('wt-session');
 
