@@ -21,21 +21,21 @@ async function controlRun(
   operation: (run: RunState, now: string, finish: (result: WorkflowResult) => Promise<void>) => Promise<WorkflowEnvelope>,
 ): Promise<WorkflowEnvelope> {
   let queued = false;
-  let settled = false;
+  let runSettled = false;
   let checkout = process.cwd();
   const envelope = await withRun(config, runId, secrets, async (run, now) => {
     const before = JSON.stringify(run);
     checkout = run.driver?.workspace ?? checkout;
     const finish = async (result: WorkflowResult): Promise<void> => {
-      settled = true;
+      runSettled = true;
       queued = await finishRun(config, run, now, result, secrets, run.driver);
     };
-    const envelope = await operation(run, now, finish);
-    return { envelope, save: JSON.stringify(run) !== before };
+    const opEnvelope = await operation(run, now, finish);
+    return { envelope: opEnvelope, save: JSON.stringify(run) !== before };
   });
   // Not on a control that only found a run already ended: its answer is an error, and the end was published before.
   // A control that settled the run answers with an error too, and still publishes its end.
-  const notPublished = 'data' in envelope || settled ? await publishRunEnd(config, runId, checkout) : undefined;
+  const notPublished = 'data' in envelope || runSettled ? await publishRunEnd(config, runId, checkout) : undefined;
   if (queued) await publishRunRecords(config);
   if (notPublished && 'data' in envelope) envelope.data.notPublished = notPublished;
   return envelope;
@@ -214,7 +214,7 @@ export async function cancelRun(config: LocalConfig, runId: string, secrets: Rec
       changed = stopWhere(run, () => true, failure, run.revision, now);
       await finish({ outcome: 'cancelled', settledAt: run.revision });
     } else {
-      const state = run.steps.find((state) => state.id === step);
+      const state = run.steps.find((s) => s.id === step);
       if (!state) return missingStepError(run, step);
       if (!cancellable(state)) return error('not_cancellable', `Step "${state.id}" is ${state.status}; only pending, waiting, leased, running or delivering steps can be cancelled`);
       const located = locateStep(run, step);

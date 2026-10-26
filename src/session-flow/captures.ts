@@ -104,7 +104,7 @@ async function rewrite(config: LocalConfig, platform: string, sessionId: string,
     await new Promise((resolve) => setTimeout(resolve, LOCK_RETRY_MS));
   }
   try {
-    for (const name of (await fs.readdir(dir)).filter((name) => name.endsWith('.json') && pick(name))) {
+    for (const name of (await fs.readdir(dir)).filter((fileName) => fileName.endsWith('.json') && pick(fileName))) {
       const file = path.join(dir, name);
       const parsed = SessionCaptureSchema.safeParse(JSON.parse(await fs.readFile(file, 'utf8')));
       if (!parsed.success) continue;

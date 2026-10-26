@@ -162,8 +162,8 @@ scope: 'user',
       await fse.outputFile(path.join(repoPath, 'env', 'billing', 'env.yaml'), YAML.stringify({
         variables: [{ key: 'BILLING_ONLY', value: 'b' }],
       }));
-      const { detectProjectConfig } = await import('../config.js');
-      vi.mocked(detectProjectConfig).mockResolvedValueOnce({ ...localConfig, projects: ['checkout'] });
+      const { detectProjectConfig: detectProjectConfigReimported } = await import('../config.js');
+      vi.mocked(detectProjectConfigReimported).mockResolvedValueOnce({ ...localConfig, projects: ['checkout'] });
 
       await envList({ reveal: true });
 

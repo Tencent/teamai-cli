@@ -57,14 +57,15 @@ export async function applyEffects(context: SkillContext, lock: RunLock, start: 
     switch (effect.kind) {
       case 'spawn':
         await spawnRunner(context, applied.state, effect.attempt, effect.job);
-        applied = { ...applied, spawned: true };
+        applied.spawned = true;
         break;
       case 'stop-left':
         await context.runners.stopLeft(applied.state.run, effect.attempt);
         break;
       case 'send': {
         const sent = await sendReport(context, lock, applied.state, effect.attempt, effect.body);
-        applied = { ...applied, state: sent.state, ...(sent.refused ? { refused: sent.refused } : {}) };
+        applied.state = sent.state;
+        if (sent.refused) applied.refused = sent.refused;
         break;
       }
       default: {

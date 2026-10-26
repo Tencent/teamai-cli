@@ -237,7 +237,7 @@ export async function readEnvBackup(localConfig: LocalConfig): Promise<Record<st
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return table;
     const reason = error instanceof Error ? error.message : String(error);
-    throw new Error(`Env backup is unreadable at ${backupPath}: ${reason}`);
+    throw new Error(`Env backup is unreadable at ${backupPath}: ${reason}`, { cause: error });
   }
   if (content.trimStart().startsWith('{')) {
     const values = backupValues(content);
@@ -312,7 +312,7 @@ function withoutOldBlocks(content: string, loaderPath: string, scopeEnvSh?: stri
   });
   let kept = content;
   // One blank line stays between the text around a block, none at either end.
-  for (const block of [...dropped].reverse()) {
+  for (const block of dropped.toReversed()) {
     const head = kept.substring(0, block.start).replace(/\n+$/, '');
     const tail = kept.substring(block.end).replace(/^\n+/, '');
     kept = head && tail ? `${head}\n\n${tail}` : head ? `${head}\n` : tail;
@@ -522,7 +522,7 @@ export class EnvHandler extends ResourceHandler {
         // env.sh is neither the old one nor the new one: no shell loads it.
         const closed = await registerEnvScope(localConfig, false).then(() => true, () => false);
         throw new Error(`Could not write ${envShPath} and the env backup (${String(error)}), nor put them and ${recordFile} back as they were (${String(restoreError)}). `
-          + `${closed ? 'Shells load no team env from it' : 'Shells may load what was written of it'} until teamai pull runs again once all are writable.`, { cause: error });
+          + `${closed ? 'Shells load no team env from it' : 'Shells may load what was written of it'} until teamai pull runs again once all are writable.`, { cause: restoreError });
       }
       throw error;
     }
@@ -773,6 +773,8 @@ export class EnvHandler extends ResourceHandler {
       if (content === (original ?? '')) continue;
       const exists = await pathExists(target);
       let created: string | null = null;
+      // `exists` is a one-time short-circuit (never meant to change); the walk up `dir` is what ends the loop.
+      // oxlint-disable-next-line no-unmodified-loop-condition
       for (let dir = path.dirname(target); !exists && !await pathExists(dir); dir = path.dirname(dir)) created = dir;
       writes.push({ file, target, before: exists ? original ?? '' : null, created, content });
     }
@@ -786,7 +788,7 @@ export class EnvHandler extends ResourceHandler {
       }
     } catch (error) {
       const unrestored: string[] = [];
-      for (const { file, target, before, created } of written.reverse()) {
+      for (const { file, target, before, created } of written.toReversed()) {
         try {
           await putBack(before === null ? created ?? target : file, before);
         } catch (restoreError) {

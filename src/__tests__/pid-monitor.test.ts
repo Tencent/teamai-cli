@@ -73,7 +73,7 @@ describe('resolveMonitorPid', () => {
 describe('parseWindowsProcessTable', () => {
     it('reads the rows Win32_Process emits', () => {
         const table = parseWindowsProcessTable(
-            '1234 100 node.exe\r\n' + '100 4 bash.exe\r\n' + '4 0 System\r\n',
+            '1234 100 node.exe\r\n100 4 bash.exe\r\n4 0 System\r\n',
         );
 
         expect(table.size).toBe(3);
@@ -166,22 +166,26 @@ describe('the Windows process table', () => {
         execFileSync.mockImplementation(() => {
             throw Object.assign(new Error('spawnSync powershell.exe ETIMEDOUT'), { code: 'ETIMEDOUT' });
         });
-        const { resolveMonitorPid } = await loadOnWindows();
+        const { resolveMonitorPid: winResolveMonitorPid } = await loadOnWindows();
 
         // A session start resolves the PID twice (dashboard report and local
         // agent sync); without a remembered result each call queried three times.
-        expect(resolveMonitorPid(20)).toBe(20);
-        expect(resolveMonitorPid(20)).toBe(20);
+        expect(winResolveMonitorPid(20)).toBe(20);
+        expect(winResolveMonitorPid(20)).toBe(20);
         expect(execFileSync).toHaveBeenCalledTimes(1);
     });
 
     it('answers every lookup from the one table it read', async () => {
         execFileSync.mockReturnValue('20 10 bash.exe\r\n10 4 codex.exe\r\n');
-        const { resolveMonitorPid, getParentPid, getProcessComm } = await loadOnWindows();
+        const {
+            resolveMonitorPid: winResolveMonitorPid,
+            getParentPid: winGetParentPid,
+            getProcessComm: winGetProcessComm,
+        } = await loadOnWindows();
 
-        expect(resolveMonitorPid(20)).toBe(10);
-        expect(getParentPid(20)).toBe(10);
-        expect(getProcessComm(10)).toBe('codex.exe');
+        expect(winResolveMonitorPid(20)).toBe(10);
+        expect(winGetParentPid(20)).toBe(10);
+        expect(winGetProcessComm(10)).toBe('codex.exe');
         expect(execFileSync).toHaveBeenCalledTimes(1);
     });
 });

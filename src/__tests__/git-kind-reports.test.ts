@@ -772,10 +772,10 @@ describe('skill usage stays in the scope that recorded it (#748)', () => {
  * locks, real worktree — only the hook dispatch around it is left out.
  */
 async function syncLikeTheHandler(cfg: LocalConfig, votesDir: string, votePath: string): Promise<boolean> {
-  const { updateReports, readReportsOriginFile } = await import('../utils/reports-branch.js');
+  const { updateReports: updateReportsForVotes, readReportsOriginFile } = await import('../utils/reports-branch.js');
   const { isDelivered } = await import('../utils/branch-worktree.js');
   const { stageVotesMerge, confirmVotesSynced, readUserVotesFromContent } = await import('../votes.js');
-  const result = await updateReports(cfg, async (wt, { onDelivered }) => {
+  const result = await updateReportsForVotes(cfg, async (wt, { onDelivered }) => {
     const originContent = await readReportsOriginFile(wt, `votes/${cfg.username}.yaml`);
     const staged = await stageVotesMerge(
       wt,

@@ -666,12 +666,12 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options
       clearTimeout(timer);
       if (!exited) continue;
       if (exited.kind === 'question') {
-        const hitl = question!.hitl;
+        const questionHitl = question!.hitl;
         question = undefined;
         if (exited.line === undefined) return { error: { code: 'interrupted', message: 'The HITL question closed without an answer. Continue with teamai workflow resume.' } };
         const [choice = '', ...words] = exited.line.trim().split(/\s+/);
         const provenance = respondProvenance({ kind: 'terminal', caller: callerProvenance(process.env, { isTTY: true }) });
-        const answer = await respondToHitl(config, runId, turn.secrets, { step: hitl.step, pass: hitl.pass, choice, ...(words.length > 0 ? { note: words.join(' ') } : {}), provenance });
+        const answer = await respondToHitl(config, runId, turn.secrets, { step: questionHitl.step, pass: questionHitl.pass, choice, ...(words.length > 0 ? { note: words.join(' ') } : {}), provenance });
         if (isWorkflowError(answer)) {
           // agent_in_path: the driver runs inside an agent session; it keeps waiting for the person's answer from elsewhere.
           if (!['repeated_response', 'stale_response', 'invalid_choice', 'not_waiting', 'run_settled', 'agent_in_path'].includes(answer.error.code)) return answer;

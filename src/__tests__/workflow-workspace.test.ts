@@ -3818,7 +3818,7 @@ steps:
     ['diff.ignoreSubmodules=all', ['config', 'diff.ignoreSubmodules', 'all']],
   ])('sees what a step changed in a submodule whatever git is told to ignore: %s', async (_name, setting) => {
     const init = "cp.execFileSync('git',['-c','protocol.file.allow=always','submodule','update','-q','--init'])";
-    const commit = "fs.writeFileSync('vendor/inside.txt','step'); cp.execFileSync('git',['-c','user.name=Test','-c','user.email=test@example.com','commit','-qam','step'],{cwd:'vendor'})";
+    const commitScript = "fs.writeFileSync('vendor/inside.txt','step'); cp.execFileSync('git',['-c','user.name=Test','-c','user.email=test@example.com','commit','-qam','step'],{cwd:'vendor'})";
     const run = (script: string): string => `node -e "const cp=require('child_process'),fs=require('fs'); ${script}"`;
     const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
 name: build
@@ -3836,7 +3836,7 @@ steps:
           command: ${run(init)}
         - id: read
           needs: [init]
-          command: ${run(commit)}
+          command: ${run(commitScript)}
   - id: edits
     needs: []
     workspace: new
@@ -3851,7 +3851,7 @@ steps:
   - id: writes
     needs: []
     workspace: new
-    command: ${run(`${init}; ${commit}`)}
+    command: ${run(`${init}; ${commitScript}`)}
 `);
     const recorded = addSubmodule(workspace);
     git(setting, workspace);

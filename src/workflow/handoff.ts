@@ -142,10 +142,10 @@ function claimedElsewhere(runId: string, owner: HandoffOwner, ownedAt: string): 
   };
 }
 
-function stateConflict(runId: string, published: number, seen: number): HandoffError {
+function stateConflict(runId: string, publishedRevision: number, seen: number): HandoffError {
   return {
     code: 'state_conflict',
-    message: `Run ${runId} on teamai-reports is at state revision ${published}, and this machine last saw ${seen}. Resume it to take the published state: teamai workflow resume ${runId}`,
+    message: `Run ${runId} on teamai-reports is at state revision ${publishedRevision}, and this machine last saw ${seen}. Resume it to take the published state: teamai workflow resume ${runId}`,
   };
 }
 
@@ -521,9 +521,9 @@ async function acknowledge(
 export async function publishRunEnd(config: LocalConfig, runId: string, checkout: string): Promise<HandoffError | undefined> {
   const stored = await readRun(config, runId);
   if (typeof stored !== 'object' || stored.publication === undefined || stored.status === 'running') return undefined;
-  const published = await publishRun(config, runId, { checkout });
-  if (published.ok) return undefined;
-  const { error } = published;
+  const publishResult = await publishRun(config, runId, { checkout });
+  if (publishResult.ok) return undefined;
+  const { error } = publishResult;
   return error.code === 'not_owner' ? claimedElsewhere(runId, error.owner, error.ownedAt) : error;
 }
 
@@ -585,7 +585,7 @@ export function settledSteps({ steps, definition, workflows = {} }: { steps: Rea
     const segments = step.id.replace(/\[\d+\]/g, '').split('.');
     return segments.map((_, at) => segments.slice(0, at + 1).join('.'));
   }));
-  return [...paths].filter((path) => covered('', path.split('.')));
+  return [...paths].filter((stepPath) => covered('', stepPath.split('.')));
 }
 
 /**
@@ -643,12 +643,12 @@ export interface CarriedRun extends Definitions {
  * `published`, the run teamai-reports holds, as a claim would install it. With `claim`, the published run comes first,
  * since a claim installs it over this machine's copy. Undefined when neither holds the run, which the resume then answers.
  */
-export async function carriedRun(config: LocalConfig, runId: string, { published, claim = false }: { published: boolean; claim?: boolean }): Promise<Result<CarriedRun | undefined>> {
+export async function carriedRun(config: LocalConfig, runId: string, { published: alreadyPublished, claim = false }: { published: boolean; claim?: boolean }): Promise<Result<CarriedRun | undefined>> {
   const stored = await readRun(config, runId);
   if (stored === 'corrupt') return refused(runUnreadable(runId));
   const local = stored === 'missing' ? undefined : { definition: stored.definition, workflows: stored.workflows ?? {}, settled: settledSteps(stored) };
   if (local && !claim) return ok(local);
-  if (!published) return ok(local);
+  if (!alreadyPublished) return ok(local);
   // Read from the team repository rather than the reports checkout, which a refused resume would otherwise leave synced.
   const origin = await publishedRun(config, runId, { checkout: false });
   if (!origin.ok || origin.value === 'absent') return origin.ok || local ? ok(local) : origin;
@@ -672,8 +672,8 @@ export async function reconcileTakenCopies(config: LocalConfig, runId: string, a
     return { code: 'workspace_base', message: `Run ${runId} records ${named.join(', ')}, which this checkout does not have, even after fetching the run's branches from origin.${said} Push each branch to origin from the machine that has its commit, then resume the run.` };
   }
   for (const { branch, commit } of recorded) {
-    const refused = await reconcileCopy(active, branch, commit);
-    if (refused) return { code: 'branch_diverged', message: refused.error };
+    const diverged = await reconcileCopy(active, branch, commit);
+    if (diverged) return { code: 'branch_diverged', message: diverged.error };
   }
   await updateRun(config, runId, await knownSecrets(config), async (local) => {
     if (local === 'missing' || !local.publication?.reconcileCopies) return { value: undefined };
@@ -803,12 +803,12 @@ interface Handover {
 function handedOver(snapshot: RunSnapshot, definitions: Definitions): Handover {
   const tree = { ...definitions, steps: snapshot.steps };
   const modes = snapshot.steps.map((step) => stepMode(tree, step.id));
-  const moved = snapshot.steps.flatMap((step, index) => (step.status === 'leased' && modes[index] === 'new'
+  const moved = new Set(snapshot.steps.flatMap((step, index) => (step.status === 'leased' && modes[index] === 'new'
     ? [branchName(snapshot.run, step.id, step.pass ?? 1)]
-    : []));
+    : [])));
   return {
     steps: snapshot.steps.map((step, index) => takeOver(step, modes[index])),
-    copies: Object.fromEntries(Object.entries(snapshot.copies).filter(([branch]) => !moved.includes(branch))),
+    copies: Object.fromEntries(Object.entries(snapshot.copies).filter(([branch]) => !moved.has(branch))),
   };
 }
 
@@ -886,10 +886,10 @@ async function install(
   secrets: Record<string, string>,
 ): Promise<Result<ClaimReceipt>> {
   // Every published field comes from the body as it is; only what the snapshot rewrites or leaves out is rebuilt here.
-  const { definitionHash: _hash, copies: _copies, steps: _steps, scorers: published, ...body } = snapshotBody(snapshot);
+  const { definitionHash: _hash, copies: _copies, steps: _steps, scorers: publishedScorers, ...body } = snapshotBody(snapshot);
   // A pinned scorer comes back only when this machine caches the same bytes; otherwise its passes are not scored here (D19).
-  const cached = await pinScorers(config, Object.keys(published ?? {}));
-  const scorers = Object.fromEntries(Object.entries(cached).filter(([name, pin]) => published?.[name]?.sourceHash === pin.sourceHash));
+  const cached = await pinScorers(config, Object.keys(publishedScorers ?? {}));
+  const scorers = Object.fromEntries(Object.entries(cached).filter(([name, pin]) => publishedScorers?.[name]?.sourceHash === pin.sourceHash));
   const run: RunState = {
     ...body,
     id: runId,

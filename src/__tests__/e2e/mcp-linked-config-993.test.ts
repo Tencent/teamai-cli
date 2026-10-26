@@ -108,9 +108,9 @@ function repo(name: string, files: Record<string, string>, commit: string[] = []
 }
 
 /** Make `link` a symlink to `target`. */
-function link(link: string, target: string): void {
-  fs.mkdirSync(path.dirname(link), { recursive: true });
-  fs.symlinkSync(target, link);
+function link(linkPath: string, target: string): void {
+  fs.mkdirSync(path.dirname(linkPath), { recursive: true });
+  fs.symlinkSync(target, linkPath);
 }
 
 function init(t: Team, dir: string, agents: string): Run {

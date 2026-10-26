@@ -477,9 +477,9 @@ async function polledToDone(made: Awaited<ReturnType<typeof harness>>, run: RunI
  */
 async function publishedMidStep(install: { config: LocalConfig; checkout: string }, name: string) {
   const client = inProcessClient({ config: install.config, env: await resolveWorkflowEnv(install.config) });
-  const started = await client.start(name, { checkout: install.checkout, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
-  if (!('data' in started) || typeof started.data.run !== 'string') throw new Error(JSON.stringify(started));
-  const run = RunIdSchema.parse(started.data.run);
+  const startAnswer = await client.start(name, { checkout: install.checkout, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
+  if (!('data' in startAnswer) || typeof startAnswer.data.run !== 'string') throw new Error(JSON.stringify(startAnswer));
+  const run = RunIdSchema.parse(startAnswer.data.run);
   const leased = await client.next(run, { driver: { kind: 'local', machine: 'ci', workspace: install.checkout, can: { workspace: [...WORKSPACE_MODES] } } });
   const attempt = 'data' in leased && typeof leased.data.lease === 'object' && leased.data.lease !== null && 'attempt' in leased.data.lease ? String(leased.data.lease.attempt) : '';
   expect(attempt, JSON.stringify(leased)).not.toBe('');
@@ -718,6 +718,8 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       const made = await harness({ check: SHIP });
       const tails: Record<string, string | undefined> = {};
       const { run } = await started(made);
+      // `tails` gains the 'lint' key via property assignment in the loop body, which the rule doesn't track.
+      // oxlint-disable-next-line no-unmodified-loop-condition
       for (let poll = 0; poll < 10 && !('lint' in tails); poll += 1) {
         const answer = await made.call({ kind: 'next', run, wait: true });
         if (!('data' in answer) || !('turn' in answer.data)) throw new Error(JSON.stringify(answer));
@@ -898,10 +900,10 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     rows: ['R2', 'R8'],
     run: async () => {
       const made = await harness({ 'release-docs': RELEASE_DOCS });
-      const describe = { kind: 'describe', name: 'release-docs' } as const;
+      const describeCall = { kind: 'describe', name: 'release-docs' } as const;
       const named = { ...made.config, workflows: { tools: { default: 'codex' } } };
-      expect(await made.call(describe, { config: named })).toMatchObject({ data: { describe: { ask: { start: 'teamai workflow start release-docs --driver local' } } } });
-      expect(await made.call(describe, { tool: 'codebuddy' })).toMatchObject({ data: { describe: { ask: { start: 'teamai workflow start release-docs --driver local' } } } });
+      expect(await made.call(describeCall, { config: named })).toMatchObject({ data: { describe: { ask: { start: 'teamai workflow start release-docs --driver local' } } } });
+      expect(await made.call(describeCall, { tool: 'codebuddy' })).toMatchObject({ data: { describe: { ask: { start: 'teamai workflow start release-docs --driver local' } } } });
       expect(await made.call({ kind: 'start', name: 'release-docs', answers: { confirmed: false }, inputs: undefined })).toMatchObject({ error: {
         code: 'needs_local_driver', message: expect.stringContaining('Ask the person to run teamai workflow start release-docs --driver local --tools default=claude in their own terminal.'),
       } });
@@ -1081,9 +1083,9 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     run: async () => {
       const made = await harness({ locked: LOCKED, gated: GATED, check: CHECK });
       const runOf = async (name: string): Promise<RunId> => {
-        const started = await made.context.client.start(name, { checkout: made.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
-        if (!('data' in started)) throw new Error(JSON.stringify(started));
-        return RunIdSchema.parse(started.data.run);
+        const startAnswer = await made.context.client.start(name, { checkout: made.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
+        if (!('data' in startAnswer)) throw new Error(JSON.stringify(startAnswer));
+        return RunIdSchema.parse(startAnswer.data.run);
       };
       const locked = await runOf('locked');
       expect(await made.call({ kind: 'resume', run: locked, claim: false, confirmed: true, answers: {} }, { evidence: AGENT })).toEqual({ error: {
@@ -1091,16 +1093,16 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       } });
       expect(await made.call({ kind: 'takeover', run: locked, confirmed: false }, { evidence: AGENT })).toMatchObject({ error: { code: 'invoke_denied', next: null } });
       expect(fs.existsSync(skillStatePath(made.config, locked))).toBe(false);
-      const gated = await runOf('gated');
-      expect(await made.call({ kind: 'resume', run: gated, claim: false, confirmed: false, answers: { parallel: 2 } }, { evidence: AGENT })).toEqual({ error: {
-        code: 'confirm_needed', message: expect.stringContaining('Ask the person whether to continue gated'), next: `teamai workflow resume ${gated} --driver skill --parallel 2 --confirmed`,
+      const gatedRun = await runOf('gated');
+      expect(await made.call({ kind: 'resume', run: gatedRun, claim: false, confirmed: false, answers: { parallel: 2 } }, { evidence: AGENT })).toEqual({ error: {
+        code: 'confirm_needed', message: expect.stringContaining('Ask the person whether to continue gated'), next: `teamai workflow resume ${gatedRun} --driver skill --parallel 2 --confirmed`,
       } });
-      expect(await made.call({ kind: 'takeover', run: gated, confirmed: false }, { evidence: AGENT }))
-        .toMatchObject({ error: { code: 'confirm_needed', next: `teamai workflow next ${gated} --driver skill --takeover --confirmed` } });
-      expect(await made.call({ kind: 'resume', run: gated, claim: false, confirmed: true, answers: {} }, { evidence: AGENT, mode: 'unattended' }))
+      expect(await made.call({ kind: 'takeover', run: gatedRun, confirmed: false }, { evidence: AGENT }))
+        .toMatchObject({ error: { code: 'confirm_needed', next: `teamai workflow next ${gatedRun} --driver skill --takeover --confirmed` } });
+      expect(await made.call({ kind: 'resume', run: gatedRun, claim: false, confirmed: true, answers: {} }, { evidence: AGENT, mode: 'unattended' }))
         .toMatchObject({ error: { code: 'unattended_denied', next: null } });
-      expect(fs.existsSync(skillStatePath(made.config, gated))).toBe(false);
-      expect(await turnOf(await made.call({ kind: 'resume', run: gated, claim: false, confirmed: true, answers: {} }, { evidence: AGENT }))).toMatchObject({ run: gated });
+      expect(fs.existsSync(skillStatePath(made.config, gatedRun))).toBe(false);
+      expect(await turnOf(await made.call({ kind: 'resume', run: gatedRun, claim: false, confirmed: true, answers: {} }, { evidence: AGENT }))).toMatchObject({ run: gatedRun });
       expect(await turnOf(await made.call({ kind: 'takeover', run: await runOf('check'), confirmed: false }, { evidence: AGENT }))).toMatchObject({ status: expect.any(String) });
       // Only a coding agent drives --driver skill, so a host that sets no agent variable is refused alike.
       expect(await made.call({ kind: 'takeover', run: locked, confirmed: false }, { evidence: { kind: 'skill-driver' } }))
@@ -1305,9 +1307,9 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       const made = await harness({ check: CHECK });
       // What the killed local driver left: its command, still running in a process group of its own, recorded where its attempt keeps it.
       const stopped = async (): Promise<{ run: RunId; left: Promise<NodeJS.Signals | null> }> => {
-        const started = await made.context.client.start('check', { checkout: made.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
-        if (!('data' in started)) throw new Error(JSON.stringify(started));
-        const run = RunIdSchema.parse(started.data.run);
+        const startAnswer = await made.context.client.start('check', { checkout: made.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
+        if (!('data' in startAnswer)) throw new Error(JSON.stringify(startAnswer));
+        const run = RunIdSchema.parse(startAnswer.data.run);
         const leased = await made.context.client.next(run, { driver: { ...driverIdentity('local', made.work), can: { workspace: [...WORKSPACE_MODES] } } });
         const { attempt } = z.object({ data: z.object({ lease: z.object({ step: z.literal('lint'), attempt: AttemptIdSchema }) }) }).parse(leased).data.lease;
         const dir = attemptDir(made.config, run, attempt);

@@ -495,7 +495,7 @@ async function reportsRemote(username: string): Promise<{ config: LocalConfig; o
 // preserving every unrelated field (the #1056 preservation discipline).
 describe('#1083 workflow stats merge', () => {
   it('counts end records once per run, additively, preserving unrelated fields', async () => {
-    const { mergeWorkflowStats } = await import('../workflow/records.js');
+    const { mergeWorkflowStats: mergeStats } = await import('../workflow/records.js');
     const existing = {
       username: 'tester',
       updatedAt: '2026-10-13T00:00:00.000Z',
@@ -506,7 +506,7 @@ describe('#1083 workflow stats merge', () => {
     };
     const start = buildStartRecord(runState({ status: 'running' }), driver, 'tester');
     const end = buildEndRecord(runState(), driver, 'tester');
-    const merged = mergeWorkflowStats(existing, 'tester', [start, end]);
+    const merged = mergeStats(existing, 'tester', [start, end]);
     expect(merged.workflows).toEqual({ runs: 1, succeeded: 1, failed: 0, totalDurationMs: 150000 });
     // Unrelated fields untouched.
     expect(merged.skills).toEqual(existing.skills);
@@ -516,7 +516,7 @@ describe('#1083 workflow stats merge', () => {
     expect(merged.username).toBe('tester');
     // Additive: another run's end record adds on top.
     const end2 = buildEndRecord(runState({ id: 'rfedcba0987654321' }), driver, 'tester');
-    const merged2 = mergeWorkflowStats(merged, 'tester', [end2]);
+    const merged2 = mergeStats(merged, 'tester', [end2]);
     expect(merged2.workflows).toEqual({ runs: 2, succeeded: 2, failed: 0, totalDurationMs: 300000 });
   });
 
@@ -537,9 +537,9 @@ describe('#1083 workflow stats merge', () => {
   });
 
   it('keeps workflow totals through a later usage report', async () => {
-    const { mergeWorkflowStats } = await import('../workflow/records.js');
+    const { mergeWorkflowStats: mergeStats } = await import('../workflow/records.js');
     const { mergeStatsWithinTeamSkills } = await import('../team-push.js');
-    const published = mergeWorkflowStats(
+    const published = mergeStats(
       { username: 'tester', updatedAt: '2026-10-13T00:00:00.000Z', skills: {} },
       'tester',
       [buildEndRecord(runState(), driver, 'tester')],

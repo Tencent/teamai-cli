@@ -889,12 +889,12 @@ export function adoptBareKeys<T>(
   const legacyRuns = new Map<string, string[]>();
   const recorded = new Set<string>();
   const seen = new Set<string>();
-  for (const { sessionId: runId, dataHomeKey, dataHome } of events) {
+  for (const { sessionId: runId, dataHomeKey: runDataHomeKey, dataHome } of events) {
     if (seen.has(runId) || !runId.startsWith('pid-')) continue;
     seen.add(runId);
     const id = runId.slice(0, runId.lastIndexOf('@'));
     if (recorded.has(id) || !Object.hasOwn(reported, id)) continue;
-    if (typeof dataHomeKey === 'string' || (source === 'shared' && typeof dataHome === 'string')) {
+    if (typeof runDataHomeKey === 'string' || (source === 'shared' && typeof dataHome === 'string')) {
       recorded.add(id);
       continue;
     }

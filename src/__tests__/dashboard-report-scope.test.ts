@@ -276,9 +276,9 @@ describe('each scope keeps its own reported snapshot (#786)', () => {
   const SNAPSHOTS = ['interventions', 'prompt-tokens', 'daily-sessions'];
 
   /** The shared snapshots as a release before #786 left them, with `prompts` reported per session. */
-  function writeSharedSnapshots(prompts: Record<string, number>, date: string, config?: LocalConfig): void {
+  function writeSharedSnapshots(promptCounts: Record<string, number>, date: string, config?: LocalConfig): void {
     const entries = (value: (n: number) => unknown) =>
-      Object.fromEntries(Object.entries(prompts).map(([sid, n]) => [sid, value(n)]));
+      Object.fromEntries(Object.entries(promptCounts).map(([sid, n]) => [sid, value(n)]));
     const values: Record<string, unknown> = {
       interventions: entries(() => ({ interrupt: 0, toolReject: 0, correction: 0 })),
       'prompt-tokens': entries((n) => ({ prompts: n, tokens: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 } })),
@@ -563,12 +563,12 @@ describe('each scope keeps its own reported snapshot (#786)', () => {
   });
 
   /** `claude --resume` of `sessionId` in `cwd`, whose Stop carries the transcript's `prompts`. */
-  async function resume(sessionId: string, cwd: string, prompts: number): Promise<void> {
+  async function resume(sessionId: string, cwd: string, promptCount: number): Promise<void> {
     await session('claude', { session_id: sessionId, cwd });
     const log = path.join(teamaiHome(), 'dashboard', 'events.jsonl');
     fs.writeFileSync(log, fs.readFileSync(log, 'utf-8').split('\n').filter(Boolean).map((line) => {
       const event = JSON.parse(line);
-      return JSON.stringify(event.sessionId === sessionId && event.type === 'stop' ? { ...event, prompts } : event);
+      return JSON.stringify(event.sessionId === sessionId && event.type === 'stop' ? { ...event, prompts: promptCount } : event);
     }).join('\n') + '\n');
   }
 
@@ -688,8 +688,8 @@ describe('each scope keeps its own reported snapshot (#786)', () => {
       const day = reported && typeof reported === 'object' && 'daily' in reported && reported.daily && typeof reported.daily === 'object'
         ? Object.values(reported.daily)[0] : undefined;
       const interventions = reported && typeof reported === 'object' && 'interventions' in reported ? reported.interventions : undefined;
-      const prompts = reported && typeof reported === 'object' && 'prompts' in reported ? reported.prompts : undefined;
-      return { day, interventions, prompts };
+      const promptsValue = reported && typeof reported === 'object' && 'prompts' in reported ? reported.prompts : undefined;
+      return { day, interventions, prompts: promptsValue };
     };
     return { event, write, stats };
   }
@@ -793,8 +793,8 @@ describe('each scope keeps its own reported snapshot (#786)', () => {
     const { event, write, stats } = await codexLog(project);
     const day = new Date().toISOString().slice(0, 10);
     // The thread-level token counter spans rollouts; prompts and costs restart with each.
-    const stop = (rollout: string, minute: number, prompts: number, costMicros: number, input: number) => event(rollout, 'stop', minute, {
-      prompts, tokenScope: 'session', tokens: { input, output: 0, cacheRead: 0, cacheCreation: 0 },
+    const stop = (rollout: string, minute: number, promptCount: number, costMicros: number, input: number) => event(rollout, 'stop', minute, {
+      prompts: promptCount, tokenScope: 'session', tokens: { input, output: 0, cacheRead: 0, cacheCreation: 0 },
       requestDaily: { [day]: { pricedRequests: 1, costMicros, cacheReadTokens: 0, cacheEligibleInputTokens: 0, priceVersion: 'v1' } },
     });
     write([stop('rollout-a.jsonl', 0, 5, 100, 500)]);
@@ -947,9 +947,9 @@ describe('each scope keeps its own reported snapshot (#786)', () => {
     const key = await dataHomeKeyOf(project);
     const log = path.join(teamaiHome(), 'dashboard', 'events.jsonl');
     fs.mkdirSync(path.dirname(log), { recursive: true });
-    const stop = (rollout: string, prompts: number, toolReject: number) => JSON.stringify({
+    const stop = (rollout: string, promptCount: number, toolReject: number) => JSON.stringify({
       type: 'stop', timestamp: new Date().toISOString(), sessionId: 'codex-s', tool: 'codex', dataHomeKey: key,
-      transcriptPath: path.join(tmp, rollout), tokenScope: 'transcript', prompts,
+      transcriptPath: path.join(tmp, rollout), tokenScope: 'transcript', prompts: promptCount,
       tokens: { input: 10, output: 1, cacheRead: 0, cacheCreation: 0 }, interventions: { interrupt: 0, toolReject },
     });
     fs.writeFileSync(log, stop('rollout-a.jsonl', 5, 1) + '\n');

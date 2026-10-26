@@ -1405,9 +1405,9 @@ async function pushCore(
       process.exitCode = 1;
       return;
     }
-    const { loadProjectsManifest, findProject, unknownProjectMessage } = await import('./projects.js');
+    const { loadProjectsManifest: loadProjectsManifestReimported, findProject, unknownProjectMessage } = await import('./projects.js');
     try {
-      projectsManifest = await loadProjectsManifest(localConfig.repo.localPath);
+      projectsManifest = await loadProjectsManifestReimported(localConfig.repo.localPath);
     } catch (e) {
       log.error(`Cannot resolve --project destinations: ${(e as Error).message}`);
       process.exitCode = 2;

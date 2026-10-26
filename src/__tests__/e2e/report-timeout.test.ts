@@ -130,35 +130,35 @@ describe('real CLI report completion', () => {
   for (const provider of ['git', 'gitlab', 'github']) {
     for (const agent of Object.keys(agents) as Array<keyof typeof agents>) {
       // Concurrent: each case mostly waits out the remote's slow push, in its own sandbox.
-      it.concurrent(`acknowledges slow pushes once: ${provider}/${agent}`, async ({ expect }) => {
+      it.concurrent(`acknowledges slow pushes once: ${provider}/${agent}`, async ({ expect: concurrentExpect }) => {
         const f = fixture(agent, provider);
         await f.pull(); // Warm reports worktree without any session data.
         await f.seedEvents();
         f.receiver('slow');
         const output = await f.pull(() => {
-          expect(fs.readFileSync(f.usage, 'utf8')).toBe(f.usageLine);
-          expect(f.snapshot('prompt-tokens')[f.runId]).toBeUndefined();
-          expect(fs.existsSync(path.join(f.home, '.teamai/.sync-lock'))).toBe(true);
+          concurrentExpect(fs.readFileSync(f.usage, 'utf8')).toBe(f.usageLine);
+          concurrentExpect(f.snapshot('prompt-tokens')[f.runId]).toBeUndefined();
+          concurrentExpect(fs.existsSync(path.join(f.home, '.teamai/.sync-lock'))).toBe(true);
           // An event arriving during the push must survive cleanup of the batch.
           fs.appendFileSync(f.usage, f.usageLine);
         });
-        expect(output).toContain('Auto-report is still running after 5s');
-        expect(f.stats().skills.review.count).toBe(1);
-        expect(fs.readFileSync(f.usage, 'utf8')).toBe(f.usageLine);
+        concurrentExpect(output).toContain('Auto-report is still running after 5s');
+        concurrentExpect(f.stats().skills.review.count).toBe(1);
+        concurrentExpect(fs.readFileSync(f.usage, 'utf8')).toBe(f.usageLine);
         for (const name of ['interventions', 'prompt-tokens', 'daily-sessions']) {
-          expect(f.snapshot(name)[f.runId]).toBeDefined();
+          concurrentExpect(f.snapshot(name)[f.runId]).toBeDefined();
         }
-        expect(fs.existsSync(path.join(f.home, '.teamai/.sync-lock'))).toBe(false);
+        concurrentExpect(fs.existsSync(path.join(f.home, '.teamai/.sync-lock'))).toBe(false);
         f.receiver('normal');
         await f.pull();
         const stats = f.stats();
-        expect(stats.skills.review.count).toBe(2);
-        expect(stats.prompts).toBe(1);
-        expect(stats.tokens.input).toBe(10);
-        expect(stats.interventions.sessions).toBe(1);
-        expect(fs.readFileSync(f.usage, 'utf8')).toBe('');
+        concurrentExpect(stats.skills.review.count).toBe(2);
+        concurrentExpect(stats.prompts).toBe(1);
+        concurrentExpect(stats.tokens.input).toBe(10);
+        concurrentExpect(stats.interventions.sessions).toBe(1);
+        concurrentExpect(fs.readFileSync(f.usage, 'utf8')).toBe('');
         await f.pull();
-        expect(f.stats()).toEqual(stats);
+        concurrentExpect(f.stats()).toEqual(stats);
       }, 60_000);
     }
   }

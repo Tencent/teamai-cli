@@ -190,7 +190,7 @@ export async function buildDeliveredGitExcludeChecks(ctx: DoctorContext): Promis
       source: 'local',
       reportedByPull: 'git-exclude-foreign',
       check: async () => foreign.length === 0,
-      fix: foreign.join(' ') + (union.foreign.some((path) => !path.unlisted)
+      fix: foreign.join(' ') + (union.foreign.some((p) => !p.unlisted)
         ? ' Rename or delete that file if it is a leftover; then the next `teamai pull` lists the path.' : ''),
     });
   }

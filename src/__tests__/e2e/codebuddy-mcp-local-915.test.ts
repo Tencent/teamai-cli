@@ -221,7 +221,7 @@ function withoutLocal(data: CodebuddyJson, ...keys: string[]): unknown {
   return copy;
 }
 
-const names = (servers: Record<string, unknown> | null | undefined): string[] => Object.keys(servers ?? {}).sort();
+const names = (serverMap: Record<string, unknown> | null | undefined): string[] => Object.keys(serverMap ?? {}).sort();
 
 beforeAll(() => {
   if (!fs.existsSync(CLI)) throw new Error(`CLI binary not found at ${CLI}. Run "npm run build" first.`);

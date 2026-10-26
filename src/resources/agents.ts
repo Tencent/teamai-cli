@@ -455,9 +455,9 @@ export class AgentsHandler extends ResourceHandler {
             break;
           }
           const content = await readFileSafe(filePath);
-          const recorded = modelRecords[stem]?.[tool];
+          const recordedModel = modelRecords[stem]?.[tool];
           if (content === expected.render.content
-            || (recorded !== undefined && content === renderWithModel(canonicalSpec, tool, recorded).content)
+            || (recordedModel !== undefined && content === renderWithModel(canonicalSpec, tool, recordedModel).content)
             || (delivered?.[filePath] !== undefined && delivered[filePath] === await fileHash(filePath))) {
             toolFiles.delete(tool);
           }

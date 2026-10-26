@@ -606,13 +606,13 @@ export async function loadModelInputs(filePath: string): Promise<StoredModelInpu
     content = await fs.promises.readFile(filePath, 'utf8');
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {};
-    throw new Error(`Cannot read local model inputs at ${filePath}: ${(error as Error).message}`);
+    throw new Error(`Cannot read local model inputs at ${filePath}: ${(error as Error).message}`, { cause: error });
   }
   let raw: unknown;
   try {
     raw = JSON.parse(content) as unknown;
   } catch (error) {
-    throw new Error(`Cannot parse local model inputs at ${filePath}: ${(error as Error).message}`);
+    throw new Error(`Cannot parse local model inputs at ${filePath}: ${(error as Error).message}`, { cause: error });
   }
   const parsed = StoredModelInputsSchema.safeParse(raw);
   if (!parsed.success) {

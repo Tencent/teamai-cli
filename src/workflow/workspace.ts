@@ -89,7 +89,7 @@ export function branchName(runId: string, stepPath: string, pass: number): strin
 export function resolveMode(step: WorkflowStep, ancestors: WorkflowStep[]): WorkspaceMode {
   if (step.workspace) return step.workspace;
   if (step.command !== undefined && step.prompt === undefined && step.promptFile === undefined) return 'read-only';
-  for (const ancestor of [...ancestors].reverse()) {
+  for (const ancestor of ancestors.toReversed()) {
     if (ancestor.workspace !== 'new' && ancestor.workspace !== 'continue') continue;
     return ancestor.forEach ? 'new' : 'continue';
   }
@@ -250,6 +250,8 @@ function workflowChildren(run: RunState, step: StepState): StepState[] {
   const prefix = `${step.id}.`;
   return run.steps.filter((item) => {
     if (!item.id.startsWith(prefix)) return false;
+    // `rest` is a string; these are substring checks, not array membership (the rule can't tell the two apart).
+    // oxlint-disable-next-line unicorn/prefer-set-has
     const rest = item.id.slice(prefix.length);
     return !rest.includes('.') && !rest.includes('[');
   });
@@ -376,7 +378,7 @@ function sessionFromPasses(passes: Array<{ tool?: string; session?: string }>): 
 /** Where `session` stands now: the copy the latest step that continued it under another id left, and so on from there. */
 function latestContinuation(run: RunState, session: SessionRef | undefined): LeaseSession | undefined {
   if (!session) return undefined;
-  const latestFirst = [...(run.sessionContinuations ?? [])].reverse();
+  const latestFirst = (run.sessionContinuations ?? []).toReversed();
   let latest = session;
   const earlier: SessionRef[] = [];
   // At most one hop per link, so links a driver reported in a circle still end.
@@ -444,7 +446,7 @@ export function planWorkspace(
   const sessionResult = sessionOf(run, scope, state, definition);
   if (sessionResult && 'code' in sessionResult) return { mode, fail: sessionResult };
   const session = sessionResult ? { session: sessionResult } : {};
-  const owner = [...ancestors].reverse().find((ancestor) => opensCopy(ancestor.step));
+  const owner = ancestors.toReversed().find((ancestor) => opensCopy(ancestor.step));
   const modes = request.modes ?? ['read-only'];
   if (mode === 'read-only') {
     if (!owner) return { mode, ...session };
@@ -516,7 +518,7 @@ export function opensCopy(step: WorkflowStep): boolean {
 export function plannedBranch(run: RunState, scope: Scope, state: StepState, definition: WorkflowStep): string | undefined {
   if (definition.workflow !== undefined) {
     if (opensCopy(definition)) return undefined;
-    const owner = [...ancestorsOf(run, state.id)].reverse().find((ancestor) => opensCopy(ancestor.step));
+    const owner = ancestorsOf(run, state.id).toReversed().find((ancestor) => opensCopy(ancestor.step));
     return owner && branchName(run.id, owner.instance, owner.pass);
   }
   return planWorkspace(run, scope, state, definition, {

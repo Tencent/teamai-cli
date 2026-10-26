@@ -330,8 +330,8 @@ describe('hook-handlers registry', () => {
   });
 
   it.each(['rebase', 'amend'])('post-rewrite syncs only a completed rebase, not amend (%s)', async (rewrite) => {
-    const { createDispatcher } = await import('../hook-dispatch.js');
-    const dispatcher = createDispatcher({
+    const { createDispatcher: freshCreateDispatcher } = await import('../hook-dispatch.js');
+    const dispatcher = freshCreateDispatcher({
       handlers: buildHandlerRegistry(),
       localConfig: {
         scope: 'project', projectRoot: '/tmp/self-project', username: 'test', additionalRoles: [],
@@ -381,8 +381,8 @@ describe('hook-handlers registry', () => {
     const checkout = async (args: () => string[], action: string | undefined) => {
       if (action === undefined) delete process.env.GIT_REFLOG_ACTION;
       else process.env.GIT_REFLOG_ACTION = action;
-      const { createDispatcher } = await import('../hook-dispatch.js');
-      const dispatcher = createDispatcher({
+      const { createDispatcher: freshCreateDispatcher } = await import('../hook-dispatch.js');
+      const dispatcher = freshCreateDispatcher({
         handlers: buildHandlerRegistry(),
         localConfig: {
           scope: 'project', projectRoot: repo, username: 'test', additionalRoles: [],
@@ -2121,12 +2121,12 @@ describe('buildAdoptedSummary', () => {
 
 describe('mr-hint agent language (#1014)', () => {
   it('passes language en from teamai.yaml into the hint', async () => {
-    const fs = await import('node:fs');
-    const os = await import('node:os');
-    const path = await import('node:path');
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-lang-'));
+    const fsMod = await import('node:fs');
+    const osMod = await import('node:os');
+    const pathMod = await import('node:path');
+    const dir = fsMod.mkdtempSync(pathMod.join(osMod.tmpdir(), 'teamai-lang-'));
     try {
-      fs.writeFileSync(path.join(dir, 'teamai.yaml'), 'team: t\nrepo: https://example.invalid/t.git\nlanguage: en\n');
+      fsMod.writeFileSync(pathMod.join(dir, 'teamai.yaml'), 'team: t\nrepo: https://example.invalid/t.git\nlanguage: en\n');
       const handler = buildHandlerRegistry().find((r) => r.handler.name === 'mr-hint')!.handler;
       mockMrHintOutput.mockClear();
       await handler.execute({}, 'claude', {
@@ -2138,17 +2138,17 @@ describe('mr-hint agent language (#1014)', () => {
         expect.objectContaining({ repo: expect.objectContaining({ localPath: dir }) }),
       ]);
     } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+      fsMod.rmSync(dir, { recursive: true, force: true });
     }
   });
 
   it('passes no English override when language is omitted', async () => {
-    const fs = await import('node:fs');
-    const os = await import('node:os');
-    const path = await import('node:path');
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-lang-'));
+    const fsMod = await import('node:fs');
+    const osMod = await import('node:os');
+    const pathMod = await import('node:path');
+    const dir = fsMod.mkdtempSync(pathMod.join(osMod.tmpdir(), 'teamai-lang-'));
     try {
-      fs.writeFileSync(path.join(dir, 'teamai.yaml'), 'team: t\nrepo: https://example.invalid/t.git\n');
+      fsMod.writeFileSync(pathMod.join(dir, 'teamai.yaml'), 'team: t\nrepo: https://example.invalid/t.git\n');
       const handler = buildHandlerRegistry().find((r) => r.handler.name === 'mr-hint')!.handler;
       mockMrHintOutput.mockClear();
       await handler.execute({}, 'claude', {
@@ -2160,7 +2160,7 @@ describe('mr-hint agent language (#1014)', () => {
         expect.objectContaining({ repo: expect.objectContaining({ localPath: dir }) }),
       ]);
     } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+      fsMod.rmSync(dir, { recursive: true, force: true });
     }
   });
 });

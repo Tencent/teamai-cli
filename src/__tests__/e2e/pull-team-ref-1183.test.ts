@@ -866,7 +866,7 @@ process.stdout.write(JSON.stringify({ type: 'result', session_id: 's' }) + '\\n'
   m.env.PATH = `${bin}${path.delimiter}${m.env.PATH}`;
   const recorded = (): string | undefined => {
     const started = m.ok(['workflow', 'start', 'check', '--driver', 'local', '--tools', 'default=claude']);
-    const envelope = JSON.parse(started.output.trim().split('\n').filter((line) => line.startsWith('{')).at(-1)!);
+    const envelope = JSON.parse(started.output.trim().split('\n').findLast((line) => line.startsWith('{'))!);
     const run = String(envelope.data.done.run);
     const record = JSON.parse(m.git(['show', `teamai-reports:workflows/runs/${run}.json`], m.remote));
     return record.steps[0].agent?.team?.revision;

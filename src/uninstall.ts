@@ -1083,12 +1083,12 @@ async function buildRemovalPlan(
   // this entry, so there are no unrecorded teamai entries to migrate.
   const opencodeRes = perTool.get('opencode');
   if (opencodeRes) {
-    const { loadStateForScope } = await import('./config.js');
+    const { loadStateForScope: loadStateForScopeReimported } = await import('./config.js');
     const { opencodeContextReference, readOpencodeInstructionList } = await import('./resources/opencode-config.js');
     const contextFile = ownOf(await locate('opencode', 'blocks', install))?.path;
     // Worktrees share state.json: only this checkout's own record counts.
     const own = contextFile === undefined ? undefined : opencodeContextReference(contextFile, localConfig.scope, resolveToolBaseDir('opencode', localConfig));
-    const recorded = (await loadStateForScope(localConfig)).opencodeContextEntries ?? [];
+    const recorded = (await loadStateForScopeReimported(localConfig)).opencodeContextEntries ?? [];
     if (own && recorded.some((ref) => ref.config === own.config && ref.entry === own.entry)) {
       const listed = await readOpencodeInstructionList(own.config);
       if (listed?.includes(own.entry) || (listed === null && await pathExists(own.config))) {

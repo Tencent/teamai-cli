@@ -212,9 +212,9 @@ export async function listLearningFiles(
  * reaches no teammate and the next realign can undo it. Every mutation asks
  * this before deciding whether to write in place or in the write root.
  */
-export function isInWriteRoot(absPath: string, writeRoot: string): boolean {
+export function isInWriteRoot(absPath: string, rootPath: string): boolean {
   const resolved = path.resolve(absPath);
-  const root = path.resolve(writeRoot);
+  const root = path.resolve(rootPath);
   return resolved === root || resolved.startsWith(root + path.sep);
 }
 

@@ -1,7 +1,7 @@
 import path from 'node:path';
 
 import { pathExists, readJson } from '../../utils/fs.js';
-import { formatCommand, type CommandExecutor } from '../../utils/exec.js';
+import { formatCommand } from '../../utils/exec.js';
 import { log } from '../../utils/logger.js';
 import type { NpmLockEntry, NpmSpec, PackageStatus } from '../types.js';
 import {
@@ -105,10 +105,6 @@ export function extractNpmLockEntries(
 
 export class NpmAdapter extends PackageAdapter<NpmSpec[], NpmLockEntry[]> {
   readonly ecosystem = 'npm' as const;
-
-  constructor(executor?: CommandExecutor) {
-    super(executor);
-  }
 
   async detect(cwd: string): Promise<boolean> {
     return pathExists(path.join(cwd, 'package.json'));

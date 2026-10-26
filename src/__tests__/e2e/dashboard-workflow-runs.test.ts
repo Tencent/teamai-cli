@@ -20,7 +20,7 @@ afterEach(async () => {
 
 function cli(args: string[]): Record<string, unknown> {
   const stdout = execFileSync(process.execPath, [CLI, ...args], { cwd: repo, env: { ...process.env, FORCE_COLOR: '0' }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-  const envelope = JSON.parse(stdout.trim().split('\n').filter((line) => line.startsWith('{')).at(-1) ?? '{}') as WorkflowEnvelope;
+  const envelope = JSON.parse(stdout.trim().split('\n').findLast((line) => line.startsWith('{')) ?? '{}') as WorkflowEnvelope;
   if ('error' in envelope) throw new Error(envelope.error.message);
   return envelope.data;
 }

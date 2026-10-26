@@ -88,7 +88,7 @@ function spawnsByPath(candidate: string): boolean {
 }
 
 /** ELF, Mach-O (thin or universal): a format the kernel starts without an interpreter. */
-const NATIVE_MAGIC = ['7f454c46', 'feedface', 'feedfacf', 'cefaedfe', 'cffaedfe', 'cafebabe'];
+const NATIVE_MAGIC = new Set(['7f454c46', 'feedface', 'feedfacf', 'cefaedfe', 'cffaedfe', 'cafebabe']);
 
 /**
  * Whether `file` is a native executable this user may run, which starts when
@@ -101,7 +101,7 @@ function isNativeExecutable(file: string): boolean {
     const fd = fs.openSync(file, 'r');
     try {
       const head = Buffer.alloc(4);
-      return fs.readSync(fd, head, 0, 4, 0) === 4 && NATIVE_MAGIC.includes(head.toString('hex'));
+      return fs.readSync(fd, head, 0, 4, 0) === 4 && NATIVE_MAGIC.has(head.toString('hex'));
     } finally {
       fs.closeSync(fd);
     }

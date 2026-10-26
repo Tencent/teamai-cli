@@ -416,6 +416,8 @@ class Harness {
   async ticking<T>(step: Promise<T>): Promise<T> {
     let settled = false;
     const result = step.finally(() => { settled = true; });
+    // `settled` flips inside the `.finally()` callback registered above, which the linter can't see.
+    // oxlint-disable-next-line no-unmodified-loop-condition
     for (let now = Date.now(); !settled; now += 1000) {
       await new Promise((r) => setTimeout(r, 25));
       vi.setSystemTime(now + 1000);
@@ -1238,15 +1240,15 @@ const ROWS: Row[] = [
     trace: async (h) => {
       const { files } = await h.recall('redis timeout');
       const dir = h.rel(path.dirname(files[0]));
-      const doc = h.rel(files[0]);
-      await h.shell(`grep -l timeout '${dir}'`, `${doc}\n`);
-      await h.shell(`grep -rl timeout '${doc}'`, `${doc}\n`);
-      await h.shell(`grep -L pool '${doc}'`, `${doc}\n`);
-      await h.shell(`rg --files '${doc}'`, `${doc}\n`);
+      const docPath = h.rel(files[0]);
+      await h.shell(`grep -l timeout '${dir}'`, `${docPath}\n`);
+      await h.shell(`grep -rl timeout '${docPath}'`, `${docPath}\n`);
+      await h.shell(`grep -L pool '${docPath}'`, `${docPath}\n`);
+      await h.shell(`rg --files '${docPath}'`, `${docPath}\n`);
       await h.shell(`ls '${dir}'`, 'redis-timeout.md\nsetup.md\n');
-      await h.shell(`ls -l '${doc}'`, `-rw-r--r-- 1 me staff 120 Sep  1 09:00 ${doc}\n`);
-      await h.shell(`find '${dir}' -name '*.md'`, `${doc}\n`);
-      await h.shell(`git ls-files '${doc}'`, `${doc}\n`);
+      await h.shell(`ls -l '${docPath}'`, `-rw-r--r-- 1 me staff 120 Sep  1 09:00 ${docPath}\n`);
+      await h.shell(`find '${dir}' -name '*.md'`, `${docPath}\n`);
+      await h.shell(`git ls-files '${docPath}'`, `${docPath}\n`);
       await h.stop();
     },
     project: {},

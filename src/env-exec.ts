@@ -46,10 +46,10 @@ const FORWARDED_SIGNALS: readonly NodeJS.Signals[] = ['SIGTERM', 'SIGHUP'];
 const TERMINAL_SIGNALS: readonly NodeJS.Signals[] = ['SIGINT', 'SIGQUIT'];
 
 /** Signal policy for an attached command, shared with foreground workflow tools. */
-export function commandSignalPolicy(terminalReachesCommand: boolean): { forwarded: readonly NodeJS.Signals[]; ignored: readonly NodeJS.Signals[] } {
+export function commandSignalPolicy(reachesCommand: boolean): { forwarded: readonly NodeJS.Signals[]; ignored: readonly NodeJS.Signals[] } {
   return {
-    forwarded: terminalReachesCommand ? FORWARDED_SIGNALS : [...FORWARDED_SIGNALS, ...TERMINAL_SIGNALS],
-    ignored: terminalReachesCommand ? TERMINAL_SIGNALS : [],
+    forwarded: reachesCommand ? FORWARDED_SIGNALS : [...FORWARDED_SIGNALS, ...TERMINAL_SIGNALS],
+    ignored: reachesCommand ? TERMINAL_SIGNALS : [],
   };
 }
 
@@ -312,9 +312,9 @@ function run(
   args: readonly string[],
   env: NodeJS.ProcessEnv,
   cwd: string,
-  terminalReachesCommand: boolean,
+  reachesCommand: boolean,
 ): Promise<ExecOutcome> {
-  const { forwarded, ignored } = commandSignalPolicy(terminalReachesCommand);
+  const { forwarded, ignored } = commandSignalPolicy(reachesCommand);
   return new Promise((resolve) => {
     // cross-spawn: on Windows, npm installs CLIs as .cmd shims spawn can't start.
     const child = crossSpawn(file, [...args], { cwd, env, stdio: 'inherit' });

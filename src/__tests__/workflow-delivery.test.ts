@@ -137,8 +137,8 @@ function flag(args: string[], name: string): string | undefined {
 }
 
 /** An open pull request as GitHub lists it. */
-function pull(number: number, head: string, base = 'main', repo = 'fixture/app') {
-  return { state: 'open', html_url: `https://github.com/${repo}/pull/${number}`, head: { ref: head, repo: { full_name: repo } }, base: { ref: base, repo: { full_name: repo } } };
+function pull(number: number, prHead: string, base = 'main', repo = 'fixture/app') {
+  return { state: 'open', html_url: `https://github.com/${repo}/pull/${number}`, head: { ref: prHead, repo: { full_name: repo } }, base: { ref: base, repo: { full_name: repo } } };
 }
 
 const FIX_THEN_REVIEW = `  - id: fix\n    workspace: new\n    command: node fix.js\n    deliver: pr\n  - id: review\n    needs: [fix]\n    command: echo review\n`;
@@ -562,8 +562,8 @@ function creates(gh: ReturnType<typeof fakeGh>): Array<[string | undefined, stri
 }
 
 /** The commits on `head` that `target` does not have, on the fixture's origin, leaving out the merge that brings a copy up to its needs. */
-function commitsBeyond(root: string, target: string, head: string): string[] {
-  return git(root, ['--git-dir=remote.git', 'log', '--no-merges', '--format=%H', `${target}..${head}`]).split('\n').filter(Boolean);
+function commitsBeyond(root: string, target: string, fromHead: string): string[] {
+  return git(root, ['--git-dir=remote.git', 'log', '--no-merges', '--format=%H', `${target}..${fromHead}`]).split('\n').filter(Boolean);
 }
 
 function changedTo(run: RunState, id: string): string | undefined {
@@ -919,9 +919,9 @@ describe('reported URLs from a driver', () => {
  */
 function providerDouble(findOpen: PullRequestLookup['findOpen'], create: GitProvider['createPullRequest'], hostname = 'github.com') {
   const provider = new GitHubProvider();
-  const creates = vi.spyOn(provider, 'createPullRequest').mockImplementation(create);
+  const createSpy = vi.spyOn(provider, 'createPullRequest').mockImplementation(create);
   vi.spyOn(registry, 'providerForRemote').mockReturnValue({ kind: 'provider', provider, pullRequests: { findOpen }, repo: 'fixture/app', hostname });
-  return creates;
+  return createSpy;
 }
 
 describe('retrying and cancelling a delivery', () => {

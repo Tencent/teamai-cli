@@ -72,8 +72,8 @@ describe.each([{ version: 'V1', binary: V1 }, { version: 'V2', binary: V2 }])('r
       const auth = Buffer.from(`opencode:${version === 'V1' ? env.OPENCODE_SERVER_PASSWORD : env.OPENCODE_PASSWORD}`).toString('base64');
       const request = async (route: string, body?: unknown, timeout = 5_000) => {
         if (version === 'V2') {
-          const output = execFileSync(binary!, ['api', '--server', url, body ? 'POST' : 'GET', route, ...(body ? ['--data', JSON.stringify(body)] : [])], { env, cwd: work, encoding: 'utf8', timeout, stdio: ['ignore', 'pipe', 'pipe'] });
-          const response = JSON.parse(output) as Record<string, unknown>;
+          const apiOutput = execFileSync(binary!, ['api', '--server', url, body ? 'POST' : 'GET', route, ...(body ? ['--data', JSON.stringify(body)] : [])], { env, cwd: work, encoding: 'utf8', timeout, stdio: ['ignore', 'pipe', 'pipe'] });
+          const response = JSON.parse(apiOutput) as Record<string, unknown>;
           return (response.data ?? response) as Record<string, unknown>;
         }
         const response = await fetch(`${url}${route}`, { method: body ? 'POST' : 'GET', headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(timeout), ...(body ? { body: JSON.stringify(body) } : {}) });

@@ -959,14 +959,14 @@ describe('self mode migration (P2)', () => {
     await fse.outputFile(path.join(legacyDir, 'pending-learnings', moved), '# drained\n');
     const self = await readConfigFrom(partition, repoRoot);
     if (!self) throw new Error('expected the partition config');
-    const git = { ...self, repo: { localPath: path.join(partition, 'team-repo'), remote: 'git@example.com:team/repo.git', kind: 'git' as const } };
+    const gitConfig = { ...self, repo: { localPath: path.join(partition, 'team-repo'), remote: 'git@example.com:team/repo.git', kind: 'git' as const } };
 
     // Another checkout's init switches the project to git mode while this
     // migration drains the checkout's self queue into the partition.
     let switched: Promise<unknown> | undefined;
     listing.after = async () => {
-      switched = setAsideQueueOnModeSwitch(self, git, () =>
-        fse.writeFile(path.join(partition, 'config.yaml'), YAML.stringify({ repo: git.repo, username: 'tester', scope: 'project' })));
+      switched = setAsideQueueOnModeSwitch(self, gitConfig, () =>
+        fse.writeFile(path.join(partition, 'config.yaml'), YAML.stringify({ repo: gitConfig.repo, username: 'tester', scope: 'project' })));
       await Promise.race([switched, new Promise((resolve) => setTimeout(resolve, 300))]);
     };
 

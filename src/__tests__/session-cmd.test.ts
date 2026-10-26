@@ -1372,7 +1372,7 @@ describe('session resume of a session already restored', () => {
 
     await resume();
     const projects = path.join(mocks.home, '.claude', 'projects');
-    const [transcript] = (fs.readdirSync(projects, { recursive: true }) as string[]).filter((f) => f.endsWith('.jsonl'));
+    const transcript = (fs.readdirSync(projects, { recursive: true }) as string[]).find((f) => f.endsWith('.jsonl'))!;
     const restoredId = path.basename(transcript, '.jsonl');
     expect(out.join('\n')).toContain(`To continue: claude --resume ${restoredId}`);
     fs.appendFileSync(path.join(projects, transcript), JSON.stringify({ type: 'user', message: { content: 'later turn' } }) + '\n');

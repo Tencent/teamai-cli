@@ -127,8 +127,8 @@ function machine(name: string, extraServers: Array<{ name: string; url: string }
     fs.writeFileSync(manifest, JSON.stringify(data, null, 2));
   };
   /** The team publishes a new set of MCP servers. */
-  const publishTeamMcp = (servers: Array<{ name: string; url: string }>): void => {
-    writeTeamMcp(servers);
+  const publishTeamMcp = (newServers: Array<{ name: string; url: string }>): void => {
+    writeTeamMcp(newServers);
     gitOk(['add', '-A'], seed);
     gitOk(['commit', '-q', '-m', 'mcp'], seed);
     gitOk(['push', '-q', remote, 'main'], seed);

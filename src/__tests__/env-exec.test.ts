@@ -409,7 +409,7 @@ describe('teamai env exec', () => {
       expect({
         exec: (await childEnv(root))[key],
         mcp: (await buildVarTable(inheriting))[key],
-        list: envListing(await resolveTeamEnv(inheriting), { reveal: true }).lines.map(({ text }) => text.trim()).filter((text) => text.startsWith(key)),
+        list: envListing(await resolveTeamEnv(inheriting), { reveal: true }).lines.map(({ text: lineText }) => lineText.trim()).filter((trimmed) => trimmed.startsWith(key)),
         hint: (await hint.execute({}, 'claude', inheriting))?.includes(key) ?? false,
       }).toEqual({ exec: expected, mcp: expected, list: [list], hint: expected !== undefined });
     });
@@ -445,13 +445,13 @@ describe('teamai env exec', () => {
       expect({
         exec: (await childEnv(root)).USER_ONLY,
         mcp: (await buildVarTable(inheriting)).USER_ONLY,
-        list: listing.lines.map(({ text }) => text.trim()).filter((text) => text.startsWith('USER_ONLY')),
+        list: listing.lines.map(({ text: lineText }) => lineText.trim()).filter((trimmed) => trimmed.startsWith('USER_ONLY')),
         hint: (await hint.execute({}, 'claude', inheriting))?.includes('USER_ONLY') ?? false,
       }).toEqual({ exec: expected, mcp: expected, list, hint: true });
       if (problem) {
-        expect(listing.problems.some((text) => text.includes(problem))).toBe(true);
+        expect(listing.problems.some((message) => message.includes(problem))).toBe(true);
         expect(listing.problems).toContain("Until it is fixed, shells, MCP servers and `teamai env exec` use the values the user scope's last pull wrote for USER_ONLY.");
-        const kept = stderr.find((text) => text.includes("with the env variables the user scope's last pull wrote (USER_ONLY)"));
+        const kept = stderr.find((line) => line.includes("with the env variables the user scope's last pull wrote (USER_ONLY)"));
         expect(kept).toContain('[user] ');
         expect(kept).toContain(problem);
         expect(kept).not.toContain('USER_ONLY=old');
@@ -488,9 +488,9 @@ describe('teamai env exec', () => {
         mcp: [(await buildVarTable(detected)).PROJ, (await buildVarTable(detected)).USER_ONLY],
         hint: (await hint.execute({}, 'claude', detected))?.includes('PROJ') ?? false,
       }).toEqual({ exec: ['old', 'u'], mcp: ['old', 'u'], hint: true });
-      expect(listing.problems.some((text) => text.includes(problem))).toBe(true);
+      expect(listing.problems.some((message) => message.includes(problem))).toBe(true);
       expect(listing.problems).toContain('Until it is fixed, shells, MCP servers and `teamai env exec` use the values the last pull wrote for PROJ.');
-      expect(stderr.find((text) => text.includes('with the env variables the last pull wrote (PROJ)'))).toContain(problem);
+      expect(stderr.find((line) => line.includes('with the env variables the last pull wrote (PROJ)'))).toContain(problem);
     });
 
     // What the last pull wrote is what its env.sh exports, byte for byte: a
@@ -545,7 +545,7 @@ describe('teamai env exec', () => {
         exec: (await childEnv(root)).TOKEN,
         mcp: (await buildVarTable(inheriting, teamEnv)).TOKEN,
         inherited: declared ? teamEnv.inheritedVariables.includes(declared) : false,
-        list: envListing(teamEnv, { reveal: true }).lines.map(({ text }) => text.trim()).filter((text) => text.startsWith('TOKEN')),
+        list: envListing(teamEnv, { reveal: true }).lines.map(({ text: lineText }) => lineText.trim()).filter((trimmed) => trimmed.startsWith('TOKEN')),
       }).toEqual({ exec: expected, mcp: expected, inherited: expected === 'user', list: [list] });
     });
 

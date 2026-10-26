@@ -180,7 +180,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
       const toolRootsFor = toolRootsLookup();
       const commitMessage = (saved: number) => `sync: push ${saved} session(s) from ${source}${opts.all ? ' (all workspaces)' : ''}`;
       /** Saves the selected sessions into the archive at `root`: how many, or undefined once a failure that stops the push was reported. */
-      const archiveInto = async (syncMgr: SyncManager, root: string): Promise<number | undefined> => {
+      const archiveInto = async (syncMgr: SyncManager, archiveRoot: string): Promise<number | undefined> => {
         let saved = 0;
         let unreadable = 0;
         let redactedTotal = 0;
@@ -221,7 +221,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
           try {
             const write = await syncMgr.saveSession(session, meta);
             if (write.status === 'busy') {
-              reportArchiveBusy(root, write.lockPath);
+              reportArchiveBusy(archiveRoot, write.lockPath);
               return undefined;
             }
           } catch (err) {
@@ -321,9 +321,9 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
         return;
       }
       /** Pulls the archive at `root` and rebuilds its indexes: false once the pull itself failed and said why; a busy rebuild sets the exit code instead. */
-      const pullInto = async (root: string): Promise<boolean> => {
-        const syncMgr = new SyncManager(root);
-        const pulled = await pullArchive(syncMgr, root);
+      const pullInto = async (pullRoot: string): Promise<boolean> => {
+        const syncMgr = new SyncManager(pullRoot);
+        const pulled = await pullArchive(syncMgr, pullRoot);
         if (pulled.status === 'failed') {
           console.error(`Error: ${pulled.reason}`);
           return false;
@@ -334,7 +334,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
           // rather than only rebuilding the ones whose identity can be recovered from _index.json.
           const rebuilt = await syncMgr.rebuildAllIndexes();
           if (rebuilt.status === 'busy') {
-            reportArchiveBusy(root, rebuilt.lockPath);
+            reportArchiveBusy(pullRoot, rebuilt.lockPath);
             return true;
           }
           const { repos, sessions } = rebuilt.value;
@@ -343,7 +343,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
           const repoIdentity = resolveRepoIdentity(workCwd);
           const rebuilt = await syncMgr.rebuildIndex(repoIdentity);
           if (rebuilt.status === 'busy') {
-            reportArchiveBusy(root, rebuilt.lockPath);
+            reportArchiveBusy(pullRoot, rebuilt.lockPath);
             return true;
           }
           console.log(`\n  ✓ Pulled and indexed ${rebuilt.value} session(s)\n`);

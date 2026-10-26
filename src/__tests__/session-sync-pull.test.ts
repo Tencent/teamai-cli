@@ -45,8 +45,8 @@ function useGitConfig(extra = ''): void {
   process.env.GIT_CONFIG_NOSYSTEM = '1';
 }
 
-async function archive(clone: string, sessionId: string, author: string): Promise<void> {
-  const session: Session = {
+async function archive(repoDir: string, sessionId: string, author: string): Promise<void> {
+  const sessionRecord: Session = {
     sessionId,
     title: `session ${sessionId}`,
     cwd: '/proj/app',
@@ -57,11 +57,11 @@ async function archive(clone: string, sessionId: string, author: string): Promis
     metadata: {},
   };
   const meta = defaultSyncMeta(
-    { platform: 'claude-code', author, cwd: '/proj/app', sessionId, repoIdentity: REPO, title: session.title },
-    session.createdAt,
+    { platform: 'claude-code', author, cwd: '/proj/app', sessionId, repoIdentity: REPO, title: sessionRecord.title },
+    sessionRecord.createdAt,
   );
-  const mgr = new SyncManager(clone);
-  await mgr.saveSession(session, meta);
+  const mgr = new SyncManager(repoDir);
+  await mgr.saveSession(sessionRecord, meta);
   mgr.gitCommit(`sync: ${sessionId}`);
 }
 
@@ -76,13 +76,13 @@ function sessionIdsOf(indexJson: string): string[] {
   return index.sessions.map((s) => s.sessionId).sort();
 }
 
-function indexedSessionIds(clone: string): string[] {
-  return sessionIdsOf(fs.readFileSync(path.join(clone, INDEX), 'utf-8'));
+function indexedSessionIds(repoDir: string): string[] {
+  return sessionIdsOf(fs.readFileSync(path.join(repoDir, INDEX), 'utf-8'));
 }
 
 /** Pull, and finish a merge stopped on the session indexes the way the session commands do. */
-async function pullAndRebuild(clone: string): Promise<PullResult> {
-  const mgr = new SyncManager(clone);
+async function pullAndRebuild(repoDir: string): Promise<PullResult> {
+  const mgr = new SyncManager(repoDir);
   const result = mgr.gitPull();
   if (result.status === 'indexes-conflicted') await mgr.commitRebuiltIndexes(result.indexes);
   return result;
@@ -126,10 +126,10 @@ async function session(...args: string[]): Promise<{ code: number; stdout: strin
 }
 
 function conflictOnNotes(a: string, b: string): void {
-  for (const [clone, text] of [[a, 'from a\n'], [b, 'from b\n']]) {
-    fs.writeFileSync(path.join(clone, 'notes.md'), text);
-    git(clone, 'add', 'notes.md');
-    git(clone, 'commit', '-qm', 'notes');
+  for (const [repoDir, text] of [[a, 'from a\n'], [b, 'from b\n']]) {
+    fs.writeFileSync(path.join(repoDir, 'notes.md'), text);
+    git(repoDir, 'add', 'notes.md');
+    git(repoDir, 'commit', '-qm', 'notes');
   }
   git(a, 'push', '-q', 'origin', 'main');
 }
@@ -325,15 +325,15 @@ describe('SyncManager.gitPull', () => {
   ])('takes the repo identity from a side that recorded one (%s)', async (_label, ours, theirs) => {
     useGitConfig();
     const { a, b } = (await seedRemote());
-    const commitIndex = async (clone: string, sessionId: string, author: string, identity: unknown): Promise<void> => {
-      await archive(clone, sessionId, author);
+    const commitIndex = async (repoDir: string, sessionId: string, author: string, identity: unknown): Promise<void> => {
+      await archive(repoDir, sessionId, author);
       if (identity === 'kept') return;
-      const file = path.join(clone, INDEX);
+      const file = path.join(repoDir, INDEX);
       const index = JSON.parse(fs.readFileSync(file, 'utf-8')) as Record<string, unknown>;
       if (identity === undefined) delete index.repoIdentity;
       else index.repoIdentity = identity;
       fs.writeFileSync(file, JSON.stringify(index, null, 2));
-      git(clone, 'commit', '-qam', `edit ${sessionId} index`);
+      git(repoDir, 'commit', '-qam', `edit ${sessionId} index`);
     };
     await commitIndex(a, 'a1', 'alice', theirs);
     git(a, 'push', '-q', 'origin', 'main');
@@ -349,20 +349,20 @@ describe('SyncManager.gitPull', () => {
     useGitConfig();
     const identity = 'github.com/acme/my_app';
     const dir = 'sessions/repos/github.com_acme_my_app';
-    const writeLegacy = (clone: string, ids: string[]): void => {
+    const writeLegacy = (repoDir: string, ids: string[]): void => {
       for (const id of ids) {
         const meta = defaultSyncMeta(
           { platform: 'claude-code', author: 'dana', cwd: '/proj/app', sessionId: id, repoIdentity: identity, title: id },
           '2026-01-02T03:04:05.000Z',
         );
-        fs.mkdirSync(path.join(clone, dir, 'dana'), { recursive: true });
-        fs.writeFileSync(path.join(clone, dir, 'dana', `${id}.meta.json`), JSON.stringify(meta));
-        fs.writeFileSync(path.join(clone, dir, 'dana', `${id}.jsonl`), '{}\n');
+        fs.mkdirSync(path.join(repoDir, dir, 'dana'), { recursive: true });
+        fs.writeFileSync(path.join(repoDir, dir, 'dana', `${id}.meta.json`), JSON.stringify(meta));
+        fs.writeFileSync(path.join(repoDir, dir, 'dana', `${id}.jsonl`), '{}\n');
       }
       const sessions = ids.map((sessionId) => ({ sessionId }));
-      fs.writeFileSync(path.join(clone, dir, '_index.json'), JSON.stringify({ version: 1, repoIdentity: identity, sessions }, null, 2));
-      git(clone, 'add', '.');
-      git(clone, 'commit', '-qm', ids.join(' '));
+      fs.writeFileSync(path.join(repoDir, dir, '_index.json'), JSON.stringify({ version: 1, repoIdentity: identity, sessions }, null, 2));
+      git(repoDir, 'add', '.');
+      git(repoDir, 'commit', '-qm', ids.join(' '));
     };
     git(tmp, 'init', '-q', '--bare', '-b', 'main', 'remote.git');
     const seed = clone('seed');

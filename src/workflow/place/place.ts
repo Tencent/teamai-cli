@@ -45,12 +45,12 @@ export function placeOf(lease: { cwd?: string; workspace?: Pick<WorkspaceContrac
 export async function placeHeldBy(input: { config: LocalConfig; run: RunId; root: string; lease: Pick<PlaceLease, 'workspace'>; others: AttemptId[]; adopt?: string }): Promise<{ behind: AttemptId; dir: string } | undefined> {
   const { config, run, lease, adopt } = input;
   const hosted = lease.workspace ? await adoptedPlaceOf({ config, run, branch: lease.workspace.branch }) : undefined;
-  const places = [placeOf(lease, path.resolve(input.root)), ...(hosted !== undefined ? [hosted] : []), ...(adopt !== undefined ? [path.resolve(adopt)] : [])];
+  const places = new Set([placeOf(lease, path.resolve(input.root)), ...(hosted !== undefined ? [hosted] : []), ...(adopt !== undefined ? [path.resolve(adopt)] : [])]);
   for (const other of input.others) {
     const read = await readPlaceRecord(config, run, other);
     const recorded = read.kind === 'found' ? read.record : undefined;
     if (!recorded || recorded.phase === 'finished' || recorded.phase === 'abandoned') continue;
-    if (places.includes(recorded.dir)) return { behind: other, dir: recorded.dir };
+    if (places.has(recorded.dir)) return { behind: other, dir: recorded.dir };
   }
   return undefined;
 }

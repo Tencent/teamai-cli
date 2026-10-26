@@ -416,7 +416,7 @@ describe('a pull and the homes the env moves', () => {
       },
     ] as const)('keeps teamai\'s copies there and names the directory once: $name', async ({ scope, old, installed }) => {
       const project = path.join(tmp, 'project'); const oldHome = path.join(tmp, old); const newHome = path.join(tmp, 'hermes-b');
-      for (const dir of [project, oldHome, newHome, ...installed.map((dir) => path.join(tmp, dir))]) await fse.ensureDir(dir);
+      for (const dir of [project, oldHome, newHome, ...installed.map((installedDir) => path.join(tmp, installedDir))]) await fse.ensureDir(dir);
       execFileSync('git', ['init', '-q', project]);
       config.enabledAgents = ['hermes'];
       if (scope === 'project') {

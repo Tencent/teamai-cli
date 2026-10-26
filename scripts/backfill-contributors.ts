@@ -63,7 +63,7 @@ for (const entry of entries) {
     const seen = new Set<string>();
     const contributors: string[] = [];
     // git log outputs newest-first; reverse to get chronological order
-    for (const author of allAuthors.reverse()) {
+    for (const author of allAuthors.toReversed()) {
       if (!seen.has(author)) {
         seen.add(author);
         contributors.push(author);

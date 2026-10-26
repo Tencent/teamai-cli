@@ -163,7 +163,7 @@ export async function importFromOrg(opts: ImportFromOrgOptions): Promise<void> {
     try {
         rawRepos = await provider.listOrgRepos(orgPath, { maxRepos });
     } catch (err) {
-        throw new Error(`listOrgRepos failed: ${String(err)}`);
+        throw new Error(`listOrgRepos failed: ${String(err)}`, { cause: err });
     }
 
     log.info(`Fetched ${rawRepos.length} repos, filtering...`);

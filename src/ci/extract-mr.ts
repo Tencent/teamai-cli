@@ -275,20 +275,20 @@ export async function ciExtractMr(opts: CiExtractMrOptions): Promise<void> {
       const { posted } = await postIndividualComments(opts.url, learning, undefined, opts.dryRun);
       log.success(`Posted ${posted} individual suggestion comment(s)`);
     } else {
-      const result = await postOrUpdateMrComment(
+      const commentResult = await postOrUpdateMrComment(
         opts.url,
         learning,
         undefined,
         opts.commentMarker,
         opts.dryRun,
       );
-      if (result.created) {
+      if (commentResult.created) {
         log.success('MR comment posted');
       } else {
         log.success('MR comment updated');
       }
-      if (result.url) {
-        log.info(`Comment URL: ${result.url}`);
+      if (commentResult.url) {
+        log.info(`Comment URL: ${commentResult.url}`);
       }
     }
   }

@@ -116,11 +116,11 @@ function keep(kind: string, key: string, entry: Kept[string][string]): Promise<v
     const file = await keptFile();
     if (file === null) return;
     const answers = await readKept(file);
-    for (const { kind, key, entry } of taken) {
-      const entries = answers[kind] ??= {};
+    for (const { kind: entryKind, key: entryKey, entry: entryValue } of taken) {
+      const entries = answers[entryKind] ??= {};
       // Deleted first, so the answer becomes the newest.
-      delete entries[key];
-      entries[key] = entry;
+      delete entries[entryKey];
+      entries[entryKey] = entryValue;
       for (const old of Object.keys(entries).slice(0, -KEPT_PER_KIND)) delete entries[old];
     }
     try {

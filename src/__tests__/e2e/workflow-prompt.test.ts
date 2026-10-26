@@ -26,7 +26,7 @@ function runCLI(args: string[], cwd: string, extraEnv: NodeJS.ProcessEnv = {}): 
 }
 
 function envelope(stdout: string): WorkflowEnvelope {
-  const line = stdout.trim().split('\n').filter((item) => item.startsWith('{')).at(-1);
+  const line = stdout.trim().split('\n').findLast((item) => item.startsWith('{'));
   if (!line) throw new Error(`no JSON envelope in stdout:\n${stdout}`);
   return JSON.parse(line) as WorkflowEnvelope;
 }

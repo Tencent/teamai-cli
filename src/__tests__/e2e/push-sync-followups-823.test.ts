@@ -564,7 +564,7 @@ describe('placed agent in a stale linked worktree (#823 item 3)', () => {
     const published = await runCLI(['push', '--project', 'front-app', '--all'], projectRoot, home);
     expect(published.output).toContain('[agents] vr → agents/fe-agents/vr.yaml');
     const branch = git(['for-each-ref', '--format=%(refname:short)', 'refs/heads/teamai/'], remote)
-      .split('\n').filter(Boolean).at(-1) ?? '';
+      .split('\n').findLast(Boolean) ?? '';
     expect(branch).not.toBe('');
     onMain((clone) => {
       git(['merge', '--no-edit', '-q', `origin/${branch}`], clone);

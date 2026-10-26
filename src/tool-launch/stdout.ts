@@ -20,7 +20,7 @@ function finiteNumber(value: unknown): number | undefined {
 
 function claudeStdout(stdout: string): ToolReport | null {
   const events = jsonRecords(stdout);
-  const record = events.filter((event) => event.type === 'result').at(-1);
+  const record = events.findLast((event) => event.type === 'result');
   if (!record) return null;
   const usage = record.usage as Record<string, unknown> | undefined;
   // The `init` event names the session's model. `modelUsage` keys every model the session billed, a side call's and a

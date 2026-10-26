@@ -130,7 +130,7 @@ function writeExamples(page: string, config: LocalConfig): { byFile: Map<string,
     if (twin) failures.push(`${example.label}: ${file} is also ${twin}`);
     byFile.set(file, example.label);
     fs.writeFileSync(path.join(config.repo.localPath, file), example.source);
-    for (const prompt of promptFiles(value).filter((file) => file.startsWith('prompts/'))) {
+    for (const prompt of promptFiles(value).filter((promptFile) => promptFile.startsWith('prompts/'))) {
       fs.mkdirSync(path.dirname(path.join(config.repo.localPath, prompt)), { recursive: true });
       fs.writeFileSync(path.join(config.repo.localPath, prompt), 'Review the change.\n');
     }
@@ -214,11 +214,11 @@ describe('workflow guide examples', () => {
     for (const unknown of result.unknownScorers) failures.push(`${byFile.get(unknown.file) ?? page}: ${formatUnknownScorer(unknown)}`);
     const reported = new Set(result.invalid.map(formatDiagnostic));
     const shownInvalid = new Set(result.invalid.filter((diagnostic) => shown.has(formatDiagnostic(diagnostic))).map((diagnostic) => diagnostic.file));
-    for (const diagnostic of result.invalid.filter((diagnostic) => !shown.has(formatDiagnostic(diagnostic)))) {
+    for (const diagnostic of result.invalid.filter((candidate) => !shown.has(formatDiagnostic(candidate)))) {
       failures.push(`${byFile.get(diagnostic.file) ?? page}: ${formatDiagnostic(diagnostic)}`);
     }
-    for (const line of [...shown].filter((line) => !reported.has(line))) failures.push(`${page}: shows "${line}", which no example produces`);
-    for (const file of result.unrunnable.filter((file) => !shownInvalid.has(file))) failures.push(`${byFile.get(file) ?? page}: ${file} has no runnable version`);
+    for (const line of [...shown].filter((shownLine) => !reported.has(shownLine))) failures.push(`${page}: shows "${line}", which no example produces`);
+    for (const file of result.unrunnable.filter((unrunnableFile) => !shownInvalid.has(unrunnableFile))) failures.push(`${byFile.get(file) ?? page}: ${file} has no runnable version`);
     expect(failures).toEqual([]);
   });
 
@@ -227,11 +227,11 @@ describe('workflow guide examples', () => {
   });
 
   it('declares in prose only workflows that a page starts without an example', () => {
-    const inProse = PAGES.flatMap((page) => {
+    const inProse = new Set(PAGES.flatMap((page) => {
       const { byFile } = writeExamples(page, teamRepo());
       return startsOf(page).starts.filter((start) => !byFile.has(`workflows/${start.name}.yaml`)).map((start) => start.name);
-    });
-    expect([...DECLARED_IN_PROSE].filter((name) => !inProse.includes(name))).toEqual([]);
+    }));
+    expect([...DECLARED_IN_PROSE].filter((name) => !inProse.has(name))).toEqual([]);
   });
 
   it.each(PAGES)('%s: each workflow start --inputs fits the inputs its workflow declares on the page', async (page) => {

@@ -1517,7 +1517,6 @@ program
       });
     } catch (error) {
       if (!(error instanceof DetachedTeamRepoError)) throw error;
-      const { log } = await import('./utils/logger.js');
       log.error(error.message);
       process.exitCode = 1;
     }
@@ -1549,7 +1548,6 @@ recallCmd
     // actions do (#900).
     const cmdOpts = { ...(program.opts() as GlobalOptions), ...localOpts };
     if (!cmdOpts.confidenceWriteback && !cmdOpts.prune && !cmdOpts.updateQuality) {
-      const { log } = await import('./utils/logger.js');
       log.info('Usage: teamai recall maintenance --prune | --confidence-writeback | --update-quality');
       return;
     }
@@ -1578,11 +1576,9 @@ recallCmd
         threshold: cmdOpts.threshold,
       });
       if (candidates.length === 0) {
-        const { log } = await import('./utils/logger.js');
         log.info('No learnings below threshold. Knowledge base is healthy.');
         return;
       }
-      const { log } = await import('./utils/logger.js');
       log.info(`Found ${candidates.length} candidate(s) for pruning:`);
       for (const c of candidates) {
         log.info(`  - ${c.filename} (confidence: ${c.confidence.toFixed(2)}, reason: ${c.reason})`);
@@ -1604,7 +1600,6 @@ recallCmd
     if (cmdOpts.updateQuality) {
       const { findStaleEntries, reportStaleEntries, findRelatedAdoptedLearnings, generateUpdateDraft } = await import('./maintenance/index.js');
       const { writeFile } = await import('./utils/fs.js');
-      const { log } = await import('./utils/logger.js');
       const entries = await findStaleEntries(votesDir, {
         docs: `${repoPath}/docs`,
         rules: `${repoPath}/rules`,
@@ -1648,7 +1643,6 @@ recallCmd
     const {
       repoPath, votesDir, learningsReadDirs, learningsWriteDir,
     } = paths;
-    const { log } = await import('./utils/logger.js');
 
     const candidates = await findPromotionCandidates(learningsReadDirs, votesDir);
 
@@ -1698,7 +1692,6 @@ async function maintenancePathsOrExit(localConfig: LocalConfig, dryRun?: boolean
     return await resolveMaintenancePaths(localConfig, { dryRun });
   } catch (e) {
     if (e instanceof CheckoutLockedError || e instanceof CheckoutUnavailableError) {
-      const { log } = await import('./utils/logger.js');
       log.error(e.message);
     } else if (!(e instanceof CheckoutRefusedError)) {
       throw e;
@@ -1715,7 +1708,6 @@ async function maintenancePathsOrExit(localConfig: LocalConfig, dryRun?: boolean
  */
 async function publishMaintenance(localConfig: LocalConfig, message: string, changed: readonly string[]): Promise<void> {
   const { publishLearningsMaintenance } = await import('./utils/learnings-publish.js');
-  const { log } = await import('./utils/logger.js');
   const result = await publishLearningsMaintenance(localConfig, message, changed);
   if (result.status === 'published') {
     log.success('Published maintenance changes to the learnings branch');

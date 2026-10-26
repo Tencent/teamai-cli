@@ -1064,7 +1064,7 @@ async function verifyStaging(legacyDir: string, staging: string): Promise<void> 
   try {
     LocalConfigSchema.parse(YAML.parse(content));
   } catch (e) {
-    throw new Error(`migration verify: staged config.yaml is invalid (${(e as Error).message})`);
+    throw new Error(`migration verify: staged config.yaml is invalid (${(e as Error).message})`, { cause: e });
   }
 
   const legacyGit = path.join(legacyDir, 'team-repo', '.git');
@@ -1084,6 +1084,7 @@ async function verifyStaging(legacyDir: string, staging: string): Promise<void> 
       throw new Error(
         `migration verify: the staged team-repo clone is not a usable git ` +
           `repository (${(e as Error).message})`,
+        { cause: e },
       );
     }
   }

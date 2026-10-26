@@ -229,12 +229,12 @@ async function readSource(source: AgentAdapter, ref: AgentSessionRef): Promise<S
  */
 async function existingCopyId(
   target: AgentAdapter,
-  copy: { targetId: string; cwd: string; sourcePlatform: string; targetPlatform: string; sourceSessionId: string },
+  copyInfo: { targetId: string; cwd: string; sourcePlatform: string; targetPlatform: string; sourceSessionId: string },
 ): Promise<string | undefined> {
-  const derived = await target.existingSessionId(copy.targetId);
+  const derived = await target.existingSessionId(copyInfo.targetId);
   if (derived) return derived;
-  for (const id of legacyTargetSessionIds(copy)) {
-    const found = await target.existingSessionId(id, copy.cwd);
+  for (const id of legacyTargetSessionIds(copyInfo)) {
+    const found = await target.existingSessionId(id, copyInfo.cwd);
     if (found) return found;
   }
   return undefined;

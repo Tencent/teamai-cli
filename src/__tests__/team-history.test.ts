@@ -160,32 +160,32 @@ describe('team history proof', () => {
 // #993: a link's blob is its target text, so it never proves a file, and a version
 // that changed only its mode (file to link) is kept as its own version.
 describe('links in the team history', () => {
-  let repo: string;
-  const git = (...args: string[]): string => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...args], {
-    cwd: repo, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1' },
+  let linksRepo: string;
+  const linksGit = (...args: string[]): string => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...args], {
+    cwd: linksRepo, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1' },
   });
   beforeAll(() => {
-    repo = fs.mkdtempSync(path.join(os.tmpdir(), 'team-history-links-'));
-    git('init', '-q', '-b', 'main');
-    fs.mkdirSync(path.join(repo, 'rules'));
-    fs.writeFileSync(path.join(repo, 'rules', 'foo.md'), 'bar.md');
-    git('add', '-A'); git('commit', '-q', '-m', 'file');
-    fs.rmSync(path.join(repo, 'rules', 'foo.md'));
-    fs.symlinkSync('bar.md', path.join(repo, 'rules', 'foo.md'));
-    git('add', '-A'); git('commit', '-q', '-m', 'link');
+    linksRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'team-history-links-'));
+    linksGit('init', '-q', '-b', 'main');
+    fs.mkdirSync(path.join(linksRepo, 'rules'));
+    fs.writeFileSync(path.join(linksRepo, 'rules', 'foo.md'), 'bar.md');
+    linksGit('add', '-A'); linksGit('commit', '-q', '-m', 'file');
+    fs.rmSync(path.join(linksRepo, 'rules', 'foo.md'));
+    fs.symlinkSync('bar.md', path.join(linksRepo, 'rules', 'foo.md'));
+    linksGit('add', '-A'); linksGit('commit', '-q', '-m', 'link');
   });
-  afterAll(() => fs.rmSync(repo, { recursive: true, force: true }));
+  afterAll(() => fs.rmSync(linksRepo, { recursive: true, force: true }));
 
   it('keeps both the file and the link version when only the mode changed', async () => {
-    const modes = (await historicalVersions(repo, 'rules/foo.md'))!.map((v) => v.mode).sort();
+    const modes = (await historicalVersions(linksRepo, 'rules/foo.md'))!.map((v) => v.mode).sort();
     expect(modes).toEqual(['100644', '120000']);
   });
 
   it('proves a file only by a file the team had, not by a link with the same text', async () => {
-    fs.symlinkSync('baz.md', path.join(repo, 'rules', 'only-link.md'));
-    git('add', '-A'); git('commit', '-q', '-m', 'only a link');
-    expect(await matchesHistory(repo, 'rules/only-link.md', 'baz.md')).toBe(false);
+    fs.symlinkSync('baz.md', path.join(linksRepo, 'rules', 'only-link.md'));
+    linksGit('add', '-A'); linksGit('commit', '-q', '-m', 'only a link');
+    expect(await matchesHistory(linksRepo, 'rules/only-link.md', 'baz.md')).toBe(false);
     // foo.md was once a regular file holding these bytes: that version proves it.
-    expect(await matchesHistory(repo, 'rules/foo.md', 'bar.md')).toBe(true);
+    expect(await matchesHistory(linksRepo, 'rules/foo.md', 'bar.md')).toBe(true);
   });
 });

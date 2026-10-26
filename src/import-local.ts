@@ -222,7 +222,7 @@ export async function scanCandidates(opts: {
     try {
       assertSafePath(expandedDir, defaultAllowedRoots());
     } catch (err: unknown) {
-      throw new Error(`Refused to scan directory: ${String(err)}`);
+      throw new Error(`Refused to scan directory: ${String(err)}`, { cause: err });
     }
     const relPaths = await listFilesRecursive(expandedDir);
     for (const relPath of relPaths) {

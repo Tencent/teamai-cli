@@ -1,6 +1,6 @@
 import path from 'node:path';
 
-import { formatCommand, type CommandExecutor } from '../../utils/exec.js';
+import { formatCommand } from '../../utils/exec.js';
 import { log } from '../../utils/logger.js';
 import type {
   ClaudeEcosystem,
@@ -76,10 +76,6 @@ function parseJsonArray<T>(stdout: string): T[] {
 
 export class ClaudePluginAdapter extends PackageAdapter<ClaudeEcosystem, ClaudeLockSection> {
   readonly ecosystem = 'claude' as const;
-
-  constructor(executor?: CommandExecutor) {
-    super(executor);
-  }
 
   async detect(_cwd: string): Promise<boolean> {
     try {

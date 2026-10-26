@@ -187,7 +187,7 @@ export class McpHandler extends ResourceHandler {
     // drops a key it does not know, and dropping a misspelled `roles:` would
     // install that server for every member (#822).
     const doc = YAML.parseDocument(content);
-    for (const index of removed.reverse()) doc.deleteIn(['servers', index]);
+    for (const index of removed.toReversed()) doc.deleteIn(['servers', index]);
     await writeFile(yamlPath, doc.toString());
     await this.addTombstone(serverName, localConfig);
     return [yamlPath];

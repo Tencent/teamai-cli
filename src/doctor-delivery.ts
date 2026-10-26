@@ -1100,7 +1100,7 @@ async function buildUserRulesFileChecks(ctx: DoctorContext, items: ResourceItem[
 
   const { inlineRulesLabelOf, inlineRulesLocationOf, teamRulesBlock, unreadableConfigOf } = await import('./resources/rules.js');
   const { isCodexTool } = await import('./utils/tool-names.js');
-  const { TEAMAI_TEAM_RULES_START, TEAMAI_TEAM_RULES_END, scopedToolPaths } = await import('./types.js');
+  const { TEAMAI_TEAM_RULES_START, TEAMAI_TEAM_RULES_END, scopedToolPaths: scopedPaths } = await import('./types.js');
   const expected = await teamRulesBlock(items);
   const install = installOf(teamConfig, localConfig);
   const checks: Check[] = [];
@@ -1128,7 +1128,7 @@ async function buildUserRulesFileChecks(ctx: DoctorContext, items: ResourceItem[
       // entry written before #938 leaves it nowhere to read user rules from.
       // One with no `rules` path delivers no rules to it on purpose; with no
       // team rules it misses none.
-      if (!codexFamily || items.length === 0 || !scopedToolPaths(teamConfig, localConfig)[tool]?.rules) continue;
+      if (!codexFamily || items.length === 0 || !scopedPaths(teamConfig, localConfig)[tool]?.rules) continue;
       checks.push({
         name,
         source: 'local',
@@ -1730,7 +1730,7 @@ export async function buildCodexProjectTrustCheck(ctx: DoctorContext): Promise<C
   if (names.length === 0) return [];
 
   const where = await locate(target.tool, 'mcp', installOf(teamConfig, localConfig));
-  const gate = where.channel === 'files' ? where.readGates.find((gate) => gate.kind === 'codex-project-trust') : undefined;
+  const gate = where.channel === 'files' ? where.readGates.find((readGate) => readGate.kind === 'codex-project-trust') : undefined;
   if (gate === undefined) return [];
   const trust = await codexProjectTrust(gate);
   const cause = `${target.file} holds team MCP servers (${nameList(names)}), but Codex loads a project's `
@@ -1821,8 +1821,8 @@ export async function buildMcpGitExcludeCheck(ctx: DoctorContext): Promise<Check
   }
   // And a file a pull wrote under a mapping the team has since changed, but one recorded as tracked while git
   // tracks it: no line protects it. In a file another tool now maps, that tool's records tell its own servers.
-  for (const [file, { targets: group, mappedBy, tracked }] of await recordedMcpTargets(localConfig, targets)) {
-    if (holding.has(file) || (tracked && (await gitTracks(file)).kind === 'tracked')) continue;
+  for (const [file, { targets: group, mappedBy, tracked: recordedTracked }] of await recordedMcpTargets(localConfig, targets)) {
+    if (holding.has(file) || (recordedTracked && (await gitTracks(file)).kind === 'tracked')) continue;
     manifest ??= (await loadProjectMcpManifest(getDataHome(localConfig), projectRoot, { dryRun: true })).manifest;
     if (await recordedMcpFileEvidence(group, ownedByMappers(mappedBy, manifest))) await hold(file);
   }
@@ -1831,8 +1831,8 @@ export async function buildMcpGitExcludeCheck(ctx: DoctorContext): Promise<Check
   // A built-in location no mapping reaches today, which no record covers, is judged as one of them.
   const earlier = (await readResolvedMcpFiles(localConfig)).earlierMappingsRead ? []
     : await earlierMappedMcpTargets(localConfig, mapped).catch(() => null) ?? [];
-  for (const { tracked, mappedBy, ...target } of [...earlier, ...await unrecordedUnmappedMcpDefaults(localConfig, unmapped, targets)]) {
-    if (tracked || holding.has(target.file)) continue;
+  for (const { tracked: earlierTracked, mappedBy, ...target } of [...earlier, ...await unrecordedUnmappedMcpDefaults(localConfig, unmapped, targets)]) {
+    if (earlierTracked || holding.has(target.file)) continue;
     vars ??= await buildVarTable(localConfig);
     manifest ??= (await loadProjectMcpManifest(getDataHome(localConfig), projectRoot, { dryRun: true })).manifest;
     if (await earlierMappedMcpFileEvidence(target, teamDefs, vars, desired, ownedByMappers(mappedBy, manifest))) await hold(target.file);
@@ -2123,8 +2123,8 @@ async function envDeliveryProblems(
   // no longer delivers, and this project does not set, still reaches this
   // project's shells, where `env exec` and MCP leave it out.
   if (inheritsUser && localConfig.inheritUserScope === true && teamEnv.inheritedValues.kind === 'resolved' && resolution.kind === 'resolved' && projectFailure === null) {
-    const { declaredSecretKeys } = await import('./resources/secrets.js');
-    const owed = [...inherited.map(({ key }) => key), ...resolution.entries.map(({ name }) => name), ...declaredSecretKeys(secrets) ?? []];
+    const { declaredSecretKeys: secretKeysOf } = await import('./resources/secrets.js');
+    const owed = [...inherited.map(({ key }) => key), ...resolution.entries.map(({ name }) => name), ...secretKeysOf(secrets) ?? []];
     const extra = [...parseEnvFile(await readFileSafe(userEnvShPath) ?? '').keys()].filter((key) => sameEnvName(owed, key) === undefined);
     if (extra.length > 0) inheritedProblems.push(`${userEnvShPath} still exports ${nameList(extra)}, which the user scope no longer delivers and this project inherits: ${pullUser}`);
   }

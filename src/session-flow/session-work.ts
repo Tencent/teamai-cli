@@ -61,7 +61,7 @@ function capturedTeamSkillsAt(captures: readonly SessionCapture[]): (timestamp: 
   return (timestamp) => {
     const at = timestamp === undefined ? Number.NaN : Date.parse(timestamp);
     if (Number.isNaN(at)) return alike ? first.teamSkills ?? {} : {};
-    const inEffect = captures.filter((capture) => Date.parse(capture.capturedAt) <= at).pop();
+    const inEffect = captures.findLast((capture) => Date.parse(capture.capturedAt) <= at);
     return inEffect?.teamSkills ?? {};
   };
 }
@@ -270,9 +270,9 @@ async function entries(config: LocalConfig, now: string, scoring: Extract<ScopeS
   const dirs = [...new Set(scorers.flatMap(({ namespace }) => namespace ?? []))];
   const scope = dirs.length > 0 ? await readWorkspaceChildren(config) : config;
   const sessions: Array<{ platform: string; sessionId: string; scorers: SessionScorer[] }> = [];
-  for (const { captured } of finished) {
-    const active = dirs.length > 0 ? await sessionNamespaces(scope, captured.captures, dirs) : new Set<string>();
-    sessions.push({ ...captured, scorers: scorers.filter(({ namespace }) => namespace === undefined || active.has(namespace)) });
+  for (const { captured: session } of finished) {
+    const active = dirs.length > 0 ? await sessionNamespaces(scope, session.captures, dirs) : new Set<string>();
+    sessions.push({ ...session, scorers: scorers.filter(({ namespace }) => namespace === undefined || active.has(namespace)) });
   }
   const found = sessions.flatMap(({ platform, sessionId, scorers: applying }) => applying.flatMap(({ scorer, pin, definition }): SessionEntry[] => {
     const subject = { platform, sessionId };

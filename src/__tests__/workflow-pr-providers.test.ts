@@ -151,20 +151,20 @@ describe('GitLab merge request lookup', () => {
   });
 
   it('fails, rather than finding nothing, without a token, on an answer it cannot read or see past, on another host, or with no answer in time', async () => {
-    const lookup = lookupOf(new GitLabProvider());
+    const gitlabLookup = lookupOf(new GitLabProvider());
     vi.stubEnv('GITLAB_TOKEN', ''); vi.stubEnv('GITLAB_PRIVATE_TOKEN', ''); vi.stubEnv('GITLAB_PAT', '');
-    await expect(lookup.findOpen(ref)).rejects.toThrow('GitLab authentication unavailable');
+    await expect(gitlabLookup.findOpen(ref)).rejects.toThrow('GitLab authentication unavailable');
     vi.stubEnv('GITLAB_TOKEN', 'test-token');
     answering({ message: 'private-token-in-body' }, 403);
-    await expect(lookup.findOpen(ref)).rejects.toThrow(/^GitLab answered the open merge request lookup with HTTP 403\.(?!.*private-token-in-body)/);
+    await expect(gitlabLookup.findOpen(ref)).rejects.toThrow(/^GitLab answered the open merge request lookup with HTTP 403\.(?!.*private-token-in-body)/);
     answering({ message: 'private-token-in-body' });
-    await expect(lookup.findOpen(ref)).rejects.toThrow(/^GitLab answered the open merge request lookup with data TeamAI cannot read\.$/);
+    await expect(gitlabLookup.findOpen(ref)).rejects.toThrow(/^GitLab answered the open merge request lookup with data TeamAI cannot read\.$/);
     answering(Array.from({ length: 100 }, (_, index) => mr(`other-${index}`, index)));
-    await expect(lookup.findOpen(ref)).rejects.toThrow('more open merge requests than one page');
+    await expect(gitlabLookup.findOpen(ref)).rejects.toThrow('more open merge requests than one page');
     answering([mr(ref.source, 7, 1, 'https://evil.example/acme/app/-/merge_requests/7')]);
-    await expect(lookup.findOpen(ref)).rejects.toThrow('on another host');
+    await expect(gitlabLookup.findOpen(ref)).rejects.toThrow('on another host');
     hanging();
-    await expect(lookup.findOpen({ ...ref, timeoutMs: 20 })).rejects.toThrow();
+    await expect(gitlabLookup.findOpen({ ...ref, timeoutMs: 20 })).rejects.toThrow();
   });
 
   it('gives up on a create GitLab does not answer in time', async () => {
@@ -191,17 +191,17 @@ describe('TGit merge request lookup', () => {
   });
 
   it('fails, rather than finding nothing, on an answer it cannot read or see past, on another host, or with no answer in time', async () => {
-    const lookup = lookupOf(new TGitProvider());
+    const tgitLookup = lookupOf(new TGitProvider());
     answering({ message: 'private-token-in-body' }, 404);
-    await expect(lookup.findOpen(ref)).rejects.toThrow(/^TGit answered the open merge request lookup with HTTP 404\.(?!.*private-token-in-body)/);
+    await expect(tgitLookup.findOpen(ref)).rejects.toThrow(/^TGit answered the open merge request lookup with HTTP 404\.(?!.*private-token-in-body)/);
     answering([{ web_url: 'https://git.woa.com/acme/app/merge_requests/7', state: 'opened' }]);
-    await expect(lookup.findOpen(ref)).rejects.toThrow(/^TGit answered the open merge request lookup with data TeamAI cannot read\.$/);
+    await expect(tgitLookup.findOpen(ref)).rejects.toThrow(/^TGit answered the open merge request lookup with data TeamAI cannot read\.$/);
     answering(Array.from({ length: 100 }, (_, index) => tgitMr(`other-${index}`, index)));
-    await expect(lookup.findOpen(ref)).rejects.toThrow('more open merge requests than one page');
+    await expect(tgitLookup.findOpen(ref)).rejects.toThrow('more open merge requests than one page');
     answering([tgitMr(ref.source, 7, 1, 'opened', 'https://evil.example/acme/app/merge_requests/7')]);
-    await expect(lookup.findOpen(ref)).rejects.toThrow('on another host');
+    await expect(tgitLookup.findOpen(ref)).rejects.toThrow('on another host');
     hanging();
-    await expect(lookup.findOpen({ ...ref, timeoutMs: 20 })).rejects.toThrow();
+    await expect(tgitLookup.findOpen({ ...ref, timeoutMs: 20 })).rejects.toThrow();
   });
 });
 
@@ -223,17 +223,17 @@ describe('GitCode pull request lookup', () => {
   });
 
   it('fails, rather than finding nothing, on an answer it cannot read or see past, on another host, or with no answer in time', async () => {
-    const lookup = lookupOf(new GitCodeProvider());
+    const gitcodeLookup = lookupOf(new GitCodeProvider());
     answering({ message: 'private-token-in-body' }, 401);
-    await expect(lookup.findOpen(ref)).rejects.toThrow(/^GitCode answered the open pull request lookup with HTTP 401\.(?!.*private-token-in-body)/);
+    await expect(gitcodeLookup.findOpen(ref)).rejects.toThrow(/^GitCode answered the open pull request lookup with HTTP 401\.(?!.*private-token-in-body)/);
     answering([gitcodePull(ref.source, 'acme/app', 7, 'opened')]);
-    await expect(lookup.findOpen(ref)).rejects.toThrow(/^GitCode answered the open pull request lookup with data TeamAI cannot read\.$/);
+    await expect(gitcodeLookup.findOpen(ref)).rejects.toThrow(/^GitCode answered the open pull request lookup with data TeamAI cannot read\.$/);
     answering(Array.from({ length: 100 }, (_, index) => gitcodePull(`other-${index}`, 'acme/app', index)));
-    await expect(lookup.findOpen(ref)).rejects.toThrow('more open pull requests than one page');
+    await expect(gitcodeLookup.findOpen(ref)).rejects.toThrow('more open pull requests than one page');
     answering([gitcodePull(ref.source, 'acme/app', 7, 'open', 'https://evil.example/acme/app/pull/7')]);
-    await expect(lookup.findOpen(ref)).rejects.toThrow('on another host');
+    await expect(gitcodeLookup.findOpen(ref)).rejects.toThrow('on another host');
     hanging();
-    await expect(lookup.findOpen({ ...ref, timeoutMs: 20 })).rejects.toThrow();
+    await expect(gitcodeLookup.findOpen({ ...ref, timeoutMs: 20 })).rejects.toThrow();
   });
 });
 

@@ -438,7 +438,7 @@ async function copyDocs(
       await fse.rename(path.join(staging!, `new-${index}`), conflict.target);
     }
   } catch (error) {
-    for (const { target, backup } of moved.reverse()) {
+    for (const { target, backup } of moved.toReversed()) {
       await fse.remove(target);
       await fse.rename(backup, target);
     }

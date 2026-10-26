@@ -240,7 +240,7 @@ describe('Copilot built-in hooks in project scope', () => {
     };
     for (const [state, enter] of states) {
       enter();
-      for (const [rowState, copy, expected] of rows.filter(([rowState]) => rowState === state)) {
+      for (const [rowState, copy, expected] of rows.filter(([candidateState]) => candidateState === state)) {
         const sessionId = `${rowState}-${copy}`.replaceAll(' ', '-');
         dispatch(copy === 'legacy' ? legacy : global, a, b, sessionId);
         expect(recorded(sessionId), `${rowState}: ${copy} copy`).toBe(expected);
@@ -366,7 +366,7 @@ describe('Copilot built-in hooks in project scope', () => {
     expect(shell.stdout.trim()).toBe('team-hook');
     if (legacyGuard) {
       const cursorPrefix = teamCommand.slice(0, teamCommand.indexOf('if [ -n "$COPILOT_PROJECT_DIR" ]'));
-      const entry = settings.hooks.Stop.find((entry: { description: string }) => entry.description.startsWith('[teamai:hook:'));
+      const entry = settings.hooks.Stop.find((stopEntry: { description: string }) => stopEntry.description.startsWith('[teamai:hook:'));
       entry.hooks[0].command = cursorPrefix + 'if [ -n "$COPILOT_PROJECT_DIR" ] && grep -q -- \'--tool copilot\' "$COPILOT_PROJECT_DIR/.github/hooks/teamai.json" 2>/dev/null; then exit 0; fi; echo team-hook';
       write(path.join(dir, '.claude/settings.local.json'), JSON.stringify(settings));
     }

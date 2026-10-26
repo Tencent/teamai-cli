@@ -181,7 +181,7 @@ steps:
     let stderr = '';
     driver.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
     const ended = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
-      driver.on('close', (code, signal) => resolve({ code, signal }));
+      driver.on('close', (code, closeSignal) => resolve({ code, signal: closeSignal }));
     });
     let pids: number[] = [];
     try {

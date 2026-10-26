@@ -132,10 +132,10 @@ export async function scoreSession(from: LocalConfig, demand: SessionDemand, now
     const chosen = chooseJudgeModel(aliases, member.definition, tools);
     if (!chosen.ok) return failure('judge_model_unavailable', chosen.message);
     if (chosen.note) log.info(chosen.note);
-    const judged = { ...member, ...(chosen.choice.alias !== undefined ? { alias: chosen.choice.alias } : {}) };
+    const judgedMember = { ...member, ...(chosen.choice.alias !== undefined ? { alias: chosen.choice.alias } : {}) };
     const group = batch ? groups.find(({ choice }) => choice.tool === chosen.choice.tool && choice.model?.name === chosen.choice.model?.name && choice.model?.effort === chosen.choice.model?.effort) : undefined;
-    if (group) group.members.push(judged);
-    else groups.push({ choice: chosen.choice, members: [judged] });
+    if (group) group.members.push(judgedMember);
+    else groups.push({ choice: chosen.choice, members: [judgedMember] });
   }
   const answers: Array<Record<string, unknown>> = [];
   for (const { choice, members } of groups) {

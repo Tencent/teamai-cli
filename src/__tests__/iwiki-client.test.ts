@@ -13,11 +13,11 @@ function mockMcpResponses(responses: Record<string, { result?: unknown; error?: 
       write(chunk: string) { payload += chunk; },
       destroy: vi.fn(),
       end() {
-        const request = JSON.parse(payload) as { id: number; params: { name: string } };
+        const parsedRequest = JSON.parse(payload) as { id: number; params: { name: string } };
         queueMicrotask(() => {
           const res = new EventEmitter();
           if (typeof callback === 'function') callback(res as IncomingMessage);
-          res.emit('data', Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: request.id, ...responses[request.params.name] })));
+          res.emit('data', Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: parsedRequest.id, ...responses[parsedRequest.params.name] })));
           res.emit('end');
           req.emit('close');
         });

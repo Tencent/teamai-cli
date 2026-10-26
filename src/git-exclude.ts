@@ -715,10 +715,10 @@ export async function sync(
     const wanted = placed.filter((p) => !tracked.some((t) => t.path === p.path)).map((p) => p.line);
     const next = (current: string[]): string[] => [...new Set([...addOnly ? current : [], ...wanted])].sort();
     const { lines, ...outcome } = await writeOwnerLines(excludeFile, owner.name, next, options.dryRun);
-    const reincluded = options.dryRun || outcome.write.kind !== 'written' && outcome.write.kind !== 'unchanged'
+    const reincludedLines = options.dryRun || outcome.write.kind !== 'written' && outcome.write.kind !== 'unchanged'
       ? []
       : await reincludedPaths(placed.filter((p) => lines.includes(p.line)), checkFailed);
-    result.files.push({ excludeFile, ...outcome, lines, tracked, reincluded, checkFailed });
+    result.files.push({ excludeFile, ...outcome, lines, tracked, reincluded: reincludedLines, checkFailed });
     if (outcome.write.kind === 'written' || outcome.write.kind === 'unchanged') (lines.length > 0 ? add : drop).push(excludeFile);
   }
   if (!options.dryRun && owner.record && (add.length > 0 || drop.length > 0)) await owner.record.update({ add, drop });
@@ -1241,7 +1241,7 @@ export function stateHomeRecord(stateHome: string, owner: string): GitExcludeFil
     try {
       parsed = JSON.parse(content);
     } catch (e) {
-      throw new Error(`${file} is not valid JSON (${e instanceof Error ? e.message : String(e)}): fix or delete it, then run the command again.`);
+      throw new Error(`${file} is not valid JSON (${e instanceof Error ? e.message : String(e)}): fix or delete it, then run the command again.`, { cause: e });
     }
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
       throw new Error(`${file} does not hold an object: fix or delete it, then run the command again.`);

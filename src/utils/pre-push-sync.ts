@@ -290,7 +290,7 @@ async function replaceSkillDir(teamSkillDir: string, localSkillDir: string): Pro
     await removeLeftover(staged);
     if (!restored) {
       throw new Error(`${error instanceof Error ? error.message : String(error)}; the previous version of the skill `
-        + `could not be put back and is at ${previous}. Move it back to ${localSkillDir}.`);
+        + `could not be put back and is at ${previous}. Move it back to ${localSkillDir}.`, { cause: error });
     }
     throw error;
   }

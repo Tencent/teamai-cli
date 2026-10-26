@@ -505,26 +505,26 @@ describe('the agent a local pass ran as (#1176)', () => {
    * `claude --version` on PATH. `record` overrides fields of that pull's record.
    */
   async function observed(yaml: string, { tool = 'claude', record = {} }: { tool?: keyof typeof reviewer; record?: Partial<CheckoutRecord> } = {}): Promise<Observed> {
-    const fixture = await workflowFixture(yaml);
-    const team = fixture.config.repo.localPath;
+    const wf = await workflowFixture(yaml);
+    const team = wf.config.repo.localPath;
     git(team, 'init', '-q');
     const rev = commitFile(team, 'agents/reviewer.yaml');
-    const skill = path.join(fixture.workspace, '.claude', 'skills', 'review', 'SKILL.md');
+    const skill = path.join(wf.workspace, '.claude', 'skills', 'review', 'SKILL.md');
     fs.mkdirSync(path.dirname(skill), { recursive: true });
     fs.writeFileSync(skill, 'Review carefully.\n');
-    const agentFile = path.join(fixture.workspace, reviewer[tool].file);
+    const agentFile = path.join(wf.workspace, reviewer[tool].file);
     fs.mkdirSync(path.dirname(agentFile), { recursive: true });
     fs.writeFileSync(agentFile, reviewer[tool].content);
-    fixture.config.workflows = { tools: { default: tool } };
-    await recordDelivery(fixture.config, {
+    wf.config.workflows = { tools: { default: tool } };
+    await recordDelivery(wf.config, {
       rev: rev.slice(0, 7),
       targets: [tool],
       files: [skill, agentFile],
       agentModels: { reviewer: { [tool]: { step: 'spec', model: reviewer[tool].model } } },
       ...record,
     });
-    restore.push(fakeClaude(path.dirname(fixture.workspace), '2.1.301'));
-    return { ...fixture, rev, skill, agentFile };
+    restore.push(fakeClaude(path.dirname(wf.workspace), '2.1.301'));
+    return { ...wf, rev, skill, agentFile };
   }
 
   const reviewStep = (agent?: string) => `schemaVersion: v1alpha1
@@ -2513,9 +2513,9 @@ steps:
     tool.run = vi.fn(async (name, input) => {
       const result = await recorded(name, input);
       if (resumed.length === 1) {
-        const [copy] = (await getAdapter('claude-code').listConversations(workspace)).filter((meta) => meta.sessionId === input.resume);
+        const copy = (await getAdapter('claude-code').listConversations(workspace)).find((meta) => meta.sessionId === input.resume);
         const records = fs.readFileSync(copy?.filePath ?? '', 'utf8').trimEnd().split('\n').map((line): Record<string, unknown> => JSON.parse(line));
-        const answer = [...records].reverse().find((record) => record.type === 'assistant');
+        const answer = records.toReversed().find((record) => record.type === 'assistant');
         const turn = { ...answer, type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'Fix both.' }] }, uuid: randomUUID(), parentUuid: answer?.uuid };
         fs.appendFileSync(copy?.filePath ?? '', `${JSON.stringify(turn)}\n`);
       }
@@ -2593,9 +2593,9 @@ ${steps}`);
   });
 
   it('runs setup once in the workspace it creates, with its keys, and the steps there never get them', async () => {
-    const log = path.join(os.tmpdir(), `teamai-setup-log-${randomUUID()}`);
-    dirs.push(log);
-    const { config, workspace, runId } = await setupFixture(`  command: test "$SETUP_TOKEN" = setup-token-value-1082 && echo prepared > .prepared && echo ran >> ${log}\n  requires: { env: [SETUP_TOKEN] }`, `  - id: change
+    const logFile = path.join(os.tmpdir(), `teamai-setup-log-${randomUUID()}`);
+    dirs.push(logFile);
+    const { config, workspace, runId } = await setupFixture(`  command: test "$SETUP_TOKEN" = setup-token-value-1082 && echo prepared > .prepared && echo ran >> ${logFile}\n  requires: { env: [SETUP_TOKEN] }`, `  - id: change
     workspace: new
     workflow:
       steps:
@@ -2605,10 +2605,10 @@ ${steps}`);
           needs: [first]
           command: test -f .prepared && test -z "$SETUP_TOKEN"
 `);
-    fs.writeFileSync(log, '');
+    fs.writeFileSync(logFile, '');
     const done = await runLocalDriver(config, runId, workspace, { hitl: false });
     expect(done, JSON.stringify(await readRun(config, runId))).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
-    expect(fs.readFileSync(log, 'utf8')).toBe('ran\n');
+    expect(fs.readFileSync(logFile, 'utf8')).toBe('ran\n');
   });
 
   it('gives setup and the step\'s command the run mode of the process that drives the run', async () => {
@@ -2622,10 +2622,10 @@ ${steps}`);
   });
 
   it('runs setup again when a retried step finds the workspace of a copy a step already ran in gone', async () => {
-    const log = path.join(os.tmpdir(), `teamai-setup-log-${randomUUID()}`);
+    const logFile = path.join(os.tmpdir(), `teamai-setup-log-${randomUUID()}`);
     const ready = path.join(os.tmpdir(), `teamai-setup-ready-${randomUUID()}`);
-    dirs.push(log, ready);
-    const { config, workspace, runId } = await setupFixture(`  command: echo prepared > .prepared && echo ran >> ${log}`, `  - id: change
+    dirs.push(logFile, ready);
+    const { config, workspace, runId } = await setupFixture(`  command: echo prepared > .prepared && echo ran >> ${logFile}`, `  - id: change
     workspace: new
     workflow:
       steps:
@@ -2635,7 +2635,7 @@ ${steps}`);
           needs: [first]
           command: test -f .prepared && test -f ${JSON.stringify(ready)}
 `);
-    fs.writeFileSync(log, '');
+    fs.writeFileSync(logFile, '');
     expect(await runLocalDriver(config, runId, workspace, { hitl: false })).toMatchObject({ data: { done: { outcome: 'failed' } } });
     for (const line of worktrees(workspace)) fs.rmSync(line.slice('worktree '.length), { recursive: true, force: true });
     fs.writeFileSync(ready, '');
@@ -2643,7 +2643,7 @@ ${steps}`);
 
     const done = await runLocalDriver(config, runId, workspace, { hitl: false });
     expect(done, JSON.stringify(await readRun(config, runId))).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
-    expect(fs.readFileSync(log, 'utf8')).toBe('ran\nran\n');
+    expect(fs.readFileSync(logFile, 'utf8')).toBe('ran\nran\n');
   });
 
   it.each([

@@ -28,8 +28,8 @@ async function budget(text: string, trailing = '') {
   const localConfig: LocalConfig = { repo: { localPath: path.join(home, 'repo'), remote: 'fixture' }, username: 'test', additionalRoles: [], scope: 'user', enabledAgents: ['openclaw'] };
   const teamConfig = TeamaiConfigSchema.parse({ team: 'test', repo: 'fixture' });
   const checks = await buildInstructionDeliveryChecks({ teamConfig, localConfig } as never);
-  const budget = checks.find(check => check.name === 'OpenClaw AGENTS.md fits the default bootstrap read budget');
-  return budget;
+  const budgetCheck = checks.find(check => check.name === 'OpenClaw AGENTS.md fits the default bootstrap read budget');
+  return budgetCheck;
 }
 
 function configure(defaults: Record<string, unknown>) {

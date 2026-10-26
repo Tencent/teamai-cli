@@ -480,11 +480,11 @@ describe('a session-start channel is ready only once teamai\'s hook is where the
     ['dsh', 'dsh-session-start'],
     ['muse', 'muse-session-start'],
   ] as const)('%s: not ready before `hooks inject`, ready after', async (tool, probe) => {
-    const context = { teamConfig: teamConfig(), localConfig: config('project', [tool]) };
+    const readinessContext = { teamConfig: teamConfig(), localConfig: config('project', [tool]) };
 
-    const before = await channelReadiness(tool, probe, context);
+    const before = await channelReadiness(tool, probe, readinessContext);
     await install[tool]();
-    const after = await channelReadiness(tool, probe, context);
+    const after = await channelReadiness(tool, probe, readinessContext);
 
     expect(before.ready).toBe(false);
     expect(before.fix).toContain('teamai hooks inject');

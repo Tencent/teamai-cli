@@ -171,8 +171,8 @@ describe('teamai list / status resource coverage', () => {
   it('list env --reveal leaves out the env.yaml value of a key declared as a secret, and shows a team value as team', async () => {
     await fse.writeFile(path.join(repoPath, 'env', 'secrets.yaml'), 'secrets:\n  - key: SECRET_TOKEN\n');
     const { getTeamSecretsPath, writeSecretStore } = await import('../secret-store.js');
-    const { localConfig } = await mockAutoDetectInit() as { localConfig: LocalConfig };
-    await writeSecretStore(getTeamSecretsPath(localConfig), { SECRET_TOKEN: { value: 'fixture-team-value' } });
+    const { localConfig: mockedLocalConfig } = await mockAutoDetectInit() as { localConfig: LocalConfig };
+    await writeSecretStore(getTeamSecretsPath(mockedLocalConfig), { SECRET_TOKEN: { value: 'fixture-team-value' } });
 
     await list('env', { source: 'repo', reveal: true });
     const out = lines.join('\n');
@@ -184,8 +184,8 @@ describe('teamai list / status resource coverage', () => {
   // #875: list env is the listing env list prints, so it shows a member's override too.
   it('list env shows the member\'s value of an overridden variable, as team', async () => {
     const { getTeamSecretsPath, writeSecretStore } = await import('../secret-store.js');
-    const { localConfig } = await mockAutoDetectInit() as { localConfig: LocalConfig };
-    await writeSecretStore(getTeamSecretsPath(localConfig), { SECRET_TOKEN: { value: 'fixture-member-value', kind: 'variable' } });
+    const { localConfig: mockedLocalConfig } = await mockAutoDetectInit() as { localConfig: LocalConfig };
+    await writeSecretStore(getTeamSecretsPath(mockedLocalConfig), { SECRET_TOKEN: { value: 'fixture-member-value', kind: 'variable' } });
 
     await list('env', { source: 'repo', reveal: true });
     const out = lines.join('\n');

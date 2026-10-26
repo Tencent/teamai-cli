@@ -192,6 +192,8 @@ export function stopProcess<T>(child: ChildProcess, exit: Promise<T>, detached: 
     // descendant or process in the detached group remains.
     // Descendants may still be exiting when the shell closes. Recheck instead
     // of waiting the whole grace period after that first successful probe.
+    // `escalated` flips inside the setTimeout closure registered above, which the linter can't see.
+    // oxlint-disable-next-line no-unmodified-loop-condition
     while (!escalated && signal(0)) {
       await Promise.race([killed, new Promise<void>((resolve) => setTimeout(resolve, 50))]);
     }

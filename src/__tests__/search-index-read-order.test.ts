@@ -48,7 +48,7 @@ describe('buildIndex when reads finish out of order (#1239)', () => {
       const read = actualReadFile(file, options);
       const turn = new Promise<void>((release) => releases.push(release));
       await read.then(() => undefined, () => undefined);
-      if (++settled === count) for (const release of [...releases].reverse()) release();
+      if (++settled === count) for (const release of releases.toReversed()) release();
       await turn;
       return read;
     });

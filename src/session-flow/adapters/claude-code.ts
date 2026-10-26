@@ -642,7 +642,7 @@ export class ClaudeCodeAdapter extends AgentAdapter {
     // Depth-first over the main chain, so each root's chain stays in one piece
     const ordered: Record<string, unknown>[] = [];
     const visited = new Set<string>();
-    const stack: Record<string, unknown>[] = [...roots].reverse();
+    const stack: Record<string, unknown>[] = roots.toReversed();
 
     while (stack.length > 0) {
       const record = stack.pop()!;
@@ -651,7 +651,7 @@ export class ClaudeCodeAdapter extends AgentAdapter {
       if (uid) visited.add(uid);
       ordered.push(record);
       if (uid) {
-        stack.push(...[...(childrenMap.get(uid) ?? [])].reverse());
+        stack.push(...(childrenMap.get(uid) ?? []).toReversed());
       }
     }
 

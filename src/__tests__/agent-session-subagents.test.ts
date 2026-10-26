@@ -184,7 +184,7 @@ describe('AgentSession.find with subagents', () => {
     };
     const sessionId = await adapter.writeSession(base, cwd);
     const helper = await adapter.writeSession({ ...base, sessionId: 'y', createdAt: '2026-10-20T10:00:02.000Z', messages: [{ role: 'user', content: [{ type: 'text', text: 'helper' }] }] }, cwd);
-    const [listed] = (await adapter.listConversations(cwd)).filter((meta) => meta.sessionId === helper);
+    const listed = (await adapter.listConversations(cwd)).find((meta) => meta.sessionId === helper);
     if (!listed?.filePath) throw new Error('helper not listed');
     const agents = path.join(path.dirname(listed.filePath), sessionId, 'subagents');
     fs.mkdirSync(agents, { recursive: true });

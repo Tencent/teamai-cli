@@ -538,9 +538,9 @@ describe('doUpdate', () => {
   it('should skip when lock is held by another live process', async () => {
     // Exclusive create fails (EEXIST) and the on-disk owner is a live process,
     // so acquireLock backs off rather than reclaiming.
-    const eexist = new Error('EEXIST') as NodeJS.ErrnoException;
-    eexist.code = 'EEXIST';
-    mockedFse.link.mockRejectedValue(eexist);
+    const eexistError = new Error('EEXIST') as NodeJS.ErrnoException;
+    eexistError.code = 'EEXIST';
+    mockedFse.link.mockRejectedValue(eexistError);
     mockedFse.readFile.mockResolvedValue(
       JSON.stringify({ pid: process.pid, owner: 'held', startedAt: 'x' }),
     );

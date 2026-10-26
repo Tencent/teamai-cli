@@ -143,14 +143,14 @@ function machine(base: string, opts: MachineOptions = {}): Machine {
   const remote = path.join(sandbox, `${name}.git`);
   const sourceSeed = (source: string): string => path.join(sandbox, `${name}-${source}-seed`);
   const sourceRemote = (source: string): string => path.join(sandbox, `${name}-${source}.git`);
-  const commitAndPush = (repo: string, files: Record<string, string | null>, remote: string): void => {
+  const commitAndPush = (repo: string, files: Record<string, string | null>, pushRemote: string): void => {
     for (const [rel, content] of Object.entries(files)) {
       if (content === null) fs.rmSync(path.join(repo, rel), { force: true });
       else writeFile(path.join(repo, rel), content);
     }
     gitOk(['add', '-A'], repo);
     gitOk(['commit', '-q', '-m', 'team change'], repo);
-    gitOk(['push', '-q', remote, 'main'], repo);
+    gitOk(['push', '-q', pushRemote, 'main'], repo);
   };
   const sources = Object.entries(opts.sources ?? {}).map(([source, files]) => {
     const seedDir = sourceSeed(source);

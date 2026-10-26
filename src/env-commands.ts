@@ -432,8 +432,8 @@ export async function envAdd(
       // everyone — the outcome the per-entry key was scoping against.
       const targets = new TargetFiles(repoPath, entryLayout('env'));
       const files: string[] = [];
-      for (const key of removed) {
-        files.push(...await targets.forIds(key as 'roles' | 'projects', updated[key as 'roles' | 'projects'] ?? []));
+      for (const removedKey of removed) {
+        files.push(...await targets.forIds(removedKey as 'roles' | 'projects', updated[removedKey as 'roles' | 'projects'] ?? []));
       }
       log.warn(
         `${relativePath}: variable "${key}" is scoped with per-entry `

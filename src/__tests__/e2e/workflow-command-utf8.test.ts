@@ -68,7 +68,7 @@ steps:
   });
   expect(result.error).toBeUndefined();
   expect(result.status, result.stderr).toBe(exitCode);
-  const envelope = JSON.parse(result.stdout.trim().split('\n').filter((line) => line.startsWith('{')).at(-1)!);
+  const envelope = JSON.parse(result.stdout.trim().split('\n').findLast((line) => line.startsWith('{'))!);
   expect(envelope, result.stderr).toMatchObject({ data: { done: { outcome: exitCode === 0 ? 'succeeded' : 'failed' } } });
   const runId = envelope.data.done.run as string;
   const runsDir = path.join(dataHome, 'workflows', 'runs');

@@ -104,7 +104,7 @@ export async function repositoryStamp(dir: string): Promise<{ stamp: string; git
 async function configuredWorkTrees(gitDir: string, configFiles: readonly string[]): Promise<string[] | null> {
   const texts = await Promise.all(configFiles.map((file) => fs.promises.readFile(file, 'utf8').catch(() => '')));
   const values: string[] = [];
-  for (const line of texts.flatMap((text) => text.split('\n')).filter((line) => /\bworktree\b/i.test(line))) {
+  for (const line of texts.flatMap((text) => text.split('\n')).filter((candidate) => /\bworktree\b/i.test(candidate))) {
     const value = /^\s*(?:\[[^\]"]*\]\s*)*worktree\s*=(.*)$/i.exec(line)?.[1]?.trim();
     if (value === undefined || /["\\#;]/.test(value)) return null;
     values.push(value);

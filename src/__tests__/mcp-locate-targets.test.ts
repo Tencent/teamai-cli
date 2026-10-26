@@ -338,7 +338,7 @@ describe('pull writes MCP servers where each tool reads them (#1221)', () => {
     config.toolPaths = { ...config.toolPaths, cursor: { ...config.toolPaths.cursor, mcp: '.cursor/unread.json' } };
 
     const check = (await buildMcpReadFileChecks(context(config, userConfig('cursor'))))
-      .find((check) => check.name === 'cursor reads the MCP servers teamai writes');
+      .find((candidate) => candidate.name === 'cursor reads the MCP servers teamai writes');
 
     expect(check).toBeDefined();
     expect(await check?.check()).toBe(false);
@@ -355,7 +355,7 @@ describe('pull writes MCP servers where each tool reads them (#1221)', () => {
     vi.stubEnv('XDG_CONFIG_HOME', xdg);
 
     const check = (await buildMcpReadFileChecks(context(team(), userConfig('opencode'))))
-      .find((check) => check.name === 'opencode MCP servers are where the last write put them');
+      .find((candidate) => candidate.name === 'opencode MCP servers are where the last write put them');
 
     expect(check).toBeDefined();
     expect(await check?.check()).toBe(false);

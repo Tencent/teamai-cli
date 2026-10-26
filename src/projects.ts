@@ -146,7 +146,7 @@ export async function loadProjectsManifest(repoPath: string): Promise<ProjectsMa
     try {
       raw = YAML.parse(text);
     } catch (error) {
-      throw new Error(`Invalid projects manifest YAML: ${(error as Error).message}`);
+      throw new Error(`Invalid projects manifest YAML: ${(error as Error).message}`, { cause: error });
     }
     return validateManifestShape(raw);
   });

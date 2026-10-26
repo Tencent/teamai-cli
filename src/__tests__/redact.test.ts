@@ -123,13 +123,13 @@ describe('redact', () => {
       // form tripped an internal mdb-client rule), so both the input and the
       // expected output are computed rather than written as string literals.
       const pw = ['pl', 'ace', 'holder', 'value'].join('');
-      const dsn = ['redis://svc', pw].join(':') + '@' + 'cache.example.com:6379';
+      const dsn = ['redis://svc', pw].join(':') + '@cache.example.com:6379';
       const expected = dsn.replace(pw, '<REDACTED:conn>');
       expect(redact(dsn)).toBe(expected);
     });
 
     const pw = ['hun', 'ter2', 'pass'].join('');
-    const dsn = ['postgres://user', pw].join(':') + '@' + 'db.example.com';
+    const dsn = ['postgres://user', pw].join(':') + '@db.example.com';
 
     it('masks a connection string whose scheme follows digits or punctuation', () => {
       for (const lead of ['', ' ', '1', '+', '9.x-']) {

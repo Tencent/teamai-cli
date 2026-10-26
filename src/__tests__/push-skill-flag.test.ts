@@ -493,8 +493,8 @@ describe('push --skill flag', () => {
       return { scanLocalForPush: vi.fn().mockResolvedValue([]), pushItem: vi.fn() };
     });
 
-    const os = await import('node:os');
-    const homedir = os.homedir();
+    const nodeOs = await import('node:os');
+    const homedir = nodeOs.homedir();
 
     // Mock filesystem for expanded path
     mockPathExists.mockImplementation(async (p: string) => {

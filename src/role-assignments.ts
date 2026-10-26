@@ -124,7 +124,7 @@ export async function loadRoleAssignments(repoPath: string, repo: { kind?: strin
     try {
       raw = YAML.parse(text);
     } catch (error) {
-      throw new Error(`Invalid members manifest YAML: ${(error as Error).message}`);
+      throw new Error(`Invalid members manifest YAML: ${(error as Error).message}`, { cause: error });
     }
     return validateAssignments(raw);
   });

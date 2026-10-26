@@ -183,13 +183,13 @@ describe('local-agent: buildReportPayload disk scan', () => {
 
 describe('local-agent: project MCP report is per-worktree (issue #374 P1-2C)', () => {
   it('reports only the current workspace\'s MCP records from the shared partition manifest', async () => {
-    const { execFileSync } = await import('node:child_process');
+    const { execFileSync: gitExecFileSync } = await import('node:child_process');
     const { realpathSync } = await import('node:fs');
     const { managedMcpWorkspaceId } = await import('../types.js');
 
     // Real git repo + linked worktree → same projectAnchor → same partition.
     const repo = realpathSync.native(await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-la-wt-')));
-    const git = (cwd: string, ...a: string[]) => execFileSync('git', a, { cwd, stdio: 'pipe' });
+    const git = (cwd: string, ...a: string[]) => gitExecFileSync('git', a, { cwd, stdio: 'pipe' });
     git(repo, 'init', '-q');
     git(repo, 'config', 'user.email', 't@e'); git(repo, 'config', 'user.name', 'T');
     git(repo, 'commit', '--allow-empty', '-q', '-m', 'init');
@@ -307,8 +307,8 @@ describe('local-agent: bindCurrentProject --skip', () => {
     // Create a git repo in tmpDir so resolveWorkspacePath works
     const projectDir = path.join(tmpDir, 'my-project');
     await fse.ensureDir(projectDir);
-    const { execFileSync } = await import('node:child_process');
-    execFileSync('git', ['init'], { cwd: projectDir, stdio: 'ignore' });
+    const { execFileSync: gitExecFileSync } = await import('node:child_process');
+    gitExecFileSync('git', ['init'], { cwd: projectDir, stdio: 'ignore' });
 
     const { bindCurrentProject } = await import('../local-agent.js');
     await bindCurrentProject({ skip: true, cwd: projectDir });
@@ -330,8 +330,8 @@ describe('local-agent: bindCurrentProject --skip', () => {
     const mainDir = path.join(tmpDir, 'main-repo');
     const worktreeDir = path.join(tmpDir, 'linked-wt');
     await fse.ensureDir(mainDir);
-    const { execFileSync } = await import('node:child_process');
-    const git = (args: string[], cwd: string) => execFileSync('git', args, { cwd, stdio: 'ignore' });
+    const { execFileSync: gitExecFileSync } = await import('node:child_process');
+    const git = (args: string[], cwd: string) => gitExecFileSync('git', args, { cwd, stdio: 'ignore' });
     git(['init'], mainDir);
     git(['config', 'user.email', 'test@example.com'], mainDir);
     git(['config', 'user.name', 'test'], mainDir);
@@ -358,8 +358,8 @@ describe('local-agent: emitBindingHint via reportAndSyncLocalAgent', () => {
     await setupConfig();
     const projectDir = path.join(tmpDir, 'unbound-project');
     await fse.ensureDir(projectDir);
-    const { execFileSync } = await import('node:child_process');
-    execFileSync('git', ['init'], { cwd: projectDir, stdio: 'ignore' });
+    const { execFileSync: gitExecFileSync } = await import('node:child_process');
+    gitExecFileSync('git', ['init'], { cwd: projectDir, stdio: 'ignore' });
 
     // Mock global fetch to handle /api/projects/mine and /api/local-agent/report
     const fetchMock = vi.fn(async (url: string) => {
@@ -420,8 +420,8 @@ describe('local-agent: emitBindingHint via reportAndSyncLocalAgent', () => {
       await setupConfig();
       const projectDir = path.join(tmpDir, `non-buddy-${tool}`);
       await fse.ensureDir(projectDir);
-      const { execFileSync } = await import('node:child_process');
-      execFileSync('git', ['init'], { cwd: projectDir, stdio: 'ignore' });
+      const { execFileSync: gitExecFileSync } = await import('node:child_process');
+      gitExecFileSync('git', ['init'], { cwd: projectDir, stdio: 'ignore' });
 
       const fetchMock = vi.fn(async (url: string) => {
         if (url.includes('/api/projects/mine')) {
@@ -461,8 +461,8 @@ describe('local-agent: emitBindingHint via reportAndSyncLocalAgent', () => {
     await setupConfig();
     const projectDir = path.join(tmpDir, 'disabled-project');
     await fse.ensureDir(projectDir);
-    const { execFileSync } = await import('node:child_process');
-    execFileSync('git', ['init'], { cwd: projectDir, stdio: 'ignore' });
+    const { execFileSync: gitExecFileSync } = await import('node:child_process');
+    gitExecFileSync('git', ['init'], { cwd: projectDir, stdio: 'ignore' });
 
     const fetchMock = vi.fn(async (_url: string) => new Response(JSON.stringify({ ok: true })));
     vi.stubGlobal('fetch', fetchMock);
@@ -495,8 +495,8 @@ describe('local-agent: emitBindingHint via reportAndSyncLocalAgent', () => {
     process.env.TEAMAI_BIND_PROMPT_ENABLED = '1';
     const projectDir = path.join(tmpDir, 'bound-project');
     await fse.ensureDir(projectDir);
-    const { execFileSync } = await import('node:child_process');
-    execFileSync('git', ['init'], { cwd: projectDir, stdio: 'ignore' });
+    const { execFileSync: gitExecFileSync } = await import('node:child_process');
+    gitExecFileSync('git', ['init'], { cwd: projectDir, stdio: 'ignore' });
 
     await setupConfig({
       [projectDir]: { projectId: 1, projectName: 'existing', boundAt: '2026-01-01T00:00:00.000Z' },
@@ -531,8 +531,8 @@ describe('local-agent: emitBindingHint via reportAndSyncLocalAgent', () => {
     process.env.TEAMAI_BIND_PROMPT_ENABLED = '1';
     const projectDir = path.join(tmpDir, 'skipped-project');
     await fse.ensureDir(projectDir);
-    const { execFileSync } = await import('node:child_process');
-    execFileSync('git', ['init'], { cwd: projectDir, stdio: 'ignore' });
+    const { execFileSync: gitExecFileSync } = await import('node:child_process');
+    gitExecFileSync('git', ['init'], { cwd: projectDir, stdio: 'ignore' });
 
     await setupConfig({
       [projectDir]: { projectId: 0, projectName: '__skipped__', boundAt: '2026-01-01T00:00:00.000Z' },
@@ -607,8 +607,8 @@ describe('local-agent: emitBindingHint via reportAndSyncLocalAgent', () => {
     await setupConfig();
     const projectDir = path.join(tmpDir, 'dedup-project');
     await fse.ensureDir(projectDir);
-    const { execFileSync } = await import('node:child_process');
-    execFileSync('git', ['init'], { cwd: projectDir, stdio: 'ignore' });
+    const { execFileSync: gitExecFileSync } = await import('node:child_process');
+    gitExecFileSync('git', ['init'], { cwd: projectDir, stdio: 'ignore' });
 
     const fetchMock = vi.fn(async (url: string) => {
       if (url.includes('/api/projects/mine')) {
@@ -654,8 +654,8 @@ describe('local-agent: emitBindingHint via reportAndSyncLocalAgent', () => {
     await setupConfig();
     const projectDir = path.join(tmpDir, 'session-start-project');
     await fse.ensureDir(projectDir);
-    const { execFileSync } = await import('node:child_process');
-    execFileSync('git', ['init'], { cwd: projectDir, stdio: 'ignore' });
+    const { execFileSync: gitExecFileSync } = await import('node:child_process');
+    gitExecFileSync('git', ['init'], { cwd: projectDir, stdio: 'ignore' });
 
     // Guarantee non-TTY so askViaTty returns null immediately (no /dev/tty open).
     Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
@@ -717,8 +717,8 @@ describe('local-agent: worktree binding inheritance', () => {
     const mainDir = path.join(tmpDir, 'main-repo');
     const worktreeDir = path.join(tmpDir, 'linked-wt');
     await fse.ensureDir(mainDir);
-    const { execFileSync } = await import('node:child_process');
-    const git = (args: string[], cwd: string) => execFileSync('git', args, { cwd, stdio: 'ignore' });
+    const { execFileSync: gitExecFileSync } = await import('node:child_process');
+    const git = (args: string[], cwd: string) => gitExecFileSync('git', args, { cwd, stdio: 'ignore' });
     git(['init'], mainDir);
     git(['config', 'user.email', 'test@example.com'], mainDir);
     git(['config', 'user.name', 'test'], mainDir);
@@ -774,8 +774,8 @@ describe('local-agent: security — install command hardening', () => {
     await setupConfig();
     const projectDir = path.join(tmpDir, 'sec-project');
     await fse.ensureDir(projectDir);
-    const { execFileSync } = await import('node:child_process');
-    execFileSync('git', ['init'], { cwd: projectDir, stdio: 'ignore' });
+    const { execFileSync: gitExecFileSync } = await import('node:child_process');
+    gitExecFileSync('git', ['init'], { cwd: projectDir, stdio: 'ignore' });
 
     const acks: Array<Record<string, unknown>> = [];
     const fetchMock = vi.fn(async (url: string, init?: { body?: string }) => {
@@ -940,8 +940,8 @@ describe('local-agent: normalizeScope — workspace scope installs to project di
   it('installs to project-level skills dir when backend sends scope=workspace', async () => {
     const projectDir = path.join(tmpDir, 'ws-project');
     await fse.ensureDir(projectDir);
-    const { execFileSync } = await import('node:child_process');
-    execFileSync('git', ['init'], { cwd: projectDir, stdio: 'ignore' });
+    const { execFileSync: gitExecFileSync } = await import('node:child_process');
+    gitExecFileSync('git', ['init'], { cwd: projectDir, stdio: 'ignore' });
     await fse.ensureDir(path.join(projectDir, '.codebuddy', 'skills'));
     await setupConfig();
 
@@ -1102,12 +1102,12 @@ describe('local-agent: full-snapshot workspace reporting', () => {
   });
 
   it('includes unbound current cwd in the report', async () => {
-    const { execFileSync } = await import('node:child_process');
+    const { execFileSync: gitExecFileSync } = await import('node:child_process');
     const cwdDir = path.join(tmpDir, 'current');
     const wsA = path.join(tmpDir, 'ws-a3');
     await fse.ensureDir(cwdDir);
     await fse.ensureDir(wsA);
-    execFileSync('git', ['init'], { cwd: cwdDir, stdio: 'ignore' });
+    gitExecFileSync('git', ['init'], { cwd: cwdDir, stdio: 'ignore' });
     await setupConfig({
       [wsA]: { projectId: 5, projectName: 'A', boundAt: 'x', ideType: 'codebuddy' },
     });
@@ -1143,8 +1143,8 @@ describe('local-agent: full-snapshot workspace reporting', () => {
   });
 
   it('reports the cwd, not HOME, under a dotfiles repo rooted at HOME', async () => {
-    const { execFileSync } = await import('node:child_process');
-    execFileSync('git', ['init'], { cwd: tmpDir, stdio: 'ignore' });
+    const { execFileSync: gitExecFileSync } = await import('node:child_process');
+    gitExecFileSync('git', ['init'], { cwd: tmpDir, stdio: 'ignore' });
     const notes = path.join(tmpDir, 'notes');
     await fse.ensureDir(notes);
     await setupConfig();
@@ -1301,12 +1301,12 @@ describe('local-agent: full-snapshot workspace reporting', () => {
   });
 
   it('includes unattributed cwd binding as current tool and excludes unattributed non-cwd binding', async () => {
-    const { execFileSync } = await import('node:child_process');
+    const { execFileSync: gitExecFileSync } = await import('node:child_process');
     const cwdDir = path.join(tmpDir, 'cwd-no-type');
     const wsOther = path.join(tmpDir, 'ws-other-no-type');
     await fse.ensureDir(cwdDir);
     await fse.ensureDir(wsOther);
-    execFileSync('git', ['init'], { cwd: cwdDir, stdio: 'ignore' });
+    gitExecFileSync('git', ['init'], { cwd: cwdDir, stdio: 'ignore' });
     await setupConfig({
       [cwdDir]: { projectId: 30, projectName: 'cwd-ws', boundAt: 'x' },
       [wsOther]: { projectId: 31, projectName: 'other-ws', boundAt: 'x' },
@@ -1507,8 +1507,8 @@ describe('local-agent: CloudStudio sandbox suppression', () => {
     await setupConfig();
     const projectDir = path.join(tmpDir, 'sandbox-unbound-project');
     await fse.ensureDir(projectDir);
-    const { execFileSync } = await import('node:child_process');
-    execFileSync('git', ['init'], { cwd: projectDir, stdio: 'ignore' });
+    const { execFileSync: gitExecFileSync } = await import('node:child_process');
+    gitExecFileSync('git', ['init'], { cwd: projectDir, stdio: 'ignore' });
 
     let reportCalled = false;
     const fetchMock = vi.fn(async (url: string) => {
@@ -2630,13 +2630,13 @@ describe('local-agent: cmds[] migration', () => {
 
 describe('local-agent: per-worktree claudemd isolation (issue #374 P1-2C)', () => {
   it('worktree B\'s CLAUDE.md never merges worktree A\'s instructions', async () => {
-    const { execFileSync } = await import('node:child_process');
+    const { execFileSync: gitExecFileSync } = await import('node:child_process');
     const { realpathSync } = await import('node:fs');
 
     // Real git repo + linked worktree → shared partition data home. The resource
     // cache used to be shared, so syncClaudemd merged A's + B's fragments.
     const repo = realpathSync.native(await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-cmd-wt-')));
-    const git = (cwd: string, ...a: string[]) => execFileSync('git', a, { cwd, stdio: 'pipe' });
+    const git = (cwd: string, ...a: string[]) => gitExecFileSync('git', a, { cwd, stdio: 'pipe' });
     git(repo, 'init', '-q');
     git(repo, 'config', 'user.email', 't@e'); git(repo, 'config', 'user.name', 'T');
     git(repo, 'commit', '--allow-empty', '-q', '-m', 'init');
@@ -2710,10 +2710,10 @@ describe('local-agent: per-worktree claudemd isolation (issue #374 P1-2C)', () =
 
 describe('local-agent: project prompts reach every installed tool (#945)', () => {
   async function installProjectPrompt(tool: string, toolDirs: string[], options: { prompt?: string; files?: Record<string, string>; sessionStart?: boolean } = {}) {
-    const { execFileSync } = await import('node:child_process');
+    const { execFileSync: gitExecFileSync } = await import('node:child_process');
     const repo = path.join(tmpDir, 'project');
     await fse.ensureDir(repo);
-    execFileSync('git', ['init', '-q'], { cwd: repo, stdio: 'pipe' });
+    gitExecFileSync('git', ['init', '-q'], { cwd: repo, stdio: 'pipe' });
     for (const dir of toolDirs) await fse.ensureDir(path.join(repo, dir));
     for (const [rel, text] of Object.entries(options.files ?? {})) await fse.outputFile(path.join(repo, rel), text);
     await fse.ensureDir(path.join(tmpDir, '.teamai', 'local-agent'));

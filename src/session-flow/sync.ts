@@ -754,14 +754,14 @@ export class SyncManager {
       committed = true;
     } catch (error) {
       const failures: unknown[] = [];
-      for (const file of [...files].reverse()) {
+      for (const file of files.toReversed()) {
         try {
           if (file.installed) fs.unlinkSync(file.file);
           if (file.backedUp) fs.renameSync(file.backup, file.file);
         } catch (rollbackError) { failures.push(rollbackError); }
       }
       if (failures.length > 0) {
-        throw new AggregateError([error, ...failures], `Session archive rollback failed; original files kept at ${files.filter((f) => f.backedUp).map((f) => f.backup).join(', ')}`);
+        throw new AggregateError([error, ...failures], `Session archive rollback failed; original files kept at ${files.filter((f) => f.backedUp).map((f) => f.backup).join(', ')}`, { cause: error });
       }
       throw error;
     } finally {

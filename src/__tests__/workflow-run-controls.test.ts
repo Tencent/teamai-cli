@@ -76,8 +76,8 @@ describe('HITL provenance', () => {
 describe('workflow HITL', () => {
   it('opens a HITL request without a lease or revision bump, answers, then leases', async () => {
     const f = await fixture('  - id: build\n    approve: Build it?\n    command: echo build');
-    const hitl = data(await f.next()).hitl;
-    expect(hitl).toEqual({ run: f.id, step: 'build', pass: 1, kind: 'approve', message: 'Build it?', options: ['yes', 'no'], required: false, respond: `teamai workflow respond ${f.id} build <option> --pass 1` });
+    const hitlEvent = data(await f.next()).hitl;
+    expect(hitlEvent).toEqual({ run: f.id, step: 'build', pass: 1, kind: 'approve', message: 'Build it?', options: ['yes', 'no'], required: false, respond: `teamai workflow respond ${f.id} build <option> --pass 1` });
     expect((await f.state()).revision).toBe(1);
     const answered = data(await f.respond('build', 'yes', { note: 'Ready' }));
     expect(answered).toEqual({ answered: { step: 'build', pass: 1, choice: 'yes', channel: 'tty', agent: false }, run: { id: f.id, status: 'running', revision: 1 } });
@@ -111,8 +111,8 @@ describe('workflow HITL', () => {
     ['choose: { message: Pick, options: [one, two], default: one }', true, 'succeeded', 'one', 'auto_approve'],
     ['choose: { message: Pick, options: [one, two], default: one }', false, 'failed', undefined, undefined],
     ['choose: { message: Pick, options: [one, two] }', true, 'failed', undefined, undefined],
-  ])('settles %s without HITL with auto_approve=%s', async (hitl, auto, status, choice, channel) => {
-    const f = await fixture(`  - id: ask\n    ${hitl}`);
+  ])('settles %s without HITL with auto_approve=%s', async (hitlSpec, auto, status, choice, channel) => {
+    const f = await fixture(`  - id: ask\n    ${hitlSpec}`);
     f.config.workflows = { tools: {}, auto_approve: auto };
     expect(data(await leaseNext(f.config, f.id, driver))).toHaveProperty('done');
     const state = (await f.state()).steps[0]!;

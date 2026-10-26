@@ -385,7 +385,7 @@ describe('extract writes a fallback evidence manifest (#508)', () => {
 
     const lastJson = [...vi.mocked(console.log).mock.calls]
       .map(call => String(call[0]))
-      .reverse()
+      .toReversed()
       .find(text => text.trim().startsWith('{'));
     expect(lastJson).toBeTruthy();
     const report = JSON.parse(lastJson!) as { complete?: boolean; missingComponents?: string[] };

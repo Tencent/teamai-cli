@@ -106,7 +106,7 @@ function teamai(member: Member, args: string[], options: { cwd?: string; spawned
 }
 
 function envelope(result: Result): Envelope {
-  const line = result.stdout.trim().split('\n').filter((item) => item.startsWith('{')).at(-1);
+  const line = result.stdout.trim().split('\n').findLast((item) => item.startsWith('{'));
   if (!line) throw new Error(`no JSON envelope:\n${said(result)}`);
   return EnvelopeSchema.parse(JSON.parse(line));
 }
@@ -391,7 +391,7 @@ describe('workflow delivery conformance of each kind of driver through the CLI',
         const { run, member, log, held, killed, polled } = await drive(profile, scenario);
         const state = readRun(member, run);
         const branch = `teamai/${run}/work/p1`;
-        const work = state.steps.find((step) => step.id === 'work');
+        const workStep = state.steps.find((step) => step.id === 'work');
         const steps = state.steps.map((step) => `${step.id} ${step.status}${step.failure ? `: ${step.failure.message}` : ''}`).join('\n');
 
         // A driver that reports its own pull request is looked up only when it reports, and never reaches a create.
@@ -402,7 +402,7 @@ describe('workflow delivery conformance of each kind of driver through the CLI',
           expect(polled, 'the driver kept driving while the delivery held').toBe(true);
           if (log) expect(log.waits, 'the driver polled while the delivery held').toBeGreaterThan(0);
         }
-        expect([state.status, work?.status], steps).toEqual([expected.run, expected.work]);
+        expect([state.status, workStep?.status], steps).toEqual([expected.run, expected.work]);
         expect(createsOf(run)).toEqual(Array.from({ length: expected.creates }, () => ['fixture/app', branch, 'main']));
         expect(state.deliveries ?? []).toHaveLength(expected.prs);
         expect(endRecordPrs(run) ?? []).toEqual((state.deliveries ?? []).map((receipt) => receipt.url));
@@ -410,9 +410,9 @@ describe('workflow delivery conformance of each kind of driver through the CLI',
           expect(receipt).toMatchObject({ branch, base: 'main', step: 'work', pass: 1 });
           expect(receipt.url).toMatch(/^https:\/\/github\.com\/fixture\/app\/pull\/\d+$/);
         }
-        if (expected.failure) expect(work?.failure).toMatchObject({ code: expected.failure, message: expect.stringContaining(branch) });
+        if (expected.failure) expect(workStep?.failure).toMatchObject({ code: expected.failure, message: expect.stringContaining(branch) });
         const tip = git(sandbox, ['--git-dir', productOrigin, 'rev-parse', `refs/heads/${branch}`]);
-        if (work?.changes) expect(tip, 'the branch is on origin').toBe(work.changes.to);
+        if (workStep?.changes) expect(tip, 'the branch is on origin').toBe(workStep.changes.to);
         if (expected.run === 'succeeded') {
           const saw = OpenSchema.parse(JSON.parse(fs.readFileSync(path.join(ghDir, 'ship-saw.json'), 'utf8')));
           expect(saw.filter((pull) => pull.head.ref === branch).map((pull) => pull.html_url), 'ship ran once work was delivered')

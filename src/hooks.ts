@@ -616,8 +616,8 @@ export function getToolCheckouts(manifest: SharedHooksManifest, tool: string): s
 
 export function setToolCheckouts(manifest: SharedHooksManifest, tool: string, checkouts: string[]): void {
   if (Array.isArray(manifest.checkouts)) {
-    const checkouts = manifest.checkouts;
-    manifest.checkouts = Object.fromEntries(MAIN_CHECKOUT_TEAM_HOOK_TOOLS.map((tool) => [tool, [...checkouts]]));
+    const existingCheckouts = manifest.checkouts;
+    manifest.checkouts = Object.fromEntries(MAIN_CHECKOUT_TEAM_HOOK_TOOLS.map((t) => [t, [...existingCheckouts]]));
   } else if (!manifest.checkouts) {
     manifest.checkouts = {};
   }
@@ -1964,7 +1964,7 @@ export async function copilotBuiltinInstalled(event: string, matcher: string, pr
 export async function removeCopilotGlobalBuiltins(): Promise<void> {
   const dir = path.join(getCopilotHome(), 'hooks');
   const files = await readdir(dir).catch(() => [] as string[]);
-  for (const name of files.filter(name => name.endsWith('.json')).sort()) {
+  for (const name of files.filter(f => f.endsWith('.json')).sort()) {
     const file = path.resolve(dir, name);
     const json = await readJson<CopilotHooksJson>(file);
     if (json?.version === COPILOT_HOOK_SCHEMA_VERSION && json.hooks) {

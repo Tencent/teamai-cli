@@ -5,7 +5,7 @@ const { autoDetectInit, findUnreadableProjectConfig, logDim, logError, NotInitia
   findUnreadableProjectConfig: vi.fn(),
   logDim: vi.fn(),
   logError: vi.fn(),
-  NotInitializedError: class NotInitializedError extends Error {},
+  NotInitializedError: class NotInitializedErrorStub extends Error {},
 }));
 vi.mock('../config.js', async (importOriginal) => ({
   autoDetectInit,

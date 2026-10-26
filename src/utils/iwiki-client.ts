@@ -170,7 +170,7 @@ export class IWikiClient {
     try {
       response = JSON.parse(rawBody) as JsonRpcResponse;
     } catch (parseErr: unknown) {
-      throw new Error(`iWiki MCP response could not be parsed: ${String(parseErr)}; raw response: ${rawBody.slice(0, 200)}`);
+      throw new Error(`iWiki MCP response could not be parsed: ${String(parseErr)}; raw response: ${rawBody.slice(0, 200)}`, { cause: parseErr });
     }
 
     if (response.error) {

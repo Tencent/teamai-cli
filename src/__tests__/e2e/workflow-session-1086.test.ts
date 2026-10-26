@@ -22,7 +22,7 @@ describe('session workflow public CLI (#1086)', () => {
     const run = (command: string, args: string[], cwd = repo, input?: string) => spawnSync(command, args, { cwd, env, input, encoding: 'utf8', timeout: 30_000 });
     const git = (...args: string[]) => { const result = run('git', args); expect(result.status, result.stderr).toBe(0); return result.stdout.trim(); };
     const call = (args: string[], cwd = repo, input?: string) => run(process.execPath, [cli, ...args], cwd, input);
-    const envelope = (stdout: string) => JSON.parse(stdout.trim().split('\n').filter((line) => line.startsWith('{')).at(-1)!);
+    const envelope = (stdout: string) => JSON.parse(stdout.trim().split('\n').findLast((line) => line.startsWith('{'))!);
     try {
       git('init', '-q', '-b', 'main'); fs.writeFileSync(path.join(repo, 'AGENTS.md'), 'Trusted base instructions.\n');
       git('add', '.'); git('commit', '-qm', 'fixture'); git('init', '-q', '--bare', '-b', 'main', bare);
@@ -121,7 +121,7 @@ console.log(JSON.stringify({ type: 'result', structured_output: { label: 'thorou
     env.CLAUDE_CODE_SESSION_ID = 'session-judged';
     const run = (command: string, args: string[], timeout = 30_000) => spawnSync(command, args, { cwd: repo, env, encoding: 'utf8', timeout });
     const git = (...args: string[]) => { const result = run('git', args); expect(result.status, result.stderr).toBe(0); };
-    const envelope = (stdout: string) => JSON.parse(stdout.trim().split('\n').filter((line) => line.startsWith('{')).at(-1) ?? 'null');
+    const envelope = (stdout: string) => JSON.parse(stdout.trim().split('\n').findLast((line) => line.startsWith('{')) ?? 'null');
     /** Runs a literal the CLI printed, `teamai …`, with the built CLI: its answer. */
     const literal = (line: string, timeout?: number) => {
       const result = run(process.execPath, [cli, ...line.split(' ').slice(1)], timeout); expect(result.status, result.stderr).toBe(0);

@@ -134,7 +134,7 @@ export async function loadRolesManifest(repoPath: string): Promise<RolesManifest
     try {
       raw = YAML.parse(text);
     } catch (error) {
-      throw new Error(`Invalid roles manifest YAML: ${(error as Error).message}`);
+      throw new Error(`Invalid roles manifest YAML: ${(error as Error).message}`, { cause: error });
     }
     return validateManifestShape(raw);
   });

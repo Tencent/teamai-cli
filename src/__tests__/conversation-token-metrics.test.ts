@@ -374,9 +374,9 @@ describe('aggregateSessionMetrics', () => {
     // A Codex build that writes a new rollout per resume restarts its counters.
     const tokensA = { input: 500, output: 50, cacheRead: 1_000, cacheCreation: 0 };
     const tokensB = { input: 30, output: 3, cacheRead: 100, cacheCreation: 0 };
-    const stop = (path: string, tokens: TokenUsage, prompts: number): DashboardEvent => ({
+    const stop = (transcriptPath: string, tokens: TokenUsage, prompts: number): DashboardEvent => ({
       type: 'stop', timestamp: new Date().toISOString(), sessionId: 's1', tool: 'codex',
-      transcriptPath: path, tokenScope: 'transcript', tokens, prompts,
+      transcriptPath, tokenScope: 'transcript', tokens, prompts,
     });
     const first = computePromptTokenDelta(aggregateSessionMetrics([stop('/rollouts/a.jsonl', tokensA, 5)]), {});
     expect(first.delta).toEqual({ prompts: 5, tokens: tokensA });
@@ -392,8 +392,8 @@ describe('aggregateSessionMetrics', () => {
   it('an entry from before rollouts were kept covers only the rollouts that existed when it was written', () => {
     const tokensA = { input: 500, output: 50, cacheRead: 1_000, cacheCreation: 0 };
     const tokensB = { input: 30, output: 3, cacheRead: 100, cacheCreation: 0 };
-    const stop = (path: string, timestamp: string, tokens: TokenUsage, prompts: number): DashboardEvent => ({
-      type: 'stop', timestamp, sessionId: 's1', tool: 'codex', transcriptPath: path, tokenScope: 'transcript', tokens, prompts,
+    const stop = (transcriptPath: string, timestamp: string, tokens: TokenUsage, prompts: number): DashboardEvent => ({
+      type: 'stop', timestamp, sessionId: 's1', tool: 'codex', transcriptPath, tokenScope: 'transcript', tokens, prompts,
     });
     const writtenAt = Date.parse('2026-09-01T12:00:00Z');
     // An earlier release reported rollout A as a whole, with no rollouts.
@@ -425,9 +425,9 @@ describe('aggregateSessionMetrics', () => {
   });
 
   it('counts a Codex session\'s prompts across its rollouts', () => {
-    const stop = (path: string, prompts: number): DashboardEvent => ({
+    const stop = (transcriptPath: string, prompts: number): DashboardEvent => ({
       type: 'stop', timestamp: new Date().toISOString(), sessionId: 's1', tool: 'codex',
-      transcriptPath: path, tokenScope: 'transcript', tokens: emptyTokens(), prompts,
+      transcriptPath, tokenScope: 'transcript', tokens: emptyTokens(), prompts,
     });
     expect(aggregateSessionMetrics([stop('/rollouts/a.jsonl', 5), stop('/rollouts/b.jsonl', 2)]).get('s1')?.prompts).toBe(7);
   });
@@ -489,12 +489,12 @@ describe('aggregateSessionMetrics', () => {
       { type: 'prompt_submit', timestamp: ts, sessionId: 's1', tool: 'claude', promptSummary: 'new-2' },
       { type: 'stop', timestamp: ts, sessionId: 's1', tool: 'claude', prompts: 12 },
     ];
-    const metrics = aggregateSessionMetrics(resumedEvents);
-    expect(metrics.get('s1')!.prompts).toBe(12);
+    const postResumeMetrics = aggregateSessionMetrics(resumedEvents);
+    expect(postResumeMetrics.get('s1')!.prompts).toBe(12);
 
     // Baseline already reported 10 prompts before compaction.
     const reported = { s1: { prompts: 10, tokens: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 } } };
-    const { delta } = computePromptTokenDelta(metrics, reported);
+    const { delta } = computePromptTokenDelta(postResumeMetrics, reported);
     expect(delta.prompts).toBe(2); // the 2 post-resume turns are still reported
   });
 });

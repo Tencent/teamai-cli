@@ -359,15 +359,15 @@ servers:
 `;
     await writeMcpYaml(`servers:${temp}`);
     await reconcileMcpForConfig(teamConfig, localConfig);
-    const { log } = await import('../utils/logger.js');
-    vi.mocked(log.warn).mockClear();
+    const { log: freshLog } = await import('../utils/logger.js');
+    vi.mocked(freshLog.warn).mockClear();
 
     await writeMcpYaml(`server:${temp}`);
     const { changes } = await reconcileMcpForConfig(teamConfig, localConfig);
 
     expect(changes).toEqual([]);
     expect((await fse.readJson(path.join(homeDir, '.claude.json'))).mcpServers.temp).toBeDefined();
-    const warnings = vi.mocked(log.warn).mock.calls.map(([m]) => String(m));
+    const warnings = vi.mocked(freshLog.warn).mock.calls.map(([m]) => String(m));
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toContain('mcp/mcp.yaml');
     expect(warnings[0]).toContain('`server`');
@@ -478,15 +478,15 @@ servers:
     transport: http
     url: https://example.com/shared
 `);
-      const { log } = await import('../utils/logger.js');
-      vi.mocked(log.warn).mockClear();
+      const { log: freshLog } = await import('../utils/logger.js');
+      vi.mocked(freshLog.warn).mockClear();
 
       await reconcileMcpForConfig(teamConfig, { ...localConfig, primaryRole: 'frontend', additionalRoles: [] });
 
       expect(Object.keys(await claudeServers())).toEqual(['shared']);
       await reconcileMcpForConfig(teamConfig, { ...localConfig, primaryRole: 'frontend', additionalRoles: [] });
 
-      const warnings = vi.mocked(log.warn).mock.calls.map(([m]) => String(m)).filter((m) => /frontned/.test(m));
+      const warnings = vi.mocked(freshLog.warn).mock.calls.map(([m]) => String(m)).filter((m) => /frontned/.test(m));
       expect(warnings).toHaveLength(1);
       expect(warnings[0]).toContain('mcp/mcp.yaml: server "typo" is scoped with per-entry `roles:`, which is deprecated');
       // No such role, so no declared namespace: the warning says what to declare.
@@ -558,15 +558,15 @@ servers:
     transport: http
     url: https://billing.example.com/orders
 `);
-      const { log } = await import('../utils/logger.js');
-      vi.mocked(log.warn).mockClear();
+      const { log: freshLog } = await import('../utils/logger.js');
+      vi.mocked(freshLog.warn).mockClear();
       resetWarnOnce();
 
       const { changes } = await reconcileMcpForConfig(teamConfig, { ...localConfig, projects: ['checkout', 'billing'] });
 
       expect(changes).toEqual([]);
       expect(await claudeServers()).toEqual(before);
-      expect(log.warn).toHaveBeenCalledWith(expect.stringContaining(
+      expect(freshLog.warn).toHaveBeenCalledWith(expect.stringContaining(
         'server "orders" is defined in both mcp/checkout/mcp.yaml and mcp/billing/mcp.yaml',
       ));
     });
@@ -594,13 +594,13 @@ servers:
     transport: http
     url: https://example.com/shared-again
 `);
-      const { log } = await import('../utils/logger.js');
+      const { log: freshLog } = await import('../utils/logger.js');
       resetWarnOnce();
 
       await reconcileMcpForConfig(teamConfig, { ...localConfig, projects: ['checkout'] });
 
       expect(await claudeServers()).toEqual(before);
-      expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('mcp/mcp.yaml defines server "shared" more than once'));
+      expect(freshLog.warn).toHaveBeenCalledWith(expect.stringContaining('mcp/mcp.yaml defines server "shared" more than once'));
     });
 
     it('keeps a 0.25 file that repeats one server under different roles: working as 0.25 did', async () => {
@@ -634,13 +634,13 @@ servers:
     transport: http
     url: https://example.com/shared
 `);
-      const { log } = await import('../utils/logger.js');
+      const { log: freshLog } = await import('../utils/logger.js');
       resetWarnOnce();
 
       await reconcileMcpForConfig(teamConfig, { ...localConfig, projects: ['billing'] });
 
       expect(Object.keys(await claudeServers()).sort()).toEqual(['shared']);
-      expect(log.warn).toHaveBeenCalledWith(expect.stringContaining(
+      expect(freshLog.warn).toHaveBeenCalledWith(expect.stringContaining(
         'mcp/mcp.yaml: server "checkout-db" is scoped with per-entry `projects:`, which this version no longer reads, '
         + 'so it reaches nobody. Move it to mcp/checkout/mcp.yaml and drop the key.',
       ));
@@ -648,8 +648,8 @@ servers:
 
     // A typo of a scoping key (#822) must not widen who gets the server.
     const warningsAbout = async (file: string, server: string): Promise<string[]> => {
-      const { log } = await import('../utils/logger.js');
-      return vi.mocked(log.warn).mock.calls.map(([m]) => String(m))
+      const { log: freshLog } = await import('../utils/logger.js');
+      return vi.mocked(freshLog.warn).mock.calls.map(([m]) => String(m))
         .filter((m) => m.includes(file) && m.includes(`"${server}"`));
     };
 
@@ -664,8 +664,8 @@ servers:
     transport: http
     url: https://example.com/shared
 `);
-      const { log } = await import('../utils/logger.js');
-      vi.mocked(log.warn).mockClear();
+      const { log: freshLog } = await import('../utils/logger.js');
+      vi.mocked(freshLog.warn).mockClear();
       resetWarnOnce();
 
       await reconcileMcpForConfig(teamConfig, { ...localConfig, projects: ['billing'] });
@@ -684,8 +684,8 @@ servers:
     url: https://checkout.example.com/db
     role: [frontend]
 `);
-      const { log } = await import('../utils/logger.js');
-      vi.mocked(log.warn).mockClear();
+      const { log: freshLog } = await import('../utils/logger.js');
+      vi.mocked(freshLog.warn).mockClear();
       resetWarnOnce();
 
       await reconcileMcpForConfig(teamConfig, { ...localConfig, projects: ['checkout'] });
@@ -712,8 +712,8 @@ servers:
     tools: [claude]
     roles: [frontend]
 `);
-      const { log } = await import('../utils/logger.js');
-      vi.mocked(log.warn).mockClear();
+      const { log: freshLog } = await import('../utils/logger.js');
+      vi.mocked(freshLog.warn).mockClear();
       resetWarnOnce();
 
       await reconcileMcpForConfig(teamConfig, { ...localConfig, projects: ['billing'] });
@@ -4141,8 +4141,8 @@ servers:
       expect({ changes, wrote, unresolved }).toEqual({ changes: [], wrote: false, unresolved: true });
       expect(await fse.readFile(claudeJson(), 'utf-8')).toBe(jsonBefore);
       expect(await fse.readFile(codexToml(), 'utf-8')).toBe(tomlBefore);
-      const { log } = await import('../utils/logger.js');
-      expect(vi.mocked(log.warn).mock.calls.map(([m]) => String(m)).join('\n')).toContain('env/secrets.yaml');
+      const { log: freshLog } = await import('../utils/logger.js');
+      expect(vi.mocked(freshLog.warn).mock.calls.map(([m]) => String(m)).join('\n')).toContain('env/secrets.yaml');
     });
 
     it('still removes a server whose missing variable is not declared as a secret', async () => {

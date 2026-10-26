@@ -195,12 +195,12 @@ async function resolveSourcePhysicalPath(target: string): Promise<string> {
     return await fse.realpath(absolute);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-      throw new Error(`Cannot verify source destination: ${absolute}. Manual review is required (${(error as NodeJS.ErrnoException).code ?? 'unknown error'}).`);
+      throw new Error(`Cannot verify source destination: ${absolute}. Manual review is required (${(error as NodeJS.ErrnoException).code ?? 'unknown error'}).`, { cause: error });
     }
     // A missing leaf is safe to append; an existing dangling link is not.
     try {
       await fse.lstat(absolute);
-      throw new Error(`Cannot determine source destination through a dangling symlink: ${absolute}. Manual review is required.`);
+      throw new Error(`Cannot determine source destination through a dangling symlink: ${absolute}. Manual review is required.`, { cause: error });
     } catch (statError) {
       if ((statError as NodeJS.ErrnoException).code !== 'ENOENT') throw statError;
     }
@@ -228,7 +228,7 @@ async function readSourceManifest(manifestPath: string): Promise<SourceInstallMa
     raw = await fse.readFile(manifestPath, 'utf8');
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
-    throw new Error(`Cannot read source ownership record: ${manifestPath}`);
+    throw new Error(`Cannot read source ownership record: ${manifestPath}`, { cause: error });
   }
   let value: unknown;
   try {
@@ -905,7 +905,7 @@ async function pullSingleSource(
     // cross-installation ownership is checked.
     const targets: string[] = [];
     // Recorded copies holding a file of the member's where the source now has one: kept on record, not copied.
-    const retained: string[] = [];
+    const retainedTargets: string[] = [];
     let codexSkillsPath: string | undefined;
     let conflictingPath: string | undefined;
     let conflictingRecord: string | undefined;
@@ -951,14 +951,14 @@ async function pullSingleSource(
         if (colliding) {
           log.warn(`[source:${source.name}] Kept ${target}: ${colliding} there is yours, and ${source.name}/${skill.name} now has a file at that path. `
             + `Rename or delete ${colliding}, then run teamai pull, to receive the source version.`);
-          retained.push(target);
+          retainedTargets.push(target);
           continue;
         }
       }
       if (tool === CODEX_TOOL && target !== path.join(baseDir, toolPath.skills, skill.name)) codexSkillsPath = toolPath.skills;
       targets.push(target);
     }
-    if (targets.length > 0 || retained.length > 0) plans.push({ skill, targets, retained, codexSkillsPath, conflictingPath, conflictingRecord });
+    if (targets.length > 0 || retainedTargets.length > 0) plans.push({ skill, targets, retained: retainedTargets, codexSkillsPath, conflictingPath, conflictingRecord });
   }
 
   // Directory copies merge content. Crossing an existing parent/child boundary
@@ -1033,7 +1033,7 @@ async function pullSingleSource(
   }
 
   const keptInPlace = new Set<string>();
-  for (const { skill, targets, retained, conflictingPath, conflictingRecord } of plans) {
+  for (const { skill, targets, retained: retainedTargets, conflictingPath, conflictingRecord } of plans) {
     if (conflictingPath) {
       log.warn(`[source:${source.name}] Skipping "${skill.name}": another source repository owns ${conflictingPath}. Remove that installation before pulling this skill. Ownership record: ${conflictingRecord}`);
       continue;
@@ -1067,14 +1067,14 @@ async function pullSingleSource(
       // copyDir may replace a leaf symlink: pin the actual post-copy location.
       installedPhysicalPaths[relativeTarget] = await resolveSourcePhysicalPath(targetDir);
     }
-    for (const targetDir of retained) {
+    for (const targetDir of retainedTargets) {
       const relativeTarget = recordedDestination(baseDir, targetDir);
       const skillPaths = installedPaths[skill.name] ??= [];
       if (!skillPaths.includes(relativeTarget)) skillPaths.push(relativeTarget);
       installedPhysicalPaths[relativeTarget] = await resolveSourcePhysicalPath(targetDir);
     }
     // A copy kept whole is still this source's on record, so removal judges it later.
-    if (retained.length > 0) keptInPlace.add(skill.name);
+    if (retainedTargets.length > 0) keptInPlace.add(skill.name);
     if (targets.length === 0) continue;
 
     if (oldInstalled.has(skill.name)) {

@@ -243,9 +243,9 @@ describe('team env by directory (#1018)', () => {
         const value = "a\nit's\nexport AWS_SECRET_ACCESS_KEY=x\nback\\'\nexport AWS_SECRET_ACCESS_KEY=y\nb";
         await handler.writeResolvedEnv([{ key: 'MULTI', value }], teamConfig, a);
         const member = platform === 'win32' ? 'aws_secret_access_key' : 'AWS_SECRET_ACCESS_KEY';
-        const report = `printf "%s|%s|%s\\n" "\${MULTI-unset}" "$(printenv ${member})" "$(env | grep -c __TEAMAI_ENV_PREV_)"`;
+        const multilineReport = `printf "%s|%s|%s\\n" "\${MULTI-unset}" "$(printenv ${member})" "$(env | grep -c __TEAMAI_ENV_PREV_)"`;
 
-        const run = spawnSync(shell, ['-c', `. "$1"; ${report}; cd "$2" && __teamai_env_apply; ${report}`, 'teamai', path.join(homeDir, '.teamai', 'env-loader.sh'), elsewhere], {
+        const run = spawnSync(shell, ['-c', `. "$1"; ${multilineReport}; cd "$2" && __teamai_env_apply; ${multilineReport}`, 'teamai', path.join(homeDir, '.teamai', 'env-loader.sh'), elsewhere], {
           cwd: a.projectRoot,
           env: { HOME: homeDir, PATH: process.env.PATH, ZDOTDIR: tmpDir, [member]: 'real' },
           encoding: 'utf-8',
@@ -941,13 +941,13 @@ describe('team env by directory (#1018)', () => {
       const a = await project('a');
       await handler.writeResolvedEnv([{ key: 'MARKER', value: 'old' }], teamConfig, a);
       const envSh = path.join(a.dataHome ?? '', 'env.sh');
-      const state = async () => ({ envSh: await fse.readFile(envSh, 'utf-8'), backup: await readEnvBackup(a), exports: await readEnvShExports(envSh) });
-      const before = await state();
+      const envState = async () => ({ envSh: await fse.readFile(envSh, 'utf-8'), backup: await readEnvBackup(a), exports: await readEnvShExports(envSh) });
+      const before = await envState();
       await fse.chmod(readOnlyFile(a), 0o444);
 
       await expect(handler.writeResolvedEnv([{ key: 'MARKER', value: 'new' }], teamConfig, a)).rejects.toThrow(/EACCES|EPERM/);
 
-      expect(await state()).toEqual(before);
+      expect(await envState()).toEqual(before);
       expect(before.backup).toEqual({ MARKER: 'old' });
     });
 
@@ -975,14 +975,14 @@ describe('team env by directory (#1018)', () => {
       const a = await project('a');
       if (pulledBefore) await handler.writeResolvedEnv([{ key: 'MARKER', value: 'old' }], teamConfig, a);
       // Every file in the scope's data home, env.sh, the env backup and the export record among them.
-      const state = async () => Promise.all((await fse.readdir(a.dataHome ?? '').catch(() => [])).sort().map(async (name) =>
+      const dirState = async () => Promise.all((await fse.readdir(a.dataHome ?? '').catch(() => [])).sort().map(async (name) =>
         [name, await fse.readFile(path.join(a.dataHome ?? '', name), 'utf-8').catch(() => 'not a file')]));
-      const before = await state();
+      const before = await dirState();
       failFirstWriteTo((file) => file === failing(a));
 
       await expect(handler.writeResolvedEnv([{ key: 'MARKER', value: 'new' }], teamConfig, a)).rejects.toThrow(/ENOSPC/);
 
-      expect(await state()).toEqual(before);
+      expect(await dirState()).toEqual(before);
     });
 
     // So is a profile file, written through the name the member uses, so a link stays.
@@ -2052,8 +2052,8 @@ describe('team env by directory (#1018)', () => {
 
       expect(run.status, run.stderr).toBe(0);
       expect(run.stdout).toContain('restored');
-      const hooks = run.stdout.split('\n').filter((line) => line.startsWith('hook:'));
-      expect(hooks[0]).toBe(setup.includes('member_prompt') ? 'hook:from-a' : undefined);
+      const firstHook = run.stdout.split('\n').find((line) => line.startsWith('hook:'));
+      expect(firstHook).toBe(setup.includes('member_prompt') ? 'hook:from-a' : undefined);
     });
 
     it.each(promptBashes)('%s keeps an exported PROMPT_COMMAND in a child shell', async (bash) => {

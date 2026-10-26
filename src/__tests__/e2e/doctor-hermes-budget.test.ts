@@ -24,7 +24,7 @@ it('reports whole-file truncation through the real doctor CLI and clears it afte
       const result = spawnSync(process.execPath, [CLI, 'doctor', '--json'], { cwd: home, env, encoding: 'utf8', timeout: 45000 });
       expect(result.error).toBeUndefined();
       const report = JSON.parse(result.stdout) as { checks: { name: string; ok: boolean; fix: string }[] };
-      const check = report.checks.find(check => check.name === 'Hermes SOUL.md fits the context-file read budget');
+      const check = report.checks.find(c => c.name === 'Hermes SOUL.md fits the context-file read budget');
       expect(check, result.stdout + result.stderr).toBeDefined();
       return check!;
     };

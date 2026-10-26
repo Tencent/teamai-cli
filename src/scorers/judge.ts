@@ -56,8 +56,8 @@ export function judgeAccess(tool: JudgeTool): JudgeAccess {
   return ACCESS[judgeFamily(tool)];
 }
 
-function profileIsolation(tool: JudgeTool, version: string, insideCheckout: boolean): Isolation {
-  return VERIFIED[judgeFamily(tool)]?.test(version) && !insideCheckout ? 'verified' : 'best-effort';
+function profileIsolation(tool: JudgeTool, version: string, isInsideCheckout: boolean): Isolation {
+  return VERIFIED[judgeFamily(tool)]?.test(version) && !isInsideCheckout ? 'verified' : 'best-effort';
 }
 
 export interface JudgeToolLevel {
@@ -212,7 +212,7 @@ function answerFrom(tool: JudgeTool, stdout: string): JudgeAnswer | undefined {
   const family = judgeFamily(tool);
   const events = records(stdout);
   if (family === 'claude' || family === 'codebuddy') {
-    const last = events.filter((record) => record.type === 'result').at(-1);
+    const last = events.findLast((record) => record.type === 'result');
     const structured = JudgeAnswerSchema.safeParse(last?.structured_output);
     if (structured.success) return structured.data;
     return parseAnswer(typeof last?.result === 'string' ? last.result : '');
@@ -321,7 +321,7 @@ export async function runLocalJudge(input: JudgeInput, { resolveTool = resolveCl
     // CodeBuddy prints Claude's result record.
     const report = toolStdout(input.tool === 'codebuddy' ? 'claude' : input.tool, result.stdout);
     const tokens = report?.tokens;
-    const cost = records(result.stdout).filter((record) => typeof record.total_cost_usd === 'number').at(-1)?.total_cost_usd;
+    const cost = records(result.stdout).findLast((record) => typeof record.total_cost_usd === 'number')?.total_cost_usd;
     const spent = tokens || typeof cost === 'number'
       ? { usage: { ...(tokens?.input !== undefined ? { inputTokens: tokens.input } : {}), ...(tokens?.output !== undefined ? { outputTokens: tokens.output } : {}), ...(typeof cost === 'number' ? { cost: { amount: cost, unit: 'USD' } } : {}) } }
       : {};

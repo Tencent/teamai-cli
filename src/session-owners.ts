@@ -389,7 +389,7 @@ export async function creditedPrompts(credit: OwnerCredit, transcripts: string[]
     }
     return key;
   };
-  for (const transcript of [...transcripts].reverse()) {
+  for (const transcript of transcripts.toReversed()) {
     const content = await readFileSafe(transcript);
     if (content === null) continue;
     const prompts: string[] = [];

@@ -220,7 +220,7 @@ function branchFiles(fixture: Fixture): { branch: string; files: string[] } {
   const branch = git(
     ['for-each-ref', '--format=%(refname:short)', `refs/heads/teamai/push/${fixture.username}/`],
     fixture.remote,
-  ).split('\n').filter(Boolean).at(-1) ?? '';
+  ).split('\n').findLast(Boolean) ?? '';
   const files = branch
     ? git(['ls-tree', '-r', '--name-only', branch], fixture.remote).split('\n').filter(Boolean)
     : [];

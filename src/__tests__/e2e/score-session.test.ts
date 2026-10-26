@@ -31,7 +31,7 @@ function runCLI(args: string[], cwd: string, env: NodeJS.ProcessEnv): Promise<{ 
 }
 
 function envelope(stdout: string): z.infer<typeof EnvelopeSchema> {
-  const line = stdout.trim().split('\n').filter((item) => item.startsWith('{')).at(-1);
+  const line = stdout.trim().split('\n').findLast((item) => item.startsWith('{'));
   if (!line) throw new Error(`no JSON envelope in stdout:\n${stdout}`);
   return EnvelopeSchema.parse(JSON.parse(line));
 }

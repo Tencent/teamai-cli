@@ -1158,7 +1158,7 @@ export async function scoreOnDemand(config: LocalConfig, demand: ScoreDemand, no
   if (!scoring.ok) return error('scoring_settings_invalid', scoring.reason);
   const run = isRunId(demand.run) ? await readRun(config, demand.run) : 'missing';
   if (typeof run !== 'object') {
-    const ids = (await localRuns(config)).reverse().slice(0, 10).map((known) => known.id);
+    const ids = (await localRuns(config)).toReversed().slice(0, 10).map((known) => known.id);
     return error('run_not_found', `Run ${demand.run} is not on this machine. ${ids.length > 0 ? `Runs here, newest first: ${ids.join(', ')}.` : 'This scope has no runs.'}`);
   }
   const judgeable = judgeablePasses(run).map(({ pass }) => pass);

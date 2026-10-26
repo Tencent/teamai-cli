@@ -152,7 +152,7 @@ export async function startDashboard(port?: number): Promise<void> {
             // The session's own data home, so its scope's report still sees it end.
             dataHomeKey: events.find((e) => e.sessionId === session.sessionId && e.dataHomeKey)?.dataHomeKey,
             // And its repo, which the cwd may no longer lead to (a removed worktree).
-            projectAnchor: [...events].reverse().find((e) => e.sessionId === session.sessionId && e.projectAnchor)?.projectAnchor,
+            projectAnchor: events.toReversed().find((e) => e.sessionId === session.sessionId && e.projectAnchor)?.projectAnchor,
           };
           await appendEvent(exitEvent);
           log.info(
@@ -183,9 +183,9 @@ export async function startDashboard(port?: number): Promise<void> {
       res.end(JSON.stringify(body));
     };
     const route = pathname.slice('/api/distribution'.length);
-    const writeRoutes = ['/preview', '/roles', '/projects'];
-    if (route === '' ? req.method !== 'GET' : !writeRoutes.includes(route) || req.method !== 'POST') {
-      json(route === '' || writeRoutes.includes(route) ? 405 : 404, { error: 'Not supported.' });
+    const writeRoutes = new Set(['/preview', '/roles', '/projects']);
+    if (route === '' ? req.method !== 'GET' : !writeRoutes.has(route) || req.method !== 'POST') {
+      json(route === '' || writeRoutes.has(route) ? 405 : 404, { error: 'Not supported.' });
       return;
     }
     const distribution = await import('./dashboard/distribution.js');

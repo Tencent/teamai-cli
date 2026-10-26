@@ -277,7 +277,7 @@ describe('buildIndex puts a previous entry back only where a fresh read would (#
   });
 
   afterEach(async () => {
-    for (const p of locked.reverse()) await fse.chmod(p, 0o755);
+    for (const p of locked.toReversed()) await fse.chmod(p, 0o755);
     await fse.remove(tmpDir);
   });
 

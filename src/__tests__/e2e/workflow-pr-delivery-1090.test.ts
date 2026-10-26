@@ -177,7 +177,7 @@ function said(ran: Ran[]): string {
 }
 
 function doneOf(step: Ran | undefined): { run: string; outcome: string } {
-  const line = step?.stdout.trim().split('\n').filter((item) => item.startsWith('{')).at(-1);
+  const line = step?.stdout.trim().split('\n').findLast((item) => item.startsWith('{'));
   if (!line) throw new Error(`no JSON envelope from ${step?.command}`);
   return DoneSchema.parse(JSON.parse(line)).data.done;
 }

@@ -301,8 +301,8 @@ describe('push namespace routing', () => {
     expect(askQuestion).not.toHaveBeenCalled();
     expect(pushedItems).toHaveLength(0);
     expect(process.exitCode).toBe(2);
-    const { log } = await import('../utils/logger.js');
-    const said = vi.mocked(log.error).mock.calls.flat().join(' ');
+    const { log: pushLog } = await import('../utils/logger.js');
+    const said = vi.mocked(pushLog.error).mock.calls.flat().join(' ');
     expect(said).toContain('common, hai');
     expect(said).toContain('--role <ns>');
   });
@@ -1165,8 +1165,8 @@ describe('push namespace routing for rules and agents', () => {
     expect(process.exitCode).toBe(2);
     expect(pushedItems).toHaveLength(0);
     // The flag is the problem, and this push carries no skill at all.
-    const { log } = await import('../utils/logger.js');
-    expect(vi.mocked(log.error).mock.calls.flat().join(' ')).toContain('--role');
+    const { log: pushLog } = await import('../utils/logger.js');
+    expect(vi.mocked(pushLog.error).mock.calls.flat().join(' ')).toContain('--role');
   });
 
   it('--project resolves each type from its own axis, not from skills', async () => {
@@ -1210,8 +1210,8 @@ describe('push namespace routing for rules and agents', () => {
 
     expect(process.exitCode).toBe(2);
     expect(pushedItems).toHaveLength(0);
-    const { log } = await import('../utils/logger.js');
-    expect(vi.mocked(log.error).mock.calls.flat().join(' ')).toContain('your role could not be resolved');
+    const { log: pushLog } = await import('../utils/logger.js');
+    expect(vi.mocked(pushLog.error).mock.calls.flat().join(' ')).toContain('your role could not be resolved');
   });
 
   it('reports a projects manifest that cannot be loaded for --project instead of throwing', async () => {
@@ -1227,8 +1227,8 @@ describe('push namespace routing for rules and agents', () => {
 
     expect(process.exitCode).toBe(2);
     expect(pushedItems).toHaveLength(0);
-    const { log } = await import('../utils/logger.js');
-    expect(vi.mocked(log.error).mock.calls.flat().join(' ')).toContain('Cannot resolve --project destinations');
+    const { log: pushLog } = await import('../utils/logger.js');
+    expect(vi.mocked(pushLog.error).mock.calls.flat().join(' ')).toContain('Cannot resolve --project destinations');
   });
 
   it('refuses to push to the shared root when the project declares no namespace for the type', async () => {
@@ -1361,8 +1361,8 @@ describe('push namespace routing for rules and agents', () => {
     expect(process.exitCode).toBe(2);
     expect(pushedItems).toHaveLength(0);
     expect(mockPushRepoBranch).not.toHaveBeenCalled();
-    const { log } = await import('../utils/logger.js');
-    expect(vi.mocked(log.error).mock.calls.flat().join(' ')).toContain('agents namespace');
+    const { log: pushLog } = await import('../utils/logger.js');
+    expect(vi.mocked(pushLog.error).mock.calls.flat().join(' ')).toContain('agents namespace');
   });
 
   it('still pushes an unrelated rule when the only skipped agent needs a destination the project lacks', async () => {
@@ -1393,8 +1393,8 @@ describe('push namespace routing for rules and agents', () => {
 
     expect(process.exitCode).not.toBe(2);
     expect(pushedItems.map((i) => i.relativePath)).toEqual(['rules/docs-know/my-rule.md']);
-    const { log } = await import('../utils/logger.js');
-    expect(vi.mocked(log.warn).mock.calls.flat().join(' ')).toContain('agents namespace');
+    const { log: pushLog } = await import('../utils/logger.js');
+    expect(vi.mocked(pushLog.warn).mock.calls.flat().join(' ')).toContain('agents namespace');
   });
 
   it('lets a modified namespaced agent through a project whose agents axis is empty', async () => {
@@ -1510,8 +1510,8 @@ describe('push namespace routing for rules and agents', () => {
     expect(process.exitCode).toBe(2);
     expect(pushedItems).toHaveLength(0);
     expect(mockPushRepoBranch).not.toHaveBeenCalled();
-    const { log } = await import('../utils/logger.js');
-    expect(vi.mocked(log.error).mock.calls.flat().join(' ')).toContain('agents namespace');
+    const { log: pushLog } = await import('../utils/logger.js');
+    expect(vi.mocked(pushLog.error).mock.calls.flat().join(' ')).toContain('agents namespace');
   });
 
   it('still fails when the skill lacking a project namespace is selected', async () => {
@@ -1556,8 +1556,8 @@ describe('push namespace routing for rules and agents', () => {
 
     expect(pushedItems[0]?.relativePath).toBe('rules/my-rule.md');
     // Reaching the whole team is the outcome worth naming out loud.
-    const { log } = await import('../utils/logger.js');
-    const said = [...vi.mocked(log.info).mock.calls, ...vi.mocked(log.warn).mock.calls]
+    const { log: pushLog } = await import('../utils/logger.js');
+    const said = [...vi.mocked(pushLog.info).mock.calls, ...vi.mocked(pushLog.warn).mock.calls]
       .flat().join(' ');
     expect(said).toContain('rules/my-rule.md');
     expect(said).toMatch(/everyone|whole team|shared/i);
@@ -1615,8 +1615,8 @@ describe('push namespace routing for rules and agents', () => {
     expect(process.exitCode).toBe(1);
     expect(pushedItems).toHaveLength(0);
     expect(mockPushRepoBranch).not.toHaveBeenCalled();
-    const { log } = await import('../utils/logger.js');
-    expect(vi.mocked(log.error).mock.calls.flat().join(' ')).toContain('could not be refreshed');
+    const { log: pushLog } = await import('../utils/logger.js');
+    expect(vi.mocked(pushLog.error).mock.calls.flat().join(' ')).toContain('could not be refreshed');
   });
 
   it('stops placing a new resource on a stale clone even when that clone has no roles manifest', async () => {
@@ -1634,8 +1634,8 @@ describe('push namespace routing for rules and agents', () => {
 
     expect(process.exitCode).toBe(1);
     expect(pushedItems).toHaveLength(0);
-    const { log } = await import('../utils/logger.js');
-    expect(vi.mocked(log.error).mock.calls.flat().join(' ')).toContain('could not be refreshed');
+    const { log: pushLog } = await import('../utils/logger.js');
+    expect(vi.mocked(pushLog.error).mock.calls.flat().join(' ')).toContain('could not be refreshed');
   });
 
   it('stops the push when the reconciled placement records cannot be saved', async () => {
@@ -1658,8 +1658,8 @@ describe('push namespace routing for rules and agents', () => {
 
     expect(process.exitCode).toBe(1);
     expect(pushedItems).toHaveLength(0);
-    const { log } = await import('../utils/logger.js');
-    expect(vi.mocked(log.error).mock.calls.flat().join(' ')).toContain('Nothing was pushed');
+    const { log: pushLog } = await import('../utils/logger.js');
+    expect(vi.mocked(pushLog.error).mock.calls.flat().join(' ')).toContain('Nothing was pushed');
   });
 
   it('turns a placement into a record only once its file is on the default branch, before scanning', async () => {
@@ -1835,8 +1835,8 @@ describe('push namespace routing for rules and agents', () => {
     // decides, the open PR is left alone, and the collision is reported.
     expect(pushedItems[0]?.relativePath).toBe('skills/pm/skill-a');
     expect(pushedItems[0]?.namespace).toBe('pm');
-    const { log } = await import('../utils/logger.js');
-    const said = vi.mocked(log.warn).mock.calls.flat().join(' ');
+    const { log: pushLog } = await import('../utils/logger.js');
+    const said = vi.mocked(pushLog.warn).mock.calls.flat().join(' ');
     expect(said).toContain('awaiting review at skills/js/skill-a');
     expect(said).toContain('separate PR');
   });
@@ -1954,8 +1954,8 @@ describe('push namespace routing for rules and agents', () => {
     // namespace for a rule.
     expect(process.exitCode).toBe(2);
     expect(pushedItems).toHaveLength(0);
-    const { log } = await import('../utils/logger.js');
-    expect(vi.mocked(log.error).mock.calls.flat().join(' ')).toContain('foo/bar');
+    const { log: pushLog } = await import('../utils/logger.js');
+    expect(vi.mocked(pushLog.error).mock.calls.flat().join(' ')).toContain('foo/bar');
   });
 
   it('detects a pending namespace recorded only in the path', async () => {
@@ -1982,8 +1982,8 @@ describe('push namespace routing for rules and agents', () => {
     await push({ all: true, role: 'be-agents' });
 
     expect(pushedItems[0]?.relativePath).toBe('agents/be-agents/vr.yaml');
-    const { log } = await import('../utils/logger.js');
-    expect(vi.mocked(log.warn).mock.calls.flat().join(' '))
+    const { log: pushLog } = await import('../utils/logger.js');
+    expect(vi.mocked(pushLog.warn).mock.calls.flat().join(' '))
       .toContain('awaiting review at agents/fe-agents/vr.yaml');
   });
 
@@ -2015,8 +2015,8 @@ describe('push namespace routing for rules and agents', () => {
     // A new branch, never the pending one.
     const branches = mockPushRepoBranch.mock.calls.map((call) => call[3]);
     expect(branches).not.toContain('teamai/push/test/20260101-000000');
-    const { log } = await import('../utils/logger.js');
-    const said = vi.mocked(log.warn).mock.calls.flat().join(' ');
+    const { log: pushLog } = await import('../utils/logger.js');
+    const said = vi.mocked(pushLog.warn).mock.calls.flat().join(' ');
     expect(said).toContain('awaiting review at rules/my-rule.md');
     expect(said).toContain('separate PR');
   });
@@ -2048,8 +2048,8 @@ describe('push namespace routing for rules and agents', () => {
 
     expect(pushedItems).toHaveLength(0);
     expect(mockPushRepoBranch).not.toHaveBeenCalled();
-    const { log } = await import('../utils/logger.js');
-    expect(vi.mocked(log.warn).mock.calls.flat().join(' ')).toContain('rules/my-rule.md now exists at the shared root');
+    const { log: pushLog } = await import('../utils/logger.js');
+    expect(vi.mocked(pushLog.warn).mock.calls.flat().join(' ')).toContain('rules/my-rule.md now exists at the shared root');
   });
 
   it('keeps updating the open PR of a resource the flag does not move', async () => {
@@ -2083,8 +2083,8 @@ describe('push namespace routing for rules and agents', () => {
     expect(pushedItems[0]?.relativePath).toBe('rules/fe-know/my-rule.md');
     const branches = mockPushRepoBranch.mock.calls.map((call) => call[3]);
     expect(branches).toEqual(['teamai/push/test/20260101-000000']);
-    const { log } = await import('../utils/logger.js');
-    expect(vi.mocked(log.warn).mock.calls.flat().join(' ')).not.toContain('separate PR');
+    const { log: pushLog } = await import('../utils/logger.js');
+    expect(vi.mocked(pushLog.warn).mock.calls.flat().join(' ')).not.toContain('separate PR');
   });
 
   it('--dry-run reports the same destination the real push would use', async () => {
@@ -2108,8 +2108,8 @@ describe('push namespace routing for rules and agents', () => {
 
     await push({ dryRun: true, role: 'pm' });
 
-    const { log } = await import('../utils/logger.js');
-    const said = vi.mocked(log.info).mock.calls.flat().join(' ');
+    const { log: pushLog } = await import('../utils/logger.js');
+    const said = vi.mocked(pushLog.info).mock.calls.flat().join(' ');
     expect(said).toContain('rules/pm/my-rule.md');
     expect(said).not.toContain('rules/fe-know/my-rule.md');
     expect(mockPushRepoBranch).not.toHaveBeenCalled();
@@ -2174,8 +2174,8 @@ describe('push namespace routing for rules and agents', () => {
       expect(mockPushRepoBranch).not.toHaveBeenCalled();
       expect(fs.readFileSync(path.join(repoDir, 'rules/pm', 'my-rule.md'), 'utf-8'))
         .toBe('the team rule');
-      const { log } = await import('../utils/logger.js');
-      expect(vi.mocked(log.error).mock.calls.flat().join(' ')).toContain('rules/pm/my-rule.md');
+      const { log: pushLog } = await import('../utils/logger.js');
+      expect(vi.mocked(pushLog.error).mock.calls.flat().join(' ')).toContain('rules/pm/my-rule.md');
     } finally {
       fs.rmSync(repoDir, { recursive: true, force: true });
     }
@@ -2204,8 +2204,8 @@ describe('push namespace routing for rules and agents', () => {
       expect(process.exitCode).toBe(2);
       expect(pushedItems).toHaveLength(0);
       expect(fs.existsSync(path.join(repoDir, 'agents/pm', 'vr.md'))).toBe(false);
-      const { log } = await import('../utils/logger.js');
-      expect(vi.mocked(log.error).mock.calls.flat().join(' ')).toContain('agents/pm/vr.yaml');
+      const { log: pushLog } = await import('../utils/logger.js');
+      expect(vi.mocked(pushLog.error).mock.calls.flat().join(' ')).toContain('agents/pm/vr.yaml');
     } finally {
       fs.rmSync(repoDir, { recursive: true, force: true });
     }
@@ -2299,8 +2299,8 @@ describe('push namespace routing for rules and agents', () => {
     expect(process.exitCode).toBe(2);
     expect(pushedItems).toHaveLength(0);
     expect(mockPushRepoBranch).not.toHaveBeenCalled();
-    const { log } = await import('../utils/logger.js');
-    expect(vi.mocked(log.error).mock.calls.flat().join(' ')).toContain('Invalid roles manifest YAML');
+    const { log: pushLog } = await import('../utils/logger.js');
+    expect(vi.mocked(pushLog.error).mock.calls.flat().join(' ')).toContain('Invalid roles manifest YAML');
   });
 
   it('stops the push when the configured role is missing from the manifest', async () => {
@@ -2366,8 +2366,8 @@ describe('push namespace routing for rules and agents', () => {
 
     expect(pushedItems).toHaveLength(0);
     expect(mockPushRepoBranch).not.toHaveBeenCalled();
-    const { log } = await import('../utils/logger.js');
-    const said = vi.mocked(log.info).mock.calls.flat().join(' ');
+    const { log: pushLog } = await import('../utils/logger.js');
+    const said = vi.mocked(pushLog.info).mock.calls.flat().join(' ');
     expect(said).toContain('rules/fe-know/my-rule.md');
     expect(said).toContain('agents/fe-agents/vr.yaml');
   });
@@ -2390,7 +2390,7 @@ describe('push namespace routing for rules and agents', () => {
 
     // A dry run that called this viable would be worse than no dry run at all.
     expect(process.exitCode).toBe(2);
-    const { log } = await import('../utils/logger.js');
-    expect(vi.mocked(log.error).mock.calls.flat().join(' ')).toContain('knowledge');
+    const { log: pushLog } = await import('../utils/logger.js');
+    expect(vi.mocked(pushLog.error).mock.calls.flat().join(' ')).toContain('knowledge');
   });
 });

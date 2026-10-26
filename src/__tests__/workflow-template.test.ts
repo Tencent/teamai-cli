@@ -38,7 +38,7 @@ function generated(seed: number, tokens: number): string {
   const chain = (part: () => string[]): string[] => [part(), ...Array.from({ length: below(width) }, () => [pick(JOINS), ...part()])].flat();
   const group = (): string[] => {
     const openers = Array.from({ length: below(width) }, () => pick(OPENERS));
-    return [...openers.map(([open]) => open), ...chain(() => [pick(VALUES)]), ...openers.reverse().map(([, close]) => close)];
+    return [...openers.map(([open]) => open), ...chain(() => [pick(VALUES)]), ...openers.toReversed().map(([, close]) => close)];
   };
   const parts = chain(() => ['(', ...chain(group), ')']);
   switch (below(4)) {

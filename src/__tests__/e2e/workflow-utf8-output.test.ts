@@ -77,7 +77,7 @@ setTimeout(() => fs.writeSync(1, bytes.subarray(split)), 150);
   const stdout = run(['workflow', 'start', 'unicode', '--driver', 'local', '--tools', 'default=claude'], {
     ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}`,
   });
-  const envelope = JSON.parse(stdout.trim().split('\n').filter((line) => line.startsWith('{')).at(-1)!);
+  const envelope = JSON.parse(stdout.trim().split('\n').findLast((line) => line.startsWith('{'))!);
   expect(envelope).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
   const runId = envelope.data.done.run as string;
   const runDir = path.join(dataHome, 'workflows', 'runs');

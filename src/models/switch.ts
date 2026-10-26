@@ -281,7 +281,7 @@ async function yamlObject(file: string): Promise<Record<string, unknown>> {
   try {
     parsed = YAML.parse(raw);
   } catch (error) {
-    throw new Error(`Cannot parse ${file}: ${(error as Error).message}`);
+    throw new Error(`Cannot parse ${file}: ${(error as Error).message}`, { cause: error });
   }
   if (parsed === null || parsed === undefined) return {};
   if (!isRecord(parsed)) {
@@ -308,7 +308,7 @@ async function jsonObject(file: string): Promise<Record<string, unknown>> {
   try {
     parsed = JSON.parse(raw);
   } catch (error) {
-    throw new Error(`Cannot parse ${file}: ${(error as Error).message}`);
+    throw new Error(`Cannot parse ${file}: ${(error as Error).message}`, { cause: error });
   }
   if (!isRecord(parsed)) {
     throw new Error(`Cannot update ${file}: the root must be a JSON object`);
@@ -544,7 +544,7 @@ function parseCodex(source: string): Record<string, unknown> {
   try {
     return parseToml(source) as Record<string, unknown>;
   } catch (error) {
-    throw new Error(`Cannot parse Codex config.toml: ${(error as Error).message}`);
+    throw new Error(`Cannot parse Codex config.toml: ${(error as Error).message}`, { cause: error });
   }
 }
 
@@ -764,7 +764,7 @@ async function buddyDoc(agent: BuddyAgent): Promise<{
   if (raw === null || raw.trim() === '') return { file, doc: {}, models: [] };
   let parsed: unknown;
   try { parsed = JSON.parse(raw); } catch (error) {
-    throw new Error(`Cannot parse ${file}: ${(error as Error).message}`);
+    throw new Error(`Cannot parse ${file}: ${(error as Error).message}`, { cause: error });
   }
   if (Array.isArray(parsed)) return { file, doc: parsed, models: parsed };
   if (!isRecord(parsed)) throw new Error(`Cannot update ${file}: root must be an object or array`);

@@ -27,8 +27,8 @@ async function budget(text: string, trailing = '') {
   const localConfig: LocalConfig = { repo: { localPath: path.join(home, 'repo'), remote: 'fixture' }, username: 'test', additionalRoles: [], scope: 'user', enabledAgents: ['hermes'] };
   const teamConfig = TeamaiConfigSchema.parse({ team: 'test', repo: 'fixture' });
   const checks = await buildInstructionDeliveryChecks({ teamConfig, localConfig } as never);
-  const budget = checks.find(check => check.name === 'Hermes SOUL.md fits the context-file read budget');
-  return budget;
+  const budgetCheck = checks.find(check => check.name === 'Hermes SOUL.md fits the context-file read budget');
+  return budgetCheck;
 }
 
 it('checks member text as well as the managed block', async () => {

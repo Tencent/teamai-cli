@@ -449,8 +449,8 @@ describe('workflow engine', () => {
     // pull.
     const stored = await readRun(config, runId);
     if (typeof stored !== 'object') throw new Error('run missing');
-    const { pendingRecords } = await import('../workflow/records.js');
-    const queued = await pendingRecords(config);
+    const { pendingRecords: freshPendingRecords } = await import('../workflow/records.js');
+    const queued = await freshPendingRecords(config);
     expect(queued).toHaveLength(1);
     expect(queued[0].phase).toBe('start');
     expect(queued[0].run).toBe(runId);
@@ -471,17 +471,17 @@ steps:
     command: node one.js
 `;
     const { config, runId } = await startBuild(failing);
-    const { pendingRecords } = await import('../workflow/records.js');
+    const { pendingRecords: freshPendingRecords } = await import('../workflow/records.js');
     const leased = await leaseNext(config, runId, driverA);
     if ('error' in leased) throw new Error(leased.error.message);
     const lease = leased.data.lease as { attempt: string; revision: number };
     await reportAttempt(config, runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'failed', driver: driverA });
     // A failed report does not settle the run; the next `next` does.
-    expect((await pendingRecords(config)).find((record) => record.phase === 'end')).toBeUndefined();
+    expect((await freshPendingRecords(config)).find((record) => record.phase === 'end')).toBeUndefined();
 
     const done = await leaseNext(config, runId, driverA);
     expect(done).toMatchObject({ data: { done: { outcome: 'failed' } } });
-    const end = (await pendingRecords(config)).find((record) => record.phase === 'end');
+    const end = (await freshPendingRecords(config)).find((record) => record.phase === 'end');
     expect(end).toBeDefined();
     expect(end!.status).toBe('failed');
     expect(end!.stepCounts).toEqual({ total: 1, succeeded: 0, failed: 1, skipped: 0, cancelled: 0 });
@@ -493,8 +493,8 @@ steps:
     fs.writeFileSync(path.join(work, 'two.js'), "process.stdout.write(JSON.stringify({ ok: true }))\n");
     const done = await runLocalDriver(config, runId, work);
     expect(done).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
-    const { pendingRecords } = await import('../workflow/records.js');
-    const queued = await pendingRecords(config);
+    const { pendingRecords: freshPendingRecords } = await import('../workflow/records.js');
+    const queued = await freshPendingRecords(config);
     const end = queued.find((record) => record.phase === 'end');
     expect(end).toBeDefined();
     expect(end!.status).toBe('succeeded');
@@ -4116,7 +4116,7 @@ describe('for_each', () => {
   });
 
   it('archives the items of a round when its workflow loops, and numbers the next round\'s items after them', async () => {
-    const rounds = workflow('rounds', `  - id: build
+    const roundsWf = workflow('rounds', `  - id: build
     for_each: inputs.targets
     command: node build.js
     output:
@@ -4127,7 +4127,7 @@ describe('for_each', () => {
     output:
       again: boolean
 `, 'inputs:\n  targets: [string]\nloop: { while: steps.decide.outputs.again, max_iterations: 2 }\n');
-    const { config, runId } = await startTree({ rounds }, 'rounds', { targets: ['web', 'api'] });
+    const { config, runId } = await startTree({ rounds: roundsWf }, 'rounds', { targets: ['web', 'api'] });
 
     const { leased, done } = await driveLoop(config, runId, (lease, earlier) => (lease.step === 'decide'
       ? { outputs: { again: earlier === 0 } }

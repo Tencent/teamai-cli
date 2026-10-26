@@ -818,7 +818,7 @@ async function findMuseSessionLog(sessionId: string): Promise<string | null> {
   const dataHome = process.env.XDG_DATA_HOME?.trim() || path.join(getUserHome(), '.local', 'share');
   const root = path.join(dataHome, 'muse', 'sessions');
   const subdirs = async (dir: string) => (await fs.promises.readdir(dir).catch(() => [] as string[]))
-    .filter((name) => /^\d+$/.test(name)).sort().reverse().map((name) => path.join(dir, name));
+    .filter((name) => /^\d+$/.test(name)).sort().toReversed().map((name) => path.join(dir, name));
   for (const year of await subdirs(root)) {
     for (const month of await subdirs(year)) {
       for (const day of await subdirs(month)) {
@@ -1450,7 +1450,7 @@ export async function parseHookEvent(
       const pendingStarts = sessionHistory.slice(lastEnd + 1)
         .filter((entry) => entry.type === 'session_start');
       const start = Number.isFinite(providerTime)
-        ? [...starts].reverse().find((entry) => Date.parse(entry.timestamp) <= endTime)
+        ? starts.toReversed().find((entry) => Date.parse(entry.timestamp) <= endTime)
         : starts.length === 1 ? starts[0]
           : pendingStarts.length === 1 ? pendingStarts[0] : undefined;
       let usage: CopilotUsageObservation = { shutdownObserved: false };
@@ -2122,10 +2122,10 @@ export function aggregateSessionMetrics(
     if (event.tokenScope === 'transcript' || (isCodexTool(event.tool) && typeof event.transcriptPath === 'string')) {
       rolloutSessions.add(event.sessionId);
     }
-    const events = timeline.get(event.sessionId) ?? [];
+    const sessionTimeline = timeline.get(event.sessionId) ?? [];
     const rolloutOf = event.transcriptPath ?? lastTranscript.get(event.sessionId);
-    events.push({ at: Date.parse(event.timestamp), transcript: rolloutOf });
-    timeline.set(event.sessionId, events);
+    sessionTimeline.push({ at: Date.parse(event.timestamp), transcript: rolloutOf });
+    timeline.set(event.sessionId, sessionTimeline);
     if (event.status === 'error' && rolloutOf !== undefined) {
       transcriptErrors.set(event.sessionId, (transcriptErrors.get(event.sessionId) ?? new Set<string>()).add(rolloutOf));
     }
@@ -2172,9 +2172,9 @@ export function aggregateSessionMetrics(
       lastStopAt.set(event.sessionId, new Date(event.timestamp).getTime());
     } else if (event.type === 'prompt_submit') {
       submitCount.set(event.sessionId, (submitCount.get(event.sessionId) ?? 0) + 1);
-      const stopAt = lastStopAt.get(event.sessionId);
-      if (stopAt !== undefined) {
-        const gap = new Date(event.timestamp).getTime() - stopAt;
+      const priorStopAt = lastStopAt.get(event.sessionId);
+      if (priorStopAt !== undefined) {
+        const gap = new Date(event.timestamp).getTime() - priorStopAt;
         // Legacy events (no `correction` flag) fall back to the built-in list.
         const isCorrection = event.correction ?? isCorrectionPrompt(event.promptSummary);
         if (gap >= 0 && gap <= CORRECTION_WINDOW_MS && isCorrection) {
@@ -2388,7 +2388,7 @@ function recordedScope(sessionId: string, cwd: string): Promise<RecordedScope> {
   let known = recordedScopes.get(key);
   if (!known) {
     known = readEvents().then((events) => {
-      const own = events.filter((e) => e.sessionId === sessionId).reverse();
+      const own = events.filter((e) => e.sessionId === sessionId).toReversed();
       const here = own.filter((e) => e.cwd === cwd);
       const scoped = here.find((e) => e.dataHomeKey) ?? own.find((e) => e.dataHomeKey);
       return {

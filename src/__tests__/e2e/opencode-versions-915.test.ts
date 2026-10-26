@@ -160,7 +160,7 @@ function machine(base: string, opts: { version: string; committed?: Record<strin
     },
     override: (value) => {
       const projects = path.join(home, '.teamai', 'projects');
-      const [config] = fs.readdirSync(projects).map((d) => path.join(projects, d, 'config.yaml')).filter((f) => fs.existsSync(f));
+      const config = fs.readdirSync(projects).map((d) => path.join(projects, d, 'config.yaml')).find((f) => fs.existsSync(f))!;
       const lines = read(config).split('\n').filter((line) => line && !line.startsWith('gitExcludeEnabled:'));
       fs.writeFileSync(config, `${[...lines, `gitExcludeEnabled: ${value}`].join('\n')}\n`);
     },

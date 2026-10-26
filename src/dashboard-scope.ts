@@ -101,7 +101,7 @@ async function transcriptOwner(
   paths: string[],
   resolveConfigForDir: (dir: string) => Promise<LocalConfig | null>,
 ): Promise<string | undefined> {
-  for (const transcript of [...paths].reverse()) {
+  for (const transcript of paths.toReversed()) {
     const origin = await transcriptOrigin(transcript);
     if (origin === undefined) continue;
     const config = (await pathExists(origin)) ? await resolveConfigForDir(origin) : null;

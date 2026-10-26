@@ -231,9 +231,9 @@ export async function readManifestFile(manifestPath: string, kind: ManifestKind)
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
       const dangling = await danglingLinkOnPath(resolvedPath);
       if (!dangling) return null;
-      throw new Error(`The ${kind} manifest ${resolvedPath} could not be read: ${dangling} is a symbolic link with no target. Point the link at the manifest file, or replace the link with the file itself.`);
+      throw new Error(`The ${kind} manifest ${resolvedPath} could not be read: ${dangling} is a symbolic link with no target. Point the link at the manifest file, or replace the link with the file itself.`, { cause: error });
     }
-    throw new Error(`The ${kind} manifest ${resolvedPath} could not be read: ${(error as Error).message}. Make it a readable file, then retry.`);
+    throw new Error(`The ${kind} manifest ${resolvedPath} could not be read: ${(error as Error).message}. Make it a readable file, then retry.`, { cause: error });
   }
   if (content.trim() === '') throw emptyManifestError(kind, resolvedPath);
   return content;

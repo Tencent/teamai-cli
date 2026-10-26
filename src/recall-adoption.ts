@@ -347,7 +347,7 @@ async function creditRoot(config: LocalConfig, index: LogIndex, sessionId: strin
   for (const id of crediting) consumed.add(id);
   try {
     const ts = new Date().toISOString();
-    await appendRecallLines(config, crediting.map((evidence) => ({ kind: 'consumed', ts, evidence })));
+    await appendRecallLines(config, crediting.map((evidenceId) => ({ kind: 'consumed', ts, evidence: evidenceId })));
   } catch (e) {
     // The ledger still holds the credit for its window; past it this evidence could credit again.
     log.debug(`recall adoption: could not mark ${crediting.length} evidence line(s) consumed: ${(e as Error).message}`);

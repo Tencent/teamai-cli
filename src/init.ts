@@ -886,9 +886,9 @@ async function runInitScript(
   syncMcp = false,
 ): Promise<void> {
   if (dryRun) return;
-  const { isInteractive } = await import('./utils/prompt.js');
+  const { isInteractive: isInteractiveReimported } = await import('./utils/prompt.js');
   const { runTeamScript, syncMcpAfterPostInit } = await import('./team-scripts.js');
-  const result = await runTeamScript(localConfig, event, { interactive: isInteractive(), announce: true });
+  const result = await runTeamScript(localConfig, event, { interactive: isInteractiveReimported(), announce: true });
   if (syncMcp && result.status === 'ran') await syncMcpAfterPostInit(localConfig);
 }
 

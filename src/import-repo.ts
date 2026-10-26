@@ -338,7 +338,7 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
                 cloneBranch = cloneResult.branch;
                 oldSha = null; // treat as full clone on fallback, skip drift detection
             } catch (err) {
-                throw new Error(`Clone failed (${url}): ${err instanceof Error ? err.message : String(err)}`);
+                throw new Error(`Clone failed (${url}): ${err instanceof Error ? err.message : String(err)}`, { cause: err });
             }
         }
     } else {
@@ -351,7 +351,7 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
             cloneBranch = cloneResult.branch;
         } catch (err) {
             // shallowClone cleans up the directory internally
-            throw new Error(`Clone failed (${url}): ${err instanceof Error ? err.message : String(err)}`);
+            throw new Error(`Clone failed (${url}): ${err instanceof Error ? err.message : String(err)}`, { cause: err });
         }
     }
 
@@ -428,7 +428,7 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
             ? `✓ teamwiki/ knowledge graph updated: ${slug}`
             : `✓ ${slug}: no source changes since the last import, teamwiki unchanged`));
     } catch (err) {
-        throw new Error(`Knowledge extraction failed: ${err instanceof Error ? err.message : String(err)}`);
+        throw new Error(`Knowledge extraction failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
     }
 
     if (updated) {

@@ -232,7 +232,7 @@ hooks:
       },
     });
 
-    const [command] = (await cursorSettings()).hooks.stop.map((entry) => entry.command).filter((c) => c.includes('ws-hook-ran'));
+    const command = (await cursorSettings()).hooks.stop.map((entry) => entry.command).find((c) => c.includes('ws-hook-ran'));
     const runIn = (cwd: string): string => execFileSync('sh', ['-c', command!], { cwd, encoding: 'utf8' });
     expect(runIn(root)).toBe('ws-hook-ran\n');
     expect(runIn(path.join(root, 'notes'))).toBe('ws-hook-ran\n');
@@ -301,13 +301,13 @@ hooks:
     await setUp(child, 'x');
     execFileSync('git', ['worktree', 'add', '-q', worktree], { cwd: child, env: gitEnv });
     await setUp(other, 'https://git.example.com/other/team.git');
-    const { readWorkspaceChildren } = await import('../workspace-children.js');
-    const configured = await readWorkspaceChildren({ ...localConfig(), dataHome: path.join(project, '.teamai') });
+    const { readWorkspaceChildren: freshReadWorkspaceChildren } = await import('../workspace-children.js');
+    const configured = await freshReadWorkspaceChildren({ ...localConfig(), dataHome: path.join(project, '.teamai') });
     expect(configured.children?.children.map((found) => found.path)).toEqual(['svc-a']);
 
     await reconcileTeamHooksForConfig(teamConfig, configured);
 
-    const [command] = (await cursorSettings()).hooks.stop.map((entry) => entry.command).filter((c) => c.includes('ws-hook-ran'));
+    const command = (await cursorSettings()).hooks.stop.map((entry) => entry.command).find((c) => c.includes('ws-hook-ran'));
     const runIn = (cwd: string): string => execFileSync('sh', ['-c', command!], { cwd, encoding: 'utf8' });
     expect(runIn(root)).toBe('ws-hook-ran\n');
     expect(runIn(child)).toBe('');
@@ -640,7 +640,7 @@ builtin:
       async (found, entry) => [...await found, ...entry.isDirectory() ? await manifests(path.join(dir, entry.name))
         : entry.name === 'managed-hooks.json' ? [path.join(dir, entry.name)] : []], Promise.resolve([]));
     const heldRecords = async (): Promise<string[]> => (await Promise.all([...await manifests(project), ...await manifests(home)]
-      .map(async (manifest) => ((await fse.readJson(manifest)).claude ?? []) as Array<{ id: string; command: string }>)))
+      .map(async (manifestFile) => ((await fse.readJson(manifestFile)).claude ?? []) as Array<{ id: string; command: string }>)))
       .flat().filter((record) => record.id === 'held').map((record) => record.command);
     expect(await heldRecords()).toEqual(['echo member-held']);
   });

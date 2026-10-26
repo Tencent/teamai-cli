@@ -396,12 +396,12 @@ export function envShVariables(
  */
 export function keptFromUserScope(localConfig: LocalConfig, teamEnv: TeamEnv, exported: readonly EnvVariable[]): string[] {
   if (localConfig.scope !== 'project' || localConfig.inheritUserScope !== true) return [];
-  const exportedKeys = exported.map(({ key }) => key);
+  const exportedKeys = new Set(exported.map(({ key }) => key));
   const declared = new Set([
     ...(teamEnv.variables.kind === 'resolved' ? teamEnv.variables.entries.map(({ name }) => name) : []),
     ...(declaredSecretKeys(teamEnv.declarations) ?? []),
   ]);
-  return [...declared].filter((key) => !exportedKeys.includes(key) && !isReservedTeamEnvKey(key));
+  return [...declared].filter((key) => !exportedKeys.has(key) && !isReservedTeamEnvKey(key));
 }
 
 /** What a pull and MCP do while the member's values can't be read: keep what the last pull wrote. */

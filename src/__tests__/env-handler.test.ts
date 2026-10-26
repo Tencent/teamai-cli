@@ -598,7 +598,7 @@ scope: 'user',
         (await fse.readFile(path.join(homeDir, name), 'utf-8').catch(() => '')).split(TEAMAI_ENV_START).length - 1;
       expect(Object.fromEntries(await Promise.all(names.map(async (name) => [name, await blocks(name)]))))
         .toEqual(Object.fromEntries(names.map((name) => [name, loaderIn.includes(name) ? 1 : 0])));
-      for (const name of names.filter((name) => !loaderIn.includes(name) && !(name in existing))) {
+      for (const name of names.filter((candidate) => !loaderIn.includes(candidate) && !(candidate in existing))) {
         expect(await fse.pathExists(path.join(homeDir, name))).toBe(false);
       }
     });

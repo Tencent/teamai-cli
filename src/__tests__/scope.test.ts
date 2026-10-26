@@ -574,8 +574,8 @@ describe('contribute --scope', () => {
     // Override cwd to project root
     process.cwd = () => projectRoot;
 
-    const { loadLocalConfigForScope } = await import('../config.js');
-    const cfg = await loadLocalConfigForScope('project', projectRoot);
+    const { loadLocalConfigForScope: loadConfigForScope } = await import('../config.js');
+    const cfg = await loadConfigForScope('project', projectRoot);
     expect(cfg).not.toBeNull();
     expect(cfg!.scope).toBe('project');
     expect(cfg!.username).toBe('projuser');
@@ -593,8 +593,8 @@ describe('contribute --scope', () => {
       }),
     );
 
-    const { loadLocalConfigForScope } = await import('../config.js');
-    const cfg = await loadLocalConfigForScope('user');
+    const { loadLocalConfigForScope: loadConfigForScope } = await import('../config.js');
+    const cfg = await loadConfigForScope('user');
     expect(cfg).not.toBeNull();
     expect(cfg!.scope).toBe('user');
     expect(cfg!.username).toBe('homeuser');

@@ -281,9 +281,9 @@ async function work(
   const lease = next.data.lease as {
     step: string; attempt: string; revision: number; workspace: { branch: string; base: { commit: string }; start: { commit: string } };
   };
-  const { branch, base, start } = lease.workspace;
-  await fetchMissingCommits(member.checkout, { run: runId, commits: [base.commit, start.commit] });
-  const opened = await ensureWorktree(member.checkout, branch, start.commit);
+  const { branch, base, start: startCommit } = lease.workspace;
+  await fetchMissingCommits(member.checkout, { run: runId, commits: [base.commit, startCommit.commit] });
+  const opened = await ensureWorktree(member.checkout, branch, startCommit.commit);
   if ('error' in opened) throw new Error(opened.error);
   fs.writeFileSync(path.join(opened.dir, file), `${file}\n`);
   git(opened.dir, 'add', file);
@@ -292,7 +292,7 @@ async function work(
   if (push) git(opened.dir, 'push', '-q', 'origin', branch);
   const reported = await reportAttempt(member.config, runId, {
     attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver,
-    changes: { branch, base: base.commit, from: start.commit, to: commit, commits: [commit] },
+    changes: { branch, base: base.commit, from: startCommit.commit, to: commit, commits: [commit] },
   });
   if ('error' in reported) throw new Error(reported.error.message);
   return { step: lease.step, branch, commit };
@@ -1846,8 +1846,8 @@ steps:
     const tip = git(alice.checkout, 'rev-parse', wrote.branch);
     expect(git(alice.checkout, 'rev-parse', `${tip}^`)).toBe(more.commit);
     expect(originRef(business, `refs/heads/${wrote.branch}`)).toBe(tip);
-    const settled = await readRun(alice.config, runId);
-    expect(typeof settled === 'object' && settled.publication).not.toHaveProperty('reconcileCopies');
+    const settledRun = await readRun(alice.config, runId);
+    expect(typeof settledRun === 'object' && settledRun.publication).not.toHaveProperty('reconcileCopies');
   });
 
   function commitLocally(dir: string): void {
@@ -1946,7 +1946,7 @@ steps:
 
   /** Removes the member's own copy of `session`, as on a machine that never ran it. */
   async function forget(cwd: string, session: string): Promise<void> {
-    const [listed] = (await getAdapter('claude-code').listConversations(cwd)).filter((meta) => meta.sessionId === session);
+    const listed = (await getAdapter('claude-code').listConversations(cwd)).find((meta) => meta.sessionId === session);
     fs.rmSync(listed?.filePath ?? '');
   }
 
@@ -2314,7 +2314,7 @@ steps:
 `;
 
   /** Writes Claude Code session `id` in `cwd` with one assistant answer per entry of `answers`, and returns the id it got. */
-  async function claudeSession(cwd: string, id: string, answers: string[]): Promise<string> {
+  async function claudeSession(cwd: string, id: string, replies: string[]): Promise<string> {
     fs.mkdirSync(path.join(os.homedir(), '.claude', 'projects'), { recursive: true });
     return getAdapter('claude-code').writeSession({
       sessionId: id,
@@ -2322,10 +2322,10 @@ steps:
       cwd,
       platform: 'claude-code',
       createdAt: '2026-10-01T10:00:00.000Z',
-      updatedAt: `2026-10-01T10:0${answers.length}:00.000Z`,
+      updatedAt: `2026-10-01T10:0${replies.length}:00.000Z`,
       messages: [
         { role: 'user', timestamp: '2026-10-01T10:00:00.000Z', content: [{ type: 'text', text: 'Review this project.' }] },
-        ...answers.map((text, index) => ({ role: 'assistant' as const, timestamp: `2026-10-01T10:0${index + 1}:00.000Z`, content: [{ type: 'text' as const, text }] })),
+        ...replies.map((text, index) => ({ role: 'assistant' as const, timestamp: `2026-10-01T10:0${index + 1}:00.000Z`, content: [{ type: 'text' as const, text }] })),
       ],
       metadata: {},
     }, cwd);
@@ -2359,7 +2359,7 @@ steps:
 
   /** Removes the member's own copy of `session`, as on a machine that never ran it. */
   async function forget(cwd: string, session: string): Promise<void> {
-    const [listed] = (await getAdapter('claude-code').listConversations(cwd)).filter((meta) => meta.sessionId === session);
+    const listed = (await getAdapter('claude-code').listConversations(cwd)).find((meta) => meta.sessionId === session);
     fs.rmSync(listed?.filePath ?? '');
   }
 
@@ -2392,12 +2392,12 @@ steps:
   });
 
   /** Runs `work` as on `member`'s own machine: its tools keep their sessions under a home of its own. */
-  async function on<T>(member: Member, work: () => Promise<T>): Promise<T> {
+  async function on<T>(member: Member, task: () => Promise<T>): Promise<T> {
     const home = path.join(path.dirname(member.checkout), 'home');
     fs.mkdirSync(path.join(home, '.claude', 'projects'), { recursive: true });
     vi.stubEnv('HOME', home);
     try {
-      return await work();
+      return await task();
     } finally {
       vi.unstubAllEnvs();
     }
@@ -2405,10 +2405,10 @@ steps:
 
   /** Adds an assistant turn saying `text` to Claude Code session `id` in `cwd`, as `claude --resume <id>` does. */
   async function addTurn(cwd: string, id: string, text: string): Promise<void> {
-    const [listed] = (await getAdapter('claude-code').listConversations(cwd)).filter((meta) => meta.sessionId === id);
+    const listed = (await getAdapter('claude-code').listConversations(cwd)).find((meta) => meta.sessionId === id);
     if (!listed?.filePath) throw new Error(`no session ${id} in ${cwd}`);
     const records = fs.readFileSync(listed.filePath, 'utf8').trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
-    const last = records.filter((record) => record.type === 'user' || record.type === 'assistant').pop();
+    const last = records.findLast((record) => record.type === 'user' || record.type === 'assistant');
     const turn = {
       parentUuid: last?.uuid ?? null, isSidechain: false, type: 'assistant', uuid: `turn-${text.length}-${Date.now()}`,
       message: { role: 'assistant', content: [{ type: 'text', text }], model: 'claude-sonnet' },

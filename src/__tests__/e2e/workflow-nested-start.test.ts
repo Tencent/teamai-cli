@@ -26,7 +26,7 @@ function fixture(prefix: string, workflows: (root: string) => Record<string, str
   /** The JSON envelope `teamai workflow <args>` printed. */
   const workflow = (args: string[], options: { cwd?: string; extra?: Record<string, string> } = {}) => {
     const { stdout, stderr } = run(process.execPath, [cli, 'workflow', ...args], options);
-    const line = stdout.trim().split('\n').filter((item) => item.startsWith('{')).at(-1);
+    const line = stdout.trim().split('\n').findLast((item) => item.startsWith('{'));
     if (line === undefined) throw new Error(`workflow ${args.join(' ')} printed no JSON envelope:\n${stdout}\n${stderr}`);
     return JSON.parse(line) as { data?: Record<string, unknown>; error?: { code: string; message: string; next?: unknown } };
   };
