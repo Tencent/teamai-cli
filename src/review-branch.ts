@@ -863,8 +863,8 @@ async function skillLinkFindings(files: SkillFile[]): Promise<Finding[]> {
   return findings;
 }
 
-/** What may precede the shell word of a stage: `sudo` with its options, `env` with options and assignments, and a directory. */
-const COMMAND_PREFIX = String.raw`^\s*(?:sudo\s+(?:-\S+(?:\s+(?!-)\S+)?\s+)*)?`
+/** What may precede the shell word of a stage: assignments, `sudo` with its options and assignments, `env` with options and assignments, and a directory. */
+const COMMAND_PREFIX = String.raw`^\s*(?:\w+=\S*\s+)*(?:sudo\s+(?:-\S+(?:\s+(?!-)\S+)?\s+)*(?:\w+=\S*\s+)*)?`
   + String.raw`(?:env\s+(?:(?:-[uCS]\s*\S+|--(?:unset|chdir|split-string)(?:=|\s+)\S+|-\S+|\w+=\S*)\s+)*)?(?:\S*\/)?`;
 // The shell word ends where the stage, a code span, a quoted string or a subshell does.
 const SHELL_STAGE = new RegExp(String.raw`${COMMAND_PREFIX}((?:ba|da|k|z)?sh|fish)(?=[\s\`'")]|$)`);
