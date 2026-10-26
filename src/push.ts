@@ -2044,6 +2044,8 @@ async function pushCore(
   }
 
   if (allItems.length === 0) {
+    // Nothing goes out, so this rejects every --carried value.
+    if (await branchGuard.stops(allItems)) return;
     // No resource changes, but the user may have edited teamai.yaml (sources /
     // publicSkills) via `teamai source add`. Push that config change on its own
     // rather than reporting "nothing to push".
