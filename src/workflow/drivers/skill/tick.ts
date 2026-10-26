@@ -87,7 +87,7 @@ async function spawnRunner(context: SkillContext, state: SkillState, attempt: At
  */
 async function sendReport(context: SkillContext, lock: RunLock, state: SkillState, attempt: AttemptId, body: ReportBody): Promise<{ state: SkillState; refused?: WorkflowFailure }> {
   await writeSkillState(context.config, lock, state, context.env.secrets);
-  const reply = reportReply(await context.client.report(state.run, body, { lock }));
+  const reply = reportReply(await context.client.report(state.run, { ...body, runMode: state.options.mode }, { lock }));
   const taken = traced(context, reportedRow(state, { attempt, reply, at: context.now().toISOString() }));
   if (!taken) return { state };
   return 'answer' in taken ? { state, refused: taken.answer.error } : { state: taken.state };

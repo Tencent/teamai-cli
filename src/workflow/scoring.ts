@@ -868,9 +868,13 @@ async function labelJudgeLease(
     switch (lease.source) {
       case 'workflow':
         return labelMembers({ config, submission, now, local, members: lease.members, labelOf: (attempt, { scorer, rubric, label, score, passed, judge, scoredAt }) => {
-          const reported = evidencePlan(lease.run, attempt.subject).passes.flatMap((judged) => judged.used ?? []);
+          const judged = evidencePlan(lease.run, attempt.subject).passes;
+          const reported = judged.flatMap((pass) => pass.used ?? []);
           const used = reported.length > 0 ? { skills: [...new Set(reported.flatMap((each) => each.skills))].sort() } : undefined;
-          return { label: { scorer, rubric, label, score, passed, source: 'workflow', subject: attempt.subject, ...(used ? { used } : {}), judge, scoredAt } };
+          // The pass's mode, or the one every pass a workflow step ran agrees on: never the judge's.
+          const modes = new Set(judged.map((pass) => pass.runMode));
+          const [runMode] = modes.size === 1 ? modes : [];
+          return { label: { scorer, rubric, label, score, passed, source: 'workflow', subject: attempt.subject, ...(used ? { used } : {}), judge, ...(runMode ? { runMode } : {}), scoredAt } };
         } });
       case 'session':
         return labelMembers({ config, submission, now, local, members: lease.members, labelOf: (attempt, verdict) => ({

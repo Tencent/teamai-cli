@@ -150,6 +150,7 @@ describe('session captures (#1178)', () => {
       platform: 'claude-code',
       sessionId: SESSION,
       capturedAt: expect.any(String),
+      runMode: 'attended',
       agent: expect.objectContaining({
         tool: { name: 'claude' },
         model: { requested: 'claude-opus-5-5' },
@@ -178,8 +179,25 @@ describe('session captures (#1178)', () => {
     await recordDelivery(config, { rev: rev.slice(0, 7), targets: ['claude'], files: [skill] });
 
     for (const by of ['workflow', 'scorer']) await SessionCaptures.atStart(config, 'claude', start(project), { TEAMAI_LAUNCHED_BY: by });
+    // A skill driver's command steps and runners carry only its attempt marker.
+    await SessionCaptures.atStart(config, 'claude', start(project), { TEAMAI_WORKFLOW_ATTEMPT: 'r0123456789abcdef/a0000000a' });
 
     expect(await SessionCaptures.read(config, 'claude-code', SESSION)).toEqual([]);
+  });
+
+  it('records the run mode each start resolved, and the session has one only while its starts agree (#1384)', async () => {
+    const { config, project, rev, skill } = checkout();
+    await recordDelivery(config, { rev: rev.slice(0, 7), targets: ['claude'], files: [skill] });
+
+    await SessionCaptures.atStart(config, 'claude', start(project), {});
+    const attended = await SessionCaptures.read(config, 'claude-code', SESSION);
+    await SessionCaptures.atStart(config, 'claude', start(project, { source: 'resume' }), { CI: 'true' });
+    const both = await SessionCaptures.read(config, 'claude-code', SESSION);
+
+    expect(attended.map((capture) => capture.runMode)).toEqual(['attended']);
+    expect(SessionCaptures.runModeOf(attended)).toBe('attended');
+    expect(both.map((capture) => capture.runMode).sort()).toEqual(['attended', 'unattended']);
+    expect(SessionCaptures.runModeOf(both)).toBeUndefined();
   });
 
   it('logs a capture it cannot write at debug level, and never throws', async () => {

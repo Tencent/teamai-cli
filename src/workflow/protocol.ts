@@ -393,7 +393,7 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
       const refused = invokeRefusal(cached?.definition, caller, { kind: 'start' });
       if (refused) return { error: refused };
       const base = checkout === undefined ? undefined : await headCommit(checkout);
-      return startRun(config, name, inputs ?? {}, { secrets: env.secrets, ...(checkout !== undefined ? { checkout } : {}), ...(base ? { base } : {}) });
+      return startRun(config, name, inputs ?? {}, { secrets: env.secrets, runMode: caller.mode, ...(checkout !== undefined ? { checkout } : {}), ...(base ? { base } : {}) });
     },
     runVersion: async (runId) => {
       const run = await readRun(config, runId);

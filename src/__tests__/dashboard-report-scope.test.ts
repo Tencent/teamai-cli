@@ -65,6 +65,7 @@ const { reportUsageToTeam } = await import('../team-push.js');
 const { reconcileHooks } = await import('../hooks.js');
 const { getDataHome } = await import('../types.js');
 const { dataHomeKey } = await import('../dashboard-collector.js');
+const { SESSION_RUN_PAYLOAD_KEY, sessionRun } = await import('../launch-context.js');
 const dataHomeKeyOf = (config: LocalConfig) => dataHomeKey(getDataHome(config));
 
 let tmp: string;
@@ -1369,5 +1370,75 @@ describe('each scope keeps its own reported snapshot (#786)', () => {
     writeSharedSnapshots({ 'rollback-p': 1 }, new Date().toISOString().slice(0, 10));
 
     expect(await report(project)).toBeNull();
+  });
+});
+
+describe('the usage report counts the member\'s own sessions, split by run mode (#1384)', () => {
+  /**
+   * One session run with `env` in its host's environment. The background passes run with none of it: they read the
+   * mode and the launcher from the payload, as the foreground dispatcher forwards them.
+   */
+  async function sessionIn(env: Record<string, string>, base: Record<string, unknown>): Promise<void> {
+    for (const [event, name] of [['session-start', 'SessionStart'], ['prompt-submit', 'UserPromptSubmit'], ['stop', 'Stop']] as const) {
+      const payload = { ...base, hook_event_name: name, ...(event === 'prompt-submit' ? { prompt: 'hello' } : {}) };
+      const stdinFile = path.join(tmp, `stdin-${Date.now()}-${Math.random()}.json`);
+      for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value);
+      fs.writeFileSync(stdinFile, JSON.stringify(payload));
+      await hookDispatchCli(event, 'claude', '*', { stdinFile });
+      const forwarded = sessionRun(process.env);
+      vi.unstubAllEnvs();
+      fs.writeFileSync(stdinFile, JSON.stringify({ ...payload, [SESSION_RUN_PAYLOAD_KEY]: forwarded }));
+      await hookDispatchCli(event, 'claude', '*', { bgOnly: true, stdinFile });
+    }
+  }
+
+  const events = () => fs.readFileSync(path.join(teamaiHome(), 'dashboard', 'events.jsonl'), 'utf-8')
+    .split('\n').filter(Boolean).map((line) => JSON.parse(line) as Record<string, unknown>);
+
+  it('a background pass records the mode and launcher its payload carries, with neither in its environment', async () => {
+    const { root } = await setup();
+    const stdinFile = path.join(tmp, 'stop.json');
+    fs.writeFileSync(stdinFile, JSON.stringify({
+      session_id: 'sid-step', cwd: root, hook_event_name: 'Stop', [SESSION_RUN_PAYLOAD_KEY]: { runMode: 'unattended', launchedBy: 'workflow' },
+    }));
+
+    await hookDispatchCli('stop', 'claude', '*', { bgOnly: true, stdinFile });
+
+    expect(events().find((event) => event.type === 'stop')).toMatchObject({ sessionId: 'sid-step', runMode: 'unattended', launchedBy: 'workflow' });
+  });
+
+  it('a session a workflow step launched adds nothing to the member\'s totals', async () => {
+    const { root, project } = await setup();
+    await sessionIn({ TEAMAI_LAUNCHED_BY: 'workflow' }, { session_id: 'sid-step', cwd: root });
+
+    expect(events().map((event) => [event.type, event.runMode, event.launchedBy])).toEqual([
+      ['session_start', 'attended', 'workflow'], ['prompt_submit', 'attended', 'workflow'], ['stop', 'attended', 'workflow'],
+    ]);
+    expect(await report(project)).toBeNull();
+  });
+
+  it('keeps the top-level counters, adds each mode\'s, and leaves what was recorded without a mode in neither', async () => {
+    const { root, project } = await setup();
+    const statsPath = path.join(path.dirname(project.repo.localPath), 'reports-wt', 'stats', 'tester.yaml');
+    fs.mkdirSync(path.dirname(statsPath), { recursive: true });
+    // Written before modes were recorded.
+    fs.writeFileSync(statsPath, YAML.stringify({
+      username: 'tester', updatedAt: '2026-01-01T00:00:00.000Z', skills: {},
+      interventions: { sessions: 5, interrupt: 1, toolReject: 0, correction: 0 }, prompts: 30,
+    }));
+    await sessionIn({}, { session_id: 'sid-attended', cwd: root });
+    await sessionIn({ CI: 'true' }, { session_id: 'sid-unattended', cwd: root });
+    await sessionIn({ TEAMAI_LAUNCHED_BY: 'workflow' }, { session_id: 'sid-step', cwd: root });
+
+    const stats = await report(project);
+
+    expect(stats).toMatchObject({
+      interventions: { sessions: 7, interrupt: 1 },
+      prompts: 32,
+      attended: { interventions: { sessions: 1, interrupt: 0 }, prompts: 1 },
+      unattended: { interventions: { sessions: 1, interrupt: 0 }, prompts: 1 },
+    });
+    // A second report adds nothing: each mode compares against the same baselines.
+    expect(await report(project)).toEqual(stats);
   });
 });

@@ -559,6 +559,21 @@ describe('doctor — hook checks', () => {
         expect(allCalls.some((msg: string) => msg.includes('claude'))).toBe(true);
     });
 
+    it.each([
+        [{ CI: 'true' }, '  ✔ Run mode: unattended (CI)'],
+        [{ TEAMAI_MODE: 'robot' }, '  ⚠ Run mode: attended (default). TEAMAI_MODE="robot" is not attended or unattended, so it is ignored.'],
+    ])('prints the run mode with %o as a row that fails nothing (#1384)', async (env, row) => {
+        for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value);
+        const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
+
+        const allPassed = await doctor({});
+
+        stderr.mockRestore();
+        vi.unstubAllEnvs();
+        expect(consoleSpy.mock.calls.map((c) => String(c[0]))).toContain(row);
+        expect(allPassed).toBe(true);
+    });
+
     it('does not assume a provider before initialization', async () => {
         mockedLoadLocalConfig.mockResolvedValue(null);
         mockedLoadTeamConfig.mockResolvedValue(null);
@@ -686,6 +701,19 @@ describe('doctor — JSON report', () => {
         await doctor({ json: true });
 
         expect(emittedReport().notes).toContain('Usage reporting: off, from HTTP mode (no team repo to report to).');
+    });
+
+    it.each([
+        [{ CI: 'true' }, { mode: 'unattended', source: 'CI' }],
+        [{ CI: 'true', TEAMAI_MODE: 'attended' }, { mode: 'attended', source: 'TEAMAI_MODE' }],
+        [{}, { mode: 'attended', source: 'default' }],
+    ])('reports the run mode %o resolves, and what set it (#1384)', async (env, runMode) => {
+        for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value);
+
+        await doctor({ json: true });
+
+        vi.unstubAllEnvs();
+        expect(emittedReport().runMode).toEqual(runMode);
     });
 
     it('emits the same envelope before initialization', async () => {

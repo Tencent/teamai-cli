@@ -5,6 +5,7 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { AgentObservationSchema, ObservedEffortSchema, ObservedModelSchema, UsedSchema } from '../agent-observation.js';
+import { RUN_MODES } from '../launch-context.js';
 import { canonicalJson } from '../utils/canonical-json.js';
 
 export const RunSubjectSchema = z.object({ runId: z.string().min(1), step: z.string().min(1), pass: z.number().int().positive() });
@@ -62,6 +63,8 @@ const LabelFields = {
   score: z.number(),
   passed: z.boolean(),
   judge: JudgeSchema,
+  /** The run mode of the subject, never of the judge: the pass's for a pass, the session's for a session. Absent when unknown. */
+  runMode: z.enum(RUN_MODES).optional(),
   scoredAt: z.string().datetime(),
 };
 
@@ -92,7 +95,7 @@ export type ScoreLabel = z.infer<typeof ScoreLabelSchema>;
  * What a session label takes from one read of the session besides the verdict: the agent it ran as when its captures
  * agree on one, the team skills it used, and its redacted first prompt, which heads the label's reasoning file.
  */
-export const SessionLabelContextSchema = SessionLabelSchema.pick({ agent: true, used: true }).required({ used: true }).extend({ prompt: z.string() });
+export const SessionLabelContextSchema = SessionLabelSchema.pick({ agent: true, used: true, runMode: true }).required({ used: true }).extend({ prompt: z.string() });
 export type SessionLabelContext = z.infer<typeof SessionLabelContextSchema>;
 
 /** The label `value` holds, or undefined when it is not one. */

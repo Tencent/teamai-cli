@@ -1,5 +1,6 @@
 /** Workflow types for the v1alpha1 local-driver subset. */
 
+import type { RunMode } from '../launch-context.js';
 import type { PinnedScorer } from '../scorers/pin.js';
 import type { DeliveryReceipt, UnresolvedCreate } from './delivery-schema.js';
 import type { ArchivedPass, LimitsFrom, ReleasedTokens, SessionContinuation, StepState, StoppedAttempt } from './step-state.js';
@@ -273,6 +274,8 @@ export interface RunState {
   sourceHash: string;
   /** Remote-reachable team commit shared by every cached workflow in this run. */
   teamRevision?: string;
+  /** The run mode `workflow start` resolved. A claim keeps it. Absent on runs started before it was recorded. */
+  runMode?: RunMode;
   definition: WorkflowDefinition;
   /** The sub-workflows the run uses, by name, as they were cached when it started. */
   workflows?: Record<string, WorkflowDefinition>;

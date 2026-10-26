@@ -103,7 +103,7 @@ Generated: do not edit by hand. Regenerate with
 
 ## doctor
 
-- `teamai doctor` — Diagnose configuration issues
+- `teamai doctor` — Diagnose configuration issues, and print the run mode (attended or unattended) and what set it: TEAMAI_MODE, CI, or the default
   - `--json` — Output the report as JSON (suitable for CI)
   - `--fix` — Remove lock files left behind by dead processes
 

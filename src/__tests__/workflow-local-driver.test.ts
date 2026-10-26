@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import * as envExec from '../env-exec.js';
+import { launchEnv, sessionRun } from '../launch-context.js';
 import { loadStateForScope, saveStateForScope } from '../config.js';
 import { checkoutRecordKey, type CheckoutRecord } from '../pull.js';
 import { getAdapter } from '../session-flow/adapters/index.js';
@@ -134,6 +135,9 @@ describe('local workflow prompt driver', () => {
     await runLocalDriver(config, runId, workspace, { adapter, toolPaths });
 
     expect(input?.env?.TEAMAI_MODE).toBe(mode);
+    // What the launched session's hook records (#1384), and the pass's own record of the mode it ran in.
+    expect(sessionRun({ ...input?.env, ...(input?.launch ? launchEnv(input.launch) : {}) })).toEqual({ runMode: mode, launchedBy: 'workflow' });
+    expect(await readRun(config, runId)).toMatchObject({ steps: [{ runMode: mode }] });
   });
 
   it('fails without a configured tool and does not invoke the adapter', async () => {

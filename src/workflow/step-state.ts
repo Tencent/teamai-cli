@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { AgentObservationSchema, UsedSchema } from '../agent-observation.js';
 import { DriverSchema } from '../driver-identity.js';
+import { RUN_MODES } from '../launch-context.js';
 import type { TokenUsage } from '../tool-launch/stdout.js';
 import { PrUrlSchema } from './pr-url.js';
 import { UnenforcedSchema } from './requirements.js';
@@ -83,6 +84,8 @@ const report = {
   installId: z.string().optional(),
   /** The best-effort requirements the attempt's driver could not enforce. */
   unenforced: z.array(UnenforcedSchema).optional(),
+  /** The run mode the attempt ran in, as its driver reported it. Absent on passes settled before it was recorded. */
+  runMode: z.enum(RUN_MODES).optional(),
 };
 
 export const OutcomeSchema = z.enum(['success', 'failed', 'timeout', 'skipped', 'cancelled']);

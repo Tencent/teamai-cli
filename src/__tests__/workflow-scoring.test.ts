@@ -763,6 +763,30 @@ steps:
   });
 });
 
+describe('the run mode of a judged pass (#1384)', () => {
+  const labelled = async (config: LocalConfig): Promise<Record<string, unknown>> => {
+    const lease = leaseOf(await nextJudgeLease(config, request()));
+    data(await submitJudgeLease(config, lease.ref, { driver: judgeDriver, outcome: 'success', answer: { label: 'good', reasoning: 'r' } }));
+    return z.object({}).passthrough().parse((await LabelStore.local(config))[0]);
+  };
+
+  it.each([
+    ['unattended', { runMode: 'unattended' }, 'unattended'],
+    ['no mode', {}, 'absent'],
+  ])('labels a pass whose driver reported %s with its mode, never the judge\'s', async (_, reported, runMode) => {
+    const config = fixture(scorer(100));
+    await settledRun(config, reported);
+
+    const label = await labelled(config);
+
+    expect('runMode' in label ? label.runMode : 'absent').toBe(runMode);
+  });
+
+  it('refuses a report whose runMode names no mode', () => {
+    expect(parseReport({ attempt: 'a1', revision: 1, outcome: 'success', driver: workDriver, runMode: 'robot' })).toBe('runMode must be attended or unattended');
+  });
+});
+
 describe('run snapshot', () => {
   it('publishes the pinned scorers by hash only, and the install and within stamps as they are', async () => {
     const config = fixture(scorer(100));

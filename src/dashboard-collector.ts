@@ -41,6 +41,7 @@ import {
 } from './types.js';
 import { getUserHome } from './utils/home.js';
 import type { HeadState } from './utils/git.js';
+import type { RunMode } from './launch-context.js';
 import { estimateClaudeRequest } from './model-pricing.js';
 
 // ─── Event collection data flow ─────────────────────────
@@ -2067,6 +2068,24 @@ function setLatestTokenSnapshot(
 }
 
 /**
+ * The events of the member's own sessions: an event a session teamai launched recorded (`launchedBy`) never counts as
+ * the member's, in either mode. A step that continued a member's session leaves the member's earlier turns theirs.
+ */
+export function memberEvents(events: DashboardEvent[]): DashboardEvent[] {
+  return events.filter((event) => !event.launchedBy);
+}
+
+/**
+ * Each session's run mode: the one its latest event that recorded one says. A session with no such event, such as one
+ * recorded before the mode was, has none, and counts as not recorded.
+ */
+export function sessionRunModes(events: DashboardEvent[]): Map<string, RunMode> {
+  const modes = new Map<string, RunMode>();
+  for (const event of events) if (event.runMode) modes.set(event.sessionId, event.runMode);
+  return modes;
+}
+
+/**
  * Aggregate per-session metrics from raw events (no timeout filtering).
  *
  * - interrupt / toolReject: taken from the latest Stop event's snapshot.
@@ -2556,6 +2575,8 @@ export async function dashboardReport(toolArg?: string): Promise<void> {
     addGitStateAtStart(event, gitStateIn(hookData)),
   ]);
   event.projectAnchor = projectAnchor;
+  const { sessionRun } = await import('./launch-context.js');
+  Object.assign(event, sessionRun(process.env));
   await appendEvent(event);
 
   // Trigger compaction check (non-blocking)

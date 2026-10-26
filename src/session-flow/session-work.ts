@@ -115,12 +115,14 @@ export function judgeSession({ platform, found, captures, mask }: {
   const models = new Set(session.messages.flatMap((message) => message.metadata?.model ?? []));
   const [reportedModel] = models.size === 1 ? models : [];
   const agent = SessionCaptures.agentOf(captures, reportedModel);
+  const runMode = SessionCaptures.runModeOf(captures);
   return {
     subject,
     body: keepEnds(mask(transcript.body), EVIDENCE_MAX_CHARS - framing),
     manifest,
     context: {
       ...(agent ? { agent } : {}),
+      ...(runMode ? { runMode } : {}),
       used: { skills: usedSkills(AgentSession.toolForPlatform(platform), found, capturedTeamSkillsAt(captures)) },
       prompt: mask(firstPrompt(session)),
     },
@@ -143,9 +145,9 @@ export async function writeSessionEvidence(dir: string, judged: JudgedSession, r
 }
 
 /** The label of a verdict on a session, with the context one read of it gave. */
-export function sessionLabel(verdict: Omit<SessionLabel, 'source' | 'subject' | 'agent' | 'used'>, subject: SessionSubject, context: SessionLabelContext): SessionLabel {
+export function sessionLabel(verdict: Omit<SessionLabel, 'source' | 'subject' | 'agent' | 'used' | 'runMode'>, subject: SessionSubject, context: SessionLabelContext): SessionLabel {
   const { scorer, rubric, label, score, passed, judge, scoredAt } = verdict;
-  return { scorer, rubric, label, score, passed, source: 'session', subject, ...(context.agent ? { agent: context.agent } : {}), used: context.used, judge, scoredAt };
+  return { scorer, rubric, label, score, passed, source: 'session', subject, ...(context.agent ? { agent: context.agent } : {}), used: context.used, judge, ...(context.runMode ? { runMode: context.runMode } : {}), scoredAt };
 }
 
 /** Nothing happened in a session for this long: it is finished, and judge work. */

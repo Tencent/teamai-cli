@@ -376,7 +376,7 @@ registerPackagesCommand(program);
 
 program
   .command('doctor')
-  .description('Diagnose configuration issues')
+  .description('Diagnose configuration issues, and print the run mode (attended or unattended) and what set it: TEAMAI_MODE, CI, or the default')
   .option('--json', 'Output the report as JSON (suitable for CI)')
   .option('--fix', 'Remove lock files left behind by dead processes')
   .action(async (cmdOpts) => {

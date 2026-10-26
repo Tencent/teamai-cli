@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { log } from './utils/logger.js';
 import { ensureDir } from './utils/fs.js';
-import { readEvents, rebuildSessions, appendEvent } from './dashboard-collector.js';
+import { readEvents, rebuildSessions, appendEvent, memberEvents, sessionRunModes } from './dashboard-collector.js';
 import { isProcessAlive } from './pid-monitor.js';
 import {
   DASHBOARD_DEFAULT_PORT,
@@ -142,6 +142,7 @@ export async function startDashboard(port?: number): Promise<void> {
         if (!session.monitorPid) continue;
 
         if (!isProcessAlive(session.monitorPid)) {
+          const run = [...events].reverse().find((e) => e.sessionId === session.sessionId && e.runMode);
           const exitEvent: DashboardEvent = {
             type: 'process_exit',
             timestamp: new Date().toISOString(),
@@ -153,6 +154,9 @@ export async function startDashboard(port?: number): Promise<void> {
             dataHomeKey: events.find((e) => e.sessionId === session.sessionId && e.dataHomeKey)?.dataHomeKey,
             // And its repo, which the cwd may no longer lead to (a removed worktree).
             projectAnchor: [...events].reverse().find((e) => e.sessionId === session.sessionId && e.projectAnchor)?.projectAnchor,
+            // And its mode and who launched it, so a step's exit stays out of the member's sessions.
+            ...(run?.runMode ? { runMode: run.runMode } : {}),
+            ...(run?.launchedBy ? { launchedBy: run.launchedBy } : {}),
           };
           await appendEvent(exitEvent);
           log.info(
@@ -346,15 +350,25 @@ export async function startDashboard(port?: number): Promise<void> {
 
     if (url.pathname === '/api/trends') {
       try {
-        const events = await scopedEvents(scopeId);
+        // The member's own sessions: a session teamai launched is not theirs.
+        const events = memberEvents(await scopedEvents(scopeId));
         const snapshots = aggregateDailySessions(events);
         const daily = computeDailyStatsDelta(snapshots, {}).delta;
         const trends = summarizeTrendWindow(daily);
         const costs = summarizeSessionCosts(snapshots);
+        // The sessions that ended in the current window, by the run mode they recorded.
+        const modes = sessionRunModes(events);
+        const ended = (keep: (sessionId: string) => boolean) =>
+          summarizeTrendWindow(computeDailyStatsDelta(new Map([...snapshots].filter(([sessionId]) => keep(sessionId))), {}).delta).current.sessionsEnded;
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           current: { ...trends.current, ...costs.current },
           previous: { ...trends.previous, ...costs.previous },
+          runModes: {
+            attended: ended((sessionId) => modes.get(sessionId) === 'attended'),
+            unattended: ended((sessionId) => modes.get(sessionId) === 'unattended'),
+            notRecorded: ended((sessionId) => !modes.has(sessionId)),
+          },
         }));
       } catch (e) {
         res.writeHead(500, { 'Content-Type': 'application/json' });

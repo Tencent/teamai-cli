@@ -464,6 +464,9 @@ const dashboardReportHandler: HookHandler = {
         addGitStateAtStart(event, gitStateIn(stdin)),
       ]);
       event.projectAnchor = projectAnchor;
+      // The foreground dispatcher's, so a background pass records what the session's own environment said.
+      const { readSessionRun } = await import('./launch-context.js');
+      Object.assign(event, readSessionRun(stdin));
       await appendEvent(event);
       // Non-blocking compaction
       compactEvents().catch(() => {});

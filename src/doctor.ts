@@ -2,6 +2,7 @@ import { hookSettingsPath, hookToolPathsForConfig } from './types.js';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { detectProjectConfig, loadLocalConfig, loadTeamConfig } from './config.js';
+import { explainRunMode, type ExplainedRunMode } from './launch-context.js';
 import { readWorkspaceChildren } from './workspace-children.js';
 import { pathExists, readFileSafe } from './utils/fs.js';
 import { getUserHome } from './utils/home.js';
@@ -153,6 +154,8 @@ export interface DoctorReport {
   ok: boolean;
   /** null before initialization, when there is no config to scope. */
   scope: string | null;
+  /** The run mode this process resolves, and its source. Absent before initialization. */
+  runMode?: ExplainedRunMode;
   checks: CheckResult[];
   /** Present only when the team repo declares packages. Human text, not checks. */
   packages?: { ok: boolean; lines: string[] };
@@ -887,6 +890,13 @@ export function formatCheckResult({ name, ok, fix }: CheckResult): string[] {
   return fix ? [`  ✖ ${name}`, `    → ${fix}`] : [`  ✖ ${name}`];
 }
 
+/** The run mode row: the mode and its source, with a warning when TEAMAI_MODE held a value it ignored. */
+export function formatRunMode({ mode, source, ignored }: ExplainedRunMode): string {
+  return ignored === undefined
+    ? `  ✔ Run mode: ${mode} (${source})`
+    : `  ⚠ Run mode: ${mode} (${source}). TEAMAI_MODE="${ignored}" is not attended or unattended, so it is ignored.`;
+}
+
 function renderResult(result: CheckResult): void {
   for (const line of formatCheckResult(result)) console.log(line);
 }
@@ -918,9 +928,12 @@ export async function doctor(options: DoctorOptions): Promise<boolean> {
 
   const { localConfig } = ctx;
   const scope = localConfig.scope ?? 'user';
+  // Information, not a check: an unknown TEAMAI_MODE fails nothing.
+  const runMode = explainRunMode(process.env);
   if (!jsonMode) {
     const scopeLabel = `${installScopeName(scope)}${scope === 'project' && localConfig.projectRoot ? ` (${localConfig.projectRoot})` : ''}`;
     console.log(`  Scope: ${scopeLabel}\n`);
+    console.log(formatRunMode(runMode));
   }
 
   // --fix runs before the checks, so the report reflects the post-cleanup state.
@@ -984,6 +997,7 @@ export async function doctor(options: DoctorOptions): Promise<boolean> {
     emitReport({
       ok: allPassed,
       scope,
+      runMode,
       checks: results,
       // pkgDoctorReport renders its own lines; they are human text, not checks.
       ...(packageReport ? { packages: { ok: packageReport.allPassed, lines: packageReport.lines } } : {}),

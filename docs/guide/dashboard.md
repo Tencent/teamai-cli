@@ -41,6 +41,8 @@ New prompts pick this up after the next `pull`. What reaches the team is the cou
 
 A session row shows how many prompts were sent and how many tokens were used. A tool that does not report usage shows 0 tokens.
 
+The 7-day trends count only your own sessions: a session teamai launched, such as a workflow step, is left out. Below them, the sessions that ended in the last 7 days are split by [run mode](workflow.md#attended-and-unattended-runs): attended, unattended, and `not recorded` for sessions recorded before modes were. See [Usage reporting](reporting.md#your-sessions-by-run-mode).
+
 ## Session Save
 
 ```bash

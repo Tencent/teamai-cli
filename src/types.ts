@@ -7,6 +7,7 @@ import { log } from './utils/logger.js';
 import { realHost, toolHome } from './tool-home.js';
 import type { WorkspaceChildren } from './workspace-children.js';
 import type { HeadState } from './utils/git.js';
+import type { RunMode } from './launch-context.js';
 import { AllowSchema } from './workflow/requirements.js';
 
 const COPILOT_USER_MCP_CONFIG = 'mcp-config.json';
@@ -1786,7 +1787,17 @@ export interface UserStats {
    * record files under workflows/runs/ carry the per-run allowlist.
    */
   workflows?: { runs: number; succeeded: number; failed: number; totalDurationMs: number };
+  /**
+   * The part of `interventions`, `prompts`, `tokens` and `daily` recorded in each run mode. Those top-level counters
+   * keep every count of the member's own sessions, so what neither holds was not recorded with a mode: counts from
+   * before modes were recorded, and events without one. Sessions teamai launched count in none of them.
+   */
+  attended?: UserModeStats;
+  unattended?: UserModeStats;
 }
+
+/** The counters of {@link UserStats} one run mode holds. */
+export type UserModeStats = Pick<UserStats, 'interventions' | 'prompts' | 'tokens' | 'daily'>;
 
 /** Aggregated, privacy-preserving activity for one UTC day. */
 export interface DailyUserStats {
@@ -1938,6 +1949,16 @@ export interface DashboardEvent {
    * attribution then uses the session's last anchor, else `cwd`.
    */
   projectAnchor?: string;
+  /**
+   * The run mode the session's hook resolved. Absent on events written before it was recorded, which count in neither
+   * mode. See `SessionRun` in launch-context.ts.
+   */
+  runMode?: RunMode;
+  /**
+   * Who launched the session when teamai did, such as `workflow` for a step. Such an event never counts as the member's:
+   * not in sessions, interventions, prompts or tokens.
+   */
+  launchedBy?: string;
   /** First user prompt (captured from UserPromptSubmit) */
   promptSummary?: string;
   /**

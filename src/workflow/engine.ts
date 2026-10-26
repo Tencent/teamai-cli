@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { parseReportedAgent, parseReportedUsed, settleObservation, type ReportedAgent, type Used } from '../agent-observation.js';
 import { DriverSchema, sameDriver } from '../driver-identity.js';
+import { RUN_MODES, type RunMode } from '../launch-context.js';
 import { log } from '../utils/logger.js';
 import type { LocalConfig } from '../types.js';
 import { loadCachedWorkflow, loadWorkflowTree } from './cache.js';
@@ -87,6 +88,8 @@ export interface ReportInput {
   used?: Used;
   /** What the attempt's driver learned, once it ran the step, that it did not enforce. */
   unenforced?: ReportedUnenforced;
+  /** The run mode the driver ran the attempt in, the one it exported to the attempt's processes. */
+  runMode?: RunMode;
 }
 
 /** A protocol rejection that retains its actionable code and message. */
@@ -875,7 +878,7 @@ export async function startRun(
   config: LocalConfig,
   name: string,
   inputs: unknown,
-  { secrets, ...options }: { secrets: Record<string, string>; driver?: DriverIdentity; base?: RunState['base']; checkout?: string },
+  { secrets, ...options }: { secrets: Record<string, string>; runMode?: RunMode; driver?: DriverIdentity; base?: RunState['base']; checkout?: string },
 ): Promise<WorkflowEnvelope> {
   const cached = await loadCachedWorkflow(config, name);
   if (!cached) {
@@ -904,6 +907,7 @@ export async function startRun(
     ...(cached.definition.inputs ? { inputs: inputs as Record<string, unknown> } : {}),
     sourceHash: tree.sourceHash,
     ...(tree.teamRevision ? { teamRevision: tree.teamRevision } : {}),
+    ...(options.runMode ? { runMode: options.runMode } : {}),
     definition: cached.definition,
     ...(Object.keys(tree.workflows).length > 0 ? { workflows: tree.workflows } : {}),
     ...(Object.keys(scorers).length > 0 ? { scorers } : {}),
@@ -1264,7 +1268,7 @@ const NEXT_PAYLOAD_FIELDS = new Set(['driver', 'running', 'canTakeLease', 'base'
 /** The top-level payload fields `parseReport` reads. Keep in sync with the fields it picks. */
 const REPORT_FIELDS = new Set([
   'attempt', 'revision', 'outcome', 'driver', 'outputs', 'exitCode', 'message', 'tool', 'model', 'session', 'resumed', 'tokens', 'failure', 'changes', 'read', 'agent', 'used',
-  'unenforced',
+  'unenforced', 'runMode',
 ]);
 
 /**
@@ -1388,6 +1392,11 @@ export function parseReport(value: unknown): ParsedReport | string {
     const unenforced = ReportedUnenforcedSchema.safeParse(record.unenforced);
     if (!unenforced.success) return 'unenforced must list the requirements the driver did not enforce: max_turns';
     report.unenforced = unenforced.data;
+  }
+  if (record.runMode !== undefined) {
+    const runMode = RUN_MODES.find((mode) => mode === record.runMode);
+    if (!runMode) return 'runMode must be attended or unattended';
+    report.runMode = runMode;
   }
   const ignored = unreadFields(record, REPORT_FIELDS);
   if (isRecord(record.changes)) {
@@ -1693,6 +1702,7 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
       agent: settleObservation(report, defined?.agent),
       ...(report.used ? { used: report.used } : {}),
       ...(unenforced.length > 0 ? { unenforced } : {}),
+      ...(report.runMode ? { runMode: report.runMode } : {}),
       installId: install.id,
     };
     if (outcome !== 'released') continueSession(run, report);

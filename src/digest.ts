@@ -7,7 +7,7 @@ import { parseLearningDoc, titleFromFilename } from './utils/search-index.js';
 import { requireInit, detectProjectConfig } from './config.js';
 import { calculateTeamHealth } from './skill-health.js';
 import { createGit } from './utils/git.js';
-import type { UserStats, TokenUsage } from './types.js';
+import type { UserStats, UserModeStats, TokenUsage } from './types.js';
 import { totalTokens } from './types.js';
 import { mergeDailyStats, summarizeTrendWindow, type TrendPeriod } from './session-trends.js';
 
@@ -318,6 +318,33 @@ export function summarizeInterventions(teamStats: UserStats[]): InterventionSumm
   };
 }
 
+/** A team total split by the run mode it was recorded in; `notRecorded` is the rest, recorded without one. */
+export interface RunModeSplit {
+  attended: number;
+  unattended: number;
+  notRecorded: number;
+}
+
+/**
+ * The team's `count` split by run mode. A member's top-level counter holds every count of their own sessions, and what
+ * neither mode holds was recorded without one, so it is shown apart, never as a mode.
+ */
+export function splitByRunMode(teamStats: UserStats[], count: (stats: UserModeStats | undefined) => number): RunModeSplit {
+  const split: RunModeSplit = { attended: 0, unattended: 0, notRecorded: 0 };
+  for (const user of teamStats) {
+    const attended = count(user.attended);
+    const unattended = count(user.unattended);
+    split.attended += attended;
+    split.unattended += unattended;
+    split.notRecorded += Math.max(0, count(user) - attended - unattended);
+  }
+  return split;
+}
+
+function formatRunModeSplit(split: RunModeSplit, unit: string): string {
+  return `  By run mode: attended ${split.attended} · unattended ${split.unattended} · not recorded ${split.notRecorded} ${unit}`;
+}
+
 /** Aggregated team-wide conversation-turn + token-usage summary (Issue #75). */
 export interface ConversationSummary {
   /** Total human conversation turns (UserPromptSubmit) across the team. */
@@ -560,6 +587,7 @@ export async function generateDigest(): Promise<void> {
       console.log(
         `  Breakdown: interrupt ${interventions.interrupt} · reject ${interventions.toolReject} · correction ${interventions.correction}`,
       );
+      console.log(formatRunModeSplit(splitByRunMode(teamStats, (stats) => stats?.interventions?.sessions ?? 0), 'sessions'));
       console.log('');
     }
 
@@ -569,6 +597,7 @@ export async function generateDigest(): Promise<void> {
       const t = conversation.tokens;
       console.log('💬 Lifetime Conversation & Token Usage:');
       console.log(`  Lifetime human prompts: ${conversation.totalPrompts}`);
+      console.log(formatRunModeSplit(splitByRunMode(teamStats, (stats) => stats?.prompts ?? 0), 'prompts'));
       console.log(
         `  Lifetime tokens: ${formatTokenCount(conversation.totalTokens)} ` +
         `(input ${formatTokenCount(t.input)} · output ${formatTokenCount(t.output)} · ` +
