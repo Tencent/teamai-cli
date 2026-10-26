@@ -667,7 +667,9 @@ function withoutCode(markdown: string): string {
       }
       inCode = false;
       const isQuoted = BLOCKQUOTE.test(line);
-      if (BLOCK_START.test(line) || (isQuoted && !previousQuoted)) startBlock();
+      // Inside a blockquote, a blank quoted line or a quoted heading or list item starts a block too.
+      const quoted = isQuoted ? line.replace(/^(?: {0,3}> ?)+/, '') : line;
+      if (BLOCK_START.test(quoted) || quoted.trim() === '' || (isQuoted && !previousQuoted)) startBlock();
       previousQuoted = isQuoted;
       keep(line);
       if (/^ {0,3}#{1,6}(?:[ \t]|$)/.test(line)) startBlock();
@@ -819,10 +821,11 @@ const COMMAND_PREFIX = String.raw`^\s*(?:sudo\s+(?:-\S+(?:\s+(?!-)\S+)?\s+)*)?(?
 const SHELL_STAGE = new RegExp(String.raw`${COMMAND_PREFIX}((?:ba|da|k|z)?sh|fish)(?=[\s\`'")]|$)`);
 
 /** The `curl` or `wget` a stage runs: a whole word, as a command or in prose, but not text `echo` or `printf` prints. */
-function downloaderOf(stage: string): { word: string; argsAt: number } | undefined {
+function downloaderOf(stage: string): { word: 'curl' | 'wget'; argsAt: number } | undefined {
   const found = /(?<![\w.-])(curl|wget)(?=\s|$)/.exec(stage);
-  if (!found?.[1] || /\b(?:echo|printf)\s+['"]?$/.test(stage.slice(0, found.index))) return undefined;
-  return { word: found[1], argsAt: found.index + found[1].length };
+  const word = found?.[1];
+  if (!found || (word !== 'curl' && word !== 'wget') || /\b(?:echo|printf)\s+['"]?$/.test(stage.slice(0, found.index))) return undefined;
+  return { word, argsAt: found.index + word.length };
 }
 
 /** The words of a command, a quoted word unquoted. */
@@ -830,39 +833,53 @@ function commandWords(command: string): string[] {
   return (command.match(/"(?:[^"\\]|\\.)*"|'[^']*'|\S+/g) ?? []).map((word) => word.replace(/^(["'])([\s\S]*)\1$/, '$2'));
 }
 
+/** Short options that take a value, attached or as the next word; the rest of a bundle after one is that value. */
+const SHORT_OPTIONS_WITH_VALUE: Record<'curl' | 'wget', ReadonlySet<string>> = {
+  curl: new Set('AbcCdDeEFhHKmoPQrtTuUwxXyYz'),
+  wget: new Set('aABDeiIlLoOPQRtTUwX'),
+};
+/** curl long options whose value is a URL that is not a download. */
+const CURL_URL_VALUED_OPTION = /^--(?:proxy|preproxy|referer|doh-url)$/;
+
 /**
  * Whether the `curl` or `wget` whose arguments are `args` writes a download to
  * standard output rather than to a file. curl writes each URL to stdout unless an
  * output option (`-o FILE`, `-O`, `--output FILE`, `--remote-name`) is paired with
  * it; wget writes to stdout only with `-O -`.
  */
-function writesToStdout(downloader: string, args: string): boolean {
+function writesToStdout(downloader: 'curl' | 'wget', args: string): boolean {
   const words = commandWords(args);
+  const withValue = SHORT_OPTIONS_WITH_VALUE[downloader];
   let urls = 0;
   let savedOutputs = 0;
   for (let index = 0; index < words.length; index++) {
     const word = words[index] ?? '';
     const valueOf = (attached: string): string => (attached !== '' ? attached : words[++index] ?? '');
+    if (/^-[^-]/.test(word)) {
+      for (let at = 1; at < word.length; at++) {
+        const letter = word.charAt(at);
+        if (downloader === 'curl' && letter === 'O') savedOutputs++;
+        if (!withValue.has(letter)) continue;
+        const value = valueOf(word.slice(at + 1));
+        if (downloader === 'wget' && letter === 'O' && value === '-') return true;
+        if (downloader === 'curl' && letter === 'o' && value !== '-') savedOutputs++;
+        break;
+      }
+      continue;
+    }
     if (downloader === 'wget') {
-      const short = /^-[a-zA-Z]*O(.*)$/.exec(word);
       const long = /^--output-document(?:=(.*))?$/.exec(word);
-      if ((short && valueOf(short[1] ?? '') === '-') || (long && valueOf(long[1] ?? '') === '-')) return true;
+      if (long && valueOf(long[1] ?? '') === '-') return true;
       continue;
     }
     if (word === '--remote-name-all') return false;
     if (word === '--remote-name') savedOutputs++;
     const long = /^--output(?:=(.*))?$/.exec(word);
     if (long && valueOf(long[1] ?? '') !== '-') savedOutputs++;
-    const short = /^-([a-zA-Z]+)(.*)$/.exec(word);
-    if (short && !word.startsWith('--')) {
-      const letters = short[1] ?? '';
-      if (letters.includes('O')) savedOutputs++;
-      const o = letters.indexOf('o');
-      if (o >= 0 && valueOf(letters.slice(o + 1) + (short[2] ?? '')) !== '-') savedOutputs++;
-    }
+    if (CURL_URL_VALUED_OPTION.test(word)) index++;
     if (/^[a-z][a-z0-9+.-]*:\/\//i.test(word)) urls++;
   }
-  return downloader !== 'wget' && Math.max(urls, 1) > savedOutputs;
+  return downloader === 'curl' && Math.max(urls, 1) > savedOutputs;
 }
 
 /**
