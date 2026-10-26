@@ -1,56 +1,64 @@
-# TeamAI MR Knowledge Extract — GitLab CI（git.guazi-corp.com 等自建 GitLab，API v4）
+# TeamAI MR Knowledge Extract — GitLab CI (self-hosted instances such as
+# git.guazi-corp.com, API v4)
 #
-# MR 创建/更新时自动提炼知识并以 comment 贴到 MR 上；
-# MR 合入默认分支后自动把 learning 和 teamwiki/ 图谱写入团队知识仓库。
+# Extracts knowledge as an MR comment when the MR is created or updated, and
+# writes the learning plus the teamwiki/ graph to the team knowledge repo once
+# the MR lands on the default branch.
 #
-# 使用前请配置：
-#   1. 本文件放入业务仓根目录 .gitlab-ci.yml（或 include 引入）。
-#      触发点必须在业务仓：只有业务仓自己的 pipeline 能收到 merge_request_event，
-#      团队知识仓的 CI 无法订阅其它项目的 MR 事件。
-#   2. Settings → CI/CD → Variables（勾选 Masked）：
-#        GITLAB_TOKEN           GitLab Personal Access Token（api 权限），
-#                               对团队知识仓库有 push 权限
-#        ANTHROPIC_AUTH_TOKEN   AI 认证 Token（callClaude 会 spawn 本地 AI CLI，必须）
-#   3. 普通 Variables：
-#        TEAMAI_KNOWLEDGE_REPO    团队知识仓库路径（如 wangchongfei/c2-teamai-test）
-#        TEAMAI_KNOWLEDGE_BRANCH  团队知识仓库分支（如 main）
-#        ANTHROPIC_BASE_URL       AI 网关地址（走内网网关时必填）
-#   4. teamai-cli 版本需包含 GitLab CI 支持（ci extract-mr 的 GitLab 平台适配）。
-#      内网无公网 npm 时：npm install -g --registry=http://npm.guazi-corp.com teamai-cli
+# Before use:
+#   1. Put this file at the business repo root as .gitlab-ci.yml (or include it).
+#      The trigger must live in the business repo: only its own pipeline
+#      receives merge_request_event; the team knowledge repo's CI cannot
+#      subscribe to another project's MR events.
+#   2. Settings → CI/CD → Variables (mark as Masked):
+#        GITLAB_TOKEN           GitLab Personal Access Token (api scope) with
+#                               push access to the team knowledge repo
+#        ANTHROPIC_AUTH_TOKEN   AI auth token (callClaude spawns a local AI
+#                               CLI, so it is required)
+#   3. Plain variables:
+#        TEAMAI_KNOWLEDGE_REPO    team knowledge repo path (e.g. wangchongfei/c2-teamai-test)
+#        TEAMAI_KNOWLEDGE_BRANCH  team knowledge repo branch (e.g. main)
+#        ANTHROPIC_BASE_URL       AI gateway URL (required behind an internal gateway)
+#   4. The teamai-cli version must include GitLab CI support (the GitLab
+#      platform adapter for ci extract-mr). Without public npm access:
+#      npm install -g --registry=http://npm.guazi-corp.com teamai-cli
 
 stages:
   - teamai-extract
   - teamai-write
 
-# ── MR 创建/更新时：提炼知识并以 comment 形式展示 ──────────
+# ── MR created/updated: extract knowledge and post it as a comment ──────────
 teamai-extract-comment:
   stage: teamai-extract
   image: node:22
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_EVENT_TYPE != "merged_result"'
-  # timeout 必须是字面量时长（GitLab 不展开 CI/CD 变量）
+  # timeout must be a literal duration (GitLab does not expand CI/CD variables here)
   timeout: 20m
   variables:
-    # 自建 GitLab 必须：CLI 只向配置过的实例发 PAT（默认 gitlab.com 会拒绝本实例 MR）
+    # Required for self-hosted GitLab: the CLI only sends the PAT to the
+    # configured instance (gitlab.com by default, which refuses this MR).
     GITLAB_URL: $CI_SERVER_URL
   script:
     - npm install -g teamai-cli @anthropic-ai/claude-code
     - |
       MR_URL="${CI_MERGE_REQUEST_PROJECT_URL}/-/merge_requests/${CI_MERGE_REQUEST_IID}"
       echo "=== [TeamAI] MR_URL=$MR_URL ==="
-      # comment 模式仅通过 REST 拉取 MR 并回帖，无需克隆任何仓库。
-      # --individual-comments：每条建议独立成评，reviewer 点 👎 emoji 可拒绝写入。
+      # comment mode only fetches the MR over REST and replies; no repo clone.
+      # --individual-comments: one comment per suggestion, so a reviewer can
+      # reject a suggestion with a 👎 emoji.
       teamai ci extract-mr --url "$MR_URL" --mode comment --individual-comments
 
-# ── MR 合入默认分支后：将知识写入团队知识仓库 ─────────────
-# GitLab 没有 "MR merged" 原生 CI 触发器：合入表现为默认分支的一次 push，
-# 因此在默认分支 push pipeline 里按 merge/squash commit 反查对应 MR。
+# ── MR landed on the default branch: write knowledge to the team repo ───────
+# GitLab has no native "MR merged" CI trigger: a merge shows up as a push to
+# the default branch, so the write stage looks the MR up by its merge/squash
+# commit in the default-branch push pipeline.
 teamai-post-merge-write:
   stage: teamai-write
   image: node:22
   rules:
     - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
-  # timeout 必须是字面量时长（GitLab 不展开 CI/CD 变量）
+  # timeout must be a literal duration (GitLab does not expand CI/CD variables here)
   timeout: 20m
   variables:
     GITLAB_URL: $CI_SERVER_URL
@@ -58,11 +66,12 @@ teamai-post-merge-write:
     - npm install -g teamai-cli @anthropic-ai/claude-code
     - |
       echo "=== [TeamAI] Looking up the MR merged by ${CI_COMMIT_SHA} ==="
-      # 用 CI_PROJECT_PATH（带命名空间的完整路径）并 URL 编码：
-      # CI_PROJECT_ID 数字 id 在部分自建实例上会取到别的项目的数据。
+      # Address the project by its URL-encoded path (CI_PROJECT_PATH), the same
+      # way the CLI does. A numeric project id resolved to unexpected data on
+      # the instance used for testing (captured responses in the PR body).
       CI_PROJECT_ENC=$(printf '%s' "${CI_PROJECT_PATH}" | node -e 'let d="";process.stdin.on("data",(c)=>(d+=c)).on("end",()=>process.stdout.write(encodeURIComponent(d.trim())))')
-      # 分页查找：延迟触发的 push pipeline，其 MR 可能排在最新 20 条之外。
-      # 按 updated_at 倒序翻页，找到即停。
+      # Page through the merged MRs: a delayed push pipeline may find its MR
+      # outside the most recently updated ones. Stop at the first match.
       MR_URL=""
       for PAGE in 1 2 3 4 5; do
         MR_JSON=$(curl -sf -H "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
@@ -76,7 +85,7 @@ teamai-post-merge-write:
             process.stdout.write(mr ? mr.web_url : "");
           });')
         [ -n "$MR_URL" ] && break
-        # 该页没有更多结果时提前结束
+        # Stop early once a page comes back empty
         [ "$(printf '%s' "$MR_JSON" | node -e 'let d="";process.stdin.on("data",(c)=>(d+=c)).on("end",()=>process.stdout.write(String(JSON.parse(d).length)))')" = "0" ] && break
       done
       if [ -z "$MR_URL" ]; then
@@ -84,10 +93,12 @@ teamai-post-merge-write:
         exit 0
       fi
       echo "=== [TeamAI] Writing knowledge for $MR_URL ==="
-      # 团队知识仓库克隆到源码 checkout 之外：克隆在 checkout 内会被当成源码提取，
-      # CLI 会跳过 teamwiki/ 更新，只写 learning。
-      # clone URL 由 CI_SERVER_URL 拼装（保留 scheme/端口/相对根路径）：
-      # CI_SERVER_HOST 不含协议与路径，自建实例（如 https://host:8443/gitlab）会拼错。
+      # Clone the team knowledge repo outside the source checkout: a clone inside
+      # it is treated as source, so the CLI skips the teamwiki/ update and only
+      # writes the learning.
+      # The clone URL is assembled from CI_SERVER_URL (keeps scheme, port and
+      # relative root): CI_SERVER_HOST has neither the scheme nor the path, so
+      # an instance at https://host:8443/gitlab would be built wrong.
       TEAM_REPO_DIR=/tmp/teamai-team-repo
       CI_BASE="${CI_SERVER_URL%/}"
       CI_SCHEME="${CI_BASE%%://*}"
@@ -100,10 +111,12 @@ teamai-post-merge-write:
       git clone --branch "${TEAMAI_KNOWLEDGE_BRANCH}" \
         "${CI_SCHEME}://oauth2:${GITLAB_TOKEN}@${CI_HOST}${CI_ROOT}/${TEAMAI_KNOWLEDGE_REPO}.git" \
         "$TEAM_REPO_DIR"
-      # 在合入后的源码 checkout（GitLab 已自动 clone 到 CI_PROJECT_DIR）中运行：
-      # teamwiki/ 走 `teamai import --dir . --incremental` 的同一流程，
-      # 写入 teamwiki/evidence/code/gitlab__<group>__<repo>/。
-      # --write-mode direct：CLI 自行 commit 并 push，git 身份由 GITLAB_TOKEN
-      # 对应账号（REST /user）推导，无需手动 git config/commit/push。
+      # Runs in the merged source checkout (GitLab already cloned it to
+      # CI_PROJECT_DIR): teamwiki/ follows the same flow as
+      # `teamai import --dir . --incremental`, writing to
+      # teamwiki/evidence/code/gitlab__<group>__<repo>/.
+      # --write-mode direct: the CLI commits and pushes itself, deriving the
+      # git identity from the GITLAB_TOKEN account (REST /user), so no manual
+      # git config/commit/push is needed.
       teamai ci extract-mr --url "$MR_URL" --mode write --individual-comments \
         --team-repo "$TEAM_REPO_DIR" --write-mode direct
