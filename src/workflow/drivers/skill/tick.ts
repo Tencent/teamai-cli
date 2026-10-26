@@ -211,7 +211,7 @@ async function stepTick(context: SkillContext, lock: RunLock, start: SkillState,
     const answer = await context.client.next(state.run, body);
     const at = context.now().toISOString();
     const { reply, cancelled } = engineReply(state.run, answer);
-    const sameEnd = reply.kind === 'done' && state.done !== undefined && canonicalJson(endOf(reply)) === canonicalJson(endOf(state.done));
+    const sameEnd = reply.kind === 'done' && reply.out && state.done !== undefined && canonicalJson(endOf(reply)) === canonicalJson(endOf(state.done));
     state = traced(context, reopenedRow(state, { reply, sameEnd }))?.state ?? state;
     for (const attempt of cancelled) state = traced(context, cancelledRow(state, { attempt, at }))?.state ?? state;
     state = traced(context, gateCheckRow(state, reply))?.state ?? state;
@@ -234,8 +234,9 @@ async function stepTick(context: SkillContext, lock: RunLock, start: SkillState,
       }
     }
     const leased = reply.kind === 'lease';
-    // A cancel in this reply gave up an attempt that waited, so a slot the request had no room for is free now.
-    const freed = !request.canTakeLease && role === 'call' && hasSlot(state);
+    // A cancel in this reply gave up an attempt that waited, so a slot the request had no room for is free now. A run
+    // that ended has no step left to fill it.
+    const freed = !request.canTakeLease && role === 'call' && !state.done && hasSlot(state);
     if (!freed && (!leased || (!hasSlot(state) && (state.gate === undefined || probed)))) {
       return { state, spawned, ...(replied.waiting ? { waiting: replied.waiting } : {}), ...(replied.turn ? { turn: replied.turn } : {}) };
     }

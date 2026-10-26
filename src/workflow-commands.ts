@@ -286,12 +286,12 @@ const JsonReportOptionsSchema = z.object({
   json: z.string().optional(),
 });
 
-/** Answers the first issue of a `--json` driver's flags, as `invalid_arguments`. */
 /** The refusal of a `--driver` that is neither `local` nor `skill`. */
 function unsupportedDriver(driver: string): WorkflowFailure {
   return { code: 'unsupported_driver', message: `Driver "${driver}" is not available. Use --driver local or --driver skill.` };
 }
 
+/** Answers the first issue of a `--json` driver's flags, as `invalid_arguments`. */
 function refuseOptions(error: z.ZodError): void {
   writeEnvelope({ error: { code: 'invalid_arguments', message: error.issues[0]?.message ?? 'invalid options' } }, collectEnvSecrets());
 }

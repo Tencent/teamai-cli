@@ -36,7 +36,7 @@ const NextDataSchema = z.object({
   wait: z.object({
     reason: z.string(), delivering: z.array(z.string()).optional(), held: z.array(z.object({ step: z.string(), missing: z.array(z.string()) })).optional(),
   }).optional(),
-  done: z.object({ outcome: z.enum(['succeeded', 'failed', 'cancelled']), failure: FailureSchema.optional(), prs: z.array(z.string()).optional() }).optional(),
+  done: z.object({ outcome: z.enum(['succeeded', 'failed', 'cancelled']), failure: FailureSchema.optional(), prs: z.array(z.string()).optional(), notPublished: z.object({ code: z.string() }).optional() }).optional(),
 });
 
 /** The engine's answer to `next`, and the attempts it no longer leases to this driver. */
@@ -47,7 +47,7 @@ export function engineReply(run: RunId, answer: WorkflowEnvelope): { reply: Engi
     return { reply: { kind: 'error', error: { code: 'run_unreadable', message: `Run ${run} answered next with a reply this teamai cannot read: ${data.error.issues[0]?.message ?? 'invalid'}. Update teamai.` } }, cancelled: [] };
   }
   const { done, lease, hitl, wait, cancelled = [] } = data.data;
-  if (done) return { reply: { kind: 'done', outcome: done.outcome, ...(done.failure ? { failure: done.failure } : {}), prs: done.prs ?? [] }, cancelled };
+  if (done) return { reply: { kind: 'done', outcome: done.outcome, ...(done.failure ? { failure: done.failure } : {}), prs: done.prs ?? [], out: done.notPublished === undefined || done.notPublished.code === 'not_owner' }, cancelled };
   if (hitl) {
     const { step: id, pass, kind, message, options, default: chosen, required } = hitl;
     return { reply: { kind: 'hitl', gate: { step: id, pass, kind, message, options, ...(chosen !== undefined ? { default: chosen } : {}), required } }, cancelled };

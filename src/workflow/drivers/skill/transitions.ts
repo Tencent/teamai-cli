@@ -37,7 +37,7 @@ export const TRANSITIONS = [
   { id: 'R9', state: 'none', input: 'start `--driver skill`', guard: '`checkStartAnswers` answers `confirm-needed`', effects: 'none', next: 'none', action: 'error `confirm_needed`, next: the describe literal' },
   { id: 'R10', state: 'none', input: 'start `--driver skill`', guard: '`checkStartAnswers` answers `ok`', effects: '`WorkflowClient.start`; write skill.json: identity `{skill, machine, run checkout}`, invocation, options (`--parallel`, the HITL mode, the caller\'s run mode), host `pending` when the definition has a prompt step, owner := the caller\'s session; judging on with the session tool when describe judges here and the start has no `--no-judge`', next: 'host when it has a prompt step, else drive', action: 'the turn of a tick' },
   { id: 'R11', state: 'none', input: 'next, report `--driver skill`', guard: 'this machine has no skill.json for the run', effects: 'none', next: 'none', action: 'error `not_skill_run`, next: the `resume <run> --driver skill` literal' },
-  { id: 'R19', state: 'any', input: 'resume `--driver skill`; `next --takeover` with no skill.json here', guard: '`WorkflowClient.resume` readied the run: it took a run this machine lacks, or with `--claim` one another install owns, or found the run here and this install its owner, and released each lease this machine\'s local driver left on it, once the process group that lease\'s setup or command left is stopped; no skill.json is kept here, or the claim installed the published state; R8 and R24 do not apply', effects: 'write skill.json as R10 does, with the caller\'s run mode and the options of `--parallel`, `--hitl` or `--auto-approve` and `--no-judge`, else a start\'s: one step at a time, HITL mode `person`, or `auto-approve` in an unattended run', next: 'host when the run has a prompt step, else drive', action: 'the turn of a tick' },
+  { id: 'R19', state: 'any', input: 'resume `--driver skill`; `next --takeover` with no skill.json here', guard: '`WorkflowClient.resume` readied the run: it took a run this machine lacks, or with `--claim` one another install owns, or found the run here and this install its owner, and released each lease this machine\'s local driver left on it, once the process group that lease\'s setup or command left is stopped, and stopped the group each attempt of that driver the run already stopped left; no skill.json is kept here, or the claim installed the published state; R8 and R24 do not apply', effects: 'write skill.json as R10 does, with the caller\'s run mode and the options of `--parallel`, `--hitl` or `--auto-approve` and `--no-judge`, else a start\'s: one step at a time, HITL mode `person`, or `auto-approve` in an unattended run', next: 'host when the run has a prompt step, else drive', action: 'the turn of a tick' },
   { id: 'R20', state: 'any', input: 'R19\'s input', guard: '`WorkflowClient.resume` answers that another install owns the run (a resume without `--claim`, or a takeover), or that this machine lacks it (a takeover)', effects: 'none', next: 'unchanged', action: 'error `not_owner` or `run_not_found`, next: the `resume <run> --driver skill --claim` literal, run only when the person agrees' },
   { id: 'R21', state: 'any', input: 'R19\'s input', guard: '`WorkflowClient.resume` refuses the run otherwise: teamai-reports does not hold it or moved while it was claimed, its definition cannot be read here, or its copies cannot be brought to the commits it recorded', effects: 'none', next: 'unchanged', action: 'error with the refusal\'s code and message, next null' },
   { id: 'R22', state: 'any', input: 'resume `--driver skill`, `next --takeover`', guard: 'the caller is not the session skill.json here names as the run\'s owner, and `WorkflowClient.resumeRefusal` refuses it by the `invoke` of the run\'s own definition, as a start is refused: agent evidence (a session variable, or `--driver skill` itself), and `invoke: deny`, or `invoke: ask` without `--confirmed` or in an unattended run', effects: 'none', next: 'unchanged', action: 'error `invoke_denied`, `unattended_denied` or `confirm_needed`; next: for `confirm_needed` the same call with `--confirmed`, run only when the person agrees, else null' },
@@ -67,7 +67,7 @@ export const TRANSITIONS = [
   { id: 'D14', state: 'drive', input: 'reply wait', guard: 'it lists `held`, and no attempt is open', effects: 'none', next: 'drive', action: '`person why:handoff` with the person\'s `teamai workflow resume <run>` literal, with `--tools default=<session tool>` when `localPromptTool` names one; waiting `held`; no `then`' },
   { id: 'D15', state: 'drive', input: 'reply wait', guard: '', effects: 'none', next: 'drive', action: 'waiting' },
   { id: 'D27', state: 'drive', input: 'reply wait, after its row', guard: 'it lists `held`, and no reply of this tick came to a `next` that took no lease', effects: 'engine `next` as D1, with `canTakeLease: false`, since the engine answers a held step before a gate; H5, then D10 to D12 for a gate, take its reply', next: 'drive', action: '' },
-  { id: 'D16', state: 'drive', input: 'reply done', guard: '', effects: '`seq` := seq + 1, so every session has the end to see; keep with the end the run file\'s version, read after, when its status and receipts agree with the end', next: 'done', action: '`done {outcome, failure, prs, judging}`' },
+  { id: 'D16', state: 'drive', input: 'reply done', guard: '', effects: '`seq` := seq + 1, so every session has the end to see; keep with the end the run file\'s version, read after, when the end is out and its status and receipts agree with the end', next: 'done', action: '`done {outcome, failure, prs, judging}`' },
   { id: 'D17', state: 'drive', input: 'reply error', guard: '', effects: 'none', next: 'drive', action: 'error with the engine\'s code, next: the next literal' },
   { id: 'D18', state: 'drive', input: 'a foreground call', guard: 'it spawned runners', effects: 'release the lock; wait up to `WAIT_GRACE_MS` for them, re-taking the lock per check', next: 'drive', action: '' },
   { id: 'D19', state: 'any', input: 'a foreground call', guard: 'the lock is not free within `TICK_LOCK_WAIT_MS` (`report`: `WAIT_BOUND_MS`)', effects: 'none', next: 'unchanged', action: 'error `driver_running`, next: the same literal' },
@@ -120,7 +120,7 @@ export const TRANSITIONS = [
   { id: 'X2', state: 'done', input: 'next', guard: 'no attempt or judge is open', effects: 'none', next: 'done', action: '`done`, no `then`' },
   { id: 'X4', state: 'done', input: 'next', guard: 'an attempt is still open: the engine cancelled it with the run', effects: 'none', next: 'done', action: 'every `stop`, then `done`; `then: poll`' },
   { id: 'X5', state: 'done', input: 'tick', guard: 'the run file shows a version other than the one kept with the end, or a create still unresolved, or none was kept', effects: 'keep the run file\'s version with the end; engine `next` as D1, with `canTakeLease: false`', next: 'done', action: '' },
-  { id: 'X6', state: 'done', input: 'reply, before its row', guard: 'the reply is not `done`, or is a `done` whose outcome, failure or PRs differ from the kept end (`canonicalJson`): the engine reopened the run, as `workflow retry` does, or another driver ended it again', effects: 'drop `done`', next: 'drive', action: 'the reply\'s row; the tick goes on as in drive' },
+  { id: 'X6', state: 'done', input: 'reply, before its row', guard: 'the reply is not `done`, or is a `done` whose outcome, failure or PRs differ from the kept end (`canonicalJson`), or that is not out: the engine reopened the run, as `workflow retry` does, another driver ended it again, or the end still has to reach `teamai-reports`', effects: 'drop `done`', next: 'drive', action: 'the reply\'s row; the tick goes on as in drive' },
   { id: 'X7', state: 'done', input: 'tick', guard: 'the run file shows the version kept with the end (status, revision, pull request receipts), and no create unresolved', effects: 'none: no engine `next`, so no tick publishes an end already out again', next: 'done', action: '' },
 ] as const satisfies readonly TransitionRow[];
 
@@ -148,7 +148,8 @@ export type EngineReply =
    */
   | { kind: 'wait'; reason: string; delivering: string[]; held: NonNullable<Waiting['held']> }
   | { kind: 'hitl'; gate: AskedGate }
-  | { kind: 'done'; outcome: NonNullable<SkillState['done']>['outcome']; failure?: WorkflowFailure; prs: string[] }
+  /** `out`: the end reached `teamai-reports`, or another install owns the run and publishes it. */
+  | { kind: 'done'; outcome: NonNullable<SkillState['done']>['outcome']; failure?: WorkflowFailure; prs: string[]; out: boolean }
   | { kind: 'error'; error: WorkflowFailure };
 
 /** What `score --next` answered: a lease, read as the judge it opens; nothing to take; or an error. */
@@ -448,11 +449,12 @@ interface TickRequest {
 }
 
 /**
- * Whether `version`, read after the engine answered `end`, is the run file that end came from. A retry can land between
- * the two, so a version that disagrees is not kept, and X5 asks the engine again.
+ * Whether `version`, read after the engine answered `end`, is the run file that end came from, and the end is out. A retry
+ * can land between the two, and an end whose publication failed is published again only by an engine `next`, so for
+ * either no version is kept, and X5 asks the engine again.
  */
-function agrees(version: RunVersion, end: { outcome: string; prs: string[] }): boolean {
-  return version.status === end.outcome && version.receipts === end.prs.length;
+function agrees(version: RunVersion, end: { outcome: string; prs: string[]; out: boolean }): boolean {
+  return end.out && version.status === end.outcome && version.receipts === end.prs.length;
 }
 
 /**
@@ -476,7 +478,7 @@ export function tickRow(state: SkillState, input: { role: 'call' | 'runner'; ver
 
 /**
  * X6: the engine answered a run this driver saw done with anything but that same end: it reopened the run, as a retry
- * does, or another driver ended it again. `sameEnd`: the reply is a `done` naming the end the driver kept.
+ * does, or another driver ended it again. `sameEnd`: the reply is a `done` naming the end the driver kept, and that end is out.
  */
 export function reopenedRow(state: SkillState, input: { reply: EngineReply; sameEnd: boolean }): Moved<'X6'> | undefined {
   if (!state.done || input.sameEnd) return undefined;

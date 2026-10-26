@@ -790,6 +790,32 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     },
   },
   {
+    name: 'a done run whose end failed to reach teamai-reports asks the engine again on each tick, which publishes it, until it is out',
+    rows: ['D16', 'X5', 'X6', 'X7'],
+    run: async () => {
+      let offline = true;
+      let asked = 0;
+      const made = await harness({ check: CHECK }, { client: (client) => ({ ...client, next: async (...args) => {
+        const answer = await client.next(...args);
+        if (!('data' in answer) || typeof answer.data !== 'object' || answer.data === null || !('done' in answer.data)) return answer;
+        asked += 1;
+        const { done } = answer.data;
+        return offline && typeof done === 'object' ? { data: { ...answer.data, done: { ...done, notPublished: { code: 'publish_failed', message: 'offline' } } } } : answer;
+      } }) });
+      const { run } = await started(made);
+      expect((await polledToDone(made, run)).actions).toEqual([expect.objectContaining({ kind: 'done', outcome: 'succeeded' })]);
+      const offlineAsks = asked;
+      await made.call({ kind: 'next', run, wait: false });
+      expect(asked).toBe(offlineAsks + 1);
+      offline = false;
+      await made.call({ kind: 'next', run, wait: false });
+      const out = asked;
+      for (let call = 0; call < 2; call += 1) expect(await turnOf(await made.call({ kind: 'next', run, wait: false }))).toMatchObject({ status: 'done', actions: [{ kind: 'done', outcome: 'succeeded' }] });
+      expect(asked).toBe(out);
+      return made.rows;
+    },
+  },
+  {
     name: 'a done run asks the engine again once a pull request receipt reaches its run file, and lists that pull request',
     rows: ['X5', 'X6', 'D16'],
     run: async () => {
