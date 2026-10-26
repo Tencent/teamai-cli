@@ -1239,7 +1239,7 @@ async function buildRemovalPlan(
       : [],
     keptForProjects: projectsKept,
     includeShared,
-    hermesCleanup: globalAdapters && toolsToMerge.includes('hermes'),
+    hermesCleanup: globalAdapters && toolsToMerge.includes('hermes') && await (await import('./hermes-hooks.js')).hasHermesHooks(),
     scope: localConfig.scope,
     globalAdapters,
     keptGlobal: [],

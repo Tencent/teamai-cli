@@ -49,6 +49,10 @@ it.each(['repair', 'uninstall'])('keeps a blocking file, reports it in doctor, a
       expect(fs.existsSync(plugin)).toBe(false);
       expect(fs.readFileSync(blocked, 'utf8')).toBe('member file');
       expect(fs.existsSync(path.join(home, '.claude', 'skills', 'fixture', 'SKILL.md'))).toBe(true);
+      const again = spawnSync(process.execPath, [cli, 'uninstall', '--agent', 'hermes', '--force'], { cwd: home, env, encoding: 'utf8', timeout: 30_000 });
+      expect(again.status, again.stdout + again.stderr).toBe(0);
+      expect(again.stdout + again.stderr).toContain('Nothing to uninstall');
+      expect(again.stdout + again.stderr).not.toContain('Removed teamai Hermes hook');
       return;
     }
     fs.unlinkSync(blocked);
