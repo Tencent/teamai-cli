@@ -2,9 +2,29 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fse from 'fs-extra';
 import os from 'node:os';
 import path from 'node:path';
+
+vi.mock('../config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../config.js')>()),
+  detectProjectConfig: vi.fn().mockResolvedValue(null),
+  loadLocalConfig: vi.fn(),
+  loadTeamConfig: vi.fn(),
+  loadStateForScope: vi.fn().mockResolvedValue({}),
+}));
+
+vi.mock('../utils/logger.js', () => ({
+  log: {
+    debug: vi.fn(), error: vi.fn(), info: vi.fn(), success: vi.fn(), warn: vi.fn(), dim: vi.fn(),
+  },
+  setStderrOnly: vi.fn(),
+  isSilent: () => false,
+  setSilent: vi.fn(),
+}));
+
+import { loadLocalConfig, loadTeamConfig } from '../config.js';
+import { buildChecks, resolveDoctorContext, type Check } from '../doctor.js';
 import { isToolInstalledForConfig } from '../resources/base.js';
-import { scopedToolPaths } from '../types.js';
-import type { LocalConfig } from '../types.js';
+import { DEFAULT_TOOL_PATHS, scopedToolPaths } from '../types.js';
+import type { LocalConfig, TeamaiConfig } from '../types.js';
 
 /**
  * WorkBuddy 5.7+ moved its runtime to `~/.workbuddy-ai/` (settings.json,
@@ -133,3 +153,63 @@ describe('scopedToolPaths swaps WorkBuddy skills to the 5.7+ root (#1273)', () =
     expect(paths(defaultTeam, 'project', projectRoot).workbuddy.skills).toBe('.workbuddy-ai/skills');
   });
 });
+
+/**
+ * Doctor on a member whose only WorkBuddy root is `.workbuddy-ai/` (#1273):
+ * skills arrive there, while rules, instructions, agents, MCP servers and
+ * hooks wait for `.workbuddy/`, so pull writes none of them. Doctor must say
+ * so instead of passing.
+ */
+describe('doctor on a WorkBuddy member with only the 5.7+ root', () => {
+  let root: string;
+  let home: string;
+
+  beforeEach(async () => {
+    root = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-wb-doctor-'));
+    home = path.join(root, 'home');
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('USERPROFILE', home);
+    const localConfig: LocalConfig = {
+      repo: { localPath: path.join(root, 'repo'), remote: 'owner/repo' },
+      username: 'tester', scope: 'user', additionalRoles: [], enabledAgents: ['workbuddy'],
+    };
+    const teamConfig: TeamaiConfig = {
+      team: 'test', description: '', repo: 'owner/repo', provider: 'git', reviewers: [],
+      sharing: { skills: {}, rules: { enforced: [] }, docs: { localDir: '' }, env: { injectShellProfile: false } },
+      toolPaths: { workbuddy: DEFAULT_TOOL_PATHS.workbuddy },
+    };
+    vi.mocked(loadLocalConfig).mockResolvedValue(localConfig);
+    vi.mocked(loadTeamConfig).mockResolvedValue(teamConfig);
+  });
+
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    await fse.remove(root);
+  });
+
+  async function checks(): Promise<Check[]> {
+    const ctx = await resolveDoctorContext();
+    if (!ctx) throw new Error('expected a resolved doctor context');
+    return buildChecks(ctx);
+  }
+
+  it('fails a check naming the surfaces pull holds and the root they wait for', async () => {
+    await fse.ensureDir(path.join(home, '.workbuddy-ai'));
+    const all = await checks();
+
+    const installed = all.find((c) => c.name === 'workbuddy is installed');
+    expect(await installed?.check()).toBe(true);
+    const held = all.filter((c) => c.name.startsWith('workbuddy receives'));
+    expect(held).toHaveLength(1);
+    expect(await held[0].check()).toBe(false);
+    for (const surface of ['rules', 'agents', 'MCP servers', 'hooks']) expect(held[0].name).toContain(surface);
+    expect(held[0].fix).toContain(path.join(home, '.workbuddy-ai', 'skills'));
+    expect(held[0].fix).toContain(`${path.join(home, '.workbuddy')} exists`);
+  });
+
+  it('has nothing to report while the old root is there', async () => {
+    await fse.ensureDir(path.join(home, '.workbuddy'));
+    expect((await checks()).map((c) => c.name).filter((name) => name.startsWith('workbuddy receives'))).toEqual([]);
+  });
+});
+

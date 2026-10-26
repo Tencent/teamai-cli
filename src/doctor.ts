@@ -18,6 +18,7 @@ import {
   resolveToolBaseDir,
   isAgentExcluded,
   scopedToolPaths,
+  toolGateRoot,
   getDataHome,
   getTeamaiHomeDir,
   isUsageReportEnabled,
@@ -35,6 +36,7 @@ import { TEAMAI_HOOK_SUBCOMMANDS, isCodexTrustGatedTool, codexTrustReminder, kep
 import { codexBuildSkewMessage } from './codex-trust.js';
 import {
   buildDeliveryChecks,
+  nameList,
   toolPathsDroppedKeyNotes,
   buildSkillDirChecks,
   skillReadNotes,
@@ -215,6 +217,47 @@ async function buildEnabledToolChecks(ctx: DoctorContext): Promise<Check[]> {
     });
   }
 
+  return checks;
+}
+
+/** The surfaces `locate` gates per tool, as a fix names them. */
+const GATED_SURFACES = [['rules', 'rules'], ['blocks', 'team instructions'], ['agents', 'agents'], ['mcp', 'MCP servers']] as const;
+
+/**
+ * A tool can take its skills while its other surfaces wait for a root that is
+ * not there: on WorkBuddy 5.7+, skills land under `.workbuddy-ai/`, while
+ * everything else still needs `.workbuddy/` (#1273). Pull writes none of those,
+ * and the delivery checks skip a tool whose gate is unmet, so with
+ * `<tool> is installed` passing on the skills root doctor would stay green.
+ * Hooks count when teamai injects them under the same missing root.
+ */
+async function buildHeldSurfaceChecks(ctx: DoctorContext): Promise<Check[]> {
+  const { localConfig, toolPaths, hookToolPaths, baseDir } = ctx;
+  const install = installOf(ctx.teamConfig ?? { toolPaths }, localConfig);
+  const checks: Check[] = [];
+  for (const tool of Object.keys(toolPaths)) {
+    const skills = writable(await locate(tool, 'skills', install));
+    if (skills === null) continue;
+    const held = new Map<string, string[]>();
+    for (const [resource, surface] of GATED_SURFACES) {
+      const location = await locate(tool, resource, install);
+      const unmet = location.gates.find((gate) => gate.kind === 'installed' && !gate.met);
+      if (location.channel !== 'files' || location.own === null || unmet?.kind !== 'installed') continue;
+      held.set(unmet.probe, [...held.get(unmet.probe) ?? [], surface]);
+    }
+    const settings = hookToolPaths[tool]?.settings;
+    if (settings) held.get(hookSettingsPath(tool, baseDir, toolGateRoot(tool, settings, localConfig.toolRoots)))?.push('hooks');
+    for (const [root, surfaces] of held) {
+      checks.push({
+        name: `${tool} receives ${nameList(surfaces)}`,
+        source: 'local',
+        check: async () => false,
+        fix: `teamai delivers ${tool}'s skills to ${skills.path}, but writes its ${nameList(surfaces)} only once `
+          + `${root} exists, and it does not, so a pull holds them back from ${tool}. teamai does not write them `
+          + 'where this install reads its skills yet, so there is nothing to fix on this machine.',
+      });
+    }
+  }
   return checks;
 }
 
@@ -679,6 +722,7 @@ export async function buildChecks(ctx: DoctorContext, stage: CheckStage = 'docto
     ...buildToolRootChecks(localConfig, teamConfig),
     ...buildToolHomeChecks(localConfig),
     ...await buildEnabledToolChecks(ctx),
+    ...await buildHeldSurfaceChecks(ctx),
     ...await buildHookChecks(toolPaths, hookToolPaths, baseDir, localConfig),
     ...await buildDeliveryChecks(ctx),
     ...await buildSkillDirChecks(ctx),
