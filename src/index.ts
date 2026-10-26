@@ -202,6 +202,9 @@ program
     + '— skills, knowledge for rules, agents, learnings, docs, env, hooks, mcp, models, and more (from manifest/projects.yaml)')
   .option('--shared', 'Place new resources at the shared root for all roles; cannot combine with --role or --project')
   .option('--branch <name>', 'Push to this destination branch instead of a generated teamai/push branch')
+  .option('--carried <path@blob>', 'Override the stop for an agent format conversion that would delete a placed agent file a teammate changed. '
+    + 'Use it only after carrying that change into the converted file, with the value the stop printed; '
+    + 'a later team edit stops the push again. Repeatable', (val: string, acc: string[]) => acc.concat(val), [] as string[])
   .action(async (cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
     const { push } = await import('./push.js');

@@ -40,6 +40,7 @@ Generated: do not edit by hand. Regenerate with
   - `--project <id>` — Target a project: each new resource goes to that project's namespace for its own type — skills, knowledge for rules, agents, learnings, docs, env, hooks, mcp, models, and more (from manifest/projects.yaml)
   - `--shared` — Place new resources at the shared root for all roles; cannot combine with --role or --project
   - `--branch <name>` — Push to this destination branch instead of a generated teamai/push branch
+  - `--carried <path@blob>` — Override the stop for an agent format conversion that would delete a placed agent file a teammate changed. Use it only after carrying that change into the converted file, with the value the stop printed; a later team edit stops the push again. Repeatable
 
 ## pull
 

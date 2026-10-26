@@ -535,7 +535,7 @@ function supersededPathOf(item: ResourceItem): string | undefined {
   return 'supersedes' in item && typeof item.supersedes === 'string' ? item.supersedes : undefined;
 }
 
-/** The blob of that retired file this machine last saw, when one is recorded. */
+/** The blob this machine delivered to that retired file, when its merge was proven. */
 function supersededBlobOf(item: ResourceItem): string | undefined {
   return 'supersededBlob' in item && typeof item.supersededBlob === 'string' ? item.supersededBlob : undefined;
 }
@@ -914,7 +914,7 @@ async function validateWorkflows(localConfig: LocalConfig, dryRun: boolean): Pro
 }
 
 export async function push(
-  options: GlobalOptions & { all?: boolean; role?: string; project?: string; shared?: boolean; branch?: string },
+  options: GlobalOptions & { all?: boolean; role?: string; project?: string; shared?: boolean; branch?: string; carried?: string[] },
   /**
    * Optional out-param: set to `{ completed: true }` only when a real push
    * actually happened (resources or config pushed) — never on dry-run, cancel,
@@ -1172,6 +1172,26 @@ async function itemsChangedOnDefaultBranch(
 }
 
 /**
+ * The `--carried <path>@<blob>` values as the retired file and the version of
+ * it on the default branch each one lets this push delete. A value that names
+ * no file in `retiring` is reported, exit 2, and nothing is returned.
+ */
+function carriedVersions(
+  values: readonly string[],
+  retiring: readonly RetiringItem[],
+): Pick<RetiringItem, 'retired' | 'tip'>[] | undefined {
+  const versions: Pick<RetiringItem, 'retired' | 'tip'>[] = [];
+  for (const value of values) {
+    const [, retired, tip] = /^(?:\.teamai\/)?(.+)@([^@]+)$/.exec(value) ?? [];
+    if (retired && tip && retiring.some((entry) => entry.retired === retired)) versions.push({ retired, tip });
+    else log.error(`--carried ${value} names no agent conversion this push stops for. Nothing was pushed. Pass the <path>@<blob> value a push stop printed, or push without --carried.`);
+  }
+  if (versions.length === values.length) return versions;
+  process.exitCode = 2;
+  return undefined;
+}
+
+/**
  * Where the default branch moved under a self-mode checkout: the items to
  * leave out of the push (announced here), and a check that stops the push,
  * exit 2, when an item going out would overwrite or delete that branch's change.
@@ -1180,7 +1200,7 @@ async function defaultBranchGuard(
   localConfig: LocalConfig,
   memberRoot: string,
   items: readonly ResourceItem[],
-  { dryRun }: { dryRun?: boolean },
+  carriedValues: readonly string[],
 ): Promise<{ leftOut: readonly ResourceItem[]; stops: (going: readonly ResourceItem[]) => Promise<boolean> }> {
   const changes = await itemsChangedOnDefaultBranch(localConfig, memberRoot, items);
   const sourceOf = (item: ResourceItem): string => path.relative(memberRoot, item.sourcePath).split(path.sep).join('/');
@@ -1202,9 +1222,17 @@ async function defaultBranchGuard(
   // item that is going out: a file left out by --skill, a filter or the
   // selection must not hold back the rest.
   const stops = async (going: readonly ResourceItem[]): Promise<boolean> => {
+    const carried = carriedVersions(carriedValues, changes.history === 'complete' ? changes.retiring : []);
+    if (!carried) return true;
     const goingOut = (list: readonly ResourceItem[]): ResourceItem[] => list.filter((item) => going.includes(item));
     const edited = goingOut(changes.history === 'complete' ? changes.edited : changes.unclassified);
-    const retiring = changes.history === 'complete' ? changes.retiring.filter(({ item }) => going.includes(item)) : [];
+    // Pull never refreshes the member's root copy, so only the member can say
+    // a conversion carries the team's edit. --carried says it for the version
+    // a stop printed; a later team edit stops the push again.
+    const retiring = changes.history === 'complete'
+      ? changes.retiring.filter(({ item, retired, tip }) => going.includes(item)
+        && !carried.some((version) => version.retired === retired && version.tip === tip))
+      : [];
     if (edited.length === 0 && retiring.length === 0) return false;
     const defaultBranch = await getDefaultBranch(memberRoot);
     if (changes.history === 'missing') {
@@ -1222,24 +1250,10 @@ async function defaultBranchGuard(
         + 'from it, so pushing would overwrite that change. Nothing was pushed. '
         + `Merge origin/${defaultBranch} (\`git pull origin ${defaultBranch}\`), resolve any conflict, then push again.`);
     }
-    for (const { item, retired } of retiring) {
-      const evidence = supersededBlobOf(item)
-        ? 'since this machine last saw it'
-        : 'since this checkout branched from it (this older placement has no recorded delivered blob)';
-      log.error(`${named([item])} would delete .teamai/${retired}, which changed on `
-        + `origin/${defaultBranch} ${evidence}. Nothing was pushed. `
-        + `Run \`git pull origin ${defaultBranch}\`, carry that change into ${sourceOf(item)}, then push again.`
-        + (dryRun ? '' : ' The next push does not stop for this version again.'));
-    }
-    // Pull never refreshes the member's root copy, so this stop is the only
-    // sign that the member knows the version it names. The next push takes the
-    // conversion as carrying it; a later team edit stops it again.
-    if (!dryRun && retiring.length > 0) {
-      const state = await loadStateForScope(localConfig);
-      for (const { item, retired, tip } of retiring) {
-        state.placedAgentSources = { ...state.placedAgentSources, [item.name]: { path: retired, blob: tip } };
-      }
-      await saveStateForScope(state, localConfig);
+    for (const { item, retired, tip } of retiring) {
+      log.error(supersededBlobOf(item)
+        ? `${named([item])} would delete .teamai/${retired}, which changed on origin/${defaultBranch} since this machine delivered it. Nothing was pushed. Run \`git pull origin ${defaultBranch}\`, carry that change into ${sourceOf(item)}, then run \`teamai push --carried .teamai/${retired}@${tip}\` with the other options you used. --carried accepts only this version of that file.`
+        : `${named([item])} would delete .teamai/${retired}, which changed on origin/${defaultBranch} since this checkout branched from it (this older placement has no recorded delivered blob). Nothing was pushed. Run \`git pull origin ${defaultBranch}\`, carry that change into ${sourceOf(item)}, then push again.`);
     }
     process.exitCode = 2;
     return true;
@@ -1250,7 +1264,7 @@ async function defaultBranchGuard(
 async function pushCore(
   localConfig: LocalConfig,
   teamConfig: TeamaiConfig,
-  options: GlobalOptions & { all?: boolean; role?: string; project?: string; shared?: boolean; branch?: string },
+  options: GlobalOptions & { all?: boolean; role?: string; project?: string; shared?: boolean; branch?: string; carried?: string[] },
   initialPendingTeamConfig: string | null = null,
   result?: { completed: boolean },
 ): Promise<void> {
@@ -1743,8 +1757,8 @@ async function pushCore(
 
   const memberRoot = selfMode ? localConfig.projectRoot : undefined;
   const branchGuard = memberRoot
-    ? await defaultBranchGuard(localConfig, memberRoot, listed, options)
-    : { leftOut: [], stops: async () => false };
+    ? await defaultBranchGuard(localConfig, memberRoot, listed, options.carried ?? [])
+    : { leftOut: [], stops: async () => carriedVersions(options.carried ?? [], []) === undefined };
   const allItems = listed.filter((item) => !branchGuard.leftOut.includes(item));
 
   // Such an agent is skipped like any other, and a skipped agent does not

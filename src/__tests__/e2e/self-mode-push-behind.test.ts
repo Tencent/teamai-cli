@@ -348,16 +348,18 @@ describe('single-repo push from a checkout behind the default branch', () => {
     expect(push.code, push.output).toBe(2);
     expect(push.output).toContain(
       '.teamai/agents/sample.yaml (pushed to .teamai/agents/ops/sample.yaml) would delete .teamai/agents/ops/sample.md, '
-        + 'which changed on origin/main since this machine last saw it.',
+        + 'which changed on origin/main since this machine delivered it.',
     );
+    const teamVersion = git(['rev-parse', 'main:.teamai/agents/ops/sample.md'], remote);
     expect(push.output).toContain(
-      'carry that change into .teamai/agents/sample.yaml, then push again. The next push does not stop for this version again.',
+      'carry that change into .teamai/agents/sample.yaml, then run '
+        + `\`teamai push --carried .teamai/agents/ops/sample.md@${teamVersion}\` with the other options you used.`,
     );
     expect(pushBranches()).toEqual([]);
     expect(git(['show', 'main:.teamai/agents/ops/sample.md'], remote)).toContain('Teammate safety instructions.');
   });
 
-  it('pushes an agent conversion that carries the upstream edits each stop named', async () => {
+  it('deletes a placed agent a teammate changed only with --carried naming the version the stop printed', async () => {
     expect((await runCLI(['pull'], projectRoot, home)).code).toBe(0);
     const AGENT = '---\nname: sample\ndescription: A sample agent\n---\n\nSample instructions.\n';
     fs.mkdirSync(active('.teamai/agents'), { recursive: true });
@@ -369,15 +371,26 @@ describe('single-repo push from a checkout behind the default branch', () => {
       active('.teamai/agents/sample.yaml'),
       'name: sample\ndescription: A sample agent\ninstructions: Member replacement instructions.\n',
     );
+    const push = ['push', '--all', '--role', 'ops'];
+    const teamVersion = (): string => git(['rev-parse', 'main:.teamai/agents/ops/sample.md'], remote);
+    const carried = (version: string): string => `.teamai/agents/ops/sample.md@${version}`;
 
     teammateLandsOnMain({ '.teamai/agents/ops/sample.md': `${AGENT}\nTeammate safety instructions.\n` });
-    const preview = await runCLI(['push', '--all', '--role', 'ops', '--dry-run'], projectRoot, home);
-    expect(preview.code, preview.output).toBe(2);
-    expect(preview.output).not.toContain('The next push does not stop');
-    expect((await runCLI(['push', '--all', '--role', 'ops'], projectRoot, home)).code).toBe(2);
+    const first = teamVersion();
+    for (const args of [[...push, '--dry-run'], push, push]) {
+      const stop = await runCLI(args, projectRoot, home);
+      expect(stop.code, stop.output).toBe(2);
+      expect(stop.output).toContain(`\`teamai push --carried ${carried(first)}\``);
+    }
+    const unknown = await runCLI([...push, '--carried', `.teamai/agents/ops/other.md@${first}`], projectRoot, home);
+    expect(unknown.code, unknown.output).toBe(2);
+    expect(unknown.output).toContain(`--carried .teamai/agents/ops/other.md@${first} names no agent conversion this push stops for.`);
+
     teammateLandsOnMain({ '.teamai/agents/ops/sample.md': `${AGENT}\nTeammate safety instructions.\nTeammate review step.\n` });
-    const second = await runCLI(['push', '--all', '--role', 'ops'], projectRoot, home);
-    expect(second.code, second.output).toBe(2);
+    const second = teamVersion();
+    const outdated = await runCLI([...push, '--carried', carried(first)], projectRoot, home);
+    expect(outdated.code, outdated.output).toBe(2);
+    expect(outdated.output).toContain(`\`teamai push --carried ${carried(second)}\``);
     expect(pushBranches()).toEqual([]);
 
     git(['pull', '-q', '--ff-only', 'origin', 'main'], projectRoot);
@@ -386,9 +399,13 @@ describe('single-repo push from a checkout behind the default branch', () => {
       'name: sample\ndescription: A sample agent\ninstructions: |\n  Member replacement instructions.\n'
         + '  Teammate safety instructions.\n  Teammate review step.\n',
     );
-    const push = await runCLI(['push', '--all', '--role', 'ops'], projectRoot, home);
+    const preview = await runCLI([...push, '--carried', carried(second), '--dry-run'], projectRoot, home);
+    expect(preview.code, preview.output).toBe(0);
+    expect(preview.output).toContain('Dry run — no changes made');
+    expect(pushBranches()).toEqual([]);
+    const pushed = await runCLI([...push, '--carried', carried(second)], projectRoot, home);
 
-    expect(push.output).toContain('Pushed branch');
+    expect(pushed.output).toContain('Pushed branch');
     const [branch] = pushBranches();
     expect(git(['diff', '--name-status', 'main', branch], remote)).toContain('D\t.teamai/agents/ops/sample.md');
     expect(git(['show', `${branch}:.teamai/agents/ops/sample.yaml`], remote)).toContain('Teammate review step.');

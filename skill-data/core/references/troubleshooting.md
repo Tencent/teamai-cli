@@ -460,6 +460,6 @@ When a file occupies a tool skills directory, doctor fails the directory check e
 
 ## Placed agent format changes behind the default branch
 
-A `.md`/`.yaml` conversion may retire the agent this machine placed after its merge is proven. If the team changed that original, the push stops once and names it: update the checkout, carry its changes into the conversion, then push again. The next push does not stop for that version again. If the team deleted it, the remaining root copy is not a new agent to publish. Older records without a delivered blob catch a team change only while the checkout is behind it, so compare with the team file before converting.
+A `.md`/`.yaml` conversion may retire the agent this machine placed after its merge is proven. If the team changed that original, the push stops and prints a `teamai push --carried <path>@<blob>` command: update the checkout, carry its changes into the conversion, then run it. The option accepts only that version, so a plain retry or a later team change stops again. If the team deleted it, the remaining root copy is not a new agent to publish. Older records without a delivered blob catch a team change only while the checkout is behind it, so compare with the team file before converting.
 
 A recreated namespace source can be edited directly; the retired flattened copy is kept as a backup. Retired tool copies do not become new agents when the root copy is removed. The retirement warning names the former source so the member can restore it before pushing edits.
