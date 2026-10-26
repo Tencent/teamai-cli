@@ -171,6 +171,8 @@ export type McpProject = McpCommon<HomeRead | ProjectRead | FirstExistingRead> &
 };
 
 export type McpChannels = Scoped<McpUser, McpProject> & {
+  /** Earlier releases wrote file-less ownership records under the default home. */
+  readonly legacyDefaultHome?: true;
   /** Files earlier releases wrote the servers to, per scope: pull moves teamai's servers out of them. */
   readonly retired?: { readonly user?: readonly string[]; readonly project?: readonly string[] };
 };
@@ -746,9 +748,8 @@ export const TOOLS = {
     },
   },
   // muse-bin 1.4.11: $XDG_CONFIG_HOME/muse, else ~/.config/muse; hooks follow this home too.
-  // Model switching still uses the default settings file until its separate migration.
   muse: {
-    home: { dir: '.config/muse', moves: { by: [{ kind: 'xdg', child: 'muse', evidence: 'source' }], settingsAtDefault: true } },
+    home: { dir: '.config/muse', moves: { by: [{ kind: 'xdg', child: 'muse', evidence: 'source' }] } },
     installedBy: 'home',
     skillLoad: { calls: [{ name: 'read_skill', evidence: 'verified' }] },
     skills: {
@@ -772,6 +773,7 @@ export const TOOLS = {
       project: { reads: 'unknown' },
     },
     mcp: {
+      legacyDefaultHome: true,
       user: { format: 'muse', reads: [{ base: 'home', path: '.config/muse/settings.json', evidence: 'source' }] },
       project: { format: 'muse', writtenBy: 'claude', reads: [{ base: 'project', path: '.mcp.json', when: 'workspaceUnder', evidence: 'source' }] },
     },
@@ -895,4 +897,10 @@ export function mcpFormatOf(tool: string): McpFormat | null {
   const { mcp } = channelsOf(tool);
   for (const channel of [mcp.user, mcp.project]) if (typeof channel === 'object') return channel.format;
   return null;
+}
+
+/** File-less MCP records retain their default-home fallback after hooks move. */
+export function legacyDefaultMcp(tool: ToolId): boolean {
+  const mcp: McpChannels = TOOLS[tool].mcp;
+  return mcp.legacyDefaultHome === true || settingsAtDefault(tool);
 }

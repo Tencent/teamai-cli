@@ -75,6 +75,6 @@ describe('the descriptor\'s channels agree with the tables they replaced', () =>
   });
 
   it('marks the tools whose hooks and settings stay at the default home', () => {
-    expect(TOOL_IDS.filter(settingsAtDefault)).toEqual(['pi', 'codebuddy', 'opencode', 'muse']);
+    expect(TOOL_IDS.filter(settingsAtDefault)).toEqual(['pi', 'codebuddy', 'opencode']);
   });
 });
