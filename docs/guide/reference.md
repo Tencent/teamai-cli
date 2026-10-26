@@ -220,3 +220,7 @@ teamai models remove local:my-gateway
 ## ZCode hook stdout budget
 
 Doctor measures the serialized project-rules reply in UTF-8 bytes against `hooks.maxOutputBytes` in `~/.zcode/cli/config.json` (32768 by default). This is a lower bound: other session hints add bytes to the complete reply. ZCode truncates oversized stdout and silently drops a reply that no longer parses, even when its hook is registered. Shorten the rules or increase that positive integer limit enough for the complete reply, then start a new ZCode session. TeamAI does not change the limit or truncate rules.
+
+## Kiro lifecycle hooks
+
+Kiro CLI V3 loads `~/.kiro/hooks/teamai.json` for every agent, including the default agent. Pull and hook injection install its SessionStart hook without requiring a team agent. Before enabling it, they remove only TeamAI’s old agentSpawn command from existing Kiro agents, including member-edited copies, preserving personal hooks and agent fields. `hooks list` and `doctor` check it; hook removal and user uninstall remove it. Project uninstall preserves this shared user hook. A same-named personal file is kept and reported. Pull removes the old managed `agentSpawn` entry from rendered team agents while preserving custom hooks. Lifecycle integration requires V3; Kiro 2.x does not load this standalone hook.

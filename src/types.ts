@@ -505,9 +505,9 @@ export const DEFAULT_TOOL_PATHS = {
     },
   },
   // Kiro: skills, steering (rules), and custom agents sync to .kiro/. Kiro CLI
-  // 2.x stores lifecycle hooks inside each .kiro/agents/*.json config. The
-  // Kiro agent renderer therefore embeds TeamAI's session-start dispatch as
-  // `hooks.agentSpawn`; there is no standalone `settings` hook surface.
+  // V3 reads the standalone .kiro/hooks/teamai.json lifecycle hook. Legacy
+  // TeamAI agentSpawn entries are migrated out of agent files; Kiro 2.x
+  // does not support this standalone lifecycle integration.
   // MCP uses the dedicated, mcpServers-only .kiro/settings/mcp.json:
   // https://kiro.dev/docs/mcp/configuration/
   kiro: {
