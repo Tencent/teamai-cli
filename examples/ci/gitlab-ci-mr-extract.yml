@@ -1,5 +1,5 @@
 # TeamAI MR Knowledge Extract — GitLab CI (self-hosted instances such as
-# git.guazi-corp.com, API v4)
+# gitlab.example.com, API v4)
 #
 # Extracts knowledge as an MR comment when the MR is created or updated, and
 # writes the learning plus the teamwiki/ graph to the team knowledge repo once
@@ -16,12 +16,12 @@
 #        ANTHROPIC_AUTH_TOKEN   AI auth token (callClaude spawns a local AI
 #                               CLI, so it is required)
 #   3. Plain variables:
-#        TEAMAI_KNOWLEDGE_REPO    team knowledge repo path (e.g. wangchongfei/c2-teamai-test)
+#        TEAMAI_KNOWLEDGE_REPO    team knowledge repo path (e.g. group/team-knowledge)
 #        TEAMAI_KNOWLEDGE_BRANCH  team knowledge repo branch (e.g. main)
 #        ANTHROPIC_BASE_URL       AI gateway URL (required behind an internal gateway)
 #   4. The teamai-cli version must include GitLab CI support (the GitLab
 #      platform adapter for ci extract-mr). Without public npm access:
-#      npm install -g --registry=http://npm.guazi-corp.com teamai-cli
+#      npm install -g --registry=http://npm.example.com teamai-cli
 
 stages:
   - teamai-extract
@@ -51,8 +51,8 @@ teamai-extract-comment:
 
 # ── MR landed on the default branch: write knowledge to the team repo ───────
 # GitLab has no native "MR merged" CI trigger: a merge shows up as a push to
-# the default branch, so the write stage looks the MR up by its merge/squash
-# commit in the default-branch push pipeline.
+# the default branch, so the write stage looks the MR up by the pushed commit
+# in the default-branch push pipeline.
 teamai-post-merge-write:
   stage: teamai-write
   image: node:22
@@ -70,24 +70,19 @@ teamai-post-merge-write:
       # way the CLI does. A numeric project id resolved to unexpected data on
       # the instance used for testing (captured responses in the PR body).
       CI_PROJECT_ENC=$(printf '%s' "${CI_PROJECT_PATH}" | node -e 'let d="";process.stdin.on("data",(c)=>(d+=c)).on("end",()=>process.stdout.write(encodeURIComponent(d.trim())))')
-      # Page through the merged MRs: a delayed push pipeline may find its MR
-      # outside the most recently updated ones. Stop at the first match.
-      MR_URL=""
-      for PAGE in 1 2 3 4 5; do
-        MR_JSON=$(curl -sf -H "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
-          "${CI_API_V4_URL}/projects/${CI_PROJECT_ENC}/merge_requests?state=merged&target_branch=${CI_DEFAULT_BRANCH}&per_page=20&page=${PAGE}&order_by=updated_at")
-        MR_URL=$(printf '%s' "$MR_JSON" | node -e '
-          let d = "";
-          process.stdin.on("data", (c) => (d += c)).on("end", () => {
-            const sha = process.env.CI_COMMIT_SHA;
-            const mrs = JSON.parse(d);
-            const mr = mrs.find((m) => m.merge_commit_sha === sha || m.squash_commit_sha === sha);
-            process.stdout.write(mr ? mr.web_url : "");
-          });')
-        [ -n "$MR_URL" ] && break
-        # Stop early once a page comes back empty
-        [ "$(printf '%s' "$MR_JSON" | node -e 'let d="";process.stdin.on("data",(c)=>(d+=c)).on("end",()=>process.stdout.write(String(JSON.parse(d).length)))')" = "0" ] && break
-      done
+      # List the MRs associated with the pushed commit. GitLab returns an MR
+      # for its merge commit, its squash commit and its head commit, so one
+      # request covers merge, squash and fast-forward merges. Keep the MR that
+      # was merged into the default branch.
+      MR_JSON=$(curl -sf -H "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+        "${CI_API_V4_URL}/projects/${CI_PROJECT_ENC}/repository/commits/${CI_COMMIT_SHA}/merge_requests")
+      MR_URL=$(printf '%s' "$MR_JSON" | node -e '
+        let d = "";
+        process.stdin.on("data", (c) => (d += c)).on("end", () => {
+          const mrs = JSON.parse(d);
+          const mr = mrs.find((m) => m.state === "merged" && m.target_branch === process.env.CI_DEFAULT_BRANCH);
+          process.stdout.write(mr ? mr.web_url : "");
+        });')
       if [ -z "$MR_URL" ]; then
         echo "=== [TeamAI] SKIP: this push is not an MR merge ==="
         exit 0
