@@ -7,14 +7,6 @@ import { aggregateUsage } from './stats.js';
 import { collectTeamRepoSkills } from './agent-skills.js';
 import { BUILTIN_SKILL_NAMES } from './builtin-skills.js';
 import { readEvents, aggregateSessionMetrics, dataHomeKey } from './dashboard-collector.js';
-import {
-  createGit,
-  pushRepoDirectly,
-  pullRepo,
-  resetToCleanMaster,
-  isDedicatedRepoRoot,
-  getFileContentAtRev,
-} from './utils/git.js';
 import { writeFile, readFileSafe, ensureDir, pathExists, readJson, writeJson } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import type {
@@ -57,7 +49,7 @@ interface PromptTokenDelta {
 //  [reportUsageToTeam()]
 //      │
 //      ▼
-//  [git pull latest] ── get freshest remote state ──
+//  [update teamai-reports branch]
 //      │
 //      ▼
 //  [read scope usage file] ─has events?─▶ merge stats
@@ -933,25 +925,23 @@ export function adoptBareKeys<T>(
 export async function reportUsageToTeam(
   repoPath: string,
   username: string,
-  options?: { skipTruncate?: boolean; selfConfig?: LocalConfig },
+  options: { skipTruncate?: boolean; selfConfig: LocalConfig },
 ): Promise<boolean> {
-  // Non-HTTP repos: stats + votes are report data → the teamai-reports orphan
-  // branch (isolated worktree). We must NOT resetToCleanMaster / pullRepo /
-  // pushRepoDirectly on the default branch (or, in self mode, the business
-  // working tree). The dedicated writer handles the worktree + rebase race.
-  const reportsConfig = options?.selfConfig;
-  const useReportsBranch = !!reportsConfig && usesBranchWorktree(reportsConfig);
+  const reportsConfig = options.selfConfig;
+  if (!usesBranchWorktree(reportsConfig)) {
+    log.debug(`Skipping report for HTTP repo ${repoPath}`);
+    return false;
+  }
   let restoreStats: (() => Promise<void>) | undefined;
 
   // Reports-branch writes use the reports-lock, not the partition sync-lock
-  // (non-reentrant; pull() already holds it). The else-branch clone reset is
-  // only for callers that did not pass a config.
+  // (non-reentrant; pull() already holds it).
 
   try {
     // This scope's own skill usage (#748); a caller without a scope reports none.
-    const events = reportsConfig ? await readUsageEvents(reportsConfig) : [];
+    const events = await readUsageEvents(reportsConfig);
     // This scope's own votes (#787), likewise.
-    const votesDir = reportsConfig ? getVotesDir(reportsConfig) : undefined;
+    const votesDir = getVotesDir(reportsConfig);
     const filesToPush: string[] = [];
 
     // Fold the local dashboard event log into per-session metrics once, then derive
@@ -985,12 +975,10 @@ export async function reportUsageToTeam(
     );
     // This scope's sessions, and those of its snapshots no owner claims yet
     // (a project whose data home is in its workspace, which the seed may miss).
-    if (reportsConfig) {
-      await recordSessionOwners([
-        ...dashboardEvents.map((e) => e.sessionId),
-        ...await reportedBeyondShared(reportedPromptTokens, reportedInterventions, reportedDailySessions),
-      ], await dataHomeKey(getDataHome(reportsConfig)));
-    }
+    await recordSessionOwners([
+      ...dashboardEvents.map((e) => e.sessionId),
+      ...await reportedBeyondShared(reportedPromptTokens, reportedInterventions, reportedDailySessions),
+    ], await dataHomeKey(getDataHome(reportsConfig)));
 
     const hasUsage = events.length > 0;
     const hasInterventions = hasInterventionDelta(interventionDelta);
@@ -1006,7 +994,7 @@ export async function reportUsageToTeam(
 
     const writeReportFiles = async (
       writeRoot: string,
-      votesStaged?: { syncedDeltas?: UserVotesV2['deltas'] },
+      votesStaged: { syncedDeltas?: UserVotesV2['deltas'] },
     ): Promise<void> => {
       // The team's shared-skill catalog for the #1055 privacy filter. Always
       // enumerated from repoPath (the default-branch checkout): writeRoot may
@@ -1022,12 +1010,10 @@ export async function reportUsageToTeam(
         // mergeStats with [] preserves existing skills while refreshing username/updatedAt,
         // and carries every other field so partial reports do not clobber them (#425, #1170).
         const existing = await readExistingStats(statsPath);
-        if (useReportsBranch) {
-          const previousContent = await readFileSafe(statsPath);
-          // A failed push can leave an already-incremented file in the reports
-          // worktree. Restore its input so a normal retry does not add it twice.
-          restoreStats = () => writeFile(statsPath, previousContent ?? '');
-        }
+        const previousContent = await readFileSafe(statsPath);
+        // A failed push can leave an already-incremented file in the reports
+        // worktree. Restore its input so a normal retry does not add it twice.
+        restoreStats = () => writeFile(statsPath, previousContent ?? '');
         const newStats = hasUsage ? aggregateUsage(events) : [];
         // #1055: new usage is filtered to names the team actually shares (plus
         // CLI built-ins); names published before this filter existed are kept
@@ -1055,29 +1041,21 @@ export async function reportUsageToTeam(
       // reports branch the deltas are NOT cleared here: they are cleared by
       // confirmVotesSynced once the push is confirmed delivered (#1027), so a
       // failed push or a crash keeps them pending instead of losing the sync
-      // trigger forever. The plain-clone path keeps the merge-and-clear shape.
+      // trigger forever.
       try {
-        if (votesDir && await pathExists(votesDir)) {
-          if (votesStaged) {
-            const { stageVotesMerge, readUserVotesFromContent } = await import('./votes.js');
-            const { readReportsOriginFile } = await import('./utils/reports-branch.js');
-            const origin = await readReportsOriginFile(writeRoot, `votes/${username}.yaml`);
-            const staged = await stageVotesMerge(
-              writeRoot,
-              username,
-              votesDir,
-              origin === null ? null : readUserVotesFromContent(origin),
-            );
-            if (staged) {
-              votesStaged.syncedDeltas = staged.syncedDeltas;
-              filesToPush.push(`votes/${username}.yaml`);
-            }
-          } else {
-            const { syncVotesToTeam } = await import('./votes.js');
-            const synced = await syncVotesToTeam(writeRoot, username, votesDir);
-            if (synced) {
-              filesToPush.push(`votes/${username}.yaml`);
-            }
+        if (await pathExists(votesDir)) {
+          const { stageVotesMerge, readUserVotesFromContent } = await import('./votes.js');
+          const { readReportsOriginFile } = await import('./utils/reports-branch.js');
+          const origin = await readReportsOriginFile(writeRoot, `votes/${username}.yaml`);
+          const staged = await stageVotesMerge(
+            writeRoot,
+            username,
+            votesDir,
+            origin === null ? null : readUserVotesFromContent(origin),
+          );
+          if (staged) {
+            votesStaged.syncedDeltas = staged.syncedDeltas;
+            filesToPush.push(`votes/${username}.yaml`);
           }
         }
       } catch (e) {
@@ -1087,95 +1065,40 @@ export async function reportUsageToTeam(
 
     // Keep push and acknowledgement in the same operation. A caller timing out
     // must not abandon the success bookkeeping below.
-    if (useReportsBranch && reportsConfig) {
-      let hasVotes = false;
-      if (!hasStats && votesDir && await pathExists(votesDir)) {
-        const { hasPendingVoteDeltas } = await import('./votes.js');
-        hasVotes = await hasPendingVoteDeltas(votesDir, username);
+    let hasVotes = false;
+    if (!hasStats && await pathExists(votesDir)) {
+      const { hasPendingVoteDeltas } = await import('./votes.js');
+      hasVotes = await hasPendingVoteDeltas(votesDir, username);
+    }
+    if (!hasStats && !hasVotes) {
+      log.debug('No usage events or votes to report');
+      return true;
+    }
+    const { updateReports } = await import('./utils/reports-branch.js');
+    const { isPublished } = await import('./utils/branch-worktree.js');
+    const votesStaged: { syncedDeltas?: UserVotesV2['deltas'] } = {};
+    const result = await updateReports(reportsConfig, async (wt, { onDelivered }) => {
+      filesToPush.length = 0;
+      await writeReportFiles(wt, votesStaged);
+      if (votesStaged.syncedDeltas) {
+        // Clear the staged deltas only once origin holds them, under the
+        // reports lock (see the votes-sync handler) — a busy lock, a failed
+        // push, or a crash keeps them pending for the next report (#1027).
+        onDelivered(() => import('./votes.js').then(({ confirmVotesSynced }) =>
+          confirmVotesSynced(path.join(votesDir, `${username}.yaml`), votesStaged.syncedDeltas!)));
       }
-      if (!hasStats && !hasVotes) {
-        log.debug('No usage events or votes to report');
-        return true;
-      }
-      const { updateReports } = await import('./utils/reports-branch.js');
-      const { isPublished } = await import('./utils/branch-worktree.js');
-      const votesStaged: { syncedDeltas?: UserVotesV2['deltas'] } = {};
-      const result = await updateReports(reportsConfig, async (wt, { onDelivered }) => {
-        filesToPush.length = 0;
-        await writeReportFiles(wt, votesStaged);
-        if (votesStaged.syncedDeltas) {
-          // Clear the staged deltas only once origin holds them, under the
-          // reports lock (see the votes-sync handler) — a busy lock, a failed
-          // push, or a crash keeps them pending for the next report (#1027).
-          onDelivered(() => import('./votes.js').then(({ confirmVotesSynced }) =>
-            confirmVotesSynced(path.join(votesDir!, `${username}.yaml`), votesStaged.syncedDeltas!)));
-        }
-        return { files: [...filesToPush], message: commitMsg };
-      }, { pushIfUnchanged: true });
-      const pushed = isPublished(result);
-      if (!pushed) {
-        log.debug('Auto-report push was not confirmed; keeping local report data');
-        await restoreStats?.();
-        return false;
-      }
-    } else {
-      // The team repo is a disposable cache clone here — safe to discard local state
-      // and reset to the default branch before pulling (same pattern as push.ts).
-      //
-      // Defense-in-depth: this whole else-branch assumes repoPath is a dedicated clone
-      // ROOT with its own .git. If it is not the git top level, git commands here bubble
-      // up to the nearest enclosing .git and act on the USER'S BUSINESS REPO instead —
-      // reset --hard wipes their uncommitted work and checkout switches them off their
-      // branch. Two known ways repoPath ends up inside the business repo:
-      //   - self mode: localPath is `<businessRoot>/.teamai`
-      //   - project scope: localPath is `<projectRoot>/.teamai/team-repo`, and when that
-      //     dir has no dedicated .git (clone missing/incomplete) it resolves to the
-      //     business repo root.
-      // In either case bail out: there is no safe cache root to report into.
-      const git = createGit(repoPath);
-      if (!(await isDedicatedRepoRoot(repoPath))) {
-        log.debug(`Skipping report: ${repoPath} is not a dedicated team-repo root (safety guard)`);
-        return false;
-      }
-      const { isImportInProgress } = await import('./utils/import-lock.js');
-      if (await isImportInProgress(repoPath)) {
-        log.debug(`Skipping report: import in progress for ${repoPath} (would reset uncommitted artifacts)`);
-        return false;
-      }
-      const yamlPath = path.join(repoPath, 'teamai.yaml');
-      const workingContent = await readFileSafe(yamlPath);
-      const committedContent = workingContent === null
-        ? null
-        : await getFileContentAtRev(repoPath, 'HEAD', 'teamai.yaml');
-      const pendingTeamConfig = workingContent !== null
-        && (committedContent === null || committedContent.toString() !== workingContent)
-        ? workingContent
-        : null;
-
-      try {
-        await resetToCleanMaster(git, repoPath);
-        await pullRepo(repoPath);
-      } finally {
-        // `source add` and `source remove` intentionally leave teamai.yaml
-        // uncommitted until `teamai push`. Auto-report must not discard those edits.
-        // Keep the complete local version, matching pushCore: it remains an explicit
-        // working-tree diff for review instead of being silently committed here.
-        if (pendingTeamConfig !== null) {
-          await writeFile(yamlPath, pendingTeamConfig);
-        }
-      }
-
-      await writeReportFiles(repoPath);
-      if (filesToPush.length === 0) {
-        log.debug('No usage events or votes to report');
-        return true;
-      }
-      await pushRepoDirectly(repoPath, commitMsg, filesToPush);
+      return { files: [...filesToPush], message: commitMsg };
+    }, { pushIfUnchanged: true });
+    const pushed = isPublished(result);
+    if (!pushed) {
+      log.debug('Auto-report push was not confirmed; keeping local report data');
+      await restoreStats?.();
+      return false;
     }
     restoreStats = undefined;
 
     // Success — truncate reported usage events (only if caller allows it)
-    if (hasUsage && reportsConfig && !options?.skipTruncate) {
+    if (hasUsage && !options.skipTruncate) {
       await truncateUsageAfterReport(events.length, reportsConfig);
       log.debug(`Reported ${events.length} usage events to team repo`);
     } else if (hasUsage) {

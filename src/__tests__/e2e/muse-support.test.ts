@@ -365,4 +365,25 @@ describe('Muse Code resource delivery', () => {
 
     expect(fs.existsSync(path.join(home, '.config', 'muse'))).toBe(false);
   }, 90_000);
+
+  it('uninstalls a Muse-reordered server without an intervening pull', async () => {
+    const cwd = fs.mkdtempSync(path.join(sandbox, 'reorder-work-'));
+    const home = makeHome('home-reorder');
+    const file = path.join(home, '.config', 'muse', 'settings.json');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const init = await runCLI(['init', FAKE_URL, '--scope', 'user', '--role', 'dev', '--agent', 'muse', '--force'], cwd, home);
+    expect(init.code, init.output).toBe(0);
+    const inject = await runCLI(['mcp', 'inject'], cwd, home);
+    expect(inject.code, inject.output).toBe(0);
+    const settings = JSON.parse(fs.readFileSync(file, 'utf8'));
+    delete settings.mcpServers.local.type;
+    settings.mcpServers.local = Object.fromEntries(Object.entries(settings.mcpServers.local).reverse());
+    settings.mcpServers.personal = { type: 'stdio', command: 'personal-server' };
+    fs.writeFileSync(file, JSON.stringify(settings));
+
+    const uninstall = await runCLI(['uninstall', '--agent', 'muse', '--force'], cwd, home);
+    expect(uninstall.code, uninstall.output).toBe(0);
+    expect(JSON.parse(fs.readFileSync(file, 'utf8')).mcpServers).toEqual({ personal: { type: 'stdio', command: 'personal-server' } });
+  }, 120_000);
+
 });

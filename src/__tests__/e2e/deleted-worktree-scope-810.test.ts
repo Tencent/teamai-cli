@@ -9,13 +9,14 @@
  * scope's usage file.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dataHomeKey } from '../../dashboard-collector.js';
 import { projectSlug } from '../../utils/partition.js';
+import { trackDetachedProcesses } from '../helpers/detached-processes.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -45,10 +46,24 @@ const SESSION = 's-b';
 /** The turns that use `team-skill`: p1's call, p2's `/team-skill` (its call and `track` repeat it), p3's `track-slash`. */
 const SKILL_USES = 3;
 
+// Every scenario's CLI child runs with this preload, so each detached
+// grandchild it spawns (the --bg-only pass of SessionEnd and Stop) records
+// its pid. Teardown joins those pids before removing the sandbox: the child
+// keeps writing `state.json` and `debug.log` under `.teamai` for a moment
+// after the events it records have landed, which is what raced the removal
+// into ENOTEMPTY on CI (#1413) — the events-settled wait above watches what
+// the child wrote, never the writer itself. One shared tracker for the file:
+// scenarios are sequential, so an afterAll waiting here waits only for
+// children earlier or none at all, never for a later scenario's.
+const detachedRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-810-detached-'));
+const detached = trackDetachedProcesses(detachedRoot);
+afterAll(() => fs.rmSync(detachedRoot, { recursive: true, force: true }));
+
 function cliEnv(home: string): NodeJS.ProcessEnv {
   // The host's session id would override the payloads' own.
   const { CLAUDE_SESSION_ID: _ignored, ...env } = process.env;
-  return { ...env, ...GIT_ENV, HOME: home, USERPROFILE: home, FORCE_COLOR: '0', NO_COLOR: '1' };
+  const nodeOptions = [process.env.NODE_OPTIONS ?? '', detached.nodeOptions].filter(Boolean).join(' ');
+  return { ...env, ...GIT_ENV, HOME: home, USERPROFILE: home, FORCE_COLOR: '0', NO_COLOR: '1', NODE_OPTIONS: nodeOptions };
 }
 
 function runCLI(args: string[], cwd: string, home: string, input = ''): Promise<RunResult> {
@@ -235,11 +250,15 @@ function scenario({ userScope, breakProjectConfig = false, bare = false, project
   const afterRemoval = () => readJsonl<RecordedEvent>(eventsFile).slice(state.before).filter((e) => e.sessionId === SESSION);
   // Every hook here goes through `hook-dispatch`, which spawns a detached child
   // for the background-only handlers (SessionEnd, Stop). The suite waits for the
-  // events that child writes, never for the child itself to exit, so a removal
-  // that runs straight afterwards can race it: `rmdir '.teamai'` lands while the
-  // child is still creating a file there and fails with ENOTEMPTY. Retry like
-  // git-kind-learnings.test.ts does for the same `git gc --auto` race.
-  const cleanup = () => fs.rmSync(sandbox, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  // events that child writes, never for the child itself to exit: it keeps
+  // writing `state.json` and `debug.log` under `.teamai` for a moment after,
+  // so a removal that runs straight afterwards raced it into ENOTEMPTY on CI
+  // (#1413). Teardown joins every detached pid the preload recorded before
+  // removing the sandbox; the maxRetries rmSync stays as a backstop.
+  const cleanup = async (): Promise<void> => {
+    await detached.waitForExit();
+    fs.rmSync(sandbox, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  };
   return { state, setup, afterRemoval, cleanup, hook, writeSessionState };
 }
 
@@ -377,4 +396,34 @@ describe('hook events after their worktree is deleted (#810)', () => {
       expect(r.output).not.toContain('worth documenting');
     });
   });
+});
+
+
+it.runIf(process.platform !== 'win32').each([[false, false], [true, false], [true, true]])('recovers an omitted cwd after deletion, user scope %s, moved on %s', async (userScope, movedOn) => {
+  const fixture = scenario({ userScope });
+  try {
+    await fixture.setup();
+    const { state } = fixture;
+    if (movedOn) {
+      const elsewhere = path.join(state.home, 'elsewhere');
+      fs.mkdirSync(elsewhere);
+      git(['init', '-q', '-b', 'main'], elsewhere);
+      git(['commit', '-q', '--allow-empty', '-m', 'fixture'], elsewhere);
+      const prompt = await runCLI(['hook-dispatch', 'prompt-submit', '--tool', 'claude'], elsewhere, state.home,
+        JSON.stringify({ session_id: SESSION, cwd: elsewhere, prompt: 'work elsewhere' }));
+      expect(prompt.code, prompt.output).toBe(0);
+      expect(readJsonl<RecordedEvent & { cwd: string }>(state.eventsFile).at(-1)?.cwd).toBe(elsewhere);
+    }
+    const before = readJsonl<RecordedEvent>(state.eventsFile).length;
+    fs.mkdirSync(state.worktree);
+    const stopped = spawnSync('/bin/sh', ['-c', 'rmdir "$REMOVED_WORK" && exec "$TEST_NODE" "$TEST_CLI" hook-dispatch stop --tool claude --bg-only'], {
+      cwd: state.worktree, env: { ...cliEnv(state.home), REMOVED_WORK: state.worktree, TEST_NODE: process.execPath, TEST_CLI: CLI },
+      input: JSON.stringify({ session_id: SESSION, hook_event_name: 'Stop' }), encoding: 'utf8', timeout: 30000,
+    });
+    expect(stopped.status, stopped.stdout + stopped.stderr).toBe(0);
+    expect(stopped.stdout + stopped.stderr).not.toContain('uv_cwd');
+    const events = readJsonl<RecordedEvent>(state.eventsFile).slice(before).filter(event => event.sessionId === SESSION && event.type === 'stop');
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ dataHomeKey: await dataHomeKey(state.partition), projectAnchor: state.anchor });
+  } finally { await fixture.cleanup(); }
 });
