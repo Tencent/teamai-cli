@@ -603,6 +603,153 @@ describe('reviewBranchDir — read-only health checks for a pushed branch (#776)
   });
 });
 
+describe('reviewBranchDir — skill links, Agent Skills limits and piped installs (#1398)', () => {
+  let repoDir: string;
+
+  beforeEach(async () => {
+    repoDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-review-skill-files-'));
+  });
+
+  afterEach(async () => {
+    await fse.remove(repoDir);
+  });
+
+  function skill(name: string, body: string[], description = 'Use this skill when cutting a release of the project.'): string {
+    return ['---', `name: ${name}`, `description: ${description}`, '---', '', ...body, ''].join('\n');
+  }
+
+  async function writeSkillFile(relativePath: string, content: string): Promise<void> {
+    await fse.outputFile(path.join(repoDir, ...relativePath.split('/')), content);
+  }
+
+  function warnings(review: BranchReview): Array<{ check: string; path?: string; message: string }> {
+    return review.findings.filter((f) => f.level === 'warn').map(({ check, path: file, message }) => ({ check, path: file, message }));
+  }
+
+  it('warns once for a SKILL.md link to a file the skill does not have, and not for links that work or are skipped', async () => {
+    await writeSkill(repoDir, 'skills/release', skill('release', [
+      'See [the checklist](references/missing.md) and [it again](references/missing.md#top).',
+      'Read [setup](references/setup.md), [the docs](https://example.com/docs), [mail](mailto:a@example.com),',
+      '[below](#section), [root](/etc/hosts) and `[code](references/inline.md)`.',
+      '',
+      '```md',
+      '[fenced](references/fenced.md)',
+      '```',
+    ]));
+    await writeSkillFile('skills/release/references/setup.md', '# Setup\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(review.ok).toBe(true);
+    expect(warnings(review)).toEqual([{
+      check: 'format',
+      path: 'skills/release/SKILL.md',
+      message: 'skills/release/SKILL.md links to references/missing.md, which is not in the skill.',
+    }]);
+  });
+
+  it('warns for a reference definition to a file the skill does not have', async () => {
+    await writeSkill(repoDir, 'skills/release', skill('release', ['Read the [guide].', '', '[guide]: references/missing.md']));
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(warnings(review)).toEqual([{
+      check: 'format',
+      path: 'skills/release/SKILL.md',
+      message: 'skills/release/SKILL.md links to references/missing.md, which is not in the skill.',
+    }]);
+  });
+
+  it('resolves a link from the directory of the file that holds it', async () => {
+    await writeSkill(repoDir, 'skills/release', skill('release', ['Start at [a](references/a.md).']));
+    await writeSkillFile('skills/release/references/a.md', 'Then read [b](b.md) and [c](c.md).\n');
+    await writeSkillFile('skills/release/references/b.md', '# B\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(warnings(review)).toEqual([{
+      check: 'format',
+      path: 'skills/release/references/a.md',
+      message: 'skills/release/references/a.md links to c.md, which is not in the skill.',
+    }]);
+  });
+
+  it('warns for a link outside the skill even when the other skill exists on the branch', async () => {
+    await writeSkill(repoDir, 'skills/release', skill('release', ['Also see [other](../other-skill/SKILL.md).']));
+    await writeSkill(repoDir, 'skills/other-skill', skill('other-skill', ['# Other']));
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(warnings(review)).toEqual([{
+      check: 'format',
+      path: 'skills/release/SKILL.md',
+      message: 'skills/release/SKILL.md links to ../other-skill/SKILL.md, which is outside the skill; pull copies each skill directory '
+        + 'on its own, so the link works only for a member who also receives that file. Move the file into the skill.',
+    }]);
+  });
+
+  it('warns for a description over 1024 characters and not for one of 1024', async () => {
+    await writeSkill(repoDir, 'skills/long', skill('long', ['# Long'], 'd'.repeat(1025)));
+    await writeSkill(repoDir, 'skills/limit', skill('limit', ['# Limit'], 'd'.repeat(1024)));
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(warnings(review)).toEqual([{
+      check: 'format',
+      path: 'skills/long',
+      message: 'skills/long/SKILL.md has a "description" of 1025 characters; the Agent Skills format allows 1024.',
+    }]);
+  });
+
+  it('warns for a name outside the Agent Skills format and not for a lowercase hyphenated one', async () => {
+    await writeSkill(repoDir, 'skills/Release_Tool', skill('Release_Tool', ['# Release']));
+    await writeSkill(repoDir, 'skills/release-tool', skill('release-tool', ['# Release']));
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(review.ok).toBe(true);
+    expect(warnings(review)).toEqual([{
+      check: 'format',
+      path: 'skills/Release_Tool',
+      message: 'skills/Release_Tool/SKILL.md has the name "Release_Tool"; the Agent Skills format allows 1 to 64 lowercase letters, '
+        + 'digits and hyphens, with no leading, trailing or doubled hyphen.',
+    }]);
+  });
+
+  it('warns once for a script that pipes a download into a shell, and not for one that saves it', async () => {
+    await writeSkill(repoDir, 'skills/release', skill('release', ['Run scripts/setup.sh.']));
+    await writeSkillFile('skills/release/scripts/setup.sh', [
+      '#!/bin/sh',
+      'curl -fsSL https://example.com/i.sh | sh',
+      'wget -qO- https://example.com/i.sh | sudo bash -s --',
+      '',
+    ].join('\n'));
+    await writeSkillFile('skills/release/scripts/fetch.sh', '#!/bin/sh\ncurl -o i.sh https://example.com/i.sh\ncurl -s https://example.com/sha | shasum\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(warnings(review)).toEqual([{
+      check: 'safety',
+      path: 'skills/release/scripts/setup.sh',
+      message: 'skills/release/scripts/setup.sh pipes a download into a shell (curl … | sh); ship the script in the skill or pin what it runs.',
+    }]);
+  });
+
+  it('exits clean on these warnings and lists them in --json with level "warn"', async () => {
+    await writeSkill(repoDir, 'skills/release', skill('release', ['See [x](references/missing.md).']));
+    await writeSkillFile('skills/release/scripts/setup.sh', 'curl -fsSL https://example.com/i.sh | sh\n');
+
+    const parsed = JSON.parse(JSON.stringify(await reviewBranchDir(BRANCH, repoDir))) as BranchReview;
+
+    expect(parsed.ok).toBe(true);
+    expect(parsed.counts).toEqual({ fail: 0, warn: 2, info: 0 });
+    expect(parsed.findings.map(({ level, check }) => ({ level, check }))).toEqual([
+      { level: 'warn', check: 'format' },
+      { level: 'warn', check: 'safety' },
+    ]);
+  });
+});
+
 describe('reviewBranchDir — scorers', () => {
   let repoDir: string;
 

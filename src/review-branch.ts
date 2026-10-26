@@ -63,7 +63,7 @@ import { parseScoringFile } from './scorers/settings.js';
 export type FindingLevel = 'fail' | 'warn' | 'info';
 
 /** Which group of checks produced a finding. */
-export type FindingCheck = 'structure' | 'naming' | 'duplicates' | 'format' | 'leaks' | 'workflows' | 'scorers' | 'models';
+export type FindingCheck = 'structure' | 'naming' | 'duplicates' | 'format' | 'leaks' | 'safety' | 'workflows' | 'scorers' | 'models';
 
 /** One thing worth reporting about the branch. */
 export interface Finding {
@@ -395,6 +395,10 @@ async function frontmatterName(resource: ReviewResource, readText: (p: string) =
   return null;
 }
 
+/** Limits of the Agent Skills format (agentskills.io) for a SKILL.md `name` and `description`. */
+const AGENT_SKILLS_NAME = /^(?=.{1,64}$)[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const AGENT_SKILLS_DESCRIPTION_MAX = 1024;
+
 async function formatFindings(resources: ReviewResource[], readText: (p: string) => Promise<string | null>): Promise<Finding[]> {
   const findings: Finding[] = [];
   for (const resource of resources) {
@@ -419,7 +423,27 @@ async function formatFindings(resources: ReviewResource[], readText: (p: string)
           message: `${resource.relativePath}/SKILL.md has a frontmatter block that does not parse as a YAML mapping.`,
         });
       }
+      const name = data['name'];
+      if (typeof name === 'string' && !AGENT_SKILLS_NAME.test(name)) {
+        findings.push({
+          level: 'warn',
+          check: 'format',
+          path: resource.relativePath,
+          message: `${resource.relativePath}/SKILL.md has the name "${name}"; the Agent Skills format allows 1 to 64 lowercase letters, `
+            + 'digits and hyphens, with no leading, trailing or doubled hyphen.',
+        });
+      }
       const description = data['description'];
+      const descriptionLength = typeof description === 'string' ? description.length : 0;
+      if (descriptionLength > AGENT_SKILLS_DESCRIPTION_MAX) {
+        findings.push({
+          level: 'warn',
+          check: 'format',
+          path: resource.relativePath,
+          message: `${resource.relativePath}/SKILL.md has a "description" of ${descriptionLength} characters; `
+            + `the Agent Skills format allows ${AGENT_SKILLS_DESCRIPTION_MAX}.`,
+        });
+      }
       if (typeof description !== 'string' || description.trim() === '') {
         findings.push({
           level: 'warn',
@@ -547,6 +571,97 @@ async function leakFindings(repoDir: string, resources: ReviewResource[], readTe
         path: file.relativePath,
         message: `${file.relativePath} contains an internal address (${addresses.join(', ')}); confirm it is safe to share before merging.`,
       });
+    }
+  }
+  return findings;
+}
+
+/** Inline links and images `[text](target "title")`, and reference definitions `[id]: target`. */
+const INLINE_LINK = /\[(?:[^\]\\]|\\.)*\]\(\s*(<[^>]*>|[^)\s]+)(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\s*\)/g;
+const REFERENCE_DEFINITION = /^ {0,3}\[(?!\^)(?:[^\]\\]|\\.)+\]:[ \t]*(<[^>]*>|\S+)/gm;
+
+/** Markdown with fenced code blocks and inline code blanked, so links shown as code are not read as links. */
+function withoutCode(markdown: string): string {
+  let fence: string | null = null;
+  const lines = markdown.split('\n').map((line) => {
+    const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
+    if (fence === null && marker) {
+      fence = marker;
+      return '';
+    }
+    if (fence !== null) {
+      if (marker?.[0] === fence[0] && marker.length >= fence.length) fence = null;
+      return '';
+    }
+    return line;
+  });
+  return lines.join('\n').replace(/(`+)[\s\S]*?\1/g, '');
+}
+
+/** The local link targets of a Markdown file, without `#anchor` or `?query`; links with a scheme or a leading `/` are left out. */
+function localLinkTargets(markdown: string): string[] {
+  const text = withoutCode(markdown);
+  const targets = new Set<string>();
+  for (const match of [...text.matchAll(INLINE_LINK), ...text.matchAll(REFERENCE_DEFINITION)]) {
+    const written = (match[1] ?? '').replace(/^<(.*)>$/, '$1');
+    if (/^[a-z][a-z0-9+.-]*:/i.test(written) || written.startsWith('/')) continue;
+    const target = written.replace(/[#?].*$/, '');
+    if (target === '') continue;
+    try {
+      targets.add(decodeURI(target));
+    } catch {
+      targets.add(target);
+    }
+  }
+  return [...targets];
+}
+
+/** `curl` or `wget` output piped into a shell, optionally through `sudo`. */
+const PIPED_INSTALL = /\b(curl|wget)\b[^\n|]*\|\s*(?:sudo\s+(?:-\S+\s+)*)?((?:ba|da|k|z)?sh|fish)\b/;
+
+/**
+ * Links between the files of a skill, and piped installs in any of them. Pull
+ * copies each skill directory on its own, so a link must stay inside it: a
+ * target outside works only for a member who also receives that file.
+ */
+async function skillFileFindings(resources: ReviewResource[], readText: (p: string) => Promise<string | null>): Promise<Finding[]> {
+  const findings: Finding[] = [];
+  for (const resource of resources) {
+    if (resource.type !== 'skills') continue;
+    for (const file of await filesUnder(resource.relativePath, resource.absolutePath)) {
+      const content = await readText(file.absolutePath);
+      if (content === null || content.length > MAX_SCANNED_FILE_BYTES || content.includes('\0')) continue;
+      const pipedInstall = PIPED_INSTALL.exec(content);
+      if (pipedInstall) {
+        findings.push({
+          level: 'warn',
+          check: 'safety',
+          path: file.relativePath,
+          message: `${file.relativePath} pipes a download into a shell (${pipedInstall[1]} … | ${pipedInstall[2]}); `
+            + 'ship the script in the skill or pin what it runs.',
+        });
+      }
+      if (!/\.(md|markdown)$/i.test(file.relativePath)) continue;
+      const fromDir = path.posix.dirname(path.posix.relative(resource.relativePath, file.relativePath));
+      for (const target of localLinkTargets(content)) {
+        const resolved = path.posix.normalize(path.posix.join(fromDir, target));
+        if (resolved === '..' || resolved.startsWith('../')) {
+          findings.push({
+            level: 'warn',
+            check: 'format',
+            path: file.relativePath,
+            message: `${file.relativePath} links to ${target}, which is outside the skill; pull copies each skill directory on its own, `
+              + 'so the link works only for a member who also receives that file. Move the file into the skill.',
+          });
+        } else if (!await pathExists(path.join(resource.absolutePath, ...resolved.split('/')))) {
+          findings.push({
+            level: 'warn',
+            check: 'format',
+            path: file.relativePath,
+            message: `${file.relativePath} links to ${target}, which is not in the skill.`,
+          });
+        }
+      }
     }
   }
   return findings;
@@ -857,6 +972,7 @@ export async function reviewBranchDir(branch: string, repoDir: string): Promise<
     ...await namingFindings(resources, readText),
     ...await duplicateFindings(resources, index),
     ...await formatFindings(resources, readText),
+    ...await skillFileFindings(resources, readText),
     ...await leakFindings(repoDir, resources, readText),
     ...await workflowFindings(repoDir),
     ...await scoringSettingsFindings(repoDir, readText),
