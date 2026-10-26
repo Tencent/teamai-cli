@@ -1038,7 +1038,7 @@ function closingQuote(line: string, open: number): number {
 }
 
 /** A shell that runs a download through process or command substitution: `bash <(curl …)`, `sh -c "$(curl …)"`. */
-const SUBSTITUTED_INSTALL = /(?<![\w.-])((?:ba|da|k|z)?sh)\s+(?:-\S+\s+)*(<\(|["']?\$\()\s*(curl|wget)(?=\s)/;
+const SUBSTITUTED_INSTALL = /(?<![\w.-])((?:ba|da|k|z)?sh)\s+((?:-\S+\s+)*)(<\(|["']?\$\()\s*(curl|wget)(?=\s)/;
 
 /**
  * The first `curl` or `wget` whose output a shell runs, written as the install
@@ -1055,8 +1055,10 @@ function findPipedInstall(text: string): string | null {
     .flatMap((line) => blankQuotedSeparators(line).split(/;|&&|\|\|/));
   for (const command of commands) {
     const substituted = SUBSTITUTED_INSTALL.exec(command);
-    const [, substitutingShell, opener, substitutedDownloader] = substituted ?? [];
-    if (substituted && substitutingShell !== undefined && (substitutedDownloader === 'curl' || substitutedDownloader === 'wget')) {
+    const [, substitutingShell, options = '', opener, substitutedDownloader] = substituted ?? [];
+    // A command substitution is a script only after `-c`; without it the shell opens a file of that name.
+    const runsSubstitution = opener === '<(' || /(?:^|\s)-[a-zA-Z]*c/.test(options);
+    if (substituted && substitutingShell !== undefined && runsSubstitution && (substitutedDownloader === 'curl' || substitutedDownloader === 'wget')) {
       const args = command.slice(substituted.index + substituted[0].length).split(')')[0] ?? '';
       if (writesToStdout(substitutedDownloader, args)) {
         return opener === '<(' ? `${substitutingShell} <(${substitutedDownloader} …)` : `${substitutingShell} -c "$(${substitutedDownloader} …)"`;
