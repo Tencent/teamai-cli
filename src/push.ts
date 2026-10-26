@@ -1091,8 +1091,8 @@ type DefaultBranchChanges =
  * retired file the default branch changed since this checkout branched from it,
  * and which the checkout does not already hold at the branch's version:
  * `untouched` when the checkout still holds the version it branched from,
- * `edited` when it changed the file too, `retiring` when the push would delete
- * a file the branch changed. Self-mode scans compare the checkout with the default
+ * `edited` when it changed the file too, and independently `retiring` when the
+ * push would delete a file the branch changed. Self-mode scans compare the checkout with the default
  * branch, so on a checkout behind it both read as this member's edit, and
  * pushing either reverts the other side. Without a common ancestor (a shallow
  * clone, or rewritten history), what differs from its own HEAD is
@@ -1136,10 +1136,7 @@ async function itemsChangedOnDefaultBranch(
     const retiredTip = retired && (seenBlob
       ? (await git.raw(['rev-parse', `${defaultTip}:.teamai/${retired}`]).catch(() => '')).trim()
       : blobs.get(teamFile(retired))?.atTip);
-    if (retired && retiredTip && retiredTip !== seenBlob) {
-      retiring.push({ item, retired, tip: retiredTip });
-      continue;
-    }
+    if (retired && retiredTip && retiredTip !== seenBlob) retiring.push({ item, retired, tip: retiredTip });
     if (item.type === 'skills') {
       const source = path.resolve(item.sourcePath);
       const destination = teamFile(item.relativePath);
@@ -1168,7 +1165,7 @@ async function itemsChangedOnDefaultBranch(
   }
   return branchedFrom
     ? { history: 'complete', untouched, edited, retiring }
-    : missing([...untouched, ...edited, ...retiring.map(({ item }) => item)]);
+    : missing([...new Set([...untouched, ...edited, ...retiring.map(({ item }) => item)])]);
 }
 
 /**
