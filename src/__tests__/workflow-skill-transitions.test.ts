@@ -380,6 +380,11 @@ const GO_LIVE_AFTER_UI = `  - id: go-live
     command: node -e "process.exit(0)"
 `;
 
+// HANDED with invoke: allow and a required approval between the build and the prompt steps.
+const HANDED_GATED = HANDED.replace('description: Build, then write the API and the UI', 'description: Build, then write the API and the UI\ninvoke: allow')
+  .replace('  - id: api\n    needs: [build]', '  - id: go-live\n    needs: [build]\n    approve: { message: Go live?, required: true }\n    command: node -e "process.exit(0)"\n  - id: api\n    needs: [go-live]')
+  .replace('  - id: ui\n    needs: [build]', '  - id: ui\n    needs: [go-live]');
+
 // A review whose required approval sits in a workflow that never runs.
 const SKIPPED_REVIEW = `schemaVersion: v1alpha1
 name: skipping
@@ -1172,6 +1177,46 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       const runs = runsDir(made.config);
       expect(fs.existsSync(runs) ? fs.readdirSync(runs) : []).toEqual([]);
       return made.rows;
+    },
+  },
+  {
+    name: 'an unattended takeover of a run a session drives is refused when the steps left need a person, and that session stays its orchestrator',
+    rows: ['R24'],
+    run: async () => {
+      const made = await harness({ release: RELEASE });
+      const { run } = await turnOf(await made.call({ kind: 'start', name: 'release', answers: { confirmed: false, hitl: 'person' }, inputs: undefined }));
+      const owner = (): unknown => JSON.parse(fs.readFileSync(skillStatePath(made.config, run), 'utf8')).orchestrator;
+      const before = owner();
+      expect(await made.call({ kind: 'takeover', run, confirmed: false }, { mode: 'unattended', session: 'session-b' })).toMatchObject({ error: { code: 'unattended_denied', next: null } });
+      expect(owner()).toEqual(before);
+      return made.rows;
+    },
+  },
+  {
+    name: 'an unattended resume --claim decides from the published run the claim installs, not this machine\'s older copy',
+    rows: ['R19'],
+    run: async () => {
+      const team = sharedTeam({ handed: HANDED_GATED });
+      const ci = await team.install('ci');
+      const { run } = await publishedMidStep(ci, 'handed');
+      // A member's session claims the run, the person answers go-live, and the member publishes it with api and ui left.
+      const member = await harness({}, { install: await team.install('member') });
+      await turnOf(await member.call({ kind: 'resume', run, claim: false, confirmed: false, answers: {} }));
+      await member.call({ kind: 'choose', run, choice: 'h1' });
+      const person = respondProvenance({ kind: 'terminal', caller: { tty: true, evidence: { kind: 'none' } } });
+      const goLive = async (): Promise<string | undefined> => {
+        const read = await readRun(member.config, run);
+        return typeof read === 'object' ? read.steps.find((step) => step.id === 'go-live')?.status : undefined;
+      };
+      for (let poll = 0; poll < 10 && await goLive() !== 'succeeded'; poll += 1) {
+        await respondToHitl(member.config, run, member.context.env.secrets, { step: 'go-live', choice: 'yes', pass: 1, provenance: person });
+        await member.call({ kind: 'next', run, wait: true });
+      }
+      expect(await publishRun(member.config, run, { checkout: member.work })).toMatchObject({ ok: true });
+      // CI's own copy still has go-live ahead; the published run does not.
+      const back = await harness({}, { install: ci, mode: 'unattended' });
+      expect(await turnOf(await back.call({ kind: 'resume', run, claim: true, confirmed: false, answers: {} }))).toMatchObject({ run });
+      return back.rows;
     },
   },
   {

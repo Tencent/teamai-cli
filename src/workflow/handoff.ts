@@ -561,9 +561,23 @@ export async function resumeRun(config: LocalConfig, runId: string, options: { c
   return acquire(config, runId, origin, { transfer: false, checkout: options.checkout });
 }
 
-/** The steps of `steps` settled for good: succeeded or skipped, so no person is needed for them again. */
+/**
+ * The steps of `steps` settled for good, succeeded or skipped, so no person is needed for them again. A step inside the
+ * items of a `for_each` step, such as `items[0].approve`, is also listed by its definition's path, `items.approve`, once
+ * every item settled it or settled whole. Items within items are not.
+ */
 export function settledSteps(steps: ReadonlyArray<{ id: string; status: string }>): string[] {
-  return steps.filter((step) => step.status === 'succeeded' || step.status === 'skipped').map((step) => step.id);
+  const settled = new Set(steps.filter((step) => step.status === 'succeeded' || step.status === 'skipped').map((step) => step.id));
+  const inItems = new Map<string, { container: string; rest: string }>();
+  for (const id of settled) {
+    const item = /^([^[\]]+)\[\d+\](\..+)$/.exec(id);
+    if (item?.[1] !== undefined && item[2] !== undefined && !item[2].includes('[')) inItems.set(`${item[1]}${item[2]}`, { container: item[1], rest: item[2] });
+  }
+  const paths = [...inItems].filter(([, { container, rest }]) => {
+    const items = steps.filter((step) => step.id.startsWith(`${container}[`) && /^\[\d+\]$/.test(step.id.slice(container.length)));
+    return items.length > 0 && items.every((item) => settled.has(item.id) || settled.has(`${item.id}${rest}`));
+  }).map(([path]) => path);
+  return [...settled, ...paths];
 }
 
 /** What a run carries: its definitions, and the steps it settled for good. */
@@ -573,17 +587,18 @@ export interface CarriedRun extends Definitions {
 
 /**
  * What run `runId` carries, before `resumeRun` changes anything: this machine's copy of the run, else, when
- * `published`, the run teamai-reports holds, as a claim would install it. Undefined when neither holds the run, which
- * the resume then answers.
+ * `published`, the run teamai-reports holds, as a claim would install it. With `claim`, the published run comes first,
+ * since a claim installs it over this machine's copy. Undefined when neither holds the run, which the resume then answers.
  */
-export async function carriedRun(config: LocalConfig, runId: string, { published }: { published: boolean }): Promise<Result<CarriedRun | undefined>> {
+export async function carriedRun(config: LocalConfig, runId: string, { published, claim = false }: { published: boolean; claim?: boolean }): Promise<Result<CarriedRun | undefined>> {
   const stored = await readRun(config, runId);
   if (stored === 'corrupt') return refused(runUnreadable(runId));
-  if (stored !== 'missing') return ok({ definition: stored.definition, workflows: stored.workflows ?? {}, settled: settledSteps(stored.steps) });
-  if (!published) return ok(undefined);
+  const local = stored === 'missing' ? undefined : { definition: stored.definition, workflows: stored.workflows ?? {}, settled: settledSteps(stored.steps) };
+  if (local && !claim) return ok(local);
+  if (!published) return ok(local);
   // Read from the team repository rather than the reports checkout, which a refused resume would otherwise leave synced.
   const origin = await publishedRun(config, runId, { checkout: false });
-  if (!origin.ok || origin.value === 'absent') return origin.ok ? ok(undefined) : origin;
+  if (!origin.ok || origin.value === 'absent') return origin.ok || local ? ok(local) : origin;
   const definitions = await definitionsOf(config, origin.value);
   return definitions.ok ? ok({ ...definitions.value, settled: settledSteps(origin.value.steps) }) : definitions;
 }

@@ -107,7 +107,7 @@ export interface WorkflowClient {
    * Run `runId` as it stands before `resume` changes anything, as `resumeRefusal` reads it: its own definition described
    * as `describe` does, and the steps it settled for good. Undefined when this machine cannot read it.
    */
-  carried(runId: RunId, options: { published: boolean; ceiling: number; can: DriverCan }): Promise<{ description: WorkflowDescription; settled: string[] } | undefined>;
+  carried(runId: RunId, options: { published: boolean; claim: boolean; ceiling: number; can: DriverCan }): Promise<{ description: WorkflowDescription; settled: string[] } | undefined>;
   /** Why `caller` may not continue run `runId`, by a resume or a takeover, as `resumeRefusal` decides it. */
   resumeRefusal(runId: RunId, options: { caller: InvokeCaller; published: boolean }): Promise<WorkflowFailure | undefined>;
   /** Takes or renews judge work, as `teamai score --next` does with `body` as its payload. */
@@ -461,8 +461,8 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
       const description = describeWorkflow({ definition: run.definition, workflows: run.workflows ?? {}, ceiling, can, allow: config.workflows?.allow ?? {}, env: env.facts });
       return { kind: 'ready', installed: resumed.value?.ownership === 'claimed', description, settled: settledSteps(run.steps), judging: await judgingOf(config, description, tool) };
     },
-    carried: async (runId, { published, ceiling, can }) => {
-      const carried = await carriedRun(config, runId, { published });
+    carried: async (runId, { published, claim, ceiling, can }) => {
+      const carried = await carriedRun(config, runId, { published, claim });
       if (!carried.ok || carried.value === undefined) return undefined;
       const { definition, workflows, settled } = carried.value;
       return { description: describeWorkflow({ definition, workflows, ceiling, can, allow: config.workflows?.allow ?? {}, env: env.facts }), settled };

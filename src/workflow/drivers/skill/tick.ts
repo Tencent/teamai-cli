@@ -263,20 +263,22 @@ async function called(context: SkillContext, lock: RunLock, same: Literal, input
     return { answer: { error: { code: 'run_unreadable', message: `The skill driver's state of run ${run} cannot be read (${read.reason}). The person can continue the run in a terminal with ${resumeLiteral(context.invocation, run, { tool: localTool })}.`, next: null } } };
   }
   const state = read.kind === 'found' ? read.state : undefined;
-  if (input.resume !== undefined || (input.takeover && !state)) {
-    const answers = input.resume?.answers ?? {};
-    if (context.mode === 'unattended') {
-      // Nobody is there to take a run that needs a person or the local driver over from here, so it is refused before
-      // the claim, which would leave this install owning it.
-      const carried = await context.client.carried(run, { published: input.resume !== undefined, ceiling: ceilingOf(context.config), can: canFor(undefined) });
-      const local = carried ? localReason(carried.description) : undefined;
-      const attended = carried ? attendedReason(carried.description, 'continue', new Set(carried.settled)) : undefined;
-      if (carried && (local !== undefined || attended !== undefined)) {
-        const readied: RunReadied = { kind: 'ready', installed: false, description: carried.description, settled: carried.settled, judging: { kind: 'none' } };
-        const refused = traced(context, readiedRow({ run, readied, kept: false, mode: context.mode, ...(local !== undefined ? { local } : {}), ...(attended !== undefined ? { attended } : {}), answers }));
-        if (refused && 'answer' in refused) return { answer: { error: errorOf(refused.answer, { invocation: context.invocation, same, localTool }) } };
-      }
+  const answers = input.resume?.answers ?? {};
+  if (context.mode === 'unattended' && (input.resume !== undefined || input.takeover)) {
+    // Nobody is there to take a run that needs a person or the local driver over from here, so it is refused before the
+    // claim, which would leave this install owning it, and before a takeover makes this session its orchestrator.
+    const carried = await context.client.carried(run, {
+      published: input.resume !== undefined, claim: input.resume?.claim === true, ceiling: ceilingOf(context.config), can: canFor(undefined),
+    });
+    const local = carried ? localReason(carried.description) : undefined;
+    const attended = carried ? attendedReason(carried.description, 'continue', new Set(carried.settled)) : undefined;
+    if (carried && (local !== undefined || attended !== undefined)) {
+      const readied: RunReadied = { kind: 'ready', installed: false, description: carried.description, settled: carried.settled, judging: { kind: 'none' } };
+      const refused = traced(context, readiedRow({ run, readied, kept: false, mode: context.mode, ...(local !== undefined ? { local } : {}), ...(attended !== undefined ? { attended } : {}), answers }));
+      if (refused && 'answer' in refused) return { answer: { error: errorOf(refused.answer, { invocation: context.invocation, same, localTool }) } };
     }
+  }
+  if (input.resume !== undefined || (input.takeover && !state)) {
     const readied = await context.client.resume(run, {
       lock, claim: input.resume === undefined ? 'none' : input.resume.claim ? 'any' : 'lacking', checkout: context.cwd, ceiling: ceilingOf(context.config), can: canFor(undefined),
       ...(context.tool !== undefined ? { tool: context.tool } : {}),

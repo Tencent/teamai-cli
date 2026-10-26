@@ -13,7 +13,7 @@ import { updateReports } from '../utils/reports-branch.js';
 import * as workflowCache from '../workflow/cache.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, reportAttempt, resumableSessions, startRun } from '../workflow/engine.js';
-import { claimRun, publishRun, resumeRun } from '../workflow/handoff.js';
+import { claimRun, publishRun, resumeRun, settledSteps } from '../workflow/handoff.js';
 import { pendingRecords, publishPendingRecords, queueRunRecord } from '../workflow/records.js';
 import { runLocalDriver } from '../workflow/drivers/local/local-driver.js';
 import { cancelRun, retryStep } from '../workflow/run-controls.js';
@@ -2527,5 +2527,20 @@ steps:
       ['Build it.', ['Planned it.']],
       ['Check it.', ['Planned it.']],
     ]);
+  });
+});
+
+describe('settledSteps', () => {
+  it('lists a step inside for_each items by its definition path once every item settled it or settled whole', () => {
+    const items = (statuses: string[]) => [
+      { id: 'items', status: 'running' },
+      ...statuses.map((status, index) => ({ id: `items[${index}]`, status: status === 'skipped' ? 'skipped' : 'running' })),
+      ...statuses.flatMap((status, index) => (status === 'skipped' || status === 'unstarted' ? [] : [{ id: `items[${index}].approve`, status }])),
+    ];
+    expect(settledSteps(items(['succeeded', 'succeeded']))).toContain('items.approve');
+    expect(settledSteps(items(['succeeded', 'skipped']))).toContain('items.approve');
+    expect(settledSteps(items(['succeeded', 'pending']))).not.toContain('items.approve');
+    expect(settledSteps(items(['succeeded', 'unstarted']))).not.toContain('items.approve');
+    expect(settledSteps([{ id: 'a', status: 'running' }, { id: 'a[0]', status: 'running' }, { id: 'a[0].b[0].c', status: 'succeeded' }])).not.toContain('a.b.c');
   });
 });
