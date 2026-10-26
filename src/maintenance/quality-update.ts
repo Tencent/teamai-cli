@@ -127,8 +127,10 @@ export async function findRelatedAdoptedLearnings(
   staleEntry: StaleEntry,
   votesDir: string,
   learningsDirs: readonly string[],
-  limit: number = 5,
+  options?: { limit?: number; namespaces?: readonly string[] } | number,
 ): Promise<string[]> {
+  const limit = typeof options === 'number' ? options : (options?.limit ?? 5);
+  const namespaces = typeof options === 'object' ? options.namespaces : undefined;
   const perDoc = new Map<string, number>();
   const voteFiles = await listFiles(votesDir);
 
@@ -152,7 +154,7 @@ export async function findRelatedAdoptedLearnings(
     .slice(0, limit);
 
   const byName = new Map(
-    (await listLearningFiles(learningsDirs)).map((learning) => [learning.file, learning.absPath]),
+    (await listLearningFiles(learningsDirs, namespaces)).map((learning) => [learning.file, learning.absPath]),
   );
   const contents: string[] = [];
   for (const [docId] of sorted) {

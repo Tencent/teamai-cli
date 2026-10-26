@@ -31,15 +31,21 @@ const MIN_AGE_DAYS = 14;
 /**
  * Find learnings eligible for promotion to formal knowledge.
  */
+export interface PromotionCandidatesOptions {
+  namespaces?: readonly string[];
+}
+
 export async function findPromotionCandidates(
   learningsDirs: readonly string[],
   votesDir: string,
+  options?: PromotionCandidatesOptions | readonly string[],
 ): Promise<PromotionCandidate[]> {
+  const namespaces = Array.isArray(options) ? options : (options && 'namespaces' in options ? options.namespaces : undefined);
   const confidenceMap = await computeAllConfidence(votesDir);
   const candidates: PromotionCandidate[] = [];
 
   const perDoc = await aggregatePerDocVotes(votesDir);
-  const files = await listLearningFiles(learningsDirs);
+  const files = await listLearningFiles(learningsDirs, namespaces);
   const now = Date.now();
 
   for (const { file, absPath } of files) {
@@ -158,9 +164,10 @@ export async function executePromotion(
   options: PromoteOptions & { learningsWriteDir?: string } = {},
 ): Promise<{ targetPath: string; marked: string | null }> {
   const category = options.category ?? candidate.suggestedCategory;
+  const normalizedFilename = candidate.filename.split(path.sep).join('/');
   const relativePath = category === 'skills'
-    ? path.posix.join(category, candidate.filename.replace(/\.md$/i, ''), 'SKILL.md')
-    : path.posix.join(category, candidate.filename);
+    ? path.posix.join(category, normalizedFilename.replace(/\.md$/i, ''), 'SKILL.md')
+    : path.posix.join(category, normalizedFilename);
   const targetPath = path.join(repoPath, relativePath);
 
   if (options.dryRun) {
@@ -178,7 +185,7 @@ export async function executePromotion(
   let promotedContent = await generatePromotedContent(originalContent, category, candidate.title);
   if (category === 'skills') {
     const { withSkillFrontmatter } = await import('../resources/skills.js');
-    const skillName = path.posix.basename(candidate.filename).replace(/\.md$/i, '');
+    const skillName = path.posix.basename(normalizedFilename).replace(/\.md$/i, '');
     promotedContent = withSkillFrontmatter(promotedContent, skillName);
   }
   await writeFile(targetPath, promotedContent);

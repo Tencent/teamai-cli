@@ -1561,11 +1561,21 @@ recallCmd
     const {
       repoPath, votesDir, learningsReadDirs, learningsWriteDir,
     } = paths;
+    let learningsNamespaces: string[] | undefined;
+    try {
+      const { deliveredLearningsNamespaces } = await import('./workspace-children.js');
+      learningsNamespaces = await deliveredLearningsNamespaces(localConfig);
+    } catch {
+      learningsNamespaces = undefined;
+    }
 
     if (cmdOpts.confidenceWriteback) {
       const { computeAllConfidence, writeBackConfidence } = await import('./maintenance/index.js');
       const map = await computeAllConfidence(votesDir);
-      const written = await writeBackConfidence(learningsReadDirs, map, learningsWriteDir, { dryRun: cmdOpts.dryRun });
+      const written = await writeBackConfidence(learningsReadDirs, map, learningsWriteDir, {
+        dryRun: cmdOpts.dryRun,
+        namespaces: learningsNamespaces,
+      });
       if (written.length > 0 && !cmdOpts.dryRun) {
         await publishMaintenance(localConfig, `[teamai] Update confidence for ${written.length} learning(s)`, written);
       }
@@ -1576,6 +1586,7 @@ recallCmd
       const { findPruneCandidates, executePrune } = await import('./maintenance/index.js');
       const candidates = await findPruneCandidates(learningsReadDirs, votesDir, {
         threshold: cmdOpts.threshold,
+        namespaces: learningsNamespaces,
       });
       if (candidates.length === 0) {
         const { log } = await import('./utils/logger.js');
@@ -1616,7 +1627,9 @@ recallCmd
 
       log.info('\nGenerating AI-powered update drafts...');
       for (const entry of entries) {
-        const related = await findRelatedAdoptedLearnings(entry, votesDir, learningsReadDirs);
+        const related = await findRelatedAdoptedLearnings(entry, votesDir, learningsReadDirs, {
+          namespaces: learningsNamespaces,
+        });
         const draft = await generateUpdateDraft(entry, related);
         if (draft) {
           const draftPath = `${entry.path}.draft.md`;
@@ -1648,9 +1661,18 @@ recallCmd
     const {
       repoPath, votesDir, learningsReadDirs, learningsWriteDir,
     } = paths;
+    let learningsNamespaces: string[] | undefined;
+    try {
+      const { deliveredLearningsNamespaces } = await import('./workspace-children.js');
+      learningsNamespaces = await deliveredLearningsNamespaces(localConfig);
+    } catch {
+      learningsNamespaces = undefined;
+    }
     const { log } = await import('./utils/logger.js');
 
-    const candidates = await findPromotionCandidates(learningsReadDirs, votesDir);
+    const candidates = await findPromotionCandidates(learningsReadDirs, votesDir, {
+      namespaces: learningsNamespaces,
+    });
 
     if (candidates.length === 0) {
       log.info('No learnings eligible for promotion yet.');
