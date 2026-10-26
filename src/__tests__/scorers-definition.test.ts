@@ -81,7 +81,7 @@ describe('parseScorer', () => {
   });
 
   it('rejects a name ending in .md, which --scorer would take for a file', () => {
-    expect(problems('scorers/v1.md.md', VALID)).toEqual(['scorers/v1.md.md: the file name must be a token such as review-quality.md']);
+    expect(problems('scorers/v1.md.md', VALID)).toEqual(['scorers/v1.md.md: a scorer\'s name cannot end in .md, since teamai score --scorer reads such a value as a scorer file']);
   });
 });
 
