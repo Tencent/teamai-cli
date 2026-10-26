@@ -58,16 +58,27 @@ teamai-post-merge-write:
     - npm install -g teamai-cli @anthropic-ai/claude-code
     - |
       echo "=== [TeamAI] Looking up the MR merged by ${CI_COMMIT_SHA} ==="
-      MR_JSON=$(curl -sf -H "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
-        "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/merge_requests?state=merged&target_branch=${CI_DEFAULT_BRANCH}&per_page=20&order_by=updated_at")
-      MR_URL=$(printf '%s' "$MR_JSON" | node -e '
-        let d = "";
-        process.stdin.on("data", (c) => (d += c)).on("end", () => {
-          const sha = process.env.CI_COMMIT_SHA;
-          const mrs = JSON.parse(d);
-          const mr = mrs.find((m) => m.merge_commit_sha === sha || m.squash_commit_sha === sha);
-          process.stdout.write(mr ? mr.web_url : "");
-        });')
+      # 用 CI_PROJECT_PATH（带命名空间的完整路径）并 URL 编码：
+      # CI_PROJECT_ID 数字 id 在部分自建实例上会取到别的项目的数据。
+      CI_PROJECT_ENC=$(printf '%s' "${CI_PROJECT_PATH}" | node -e 'let d="";process.stdin.on("data",(c)=>(d+=c)).on("end",()=>process.stdout.write(encodeURIComponent(d.trim())))')
+      # 分页查找：延迟触发的 push pipeline，其 MR 可能排在最新 20 条之外。
+      # 按 updated_at 倒序翻页，找到即停。
+      MR_URL=""
+      for PAGE in 1 2 3 4 5; do
+        MR_JSON=$(curl -sf -H "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+          "${CI_API_V4_URL}/projects/${CI_PROJECT_ENC}/merge_requests?state=merged&target_branch=${CI_DEFAULT_BRANCH}&per_page=20&page=${PAGE}&order_by=updated_at")
+        MR_URL=$(printf '%s' "$MR_JSON" | node -e '
+          let d = "";
+          process.stdin.on("data", (c) => (d += c)).on("end", () => {
+            const sha = process.env.CI_COMMIT_SHA;
+            const mrs = JSON.parse(d);
+            const mr = mrs.find((m) => m.merge_commit_sha === sha || m.squash_commit_sha === sha);
+            process.stdout.write(mr ? mr.web_url : "");
+          });')
+        [ -n "$MR_URL" ] && break
+        # 该页没有更多结果时提前结束
+        [ "$(printf '%s' "$MR_JSON" | node -e 'let d="";process.stdin.on("data",(c)=>(d+=c)).on("end",()=>process.stdout.write(String(JSON.parse(d).length)))')" = "0" ] && break
+      done
       if [ -z "$MR_URL" ]; then
         echo "=== [TeamAI] SKIP: this push is not an MR merge ==="
         exit 0
@@ -79,6 +90,7 @@ teamai-post-merge-write:
       # CI_SERVER_HOST 不含协议与路径，自建实例（如 https://host:8443/gitlab）会拼错。
       TEAM_REPO_DIR=/tmp/teamai-team-repo
       CI_BASE="${CI_SERVER_URL%/}"
+      CI_SCHEME="${CI_BASE%%://*}"
       CI_HOSTPART="${CI_BASE#*://}"
       CI_HOST="${CI_HOSTPART%%/*}"
       CI_ROOT=""
@@ -86,7 +98,7 @@ teamai-post-merge-write:
         */*) CI_ROOT="/${CI_HOSTPART#*/}" ;;
       esac
       git clone --branch "${TEAMAI_KNOWLEDGE_BRANCH}" \
-        "https://oauth2:${GITLAB_TOKEN}@${CI_HOST}${CI_ROOT}/${TEAMAI_KNOWLEDGE_REPO}.git" \
+        "${CI_SCHEME}://oauth2:${GITLAB_TOKEN}@${CI_HOST}${CI_ROOT}/${TEAMAI_KNOWLEDGE_REPO}.git" \
         "$TEAM_REPO_DIR"
       # 在合入后的源码 checkout（GitLab 已自动 clone 到 CI_PROJECT_DIR）中运行：
       # teamwiki/ 走 `teamai import --dir . --incremental` 的同一流程，
