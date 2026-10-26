@@ -291,6 +291,17 @@ export async function addHermesAllowlist(event: string, command: string): Promis
   return true;
 }
 
+/** Whether these exact managed commands remain in hooks or their approvals. */
+export async function hasHermesHookCommands(commands: readonly string[]): Promise<boolean> {
+  const doc = await readConfigDoc();
+  const raw = doc.getIn(['hooks']);
+  const hooks = YAML.isMap(raw) ? raw.toJSON() as Record<string, unknown> : {};
+  if (Object.values(hooks).some(entries => Array.isArray(entries)
+    && entries.some((entry: HookEntry) => entry && typeof entry === 'object' && commands.includes(entry.command)))) return true;
+  const approvals = await readJson<AllowlistFile>(getHermesAllowlistPath());
+  return Array.isArray(approvals?.approvals) && approvals.approvals.some(entry => commands.includes(entry.command));
+}
+
 /**
  * Remove `{event, command}` from the Hermes shell-hooks allowlist JSON.
  * No-op when the file is missing or the entry is absent.

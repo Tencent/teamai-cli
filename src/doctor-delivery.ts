@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { expandHome, listFilesRecursive, pathExists, readFileSafe, readJsonObject } from './utils/fs.js';
 import {
   DEFAULT_TOOL_PATHS, getDataHome, getMcpSharing, getTeamaiHome, isAgentExcluded, isGitExcludeEnabled, managedMcpManifestKey, MUSE_TOOL_ID,
-  resolveToolBaseDir, scopedToolPaths,
+  resolveBaseDir, resolveToolBaseDir, scopedToolPaths,
 } from './types.js';
 import type { DeliveryTarget, LocalConfig, ManagedMcpManifest, McpServerDef, ResourceItem, TeamaiConfig } from './types.js';
 import type { EntryLayout, EntryResolution } from './namespaced-entries.js';
@@ -32,6 +32,8 @@ import { isToolId, settingsAtDefault } from './tools.js';
 import { getsRulesFromExtension, ruleFormatForTool, ruleStemsForTool } from './resources/rule-format.js';
 import { declaredSecretKeys } from './resources/secrets.js';
 import { isReservedTeamEnvKey } from './env-reserved.js';
+import { skillsGuardBase } from './builtin-skills.js';
+import { findSkillDirectoryBlock, describeSkippedSkillDirectory } from './resources/skills.js';
 
 /**
  * The checks that verify the payload rather than the plumbing: what each tool
@@ -380,13 +382,26 @@ export async function buildSkillDirChecks(ctx: DoctorContext): Promise<Check[]> 
   const holds = moved ? await moveHolds(ctx, located) : { members: new Map<string, string[]>(), workspaceHeld: [] };
   const checks: Check[] = [];
   for (const { tool, own, where } of located) {
+    const blocks = [];
+    for (const { path: dir } of writesOf(where)) {
+      const base = await skillsGuardBase(resolveBaseDir(ctx.localConfig), dir);
+      // The built-in teamai skill is always owed, even without team skills.
+      const block = await findSkillDirectoryBlock(base, path.join(dir, 'teamai'), { keepSkillLink: true });
+      if (block) blocks.push(describeSkippedSkillDirectory('teamai', tool, block));
+    }
+    checks.push({
+      name: `${tool} skills directory is usable`,
+      source: 'local',
+      check: async () => blocks.length === 0,
+      fix: blocks.join(' '),
+    });
     const wrote = recorded?.[tool];
     if (wrote !== undefined) {
       checks.push({
         name: `${tool} skills are where the last pull wrote them`,
         source: 'local',
-        check: async () => unmoved(tool, where),
-        fix: await moveFix({ tool, own, writes: writesOf(where).map((place) => place.path), wrote, members: holds.members.get(tool) ?? [], workspaceHeld: holds.workspaceHeld }),
+        check: async () => blocks.length === 0 && await unmoved(tool, where),
+        fix: blocks.length > 0 ? blocks.join(' ') : await moveFix({ tool, own, writes: writesOf(where).map((place) => place.path), wrote, members: holds.members.get(tool) ?? [], workspaceHeld: holds.workspaceHeld }),
       });
     }
     if (where.reads === 'unknown') continue;
