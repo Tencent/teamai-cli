@@ -38,21 +38,21 @@ async function legacyAgentDirs(projectRoot?: string): Promise<Set<string>> {
     ...projectRoot ? [path.join(projectRoot, '.kiro', 'agents')] : []]);
   const { projectsRootDir, readAnchorFile } = await import('./utils/partition.js');
   const { listWorktrees } = await import('./utils/git.js');
-  const { readConfigFrom, loadTeamConfig } = await import('./config.js');
+  const { readConfigFrom, loadLocalConfig, loadTeamConfig } = await import('./config.js');
   const { installOf, locate, ownOf } = await import('./locate.js');
-  const scopes = [{ dataHome: path.join(home, '.teamai'), root: home }];
+  const options = { selfHeal: false, dryRun: true, suppressMigrationNotice: true };
+  // readConfigFrom reads project partitions only; the user config has its own loader.
+  const configs = [await loadLocalConfig(options)];
   for (const name of await listDirs(projectsRootDir())) {
     const dataHome = path.join(projectsRootDir(), name);
     const anchor = await readAnchorFile(dataHome);
     if (!anchor) continue;
     for (const root of new Set([anchor, ...await listWorktrees(anchor).catch(() => [])])) {
       dirs.add(path.join(root, '.kiro', 'agents'));
-      scopes.push({ dataHome, root });
+      configs.push(await readConfigFrom(dataHome, root, undefined, undefined, options));
     }
   }
-  for (const { dataHome, root } of scopes) {
-    const config = await readConfigFrom(dataHome, root, undefined, undefined,
-      { selfHeal: false, dryRun: true, suppressMigrationNotice: true });
+  for (const config of configs) {
     if (!config) continue;
     const team = await loadTeamConfig(config.repo.localPath);
     if (!team) continue;

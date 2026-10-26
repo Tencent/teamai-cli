@@ -36,6 +36,22 @@ it('migrates legacy hooks in another registered project before enabling the glob
   } finally { await fse.remove(home); }
 });
 
+it('migrates legacy hooks in the user scope custom agents directory', async () => {
+  const home = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-kiro-user-paths-'));
+  vi.stubEnv('HOME', home);
+  const repo = path.join(home, '.teamai/team-repo');
+  const file = path.join(home, 'custom/kiro-agents/reviewer.json');
+  try {
+    await fse.outputFile(path.join(repo, 'teamai.yaml'), 'team: t\nrepo: x\ntoolPaths:\n  kiro:\n    agents: custom/kiro-agents\n');
+    await fse.outputFile(path.join(home, '.teamai/config.yaml'), `repo:\n  localPath: ${repo}\n  remote: x\n  kind: git\nusername: me\nscope: user\n`);
+    await fse.outputJson(file, { name: 'reviewer', prompt: 'Member prompt', hooks: { agentSpawn: [{ command: getDispatchCommand('session-start', 'kiro') }, { command: 'echo personal' }] } });
+    await fse.ensureDir(path.join(home, '.kiro'));
+    const { injectKiroHooks } = await import('../kiro-hooks.js');
+    await injectKiroHooks();
+    expect((await fse.readJson(file)).hooks.agentSpawn).toEqual([{ command: 'echo personal' }]);
+  } finally { await fse.remove(home); }
+});
+
 it('installs Kiro V3 SessionStart independently of custom agents and removes only its own file', async () => {
   const home = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-kiro-hooks-'));
   vi.stubEnv('HOME', home);
