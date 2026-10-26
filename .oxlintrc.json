@@ -24,6 +24,18 @@
     "typescript/require-array-sort-compare": "off",
     "typescript/restrict-template-expressions": "off",
     "typescript/unbound-method": "off",
+    // Enabling the suspicious/perf categories below also reaches the
+    // type-aware typescript/* rules in those categories. Type-aware linting
+    // beyond no-floating-promises/no-misused-promises is #863's separate,
+    // not-yet-merged scope, not this PR's — keep it off here.
+    "typescript/no-unsafe-type-assertion": "off",
+    "typescript/no-unnecessary-type-assertion": "off",
+    "typescript/no-unnecessary-type-conversion": "off",
+    "typescript/consistent-return": "off",
+    "typescript/no-unnecessary-boolean-literal-compare": "off",
+    "typescript/no-unnecessary-template-expression": "off",
+    "typescript/no-unnecessary-type-arguments": "off",
+    "typescript/no-unnecessary-type-parameters": "off",
     // Sequential awaits are deliberate in a CLI (git, prompts, ordered
     // writes); the rule can't tell an intentional ordering dependency from
     // a parallelizable loop.
