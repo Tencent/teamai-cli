@@ -46,7 +46,7 @@ import { readEnvBackup } from './resources/env.js';
 import { isEnvShMarker } from './env-sh-exports.js';
 import { memberEnvironmentWithoutScope } from './member-env.js';
 import { cleanupOf, installOf, locate, ownOf, writable, type EntryPlace, type Install } from './locate.js';
-import { channelsOf, isToolId, mcpFormatOf, settingsAtDefault, TOOLS, type McpProject } from './tools.js';
+import { channelsOf, isToolId, mcpFormatOf, legacyDefaultMcp, TOOLS, type McpProject } from './tools.js';
 import { realHost, type Host } from './tool-home.js';
 import { KNOWN_AGENTS } from './known-agents.js';
 import { entryLayout, reportEntryResolution, resolveEntriesFor } from './namespaced-entries.js';
@@ -604,7 +604,7 @@ export async function resolveMcpTargets(
     const lookup = inTree ? where.lookup : null;
     const retired = inTree ? where.retired.filter(({ was }) => was === 'default').map(({ place }) => ({ file: place.path, key: place.key })) : [];
     // Every release before #1221 wrote there under the default home: a lookup tool's mapped file (#993).
-    const unmoved = inTree && isToolId(tool) && settingsAtDefault(tool) ? await locate(tool, 'mcp', install, unmovedHost(host)) : null;
+    const unmoved = inTree && isToolId(tool) && legacyDefaultMcp(tool) ? await locate(tool, 'mcp', install, unmovedHost(host)) : null;
     const unmovedFile = unmoved?.channel === 'files' ? unmoved.lookup?.mapped ?? ownOf(unmoved)?.path : undefined;
     targets.push({
       ...mcpTargetAt(tool, museOnly ? 'muse' : channel.format, plugin && where.alternate ? where.alternate : place, projectScope),

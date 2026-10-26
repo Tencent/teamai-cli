@@ -119,7 +119,7 @@ describe('doctor — where a tool takes rules and instruction blocks', () => {
     expect(check?.fix).toContain(`opencode does not read ${path.join(homeDir, '.opencode', 'rules')}`);
   });
 
-  it('notes that OpenCode\'s other files stay in its default home while its rules and blocks follow the moved one', async () => {
+  it('does not report a stale default-home warning after OpenCode hooks move', async () => {
     const xdg = path.join(tempDir, 'xdg');
     await fse.ensureDir(path.join(xdg, 'opencode'));
     vi.stubEnv('XDG_CONFIG_HOME', xdg);
@@ -127,9 +127,9 @@ describe('doctor — where a tool takes rules and instruction blocks', () => {
     const { notes } = await report();
     const home = path.join(homeDir, '.config', 'opencode');
 
-    expect(notes).toEqual(expect.arrayContaining([
+    for (const note of [
       `opencode takes rules from ${path.join(xdg, 'opencode', 'rules')}, but teamai still writes some of its other files under ${home}.`,
       `opencode takes instruction blocks from ${path.join(xdg, 'opencode', 'teamai-context.md')}, but teamai still writes some of its other files under ${home}.`,
-    ]));
+    ]) expect(notes).not.toContain(note);
   });
 });
