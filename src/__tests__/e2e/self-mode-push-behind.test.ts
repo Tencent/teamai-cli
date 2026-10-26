@@ -440,6 +440,29 @@ describe('single-repo push from a checkout behind the default branch', () => {
     expect(pushBranches()).toEqual([]);
   });
 
+  it('rejects --carried for an agent conversion this push leaves out', async () => {
+    expect((await runCLI(['pull'], projectRoot, home)).code).toBe(0);
+    const AGENT = '---\nname: sample\ndescription: A sample agent\n---\n\nSample instructions.\n';
+    fs.mkdirSync(active('.teamai/agents'), { recursive: true });
+    fs.writeFileSync(active('.teamai/agents/sample.md'), AGENT);
+    expect((await runCLI(['push', '--all', '--role', 'ops'], projectRoot, home)).output).toContain('Pushed branch');
+    await mergePushAndPull();
+    teammateLandsOnMain({ '.teamai/agents/ops/sample.md': `${AGENT}\nTeammate safety instructions.\n` });
+    fs.rmSync(active('.teamai/agents/sample.md'));
+    fs.writeFileSync(active('.teamai/agents/sample.yaml'), 'name: sample\ndescription: A sample agent\ninstructions: Member.\n');
+    fs.mkdirSync(active('.teamai/skills/independent'), { recursive: true });
+    fs.writeFileSync(active('.teamai/skills/independent/SKILL.md'), '---\nname: independent\ndescription: Independent skill\n---\n# Independent\n');
+    const carried = `.teamai/agents/ops/sample.md@${git(['rev-parse', 'main:.teamai/agents/ops/sample.md'], remote)}`;
+
+    const push = await runCLI(
+      ['push', '--all', '--skill', '.teamai/skills/independent', '--shared', '--carried', carried], projectRoot, home,
+    );
+
+    expect(push.code, push.output).toBe(2);
+    expect(push.output).toContain(`--carried ${carried} names no agent conversion this push stops for. Nothing was pushed.`);
+    expect(pushBranches()).toEqual([]);
+  });
+
   it('publishes an edited root agent re-added after the placed agent was deleted', async () => {
     expect((await runCLI(['pull'], projectRoot, home)).code).toBe(0);
     fs.mkdirSync(active('.teamai/agents'), { recursive: true });
