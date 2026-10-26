@@ -52,7 +52,8 @@ teamai-extract-comment:
 # ── MR landed on the default branch: write knowledge to the team repo ───────
 # GitLab has no native "MR merged" CI trigger: a merge shows up as a push to
 # the default branch, so the write stage looks the MR up by the pushed commit
-# in the default-branch push pipeline.
+# in the default-branch push pipeline (within the 100 most recently updated
+# merged MRs).
 teamai-post-merge-write:
   stage: teamai-write
   image: node:22
@@ -70,19 +71,24 @@ teamai-post-merge-write:
       # way the CLI does. A numeric project id resolved to unexpected data on
       # the instance used for testing (captured responses in the PR body).
       CI_PROJECT_ENC=$(printf '%s' "${CI_PROJECT_PATH}" | node -e 'let d="";process.stdin.on("data",(c)=>(d+=c)).on("end",()=>process.stdout.write(encodeURIComponent(d.trim())))')
-      # List the MRs associated with the pushed commit. GitLab returns an MR
-      # for its merge commit, its squash commit and its head commit, so one
-      # request covers merge, squash and fast-forward merges. Keep the MR that
-      # was merged into the default branch.
-      MR_JSON=$(curl -sf -H "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
-        "${CI_API_V4_URL}/projects/${CI_PROJECT_ENC}/repository/commits/${CI_COMMIT_SHA}/merge_requests")
-      MR_URL=$(printf '%s' "$MR_JSON" | node -e '
-        let d = "";
-        process.stdin.on("data", (c) => (d += c)).on("end", () => {
-          const mrs = JSON.parse(d);
-          const mr = mrs.find((m) => m.state === "merged" && m.target_branch === process.env.CI_DEFAULT_BRANCH);
-          process.stdout.write(mr ? mr.web_url : "");
-        });')
+      # Page through the merged MRs, newest updates first, and stop at the first
+      # whose merge commit, squash commit or head commit (a fast-forward merge)
+      # is the pushed commit. The commit-scoped endpoint would need one request,
+      # but GitLab 11.x does not return an MR for its merge commit there.
+      MR_URL=""
+      for PAGE in 1 2 3 4 5; do
+        MR_JSON=$(curl -sf -H "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+          "${CI_API_V4_URL}/projects/${CI_PROJECT_ENC}/merge_requests?state=merged&target_branch=${CI_DEFAULT_BRANCH}&per_page=20&page=${PAGE}&order_by=updated_at")
+        [ "$MR_JSON" = "[]" ] && break
+        MR_URL=$(printf '%s' "$MR_JSON" | node -e '
+          let d = "";
+          process.stdin.on("data", (c) => (d += c)).on("end", () => {
+            const sha = process.env.CI_COMMIT_SHA;
+            const mr = JSON.parse(d).find((m) => [m.merge_commit_sha, m.squash_commit_sha, m.sha].includes(sha));
+            process.stdout.write(mr ? mr.web_url : "");
+          });')
+        [ -n "$MR_URL" ] && break
+      done
       if [ -z "$MR_URL" ]; then
         echo "=== [TeamAI] SKIP: this push is not an MR merge ==="
         exit 0
