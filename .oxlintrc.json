@@ -1,5 +1,9 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "categories": {
+    "suspicious": "warn",
+    "perf": "warn"
+  },
   "rules": {
     "no-unused-vars": [
       "warn",
@@ -19,7 +23,21 @@
     "typescript/await-thenable": "off",
     "typescript/require-array-sort-compare": "off",
     "typescript/restrict-template-expressions": "off",
-    "typescript/unbound-method": "off"
+    "typescript/unbound-method": "off",
+    // Sequential awaits are deliberate in a CLI (git, prompts, ordered
+    // writes); the rule can't tell an intentional ordering dependency from
+    // a parallelizable loop.
+    "no-await-in-loop": "off",
+    // All prod sort sites sort a local array built in the same function;
+    // none mutates a caller's array, so the in-place warning doesn't apply.
+    "unicorn/no-array-sort": "off",
+    // Moves closures to outer scope; a style preference, not a bug class.
+    "unicorn/consistent-function-scoping": "off",
+    // Conflicts with this repo's own `_` convention (`_setLogFilePath`,
+    // `_resetState`).
+    "no-underscore-dangle": "off",
+    // Micro-optimization, not worth the churn.
+    "oxc/no-map-spread": "off"
   },
   "overrides": [
     {
