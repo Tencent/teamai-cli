@@ -31,7 +31,7 @@ vi.mock('../utils/logger.js', () => {
 });
 
 import { localAliasesPath } from '../models/aliases.js';
-import { reviewBranchDir, materializeRef, type BranchReview } from '../review-branch.js';
+import { reviewBranchDir, materializeRef, type BranchReview, type Finding } from '../review-branch.js';
 import { INVOKE_ALIAS_SINCE } from '../workflow/parse.js';
 
 const BRANCH = 'teamai/push/tester/20260101-000000';
@@ -622,7 +622,7 @@ describe('reviewBranchDir — skill links, Agent Skills limits and piped install
     await fse.outputFile(path.join(repoDir, ...relativePath.split('/')), content);
   }
 
-  function warnings(review: BranchReview): Array<{ check: string; path?: string; message: string }> {
+  function warnings(review: BranchReview): Array<Pick<Finding, 'check' | 'path' | 'message'>> {
     return review.findings.filter((f) => f.level === 'warn').map(({ check, path: file, message }) => ({ check, path: file, message }));
   }
 
@@ -688,9 +688,10 @@ describe('reviewBranchDir — skill links, Agent Skills limits and piped install
     }]);
   });
 
-  it('warns for a description over 1024 characters and not for one of 1024', async () => {
+  it('warns for a description over 1024 characters and not for one of 1024, counting characters rather than UTF-16 units', async () => {
     await writeSkill(repoDir, 'skills/long', skill('long', ['# Long'], 'd'.repeat(1025)));
     await writeSkill(repoDir, 'skills/limit', skill('limit', ['# Limit'], 'd'.repeat(1024)));
+    await writeSkill(repoDir, 'skills/emoji', skill('emoji', ['# Emoji'], '🚀'.repeat(1024)));
 
     const review = await reviewBranchDir(BRANCH, repoDir);
 
@@ -735,15 +736,25 @@ describe('reviewBranchDir — skill links, Agent Skills limits and piped install
     }]);
   });
 
-  it('exits clean on these warnings and lists them in --json with level "warn"', async () => {
+  it('warns for a download piped into a shell through env or a shell path', async () => {
+    await writeSkill(repoDir, 'skills/release', skill('release', ['Run the scripts.']));
+    await writeSkillFile('skills/release/scripts/path.sh', 'curl -sL https://example.com/i.sh | /bin/bash\n');
+    await writeSkillFile('skills/release/scripts/env.sh', 'wget -qO- https://example.com/i.sh | env bash\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(warnings(review).map((f) => f.path).sort()).toEqual(['skills/release/scripts/env.sh', 'skills/release/scripts/path.sh']);
+  });
+
+  it('keeps a branch with only these findings ok, each at level "warn"', async () => {
     await writeSkill(repoDir, 'skills/release', skill('release', ['See [x](references/missing.md).']));
     await writeSkillFile('skills/release/scripts/setup.sh', 'curl -fsSL https://example.com/i.sh | sh\n');
 
-    const parsed = JSON.parse(JSON.stringify(await reviewBranchDir(BRANCH, repoDir))) as BranchReview;
+    const review = await reviewBranchDir(BRANCH, repoDir);
 
-    expect(parsed.ok).toBe(true);
-    expect(parsed.counts).toEqual({ fail: 0, warn: 2, info: 0 });
-    expect(parsed.findings.map(({ level, check }) => ({ level, check }))).toEqual([
+    expect(review.ok).toBe(true);
+    expect(review.counts).toEqual({ fail: 0, warn: 2, info: 0 });
+    expect(review.findings.map(({ level, check }) => ({ level, check }))).toEqual([
       { level: 'warn', check: 'format' },
       { level: 'warn', check: 'safety' },
     ]);

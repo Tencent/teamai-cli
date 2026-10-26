@@ -434,7 +434,7 @@ async function formatFindings(resources: ReviewResource[], readText: (p: string)
         });
       }
       const description = data['description'];
-      const descriptionLength = typeof description === 'string' ? description.length : 0;
+      const descriptionLength = typeof description === 'string' ? Array.from(description).length : 0;
       if (descriptionLength > AGENT_SKILLS_DESCRIPTION_MAX) {
         findings.push({
           level: 'warn',
@@ -616,8 +616,8 @@ function localLinkTargets(markdown: string): string[] {
   return [...targets];
 }
 
-/** `curl` or `wget` output piped into a shell, optionally through `sudo`. */
-const PIPED_INSTALL = /\b(curl|wget)\b[^\n|]*\|\s*(?:sudo\s+(?:-\S+\s+)*)?((?:ba|da|k|z)?sh|fish)\b/;
+/** `curl` or `wget` output piped into a shell, optionally through `sudo`, `env` or a path such as `/bin/bash`. */
+const PIPED_INSTALL = /\b(curl|wget)\b[^\n|]*\|\s*(?:sudo\s+(?:-\S+\s+)*)?(?:env\s+)?(?:\S*\/)?((?:ba|da|k|z)?sh|fish)\b/;
 
 /**
  * Links between the files of a skill, and piped installs in any of them. Pull
