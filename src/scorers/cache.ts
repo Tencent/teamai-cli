@@ -27,6 +27,11 @@ export interface SyncScorerResult {
   verified: string[];
 }
 
+/** A scorer file's `rubric.sourceHash`: sha256 of its text, so an edit to its rubric is a new rubric. */
+export function scorerSourceHash(content: string): string {
+  return createHash('sha256').update(content).digest('hex');
+}
+
 /** The cache stores the file's text and parses it again on load, so a cached definition is always one this teamai reads. */
 const CacheEntrySchema = z.object({
   relativePath: z.string(),
@@ -217,7 +222,7 @@ export async function syncScorerDefinitions(config: LocalConfig, options: SyncSc
     }
     const { name } = parsed.definition;
     if (parsed.definition.isolation === 'verified') result.verified.push(relativePath);
-    const sourceHash = createHash('sha256').update(content).digest('hex');
+    const sourceHash = scorerSourceHash(content);
     const revision = await (reachable ??= remotelyReachableRevision(knowledgeRoot));
     const holds = await revisionHoldsSources(knowledgeRoot, revision, [{ path: relativePath, content }]);
     const previous = await withoutStaleTeamRevision(knowledgeRoot, await readCache(config, name));

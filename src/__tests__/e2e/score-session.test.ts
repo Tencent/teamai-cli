@@ -125,6 +125,47 @@ console.log(JSON.stringify({ type: 'result', structured_output: { label: 'shallo
     expect(envelope(inside.stdout).data).toMatchObject({ label: { subject: { platform: 'claude-code', sessionId: SESSION } } });
   });
 
+  it('tries a scorer file next to the labels stored for its scorer, stores nothing, and refuses it with --push and --run', async () => {
+    const byName = await runCLI(['score', '--session', SESSION, '--source', 'claude-code', '--scorer', 'review-quality'], app, env);
+    expect(byName.code, byName.stdout + byName.stderr).toBe(0);
+    const dataHome = path.resolve(z.object({ reasoning: z.string() }).parse(envelope(byName.stdout).data?.label).reasoning, '..', '..', '..');
+    const store = () => ['labels.jsonl', 'pending', 'reasoning'].map((name) => {
+      const at = path.join(dataHome, 'scores', name);
+      return fs.statSync(at).isDirectory() ? fs.readdirSync(at).join(',') : fs.readFileSync(at, 'utf8');
+    });
+    const before = store();
+    const reportsBefore = git(team, 'for-each-ref', '--format=%(refname) %(objectname)');
+    fs.mkdirSync(path.join(app, 'scorers'), { recursive: true });
+    fs.writeFileSync(path.join(app, 'scorers', 'review-quality.md'), SCORER.replace('Judge whether', 'Judge strictly whether'));
+
+    const tried = await runCLI(['score', '--session', SESSION, '--source', 'claude-code', '--scorer', './scorers/review-quality.md'], app, env);
+    expect(tried.code, tried.stdout + tried.stderr).toBe(0);
+    const { rubric: cachedRubric } = z.object({ rubric: z.object({ sourceHash: z.string() }).passthrough() })
+      .parse(JSON.parse(fs.readFileSync(path.join(dataHome, 'scores', 'labels.jsonl'), 'utf8').trim().split('\n').at(-1) ?? 'null'));
+    expect(envelope(tried.stdout).data).toEqual({
+      label: expect.objectContaining({ scorer: 'review-quality', file: 'scorers/review-quality.md', label: 'shallow', passed: false, reasoning: 'It never ran the tests.', stored: false }),
+      stored: [{ rubric: cachedRubric, label: 'shallow', score: 0, passed: false, judge: { kind: 'model', tool: 'claude' } }],
+      control: { label: 'shallow', score: 0, passed: false },
+    });
+    expect(z.object({ label: z.object({ rubric: z.object({ sourceHash: z.string() }) }).passthrough() }).parse(envelope(tried.stdout).data).label.rubric.sourceHash)
+      .not.toBe(cachedRubric.sourceHash);
+    expect(store()).toEqual(before);
+
+    fs.writeFileSync(path.join(app, 'scorers', 'broken.md'), SCORER.replace('passingScore: 0.5', 'passingScore: 2'));
+    const invalid = await runCLI(['score', '--session', SESSION, '--source', 'claude-code', '--scorer', 'scorers/broken.md'], app, env);
+    expect(invalid.code).toBe(1);
+    expect(envelope(invalid.stdout).error).toEqual({ code: 'scorer_invalid', message: 'scorers/broken.md: passingScore must have at least one label at or above it and one below it' });
+
+    const pushed = await runCLI(['score', '--session', SESSION, '--source', 'claude-code', '--scorer', './scorers/review-quality.md', '--push'], app, env);
+    expect(pushed.code).toBe(1);
+    expect(envelope(pushed.stdout).error?.code).toBe('invalid_arguments');
+    const run = await runCLI(['score', '--run', 'r1', '--step', 'review', '--scorer', './scorers/review-quality.md'], app, env);
+    expect(run.code).toBe(1);
+    expect(envelope(run.stdout).error?.code).toBe('invalid_arguments');
+    expect(store()).toEqual(before);
+    expect(git(team, 'for-each-ref', '--format=%(refname) %(objectname)')).toBe(reportsBefore);
+  });
+
   it('publishes labels with --push without the transcript, keeps one line per key, and keeps them pending while it cannot publish', async () => {
     const score = (...extra: string[]) => runCLI(['score', '--session', SESSION, '--source', 'claude-code', '--scorer', 'review-quality', ...extra], app, env);
     const published = (): string[] => git(team, 'ls-tree', '-r', '--name-only', 'teamai-reports').split('\n').filter((file) => file.startsWith('scores/'));

@@ -631,6 +631,124 @@ describe('teamai score --session', () => {
     expect(fs.existsSync(path.join(root, 'data', 'scores', 'labels.jsonl'))).toBe(false);
   });
 
+  describe('a scorer file', () => {
+    const DRAFT = SCORER.replace('Judge the session.', 'Judge the session strictly.');
+    const WARNING = 'This rubric passes a session where the agent did nothing, so it may not judge the work.';
+
+    /** The draft `<name>.md` under `<root>/draft`, with `<root>` the current directory, and the scope's store as it is. */
+    function draft(text = DRAFT, name = 'quality'): { file: string; store: () => string[] } {
+      fs.mkdirSync(path.join(root, 'draft'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'draft', `${name}.md`), text);
+      vi.spyOn(process, 'cwd').mockReturnValue(root);
+      const scores = path.join(root, 'data', 'scores');
+      return {
+        file: `./draft/${name}.md`,
+        store: () => ['labels.jsonl', 'pending', 'reasoning'].map((name) => {
+          const at = path.join(scores, name);
+          if (!fs.existsSync(at)) return '';
+          return fs.statSync(at).isDirectory() ? fs.readdirSync(at).join(',') : fs.readFileSync(at, 'utf8');
+        }),
+      };
+    }
+
+    /** A Claude judge that gives `good` only when the evidence holds `work`, else `bad`. */
+    function fakeClaudeJudgingWork(work: string): void {
+      fakeClaude('good');
+      const bin = path.join(root, 'bin', 'claude');
+      fs.writeFileSync(bin, fs.readFileSync(bin, 'utf8').replace('structured_output: {"label":"good"',
+        `structured_output: { label: fs.readFileSync(require('node:path').join('transcripts', 'session.md'), 'utf8').includes(${JSON.stringify(work)}) ? 'good' : 'bad'`));
+    }
+
+    it('prints the file\'s label with its reasoning, stores nothing, and lists the labels stored for its scorer', async () => {
+      const config = await fixture();
+      plantClaudeSession(path.join(root, 'app'), 'Add retries to the client');
+      fakeClaude('bad');
+      expect(data(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: ['quality'] }))).toMatchObject({ label: { label: 'bad' } });
+      const [cached] = parseScoreLabels(fs.readFileSync(path.join(root, 'data', 'scores', 'labels.jsonl'), 'utf8'));
+      const { file, store } = draft();
+      const before = store();
+      fakeClaudeJudgingWork('Added the retries.');
+
+      const tried = data(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: [file] }));
+      expect(tried).toEqual({
+        label: {
+          scorer: 'quality', file: 'draft/quality.md', subject: { platform: 'claude-code', sessionId: SESSION },
+          rubric: { sourceHash: expect.not.stringMatching(cached?.rubric.sourceHash ?? '') }, label: 'good', score: 1, passed: true, reasoning: 'the reasoning', stored: false,
+        },
+        stored: [{ rubric: cached?.rubric, label: 'bad', score: 0, passed: false, judge: { kind: 'model', tool: 'claude' } }],
+        control: { label: 'bad', score: 0, passed: false },
+      });
+      expect(store()).toEqual(before);
+    });
+
+    it('judges the control on the session\'s first prompt alone, and warns when the rubric passes it', async () => {
+      const config = await fixture();
+      plantClaudeSession(path.join(root, 'app'), 'Add retries to the client');
+      plantSubagentEdit(path.join(root, 'app'));
+      const { file, store } = draft();
+      fakeClaude('good');
+
+      expect(data(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: [file] }))).toMatchObject({
+        label: { passed: true, stored: false }, stored: [], control: { label: 'good', score: 1, passed: true, warning: WARNING },
+      });
+      expect(fs.readFileSync(path.join(root, 'calls'), 'utf8')).toBe('xx');
+      const control = fs.readFileSync(path.join(root, 'judged-transcript.md'), 'utf8');
+      expect(control).toContain('Add retries to the client');
+      expect(control).not.toContain('Added the retries.');
+      expect(control).not.toContain('retryWithBackoff');
+      expect(store()).toEqual(['', '', '']);
+    });
+
+    it('fails with the message teamai pull gives for an invalid file, and runs no judge', async () => {
+      const config = await fixture();
+      plantClaudeSession(path.join(root, 'app'), 'Add retries to the client');
+      const { file } = draft(SCORER.replace('passingScore: 0.5', 'passingScore: 2'));
+      fakeClaude('good');
+
+      expect(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: [file] })).toEqual({
+        error: { code: 'scorer_invalid', message: 'draft/quality.md: passingScore must have at least one label at or above it and one below it' },
+      });
+      expect(fs.existsSync(path.join(root, 'calls'))).toBe(false);
+    });
+
+    it('runs no control for a cached scorer', async () => {
+      const config = await fixture();
+      plantClaudeSession(path.join(root, 'app'), 'Add retries to the client');
+      fakeClaude('good');
+
+      const scored = data(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: ['quality'] }));
+      expect(scored).not.toHaveProperty('control');
+      expect(scored).not.toHaveProperty('stored');
+      expect(fs.readFileSync(path.join(root, 'calls'), 'utf8')).toBe('x');
+    });
+
+    it('shares one control call between the files of a batch, and stores only the cached scorer\'s label', async () => {
+      const config = await fixture({ review: SCORER });
+      plantClaudeSession(path.join(root, 'app'), 'Add retries to the client');
+      const quality = draft().file;
+      const tests = draft(DRAFT, 'tests').file;
+      fakeClaude({ quality: { label: 'good', reasoning: 'r1' }, tests: { label: 'bad', reasoning: 'r2' }, review: { label: 'good', reasoning: 'r3' } });
+
+      expect(data(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: [quality, tests, 'review'], batch: true }))).toMatchObject({
+        labels: [{ scorer: 'quality', stored: false }, { scorer: 'tests', stored: false }, { scorer: 'review', labelId: expect.any(String) }],
+        stored: { quality: [], tests: [] },
+        control: { quality: { label: 'good', passed: true, warning: WARNING }, tests: { label: 'bad', passed: false } },
+      });
+      expect(fs.readFileSync(path.join(root, 'calls'), 'utf8')).toBe('xx');
+      expect(parseScoreLabels(fs.readFileSync(path.join(root, 'data', 'scores', 'labels.jsonl'), 'utf8')).map((label) => label.scorer)).toEqual(['review']);
+    });
+
+    it('refuses a file and a cached scorer of the same name in one command', async () => {
+      const config = await fixture();
+      plantClaudeSession(path.join(root, 'app'), 'Add retries to the client');
+      const { file } = draft();
+      fakeClaude('good');
+
+      expect(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: ['quality', file] })).toMatchObject({ error: { code: 'invalid_arguments' } });
+      expect(fs.existsSync(path.join(root, 'calls'))).toBe(false);
+    });
+  });
+
   describe('the agent a session ran as', () => {
     const FULL = 'a'.repeat(40);
     const observed = { v: 1, tool: { name: 'claude', version: '2.1.308' }, model: { requested: 'claude-x' }, team: { revision: FULL, localChanges: false },

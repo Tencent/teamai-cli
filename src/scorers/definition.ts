@@ -9,6 +9,11 @@ import { splitFrontmatter } from '../utils/frontmatter.js';
 
 const TOKEN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
+/** Whether `--scorer <value>` names a scorer file, relative to the current directory, rather than a scorer: a name is a token without `/`. */
+export function isScorerFile(value: string): boolean {
+  return value.includes('/') || value.endsWith('.md');
+}
+
 const text = (message: string) => z.string({ required_error: message, invalid_type_error: message }).refine((value) => value.trim() !== '', message);
 const number = (message: string) => z.number({ required_error: message, invalid_type_error: message }).finite(message);
 
