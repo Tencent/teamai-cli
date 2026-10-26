@@ -23,7 +23,7 @@ import {
 } from './instruction-targets.js';
 import { getHandler, RulesHandler, DocsHandler, EnvHandler, AgentsHandler } from './resources/index.js';
 import { removedAgentOrigin, reportHeldAgents, type RedeployedCopy } from './resources/agents.js';
-import { ruleOrigin, writableRulesTools } from './resources/rules.js';
+import { ruleOrigin, rulesReceivingTools } from './resources/rules.js';
 import {
   deliveredDocFiles, describeLinkedDocsRoot, isLinkedDocsRoot, isTeamDocsDirectory, keepDocsSearchWhitelist, listStaleDocDirectories, membersDocs,
   resolveDesiredDocs, resolveDocsDestination,
@@ -1974,7 +1974,7 @@ async function pullForScope(
           // A member whose rules tools are all fail-closed (WorkBuddy 5.7-only,
           // #1290) or not installed gets the truth, not a count of rules no
           // tool took.
-          if ((await writableRulesTools(freshConfig, localConfig)).length > 0) {
+          if ((await rulesReceivingTools(freshConfig, localConfig)).length > 0) {
             log.success(`[${scopeLabel}] Synced ${items.length} rule(s)${skippedByTags > 0 ? ` (skipped ${skippedByTags} by tags)` : ''}`);
           } else {
             log.info(`[${scopeLabel}] Held ${items.length} rule(s): no installed tool reads rules in this scope`);

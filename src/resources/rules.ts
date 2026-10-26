@@ -1383,16 +1383,18 @@ async function rulesLocations(
 }
 
 /**
- * Tools of the team's `toolPaths` whose rules target this pull can write in
- * this scope — a directory surface or a single file like Codex's `AGENTS.md`
- * alike; only `writable` decides. An empty list means every rules surface is
- * fail-closed — not installed, excluded, or a WorkBuddy 5.7-only member whose
- * old root is gone (#1290) — so nothing was written, whatever the desired
- * count said.
+ * Tools of the team's `toolPaths` that take rules in this scope: a rules
+ * target this pull can write (a directory or a single file like Codex's
+ * `AGENTS.md`), or a session hook, extension or plugin whose gates are met.
+ * An empty list means every rules surface is fail-closed (not installed,
+ * excluded, or a WorkBuddy 5.7-only member whose old root is gone, #1290), so
+ * no tool got the rules, whatever the desired count said.
  */
-export async function writableRulesTools(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<readonly string[]> {
+export async function rulesReceivingTools(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<readonly string[]> {
   const locations = await rulesLocations(teamConfig, localConfig);
-  return locations.filter(({ location }) => writable(location) !== null).map(({ tool }) => tool);
+  return locations
+    .filter(({ location }) => location.channel === 'run-time' ? location.gates.every((gate) => gate.met) : writable(location) !== null)
+    .map(({ tool }) => tool);
 }
 
 /**

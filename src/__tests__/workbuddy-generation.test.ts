@@ -23,7 +23,7 @@ vi.mock('../utils/logger.js', () => ({
 import { loadLocalConfig, loadTeamConfig } from '../config.js';
 import { buildChecks, resolveDoctorContext, type Check } from '../doctor.js';
 import { isToolInstalledForConfig } from '../resources/base.js';
-import { writableRulesTools } from '../resources/rules.js';
+import { rulesReceivingTools } from '../resources/rules.js';
 import { DEFAULT_TOOL_PATHS, scopedToolPaths } from '../types.js';
 import type { LocalConfig, TeamaiConfig } from '../types.js';
 
@@ -228,12 +228,12 @@ describe('doctor on a WorkBuddy member with only the 5.7+ root', () => {
 });
 
 /**
- * Pull reports rules as synced only when some tool's rules target is
- * writable (#1273): none on a member whose only WorkBuddy root is
- * `.workbuddy-ai/`, while a single-file target such as Codex's `AGENTS.md`
- * counts like a rules directory.
+ * Pull reports rules as synced only when some tool takes them (#1273): none
+ * on a member whose only WorkBuddy root is `.workbuddy-ai/`, while a
+ * single-file target such as Codex's `AGENTS.md` counts like a rules
+ * directory, and a session hook or extension counts like a file.
  */
-describe('writableRulesTools', () => {
+describe('rulesReceivingTools', () => {
   let root: string;
   let home: string;
 
@@ -261,13 +261,21 @@ describe('writableRulesTools', () => {
 
   it('finds no rules target on a member whose only WorkBuddy root is .workbuddy-ai', async () => {
     await fse.ensureDir(path.join(home, '.workbuddy-ai'));
-    expect(await writableRulesTools(teamConfig({ workbuddy: DEFAULT_TOOL_PATHS.workbuddy }), localConfig())).toEqual([]);
+    expect(await rulesReceivingTools(teamConfig({ workbuddy: DEFAULT_TOOL_PATHS.workbuddy }), localConfig())).toEqual([]);
+  });
+
+  it.each(['codex', 'pi'] as const)('counts %s, whose session hook or extension adds the rules in a workspace', async (tool) => {
+    const projectRoot = path.join(root, 'project');
+    await fse.ensureDir(path.join(home, `.${tool}`));
+    await fse.ensureDir(path.join(projectRoot, `.${tool}`));
+    const workspace: LocalConfig = { ...localConfig(), scope: 'project', projectRoot, enabledAgents: [tool] };
+    expect(await rulesReceivingTools(teamConfig({ [tool]: DEFAULT_TOOL_PATHS[tool] }), workspace)).toEqual([tool]);
   });
 
   it('counts a tool whose rules land in a single file', async () => {
     await fse.ensureDir(path.join(home, '.workbuddy-ai'));
     await fse.ensureDir(path.join(home, '.codex'));
     const toolPaths = { workbuddy: DEFAULT_TOOL_PATHS.workbuddy, codex: DEFAULT_TOOL_PATHS.codex };
-    expect(await writableRulesTools(teamConfig(toolPaths), localConfig())).toEqual(['codex']);
+    expect(await rulesReceivingTools(teamConfig(toolPaths), localConfig())).toEqual(['codex']);
   });
 });
