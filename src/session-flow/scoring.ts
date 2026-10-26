@@ -64,7 +64,7 @@ interface Asked {
 async function scorerFile(value: string): Promise<Asked | Failure> {
   const full = path.resolve(value);
   const file = path.relative(process.cwd(), full).split(path.sep).join('/');
-  if (!file.endsWith('.md')) return failure('scorer_invalid', formatScorerDiagnostic({ file, message: NOT_A_SCORER }));
+  if (!file.endsWith('.md') || path.posix.basename(file) === 'README.md') return failure('scorer_invalid', formatScorerDiagnostic({ file, message: NOT_A_SCORER }));
   const content = await readFileSafe(full);
   if (content === null) return failure('scorer_not_found', formatScorerDiagnostic({ file, message: 'could not be read' }));
   const parsed = parseScorer(file, content);
@@ -241,14 +241,16 @@ export async function scoreSession(from: LocalConfig, demand: SessionDemand, now
         scoredAt: now,
       }, subject, judged.context) };
     });
-    const written = await AttemptStore.locked(config, async () => {
+    const write = async () => {
       const outcomes: Array<(typeof labels)[number] & ({ kind: 'stored'; kept: { id: string; version: string } } | { kind: 'tried'; file: string })> = [];
       for (const one of labels) {
         const { file } = one.member;
         outcomes.push(file === undefined ? { ...one, kind: 'stored', kept: await LabelStore.append(config, one.label, one.reasoning, prompt) } : { ...one, kind: 'tried', file });
       }
       return outcomes;
-    });
+    };
+    // Only a cached scorer's label is written, so a group of scorer files never waits on the label store's lock.
+    const written = labels.some(({ member }) => member.file === undefined) ? await AttemptStore.locked(config, write) : { status: 'done' as const, value: await write() };
     if (written.status === 'busy') return failure('busy', 'Another teamai process holds the label store, so no label was written. Score the session again.');
     const [fileHead, ...fileTail] = members.filter((member) => member.file !== undefined);
     // After the labels are kept, so a control that fails loses none of them.

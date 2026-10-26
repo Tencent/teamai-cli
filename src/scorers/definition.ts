@@ -7,7 +7,8 @@ import { z } from 'zod';
 import { modelValueProblem } from '../models/aliases.js';
 import { splitFrontmatter } from '../utils/frontmatter.js';
 
-const TOKEN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+/** A scorer's name. Never ends in `.md`, so `--scorer` tells it from a scorer file (`isScorerFile`). */
+const TOKEN = /^(?!.*\.md$)[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 /** Whether `--scorer <value>` names a scorer file, relative to the current directory: a value with a `/` or ending in `.md`. Else it is a scorer's name. */
 export function isScorerFile(value: string): boolean {

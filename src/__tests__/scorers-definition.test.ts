@@ -79,6 +79,10 @@ describe('parseScorer', () => {
   it('rejects a file name that is not a token', () => {
     expect(problems('scorers/.hidden.md', VALID)).toEqual(['scorers/.hidden.md: the file name must be a token such as review-quality.md']);
   });
+
+  it('rejects a name ending in .md, which --scorer would take for a file', () => {
+    expect(problems('scorers/v1.md.md', VALID)).toEqual(['scorers/v1.md.md: the file name must be a token such as review-quality.md']);
+  });
 });
 
 describe('isScorerFile', () => {

@@ -739,6 +739,28 @@ describe('teamai score --session', () => {
       expect(fs.existsSync(path.join(root, 'calls'))).toBe(false);
     });
 
+    it('refuses a README.md, which teamai pull skips', async () => {
+      const config = await fixture();
+      plantClaudeSession(path.join(root, 'app'), 'Add retries to the client');
+      draft(DRAFT, 'README');
+      fakeClaude('good');
+
+      expect(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: ['./draft/README.md'] })).toEqual({
+        error: { code: 'scorer_invalid', message: expect.stringMatching(/^draft\/README\.md: not a scorer file;/) },
+      });
+      expect(fs.existsSync(path.join(root, 'calls'))).toBe(false);
+    });
+
+    it('tries a file while another teamai process holds the label store', async () => {
+      const config = await fixture();
+      plantClaudeSession(path.join(root, 'app'), 'Add retries to the client');
+      const { file } = draft();
+      fakeClaude('good');
+
+      const held = await AttemptStore.locked(config, () => scoreSession(config, { session: SESSION, source: 'claude-code', scorers: [file] }));
+      expect(held).toMatchObject({ status: 'done', value: { data: { label: { label: 'good', stored: false }, control: { passed: true } } } });
+    });
+
     it('runs no control for a cached scorer', async () => {
       const config = await fixture();
       plantClaudeSession(path.join(root, 'app'), 'Add retries to the client');
