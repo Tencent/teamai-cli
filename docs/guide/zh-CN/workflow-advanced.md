@@ -826,7 +826,7 @@ teamai workflow next <run> --json '{"claim":true,"driver":{"kind":"script","mach
 
 ### 让 TeamAI 准备工作区
 
-驱动可以把工作区及其 git 操作交给 TeamAI。`next <run> --prepare --json '<payload>'` 领取一个步骤并准备它的工作区：在运行启动时所在的检出目录中创建或复用 worktree，应用基线 agent 文件和团队资源，并以 `lease.cwd` 返回该目录。再次准备会保留已有的编辑。在 `lease.cwd` 中运行步骤，不要在那里运行 git。两个 attempt 从不共用一个位置，而检出目录是同一个位置，所以在检出目录中工作的步骤即使可以并行，也会依次运行：租约的位置被另一个未结束的 attempt 占用时，返回 `busy`，attempt 仍保持租约；等那个 attempt 报告后，用 `--attempt` 准备它。运行会记录它启动时的模式，但 setup 按调用 `next --prepare` 的进程的模式运行（见[有人值守与无人值守的运行](workflow.md#有人值守与无人值守的运行)），因此请在驱动中自行导出 `TEAMAI_MODE`，让它的各次调用保持同一模式。
+驱动可以把工作区及其 git 操作交给 TeamAI。`next <run> --prepare --json '<payload>'` 领取一个步骤并准备它的工作区：在运行启动时所在的检出目录中创建或复用 worktree，应用基线 agent 文件和团队资源，并以 `lease.cwd` 返回该目录。再次准备会保留已有的编辑。在 `lease.cwd` 中运行步骤，不要在那里运行 git。两个 attempt 从不共用一个位置，而检出目录是同一个位置，所以在检出目录中工作的步骤即使可以并行，也会依次运行：租约的位置被另一个未结束的 attempt 占用时，返回 `busy`，attempt 仍保持租约；等那个 attempt 报告后，用 `--attempt` 准备它。setup 按驱动在 `next` 上发送的 `runMode` 运行；没有发送时，按调用 `next --prepare` 的进程的模式运行（见[有人值守与无人值守的运行](workflow.md#有人值守与无人值守的运行)），而不是运行启动时的模式。
 
 之后由 `report` 完成这个 attempt。它负责 commit、push，并自己填写 `changes` 或 `read`，所以已准备的 attempt 的报告如果带有 `changes` 或 `read`，会返回 `invalid_report`。TeamAI 只在接受了成功报告且回复允许 cleanup 后才删除 worktree。失败的 attempt 保留其工作，以便重试。
 

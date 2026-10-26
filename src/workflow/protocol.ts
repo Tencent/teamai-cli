@@ -294,7 +294,8 @@ export type HostPlacePrepared =
   | { kind: 'needs-place'; name: string; branch: string; start: string; refused?: string };
 
 /** A lease as the run leases it now, with the checkout its place goes in and the run's other leased attempts. */
-type Leased = { kind: 'leased'; lease: PlaceLease; root: string; others: AttemptId[] };
+/** `mode`: the run mode the lease keeps, as its driver's `next` sent it. */
+type Leased = { kind: 'leased'; lease: PlaceLease; root: string; others: AttemptId[]; mode?: RunMode };
 
 /** What every driver fails a lease of run `run` with when this teamai cannot read the place it names, as a newer one writes. */
 export function unreadablePlace(run: RunId): WorkflowFailure {
@@ -311,7 +312,8 @@ async function leasedPlace(config: LocalConfig, lock: RunLock, raw: unknown): Pr
   const leased = run.steps.find((step) => step.status === 'leased' && step.lease.attempt === lease.attempt);
   if (leased?.status !== 'leased') return { kind: 'failed', failure: { code: 'wrong_attempt', message: `Attempt ${lease.attempt} is not the leased attempt` } };
   if (run.checkout === undefined) return { kind: 'failed', failure: noCheckout(lock.run, lease.attempt) };
-  return { kind: 'leased', lease: { ...lease, step: leased.id }, root: run.checkout, others: otherLeases(run, { attempt: lease.attempt, driver: leased.lease.driver }) };
+  const { driver, runMode } = leased.lease;
+  return { kind: 'leased', lease: { ...lease, step: leased.id }, root: run.checkout, others: otherLeases(run, { attempt: lease.attempt, driver }), ...(runMode ? { mode: runMode } : {}) };
 }
 
 /**
@@ -534,9 +536,10 @@ async function prepareLeased(input: { config: LocalConfig; lock: RunLock; driver
     return { error: { code: 'busy', message: `Attempt ${attempt} of run ${lock.run} runs in ${placed.dir}, the place of attempt ${placed.behind}, which is still open, so it was not prepared. Report attempt ${placed.behind}, then prepare this one with next --prepare --attempt ${attempt}.` } };
   }
   if (placed.kind === 'failed') return failed(placed.failure);
-  // Setup runs in the mode of the process that prepares the attempt, not the mode the run started in: a run
-  // another machine claimed can run its passes in another mode.
-  const failure = await runPlaceSetup({ config, run: lock.run, attempt, mode: resolveRunMode(process.env), values: env.values });
+  // Setup runs in the mode the lease keeps, else in the mode of the process that prepares the attempt; never in the
+  // mode the run started in, since a run another machine claimed can run its passes in another mode.
+  const mode = (leased.kind === 'leased' ? leased.mode : undefined) ?? resolveRunMode(process.env);
+  const failure = await runPlaceSetup({ config, run: lock.run, attempt, mode, values: env.values });
   if (failure) return failed(failure);
   return { data: { ...answer.data, lease: { ...named.data, cwd: placed.dir, ...(placed.prompt !== undefined ? { prompt: placed.prompt } : {}) } } };
 }

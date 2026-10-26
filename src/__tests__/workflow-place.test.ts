@@ -164,6 +164,17 @@ steps:
       expect(await f.client.report(f.runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: f.driver })).toMatchObject({ data: { accepted: true } });
     });
 
+    it.each([
+      ['the mode its next sent', { runMode: 'unattended' }, 'unattended'],
+      ['the mode of the process, when its next sent none', {}, 'attended'],
+    ])('runs setup in %s', async (_, sent, mode) => {
+      vi.stubEnv('TEAMAI_MODE', 'attended');
+      const f = await fixture(SETUP.replace('touch "$(git rev-parse --git-path setup-ran)"', 'echo "$TEAMAI_MODE" > "$(git rev-parse --git-path setup-ran)"'));
+      const answer = await f.client.next(f.runId, { driver: { ...f.driver, can: { hitl: true, setup: true, workspace: ['read-only', 'new', 'continue'] } }, ...sent }, { prepare: true });
+      const { cwd } = z.object({ cwd: z.string() }).parse('data' in answer ? answer.data.lease : answer);
+      expect(fs.readFileSync(path.resolve(cwd, git(cwd, 'rev-parse', '--git-path', 'setup-ran')), 'utf8')).toBe(`${mode}\n`);
+    });
+
     it('lets the next prepare of a reader use the copy it marked', async () => {
       const f = await fixture(`schemaVersion: v1alpha1
 name: build
