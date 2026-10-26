@@ -50,12 +50,14 @@ export function localReason(description: WorkflowDescription): string | undefine
 /**
  * Why a run of `description` needs a person, which an unattended run lacks, as a refusal to `act` on it says it:
  * undefined when it can do without one, its optional gates auto-approved. A run to continue counts only the steps it
- * has not `settled` for good: an approval, a choice or an interactive step that already ran needs nobody now. Its
- * `invoke: ask` still does.
+ * has not `settled` for good: an approval, a choice or an interactive step that already ran, or whose workflow or
+ * `for_each` step settled whole (skipped, or every item done), needs nobody now. Its `invoke: ask` still does.
  */
 export function attendedReason(description: WorkflowDescription, act: 'start' | 'continue', settled: ReadonlySet<string> = new Set()): string | undefined {
   const { name, facts } = description;
-  const left = (step: string): boolean => !settled.has(step);
+  // `a.b.c` is settled when `a`, `a.b` or `a.b.c` is: a workflow's steps exist in the run only once it starts, and an
+  // item's path (`a[0].b`) is not the definition's (`a.b`).
+  const left = (step: string): boolean => !step.split('.').some((_, at, segments) => settled.has(segments.slice(0, at + 1).join('.')));
   const interactive = facts.interactive.filter(left);
   const gates = facts.gates.filter((gate) => left(gate.step));
   const required = gates.filter((gate) => gate.required);

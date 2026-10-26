@@ -333,8 +333,10 @@ async function start(call: Extract<SkillCall, { kind: 'describe' | 'start' }>, c
   }
   const check = checkStartAnswers({ description, answers: call.answers, inputs: call.inputs, ceiling });
   const judge = judging.kind === 'here' && call.answers.judge !== false ? judging.tool : undefined;
-  const taken = startRow({ name: description.name, check, ...why, prompts: description.facts.prompts.length > 0, ...(judge !== undefined ? { judge } : {}) });
+  const attended = context.mode === 'unattended' ? attendedReason(description, 'start') : undefined;
+  const taken = startRow({ name: description.name, check, ...why, ...(attended !== undefined ? { attended } : {}), prompts: description.facts.prompts.length > 0, ...(judge !== undefined ? { judge } : {}) });
   context.trace?.(taken.row);
+  if (taken.row === 'R25') return { error: { ...taken.error, next: null } };
   if (taken.row !== 'R10') {
     const same = describeLiteral(context.invocation, description.name);
     return { error: errorOf({ kind: 'error', refusal: taken.refusal }, { invocation: context.invocation, same, localTool: localPromptTool(context.config, context.tool) }) };

@@ -380,6 +380,27 @@ const GO_LIVE_AFTER_UI = `  - id: go-live
     command: node -e "process.exit(0)"
 `;
 
+// A review whose required approval sits in a workflow that never runs.
+const SKIPPED_REVIEW = `schemaVersion: v1alpha1
+name: skipping
+description: Ship, with a review that is switched off
+invoke: allow
+steps:
+  - id: prep
+    command: node -e "process.exit(0)"
+  - id: review
+    needs: [prep]
+    if: steps.prep.outcome == 'failed'
+    workflow:
+      steps:
+        - id: sign-off
+          approve: { message: Sign off?, required: true }
+          command: node -e "process.exit(0)"
+  - id: ship
+    needs: [prep]
+    command: node -e "process.exit(0)"
+`;
+
 const SCORERS = { 'review-quality': `---
 labels:
   - { value: thorough, score: 1, description: Did the work it was asked for }
@@ -1135,6 +1156,43 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       expect(await readRun(made.config, run)).toMatchObject({ status: 'running', steps: expect.arrayContaining([expect.objectContaining({ id: 'go-live', status: 'succeeded' })]) });
       expect(await turnOf(await made.call({ kind: 'resume', run, claim: false, confirmed: false, answers: {} }))).toMatchObject({ run });
       expect(JSON.parse(fs.readFileSync(skillStatePath(made.config, run), 'utf8'))).toMatchObject({ options: { hitl: 'auto-approve', mode: 'unattended' } });
+      return made.rows;
+    },
+  },
+  {
+    name: 'an unattended start of a workflow that needs a person is refused as describe denies it, and no run is created',
+    rows: ['R25'],
+    run: async () => {
+      const made = await harness({ release: RELEASE }, { mode: 'unattended' });
+      expect(await made.call({ kind: 'start', name: 'release', answers: { confirmed: false, hitl: 'auto-approve' }, inputs: undefined })).toEqual({ error: {
+        code: 'unattended_denied',
+        message: 'Workflow release needs a person, and this run is unattended (TEAMAI_MODE or CI says so): only a person can answer the approval at go-live. Start it from a session a person attends, or set TEAMAI_MODE=attended where one does.',
+        next: null,
+      } });
+      const runs = runsDir(made.config);
+      expect(fs.existsSync(runs) ? fs.readdirSync(runs) : []).toEqual([]);
+      return made.rows;
+    },
+  },
+  {
+    name: 'an unattended resume does not count a required approval inside a workflow the run skipped',
+    rows: ['R19'],
+    run: async () => {
+      const made = await harness({ skipping: SKIPPED_REVIEW }, { mode: 'unattended' });
+      const { client } = made.context;
+      const created = await client.start('skipping', { checkout: made.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
+      if (!('data' in created)) throw new Error(JSON.stringify(created));
+      const run = RunIdSchema.parse(created.data.run);
+      // CI's local driver runs `prep` and gives `ship` back, so the run waits with `review` skipped and its approval never asked.
+      const driver = { kind: 'local', machine: 'ci', workspace: made.work, can: { hitl: true, workspace: [...WORKSPACE_MODES] } };
+      for (const [step, outcome] of [['prep', 'success'], ['ship', 'released']] as const) {
+        const answer = await client.next(run, { driver });
+        const { lease } = z.object({ lease: z.object({ step: z.string(), attempt: z.string(), revision: z.number() }) }).parse('data' in answer ? answer.data : answer);
+        expect(lease.step).toBe(step);
+        expect(await client.report(run, { attempt: lease.attempt, revision: lease.revision, outcome, driver })).not.toHaveProperty('error');
+      }
+      expect(await readRun(made.config, run)).toMatchObject({ status: 'running', steps: expect.arrayContaining([expect.objectContaining({ id: 'review', status: 'skipped' })]) });
+      expect(await turnOf(await made.call({ kind: 'resume', run, claim: false, confirmed: false, answers: {} }))).toMatchObject({ run });
       return made.rows;
     },
   },
