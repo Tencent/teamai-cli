@@ -1,24 +1,26 @@
 /**
- * GitLab REST 分页读取助手（供 CI 评论/拒绝标记路径共用）。
+ * GitLab REST pagination helper (shared by the CI comment and rejection paths).
  *
- * 两个要点：
+ * Two rules:
  *
- * 1. **不跟随重定向**：所有带 PRIVATE-TOKEN 的请求必须用 `redirect: 'manual'`，
- *    否则 fetch 会跟随 3xx 并把 token 带到另一个 origin。收到 3xx 时这里直接报错。
- * 2. **不静默截断**：超过 maxPages 仍有下一页时显式抛错。截断会让 marker
- *    查找漏掉旧评论（重复发评论），也会漏判 👎（把被拒绝的学习写进知识库）。
+ * 1. **Never follow redirects**: every request carrying PRIVATE-TOKEN must use
+ *    `redirect: 'manual'`, or fetch follows a 3xx and forwards the token to
+ *    another origin. A 3xx is an error here.
+ * 2. **Never truncate silently**: throw when pages remain past maxPages.
+ *    Truncation would make the marker lookup miss an earlier comment (posting a
+ *    duplicate) and miss a 👎 (writing a rejected learning to the knowledge repo).
  */
 
-/** 单页响应里取出 items 的解析函数（默认按数组解析）。 */
+/** Parses the items out of one page's response (an array by default). */
 export type GitLabPageParser<T> = (json: unknown) => T[];
 
 /**
- * 逐页拉取 GitLab 列表接口，直到 `x-next-page` 消失。
+ * Fetches a GitLab list endpoint page by page until `x-next-page` is gone.
  *
- * @param fetchPage - 拉取某一页的函数（需自行设置 `redirect: 'manual'`）
- * @param maxPages - 最大页数（GitLab 每页 100 条）
- * @param label - 错误信息里的接口名
- * @param parse - 响应体解析（默认当作数组）
+ * @param fetchPage - fetches one page (must set `redirect: 'manual'` itself)
+ * @param maxPages - page limit (GitLab returns up to 100 items per page)
+ * @param label - endpoint name used in error messages
+ * @param parse - parses the response body (an array by default)
  */
 export async function paginateGitLab<T>(
   fetchPage: (page: number) => Promise<Response>,

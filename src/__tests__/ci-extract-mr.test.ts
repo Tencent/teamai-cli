@@ -68,7 +68,7 @@ describe('ciExtractMr', () => {
     await fse.remove(tmpDir);
   });
 
-  it('comment 模式调用 postOrUpdateMrComment', async () => {
+  it('comment mode calls postOrUpdateMrComment', async () => {
     await ciExtractMr({
       url: 'https://github.com/org/repo/pull/1',
       mode: 'comment',
@@ -79,7 +79,7 @@ describe('ciExtractMr', () => {
       all: true,
       dryRun: true,
     }));
-    // codebase suggestions 不再通过 comment 发布（由图谱变更 comment 替代）
+    // codebase suggestions are no longer posted as a comment (the graph change comment replaced it)
     expect(mockPostOrUpdateMrComment).toHaveBeenCalledWith(
       'https://github.com/org/repo/pull/1',
       expect.objectContaining({ title: 'Test Learning' }),
@@ -101,14 +101,14 @@ describe('ciExtractMr', () => {
     }));
   });
 
-  it('write 模式需要 --team-repo 参数', async () => {
+  it('write mode requires --team-repo', async () => {
     await expect(ciExtractMr({
       url: 'https://github.com/org/repo/pull/1',
       mode: 'write',
-    })).rejects.toThrow('write 模式需要 --team-repo 参数');
+    })).rejects.toThrow('write mode requires --team-repo');
   });
 
-  it('write 模式 direct: 写 learning + 调用 pushRepoDirectly', async () => {
+  it('write mode direct: writes the learning and calls pushRepoDirectly', async () => {
     const teamRepo = path.join(tmpDir, 'team-repo');
     await fse.ensureDir(path.join(teamRepo, 'docs'));
     await fse.writeFile(path.join(teamRepo, 'docs', 'codebase.md'), '# Codebase');
@@ -120,15 +120,15 @@ describe('ciExtractMr', () => {
       writeMode: 'direct',
     });
 
-    // learning 文件被写入
+    // the learning file is written
     const learnings = await fse.readdir(path.join(teamRepo, 'learnings'));
     expect(learnings.length).toBe(1);
     expect(learnings[0]).toContain('Test-Learning');
 
-    // codebase direct 模式已被图谱引擎替代，不再调用 applyCodebaseSuggestions
-    // mockApplyCodebaseSuggestions 不应被调用
+    // the graph engine replaced codebase direct mode, so applyCodebaseSuggestions is no longer called
+    // mockApplyCodebaseSuggestions must not be called
 
-    // push 被调用（仅含 learning，不含 docs/codebase.md）
+    // push is called (with the learning only, not docs/codebase.md)
     expect(mockPushRepoDirectly).toHaveBeenCalledWith(
       teamRepo,
       expect.stringContaining('[teamai]'),
@@ -136,7 +136,7 @@ describe('ciExtractMr', () => {
     );
   });
 
-  it('write 模式 pending-review: 写入 learning，不调用 appendPendingReview（codebase suggestions 已移除）', async () => {
+  it('write mode pending-review: writes the learning without calling appendPendingReview (codebase suggestions were removed)', async () => {
     const teamRepo = path.join(tmpDir, 'team-repo');
     await fse.ensureDir(path.join(teamRepo, 'learnings'));
 
@@ -147,14 +147,14 @@ describe('ciExtractMr', () => {
       writeMode: 'pending-review',
     });
 
-    // codebase suggestion 链路已移除，appendPendingReview 不再被调用
+    // the codebase suggestion path was removed, so appendPendingReview is no longer called
     expect(mockAppendPendingReview).not.toHaveBeenCalled();
-    // learning 仍然写入
+    // the learning is still written
     const learnings = await fse.readdir(path.join(teamRepo, 'learnings'));
     expect(learnings.length).toBe(1);
   });
 
-  it('both 模式同时调用 comment 和 write', async () => {
+  it('both mode runs comment and write', async () => {
     const teamRepo = path.join(tmpDir, 'team-repo');
     await fse.ensureDir(path.join(teamRepo, 'docs'));
     await fse.writeFile(path.join(teamRepo, 'docs', 'codebase.md'), '# Codebase');
@@ -169,7 +169,7 @@ describe('ciExtractMr', () => {
     expect(mockPushRepoDirectly).toHaveBeenCalled();
   });
 
-  it('output 选项输出 artifacts', async () => {
+  it('the output option writes artifacts', async () => {
     const outputDir = path.join(tmpDir, 'output');
 
     await ciExtractMr({
@@ -179,11 +179,11 @@ describe('ciExtractMr', () => {
     });
 
     expect(await fse.pathExists(path.join(outputDir, 'learning.md'))).toBe(true);
-    // codebase suggestion 链路已移除，不再输出 codebase-suggestions.json
+    // the codebase suggestion path was removed, so codebase-suggestions.json is no longer written
     expect(await fse.pathExists(path.join(outputDir, 'codebase-suggestions.json'))).toBe(false);
   });
 
-  it('dry-run 不调用 API', async () => {
+  it('dry-run calls no API', async () => {
     await ciExtractMr({
       url: 'https://github.com/org/repo/pull/1',
       mode: 'comment',

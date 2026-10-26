@@ -3,23 +3,23 @@ import { extractMarkerId, readRejections, shouldWrite } from '../ci/read-rejecti
 import type { RejectionResult } from '../ci/read-rejections.js';
 
 describe('extractMarkerId', () => {
-  it('提取 learning marker', () => {
+  it('extracts the learning marker', () => {
     expect(extractMarkerId('<!-- teamai:ci-extract:learning -->\nsome content')).toBe('learning');
   });
 
-  it('提取 suggestion marker', () => {
+  it('extracts a suggestion marker', () => {
     expect(extractMarkerId('<!-- teamai:ci-extract:suggestion:1 -->\ncontent')).toBe('suggestion:1');
   });
 
-  it('提取 suggestion:2 marker', () => {
+  it('extracts the suggestion:2 marker', () => {
     expect(extractMarkerId('<!-- teamai:ci-extract:suggestion:2 -->')).toBe('suggestion:2');
   });
 
-  it('无 marker 返回 null', () => {
+  it('returns null without a marker', () => {
     expect(extractMarkerId('普通 comment 内容')).toBeNull();
   });
 
-  it('其他 teamai marker 不匹配', () => {
+  it('does not match other teamai markers', () => {
     expect(extractMarkerId('<!-- teamai:ci-extract -->')).toBeNull();
   });
 });
@@ -31,32 +31,32 @@ describe('shouldWrite', () => {
     allIds: new Set(['learning', 'suggestion:1', 'suggestion:2']),
   };
 
-  describe('GitHub (默认写入，👎 = reject)', () => {
-    it('不在 rejectedIds 中 → 写入', () => {
+  describe('GitHub (written by default, 👎 = reject)', () => {
+    it('not in rejectedIds → written', () => {
       expect(shouldWrite('learning', rejections, 'github')).toBe(true);
       expect(shouldWrite('suggestion:1', rejections, 'github')).toBe(true);
     });
 
-    it('在 rejectedIds 中 → 不写入', () => {
+    it('in rejectedIds → not written', () => {
       expect(shouldWrite('suggestion:2', rejections, 'github')).toBe(false);
     });
 
-    it('未知 id（不在任何集合中）→ 写入（默认）', () => {
+    it('unknown id (in no set) → written (default)', () => {
       expect(shouldWrite('suggestion:99', rejections, 'github')).toBe(true);
     });
   });
 
-  describe('TGit (默认写入，🚫 emoji = reject)', () => {
-    it('不在 rejectedIds 中 → 写入', () => {
+  describe('TGit (written by default, 🚫 emoji = reject)', () => {
+    it('not in rejectedIds → written', () => {
       expect(shouldWrite('learning', rejections, 'tgit')).toBe(true);
       expect(shouldWrite('suggestion:1', rejections, 'tgit')).toBe(true);
     });
 
-    it('在 rejectedIds 中 → 不写入', () => {
+    it('in rejectedIds → not written', () => {
       expect(shouldWrite('suggestion:2', rejections, 'tgit')).toBe(false);
     });
 
-    it('未知 id（不在任何集合中）→ 写入（默认）', () => {
+    it('unknown id (in no set) → written (default)', () => {
       expect(shouldWrite('suggestion:99', rejections, 'tgit')).toBe(true);
     });
   });
@@ -102,7 +102,7 @@ describe('readRejections API failures', () => {
   });
 });
 
-describe('GitLab (默认写入，👎 thumbsdown = reject)', () => {
+describe('GitLab (written by default, 👎 thumbsdown = reject)', () => {
   beforeEach(() => {
     vi.stubEnv('GITLAB_URL', 'https://gitlab.com');
   });
@@ -119,7 +119,7 @@ describe('GitLab (默认写入，👎 thumbsdown = reject)', () => {
   const emojiUrl = (noteId: number) =>
     `https://gitlab.com/api/v4/projects/acme%2Fapp/merge_requests/7/notes/${noteId}/award_emoji?per_page=100&page=1`;
 
-  it('thumbsdown award 标记为 reject，无 emoji 默认 approve', async () => {
+  it('marks a thumbsdown award as reject and approves by default without an emoji', async () => {
     vi.stubEnv('GITLAB_TOKEN', 'test-token');
     vi.stubGlobal('fetch', vi.fn(async (url: string) => {
       if (url === notesUrl) return new Response(notes, { status: 200 });
