@@ -228,6 +228,20 @@ describe.skipIf(!configHooks || process.platform === 'win32')('a worktree create
     expect(deploys(dir)).toBe(1);
   }, 60_000);
 
+  it('a worktree removed and created again at the same path is prepared again, postDeploy included', async () => {
+    const dir = path.join(sandbox, 'wt-again');
+    gitOk(['worktree', 'add', '-q', '--detach', dir, 'HEAD'], project);
+    await detached.waitForExit();
+    expect(deploys(dir)).toBe(1);
+    gitOk(['worktree', 'remove', '--force', dir], project);
+
+    gitOk(['worktree', 'add', '-q', '--detach', dir, 'HEAD'], project);
+    await detached.waitForExit();
+
+    expect(fs.existsSync(skill(dir))).toBe(true);
+    expect(deploys(dir)).toBe(2);
+  }, 60_000);
+
   it('a session started in the worktree prepares it as a new worktree, postDeploy included', async () => {
     const dir = hooklessWorktree('wt-session');
 
