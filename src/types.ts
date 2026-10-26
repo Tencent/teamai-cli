@@ -1572,11 +1572,11 @@ export interface GlobalOptions {
    */
   force?: boolean;
   /**
-   * Internal (git hooks and checkout preparation from a tool use, `pull` only): deliver what the next
-   * session reads, without network when the team clone was fetched within
+   * Internal (git hooks and checkout preparation, `pull` only): deliver what
+   * the next session reads, without network when the team clone was fetched within
    * SOURCE_PULL_TTL_MS; sources come from their cached clones. Learnings,
    * reports, usage reporting and post-pull scripts are left to a full pull.
-   * `scripts.postDeploy` still runs when `prepareCheckout` is set.
+   * `scripts.postDeploy` still runs as `prepareCheckout` says.
    */
   inline?: boolean;
   /**
@@ -1585,10 +1585,10 @@ export interface GlobalOptions {
    * - `always`: a workflow worktree whose agent files were just put back to a
    *   base commit. postDeploy runs on every such pull.
    * - `once`: a linked worktree, a submodule's first checkout when that repo
-   *   already has teamai's git hooks (git's hook, and the pull it hands over
-   *   to), or a worktree an agent tool created without git hooks. Only the
-   *   pull that writes the checkout's first record runs postDeploy; an inline
-   *   one finding a record under the sync lock delivers nothing.
+   *   already has teamai's git hooks, or a worktree an agent tool created
+   *   without git hooks. Only the pull that writes the checkout's first record
+   *   runs postDeploy; an inline one finding a record under the sync lock
+   *   delivers nothing.
    */
   prepareCheckout?: 'always' | 'once';
   /**

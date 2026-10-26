@@ -1688,8 +1688,10 @@ describe('a checkout no pull delivered into (#1424)', () => {
     vi.clearAllMocks();
     root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'new-checkout-')));
     mockDeliveringCheckoutRecord.mockResolvedValue(undefined);
-    // A linked worktree: its `.git` is a file naming the repository's git dir.
+    // A linked worktree: its `.git` file names a git dir holding `commondir`.
     fs.mkdirSync(path.join(root, 'project'));
+    fs.mkdirSync(path.join(root, 'repo.git', 'worktrees', 'project'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'repo.git', 'worktrees', 'project', 'commondir'), '../..\n');
     fs.writeFileSync(path.join(root, 'project', '.git'), `gitdir: ${path.join(root, 'repo.git', 'worktrees', 'project')}\n`);
   });
   afterEach(() => {
@@ -1712,6 +1714,14 @@ describe('a checkout no pull delivered into (#1424)', () => {
   it('prepares nothing in a main checkout, where init runs', async () => {
     fs.rmSync(path.join(root, 'project', '.git'));
     fs.mkdirSync(path.join(root, 'project', '.git'));
+
+    await toolUse(projectConfig('git'));
+
+    expect(mockPull).not.toHaveBeenCalled();
+  });
+
+  it('prepares nothing in a submodule or a --separate-git-dir checkout, whose git dir holds no commondir', async () => {
+    fs.rmSync(path.join(root, 'repo.git', 'worktrees', 'project', 'commondir'));
 
     await toolUse(projectConfig('git'));
 

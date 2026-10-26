@@ -206,19 +206,27 @@ async function prepareCheckout(cwd: string, trigger: keyof typeof PREPARING_PULL
 }
 
 /**
- * Whether a tool's hook prepares the checkout at `cwd`: a project-scope one
- * git's post-checkout would have prepared (a linked worktree or a submodule,
- * whose `.git` is a file; a main checkout is where init runs), no pull
- * delivered into yet, and not teamai's own. An HTTP team's checkout keeps no
- * such record; its resources come through the local agent's sync.
+ * Whether a tool's hook prepares the checkout at `cwd`: a project-scope linked
+ * worktree no pull delivered into yet, which is not teamai's own. Agent tools
+ * create linked worktrees; a main checkout is where init runs. An HTTP team's
+ * checkout keeps no such record; its resources come through the local agent's sync.
  */
 async function needsPreparation(cwd: string, config: LocalConfig): Promise<boolean> {
   if (config.scope !== 'project' || config.repo.kind === 'http' || !config.projectRoot) return false;
-  const { stat } = await import('node:fs/promises');
-  const dotGit = await stat(path.join(config.projectRoot, '.git')).catch(() => null);
-  if (!dotGit?.isFile()) return false;
+  if (!await isLinkedWorktree(config.projectRoot)) return false;
   const { deliveringCheckoutRecord } = await import('./pull.js');
   return !await deliveringCheckoutRecord(config) && !await isOwnCheckout(cwd, config);
+}
+
+/**
+ * Whether the checkout at `root` is a linked worktree: its `.git` file names a
+ * git dir holding `commondir`. A main checkout, `--separate-git-dir` or not,
+ * and a submodule have none.
+ */
+async function isLinkedWorktree(root: string): Promise<boolean> {
+  const { readFile } = await import('node:fs/promises');
+  const pointer = /^gitdir:\s*(.+)$/m.exec(await readFile(path.join(root, '.git'), 'utf8').catch(() => ''));
+  return pointer !== null && pathExists(path.join(path.resolve(root, pointer[1].trim()), 'commondir'));
 }
 
 /** Checkouts teamai itself creates: its knowledge and reports worktrees, under the scope's data home or team clone. */
@@ -1306,7 +1314,7 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     { event: 'post-tool-use', matcher: '*', handler: localAgentHandler, timeoutMs: LOCAL_AGENT_TIMEOUT_MS, background: true },
     { event: 'post-tool-use', matcher: '*', handler: skillUseHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true, requiresConfig: true },
     // A worktree an agent tool entered without any git hook (Claude Code's EnterWorktree, Codex CLI) gets the
-    // team's resources on its first tool use there; a checkout with a delivery record costs one state read.
+    // team's resources on its first tool use there; any other checkout costs a few file reads.
     { event: 'post-tool-use', matcher: '*', handler: newCheckoutHandler, timeoutMs: PULL_TIMEOUT_MS, background: true, requiresConfig: true },
 
     // ─── UserPromptSubmit ─────────────────────────────

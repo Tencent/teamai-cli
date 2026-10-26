@@ -3019,8 +3019,6 @@ export async function pull(
   // Read once; the scripts this pull runs (postPull) must not inherit it.
   delete process.env.TEAMAI_GIT_HOOK;
   if (!options.gitHook && isGitHookEvent(hookEnv)) options = { ...options, gitHook: hookEnv };
-  // The pull a new checkout's hook hands over to delivers first when the hook's could not.
-  if (hookEnv === 'post-checkout') options = { ...options, prepareCheckout: 'once' };
   // What the scopes below say in their own words, so the post-pull pass does
   // not repeat it. Owned here rather than at module scope so nothing survives
   // into another call.
