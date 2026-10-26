@@ -12,7 +12,11 @@ import { describe, expect, it } from 'vitest';
 // itself is asked, both at the global level and from a fresh repo.
 describe('isolate-home gitconfig (#1413)', () => {
   it('turns git background upkeep off for the isolated home', () => {
-    const config = fs.readFileSync(path.join(process.env.HOME!, '.gitconfig'), 'utf-8');
+    // Fails at this assertion on a base without the setup file's gitconfig,
+    // not on the read, so the gap is named.
+    const file = path.join(process.env.HOME!, '.gitconfig');
+    expect(fs.existsSync(file), `no .gitconfig in the isolated home ${process.env.HOME}`).toBe(true);
+    const config = fs.readFileSync(file, 'utf-8');
     expect(config).toContain('[gc]');
     expect(config).toContain('auto = 0');
     expect(config).toContain('[maintenance]');
