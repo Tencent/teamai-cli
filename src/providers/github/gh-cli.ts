@@ -32,8 +32,21 @@ export function isGhInstalled(): boolean {
 }
 
 /**
+ * Whether `spawnSync` killed the child because `timeout` elapsed.
+ *
+ * A deadline surfaces as `status: null` plus `error.code === 'ETIMEDOUT'`, so
+ * without this probe a timed-out call is indistinguishable from a `gh` that
+ * exited non-zero while printing nothing: the caller only sees
+ * `{ status: 1, stdout: '', stderr: '' }`.
+ */
+function hitTimeout(result: { error?: Error | null }): boolean {
+  const { error } = result;
+  return error instanceof Error && 'code' in error && error.code === 'ETIMEDOUT';
+}
+
+/**
  * Execute a gh CLI command.
- * Returns { stdout, stderr, status }.
+ * Returns { stdout, stderr, status }, plus `timedOut` when a deadline fired.
  *
  * Launches through cross-spawn rather than the native `spawnSync`, for the same
  * reason `callClaude` does: a `gh` that npm installed is a `.cmd` shim, and Node
@@ -50,7 +63,7 @@ export function ghExec(
     timeoutMs?: number;
     maxBuffer?: number;
   },
-): { stdout: string; stderr: string; status: number } {
+): { stdout: string; stderr: string; status: number; timedOut?: boolean } {
   const ghPath = getGhPath();
   if (!ghPath) {
     throw new Error(
@@ -67,7 +80,12 @@ export function ghExec(
       cwd: options.cwd,
       ...(options.timeoutMs ? { timeout: options.timeoutMs } : {}),
     });
-    return { stdout: '', stderr: '', status: result.status ?? 1 };
+    return {
+      stdout: '',
+      stderr: '',
+      status: result.status ?? 1,
+      ...(hitTimeout(result) ? { timedOut: true } : {}),
+    };
   }
 
   const result = crossSpawn.sync(ghPath, args, {
@@ -82,6 +100,7 @@ export function ghExec(
     stdout: (result.stdout ?? '').toString().trim(),
     stderr: (result.stderr ?? '').toString().trim(),
     status: result.status ?? 1,
+    ...(hitTimeout(result) ? { timedOut: true } : {}),
   };
 }
 

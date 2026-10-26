@@ -269,7 +269,7 @@ broken machine):
 | Codex                 | Installed and trusted     | Codex runs only trusted hooks; teamai trusts the ones it writes through `codex app-server`, and `teamai doctor` names any Codex will not run |
 | Cursor                | Installed                 | Also runs `~/.claude/settings.json`. That copy exits only when `~/.cursor/hooks.json` or the project `.cursor/hooks.json` contains `--tool cursor` |
 | Copilot CLI           | Installed                 | Built-ins use `$COPILOT_HOME/hooks/teamai.json` (default `~/.copilot/hooks/teamai.json`); self mode keeps them in the project. Claude built-ins exit for a valid, enabled version-1 file, global or project, with a `--tool copilot` command; self mode checks only the project directory. A Claude team hook exits only when a valid, enabled project version-1 file delivers the same command to Copilot for the same event and matcher. `COPILOT_CLI` alone does not skip |
-| CodeBuddy / WorkBuddy | Installed                 | Claude-format hooks in their own `settings.json`                    |
+| CodeBuddy / WorkBuddy | Installed                 | Claude-format hooks in their own `settings.json`; none on a WorkBuddy with only `.workbuddy-ai/` (see WorkBuddy below) |
 
 Practical rule: if you set up with `--agent claude`, expect **only** Claude to show
 hooks installed. A tool you are not using, or one that is not a supported hook
@@ -334,6 +334,10 @@ Walk them through opening the tool's config and adding the TeamAI session-start
 hook entry; if unsure of the exact config, run `teamai doctor` and `teamai hooks list`
 to see what should be present, then have them replicate it. Until then, they can
 sync with a manual `teamai pull`.
+
+Skip this on WorkBuddy 5.7+ with only `~/.workbuddy-ai/`. teamai does not know yet
+where 5.7 reads hooks, so it writes none, and `teamai doctor` names them under
+`workbuddy receives ...`. Do not hand-register a hook there; sync with `teamai pull`.
 
 ### Muse Code
 

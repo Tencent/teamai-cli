@@ -16,6 +16,7 @@ import {
 } from './tools.js';
 import {
   DEFAULT_TOOL_PATHS, isAgentExcluded, isGitExcludeEnabled, isSelfMode, resolveBaseDir, scopedToolPaths, toolGateRoot,
+  WORKBUDDY_NEW_GENERATION_ROOT, WORKBUDDY_TOOL_ID, WORKBUDDY_TOOL_ROOT,
   type HomePaths, type LocalConfig, type Scope, type TeamaiConfig, type ToolId,
 } from './types.js';
 import { homeRoot, movedToolHome, realHost, toolHome, type Host } from './tool-home.js';
@@ -397,13 +398,13 @@ async function userViewOf(install: Install, host: Host): Promise<Install> {
   return { toolPaths: install.toolPaths, agents: install.agents, toolRoots, gitExclude: install.gitExclude, scope: 'user' };
 }
 
-async function gatesOf(tool: string, install: Install, host: Host, roots: Roots = rootsOf(tool, install, host)): Promise<Gate[]> {
+async function gatesOf(tool: string, install: Install, host: Host, roots: Roots = rootsOf(tool, install, host), resource?: Resource): Promise<Gate[]> {
   const selected: Gate = { kind: 'selected', met: !isAgentExcluded(install.agents, tool) };
-  const installed = await installedGateOf(tool, install, host, roots);
+  const installed = await installedGateOf(tool, install, host, roots, resource);
   return installed === null ? [selected] : [selected, installed];
 }
 
-async function installedGateOf(tool: string, install: Install, host: Host, roots: Roots): Promise<Gate | null> {
+async function installedGateOf(tool: string, install: Install, host: Host, roots: Roots, resource?: Resource): Promise<Gate | null> {
   const { home, join } = roots;
   const enabled = install.agents.enabledAgents?.includes(tool) === true;
   const probe = async (dir: string, met?: boolean): Promise<Gate> => ({ kind: 'installed', probe: dir, met: met ?? await host.exists(dir) });
@@ -433,6 +434,18 @@ async function installedGateOf(tool: string, install: Install, host: Host, roots
       case 'home':
         return probe(home.dir);
       case 'own-root':
+        // WorkBuddy 5.7+ moved its runtime to `.workbuddy-ai/` and stops
+        // reading `.workbuddy/` (#1273): the new root present means 5.7+ is
+        // the live generation (an upgrade leaves the old root behind as an
+        // unread leftover), so it is the install proof even when both exist —
+        // but only for skills, the one surface with verified 5.7+ delivery
+        // evidence (the 13-skill `/` menu check in #1273). Every other
+        // surface keeps requiring the old root and fails closed on a
+        // 5.7-only member until its real 5.7+ path is confirmed (#1290).
+        if (resource === 'skills' && tool === WORKBUDDY_TOOL_ID
+          && await host.exists(join(roots.base, WORKBUDDY_NEW_GENERATION_ROOT))) {
+          return probe(join(roots.base, WORKBUDDY_NEW_GENERATION_ROOT));
+        }
         return probe(join(roots.base, home.root));
       default: {
         const unhandled: never = installedBy;
@@ -545,6 +558,19 @@ async function locateSkills(tool: string, install: Install, host: Host): Promise
   if (configured === null) return { channel: 'files', own: null, shared: null, reads: 'unknown', readGates: [], retired: [], gates: [] };
 
   let own: string | null = configured;
+  // WorkBuddy 5.7+ scans skills from `.workbuddy-ai/skills` and stops reading
+  // `.workbuddy/` (#1273), so on an install whose live generation is the new
+  // root, skills land where the app scans. Only the default path swaps —
+  // a team that redirected skills on purpose keeps its own. User scope may
+  // already carry the swapped default (`scopedToolPaths`), so both spellings
+  // count (#1290: the new root wins even when an upgrade left both behind).
+  if (tool === WORKBUDDY_TOOL_ID) {
+    const relative = roots.paths?.skills;
+    if ((relative === `${WORKBUDDY_TOOL_ROOT}/skills` || relative === `${WORKBUDDY_NEW_GENERATION_ROOT}/skills`)
+      && await host.exists(roots.join(roots.base, WORKBUDDY_NEW_GENERATION_ROOT))) {
+      own = roots.join(roots.base, `${WORKBUDDY_NEW_GENERATION_ROOT}/skills`);
+    }
+  }
   let shared: string | null = null;
   if (tool === 'openclaw') {
     const workspace = await openclawWorkspaceOf(roots, host);
@@ -563,7 +589,7 @@ async function locateSkills(tool: string, install: Install, host: Host): Promise
     reads: await readsOf(isToolId(tool) ? TOOLS[tool].skills[install.scope] : 'unknown', roots, host),
     readGates: [],
     retired: [],
-    gates: await gatesOf(tool, install, host, roots),
+    gates: await gatesOf(tool, install, host, roots, 'skills'),
   };
 }
 
