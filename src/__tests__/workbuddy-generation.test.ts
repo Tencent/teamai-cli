@@ -23,6 +23,7 @@ vi.mock('../utils/logger.js', () => ({
 import { loadLocalConfig, loadTeamConfig } from '../config.js';
 import { buildChecks, resolveDoctorContext, type Check } from '../doctor.js';
 import { isToolInstalledForConfig } from '../resources/base.js';
+import { writableRulesTools } from '../resources/rules.js';
 import { DEFAULT_TOOL_PATHS, scopedToolPaths } from '../types.js';
 import type { LocalConfig, TeamaiConfig } from '../types.js';
 
@@ -109,7 +110,7 @@ describe('scopedToolPaths swaps WorkBuddy skills to the 5.7+ root (#1273)', () =
     expect(paths(defaultTeam).workbuddy.skills).toBe('.workbuddy-ai/skills');
   });
 
-  it('prefers the new root when an upgrade left both roots behind (#1290 P1)', async () => {
+  it('prefers the new root when an upgrade left both roots behind', async () => {
     await fse.ensureDir(path.join(home, '.workbuddy'));
     await fse.ensureDir(path.join(home, '.workbuddy-ai'));
     expect(paths(defaultTeam).workbuddy.skills).toBe('.workbuddy-ai/skills');
@@ -127,7 +128,7 @@ describe('scopedToolPaths swaps WorkBuddy skills to the 5.7+ root (#1273)', () =
     expect(paths(elsewhere).workbuddy.skills).toBe('custom/skills');
   });
 
-  it('keeps the swap after the user-scope override merges the default path (#1290 P1)', async () => {
+  it('keeps the swap after the user-scope override merges the default path', async () => {
     await fse.ensureDir(path.join(home, '.workbuddy-ai'));
     const scoped = {
       toolPaths: {
@@ -137,7 +138,7 @@ describe('scopedToolPaths swaps WorkBuddy skills to the 5.7+ root (#1273)', () =
     expect(paths(scoped).workbuddy.skills).toBe('.workbuddy-ai/skills');
   });
 
-  it('never stomps a userScope skills redirect of its own (#1290 P1)', async () => {
+  it('never stomps a userScope skills redirect of its own', async () => {
     await fse.ensureDir(path.join(home, '.workbuddy-ai'));
     const scoped = {
       toolPaths: {
@@ -213,3 +214,47 @@ describe('doctor on a WorkBuddy member with only the 5.7+ root', () => {
   });
 });
 
+/**
+ * Pull reports rules as synced only when some tool's rules target is
+ * writable (#1273): none on a member whose only WorkBuddy root is
+ * `.workbuddy-ai/`, while a single-file target such as Codex's `AGENTS.md`
+ * counts like a rules directory.
+ */
+describe('writableRulesTools', () => {
+  let root: string;
+  let home: string;
+
+  beforeEach(async () => {
+    root = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-wb-rules-'));
+    home = path.join(root, 'home');
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('USERPROFILE', home);
+  });
+
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    await fse.remove(root);
+  });
+
+  const localConfig = (): LocalConfig => ({
+    repo: { localPath: path.join(root, 'repo'), remote: 'owner/repo' },
+    username: 'tester', scope: 'user', additionalRoles: [],
+  });
+  const teamConfig = (toolPaths: TeamaiConfig['toolPaths']): TeamaiConfig => ({
+    team: 'test', description: '', repo: 'owner/repo', provider: 'git', reviewers: [],
+    sharing: { skills: {}, rules: { enforced: [] }, docs: { localDir: '' }, env: { injectShellProfile: false } },
+    toolPaths,
+  });
+
+  it('finds no rules target on a member whose only WorkBuddy root is .workbuddy-ai', async () => {
+    await fse.ensureDir(path.join(home, '.workbuddy-ai'));
+    expect(await writableRulesTools(teamConfig({ workbuddy: DEFAULT_TOOL_PATHS.workbuddy }), localConfig())).toEqual([]);
+  });
+
+  it('counts a tool whose rules land in a single file', async () => {
+    await fse.ensureDir(path.join(home, '.workbuddy-ai'));
+    await fse.ensureDir(path.join(home, '.codex'));
+    const toolPaths = { workbuddy: DEFAULT_TOOL_PATHS.workbuddy, codex: DEFAULT_TOOL_PATHS.codex };
+    expect(await writableRulesTools(teamConfig(toolPaths), localConfig())).toEqual(['codex']);
+  });
+});

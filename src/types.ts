@@ -2886,35 +2886,14 @@ export function applyToolRoots(
 }
 
 /**
- * Return `teamConfig.toolPaths` with per-scope path overrides applied.
- *
- * Almost every tool keeps its user-scope and project-scope resources at the same
- * `.<tool>/<resource>` relative path, so this is the identity map for them. The
- * exception is a tool whose user-scope config lives under a different prefix from
- * its project-scope config; its `userScope` block carries those paths and is
- * spliced in only when the active scope is `user`. OpenCode is such a tool
- * (`~/.config/opencode/` vs `<root>/.opencode/`), and so is Qoder CN
- * (`~/.qoder-cn/` vs `<root>/.qoder/`). Callers that iterate `toolPaths` for
- * scoped resources should iterate the result of this function instead, so the
- * correct path is used.
- *
- * MCP is untouched here: its two scopes are already distinct fields
- * (`mcp` / `mcpProject`), resolved separately in the reconcile engine.
- *
- * User scope also applies the member's `toolRoots` (applyToolRoots). Project
- * scope must not: there the paths hang off the project root, which a
- * HOME-relative member root has nothing to say about.
- */
-/**
  * WorkBuddy 5.7+ moved its runtime to `.workbuddy-ai/` and stops reading
- * `.workbuddy/` (#1273): on an install that left only the new root, deliver
- * skills to the directory the app actually scans — live-verified in the issue
- * (13 team skills showed in the live `/` menu); the new root wins whenever it
- * exists, because an upgrade leaves the old one behind as an unread leftover.
- * Only the default skills path
- * swaps, so a team that redirected on purpose keeps its own; every other
- * surface keeps its configured path (writes into the dead old layout are
- * no-ops the app ignores). Returns the same object when no swap fires.
+ * `.workbuddy/` (#1273), so skills go to the directory the app actually scans
+ * — live-verified in the issue (13 team skills showed in the live `/` menu).
+ * The new root wins whenever it exists, because an upgrade leaves the old one
+ * behind as an unread leftover. Only the default skills path swaps, so a team
+ * that redirected on purpose keeps its own. Every other surface keeps its
+ * `.workbuddy/` path: written there while that root exists, held by `locate`
+ * once it is gone. Returns the same object when no swap fires.
  */
 function applyWorkBuddyGeneration(
   toolPaths: Record<string, z.infer<typeof ToolPathsSchema>>,
@@ -2934,6 +2913,26 @@ function applyWorkBuddyGeneration(
   return toolPaths;
 }
 
+/**
+ * Return `teamConfig.toolPaths` with per-scope path overrides applied.
+ *
+ * Almost every tool keeps its user-scope and project-scope resources at the same
+ * `.<tool>/<resource>` relative path, so this is the identity map for them. The
+ * exception is a tool whose user-scope config lives under a different prefix from
+ * its project-scope config; its `userScope` block carries those paths and is
+ * spliced in only when the active scope is `user`. OpenCode is such a tool
+ * (`~/.config/opencode/` vs `<root>/.opencode/`), and so is Qoder CN
+ * (`~/.qoder-cn/` vs `<root>/.qoder/`). Callers that iterate `toolPaths` for
+ * scoped resources should iterate the result of this function instead, so the
+ * correct path is used.
+ *
+ * MCP is untouched here: its two scopes are already distinct fields
+ * (`mcp` / `mcpProject`), resolved separately in the reconcile engine.
+ *
+ * User scope also applies the member's `toolRoots` (applyToolRoots). Project
+ * scope must not: there the paths hang off the project root, which a
+ * HOME-relative member root has nothing to say about.
+ */
 export function scopedToolPaths(
   teamConfig: Pick<TeamaiConfig, 'toolPaths'>,
   localConfig: { scope?: Scope; toolRoots?: Readonly<Record<string, string>> },
