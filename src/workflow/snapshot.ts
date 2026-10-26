@@ -230,7 +230,7 @@ const ANSWER_RULES = {
 const FAILURE_RULES = { 'code': 'publish', message: 'rewrite' } satisfies FieldRules<WorkflowFailure>;
 
 // A lease another machine held is released when the run is handed over, so the session it offered stays here.
-const LEASE_RULES = { attempt: 'publish', revision: 'publish', driver: 'rewrite', session: 'drop', unenforced: 'drop', expiresAt: 'drop' } satisfies FieldRules<StepLease>;
+const LEASE_RULES = { attempt: 'publish', revision: 'publish', driver: 'rewrite', session: 'drop', unenforced: 'drop', expiresAt: 'drop', runMode: 'drop' } satisfies FieldRules<StepLease>;
 
 const COPY_RULES = { owner: 'drop', commit: 'publish', from: 'publish', used: 'drop' } satisfies FieldRules<NonNullable<RunState['copies']>[string]>;
 

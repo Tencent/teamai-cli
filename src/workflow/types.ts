@@ -248,6 +248,8 @@ export interface StepLease {
   unenforced?: Unenforced[];
   /** When the step's own `timeout` ends this lease, set when it is issued so a hand-back keeps it. */
   expiresAt?: string;
+  /** The run mode the driver runs the lease in, as its `next` reported it, so the pass keeps it however it settles. */
+  runMode?: RunMode;
 }
 
 export interface WorkflowFailure {

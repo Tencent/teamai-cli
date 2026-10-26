@@ -409,10 +409,10 @@ describe('workflow handoff through teamai-reports', () => {
     const started = await startRun(alice.config, 'build', {}, { secrets: await knownSecrets(alice.config), runMode: 'attended' });
     if ('error' in started) throw new Error(started.error.message);
     const runId = String(started.data.run);
-    const next = await leaseNext(alice.config, runId, alice.driver);
+    const next = await leaseNext(alice.config, runId, alice.driver, { runMode: 'attended' });
     if (!('data' in next) || !next.data.lease) throw new Error(`no lease: ${JSON.stringify(next)}`);
     const lease = next.data.lease as { attempt: string; revision: number };
-    await reportAttempt(alice.config, runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: alice.driver, runMode: 'attended' });
+    await reportAttempt(alice.config, runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: alice.driver });
     await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout });
     expect(await claimRun(bob.config, runId, { checkout: bob.checkout })).toMatchObject({ ok: true });
 

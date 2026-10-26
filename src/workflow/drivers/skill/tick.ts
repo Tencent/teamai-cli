@@ -87,7 +87,7 @@ async function spawnRunner(context: SkillContext, state: SkillState, attempt: At
  */
 async function sendReport(context: SkillContext, lock: RunLock, state: SkillState, attempt: AttemptId, body: ReportBody): Promise<{ state: SkillState; refused?: WorkflowFailure }> {
   await writeSkillState(context.config, lock, state, context.env.secrets);
-  const reply = reportReply(await context.client.report(state.run, { ...body, runMode: state.options.mode }, { lock }));
+  const reply = reportReply(await context.client.report(state.run, body, { lock }));
   const taken = traced(context, reportedRow(state, { attempt, reply, at: context.now().toISOString() }));
   if (!taken) return { state };
   return 'answer' in taken ? { state, refused: taken.answer.error } : { state: taken.state };
@@ -207,7 +207,7 @@ async function stepTick(context: SkillContext, lock: RunLock, start: SkillState,
     probed = probed || !request.canTakeLease;
     const body = {
       driver: { ...state.driver, can: canFor(state.host.kind === 'chosen' ? state.host.id : undefined) }, running: request.running, canTakeLease: request.canTakeLease,
-      ...(request.autoApprove ? { autoApprove: true } : {}),
+      runMode: state.options.mode, ...(request.autoApprove ? { autoApprove: true } : {}),
     };
     const answer = await context.client.next(state.run, body);
     const at = context.now().toISOString();

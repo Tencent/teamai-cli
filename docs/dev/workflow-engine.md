@@ -103,7 +103,7 @@ Test parsing through `parseWorkflow` and `syncWorkflowDefinitions`. Test the eng
 
 | Row | State | Input | Guard | Effects | Next | Action |
 |---|---|---|---|---|---|---|
-| D1 | drive | tick | | engine `next {driver: identity + canFor(host), the can of the host's profile, and h1's for a run without prompt steps, running: every open attempt, canTakeLease: fewer open than options.parallel, and than one under a serial host; false in a runner's check, autoApprove: true under HITL mode `auto-approve`}` | drive | |
+| D1 | drive | tick | | engine `next {driver: identity + canFor(host), the can of the host's profile, and h1's for a run without prompt steps, running: every open attempt, canTakeLease: fewer open than options.parallel, and than one under a serial host; false in a runner's check, autoApprove: true under HITL mode `auto-approve`, runMode: options.mode}` | drive | |
 | D2 | drive | reply `cancelled` holds a | a queued or placing | drop a | drive | event `stopped` |
 | D3 | drive | reply `cancelled` holds a | a preparing or running | phase stopping by its runner, why `timeout` once its `expiresAt` passed, else `cancelled` | drive | |
 | D4 | drive | reply `cancelled` holds a | a offered or dispatched | phase stopping by the agent, why as D3 | drive | `stop {why, report}` in each foreground turn until reported |

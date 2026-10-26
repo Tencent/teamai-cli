@@ -524,7 +524,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options
   const report = async (body: ReportBody, lease: Lease): Promise<WorkflowEnvelope | undefined> => {
     const secrets = env?.secrets ?? await knownSecrets(config);
     await maskResultFile(attemptResultPath(config, runId, lease.attempt), secrets);
-    const answer = await managedReport({ config, runId, report: { ...body, runMode: mode }, secrets, lock });
+    const answer = await managedReport({ config, runId, report: body, secrets, lock });
     // Cancelled while it ran: the next `next` lists it in `cancelled`, and the run goes on without it.
     if (isWorkflowError(answer)) return answer.error.code === 'lease_cancelled' ? undefined : answer;
     reported.add(body.attempt);
@@ -540,7 +540,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options
       const turn = { ...resolved, secrets: rememberSecrets(seen, resolved.secrets) };
       env = turn;
       const next = await leaseNext(config, runId, driver, {
-        running, canTakeLease, can, autoApprove: options.autoApprove, ...(base ? { base } : {}), env: turn,
+        running, canTakeLease, can, autoApprove: options.autoApprove, runMode: mode, ...(base ? { base } : {}), env: turn,
       });
       if (signalled) continue;
       if (isWorkflowError(next)) return next;
