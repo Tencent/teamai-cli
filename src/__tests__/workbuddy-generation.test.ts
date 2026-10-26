@@ -164,6 +164,7 @@ describe('scopedToolPaths swaps WorkBuddy skills to the 5.7+ root (#1273)', () =
 describe('doctor on a WorkBuddy member with only the 5.7+ root', () => {
   let root: string;
   let home: string;
+  let teamConfig: TeamaiConfig;
 
   beforeEach(async () => {
     root = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-wb-doctor-'));
@@ -174,7 +175,7 @@ describe('doctor on a WorkBuddy member with only the 5.7+ root', () => {
       repo: { localPath: path.join(root, 'repo'), remote: 'owner/repo' },
       username: 'tester', scope: 'user', additionalRoles: [], enabledAgents: ['workbuddy'],
     };
-    const teamConfig: TeamaiConfig = {
+    teamConfig = {
       team: 'test', description: '', repo: 'owner/repo', provider: 'git', reviewers: [],
       sharing: { skills: {}, rules: { enforced: [] }, docs: { localDir: '' }, env: { injectShellProfile: false } },
       toolPaths: { workbuddy: DEFAULT_TOOL_PATHS.workbuddy },
@@ -205,6 +206,18 @@ describe('doctor on a WorkBuddy member with only the 5.7+ root', () => {
     expect(await held[0].check()).toBe(false);
     for (const surface of ['rules', 'agents', 'MCP servers', 'hooks']) expect(held[0].name).toContain(surface);
     expect(held[0].fix).toContain(path.join(home, '.workbuddy-ai', 'skills'));
+    expect(held[0].fix).toContain(`${path.join(home, '.workbuddy')} exists`);
+  });
+
+  it('names hooks when the team maps WorkBuddy to skills and settings only', async () => {
+    await fse.ensureDir(path.join(home, '.workbuddy-ai'));
+    vi.mocked(loadTeamConfig).mockResolvedValue({
+      ...teamConfig, toolPaths: { workbuddy: { skills: '.workbuddy/skills', settings: '.workbuddy/settings.json' } },
+    });
+    const held = (await checks()).filter((c) => c.name.startsWith('workbuddy receives'));
+
+    expect(held.map((c) => c.name)).toEqual(['workbuddy receives hooks']);
+    expect(await held[0].check()).toBe(false);
     expect(held[0].fix).toContain(`${path.join(home, '.workbuddy')} exists`);
   });
 

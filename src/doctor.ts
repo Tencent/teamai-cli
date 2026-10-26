@@ -229,7 +229,8 @@ const GATED_SURFACES = [['rules', 'rules'], ['blocks', 'team instructions'], ['a
  * everything else still needs `.workbuddy/` (#1273). Pull writes none of those,
  * and the delivery checks skip a tool whose gate is unmet, so with
  * `<tool> is installed` passing on the skills root doctor would stay green.
- * Hooks count when teamai injects them under the same missing root.
+ * Hooks count when the hook writer finds none of its install roots and one of
+ * them is a root the other surfaces wait for.
  */
 async function buildHeldSurfaceChecks(ctx: DoctorContext): Promise<Check[]> {
   const { localConfig, toolPaths, hookToolPaths, baseDir } = ctx;
@@ -238,16 +239,27 @@ async function buildHeldSurfaceChecks(ctx: DoctorContext): Promise<Check[]> {
   for (const tool of Object.keys(toolPaths)) {
     const skills = writable(await locate(tool, 'skills', install));
     if (skills === null) continue;
+    // Keyed by every missing root, whether or not the team maps a surface to it.
     const held = new Map<string, string[]>();
     for (const [resource, surface] of GATED_SURFACES) {
       const location = await locate(tool, resource, install);
       const unmet = location.gates.find((gate) => gate.kind === 'installed' && !gate.met);
-      if (location.channel !== 'files' || location.own === null || unmet?.kind !== 'installed') continue;
-      held.set(unmet.probe, [...held.get(unmet.probe) ?? [], surface]);
+      if (unmet?.kind !== 'installed') continue;
+      const surfaces = held.get(unmet.probe) ?? [];
+      if (location.channel === 'files' && location.own !== null) surfaces.push(surface);
+      held.set(unmet.probe, surfaces);
     }
     const settings = hookToolPaths[tool]?.settings;
-    if (settings) held.get(hookSettingsPath(tool, baseDir, toolGateRoot(tool, settings, localConfig.toolRoots)))?.push('hooks');
+    if (settings) {
+      // reconcileHooksToAllTools injects while either root exists.
+      const gateRoot = toolGateRoot(tool, settings, localConfig.toolRoots);
+      const hookRoots = [hookSettingsPath(tool, baseDir, gateRoot)];
+      if (localConfig.scope === 'project') hookRoots.push(path.join(localConfig.projectRoot ?? baseDir, gateRoot));
+      const root = hookRoots.find((candidate) => held.has(candidate));
+      if (root !== undefined && !(await Promise.all(hookRoots.map((dir) => pathExists(dir)))).includes(true)) held.get(root)?.push('hooks');
+    }
     for (const [root, surfaces] of held) {
+      if (surfaces.length === 0) continue;
       checks.push({
         name: `${tool} receives ${nameList(surfaces)}`,
         source: 'local',
