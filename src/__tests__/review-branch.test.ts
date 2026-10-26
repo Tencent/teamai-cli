@@ -833,18 +833,31 @@ describe('reviewBranchDir — skill links, Agent Skills limits and piped install
     }]);
   });
 
-  it('warns for a link outside the skill even when the other skill exists on the branch', async () => {
-    await writeSkill(repoDir, 'skills/release', skill('release', ['Also see [other](../other-skill/SKILL.md).']));
-    await writeSkill(repoDir, 'skills/other-skill', skill('other-skill', ['# Other']));
+  it('resolves a link outside the skill where pull delivers skills, side by side by name', async () => {
+    await fse.ensureDir(path.join(repoDir, 'manifest'));
+    await fse.writeFile(path.join(repoDir, 'manifest', 'roles.yaml'), rolesYaml(['frontend', 'backend']));
+    await writeSkill(repoDir, 'skills/frontend/release', skill('release', [
+      'See [notes](../notes/SKILL.md), [deploy](../deploy/SKILL.md), [deploy by repo path](../../backend/deploy/SKILL.md),',
+      '[missing in notes](../notes/references/missing.md) and [guide](../../../docs/guide.md).',
+    ]));
+    await writeSkill(repoDir, 'skills/frontend/notes', skill('notes', ['# Notes']));
+    await writeSkill(repoDir, 'skills/backend/deploy', skill('deploy', ['# Deploy']));
 
     const review = await reviewBranchDir(BRANCH, repoDir);
+    const linkFindings = review.findings
+      .filter((f) => f.path === 'skills/frontend/release/SKILL.md')
+      .map(({ level, message }) => `${level} ${message.replace(/^skills\/frontend\/release\/SKILL\.md links to /, '')}`);
 
-    expect(warnings(review)).toEqual([{
-      check: 'format',
-      path: 'skills/release/SKILL.md',
-      message: 'skills/release/SKILL.md links to ../other-skill/SKILL.md, which is outside the skill; pull copies each skill directory '
-        + 'on its own, so the link works only for a member who also receives that file. Move the file into the skill.',
-    }]);
+    expect(review.ok).toBe(true);
+    expect(linkFindings).toEqual([
+      'info ../notes/SKILL.md, in skill "notes"; it resolves only for a member who also receives that skill.',
+      'info ../deploy/SKILL.md, in skill "deploy"; it resolves only for a member who also receives that skill.',
+      'warn ../../backend/deploy/SKILL.md, which pull never delivers there: it delivers each skill as <skills>/<name>/, '
+        + 'so link another skill as ../<name>/… and move any other file into the skill.',
+      'warn ../notes/references/missing.md, which is not in skill "notes".',
+      'warn ../../../docs/guide.md, which pull never delivers there: it delivers each skill as <skills>/<name>/, '
+        + 'so link another skill as ../<name>/… and move any other file into the skill.',
+    ]);
   });
 
   it('warns for a description over 1024 characters and not for one of 1024, counting characters rather than UTF-16 units', async () => {

@@ -811,56 +811,68 @@ async function linkTargetState(root: string, segments: string[], mustBeDirectory
 }
 
 /**
- * Links between the files of a skill. Pull copies each skill directory on its
- * own, so a link must stay inside it: a target outside works only for a member
- * who also receives that file.
+ * Links between the files of a skill, read where pull delivers it: each skill on
+ * its own as `<skills>/<name>/`, namespaces flattened. A link that leaves the
+ * skill resolves only into another skill delivered beside it, and only for a
+ * member who also receives that skill; anything else never resolves.
  */
-async function skillLinkFindings(files: SkillFile[]): Promise<Finding[]> {
+async function skillLinkFindings(files: SkillFile[], resources: ReviewResource[]): Promise<Finding[]> {
+  const skillsByName = new Map<string, ReviewResource[]>();
+  for (const resource of resources) if (resource.type === 'skills') byKey(skillsByName, resource.name).push(resource);
   const findings: Finding[] = [];
   for (const file of files) {
     if (!/\.(md|markdown)$/i.test(file.relativePath)) continue;
     const fromDir = path.posix.dirname(path.posix.relative(file.skill.relativePath, file.relativePath));
     for (const target of localLinkTargets(file.content)) {
+      const mustBeDirectory = target.endsWith('/');
       const resolved = path.posix.normalize(path.posix.join(fromDir, target)).replace(/\/$/, '');
-      if (resolved === '..' || resolved.startsWith('../')) {
-        findings.push({
-          level: 'warn',
-          check: 'format',
-          path: file.relativePath,
-          message: `${file.relativePath} links to ${target}, which is outside the skill; pull copies each skill directory on its own, `
-            + 'so the link works only for a member who also receives that file. Move the file into the skill.',
-        });
+      const finding = (level: FindingLevel, message: string): void => {
+        findings.push({ level, check: 'format', path: file.relativePath, message: `${file.relativePath} links to ${target}${message}` });
+      };
+      const segments = resolved === '.' ? [] : resolved.split('/');
+      if (segments[0] !== '..') {
+        reportLinkTarget(await linkTargetState(file.skill.absolutePath, segments, mustBeDirectory), ', which is not in the skill.', finding);
         continue;
       }
-      const state = await linkTargetState(file.skill.absolutePath, resolved === '.' ? [] : resolved.split('/'), target.endsWith('/'));
-      switch (state) {
-        case 'copied':
-          break;
-        case 'missing':
-          findings.push({
-            level: 'warn',
-            check: 'format',
-            path: file.relativePath,
-            message: `${file.relativePath} links to ${target}, which is not in the skill.`,
-          });
-          break;
-        case 'skipped':
-          findings.push({
-            level: 'warn',
-            check: 'format',
-            path: file.relativePath,
-            message: `${file.relativePath} links to ${target}, which pull does not copy (a symlink or an ignored name); `
-              + 'replace it with the file itself.',
-          });
-          break;
-        default: {
-          const unhandled: never = state;
-          throw new Error(`Unhandled link target state: ${String(unhandled)}`);
-        }
+      const [, skillName = '', ...inSkill] = segments;
+      const siblings = skillName === '..' ? [] : skillsByName.get(skillName) ?? [];
+      if (siblings.length === 0) {
+        finding('warn', ', which pull never delivers there: it delivers each skill as <skills>/<name>/, '
+          + 'so link another skill as ../<name>/… and move any other file into the skill.');
+        continue;
       }
+      const states = await Promise.all(siblings.map((sibling) => linkTargetState(sibling.absolutePath, inSkill, mustBeDirectory)));
+      const state = states.includes('copied') ? 'copied' : states.includes('skipped') ? 'skipped' : 'missing';
+      if (state === 'copied' && skillName !== file.skill.name) {
+        finding('info', `, in skill "${skillName}"; it resolves only for a member who also receives that skill.`);
+        continue;
+      }
+      reportLinkTarget(state, `, which is not in skill "${skillName}".`, finding);
     }
   }
   return findings;
+}
+
+/** The finding for a link target inside a skill, if any: `missing` says `missingText`. */
+function reportLinkTarget(
+  state: 'copied' | 'missing' | 'skipped',
+  missingText: string,
+  finding: (level: FindingLevel, message: string) => void,
+): void {
+  switch (state) {
+    case 'copied':
+      return;
+    case 'missing':
+      finding('warn', missingText);
+      return;
+    case 'skipped':
+      finding('warn', ', which pull does not copy (a symlink or an ignored name); replace it with the file itself.');
+      return;
+    default: {
+      const unhandled: never = state;
+      throw new Error(`Unhandled link target state: ${String(unhandled)}`);
+    }
+  }
 }
 
 /** What may precede the shell word of a stage: assignments, `sudo` with its options and assignments, `env` with options and assignments, and a directory. */
@@ -1370,7 +1382,7 @@ export async function reviewBranchDir(branch: string, repoDir: string): Promise<
     ...await structureFindings(resources, index),
     ...await namingFindings(resources, readText),
     ...await duplicateFindings(resources, index),
-    ...await skillLinkFindings(skillFiles),
+    ...await skillLinkFindings(skillFiles, resources),
     ...await formatFindings(resources, readText),
     ...pipedInstallFindings(skillFiles),
     ...await leakFindings(repoDir, resources, readText),
