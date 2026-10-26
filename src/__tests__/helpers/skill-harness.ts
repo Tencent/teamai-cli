@@ -71,7 +71,7 @@ const COMMAND_EXIT_MS = 10_000;
  * one that runs until it is stopped. A runner that throws `Crash` is gone, as a killed one is; any other error fails the next sleep.
  */
 function memoryRunners(command: Runners['command']): {
-  runners: Runners; track(runners: Runners): Runners; settingUp(client: WorkflowClient): WorkflowClient; judging(client: WorkflowClient): WorkflowClient; now: () => Date; bind(context: SkillContext): void; hold(held: boolean): void; crash(run: string, attempt: string): boolean;
+  runners: Runners; track(runners: Runners): Runners; settingUp(client: WorkflowClient): WorkflowClient; judging(client: WorkflowClient): WorkflowClient; now: () => Date; advance(ms: number): void; bind(context: SkillContext): void; hold(held: boolean): void; crash(run: string, attempt: string): boolean;
 } {
   let clock = Date.now();
   vi.useFakeTimers({ toFake: ['Date'] });
@@ -119,6 +119,7 @@ function memoryRunners(command: Runners['command']): {
   };
   return {
     now: () => new Date(clock),
+    advance: (ms) => { clock += ms; vi.setSystemTime(clock); },
     bind: (context) => { base = context; },
     hold: (on) => { held = on; },
     /** Wraps the runners a test ends with, so `stopLeft` reaches the commands they start, faked ones too. */
@@ -321,6 +322,8 @@ export async function skillHarness(workflows: Record<string, string>, options: H
     root, work, config, context, rows,
     /** While held, a sleep moves the clock and no runner, so two calls in a row see the same runners. */
     hold: scheduler.hold,
+    /** Moves the clock `ms` ahead and wakes no runner. A sleep moves it on from there, so `vi.setSystemTime` would not hold. */
+    advance: scheduler.advance,
     /** Makes the runner of `attempt` crash where it is parked at the next sleep. Whether one is alive to crash. */
     crashRunner: scheduler.crash,
     /** Makes `call` as the session, or with another session, agent evidence, run mode, lock, config, session tool or working directory in its context. */

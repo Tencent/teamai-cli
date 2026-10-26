@@ -762,8 +762,8 @@ describe('skill driver', () => {
     // A next past the deadline settles the run: the engine stops the attempt, as a runner's own check would.
     {
       stop: 'whose deadline passed', timeout: '    timeout: 30s\n', step: { status: 'failed', failure: { code: 'timeout' } },
-      meanwhile: async (client: WorkflowClient, run: RunId, driver: unknown) => {
-        vi.setSystemTime(Date.now() + 60_000);
+      meanwhile: async (client: WorkflowClient, run: RunId, driver: unknown, advance: (ms: number) => void) => {
+        advance(60_000);
         await client.next(run, { driver, canTakeLease: false });
       },
     },
@@ -785,7 +785,7 @@ ${timeout}    command: node -e "require('fs').writeFileSync('built.txt', 'B')"
         ...client,
         setup: async (run, attempt, mode) => {
           const failure = await client.setup(run, attempt, mode);
-          await meanwhile(client, run, z.object({ driver: z.unknown() }).parse(JSON.parse(fs.readFileSync(skillStatePath(harness.config, run), 'utf8'))).driver);
+          await meanwhile(client, run, z.object({ driver: z.unknown() }).parse(JSON.parse(fs.readFileSync(skillStatePath(harness.config, run), 'utf8'))).driver, harness.advance);
           return failure;
         },
         report: async (runId, body, options) => {
