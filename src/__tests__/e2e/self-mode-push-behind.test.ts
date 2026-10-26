@@ -411,6 +411,35 @@ describe('single-repo push from a checkout behind the default branch', () => {
     expect(git(['show', `${branch}:.teamai/agents/ops/sample.yaml`], remote)).toContain('Teammate review step.');
   });
 
+  it('stops a --carried agent conversion when a teammate added its destination file', async () => {
+    expect((await runCLI(['pull'], projectRoot, home)).code).toBe(0);
+    const AGENT = '---\nname: sample\ndescription: A sample agent\n---\n\nSample instructions.\n';
+    fs.mkdirSync(active('.teamai/agents'), { recursive: true });
+    fs.writeFileSync(active('.teamai/agents/sample.md'), AGENT);
+    expect((await runCLI(['push', '--all', '--role', 'ops'], projectRoot, home)).output).toContain('Pushed branch');
+    await mergePushAndPull();
+    teammateLandsOnMain({
+      '.teamai/agents/ops/sample.md': `${AGENT}\nTeammate safety instructions.\n`,
+      '.teamai/agents/ops/sample.yaml': 'name: sample\ndescription: A sample agent\ninstructions: Team YAML instructions.\n',
+    });
+    fs.rmSync(active('.teamai/agents/sample.md'));
+    fs.writeFileSync(
+      active('.teamai/agents/sample.yaml'),
+      'name: sample\ndescription: A sample agent\ninstructions: |\n  Member replacement instructions.\n  Teammate safety instructions.\n',
+    );
+    const teamVersion = git(['rev-parse', 'main:.teamai/agents/ops/sample.md'], remote);
+
+    const push = await runCLI(
+      ['push', '--all', '--role', 'ops', '--carried', `.teamai/agents/ops/sample.md@${teamVersion}`], projectRoot, home,
+    );
+
+    expect(push.code, push.output).toBe(2);
+    expect(push.output).toContain(
+      '.teamai/agents/sample.yaml (pushed to .teamai/agents/ops/sample.yaml) changed both here and on origin/main',
+    );
+    expect(pushBranches()).toEqual([]);
+  });
+
   it('publishes an edited root agent re-added after the placed agent was deleted', async () => {
     expect((await runCLI(['pull'], projectRoot, home)).code).toBe(0);
     fs.mkdirSync(active('.teamai/agents'), { recursive: true });
