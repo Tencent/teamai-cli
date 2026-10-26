@@ -943,8 +943,10 @@ function writesToStdout(downloader: 'curl' | 'wget', args: string): boolean {
   let remoteNameAll = false;
   // wget writes where its last -O points.
   let wgetOutput: string | undefined;
+  // `-`, `/dev/stdout` and `/dev/fd/1` all name standard output.
+  const isStdout = (value: string | undefined): boolean => value === '-' || value === '/dev/stdout' || value === '/dev/fd/1';
   const countOutput = (value: string): void => {
-    if (value === '-') stdoutOutputs++;
+    if (isStdout(value)) stdoutOutputs++;
     else savedOutputs++;
   };
   for (let index = 0; index < words.length; index++) {
@@ -974,7 +976,7 @@ function writesToStdout(downloader: 'curl' | 'wget', args: string): boolean {
     if (CURL_LONG_OPTION_WITH_VALUE.test(word)) index++;
     if (/^[a-z][a-z0-9+.-]*:\/\//i.test(word) || SCHEMELESS_URL.test(word) || word.startsWith('--url=')) urls++;
   }
-  if (downloader === 'wget') return wgetOutput === '-';
+  if (downloader === 'wget') return isStdout(wgetOutput);
   // curl pairs output options with URLs in order: `-o -` sends its URL to stdout,
   // and a URL left without an output goes there too unless --remote-name-all saves it.
   return (stdoutOutputs > 0 || (!remoteNameAll && Math.max(urls, 1) > savedOutputs + stdoutOutputs));
