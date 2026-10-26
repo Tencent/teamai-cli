@@ -154,6 +154,29 @@ describe.skipIf(!configHooks || process.platform === 'win32')('a worktree create
     expect(deploys(dir)).toBe(1);
   }, 60_000);
 
+  it('offline, with a team clone fetched days ago: a tool use delivers from the clone, and postDeploy runs once', async () => {
+    const remote = path.join(sandbox, 'team.git');
+    const projectsDir = path.join(home, '.teamai', 'projects');
+    const stamp = path.join(projectsDir, fs.readdirSync(projectsDir)[0], 'last-fetch.json');
+    const fetched = fs.readFileSync(stamp, 'utf8');
+    fs.writeFileSync(stamp, JSON.stringify({ lastFetch: new Date(Date.now() - 72 * 3600_000).toISOString() }));
+    fs.renameSync(remote, `${remote}.away`);
+    try {
+      const dir = hooklessWorktree('wt-offline');
+
+      await enterWorktree(dir);
+      await detached.waitForExit();
+      await enterWorktree(dir);
+      await detached.waitForExit();
+
+      expect(fs.existsSync(skill(dir))).toBe(true);
+      expect(deploys(dir)).toBe(1);
+    } finally {
+      fs.renameSync(`${remote}.away`, remote);
+      fs.writeFileSync(stamp, fetched);
+    }
+  }, 60_000);
+
   it('a session started in the worktree prepares it as a new worktree, postDeploy included', async () => {
     const dir = hooklessWorktree('wt-session');
 

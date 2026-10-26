@@ -192,6 +192,7 @@ vi.mock('../utils/reports-branch.js', () => ({
 const mockSeedProjectAgentRoot = vi.fn().mockResolvedValue(undefined);
 vi.mock('../project-agent-root.js', () => ({
   seedProjectAgentRoot: mockSeedProjectAgentRoot,
+  createProjectToolRoots: vi.fn().mockResolvedValue(undefined),
 }));
 
 // No scope scores finished sessions unless a test says so; a detached process is never started for real.
@@ -1677,6 +1678,37 @@ describe('post-tool-use dispatch — local-agent runs detached, never blocks hos
     expect(mockParseHookEvent).not.toHaveBeenCalled();
     await dispatcher.dispatch('post-tool-use', '*', stdin, 'claude', 'background');
     expect(mockParseHookEvent).toHaveBeenCalled();
+  });
+});
+
+describe('post-tool-use in a checkout no pull delivered into (#1424)', () => {
+  let root: string;
+  beforeEach(() => {
+    vi.clearAllMocks();
+    root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'new-checkout-')));
+    mockDeliveringCheckoutRecord.mockResolvedValue(undefined);
+  });
+  afterEach(() => {
+    mockDeliveringCheckoutRecord.mockResolvedValue({ rev: 'abc', targets: [] });
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  const projectConfig = (kind: 'git' | 'http'): LocalConfig => ({
+    repo: { kind, localPath: path.join(root, 'team'), remote: '' }, username: 'test', scope: 'project',
+    additionalRoles: [], dataHome: path.join(root, 'data'), projectRoot: path.join(root, 'project'),
+  });
+  const toolUse = (config: LocalConfig) => createDispatcher({ handlers: buildHandlerRegistry(), localConfig: config })
+    .dispatch('post-tool-use', '*', { tool_name: 'EnterWorktree', cwd: path.join(root, 'project') }, 'claude', 'background');
+
+  it('prepares it from the team clone as last fetched', async () => {
+    await toolUse(projectConfig('git'));
+
+    expect(mockPull).toHaveBeenCalledWith({ silent: true, prepareCheckout: true, inline: true, localOnly: true });
+  });
+
+  it('prepares nothing for an HTTP team, whose checkouts keep no delivery record', async () => {
+    await toolUse(projectConfig('http'));
+
+    expect(mockPull).not.toHaveBeenCalled();
   });
 });
 
