@@ -17,7 +17,7 @@ import { log, spinner } from './utils/logger.js';
 import { getUserHome } from './utils/home.js';
 import { getHandler } from './resources/index.js';
 import { createSkillPushItem, scanTeamRepoNamespaces } from './resources/skills.js';
-import { AgentsHandler, type AgentResourceItem } from './resources/agents.js';
+import { AgentsHandler } from './resources/agents.js';
 import { deliversEveryNamespace, resolveResourceNamespaces } from './resource-namespaces.js';
 import type {
   GlobalOptions, PendingPushItem, ResourceItem, ResourceType, LocalConfig, TeamaiConfig, State,
@@ -1124,8 +1124,11 @@ async function itemsChangedOnDefaultBranch(
   const retiring: ResourceItem[] = [];
   for (const item of teamItems) {
     const retired = supersededPathOf(item);
-    const retiredTip = retired && blobs.get(teamFile(retired))?.atTip;
-    if (retiredTip && retiredTip !== (item as AgentResourceItem).supersededBlob) {
+    const deliveredBlob = 'supersededBlob' in item && typeof item.supersededBlob === 'string' ? item.supersededBlob : undefined;
+    const retiredTip = retired && (deliveredBlob
+      ? (await git.raw(['rev-parse', `${defaultTip}:.teamai/${retired}`]).catch(() => '')).trim()
+      : blobs.get(teamFile(retired))?.atTip);
+    if (retiredTip && retiredTip !== deliveredBlob) {
       retiring.push(item);
       continue;
     }
@@ -1211,8 +1214,11 @@ async function defaultBranchGuard(
         + `Merge origin/${defaultBranch} (\`git pull origin ${defaultBranch}\`), resolve any conflict, then push again.`);
     }
     for (const item of retiring) {
+      const evidence = 'supersededBlob' in item && typeof item.supersededBlob === 'string'
+        ? 'since this machine delivered it'
+        : 'since this checkout branched from it (this older placement has no recorded delivered blob)';
       log.error(`${named([item])} would delete .teamai/${supersededPathOf(item)}, which changed on `
-        + `origin/${defaultBranch} since this checkout branched from it. Nothing was pushed. `
+        + `origin/${defaultBranch} ${evidence}. Nothing was pushed. `
         + `Run \`git pull origin ${defaultBranch}\`, carry that change into ${sourceOf(item)}, then push again.`);
     }
     process.exitCode = 2;

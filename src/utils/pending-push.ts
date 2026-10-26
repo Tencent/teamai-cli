@@ -492,9 +492,10 @@ export async function reconcilePlacementRecords(
     }
   }
 
-  for (const [name, source] of Object.entries(state.placedAgentSources ?? {})) {
+  const agentSources = state.placedAgentSources;
+  for (const [name, source] of Object.entries(agentSources ?? {})) {
     if (state.placedAgents?.[name] !== source.path) {
-      delete state.placedAgentSources![name];
+      if (agentSources) delete agentSources[name];
       changed = true;
     }
   }

@@ -238,6 +238,14 @@ export class AgentsHandler extends ResourceHandler {
       .filter((item) => item.type === 'agents' && recordedNamespace(item) !== undefined)
       .map((item) => item.name));
 
+    const retiredCopy = (stem: string): boolean => {
+      const retired = placedResourcePath(state.retiredPlacedAgents, 'agents', stem);
+      if (!retired || placedResourcePath(placedAgents, 'agents', stem)) return false;
+      log.warn(`[agents] ${stem} was removed from the team at ${retired}; its remaining copies are not new agents. `
+        + `After updating the checkout, edit the restored .teamai/${retired} source directly; keep the old copies as backups.`);
+      return true;
+    };
+
     const directItems: AgentResourceItem[] = [];
     const directStems = new Set<string>();
     if (isSelfMode(localConfig) && localConfig.projectRoot) {
@@ -252,9 +260,7 @@ export class AgentsHandler extends ResourceHandler {
             const stem = file.replace(/\.(yaml|md)$/, '');
             if (tombstones.has(stem)) continue;
             if (BUILTIN_AGENT_NAMES.has(stem)) continue;
-            if (!namespace && !placedResourcePath(placedAgents, 'agents', stem)
-              && placedResourcePath(state.retiredPlacedAgents, 'agents', stem)) {
-              log.warn(`[agents] ${stem} was removed from the team; its root copy is not pushed as a new agent.`);
+            if (!namespace && retiredCopy(stem)) {
               directStems.add(stem);
               continue;
             }
@@ -395,6 +401,7 @@ export class AgentsHandler extends ResourceHandler {
       const candidates = activeNamespaces === null
         ? (active.length > 0 ? active : recorded)
         : [activeInNamespace, recorded, atRoot].find((files) => files.length > 0) ?? [];
+      if (candidates.length === 0 && retiredCopy(stem)) continue;
       if (candidates.length > 1) {
         items.push({ name: stem, type: 'agents', sourcePath: teamAgentsDir,
           relativePath: `agents/${stem}.yaml`, status: 'modified',

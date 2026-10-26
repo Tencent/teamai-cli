@@ -325,7 +325,7 @@ describe('single-repo push from a checkout behind the default branch', () => {
     expect(pushed).toContain('Member line.');
   });
 
-  it('refuses with exit 2 when the agent file a format change removes changed on the default branch', async () => {
+  it.each([false, true])('refuses agent conversion after an upstream edit, checkout synchronized: %s', async (synced) => {
     expect((await runCLI(['pull'], projectRoot, home)).code).toBe(0);
     const AGENT = '---\nname: sample\ndescription: A sample agent\n---\n\nSample instructions.\n';
     fs.mkdirSync(active('.teamai/agents'), { recursive: true });
@@ -336,6 +336,7 @@ describe('single-repo push from a checkout behind the default branch', () => {
     expect(fs.readFileSync(active('.teamai/agents/ops/sample.md'), 'utf8')).toBe(AGENT);
 
     teammateLandsOnMain({ '.teamai/agents/ops/sample.md': `${AGENT}\nTeammate safety instructions.\n` });
+    if (synced) { git(['fetch', '-q', 'origin'], projectRoot); git(['merge', '-q', '--no-edit', 'origin/main'], projectRoot); }
     fs.rmSync(active('.teamai/agents/sample.md'));
     fs.writeFileSync(
       active('.teamai/agents/sample.yaml'),
@@ -347,7 +348,7 @@ describe('single-repo push from a checkout behind the default branch', () => {
     expect(push.code, push.output).toBe(2);
     expect(push.output).toContain(
       '.teamai/agents/sample.yaml (pushed to .teamai/agents/ops/sample.yaml) would delete .teamai/agents/ops/sample.md, '
-        + 'which changed on origin/main since this checkout branched from it.',
+        + 'which changed on origin/main since this machine delivered it.',
     );
     expect(push.output).toContain('carry that change into .teamai/agents/sample.yaml');
     expect(pushBranches()).toEqual([]);
@@ -375,6 +376,56 @@ describe('single-repo push from a checkout behind the default branch', () => {
     expect(pushed.output).toContain('Pushed branch');
     const [branch] = pushBranches();
     expect(git(['show', `${branch}:.teamai/agents/sample.yaml`], remote)).toContain('Member edit after re-add.');
+  });
+
+  it('does not republish a delivered tool copy after the retired root copy is deleted', async () => {
+    const config = path.join(home, '.teamai/projects', projectSlug(projectRoot), 'config.yaml');
+    fs.appendFileSync(config, 'additionalRoles: [ops]\n');
+    fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
+    fs.mkdirSync(active('.claude'), { recursive: true });
+    expect((await runCLI(['pull'], projectRoot, home)).code).toBe(0);
+    fs.mkdirSync(active('.teamai/agents'), { recursive: true });
+    fs.writeFileSync(active('.teamai/agents/sample.md'), '---\nname: sample\ndescription: Sample\n---\nOriginal.\n');
+    expect((await runCLI(['push', '--all', '--role', 'ops'], projectRoot, home)).output).toContain('Pushed branch');
+    await mergePushAndPull();
+    fs.unlinkSync(active('.teamai/agents/sample.md'));
+    const delivered = await runCLI(['pull', '--force'], projectRoot, home);
+    expect(delivered.code, delivered.output).toBe(0);
+    expect(fs.existsSync(active('.claude/agents/sample.md')), delivered.output + '\n' + JSON.stringify(fs.readdirSync(active('.claude'), { recursive: true }))).toBe(true);
+    git(['rm', '.teamai/agents/ops/sample.md'], teammate);
+    git(['commit', '-q', '-m', 'remove placed agent'], teammate);
+    git(['push', '-q', 'origin', 'main'], teammate);
+    fs.appendFileSync(active('.claude/agents/sample.md'), '\nMember edit in the leftover copy.\n');
+    const pushed = await runCLI(['push', '--all', '--role', 'ops'], projectRoot, home);
+    expect(pushed.output).not.toContain('Pushed branch');
+    expect(pushBranches()).toEqual([]);
+  });
+
+  it('names the recreated namespace source and allows editing it without republishing the retired root copy', async () => {
+    expect((await runCLI(['pull'], projectRoot, home)).code).toBe(0);
+    fs.mkdirSync(active('.teamai/agents'), { recursive: true });
+    const original = '---\nname: sample\ndescription: Sample\n---\nOriginal.\n';
+    fs.writeFileSync(active('.teamai/agents/sample.md'), original);
+    expect((await runCLI(['push', '--all', '--role', 'ops'], projectRoot, home)).output).toContain('Pushed branch');
+    await mergePushAndPull(false);
+    git(['rm', '.teamai/agents/ops/sample.md'], teammate);
+    git(['commit', '-q', '-m', 'remove placed agent'], teammate);
+    git(['push', '-q', 'origin', 'main'], teammate);
+    await runCLI(['push', '--all', '--dry-run'], projectRoot, home);
+    teammateLandsOnMain({ '.teamai/agents/ops/sample.md': original + 'Restored by teammate.\n' });
+    git(['fetch', '-q', 'origin'], projectRoot);
+    git(['merge', '-q', '--no-edit', 'origin/main'], projectRoot);
+    expect((await runCLI(['pull'], projectRoot, home)).code).toBe(0);
+    fs.writeFileSync(active('.teamai/agents/sample.md'), original + 'Restored by teammate.\nMember edit after restore.\n');
+    const held = await runCLI(['push', '--all', '--role', 'ops'], projectRoot, home);
+    expect(held.output).not.toContain('Pushed branch');
+    expect(held.output).toContain('edit the restored .teamai/agents/ops/sample.md source directly');
+    fs.writeFileSync(active('.teamai/agents/ops/sample.md'), original + 'Restored by teammate.\nMember edit after restore.\n');
+    const pushed = await runCLI(['push', '--all', '--role', 'ops'], projectRoot, home);
+    expect(pushed.output).toContain('Pushed branch');
+    const [branch] = pushBranches();
+    expect(git(['show', `${branch}:.teamai/agents/ops/sample.md`], remote)).toContain('Member edit after restore.');
+    expect(git(['ls-tree', '-r', '--name-only', branch], remote)).not.toContain('.teamai/agents/sample.yaml');
   });
 
   it.each([false, true])('converts a placed agent behind its own merge, deleted upstream: %s', async (deleted) => {

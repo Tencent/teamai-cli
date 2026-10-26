@@ -451,3 +451,5 @@ Doctor checks the serialized rules reply against the user config `hooks.maxOutpu
 ## Placed agent format changes behind the default branch
 
 A `.md`/`.yaml` conversion may retire the agent this machine placed after its merge is proven. If the team changed that original, carry its changes into the conversion after updating the checkout. If the team deleted it, the remaining root copy is not a new agent to publish. Older records without a delivered blob need an updated checkout before conversion.
+
+A recreated namespace source can be edited directly; the retired flattened copy is kept as a backup. Retired tool copies do not become new agents when the root copy is removed. The retirement warning names the former source so the member can restore it before pushing edits.
