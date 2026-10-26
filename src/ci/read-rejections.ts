@@ -18,6 +18,14 @@ const API_TIMEOUT_MS = 15_000;
 // GitLab caps note pages at 100; same guard as fetchGitLabDiscussions (mr-fetch.ts).
 const MAX_NOTE_PAGES = 20;
 
+/**
+ * GitLab names a skin-toned emoji `thumbsdown_tone1` … `thumbsdown_tone5`.
+ * Any of those still means the reviewer rejected the suggestion.
+ */
+function isThumbsdownAward(name: string): boolean {
+  return name === 'thumbsdown' || name.startsWith('thumbsdown_tone');
+}
+
 // ─── Types ────────────────────────────────────────────────
 
 export interface RejectionResult {
@@ -215,7 +223,7 @@ async function readGitLabRejections(mrUrl: string): Promise<RejectionResult> {
     );
 
     // GitLab: 👎 (thumbsdown) = reject, no emoji = approve (written by default, same as GitHub)
-    if (awards.some((a) => a.name === 'thumbsdown')) {
+    if (awards.some((a) => isThumbsdownAward(a.name))) {
       result.rejectedIds.add(markerId);
     } else {
       result.approvedIds.add(markerId);

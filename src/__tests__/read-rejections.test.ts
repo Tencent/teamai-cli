@@ -135,6 +135,21 @@ describe('GitLab (written by default, 👎 thumbsdown = reject)', () => {
     expect(shouldWrite('suggestion:1', result, 'gitlab')).toBe(true);
   });
 
+  it('counts a skin-tone thumbsdown as a reject', async () => {
+    vi.stubEnv('GITLAB_TOKEN', 'test-token');
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url === notesUrl) return new Response(notes, { status: 200 });
+      if (url === emojiUrl(1)) return new Response(JSON.stringify([{ name: 'thumbsdown_tone2' }]), { status: 200 });
+      if (url === emojiUrl(2)) return new Response(JSON.stringify([]), { status: 200 });
+      throw new Error(`unexpected ${url}`);
+    }));
+
+    const result = await readRejections('https://gitlab.com/acme/app/-/merge_requests/7');
+    expect(result.rejectedIds).toEqual(new Set(['learning']));
+    expect(result.approvedIds).toEqual(new Set(['suggestion:1']));
+    expect(shouldWrite('learning', result, 'gitlab')).toBe(false);
+  });
+
   it('reads marker notes beyond the first page (newest-first paging)', async () => {
     vi.stubEnv('GITLAB_TOKEN', 'test-token');
     // The learning note is the oldest of many: it lands on page 2, not page 1.
