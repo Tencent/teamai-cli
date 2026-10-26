@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import YAML from 'yaml';
+import * as builtinHooks from '../builtin-hooks.js';
 import { injectHermesHooks, removeHermesHooks, hasHermesHooks, getReportScriptPath, getInstructionsPluginDir } from '../hermes-hooks.js';
 import { log } from '../utils/logger.js';
 import { channelReadiness } from '../instruction-targets.js';
@@ -23,6 +24,23 @@ afterEach(() => {
 });
 
 describe('injectHermesHooks', () => {
+  it('warns and keeps the installed files when the CLI entry cannot be resolved', async () => {
+    await injectHermesHooks();
+    const files = [getReportScriptPath(), path.join(tmpDir, 'config.yaml'), path.join(tmpDir, 'shell-hooks-allowlist.json'),
+      path.join(getInstructionsPluginDir(), 'plugin.yaml'), path.join(getInstructionsPluginDir(), '__init__.py')];
+    const before = files.map(file => fs.readFileSync(file, 'utf8'));
+    const resolver = vi.spyOn(builtinHooks, 'resolveCliEntry').mockReturnValue(null);
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {});
+    try {
+      await injectHermesHooks();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('cannot resolve the teamai CLI entry'));
+      expect(files.map(file => fs.readFileSync(file, 'utf8'))).toEqual(before);
+    } finally {
+      resolver.mockRestore();
+      warn.mockRestore();
+    }
+  });
+
   it('migrates a raw command and its approval without removing member hooks', async () => {
     process.env.HERMES_HOME = path.join(tmpDir, 'Hermes home');
     fs.mkdirSync(process.env.HERMES_HOME);
