@@ -1021,7 +1021,7 @@ export async function userScopeRecord(state: State): Promise<CheckoutRecord> {
 }
 
 /** The record of the checkout `localConfig`'s pulls deliver into, if any. */
-async function deliveringCheckoutRecord(localConfig: LocalConfig, state?: State): Promise<CheckoutRecord | undefined> {
+export async function deliveringCheckoutRecord(localConfig: LocalConfig, state?: State): Promise<CheckoutRecord | undefined> {
   const key = await checkoutRecordKey(localConfig);
   if (!key) return undefined;
   return (state ?? await loadStateForScope(localConfig)).lastPullByWorkspace?.[key];
@@ -3058,6 +3058,8 @@ export async function pull(
   let projectConfig: LocalConfig | null = null;
   let postPullRepo: string | null = null;
   let scriptOwner: LocalConfig | null = null;
+  // Checkout preparation found no record of this checkout under the lock: its first delivery, which runs postDeploy.
+  let firstDelivery = false;
   const lockScope = async (config: LocalConfig): Promise<boolean> => {
     // git-mode guards its shared team clone; self mode guards its machine-data
     // writes (state/env/search-index) against a concurrent P2 migration relocating
@@ -3221,6 +3223,7 @@ export async function pull(
     try {
       if (await lockScope(projectConfig)) {
         if (!options.dryRun && !options.inline) await runTeamScript(projectConfig, 'prePull');
+        firstDelivery = options.prepareCheckout === true && !await deliveringCheckoutRecord(projectConfig);
         await pullForScope(projectConfig, options, reported, { recorder: deliveryRecorder }, syncResult, teamEnvs, instructions);
         if (pinRequired && syncResult.teamRepoFailed) return;
         await excludeWorkspaceInstructions(projectConfig, options);
@@ -3502,9 +3505,10 @@ export async function pull(
     }
   }
 
-  // 6. Checkout preparation waits for `scripts.postDeploy` before git returns.
-  //    Inline pulls otherwise skip team scripts. Nothing here can fail the pull.
-  if (!options.dryRun && options.prepareCheckout && scriptOwner) {
+  // 6. Checkout preparation waits for `scripts.postDeploy` before git returns,
+  //    once per checkout: a second trigger for the same new checkout finds its
+  //    record. Inline pulls otherwise skip team scripts. Nothing here can fail the pull.
+  if (!options.dryRun && firstDelivery && scriptOwner) {
     await runTeamScript(scriptOwner, 'postDeploy');
   }
 

@@ -125,17 +125,7 @@ const pullHandler: HookHandler = {
       const { findUnreadableProjectConfig } = await import('./config.js');
       if (await findUnreadableProjectConfig(cwd) !== null) return null;
     }
-    // A tool excluded here, by `uninstall --agent` or an uninstall that could not remove its hooks,
-    // syncs nothing from its hooks: a pull would restore what was removed (#993).
-    if (config) {
-      const { isAgentExcluded } = await import('./types.js');
-      if (isAgentExcluded(config, tool)) return null;
-    }
-    if (config) {
-      const { LAUNCH_PAYLOAD_KEY, launchHoldsCheckout, readLaunch } = await import('./launch-context.js');
-      const launch = readLaunch(stdin[LAUNCH_PAYLOAD_KEY]);
-      if (launch && await launchHoldsCheckout(config, launch)) return null;
-    }
+    if (config && !await toolMayDeliver(stdin, tool, config)) return null;
     const hintCwd = cwd ?? process.cwd();
     const packageHints = await import('./pkg/pkg-hint.js');
     const packageHashBeforePull = await packageHints.packageManifestHashForCwd(hintCwd);
@@ -148,6 +138,10 @@ const pullHandler: HookHandler = {
     const { pull, settleLateUsageReport } = await import('./pull.js');
     const { SessionCaptures } = await import('./session-flow/captures.js');
     const before = config && await SessionCaptures.checkoutDelivery(config, tool);
+    // A checkout no pull delivered into yet is prepared as a new worktree is, then pulled as usual.
+    if (config && await hasNoDeliveryRecord(config)) {
+      await prepareCheckout(hintCwd, config).catch((e: unknown) => log.debug(`hook-dispatch: could not prepare ${hintCwd}: ${e instanceof Error ? e.message : String(e)}`));
+    }
     await pull({ silent: true });
     if (config && before) await SessionCaptures.markTeamChanged(config, tool, stdin, before);
     await packageHints.stashPackageHintAfterPull(
@@ -187,11 +181,40 @@ const sessionCaptureHandler: HookHandler = {
 };
 
 /**
- * `post-checkout` from the git hook: a new checkout (a linked worktree) of a
- * project-scope repository gets its tool roots and the team's resources. A
- * branch switch, user scope (whose resources live in HOME), and checkouts
- * teamai itself creates (its knowledge and reports worktrees, under the scope's
- * data home or team clone) do nothing.
+ * Prepare a new checkout of a project-scope repository: its tool roots, then
+ * the team's resources from the team clone, then `scripts.postDeploy` on its
+ * first delivery. Every trigger calls this: git's `post-checkout`, while git
+ * waits, and a tool hook's background pass in a checkout with no delivery
+ * record, for tools that create worktrees without any git hook. Checkouts
+ * teamai itself creates (its knowledge and reports worktrees, under the
+ * scope's data home or team clone) are left alone. Returns whether it ran.
+ */
+async function prepareCheckout(
+  cwd: string, config: LocalConfig, gitHook?: 'post-checkout',
+): Promise<boolean> {
+  const { getDataHome } = await import('./types.js');
+  if (await isWithin(cwd, [getDataHome(config), config.repo.localPath, ...await ownCheckoutsDir(cwd)])) return false;
+  const { createProjectToolRoots } = await import('./project-agent-root.js');
+  await createProjectToolRoots({ cwd });
+  const { pull } = await import('./pull.js');
+  // Init does not run on this path. Under the sync lock, the pull runs
+  // postDeploy only when this checkout still has no record, so a second
+  // trigger for the same checkout delivers nothing twice.
+  await pull({ silent: true, inline: true, prepareCheckout: true, ...gitHook ? { gitHook } : {} });
+  return true;
+}
+
+/** Whether no pull has delivered into the checkout `config`'s pulls deliver into yet. */
+async function hasNoDeliveryRecord(config: LocalConfig): Promise<boolean> {
+  const { deliveringCheckoutRecord } = await import('./pull.js');
+  return config.scope === 'project' && !await deliveringCheckoutRecord(config);
+}
+
+/**
+ * `post-checkout` from the git hook: a new checkout (a linked worktree, a
+ * submodule's first checkout) is prepared before git returns
+ * (prepareCheckout). A branch switch and user scope (whose resources live in
+ * HOME) do nothing.
  */
 const newWorktreeHandler: HookHandler = {
   name: 'new-worktree',
@@ -200,25 +223,47 @@ const newWorktreeHandler: HookHandler = {
     const args = Array.isArray(stdin.git_args) ? stdin.git_args.map(String) : [];
     if (!config || config.scope !== 'project' || !isNewCheckout(args)) return null;
     const cwd = resolveHookCwd(stdin) ?? process.cwd();
-    const { getDataHome } = await import('./types.js');
-    if (await isWithin(cwd, [getDataHome(config), config.repo.localPath, ...await ownCheckoutsDir(cwd)])) return null;
-
+    let ownCheckout = false;
     await recordingFailure(config, 'post-checkout', async () => {
-      const { createProjectToolRoots } = await import('./project-agent-root.js');
-      await createProjectToolRoots({ cwd });
-      const { pull } = await import('./pull.js');
-      // prepareCheckout waits for scripts.postDeploy before this returns, so a
-      // link can exist before `git worktree add` (or a submodule's first
-      // checkout) returns. Init does not run on this path.
-      await pull({ silent: true, inline: true, gitHook: 'post-checkout', prepareCheckout: true });
+      ownCheckout = !await prepareCheckout(cwd, config, 'post-checkout');
     });
     // Learnings, reports, sources and the team repo itself refresh after
     // `git worktree add` returns; it also retries what failed above.
     // postDeploy already ran inside the pull.
-    await spawnDetachedPull(cwd, 'post-checkout');
+    if (!ownCheckout) await spawnDetachedPull(cwd, 'post-checkout');
     return null;
   },
 };
+
+/**
+ * A tool used in a checkout teamai has not delivered into: one an agent tool
+ * created without any git hook (Claude Code's `EnterWorktree`, Codex CLI's
+ * worktrees), or one made before teamai was set up. It is prepared in the
+ * background pass (prepareCheckout); the session's tool hooks find its record
+ * afterwards and do nothing.
+ */
+const newCheckoutHandler: HookHandler = {
+  name: 'new-checkout',
+  async execute(stdin, tool, config) {
+    if (!config || !await toolMayDeliver(stdin, tool, config) || !await hasNoDeliveryRecord(config)) return null;
+    await prepareCheckout(resolveHookCwd(stdin) ?? process.cwd(), config);
+    return null;
+  },
+};
+
+/**
+ * Whether `tool`'s hooks may deliver into the checkout: not when the tool is
+ * excluded, by `uninstall --agent` or an uninstall that could not remove its
+ * hooks, since a pull would restore what was removed (#993), nor when a
+ * workflow launched the session in a checkout it holds (#1176).
+ */
+async function toolMayDeliver(stdin: Record<string, unknown>, tool: string, config: LocalConfig): Promise<boolean> {
+  const { isAgentExcluded } = await import('./types.js');
+  if (isAgentExcluded(config, tool)) return false;
+  const { LAUNCH_PAYLOAD_KEY, launchHoldsCheckout, readLaunch } = await import('./launch-context.js');
+  const launch = readLaunch(stdin[LAUNCH_PAYLOAD_KEY]);
+  return !(launch && await launchHoldsCheckout(config, launch));
+}
 
 /** How long `git pull` waits for its hook's team repo fetch. */
 const GIT_PULL_FETCH_CAP_MS = 5_000;
@@ -1243,6 +1288,9 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     { event: 'post-tool-use', matcher: 'TodoWrite', handler: todowriteHintHandler, timeoutMs: TODOWRITE_HINT_TIMEOUT_MS, requiresConfig: true },
     { event: 'post-tool-use', matcher: '*', handler: localAgentHandler, timeoutMs: LOCAL_AGENT_TIMEOUT_MS, background: true },
     { event: 'post-tool-use', matcher: '*', handler: skillUseHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true, requiresConfig: true },
+    // A worktree an agent tool entered without any git hook (Claude Code's EnterWorktree, Codex CLI) gets the
+    // team's resources on its first tool use there; a checkout with a delivery record costs one state read.
+    { event: 'post-tool-use', matcher: '*', handler: newCheckoutHandler, timeoutMs: PULL_TIMEOUT_MS, background: true, requiresConfig: true },
 
     // ─── UserPromptSubmit ─────────────────────────────
     { event: 'prompt-submit', matcher: '*', handler: pendingHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true, requiresConfig: true },

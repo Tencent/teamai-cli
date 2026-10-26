@@ -32,8 +32,11 @@ const mockClaimPackageHint = vi.fn().mockResolvedValue(null);
 const mockTakePendingPackageHint = vi.fn().mockResolvedValue(null);
 
 const mockTeamDelivery = vi.fn().mockResolvedValue({ complete: false, key: undefined, gap: 'no_record' });
+// The checkout already has a delivery record: a session start or tool use prepares nothing.
+const mockDeliveringCheckoutRecord = vi.fn().mockResolvedValue({ rev: 'abc', targets: [] });
 vi.mock('../pull.js', () => ({
   pull: mockPull,
+  deliveringCheckoutRecord: mockDeliveringCheckoutRecord,
   settleLateUsageReport: mockSettleLateUsageReport,
   teamDelivery: mockTeamDelivery,
 }));
