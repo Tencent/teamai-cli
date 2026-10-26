@@ -43,7 +43,7 @@ import { loadRolesManifestIfPresent, type RolesManifest } from './roles.js';
 import { AGENT_TOOLS } from './tools.js';
 import { LocalConfigSchema, type GlobalOptions, type LocalConfig, type ResourceItem, type TeamaiConfig } from './types.js';
 import { splitFrontmatter } from './utils/frontmatter.js';
-import { listFilesRecursive, pathExists, readFileIfExists, writeFile, ensureDir } from './utils/fs.js';
+import { isIgnored, listFilesRecursive, pathExists, readFileIfExists, writeFile, ensureDir } from './utils/fs.js';
 import { getFileContentAtRev, getHeadCommit, listTreeAtRev } from './utils/git.js';
 import { isSilent, log, setSilent } from './utils/logger.js';
 import { redact } from './utils/redact.js';
@@ -601,63 +601,86 @@ async function scannableSkillFiles(resources: ReviewResource[], readText: (p: st
   return files;
 }
 
-// Link text may hold one level of brackets, a destination one level of
-// parentheses, and a title escaped quotes, as CommonMark allows.
-const LINK_TEXT = String.raw`\[(?:[^\[\]\\]|\\.|\[(?:[^\[\]\\]|\\.)*\])*\]`;
+/** The inside of `[text]` with up to `depth` levels of brackets, as Markdown link text allows. */
+function bracketContent(depth: number): string {
+  const nested = depth === 0 ? '' : String.raw`|\[${bracketContent(depth - 1)}\]`;
+  return String.raw`(?:[^\[\]\\]|\\.${nested})*`;
+}
+// A bracket escaped by an odd run of backslashes is literal text, not a link.
+// The check follows the bracket so it only runs where a bracket is.
+const UNESCAPED_OPEN_BRACKET = String.raw`\[(?<=(?:^|[^\\])(?:\\\\)*\[)`;
 const LINK_DESTINATION = String.raw`(<[^<>\n]*>|(?:[^\s()\\]|\\.|\((?:[^\s()\\]|\\.)*\))+)`;
 const LINK_TITLE = String.raw`(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\((?:[^()\\]|\\.)*\))`;
 /** Inline links and images `[text](target "title")`, and reference definitions `[id]: target`. */
-const INLINE_LINK = new RegExp(String.raw`${LINK_TEXT}\(\s*${LINK_DESTINATION}(?:\s+${LINK_TITLE})?\s*\)`, 'g');
+const INLINE_LINK = new RegExp(String.raw`${UNESCAPED_OPEN_BRACKET}${bracketContent(3)}\]\(\s*${LINK_DESTINATION}(?:\s+${LINK_TITLE})?\s*\)`, 'g');
 const REFERENCE_DEFINITION = new RegExp(
-  String.raw`^ {0,3}\[(?!\^)(?:[^\[\]\\]|\\.)+\]:[ \t]*${LINK_DESTINATION}(?:[ \t]+${LINK_TITLE})?[ \t]*$`,
+  String.raw`^[ \t]*\[(?!\^)(?:[^\[\]\\]|\\.)+\]:[ \t]*${LINK_DESTINATION}(?:[ \t]+${LINK_TITLE})?[ \t]*$`,
   'gm',
 );
 const LIST_ITEM = /^ {0,3}(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$)/;
+/** A line that starts a block of its own, so a code span cannot continue into it. */
+const BLOCK_START = /^ {0,3}(?:#{1,6}(?:[ \t]|$)|>|(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$))/;
 
 /**
- * Markdown with HTML comments, fenced and indented code blocks, and inline code
- * blanked, so links shown as code are not read as links. An indented line inside
- * a list item stays: it continues the item rather than starting a code block.
+ * Markdown with fenced and indented code blocks, inline code and HTML comments
+ * blanked, so links shown as code are not read as links. Inside a list item an
+ * indented line continues the item, and a fence may sit at the item's indentation.
  */
 function withoutCode(markdown: string): string {
   let fence: string | null = null;
   let previousBlank = true;
   let inCode = false;
   let inList = false;
-  const kept: string[] = [];
-  for (const line of markdown.replace(/<!--[\s\S]*?-->/g, '').split(/\r?\n/)) {
+  const blocks: string[][] = [[]];
+  const startBlock = (): void => {
+    if ((blocks[blocks.length - 1] ?? []).length > 0) blocks.push([]);
+  };
+  const keep = (line: string): void => {
+    blocks[blocks.length - 1]?.push(line);
+  };
+  for (const line of markdown.split(/\r?\n/)) {
+    const fenceMarker = (inList ? /^\s*(`{3,}|~{3,})/ : /^ {0,3}(`{3,}|~{3,})/).exec(line)?.[1];
     if (fence !== null) {
-      const closing = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line)?.[1];
-      if (closing?.[0] === fence[0] && closing.length >= fence.length) fence = null;
-      kept.push('');
+      if (fenceMarker?.[0] === fence[0] && fenceMarker.length >= fence.length && /^\s*[`~]+[ \t]*$/.test(line)) fence = null;
       continue;
     }
-    const opening = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
-    if (opening) {
-      fence = opening;
-      kept.push('');
+    if (fenceMarker) {
+      fence = fenceMarker;
+      startBlock();
       previousBlank = false;
       continue;
     }
     const isBlank = line.trim() === '';
-    if (!isBlank) {
+    if (isBlank) {
+      startBlock();
+    } else {
       if (LIST_ITEM.test(line)) inList = true;
       else if (previousBlank && !/^\s/.test(line)) inList = false;
       if (!inList && (inCode || previousBlank) && /^(?: {4}|\t)/.test(line)) {
         inCode = true;
-        kept.push('');
         previousBlank = false;
         continue;
       }
       inCode = false;
+      if (BLOCK_START.test(line)) startBlock();
+      keep(line);
+      if (/^ {0,3}#{1,6}(?:[ \t]|$)/.test(line)) startBlock();
     }
     previousBlank = isBlank;
-    kept.push(line);
   }
-  // A code span ends within its paragraph, so a stray backtick blanks nothing past it.
-  return kept.join('\n').split(/\n[ \t]*\n/)
-    .map((paragraph) => paragraph.replace(/(?<!`)(`+)(?!`)[\s\S]*?(?<!`)\1(?!`)/g, ''))
-    .join('\n\n');
+  // A code span ends within its block; a comment is read after code, so `<!--` shown as code opens none.
+  return blocks
+    .map((block) => block.join('\n').replace(/(?<!`)(`+)(?!`)[\s\S]*?(?<!`)\1(?!`)/g, ''))
+    .join('\n\n')
+    .split('<!--')
+    .map((piece, index) => (index === 0 ? piece : piece.slice(commentEnd(piece))))
+    .join('');
+}
+
+/** Where the text after a `<!--` resumes: past its `-->`, or at the end when the comment never closes. */
+function commentEnd(afterOpener: string): number {
+  const close = afterOpener.indexOf('-->');
+  return close < 0 ? afterOpener.length : close + 3;
 }
 
 /** The local link targets of a Markdown file, without `#anchor` or `?query`; links with a scheme or a leading `/` are left out. */
@@ -670,7 +693,7 @@ function localLinkTargets(markdown: string): string[] {
     const target = written.replace(/[#?].*$/, '');
     if (target === '') continue;
     try {
-      targets.add(decodeURI(target));
+      targets.add(decodeURIComponent(target));
     } catch {
       targets.add(target);
     }
@@ -678,15 +701,23 @@ function localLinkTargets(markdown: string): string[] {
   return [...targets];
 }
 
-/** Whether `segments` name an entry under `root` with exactly that case, as on the case-sensitive file systems members sync to. */
-async function existsWithExactCase(root: string, segments: string[]): Promise<boolean> {
+/**
+ * Whether `segments` name an entry under `root` that pull copies with the skill.
+ * Case must match exactly, as on the case-sensitive file systems members sync
+ * to, and pull's copy skips a symlink or an ignored name on the way.
+ */
+async function linkTargetState(root: string, segments: string[], mustBeDirectory: boolean): Promise<'copied' | 'missing' | 'skipped'> {
   let dir = root;
-  for (const segment of segments) {
-    const names = await fse.readdir(dir).catch(() => null);
-    if (!names?.includes(segment)) return false;
+  for (const [index, segment] of segments.entries()) {
+    const entries = await fse.readdir(dir, { withFileTypes: true }).catch(() => []);
+    const entry = entries.find((candidate) => candidate.name === segment);
+    if (!entry) return 'missing';
+    if (entry.isSymbolicLink() || isIgnored(segment)) return 'skipped';
+    const isLast = index === segments.length - 1;
+    if ((!isLast || mustBeDirectory) && !entry.isDirectory()) return 'missing';
     dir = path.join(dir, segment);
   }
-  return true;
+  return 'copied';
 }
 
 /**
@@ -709,21 +740,92 @@ async function skillLinkFindings(files: SkillFile[]): Promise<Finding[]> {
           message: `${file.relativePath} links to ${target}, which is outside the skill; pull copies each skill directory on its own, `
             + 'so the link works only for a member who also receives that file. Move the file into the skill.',
         });
-      } else if (!await existsWithExactCase(file.skill.absolutePath, resolved === '.' ? [] : resolved.split('/'))) {
-        findings.push({
-          level: 'warn',
-          check: 'format',
-          path: file.relativePath,
-          message: `${file.relativePath} links to ${target}, which is not in the skill.`,
-        });
+        continue;
+      }
+      const state = await linkTargetState(file.skill.absolutePath, resolved === '.' ? [] : resolved.split('/'), target.endsWith('/'));
+      switch (state) {
+        case 'copied':
+          break;
+        case 'missing':
+          findings.push({
+            level: 'warn',
+            check: 'format',
+            path: file.relativePath,
+            message: `${file.relativePath} links to ${target}, which is not in the skill.`,
+          });
+          break;
+        case 'skipped':
+          findings.push({
+            level: 'warn',
+            check: 'format',
+            path: file.relativePath,
+            message: `${file.relativePath} links to ${target}, which pull does not copy (a symlink or an ignored name); `
+              + 'replace it with the file itself.',
+          });
+          break;
+        default: {
+          const unhandled: never = state;
+          throw new Error(`Unhandled link target state: ${String(unhandled)}`);
+        }
       }
     }
   }
   return findings;
 }
 
-/** A pipeline stage that runs a shell: `sh`, `bash`, … possibly through `sudo` with its options, `env`, or a path such as `/bin/bash`. */
-const SHELL_STAGE = /^\s*(?:sudo\s+(?:-\S+(?:\s+(?!-)\S+)?\s+)*)?(?:env\s+)?(?:\S*\/)?((?:ba|da|k|z)?sh|fish)\b/;
+/** What may precede the shell word of a stage: `sudo` with its options, `env` with options and assignments, and a directory. */
+const COMMAND_PREFIX = String.raw`^\s*(?:sudo\s+(?:-\S+(?:\s+(?!-)\S+)?\s+)*)?(?:env\s+(?:(?:-\S+|\w+=\S*)\s+)*)?(?:\S*\/)?`;
+// The shell word ends where the stage, a code span, a quoted string or a subshell does.
+const SHELL_STAGE = new RegExp(String.raw`${COMMAND_PREFIX}((?:ba|da|k|z)?sh|fish)(?=[\s\`'")]|$)`);
+
+/** The `curl` or `wget` a stage runs: a whole word, as a command or in prose, but not text `echo` or `printf` prints. */
+function downloaderOf(stage: string): string | undefined {
+  const word = /(?<![\w.-])(curl|wget)(?=\s|$)/.exec(stage);
+  if (!word?.[1] || /\b(?:echo|printf)\s+['"]?$/.test(stage.slice(0, word.index))) return undefined;
+  return word[1];
+}
+
+/** Whether a `curl` or `wget` stage writes the download to standard output rather than to a file. */
+function writesToStdout(downloader: string, stage: string): boolean {
+  if (downloader === 'wget') return /\s(?:-[a-zA-Z]*O\s*-|--output-document(?:=|\s+)-)(?=\s|$)/.test(stage);
+  return !/\s(?:-[a-zA-Z]*o\s*(?!-(?:\s|$))\S|--output(?:=|\s+)(?!-(?:\s|$))\S|-[a-zA-Z]*O(?=\s|$)|--remote-name)/.test(stage);
+}
+
+/**
+ * `line` with `;` and `&` inside a closed quote blanked, since there they are part
+ * of an argument rather than the end of a command. A quote with no closing match
+ * on the line is literal, and so is every later one of that kind, which keeps the
+ * scan linear.
+ */
+function blankQuotedSeparators(line: string): string {
+  let blanked = '';
+  let at = 0;
+  const unclosed = new Set<string>();
+  while (at < line.length) {
+    const char = line.charAt(at);
+    const close = (char === "'" || char === '"') && !unclosed.has(char) ? closingQuote(line, at) : -1;
+    if (close < 0) {
+      if (char === "'" || char === '"') unclosed.add(char);
+      blanked += char;
+      at++;
+      continue;
+    }
+    blanked += line.slice(at, close + 1).replace(/[;&]/g, ' ');
+    at = close + 1;
+  }
+  return blanked;
+}
+
+/** The index of the quote that closes the one at `open`, or -1; inside double quotes a backslash escapes it. */
+function closingQuote(line: string, open: number): number {
+  const quote = line.charAt(open);
+  for (let at = line.indexOf(quote, open + 1); at >= 0; at = line.indexOf(quote, at + 1)) {
+    let backslashes = 0;
+    while (quote === '"' && line.charAt(at - 1 - backslashes) === '\\') backslashes++;
+    if (backslashes % 2 === 0) return at;
+  }
+  return -1;
+}
 
 /**
  * The first `curl` or `wget` whose output a later stage of the same pipeline
@@ -731,13 +833,19 @@ const SHELL_STAGE = /^\s*(?:sudo\s+(?:-\S+(?:\s+(?!-)\S+)?\s+)*)?(?:env\s+)?(?:\
  * and then into stages on `|`, so the scan stays linear in the file size.
  */
 function findPipedInstall(text: string): { downloader: string; shell: string } | null {
-  // A command continued with a trailing backslash is one line to the shell.
-  for (const command of text.replace(/\\\r?\n/g, ' ').split(/\n|;|&&|\|\|/)) {
+  const commands = text
+    // A trailing backslash or pipe continues the command on the next line.
+    .replace(/\\\r?\n/g, ' ')
+    .replace(/\|[ \t]*\r?\n/g, '| ')
+    .split('\n')
+    .flatMap((line) => blankQuotedSeparators(line).split(/;|&&|\|\|/));
+  for (const command of commands) {
     let downloader: string | undefined;
     for (const stage of command.split('|')) {
       const shell = downloader === undefined ? undefined : SHELL_STAGE.exec(stage)?.[1];
       if (downloader !== undefined && shell !== undefined) return { downloader, shell };
-      downloader ??= /\b(curl|wget)\b/.exec(stage)?.[1];
+      const download = downloaderOf(stage);
+      if (downloader === undefined && download !== undefined && writesToStdout(download, stage)) downloader = download;
     }
   }
   return null;
