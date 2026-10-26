@@ -4,7 +4,7 @@ import path from 'node:path';
 import { detectProjectConfig, loadTeamConfig } from './config.js';
 import { KNOWN_AGENTS } from './known-agents.js';
 import { isAgentDisabled, resolveBaseDir, scopedToolPaths, toolInstallRoot } from './types.js';
-import { ensureDir } from './utils/fs.js';
+import { ensureDir, pathExists } from './utils/fs.js';
 import { checkoutForProjectAnchor, resolveAnchors } from './utils/git.js';
 import { log } from './utils/logger.js';
 
@@ -77,6 +77,8 @@ export async function createProjectToolRoots(options: {
     const root = rootOf(id);
     if (!root) continue;
     const dest = path.join(baseDir, root);
+    // A checkout removed meanwhile is not created again (#1424).
+    if (!await pathExists(baseDir)) return;
     await ensureDir(dest);
     log.debug(`Seeded project agent root for ${id}: ${dest}`);
   }
