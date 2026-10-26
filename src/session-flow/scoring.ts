@@ -9,14 +9,14 @@ import { knownSecrets } from '../env-resolution.js';
 import { loadModelAliases } from '../models/aliases.js';
 import { AttemptStore, newAttemptId, scoresDir } from '../scorers/attempts.js';
 import { batchesScorers, verdictsOf, type Verdict } from '../scorers/batch.js';
-import { cachedScorerNames, pinScorers, scorerSourceHash } from '../scorers/cache.js';
+import { cachedScorerNames, NOT_A_SCORER, pinScorers, scorerSourceHash } from '../scorers/cache.js';
 import { formatScorerDiagnostic, isScorerFile, parseScorer, type ScorerDefinition } from '../scorers/definition.js';
 import { answerSchema, evidenceDirOf, type Rubrics } from '../scorers/evidence.js';
 import { scoringUnavailable } from '../scorers/home.js';
 import { requiredIsolation, scorerIsolationSource, type RequiredIsolation } from '../scorers/isolation.js';
 import { scopeScoring } from '../scorers/settings.js';
 import { installedJudgeTools, runLocalJudge, type JudgeTool, type LocalJudgeResult } from '../scorers/judge.js';
-import { chooseJudgeModel } from '../scorers/judge-model.js';
+import { chooseJudgeModel, type JudgeModelChoice } from '../scorers/judge-model.js';
 import type { ScoreLabel, SessionSubject } from '../scorers/label.js';
 import { LabelStore, reasoningPath, shareFailedLabelHint } from '../scorers/label-store.js';
 import { pinnedDefinition, type PinnedScorer } from '../scorers/pin.js';
@@ -64,6 +64,7 @@ interface Asked {
 async function scorerFile(value: string): Promise<Asked | Failure> {
   const full = path.resolve(value);
   const file = path.relative(process.cwd(), full).split(path.sep).join('/');
+  if (!file.endsWith('.md')) return failure('scorer_invalid', formatScorerDiagnostic({ file, message: NOT_A_SCORER }));
   const content = await readFileSafe(full);
   if (content === null) return failure('scorer_not_found', formatScorerDiagnostic({ file, message: 'could not be read' }));
   const parsed = parseScorer(file, content);
@@ -99,7 +100,7 @@ async function scopeOf(config: LocalConfig, platform: string, session: Session):
   return resolved ? readWorkspaceChildren(resolved) : config;
 }
 
-/** One scorer file the command tries, and the stored labels of its scorer next to the file's verdict. */
+/** One scorer file the command tries: the labels stored for its scorer, and the control's verdict or why it has none. */
 interface Tried {
   scorer: string;
   stored: Array<Record<string, unknown>>;
@@ -109,7 +110,7 @@ interface Tried {
 /** Why a rubric that passes the control may not judge the work. Printed, never a failure: a rubric may judge the prompt by design. */
 const CONTROL_WARNING = 'This rubric passes a session where the agent did nothing, so it may not judge the work.';
 
-type JudgeChoice = { tool: JudgeTool; model?: { name: string; effort?: string } };
+type JudgeChoice = Extract<JudgeModelChoice<JudgeTool>, { ok: true }>['choice'];
 
 /**
  * One judge call of `members` on `judged`, its evidence written for it and removed after it: each member's verdict and
@@ -187,16 +188,16 @@ export async function scoreSession(from: LocalConfig, demand: SessionDemand, now
     const file = files.get(value);
     const pin = pins[value];
     const definition = pin && pinnedDefinition(value, pin);
-    const one = file ?? (pin && definition ? { scorer: value, pin, definition } : undefined);
-    if (!one) {
+    const candidate = file ?? (pin && definition ? { scorer: value, pin, definition } : undefined);
+    if (!candidate) {
       const known = await cachedScorerNames(config);
       return failure('scorer_not_found', `Scorer ${value} is not cached here. ${known.length > 0 ? `Scorers: ${known.join(', ')}.` : 'Run teamai pull to cache the team\'s scorers.'}`);
     }
-    const twin = asked.find((other) => other.scorer === one.scorer);
+    const twin = asked.find((other) => other.scorer === candidate.scorer);
     if (twin) {
-      return failure('invalid_arguments', `--scorer ${twin.file ?? twin.scorer} and --scorer ${one.file ?? one.scorer} are both scorer ${one.scorer}. Judge them in separate commands: a file's output lists the labels stored for its scorer.`);
+      return failure('invalid_arguments', `--scorer ${twin.file ?? twin.scorer} and --scorer ${candidate.file ?? candidate.scorer} are both scorer ${candidate.scorer}. Judge them in separate commands: a file's output lists the labels stored for its scorer.`);
     }
-    asked.push(one);
+    asked.push(candidate);
   }
   log.info(`Scoring ${platform} session ${session.sessionId} in ${session.cwd || '(directory unknown)'}`);
   const envSecrets = await knownSecrets(config);
@@ -228,9 +229,6 @@ export async function scoreSession(from: LocalConfig, demand: SessionDemand, now
     const required = requiredIsolation([...scoring.isolation, ...members.map(({ scorer, pin, definition }) => ({ source: scorerIsolationSource(scorer, pin.relativePath), value: definition.isolation }))]);
     const result = await judgeOnce(config, judged, members, choice, required);
     if (!result.ok) return result.envelope;
-    const [fileHead, ...fileTail] = members.filter((member) => member.file !== undefined);
-    const controls = control && fileHead ? await judgeOnce(config, control, [fileHead, ...fileTail], choice, required) : undefined;
-    if (controls && !controls.ok) return controls.envelope;
     const labels = result.verdicts.map(({ judged: member, label, passed, reasoning }) => {
       const model = observedModel({ ...result.judge.model, alias: member.alias });
       return { member, reasoning, label: sessionLabel({
@@ -243,39 +241,49 @@ export async function scoreSession(from: LocalConfig, demand: SessionDemand, now
         scoredAt: now,
       }, subject, judged.context) };
     });
-    const stored = await AttemptStore.locked(config, async () => {
-      const written: Array<(typeof labels)[number] & { kept?: { id: string; version: string } }> = [];
-      for (const one of labels) written.push(one.member.file === undefined ? { ...one, kept: await LabelStore.append(config, one.label, one.reasoning, prompt) } : one);
-      return written;
+    const written = await AttemptStore.locked(config, async () => {
+      const outcomes: Array<(typeof labels)[number] & ({ kind: 'stored'; kept: { id: string; version: string } } | { kind: 'tried'; file: string })> = [];
+      for (const one of labels) {
+        const { file } = one.member;
+        outcomes.push(file === undefined ? { ...one, kind: 'stored', kept: await LabelStore.append(config, one.label, one.reasoning, prompt) } : { ...one, kind: 'tried', file });
+      }
+      return outcomes;
     });
-    if (stored.status === 'busy') return failure('busy', 'Another teamai process holds the label store, so no label was written. Score the session again.');
-    const local = files.size > 0 ? await LabelStore.local(config) : [];
-    for (const { member, label, reasoning, kept } of stored.value) {
-      const outcome = `${label.label} (score ${label.score}, ${label.passed ? 'passed' : 'did not pass'})`;
-      if (kept) {
-        const file = reasoningPath(config, kept.version);
-        log.info(`${label.scorer}: ${outcome}. Reasoning: ${file}`);
+    if (written.status === 'busy') return failure('busy', 'Another teamai process holds the label store, so no label was written. Score the session again.');
+    const [fileHead, ...fileTail] = members.filter((member) => member.file !== undefined);
+    // After the labels are kept, so a control that fails loses none of them.
+    const controlled = control && fileHead ? await judgeOnce(config, control, [fileHead, ...fileTail], choice, required) : undefined;
+    const storedLabels = fileHead ? await LabelStore.local(config) : [];
+    for (const outcome of written.value) {
+      const { member, label } = outcome;
+      const verdict = `${label.label} (score ${label.score}, ${label.passed ? 'passed' : 'did not pass'})`;
+      const answer = { scorer: label.scorer, subject, label: label.label, score: label.score, passed: label.passed, ...(used.skills.length > 0 ? { used } : {}) };
+      if (outcome.kind === 'stored') {
+        const file = reasoningPath(config, outcome.kept.version);
+        log.info(`${label.scorer}: ${verdict}. Reasoning: ${file}`);
         if (!label.passed) log.info(shareFailedLabelHint(file, session.sessionId));
-        answers.push({ scorer: label.scorer, subject, label: label.label, score: label.score, passed: label.passed, ...(used.skills.length > 0 ? { used } : {}), labelId: kept.id, reasoning: file });
+        answers.push({ ...answer, labelId: outcome.kept.id, reasoning: file });
         continue;
       }
-      log.info(`${label.scorer} from ${member.file}: ${outcome}. Not stored: a scorer file's label is only tried.`);
-      answers.push({ scorer: label.scorer, file: member.file, subject, rubric: label.rubric, label: label.label, score: label.score, passed: label.passed, ...(used.skills.length > 0 ? { used } : {}), reasoning, stored: false });
-      const verdict = controls?.ok ? controls.verdicts.find(({ judged: one }) => one === member) : undefined;
-      if (!verdict) continue;
-      if (verdict.passed) log.warn(`${label.scorer}: ${CONTROL_WARNING}`);
+      log.info(`${label.scorer} from ${outcome.file}: ${verdict}. Not stored: a scorer file's label is only tried.`);
+      answers.push({ ...answer, file: outcome.file, rubric: label.rubric, reasoning: outcome.reasoning, stored: false });
+      const controlVerdict = controlled?.ok ? controlled.verdicts.find(({ judged: one }) => one === member) : undefined;
+      if (controlled && !controlled.ok) log.warn(`${label.scorer}: the control could not be judged: ${controlled.envelope.error.message}`);
+      if (controlVerdict?.passed) log.warn(`${label.scorer}: ${CONTROL_WARNING}`);
       tried.push({
         scorer: label.scorer,
-        stored: storedOf(local, label.scorer, subject),
-        control: { label: verdict.label.value, score: verdict.label.score, passed: verdict.passed, ...(verdict.passed ? { warning: CONTROL_WARNING } : {}) },
+        stored: storedOf(storedLabels, label.scorer, subject),
+        control: controlVerdict
+          ? { label: controlVerdict.label.value, score: controlVerdict.label.score, passed: controlVerdict.passed, ...(controlVerdict.passed ? { warning: CONTROL_WARNING } : {}) }
+          : { error: controlled && !controlled.ok ? controlled.envelope.error : { code: 'judge_failed', message: 'The judge gave the control no label.' } },
       });
     }
   }
   const [only, ...more] = answers;
-  const [one] = tried;
+  const [firstTried] = tried;
   const scored = only && more.length === 0
-    ? { label: only, ...(one ? { stored: one.stored, control: one.control } : {}) }
-    : { labels: answers, ...(one ? { stored: Object.fromEntries(tried.map(({ scorer, stored }) => [scorer, stored])), control: Object.fromEntries(tried.map(({ scorer, control }) => [scorer, control])) } : {}) };
+    ? { label: only, ...(firstTried ? { stored: firstTried.stored, control: firstTried.control } : {}) }
+    : { labels: answers, ...(firstTried ? { stored: Object.fromEntries(tried.map(({ scorer, stored }) => [scorer, stored])), control: Object.fromEntries(tried.map(({ scorer, control }) => [scorer, control])) } : {}) };
   if (!demand.push) return { data: scored };
   const pushed = await LabelStore.push(config);
   return 'data' in pushed ? { data: { ...scored, ...pushed.data } } : pushed;

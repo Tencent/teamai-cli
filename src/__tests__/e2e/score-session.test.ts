@@ -83,11 +83,16 @@ describe('teamai score --session', () => {
       + line({ type: 'assistant', uuid: 'u2', parentUuid: 'u1', cwd: app, sessionId: SESSION, timestamp: '2026-10-20T10:00:01.000Z', message: { role: 'assistant', model: 'claude-x', content: [{ type: 'text', text: 'Added the retries.' }] } }));
     const bin = path.join(root, 'bin');
     fs.mkdirSync(bin);
+    // Fails a session that holds the agent's work, and passes one without it, as a lenient rubric would; keeps the last transcript it judged.
     fs.writeFileSync(path.join(bin, 'claude'), `#!${process.execPath}
+const fs = require('node:fs');
 if (process.argv.includes('--version')) { console.log('2.1.308 (Claude Code)'); process.exit(); }
+const transcript = fs.readFileSync(require('node:path').join('transcripts', 'session.md'), 'utf8');
+fs.writeFileSync(${JSON.stringify(path.join(root, 'judged-transcript.md'))}, transcript);
+const label = transcript.includes('Added the retries.') ? 'shallow' : 'thorough';
 process.stdin.resume(); process.stdin.on('end', () => {
 console.log(JSON.stringify({ type: 'system', subtype: 'init', model: 'm1' }));
-console.log(JSON.stringify({ type: 'result', structured_output: { label: 'shallow', reasoning: 'It never ran the tests.' } }));
+console.log(JSON.stringify({ type: 'result', structured_output: { label, reasoning: 'It never ran the tests.' } }));
 });\n`, { mode: 0o755 });
     env = { ...process.env, HOME: home, USERPROFILE: home, GIT_CONFIG_GLOBAL: path.join(home, '.gitconfig'), PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}` };
     for (const name of ['CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'CLAUDE_CODE_SESSION_ID', 'CODEX_SESSION_ID', 'CODEBUDDY_SESSION_ID', 'COPILOT_AGENT_SESSION_ID', 'CURSOR_CONVERSATION_ID', 'CLAUDE_SESSION_ID', 'OPENCODE_SESSION_ID', 'TEAMAI_AGENT_SESSION_ID', 'PI_SESSION_ID', 'MUSE_SESSION_ID']) delete env[name];
@@ -125,7 +130,7 @@ console.log(JSON.stringify({ type: 'result', structured_output: { label: 'shallo
     expect(envelope(inside.stdout).data).toMatchObject({ label: { subject: { platform: 'claude-code', sessionId: SESSION } } });
   });
 
-  it('tries a scorer file next to the labels stored for its scorer, stores nothing, and refuses it with --push and --run', async () => {
+  it('tries a scorer file next to the labels stored for its scorer and a control on the first prompt alone, stores nothing, and refuses it with --push and --run', async () => {
     const byName = await runCLI(['score', '--session', SESSION, '--source', 'claude-code', '--scorer', 'review-quality'], app, env);
     expect(byName.code, byName.stdout + byName.stderr).toBe(0);
     const dataHome = path.resolve(z.object({ reasoning: z.string() }).parse(envelope(byName.stdout).data?.label).reasoning, '..', '..', '..');
@@ -145,8 +150,12 @@ console.log(JSON.stringify({ type: 'result', structured_output: { label: 'shallo
     expect(envelope(tried.stdout).data).toEqual({
       label: expect.objectContaining({ scorer: 'review-quality', file: 'scorers/review-quality.md', label: 'shallow', passed: false, reasoning: 'It never ran the tests.', stored: false }),
       stored: [{ rubric: cachedRubric, label: 'shallow', score: 0, passed: false, judge: { kind: 'model', tool: 'claude' } }],
-      control: { label: 'shallow', score: 0, passed: false },
+      control: { label: 'thorough', score: 1, passed: true, warning: 'This rubric passes a session where the agent did nothing, so it may not judge the work.' },
     });
+    const control = fs.readFileSync(path.join(root, 'judged-transcript.md'), 'utf8');
+    expect(control).toContain(`Add retries. ${PHRASE}`);
+    expect(control).not.toContain('Added the retries.');
+    expect(tried.stderr).toContain('review-quality: This rubric passes a session where the agent did nothing, so it may not judge the work.');
     expect(z.object({ label: z.object({ rubric: z.object({ sourceHash: z.string() }) }).passthrough() }).parse(envelope(tried.stdout).data).label.rubric.sourceHash)
       .not.toBe(cachedRubric.sourceHash);
     expect(store()).toEqual(before);

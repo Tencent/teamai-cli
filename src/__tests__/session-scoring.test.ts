@@ -643,20 +643,23 @@ describe('teamai score --session', () => {
       const scores = path.join(root, 'data', 'scores');
       return {
         file: `./draft/${name}.md`,
-        store: () => ['labels.jsonl', 'pending', 'reasoning'].map((name) => {
-          const at = path.join(scores, name);
+        store: () => ['labels.jsonl', 'pending', 'reasoning'].map((entry) => {
+          const at = path.join(scores, entry);
           if (!fs.existsSync(at)) return '';
           return fs.statSync(at).isDirectory() ? fs.readdirSync(at).join(',') : fs.readFileSync(at, 'utf8');
         }),
       };
     }
 
-    /** A Claude judge that gives `good` only when the evidence holds `work`, else `bad`. */
-    function fakeClaudeJudgingWork(work: string): void {
+    /** A Claude judge that gives `good` only when the evidence holds `work`, else `otherwise`. */
+    function fakeClaudeJudgingWork(work: string, otherwise = 'bad'): void {
       fakeClaude('good');
       const bin = path.join(root, 'bin', 'claude');
-      fs.writeFileSync(bin, fs.readFileSync(bin, 'utf8').replace('structured_output: {"label":"good"',
-        `structured_output: { label: fs.readFileSync(require('node:path').join('transcripts', 'session.md'), 'utf8').includes(${JSON.stringify(work)}) ? 'good' : 'bad'`));
+      const fixed = fs.readFileSync(bin, 'utf8');
+      const judging = fixed.replace('structured_output: {"label":"good"',
+        `structured_output: { label: fs.readFileSync(require('node:path').join('transcripts', 'session.md'), 'utf8').includes(${JSON.stringify(work)}) ? 'good' : ${JSON.stringify(otherwise)}`);
+      if (judging === fixed) throw new Error('fakeClaude no longer writes the answer this helper rewrites');
+      fs.writeFileSync(bin, judging);
     }
 
     it('prints the file\'s label with its reasoning, stores nothing, and lists the labels stored for its scorer', async () => {
@@ -707,6 +710,31 @@ describe('teamai score --session', () => {
 
       expect(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: [file] })).toEqual({
         error: { code: 'scorer_invalid', message: 'draft/quality.md: passingScore must have at least one label at or above it and one below it' },
+      });
+      expect(fs.existsSync(path.join(root, 'calls'))).toBe(false);
+    });
+
+    it('still prints the file\'s label when the control cannot be judged, and says why in control', async () => {
+      const config = await fixture();
+      plantClaudeSession(path.join(root, 'app'), 'Add retries to the client');
+      const { file } = draft();
+      fakeClaudeJudgingWork('Added the retries.', 'excellent');
+
+      expect(data(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: [file] }))).toMatchObject({
+        label: { label: 'good', stored: false },
+        control: { error: { code: 'judge_answer_invalid', message: expect.stringContaining('"excellent" is not a label of scorer quality') } },
+      });
+    });
+
+    it('refuses a file that does not end in .md, as teamai pull does, and runs no judge', async () => {
+      const config = await fixture();
+      plantClaudeSession(path.join(root, 'app'), 'Add retries to the client');
+      draft();
+      fs.copyFileSync(path.join(root, 'draft', 'quality.md'), path.join(root, 'draft', 'quality'));
+      fakeClaude('good');
+
+      expect(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: ['./draft/quality'] })).toEqual({
+        error: { code: 'scorer_invalid', message: expect.stringMatching(/^draft\/quality: not a scorer file;/) },
       });
       expect(fs.existsSync(path.join(root, 'calls'))).toBe(false);
     });

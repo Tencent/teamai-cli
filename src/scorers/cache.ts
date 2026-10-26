@@ -48,7 +48,7 @@ export type CachedScorer = Omit<CacheEntry, 'content'> & { definition: ScorerDef
 /** The team's scoring settings beside the scorers (`scorers/settings.ts`): not a scorer. */
 export const SCORING_FILE = 'scoring.yaml';
 
-const NOT_A_SCORER = 'not a scorer file; scorers/ holds <name>.md and <namespace>/<name>.md scorers, scoring.yaml settings and an optional README.md';
+export const NOT_A_SCORER = 'not a scorer file; scorers/ holds <name>.md and <namespace>/<name>.md scorers, scoring.yaml settings and an optional README.md';
 
 function cacheDir(config: LocalConfig): string {
   const home = getDataHome(config);
