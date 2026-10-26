@@ -618,8 +618,9 @@ const REFERENCE_DEFINITION = new RegExp(
   'gm',
 );
 const LIST_ITEM = /^ {0,3}(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$)/;
-/** A line that starts a block of its own, so a code span cannot continue into it. */
-const BLOCK_START = /^ {0,3}(?:#{1,6}(?:[ \t]|$)|>|(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$))/;
+/** A line that starts a block of its own, so a code span cannot continue into it; a blockquote starts one only after a line outside it. */
+const BLOCK_START = /^ {0,3}(?:#{1,6}(?:[ \t]|$)|(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$))/;
+const BLOCKQUOTE = /^ {0,3}>/;
 
 /**
  * Markdown with fenced and indented code blocks, inline code and HTML comments
@@ -631,6 +632,7 @@ function withoutCode(markdown: string): string {
   let previousBlank = true;
   let inCode = false;
   let inList = false;
+  let previousQuoted = false;
   const blocks: string[][] = [[]];
   const startBlock = (): void => {
     if ((blocks[blocks.length - 1] ?? []).length > 0) blocks.push([]);
@@ -641,7 +643,8 @@ function withoutCode(markdown: string): string {
   for (const line of markdown.split(/\r?\n/)) {
     const fenceMarker = (inList ? /^\s*(`{3,}|~{3,})/ : /^ {0,3}(`{3,}|~{3,})/).exec(line)?.[1];
     if (fence !== null) {
-      if (fenceMarker?.[0] === fence[0] && fenceMarker.length >= fence.length && /^\s*[`~]+[ \t]*$/.test(line)) fence = null;
+      const closing = (inList ? /^\s*(`{3,}|~{3,})[ \t]*$/ : /^ {0,3}(`{3,}|~{3,})[ \t]*$/).exec(line)?.[1];
+      if (closing?.[0] === fence[0] && closing.length >= fence.length) fence = null;
       continue;
     }
     if (fenceMarker) {
@@ -653,6 +656,7 @@ function withoutCode(markdown: string): string {
     const isBlank = line.trim() === '';
     if (isBlank) {
       startBlock();
+      previousQuoted = false;
     } else {
       if (LIST_ITEM.test(line)) inList = true;
       else if (previousBlank && !/^\s/.test(line)) inList = false;
@@ -662,25 +666,61 @@ function withoutCode(markdown: string): string {
         continue;
       }
       inCode = false;
-      if (BLOCK_START.test(line)) startBlock();
+      const isQuoted = BLOCKQUOTE.test(line);
+      if (BLOCK_START.test(line) || (isQuoted && !previousQuoted)) startBlock();
+      previousQuoted = isQuoted;
       keep(line);
       if (/^ {0,3}#{1,6}(?:[ \t]|$)/.test(line)) startBlock();
     }
     previousBlank = isBlank;
   }
-  // A code span ends within its block; a comment is read after code, so `<!--` shown as code opens none.
-  return blocks
-    .map((block) => block.join('\n').replace(/(?<!`)(`+)(?!`)[\s\S]*?(?<!`)\1(?!`)/g, ''))
-    .join('\n\n')
-    .split('<!--')
-    .map((piece, index) => (index === 0 ? piece : piece.slice(commentEnd(piece))))
-    .join('');
+  return withoutSpansAndComments(blocks.map((block) => block.join('\n')).join('\n\n'));
 }
 
-/** Where the text after a `<!--` resumes: past its `-->`, or at the end when the comment never closes. */
-function commentEnd(afterOpener: string): number {
-  const close = afterOpener.indexOf('-->');
-  return close < 0 ? afterOpener.length : close + 3;
+/**
+ * `text` without code spans and HTML comments, read left to right as Markdown
+ * does, so `<!--` shown as code opens no comment and a backtick inside a comment
+ * opens no code span. A code span ends within its block (blocks are joined by a
+ * blank line); a comment runs to its `-->`, or to the end when it never closes.
+ */
+function withoutSpansAndComments(text: string): string {
+  // Backtick runs by length, each list in text order; the scan only moves forward,
+  // so one pointer per length finds every closing run in linear time.
+  const runsByLength = new Map<number, number[]>();
+  for (const run of text.matchAll(/`+/g)) byKey(runsByLength, run[0].length).push(run.index);
+  const nextRun = new Map<number, number>();
+  const closingRun = (length: number, from: number, before: number): number => {
+    const starts = runsByLength.get(length) ?? [];
+    let next = nextRun.get(length) ?? 0;
+    while ((starts[next] ?? Infinity) < from) next++;
+    nextRun.set(length, next);
+    const start = starts[next] ?? Infinity;
+    return start < before ? start : -1;
+  };
+
+  const opener = /`+|<!--/g;
+  let kept = '';
+  let at = 0;
+  let blockEnd = -1;
+  for (let match = opener.exec(text); match !== null; match = opener.exec(text)) {
+    if (match[0] === '<!--') {
+      const close = text.indexOf('-->', match.index + 4);
+      kept += text.slice(at, match.index);
+      at = close < 0 ? text.length : close + 3;
+    } else {
+      if (match.index > blockEnd) {
+        blockEnd = text.indexOf('\n\n', match.index);
+        if (blockEnd < 0) blockEnd = text.length;
+      }
+      const run = match[0].length;
+      const close = closingRun(run, match.index + run, blockEnd);
+      if (close < 0) continue;
+      kept += text.slice(at, match.index);
+      at = close + run;
+    }
+    opener.lastIndex = at;
+  }
+  return kept + text.slice(at);
 }
 
 /** The local link targets of a Markdown file, without `#anchor` or `?query`; links with a scheme or a leading `/` are left out. */
@@ -779,16 +819,50 @@ const COMMAND_PREFIX = String.raw`^\s*(?:sudo\s+(?:-\S+(?:\s+(?!-)\S+)?\s+)*)?(?
 const SHELL_STAGE = new RegExp(String.raw`${COMMAND_PREFIX}((?:ba|da|k|z)?sh|fish)(?=[\s\`'")]|$)`);
 
 /** The `curl` or `wget` a stage runs: a whole word, as a command or in prose, but not text `echo` or `printf` prints. */
-function downloaderOf(stage: string): string | undefined {
-  const word = /(?<![\w.-])(curl|wget)(?=\s|$)/.exec(stage);
-  if (!word?.[1] || /\b(?:echo|printf)\s+['"]?$/.test(stage.slice(0, word.index))) return undefined;
-  return word[1];
+function downloaderOf(stage: string): { word: string; argsAt: number } | undefined {
+  const found = /(?<![\w.-])(curl|wget)(?=\s|$)/.exec(stage);
+  if (!found?.[1] || /\b(?:echo|printf)\s+['"]?$/.test(stage.slice(0, found.index))) return undefined;
+  return { word: found[1], argsAt: found.index + found[1].length };
 }
 
-/** Whether a `curl` or `wget` stage writes the download to standard output rather than to a file. */
-function writesToStdout(downloader: string, stage: string): boolean {
-  if (downloader === 'wget') return /\s(?:-[a-zA-Z]*O\s*-|--output-document(?:=|\s+)-)(?=\s|$)/.test(stage);
-  return !/\s(?:-[a-zA-Z]*o\s*(?!-(?:\s|$))\S|--output(?:=|\s+)(?!-(?:\s|$))\S|-[a-zA-Z]*O(?=\s|$)|--remote-name)/.test(stage);
+/** The words of a command, a quoted word unquoted. */
+function commandWords(command: string): string[] {
+  return (command.match(/"(?:[^"\\]|\\.)*"|'[^']*'|\S+/g) ?? []).map((word) => word.replace(/^(["'])([\s\S]*)\1$/, '$2'));
+}
+
+/**
+ * Whether the `curl` or `wget` whose arguments are `args` writes a download to
+ * standard output rather than to a file. curl writes each URL to stdout unless an
+ * output option (`-o FILE`, `-O`, `--output FILE`, `--remote-name`) is paired with
+ * it; wget writes to stdout only with `-O -`.
+ */
+function writesToStdout(downloader: string, args: string): boolean {
+  const words = commandWords(args);
+  let urls = 0;
+  let savedOutputs = 0;
+  for (let index = 0; index < words.length; index++) {
+    const word = words[index] ?? '';
+    const valueOf = (attached: string): string => (attached !== '' ? attached : words[++index] ?? '');
+    if (downloader === 'wget') {
+      const short = /^-[a-zA-Z]*O(.*)$/.exec(word);
+      const long = /^--output-document(?:=(.*))?$/.exec(word);
+      if ((short && valueOf(short[1] ?? '') === '-') || (long && valueOf(long[1] ?? '') === '-')) return true;
+      continue;
+    }
+    if (word === '--remote-name-all') return false;
+    if (word === '--remote-name') savedOutputs++;
+    const long = /^--output(?:=(.*))?$/.exec(word);
+    if (long && valueOf(long[1] ?? '') !== '-') savedOutputs++;
+    const short = /^-([a-zA-Z]+)(.*)$/.exec(word);
+    if (short && !word.startsWith('--')) {
+      const letters = short[1] ?? '';
+      if (letters.includes('O')) savedOutputs++;
+      const o = letters.indexOf('o');
+      if (o >= 0 && valueOf(letters.slice(o + 1) + (short[2] ?? '')) !== '-') savedOutputs++;
+    }
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(word)) urls++;
+  }
+  return downloader !== 'wget' && Math.max(urls, 1) > savedOutputs;
 }
 
 /**
@@ -845,7 +919,7 @@ function findPipedInstall(text: string): { downloader: string; shell: string } |
       const shell = downloader === undefined ? undefined : SHELL_STAGE.exec(stage)?.[1];
       if (downloader !== undefined && shell !== undefined) return { downloader, shell };
       const download = downloaderOf(stage);
-      if (downloader === undefined && download !== undefined && writesToStdout(download, stage)) downloader = download;
+      if (downloader === undefined && download !== undefined && writesToStdout(download.word, stage.slice(download.argsAt))) downloader = download.word;
     }
   }
   return null;
