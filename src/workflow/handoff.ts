@@ -561,21 +561,31 @@ export async function resumeRun(config: LocalConfig, runId: string, options: { c
   return acquire(config, runId, origin, { transfer: false, checkout: options.checkout });
 }
 
+/** The steps of `steps` settled for good: succeeded or skipped, so no person is needed for them again. */
+export function settledSteps(steps: ReadonlyArray<{ id: string; status: string }>): string[] {
+  return steps.filter((step) => step.status === 'succeeded' || step.status === 'skipped').map((step) => step.id);
+}
+
+/** What a run carries: its definitions, and the steps it settled for good. */
+export interface CarriedRun extends Definitions {
+  settled: string[];
+}
+
 /**
- * The definition run `runId` runs, before `resumeRun` changes anything: this machine's copy of the run, else, when
+ * What run `runId` carries, before `resumeRun` changes anything: this machine's copy of the run, else, when
  * `published`, the run teamai-reports holds, as a claim would install it. Undefined when neither holds the run, which
  * the resume then answers.
  */
-export async function carriedDefinition(config: LocalConfig, runId: string, { published }: { published: boolean }): Promise<Result<WorkflowDefinition | undefined>> {
+export async function carriedRun(config: LocalConfig, runId: string, { published }: { published: boolean }): Promise<Result<CarriedRun | undefined>> {
   const stored = await readRun(config, runId);
   if (stored === 'corrupt') return refused(runUnreadable(runId));
-  if (stored !== 'missing') return ok(stored.definition);
+  if (stored !== 'missing') return ok({ definition: stored.definition, workflows: stored.workflows ?? {}, settled: settledSteps(stored.steps) });
   if (!published) return ok(undefined);
   // Read from the team repository rather than the reports checkout, which a refused resume would otherwise leave synced.
   const origin = await publishedRun(config, runId, { checkout: false });
   if (!origin.ok || origin.value === 'absent') return origin.ok ? ok(undefined) : origin;
   const definitions = await definitionsOf(config, origin.value);
-  return definitions.ok ? ok(definitions.value.definition) : definitions;
+  return definitions.ok ? ok({ ...definitions.value, settled: settledSteps(origin.value.steps) }) : definitions;
 }
 
 /**

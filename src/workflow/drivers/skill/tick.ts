@@ -4,6 +4,7 @@
  */
 import { driverIdentity } from '../../../driver-identity.js';
 import { canonicalJson } from '../../../utils/canonical-json.js';
+import type { RunReadied } from '../../protocol.js';
 import type { AttemptId, RunId, RunLock } from '../../store.js';
 import type { WorkflowFailure } from '../../types.js';
 import { readChildResult } from './child-brief.js';
@@ -263,14 +264,27 @@ async function called(context: SkillContext, lock: RunLock, same: Literal, input
   }
   const state = read.kind === 'found' ? read.state : undefined;
   if (input.resume !== undefined || (input.takeover && !state)) {
+    const answers = input.resume?.answers ?? {};
+    if (context.mode === 'unattended') {
+      // Nobody is there to take a run that needs a person or the local driver over from here, so it is refused before
+      // the claim, which would leave this install owning it.
+      const carried = await context.client.carried(run, { published: input.resume !== undefined, ceiling: ceilingOf(context.config), can: canFor(undefined) });
+      const local = carried ? localReason(carried.description) : undefined;
+      const attended = carried ? attendedReason(carried.description, 'continue', new Set(carried.settled)) : undefined;
+      if (carried && (local !== undefined || attended !== undefined)) {
+        const readied: RunReadied = { kind: 'ready', installed: false, description: carried.description, settled: carried.settled, judging: { kind: 'none' } };
+        const refused = traced(context, readiedRow({ run, readied, kept: false, mode: context.mode, ...(local !== undefined ? { local } : {}), ...(attended !== undefined ? { attended } : {}), answers }));
+        if (refused && 'answer' in refused) return { answer: { error: errorOf(refused.answer, { invocation: context.invocation, same, localTool }) } };
+      }
+    }
     const readied = await context.client.resume(run, {
       lock, claim: input.resume === undefined ? 'none' : input.resume.claim ? 'any' : 'lacking', checkout: context.cwd, ceiling: ceilingOf(context.config), can: canFor(undefined),
       ...(context.tool !== undefined ? { tool: context.tool } : {}),
     });
     const local = readied.kind === 'ready' ? localReason(readied.description) : undefined;
-    const attended = readied.kind === 'ready' && context.mode === 'unattended' ? attendedReason(readied.description, 'continue') : undefined;
+    const attended = readied.kind === 'ready' && context.mode === 'unattended' ? attendedReason(readied.description, 'continue', new Set(readied.settled)) : undefined;
     const taken = traced(context, readiedRow({
-      run, readied, kept: state !== undefined, mode: context.mode, ...(local !== undefined ? { local } : {}), ...(attended !== undefined ? { attended } : {}), answers: input.resume?.answers ?? {},
+      run, readied, kept: state !== undefined, mode: context.mode, ...(local !== undefined ? { local } : {}), ...(attended !== undefined ? { attended } : {}), answers,
     }));
     if (taken && 'answer' in taken) return { answer: { error: errorOf(taken.answer, { invocation: context.invocation, same, localTool }) } };
     if (taken) {

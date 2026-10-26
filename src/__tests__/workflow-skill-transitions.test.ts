@@ -369,6 +369,17 @@ steps:
     prompt: Write the UI.
 `;
 
+// A step after RELEASE's required approval, and one after HANDED's UI.
+const ANNOUNCE = `  - id: announce
+    needs: [go-live]
+    command: node -e "process.exit(0)"
+`;
+const GO_LIVE_AFTER_UI = `  - id: go-live
+    needs: [ui]
+    approve: { message: Deploy to production?, required: true }
+    command: node -e "process.exit(0)"
+`;
+
 const SCORERS = { 'review-quality': `---
 labels:
   - { value: thorough, score: 1, description: Did the work it was asked for }
@@ -1093,6 +1104,51 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       expect(await turnOf(await made.call({ kind: 'resume', run: approved, claim: false, confirmed: false, answers: {} }))).toMatchObject({ run: approved, actions: [] });
       expect(JSON.parse(fs.readFileSync(skillStatePath(made.config, approved), 'utf8'))).toMatchObject({ options: { hitl: 'auto-approve', mode: 'unattended' } });
       expect(await polledToDone(made, approved)).toMatchObject({ actions: [{ kind: 'done', outcome: 'succeeded' }] });
+      return made.rows;
+    },
+  },
+  {
+    name: 'an unattended resume counts only the steps left: a run whose required approval already ran continues with its optional gates auto-approved',
+    rows: ['R19'],
+    run: async () => {
+      const made = await harness({ released: RELEASE.replace('name: release', 'name: released') + ANNOUNCE }, { mode: 'unattended' });
+      const { client, env } = made.context;
+      const created = await client.start('released', { checkout: made.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
+      if (!('data' in created)) throw new Error(JSON.stringify(created));
+      const run = RunIdSchema.parse(created.data.run);
+      // CI's local driver runs the run up to announce; the person answers both approvals from their terminal.
+      const driver = { kind: 'local', machine: 'ci', workspace: made.work, can: { hitl: true, workspace: [...WORKSPACE_MODES] } };
+      const person = respondProvenance({ kind: 'terminal', caller: { tty: true, evidence: { kind: 'none' } } });
+      for (let turn = 0; turn < 12; turn += 1) {
+        const answer = await client.next(run, { driver });
+        if (!('data' in answer)) throw new Error(JSON.stringify(answer));
+        const { hitl, lease } = z.object({ hitl: z.object({ step: z.string(), pass: z.number() }).optional(), lease: z.object({ step: z.string(), attempt: z.string(), revision: z.number() }).optional() }).parse(answer.data);
+        if (hitl) {
+          expect(await respondToHitl(made.config, run, env.secrets, { step: hitl.step, choice: 'yes', pass: hitl.pass, provenance: person })).not.toHaveProperty('error');
+          continue;
+        }
+        if (!lease) throw new Error(JSON.stringify(answer));
+        const outcome = lease.step === 'announce' ? 'released' : 'success';
+        expect(await client.report(run, { attempt: lease.attempt, revision: lease.revision, outcome, driver })).not.toHaveProperty('error');
+        if (outcome === 'released') break;
+      }
+      expect(await readRun(made.config, run)).toMatchObject({ status: 'running', steps: expect.arrayContaining([expect.objectContaining({ id: 'go-live', status: 'succeeded' })]) });
+      expect(await turnOf(await made.call({ kind: 'resume', run, claim: false, confirmed: false, answers: {} }))).toMatchObject({ run });
+      expect(JSON.parse(fs.readFileSync(skillStatePath(made.config, run), 'utf8'))).toMatchObject({ options: { hitl: 'auto-approve', mode: 'unattended' } });
+      return made.rows;
+    },
+  },
+  {
+    name: 'an unattended resume of a published run that needs a person is refused before the claim: the install that published it still owns it',
+    rows: ['R24'],
+    run: async () => {
+      const team = sharedTeam({ 'gated-handed': HANDED.replace('name: handed', 'name: gated-handed\ninvoke: allow') + GO_LIVE_AFTER_UI });
+      const ci = await team.install('ci');
+      const { run } = await publishedMidStep(ci, 'gated-handed');
+      const made = await harness({}, { install: await team.install('member'), mode: 'unattended' });
+      expect(await made.call({ kind: 'resume', run, claim: true, confirmed: false, answers: {} })).toMatchObject({ error: { code: 'unattended_denied', next: null } });
+      expect(await readRun(made.config, run)).toBe('missing');
+      expect(await publishRun(ci.config, run, { checkout: ci.checkout })).toMatchObject({ ok: true });
       return made.rows;
     },
   },

@@ -11,7 +11,7 @@ import { nestedWorkflowError, type AgentEvidence } from './attempt-marker.js';
 import { loadCachedWorkflow, loadWorkflowTree } from './cache.js';
 import { describeWorkflow, type WorkflowDescription } from './describe.js';
 import { LeaseIdSchema, LeaseWireSchema } from './lease-wire.js';
-import { carriedDefinition, reconcileTakenCopies, resumeRun } from './handoff.js';
+import { carriedRun, reconcileTakenCopies, resumeRun, settledSteps } from './handoff.js';
 import { leaseNext, parseNextPayload, parseReport, parseResponsePayload, reportable, reportAttempt, startRun, withIgnored, type NextOptions, type ReportInput } from './engine.js';
 import {
   abandonPlace, adoptedPlaceOf, finishPlace, placeHeldBy, placeLeaseOf, placeOf, placeRecorded, preparePlace, releasePlace, runPlaceSetup, type PlaceLease, type PlacePrepared,
@@ -103,6 +103,11 @@ export interface WorkflowClient {
    * lock, so it is gone. Describes the run's own definition as `describe` does.
    */
   resume(runId: RunId, options: { lock: RunLock; claim: 'none' | 'lacking' | 'any'; checkout: string; ceiling: number; can: DriverCan; tool?: string }): Promise<RunReadied>;
+  /**
+   * Run `runId` as it stands before `resume` changes anything, as `resumeRefusal` reads it: its own definition described
+   * as `describe` does, and the steps it settled for good. Undefined when this machine cannot read it.
+   */
+  carried(runId: RunId, options: { published: boolean; ceiling: number; can: DriverCan }): Promise<{ description: WorkflowDescription; settled: string[] } | undefined>;
   /** Why `caller` may not continue run `runId`, by a resume or a takeover, as `resumeRefusal` decides it. */
   resumeRefusal(runId: RunId, options: { caller: InvokeCaller; published: boolean }): Promise<WorkflowFailure | undefined>;
   /** Takes or renews judge work, as `teamai score --next` does with `body` as its payload. */
@@ -120,7 +125,7 @@ export interface WorkflowClient {
  * refused for `failure`.
  */
 export type RunReadied =
-  | { kind: 'ready'; installed: boolean; description: WorkflowDescription; judging: Judging }
+  | { kind: 'ready'; installed: boolean; description: WorkflowDescription; settled: string[]; judging: Judging }
   | { kind: 'not-here' }
   | { kind: 'not-owner'; owner: string; since: string }
   | { kind: 'failed'; failure: WorkflowFailure };
@@ -244,9 +249,9 @@ export async function resumeRefusal(
   { published, act = 'continue' }: { published: boolean; act?: 'continue' | 'claim' },
 ): Promise<WorkflowFailure | undefined> {
   if (caller.evidence.kind === 'none') return undefined;
-  const carried = await carriedDefinition(config, runId, { published });
+  const carried = await carriedRun(config, runId, { published });
   if (!carried.ok) return { code: carried.error.code, message: carried.error.message };
-  return invokeRefusal(carried.value, caller, { kind: act, run: runId });
+  return invokeRefusal(carried.value?.definition, caller, { kind: act, run: runId });
 }
 
 /** The failure a call answers when the cache holds no unambiguous runnable version of workflow or alias `name`. */
@@ -454,7 +459,13 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
       const unreconciled = await reconcileTakenCopies(config, runId, run.checkout ?? checkout);
       if (unreconciled) return { kind: 'failed', failure: unreconciled };
       const description = describeWorkflow({ definition: run.definition, workflows: run.workflows ?? {}, ceiling, can, allow: config.workflows?.allow ?? {}, env: env.facts });
-      return { kind: 'ready', installed: resumed.value?.ownership === 'claimed', description, judging: await judgingOf(config, description, tool) };
+      return { kind: 'ready', installed: resumed.value?.ownership === 'claimed', description, settled: settledSteps(run.steps), judging: await judgingOf(config, description, tool) };
+    },
+    carried: async (runId, { published, ceiling, can }) => {
+      const carried = await carriedRun(config, runId, { published });
+      if (!carried.ok || carried.value === undefined) return undefined;
+      const { definition, workflows, settled } = carried.value;
+      return { description: describeWorkflow({ definition, workflows, ceiling, can, allow: config.workflows?.allow ?? {}, env: env.facts }), settled };
     },
     resumeRefusal: (runId, { caller, published }) => resumeRefusal(config, runId, caller, { published }),
     scoreNext: async (body) => {

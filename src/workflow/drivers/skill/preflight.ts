@@ -49,13 +49,17 @@ export function localReason(description: WorkflowDescription): string | undefine
 
 /**
  * Why a run of `description` needs a person, which an unattended run lacks, as a refusal to `act` on it says it:
- * undefined when it can do without one, its optional gates auto-approved.
+ * undefined when it can do without one, its optional gates auto-approved. A run to continue counts only the steps it
+ * has not `settled` for good: an approval, a choice or an interactive step that already ran needs nobody now. Its
+ * `invoke: ask` still does.
  */
-export function attendedReason(description: WorkflowDescription, act: 'start' | 'continue'): string | undefined {
+export function attendedReason(description: WorkflowDescription, act: 'start' | 'continue', settled: ReadonlySet<string> = new Set()): string | undefined {
   const { name, facts } = description;
-  const { interactive } = facts;
-  const required = facts.gates.filter((gate) => gate.required);
-  const open = facts.gates.filter((gate) => !gate.required && gate.kind === 'choose' && !gate.hasDefault);
+  const left = (step: string): boolean => !settled.has(step);
+  const interactive = facts.interactive.filter(left);
+  const gates = facts.gates.filter((gate) => left(gate.step));
+  const required = gates.filter((gate) => gate.required);
+  const open = gates.filter((gate) => !gate.required && gate.kind === 'choose' && !gate.hasDefault);
   const needs = [
     ...(description.invoke === 'ask' ? [INVOKE_ASK_NEED] : []),
     ...(interactive.length > 0 ? [`${listOf(interactive)} ${interactive.length > 1 ? 'are' : 'is'} interactive, worked with a person`] : []),
