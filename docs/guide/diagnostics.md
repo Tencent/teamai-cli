@@ -17,6 +17,8 @@ teamai remove rules <name> --force
 
 `doctor` exits 1 when any check fails. `stats` adds a recall section when that scope has recall runs. See [Recall adoption and upvotes](./knowledge.md#recall-adoption-and-upvotes).
 
+Generated-hook checks compare the handler logic and accept an existing absolute launcher recorded by another installation of the same build. Running `doctor` from a different CLI path alone does not require reinstalling hooks. A missing saved launcher or changed handler still requires `teamai hooks inject` or `teamai pull`.
+
 If a file occupies a tool's skills directory, `pull` keeps it, names the blocked path, and continues delivering to other tools. Move the file aside, then run `teamai pull` again to deliver the missing skills.
 
 ZCode's CLI reads hooks from `~/.zcode/cli/config.json` even in single-repo mode. `hooks inject` moves teamai's old project-file entries there, keeps personal settings, and gates team hooks to their project. `hooks list` and `doctor` check that same HOME file.

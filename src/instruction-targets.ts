@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { hookSourceMatches } from './utils/hook-source.js';
 import { getsRulesFromExtension } from './resources/rule-format.js';
 import { pathExists, readFileSafe, readJsonObject, remove, writeFile } from './utils/fs.js';
 import { getUserHome } from './utils/home.js';
@@ -201,7 +202,7 @@ export async function channelReadiness(
       const file = omp ? path.join(resolveOmpExtensionsDir(), OMP_HOOK_FILE) : path.join(resolvePiExtensionsDir(), PI_HOOK_FILE);
       const expected = omp ? buildOmpExtensionSource() : buildPiExtensionSource();
       return {
-        ready: await readFileSafe(file) === expected,
+        ready: await hookSourceMatches(await readFileSafe(file), expected),
         // Pi's extension also carries a project's team rules (#946); OMP reads its own rules files.
         fix: `${file} is missing or out of date, so ${tool} sessions in this project get no team instructions`
           + `${getsRulesFromExtension(tool) ? ' or rules' : ''}. ${rerun}`,
@@ -215,7 +216,7 @@ export async function channelReadiness(
       if (!await ownsInstructionsPlugin()) return { ready: false, fix: foreignInstructionsPlugin() };
       const dir = getInstructionsPluginDir();
       const plugin = buildInstructionsPlugin();
-      const installed = await readFileSafe(path.join(dir, '__init__.py')) === plugin.init
+      const installed = await hookSourceMatches(await readFileSafe(path.join(dir, '__init__.py')), plugin.init)
         && await readFileSafe(path.join(dir, 'plugin.yaml')) === plugin.manifest;
       if (!installed) {
         return { ready: false, fix: `The Hermes plugin ${dir} is missing or out of date, so Hermes sessions in this project get no team instructions. ${rerun}` };

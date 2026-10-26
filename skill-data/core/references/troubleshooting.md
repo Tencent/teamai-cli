@@ -442,7 +442,7 @@ Session archive writers (`session push`, `migrate --push`, and `session pull`) w
 
 ## OpenCode hooks cannot start the CLI
 
-If OpenCode hooks stopped after moving or reinstalling Node or TeamAI, run `teamai hooks inject` or `teamai pull` and restart OpenCode. The plugin records the installed Node and CLI paths so it also works without `teamai` on the service PATH.
+If OpenCode hooks stopped after moving or reinstalling Node or TeamAI, run `teamai hooks inject` or `teamai pull` and restart OpenCode. The plugin records the installed Node and CLI paths so it also works without `teamai` on the service PATH. Doctor accepts those live paths when another installation of the same build inspects the plugin; missing saved paths or a changed handler still fail the check.
 
 ## ZCode registered hooks but missing project rules
 
