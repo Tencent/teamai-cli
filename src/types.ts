@@ -1589,7 +1589,8 @@ export interface GlobalOptions {
    *   through TEAMAI_PREPARE_CHECKOUT), or a worktree an agent tool created
    *   without git hooks. Only the pull that writes the checkout's first record
    *   runs postDeploy; an inline one finding a record under the sync lock
-   *   delivers nothing.
+   *   delivers nothing. A pass whose checkout is removed under it stops
+   *   before its next write phase.
    */
   prepareCheckout?: 'always' | 'once';
   /**

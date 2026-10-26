@@ -72,6 +72,7 @@ vi.mock('../update.js', () => ({
 import { pull } from '../pull.js';
 import { detectProjectConfig, loadTeamConfig } from '../config.js';
 import { getHeadRev } from '../utils/git.js';
+import { reconcileTeamHooksForConfig } from '../hooks.js';
 import type { LocalConfig, TeamaiConfig } from '../types.js';
 
 describe('checkout preparation runs postDeploy (#1424)', () => {
@@ -145,6 +146,19 @@ describe('checkout preparation runs postDeploy (#1424)', () => {
     await pull({ silent: true });
 
     expect(fse.existsSync(skill())).toBe(true);
+    expect(postDeploys()).toBe(0);
+  });
+
+  it('once: a pass whose checkout is removed after its resources are delivered runs no postDeploy there', async () => {
+    await fse.outputFile(path.join(projectRoot, '.git'), 'gitdir: ../repo.git/worktrees/project\n');
+    vi.mocked(reconcileTeamHooksForConfig).mockImplementationOnce(async () => {
+      await fse.remove(projectRoot);
+      return { ok: true, defs: [] };
+    });
+
+    await pull({ silent: true, inline: true, prepareCheckout: 'once' });
+
+    expect(fse.existsSync(projectRoot)).toBe(false);
     expect(postDeploys()).toBe(0);
   });
 

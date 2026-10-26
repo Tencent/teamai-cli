@@ -1030,6 +1030,17 @@ export async function deliveringCheckoutRecord(localConfig: LocalConfig, state?:
 }
 
 /**
+ * How a `once` preparation sees its checkout removed under it (#1424): the
+ * `.git` the checkout had when the pass began is gone, or the folder itself
+ * when it had none. The pass then stops before its next write phase, so it
+ * never creates the folder again, and runs no postDeploy there.
+ */
+async function watchCheckoutRemoval(root: string): Promise<() => Promise<boolean>> {
+  const marker = await pathExists(path.join(root, '.git')) ? path.join(root, '.git') : root;
+  return async () => !await pathExists(marker);
+}
+
+/**
  * Why a checkout record does not name one complete team delivery for a tool.
  * `pending_full_sync`: a selection command cleared the shared lastPullRev, so
  * the next pull delivers a new selection. `awaiting_full_sync`: a forced full
@@ -1355,6 +1366,8 @@ async function pullForScope(
     revisionField?: 'lastPullRev' | 'lastInheritedPullRev';
     /** What this scope's writers deliver into the project checkout (#915): the project scope's alone. */
     recorder?: DeliveryRecorder;
+    /** Whether a `once` preparation's checkout was removed under it: the scope stops before its next write phase (#1424). */
+    checkoutRemoved?: () => Promise<boolean>;
   } = {},
   /** Set to `{ completed: true }` on a real (non-dry-run) sync. See pull(). */
   result?: PullSyncResult,
@@ -1364,6 +1377,7 @@ async function pullForScope(
 ): Promise<void> {
   const scopeLabel = installScopeName(localConfig.scope);
   const revisionField = policy.revisionField ?? 'lastPullRev';
+  const checkoutRemoved = policy.checkoutRemoved ?? (async () => false);
   const targetsField = revisionField === 'lastPullRev'
     ? 'lastPullTargets' as const
     : 'lastInheritedPullTargets' as const;
@@ -1949,6 +1963,7 @@ async function pullForScope(
   let rootRepoSkillNames: Set<string> | null = null;
 
   for (const type of resourceTypes) {
+    if (await checkoutRemoved()) return;
     const handler = getHandler(type);
 
     if (type === 'rules') {
@@ -2206,6 +2221,7 @@ async function pullForScope(
   const undeliveredSkills = new Set<string>();
   let rootSkillUndelivered = false;
 
+  if (await checkoutRemoved()) return;
   // Step 3: Clean up tombstoned resources
   if (!options.dryRun) {
     await cleanupTombstonedResources(freshConfig, localConfig, scopeLabel, ledger, revisionRemovals, unpinnedRef);
@@ -2239,6 +2255,7 @@ async function pullForScope(
     }
   }
 
+  if (await checkoutRemoved()) return;
   // Step 3b: Clean up local skills not in the desired union set (role + tags)
   if (!options.dryRun && desiredSkillNames && knownRepoSkillNames) {
     const install = installOf(freshConfig, localConfig);
@@ -2326,10 +2343,12 @@ async function pullForScope(
   // (#704); see `syncLearningsAndRebuildIndex`.
   await syncLearningsAndRebuildIndex();
 
+  if (await checkoutRemoved()) return;
   // Steps 3.6-3.8: Deliver team culture, shared instructions and the recall block.
   const delivery = await syncManagedInstructions(freshConfig, localConfig, roleContext, scopeLabel, options.dryRun, ledger.recorder);
   instructions?.set(localConfig, delivery);
 
+  if (await checkoutRemoved()) return;
   // Step 4: Deploy CLI built-in skills
   // What they write is delivered too (#915); a deployment that failed says so.
   // A dry run only reports what they would write, for the block's preview.
@@ -2375,6 +2394,7 @@ async function pullForScope(
   }
   recorder?.succeeded('builtin');
 
+  if (await checkoutRemoved()) return;
   // Step 4b: Record where each tool took skills, rules, instruction blocks and
   // agents, once they and the built-ins had their chance at the new place, and
   // name the places a tool left.
@@ -3066,6 +3086,8 @@ export async function pull(
   let scriptOwner: LocalConfig | null = null;
   // A `once` preparation found no record of the checkout under the lock and wrote one: its first delivery, which runs postDeploy.
   let firstDelivery = false;
+  // Whether a `once` preparation's checkout was removed under it: the pass stops at its next write phase.
+  let checkoutRemoved = async (): Promise<boolean> => false;
   const lockScope = async (config: LocalConfig): Promise<boolean> => {
     // git-mode guards its shared team clone; self mode guards its machine-data
     // writes (state/env/search-index) against a concurrent P2 migration relocating
@@ -3222,6 +3244,8 @@ export async function pull(
     }
   }
 
+  if (options.prepareCheckout === 'once' && projectConfig?.projectRoot) checkoutRemoved = await watchCheckoutRemoval(projectConfig.projectRoot);
+
   // 3. Project scope.
   if (projectConfig) {
     // The git hook runs silently; what failed in it is said here, once.
@@ -3232,7 +3256,8 @@ export async function pull(
         const undelivered = options.prepareCheckout === 'once' && !await deliveringCheckoutRecord(projectConfig);
         // An inline preparation that waited out another trigger's finds nothing left to deliver.
         if (options.prepareCheckout === 'once' && options.inline && !undelivered) return;
-        await pullForScope(projectConfig, options, reported, { recorder: deliveryRecorder }, syncResult, teamEnvs, instructions);
+        await pullForScope(projectConfig, options, reported, { recorder: deliveryRecorder, checkoutRemoved }, syncResult, teamEnvs, instructions);
+        if (await checkoutRemoved()) return;
         firstDelivery = undelivered && await deliveringCheckoutRecord(projectConfig) !== undefined;
         if (pinRequired && syncResult.teamRepoFailed) return;
         await excludeWorkspaceInstructions(projectConfig, options);
@@ -3259,6 +3284,7 @@ export async function pull(
   scriptOwner = reconcileProject ?? reconcileUser ?? null;
   postPullRepo = scriptOwner?.repo.localPath ?? null;
 
+  if (await checkoutRemoved()) return;
   // 3.4. Legacy hook-format migration (pre-dispatch era). Runs UNDER the scope
   // lock (unlike the old step-0 call) against a locked, non-contended scope, so
   // it reads teamConfig.toolPaths from a stable clone rather than a concurrent
@@ -3277,6 +3303,7 @@ export async function pull(
     }
   }
 
+  if (await checkoutRemoved()) return;
   // 3.5. Reconcile built-in + team hooks for the active scope only. Runs OUTSIDE
   // pullForScope so it bypasses the "Already synced" rev fast-path — this is
   // what self-heals new built-in hooks and applies hooks.yaml changes on every
@@ -3286,10 +3313,12 @@ export async function pull(
   startupErrors.push(...hooks.errors);
   unwritten.push(...hooks.unwritten);
 
+  if (await checkoutRemoved()) return;
   // 3.6. Reconcile team MCP servers. Outside pullForScope for the same reason as
   // hooks. User-scope MCP remains isolated in project mode.
   startupErrors.push(...await reconcileMcpAllScopes(reconcileUser, reconcileProject, options, teamEnvs));
 
+  if (await checkoutRemoved()) return;
   // 3.6a. Trust in Codex what the two stages above wrote for it: its hooks and,
   // for a project, the main checkout whose `.codex/` holds team hooks or MCP
   // servers (#955). After both, so a project whose only Codex content is its MCP
@@ -3301,6 +3330,7 @@ export async function pull(
   // on every session.
   if (!options.silent) await reportEnvAdvisories(reconcileUser, reconcileProject, teamEnvs);
 
+  if (await checkoutRemoved()) return;
   // 3.7. Reconcile the team co-author policy (does an AI tool stamp a
   // Co-Authored-By / attribution trailer on its commits?). Outside pullForScope
   // for the same reason as hooks/MCP; write-only, so it self-heals but never
@@ -3408,6 +3438,7 @@ export async function pull(
     }
   }
 
+  if (await checkoutRemoved()) return;
   // 5. Pull cross-team source skills (always — even in project mode), against
   //    the active scope so deploys land in the right base dir. Use the
   //    contention-filtered scopes: pullSources re-reads `sources` from the shared
@@ -3426,6 +3457,7 @@ export async function pull(
     }
   }
 
+  if (await checkoutRemoved()) return;
   // 5a. Keep what this pull delivered into the project out of git (#915),
   //     after its last writer and still under the scope's sync lock. A
   //     contended scope is skipped: the lock's holder syncs.
@@ -3517,7 +3549,7 @@ export async function pull(
   // 6. Checkout preparation waits for `scripts.postDeploy` before returning;
   //    a `once` one only when it wrote the checkout's first record. Inline
   //    pulls otherwise skip team scripts. Nothing here can fail the pull.
-  if (!options.dryRun && (options.prepareCheckout === 'always' || firstDelivery) && scriptOwner) {
+  if (!options.dryRun && (options.prepareCheckout === 'always' || firstDelivery) && scriptOwner && !await checkoutRemoved()) {
     await runTeamScript(scriptOwner, 'postDeploy');
   }
 
