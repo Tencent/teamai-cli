@@ -334,9 +334,10 @@ async function findGitLabComment(mrUrl: string, marker: string): Promise<GitLabN
     MAX_NOTE_PAGES,
     'GitLab note list',
   );
-  // Our own notes start with the marker; a human note that merely quotes it
-  // must not be mistaken for the comment to update in place.
-  return notes.find((n) => n.body.trimStart().startsWith(marker)) ?? null;
+  // Our markers sit on their own line (first line for learning comments, last
+  // line for graph comments). Match the whole line so a human note that merely
+  // quotes the marker inside a sentence is not treated as our comment.
+  return notes.find((n) => n.body.split('\n').some((line) => line.trim() === marker)) ?? null;
 }
 
 async function postGitLabComment(mrUrl: string, body: string): Promise<CommentResult> {

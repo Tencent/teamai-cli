@@ -1,4 +1,4 @@
-import { afterEach, describe, it, expect, vi } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { extractMarkerId, readRejections, shouldWrite } from '../ci/read-rejections.js';
 import type { RejectionResult } from '../ci/read-rejections.js';
 
@@ -63,6 +63,9 @@ describe('shouldWrite', () => {
 });
 
 describe('readRejections API failures', () => {
+  beforeEach(() => {
+    vi.stubEnv('GITLAB_URL', 'https://gitlab.com');
+  });
   afterEach(() => {
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
@@ -100,6 +103,9 @@ describe('readRejections API failures', () => {
 });
 
 describe('GitLab (默认写入，👎 thumbsdown = reject)', () => {
+  beforeEach(() => {
+    vi.stubEnv('GITLAB_URL', 'https://gitlab.com');
+  });
   afterEach(() => {
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();

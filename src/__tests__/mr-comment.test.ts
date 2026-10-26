@@ -1,5 +1,5 @@
-import { afterEach, describe, it, expect, vi } from 'vitest';
-import { parseMrUrl, formatComment, postOrUpdateMrComment } from '../ci/mr-comment.js';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
+import { parseMrUrl, formatComment, postOrUpdateMrComment, postCodebaseGraphComment } from '../ci/mr-comment.js';
 import type { LearningDraft, CodebaseSuggestion } from '../types.js';
 
 describe('parseMrUrl', () => {
@@ -74,6 +74,10 @@ describe('formatComment', () => {
 });
 
 describe('postOrUpdateMrComment API failures', () => {
+  beforeEach(() => {
+    // Pin the instance host so the developer's local GITLAB_URL never leaks in.
+    vi.stubEnv('GITLAB_URL', 'https://gitlab.com');
+  });
   afterEach(() => {
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
@@ -200,5 +204,52 @@ describe('postOrUpdateMrComment API failures', () => {
     )).rejects.toThrow('Refusing to fetch GitLab MR');
 
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('posts a new GitLab codebase-graph comment when none exists', async () => {
+    vi.stubEnv('GITLAB_TOKEN', 'test-token');
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes('/notes?')) return new Response('[]', { status: 200 });
+      if (url.endsWith('/notes') && init?.method === 'POST') {
+        return new Response(JSON.stringify({ id: 42 }), { status: 201 });
+      }
+      throw new Error(`unexpected ${url} ${init?.method}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await postCodebaseGraphComment(
+      'https://gitlab.com/acme/app/-/merge_requests/7',
+      { added: ['a.ts'], removed: [] },
+    );
+
+    const post = fetchMock.mock.calls.find(([, init]) => init?.method === 'POST');
+    expect(post).toBeDefined();
+    expect(String(post?.[1]?.body)).toContain('teamai:ci-extract:codebase-graph');
+  });
+
+  it('updates an existing GitLab codebase-graph comment whose marker is on the LAST line', async () => {
+    vi.stubEnv('GITLAB_TOKEN', 'test-token');
+    const marker = '<!-- teamai:ci-extract:codebase-graph -->';
+    // The graph formatter puts the marker at the END of the body, not the start.
+    const existing = JSON.stringify([
+      { id: 9, body: `## 📊 Codebase 知识图谱变更\n\nold\n---\n> 👎 ...\n${marker}` },
+    ]);
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes('/notes?')) return new Response(existing, { status: 200 });
+      if (url.includes('/notes/9') && init?.method === 'PUT') {
+        return new Response(JSON.stringify({}), { status: 200 });
+      }
+      throw new Error(`unexpected ${url} ${init?.method}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await postCodebaseGraphComment(
+      'https://gitlab.com/acme/app/-/merge_requests/7',
+      { added: ['a.ts'], removed: [] },
+    );
+
+    const put = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT');
+    expect(put?.[0]).toContain('/notes/9');
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
   });
 });

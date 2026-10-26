@@ -2,7 +2,7 @@ import { type MRData, type MRFetchOptions, type MRThread } from '../../types.js'
 import { log } from '../../utils/logger.js';
 import { pruneThreads } from '../mr-threads.js';
 import { getGitLabToken, gitlabBaseUrl } from './gitlab-api.js';
-import { GITLAB_HOST } from './repo-url.js';
+import { resolveGitLabHost } from './repo-url.js';
 
 const REQUEST_TIMEOUT_MS = 30_000;
 
@@ -44,7 +44,7 @@ export function parseGitLabMRUrl(url: string): ParsedGitLabMR {
   if (!hostMatchesConfigured(host)) {
     throw new Error(
       `Refusing to fetch GitLab MR from "${host}": it does not match the configured ` +
-        `GitLab instance "${GITLAB_HOST}". Set GITLAB_URL / TEAMAI_GITLAB_HOST to this ` +
+        `GitLab instance "${resolveGitLabHost()}". Set GITLAB_URL / TEAMAI_GITLAB_HOST to this ` +
         `instance if it is trusted.`,
     );
   }
@@ -76,7 +76,9 @@ function normalizeHost(host: string): string {
  * as the configured GITLAB_HOST. GITLAB_HOST may itself carry a port.
  */
 function hostMatchesConfigured(urlHost: string): boolean {
-  return normalizeHost(urlHost) === normalizeHost(GITLAB_HOST);
+  // Resolved lazily so a changed GITLAB_URL / TEAMAI_GITLAB_HOST (or a test
+  // stubbing it) takes effect without re-importing this module.
+  return normalizeHost(urlHost) === normalizeHost(resolveGitLabHost());
 }
 
 /** GitLab REST API 返回的 MR 元信息（仅使用的字段） */
