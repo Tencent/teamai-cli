@@ -1445,6 +1445,8 @@ export interface ManagedMcpRecord {
   name: string;
   /** sha1 (first 16 hex) of the rendered entry; drives idempotent rewrites. */
   hash: string;
+  /** Muse only: content fingerprint ignoring object key order and an inferred stdio type. */
+  valueHash?: string;
   /**
    * Project scope: whether the entry holds a `${VAR}` value teamai resolved
    * (#882). Absent in records an older teamai wrote.

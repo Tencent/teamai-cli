@@ -2,14 +2,14 @@ import { type MRData, type MRFetchOptions, type MRThread } from '../../types.js'
 import { log } from '../../utils/logger.js';
 import { pruneThreads } from '../mr-threads.js';
 import { getGitLabToken, gitlabBaseUrl } from './gitlab-api.js';
-import { GITLAB_HOST } from './repo-url.js';
+import { resolveGitLabHost } from './repo-url.js';
 
 const REQUEST_TIMEOUT_MS = 30_000;
 const COMMIT_PAGE_SIZE = 50;
 const MAX_COMMIT_PAGES = 100;
 
 /** GitLab MR URL 解析结果 */
-interface ParsedGitLabMR {
+export interface ParsedGitLabMR {
   /** API base derived from the MR URL's own origin, e.g. https://host/api/v4 */
   apiBase: string;
   projectPath: string;
@@ -22,8 +22,11 @@ interface ParsedGitLabMR {
  * 支持格式：https://<host>/<group>/<project>/-/merge_requests/<id>
  * group 可以是多级路径（如 group/subgroup）。
  * 解析失败时抛出 Error。
+ *
+ * Exported for the CI comment path (ci/mr-comment.ts): it needs the same
+ * host-matching guard so a crafted MR URL cannot receive the PAT.
  */
-function parseGitLabMRUrl(url: string): ParsedGitLabMR {
+export function parseGitLabMRUrl(url: string): ParsedGitLabMR {
   const match = url.match(/^(https?):\/\/([^/]+)\/(.+?)\/-\/merge_requests\/(\d+)/i);
   if (!match) {
     throw new Error(`Invalid GitLab MR URL: ${url}`);
@@ -43,7 +46,7 @@ function parseGitLabMRUrl(url: string): ParsedGitLabMR {
   if (!hostMatchesConfigured(host)) {
     throw new Error(
       `Refusing to fetch GitLab MR from "${host}": it does not match the configured ` +
-        `GitLab instance "${GITLAB_HOST}". Set GITLAB_URL / TEAMAI_GITLAB_HOST to this ` +
+        `GitLab instance "${resolveGitLabHost()}". Set GITLAB_URL / TEAMAI_GITLAB_HOST to this ` +
         `instance if it is trusted.`,
     );
   }
@@ -75,7 +78,9 @@ function normalizeHost(host: string): string {
  * as the configured GITLAB_HOST. GITLAB_HOST may itself carry a port.
  */
 function hostMatchesConfigured(urlHost: string): boolean {
-  return normalizeHost(urlHost) === normalizeHost(GITLAB_HOST);
+  // Resolved lazily so a changed GITLAB_URL / TEAMAI_GITLAB_HOST (or a test
+  // stubbing it) takes effect without re-importing this module.
+  return normalizeHost(urlHost) === normalizeHost(resolveGitLabHost());
 }
 
 /** GitLab REST API 返回的 MR 元信息（仅使用的字段） */
