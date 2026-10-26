@@ -535,9 +535,9 @@ function supersededPathOf(item: ResourceItem): string | undefined {
   return 'supersedes' in item && typeof item.supersedes === 'string' ? item.supersedes : undefined;
 }
 
-/** The blob this machine delivered to that retired file, when its merge was proven. */
-function supersededBlobOf(item: ResourceItem): string | undefined {
-  return 'supersededBlob' in item && typeof item.supersededBlob === 'string' ? item.supersededBlob : undefined;
+/** The blob this machine delivered to the placed file `item` replaces, when its merge was proven. */
+function deliveredBlobOf(item: ResourceItem): string | undefined {
+  return 'deliveredBlob' in item && typeof item.deliveredBlob === 'string' ? item.deliveredBlob : undefined;
 }
 
 /**
@@ -1132,7 +1132,7 @@ async function itemsChangedOnDefaultBranch(
   const retiring: RetiringItem[] = [];
   for (const item of teamItems) {
     const retired = supersededPathOf(item);
-    const seenBlob = supersededBlobOf(item);
+    const seenBlob = deliveredBlobOf(item);
     const retiredTip = retired && (seenBlob
       ? (await git.raw(['rev-parse', `${defaultTip}:.teamai/${retired}`]).catch(() => '')).trim()
       : blobs.get(teamFile(retired))?.atTip);
@@ -1247,7 +1247,7 @@ async function defaultBranchGuard(
         + `Merge origin/${defaultBranch} (\`git pull origin ${defaultBranch}\`), resolve any conflict, then push again.`);
     }
     for (const { item, retired, tip } of retiring) {
-      log.error(supersededBlobOf(item)
+      log.error(deliveredBlobOf(item)
         ? `${named([item])} would delete .teamai/${retired}, which changed on origin/${defaultBranch} since this machine delivered it. Nothing was pushed. Run \`git pull origin ${defaultBranch}\`, carry that change into ${sourceOf(item)}, then run \`teamai push --carried .teamai/${retired}@${tip}\` with the other options you used. --carried accepts only this version of that file.`
         : `${named([item])} would delete .teamai/${retired}, which changed on origin/${defaultBranch} since this checkout branched from it (this older placement has no recorded delivered blob). Nothing was pushed. Run \`git pull origin ${defaultBranch}\`, carry that change into ${sourceOf(item)}, then push again.`);
     }

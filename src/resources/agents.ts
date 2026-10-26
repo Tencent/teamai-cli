@@ -78,8 +78,11 @@ export interface AgentResourceItem extends ResourceItem {
    * `pushItem` deletes it and `push` stages the deletion and moves the record.
    */
   supersedes?: string;
-  /** Blob this machine placed at `supersedes`, when its merge was proven. */
-  supersededBlob?: string;
+  /**
+   * Blob this machine placed at the file this push replaces (`supersedes`, or
+   * else `relativePath`), when its merge was proven.
+   */
+  deliveredBlob?: string;
 }
 
 /**
@@ -270,6 +273,7 @@ export class AgentsHandler extends ResourceHandler {
             let basePath = path.join(localConfig.repo.localPath, teamRelPath);
             let baseExists = await pathExists(basePath);
             let supersedes: string | undefined;
+            let deliveredBlob: string | undefined;
             // A canonical source authored at .teamai/agents/ root and placed
             // under agents/<ns>/ has nothing at agents/<stem>.yaml, so without
             // the record it reads as brand new — and the collision check then
@@ -283,6 +287,8 @@ export class AgentsHandler extends ResourceHandler {
                 // path nothing was written to, and leave that `.md` behind.
                 teamRelPath = `${path.posix.dirname(placed)}/${file}`;
                 if (teamRelPath !== placed) supersedes = placed;
+                const delivered = state.placedAgentSources?.[stem];
+                if (delivered?.path === placed) deliveredBlob = delivered.blob;
                 basePath = path.join(localConfig.repo.localPath, placed);
                 baseExists = true;
                 // Nothing refreshes this root file after placement — pull
@@ -315,8 +321,7 @@ export class AgentsHandler extends ResourceHandler {
                 ? { namespace: teamRelPath.split('/')[1] }
                 : {}),
               ...(supersedes ? { supersedes } : {}),
-              ...(supersedes && state.placedAgentSources?.[stem]?.path === supersedes
-                ? { supersededBlob: state.placedAgentSources[stem].blob } : {}),
+              ...(deliveredBlob ? { deliveredBlob } : {}),
             });
             directStems.add(stem);
           }

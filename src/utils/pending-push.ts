@@ -245,12 +245,16 @@ export async function toPendingItems(items: ResourceItem[], repoPath: string): P
  * found in its namespace by the scanner, which means that namespace is active
  * here and the scan will find it again; recording it would turn a temporary
  * activation into standing permission to keep editing an agent long after the
- * role or project that granted it was dropped. The one exception is an agent
- * the scan reached THROUGH its record and rewrote under another extension
- * (`supersedes`): the record has to follow it to the new path.
+ * role or project that granted it was dropped. The exception is an agent the
+ * scan reached THROUGH its record: rewritten under another extension
+ * (`supersedes`), the record has to follow it to the new path; edited where
+ * the record holds what this machine delivered (`deliveredBlob`), that blob
+ * has to follow the edit, or the member's next push reads their own merged
+ * edit as a teammate's.
  */
 export function isPlacement(item: ResourceItem): boolean {
   if (item.type === 'agents' && 'supersedes' in item && typeof item.supersedes === 'string') return true;
+  if (item.type === 'agents' && 'deliveredBlob' in item && typeof item.deliveredBlob === 'string') return true;
   if (item.status !== 'new' || !item.namespace) return false;
   // A rule the scanner already found in a subdirectory carries the namespace
   // in its name and matches by full path, so it needs no record.
