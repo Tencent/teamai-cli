@@ -78,7 +78,7 @@ export interface AgentResourceItem extends ResourceItem {
    * `pushItem` deletes it and `push` stages the deletion and moves the record.
    */
   supersedes?: string;
-  /** Blob this machine placed at `supersedes`, when its merge was proven. */
+  /** Blob of `supersedes` this machine last saw, from `state.placedAgentSources`. */
   supersededBlob?: string;
 }
 

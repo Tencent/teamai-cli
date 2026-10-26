@@ -73,7 +73,7 @@ teamai remove agents code-reviewer
 
 `pull` writes each tool's own format into that tool's agents directory: `<name>.toml` for the Codex family, `<name>.agent.md` for Copilot, `<name>.json` for Kiro, and `<name>.md` for the rest.
 
-In single-repo mode, changing a placed agent from `.md` to `.yaml` can retire the original file while your checkout is behind its own merged PR. TeamAI compares the original with the blob that proved your placement landed; a later team edit still stops the push. An agent deleted by the team is not re-added from your root copy. Older placement records without a blob remain conservative: update the checkout before converting.
+In single-repo mode, changing a placed agent from `.md` to `.yaml` can retire the original file while your checkout is behind its own merged PR. TeamAI compares the original with the blob that proved your placement landed. If the team edited it since, the push stops once and names it; carry that edit into the conversion, then push again. An agent deleted by the team is not re-added from your root copy. An older placement record without a blob catches a team edit only while your checkout is behind it.
 
 ### Model aliases
 
@@ -303,4 +303,4 @@ projects:
 
 In self mode, pushing an edited skill from a checkout behind the default branch stops with exit 2 if it would overwrite an upstream file. The check covers the whole skill directory, including references and deletions, even when your edit is in another file. Merge the default branch, reconcile the skill, and retry; a copy that already contains the upstream changes can be pushed.
 
-If the team recreates a retired agent at its old namespace, edit that namespace source directly; the old flattened copy remains a backup. Deleting the retired root copy does not make its remaining tool copies new agents. Format conversion also checks the last delivered blob after the checkout has caught up with the default branch.
+If the team recreates a retired agent at its old namespace, edit that namespace source directly; the old flattened copy remains a backup. Deleting the retired root copy does not make its remaining tool copies new agents. Format conversion compares the original with the blob this machine last saw, even after the checkout has caught up with the default branch.

@@ -535,6 +535,11 @@ function supersededPathOf(item: ResourceItem): string | undefined {
   return 'supersedes' in item && typeof item.supersedes === 'string' ? item.supersedes : undefined;
 }
 
+/** The blob of that retired file this machine last saw, when one is recorded. */
+function supersededBlobOf(item: ResourceItem): string | undefined {
+  return 'supersededBlob' in item && typeof item.supersededBlob === 'string' ? item.supersededBlob : undefined;
+}
+
 /**
  * Give every resource waiting in an open PR back the destination that PR
  * recorded, rather than asking again — a different answer would silently move
@@ -1074,8 +1079,11 @@ async function pendingSelfTeamConfig(localConfig: LocalConfig): Promise<string |
   return committed === null || committed.toString() !== activeConfig ? activeConfig : null;
 }
 
+/** An item whose push would delete `retired`, which is at `tip` on the default branch. */
+type RetiringItem = { item: ResourceItem; retired: string; tip: string };
+
 type DefaultBranchChanges =
-  | { history: 'complete'; untouched: ResourceItem[]; edited: ResourceItem[]; retiring: ResourceItem[] }
+  | { history: 'complete'; untouched: ResourceItem[]; edited: ResourceItem[]; retiring: RetiringItem[] }
   | { history: 'missing'; shallow: boolean; unclassified: ResourceItem[] };
 
 /**
@@ -1121,15 +1129,15 @@ async function itemsChangedOnDefaultBranch(
   }
   const untouched: ResourceItem[] = [];
   const edited: ResourceItem[] = [];
-  const retiring: ResourceItem[] = [];
+  const retiring: RetiringItem[] = [];
   for (const item of teamItems) {
     const retired = supersededPathOf(item);
-    const deliveredBlob = 'supersededBlob' in item && typeof item.supersededBlob === 'string' ? item.supersededBlob : undefined;
-    const retiredTip = retired && (deliveredBlob
+    const seenBlob = supersededBlobOf(item);
+    const retiredTip = retired && (seenBlob
       ? (await git.raw(['rev-parse', `${defaultTip}:.teamai/${retired}`]).catch(() => '')).trim()
       : blobs.get(teamFile(retired))?.atTip);
-    if (retiredTip && retiredTip !== deliveredBlob) {
-      retiring.push(item);
+    if (retired && retiredTip && retiredTip !== seenBlob) {
+      retiring.push({ item, retired, tip: retiredTip });
       continue;
     }
     if (item.type === 'skills') {
@@ -1160,7 +1168,7 @@ async function itemsChangedOnDefaultBranch(
   }
   return branchedFrom
     ? { history: 'complete', untouched, edited, retiring }
-    : missing([...untouched, ...edited, ...retiring]);
+    : missing([...untouched, ...edited, ...retiring.map(({ item }) => item)]);
 }
 
 /**
@@ -1172,6 +1180,7 @@ async function defaultBranchGuard(
   localConfig: LocalConfig,
   memberRoot: string,
   items: readonly ResourceItem[],
+  { dryRun }: { dryRun?: boolean },
 ): Promise<{ leftOut: readonly ResourceItem[]; stops: (going: readonly ResourceItem[]) => Promise<boolean> }> {
   const changes = await itemsChangedOnDefaultBranch(localConfig, memberRoot, items);
   const sourceOf = (item: ResourceItem): string => path.relative(memberRoot, item.sourcePath).split(path.sep).join('/');
@@ -1195,7 +1204,7 @@ async function defaultBranchGuard(
   const stops = async (going: readonly ResourceItem[]): Promise<boolean> => {
     const goingOut = (list: readonly ResourceItem[]): ResourceItem[] => list.filter((item) => going.includes(item));
     const edited = goingOut(changes.history === 'complete' ? changes.edited : changes.unclassified);
-    const retiring = goingOut(changes.history === 'complete' ? changes.retiring : []);
+    const retiring = changes.history === 'complete' ? changes.retiring.filter(({ item }) => going.includes(item)) : [];
     if (edited.length === 0 && retiring.length === 0) return false;
     const defaultBranch = await getDefaultBranch(memberRoot);
     if (changes.history === 'missing') {
@@ -1213,13 +1222,24 @@ async function defaultBranchGuard(
         + 'from it, so pushing would overwrite that change. Nothing was pushed. '
         + `Merge origin/${defaultBranch} (\`git pull origin ${defaultBranch}\`), resolve any conflict, then push again.`);
     }
-    for (const item of retiring) {
-      const evidence = 'supersededBlob' in item && typeof item.supersededBlob === 'string'
-        ? 'since this machine delivered it'
+    for (const { item, retired } of retiring) {
+      const evidence = supersededBlobOf(item)
+        ? 'since this machine last saw it'
         : 'since this checkout branched from it (this older placement has no recorded delivered blob)';
-      log.error(`${named([item])} would delete .teamai/${supersededPathOf(item)}, which changed on `
+      log.error(`${named([item])} would delete .teamai/${retired}, which changed on `
         + `origin/${defaultBranch} ${evidence}. Nothing was pushed. `
-        + `Run \`git pull origin ${defaultBranch}\`, carry that change into ${sourceOf(item)}, then push again.`);
+        + `Run \`git pull origin ${defaultBranch}\`, carry that change into ${sourceOf(item)}, then push again.`
+        + (dryRun ? '' : ' The next push does not stop for this version again.'));
+    }
+    // Pull never refreshes the member's root copy, so this stop is the only
+    // sign that the member knows the version it names. The next push takes the
+    // conversion as carrying it; a later team edit stops it again.
+    if (!dryRun && retiring.length > 0) {
+      const state = await loadStateForScope(localConfig);
+      for (const { item, retired, tip } of retiring) {
+        state.placedAgentSources = { ...state.placedAgentSources, [item.name]: { path: retired, blob: tip } };
+      }
+      await saveStateForScope(state, localConfig);
     }
     process.exitCode = 2;
     return true;
@@ -1723,7 +1743,7 @@ async function pushCore(
 
   const memberRoot = selfMode ? localConfig.projectRoot : undefined;
   const branchGuard = memberRoot
-    ? await defaultBranchGuard(localConfig, memberRoot, listed)
+    ? await defaultBranchGuard(localConfig, memberRoot, listed, options)
     : { leftOut: [], stops: async () => false };
   const allItems = listed.filter((item) => !branchGuard.leftOut.includes(item));
 

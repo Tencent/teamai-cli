@@ -348,9 +348,11 @@ describe('single-repo push from a checkout behind the default branch', () => {
     expect(push.code, push.output).toBe(2);
     expect(push.output).toContain(
       '.teamai/agents/sample.yaml (pushed to .teamai/agents/ops/sample.yaml) would delete .teamai/agents/ops/sample.md, '
-        + 'which changed on origin/main since this machine delivered it.',
+        + 'which changed on origin/main since this machine last saw it.',
     );
-    expect(push.output).toContain('carry that change into .teamai/agents/sample.yaml');
+    expect(push.output).toContain(
+      'carry that change into .teamai/agents/sample.yaml, then push again. The next push does not stop for this version again.',
+    );
     expect(pushBranches()).toEqual([]);
     expect(git(['show', 'main:.teamai/agents/ops/sample.md'], remote)).toContain('Teammate safety instructions.');
   });

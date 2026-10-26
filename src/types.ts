@@ -1185,7 +1185,10 @@ export const StateSchema = z.object({
    * `placedRules`.
    */
   placedAgents: z.record(z.string(), z.string()).optional(),
-  /** The blob that proved each agent placement landed; never inferred from the current tip. */
+  /**
+   * The blob of each placed agent this machine last saw: the one that proved
+   * the placement landed, or a later one a push stop named to the member.
+   */
   placedAgentSources: z.record(z.string(), PlacementRecordSchema).optional(),
   /**
    * Where push placed a repo-backed resource (docs, wiki, prompts, workflows,
