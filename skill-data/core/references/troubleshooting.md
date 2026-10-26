@@ -160,11 +160,11 @@ Existing hook contents and permissions stay unchanged; read/write errors propaga
 from `init` and `hooks inject`, and Git-started pulls record them. An unreadable
 project config prevents sync and keeps its reason in `~/.teamai/debug.log`.
 
-Hosts that skip checkout hooks need `teamai pull` in the new checkout before the AI
-tool starts. For Codex CLI 0.160.0, use `git worktree add`, run `teamai pull` there, then
-launch `codex exec -C <worktree>`. Its native `codex exec --worktree` path creates
-the checkout without `post-checkout`, so SessionStart sync arrives after startup
-discovery.
+Hosts that skip checkout hooks (Claude Code's `EnterWorktree`, Codex CLI's worktrees) get
+the same delivery from teamai's own session start and tool hooks, in the background, the first
+time they run in a checkout with no delivery record. What the tool reads at startup is read
+before that delivery lands: for Codex CLI 0.160.0, use `git worktree add`, run `teamai pull` there, then
+launch `codex exec -C <worktree>`.
 
 ## "KEY is not set. Run `teamai env set KEY`"
 

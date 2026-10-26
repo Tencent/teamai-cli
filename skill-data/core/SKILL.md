@@ -147,7 +147,9 @@ scripts, and with it `teamai doctor` advises), beside any `core.hooksPath` manag
 worktree is created by `git worktree add` or an app that runs checkout hooks, it creates the project roots
 of `enabledAgents` (else the ones the main checkout has) and pulls into it before
 the command returns, from the team clone as last fetched when that was within
-24 h; a full pull then runs in the background. A branch switch does nothing.
+24 h; a full pull then runs in the background. A worktree an agent tool creates without git hooks
+(Claude Code's `EnterWorktree`, Codex CLI) is prepared the same way, in the background, on the first
+session start or tool use there. A branch switch does nothing.
 After `git pull` (merge or a completed rebase) it fetches the team repo (5 s cap, then the background pull) and
 delivers; in single-repo mode it delivers what `git pull` brought, offline. It prints nothing and always
 exits 0; a failure inside it is recorded, and `teamai doctor` names it (`Last git
