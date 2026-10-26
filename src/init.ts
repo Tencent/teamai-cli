@@ -113,6 +113,43 @@ import {
 import { TOOLS } from './tools.js';
 import { describeToolHomeChange, recordToolHomes } from './tool-home-record.js';
 
+function validAgentIds(teamConfig?: TeamaiConfig | null): string[] {
+  return [...new Set([
+    ...Object.keys(TOOLS),
+    ...KNOWN_AGENTS.map((agent) => agent.id),
+    ...Object.keys(teamConfig?.toolPaths ?? {}),
+  ])].sort();
+}
+
+function unknownAgentIds(agentIds: string[], teamConfig?: TeamaiConfig | null): string[] {
+  const known = new Set(validAgentIds(teamConfig));
+  return agentIds.filter((id) => !known.has(id));
+}
+
+function validateGitInitAgentIds(agentIds: string[], teamConfig?: TeamaiConfig | null): boolean {
+  const unknown = unknownAgentIds(agentIds, teamConfig);
+  if (unknown.length === 0) return true;
+
+  const subject = unknown.map((id) => '"' + id + '"').join(', ');
+  const explanation = unknown.length === 1
+    ? subject + ' is neither a built-in agent nor a key in the team\'s toolPaths in teamai.yaml.'
+    : subject + ' are neither built-in agents nor keys in the team\'s toolPaths in teamai.yaml.';
+  log.error(
+    'Unknown --agent id' + (unknown.length === 1 ? '' : 's') + ': ' + explanation +
+    ' Valid ids: ' + validAgentIds(teamConfig).join(', ') + '.',
+  );
+  return false;
+}
+
+function warnAboutUncheckedHttpAgentIds(agentIds: string[]): void {
+  const unknown = unknownAgentIds(agentIds);
+  if (unknown.length === 0) return;
+  log.warn(
+    'Cannot check custom --agent id(s) ' + unknown.map((id) => '"' + id + '"').join(', ') +
+    ' during HTTP init because the team config is unavailable. They may be valid once the team config is available.',
+  );
+}
+
 /**
  * Record each relocated tool root (every entry of `RELOCATABLE_TOOLS`, by the
  * variable it names) into the config being written, so every later run targets
@@ -656,6 +693,8 @@ export async function initHttp(
   const { resolveApiKey, saveApiKey, getApiKeyPath } = await import('./api-key.js');
 
   log.info('Initializing teamai (HTTP read-only consumer)...');
+  const requestedAgents = normalizeAgentList(options.agent);
+  warnAboutUncheckedHttpAgentIds(requestedAgents);
 
   // Step 0: scope (same rules as git init — default project)
   let scope: Scope;
@@ -760,7 +799,6 @@ export async function initHttp(
   Object.assign(localConfig, await resolveProjectsForInit(localPath, options.project));
 
   // Persist --agent into enabledAgents (additive across runs)
-  const requestedAgents = normalizeAgentList(options.agent);
   if (requestedAgents.length > 0) {
     const existing = await loadLocalConfigForScope(scope, projectRoot);
     const prev = existing?.enabledAgents ?? [];
@@ -1341,6 +1379,10 @@ export async function initSelfRepo(options: GlobalOptions & {
     process.exit(1);
     return;
   }
+  if (!validateGitInitAgentIds(normalizeAgentList(options.agent), teamConfig)) {
+    process.exit(1);
+    return;
+  }
 
   // Step 4: assemble local config (kind: self). dataHome points at the partition
   // so config/state and every other class-A1 write lands outside the repo (P2);
@@ -1623,6 +1665,7 @@ export async function init(options: GlobalOptions & {
   if (options.self || repoArg === '.') {
     return initSelfRepo({ ...options, provider: forcedProvider });
   }
+  const requestedAgents = normalizeAgentList(options.agent);
   log.info('Initializing teamai...');
 
   // Step 0: Resolve scope (default project; only explicit --scope user → ~/ )
@@ -2001,6 +2044,10 @@ export async function init(options: GlobalOptions & {
   // Remote teamai.yaml.scope (if present) is ignored — local install location
   // is decided only by --scope / default (issue #250).
   const teamConfig = await loadTeamConfig(localPath);
+  if (!validateGitInitAgentIds(requestedAgents, teamConfig)) {
+    process.exit(1);
+    return;
+  }
   const createdSkeleton = !teamConfig;
   if (!teamConfig) {
     log.warn('teamai.yaml not found in repo. Creating default config...');
@@ -2266,7 +2313,6 @@ export async function init(options: GlobalOptions & {
   localConfig.projects = resolvedProjects;
 
   // Persist --agent into enabledAgents (additive across runs)
-  const requestedAgents = normalizeAgentList(options.agent);
   // Interactive project init without --agent asks which tools the member uses.
   // Non-interactive runs skip the picker. Calling it would copy tools found in
   // HOME, and this init enables nothing unless --agent names a tool.
