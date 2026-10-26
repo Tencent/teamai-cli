@@ -131,11 +131,14 @@ describe('only skills accept the new root as install proof (#1290)', () => {
     // member.
     const host = hostWith([`${HOME}/.workbuddy-ai`]);
     const install = installOf({ toolPaths: DEFAULT_TOOL_PATHS }, { scope: 'user', repo: {} });
-    for (const resource of ['rules', 'mcp'] as const) {
-      const where = await locate('workbuddy', resource, install, host);
-      expect(where.gates).toContainEqual({ kind: 'installed', probe: `${HOME}/.workbuddy`, met: false });
-      expect(writable(where)).toBeNull();
-    }
+    // Two explicit calls, not a loop: `writable()` narrows by resource, so a
+    // union-typed `Location<'mcp' | 'rules'>` does not type-check.
+    const rules = await locate('workbuddy', 'rules', install, host);
+    expect(rules.gates).toContainEqual({ kind: 'installed', probe: `${HOME}/.workbuddy`, met: false });
+    expect(writable(rules)).toBeNull();
+    const mcp = await locate('workbuddy', 'mcp', install, host);
+    expect(mcp.gates).toContainEqual({ kind: 'installed', probe: `${HOME}/.workbuddy`, met: false });
+    expect(writable(mcp)).toBeNull();
     const skills = await locate('workbuddy', 'skills', install, host);
     expect(ownOf(skills)?.path).toBe(`${HOME}/.workbuddy-ai/skills`);
     expect(writable(skills)).not.toBeNull();
