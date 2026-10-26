@@ -434,7 +434,7 @@ async function formatFindings(resources: ReviewResource[], readText: (p: string)
         });
       }
       const description = data['description'];
-      const descriptionLength = typeof description === 'string' ? Array.from(description).length : 0;
+      const descriptionLength = typeof description === 'string' ? Array.from(description.trim()).length : 0;
       if (descriptionLength > AGENT_SKILLS_DESCRIPTION_MAX) {
         findings.push({
           level: 'warn',
@@ -578,19 +578,20 @@ async function leakFindings(repoDir: string, resources: ReviewResource[], readTe
 
 /** Inline links and images `[text](target "title")`, and reference definitions `[id]: target`. */
 const INLINE_LINK = /\[(?:[^\]\\]|\\.)*\]\(\s*(<[^>]*>|[^)\s]+)(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\s*\)/g;
-const REFERENCE_DEFINITION = /^ {0,3}\[(?!\^)(?:[^\]\\]|\\.)+\]:[ \t]*(<[^>]*>|\S+)/gm;
+const REFERENCE_DEFINITION = /^ {0,3}\[(?!\^)(?:[^\]\\]|\\.)+\]:[ \t]*(<[^>]*>|\S+)(?:[ \t]+(?:"[^"]*"|'[^']*'|\([^)]*\)))?[ \t]*$/gm;
 
 /** Markdown with fenced code blocks and inline code blanked, so links shown as code are not read as links. */
 function withoutCode(markdown: string): string {
   let fence: string | null = null;
-  const lines = markdown.split('\n').map((line) => {
+  const lines = markdown.split(/\r?\n/).map((line) => {
     const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
     if (fence === null && marker) {
       fence = marker;
       return '';
     }
     if (fence !== null) {
-      if (marker?.[0] === fence[0] && marker.length >= fence.length) fence = null;
+      const closing = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line)?.[1];
+      if (closing?.[0] === fence[0] && closing.length >= fence.length) fence = null;
       return '';
     }
     return line;

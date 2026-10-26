@@ -634,7 +634,11 @@ describe('reviewBranchDir — skill links, Agent Skills limits and piped install
       '',
       '```md',
       '[fenced](references/fenced.md)',
+      '```python',
+      '[still fenced](references/still-fenced.md)',
       '```',
+      '',
+      '[TODO]: tighten this section later',
     ]));
     await writeSkillFile('skills/release/references/setup.md', '# Setup\n');
 
@@ -646,6 +650,14 @@ describe('reviewBranchDir — skill links, Agent Skills limits and piped install
       path: 'skills/release/SKILL.md',
       message: 'skills/release/SKILL.md links to references/missing.md, which is not in the skill.',
     }]);
+  });
+
+  it('reads links after a code block and reference definitions in a file with CRLF line endings', async () => {
+    await writeSkill(repoDir, 'skills/release', skill('release', ['```sh', 'echo', '```', '', '[guide]: references/missing.md']).replace(/\n/g, '\r\n'));
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(warnings(review).map((f) => f.message)).toEqual(['skills/release/SKILL.md links to references/missing.md, which is not in the skill.']);
   });
 
   it('warns for a reference definition to a file the skill does not have', async () => {
@@ -692,6 +704,7 @@ describe('reviewBranchDir — skill links, Agent Skills limits and piped install
     await writeSkill(repoDir, 'skills/long', skill('long', ['# Long'], 'd'.repeat(1025)));
     await writeSkill(repoDir, 'skills/limit', skill('limit', ['# Limit'], 'd'.repeat(1024)));
     await writeSkill(repoDir, 'skills/emoji', skill('emoji', ['# Emoji'], '🚀'.repeat(1024)));
+    await writeSkill(repoDir, 'skills/block', ['---', 'name: block', 'description: |', `  ${'d'.repeat(1024)}`, '---', '', '# Block', ''].join('\n'));
 
     const review = await reviewBranchDir(BRANCH, repoDir);
 
