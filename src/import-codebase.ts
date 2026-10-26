@@ -6,6 +6,8 @@ import fs from 'fs-extra';
 import { extractCodebase } from './codebase-extract.js';
 import type { TeamaiInit } from './config.js';
 import { log } from './utils/logger.js';
+import { repoIdentity } from './utils/git.js';
+import { assertSafeResourceName } from './utils/path-safety.js';
 
 /** The caches an incremental extraction reuses, kept with each codebase's evidence. */
 const INCREMENTAL_CACHES = ['facts-cache.json', 'interfaces-cache.json'] as const;
@@ -26,6 +28,53 @@ export interface ImportCodebaseOptions {
   branch?: string;
   /** MR/PR recorded as ingested in source-manifest.json. */
   sourceMrUrl?: string | readonly string[];
+}
+
+type EvidenceJson = Record<string, unknown>;
+
+async function readJsonIfPresent(file: string): Promise<EvidenceJson | null> {
+  try {
+    return (await fs.readJson(file)) as EvidenceJson;
+  } catch {
+    return null;
+  }
+}
+
+/** The component slugs a published or freshly extracted manifest declares. */
+function componentSlugs(manifest: EvidenceJson | null): Set<string> {
+  const components = manifest?.['components'];
+  if (!Array.isArray(components)) return new Set();
+  return new Set(components
+    .map((component) => (component && typeof component === 'object'
+      ? (component as Record<string, unknown>)['slug']
+      : undefined))
+    .filter((slug): slug is string => typeof slug === 'string' && slug.length > 0));
+}
+
+const PROVIDER_SLUG_PREFIXES = ['github__', 'gitlab__', 'tgit__'] as const;
+
+/**
+ * `--dir` imports derive the slug from the directory basename, so two checkouts
+ * named `svc` share one evidence directory. Carrying curated artifacts across
+ * such an import would attach the first repo's docs and domain to the second.
+ *
+ * Keep them only when the two manifests name the same repository. Teamwikis
+ * written before the per-codebase `source-manifest.json` existed have no
+ * published identity; there a provider-namespaced slug (`gitlab__group__repo`)
+ * still names the remote repository, so the slug itself is the identity. A
+ * bare `--dir` basename is not, and replaces the evidence like base.
+ */
+async function sameRepository(publishedDir: string, stagedDir: string, slug: string): Promise<boolean> {
+  const [published, staged] = await Promise.all([
+    readJsonIfPresent(path.join(publishedDir, 'source-manifest.json')),
+    readJsonIfPresent(path.join(stagedDir, 'source-manifest.json')),
+  ]);
+  const publishedUrl = typeof published?.['repoUrl'] === 'string' ? published['repoUrl'] : '';
+  const stagedUrl = typeof staged?.['repoUrl'] === 'string' ? staged['repoUrl'] : '';
+  if (publishedUrl && stagedUrl) return repoIdentity(publishedUrl) === repoIdentity(stagedUrl);
+  return !publishedUrl
+    && Boolean(stagedUrl)
+    && PROVIDER_SLUG_PREFIXES.some((prefix) => slug.startsWith(prefix));
 }
 
 /**
@@ -109,6 +158,78 @@ export async function importCodebase(opts: ImportCodebaseOptions): Promise<boole
 
     const stagingEvidence = path.join(stagingWiki, 'evidence', 'code', slug);
     const evidenceDest = path.join(wikiRoot, 'evidence', 'code', slug);
+
+    const [publishedManifest, stagedManifest] = await Promise.all([
+      readJsonIfPresent(path.join(evidenceDest, '_manifest.json')),
+      readJsonIfPresent(path.join(stagingEvidence, '_manifest.json')),
+    ]);
+    const publishedComponents = componentSlugs(publishedManifest);
+    const currentComponents = componentSlugs(stagedManifest);
+    const removedComponents = new Set([...publishedComponents].filter((component) => !currentComponents.has(component)));
+    const stagedDocs = new Set(
+      await fs.readdir(path.join(stagingEvidence, 'docs')).catch(() => [] as string[]),
+    );
+    const stagedDomains = await fs.pathExists(path.join(stagingEvidence, '_domains.json'));
+    // A missing manifest is the only case where nothing can be pruned.
+    const hasManifest = Boolean(stagedManifest);
+
+    if (await sameRepository(evidenceDest, stagingEvidence, slug)) {
+      // Carry over the artifacts that only AI enrichment and deep enrich write.
+      // Extraction never regenerates them, so replacing the published evidence
+      // would silently drop curated docs and domain metadata. Existing staged
+      // files win: a fresh extraction or a new AI classification is newer than
+      // what the teamwiki holds. `_review/` is deliberately not carried over: it
+      // records which components deep enrich already documented, and a repo that
+      // changed must regenerate those docs instead of skipping them.
+      for (const artifact of ['docs', '_domains.json']) {
+        const published = path.join(evidenceDest, artifact);
+        if (!(await fs.pathExists(published))) continue;
+        await fs.copy(published, path.join(stagingEvidence, artifact), { overwrite: false, errorOnExist: false });
+      }
+
+      const stagedDocsDir = path.join(stagingEvidence, 'docs');
+      if (await fs.pathExists(stagedDocsDir)) {
+        // Deep enrich's graph pages describe the previous extraction; never
+        // carry them forward. The freshly extracted graph replaces them, and
+        // the generated README routes to the new pages.
+        for (const entry of await fs.readdir(stagedDocsDir)) {
+          if (stagedDocs.has(entry)) continue;
+          if (entry === 'README.md' || /^graph-g\d+-/.test(entry)) {
+            await fs.remove(path.join(stagedDocsDir, entry));
+          }
+        }
+        // A component that disappeared from the new manifest must not keep a doc.
+        if (hasManifest) {
+          for (const component of removedComponents) {
+            try {
+              assertSafeResourceName(component);
+            } catch {
+              continue;
+            }
+            await fs.remove(path.join(stagedDocsDir, `${component}.md`));
+          }
+        }
+      }
+
+      // Keep the carried domain metadata in step with the new manifest: drop
+      // removed components and the keywords that named them.
+      if (hasManifest && !stagedDomains) {
+        const domainsPath = path.join(stagingEvidence, '_domains.json');
+        const domains = await readJsonIfPresent(domainsPath);
+        if (domains) {
+          if (Array.isArray(domains['components']) && stagedManifest) {
+            domains['components'] = domains['components']
+              .filter((component): component is string => typeof component === 'string' && currentComponents.has(component));
+          }
+          if (Array.isArray(domains['keywords']) && removedComponents.size > 0) {
+            domains['keywords'] = domains['keywords']
+              .filter((keyword) => typeof keyword !== 'string' || !removedComponents.has(keyword));
+          }
+          await fs.writeJson(domainsPath, domains, { spaces: 2 });
+        }
+      }
+    }
+
     // Replace the old pages so a removed module's page does not linger.
     if (await fs.pathExists(evidenceDest)) {
       for (const entry of await fs.readdir(evidenceDest)) {
