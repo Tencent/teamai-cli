@@ -623,16 +623,27 @@ const LIST_MARKER = /^ {0,3}(?:[-*+]|\d{1,9}[.)])[ \t]+/;
 const BLOCK_START = /^ {0,3}(?:#{1,6}(?:[ \t]|$)|(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$))/;
 const BLOCKQUOTE = /^ {0,3}>/;
 
+/** The indentation of a line in columns, a tab counting as four. */
+function indentOf(line: string): number {
+  let columns = 0;
+  for (const char of /^[ \t]*/.exec(line)?.[0] ?? '') columns += char === '\t' ? 4 - (columns % 4) : 1;
+  return columns;
+}
+
 /**
  * Markdown with fenced and indented code blocks, inline code and HTML comments
  * blanked, so links shown as code are not read as links. Inside a list item an
- * indented line continues the item, and a fence may sit at the item's indentation.
+ * indented line continues the item unless it is indented four columns past the
+ * item's content, and a fence may sit at the item's indentation.
  */
 function withoutCode(markdown: string): string {
   let fence: string | null = null;
   let previousBlank = true;
   let inCode = false;
   let inList = false;
+  // Where the current list item's content starts, and that of the item holding the open fence.
+  let listIndent = 0;
+  let fenceListIndent: number | null = null;
   let previousQuoted = false;
   let inCommentBlock = false;
   const blocks: string[][] = [[]];
@@ -650,17 +661,25 @@ function withoutCode(markdown: string): string {
       keep(line);
       continue;
     }
+    if (fence !== null) {
+      // A fence inside a list item also ends where a line outdents past the item.
+      if (fenceListIndent !== null && line.trim() !== '' && indentOf(line) < fenceListIndent) {
+        fence = null;
+        inList = false;
+      } else {
+        const closing = (inList ? /^\s*(`{3,}|~{3,})[ \t]*$/ : /^ {0,3}(`{3,}|~{3,})[ \t]*$/).exec(line)?.[1];
+        if (closing?.[0] === fence[0] && closing.length >= fence.length) fence = null;
+        continue;
+      }
+    }
     const isListItem = LIST_ITEM.test(line);
+    if (isListItem) listIndent = LIST_MARKER.exec(line)?.[0].length ?? line.trimEnd().length + 1;
     const fenceLine = isListItem ? line.replace(LIST_MARKER, '') : line;
     const fenceMarker = (inList || isListItem ? /^\s*(`{3,}|~{3,})/ : /^ {0,3}(`{3,}|~{3,})/).exec(fenceLine)?.[1];
-    if (fence !== null) {
-      const closing = (inList ? /^\s*(`{3,}|~{3,})[ \t]*$/ : /^ {0,3}(`{3,}|~{3,})[ \t]*$/).exec(line)?.[1];
-      if (closing?.[0] === fence[0] && closing.length >= fence.length) fence = null;
-      continue;
-    }
     if (fenceMarker) {
       fence = fenceMarker;
       if (isListItem) inList = true;
+      fenceListIndent = inList ? listIndent : null;
       startBlock();
       previousBlank = false;
       continue;
@@ -672,7 +691,8 @@ function withoutCode(markdown: string): string {
     } else {
       if (isListItem) inList = true;
       else if (previousBlank && !/^\s/.test(line)) inList = false;
-      if (!inList && (inCode || previousBlank) && /^(?: {4}|\t)/.test(line)) {
+      // Indented code starts four columns past the content of the list item it sits in.
+      if (!isListItem && (inCode || previousBlank) && indentOf(line) >= (inList ? listIndent : 0) + 4) {
         inCode = true;
         previousBlank = false;
         continue;
@@ -844,15 +864,32 @@ async function skillLinkFindings(files: SkillFile[]): Promise<Finding[]> {
 }
 
 /** What may precede the shell word of a stage: `sudo` with its options, `env` with options and assignments, and a directory. */
-const COMMAND_PREFIX = String.raw`^\s*(?:sudo\s+(?:-\S+(?:\s+(?!-)\S+)?\s+)*)?(?:env\s+(?:(?:-\S+|\w+=\S*)\s+)*)?(?:\S*\/)?`;
+const COMMAND_PREFIX = String.raw`^\s*(?:sudo\s+(?:-\S+(?:\s+(?!-)\S+)?\s+)*)?`
+  + String.raw`(?:env\s+(?:(?:-[uCS]\s*\S+|--(?:unset|chdir|split-string)(?:=|\s+)\S+|-\S+|\w+=\S*)\s+)*)?(?:\S*\/)?`;
 // The shell word ends where the stage, a code span, a quoted string or a subshell does.
 const SHELL_STAGE = new RegExp(String.raw`${COMMAND_PREFIX}((?:ba|da|k|z)?sh|fish)(?=[\s\`'")]|$)`);
+
+/**
+ * Whether the shell whose arguments start at `args` reads its script from stdin:
+ * not when `-c` gives it one, unless `-s` says so. Reading stops at the first word
+ * that is not an option, and at a code span, a quote or a subshell, since prose
+ * may follow the command.
+ */
+function shellReadsStdin(args: string): boolean {
+  let readsStdin = true;
+  for (const word of (args.split(/[`'")]/)[0] ?? '').trim().split(/\s+/)) {
+    if (!/^-[a-zA-Z]+$/.test(word)) break;
+    if (word.includes('s')) return true;
+    if (word.includes('c')) readsStdin = false;
+  }
+  return readsStdin;
+}
 
 /** The `curl` or `wget` a stage runs: a whole word, as a command or in prose, but not text `echo` or `printf` prints. */
 function downloaderOf(stage: string): { word: 'curl' | 'wget'; argsAt: number } | undefined {
   const found = /(?<![\w.-])(curl|wget)(?=\s|$)/.exec(stage);
   const word = found?.[1];
-  if (!found || (word !== 'curl' && word !== 'wget') || /\b(?:echo|printf)\s+['"]?$/.test(stage.slice(0, found.index))) return undefined;
+  if (!found || (word !== 'curl' && word !== 'wget') || /\b(?:echo|printf)(?:\s+-\S+)*\s+['"]?$/.test(stage.slice(0, found.index))) return undefined;
   return { word, argsAt: found.index + word.length };
 }
 
@@ -874,25 +911,38 @@ const SHORT_OPTIONS_WITH_VALUE: Record<'curl' | 'wget', ReadonlySet<string>> = {
   curl: new Set('AbcCdDeEFhHKmoPQrtTuUwxXyYz'),
   wget: new Set('aABDeiIlLoOPQRtTUwX'),
 };
-/** curl long options whose value is a URL that is not a download. */
-const CURL_URL_VALUED_OPTION = /^--(?:proxy|preproxy|referer|doh-url)$/;
+/** curl long options that take the next word as their value, so a URL there is not a download. */
+const CURL_LONG_OPTION_WITH_VALUE = new RegExp(String.raw`^--(?:data(?:-[a-z]+)?|form(?:-string)?|json|header|proxy(?:-[a-z-]+)?|preproxy|referer|doh-url`
+  + String.raw`|user(?:-agent)?|cookie(?:-jar)?|upload-file|url-query|request|resolve|connect-to|config|cacert|capath|cert|key|output-dir`
+  + String.raw`|retry(?:-[a-z-]+)?|max-time|connect-timeout|max-filesize|limit-rate|range|time-cond|write-out|dump-header|trace(?:-ascii)?)$`);
+
+/** Whether a shell word sends standard output to a file or another descriptor: `>file`, `1>file`, `&>file`, `>&2`, attached or not. */
+function redirectsStdout(rawWord: string): boolean {
+  const unquoted = rawWord.replace(/"(?:[^"\\]|\\.)*"|'[^']*'/g, '');
+  const at = unquoted.indexOf('>');
+  if (at < 0) return false;
+  const descriptor = unquoted.slice(0, at);
+  return !/^\d+$/.test(descriptor) || descriptor === '1';
+}
 
 /**
  * Whether the `curl` or `wget` whose arguments are `args` writes a download to
  * standard output rather than to a file. curl writes each URL to stdout unless an
  * output option (`-o FILE`, `-O`, `--output FILE`, `--remote-name`) is paired with
- * it; wget writes to stdout only with `-O -`.
+ * it; wget writes to stdout only when its last `-O` is `-`. A redirection of the
+ * command's stdout feeds nothing to the pipe.
  */
 function writesToStdout(downloader: 'curl' | 'wget', args: string): boolean {
   const rawWords = commandWords(args);
-  // `> file`, `1> file`, `&> file` or `>&2` send standard output somewhere other than the pipe.
-  if (rawWords.some((word) => /^(?:1|&)?>/.test(word))) return false;
+  if (rawWords.some(redirectsStdout)) return false;
   const words = rawWords.map(unquote);
   const withValue = SHORT_OPTIONS_WITH_VALUE[downloader];
   let urls = 0;
   let savedOutputs = 0;
   let stdoutOutputs = 0;
   let remoteNameAll = false;
+  // wget writes where its last -O points.
+  let wgetOutput: string | undefined;
   const countOutput = (value: string): void => {
     if (value === '-') stdoutOutputs++;
     else savedOutputs++;
@@ -906,7 +956,7 @@ function writesToStdout(downloader: 'curl' | 'wget', args: string): boolean {
         if (downloader === 'curl' && letter === 'O') savedOutputs++;
         if (!withValue.has(letter)) continue;
         const value = valueOf(word.slice(at + 1));
-        if (downloader === 'wget' && letter === 'O' && value === '-') return true;
+        if (downloader === 'wget' && letter === 'O') wgetOutput = value;
         if (downloader === 'curl' && letter === 'o') countOutput(value);
         break;
       }
@@ -914,19 +964,20 @@ function writesToStdout(downloader: 'curl' | 'wget', args: string): boolean {
     }
     if (downloader === 'wget') {
       const long = /^--output-document(?:=(.*))?$/.exec(word);
-      if (long && valueOf(long[1] ?? '') === '-') return true;
+      if (long) wgetOutput = valueOf(long[1] ?? '');
       continue;
     }
     if (word === '--remote-name-all') remoteNameAll = true;
     if (word === '--remote-name') savedOutputs++;
     const long = /^--output(?:=(.*))?$/.exec(word);
     if (long) countOutput(valueOf(long[1] ?? ''));
-    if (CURL_URL_VALUED_OPTION.test(word)) index++;
-    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(word) || SCHEMELESS_URL.test(word)) urls++;
+    if (CURL_LONG_OPTION_WITH_VALUE.test(word)) index++;
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(word) || SCHEMELESS_URL.test(word) || word.startsWith('--url=')) urls++;
   }
+  if (downloader === 'wget') return wgetOutput === '-';
   // curl pairs output options with URLs in order: `-o -` sends its URL to stdout,
   // and a URL left without an output goes there too unless --remote-name-all saves it.
-  return downloader === 'curl' && (stdoutOutputs > 0 || (!remoteNameAll && Math.max(urls, 1) > savedOutputs + stdoutOutputs));
+  return (stdoutOutputs > 0 || (!remoteNameAll && Math.max(urls, 1) > savedOutputs + stdoutOutputs));
 }
 
 /**
@@ -948,9 +999,11 @@ function blankQuotedSeparators(line: string): string {
       at++;
       continue;
     }
-    // A quote that holds a download, such as a package.json script, is still read as a command.
+    // A quote whose text runs a download, such as a package.json or YAML script, is
+    // still read as a command; a download word elsewhere in it, as in a header, is not.
     const quoted = line.slice(at, close + 1);
-    blanked += quoted.replace(/\b(?:curl|wget)\b/.test(quoted) ? /[;&]/g : /[;&|]/g, ' ');
+    const holdsCommand = /(?:^["']|[;&|])\s*(?:sudo\s+)?(?:curl|wget)\b/.test(quoted);
+    blanked += quoted.replace(holdsCommand ? /[;&]/g : /[;&|]/g, ' ');
     at = close + 1;
   }
   return blanked;
@@ -982,8 +1035,11 @@ function findPipedInstall(text: string): { downloader: string; shell: string } |
   for (const command of commands) {
     let downloader: string | undefined;
     for (const stage of command.split('|')) {
-      const shell = downloader === undefined ? undefined : SHELL_STAGE.exec(stage)?.[1];
-      if (downloader !== undefined && shell !== undefined) return { downloader, shell };
+      const shellStage = downloader === undefined ? null : SHELL_STAGE.exec(stage);
+      const shell = shellStage?.[1];
+      if (downloader !== undefined && shellStage && shell !== undefined && shellReadsStdin(stage.slice(shellStage[0].length))) {
+        return { downloader, shell };
+      }
       const download = downloaderOf(stage);
       if (downloader === undefined && download !== undefined && writesToStdout(download.word, stage.slice(download.argsAt))) downloader = download.word;
     }
