@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
-import { parseMrUrl, formatComment, postOrUpdateMrComment, postCodebaseGraphComment } from '../ci/mr-comment.js';
+import { parseMrUrl, formatComment, postOrUpdateMrComment, postIndividualComments, postCodebaseGraphComment } from '../ci/mr-comment.js';
 import type { LearningDraft, CodebaseSuggestion } from '../types.js';
 
 describe('parseMrUrl', () => {
@@ -167,6 +167,69 @@ describe('postOrUpdateMrComment API failures', () => {
     const put = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT');
     expect(put?.[0]).toContain('/notes/9');
     expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+  });
+
+  describe.each([1, 20])('marker found on page %i with more pages remaining', (markerPage) => {
+    it.each(['summary', 'custom', 'individual', 'graph'] as const)('updates the %s comment without fetching later pages', async (kind) => {
+      vi.stubEnv('GITLAB_TOKEN', 'test-token');
+      const marker = kind === 'custom' ? '<!-- custom-learning -->'
+        : kind === 'individual' ? '<!-- teamai:ci-extract:learning -->'
+          : kind === 'graph' ? '<!-- teamai:ci-extract:codebase-graph -->'
+            : '<!-- teamai:ci-extract -->';
+      const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+        if (url.includes('/notes?')) {
+          const page = Number(new URL(url).searchParams.get('page'));
+          const notes = Array.from({ length: 100 }, (_, i) => ({ id: page * 100 + i, body: `chat ${i}` }));
+          // Quoting the marker must not stop the lookup on an earlier page.
+          notes[0].body = `Please explain ${marker}`;
+          if (page === markerPage) notes[1] = { id: 9, body: `old content\n${marker}` };
+          return new Response(JSON.stringify(notes), { headers: { 'x-next-page': String(page + 1) } });
+        }
+        if (url.endsWith('/notes/9') && init?.method === 'PUT') return new Response('{}');
+        throw new Error(`unexpected ${url} ${init?.method}`);
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      const url = 'https://gitlab.com/acme/app/-/merge_requests/7';
+      const learning = { title: 'T', content: 'C' };
+
+      if (kind === 'graph') await postCodebaseGraphComment(url, { added: ['a.ts'], removed: [] });
+      else if (kind === 'individual') await postIndividualComments(url, learning, undefined);
+      else await postOrUpdateMrComment(url, learning, undefined, marker);
+
+      expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'GET')).toHaveLength(markerPage);
+      expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(1);
+      expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+    });
+  });
+
+  it('refuses to post a duplicate when the marker is still missing at the page limit', async () => {
+    vi.stubEnv('GITLAB_TOKEN', 'test-token');
+    const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
+      const page = Number(new URL(url).searchParams.get('page'));
+      return new Response('[]', { headers: { 'x-next-page': String(page + 1) } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(postOrUpdateMrComment(
+      'https://gitlab.com/acme/app/-/merge_requests/7', undefined, undefined,
+    )).rejects.toThrow('GitLab note list has more than 20 pages');
+
+    expect(fetchMock).toHaveBeenCalledTimes(20);
+    expect(fetchMock.mock.calls.every(([, init]) => init?.method === 'GET')).toBe(true);
+  });
+
+  it('fails without posting when a later page cannot be read before finding the marker', async () => {
+    vi.stubEnv('GITLAB_TOKEN', 'test-token');
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response('[]', { headers: { 'x-next-page': '2' } }))
+      .mockResolvedValueOnce(new Response(null, { status: 503 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(postOrUpdateMrComment(
+      'https://gitlab.com/acme/app/-/merge_requests/7', undefined, undefined,
+    )).rejects.toThrow('GitLab note list request failed (503)');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls.every(([, init]) => init?.method === 'GET')).toBe(true);
   });
 
   it('ignores a human note that only quotes the marker', async () => {

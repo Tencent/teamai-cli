@@ -328,18 +328,18 @@ async function gitlabRequest(mrUrl: string, path: string, method: string, body?:
 }
 
 async function findGitLabComment(mrUrl: string, marker: string): Promise<GitLabNote | null> {
-  // GitLab returns notes newest-first, capped at 100 per page. Page through all
-  // of them: a marker note pushed far back by newer discussion is still the one
-  // to update in place, and missing it would post a duplicate instead.
+  // Markers sit on their own line. Ignore mentions quoted in a sentence.
+  const matchesMarker = (note: GitLabNote) => note.body.split('\n').some((line) => line.trim() === marker);
+  // Stop when found: later pages cannot change which newest matching note to
+  // update, and a busy MR may have more notes than the pagination cap allows.
   const notes = await paginateGitLab<GitLabNote>(
     (page) => gitlabRequest(mrUrl, `?per_page=100&page=${page}`, 'GET'),
     MAX_NOTE_PAGES,
     'GitLab note list',
+    undefined,
+    matchesMarker,
   );
-  // Our markers sit on their own line (first line for learning comments, last
-  // line for graph comments). Match the whole line so a human note that merely
-  // quotes the marker inside a sentence is not treated as our comment.
-  return notes.find((n) => n.body.split('\n').some((line) => line.trim() === marker)) ?? null;
+  return notes.find(matchesMarker) ?? null;
 }
 
 async function postGitLabComment(mrUrl: string, body: string): Promise<CommentResult> {

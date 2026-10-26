@@ -193,6 +193,8 @@ Write mode runs in the merged source checkout. Its code knowledge goes through t
 
 Mark a suggestion to drop it: 👎 on GitHub and GitLab, ☝️ on TGit. Templates — GitHub Actions, GitLab CI and 智研/Coding CI — are in [`examples/ci/`](../../examples/ci/README.md).
 
+On GitLab, comment updates stop paging once the marker is found. If it is still missing after 20 pages and more pages remain, the command fails instead of risking a duplicate. Rejection checks still read every page within that limit and fail if more remain.
+
 ## Knowledge Base Health Report
 
 ```bash
