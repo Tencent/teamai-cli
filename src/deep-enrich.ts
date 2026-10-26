@@ -1,4 +1,5 @@
-import { readFile, writeFile, readdir, mkdir, unlink } from 'node:fs/promises';
+import { readFile, writeFile, readdir, mkdir, unlink, lstat, rename } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { pathExists } from './utils/fs.js';
 import { callClaude, callClaudeParallel } from './utils/ai-client.js';
@@ -65,6 +66,35 @@ async function readFileSafe(filePath: string): Promise<string> {
     return await readFile(filePath, 'utf-8');
   } catch {
     return '';
+  }
+}
+
+async function assertSafeDocsDir(docsDir: string): Promise<void> {
+  try {
+    if ((await lstat(docsDir)).isSymbolicLink()) {
+      throw new Error(`Cannot deep-enrich through a symbolic link: ${docsDir}`);
+    }
+    for (const entry of await readdir(docsDir, { withFileTypes: true })) {
+      if (entry.isSymbolicLink()) {
+        throw new Error(`Cannot deep-enrich through a symbolic link: ${path.join(docsDir, entry.name)}`);
+      }
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+}
+
+async function writeDoc(docsDir: string, name: string, content: string): Promise<void> {
+  await mkdir(docsDir, { recursive: true });
+  await assertSafeDocsDir(docsDir);
+  const target = path.join(docsDir, name);
+  const pending = path.join(docsDir, `.${name}.${randomUUID()}.tmp`);
+  try {
+    await writeFile(pending, content, { encoding: 'utf-8', flag: 'wx' });
+    await rename(pending, target);
+  } catch (error) {
+    await unlink(pending).catch(() => undefined);
+    throw error;
   }
 }
 
@@ -436,8 +466,7 @@ async function runPhaseComponents(
         continue;
       }
       const outPath = path.join(docsDir, `${comp.slug}.md`);
-      await mkdir(docsDir, { recursive: true });
-      await writeFile(outPath, content, 'utf-8');
+      await writeDoc(docsDir, `${comp.slug}.md`, content);
       progress.componentsDone.push(comp.slug);
       await saveProgress(evidenceDir, progress);
       log.debug(`deep-enrich[${project}]: Component doc written: ${outPath}`);
@@ -479,8 +508,7 @@ async function runPhaseArchitecture(
   }
 
   const outPath = path.join(docsDir, 'architecture.md');
-  await mkdir(docsDir, { recursive: true });
-  await writeFile(outPath, content, 'utf-8');
+  await writeDoc(docsDir, 'architecture.md', content);
   log.debug(`deep-enrich[${project}]: Architecture overview written: ${outPath}`);
 }
 
@@ -500,11 +528,10 @@ async function runPhaseGraph(
   const g2 = buildG2DataflowDoc(ctx.callChains);
   const g3 = buildG3InterfacesDoc(interfacesMd);
 
-  await mkdir(docsDir, { recursive: true });
   await Promise.all([
-    writeFile(path.join(docsDir, 'graph-g1-relations.md'), g1, 'utf-8'),
-    writeFile(path.join(docsDir, 'graph-g2-dataflow.md'), g2, 'utf-8'),
-    writeFile(path.join(docsDir, 'graph-g3-interfaces.md'), g3, 'utf-8'),
+    writeDoc(docsDir, 'graph-g1-relations.md', g1),
+    writeDoc(docsDir, 'graph-g2-dataflow.md', g2),
+    writeDoc(docsDir, 'graph-g3-interfaces.md', g3),
   ]);
   log.debug(`deep-enrich[${project}]: Graph docs written: ${docsDir}`);
 }
@@ -627,12 +654,10 @@ async function runPhaseAiGraph(
   const { project } = opts;
   log.info(`deep-enrich[${project}]: Phase 4 — Generating AI graph docs (G5/G6)`);
 
-  await mkdir(docsDir, { recursive: true });
-
   // G6: 确定性 BFS（不需要 AI）
   const g6HasEdges = (ctx.manifest.edges ?? []).length > 0;
   const g6 = buildG6Content(project, ctx.manifest);
-  await writeFile(path.join(docsDir, 'graph-g6-multihop.md'), g6, 'utf-8');
+  await writeDoc(docsDir, 'graph-g6-multihop.md', g6);
   log.debug(`deep-enrich[${project}]: G6 multi-hop analysis written`);
 
   const g5Path = path.join(docsDir, 'graph-g5-scenarios.md');
@@ -661,7 +686,7 @@ async function runPhaseAiGraph(
   try {
     const g5Content = await callClaude(prompt);
     if (g5Content.trim()) {
-      await writeFile(path.join(docsDir, 'graph-g5-scenarios.md'), g5Content, 'utf-8');
+      await writeDoc(docsDir, 'graph-g5-scenarios.md', g5Content);
       log.debug(`deep-enrich[${project}]: G5 scenario diagrams written`);
       g5Generated = true;
     }
@@ -685,12 +710,11 @@ async function runPhaseIndexEnhance(
   const { graphReadmeTemplate } = await import('./wiki-engine/adapters/templates.js');
 
   // 写入 graph/README.md 路由分发表（按实际生成情况动态渲染）
-  await mkdir(docsDir, { recursive: true });
   const graphReadme = graphReadmeTemplate(project, {
     hasG5: graphFlags?.g5Generated ?? false,
     hasG6: graphFlags?.g6Generated ?? true,
   });
-  await writeFile(path.join(docsDir, 'README.md'), graphReadme, 'utf-8');
+  await writeDoc(docsDir, 'README.md', graphReadme);
   log.debug(`deep-enrich[${project}]: graph/README.md routing table written`);
 
   // 增量更新顶层 router.md 和 index.md（追加/更新当前项目条目，不覆盖其他项目）
@@ -852,6 +876,8 @@ export async function deepEnrich(opts: DeepEnrichOptions): Promise<DeepEnrichRes
     log.warn(`deep-enrich[${project}]: No components in _manifest.json, aborting`);
     return { project, complete: false, missingComponents: [], missingArchitecture: true };
   }
+
+  await assertSafeDocsDir(docsDir);
 
   if (opts.maxModules && components.length > opts.maxModules) {
     log.info(`deep-enrich[${project}]: Limited to first ${opts.maxModules} components (${components.length} total)`);
