@@ -231,6 +231,8 @@ ZCode 的 server 写入 `~/.zcode/cli/config.json` 或项目的 `.zcode/config.j
 
 WorkBuddy 按顺序使用第一个已存在的用户文件：`~/.workbuddy/.mcp.json`、`~/.workbuddy/mcp.json`、`~/.codebuddy.json`。`CODEBUDDY_CONFIG_DIR` 会移动最后一个文件。项目使用 `.mcp.json`，仅有 `mcp.json` 时使用后者。开启 `sharing.gitExclude` 后，server 写入 `.codebuddy.json` 的 `projects[<项目路径>].mcpServers`。这些路径基于 CodeBuddy 2.168.0 引擎，尚未认证 WorkBuddy 启动器的主目录绑定。Pull 只从旧项目文件 `.workbuddy/mcp.json` 移除未被修改的 teamai 条目。
 
+主目录或项目中存在 `.workbuddy-ai/` 时（WorkBuddy 5.7+），默认技能路径改为 `.workbuddy-ai/skills`。其他内容仍要等 `.workbuddy/` 存在才写入，所以只有 `.workbuddy-ai/` 的成员收不到规则、团队指令、agent、MCP server 和钩子，`teamai doctor` 会以 `workbuddy receives ...` 失败并列出被搁置的项。
+
 工具主目录或配置的 MCP 路径改变时，pull 保留旧副本并提示一次。确认没有工具读取后再删除。Doctor 会报告工具不读取的映射、已移动的文件，以及仅在项目根目录启动会话时才读取的项目 MCP。MCP 通道未知的内部版本只显示提示，不猜测配置路径。
 
 在包含已初始化仓库的 workspace 中，Claude Code、CodeBuddy 和 WorkBuddy 通过各自的 local scope 而不是项目 MCP 文件获得这些 server，所以在其中某个仓库里启动的会话不会加载它们。在单仓库模式下，或 tclaude、Muse Code 读取该文件时，Claude Code 的 server 仍留在其中，这样的会话会加载它们。
