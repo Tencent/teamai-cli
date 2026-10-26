@@ -11,7 +11,7 @@ import type { RepoInfo } from '../types.js';
  */
 export const GITLAB_HOST = resolveGitLabHost();
 
-function resolveGitLabHost(): string {
+export function resolveGitLabHost(): string {
   const direct = process.env.TEAMAI_GITLAB_HOST?.trim();
   if (direct) return direct;
 

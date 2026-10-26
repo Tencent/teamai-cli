@@ -625,7 +625,12 @@ async function locateBlocks(tool: string, install: Install, host: Host): Promise
 
   const [file, other] = install.gitExclude && channel.gitExcluded !== undefined
     ? [channel.gitExcluded, channel.file] : [channel.file, channel.gitExcluded];
-  const { place: own, gates } = await blocksFileOf(file, roots, host);
+  let { place: own, gates } = await blocksFileOf(file, roots, host);
+  // Pi reads the first context file in a directory; its override shadows AGENTS.md.
+  if (tool === 'pi' && install.scope === 'user' && own !== null) {
+    const override = p.join(p.dirname(own.path), 'AGENTS.override.md');
+    if (await host.exists(override)) own = { ...own, path: override };
+  }
   const otherPlace = other === undefined ? null : (await blocksFileOf(other, roots, host)).place;
   return {
     channel: 'files',

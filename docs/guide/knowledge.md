@@ -191,7 +191,7 @@ teamai ci extract-mr --url "$MR_URL" --mode write --team-repo ../team-repo --ind
 
 Write mode runs in the merged source checkout. Its code knowledge goes through the same path as `teamai import --dir . --incremental`, into `<team-repo>/teamwiki/evidence/code/<provider>__<owner>__<repo>/`, re-extracting only the changed files. Clone the team repo outside the checkout: otherwise its files would be extracted as source, so this step is skipped.
 
-Mark a suggestion to drop it: 👎 on GitHub, ☝️ on TGit. Templates are in [`examples/ci/`](../../examples/ci/README.md).
+Mark a suggestion to drop it: 👎 on GitHub and GitLab, ☝️ on TGit. Templates — GitHub Actions, GitLab CI and 智研/Coding CI — are in [`examples/ci/`](../../examples/ci/README.md).
 
 ## Knowledge Base Health Report
 

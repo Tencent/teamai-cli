@@ -1,0 +1,123 @@
+# TeamAI MR Knowledge Extract — GitLab CI (self-hosted instances such as
+# gitlab.example.com, API v4)
+#
+# Extracts knowledge as an MR comment when the MR is created or updated, and
+# writes the learning plus the teamwiki/ graph to the team knowledge repo once
+# the MR lands on the default branch.
+#
+# Before use:
+#   1. Put this file at the business repo root as .gitlab-ci.yml (or include it).
+#      The trigger must live in the business repo: only its own pipeline
+#      receives merge_request_event; the team knowledge repo's CI cannot
+#      subscribe to another project's MR events.
+#   2. Settings → CI/CD → Variables (mark as Masked):
+#        GITLAB_TOKEN           GitLab Personal Access Token (api scope) with
+#                               push access to the team knowledge repo
+#        ANTHROPIC_AUTH_TOKEN   AI auth token (callClaude spawns a local AI
+#                               CLI, so it is required)
+#   3. Plain variables:
+#        TEAMAI_KNOWLEDGE_REPO    team knowledge repo path (e.g. group/team-knowledge)
+#        TEAMAI_KNOWLEDGE_BRANCH  team knowledge repo branch (e.g. main)
+#        ANTHROPIC_BASE_URL       AI gateway URL (required behind an internal gateway)
+#   4. The teamai-cli version must include GitLab CI support (the GitLab
+#      platform adapter for ci extract-mr). Without public npm access:
+#      npm install -g --registry=http://npm.example.com teamai-cli
+
+stages:
+  - teamai-extract
+  - teamai-write
+
+# ── MR created/updated: extract knowledge and post it as a comment ──────────
+teamai-extract-comment:
+  stage: teamai-extract
+  image: node:22
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_EVENT_TYPE != "merged_result"'
+  # timeout must be a literal duration (GitLab does not expand CI/CD variables here)
+  timeout: 20m
+  variables:
+    # Required for self-hosted GitLab: the CLI only sends the PAT to the
+    # configured instance (gitlab.com by default, which refuses this MR).
+    GITLAB_URL: $CI_SERVER_URL
+  script:
+    - npm install -g teamai-cli @anthropic-ai/claude-code
+    - |
+      MR_URL="${CI_MERGE_REQUEST_PROJECT_URL}/-/merge_requests/${CI_MERGE_REQUEST_IID}"
+      echo "=== [TeamAI] MR_URL=$MR_URL ==="
+      # comment mode only fetches the MR over REST and replies; no repo clone.
+      # --individual-comments: one comment per suggestion, so a reviewer can
+      # reject a suggestion with a 👎 emoji.
+      teamai ci extract-mr --url "$MR_URL" --mode comment --individual-comments
+
+# ── MR landed on the default branch: write knowledge to the team repo ───────
+# GitLab has no native "MR merged" CI trigger: a merge shows up as a push to
+# the default branch, so the write stage looks the MR up by the pushed commit
+# in the default-branch push pipeline (within the 100 most recently updated
+# merged MRs).
+teamai-post-merge-write:
+  stage: teamai-write
+  image: node:22
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+  # timeout must be a literal duration (GitLab does not expand CI/CD variables here)
+  timeout: 20m
+  variables:
+    GITLAB_URL: $CI_SERVER_URL
+  script:
+    - npm install -g teamai-cli @anthropic-ai/claude-code
+    - |
+      echo "=== [TeamAI] Looking up the MR merged by ${CI_COMMIT_SHA} ==="
+      # Address the project by its URL-encoded path (CI_PROJECT_PATH), the same
+      # way the CLI does. A numeric project id resolved to unexpected data on
+      # the instance used for testing (captured responses in the PR body).
+      CI_PROJECT_ENC=$(printf '%s' "${CI_PROJECT_PATH}" | node -e 'let d="";process.stdin.on("data",(c)=>(d+=c)).on("end",()=>process.stdout.write(encodeURIComponent(d.trim())))')
+      # Page through the merged MRs, newest updates first, and stop at the first
+      # whose merge commit, squash commit or head commit (a fast-forward merge)
+      # is the pushed commit. The commit-scoped endpoint would need one request,
+      # but GitLab 11.x does not return an MR for its merge commit there.
+      MR_URL=""
+      for PAGE in 1 2 3 4 5; do
+        MR_JSON=$(curl -sf -H "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+          "${CI_API_V4_URL}/projects/${CI_PROJECT_ENC}/merge_requests?state=merged&target_branch=${CI_DEFAULT_BRANCH}&per_page=20&page=${PAGE}&order_by=updated_at")
+        [ "$MR_JSON" = "[]" ] && break
+        MR_URL=$(printf '%s' "$MR_JSON" | node -e '
+          let d = "";
+          process.stdin.on("data", (c) => (d += c)).on("end", () => {
+            const sha = process.env.CI_COMMIT_SHA;
+            const mr = JSON.parse(d).find((m) => [m.merge_commit_sha, m.squash_commit_sha, m.sha].includes(sha));
+            process.stdout.write(mr ? mr.web_url : "");
+          });')
+        [ -n "$MR_URL" ] && break
+      done
+      if [ -z "$MR_URL" ]; then
+        echo "=== [TeamAI] SKIP: this push is not an MR merge ==="
+        exit 0
+      fi
+      echo "=== [TeamAI] Writing knowledge for $MR_URL ==="
+      # Clone the team knowledge repo outside the source checkout: a clone inside
+      # it is treated as source, so the CLI skips the teamwiki/ update and only
+      # writes the learning.
+      # The clone URL is assembled from CI_SERVER_URL (keeps scheme, port and
+      # relative root): CI_SERVER_HOST has neither the scheme nor the path, so
+      # an instance at https://host:8443/gitlab would be built wrong.
+      TEAM_REPO_DIR=/tmp/teamai-team-repo
+      CI_BASE="${CI_SERVER_URL%/}"
+      CI_SCHEME="${CI_BASE%%://*}"
+      CI_HOSTPART="${CI_BASE#*://}"
+      CI_HOST="${CI_HOSTPART%%/*}"
+      CI_ROOT=""
+      case "$CI_HOSTPART" in
+        */*) CI_ROOT="/${CI_HOSTPART#*/}" ;;
+      esac
+      git clone --branch "${TEAMAI_KNOWLEDGE_BRANCH}" \
+        "${CI_SCHEME}://oauth2:${GITLAB_TOKEN}@${CI_HOST}${CI_ROOT}/${TEAMAI_KNOWLEDGE_REPO}.git" \
+        "$TEAM_REPO_DIR"
+      # Runs in the merged source checkout (GitLab already cloned it to
+      # CI_PROJECT_DIR): teamwiki/ follows the same flow as
+      # `teamai import --dir . --incremental`, writing to
+      # teamwiki/evidence/code/gitlab__<group>__<repo>/.
+      # --write-mode direct: the CLI commits and pushes itself, deriving the
+      # git identity from the GITLAB_TOKEN account (REST /user), so no manual
+      # git config/commit/push is needed.
+      teamai ci extract-mr --url "$MR_URL" --mode write --individual-comments \
+        --team-repo "$TEAM_REPO_DIR" --write-mode direct

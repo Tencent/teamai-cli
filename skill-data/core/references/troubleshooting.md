@@ -188,6 +188,8 @@ command in the line; do not choose for them.
 
 Muse may omit `type` when saving a stdio server. Pull and removal compare that form separately from the document they write, so a change to one server leaves personal servers and unchanged managed entries as saved.
 
+Muse key reordering alone is not a user edit. Removal uses a content fingerprint for new records; a legacy record needs a matching original rendered hash and value from team Git history. Without that proof it keeps the server and warns. Real command, args, env or header edits remain personal.
+
 ## "Did not write <tool>'s MCP servers to <file>" / `withheld:`
 
 `pull` prints this, and `teamai mcp list` (`withheld:`) and `teamai doctor`
@@ -442,11 +444,15 @@ Session archive writers (`session push`, `migrate --push`, and `session pull`) w
 
 ## OpenCode hooks cannot start the CLI
 
-If OpenCode hooks stopped after moving or reinstalling Node or TeamAI, run `teamai hooks inject` or `teamai pull` and restart OpenCode. The plugin records the installed Node and CLI paths so it also works without `teamai` on the service PATH.
+If OpenCode hooks stopped after moving or reinstalling Node or TeamAI, run `teamai hooks inject` or `teamai pull` and restart OpenCode. The plugin records the installed Node and CLI paths so it also works without `teamai` on the service PATH. Doctor accepts those live paths when another installation of the same build inspects the plugin; missing saved paths or a changed handler still fail the check.
 
 ## ZCode registered hooks but missing project rules
 
 Doctor checks the serialized rules reply against the user config `hooks.maxOutputBytes` (default 32768), counting UTF-8 bytes and JSON escaping. Other session hints make the complete stdout larger. Shorten the rules or raise the positive integer byte cap enough for the whole reply, then start a new session; registration alone does not prove the rules fit.
+
+## Pi user instructions with an override file
+
+Pi reads `AGENTS.override.md` before `AGENTS.md` in the same directory. In user scope, pull writes rules and instruction blocks into the existing override and strips only TeamAI blocks from the older configured file. Personal text in both files is preserved, including on uninstall. Without an override, the configured user file remains the target.
 
 ## Kiro default-agent synchronization
 

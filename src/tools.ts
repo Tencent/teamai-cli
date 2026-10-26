@@ -557,7 +557,7 @@ export const TOOLS = {
       project: { channel: 'extension', probe: 'pi-extension', evidence: 'verified' },
     },
     blocks: {
-      user: { channel: 'file', file: { in: 'claudemd' }, reads: [{ base: 'home', path: '.pi/agent/AGENTS.md', evidence: 'verified' }] },
+      user: { channel: 'file', file: { in: 'claudemd' }, reads: [{ base: 'home', path: '.pi/agent/AGENTS.override.md', evidence: 'verified' }, { base: 'home', path: '.pi/agent/AGENTS.md', evidence: 'verified' }] },
       project: { channel: 'extension', probe: 'pi-extension', evidence: 'verified' },
       retired: { project: ['AGENTS.md'] },
     },

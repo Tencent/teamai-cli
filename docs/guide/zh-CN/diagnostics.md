@@ -17,6 +17,8 @@ teamai remove rules <name> --force
 
 `doctor` 有一项没过就以状态码 1 退出。`stats` 在有 recall 记录时会多一节，见 [Recall 采纳与 upvote](./knowledge.md#recall-采纳与-upvote)。
 
+生成 hook 的检查会比较处理逻辑，并接受同一构建的另一份安装记录的有效绝对启动路径。仅换一个 CLI 路径运行 `doctor` 不需要重装 hooks；记录的启动入口不存在或处理逻辑发生变化时，仍需运行 `teamai hooks inject` 或 `teamai pull`。
+
 如果工具的 skills 目录被普通文件占用，`pull` 会保留该文件、指出阻塞路径，并继续向其他工具分发。移开该文件后，再运行 `teamai pull` 即可补齐缺失的技能。
 
 即使在单仓库模式，ZCode CLI 也从 `~/.zcode/cli/config.json` 读取 hooks。`hooks inject` 会迁移旧项目文件中属于 teamai 的条目，保留个人设置，并限制团队 hooks 只在所属项目运行。`hooks list` 和 `doctor` 检查同一个 HOME 文件。

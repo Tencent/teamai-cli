@@ -23,6 +23,7 @@
  */
 
 import path from 'node:path';
+import { hookSourceMatches } from './utils/hook-source.js';
 import { writeFile, writeIfChanged, ensureDir, pathExists, readFileSafe, remove } from './utils/fs.js';
 import { probeBinary } from './utils/exec.js';
 import { log } from './utils/logger.js';
@@ -409,13 +410,12 @@ export function opencodeMajorVersion(binary = 'opencode'): Promise<number> {
 
 /**
  * The teamai plugin in HOME, and whether it is the one this build writes.
- * OpenCode V2 ignores `instructions` and gets the team rules and instruction
- * files only from this plugin's context hook.
+ * This plugin supplies the team rules and instructions on the plugin channel.
  */
 export async function opencodeContextPlugin(): Promise<{ file: string; ready: boolean }> {
   const file = path.join(resolveOpencodePluginDir(getUserHome(), 'user'), OPENCODE_HOOK_FILE);
   const entry = resolveCliEntry();
-  return { file, ready: !!entry && await readFileSafe(file) === buildPluginSource(undefined, entry) };
+  return { file, ready: !!entry && await hookSourceMatches(await readFileSafe(file), buildPluginSource(undefined, entry)) };
 }
 
 /**

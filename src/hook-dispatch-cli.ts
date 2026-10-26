@@ -441,6 +441,20 @@ export async function hookDispatchCli(
         : await readStdin();
     const stdin = parseStdin(raw, event);
 
+    // Dynamic imports and handlers may resolve paths through process.cwd().
+    // A removed worktree has no usable process cwd. Preserve a supplied payload
+    // cwd; recover an omitted one from session history before using a live directory.
+    try {
+      process.cwd();
+    } catch {
+      process.chdir(os.tmpdir());
+      if (!resolveHookCwd(stdin)) {
+        const { recordedHookCwd } = await import('./dashboard-collector.js');
+        const previousCwd = await recordedHookCwd(stdin, tool);
+        if (previousCwd) stdin.cwd = previousCwd;
+      }
+    }
+
     // Config gates: a directory without teamai runs no team handlers (#748), and
     // HTTP-only teams must not receive git-provider-only hook prompts
     // (contribute / mr-hint / votes). The project-scope config of the host's
