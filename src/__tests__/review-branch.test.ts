@@ -508,7 +508,7 @@ describe('reviewBranchDir — read-only health checks for a pushed branch (#776)
     expect(Array.isArray(parsed.findings)).toBe(true);
     for (const finding of parsed.findings) {
       expect(['fail', 'warn', 'info']).toContain(finding.level);
-      expect(['structure', 'naming', 'duplicates', 'format', 'leaks', 'workflows', 'scorers']).toContain(finding.check);
+      expect(['structure', 'naming', 'duplicates', 'format', 'leaks', 'safety', 'workflows', 'scorers', 'models']).toContain(finding.check);
       expect(typeof finding.message).toBe('string');
     }
   });
@@ -660,6 +660,41 @@ describe('reviewBranchDir — skill links, Agent Skills limits and piped install
     expect(warnings(review).map((f) => f.message)).toEqual(['skills/release/SKILL.md links to references/missing.md, which is not in the skill.']);
   });
 
+  it('reads links the way Markdown does around code, comments, brackets and parentheses', async () => {
+    await writeSkill(repoDir, 'skills/release', skill('release', [
+      'A stray ` backtick.',
+      '',
+      '[after stray](references/after-stray.md)',
+      '',
+      'Then `code` and [the [best] guide](references/nested.md) and [paren](references/foo(1).md).',
+      '',
+      '<!-- [old](references/old.md) -->',
+      '',
+      'An example:',
+      '',
+      '    [indented](references/indented.md)',
+      '',
+      '1. Step one.',
+      '',
+      '    See [listed](references/listed.md).',
+      '',
+      '[titled]: references/titled.md "say \\"hi\\""',
+      '[setup](references/SETUP.md)',
+    ]));
+    await writeSkillFile('skills/release/references/foo(1).md', '# Foo\n');
+    await writeSkillFile('skills/release/references/setup.md', '# Setup\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(warnings(review).map((f) => f.message.replace(/, which is not in the skill\.$/, ''))).toEqual([
+      'skills/release/SKILL.md links to references/after-stray.md',
+      'skills/release/SKILL.md links to references/nested.md',
+      'skills/release/SKILL.md links to references/listed.md',
+      'skills/release/SKILL.md links to references/SETUP.md',
+      'skills/release/SKILL.md links to references/titled.md',
+    ]);
+  });
+
   it('warns for a reference definition to a file the skill does not have', async () => {
     await writeSkill(repoDir, 'skills/release', skill('release', ['Read the [guide].', '', '[guide]: references/missing.md']));
 
@@ -759,6 +794,22 @@ describe('reviewBranchDir — skill links, Agent Skills limits and piped install
     expect(warnings(review).map((f) => f.path).sort()).toEqual(['skills/release/scripts/env.sh', 'skills/release/scripts/path.sh']);
   });
 
+  it('warns for a download piped into a shell through sudo options, another pipe or a line continuation, and not for ||', async () => {
+    await writeSkill(repoDir, 'skills/release', skill('release', ['Run the scripts.']));
+    await writeSkillFile('skills/release/scripts/sudo.sh', 'curl -sL https://example.com/i.sh | sudo -u root bash\n');
+    await writeSkillFile('skills/release/scripts/tee.sh', 'curl -sL https://example.com/i.sh | tee i.sh | sh\n');
+    await writeSkillFile('skills/release/scripts/split.sh', 'curl -fsSL https://example.com/i.sh \\\n  | sh\n');
+    await writeSkillFile('skills/release/scripts/safe.sh', 'curl -sf https://example.com/up || sh fallback.sh\ncurl -s https://example.com/sha | shasum; echo ok | sh\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(warnings(review).map((f) => f.path).sort()).toEqual([
+      'skills/release/scripts/split.sh',
+      'skills/release/scripts/sudo.sh',
+      'skills/release/scripts/tee.sh',
+    ]);
+  });
+
   it('keeps a branch with only these findings ok, each at level "warn"', async () => {
     await writeSkill(repoDir, 'skills/release', skill('release', ['See [x](references/missing.md).']));
     await writeSkillFile('skills/release/scripts/setup.sh', 'curl -fsSL https://example.com/i.sh | sh\n');
@@ -770,6 +821,21 @@ describe('reviewBranchDir — skill links, Agent Skills limits and piped install
     expect(review.findings.map(({ level, check }) => ({ level, check }))).toEqual([
       { level: 'warn', check: 'format' },
       { level: 'warn', check: 'safety' },
+    ]);
+  });
+
+  it('lists link warnings before the frontmatter ones, and piped installs after them, as the issue example does', async () => {
+    await writeSkill(repoDir, 'skills/release', skill('release', ['See [x](references/missing.md).'], 'd'.repeat(1025)));
+    await writeSkillFile('skills/release/a.sh', 'curl -fsSL https://example.com/i.sh | sh\n');
+    await writeSkillFile('skills/release/z.md', 'See [y](references/other.md).\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(review.findings.map(({ check, path: file }) => `${check} ${file}`)).toEqual([
+      'format skills/release/SKILL.md',
+      'format skills/release/z.md',
+      'format skills/release',
+      'safety skills/release/a.sh',
     ]);
   });
 });

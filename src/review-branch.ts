@@ -549,7 +549,7 @@ async function leakFindings(repoDir: string, resources: ReviewResource[], readTe
     if (seenFiles.has(file.absolutePath)) continue;
     seenFiles.add(file.absolutePath);
     const content = await readText(file.absolutePath);
-    if (content === null || content.length > MAX_SCANNED_FILE_BYTES || content.includes('\0')) continue;
+    if (!isScannable(content)) continue;
 
     const redacted = redact(content);
     if (redacted !== content) {
@@ -576,27 +576,88 @@ async function leakFindings(repoDir: string, resources: ReviewResource[], readTe
   return findings;
 }
 
-/** Inline links and images `[text](target "title")`, and reference definitions `[id]: target`. */
-const INLINE_LINK = /\[(?:[^\]\\]|\\.)*\]\(\s*(<[^>]*>|[^)\s]+)(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\s*\)/g;
-const REFERENCE_DEFINITION = /^ {0,3}\[(?!\^)(?:[^\]\\]|\\.)+\]:[ \t]*(<[^>]*>|\S+)(?:[ \t]+(?:"[^"]*"|'[^']*'|\([^)]*\)))?[ \t]*$/gm;
+/** A skill file whose text the checks read: the same files, size cap and binary skip as `leaks`. */
+interface SkillFile {
+  skill: ReviewResource;
+  relativePath: string;
+  content: string;
+}
 
-/** Markdown with fenced code blocks and inline code blanked, so links shown as code are not read as links. */
+function isScannable(content: string | null): content is string {
+  return content !== null && content.length <= MAX_SCANNED_FILE_BYTES && !content.includes('\0');
+}
+
+async function scannableSkillFiles(resources: ReviewResource[], readText: (p: string) => Promise<string | null>): Promise<SkillFile[]> {
+  const files: SkillFile[] = [];
+  for (const skill of resources) {
+    if (skill.type !== 'skills') continue;
+    const listed = (await filesUnder(skill.relativePath, skill.absolutePath))
+      .sort((a, b) => (a.relativePath < b.relativePath ? -1 : 1));
+    for (const file of listed) {
+      const content = await readText(file.absolutePath);
+      if (isScannable(content)) files.push({ skill, relativePath: file.relativePath, content });
+    }
+  }
+  return files;
+}
+
+// Link text may hold one level of brackets, a destination one level of
+// parentheses, and a title escaped quotes, as CommonMark allows.
+const LINK_TEXT = String.raw`\[(?:[^\[\]\\]|\\.|\[(?:[^\[\]\\]|\\.)*\])*\]`;
+const LINK_DESTINATION = String.raw`(<[^<>\n]*>|(?:[^\s()\\]|\\.|\((?:[^\s()\\]|\\.)*\))+)`;
+const LINK_TITLE = String.raw`(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\((?:[^()\\]|\\.)*\))`;
+/** Inline links and images `[text](target "title")`, and reference definitions `[id]: target`. */
+const INLINE_LINK = new RegExp(String.raw`${LINK_TEXT}\(\s*${LINK_DESTINATION}(?:\s+${LINK_TITLE})?\s*\)`, 'g');
+const REFERENCE_DEFINITION = new RegExp(
+  String.raw`^ {0,3}\[(?!\^)(?:[^\[\]\\]|\\.)+\]:[ \t]*${LINK_DESTINATION}(?:[ \t]+${LINK_TITLE})?[ \t]*$`,
+  'gm',
+);
+const LIST_ITEM = /^ {0,3}(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$)/;
+
+/**
+ * Markdown with HTML comments, fenced and indented code blocks, and inline code
+ * blanked, so links shown as code are not read as links. An indented line inside
+ * a list item stays: it continues the item rather than starting a code block.
+ */
 function withoutCode(markdown: string): string {
   let fence: string | null = null;
-  const lines = markdown.split(/\r?\n/).map((line) => {
-    const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
-    if (fence === null && marker) {
-      fence = marker;
-      return '';
-    }
+  let previousBlank = true;
+  let inCode = false;
+  let inList = false;
+  const kept: string[] = [];
+  for (const line of markdown.replace(/<!--[\s\S]*?-->/g, '').split(/\r?\n/)) {
     if (fence !== null) {
       const closing = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line)?.[1];
       if (closing?.[0] === fence[0] && closing.length >= fence.length) fence = null;
-      return '';
+      kept.push('');
+      continue;
     }
-    return line;
-  });
-  return lines.join('\n').replace(/(`+)[\s\S]*?\1/g, '');
+    const opening = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
+    if (opening) {
+      fence = opening;
+      kept.push('');
+      previousBlank = false;
+      continue;
+    }
+    const isBlank = line.trim() === '';
+    if (!isBlank) {
+      if (LIST_ITEM.test(line)) inList = true;
+      else if (previousBlank && !/^\s/.test(line)) inList = false;
+      if (!inList && (inCode || previousBlank) && /^(?: {4}|\t)/.test(line)) {
+        inCode = true;
+        kept.push('');
+        previousBlank = false;
+        continue;
+      }
+      inCode = false;
+    }
+    previousBlank = isBlank;
+    kept.push(line);
+  }
+  // A code span ends within its paragraph, so a stray backtick blanks nothing past it.
+  return kept.join('\n').split(/\n[ \t]*\n/)
+    .map((paragraph) => paragraph.replace(/(?<!`)(`+)(?!`)[\s\S]*?(?<!`)\1(?!`)/g, ''))
+    .join('\n\n');
 }
 
 /** The local link targets of a Markdown file, without `#anchor` or `?query`; links with a scheme or a leading `/` are left out. */
@@ -604,7 +665,7 @@ function localLinkTargets(markdown: string): string[] {
   const text = withoutCode(markdown);
   const targets = new Set<string>();
   for (const match of [...text.matchAll(INLINE_LINK), ...text.matchAll(REFERENCE_DEFINITION)]) {
-    const written = (match[1] ?? '').replace(/^<(.*)>$/, '$1');
+    const written = (match[1] ?? '').replace(/^<(.*)>$/, '$1').replace(/\\([!-/:-@[-`{-~])/g, '$1');
     if (/^[a-z][a-z0-9+.-]*:/i.test(written) || written.startsWith('/')) continue;
     const target = written.replace(/[#?].*$/, '');
     if (target === '') continue;
@@ -617,53 +678,83 @@ function localLinkTargets(markdown: string): string[] {
   return [...targets];
 }
 
-/** `curl` or `wget` output piped into a shell, optionally through `sudo`, `env` or a path such as `/bin/bash`. */
-const PIPED_INSTALL = /\b(curl|wget)\b[^\n|]*\|\s*(?:sudo\s+(?:-\S+\s+)*)?(?:env\s+)?(?:\S*\/)?((?:ba|da|k|z)?sh|fish)\b/;
+/** Whether `segments` name an entry under `root` with exactly that case, as on the case-sensitive file systems members sync to. */
+async function existsWithExactCase(root: string, segments: string[]): Promise<boolean> {
+  let dir = root;
+  for (const segment of segments) {
+    const names = await fse.readdir(dir).catch(() => null);
+    if (!names?.includes(segment)) return false;
+    dir = path.join(dir, segment);
+  }
+  return true;
+}
 
 /**
- * Links between the files of a skill, and piped installs in any of them. Pull
- * copies each skill directory on its own, so a link must stay inside it: a
- * target outside works only for a member who also receives that file.
+ * Links between the files of a skill. Pull copies each skill directory on its
+ * own, so a link must stay inside it: a target outside works only for a member
+ * who also receives that file.
  */
-async function skillFileFindings(resources: ReviewResource[], readText: (p: string) => Promise<string | null>): Promise<Finding[]> {
+async function skillLinkFindings(files: SkillFile[]): Promise<Finding[]> {
   const findings: Finding[] = [];
-  for (const resource of resources) {
-    if (resource.type !== 'skills') continue;
-    for (const file of await filesUnder(resource.relativePath, resource.absolutePath)) {
-      const content = await readText(file.absolutePath);
-      if (content === null || content.length > MAX_SCANNED_FILE_BYTES || content.includes('\0')) continue;
-      const pipedInstall = PIPED_INSTALL.exec(content);
-      if (pipedInstall) {
+  for (const file of files) {
+    if (!/\.(md|markdown)$/i.test(file.relativePath)) continue;
+    const fromDir = path.posix.dirname(path.posix.relative(file.skill.relativePath, file.relativePath));
+    for (const target of localLinkTargets(file.content)) {
+      const resolved = path.posix.normalize(path.posix.join(fromDir, target)).replace(/\/$/, '');
+      if (resolved === '..' || resolved.startsWith('../')) {
         findings.push({
           level: 'warn',
-          check: 'safety',
+          check: 'format',
           path: file.relativePath,
-          message: `${file.relativePath} pipes a download into a shell (${pipedInstall[1]} … | ${pipedInstall[2]}); `
-            + 'ship the script in the skill or pin what it runs.',
+          message: `${file.relativePath} links to ${target}, which is outside the skill; pull copies each skill directory on its own, `
+            + 'so the link works only for a member who also receives that file. Move the file into the skill.',
+        });
+      } else if (!await existsWithExactCase(file.skill.absolutePath, resolved === '.' ? [] : resolved.split('/'))) {
+        findings.push({
+          level: 'warn',
+          check: 'format',
+          path: file.relativePath,
+          message: `${file.relativePath} links to ${target}, which is not in the skill.`,
         });
       }
-      if (!/\.(md|markdown)$/i.test(file.relativePath)) continue;
-      const fromDir = path.posix.dirname(path.posix.relative(resource.relativePath, file.relativePath));
-      for (const target of localLinkTargets(content)) {
-        const resolved = path.posix.normalize(path.posix.join(fromDir, target));
-        if (resolved === '..' || resolved.startsWith('../')) {
-          findings.push({
-            level: 'warn',
-            check: 'format',
-            path: file.relativePath,
-            message: `${file.relativePath} links to ${target}, which is outside the skill; pull copies each skill directory on its own, `
-              + 'so the link works only for a member who also receives that file. Move the file into the skill.',
-          });
-        } else if (!await pathExists(path.join(resource.absolutePath, ...resolved.split('/')))) {
-          findings.push({
-            level: 'warn',
-            check: 'format',
-            path: file.relativePath,
-            message: `${file.relativePath} links to ${target}, which is not in the skill.`,
-          });
-        }
-      }
     }
+  }
+  return findings;
+}
+
+/** A pipeline stage that runs a shell: `sh`, `bash`, … possibly through `sudo` with its options, `env`, or a path such as `/bin/bash`. */
+const SHELL_STAGE = /^\s*(?:sudo\s+(?:-\S+(?:\s+(?!-)\S+)?\s+)*)?(?:env\s+)?(?:\S*\/)?((?:ba|da|k|z)?sh|fish)\b/;
+
+/**
+ * The first `curl` or `wget` whose output a later stage of the same pipeline
+ * runs as a shell script. Commands are split on newlines, `;`, `&&` and `||`
+ * and then into stages on `|`, so the scan stays linear in the file size.
+ */
+function findPipedInstall(text: string): { downloader: string; shell: string } | null {
+  // A command continued with a trailing backslash is one line to the shell.
+  for (const command of text.replace(/\\\r?\n/g, ' ').split(/\n|;|&&|\|\|/)) {
+    let downloader: string | undefined;
+    for (const stage of command.split('|')) {
+      const shell = downloader === undefined ? undefined : SHELL_STAGE.exec(stage)?.[1];
+      if (downloader !== undefined && shell !== undefined) return { downloader, shell };
+      downloader ??= /\b(curl|wget)\b/.exec(stage)?.[1];
+    }
+  }
+  return null;
+}
+
+function pipedInstallFindings(files: SkillFile[]): Finding[] {
+  const findings: Finding[] = [];
+  for (const file of files) {
+    const pipedInstall = findPipedInstall(file.content);
+    if (!pipedInstall) continue;
+    findings.push({
+      level: 'warn',
+      check: 'safety',
+      path: file.relativePath,
+      message: `${file.relativePath} pipes a download into a shell (${pipedInstall.downloader} … | ${pipedInstall.shell}); `
+        + 'ship the script in the skill or pin what it runs.',
+    });
   }
   return findings;
 }
@@ -967,13 +1058,15 @@ export async function reviewBranchDir(branch: string, repoDir: string): Promise<
   const index = buildManifestIndex(roles, projects);
   const resources = await scanResources(repoDir, index);
   const readText = makeTextReader();
+  const skillFiles = await scannableSkillFiles(resources, readText);
 
   const findings: Finding[] = [
     ...await structureFindings(resources, index),
     ...await namingFindings(resources, readText),
     ...await duplicateFindings(resources, index),
+    ...await skillLinkFindings(skillFiles),
     ...await formatFindings(resources, readText),
-    ...await skillFileFindings(resources, readText),
+    ...pipedInstallFindings(skillFiles),
     ...await leakFindings(repoDir, resources, readText),
     ...await workflowFindings(repoDir),
     ...await scoringSettingsFindings(repoDir, readText),
