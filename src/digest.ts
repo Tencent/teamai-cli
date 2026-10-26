@@ -506,13 +506,8 @@ export async function generateDigest(): Promise<void> {
     // Not another repository's learnings checkout, if one sits where this
     // project's would (#808).
     const { indexableLearningsRoots } = await import('./utils/learnings-roots.js');
-    let learningsNamespaces: string[] | undefined;
-    try {
-      const { deliveredLearningsNamespaces } = await import('./workspace-children.js');
-      learningsNamespaces = await deliveredLearningsNamespaces(localConfig);
-    } catch {
-      learningsNamespaces = undefined;
-    }
+    const { safeDeliveredLearningsNamespaces } = await import('./workspace-children.js');
+    const learningsNamespaces = await safeDeliveredLearningsNamespaces(localConfig, 'digest');
     const { recent: recentLearnings, total: totalLearnings } = await getRecentLearnings(
       await indexableLearningsRoots(localConfig),
       learningsNamespaces,

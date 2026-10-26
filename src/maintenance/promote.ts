@@ -38,9 +38,9 @@ export interface PromotionCandidatesOptions {
 export async function findPromotionCandidates(
   learningsDirs: readonly string[],
   votesDir: string,
-  options?: PromotionCandidatesOptions | readonly string[],
+  options?: PromotionCandidatesOptions,
 ): Promise<PromotionCandidate[]> {
-  const namespaces = Array.isArray(options) ? options : (options && 'namespaces' in options ? options.namespaces : undefined);
+  const namespaces = options?.namespaces;
   const confidenceMap = await computeAllConfidence(votesDir);
   const candidates: PromotionCandidate[] = [];
 

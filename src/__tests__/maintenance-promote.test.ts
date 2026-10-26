@@ -218,4 +218,32 @@ describe('executePromotion', () => {
     const { data } = matter(original);
     expect(data.promoted_to).toBe('skills/k8s/helm-values/SKILL.md');
   });
+
+  it('normalizes backslash separators in candidate filename when promoting', async () => {
+    const learningsDir = path.join(tmpDir, 'learnings');
+    const skillsDir = path.join(tmpDir, 'skills');
+    fs.mkdirSync(path.join(learningsDir, 'k8s'), { recursive: true });
+
+    const absPath = path.join(learningsDir, 'k8s', 'helm-values.md');
+    fs.writeFileSync(absPath, matter.stringify('Step by step procedure', { title: 'helm-values', date: '2026-01-01' }));
+
+    const candidate = {
+      docId: 'k8s/helm-values',
+      filename: 'k8s\\helm-values.md',
+      path: absPath,
+      confidence: 0.95,
+      upvotedCount: 10,
+      userCount: 3,
+      title: 'helm-values',
+      suggestedCategory: 'skills' as const,
+    };
+
+    const { targetPath } = await executePromotion(candidate, tmpDir, { category: 'skills' });
+    expect(targetPath).toBe(path.join(tmpDir, 'skills', 'k8s', 'helm-values', 'SKILL.md'));
+    expect(fs.existsSync(path.join(skillsDir, 'k8s', 'helm-values', 'SKILL.md'))).toBe(true);
+
+    const original = fs.readFileSync(absPath, 'utf-8');
+    const { data } = matter(original);
+    expect(data.promoted_to).toBe('skills/k8s/helm-values/SKILL.md');
+  });
 });

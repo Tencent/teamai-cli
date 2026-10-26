@@ -1561,13 +1561,8 @@ recallCmd
     const {
       repoPath, votesDir, learningsReadDirs, learningsWriteDir,
     } = paths;
-    let learningsNamespaces: string[] | undefined;
-    try {
-      const { deliveredLearningsNamespaces } = await import('./workspace-children.js');
-      learningsNamespaces = await deliveredLearningsNamespaces(localConfig);
-    } catch {
-      learningsNamespaces = undefined;
-    }
+    const { safeDeliveredLearningsNamespaces } = await import('./workspace-children.js');
+    const learningsNamespaces = await safeDeliveredLearningsNamespaces(localConfig, 'recall maintenance');
 
     if (cmdOpts.confidenceWriteback) {
       const { computeAllConfidence, writeBackConfidence } = await import('./maintenance/index.js');
@@ -1661,13 +1656,8 @@ recallCmd
     const {
       repoPath, votesDir, learningsReadDirs, learningsWriteDir,
     } = paths;
-    let learningsNamespaces: string[] | undefined;
-    try {
-      const { deliveredLearningsNamespaces } = await import('./workspace-children.js');
-      learningsNamespaces = await deliveredLearningsNamespaces(localConfig);
-    } catch {
-      learningsNamespaces = undefined;
-    }
+    const { safeDeliveredLearningsNamespaces } = await import('./workspace-children.js');
+    const learningsNamespaces = await safeDeliveredLearningsNamespaces(localConfig, 'recall promote');
     const { log } = await import('./utils/logger.js');
 
     const candidates = await findPromotionCandidates(learningsReadDirs, votesDir, {

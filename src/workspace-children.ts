@@ -178,6 +178,33 @@ export async function deliveredLearningsNamespaces(config: LocalConfig): Promise
   return [...namespaces];
 }
 
+/**
+ * Active learnings namespaces for this configuration. When resolution fails
+ * (e.g. an unreadable manifest/projects.yaml), logs a warning matching `recall`
+ * and falls back to the shared root (empty namespaces).
+ */
+export async function safeDeliveredLearningsNamespaces(
+  config: LocalConfig,
+  caller = 'maintenance',
+): Promise<string[]> {
+  try {
+    return await deliveredLearningsNamespaces(config);
+  } catch (e) {
+    const projects = [...new Set([
+      ...config.projects ?? [],
+      ...config.children?.children.flatMap((child) => child.selection.projects ?? []) ?? [],
+    ])];
+    const projectSummary = projects.length === 0
+      ? ''
+      : ` The learnings of ${projects.length === 1 ? 'project' : 'projects'} ${projects.join(', ')} `
+        + `stay out of ${caller} until manifest/projects.yaml is fixed; \`teamai doctor\` shows the problem.`;
+    log.warn(
+      `${caller} read the shared learnings only: ${e instanceof Error ? e.message : String(e)}.${projectSummary}`,
+    );
+    return [];
+  }
+}
+
 /** One name whose copies differ between two members, so the workspace delivers neither. */
 export interface HeldBackItem<TItem> {
   readonly name: string;

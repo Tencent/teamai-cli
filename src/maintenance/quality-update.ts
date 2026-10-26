@@ -123,14 +123,19 @@ export function reportStaleEntries(entries: StaleEntry[]): void {
  * same period a stale entry was being ignored. These serve as context for the
  * AI to understand what the team actually preferred.
  */
+export interface RelatedAdoptedLearningsOptions {
+  limit?: number;
+  namespaces?: readonly string[];
+}
+
 export async function findRelatedAdoptedLearnings(
   staleEntry: StaleEntry,
   votesDir: string,
   learningsDirs: readonly string[],
-  options?: { limit?: number; namespaces?: readonly string[] } | number,
+  options?: RelatedAdoptedLearningsOptions,
 ): Promise<string[]> {
-  const limit = typeof options === 'number' ? options : (options?.limit ?? 5);
-  const namespaces = typeof options === 'object' ? options.namespaces : undefined;
+  const limit = options?.limit ?? 5;
+  const namespaces = options?.namespaces;
   const perDoc = new Map<string, number>();
   const voteFiles = await listFiles(votesDir);
 
