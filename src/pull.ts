@@ -3662,8 +3662,10 @@ function setWriterPaths(paths: GitExcludePaths, writer: WriterId, list: string[]
 /**
  * The delivered lists of the project's live checkouts (liveCheckoutRecords),
  * `current` standing in for the list of the checkout keyed `current.key`
- * (this pull's, which may have no record yet). A record without `root` or
- * without `gitExcludePaths` is a live checkout with no list. Read-only.
+ * (this pull's, which may have no record yet). A record without
+ * `gitExcludePaths` is a live checkout with no list. One without `root`, from
+ * an older CLI, names no checkout and is left out: git lists each checkout it
+ * may belong to, below, as one with no list. Read-only.
  */
 export async function liveDeliveredLists(
   projectRoot: string,
@@ -3673,10 +3675,10 @@ export async function liveDeliveredLists(
   const live = await liveCheckoutRecords(projectRoot, records) ?? {};
   const lists: ListedCheckout[] = Object.entries(live)
     .filter(([key]) => key !== current?.key)
-    .map(([, { root, gitExcludePaths }]) => ({
-      root: root ?? projectRoot,
-      paths: root !== undefined && gitExcludePaths ? Object.values(gitExcludePaths).flat() : null,
-    }));
+    .flatMap(([, { root, gitExcludePaths }]) => root === undefined ? [] : [{
+      root,
+      paths: gitExcludePaths ? Object.values(gitExcludePaths).flat() : null,
+    }]);
   if (current) lists.push({ root: projectRoot, paths: Object.values(current.paths).flat() });
   // A checkout git lists that teamai has no record of (made before it was set
   // up) has no list either: its files hold lines back like an unlisted one's.
