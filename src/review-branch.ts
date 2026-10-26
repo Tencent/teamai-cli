@@ -912,9 +912,9 @@ const SHORT_OPTIONS_WITH_VALUE: Record<'curl' | 'wget', ReadonlySet<string>> = {
   wget: new Set('aABDeiIlLoOPQRtTUwX'),
 };
 /** curl long options that take the next word as their value, so a URL there is not a download. */
-const CURL_LONG_OPTION_WITH_VALUE = new RegExp(String.raw`^--(?:data(?:-[a-z]+)?|form(?:-string)?|json|header|proxy(?:-[a-z-]+)?|preproxy|referer|doh-url`
+const CURL_LONG_OPTION_WITH_VALUE = new RegExp(String.raw`^--(?:data(?:-[a-z]+)?|form(?:-string)?|json|header|proxy(?:-(?:user|header|cacert|capath|cert|key|pass|ciphers|service-name|tlsuser|tlspassword))?|preproxy|referer|doh-url`
   + String.raw`|user(?:-agent)?|cookie(?:-jar)?|upload-file|url-query|request|resolve|connect-to|config|cacert|capath|cert|key|output-dir`
-  + String.raw`|retry(?:-[a-z-]+)?|max-time|connect-timeout|max-filesize|limit-rate|range|time-cond|write-out|dump-header|trace(?:-ascii)?)$`);
+  + String.raw`|retry(?:-delay|-max-time)?|max-time|connect-timeout|max-filesize|limit-rate|range|time-cond|write-out|dump-header|trace(?:-ascii)?)$`);
 
 /** Whether a shell word sends standard output to a file or another descriptor: `>file`, `1>file`, `&>file`, `>&2`, attached or not. */
 function redirectsStdout(rawWord: string): boolean {
