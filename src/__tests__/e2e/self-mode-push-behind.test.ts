@@ -384,7 +384,7 @@ describe('single-repo push from a checkout behind the default branch', () => {
     }
     const unknown = await runCLI([...push, '--carried', `.teamai/agents/ops/other.md@${first}`], projectRoot, home);
     expect(unknown.code, unknown.output).toBe(2);
-    expect(unknown.output).toContain(`--carried .teamai/agents/ops/other.md@${first} names no agent conversion this push stops for.`);
+    expect(unknown.output).toContain(`--carried .teamai/agents/ops/other.md@${first} names no placed agent file this push stops for.`);
 
     teammateLandsOnMain({ '.teamai/agents/ops/sample.md': `${AGENT}\nTeammate safety instructions.\nTeammate review step.\n` });
     const second = teamVersion();
@@ -536,7 +536,7 @@ describe('single-repo push from a checkout behind the default branch', () => {
     );
 
     expect(push.code, push.output).toBe(2);
-    expect(push.output).toContain(`--carried ${carried} names no agent conversion this push stops for. Nothing was pushed.`);
+    expect(push.output).toContain(`--carried ${carried} names no placed agent file this push stops for. Nothing was pushed.`);
     expect(pushBranches()).toEqual([]);
   });
 
@@ -548,7 +548,7 @@ describe('single-repo push from a checkout behind the default branch', () => {
     const push = await runCLI(['push', '--all', '--carried', carried], projectRoot, home);
 
     expect(push.code, push.output).toBe(2);
-    expect(push.output).toContain(`--carried ${carried} names no agent conversion this push stops for. Nothing was pushed.`);
+    expect(push.output).toContain(`--carried ${carried} names no placed agent file this push stops for. Nothing was pushed.`);
     expect(pushBranches()).toEqual([]);
   });
 
