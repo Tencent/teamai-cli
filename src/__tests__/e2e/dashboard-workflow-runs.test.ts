@@ -84,7 +84,7 @@ describe('dashboard workflow runs', () => {
 
     const answered = await respond(answer, { ...json, Origin: base });
     expect(answered.status).toBe(200);
-    expect(await answered.json()).toEqual({ answered: { step: 'ship', pass: 1, choice: 'yes', channel: 'dashboard' } });
+    expect(await answered.json()).toEqual({ answered: { step: 'ship', pass: 1, choice: 'yes', channel: 'dashboard', agent: false } });
     const state = JSON.parse(fs.readFileSync(path.join(await resolveProjectDataHome(repo), 'workflows/runs', `${run}.json`), 'utf8')) as RunState;
     expect(state.steps[0]?.answer).toMatchObject({ choice: 'yes', channel: 'dashboard', agent: false });
     expect(JSON.parse(await list())).toMatchObject({ local: [{ run, waiting: [] }] });
