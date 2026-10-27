@@ -133,6 +133,8 @@ describe('--tools of the skill driver', () => {
     expect(skillCall(startLiteral('teamai', 'check', { tool: 'omp' }), 'teamai')).toMatchObject({ kind: 'start', name: 'check', tool: 'omp' });
     expect(skillCall(describeLiteral('teamai', 'check', { tool: 'omp' }), 'teamai')).toEqual({ kind: 'describe', name: 'check', tool: 'omp' });
     expect(skillCall(skillResumeLiteral('teamai', RUN, { claim: true, tool: 'omp' }), 'teamai')).toMatchObject({ kind: 'resume', run: RUN, claim: true, tool: 'omp' });
+    // The describe a session with no tool is asked to run, once it fills the {tool} slot.
+    expect(skillCall(describeLiteral('teamai', 'check', { tool: '{tool}' }).replace("'{tool}'", 'omp'), 'teamai')).toEqual({ kind: 'describe', name: 'check', tool: 'omp' });
   });
 
   it('refuses a role map or a tool teamai does not know', () => {
@@ -141,6 +143,8 @@ describe('--tools of the skill driver', () => {
     }
     expect(parseSkillCall({ kind: 'start', name: 'check', options: { tools: 'default=vim' } }, {}))
       .toEqual({ error: { code: 'invalid_arguments', message: expect.stringMatching(/^--tools default=vim names no tool teamai knows: claude, .*hermes/), next: null } });
+    expect(parseSkillCall({ kind: 'start', name: 'check', options: { describe: true, tools: 'default={tool}' } }, {}))
+      .toEqual({ error: { code: 'invalid_arguments', message: expect.stringMatching(/^--tools default=\{tool\} names no tool teamai knows: claude, /), next: null } });
   });
 });
 

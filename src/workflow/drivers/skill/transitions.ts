@@ -28,12 +28,13 @@ export interface TransitionRow {
 export const TRANSITIONS = [
   { id: 'R1', state: 'none', input: 'describe', guard: '`invoke: deny` and the caller has agent evidence', effects: 'none', next: 'none', action: 'describe `ask.kind: denied` with the reason, no literal' },
   { id: 'R2', state: 'none', input: 'describe', guard: 'run mode `attended`, and the definition has a local route: a step this driver takes and a later one it is held from for env or tokens work in one workspace copy', effects: 'none', next: 'none', action: 'describe `ask.kind: local` with the reason and the `--driver local` start literal, with `--tools default=<session tool>` when `localPromptTool` names one' },
-  { id: 'R3', state: 'none', input: 'describe', guard: 'something to ask: `invoke: ask`, a required input, width above 1, an optional gate, or judging here or by the session', effects: 'none', next: 'none', action: 'describe `ask.kind: ask`: one question stating every fact, and at most five start literals, the recommended first' },
-  { id: 'R4', state: 'none', input: 'describe', guard: 'nothing to ask', effects: 'none', next: 'none', action: 'describe `ask.kind: start` with the one start literal, and the facts to tell the person' },
+  { id: 'R3', state: 'none', input: 'describe', guard: 'R27 does not apply, and something to ask: `invoke: ask`, a required input, width above 1, an optional gate, or judging here or by the session', effects: 'none', next: 'none', action: 'describe `ask.kind: ask`: one question stating every fact, and at most five start literals, the recommended first' },
+  { id: 'R4', state: 'none', input: 'describe', guard: 'R27 does not apply, and nothing to ask', effects: 'none', next: 'none', action: 'describe `ask.kind: start` with the one start literal, and the facts to tell the person' },
   { id: 'R16', state: 'none', input: 'describe', guard: '`deliveryProblem` answers for the checkout: a `deliver: pr` step the definition cannot deliver (`bad_delivery`), or a detached HEAD (`no_base_branch`)', effects: 'none', next: 'none', action: 'describe `ask.kind: denied` with its message, no literal' },
   { id: 'R23', state: 'none', input: 'describe', guard: 'run mode `unattended`, R1 and R16 do not apply, and the definition has a local route, as R2\'s', effects: 'none', next: 'none', action: 'describe `ask.kind: denied` with the local route\'s reason, no literal: nobody is there to run the local driver' },
   { id: 'R17', state: 'none', input: 'describe', guard: 'run mode `unattended`, R1, R16 and R23 do not apply, and `attendedReason` names what needs a person: `invoke: ask`, an interactive step, a required approval, or a choice without a default', effects: 'none', next: 'none', action: 'describe `ask.kind: denied` with that reason, no literal' },
-  { id: 'R18', state: 'none', input: 'describe', guard: 'run mode `unattended`, and R1, R16, R23 and R17 do not apply', effects: 'none', next: 'none', action: 'describe `ask.kind: start` with the start of R3\'s recommended option under `--auto-approve`; `{inputs}` kept and `inputs` listed when the workflow has inputs' },
+  { id: 'R18', state: 'none', input: 'describe', guard: 'run mode `unattended`, and R1, R16, R23, R17 and R27 do not apply', effects: 'none', next: 'none', action: 'describe `ask.kind: start` with the start of R3\'s recommended option under `--auto-approve`; `{inputs}` kept and `inputs` listed when the workflow has inputs' },
+  { id: 'R27', state: 'none', input: 'describe', guard: 'the session names no tool, the definition has a prompt or scored step, and R1, R16, R2, R23 and R17 do not apply', effects: 'none', next: 'none', action: 'describe `ask.kind: tool` with the reason, the describe literal with `--tools default=\'{tool}\'` for the agent to fill, and the ids of the tools teamai knows' },
   { id: 'R8', state: 'none', input: 'start `--driver skill`, or R19\'s input', guard: 'the definition has a local route; for R19\'s input, the run\'s own definition, once R20 and R21 do not apply, or, in run mode `unattended`, as the run stands before the claim', effects: 'none', next: 'none', action: 'error `needs_local_driver` with the reason, next null; for R19\'s input it names the person\'s `teamai workflow resume <run>` literal, and the run stays readied here, or, unattended, as it was: nothing is claimed' },
   { id: 'R25', state: 'none', input: 'start `--driver skill`', guard: 'run mode `unattended`, R8 does not apply, and `attendedReason` names what needs a person, as R17\'s', effects: 'none', next: 'none', action: 'error `unattended_denied` with that reason, next null: no run is created' },
   { id: 'R9', state: 'none', input: 'start `--driver skill`', guard: '`checkStartAnswers` answers `confirm-needed`, and R8 and R25 do not apply', effects: 'none', next: 'none', action: 'error `confirm_needed`, next: the describe literal' },
@@ -172,9 +173,10 @@ export type JudgeAnswer = { kind: 'judged'; labels: Array<{ scorer: string; labe
  * `local`: why the local driver must run it. `judged`: the scored steps are judged on this machine, by the session
  * tool's confined judge or by the session itself, so the person may turn judging off. `undeliverable`: why a start from
  * the checkout would be refused for its delivery. `mode`: the run mode of the caller. `attended`: why a run of the
- * workflow needs a person.
+ * workflow needs a person. `needsTool`: the session names no tool, and the workflow has a step whose model or judging
+ * needs one.
  */
-export interface DescribeInput { needed: StartAnswer[]; denied?: string; undeliverable?: string; local?: string; judged: boolean; mode: RunMode; attended?: string }
+export interface DescribeInput { needed: StartAnswer[]; denied?: string; undeliverable?: string; local?: string; judged: boolean; mode: RunMode; attended?: string; needsTool: boolean }
 
 /** Who judges a run's scored steps on this machine: the confined judge of `tool` here, or the session itself with `tool`. */
 export type JudgedBy = { kind: 'here'; tool: string } | { kind: 'session'; tool: string };
@@ -233,7 +235,7 @@ export type Refusal =
  * How describe says to start, and why, for the kinds that start no run here. `unattended`: start with the recommended
  * answers and optional gates auto-approved, since nobody answers a question.
  */
-export type DescribeVerdict = { ask: 'start' | 'ask' | 'unattended' } | { ask: 'local' | 'denied'; reason: string };
+export type DescribeVerdict = { ask: 'start' | 'ask' | 'unattended' | 'tool' } | { ask: 'local' | 'denied'; reason: string };
 
 /** The run R10 starts: its options, whether it asks the host question first, and who judges it on this machine. */
 export interface StartRun { parallel: number; hitl: HitlMode; host: 'none' | 'pending'; judge?: JudgedBy }
@@ -344,13 +346,13 @@ export function unseenEvents(state: SkillState, session: string | undefined): Tu
 }
 
 /** The describe row `input` matches, with how describe says to start. */
-export function describeRow(input: DescribeInput): { row: 'R1' | 'R16' | 'R2' | 'R23' | 'R17' | 'R18' | 'R3' | 'R4'; verdict: DescribeVerdict } {
+export function describeRow(input: DescribeInput): { row: 'R1' | 'R16' | 'R2' | 'R23' | 'R17' | 'R27' | 'R18' | 'R3' | 'R4'; verdict: DescribeVerdict } {
   if (input.denied !== undefined) return { row: 'R1', verdict: { ask: 'denied', reason: input.denied } };
   if (input.undeliverable !== undefined) return { row: 'R16', verdict: { ask: 'denied', reason: input.undeliverable } };
   if (input.local !== undefined) return input.mode === 'unattended' ? { row: 'R23', verdict: { ask: 'denied', reason: input.local } } : { row: 'R2', verdict: { ask: 'local', reason: input.local } };
-  if (input.mode === 'unattended') {
-    return input.attended !== undefined ? { row: 'R17', verdict: { ask: 'denied', reason: input.attended } } : { row: 'R18', verdict: { ask: 'unattended' } };
-  }
+  if (input.mode === 'unattended' && input.attended !== undefined) return { row: 'R17', verdict: { ask: 'denied', reason: input.attended } };
+  if (input.needsTool) return { row: 'R27', verdict: { ask: 'tool' } };
+  if (input.mode === 'unattended') return { row: 'R18', verdict: { ask: 'unattended' } };
   if (input.needed.length > 0 || input.judged) return { row: 'R3', verdict: { ask: 'ask' } };
   return { row: 'R4', verdict: { ask: 'start' } };
 }

@@ -1,10 +1,11 @@
 /** Before a run: what describe asks the person, and whether a start carries every answer it needs. */
 import { isLaunchTool, LAUNCH_ORDER, type LaunchTool } from '../../../tool-launch/tools.js';
+import { TOOLS } from '../../../tools.js';
 import type { LocalConfig, ToolId } from '../../../types.js';
 import type { GateGuards, WorkflowDescription } from '../../describe.js';
 import { INVOKE_ASK_NEED, unattendedReason, type Judging } from '../../protocol.js';
 import type { OutputSchema } from '../../types.js';
-import { localStartLiteral, startLiteral, type Invocation, type Literal } from './literals.js';
+import { describeLiteral, localStartLiteral, startLiteral, type Invocation, type Literal } from './literals.js';
 import { judgedBy, type DescribeVerdict } from './transitions.js';
 import type { DescribeAsk } from './turn.js';
 
@@ -203,7 +204,7 @@ function heldFact(held: HeldFact): string {
 }
 
 /** What the person needs to know before `description` runs, a sentence each, in the order a run meets it. */
-function factsOf(description: WorkflowDescription, judging: Judging, answering: GateAnswering, toolNamed: boolean): string[] {
+function factsOf(description: WorkflowDescription, judging: Judging, answering: GateAnswering): string[] {
   const { name, inputs, facts } = description;
   const named = Object.entries(inputs).map(([input, type]) => `${input} (${typeOf(type)})`);
   const required = facts.gates.filter((gate) => gate.required);
@@ -226,7 +227,6 @@ function factsOf(description: WorkflowDescription, judging: Judging, answering: 
     ...facts.held.map(heldFact),
     ...facts.budgets.map(({ step, tokens }) => (step === undefined ? `It may spend at most ${tokens} tokens.` : `${step} may spend at most ${tokens} tokens each time it starts.`)),
     ...(facts.timeout !== undefined ? [`It stops after ${durationOf(facts.timeout)}.`] : []),
-    ...(!toolNamed && facts.prompts.length + facts.scored.length > 0 ? ['This coding session names no tool for its prompt steps and judging: describe the workflow again with --tools default=<tool>, the tool it works in, and start it from that reply.'] : []),
     ...(judging.kind === 'here' ? [`${judging.tool} judges ${scored} here, with one confined judge call per pass.`] : []),
     ...(judging.kind === 'session' ? [`${scored} ${facts.scored.length > 1 ? 'are' : 'is'} judged by this session in a subagent once the run is done, at best-effort isolation. ${judging.reason}`] : []),
     ...(judging.kind === 'session' && judging.verified ? [`${listOf(judging.verified)} ${judging.verified.length > 1 ? 'ask' : 'asks'} for verified isolation, so that work stays open for another driver.`] : []),
@@ -300,13 +300,12 @@ export function localPromptTool({ config, tool, aiTools }: { config: LocalConfig
 
 /**
  * The describe reply's `ask` of the kind the transitions chose. `tools.local`: the prompt tool a local start names.
- * `tools.session`: the tool the session declared, which every skill start it offers keeps. `tools.named`: whether the
- * session has a tool, declared or named by its host.
+ * `tools.session`: the tool the session declared, which every skill start it offers keeps.
  */
-export function askFor(verdict: DescribeVerdict, description: WorkflowDescription, invocation: Invocation, judging: Judging, tools: { local?: string; session?: ToolId; named: boolean }): DescribeAsk {
+export function askFor(verdict: DescribeVerdict, description: WorkflowDescription, invocation: Invocation, judging: Judging, tools: { local?: string; session?: ToolId } = {}): DescribeAsk {
   const { name } = description;
   const session = tools.session !== undefined ? { tool: tools.session } : {};
-  const facts = factsOf(description, judging, verdict.ask === 'unattended' ? 'auto-approve' : 'picked', tools.named).map((fact) => `- ${fact}`);
+  const facts = factsOf(description, judging, verdict.ask === 'unattended' ? 'auto-approve' : 'picked').map((fact) => `- ${fact}`);
   switch (verdict.ask) {
     case 'start':
       return { kind: 'start', ...(facts.length > 0 ? { say: facts.join('\n') } : {}), start: startLiteral(invocation, name, session) };
@@ -315,6 +314,10 @@ export function askFor(verdict: DescribeVerdict, description: WorkflowDescriptio
       const start = startLiteral(invocation, name, { ...startFlags(description), ...recommendedPick(description), hitl: 'auto-approve', ...session });
       return { kind: 'start', ...(facts.length > 0 ? { say: facts.join('\n') } : {}), start, ...(inputs.length > 0 ? { inputs } : {}) };
     }
+    case 'tool':
+      return {
+        kind: 'tool', reason: 'This coding session names no tool, which its prompt steps and judging need.', describe: describeLiteral(invocation, name, { tool: '{tool}' }), tools: Object.keys(TOOLS),
+      };
     case 'local':
     case 'denied':
       return verdict.ask === 'local' ? { kind: 'local', reason: verdict.reason, start: localStartLiteral(invocation, name, { tool: tools.local }) } : { kind: 'denied', reason: verdict.reason };

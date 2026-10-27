@@ -1976,6 +1976,25 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     },
   },
   {
+    name: 'describe asks a session whose host names no tool for it, with a describe whose {tool} slot it fills, when the run needs a tool',
+    rows: ['R27', 'R3', 'R4'],
+    run: async () => {
+      const made = await harness({ review: REVIEW, check: CHECK }, { scorers: SCORERS, tool: null });
+      for (const mode of ['attended', 'unattended'] as const) {
+        expect(await made.call({ kind: 'describe', name: 'review' }, { mode })).toMatchObject({ data: { describe: { ask: {
+          kind: 'tool', reason: 'This coding session names no tool, which its prompt steps and judging need.',
+          describe: "teamai workflow start --describe review --driver skill --tools default='{tool}'", tools: expect.arrayContaining(['claude', 'omp', 'qoder']),
+        } } } });
+      }
+      expect(await made.call({ kind: 'describe', name: 'review', tool: 'claude' })).toMatchObject({ data: { describe: { ask: { kind: 'ask', question: {
+        options: [{ label: 'Recommended: with judging', start: 'teamai workflow start review --driver skill --tools default=claude' }, { label: 'Same, but without judging', start: 'teamai workflow start review --driver skill --tools default=claude --no-judge' }],
+      } } } } });
+      // A run of commands alone needs no tool.
+      expect(await made.call({ kind: 'describe', name: 'check' })).toMatchObject({ data: { describe: { ask: { kind: 'start', start: 'teamai workflow start check --driver skill' } } } });
+      return made.rows;
+    },
+  },
+  {
     name: 'judging by the session, when its tool has no confined judge here, is asked about too, and judging nobody here can do is not',
     rows: ['R3', 'R4'],
     run: async () => {

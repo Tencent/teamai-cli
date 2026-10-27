@@ -11,7 +11,7 @@ You orchestrate. You run the literal commands the CLI prints, and you keep the p
 
 ## Start
 
-Run `teamai workflow start --describe <name> --driver skill` with the workflow name from the skill that sent you. Where this machine runs teamai through `npx teamai-cli`, use that in its place; every literal the CLI prints after this already does. When the reply says this coding session names no tool, run the describe again with `--tools default=<tool>`, the tool you work in, and act on that reply instead.
+Run `teamai workflow start --describe <name> --driver skill` with the workflow name from the skill that sent you. Where this machine runs teamai through `npx teamai-cli`, use that in its place; every literal the CLI prints after this already does.
 
 Act on `data.describe.ask.kind`:
 
@@ -19,6 +19,7 @@ Act on `data.describe.ask.kind`:
 - `ask`: the question is the person's to answer, once, so the run goes on without them after. In one message, give them `ask.question.text` as it is, each entry of `ask.question.inputs` to fill in, and the `label` of each option as their choices. Wait for their pick, also when an option is marked recommended. In the `start` of the option they pick, replace `{inputs}` with their answers as one JSON object, each `'` in it written as `'\''`, and run it. Those options are the whole choice: when the person wants a start none of them offers, show them the options again.
 - `local`: tell the person `ask.reason` and give them `ask.start` for their own terminal. It is theirs to run.
 - `denied`: tell the person `ask.reason`. Nothing is left to run here.
+- `tool`: this session names no tool, and the run needs one. In `ask.describe`, replace `{tool}` with the entry of `ask.tools` for the tool you work in, run it, and act on its reply instead.
 
 Done when a reply carries `data.turn` with a `run` id, or the person has `ask.reason`.
 

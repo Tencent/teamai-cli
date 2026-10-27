@@ -30,6 +30,8 @@ export type DescribeAsk =
     };
   }
   | { kind: 'local'; reason: string; start: Literal }
+  /** The session names no tool the run needs: the agent fills `describe`'s `{tool}` slot with the one of `tools` it works in, and describes again. */
+  | { kind: 'tool'; reason: string; describe: Literal; tools: string[] }
   /** `invoke: deny` asked from an agent session, or a start this checkout would refuse for its delivery: no literal. */
   | { kind: 'denied'; reason: string };
 

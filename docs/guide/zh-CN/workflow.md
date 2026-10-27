@@ -359,7 +359,7 @@ self 模式下，工作流 worktree 中的团队文件是已提交的版本。�
 
 agent 运行 `teamai workflow start --describe <name> --driver skill`。回复说明如何启动运行：直接启动、先问本人一个问题，或交给本地驱动。这个问题涵盖输入、同时运行几个步骤、谁回答可选审批，以及是否评审。
 
-TeamAI 从宿主设置的会话变量得知会话所用的工具。找不到时（例如 Oh My Pi 或 Qoder），describe 会说明这一点，agent 就在 describe 和 start 时传 `--tools default=<tool>`。运行会记住这个工具：评分步骤由它评审；teamai 为该工具安装 agent 时，步骤的模型也按它解析。
+TeamAI 从宿主设置的会话变量得知会话所用的工具。找不到时（例如 Oh My Pi 或 Qoder），且工作流有提示词步骤或评分步骤，describe 会要求提供工具，agent 就用 `--tools default=<tool>` 再次 describe。之后 teamai 打印的每条命令都会带上它。运行会记住这个工具：评分步骤由它评审；teamai 为该工具安装 agent 时，步骤的模型也按它解析。
 
 启动后，每次回复都是一个 turn：agent 要做的 action、正在运行的步骤、上次调用以来发生的事，以及下一条要运行的命令。运行状态保存在 CLI 中，agent 在两次调用之间不需要记住任何东西。上下文压缩后或在新会话中，`teamai workflow next <run> --driver skill` 会打印当前 turn。如果另一个会话仍在驱动这次运行，它返回 `orchestrator_active`，由本人决定是否让本会话用 `--takeover` 接管。
 
