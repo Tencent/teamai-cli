@@ -318,6 +318,24 @@ describe('session list --all', () => {
     expect(text).not.toMatch(CJK);
   });
 
+  it('shows the repo of an old index entry that does not record it', async () => {
+    const dir = path.join(repoRoot, 'sessions', 'repos', encodeRepoIdentity('github.com/org/alpha'));
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, '_index.json'), JSON.stringify({
+      version: 1,
+      repoIdentity: 'github.com/org/alpha',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      sessions: [
+        { sessionName: 'old_x', author: 'alice', platform: 'claude-code', title: 'x', cwd: '/p', messageCount: 1, createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z', status: 'active' },
+      ],
+    }));
+
+    await runSession('list', '--all', '--repo-root', repoRoot, '--cwd', '/tmp/nowhere');
+
+    const row = out.join('\n').split('\n').find((line) => line.includes('old_x'));
+    expect(row).toContain('github.com/org/alpha');
+  });
+
   it('keeps the single-project format without --all', async () => {
     await seed('github.com/org/alpha', 'alice', 'a-1', 'payment', 'payment retry');
     mocks.remotes['/run/alpha'] = 'https://github.com/org/alpha.git';

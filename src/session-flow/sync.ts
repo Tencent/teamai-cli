@@ -968,23 +968,6 @@ export class SyncManager {
     return identities;
   }
 
-  /**
-   * List every session across repos (the data source for `list --all` / `search --all`).
-   *
-   * Calls listSessions for each identity from listAllRepoIdentities() and merges the results.
-   * Each entry's repoIdentity field marks the source repo (null → `_unattributed`).
-   * The display layer uses it for the source column; when an old index entry lacks the value, backfill it from the repo's identity.
-   */
-  listSessionsAcrossRepos(author?: string): IndexEntry[] {
-    const out: IndexEntry[] = [];
-    for (const identity of this.listAllRepoIdentities()) {
-      for (const entry of this.listSessions(identity, author)) {
-        out.push({ ...entry, repoIdentity: entry.repoIdentity ?? identity });
-      }
-    }
-    return out;
-  }
-
   private deleteSessionLocked(repoIdentity: string | null, sessionName: string, author?: string): void {
     const resolvedAuthor = author ?? this.findAuthor(repoIdentity, sessionName);
     const paths = this.sessionPaths(repoIdentity, resolvedAuthor, sessionName);
