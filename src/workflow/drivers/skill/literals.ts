@@ -26,8 +26,9 @@ export function generatedStartPatterns(name: string, alias?: string): string[] {
   return INVOCATIONS.flatMap((invocation) => [name, ...(alias ? [alias] : [])].map((start) => `Bash(${invocation} workflow start ${start} --driver skill:*)`));
 }
 
-export function describeLiteral(invocation: Invocation, name: string): Literal {
-  return LiteralSchema.parse(`${invocation} workflow start --describe ${name} --driver skill`);
+/** Describes `name` for the skill driver. `tool` names the tool of a session whose host names none. */
+export function describeLiteral(invocation: Invocation, name: string, options: { tool?: string } = {}): Literal {
+  return LiteralSchema.parse([`${invocation} workflow start --describe ${name} --driver skill`, ...toolsWords(options.tool)].join(' '));
 }
 
 /** `word` as one shell word: as is when it holds only safe characters, else single-quoted. */
@@ -46,11 +47,13 @@ function runOptionWords(options: { parallel?: number; hitl?: HitlMode; noJudge?:
 
 /**
  * Starts `name` for the skill driver. `inputs` leaves the `{inputs}` slot the agent fills with the person's answers;
- * `hitl` is how optional gates are answered; `noJudge` leaves the scored steps unjudged here.
+ * `hitl` is how optional gates are answered; `noJudge` leaves the scored steps unjudged here; `tool` names the tool of a
+ * session whose host names none.
  */
-export function startLiteral(invocation: Invocation, name: string, options: { parallel?: number; confirmed?: boolean; hitl?: HitlMode; inputs?: boolean; noJudge?: boolean } = {}): Literal {
+export function startLiteral(invocation: Invocation, name: string, options: { parallel?: number; confirmed?: boolean; hitl?: HitlMode; inputs?: boolean; noJudge?: boolean; tool?: string } = {}): Literal {
   return LiteralSchema.parse([
     `${invocation} workflow start ${name} --driver skill`,
+    ...toolsWords(options.tool),
     ...runOptionWords({ parallel: options.parallel }),
     ...(options.confirmed ? ['--confirmed'] : []),
     ...runOptionWords({ hitl: options.hitl, noJudge: options.noJudge }),
@@ -58,7 +61,7 @@ export function startLiteral(invocation: Invocation, name: string, options: { pa
   ].join(' '));
 }
 
-/** `--tools default=<tool>`, when `tool` is the prompt tool a local run must be told (`localPromptTool`). */
+/** `--tools default=<tool>`: the prompt tool a local run must be told (`localPromptTool`), or the tool a skill session names. */
 function toolsWords(tool: string | undefined): string[] {
   return tool !== undefined ? [`--tools default=${shellWord(tool)}`] : [];
 }

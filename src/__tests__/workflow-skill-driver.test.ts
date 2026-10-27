@@ -8,7 +8,7 @@ import { LabelStore } from '../scorers/label-store.js';
 import { encodeCwdClaude } from '../session-flow/fs.js';
 import type { RunMode } from '../launch-context.js';
 import { acquireLock, releaseLock } from '../update.js';
-import { getDataHome } from '../types.js';
+import { getDataHome, type ToolId } from '../types.js';
 import { skillContext } from '../workflow/drivers/skill/skill-driver.js';
 import { inProcessClient, type WorkflowClient } from '../workflow/protocol.js';
 import { takeJudgeLease, type JudgeRequest } from '../workflow/scoring.js';
@@ -215,10 +215,10 @@ async function eventsToDone(harness: Harness, run: RunId): Promise<unknown[]> {
 }
 
 /** Starts `review` with the skill driver, has its child review the change and report, and answers the turn that follows. */
-async function reviewed(harness: Harness, mode: RunMode = 'attended', options: { judge?: false; host?: 'h1' | 'h4' } = {}): Promise<{ run: RunId; chosen: unknown; turn: unknown }> {
-  const { host = 'h1', ...judge } = options;
+async function reviewed(harness: Harness, mode: RunMode = 'attended', options: { judge?: false; host?: 'h1' | 'h4'; tool?: ToolId } = {}): Promise<{ run: RunId; chosen: unknown; turn: unknown }> {
+  const { host = 'h1', tool, ...judge } = options;
   const answers = { ...(mode === 'unattended' ? { confirmed: false, hitl: 'auto-approve' as const } : { confirmed: false }), ...judge };
-  const started = await harness.call({ kind: 'start', name: 'review', answers, inputs: undefined }, { mode });
+  const started = await harness.call({ kind: 'start', name: 'review', answers, inputs: undefined, ...(tool !== undefined ? { tool } : {}) }, { mode });
   if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
   const run = RunIdSchema.parse(started.data.turn.run);
   const chosen = await harness.call({ kind: 'choose', run, choice: host }, { mode });
@@ -987,6 +987,56 @@ steps:
     const { tool } = await skillContext({ config: harness.config, toolPaths: harness.context.toolPaths, env: harness.context.env, cwd: harness.work, aiTools: [] });
     expect(tool).toBe('pi');
     expect(await harness.call({ kind: 'describe', name: 'review' }, { tool })).toMatchObject({ data: { describe: { judging: { kind: 'session', tool: 'pi' } } } });
+  });
+
+  it('describe tells a session whose host names no tool how to name it, as nobody judges its run here until it does', async () => {
+    const harness = await skillHarness({ review: REVIEW }, { scorers: { 'review-quality': REVIEW_QUALITY }, tool: null });
+    roots.push(harness.root);
+    expect(await harness.call({ kind: 'describe', name: 'review' })).toMatchObject({ data: { describe: {
+      judging: { kind: 'elsewhere', reason: 'This coding session names no tool: describe and start the workflow with --tools default=<tool>, the tool it works in.' },
+    } } });
+  });
+
+  it('a step that needs a model fails in a session whose host names no tool, and says how to name it', async () => {
+    const harness = await skillHarness({ review: REVIEW.replace('    prompt: Review the change.', '    prompt: Review the change.\n    model: claude-opus-4-1') }, { tool: null });
+    roots.push(harness.root);
+    const started = await harness.call({ kind: 'start', name: 'review', answers: { confirmed: false }, inputs: undefined });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+    expect(await harness.call({ kind: 'choose', run: RunIdSchema.parse(started.data.turn.run), choice: 'h1' })).toMatchObject({ data: { turn: { events: expect.arrayContaining([{
+      kind: 'settled', step: 'review', outcome: 'failed', failure: { code: 'model_unavailable', message: 'Step "review" needs model claude-opus-4-1, and this coding session names no tool to resolve it for: start the workflow with --tools default=<tool>, the tool it works in.' },
+    }]) } } });
+  });
+
+  it('a takeover hands the run to the new session\'s tool, which the steps it prepares resolve their model for', async () => {
+    const harness = await skillHarness({ review: REVIEW.replace('    prompt: Review the change.', '    prompt: Review the change.\n    model: claude-opus-4-1') });
+    roots.push(harness.root);
+    const started = await harness.call({ kind: 'start', name: 'review', answers: { confirmed: false }, inputs: undefined });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+    const run = RunIdSchema.parse(started.data.turn.run);
+    expect(await harness.call({ kind: 'takeover', run, confirmed: false }, { session: 'session-b', tool: 'pi' })).toMatchObject({ data: { turn: { events: [{ kind: 'takeover', from: 'session-a' }] } } });
+    expect(await harness.call({ kind: 'choose', run, choice: 'h1' }, { session: 'session-b', tool: 'pi' })).toMatchObject({ data: { turn: { events: expect.arrayContaining([{
+      kind: 'settled', step: 'review', outcome: 'failed', failure: { code: 'model_unavailable', message: 'Step "review" needs model claude-opus-4-1, and teamai resolves no model for pi, the coding session\'s tool.' },
+    }]) } } });
+  });
+
+  it('keeps a declared tool in every start command describe offers, and in the describe command a refused start prints', async () => {
+    const harness = await skillHarness({ review: REVIEW.replace('invoke: allow', 'invoke: ask') }, { scorers: { 'review-quality': REVIEW_QUALITY }, tool: null });
+    roots.push(harness.root);
+    unverifiedClaude(harness);
+    const starts = JSON.stringify(await harness.call({ kind: 'describe', name: 'review', tool: 'claude' })).match(/teamai workflow start review --driver skill[^"]*/g) ?? [];
+    expect(starts).not.toHaveLength(0);
+    for (const start of starts) expect(start).toMatch(/^teamai workflow start review --driver skill --tools default=claude /);
+    expect(await harness.call({ kind: 'start', name: 'review', answers: { confirmed: false }, inputs: undefined, tool: 'claude' }))
+      .toMatchObject({ error: { code: 'confirm_needed', next: 'teamai workflow start --describe review --driver skill --tools default=claude' } });
+  });
+
+  it('a session whose host names no tool names it with --tools: its runner resolves the step\'s model for that tool, and done leases the judging to it', async () => {
+    const harness = await skillHarness({ review: REVIEW.replace('    prompt: Review the change.', '    prompt: Review the change.\n    model: claude-opus-4-1') }, { scorers: { 'review-quality': REVIEW_QUALITY }, tool: null });
+    roots.push(harness.root);
+    unverifiedClaude(harness);
+    const { chosen, turn: done } = await reviewed(harness, 'attended', { tool: 'claude' });
+    expect(chosen).toMatchObject({ data: { turn: { actions: [{ kind: 'dispatch', model: { by: 'step', name: 'claude-opus-4-1' } }] } } });
+    expect(done).toMatchObject({ data: { turn: { status: 'done', actions: [{ kind: 'done', outcome: 'succeeded', score: expect.stringContaining('"tools":["claude"]') }] } } });
   });
 
   it('a session whose host has no child agent does not judge its run: choosing h4 turns judging off, and done names no score --next', async () => {

@@ -231,7 +231,7 @@ Generated: do not edit by hand. Regenerate with
     - `--confirmed` — The person agreed to start this run, as the describe reply asked. From an agent session, an invoke: ask workflow starts only with it, with any driver; teamai takes the agent's word for it. In an unattended run (TEAMAI_MODE=unattended or CI) an agent cannot start an invoke: ask workflow, with or without it
     - `--hitl <mode>` — With --driver skill: who answers optional approvals and choices, as the describe reply offered: person (the agent asks the person) or recommend (the agent answers). A required approval always goes to the person
     - `--no-judge` — With --driver skill: leave the scored steps unjudged on this machine, as the describe reply offered
-    - `--tools <list>` — Override local prompt tools for this run, as comma-separated name=tool pairs
+    - `--tools <list>` — Override local prompt tools for this run, as comma-separated name=tool pairs. With --driver skill: only default=<tool>, the tool this coding session works in, which its steps' models resolve for and which judges its scored steps. Pass it when the describe reply says the session names no tool
     - `--auto-approve` — Answer optional approve HITL requests yes and choose requests with their default: with --driver local in this process, with --driver skill for this run. A required approval still goes to the person
     - `--inputs <json>` — Values for the inputs the workflow declares, as a JSON object, for example {"issue":42}. Every declared input is required.
   - `teamai workflow next <run>` — Get a lease, hitl, wait, or done JSON envelope. Show hitl.message and hitl.respond to a person, who replaces <option> with a choice.
@@ -261,7 +261,7 @@ Generated: do not edit by hand. Regenerate with
     - `--parallel <n>` — With --driver skill: the most steps that run at once; 1 when left out
     - `--hitl <mode>` — With --driver skill: who answers optional approvals and choices: person (the agent asks the person; the default) or recommend (the agent answers). A required approval always goes to the person
     - `--no-judge` — With --driver skill: leave the scored steps unjudged on this machine
-    - `--tools <list>` — Override local prompt tools for this run, as comma-separated name=tool pairs
+    - `--tools <list>` — Override local prompt tools for this run, as comma-separated name=tool pairs. With --driver skill: only default=<tool>, the tool this coding session works in, which its steps' models resolve for and which judges its scored steps. Pass it when the describe reply says the session names no tool
     - `--auto-approve` — Answer optional approve HITL requests yes and choose requests with their default: with --driver local in this process, with --driver skill for this run. A required approval still goes to the person
     - `--claim` — Take the published run over from the install that owns it, replacing this machine's copy and releasing its leases
     - `--confirmed` — The person agreed to continue this run, as the confirm_needed answer asked. From an agent session, a run of an invoke: ask workflow continues only with it, with any driver; teamai takes the agent's word for it. In an unattended run (TEAMAI_MODE=unattended or CI) an agent cannot continue a run of an invoke: ask workflow, with or without it

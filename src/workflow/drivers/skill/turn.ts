@@ -7,7 +7,7 @@ import type { AttemptId, RunId } from '../../store.js';
 import type { OutputSchema, WorkflowFailure } from '../../types.js';
 import { HOST_CHOICES, HOST_PROFILES, HOST_QUESTION, type HostChoice } from './host-profiles.js';
 import {
-  ackLiteral, adoptLiteral, chooseHostLiteral, describeLiteral, localStartLiteral, nextLiteral, personRespondLiteral, pollLiteral, reportLiteral, respondLiteral, resumeLiteral,
+  ackLiteral, adoptLiteral, chooseHostLiteral, localStartLiteral, nextLiteral, personRespondLiteral, pollLiteral, reportLiteral, respondLiteral, resumeLiteral,
   sessionJudgeLiteral, skillResumeLiteral, takeoverLiteral, unavailableLiteral, type Invocation, type Literal,
 } from './literals.js';
 import type { AttemptState, Dispatch, Gate, ModelPick, SkillState, StopReason, TurnEvent } from './skill-state.js';
@@ -215,7 +215,8 @@ function refusalNext(refusal: Refusal, context: { invocation: Invocation; same: 
     case 'needs_local_driver':
       return null;
     case 'confirm_needed':
-      return describeLiteral(invocation, refusal.name);
+      // Only a start is refused for it, and its describe keeps the tool the start declared.
+      return context.same;
     case 'not_skill_run':
       return skillResumeLiteral(invocation, refusal.run);
     case 'not_owner':

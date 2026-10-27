@@ -238,9 +238,9 @@ function factsOf(description: WorkflowDescription, judging: Judging, answering: 
  * The starts the question offers: the recommended one, which runs at the full width with the agent deciding optional
  * gates and judging on, then the same start with one answer changed. At most five, whatever the workflow.
  */
-function optionsOf(description: WorkflowDescription, judging: Judging, invocation: Invocation): Array<{ label: string; start: Literal }> {
+function optionsOf(description: WorkflowDescription, judging: Judging, invocation: Invocation, tool: ToolId | undefined): Array<{ label: string; start: Literal }> {
   const { name, facts } = description;
-  const flags = startFlags(description);
+  const flags = { ...startFlags(description), ...(tool !== undefined ? { tool } : {}) };
   const noun = gatesNoun(facts.gates.filter((gate) => !gate.required), true);
   const judged = judgedBy(judging) !== undefined;
   const recommended = recommendedPick(description);
@@ -297,23 +297,27 @@ export function localPromptTool({ config, tool, aiTools }: { config: LocalConfig
   return !picked && tool !== undefined && isLaunchTool(tool) ? tool : undefined;
 }
 
-/** The describe reply's `ask` of the kind the transitions chose. `local.tool`: the prompt tool a local start names. */
-export function askFor(verdict: DescribeVerdict, description: WorkflowDescription, invocation: Invocation, judging: Judging, local: { tool?: string } = {}): DescribeAsk {
+/**
+ * The describe reply's `ask` of the kind the transitions chose. `tools.local`: the prompt tool a local start names.
+ * `tools.session`: the tool the session declared, which every skill start it offers keeps.
+ */
+export function askFor(verdict: DescribeVerdict, description: WorkflowDescription, invocation: Invocation, judging: Judging, tools: { local?: string; session?: ToolId } = {}): DescribeAsk {
   const { name } = description;
+  const session = tools.session !== undefined ? { tool: tools.session } : {};
   const facts = factsOf(description, judging, verdict.ask === 'unattended' ? 'auto-approve' : 'picked').map((fact) => `- ${fact}`);
   switch (verdict.ask) {
     case 'start':
-      return { kind: 'start', ...(facts.length > 0 ? { say: facts.join('\n') } : {}), start: startLiteral(invocation, name) };
+      return { kind: 'start', ...(facts.length > 0 ? { say: facts.join('\n') } : {}), start: startLiteral(invocation, name, session) };
     case 'unattended': {
       const inputs = inputsOf(description);
-      const start = startLiteral(invocation, name, { ...startFlags(description), ...recommendedPick(description), hitl: 'auto-approve' });
+      const start = startLiteral(invocation, name, { ...startFlags(description), ...recommendedPick(description), hitl: 'auto-approve', ...session });
       return { kind: 'start', ...(facts.length > 0 ? { say: facts.join('\n') } : {}), start, ...(inputs.length > 0 ? { inputs } : {}) };
     }
     case 'local':
     case 'denied':
-      return verdict.ask === 'local' ? { kind: 'local', reason: verdict.reason, start: localStartLiteral(invocation, name, local) } : { kind: 'denied', reason: verdict.reason };
+      return verdict.ask === 'local' ? { kind: 'local', reason: verdict.reason, start: localStartLiteral(invocation, name, { tool: tools.local }) } : { kind: 'denied', reason: verdict.reason };
     case 'ask': {
-      const options = optionsOf(description, judging, invocation);
+      const options = optionsOf(description, judging, invocation, tools.session);
       const confirmed = description.invoke === 'ask';
       const inputs = inputsOf(description);
       const closing = options.length > 1 ? (confirmed ? 'Start it, and if so, how should it run?' : 'How should it run?')

@@ -6,7 +6,7 @@ import { onTestFinished, vi } from 'vitest';
 import { resolveWorkflowEnv } from '../../env-resolution.js';
 import type { RunMode } from '../../launch-context.js';
 import { memberTools } from '../../tool-launch/call.js';
-import { getUserConfigPath, TeamaiConfigBaseSchema, type LocalConfig } from '../../types.js';
+import { getUserConfigPath, TeamaiConfigBaseSchema, type LocalConfig, type ToolId } from '../../types.js';
 import type { AgentEvidence } from '../../workflow/attempt-marker.js';
 import { syncWorkflowDefinitions } from '../../workflow/cache.js';
 import { inProcessClient, type WorkflowClient } from '../../workflow/protocol.js';
@@ -224,6 +224,8 @@ interface HarnessOptions {
   install?: TeamInstall;
   /** The member's `ai.tool` in ~/.teamai/config.yaml; none unless a test sets it. */
   aiTool?: string;
+  /** The tool the session's host names, which its runners also run under; claude unless a test sets it, null for none. */
+  tool?: ToolId | null;
 }
 
 /** A member's install of a `sharedTeam`: its config, and the business checkout its runs start from. */
@@ -320,7 +322,7 @@ export async function skillHarness(workflows: Record<string, string>, options: H
   const client = scheduler.settingUp(inProcessClient({ config, env }));
   const rows: string[] = [];
   const context: SkillContext = {
-    config, toolPaths, env, client: scheduler.judging(options.client ? options.client(client) : client), session: options.session ?? 'session-a', tool: 'claude', aiTools: production.aiTools, invocation: 'teamai', evidence: options.evidence ?? { kind: 'none' }, mode: options.mode ?? 'attended', cwd: work,
+    config, toolPaths, env, client: scheduler.judging(options.client ? options.client(client) : client), session: options.session ?? 'session-a', tool: options.tool === null ? undefined : options.tool ?? 'claude', aiTools: production.aiTools, invocation: 'teamai', evidence: options.evidence ?? { kind: 'none' }, mode: options.mode ?? 'attended', cwd: work,
     now: scheduler.now, runners: scheduler.track(options.runners ? options.runners(scheduler.runners) : scheduler.runners),
     locks: { take: (run, body, waitMs) => takeRunLock(config, run, body, { waitMs }) },
     trace: (row) => { rows.push(row); },

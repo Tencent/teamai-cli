@@ -29,7 +29,7 @@ export async function pickChildModel(input: {
   const asked = model ?? (definition?.spec.model === undefined ? defaultModel : undefined);
   if (asked === undefined) return { ok: true, model: { by: 'definition' } };
   if (tool === undefined) {
-    return { ok: false, failure: { code: 'model_unavailable', message: `Step "${step}" needs model ${asked}, and this coding session names no tool to resolve it for.` } };
+    return { ok: false, failure: { code: 'model_unavailable', message: `Step "${step}" needs model ${asked}, and this coding session names no tool to resolve it for: start the workflow with --tools default=<tool>, the tool it works in.` } };
   }
   if (agentTool === undefined) {
     return { ok: false, failure: { code: 'model_unavailable', message: `Step "${step}" needs model ${asked}, and teamai resolves no model for ${tool}, the coding session's tool.` } };

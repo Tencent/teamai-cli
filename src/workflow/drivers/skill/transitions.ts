@@ -4,6 +4,7 @@
  * are the tables under `## The skill driver` in docs/dev/workflow-engine.md, cell by cell.
  */
 import type { RunMode } from '../../../launch-context.js';
+import type { ToolId } from '../../../types.js';
 import type { Judging, RunReadied, RunVersion } from '../../protocol.js';
 import type { EnvScope } from '../../requirements.js';
 import type { AttemptId, RunId } from '../../store.js';
@@ -36,7 +37,7 @@ export const TRANSITIONS = [
   { id: 'R8', state: 'none', input: 'start `--driver skill`, or R19\'s input', guard: 'the definition has a local route; for R19\'s input, the run\'s own definition, once R20 and R21 do not apply, or, in run mode `unattended`, as the run stands before the claim', effects: 'none', next: 'none', action: 'error `needs_local_driver` with the reason, next null; for R19\'s input it names the person\'s `teamai workflow resume <run>` literal, and the run stays readied here, or, unattended, as it was: nothing is claimed' },
   { id: 'R25', state: 'none', input: 'start `--driver skill`', guard: 'run mode `unattended`, R8 does not apply, and `attendedReason` names what needs a person, as R17\'s', effects: 'none', next: 'none', action: 'error `unattended_denied` with that reason, next null: no run is created' },
   { id: 'R9', state: 'none', input: 'start `--driver skill`', guard: '`checkStartAnswers` answers `confirm-needed`, and R8 and R25 do not apply', effects: 'none', next: 'none', action: 'error `confirm_needed`, next: the describe literal' },
-  { id: 'R10', state: 'none', input: 'start `--driver skill`', guard: '`checkStartAnswers` answers `ok`', effects: '`WorkflowClient.start`; write skill.json: identity `{skill, machine, run checkout}`, invocation, options (`--parallel`, the HITL mode, the caller\'s run mode), host `pending` when the definition has a prompt step, owner := the caller\'s session; judging on with the session tool when describe judges here, or `sessionJudge` with it when describe judges by the session, and the start has no `--no-judge`', next: 'host when it has a prompt step, else drive', action: 'the turn of a tick' },
+  { id: 'R10', state: 'none', input: 'start `--driver skill`', guard: '`checkStartAnswers` answers `ok`', effects: '`WorkflowClient.start`; write skill.json: identity `{skill, machine, run checkout}`, invocation, options (`--parallel`, the HITL mode, the caller\'s run mode), host `pending` when the definition has a prompt step, owner := the caller\'s session, working in the tool its `--tools default=<tool>` names, else the one its host names; judging on with the session tool when describe judges here, or `sessionJudge` with it when describe judges by the session, and the start has no `--no-judge`', next: 'host when it has a prompt step, else drive', action: 'the turn of a tick' },
   { id: 'R11', state: 'none', input: 'next, report `--driver skill`', guard: 'this machine has no skill.json for the run', effects: 'none', next: 'none', action: 'error `not_skill_run`, next: the `resume <run> --driver skill` literal' },
   { id: 'R19', state: 'any', input: 'resume `--driver skill`; `next --takeover` with no skill.json here', guard: '`WorkflowClient.resume` readied the run: it took a run this machine lacks, or with `--claim` one another install owns, or found the run here and this install its owner, and released each lease this machine\'s local driver left on it, once the process group that lease\'s setup or command left is stopped, and stopped the group each attempt of that driver the run already stopped left; no skill.json is kept here, or the claim installed the published state; R8 and R24 do not apply', effects: 'write skill.json as R10 does, with the caller\'s run mode and the options of `--parallel`, `--hitl` or `--auto-approve` and `--no-judge`, else a start\'s: one step at a time, HITL mode `person`, or `auto-approve` in an unattended run', next: 'host when the run has a prompt step, else drive', action: 'the turn of a tick' },
   { id: 'R20', state: 'any', input: 'R19\'s input', guard: '`WorkflowClient.resume` answers that another install owns the run (a resume without `--claim`, or a takeover), or that this machine lacks it (a takeover)', effects: 'none', next: 'unchanged', action: 'error `not_owner` or `run_not_found`, next: the `resume <run> --driver skill --claim` literal, run only when the person agrees' },
@@ -50,7 +51,7 @@ export const TRANSITIONS = [
   { id: 'R15', state: 'drive, done', input: 'next `--choice h`', guard: '', effects: 'none', next: 'unchanged', action: 'error `unknown_choice`, next: the next literal' },
   { id: 'S1', state: 'host, drive, done', input: 'an agent call from session s', guard: 'the owner is s, or either session is unknown', effects: '`lastCallAt` := now; owner := s when unknown', next: 'unchanged', action: 'the input\'s row' },
   { id: 'S2', state: 'host, drive, done', input: 'an agent call from session s without `--takeover`', guard: 'owner o is not s, and both are known, however long o has been idle', effects: 'none', next: 'unchanged', action: 'error `orchestrator_active` with `idleSeconds`, the seconds since o\'s last call, next: the takeover literal' },
-  { id: 'S4', state: 'host, drive, done', input: 'next `--takeover` from session s', guard: '', effects: 'owner := s; `lastCallAt` := now; `seen[s]` := `seen[o]` when that is later; every offered or dispatched attempt becomes offered with `reissued`', next: 'unchanged', action: 'event `takeover`; the turn of a tick' },
+  { id: 'S4', state: 'host, drive, done', input: 'next `--takeover` from session s', guard: '', effects: 'owner := s, working in the tool its host names; `lastCallAt` := now; `seen[s]` := `seen[o]` when that is later; every offered or dispatched attempt becomes offered with `reissued`', next: 'unchanged', action: 'event `takeover`; the turn of a tick' },
   { id: 'S5', state: 'any', input: 'a runner call (`report --attempt a` with the marker `<run>/a`)', guard: '', effects: 'no session check, no `lastCallAt`', next: 'unchanged', action: 'C rows' },
   { id: 'S6', state: 'host, drive, done', input: 'an agent `report --attempt a`, from any session', guard: 'a is settled, or open offered, dispatched, reporting, or stopping by the agent', effects: 'no session check, no `lastCallAt`', next: 'unchanged', action: 'the input\'s row' },
   { id: 'D1', state: 'drive', input: 'tick', guard: '', effects: 'engine `next {driver: identity + canFor(host), the can of the host\'s profile, and h1\'s for a run without prompt steps, running: every open attempt, canTakeLease: fewer open than options.parallel, and than one under a serial host; false in a runner\'s check, autoApprove: true under HITL mode `auto-approve`, runMode: options.mode}`', next: 'drive', action: '' },
@@ -434,15 +435,15 @@ export function invokeRow(refusal: WorkflowFailure | undefined): Answered<'R22',
  * The session row of an agent call from `input.session` (S1, S2, S4), or R11 when this machine keeps no skill state of
  * the run. `takeover`: the call is `next --takeover`.
  */
-export function callRow(state: SkillState | undefined, input: { run: RunId; session: string | undefined; at: string; takeover: boolean }): Moved<'S1' | 'S4'> | Answered<'R11' | 'S2'> {
+export function callRow(state: SkillState | undefined, input: { run: RunId; session: string | undefined; tool: ToolId | undefined; at: string; takeover: boolean }): Moved<'S1' | 'S4'> | Answered<'R11' | 'S2'> {
   if (!state) return { row: 'R11', answer: { kind: 'error', refusal: { code: 'not_skill_run', run: input.run } } };
-  if (input.takeover) return { row: 'S4', state: takenOver(state, input.session, input.at) };
+  if (input.takeover) return { row: 'S4', state: takenOver(state, input) };
   const owner = state.orchestrator.session;
   if (owner !== undefined && input.session !== undefined && owner !== input.session) {
     const idleSeconds = Math.round((Date.parse(input.at) - Date.parse(state.orchestrator.lastCallAt)) / 1000);
     return { row: 'S2', answer: { kind: 'error', refusal: { code: 'orchestrator_active', run: state.run, idleSeconds } } };
   }
-  return { row: 'S1', state: { ...state, orchestrator: { session: state.orchestrator.session ?? input.session, lastCallAt: input.at } } };
+  return { row: 'S1', state: { ...state, orchestrator: { ...state.orchestrator, session: state.orchestrator.session ?? input.session, lastCallAt: input.at } } };
 }
 
 /** S5: a runner's call, which takes no session row. */
@@ -897,10 +898,11 @@ export function reportRow(state: SkillState, input: { attempt: AttemptId; modelU
 }
 
 /**
- * `state` driven from session `session` from `at` on. Every dispatch an earlier session was shown is offered again, as
- * reissued, since that session may have started its child. The new session is told only what the earlier one was not.
+ * `state` driven from session `session`, working in `tool`, from `at` on. Every dispatch an earlier session was shown is
+ * offered again, as reissued, since that session may have started its child. The new session is told only what the
+ * earlier one was not.
  */
-function takenOver(state: SkillState, session: string | undefined, at: string): SkillState {
+function takenOver(state: SkillState, { session, tool, at }: { session: string | undefined; tool: ToolId | undefined; at: string }): SkillState {
   const attempts = state.attempts.map((open): AttemptState => {
     if (open.phase !== 'offered' && open.phase !== 'dispatched') return open;
     return { ...open, phase: 'offered', reissued: true };
@@ -908,7 +910,7 @@ function takenOver(state: SkillState, session: string | undefined, at: string): 
   const from = state.orchestrator.session;
   const told = Math.max(state.seen[seenBy(from)] ?? 0, state.seen[seenBy(session)] ?? 0);
   return withEvent(
-    { ...state, attempts, orchestrator: { ...(session !== undefined ? { session } : {}), lastCallAt: at }, seen: { ...state.seen, [seenBy(session)]: told } },
+    { ...state, attempts, orchestrator: { ...(session !== undefined ? { session } : {}), ...(tool !== undefined ? { tool } : {}), lastCallAt: at }, seen: { ...state.seen, [seenBy(session)]: told } },
     { kind: 'takeover', ...(from !== undefined ? { from } : {}) },
   );
 }

@@ -280,7 +280,7 @@ async function judgingOf(config: LocalConfig, description: WorkflowDescription, 
   if (description.facts.scored.length === 0) return { kind: 'none' };
   const unavailable = scoringUnavailable(config);
   if (unavailable) return { kind: 'elsewhere', reason: unavailable };
-  if (tool === undefined) return { kind: 'elsewhere', reason: 'The coding session\'s tool has no confined judge teamai runs.' };
+  if (tool === undefined) return { kind: 'elsewhere', reason: 'This coding session names no tool: describe and start the workflow with --tools default=<tool>, the tool it works in.' };
   const level = isJudgeTool(tool) ? await judgeToolLevel(tool) : undefined;
   if (level?.isolation === 'verified') return { kind: 'here', tool };
   const reason = !isJudgeTool(tool) ? `The coding session's tool, ${tool}, has no confined judge teamai runs`

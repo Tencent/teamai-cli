@@ -8,7 +8,7 @@ import { resolveCliEntry } from '../../../builtin-hooks.js';
 import type { WorkflowEnv } from '../../../env-resolution.js';
 import { resolveRunMode, type RunMode } from '../../../launch-context.js';
 import type { CommandExit } from '../../../tool-launch/process-stop.js';
-import { isToolId } from '../../../tools.js';
+import { isToolId, TOOLS } from '../../../tools.js';
 import type { LocalConfig, TeamaiConfig, ToolId } from '../../../types.js';
 import { agentSessionFromEnv } from '../../../utils/session-id.js';
 import { agentEvidence, isAttemptRunner, type AgentEvidence } from '../../attempt-marker.js';
@@ -25,15 +25,16 @@ import { agentReport, foreground, plannedState, poll } from './tick.js';
 import { describeRow, judgedBy, startRow, type ResumeAnswers, type RowId } from './transitions.js';
 import { errorOf, type SkillAnswer, type SkillError } from './turn.js';
 
+/** `tool`: `--tools default=<tool>`, the tool of the calling session, which its host may not name. */
 export type SkillCall =
-  | { kind: 'describe'; name: string }
+  | { kind: 'describe'; name: string; tool?: ToolId }
   /** `judge: false`: `--no-judge`, which leaves the scored steps unjudged here. `hitl`: `--hitl`, or `--auto-approve`. */
-  | { kind: 'start'; name: string; answers: { parallel?: number; confirmed: boolean; hitl?: HitlMode; judge?: false }; inputs: unknown }
+  | { kind: 'start'; name: string; answers: { parallel?: number; confirmed: boolean; hitl?: HitlMode; judge?: false }; inputs: unknown; tool?: ToolId }
   /**
    * `resume --driver skill`: this session drives a run another machine published; `claim` takes it from another install.
    * `confirmed`: `--confirmed`, the agent's word that the person agreed to continue a run of an `invoke: ask` workflow.
    */
-  | { kind: 'resume'; run: RunId; claim: boolean; confirmed: boolean; answers: ResumeAnswers }
+  | { kind: 'resume'; run: RunId; claim: boolean; confirmed: boolean; answers: ResumeAnswers; tool?: ToolId }
   | { kind: 'next'; run: RunId; wait: boolean }
   /** `next --takeover`: this session drives the run from now on, as the person agreed; `confirmed` as a resume's. */
   | { kind: 'takeover'; run: RunId; confirmed: boolean }
@@ -136,13 +137,28 @@ export async function sessionDrivesRun(config: LocalConfig, run: RunId): Promise
 }
 
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+/** `--tools default=<tool>`: the tool this coding session works in, for a host that sets no session variable teamai reads. */
+const SessionToolSchema = z.string().transform((tools, ctx) => {
+  const [pair = '', ...more] = tools.split(',');
+  const separator = pair.indexOf('=');
+  const tool = pair.slice(separator + 1).trim();
+  if (more.length > 0 || pair.slice(0, separator).trim() !== 'default' || tool === '') {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: '--driver skill takes only --tools default=<tool>, the tool this coding session works in' });
+    return z.NEVER;
+  }
+  if (!isToolId(tool)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: `--tools default=${tool} names no tool teamai knows: ${Object.keys(TOOLS).join(', ')}` });
+    return z.NEVER;
+  }
+  return tool;
+});
 /** The options of a run that a skill start and a skill resume share. */
 const RunOptionsSchema = z.object({
   parallel: z.string().regex(/^[1-9][0-9]*$/, '--parallel takes a whole number of steps, 1 or more').transform(Number).optional(),
   judge: z.boolean().optional(),
   hitl: z.enum(['person', 'recommend'], { errorMap: () => ({ message: '--hitl takes person or recommend, as the describe reply offered' }) }).optional(),
   autoApprove: z.boolean().optional(),
-  tools: z.undefined({ invalid_type_error: '--tools is for --driver local' }),
+  tools: SessionToolSchema.optional(),
 });
 const ONE_HITL = {
   check: (options: z.infer<typeof RunOptionsSchema>) => !(options.hitl !== undefined && options.autoApprove),
@@ -216,14 +232,15 @@ export function parseSkillCall(
     if (!NAME.test(raw.name)) return { error: { code: 'invalid_arguments', message: `"${raw.name}" is not a workflow name`, next: null } };
     const options = StartOptionsSchema.safeParse(raw.options);
     if (!options.success) return invalid(options.error);
-    if (options.data.describe) return { kind: 'describe', name: raw.name };
+    const tool = options.data.tools !== undefined ? { tool: options.data.tools } : {};
+    if (options.data.describe) return { kind: 'describe', name: raw.name, ...tool };
     const read = options.data.inputs === undefined ? { inputs: undefined } : parseInputsFlag(options.data.inputs);
     if ('error' in read) return { error: { ...read.error, next: null } };
     const { inputs } = read;
     const { parallel, confirmed, judge, autoApprove } = options.data;
     const hitl: HitlMode | undefined = autoApprove ? 'auto-approve' : options.data.hitl;
     return {
-      kind: 'start', name: raw.name, inputs,
+      kind: 'start', name: raw.name, inputs, ...tool,
       answers: { ...(parallel !== undefined ? { parallel } : {}), confirmed: confirmed === true, ...(hitl !== undefined ? { hitl } : {}), ...(judge === false ? { judge } : {}) },
     };
   }
@@ -232,10 +249,10 @@ export function parseSkillCall(
   if (raw.kind === 'resume') {
     const options = ResumeOptionsSchema.safeParse(raw.options);
     if (!options.success) return invalid(options.error);
-    const { claim, confirmed, parallel, judge, autoApprove } = options.data;
+    const { claim, confirmed, parallel, judge, autoApprove, tools } = options.data;
     const hitl: HitlMode | undefined = autoApprove ? 'auto-approve' : options.data.hitl;
     return {
-      kind: 'resume', run: run.data, claim: claim === true, confirmed: confirmed === true,
+      kind: 'resume', run: run.data, claim: claim === true, confirmed: confirmed === true, ...(tools !== undefined ? { tool: tools } : {}),
       answers: { ...(parallel !== undefined ? { parallel } : {}), ...(hitl !== undefined ? { hitl } : {}), ...(judge === false ? { judge } : {}) },
     };
   }
@@ -278,7 +295,9 @@ export async function runSkillCall(call: SkillCall, context: SkillContext): Prom
   return answer;
 }
 
-async function answerOf(call: SkillCall, context: SkillContext): Promise<SkillAnswer> {
+async function answerOf(call: SkillCall, caller: SkillContext): Promise<SkillAnswer> {
+  // The tool a session declares is the one it works in, whatever its host names, as a host may pass its env on to another tool.
+  const context = 'tool' in call && call.tool !== undefined ? { ...caller, tool: call.tool } : caller;
   switch (call.kind) {
     case 'describe':
     case 'start':
@@ -330,7 +349,7 @@ async function start(call: Extract<SkillCall, { kind: 'describe' | 'start' }>, c
       mode: context.mode, ...(attended !== undefined ? { attended } : {}),
     });
     context.trace?.(row);
-    return { data: { describe: { workflow: description, judging, ask: askFor(verdict, description, context.invocation, judging, { tool: localPromptTool(context) }) } } };
+    return { data: { describe: { workflow: description, judging, ask: askFor(verdict, description, context.invocation, judging, { local: localPromptTool(context), session: call.tool }) } } };
   }
   const check = checkStartAnswers({ description, answers: call.answers, inputs: call.inputs, ceiling });
   const judge = call.answers.judge !== false ? judgedBy(judging) : undefined;
@@ -338,17 +357,15 @@ async function start(call: Extract<SkillCall, { kind: 'describe' | 'start' }>, c
   const taken = startRow({ name: description.name, check, ...why, ...(attended !== undefined ? { attended } : {}), prompts: description.facts.prompts.length > 0, ...(judge !== undefined ? { judge } : {}) });
   context.trace?.(taken.row);
   if (taken.row === 'R25') return { error: { ...taken.error, next: null } };
-  if (taken.row !== 'R10') {
-    const same = describeLiteral(context.invocation, description.name);
-    return { error: errorOf({ kind: 'error', refusal: taken.refusal }, { invocation: context.invocation, same, localTool: localPromptTool(context) }) };
-  }
+  const same = describeLiteral(context.invocation, description.name, { tool: call.tool });
+  if (taken.row !== 'R10') return { error: errorOf({ kind: 'error', refusal: taken.refusal }, { invocation: context.invocation, same, localTool: localPromptTool(context) }) };
   const planned = taken.start;
   const started = await context.client.start(description.name, {
     ...(call.inputs !== undefined ? { inputs: call.inputs } : {}), checkout: context.cwd, caller: { evidence: context.evidence, confirmed: call.answers.confirmed, mode: context.mode },
   });
   if ('error' in started) {
     // No literal for a refusal no other answer fixes: a new describe would only lead back to it.
-    return { error: { ...started.error, next: ANSWERABLE_START_REFUSALS.has(started.error.code) ? describeLiteral(context.invocation, description.name) : null } };
+    return { error: { ...started.error, next: ANSWERABLE_START_REFUSALS.has(started.error.code) ? same : null } };
   }
   const run = RunIdSchema.safeParse(started.data.run);
   if (!run.success) return { error: { code: 'run_unreadable', message: 'The new run id was missing', next: null } };
