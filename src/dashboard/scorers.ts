@@ -11,6 +11,7 @@ import { z } from 'zod';
 import { readRecordedAgent, type RecordedAgent } from '../agent-observation.js';
 import { readReminderDecisions, REMINDER_RECORD_DAYS, sanitizeSessionId } from '../contribute-check.js';
 import { memberEvents } from '../dashboard-collector.js';
+import type { ScoreLabel } from '../scorers/label.js';
 import { LabelStore } from '../scorers/label-store.js';
 import { DIMENSIONS_OFFERED, SCORER_WINDOWS, ScorerResults, type ReminderInput, type ScorerResultsQuery, type ScorerResultsView, type Side, type ViewedLabel } from '../scorers/results.js';
 import { sessionArchiveRoot } from '../session-flow/session-cmd-shared.js';
@@ -18,7 +19,7 @@ import { SyncManager } from '../session-flow/sync.js';
 import { getReportsDir, usesBranchWorktree, type DashboardEvent, type LocalConfig } from '../types.js';
 import { execCommand } from '../utils/exec.js';
 import { buildEndRecord, RECORDS_DIR } from '../workflow/records.js';
-import { isRunId, readRun } from '../workflow/store.js';
+import { isRunId, readRun, runsDir } from '../workflow/store.js';
 import { HttpError } from './http.js';
 
 /** The most failing labels one answer lists, however many the page asks for. */
@@ -64,11 +65,12 @@ const RecordSchema = z.object({
 });
 
 type RunAgents = { source: 'local' | 'reported'; isBenchmark: boolean; agents: Map<string, RecordedAgent> };
+type PublishedRecord = z.infer<typeof RecordSchema>;
 
 const passKey = (step: string, pass: number) => `${step}#${pass}`;
 const sessionKey = (platform: string, sessionId: string) => `${platform}\0${sessionId}`;
 
-async function publishedRecord(config: LocalConfig, runId: string): Promise<z.infer<typeof RecordSchema> | undefined> {
+async function publishedRecord(config: LocalConfig, runId: string): Promise<PublishedRecord | undefined> {
   try {
     const parsed = RecordSchema.safeParse(JSON.parse(await fs.readFile(path.join(getReportsDir(config), RECORDS_DIR, `${runId}.json`), 'utf8')));
     return parsed.success ? parsed.data : undefined;
@@ -81,13 +83,13 @@ async function publishedRecord(config: LocalConfig, runId: string): Promise<z.in
  * The run a workflow label judges: its pass agents from this machine's run file when it has one, else from the record
  * the team published. Whether it was a benchmark comes from the published record either way.
  */
-async function runAgents(config: LocalConfig, runId: string): Promise<RunAgents | undefined> {
+async function runAgents(config: LocalConfig, runId: string, { isLocal, team }: { isLocal: boolean; team: TeamReads }): Promise<RunAgents | undefined> {
   if (!isRunId(runId)) return undefined;
-  const read = (steps: z.infer<typeof RecordSchema>['steps']) => new Map((steps ?? []).flatMap(({ step, pass, agent }) => {
+  const read = (steps: PublishedRecord['steps']) => new Map((steps ?? []).flatMap(({ step, pass, agent }) => {
     const recorded = readRecordedAgent(agent);
     return recorded ? [[passKey(step, pass), recorded] as const] : [];
   }));
-  const [local, published] = await Promise.all([readRun(config, runId), publishedRecord(config, runId)]);
+  const [local, published] = await Promise.all([isLocal ? readRun(config, runId) : undefined, team.record(runId)]);
   const isBenchmark = published?.benchmark !== undefined;
   if (typeof local === 'object') return { source: 'local', isBenchmark, agents: read(buildEndRecord(local, local.driver, '').steps) };
   return published ? { source: 'reported', isBenchmark, agents: read(published.steps) } : undefined;
@@ -100,6 +102,64 @@ function archivedNames(config: LocalConfig): Map<string, string> {
   const entries = new SyncManager(root).listAllSessions()
     .sort((left, right) => left.updatedAt.localeCompare(right.updatedAt));
   return new Map(entries.flatMap((entry) => (entry.sessionId ? [[sessionKey(entry.platform, entry.sessionId), entry.sessionName] as const] : [])));
+}
+
+/**
+ * What the team published, as read at one commit of the reports checkout and of the team clone: its labels, the names
+ * of its archived sessions, and each run's record, read on first ask.
+ */
+type TeamReads = {
+  labels: ReadonlyArray<{ member: string; label: ScoreLabel }>;
+  names: ReadonlyMap<string, string>;
+  record: (runId: string) => Promise<PublishedRecord | undefined>;
+};
+
+/**
+ * The team reads of each reports checkout, by the commits they were read at. Every change on the page asks again, and
+ * only a new commit of either checkout changes what the team published, so a click re-reads nothing else.
+ */
+const teamReadsCache = new Map<string, { at: string; reads: Promise<TeamReads> }>();
+
+async function headOf(dir: string): Promise<string | undefined> {
+  const { code, stdout } = await execCommand('git', ['rev-parse', '--verify', '--quiet', 'HEAD'], { cwd: dir, timeoutMs: 10_000 });
+  return code === 0 ? stdout.trim() : undefined;
+}
+
+async function readTeam(config: LocalConfig): Promise<TeamReads> {
+  const records = new Map<string, Promise<PublishedRecord | undefined>>();
+  return {
+    labels: await LabelStore.published(config),
+    names: archivedNames(config),
+    record: (runId) => {
+      const record = records.get(runId) ?? publishedRecord(config, runId);
+      records.set(runId, record);
+      return record;
+    },
+  };
+}
+
+/** The team reads at the current commits, from memory when neither checkout moved. A checkout with no commit is never kept. */
+async function teamReads(config: LocalConfig): Promise<TeamReads> {
+  const dir = getReportsDir(config);
+  const [reportsHead, teamHead] = await Promise.all([headOf(dir), headOf(config.repo.localPath)]);
+  const at = reportsHead && teamHead ? `${reportsHead} ${teamHead}` : undefined;
+  const kept = teamReadsCache.get(dir);
+  if (at && kept?.at === at) return kept.reads;
+  const reads = readTeam(config);
+  if (at) teamReadsCache.set(dir, { at, reads });
+  else teamReadsCache.delete(dir);
+  try {
+    return await reads;
+  } catch (e) {
+    if (teamReadsCache.get(dir)?.reads === reads) teamReadsCache.delete(dir);
+    throw e;
+  }
+}
+
+/** The runs this machine has a run file for. */
+async function localRunIds(config: LocalConfig): Promise<Set<string>> {
+  const entries = await fs.readdir(runsDir(config)).catch(() => []);
+  return new Set(entries.flatMap((entry) => (entry.endsWith('.json') ? [entry.slice(0, -'.json'.length)] : [])));
 }
 
 async function teamGit(config: LocalConfig, args: string[]) {
@@ -165,15 +225,15 @@ export async function scorerResults({ config, query, now = new Date(), events, r
     const { readableReportsWorktree } = await import('../utils/reports-branch.js');
     await readableReportsWorktree(config, { dryRun: !refresh });
   }
-  const [local, published] = await Promise.all([LabelStore.local(config), LabelStore.published(config)]);
+  const [local, team, localRuns] = await Promise.all([LabelStore.local(config), teamReads(config), localRunIds(config)]);
   const labels = [
     ...local.map((label) => ({ label, author: config.username ?? 'unknown' })),
-    ...published.map(({ member, label }) => ({ label, author: member })),
+    ...team.labels.map(({ member, label }) => ({ label, author: member })),
   ];
 
   const runIds = new Set(labels.flatMap(({ label }) => (label.source === 'workflow' ? [label.subject.runId] : [])));
-  const runs = new Map(await Promise.all([...runIds].map(async (runId) => [runId, await runAgents(config, runId)] as const)));
-  const names = archivedNames(config);
+  const runs = new Map(await Promise.all([...runIds].map(async (runId) => [runId, await runAgents(config, runId, { isLocal: localRuns.has(runId), team })] as const)));
+  const { names } = team;
   const viewed: ViewedLabel[] = labels.flatMap(({ label, author }): ViewedLabel[] => {
     if (label.source === 'session') {
       const sessionName = names.get(sessionKey(label.subject.platform, label.subject.sessionId));

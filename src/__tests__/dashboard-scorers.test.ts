@@ -168,6 +168,28 @@ describe('dashboard scorer results', () => {
   });
 });
 
+describe('team reads between clicks', () => {
+  it('counts labels a new reports commit adds, and this machine\'s own labels whenever they change', async () => {
+    const { config } = team();
+    const reports = getReportsDir(config);
+    fs.mkdirSync(reports, { recursive: true });
+    git(reports, 'init', '-q', '-b', 'teamai-reports');
+    const commit = (labels: ScoreLabel[]) => {
+      publishLabels(config, 'bob', labels);
+      git(reports, 'add', '.');
+      git(reports, 'commit', '-q', '-m', 'reports');
+    };
+    const n = async () => (await scorerResults({ config, query: { windowDays: 30 }, now: NOW })).selected?.cohort.stats.n;
+
+    commit([sessionLabel('one')]);
+    expect(await n()).toBe(1);
+    commit([sessionLabel('one'), sessionLabel('two')]);
+    expect(await n()).toBe(2);
+    write(path.join(config.dataHome ?? '', 'scores', 'labels.jsonl'), `${JSON.stringify(sessionLabel('mine'))}\n`);
+    expect(await n()).toBe(3);
+  });
+});
+
 describe('reminder table over a long window', () => {
   it('covers only the 30 days this machine keeps reminder decisions for, and says so', async () => {
     const { config } = team();

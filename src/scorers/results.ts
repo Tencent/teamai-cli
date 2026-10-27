@@ -186,7 +186,20 @@ function withAlias(judge: JudgeCohort, newestFirst: readonly ViewedLabel[]): Jud
   return alias ? { ...judge, model: { ...judge.model, alias } } : judge;
 }
 
-function cohortOf(label: ScoreLabel): Omit<Cohort, 'rubric'> & { rubric: { sourceHash: string } } {
+type CohortIdentity = Omit<Cohort, 'rubric'> & { rubric: { sourceHash: string } };
+
+/** Each label's cohort and key, kept for as long as the label is: a caller that keeps its labels between views reuses them. */
+const identities = new WeakMap<ScoreLabel, { cohort: CohortIdentity; key: string }>();
+
+function identityOf(label: ScoreLabel): { cohort: CohortIdentity; key: string } {
+  const kept = identities.get(label);
+  if (kept) return kept;
+  const identity = { cohort: cohortOf(label), key: labelId(label) };
+  identities.set(label, identity);
+  return identity;
+}
+
+function cohortOf(label: ScoreLabel): CohortIdentity {
   const identity = {
     scorer: label.scorer,
     rubric: { sourceHash: label.rubric.sourceHash },
@@ -204,7 +217,7 @@ function cohortOf(label: ScoreLabel): Omit<Cohort, 'rubric'> & { rubric: { sourc
 function current(labels: readonly ViewedLabel[]): ViewedLabel[] {
   const kept = new Map<string, ViewedLabel>();
   for (const entry of labels) {
-    const key = labelId(entry.label);
+    const { key } = identityOf(entry.label);
     const other = kept.get(key);
     if (!other || entry.label.scoredAt > other.label.scoredAt) kept.set(key, entry);
   }
@@ -375,9 +388,9 @@ export const ScorerResults = {
     const { from, to } = window;
     const inWindow = (entry: ViewedLabel) => entry.label.scoredAt >= from && entry.label.scoredAt <= to;
 
-    const byCohort = new Map<string, { cohort: ReturnType<typeof cohortOf>; all: ViewedLabel[] }>();
+    const byCohort = new Map<string, { cohort: CohortIdentity; all: ViewedLabel[] }>();
     for (const entry of current(labels)) {
-      const cohort = cohortOf(entry.label);
+      const { cohort } = identityOf(entry.label);
       const group = byCohort.get(cohort.id) ?? { cohort, all: [] };
       group.all.push(entry);
       byCohort.set(cohort.id, group);
