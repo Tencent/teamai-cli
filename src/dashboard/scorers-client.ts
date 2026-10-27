@@ -20,7 +20,7 @@ const DIMENSION_NAMES: Record<Dimension, string> = {
 };
 
 export const scorersClient = `
-let scorerData=null, scorerError='', scorerLoading=false, scorerHtml='', scorerGroup='', scorerAllFailing=false;
+let scorerData=null, scorerError='', scorerLoading=false, scorerHtml='', scorerGroup='', scorerAllFailing=false, scorerRequest=0;
 const scorerWindows=${JSON.stringify(SCORER_WINDOWS.map(String))};
 const scorerDimensions=${JSON.stringify(Object.fromEntries(DIMENSIONS_OFFERED.map((dimension) => [dimension, DIMENSION_NAMES[dimension]])))};
 const savedWindow=read('teamai-dashboard-scorer-window','30'), savedGroup=read('teamai-dashboard-scorer-group','');
@@ -78,8 +78,8 @@ function groupsPanel(sel){
 }
 function failingPanel(sel){
  const rows=scorerGroup?sel.failing.filter(r=>(r.groups||[]).includes(scorerGroup)):sel.failing;
- const subject=r=>r.run?'<button class="link" data-run="'+e(r.run.id)+'" data-run-source="'+e(r.run.source)+'"><span data-verbatim>'+e(r.run.id)+'</span> ↗</button><small data-verbatim>'+e(r.run.step)+' #'+e(r.run.pass)+'</small>'
-  :(r.sessionName?'<code class="command" data-verbatim>teamai session resume '+e(r.sessionName)+'</code>':'<span class="muted">'+label('Not pushed to the team archive')+'</span>');
+ const subject=r=>r.run?(r.run.source?'<button class="link" data-run="'+e(r.run.id)+'" data-run-source="'+e(r.run.source)+'"><span data-verbatim>'+e(r.run.id)+'</span> ↗</button>':'<span data-verbatim>'+e(r.run.id)+'</span> <span class="muted">'+label('Run not found')+'</span>')+'<small data-verbatim>'+e(r.run.step)+' #'+e(r.run.pass)+'</small>'
+  :(r.sessionName?'<code class="command" data-verbatim>teamai session resume '+e(r.sessionName)+' --platform '+e(r.platform)+'</code>':'<span class="muted">'+label('Not pushed to the team archive')+'</span>');
  return '<section class="panel sessions"><div class="panelhead"><h2>'+label('Failing labels')+' <span class="count">'+number(rows.length)+'</span></h2>'+(scorerGroup?'<button class="link" data-scorer-group="">'+label('Show every group')+'</button>':'<span class="label">'+label('Newest first')+'</span>')+'</div>'
   +(rows.length?'<div class="table-scroll"><table class="session-table"><thead><tr>'+['SCORED','AUTHOR','LABEL','PLATFORM','SKILLS','OPEN'].map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'
   +rows.slice(0,scorerAllFailing?rows.length:10).map(r=>'<tr><td>'+e(when(r.scoredAt))+'</td><td data-verbatim>'+e(r.author)+'</td><td class="amber" data-verbatim>'+e(r.label)+'</td><td data-verbatim>'+e(r.platform||(r.run?t('Workflow run'):'—'))+'</td><td>'+(r.skills?r.skills.map(s=>'<span class="tag" data-verbatim>'+e(s)+'</span>').join(' '):'—')+'</td><td>'+subject(r)+'</td></tr>').join('')
@@ -87,9 +87,9 @@ function failingPanel(sel){
 }
 function remindersPanel(sel){
  if(!sel.reminders)return '';
- return '<section class="panel sessions"><div class="panelhead"><h2>'+label('Friction reminder')+'</h2><span class="tag">'+label('Sessions run on this machine')+'</span></div><div class="table-scroll"><table class="session-table"><thead><tr>'+['REMINDER FIRED','SESSIONS','LABELLED','PASSED'].map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'
-  +sel.reminders.map(r=>'<tr><td>'+(r.reminder==='yes'?label('Yes'):r.reminder==='no'?label('No'):label('Not recorded'))+'</td><td>'+number(r.sessions)+'</td><td>'+number(r.labelled)+'</td><td>'+(r.rate==null?'—':meter(r.rate)+' '+pct(r.rate))+'</td></tr>').join('')
-  +'</tbody></table></div><p class="hint">'+label('Sessions are your own sessions that started on this machine in the window. The pass rate is over labelled sessions only. A session with no reminder state here is not recorded.')+'</p></section>';
+ return '<section class="panel sessions"><div class="panelhead"><h2>'+label('Friction reminder')+'</h2><span class="tag">'+label('Sessions run on this machine')+' · '+label('last')+' '+number(sel.reminders.days)+' '+label('days')+'</span></div><div class="table-scroll"><table class="session-table"><thead><tr>'+['REMINDER FIRED','SESSIONS','LABELLED','PASSED'].map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'
+  +sel.reminders.rows.map(r=>'<tr><td>'+(r.reminder==='yes'?label('Yes'):r.reminder==='no'?label('No'):label('Not recorded'))+'</td><td>'+number(r.sessions)+'</td><td>'+number(r.labelled)+'</td><td>'+(r.rate==null?'—':meter(r.rate)+' '+pct(r.rate))+'</td></tr>').join('')
+  +'</tbody></table></div><p class="hint">'+label('Sessions are your own sessions that started on this machine in the window, at most the 30 days this machine keeps reminder decisions. The pass rate is over labelled sessions only. A session with no reminder state here is not recorded.')+'</p></section>';
 }
 function scorerSummary(data){
  return '<section class="panel sessions"><div class="panelhead"><h2>'+label('Scorers')+' <span class="count">'+number(data.scorers.length)+'</span></h2><span class="label">'+label('Each scorer opens on its newest committed rubric.')+'</span></div><div class="table-scroll"><table class="session-table"><thead><tr>'+['SCORER','MEASUREMENT','LABELS','PASS RATE','TREND'].map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'
@@ -116,22 +116,22 @@ function scorersPage(){
  return (scorerError?'<div class="error-panel" role="alert"><p>'+e(scorerError)+'</p></div>':'')
   +'<div class="statusline"><span>'+label('Window')+': '+e(when(w.from))+' – '+e(when(w.to))+'</span><span>'+label('Counted by when labels were scored, not when the work happened.')+'</span><span>'+label('Pass or fail as each label stored it.')+'</span></div>'
   +scorerSummary(scorerData)+scorerControls(scorerData)
-  +(sel?'<h2 class="section-label"><span data-verbatim>'+e(sel.cohort.scorer)+'</span> <span class="tag">'+(sel.cohort.source==='session'?label('Session labels'):label('Workflow labels'))+'</span></h2>'+kpis(sel.headline)+(sel.split?splitCards(sel.split):'')
-   +'<section class="panel trend-panel"><div class="panelhead"><h2>'+label('Weekly pass rate')+'</h2><span class="label">'+cohortText(sel.cohort)+'</span></div>'+trendChart(sel.trend)+'</section>'
+  +(sel?'<h2 class="section-label"><span data-verbatim>'+e(sel.cohort.scorer)+'</span> <span class="tag">'+(sel.cohort.source==='session'?label('Session labels'):label('Workflow labels'))+'</span></h2>'+kpis(sel.cohort.stats)+(sel.split?splitCards(sel.split):'')
+   +'<section class="panel trend-panel"><div class="panelhead"><h2>'+label('Weekly pass rate')+'</h2><span class="label">'+cohortText(sel.cohort)+'</span></div>'+trendChart(sel.cohort.trend)+'</section>'
    +groupsPanel(sel)+failingPanel(sel)+remindersPanel(sel):'')
   +note;
 }
 async function loadScorers(){
- if(scorerLoading)return; const generation=workspaceGeneration; scorerLoading=true;
+ const generation=workspaceGeneration, request=++scorerRequest, current=()=>generation===workspaceGeneration&&request===scorerRequest; scorerLoading=true;
  const params={window:scorerQuery.window}; for(const key of ['scorer','cohort','groupBy','commit'])if(scorerQuery[key])params[key]=scorerQuery[key];
  try{
   const response=await fetch(apiQuery('/api/scorers',params),{signal:AbortSignal.timeout(30000)});
   const data=await response.json().catch(()=>null);
-  if(generation!==workspaceGeneration)return;
-  if(!response.ok){scorerError=data&&data.error?data.error:t('Could not load scorer results.');}
+  if(!current())return;
+  if(!response.ok){scorerError=data&&data.error?data.error:t('Could not load scorer results.');if(response.status===400)scorerQuery.commit='';}
   else{scorerData=data;scorerError='';if(data.selected){scorerQuery.scorer=data.selected.cohort.scorer;scorerQuery.cohort=data.selected.cohort.id;}if(!data.selected||!data.selected.groups)scorerGroup='';}
- }catch{if(generation===workspaceGeneration)scorerError=t('Could not load scorer results.');}
- finally{if(generation===workspaceGeneration){scorerLoading=false;if(page==='scorers'){const html=scorersPage();if(html!==scorerHtml){scorerHtml=html;render();}}}}
+ }catch{if(current())scorerError=t('Could not load scorer results.');}
+ finally{if(current()){scorerLoading=false;if(page==='scorers'){const html=scorersPage();if(html!==scorerHtml){scorerHtml=html;render();}}}}
 }
 function setScorerQuery(changes){ scorerQuery={...scorerQuery,...changes}; save('teamai-dashboard-scorer-window',scorerQuery.window); save('teamai-dashboard-scorer-group',scorerQuery.groupBy); scorerGroup=''; loadScorers(); }
 document.addEventListener('change',event=>{

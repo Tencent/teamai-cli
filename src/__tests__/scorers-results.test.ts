@@ -38,11 +38,11 @@ describe('scorer results', () => {
     ];
     const opened = ScorerResults.of({ labels, query: { windowDays: 30 }, now: NOW });
     expect(opened.selected?.cohort.rubric).toEqual({ sourceHash: 'committed', teamRevision: REV_A });
-    expect(opened.selected?.headline).toEqual({ n: 2, passed: 1, failed: 1, rate: 0.5 });
+    expect(opened.selected?.cohort.stats).toEqual({ n: 2, passed: 1, failed: 1, rate: 0.5 });
 
     const draft = opened.scorers[0]?.cohorts.find((cohort) => cohort.rubric.sourceHash === 'draft');
     const other = ScorerResults.of({ labels, query: { windowDays: 30, scorer: 'review-quality', cohort: draft?.id }, now: NOW });
-    expect(other.selected?.headline).toEqual({ n: 1, passed: 1, failed: 0, rate: 1 });
+    expect(other.selected?.cohort.stats).toEqual({ n: 1, passed: 1, failed: 0, rate: 1 });
   });
 
   it('never counts workflow and session labels, two judge models, or two run modes together', () => {
@@ -65,6 +65,18 @@ describe('scorer results', () => {
       ]);
   });
 
+  it('counts a judge model under one measurement whatever alias the scorer named it by, and shows the newest alias', () => {
+    const judge = (alias?: string): ScoreLabel['judge'] => ({ kind: 'model', tool: 'claude', model: { reported: 'claude-haiku-5-5', ...(alias ? { alias } : {}) }, isolation: 'verified', access: 'read' });
+    const labels = [
+      viewed(sessionLabel({ judge: judge(), scoredAt: '2026-03-10T00:00:00.000Z' })),
+      viewed(sessionLabel({ judge: judge('fast'), scoredAt: '2026-03-12T00:00:00.000Z' })),
+    ];
+    const [scorer] = ScorerResults.of({ labels, query: { windowDays: 30 }, now: NOW }).scorers;
+    expect(scorer?.cohorts.map((cohort) => ({ judge: cohort.judge, n: cohort.stats.n }))).toEqual([
+      { judge: { kind: 'model', tool: 'claude', model: { id: 'claude-haiku-5-5', reported: true, alias: 'fast' } }, n: 2 },
+    ]);
+  });
+
   it('counts a label rescored in a later month once, in that month', () => {
     const subject = { platform: 'claude', sessionId: 'rescored' };
     const labels = [
@@ -74,14 +86,14 @@ describe('scorer results', () => {
     const january = ScorerResults.of({ labels, query: { windowDays: 10 }, now: new Date('2026-01-25T00:00:00Z') });
     const february = ScorerResults.of({ labels, query: { windowDays: 10 }, now: new Date('2026-02-15T00:00:00Z') });
     const both = ScorerResults.of({ labels, query: { windowDays: 60 }, now: new Date('2026-02-15T00:00:00Z') });
-    expect(january.selected?.headline.n).toBe(0);
-    expect(february.selected?.headline).toEqual({ n: 1, passed: 1, failed: 0, rate: 1 });
-    expect(both.selected?.headline.n).toBe(1);
+    expect(january.selected?.cohort.stats.n).toBe(0);
+    expect(february.selected?.cohort.stats).toEqual({ n: 1, passed: 1, failed: 0, rate: 1 });
+    expect(both.selected?.cohort.stats.n).toBe(1);
   });
 
   it('reads pass or fail as the label stored it, whatever its score', () => {
     const labels = [viewed(sessionLabel({ score: 0.2, passed: true })), viewed(sessionLabel({ score: 0.9, passed: false }))];
-    expect(ScorerResults.of({ labels, query: { windowDays: 30 }, now: NOW }).selected?.headline).toEqual({ n: 2, passed: 1, failed: 1, rate: 0.5 });
+    expect(ScorerResults.of({ labels, query: { windowDays: 30 }, now: NOW }).selected?.cohort.stats).toEqual({ n: 2, passed: 1, failed: 1, rate: 0.5 });
   });
 
   describe('grouping', () => {
@@ -145,7 +157,7 @@ describe('scorer results', () => {
       after: { n: 2, passed: 2, failed: 0, rate: 1 },
       notRecorded: { n: 2, passed: 2, failed: 0, rate: 1 },
     });
-    expect(selected?.groups?.find((group) => group.key === 'tdd')?.split).toMatchObject({ before: { n: 1 }, after: { n: 1 }, notRecorded: { n: 2 } });
+    expect(selected?.groups?.find((group) => group.kind === 'value' && group.value === 'tdd')?.split).toMatchObject({ before: { n: 1 }, after: { n: 1 }, notRecorded: { n: 2 } });
   });
 
   it('lists the failing labels of a cohort newest first, with their author, platform, skills and session name only', () => {
@@ -160,6 +172,17 @@ describe('scorer results', () => {
     ]);
   });
 
+  it('keeps a recorded value named like none apart from labels that recorded none', () => {
+    const labels = [
+      viewed(sessionLabel({ passed: false, label: 'poor', used: { skills: ['none'] } })),
+      viewed(sessionLabel({ passed: false, label: 'poor', used: { skills: [] } })),
+    ];
+    const selected = ScorerResults.of({ labels, query: { windowDays: 30, groupBy: 'skill' }, now: NOW }).selected;
+    const keys = selected?.groups?.map((group) => group.key) ?? [];
+    expect(new Set(keys).size).toBe(2);
+    for (const key of keys) expect(selected?.failing.filter((row) => row.groups?.includes(key))).toHaveLength(1);
+  });
+
   it('lists every failing label of a group, however many newer failing labels other groups have', () => {
     const failing = (skill: string, scoredAt: string) => viewed(sessionLabel({ passed: false, label: 'poor', scoredAt, used: { skills: [skill] } }));
     const labels = [
@@ -167,7 +190,8 @@ describe('scorer results', () => {
       ...Array.from({ length: 150 }, (_, index) => failing('tdd', `2026-03-10T00:00:${String(index % 60).padStart(2, '0')}.${String(index).padStart(3, '0')}Z`)),
     ];
     const selected = ScorerResults.of({ labels, query: { windowDays: 30, groupBy: 'skill' }, now: NOW }).selected;
-    expect(selected?.failing.filter((row) => row.groups?.includes('review'))).toHaveLength(1);
+    const review = selected?.groups?.find((group) => group.kind === 'value' && group.value === 'review')?.key ?? 'missing';
+    expect(selected?.failing.filter((row) => row.groups?.includes(review))).toHaveLength(1);
     expect(selected?.failing).toHaveLength(151);
   });
 
@@ -175,14 +199,15 @@ describe('scorer results', () => {
     const on = (sessionId: string, passed: boolean) => viewed(sessionLabel({ subject: { platform: 'claude', sessionId }, passed }));
     const labels = [on('fired-1', false), on('fired-2', true), on('quiet-1', true), on('unknown-1', true), on('elsewhere', false)];
     const reminders = {
+      days: 30,
       sessions: ['fired-1', 'fired-2', 'fired-3', 'quiet-1', 'quiet-2', 'unknown-1'],
       hinted: new Map([['fired-1', true], ['fired-2', true], ['fired-3', true], ['quiet-1', false], ['quiet-2', false]]),
     };
-    expect(ScorerResults.of({ labels, query: { windowDays: 30 }, now: NOW, reminders }).selected?.reminders).toEqual([
+    expect(ScorerResults.of({ labels, query: { windowDays: 30 }, now: NOW, reminders }).selected?.reminders).toEqual({ days: 30, rows: [
       { reminder: 'yes', sessions: 3, labelled: 2, passed: 1, rate: 0.5 },
       { reminder: 'no', sessions: 2, labelled: 1, passed: 1, rate: 1 },
       { reminder: 'not recorded', sessions: 1, labelled: 1, passed: 1, rate: 1 },
-    ]);
+    ] });
   });
 
   it('shows a week without labels as a gap in the weekly trend, not as 0%', () => {
@@ -190,7 +215,7 @@ describe('scorer results', () => {
       viewed(sessionLabel({ scoredAt: '2026-03-03T00:00:00.000Z' })),
       viewed(sessionLabel({ scoredAt: '2026-03-17T00:00:00.000Z', passed: false })),
     ];
-    const trend = ScorerResults.of({ labels, query: { windowDays: 21 }, now: NOW }).selected?.trend;
+    const trend = ScorerResults.of({ labels, query: { windowDays: 21 }, now: NOW }).selected?.cohort.trend;
     expect(trend).toEqual([
       { week: '2026-02-23', n: 0, passed: 0, failed: 0, rate: null },
       { week: '2026-03-02', n: 1, passed: 1, failed: 0, rate: 1 },

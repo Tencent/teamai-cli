@@ -9,10 +9,10 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { readRecordedAgent, type RecordedAgent } from '../agent-observation.js';
-import { readReminderDecisions, sanitizeSessionId } from '../contribute-check.js';
+import { readReminderDecisions, REMINDER_RECORD_DAYS, sanitizeSessionId } from '../contribute-check.js';
 import { memberEvents } from '../dashboard-collector.js';
 import { LabelStore } from '../scorers/label-store.js';
-import { DIMENSIONS_OFFERED, SCORER_WINDOWS, ScorerResults, type ScorerResultsQuery, type ScorerResultsView, type Side, type ViewedLabel } from '../scorers/results.js';
+import { DIMENSIONS_OFFERED, SCORER_WINDOWS, ScorerResults, type ReminderInput, type ScorerResultsQuery, type ScorerResultsView, type Side, type ViewedLabel } from '../scorers/results.js';
 import { sessionArchiveRoot } from '../session-flow/session-cmd-shared.js';
 import { SyncManager } from '../session-flow/sync.js';
 import { getReportsDir, usesBranchWorktree, type DashboardEvent, type LocalConfig } from '../types.js';
@@ -62,22 +62,29 @@ type RunAgents = { source: 'local' | 'reported'; isBenchmark: boolean; agents: M
 const passKey = (step: string, pass: number) => `${step}#${pass}`;
 const sessionKey = (platform: string, sessionId: string) => `${platform}\0${sessionId}`;
 
-/** The run a workflow label judges: this machine's run file when it has one, else the record the team published. */
+async function publishedRecord(config: LocalConfig, runId: string): Promise<z.infer<typeof RecordSchema> | undefined> {
+  try {
+    const parsed = RecordSchema.safeParse(JSON.parse(await fs.readFile(path.join(getReportsDir(config), RECORDS_DIR, `${runId}.json`), 'utf8')));
+    return parsed.success ? parsed.data : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The run a workflow label judges: its pass agents from this machine's run file when it has one, else from the record
+ * the team published. Whether it was a benchmark comes from the published record either way.
+ */
 async function runAgents(config: LocalConfig, runId: string): Promise<RunAgents | undefined> {
   if (!isRunId(runId)) return undefined;
-  const local = await readRun(config, runId);
   const read = (steps: z.infer<typeof RecordSchema>['steps']) => new Map((steps ?? []).flatMap(({ step, pass, agent }) => {
     const recorded = readRecordedAgent(agent);
     return recorded ? [[passKey(step, pass), recorded] as const] : [];
   }));
-  if (typeof local === 'object') return { source: 'local', isBenchmark: false, agents: read(buildEndRecord(local, local.driver, '').steps) };
-  try {
-    const parsed = RecordSchema.safeParse(JSON.parse(await fs.readFile(path.join(getReportsDir(config), RECORDS_DIR, `${runId}.json`), 'utf8')));
-    if (!parsed.success) return undefined;
-    return { source: 'reported', isBenchmark: parsed.data.benchmark !== undefined, agents: read(parsed.data.steps) };
-  } catch {
-    return undefined;
-  }
+  const [local, published] = await Promise.all([readRun(config, runId), publishedRecord(config, runId)]);
+  const isBenchmark = published?.benchmark !== undefined;
+  if (typeof local === 'object') return { source: 'local', isBenchmark, agents: read(buildEndRecord(local, local.driver, '').steps) };
+  return published ? { source: 'reported', isBenchmark, agents: read(published.steps) } : undefined;
 }
 
 /** The name of each session the team archive holds, by source platform and session id; the latest update wins. */
@@ -102,17 +109,30 @@ async function resolveCommit(config: LocalConfig, commit: string): Promise<strin
   return resolved.stdout.trim();
 }
 
+/** How many git processes a split starts at once, however many team revisions the labels name. */
+const SPLIT_GIT_BATCH = 8;
+
 /** Which side of `commit` each revision is on: after when the revision contains it. A revision this clone lacks has none. */
 async function sidesOf(config: LocalConfig, commit: string, revisions: ReadonlySet<string>): Promise<Map<string, Side>> {
-  const answers = await Promise.all([...revisions].map(async (revision) => {
-    const { code } = await teamGit(config, ['merge-base', '--is-ancestor', commit, revision]);
-    return code === 0 ? [[revision, 'after' as const] as const] : code === 1 ? [[revision, 'before' as const] as const] : [];
-  }));
-  return new Map(answers.flat());
+  const sides = new Map<string, Side>();
+  const pending = [...revisions];
+  for (let start = 0; start < pending.length; start += SPLIT_GIT_BATCH) {
+    await Promise.all(pending.slice(start, start + SPLIT_GIT_BATCH).map(async (revision) => {
+      const { code } = await teamGit(config, ['merge-base', '--is-ancestor', commit, revision]);
+      if (code === 0) sides.set(revision, 'after');
+      else if (code === 1) sides.set(revision, 'before');
+    }));
+  }
+  return sides;
 }
 
-/** The member's own sessions that started on this machine in the window, and whether their reminder fired. */
-async function reminderInput({ events, from, to }: { events: readonly DashboardEvent[]; from: string; to: string }) {
+/**
+ * The member's own sessions that started on this machine in the window, and whether their reminder fired. A window
+ * longer than this machine keeps reminder decisions is cut to that, so an older session never reads as not recorded.
+ */
+async function reminderInput({ events, windowDays, now }: { events: readonly DashboardEvent[]; windowDays: number; now: Date }): Promise<ReminderInput> {
+  const days = Math.min(windowDays, REMINDER_RECORD_DAYS);
+  const { from, to } = ScorerResults.window(days, now);
   const sessions = [...new Set(memberEvents([...events])
     .filter((event) => event.type === 'session_start' && event.timestamp >= from && event.timestamp <= to)
     .map((event) => event.sessionId))];
@@ -121,7 +141,7 @@ async function reminderInput({ events, from, to }: { events: readonly DashboardE
     const decision = decisions.get(sanitizeSessionId(session));
     return decision === undefined ? [] : [[session, decision] as const];
   }));
-  return { sessions, hinted };
+  return { days, sessions, hinted };
 }
 
 /**
@@ -160,13 +180,12 @@ export async function scorerResults({ config, query, now = new Date(), events, r
   });
 
   const { commit, ...rest } = query;
-  const window = ScorerResults.window(query.windowDays, now);
   const [split, reminders] = await Promise.all([
     commit ? (async () => {
       const full = await resolveCommit(config, commit);
       return { commit: full, sideOf: await sidesOf(config, full, ScorerResults.revisions(viewed)) };
     })() : undefined,
-    events ? reminderInput({ events, ...window }) : undefined,
+    events ? reminderInput({ events, windowDays: query.windowDays, now }) : undefined,
   ]);
   return ScorerResults.of({ labels: viewed, query: { ...rest, ...split ? { split } : {} }, now, ...reminders ? { reminders } : {} });
 }

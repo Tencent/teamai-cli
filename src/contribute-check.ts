@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { z } from 'zod';
 import { log } from './utils/logger.js';
 import { RELAY_TO_USER_PREFIX, relayWhenHidden } from './utils/hook-output.js';
-import { readJson, writeJson, ensureDir } from './utils/fs.js';
+import { readJson, writeJson, writeJsonAtomic, ensureDir } from './utils/fs.js';
 import { readEvents, aggregateSessionMetrics, scanTranscriptStop, hookScopeDir } from './dashboard-collector.js';
 import { readRecallQuality } from './recall-quality.js';
 import { deriveSessionId } from './utils/session-id.js';
@@ -184,10 +184,11 @@ export async function writeContributeState(sessionId: string, state: ContributeS
 const STALE_SESSION_MS = 24 * 60 * 60 * 1000;
 
 /**
- * How long a swept session's reminder decision is kept: the dashboard compares the sessions the friction reminder fired
- * on with those it did not over a 30 days window (#1182), longer than a state file lives.
+ * How long a swept session's reminder decision is kept, in days: the dashboard compares the sessions the friction
+ * reminder fired on with those it did not over at most this many days (#1182), longer than a state file lives.
  */
-const SWEPT_RECORD_MS = 30 * 24 * 60 * 60 * 1000;
+export const REMINDER_RECORD_DAYS = 30;
+const SWEPT_RECORD_MS = REMINDER_RECORD_DAYS * 24 * 60 * 60 * 1000;
 
 /** `<sessions>/swept/<sanitized id>.json`: what the sweep keeps of a removed state file, `{ hinted }` only. */
 function sweptDir(sessionsDir: string): string {
@@ -229,7 +230,7 @@ export async function cleanupStaleSessions(dir: string, currentSessionId: string
       if (now - stat.mtimeMs > STALE_SESSION_MS) {
         const hinted = await readHinted(filePath);
         const record = path.join(sweptDir(dir), entry);
-        if (hinted !== undefined) await writeJson(record, { hinted: hinted || (await readHinted(record)) === true });
+        if (hinted !== undefined) await writeJsonAtomic(record, { hinted: hinted || (await readHinted(record)) === true });
         await fs.promises.unlink(filePath);
       }
     } catch {

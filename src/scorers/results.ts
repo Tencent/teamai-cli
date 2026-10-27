@@ -117,14 +117,15 @@ export type ScorerResultsQuery = {
  */
 export type FailingLabel = { author: string; scoredAt: string; label: string; skills?: string[]; groups?: string[] } & (
   | { source: 'session'; platform: string; sessionName?: string }
-  | { source: 'workflow'; run: { id: string; step: string; pass: number; source: 'local' | 'reported' } }
+  | { source: 'workflow'; run: { id: string; step: string; pass: number; source?: 'local' | 'reported' } }
 );
 
 /**
  * The friction reminder per session run on this machine (#1182): `hinted` from the member's contribute state, by
- * session id, for the member's sessions that started in the window. A session missing from `hinted` has no state here.
+ * session id, for the member's sessions that started in the last `days`. A session missing from `hinted` has no state
+ * here.
  */
-export type ReminderInput = { sessions: readonly string[]; hinted: ReadonlyMap<string, boolean> };
+export type ReminderInput = { days: number; sessions: readonly string[]; hinted: ReadonlyMap<string, boolean> };
 
 /** One row of the reminder table. `rate` is over `labelled` sessions only. */
 export type ReminderRow = { reminder: 'yes' | 'no' | 'not recorded'; sessions: number; labelled: number; passed: number; rate: number | null };
@@ -133,15 +134,14 @@ export type ReminderRow = { reminder: 'yes' | 'no' | 'not recorded'; sessions: n
 export type TrendWeek = Stats & { week: string };
 
 export type SelectedCohort = {
+  /** The cohort with its counts and weekly trend over the window. */
   cohort: CohortSummary;
-  headline: Stats;
-  trend: TrendWeek[];
   groupBy?: Dimension;
   groups?: Group[];
   split?: Split;
   failing: FailingLabel[];
-  /** Only for a session cohort on a dashboard that read this machine's reminder state. */
-  reminders?: ReminderRow[];
+  /** Only for a session cohort on a dashboard that read this machine's reminder state: the sessions of the last `days`. */
+  reminders?: { days: number; rows: ReminderRow[] };
 };
 
 export type ScorerResultsView = {
@@ -161,18 +161,21 @@ function judgeCohort(judge: ScoreLabel['judge']): JudgeCohort {
       return { kind: 'human' };
     case 'model': {
       const id = judge.model?.reported ?? judge.model?.requested;
-      const alias = judge.model?.alias;
-      return {
-        kind: 'model',
-        tool: judge.tool,
-        ...(id ? { model: { id, reported: judge.model?.reported !== undefined, ...(alias ? { alias } : {}) } } : {}),
-      };
+      return { kind: 'model', tool: judge.tool, ...(id ? { model: { id, reported: judge.model?.reported !== undefined } } : {}) };
     }
     default: {
       const unhandled: never = judge;
       return unhandled;
     }
   }
+}
+
+/** A model judge with the team alias its newest label named it by, which a cohort shows but never tells judges apart by. */
+function withAlias(judge: JudgeCohort, newestFirst: readonly ViewedLabel[]): JudgeCohort {
+  if (judge.kind !== 'model' || !judge.model) return judge;
+  const named = newestFirst.find(({ label }) => label.judge.kind === 'model' && label.judge.model?.alias)?.label.judge;
+  const alias = named?.kind === 'model' ? named.model?.alias : undefined;
+  return alias ? { ...judge, model: { ...judge.model, alias } } : judge;
 }
 
 function cohortOf(label: ScoreLabel): Omit<Cohort, 'rubric'> & { rubric: { sourceHash: string } } {
@@ -216,9 +219,12 @@ function trend({ labels, from, to }: { labels: readonly ViewedLabel[]; from: str
   return weeks;
 }
 
+/** Group keys, built from the group's parts so a recorded value can never read as another value or as `none`. */
 function groupKey(value: GroupValue): string {
-  return `${value.reported === false ? 'requested:' : ''}${value.value}${value.localChanges ? '+local' : ''}`;
+  return JSON.stringify(['value', value.value, value.reported ?? null, value.localChanges ?? false]);
 }
+const NONE_KEY = JSON.stringify(['none']);
+const NOT_RECORDED_KEY = JSON.stringify(['not recorded']);
 
 function splitStats(labels: readonly ViewedLabel[], sideOf: ReadonlyMap<string, Side>): Omit<Split, 'commit'> {
   const side = (entry: ViewedLabel) => {
@@ -234,8 +240,8 @@ function splitStats(labels: readonly ViewedLabel[], sideOf: ReadonlyMap<string, 
 
 function groupKeys(entry: ViewedLabel, dimension: Dimension): string[] {
   const recorded = DIMENSIONS[dimension](entry);
-  if (recorded === undefined) return ['not recorded'];
-  return recorded.length === 0 ? ['none'] : recorded.map(groupKey);
+  if (recorded === undefined) return [NOT_RECORDED_KEY];
+  return recorded.length === 0 ? [NONE_KEY] : recorded.map(groupKey);
 }
 
 function failingLabel(entry: ViewedLabel, groupBy: Dimension | undefined): FailingLabel {
@@ -251,7 +257,7 @@ function failingLabel(entry: ViewedLabel, groupBy: Dimension | undefined): Faili
     case 'session':
       return { ...shared, source: 'session', platform: label.subject.platform, ...entry.sessionName ? { sessionName: entry.sessionName } : {} };
     case 'workflow':
-      return { ...shared, source: 'workflow', run: { id: label.subject.runId, step: label.subject.step, pass: label.subject.pass, source: entry.runSource ?? 'reported' } };
+      return { ...shared, source: 'workflow', run: { id: label.subject.runId, step: label.subject.step, pass: label.subject.pass, ...entry.runSource ? { source: entry.runSource } : {} } };
     default: {
       const unhandled: never = label;
       return unhandled;
@@ -295,8 +301,8 @@ function groups(labels: readonly ViewedLabel[], dimension: Dimension, sideOf: Re
   const counts = (members: readonly ViewedLabel[]) => ({ stats: stats(members), ...sideOf ? { split: splitStats(members, sideOf) } : {} });
   const counted: Group[] = [...values].map(([key, { value, labels: members }]) => ({ key, kind: 'value' as const, ...value, ...counts(members) }))
     .sort((left, right) => right.stats.n - left.stats.n || left.key.localeCompare(right.key));
-  if (none.length > 0) counted.push({ key: 'none', kind: 'none', ...counts(none) });
-  if (notRecorded.length > 0) counted.push({ key: 'not recorded', kind: 'not recorded', ...counts(notRecorded) });
+  if (none.length > 0) counted.push({ key: NONE_KEY, kind: 'none', ...counts(none) });
+  if (notRecorded.length > 0) counted.push({ key: NOT_RECORDED_KEY, kind: 'not recorded', ...counts(notRecorded) });
   return counted;
 }
 
@@ -353,11 +359,12 @@ export const ScorerResults = {
 
     const byScorer = new Map<string, Array<{ summary: CohortSummary; all: ViewedLabel[] }>>();
     for (const { cohort, all } of byCohort.values()) {
-      const teamRevision = all.filter(({ label }) => label.rubric.teamRevision)
-        .sort((left, right) => right.label.scoredAt.localeCompare(left.label.scoredAt))[0]?.label.rubric.teamRevision;
+      const newestFirst = [...all].sort((left, right) => right.label.scoredAt.localeCompare(left.label.scoredAt));
+      const teamRevision = newestFirst.find(({ label }) => label.rubric.teamRevision)?.label.rubric.teamRevision;
       const summary: CohortSummary = {
         ...cohort,
         rubric: { sourceHash: cohort.rubric.sourceHash, ...(teamRevision ? { teamRevision } : {}) },
+        judge: withAlias(cohort.judge, newestFirst),
         stats: stats(all.filter(inWindow)),
         trend: trend({ labels: all.filter(inWindow), from, to }),
         lastScoredAt: newest(all),
@@ -389,12 +396,10 @@ export const ScorerResults = {
       scorers,
       selected: {
         cohort: summary,
-        headline: stats(counted),
-        trend: trend({ labels: counted, from, to }),
         ...(groupBy ? { groupBy, groups: groups(counted, groupBy, split?.sideOf) } : {}),
         ...(split ? { split: { commit: split.commit, ...splitStats(counted, split.sideOf) } } : {}),
         failing,
-        ...(reminders && summary.source === 'session' ? { reminders: reminderRows(chosen.all, reminders) } : {}),
+        ...(reminders && summary.source === 'session' ? { reminders: { days: reminders.days, rows: reminderRows(chosen.all, reminders) } } : {}),
       },
     };
   },

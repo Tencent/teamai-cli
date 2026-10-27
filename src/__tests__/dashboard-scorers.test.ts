@@ -16,6 +16,7 @@ import { HttpError } from '../dashboard/http.js';
 import { parseScorerQuery, scorerResults } from '../dashboard/scorers.js';
 import type { ScoreLabel } from '../scorers/label.js';
 import { getReportsDir, type DashboardEvent, type LocalConfig } from '../types.js';
+import { readRun, runFilePath } from '../workflow/store.js';
 
 const NOW = new Date('2026-03-20T12:00:00Z');
 const originalHome = process.env.HOME;
@@ -98,9 +99,9 @@ describe('dashboard scorer results', () => {
     publishRecord(config, { run: 'r0000000000000002', steps: [{ step: 'implement', pass: 1, agent: 'implementer' }] });
     publishLabels(config, 'bob', [workflowLabel('r0000000000000001'), workflowLabel('r0000000000000002')]);
     const byTool = await scorerResults({ config, query: { windowDays: 30, groupBy: 'tool' }, now: NOW });
-    expect(byTool.selected?.groups?.map((group) => [group.key, group.stats.n])).toEqual([['codex', 1], ['not recorded', 1]]);
+    expect(byTool.selected?.groups?.map((group) => [group.kind === 'value' ? group.value : group.kind, group.stats.n])).toEqual([['codex', 1], ['not recorded', 1]]);
     const byDefinition = await scorerResults({ config, query: { windowDays: 30, groupBy: 'definition' }, now: NOW });
-    expect(byDefinition.selected?.groups?.map((group) => [group.key, group.stats.n])).toEqual([['implementer', 2]]);
+    expect(byDefinition.selected?.groups?.map((group) => [group.kind === 'value' ? group.value : group.kind, group.stats.n])).toEqual([['implementer', 2]]);
   });
 
   it('leaves out the labels of a benchmark run', async () => {
@@ -109,7 +110,21 @@ describe('dashboard scorer results', () => {
     publishRecord(config, { run: 'r0000000000000002', benchmark: { suite: { sourceHash: 'b'.repeat(64) }, trials: [] }, steps: [{ step: 'implement', pass: 1, agent: observation('codex') }] });
     publishLabels(config, 'bob', [workflowLabel('r0000000000000001'), workflowLabel('r0000000000000002', { passed: false })]);
     const view = await scorerResults({ config, query: { windowDays: 30 }, now: NOW });
-    expect(view.selected?.headline).toEqual({ n: 1, passed: 1, failed: 0, rate: 1 });
+    expect(view.selected?.cohort.stats).toEqual({ n: 1, passed: 1, failed: 0, rate: 1 });
+  });
+
+  it('leaves out the labels of a benchmark run whose run file is also on this machine', async () => {
+    const { config } = team();
+    const runId = 'r0000000000000002';
+    publishRecord(config, { run: runId, benchmark: { suite: { sourceHash: 'b'.repeat(64) }, trials: [] }, steps: [{ step: 'implement', pass: 1, agent: observation('codex') }] });
+    write(runFilePath(config, runId), JSON.stringify({
+      schemaVersion: 'v1alpha1', id: runId, name: 'review', revision: 1, status: 'succeeded', startedAt: 1, steps: [], settledAttempts: [],
+      definition: { schemaVersion: 'v1alpha1', name: 'review', description: 'Review.', steps: [{ id: 'implement', prompt: 'p' }] },
+    }));
+    expect(await readRun(config, runId)).toMatchObject({ id: runId });
+    publishLabels(config, 'bob', [workflowLabel(runId, { passed: false })]);
+    const view = await scorerResults({ config, query: { windowDays: 30 }, now: NOW });
+    expect(view.scorers).toEqual([]);
   });
 
   it('splits at a team commit with this clone\'s ancestry, and refuses a commit the clone does not have', async () => {
@@ -145,11 +160,30 @@ describe('dashboard scorer results', () => {
     const start = (sessionId: string, extra: Partial<DashboardEvent> = {}): DashboardEvent => ({ type: 'session_start', timestamp: '2026-03-15T00:00:00.000Z', sessionId, tool: 'claude', ...extra });
     const events = [start('fired'), start('quiet'), start('no-state'), start('launched', { launchedBy: 'workflow' }), start('old', { timestamp: '2026-01-01T00:00:00.000Z' })];
     const view = await scorerResults({ config, query: { windowDays: 30 }, now: NOW, events });
-    expect(view.selected?.reminders).toEqual([
+    expect(view.selected?.reminders?.rows).toEqual([
       { reminder: 'yes', sessions: 1, labelled: 1, passed: 1, rate: 1 },
       { reminder: 'no', sessions: 1, labelled: 1, passed: 0, rate: 0 },
       { reminder: 'not recorded', sessions: 1, labelled: 1, passed: 1, rate: 1 },
     ]);
+  });
+});
+
+describe('reminder table over a long window', () => {
+  it('covers only the 30 days this machine keeps reminder decisions for, and says so', async () => {
+    const { config } = team();
+    publishLabels(config, 'bob', [sessionLabel('recent'), sessionLabel('forgotten', { scoredAt: '2026-02-01T00:00:00.000Z' })]);
+    write(path.join(root, 'home', '.teamai', 'sessions', 'recent.json'), JSON.stringify({ contributed: false, hinted: true }));
+    const start = (sessionId: string, timestamp: string): DashboardEvent => ({ type: 'session_start', timestamp, sessionId, tool: 'claude' });
+    const events = [start('recent', '2026-03-15T00:00:00.000Z'), start('forgotten', '2026-01-30T00:00:00.000Z')];
+    const view = await scorerResults({ config, query: { windowDays: 90 }, now: NOW, events });
+    expect(view.selected?.reminders).toEqual({
+      days: 30,
+      rows: [
+        { reminder: 'yes', sessions: 1, labelled: 1, passed: 1, rate: 1 },
+        { reminder: 'no', sessions: 0, labelled: 0, passed: 0, rate: null },
+        { reminder: 'not recorded', sessions: 0, labelled: 0, passed: 0, rate: null },
+      ],
+    });
   });
 });
 
