@@ -51,6 +51,7 @@ const MEMBER_SETTINGS = {
   workflows: { tools: { default: 'codex' }, max_parallel: 2, auto_approve: true, sandbox: true, allow: { network: false, env: ['CI'] } },
   modelAliases: { 'gateway-model-42': 'claude-opus-4-1' },
   scoring: { isolation: 'verified', sessions: false, daily_limit: 0 },
+  sessions: { publish: { attended: 'auto', unattended: 'off' } },
 } satisfies Required<Omit<LocalConfigInput, InitDecides>>;
 
 interface Run { code: number | null; output: string }
