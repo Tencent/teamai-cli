@@ -404,9 +404,9 @@ async function isWithin(dir: string, parents: string[]): Promise<boolean> {
 
 const updateHandler: HookHandler = {
   name: 'update',
-  async execute(_stdin, _tool) {
+  async execute(_stdin, _tool, config) {
     const { doUpdate } = await import('./update.js');
-    await doUpdate();
+    await doUpdate(config);
     return null;
   },
 };
