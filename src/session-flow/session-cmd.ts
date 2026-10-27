@@ -472,14 +472,17 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
         return;
       }
 
+      // Whole names and authors: session resume and score --team-session take them as printed.
+      const nameWidth = Math.max(36, ...sessions.map((s) => safeText(s.sessionName).length));
+      const authorWidth = Math.max(12, ...sessions.map((s) => safeText(s.author).length + 1));
+      const head = `  ${'SESSION'.padEnd(nameWidth)}  ${'AUTHOR'.padEnd(authorWidth)}PLATFORM        MSGS  UPDATED`;
       if (opts.all) {
         console.log(`\nSessions across all projects:\n`);
-        console.log(`  SESSION                              AUTHOR       PLATFORM        MSGS  UPDATED    SOURCE`);
-        console.log(`  ─────────────────────────────────────────────────────────────────────────────────────`);
+        console.log(`${head}    SOURCE`);
+        console.log(`  ${'─'.repeat(head.length + 8)}`);
         for (const s of sessions) {
-          const name = safeText(s.sessionName);
-          const nameCol = name.length > 36 ? name.slice(0, 34) + '..' : name.padEnd(36);
-          const authorCol = safeText(s.author).slice(0, 12).padEnd(12);
+          const nameCol = safeText(s.sessionName).padEnd(nameWidth);
+          const authorCol = safeText(s.author).padEnd(authorWidth);
           const platCol = safeText(s.platform).slice(0, 16).padEnd(16);
           const msgCol = String(s.messageCount).padStart(4);
           const dateCol = s.updatedAt.slice(0, 10);
@@ -489,12 +492,11 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
       } else {
         const repoLabel = repoIdentity ?? '_unattributed';
         console.log(`\nSessions for ${repoLabel}:\n`);
-        console.log(`  SESSION                              AUTHOR       PLATFORM        MSGS  UPDATED`);
-        console.log(`  ──────────────────────────────────────────────────────────────────────────`);
+        console.log(head);
+        console.log(`  ${'─'.repeat(head.length - 2)}`);
         for (const s of sessions) {
-          const name = safeText(s.sessionName);
-          const nameCol = name.length > 36 ? name.slice(0, 34) + '..' : name.padEnd(36);
-          const authorCol = safeText(s.author).slice(0, 12).padEnd(12);
+          const nameCol = safeText(s.sessionName).padEnd(nameWidth);
+          const authorCol = safeText(s.author).padEnd(authorWidth);
           const platCol = safeText(s.platform).slice(0, 16).padEnd(16);
           const msgCol = String(s.messageCount).padStart(4);
           const dateCol = s.updatedAt.slice(0, 10);
