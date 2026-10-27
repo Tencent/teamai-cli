@@ -173,7 +173,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
       }
       const workCwd = opts.cwd ?? process.cwd();
       const archive = await resolveRepoRoot(opts.repoRoot, { dryRun: isDryRun() });
-      const { root: repoRoot, reports } = archive;
+      const { root: repoRoot, reports, legacy } = archive;
       const author = getGitAuthor(workCwd);
       // --all: no workspace lists every workspace directory of that platform (P5).
       // The blast radius stays on a single platform (same as status --all); single-cwd mode keeps the old behavior.
@@ -244,6 +244,8 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
         let saved = 0;
         let unreadable = 0;
         let redactedTotal = 0;
+        let onDefaultBranch = 0;
+        const defaultBranch = legacy ? new SyncManager(legacy) : undefined;
         for (const m of selected) {
           // Read the file that was listed: with --all, one id can live in several workspaces.
           // What gets archived is the full original text, and the team can read it: redact first when --scrub is set; when not redacted, say so once explicitly.
@@ -290,6 +292,10 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
             return undefined;
           }
           saved++;
+          if (defaultBranch?.findArchived(meta.origin.repoIdentity, { platform: source, sessionId: m.sessionId })) onDefaultBranch++;
+        }
+        if (onDefaultBranch > 0) {
+          console.log(`  · ${onDefaultBranch} session(s) also archived on the default branch: session list and resume read the copy pushed to teamai-reports first.`);
         }
         if (unreadable > 0) {
           console.error(`  ✗ ${unreadable} session(s) could not be read and were not archived.`);

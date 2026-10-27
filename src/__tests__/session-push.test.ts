@@ -368,6 +368,18 @@ describe('session commands without --repo-root outside a workspace install', () 
     expect(listed.stdout).toContain('2 session(s)');
   });
 
+  it('push to teamai-reports a session the default branch also holds, and say that list and resume read this copy first', async () => {
+    const team = await userInstall();
+    const { checkout } = repository('product');
+    await claudeSession(checkout);
+    expect((await session('push', '--source', 'claude-code', '--cwd', checkout, '-y', '--repo-root', team.checkout)).code).toBe(0);
+
+    const pushed = await session('push', '--source', 'claude-code', '--cwd', checkout, '-y');
+
+    expect(pushed.code, pushed.stderr).toBe(0);
+    expect(pushed.stdout).toContain('  · 1 session(s) also archived on the default branch: session list and resume read the copy pushed to teamai-reports first.');
+  });
+
   it('push exactly the session --session names, scrubbed, to teamai-reports', async () => {
     const team = await userInstall();
     const { checkout } = repository('product');
