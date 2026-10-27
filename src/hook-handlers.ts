@@ -235,6 +235,9 @@ async function isOwnCheckout(cwd: string, config: LocalConfig): Promise<boolean>
   return isWithin(cwd, [
     getDataHome(config),
     config.repo.localPath,
+    // The shared side-branch checkouts both scopes resolve now (#1443), and the
+    // user-scope ones an older CLI left in ~/.teamai (#1454/#1445).
+    ...(config.branchHome ? WORKTREE_DIRNAMES.map((dirname) => path.join(config.branchHome!, dirname)) : []),
     ...WORKTREE_DIRNAMES.map((dirname) => path.join(getTeamaiHomeDir(), dirname)),
     ...await ownCheckoutsDir(cwd),
   ]);

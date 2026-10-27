@@ -244,7 +244,7 @@ async function openWorktree(
     // best effort
   }
   if (isSelfMode(localConfig)) {
-    await removeOldCheckoutsInDotTeamai(spec, git, wt);
+    await removeOldCheckouts(spec, git, wt);
     onOriginAnswer = remoteBranchExists(spec, repoRoot);
   }
 
@@ -307,19 +307,21 @@ async function openWorktree(
 }
 
 /**
- * A side branch is checked out in one worktree only, and a user-scope install
- * and a single-repo project partition of the same repository compute different
- * worktree paths. Remove a checkout only when it is a path teamai manages:
- * the legacy `<checkout>/.teamai/<dirname>` or a partition under teamai's
- * real projects root (`~/.teamai/projects/<slug>/<dirname>`). An arbitrary
- * worktree a member placed elsewhere is left alone: git will refuse the second
- * checkout, and the caller reports it instead of silently deleting the member's
- * checkout (#1443, #808).
+ * Every scope and every checkout of a single-repo team resolve one side-branch
+ * home now (#1443), so a checkout this repository registered anywhere else is
+ * left over from an older layout. Remove it only when it is a path teamai
+ * manages: the legacy `<checkout>/.teamai/<dirname>` or a partition under
+ * teamai's real projects root (`~/.teamai/projects/<slug>/<dirname>`). An
+ * arbitrary worktree a member placed elsewhere is left alone: git will refuse
+ * the second checkout, and the caller reports it instead of silently deleting
+ * the member's checkout (#808).
  * Remove the way a member would: without --force, so a checkout with
  * uncommitted changes stays, and the member is told what to do with them. Its
- * commits are on the branch, which the new checkout reuses.
+ * commits are on the branch, which the new checkout reuses. A command still
+ * running with the old location holds its lock, which this takes for the
+ * removal, so a checkout another pull is writing is never deleted.
  */
-async function removeOldCheckoutsInDotTeamai(spec: BranchWorktreeSpec, git: SimpleGit, wt: string): Promise<void> {
+async function removeOldCheckouts(spec: BranchWorktreeSpec, git: SimpleGit, wt: string): Promise<void> {
   const oldSuffix = `${path.sep}${path.join('.teamai', spec.worktreeDirname)}`;
   const projectsRoot = await fse.realpath(projectsRootDir()).catch(() => path.resolve(projectsRootDir()));
   for (const checkout of await checkoutsOfBranch(spec, git)) {
@@ -327,10 +329,24 @@ async function removeOldCheckoutsInDotTeamai(spec: BranchWorktreeSpec, git: Simp
     // the path a symlink resolves to, so compare the same form as the root.
     const resolved = path.resolve(checkout);
     const real = await fse.realpath(resolved).catch(() => resolved);
-    if (resolved === path.resolve(wt)) continue;
+    // A symlinked parent can register the same checkout under another spelling.
+    const wtReal = await fse.realpath(path.resolve(wt)).catch(() => path.resolve(wt));
+    if (resolved === path.resolve(wt) || real === wtReal) continue;
     const projectPartition = path.dirname(path.dirname(real)) === projectsRoot
       && path.basename(real) === spec.worktreeDirname;
     if (!resolved.endsWith(oldSuffix) && !projectPartition) continue;
+    // A command still running with the old location holds the lock beside that
+    // checkout. Take it for the removal, so a checkout another pull is writing
+    // is never deleted from under it (#1443).
+    const oldLock = path.join(path.dirname(resolved), spec.lockFilename);
+    if (!await acquireLock(oldLock)) {
+      refuse(new CheckoutRefusedError(
+        `${checkout} is being updated by another teamai command (its lock ${oldLock} is held). ` +
+          `teamai keeps that checkout at ${wt}, shared by every checkout of this repo. ` +
+          'Run this again when the other command finishes.',
+        `the ${spec.branch} checkout is in use; see the warning above`,
+      ));
+    }
     try {
       await git.raw(['worktree', 'remove', checkout]);
       log.debug(`[${spec.logTag}] removed the old checkout at ${checkout}`);
@@ -343,6 +359,8 @@ async function removeOldCheckoutsInDotTeamai(spec: BranchWorktreeSpec, git: Simp
           'or delete it by hand, which loses those uncommitted changes, then run the command again.',
         `an old ${spec.branch} checkout is in the way; see the warning above`,
       ));
+    } finally {
+      await releaseLock(oldLock);
     }
   }
 }

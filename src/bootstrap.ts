@@ -18,6 +18,7 @@ import path from 'node:path';
 import YAML from 'yaml';
 import {
   BOOTSTRAP_LOCK_FILENAME,
+  SELF_BRANCH_HOME_DIRNAME,
   getConfigPath,
   type LocalConfig,
   type TeamaiConfig,
@@ -163,6 +164,8 @@ async function planSelfBootstrap(
     // stays <repo>/.teamai (the class-B knowledge anchor); dataHome routes the
     // class-A1 writes (config/state) out of the workspace.
     dataHome: partitionHome,
+    // Both scopes of a self-mode repo share one side-branch checkout (#1443).
+    branchHome: path.join(partitionHome, SELF_BRANCH_HOME_DIRNAME),
     additionalRoles: [],
     ...(enabledAgents.length > 0 ? { enabledAgents } : {}),
   };

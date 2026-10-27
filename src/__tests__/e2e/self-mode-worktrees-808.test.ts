@@ -629,7 +629,7 @@ describe('self mode with a linked worktree (#808)', () => {
     // not exist, and the next publish would delete what it wrote.
     const learning = path.join(projectRoot, '.teamai', 'learnings', 'kb-note.md');
     fs.writeFileSync(learning, '---\ntitle: kb-note\n---\nA learning with votes.\n');
-    const votes = path.join(partitionOf(project), 'reports-wt', 'votes', 'ci-808.yaml');
+    const votes = path.join(partitionOf(project), 'side-branches', 'reports-wt', 'votes', 'ci-808.yaml');
     fs.mkdirSync(path.dirname(votes), { recursive: true });
     fs.writeFileSync(votes, [
       'version: 2',
@@ -815,11 +815,10 @@ describe('self mode with a linked worktree (#808)', () => {
     expect(first.code, first.output).toBe(0);
     const projects = path.join(home, '.teamai', 'projects');
     const partition = path.join(projects, fs.readdirSync(projects)[0]);
-    const checkout = path.join(partition, 'learnings-wt');
+    const checkout = path.join(partition, 'side-branches', 'learnings-wt');
 
-    // What the project's earlier git-mode install left in the same partition:
-    // the team clone, with its own checkout of teamai-learnings where self mode
-    // keeps the business repo's.
+    // A checkout of another repository where self mode keeps its own (a clone
+    // moved here by hand): teamai must refuse it, not publish into it.
     git(['worktree', 'remove', checkout], projectRoot);
     const teamClone = path.join(partition, 'team-repo');
     git(['clone', '-q', teamRemote, teamClone], sandbox);
@@ -863,7 +862,7 @@ describe('self mode with a linked worktree (#808)', () => {
 
     // The weekly digest lists this team's learnings, not the other team's. It
     // only gets that far with some team usage on this project's reports branch.
-    const reportsCheckout = path.join(partition, 'reports-wt');
+    const reportsCheckout = path.join(partition, 'side-branches', 'reports-wt');
     fs.mkdirSync(path.join(reportsCheckout, 'stats'), { recursive: true });
     fs.writeFileSync(path.join(reportsCheckout, 'stats', 'ci-808.yaml'), 'username: ci-808\nskills: {}\n');
     git(['add', 'stats'], reportsCheckout);
@@ -960,7 +959,7 @@ describe('self mode with a linked worktree (#808)', () => {
     const first = await runCLI(['pull'], projectRoot, home);
     expect(first.code, first.output).toBe(0);
     const partition = partitionOf(project);
-    const checkout = path.join(partition, 'learnings-wt');
+    const checkout = path.join(partition, 'side-branches', 'learnings-wt');
 
     // A checkout of a repository that was moved or deleted since: its .git
     // points at a git dir that no longer exists, and it holds uncommitted work.
@@ -997,10 +996,11 @@ describe('self mode with a linked worktree (#808)', () => {
     const first = await runCLI(['pull'], projectRoot, home);
     expect(first.code, first.output).toBe(0);
     const partition = partitionOf(project);
-    const checkout = path.join(partition, 'learnings-wt');
-    const lock = path.join(partition, '.learnings-lock');
+    const checkout = path.join(partition, 'side-branches', 'learnings-wt');
+    const shared = path.join(partition, 'side-branches');
+    const lock = path.join(shared, '.learnings-lock');
     const busy = `The learnings checkout is locked: another teamai command may be updating it, or its lock at ${lock} could not be created. ` +
-      `Nothing was changed. Run this again when the other command finishes; if this keeps happening, check that ${partition} is writable.`;
+      `Nothing was changed. Run this again when the other command finishes; if this keeps happening, check that ${shared} is writable.`;
 
     // A live holder: this test's own process, as another teamai command would be.
     fs.writeFileSync(
@@ -1017,9 +1017,9 @@ describe('self mode with a linked worktree (#808)', () => {
     }
 
     // Maintenance reads votes from the reports checkout, which is just as unchecked under its lock.
-    const reportsLock = path.join(partition, '.reports-lock');
+    const reportsLock = path.join(shared, '.reports-lock');
     const reportsBusy = `The reports checkout is locked: another teamai command may be updating it, or its lock at ${reportsLock} could not be created. ` +
-      `Nothing was changed. Run this again when the other command finishes; if this keeps happening, check that ${partition} is writable.`;
+      `Nothing was changed. Run this again when the other command finishes; if this keeps happening, check that ${shared} is writable.`;
     fs.renameSync(lock, reportsLock);
     for (const args of [['recall', 'maintenance', '--confidence-writeback'], ['recall', 'promote']]) {
       const run = await runCLI(args, projectRoot, home);
@@ -1150,7 +1150,7 @@ describe('self mode with a linked worktree (#808)', () => {
     expect(partitionConfig).not.toContain('kind:');
     // The self install's side-branch checkouts are in the way of the team
     // repo's; remove them, as teamai says to.
-    for (const dir of ['learnings-wt', 'reports-wt']) git(['worktree', 'remove', path.join(partition, dir)], projectRoot);
+    for (const dir of ['learnings-wt', 'reports-wt']) git(['worktree', 'remove', path.join(partition, 'side-branches', dir)], projectRoot);
 
     // The worktree never migrated: its checkout config still says self.
     const contribute = await runCLI(
@@ -1176,7 +1176,7 @@ describe('self mode with a linked worktree (#808)', () => {
     const first = await runCLI(['pull'], projectRoot, home);
     expect(first.code, first.output).toBe(0);
     const partition = partitionOf(project);
-    const checkout = path.join(partition, 'learnings-wt');
+    const checkout = path.join(partition, 'side-branches', 'learnings-wt');
 
     // teamai-learnings checked out where teamai does not look: git will not
     // check it out a second time.
@@ -1187,7 +1187,7 @@ describe('self mode with a linked worktree (#808)', () => {
 
     const learning = path.join(projectRoot, '.teamai', 'learnings', 'kb-note.md');
     fs.writeFileSync(learning, '---\ntitle: kb-note\n---\nA learning with votes.\n');
-    const votes = path.join(partition, 'reports-wt', 'votes', 'ci-808.yaml');
+    const votes = path.join(partition, 'side-branches', 'reports-wt', 'votes', 'ci-808.yaml');
     fs.mkdirSync(path.dirname(votes), { recursive: true });
     fs.writeFileSync(votes, [
       'version: 2',
@@ -1241,7 +1241,7 @@ describe('self mode with a linked worktree (#808)', () => {
     const pulled = await runCLI(['pull'], projectRoot, home);
     expect(pulled.code, pulled.output).toBe(0);
     const partition = partitionOf(project);
-    for (const dir of ['learnings-wt', 'reports-wt']) git(['worktree', 'remove', path.join(partition, dir)], projectRoot);
+    for (const dir of ['learnings-wt', 'reports-wt']) git(['worktree', 'remove', path.join(partition, 'side-branches', dir)], projectRoot);
 
     // What an older teamai left: a self install whose config was already in
     // the partition queued in the checkout, and its init switched the project
