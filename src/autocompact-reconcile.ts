@@ -3,6 +3,7 @@ import path from 'node:path';
 import YAML from 'yaml';
 import type { LocalConfig, TeamaiConfig, ToolId } from './types.js';
 import { isAgentExcluded, recordedToolRootDir, resolveAutoCompactTokens } from './types.js';
+import { CODEX_TOOL_IDS } from './utils/tool-names.js';
 import { toolHome } from './tool-home.js';
 import { withFileLock } from './update.js';
 import { pathExists, readFileSafe, readJsonObject, writeFile, writeJson, writeJsonAtomic } from './utils/fs.js';
@@ -47,7 +48,6 @@ import { getUserHome } from './utils/home.js';
 
 const CLAUDE_TOOLS: readonly ToolId[] = ['claude', 'tclaude', 'claude-internal'];
 const BUDDY_TOOLS: readonly ToolId[] = ['codebuddy', 'workbuddy'];
-const CODEX_TOOLS: readonly ToolId[] = ['codex', 'codex-internal', 'tcodex'];
 
 type Kind = 'claude' | 'buddy' | 'codex' | 'dsh';
 
@@ -126,7 +126,7 @@ async function resolveTargets(localConfig: LocalConfig): Promise<Target[]> {
   const families: [readonly ToolId[], Kind, string][] = [
     [CLAUDE_TOOLS, 'claude', 'settings.json'],
     [BUDDY_TOOLS, 'buddy', 'settings.json'],
-    [CODEX_TOOLS, 'codex', 'config.toml'],
+    [CODEX_TOOL_IDS, 'codex', 'config.toml'],
     [['dsh'], 'dsh', 'cordis.patch.yml'],
   ];
   const targets: Target[] = [];

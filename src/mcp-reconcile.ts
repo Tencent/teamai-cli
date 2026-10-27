@@ -8,6 +8,7 @@ import type {
   McpServerDef,
   ManagedMcpManifest,
   ManagedMcpRecord,
+  ToolId,
 } from './types.js';
 import {
   DEFAULT_TOOL_PATHS,
@@ -1327,7 +1328,7 @@ export async function unclaimedMcpServers(target: McpTarget, claimed: readonly s
  * In a single-repo team Claude keeps `.mcp.json` (`mcpRelocated`), and it is
  * judged.
  */
-const NOT_TEAMAI_ONLY_MCP_TOOLS = new Set(['claude', 'tclaude', 'codebuddy', 'qoder', 'qoder-cn']);
+const NOT_TEAMAI_ONLY_MCP_TOOLS = new Set<string>(['claude', 'tclaude', 'codebuddy', 'qoder', 'qoder-cn'] satisfies ToolId[]);
 
 /**
  * Each project MCP config of this checkout that holds anything, and whether

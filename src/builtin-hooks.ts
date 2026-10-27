@@ -3,7 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { TEAMAI_HOOK_DESCRIPTION_PREFIX } from './types.js';
 import { CODEX_TOOL_IDS, isCodexTool } from './utils/tool-names.js';
-import type { HookDef } from './types.js';
+import type { HookDef, ToolId } from './types.js';
 import { getUserHome } from './utils/home.js';
 import { log } from './utils/logger.js';
 import { bundledShellFor, findGitBashWindows, resetBundledRuntimeCache, resolveCodebuddyNode, resolveWorkbuddyNode } from './bundled-runtime.js';
@@ -42,7 +42,7 @@ const CODEBUDDY_HOOK_WRAPPER = 'teamai-codebuddy-hook';
  * bundled-runtime.ts. Injection is skipped for a tool when no shell resolves,
  * because its hook commands could never run.
  */
-export const SHELL_DEPENDENT_TOOLS = new Set(['workbuddy', 'codebuddy']);
+export const SHELL_DEPENDENT_TOOLS = new Set<string>(['workbuddy', 'codebuddy'] satisfies ToolId[]);
 
 /**
  * Check whether /bin/sh exists.  Remote containers (e.g. CloudStudio AI
@@ -395,9 +395,9 @@ const SUBAGENT_START_SPEC: BuiltinHookSpec = {
  * to the parent; not ZCode, which has no such event and rejects the whole
  * hooks block on an unknown key.
  */
-const SUBAGENT_STOP_TOOLS = new Set([
+const SUBAGENT_STOP_TOOLS = new Set<string>([
   'claude', 'claude-internal', 'tclaude', ...CODEX_TOOL_IDS, 'codebuddy', 'qoder', 'qoder-cn',
-]);
+] satisfies ToolId[]);
 
 /**
  * Build the built-in hook definitions for a tool.

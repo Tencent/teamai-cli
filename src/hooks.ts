@@ -19,7 +19,7 @@ import {
   hookToolPathsForConfig,
   toolGateRoot,
 } from './types.js';
-import type { HookDef, TeamaiConfig, LocalConfig, ManagedMcpManifest, Scope } from './types.js';
+import type { HookDef, TeamaiConfig, LocalConfig, ManagedMcpManifest, Scope, ToolId } from './types.js';
 import {
   CODEX_TOOL_ID,
   DEFAULT_CODEX_ROOT,
@@ -941,7 +941,7 @@ function gatedProjectRoot(command: string): string | null {
  * HOME, which every worktree reads from its first session. Every other tool
  * keeps its team hooks in HOME behind a `$PWD` gate.
  */
-const MAIN_CHECKOUT_TEAM_HOOK_TOOLS = ['claude', 'codex'] as const;
+const MAIN_CHECKOUT_TEAM_HOOK_TOOLS = ['claude', 'codex'] as const satisfies readonly ToolId[];
 
 /** Where a non-self project scope keeps Claude/Codex team hooks. */
 export interface MainCheckoutHooks {

@@ -69,28 +69,7 @@ export interface AgentSpec {
    * Passed through verbatim when rendering for the matching tool,
    * and collected when reversing from a tool's native format.
    */
-  tool_extras?: {
-    claude?: Record<string, unknown>;
-    'claude-internal'?: Record<string, unknown>;
-    tclaude?: Record<string, unknown>;
-    codebuddy?: Record<string, unknown>;
-    codex?: Record<string, unknown>;
-    'codex-internal'?: Record<string, unknown>;
-    tcodex?: Record<string, unknown>;
-    cursor?: Record<string, unknown>;
-    copilot?: Record<string, unknown>;
-    joycode?: Record<string, unknown>;
-    qoder?: Record<string, unknown>;
-    'qoder-cn'?: Record<string, unknown>;
-    kiro?: Record<string, unknown>;
-    zcode?: Record<string, unknown>;
-    omp?: Record<string, unknown>;
-    opencode?: Record<string, unknown>;
-    workbuddy?: Record<string, unknown>;
-    muse?: Record<string, unknown>;
-    trae?: Record<string, unknown>;
-    'trae-cn'?: Record<string, unknown>;
-  };
+  tool_extras?: { [T in ToolName]?: Record<string, unknown> };
   /**
    * Which tools this agent should be deployed to.
    * When undefined, the agent is deployed to ALL installed supported tools.

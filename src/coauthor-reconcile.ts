@@ -1,5 +1,6 @@
 import path from 'node:path';
 import type { LocalConfig, TeamaiConfig, State } from './types.js';
+import { isCodexTool } from './utils/tool-names.js';
 import {
   DEFAULT_CODEX_ROOT,
   cursorConfigDir,
@@ -53,13 +54,12 @@ import { log } from './utils/logger.js';
 //                    see cursorConfigDir. Known upstream bug: the local executor may
 //                    ignore this, so treat it as best-effort.
 
-const CODEX_TOOLS = new Set(['codex', 'codex-internal', 'tcodex']);
 const CURSOR_TOOLS = new Set(['cursor']);
 
 type Family = 'claude' | 'codex' | 'cursor';
 
 function familyOf(tool: string): Family {
-  if (CODEX_TOOLS.has(tool)) return 'codex';
+  if (isCodexTool(tool)) return 'codex';
   return CURSOR_TOOLS.has(tool) ? 'cursor' : 'claude';
 }
 

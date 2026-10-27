@@ -1,4 +1,5 @@
 import type { ToolName } from '../resources/agent-format.js';
+import type { ToolId } from '../types.js';
 
 // -*- coding: utf-8 -*-
 /**
@@ -31,7 +32,7 @@ const AGENT_TYPE_ALIASES: Record<string, string> = {
   'codex-internal': 'codex',
   tclaude: 'claude',
   'claude-internal': 'claude',
-};
+} satisfies Partial<Record<ToolId, ToolId>>;
 
 export function normalizeAgentType(name: string): string {
   return AGENT_TYPE_ALIASES[name] ?? name;
@@ -82,7 +83,7 @@ const STOP_STDOUT_TOOLS = new Set<string>([
   'pi',
   'opencode',
   'dsh',
-]);
+] satisfies ToolId[]);
 
 /**
  * Whether `tool`'s Stop hook cannot take the Stop payload (see
