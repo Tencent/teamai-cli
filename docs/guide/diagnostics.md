@@ -31,7 +31,7 @@ autoUpdate: false
 ```
 
 ```yaml
-# ~/.teamai/config.yaml
+# ~/.teamai/config.yaml, else ~/.teamai/projects/<slug>/config.yaml
 updatePolicy: skip    # auto, prompt, or skip
 ```
 

@@ -162,6 +162,12 @@ const workspaceConfig = (overrides: Partial<LocalConfig> = {}): LocalConfig => (
   ...overrides,
 });
 
+const expectNoInstall = () => expect(mockedExecSync).not.toHaveBeenCalledWith(
+  expect.any(String),
+  expect.arrayContaining(['install']),
+  expect.anything(),
+);
+
 // A real npm-managed global layout (<prefix>/lib/node_modules/<pkg>) so doUpdate
 // has an install target. Without one — as when the suite runs from this
 // checkout — doUpdate refuses to install (see the linked-checkout test).
@@ -188,6 +194,7 @@ beforeEach(() => {
     updatePolicy: 'auto',
   });
   mockedLoadTeamConfig.mockResolvedValue(null);
+  vi.mocked(resolveConfigForDir).mockResolvedValue(null);
   mockedFse.pathExists.mockResolvedValue(false);
   mockedFse.readFile.mockResolvedValue('');
   mockedFse.writeFile.mockResolvedValue(undefined);
@@ -502,7 +509,7 @@ describe('doUpdate', () => {
 
     await doUpdate(workspaceConfig());
 
-    expect(mockedExecSync).toHaveBeenCalledTimes(1);
+    expectNoInstall();
     expect(mockedLog.debug).toHaveBeenCalledWith('Auto-update skipped: team policy (autoUpdate: false)');
   });
 
@@ -512,7 +519,7 @@ describe('doUpdate', () => {
 
     await doUpdate(workspaceConfig({ updatePolicy: 'skip' }));
 
-    expect(mockedExecSync).toHaveBeenCalledTimes(1);
+    expectNoInstall();
     expect(mockedLog.debug).toHaveBeenCalledWith('Auto-update skipped: local updatePolicy: skip');
   });
 
@@ -526,7 +533,7 @@ describe('doUpdate', () => {
 
     await doUpdate(workspaceConfig({ updatePolicy: 'auto' }));
 
-    expect(mockedExecSync).toHaveBeenCalledTimes(1);
+    expectNoInstall();
     expect(mockedLog.debug).toHaveBeenCalledWith('Auto-update skipped: local updatePolicy: skip');
   });
 
@@ -726,12 +733,12 @@ describe('update', () => {
 
   it('follows the scope of the directory it runs in when there is no user-scope config', async () => {
     mockedLoadLocalConfig.mockResolvedValue(null);
-    (resolveConfigForDir as Mock).mockResolvedValue(workspaceConfig({ updatePolicy: 'skip' }));
+    vi.mocked(resolveConfigForDir).mockResolvedValue(workspaceConfig({ updatePolicy: 'skip' }));
     mockedExecSync.mockResolvedValueOnce({ stdout: '99.0.0\n', stderr: '' });
 
     await update({});
 
-    expect(mockedExecSync).toHaveBeenCalledTimes(1);
+    expectNoInstall();
     expect(mockedLog.debug).toHaveBeenCalledWith('Auto-update skipped: local updatePolicy: skip');
   });
 
