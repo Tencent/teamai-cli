@@ -5,14 +5,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { AgentsHandler } from '../resources/agents.js';
 import { log } from '../utils/logger.js';
-import { TeamaiConfigSchema, type LocalConfig, type TeamaiConfig } from '../types.js';
+import { LocalConfigSchema, TeamaiConfigSchema, type LocalConfig, type TeamaiConfig } from '../types.js';
 
 vi.mock('../utils/logger.js', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn() },
 }));
 
 /** Trae's subagent frontmatter rules (docs.trae.ai/ide/subagents): the name it loads, and only its own model ids. */
-const TRAE_NAME = /^[A-Za-z][A-Za-z0-9-]{0,48}[A-Za-z0-9]$/;
+const TRAE_NAME = /^[A-Za-z](?:[A-Za-z0-9-]{0,48}[A-Za-z0-9])?$/;
 
 const AGENT = 'reviewer';
 const AGENT_YAML = `name: ${AGENT}
@@ -48,14 +48,14 @@ describe('Trae subagents', () => {
     await fse.remove(sandbox);
   });
 
-  const configFor = (tool: string, scope: 'user' | 'project'): LocalConfig => ({
+  const configFor = (tool: string, scope: 'user' | 'project'): LocalConfig => LocalConfigSchema.parse({
     repo: { localPath: teamRepo, remote: 'fixture' },
     username: 'tester',
     scope,
     ...(scope === 'project' ? { projectRoot } : {}),
     enabledAgents: [tool],
     additionalRoles: [],
-  } as unknown as LocalConfig);
+  });
 
   for (const tool of ['trae', 'trae-cn']) {
     it(`${tool}: a project's team agent lands in .trae/agents with frontmatter Trae loads`, async () => {

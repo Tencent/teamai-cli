@@ -188,7 +188,7 @@ profiles:
 | OpenCode | any | `opencode.json` |
 | CodeBuddy / WorkBuddy | `openai-chat-completions` | `models.json` (CodeBuddy follows its recorded home) |
 | Pi | any | `~/.pi/agent/models.json` |
-| OMP | any | `~/.omp/agent/models.yml`, or the agent dir of `OMP_PROFILE` and `PI_CONFIG_DIR` |
+| OMP | any | `~/.omp/agent/models.yml`, or the agent dir of `OMP_PROFILE` (or `PI_PROFILE`) and `PI_CONFIG_DIR` |
 | Muse Code | `openai-responses` | `<Muse home>/settings.json` (recorded home, else `$XDG_CONFIG_HOME/muse` or `~/.config/muse`), and the key as `META_API_KEY` in `~/.teamai/models/env.sh`, which your shell profile loads |
 
 The example has no `openai-responses` group, so Codex and Muse Code are left alone.

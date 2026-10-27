@@ -772,7 +772,7 @@ export class AgentsHandler extends ResourceHandler {
       }
     }
     for (const { tool, dest, render, origin } of renders) {
-      const rejected = agentNameRejection(tool, spec?.name ?? item.name);
+      const rejected = agentNameRejection({ tool, name: spec?.name ?? item.name });
       if (rejected !== null) {
         log.warn(`[agents] Skipped ${item.name} for ${tool}: ${rejected}`);
         ledger?.toolsMissingAgents.add(tool);

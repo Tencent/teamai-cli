@@ -398,7 +398,7 @@ function isEmptyHooksResidue(parsed: Record<string, unknown> | null): boolean {
 /**
  * Delete `file`, a standalone Copilot hook file teamai wrote, once removing
  * teamai's entries left it holding only the events they emptied: Copilot runs
- * nothing from it. One git tracks stays, as the hook pass keeps it.
+ * nothing from it. A file git tracks stays, as the hook pass keeps it.
  */
 async function removeEmptiedCopilotHookFile(file: string): Promise<void> {
   const parsed = await readJson<Record<string, unknown>>(file);

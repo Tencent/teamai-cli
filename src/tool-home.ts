@@ -111,6 +111,7 @@ function moveOf(move: HomeMove, host: Host): EnvToolHome | null {
 
 function openclawState(host: Host): EnvToolHome | null {
   const raw = host.env.OPENCLAW_HOME?.trim();
+  // OpenClaw counts a blank value and the literals `undefined` and `null` as unset.
   const openclawHome = raw && raw !== 'undefined' && raw !== 'null' ? absoluteOn(raw, host) : null;
   const effective: Host = openclawHome === null ? host : { ...host, home: openclawHome };
   const state = host.env.OPENCLAW_STATE_DIR?.trim();
@@ -143,8 +144,10 @@ function hermesHome(host: Host): EnvToolHome | null {
     : suffix ? { dir: native, variable: 'HERMES_DATA_DIR_SUFFIX', kind: 'own' }
       : appData !== null ? { dir: native, variable: 'LOCALAPPDATA', kind: 'platform-default' } : null;
   if (explicit !== null && p.basename(p.dirname(explicit)) === 'profiles') return processHome;
-  const inNative = explicit === null || !p.relative(native, explicit).startsWith('..') && !p.isAbsolute(p.relative(native, explicit));
-  const activeProfile = p.join(inNative ? native : explicit, 'active_profile');
+  // Hermes looks for active_profile in its native home unless HERMES_HOME lies outside it.
+  const fromNative = explicit === null ? '' : p.relative(native, explicit);
+  const outsideNative = explicit !== null && (fromNative.startsWith('..') || p.isAbsolute(fromNative));
+  const activeProfile = p.join(outsideNative ? explicit : native, 'active_profile');
   const name = host.readTextNow(activeProfile)?.trim();
   if (!name || name === 'default') return processHome;
   const dir = p.join(explicit ?? native, 'profiles', name);

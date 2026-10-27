@@ -390,7 +390,7 @@ export function renderForMuse(spec: AgentSpec): RenderResult {
 const TRAE_AGENT_NAME = /^[A-Za-z](?:[A-Za-z0-9-]{0,48}[A-Za-z0-9])?$/;
 
 /** Why `tool` would ignore an agent named `name`, or null when it loads it. */
-export function agentNameRejection(tool: string, name: string): string | null {
+export function agentNameRejection({ tool, name }: { readonly tool: string; readonly name: string }): string | null {
   if ((tool === 'trae' || tool === 'trae-cn') && !TRAE_AGENT_NAME.test(name)) {
     return 'Trae loads a subagent only when its name starts with a letter, holds only letters, digits and -, ends with a letter or digit, and is at most 50 characters.';
   }

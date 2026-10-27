@@ -162,10 +162,7 @@ export type BlocksChannels = Scoped<BlocksTarget<HomeRead>, BlocksTarget<HomeRea
  * tool id itself (`renderForTool`), so no entry can point a tool at another
  * tool's renderer.
  */
-export type AgentsTarget<R> = {
-  readonly reads: Reads<R>;
-  readonly readGates?: readonly ReadGateKind[];
-};
+export type AgentsTarget<R> = { readonly reads: Reads<R>; readonly readGates?: readonly ReadGateKind[] };
 export type AgentsChannels = Scoped<AgentsTarget<HomeRead>, AgentsTarget<HomeRead | ProjectRead>>;
 
 /**
