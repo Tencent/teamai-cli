@@ -1476,8 +1476,9 @@ function mergeCanonicalEdits(
     // A model pin, the tool's own or inherited, reaches the copy as its native
     // `model`, which reverse parsing reads as the root field: compared as an
     // extras key, a change to it stays this tool's, and the root model and the
-    // base tool's pin are kept.
-    const modelPin = !canonicalAlias && toolExtrasFor(canonical, tool)?.['model'] !== undefined;
+    // base tool's pin are kept. A pin the copy does not carry (a Trae
+    // project file) is not compared, so it is kept.
+    const modelPin = !canonicalAlias && toolExtrasFor(canonical, tool)?.['model'] !== undefined && baseline.spec.model !== undefined;
     if (modelPin) {
       before['model'] = baseline.spec.model;
       if (edited.model !== undefined) after['model'] = edited.model;

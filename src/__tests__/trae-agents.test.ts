@@ -127,6 +127,19 @@ describe('Trae subagents', () => {
       return new AgentsHandler().scanLocalForPush(teamConfig, config);
     };
 
+    it('keeps an edition model the project file leaves out when only the instructions change', async () => {
+      await fse.writeFile(item.sourcePath, `${AGENT_YAML}tool_extras:\n  trae-cn:\n    model: kimi-k2.5\n`);
+      const config = configFor('trae-cn', 'project');
+      const file = path.join(projectRoot, '.trae', 'agents', `${AGENT}.md`);
+      await new AgentsHandler().pullItem(item, teamConfig, config);
+      await fse.writeFile(file, (await fse.readFile(file, 'utf8')).replace('report defects.', 'report defects, then risks.'));
+
+      const candidates = await new AgentsHandler().scanLocalForPush(teamConfig, config);
+
+      expect(candidates[0]?.mergedSpec?.instructions).toContain('then risks.');
+      expect(candidates[0]?.mergedSpec?.tool_extras).toEqual({ 'trae-cn': { model: 'kimi-k2.5' } });
+    });
+
     it('refuses a changed value, which would give the two editions different values', async () => {
       const candidates = await editAndScan((content) => content.replace('disallowedTools: Bash', 'disallowedTools: Write'));
 
