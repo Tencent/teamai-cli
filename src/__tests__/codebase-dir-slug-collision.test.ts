@@ -1,10 +1,11 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { importLocalCheckout, localCheckoutSlug } from '../import-codebase.js';
+import { log } from '../utils/logger.js';
 
 /**
  * A `--dir` checkout without an origin remote is named after its directory, so
@@ -17,6 +18,7 @@ import { importLocalCheckout, localCheckoutSlug } from '../import-codebase.js';
 const temps: string[] = [];
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const dir of temps.splice(0)) {
     try {
       fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
@@ -249,5 +251,35 @@ describe('--dir slug collision (#1422)', () => {
     expect(fs.readFileSync(curated, 'utf-8')).toBe('# curated\n');
     expect(fs.readFileSync(path.join(wikiRoot, 'evidence', 'code', suffix, 'source-manifest.json'), 'utf-8')).toContain('acme/mono');
     expect(localRootHashOf(wikiRoot, 'svc')).toBe(sha256(plain));
+  });
+
+  it('a suffixed subdirectory reports the copy an older release wrote under its directory name', async () => {
+    const parent = temp('teamai-1422-dir-');
+    const wikiRoot = path.join(temp('teamai-1422-wiki-'), 'teamwiki');
+    await importDir(plainDir(parent, 'svc', 'plain'), wikiRoot);
+    const repo = path.join(parent, 'mono');
+    const sub = path.join(repo, 'apps', 'svc');
+    fs.mkdirSync(sub, { recursive: true });
+    fs.writeFileSync(path.join(sub, 'svc.ts'), 'export const svc = 1;\n');
+    execFileSync('git', ['init', '--quiet'], { cwd: repo, stdio: 'ignore' });
+    await importDir(sub, wikiRoot);
+    const suffix = `svc-${hash8(sub)}`;
+    execFileSync('git', ['remote', 'add', 'origin', 'https://github.com/acme/mono.git'], { cwd: repo, stdio: 'ignore' });
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {});
+    const olderCopy = `teamwiki/evidence/code/svc/ is an older copy of teamwiki/evidence/code/${suffix}/. `
+      + 'Move any curated docs you want to keep from it, then remove it.';
+
+    // svc/ is still the other checkout's: nothing to report.
+    await importDir(sub, wikiRoot);
+    expect(warn).not.toHaveBeenCalled();
+
+    // A release without suffixes imported this subdirectory into svc/.
+    fs.writeFileSync(path.join(wikiRoot, 'evidence', 'code', 'svc', 'source-manifest.json'),
+      JSON.stringify({ repoUrl: 'https://github.com/acme/mono.git', sourceSubdir: 'apps/svc' }));
+    fs.writeFileSync(path.join(sub, 'svc.ts'), 'export const svc = 2;\n');
+    await importDir(sub, wikiRoot);
+
+    expect(warn.mock.calls).toEqual([[olderCopy]]);
+    expect(evidenceSlugs(wikiRoot)).toEqual(['svc', suffix].sort());
   });
 });

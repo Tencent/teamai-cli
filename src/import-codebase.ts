@@ -194,16 +194,23 @@ export async function localCheckoutSlug(opts: { sourceDir: string; slug: string;
     // A subdirectory keeps its directory name once it has an origin, so a
     // suffix it was given before is still its own: found by its hashed root
     // on the first import, and by the repository it names after that.
+    const { repoUrl } = source;
+    const isThisSource = (codebase: CodebaseSource | null) => codebase?.kind === 'remote'
+      && remotesMatch(codebase.repoUrl, repoUrl)
+      && (codebase.sourceSubdir ?? '') === (source.sourceSubdir ?? '');
+    const published = await readCodebaseSource(path.join(wikiRoot, 'evidence', 'code', slug));
     for (const candidate of await suffixedSlugs(opts.sourceDir, slug)) {
-      const published = await readCodebaseSource(path.join(wikiRoot, 'evidence', 'code', candidate));
-      const isOwn = published?.kind === 'local'
-        ? sameLocalSource(published, source)
-        : published?.kind === 'remote' && remotesMatch(published.repoUrl, source.repoUrl)
-          && (published.sourceSubdir ?? '') === (source.sourceSubdir ?? '');
-      if (isOwn) return candidate;
+      const suffixed = await readCodebaseSource(path.join(wikiRoot, 'evidence', 'code', candidate));
+      const isOwn = suffixed?.kind === 'local' ? sameLocalSource(suffixed, source) : isThisSource(suffixed);
+      if (!isOwn) continue;
+      // A release without suffixes may have imported it under its directory name since.
+      if (isThisSource(published)) {
+        log.warn(`teamwiki/evidence/code/${slug}/ is an older copy of teamwiki/evidence/code/${candidate}/. `
+          + 'Move any curated docs you want to keep from it, then remove it.');
+      }
+      return candidate;
     }
     const evidence = `teamwiki/evidence/code/${slug}/`;
-    const published = await readCodebaseSource(path.join(wikiRoot, 'evidence', 'code', slug));
     if (published?.kind === 'local' && !sameLocalSource(published, source)) {
       throw new Error(`${evidence} holds the evidence of a checkout without an origin remote, and this checkout is `
         + `${describeSource({ kind: 'remote', repoUrl: source.repoUrl, sourceSubdir: source.sourceSubdir })}. Not replacing it. `
