@@ -187,16 +187,22 @@ function withLocalMemberSettings(config: LocalConfig): LocalConfig {
  * is already in memory. `init` and `pull` both reconcile hooks, MCP and env
  * before another load occurs, so they must see the same effective member
  * settings as ordinary config readers while keeping the caller's identity.
+ * A user config also takes the settings it does not set from a settings-only
+ * machine file, which is a no-op once that file holds the install.
  */
 export async function refreshRoleAssignment(config: LocalConfig): Promise<void> {
   let resolved = await applyRoleAssignment(withLocalRoles(withLocalMemberSettings(config)));
   if (config.roleAssignment && !resolved.roleAssignment) resolved = await resolveLegacyRole(resolved);
   if (resolved.roleAssignment) delete resolved.roleUnresolved;
-  if (resolved.scope !== 'user') resolved = applyMachineSettings(resolved, await loadMemberSettings());
-  // A user init promotes a settings-only machine file, and saveLocalConfig
-  // keeps its settings below the in-memory ones. Rank them the same here so
-  // the reconcile that follows acts on what the save writes (#1484).
-  else resolved = { ...await readSettingsOnlyConfig(expandHome(getUserConfigPath())), ...resolved };
+  if (resolved.scope !== 'user') {
+    resolved = applyMachineSettings(resolved, await loadMemberSettings());
+  } else {
+    // A user init promotes a settings-only machine file, and saveLocalConfig
+    // keeps its settings below the in-memory ones. Rank them the same here so
+    // the reconcile that follows acts on what the save writes (#1484).
+    const { workflows, ...machine } = await readSettingsOnlyConfig(expandHome(getUserConfigPath()));
+    resolved = { ...machine, ...(workflows ? { workflows: { ...workflows, tools: workflows.tools ?? {} } } : {}), ...resolved };
+  }
 
   // `resolved` can alias `config` when there is no role or settings overlay.
   // Snapshot it before clearing runtime-only values; otherwise the cleanup
@@ -530,7 +536,7 @@ export async function loadLocalConfig(options: LoadOptions = {}): Promise<LocalC
  * Only a write that happens anyway uses it (a save, or the legacy role
  * migration); a plain load leaves a `scope: project` file as it is.
  */
-function serializeLocalConfig(config: LocalConfig, carriedSettings?: Record<string, unknown>): string {
+function serializeLocalConfig(config: LocalConfig, carriedSettings?: MemberSettings): string {
   // The overlaid roles are the team's, read fresh on every load. Writing them
   // would leave a stale copy behind once the assignment changes or the file
   // goes, and a stale copy is exactly what a member must not be able to keep.
@@ -551,25 +557,15 @@ function serializeLocalConfig(config: LocalConfig, carriedSettings?: Record<stri
 }
 
 /** Read valid member settings before user init promotes a machine file to an install. */
-async function readSettingsOnlyConfig(configPath: string): Promise<Record<string, unknown>> {
+async function readSettingsOnlyConfig(configPath: string): Promise<MemberSettings> {
   const content = await readFileSafe(configPath);
   if (!content) return {};
   try {
-    const raw = YAML.parse(content);
-    if (!isSettingsOnlyConfig(raw)) return {};
-
-    const settings: Record<string, unknown> = {};
-    for (const key of MEMBER_SETTING_KEYS) {
-      if (key === 'workflows') continue;
-      const value = memberSettingAt(raw, key, MemberSettingsSchema.shape[key], configPath);
-      if (value !== undefined) settings[key] = value;
-    }
-    const workflows = readMachineWorkflowSettings(raw, configPath);
-    if (workflows !== undefined) settings.workflows = workflows;
-    return settings;
+    if (!isSettingsOnlyConfig(YAML.parse(content))) return {};
   } catch {
     return {};
   }
+  return loadMemberSettings(configPath);
 }
 
 /**

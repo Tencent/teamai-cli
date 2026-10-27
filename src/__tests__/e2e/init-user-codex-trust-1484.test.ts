@@ -83,8 +83,10 @@ function member(name: string, machineSettings?: Record<string, unknown>) {
 }
 
 describe('init --scope user honours a settings-only machine file (#1484)', () => {
-  it('trusts no Codex hook when the machine file sets codexTrustEnabled: false, and keeps its settings', async () => {
-    const m = member('trust-off', { codexTrustEnabled: false, recallEnabled: false, updatePolicy: 'skip' });
+  it('trusts no Codex hook when the machine file sets codexTrustEnabled: false, and keeps its settings', () => {
+    const m = member('trust-off', {
+      codexTrustEnabled: false, recallEnabled: false, updatePolicy: 'skip', workflows: { max_parallel: 2 },
+    });
 
     const run = m.init();
 
@@ -93,11 +95,11 @@ describe('init --scope user honours a settings-only machine file (#1484)', () =>
     expect(run.output).toContain('Codex hooks written, but Codex may require you to review/trust them');
     expect(m.trustedHooks()).toBe(0);
     expect(YAML.parse(fs.readFileSync(m.config, 'utf8'))).toMatchObject({
-      codexTrustEnabled: false, recallEnabled: false, updatePolicy: 'skip', scope: 'user',
+      codexTrustEnabled: false, recallEnabled: false, updatePolicy: 'skip', workflows: { max_parallel: 2 }, scope: 'user',
     });
   }, 120_000);
 
-  it('trusts the Codex hooks when there is no machine file', async () => {
+  it('trusts the Codex hooks when there is no machine file', () => {
     const m = member('no-machine-file');
 
     const run = m.init();
