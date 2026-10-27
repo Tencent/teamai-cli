@@ -63,8 +63,8 @@ const CodebaseManifestSchema = z.object({
 /**
  * `--skip-enrich` writes the static fallback manifest. Keep what AI enrichment
  * wrote for each component still in the code (its category, responsibilities,
- * and the edges between them), with the entrypoints just extracted; a new
- * component keeps its static entry.
+ * and the edges between them), with the doc path and entrypoints just
+ * extracted; a new component keeps its static entry.
  */
 function keepEnrichedComponents(manifests: { published: unknown; staged: unknown }): Record<string, unknown> | null {
   const publishedManifest = CodebaseManifestSchema.safeParse(manifests.published);
@@ -73,7 +73,7 @@ function keepEnrichedComponents(manifests: { published: unknown; staged: unknown
   const enriched = new Map(publishedManifest.data.components.map((component) => [component.slug, component]));
   const components = stagedManifest.data.components.map((component) => {
     const previous = enriched.get(component.slug);
-    return previous ? { ...previous, entrypoints: component['entrypoints'] } : component;
+    return previous ? { ...previous, docPath: component['docPath'], entrypoints: component['entrypoints'] } : component;
   });
   const slugs = new Set(components.map((component) => component.slug));
   return {

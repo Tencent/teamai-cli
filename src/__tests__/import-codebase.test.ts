@@ -403,6 +403,42 @@ describe('importCodebase: the extraction every import source shares', () => {
     expect((await fs.readJson(path.join(evidence, 'source-manifest.json'))).project).toBe('github__acme__svc');
   });
 
+  it('points the kept AI components at the moved evidence on a skipped-enrichment import', async () => {
+    const repo = await makeRepo(root, 'svc', 'export function greet() { return "hi"; }\n');
+    await fs.outputFile(path.join(repo, 'auth', 'main.ts'), 'export const auth = 1;\n');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '-q', '-m', 'modules');
+    mockEnrichWithAI.mockResolvedValue({
+      manifest: {
+        schemaVersion: 'team-wiki.codebase-output-manifest.v2',
+        project: 'svc',
+        generatedAt: new Date().toISOString(),
+        components: [{
+          slug: 'auth',
+          docPath: 'evidence/code/svc/auth.md',
+          title: 'auth',
+          category: 'service',
+          confidence: 'INFERRED',
+          responsibilities: ['Signs users in'],
+        }],
+        edges: [],
+      },
+      domains: [],
+      repoDomain: 'Identity',
+      repoDescription: 'identity',
+      repoKeywords: [],
+    });
+    await importCodebase({ sourceDir: repo, slug: 'svc', wikiRoot, skipEnrich: false });
+
+    await importCodebase({ sourceDir: repo, slug: 'github__acme__svc', legacySlug: 'svc', wikiRoot, skipEnrich: true });
+
+    const manifest = await fs.readJson(path.join(wikiRoot, 'evidence', 'code', 'github__acme__svc', '_manifest.json'));
+    expect(manifest.components.find((component: { slug: string }) => component.slug === 'auth')).toMatchObject({
+      docPath: 'evidence/code/github__acme__svc/auth.md',
+      responsibilities: ['Signs users in'],
+    });
+  });
+
   it('keeps the evidence under the directory name, with a warning, when the remote slug already has evidence', async () => {
     const repo = await makeRepo(root, 'svc', 'export function greet() { return "hi"; }\n');
     await importCodebase({ sourceDir: repo, slug: 'svc', wikiRoot, skipEnrich: true });
