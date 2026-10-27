@@ -4,7 +4,6 @@ import {
   COPILOT_TOOL_ID,
   getCopilotHome,
   resolveBaseDir,
-  resolveToolBaseDir,
   isAgentDisabled,
   isSelfMode,
   resolveHookScope,
@@ -12,11 +11,11 @@ import {
   toolGateRoot,
   detectToolRoot,
 } from './types.js';
-import { isToolInstalledForConfig } from './resources/base.js';
 import { isToolId, TOOLS } from './tools.js';
 import { installOf, locate, ownOf } from './locate.js';
 import type { LocalConfig, TeamaiConfig, Scope } from './types.js';
 import { getUserHome } from './utils/home.js';
+import { realHost, type Host } from './tool-home.js';
 
 /**
  * Single-repo mode: the AI tools offered when `teamai init .` asks which tool
@@ -364,11 +363,12 @@ export function getEffectiveAgents(
 /**
  * Resolve agents to absolute paths and detect installation state.
  *
- * `installed` is true when the agent's root directory (~/.<id>/)
- * exists; this mirrors `ResourceHandler.isToolInstalled` so the
- * detection lines up with what `teamai pull` actually writes to.
+ * A built-in tool reads where `teamai pull` writes its skills, and counts as
+ * installed when that write's install gate is met. An agent pull does not
+ * write, and a tool with no skills place, keeps its `skillsPath` under the
+ * scope's base and counts as installed when its root directory exists.
  */
-export async function detectInstalledAgents(localConfig: LocalConfig, teamConfig: TeamaiConfig): Promise<ResolvedAgent[]> {
+export async function detectInstalledAgents(localConfig: LocalConfig, teamConfig: TeamaiConfig, host: Host = realHost()): Promise<ResolvedAgent[]> {
   const agents = getEffectiveAgents(teamConfig, localConfig);
   const scoped = scopedToolPaths(teamConfig, localConfig);
   const fromTeamConfig = new Set(
@@ -376,17 +376,20 @@ export async function detectInstalledAgents(localConfig: LocalConfig, teamConfig
       .filter(([, paths]) => paths.skills)
       .map(([id]) => id),
   );
+  const install = installOf(teamConfig, localConfig);
+  const base = install.scope === 'user' ? host.home : install.projectRoot;
 
   const results: ResolvedAgent[] = [];
   for (const agent of agents) {
-    const baseDir = resolveToolBaseDir(agent.id, localConfig);
-    const installed = await isToolInstalledForConfig(agent.id, agent.skillsPath, localConfig);
-    results.push({
-      ...agent,
-      absoluteSkillsPath: path.join(baseDir, agent.skillsPath),
-      installed,
-      fromTeamConfig: fromTeamConfig.has(agent.id),
-    });
+    const location = isToolId(agent.id) ? await locate(agent.id, 'skills', install, host) : null;
+    const own = location === null ? null : ownOf(location);
+    const [absoluteSkillsPath, installed] = location !== null && own !== null
+      ? [own.path, location.gates.every((gate) => gate.kind !== 'installed' || gate.met)]
+      : [
+        host.path.join(base, ...agent.skillsPath.split('/')),
+        await host.exists(host.path.join(base, ...toolGateRoot(agent.id, agent.skillsPath, localConfig.toolRoots).split('/'))),
+      ];
+    results.push({ ...agent, absoluteSkillsPath, installed, fromTeamConfig: fromTeamConfig.has(agent.id) });
   }
 
   return results;
