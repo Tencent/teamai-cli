@@ -1,4 +1,4 @@
-import { getCopilotHome } from '../types.js';
+import { toolHome } from '../tool-home.js';
 import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest';
 import path from 'node:path';
 
@@ -300,7 +300,7 @@ describe('doctor — hook checks', () => {
 
     it('reports missing global hooks for explicitly selected project Copilot', async () => {
         const projectRoot = '/tmp/teamai-doctor-copilot-project';
-        const hookPath = path.join(getCopilotHome(), 'hooks', 'teamai.json');
+        const hookPath = path.join(toolHome('copilot'), 'hooks', 'teamai.json');
         mockedLoadLocalConfig.mockResolvedValue({
             ...mockLocalConfig,
             scope: 'project',
@@ -329,7 +329,7 @@ describe('doctor — hook checks', () => {
 
     it('checks global Copilot hooks for a project when userScope.hooks is set', async () => {
         const projectRoot = '/tmp/teamai-doctor-copilot-project-userscope';
-        const hookPath = path.join(getCopilotHome(), 'hooks', 'teamai.json');
+        const hookPath = path.join(toolHome('copilot'), 'hooks', 'teamai.json');
         mockedLoadLocalConfig.mockResolvedValue({
             ...mockLocalConfig,
             scope: 'project',

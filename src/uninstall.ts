@@ -39,7 +39,6 @@ import {
   resolveBaseDir,
   resolveHookScope,
   resolveLegacyProjectHookScope,
-  resolveToolBaseDir,
   scopedToolPaths,
   hookToolPathsForConfig,
   SYNC_LOCK_FILENAME,
@@ -1033,7 +1032,8 @@ async function buildRemovalPlan(
       await discoverToolResources(
         tool,
         toolPath,
-        resolveToolBaseDir(tool, localConfig),
+        // User-scope Copilot paths are relative to its home.
+        tool === COPILOT_TOOL_ID && localConfig.scope === 'user' ? toolHome(COPILOT_TOOL_ID) : resolveBaseDir(localConfig),
         baseDir,
         writesOf(await locate(tool, 'skills', install)).map((place) => place.path),
         await locate(tool, 'blocks', install),
@@ -1103,7 +1103,7 @@ async function buildRemovalPlan(
     const { opencodeContextReference, readOpencodeInstructionList } = await import('./resources/opencode-config.js');
     const contextFile = ownOf(await locate('opencode', 'blocks', install))?.path;
     // Worktrees share state.json: only this checkout's own record counts.
-    const own = contextFile === undefined ? undefined : opencodeContextReference(contextFile, localConfig.scope, resolveToolBaseDir('opencode', localConfig));
+    const own = contextFile === undefined ? undefined : opencodeContextReference(contextFile, localConfig.scope, resolveBaseDir(localConfig));
     const recorded = (await loadStateForScope(localConfig)).opencodeContextEntries ?? [];
     if (own && recorded.some((ref) => ref.config === own.config && ref.entry === own.entry)) {
       const listed = await readOpencodeInstructionList(own.config);

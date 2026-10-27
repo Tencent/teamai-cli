@@ -28,11 +28,11 @@ import {
   deliveredSkillFiles, describeKeptEntry, describeMembersLink, describeSkippedLink, holdsGitDir, holdsNonRegular, isLink, isTeamaiSkillCopy,
   keepsTrackedCopy, membersLinkAt,
 } from './resources/delivered-copies.js';
-import { getHermesHome } from './hermes-home.js';
 import { warnOnce } from './utils/warn-once.js';
 import { blobIdOf, historicalVersions } from './utils/team-history.js';
 import { installOf, locate, ownOf } from './locate.js';
 import { resolveOpenclawStateDir, resolveOpenclawWorkspace } from './openclaw-home.js';
+import { toolHome } from './tool-home.js';
 import { BUILTIN_SKILL_NAMES, LEGACY_BUILTIN_SKILL_NAMES } from './builtin-skills.js';
 import { getUserHome } from './utils/home.js';
 import { acquireLock, releaseLock } from './update.js';
@@ -44,7 +44,7 @@ import type {
   SourceInstallManifest,
   GlobalOptions,
 } from './types.js';
-import { getCopilotHome, isAgentExcluded, resolveBaseDir, scopedToolPaths, SOURCE_PULL_TTL_MS } from './types.js';
+import { COPILOT_TOOL_ID, isAgentExcluded, resolveBaseDir, scopedToolPaths, SOURCE_PULL_TTL_MS } from './types.js';
 import type { DeliveryRecorder } from './git-exclude-delivered.js';
 
 // ─── Source repo management ──────────────────────────────
@@ -154,7 +154,7 @@ function isCanonicalSkillName(value: string): boolean {
  * A source destination recorded as an absolute path must lie inside one.
  */
 async function externalToolHomes(): Promise<string[]> {
-  const homes = [getHermesHome(), resolveOpenclawStateDir(), getCopilotHome()];
+  const homes = [toolHome('hermes'), resolveOpenclawStateDir(), toolHome(COPILOT_TOOL_ID)];
   // The workspace OpenClaw is configured to read, even once its directory is gone:
   // a record of a copy there stays valid, so pull and `source remove` keep working.
   const workspace = await resolveOpenclawWorkspace();

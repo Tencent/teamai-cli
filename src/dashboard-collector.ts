@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { toolHome } from './tool-home.js';
 import readline from 'node:readline';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { log } from './utils/logger.js';
@@ -25,7 +26,6 @@ import {
   TRANSCRIPT_REJECT_MARKERS,
   COPILOT_TOOL_ID,
   MUSE_TOOL_ID,
-  getCopilotHome,
   getDataHome,
   emptyTokenUsage,
   addTokenUsage,
@@ -798,7 +798,7 @@ export function resolveCopilotUsageTranscript(
 ): string | null {
   if (!COPILOT_SESSION_ID_RE.test(sessionId) || sessionId === '.' || sessionId === '..') return null;
   return path.join(
-    getCopilotHome(),
+    toolHome(COPILOT_TOOL_ID),
     COPILOT_SESSION_STATE_DIR,
     sessionId,
     COPILOT_SESSION_EVENTS_FILE,

@@ -22,7 +22,7 @@ vi.mock('../utils/logger.js', () => ({
 
 import { loadLocalConfig, loadTeamConfig } from '../config.js';
 import { buildChecks, resolveDoctorContext, type Check } from '../doctor.js';
-import { isToolInstalledForConfig } from '../resources/base.js';
+import { isInstalled } from './helpers/install-gate.js';
 import { rulesReceivingTools } from '../resources/rules.js';
 import { DEFAULT_TOOL_PATHS, scopedToolPaths } from '../types.js';
 import type { LocalConfig, TeamaiConfig } from '../types.js';
@@ -59,23 +59,23 @@ describe('WorkBuddy install probe across generations (#1273)', () => {
 
   it('finds old-generation WorkBuddy by .workbuddy at the base dir', async () => {
     await fse.ensureDir(path.join(projectRoot, '.workbuddy'));
-    expect(await isToolInstalledForConfig('workbuddy', '.workbuddy/skills', projectConfig())).toBe(true);
+    expect(await isInstalled('workbuddy', 'rules', projectConfig())).toBe(true);
   });
 
   it('does not treat .workbuddy-ai alone as installed outside the skills surface (#1290)', async () => {
     await fse.ensureDir(path.join(projectRoot, '.workbuddy-ai'));
-    expect(await isToolInstalledForConfig('workbuddy', '.workbuddy/skills', projectConfig())).toBe(false);
+    expect(await isInstalled('workbuddy', 'rules', projectConfig())).toBe(false);
   });
 
   it('takes the old root as proof when both generations left directories behind', async () => {
     await fse.ensureDir(path.join(projectRoot, '.workbuddy'));
     await fse.ensureDir(path.join(projectRoot, '.workbuddy-ai'));
-    expect(await isToolInstalledForConfig('workbuddy', '.workbuddy/skills', projectConfig())).toBe(true);
+    expect(await isInstalled('workbuddy', 'rules', projectConfig())).toBe(true);
   });
 
   it('does not take a bare .codebuddy directory for WorkBuddy', async () => {
     await fse.ensureDir(path.join(projectRoot, '.codebuddy'));
-    expect(await isToolInstalledForConfig('workbuddy', '.codebuddy/rules', projectConfig())).toBe(false);
+    expect(await isInstalled('workbuddy', 'rules', projectConfig())).toBe(false);
   });
 });
 

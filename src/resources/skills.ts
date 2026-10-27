@@ -3,7 +3,7 @@ import { lstat, realpath } from 'node:fs/promises';
 import YAML from 'yaml';
 import { ResourceHandler, type ScanForPushOptions } from './base.js';
 import type { CopyOrigin, PendingPush, ResourceItem, ResourceItemStatus, DeliveryTarget, TeamaiConfig, LocalConfig } from '../types.js';
-import { getPushignorePath, resolveBaseDir, resolveToolBaseDir, scopedToolPaths, SELF_KNOWLEDGE_SCAN_KEY } from '../types.js';
+import { getPushignorePath, resolveBaseDir, scopedToolPaths, SELF_KNOWLEDGE_SCAN_KEY } from '../types.js';
 import { listDirs, listFilesRecursive, pathExists, copyDir, remove, pruneEmptyDirs, dirContentEqual, dirTeamSubsetEqual, fileContentEqual, fileHash, getDirLatestMtime, readFileSafe, writeFile } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { debugOnce, warnOnce } from '../utils/warn-once.js';
@@ -1088,7 +1088,7 @@ export class SkillsHandler extends ResourceHandler {
             if (tool === SELF_KNOWLEDGE_SCAN_KEY && localConfig.projectRoot
               && await isPastSkillVersion(localConfig.repo.localPath, localConfig.projectRoot, localDirPath, teamDirPath, teamRelDir)) {
               log.warn(
-                `[skills] Skipped ${dir}: ${path.relative(resolveToolBaseDir(tool, localConfig), localDirPath)} is an older `
+                `[skills] Skipped ${dir}: ${path.relative(resolveBaseDir(localConfig), localDirPath)} is an older `
                 + `version of ${teamRelDir}, which has changed on the team since. `
                 + 'Copy the current files over it (or delete it) before editing.',
               );

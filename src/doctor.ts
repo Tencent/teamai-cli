@@ -22,7 +22,6 @@ import {
   resolveHookScope,
   legacyManagedHooksPath,
   resolveBaseDir,
-  resolveToolBaseDir,
   isAgentExcluded,
   scopedToolPaths,
   toolGateRoot,

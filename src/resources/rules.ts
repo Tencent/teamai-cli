@@ -5,7 +5,7 @@ import { listFilesRecursive, pathExists, copyFile, ensureDir, remove, fileConten
 import { log } from '../utils/logger.js';
 import { getUserHome } from '../utils/home.js';
 import { debugOnce, warnOnce } from '../utils/warn-once.js';
-import { TEAMAI_RULES_START, TEAMAI_RULES_END, TEAMAI_TEAM_RULES_START, TEAMAI_TEAM_RULES_END, resolveToolBaseDir, resolveToolRootDir, isAgentExcluded, SELF_KNOWLEDGE_SCAN_KEY, installScopeName } from '../types.js';
+import { TEAMAI_RULES_START, TEAMAI_RULES_END, TEAMAI_TEAM_RULES_START, TEAMAI_TEAM_RULES_END, resolveBaseDir, resolveToolRootDir, isAgentExcluded, SELF_KNOWLEDGE_SCAN_KEY, installScopeName } from '../types.js';
 import { EXCLUDED_RULE_NAMES, isDeployedRecallRule, TEAMAI_CONTEXT_RULE_NAME } from '../builtin-rules.js';
 import { rulePaths, teamRuleBody, teamRuleData } from './team-rule.js';
 import { joycodeQuotedGlobsWarning } from './joycode-rule.js';
@@ -40,7 +40,8 @@ import {
   type RuleFormat,
 } from './rule-format.js';
 import { injectClaudeMdSection, removeClaudeMdSection } from '../utils/claudemd.js';
-import { cleanupOf, installOf, locate, ownOf, userViewOf, writable, type Gate, type Install, type Location } from '../locate.js';
+import { toolHome } from '../tool-home.js';
+import { cleanupOf, installOf, locate, openclawWorkspaceDir, ownOf, userViewOf, writable, type Gate, type Install, type Location } from '../locate.js';
 import { channelsOf } from '../tools.js';
 
 /** The copies earlier pulls left in one of `LEGACY_RULE_DIRS` (`RulesHandler.legacyRuleCopies`). */
@@ -172,7 +173,7 @@ export class RulesHandler extends ResourceHandler {
           if (tool === SELF_KNOWLEDGE_SCAN_KEY
             && await isPastVersionOf(localConfig.repo.localPath, localFilePath, teamRelPath)) {
             log.warn(
-              `[rules] Skipped ${name}: ${path.relative(resolveToolBaseDir(tool, localConfig), localFilePath)} is an `
+              `[rules] Skipped ${name}: ${path.relative(resolveBaseDir(localConfig), localFilePath)} is an `
               + `older version of ${teamRelPath}, which has changed on the team since. `
               + 'Copy the current file over it (or delete it) before editing.',
             );
@@ -1170,7 +1171,7 @@ export class RulesHandler extends ResourceHandler {
       const { tool, ext } = entry;
       if (!entry.scopes.includes(localConfig.scope)) continue;
       const dir = legacyRuleDirPath(entry, localConfig);
-      const baseDir = resolveToolBaseDir(tool, localConfig);
+      const baseDir = resolveBaseDir(localConfig);
       if (entry.copiedFrom === undefined
         ? deliveredDirs.has(dir)
         // A directory the tool reads is the tool's, until it has copied into
@@ -1452,7 +1453,7 @@ export function unreadableConfigOf(location: { readonly gates: readonly Gate[] }
 function legacyRuleDirPath(entry: LegacyRuleDir, localConfig: LocalConfig): string {
   return localConfig.scope === 'user'
     ? path.join(resolveToolRootDir(entry.tool, path.dirname(entry.dir), localConfig.toolRoots), path.basename(entry.dir))
-    : path.join(resolveToolBaseDir(entry.tool, localConfig), entry.dir);
+    : path.join(resolveBaseDir(localConfig), entry.dir);
 }
 
 /**
@@ -1714,8 +1715,7 @@ export async function ruleChannelNotes(localConfig: LocalConfig): Promise<string
   const notes: string[] = [];
   if (localConfig.scope !== 'project') return notes;
   if (!isAgentExcluded(localConfig, 'hermes')) {
-    const { getHermesHome } = await import('../hermes-home.js');
-    if (await pathExists(getHermesHome())) {
+    if (await pathExists(toolHome('hermes'))) {
       notes.push(
         'Hermes gets no project rules: it reads team rules only from the global SOUL.md, which a '
         + 'user-scope pull writes (`teamai init --scope user`). A project channel would cost more than '
@@ -1726,8 +1726,7 @@ export async function ruleChannelNotes(localConfig: LocalConfig): Promise<string
     }
   }
   if (!isAgentExcluded(localConfig, 'openclaw')) {
-    const { resolveOpenclawWorkspaceDir } = await import('../openclaw-hooks.js');
-    if (await resolveOpenclawWorkspaceDir() !== null) {
+    if (await openclawWorkspaceDir() !== null) {
       notes.push(
         'OpenClaw gets no project rules: its only project file is the AGENTS.md other tools read too, '
         + 'and it reads no rules directory. It reads the team rules from its workspace AGENTS.md, which a '

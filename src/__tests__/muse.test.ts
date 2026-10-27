@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { reconcileHooks } from '../hooks.js';
 import { loadMcpManifest, mcpRelocated, reconcileMcpForConfig } from '../mcp-reconcile.js';
 import { buildMcpDeliveryChecks, mcpTransportNotes } from '../doctor-delivery.js';
-import { isToolInstalledForConfig } from '../resources/base.js';
+import { isInstalled } from './helpers/install-gate.js';
 import { AgentsHandler } from '../resources/agents.js';
 import { museAgentDrops, renderForTool, type AgentSpec } from '../resources/agent-format.js';
 import matter from 'gray-matter';
@@ -428,11 +428,11 @@ describe('Muse Code detection', () => {
   it('finds Muse Code in a project scope by ~/.config/muse', async () => {
     await fse.ensureDir(path.join(home, '.config', 'muse'));
 
-    expect(await isToolInstalledForConfig('muse', '.agents/skills', projectConfig())).toBe(true);
+    expect(await isInstalled('muse', 'skills', projectConfig())).toBe(true);
   });
 
   it('does not take a project .agents directory for Muse Code', async () => {
-    expect(await isToolInstalledForConfig('muse', '.agents/skills', projectConfig())).toBe(false);
+    expect(await isInstalled('muse', 'skills', projectConfig())).toBe(false);
   });
 });
 

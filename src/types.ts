@@ -4,7 +4,6 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { getUserHome, expandHome } from './utils/home.js';
 import { log } from './utils/logger.js';
-import { realHost, toolHome } from './tool-home.js';
 import { channelsOf } from './tools.js';
 import type { WorkspaceChildren } from './workspace-children.js';
 import type { HeadState } from './utils/git.js';
@@ -649,7 +648,7 @@ export const DEFAULT_TOOL_PATHS = {
   // WorkBuddy runs CodeBuddy's engine: in a project it reads CodeBuddy's
   // .codebuddy/rules, which the two share (one copy), and in user scope its
   // own ~/.workbuddy/rules (#946). Its install probe stays .workbuddy
-  // (`isToolInstalledForConfig`), whatever directory its rules land in.
+  // (`locate`'s install gate), whatever directory its rules land in.
   workbuddy: {
     skills: '.workbuddy/skills',
     rules: '.codebuddy/rules',
@@ -2639,11 +2638,6 @@ export function resolveBaseDir(localConfig: Pick<LocalConfig, 'scope' | 'project
 
 export const COPILOT_TOOL_ID = 'copilot';
 
-/** GitHub Copilot CLI's user configuration root: the recorded one (`toolHome`), else COPILOT_HOME, else `~/.copilot`. */
-export function getCopilotHome(env: NodeJS.ProcessEnv = process.env): string {
-  return toolHome(COPILOT_TOOL_ID, realHost({ env }));
-}
-
 export const CLAUDE_TOOL_ID = 'claude';
 
 /** The `toolPaths.claude` root segment Claude Code uses when it is not relocated. */
@@ -2831,12 +2825,6 @@ export function cursorConfigDir(toolRoots?: Record<string, string>): string {
   const xdg = process.env.XDG_CONFIG_HOME?.trim();
   if (xdg) return path.join(expandHome(xdg), 'cursor');
   return path.join(getUserHome(), DEFAULT_CURSOR_ROOT);
-}
-
-/** Base directory for one tool's resources in the active scope. */
-export function resolveToolBaseDir(tool: string, localConfig: LocalConfig): string {
-  if (tool === COPILOT_TOOL_ID && localConfig.scope === 'user') return getCopilotHome();
-  return resolveBaseDir(localConfig);
 }
 
 /** True when `tool` is in localConfig.disabledAgents (excluded from teamai sync). */

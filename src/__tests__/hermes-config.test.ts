@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import YAML from 'yaml';
-import { getHermesHome } from '../hermes-home.js';
+import { toolHome } from '../tool-home.js';
 import {
   upsertSoulRules,
   removeSoulRules,
@@ -41,23 +41,23 @@ afterEach(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
-// ─── getHermesHome ────────────────────────────────────────────────────────────
+// ─── toolHome('hermes') ────────────────────────────────────────────────────────────
 
-describe('getHermesHome', () => {
+describe("toolHome('hermes')", () => {
   it('returns the HERMES_HOME env var as-is when it is an absolute path', () => {
-    expect(getHermesHome()).toBe(tmpDir);
+    expect(toolHome('hermes')).toBe(tmpDir);
   });
 
   it('resolves HERMES_HOME to an absolute path when it is relative', () => {
     process.env.HERMES_HOME = 'relative/path';
-    const result = getHermesHome();
+    const result = toolHome('hermes');
     expect(path.isAbsolute(result)).toBe(true);
     expect(result).toBe(path.resolve('relative/path'));
   });
 
   it('returns the platform default when HERMES_HOME is not set', () => {
     delete process.env.HERMES_HOME;
-    const result = getHermesHome();
+    const result = toolHome('hermes');
     expect(result).toBe(defaultHermesHome());
     // restore for afterEach cleanup
     process.env.HERMES_HOME = tmpDir;

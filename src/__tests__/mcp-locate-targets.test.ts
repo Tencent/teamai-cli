@@ -12,7 +12,7 @@ vi.mock('../utils/logger.js', () => ({
 
 import { buildMcpReadFileChecks, mcpTransportNotes } from '../doctor-delivery.js';
 import type { DoctorContext } from '../doctor.js';
-import { detectMcpFormat } from '../resources/mcp-format.js';
+import { mcpFormatOf } from '../tools.js';
 import { log } from '../utils/logger.js';
 import { judgeTeamaiOnlyMcpConfigs, reconcileMcpForConfig } from '../mcp-reconcile.js';
 import { entryHash, renderCodexBlock, renderJsonEntry } from '../resources/mcp-format.js';
@@ -375,7 +375,7 @@ describe('pull writes MCP servers where each tool reads them (#1221)', () => {
   it.each(['claude-internal', 'codex-internal', 'tcodex'])('doctor notes %s has an unknown MCP channel', async (tool) => {
     await fse.ensureDir(path.join(home, `.${tool}`));
 
-    expect(detectMcpFormat(tool)).toBeNull();
+    expect(mcpFormatOf(tool)).toBeNull();
     expect(await mcpTransportNotes(context(team(), userConfig(tool)))).toContain(`${tool}'s MCP channel is unknown; teamai does not write its servers.`);
   });
 

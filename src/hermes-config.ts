@@ -1,6 +1,6 @@
 import YAML from 'yaml';
 import path from 'node:path';
-import { getHermesHome } from './hermes-home.js';
+import { toolHome } from './tool-home.js';
 import { readFileSafe, writeFile, ensureDir, remove, pathExists, readJson, writeJson } from './utils/fs.js';
 import { TEAMAI_RULES_START, TEAMAI_RULES_END } from './types.js';
 
@@ -10,7 +10,7 @@ const RULES_BLOCK_END = TEAMAI_RULES_END;
 
 /** Absolute path to the Hermes config.yaml. */
 export function getHermesConfigPath(): string {
-  return path.join(getHermesHome(), 'config.yaml');
+  return path.join(toolHome('hermes'), 'config.yaml');
 }
 
 /** Hermes uses an explicit cap, or a model-dependent cap with a 20,000-character floor. */
@@ -48,7 +48,7 @@ async function readConfigDoc(): Promise<YAML.Document.Parsed> {
  * if needed. Comments and key order in the original file are preserved.
  */
 async function writeConfigDoc(doc: YAML.Document.Parsed): Promise<void> {
-  await ensureDir(getHermesHome());
+  await ensureDir(toolHome('hermes'));
   await writeFile(getHermesConfigPath(), doc.toString());
 }
 
@@ -163,7 +163,7 @@ export async function removeSoulRules(soulPath: string): Promise<void> {
 
 /** Absolute path to the Hermes shell-hooks allowlist JSON. */
 export function getHermesAllowlistPath(): string {
-  return path.join(getHermesHome(), 'shell-hooks-allowlist.json');
+  return path.join(toolHome('hermes'), 'shell-hooks-allowlist.json');
 }
 
 /** Shape of a single hook entry in config.yaml `hooks.<event>[]`. */

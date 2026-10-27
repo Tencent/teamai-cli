@@ -23,19 +23,11 @@ export const DSH_HOOK_PLUGIN_ID = 'teamai-hooks-claude-code';
 export const DSH_HOOK_PLUGIN_PACKAGE = '@deepseek-ai/dsh-hooks-claude-code';
 
 /**
- * DeepSeek Harness's own home, where it reads the user `AGENTS.md`: the
- * recorded one (`toolHome`), else `DSH_HOME`, else `~/.dsh` (dsh `config.ts` `dshHome`).
- */
-export function resolveDshHome(): string {
-  return toolHome('dsh');
-}
-
-/**
- * Whether DeepSeek Harness is installed: its home (`resolveDshHome`) exists.
+ * Whether DeepSeek Harness is installed: its home (`toolHome('dsh')`) exists.
  * The hook bridge, the user-scope rules file, doctor and init all ask here.
  */
 export async function isDshInstalled(): Promise<boolean> {
-  return pathExists(resolveDshHome());
+  return pathExists(toolHome('dsh'));
 }
 
 export function resolveDshHookConfigPath(): string {
@@ -55,7 +47,7 @@ const DSH_LEGACY_PATCH = '# teamai mounts its hooks from $DSH_HOME/cordis.patch.
 
 /** The patch list dsh applies on every boot: the member's file, in which teamai owns one row. */
 export function resolveDshHomePatchPath(): string {
-  return path.join(resolveDshHome(), DSH_PATCH_FILE);
+  return path.join(toolHome('dsh'), DSH_PATCH_FILE);
 }
 
 const isTeamaiRow = (entry: unknown): boolean => YAML.isMap(entry) && entry.get('id') === DSH_HOOK_PLUGIN_ID;

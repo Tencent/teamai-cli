@@ -28,7 +28,7 @@ import {
   deliveredDocFiles, describeLinkedDocsRoot, isLinkedDocsRoot, isTeamDocsDirectory, keepDocsSearchWhitelist, listStaleDocDirectories, membersDocs,
   resolveDesiredDocs, resolveDocsDestination,
 } from './resources/docs.js';
-import { isToolInstalledForConfig, ResourceHandler } from './resources/base.js';
+import { ResourceHandler } from './resources/base.js';
 import { CODEX_TOOL, mayDeleteSkillCopy, skillOrigin } from './resources/skills.js';
 import { installOf, locate, ownOf, SHARED_AGENT_SKILLS_PATH, writable, writesOf } from './locate.js';
 import { describeToolHomeChange, recordToolHomes } from './tool-home-record.js';
@@ -51,7 +51,7 @@ import {
   TEAMAI_RECALL_RULES_START,
   TEAMAI_RECALL_RULES_END,
   CultureFrontmatterSchema,
-  resolveToolBaseDir,
+  resolveBaseDir,
   resolveHookScope,
   getDataHome,
   getTeamaiHomeDir,
@@ -422,7 +422,7 @@ async function sweepSharedSkillCopies(
   ledger: DeliveryLedger | undefined,
   scopeLabel: string,
 ): Promise<string[]> {
-  const sharedDir = path.join(resolveToolBaseDir(CODEX_TOOL, localConfig), SHARED_AGENT_SKILLS_PATH);
+  const sharedDir = path.join(resolveBaseDir(localConfig), SHARED_AGENT_SKILLS_PATH);
   const removed: string[] = [];
   for (const name of await listDirs(sharedDir)) {
     if (BUILTIN_SKILL_NAMES.has(name) || !swept(name)) continue;
@@ -660,9 +660,8 @@ async function cleanupTombstonedResources(
         if (rulesDir === undefined) continue;
         typeDir = rulesDir.path;
       } else {
-        if (!await isToolInstalledForConfig(tool, dir, localConfig)) continue;
-        if (isAgentExcluded(localConfig, tool)) continue;
-        typeDir = path.join(resolveToolBaseDir(tool, localConfig), dir);
+        const unhandled: never = type;
+        return unhandled;
       }
       // OMP's copy of a namespaced rule is flat (#946). A file of that name
       // may be the member's own, so only its record makes it teamai's.
@@ -2782,7 +2781,7 @@ async function syncManagedInstructions(
       && Object.values(blocks).some(Boolean) && !await opencodeDeliversThroughPlugin(config, localConfig)) {
       const { opencodeContextReference, readOpencodeInstructionList } = await import('./resources/opencode-config.js');
       const target = targets.find((target) => target.tools.includes('opencode'))!;
-      const { config: file, entry } = opencodeContextReference(target.path, localConfig.scope, resolveToolBaseDir('opencode', localConfig));
+      const { config: file, entry } = opencodeContextReference(target.path, localConfig.scope, resolveBaseDir(localConfig));
       opencodeReady = (await readOpencodeInstructionList(file))?.includes(entry) ?? false;
     }
   } catch (e) {

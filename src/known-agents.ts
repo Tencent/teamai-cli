@@ -2,7 +2,6 @@ import path from 'node:path';
 import { pathExists, ensureDir, writeJson } from './utils/fs.js';
 import {
   COPILOT_TOOL_ID,
-  getCopilotHome,
   resolveBaseDir,
   isAgentDisabled,
   isSelfMode,
@@ -15,7 +14,7 @@ import { isToolId, TOOLS } from './tools.js';
 import { installOf, isInstalledFor, locate, ownOf } from './locate.js';
 import type { LocalConfig, TeamaiConfig, Scope } from './types.js';
 import { getUserHome } from './utils/home.js';
-import { realHost, type Host } from './tool-home.js';
+import { realHost, toolHome, type Host } from './tool-home.js';
 
 /**
  * Single-repo mode: the AI tools offered when `teamai init .` asks which tool
@@ -311,7 +310,7 @@ export async function detectHomeInstalledAgents(
   const found: string[] = [];
   for (const id of candidateIds) {
     if (id === COPILOT_TOOL_ID) {
-      if (await pathExists(getCopilotHome())) found.push(id);
+      if (await pathExists(toolHome(COPILOT_TOOL_ID))) found.push(id);
       continue;
     }
     const skillsPath = KNOWN_AGENTS.find((a) => a.id === id)?.skillsPath;

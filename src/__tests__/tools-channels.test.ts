@@ -4,7 +4,7 @@ import { COPILOT_INSTRUCTIONS_FORMAT } from '../resources/copilot-instructions.j
 import { CURSOR_MDC_FORMAT } from '../resources/cursor-mdc.js';
 import { JOYCODE_RULE_FORMAT } from '../resources/joycode-rule.js';
 import { KIRO_STEERING_FORMAT } from '../resources/kiro-steering.js';
-import { detectMcpFormat, type McpFormat } from '../resources/mcp-format.js';
+import type { McpFormat } from '../resources/mcp-format.js';
 import { OMP_RULE_FORMAT } from '../resources/omp-rule.js';
 import { QODER_RULE_FORMAT } from '../resources/qoder-rule.js';
 import { getsRulesFromExtension, getsRulesFromSessionHook, ruleFormatById, ruleFormatForTool, type RuleFormat } from '../resources/rule-format.js';
@@ -69,8 +69,7 @@ describe('the descriptor\'s channels agree with the tables they replaced', () =>
     );
 
     const internal = ['claude-internal', 'codex-internal', 'tcodex'].includes(tool);
-    expect(detectMcpFormat(tool)).toBe(internal ? null : BEFORE.mcpFormats[tool] ?? null);
-    expect(mcpFormatOf(tool)).toBe(detectMcpFormat(tool));
+    expect(mcpFormatOf(tool)).toBe(internal ? null : BEFORE.mcpFormats[tool] ?? null);
 
     expect(hookFormatOf(tool)).toBe(BEFORE.hookFormats[tool] ?? 'claude');
   });

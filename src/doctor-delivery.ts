@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { expandHome, listFilesRecursive, pathExists, readFileSafe, readJsonObject } from './utils/fs.js';
 import {
   DEFAULT_TOOL_PATHS, getDataHome, getMcpSharing, getTeamaiHome, isAgentExcluded, isGitExcludeEnabled, managedMcpManifestKey, MUSE_TOOL_ID,
-  resolveBaseDir, resolveToolBaseDir, scopedToolPaths,
+  resolveBaseDir, scopedToolPaths,
 } from './types.js';
 import type { DeliveryTarget, LocalConfig, ManagedMcpManifest, McpServerDef, ResourceItem, TeamaiConfig } from './types.js';
 import type { EntryLayout, EntryResolution } from './namespaced-entries.js';
@@ -874,7 +874,7 @@ async function buildCursorUserRulesHookChecks(ctx: DoctorContext): Promise<Check
   const { readBuiltinOverride } = await import('./resources/hooks.js');
   const builtin = await readBuiltinOverride(localConfig);
   const disabledByTeam = builtin.known && (builtin.override?.disabled ?? []).includes('Hook dispatch session-start');
-  const file = path.join(resolveToolBaseDir('cursor', localConfig), toolPath.settings);
+  const file = path.join(resolveBaseDir(localConfig), toolPath.settings);
   const read = await readJsonObject(file);
   const hooks = read.kind === 'ok' ? read.value.hooks : undefined;
   const sessionStart = hooks !== null && typeof hooks === 'object' ? (hooks as { sessionStart?: unknown }).sessionStart : undefined;
@@ -2499,7 +2499,7 @@ export async function buildInstructionDeliveryChecks(ctx: DoctorContext): Promis
   if (opencodeV2) {
     checks.push(opencodeV2);
   } else if (opencodeFile && opencodeDelivered && !opencodeFallback) {
-    const { config, entry } = opencodeContextReference(opencodeFile, localConfig.scope, resolveToolBaseDir('opencode', localConfig));
+    const { config, entry } = opencodeContextReference(opencodeFile, localConfig.scope, resolveBaseDir(localConfig));
     const instructions = await readOpencodeInstructionList(config);
     checks.push({
       name: 'Team instructions are listed in opencode instructions',

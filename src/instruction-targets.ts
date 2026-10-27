@@ -13,7 +13,7 @@ import { gitUntracked } from './git-exclude.js';
 import { TEAMAI_CONTEXT_RULE_NAME } from './builtin-rules.js';
 import {
   isAgentExcluded,
-  resolveToolBaseDir,
+  resolveBaseDir,
   resolveHookScope,
   scopedToolPaths,
   TEAMAI_CLAUDEMD_END,
@@ -487,7 +487,7 @@ export async function registerOpencodeContext(
   // Old or malformed blocks the plan could not replace are not this sync's.
   const present = wanted && delivered && ready;
   // Pull, doctor and uninstall read the entry from the config beside the file, whatever the team maps MCP to.
-  const { config, entry } = opencodeContextReference(contextFile, localConfig.scope, resolveToolBaseDir('opencode', localConfig));
+  const { config, entry } = opencodeContextReference(contextFile, localConfig.scope, resolveBaseDir(localConfig));
   // An entry goes only if teamai recorded adding it: one the member listed
   // before teamai wrote the file is theirs.
   if (!present) {

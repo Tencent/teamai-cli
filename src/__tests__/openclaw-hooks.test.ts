@@ -6,9 +6,10 @@ import { pathToFileURL } from 'node:url';
 import { transformSync } from 'esbuild';
 import { parseDocument } from 'yaml';
 import {
-  applyOpenClawAgentHook, removeOpenClawAgentHook, injectOpenClawHooks, removeOpenClawHookEntry, removeOpenClawHooks, resolveOpenclawWorkspaceDir, OPENCLAW_HOOK_DIR,
+  applyOpenClawAgentHook, removeOpenClawAgentHook, injectOpenClawHooks, removeOpenClawHookEntry, removeOpenClawHooks, OPENCLAW_HOOK_DIR,
 } from '../openclaw-hooks.js';
 import { reconcileHooksToAllTools } from '../hooks.js';
+import { openclawWorkspaceDir } from '../locate.js';
 import { log } from '../utils/logger.js';
 import * as builtinHooks from '../builtin-hooks.js';
 import { OPENCLAW_EVENT_KEYS, openclawEvents, type OpenClawHookEvent } from './fixtures/openclaw/events.js';
@@ -199,7 +200,7 @@ describe('the OpenClaw workspace and state dir follow OpenClaw\'s resolution', (
     fs.mkdirSync(path.join(state, 'workspace'), { recursive: true });
     fs.mkdirSync(path.join(home, '.openclaw', 'workspace'), { recursive: true });
 
-    expect(await resolveOpenclawWorkspaceDir()).toBe(path.join(state, 'workspace'));
+    expect(await openclawWorkspaceDir()).toBe(path.join(state, 'workspace'));
     await injectOpenClawHooks('openclaw');
 
     expect(fs.existsSync(path.join(state, 'workspace', 'hooks', OPENCLAW_HOOK_DIR, 'handler.ts'))).toBe(true);
@@ -212,7 +213,7 @@ describe('the OpenClaw workspace and state dir follow OpenClaw\'s resolution', (
     vi.stubEnv('OPENCLAW_PROFILE', 'default');
     fs.mkdirSync(path.join(home, '.openclaw', 'workspace'), { recursive: true });
 
-    expect(await resolveOpenclawWorkspaceDir()).toBe(path.join(home, '.openclaw', 'workspace'));
+    expect(await openclawWorkspaceDir()).toBe(path.join(home, '.openclaw', 'workspace'));
   });
 
   it('uses OPENCLAW_WORKSPACE_DIR over the state dir default', async () => {
@@ -221,7 +222,7 @@ describe('the OpenClaw workspace and state dir follow OpenClaw\'s resolution', (
     fs.mkdirSync(path.join(home, '.openclaw', 'workspace'), { recursive: true });
     vi.stubEnv('OPENCLAW_WORKSPACE_DIR', custom);
 
-    expect(await resolveOpenclawWorkspaceDir()).toBe(custom);
+    expect(await openclawWorkspaceDir()).toBe(custom);
   });
 
   it('uses agents.defaults.workspace from the config over OPENCLAW_WORKSPACE_DIR, as OpenClaw does', async () => {
@@ -233,7 +234,7 @@ describe('the OpenClaw workspace and state dir follow OpenClaw\'s resolution', (
     fs.writeFileSync(path.join(home, '.openclaw', 'openclaw.json'), JSON.stringify({ agents: { defaults: { workspace: configured } } }));
     vi.stubEnv('OPENCLAW_WORKSPACE_DIR', custom);
 
-    expect(await resolveOpenclawWorkspaceDir()).toBe(configured);
+    expect(await openclawWorkspaceDir()).toBe(configured);
   });
 
   it('uses <OPENCLAW_STATE_DIR>/workspace when the state dir is set', async () => {
@@ -242,7 +243,7 @@ describe('the OpenClaw workspace and state dir follow OpenClaw\'s resolution', (
     vi.stubEnv('OPENCLAW_STATE_DIR', state);
     vi.stubEnv('OPENCLAW_PROFILE', 'work');
 
-    expect(await resolveOpenclawWorkspaceDir()).toBe(path.join(state, 'workspace'));
+    expect(await openclawWorkspaceDir()).toBe(path.join(state, 'workspace'));
   });
 
   it('returns null when the workspace OpenClaw would use does not exist', async () => {
@@ -250,7 +251,7 @@ describe('the OpenClaw workspace and state dir follow OpenClaw\'s resolution', (
     vi.stubEnv('OPENCLAW_PROFILE', 'work');
     fs.mkdirSync(path.join(home, '.openclaw', 'workspace'), { recursive: true });
 
-    expect(await resolveOpenclawWorkspaceDir()).toBeNull();
+    expect(await openclawWorkspaceDir()).toBeNull();
   });
 });
 
