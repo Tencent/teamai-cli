@@ -1485,7 +1485,7 @@ export async function mcpTransportNotes(ctx: DoctorContext): Promise<string[]> {
     }
     const own = writable(where);
     if (where.channel !== 'files' || own === null) continue;
-    for (const unread of unreadWrites(where, realHost(), doctorSession(install))) {
+    for (const unread of unreadWrites(where, host, doctorSession(install))) {
       if (unread.reason === 'cwd-only') notes.push(`${tool} reads project MCP servers only from a session started in ${unread.readFrom}.`);
     }
     if (tool === 'zcode' && install.scope === 'user') {
