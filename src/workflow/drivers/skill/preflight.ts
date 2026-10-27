@@ -58,11 +58,22 @@ export function localReason(description: WorkflowDescription): string | undefine
 /**
  * Why a run of `description` needs a person, which an unattended run lacks, as a refusal to `act` on it says it:
  * undefined when it can do without one, its optional gates auto-approved. A run to continue counts only the steps it
- * has not `settled` for good: an approval, a choice or an interactive step that already ran, or whose workflow or
- * `for_each` step settled whole (skipped, or every item done), needs nobody now. Its `invoke: ask` still does.
+ * has not `settled` for good, as {@link stepNeeds} does. Its `invoke: ask` still does.
  */
 export function attendedReason(description: WorkflowDescription, act: 'start' | 'continue', settled: ReadonlySet<string> = new Set()): string | undefined {
-  const { name, facts } = description;
+  const needs = [...(description.invoke === 'ask' ? [INVOKE_ASK_NEED] : []), ...stepNeeds(description, settled)];
+  if (needs.length === 0) return undefined;
+  return unattendedReason(description.name, listOf(needs), act);
+}
+
+/**
+ * What in the steps of `description` needs a person, a clause each, with optional gates auto-approved: an interactive
+ * step, a required approval or choice, and a choice with no default. A run to continue counts only the steps it has not
+ * `settled` for good: an approval, a choice or an interactive step that already ran, or whose workflow or `for_each`
+ * step settled whole (skipped, or every item done), needs nobody now. Who calls, and `invoke`, are not steps' needs.
+ */
+export function stepNeeds(description: WorkflowDescription, settled: ReadonlySet<string> = new Set()): string[] {
+  const { facts } = description;
   // `a.b.c` is settled when `a`, `a.b` or `a.b.c` is: a workflow's steps exist in the run only once it starts, and an
   // item's path (`a[0].b`) is not the definition's (`a.b`).
   const left = (step: string): boolean => !step.split('.').some((_, at, segments) => settled.has(segments.slice(0, at + 1).join('.')));
@@ -70,14 +81,11 @@ export function attendedReason(description: WorkflowDescription, act: 'start' | 
   const gates = facts.gates.filter((gate) => left(gate.step));
   const required = gates.filter((gate) => gate.required);
   const open = gates.filter((gate) => !gate.required && gate.kind === 'choose' && gate.default === undefined);
-  const needs = [
-    ...(description.invoke === 'ask' ? [INVOKE_ASK_NEED] : []),
+  return [
     ...(interactive.length > 0 ? [`${listOf(interactive)} ${interactive.length > 1 ? 'are' : 'is'} interactive, worked with a person`] : []),
     ...(required.length > 0 ? [`only a person can answer the ${gatesNoun(required)} at ${listOf(required.map((gate) => gate.step))}`] : []),
     ...(open.length > 0 ? [`the ${open.length > 1 ? 'choices' : 'choice'} at ${listOf(open.map((gate) => gate.step))} ${open.length > 1 ? 'have' : 'has'} no default, so --auto-approve leaves ${open.length > 1 ? 'them' : 'it'} to a person`] : []),
   ];
-  if (needs.length === 0) return undefined;
-  return unattendedReason(name, listOf(needs), act);
 }
 
 /** Checks a start of `description` against what describe asked. `ceiling` is the most steps the driver runs at once. */
