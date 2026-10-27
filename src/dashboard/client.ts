@@ -1,4 +1,5 @@
 import { scorersClient } from './scorers-client.js';
+import { sessionSharingView } from './session-sharing-view.js';
 
 /** Browser application, embedded in the standalone dashboard HTML by tsup. */
 export const dashboardClient = `(() => {
@@ -20,6 +21,7 @@ let sessions = [], haveSessions = false, connected = false, trends = null, kb = 
 let trendError = false, kbError = false, selectedSession = null, selectedSnapshot = null, focusBeforeDialog = null;
 let trendLoading = false, kbLoading = false, eventSource = null, reconnectTimer = null, fallbackGeneration = 0;
 let rules = null, rulesError = false, rulesLoading = false;
+let sharing = null, sharingError = false, sharingLoading = false;
 let dist = null, distError = false, distLoading = false, distDraft = null, preview = null, previewError = '', previewing = false, saving = false, saveError = '', savedNote = ''; let distVersion = 0;
 let skills = null, skillsError = false, skillsLoading = false, skillBusy = '';
 let skillFilterDelivery = '', skillFilterNamespace = '', skillFilterAgent = '';
@@ -58,6 +60,8 @@ function filters() {
 function connection() { $('connection').classList.toggle('connected', connected); $('connection').textContent = t(connected ? 'Connected · local live' : haveSessions ? 'Reconnecting…' : 'Connecting…'); }
 function source() { if (!kb) return ''; return '<div class="source">'+label(kb.source.label || (kb.source.scope==='team'?'Team repo · aggregated across the team':'Local knowledge · your recalls only'))+'<br>'+label('Report generated')+': '+e(when(kb.generatedAt))+'</div>'; }
 function errorPanel(text, action) { return '<div class="error-panel" role="status"><p>'+label(text)+'</p><button class="link" data-retry="'+action+'">'+label('Retry')+'</button></div>'; }
+${sessionSharingView}
+function sharingSection() { return (sharingError?errorPanel('Could not load session sharing.','sharing'):'')+(sharing?sessionSharingPanel(sharing):sharingError?'':'<section class="panel sharing"><div class="empty" role="status">'+label('Loading session sharing…')+'</div></section>'); }
 function overview() {
  const working=sessions.filter(s=>s.status==='running').length;
  const waiting=sessions.filter(s=>s.status==='waiting_for_input').length;
@@ -65,7 +69,7 @@ function overview() {
  return '<div class="cards"><article class="card"><div class="cardtop">'+label('Team Execution')+icon('execution')+'</div><div class="source">'+label('Local live sessions')+'</div><div class="big summary-value">'+(haveSessions?number(sessions.length):'—')+'<small>'+label('sessions on this machine')+'</small></div><div class="statusline">'+number(working)+' '+label('Working')+' · '+number(waiting)+' '+label('Your turn')+'</div><div class="cardfoot">'+link('execution','View sessions')+'</div></article>'+
  '<article class="card"><div class="cardtop">'+label('Team Context')+'</div>'+source()+'<div class="big summary-value">'+(kb?number(kb.overallCoveragePct)+'%':'—')+'<small>'+label('Knowledge coverage')+'</small></div><div class="statusline">'+(kb?number(kb.totalEntries)+' '+label('Entries')+' · '+number(kb.silentCount)+' '+label('Never recalled'):label(kbError?'Unavailable':'Loading…'))+'</div><div class="cardfoot">'+link('context','View KB Health')+'</div></article>'+
  '<article class="card"><div class="cardtop">'+label('Team Improvement')+'</div><div class="source">'+label('KB Health maintenance candidates')+'</div><div class="big summary-value">'+(maintenance===null?'—':number(maintenance))+'<small>'+label('candidates for review')+'</small></div><div class="statusline">'+(kb?number(kb.maintenanceCounts.promote)+' '+label('Promotion')+' · '+number(kb.maintenanceCounts.prune)+' '+label('Archive')+' · '+number(kb.maintenanceCounts.stale)+' '+label('Stale'):label(kbError?'Unavailable':'Loading…'))+'</div><div class="cardfoot">'+link('improvement','View maintenance')+'</div></article></div>'+
- (kbError?errorPanel('Could not refresh KB Health. Any displayed report is the last successful result.','kb'):'')+trendPanel()+outcomePanel()+sessionTable(sessions);
+ (kbError?errorPanel('Could not refresh KB Health. Any displayed report is the last successful result.','kb'):'')+sharingSection()+trendPanel()+outcomePanel()+sessionTable(sessions);
 }
 function formatMetric(value, kind) { if (value===null || value===undefined) return trends ? '—' : label(trendError?'Unavailable':'Loading…'); if(kind==='pct')return number(Math.round(value*100))+'%'; if(kind==='cost')return new Intl.NumberFormat(language,{style:'currency',currency:'USD',minimumFractionDigits:3}).format(value/1000000)+' '+label('est.');return Number(value).toFixed(1); }
 function trendPanel() {
@@ -415,6 +419,7 @@ async function json(url) { const response=await fetch(url,{signal:AbortSignal.ti
 async function loadTrends() { if(trendLoading)return;const generation=workspaceGeneration;trendLoading=true;try{const data=await json(api('/api/trends'));if(generation===workspaceGeneration){trends=data;trendError=false;}}catch{if(generation===workspaceGeneration)trendError=true;}finally{if(generation===workspaceGeneration){trendLoading=false;if(['overview','improvement'].includes(page))render();}} }
 async function loadOutcomes() { if(outcomesLoading)return;const generation=workspaceGeneration;outcomesLoading=true;try{const data=await json(api('/api/outcomes'));if(generation===workspaceGeneration){outcomeSummary=data;outcomesError=false;}}catch{if(generation===workspaceGeneration)outcomesError=true;}finally{if(generation===workspaceGeneration){outcomesLoading=false;if(page==='overview')render();}} }
 async function loadKb() { if(kbLoading)return;const generation=workspaceGeneration;kbLoading=true;try{const data=await json(api('/api/context'));if(generation===workspaceGeneration){kb=data;kbError=false;}}catch{if(generation===workspaceGeneration)kbError=true;}finally{if(generation===workspaceGeneration){kbLoading=false;render();}} }
+async function loadSharing() { if(sharingLoading)return;const generation=workspaceGeneration;sharingLoading=true;try{const data=await json(api('/api/session-sharing'));if(generation===workspaceGeneration){const changed=sharingError||JSON.stringify(data)!==JSON.stringify(sharing);sharing=data;sharingError=false;if(changed&&page==='overview')render();}}catch{if(generation===workspaceGeneration){sharingError=true;if(page==='overview')render();}}finally{if(generation===workspaceGeneration)sharingLoading=false;} }
 async function loadRules() { if(rulesLoading)return;const generation=workspaceGeneration;rulesLoading=true;try{const data=await json(api('/api/resources/rules'));if(generation===workspaceGeneration){rules=data;rulesError=false;}}catch{if(generation===workspaceGeneration)rulesError=true;}finally{if(generation===workspaceGeneration){rulesLoading=false;if(page==='resources')render();}} }
 async function postJson(route, body) { const response=await fetch(api(route),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(15000)}); const data=await response.json().catch(()=>null); if(!response.ok)throw Error(data&&data.error?data.error:'HTTP '+response.status); return data; }
 async function loadDistribution() { if(distLoading)return;const generation=workspaceGeneration;distLoading=true;try{const data=await json(api('/api/distribution'));if(generation===workspaceGeneration){dist=data;distError=false;distDraft=null;preview=null;previewError='';saveError='';savedNote='';}}catch{if(generation===workspaceGeneration)distError=true;}finally{if(generation===workspaceGeneration){distLoading=false;if(page==='distribution')render();}} }
@@ -487,7 +492,7 @@ document.addEventListener('click',event=>{
  if(run)showRun(run.dataset.runSource,run.dataset.run);
  if(answer)answerGate(answer.dataset.answerStep,answer.dataset.answerPass,answer.dataset.answerChoice);
  if(event.target.closest('[data-close]'))$('session-dialog').close();
- if(retry){if(retry.dataset.retry==='trends')loadTrends();else if(retry.dataset.retry==='outcomes')loadOutcomes();else if(retry.dataset.retry==='kb')loadKb();else if(retry.dataset.retry==='rules')loadRules();else if(retry.dataset.retry==='skills')loadSkills();else if(retry.dataset.retry==='distribution')loadDistribution();else if(retry.dataset.retry==='workflows')loadWorkflows();else if(retry.dataset.retry==='run')loadRunDetail();else if(retry.dataset.retry==='scorers'){scorerError='';loadScorers();}else{eventSource?.close();clearTimeout(reconnectTimer);connect();}}
+ if(retry){if(retry.dataset.retry==='trends')loadTrends();else if(retry.dataset.retry==='outcomes')loadOutcomes();else if(retry.dataset.retry==='kb')loadKb();else if(retry.dataset.retry==='rules')loadRules();else if(retry.dataset.retry==='sharing')loadSharing();else if(retry.dataset.retry==='skills')loadSkills();else if(retry.dataset.retry==='distribution')loadDistribution();else if(retry.dataset.retry==='workflows')loadWorkflows();else if(retry.dataset.retry==='run')loadRunDetail();else if(retry.dataset.retry==='scorers'){scorerError='';loadScorers();}else{eventSource?.close();clearTimeout(reconnectTimer);connect();}}
  if(event.target.closest('[data-preview-button]'))previewSelection();
  if(event.target.closest('[data-save-button]'))saveSelection();
 });
@@ -500,18 +505,20 @@ function switchWorkspace(id) {
  sessions=[];haveSessions=false;connected=false;trends=null;kb=null;trendLoading=false;kbLoading=false;trendError=false;kbError=false;
  outcomeSummary=null;outcomesError=false;outcomesLoading=false;
  rules=null;rulesError=false;rulesLoading=false;
+ sharing=null;sharingError=false;sharingLoading=false;
  dist=null;distError=false;distLoading=false;distDraft=null;preview=null;previewError='';previewing=false;saving=false;saveError='';savedNote='';
  workflows=null;workflowsHtml='';workflowsError=false;workflowsLoading=false;runKey=null;runDetail=null;answering='';answerError='';
  resetScorers();
  skills=null;skillsError=false;skillsLoading=false;skillBusy='';skillFilterDelivery='';skillFilterNamespace='';skillFilterAgent='';
- $('repo').value='';$('agent').value='';workspaceOptions();filters();render();connect();loadTrends();loadOutcomes();loadKb();loadRules();loadSkills();
+ $('repo').value='';$('agent').value='';workspaceOptions();filters();render();connect();loadTrends();loadOutcomes();loadKb();loadSharing();loadRules();loadSkills();
 }
 $('workspace').onchange=()=>switchWorkspace($('workspace').value);
 document.addEventListener('click',event=>{const button=event.target.closest('[data-skill-exclude]');if(button){toggleSkillExclude(button.dataset.skillExclude,button.dataset.excluded==='true');}});
 document.addEventListener('change',event=>{if(event.target.id==='skill-delivery'){skillFilterDelivery=event.target.value;if(page==='resources')render();}else if(event.target.id==='skill-namespace'){skillFilterNamespace=event.target.value;if(page==='resources')render();}else if(event.target.id==='skill-agent'){skillFilterAgent=event.target.value;if(page==='resources')render();}});
 preferences();
-json('/api/workspaces').then(data=>{workspaces=data;const saved=read('teamai-dashboard-workspace','');const fallback=(workspaces.find(w=>w.scope==='project')||workspaces[0])?.id;switchWorkspace(workspaces.some(w=>w.id===saved)?saved:(fallback??''));}).catch(()=>{workspaceOptions();connect();loadTrends();loadOutcomes();loadKb();loadRules();loadSkills();});
+json('/api/workspaces').then(data=>{workspaces=data;const saved=read('teamai-dashboard-workspace','');const fallback=(workspaces.find(w=>w.scope==='project')||workspaces[0])?.id;switchWorkspace(workspaces.some(w=>w.id===saved)?saved:(fallback??''));}).catch(()=>{workspaceOptions();connect();loadTrends();loadOutcomes();loadKb();loadSharing();loadRules();loadSkills();});
 setInterval(()=>{loadTrends();loadOutcomes();},30000);
+setInterval(loadSharing,30000);
 // Workflow runs change without a hook event, so their page polls while it is open.
 setInterval(()=>{if(page!=='workflows')return;tickRunDurations();loadWorkflows();if(runKey&&!answering)loadRunDetail();},5000);
 // Reconcile idle/ended expiry even when no hook emits another SSE event.
