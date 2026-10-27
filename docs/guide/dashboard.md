@@ -9,7 +9,7 @@ teamai dashboard
 teamai dashboard --port 8080
 ```
 
-Open `http://localhost:3721`. The sidebar is Overview, Team Execution, Workflow Runs, Team Context, Resources, Distribution, and Team Improvement. The numbers are from this machine.
+Open `http://localhost:3721`. The sidebar is Overview, Team Execution, Workflow Runs, Scorers, Team Context, Resources, Distribution, and Team Improvement. The numbers are from this machine.
 
 ## Workflow Runs
 
@@ -18,6 +18,26 @@ The Workflow Runs page has two lists for the selected workspace. **Local runs** 
 The page shows what a run record publishes, plus each step's live status and the options of a waiting HITL request. Inputs, `for_each` items, outputs, prompts, HITL messages, and local paths stay in the run file. Read a HITL question where the run's driver asks it.
 
 A waiting approve or choose request can be answered from the run's details. The answer goes through the same `respond` operation as the CLI, with channel `dashboard` and `agent: false`, so it can answer a required approval. A dashboard started inside an agent session records `agent: true`, as an answer from that shell would, and cannot answer a required approval. It carries the pass the page showed: if that request was answered or replaced in the meantime, the page shows the refusal and reloads. Another website cannot send an answer. A request without an `Origin` header, such as a plain `curl`, is refused too. This marks an answer as sent from a browser; it does not stop a local script that sets the header.
+
+## Scorers
+
+The Scorers page shows the pass rate of every [scorer](scorers.md) that has labels, from `scores/<member>/<YYYY-MM>.jsonl` on `teamai-reports` and from this machine's label store. It answers two questions: is a scorer's pass rate moving, and does it differ by tool, model, team revision or definition.
+
+**One measurement at a time.** A measurement fixes the scorer, the rubric version (`rubric.sourceHash`, with its `teamRevision` when it has one), the source (`workflow` or `session`), the run mode, and the judge (a hand label, or the judge's tool and recorded model). Labels that differ in any of these are never counted together. A scorer opens on its newest rubric whose labels carry a `teamRevision`, so an uncommitted draft does not become the default. The other measurements are listed above the numbers. Labels without a run mode are counted under `Not recorded`.
+
+**What it shows:**
+
+- The pass rate over a window of 7, 30, 90 or 180 days, with the label count, passed and failed. The window is about when labels were scored, not when the work happened. A label rescored later counts once, when it was rescored.
+- A weekly trend. A week with no labels is drawn as a gap, not 0%.
+- Pass or fail as each label stored it. Changing a scorer's `passingScore` does not change past results.
+- **Group by** tool, model, team revision, agent definition, the role, project or tag the team assets were delivered for, fingerprint, or a team skill the work used. A label that lists two skills counts under both. Model groups keep a model the tool reported apart from one that was only requested. A label that did not record that part is `Not recorded`. A workflow label is grouped by the agent of the pass it judged, read from the run's record. A run recorded before agents were observed gives only its definition.
+- **Split at team commit.** Give a commit of the team repo. A label is after it when its team revision contains the commit, checked with `git merge-base --is-ancestor` in this machine's team clone. A label with no team revision, or one this clone does not have, is `Not recorded`. The split also applies inside each group, so you can compare the sessions that loaded a skill before and after the commit that changed it.
+- **Failing labels**, newest first: author, scored time, platform and the skills used. Select a group to list only its failing labels. A session pushed to the team archive shows `teamai session resume <name>`. A workflow label opens its run.
+- **Friction reminder**, for a session measurement: the sessions the friction reminder fired on and those it did not, with how many have a label of this measurement and how many of those passed. It covers your own sessions that started on this machine in the window, because the reminder state is only kept on this machine. The pass rate is over labelled sessions only. A session with no reminder state here is `Not recorded`. When a session's state file is removed a day after its last write, teamai keeps whether its reminder fired for 30 days.
+
+Labels from benchmark runs are left out. The page reads labels and recorded configuration only. It never reads or shows a judge's reasoning, a prompt, a transcript, a diff, or a session's own id.
+
+Labels from sessions and workflow runs show how the tools did on the work that came along. To compare tools, models or team assets on the same tasks, run a benchmark.
 
 ## Resources
 

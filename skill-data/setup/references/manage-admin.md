@@ -241,7 +241,7 @@ teamai dashboard             # start the AI coding session dashboard (default po
 teamai dashboard --port 8080 # custom port
 ```
 
-Opens a local web UI for team coding-session activity and knowledge-base health.
+Opens a local web UI for team coding-session activity, workflow runs, scorer pass rates, and knowledge-base health.
 
 ## Team packages (npm + Claude plugins)
 
