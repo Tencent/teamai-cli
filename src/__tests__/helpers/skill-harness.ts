@@ -221,7 +221,7 @@ interface HarnessOptions {
   scoring?: LocalConfig['scoring'];
   /** An install of a `sharedTeam` to drive from, instead of a checkout and team repository of the harness's own. */
   install?: TeamInstall;
-  /** The member's `ai.tool`, in the ~/.teamai/config.yaml of the harness's home. */
+  /** The member's `ai.tool`; none unless a test sets it. */
   aiTool?: string;
 }
 
@@ -305,15 +305,11 @@ export async function skillHarness(workflows: Record<string, string>, options: H
   fs.mkdirSync(home);
   vi.stubEnv('HOME', home);
   vi.stubEnv('USERPROFILE', home);
-  if (options.aiTool) {
-    fs.mkdirSync(path.join(home, '.teamai'));
-    fs.writeFileSync(path.join(home, '.teamai', 'config.yaml'), `repo:\n  localPath: ${root}\n  remote: local\nusername: test\nai:\n  tool: ${options.aiTool}\n`);
-  }
   const { config, checkout: work } = options.install ?? await ownInstall(root, workflows, options);
   const env = await resolveWorkflowEnv(config);
   // Every tool's default paths, as a team repository that sets no toolPaths has them.
   const toolPaths = TeamaiConfigBaseSchema.shape.toolPaths.parse(undefined);
-  const production = await skillContext({ config, toolPaths, env, cwd: work });
+  const production = await skillContext({ config, toolPaths, env, cwd: work, aiTool: options.aiTool });
   const scheduler = memoryRunners(production.runners.command);
   const client = scheduler.settingUp(inProcessClient({ config, env }));
   const rows: string[] = [];
