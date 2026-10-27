@@ -300,12 +300,13 @@ function memberSettingAt(
   key: string,
   schema: z.ZodTypeAny,
   configPath: string,
+  invalidValue?: unknown,
 ): unknown {
   if (!Object.prototype.hasOwnProperty.call(raw, key)) return undefined;
   const parsed = schema.safeParse(raw[key]);
   if (parsed.success) return parsed.data;
   warnOnce(`Ignoring ${key} in ${configPath}: ${describeConfigError(parsed.error)}.`);
-  return undefined;
+  return invalidValue;
 }
 
 /** The valid values of `workflows` in a machine file, merged by key rather than as one all-or-nothing object. */
@@ -340,12 +341,16 @@ function readMachineWorkflowSettings(raw: Record<string, unknown>, configPath: s
   if (allow) {
     const accepted: Record<string, unknown> = {};
     for (const [key, schema] of Object.entries(AllowSchema.shape)) {
-      const value = memberSettingAt(allow, key, schema, configPath);
+      const invalidFallback = key === 'network' ? false : [];
+      const value = memberSettingAt(allow, key, schema, configPath, invalidFallback);
       if (value !== undefined) accepted[key] = value;
     }
+    // A malformed policy must remain restrictive. In particular, silently
+    // dropping `network: "false"` would turn a deny into the default allow.
     if (Object.keys(accepted).length > 0) settings.allow = accepted;
   } else if (Object.prototype.hasOwnProperty.call(workflow, 'allow')) {
     warnOnce(`Ignoring workflows.allow in ${configPath}: expected an object.`);
+    settings.allow = { network: false, env: [] };
   }
 
   return Object.keys(settings).length > 0 ? MemberWorkflowSettingsSchema.parse(settings) : undefined;
@@ -378,11 +383,12 @@ export async function loadMemberSettings(configPath = expandHome(getUserConfigPa
 function applyMachineSettings(config: LocalConfig, machine: MemberSettings): LocalConfig {
   if (config.scope === 'user' || config.memberSettingsOverlay) return config;
   const local = MemberSettingsSchema.parse(config);
-  const merged: MemberSettings = { ...machine, ...local };
-
-  const ai = local.ai?.tool !== undefined ? local.ai : machine.ai;
-  if (ai !== undefined) merged.ai = ai;
-  else delete merged.ai;
+  // `ai.tool` has a dedicated precedence reader (`aiToolSettings`) used by
+  // tool-launch. Do not inject the machine copy into every workspace config;
+  // keeping it in this overlay would create a second, stale reader.
+  const { ai: _machineAi, ...machineWithoutAi } = machine;
+  const { ai: _localAi, ...localWithoutAi } = local;
+  const merged: MemberSettings = { ...machineWithoutAi, ...localWithoutAi };
 
   const mergedWorkflows = machine.workflows || local.workflows
     ? {
@@ -549,28 +555,13 @@ async function readSettingsOnlyConfig(configPath: string): Promise<Record<string
     if (!isSettingsOnlyConfig(raw)) return {};
 
     const settings: Record<string, unknown> = {};
-    const keys = [
-      'ai',
-      'recallEnabled',
-      'contributeHintEnabled',
-      'mrHintEnabled',
-      'usageReportEnabled',
-      'coAuthorEnabled',
-      'autoCompactTokens',
-      'codexTrustEnabled',
-      'updatePolicy',
-      'modelAliases',
-      'workflows',
-    ] as const;
-    for (const key of keys) {
-      if (!Object.prototype.hasOwnProperty.call(raw, key)) continue;
-      const parsed = LocalConfigSchema.shape[key].safeParse(raw[key]);
-      if (parsed.success) {
-        settings[key] = parsed.data;
-      } else {
-        warnOnce(`Ignoring ${key} in ${configPath}: ${describeConfigError(parsed.error)}.`);
-      }
+    for (const key of MEMBER_SETTING_KEYS) {
+      if (key === 'workflows') continue;
+      const value = memberSettingAt(raw, key, MemberSettingsSchema.shape[key], configPath);
+      if (value !== undefined) settings[key] = value;
     }
+    const workflows = readMachineWorkflowSettings(raw, configPath);
+    if (workflows !== undefined) settings.workflows = workflows;
     return settings;
   } catch {
     return {};

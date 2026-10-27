@@ -8,6 +8,8 @@ import {
   getInterventionSharing,
   StateSchema,
   LocalConfigSchema,
+  MemberSettingsSchema,
+  LOCAL_CONFIG_INSTALL_KEYS,
   resolveLegacyProjectHookScope,
   DEFAULT_TOOL_PATHS,
 } from '../types.js';
@@ -78,6 +80,20 @@ describe('LocalConfigSchema', () => {
       username: 'e2e',
     });
     expect(parsed.repo.localPath).toBe('/srv/team-repo');
+  });
+});
+
+describe('LocalConfigSchema key ownership', () => {
+  it('keeps install and member settings declarations exhaustive and disjoint', () => {
+    const localKeys = Object.keys(LocalConfigSchema.shape).filter((key) => key !== 'scope')
+      .concat('scope');
+    const memberKeys = Object.keys(MemberSettingsSchema.shape);
+    const installKeys = [...LOCAL_CONFIG_INSTALL_KEYS];
+
+    expect(new Set(installKeys).size).toBe(installKeys.length);
+    expect(new Set(memberKeys).size).toBe(memberKeys.length);
+    expect(installKeys.filter((key) => memberKeys.includes(key))).toEqual([]);
+    expect([...installKeys, ...memberKeys].sort()).toEqual(localKeys.sort());
   });
 });
 

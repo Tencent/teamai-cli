@@ -824,7 +824,10 @@ export const MemberWorkflowSettingsSchema = z.object({
 export type MemberWorkflowSettings = z.infer<typeof MemberWorkflowSettingsSchema>;
 
 export const MemberSettingsSchema = z.object({
-  ai: z.object({ tool: z.string().min(1).optional() }).optional(),
+  // Keep the member-settings shape compatible with LocalConfigSchema. An empty
+  // local ai.tool is treated as unset by aiToolSettings; it must not make an
+  // otherwise valid workspace config unreadable during overlay parsing.
+  ai: z.object({ tool: z.string().optional() }).optional(),
   recallEnabled: z.boolean().optional(),
   contributeHintEnabled: z.boolean().optional(),
   mrHintEnabled: z.boolean().optional(),

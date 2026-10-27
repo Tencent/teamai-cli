@@ -64,10 +64,14 @@ vi.mock('../utils/fs.js', () => ({
   ensureDir: vi.fn(() => Promise.resolve()),
 }));
 
-vi.mock('../types.js', () => ({
-  getUpdateLockPath: () => '/tmp/test-update-lock',
-  getTeamaiHomeDir: () => '/home/test/.teamai',
-}));
+vi.mock('../types.js', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../types.js')>();
+  return {
+    ...original,
+    getUpdateLockPath: () => '/tmp/test-update-lock',
+    getTeamaiHomeDir: () => '/home/test/.teamai',
+  };
+});
 
 vi.mock('../builtin-hooks.js', () => ({
   resolveTeamaiEntryScript: vi.fn(),

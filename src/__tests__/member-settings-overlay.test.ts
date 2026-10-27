@@ -93,6 +93,24 @@ describe('member settings overlay', () => {
     expect((saved.workflows as Record<string, unknown>).max_parallel).toBeUndefined();
   });
 
+  it('fails closed when a workflow policy value has the wrong type', async () => {
+    writeConfig(machineConfig, {
+      workflows: { allow: { network: 'false', env: 'not-a-list' } },
+    });
+    writeConfig(projectConfig, {
+      repo: { localPath: path.join(home, 'team-repo'), remote: 'https://example.test/team.git' },
+      username: 'member',
+      scope: 'project',
+      projectRoot,
+    });
+
+    const loaded = await loadLocalConfigForScope('project', projectRoot);
+
+    expect(loaded?.workflows?.allow).toEqual({ network: false, env: [] });
+    expect(vi.mocked(log.warn).mock.calls.flat().join('\\n')).toContain('Ignoring network');
+    expect(vi.mocked(log.warn).mock.calls.flat().join('\\n')).toContain('Ignoring env');
+  });
+
   it('keeps valid machine settings when a sibling setting has the wrong type', async () => {
     writeConfig(machineConfig, {
       recallEnabled: 'yes',

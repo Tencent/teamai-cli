@@ -441,8 +441,10 @@ async function userModelAliases(stdin: Record<string, unknown>): Promise<Record<
   const eventName = typeof stdin.hook_event_name === 'string' ? stdin.hook_event_name.toLowerCase() : '';
   if (eventName !== 'stop') return undefined;
   try {
-    const { loadLocalConfig } = await import('./config.js');
-    return (await loadLocalConfig())?.modelAliases;
+    const { loadLocalConfig, loadMemberSettings } = await import('./config.js');
+    const local = await loadLocalConfig();
+    const settings = local?.scope === 'user' ? local : { ...(await loadMemberSettings()), ...local };
+    return settings.modelAliases;
   } catch {
     return undefined;
   }
