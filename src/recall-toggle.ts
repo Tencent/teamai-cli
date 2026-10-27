@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { autoDetectInit, saveLocalConfigForScope } from './config.js';
+import { autoDetectInit, markMemberSettingsWritten, saveLocalConfigForScope } from './config.js';
 import { log } from './utils/logger.js';
 import { remove, pathExists } from './utils/fs.js';
 import { applyInstructionPlan, planInstructionFiles, registerOpencodeContext, resolveInstructionTargets } from './instruction-targets.js';
@@ -104,7 +104,7 @@ export async function recallDisable(opts: GlobalOptions): Promise<void> {
     return;
   }
 
-  const updated = { ...localConfig, recallEnabled: false };
+  const updated = markMemberSettingsWritten(localConfig, { recallEnabled: false });
   await saveLocalConfigForScope(updated, localConfig.scope, localConfig.projectRoot);
 
   await removeRecallArtifacts(teamConfig, localConfig);
@@ -119,7 +119,7 @@ export async function recallEnable(opts: GlobalOptions): Promise<void> {
     return;
   }
 
-  const updated = { ...localConfig, recallEnabled: true };
+  const updated = markMemberSettingsWritten(localConfig, { recallEnabled: true });
   await saveLocalConfigForScope(updated, localConfig.scope, localConfig.projectRoot);
 
   await deployRecallArtifacts(teamConfig, localConfig);

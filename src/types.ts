@@ -806,6 +806,43 @@ export const MemberConfigSchema = z.object({
 
 export type MemberConfig = z.infer<typeof MemberConfigSchema>;
 
+// ─── Member settings overlay (~/.teamai/config.yaml) ───────
+
+/**
+ * Settings a member may place in the machine config. These are deliberately
+ * separate from install metadata: a workspace/self config overlays them at
+ * runtime, but never persists the machine value into its own file.
+ */
+export const MemberWorkflowSettingsSchema = z.object({
+  tools: z.record(z.string(), z.string().min(1)).optional(),
+  max_parallel: z.number().int().positive().optional(),
+  auto_approve: z.boolean().optional(),
+  sandbox: z.boolean().optional(),
+  allow: AllowSchema.optional(),
+});
+
+export type MemberWorkflowSettings = z.infer<typeof MemberWorkflowSettingsSchema>;
+
+export const MemberSettingsSchema = z.object({
+  ai: z.object({ tool: z.string().min(1).optional() }).optional(),
+  recallEnabled: z.boolean().optional(),
+  contributeHintEnabled: z.boolean().optional(),
+  mrHintEnabled: z.boolean().optional(),
+  usageReportEnabled: z.boolean().optional(),
+  coAuthorEnabled: z.boolean().optional(),
+  autoCompactTokens: z.number().int().min(0).optional(),
+  codexTrustEnabled: z.boolean().optional(),
+  updatePolicy: z.enum(['auto', 'prompt', 'skip']).optional(),
+  modelAliases: z.record(z.string(), z.string()).optional(),
+  workflows: MemberWorkflowSettingsSchema.optional(),
+});
+export type MemberSettings = z.infer<typeof MemberSettingsSchema>;
+
+/** Runtime bookkeeping for restoring local values before a save. */
+export interface MemberSettingsOverlay {
+  local: MemberSettings;
+}
+
 // ─── Local config (~/.teamai/config.yaml) ──────────────────
 
 export const LocalConfigSchema = z.object({
@@ -940,6 +977,14 @@ export const LocalConfigSchema = z.object({
   }).optional(),
 });
 
+/** Local-config keys that remain specific to one install rather than overlaying from the machine. */
+export const LOCAL_CONFIG_INSTALL_KEYS = [
+  'repo', 'username', 'provider', 'scope', 'primaryRole', 'additionalRoles',
+  'projects', 'resourceProfileVersion', 'projectRoot', 'inheritUserScope',
+  'subscribedTags', 'excludedSkills', 'gitExcludeEnabled', 'enabledAgents',
+  'toolRoots', 'disabledAgents', 'scoring',
+] as const satisfies readonly Exclude<keyof z.infer<typeof LocalConfigSchema>, keyof MemberSettings>[];
+
 /**
  * In-memory config: the persisted schema plus a runtime-only `dataHome`.
  *
@@ -969,6 +1014,7 @@ export type LocalConfig = z.infer<typeof LocalConfigSchema> & {
   roleUnresolved?: true;
   children?: WorkspaceChildren;
   roleAssignment?: RoleAssignment;
+  memberSettingsOverlay?: MemberSettingsOverlay;
 };
 
 /**
