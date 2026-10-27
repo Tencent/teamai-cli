@@ -43,7 +43,7 @@ import {
   mergeInterfaceInventories,
 } from './wiki-engine/code-knowledge/code-incremental.js';
 import { writeIfChanged } from './utils/fs.js';
-import { createGit, redactGitCredentials, repoIdentity, resolveAnchors } from './utils/git.js';
+import { createGit, redactGitCredentials, repoIdentity, resolveAnchors, type ProjectAnchors } from './utils/git.js';
 import { assertSafePath } from './utils/path-safety.js';
 import { repoName } from './utils/repo-attribution.js';
 import type { GraphIndex } from './wiki-engine/core/graph-index.schema.js';
@@ -558,18 +558,19 @@ function buildOverview(
  * CI publishes for the repo.
  */
 export async function defaultProjectSlug(dir: string): Promise<string> {
-  const name = await checkoutName(dir);
-  const anchors = statSync(dir, { throwIfNoEntry: false })?.isDirectory() ? await resolveAnchors(dir) : null;
-  if (!anchors || await realpath(dir) !== anchors.workspaceRoot) return name;
+  const anchors = await checkoutRootAnchors(dir);
+  if (!anchors) return path.basename(dir);
   const origin = (await createGit(dir).getRemotes(true).catch(() => []))
     .find((remote) => remote.name === 'origin')?.refs.fetch;
-  if (!origin) return name;
-  const { repoSlugForUrl } = await import('./import-repo.js');
-  try {
-    return repoSlugForUrl(origin);
-  } catch {
-    return name;
+  if (origin) {
+    const { repoSlugForUrl } = await import('./import-repo.js');
+    try {
+      return repoSlugForUrl(origin);
+    } catch {
+      // An origin no provider can parse names no remote slug; use the repo's name.
+    }
   }
+  return repoName(anchors.projectAnchor);
 }
 
 /**
@@ -577,12 +578,15 @@ export async function defaultProjectSlug(dir: string): Promise<string> {
  * its remote: the repo's name for a checkout root, else the directory's own.
  */
 export async function checkoutName(dir: string): Promise<string> {
-  if (!statSync(dir, { throwIfNoEntry: false })?.isDirectory()) return path.basename(dir);
+  const anchors = await checkoutRootAnchors(dir);
+  return anchors ? repoName(anchors.projectAnchor) : path.basename(dir);
+}
+
+/** The anchors of `dir` when it is a checkout's root, the main one or a linked worktree. */
+async function checkoutRootAnchors(dir: string): Promise<ProjectAnchors | null> {
+  if (!statSync(dir, { throwIfNoEntry: false })?.isDirectory()) return null;
   const anchors = await resolveAnchors(dir);
-  if (anchors && await realpath(dir) === anchors.workspaceRoot) {
-    return repoName(anchors.projectAnchor);
-  }
-  return path.basename(dir);
+  return anchors && await realpath(dir) === anchors.workspaceRoot ? anchors : null;
 }
 
 interface SourceRepositoryMetadata {
