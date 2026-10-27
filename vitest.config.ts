@@ -8,12 +8,14 @@ export default defineConfig({
     // Applied before setupFiles: clear-agent-session-env.ts must remove each,
     // which workflow-test-env.test.ts checks.
     env: { CLAUDE_CODE_SESSION_ID: 'seeded-by-vitest-config', TEAMAI_WORKFLOW_ATTEMPT: 'seeded-by-vitest-config', TEAMAI_LAUNCHED_BY: 'seeded-by-vitest-config', TEAMAI_MODE: 'unattended', CI: 'seeded-by-vitest-config' },
-    // isolate-home first: the other setup file imports modules that build
+    // teardown-writers first, so its afterAll runs after the others' and
+    // the removals in theirs can still join detached writers.
+    // isolate-home next: the setup file after it imports modules that build
     // home paths at load time.
     setupFiles: [
+      'src/__tests__/helpers/teardown-writers.ts',
       'src/__tests__/helpers/isolate-home.ts',
       'src/__tests__/helpers/clear-agent-session-env.ts',
-      'src/__tests__/helpers/name-teardown-writer.ts',
     ],
     // CI workers can be resource-constrained under parallel load, which made
     // otherwise-fast tests sporadically exceed vitest's 5s default timeout.

@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import os from 'node:os';
@@ -11,15 +11,21 @@ import { expect, it, onTestFinished, vi } from 'vitest';
 // rmSync on Linux almost never loses it), so the setup file is loaded over
 // removals that always lose, while the writers are real processes.
 
-/** fs.rmSync and fs.promises.rm as the setup file wraps removals that always fail with ENOTEMPTY. */
-async function wrapLosingRemovals(): Promise<{ rmSync: typeof fs.rmSync; rm: typeof fs.promises.rm }> {
+/** fs.rmSync and fs.promises.rm as the setup file wraps removals that fail with ENOTEMPTY while `losing` holds. */
+async function wrapLosingRemovals(losing = () => true): Promise<{ rmSync: typeof fs.rmSync; rm: typeof fs.promises.rm }> {
   const installed = { rmSync: fs.rmSync, rm: fs.promises.rm };
   const lost = (target: fs.PathLike) => Object.assign(new Error(`ENOTEMPTY: directory not empty, rmdir '${String(target)}'`), { code: 'ENOTEMPTY' });
-  fs.rmSync = (target) => { throw lost(target); };
-  fs.promises.rm = async (target) => { throw lost(target); };
+  fs.rmSync = (target, options) => {
+    if (losing()) throw lost(target);
+    installed.rmSync(target, options);
+  };
+  fs.promises.rm = async (target, options) => {
+    if (losing()) throw lost(target);
+    await installed.rm(target, options);
+  };
   try {
     vi.resetModules();
-    await import('./helpers/name-teardown-writer.js');
+    await import('./helpers/teardown-writers.js');
     return { rmSync: fs.rmSync, rm: fs.promises.rm };
   } finally {
     fs.rmSync = installed.rmSync;
@@ -49,6 +55,59 @@ async function repoWithUpkeep(root: string): Promise<number | undefined> {
   fs.writeFileSync(path.join(pack, 'tmp_pack_1'), '');
   return idleProcess({ cwd: path.join(root, 'repo') });
 }
+
+function isRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Run a node parent that exits at once and leaves a detached child running for
+ * `ms`, as hook-dispatch leaves its --bg-only pass. The parent gets the
+ * environment every test passes on, and nothing that tracks its children.
+ */
+async function leaveDetachedChild(ms: number): Promise<number> {
+  const pidFile = path.join(tempRoot(), 'detached.pid');
+  const child = `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setTimeout(() => {}, ${ms})`;
+  const parent = spawnSync(process.execPath, ['-e', `
+    require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(child)}], { detached: true, stdio: 'ignore' }).unref();
+  `], { encoding: 'utf-8' });
+  expect(parent.status, parent.stderr).toBe(0);
+  while (!fs.existsSync(pidFile) || fs.readFileSync(pidFile, 'utf-8') === '') await new Promise((resolve) => setTimeout(resolve, 10));
+  const pid = Number(fs.readFileSync(pidFile, 'utf-8'));
+  onTestFinished(() => { if (isRunning(pid)) process.kill(pid); });
+  return pid;
+}
+
+it('waits for a detached child the suite started before rmSync gives up on ENOTEMPTY', async () => {
+  let writer: number | undefined;
+  const { rmSync } = await wrapLosingRemovals(() => writer !== undefined && isRunning(writer));
+  const root = tempRoot();
+  fs.writeFileSync(path.join(root, 'state.json'), '{}');
+  writer = await leaveDetachedChild(1_500);
+
+  rmSync(root, { recursive: true, force: true });
+
+  expect(fs.existsSync(root)).toBe(false);
+  expect(isRunning(writer)).toBe(false);
+});
+
+it('waits for a detached child the suite started before fs.promises.rm gives up on ENOTEMPTY', async () => {
+  let writer: number | undefined;
+  const { rm } = await wrapLosingRemovals(() => writer !== undefined && isRunning(writer));
+  const root = tempRoot();
+  fs.writeFileSync(path.join(root, 'state.json'), '{}');
+  writer = await leaveDetachedChild(1_500);
+
+  await rm(root, { recursive: true, force: true });
+
+  expect(fs.existsSync(root)).toBe(false);
+  expect(isRunning(writer)).toBe(false);
+});
 
 // Processes are found with /proc, or ps and lsof; Windows has neither.
 it.skipIf(process.platform === 'win32')('names what reappeared and the process still in the directory when rmSync meets ENOTEMPTY', async () => {

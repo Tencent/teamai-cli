@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 /** Track detached children before their parent exits, so a fixture can join them. */
-export function trackDetachedProcesses(root: string): { nodeOptions: string; waitForExit: () => Promise<void> } {
+export function trackDetachedProcesses(root: string): { preload: string; nodeOptions: string; running: () => number[]; waitForExit: () => Promise<void> } {
   const children = path.join(root, 'detached-children');
   fs.mkdirSync(children);
   const preload = path.join(root, 'track-detached.cjs');
@@ -20,22 +20,27 @@ cp.spawn = function (...args) {
 };
 require('node:module').syncBuiltinESMExports();
 `);
+  /** The tracked pids still running; each exited one is forgotten. */
+  function running(): number[] {
+    return fs.readdirSync(children).map(Number).filter((pid) => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== 'ESRCH') throw e;
+        fs.unlinkSync(path.join(children, String(pid)));
+        return false;
+      }
+    });
+  }
   return {
+    preload,
     nodeOptions: `--require ${JSON.stringify(preload)}`,
+    running,
     async waitForExit() {
       const deadline = Date.now() + 60_000;
-      while (true) {
-        const pending = fs.readdirSync(children);
-        if (pending.length === 0) return;
-        for (const name of pending) {
-          try {
-            process.kill(Number(name), 0);
-          } catch (e) {
-            if ((e as NodeJS.ErrnoException).code !== 'ESRCH') throw e;
-            fs.unlinkSync(path.join(children, name));
-          }
-        }
-        if (Date.now() >= deadline) throw new Error(`Detached fixture processes did not exit: ${fs.readdirSync(children).join(', ')}`);
+      while (running().length > 0) {
+        if (Date.now() >= deadline) throw new Error(`Detached fixture processes did not exit: ${running().join(', ')}`);
         await new Promise(resolve => setTimeout(resolve, 25));
       }
     },

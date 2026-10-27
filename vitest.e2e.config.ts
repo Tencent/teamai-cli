@@ -10,12 +10,14 @@ export default defineConfig({
     // Applied before setupFiles: clear-agent-session-env.ts must remove each,
     // which workflow-test-env.test.ts checks.
     env: { CLAUDE_CODE_SESSION_ID: 'seeded-by-vitest-config', TEAMAI_WORKFLOW_ATTEMPT: 'seeded-by-vitest-config', TEAMAI_LAUNCHED_BY: 'seeded-by-vitest-config', TEAMAI_MODE: 'unattended', CI: 'seeded-by-vitest-config' },
-    // isolate-e2e-env first: the other setup file imports modules that build
+    // teardown-writers first, so its afterAll runs after the others' and
+    // the removals in theirs can still join detached writers.
+    // isolate-e2e-env next: the setup file after it imports modules that build
     // home paths at load time.
     setupFiles: [
+      'src/__tests__/helpers/teardown-writers.ts',
       'src/__tests__/helpers/isolate-e2e-env.ts',
       'src/__tests__/helpers/clear-agent-session-env.ts',
-      'src/__tests__/helpers/name-teardown-writer.ts',
       'src/__tests__/helpers/yield-between-tests.ts',
     ],
     // OpenCode's installer replaces a shared binary. Run it before workers.

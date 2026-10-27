@@ -1,17 +1,39 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
-import { syncBuiltinESMExports } from 'node:module';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { afterAll } from 'vitest';
+import { trackDetachedProcesses } from './detached-processes.js';
 
 // A recursive removal fails with ENOTEMPTY when something keeps writing into
-// the directory while it is removed, and retries cannot outlast a writer the
-// test started and never joined. The bare error named neither, so CI failures
-// could not tell git's background upkeep from teamai's own detached work
-// (#1413). Every rmSync and fs.promises.rm in the suite now reports what
-// reappeared and which processes are still running in or on the directory.
+// the directory while it is removed. teamai's own detached work is such a
+// writer: hook-dispatch's --bg-only pass and the git hook's pull outlive the
+// CLI that started them, and a teardown that never joined them raced their
+// last write (#1413). This worker, and every node process the suite starts
+// with its environment, records each detached child it spawns, so a removal
+// that meets ENOTEMPTY waits for those children and tries once more. One that
+// still fails reports what reappeared and which processes are still running
+// in or on the directory.
+const tracker = trackDetachedProcesses(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-detached-')));
+process.env.NODE_OPTIONS = [process.env.NODE_OPTIONS, tracker.nodeOptions].filter(Boolean).join(' ');
+createRequire(import.meta.url)(tracker.preload);
+
+// Under the hook timeouts, so a writer that never exits fails the removal rather than the hook.
+const JOIN_MS = 10_000;
+const POLL_MS = 25;
+
 const rmSync = fs.rmSync;
-fs.rmSync = function rmSyncNamingWriter(target, options) {
+fs.rmSync = function rmSyncJoiningWriters(target, options) {
+  try {
+    rmSync(target, options);
+    return;
+  } catch (error) {
+    if (!isNotEmpty(error)) throw error;
+  }
+  const deadline = Date.now() + JOIN_MS;
+  while (tracker.running().length > 0 && Date.now() < deadline) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, POLL_MS);
   try {
     rmSync(target, options);
   } catch (error) {
@@ -19,7 +41,15 @@ fs.rmSync = function rmSyncNamingWriter(target, options) {
   }
 };
 const rm = fs.promises.rm;
-fs.promises.rm = async function rmNamingWriter(target, options) {
+fs.promises.rm = async function rmJoiningWriters(target, options) {
+  try {
+    await rm(target, options);
+    return;
+  } catch (error) {
+    if (!isNotEmpty(error)) throw error;
+  }
+  const deadline = Date.now() + JOIN_MS;
+  while (tracker.running().length > 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, POLL_MS));
   try {
     await rm(target, options);
   } catch (error) {
@@ -28,10 +58,18 @@ fs.promises.rm = async function rmNamingWriter(target, options) {
 };
 syncBuiltinESMExports();
 
+// Both configs load this setup file first, so this runs after every other
+// teardown, each removal of which could still need the tracker.
+afterAll(() => fs.rmSync(path.dirname(tracker.preload), { recursive: true, force: true }));
+
 const MAX_LISTED = 10;
 
+function isNotEmpty(error: unknown): error is Error {
+  return error instanceof Error && 'code' in error && error.code === 'ENOTEMPTY';
+}
+
 function withWriters(error: unknown, target: fs.PathLike): unknown {
-  if (error instanceof Error && 'code' in error && error.code === 'ENOTEMPTY') {
+  if (isNotEmpty(error)) {
     error.message += describeWriters(target instanceof URL ? fileURLToPath(target) : target.toString());
   }
   return error;
