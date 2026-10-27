@@ -100,6 +100,19 @@ describe('scrubSession', () => {
     expect(last).toMatchObject({ type: 'image', filePath: '/Users/alice/shot.png' });
   });
 
+  it('keeps tool arguments masked when masking a number in them leaves no JSON to parse', () => {
+    const session = makeSession();
+    session.messages = [{
+      role: 'assistant',
+      content: [{ type: 'tool_call', toolName: 'db', callId: 'toolu_2', arguments: { pin: 4938, token: `ghp_${'A1b2C3d4E5F6'.repeat(3)}` } }],
+      timestamp: session.createdAt,
+    }];
+
+    const { session: scrubbed } = scrubSession(session, { secrets: { WAREHOUSE_PIN: '4938' } });
+
+    expect(scrubbed.messages[0].content[0]).toMatchObject({ type: 'tool_call', arguments: { redacted: '{"pin":<REDACTED:WAREHOUSE_PIN>,"token":"<REDACTED:gh_tok>"}' } });
+  });
+
   it('无敏感内容时原样返回、计数为 0', () => {
     const clean = makeSession();
     clean.title = '普通提问';

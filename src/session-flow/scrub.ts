@@ -73,9 +73,9 @@ function scrubBlock(
       try {
         parsed = JSON.parse(next) as Record<string, unknown>;
       } catch {
-        // Redaction broke the JSON (placeholder landed in a key name): keep
-        // the original arguments rather than writing something unparsable.
-        return { block, count: 0 };
+        // A placeholder that replaced a number or a key left no JSON to
+        // parse: keep the masked text whole, never the original arguments.
+        parsed = { redacted: next };
       }
       return { block: { ...block, arguments: parsed }, count };
     }
