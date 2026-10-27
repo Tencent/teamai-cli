@@ -956,12 +956,11 @@ function changedCounters(existing: UserModeStats | undefined, delta: UsageDelta)
   return changed;
 }
 
+/** What one usage report did: pushed the new counts, found none to push, or did not push them (skipped or failed). */
+export type UsageReportOutcome = 'reported' | 'nothing' | 'unreported';
+
 /**
  * Auto-report usage data to team repo during pull.
- * Merges new events with existing stats to preserve historical data.
- * Best-effort: silently fails on any error.
- * Resolves only after push and success bookkeeping settle. The caller may bound
- * its wait, but must keep this operation alive so late success is acknowledged.
  * Returns false when reporting was skipped or failed; true when there is no
  * pending data or the report completed successfully.
  */
@@ -970,10 +969,25 @@ export async function reportUsageToTeam(
   username: string,
   options: { skipTruncate?: boolean; selfConfig: LocalConfig },
 ): Promise<boolean> {
+  return (await reportUsage(repoPath, username, options)) !== 'unreported';
+}
+
+/**
+ * Reports this scope's usage data to the team repo.
+ * Merges new events with existing stats to preserve historical data.
+ * Best-effort: silently fails on any error.
+ * Resolves only after push and success bookkeeping settle. The caller may bound
+ * its wait, but must keep this operation alive so late success is acknowledged.
+ */
+export async function reportUsage(
+  repoPath: string,
+  username: string,
+  options: { skipTruncate?: boolean; selfConfig: LocalConfig },
+): Promise<UsageReportOutcome> {
   const reportsConfig = options.selfConfig;
   if (!usesBranchWorktree(reportsConfig)) {
     log.debug(`Skipping report for HTTP repo ${repoPath}`);
-    return false;
+    return 'unreported';
   }
   let restoreStats: (() => Promise<void>) | undefined;
 
@@ -1128,7 +1142,7 @@ export async function reportUsageToTeam(
     }
     if (!hasStats && !hasVotes) {
       log.debug('No usage events or votes to report');
-      return true;
+      return 'nothing';
     }
     const { updateReports } = await import('./utils/reports-branch.js');
     const { isPublished } = await import('./utils/branch-worktree.js');
@@ -1149,7 +1163,7 @@ export async function reportUsageToTeam(
     if (!pushed) {
       log.debug('Auto-report push was not confirmed; keeping local report data');
       await restoreStats?.();
-      return false;
+      return 'unreported';
     }
     restoreStats = undefined;
 
@@ -1185,7 +1199,7 @@ export async function reportUsageToTeam(
     if (!hasUsage && !hasInterventions && !hasPromptTokens && !hasDaily && !hasOutcomes) {
       log.debug('Pushed pending votes to team repo');
     }
-    return true;
+    return 'reported';
   } catch (e) {
     try {
       await restoreStats?.();
@@ -1193,6 +1207,6 @@ export async function reportUsageToTeam(
       log.error(`Could not restore report stats after failure: ${(restoreError as Error).message}`);
     }
     log.error(`Auto-report skipped: ${(e as Error).message}`);
-    return false;
+    return 'unreported';
   }
 }

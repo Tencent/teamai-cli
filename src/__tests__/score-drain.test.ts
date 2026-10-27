@@ -430,6 +430,22 @@ describe('teamai score --drain', () => {
     expect(YAML.parse(readOnReports(origin, 'stats/tester.yaml'))).toMatchObject({ unattended: { interventions: { sessions: 1 }, prompts: 1 } });
   });
 
+  it('says only that nothing is left when a second drain finds nothing new, usage included', async () => {
+    await team();
+    capturedSession(SESSION, 'unattended');
+    const key = await dataHomeKey(path.join(mocks.home, '.teamai'));
+    fs.mkdirSync(path.join(mocks.home, '.teamai', 'dashboard'), { recursive: true });
+    fs.writeFileSync(path.join(mocks.home, '.teamai', 'dashboard', 'events.jsonl'), line({
+      type: 'session_start', timestamp: new Date(Date.now() - HOUR).toISOString(), sessionId: SESSION, tool: 'claude', cwd: path.join(root, 'app'), dataHomeKey: key, runMode: 'unattended',
+    }));
+    vi.stubEnv('CI', 'true');
+    expect((await drain()).lines).toContain('✔ Reported usage to stats/tester.yaml');
+
+    const again = await drain();
+
+    expect(again).toEqual({ code: 0, lines: ['✔ Nothing left to do here'] });
+  });
+
   it('judges sampled sessions within daily_limit, with every scorer that judges sessions', async () => {
     const { config } = await team({
       'scorers/rare.md': SCORER.replace('samplingRate: 100', 'samplingRate: 0'),

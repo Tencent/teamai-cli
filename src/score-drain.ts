@@ -13,7 +13,7 @@ import { SessionPublish, type StepSessionsPublished } from './session-flow/sessi
 import { SessionWork } from './session-flow/session-work.js';
 import type { RunSubject, SessionSubject } from './scorers/label.js';
 import { LabelStore } from './scorers/label-store.js';
-import { reportUsageToTeam } from './team-push.js';
+import { reportUsage } from './team-push.js';
 import { isUsageReportEnabled, usesBranchWorktree, type LocalConfig } from './types.js';
 import { log } from './utils/logger.js';
 import { judgeLease, submitJudgeLease, takeJudgeLease, type SkippedEntry, type TakenLease } from './workflow/scoring.js';
@@ -52,7 +52,7 @@ export interface DrainResult {
   /** The step sessions of each run ended here, archived on teamai-reports or skipped. */
   steps: StepSessionsPublished[];
   unpublished: Unpublished[];
-  /** The usage of each scope that reports it, by the member whose `stats/<member>.yaml` it goes to. */
+  /** The usage of each scope that had new usage to report, by the member whose `stats/<member>.yaml` it goes to. */
   usage: Array<{ member: string; reported: boolean }>;
 }
 
@@ -143,7 +143,8 @@ async function run(configs: readonly LocalConfig[], { mode, clock = () => new Da
     }
     // As pull reports it, so the counts of this data home leave an ephemeral runner.
     if (usesBranchWorktree(config) && isUsageReportEnabled(config, team ?? {})) {
-      result.usage.push({ member: config.username, reported: await reportUsageToTeam(config.repo.localPath, config.username, { selfConfig: config }) });
+      const outcome = await reportUsage(config.repo.localPath, config.username, { selfConfig: config });
+      if (outcome !== 'nothing') result.usage.push({ member: config.username, reported: outcome === 'reported' });
     }
   }
   return result;
