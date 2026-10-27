@@ -105,6 +105,11 @@ async function readCodebaseSource(evidenceDir: string): Promise<CodebaseSource |
   return parsed.success ? parsed.data : null;
 }
 
+/** Two checkouts without a remote are one source when they hashed the same root and extracted the same directory in it. */
+function sameLocalSource(a: { localRootHash: string; sourceSubdir?: string }, b: { localRootHash: string; sourceSubdir?: string }): boolean {
+  return a.localRootHash === b.localRootHash && (a.sourceSubdir ?? '') === (b.sourceSubdir ?? '');
+}
+
 /** Whether the published evidence of a slug came from the source being imported over it. */
 type PublishedSource =
   | { kind: 'same' }
@@ -135,10 +140,7 @@ async function publishedSource(dirs: { publishedDir: string; stagedDir: string; 
     return sameRepo && sameDir ? { kind: 'same' } : { kind: 'different', published, staged };
   }
   if (published?.kind === 'local' && staged?.kind === 'local') {
-    return published.localRootHash === staged.localRootHash
-      && (published.sourceSubdir ?? '') === (staged.sourceSubdir ?? '')
-      ? { kind: 'same' }
-      : { kind: 'unknown' };
+    return sameLocalSource(published, staged) ? { kind: 'same' } : { kind: 'unknown' };
   }
   return staged?.kind === 'remote' && PROVIDER_SLUG_PREFIXES.some((prefix) => dirs.slug.startsWith(prefix))
     ? { kind: 'same' }
@@ -161,100 +163,45 @@ function differentSourceError(slug: string, source: { published: RemoteSource; s
 }
 
 /**
- * Read a published evidence sidecar, or null when the slug has none.
- */
-async function publishedSidecar(wikiRoot: string, slug: string): Promise<Record<string, unknown> | null> {
-  return await readJsonIfPresent(path.join(wikiRoot, 'evidence', 'code', slug, 'source-manifest.json'));
-}
-
-/**
- * Whether a sidecar carries an identity marker to compare against. The
- * earliest manifests predate both `repoIdentity` and `localRootHash`; for
- * those, today's behaviour stands and the caller keeps the slug as-is.
- */
-function sidecarHasMarker(published: Record<string, unknown> | null): boolean {
-  if (!published) return false;
-  const identity = typeof published['repoIdentity'] === 'string' && published['repoIdentity'].trim();
-  const url = typeof published['repoUrl'] === 'string' && published['repoUrl'].trim();
-  const root = typeof published['localRootHash'] === 'string' && published['localRootHash'].trim();
-  return Boolean(identity || url || root);
-}
-
-/**
- * Whether a sidecar names this source: a remote answers by `repoIdentity`,
- * an origin-less checkout by its hashed local root together with the
- * subdirectory (two same-named extractions of one repository stay apart).
- * One side answering by a remote and the other only by a local root is not
- * one source. A marker-less sidecar cannot be told apart and never matches.
- */
-function namesSameSource(
-  published: Record<string, unknown> | null,
-  identity: string,
-  rootHash: string,
-  subdir: string,
-): boolean {
-  if (!published) return false;
-  const publishedIdentity = typeof published['repoIdentity'] === 'string' && published['repoIdentity'].trim()
-    ? published['repoIdentity'].trim()
-    : typeof published['repoUrl'] === 'string' && published['repoUrl'].trim()
-      ? repoIdentity(published['repoUrl'])
-      : '';
-  if (identity && publishedIdentity) return identity === publishedIdentity;
-  if (!identity && !publishedIdentity) {
-    const publishedRoot = typeof published['localRootHash'] === 'string' ? published['localRootHash'] : '';
-    const publishedSubdir = typeof published['sourceSubdir'] === 'string' ? published['sourceSubdir'] : '';
-    return rootHash !== '' && rootHash === publishedRoot && subdir === publishedSubdir;
-  }
-  return false;
-}
-
-/**
- * A `--dir` slug comes from the basename (`defaultProjectSlug`), so two
- * checkouts named `svc` point at one evidence directory and the second import
- * replaced the first's (#1422). Before anything is seeded or extracted,
- * decide the slug once — so the extraction, the carry-over pass and the index
- * refresh all target the same directory:
+ * A `--dir` checkout without an origin remote is named after its directory, so
+ * `/a/svc` and `/b/svc` share the slug `svc` and the second import would
+ * replace the first's evidence (#1422). Decided once, before anything is
+ * seeded or extracted, so the import prints the slug it publishes under.
  *
- * - The slug's occupant is compared with this source. A matching occupant
- *   keeps the slug (every checkout of one repo shares evidence, whatever its
- *   path — #823); a differing one moves this import to a suffixed directory
- *   instead of overwriting, and a marker-less legacy occupant keeps today's
- *   behaviour. No raw path is published: identity is `repoIdentity`, or the
- *   hashed local root #1427 records (extended to directories without a
- *   repository) together with the subdirectory.
- * - The suffix comes from the remote identity when there is one, so one
- *   repository converges on one destination from any checkout path and
- *   machine; only a directory without a remote falls back to its real path.
- * - The suffixed destination is verified too: if it names yet another source
- *   (the same checkout path on a different machine), the full digest is
- *   tried, and a destination that still names another source is refused
- *   rather than replaced.
+ * Such a checkout publishes where its own evidence already is (the same hashed
+ * root and directory in it, see #1427), or at the slug when nothing is there.
+ * Over evidence that names another source, or none, it moves to
+ * `<slug>-<hash8>` of its real path, then the full digest, and never reuses a
+ * suffix that holds another source's evidence. A checkout with a remote, and
+ * one over a remote's evidence, keep the slug: `publishedSource` decides
+ * whether the import may replace what is there.
  */
-async function disambiguateDirSlug(
-  wikiRoot: string,
-  slug: string,
-  sourceDir: string,
-  explicitRepoUrl?: string,
-): Promise<string> {
-  const occupant = await publishedSidecar(wikiRoot, slug);
-  if (!occupant || !sidecarHasMarker(occupant)) return slug;
+export async function localCheckoutSlug(opts: { sourceDir: string; slug: string; wikiRoot: string; repoUrl?: string }): Promise<string> {
+  const { slug, wikiRoot } = opts;
+  const source = await sourceRepositoryMetadata(opts.sourceDir, opts.repoUrl);
+  const { localRootHash } = source;
+  if (source.repoUrl || !localRootHash) return slug;
 
-  const sourceRepo = await sourceRepositoryMetadata(sourceDir, explicitRepoUrl);
-  const identity = sourceRepo.repoIdentity ?? '';
-  const rootHash = sourceRepo.localRootHash ?? '';
-  const subdir = sourceRepo.sourceSubdir ?? '';
-  if (namesSameSource(occupant, identity, rootHash, subdir)) return slug;
+  const digest = createHash('sha256').update(await fs.realpath(opts.sourceDir)).digest('hex');
+  const [occupant, ...suffixed] = await Promise.all([slug, `${slug}-${digest.slice(0, 8)}`, `${slug}-${digest}`]
+    .map(async (candidate) => {
+      const evidenceDir = path.join(wikiRoot, 'evidence', 'code', candidate);
+      return { slug: candidate, isEmpty: !(await fs.pathExists(evidenceDir)), source: await readCodebaseSource(evidenceDir) };
+    }));
+  const own = [occupant, ...suffixed].find((candidate) => candidate?.source?.kind === 'local'
+    && sameLocalSource(candidate.source, { localRootHash, sourceSubdir: source.sourceSubdir }));
+  if (own) return own.slug;
+  if (!occupant || occupant.isEmpty || occupant.source?.kind === 'remote') return slug;
 
-  const stable = identity || await fs.realpath(sourceDir);
-  const digest = createHash('sha256').update(stable).digest('hex');
-  for (const candidate of [`${slug}-${digest.slice(0, 8)}`, `${slug}-${digest}`]) {
-    const holder = await publishedSidecar(wikiRoot, candidate);
-    if (!holder || !sidecarHasMarker(holder)) return candidate;
-    if (namesSameSource(holder, identity, rootHash, subdir)) return candidate;
+  const free = suffixed.find((candidate) => candidate.isEmpty);
+  if (!free) {
+    throw new Error(`teamwiki/evidence/code/${slug}/ and both of its suffixed slugs hold evidence of other sources. `
+      + 'Not replacing them. Import this checkout from a directory with another name.');
   }
-  throw new Error(
-    `teamwiki/evidence/code/ holds a different source under both ${slug}-${digest.slice(0, 8)} and ${slug}-${digest}; not replacing it (#1422)`,
-  );
+  log.warn(`teamwiki/evidence/code/${slug}/ holds evidence of another source, so this checkout, which has no origin remote, `
+    + `is published under teamwiki/evidence/code/${free.slug}/. `
+    + `If teamwiki/evidence/code/${slug}/ is an older copy of this checkout, move any curated docs you want to keep from it, then remove it.`);
+  return free.slug;
 }
 
 /**
@@ -553,14 +500,6 @@ export async function publishTeamwikiViaMR(team: TeamaiInit, message: string): P
  * @returns whether the teamwiki changed
  */
 export async function importLocalCheckout(opts: ImportCodebaseOptions): Promise<boolean> {
-  // Same-basename `--dir` checkouts must not share one evidence directory
-  // (#1422); decided here, once, so the extraction, the reconcile pass and
-  // the index refresh below all target the same slug.
-  const slug = await disambiguateDirSlug(opts.wikiRoot, opts.slug, opts.sourceDir, opts.repoUrl);
-  if (slug !== opts.slug) {
-    log.info(`[import] evidence/code/${opts.slug}/ holds a different source; publishing this one under ${slug}`);
-    opts.slug = slug;
-  }
   const updated = await importCodebase(opts);
   if (!updated) {
     log.info(`${opts.slug}: no source changes since the last import, teamwiki unchanged`);

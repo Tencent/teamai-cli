@@ -4,17 +4,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { importLocalCheckout } from '../import-codebase.js';
-import { defaultProjectSlug } from '../codebase-extract.js';
+import { importLocalCheckout, localCheckoutSlug } from '../import-codebase.js';
 
 /**
- * A `--dir` slug is the checkout's basename, so `/a/svc` and `/b/svc` both
- * wrote `teamwiki/evidence/code/svc/` and the second import replaced the
- * first's evidence (#1422). The published sidecar now records the source
- * root's real path, and a same-name import whose source differs — by remote
- * identity for a repository, by real path otherwise — publishes under
- * `<slug>-<hash8(realpath)>` instead. One repository, any checkout path,
- * keeps sharing its evidence (#823).
+ * A `--dir` checkout without an origin remote is named after its directory, so
+ * `/a/svc` and `/b/svc` both wrote `teamwiki/evidence/code/svc/` and the second
+ * import replaced the first's evidence (#1422). Such a checkout is told apart
+ * by its hashed local root, and one whose slug holds another source's evidence
+ * publishes under `<slug>-<hash8(realpath)>` instead.
  */
 
 const temps: string[] = [];
@@ -49,24 +46,10 @@ function plainDir(parent: string, name: string, marker: string): string {
   return fs.realpathSync(dir);
 }
 
-function gitCheckout(parent: string, name: string, origin: string): string {
-  const dir = path.join(parent, name);
-  fs.mkdirSync(dir, { recursive: true });
-  const git = (...args: string[]) => execFileSync('git', args, { cwd: dir, stdio: 'ignore' });
-  git('init', '--quiet');
-  git('symbolic-ref', 'HEAD', 'refs/heads/main');
-  git('config', 'user.email', 'test@example.invalid');
-  git('config', 'user.name', 'Test');
-  git('remote', 'add', 'origin', origin);
-  fs.writeFileSync(path.join(dir, `${name}.ts`), `export const ${name} = 1;\n`);
-  git('add', '.');
-  git('commit', '--quiet', '-m', 'init');
-  return fs.realpathSync(dir);
-}
-
-function repoIdentityOf(url: string): string {
-  // repoIdentity's spelling for these remotes: the sanitized URL itself.
-  return url.replace(/\.git$/, '');
+/** `teamai import --dir <sourceDir> --skip-enrich` of a directory named `svc`. */
+async function importDir(sourceDir: string, wikiRoot: string): Promise<boolean> {
+  const slug = await localCheckoutSlug({ sourceDir, slug: 'svc', wikiRoot });
+  return await importLocalCheckout({ sourceDir, slug, wikiRoot, skipEnrich: true });
 }
 
 function evidenceSlugs(wikiRoot: string): string[] {
@@ -84,8 +67,8 @@ describe('--dir slug collision (#1422)', () => {
     const a = plainDir(parent, 'svc', 'first');
     const b = plainDir(parent, 'other', 'second');
 
-    await importLocalCheckout({ sourceDir: a, slug: 'svc', wikiRoot, skipEnrich: true });
-    await importLocalCheckout({ sourceDir: b, slug: 'svc', wikiRoot, skipEnrich: true });
+    await importDir(a, wikiRoot);
+    await importDir(b, wikiRoot);
 
     expect(evidenceSlugs(wikiRoot)).toEqual(['svc', `svc-${hash8(b)}`].sort());
     // The first codebase's evidence survived — its manifest still answers by
@@ -118,40 +101,17 @@ describe('--dir slug collision (#1422)', () => {
       fs.writeFileSync(path.join(dir, 'svc.ts'), `export const svc = '${path.basename(path.dirname(dir))}';\n`);
     }
 
-    await importLocalCheckout({ sourceDir: a, slug: 'svc', wikiRoot, skipEnrich: true });
-    await importLocalCheckout({ sourceDir: b, slug: 'svc', wikiRoot, skipEnrich: true });
+    await importDir(a, wikiRoot);
+    await importDir(b, wikiRoot);
 
     expect(evidenceSlugs(wikiRoot)).toHaveLength(2);
   });
 
-  it('one repository converges on one suffixed destination from any checkout path', async () => {
-    const parent = temp('teamai-1422-dir-');
-    const wikiRoot = path.join(temp('teamai-1422-wiki-'), 'teamwiki');
-    // A plain directory occupies `svc` first, so the repository must move.
-    const plain = plainDir(parent, 'svc', 'plain');
-    await importLocalCheckout({ sourceDir: plain, slug: 'svc', wikiRoot, skipEnrich: true });
-
-    const origin = 'https://github.com/acme/svc.git';
-    const first = gitCheckout(parent, 'svc-repo', origin);
-    const second = gitCheckout(path.join(parent, 'elsewhere'), 'svc-repo', origin);
-
-    await importLocalCheckout({ sourceDir: first, slug: 'svc', wikiRoot, skipEnrich: true });
-    await importLocalCheckout({ sourceDir: second, slug: 'svc', wikiRoot, skipEnrich: true });
-
-    // Both paths of the same repository publish to one suffixed directory,
-    // and it is not the plain directory's.
-    const slugs = evidenceSlugs(wikiRoot);
-    expect(slugs).toHaveLength(2);
-    expect(slugs).toContain('svc');
-    const suffixed = slugs.find((s) => s !== 'svc')!;
-    const manifest = JSON.parse(fs.readFileSync(path.join(wikiRoot, 'evidence', 'code', suffixed, 'source-manifest.json'), 'utf-8'));
-    expect(manifest.repoIdentity).toBe(repoIdentityOf(origin));
-  });
   it('a suffixed destination naming another source is not reused', async () => {
     const parent = temp('teamai-1422-dir-');
     const wikiRoot = path.join(temp('teamai-1422-wiki-'), 'teamwiki');
     const plain = plainDir(parent, 'svc', 'plain');
-    await importLocalCheckout({ sourceDir: plain, slug: 'svc', wikiRoot, skipEnrich: true });
+    await importDir(plain, wikiRoot);
 
     const b = plainDir(parent, 'other', 'second');
     const staged = `svc-${hash8(b)}`;
@@ -163,7 +123,7 @@ describe('--dir slug collision (#1422)', () => {
       JSON.stringify({ repoIdentity: 'https://github.com/acme/other' }),
     );
 
-    await importLocalCheckout({ sourceDir: b, slug: 'svc', wikiRoot, skipEnrich: true });
+    await importDir(b, wikiRoot);
 
     // The 8-hex candidate was not reused: the import fell through to the full digest.
     const slugs = evidenceSlugs(wikiRoot);
@@ -177,7 +137,7 @@ describe('--dir slug collision (#1422)', () => {
     const parent = temp('teamai-1422-dir-');
     const wikiRoot = path.join(temp('teamai-1422-wiki-'), 'teamwiki');
     const plain = plainDir(parent, 'svc', 'plain');
-    await importLocalCheckout({ sourceDir: plain, slug: 'svc', wikiRoot, skipEnrich: true });
+    await importDir(plain, wikiRoot);
 
     const b = plainDir(parent, 'other', 'second');
     for (const candidate of [`svc-${hash8(b)}`, `svc-${sha256(b)}`]) {
@@ -186,8 +146,8 @@ describe('--dir slug collision (#1422)', () => {
       fs.writeFileSync(path.join(dir, 'source-manifest.json'), JSON.stringify({ repoIdentity: 'https://github.com/acme/other' }));
     }
 
-    await expect(importLocalCheckout({ sourceDir: b, slug: 'svc', wikiRoot, skipEnrich: true }))
-      .rejects.toThrow('not replacing it (#1422)');
+    await expect(importDir(b, wikiRoot))
+      .rejects.toThrow('Not replacing them');
   });
 
   it('re-importing the same directory keeps its published slug', async () => {
@@ -195,24 +155,30 @@ describe('--dir slug collision (#1422)', () => {
     const wikiRoot = path.join(temp('teamai-1422-wiki-'), 'teamwiki');
     const a = plainDir(parent, 'svc', 'first');
 
-    await importLocalCheckout({ sourceDir: a, slug: 'svc', wikiRoot, skipEnrich: true });
+    await importDir(a, wikiRoot);
     fs.writeFileSync(path.join(a, 'svc.ts'), `export const marker = 'edited';\n`);
-    await importLocalCheckout({ sourceDir: a, slug: 'svc', wikiRoot, skipEnrich: true });
+    await importDir(a, wikiRoot);
 
     expect(evidenceSlugs(wikiRoot)).toEqual(['svc']);
   });
 
-  it('one repository keeps one evidence directory from any checkout path (#823)', async () => {
+  it('keeps evidence that names no source and publishes beside it', async () => {
     const parent = temp('teamai-1422-dir-');
     const wikiRoot = path.join(temp('teamai-1422-wiki-'), 'teamwiki');
-    const first = gitCheckout(parent, 'svc', 'https://github.com/acme/svc.git');
-    const second = gitCheckout(path.join(parent, 'elsewhere'), 'svc', 'https://github.com/acme/svc.git');
+    // Evidence from a release that recorded no source for a checkout without
+    // an origin, with a doc curated by hand.
+    const legacy = path.join(wikiRoot, 'evidence', 'code', 'svc');
+    fs.mkdirSync(path.join(legacy, 'docs'), { recursive: true });
+    fs.writeFileSync(path.join(legacy, 'source-manifest.json'), JSON.stringify({ project: 'svc', files: [] }));
+    fs.writeFileSync(path.join(legacy, 'docs', 'curated.md'), '# curated\n');
+    const b = plainDir(parent, 'svc', 'second');
 
-    const slug = await defaultProjectSlug(first);
-    await importLocalCheckout({ sourceDir: first, slug, wikiRoot, skipEnrich: true });
-    await importLocalCheckout({ sourceDir: second, slug: await defaultProjectSlug(second), wikiRoot, skipEnrich: true });
+    await importDir(b, wikiRoot);
+    fs.writeFileSync(path.join(b, 'svc.ts'), `export const marker = 'edited';\n`);
+    await importDir(b, wikiRoot);
 
-    expect(slug).toBe('svc');
-    expect(evidenceSlugs(wikiRoot)).toEqual(['svc']);
+    expect(evidenceSlugs(wikiRoot)).toEqual(['svc', `svc-${hash8(b)}`].sort());
+    expect(fs.readFileSync(path.join(legacy, 'docs', 'curated.md'), 'utf-8')).toBe('# curated\n');
+    expect(localRootHashOf(wikiRoot, `svc-${hash8(b)}`)).toBe(sha256(b));
   });
 });

@@ -439,13 +439,13 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
         throw new Error(`Directory not found: ${dirPath}`);
       }
       const { checkoutName, defaultProjectSlug } = await import('./codebase-extract.js');
-      const slug = await defaultProjectSlug(dirPath);
+      const dirSlug = await defaultProjectSlug(dirPath);
       const legacySlug = await checkoutName(dirPath);
-      log.info(`Scanning local directory: ${dirPath} (project: ${slug})`);
 
       if (opts.dryRun) {
+        log.info(`Scanning local directory: ${dirPath} (project: ${dirSlug})`);
         log.info(`[dry-run] skipping code extraction, no action taken`);
-        log.success(`Local directory ${slug} import complete (dry-run)`);
+        log.success(`Local directory ${dirSlug} import complete (dry-run)`);
         return;
       }
 
@@ -455,11 +455,14 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
       const { wikiRoot, team } = target;
       const releaseImportLock = await lockTeamwiki(target);
       try {
-        const { importLocalCheckout } = await import('./import-codebase.js');
+        const { importLocalCheckout, localCheckoutSlug } = await import('./import-codebase.js');
+        const slug = await localCheckoutSlug({ sourceDir: dirPath, slug: dirSlug, wikiRoot });
+        log.info(`Scanning local directory: ${dirPath} (project: ${slug})`);
         const updated = await importLocalCheckout({
           sourceDir: dirPath,
           slug,
-          legacySlug,
+          // A suffixed slug is a new codebase; the directory-named evidence is another source's.
+          ...(slug === dirSlug ? { legacySlug } : {}),
           wikiRoot,
           incremental: opts.incremental ?? false,
           skipEnrich: opts.skipEnrich ?? false,
@@ -476,10 +479,10 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
           await autoPushTeamRepo(team.localConfig.repo.localPath, `[teamai] Import from local dir: ${slug}`);
           log.success(`Pushed to team knowledge repo (${team.localConfig.repo.remote})`);
         }
+        log.success(`Local directory ${slug} import complete`);
       } finally {
         await releaseImportLock();
       }
-      log.success(`Local directory ${slug} import complete`);
     } else if (opts.fromClaude) {
       // 分支 3b：--from-claude，扫描规则文件并交互式导入
       const candidates = await scanCandidates({ fromClaude: true, dryRun: opts.dryRun });

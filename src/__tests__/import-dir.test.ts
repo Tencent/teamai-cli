@@ -5,7 +5,8 @@ import os from 'node:os';
 import fs from 'fs-extra';
 
 // Mock external dependencies
-vi.mock('../codebase-extract.js', () => ({
+vi.mock('../codebase-extract.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../codebase-extract.js')>()),
   extractCodebase: vi.fn(),
   // The fixtures are outside git, where the slug is the directory's name.
   defaultProjectSlug: vi.fn(async (dir: string) => path.basename(dir)),
@@ -26,7 +27,7 @@ vi.mock('../config.js', async (importOriginal) => ({
   autoDetectInit: vi.fn(),
 }));
 
-import { defaultProjectSlug, extractCodebase } from '../codebase-extract.js';
+import { defaultProjectSlug, extractCodebase, sourceRepositoryMetadata } from '../codebase-extract.js';
 import { aggregateGlobalGraph } from '../graph-aggregate.js';
 import { autoPushTeamRepo } from '../utils/git.js';
 import { autoDetectInit } from '../config.js';
@@ -59,12 +60,14 @@ describe('import --dir', () => {
     });
 
     // extractCodebase mock: simulate writing teamwiki output to outputRoot
-    (extractCodebase as ReturnType<typeof vi.fn>).mockImplementation(async (opts: { outputRoot?: string; project?: string }) => {
+    (extractCodebase as ReturnType<typeof vi.fn>).mockImplementation(async (opts: { path: string; outputRoot?: string; project?: string }) => {
       const outputBase = opts.outputRoot ?? projectDir;
       const wikiRoot = path.join(outputBase, 'teamwiki');
       const evidenceDir = path.join(wikiRoot, 'evidence', 'code', opts.project ?? 'my-project');
       await fs.ensureDir(evidenceDir);
       await fs.writeFile(path.join(evidenceDir, 'index.md'), '# test\n');
+      // The source the real extraction records, by which the next import recognises it.
+      await fs.writeJson(path.join(evidenceDir, 'source-manifest.json'), await sourceRepositoryMetadata(opts.path));
       await fs.ensureDir(path.join(wikiRoot, '.indices'));
       await fs.writeFile(path.join(wikiRoot, '.indices', 'graph-index.json'), JSON.stringify({ nodes: [{ slug: 'a' }], edges: [] }));
       return true;
@@ -139,6 +142,26 @@ describe('import --dir', () => {
 
     expect(await fs.pathExists(path.join(teamRepoDir, 'teamwiki', 'evidence', 'code', 'my-project', 'source-manifest.json'))).toBe(true);
     expect(lines.join('\n')).not.toContain('under resources.wiki');
+  });
+
+  it('prints the slug a same-named directory without an origin is published under', async () => {
+    await runImportDir({ dir: projectDir });
+    const other = path.join(tmpDir, 'other', 'my-project');
+    await fs.outputFile(path.join(other, 'main.py'), '# other\n');
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => { lines.push(args.map(String).join(' ')); });
+    try {
+      await runImportDir({ dir: other });
+    } finally {
+      spy.mockRestore();
+    }
+
+    const slugs = (await fs.readdir(path.join(teamRepoDir, 'teamwiki', 'evidence', 'code'))).sort();
+    expect(slugs).toHaveLength(2);
+    const suffixed = slugs.find((slug) => slug !== 'my-project');
+    expect(suffixed).toMatch(/^my-project-[0-9a-f]{8}$/);
+    expect(lines.join('\n')).toContain(`(project: ${suffixed})`);
+    expect(lines.join('\n')).toContain(`Local directory ${suffixed} import complete`);
   });
 
   it('--output writes to specified dir without touching team-repo', async () => {

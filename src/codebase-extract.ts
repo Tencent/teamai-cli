@@ -594,7 +594,8 @@ interface SourceRepositoryMetadata {
   repoIdentity?: string;
   sourceSubdir?: string;
   /**
-   * Hex `sha256` of the verified `realpath` of the git root. Written only for a
+   * Hex `sha256` of the verified `realpath` of the git root, or of the
+   * directory itself when it is in no repository. Written only for a
    * checkout with no remote identity (#1422), because such a checkout has
    * nothing else stable to recognise itself by; a checkout with a remote is
    * identified by `repoIdentity` and does not get this member. Hashed rather
@@ -698,15 +699,12 @@ export async function sourceRepositoryMetadata(
     // unknown. Extraction itself still works for non-Git directories.
   }
 
-  // A directory without a repository still answers by a local root: its own
-  // real path, hashed like the git root above, so a later run (and the
-  // same-basename disambiguation in import-codebase) can recognise this
-  // checkout without publishing the member's path in the teamwiki (#1422).
-  const localRoot = localRootHash ?? createHash('sha256').update(await realpath(root)).digest('hex');
   if (!remoteUrl) {
+    // A directory outside any repository answers by its own real path, hashed
+    // like a git root, so its next import recognises it (#1422).
     return {
       ...(sourceSubdir !== undefined ? { sourceSubdir } : {}),
-      localRootHash: localRoot,
+      localRootHash: localRootHash ?? createHash('sha256').update(await realpath(root)).digest('hex'),
     };
   }
   const safeUrl = sanitizeRepoUrl(remoteUrl);
