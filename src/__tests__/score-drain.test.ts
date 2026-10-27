@@ -73,7 +73,7 @@ function git(cwd: string, ...args: string[]): string {
 /** A git-kind team whose repo holds `files`, cloned and saved as this machine's user install, with its scorers cached. */
 async function team(files: Record<string, string> = {}): Promise<{ origin: string; config: LocalConfig }> {
   const seed = path.join(root, 'seed');
-  for (const [file, text] of Object.entries({ 'teamai.yaml': 'team: acme\n', 'scorers/quality.md': SCORER, ...files })) {
+  for (const [file, text] of Object.entries({ 'teamai.yaml': 'team: acme\nrepo: https://example.com/acme/team.git\n', 'scorers/quality.md': SCORER, ...files })) {
     fs.mkdirSync(path.dirname(path.join(seed, file)), { recursive: true });
     fs.writeFileSync(path.join(seed, file), text);
   }
@@ -148,6 +148,15 @@ async function settledRun(config: LocalConfig, runMode: RunMode, report: Record<
   data(await reportAttempt(config, runId, parsed.report));
   expect(data(await leaseNext(config, runId, driver))).toMatchObject({ done: { outcome: 'succeeded' } });
   return runId;
+}
+
+/** The files under `dir` on teamai-reports of bare repository `origin`. */
+function onReports(origin: string, dir: string): string[] {
+  try {
+    return execFileSync('git', ['--git-dir', origin, 'ls-tree', '-r', '--name-only', 'teamai-reports', dir], { encoding: 'utf8', stdio: 'pipe' }).split('\n').filter(Boolean);
+  } catch {
+    return [];
+  }
 }
 
 /** Runs `teamai score --drain` and returns its exit code and the lines it printed. */
@@ -248,5 +257,40 @@ describe('teamai score --drain', () => {
 
     expect(again.code, again.lines.join('\n')).toBe(0);
     expect(again.lines.filter((printed) => printed.includes('Judged'))).toEqual([]);
+  });
+
+  it('publishes the labels it judged to teamai-reports', async () => {
+    const { origin } = await team();
+    capturedSession(SESSION, 'unattended');
+    fakeClaude();
+    vi.stubEnv('CI', 'true');
+
+    const drained = await drain();
+
+    expect(drained.code, drained.lines.join('\n')).toBe(0);
+    expect(drained.lines).toContain('✔ Published 1 label to teamai-reports');
+    expect(onReports(origin, 'scores')).toEqual([expect.stringMatching(/^scores\/tester\/\d{4}-\d{2}\.jsonl$/)]);
+  });
+
+  it('exits 1 when it cannot publish, and the next drain publishes what stayed pending', async () => {
+    const { origin } = await team();
+    capturedSession(SESSION, 'unattended');
+    fakeClaude();
+    vi.stubEnv('CI', 'true');
+    const hook = path.join(origin, 'hooks', 'pre-receive');
+    fs.writeFileSync(hook, '#!/bin/sh\necho "push refused" >&2\nexit 1\n', { mode: 0o755 });
+
+    const failed = await drain();
+
+    expect(failed.code, failed.lines.join('\n')).toBe(1);
+    expect(failed.lines).toContainEqual(expect.stringMatching(/^✖ Could not publish 1 label to teamai-reports: [\s\S]+\. It stays pending; run teamai score --drain again\.$/));
+    expect(onReports(origin, 'scores')).toEqual([]);
+
+    fs.rmSync(hook);
+    const again = await drain();
+
+    expect(again.code, again.lines.join('\n')).toBe(0);
+    expect(again.lines).toContain('✔ Published 1 label to teamai-reports');
+    expect(onReports(origin, 'scores')).toHaveLength(1);
   });
 });

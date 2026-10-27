@@ -9,6 +9,7 @@ import { localJudgeOffers } from './score-sessions.js';
 import { SessionCaptures } from './session-flow/captures.js';
 import { SessionWork } from './session-flow/session-work.js';
 import type { RunSubject, SessionSubject } from './scorers/label.js';
+import { LabelStore } from './scorers/label-store.js';
 import type { LocalConfig } from './types.js';
 import { log } from './utils/logger.js';
 import { judgeLease, submitJudgeLease, takeJudgeLease, type SkippedEntry, type TakenLease } from './workflow/scoring.js';
@@ -26,12 +27,21 @@ interface FailedJudgment {
   code: string;
 }
 
+/** What could not reach teamai-reports for one reason. It stays pending, and the next drain retries it. */
+interface Unpublished {
+  labels: number;
+  sessions: number;
+  reason: string;
+}
+
 /** What one drain did across its scopes. */
 export interface DrainResult {
   judged: Judged[];
   failed: FailedJudgment[];
   /** Judge entries no judge tool here runs the scorer's model for, left open for another driver's `score --next`. */
   leftOpen: SkippedEntry[];
+  labelsPublished: number;
+  unpublished: Unpublished[];
 }
 
 /** In unattended mode, every session captured unattended in this data home is finished from now on. */
@@ -76,15 +86,37 @@ async function judge(config: LocalConfig, clock: () => string): Promise<Pick<Dra
   return { judged, failed, leftOpen };
 }
 
+/** Publishes the pending labels of `config`, as `score --push` does. Nothing is pending while usage reporting is off. */
+async function publishLabels(config: LocalConfig): Promise<Pick<DrainResult, 'labelsPublished' | 'unpublished'>> {
+  const pending = await LabelStore.unpublished(config);
+  if (pending === 0) return { labelsPublished: 0, unpublished: [] };
+  const delivery = await LabelStore.publish(config);
+  switch (delivery.state) {
+    case 'published':
+      return { labelsPublished: pending, unpublished: [] };
+    case 'pending':
+      return { labelsPublished: 0, unpublished: [{ labels: pending, sessions: 0, reason: delivery.reason }] };
+    case 'unsupported':
+      return { labelsPublished: 0, unpublished: [] };
+    default: {
+      const unhandled: never = delivery;
+      return unhandled;
+    }
+  }
+}
+
 /** Drains each scope of `configs`, in order, in run mode `mode`. */
 async function run(configs: readonly LocalConfig[], { mode, clock = () => new Date().toISOString() }: { mode: RunMode; clock?: () => string }): Promise<DrainResult> {
-  const result: DrainResult = { judged: [], failed: [], leftOpen: [] };
+  const result: DrainResult = { judged: [], failed: [], leftOpen: [], labelsPublished: 0, unpublished: [] };
   for (const config of configs) {
     if (mode === 'unattended') await finishUnattended(config, clock());
     const { judged, failed, leftOpen } = await judge(config, clock);
     result.judged.push(...judged);
     result.failed.push(...failed);
     result.leftOpen.push(...leftOpen);
+    const labels = await publishLabels(config);
+    result.labelsPublished += labels.labelsPublished;
+    result.unpublished.push(...labels.unpublished);
   }
   return result;
 }
@@ -108,9 +140,15 @@ function failedText({ scorers, subject, code }: FailedJudgment): string {
   return `${scorers.join(', ')} on ${what}: ${code}. A failed judgment is final and is not retried. To ask for a new one: ${ask}`;
 }
 
-/** Whether something the drain tried here failed, so its command exits 1. */
+/** What could not reach teamai-reports for one reason, and that the next drain retries it. */
+function unpublishedText({ labels, sessions, reason }: Unpublished): string {
+  const what = [labels > 0 ? plural(labels, 'label', 'labels') : '', sessions > 0 ? plural(sessions, 'session', 'sessions') : ''].filter(Boolean).join(' and ');
+  return `Could not publish ${what} to teamai-reports: ${reason}. ${labels + sessions === 1 ? 'It stays' : 'They stay'} pending; run teamai score --drain again.`;
+}
+
+/** Whether a judgment or a publish the drain tried here failed, so its command exits 1. */
 function hasFailed(result: DrainResult): boolean {
-  return result.failed.length > 0;
+  return result.failed.length > 0 || result.unpublished.length > 0;
 }
 
 /** Prints what `result` did, one line per kind of work. */
@@ -120,6 +158,8 @@ function print(result: DrainResult): void {
   if (passes.length > 0) log.success(`Judged ${plural(passes.length, 'sampled pass', 'sampled passes')} here (${scorerNames(passes)})`);
   if (sessions.length > 0) log.success(`Judged ${plural(sessions.length, 'sampled session', 'sampled sessions')} here (${scorerNames(sessions)})`);
   for (const failed of result.failed) log.error(failedText(failed));
+  if (result.labelsPublished > 0) log.success(`Published ${plural(result.labelsPublished, 'label', 'labels')} to teamai-reports`);
+  for (const unpublished of result.unpublished) log.error(unpublishedText(unpublished));
   const { leftOpen } = result;
   if (leftOpen.length > 0) {
     const ofSessions = leftOpen.filter((entry) => 'sessionId' in entry.subject).length;
