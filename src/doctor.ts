@@ -2,7 +2,7 @@ import YAML from 'yaml';
 import { hookToolPathsForConfig } from './types.js';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import { detectProjectConfig, loadLocalConfig, loadMemberSettings, loadTeamConfig } from './config.js';
+import { detectProjectConfig, loadLocalConfig, loadMemberSettings, loadTeamConfig, ownMemberSettings } from './config.js';
 import { memberTools } from './tool-launch/call.js';
 import { AgentSession } from './session-flow/agent-session.js';
 import { SessionPolicy, type SessionPolicy as Policy } from './session-flow/session-policy.js';
@@ -193,6 +193,35 @@ export interface MemberSettingsReport {
   effective?: unknown;
   source?: MemberSettingSource;
   levels: MemberSettingSource[];
+}
+
+/** A level as doctor's text names it: where a value came from, and its short name among the levels below. */
+function describeMemberSettingLevel({ level, file, variable }: MemberSettingSource, scope: LocalConfig['scope']): { from: string; short: string } {
+  switch (level) {
+    case 'environment': return { from: variable ?? 'the environment', short: variable ?? 'environment' };
+    // In user scope this scope's config is this machine's, named once.
+    case 'scope': return scope === 'user'
+      ? { from: `the user config ${file}, also this machine's`, short: 'user config' }
+      : { from: `the workspace config ${file}`, short: 'workspace' };
+    case 'machine': return { from: `the machine config ${file}`, short: 'machine' };
+    case 'team': return { from: "the team's teamai.yaml", short: 'team' };
+    case 'default': return { from: 'the default', short: 'default' };
+    default: {
+      const unhandled: never = level;
+      return unhandled;
+    }
+  }
+}
+
+/** Doctor's `Member settings` lines: each setting some level sets, the level that won, and the values below it. */
+function memberSettingLines(reports: MemberSettingsReport[], scope: LocalConfig['scope']): string[] {
+  const shown = (value: unknown): string => typeof value === 'string' ? value : JSON.stringify(value);
+  return reports.flatMap(({ key, source, levels }) => {
+    if (!source || source.level === 'default') return [];
+    const below = levels.slice(levels.indexOf(source) + 1).filter(({ level }) => level !== 'default')
+      .map((lower, index) => `the ${describeMemberSettingLevel(lower, scope).short}${index === 0 ? ' says' : ''} ${shown(lower.value)}`);
+    return [`  ${key}: ${shown(source.value)}, from ${describeMemberSettingLevel(source, scope).from}${below.length > 0 ? ` (${below.join(', ')})` : ''}`];
+  });
 }
 
 const MEMBER_SETTING_REPORT_KEYS = [
@@ -741,7 +770,10 @@ function usageReportNote({ localConfig, teamConfig }: DoctorContext): string {
   if (localConfig.repo.kind === 'http') return 'Usage reporting: off, from HTTP mode (no team repo to report to).';
   const member = localConfig.usageReportEnabled;
   const team = teamConfig?.usageReport;
-  const source = member !== undefined ? `usageReportEnabled: ${member} in ${path.join(getDataHome(localConfig), 'config.yaml')}`
+  // A workspace or self config takes the machine's value when its own file sets none.
+  const level = ownMemberSettings(localConfig).usageReportEnabled === undefined ? `the machine config ${path.join(getTeamaiHomeDir(), 'config.yaml')}`
+    : `the ${installScopeName(localConfig.scope)} config ${path.join(getDataHome(localConfig), 'config.yaml')}`;
+  const source = member !== undefined ? `usageReportEnabled: ${member} in ${level}`
     : team !== undefined ? `usageReport: ${team} in the team's teamai.yaml`
     : 'the default';
   return `Usage reporting: ${isUsageReportEnabled(localConfig, teamConfig ?? {}) ? 'on' : 'off'}, from ${source}.`;
@@ -1247,13 +1279,14 @@ export async function doctor(options: DoctorOptions): Promise<boolean> {
     ...await recordedPlaceNotes(ctx, 'blocks'),
   ];
 
+  const memberSettings = await memberSettingsReport(ctx);
   if (jsonMode) {
     emitReport({
       ok: allPassed,
       scope,
       runMode,
       checks: results,
-      memberSettings: await memberSettingsReport(ctx),
+      memberSettings,
       // pkgDoctorReport renders its own lines; they are human text, not checks.
       ...(packageReport ? { packages: { ok: packageReport.allPassed, lines: packageReport.lines } } : {}),
       ...(notes.length > 0 ? { notes } : {}),
@@ -1263,6 +1296,13 @@ export async function doctor(options: DoctorOptions): Promise<boolean> {
 
   if (packageReport) {
     for (const line of packageReport.lines) console.log(line);
+  }
+
+  const settingLines = memberSettingLines(memberSettings, localConfig.scope);
+  if (settingLines.length > 0) {
+    console.log('');
+    log.info('Member settings:');
+    for (const line of settingLines) console.log(line);
   }
 
   if (notes.length > 0) {

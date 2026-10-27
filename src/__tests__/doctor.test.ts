@@ -1,6 +1,6 @@
 import { toolHome } from '../tool-home.js';
 import { getTeamaiHomeDir } from '../types.js';
-import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished, type Mock } from 'vitest';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -82,7 +82,7 @@ vi.mock('../hooks.js', async (importOriginal) => ({
 
 // ── Imports (after mocks) ────────────────────────────────
 
-import { loadLocalConfig, loadMemberSettings, loadTeamConfig } from '../config.js';
+import { detectProjectConfig, loadLocalConfig, loadMemberSettings, loadTeamConfig } from '../config.js';
 import { pathExists, readFileSafe } from '../utils/fs.js';
 import { TEAMAI_HOOK_SUBCOMMANDS, readCodexHookTrustForScope } from '../hooks.js';
 import { log, setStderrOnly } from '../utils/logger.js';
@@ -93,6 +93,7 @@ import type { DoctorReport } from '../doctor.js';
 const mockedLoadLocalConfig = loadLocalConfig as Mock;
 const mockedLoadMemberSettings = loadMemberSettings as Mock;
 const mockedLoadTeamConfig = loadTeamConfig as Mock;
+const mockedDetectProjectConfig = detectProjectConfig as Mock;
 const mockedPathExists = pathExists as Mock;
 const mockedReadFileSafe = readFileSafe as Mock;
 const mockedReadCodexHookTrust = readCodexHookTrustForScope as Mock;
@@ -1373,5 +1374,37 @@ describe('doctor — the recorded Codex root', () => {
     it('passes for an unrecorded CODEX_HOME=~/.codex, where recording would move nothing', async () => {
         process.env.CODEX_HOME = path.join(home, '.codex');
         expect(await (await checkFor())!.check()).toBe(true);
+    });
+});
+
+describe('doctor — member settings (#1459)', () => {
+    const machineFile = (): string => path.join(getTeamaiHomeDir(), 'config.yaml');
+
+    it('lists each member setting some level sets, with the level that set it and the levels below', async () => {
+        mockedLoadTeamConfig.mockResolvedValue({ ...mockTeamConfig, sharing: { recall: { enabled: false } } });
+        const otherReads = mockedReadFileSafe.getMockImplementation();
+        mockedReadFileSafe.mockImplementation(async (filePath: string) => (
+            filePath === machineFile() ? 'recallEnabled: true\nai:\n  tool: codex\n' : otherReads?.(filePath)
+        ));
+
+        await doctor({});
+
+        const printed = consoleSpy.mock.calls.map(([line]) => String(line));
+        expect(log.info).toHaveBeenCalledWith('Member settings:');
+        expect(printed).toContain(`  ai.tool: codex, from the user config ${machineFile()}, also this machine's`);
+        expect(printed).toContain(`  recallEnabled: true, from the user config ${machineFile()}, also this machine's (the team says false)`);
+        expect(printed.filter((line) => line.startsWith('  contributeHintEnabled:'))).toEqual([]);
+    });
+
+    it('names the machine config in the usage-reporting note when only this machine turns reporting off', async () => {
+        // A workspace load overlays the machine's usageReportEnabled, and keeps what its own file set.
+        const workspace = { ...mockLocalConfig, scope: 'project', projectRoot: '/tmp/ws', dataHome: '/tmp/ws-data', usageReportEnabled: false, memberSettingsOverlay: { local: {} } };
+        mockedDetectProjectConfig.mockResolvedValue(workspace);
+        onTestFinished(() => { mockedDetectProjectConfig.mockResolvedValue(null); });
+
+        await doctor({ json: true });
+
+        const report = JSON.parse(String(consoleSpy.mock.calls.at(-1)?.[0])) as DoctorReport;
+        expect(report.notes).toContain(`Usage reporting: off, from usageReportEnabled: false in the machine config ${machineFile()}.`);
     });
 });
