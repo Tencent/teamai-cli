@@ -458,6 +458,25 @@ describe('teamai score --drain', () => {
     expect(onReports(origin, 'sessions').filter((file) => file.endsWith('.jsonl'))).toHaveLength(1);
   });
 
+  it('says the cause ssh gives when it cannot publish, in one sentence', async () => {
+    const { config } = await team();
+    capturedSession(SESSION, 'unattended');
+    fakeClaude();
+    vi.stubEnv('CI', 'true');
+    const ssh = path.join(root, 'bin', 'ssh-denied');
+    fs.writeFileSync(ssh, '#!/bin/sh\necho "git@example.invalid: Permission denied (publickey)." >&2\nexit 255\n', { mode: 0o755 });
+    vi.stubEnv('GIT_SSH_COMMAND', ssh);
+    execFileSync('git', ['-C', config.repo.localPath, 'config', 'remote.origin.pushurl', 'git@example.invalid:acme/team.git']);
+
+    const failed = await drain();
+
+    expect(failed.code, failed.lines.join('\n')).toBe(1);
+    expect(failed.lines.filter((printed) => printed.startsWith('✖ Could not publish'))).toEqual([
+      '✖ Could not publish 1 label and 1 session to teamai-reports: git@example.invalid: Permission denied (publickey).; fatal: Could not read from remote repository.; '
+        + 'Please make sure you have the correct access rights; and the repository exists. They stay pending; run teamai score --drain again.',
+    ]);
+  });
+
   it('says once that another process is writing teamai-reports, for labels and sessions alike', async () => {
     const { config } = await team();
     capturedSession(SESSION, 'unattended');

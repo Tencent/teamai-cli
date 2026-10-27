@@ -24,7 +24,7 @@ describe('failureReason', () => {
     );
   });
 
-  it('keeps the cause ssh gives for a push it could not make', () => {
+  it('keeps the cause ssh gives for a push it could not make, as a clause the caller ends', () => {
     const denied = [
       'git@example.invalid: Permission denied (publickey).',
       'fatal: Could not read from remote repository.',
@@ -35,7 +35,7 @@ describe('failureReason', () => {
     ].join('\n');
 
     expect(failureReason(new Error(denied))).toBe(
-      'git@example.invalid: Permission denied (publickey).; fatal: Could not read from remote repository.; Please make sure you have the correct access rights; and the repository exists.',
+      'git@example.invalid: Permission denied (publickey).; fatal: Could not read from remote repository.; Please make sure you have the correct access rights; and the repository exists',
     );
   });
 

@@ -236,7 +236,8 @@ function unpublishedText(unpublished: readonly Unpublished[]): string {
     sessions > 0 ? plural({ count: sessions, one: 'session', many: 'sessions' }) : '',
   ].filter(Boolean);
   const what = kinds.length > 1 ? `${kinds.slice(0, -1).join(', ')} and ${kinds.at(-1)}` : kinds.join('');
-  const reasons = [...new Set(unpublished.map((entry) => entry.reason))].join('; ');
+  // A reason can end a sentence of its own, as the cause ssh gives does.
+  const reasons = [...new Set(unpublished.map((entry) => entry.reason.replace(/\.$/, '')))].join('; ');
   return `Could not publish ${what} to teamai-reports: ${reasons}. ${runRecords + labels + sessions === 1 ? 'It stays' : 'They stay'} pending; run teamai score --drain again.`;
 }
 
