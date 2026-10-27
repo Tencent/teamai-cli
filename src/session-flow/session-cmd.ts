@@ -56,18 +56,18 @@ import {
 } from './session-cmd-shared.js';
 
 /**
- * The sessions of `identities` that the archives at `roots` hold, read in that order: a session a later archive also
- * holds, under the same repository, name and author, is kept from the first.
+ * The sessions of `identities` that the archive at `root` holds, then those the archive kept on the default branch
+ * before, at `legacy`, holds: a session both hold, under the same repository, name and author, is kept from `root`.
  */
 function archivedSessions(
-  roots: readonly string[],
+  { root, legacy }: { root: string; legacy?: string },
   identities: (archive: SyncManager) => Array<string | null>,
   author?: string,
 ): Array<{ archive: SyncManager; identity: string | null; entry: IndexEntry }> {
   const seen = new Set<string>();
   const found: Array<{ archive: SyncManager; identity: string | null; entry: IndexEntry }> = [];
-  for (const root of roots) {
-    const archive = new SyncManager(root);
+  for (const archiveRoot of [root, ...(legacy ? [legacy] : [])]) {
+    const archive = new SyncManager(archiveRoot);
     for (const identity of identities(archive)) {
       for (const entry of archive.listSessions(identity, author)) {
         const key = JSON.stringify([identity, entry.sessionName, entry.author]);
@@ -448,12 +448,12 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
     .option('--all', 'List sessions across all projects in the team repo (not just the current one)')
     .action(async (opts) => {
       const workCwd = opts.cwd ?? process.cwd();
-      const { root: repoRoot, legacy } = await resolveRepoRoot(opts.repoRoot, { dryRun: isDryRun(), read: true });
+      const archives = await resolveRepoRoot(opts.repoRoot, { dryRun: isDryRun(), read: true });
       const repoIdentity = resolveRepoIdentity(workCwd);
 
       // P2: --all uses the cross-repo view (including _unattributed); each entry's repoIdentity marks the source
       const sessions = archivedSessions(
-        [repoRoot, ...(legacy ? [legacy] : [])],
+        archives,
         (archive) => (opts.all ? archive.listAllRepoIdentities() : [repoIdentity]),
         opts.author,
       ).map(({ identity, entry }) => ({ ...entry, repoIdentity: entry.repoIdentity ?? identity }));
@@ -514,13 +514,13 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
         return;
       }
       const workCwd = opts.cwd ?? process.cwd();
-      const { root: repoRoot, legacy } = await resolveRepoRoot(opts.repoRoot, { dryRun: isDryRun(), read: true });
+      const archives = await resolveRepoRoot(opts.repoRoot, { dryRun: isDryRun(), read: true });
       const repoIdentity = resolveRepoIdentity(workCwd);
 
       // A session teamai-reports does not hold is read from the archive the team kept on its default branch before.
-      const [held] = archivedSessions([repoRoot, ...(legacy ? [legacy] : [])], () => [repoIdentity], opts.author)
+      const [held] = archivedSessions(archives, () => [repoIdentity], opts.author)
         .filter(({ entry }) => entry.sessionName === sessionName);
-      const syncMgr = held?.archive ?? new SyncManager(repoRoot);
+      const syncMgr = held?.archive ?? new SyncManager(archives.root);
       // Without try/catch, a loadSession error on resume hits the terminal as an uncaught exception.
       // The usual root cause is that the session was archived under another project name (repoIdentity mismatch).
       // Give an actionable hint instead of a raw stack trace (see design doc P9).
@@ -582,7 +582,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
     .option('--all', 'Search across all projects (not just current)')
     .action(async (query, opts) => {
       const workCwd = opts.cwd ?? process.cwd();
-      const { root: repoRoot, legacy } = await resolveRepoRoot(opts.repoRoot, { dryRun: isDryRun(), read: true });
+      const archives = await resolveRepoRoot(opts.repoRoot, { dryRun: isDryRun(), read: true });
       const repoIdentity = resolveRepoIdentity(workCwd);
       const limitRaw = parseInt(opts.limit, 10);
       const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : 10;
@@ -594,7 +594,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
       // returns encoded directory names and has no decoder, so the canonical identity can only be
       // recovered from each repo's _index.json (see SyncManager.listAllRepoIdentities).
       const found = archivedSessions(
-        [repoRoot, ...(legacy ? [legacy] : [])],
+        archives,
         (archive) => (opts.all ? archive.listAllRepoIdentities() : [repoIdentity]),
       );
       for (const { archive, identity, entry } of found) {
