@@ -1,3 +1,5 @@
+import { scorersClient } from './scorers-client.js';
+
 /** Browser application, embedded in the standalone dashboard HTML by tsup. */
 export const dashboardClient = `(() => {
 'use strict';
@@ -11,7 +13,7 @@ const t = text => language === 'zh-CN' ? (Object.hasOwn(messages,text) ? message
 const e = value => String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 const label = text => e(t(text));
 const escapeHtml = e;
-const pageNames = { overview: 'Overview', execution: 'Team Execution', workflows: 'Workflow Runs', context: 'Team Context', resources: 'Resources', distribution: 'Distribution', improvement: 'Team Improvement' };
+const pageNames = { overview: 'Overview', execution: 'Team Execution', workflows: 'Workflow Runs', scorers: 'Scorers', context: 'Team Context', resources: 'Resources', distribution: 'Distribution', improvement: 'Team Improvement' };
 const statusNames = { running:'Working', waiting_for_input:'Your turn', error:'Error', idle:'Idle', stopped:'Ended' };
 let page = Object.hasOwn(pageNames,location.hash.slice(1)) ? location.hash.slice(1) : 'overview';
 let sessions = [], haveSessions = false, connected = false, trends = null, kb = null;
@@ -29,7 +31,7 @@ function workspaceLabel(w) { return w.scope==='user'?label('User scope'):w.scope
 function workspaceOptions() { $('workspace').innerHTML='<button><selectedcontent></selectedcontent></button>'+workspaces.map(w=>'<option value="'+e(w.id)+'">'+workspaceLabel(w)+'</option>').join('');$('workspace').value=workspaceId;const w=workspaces.find(w=>w.id===workspaceId);$('workspace-root').textContent=w?w.root:''; }
 const icons = {
  overview:'<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
- execution:'<path d="M4 12h4l3-8 4 16 3-8h3"/>',workflows:'<circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="12" r="2.5"/><path d="M8.5 6h2a4 4 0 0 1 4 4v.5M8.5 18h2a4 4 0 0 0 4-4v-.5"/>',context:'<path d="M4 4h6l2 2 2-2h6v15h-6l-2 2-2-2H4zM12 6v15"/>',resources:'<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>',distribution:'<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 13.5l6.8 4M15.4 6.5l-6.8 4"/>',improvement:'<path d="M4 17l6-6 4 3 6-10M14 4h6v6"/>'
+ execution:'<path d="M4 12h4l3-8 4 16 3-8h3"/>',workflows:'<circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="12" r="2.5"/><path d="M8.5 6h2a4 4 0 0 1 4 4v.5M8.5 18h2a4 4 0 0 0 4-4v-.5"/>',scorers:'<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/><path d="M14.5 7.5l2 2 4-4"/>',context:'<path d="M4 4h6l2 2 2-2h6v15h-6l-2 2-2-2H4zM12 6v15"/>',resources:'<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>',distribution:'<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 13.5l6.8 4M15.4 6.5l-6.8 4"/>',improvement:'<path d="M4 17l6-6 4 3 6-10M14 4h6v6"/>'
 };
 const icon = key => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">'+icons[key]+'</svg>';
 const link = (key, text) => '<button class="link" data-page="'+key+'">'+label(text)+' →</button>';
@@ -269,6 +271,7 @@ function localizeReport() {
   if(messages[text]) node.nodeValue=node.nodeValue.replace(text,t(text));
  }
 }
+${scorersClient}
 function render() {
  const focus=document.activeElement;
  const focusKey=focus?.dataset.session, retryKey=focus?.dataset.retry, runFocus=focus?.dataset.run;
@@ -276,7 +279,7 @@ function render() {
  $('nav').innerHTML=Object.keys(pageNames).map(key=>'<button data-page="'+key+'" class="'+(page===key?'active':'')+'" '+(page===key?'aria-current="page"':'')+'>'+icon(key)+label(pageNames[key])+'</button>').join('');
  $('title').textContent=t(pageNames[page]);$('crumb').textContent=t(pageNames[page]);
  document.querySelector('.filters').hidden=page!=='execution';
- $('view').innerHTML=({overview,execution,workflows:workflowRuns,context:knowledge,resources,distribution,improvement})[page]();tickRunDurations();
+ $('view').innerHTML=({overview,execution,workflows:workflowRuns,scorers:scorersPage,context:knowledge,resources,distribution,improvement})[page]();tickRunDurations();
  localizeReport();connection();
  document.querySelectorAll('#kb-content details').forEach(d=>{if(opened.includes([...d.parentElement.children].indexOf(d)))d.open=true;});
  if(focusKey) [...document.querySelectorAll('[data-session]')].find(el=>el.dataset.session===focusKey)?.focus({preventScroll:true});
@@ -461,7 +464,7 @@ document.addEventListener('click',event=>{
  if(run)showRun(run.dataset.runSource,run.dataset.run);
  if(answer)answerGate(answer.dataset.answerStep,answer.dataset.answerPass,answer.dataset.answerChoice);
  if(event.target.closest('[data-close]'))$('session-dialog').close();
- if(retry){if(retry.dataset.retry==='trends')loadTrends();else if(retry.dataset.retry==='kb')loadKb();else if(retry.dataset.retry==='rules')loadRules();else if(retry.dataset.retry==='skills')loadSkills();else if(retry.dataset.retry==='distribution')loadDistribution();else if(retry.dataset.retry==='workflows')loadWorkflows();else if(retry.dataset.retry==='run')loadRunDetail();else{eventSource?.close();clearTimeout(reconnectTimer);connect();}}
+ if(retry){if(retry.dataset.retry==='trends')loadTrends();else if(retry.dataset.retry==='kb')loadKb();else if(retry.dataset.retry==='rules')loadRules();else if(retry.dataset.retry==='skills')loadSkills();else if(retry.dataset.retry==='distribution')loadDistribution();else if(retry.dataset.retry==='workflows')loadWorkflows();else if(retry.dataset.retry==='run')loadRunDetail();else if(retry.dataset.retry==='scorers'){scorerError='';loadScorers();}else{eventSource?.close();clearTimeout(reconnectTimer);connect();}}
  if(event.target.closest('[data-preview-button]'))previewSelection();
  if(event.target.closest('[data-save-button]'))saveSelection();
 });
@@ -475,6 +478,7 @@ function switchWorkspace(id) {
  rules=null;rulesError=false;rulesLoading=false;
  dist=null;distError=false;distLoading=false;distDraft=null;preview=null;previewError='';previewing=false;saving=false;saveError='';savedNote='';
  workflows=null;workflowsHtml='';workflowsError=false;workflowsLoading=false;runKey=null;runDetail=null;answering='';answerError='';
+ resetScorers();
  skills=null;skillsError=false;skillsLoading=false;skillBusy='';skillFilterDelivery='';skillFilterNamespace='';skillFilterAgent='';
  $('repo').value='';$('agent').value='';workspaceOptions();filters();render();connect();loadTrends();loadKb();loadRules();loadSkills();
 }

@@ -1,0 +1,121 @@
+/**
+ * The Scorers page of the dashboard client (#1182), embedded in `dashboardClient`'s closure, whose helpers it uses:
+ * `$`, `e`, `t`, `label`, `number`, `when`, `json`, `apiQuery`, `errorPanel`, `render`, `page` and `workspaceGeneration`.
+ * Every value from the API is escaped with `e`. A workflow row opens its run through the Workflow Runs dialog.
+ */
+export const scorersClient = `
+let scorerData=null, scorerError='', scorerLoading=false, scorerHtml='', scorerGroup='';
+const scorerWindows=['7','30','90','180'];
+const scorerDimensions={tool:'Tool',model:'Model',teamRevision:'Team revision',definition:'Agent definition',role:'Role',project:'Project',tag:'Tag',fingerprint:'Fingerprint',skill:'Skill used'};
+const savedWindow=read('teamai-dashboard-scorer-window','30'), savedGroup=read('teamai-dashboard-scorer-group','');
+let scorerQuery={window:scorerWindows.includes(savedWindow)?savedWindow:'30',scorer:'',cohort:'',groupBy:Object.hasOwn(scorerDimensions,savedGroup)?savedGroup:'',commit:''};
+function resetScorers(){scorerData=null;scorerError='';scorerLoading=false;scorerHtml='';scorerGroup='';scorerQuery={...scorerQuery,scorer:'',cohort:'',commit:''};}
+const pct=rate=>rate==null?'—':number(Math.round(rate*100))+'%';
+const short=hash=>e(String(hash||'').slice(0,7));
+function judgeText(j){ if(j.kind==='human')return label('Hand label'); return '<span data-verbatim>'+e(j.tool)+'</span> / '+(j.model?'<span data-verbatim>'+e(j.model.id)+'</span>'+(j.model.reported?'':' <small>'+label('requested')+'</small>')+(j.model.alias?' <small data-verbatim>'+e(j.model.alias)+'</small>':''):label('model not recorded')); }
+function runModeText(mode){ return mode==='attended'?label('Attended'):mode==='unattended'?label('Unattended'):label('Not recorded'); }
+function rubricText(c){ return label('Rubric')+' <span title="'+e(c.rubric.sourceHash)+'" data-verbatim>'+short(c.rubric.sourceHash)+'</span>'+(c.rubric.teamRevision?' · '+label('Team revision')+' <span title="'+e(c.rubric.teamRevision)+'" data-verbatim>'+short(c.rubric.teamRevision)+'</span>':' · <span class="amber">'+label('No team revision')+'</span>'); }
+function cohortText(c){ return rubricText(c)+' · '+(c.source==='session'?label('Session labels'):label('Workflow labels'))+' · '+runModeText(c.runMode)+' · '+judgeText(c.judge); }
+function sparkline(weeks){
+ if(!weeks||!weeks.length)return '';
+ const w=Math.max(1,weeks.length-1), points=weeks.map((week,i)=>week.rate==null?null:(i/w*96+2).toFixed(1)+','+(26-week.rate*22).toFixed(1));
+ const runs=[]; let current=[]; for(const p of points){ if(p===null){ if(current.length)runs.push(current); current=[]; } else current.push(p); } if(current.length)runs.push(current);
+ return '<svg class="spark" viewBox="0 0 100 28" preserveAspectRatio="none" aria-hidden="true">'+runs.map(run=>run.length===1?'<circle cx="'+run[0].split(',')[0]+'" cy="'+run[0].split(',')[1]+'" r="1.8"/>':'<polyline points="'+run.join(' ')+'"/>').join('')+'</svg>';
+}
+function trendChart(weeks){
+ const bar=36, gap=10, height=120, width=weeks.length*(bar+gap);
+ const every=Math.max(1,Math.ceil(weeks.length/8));
+ return '<div class="trend-chart"><svg viewBox="0 0 '+width+' '+(height+34)+'" role="img" aria-label="'+e(t('Weekly pass rate'))+'">'
+  +[0,0.5,1].map(y=>'<line class="grid" x1="0" x2="'+width+'" y1="'+(10+(1-y)*height)+'" y2="'+(10+(1-y)*height)+'"/>').join('')
+  +weeks.map((week,i)=>{const x=i*(bar+gap)+gap/2; const tip=e(week.week)+': '+(week.rate==null?e(t('No labels')):pct(week.rate)+' · '+number(week.passed)+'/'+number(week.n));
+   const shape=week.rate==null?'<rect class="gap" x="'+x+'" y="10" width="'+bar+'" height="'+height+'" rx="3"/>':'<rect class="bar'+(week.rate<0.5?' low':'')+'" x="'+x+'" y="'+(10+(1-week.rate)*height)+'" width="'+bar+'" height="'+Math.max(2,week.rate*height)+'" rx="3"/><text x="'+(x+bar/2)+'" y="'+Math.max(9,4+(1-week.rate)*height)+'" class="value">'+pct(week.rate)+'</text>';
+   return '<g><title>'+tip+'</title>'+shape+(i%every===0?'<text x="'+(x+bar/2)+'" y="'+(height+28)+'" class="axis">'+e(week.week.slice(5))+'</text>':'')+'</g>';}).join('')
+  +'</svg><p class="label">'+label('Weeks start on Monday, UTC. A dashed week had no labels: it is a gap, not 0%.')+'</p></div>';
+}
+function kpis(stats, split){
+ const card=(title, value, foot)=>'<article class="card kpi"><div class="cardtop">'+title+'</div><div class="big">'+value+'</div>'+(foot?'<div class="statusline">'+foot+'</div>':'')+'</article>';
+ return '<div class="kpis">'+card(label('Pass rate'),pct(stats.rate),number(stats.n)+' '+label('labels'))+card(label('Passed'),'<span class="good">'+number(stats.passed)+'</span>')+card(label('Failed'),'<span class="amber">'+number(stats.failed)+'</span>')
+  +(split?card(label('After the commit'),pct(split.after.rate),number(split.after.n)+' '+label('labels')+' · '+label('Before')+' '+pct(split.before.rate)+' ('+number(split.before.n)+')'+(split.after.rate!=null&&split.before.rate!=null?' · <b class="'+(split.after.rate>=split.before.rate?'good':'amber')+'">'+(split.after.rate>=split.before.rate?'+':'')+number(Math.round((split.after.rate-split.before.rate)*100))+' '+label('pts')+'</b>':'')):'')+'</div>';
+}
+function meter(rate){ return '<span class="meter" aria-hidden="true"><span style="width:'+(rate==null?0:Math.round(rate*100))+'%"></span></span>'; }
+function groupName(g){ if(g.kind==='none')return label('None'); if(g.kind==='not recorded')return '<span class="muted">'+label('Not recorded')+'</span>'; const long=['teamRevision','fingerprint'].includes(scorerData.selected.groupBy); return '<span data-verbatim title="'+e(g.value)+'">'+(long?short(g.value):e(g.value))+'</span>'+(g.reported===false?' <small>'+label('requested')+'</small>':'')+(g.localChanges?' <small class="amber">'+label('local changes')+'</small>':''); }
+function groupsPanel(sel){
+ if(!sel.groups)return '';
+ const split=!!sel.split;
+ const heads=['VALUE','LABELS','PASSED','FAILED','PASS RATE'].concat(split?['BEFORE','AFTER','NOT RECORDED']:[]);
+ return '<section class="panel sessions"><div class="panelhead"><h2>'+label('By')+' '+label(scorerDimensions[sel.groupBy])+' <span class="count">'+number(sel.groups.length)+'</span></h2><span class="label">'+label('A label that lists two values counts under both. Select a row to list its failing labels.')+'</span></div><div class="table-scroll"><table class="session-table scorer-groups"><thead><tr>'+heads.map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'
+  +sel.groups.map(g=>'<tr class="'+(scorerGroup===g.key?'selected-row':'')+'"><td><button class="link" data-scorer-group="'+e(g.key)+'" aria-pressed="'+(scorerGroup===g.key)+'">'+groupName(g)+'</button></td><td>'+number(g.stats.n)+'</td><td>'+number(g.stats.passed)+'</td><td>'+number(g.stats.failed)+'</td><td>'+meter(g.stats.rate)+' '+pct(g.stats.rate)+'</td>'+(split?['before','after','notRecorded'].map(side=>'<td>'+pct(g.split[side].rate)+' <small>'+number(g.split[side].n)+'</small></td>').join(''):'')+'</tr>').join('')
+  +'</tbody></table></div></section>';
+}
+function failingPanel(sel){
+ const rows=scorerGroup?sel.failing.filter(r=>(r.groups||[]).includes(scorerGroup)):sel.failing;
+ const subject=r=>r.run?'<button class="link" data-run="'+e(r.run.id)+'" data-run-source="'+e(r.run.source)+'"><span data-verbatim>'+e(r.run.id)+'</span> ↗</button><small data-verbatim>'+e(r.run.step)+' #'+e(r.run.pass)+'</small>'
+  :(r.sessionName?'<code class="command" data-verbatim>teamai session resume '+e(r.sessionName)+'</code>':'<span class="muted">'+label('Not pushed to the team archive')+'</span>');
+ return '<section class="panel sessions"><div class="panelhead"><h2>'+label('Failing labels')+' <span class="count">'+number(rows.length)+'</span></h2>'+(scorerGroup?'<button class="link" data-scorer-group="">'+label('Show every group')+'</button>':'<span class="label">'+label('Newest first')+'</span>')+'</div>'
+  +(rows.length?'<div class="table-scroll"><table class="session-table"><thead><tr>'+['SCORED','AUTHOR','LABEL','PLATFORM','SKILLS','OPEN'].map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'
+  +rows.map(r=>'<tr><td>'+e(when(r.scoredAt))+'</td><td data-verbatim>'+e(r.author)+'</td><td class="amber" data-verbatim>'+e(r.label)+'</td><td data-verbatim>'+e(r.platform||(r.run?t('Workflow run'):'—'))+'</td><td>'+(r.skills?r.skills.map(s=>'<span class="tag" data-verbatim>'+e(s)+'</span>').join(' '):'—')+'</td><td>'+subject(r)+'</td></tr>').join('')
+  +'</tbody></table></div>':'<div class="empty"><p>'+label('No failing labels in this window.')+'</p></div>')+'</section>';
+}
+function remindersPanel(sel){
+ if(!sel.reminders)return '';
+ return '<section class="panel sessions"><div class="panelhead"><h2>'+label('Friction reminder')+'</h2><span class="tag">'+label('Sessions run on this machine')+'</span></div><div class="table-scroll"><table class="session-table"><thead><tr>'+['REMINDER FIRED','SESSIONS','LABELLED','PASSED'].map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'
+  +sel.reminders.map(r=>'<tr><td>'+(r.reminder==='yes'?label('Yes'):r.reminder==='no'?label('No'):label('Not recorded'))+'</td><td>'+number(r.sessions)+'</td><td>'+number(r.labelled)+'</td><td>'+(r.rate==null?'—':meter(r.rate)+' '+pct(r.rate))+'</td></tr>').join('')
+  +'</tbody></table></div><p class="hint">'+label('Sessions are your own sessions that started on this machine in the window. The pass rate is over labelled sessions only. A session with no reminder state here is not recorded.')+'</p></section>';
+}
+function scorerSummary(data){
+ return '<section class="panel sessions"><div class="panelhead"><h2>'+label('Scorers')+' <span class="count">'+number(data.scorers.length)+'</span></h2><span class="label">'+label('Each scorer opens on its newest committed rubric.')+'</span></div><div class="table-scroll"><table class="session-table"><thead><tr>'+['SCORER','MEASUREMENT','LABELS','PASS RATE','TREND'].map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'
+  +data.scorers.map(s=>{const c=s.cohorts.find(c=>c.id===s.defaultCohort)||s.cohorts[0]; const selected=data.selected&&data.selected.cohort.scorer===s.scorer; return '<tr class="'+(selected?'selected-row':'')+'"><td><button class="link" data-scorer="'+e(s.scorer)+'" aria-pressed="'+selected+'" data-verbatim>'+e(s.scorer)+'</button><small>'+number(s.cohorts.length)+' '+(s.cohorts.length===1?label('measurement'):label('measurements'))+'</small></td><td><small>'+cohortText(c)+'</small></td><td>'+number(c.stats.n)+'</td><td>'+meter(c.stats.rate)+' '+pct(c.stats.rate)+'</td><td>'+sparkline(c.trend)+'</td></tr>';}).join('')
+  +'</tbody></table></div></section>';
+}
+function scorerControls(data){
+ const sel=data.selected;
+ return '<form class="scorer-controls" data-scorer-form>'
+  +'<label>'+label('Window')+'<select id="scorer-window">'+scorerWindows.map(w=>'<option value="'+w+'"'+(scorerQuery.window===w?' selected':'')+'>'+number(Number(w))+' '+label('days')+'</option>').join('')+'</select></label>'
+  +'<label>'+label('Group by')+'<select id="scorer-group"><option value="">'+label('No grouping')+'</option>'+Object.keys(scorerDimensions).map(k=>'<option value="'+k+'"'+(scorerQuery.groupBy===k?' selected':'')+'>'+label(scorerDimensions[k])+'</option>').join('')+'</select></label>'
+  +'<label>'+label('Split at team commit')+'<span class="inline"><input id="scorer-commit" name="commit" autocomplete="off" spellcheck="false" placeholder="'+e(t('commit SHA'))+'" value="'+e(scorerQuery.commit)+'" pattern="[0-9a-fA-F]{4,64}"><button class="primary" type="submit">'+label('Split')+'</button>'+(scorerQuery.commit?'<button class="ghost" type="button" data-scorer-clear>'+label('Clear')+'</button>':'')+'</span></label>'
+  +'</form>'
+  +(sel?'<div class="cohorts" role="group" aria-label="'+e(t('Measurements'))+'">'+data.scorers.find(s=>s.scorer===sel.cohort.scorer).cohorts.map(c=>'<button class="chip'+(c.id===sel.cohort.id?' active':'')+'" data-cohort="'+e(c.id)+'" aria-pressed="'+(c.id===sel.cohort.id)+'">'+cohortText(c)+' <b>'+number(c.stats.n)+'</b></button>').join('')+'</div>':'');
+}
+function scorersPage(){
+ if(page==='scorers'&&!scorerData&&!scorerLoading&&!scorerError)loadScorers();
+ if(scorerError&&!scorerData)return errorPanel(scorerError,'scorers');
+ if(!scorerData)return '<div class="empty" role="status">'+label('Loading scorer results…')+'</div>';
+ if(!scorerData.configured)return '<section class="panel"><div class="empty"><h2>'+label('No TeamAI scope in this workspace')+'</h2><p>'+label('Pick a project workspace above, or set one up with teamai init.')+'</p></div></section>';
+ const sel=scorerData.selected, w=scorerData.window;
+ const note='<p class="label scorer-note">'+label('Labels from sessions and workflow runs show how the tools did on the work that came along. To compare tools, models or team assets on the same tasks, run a benchmark.')+'</p>';
+ if(!scorerData.scorers.length)return '<section class="panel"><div class="empty"><h2>'+label('No score labels yet')+'</h2><p>'+label('Labels appear here once a workflow scorer or teamai score labels work and the labels reach teamai-reports.')+'</p></div></section>'+note;
+ return (scorerError?'<div class="error-panel" role="alert"><p>'+e(scorerError)+'</p></div>':'')
+  +'<div class="statusline"><span>'+label('Window')+': '+e(when(w.from))+' – '+e(when(w.to))+'</span><span>'+label('Counted by when labels were scored, not when the work happened.')+'</span><span>'+label('Pass or fail as each label stored it.')+'</span></div>'
+  +scorerSummary(scorerData)+scorerControls(scorerData)
+  +(sel?'<h2 class="section-label"><span data-verbatim>'+e(sel.cohort.scorer)+'</span> <span class="tag">'+(sel.cohort.source==='session'?label('Session labels'):label('Workflow labels'))+'</span></h2>'+kpis(sel.headline,sel.split)
+   +'<section class="panel trend-panel"><div class="panelhead"><h2>'+label('Weekly pass rate')+'</h2><span class="label">'+cohortText(sel.cohort)+'</span></div>'+trendChart(sel.trend)+'</section>'
+   +(sel.split?'<p class="label">'+label('Split at')+' <span data-verbatim title="'+e(sel.split.commit)+'">'+short(sel.split.commit)+'</span>: '+label('After means the team revision contains the commit, checked in this machine\\'s team clone. A label on a revision this clone does not have is not recorded.')+' '+label('Not recorded')+': '+number(sel.split.notRecorded.n)+'</p>':'')
+   +groupsPanel(sel)+failingPanel(sel)+remindersPanel(sel):'')
+  +note;
+}
+async function loadScorers(){
+ if(scorerLoading)return; const generation=workspaceGeneration; scorerLoading=true;
+ const params={window:scorerQuery.window}; for(const key of ['scorer','cohort','groupBy','commit'])if(scorerQuery[key])params[key]=scorerQuery[key];
+ try{
+  const response=await fetch(apiQuery('/api/scorers',params),{signal:AbortSignal.timeout(30000)});
+  const data=await response.json().catch(()=>null);
+  if(generation!==workspaceGeneration)return;
+  if(!response.ok){scorerError=data&&data.error?data.error:t('Could not load scorer results.');}
+  else{scorerData=data;scorerError='';if(data.selected){scorerQuery.scorer=data.selected.cohort.scorer;scorerQuery.cohort=data.selected.cohort.id;}if(!data.selected||!data.selected.groups)scorerGroup='';}
+ }catch{if(generation===workspaceGeneration)scorerError=t('Could not load scorer results.');}
+ finally{if(generation===workspaceGeneration){scorerLoading=false;if(page==='scorers'){const html=scorersPage();if(html!==scorerHtml){scorerHtml=html;render();}}}}
+}
+function setScorerQuery(changes){ scorerQuery={...scorerQuery,...changes}; save('teamai-dashboard-scorer-window',scorerQuery.window); save('teamai-dashboard-scorer-group',scorerQuery.groupBy); scorerGroup=''; loadScorers(); }
+document.addEventListener('change',event=>{
+ if(event.target.id==='scorer-window')setScorerQuery({window:event.target.value});
+ else if(event.target.id==='scorer-group')setScorerQuery({groupBy:event.target.value});
+});
+document.addEventListener('submit',event=>{ if(!event.target.closest('[data-scorer-form]'))return; event.preventDefault(); setScorerQuery({commit:$('scorer-commit').value.trim()}); });
+document.addEventListener('click',event=>{
+ const scorer=event.target.closest('[data-scorer]'), cohort=event.target.closest('[data-cohort]'), group=event.target.closest('[data-scorer-group]');
+ if(scorer)setScorerQuery({scorer:scorer.dataset.scorer,cohort:''});
+ else if(cohort)setScorerQuery({cohort:cohort.dataset.cohort});
+ else if(group){scorerGroup=scorerGroup===group.dataset.scorerGroup?'':group.dataset.scorerGroup;scorerHtml='';render();}
+ else if(event.target.closest('[data-scorer-clear]'))setScorerQuery({commit:''});
+});
+`;

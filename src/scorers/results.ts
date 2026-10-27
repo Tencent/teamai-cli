@@ -40,7 +40,8 @@ export type Cohort = {
 /** Labels counted together. `rate` is null when there are none: no labels is a gap, never 0%. */
 export type Stats = { n: number; passed: number; failed: number; rate: number | null };
 
-export type CohortSummary = Cohort & { stats: Stats; lastScoredAt: string };
+/** A cohort with its counts over the window and its weekly trend. */
+export type CohortSummary = Cohort & { stats: Stats; trend: TrendWeek[]; lastScoredAt: string };
 
 export type ScorerSummary = { scorer: string; defaultCohort: string; cohorts: CohortSummary[] };
 
@@ -345,6 +346,7 @@ export const ScorerResults = {
         ...cohort,
         rubric: { sourceHash: cohort.rubric.sourceHash, ...(teamRevision ? { teamRevision } : {}) },
         stats: stats(all.filter(inWindow)),
+        trend: trend(all.filter(inWindow), from, to),
         lastScoredAt: newest(all),
       };
       byScorer.set(cohort.scorer, [...byScorer.get(cohort.scorer) ?? [], { summary, all }]);

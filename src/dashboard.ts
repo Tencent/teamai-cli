@@ -297,6 +297,44 @@ export async function startDashboard(port?: number): Promise<void> {
     }
   };
 
+  // Scorer results (#1182). Like the team run history, the reports checkout is refreshed from origin at most once per
+  // TTL; the page asks again on every change of scorer, cohort, window, grouping or commit.
+  const scorersRefreshed = new Map<string, number>();
+  const handleScorers = async (req: http.IncomingMessage, res: http.ServerResponse, url: URL, workspace: DashboardWorkspace | undefined) => {
+    const json = (status: number, body: unknown) => {
+      res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify(body));
+    };
+    if (url.pathname !== '/api/scorers') {
+      json(404, { error: 'Not supported.' });
+      return;
+    }
+    if (req.method !== 'GET') {
+      json(405, { error: 'Not supported.' });
+      return;
+    }
+    if (!workspace?.config) {
+      json(200, { configured: false });
+      return;
+    }
+    try {
+      const { parseScorerQuery, scorerResults } = await import('./dashboard/scorers.js');
+      const query = parseScorerQuery(url.searchParams);
+      const refresh = Date.now() - (scorersRefreshed.get(workspace.id) ?? 0) > KB_SUMMARY_TTL_MS;
+      const events = await scopedEvents(workspace.id);
+      const view = await scorerResults({ config: workspace.config, query, events, refresh });
+      if (refresh) scorersRefreshed.set(workspace.id, Date.now());
+      json(200, { configured: true, ...view });
+    } catch (e) {
+      if (e instanceof HttpError) {
+        json(e.status, { error: e.message });
+        return;
+      }
+      log.debug(`dashboard: ${url.pathname} failed: ${(e as Error).message}`);
+      json(500, { error: 'Failed to load scorer results.' });
+    }
+  };
+
   const handleRequest = async (req: http.IncomingMessage, res: http.ServerResponse) => {
     const url = new URL(req.url ?? '/', `http://localhost:${serverPort}`);
 
@@ -417,6 +455,11 @@ export async function startDashboard(port?: number): Promise<void> {
 
     if (url.pathname === '/api/workflows' || url.pathname.startsWith('/api/workflows/')) {
       await handleWorkflows(req, res, url, workspace);
+      return;
+    }
+
+    if (url.pathname === '/api/scorers' || url.pathname.startsWith('/api/scorers/')) {
+      await handleScorers(req, res, url, workspace);
       return;
     }
 
