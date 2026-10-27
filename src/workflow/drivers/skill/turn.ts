@@ -225,7 +225,8 @@ function refusalNext(refusal: Refusal, context: { invocation: Invocation; same: 
     case 'not_skill_run':
       return skillResumeLiteral(invocation, refusal.run, { tool: refusal.toolNamed ? undefined : '{tool}' });
     case 'tool_needed':
-      return skillResumeLiteral(invocation, refusal.run, { tool: '{tool}' });
+      // The claim the refused call made stands.
+      return skillResumeLiteral(invocation, refusal.run, { ...refusal.answers, noJudge: refusal.answers.judge === false, confirmed: refusal.confirmed, tool: '{tool}' });
     case 'not_owner':
     case 'run_not_found':
       return skillResumeLiteral(invocation, refusal.run, { claim: true, tool: context.tool });

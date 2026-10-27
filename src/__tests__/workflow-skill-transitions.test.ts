@@ -1053,6 +1053,10 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       } };
       expect(await made.call({ kind: 'resume', run, claim: false, confirmed: false, answers: {} })).toEqual(refused);
       expect(await made.call({ kind: 'takeover', run, confirmed: false })).toEqual(refused);
+      // The next keeps the options of the resume it refuses.
+      expect(await made.call({ kind: 'resume', run, claim: false, confirmed: true, answers: { parallel: 2, hitl: 'auto-approve' } })).toMatchObject({ error: {
+        code: 'tool_needed', next: `teamai workflow resume ${run} --driver skill --tools default='{tool}' --parallel 2 --auto-approve --confirmed`,
+      } });
       expect(await turnOf(await made.call({ kind: 'resume', run, claim: false, confirmed: false, answers: {}, tool: 'claude' }))).toMatchObject({ run, actions: [{ kind: 'choose', about: 'host' }] });
       return made.rows;
     },
