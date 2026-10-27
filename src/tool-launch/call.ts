@@ -47,7 +47,7 @@ export class CallError extends Error {
 }
 
 /** Whether a call failed because the member named a tool teamai cannot run, which a caller's fallback must not hide. */
-export function isOverrideInvalid(error: unknown): error is CallError {
+export function isOverrideInvalid(error: unknown): error is CallError & { kind: 'override_invalid' } {
   return error instanceof CallError && error.kind === 'override_invalid';
 }
 

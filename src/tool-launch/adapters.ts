@@ -22,7 +22,7 @@ export interface CallInput {
 }
 
 /** How an adapter runs a prompt headless and reads the answer back. */
-export interface CallProfile {
+export interface CallLaunch {
   readonly evidence: Evidence;
   /** How the prompt reaches the tool: on stdin, in `promptFile`, or as an argument `args` places. */
   readonly prompt: 'stdin' | 'file' | 'argv';
@@ -31,12 +31,12 @@ export interface CallProfile {
 }
 
 /** A workflow step: a session the adapter starts and resumes, in `local-tool-adapter.ts`. */
-export interface StepProfile {
+export interface StepLaunch {
   readonly evidence: Evidence;
 }
 
 /** A confined judge for scorers, in `scorers/judge.ts`. */
-export interface JudgeProfile {
+export interface JudgeLaunch {
   readonly evidence: Evidence;
   /** The member's variables the judge keeps, beyond the common ones. */
   readonly env: readonly string[];
@@ -51,9 +51,9 @@ export interface JudgeProfile {
 export interface LaunchAdapter {
   /** The command that starts the tool, when it is not the tool's id. */
   readonly executable?: string;
-  readonly call: CallProfile;
-  readonly step?: StepProfile;
-  readonly judge?: JudgeProfile;
+  readonly call: CallLaunch;
+  readonly step?: StepLaunch;
+  readonly judge?: JudgeLaunch;
 }
 
 function jsonLines(stdout: string): unknown[] {

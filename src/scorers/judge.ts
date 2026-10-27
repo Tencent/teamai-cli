@@ -12,7 +12,7 @@ import { resolveCliPath } from '../utils/cli-path.js';
 import { execCommand, probeBinary } from '../utils/exec.js';
 import { runTool } from '../tool-launch/run.js';
 import { toolStdout } from '../tool-launch/stdout.js';
-import { LAUNCH_ADAPTERS, type JudgeProfile } from '../tool-launch/adapters.js';
+import { LAUNCH_ADAPTERS, type JudgeLaunch } from '../tool-launch/adapters.js';
 import { executableOf, JUDGE_TOOLS, launchAdapterIdOf, opencodeModelArgs, type JudgeTool } from '../tool-launch/tools.js';
 import { JudgeAnswerSchema, type JudgeAnswer } from './batch.js';
 import type { ScoreLabel, Isolation, JudgeAccess, JudgeUsage } from './label.js';
@@ -32,7 +32,7 @@ export function installedJudgeTools(preferred: readonly string[], { resolveTool 
   return [...tools].filter((tool) => resolveTool(executableOf(tool)) !== null);
 }
 
-function judgeProfile(tool: JudgeTool): JudgeProfile {
+function judgeProfile(tool: JudgeTool): JudgeLaunch {
   return LAUNCH_ADAPTERS[launchAdapterIdOf(tool)].judge;
 }
 
