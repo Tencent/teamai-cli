@@ -9,11 +9,11 @@ import { LocalConfigSchema, type LocalConfig } from '../types.js';
 let root = '';
 afterEach(async () => { vi.unstubAllEnvs(); if (root) await fs.rm(root, { recursive: true, force: true }); root = ''; });
 
-const Invocation = z.object({ args: z.array(z.string()), env: z.record(z.string()), stdin: z.string() });
+const Invocation = z.object({ args: z.array(z.string()), env: z.record(z.string()), stdin: z.string(), promptFile: z.string().nullable() });
 
 /**
- * A fake tool on disk: it records how it was launched, prints `stdout` and `stderr`, and writes `lastMessage` to the
- * file after `-o`, as Codex does.
+ * A fake tool on disk: it records how it was launched, with the file after `--prompt-file`, prints `stdout` and
+ * `stderr`, and writes `lastMessage` to the file after `-o`, as Codex does.
  */
 async function fakeTool(name: string, { stdout = '', stderr = '', exitCode = 0, lastMessage }: { stdout?: string; stderr?: string; exitCode?: number; lastMessage?: string }): Promise<{ executable: string; invocation: () => Promise<z.infer<typeof Invocation>> }> {
   root ||= await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-call-'));
@@ -23,7 +23,8 @@ async function fakeTool(name: string, { stdout = '', stderr = '', exitCode = 0, 
 const fs = require('fs');
 let stdin = ''; process.stdin.on('data', (d) => stdin += d); process.stdin.on('end', () => {
   const args = process.argv.slice(2);
-  fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify({ args, env: process.env, stdin }));
+  const promptFile = args.includes('--prompt-file') ? fs.readFileSync(args[args.indexOf('--prompt-file') + 1], 'utf8') : null;
+  fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify({ args, env: process.env, stdin, promptFile }));
   const last = ${JSON.stringify(lastMessage ?? null)};
   if (last !== null && args.includes('-o')) fs.writeFileSync(args[args.indexOf('-o') + 1], last);
   process.stdout.write(${JSON.stringify(stdout)}); process.stderr.write(${JSON.stringify(stderr)});
@@ -80,7 +81,7 @@ it('fails with no_tool when no tool teamai launches is on PATH', async () => {
   vi.stubEnv('TEAMAI_AI_TOOL', '');
   const caller = createToolCaller({ resolveTool: () => null, loadConfig: async () => null });
 
-  await expect(caller.callTool('hi', { launchedBy: 'codebase' })).rejects.toMatchObject({ kind: 'no_tool', message: 'No AI tool teamai launches is on PATH. Install one of: claude, claude-internal, tclaude, codex, codex-internal, tcodex, opencode, codebuddy, workbuddy, openclaw, pi, omp, or set TEAMAI_AI_TOOL to one you have.' });
+  await expect(caller.callTool('hi', { launchedBy: 'codebase' })).rejects.toMatchObject({ kind: 'no_tool', message: 'No AI tool teamai launches is on PATH. Install one of: claude, claude-internal, tclaude, codex, codex-internal, tcodex, opencode, codebuddy, workbuddy, openclaw, pi, omp, muse, or set TEAMAI_AI_TOOL to one you have.' });
 });
 
 it('runs Codex with the prompt on stdin, reads its last message from the -o file and its tokens from the turn', async () => {
@@ -186,6 +187,36 @@ it('runs omp as it runs pi, its fork, and reads the same events', async () => {
   expect(stdin).toBe('Classify');
 });
 
+/** What `muse exec --json` prints: an envelope per record, the answer in the run's terminal record. */
+function museRecords(terminal: Record<string, unknown>): string {
+  const record = (payloadType: string, payload: Record<string, unknown>) => JSON.stringify({ schema_version: 1, stream: { kind: 'session', id: 'session-1' }, payload_type: payloadType, payload });
+  return [
+    record('turn.input.user', { kind: 'turn_input_user', prompt: 'Classify' }),
+    record('run.output.delta', { kind: 'run_output_delta', text: 'rul' }),
+    record('run.usage', { kind: 'run_usage', models: [{ model: 'm', input_tokens: 11, cached_tokens: 2, output_tokens: 3 }] }),
+    record('run.terminal.completed', { kind: 'run_terminal', ...terminal }),
+  ].join('\n');
+}
+
+it('runs muse exec with the prompt in a file, and reads the answer and usage of the run', async () => {
+  const muse = await fakeTool('muse', { stdout: museRecords({ terminal: 'completed', text: 'rules', reason: null }) });
+
+  const answer = await only('muse', muse.executable).callTool('Classify', { launchedBy: 'recall-promote' });
+
+  expect(answer).toEqual({ text: 'rules', tool: 'muse', tokens: { input: 11, output: 3, cachedInput: 2 } });
+  const { args, stdin, promptFile } = await muse.invocation();
+  expect(args.slice(0, 2)).toEqual(['exec', '--json']);
+  expect(args).toContain('--no-session-log');
+  expect(promptFile).toBe('Classify');
+  expect(stdin).toBe('');
+});
+
+it('fails with the reason a muse run ends without completing', async () => {
+  const muse = await fakeTool('muse', { stdout: museRecords({ terminal: 'failed', text: null, reason: 'provider refused the request' }), exitCode: 1 });
+
+  await expect(only('muse', muse.executable).callTool('Classify', { launchedBy: 'recall-promote' })).rejects.toMatchObject({ kind: 'call_failed', message: 'AI call failed (tool: muse): provider refused the request' });
+});
+
 it('runs the tool TEAMAI_AI_TOOL names, though an earlier tool in the launch order is on PATH', async () => {
   const claude = await fakeTool('claude', { stdout: JSON.stringify({ type: 'result', result: 'from claude' }) });
   const codex = await fakeTool('codex', { lastMessage: 'from codex' });
@@ -211,10 +242,10 @@ it('runs the tool ai.tool names when TEAMAI_AI_TOOL is unset, and TEAMAI_AI_TOOL
 });
 
 it.each([
-  { source: 'TEAMAI_AI_TOOL', named: 'gemini', message: 'TEAMAI_AI_TOOL is "gemini", which is not a tool teamai launches. Set it to one of: claude, claude-internal, tclaude, codex, codex-internal, tcodex, opencode, codebuddy, workbuddy, openclaw, pi, omp. Or unset it.' },
+  { source: 'TEAMAI_AI_TOOL', named: 'gemini', message: 'TEAMAI_AI_TOOL is "gemini", which is not a tool teamai launches. Set it to one of: claude, claude-internal, tclaude, codex, codex-internal, tcodex, opencode, codebuddy, workbuddy, openclaw, pi, omp, muse. Or unset it.' },
   { source: 'TEAMAI_AI_TOOL', named: 'codex', message: 'TEAMAI_AI_TOOL is "codex", which is not on PATH. Install codex, or unset TEAMAI_AI_TOOL to use the first installed tool.' },
   { source: 'TEAMAI_AI_TOOL', named: 'cursor', message: 'TEAMAI_AI_TOOL is "cursor", which is not a tool teamai launches.' },
-  { source: 'ai.tool', named: 'gemini', message: 'ai.tool in /home/member/.teamai/config.yaml is "gemini", which is not a tool teamai launches. Set it to one of: claude, claude-internal, tclaude, codex, codex-internal, tcodex, opencode, codebuddy, workbuddy, openclaw, pi, omp. Or remove it.' },
+  { source: 'ai.tool', named: 'gemini', message: 'ai.tool in /home/member/.teamai/config.yaml is "gemini", which is not a tool teamai launches. Set it to one of: claude, claude-internal, tclaude, codex, codex-internal, tcodex, opencode, codebuddy, workbuddy, openclaw, pi, omp, muse. Or remove it.' },
   { source: 'ai.tool', named: 'codex', message: 'ai.tool in /home/member/.teamai/config.yaml is "codex", which is not on PATH. Install codex, or remove ai.tool to use the first installed tool.' },
 ] as const)('fails the call when $source names $named, rather than run another tool', async ({ source, named, message }) => {
   const claude = await fakeTool('claude', { stdout: JSON.stringify({ type: 'result', result: 'from claude' }) });

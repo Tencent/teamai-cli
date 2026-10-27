@@ -12,11 +12,21 @@ export interface CallOutput {
   lastMessage: string | undefined;
 }
 
-/** How an adapter runs a prompt headless and reads the answer back. The prompt goes on stdin. */
+/** What a call's arguments may name: the prompt, and fresh paths in a scratch directory for its prompt and last message. */
+export interface CallInput {
+  prompt: string;
+  /** Holds the prompt when the profile takes it from a file. */
+  promptFile: string;
+  /** For a tool that writes its last message to a file. */
+  lastMessageFile: string;
+}
+
+/** How an adapter runs a prompt headless and reads the answer back. */
 export interface CallProfile {
   readonly evidence: Evidence;
-  /** `lastMessageFile` is a fresh path in a scratch directory, for a tool that writes its last message to a file. */
-  args(lastMessageFile: string): string[];
+  /** How the prompt reaches the tool: on stdin, in `promptFile`, or as an argument `args` places. */
+  readonly prompt: 'stdin' | 'file' | 'argv';
+  args(input: CallInput): string[];
   read(output: CallOutput): CallReading;
 }
 
@@ -155,10 +165,38 @@ function readPiJson({ stdout }: CallOutput): CallReading {
   return { ok: true, text, ...(Object.keys(tokens).length > 0 ? { tokens } : {}) };
 }
 
+const MuseRecord = z.object({ payload_type: z.string(), payload: z.record(z.unknown()) });
+const MuseTerminal = z.object({ terminal: z.string(), text: z.string().nullable().optional(), reason: z.string().nullable().optional() });
+const MuseUsage = z.object({ models: z.array(z.object({ input_tokens: z.number(), cached_tokens: z.number(), output_tokens: z.number() }).partial()) });
+
+/** `muse exec --json` prints one record per event: the run's terminal record carries the answer, `run.usage` the tokens. */
+function readMuseExec({ stdout }: CallOutput): CallReading {
+  const records = jsonLines(stdout).flatMap((line) => { const parsed = MuseRecord.safeParse(line); return parsed.success ? [parsed.data] : []; });
+  const terminal = records.flatMap((record) => {
+    const parsed = record.payload_type.startsWith('run.terminal.') ? MuseTerminal.safeParse(record.payload) : undefined;
+    return parsed?.success ? [parsed.data] : [];
+  }).at(-1);
+  if (!terminal) return { ok: false };
+  const text = terminal.text?.trim();
+  if (terminal.terminal !== 'completed' || !text) return { ok: false, ...(terminal.reason ? { message: terminal.reason } : {}) };
+  const models = records.flatMap((record) => {
+    const parsed = record.payload_type === 'run.usage' ? MuseUsage.safeParse(record.payload) : undefined;
+    return parsed?.success ? parsed.data.models : [];
+  });
+  const sum = (key: 'input_tokens' | 'cached_tokens' | 'output_tokens') => models.some((model) => model[key] !== undefined) ? models.reduce((total, model) => total + (model[key] ?? 0), 0) : undefined;
+  const [input, output, cachedInput] = [sum('input_tokens'), sum('output_tokens'), sum('cached_tokens')];
+  const tokens: TokenUsage = {
+    ...(input !== undefined ? { input } : {}),
+    ...(output !== undefined ? { output } : {}),
+    ...(cachedInput !== undefined ? { cachedInput } : {}),
+  };
+  return { ok: true, text, ...(Object.keys(tokens).length > 0 ? { tokens } : {}) };
+}
+
 /** How teamai launches each family of tools headless. A tool picks its adapter with the `launch` facet in `TOOLS`. */
 export const LAUNCH_ADAPTERS = {
   claude: {
-    call: { evidence: 'verified', args: () => ['-p', '--output-format', 'json'], read: readClaudeResult },
+    call: { evidence: 'verified', prompt: 'stdin', args: () => ['-p', '--output-format', 'json'], read: readClaudeResult },
     step: { evidence: 'verified' },
     judge: {
       evidence: 'verified',
@@ -169,17 +207,17 @@ export const LAUNCH_ADAPTERS = {
     },
   },
   codex: {
-    call: { evidence: 'verified', args: (lastMessageFile) => ['exec', '--json', '--skip-git-repo-check', '-o', lastMessageFile, '-'], read: readCodexExec },
+    call: { evidence: 'verified', prompt: 'stdin', args: ({ lastMessageFile }) => ['exec', '--json', '--skip-git-repo-check', '-o', lastMessageFile, '-'], read: readCodexExec },
     step: { evidence: 'verified' },
     judge: { evidence: 'verified', env: ['CODEX_HOME', 'OPENAI_API_KEY', 'OPENAI_BASE_URL'], homeEnv: 'CODEX_HOME', verified: /^codex-cli 0\.163\.0$/, access: 'read' },
   },
   opencode: {
-    call: { evidence: 'verified', args: () => ['run', '--format', 'json'], read: readOpenCodeRun },
+    call: { evidence: 'verified', prompt: 'stdin', args: () => ['run', '--format', 'json'], read: readOpenCodeRun },
     step: { evidence: 'verified' },
     judge: { evidence: 'verified', env: ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GOOGLE_GENERATIVE_AI_API_KEY', 'GEMINI_API_KEY', 'OPENROUTER_API_KEY', 'OPENCODE_API_KEY'], verified: /^opencode v2\.1\.2$/, access: 'read' },
   },
   codebuddy: {
-    call: { evidence: 'docs', args: () => ['-p', '--output-format', 'json'], read: readClaudeResult },
+    call: { evidence: 'docs', prompt: 'stdin', args: () => ['-p', '--output-format', 'json'], read: readClaudeResult },
     // Claude's flags and stream, without --effort.
     step: { evidence: 'docs' },
     // CodeBuddy lists about 70 tools whatever `--tools` says.
@@ -187,10 +225,10 @@ export const LAUNCH_ADAPTERS = {
   },
   // One embedded turn with ephemeral state, so no call leaves a session in the member's conversations (#1308).
   openclaw: {
-    call: { evidence: 'docs', args: () => ['agent', 'exec', '--json', '--message-file', '-'], read: readOpenClawExec },
+    call: { evidence: 'docs', prompt: 'stdin', args: () => ['agent', 'exec', '--json', '--message-file', '-'], read: readOpenClawExec },
   },
   pi: {
-    call: { evidence: 'source', args: () => ['-p', '--mode', 'json', '--no-session'], read: readPiJson },
+    call: { evidence: 'source', prompt: 'stdin', args: () => ['-p', '--mode', 'json', '--no-session'], read: readPiJson },
     judge: {
       evidence: 'docs',
       env: ['PI_CODING_AGENT_DIR', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GEMINI_API_KEY', 'OPENROUTER_API_KEY', 'DEEPSEEK_API_KEY', 'GROQ_API_KEY'],
@@ -200,7 +238,11 @@ export const LAUNCH_ADAPTERS = {
   },
   // pi's fork: the same call and events, with flags of its own elsewhere.
   omp: {
-    call: { evidence: 'docs', args: () => ['-p', '--mode', 'json', '--no-session'], read: readPiJson },
+    call: { evidence: 'docs', prompt: 'stdin', args: () => ['-p', '--mode', 'json', '--no-session'], read: readPiJson },
+  },
+  // muse reads no prompt from stdin: `--prompt-file` takes a regular file only.
+  muse: {
+    call: { evidence: 'verified', prompt: 'file', args: ({ promptFile }) => ['exec', '--json', '--no-session-log', '--prompt-file', promptFile], read: readMuseExec },
   },
 } as const satisfies Record<string, LaunchAdapter>;
 
