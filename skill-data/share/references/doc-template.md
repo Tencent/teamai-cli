@@ -34,6 +34,7 @@ How did you solve it? What were the key steps?
 | author | yes | Contributor's username | jeffyxu |
 | date | yes | Date as YYYY-MM-DD | 2026-03-28 |
 | tags | yes | 2-5 key tags | [k8s, oom, troubleshooting] |
+| session | no | The session the learning came from. Leave it out: `teamai contribute` writes it | { platform: claude-code, sessionId: 7c1e… } |
 
 ### Choosing tags
 
