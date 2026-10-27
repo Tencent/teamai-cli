@@ -426,9 +426,10 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
           return true;
         }
         if (!legacy) return pulled;
-        const pulledLegacy = await pullArchive(new SyncManager(legacy), legacy);
-        if (pulledLegacy.status === 'failed') {
-          console.error(`Error: Pulling the sessions archived on the default branch in ${legacy} failed: ${safeText(pulledLegacy.reason)}`);
+        const pulledLegacy = await withSessionPublicationLock(legacy, () => pullArchive(new SyncManager(legacy), legacy));
+        if (pulledLegacy.status === 'busy') reportArchiveBusy(legacy, pulledLegacy.lockPath);
+        else if (pulledLegacy.value.status === 'failed') {
+          console.error(`Error: Pulling the sessions archived on the default branch in ${legacy} failed: ${safeText(pulledLegacy.value.reason)}`);
           process.exitCode = 1;
         }
         return pulled;
