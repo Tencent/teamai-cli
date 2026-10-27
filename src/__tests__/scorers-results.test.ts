@@ -223,4 +223,27 @@ describe('scorer results', () => {
       { week: '2026-03-16', n: 1, passed: 0, failed: 1, rate: 0 },
     ]);
   });
+
+  it('counts a measurement by label value, highest score first, adding up to its label count', () => {
+    const routing = (label: string, score: number) => viewed(sessionLabel({ label, score, passed: score > 0 }));
+    const labels = [routing('missed', 0), routing('fit', 1), routing('extra', 0), routing('fit', 1), routing('extra', 0), routing('fit', 1)];
+    const { selected } = ScorerResults.of({ labels, query: { windowDays: 30 }, now: NOW });
+    expect(selected?.values).toEqual([
+      { label: 'fit', score: 1, n: 3 },
+      { label: 'extra', score: 0, n: 2 },
+      { label: 'missed', score: 0, n: 1 },
+    ]);
+    expect(selected?.cohort.stats.n).toBe(6);
+  });
+
+  it('counts a label rescored with another value once, under its newest value, and shows no row for a value outside the window', () => {
+    const subject = { platform: 'claude', sessionId: 'rescored' };
+    const labels = [
+      viewed(sessionLabel({ subject, label: 'partial', score: 0.5, passed: false, scoredAt: '2026-02-25T00:00:00.000Z' })),
+      viewed(sessionLabel({ subject, label: 'good', score: 1, passed: true, scoredAt: '2026-03-15T00:00:00.000Z' })),
+      viewed(sessionLabel({ label: 'bad', score: 0, passed: false, scoredAt: '2025-12-01T00:00:00.000Z' })),
+    ];
+    const { selected } = ScorerResults.of({ labels, query: { windowDays: 30 }, now: NOW });
+    expect(selected?.values).toEqual([{ label: 'good', score: 1, n: 1 }]);
+  });
 });

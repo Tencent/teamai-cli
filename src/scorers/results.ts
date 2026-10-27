@@ -130,12 +130,17 @@ export type ReminderInput = { days: number; sessions: readonly string[]; hinted:
 /** One row of the reminder table. `rate` is over `labelled` sessions only. */
 export type ReminderRow = { reminder: 'yes' | 'no' | 'not recorded'; sessions: number; labelled: number; passed: number; rate: number | null };
 
+/** The labels of a measurement that stored one value, with the score the value stood for. */
+export type ValueCount = { label: string; score: number; n: number };
+
 /** One UTC week of the trend, named by its Monday. */
 export type TrendWeek = Stats & { week: string };
 
 export type SelectedCohort = {
   /** The cohort with its counts and weekly trend over the window. */
   cohort: CohortSummary;
+  /** The cohort's labels by stored value, highest score first: what a pass rate folds together. */
+  values: ValueCount[];
   groupBy?: Dimension;
   groups?: Group[];
   split?: Split;
@@ -306,6 +311,18 @@ function groups(labels: readonly ViewedLabel[], dimension: Dimension, sideOf: Re
   return counted;
 }
 
+/** The values `labels` stored, as stored: the scorer file is never read to rename, add or reorder them. */
+function valueCounts(labels: readonly ViewedLabel[]): ValueCount[] {
+  const counts = new Map<string, ValueCount>();
+  for (const { label } of labels) {
+    const key = JSON.stringify([label.label, label.score]);
+    const count = counts.get(key) ?? { label: label.label, score: label.score, n: 0 };
+    count.n += 1;
+    counts.set(key, count);
+  }
+  return [...counts.values()].sort((left, right) => right.score - left.score || left.label.localeCompare(right.label));
+}
+
 function stats(labels: readonly ViewedLabel[]): Stats {
   const passed = labels.filter(({ label }) => label.passed).length;
   return { n: labels.length, passed, failed: labels.length - passed, rate: labels.length === 0 ? null : passed / labels.length };
@@ -396,6 +413,7 @@ export const ScorerResults = {
       scorers,
       selected: {
         cohort: summary,
+        values: valueCounts(counted),
         ...(groupBy ? { groupBy, groups: groups(counted, groupBy, split?.sideOf) } : {}),
         ...(split ? { split: { commit: split.commit, ...splitStats(counted, split.sideOf) } } : {}),
         failing,
