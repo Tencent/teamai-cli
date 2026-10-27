@@ -429,6 +429,11 @@ async function applyConfigOverlays(config: LocalConfig): Promise<LocalConfig> {
   return applyMachineSettings(assigned, await loadMemberSettings());
 }
 
+/** The member settings `config`'s own file sets, without the machine's overlaid below them. */
+export function ownMemberSettings(config: LocalConfig): MemberSettings {
+  return config.memberSettingsOverlay?.local ?? MemberSettingsSchema.parse(config);
+}
+
 /** Mark settings a command deliberately wrote, so a later save keeps them even when they equal a machine value. */
 export function markMemberSettingsWritten(config: LocalConfig, written: MemberSettings): LocalConfig {
   const local = config.memberSettingsOverlay?.local ?? MemberSettingsSchema.parse(config);
@@ -480,30 +485,6 @@ async function readAiSetting(configPath: string): Promise<LocalConfig['ai']> {
     log.warn(`Ignoring ai.tool: ${configPath} is not valid YAML (${describeConfigError(e)}).`);
   }
   return undefined;
-}
-
-/** `ai.tool` as one level sets it: the current scope's own config (`project`) or ~/.teamai/config.yaml (`machine`). */
-export interface AiToolSetting {
-  level: 'project' | 'machine';
-  tool: string;
-  /** The file it is set in, which a message tells the member to change. */
-  file: string;
-}
-
-/**
- * The `ai.tool` settings that apply in `scope`, the project's first: its own config when it is a project, self or
- * workspace install, then ~/.teamai/config.yaml. Without a scope, or in user scope, only the machine's.
- */
-export async function aiToolSettings(scope: LocalConfig | undefined): Promise<AiToolSetting[]> {
-  const machine = expandHome(getUserConfigPath());
-  const project = scope && scope.scope !== 'user' ? path.join(getDataHome(scope), 'config.yaml') : undefined;
-  const levels = [...(project && project !== machine ? [{ level: 'project' as const, file: project }] : []), { level: 'machine' as const, file: machine }];
-  const settings: AiToolSetting[] = [];
-  for (const { level, file } of levels) {
-    const tool = (await readAiSetting(file))?.tool;
-    if (tool) settings.push({ level, tool, file });
-  }
-  return settings;
 }
 
 /**

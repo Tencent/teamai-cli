@@ -3,8 +3,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, expect, it, onTestFinished, vi } from 'vitest';
 import { z } from 'zod';
+import { readConfigFrom } from '../config.js';
 import { createToolCaller } from '../tool-launch/call.js';
-import { getUserConfigPath, type LocalConfig } from '../types.js';
+import { getDataHome, getUserConfigPath, type LocalConfig } from '../types.js';
 import { log } from '../utils/logger.js';
 
 let root = '';
@@ -307,7 +308,8 @@ async function aiToolFiles({ project, machine }: { project?: string; machine?: s
   const install = `repo:\n  localPath: ${root}\n  remote: local\nusername: member\nscope: workspace\n`;
   await fs.writeFile(projectFile, install + (project ? `ai:\n  tool: ${project}\n` : ''));
   if (machine) await fs.writeFile(machineFile, `ai:\n  tool: ${machine}\n`);
-  const scope: LocalConfig = { repo: { localPath: root, remote: 'local' }, username: 'member', scope: 'project', projectRoot: root, dataHome, additionalRoles: [] };
+  const scope = await readConfigFrom(dataHome, root);
+  if (!scope) throw new Error(`${projectFile} did not load`);
   return { scope, projectFile, machineFile };
 }
 
@@ -374,19 +376,45 @@ it('picks once per scope, so a process that works in two projects runs each proj
   expect(await caller.callTool('hi', { launchedBy: 'codebase' })).toMatchObject({ tool: 'opencode' });
 });
 
+it('runs the tool the member names now, in a scope where a call ran on the one named before', async () => {
+  vi.stubEnv('TEAMAI_AI_TOOL', '');
+  const { projectFile, scope } = await aiToolFiles({ machine: 'codex' });
+  const caller = createToolCaller({ resolveTool: await threeTools(), resolveScope: async () => await readConfigFrom(getDataHome(scope), root) ?? undefined });
+
+  expect(await caller.callTool('hi', { launchedBy: 'codebase' })).toMatchObject({ tool: 'codex' });
+  await fs.appendFile(projectFile, 'ai:\n  tool: opencode\n');
+  expect(await caller.callTool('hi', { launchedBy: 'codebase' })).toMatchObject({ tool: 'opencode' });
+});
+
 it.each([
   { level: 'TEAMAI_AI_TOOL', named: 'gemini', message: () => 'TEAMAI_AI_TOOL is "gemini", which is not a tool teamai launches. Set it to one of: claude, claude-internal, tclaude, codex, codex-internal, tcodex, opencode, codebuddy, workbuddy, openclaw, cursor, copilot, qoder, kiro, pi, omp, muse, hermes. Or unset it.' },
   { level: 'TEAMAI_AI_TOOL', named: 'kiro', message: () => 'TEAMAI_AI_TOOL is "kiro", which is not on PATH. Install kiro, or unset TEAMAI_AI_TOOL to use the next setting or the first installed tool.' },
   { level: 'TEAMAI_AI_TOOL', named: 'trae', message: () => 'TEAMAI_AI_TOOL is "trae", which is not a tool teamai launches.' },
-  { level: 'project', named: 'gemini', message: (file: string) => `ai.tool in ${file} is "gemini", which is not a tool teamai launches. Set it to one of: claude, claude-internal, tclaude, codex, codex-internal, tcodex, opencode, codebuddy, workbuddy, openclaw, cursor, copilot, qoder, kiro, pi, omp, muse, hermes. Or remove it.` },
-  { level: 'project', named: 'kiro', message: (file: string) => `ai.tool in ${file} is "kiro", which is not on PATH. Install kiro, or remove it to use the next setting or the first installed tool.` },
-  { level: 'machine', named: 'kiro', message: (file: string) => `ai.tool in ${file} is "kiro", which is not on PATH. Install kiro, or remove it to use the next setting or the first installed tool.` },
+  { level: 'project', named: 'gemini', message: (file: string) => `ai.tool in the workspace config ${file} is "gemini", which is not a tool teamai launches. Set it to one of: claude, claude-internal, tclaude, codex, codex-internal, tcodex, opencode, codebuddy, workbuddy, openclaw, cursor, copilot, qoder, kiro, pi, omp, muse, hermes. Or remove it.` },
+  { level: 'project', named: 'kiro', message: (file: string) => `ai.tool in the workspace config ${file} is "kiro", which is not on PATH. Install kiro, or remove it to use the next setting or the first installed tool.` },
+  { level: 'machine', named: 'kiro', message: (file: string) => `ai.tool in the machine config ${file} is "kiro", which is not on PATH. Install kiro, or remove it to use the next setting or the first installed tool.` },
 ] as const)('fails the call when $level names $named, naming the setting to change, rather than run another tool', async ({ level, named, message }) => {
   vi.stubEnv('TEAMAI_AI_TOOL', level === 'TEAMAI_AI_TOOL' ? named : '');
   const { scope, projectFile, machineFile } = await aiToolFiles({ project: level === 'project' ? named : undefined, machine: level === 'machine' ? named : 'opencode' });
   const caller = createToolCaller({ resolveTool: await threeTools(), resolveScope: async () => scope });
 
   await expect(caller.callTool('hi', { launchedBy: 'codebase' })).rejects.toMatchObject({ name: 'CallError', kind: 'override_invalid', message: expect.stringContaining(message(level === 'project' ? projectFile : machineFile)) });
+});
+
+it('fails the call when the workspace config here cannot be read, rather than run the machine\'s ai.tool', async () => {
+  vi.stubEnv('TEAMAI_AI_TOOL', '');
+  const { machineFile } = await aiToolFiles({});
+  await fs.writeFile(machineFile, 'ai:\n  tool: codex\n');
+  const workspace = path.join(root, 'broken-workspace');
+  const brokenFile = path.join(workspace, '.teamai', 'config.yaml');
+  await fs.mkdir(path.dirname(brokenFile), { recursive: true });
+  await fs.writeFile(brokenFile, 'repo: [unclosed\n');
+  const cwd = vi.spyOn(process, 'cwd').mockReturnValue(workspace);
+  onTestFinished(() => cwd.mockRestore());
+
+  const call = createToolCaller({ resolveTool: await threeTools() }).callTool('hi', { launchedBy: 'codebase' });
+
+  await expect(call).rejects.toMatchObject({ name: 'CallError', kind: 'override_invalid', message: expect.stringContaining(`${brokenFile} could not be read`) });
 });
 
 it('fails a batch with the override error itself, before it runs any call', async () => {

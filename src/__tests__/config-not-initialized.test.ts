@@ -17,7 +17,7 @@ import {
   findUnreadableProjectConfig,
   hasUserScopeInstall,
   loadLocalConfigForScope,
-  aiToolSettings,
+  loadMemberSettings,
   requireInit,
   saveLocalConfig,
   saveLocalConfigForScope,
@@ -59,7 +59,7 @@ describe('requireInit: missing config versus unreadable config', () => {
     await expect(requireInit()).rejects.toBeInstanceOf(NotInitializedError);
     expect(log.error).not.toHaveBeenCalled();
     expect(await hasUserScopeInstall()).toBe(false);
-    expect(await aiToolSettings(undefined)).toEqual([{ level: 'machine', tool: 'codex', file: configPath }]);
+    expect(await loadMemberSettings()).toEqual({ ai: { tool: 'codex' } });
   });
 
   it("loads no user scope, with nothing logged, when the file holds only the member's settings", async () => {
@@ -346,7 +346,7 @@ describe("the member's ai.tool across a write of the config file", () => {
     await saveLocalConfig(freshInstall('user'));
 
     expect(await hasUserScopeInstall()).toBe(true);
-    expect(await aiToolSettings(undefined)).toEqual([{ level: 'machine', tool: 'codex', file: machineFile }]);
+    expect(await loadMemberSettings()).toEqual({ ai: { tool: 'codex' } });
   });
 
   it('skips a wrong-typed machine setting while preserving valid siblings', async () => {
@@ -385,6 +385,6 @@ describe("the member's ai.tool across a write of the config file", () => {
 
     await saveLocalConfigForScope(config);
 
-    expect(await aiToolSettings(config)).toEqual([{ level: 'project', tool: 'opencode', file: projectFile }]);
+    expect(YAML.parse(fs.readFileSync(projectFile, 'utf8'))).toMatchObject({ ai: { tool: 'opencode' } });
   });
 });

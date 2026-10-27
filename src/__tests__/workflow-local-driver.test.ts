@@ -46,12 +46,10 @@ function memberAiTool(tool: string): void {
   onTestFinished(() => { fs.rmSync(file, { force: true }); });
 }
 
-/** Sets `ai.tool` in the config of `config`'s own scope, and returns that file. */
+/** Sets `ai.tool` in `config`'s own scope, as a load of its config file reads it, and returns that file. */
 function projectAiTool(config: LocalConfig, tool: string): string {
-  const file = path.join(getDataHome(config), 'config.yaml');
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, `ai:\n  tool: ${tool}\n`);
-  return file;
+  config.ai = { tool };
+  return path.join(getDataHome(config), 'config.yaml');
 }
 
 async function fixture(agent?: string): Promise<{ config: LocalConfig; workspace: string; runId: string }> {
@@ -195,7 +193,7 @@ describe('local workflow prompt driver', () => {
 
     expect(adapter.run).not.toHaveBeenCalled();
     expect(await readRun(config, runId)).toMatchObject({
-      steps: [{ failure: { code: 'tool_unsupported', message: expect.stringContaining(`ai.tool in ${file} is "gemini", which is not a tool teamai launches.`) } }],
+      steps: [{ failure: { code: 'tool_unsupported', message: expect.stringContaining(`ai.tool in the workspace config ${file} is "gemini", which is not a tool teamai launches.`) } }],
     });
   });
 
