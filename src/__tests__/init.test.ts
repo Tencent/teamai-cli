@@ -1175,6 +1175,10 @@ describe('init', () => {
       const errorCalls = vi.mocked(log.error).mock.calls.map(([message]) => String(message)).join('\n');
       expect(errorCalls).toContain('--scope user is not supported in single-repo mode');
       expect(errorCalls).toContain('~/.teamai/config.yaml');
+      // The suggestion must not point single-repo members at a team-mode init,
+      // which would clone/skeleton their business repo as a separate team repo.
+      expect(errorCalls).not.toContain('teamai init --scope user');
+      expect(errorCalls).toContain('repo.kind: self');
       expect(saveLocalConfigForScope).not.toHaveBeenCalled();
     });
 
