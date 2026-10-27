@@ -572,7 +572,7 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     run: async () => {
       const made = await harness({ release: RELEASE });
       expect(await made.call({ kind: 'describe', name: 'release' })).toMatchObject({ data: { describe: { ask: { kind: 'ask', question: {
-        text: '- Only you can answer the approval at go-live, from your own terminal or teamai dashboard.\n- Optional approvals: plan-review.\nHow should it run?',
+        text: '- Only you can answer the approval at go-live, from your own terminal or teamai dashboard.\n- Optional approval at plan-review: before `node -e "process.exit(0)"`.\n- The recommended start lets this session\'s agent answer optional approvals and say why; "answer optional approvals automatically" answers each approval yes.\nHow should it run?',
         options: [
           { label: 'Recommended: you decide optional approvals', start: 'teamai workflow start release --driver skill --hitl recommend' },
           { label: 'Same, but ask me at optional approvals', start: 'teamai workflow start release --driver skill --hitl person' },

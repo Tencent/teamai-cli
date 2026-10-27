@@ -189,7 +189,8 @@ describe('skill driver preflight', () => {
         '- It can run up to 2 steps at once.',
         '- notes is interactive: you work in it here, with this session\'s agent.',
         '- Only you can answer the approval at go-live, from your own terminal or teamai dashboard.',
-        '- Optional approvals: plan-review.',
+        '- Optional approval at plan-review: before `node -e "process.exit(0)"`.',
+        '- The recommended start lets this session\'s agent answer optional approvals and say why; "answer optional approvals automatically" answers each approval yes.',
         '- It opens a pull request from integrate into main.',
         '- NPM_TOKEN and SLACK_TOKEN have no value on this machine: set them with teamai env set NPM_TOKEN and teamai env set SLACK_TOKEN before the steps that require them run, or those steps fail.',
         '- announce.post needs env SLACK_TOKEN, which a coding session keeps from its agents, and runs under a token budget, which no coding session meters for teamai, so you finish it in your own terminal with teamai workflow resume once the run reaches it.',
@@ -246,6 +247,35 @@ describe('skill driver preflight', () => {
     expect(await made.call({ kind: 'describe', name: 'release-docs' })).toMatchObject({ data: { describe: { ask: {
       kind: 'local', reason: expect.stringContaining('needs env SIGNING_KEY and RELEASE_KEY, which a coding session keeps from its agents.'),
     } } } });
+  });
+});
+
+describe('skill driver preflight of optional gates', () => {
+  /** A workflow named `gates`, invoke: allow, whose steps are `steps`. */
+  const gates = (steps: string) => `schemaVersion: v1alpha1\nname: gates\ndescription: Gate some steps\ninvoke: allow\nsteps:\n${steps}`;
+  const approvalsAnswer = '- The recommended start lets this session\'s agent answer optional approvals and say why; "answer optional approvals automatically" answers each approval yes.';
+  const questionOf = async (workflows: Record<string, string>) => {
+    const made = await harness(workflows);
+    return made.call({ kind: 'describe', name: 'gates' });
+  };
+
+  it('names the command an optional approval comes before: its first line, whitespace collapsed, cut after 80 characters', async () => {
+    const long = `teamai contribute --file "$FILE" --title "$TITLE" --namespace "$NS" --session-id "$SESSION"`;
+    expect(await questionOf({ gates: gates(`  - id: build
+    approve: Build?
+    command: |
+      npm   run    build
+      npm test
+  - id: share
+    needs: [build]
+    approve: Share?
+    command: ${long}
+`) })).toMatchObject({ data: { describe: { ask: { kind: 'ask', question: { text: [
+      '- Optional approval at build: before `npm run build`.',
+      '- Optional approval at share: before `teamai contribute --file "$FILE" --title "$TITLE" --namespace "$NS" --session-id…`.',
+      approvalsAnswer,
+      'How should it run?',
+    ].join('\n') } } } } });
   });
 });
 

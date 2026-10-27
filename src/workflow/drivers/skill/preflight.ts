@@ -2,7 +2,7 @@
 import type { ToolName } from '../../../resources/agent-format.js';
 import { isLaunchTool, type LaunchTool } from '../../../tool-launch/tools.js';
 import type { LocalConfig } from '../../../types.js';
-import type { WorkflowDescription } from '../../describe.js';
+import type { GateGuards, WorkflowDescription } from '../../describe.js';
 import { INVOKE_ASK_NEED, unattendedReason, type Judging } from '../../protocol.js';
 import type { OutputSchema } from '../../types.js';
 import { localStartLiteral, startLiteral, type Invocation, type Literal } from './literals.js';
@@ -102,6 +102,39 @@ function gatesNoun(gates: ReadonlyArray<{ kind: 'approve' | 'choose' }>, plural 
   return plural ? `${noun}s` : noun;
 }
 
+/** The start option that has the engine answer optional `noun`, as its label names it. */
+function autoAnswered(noun: string): string {
+  return `answer optional ${noun} automatically`;
+}
+
+type GateFact = WorkflowDescription['facts']['gates'][number];
+
+/** What optional `gate` guards, as a sentence. */
+function optionalGateFact(gate: GateFact): string {
+  return `Optional approval at ${gate.step}: ${guardsFact(gate.guards)}.`;
+}
+
+function guardsFact(guards: GateGuards): string {
+  switch (guards.kind) {
+    case 'command':
+      return `before \`${guards.line}\``;
+    case 'none':
+      return 'no action';
+    default: {
+      const unhandled: never = guards;
+      return unhandled;
+    }
+  }
+}
+
+/** How the start options answer the `optional` gates. */
+function optionalAnswersFact(optional: readonly GateFact[]): string {
+  const noun = gatesNoun(optional, true);
+  const kinds = new Set(optional.map((gate) => gate.kind));
+  const answers = [...(kinds.has('approve') ? ['each approval yes'] : []), ...(kinds.has('choose') ? ['each choice with its default'] : [])];
+  return `The recommended start lets this session's agent answer optional ${noun} and say why; "${autoAnswered(noun)}" answers ${answers.join(' and ')}.`;
+}
+
 function typeOf(schema: OutputSchema): string {
   switch (schema.type) {
     case 'string':
@@ -160,7 +193,8 @@ function factsOf(description: WorkflowDescription, judging: Judging): string[] {
     ...(facts.width > 1 ? [`It can run up to ${facts.width} steps at once.`] : []),
     ...(interactive.length > 0 ? [`${listOf(interactive)} ${many ? 'are' : 'is'} interactive: you work in ${many ? 'them' : 'it'} here, with this session's agent.`] : []),
     ...(required.length > 0 ? [`Only you can answer the ${gatesNoun(required)} at ${listOf(required.map((gate) => gate.step))}, from your own terminal or teamai dashboard.`] : []),
-    ...(optional.length > 0 ? [`Optional ${gatesNoun(optional, true)}: ${optional.map((gate) => gate.step).join(', ')}.`] : []),
+    ...optional.map(optionalGateFact),
+    ...(optional.length > 0 ? [optionalAnswersFact(optional)] : []),
     ...facts.deliver.map(({ step, onto }) => (onto !== undefined ? `It opens a pull request from ${step} onto the pull request of ${onto}.`
       : facts.base !== undefined ? `It opens a pull request from ${step} into ${facts.base}.`
         : `${step} opens a pull request, which needs a branch to target: check out a branch here before you start it.`)),
@@ -187,7 +221,7 @@ function optionsOf(description: WorkflowDescription, judging: Judging, invocatio
   const others: Array<{ label: string; pick: StartPick }> = [
     ...(recommended.hitl ? [
       { label: `Same, but ask me at optional ${noun}`, pick: { ...recommended, hitl: 'person' as const } },
-      { label: `Same, but answer optional ${noun} automatically`, pick: { ...recommended, hitl: 'auto-approve' as const } },
+      { label: `Same, but ${autoAnswered(noun)}`, pick: { ...recommended, hitl: 'auto-approve' as const } },
     ] : []),
     ...(recommended.parallel !== undefined ? [{ label: 'Same, but one step at a time', pick: { ...recommended, parallel: 1 } }] : []),
     ...(here ? [{ label: 'Same, but without judging', pick: { ...recommended, noJudge: true as const } }] : []),

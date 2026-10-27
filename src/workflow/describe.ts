@@ -13,6 +13,26 @@ export interface LocalRoute {
   missing: 'env' | 'tokens';
 }
 
+/** What a gated step does once its question is answered. */
+export type GateGuards =
+  | { kind: 'command'; line: string }
+  | { kind: 'none'; waiting: string[] };
+
+/** The most characters of a command a gate shows before it cuts the rest. */
+const COMMAND_SHOWN = 80;
+
+/** `command` as a gate shows it: its first line, whitespace collapsed, cut after `COMMAND_SHOWN` characters. */
+function commandLine(command: string): string {
+  const line = (command.split('\n')[0] ?? '').replace(/\s+/g, ' ').trim();
+  return line.length > COMMAND_SHOWN ? `${line.slice(0, COMMAND_SHOWN)}…` : line;
+}
+
+/** What `step`, gated, guards. */
+function guardsOf(step: WorkflowStep): GateGuards {
+  if (step.command !== undefined) return { kind: 'command', line: commandLine(step.command) };
+  return { kind: 'none', waiting: [] };
+}
+
 /** What a workflow will do, read from its definition before any run, as far as choosing how to start it needs. */
 export interface WorkflowDescription {
   name: string;
@@ -29,7 +49,7 @@ export interface WorkflowDescription {
     /** The most steps a run may have leased at once, at most `ceiling`. */
     width: number;
     /** The questions asked before a step runs, by path. */
-    gates: Array<{ step: string; kind: StepHitl['kind']; required: boolean; hasDefault: boolean }>;
+    gates: Array<{ step: string; kind: StepHitl['kind']; required: boolean; hasDefault: boolean; guards: GateGuards }>;
     /** Steps that run in a workspace copy rather than in the checkout, by path. */
     inWorkspace: string[];
     /** Steps whose succeeded passes a scorer judges, by path, with the scorers it lists. */
@@ -127,7 +147,7 @@ export function describeWorkflow(input: {
     for (const step of steps) {
       const path = `${scope.prefix}${step.id}`;
       const child = childOf(step);
-      if (step.hitl) facts.gates.push({ step: path, kind: step.hitl.kind, required: step.hitl.required, hasDefault: step.hitl.default !== undefined });
+      if (step.hitl) facts.gates.push({ step: path, kind: step.hitl.kind, required: step.hitl.required, hasDefault: step.hitl.default !== undefined, guards: guardsOf(step) });
       if (!child && step.end === undefined && !runsInCheckout(step, scope.ancestors)) facts.inWorkspace.push(path);
       if (step.prompt !== undefined || step.promptFile !== undefined) facts.prompts.push(path);
       if (step.interactive) facts.interactive.push(path);
