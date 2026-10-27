@@ -1,6 +1,6 @@
 import { sameEnvName } from '../resources/env-key.js';
 import { mergeRequirements, negotiate, requiredEnvKeys, type Allow, type DriverCan, type EnvFacts, type Missing, type Requirements, type Setup } from './requirements.js';
-import type { Invoke, OutputSchema, StepHitl, WorkflowDefinition, WorkflowStep } from './types.js';
+import type { Invoke, OutputSchema, WorkflowDefinition, WorkflowStep } from './types.js';
 import { opensCopy, resolveMode, runsInCheckout } from './workspace.js';
 
 /**
@@ -59,8 +59,8 @@ export interface WorkflowDescription {
     interactive: string[];
     /** The most steps a run may have leased at once, at most `ceiling`. */
     width: number;
-    /** The questions asked before a step runs, by path. */
-    gates: Array<{ step: string; kind: StepHitl['kind']; required: boolean; hasDefault: boolean; guards: GateGuards }>;
+    /** The questions asked before a step runs, by path, with what the step does once answered. */
+    gates: Array<{ step: string; required: boolean; hasDefault: boolean; guards: GateGuards } & ({ kind: 'approve' } | { kind: 'choose'; options: string[]; default?: string })>;
     /** Steps that run in a workspace copy rather than in the checkout, by path. */
     inWorkspace: string[];
     /** Steps whose succeeded passes a scorer judges, by path, with the scorers it lists. */
@@ -158,7 +158,13 @@ export function describeWorkflow(input: {
     for (const step of steps) {
       const path = `${scope.prefix}${step.id}`;
       const child = childOf(step);
-      if (step.hitl) facts.gates.push({ step: path, kind: step.hitl.kind, required: step.hitl.required, hasDefault: step.hitl.default !== undefined, guards: guardsOf(step, steps, scope.prefix) });
+      if (step.hitl) {
+        const { kind, options, required, default: choice } = step.hitl;
+        facts.gates.push({
+          step: path, required, hasDefault: choice !== undefined, guards: guardsOf(step, steps, scope.prefix),
+          ...(kind === 'choose' ? { kind, options, ...(choice !== undefined ? { default: choice } : {}) } : { kind }),
+        });
+      }
       if (!child && step.end === undefined && !runsInCheckout(step, scope.ancestors)) facts.inWorkspace.push(path);
       if (step.prompt !== undefined || step.promptFile !== undefined) facts.prompts.push(path);
       if (step.interactive) facts.interactive.push(path);

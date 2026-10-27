@@ -109,9 +109,20 @@ function autoAnswered(noun: string): string {
 
 type GateFact = WorkflowDescription['facts']['gates'][number];
 
-/** What optional `gate` guards, as a sentence. */
+/** What optional `gate` guards, as a sentence: what its step does, or for a choice, what it picks from. */
 function optionalGateFact(gate: GateFact): string {
-  return `Optional approval at ${gate.step}: ${guardsFact(gate.guards)}.`;
+  switch (gate.kind) {
+    case 'approve':
+      return `Optional approval at ${gate.step}: ${guardsFact(gate.guards)}.`;
+    case 'choose': {
+      const picks = gate.default !== undefined ? `"answer automatically" picks ${gate.default}` : 'no default, so "answer automatically" leaves it to you';
+      return `Optional choice at ${gate.step}: one of ${gate.options.join(', ')}; ${picks}.`;
+    }
+    default: {
+      const unhandled: never = gate;
+      return unhandled;
+    }
+  }
 }
 
 function guardsFact(guards: GateGuards): string {

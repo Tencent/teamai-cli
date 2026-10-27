@@ -356,6 +356,25 @@ describe('skill driver preflight of optional gates', () => {
       'How should it run?',
     ].join('\n') } } } } });
   });
+
+  it('names the options of an optional choice and what answering automatically picks, and lets the agent answer choices too', async () => {
+    expect(await questionOf({ gates: gates(`  - id: target
+    choose: { message: Where?, options: [staging, prod], default: staging }
+  - id: region
+    needs: [target]
+    choose: { message: Which region?, options: [eu, us] }
+  - id: ship-ok
+    needs: [region]
+    approve: Ship it?
+    command: echo shipped
+`) })).toMatchObject({ data: { describe: { ask: { kind: 'ask', question: { text: [
+      '- Optional choice at target: one of staging, prod; "answer automatically" picks staging.',
+      '- Optional choice at region: one of eu, us; no default, so "answer automatically" leaves it to you.',
+      '- Optional approval at ship-ok: before `echo shipped`.',
+      '- The recommended start lets this session\'s agent answer optional approvals and choices and say why; "answer optional approvals and choices automatically" answers each approval yes and each choice with its default.',
+      'How should it run?',
+    ].join('\n') } } } } });
+  });
 });
 
 describe('skill driver preflight in an unattended run', () => {
