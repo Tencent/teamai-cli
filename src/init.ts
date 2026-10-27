@@ -1241,7 +1241,8 @@ export async function initSelfRepo(options: GlobalOptions & {
       '--scope user is not supported in single-repo mode (`teamai init --self` / `teamai init .`): '
       + 'it installs at workspace scope. Run it again without --scope user. '
       + 'For a user-scope install of this repo, write ~/.teamai/config.yaml by hand with '
-      + 'repo.kind: self, repo.localPath: <repo>/.teamai, repo.businessRepoRoot: <repo> and scope: user.',
+      + 'scope: user, username: <you>, repo.kind: self, repo.remote: <origin URL>, '
+      + 'repo.localPath: <repo>/.teamai and repo.businessRepoRoot: <repo>.',
     );
     process.exit(1);
     return;

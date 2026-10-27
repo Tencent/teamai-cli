@@ -1179,6 +1179,10 @@ describe('init', () => {
       // which would clone/skeleton their business repo as a separate team repo.
       expect(errorCalls).not.toContain('teamai init --scope user');
       expect(errorCalls).toContain('repo.kind: self');
+      // The hand-written config must name every required field, or the first
+      // `status`/`pull`/`doctor` fails on repo.remote or username (#1455).
+      expect(errorCalls).toContain('repo.remote: <origin URL>');
+      expect(errorCalls).toContain('username: <you>');
       expect(saveLocalConfigForScope).not.toHaveBeenCalled();
     });
 
