@@ -9,6 +9,7 @@ import type { TeamaiInit } from './config.js';
 import { log } from './utils/logger.js';
 import { remotesMatch } from './utils/git.js';
 import { assertSafeResourceName } from './utils/path-safety.js';
+import { isOverrideInvalid } from './tool-launch/call.js';
 
 /** The caches an incremental extraction reuses, kept with each codebase's evidence. */
 const INCREMENTAL_CACHES = ['facts-cache.json', 'interfaces-cache.json'] as const;
@@ -413,6 +414,7 @@ export async function reconcileAndDeepEnrich(params: {
     await deepEnrich({ project: slug, evidenceDir, wikiRoot, cacheDir: sourceDir });
     log.info(`Deep enrich complete: ${slug}`);
   } catch (err) {
+    if (isOverrideInvalid(err)) throw err;
     log.debug(`deep-enrich failed for ${slug} (non-blocking): ${(err as Error).message}`);
   }
 }

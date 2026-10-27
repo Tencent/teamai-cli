@@ -16,7 +16,7 @@ vi.mock('../tool-launch/call.js', async (importOriginal) => ({
   }),
 }));
 
-import { callToolParallel } from '../tool-launch/call.js';
+import { CallError, callToolParallel } from '../tool-launch/call.js';
 import { extractCodebase } from '../codebase-extract.js';
 import { repoIdentity } from '../utils/git.js';
 import { codebaseCmd } from '../codebase-cmd.js';
@@ -162,6 +162,17 @@ describe('extract writes a fallback evidence manifest (#508)', () => {
       expect(component.docPath).toEqual(expect.any(String));
       expect(component.docPath?.length).toBeGreaterThan(0);
     }
+  });
+
+  it('fails instead of writing the fallback when the member names a tool teamai cannot run', async () => {
+    const root = createWidgetFixture();
+    // AI enrich only asks about a module with at least five facts.
+    fs.writeFileSync(path.join(root, 'src', 'shapes.ts'), ['Circle', 'Square', 'Triangle', 'Hexagon', 'Ellipse', 'Rhombus'].map((shape) => `export class ${shape} {\n  area() { return 1; }\n}\n`).join(''));
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    vi.mocked(callToolParallel).mockRejectedValueOnce(new CallError('override_invalid', 'TEAMAI_AI_TOOL is "gemini", which is not a tool teamai launches.'));
+
+    await expect(extractCodebase({ path: root, project: 'widget', json: true })).rejects.toMatchObject({ kind: 'override_invalid' });
+    expect(fs.existsSync(path.join(root, 'teamwiki', 'evidence', 'code', 'widget', '_manifest.json'))).toBe(false);
   });
 
   it('writes the same fallback when --skip-enrich is set', async () => {

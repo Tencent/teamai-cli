@@ -49,6 +49,7 @@ import { repoName } from './utils/repo-attribution.js';
 import type { GraphIndex } from './wiki-engine/core/graph-index.schema.js';
 import { routerTemplate, indexTemplate, HOT_TEMPLATE } from './wiki-engine/adapters/templates.js';
 import type { DomainGroup, IndexStats } from './wiki-engine/adapters/templates.js';
+import { isOverrideInvalid } from './tool-launch/call.js';
 
 export interface ExtractCodebaseOptions {
   path?: string;
@@ -1051,6 +1052,7 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<boo
         }
       }
     } catch (e) {
+      if (isOverrideInvalid(e)) throw e;
       if (!opts.json) {
         console.log(chalk.dim(`  [AI enrich skipped: ${(e as Error).message}]`));
       }
