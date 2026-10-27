@@ -732,14 +732,17 @@ describe('doctor — JSON report', () => {
         expect(emittedReport().notes).toContain('Sessions are not published: the team repo is an HTTP repo, which keeps no session archive, so sessions.publish acts as off.');
     });
 
-    it('names each enabled tool teamai reads no sessions from, in each mode whose sessions are published or scored', async () => {
-        mockedLoadTeamConfig.mockResolvedValue({ ...mockTeamConfig, toolPaths: { ...mockTeamConfig.toolPaths, muse: { skills: '.config/muse/skills' } } });
+    it('names the enabled tools teamai reads no sessions from in one line per mode whose sessions are published or scored', async () => {
+        mockedLoadTeamConfig.mockResolvedValue({
+            ...mockTeamConfig,
+            toolPaths: { ...mockTeamConfig.toolPaths, muse: { skills: '.config/muse/skills' }, lyre: { skills: '.config/lyre/skills' } },
+        });
 
         await doctor({ json: true });
 
         expect(emittedReport().notes?.filter((note) => note.includes('reads no sessions from'))).toEqual([
-            'Sessions are offered for publishing in attended mode, but teamai reads no sessions from muse: they are not published.',
-            'Sessions are published and scored in unattended mode, but teamai reads no sessions from muse: they are neither published nor judged.',
+            'Sessions are offered for publishing in attended mode, but teamai reads no sessions from muse, lyre: they are not published.',
+            'Sessions are published and scored in unattended mode, but teamai reads no sessions from muse, lyre: they are neither published nor judged.',
         ]);
     });
 

@@ -524,8 +524,8 @@ function usageReportNote({ localConfig, teamConfig }: DoctorContext): string {
 }
 
 /**
- * Each enabled tool teamai reads no sessions from, in each run mode whose sessions it publishes or scores (#1385):
- * such a tool's sessions are never captured, so they are neither published nor judged.
+ * The enabled tools teamai reads no sessions from, in one note per run mode whose sessions it publishes or scores
+ * (#1385): such a tool's sessions are never captured, so they are neither published nor judged.
  */
 async function unreadSessionToolNotes({ localConfig, teamConfig, toolPaths }: DoctorContext): Promise<string[]> {
   const tools = Object.keys(toolPaths).filter((tool) => AgentSession.platformForTool(tool) === undefined);
@@ -540,7 +540,7 @@ async function unreadSessionToolNotes({ localConfig, teamConfig, toolPaths }: Do
     if (published === undefined && judged === undefined) return [];
     const lead = [published, judged].filter((part) => part !== undefined).join(' and ');
     const outcome = published && judged ? 'neither published nor judged' : published ? 'not published' : 'not judged';
-    return tools.map((tool) => `Sessions are ${lead} in ${mode} mode, but teamai reads no sessions from ${tool}: they are ${outcome}.`);
+    return [`Sessions are ${lead} in ${mode} mode, but teamai reads no sessions from ${tools.join(', ')}: they are ${outcome}.`];
   });
 }
 
