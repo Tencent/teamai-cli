@@ -591,6 +591,19 @@ describe('teamai score --drain', () => {
     expect(archived.map((file) => readOnReports(origin, file))).toEqual([expect.stringContaining('The idle answer.')]);
   });
 
+  it('in attended mode with no settings, neither archives nor judges an attended session idle six hours', async () => {
+    const { origin, config } = await team();
+    capturedSession(SESSION, 'attended');
+    fakeClaude();
+
+    const drained = await drain();
+
+    expect(drained.code, drained.lines.join('\n')).toBe(0);
+    expect(drained.lines.filter((printed) => /Judged|Archived/.test(printed))).toEqual([]);
+    expect(await LabelStore.local(config)).toEqual([]);
+    expect(onReports(origin, 'sessions')).toEqual([]);
+  });
+
   it.each<[string, ScoreOptions]>([
     ['--next', { next: true }],
     ['a payload', { json: '{}' }],
@@ -683,6 +696,17 @@ describe('teamai score --drain', () => {
 });
 
 describe('the background pass a session start begins (teamai score-sessions)', () => {
+  it('with no settings, neither archives nor judges an attended session idle six hours', async () => {
+    const { origin, config } = await team();
+    capturedSession(SESSION, 'attended');
+    fakeClaude();
+
+    await scoreSessionsCommand();
+
+    expect(await LabelStore.local(config)).toEqual([]);
+    expect(onReports(origin, 'sessions')).toEqual([]);
+  });
+
   it('archives attended sessions idle six hours when sessions.publish is auto for attended, though it scores none', async () => {
     const { origin, config } = await team({ 'teamai.yaml': 'team: acme\nrepo: https://example.com/acme/team.git\nsessions:\n  publish: { attended: auto }\n' });
     capturedSession(SESSION, 'attended', { answer: 'The idle answer.' });
