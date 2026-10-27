@@ -27,7 +27,7 @@ import { typedIn, usedSkills } from '../skill-use.js';
 import { getDataHome, type LocalConfig } from '../types.js';
 import { readWorkspaceChildren } from '../workspace-children.js';
 import { redact } from '../utils/redact.js';
-import { AgentSession } from './agent-session.js';
+import { AgentSession, sessionKey } from './agent-session.js';
 import type { SubagentsRead } from './adapters/base.js';
 import { SessionCaptures, type CapturedSession, type SessionCapture } from './captures.js';
 import type { Session } from './ir.js';
@@ -235,7 +235,7 @@ async function lastEvents(): Promise<Map<string, string>> {
   for (const event of await readEvents()) {
     const platform = AgentSession.platformForTool(event.tool);
     if (!platform) continue;
-    const key = sessionKey(platform, event.sessionId);
+    const key = sessionKey({ platform, sessionId: event.sessionId });
     if ((latest.get(key) ?? '') < event.timestamp) latest.set(key, event.timestamp);
   }
   return latest;
@@ -250,11 +250,9 @@ async function lastActiveAt(captured: CapturedSession, events: ReadonlyMap<strin
   const written = await Promise.all(files.map((file) => fs.stat(file).then((stat) => stat.mtimeMs, () => undefined)));
   const known = written.filter((at): at is number => at !== undefined);
   if (known.length < files.length) return undefined;
-  const event = events.get(sessionKey(captured.platform, captured.sessionId));
+  const event = events.get(sessionKey(captured));
   return Math.max(...known, ...(event ? [Date.parse(event)] : []), ...captured.captures.map((capture) => Date.parse(capture.capturedAt)));
 }
-
-const sessionKey = (platform: string, sessionId: string) => `${platform}\0${sessionId}`;
 
 /** Whether a file the hooks of `captured` named is gone, so it is never finished, judged or published. */
 async function isGone(captured: CapturedSession): Promise<boolean> {
@@ -294,7 +292,7 @@ async function finished(captured: readonly CapturedSession[], now: string, inclu
 async function prunableBy(config: LocalConfig): Promise<ReadonlySet<string> | undefined> {
   const attempts = [...(await AttemptStore.read(config)).values()].flat();
   if (!attempts.some((attempt) => attempt.source === 'session')) return undefined;
-  return new Set((await SessionCaptures.list(config)).map((one) => sessionKey(one.platform, one.sessionId)));
+  return new Set((await SessionCaptures.list(config)).map(sessionKey));
 }
 
 /**
@@ -310,7 +308,7 @@ async function entries(config: LocalConfig, now: string, scoring: Extract<ScopeS
   const scorers = await sessionScorers(config);
   if (scorers.length === 0) return { entries: [], captured: await prunableBy(config) };
   const captured = await SessionCaptures.list(config);
-  const keys = new Set(captured.map((one) => sessionKey(one.platform, one.sessionId)));
+  const keys = new Set(captured.map(sessionKey));
   if (captured.length === 0) return { entries: [], captured: keys };
   const [labels, attempts] = await Promise.all([LabelStore.local(config), AttemptStore.read(config)]);
   const batch = batchesScorers({ team: scoring.batch });
@@ -372,7 +370,7 @@ function launchesToday(attempts: Iterable<AttemptRecord>, now: string): number {
 function gone(attempts: ReadonlyMap<string, readonly AttemptRecord[]>, captured: ReadonlySet<string>, now: string): string[] {
   const today = localDay(now);
   return [...attempts].filter(([, ofEntry]) => ofEntry.length > 0 && ofEntry.every((attempt) => attempt.source === 'session'
-    && !captured.has(sessionKey(attempt.subject.platform, attempt.subject.sessionId))
+    && !captured.has(sessionKey(attempt.subject))
     && localDay(attempt.leasedAt) !== today
     && !(attempt.status === 'leased' && !hasLapsed(attempt, now)))).map(([entry]) => entry);
 }

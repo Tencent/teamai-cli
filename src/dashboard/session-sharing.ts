@@ -8,8 +8,8 @@ import { explainRunMode, RUN_MODE_ENV, RUN_MODES, type ExplainedRunMode, type Ru
 import { scoringUnavailable } from '../scorers/home.js';
 import { LabelStore } from '../scorers/label-store.js';
 import { scopeScoring } from '../scorers/settings.js';
-import { AgentSession } from '../session-flow/agent-session.js';
-import { SessionCaptures, type CapturedSession } from '../session-flow/captures.js';
+import { AgentSession, sessionKey } from '../session-flow/agent-session.js';
+import { SessionCaptures } from '../session-flow/captures.js';
 import { sessionArchiveRoot } from '../session-flow/session-cmd-shared.js';
 import { SessionPolicy, type SessionPolicies } from '../session-flow/session-policy.js';
 import { SessionPublish } from '../session-flow/session-publish.js';
@@ -48,8 +48,6 @@ export type SessionSharing =
 
 type Configured = Extract<SessionSharing, { configured: true }>;
 
-const key = ({ platform, sessionId }: Pick<CapturedSession, 'platform' | 'sessionId'>) => `${platform}\0${sessionId}`;
-
 /**
  * Each session captured here by run mode (a capture with no mode counts as attended) and state: an attended one is
  * active until it is finished, an unattended one waits for a drain until one reaches it; a finished one waits to be
@@ -57,7 +55,7 @@ const key = ({ platform, sessionId }: Pick<CapturedSession, 'platform' | 'sessio
  */
 async function capturedHere(config: LocalConfig, now: string, publish: SessionPolicies): Promise<CapturedSessions> {
   const sessions = await SessionCaptures.list(config);
-  const finished = new Set((await SessionWork.finished(sessions, now, () => true)).map(key));
+  const finished = new Set((await SessionWork.finished(sessions, now, () => true)).map(sessionKey));
   const counts: CapturedSessions = {
     attended: { active: 0, finished: 0, waitingToArchive: 0, archived: 0 },
     unattended: { waitingForDrain: 0, finished: 0, waitingToArchive: 0, archived: 0 },
@@ -69,7 +67,7 @@ async function capturedHere(config: LocalConfig, now: string, publish: SessionPo
       continue;
     }
     if (await SessionWork.isGone(one)) continue;
-    if (finished.has(key(one))) {
+    if (finished.has(sessionKey(one))) {
       if (publish[mode].policy === 'auto') counts[mode].waitingToArchive += 1;
       else counts[mode].finished += 1;
       continue;

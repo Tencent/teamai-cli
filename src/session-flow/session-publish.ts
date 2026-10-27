@@ -13,7 +13,7 @@ import { runPasses, type RunPass } from '../workflow/loop.js';
 import { localRuns, settledHere } from '../workflow/scoring.js';
 import { installOwner } from '../workflow/store.js';
 import type { RunState } from '../workflow/types.js';
-import { AgentSession, recordedToolRoots, type ToolRootsLookup } from './agent-session.js';
+import { AgentSession, recordedToolRoots, sessionKey, type ToolRootsLookup } from './agent-session.js';
 import { archiveSessions, pushSession, type ArchiveSessionRef } from './archive.js';
 import { SessionCaptures } from './captures.js';
 import { SessionWork } from './session-work.js';
@@ -41,7 +41,7 @@ function recordFile(config: LocalConfig, key: PublishedKey): string {
 function recordName(key: PublishedKey): string {
   switch (key.kind) {
     case 'platform':
-      return `${key.platform}\0${key.sessionId}`;
+      return sessionKey(key);
     case 'tool':
       return `tool\0${key.tool}\0${key.sessionId}`;
     default: {
@@ -171,7 +171,7 @@ async function steps(config: LocalConfig, mode: RunMode, now: string): Promise<S
       if (reason !== undefined) {
         skipped.push({ step: pass.step, pass: pass.pass, reason });
         await record(config, { ...key, skippedAt: now, reason });
-      } else if (key.kind === 'platform') refs.set(`${key.platform}\0${key.sessionId}`, { platform: key.platform, sessionId: key.sessionId });
+      } else if (key.kind === 'platform') refs.set(sessionKey(key), { platform: key.platform, sessionId: key.sessionId });
     }
     if (refs.size === 0) {
       if (skipped.length > 0) published.push({ run: run.id, archived: 0, skipped });

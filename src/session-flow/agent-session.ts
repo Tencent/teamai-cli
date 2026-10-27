@@ -525,6 +525,9 @@ function platformForTool(tool: string): string | undefined {
   return sessionPlatformsOf(tool)[0] ?? (isSessionPlatform(tool) ? tool : undefined);
 }
 
+/** One string per session, for a set or a map keyed by session. */
+export const sessionKey = ({ platform, sessionId }: Pick<AgentSessionRef, 'platform' | 'sessionId'>): string => `${platform}\0${sessionId}`;
+
 /** The tool whose sessions `platform` holds, the reverse of `platformForTool`. */
 function toolForPlatform(platform: string): string {
   return sessionPlatformOwner(platform) ?? sessionPlatformFacts(platform)?.tool ?? platform;
