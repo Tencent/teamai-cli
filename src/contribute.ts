@@ -189,10 +189,18 @@ async function recordStepOutcome(localConfig: LocalConfig, marker: string, relPa
     log.warn(`Learning ${id} is not recorded on workflow attempt ${marker}: ${e instanceof Error ? e.message : String(e)}`);
     return;
   }
-  if (recorded === 'bad_marker') {
-    log.warn(`Learning ${id} is not recorded on a workflow step: ${ATTEMPT_ENV} is "${marker}", not <run>/<attempt>.`);
-  } else if (recorded === 'unknown_run') {
-    log.warn(`Learning ${id} is not recorded on workflow attempt ${marker}: this scope holds no such run. Run teamai contribute in the step's checkout, or pass --scope with the scope the run started in.`);
+  switch (recorded) {
+    case 'appended': return;
+    case 'bad_marker':
+      log.warn(`Learning ${id} is not recorded on a workflow step: ${ATTEMPT_ENV} is "${marker}", not <run>/<attempt>.`);
+      return;
+    case 'unknown_run':
+      log.warn(`Learning ${id} is not recorded on workflow attempt ${marker}: this scope holds no such run. Run teamai contribute in the step's checkout, or pass --scope with the scope the run started in.`);
+      return;
+    default: {
+      const unhandled: never = recorded;
+      return unhandled;
+    }
   }
 }
 

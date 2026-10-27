@@ -394,7 +394,7 @@ export async function startDashboard(port?: number): Promise<void> {
         res.end(JSON.stringify(SessionOutcomes.summarize(events, { ...(key ? { dataHomeKey: key } : {}), now: Date.now() })));
       } catch (e) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: (e as Error).message }));
+        res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
       }
       return;
     }

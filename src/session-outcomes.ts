@@ -11,14 +11,15 @@
  */
 import path from 'node:path';
 import { z } from 'zod';
-import { RunModeSchema, type RunMode } from './launch-context.js';
-import { appendEvent, dataHomeKey, readSessionOutcomes, sessionRuns } from './dashboard-collector.js';
-import { addCounts, uniqueOutcomes, type SessionOutcomeEvent, type WorkOutcome } from './outcomes.js';
+import { RunModeSchema } from './launch-context.js';
+import { appendEvent, dataHomeKey, readSessionOutcomes, SESSION_OUTCOME_RETENTION_MS, sessionRuns } from './dashboard-collector.js';
+import { addCounts, uniqueOutcomes, type SessionOutcomeEvent, type SessionUsage, type WorkOutcome } from './outcomes.js';
 import { interventionsEntry, promptTokensEntry, snapshotPathIn, type ReportedInterventions, type ReportedPromptTokens } from './session-owners.js';
 import { FINISHED_AFTER_MS } from './session-flow/session-work.js';
 import { getDataHome, type DashboardEvent, type LocalConfig, type SessionMetrics, type UserOutcomeStats } from './types.js';
 import { readJson, writeJson } from './utils/fs.js';
 import { log } from './utils/logger.js';
+import { CommitIdSchema } from './workflow/delivery-schema.js';
 import { findDelivered } from './workflow/pr-delivery.js';
 import { PrUrlSchema } from './workflow/pr-url.js';
 import { git } from './workflow/worktree.js';
@@ -42,14 +43,8 @@ type Facts = z.infer<typeof FactsSchema>;
 const EntrySchema = z.union([z.object({ reported: z.literal(true) }), z.object({ reported: z.literal(false), facts: FactsSchema })]);
 type Entry = z.infer<typeof EntrySchema>;
 
-/** A session this report counts, with what it counts it with. */
-export interface FinishedSession {
-  sessionId: string;
-  tool?: string;
-  runMode?: RunMode;
-  outcomes: WorkOutcome[];
-  counted: { tokens: { input: number; output: number }; interventions: number };
-}
+/** A session this report counts, with what it counts it with: what {@link markReported} records of it. */
+export type FinishedSession = Pick<SessionOutcomeEvent, 'sessionId' | 'tool' | 'runMode' | 'outcomes'> & { counted: SessionUsage };
 
 /** What `fold` hands the report: the counts to add, and the sessions they count. */
 export interface OutcomeFold {
@@ -149,7 +144,7 @@ async function sessionCommits(facts: Facts): Promise<string[]> {
   const listed = await git(cwd, [
     'log', '--reverse', '--format=%H', `--author=${author}`, ...(startedAt ? [`--since=${startedAt}`] : []), `${startHead}..${endHead}`,
   ], { timeoutMs: GIT_TIMEOUT_MS });
-  return listed.code === 0 ? listed.stdout.split('\n').filter((sha) => /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(sha)) : [];
+  return listed.code === 0 ? listed.stdout.split('\n').filter((sha) => CommitIdSchema.safeParse(sha).success) : [];
 }
 
 /** A session's pull request lookup that got an answer: the open pull request it found, or none. */
@@ -158,6 +153,11 @@ type PrLookup = z.infer<typeof PrLookupSchema>;
 
 function prCachePath(config: LocalConfig): string {
   return path.join(getDataHome(config), 'dashboard', 'outcome-prs.json');
+}
+
+async function readPrCache(config: LocalConfig): Promise<Record<string, PrLookup>> {
+  const parsed = z.record(PrLookupSchema).safeParse(await readJson<unknown>(prCachePath(config)));
+  return parsed.success ? parsed.data : {};
 }
 
 /**
@@ -206,8 +206,7 @@ async function fold(input: FoldInput): Promise<OutcomeFold> {
   const due = Object.entries(baseline).flatMap(([sessionId, entry]) =>
     (!entry.reported && Date.parse(entry.facts.activeAt) + FINISHED_AFTER_MS <= input.now ? [{ sessionId, facts: entry.facts }] : []));
   // A session's pull request is looked up once, and the answer kept for a report whose push fails.
-  const cachedPrs = z.record(PrLookupSchema).safeParse(await readJson<unknown>(prCachePath(input.config)));
-  const prs: Record<string, PrLookup> = cachedPrs.success ? cachedPrs.data : {};
+  const prs = await readPrCache(input.config);
   let prsChanged = false;
   // Each lookup may wait on a host, so they run together; one that fails leaves its pull request out.
   const finished = await Promise.all(due.map(async ({ sessionId, facts }): Promise<FinishedSession> => {
@@ -255,7 +254,6 @@ function rowsOf(sessions: readonly FinishedSession[]): UserOutcomeStats {
   return rows;
 }
 
-const SUMMARY_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 const SUMMARY_RECENT_LIMIT = 20;
 
 /** A finished session as the dashboard lists it. */
@@ -272,12 +270,13 @@ export interface OutcomeSummary {
 }
 
 /**
- * The finished sessions the report counted in the last 30 days, from the `counted` session outcome events
- * {@link markReported} wrote: those of the scope whose data home key is `dataHomeKey`, or every scope's without one.
+ * The finished sessions the report counted in the last 30 days, as long as compaction keeps their lines, from the
+ * `counted` session outcome events {@link markReported} wrote: those of the scope whose data home key is `dataHomeKey`,
+ * or every scope's without one.
  */
 function summarize(events: readonly SessionOutcomeEvent[], { dataHomeKey: key, now }: { dataHomeKey?: string; now: number }): OutcomeSummary {
   const counted = events.flatMap(({ sessionId, tool, runMode, outcomes, counted: usage, timestamp, dataHomeKey: eventKey }): CountedSession[] =>
-    (usage && (key === undefined || eventKey === key) && now - Date.parse(timestamp) <= SUMMARY_WINDOW_MS
+    (usage && (key === undefined || eventKey === key) && now - Date.parse(timestamp) <= SESSION_OUTCOME_RETENTION_MS
       ? [{ sessionId, ...(tool ? { tool } : {}), ...(runMode ? { runMode } : {}), countedAt: timestamp, outcomes, counted: usage }]
       : []));
   return {
@@ -288,12 +287,19 @@ function summarize(events: readonly SessionOutcomeEvent[], { dataHomeKey: key, n
   };
 }
 
-/** Once the report that counted `finished` is pushed: each is flagged reported, and its outcomes recorded here. */
+/**
+ * Once the report that counted `finished` is pushed: each is flagged reported, its outcomes recorded here, and its
+ * pull request lookup, which no later report needs, dropped.
+ */
 async function markReported(config: LocalConfig, finished: readonly FinishedSession[]): Promise<void> {
   if (finished.length === 0) return;
   const baseline = await readBaseline(config);
   for (const { sessionId } of finished) baseline[sessionId] = { reported: true };
   await writeJson(baselinePath(config), baseline);
+  const prs = await readPrCache(config);
+  const looked = finished.filter(({ sessionId }) => Object.hasOwn(prs, sessionId));
+  for (const { sessionId } of looked) delete prs[sessionId];
+  if (looked.length > 0) await writeJson(prCachePath(config), prs);
   const key = await dataHomeKey(getDataHome(config));
   const timestamp = new Date().toISOString();
   for (const session of finished) {

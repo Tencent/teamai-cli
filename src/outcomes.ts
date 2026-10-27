@@ -6,10 +6,11 @@
 import { z } from 'zod';
 import { RUN_MODES, RunModeSchema } from './launch-context.js';
 import type { OutcomeCounts, UserOutcomeStats } from './types.js';
+import { CommitIdSchema } from './workflow/delivery-schema.js';
 import { PrUrlSchema } from './workflow/pr-url.js';
 
 export const WorkOutcomeSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('commit'), sha: z.string().regex(/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/) }),
+  z.object({ kind: z.literal('commit'), sha: CommitIdSchema }),
   z.object({ kind: z.literal('pr'), url: PrUrlSchema }),
   z.object({ kind: z.literal('learning'), id: z.string().min(1) }),
 ]);
@@ -71,6 +72,13 @@ export function learningIdOf(relPath: string): string {
   return relPath.replace(/\.md$/, '');
 }
 
+/** What a counted session adds to its rows besides itself: its tokens and interventions. */
+export const SessionUsageSchema = z.object({
+  tokens: z.object({ input: z.number().nonnegative(), output: z.number().nonnegative() }),
+  interventions: z.number().int().nonnegative(),
+});
+export type SessionUsage = z.infer<typeof SessionUsageSchema>;
+
 /**
  * One line of the dashboard event log naming outcomes of a session: a learning `contribute` recorded for it, or what
  * the usage report found once the session was finished, with what it counted the session with (`counted`). `runMode`
@@ -85,9 +93,6 @@ export const SessionOutcomeEventSchema = z.object({
   runMode: RunModeSchema.optional(),
   launchedBy: z.string().min(1).optional(),
   outcomes: z.array(WorkOutcomeSchema),
-  counted: z.object({
-    tokens: z.object({ input: z.number().nonnegative(), output: z.number().nonnegative() }),
-    interventions: z.number().int().nonnegative(),
-  }).optional(),
+  counted: SessionUsageSchema.optional(),
 });
 export type SessionOutcomeEvent = z.infer<typeof SessionOutcomeEventSchema>;
