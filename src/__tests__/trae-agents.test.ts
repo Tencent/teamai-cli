@@ -48,12 +48,12 @@ describe('Trae subagents', () => {
     await fse.remove(sandbox);
   });
 
-  const configFor = (tool: string, scope: 'user' | 'project'): LocalConfig => LocalConfigSchema.parse({
+  const configFor = (tool: string, scope: 'user' | 'project', tools: readonly string[] = [tool]): LocalConfig => LocalConfigSchema.parse({
     repo: { localPath: teamRepo, remote: 'fixture' },
     username: 'tester',
     scope,
     ...(scope === 'project' ? { projectRoot } : {}),
-    enabledAgents: [tool],
+    enabledAgents: tools,
     additionalRoles: [],
   });
 
@@ -81,7 +81,7 @@ describe('Trae subagents', () => {
 
   it('both editions in a project share one .trae/agents file without an edition\'s model, and a second pull leaves it alone', async () => {
     await fse.writeFile(item.sourcePath, `${AGENT_YAML}tool_extras:\n  trae-cn:\n    model: kimi-k2.5\n`);
-    const config = { ...configFor('trae', 'project'), enabledAgents: ['trae', 'trae-cn'] } as LocalConfig;
+    const config = configFor('trae', 'project', ['trae', 'trae-cn']);
     const file = path.join(projectRoot, '.trae', 'agents', `${AGENT}.md`);
 
     await new AgentsHandler().pullItem(item, teamConfig, config);
@@ -90,6 +90,14 @@ describe('Trae subagents', () => {
 
     expect(matter(first).data).toEqual({ name: AGENT, description: 'Review team changes', tools: 'Read, Grep, Glob' });
     expect(await fse.readFile(file, 'utf8')).toBe(first);
+  });
+
+  it('keeps an agent the team gives no tools without tools, since Trae gives every tool to one with no tools field', async () => {
+    await fse.writeFile(item.sourcePath, AGENT_YAML.replace('tools: [Read, Grep, Glob]', 'tools: []'));
+    await new AgentsHandler().pullItem(item, teamConfig, configFor('trae-cn', 'project'));
+
+    const { data } = matter(await fse.readFile(path.join(projectRoot, '.trae', 'agents', `${AGENT}.md`), 'utf8'));
+    expect(data['tools']).toBe('');
   });
 
   it('trae-cn: a user-scope team agent lands in ~/.trae-cn/agents', async () => {

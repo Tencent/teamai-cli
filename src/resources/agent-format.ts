@@ -413,8 +413,9 @@ function renderForTrae(spec: AgentSpec, extras: Record<string, unknown> | undefi
   return renderMarkdownAgent(rest, editionModel ? extras : projectExtras, joined === undefined ? undefined : { tools: joined });
 }
 
+/** Trae gives an agent with no `tools` every tool, and one with `tools: ''` none. */
 function traeTools(tools: string[] | string | undefined): string | undefined {
-  if (tools === undefined || tools.length === 0) return undefined;
+  if (tools === undefined) return undefined;
   return Array.isArray(tools) ? tools.join(', ') : tools;
 }
 
