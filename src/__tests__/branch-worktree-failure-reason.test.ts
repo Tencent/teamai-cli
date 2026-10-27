@@ -24,9 +24,24 @@ describe('failureReason', () => {
     );
   });
 
-  it('keeps the whole message when no line of it is git saying what went wrong', () => {
+  it('keeps the cause ssh gives for a push it could not make', () => {
+    const denied = [
+      'git@example.invalid: Permission denied (publickey).',
+      'fatal: Could not read from remote repository.',
+      '',
+      'Please make sure you have the correct access rights',
+      'and the repository exists.',
+      '',
+    ].join('\n');
+
+    expect(failureReason(new Error(denied))).toBe(
+      'git@example.invalid: Permission denied (publickey).; fatal: Could not read from remote repository.; Please make sure you have the correct access rights; and the repository exists.',
+    );
+  });
+
+  it('keeps every line of a failure that is not git, on one line', () => {
     const message = "EACCES: permission denied, open '/tmp/acme/teamai-reports/stats/tester.yaml'\nwhile writing the stats";
 
-    expect(failureReason(new Error(message))).toBe(message);
+    expect(failureReason(new Error(message))).toBe("EACCES: permission denied, open '/tmp/acme/teamai-reports/stats/tester.yaml'; while writing the stats");
   });
 });

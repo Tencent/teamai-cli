@@ -553,17 +553,14 @@ export class CheckoutRefusedError extends Error {
   }
 }
 
-/** The lines of git's output that say what went wrong, as opposed to its progress. */
-const GIT_PROBLEM_LINE = /^(?:remote:\s*\S|!\s|error:|fatal:)/;
+/** The lines of git's output that report its progress. Every other line, such as the cause ssh prints, says what went wrong. */
+const GIT_PROGRESS_LINE = /^(?:To |Pushing to |hint:|Enumerating |Counting |Delta |Compressing |Writing |Total |Done$|remote:$|remote: (?:Enumerating|Counting|Compressing|Resolving|Total))/;
 
-/**
- * The reason a failed side-branch write reports: short for a refusal that was warned; for a git failure, only the
- * lines that say what went wrong; whole otherwise.
- */
+/** The reason a failed side-branch write reports: short for a refusal that was warned, else its lines but git's progress, on one line. */
 export function failureReason(e: unknown): string {
   if (e instanceof CheckoutRefusedError && warnedRefusals.has(e.message)) return e.summary;
   const message = e instanceof Error ? e.message : String(e);
-  const problems = message.split('\n').map((line) => line.trim().replace(/\s+/g, ' ')).filter((line) => GIT_PROBLEM_LINE.test(line));
+  const problems = message.split('\n').map((line) => line.trim().replace(/\s+/g, ' ')).filter((line) => line !== '' && !GIT_PROGRESS_LINE.test(line));
   return problems.length > 0 ? problems.join('; ') : message;
 }
 
