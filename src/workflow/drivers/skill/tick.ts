@@ -3,6 +3,7 @@
  * effect, and feeds each answer back as the next input. It holds the lock only while it ticks, never across a sleep.
  */
 import { driverIdentity } from '../../../driver-identity.js';
+import type { ToolId } from '../../../types.js';
 import { canonicalJson } from '../../../utils/canonical-json.js';
 import type { RunReadied } from '../../protocol.js';
 import type { AttemptId, RunId, RunLock } from '../../store.js';
@@ -289,7 +290,7 @@ async function called(context: SkillContext, lock: RunLock, same: Literal, input
     const taken = traced(context, readiedRow({
       run, readied, kept: state !== undefined, mode: context.mode, ...(local !== undefined ? { local } : {}), ...(attended !== undefined ? { attended } : {}), answers,
     }));
-    if (taken && 'answer' in taken) return { answer: { error: errorOf(taken.answer, { invocation: context.invocation, same, localTool }) } };
+    if (taken && 'answer' in taken) return { answer: { error: errorOf(taken.answer, { invocation: context.invocation, same, localTool, tool: input.resume?.tool }) } };
     if (taken) {
       return { state: plannedState(context, run, taken.start) };
     }
@@ -329,7 +330,7 @@ async function finish(context: SkillContext, lock: RunLock, state: SkillState, t
  * A `resume --driver skill`: `claim` takes the run from another install that owns it; `confirmed`, the person's yes to
  * continue a run of an `invoke: ask` workflow; `answers`, its options.
  */
-interface Resume { claim: boolean; confirmed: boolean; answers: ResumeAnswers }
+interface Resume { claim: boolean; confirmed: boolean; answers: ResumeAnswers; tool?: ToolId }
 
 /**
  * A call that answers with a turn at once: `next`, a takeover, a resume, an answer to the host question, an ack, a place
@@ -351,7 +352,7 @@ function literalOf(invocation: Invocation, run: RunId, call: ForegroundCall): Li
     case 'takeover':
       return takeoverLiteral(invocation, run, { confirmed: call.confirmed });
     case 'resume':
-      return skillResumeLiteral(invocation, run, { claim: call.claim, ...call.answers, noJudge: call.answers.judge === false, confirmed: call.confirmed });
+      return skillResumeLiteral(invocation, run, { claim: call.claim, ...call.answers, noJudge: call.answers.judge === false, confirmed: call.confirmed, tool: call.tool });
     case 'choose':
       return chooseHostLiteral(invocation, run, call.choice);
     case 'ack':

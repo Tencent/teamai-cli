@@ -132,6 +132,7 @@ describe('--tools of the skill driver', () => {
     expect(parseSkillCall({ kind: 'resume', run: RUN, options: { tools: ' default = hermes ' } }, {})).toMatchObject({ kind: 'resume', run: RUN, tool: 'hermes' });
     expect(skillCall(startLiteral('teamai', 'check', { tool: 'omp' }), 'teamai')).toMatchObject({ kind: 'start', name: 'check', tool: 'omp' });
     expect(skillCall(describeLiteral('teamai', 'check', { tool: 'omp' }), 'teamai')).toEqual({ kind: 'describe', name: 'check', tool: 'omp' });
+    expect(skillCall(skillResumeLiteral('teamai', RUN, { claim: true, tool: 'omp' }), 'teamai')).toMatchObject({ kind: 'resume', run: RUN, claim: true, tool: 'omp' });
   });
 
   it('refuses a role map or a tool teamai does not know', () => {

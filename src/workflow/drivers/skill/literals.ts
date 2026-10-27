@@ -81,9 +81,10 @@ export function resumeLiteral(invocation: Invocation, run: RunId, options: { too
  * `claim` takes it from another install that owns it: printed only for the person to agree to. `confirmed` carries the
  * person's yes to continue a run of an `invoke: ask` workflow. The other options are a start's (`startLiteral`).
  */
-export function skillResumeLiteral(invocation: Invocation, run: RunId, options: { claim?: boolean; parallel?: number; hitl?: HitlMode; noJudge?: boolean; confirmed?: boolean } = {}): Literal {
+export function skillResumeLiteral(invocation: Invocation, run: RunId, options: { claim?: boolean; parallel?: number; hitl?: HitlMode; noJudge?: boolean; confirmed?: boolean; tool?: string } = {}): Literal {
   return LiteralSchema.parse([
     `${invocation} workflow resume ${run} --driver skill`,
+    ...toolsWords(options.tool),
     ...(options.claim ? ['--claim'] : []),
     ...runOptionWords(options),
     ...(options.confirmed ? ['--confirmed'] : []),

@@ -1006,6 +1006,17 @@ steps:
     } } } });
   });
 
+  it('tells a session whose host names no tool to name it on the resume of a run it does not drive', async () => {
+    const harness = await skillHarness({ check: CHECK }, { tool: null });
+    roots.push(harness.root);
+    const other = await harness.context.client.start('check', { checkout: harness.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
+    if (!('data' in other) || typeof other.data.run !== 'string') throw new Error(JSON.stringify(other));
+    const run = RunIdSchema.parse(other.data.run);
+    expect(await harness.call({ kind: 'next', run, wait: false })).toMatchObject({ error: {
+      code: 'not_skill_run', message: expect.stringMatching(/ This coding session names no tool: add --tools default=<tool>, the tool it works in, to the command in next\.$/), next: `teamai workflow resume ${run} --driver skill`,
+    } });
+  });
+
   it('a step that needs a model fails in a session whose host names no tool, and says how to name it', async () => {
     const harness = await skillHarness({ review: REVIEW.replace('    prompt: Review the change.', '    prompt: Review the change.\n    model: claude-opus-4-1') }, { tool: null });
     roots.push(harness.root);

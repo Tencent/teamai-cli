@@ -1350,6 +1350,8 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       expect(await back.call({ kind: 'resume', run, claim: false, confirmed: false, answers: {} })).toEqual({
         error: { code: 'not_owner', message: expect.stringContaining(`Run ${run} is owned by member`), next: `teamai workflow resume ${run} --driver skill --claim` },
       });
+      expect(await back.call({ kind: 'resume', run, claim: false, confirmed: false, answers: {}, tool: 'claude' }))
+        .toMatchObject({ error: { code: 'not_owner', next: `teamai workflow resume ${run} --driver skill --tools default=claude --claim` } });
       expect(await turnOf(await back.call({ kind: 'resume', run, claim: true, confirmed: false, answers: {} }))).toMatchObject({ run, status: 'driving', actions: [{ kind: 'choose', about: 'host' }] });
       return [...member.rows, ...back.rows];
     },

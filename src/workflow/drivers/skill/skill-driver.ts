@@ -307,7 +307,7 @@ async function answerOf(call: SkillCall, caller: SkillContext): Promise<SkillAns
       if (call.answers.parallel !== undefined && call.answers.parallel > ceiling) {
         return { error: { code: 'invalid_arguments', message: `--parallel ${call.answers.parallel} is above the most this machine runs at once, ${ceiling}.`, next: null } };
       }
-      return foreground(context, call.run, { kind: 'resume', claim: call.claim, confirmed: call.confirmed, answers: call.answers });
+      return foreground(context, call.run, { kind: 'resume', claim: call.claim, confirmed: call.confirmed, answers: call.answers, ...(call.tool !== undefined ? { tool: call.tool } : {}) });
     }
     case 'next':
       return call.wait ? poll(context, call.run) : foreground(context, call.run, { kind: 'next' });

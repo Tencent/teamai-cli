@@ -195,7 +195,7 @@ export interface SkillError {
  * The error a row answers, with its message and the literal to run instead. `run` names the run of an engine error;
  * `localTool`, the prompt tool a local start or resume the refusal prints names (`localPromptTool`).
  */
-export function errorOf(answer: Answer, context: { invocation: Invocation; same: Literal; run?: RunId; localTool?: string }): SkillError {
+export function errorOf(answer: Answer, context: { invocation: Invocation; same: Literal; run?: RunId; localTool?: string; tool?: string }): SkillError {
   const { invocation, same } = context;
   if (answer.kind === 'engine-error') {
     const next = answer.next === null ? null : context.run === undefined || answer.next === 'same' ? same : answer.next === 'poll' ? pollLiteral(invocation, context.run) : nextLiteral(invocation, context.run);
@@ -204,12 +204,15 @@ export function errorOf(answer: Answer, context: { invocation: Invocation; same:
   const { refusal } = answer;
   return {
     code: refusal.code, message: refusalMessage(refusal, { invocation, tool: context.localTool }), ...(refusal.code === 'orchestrator_active' ? { idleSeconds: refusal.idleSeconds } : {}),
-    next: refusalNext(refusal, { invocation, same }),
+    next: refusalNext(refusal, { invocation, same, tool: context.tool }),
   };
 }
 
-/** The literal each refusal names to run instead, null when only the person can act on it; `same` is the call refused. */
-function refusalNext(refusal: Refusal, context: { invocation: Invocation; same: Literal }): Literal | null {
+/**
+ * The literal each refusal names to run instead, null when only the person can act on it; `same` is the call refused,
+ * and `tool` the tool it declared.
+ */
+function refusalNext(refusal: Refusal, context: { invocation: Invocation; same: Literal; tool?: string }): Literal | null {
   const { invocation } = context;
   switch (refusal.code) {
     case 'needs_local_driver':
@@ -221,7 +224,7 @@ function refusalNext(refusal: Refusal, context: { invocation: Invocation; same: 
       return skillResumeLiteral(invocation, refusal.run);
     case 'not_owner':
     case 'run_not_found':
-      return skillResumeLiteral(invocation, refusal.run, { claim: true });
+      return skillResumeLiteral(invocation, refusal.run, { claim: true, tool: context.tool });
     case 'orchestrator_active':
       return takeoverLiteral(invocation, refusal.run);
     case 'choice_pending':
@@ -255,7 +258,7 @@ function refusalMessage(refusal: Refusal, local: { invocation: Invocation; tool?
       return `Start ${refusal.name} from its describe reply: ${said.join('; ')}. Run the describe literal and ask the person.`;
     }
     case 'not_skill_run':
-      return `Run ${refusal.run} is not driven by the skill driver on this machine. Ask the person whether to continue it from this session, and run the command in next only when they agree: it takes the run over from the machine that last drove it. The person can instead continue it in a terminal with ${resumeLiteral(local.invocation, refusal.run, { tool: local.tool })}.`;
+      return `Run ${refusal.run} is not driven by the skill driver on this machine. Ask the person whether to continue it from this session, and run the command in next only when they agree: it takes the run over from the machine that last drove it. The person can instead continue it in a terminal with ${resumeLiteral(local.invocation, refusal.run, { tool: local.tool })}.${refusal.toolNamed ? '' : ' This coding session names no tool: add --tools default=<tool>, the tool it works in, to the command in next.'}`;
     case 'not_owner':
       return `Run ${refusal.run} is owned by ${refusal.owner}, who claimed it at ${refusal.since}. Ask the person whether that install is done with it, and run the command in next only when they agree to take it from there; otherwise the run goes on there.`;
     case 'run_not_found':
