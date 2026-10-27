@@ -87,4 +87,16 @@ describe('side-branch worktree ownership across scopes (#1443)', () => {
     expect(fs.existsSync(userWt)).toBe(true);
     expect(fs.existsSync(projectWt)).toBe(false);
   });
+
+  it('leaves a checkout the member made outside teamai alone', async () => {
+    const elsewhere = path.join(sandbox, 'elsewhere-reports');
+    git(['worktree', 'add', '-q', elsewhere, 'teamai-reports'], business);
+
+    // teamai did not create that checkout, so it must not delete it, however
+    // clean: the worktree add fails and the member is told which one is in the way.
+    await expect(ensureReportsWorktree(userConfig)).rejects.toThrow(/already (used by worktree|checked out)/);
+
+    expect(fs.existsSync(elsewhere)).toBe(true);
+    expect(fs.existsSync(path.join(process.env.HOME!, '.teamai', 'reports-wt'))).toBe(false);
+  });
 });
