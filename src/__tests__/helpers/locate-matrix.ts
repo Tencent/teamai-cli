@@ -86,6 +86,8 @@ export type FilesRow = RowCommon & {
   /** OpenCode's `instructions` key (rules, blocks); null when the row omits it and the location has the field. */
   readonly activation?: PlaceSpec;
   readonly alternate?: PlaceSpec;
+  /** The project file a team repo's workspace takes the team's hooks in (Copilot); null when the row omits it and the location has the field. */
+  readonly workspace?: PlaceSpec;
   readonly writtenBy?: string;
   /** Cells whose write the tool does not read from some cwd, with the issue that tracks it. */
   readonly broken?: Partial<Record<Cwd, { readonly reason: 'not-read' | 'shadowed' | 'cwd-only' | 'outside-workspace'; readonly issue: `#${number}` }>>;
@@ -216,6 +218,7 @@ function expectFiles(row: FilesRow, where: Location, cell: Cell, host: Host): vo
   if ('activation' in where) expect(where.activation).toEqual(row.activation === undefined ? null : expect.objectContaining(placeOf(row.activation, cell)));
   if ('alternate' in where) expect(where.alternate).toEqual(row.alternate === undefined ? null : expect.objectContaining(placeOf(row.alternate, cell)));
   if ('writtenBy' in where) expect(where.writtenBy).toEqual(row.writtenBy ?? null);
+  if ('workspace' in where) expect(where.workspace).toEqual(row.workspace === undefined ? null : expect.objectContaining(placeOf(row.workspace, cell)));
   const broken = row.broken?.[cell.cwd];
   expect(unreadWrites<Place>(where, host).map((unread) => unread.reason)).toEqual(broken ? [broken.reason] : []);
 }

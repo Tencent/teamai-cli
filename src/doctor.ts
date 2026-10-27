@@ -34,7 +34,7 @@ import {
 } from './types.js';
 import { hookSettingsFile, installOf, isInstalledFor, locate, ownOf, writable, type Gate, type Install } from './locate.js';
 import { samePlace } from './resources/places.js';
-import { describeInvalidToolHomes, envToolHome, realHost, reloadToolHomes, toolHome, toolHomesPath } from './tool-home.js';
+import { describeInvalidToolHomes, envToolHome, realHost, reloadToolHomes, toolHomesPath } from './tool-home.js';
 import { isToolId } from './tools.js';
 import { isCodexTool } from './utils/tool-names.js';
 import { TEAMAI_HOOK_SUBCOMMANDS, isCodexTrustGatedTool, codexTrustReminder, keptTeamHookEntries, readCodexHookTrustForScope } from './hooks.js';
@@ -395,11 +395,10 @@ async function buildHookChecks(
   toolPaths: TeamaiConfig['toolPaths'],
   hookToolPaths: TeamaiConfig['toolPaths'],
   baseDir: string,
-  localConfig: LocalConfig,
   install: Install,
 ): Promise<Check[]> {
   const checks: Check[] = [];
-  for (const [tool, paths] of Object.entries(toolPaths)) {
+  for (const tool of Object.keys(toolPaths)) {
     if (tool === 'kiro') {
       if (!await pathExists(path.join(getUserHome(), '.kiro'))) continue;
       const { hasKiroHooks } = await import('./kiro-hooks.js');
@@ -435,7 +434,7 @@ async function buildHookChecks(
     }
     const settings = hookToolPaths[tool]?.settings;
     const hookPath = hookToolPaths[tool]?.hooks
-      ? path.join(tool === COPILOT_TOOL_ID && resolveHookScope(localConfig).scope === 'user' ? toolHome(COPILOT_TOOL_ID) : baseDir, hookToolPaths[tool]?.hooks ?? paths.hooks)
+      ? ownOf(await locate(tool, 'hooks', install))?.path
       : settings
         ? hookSettingsFile(tool, baseDir, settings)
         : undefined;
@@ -784,7 +783,7 @@ export async function buildChecks(ctx: DoctorContext, stage: CheckStage = 'docto
     ...buildToolHomeChecks(localConfig),
     ...await buildEnabledToolChecks(ctx),
     ...await buildHeldSurfaceChecks(ctx),
-    ...await buildHookChecks(toolPaths, hookToolPaths, baseDir, localConfig, installOf(teamConfig ?? { toolPaths }, localConfig)),
+    ...await buildHookChecks(toolPaths, hookToolPaths, baseDir, installOf(teamConfig ?? { toolPaths }, localConfig)),
     ...await buildDeliveryChecks(ctx),
     ...await buildSkillDirChecks(ctx),
     ...await buildRecordedPlaceChecks(ctx, 'rules'),

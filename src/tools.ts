@@ -195,6 +195,12 @@ export type HookAdapter = { readonly channel: 'adapter'; readonly adapter: HookA
 export type HooksChannels = {
   readonly user: HookSettings<HomeRead> | HookAdapter | 'none' | 'unknown';
   readonly self: HookSettings<HomeRead | ProjectRead> | 'user' | 'none' | 'unknown';
+  /**
+   * A workspace of a team repo also takes the team's hooks in this project
+   * file, while the user hooks keep the built-ins (Copilot's
+   * `.github/hooks/teamai.json`). Absent: the workspace takes the user hooks only.
+   */
+  readonly workspace?: HookSettings<ProjectRead>;
 };
 
 /**
@@ -547,7 +553,11 @@ export const TOOLS = {
       user: { format: 'copilot', reads: [{ base: 'home', path: '.copilot/mcp-config.json', evidence: 'verified' }] },
       project: { format: 'copilot', reads: [{ base: 'project', path: '.github/mcp.json', when: 'workspaceUnder', evidence: 'verified' }] },
     },
-    hooks: { user: { channel: 'settings', format: 'copilot', reads: [{ base: 'home', path: '.copilot/hooks/teamai.json', evidence: 'source' }] }, self: { channel: 'settings', format: 'copilot', reads: [{ base: 'project', path: '.github/hooks/teamai.json', when: 'workspaceUnder', evidence: 'source' }] } },
+    hooks: {
+      user: { channel: 'settings', format: 'copilot', reads: [{ base: 'home', path: '.copilot/hooks/teamai.json', evidence: 'source' }] },
+      self: { channel: 'settings', format: 'copilot', reads: [{ base: 'project', path: '.github/hooks/teamai.json', when: 'workspaceUnder', evidence: 'source' }] },
+      workspace: { channel: 'settings', format: 'copilot', reads: [{ base: 'project', path: '.github/hooks/teamai.json', when: 'workspaceUnder', evidence: 'source' }] },
+    },
     sessions: 'none',
     launch: 'copilot',
     features: {

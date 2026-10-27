@@ -67,7 +67,7 @@ import {
   removeOwnedFiles,
   skillsGuardBase,
 } from './builtin-skills.js';
-import { cleanupOf, hookAdapterDir, hookSettingsFile, installOf, isInstalledFor, locate, openclawWorkspaceDir, ownOf, SHARED_AGENT_SKILLS_PATH, writesOf, type Location } from './locate.js';
+import { cleanupOf, hookAdapterDir, hookSettingsFile, installOf, isInstalledFor, locate, openclawWorkspaceDir, ownOf, SHARED_AGENT_SKILLS_PATH, workspaceHooksOf, writesOf, type Location } from './locate.js';
 import { toolHome } from './tool-home.js';
 import { channelsOf } from './tools.js';
 import { CODEX_TOOL_IDS } from './utils/tool-names.js';
@@ -440,6 +440,8 @@ async function discoverToolResources(
   rulesDirs: readonly string[],
   /** Directories `locate` says may hold `tool`'s hook adapter files: where pull writes them, and one it retired. */
   hookDirs: readonly string[],
+  /** The hook file `locate` says this scope's `hooks` path names: a team repo workspace's project file, else the tool's own. */
+  hookFile: string | null,
   teamSkillNames: Set<string>,
   /** Whether `tool`'s skill directory `dir`, at a name in `teamSkillNames`, is teamai's (#993). */
   ownsSkill: (dir: string, name: string, tool: string) => Promise<boolean>,
@@ -475,10 +477,10 @@ async function discoverToolResources(
 
   // (a) Hooks — settings.json / hooks.json
   if (toolPath.hooks) {
-    const hooksPath = path.join(baseDir, toolPath.hooks);
+    const hooksPath = hookFile;
     const teamOnly = tool === 'copilot' && scope === 'project';
     // A project's Copilot file holds only team hooks, so lost records leave no marker behind (#993).
-    if (await pathExists(hooksPath)
+    if (hooksPath !== null && await pathExists(hooksPath)
       && (await hasTeamaiHooks(hooksPath, tool, standaloneHookManifestPath)
         || isEmptyHooksResidue(await readJson<Record<string, unknown>>(hooksPath))
         || await hasUnrecordedTeamHooks(hooksPath, tool, { teamHookHistory: hookTargets[0]?.teamHookHistory, teamOnly }))) {
@@ -1027,18 +1029,20 @@ async function buildRemovalPlan(
   for (const [tool, toolPath] of Object.entries(toolPaths)) {
     const rulesDirs = cleanupOf(await locate(tool, 'rules', install)).flatMap((place) => place.kind === 'dir' ? [place.path] : []);
     rulesDirsByTool.set(tool, rulesDirs);
+    const hooks = await locate(tool, 'hooks', install);
     perTool.set(
       tool,
       await discoverToolResources(
         tool,
         toolPath,
-        // User-scope Copilot paths are relative to its home.
+        // User-scope Copilot skills are relative to its home.
         tool === COPILOT_TOOL_ID && localConfig.scope === 'user' ? toolHome(COPILOT_TOOL_ID) : resolveBaseDir(localConfig),
         baseDir,
         writesOf(await locate(tool, 'skills', install)).map((place) => place.path),
         await locate(tool, 'blocks', install),
         rulesDirs,
-        cleanupOf(await locate(tool, 'hooks', install)).flatMap((place) => place.kind === 'dir' ? [place.path] : []),
+        cleanupOf(hooks).flatMap((place) => place.kind === 'dir' ? [place.path] : []),
+        (workspaceHooksOf(hooks) ?? ownOf(hooks))?.path ?? null,
         teamSkillNames,
         ownsSkill,
         skillFiles,
@@ -1056,10 +1060,9 @@ async function buildRemovalPlan(
 
   // A project uninstall leaves Copilot's shared built-ins available to other projects.
   if (localConfig.scope === 'project' && primaryHookScope.scope === 'user') {
-    const hooks = hookToolPaths.copilot?.hooks;
+    const file = hookToolPaths.copilot?.hooks === undefined ? undefined : ownOf(await locate(COPILOT_TOOL_ID, 'hooks', install))?.path;
     const res = perTool.get('copilot');
-    if (hooks && res) {
-      const file = path.join(toolHome(COPILOT_TOOL_ID), hooks);
+    if (file !== undefined && res) {
       if (await pathExists(file) && await hasTeamaiHooks(file, 'copilot')) res.keptGlobal.push(file);
     }
   }

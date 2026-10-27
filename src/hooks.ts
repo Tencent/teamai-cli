@@ -50,7 +50,7 @@ import {
 import { codexDispatcherCheckouts, codexDispatcherProjects, dispatchedCodexHooks, isCodexTeamHookDispatcher, reconcileCodexDispatchers, runsFromCodexDispatcher, setCodexDispatcherHooks } from './codex-team-hooks.js';
 import type { CodexTeamHook } from './codex-team-hooks.js';
 import { channelsOf, hookFormatOf, hookSettingsFormatOf, type HookAdapterId, type HookFormat } from './tools.js';
-import { earlierHookAdapterDir, hookSettingsFile, installOf, locate, openclawWorkspaceDir, ownOf } from './locate.js';
+import { earlierHookAdapterDir, hookSettingsFile, installOf, locate, openclawWorkspaceDir, ownOf, workspaceHooksOf } from './locate.js';
 import { toolHome } from './tool-home.js';
 
 export { claudeHookOtherHostSkip };
@@ -4029,9 +4029,8 @@ export async function reconcileTeamHooksForConfig(
     copilotSelected
     || (explicitlySelectedAgents === undefined && await pathExists(toolHome(COPILOT_TOOL_ID)))
   );
-  const copilotHooksPath = hookToolPaths[COPILOT_TOOL_ID]?.hooks === undefined
-    ? undefined
-    : ownOf(await locate(COPILOT_TOOL_ID, 'hooks', installOf(teamConfig, localConfig)))?.path;
+  const copilotHooks = await locate(COPILOT_TOOL_ID, 'hooks', installOf(teamConfig, localConfig));
+  const copilotHooksPath = hookToolPaths[COPILOT_TOOL_ID]?.hooks === undefined ? undefined : ownOf(copilotHooks)?.path;
   if (copilotEnabled && copilotHooksPath !== undefined) {
     const splitCopilotHooks = localConfig.scope === 'project' && hookScope === 'user';
     const copilotManifestPath = splitCopilotHooks ? undefined : getManagedHooksPath(localConfig);
@@ -4051,9 +4050,8 @@ export async function reconcileTeamHooksForConfig(
       });
     }
     if (splitCopilotHooks && !builtinsOnly) {
-      const projectHooks = scopedToolPaths(teamConfig, localConfig)[COPILOT_TOOL_ID]?.hooks;
-      if (projectHooks) {
-        const projectFile = path.join(resolveBaseDir(localConfig), projectHooks);
+      const projectFile = workspaceHooksOf(copilotHooks)?.path;
+      if (projectFile !== undefined) {
         if (await pathExists(projectFile) || teamDefsForTool(teamDefs, COPILOT_TOOL_ID).length > 0) {
           await reconcileHooks(projectFile, COPILOT_TOOL_ID, teamDefs, {
             manifestPath: getManagedHooksPath(localConfig),
@@ -4125,10 +4123,11 @@ async function projectHookFiles(
   if (selfLocal && ((await readManifest(selfManifest)).claude?.length ?? 0) > 0) {
     files.push({ file: selfLocal, tool: 'claude', manifestPath: selfManifest });
   }
-  const copilotHooks = scopedToolPaths(teamConfig, localConfig)[COPILOT_TOOL_ID]?.hooks;
-  if (copilotHooks) {
+  const copilotHooks = await locate(COPILOT_TOOL_ID, 'hooks', installOf(teamConfig, localConfig));
+  const copilotFile = (workspaceHooksOf(copilotHooks) ?? ownOf(copilotHooks))?.path;
+  if (copilotFile !== undefined) {
     files.push({
-      file: path.join(resolveBaseDir(localConfig), copilotHooks),
+      file: copilotFile,
       tool: COPILOT_TOOL_ID,
       manifestPath: getManagedHooksPath(localConfig),
     });

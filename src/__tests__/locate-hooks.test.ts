@@ -65,7 +65,23 @@ const ROWS: readonly (FilesRow | OtherRow)[] = [
     toolHomes: { copilot: '/recorded/copilot' }, reads: [{ at: '/recorded/copilot/hooks/teamai.json', when: 'always', key: HOOK_LIST }],
     source: 'a recorded home wins over a shell without COPILOT_HOME',
   }),
-  settings('copilot', 'project', '~/.copilot/hooks/teamai.json', '~/.copilot', { source: 'resolveHookScope: a workspace takes the user hooks (#264)' }),
+  settings('copilot', 'project', '~/.copilot/hooks/teamai.json', '~/.copilot', {
+    workspace: { at: '<root>/.github/hooks/teamai.json', key: HOOK_LIST },
+    reads: [
+      { at: '~/.copilot/hooks/teamai.json', when: 'always', key: HOOK_LIST },
+      { at: '<root>/.github/hooks/teamai.json', when: 'workspaceUnder', key: HOOK_LIST },
+    ],
+    source: 'resolveHookScope: a workspace takes the user hooks (#264), and the team hooks in the project file Copilot CLI loads from .github/hooks',
+  }),
+  settings('copilot', 'project', '/copilot-home/hooks/teamai.json', '/copilot-home', {
+    env: { COPILOT_HOME: '/copilot-home' },
+    workspace: { at: '<root>/.github/hooks/teamai.json', key: HOOK_LIST },
+    reads: [
+      { at: '/copilot-home/hooks/teamai.json', when: 'always', key: HOOK_LIST },
+      { at: '<root>/.github/hooks/teamai.json', when: 'workspaceUnder', key: HOOK_LIST },
+    ],
+    source: 'Copilot CLI 1.0.98: COPILOT_HOME moves the user hooks; the project file stays in the project',
+  }),
   selfSettings('copilot', '<root>/.github/hooks/teamai.json', '~/.copilot', 'workspaceUnder', {
     source: `${SELF}: whether repo hooks wait for folder trust is not traced`,
   }),

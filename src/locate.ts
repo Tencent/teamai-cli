@@ -221,10 +221,12 @@ type LocationOf = {
    * directory its `adapter` writes teamai's file into. A workspace takes the
    * user hooks, and self mode the project's unless the tool takes its user
    * hooks there too (`HooksChannels.self`). `retired`: the default home's,
-   * where earlier releases wrote before the home moved.
+   * where earlier releases wrote before the home moved. `workspace`: the
+   * project file a team repo's workspace takes the team's hooks in, beside
+   * the user hooks in `own` (`HooksChannels.workspace`); null elsewhere.
    */
   readonly hooks:
-    | (FilesChannel<EntryPlace> & { readonly format: HookFormat })
+    | (FilesChannel<EntryPlace> & { readonly format: HookFormat; readonly workspace: EntryPlace | null })
     | (FilesChannel<DirPlace> & { readonly adapter: HookAdapterId })
     | SilentChannel<EntryPlace | DirPlace>;
   /**
@@ -270,6 +272,11 @@ export function writable<P extends Place>(location: Located<P>): P | null {
 /** `own` whatever the gates say: what push and the scans read, where pull would write. */
 export function ownOf<P extends Place>(location: Located<P>): P | null {
   return location.channel === 'files' ? location.own : null;
+}
+
+/** The project file a team repo's workspace takes the tool's team hooks in, beside its user hooks; null for every other install and tool. */
+export function workspaceHooksOf(location: Location<'hooks'>): EntryPlace | null {
+  return location.channel === 'files' && 'workspace' in location ? location.workspace : null;
 }
 
 /** Whether the tool counts as installed for this resource: its `installed` gate, when it has one, is met. Selection is the caller's question. */
@@ -1025,8 +1032,19 @@ async function locateHooks(tool: string, install: Install, host: Host): Promise<
   if (install.scope === 'project' && install.repo === 'self' && hooks.self !== 'user') return settingsHooksOf(tool, hooks.self, install, host);
   const user = await userViewOf(install, host);
   const channel = hooks.user;
-  if (channel === 'none' || channel === 'unknown' || channel.channel === 'settings') return settingsHooksOf(tool, channel, user, host);
-  return adapterHooksOf(tool, channel, user, host);
+  if (channel === 'none' || channel === 'unknown') return settingsHooksOf(tool, channel, user, host);
+  if (channel.channel === 'adapter') return adapterHooksOf(tool, channel, user, host);
+  const located = await settingsHooksOf(tool, channel, user, host);
+  if (install.scope !== 'project' || hooks.workspace === undefined || located.channel !== 'files') return located;
+  const roots = rootsOf(tool, install, host);
+  const file = roots.configured(roots.paths?.hooks === undefined ? 'settings' : 'hooks');
+  if (file === null) return located;
+  const reads = await readsOf(hooks.workspace.reads, roots, host, HOOK_LIST_KEY);
+  return {
+    ...located,
+    workspace: { kind: 'entry', path: file, key: HOOK_LIST_KEY },
+    reads: located.reads === 'unknown' || reads === 'unknown' ? located.reads : [...located.reads, ...reads],
+  };
 }
 
 /** Whether `tool`'s home moved, while every release before #1221 wrote its hooks under the default one (`Home.moves.defaultHomeLeftovers`). */
@@ -1054,6 +1072,7 @@ async function settingsHooksOf(
     channel: 'files',
     own,
     format: channel.format,
+    workspace: null,
     reads: await readsOf(channel.reads, roots, host, HOOK_LIST_KEY),
     readGates: [],
     retired: settled(own, [unmoved], host.path),
