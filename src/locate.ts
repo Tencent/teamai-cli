@@ -421,11 +421,12 @@ function rootsOf(tool: string, install: Install, host: Host): Roots {
 }
 
 /**
- * `install` seen from its user scope: a run-time channel and a local MCP scope run from the tool's user config.
+ * `install` seen from its user scope: a run-time channel and a local MCP scope run from the tool's user config,
+ * and a project pull cleans what an earlier one left in a user file (Hermes' SOUL.md).
  * A project config that records no `toolRoots` takes the user config's: a root is the machine's, and a
  * user-scope init may have recorded it after the project was set up.
  */
-async function userViewOf(install: Install, host: Host): Promise<Install> {
+export async function userViewOf(install: Install, host: Host = realHost()): Promise<Install> {
   const toolRoots = install.scope === 'project' && Object.keys(install.toolRoots).length === 0
     ? await host.userToolRoots() ?? {}
     : install.toolRoots;

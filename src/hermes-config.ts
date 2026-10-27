@@ -13,11 +13,6 @@ export function getHermesConfigPath(): string {
   return path.join(getHermesHome(), 'config.yaml');
 }
 
-/** Absolute path to the Hermes SOUL.md file (user-level standing instructions). */
-export function getHermesSoulPath(): string {
-  return path.join(getHermesHome(), 'SOUL.md');
-}
-
 /** Hermes uses an explicit cap, or a model-dependent cap with a 20,000-character floor. */
 export async function hermesContextFileBudget(): Promise<{ limit: number; explicit: boolean; error?: string }> {
   const raw = await readFileSafe(getHermesConfigPath());
@@ -120,26 +115,26 @@ function mergeBlock(existing: string, rulesText: string): string {
  * Pass an empty string to remove the teamai block. Removes the file entirely
  * when the merged result is blank.
  *
+ * @param soulPath  SOUL.md, where `locate` puts Hermes' blocks.
  * @param rulesText Concatenated team rule bodies (already joined).
  */
-export async function upsertSoulRules(rulesText: string): Promise<void> {
+export async function upsertSoulRules(soulPath: string, rulesText: string): Promise<void> {
   // Strip any teamai markers embedded in rule bodies so they can't break the
   // block boundaries on the next read.
   const sanitized = rulesText
     .split('\n')
     .filter((line) => line.trim() !== RULES_BLOCK_START && line.trim() !== RULES_BLOCK_END)
     .join('\n');
-  const filePath = getHermesSoulPath();
-  const existing = (await readFileSafe(filePath)) ?? '';
+  const existing = (await readFileSafe(soulPath)) ?? '';
   const merged = mergeBlock(existing, sanitized);
 
   if (merged === '') {
-    if (await pathExists(filePath)) await remove(filePath);
+    if (await pathExists(soulPath)) await remove(soulPath);
     return;
   }
 
-  await ensureDir(getHermesHome());
-  await writeFile(filePath, merged + '\n');
+  await ensureDir(path.dirname(soulPath));
+  await writeFile(soulPath, merged + '\n');
 }
 
 /**
@@ -148,8 +143,8 @@ export async function upsertSoulRules(rulesText: string): Promise<void> {
  * with what `upsertSoulRules` would write, and reusing the writer to find out
  * would edit the file the command is only meant to describe.
  */
-export async function readSoulRules(): Promise<string | null> {
-  const content = await readFileSafe(getHermesSoulPath());
+export async function readSoulRules(soulPath: string): Promise<string | null> {
+  const content = await readFileSafe(soulPath);
   if (content === null) return null;
 
   const startIdx = content.indexOf(RULES_BLOCK_START);
@@ -162,8 +157,8 @@ export async function readSoulRules(): Promise<string | null> {
  * Remove the teamai-managed rules block from Hermes SOUL.md, leaving user
  * content intact. No-op when nothing is present.
  */
-export async function removeSoulRules(): Promise<void> {
-  await upsertSoulRules('');
+export async function removeSoulRules(soulPath: string): Promise<void> {
+  await upsertSoulRules(soulPath, '');
 }
 
 /** Absolute path to the Hermes shell-hooks allowlist JSON. */

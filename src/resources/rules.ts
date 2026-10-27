@@ -40,7 +40,7 @@ import {
   type RuleFormat,
 } from './rule-format.js';
 import { injectClaudeMdSection, removeClaudeMdSection } from '../utils/claudemd.js';
-import { cleanupOf, installOf, locate, ownOf, writable, type Gate, type Install, type Location } from '../locate.js';
+import { cleanupOf, installOf, locate, ownOf, userViewOf, writable, type Gate, type Install, type Location } from '../locate.js';
 import { channelsOf } from '../tools.js';
 
 /** The copies earlier pulls left in one of `LEGACY_RULE_DIRS` (`RulesHandler.legacyRuleCopies`). */
@@ -961,17 +961,19 @@ export class RulesHandler extends ResourceHandler {
    * refreshes or removes that block, so Hermes would keep applying rules the
    * team may have deleted: a project pull removes it there.
    */
-  private async removeStaleProjectSoulRules(localConfig: LocalConfig): Promise<void> {
+  private async removeStaleProjectSoulRules(localConfig: LocalConfig, install: Install): Promise<void> {
     if (isAgentExcluded(localConfig, 'hermes')) return;
     // An unreadable user config still represents an install whose rules we must keep.
     if (await hasUserScopeInstall()) return;
-    const { getHermesSoulPath, readSoulRules, removeSoulRules } = await import('../hermes-config.js');
-    if (await readSoulRules() === null) return;
+    const soul = ownOf(await locate('hermes', 'blocks', await userViewOf(install)))?.path;
+    if (soul === undefined) return;
+    const { readSoulRules, removeSoulRules } = await import('../hermes-config.js');
+    if (await readSoulRules(soul) === null) return;
     try {
-      await removeSoulRules();
-      log.info(`Removed the team rules an older project pull wrote to ${getHermesSoulPath()}: Hermes gets no project rules`);
+      await removeSoulRules(soul);
+      log.info(`Removed the team rules an older project pull wrote to ${soul}: Hermes gets no project rules`);
     } catch (e) {
-      log.warn(`Could not remove the team rules an older project pull wrote to ${getHermesSoulPath()}: ${(e as Error).message}. `
+      log.warn(`Could not remove the team rules an older project pull wrote to ${soul}: ${(e as Error).message}. `
         + 'Hermes keeps applying them until this succeeds; run `teamai pull` again once the cause above is fixed.');
     }
   }
@@ -993,7 +995,7 @@ export class RulesHandler extends ResourceHandler {
     toolsMissingRules?: Set<string>,
   ): Promise<void> {
     if (localConfig.scope !== 'user') {
-      await this.removeStaleProjectSoulRules(localConfig);
+      await this.removeStaleProjectSoulRules(localConfig, installOf(teamConfig, localConfig));
       return;
     }
     // Hermes: inline all team rules into a teamai-managed block in SOUL.md
@@ -1003,14 +1005,15 @@ export class RulesHandler extends ResourceHandler {
     // rules (see `ruleChannelNotes`, #946). Here, so the "Already synced" pull
     // repairs a block an older project pull overwrote.
     const install = installOf(teamConfig, localConfig);
-    const soul = await inlineRulesLocationOf('hermes', install);
-    if (soul !== null && writable(soul) !== null) {
-      const { getHermesSoulPath, upsertSoulRules } = await import('../hermes-config.js');
+    const soulLocation = await inlineRulesLocationOf('hermes', install);
+    const soul = soulLocation === null ? null : writable(soulLocation);
+    if (soul !== null) {
+      const { upsertSoulRules } = await import('../hermes-config.js');
       try {
-        await upsertSoulRules(await inlinedRulesText(rules));
+        await upsertSoulRules(soul.path, await inlinedRulesText(rules));
       } catch (e) {
         toolsMissingRules?.add('hermes');
-        log.warn(`Could not write the team rules to ${getHermesSoulPath()}: ${(e as Error).message}. Hermes reads that `
+        log.warn(`Could not write the team rules to ${soul.path}: ${(e as Error).message}. Hermes reads that `
           + 'file as it is until this succeeds; run `teamai pull` again once the cause above is fixed.');
       }
     }

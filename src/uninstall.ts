@@ -197,6 +197,8 @@ interface RemovalPlan {
   includeShared: boolean;
   /** Whether this removal targets Hermes (clears its SOUL.md block + config.yaml hook). */
   hermesCleanup: boolean;
+  /** The SOUL.md whose rules block goes with `hermesCleanup`: only a user-scope pull writes one (#946). */
+  hermesSoul: string | null;
   /** Scope being uninstalled (issue #73: surfaced to the user). */
   scope: Scope;
   /** Whether this removal takes the machine-wide adapters: a user-scope uninstall only. */
@@ -1250,6 +1252,7 @@ async function buildRemovalPlan(
     keptForProjects: projectsKept,
     includeShared,
     hermesCleanup: globalAdapters && toolsToMerge.includes('hermes') && await (await import('./hermes-hooks.js')).hasHermesHooks(),
+    hermesSoul: localConfig.scope === 'user' ? ownOf(await locate('hermes', 'blocks', install))?.path ?? null : null,
     scope: localConfig.scope,
     globalAdapters,
     keptGlobal: [],
@@ -2449,8 +2452,7 @@ async function executeRemoval(
       const { removeHermesHooks } = await import('./hermes-hooks.js');
       const { removeSoulRules } = await import('./hermes-config.js');
       await removeHermesHooks();
-      // SOUL.md is global and only a user-scope pull writes its rules block (#946).
-      if (plan.scope === 'user') await removeSoulRules();
+      if (plan.hermesSoul !== null) await removeSoulRules(plan.hermesSoul);
     } catch (e) {
       log.debug(`Hermes uninstall cleanup skipped: ${(e as Error).message}`);
     }

@@ -24,7 +24,7 @@ import {
 } from './utils/shell-profile.js';
 import { getUserHome } from './utils/home.js';
 import { loadStateForScope } from './config.js';
-import { installOf, locate, ownOf, unreadWrites, writable, writesOf, type DirPlace, type FilesChannel, type Location, type Unread } from './locate.js';
+import { installOf, isInstalledFor, locate, ownOf, unreadWrites, writable, writesOf, type DirPlace, type FilesChannel, type Location, type Unread } from './locate.js';
 import { codexProjectTrust, codexTrustFix } from './codex-project-trust.js';
 import { amongPlaces, placesRecordOf, samePlaces } from './resources/places.js';
 import { realHost } from './tool-home.js';
@@ -823,22 +823,24 @@ async function buildRulesActivationChecks(ctx: DoctorContext, items: ResourceIte
     });
   }
 
-  const { getHermesHome } = await import('./hermes-home.js');
-  const hermesHome = getHermesHome();
   // SOUL.md is global and only a user-scope pull writes it; in a project,
   // `ruleChannelNotes` says why Hermes gets no project rules (#946).
-  if (localConfig.scope === 'user' && !isAgentExcluded(localConfig, 'hermes') && await pathExists(hermesHome)) {
-    const { getHermesSoulPath, readSoulRules } = await import('./hermes-config.js');
+  const soulLocation = localConfig.scope === 'user' && !isAgentExcluded(localConfig, 'hermes')
+    ? await locate('hermes', 'blocks', installOf(teamConfig, localConfig))
+    : null;
+  const soul = soulLocation !== null && isInstalledFor(soulLocation) ? ownOf(soulLocation)?.path : undefined;
+  if (soul !== undefined) {
+    const { readSoulRules } = await import('./hermes-config.js');
     const expected = await inlinedRulesText(items);
-    const delivered = await readSoulRules();
+    const delivered = await readSoulRules(soul);
     checks.push({
       name: 'Team rules are inlined in Hermes SOUL.md',
       source: 'local',
       check: async () => (items.length === 0 && delivered === null) || delivered === expected.trim(),
       fix: delivered === null
-        ? `${getHermesSoulPath()} carries no teamai rules block, so Hermes reads none of the `
+        ? `${soul} carries no teamai rules block, so Hermes reads none of the `
           + 'team rules. Run `teamai pull` to restore it.'
-        : `The teamai block in ${getHermesSoulPath()} is not what the team rules inline to: `
+        : `The teamai block in ${soul} is not what the team rules inline to: `
           + 'Hermes reads standing instructions from this file rather than a rules directory, '
           + 'so a stale block is a stale rule set. Run `teamai pull` to rewrite it.',
     });
