@@ -15,6 +15,7 @@ import {
   detectProjectConfig,
   findUnreadableProjectConfig,
   hasUserScopeInstall,
+  loadLocalConfigForScope,
   aiToolSettings,
   requireInit,
   saveLocalConfig,
@@ -58,6 +59,16 @@ describe('requireInit: missing config versus unreadable config', () => {
     expect(log.error).not.toHaveBeenCalled();
     expect(await hasUserScopeInstall()).toBe(false);
     expect(await aiToolSettings(undefined)).toEqual([{ level: 'machine', tool: 'codex', file: configPath }]);
+  });
+
+  it("loads no user scope, with nothing logged, when the file holds only the member's settings", async () => {
+    const configPath = path.join(home, '.teamai', 'config.yaml');
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, 'ai:\n  tool: codex\n');
+    vi.mocked(log.error).mockClear();
+
+    expect(await loadLocalConfigForScope('user')).toBeNull();
+    expect(log.error).not.toHaveBeenCalled();
   });
 
   it('names the file, and is not NotInitializedError, when the config exists but does not parse', async () => {

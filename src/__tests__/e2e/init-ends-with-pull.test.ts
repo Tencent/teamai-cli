@@ -193,7 +193,7 @@ describe.skipIf(process.platform === 'win32')('teamai init does not pull team re
     const result = await runCLI(['init', FAKE_URL, '--scope', 'user', '--agent', 'claude'], cwd);
 
     expect(result.code, result.output).toBe(0);
-    expect(result.output).not.toMatch(/already initialized|Moved .*config\.yaml/);
+    expect(result.output).not.toMatch(/already initialized|Moved .*config\.yaml|Invalid user config/);
     expect(fs.existsSync(`${configPath}.previous`)).toBe(false);
     const saved = fs.readFileSync(configPath, 'utf8');
     expect(saved).toMatch(/^repo:/m);

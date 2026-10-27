@@ -518,6 +518,7 @@ export async function loadLocalConfigForScope(
   if (!content) return null;
   try {
     const raw = YAML.parse(content);
+    if (holdsMemberSettingsOnly(raw)) return null;
     const parsed = LocalConfigSchema.parse(raw);
     return await migrateLegacyRoleConfig(await applyRoleAssignment(parsed), configPath, options);
   } catch (e) {
