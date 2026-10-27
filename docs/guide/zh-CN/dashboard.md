@@ -11,6 +11,17 @@ teamai dashboard --port 8080
 
 浏览器打开 `http://localhost:3721`。侧栏是总览、团队执行、工作流运行、评分器、团队上下文、资源、分发、团队改进。数据是这台机器上的。
 
+## 会话共享（Session sharing）
+
+总览页的**会话共享**面板针对当前工作区，说明在每种[运行模式](workflow.md#有人值守与无人值守的运行)下会话是否发布到 `teamai-reports`、是否评分，以及原因：
+
+- 每种模式的发布和评分策略，以及它来自哪项设置，如 `the default` 或 `teamai.yaml sessions.publish.unattended`。`ask` 目前等同于 `off`。
+- 本机在每种模式下捕获的会话：活跃、等待 drain、保留在本机、等待归档、已归档。
+- 正在等待的内容，以及要运行的 drain。drain 只结束并发布与其运行模式相同的会话，因此在有人值守的机器上，面板会为无人值守会话给出 `TEAMAI_MODE=unattended teamai score --drain`。
+- 归档位置、`daily_limit`、评判会话的评分器、teamai 不读取其会话的已启用工具，以及 `teamai doctor` 报告的设置问题。
+
+**本机**是启动 `teamai dashboard` 的 shell 的运行模式。面板只显示计数和设置名，从不显示会话内容，也不修改任何设置。相关设置见[会话](sharing.md#会话)和[已结束的会话](scorers.md#已结束的会话)。
+
 ## 工作流运行（Workflow Runs）
 
 工作流运行页为当前工作区列出两部分。**本机运行**是这台机器上的运行文件，实时读取：状态、已租用的步骤、等待回答的 HITL 请求，以及已结束运行的记录是否已送达团队。**团队上报历史**是 `teamai-reports` 分支上所有成员的运行记录。每行显示工作流、驱动、状态、命名结局、时长、token、团队修订（没有已推送提交包含这些定义时不显示；源哈希始终显示）以及交付的拉取请求。
