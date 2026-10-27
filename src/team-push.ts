@@ -9,7 +9,7 @@ import { BUILTIN_SKILL_NAMES } from './builtin-skills.js';
 import { readEvents, aggregateSessionMetrics, dataHomeKey, memberEvents, sessionRuns } from './dashboard-collector.js';
 import { RUN_MODES, type RunMode, type SessionRun } from './launch-context.js';
 import { addOutcomeStats } from './outcomes.js';
-import { SessionOutcomes } from './session-outcomes.js';
+import { SessionOutcomes, type FoldInput } from './session-outcomes.js';
 import { writeFile, readFileSafe, ensureDir, pathExists, readJson, writeJson } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import type {
@@ -969,7 +969,7 @@ export type UsageReportOutcome = 'reported' | 'nothing' | 'unreported';
 export async function reportUsage(
   repoPath: string,
   username: string,
-  options: { skipTruncate?: boolean; selfConfig: LocalConfig; isDrain?: boolean },
+  options: { skipTruncate?: boolean; selfConfig: LocalConfig; drain?: FoldInput['drain'] },
 ): Promise<UsageReportOutcome> {
   const reportsConfig = options.selfConfig;
   if (!usesBranchWorktree(reportsConfig)) {
@@ -1039,7 +1039,7 @@ export async function reportUsage(
         interventions: { ...reportedInterventions, ...nextReported },
       },
       now: Date.now(),
-      isDrain: options.isDrain ?? false,
+      drain: options.drain,
     });
 
     const hasUsage = events.length > 0;

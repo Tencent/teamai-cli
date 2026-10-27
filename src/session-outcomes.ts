@@ -21,7 +21,7 @@ import { interventionsEntry, promptTokensEntry, snapshotPathIn, type ReportedInt
 import { FINISHED_AFTER_MS } from './session-flow/session-work.js';
 import { getDataHome, type DashboardEvent, type LocalConfig, type UserOutcomeStats } from './types.js';
 import { pathExists, readJson, writeJson } from './utils/fs.js';
-import { checkoutForProjectAnchor, getDefaultBranch } from './utils/git.js';
+import { checkoutForProjectAnchor, getCurrentBranch, getDefaultBranch, getHeadCommit } from './utils/git.js';
 import { log } from './utils/logger.js';
 import { CommitIdSchema } from './workflow/delivery-schema.js';
 import { findDelivered } from './workflow/pr-delivery.js';
@@ -74,8 +74,11 @@ export interface FoldInput {
    */
   totals: { promptTokens: ReportedPromptTokens; interventions: ReportedInterventions };
   now: number;
-  /** Whether `teamai score --drain` makes this report, which ends the job of every unattended session here (#1385). */
-  isDrain: boolean;
+  /**
+   * Set when `teamai score --drain` makes this report, which ends the job of every unattended session here (#1385).
+   * `running` is the agent session that runs it: its last turn has no Stop yet, so its checkout is read now.
+   */
+  drain?: { running?: string };
 }
 
 function baselinePath(config: LocalConfig): string {
@@ -93,8 +96,8 @@ function isIdle(facts: Facts, now: number): boolean {
 }
 
 /** Idle for 6 hours, or unattended at a drain: an ephemeral runner's sessions are counted before the job ends. */
-function isFinished(facts: Facts, { now, isDrain }: Pick<FoldInput, 'now' | 'isDrain'>): boolean {
-  return isIdle(facts, now) || (isDrain && facts.runMode === 'unattended');
+function isFinished(facts: Facts, { now, drain }: Pick<FoldInput, 'now' | 'drain'>): boolean {
+  return isIdle(facts, now) || (drain !== undefined && facts.runMode === 'unattended');
 }
 
 /** The facts the scope's member events give each session, merged over what an earlier report kept. */
@@ -161,6 +164,12 @@ async function scopeOutcomes(input: FoldInput): Promise<SessionOutcomeEvent[]> {
 async function checkoutOf(facts: Facts): Promise<string | undefined> {
   if (facts.cwd && await pathExists(facts.cwd)) return facts.cwd;
   return facts.anchor ? await checkoutForProjectAnchor(facts.anchor) ?? undefined : undefined;
+}
+
+/** `facts` with the head and branch `cwd` has checked out now, as its Stop would record them. */
+async function withHeadNow(facts: Facts, cwd: string): Promise<Facts> {
+  const [head, branch] = await Promise.all([getHeadCommit(cwd), getCurrentBranch(cwd)]);
+  return head ? { ...facts, endHead: head, ...(branch ? { endBranch: branch } : {}) } : facts;
 }
 
 /** The commits the member authored in `cwd`, the session's checkout, from its start to its last Stop, oldest first. */
@@ -245,8 +254,9 @@ async function fold(input: FoldInput): Promise<OutcomeFold> {
   const prs = await readPrCache(input.config);
   let prsChanged = false;
   // Each lookup may wait on a host, so they run together; one that fails leaves its pull request out.
-  const finished = (await Promise.all(pending.map(async ({ sessionId, facts, isDue }): Promise<FinishedSession[]> => {
-    const cwd = await checkoutOf(facts);
+  const finished = (await Promise.all(pending.map(async ({ sessionId, facts: kept, isDue }): Promise<FinishedSession[]> => {
+    const cwd = await checkoutOf(kept);
+    const facts = cwd && isDue && sessionId === input.drain?.running ? await withHeadNow(kept, cwd) : kept;
     const commits = cwd ? await sessionCommits(cwd, facts) : [];
     // A session that has since stopped on another branch is asked about that one.
     if (cwd && commits.length > 0 && facts.endBranch && prs[sessionId]?.branch !== facts.endBranch) {

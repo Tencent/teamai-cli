@@ -661,6 +661,32 @@ describe('teamai score --drain', () => {
     expect(YAML.parse(readOnReports(origin, 'stats/tester.yaml')).outcomes).toEqual({ unattended: { none: { sessions: 1, tokens: { input: 0, output: 0 }, interventions: 0 } } });
   });
 
+  it('counts the commits the session that runs the drain made since its last Stop (#1387)', async () => {
+    const { origin } = await team();
+    const app = path.join(root, 'driven-app');
+    fs.mkdirSync(app);
+    git(app, 'init', '-q', '-b', 'main');
+    git(app, 'commit', '-q', '--allow-empty', '-m', 'start');
+    const start = git(app, 'rev-parse', 'HEAD');
+    const key = await dataHomeKey(path.join(mocks.home, '.teamai'));
+    const at = (minute: number) => new Date(Date.now() - (60 - minute) * 60 * 1000).toISOString();
+    const event = (type: string, minute: number) => line({
+      type, timestamp: at(minute), sessionId: SESSION, tool: 'claude', cwd: app, dataHomeKey: key, runMode: 'unattended',
+      ...(type === 'session_start' ? { gitAtStart: { head: start } } : { gitHead: start, gitBranch: 'main' }),
+    });
+    fs.mkdirSync(path.join(mocks.home, '.teamai', 'dashboard'), { recursive: true });
+    fs.writeFileSync(path.join(mocks.home, '.teamai', 'dashboard', 'events.jsonl'), [event('session_start', 0), event('stop', 2)].join(''));
+    // The turn that runs the drain commits first; its Stop comes after the drain.
+    git(app, 'commit', '-q', '--allow-empty', '-m', 'retries');
+    vi.stubEnv('CLAUDE_CODE_SESSION_ID', SESSION);
+    vi.stubEnv('CI', 'true');
+
+    const drained = await drain();
+
+    expect(drained.code, drained.lines.join('\n')).toBe(0);
+    expect(YAML.parse(readOnReports(origin, 'stats/tester.yaml')).outcomes).toEqual({ unattended: { commit: { sessions: 1, tokens: { input: 0, output: 0 }, interventions: 0 } } });
+  });
+
   it('says only that nothing is left when a second drain finds nothing new, usage included', async () => {
     await team({ 'scorers/quality.md': SCORER.replace('sessions: true\n', '') });
     capturedSession(SESSION, 'unattended');

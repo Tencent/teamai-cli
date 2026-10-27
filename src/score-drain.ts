@@ -19,6 +19,7 @@ import { reportUsage } from './team-push.js';
 import { isUsageReportEnabled, usesBranchWorktree, type LocalConfig } from './types.js';
 import { acquireLock, releaseLock } from './update.js';
 import { log } from './utils/logger.js';
+import { agentSessionIdFromEnv } from './utils/session-id.js';
 import { pendingRecords, publishPendingRecords } from './workflow/records.js';
 import { judgeLease, openJudgeEntries, submitJudgeLease, takeJudgeLease, type SkippedEntry, type TakenLease } from './workflow/scoring.js';
 
@@ -190,7 +191,7 @@ async function run(configs: readonly LocalConfig[], { mode, clock = () => new Da
     }
     // As pull reports it, so the counts of this data home leave an ephemeral runner.
     if (usesBranchWorktree(config) && isUsageReportEnabled(config, team ?? {})) {
-      const outcome = await reportUsage(config.repo.localPath, config.username, { selfConfig: config, isDrain: true });
+      const outcome = await reportUsage(config.repo.localPath, config.username, { selfConfig: config, drain: { running: await agentSessionIdFromEnv() } });
       if (outcome !== 'nothing') result.usage.push({ member: config.username, reported: outcome === 'reported' });
     }
   }
