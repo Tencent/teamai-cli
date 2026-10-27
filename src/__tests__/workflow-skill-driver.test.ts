@@ -1020,9 +1020,12 @@ steps:
   });
 
   it('keeps a declared tool in every start command describe offers, and in the describe command a refused start prints', async () => {
-    const harness = await skillHarness({ review: REVIEW.replace('invoke: allow', 'invoke: ask') }, { scorers: { 'review-quality': REVIEW_QUALITY }, tool: null });
+    const harness = await skillHarness({ review: REVIEW.replace('invoke: allow', 'invoke: ask'), check: CHECK }, { scorers: { 'review-quality': REVIEW_QUALITY }, tool: null });
     roots.push(harness.root);
     unverifiedClaude(harness);
+    expect(await harness.call({ kind: 'describe', name: 'check', tool: 'claude' }, { mode: 'unattended' }))
+      .toMatchObject({ data: { describe: { ask: { kind: 'start', start: 'teamai workflow start check --driver skill --tools default=claude --auto-approve' } } } });
+    expect(await harness.call({ kind: 'describe', name: 'check', tool: 'claude' })).toMatchObject({ data: { describe: { ask: { kind: 'start', start: 'teamai workflow start check --driver skill --tools default=claude' } } } });
     const starts = JSON.stringify(await harness.call({ kind: 'describe', name: 'review', tool: 'claude' })).match(/teamai workflow start review --driver skill[^"]*/g) ?? [];
     expect(starts).not.toHaveLength(0);
     for (const start of starts) expect(start).toMatch(/^teamai workflow start review --driver skill --tools default=claude /);
