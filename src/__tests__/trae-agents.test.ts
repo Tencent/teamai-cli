@@ -140,6 +140,18 @@ describe('Trae subagents', () => {
       expect(candidates[0]?.mergedSpec?.tool_extras).toEqual({ 'trae-cn': { model: 'kimi-k2.5' } });
     });
 
+    it('keeps an edition model the project file leaves out when another of its extras changes', async () => {
+      await fse.writeFile(item.sourcePath, `${AGENT_YAML}tool_extras:\n  trae-cn:\n    model: kimi-k2.5\n    disallowedTools: Bash\n`);
+      const config = configFor('trae-cn', 'project');
+      const file = path.join(projectRoot, '.trae', 'agents', `${AGENT}.md`);
+      await new AgentsHandler().pullItem(item, teamConfig, config);
+      await fse.writeFile(file, (await fse.readFile(file, 'utf8')).replace('disallowedTools: Bash', 'disallowedTools: Write'));
+
+      const candidates = await new AgentsHandler().scanLocalForPush(teamConfig, config);
+
+      expect(candidates[0]?.mergedSpec?.tool_extras).toEqual({ 'trae-cn': { model: 'kimi-k2.5', disallowedTools: 'Write' } });
+    });
+
     it('refuses a changed value, which would give the two editions different values', async () => {
       const candidates = await editAndScan((content) => content.replace('disallowedTools: Bash', 'disallowedTools: Write'));
 

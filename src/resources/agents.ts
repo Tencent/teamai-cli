@@ -1557,6 +1557,8 @@ function mergeCanonicalEdits(
       const ownBefore = canonical.tool_extras?.[tool] ?? {};
       const own = Object.fromEntries(Object.entries(after).filter(([key, value]) =>
         !isDeepStrictEqual(inherited[key], value) || (key in ownBefore && isDeepStrictEqual(before[key], value))));
+      // A model pin the copy does not carry (a Trae project file) cannot have been edited there.
+      if (baseline.spec.model === undefined && ownBefore['model'] !== undefined) own['model'] = ownBefore['model'];
       propose(`tool_extras.${tool}`, own, () => {
         if (Object.keys(own).length) extras[tool] = own;
         else delete extras[tool];
