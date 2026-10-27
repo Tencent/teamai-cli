@@ -265,6 +265,14 @@ const ROWS: readonly MatrixRow[] = [
     source: 'OpenClaw 884a96d1 source: agents.defaults.workspace in openclaw.json names the workspace',
   },
   {
+    tool: 'openclaw', scope: 'user', invalidJson: ['~/.openclaw/openclaw.json'],
+    writes: [],
+    existingDirs: ['~/.openclaw/workspace'], installed: { probe: '~/.openclaw/workspace', met: true },
+    readableConfig: { file: '~/.openclaw/openclaw.json', met: false },
+    reads: 'unknown',
+    source: 'an openclaw.json teamai cannot parse may name another workspace (#946): no blocks go to the fallback one',
+  },
+  {
     tool: 'openclaw', scope: 'project',
     channel: 'none',
     existingDirs: ['~/.openclaw/workspace'], installed: { probe: '~/.openclaw/workspace', met: true },
@@ -278,6 +286,22 @@ const ROWS: readonly MatrixRow[] = [
     reads: [{ at: '~/.hermes/SOUL.md', when: 'always' }],
     retired: [{ at: '~/AGENTS.md', was: 'default' }],
     source: 'hermes-agent prompt_builder: SOUL.md from HERMES_HOME; earlier releases wrote ~/AGENTS.md',
+  },
+  {
+    tool: 'hermes', scope: 'user', env: { HERMES_HOME: '/hermes' },
+    writes: ['/hermes/SOUL.md'],
+    existingDirs: ['/hermes'], installed: { probe: '/hermes', met: true },
+    reads: [{ at: '/hermes/SOUL.md', when: 'always' }],
+    retired: [{ at: '~/AGENTS.md', was: 'default' }],
+    source: 'hermes-agent prompt_builder: SOUL.md from HERMES_HOME',
+  },
+  {
+    tool: 'hermes', scope: 'user', platforms: ['win32'],
+    writes: ['$LOCALAPPDATA/hermes/SOUL.md'],
+    existingDirs: ['$LOCALAPPDATA/hermes'], installed: { probe: '$LOCALAPPDATA/hermes', met: true },
+    reads: [{ at: '$LOCALAPPDATA/hermes/SOUL.md', when: 'always' }],
+    retired: [{ at: '~/AGENTS.md', was: 'default' }],
+    source: 'hermes-agent hermes_constants.py:51-58: %LOCALAPPDATA%\\hermes on Windows; SOUL.md from that home',
   },
   {
     tool: 'hermes', scope: 'project', platforms: ['darwin', 'linux'],

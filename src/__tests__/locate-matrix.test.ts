@@ -225,6 +225,20 @@ const ROWS: readonly FilesRow[] = [
     source: `${OPENCLAW_SOURCE}; no workspace, nothing to write into`,
   },
   {
+    tool: 'openclaw', scope: 'user', invalidJson: ['~/.openclaw/openclaw.json'],
+    writes: ['~/.openclaw/workspace/skills'],
+    existingDirs: ['~/.openclaw/workspace'], installed: { probe: '~/.openclaw/workspace', met: true },
+    reads: 'unknown',
+    source: `${OPENCLAW_SOURCE}; an openclaw.json teamai cannot parse leaves the workspace OPENCLAW_WORKSPACE_DIR or the state dir gives, where skills still go`,
+  },
+  {
+    tool: 'openclaw', scope: 'user', invalidJson: ['~/.openclaw/openclaw.json'],
+    writes: [],
+    existingDirs: ['~/.openclaw'], installed: { probe: '~/.openclaw/openclaw.json', met: false },
+    reads: 'unknown',
+    source: `${OPENCLAW_SOURCE}; an unparsable openclaw.json and no fallback workspace: nothing to write into`,
+  },
+  {
     tool: 'openclaw', scope: 'user', env: { OPENCLAW_STATE_DIR: '/oc-state' },
     writes: ['/oc-state/workspace/skills'],
     existingDirs: ['/oc-state/workspace'], installed: { probe: '/oc-state/workspace', met: true },

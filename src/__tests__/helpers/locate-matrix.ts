@@ -41,6 +41,8 @@ type RowCommon = {
   readonly env?: Readonly<Record<string, Spot>>;
   readonly envLiterals?: Readonly<Record<string, string>>;
   readonly json?: readonly { readonly at: Spot; readonly value: Record<string, unknown> }[];
+  /** JSON files `host.readJson` cannot parse: an openclaw.json with comments. */
+  readonly invalidJson?: readonly Spot[];
   /** Small text files `host.readText` finds: a linked worktree's `.git` and `commondir`. */
   readonly texts?: readonly { readonly at: Spot; readonly text: string }[];
   /** Paths `host.exists` finds: directories, and the files a first-existing lookup tries. */
@@ -137,6 +139,7 @@ function envFor(row: MatrixRow, platform: Platform, cwd: Cwd): Record<string, st
 function hostFor(row: MatrixRow, cell: Cell): Host {
   const existing = new Set(row.existingDirs.map((spot) => at(spot, cell)));
   const files = new Map((row.json ?? []).map((file) => [at(file.at, cell), file.value]));
+  const invalid = new Set((row.invalidJson ?? []).map((spot) => at(spot, cell)));
   const texts = new Map((row.texts ?? []).map((file) => [at(file.at, cell), file.text]));
   return {
     platform: cell.platform,
@@ -148,6 +151,7 @@ function hostFor(row: MatrixRow, cell: Cell): Host {
     cwd: () => cwdOf(cell.platform, cell.cwd),
     exists: async (dir) => existing.has(dir),
     readJson: async (file) => {
+      if (invalid.has(file)) return { kind: 'invalid', error: 'Unexpected token' };
       const value = files.get(file);
       return value === undefined ? { kind: 'missing' } : { kind: 'ok', value };
     },
@@ -190,7 +194,7 @@ function isFilesRow(row: MatrixRow): row is FilesRow {
 function conditionsOf(row: MatrixRow): string {
   const conditions = [
     ...Object.keys(row.env ?? {}), ...Object.entries(row.envLiterals ?? {}).map(([name, value]) => `${name}=${value}`),
-    ...(row.json ?? []).map((file) => file.at), ...(row.texts ?? []).map((file) => file.at), ...Object.keys(row.toolHomes ?? {}).map((tool) => `recorded ${tool}`),
+    ...(row.json ?? []).map((file) => file.at), ...(row.invalidJson ?? []).map((spot) => `unreadable ${spot}`), ...(row.texts ?? []).map((file) => file.at), ...Object.keys(row.toolHomes ?? {}).map((tool) => `recorded ${tool}`),
     ...Object.keys(row.userToolRoots ?? {}).map((tool) => `user toolRoots.${tool}`),
     ...(row.install?.gitExclude ? ['gitExclude'] : []), ...(row.install?.self ? ['self'] : []),
     ...(row.install?.workspaceChildren ? ['children'] : []), ...(row.installed === null || row.installed.met ? [] : ['not installed']),

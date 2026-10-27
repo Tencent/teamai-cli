@@ -61,6 +61,11 @@ const ROWS: readonly (FilesRow | OtherRow)[] = [
     env: { COPILOT_HOME: '/copilot-home' }, reads: [{ at: '/copilot-home/hooks/teamai.json', when: 'always', key: HOOK_LIST }],
     source: 'Copilot CLI 1.0.98: COPILOT_HOME moves the whole user customization root, hooks included',
   }),
+  settings('copilot', 'user', '/recorded/copilot/hooks/teamai.json', '/recorded/copilot', {
+    toolHomes: { copilot: '/recorded/copilot' }, reads: [{ at: '/recorded/copilot/hooks/teamai.json', when: 'always', key: HOOK_LIST }],
+    source: 'a recorded home wins over a shell without COPILOT_HOME',
+  }),
+  settings('copilot', 'project', '~/.copilot/hooks/teamai.json', '~/.copilot', { source: 'resolveHookScope: a workspace takes the user hooks (#264)' }),
   selfSettings('copilot', '<root>/.github/hooks/teamai.json', '~/.copilot', 'workspaceUnder', {
     source: `${SELF}: whether repo hooks wait for folder trust is not traced`,
   }),
@@ -130,12 +135,23 @@ const ROWS: readonly (FilesRow | OtherRow)[] = [
   adapter('hermes', 'user', '~/.hermes/hooks', '~/.hermes', { platforms: ['darwin', 'linux'], source: HERMES_SOURCE }),
   adapter('hermes', 'user', '$LOCALAPPDATA/hermes/hooks', '$LOCALAPPDATA/hermes', { platforms: ['win32'], source: HERMES_SOURCE }),
   adapter('hermes', 'user', '/hermes/hooks', '/hermes', { env: { HERMES_HOME: '/hermes' }, source: HERMES_SOURCE }),
+  adapter('hermes', 'user', '/recorded/hermes/hooks', '/recorded/hermes', {
+    toolHomes: { hermes: '/recorded/hermes' }, source: `${HERMES_SOURCE}; a recorded home wins over a shell without HERMES_HOME`,
+  }),
   adapter('openclaw', 'user', '~/.openclaw/workspace/hooks', '~/.openclaw/workspace', {
     source: 'OpenClaw 884a96d1 loads workspace hooks from <workspace>/hooks (issue #1221 matrix, v)',
   }),
   adapter('openclaw', 'user', '/oc-state/workspace/hooks', '/oc-state/workspace', {
     env: { OPENCLAW_STATE_DIR: '/oc-state' }, source: 'OpenClaw: the workspace defaults to <state dir>/workspace',
   }),
+  adapter('openclaw', 'user', '~/.openclaw/workspace/hooks', '~/.openclaw/workspace', {
+    invalidJson: ['~/.openclaw/openclaw.json'],
+    source: 'an openclaw.json teamai cannot parse leaves the workspace OPENCLAW_WORKSPACE_DIR or the state dir gives, where the hook still goes',
+  }),
+  {
+    tool: 'openclaw', scope: 'user', existingDirs: ['~/.openclaw'], installed: { probe: '~/.openclaw/workspace', met: false },
+    writes: [], reads: [], source: 'no OpenClaw workspace: nothing loads a hook teamai would write',
+  },
   adapter('dsh', 'user', '~/.teamai/dsh', '~/.dsh', { source: 'dsh-hooks.ts: the bridge config teamai mounts through $DSH_HOME/cordis.patch.yml (#1219, #1223)' }),
   adapter('dsh', 'user', '~/.teamai/dsh', '/dsh', { env: { DSH_HOME: '/dsh' }, source: 'dsh config.ts dshHome: DSH_HOME moves the home, not teamai\'s bridge config' }),
   {
