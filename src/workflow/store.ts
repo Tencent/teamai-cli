@@ -92,7 +92,7 @@ export function attemptOutcomesPath(config: LocalConfig, run: RunId, attempt: At
 }
 
 /**
- * Append `outcome` to the outcome file of the attempt `marker` (`TEAMAI_WORKFLOW_ATTEMPT`, `<run>/<attempt>`) names.
+ * Append `outcome` to the outcome file of the attempt `marker` (`ATTEMPT_ENV`, `<run>/<attempt>`) names.
  * `unknown_run` when this scope holds no such run, since the engine that settles the attempt reads only its own scope.
  */
 export async function appendAttemptOutcome(config: LocalConfig, marker: string, outcome: WorkOutcome): Promise<'appended' | 'bad_marker' | 'unknown_run'> {

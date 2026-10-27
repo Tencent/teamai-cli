@@ -46,6 +46,7 @@ vi.mock('../config.js', async (importOriginal) => ({
 
 const { contribute } = await import('../contribute.js');
 const { readSessionOutcomes } = await import('../dashboard-collector.js');
+const { readContributeState } = await import('../contribute-check.js');
 const { writeInstallConfig } = await import('./helpers/install-config.js');
 
 function queued(): Array<{ relPath: string; content: string }> {
@@ -172,5 +173,15 @@ describe('a learning contributed inside a workflow attempt', () => {
     expect(event?.sessionId).toBe('member-session');
     expect(event).not.toHaveProperty('launchedBy');
     expect(event).not.toHaveProperty('runMode');
+  });
+
+  it('still counts as contributed when its outcome file cannot be written', async () => {
+    process.env.CLAUDE_CODE_SESSION_ID = 'the-step-session';
+    fs.mkdirSync(path.join(runsDir(config()), run));
+    fs.writeFileSync(path.join(runsDir(config()), run, 'outcomes'), 'not a directory');
+
+    await contributeNote('Back off before retrying.\n', { title: 'Retry backoff' });
+
+    expect(await readContributeState('the-step-session')).toMatchObject({ contributed: true });
   });
 });

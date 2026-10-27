@@ -182,7 +182,13 @@ async function recordLearningOutcome(localConfig: LocalConfig, session: Contribu
  */
 async function recordStepOutcome(localConfig: LocalConfig, marker: string, relPath: string): Promise<void> {
   const id = learningIdOf(relPath);
-  const recorded = await appendAttemptOutcome(localConfig, marker, { kind: 'learning', id });
+  let recorded: Awaited<ReturnType<typeof appendAttemptOutcome>>;
+  try {
+    recorded = await appendAttemptOutcome(localConfig, marker, { kind: 'learning', id });
+  } catch (e) {
+    log.warn(`Learning ${id} is not recorded on workflow attempt ${marker}: ${e instanceof Error ? e.message : String(e)}`);
+    return;
+  }
   if (recorded === 'bad_marker') {
     log.warn(`Learning ${id} is not recorded on a workflow step: ${ATTEMPT_ENV} is "${marker}", not <run>/<attempt>.`);
   } else if (recorded === 'unknown_run') {

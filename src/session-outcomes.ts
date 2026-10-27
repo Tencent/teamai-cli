@@ -6,8 +6,8 @@
  *            │       its member made, the open pull request holding one) and adds to its (run mode, kind) rows
  *            └ push confirmed ─ markReported(): flagged reported, and a `counted` session outcome event written
  *
- * Facts are kept between reports because compaction drops a session's events 30 minutes after it goes quiet, long
- * before it is finished. Ids, shas and URLs stay on this machine; the report publishes counts only.
+ * Facts are kept between reports because compaction may drop a session's events once it has been quiet for 30 minutes,
+ * long before it is finished. Ids, shas and URLs stay on this machine; the report publishes counts only.
  */
 import path from 'node:path';
 import { z } from 'zod';
