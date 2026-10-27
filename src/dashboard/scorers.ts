@@ -21,6 +21,9 @@ import { buildEndRecord, RECORDS_DIR } from '../workflow/records.js';
 import { isRunId, readRun } from '../workflow/store.js';
 import { HttpError } from './http.js';
 
+/** The most failing labels one answer lists, however many the page asks for. */
+const FAILING_MAX = 1000;
+
 /** What the page asks for: the view's query, with the team commit to split at as the member typed it. */
 export type ScorerQuery = Omit<ScorerResultsQuery, 'split'> & { commit?: string };
 
@@ -30,24 +33,27 @@ const QuerySchema = z.object({
   cohort: z.string().min(1).optional(),
   groupBy: z.enum(DIMENSIONS_OFFERED).optional(),
   commit: z.string().regex(/^[0-9a-fA-F]{4,64}$/).optional(),
+  group: z.string().min(1).max(2048).optional(),
+  failing: z.coerce.number().int().min(1).max(FAILING_MAX).optional(),
 });
 
 /** The page's query string as a query. Throws an HttpError the page shows for a value it does not offer. */
 export function parseScorerQuery(params: URLSearchParams): ScorerQuery {
-  const parsed = QuerySchema.safeParse(Object.fromEntries(['window', 'scorer', 'cohort', 'groupBy', 'commit'].flatMap((key) => {
+  const parsed = QuerySchema.safeParse(Object.fromEntries(['window', 'scorer', 'cohort', 'groupBy', 'commit', 'group', 'failing'].flatMap((key) => {
     const value = params.get(key);
     return value ? [[key, value]] : [];
   })));
   if (!parsed.success) {
-    throw new HttpError(400, `Scorer results take window ${SCORER_WINDOWS.join(', ')}, a grouping the page offers, and a commit as hex digits.`);
+    throw new HttpError(400, `Scorer results take window ${SCORER_WINDOWS.join(', ')}, a grouping the page offers, a commit as hex digits, and up to ${FAILING_MAX} failing labels.`);
   }
-  const { window, scorer, cohort, groupBy, commit } = parsed.data;
+  const { window, scorer, cohort, groupBy, commit, group, failing } = parsed.data;
   return {
     windowDays: window ?? 30,
     ...(scorer ? { scorer } : {}),
     ...(cohort ? { cohort } : {}),
     ...(groupBy ? { groupBy } : {}),
     ...(commit ? { commit: commit.toLowerCase() } : {}),
+    ...(group || failing ? { failing: { ...(group ? { group } : {}), ...(failing ? { limit: failing } : {}) } } : {}),
   };
 }
 

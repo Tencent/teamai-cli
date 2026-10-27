@@ -148,7 +148,7 @@ describe('dashboard scorer results', () => {
     write(path.join(config.repo.localPath, 'sessions', 'repos', 'github.com%2Facme%2Fapp', 'bob', 'fix-login-flow.jsonl'), 'TRANSCRIPT-SECRET\n');
     write(path.join(config.dataHome ?? '', 'scores', 'reasoning', 'x.md'), 'REASONING-SECRET');
     const view = await scorerResults({ config, query: { windowDays: 30 }, now: NOW });
-    expect(view.selected?.failing).toEqual([{ author: 'bob', scoredAt: '2026-03-18T10:00:00.000Z', label: 'poor', source: 'session', platform: 'claude', sessionName: 'fix-login-flow' }]);
+    expect(view.selected?.failing).toEqual({ total: 1, labels: [{ author: 'bob', scoredAt: '2026-03-18T10:00:00.000Z', label: 'poor', source: 'session', platform: 'claude', sessionName: 'fix-login-flow' }] });
     expect(JSON.stringify(view)).not.toMatch(/native-7f3a91|TITLE-SECRET|private\/work|TRANSCRIPT-SECRET|REASONING-SECRET|isolation|access/);
   });
 
@@ -188,12 +188,13 @@ describe('reminder table over a long window', () => {
 });
 
 describe('scorer query', () => {
-  it('reads the window, scorer, cohort, grouping and commit, and refuses values the view does not offer', () => {
-    expect(parseScorerQuery(new URLSearchParams('window=90&scorer=review-quality&cohort=abc&groupBy=skill&commit=ABCDEF1'))).toEqual({
-      windowDays: 90, scorer: 'review-quality', cohort: 'abc', groupBy: 'skill', commit: 'abcdef1',
+  it('reads the window, scorer, cohort, grouping, commit and failing page, and refuses values the view does not offer', () => {
+    const group = encodeURIComponent(JSON.stringify(['value', 'tdd', null, false]));
+    expect(parseScorerQuery(new URLSearchParams(`window=90&scorer=review-quality&cohort=abc&groupBy=skill&commit=ABCDEF1&group=${group}&failing=75`))).toEqual({
+      windowDays: 90, scorer: 'review-quality', cohort: 'abc', groupBy: 'skill', commit: 'abcdef1', failing: { group: JSON.stringify(['value', 'tdd', null, false]), limit: 75 },
     });
     expect(parseScorerQuery(new URLSearchParams(''))).toEqual({ windowDays: 30 });
-    for (const bad of ['window=12', 'groupBy=prompt', 'commit=main;rm']) {
+    for (const bad of ['window=12', 'groupBy=prompt', 'commit=main;rm', 'failing=0', 'failing=10000', 'failing=2.5']) {
       expect(() => parseScorerQuery(new URLSearchParams(bad))).toThrow(HttpError);
     }
   });

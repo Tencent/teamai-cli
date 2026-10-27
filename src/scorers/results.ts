@@ -109,13 +109,15 @@ export type ScorerResultsQuery = {
   groupBy?: Dimension;
   /** The side of `commit` each team revision is on, as the caller's team clone answers it. */
   split?: { commit: string; sideOf: ReadonlyMap<string, Side> };
+  /** Which failing labels to list: only those of the group with key `group`, the newest `limit` of them. */
+  failing?: { group?: string; limit?: number };
 };
 
-/**
- * A failing label as the view lists it: never its subject's native session id, reasoning or prompt. `groups` are the
- * keys of the groups it counts under, when the view is grouped.
- */
-export type FailingLabel = { author: string; scoredAt: string; label: string; skills?: string[]; groups?: string[] } & (
+/** How many failing labels a view lists unless asked for more. */
+export const FAILING_PAGE = 25;
+
+/** A failing label as the view lists it: never its subject's native session id, reasoning or prompt. */
+export type FailingLabel = { author: string; scoredAt: string; label: string; skills?: string[] } & (
   | { source: 'session'; platform: string; sessionName?: string }
   | { source: 'workflow'; run: { id: string; step: string; pass: number; source?: 'local' | 'reported' } }
 );
@@ -144,7 +146,8 @@ export type SelectedCohort = {
   groupBy?: Dimension;
   groups?: Group[];
   split?: Split;
-  failing: FailingLabel[];
+  /** The newest failing labels the query asked for, and how many it matches. */
+  failing: { labels: FailingLabel[]; total: number };
   /** Only for a session cohort on a dashboard that read this machine's reminder state: the sessions of the last `days`. */
   reminders?: { days: number; rows: ReminderRow[] };
 };
@@ -249,14 +252,13 @@ function groupKeys(entry: ViewedLabel, dimension: Dimension): string[] {
   return recorded.length === 0 ? [NONE_KEY] : recorded.map(groupKey);
 }
 
-function failingLabel(entry: ViewedLabel, groupBy: Dimension | undefined): FailingLabel {
+function failingLabel(entry: ViewedLabel): FailingLabel {
   const { label } = entry;
   const shared = {
     author: entry.author,
     scoredAt: label.scoredAt,
     label: label.label,
     ...label.used?.skills.length ? { skills: label.used.skills } : {},
-    ...groupBy ? { groups: groupKeys(entry, groupBy) } : {},
   };
   switch (label.source) {
     case 'session':
@@ -405,9 +407,10 @@ export const ScorerResults = {
     if (!chosen || !summary) return { window, scorers };
     const counted = chosen.all.filter(inWindow);
     const { groupBy, split } = query;
-    const failing = counted.filter(({ label }) => !label.passed)
-      .sort((left, right) => right.label.scoredAt.localeCompare(left.label.scoredAt))
-      .map((entry) => failingLabel(entry, groupBy));
+    const group = query.failing?.group;
+    const inGroup = (entry: ViewedLabel) => !groupBy || group === undefined || groupKeys(entry, groupBy).includes(group);
+    const failing = counted.filter((entry) => !entry.label.passed && inGroup(entry))
+      .sort((left, right) => right.label.scoredAt.localeCompare(left.label.scoredAt));
     return {
       window,
       scorers,
@@ -416,7 +419,7 @@ export const ScorerResults = {
         values: valueCounts(counted),
         ...(groupBy ? { groupBy, groups: groups(counted, groupBy, split?.sideOf) } : {}),
         ...(split ? { split: { commit: split.commit, ...splitStats(counted, split.sideOf) } } : {}),
-        failing,
+        failing: { labels: failing.slice(0, query.failing?.limit ?? FAILING_PAGE).map(failingLabel), total: failing.length },
         ...(reminders && summary.source === 'session' ? { reminders: { days: reminders.days, rows: reminderRows(chosen.all, reminders) } } : {}),
       },
     };

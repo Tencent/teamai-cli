@@ -4,7 +4,7 @@
  * `workspaceGeneration`. Every value from the API is escaped with `e`. A workflow row opens its run through the
  * Workflow Runs dialog.
  */
-import { DIMENSIONS_OFFERED, SCORER_WINDOWS, type Dimension } from '../scorers/results.js';
+import { DIMENSIONS_OFFERED, FAILING_PAGE, SCORER_WINDOWS, type Dimension } from '../scorers/results.js';
 
 /** The name the page gives each dimension, in English; `label` translates it. */
 const DIMENSION_NAMES: Record<Dimension, string> = {
@@ -20,12 +20,13 @@ const DIMENSION_NAMES: Record<Dimension, string> = {
 };
 
 export const scorersClient = `
-let scorerData=null, scorerError='', scorerLoading=false, scorerHtml='', scorerGroup='', scorerAllFailing=false, scorerRequest=0, scorerCommitDraft='';
+let scorerData=null, scorerError='', scorerLoading=false, scorerHtml='', scorerRequest=0, scorerCommitDraft='';
+const failingPage=${FAILING_PAGE};
 const scorerWindows=${JSON.stringify(SCORER_WINDOWS.map(String))};
 const scorerDimensions=${JSON.stringify(Object.fromEntries(DIMENSIONS_OFFERED.map((dimension) => [dimension, DIMENSION_NAMES[dimension]])))};
 const savedWindow=read('teamai-dashboard-scorer-window','30'), savedGroup=read('teamai-dashboard-scorer-group','');
-let scorerQuery={window:scorerWindows.includes(savedWindow)?savedWindow:'30',scorer:'',cohort:'',groupBy:Object.hasOwn(scorerDimensions,savedGroup)?savedGroup:'',commit:''};
-function resetScorers(){scorerCommitDraft='';scorerData=null;scorerError='';scorerLoading=false;scorerHtml='';scorerGroup='';scorerAllFailing=false;scorerQuery={...scorerQuery,scorer:'',cohort:'',commit:''};}
+let scorerQuery={window:scorerWindows.includes(savedWindow)?savedWindow:'30',scorer:'',cohort:'',groupBy:Object.hasOwn(scorerDimensions,savedGroup)?savedGroup:'',commit:'',group:'',failing:''};
+function resetScorers(){scorerCommitDraft='';scorerData=null;scorerError='';scorerLoading=false;scorerHtml='';scorerQuery={...scorerQuery,scorer:'',cohort:'',commit:'',group:'',failing:''};}
 const pct=rate=>rate==null?'—':number(Math.round(rate*100))+'%';
 const short=hash=>e(String(hash||'').slice(0,7));
 function judgeText(j){ if(j.kind==='human')return label('Hand label'); return '<span data-verbatim>'+e(j.tool)+'</span> / '+(j.model?'<span data-verbatim>'+e(j.model.id)+'</span>'+(j.model.reported?'':' <small>'+label('requested')+'</small>')+(j.model.alias?' <small data-verbatim>'+e(j.model.alias)+'</small>':''):label('model not recorded')); }
@@ -73,17 +74,24 @@ function groupsPanel(sel){
  const split=!!sel.split;
  const heads=['VALUE','LABELS','PASSED','FAILED','PASS RATE'].concat(split?['BEFORE','AFTER','NOT RECORDED']:[]);
  return '<section class="panel sessions"><div class="panelhead"><h2>'+label('By')+' '+label(scorerDimensions[sel.groupBy])+' <span class="count">'+number(sel.groups.length)+'</span></h2><span class="label">'+label('A label that lists two values counts under both. Select a row to list its failing labels.')+'</span></div><div class="table-scroll"><table class="session-table scorer-groups"><thead><tr>'+heads.map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'
-  +sel.groups.map(g=>'<tr class="'+(scorerGroup===g.key?'selected-row':'')+'"><td><button class="link" data-scorer-group="'+e(g.key)+'" aria-pressed="'+(scorerGroup===g.key)+'">'+groupName(g)+'</button></td><td>'+number(g.stats.n)+'</td><td>'+number(g.stats.passed)+'</td><td>'+number(g.stats.failed)+'</td><td>'+meter(g.stats.rate)+' '+pct(g.stats.rate)+'</td>'+(split?['before','after','notRecorded'].map(side=>'<td>'+pct(g.split[side].rate)+' <small>'+number(g.split[side].n)+'</small></td>').join(''):'')+'</tr>').join('')
+  +sel.groups.map(g=>'<tr class="'+(scorerQuery.group===g.key?'selected-row':'')+'"><td><button class="link" data-scorer-group="'+e(g.key)+'" aria-pressed="'+(scorerQuery.group===g.key)+'">'+groupName(g)+'</button></td><td>'+number(g.stats.n)+'</td><td>'+number(g.stats.passed)+'</td><td>'+number(g.stats.failed)+'</td><td>'+meter(g.stats.rate)+' '+pct(g.stats.rate)+'</td>'+(split?['before','after','notRecorded'].map(side=>'<td>'+pct(g.split[side].rate)+' <small>'+number(g.split[side].n)+'</small></td>').join(''):'')+'</tr>').join('')
+  +'</tbody></table></div></section>';
+}
+function valuesPanel(sel){
+ if(!sel.values.length)return '';
+ const n=sel.cohort.stats.n;
+ return '<section class="panel sessions"><div class="panelhead"><h2>'+label('Labels by value')+' <span class="count">'+number(sel.values.length)+'</span></h2><span class="label">'+label('Each value as the labels stored it, highest score first. Read precision or recall from these counts.')+'</span></div><div class="table-scroll"><table class="session-table scorer-values"><thead><tr>'+['LABEL','SCORE','LABELS','SHARE'].map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'
+  +sel.values.map(v=>'<tr><td data-verbatim>'+e(v.label)+'</td><td>'+number(v.score)+'</td><td>'+number(v.n)+'</td><td>'+meter(n?v.n/n:null)+' '+pct(n?v.n/n:null)+'</td></tr>').join('')
   +'</tbody></table></div></section>';
 }
 function failingPanel(sel){
- const rows=scorerGroup?sel.failing.filter(r=>(r.groups||[]).includes(scorerGroup)):sel.failing;
+ const rows=sel.failing.labels, total=sel.failing.total;
  const subject=r=>r.run?(r.run.source?'<button class="link" data-run="'+e(r.run.id)+'" data-run-source="'+e(r.run.source)+'"><span data-verbatim>'+e(r.run.id)+'</span> ↗</button>':'<span data-verbatim>'+e(r.run.id)+'</span> <span class="muted">'+label('Run not found')+'</span>')+'<small data-verbatim>'+e(r.run.step)+' #'+e(r.run.pass)+'</small>'
   :(r.sessionName?'<code class="command" data-verbatim>teamai session resume '+e(r.sessionName)+' --platform '+e(r.platform)+'</code>':'<span class="muted">'+label('Not pushed to the team archive')+'</span>');
- return '<section class="panel sessions"><div class="panelhead"><h2>'+label('Failing labels')+' <span class="count">'+number(rows.length)+'</span></h2>'+(scorerGroup?'<button class="link" data-scorer-group="">'+label('Show every group')+'</button>':'<span class="label">'+label('Newest first')+'</span>')+'</div>'
+ return '<section class="panel sessions"><div class="panelhead"><h2>'+label('Failing labels')+' <span class="count">'+number(total)+'</span></h2>'+(scorerQuery.group?'<button class="link" data-scorer-group="">'+label('Show every group')+'</button>':'<span class="label">'+label('Newest first')+'</span>')+'</div>'
   +(rows.length?'<div class="table-scroll"><table class="session-table"><thead><tr>'+['SCORED','AUTHOR','LABEL','PLATFORM','SKILLS','OPEN'].map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'
-  +rows.slice(0,scorerAllFailing?rows.length:10).map(r=>'<tr><td>'+e(when(r.scoredAt))+'</td><td data-verbatim>'+e(r.author)+'</td><td class="amber" data-verbatim>'+e(r.label)+'</td><td data-verbatim>'+e(r.platform||(r.run?t('Workflow run'):'—'))+'</td><td>'+(r.skills?r.skills.map(s=>'<span class="tag" data-verbatim>'+e(s)+'</span>').join(' '):'—')+'</td><td>'+subject(r)+'</td></tr>').join('')
-  +'</tbody></table></div>'+(rows.length>10?'<div class="cardfoot scorer-foot"><button class="link" data-scorer-failing>'+(scorerAllFailing?label('Show the newest 10'):label('Show all')+' '+number(rows.length))+'</button></div>':''):'<div class="empty"><p>'+label('No failing labels in this window.')+'</p></div>')+'</section>';
+  +rows.map(r=>'<tr><td>'+e(when(r.scoredAt))+'</td><td data-verbatim>'+e(r.author)+'</td><td class="amber" data-verbatim>'+e(r.label)+'</td><td data-verbatim>'+e(r.platform||(r.run?t('Workflow run'):'—'))+'</td><td>'+(r.skills?r.skills.map(s=>'<span class="tag" data-verbatim>'+e(s)+'</span>').join(' '):'—')+'</td><td>'+subject(r)+'</td></tr>').join('')
+  +'</tbody></table></div>'+(rows.length<total?'<div class="cardfoot scorer-foot"><span class="label">'+number(rows.length)+' / '+number(total)+'</span> <button class="link" data-scorer-more>'+label('Show more')+'</button></div>':''):'<div class="empty"><p>'+label('No failing labels in this window.')+'</p></div>')+'</section>';
 }
 function remindersPanel(sel){
  if(!sel.reminders)return '';
@@ -116,24 +124,24 @@ function scorersPage(){
  return (scorerError?'<div class="error-panel" role="alert"><p>'+e(scorerError)+'</p></div>':'')
   +'<div class="statusline"><span>'+label('Window')+': '+e(when(w.from))+' – '+e(when(w.to))+'</span><span>'+label('Counted by when labels were scored, not when the work happened.')+'</span><span>'+label('Pass or fail as each label stored it.')+'</span></div>'
   +scorerSummary(scorerData)+scorerControls(scorerData)
-  +(sel?'<h2 class="section-label"><span data-verbatim>'+e(sel.cohort.scorer)+'</span> <span class="tag">'+(sel.cohort.source==='session'?label('Session labels'):label('Workflow labels'))+'</span></h2>'+kpis(sel.cohort.stats)+(sel.split?splitCards(sel.split):'')
+  +(sel?'<h2 class="section-label"><span data-verbatim>'+e(sel.cohort.scorer)+'</span> <span class="tag">'+(sel.cohort.source==='session'?label('Session labels'):label('Workflow labels'))+'</span></h2>'+kpis(sel.cohort.stats)+valuesPanel(sel)+(sel.split?splitCards(sel.split):'')
    +'<section class="panel trend-panel"><div class="panelhead"><h2>'+label('Weekly pass rate')+'</h2><span class="label">'+cohortText(sel.cohort)+'</span></div>'+trendChart(sel.cohort.trend)+'</section>'
    +groupsPanel(sel)+failingPanel(sel)+remindersPanel(sel):'')
   +note;
 }
 async function loadScorers(){
  const generation=workspaceGeneration, request=++scorerRequest, current=()=>generation===workspaceGeneration&&request===scorerRequest; scorerLoading=true;
- const params={window:scorerQuery.window}; for(const key of ['scorer','cohort','groupBy','commit'])if(scorerQuery[key])params[key]=scorerQuery[key];
+ const params={window:scorerQuery.window}; for(const key of ['scorer','cohort','groupBy','commit','group','failing'])if(scorerQuery[key])params[key]=scorerQuery[key];
  try{
   const response=await fetch(apiQuery('/api/scorers',params),{signal:AbortSignal.timeout(30000)});
   const data=await response.json().catch(()=>null);
   if(!current())return;
   if(!response.ok){scorerError=data&&data.error?data.error:t('Could not load scorer results.');if(response.status===400)scorerQuery.commit=scorerData&&scorerData.selected&&scorerData.selected.split?scorerData.selected.split.commit:'';}
-  else{scorerData=data;scorerError='';if(data.selected){scorerQuery.scorer=data.selected.cohort.scorer;scorerQuery.cohort=data.selected.cohort.id;}if(!data.selected||!data.selected.groups)scorerGroup='';}
+  else{scorerData=data;scorerError='';if(data.selected){scorerQuery.scorer=data.selected.cohort.scorer;scorerQuery.cohort=data.selected.cohort.id;}if(!data.selected||!data.selected.groups)scorerQuery.group='';}
  }catch{if(current())scorerError=t('Could not load scorer results.');}
  finally{if(current()){scorerLoading=false;if(page==='scorers'){const html=scorersPage();if(html!==scorerHtml){scorerHtml=html;render();}}}}
 }
-function setScorerQuery(changes){ scorerQuery={...scorerQuery,...changes}; save('teamai-dashboard-scorer-window',scorerQuery.window); save('teamai-dashboard-scorer-group',scorerQuery.groupBy); scorerGroup=''; loadScorers(); }
+function setScorerQuery(changes){ scorerQuery={...scorerQuery,group:'',failing:'',...changes}; save('teamai-dashboard-scorer-window',scorerQuery.window); save('teamai-dashboard-scorer-group',scorerQuery.groupBy); loadScorers(); }
 document.addEventListener('change',event=>{
  if(event.target.id==='scorer-window')setScorerQuery({window:event.target.value});
  else if(event.target.id==='scorer-group')setScorerQuery({groupBy:event.target.value});
@@ -144,8 +152,8 @@ document.addEventListener('click',event=>{
  const scorer=event.target.closest('[data-scorer]'), cohort=event.target.closest('[data-cohort]'), group=event.target.closest('[data-scorer-group]');
  if(scorer)setScorerQuery({scorer:scorer.dataset.scorer,cohort:''});
  else if(cohort)setScorerQuery({cohort:cohort.dataset.cohort});
- else if(group){scorerGroup=scorerGroup===group.dataset.scorerGroup?'':group.dataset.scorerGroup;scorerHtml='';render();}
- else if(event.target.closest('[data-scorer-failing]')){scorerAllFailing=!scorerAllFailing;scorerHtml='';render();}
+ else if(group)setScorerQuery({group:scorerQuery.group===group.dataset.scorerGroup?'':group.dataset.scorerGroup});
+ else if(event.target.closest('[data-scorer-more]'))setScorerQuery({group:scorerQuery.group,failing:String(scorerData.selected.failing.labels.length+failingPage)});
  else if(event.target.closest('[data-scorer-clear]')){scorerCommitDraft='';setScorerQuery({commit:''});}
 });
 `;

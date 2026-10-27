@@ -398,6 +398,9 @@ export const dashboardMessages: Record<string, string> = {
   "SCORER": "评分器",
   "MEASUREMENT": "度量",
   "TREND": "趋势",
-  "Show the newest 10": "只显示最新 10 条",
-  "Show all": "显示全部"
+  "Show more": "显示更多",
+  "Labels by value": "按值统计的标签",
+  "Each value as the labels stored it, highest score first. Read precision or recall from these counts.": "每个值以标签保存的结果为准，分数高的在前。可以根据这些计数读出精确率或召回率。",
+  "SCORE": "分数",
+  "SHARE": "占比"
 };

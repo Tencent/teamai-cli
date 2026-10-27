@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { RecordedAgent } from '../agent-observation.js';
 import type { ScoreLabel } from '../scorers/label.js';
-import { ScorerResults, type ViewedLabel } from '../scorers/results.js';
+import { FAILING_PAGE, ScorerResults, type ViewedLabel } from '../scorers/results.js';
 
 const NOW = new Date('2026-03-20T12:00:00Z');
 const REV_A = 'a'.repeat(40);
@@ -166,10 +166,13 @@ describe('scorer results', () => {
       viewed(sessionLabel({ passed: true })),
       viewed(sessionLabel({ passed: false, label: 'poor', scoredAt: '2026-03-15T00:00:00.000Z' })),
     ];
-    expect(ScorerResults.of({ labels, query: { windowDays: 30 }, now: NOW }).selected?.failing).toEqual([
-      { author: 'alice', scoredAt: '2026-03-15T00:00:00.000Z', label: 'poor', source: 'session', platform: 'claude' },
-      { author: 'bob', scoredAt: '2026-03-12T00:00:00.000Z', label: 'poor', source: 'session', platform: 'claude', skills: ['tdd'], sessionName: 'fix-login' },
-    ]);
+    expect(ScorerResults.of({ labels, query: { windowDays: 30 }, now: NOW }).selected?.failing).toEqual({
+      total: 2,
+      labels: [
+        { author: 'alice', scoredAt: '2026-03-15T00:00:00.000Z', label: 'poor', source: 'session', platform: 'claude' },
+        { author: 'bob', scoredAt: '2026-03-12T00:00:00.000Z', label: 'poor', source: 'session', platform: 'claude', skills: ['tdd'], sessionName: 'fix-login' },
+      ],
+    });
   });
 
   it('keeps a recorded value named like none apart from labels that recorded none', () => {
@@ -177,22 +180,29 @@ describe('scorer results', () => {
       viewed(sessionLabel({ passed: false, label: 'poor', used: { skills: ['none'] } })),
       viewed(sessionLabel({ passed: false, label: 'poor', used: { skills: [] } })),
     ];
-    const selected = ScorerResults.of({ labels, query: { windowDays: 30, groupBy: 'skill' }, now: NOW }).selected;
-    const keys = selected?.groups?.map((group) => group.key) ?? [];
+    const query = { windowDays: 30, groupBy: 'skill' } as const;
+    const keys = ScorerResults.of({ labels, query, now: NOW }).selected?.groups?.map((group) => group.key) ?? [];
     expect(new Set(keys).size).toBe(2);
-    for (const key of keys) expect(selected?.failing.filter((row) => row.groups?.includes(key))).toHaveLength(1);
+    for (const group of keys) {
+      expect(ScorerResults.of({ labels, query: { ...query, failing: { group } }, now: NOW }).selected?.failing.total).toBe(1);
+    }
   });
 
-  it('lists every failing label of a group, however many newer failing labels other groups have', () => {
+  it('lists a page of failing labels with their total, and every failing label of a group however many newer ones other groups have', () => {
     const failing = (skill: string, scoredAt: string) => viewed(sessionLabel({ passed: false, label: 'poor', scoredAt, used: { skills: [skill] } }));
     const labels = [
       failing('review', '2026-03-01T00:00:00.000Z'),
       ...Array.from({ length: 150 }, (_, index) => failing('tdd', `2026-03-10T00:00:${String(index % 60).padStart(2, '0')}.${String(index).padStart(3, '0')}Z`)),
     ];
-    const selected = ScorerResults.of({ labels, query: { windowDays: 30, groupBy: 'skill' }, now: NOW }).selected;
+    const query = { windowDays: 30, groupBy: 'skill' } as const;
+    const selected = ScorerResults.of({ labels, query, now: NOW }).selected;
+    expect(selected?.failing.total).toBe(151);
+    expect(selected?.failing.labels).toHaveLength(FAILING_PAGE);
+    expect(ScorerResults.of({ labels, query: { ...query, failing: { limit: 140 } }, now: NOW }).selected?.failing.labels).toHaveLength(140);
+
     const review = selected?.groups?.find((group) => group.kind === 'value' && group.value === 'review')?.key ?? 'missing';
-    expect(selected?.failing.filter((row) => row.groups?.includes(review))).toHaveLength(1);
-    expect(selected?.failing).toHaveLength(151);
+    const inReview = ScorerResults.of({ labels, query: { ...query, failing: { group: review } }, now: NOW }).selected?.failing;
+    expect(inReview).toMatchObject({ total: 1, labels: [{ scoredAt: '2026-03-01T00:00:00.000Z', skills: ['review'] }] });
   });
 
   it('compares the sessions the friction reminder fired on with those it did not, over labelled sessions only', () => {
