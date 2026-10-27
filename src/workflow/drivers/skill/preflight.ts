@@ -1,6 +1,6 @@
 /** Before a run: what describe asks the person, and whether a start carries every answer it needs. */
 import type { ToolName } from '../../../resources/agent-format.js';
-import { isLaunchTool, type LaunchTool } from '../../../tool-launch/tools.js';
+import { isLaunchTool, LAUNCH_ORDER, type LaunchTool } from '../../../tool-launch/tools.js';
 import type { LocalConfig } from '../../../types.js';
 import type { GateGuards, WorkflowDescription } from '../../describe.js';
 import { INVOKE_ASK_NEED, unattendedReason, type Judging } from '../../protocol.js';
@@ -285,13 +285,15 @@ function inputsOf(description: WorkflowDescription): Array<{ name: string; type:
 }
 
 /**
- * The prompt tool a person's local run must be told: the session's `tool`, when nothing on this machine names the tool
- * prompt steps run on (TEAMAI_AI_TOOL, `workflows.tools.default`, `ai.tool`) and the local driver launches `tool`.
- * Undefined when one of those names a tool, or when no tool the local driver launches is known.
+ * The prompt tool a person's local run must be told: the session's `tool`, when nothing on this machine picks the tool
+ * prompt steps run on and the local driver launches `tool`. `workflows.tools.default` picks one, and so do
+ * TEAMAI_AI_TOOL and `ai.tool` unless they name a tool teamai calls but runs no steps on, which the step passes over.
+ * Undefined when one of those picks a tool, or when no tool the local driver launches is known.
  */
 export function localPromptTool(config: LocalConfig, tool: ToolName | undefined): LaunchTool | undefined {
-  const named = process.env.TEAMAI_AI_TOOL || config.workflows?.tools.default || config.ai?.tool;
-  return !named && tool !== undefined && isLaunchTool(tool) ? tool : undefined;
+  const picks = (named: string | undefined) => !!named && (isLaunchTool(named) || !LAUNCH_ORDER.some((launched) => launched === named));
+  const picked = !!config.workflows?.tools.default || picks(process.env.TEAMAI_AI_TOOL) || picks(config.ai?.tool);
+  return !picked && tool !== undefined && isLaunchTool(tool) ? tool : undefined;
 }
 
 /** The describe reply's `ask` of the kind the transitions chose. `local.tool`: the prompt tool a local start names. */
