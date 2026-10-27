@@ -2601,7 +2601,10 @@ export async function addGitHeadAtStop(event: DashboardEvent): Promise<void> {
   if (event.type !== 'stop' || !event.cwd) return;
   const { getCurrentBranch, getHeadCommit } = await import('./utils/git.js');
   const abort = AbortSignal.timeout(GIT_STATE_TIMEOUT_MS);
-  const [head, branch] = await Promise.all([getHeadCommit(event.cwd, 'HEAD', abort), getCurrentBranch(event.cwd, abort)]);
+  // A git killed at the cap is still waited for while a child of it holds the pipe (a wrapper's), so the cap ends the
+  // wait itself: the Stop handler is stopped soon after, and its event would go unwritten.
+  const capped = new Promise<[null, null]>((resolve) => abort.addEventListener('abort', () => resolve([null, null]), { once: true }));
+  const [head, branch] = await Promise.race([Promise.all([getHeadCommit(event.cwd, 'HEAD', abort), getCurrentBranch(event.cwd, abort)]), capped]);
   if (!head) return;
   event.gitHead = head;
   if (branch) event.gitBranch = branch;

@@ -2922,6 +2922,34 @@ describe('dashboard-report records the git state a session started on', () => {
     expect(stop.gitBranch).toBe('fix-retry');
   });
 
+  it('writes a Stop without its head, in time, when git outlives its time cap with a child holding the pipe (#1387)', async () => {
+    const { repo } = committedRepo();
+    const realGit = spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf-8' }).stdout.trim();
+    const wrapperDir = path.join(tmpDir, 'git-wrapper');
+    fs.mkdirSync(wrapperDir);
+    // Hangs on the two reads a Stop makes, and leaves a child that holds the pipe once it is killed.
+    fs.writeFileSync(path.join(wrapperDir, 'git'), [
+      '#!/bin/sh',
+      'case "$*" in *"rev-parse --verify"*|*"symbolic-ref --quiet"*) (sleep 12) & sleep 12 ;; esac',
+      `exec ${realGit} "$@"`,
+      '',
+    ].join('\n'), { mode: 0o755 });
+    const originalPath = process.env.PATH;
+    process.env.PATH = `${wrapperDir}${path.delimiter}${originalPath ?? ''}`;
+    const started = Date.now();
+    try {
+      await runHook({ hook_event_name: 'Stop', session_id: 'git-hangs', cwd: repo });
+    } finally {
+      process.env.PATH = originalPath;
+    }
+
+    // The Stop handler is stopped after 4.5 seconds, its event unwritten.
+    expect(Date.now() - started).toBeLessThan(4_500);
+    const [stop] = await readEvents();
+    expect(stop).toMatchObject({ type: 'stop', sessionId: 'git-hangs' });
+    expect(stop).not.toHaveProperty('gitHead');
+  }, 20_000);
+
   it('records the commit and a clean tree', async () => {
     const { repo, head } = committedRepo();
 
