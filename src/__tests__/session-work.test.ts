@@ -158,10 +158,9 @@ describe('a finished session as judge work', () => {
     expect(data(await nextJudgeLease(config, request(), NOW))).toEqual(IDLE);
   });
 
-  it('is handed out when it ran unattended and nothing sets scoring.sessions, and not when it ran attended', async () => {
-    expect(leaseOf(await nextJudgeLease(await fixture({ scoring: {}, runMode: 'unattended' }), request(), NOW))).toMatchObject({ source: 'session', subject: { sessionId: SESSION } });
-    fs.rmSync(path.join(root, 'data'), { recursive: true, force: true });
-    expect(data(await nextJudgeLease(await fixture({ scoring: {}, runMode: 'attended' }), request(), NOW))).toEqual(IDLE);
+  it('is not handed out when it ran unattended and no drain reached it, however long it has been idle', async () => {
+    const config = await fixture({ scoring: {}, runMode: 'unattended', idleFor: 30 * HOUR });
+    expect(data(await nextJudgeLease(config, request(), NOW))).toEqual(IDLE);
   });
 
   it('is not opened again once its lease is released', async () => {

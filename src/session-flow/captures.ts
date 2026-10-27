@@ -227,7 +227,12 @@ export interface CapturedSession {
   platform: string;
   sessionId: string;
   captures: readonly [SessionCapture, ...SessionCapture[]];
+  /** Whether a drain reached it (#1385): an unattended session is finished from then on. */
+  drained: boolean;
 }
+
+/** The file in a session's capture directory that says a drain reached it. Captures end in `.json`; it does not. */
+const DRAINED_FILE = 'drained';
 
 /** Every session captured here, as `sweep` walks them. */
 async function list(config: LocalConfig): Promise<CapturedSession[]> {
@@ -236,10 +241,19 @@ async function list(config: LocalConfig): Promise<CapturedSession[]> {
   for (const platform of (await fs.readdir(root).catch(() => [])).filter((name) => SEGMENT.test(name)).sort()) {
     for (const sessionId of (await fs.readdir(path.join(root, platform)).catch(() => [])).sort()) {
       const [first, ...rest] = await read(config, platform, sessionId);
-      if (first) sessions.push({ platform, sessionId, captures: [first, ...rest] });
+      if (!first) continue;
+      const drained = await fs.stat(path.join(sessionDir(config, platform, sessionId), DRAINED_FILE)).then(() => true, () => false);
+      sessions.push({ platform, sessionId, captures: [first, ...rest], drained });
     }
   }
   return sessions;
+}
+
+/** Records that a drain reached `captured`, at `now`. Written once: a session stays drained. */
+async function markDrained(config: LocalConfig, captured: Pick<CapturedSession, 'platform' | 'sessionId'>, now: string): Promise<void> {
+  const file = path.join(sessionDir(config, captured.platform, captured.sessionId), DRAINED_FILE);
+  await fs.writeFile(`${file}.tmp`, `${now}\n`, { mode: 0o600 });
+  await fs.rename(`${file}.tmp`, file);
 }
 
 /** The platforms whose sessions named `sessionId` were captured here. */
@@ -277,4 +291,4 @@ function runModeOf(captures: readonly SessionCapture[]): RunMode | undefined {
   return agreedRunMode(captures.map((capture) => capture.runMode));
 }
 
-export const SessionCaptures = { atStart, addToolVersion, checkoutDelivery, markTeamChanged, read, list, platformsOf, agentOf, runModeOf, sweep } as const;
+export const SessionCaptures = { atStart, addToolVersion, checkoutDelivery, markTeamChanged, read, list, markDrained, platformsOf, agentOf, runModeOf, sweep } as const;
