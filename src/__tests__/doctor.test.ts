@@ -716,6 +716,22 @@ describe('doctor — JSON report', () => {
         expect(emittedReport().notes).toContain('Usage reporting: off, from HTTP mode (no team repo to report to).');
     });
 
+    it('notes a sessions.publish value it ignores', async () => {
+        mockedLoadTeamConfig.mockResolvedValue({ ...mockTeamConfig, sessions: { publish: { unattended: 'yes' } } });
+
+        await doctor({ json: true });
+
+        expect(emittedReport().notes).toContain('teamai.yaml sessions.publish.unattended is "yes", not off, ask or auto, so it is ignored.');
+    });
+
+    it('notes that sessions are not published for an HTTP team repo', async () => {
+        mockedLoadLocalConfig.mockResolvedValue({ ...mockLocalConfig, repo: { ...mockLocalConfig.repo, kind: 'http' } });
+
+        await doctor({ json: true });
+
+        expect(emittedReport().notes).toContain('Sessions are not published: the team repo is an HTTP repo, which keeps no session archive, so sessions.publish acts as off.');
+    });
+
     it.each([
         [{ CI: 'true' }, { mode: 'unattended', source: 'CI' }],
         [{ CI: 'true', TEAMAI_MODE: 'attended' }, { mode: 'attended', source: 'TEAMAI_MODE' }],

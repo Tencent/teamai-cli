@@ -2,6 +2,7 @@ import { hookToolPathsForConfig } from './types.js';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { detectProjectConfig, loadLocalConfig, loadTeamConfig } from './config.js';
+import { SessionPolicy } from './session-flow/session-policy.js';
 import { explainRunMode, type ExplainedRunMode } from './launch-context.js';
 import { readWorkspaceChildren } from './workspace-children.js';
 import { pathExists, readFileSafe } from './utils/fs.js';
@@ -986,6 +987,7 @@ export async function doctor(options: DoctorOptions): Promise<boolean> {
     ...codexTrust.notes,
     ...toolPathsDroppedKeyNotes(ctx),
     usageReportNote(ctx),
+    ...SessionPolicy.publish(localConfig, ctx.teamConfig).problems.map((problem) => `${problem}.`),
     // What git sees of the delivered team resources, and what no pull changes (#915).
     ...await deliveredGitExcludeNotes(ctx),
     ...await localAgentGitExcludeNotes(),

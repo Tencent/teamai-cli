@@ -49,6 +49,12 @@ describe('scorerNotes', () => {
     expect(await scorerNotes(config, { resolveTool: () => null })).toEqual(['Scoring isolation: best-effort, the default.', 'Judge tools here: none on PATH. Install one of: claude, claude-internal, tclaude, codex, codex-internal, tcodex, opencode, codebuddy, workbuddy, cursor, pi to judge on this machine.']);
   });
 
+  it('prints a scoring sessions value it ignores', async () => {
+    const config = teamRepo({ 'scorers/q.md': SCORER, 'scorers/scoring.yaml': 'sessions: { unattended: yes }\n' });
+
+    expect(await scorerNotes(config, { resolveTool: () => null })).toContain('scorers/scoring.yaml sessions.unattended is "yes", not off, ask or auto, so it is ignored.');
+  });
+
   it.each([
     [{ 'scorers/scoring.yaml': 'isolation: verified\n' }, {}, 'Scoring isolation: verified, set by scorers/scoring.yaml isolation.'],
     [{ 'scorers/scoring.yaml': 'isolation: best-effort\n' }, { scoring: { isolation: 'verified' } }, 'Scoring isolation: verified, set by config.yaml scoring.isolation.'],
