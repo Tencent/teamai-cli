@@ -349,6 +349,19 @@ describe('teamai score --drain', () => {
     expect(drained.lines).not.toContain('✔ Nothing left to do here');
   });
 
+  it('says once what it ignores in the scoring settings, however many leases it takes', async () => {
+    await team({ 'scorers/scoring.yaml': 'daily_limit: -1\n' });
+    capturedSession(SESSION, 'unattended');
+    fakeClaude();
+    vi.stubEnv('CI', 'true');
+
+    const drained = await drain();
+
+    expect(drained.lines.filter((printed) => printed.includes('daily_limit is -1')), drained.lines.join('\n')).toEqual([
+      '⚠ scorers/scoring.yaml: daily_limit is -1, not a whole number of 0 or more, so it is ignored.',
+    ]);
+  });
+
   it('warns once, and writes nothing into the repository, for a project whose teamai data is still inside it', async () => {
     const { config } = await team();
     const checkout = path.join(root, 'app');

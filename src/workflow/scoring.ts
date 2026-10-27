@@ -9,6 +9,7 @@ import { z } from 'zod';
 import { DriverSchema, driverIdentity, sameDriver } from '../driver-identity.js';
 import type { LocalConfig } from '../types.js';
 import { log } from '../utils/logger.js';
+import { warnOnce } from '../utils/warn-once.js';
 import {
   AttemptStore, isRunAttempt, newAttemptId, rawOutputPath, scoresDir, type AttemptRecord, type JudgeDriver, type JudgeFailureCode, type LeasedAttempt, type LeasedRunAttempt,
   type LeasedSessionAttempt, type RunAttempt, type ScoreRequest, type SessionAttempt, type SucceededAttempt,
@@ -465,9 +466,10 @@ async function requestedEntries(config: LocalConfig, request: Pick<JudgeRequest,
     log.warn(unavailable);
     return undefined;
   }
+  // A drain asks once for each lease it takes: what is off in the team's settings is said once a run.
   const scoring = await scopeScoring(config);
   if (!scoring.ok) {
-    log.warn(scoring.reason);
+    warnOnce(scoring.reason);
     return undefined;
   }
   const { named, ids } = entrySources(request.entries);
@@ -475,8 +477,8 @@ async function requestedEntries(config: LocalConfig, request: Pick<JudgeRequest,
   const runs = all.filter((entry) => (!ids || ids.includes(entry.id)) && (request.run === undefined || entry.subject.runId === request.run));
   const { entries: sessions, captured } = named ? { entries: await SessionWork.entriesOf(config, named, now), captured: undefined }
     : request.entries || request.run !== undefined ? { entries: [], captured: undefined } : await SessionWork.entries(config, now, scoring);
-  for (const unknown of requiredIsolation(scoring.isolation).unknown) log.warn(`${unknownIsolationText(unknown)}.`);
-  for (const problem of scoring.problems) log.warn(`${problem}.`);
+  for (const unknown of requiredIsolation(scoring.isolation).unknown) warnOnce(`${unknownIsolationText(unknown)}.`);
+  for (const problem of scoring.problems) warnOnce(`${problem}.`);
   const limited = !named && sessions.length > 0 && SessionWork.launchesToday([...(await AttemptStore.read(config)).values()].flat(), now) >= scoring.sessions.dailyLimit;
   return { scoring, all, runs, sessions, captured, limited, named: named !== undefined };
 }
