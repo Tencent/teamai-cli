@@ -806,8 +806,13 @@ __teamai_env_precmd() {
 # A scalar PROMPT_COMMAND keeps its form and export: the wrapper routes, recreates
 # the preceding pipeline's $? and PIPESTATUS, then evaluates the member's string.
 __teamai_env_prompt_status() { return "$1"; }
+# A hook that saved this wrapper and became PROMPT_COMMAND after it, as VS Code's
+# shell integration does, runs it again from inside the string it evaluates: that
+# call has already routed, so it returns, and the hook goes on to its own work.
 __teamai_env_prompt() {
+  [ -z "\${__teamai_prompt_active-}" ] || return "$1"
   case $- in *a*) set +a; __teamai_prompt_allexport=1 ;; *) __teamai_prompt_allexport=0 ;; esac
+  local __teamai_prompt_active=1
   local __teamai_prompt_saved_command=\${__TEAMAI_ENV_PROMPT_COMMAND-} __teamai_prompt_pipeline= __teamai_prompt_sep= __teamai_prompt_pipe
   local __teamai_prompt_status=$1 __teamai_prompt_natural=0
   shift
