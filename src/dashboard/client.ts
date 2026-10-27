@@ -24,6 +24,7 @@ let dist = null, distError = false, distLoading = false, distDraft = null, previ
 let skills = null, skillsError = false, skillsLoading = false, skillBusy = '';
 let skillFilterDelivery = '', skillFilterNamespace = '', skillFilterAgent = '';
 let workflows = null, workflowsHtml = '', workflowsError = false, workflowsLoading = false, runKey = null, runDetail = null, runHtml = '', answering = '', answerError = '';
+let outcomeSummary = null, outcomesError = false, outcomesLoading = false;
 let workspaceId = '', workspaceGeneration = 0, workspaces = [];
 const api = route => route + (workspaceId ? '?workspace=' + encodeURIComponent(workspaceId) : '');
 const apiQuery = (route, params) => { const query=new URLSearchParams(params); if(workspaceId)query.set('workspace',workspaceId); return route+'?'+query; };
@@ -64,13 +65,28 @@ function overview() {
  return '<div class="cards"><article class="card"><div class="cardtop">'+label('Team Execution')+icon('execution')+'</div><div class="source">'+label('Local live sessions')+'</div><div class="big summary-value">'+(haveSessions?number(sessions.length):'—')+'<small>'+label('sessions on this machine')+'</small></div><div class="statusline">'+number(working)+' '+label('Working')+' · '+number(waiting)+' '+label('Your turn')+'</div><div class="cardfoot">'+link('execution','View sessions')+'</div></article>'+
  '<article class="card"><div class="cardtop">'+label('Team Context')+'</div>'+source()+'<div class="big summary-value">'+(kb?number(kb.overallCoveragePct)+'%':'—')+'<small>'+label('Knowledge coverage')+'</small></div><div class="statusline">'+(kb?number(kb.totalEntries)+' '+label('Entries')+' · '+number(kb.silentCount)+' '+label('Never recalled'):label(kbError?'Unavailable':'Loading…'))+'</div><div class="cardfoot">'+link('context','View KB Health')+'</div></article>'+
  '<article class="card"><div class="cardtop">'+label('Team Improvement')+'</div><div class="source">'+label('KB Health maintenance candidates')+'</div><div class="big summary-value">'+(maintenance===null?'—':number(maintenance))+'<small>'+label('candidates for review')+'</small></div><div class="statusline">'+(kb?number(kb.maintenanceCounts.promote)+' '+label('Promotion')+' · '+number(kb.maintenanceCounts.prune)+' '+label('Archive')+' · '+number(kb.maintenanceCounts.stale)+' '+label('Stale'):label(kbError?'Unavailable':'Loading…'))+'</div><div class="cardfoot">'+link('improvement','View maintenance')+'</div></article></div>'+
- (kbError?errorPanel('Could not refresh KB Health. Any displayed report is the last successful result.','kb'):'')+trendPanel()+sessionTable(sessions);
+ (kbError?errorPanel('Could not refresh KB Health. Any displayed report is the last successful result.','kb'):'')+trendPanel()+outcomePanel()+sessionTable(sessions);
 }
 function formatMetric(value, kind) { if (value===null || value===undefined) return trends ? '—' : label(trendError?'Unavailable':'Loading…'); if(kind==='pct')return number(Math.round(value*100))+'%'; if(kind==='cost')return new Intl.NumberFormat(language,{style:'currency',currency:'USD',minimumFractionDigits:3}).format(value/1000000)+' '+label('est.');return Number(value).toFixed(1); }
 function trendPanel() {
  const metrics=[['Prompts / session','avgPrompts','number'],['Cost / session','avgSessionCostMicros','cost'],['Cache read share','cacheReadShare','pct'],['Correction rate','correctionRate','pct']];
  return '<h2 class="section-label">'+label('7 days vs prior 7 days')+' <span class="tag">'+label('Local · UTC')+'</span></h2>'+(trendError?errorPanel('Could not refresh trends. Any displayed values are the last successful result.','trends'):'')+'<div class="trends">'+metrics.map(([title,key,kind])=>'<article class="card trend"><h2>'+label(title)+'</h2><div class="big">'+formatMetric(trends?.current[key],kind)+'</div><span class="label">'+label('Prior')+': '+(trends && trends.previous[key]==null ? label(!trends.previous.sessionsEnded?'No ended sessions in prior period':kind==='cost'?'No priced sessions':'No usage data') : formatMetric(trends?.previous[key],kind))+'</span>'+(kind==='cost'?'<p class="label cost-note">'+label('Average known cost per priced session; first-stop cohort.')+' '+(trends?number(trends.current.pricedSessions)+' / '+number(trends.current.sessionsEnded)+' '+label('sessions priced'):'')+'</p>':'')+'</article>').join('')+'</div>'
   +(trends?.runModes?'<p class="label">'+label('Sessions ended by run mode')+': '+label('Attended')+' '+number(trends.runModes.attended)+' · '+label('Unattended')+' '+number(trends.runModes.unattended)+' · '+label('Not recorded')+' '+number(trends.runModes.notRecorded)+'</p>':'');
+}
+const outcomeModes = { attended:'Attended', unattended:'Unattended', notRecorded:'Not recorded' };
+const outcomeKinds = { pr:'Pull request', commit:'Commit', learning:'Learning', none:'Nothing delivered' };
+function outcomePanel() {
+ const o=outcomeSummary, head='<h2 class="section-label">'+label('What finished sessions delivered')+' <span class="tag">'+label('Local · last 30 days')+'</span></h2>';
+ if(!o) return head+(outcomesError?errorPanel('Could not load session outcomes.','outcomes'):'<div class="empty" role="status">'+label('Loading…')+'</div>');
+ const retry=outcomesError?errorPanel('Could not refresh session outcomes. Any displayed values are the last successful result.','outcomes'):'';
+ if(!o.sessions) return head+retry+'<section class="panel"><div class="empty"><h2>'+label('No finished session counted yet')+'</h2><p>'+label('The usage report counts a session 6 hours after it goes quiet, when teamai pull reports usage. Its commits, pull requests and learnings then show here.')+'</p></div></section>';
+ const rows=Object.keys(outcomeModes).flatMap(mode=>Object.keys(outcomeKinds).filter(kind=>o.rows[mode]?.[kind]).map(kind=>[mode,kind,o.rows[mode][kind]]));
+ const perSession=(r,value)=>value/r.sessions;
+ return head+retry+'<div class="outcome-summary"><article class="card"><div class="cardtop">'+label('Delivered')+'</div><div class="source">'+label('Finished sessions with a commit, pull request or learning')+'</div><div class="big summary-value">'+number(Math.round(o.delivered/o.sessions*100))+'%</div><div class="statusline">'+number(o.delivered)+' / '+number(o.sessions)+' '+label('sessions')+'</div></article>'
+  +'<section class="panel sessions"><div class="panelhead"><h2>'+label('By run mode and outcome')+'</h2><span class="label">'+label('A session in two rows counts in both, so rows do not add up.')+'</span></div><div class="table-scroll"><table class="outcome-table"><thead><tr>'+['RUN MODE','OUTCOME','SESSIONS','Tokens / session','Interventions / session'].map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'
+  +rows.map(([mode,kind,r])=>'<tr><td>'+label(outcomeModes[mode])+'</td><td class="'+(kind==='none'?'muted':'good')+'">'+label(outcomeKinds[kind])+'</td><td>'+number(r.sessions)+'</td><td>'+number(Math.round(perSession(r,r.tokens.input+r.tokens.output)))+'</td><td>'+perSession(r,r.interventions).toFixed(1)+'</td></tr>').join('')+'</tbody></table></div></section></div>'
+  +'<section class="panel sessions"><div class="panelhead"><h2>'+label('Recently finished')+' <span class="count">'+number(o.recent.length)+'</span></h2><span class="label">'+label('Local only: ids, shas and links never leave this machine')+'</span></div><div class="table-scroll"><table><thead><tr>'+['COUNTED','AI TOOL','RUN MODE','OUTCOMES','Tokens','INTERVENTIONS'].map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'
+  +o.recent.map(s=>'<tr><td>'+e(when(s.countedAt))+'</td><td data-verbatim>'+e(s.tool||'—')+'</td><td>'+label(outcomeModes[s.runMode||'notRecorded'])+'</td><td>'+outcomesHtml(s.outcomes)+'</td><td>'+number(s.counted.tokens.input+s.counted.tokens.output)+'</td><td>'+number(s.counted.interventions)+'</td></tr>').join('')+'</tbody></table></div></section>';
 }
 function sessionTable(data) {
  if(!haveSessions) return '<div class="empty" role="status">'+label('Loading local sessions…')+'</div>';
@@ -396,6 +412,7 @@ function showDetails(sessionId) {
 }
 async function json(url) { const response=await fetch(url,{signal:AbortSignal.timeout(15000)});if(!response.ok)throw Error('HTTP '+response.status);return response.json(); }
 async function loadTrends() { if(trendLoading)return;const generation=workspaceGeneration;trendLoading=true;try{const data=await json(api('/api/trends'));if(generation===workspaceGeneration){trends=data;trendError=false;}}catch{if(generation===workspaceGeneration)trendError=true;}finally{if(generation===workspaceGeneration){trendLoading=false;if(['overview','improvement'].includes(page))render();}} }
+async function loadOutcomes() { if(outcomesLoading)return;const generation=workspaceGeneration;outcomesLoading=true;try{const data=await json(api('/api/outcomes'));if(generation===workspaceGeneration){outcomeSummary=data;outcomesError=false;}}catch{if(generation===workspaceGeneration)outcomesError=true;}finally{if(generation===workspaceGeneration){outcomesLoading=false;if(page==='overview')render();}} }
 async function loadKb() { if(kbLoading)return;const generation=workspaceGeneration;kbLoading=true;try{const data=await json(api('/api/context'));if(generation===workspaceGeneration){kb=data;kbError=false;}}catch{if(generation===workspaceGeneration)kbError=true;}finally{if(generation===workspaceGeneration){kbLoading=false;render();}} }
 async function loadRules() { if(rulesLoading)return;const generation=workspaceGeneration;rulesLoading=true;try{const data=await json(api('/api/resources/rules'));if(generation===workspaceGeneration){rules=data;rulesError=false;}}catch{if(generation===workspaceGeneration)rulesError=true;}finally{if(generation===workspaceGeneration){rulesLoading=false;if(page==='resources')render();}} }
 async function postJson(route, body) { const response=await fetch(api(route),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(15000)}); const data=await response.json().catch(()=>null); if(!response.ok)throw Error(data&&data.error?data.error:'HTTP '+response.status); return data; }
@@ -469,7 +486,7 @@ document.addEventListener('click',event=>{
  if(run)showRun(run.dataset.runSource,run.dataset.run);
  if(answer)answerGate(answer.dataset.answerStep,answer.dataset.answerPass,answer.dataset.answerChoice);
  if(event.target.closest('[data-close]'))$('session-dialog').close();
- if(retry){if(retry.dataset.retry==='trends')loadTrends();else if(retry.dataset.retry==='kb')loadKb();else if(retry.dataset.retry==='rules')loadRules();else if(retry.dataset.retry==='skills')loadSkills();else if(retry.dataset.retry==='distribution')loadDistribution();else if(retry.dataset.retry==='workflows')loadWorkflows();else if(retry.dataset.retry==='run')loadRunDetail();else if(retry.dataset.retry==='scorers'){scorerError='';loadScorers();}else{eventSource?.close();clearTimeout(reconnectTimer);connect();}}
+ if(retry){if(retry.dataset.retry==='trends')loadTrends();else if(retry.dataset.retry==='outcomes')loadOutcomes();else if(retry.dataset.retry==='kb')loadKb();else if(retry.dataset.retry==='rules')loadRules();else if(retry.dataset.retry==='skills')loadSkills();else if(retry.dataset.retry==='distribution')loadDistribution();else if(retry.dataset.retry==='workflows')loadWorkflows();else if(retry.dataset.retry==='run')loadRunDetail();else if(retry.dataset.retry==='scorers'){scorerError='';loadScorers();}else{eventSource?.close();clearTimeout(reconnectTimer);connect();}}
  if(event.target.closest('[data-preview-button]'))previewSelection();
  if(event.target.closest('[data-save-button]'))saveSelection();
 });
@@ -480,19 +497,20 @@ function switchWorkspace(id) {
  workspaceGeneration++;fallbackGeneration++;workspaceId=id;save('teamai-dashboard-workspace',id);
  eventSource?.close();clearTimeout(reconnectTimer);$('session-dialog').close();selectedSession=null;selectedSnapshot=null;
  sessions=[];haveSessions=false;connected=false;trends=null;kb=null;trendLoading=false;kbLoading=false;trendError=false;kbError=false;
+ outcomeSummary=null;outcomesError=false;outcomesLoading=false;
  rules=null;rulesError=false;rulesLoading=false;
  dist=null;distError=false;distLoading=false;distDraft=null;preview=null;previewError='';previewing=false;saving=false;saveError='';savedNote='';
  workflows=null;workflowsHtml='';workflowsError=false;workflowsLoading=false;runKey=null;runDetail=null;answering='';answerError='';
  resetScorers();
  skills=null;skillsError=false;skillsLoading=false;skillBusy='';skillFilterDelivery='';skillFilterNamespace='';skillFilterAgent='';
- $('repo').value='';$('agent').value='';workspaceOptions();filters();render();connect();loadTrends();loadKb();loadRules();loadSkills();
+ $('repo').value='';$('agent').value='';workspaceOptions();filters();render();connect();loadTrends();loadOutcomes();loadKb();loadRules();loadSkills();
 }
 $('workspace').onchange=()=>switchWorkspace($('workspace').value);
 document.addEventListener('click',event=>{const button=event.target.closest('[data-skill-exclude]');if(button){toggleSkillExclude(button.dataset.skillExclude,button.dataset.excluded==='true');}});
 document.addEventListener('change',event=>{if(event.target.id==='skill-delivery'){skillFilterDelivery=event.target.value;if(page==='resources')render();}else if(event.target.id==='skill-namespace'){skillFilterNamespace=event.target.value;if(page==='resources')render();}else if(event.target.id==='skill-agent'){skillFilterAgent=event.target.value;if(page==='resources')render();}});
 preferences();
-json('/api/workspaces').then(data=>{workspaces=data;const saved=read('teamai-dashboard-workspace','');const fallback=(workspaces.find(w=>w.scope==='project')||workspaces[0])?.id;switchWorkspace(workspaces.some(w=>w.id===saved)?saved:(fallback??''));}).catch(()=>{workspaceOptions();connect();loadTrends();loadKb();loadRules();loadSkills();});
-setInterval(loadTrends,30000);
+json('/api/workspaces').then(data=>{workspaces=data;const saved=read('teamai-dashboard-workspace','');const fallback=(workspaces.find(w=>w.scope==='project')||workspaces[0])?.id;switchWorkspace(workspaces.some(w=>w.id===saved)?saved:(fallback??''));}).catch(()=>{workspaceOptions();connect();loadTrends();loadOutcomes();loadKb();loadRules();loadSkills();});
+setInterval(()=>{loadTrends();loadOutcomes();},30000);
 // Workflow runs change without a hook event, so their page polls while it is open.
 setInterval(()=>{if(page!=='workflows')return;tickRunDurations();loadWorkflows();if(runKey&&!answering)loadRunDetail();},5000);
 // Reconcile idle/ended expiry even when no hook emits another SSE event.

@@ -239,14 +239,51 @@ async function fold(input: FoldInput): Promise<OutcomeFold> {
     };
   }));
   if (prsChanged) await writeJson(prCachePath(input.config), prs);
+  return { delta: rowsOf(finished), finished };
+}
 
-  const delta: UserOutcomeStats = {};
-  for (const session of finished) {
-    const rows = (delta[session.runMode ?? 'notRecorded'] ??= {});
+/** The rows `sessions` add up to: each in its run mode's row of every kind it delivered, or of `none`. */
+function rowsOf(sessions: readonly FinishedSession[]): UserOutcomeStats {
+  const rows: UserOutcomeStats = {};
+  for (const session of sessions) {
+    const mode = (rows[session.runMode ?? 'notRecorded'] ??= {});
     const kinds = new Set(session.outcomes.map((outcome) => outcome.kind));
-    for (const kind of kinds.size > 0 ? kinds : ['none' as const]) rows[kind] = addCounts(rows[kind], { sessions: 1, ...session.counted });
+    for (const kind of kinds.size > 0 ? kinds : ['none' as const]) mode[kind] = addCounts(mode[kind], { sessions: 1, ...session.counted });
   }
-  return { delta, finished };
+  return rows;
+}
+
+const SUMMARY_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+const SUMMARY_RECENT_LIMIT = 20;
+
+/** A finished session as the dashboard lists it. */
+export type CountedSession = FinishedSession & { countedAt: string };
+
+/** What the dashboard shows of the finished sessions the report counted in the last 30 days. */
+export interface OutcomeSummary {
+  sessions: number;
+  /** The sessions that delivered at least one outcome. */
+  delivered: number;
+  rows: UserOutcomeStats;
+  /** The latest 20, newest first. */
+  recent: CountedSession[];
+}
+
+/**
+ * The finished sessions the report counted in the last 30 days, from the `counted` session outcome events
+ * {@link markReported} wrote: those of the scope whose data home key is `dataHomeKey`, or every scope's without one.
+ */
+function summarize(events: readonly SessionOutcomeEvent[], { dataHomeKey: key, now }: { dataHomeKey?: string; now: number }): OutcomeSummary {
+  const counted = events.flatMap(({ sessionId, tool, runMode, outcomes, counted: usage, timestamp, dataHomeKey: eventKey }): CountedSession[] =>
+    (usage && (key === undefined || eventKey === key) && now - Date.parse(timestamp) <= SUMMARY_WINDOW_MS
+      ? [{ sessionId, ...(tool ? { tool } : {}), ...(runMode ? { runMode } : {}), countedAt: timestamp, outcomes, counted: usage }]
+      : []));
+  return {
+    sessions: counted.length,
+    delivered: counted.filter((session) => session.outcomes.length > 0).length,
+    rows: rowsOf(counted),
+    recent: counted.sort((a, b) => Date.parse(b.countedAt) - Date.parse(a.countedAt)).slice(0, SUMMARY_RECENT_LIMIT),
+  };
 }
 
 /** Once the report that counted `finished` is pushed: each is flagged reported, and its outcomes recorded here. */
@@ -265,4 +302,4 @@ async function markReported(config: LocalConfig, finished: readonly FinishedSess
   }
 }
 
-export const SessionOutcomes = { fold, markReported } as const;
+export const SessionOutcomes = { fold, markReported, summarize } as const;
