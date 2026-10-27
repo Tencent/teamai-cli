@@ -108,7 +108,7 @@ export interface StepSessionsPublished {
 }
 
 /** Why step session `key` can never be archived from this machine, or undefined when this machine reads it. */
-async function unarchivable(key: PublishedKey, toolRootsFor: ToolRootsLookup): Promise<string | undefined> {
+async function unarchivableReason(key: PublishedKey, toolRootsFor: ToolRootsLookup): Promise<string | undefined> {
   switch (key.kind) {
     case 'tool':
       return `teamai reads no sessions from ${key.tool}`;
@@ -167,7 +167,7 @@ async function steps(config: LocalConfig, mode: RunMode, now: string): Promise<S
     const refs = new Map<string, ArchiveSessionRef>();
     const skipped: StepSessionsPublished['skipped'] = [];
     for (const { pass, key } of passes) {
-      const reason = await unarchivable(key, () => toolRoots);
+      const reason = await unarchivableReason(key, () => toolRoots);
       if (reason !== undefined) {
         skipped.push({ step: pass.step, pass: pass.pass, reason });
         await record(config, { ...key, skippedAt: now, reason });
