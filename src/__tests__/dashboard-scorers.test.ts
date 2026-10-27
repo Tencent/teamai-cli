@@ -152,6 +152,22 @@ describe('dashboard scorer results', () => {
     expect(JSON.stringify(view)).not.toMatch(/native-7f3a91|TITLE-SECRET|private\/work|TRANSCRIPT-SECRET|REASONING-SECRET|isolation|access/);
   });
 
+  it('names a failing label\'s session archived on teamai-reports, and one archived on the default branch before', async () => {
+    const { config } = team();
+    publishLabels(config, 'bob', [
+      sessionLabel('on-reports', { passed: false, label: 'poor', score: 0, scoredAt: '2026-03-18T11:00:00.000Z' }),
+      sessionLabel('on-main', { passed: false, label: 'poor', score: 0 }),
+    ]);
+    const archive = (dir: string, sessionId: string, sessionName: string) => write(path.join(dir, 'sessions', '_unattributed', '_index.json'), JSON.stringify({
+      version: 1, repoIdentity: null, updatedAt: '2026-03-18T00:00:00.000Z',
+      sessions: [{ sessionName, author: 'bob', platform: 'claude', title: 't', cwd: '/w', repoIdentity: null, messageCount: 2, createdAt: '2026-03-17T00:00:00.000Z', updatedAt: '2026-03-18T00:00:00.000Z', status: 'active', sessionId }],
+    }));
+    archive(getReportsDir(config), 'on-reports', 'add-retries');
+    archive(config.repo.localPath, 'on-main', 'plan-the-release');
+    const view = await scorerResults({ config, query: { windowDays: 30 }, now: NOW });
+    expect(view.selected?.failing?.labels).toMatchObject([{ sessionName: 'add-retries' }, { sessionName: 'plan-the-release' }]);
+  });
+
   it('builds the reminder table from this machine\'s member sessions and contribute state only', async () => {
     const { config } = team();
     publishLabels(config, 'bob', [sessionLabel('fired'), sessionLabel('quiet', { passed: false }), sessionLabel('no-state'), sessionLabel('other-machine')]);

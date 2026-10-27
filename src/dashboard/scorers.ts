@@ -16,7 +16,7 @@ import { LabelStore } from '../scorers/label-store.js';
 import { DIMENSIONS_OFFERED, FAILING_MAX, SCORER_WINDOWS, ScorerResults, type ReminderInput, type ScorerResultsQuery, type ScorerResultsView, type Side, type ViewedLabel } from '../scorers/results.js';
 import { sessionArchiveRoot } from '../session-flow/session-cmd-shared.js';
 import { SyncManager } from '../session-flow/sync.js';
-import { getReportsDir, usesBranchWorktree, type DashboardEvent, type LocalConfig } from '../types.js';
+import { getReportsDir, isSelfMode, usesBranchWorktree, type DashboardEvent, type LocalConfig } from '../types.js';
 import { execCommand } from '../utils/exec.js';
 import { buildEndRecord, RECORDS_DIR } from '../workflow/records.js';
 import { isRunId, readRun, runsDir } from '../workflow/store.js';
@@ -92,11 +92,14 @@ async function runAgents(config: LocalConfig, runId: string, { isLocal, team }: 
   return published ? { source: 'reported', isBenchmark, agents: read(published.steps) } : undefined;
 }
 
-/** The name of each session the team archive holds, by source platform and session id; the latest update wins. */
+/**
+ * The name of each session the team archive holds, by source platform and session id; the latest update wins. On a
+ * git-kind team that is teamai-reports and the archive teamai kept on the default branch before, in the team clone.
+ */
 function archivedNames(config: LocalConfig): Map<string, string> {
   const root = sessionArchiveRoot(config);
   if (!root) return new Map();
-  const entries = new SyncManager(root).listAllSessions()
+  const entries = (isSelfMode(config) ? [root] : [root, config.repo.localPath]).flatMap((dir) => new SyncManager(dir).listAllSessions())
     .sort((left, right) => left.updatedAt.localeCompare(right.updatedAt));
   return new Map(entries.flatMap((entry) => (entry.sessionId ? [[sessionKey(entry.platform, entry.sessionId), entry.sessionName] as const] : [])));
 }
