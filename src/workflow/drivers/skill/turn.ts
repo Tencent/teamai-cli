@@ -261,7 +261,9 @@ function refusalMessage(refusal: Refusal, local: { invocation: Invocation; tool?
         ...(lacks.length > 0 ? [`it needs ${lacks.join(', ')}`] : []),
         ...(refusal.outOfRange ? [`--parallel ${refusal.outOfRange.parallel} is above the most this machine runs at once, ${refusal.outOfRange.ceiling}`] : []),
       ];
-      return `Start ${refusal.name} from its describe reply: ${said.join('; ')}. Run the describe literal and ask the person.`;
+      // The tool is the agent's own answer, which describe asks it for.
+      const act = refusal.missing.some((answer) => answer !== 'tool') || refusal.outOfRange ? 'Run the describe literal and ask the person.' : 'Run the describe literal.';
+      return `Start ${refusal.name} from its describe reply: ${said.join('; ')}. ${act}`;
     }
     case 'not_skill_run':
       return `Run ${refusal.run} is not driven by the skill driver on this machine. Ask the person whether to continue it from this session, and run the command in next only when they agree: it takes the run over from the machine that last drove it. The person can instead continue it in a terminal with ${resumeLiteral(local.invocation, refusal.run, { tool: local.tool })}.`;

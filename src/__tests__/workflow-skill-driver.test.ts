@@ -1034,7 +1034,7 @@ steps:
     roots.push(harness.root);
     expect(await harness.call({ kind: 'start', name: 'review', answers: { confirmed: false }, inputs: undefined })).toEqual({ error: {
       code: 'confirm_needed',
-      message: 'Start review from its describe reply: it needs --tools default=<tool>, the tool this coding session works in. Run the describe literal and ask the person.',
+      message: 'Start review from its describe reply: it needs --tools default=<tool>, the tool this coding session works in. Run the describe literal.',
       next: 'teamai workflow start --describe review --driver skill',
     } });
     // A run of commands alone needs no tool.
