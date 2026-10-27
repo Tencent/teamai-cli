@@ -21,6 +21,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import type { LocalConfig } from './types.js';
 import { log } from './utils/logger.js';
 
 /** Max wall-clock for a single judge call. Kept modest — this is a yes/no classification. */
@@ -168,14 +169,16 @@ export function parseJudgeOutput(raw: string, allowed: string[]): string[] {
  * Run the background LLM-judge. Returns the subset of `recalledDocIds` the final
  * reply substantively used, per the local CLI. Each candidate is enriched with a
  * short excerpt read from `recalledDocPaths[docId]` so the verdict is grounded
- * in real content. Never throws — on any failure (no CLI, timeout, bad output)
- * it logs and returns [].
+ * in real content. The call runs on the AI tool of `scope`, the scope judged
+ * for, else of the working directory. Never throws — on any failure (no CLI,
+ * timeout, bad output) it logs and returns [].
  */
 export async function judgeAdoption(
   finalReply: string,
   recalledDocIds: string[],
   recalledDocPaths: Record<string, string> = {},
   allowedRoots: string[] = [],
+  scope?: LocalConfig,
 ): Promise<string[]> {
   if (recalledDocIds.length === 0) return [];
   if (!finalReply.trim()) return [];
@@ -209,7 +212,7 @@ export async function judgeAdoption(
     const allowedIds = candidates.map((c) => c.docId);
     const prompt = buildJudgePrompt(finalReply, candidates);
     log.debug(`[votes-judge] calling AI for ${candidates.length} grounded candidate(s)`);
-    const raw = (await callTool(prompt, { launchedBy: 'votes-judge', timeout: JUDGE_TIMEOUT_MS })).text;
+    const raw = (await callTool(prompt, { launchedBy: 'votes-judge', timeout: JUDGE_TIMEOUT_MS, scope })).text;
     // Allow-list is the GROUNDED ids only, so an ungrounded id can never survive.
     const adopted = parseJudgeOutput(raw, allowedIds);
     log.debug(`[votes-judge] adopted ${adopted.length}/${candidates.length}: [${adopted.join(', ')}]`);

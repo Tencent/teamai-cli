@@ -21,6 +21,8 @@ export interface CallOptions {
   /** Who in teamai makes the call, which the launched session carries as `LAUNCHED_BY_ENV`. */
   launchedBy: LaunchedBy;
   timeout?: number;
+  /** The scope the call acts for, when the caller holds it. Without it, the scope of the working directory. */
+  scope?: LocalConfig;
 }
 
 export interface ToolCaller {
@@ -73,12 +75,15 @@ async function scopeHere(): Promise<LocalConfig | undefined> {
   const unreadable: string[] = [];
   const scope = await resolveConfigForDir(process.cwd(), (file, error) => { unreadable.push(`${file} could not be read: ${error}.`); }, { dryRun: true, suppressMigrationNotice: true });
   if (unreadable.length > 0) {
-    throw new CallError('override_invalid', `${unreadable.join(' ')} It may set ai.tool, so no AI call runs here until it can be read. Fix the file, or run \`teamai init\` again in this project.`);
+    throw new CallError('override_invalid', `${unreadable.join(' ')} teamai cannot tell which ai.tool applies here, so no AI call runs until that is fixed.`);
   }
   return scope ?? undefined;
 }
 
-/** Why a call did not answer: no tool to run it, an override that names a tool teamai cannot run, or the tool failed. */
+/**
+ * Why a call did not answer: no tool to run it, an override that names a tool teamai cannot run or sits in a scope
+ * config here that cannot be read, or the tool failed.
+ */
 export type CallErrorKind = 'no_tool' | 'override_invalid' | 'call_failed';
 
 export class CallError extends Error {
@@ -88,7 +93,10 @@ export class CallError extends Error {
   }
 }
 
-/** Whether a call failed because the member named a tool teamai cannot run, which a caller's fallback must not hide. */
+/**
+ * Whether a call failed on the member's choice of tool: one teamai cannot run, or a scope config that cannot be read
+ * to find it. A caller's fallback must not hide either.
+ */
 export function isOverrideInvalid(error: unknown): error is CallError & { kind: 'override_invalid' } {
   return error instanceof CallError && error.kind === 'override_invalid';
 }
@@ -134,8 +142,8 @@ export function createToolCaller({ resolveTool = resolveCliPath, resolveScope = 
   // tool, and sees a setting changed since. Only a pick that succeeded is kept, so a long-lived process sees a tool
   // installed or a setting fixed since.
   const picked = new Map<string, Promise<Picked>>();
-  const pick = async (): Promise<Picked> => {
-    const [first] = await memberTools(await resolveScope());
+  const pick = async (scope: LocalConfig | undefined): Promise<Picked> => {
+    const [first] = await memberTools(scope ?? await resolveScope());
     const key = first?.tool ?? '';
     const cached = picked.get(key);
     if (cached) return cached;
@@ -144,8 +152,8 @@ export function createToolCaller({ resolveTool = resolveCliPath, resolveScope = 
     return picking;
   };
 
-  const callTool: ToolCaller['callTool'] = async (prompt, { launchedBy, timeout = DEFAULT_TIMEOUT_MS }) => {
-      const { tool, executable } = await pick();
+  const callTool: ToolCaller['callTool'] = async (prompt, { launchedBy, timeout = DEFAULT_TIMEOUT_MS, scope }) => {
+      const { tool, executable } = await pick(scope);
       const { call } = launchAdapterOf(tool);
       log.debug(`[tool-launch] ${launchedBy} → ${tool}, timeout=${Math.round(timeout / 1000)}s`);
       const scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-call-'));
@@ -170,7 +178,7 @@ export function createToolCaller({ resolveTool = resolveCliPath, resolveScope = 
 
   async function callToolParallel<T>(tasks: ReadonlyArray<{ prompt: string; parse: (text: string) => T }>, { concurrency = DEFAULT_CONCURRENCY, ...options }: CallOptions & { concurrency?: number }): Promise<T[]> {
     // A batch has one tool, so a tool that cannot be picked fails the batch once rather than once per task.
-    await pick();
+    await pick(options.scope);
     const settled: ({ ok: true; value: T } | { ok: false; reason: unknown })[] = [];
     let next = 0;
     const worker = async (): Promise<void> => {

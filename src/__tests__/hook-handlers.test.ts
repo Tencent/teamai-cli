@@ -1290,10 +1290,11 @@ describe('hook-handlers registry', () => {
 
     // Judge was asked only about the uncredited docs (with their paths), the
     // trusted knowledge roots to restrict excerpt reads to (repo clone + the
-    // user-scope learnings mirror), and only its verdict upvoted.
+    // user-scope learnings mirror), and the hook's scope, whose AI tool it
+    // runs on; only its verdict upvoted.
     expect(mockJudgeAdoption).toHaveBeenCalledWith(
       'I applied doc-a here.', ['doc-a', 'doc-b'], { 'doc-a': '/l/doc-a.md', 'doc-b': '/l/doc-b.md' },
-      expect.arrayContaining(['/tmp']),
+      expect.arrayContaining(['/tmp']), scope,
     );
     expect(mockIncrementUpvoted).toHaveBeenCalledWith(expect.any(String), ['doc-a'], expect.any(String));
     // Ledger-only dedup: nothing is recorded beyond the ledger, so a later Stop
@@ -1318,7 +1319,7 @@ describe('hook-handlers registry', () => {
       'claude', scope,
     );
 
-    expect(mockJudgeAdoption).toHaveBeenCalledWith('used something', ['doc-b'], { 'doc-b': '/l/doc-b.md' }, expect.arrayContaining(['/tmp']));
+    expect(mockJudgeAdoption).toHaveBeenCalledWith('used something', ['doc-b'], { 'doc-b': '/l/doc-b.md' }, expect.arrayContaining(['/tmp']), scope);
   });
 
   describe("votes-judge and the learnings checkout's owner (#808)", () => {
@@ -1438,7 +1439,7 @@ describe('hook-handlers registry', () => {
     );
 
     // Both docs go to the judge (no marker excludes doc-a); only doc-b is credited.
-    expect(mockJudgeAdoption).toHaveBeenCalledWith('final reply using doc-b', ['doc-a', 'doc-b'], expect.anything(), expect.anything());
+    expect(mockJudgeAdoption).toHaveBeenCalledWith('final reply using doc-b', ['doc-a', 'doc-b'], expect.anything(), expect.anything(), scope);
     expect(mockIncrementUpvoted).toHaveBeenCalledWith(expect.any(String), ['doc-b'], expect.any(String));
   });
 
@@ -1504,7 +1505,7 @@ describe('hook-handlers registry', () => {
 
     // Only the project-scope doc is judged; the inherited user-scope doc is
     // excluded (read-only while the project is active).
-    expect(mockJudgeAdoption).toHaveBeenCalledWith('used both', ['proj-doc'], expect.anything(), expect.anything());
+    expect(mockJudgeAdoption).toHaveBeenCalledWith('used both', ['proj-doc'], expect.anything(), expect.anything(), projectScope);
   });
 
   it('votes-sync writes votes through updateReports when deltas are pending', async () => {

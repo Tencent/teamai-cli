@@ -376,6 +376,15 @@ it('picks once per scope, so a process that works in two projects runs each proj
   expect(await caller.callTool('hi', { launchedBy: 'codebase' })).toMatchObject({ tool: 'opencode' });
 });
 
+it('runs the tool of the scope a caller acts for, not of the scope of the working directory', async () => {
+  vi.stubEnv('TEAMAI_AI_TOOL', '');
+  const here = await aiToolFiles({ project: 'opencode' }, 'here');
+  const other = await aiToolFiles({ project: 'codex' }, 'other');
+  const caller = createToolCaller({ resolveTool: await threeTools(), resolveScope: async () => here.scope });
+
+  expect(await caller.callTool('hi', { launchedBy: 'votes-judge', scope: other.scope })).toMatchObject({ tool: 'codex' });
+});
+
 it('runs the tool the member names now, in a scope where a call ran on the one named before', async () => {
   vi.stubEnv('TEAMAI_AI_TOOL', '');
   const { projectFile, scope } = await aiToolFiles({ machine: 'codex' });

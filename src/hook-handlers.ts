@@ -910,7 +910,7 @@ const votesJudgeHandler: HookHandler = {
       // docPaths is backfilled from the recall log above, so a subagent-recalled
       // doc the transcript gave no `File:` line for is still grounded here (#723).
       const { judgeAdoption } = await import('./votes-judge.js');
-      const adopted = await judgeAdoption(voteData.finalAssistantText, toJudge, docPaths, roots);
+      const adopted = await judgeAdoption(voteData.finalAssistantText, toJudge, docPaths, roots, localConfig);
 
       // Gate again to recalled (defensive; judgeAdoption already restricts to toJudge).
       const verified = adopted.filter((id) => recalledSet.has(id));

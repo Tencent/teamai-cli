@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
+import { LocalConfigSchema } from '../types.js';
 import { buildJudgePrompt, parseJudgeOutput } from '../votes-judge.js';
 
 describe('buildJudgePrompt', () => {
@@ -113,6 +114,20 @@ describe('judgeAdoption', () => {
     const paths = { 'doc-a': path.join(root, 'doc-a.md'), 'doc-b': path.join(root, 'doc-b.md') };
     expect(await judgeAdoption('used doc-a', ['doc-a', 'doc-b'], paths, [root])).toEqual(['doc-a']);
     expect(callTool).toHaveBeenCalledOnce();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it('asks for the AI tool of the scope it judges for', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-judge-scope-'));
+    fs.writeFileSync(path.join(root, 'doc-a.md'), '# doc-a\nsome guidance');
+    const callTool = vi.fn().mockResolvedValue({ text: '["doc-a"]', tool: 'codex' });
+    vi.doMock('../tool-launch/call.js', () => ({ callTool }));
+    const { judgeAdoption } = await import('../votes-judge.js');
+    const scope = LocalConfigSchema.parse({ repo: { localPath: root, remote: 'local' }, username: 'member', scope: 'project', ai: { tool: 'codex' } });
+
+    await judgeAdoption('used doc-a', ['doc-a'], { 'doc-a': path.join(root, 'doc-a.md') }, [root], scope);
+
+    expect(callTool).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ launchedBy: 'votes-judge', scope }));
     fs.rmSync(root, { recursive: true, force: true });
   });
 
