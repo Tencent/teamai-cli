@@ -11,12 +11,12 @@
  */
 import path from 'node:path';
 import { z } from 'zod';
-import { RUN_MODES, RunModeSchema, type RunMode } from './launch-context.js';
+import { RunModeSchema, type RunMode } from './launch-context.js';
 import { appendEvent, dataHomeKey, readSessionOutcomes, sessionRuns } from './dashboard-collector.js';
-import { OUTCOME_ROWS, uniqueOutcomes, type SessionOutcomeEvent, type WorkOutcome } from './outcomes.js';
+import { addCounts, uniqueOutcomes, type SessionOutcomeEvent, type WorkOutcome } from './outcomes.js';
 import { interventionsEntry, promptTokensEntry, snapshotPathIn, type ReportedInterventions, type ReportedPromptTokens } from './session-owners.js';
 import { FINISHED_AFTER_MS } from './session-flow/session-work.js';
-import { getDataHome, type DashboardEvent, type LocalConfig, type OutcomeCounts, type SessionMetrics, type UserOutcomeStats } from './types.js';
+import { getDataHome, type DashboardEvent, type LocalConfig, type SessionMetrics, type UserOutcomeStats } from './types.js';
 import { readJson, writeJson } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import { findDelivered } from './workflow/pr-delivery.js';
@@ -24,9 +24,6 @@ import { PrUrlSchema } from './workflow/pr-url.js';
 import { git } from './workflow/worktree.js';
 
 const GIT_TIMEOUT_MS = 10_000;
-
-/** The run modes of the usage report's `outcomes`, in the order they are shown; `notRecorded` holds sessions without one. */
-export const OUTCOME_MODES = [...RUN_MODES, 'notRecorded'] as const;
 
 /** What a session's events said of it, kept until it is finished. */
 const FactsSchema = z.object({
@@ -183,26 +180,6 @@ async function lookUpPr(cwd: string, commits: string[]): Promise<PrLookup | unde
       return unhandled;
     }
   }
-}
-
-function addCounts(row: OutcomeCounts | undefined, added: OutcomeCounts): OutcomeCounts {
-  return {
-    sessions: (row?.sessions ?? 0) + added.sessions,
-    tokens: { input: (row?.tokens.input ?? 0) + added.tokens.input, output: (row?.tokens.output ?? 0) + added.tokens.output },
-    interventions: (row?.interventions ?? 0) + added.interventions,
-  };
-}
-
-/** `existing` with every row of `delta` added to it. */
-export function addOutcomeStats(existing: UserOutcomeStats | undefined, delta: UserOutcomeStats): UserOutcomeStats {
-  const sum: UserOutcomeStats = structuredClone(existing ?? {});
-  for (const mode of OUTCOME_MODES) {
-    for (const kind of OUTCOME_ROWS) {
-      const added = delta[mode]?.[kind];
-      if (added) (sum[mode] ??= {})[kind] = addCounts(sum[mode]?.[kind], added);
-    }
-  }
-  return sum;
 }
 
 /**

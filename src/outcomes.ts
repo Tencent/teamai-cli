@@ -4,7 +4,8 @@
  * counts only.
  */
 import { z } from 'zod';
-import { RunModeSchema } from './launch-context.js';
+import { RUN_MODES, RunModeSchema } from './launch-context.js';
+import type { OutcomeCounts, UserOutcomeStats } from './types.js';
 import { PrUrlSchema } from './workflow/pr-url.js';
 
 export const WorkOutcomeSchema = z.discriminatedUnion('kind', [
@@ -15,8 +16,32 @@ export const WorkOutcomeSchema = z.discriminatedUnion('kind', [
 export type WorkOutcome = z.infer<typeof WorkOutcomeSchema>;
 export type OutcomeKind = WorkOutcome['kind'];
 
+/** The run modes of the usage report's `outcomes`, in the order they are shown; `notRecorded` holds sessions without one. */
+export const OUTCOME_MODES = [...RUN_MODES, 'notRecorded'] as const;
+
 /** The rows of the usage report's `outcomes` under a run mode, in the order they are shown: each kind, then `none`. */
 export const OUTCOME_ROWS = ['pr', 'commit', 'learning', 'none'] as const satisfies ReadonlyArray<OutcomeKind | 'none'>;
+
+/** `row` with `added` added to it. */
+export function addCounts(row: OutcomeCounts | undefined, added: OutcomeCounts): OutcomeCounts {
+  return {
+    sessions: (row?.sessions ?? 0) + added.sessions,
+    tokens: { input: (row?.tokens.input ?? 0) + added.tokens.input, output: (row?.tokens.output ?? 0) + added.tokens.output },
+    interventions: (row?.interventions ?? 0) + added.interventions,
+  };
+}
+
+/** `existing` with every row of `delta` added to it. */
+export function addOutcomeStats(existing: UserOutcomeStats | undefined, delta: UserOutcomeStats): UserOutcomeStats {
+  const sum: UserOutcomeStats = structuredClone(existing ?? {});
+  for (const mode of OUTCOME_MODES) {
+    for (const kind of OUTCOME_ROWS) {
+      const added = delta[mode]?.[kind];
+      if (added) (sum[mode] ??= {})[kind] = addCounts(sum[mode]?.[kind], added);
+    }
+  }
+  return sum;
+}
 
 /** `outcomes` with each outcome once, in the order it first appears. */
 export function uniqueOutcomes(outcomes: Iterable<WorkOutcome>): WorkOutcome[] {

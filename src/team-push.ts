@@ -8,7 +8,8 @@ import { collectTeamRepoSkills } from './agent-skills.js';
 import { BUILTIN_SKILL_NAMES } from './builtin-skills.js';
 import { readEvents, aggregateSessionMetrics, dataHomeKey, memberEvents, sessionRuns } from './dashboard-collector.js';
 import { RUN_MODES, type RunMode, type SessionRun } from './launch-context.js';
-import { addOutcomeStats, SessionOutcomes } from './session-outcomes.js';
+import { addOutcomeStats } from './outcomes.js';
+import { SessionOutcomes } from './session-outcomes.js';
 import { writeFile, readFileSafe, ensureDir, pathExists, readJson, writeJson } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import type {

@@ -7,7 +7,8 @@ import { parseLearningDoc, titleFromFilename } from './utils/search-index.js';
 import { requireInit, detectProjectConfig } from './config.js';
 import { calculateTeamHealth } from './skill-health.js';
 import { createGit } from './utils/git.js';
-import type { RunModeSplit, UserStats, UserModeStats, TokenUsage } from './types.js';
+import type { RunModeSplit, UserStats, UserModeStats, UserOutcomeStats, TokenUsage } from './types.js';
+import { OUTCOME_MODES, OUTCOME_ROWS, addOutcomeStats } from './outcomes.js';
 import { totalTokens } from './types.js';
 import { mergeDailyStats, summarizeTrendWindow, type TrendPeriod } from './session-trends.js';
 
@@ -339,6 +340,34 @@ function formatRunModeSplit(split: RunModeSplit, unit: string, format: (count: n
   return `  By run mode: attended ${format(split.attended)} · unattended ${format(split.unattended)} · not recorded ${format(split.notRecorded)} ${unit}`;
 }
 
+const OUTCOME_MODE_LABELS: Record<(typeof OUTCOME_MODES)[number], string> = {
+  attended: 'attended', unattended: 'unattended', notRecorded: 'not recorded',
+};
+
+function outcomeRow([mode, outcome, sessions, tokens, interventions]: readonly [string, string, string, string, string]): string {
+  return `  ${mode.padEnd(14)}${outcome.padEnd(11)}${sessions.padEnd(11)}${tokens.padEnd(17)}${interventions}`;
+}
+
+/** The team's finished sessions by run mode and outcome (#1387) as the lines of a table; none before any is reported. */
+export function formatOutcomeLines(teamStats: UserStats[]): string[] {
+  const team = teamStats.reduce<UserOutcomeStats>((sum, user) => (user.outcomes ? addOutcomeStats(sum, user.outcomes) : sum), {});
+  const rows = OUTCOME_MODES.flatMap((mode) => OUTCOME_ROWS.flatMap((kind) => {
+    const counts = team[mode]?.[kind];
+    if (!counts || counts.sessions === 0) return [];
+    return [outcomeRow([
+      OUTCOME_MODE_LABELS[mode], kind, String(counts.sessions),
+      formatTokenCount(Math.round((counts.tokens.input + counts.tokens.output) / counts.sessions)),
+      (counts.interventions / counts.sessions).toFixed(1),
+    ])];
+  }));
+  if (rows.length === 0) return [];
+  return [
+    outcomeRow(['runMode', 'outcome', 'sessions', 'tokens/session', 'interventions/session']),
+    ...rows,
+    '  A session with a pull request and a learning is in both rows, so rows do not add up.',
+  ];
+}
+
 /** Aggregated team-wide conversation-turn + token-usage summary (Issue #75). */
 export interface ConversationSummary {
   /** Total human conversation turns (UserPromptSubmit) across the team. */
@@ -588,6 +617,14 @@ export async function generateDigest(): Promise<void> {
         `  Breakdown: interrupt ${interventions.interrupt} · reject ${interventions.toolReject} · correction ${interventions.correction}`,
       );
       console.log(formatRunModeSplit(splitByRunMode(teamStats, (stats) => stats?.interventions?.sessions ?? 0), 'sessions'));
+      console.log('');
+    }
+
+    // What finished sessions delivered (#1387)
+    const outcomeLines = formatOutcomeLines(teamStats);
+    if (outcomeLines.length > 0) {
+      console.log('📦 Session Outcomes (finished sessions):');
+      for (const line of outcomeLines) console.log(line);
       console.log('');
     }
 
