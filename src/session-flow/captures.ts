@@ -249,11 +249,17 @@ async function list(config: LocalConfig): Promise<CapturedSession[]> {
   return sessions;
 }
 
-/** Records that a drain reached `captured`, at `now`. Written once: a session stays drained. */
+/**
+ * Records that a drain reached `captured`, at `now`. Written once: a session stays drained, and a drain that finds it
+ * marked by another leaves it. Only that the file exists counts, so a partly written one counts too.
+ */
 async function markDrained(config: LocalConfig, captured: Pick<CapturedSession, 'platform' | 'sessionId'>, now: string): Promise<void> {
   const file = path.join(sessionDir(config, captured.platform, captured.sessionId), DRAINED_FILE);
-  await fs.writeFile(`${file}.tmp`, `${now}\n`, { mode: 0o600 });
-  await fs.rename(`${file}.tmp`, file);
+  try {
+    await fs.writeFile(file, `${now}\n`, { mode: 0o600, flag: 'wx' });
+  } catch (error) {
+    if (!(error instanceof Error && 'code' in error && error.code === 'EEXIST')) throw error;
+  }
 }
 
 /** The platforms whose sessions named `sessionId` were captured here. */

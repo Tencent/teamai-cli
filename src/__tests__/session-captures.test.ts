@@ -348,6 +348,17 @@ describe('session captures (#1178)', () => {
     expect(SessionCaptures.agentOf(captures, undefined)?.team).toBeUndefined();
   });
 
+  it('records a session as drained when two drains reach it at the same time', async () => {
+    const { config, project, rev, skill } = checkout();
+    await recordDelivery(config, { rev: rev.slice(0, 7), targets: ['claude'], files: [skill] });
+    await SessionCaptures.atStart(config, 'claude', start(project), { CI: 'true' });
+    const session = { platform: 'claude-code', sessionId: SESSION };
+
+    await Promise.all([SessionCaptures.markDrained(config, session, '2026-10-27T10:00:00.000Z'), SessionCaptures.markDrained(config, session, '2026-10-27T10:00:00.001Z')]);
+
+    expect((await SessionCaptures.list(config)).map(({ sessionId, drained }) => ({ sessionId, drained }))).toEqual([{ sessionId: SESSION, drained: true }]);
+  });
+
   it('keeps both changes when another process rewrites the session\'s captures at the same time', async () => {
     const { config, project, rev, skill } = checkout();
     await recordDelivery(config, { rev: rev.slice(0, 7), targets: ['claude'], files: [skill] });
