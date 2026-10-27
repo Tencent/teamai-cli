@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { AgentObservationSchema, UsedSchema } from '../agent-observation.js';
 import { DriverSchema } from '../driver-identity.js';
 import { RunModeSchema } from '../launch-context.js';
+import { WorkOutcomeSchema } from '../outcomes.js';
 import type { TokenUsage } from '../tool-launch/stdout.js';
 import { PrUrlSchema } from './pr-url.js';
 import { UnenforcedSchema } from './requirements.js';
@@ -86,6 +87,8 @@ const report = {
   unenforced: z.array(UnenforcedSchema).optional(),
   /** The run mode of the attempt's lease. Absent on passes settled before it was recorded, or whose driver sent none. */
   runMode: RunModeSchema.optional(),
+  /** What the attempt's own commands appended to its outcome file, such as a learning `contribute` recorded (#1387). */
+  outcomes: z.array(WorkOutcomeSchema).optional().catch(undefined),
 };
 
 export const OutcomeSchema = z.enum(['success', 'failed', 'timeout', 'skipped', 'cancelled']);

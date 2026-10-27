@@ -32,6 +32,9 @@ import { recordGroup } from '../tool-launch/process-stop.js';
 
 _setDriverPollMs(20);
 
+/** A step command that appends a learning to its attempt's outcome file, in the data home beside the checkout it runs in. */
+const APPEND_LEARNING = `node -e "const [r,a]=process.env.TEAMAI_WORKFLOW_ATTEMPT.split('/');const p=require('path');const d=p.join('..','data','workflows','runs',r,'outcomes');require('fs').mkdirSync(d,{recursive:true});require('fs').appendFileSync(p.join(d,a+'.jsonl'),JSON.stringify({kind:'learning',id:'retry-backoff'})+'\\n')"`;
+
 const dirs: string[] = [];
 
 /** Sets `ai.tool` in the member's ~/.teamai/config.yaml, removed when the test ends. */
@@ -2875,5 +2878,20 @@ steps:
     expect(await driving).toMatchObject({ data: { done: { outcome: 'cancelled' } } });
     expect(fs.existsSync(marker)).toBe(false);
     expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'change', status: 'cancelled', failure: { code: 'cancelled' } }] });
+  });
+});
+
+describe('the outcomes a step\'s own commands report (#1387)', () => {
+  it('puts what the attempt appended to its outcome file on the pass it settles', async () => {
+    const { config, workspace, runId } = await workflowFixture(`schemaVersion: v1alpha1
+name: build
+description: A step that records a learning.
+steps:
+  - id: close
+    command: ${APPEND_LEARNING}
+`);
+
+    expect(await runLocalDriver(config, runId, workspace, { toolPaths })).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'close', outcomes: [{ kind: 'learning', id: 'retry-backoff' }] }] });
   });
 });

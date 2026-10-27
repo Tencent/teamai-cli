@@ -426,6 +426,28 @@ describe('#1083 workflow run records', () => {
     expect(buildEndRecord(runState(), driver, 'tester')).not.toHaveProperty('prs');
   });
 
+  it('gives each pass what it delivered: the commits on its branch, its own pull request, and what its commands reported (#1387)', () => {
+    const sha = (digit: string): string => digit.repeat(40);
+    const pr = (n: number): string => `https://github.com/acme/app/pull/${n}`;
+    const receipt = (n: number, step: string, pass: number) => ({ url: PrUrlSchema.parse(pr(n)), branch: `teamai/r1234567890abcdef/${step}/p${pass}`, base: 'main', step, pass });
+    const run = runState({
+      steps: [
+        {
+          id: 'one', status: 'succeeded', attempt: 'a1', settledAt: 2, outcome: 'success',
+          changes: { branch: 'teamai/r1234567890abcdef/one/p1', base: 'main', from: sha('0'), to: sha('b'), commits: [sha('a'), sha('b')] },
+        },
+        { id: 'two', status: 'succeeded', attempt: 'a2', settledAt: 3, outcome: 'success', outcomes: [{ kind: 'learning', id: 'retry-backoff-2026-10-24-p0x1za' }] },
+      ],
+      deliveries: [receipt(43, 'one', 1), receipt(44, 'one', 2)],
+    });
+
+    expect(buildEndRecord(run, driver, 'tester').steps).toEqual([
+      expect.objectContaining({ step: 'one', pass: 1, outcomes: [{ kind: 'commit', sha: sha('a') }, { kind: 'commit', sha: sha('b') }, { kind: 'pr', url: pr(43) }] }),
+      expect.objectContaining({ step: 'two', pass: 1, outcomes: [{ kind: 'learning', id: 'retry-backoff-2026-10-24-p0x1za' }] }),
+    ]);
+    expect(buildEndRecord(runState(), driver, 'tester').steps?.[0]).not.toHaveProperty('outcomes');
+  });
+
   it('drops the prs of an earlier end when a retried run ends again without them', () => {
     const delivered = { ...buildEndRecord(runState(), driver, 'tester'), prs: ['https://github.com/acme/app/pull/1'] };
     const again = buildEndRecord(runState(), driver, 'tester');

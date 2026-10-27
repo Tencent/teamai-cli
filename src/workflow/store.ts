@@ -10,7 +10,7 @@ import { PinnedScorerSchema } from '../scorers/pin.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { ArchivedPassSchema, ReleasedTokensSchema, SessionContinuationSchema, StepStateSchema, StoppedAttemptSchema } from './step-state.js';
 import type { HandoffOwner } from './snapshot.js';
-import type { WorkOutcome } from '../outcomes.js';
+import { uniqueOutcomes, WorkOutcomeSchema, type WorkOutcome } from '../outcomes.js';
 import type { RunState, WorkflowDefinition } from './types.js';
 
 /**
@@ -105,6 +105,18 @@ export async function appendAttemptOutcome(config: LocalConfig, marker: string, 
   await fs.mkdir(path.dirname(file), { recursive: true });
   await fs.appendFile(file, `${JSON.stringify(outcome)}\n`, 'utf8');
   return 'appended';
+}
+
+/** What the attempt's commands appended to its outcome file, each once; a line that is not an outcome is skipped. */
+export async function readAttemptOutcomes(config: LocalConfig, run: string, attempt: string): Promise<WorkOutcome[]> {
+  const runId = RunIdSchema.safeParse(run);
+  const attemptId = AttemptIdSchema.safeParse(attempt);
+  if (!runId.success || !attemptId.success) return [];
+  const text = await readFileSafe(attemptOutcomesPath(config, runId.data, attemptId.data));
+  return uniqueOutcomes((text ?? '').split('\n').flatMap((line) => {
+    const parsed = WorkOutcomeSchema.safeParse(parsedJson(line));
+    return parsed.success ? [parsed.data] : [];
+  }));
 }
 
 function parsedJson(text: string | null): unknown {

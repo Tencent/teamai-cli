@@ -15,6 +15,29 @@ export const WorkOutcomeSchema = z.discriminatedUnion('kind', [
 export type WorkOutcome = z.infer<typeof WorkOutcomeSchema>;
 export type OutcomeKind = WorkOutcome['kind'];
 
+/** `outcomes` with each outcome once, in the order it first appears. */
+export function uniqueOutcomes(outcomes: Iterable<WorkOutcome>): WorkOutcome[] {
+  const seen = new Map<string, WorkOutcome>();
+  for (const outcome of outcomes) {
+    const key = `${outcome.kind}\0${outcomeValue(outcome)}`;
+    if (!seen.has(key)) seen.set(key, outcome);
+  }
+  return [...seen.values()];
+}
+
+/** What names `outcome`: a commit's sha, a pull request's URL, a learning's id. */
+export function outcomeValue(outcome: WorkOutcome): string {
+  switch (outcome.kind) {
+    case 'commit': return outcome.sha;
+    case 'pr': return outcome.url;
+    case 'learning': return outcome.id;
+    default: {
+      const unhandled: never = outcome;
+      return unhandled;
+    }
+  }
+}
+
 /** A learning's id: its path under `learnings/` without `.md`, so a namespaced learning keeps its namespace. */
 export function learningIdOf(relPath: string): string {
   return relPath.replace(/\.md$/, '');

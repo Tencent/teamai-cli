@@ -38,7 +38,7 @@ import {
 } from './requirements.js';
 import { knownSecrets, resolveWorkflowEnv, secretKey, type WorkflowEnv } from '../env-resolution.js';
 import { redactJson } from '../utils/redact.js';
-import { deliveryLockPath, generateRunId, installOwner, isRunId, readRun, updateRun } from './store.js';
+import { deliveryLockPath, generateRunId, installOwner, isRunId, readAttemptOutcomes, readRun, updateRun } from './store.js';
 import { withFileLock } from '../update.js';
 import { pinScorers } from '../scorers/cache.js';
 import { isLeaseRef } from '../scorers/entry.js';
@@ -1652,6 +1652,8 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
   const install = await installOwner(config);
   const reported = report.prUrl === undefined ? undefined : sanitizePrUrl(report.prUrl);
   const unmatched = reported?.url ? await reportedPrUnmatched(config, runId, report, reported.url) : undefined;
+  // Read here for every driver: the attempt has ended, so nothing appends to it any more.
+  const outcomes = await readAttemptOutcomes(config, runId, report.attempt);
   return withRun(config, runId, secrets ?? await knownSecrets(config), async (run, now) => {
     const checked = reportedStep(run, report, now);
     if ('refused' in checked) return checked.refused;
@@ -1705,6 +1707,7 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
       ...(report.used ? { used: report.used } : {}),
       ...(unenforced.length > 0 ? { unenforced } : {}),
       ...(step.lease.runMode ? { runMode: step.lease.runMode } : {}),
+      ...(outcomes.length > 0 ? { outcomes } : {}),
       installId: install.id,
     };
     if (outcome !== 'released') continueSession(run, report);

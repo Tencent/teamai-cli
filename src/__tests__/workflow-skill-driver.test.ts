@@ -27,6 +27,16 @@ steps:
     command: node -e "console.log('Tests 42 passed (42)')"
 `;
 
+// The step command appends a learning to its attempt's outcome file, in the data home beside the checkout it runs in.
+const CLOSE = `schemaVersion: v1alpha1
+name: close
+description: Record what the run learned
+invoke: allow
+steps:
+  - id: close
+    command: node -e "const [r,a]=process.env.TEAMAI_WORKFLOW_ATTEMPT.split('/');const p=require('path');const d=p.join('..','data','workflows','runs',r,'outcomes');require('fs').mkdirSync(d,{recursive:true});require('fs').appendFileSync(p.join(d,a+'.jsonl'),JSON.stringify({kind:'learning',id:'retry-backoff'})+'\\n')"
+`;
+
 const FEATURE = `schemaVersion: v1alpha1
 name: feature
 description: Build the API and the UI, then integrate them
@@ -254,6 +264,18 @@ const roots: string[] = [];
 afterEach(() => {
   vi.unstubAllEnvs();
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
+});
+
+describe('the outcomes a step\'s own commands report, under the skill driver (#1387)', () => {
+  it('puts what the attempt appended to its outcome file on the pass it settles', async () => {
+    const harness = await skillHarness({ close: CLOSE });
+    roots.push(harness.root);
+    const started = await harness.call({ kind: 'start', name: 'close', answers: { confirmed: false }, inputs: undefined });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+
+    expect(await eventsToDone(harness, started.data.turn.run)).toContainEqual(expect.objectContaining({ kind: 'settled', step: 'close', outcome: 'success' }));
+    expect(await readRun(harness.config, started.data.turn.run)).toMatchObject({ steps: [{ id: 'close', outcomes: [{ kind: 'learning', id: 'retry-backoff' }] }] });
+  });
 });
 
 describe('skill driver', () => {
