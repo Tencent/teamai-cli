@@ -681,6 +681,7 @@ describe('doctor — JSON report', () => {
         mockedLoadTeamConfig.mockResolvedValue({
             ...mockTeamConfig,
             sharing: { recall: { enabled: true } },
+            usageReport: false,
         });
         mockedReadFileSafe.mockImplementation(async (filePath: string) => {
             if (filePath === path.join(getTeamaiHomeDir(), 'config.yaml')) {
