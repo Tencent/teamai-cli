@@ -8,7 +8,7 @@ import fs from 'fs-extra';
 vi.mock('../codebase-extract.js', () => ({
   extractCodebase: vi.fn(),
   // The fixtures are outside git, where the slug is the directory's name.
-  defaultProjectSlug: async (dir: string) => path.basename(dir),
+  defaultProjectSlug: vi.fn(async (dir: string) => path.basename(dir)),
   checkoutName: async (dir: string) => path.basename(dir),
 }));
 
@@ -26,7 +26,7 @@ vi.mock('../config.js', async (importOriginal) => ({
   autoDetectInit: vi.fn(),
 }));
 
-import { extractCodebase } from '../codebase-extract.js';
+import { defaultProjectSlug, extractCodebase } from '../codebase-extract.js';
 import { aggregateGlobalGraph } from '../graph-aggregate.js';
 import { autoPushTeamRepo } from '../utils/git.js';
 import { autoDetectInit } from '../config.js';
@@ -102,6 +102,25 @@ describe('import --dir', () => {
     expect(await fs.pathExists(path.join(evidenceDest, '.indices', 'graph-index.json'))).toBe(true);
     expect(aggregateGlobalGraph).toHaveBeenCalledWith(path.join(teamRepoDir, 'teamwiki'));
     expect(autoPushTeamRepo).toHaveBeenCalled();
+  });
+
+  it('names the roles and projects whose resources.wiki still lists the directory-named slug', async () => {
+    vi.mocked(defaultProjectSlug).mockResolvedValueOnce('github__acme__my-project');
+    await fs.outputFile(path.join(teamRepoDir, 'manifest', 'roles.yaml'),
+      'version: 1\nroles:\n  - id: backend\n    resources: { knowledge: [], skills: [], wiki: [my-project] }\n');
+    await fs.outputFile(path.join(teamRepoDir, 'manifest', 'projects.yaml'),
+      'version: 1\nprojects:\n  - id: shop\n    name: Shop\n    resources: { wiki: [my-project, payments] }\n');
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => { lines.push(args.map(String).join(' ')); });
+    try {
+      await runImportDir({ dir: projectDir });
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(lines.join('\n')).toContain('role backend and project shop list "my-project" under resources.wiki, '
+      + 'and this codebase is now teamwiki/evidence/code/github__acme__my-project/. '
+      + 'Change those entries to "github__acme__my-project" so it stays scoped to them.');
   });
 
   it('--output writes to specified dir without touching team-repo', async () => {
