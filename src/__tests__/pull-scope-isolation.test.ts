@@ -266,8 +266,11 @@ describe('pull scope isolation (issue #73)', () => {
     { scope: 'project', optOut: 'team' },
   ])('clears a pending auto-report when $optOut disables reporting in $scope scope', async ({ scope, optOut }) => {
     const config = scope === 'project' ? projectConfig : userConfig;
-    vi.mocked(detectProjectConfig).mockResolvedValue(scope === 'project' ? config : null);
-    vi.mocked(loadLocalConfigForScope).mockResolvedValue(config);
+    // A real pull reloads the config from disk on every invocation. Return a
+    // fresh object from both scope readers so this regression test does not
+    // accidentally test an in-memory mutation that the command never persists.
+    vi.mocked(detectProjectConfig).mockImplementation(async () => scope === 'project' ? structuredClone(config) : null);
+    vi.mocked(loadLocalConfigForScope).mockImplementation(async () => structuredClone(config));
     let saved: State = StateSchema.parse({ lastPullRev: 'abc1234', pushedSkills: ['keep-me'] });
     vi.mocked(loadStateForScope).mockImplementation(async () => structuredClone(saved));
     vi.mocked(saveStateForScope).mockImplementation(async (state) => { saved = structuredClone(state); });
