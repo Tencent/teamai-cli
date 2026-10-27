@@ -302,12 +302,16 @@ export type Unread =
   | { readonly write: string; readonly reason: 'shadowed'; readonly by: string }
   | { readonly write: string; readonly reason: 'cwd-only' | 'outside-workspace'; readonly readFrom: string };
 
-/** The writes of `location` the tool would not read from a session in `host.cwd()`; none when it writes no files or its reads are unknown. */
-export function unreadWrites<P extends Place>(location: Located<P> & Beside<P>, host: Host = realHost()): readonly Unread[] {
+/**
+ * The writes of `location` the tool would not read from a session in
+ * `session` (`host.cwd()` by default), or with `session` null from some
+ * session, so each read limited to sessions in one place counts; none when it
+ * writes no files or its reads are unknown.
+ */
+export function unreadWrites<P extends Place>(location: Located<P> & Beside<P>, host: Host = realHost(), session: string | null = host.cwd()): readonly Unread[] {
   if (location.channel !== 'files' || location.reads === 'unknown') return [];
   const { reads } = location;
   const p = host.path;
-  const cwd = host.cwd();
   const unread: Unread[] = [];
   for (const write of writesOf(location)) {
     const read = reads.find((candidate) => readsPlace(p, candidate, write));
@@ -323,10 +327,10 @@ export function unreadWrites<P extends Place>(location: Located<P> & Beside<P>, 
       case 'always':
         break;
       case 'cwdOnly':
-        if (!samePathOn(p, cwd, read.root)) unread.push({ write: write.path, reason: 'cwd-only', readFrom: read.root });
+        if (session === null || !samePathOn(p, session, read.root)) unread.push({ write: write.path, reason: 'cwd-only', readFrom: read.root });
         break;
       case 'workspaceUnder':
-        if (!isAtOrUnder(p, cwd, read.root)) unread.push({ write: write.path, reason: 'outside-workspace', readFrom: read.root });
+        if (session === null || !isAtOrUnder(p, session, read.root)) unread.push({ write: write.path, reason: 'outside-workspace', readFrom: read.root });
         break;
       default: {
         const unhandled: never = read;

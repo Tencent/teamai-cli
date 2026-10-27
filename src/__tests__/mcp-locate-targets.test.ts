@@ -379,7 +379,7 @@ describe('pull writes MCP servers where each tool reads them (#1221)', () => {
     expect(await mcpTransportNotes(context(team(), userConfig(tool)))).toContain(`${tool}'s MCP channel is unknown; teamai does not write its servers.`);
   });
 
-  it('doctor notes cwd-only MCP, and nothing left at the default home once the home moves (#1221)', async () => {
+  it('doctor judges project MCP from a session at the project root, and notes nothing left at the default home once the home moves (#1221)', async () => {
     const agentDir = path.join(root, 'pi-agent');
     await fse.ensureDir(agentDir);
     vi.stubEnv('PI_CODING_AGENT_DIR', agentDir);
@@ -387,7 +387,7 @@ describe('pull writes MCP servers where each tool reads them (#1221)', () => {
     const project = path.join(root, 'project');
     await fse.ensureDir(path.join(project, '.pi'));
     const local: LocalConfig = { ...userConfig('pi'), scope: 'project', projectRoot: project };
-    expect(await mcpTransportNotes(context(team(), local))).toContain(`pi reads project MCP servers only from a session started in ${project}.`);
+    expect(await mcpTransportNotes(context(team(), local))).not.toContain(`pi reads project MCP servers only from a session started in ${project}.`);
   });
 
   describe('the file each server was written to, in its ownership record', () => {
