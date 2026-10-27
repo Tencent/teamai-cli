@@ -105,7 +105,7 @@ export function formatMrThreads(threads: MRThread[], mrAuthor: string | undefine
  *
  * @param mr        MR data object
  * @param language  The team's `language` from teamai.yaml
- * @returns         Full prompt string for callClaude
+ * @returns         Full prompt string for callTool
  */
 export function extractMRLearningPrompt(mr: MRData, language?: 'en' | 'zh'): string {
   const commitsFormatted = mr.commits

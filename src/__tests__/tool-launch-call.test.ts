@@ -77,11 +77,31 @@ it('fails with the error Claude reports in its result, not its stderr tag', asyn
   await expect(only('claude', claude.executable).callTool('hi', { launchedBy: 'codebase' })).rejects.toMatchObject({ kind: 'call_failed', message: 'AI call failed (tool: claude): There\'s an issue with the selected model (x).' });
 });
 
+it.each([
+  { stdout: '', stderr: 'Authentication failed\n', exitCode: 2, reason: 'Authentication failed' },
+  { stdout: 'Provider rejected the request\n', stderr: '', exitCode: 1, reason: 'Provider rejected the request' },
+  { stdout: ' \n', stderr: '\t', exitCode: 3, reason: 'exit code 3' },
+])('fails a tool that exits $exitCode with $reason', async ({ stdout, stderr, exitCode, reason }) => {
+  const hermes = await fakeTool('hermes', { stdout, stderr, exitCode });
+
+  await expect(only('hermes', hermes.executable).callTool('hi', { launchedBy: 'codebase' })).rejects.toMatchObject({ kind: 'call_failed', message: `AI call failed (tool: hermes): ${reason}` });
+});
+
 it('fails with no_tool when no tool teamai launches is on PATH', async () => {
   vi.stubEnv('TEAMAI_AI_TOOL', '');
   const caller = createToolCaller({ resolveTool: () => null, loadConfig: async () => null });
 
   await expect(caller.callTool('hi', { launchedBy: 'codebase' })).rejects.toMatchObject({ kind: 'no_tool', message: 'No AI tool teamai launches is on PATH. Install one of: claude, claude-internal, tclaude, codex, codex-internal, tcodex, opencode, codebuddy, workbuddy, openclaw, cursor, copilot, qoder, kiro, pi, omp, muse, hermes, or set TEAMAI_AI_TOOL to one you have.' });
+});
+
+it('runs TClaude as Claude Code and TCodex as Codex, each from its own executable', async () => {
+  const tclaude = await fakeTool('tclaude', { stdout: JSON.stringify({ type: 'result', is_error: false, result: 'from tclaude' }) });
+  const tcodex = await fakeTool('tcodex', { lastMessage: 'from tcodex' });
+
+  expect(await only('tclaude', tclaude.executable).callTool('hi', { launchedBy: 'codebase' })).toEqual({ text: 'from tclaude', tool: 'tclaude' });
+  expect(await only('tcodex', tcodex.executable).callTool('hi', { launchedBy: 'codebase' })).toEqual({ text: 'from tcodex', tool: 'tcodex' });
+  expect((await tclaude.invocation()).args).toEqual(['-p', '--output-format', 'json']);
+  expect((await tcodex.invocation()).args.slice(0, 2)).toEqual(['exec', '--json']);
 });
 
 it('runs Codex with the prompt on stdin, reads its last message from the -o file and its tokens from the turn', async () => {
@@ -306,6 +326,35 @@ it('runs a batch of calls in input order and parses each answer', async () => {
   const answers = await callToolParallel(['a', 'b', 'c', 'd'].map((prompt) => ({ prompt, parse: (text: string) => text.toUpperCase() })), { launchedBy: 'enrich-with-ai', concurrency: 2 });
 
   expect(answers).toEqual(['ECHO A', 'ECHO B', 'ECHO C', 'ECHO D']);
+});
+
+it('stops a call that outlives its timeout and fails with the timeout', async () => {
+  root ||= await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-call-'));
+  const hanging = path.join(root, 'claude-hang');
+  await fs.writeFile(hanging, `#!${process.execPath}\nsetInterval(() => {}, 1000);\n`, { mode: 0o755 });
+
+  await expect(only('claude', hanging).callTool('hi', { launchedBy: 'codebase', timeout: 600 })).rejects.toMatchObject({ kind: 'call_failed', message: 'AI call timed out after 1s (tool: claude)' });
+});
+
+it('runs no more calls of a batch at once than its concurrency', async () => {
+  root ||= await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-call-'));
+  const running = path.join(root, 'running');
+  await fs.mkdir(running);
+  const counting = path.join(root, 'claude-count');
+  // Each call marks itself running, answers with how many calls run beside it, and unmarks itself before it exits.
+  await fs.writeFile(counting, `#!${process.execPath}
+const fs = require('fs'); const path = require('path');
+const mark = path.join(${JSON.stringify(running)}, String(process.pid));
+fs.writeFileSync(mark, '');
+setTimeout(() => {
+  const count = fs.readdirSync(${JSON.stringify(running)}).length;
+  fs.rmSync(mark);
+  process.stdout.write(JSON.stringify({ type: 'result', is_error: false, result: String(count) }));
+}, 150);\n`, { mode: 0o755 });
+
+  const counts = await only('claude', counting).callToolParallel(Array.from({ length: 5 }, (_, index) => ({ prompt: String(index), parse: Number })), { launchedBy: 'enrich-with-ai', concurrency: 2 });
+
+  expect(Math.max(...counts)).toBeLessThanOrEqual(2);
 });
 
 it('runs every call of a batch, then fails with each failure', async () => {

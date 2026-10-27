@@ -10,10 +10,6 @@ import { findPromotionCandidates, executePromotion } from '../maintenance/promot
 import { CallError, callTool } from '../tool-launch/call.js';
 import type { UserVotesV2 } from '../types.js';
 
-vi.mock('../utils/ai-client.js', () => ({
-  callClaude: vi.fn(async () => { throw new Error('ai-client must not be reached'); }),
-}));
-
 vi.mock('../tool-launch/call.js', async (importOriginal) => ({
   ...await importOriginal<typeof import('../tool-launch/call.js')>(),
   callTool: vi.fn(async (prompt: string) => ({

@@ -77,6 +77,27 @@ describe('resolveCliPath', () => {
     expect(pickWindowsCommand(out)).toBe('C:\\npm\\gh.cmd');
   });
 
+  it('prefers a native .exe over a .cmd or .bat of the same name, as PATHEXT does', () => {
+    expect(pickWindowsCommand('C:\\tools\\claude.cmd\r\nC:\\Program Files\\Claude\\claude.exe\r\n')).toBe('C:\\Program Files\\Claude\\claude.exe');
+    expect(pickWindowsCommand('C:\\tools\\claude.bat\nC:\\tools\\claude.exe\n')).toBe('C:\\tools\\claude.exe');
+  });
+
+  it('trims the `where` lines and matches the extension case-insensitively', () => {
+    expect(pickWindowsCommand('  C:\\npm\\CLAUDE.CMD  \r\n')).toBe('C:\\npm\\CLAUDE.CMD');
+  });
+
+  it('returns null when `where` finds only the extension-less shim, or nothing', () => {
+    expect(pickWindowsCommand('C:\\npm\\claude\r\n')).toBeNull();
+    expect(pickWindowsCommand('')).toBeNull();
+    expect(pickWindowsCommand('\r\n \r\n')).toBeNull();
+  });
+
+  it('asks only `where` on Windows, never bash, zsh or which', () => {
+    mockedExecFileSync.mockImplementation(() => { throw new Error('Command failed: where claude'); });
+    expect(resolveCliPath('claude', 'win32')).toBeNull();
+    expect(mockedExecFileSync.mock.calls.map((call) => call[0])).toEqual(['where']);
+  });
+
   it('falls through bash → zsh on POSIX', () => {
     mockedExecFileSync
       .mockImplementationOnce(() => { throw new Error('no bash'); })

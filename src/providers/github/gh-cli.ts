@@ -49,7 +49,7 @@ function hitTimeout(result: { error?: Error | null }): boolean {
  * Returns { stdout, stderr, status }, plus `timedOut` when a deadline fired.
  *
  * Launches through cross-spawn rather than the native `spawnSync`, for the same
- * reason `callClaude` does: a `gh` that npm installed is a `.cmd` shim, and Node
+ * reason `runTool` does: a `gh` that npm installed is a `.cmd` shim, and Node
  * cannot execute `.cmd` directly (EINVAL). Resolving the path alone is not
  * enough — `pickWindowsCommand` accepts `.cmd`, so the launcher has to be able
  * to run what it resolves.

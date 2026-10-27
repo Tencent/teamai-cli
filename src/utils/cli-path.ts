@@ -1,9 +1,9 @@
 /**
- * 跨平台命令探测：把一个 CLI 名称解析成"该平台上真正能被 Node 启动"的绝对路径。
+ * Cross-platform command lookup: resolves a CLI name to an absolute path Node can start on this platform.
  *
- * 从 `utils/ai-client.ts` 抽出——同一套坑（Windows 上 `which` 返回 MSYS 路径、
- * npm shim 无扩展名项排第一）在 provider 的 CLI 包装层（`providers/github/gh-cli.ts`、
- * `providers/cnb/cnb-cli.ts`）里重复出现，因此收敛到一处。
+ * The AI tool launcher (`tool-launch/`) and the provider CLI wrappers (`providers/github/gh-cli.ts`,
+ * `providers/cnb/cnb-cli.ts`) share the same traps (on Windows `which` returns an MSYS path, and npm lists its
+ * extension-less shim first), so the lookup lives here once.
  */
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
