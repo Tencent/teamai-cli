@@ -295,6 +295,26 @@ describe('skill driver preflight of optional gates', () => {
       'How should it run?',
     ].join('\n') } } } } });
   });
+
+  it('names the workflow an optional approval comes before, or says it is inline', async () => {
+    const announce = 'schemaVersion: v1alpha1\nname: announce\ndescription: Announce it\nsteps:\n  - id: post\n    command: echo posted\n';
+    expect(await questionOf({ announce, gates: gates(`  - id: announce
+    approve: Announce?
+    workflow: announce
+  - id: tidy
+    needs: [announce]
+    approve: Tidy?
+    workflow:
+      steps:
+        - id: sweep
+          command: echo swept
+`) })).toMatchObject({ data: { describe: { ask: { kind: 'ask', question: { text: [
+      '- Optional approval at announce: before workflow announce.',
+      '- Optional approval at tidy: before an inline workflow.',
+      approvalsAnswer,
+      'How should it run?',
+    ].join('\n') } } } } });
+  });
 });
 
 describe('skill driver preflight in an unattended run', () => {

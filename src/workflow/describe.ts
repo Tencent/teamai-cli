@@ -18,6 +18,8 @@ export type GateGuards =
   | { kind: 'command'; line: string }
   | { kind: 'prompt' }
   | { kind: 'interactive' }
+  /** `name`: the workflow it runs; absent when that workflow is inline. */
+  | { kind: 'workflow'; name?: string }
   | { kind: 'none'; waiting: string[] };
 
 /** The most characters of a command a gate shows before it cuts the rest. */
@@ -34,6 +36,7 @@ function guardsOf(step: WorkflowStep): GateGuards {
   if (step.command !== undefined) return { kind: 'command', line: commandLine(step.command) };
   if (step.interactive) return { kind: 'interactive' };
   if (step.prompt !== undefined || step.promptFile !== undefined) return { kind: 'prompt' };
+  if (step.workflow !== undefined) return { kind: 'workflow', ...(typeof step.workflow === 'string' ? { name: step.workflow } : {}) };
   return { kind: 'none', waiting: [] };
 }
 

@@ -122,6 +122,8 @@ function guardsFact(guards: GateGuards): string {
       return 'before a prompt step, which a child agent works';
     case 'interactive':
       return 'before an interactive step, which you work here with this session\'s agent';
+    case 'workflow':
+      return guards.name !== undefined ? `before workflow ${guards.name}` : 'before an inline workflow';
     case 'none':
       return 'no action';
     default: {
