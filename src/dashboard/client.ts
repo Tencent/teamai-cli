@@ -406,7 +406,7 @@ function showDetails(sessionId) {
  detailSection('Session activity','<p data-verbatim>'+e(s.cwd)+'</p><p>'+label('Started')+': '+e(when(s.startedAt))+'<br>'+label('Last activity')+': '+e(when(s.lastActivity))+'<br>'+label('Duration')+': '+e(duration(s))+' · '+label('Last tool')+': '+e(s.lastTool)+'</p>')+
  detailSection('Human interventions','<p>'+label('Interrupt')+': '+number(iv.interrupt)+' · '+label('Tool reject')+': '+number(iv.toolReject)+' · '+label('Correction')+': '+number(iv.correction)+'</p>')+
  detailSection('Token usage','<p>'+label('Input')+': '+number(usage.input)+' · '+label('Output')+': '+number(usage.output)+'<br>'+label('Cache read')+': '+number(usage.cacheRead)+' · '+label('Cache creation')+': '+number(usage.cacheCreation)+'</p>')+
- detailSection('Outcomes','<p>'+outcomesHtml(s.outcomes)+'</p><p class="label">'+label('A learning shows once contribute records it. Commits and pull requests show once the usage report counts the session, 6 hours after it goes quiet.')+'</p>')+
+ detailSection('Outcomes','<p>'+outcomesHtml(s.outcomes)+'</p><p class="label">'+label('A learning shows here once contribute records it. Commits and pull requests are counted 6 hours after the session goes quiet, and show under What finished sessions delivered on the Overview.')+'</p>')+
  detailSection('User prompts','<p>'+number(s.promptCount)+' '+label('Prompt turns')+'</p>'+(s.prompts||[]).map((p,i)=>'<p data-verbatim><b>'+number(i+1)+'.</b> '+e(p)+'</p>').join(''))+
  detailSection('AI output','<div class="md-output" data-verbatim>'+ (s.stoppedOutput?renderMarkdown(s.stoppedOutput):'<p>'+label('No output captured yet.')+'</p>')+'</div>');
  if(!dialog.open)dialog.showModal();

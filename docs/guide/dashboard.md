@@ -68,7 +68,7 @@ The 7-day trends count only your own sessions: a session teamai launched, such a
 
 The Overview's **What finished sessions delivered** panel shows the sessions the usage report counted in the last 30 days for the selected workspace: the share that delivered a commit, pull request or learning, the rows per run mode and outcome with tokens and interventions per session (see [Usage reporting](reporting.md#what-your-sessions-delivered)), and the latest sessions with their commits, pull request links and learnings.
 
-A session row and its details show what the session delivered so far. A learning shows once `teamai contribute` records it; commits and a pull request show once the report counts the session, 6 hours after it goes quiet. These ids, shas and links stay on this machine.
+A session row and its details show the learnings `teamai contribute` recorded for it. Its commits and pull request are counted 6 hours after it goes quiet, after the row has left the list, so they show in the panel. These ids, shas and links stay on this machine.
 
 ## Session Save
 

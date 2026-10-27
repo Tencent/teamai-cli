@@ -338,7 +338,7 @@ export const dashboardMessages: Record<string, string> = {
   "Recently finished": "最近结束",
   "Local only: ids, shas and links never leave this machine": "仅本机：ID、提交哈希和链接不会离开此机器",
   "COUNTED": "统计时间",
-  "A learning shows once contribute records it. Commits and pull requests show once the usage report counts the session, 6 hours after it goes quiet.": "经验在 contribute 记录后显示。提交和拉取请求在使用报告统计该会话后显示，即会话静默 6 小时之后。",
+  "A learning shows here once contribute records it. Commits and pull requests are counted 6 hours after the session goes quiet, and show under What finished sessions delivered on the Overview.": "经验在 contribute 记录后显示在这里。提交和拉取请求在会话静默 6 小时后统计，显示在总览的「已结束会话的产出」中。",
   "The dashboard shows only what a run record publishes: never prompts, inputs, outputs, or HITL messages.": "仪表盘只显示运行记录发布的内容：绝不显示提示词、输入、输出或 HITL 消息。",
   "Could not load this run.": "无法加载此运行。",
   "Scorers": "评分器",
