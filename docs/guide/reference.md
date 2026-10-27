@@ -113,7 +113,7 @@ workflows:
 recallEnabled: false
 ```
 
-A value of the wrong type in `~/.teamai/config.yaml` is skipped with a warning, and the next level decides. `workflows.allow` is the exception: a bad value there stops workflow commands until you fix it. A save never copies a machine value into a workspace's file; `recall enable` and `recall disable` write theirs. `teamai doctor` lists each member setting some level sets, with the level that set it and the values below it.
+A value of the wrong type in `~/.teamai/config.yaml` is skipped with a warning, and the next level decides. `workflows.allow` is the exception: a bad value there, or a file that cannot be read or parsed, stops workflow commands until you fix it. A save never copies a machine value into a workspace's file; `recall enable` and `recall disable` write theirs. `teamai doctor` lists each member setting some level sets, with the level that set it and the values below it.
 
 #### AI tool (`ai.tool`)
 

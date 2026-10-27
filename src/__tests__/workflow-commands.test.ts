@@ -251,6 +251,20 @@ steps:
     expect(fs.existsSync(path.join(config.dataHome ?? '', 'workflows', 'runs'))).toBe(false);
   });
 
+  it("refuses to start while this machine's config cannot be read, so what it restricts is unknown", async () => {
+    const config = inputsConfig();
+    await syncWorkflowDefinitions(config);
+    state.config = config;
+    const file = getUserConfigPath();
+    fs.mkdirSync(file, { recursive: true });
+    onTestFinished(() => fs.rmSync(file, { recursive: true, force: true }));
+
+    const started = await capture(() => workflowStart('fix', { inputs: '{"issue":42}' }));
+
+    expect(started.error).toMatchObject({ code: 'not_initialized', message: expect.stringContaining(`${file} could not be read`) });
+    expect(fs.existsSync(path.join(config.dataHome ?? '', 'workflows', 'runs'))).toBe(false);
+  });
+
   it("refuses to drive a run it already has while this machine's workflows.allow is invalid", async () => {
     const { config, runId } = await startBuild();
     state.config = config;

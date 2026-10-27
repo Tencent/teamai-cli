@@ -22,7 +22,7 @@ import {
   type MemberSettings,
   type MemberWorkflowSettings,
 } from './types.js';
-import { readFileSafe, readJson, writeFileAtomic, writeJsonAtomic, expandHome, pathExists } from './utils/fs.js';
+import { readFileIfExists, readFileSafe, readJson, writeFileAtomic, writeJsonAtomic, expandHome, pathExists } from './utils/fs.js';
 import { nearestGitEntry, resolveAnchors } from './utils/git.js';
 import { getUserHome } from './utils/home.js';
 import { resolvePartitionDir, writeAnchorFile } from './utils/partition.js';
@@ -392,11 +392,17 @@ export async function loadMemberSettings(configPath = expandHome(getUserConfigPa
 /**
  * What is wrong with `workflows.allow` in ~/.teamai/config.yaml, or undefined. Another bad machine value is skipped
  * with a warning, but skipping a restriction lifts it, so a workflow command refuses to run on this one, and on a
- * file it cannot parse, whose restrictions are unknown.
+ * file it cannot read or parse, whose restrictions are unknown.
  */
 export async function machineWorkflowAllowProblem(): Promise<string | undefined> {
   const configPath = expandHome(getUserConfigPath());
-  const content = await readFileSafe(configPath);
+  let content: string | null;
+  try {
+    content = await readFileIfExists(configPath);
+  } catch (e) {
+    return `${configPath} could not be read (${describeConfigError(e)}), so the workflows.allow restrictions it may set are unknown. `
+      + 'A workflow does not run until it is fixed.';
+  }
   if (!content) return undefined;
   let workflows: Record<string, unknown> | undefined;
   try {

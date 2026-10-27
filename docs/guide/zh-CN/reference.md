@@ -113,7 +113,7 @@ workflows:
 recallEnabled: false
 ```
 
-`~/.teamai/config.yaml` 中类型错误的值会被跳过并给出警告，由下一层级决定。`workflows.allow` 例外：其中的错误值会让工作流命令停止运行，直到你修正它。保存配置时不会把本机的值复制进 workspace 的文件；`recall enable` 和 `recall disable` 会写入它们自己的值。`teamai doctor` 会列出每个由某一层级设置的成员设置、设置它的层级，以及更低层级的值。
+`~/.teamai/config.yaml` 中类型错误的值会被跳过并给出警告，由下一层级决定。`workflows.allow` 例外：其中的错误值，或无法读取或解析的文件，会让工作流命令停止运行，直到你修正它。保存配置时不会把本机的值复制进 workspace 的文件；`recall enable` 和 `recall disable` 会写入它们自己的值。`teamai doctor` 会列出每个由某一层级设置的成员设置、设置它的层级，以及更低层级的值。
 
 #### AI 工具（`ai.tool`）
 
