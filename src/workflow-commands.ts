@@ -35,6 +35,23 @@ function writeEnvelope(envelope: WorkflowEnvelope, secrets: Record<string, strin
 }
 
 /**
+ * Prints what the local driver answered for a run of `config`, then, once an unattended run is done, drains the run's
+ * scope as `teamai score --drain` does. The run's outcome keeps setting the exit code: what the drain could not do is
+ * printed.
+ */
+async function writeDriven(config: LocalConfig, envelope: WorkflowEnvelope, secrets: Record<string, string>): Promise<void> {
+  writeEnvelope(envelope, secrets);
+  if ('error' in envelope || !('done' in envelope.data) || resolveRunMode(process.env) !== 'unattended') return;
+  log.info('Draining before exit (teamai score --drain)');
+  const { Drain } = await import('./score-drain.js');
+  try {
+    Drain.print(await Drain.run([config], { mode: 'unattended' }));
+  } catch (error) {
+    log.error(`The drain stopped: ${error instanceof Error ? error.message : String(error)}. Run teamai score --drain to finish it.`);
+  }
+}
+
+/**
  * Answers `nested_workflow` when `nested` says the call comes from inside a workflow attempt or, for a start, from a
  * workflow's place, before anything reads a run; true when it did. A `--driver skill` error carries `next: null`.
  */
@@ -242,7 +259,7 @@ export async function workflowStart(name: string, options: {
     return;
   }
   log.info(`Run ${runId} started. If it stops before it ends, continue it with: teamai workflow resume ${runId}`);
-  writeEnvelope(await runLocalDriver(config, runId, process.cwd(), { tools, toolPaths: teamConfig.toolPaths, autoApprove: options.autoApprove }), secrets);
+  await writeDriven(config, await runLocalDriver(config, runId, process.cwd(), { tools, toolPaths: teamConfig.toolPaths, autoApprove: options.autoApprove }), secrets);
 }
 
 /** Refuses `--driver <kind>` on `command`, which takes only `--driver skill`, naming the kind given. */
@@ -506,7 +523,7 @@ export async function workflowResume(runId: string, options: {
     return;
   }
   // Claimed under the driver lock, so a driver of this run already running here never drives the claimed run.
-  writeEnvelope(await withDriverLock(loaded.config, runId, async (drive) => {
+  await writeDriven(loaded.config, await withDriverLock(loaded.config, runId, async (drive) => {
     const resumed = await resumeRun(loaded.config, runId, { claim: options.claim === true, checkout: process.cwd() });
     if (!resumed.ok) return { error: resumed.error };
     const stored = await readRun(loaded.config, runId);

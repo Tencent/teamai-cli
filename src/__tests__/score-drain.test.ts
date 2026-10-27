@@ -28,6 +28,7 @@ import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, parseReport, reportAttempt, startRun } from '../workflow/engine.js';
 import { nextJudgeLease } from '../workflow/scoring.js';
 import type { WorkflowEnvelope } from '../workflow/types.js';
+import { workflowResume, workflowStart } from '../workflow-commands.js';
 
 const SCORER = `---
 labels:
@@ -174,6 +175,40 @@ function onReports(origin: string, dir: string): string[] {
 /** The text of `file` on teamai-reports of bare repository `origin`. */
 function readOnReports(origin: string, file: string): string {
   return execFileSync('git', ['--git-dir', origin, 'show', `teamai-reports:${file}`], { encoding: 'utf8', stdio: 'pipe' });
+}
+
+const MARK = `schemaVersion: v1alpha1
+name: mark
+description: One command.
+steps:
+  - id: mark
+    command: echo marked
+`;
+
+/** Runs `run`, a local `workflow start` or `resume`, in `<root>/app` and returns its envelope, exit code and log lines. */
+async function driveLocally(run: () => Promise<void>): Promise<{ envelope: unknown; code: number; lines: string[] }> {
+  const work = path.join(root, 'app');
+  fs.mkdirSync(work, { recursive: true });
+  vi.spyOn(process, 'cwd').mockReturnValue(work);
+  const lines: string[] = [];
+  let out = '';
+  vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+    lines.push(args.map(String).join(' '));
+  });
+  vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+    out += String(chunk);
+    return true;
+  });
+  process.exitCode = 0;
+  try {
+    await run();
+    return { envelope: JSON.parse(out), code: Number(process.exitCode ?? 0), lines };
+  } finally {
+    vi.mocked(process.stdout.write).mockRestore();
+    vi.mocked(console.error).mockRestore();
+    vi.mocked(process.cwd).mockRestore();
+    process.exitCode = 0;
+  }
 }
 
 /** Runs `teamai score --drain` and returns its exit code and the lines it printed. */
@@ -450,5 +485,53 @@ describe('teamai score --drain', () => {
       process.exitCode = 0;
     }
     expect(JSON.parse(written.join(''))).toEqual({ error: { code: 'invalid_arguments', message: '--drain goes alone and takes no payload: teamai score --drain' } });
+  });
+
+  it('runs at the end of an unattended local run, which keeps the run\'s outcome as its exit code when a publish fails', async () => {
+    const { origin, config } = await team({ 'workflows/mark.yaml': MARK });
+    await syncWorkflowDefinitions(config);
+    capturedSession(SESSION, 'unattended');
+    fakeClaude();
+    fs.writeFileSync(path.join(origin, 'hooks', 'pre-receive'), '#!/bin/sh\necho "push refused" >&2\nexit 1\n', { mode: 0o755 });
+    vi.stubEnv('CI', 'true');
+
+    const started = await driveLocally(() => workflowStart('mark', { driver: 'local' }));
+
+    expect(started.envelope).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(started.code, started.lines.join('\n')).toBe(0);
+    const draining = started.lines.indexOf('ℹ Draining before exit (teamai score --drain)');
+    expect(draining, started.lines.join('\n')).toBeGreaterThanOrEqual(0);
+    expect(started.lines.slice(draining)).toEqual(expect.arrayContaining([
+      '✔ Judged 1 sampled session here (quality)',
+      expect.stringMatching(/^✖ Could not publish 1 label and 1 session to teamai-reports: /),
+    ]));
+  });
+
+  it('does not run at the end of an attended local run', async () => {
+    const { config } = await team({ 'workflows/mark.yaml': MARK });
+    await syncWorkflowDefinitions(config);
+
+    const started = await driveLocally(() => workflowStart('mark', { driver: 'local' }));
+
+    expect(started.envelope).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(started.lines).not.toContain('ℹ Draining before exit (teamai score --drain)');
+  });
+
+  it('runs at the end of an unattended local resume', async () => {
+    const { config } = await team({ 'workflows/mark.yaml': MARK });
+    await syncWorkflowDefinitions(config);
+    const checkout = path.join(root, 'app');
+    fs.mkdirSync(checkout, { recursive: true });
+    const runId = String(data(await startRun(config, 'mark', {}, { secrets: {}, runMode: 'unattended', checkout })).run);
+    capturedSession(SESSION, 'unattended');
+    fakeClaude();
+    vi.stubEnv('CI', 'true');
+
+    const resumed = await driveLocally(() => workflowResume(runId, {}));
+
+    expect(resumed.envelope).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    const draining = resumed.lines.indexOf('ℹ Draining before exit (teamai score --drain)');
+    expect(draining, resumed.lines.join('\n')).toBeGreaterThanOrEqual(0);
+    expect(resumed.lines.slice(draining)).toContain('✔ Judged 1 sampled session here (quality)');
   });
 });
