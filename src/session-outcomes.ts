@@ -18,7 +18,7 @@ import { interventionsEntry, promptTokensEntry, snapshotPathIn, type ReportedInt
 import { FINISHED_AFTER_MS } from './session-flow/session-work.js';
 import { getDataHome, type DashboardEvent, type LocalConfig, type UserOutcomeStats } from './types.js';
 import { pathExists, readJson, writeJson } from './utils/fs.js';
-import { checkoutForProjectAnchor } from './utils/git.js';
+import { checkoutForProjectAnchor, getDefaultBranch } from './utils/git.js';
 import { log } from './utils/logger.js';
 import { CommitIdSchema } from './workflow/delivery-schema.js';
 import { findDelivered } from './workflow/pr-delivery.js';
@@ -35,6 +35,7 @@ const FactsSchema = z.object({
   cwd: z.string().optional(),
   /** The repository `cwd` is in (`projectAnchor`), whose other checkouts still hold its commits once `cwd` is removed. */
   anchor: z.string().optional(),
+  /** Its first start, and the head that start saw: none in a repository with no commit yet, or when git failed. */
   startedAt: z.string().optional(),
   startHead: z.string().optional(),
   endHead: z.string().optional(),
@@ -96,7 +97,8 @@ function factsOf(member: DashboardEvent[], outcomes: SessionOutcomeEvent[]): Map
       ...(runMode ? { runMode } : {}),
       ...(event.cwd ? { cwd: event.cwd } : {}),
       ...(event.projectAnchor ? { anchor: event.projectAnchor } : {}),
-      ...(event.gitAtStart && known.startHead === undefined ? { startedAt: event.timestamp, startHead: event.gitAtStart.head } : {}),
+      ...(event.type === 'session_start' && known.startedAt === undefined
+        ? { startedAt: event.timestamp, ...(event.gitAtStart ? { startHead: event.gitAtStart.head } : {}) } : {}),
       ...(event.gitHead ? { endHead: event.gitHead } : {}),
       ...(event.gitHead && event.gitBranch ? { endBranch: event.gitBranch } : {}),
     });
@@ -120,12 +122,13 @@ function factsOf(member: DashboardEvent[], outcomes: SessionOutcomeEvent[]): Map
 /** `kept`, an earlier report's facts, brought up to date with `seen`: the session's start stays the earlier one. */
 function merged(kept: Facts | undefined, seen: Facts): Facts {
   if (!kept) return seen;
-  const startedEarlier = kept.startHead !== undefined && (seen.startedAt === undefined || (kept.startedAt ?? '') <= seen.startedAt);
+  const { startedAt, startHead } = kept.startedAt !== undefined && (seen.startedAt === undefined || kept.startedAt <= seen.startedAt) ? kept : seen;
   return {
     ...kept,
     ...seen,
     activeAt: kept.activeAt > seen.activeAt ? kept.activeAt : seen.activeAt,
-    ...(startedEarlier ? { startedAt: kept.startedAt, startHead: kept.startHead } : {}),
+    startedAt,
+    startHead,
   };
 }
 
@@ -148,12 +151,13 @@ async function checkoutOf(facts: Facts): Promise<string | undefined> {
 /** The commits the member authored in `cwd`, the session's checkout, from its start to its last Stop, oldest first. */
 async function sessionCommits(cwd: string, facts: Facts): Promise<string[]> {
   const { startHead, endHead, startedAt } = facts;
-  if (!startHead || !endHead || startHead === endHead) return [];
+  if (!endHead || !startedAt || startHead === endHead) return [];
   const email = (await git(cwd, ['config', '--get', 'user.email'], { timeoutMs: GIT_TIMEOUT_MS })).stdout.trim();
   if (!email) return [];
-  // A commit dated before the session started came in with a pull, whoever wrote it.
+  // A commit dated before the session started came in with a pull, whoever wrote it. A start with no head (a repository
+  // with no commit yet, or git that failed) leaves the start time alone to bound the session's commits.
   const listed = await git(cwd, [
-    'log', '--reverse', '--format=%H', '--fixed-strings', `--author=<${email}>`, ...(startedAt ? [`--since=${startedAt}`] : []), `${startHead}..${endHead}`,
+    'log', '--reverse', '--format=%H', '--fixed-strings', `--author=<${email}>`, `--since=${startedAt}`, startHead ? `${startHead}..${endHead}` : endHead,
   ], { timeoutMs: GIT_TIMEOUT_MS });
   return listed.code === 0 ? listed.stdout.split('\n').filter((sha) => CommitIdSchema.safeParse(sha).success) : [];
 }
@@ -177,8 +181,8 @@ async function readPrCache(config: LocalConfig): Promise<Record<string, PrLookup
  * branch holds no commit yet) or gave no answer (the lookup failed, or teamai has no credentials for it).
  */
 async function lookUpPr({ cwd, branch, commits }: { cwd: string; branch: string; commits: string[] }): Promise<PrLookup | undefined> {
-  const target = (await git(cwd, ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'], { timeoutMs: GIT_TIMEOUT_MS })).stdout.trim().replace(/^origin\//, '');
-  if (!target || branch === target) return undefined;
+  const target = await getDefaultBranch(cwd);
+  if (branch === target) return undefined;
   const pushed = await Promise.all(commits.map(async (sha) =>
     (await git(cwd, ['merge-base', '--is-ancestor', sha, `refs/remotes/origin/${branch}`], { timeoutMs: GIT_TIMEOUT_MS })).code === 0));
   if (!pushed.includes(true)) return undefined;

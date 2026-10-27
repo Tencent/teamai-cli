@@ -200,6 +200,17 @@ describe('the usage report counts what finished sessions delivered (#1387)', () 
     expect((await readSessionOutcomes()).map((event) => event.outcomes)).toEqual([[{ kind: 'commit', sha: mine }]]);
   });
 
+  it('finds the first commits of a session that started in a repository with no commit yet', async () => {
+    const work = checkout();
+    const mine = commitIn(work, 'the first commit', ME, at(7.5));
+    const [first, stop] = session('first-commits', 7, { cwd: work });
+    writeEvents([first, { ...stop, gitHead: mine }]);
+
+    await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
+
+    expect((await readSessionOutcomes()).map((event) => event.outcomes)).toEqual([[{ kind: 'commit', sha: mine }]]);
+  });
+
   it('finds the commits of a member whose git email has a + tag', async () => {
     const work = checkout();
     gitIn(work, ['config', 'user.email', 'me+team@example.com']);
@@ -266,6 +277,27 @@ describe('the usage report counts what finished sessions delivered (#1387)', () 
     prMocks.findDelivered.mockImplementation(async (cwd: string, ref: { branch: string; target: string }) =>
       (cwd === work && ref.branch === 'fix-retry' && ref.target === 'main' ? { kind: 'found', pr: url } : { kind: 'none' }));
     const [begin, stop] = session('moved-on', 7, { cwd: work });
+    writeEvents([{ ...begin, gitAtStart: { head: start, dirty: false } }, { ...stop, gitHead: mine, gitBranch: 'fix-retry' }]);
+
+    await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
+
+    expect((await readSessionOutcomes()).map((event) => event.outcomes)).toEqual([[{ kind: 'commit', sha: mine }, { kind: 'pr', url }]]);
+  });
+
+  it('looks up the pull request of a repository pushed to its origin rather than cloned, which has no origin HEAD', async () => {
+    const work = checkout();
+    const origin = path.join(tmpDir, 'origin.git');
+    gitIn(tmpDir, ['init', '-q', '--bare', origin]);
+    const start = commitIn(work, 'base', ME);
+    gitIn(work, ['remote', 'add', 'origin', origin]);
+    gitIn(work, ['push', '-q', 'origin', 'main']);
+    gitIn(work, ['checkout', '-q', '-b', 'fix-retry']);
+    const mine = commitIn(work, 'the session', ME);
+    gitIn(work, ['push', '-q', 'origin', 'fix-retry']);
+    const url = 'https://github.com/acme/app/pull/42';
+    prMocks.findDelivered.mockImplementation(async (cwd: string, ref: { branch: string; target: string }) =>
+      (cwd === work && ref.branch === 'fix-retry' && ref.target === 'main' ? { kind: 'found', pr: url } : { kind: 'none' }));
+    const [begin, stop] = session('pushed', 7, { cwd: work });
     writeEvents([{ ...begin, gitAtStart: { head: start, dirty: false } }, { ...stop, gitHead: mine, gitBranch: 'fix-retry' }]);
 
     await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
