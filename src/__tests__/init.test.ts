@@ -1163,6 +1163,23 @@ describe('init', () => {
       expect(saveLocalConfigForScope).not.toHaveBeenCalled();
     });
 
+    // initSelfRepo always installs at project scope, so answering --scope user
+    // with a project install is a silent lie (#1454).
+    it.each([{ repo: '.' }, { self: true }])('refuses --scope user before creating anything: %o', async (target) => {
+      const { log } = await import('../utils/logger.js');
+      const { saveLocalConfigForScope } = await import('../config.js');
+      vi.mocked(saveLocalConfigForScope).mockClear();
+      mockGit.raw.mockClear();
+
+      await init({ ...target, scope: 'user' });
+
+      expect(mockExit).toHaveBeenCalledWith(1);
+      expect(log.error).toHaveBeenCalledWith(expect.stringContaining('`--scope user` is not supported for single-repo init'));
+      // Nothing was written or read from origin: the refusal comes first.
+      expect(saveLocalConfigForScope).not.toHaveBeenCalled();
+      expect(mockGit.raw).not.toHaveBeenCalled();
+    });
+
     it('aborts on a malformed roles manifest instead of initializing role-less', async () => {
       // A role-less config matches every role when hooks are reconciled, so
       // swallowing the parse failure would install exactly the hooks the manifest

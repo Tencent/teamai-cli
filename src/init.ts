@@ -1663,6 +1663,19 @@ export async function init(options: GlobalOptions & {
   // the teamai-reports orphan branch. No separate team repo is cloned.
   const repoArg = (options.repoPositional ?? options.repo ?? '').trim();
   if (options.self || repoArg === '.') {
+    // initSelfRepo always builds a project-scope config in the repo's partition.
+    // Answering `--scope user` with that silently gives the member a different
+    // install than the one they asked for (#1454).
+    if ((options.scope ?? '').trim().toLowerCase() === 'user') {
+      log.error(
+        '`--scope user` is not supported for single-repo init: `teamai init --self` and `teamai init .` install at project scope, '
+          + 'with knowledge in <repo>/.teamai and side-branch checkouts in the repository\'s project partition. '
+          + 'Drop `--scope user` and run init again. To install at user scope today, write ~/.teamai/config.yaml by hand '
+          + '(see #1454).',
+      );
+      process.exit(1);
+      return;
+    }
     return initSelfRepo({ ...options, provider: forcedProvider });
   }
   const requestedAgents = normalizeAgentList(options.agent);
