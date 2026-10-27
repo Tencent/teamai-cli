@@ -71,8 +71,8 @@ re-pushing updates the existing entry instead of generating `_1` suffixes.
   `session search --all` or `--cwd <project path>`.
 
 Deliberately **not** done: new top-level commands (Occam's razor — every change extends an
-existing command's options); branch/MR flow for session push (current behavior pushes the
-current branch; aligning with `teamai push`'s branch+MR flow is a separate discussion).
+existing command's options); branch/MR flow for session push (it then pushed the current branch, and since #1385 it pushes
+`teamai-reports`; aligning with `teamai push`'s branch+MR flow is a separate discussion).
 
 ## Affected surface
 
