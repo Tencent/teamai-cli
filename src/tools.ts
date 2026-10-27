@@ -857,7 +857,7 @@ export const TOOLS = {
       stats: { cell: '✓t', note: 'A1 (#1245) records its skill loads; not rerun' },
       aiBackend: '✓s',
       votesJudge: '?',
-      sessionJudge: { cell: '+s', note: 'bare Pi starts no subagent; the subagent example extension adds one (since 0.24.0)' },
+      sessionJudge: { cell: '◐s', note: 'bare Pi starts no subagent, so its session answers h4 and does not judge; the subagent example extension adds one (since 0.24.0); not run' },
       agentHooks: '?',
     },
   },

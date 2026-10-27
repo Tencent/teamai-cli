@@ -90,7 +90,7 @@ User scope, from #1221's matrix; a fix merged since is marked `t`, with a note. 
 | Trae CN | ? | ? | ? | ? | ? | ? | ✓s<sup>12</sup> | ? |
 | ZCode | ✓t | +s | ✓s | ✓s | +s | ✓t<sup>3</sup> | ✓d<sup>13</sup> | +t<sup>14</sup> |
 | Oh My Pi | ✓s | +s | ✓v | ✓t<sup>2</sup> | ✓d | ? | ✓s<sup>15</sup> | —t |
-| Pi Coding Agent | ✓s | +v | ✓v | ✓t<sup>2</sup> | ✓s | ? | +s<sup>16</sup> | ? |
+| Pi Coding Agent | ✓s | +v | ✓v | ✓t<sup>2</sup> | ✓s | ? | ◐s<sup>16</sup> | ? |
 | CodeBuddy | ? | ✓d | ✓s | ✓v | ✓d | +v | ✓t<sup>1</sup> | ✓s |
 | OpenClaw | ◐d | +d | ✓s | +s | ✓d | —t | ◐s<sup>17</sup> | ◐s |
 | Hermes | ◐s | +s | ✓v | +s | ✓s | —t | ✓s<sup>18</sup> | ✓t<sup>19</sup> |
@@ -116,7 +116,7 @@ Notes:
 13. the built-in general-purpose subagent works in its own context; not run
 14. refused until teamai writes the hooks.events shape (#1224)
 15. the task tool starts each child as a new agent session (omp 18.12.6); not run
-16. bare Pi starts no subagent; the subagent example extension adds one (since 0.24.0)
+16. bare Pi starts no subagent, so its session answers h4 and does not judge; the subagent example extension adds one (since 0.24.0); not run
 17. sessions_spawn with isolated context, in the coding and messaging tool profiles; a tool policy can remove it; not run
 18. delegate_task starts a child agent with a fresh conversation; not run
 19. #1224 maps the events to Hermes's; not rerun
