@@ -292,8 +292,8 @@ describe('skill driver preflight', () => {
 });
 
 describe('skill driver preflight of optional gates', () => {
-  /** A workflow named `gates`, invoke: allow, whose steps are `steps`. */
-  const gates = (steps: string) => `schemaVersion: v1alpha1\nname: gates\ndescription: Gate some steps\ninvoke: allow\nsteps:\n${steps}`;
+  /** A workflow named `gates`, invoke: allow, whose steps are `steps`, with the top-level fields `head` before them. */
+  const gates = (steps: string, head = '') => `schemaVersion: v1alpha1\nname: gates\ndescription: Gate some steps\ninvoke: allow\n${head}steps:\n${steps}`;
   const approvalsAnswer = '- The recommended start lets this session\'s agent answer optional approvals and say why; "answer optional approvals automatically" answers each approval yes.';
   const questionOf = async (workflows: Record<string, string>, name = 'gates') => {
     const made = await harness(workflows);
@@ -369,7 +369,7 @@ describe('skill driver preflight of optional gates', () => {
     needs: [wrap]
     approve: Close the run?
     end: shipped
-`).replace('steps:\n  - id: wrap', 'ends: { shipped: succeeded }\nsteps:\n  - id: wrap') })).toMatchObject({ data: { describe: { ask: { kind: 'ask', question: { text: [
+`, 'ends: { shipped: succeeded }\n') })).toMatchObject({ data: { describe: { ask: { kind: 'ask', question: { text: [
       '- Optional approval at wrap.close: before wrap ends wrapped.',
       '- Optional approval at done: before the run ends shipped.',
       approvalsAnswer,
@@ -440,7 +440,7 @@ describe('skill driver preflight of optional gates', () => {
         - id: tag
           needs: [check]
           command: echo tagged
-`).replace('invoke: allow', 'invoke: allow\ninputs: { items: [string] }') })).toMatchObject({ data: { describe: { ask: { kind: 'ask', question: { text: [
+`, 'inputs: { items: [string] }\n') })).toMatchObject({ data: { describe: { ask: { kind: 'ask', question: { text: [
       '- gates needs the input items (list of string).',
       '- Optional approval at each.check: before `echo "$ITEM"`.',
       approvalsAnswer,

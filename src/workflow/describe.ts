@@ -60,7 +60,7 @@ export interface WorkflowDescription {
     /** The most steps a run may have leased at once, at most `ceiling`. */
     width: number;
     /** The questions asked before a step runs, by path, with what the step does once answered. */
-    gates: Array<{ step: string; required: boolean; hasDefault: boolean; guards: GateGuards } & ({ kind: 'approve'; deliver?: true } | { kind: 'choose'; options: string[]; default?: string })>;
+    gates: Array<{ step: string; required: boolean; guards: GateGuards } & ({ kind: 'approve'; deliver?: true } | { kind: 'choose'; options: string[]; default?: string })>;
     /** Steps that run in a workspace copy rather than in the checkout, by path. */
     inWorkspace: string[];
     /** Steps whose succeeded passes a scorer judges, by path, with the scorers it lists. */
@@ -159,10 +159,10 @@ export function describeWorkflow(input: {
       const path = `${scope.prefix}${step.id}`;
       const child = childOf(step);
       if (step.hitl) {
-        const { kind, options, required, default: choice } = step.hitl;
+        const { kind, options, required, default: defaultOption } = step.hitl;
         facts.gates.push({
-          step: path, required, hasDefault: choice !== undefined, guards: guardsOf(step, steps, scope.prefix),
-          ...(kind === 'choose' ? { kind, options, ...(choice !== undefined ? { default: choice } : {}) } : { kind, ...(step.deliver === 'pr' ? { deliver: true as const } : {}) }),
+          step: path, required, guards: guardsOf(step, steps, scope.prefix),
+          ...(kind === 'choose' ? { kind, options, ...(defaultOption !== undefined ? { default: defaultOption } : {}) } : { kind, ...(step.deliver === 'pr' ? { deliver: true as const } : {}) }),
         });
       }
       if (!child && step.end === undefined && !runsInCheckout(step, scope.ancestors)) facts.inWorkspace.push(path);

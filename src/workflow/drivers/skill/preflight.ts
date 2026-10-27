@@ -61,7 +61,7 @@ export function attendedReason(description: WorkflowDescription, act: 'start' | 
   const interactive = facts.interactive.filter(left);
   const gates = facts.gates.filter((gate) => left(gate.step));
   const required = gates.filter((gate) => gate.required);
-  const open = gates.filter((gate) => !gate.required && gate.kind === 'choose' && !gate.hasDefault);
+  const open = gates.filter((gate) => !gate.required && gate.kind === 'choose' && gate.default === undefined);
   const needs = [
     ...(description.invoke === 'ask' ? [INVOKE_ASK_NEED] : []),
     ...(interactive.length > 0 ? [`${listOf(interactive)} ${interactive.length > 1 ? 'are' : 'is'} interactive, worked with a person`] : []),
@@ -125,6 +125,7 @@ function optionalGateFact(gate: GateFact): string {
   }
 }
 
+/** What a gated step does once answered, as the part of its line after the step. */
 function guardsFact(guards: GateGuards): string {
   switch (guards.kind) {
     case 'command':
@@ -146,11 +147,11 @@ function guardsFact(guards: GateGuards): string {
   }
 }
 
-/**
- * Who answers the `optional` gates: whom the start the person picks names (`picked`), or the engine, as an unattended
- * start has it (`auto-approve`).
- */
-function optionalAnswersFact(optional: readonly GateFact[], answering: 'picked' | 'auto-approve'): string {
+/** Who answers optional gates: whom the start the person picks names (`picked`), or the engine, as an unattended start has it (`auto-approve`). */
+type GateAnswering = 'picked' | 'auto-approve';
+
+/** How `answering` answers the `optional` gates. */
+function optionalAnswersFact(optional: readonly GateFact[], answering: GateAnswering): string {
   const noun = gatesNoun(optional, true);
   const choices = optional.filter((gate) => gate.kind === 'choose');
   const choiceAnswer = `each choice with its default${choices.some((gate) => gate.default === undefined) ? ', if it has one' : ''}`;
@@ -202,11 +203,8 @@ function heldFact(held: HeldFact): string {
   return `${held.step} ${reasons.join(', and ')}, ${after}.`;
 }
 
-/**
- * What the person needs to know before `description` runs, a sentence each, in the order a run meets it. `answering`:
- * whether the person picks how optional gates are answered, or the start auto-approves them.
- */
-function factsOf(description: WorkflowDescription, judging: Judging, answering: 'picked' | 'auto-approve'): string[] {
+/** What the person needs to know before `description` runs, a sentence each, in the order a run meets it. */
+function factsOf(description: WorkflowDescription, judging: Judging, answering: GateAnswering): string[] {
   const { name, inputs, facts } = description;
   const named = Object.entries(inputs).map(([input, type]) => `${input} (${typeOf(type)})`);
   const required = facts.gates.filter((gate) => gate.required);
