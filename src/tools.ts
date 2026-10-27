@@ -540,7 +540,7 @@ export const TOOLS = {
     },
     hooks: { user: { channel: 'settings', format: 'copilot', reads: [{ base: 'home', path: '.copilot/hooks/teamai.json', evidence: 'source' }] }, self: { channel: 'settings', format: 'copilot', reads: [{ base: 'project', path: '.github/hooks/teamai.json', when: 'workspaceUnder', evidence: 'source' }] } },
     sessions: 'none',
-    launch: 'none',
+    launch: 'copilot',
     features: {
       env: '?',
       workflows: '+s',

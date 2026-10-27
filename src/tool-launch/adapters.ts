@@ -195,6 +195,12 @@ function readMuseExec({ stdout }: CallOutput): CallReading {
   return { ok: true, text, ...(Object.keys(tokens).length > 0 ? { tokens } : {}) };
 }
 
+/** A tool that prints only its reply, as plain text. */
+function readPlainReply({ stdout }: CallOutput): CallReading {
+  const text = stdout.trim();
+  return text ? { ok: true, text } : { ok: false };
+}
+
 /** How teamai launches each family of tools headless. A tool picks its adapter with the `launch` facet in `TOOLS`. */
 export const LAUNCH_ADAPTERS = {
   claude: {
@@ -234,6 +240,10 @@ export const LAUNCH_ADAPTERS = {
     // Ask mode answers without editing.
     call: { evidence: 'docs', prompt: 'stdin', args: () => ['-p', '--output-format', 'json', '--mode', 'ask', '--trust'], read: readClaudeResult },
     judge: { evidence: 'docs', env: ['CURSOR_API_KEY', 'CURSOR_CONFIG_DIR', 'CURSOR_DATA_DIR'], access: 'full' },
+  },
+  // `-s` prints only the reply. Copilot 0.0.x has no JSON output to read tokens from.
+  copilot: {
+    call: { evidence: 'docs', prompt: 'argv', args: ({ prompt }) => ['-p', prompt, '-s'], read: readPlainReply },
   },
   pi: {
     call: { evidence: 'source', prompt: 'stdin', args: () => ['-p', '--mode', 'json', '--no-session'], read: readPiJson },
