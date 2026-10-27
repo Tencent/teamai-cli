@@ -220,9 +220,16 @@ function weekOf(iso: string): string {
 
 /** Every week the window touches, oldest first, each with its own labels. */
 function trend({ labels, from, to }: { labels: readonly ViewedLabel[]; from: string; to: string }): TrendWeek[] {
+  const byWeek = new Map<string, ViewedLabel[]>();
+  for (const entry of labels) {
+    const week = weekOf(entry.label.scoredAt);
+    const members = byWeek.get(week) ?? [];
+    members.push(entry);
+    byWeek.set(week, members);
+  }
   const weeks: TrendWeek[] = [];
   for (let week = weekOf(from); week <= to.slice(0, 10); week = new Date(Date.parse(`${week}T00:00:00Z`) + 7 * DAY_MS).toISOString().slice(0, 10)) {
-    weeks.push({ week, ...stats(labels.filter(({ label }) => weekOf(label.scoredAt) === week)) });
+    weeks.push({ week, ...stats(byWeek.get(week) ?? []) });
   }
   return weeks;
 }
