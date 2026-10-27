@@ -106,8 +106,11 @@ export type SnapshotError =
 
 type Parsed<T> = { ok: true; value: T } | { ok: false; error: SnapshotError };
 
+/** Where on `teamai-reports` the snapshots are, one directory per run. */
+export const SNAPSHOTS_DIR = 'workflows/runs';
+
 export function snapshotPath(runId: string): string {
-  return `workflows/runs/${runId}/state.json`;
+  return `${SNAPSHOTS_DIR}/${runId}/state.json`;
 }
 
 /** The text a snapshot is written as: two-space JSON, one field per line, ending in a newline. */

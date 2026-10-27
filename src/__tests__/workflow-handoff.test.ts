@@ -20,10 +20,11 @@ import { runLocalDriver } from '../workflow/drivers/local/local-driver.js';
 import { cancelRun, retryStep } from '../workflow/run-controls.js';
 import type { LocalToolAdapter } from '../workflow/drivers/local/local-tool-adapter.js';
 import type { StepPass, StepState } from '../workflow/step-state.js';
-import { readRun, runLockPath, updateRun } from '../workflow/store.js';
+import { installOwner, readRun, runLockPath, updateRun } from '../workflow/store.js';
+import { PublishedRuns, type Taker } from '../workflow/published-runs.js';
 import type { DriverIdentity, RunState, WorkflowDefinition, WorkflowEnvelope } from '../workflow/types.js';
 import { ensureWorktree, fetchMissingCommits, headCommit, markReadCopy, worktreePath } from '../workflow/worktree.js';
-import { knownSecrets } from '../env-resolution.js';
+import { knownSecrets, resolveWorkflowEnv } from '../env-resolution.js';
 import { fakeGh } from './helpers/fake-gh.js';
 
 const dirs: string[] = [];
@@ -2721,5 +2722,77 @@ describe('offering a run to a runner (#1390)', () => {
     expect(await claimOffered(runner.config, runId, { checkout: runner.checkout })).toMatchObject({ ok: false, error: { code: 'state_moved' } });
     expect(await readRun(runner.config, runId)).toBe('missing');
     expect(JSON.parse(originFile(acme.origin, `workflows/runs/${runId}/state.json`) ?? '{}')).toMatchObject({ owner: { user: 'bob' } });
+  });
+
+  const RELEASE = `schemaVersion: v1alpha1
+name: release
+description: Build, then ship once a person approves.
+steps:
+  - id: build
+    command: echo build
+  - id: ship
+    needs: [build]
+    approve: { message: Ship it?, required: true }
+    command: echo ship
+`;
+
+  /** A process that runs teamai in a CI job, with no agent session: unattended unless `mode` says otherwise. */
+  function runnerTaker(mode: 'attended' | 'unattended' = 'unattended') {
+    return { caller: { evidence: { kind: 'none' as const }, confirmed: false, mode }, driver: 'local' as const };
+  }
+
+  /** What `member` reads of teamai-reports after a pull. */
+  async function publishedRuns(member: Member, taker: Taker = runnerTaker()) {
+    await reportsBranch.readableReportsWorktree(member.config);
+    return PublishedRuns.list(member.config, { taker, env: await resolveWorkflowEnv(member.config, {}) });
+  }
+
+  it('lists an offered run whose step left has a required approval as needing a person, which an unattended runner does not take', async () => {
+    const acme = team({ release: RELEASE });
+    const alice = await acme.member('alice');
+    const runner = await acme.member('runner');
+    originAt('https://github.com/acme/app.git', [alice, runner]);
+    const started = await startRun(alice.config, 'release', {}, { secrets: {} });
+    const runId = 'data' in started ? String(started.data.run) : '';
+    expect(await runStep(alice, runId)).toBe('build');
+    await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout });
+
+    const runs = await publishedRuns(runner);
+    expect(runs).toEqual([expect.objectContaining({
+      run: runId, workflow: 'release', owner: expect.objectContaining({ user: 'alice' }), repository: 'github.com/acme/app',
+      offer: { at: expect.any(String), needs: ['only a person can answer the approval at ship'] },
+    })]);
+    const self = (await installOwner(runner.config)).id;
+    expect(PublishedRuns.candidates(runs, { repository: 'github.com/acme/app', mode: 'unattended', self })).toEqual([]);
+    expect(PublishedRuns.candidates(runs, { repository: 'github.com/acme/app', mode: 'attended', self }).map((run) => run.run)).toEqual([runId]);
+    expect(PublishedRuns.candidates(runs, { repository: 'github.com/acme/other', mode: 'attended', self })).toEqual([]);
+  });
+
+  it('lets a runner with no agent session take an offered run of an invoke: deny workflow, and refuses it to the skill driver', async () => {
+    const acme = team();
+    const alice = await acme.member('alice');
+    const runner = await acme.member('runner');
+    originAt('https://github.com/acme/app.git', [alice, runner]);
+    const runId = await start(alice);
+    await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout });
+
+    expect(await publishedRuns(runner)).toMatchObject([{ run: runId, offer: { needs: [] } }]);
+    expect((await publishedRuns(runner))[0]?.offer).not.toHaveProperty('refusal');
+    const skill = { caller: { evidence: { kind: 'skill-driver' as const }, confirmed: false, mode: 'unattended' as const }, driver: 'skill' as const };
+    expect(await publishedRuns(runner, skill)).toMatchObject([{ run: runId, offer: { refusal: { code: 'invoke_denied' } } }]);
+  });
+
+  it('lists a claimed run as held by the install that claimed it, after the offered ones', async () => {
+    const acme = team();
+    const alice = await acme.member('alice');
+    const bob = await acme.member('bob');
+    const held = await start(alice);
+    await publishRun(alice.config, held, { env: {}, checkout: alice.checkout });
+    await claimRun(bob.config, held, { checkout: bob.checkout });
+    const offered = await start(alice);
+    await publishRun(alice.config, offered, { env: {}, checkout: alice.checkout });
+
+    const runs = await publishedRuns(alice);
+    expect(runs.map((run) => [run.run, run.owner.user, run.offer !== undefined])).toEqual([[offered, 'alice', true], [held, 'bob', false]]);
   });
 });
