@@ -16,9 +16,11 @@ vi.mock('../config.js', async (importOriginal) => ({
 
 import type { RunMode } from '../launch-context.js';
 import { saveLocalConfig } from '../config.js';
+import { dataHomeKey } from '../dashboard-collector.js';
 import { syncScorerDefinitions } from '../scorers/cache.js';
 import { LabelStore } from '../scorers/label-store.js';
 import { scoreCommand } from '../score-commands.js';
+import YAML from 'yaml';
 import { encodeCwdClaude } from '../session-flow/fs.js';
 import type { LocalConfig } from '../types.js';
 import { AGENT_SESSION_ENV } from '../utils/session-id.js';
@@ -61,6 +63,8 @@ beforeEach(() => {
   for (const name of AGENT_SESSION_ENV) vi.stubEnv(name, '');
   vi.stubEnv('HOME', mocks.home);
   vi.stubEnv('USERPROFILE', mocks.home);
+  // No judge tool of this machine: a test that judges puts its fake one first.
+  vi.stubEnv('PATH', ['/usr/bin', '/bin'].join(path.delimiter));
 });
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -355,5 +359,24 @@ describe('teamai score --drain', () => {
     const again = await drain();
 
     expect(again.lines.filter((printed) => printed.includes('Archived'))).toEqual([]);
+  });
+
+  it('reports the usage of an unattended session to stats/<member>.yaml under unattended, on a data home that never ran pull', async () => {
+    const { origin } = await team();
+    capturedSession(SESSION, 'unattended');
+    const key = await dataHomeKey(path.join(mocks.home, '.teamai'));
+    const at = (minute: number) => new Date(Date.now() - (60 - minute) * 60 * 1000).toISOString();
+    const events = [['session_start', at(0)], ['prompt_submit', at(1)], ['stop', at(2)]].map(([type, timestamp]) => line({
+      type, timestamp, sessionId: SESSION, tool: 'claude', cwd: path.join(root, 'app'), dataHomeKey: key, runMode: 'unattended', ...(type === 'prompt_submit' ? { promptSummary: 'Add retries' } : {}),
+    }));
+    fs.mkdirSync(path.join(mocks.home, '.teamai', 'dashboard'), { recursive: true });
+    fs.writeFileSync(path.join(mocks.home, '.teamai', 'dashboard', 'events.jsonl'), events.join(''));
+    vi.stubEnv('CI', 'true');
+
+    const drained = await drain();
+
+    expect(drained.code, drained.lines.join('\n')).toBe(0);
+    expect(drained.lines).toContain('✔ Reported usage to stats/tester.yaml');
+    expect(YAML.parse(readOnReports(origin, 'stats/tester.yaml'))).toMatchObject({ unattended: { interventions: { sessions: 1 }, prompts: 1 } });
   });
 });

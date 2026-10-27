@@ -13,7 +13,8 @@ import { SessionPublish, type StepSessionsPublished } from './session-flow/sessi
 import { SessionWork } from './session-flow/session-work.js';
 import type { RunSubject, SessionSubject } from './scorers/label.js';
 import { LabelStore } from './scorers/label-store.js';
-import type { LocalConfig } from './types.js';
+import { reportUsageToTeam } from './team-push.js';
+import { isUsageReportEnabled, usesBranchWorktree, type LocalConfig } from './types.js';
 import { log } from './utils/logger.js';
 import { judgeLease, submitJudgeLease, takeJudgeLease, type SkippedEntry, type TakenLease } from './workflow/scoring.js';
 
@@ -49,6 +50,8 @@ export interface DrainResult {
   /** The step sessions of each run ended here, archived on teamai-reports or skipped. */
   steps: StepSessionsPublished[];
   unpublished: Unpublished[];
+  /** The usage of each scope that reports it, by the member whose `stats/<member>.yaml` it goes to. */
+  usage: Array<{ member: string; reported: boolean }>;
 }
 
 /** In unattended mode, every session captured unattended in this data home is finished from now on. */
@@ -114,8 +117,9 @@ async function publishLabels(config: LocalConfig): Promise<Pick<DrainResult, 'la
 
 /** Drains each scope of `configs`, in order, in run mode `mode`. */
 async function run(configs: readonly LocalConfig[], { mode, clock = () => new Date().toISOString() }: { mode: RunMode; clock?: () => string }): Promise<DrainResult> {
-  const result: DrainResult = { judged: [], failed: [], leftOpen: [], labelsPublished: 0, capturedArchived: 0, steps: [], unpublished: [] };
+  const result: DrainResult = { judged: [], failed: [], leftOpen: [], labelsPublished: 0, capturedArchived: 0, steps: [], unpublished: [], usage: [] };
   for (const config of configs) {
+    const team = await loadTeamConfig(config.repo.localPath);
     if (mode === 'unattended') await finishUnattended(config, clock());
     const { judged, failed, leftOpen } = await judge(config, clock);
     result.judged.push(...judged);
@@ -124,13 +128,18 @@ async function run(configs: readonly LocalConfig[], { mode, clock = () => new Da
     const labels = await publishLabels(config);
     result.labelsPublished += labels.labelsPublished;
     result.unpublished.push(...labels.unpublished);
-    if (SessionPolicy.publish(config, await loadTeamConfig(config.repo.localPath)).policies[mode].policy !== 'auto') continue;
-    const captured = await SessionPublish.captured(config, mode, clock());
-    result.capturedArchived += captured.archived;
-    result.unpublished.push(...captured.unpublished.map(({ sessions, reason }) => ({ labels: 0, sessions, reason })));
-    const steps = await SessionPublish.steps(config, mode, clock());
-    result.steps.push(...steps);
-    result.unpublished.push(...steps.flatMap(({ unpublished }) => (unpublished ? [{ labels: 0, ...unpublished }] : [])));
+    if (SessionPolicy.publish(config, team).policies[mode].policy === 'auto') {
+      const captured = await SessionPublish.captured(config, mode, clock());
+      result.capturedArchived += captured.archived;
+      result.unpublished.push(...captured.unpublished.map(({ sessions, reason }) => ({ labels: 0, sessions, reason })));
+      const steps = await SessionPublish.steps(config, mode, clock());
+      result.steps.push(...steps);
+      result.unpublished.push(...steps.flatMap(({ unpublished }) => (unpublished ? [{ labels: 0, ...unpublished }] : [])));
+    }
+    // As pull reports it, so the counts of this data home leave an ephemeral runner.
+    if (usesBranchWorktree(config) && isUsageReportEnabled(config, team ?? {})) {
+      result.usage.push({ member: config.username, reported: await reportUsageToTeam(config.repo.localPath, config.username, { selfConfig: config }) });
+    }
   }
   return result;
 }
@@ -165,7 +174,7 @@ function unpublishedText(unpublished: readonly Unpublished[]): string {
 
 /** Whether a judgment or a publish the drain tried here failed, so its command exits 1. */
 function hasFailed(result: DrainResult): boolean {
-  return result.failed.length > 0 || result.unpublished.length > 0;
+  return result.failed.length > 0 || result.unpublished.length > 0 || result.usage.some((usage) => !usage.reported);
 }
 
 /** Prints what `result` did, one line per kind of work. */
@@ -185,6 +194,10 @@ function print(result: DrainResult): void {
     }
   }
   if (result.unpublished.length > 0) log.error(unpublishedText(result.unpublished));
+  for (const { member, reported } of result.usage) {
+    if (reported) log.success(`Reported usage to stats/${member}.yaml`);
+    else log.error(`Could not report usage to stats/${member}.yaml on teamai-reports. It stays on this machine; run teamai score --drain again.`);
+  }
   const { leftOpen } = result;
   if (leftOpen.length > 0) {
     const ofSessions = leftOpen.filter((entry) => 'sessionId' in entry.subject).length;
