@@ -1787,26 +1787,35 @@ export async function appendEvent(event: DashboardEvent | SessionOutcomeEvent): 
  * same way (#788).
  */
 async function readEventsRaw(filePath: string): Promise<DashboardEvent[]> {
-  try {
-    const content = await fs.promises.readFile(filePath, 'utf-8');
-    const events: DashboardEvent[] = [];
-    for (const line of content.split('\n')) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      try {
-        const parsed = JSON.parse(trimmed) as DashboardEvent;
-        if (parsed.type && parsed.sessionId && parsed.timestamp) {
-          events.push(parsed);
-        }
-      } catch {
-        // Skip corrupted lines
-      }
-    }
-    return events;
-  } catch {
-    return [];
-  }
+  return (await readLogRaw(filePath)).events;
 }
+
+/**
+ * The log's lines: its events, as {@link readEventsRaw} returns them, apart from its session outcome lines (#1387),
+ * which only {@link readSessionOutcomes} reads, kept verbatim with their timestamp. They are not a session's activity,
+ * so no reader that rebuilds sessions, times or counts from events may see them.
+ */
+async function readLogRaw(filePath: string): Promise<{ events: DashboardEvent[]; outcomes: Array<{ timestamp: string; line: string }> }> {
+  const events: DashboardEvent[] = [];
+  const outcomes: Array<{ timestamp: string; line: string }> = [];
+  const content = await fs.promises.readFile(filePath, 'utf-8').catch(() => '');
+  for (const line of content.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      const parsed = JSON.parse(trimmed) as DashboardEvent | SessionOutcomeEvent;
+      if (!parsed.type || !parsed.sessionId || !parsed.timestamp) continue;
+      if (parsed.type === 'session_outcome') outcomes.push({ timestamp: parsed.timestamp, line: trimmed });
+      else events.push(parsed);
+    } catch {
+      // Skip corrupted lines
+    }
+  }
+  return { events, outcomes };
+}
+
+/** How long compaction keeps a session outcome line: past the 6 hours a session takes to finish, and the dashboard's month. */
+const SESSION_OUTCOME_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
 /** The session outcome events of the log at `eventsPath` (the default log when absent), in file order. */
 export async function readSessionOutcomes(eventsPath?: string): Promise<SessionOutcomeEvent[]> {
@@ -2370,7 +2379,7 @@ export async function compactEvents(eventsPath?: string): Promise<void> {
       // Compaction rewrites the file, so it must preserve raw (append-order,
       // un-deduped) events — dedup is a read-time view, not a disk mutation.
       // Dedup never changes the active-session set, so activeIds is identical.
-      const events = await readEventsRaw(target);
+      const { events, outcomes } = await readLogRaw(target);
       // Classify sessions in time order, not raw file order: a side file that
       // outlived newer appends can sit after them in the file even though it
       // folds in time order, and every reader rebuilds sessions from
@@ -2405,9 +2414,10 @@ export async function compactEvents(eventsPath?: string): Promise<void> {
         else if (now - Date.parse(first.timestamp) <= LAUNCHED_RESUMABLE_MS) marks.add(first);
       }
 
-      // Keep only events for active sessions
+      // Keep only events for active sessions, and outcomes until the report and the dashboard are done with them.
       const kept = events.filter(e => activeIds.has(e.sessionId) || marks.has(e));
-      const compacted = kept.map(e => JSON.stringify(e)).join('\n') + '\n';
+      const keptOutcomes = outcomes.filter((outcome) => now - Date.parse(outcome.timestamp) <= SESSION_OUTCOME_RETENTION_MS);
+      const compacted = [...kept.map(e => JSON.stringify(e)), ...keptOutcomes.map((outcome) => outcome.line)].join('\n') + '\n';
 
       // Atomic write: write to temp with the file's mode, then rename. The
       // lock makes the temp name ours; a killed compaction's copy is an
@@ -2578,6 +2588,18 @@ export async function addGitStateAtStart(event: DashboardEvent, known?: HeadStat
   if (state) event.gitAtStart = state;
 }
 
+/**
+ * Add to a `stop` event the commit its `cwd` has checked out, so the commits a session made are the range from its
+ * start's `gitAtStart` to its last Stop's `gitHead`, known without reading git when it is folded (#1387). Other events,
+ * events with no cwd, and a cwd with no commit or whose git fails or times out are left as they are.
+ */
+export async function addGitHeadAtStop(event: DashboardEvent): Promise<void> {
+  if (event.type !== 'stop' || !event.cwd) return;
+  const { getHeadCommit } = await import('./utils/git.js');
+  const head = await getHeadCommit(event.cwd, 'HEAD', AbortSignal.timeout(GIT_STATE_TIMEOUT_MS));
+  if (head) event.gitHead = head;
+}
+
 // ─── CLI entry point ────────────────────────────────────
 
 /**
@@ -2620,6 +2642,7 @@ export async function dashboardReport(toolArg?: string): Promise<void> {
   const [projectAnchor] = await Promise.all([
     eventProjectAnchor(event.cwd, event.sessionId),
     addGitStateAtStart(event, gitStateIn(hookData)),
+    addGitHeadAtStop(event),
   ]);
   event.projectAnchor = projectAnchor;
   const { sessionRun } = await import('./launch-context.js');

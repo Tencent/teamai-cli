@@ -1489,10 +1489,10 @@ export async function getFileContentWhenAdded(repoPath: string, filePath: string
   }
 }
 
-/** Full commit id of `rev` (HEAD by default), or null when it names none. */
-export async function getHeadCommit(localPath: string, rev = 'HEAD'): Promise<string | null> {
+/** Full commit id of `rev` (HEAD by default), or null when it names none, or git fails or is aborted. */
+export async function getHeadCommit(localPath: string, rev = 'HEAD', abort?: AbortSignal): Promise<string | null> {
   try {
-    return (await createGit(localPath).raw(['rev-parse', '--verify', `${rev}^{commit}`])).trim() || null;
+    return (await createGit(localPath, abort).raw(['rev-parse', '--verify', `${rev}^{commit}`])).trim() || null;
   } catch {
     return null;
   }

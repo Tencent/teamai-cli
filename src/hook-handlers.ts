@@ -453,7 +453,7 @@ const dashboardReportHandler: HookHandler = {
   async execute(stdin, tool, config) {
     // Registered with requiresConfig: a session outside any scope is not recorded.
     if (!config) return null;
-    const { parseHookEvent, appendEvent, compactEvents, dataHomeKey, eventProjectAnchor, addGitStateAtStart, gitStateIn } = await import('./dashboard-collector.js');
+    const { parseHookEvent, appendEvent, compactEvents, dataHomeKey, eventProjectAnchor, addGitStateAtStart, addGitHeadAtStop, gitStateIn } = await import('./dashboard-collector.js');
     const { getDataHome } = await import('./types.js');
     const raw = JSON.stringify(stdin);
     const event = await parseHookEvent(raw, tool, {
@@ -467,6 +467,7 @@ const dashboardReportHandler: HookHandler = {
       const [projectAnchor] = await Promise.all([
         eventProjectAnchor(event.cwd, event.sessionId),
         addGitStateAtStart(event, gitStateIn(stdin)),
+        addGitHeadAtStop(event),
       ]);
       event.projectAnchor = projectAnchor;
       // The foreground dispatcher's, so a background pass records what the session's own environment said.

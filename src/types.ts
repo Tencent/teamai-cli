@@ -2023,6 +2023,11 @@ export interface DashboardEvent {
    * existed.
    */
   gitAtStart?: HeadState;
+  /**
+   * On `stop` only: the commit checked out at `cwd` when the Stop fired. A session's commits are those its member
+   * authored from its start's `gitAtStart.head` to its last Stop's `gitHead` (#1387). Absent where `gitAtStart` would be.
+   */
+  gitHead?: string;
   /** Last event timestamp the PID monitor observed, so a delayed exit targets that run. */
   processExitAfter?: string;
   /** Byte boundary captured at Copilot SessionStart; private log path is never stored. */
