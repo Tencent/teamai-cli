@@ -49,6 +49,7 @@ vi.mock('../dashboard-collector.js', () => ({
   dataHomeKey: vi.fn().mockResolvedValue('key'),
   eventProjectAnchor: vi.fn().mockResolvedValue(undefined),
   addGitStateAtStart: vi.fn().mockResolvedValue(undefined),
+  addGitHeadAtStop: vi.fn().mockResolvedValue(undefined),
   gitStateIn: vi.fn().mockReturnValue(undefined),
   // The payload's cwd: what hookScopeDir answers for a cwd that exists (#810).
   hookScopeDir: async (stdin: Record<string, unknown>) =>

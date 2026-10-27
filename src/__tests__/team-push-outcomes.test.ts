@@ -184,7 +184,7 @@ describe('the usage report counts what finished sessions delivered (#1387)', () 
       (cwd === work && ref.branch === 'fix-retry' && ref.target === 'main' ? { kind: 'found', pr: url } : { kind: 'none' });
     prMocks.findDelivered.mockImplementationOnce(lookup).mockImplementationOnce(lookup);
     const withHeads = ([begin, stop]: object[], head: string, gitHead: string): object[] =>
-      [{ ...begin, gitAtStart: { head, dirty: false } }, { ...stop, gitHead }];
+      [{ ...begin, gitAtStart: { head, dirty: false } }, { ...stop, gitHead, gitBranch: 'fix-retry' }];
     writeEvents([
       ...withHeads(session('first', 8, { cwd: work }), start, first),
       ...withHeads(session('second', 7, { cwd: work }), first, second),
@@ -202,6 +202,29 @@ describe('the usage report counts what finished sessions delivered (#1387)', () 
       first: [{ kind: 'commit', sha: first }, { kind: 'pr', url }],
       second: [{ kind: 'commit', sha: second }, { kind: 'pr', url }],
     });
+  });
+
+  it('looks up the pull request of the branch the session last stopped on, after the checkout moved on', async () => {
+    const work = checkout();
+    const origin = path.join(tmpDir, 'origin.git');
+    gitIn(tmpDir, ['init', '-q', '--bare', origin]);
+    const start = commitIn(work, 'base', ME);
+    gitIn(work, ['remote', 'add', 'origin', origin]);
+    gitIn(work, ['push', '-q', 'origin', 'main']);
+    gitIn(work, ['remote', 'set-head', 'origin', 'main']);
+    gitIn(work, ['checkout', '-q', '-b', 'fix-retry']);
+    const mine = commitIn(work, 'the session', ME);
+    gitIn(work, ['push', '-q', 'origin', 'fix-retry']);
+    gitIn(work, ['checkout', '-q', 'main']);
+    const url = 'https://github.com/acme/app/pull/42';
+    prMocks.findDelivered.mockImplementation(async (cwd: string, ref: { branch: string; target: string }) =>
+      (cwd === work && ref.branch === 'fix-retry' && ref.target === 'main' ? { kind: 'found', pr: url } : { kind: 'none' }));
+    const [begin, stop] = session('moved-on', 7, { cwd: work });
+    writeEvents([{ ...begin, gitAtStart: { head: start, dirty: false } }, { ...stop, gitHead: mine, gitBranch: 'fix-retry' }]);
+
+    await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
+
+    expect((await readSessionOutcomes()).map((event) => event.outcomes)).toEqual([[{ kind: 'commit', sha: mine }, { kind: 'pr', url }]]);
   });
 
   it('counts a session known only by the learning recorded for it, when it was recorded under this data home', async () => {

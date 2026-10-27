@@ -120,7 +120,7 @@ outcomes:
 | 产出 | 会话产出了什么 |
 |---|---|
 | `commit` | 在会话所在检出中、从会话开始到最后一次 Stop 之间，以你的 git 身份提交的 commit |
-| `pr` | 检出当前分支上包含其中某个 commit 的已打开拉取请求。只查询一次，使用 `deliver: pr` 所用的凭据；查询失败则不计入 |
+| `pr` | 会话最后一次 Stop 时所在分支上包含其中某个 commit 的已打开拉取请求。只查询一次，使用 `deliver: pr` 所用的凭据；查询失败则不计入 |
 | `learning` | `teamai contribute` 为该会话记录的经验（`--session-id`，否则为智能体当前会话） |
 | `none` | 以上都没有 |
 

@@ -2912,6 +2912,16 @@ describe('dashboard-report records the git state a session started on', () => {
     expect(stop.gitHead).toBe(head);
   });
 
+  it('records on a Stop the branch the checkout is on, for the pull request lookup once the session is finished (#1387)', async () => {
+    const { repo } = committedRepo();
+    git(repo, 'checkout', '-q', '-b', 'fix-retry');
+
+    await runHook({ hook_event_name: 'Stop', session_id: 'git-branch', cwd: repo });
+
+    const [stop] = await readEvents();
+    expect(stop.gitBranch).toBe('fix-retry');
+  });
+
   it('records the commit and a clean tree', async () => {
     const { repo, head } = committedRepo();
 

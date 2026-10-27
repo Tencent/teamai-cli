@@ -2045,6 +2045,8 @@ export interface DashboardEvent {
    * authored from its start's `gitAtStart.head` to its last Stop's `gitHead` (#1387). Absent where `gitAtStart` would be.
    */
   gitHead?: string;
+  /** On `stop` only, beside `gitHead`: the branch checked out then, whose pull request the session delivered to. Absent on a detached HEAD. */
+  gitBranch?: string;
   /** Last event timestamp the PID monitor observed, so a delayed exit targets that run. */
   processExitAfter?: string;
   /** Byte boundary captured at Copilot SessionStart; private log path is never stored. */

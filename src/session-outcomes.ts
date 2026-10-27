@@ -34,6 +34,8 @@ const FactsSchema = z.object({
   startedAt: z.string().optional(),
   startHead: z.string().optional(),
   endHead: z.string().optional(),
+  /** The branch checked out at its last Stop that recorded one: the one whose pull request it delivered to. */
+  endBranch: z.string().optional(),
 });
 type Facts = z.infer<typeof FactsSchema>;
 
@@ -95,6 +97,7 @@ function factsOf(member: DashboardEvent[], outcomes: SessionOutcomeEvent[]): Map
       ...(event.cwd ? { cwd: event.cwd } : {}),
       ...(event.gitAtStart && known.startHead === undefined ? { startedAt: event.timestamp, startHead: event.gitAtStart.head } : {}),
       ...(event.gitHead ? { endHead: event.gitHead } : {}),
+      ...(event.gitHead && event.gitBranch ? { endBranch: event.gitBranch } : {}),
     });
   }
   // A session with no event of its own (a tool teamai records no hooks for) is known by its outcomes.
@@ -158,14 +161,13 @@ function prCachePath(config: LocalConfig): string {
 }
 
 /**
- * The open pull request of the checkout's branch, when origin's copy of that branch holds one of `commits`, looked up
- * as `deliver: pr` looks one up. Undefined, so not cached, when the host was not asked (no branch of origin holds a
- * commit yet) or gave no answer (the lookup failed, or teamai has no credentials for it).
+ * The open pull request of `branch`, the one the session last stopped on, when origin's copy of it holds one of
+ * `commits`, looked up as `deliver: pr` looks one up. Undefined, so not cached, when the host was not asked (origin's
+ * branch holds no commit yet) or gave no answer (the lookup failed, or teamai has no credentials for it).
  */
-async function lookUpPr(cwd: string, commits: string[]): Promise<PrLookup | undefined> {
-  const branch = (await git(cwd, ['symbolic-ref', '--quiet', '--short', 'HEAD'], { timeoutMs: GIT_TIMEOUT_MS })).stdout.trim();
+async function lookUpPr({ cwd, branch, commits }: { cwd: string; branch: string; commits: string[] }): Promise<PrLookup | undefined> {
   const target = (await git(cwd, ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'], { timeoutMs: GIT_TIMEOUT_MS })).stdout.trim().replace(/^origin\//, '');
-  if (!branch || !target || branch === target) return undefined;
+  if (!target || branch === target) return undefined;
   const pushed = await Promise.all(commits.map(async (sha) =>
     (await git(cwd, ['merge-base', '--is-ancestor', sha, `refs/remotes/origin/${branch}`], { timeoutMs: GIT_TIMEOUT_MS })).code === 0));
   if (!pushed.includes(true)) return undefined;
@@ -210,8 +212,8 @@ async function fold(input: FoldInput): Promise<OutcomeFold> {
   // Each lookup may wait on a host, so they run together; one that fails leaves its pull request out.
   const finished = await Promise.all(due.map(async ({ sessionId, facts }): Promise<FinishedSession> => {
     const commits = await sessionCommits(facts);
-    if (commits.length > 0 && facts.cwd && !prs[sessionId]) {
-      const looked = await lookUpPr(facts.cwd, commits).catch((e: unknown) => {
+    if (commits.length > 0 && facts.cwd && facts.endBranch && !prs[sessionId]) {
+      const looked = await lookUpPr({ cwd: facts.cwd, branch: facts.endBranch, commits }).catch((e: unknown) => {
         log.debug(`outcomes: pull request lookup for session ${sessionId} failed: ${e instanceof Error ? e.message : String(e)}`);
         return undefined;
       });

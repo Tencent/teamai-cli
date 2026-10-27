@@ -1498,6 +1498,15 @@ export async function getHeadCommit(localPath: string, rev = 'HEAD', abort?: Abo
   }
 }
 
+/** The branch checked out, or null on a detached HEAD, or when git fails or is aborted. */
+export async function getCurrentBranch(localPath: string, abort?: AbortSignal): Promise<string | null> {
+  try {
+    return (await createGit(localPath, abort).raw(['symbolic-ref', '--quiet', '--short', 'HEAD'])).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
 /** The full sha of the commit checked out, and whether tracked files differ from it. */
 export type HeadState = { head: string; dirty: boolean };
 

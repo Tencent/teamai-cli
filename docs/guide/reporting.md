@@ -121,7 +121,7 @@ outcomes:
 | Outcome | What the session delivered |
 |---|---|
 | `commit` | Commits made with your git identity in the session's checkout, between its start and its last Stop |
-| `pr` | The open pull request of the checkout's branch, when it holds one of those commits. Looked up once, with the credentials `deliver: pr` uses; a lookup that fails leaves it out |
+| `pr` | The open pull request of the branch the session last stopped on, when it holds one of those commits. Looked up once, with the credentials `deliver: pr` uses; a lookup that fails leaves it out |
 | `learning` | A learning `teamai contribute` recorded for the session (`--session-id`, else the agent's session) |
 | `none` | Nothing of the above |
 

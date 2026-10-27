@@ -2592,15 +2592,19 @@ export async function addGitStateAtStart(event: DashboardEvent, known?: HeadStat
 }
 
 /**
- * Add to a `stop` event the commit its `cwd` has checked out, so the commits a session made are the range from its
- * start's `gitAtStart` to its last Stop's `gitHead`, known without reading git when it is folded (#1387). Other events,
- * events with no cwd, and a cwd with no commit or whose git fails or times out are left as they are.
+ * Add to a `stop` event the commit its `cwd` has checked out, and the branch, so the commits a session made are the
+ * range from its start's `gitAtStart` to its last Stop's `gitHead`, and its pull request that of its last Stop's branch,
+ * known without reading the checkout as it is when the session is folded (#1387). Other events, events with no cwd, and
+ * a cwd with no commit or whose git fails or times out are left as they are; a detached HEAD records no branch.
  */
 export async function addGitHeadAtStop(event: DashboardEvent): Promise<void> {
   if (event.type !== 'stop' || !event.cwd) return;
-  const { getHeadCommit } = await import('./utils/git.js');
-  const head = await getHeadCommit(event.cwd, 'HEAD', AbortSignal.timeout(GIT_STATE_TIMEOUT_MS));
-  if (head) event.gitHead = head;
+  const { getCurrentBranch, getHeadCommit } = await import('./utils/git.js');
+  const abort = AbortSignal.timeout(GIT_STATE_TIMEOUT_MS);
+  const [head, branch] = await Promise.all([getHeadCommit(event.cwd, 'HEAD', abort), getCurrentBranch(event.cwd, abort)]);
+  if (!head) return;
+  event.gitHead = head;
+  if (branch) event.gitBranch = branch;
 }
 
 // ─── CLI entry point ────────────────────────────────────
