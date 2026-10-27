@@ -3364,7 +3364,7 @@ export async function pull(
   if (!options.dryRun && !options.inline && !pendingUsageReport) {
     pendingUsageReport = (async () => {
       try {
-        const { reportUsageToTeam } = await import('./team-push.js');
+        const { reportUsage } = await import('./team-push.js');
         const { truncateUsageAfterReport, readUsageEvents, capUsageEvents } = await import('./usage-tracker.js');
         const targets: Array<{ repoPath: string; username: string; opts: { skipTruncate: true; selfConfig: LocalConfig } }> = [];
         // Per-target opt-out (teamai.yaml `usageReport: false`, or the member's
@@ -3419,7 +3419,7 @@ export async function pull(
           const eventCount = (await readUsageEvents(t.opts.selfConfig)).length;
           let reported = false;
           try {
-            reported = await reportUsageToTeam(t.repoPath, t.username, t.opts);
+            reported = await reportUsage(t.repoPath, t.username, t.opts) !== 'unreported';
             if (reported && eventCount > 0) await truncateUsageAfterReport(eventCount, t.opts.selfConfig);
           } catch (e) {
             log.error(`Auto-report to ${t.repoPath} skipped: ${(e as Error).message}`);

@@ -89,7 +89,7 @@ export async function acquireImportLock(teamRepoPath: string): Promise<() => Pro
 /**
  * Check whether an import is currently in progress for the given team repo.
  *
- * Intended to be called by reportUsageToTeam before executing git reset --hard.
+ * Intended to be called by reportUsage before executing git reset --hard.
  * Returns true when a live import lock is detected, in which case the caller
  * should skip the reset and pull to avoid overwriting uncommitted import artifacts.
  *

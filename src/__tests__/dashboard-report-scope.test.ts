@@ -61,7 +61,7 @@ vi.mock('../utils/reports-branch.js', () => ({
 
 const { hookDispatchCli } = await import('../hook-dispatch-cli.js');
 const { resolveProjectDataHome, saveLocalConfigForScope, resolveConfigForDir, loadLocalConfig } = await import('../config.js');
-const { reportUsageToTeam } = await import('../team-push.js');
+const { reportUsage } = await import('../team-push.js');
 const { reconcileHooks } = await import('../hooks.js');
 const { getDataHome } = await import('../types.js');
 const { dataHomeKey } = await import('../dashboard-collector.js');
@@ -144,7 +144,7 @@ async function setup(): Promise<{ root: string; user: LocalConfig; project: Loca
 
 /** Report the way pull does, and return the stats that scope has pushed so far. */
 async function report(config: LocalConfig): Promise<unknown> {
-  await reportUsageToTeam(config.repo.localPath, config.username, { skipTruncate: true, selfConfig: config });
+  await reportUsage(config.repo.localPath, config.username, { skipTruncate: true, selfConfig: config });
   const statsPath = path.join(path.dirname(config.repo.localPath), 'reports-wt', 'stats', `${config.username}.yaml`);
   return fs.existsSync(statsPath) ? YAML.parse(fs.readFileSync(statsPath, 'utf-8')) : null;
 }

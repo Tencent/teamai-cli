@@ -27,7 +27,7 @@ vi.mock('../utils/logger.js', () => ({
   })),
   setStderrOnly: vi.fn(() => false),
 }));
-vi.mock('../team-push.js', () => ({ reportUsageToTeam: vi.fn().mockResolvedValue(true) }));
+vi.mock('../team-push.js', () => ({ reportUsage: vi.fn().mockResolvedValue('reported') }));
 vi.mock('../source.js', () => ({ pullSources: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('../hooks.js', () => ({
   injectHooksToAllTools: vi.fn().mockResolvedValue(undefined),
@@ -46,7 +46,7 @@ vi.mock('../update.js', () => ({
 const { pull } = await import('../pull.js');
 const { resolveProjectDataHome, saveLocalConfigForScope } = await import('../config.js');
 const { pullRepo } = await import('../utils/git.js');
-const { reportUsageToTeam } = await import('../team-push.js');
+const { reportUsage } = await import('../team-push.js');
 const { log } = await import('../utils/logger.js');
 
 let tmp: string;
@@ -118,7 +118,7 @@ describe('pull in a project whose config cannot be read (#784)', () => {
     await pull({});
 
     expect(pulledRepos()).toEqual([]);
-    expect(reportUsageToTeam).not.toHaveBeenCalled();
+    expect(reportUsage).not.toHaveBeenCalled();
     expect(process.exitCode).toBe(1);
     const errors = vi.mocked(log.error).mock.calls.map(([msg]) => msg);
     expect(errors).toHaveLength(1);
@@ -138,7 +138,7 @@ describe('pull in a project whose config cannot be read (#784)', () => {
     await pull({});
 
     expect(pulledRepos()).toEqual([]);
-    expect(reportUsageToTeam).not.toHaveBeenCalled();
+    expect(reportUsage).not.toHaveBeenCalled();
     expect(process.exitCode).toBe(1);
   });
 
@@ -151,7 +151,7 @@ describe('pull in a project whose config cannot be read (#784)', () => {
     await pull({ silent: true });
 
     expect(pulledRepos()).toEqual([]);
-    expect(reportUsageToTeam).not.toHaveBeenCalled();
+    expect(reportUsage).not.toHaveBeenCalled();
     expect(log.error).not.toHaveBeenCalled();
     expect(vi.mocked(log.persist).mock.calls.map(([msg]) => msg)).toEqual([
       expect.stringMatching(/^Nothing was synced: /),

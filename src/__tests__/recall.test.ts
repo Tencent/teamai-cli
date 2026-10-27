@@ -92,7 +92,7 @@ describe('autoUpvote', () => {
     expect(parsed.votes['api-timeout-2026-03-20-abc'].last_recalled_at).toBeTruthy();
 
     // Repo votes dir should NOT have the file — votes are only written
-    // to the repo by reportUsageToTeam() during `teamai pull`.
+    // to the repo by reportUsage() during `teamai pull`.
     const repoVotePath = path.join(repoPath, 'votes', 'jeff.yaml');
     expect(fs.existsSync(repoVotePath)).toBe(false);
   });

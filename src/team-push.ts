@@ -49,7 +49,7 @@ interface PromptTokenDelta {
 //  [pull team resources] ── existing flow ──
 //      │
 //      ▼
-//  [reportUsageToTeam()]
+//  [reportUsage()]
 //      │
 //      ▼
 //  [update teamai-reports branch]
@@ -958,19 +958,6 @@ function changedCounters(existing: UserModeStats | undefined, delta: UsageDelta)
 
 /** What one usage report did: pushed the new counts, found none to push, or did not push them (skipped or failed). */
 export type UsageReportOutcome = 'reported' | 'nothing' | 'unreported';
-
-/**
- * Auto-report usage data to team repo during pull.
- * Returns false when reporting was skipped or failed; true when there is no
- * pending data or the report completed successfully.
- */
-export async function reportUsageToTeam(
-  repoPath: string,
-  username: string,
-  options: { skipTruncate?: boolean; selfConfig: LocalConfig },
-): Promise<boolean> {
-  return (await reportUsage(repoPath, username, options)) !== 'unreported';
-}
 
 /**
  * Reports this scope's usage data to the team repo.

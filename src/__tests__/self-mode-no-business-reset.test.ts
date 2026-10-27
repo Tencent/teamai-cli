@@ -8,7 +8,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { simpleGit } from 'simple-git';
 
-import { reportUsageToTeam } from '../team-push.js';
+import { reportUsage } from '../team-push.js';
 import { dataHomeKey } from '../dashboard-collector.js';
 import type { LocalConfig } from '../types.js';
 
@@ -79,7 +79,7 @@ describe('E2E reports branch writes', () => {
       additionalRoles: [],
     } as unknown as LocalConfig;
 
-    await reportUsageToTeam(cacheRoot, 'me', { skipTruncate: true, selfConfig: cfg });
+    await reportUsage(cacheRoot, 'me', { skipTruncate: true, selfConfig: cfg });
 
     // Knowledge clone is not reset — uncommitted clone edits survive.
     expect(fs.readFileSync(path.join(cacheRoot, 'app.js'), 'utf-8')).toBe('garbage\n');

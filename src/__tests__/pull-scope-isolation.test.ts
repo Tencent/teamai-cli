@@ -68,7 +68,7 @@ vi.mock('../mcp-reconcile.js', () => ({
 }));
 
 vi.mock('../team-push.js', () => ({
-  reportUsageToTeam: vi.fn().mockResolvedValue(true),
+  reportUsage: vi.fn().mockResolvedValue('reported'),
 }));
 
 vi.mock('../usage-tracker.js', () => ({
@@ -112,7 +112,7 @@ import { pullSources } from '../source.js';
 import { log } from '../utils/logger.js';
 import { reconcileTeamHooksForConfig } from '../hooks.js';
 import { reconcileMcpForConfig } from '../mcp-reconcile.js';
-import { reportUsageToTeam } from '../team-push.js';
+import { reportUsage, type UsageReportOutcome } from '../team-push.js';
 import { capUsageEvents, readUsageEvents, truncateUsageAfterReport } from '../usage-tracker.js';
 import { drainRecallLog } from '../recall-adoption.js';
 import { releaseLock } from '../update.js';
@@ -131,7 +131,7 @@ describe('pull scope isolation (issue #73)', () => {
   let projectConfig: LocalConfig;
 
   beforeEach(async () => {
-    vi.mocked(reportUsageToTeam).mockReset().mockResolvedValue(true);
+    vi.mocked(reportUsage).mockReset().mockResolvedValue('reported');
     vi.mocked(saveStateForScope).mockReset();
     vi.mocked(readUsageEvents).mockResolvedValue([]);
     tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-scope-iso-'));
@@ -218,7 +218,7 @@ describe('pull scope isolation (issue #73)', () => {
   it.each([false, true])('only consumes usage after confirmed success: %s', async (success) => {
     vi.mocked(detectProjectConfig).mockResolvedValue(projectConfig);
     vi.mocked(readUsageEvents).mockResolvedValue([{ skill: 'review', timestamp: new Date().toISOString(), tool: 'claude' }]);
-    vi.mocked(reportUsageToTeam).mockResolvedValueOnce(success);
+    vi.mocked(reportUsage).mockResolvedValueOnce(success ? 'reported' : 'unreported');
     await pull({ silent: true });
     if (success) {
       expect(truncateUsageAfterReport).toHaveBeenCalledTimes(1);
@@ -238,8 +238,8 @@ describe('pull scope isolation (issue #73)', () => {
       };
       vi.mocked(loadStateForScope).mockImplementation(async () => structuredClone(saved));
       vi.mocked(saveStateForScope).mockImplementation(async (state) => { saved = structuredClone(state); });
-      if (outcome === 'exception') vi.mocked(reportUsageToTeam).mockRejectedValueOnce(new Error('offline'));
-      else vi.mocked(reportUsageToTeam).mockResolvedValueOnce(outcome === 'success' || outcome === 'recovery');
+      if (outcome === 'exception') vi.mocked(reportUsage).mockRejectedValueOnce(new Error('offline'));
+      else vi.mocked(reportUsage).mockResolvedValueOnce(outcome === 'success' || outcome === 'recovery' ? 'reported' : 'unreported');
 
       await pull({ silent: true });
 
@@ -267,31 +267,31 @@ describe('pull scope isolation (issue #73)', () => {
     vi.mocked(loadStateForScope).mockImplementation(async () => structuredClone(saved));
     vi.mocked(saveStateForScope).mockImplementation(async (state) => { saved = structuredClone(state); });
     vi.mocked(readUsageEvents).mockResolvedValue([{ skill: 'review', timestamp: new Date().toISOString(), tool: 'claude' }]);
-    vi.mocked(reportUsageToTeam).mockResolvedValue(false);
+    vi.mocked(reportUsage).mockResolvedValue('unreported');
 
     await pull({ silent: true });
     expect(saved.autoReportPendingSince).toEqual(expect.any(String));
 
     if (optOut === 'member') config.usageReportEnabled = false;
     else vi.mocked(loadTeamConfig).mockResolvedValue({ ...teamConfig, usageReport: false });
-    vi.mocked(reportUsageToTeam).mockClear();
+    vi.mocked(reportUsage).mockClear();
     await pull({ silent: true });
 
     expect(saved).not.toHaveProperty('autoReportPendingSince');
     expect(saved.pushedSkills).toEqual(['keep-me']);
-    expect(reportUsageToTeam).not.toHaveBeenCalled();
+    expect(reportUsage).not.toHaveBeenCalled();
     expect(truncateUsageAfterReport).not.toHaveBeenCalled();
   });
 
   it.each([true, false])('caps the usage file only after the report has truncated it (#788): %s', async (success) => {
     vi.mocked(detectProjectConfig).mockResolvedValue(projectConfig);
     vi.mocked(readUsageEvents).mockResolvedValue([{ skill: 'review', timestamp: new Date().toISOString(), tool: 'claude' }]);
-    vi.mocked(reportUsageToTeam).mockResolvedValueOnce(success);
+    vi.mocked(reportUsage).mockResolvedValueOnce(success ? 'reported' : 'unreported');
     await pull({ silent: true });
     expect(capUsageEvents).toHaveBeenCalledTimes(1);
     expect(capUsageEvents).toHaveBeenCalledWith(projectConfig);
     const capOrder = vi.mocked(capUsageEvents).mock.invocationCallOrder[0];
-    expect(vi.mocked(reportUsageToTeam).mock.invocationCallOrder[0]).toBeLessThan(capOrder);
+    expect(vi.mocked(reportUsage).mock.invocationCallOrder[0]).toBeLessThan(capOrder);
     if (success) expect(vi.mocked(truncateUsageAfterReport).mock.invocationCallOrder[0]).toBeLessThan(capOrder);
   });
 
@@ -300,7 +300,7 @@ describe('pull scope isolation (issue #73)', () => {
     await pull({ silent: true });
     expect(drainRecallLog).toHaveBeenCalledTimes(1);
     expect(drainRecallLog).toHaveBeenCalledWith(projectConfig);
-    expect(vi.mocked(drainRecallLog).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(reportUsageToTeam).mock.invocationCallOrder[0]);
+    expect(vi.mocked(drainRecallLog).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(reportUsage).mock.invocationCallOrder[0]);
   });
 
   it('drains the recall log of a scope with usageReport: false (#884)', async () => {
@@ -316,7 +316,7 @@ describe('pull scope isolation (issue #73)', () => {
     vi.mocked(loadLocalConfigForScope).mockResolvedValue(userConfig);
     vi.mocked(loadTeamConfig).mockResolvedValue({ ...teamConfig, usageReport: false });
     await pull({ silent: true });
-    expect(reportUsageToTeam).not.toHaveBeenCalled();
+    expect(reportUsage).not.toHaveBeenCalled();
     expect(capUsageEvents).toHaveBeenCalledWith(userConfig);
   });
 
@@ -325,7 +325,7 @@ describe('pull scope isolation (issue #73)', () => {
     vi.mocked(detectProjectConfig).mockResolvedValue(null);
     vi.mocked(loadLocalConfigForScope).mockResolvedValue(optedOut);
     await pull({ silent: true });
-    expect(reportUsageToTeam).not.toHaveBeenCalled();
+    expect(reportUsage).not.toHaveBeenCalled();
     expect(capUsageEvents).toHaveBeenCalledWith(optedOut);
   });
 
@@ -335,18 +335,18 @@ describe('pull scope isolation (issue #73)', () => {
     vi.mocked(loadLocalConfigForScope).mockResolvedValue(optedIn);
     vi.mocked(loadTeamConfig).mockResolvedValue({ ...teamConfig, usageReport: false });
     await pull({ silent: true });
-    expect(reportUsageToTeam).toHaveBeenCalledWith(userRepoPath, 'userscope', expect.objectContaining({ selfConfig: optedIn }));
+    expect(reportUsage).toHaveBeenCalledWith(userRepoPath, 'userscope', expect.objectContaining({ selfConfig: optedIn }));
   });
 
   it.each([true, false])('keeps late completion alive without starting a second report: %s', async (success) => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     vi.mocked(detectProjectConfig).mockResolvedValue(projectConfig);
     vi.mocked(readUsageEvents).mockResolvedValue([{ skill: 'review', timestamp: new Date().toISOString(), tool: 'claude' }]);
-    let finish!: (value: boolean) => void;
+    let finish!: (value: UsageReportOutcome) => void;
     let started!: () => void;
     const pushStarted = new Promise<void>((resolve) => { started = resolve; });
-    const pushResult = new Promise<boolean>((resolve) => { finish = resolve; });
-    vi.mocked(reportUsageToTeam).mockImplementationOnce(() => { started(); return pushResult; });
+    const pushResult = new Promise<UsageReportOutcome>((resolve) => { finish = resolve; });
+    vi.mocked(reportUsage).mockImplementationOnce(() => { started(); return pushResult; });
     const pulling = pull({ silent: true });
     await pushStarted;
     await vi.advanceTimersByTimeAsync(5000);
@@ -363,8 +363,8 @@ describe('pull scope isolation (issue #73)', () => {
     ).toEqual([]);
     expect(pullSources).toHaveBeenCalled();
     await pull({ silent: true });
-    expect(reportUsageToTeam).toHaveBeenCalledTimes(1);
-    finish(success);
+    expect(reportUsage).toHaveBeenCalledTimes(1);
+    finish(success ? 'reported' : 'unreported');
     await vi.advanceTimersByTimeAsync(0);
     await settleLateUsageReport();
     const saved = vi.mocked(saveStateForScope).mock.lastCall?.[0] ?? {};
@@ -376,7 +376,7 @@ describe('pull scope isolation (issue #73)', () => {
     }
     else expect(truncateUsageAfterReport).not.toHaveBeenCalled();
     await pull({ silent: true });
-    expect(reportUsageToTeam).toHaveBeenCalledTimes(2);
+    expect(reportUsage).toHaveBeenCalledTimes(2);
   });
 
   it('project mode: skips user scope entirely and pulls source against project', async () => {
@@ -585,7 +585,7 @@ describe('pull scope isolation (issue #73)', () => {
       expect.anything(),
       expect.objectContaining({ scope: 'user' }),
     );
-    expect(reportUsageToTeam).not.toHaveBeenCalledWith(
+    expect(reportUsage).not.toHaveBeenCalledWith(
       userRepoPath,
       expect.anything(),
       expect.anything(),
@@ -682,7 +682,7 @@ describe('pull scope isolation (issue #73)', () => {
     expect(log.info).not.toHaveBeenCalledWith(SKIP_MSG);
     expect(pullSources).toHaveBeenCalledTimes(1);
     expect(vi.mocked(pullSources).mock.calls[0][0]).toMatchObject({ scope: 'user' });
-    expect(reportUsageToTeam).toHaveBeenCalledWith(
+    expect(reportUsage).toHaveBeenCalledWith(
       userRepoPath,
       'userscope',
       expect.objectContaining({
@@ -706,7 +706,7 @@ describe('pull scope isolation (issue #73)', () => {
     );
   });
 
-  it('user mode self-repo: reportUsageToTeam receives selfConfig so business repo is never reset', async () => {
+  it('user mode self-repo: reportUsage receives selfConfig so business repo is never reset', async () => {
     const businessRoot = path.join(tmpDir, 'business-repo');
     const selfRepoPath = path.join(businessRoot, '.teamai');
     const selfUserConfig: LocalConfig = {
@@ -727,7 +727,7 @@ describe('pull scope isolation (issue #73)', () => {
 
     await pull({ silent: true });
 
-    expect(reportUsageToTeam).toHaveBeenCalledWith(
+    expect(reportUsage).toHaveBeenCalledWith(
       selfRepoPath,
       'selfuser',
       expect.objectContaining({
@@ -738,7 +738,7 @@ describe('pull scope isolation (issue #73)', () => {
     );
   });
 
-  it('project mode http-repo: never calls reportUsageToTeam (data-loss guard)', async () => {
+  it('project mode http-repo: never calls reportUsage (data-loss guard)', async () => {
     const httpProjectConfig: LocalConfig = {
       ...projectConfig,
       repo: { ...projectConfig.repo, kind: 'http' as const },
@@ -750,7 +750,7 @@ describe('pull scope isolation (issue #73)', () => {
 
     // HTTP-kind repo: kind !== 'http' guard filters out both report targets,
     // so targets is empty and the business repo's team-repo dir is never reset.
-    expect(reportUsageToTeam).not.toHaveBeenCalled();
+    expect(reportUsage).not.toHaveBeenCalled();
     // Its local file is the only source `teamai stats` has, so it is capped
     // rather than consumed (#788).
     expect(capUsageEvents).toHaveBeenCalledWith(httpProjectConfig);
