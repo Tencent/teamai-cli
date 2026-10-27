@@ -21,6 +21,7 @@
 import type { Session, Message, ContentBlock } from './ir.js';
 import { collectEnvSecrets, redact } from '../utils/redact.js';
 import { imagePlaceholderText } from './ir.js';
+import { maskCutSecret } from './title.js';
 
 export interface ScrubResult {
   session: Session;
@@ -110,7 +111,8 @@ function scrubBlock(
  * Redact a session (pure function; the input is not mutated).
  *
  * The title is scrubbed too: the first prompt often carries a token, and the
- * title is what shows up in the target client's session list.
+ * title is what shows up in the target client's session list. A title cut
+ * inside one of `secrets` is masked from where that secret starts.
  *
  * `dropImagePaths` (default true) removes the absolute local path of image
  * blocks -- required before archiving to a team repo, unwanted for a local
@@ -139,7 +141,7 @@ export function scrubSession(
     return contentChanged ? { ...msg, content } : msg;
   });
 
-  const title = mask(session.title);
+  const title = maskCutSecret(mask(session.title), opts.secrets ?? {});
 
   return {
     session: { ...session, title, messages },

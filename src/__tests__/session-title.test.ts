@@ -60,4 +60,19 @@ describe('a WorkBuddy session title', () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('keeps no start of a secret the team declares that its title carries past the title length once scrubbed', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-workbuddy-title-'));
+    const sessionId = '7c1e0000-0000-4000-8000-000000000032';
+    const file = path.join(dir, `${sessionId}.jsonl`);
+    const start = `${'Load the warehouse '.repeat(4)}from `;
+    fs.writeFileSync(file, `${JSON.stringify({ type: 'ai-title', aiTitle: `${start}mysql-prod-7Hq2xVb9Lk tonight` })}\n`);
+    try {
+      const { session } = scrubSession(await new WorkBuddyAdapter().readSession({ sessionId, filePath: file }), { secrets: { WAREHOUSE_DSN: 'mysql-prod-7Hq2xVb9Lk' } });
+
+      expect(session.title).toBe(`${start}<REDACTED:WAREHOUSE`);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
