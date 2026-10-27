@@ -391,7 +391,8 @@ export async function loadMemberSettings(configPath = expandHome(getUserConfigPa
 
 /**
  * What is wrong with `workflows.allow` in ~/.teamai/config.yaml, or undefined. Another bad machine value is skipped
- * with a warning, but skipping a restriction lifts it, so a workflow command refuses to run on this one.
+ * with a warning, but skipping a restriction lifts it, so a workflow command refuses to run on this one, and on a
+ * file it cannot parse, whose restrictions are unknown.
  */
 export async function machineWorkflowAllowProblem(): Promise<string | undefined> {
   const configPath = expandHome(getUserConfigPath());
@@ -400,8 +401,9 @@ export async function machineWorkflowAllowProblem(): Promise<string | undefined>
   let workflows: Record<string, unknown> | undefined;
   try {
     workflows = asRecord(asRecord(YAML.parse(content))?.workflows);
-  } catch {
-    return undefined;
+  } catch (e) {
+    return `${configPath} is not valid YAML (${describeConfigError(e)}), so the workflows.allow restrictions it may set are unknown. `
+      + 'A workflow does not run until it is fixed.';
   }
   if (!workflows || !Object.prototype.hasOwnProperty.call(workflows, 'allow')) return undefined;
   const parsed = AllowSchema.safeParse(workflows.allow);

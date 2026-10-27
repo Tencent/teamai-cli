@@ -48,6 +48,14 @@ function testConfig(): LocalConfig {
 
 const driver = { kind: 'local', machine: 'a', workspace: '/work' };
 
+/** ~/.teamai/config.yaml holding `content`, for this test only. */
+function machineConfig(content: string): void {
+  const file = getUserConfigPath();
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, content);
+  onTestFinished(() => fs.rmSync(file, { force: true }));
+}
+
 async function startBuild(): Promise<{ config: LocalConfig; runId: string }> {
   const config = testConfig();
   fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'build.yaml'), `schemaVersion: v1alpha1
@@ -225,23 +233,32 @@ steps:
   });
 
   it.each([
-    { case: 'a value of the wrong type', allow: '    network: flase\n', names: 'network' },
-    { case: 'a key it does not know', allow: '    netwrok: false\n', names: 'netwrok' },
-  ])("refuses to start while this machine's workflows.allow has $case, and creates no run", async ({ allow, names }) => {
+    { case: 'a value of the wrong type', content: 'workflows:\n  allow:\n    network: flase\n', names: 'workflows.allow in', key: 'network' },
+    { case: 'a key it does not know', content: 'workflows:\n  allow:\n    netwrok: false\n', names: 'workflows.allow in', key: 'netwrok' },
+    { case: 'a YAML error, so what it restricts is unknown', content: 'workflows:\n  allow:\n    network: false\n  tools: [unclosed\n', names: 'is not valid YAML', key: 'workflows.allow' },
+  ])("refuses to start while this machine's config has $case, and creates no run", async ({ content, names, key }) => {
     const config = inputsConfig();
     await syncWorkflowDefinitions(config);
     state.config = config;
-    const machineFile = getUserConfigPath();
-    fs.mkdirSync(path.dirname(machineFile), { recursive: true });
-    fs.writeFileSync(machineFile, `workflows:\n  allow:\n${allow}`);
-    onTestFinished(() => fs.rmSync(machineFile, { force: true }));
+    machineConfig(content);
 
     const started = await capture(() => workflowStart('fix', { inputs: '{"issue":42}' }));
 
-    expect(started.error).toMatchObject({ code: 'not_initialized', message: expect.stringContaining(`workflows.allow in ${machineFile}`) });
+    expect(started.error).toMatchObject({ code: 'not_initialized', message: expect.stringContaining(getUserConfigPath()) });
     expect(started.error?.message).toContain(names);
+    expect(started.error?.message).toContain(key);
     expect(process.exitCode).toBe(1);
-    expect(fs.existsSync(path.join(config.dataHome!, 'workflows', 'runs'))).toBe(false);
+    expect(fs.existsSync(path.join(config.dataHome ?? '', 'workflows', 'runs'))).toBe(false);
+  });
+
+  it("refuses to drive a run it already has while this machine's workflows.allow is invalid", async () => {
+    const { config, runId } = await startBuild();
+    state.config = config;
+    machineConfig('workflows:\n  allow:\n    network: "false"\n');
+
+    const answer = await capture(() => workflowNext(runId, { json: JSON.stringify({ driver }) }));
+
+    expect(answer.error).toMatchObject({ code: 'not_initialized', message: expect.stringContaining(`workflows.allow in ${getUserConfigPath()}`) });
   });
 
   it('rejects --inputs that is not JSON', async () => {

@@ -76,8 +76,6 @@ function refuseSkill(envelope: WorkflowEnvelope): void {
 async function loadConfig(readOnly = false): Promise<{ config: LocalConfig; teamConfig: TeamaiConfig } | WorkflowEnvelope> {
   try {
     const { localConfig, teamConfig } = await autoDetectInit(undefined, readOnly ? { dryRun: true, selfHeal: false, suppressMigrationNotice: true } : {});
-    const allowProblem = await machineWorkflowAllowProblem();
-    if (allowProblem) return { error: { code: 'not_initialized', message: allowProblem } };
     return { config: localConfig, teamConfig };
   } catch (error) {
     return {
@@ -110,8 +108,19 @@ function readJson(payload: string | undefined, missing: string): JsonRead {
  */
 interface Ready { config: LocalConfig; teamConfig: TeamaiConfig; env: WorkflowEnv; secrets: Record<string, string> }
 
+/**
+ * The refusal of every workflow command while this machine's `workflows.allow` cannot be used: skipping a restriction
+ * would lift it. Undefined when it can.
+ */
+async function allowRefusal(): Promise<WorkflowEnvelope | undefined> {
+  const problem = await machineWorkflowAllowProblem();
+  return problem ? { error: { code: 'not_initialized', message: problem } } : undefined;
+}
+
 /** The member's config as `Ready`, or the failure the caller prints. */
 async function readyConfig(): Promise<Ready | WorkflowEnvelope> {
+  const refusal = await allowRefusal();
+  if (refusal) return refusal;
   const loaded = await loadConfig();
   if (!('config' in loaded)) return loaded;
   const env = await resolveWorkflowEnv(loaded.config);
@@ -135,6 +144,8 @@ async function readyStartConfig(name: string): Promise<Ready | WorkflowEnvelope>
 
 /** `allowRemote`: a run no config here has is the current config's, as a call that may claim it from teamai-reports needs. */
 async function runOwner(runId: string, { allowRemote }: { allowRemote: boolean }): Promise<{ config: LocalConfig; teamConfig: TeamaiConfig } | WorkflowEnvelope> {
+  const refusal = await allowRefusal();
+  if (refusal) return refusal;
   const current = await loadConfig(true);
   const found = await findRunConfig(runId, 'config' in current ? current.config : undefined);
   if (!('config' in found)) {
