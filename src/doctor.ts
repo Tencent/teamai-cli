@@ -1,3 +1,4 @@
+import YAML from 'yaml';
 import { hookToolPathsForConfig } from './types.js';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
@@ -166,6 +167,108 @@ export interface DoctorReport {
    * value (#875), the Codex trust reminder when Codex cannot be asked.
    */
   notes?: string[];
+  /** The member setting provenance report, ordered by precedence. */
+  memberSettings?: MemberSettingsReport[];
+}
+
+export type MemberSettingLevel = 'environment' | 'scope' | 'machine' | 'team' | 'default';
+
+export interface MemberSettingSource {
+  level: MemberSettingLevel;
+  value?: unknown;
+  file?: string;
+  variable?: string;
+}
+
+export interface MemberSettingsReport {
+  key: string;
+  effective?: unknown;
+  source?: MemberSettingSource;
+  levels: MemberSettingSource[];
+}
+
+const MEMBER_SETTING_REPORT_KEYS = [
+  'ai.tool',
+  'workflows.tools.default',
+  'workflows.max_parallel',
+  'workflows.auto_approve',
+  'workflows.sandbox',
+  'workflows.allow.network',
+  'recallEnabled',
+  'contributeHintEnabled',
+  'mrHintEnabled',
+  'coAuthorEnabled',
+  'usageReportEnabled',
+  'codexTrustEnabled',
+  'modelAliases',
+  'updatePolicy',
+  'autoCompactTokens',
+] as const;
+
+function readPath(value: unknown, parts: string[]): unknown {
+  let current = value;
+  for (const part of parts) {
+    if (typeof current !== 'object' || current === null || !(part in current)) return undefined;
+    current = (current as Record<string, unknown>)[part];
+  }
+  return current;
+}
+
+async function readYamlObject(file: string): Promise<Record<string, unknown>> {
+  try {
+    const raw = YAML.parse(await readFileSafe(file) ?? '');
+    return typeof raw === 'object' && raw !== null && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+  } catch {
+    return {};
+  }
+}
+
+function settingSource(level: MemberSettingLevel, value: unknown, file?: string, variable?: string): MemberSettingSource {
+  return { level, value, ...(file ? { file } : {}), ...(variable ? { variable } : {}) };
+}
+
+async function memberSettingsReport(ctx: DoctorContext): Promise<MemberSettingsReport[]> {
+  const machineFile = path.join(getTeamaiHomeDir(), 'config.yaml');
+  const machine = await readYamlObject(machineFile);
+  const scopeFile = getDataHome(ctx.localConfig) + path.sep + 'config.yaml';
+  const scope = ctx.localConfig.scope === 'user' ? machine : await readYamlObject(scopeFile);
+  const team = ctx.teamConfig as unknown as Record<string, unknown> | null;
+  const teamSharing = team?.sharing as Record<string, unknown> | undefined;
+  const teamValue = (key: string): unknown => {
+    if (key === 'recallEnabled') return readPath(teamSharing, ['recall', 'enabled']);
+    if (key === 'contributeHintEnabled') return readPath(teamSharing, ['contributeHint', 'enabled']);
+    if (key === 'mrHintEnabled') return readPath(teamSharing, ['mrHint', 'enabled']);
+    if (key === 'coAuthorEnabled') return readPath(teamSharing, ['coAuthor', 'enabled']);
+    if (key === 'autoCompactTokens') return readPath(teamSharing, ['autoCompact', 'tokens']);
+    if (key === 'updatePolicy') return team?.autoUpdate === false ? 'skip' : team?.autoUpdate === true ? 'auto' : undefined;
+    return undefined;
+  };
+  const defaultValue = (key: string): unknown => {
+    if (key === 'recallEnabled') return false;
+    if (key === 'contributeHintEnabled' || key === 'mrHintEnabled' || key === 'usageReportEnabled') return true;
+    if (key === 'updatePolicy') return 'auto';
+    return undefined;
+  };
+  const variable = (key: string): string | undefined => key === 'ai.tool' ? 'TEAMAI_AI_TOOL' : undefined;
+  const reports: MemberSettingsReport[] = [];
+  for (const key of MEMBER_SETTING_REPORT_KEYS) {
+    const parts = key.split('.');
+    const scopeValue = readPath(scope, parts);
+    const machineValue = readPath(machine, parts);
+    const levels: MemberSettingSource[] = [];
+    if (scopeValue !== undefined) levels.push(settingSource('scope', scopeValue, ctx.localConfig.scope === 'user' ? machineFile : scopeFile));
+    if (machineValue !== undefined && ctx.localConfig.scope !== 'user') levels.push(settingSource('machine', machineValue, machineFile));
+    const teamValueForKey = teamValue(key);
+    if (teamValueForKey !== undefined) levels.push(settingSource('team', teamValueForKey, team?.repo ? `${team.repo}/teamai.yaml` : undefined));
+    const fallback = defaultValue(key);
+    if (fallback !== undefined) levels.push(settingSource('default', fallback));
+    const envName = variable(key);
+    const envValue = envName ? process.env[envName] : undefined;
+    if (envValue !== undefined) levels.unshift(settingSource('environment', envValue, undefined, envName));
+    const source = levels[0];
+    if (source) reports.push({ key, effective: source.value, source, levels });
+  }
+  return reports;
 }
 
 /**
@@ -1040,6 +1143,7 @@ export async function doctor(options: DoctorOptions): Promise<boolean> {
       scope,
       runMode,
       checks: results,
+      memberSettings: await memberSettingsReport(ctx),
       // pkgDoctorReport renders its own lines; they are human text, not checks.
       ...(packageReport ? { packages: { ok: packageReport.allPassed, lines: packageReport.lines } } : {}),
       ...(notes.length > 0 ? { notes } : {}),
