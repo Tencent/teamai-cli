@@ -118,6 +118,10 @@ function guardsFact(guards: GateGuards): string {
   switch (guards.kind) {
     case 'command':
       return `before \`${guards.line}\``;
+    case 'prompt':
+      return 'before a prompt step, which a child agent works';
+    case 'interactive':
+      return 'before an interactive step, which you work here with this session\'s agent';
     case 'none':
       return 'no action';
     default: {

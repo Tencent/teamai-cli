@@ -16,6 +16,8 @@ export interface LocalRoute {
 /** What a gated step does once its question is answered. */
 export type GateGuards =
   | { kind: 'command'; line: string }
+  | { kind: 'prompt' }
+  | { kind: 'interactive' }
   | { kind: 'none'; waiting: string[] };
 
 /** The most characters of a command a gate shows before it cuts the rest. */
@@ -30,6 +32,8 @@ function commandLine(command: string): string {
 /** What `step`, gated, guards. */
 function guardsOf(step: WorkflowStep): GateGuards {
   if (step.command !== undefined) return { kind: 'command', line: commandLine(step.command) };
+  if (step.interactive) return { kind: 'interactive' };
+  if (step.prompt !== undefined || step.promptFile !== undefined) return { kind: 'prompt' };
   return { kind: 'none', waiting: [] };
 }
 

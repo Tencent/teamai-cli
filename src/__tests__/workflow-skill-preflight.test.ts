@@ -277,6 +277,24 @@ describe('skill driver preflight of optional gates', () => {
       'How should it run?',
     ].join('\n') } } } } });
   });
+
+  it('says who works the prompt step an optional approval comes before, an interactive one with the person here', async () => {
+    expect(await questionOf({ gates: gates(`  - id: draft
+    approve: Draft?
+    prompt: Draft the notes.
+  - id: polish
+    needs: [draft]
+    approve: Polish?
+    interactive: true
+    prompt: Polish the notes with the person.
+`) })).toMatchObject({ data: { describe: { ask: { kind: 'ask', question: { text: [
+      '- polish is interactive: you work in it here, with this session\'s agent.',
+      '- Optional approval at draft: before a prompt step, which a child agent works.',
+      '- Optional approval at polish: before an interactive step, which you work here with this session\'s agent.',
+      approvalsAnswer,
+      'How should it run?',
+    ].join('\n') } } } } });
+  });
 });
 
 describe('skill driver preflight in an unattended run', () => {
