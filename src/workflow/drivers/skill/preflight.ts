@@ -1,7 +1,6 @@
 /** Before a run: what describe asks the person, and whether a start carries every answer it needs. */
-import type { ToolName } from '../../../resources/agent-format.js';
 import { isLaunchTool, LAUNCH_ORDER, type LaunchTool } from '../../../tool-launch/tools.js';
-import type { LocalConfig } from '../../../types.js';
+import type { LocalConfig, ToolId } from '../../../types.js';
 import type { GateGuards, WorkflowDescription } from '../../describe.js';
 import { INVOKE_ASK_NEED, unattendedReason, type Judging } from '../../protocol.js';
 import type { OutputSchema } from '../../types.js';
@@ -292,7 +291,7 @@ function inputsOf(description: WorkflowDescription): Array<{ name: string; type:
  * `aiTools`, the tools the member names, unless it names a tool teamai calls but runs no steps on, which the step passes
  * over. Undefined when one of those picks a tool, or when no tool the local driver launches is known.
  */
-export function localPromptTool({ config, tool, aiTools }: { config: LocalConfig; tool: ToolName | undefined; aiTools: readonly string[] }): LaunchTool | undefined {
+export function localPromptTool({ config, tool, aiTools }: { config: LocalConfig; tool: ToolId | undefined; aiTools: readonly string[] }): LaunchTool | undefined {
   const picks = (named: string) => isLaunchTool(named) || !LAUNCH_ORDER.some((launched) => launched === named);
   const picked = !!config.workflows?.tools.default || aiTools.some(picks);
   return !picked && tool !== undefined && isLaunchTool(tool) ? tool : undefined;

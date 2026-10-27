@@ -6,11 +6,10 @@ import path from 'node:path';
 import { z } from 'zod';
 import { resolveCliEntry } from '../../../builtin-hooks.js';
 import type { WorkflowEnv } from '../../../env-resolution.js';
-import type { ToolName } from '../../../resources/agent-format.js';
 import { resolveRunMode, type RunMode } from '../../../launch-context.js';
 import type { CommandExit } from '../../../tool-launch/process-stop.js';
-import { isAgentToolId } from '../../../tools.js';
-import type { LocalConfig, TeamaiConfig } from '../../../types.js';
+import { isToolId } from '../../../tools.js';
+import type { LocalConfig, TeamaiConfig, ToolId } from '../../../types.js';
 import { agentSessionFromEnv } from '../../../utils/session-id.js';
 import { agentEvidence, isAttemptRunner, type AgentEvidence } from '../../attempt-marker.js';
 import { inProcessClient, invokeDeniedMessage, type WorkflowClient } from '../../protocol.js';
@@ -91,7 +90,7 @@ export interface SkillContext {
   /** The run mode of the calling process, which describe answers for and a start keeps for the run. */
   mode: RunMode;
   /** The tool of that session, which a child's model is resolved for; undefined when its host names none. */
-  tool: ToolName | undefined;
+  tool: ToolId | undefined;
   /** The tools the member names for `config`'s scope, the most specific first: TEAMAI_AI_TOOL, then `ai.tool`. */
   aiTools: readonly string[];
   invocation: Invocation;
@@ -118,7 +117,7 @@ export async function skillContext(input: Pick<SkillContext, 'config' | 'toolPat
     // Only a coding agent drives --driver skill, so a host that sets no session variable is still an agent's.
     evidence: evidence.kind === 'none' ? { kind: 'skill-driver' } : evidence,
     mode: resolveRunMode(process.env),
-    tool: session.agent !== undefined && isAgentToolId(session.agent) ? session.agent : undefined,
+    tool: session.agent !== undefined && isToolId(session.agent) ? session.agent : undefined,
     invocation: invocationOf(resolveCliEntry() ?? undefined),
     client: inProcessClient({ config, env }),
     now: () => new Date(),
