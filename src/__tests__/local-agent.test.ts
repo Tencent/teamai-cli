@@ -2014,6 +2014,19 @@ describe('local-agent: cmds[] migration', () => {
     expect(manifest.hk1).toMatchObject({ tool: 'codebuddy', event: 'SessionStart', command: 'echo hi', timeout: 10 });
   });
 
+  it('uninstall_hook_rule removes a hook installed for another tool while a tool that takes no agent hooks runs', async () => {
+    await runResponse({ cmds: [{
+      id: 25, type: 'install_hook_rule', handle_type: 'hook', slug: 'hk-cross', event: 'SessionStart', cmd: 'echo hi', scope: 'user',
+    }] });
+    const acks = await runResponse({ cmds: [{
+      id: 26, type: 'uninstall_hook_rule', handle_type: 'hook', slug: 'hk-cross', scope: 'user',
+    }] }, undefined, 'omp');
+
+    expect(acks.find((a) => a.id === 26)?.status).toBe('success');
+    const settings = await fse.readJson(path.join(tmpDir, '.codebuddy', 'settings.json'));
+    expect(JSON.stringify(settings)).not.toContain(agentHookDescription('hk-cross'));
+  });
+
   it('remove-http reports failure and leaves the source intact when another operation keeps its lock', async () => {
     await setupConfig();
     const configPath = path.join(tmpDir, '.teamai', 'local-agent', 'config.json');

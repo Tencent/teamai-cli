@@ -27,7 +27,6 @@ import type { Session, Message, ContentBlock, ImageBlock } from '../ir.js';
 import { assertSafeSessionFileId, deriveTargetSessionId } from '../ids.js';
 import { imagePlaceholderText } from '../ir.js';
 import {
-  getClaudeCodeProjectsDir,
   encodeCwdClaude,
   bestEffortDecodeCwdClaude,
   decodeCwdClaude,
@@ -40,6 +39,7 @@ import {
   removeDirRecursive,
   mayReadLocalImageFile,
 } from '../fs.js';
+import { sessionStoreDir } from '../../locate.js';
 import {
   cleanTitleText,
   fallbackTitle,
@@ -329,15 +329,7 @@ export class ClaudeCodeAdapter extends AgentAdapter {
   constructor(platform = 'claude-code', storageRoot?: string) {
     super();
     this.platform = platform;
-    this.storageRoot = storageRoot ?? getClaudeCodeProjectsDir();
-  }
-
-  static isAvailable(): boolean {
-    return dirExists(getClaudeCodeProjectsDir());
-  }
-
-  static getDefaultStoragePath(): string {
-    return getClaudeCodeProjectsDir();
+    this.storageRoot = storageRoot ?? sessionStoreDir('claude-code', undefined);
   }
 
   isReady(): boolean {

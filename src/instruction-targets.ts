@@ -1,10 +1,11 @@
 import path from 'node:path';
+import { hookSourceMatches } from './utils/hook-source.js';
 import { getsRulesFromExtension } from './resources/rule-format.js';
 import { pathExists, readFileSafe, readJsonObject, remove, writeFile } from './utils/fs.js';
 import { getUserHome } from './utils/home.js';
 import { CODEX_TOOL_IDS } from './utils/tool-names.js';
 import { channelsOf, TOOLS, type BlocksHeader, type ChannelProbe, type RunTime } from './tools.js';
-import { installOf, locate, ownOf, writable, type FilePlace, type Gate, type Install } from './locate.js';
+import { hookAdapterDir, installOf, locate, ownOf, writable, type FilePlace, type Gate, type Install } from './locate.js';
 import {
   opencodeContextReference, opencodeV1ClaudeFile, readOpencodeInstructionList, reconcileOpencodeInstructions,
 } from './resources/opencode-config.js';
@@ -195,13 +196,13 @@ export async function channelReadiness(
   switch (probe) {
     case 'omp-extension':
     case 'pi-extension': {
-      const { buildOmpExtensionSource, resolveOmpExtensionsDir, OMP_HOOK_FILE } = await import('./omp-hooks.js');
-      const { buildPiExtensionSource, resolvePiExtensionsDir, PI_HOOK_FILE } = await import('./pi-hooks.js');
+      const { buildOmpExtensionSource, OMP_HOOK_FILE } = await import('./omp-hooks.js');
+      const { buildPiExtensionSource, PI_HOOK_FILE } = await import('./pi-hooks.js');
       const omp = probe === 'omp-extension';
-      const file = omp ? path.join(resolveOmpExtensionsDir(), OMP_HOOK_FILE) : path.join(resolvePiExtensionsDir(), PI_HOOK_FILE);
+      const file = omp ? path.join(hookAdapterDir('omp-extension'), OMP_HOOK_FILE) : path.join(hookAdapterDir('pi-extension'), PI_HOOK_FILE);
       const expected = omp ? buildOmpExtensionSource() : buildPiExtensionSource();
       return {
-        ready: await readFileSafe(file) === expected,
+        ready: await hookSourceMatches(await readFileSafe(file), expected),
         // Pi's extension also carries a project's team rules (#946); OMP reads its own rules files.
         fix: `${file} is missing or out of date, so ${tool} sessions in this project get no team instructions`
           + `${getsRulesFromExtension(tool) ? ' or rules' : ''}. ${rerun}`,
@@ -215,7 +216,7 @@ export async function channelReadiness(
       if (!await ownsInstructionsPlugin()) return { ready: false, fix: foreignInstructionsPlugin() };
       const dir = getInstructionsPluginDir();
       const plugin = buildInstructionsPlugin();
-      const installed = await readFileSafe(path.join(dir, '__init__.py')) === plugin.init
+      const installed = await hookSourceMatches(await readFileSafe(path.join(dir, '__init__.py')), plugin.init)
         && await readFileSafe(path.join(dir, 'plugin.yaml')) === plugin.manifest;
       if (!installed) {
         return { ready: false, fix: `The Hermes plugin ${dir} is missing or out of date, so Hermes sessions in this project get no team instructions. ${rerun}` };
@@ -299,9 +300,9 @@ async function hooksInstalled(file: string, tool: string): Promise<boolean> {
  */
 export async function instructionHookChannelInstallable(tool: string): Promise<boolean> {
   if (tool === 'omp' || tool === 'pi') {
-    const { hasOmpHooks, resolveOmpExtensionsDir, OMP_HOOK_FILE } = await import('./omp-hooks.js');
-    const { hasPiHooks, resolvePiExtensionsDir, PI_HOOK_FILE } = await import('./pi-hooks.js');
-    const file = tool === 'omp' ? path.join(resolveOmpExtensionsDir(), OMP_HOOK_FILE) : path.join(resolvePiExtensionsDir(), PI_HOOK_FILE);
+    const { hasOmpHooks, OMP_HOOK_FILE } = await import('./omp-hooks.js');
+    const { hasPiHooks, PI_HOOK_FILE } = await import('./pi-hooks.js');
+    const file = tool === 'omp' ? path.join(hookAdapterDir('omp-extension'), OMP_HOOK_FILE) : path.join(hookAdapterDir('pi-extension'), PI_HOOK_FILE);
     return !await pathExists(file) || (tool === 'omp' ? await hasOmpHooks() : await hasPiHooks());
   }
   if (tool === 'hermes') {

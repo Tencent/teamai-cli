@@ -1,5 +1,6 @@
 import { autoDetectInit, loadLocalConfigForScope } from './config.js';
 import { AttemptStore } from './scorers/attempts.js';
+import { isScorerFile } from './scorers/definition.js';
 import { parseLeaseRef } from './scorers/entry.js';
 import { scoreSession, type SessionDemand } from './session-flow/scoring.js';
 import type { LocalConfig } from './types.js';
@@ -58,6 +59,8 @@ function demandOf(options: ScoreOptions): ScoreDemand | WorkflowEnvelope {
     return failure('invalid_arguments', '--run takes no --next, --lease or payload: teamai score --run <id> --step <path> [--pass <n>] --scorer <name> [--queue] [--batch]');
   }
   const [scorer, ...scorers] = options.scorer ?? [];
+  const file = options.scorer?.find(isScorerFile);
+  if (file !== undefined) return failure('invalid_arguments', `--run takes scorer names, not the file ${file}: a run pins its scorers when it starts`);
   if (options.run === undefined || options.step === undefined || scorer === undefined) {
     return failure('invalid_arguments', 'Pass --run <id> --step <path> --scorer <name> to judge a pass on demand; --pass <n> picks a pass, else the latest that succeeded');
   }
@@ -122,6 +125,8 @@ async function score(options: ScoreOptions): Promise<WorkflowEnvelope> {
   if (options.push && (asksForPass || options.next || options.lease !== undefined)) {
     return failure('invalid_arguments', '--push goes alone or with a session: teamai score --push, or teamai score [--session <id>] --scorer <name> --push');
   }
+  const file = options.push ? options.scorer?.find(isScorerFile) : undefined;
+  if (file !== undefined) return failure('invalid_arguments', `--push publishes stored labels, and the label of the scorer file ${file} is never stored. Leave out --push to try the file`);
   if (asksForSession) {
     const demand = sessionDemandOf(options);
     if (!('scorers' in demand)) return demand;

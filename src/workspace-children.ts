@@ -425,9 +425,14 @@ async function walk(input: {
  */
 async function readChildConfig(dir: string, gitWorkspace: boolean): Promise<ChildRead | null> {
   // Loaded here: config.js reaches this module through the resolvers it imports.
-  const { detectProjectConfig, readConfigFrom } = await import('./config.js');
+  const { detectProjectConfig, readConfigFrom, resolveLegacyRole } = await import('./config.js');
   let unreadable: string | null = null;
   const onUnreadable = (_configPath: string, error: string): void => { unreadable ??= error; };
+  // The fast reads below skip detection, so they resolve `hai` as it does.
+  const read = async (dataHomeDir: string): Promise<LocalConfig | null> => {
+    const config = await readConfigFrom(dataHomeDir, dir, undefined, onUnreadable, { selfHeal: false });
+    return config && resolveLegacyRole(config);
+  };
   const outcome = (config: LocalConfig | null): ChildRead | null => {
     if (unreadable !== null) return { kind: 'unreadable', reason: unreadable };
     return config ? { kind: 'config', config } : null;
@@ -441,7 +446,7 @@ async function readChildConfig(dir: string, gitWorkspace: boolean): Promise<Chil
     // Outside a repo a folder is set up through its own `.teamai`; inside one,
     // such a folder is part of the workspace's checkout, not a child.
     if (gitWorkspace) return null;
-    return outcome(await readConfigFrom(path.join(dir, '.teamai'), dir, undefined, onUnreadable, { selfHeal: false }));
+    return outcome(await read(path.join(dir, '.teamai')));
   }
 
   let anchor: string | null;
@@ -453,7 +458,7 @@ async function readChildConfig(dir: string, gitWorkspace: boolean): Promise<Chil
   }
   if (anchor === null) return probe();
   const partition = await resolvePartitionDir(anchor, { dryRun: true });
-  const fromPartition = await readConfigFrom(partition, dir, undefined, onUnreadable, { selfHeal: false });
+  const fromPartition = await read(partition);
   if (fromPartition || unreadable !== null) return outcome(fromPartition);
   return await lstatOrNull(path.join(dir, '.teamai')) ? probe() : null;
 }

@@ -292,12 +292,13 @@ describe('skill driver', () => {
     expect(JSON.stringify([described, started, polled, ended])).not.toMatch(/\{inputs\}|\{dir\}|<[a-z]+>/);
   });
 
-  it('gives setup and the command of an attempt the run mode its start kept, whatever mode a later call has', async () => {
+  it('gives setup, the command and the pass of an attempt the run mode its start kept, whatever mode a later call has', async () => {
     const harness = await skillHarness({ mode: MODE });
     roots.push(harness.root);
     const started = await harness.call({ kind: 'start', name: 'mode', answers: { confirmed: false, hitl: 'auto-approve' }, inputs: undefined }, { mode: 'unattended' });
     if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
     expect(await eventsToDone(harness, started.data.turn.run)).toContainEqual(expect.objectContaining({ kind: 'settled', step: 'show', outcome: 'success', tail: 'TEAMAI_MODE=unattended' }));
+    expect(await readRun(harness.config, started.data.turn.run)).toMatchObject({ steps: [{ id: 'show', runMode: 'unattended' }] });
   });
 
   it('runs a run whose skill state was written before the run mode existed as attended', async () => {

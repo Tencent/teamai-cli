@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { deliveredUnion } from '../git-exclude-delivered.js';
+import { liveDeliveredLists } from '../pull.js';
 
 const git = (cwd: string, ...args: string[]): string =>
   execFileSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1' } });
@@ -104,6 +105,36 @@ describe('deliveredUnion', () => {
     });
   });
 
+  it.skipIf(process.platform === 'win32')('asks git about another checkout\'s file once, however many checkouts list its path', async () => {
+    const rels = ['a', 'b', 'c', 'd'].map((name) => `.claude/skills/${name}/SKILL.md`);
+    for (const r of rels) await fse.outputFile(path.join(wt, r), 'mine\n');
+    const listers = async (count: number) => Promise.all(Array.from({ length: count }, async (_, i) => {
+      const root = path.join(tmp, `lister-${count}-${i}`);
+      for (const r of rels) await fse.outputFile(path.join(root, r), 'team\n');
+      return { root, paths: rels.map((r) => path.join(root, r)) };
+    }));
+    const log = path.join(tmp, 'git-spawns.log');
+    const bin = path.join(tmp, 'bin');
+    const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+    await fse.outputFile(path.join(bin, 'git'), `#!/bin/sh\necho "$*" >> "${log}"\nexec "${realGit}" "$@"\n`, { mode: 0o755 });
+    vi.stubEnv('TMPDIR', tmp);
+    vi.stubEnv('PATH', `${bin}${path.delimiter}${process.env.PATH ?? ''}`);
+    const spawnsFor = async (count: number) => {
+      const checkouts = [...await listers(count), { root: wt, paths: [] }];
+      await fse.remove(log);
+      const union = await deliveredUnion(checkouts);
+      expect(union.foreign).toHaveLength(count * rels.length);
+      return (await fse.readFile(log, 'utf8').catch(() => '')).split('\n').filter(Boolean).length;
+    };
+    await spawnsFor(1);
+
+    const one = await spawnsFor(1);
+    const six = await spawnsFor(6);
+
+    expect(one).toBeGreaterThan(0);
+    expect(six).toBe(one);
+  });
+
   it('holds a path back when only teamai\'s own delivered block ignores the other checkout\'s file', async () => {
     await fse.outputFile(exclude(), `# [teamai:delivered:start]\n/${rel}\n# [teamai:delivered:end]\n`);
     expect(git(wt, 'check-ignore', '--', rel).trim()).toBe(rel);
@@ -111,5 +142,36 @@ describe('deliveredUnion', () => {
       paths: [],
       foreign: [{ path: path.join(main, rel), rel, checkout: wt, file: path.join(wt, rel) }],
     });
+  });
+});
+
+describe('liveDeliveredLists', () => {
+  let tmp: string;
+  let main: string;
+  let wt: string;
+
+  beforeEach(async () => {
+    tmp = await fse.realpath(await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-live-lists-')));
+    main = path.join(tmp, 'main');
+    wt = path.join(tmp, 'wt');
+    await fse.outputFile(path.join(main, 'README.md'), 'app\n');
+    git(main, 'init', '-q', '-b', 'main');
+    git(main, 'add', '-A');
+    git(main, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'app');
+    git(main, 'worktree', 'add', '-q', wt, '-b', 'wt');
+  });
+
+  afterEach(async () => {
+    await fse.remove(tmp);
+  });
+
+  it('lists the current checkout once beside records an older release saved without a root', async () => {
+    const skill = path.join(main, '.claude/skills/team/SKILL.md');
+    // An older release wrote neither `root` nor `gitExcludePaths`.
+    const records = { 'old-1': { rev: 'a', targets: ['claude'] }, 'old-2': { rev: 'a', targets: ['claude'] } };
+
+    const lists = await liveDeliveredLists(main, records, { key: 'current', paths: { skills: [skill] } });
+
+    expect(lists).toEqual([{ root: main, paths: [skill] }, { root: wt, paths: null }]);
   });
 });

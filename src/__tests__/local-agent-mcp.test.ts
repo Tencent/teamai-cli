@@ -76,6 +76,26 @@ async function runResponse(
 }
 
 describe('local-agent: MCP install/uninstall commands', () => {
+  it('records Muse content ownership for a CLI uninstall after native key reordering', async () => {
+    const file = path.join(tmpDir, '.config', 'muse', 'settings.json');
+    await fse.outputJson(file, { schema_version: 1 });
+    const acks = await runResponse({ cmds: [{ id: 8989, type: 'install_mcp', scope: 'user', slug: 'muse-fixture', version: '1',
+      mcp_config: { transport: 'stdio', command: 'node', args: ['server.mjs'], env: { B: 'two', A: 'one' } },
+    }] }, 'muse');
+    expect(acks[0].status).toBe('success');
+    const settings = await fse.readJson(file);
+    delete settings.mcpServers['muse-fixture'].type;
+    settings.mcpServers['muse-fixture'] = Object.fromEntries(Object.entries(settings.mcpServers['muse-fixture']).reverse());
+    await fse.writeJson(file, settings);
+    const { reconcileMcpForConfig } = await import('../mcp-reconcile.js');
+    const { TeamaiConfigSchema } = await import('../types.js');
+    await reconcileMcpForConfig(TeamaiConfigSchema.parse({ team: 'fixture', repo: 'fixture', provider: 'git' }), {
+      repo: { kind: 'http', localPath: path.join(tmpDir, 'stub'), remote: 'https://test.example.com/api' },
+      username: 'tester', scope: 'user', enabledAgents: ['muse'], additionalRoles: [],
+    }, { removeAll: true });
+    expect((await fse.readJson(file)).mcpServers).not.toHaveProperty('muse-fixture');
+  });
+
   it.each(['', 'model = "gpt-5"', 'model = "gpt-5"\r\n'])('leaves Codex config.toml byte-identical when it installs or removes a server again, over %j', async (initial) => {
     const file = path.join(tmpDir, '.codex', 'config.toml');
     await fse.ensureDir(path.dirname(file));

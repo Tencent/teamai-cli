@@ -1,7 +1,7 @@
 /** `runs/<run>/skill.json`: what the skill driver keeps of a run between calls. This module is its only reader and writer. */
 import { z } from 'zod';
 import { DriverSchema } from '../../../driver-identity.js';
-import { RUN_MODES } from '../../../launch-context.js';
+import { RunModeSchema } from '../../../launch-context.js';
 import type { LocalConfig } from '../../../types.js';
 import { readFileSafe, writeJsonAtomic } from '../../../utils/fs.js';
 import { redactJson } from '../../../utils/redact.js';
@@ -146,7 +146,7 @@ const SkillStateSchema = z.object({
   driver: DriverSchema,
   invocation: z.enum(INVOCATIONS),
   /** `mode`: the run mode its start resolved, which every process of its attempts gets; a state from before it was kept is attended. */
-  options: z.object({ parallel: z.number().int().min(1), hitl: z.enum(HITL_MODES), mode: z.enum(RUN_MODES).default('attended') }),
+  options: z.object({ parallel: z.number().int().min(1), hitl: z.enum(HITL_MODES), mode: RunModeSchema.default('attended') }),
   /** `none`: the run has no prompt step. `pending`: the agent has not answered the host question yet. */
   host: z.discriminatedUnion('kind', [
     z.object({ kind: z.literal('none') }),

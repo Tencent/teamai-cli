@@ -189,7 +189,8 @@ const PERSONAL = new Set(['.claude/settings.local.json']);
  * without a list yet (never pulled, or not since an older CLI) proves nothing about its files, so one there is foreign unless it holds
  * the same bytes as the listed copy. A listed
  * path outside its own checkout (the main checkout's hook file) is not
- * tested. Read-only.
+ * tested. Each file is read, and git asked about it, at most once per call,
+ * however many checkouts list its path. Read-only.
  */
 export async function deliveredUnion(checkouts: ListedCheckout[]): Promise<DeliveredUnion> {
   const all = await Promise.all(checkouts.map(async ({ root, paths }) => ({
@@ -199,13 +200,14 @@ export async function deliveredUnion(checkouts: ListedCheckout[]): Promise<Deliv
     unlisted: paths === null,
   })));
   const listed = all.filter((checkout) => !checkout.unlisted);
+  const facts = fileFacts();
   const result: DeliveredUnion = { paths: [], foreign: [] };
   for (const checkout of listed) {
     for (const file of checkout.paths) {
       const rel = path.relative(checkout.root, file);
       const inside = rel !== '' && !rel.startsWith(`..${path.sep}`) && rel !== '..' && !path.isAbsolute(rel);
       const portable = rel.split(path.sep).join('/');
-      const foreign = inside && !PERSONAL.has(portable) ? await foreignIn(all.filter((other) => other !== checkout), rel, file) : [];
+      const foreign = inside && !PERSONAL.has(portable) ? await foreignIn(all.filter((other) => other !== checkout), rel, file, facts) : [];
       result.foreign.push(...foreign.map((other) => ({
         path: file, rel: portable, checkout: other.root, file: other.file, ...other.unlisted ? { unlisted: true } : {},
       })));
@@ -217,23 +219,42 @@ export async function deliveredUnion(checkouts: ListedCheckout[]): Promise<Deliv
 }
 
 async function foreignIn(
-  others: Array<{ root: string; set: Set<string>; unlisted: boolean }>, rel: string, delivered: string,
+  others: Array<{ root: string; set: Set<string>; unlisted: boolean }>, rel: string, delivered: string, facts: FileFacts,
 ): Promise<Array<{ root: string; file: string; unlisted: boolean }>> {
   const found = await Promise.all(others.map(async ({ root, set, unlisted }) => {
     const file = path.join(root, rel);
-    if (set.has(file) || !await fse.lstat(file).then(() => true, () => false)) return null;
+    if (set.has(file) || !await facts.exists(file)) return null;
     // A checkout with no list proves nothing either way: a file equal to teamai's copy is teamai's.
-    if (unlisted && await sameBytes(file, delivered)) return null;
+    if (unlisted && await sameBytes(file, delivered, facts)) return null;
     // The member's own rule already hides it there: a line of teamai's would hide nothing more.
-    if (await ignoredByMembersRule(file)) return null;
+    if (await facts.ignoredByMembersRule(file)) return null;
     return { root, file, unlisted };
   }));
   return found.filter((f) => f !== null);
 }
 
+/** What deliveredUnion reads of a file: none of it depends on which checkout listed the path. */
+type FileFacts = ReturnType<typeof fileFacts>;
+
+function fileFacts() {
+  const once = <T>(ask: (file: string) => Promise<T>): (file: string) => Promise<T> => {
+    const answers = new Map<string, Promise<T>>();
+    return (file) => {
+      let answer = answers.get(file);
+      if (!answer) answers.set(file, answer = ask(file));
+      return answer;
+    };
+  };
+  return {
+    exists: once((file) => fse.lstat(file).then(() => true, () => false)),
+    bytes: once((file) => fse.readFile(file).catch(() => null)),
+    ignoredByMembersRule: once(ignoredByMembersRule),
+  };
+}
+
 /** Whether two regular files hold the same bytes; false when either cannot be read. */
-async function sameBytes(a: string, b: string): Promise<boolean> {
-  const [x, y] = await Promise.all([a, b].map((file) => fse.readFile(file).catch(() => null)));
+async function sameBytes(a: string, b: string, facts: FileFacts): Promise<boolean> {
+  const [x, y] = await Promise.all([facts.bytes(a), facts.bytes(b)]);
   return x !== null && y !== null && x.equals(y);
 }
 

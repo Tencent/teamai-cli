@@ -1,10 +1,16 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import YAML from 'yaml';
+import { loadTeamConfig } from '../config.js';
 import { createProjectToolRoots, seedProjectAgentRoot } from '../project-agent-root.js';
+
+vi.mock('../config.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../config.js')>();
+  return { ...actual, loadTeamConfig: vi.fn(actual.loadTeamConfig) };
+});
 
 let tmpDir: string;
 
@@ -143,6 +149,20 @@ describe('createProjectToolRoots', () => {
     await createProjectToolRoots({ cwd: projectRoot });
 
     expect(dotEntries(projectRoot)).toEqual(['.claude', '.codex', '.teamai']);
+  });
+
+  it('does not create the checkout again when it is removed before its roots are', async () => {
+    const projectRoot = writeProjectConfig({ projectRoot: path.join(tmpDir, 'wt'), enabledAgents: ['claude'] });
+    const { loadTeamConfig: read } = await vi.importActual<typeof import('../config.js')>('../config.js');
+    vi.mocked(loadTeamConfig).mockImplementationOnce(async (...args) => {
+      const team = await read(...args);
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      return team;
+    });
+
+    await createProjectToolRoots({ cwd: projectRoot });
+
+    expect(fs.existsSync(projectRoot)).toBe(false);
   });
 
   describe('in a linked worktree with empty enabledAgents', () => {

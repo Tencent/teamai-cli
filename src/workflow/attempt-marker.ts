@@ -1,14 +1,8 @@
-import { RUN_MODE_ENV, type RunMode } from '../launch-context.js';
+import { ATTEMPT_ENV, RUN_MODE_ENV, type RunMode } from '../launch-context.js';
 import { AGENT_SESSION_ENV } from '../utils/session-id.js';
 import { isRunId } from './store.js';
 import type { WorkflowFailure } from './types.js';
 import { git, worktreeCheckout } from './worktree.js';
-
-/**
- * The variable a skill driver's runner is started with, and passes to the command it runs: `<run>/<attempt>`. A
- * `workflow report` call that carries the marker of the attempt it reports is that attempt's runner.
- */
-export const ATTEMPT_ENV = 'TEAMAI_WORKFLOW_ATTEMPT';
 
 /** What every process of an attempt of `run` gets: the attempt marker, and the run's mode. */
 export function attemptEnv(run: string, attempt: string, mode: RunMode): Record<typeof ATTEMPT_ENV | typeof RUN_MODE_ENV, string> {

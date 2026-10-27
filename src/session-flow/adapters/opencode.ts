@@ -23,11 +23,12 @@ import * as fs from 'node:fs';
 import { createServer } from 'node:net';
 import * as path from 'node:path';
 import crossSpawn from 'cross-spawn';
-import { homedir, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { z } from 'zod';
 import { AgentAdapter, ToolUnavailableError, type SessionMeta, type SessionReadRef, type Subagent, type SubagentsRead } from './base.js';
 import { imagePlaceholderText, type ContentBlock, type Message, type Session } from '../ir.js';
 import { resolveRealCwd } from '../fs.js';
+import { sessionStoreDir } from '../../locate.js';
 import { deriveOpencodeMessageIds, deriveTargetSessionId } from '../ids.js';
 import { execCommand, probeBinary, type ExecResult } from '../../utils/exec.js';
 
@@ -358,17 +359,17 @@ function blockText(block: ContentBlock): string {
 export class OpencodeAdapter extends AgentAdapter {
   static readonly platform = 'opencode';
 
+  /** @param storageRoot OpenCode's data directory (`sessionStoreDir`): `$XDG_DATA_HOME/opencode`, `~/.local/share/opencode` by default. */
+  constructor(private readonly storageRoot = sessionStoreDir('opencode', undefined)) {
+    super();
+  }
+
   get platform(): string {
     return 'opencode';
   }
 
-  /** OpenCode's data directory: `$XDG_DATA_HOME/opencode`, `~/.local/share/opencode` by default. */
-  static getDefaultStoragePath(): string {
-    return path.join(process.env.XDG_DATA_HOME || path.join(homedir(), '.local', 'share'), 'opencode');
-  }
-
   isReady(): boolean {
-    return fs.existsSync(OpencodeAdapter.getDefaultStoragePath());
+    return fs.existsSync(this.storageRoot);
   }
 
   /** Run an `opencode session` command; throws `ToolUnavailableError` when no OpenCode 2 runs here. */

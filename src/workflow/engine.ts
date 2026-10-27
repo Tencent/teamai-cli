@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { parseReportedAgent, parseReportedUsed, settleObservation, type ReportedAgent, type Used } from '../agent-observation.js';
 import { DriverSchema, sameDriver } from '../driver-identity.js';
+import { RunModeSchema, type RunMode } from '../launch-context.js';
 import { log } from '../utils/logger.js';
 import type { LocalConfig } from '../types.js';
 import { loadCachedWorkflow, loadWorkflowTree } from './cache.js';
@@ -875,7 +876,7 @@ export async function startRun(
   config: LocalConfig,
   name: string,
   inputs: unknown,
-  { secrets, ...options }: { secrets: Record<string, string>; driver?: DriverIdentity; base?: RunState['base']; checkout?: string },
+  { secrets, ...options }: { secrets: Record<string, string>; runMode?: RunMode; driver?: DriverIdentity; base?: RunState['base']; checkout?: string },
 ): Promise<WorkflowEnvelope> {
   const cached = await loadCachedWorkflow(config, name);
   if (!cached) {
@@ -904,6 +905,7 @@ export async function startRun(
     ...(cached.definition.inputs ? { inputs: inputs as Record<string, unknown> } : {}),
     sourceHash: tree.sourceHash,
     ...(tree.teamRevision ? { teamRevision: tree.teamRevision } : {}),
+    ...(options.runMode ? { runMode: options.runMode } : {}),
     definition: cached.definition,
     ...(Object.keys(tree.workflows).length > 0 ? { workflows: tree.workflows } : {}),
     ...(Object.keys(scorers).length > 0 ? { scorers } : {}),
@@ -991,6 +993,8 @@ export interface NextOptions {
   autoApprove?: boolean;
   /** Take the run over from the install that published it before leasing; a run this install owns stays as it is. */
   claim?: boolean;
+  /** The run mode the driver runs its leases in, the one it exports to their processes. A lease issued or handed back keeps it. */
+  runMode?: RunMode;
   /** Process-only: the team env the caller resolved for this operation, so `next` does not resolve it again. */
   env?: WorkflowEnv;
 }
@@ -1192,7 +1196,7 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
           const { unenforced } = terms.terms;
           const expiresAt = ownDeadline(run, state, definition, now);
           const step = lease(state, offering({
-            attempt: `a${randomBytes(4).toString('hex')}`, revision: run.revision, driver,
+            attempt: `a${randomBytes(4).toString('hex')}`, revision: run.revision, driver, ...(options.runMode ? { runMode: options.runMode } : {}),
             ...(unenforced.length > 0 ? { unenforced } : {}), ...(expiresAt !== undefined ? { expiresAt } : {}),
           }, plan.session));
           rememberCopy(run, plan, driver);
@@ -1227,7 +1231,9 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
           continue;
         }
         const unenforced = unionUnenforced(leased.lease.unenforced ?? [], terms.terms.unenforced);
-        leased.lease = offering({ ...leased.lease, ...(unenforced.length > 0 ? { unenforced } : {}) }, offered?.session);
+        leased.lease = offering({
+          ...leased.lease, ...(unenforced.length > 0 ? { unenforced } : {}), ...(options.runMode ? { runMode: options.runMode } : {}),
+        }, offered?.session);
         if (offered) rememberCopy(run, offered, driver);
         return answer(leaseData(run, leased, located.step, rendered, terms.terms, offered));
       }
@@ -1259,7 +1265,7 @@ function driverFrom(value: unknown): DriverIdentity | undefined {
 const DRIVER_FIELDS = new Set(['kind', 'machine', 'workspace', 'can']);
 
 /** The top-level payload fields `parseNextPayload` reads. */
-const NEXT_PAYLOAD_FIELDS = new Set(['driver', 'running', 'canTakeLease', 'base', 'claim', 'autoApprove']);
+const NEXT_PAYLOAD_FIELDS = new Set(['driver', 'running', 'canTakeLease', 'base', 'claim', 'autoApprove', 'runMode']);
 
 /** The top-level payload fields `parseReport` reads. Keep in sync with the fields it picks. */
 const REPORT_FIELDS = new Set([
@@ -1429,6 +1435,11 @@ export function parseNextPayload(value: unknown): ParsedNextPayload | string {
   if (record.claim !== undefined) {
     if (typeof record.claim !== 'boolean') return 'claim must be a boolean';
     request.claim = record.claim;
+  }
+  if (record.runMode !== undefined) {
+    const runMode = RunModeSchema.safeParse(record.runMode);
+    if (!runMode.success) return 'runMode must be attended or unattended';
+    request.runMode = runMode.data;
   }
   const ignored = unreadFields(record, NEXT_PAYLOAD_FIELDS);
   const can = isRecord(record.driver) ? record.driver.can : undefined;
@@ -1693,6 +1704,7 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
       agent: settleObservation(report, defined?.agent),
       ...(report.used ? { used: report.used } : {}),
       ...(unenforced.length > 0 ? { unenforced } : {}),
+      ...(step.lease.runMode ? { runMode: step.lease.runMode } : {}),
       installId: install.id,
     };
     if (outcome !== 'released') continueSession(run, report);

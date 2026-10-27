@@ -88,7 +88,7 @@ describe('recall maintenance scans never rewrite a v1 votes file (#900 C7)', () 
     writeV1Votes('bob', ['lesson']);
     const before = snapshot(votesDir);
 
-    await findPromotionCandidates([learningsDir], votesDir);
+    await findPromotionCandidates([learningsDir], votesDir, undefined);
 
     expect(snapshot(votesDir)).toEqual(before);
   });

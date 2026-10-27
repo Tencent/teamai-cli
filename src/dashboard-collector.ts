@@ -41,6 +41,7 @@ import {
 } from './types.js';
 import { getUserHome } from './utils/home.js';
 import type { HeadState } from './utils/git.js';
+import type { SessionRun } from './launch-context.js';
 import { estimateClaudeRequest } from './model-pricing.js';
 
 // ─── Event collection data flow ─────────────────────────
@@ -2067,6 +2068,34 @@ function setLatestTokenSnapshot(
 }
 
 /**
+ * The events of the member's own sessions: an event a session teamai launched recorded (`launchedBy`) never counts as
+ * the member's, in either mode. A step that continued a member's session leaves the member's earlier turns theirs, and
+ * ends what counts of that session: a Stop's snapshot covers the whole transcript, so a later one holds the step's turns.
+ */
+export function memberEvents(events: DashboardEvent[]): DashboardEvent[] {
+  const launchedFrom = new Map<string, number>();
+  for (const event of events) {
+    const at = Date.parse(event.timestamp);
+    if (event.launchedBy && Number.isFinite(at)) launchedFrom.set(event.sessionId, Math.min(at, launchedFrom.get(event.sessionId) ?? at));
+  }
+  return events.filter((event) => {
+    if (event.launchedBy) return false;
+    const from = launchedFrom.get(event.sessionId);
+    return from === undefined || Date.parse(event.timestamp) < from;
+  });
+}
+
+/**
+ * Each session's run: the mode and launcher its latest event that recorded a mode says. A session with no such event,
+ * such as one recorded before the mode was, has none, and counts as not recorded.
+ */
+export function sessionRuns(events: DashboardEvent[]): Map<string, SessionRun> {
+  const runs = new Map<string, SessionRun>();
+  for (const { sessionId, runMode, launchedBy } of events) if (runMode) runs.set(sessionId, { runMode, ...(launchedBy ? { launchedBy } : {}) });
+  return runs;
+}
+
+/**
  * Aggregate per-session metrics from raw events (no timeout filtering).
  *
  * - interrupt / toolReject: taken from the latest Stop event's snapshot.
@@ -2284,6 +2313,9 @@ export function aggregateSessionInterventions(
 
 // ─── JSONL compaction ───────────────────────────────────
 
+/** How long compaction keeps where a launched session started: Claude Code removes a transcript after 30 days by default. */
+const LAUNCHED_RESUMABLE_MS = 30 * 24 * 60 * 60 * 1000;
+
 /**
  * Compact events.jsonl by keeping only events for active sessions.
  * Active = not stopped and last activity within STALE_TIMEOUT, or its tool
@@ -2339,8 +2371,25 @@ export async function compactEvents(eventsPath?: string): Promise<void> {
         if (isProcessAlive(pid)) activeIds.add(sessionId);
       }
 
+      // A session teamai launched keeps its first launched event: a member's resume of it must still find where teamai
+      // started, or its Stop would bring the launched turns back to the member (memberEvents). One line per session,
+      // and none once its tool may no longer resume it, so those lines never refill the log. Until the session is stale
+      // it keeps every event, since its first one alone would list it as running again.
+      const launchedFrom = new Map<string, DashboardEvent>();
+      const lastAt = new Map<string, number>();
+      for (const e of chronological) {
+        if (e.launchedBy && !launchedFrom.has(e.sessionId)) launchedFrom.set(e.sessionId, e);
+        lastAt.set(e.sessionId, Date.parse(e.timestamp));
+      }
+      const now = Date.now();
+      const marks = new Set<DashboardEvent>();
+      for (const [sessionId, first] of launchedFrom) {
+        if (now - (lastAt.get(sessionId) ?? 0) <= DASHBOARD_STALE_TIMEOUT_MS) activeIds.add(sessionId);
+        else if (now - Date.parse(first.timestamp) <= LAUNCHED_RESUMABLE_MS) marks.add(first);
+      }
+
       // Keep only events for active sessions
-      const kept = events.filter(e => activeIds.has(e.sessionId));
+      const kept = events.filter(e => activeIds.has(e.sessionId) || marks.has(e));
       const compacted = kept.map(e => JSON.stringify(e)).join('\n') + '\n';
 
       // Atomic write: write to temp with the file's mode, then rename. The
@@ -2368,6 +2417,7 @@ export async function compactEvents(eventsPath?: string): Promise<void> {
 
 /** What a session last recorded: its scope and the repo it was in. */
 interface RecordedScope {
+  cwd?: string;
   /** The last event's data home key, with the `projectAnchor` of that same event. */
   scope?: { key: string; anchor: string | undefined };
   /** The last `projectAnchor` the session recorded (#809's attribution rule). */
@@ -2391,6 +2441,7 @@ function recordedScope(sessionId: string, cwd: string): Promise<RecordedScope> {
       const here = own.filter((e) => e.cwd === cwd);
       const scoped = here.find((e) => e.dataHomeKey) ?? own.find((e) => e.dataHomeKey);
       return {
+        cwd: scoped?.cwd ?? own.find((e) => e.cwd)?.cwd,
         scope: scoped?.dataHomeKey ? { key: scoped.dataHomeKey, anchor: scoped.projectAnchor } : undefined,
         projectAnchor: (here.find((e) => e.projectAnchor) ?? own.find((e) => e.projectAnchor))?.projectAnchor,
       };
@@ -2398,6 +2449,13 @@ function recordedScope(sessionId: string, cwd: string): Promise<RecordedScope> {
     recordedScopes.set(key, known);
   }
   return known;
+}
+
+/** Recover the latest missing directory when the launcher's process cwd is gone. */
+export async function recordedHookCwd(hookData: Record<string, unknown>, tool: string): Promise<string | undefined> {
+  const sessionId = deriveDispatchSessionId(hookData, tool);
+  const events = (await readEvents()).filter(event => event.sessionId === sessionId).reverse();
+  return (events.find(event => event.cwd && !fs.existsSync(event.cwd)) ?? events.find(event => event.cwd))?.cwd;
 }
 
 /**
@@ -2547,6 +2605,8 @@ export async function dashboardReport(toolArg?: string): Promise<void> {
     addGitStateAtStart(event, gitStateIn(hookData)),
   ]);
   event.projectAnchor = projectAnchor;
+  const { sessionRun } = await import('./launch-context.js');
+  Object.assign(event, sessionRun(process.env));
   await appendEvent(event);
 
   // Trigger compaction check (non-blocking)

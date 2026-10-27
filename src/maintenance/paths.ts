@@ -3,6 +3,7 @@ import path from 'node:path';
 import type { LocalConfig } from '../types.js';
 import type { RefreshResult } from '../utils/branch-worktree.js';
 import { getKnowledgeDir, getReportsDir, usesBranchWorktree } from '../types.js';
+import { withFileLock } from '../update.js';
 import { learningsRoots } from '../utils/learnings-roots.js';
 
 export interface MaintenancePaths {
@@ -46,6 +47,17 @@ export class CheckoutUnavailableError extends Error {
   }
 }
 
+/**
+ * A teamai pull/push holds the sync lock. The refresh fetches into the same
+ * clone, and a fetch beside a pull pushes the pull into its reset fallback.
+ */
+export class SyncLockedError extends Error {
+  override name = 'SyncLockedError';
+  constructor() {
+    super('Another teamai pull/push is in progress, so the learnings and votes were not refreshed. Nothing was changed. Run this again when it finishes.');
+  }
+}
+
 /** Throw unless the refresh left a checkout maintenance can read and write. */
 function assertCheckoutReady(checkout: 'learnings' | 'reports', refreshed: RefreshResult): void {
   switch (refreshed.status) {
@@ -70,12 +82,14 @@ function assertCheckoutReady(checkout: 'learnings' | 'reports', refreshed: Refre
  * both data sets under localConfig.repo.localPath. Maintenance is a report
  * reader, so a cold start may create its local cache but never publishes a new
  * reports branch as a side effect. A dry run creates and refreshes nothing.
- * Throws CheckoutLockedError when the reports or learnings lock cannot be
- * taken, and CheckoutUnavailableError when either checkout could not be set up.
+ * The refresh runs under the sync lock unless the caller says it holds it.
+ * Throws SyncLockedError when a pull/push holds that lock, CheckoutLockedError
+ * when the reports or learnings lock cannot be taken, and
+ * CheckoutUnavailableError when either checkout could not be set up.
  */
 export async function resolveMaintenancePaths(
   localConfig: LocalConfig,
-  options: { dryRun?: boolean } = {},
+  options: { dryRun?: boolean; holdsSyncLock?: boolean } = {},
 ): Promise<MaintenancePaths> {
   if (usesBranchWorktree(localConfig) && options.dryRun) {
     // A dry run reads both checkouts as they are: neither refreshed nor created.
@@ -84,12 +98,13 @@ export async function resolveMaintenancePaths(
     const { learningsBranch } = await import('../utils/learnings-branch.js');
     await learningsBranch.checkOwner(localConfig);
   } else if (usesBranchWorktree(localConfig)) {
-    const { refreshReportsWorktree } = await import('../utils/reports-branch.js');
-    assertCheckoutReady('reports', await refreshReportsWorktree(localConfig, { pushIfCreated: false }));
-    // Maintenance reads and rewrites learnings, so it needs the branch as other
-    // members left it. Read-only: it never publishes a branch that is missing.
-    const { learningsBranch } = await import('../utils/learnings-branch.js');
-    assertCheckoutReady('learnings', await learningsBranch.refresh(localConfig, { pushIfCreated: false }));
+    const { syncLockPath } = await import('../utils/learnings-publish.js');
+    const lock = options.holdsSyncLock ? null : syncLockPath(localConfig);
+    if (lock === null) {
+      await refreshCheckouts(localConfig);
+    } else if (!(await withFileLock(lock, { attempts: 1, delayMs: 0 }, () => refreshCheckouts(localConfig))).held) {
+      throw new SyncLockedError();
+    }
   }
 
   const repoPath = getKnowledgeDir(localConfig);
@@ -100,4 +115,13 @@ export async function resolveMaintenancePaths(
     learningsWriteDir: roots.write,
     learningsReadDirs: roots.read,
   };
+}
+
+async function refreshCheckouts(localConfig: LocalConfig): Promise<void> {
+  const { refreshReportsWorktree } = await import('../utils/reports-branch.js');
+  assertCheckoutReady('reports', await refreshReportsWorktree(localConfig, { pushIfCreated: false }));
+  // Maintenance reads and rewrites learnings, so it needs the branch as other
+  // members left it. Read-only: it never publishes a branch that is missing.
+  const { learningsBranch } = await import('../utils/learnings-branch.js');
+  assertCheckoutReady('learnings', await learningsBranch.refresh(localConfig, { pushIfCreated: false }));
 }

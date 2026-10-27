@@ -6,6 +6,7 @@
  * evidence pages, router/hot/index navigation, and gaps detection.
  */
 
+import { createHash } from 'node:crypto';
 import { statSync } from 'node:fs';
 import { mkdir, writeFile, readFile, realpath, lstat } from 'node:fs/promises';
 import path from 'node:path';
@@ -566,6 +567,17 @@ interface SourceRepositoryMetadata {
   repoUrl?: string;
   repoIdentity?: string;
   sourceSubdir?: string;
+  /**
+   * Hex `sha256` of the verified `realpath` of the git root. Written only for a
+   * checkout with no remote identity (#1422), because such a checkout has
+   * nothing else stable to recognise itself by; a checkout with a remote is
+   * identified by `repoIdentity` and does not get this member. Hashed rather
+   * than stored raw because `source-manifest.json` is committed to the
+   * teamwiki, so a raw path would publish the member's home directory. This is
+   * not a repository identity, so it is never stored in `repoIdentity`, which
+   * freshness compares against remote URLs.
+   */
+  localRootHash?: string;
 }
 
 interface StoredSourceManifest extends SourceRepositoryMetadata {
@@ -606,17 +618,28 @@ function manifestMatchesSource(
   project: string,
   source: SourceRepositoryMetadata,
 ): manifest is StoredSourceManifest {
-  if (!manifest || !source.repoIdentity || source.sourceSubdir === undefined) return false;
+  if (!manifest || source.sourceSubdir === undefined) return false;
   if (manifest.project !== project || manifest.sourceSubdir !== source.sourceSubdir) return false;
-  if (typeof manifest.repoIdentity === 'string' && manifest.repoIdentity.trim()) {
-    return manifest.repoIdentity.trim() === source.repoIdentity;
+  if (source.repoIdentity) {
+    if (typeof manifest.repoIdentity === 'string' && manifest.repoIdentity.trim()) {
+      return manifest.repoIdentity.trim() === source.repoIdentity;
+    }
+    if (typeof manifest.repoUrl !== 'string' || !manifest.repoUrl.trim()) return false;
+    try {
+      return repoIdentity(manifest.repoUrl) === source.repoIdentity;
+    } catch {
+      return false;
+    }
   }
-  if (typeof manifest.repoUrl !== 'string' || !manifest.repoUrl.trim()) return false;
-  try {
-    return repoIdentity(manifest.repoUrl) === source.repoIdentity;
-  } catch {
-    return false;
-  }
+  // A checkout with no origin remote has no canonical identity (#1422), so the
+  // git root it was read from is the only stable statement of "this source". A
+  // manifest that names a remote was written by a checkout that had one and
+  // says nothing about this directory, so it cannot serve as its baseline.
+  if (typeof manifest.repoIdentity === 'string' && manifest.repoIdentity.trim()) return false;
+  if (typeof manifest.repoUrl === 'string' && manifest.repoUrl.trim()) return false;
+  return typeof source.localRootHash === 'string'
+    && source.localRootHash !== ''
+    && manifest.localRootHash === source.localRootHash;
 }
 
 /**
@@ -629,11 +652,13 @@ async function sourceRepositoryMetadata(
   explicitRepoUrl?: string,
 ): Promise<SourceRepositoryMetadata> {
   let sourceSubdir: string | undefined;
+  let localRootHash: string | undefined;
   let remoteUrl = explicitRepoUrl;
   try {
     const git = createGit(root);
     const gitRoot = (await git.revparse(['--show-toplevel'])).trim();
     const [realGitRoot, realSourceRoot] = await Promise.all([realpath(gitRoot), realpath(root)]);
+    localRootHash = createHash('sha256').update(realGitRoot).digest('hex');
     const relative = path.relative(realGitRoot, realSourceRoot);
     if (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`)) {
       sourceSubdir = relative.split(path.sep).filter(Boolean).join('/');
@@ -647,11 +672,18 @@ async function sourceRepositoryMetadata(
     // unknown. Extraction itself still works for non-Git directories.
   }
 
-  if (!remoteUrl) return sourceSubdir !== undefined ? { sourceSubdir } : {};
+  if (!remoteUrl) {
+    return {
+      ...(sourceSubdir !== undefined ? { sourceSubdir } : {}),
+      ...(localRootHash !== undefined ? { localRootHash } : {}),
+    };
+  }
   const safeUrl = sanitizeRepoUrl(remoteUrl);
   const identity = repoIdentity(safeUrl);
   // Keep the historical repoUrl field for status output, after removing
   // credentials, and store strict identity separately for freshness checks.
+  // `localRootHash` is deliberately left out: `repoIdentity` already identifies
+  // this checkout, and freshness never reads the root for a remote one.
   return {
     repoUrl: safeUrl,
     repoIdentity: identity,
@@ -1110,6 +1142,10 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<boo
     files: allManifestFiles,
   };
   if (sourceRepo.sourceSubdir !== undefined) manifestObject.sourceSubdir = sourceRepo.sourceSubdir;
+  // The hashed git root is what lets a later run recognise this baseline when
+  // the checkout has no remote (#1422). A checkout with a remote is identified
+  // by `repoIdentity`, so nothing reads it there and it is not written.
+  if (sourceRepo.localRootHash) manifestObject.localRootHash = sourceRepo.localRootHash;
   if (headSha) manifestObject.headSha = headSha;
   const repoUrl = sourceRepo.repoUrl ?? (sameSource ? prevRepoUrl : undefined);
   const branch = opts.branch ?? prevBranch;

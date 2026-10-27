@@ -258,7 +258,7 @@ export async function loadModelAliases(localConfig: LocalConfig): Promise<ModelA
   const read = await readAliasesFile(localPath, localPath);
   const local = read.ok ? read : { aliases: new Map<string, AliasEntries>(), warnings: [] };
   // Read once per load, and only matters for aliases: a literal model is written as is.
-  const switches = await liveModelSwitches();
+  const switches = await liveModelSwitches(localConfig);
   // A local name no team here defines is another team's: it has no effect, so no warning either.
   const localHere = new Map([...local.aliases].filter(([alias]) => names.has(alias)));
   return {

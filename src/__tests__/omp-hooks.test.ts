@@ -16,7 +16,6 @@ vi.mock('../utils/logger.js', () => ({
 }));
 
 import {
-  resolveOmpExtensionsDir,
   injectOmpHooks,
   removeOmpHooks,
   buildOmpExtensionSource,
@@ -25,10 +24,11 @@ import {
 import { reconcileHooksToAllTools } from '../hooks.js';
 import { log } from '../utils/logger.js';
 import { loadOmpExtension, type ExtensionDispatch } from './helpers/pi-extensions.js';
+import { hookAdapterDir } from '../locate.js';
 
-describe('resolveOmpExtensionsDir', () => {
+describe('the OMP extension directory', () => {
   it('always targets the user agent dir (single-copy policy)', () => {
-    expect(resolveOmpExtensionsDir()).toBe(
+    expect(hookAdapterDir('omp-extension')).toBe(
       path.join(os.homedir(), '.omp', 'agent', 'extensions'),
     );
   });

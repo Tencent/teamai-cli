@@ -965,6 +965,9 @@ export async function checkoutMaster(localPath: string): Promise<void> {
   await switchToDefaultBranch(git, defaultBranch);
 }
 
+/** Where every generated review branch lives on origin. */
+export const PUSH_BRANCH_PREFIX = 'teamai/push/';
+
 /**
  * Generate a branch name for teamai push.
  */
@@ -972,7 +975,7 @@ export function generateBranchName(username: string): string {
   const now = new Date();
   const pad = (n: number) => n.toString().padStart(2, '0');
   const timestamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
-  return `teamai/push/${username}/${timestamp}`;
+  return `${PUSH_BRANCH_PREFIX}${username}/${timestamp}`;
 }
 
 /**

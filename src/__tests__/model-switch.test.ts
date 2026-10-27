@@ -888,6 +888,39 @@ describe('model switch bookkeeping', () => {
     expect((await fse.readJson(process.env.OPENCODE_CONFIG)).plugin).toEqual(['keep']);
   });
 
+  it('writes into the Claude and Codex roots teamai init recorded, from a shell without CLAUDE_CONFIG_DIR or CODEX_HOME', async () => {
+    const claudeRoot = path.join(home, '.claude-work');
+    const codexRoot = path.join(home, '.codex-work');
+    await fse.outputFile(path.join(home, '.teamai', 'config.yaml'), `repo:\n  localPath: /x\n  remote: ''\nusername: u\ntoolRoots:\n  claude: ${claudeRoot}\n  codex: ${codexRoot}\n`);
+    await fse.outputJson(path.join(claudeRoot, 'settings.json'), { env: { KEEP: 'yes' } });
+    await fse.outputFile(path.join(codexRoot, 'config.toml'), 'model = "personal"\n');
+    expect((await switchModelProfile(routed({ anthropic: ['team'] }), ['claude']))[0].status).toBe('switched');
+    expect((await switchModelProfile(routed({ 'openai-responses': ['team'] }), ['codex']))[0].status).toBe('switched');
+    expect((await fse.readJson(path.join(claudeRoot, 'settings.json'))).env.KEEP).toBe('yes');
+    expect(await fse.readFile(path.join(codexRoot, 'config.toml'), 'utf8')).toContain('model = "team"');
+    expect(await fse.pathExists(claudeFile())).toBe(false);
+    expect(await fse.pathExists(codexFile())).toBe(false);
+    expect((await restoreModelProfiles(['claude', 'codex'])).map((row) => row.status)).toEqual(['restored', 'restored']);
+    expect(await fse.readFile(path.join(codexRoot, 'config.toml'), 'utf8')).toMatch(/^model = "personal"\n+$/);
+  });
+
+  it('names the way out when a switch an earlier release wrote under the default root no longer matches the recorded root', async () => {
+    await fse.outputJson(claudeFile(), { env: { KEEP: 'yes' } });
+    expect((await switchModelProfile(routed({ anthropic: ['team'] }), ['claude']))[0].status).toBe('switched');
+    const claudeRoot = path.join(home, '.claude-work');
+    await fse.ensureDir(claudeRoot);
+    await fse.outputFile(path.join(home, '.teamai', 'config.yaml'), `repo:\n  localPath: /x\n  remote: ''\nusername: u\ntoolRoots:\n  claude: ${claudeRoot}\n`);
+
+    const [skipped] = await restoreModelProfiles(['claude']);
+    expect(skipped.status).toBe('skipped');
+    expect(skipped.message).toContain(path.join(claudeRoot, 'settings.json'));
+    expect(skipped.message).toContain(claudeFile());
+
+    process.env.CLAUDE_CONFIG_DIR = path.join(home, '.claude');
+    expect((await restoreModelProfiles(['claude']))[0].status).toBe('restored');
+    expect(await fse.readJson(claudeFile())).toEqual({ env: { KEEP: 'yes' } });
+  });
+
   it('does not restore into a different Codex configuration directory', async () => {
     const first = path.join(home, 'first-codex');
     const second = path.join(home, 'second-codex');

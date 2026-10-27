@@ -32,8 +32,11 @@ const mockClaimPackageHint = vi.fn().mockResolvedValue(null);
 const mockTakePendingPackageHint = vi.fn().mockResolvedValue(null);
 
 const mockTeamDelivery = vi.fn().mockResolvedValue({ complete: false, key: undefined, gap: 'no_record' });
+// The checkout already has a delivery record: a session start or tool use prepares nothing.
+const mockDeliveringCheckoutRecord = vi.fn().mockResolvedValue({ rev: 'abc', targets: [] });
 vi.mock('../pull.js', () => ({
   pull: mockPull,
+  deliveringCheckoutRecord: mockDeliveringCheckoutRecord,
   settleLateUsageReport: mockSettleLateUsageReport,
   teamDelivery: mockTeamDelivery,
 }));
@@ -187,8 +190,10 @@ vi.mock('../utils/reports-branch.js', () => ({
 }));
 
 const mockSeedProjectAgentRoot = vi.fn().mockResolvedValue(undefined);
+const mockCreateProjectToolRoots = vi.fn().mockResolvedValue(undefined);
 vi.mock('../project-agent-root.js', () => ({
   seedProjectAgentRoot: mockSeedProjectAgentRoot,
+  createProjectToolRoots: mockCreateProjectToolRoots,
 }));
 
 // No scope scores finished sessions unless a test says so; a detached process is never started for real.
@@ -1674,6 +1679,80 @@ describe('post-tool-use dispatch — local-agent runs detached, never blocks hos
     expect(mockParseHookEvent).not.toHaveBeenCalled();
     await dispatcher.dispatch('post-tool-use', '*', stdin, 'claude', 'background');
     expect(mockParseHookEvent).toHaveBeenCalled();
+  });
+});
+
+describe('a checkout no pull delivered into (#1424)', () => {
+  let root: string;
+  beforeEach(() => {
+    vi.clearAllMocks();
+    root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'new-checkout-')));
+    mockDeliveringCheckoutRecord.mockResolvedValue(undefined);
+    // A linked worktree: its `.git` file names a git dir holding `commondir`.
+    fs.mkdirSync(path.join(root, 'project'));
+    fs.mkdirSync(path.join(root, 'repo.git', 'worktrees', 'project'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'repo.git', 'worktrees', 'project', 'commondir'), '../..\n');
+    fs.writeFileSync(path.join(root, 'project', '.git'), `gitdir: ${path.join(root, 'repo.git', 'worktrees', 'project')}\n`);
+  });
+  afterEach(() => {
+    mockDeliveringCheckoutRecord.mockResolvedValue({ rev: 'abc', targets: [] });
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  const projectConfig = (kind: 'git' | 'http'): LocalConfig => ({
+    repo: { kind, localPath: path.join(root, 'team'), remote: '' }, username: 'test', scope: 'project',
+    additionalRoles: [], dataHome: path.join(root, 'data'), projectRoot: path.join(root, 'project'),
+  });
+  const toolUse = (config: LocalConfig) => createDispatcher({ handlers: buildHandlerRegistry(), localConfig: config })
+    .dispatch('post-tool-use', '*', { tool_name: 'EnterWorktree', cwd: path.join(root, 'project') }, 'claude', 'background');
+
+  it('prepares it from the team clone as last fetched', async () => {
+    await toolUse(projectConfig('git'));
+
+    expect(mockPull).toHaveBeenCalledWith({ silent: true, prepareCheckout: 'once', inline: true, localOnly: true });
+  });
+
+  it('prepares nothing in a main checkout, where init runs', async () => {
+    fs.rmSync(path.join(root, 'project', '.git'));
+    fs.mkdirSync(path.join(root, 'project', '.git'));
+
+    await toolUse(projectConfig('git'));
+
+    expect(mockPull).not.toHaveBeenCalled();
+  });
+
+  it('prepares nothing in a submodule or a --separate-git-dir checkout, whose git dir holds no commondir', async () => {
+    fs.rmSync(path.join(root, 'repo.git', 'worktrees', 'project', 'commondir'));
+
+    await toolUse(projectConfig('git'));
+
+    expect(mockPull).not.toHaveBeenCalled();
+  });
+
+  it('prepares nothing for an HTTP team, whose checkouts keep no delivery record', async () => {
+    await toolUse(projectConfig('http'));
+
+    expect(mockPull).not.toHaveBeenCalled();
+  });
+
+  it('git\'s hook for a new worktree hands the pull it starts after git returns the checkout to prepare', async () => {
+    const dispatcher = createDispatcher({ handlers: buildHandlerRegistry(), localConfig: projectConfig('git') });
+
+    await dispatcher.dispatch('post-checkout', '*', {
+      cwd: path.join(root, 'project'), hook_event_name: 'post-checkout', git_args: ['0'.repeat(40), 'a'.repeat(40), '1'],
+    }, 'git');
+
+    expect(mockSpawn).toHaveBeenCalledWith(process.execPath, [expect.any(String), 'pull', '--silent'], expect.objectContaining({
+      env: expect.objectContaining({ TEAMAI_GIT_HOOK: 'post-checkout', TEAMAI_PREPARE_CHECKOUT: 'once' }),
+    }));
+  });
+
+  it('a session start still pulls when the tool roots cannot be created', async () => {
+    mockCreateProjectToolRoots.mockRejectedValueOnce(new Error('EACCES'));
+    const handler = buildHandlerRegistry().find((r) => r.event === 'session-start' && r.handler.name === 'pull')?.handler;
+
+    await handler?.execute({ session_id: 's-roots', cwd: path.join(root, 'project') }, 'claude', projectConfig('git'));
+
+    expect(mockPull).toHaveBeenCalledWith({ silent: true, prepareCheckout: 'once' });
   });
 });
 

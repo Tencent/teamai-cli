@@ -134,7 +134,7 @@ export async function mcpInject(
   options: GlobalOptions & { dryRun?: boolean; force?: boolean },
 ): Promise<void> {
   const { localConfig, teamConfig } = await autoDetectInit(undefined, { dryRun: options.dryRun });
-  const { changes, wrote, unresolved } = await reconcileMcpForConfig(teamConfig, localConfig, {
+  const { changes, wrote, unresolved, unparsed } = await reconcileMcpForConfig(teamConfig, localConfig, {
     dryRun: options.dryRun,
     force: options.force,
   });
@@ -147,13 +147,19 @@ export async function mcpInject(
   console.log(options.dryRun ? 'MCP inject (dry run):' : 'MCP inject:');
   reportChanges(changes);
 
+  if (unparsed) {
+    log.error('MCP injection incomplete: some tool configs could not be read or parsed. Fix the warnings above, then run `teamai mcp inject` again.');
+    process.exitCode = 1;
+    return;
+  }
+
   if (wrote) log.success('MCP servers updated. Restart your AI tool session to load them.');
   else if (!options.dryRun) log.info('Already up to date.');
 }
 
 export async function mcpRemove(options: GlobalOptions): Promise<void> {
   const { localConfig, teamConfig } = await autoDetectInit(undefined, { dryRun: options.dryRun });
-  const { changes, wrote } = await reconcileMcpForConfig(teamConfig, localConfig, {
+  const { changes, wrote, unparsed } = await reconcileMcpForConfig(teamConfig, localConfig, {
     removeAll: true,
     dryRun: options.dryRun,
   });
@@ -162,6 +168,12 @@ export async function mcpRemove(options: GlobalOptions): Promise<void> {
 
   console.log(options.dryRun ? 'MCP remove (dry run):' : 'MCP remove:');
   reportChanges(changes);
+
+  if (unparsed) {
+    log.error('MCP removal incomplete: some tool configs could not be read or parsed. Fix the warnings above, then run `teamai mcp remove` again.');
+    process.exitCode = 1;
+    return;
+  }
 
   if (wrote) log.success('teamai-managed MCP servers removed.');
   else if (!options.dryRun) log.info('Nothing to remove.');

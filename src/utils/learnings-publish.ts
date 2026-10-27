@@ -165,7 +165,7 @@ async function publishUnderSyncLock(
  * and publishing must not be the thing that crashes on it: it just runs
  * unguarded, exactly as contribute always did.
  */
-function syncLockPath(localConfig: LocalConfig): string | null {
+export function syncLockPath(localConfig: LocalConfig): string | null {
   try {
     return path.join(getDataHome(localConfig), SYNC_LOCK_FILENAME);
   } catch {

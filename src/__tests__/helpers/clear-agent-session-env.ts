@@ -2,11 +2,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, vi } from 'vitest';
-import { RUN_MODE_ENV } from '../../launch-context.js';
+import { ATTEMPT_ENV, LAUNCHED_BY_ENV, RUN_MODE_ENV } from '../../launch-context.js';
 import { homeVariables, isToolId, TOOLS } from '../../tools.js';
 import { GIT_REPOSITORY_ENV } from '../../utils/git-env.js';
 import { AGENT_SESSION_ENV } from '../../utils/session-id.js';
-import { ATTEMPT_ENV } from '../../workflow/attempt-marker.js';
 
 // Tests run inside an agent's shell (Claude Code sets CLAUDE_CODE_SESSION_ID),
 // and recall, contribute and session save read that id through
@@ -15,11 +14,12 @@ import { ATTEMPT_ENV } from '../../workflow/attempt-marker.js';
 // and the CLIs it spawns, with none set (an OpenCode shell's
 // TEAMAI_AGENT_SESSION_ID and a Pi shell's PI_SESSION_ID included). A workflow
 // step that runs the tests carries its runner's TEAMAI_WORKFLOW_ATTEMPT, which
-// would make a spawned `workflow report --driver skill` that runner. CI
+// would make a spawned `workflow report --driver skill` that runner, and a
+// launched step's TEAMAI_LAUNCHED_BY keeps its sessions out of the totals. CI
 // runners set CI, and a shell may set TEAMAI_MODE, either of which makes every
 // workflow run here unattended; a test that needs that mode sets it. Both
 // vitest configs seed these in `test.env`, so the scrub always has one to remove.
-for (const name of [...AGENT_SESSION_ENV, ATTEMPT_ENV, RUN_MODE_ENV, 'CI']) {
+for (const name of [...AGENT_SESSION_ENV, ATTEMPT_ENV, LAUNCHED_BY_ENV, RUN_MODE_ENV, 'CI']) {
   delete process.env[name];
 }
 

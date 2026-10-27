@@ -10,9 +10,9 @@ TeamAI 把团队的 skills、rules、agents、learnings、models、MCP 等 AI �
 
 | 层 | 做什么 | 看哪里 |
 |----|--------|--------|
-| **Team Execution** | 每台机器上同一套 skills、rules、hooks | [基础 Harness](guide/zh-CN/sharing.md)、[分发管理机制](guide/zh-CN/distribution.md) |
+| **Team Execution** | 每台机器上同一套 skills、rules、hooks | [基础 Harness](guide/zh-CN/sharing.md)、[分发管理机制](guide/zh-CN/distribution.md)、[工作流](guide/zh-CN/workflow.md) |
 | **Team Context** (beta) | Agent 能搜到团队记下的经验和代码结构 | [团队上下文](guide/zh-CN/knowledge.md) |
-| **Team Improvement** (beta) | 会话里的经验写回团队，看团队怎么用 AI | [Dashboard](guide/zh-CN/dashboard.md)、[使用统计上报](guide/zh-CN/reporting.md) |
+| **Team Improvement** (beta) | 会话里的经验写回团队，看团队怎么用 AI | [Dashboard](guide/zh-CN/dashboard.md)、[使用统计上报](guide/zh-CN/reporting.md)、[评分器](guide/zh-CN/scorers.md) |
 
 各 Agent 支持哪些能力，见 README 的[产品概览](../README.zh-CN.md#产品概览)。Git 平台支持 GitHub、GitLab、GitCode、CNB、TGit 和私有 Git 服务。
 

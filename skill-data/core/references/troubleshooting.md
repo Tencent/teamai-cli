@@ -160,11 +160,11 @@ Existing hook contents and permissions stay unchanged; read/write errors propaga
 from `init` and `hooks inject`, and Git-started pulls record them. An unreadable
 project config prevents sync and keeps its reason in `~/.teamai/debug.log`.
 
-Hosts that skip checkout hooks need `teamai pull` in the new checkout before the AI
-tool starts. For Codex CLI 0.160.0, use `git worktree add`, run `teamai pull` there, then
-launch `codex exec -C <worktree>`. Its native `codex exec --worktree` path creates
-the checkout without `post-checkout`, so SessionStart sync arrives after startup
-discovery.
+Hosts that skip checkout hooks (Claude Code's `EnterWorktree`, Codex CLI's worktrees) get
+the same delivery from teamai's own session start and tool hooks, in the background, the first
+time they run in a checkout with no delivery record. What the tool reads at startup is read
+before that delivery lands: for Codex CLI 0.160.0, use `git worktree add`, run `teamai pull` there, then
+launch `codex exec -C <worktree>`.
 
 ## "KEY is not set. Run `teamai env set KEY`"
 
@@ -187,6 +187,8 @@ user whether to set VAR in their shell or replace the reference with the
 command in the line; do not choose for them.
 
 Muse may omit `type` when saving a stdio server. Pull and removal compare that form separately from the document they write, so a change to one server leaves personal servers and unchanged managed entries as saved.
+
+Muse key reordering alone is not a user edit. Removal uses a content fingerprint for new records; a legacy record needs a matching original rendered hash and value from team Git history. Without that proof it keeps the server and warns. Real command, args, env or header edits remain personal.
 
 ## "Did not write <tool>'s MCP servers to <file>" / `withheld:`
 
@@ -267,7 +269,7 @@ broken machine):
 | Codex                 | Installed and trusted     | Codex runs only trusted hooks; teamai trusts the ones it writes through `codex app-server`, and `teamai doctor` names any Codex will not run |
 | Cursor                | Installed                 | Also runs `~/.claude/settings.json`. That copy exits only when `~/.cursor/hooks.json` or the project `.cursor/hooks.json` contains `--tool cursor` |
 | Copilot CLI           | Installed                 | Built-ins use `$COPILOT_HOME/hooks/teamai.json` (default `~/.copilot/hooks/teamai.json`); self mode keeps them in the project. Claude built-ins exit for a valid, enabled version-1 file, global or project, with a `--tool copilot` command; self mode checks only the project directory. A Claude team hook exits only when a valid, enabled project version-1 file delivers the same command to Copilot for the same event and matcher. `COPILOT_CLI` alone does not skip |
-| CodeBuddy / WorkBuddy | Installed                 | Claude-format hooks in their own `settings.json`                    |
+| CodeBuddy / WorkBuddy | Installed                 | Claude-format hooks in their own `settings.json`; none on a WorkBuddy with only `.workbuddy-ai/` (see WorkBuddy below) |
 
 Practical rule: if you set up with `--agent claude`, expect **only** Claude to show
 hooks installed. A tool you are not using, or one that is not a supported hook
@@ -333,9 +335,13 @@ hook entry; if unsure of the exact config, run `teamai doctor` and `teamai hooks
 to see what should be present, then have them replicate it. Until then, they can
 sync with a manual `teamai pull`.
 
+Skip this on WorkBuddy 5.7+ with only `~/.workbuddy-ai/`. teamai does not know yet
+where 5.7 reads hooks, so it writes none, and `teamai doctor` names them under
+`workbuddy receives ...`. Do not hand-register a hook there; sync with `teamai pull`.
+
 ### Muse Code
 
-Hooks go in the `hooks` block of `~/.config/muse/settings.json`, which Muse runs in every workspace; a project's `.muse/hooks.json` runs only once the workspace is trusted. Muse starts each hook with an emptied environment, so a variable set only on the command that launched `muse` (such as `TEAMAI_HOOKS_DISABLED=1 muse`) does not reach the hook. The hook command runs `bash -lc`, so export it in `~/.bash_profile` or `~/.profile` instead.
+Hooks go in the `hooks` block of `~/.config/muse/settings.json` (`$XDG_CONFIG_HOME/muse/settings.json` when that is set), which Muse runs in every workspace; a project's `.muse/hooks.json` runs only once the workspace is trusted. Muse starts each hook with an emptied environment, so a variable set only on the command that launched `muse` (such as `TEAMAI_HOOKS_DISABLED=1 muse`) does not reach the hook. The hook command runs `bash -lc`, so export it in `~/.bash_profile` or `~/.profile` instead.
 
 ### Tools without a writable hook surface
 
@@ -442,8 +448,30 @@ Session archive writers (`session push`, `migrate --push`, and `session pull`) w
 
 ## OpenCode hooks cannot start the CLI
 
-If OpenCode hooks stopped after moving or reinstalling Node or TeamAI, run `teamai hooks inject` or `teamai pull` and restart OpenCode. The plugin records the installed Node and CLI paths so it also works without `teamai` on the service PATH.
+If OpenCode hooks stopped after moving or reinstalling Node or TeamAI, run `teamai hooks inject` or `teamai pull` and restart OpenCode. The plugin records the installed Node and CLI paths so it also works without `teamai` on the service PATH. Doctor accepts those live paths when another installation of the same build inspects the plugin; missing saved paths or a changed handler still fail the check.
 
 ## ZCode registered hooks but missing project rules
 
 Doctor checks the serialized rules reply against the user config `hooks.maxOutputBytes` (default 32768), counting UTF-8 bytes and JSON escaping. Other session hints make the complete stdout larger. Shorten the rules or raise the positive integer byte cap enough for the whole reply, then start a new session; registration alone does not prove the rules fit.
+
+## Pi user instructions with an override file
+
+Pi reads `AGENTS.override.md` before `AGENTS.md` in the same directory. In user scope, pull writes rules and instruction blocks into the existing override and strips only TeamAI blocks from the older configured file. Personal text in both files is preserved, including on uninstall. Without an override, the configured user file remains the target.
+
+## A file blocks skill delivery
+
+When a file occupies a tool skills directory, doctor fails the directory check even if delivery skipped that tool. Move the file aside and run `teamai pull`. Uninstall keeps the blocking file and cleans the other managed resources.
+
+## Kiro default-agent synchronization
+
+Kiro CLI V3 uses the generated user hook `~/.kiro/hooks/teamai.json`, independently of custom agents. Missing or edited hooks appear in doctor; reinject after moving aside a same-named personal file. User uninstall removes the managed file, project uninstall keeps it, and personal hook files remain. Upgrade Kiro 2.x to V3 for this lifecycle integration.
+
+## Placed agent edits and format changes behind the default branch
+
+An edit of the root copy overwrites the agent this machine placed, and a `.md`/`.yaml` conversion may retire it after its merge is proven. If the team changed the placed file since this machine's last merged push, the push stops and prints a `teamai push --carried <path>@<blob>` command: update the checkout, carry its changes into the root copy, then run it. The option accepts only that version, so a plain retry or a later team change stops again. If the team deleted it, the remaining root copy is not a new agent to publish. Older records without a delivered blob catch a team change only while the checkout is behind it, until the first edit pushed through them merges and records its blob. Until then, compare with the team file before editing or converting.
+
+A recreated namespace source can be edited directly; the retired flattened copy is kept as a backup. Retired tool copies do not become new agents when the root copy is removed. The retirement warning names the former source so the member can restore it before pushing edits.
+
+## Hermes hooks after moving Node or TeamAI
+
+The generated status script and instructions plugin capture the installed Node executable and TeamAI entry. After moving or reinstalling either, run `teamai pull` or `teamai hooks inject`, then restart Hermes.

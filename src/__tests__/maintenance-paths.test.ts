@@ -10,6 +10,10 @@ import { refreshReportsWorktree } from '../utils/reports-branch.js';
 vi.mock('../utils/reports-branch.js', () => ({
   refreshReportsWorktree: vi.fn(),
 }));
+vi.mock('../update.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../update.js')>()),
+  withFileLock: vi.fn(async <T>(_lock: string, _wait: unknown, body: () => Promise<T>) => ({ held: true as const, value: await body() })),
+}));
 
 function makeConfig(kind: 'git' | 'self'): LocalConfig {
   const projectRoot = '/workspace/project';

@@ -4,7 +4,7 @@ import path from 'node:path';
 import { readUsageEvents } from './usage-tracker.js';
 import { readFileSafe } from './utils/fs.js';
 import { resolveConfigForDir } from './config.js';
-import { readEvents, aggregateSessionMetrics } from './dashboard-collector.js';
+import { readEvents, aggregateSessionMetrics, memberEvents } from './dashboard-collector.js';
 import { totalTokens, addTokenUsage, emptyTokenUsage } from './types.js';
 import { attributeByRepo, timeAnalytics, renderHourSparkline } from './session-analytics.js';
 import { formatTokenCount } from './digest.js';
@@ -243,12 +243,12 @@ export async function showStats(options: ShowStatsOptions = {}): Promise<void> {
   // and only the part of them not already reported (reported sessions stay in
   // events.jsonl until compaction, so counting the full local aggregate would
   // count each one twice and pull in other projects' sessions). Same filter,
-  // same scope config as the report path (#785).
+  // same scope config as the report path (#785), and the member's own sessions only.
   const { filterEventsByScope } = await import('./dashboard-scope.js');
   const ownerState = config ? await readSessionOwnerState({ dryRun, suppressMigrationNotice: !dryRun }) : undefined;
-  const scopedEvents = await filterEventsByScope(await readEvents(), config ?? undefined, {
+  const scopedEvents = memberEvents(await filterEventsByScope(await readEvents(), config ?? undefined, {
     dryRun, suppressMigrationNotice: !dryRun, owners: ownerState?.owners,
-  });
+  }));
   const metricsMap = aggregateSessionMetrics(scopedEvents);
   // Only subtract what the team already holds. Two guards, because a scope's
   // snapshot is first seeded from the machine-wide one, so it can name sessions

@@ -40,6 +40,7 @@ Generated: do not edit by hand. Regenerate with
   - `--project <id>` — Target a project: each new resource goes to that project's namespace for its own type — skills, knowledge for rules, agents, learnings, docs, env, hooks, mcp, models, and more (from manifest/projects.yaml)
   - `--shared` — Place new resources at the shared root for all roles; cannot combine with --role or --project
   - `--branch <name>` — Push to this destination branch instead of a generated teamai/push branch
+  - `--carried <path@blob>` — Override the stop for a push that would overwrite or delete a placed agent file a teammate changed. Use it only after carrying that change into your root copy, with the value the stop printed; a later team edit stops the push again. Repeatable
 
 ## pull
 
@@ -102,7 +103,7 @@ Generated: do not edit by hand. Regenerate with
 
 ## doctor
 
-- `teamai doctor` — Diagnose configuration issues
+- `teamai doctor` — Diagnose configuration issues, and print the run mode (attended or unattended) and what set it: TEAMAI_MODE, CI, or the default
   - `--json` — Output the report as JSON (suitable for CI)
   - `--fix` — Remove lock files left behind by dead processes
 
@@ -281,7 +282,7 @@ Generated: do not edit by hand. Regenerate with
   - `--pass <n>` — With --run: the pass to judge; default the step's latest succeeded pass
   - `--session <id>` — Judge this finished session of an agent tool on this machine, whatever sampling says, with --scorer. Prints the session's first prompt and directory first, then the label; the session and the judge's reasoning are never published.
   - `--source <platform>` — With --session: the tool that holds it, as session migrate --source names it (claude-code, codex, opencode, …); needed unless the agent session variable names that session, or the captures its session-start hook wrote here name one platform for it
-  - `--scorer <name>` — With --run: a scorer the run pinned or one teamai pull cached. With --session, or alone inside a session: a scorer teamai pull cached. Repeatable.
+  - `--scorer <name>` — With --run: a scorer the run pinned or one teamai pull cached. With --session, or alone inside a session: a scorer teamai pull cached, or a scorer file to try before pushing it: a path with / or ending in .md. A file's label is never stored, so it takes no --push; the output adds the labels stored for its scorer (stored) and its verdict on the session's first prompt alone (control). Repeatable.
   - `--queue` — With --run: leave the work to any driver's score --next instead of judging it here
   - `--batch` — With --run or --session: the scorers share one judge call when they resolve to the same tool and model
   - `--push` — Publish every pending label of this machine to scores/<member>/<YYYY-MM>.jsonl on teamai-reports, alone or after --session. Labels only: never the session, the prompt or the judge's reasoning. With usage reporting off, or when the push fails, they stay pending for the next --push.
@@ -439,7 +440,7 @@ Generated: do not edit by hand. Regenerate with
     - `--confidence-writeback` — Update frontmatter confidence scores
     - `--update-quality` — Find stale docs/rules/skills and suggest updates
     - `--dry-run` — Show what would be done without making changes
-  - `teamai recall promote [learningId]` — Promote a high-confidence learning to formal knowledge (docs/skills/rules)
+  - `teamai recall promote [learningId]` — Publish a high-confidence learning as new knowledge on a review branch, then mark it promoted
     - `--category <cat>` — Target category: skills | rules | docs; skills use <learningId>/SKILL.md
     - `--dry-run` — Show what would be done without making changes
 

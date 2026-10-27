@@ -119,6 +119,8 @@ teamai recall promote <learningId> --category skills
 teamai recall promote <learningId> --dry-run
 ```
 
+晋升会把新条目推送到评审分支，并在 provider 支持时创建 PR/MR。使用 `git` provider 时，请根据输出的分支名自行发起评审。只有条目推送成功后才会标记 learning 已晋升；合并评审后，其他成员才能 pull 到它。推送失败时，learning 仍可重试晋升。评审未合并就关闭时，删除它的分支，learning 会重新成为晋升候选。已有的目标文件不会被覆盖，`--category` 只接受 `skills`、`rules` 或 `docs`。
+
 ## 代码知识图谱
 
 `teamai import` 把源码仓库写成团队仓库里的 `teamwiki/`，`teamai recall` 会一起搜。所有来源都写进同一个位置：`<团队仓库>/teamwiki/evidence/code/<slug>/`，源码目录本身不会多出 `teamwiki/`。
@@ -144,7 +146,7 @@ GitHub 导入从 `gh` 回退到 REST 时，会按每页 100 个提交继续读�
 
 GitLab MR 导入会按每页 50 个继续读取提交，而不是只读取第一页，最多读取 100 页。每个 GitLab MR API 请求都有 30 秒期限，包含读取响应正文。元信息超时会使该 MR 失败；commits、diff 或评审 threads 超时则省略相应可选数据并继续处理。提交和评审 threads 的每一页都有独立期限。后续提交页失败时会省略整个提交列表，不把不完整的历史交给提炼流程。
 
-GitLab 的 `--from-org` 以及回退到 REST 的 GitHub `--from-org` 会为组织仓库列表的每一页设置独立的 30 秒期限，包含读取响应正文。任一页超时都会使导入失败，不写入白名单，也不开始导入仓库。
+GitLab 的 `--from-org`，以及 GitHub `--from-org` 的 `gh` 路径与回退到的 REST 路径，都会为组织仓库列表的每一页设置独立的 30 秒期限，包含读取响应正文。任一页超时都会使导入失败，不写入白名单，也不开始导入仓库，且两条路径在超时后都不会回退到 `/users/<org>/repos`。
 
 提炼时除了 MR 的描述、提交和 diff，还会读取评审 threads：GitLab 的 discussions，GitHub 的 review 评论、review 结论和会话评论，TGit 的 notes。每个 thread 带上它锚定的文件和行、是否已 resolved，以及按顺序标为 MR 作者或评审者的各条 note 进入提示词；已 resolved 的 thread 里的决定比 diff 更重要。teamai 自己的 CI 评论会被跳过。`--no-discussions` 不读取 threads，`teamai ci extract-mr` 同样适用。`teamai.yaml` 设了 `language: en` 时 learning 用英文写，否则用中文。
 
@@ -193,7 +195,9 @@ teamai ci extract-mr --url "$MR_URL" --mode write --team-repo ../team-repo --ind
 
 write 模式在合并后的源码 checkout 里运行，代码知识走和 `teamai import --dir . --incremental` 相同的流程，写进 `<team-repo>/teamwiki/evidence/code/<provider>__<owner>__<repo>/`，只重新提取改过的文件。团队仓库要克隆在 checkout 之外，否则它的文件会被当成源码提取，这一步会被跳过。
 
-不要的建议打上拒绝标记：GitHub 用 👎，工蜂用 ☝️。模板在 [`examples/ci/`](../../../examples/ci/README.md)。
+不要的建议打上拒绝标记：GitHub 和 GitLab 用 👎，工蜂用 ☝️。模板（GitHub Actions、GitLab CI、智研 / Coding CI）在 [`examples/ci/`](../../../examples/ci/README.zh-CN.md)。
+
+GitLab 更新评论时，先查最近更新的评论，找到第一个匹配的标记就停止翻页，让最初流水线发布、之后一直原地编辑的评论仍能被找到。若查完 20 页仍未找到且还有下一页，命令会报错，避免发出重复评论。
 
 ## 知识库健康报告
 

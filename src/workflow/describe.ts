@@ -1,6 +1,6 @@
 import { sameEnvName } from '../resources/env-key.js';
 import { mergeRequirements, negotiate, requiredEnvKeys, type Allow, type DriverCan, type EnvFacts, type Missing, type Requirements, type Setup } from './requirements.js';
-import type { Invoke, OutputSchema, StepHitl, WorkflowDefinition, WorkflowStep } from './types.js';
+import type { Invoke, OutputSchema, WorkflowDefinition, WorkflowStep } from './types.js';
 import { opensCopy, resolveMode, runsInCheckout } from './workspace.js';
 
 /**
@@ -11,6 +11,37 @@ export interface LocalRoute {
   opener: string;
   held: string;
   missing: 'env' | 'tokens';
+}
+
+/** What a gated step does once its question is answered. */
+export type GateGuards =
+  | { kind: 'command'; line: string }
+  | { kind: 'prompt' }
+  | { kind: 'interactive' }
+  /** `name`: the workflow it runs; absent when that workflow is inline. */
+  | { kind: 'workflow'; name?: string }
+  /** `workflow`: the workflow step whose workflow it ends, by path; absent when it ends the run. */
+  | { kind: 'end'; end: string; workflow?: string }
+  /** `waiting`: the steps whose needs list it, by path. */
+  | { kind: 'none'; waiting: string[] };
+
+/** The most characters of a command a gate shows before it cuts the rest. */
+const COMMAND_SHOWN = 80;
+
+/** `command` as a gate shows it: its first line, whitespace collapsed, cut after `COMMAND_SHOWN` characters. */
+function commandLine(command: string): string {
+  const line = (command.split('\n')[0] ?? '').replace(/\s+/g, ' ').trim();
+  return line.length > COMMAND_SHOWN ? `${line.slice(0, COMMAND_SHOWN)}…` : line;
+}
+
+/** What `step`, gated, guards; `steps` is the list it sits in, whose paths start with `prefix`. */
+function guardsOf(step: WorkflowStep, steps: WorkflowStep[], prefix: string): GateGuards {
+  if (step.command !== undefined) return { kind: 'command', line: commandLine(step.command) };
+  if (step.interactive) return { kind: 'interactive' };
+  if (step.prompt !== undefined || step.promptFile !== undefined) return { kind: 'prompt' };
+  if (step.workflow !== undefined) return { kind: 'workflow', ...(typeof step.workflow === 'string' ? { name: step.workflow } : {}) };
+  if (step.end !== undefined) return { kind: 'end', end: step.end, ...(prefix !== '' ? { workflow: prefix.slice(0, -1) } : {}) };
+  return { kind: 'none', waiting: steps.filter((other) => other.needs?.includes(step.id)).map((other) => `${prefix}${other.id}`) };
 }
 
 /** What a workflow will do, read from its definition before any run, as far as choosing how to start it needs. */
@@ -28,8 +59,8 @@ export interface WorkflowDescription {
     interactive: string[];
     /** The most steps a run may have leased at once, at most `ceiling`. */
     width: number;
-    /** The questions asked before a step runs, by path. */
-    gates: Array<{ step: string; kind: StepHitl['kind']; required: boolean; hasDefault: boolean }>;
+    /** The questions asked before a step runs, by path, with what the step does once answered. */
+    gates: Array<{ step: string; required: boolean; guards: GateGuards } & ({ kind: 'approve'; deliver?: true } | { kind: 'choose'; options: string[]; default?: string })>;
     /** Steps that run in a workspace copy rather than in the checkout, by path. */
     inWorkspace: string[];
     /** Steps whose succeeded passes a scorer judges, by path, with the scorers it lists. */
@@ -127,7 +158,13 @@ export function describeWorkflow(input: {
     for (const step of steps) {
       const path = `${scope.prefix}${step.id}`;
       const child = childOf(step);
-      if (step.hitl) facts.gates.push({ step: path, kind: step.hitl.kind, required: step.hitl.required, hasDefault: step.hitl.default !== undefined });
+      if (step.hitl) {
+        const { kind, options, required, default: defaultOption } = step.hitl;
+        facts.gates.push({
+          step: path, required, guards: guardsOf(step, steps, scope.prefix),
+          ...(kind === 'choose' ? { kind, options, ...(defaultOption !== undefined ? { default: defaultOption } : {}) } : { kind, ...(step.deliver === 'pr' ? { deliver: true as const } : {}) }),
+        });
+      }
       if (!child && step.end === undefined && !runsInCheckout(step, scope.ancestors)) facts.inWorkspace.push(path);
       if (step.prompt !== undefined || step.promptFile !== undefined) facts.prompts.push(path);
       if (step.interactive) facts.interactive.push(path);

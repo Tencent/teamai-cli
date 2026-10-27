@@ -13,6 +13,14 @@ import { afterAll, vi } from 'vitest';
 const home = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-test-home-')));
 process.env.HOME = home;
 process.env.USERPROFILE = home;
+// Git's background upkeep is off for every repo under this home: on the
+// compiled defaults, a commit, fetch or push leaves a detached
+// `git gc --auto` / `git maintenance run --auto` that keeps writing into
+// `.git/objects/` after the test returns, so the teardown's rmSync empties
+// the tree and then meets the new entries — ENOTEMPTY under CI parallel
+// load (#1413). An empty home meant no global config at all;
+// dry-run-load-path.test.ts already turns this off per repo.
+fs.writeFileSync(path.join(home, '.gitconfig'), '[gc]\n\tauto = 0\n[maintenance]\n\tauto = false\n');
 // The temporary directory too: teamai keeps git answers there between runs
 // (src/utils/git-answers.ts), and tests must neither share them nor fill the
 // file the real CLI reads. Spelled as os.tmpdir() was, not resolved like home.

@@ -7,7 +7,7 @@
  * remote for its head with `git ls-remote`; it must leave the cache, the lock
  * and the team repo alone, and say whether the cache is current.
  */
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -136,6 +136,7 @@ describe('import --from-repo --dry-run (#900 C3)', () => {
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     fs.rmSync(sandbox, { recursive: true, force: true });
   });
 
@@ -225,7 +226,8 @@ describe('import --from-repo --dry-run (#900 C3)', () => {
     expect(result.output).toContain('preview refresh failed, previewing a full clone instead');
     expect(result.output).toContain(`Would import acme/widget at ${main.slice(0, 8)}`);
     expect(result.output).not.toContain('so an incremental run would skip it');
-    await expect(shallowFetch(cacheDir, { provider: 'git' })).rejects.toThrow();
+    vi.stubEnv('TEAMAI_CACHE_DIR', cacheRoot);
+    await expect(shallowFetch(cacheDir, { provider: 'git' })).rejects.toThrow(/git (fetch|reset) failed/);
   });
 
   it('full-clone preview follows remote HEAD even when the cache is on master', async () => {

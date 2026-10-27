@@ -14,9 +14,9 @@ TypeScript, Node 20+ (`npm run lint` needs ^20.19 or >=22.12), tsup (ESM), Vites
 
 - **Occam's razor**: do not add a new CLI command early. Skip it unless it is necessary. Reuse or extend an existing command or option.
 - CLI user-facing output must be English. No Chinese in production code. Tests assert English output.
-- **Doc layout**: user-facing docs are bilingual. Top-level files are `name.md` / `name.zh-CN.md`. Guide pages are `docs/guide/<page>.md` (English) and `docs/guide/zh-CN/<page>.md` (Chinese). A behavior change updates both. `docs/designs/` (design notes: a `> Status:` line at the top, and a status entry in `docs/designs/README.md`) and `docs/dev/` (maintainer docs) are English only. Behavior changes must update every affected doc; grep old wording before opening the PR.
+- **Doc layout**: user-facing docs are bilingual. Top-level files are `name.md` / `name.zh-CN.md`. Guide pages are `docs/guide/<page>.md` (English) and `docs/guide/zh-CN/<page>.md` (Chinese). A behavior change updates both. `docs/guide/tool-support.md` and its Chinese page are generated from the tool descriptor (`src/tools.ts`): regenerate them with `npx vitest run tool-support -u`; their cell text stays English on both pages. `docs/designs/` (design notes: a `> Status:` line at the top, and a status entry in `docs/designs/README.md`) and `docs/dev/` (maintainer docs) are English only. Behavior changes must update every affected doc; grep old wording before opening the PR.
 - **Change docs rarely**: leave them alone when you can. A bugfix that does not change behavior a user runs into does not need a doc change. When you do edit docs, write them so you can understand them. Do not make them complicated.
-- **Keep the README short**: change it as little as possible. When a change is required, update every language (`README.md` and every `README.*.md`; run `ls README*` first) and keep them consistent.
+- **Keep the README short**: change it as little as possible. When a change is required, update every language (`README.md` and every `README.*.md`; run `ls README*` first) and keep them consistent. `readme-matrix.test.ts` checks that the agent matrix is the same in every README, and checks its culture, models, usage and scorers cells and the ✓¹ mark against `TOOLS`.
 - **Treat `skill-data/` like docs**: that is what the agent actually reads. A behavior change must update the affected skills (`core` / `setup` / `wiki` / `share`), and grep the old wording before the PR.
 - `skill-data/core/references/commands.md` is generated from the Commander command table. After changing a command or flag, regenerate it with `npx vitest run commands-reference -u`.
 - **Leave the teamai skill body alone**: the source of truth for usage and flags is the CLI help (`teamai --help`, `teamai <cmd> --help`) and the generated `commands.md`. To make an agent better at a command, clarify that command's `description` and option help, and point the skill at help, instead of copying usage into the skill. Edit the skill body only when the workflow itself changes.
@@ -67,6 +67,12 @@ shared state, list every reader and every writer.
   command could be reused or extended.
 - Changes must be surgical. Every changed line should trace directly to the
   PR's stated goal; flag unrelated drive-by edits.
+- A PR that adds a tool, changes where teamai writes for a tool, or changes
+  what a tool supports updates that tool's entry in `TOOLS` (`src/tools.ts`).
+  A missing update is at most `[P2 non-blocking]`. A cell marked `verified`
+  with no recorded run (tool version, date and command) in the PR is
+  `[P3 nit]`. `unknown` is never a finding. What the locate matrix test checks
+  stays out of review.
 - Label every finding with an explicit severity a first-time reader can
   understand — never a bare `P1`/`P2`/`P3` code. Keep the `P` marker but spell
   out what it means inline on each finding, using the PR author's language:

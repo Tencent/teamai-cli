@@ -320,6 +320,17 @@ describe('a later run', () => {
     expect({ location: await later.checkoutLocation(sub), worktrees: await later.listWorktrees(sub) }).toEqual(earlier);
   });
 
+  it.skipIf(process.getuid === undefined)('answers without starting git in a repository with a branch named after worktrees', async () => {
+    const { repo, sub } = checkout();
+    execFileSync('git', ['config', 'branch.worktree-cleanup.remote', 'origin'], { cwd: repo });
+    execFileSync('git', ['config', 'branch.worktree-cleanup.merge', 'refs/heads/worktree-cleanup'], { cwd: repo });
+    const earlier = await checkoutLocation(sub);
+    expect(earlier?.toplevel).toBe(repo);
+
+    const later = await laterRunWithoutGit();
+    expect(await later.checkoutLocation(sub)).toEqual(earlier);
+  });
+
   it.skipIf(process.getuid === undefined)('keeps every answer an earlier run asked for at once', async () => {
     const { repo } = checkout();
     const dirs = ['a', 'b', 'c', 'd'].map((name) => path.join(repo, name));

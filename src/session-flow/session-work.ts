@@ -72,6 +72,20 @@ function firstPrompt(session: Session): string {
   return flat.length > 200 ? `${flat.slice(0, 200)}…` : flat;
 }
 
+/**
+ * `found` with only its first prompt as the member typed it: no tool calls, no replies, no subagents. The control a
+ * scorer file is tried on (#1399): a rubric that passes it may not judge the agent's work.
+ */
+export function firstPromptOnly(found: { session: Session }): { session: Session; subagents: SubagentsRead } {
+  const { session } = found;
+  const first = session.messages.find((message) => message.content.some((block) => typedIn(message, block) !== ''));
+  const typed = first?.content.flatMap((block) => {
+    const text = typedIn(first, block);
+    return text === '' ? [] : [{ type: 'text' as const, text }];
+  });
+  return { session: { ...session, messages: first && typed ? [{ ...first, content: typed }] : [] }, subagents: { status: 'read', agents: [] } };
+}
+
 /** A session as one read gives it to a judge. In memory only: its body is the session's redacted text. */
 export interface JudgedSession {
   subject: SessionSubject;
@@ -101,12 +115,14 @@ export function judgeSession({ platform, found, captures, mask }: {
   const models = new Set(session.messages.flatMap((message) => message.metadata?.model ?? []));
   const [reportedModel] = models.size === 1 ? models : [];
   const agent = SessionCaptures.agentOf(captures, reportedModel);
+  const runMode = SessionCaptures.runModeOf(captures);
   return {
     subject,
     body: keepEnds(mask(transcript.body), EVIDENCE_MAX_CHARS - framing),
     manifest,
     context: {
       ...(agent ? { agent } : {}),
+      ...(runMode ? { runMode } : {}),
       used: { skills: usedSkills(AgentSession.toolForPlatform(platform), found, capturedTeamSkillsAt(captures)) },
       prompt: mask(firstPrompt(session)),
     },
@@ -129,9 +145,9 @@ export async function writeSessionEvidence(dir: string, judged: JudgedSession, r
 }
 
 /** The label of a verdict on a session, with the context one read of it gave. */
-export function sessionLabel(verdict: Omit<SessionLabel, 'source' | 'subject' | 'agent' | 'used'>, subject: SessionSubject, context: SessionLabelContext): SessionLabel {
+export function sessionLabel(verdict: Omit<SessionLabel, 'source' | 'subject' | 'agent' | 'used' | 'runMode'>, subject: SessionSubject, context: SessionLabelContext): SessionLabel {
   const { scorer, rubric, label, score, passed, judge, scoredAt } = verdict;
-  return { scorer, rubric, label, score, passed, source: 'session', subject, ...(context.agent ? { agent: context.agent } : {}), used: context.used, judge, scoredAt };
+  return { scorer, rubric, label, score, passed, source: 'session', subject, ...(context.agent ? { agent: context.agent } : {}), used: context.used, judge, ...(context.runMode ? { runMode: context.runMode } : {}), scoredAt };
 }
 
 /** Nothing happened in a session for this long: it is finished, and judge work. */

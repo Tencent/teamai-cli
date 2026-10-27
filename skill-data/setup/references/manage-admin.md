@@ -35,6 +35,8 @@ teamai mcp remove --dry-run # preview removal without changing tool configs or m
 teamai mcp remove      # remove teamai-managed MCP servers
 ```
 
+`mcp inject` and `mcp remove` return exit code 1 if a tool config cannot be read or parsed, including in a dry run. Other tools may still change. Fix the config named in the warning and rerun the command; the unreadable config and its ownership records are kept for that retry.
+
 MCP definitions travel with the team repo like skills/rules — edit, then the
 members pick them up on sync.
 
@@ -87,6 +89,8 @@ workspace also lists a file an older local agent wrote a credential into; `teama
 ZCode servers use `mcp.servers` in `~/.zcode/cli/config.json` or the project's `.zcode/config.json`. This follows the 3.16.2 source; 3.15.1 is not certified. Pull moves only unchanged teamai entries out of `~/.agents/mcp.json`. Doctor names other servers there because the desktop app stops reading that fallback once the native config has servers.
 
 WorkBuddy uses the first existing user file in `~/.workbuddy/.mcp.json`, `~/.workbuddy/mcp.json`, and `~/.codebuddy.json`. `CODEBUDDY_CONFIG_DIR` moves the last file. A project uses `.mcp.json`, or `mcp.json` when only that exists. With `sharing.gitExclude` on, its servers use `projects[<project path>].mcpServers` in `.codebuddy.json`. These paths follow the CodeBuddy 2.168.0 engine; WorkBuddy's launcher binding is not certified. Pull removes only unchanged teamai entries from the former `.workbuddy/mcp.json` project file.
+
+When `.workbuddy-ai/` exists in the home or project (WorkBuddy 5.7+), the default skills path moves to `.workbuddy-ai/skills`. Every other surface still waits for `.workbuddy/`, so a member with only `.workbuddy-ai/` gets no rules, team instructions, agents, MCP servers or hooks, and `teamai doctor` fails `workbuddy receives ...` with the ones held.
 
 When a tool's home or configured MCP path moves, pull leaves old copies in place and names them once. Remove them after no tool reads them. Doctor reports unread mappings, moved files, and project MCP that is read only from a session started at the project root. Internal builds with an unknown MCP channel get a note instead of a guessed config.
 

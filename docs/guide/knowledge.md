@@ -119,6 +119,8 @@ teamai recall promote <learningId> --category skills
 teamai recall promote <learningId> --dry-run
 ```
 
+Promotion pushes the new entry to a review branch and opens a PR/MR when the provider supports it. With the `git` provider, open the review request yourself using the printed branch name. The learning is marked as promoted only after the entry is pushed; merge the review request before teammates pull it. If the push fails, the learning stays eligible for retry. If a review request is closed without merging, delete its branch and the learning is offered for promotion again. Existing target files are never overwritten, and `--category` accepts only `skills`, `rules`, or `docs`.
+
 ## Codebase Knowledge Graph
 
 `teamai import` writes a source repo into the team repo's `teamwiki/`. `teamai recall` searches it too. Every source lands in the same place, `<team repo>/teamwiki/evidence/code/<slug>/`; the source directory itself gets no `teamwiki/`.
@@ -144,7 +146,7 @@ When GitHub import falls back from `gh` to REST, it reads commit pages of 100, u
 
 GitLab MR import reads commit pages of 50 instead of using only the first page, up to 100 pages. Each GitLab MR API request has a 30-second deadline, including reading its response body. A metadata timeout fails that MR; a commits, diff or review-threads timeout leaves out that optional data and continues. Each commit or review-thread page gets its own deadline. A later commit-page failure leaves out the whole commit list rather than passing an incomplete history to extraction.
 
-For GitLab `--from-org` and the GitHub REST fallback, each page of the group or organization project list has a 30-second deadline, including reading its response body. A timeout on any page fails the import before writing the whitelist or importing repositories.
+For GitLab `--from-org`, and for GitHub `--from-org` on both the `gh` path and the REST fallback, each page of the group or organization project list has a 30-second deadline, including reading its response body. A timeout on any page fails the import before writing the whitelist or importing repositories, and neither path falls back to `/users/<org>/repos` after a page has timed out.
 
 The extraction reads the MR's review threads along with its description, commits and diff: GitLab discussions, GitHub review comments, reviews and conversation comments, TGit notes. Each thread goes into the prompt with the file and line it is anchored to, whether it is resolved, and its notes marked as the MR author's or a reviewer's; a decision in a resolved thread outweighs the diff. teamai's own CI comments are skipped. `--no-discussions` leaves the threads out, for `teamai ci extract-mr` too. With `language: en` in `teamai.yaml` the learning is written in English; otherwise in Chinese.
 
@@ -193,7 +195,9 @@ teamai ci extract-mr --url "$MR_URL" --mode write --team-repo ../team-repo --ind
 
 Write mode runs in the merged source checkout. Its code knowledge goes through the same path as `teamai import --dir . --incremental`, into `<team-repo>/teamwiki/evidence/code/<provider>__<owner>__<repo>/`, re-extracting only the changed files. Clone the team repo outside the checkout: otherwise its files would be extracted as source, so this step is skipped.
 
-Mark a suggestion to drop it: 👎 on GitHub, ☝️ on TGit. Templates are in [`examples/ci/`](../../examples/ci/README.md).
+Mark a suggestion to drop it: 👎 on GitHub and GitLab, ☝️ on TGit. Templates — GitHub Actions, GitLab CI and 智研/Coding CI — are in [`examples/ci/`](../../examples/ci/README.md).
+
+On GitLab, comment updates search the most recently updated notes first and stop at the first matching marker. This keeps the original pipeline's comment discoverable as it is edited in place. If the marker is still missing after 20 pages and more pages remain, the command fails instead of risking a duplicate.
 
 ## Knowledge Base Health Report
 

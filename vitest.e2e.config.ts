@@ -9,7 +9,7 @@ export default defineConfig({
     ],
     // Applied before setupFiles: clear-agent-session-env.ts must remove each,
     // which workflow-test-env.test.ts checks.
-    env: { CLAUDE_CODE_SESSION_ID: 'seeded-by-vitest-config', TEAMAI_WORKFLOW_ATTEMPT: 'seeded-by-vitest-config', TEAMAI_MODE: 'unattended', CI: 'seeded-by-vitest-config' },
+    env: { CLAUDE_CODE_SESSION_ID: 'seeded-by-vitest-config', TEAMAI_WORKFLOW_ATTEMPT: 'seeded-by-vitest-config', TEAMAI_LAUNCHED_BY: 'seeded-by-vitest-config', TEAMAI_MODE: 'unattended', CI: 'seeded-by-vitest-config' },
     // isolate-e2e-env first: the other setup file imports modules that build
     // home paths at load time.
     setupFiles: [

@@ -10,7 +10,7 @@ import { samePlaces } from '../resources/places.js';
 
 function linuxHost(env: Record<string, string>, existing: readonly string[] = ['/new/hermes', '/x/opencode', '/home/m/.openclaw']): Host {
   return {
-    platform: 'linux', path: path.posix, home: '/home/m', env, toolHomes: { kind: 'missing' }, cwd: () => '/home/m',
+    platform: 'linux', path: path.posix, home: '/home/m', profileHome: '/home/m', env, toolHomes: { kind: 'missing' }, cwd: () => '/home/m',
     exists: async (file) => existing.includes(file), readJson: async () => ({ kind: 'missing' }),
     realpath: async (file) => file, readText: async () => null, userToolRoots: async () => undefined,
   };
@@ -75,7 +75,7 @@ describe('nextToolHomes', () => {
 
 describe('nextToolHomes on Windows', () => {
   const windowsHost = (env: Record<string, string>, existing: readonly string[]): Host => ({
-    platform: 'win32', path: path.win32, home: 'C:\\Users\\m', env, toolHomes: { kind: 'missing' },
+    platform: 'win32', path: path.win32, home: 'C:\\Users\\m', profileHome: 'C:\\Users\\m', env, toolHomes: { kind: 'missing' },
     cwd: () => 'C:\\repo', exists: async (file) => existing.includes(file), readJson: async () => ({ kind: 'missing' }),
     realpath: async (file) => file, readText: async () => null, userToolRoots: async () => undefined,
   });
@@ -136,7 +136,7 @@ describe('envToolHome', () => {
 
   it('puts Hermes in the Windows default when LOCALAPPDATA is relative', () => {
     const host: Host = {
-      platform: 'win32', path: path.win32, home: 'C:\\Users\\m', env: { LOCALAPPDATA: 'relative-appdata' }, toolHomes: { kind: 'missing' },
+      platform: 'win32', path: path.win32, home: 'C:\\Users\\m', profileHome: 'C:\\Users\\m', env: { LOCALAPPDATA: 'relative-appdata' }, toolHomes: { kind: 'missing' },
       cwd: () => 'C:\\repo', exists: async () => true, readJson: async () => ({ kind: 'missing' }),
       realpath: async (file) => file, readText: async () => null, userToolRoots: async () => undefined,
     };

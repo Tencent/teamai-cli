@@ -207,7 +207,7 @@ async function stepTick(context: SkillContext, lock: RunLock, start: SkillState,
     probed = probed || !request.canTakeLease;
     const body = {
       driver: { ...state.driver, can: canFor(state.host.kind === 'chosen' ? state.host.id : undefined) }, running: request.running, canTakeLease: request.canTakeLease,
-      ...(request.autoApprove ? { autoApprove: true } : {}),
+      runMode: state.options.mode, ...(request.autoApprove ? { autoApprove: true } : {}),
     };
     const answer = await context.client.next(state.run, body);
     const at = context.now().toISOString();

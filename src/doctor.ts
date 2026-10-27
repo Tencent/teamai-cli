@@ -1,9 +1,11 @@
-import { hookSettingsPath, hookToolPathsForConfig } from './types.js';
+import { hookToolPathsForConfig } from './types.js';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { detectProjectConfig, loadLocalConfig, loadTeamConfig } from './config.js';
+import { explainRunMode, type ExplainedRunMode } from './launch-context.js';
 import { readWorkspaceChildren } from './workspace-children.js';
 import { pathExists, readFileSafe } from './utils/fs.js';
+import { getUserHome } from './utils/home.js';
 import { log, setStderrOnly } from './utils/logger.js';
 import type { GlobalOptions } from './types.js';
 import {
@@ -18,6 +20,7 @@ import {
   resolveToolBaseDir,
   isAgentExcluded,
   scopedToolPaths,
+  toolGateRoot,
   getDataHome,
   getTeamaiHomeDir,
   isUsageReportEnabled,
@@ -26,7 +29,7 @@ import {
   installScopeName,
 } from './types.js';
 import { isToolInstalledForConfig } from './resources/base.js';
-import { installOf, locate, writable } from './locate.js';
+import { hookSettingsFile, installOf, locate, writable } from './locate.js';
 import { samePlace } from './resources/places.js';
 import { describeInvalidToolHomes, envToolHome, realHost, reloadToolHomes, toolHomesPath } from './tool-home.js';
 import { isToolId } from './tools.js';
@@ -35,6 +38,7 @@ import { TEAMAI_HOOK_SUBCOMMANDS, isCodexTrustGatedTool, codexTrustReminder, kep
 import { codexBuildSkewMessage } from './codex-trust.js';
 import {
   buildDeliveryChecks,
+  nameList,
   toolPathsDroppedKeyNotes,
   buildSkillDirChecks,
   skillReadNotes,
@@ -43,7 +47,6 @@ import {
   buildRulesDeliveryChecks,
   buildAgentsDeliveryChecks,
   buildAgentPlaceChecks,
-  agentReadNotes,
   buildInstructionDeliveryChecks,
   buildNamespaceNotes,
   buildMcpDeliveryChecks,
@@ -150,6 +153,8 @@ export interface DoctorReport {
   ok: boolean;
   /** null before initialization, when there is no config to scope. */
   scope: string | null;
+  /** The run mode this process resolves, and its source. */
+  runMode: ExplainedRunMode;
   checks: CheckResult[];
   /** Present only when the team repo declares packages. Human text, not checks. */
   packages?: { ok: boolean; lines: string[] };
@@ -215,6 +220,59 @@ async function buildEnabledToolChecks(ctx: DoctorContext): Promise<Check[]> {
     });
   }
 
+  return checks;
+}
+
+/** The surfaces `locate` gates per tool, as a fix names them. */
+const GATED_SURFACES = [['rules', 'rules'], ['blocks', 'team instructions'], ['agents', 'agents'], ['mcp', 'MCP servers']] as const;
+
+/**
+ * A tool can take its skills while its other surfaces wait for a root that is
+ * not there: on WorkBuddy 5.7+, skills land under `.workbuddy-ai/`, while
+ * everything else still needs `.workbuddy/` (#1273). Pull writes none of those,
+ * and the delivery checks skip a tool whose gate is unmet, so with
+ * `<tool> is installed` passing on the skills root doctor would stay green.
+ * Hooks count when the hook writer finds none of its install roots and one of
+ * them is a root the other surfaces wait for.
+ */
+async function buildHeldSurfaceChecks(ctx: DoctorContext): Promise<Check[]> {
+  const { localConfig, toolPaths, hookToolPaths, baseDir } = ctx;
+  const install = installOf(ctx.teamConfig ?? { toolPaths }, localConfig);
+  const checks: Check[] = [];
+  for (const tool of Object.keys(toolPaths)) {
+    const skills = writable(await locate(tool, 'skills', install));
+    if (skills === null) continue;
+    // Keyed by every missing root, whether or not the team maps a surface to it.
+    const held = new Map<string, string[]>();
+    for (const [resource, surface] of GATED_SURFACES) {
+      const location = await locate(tool, resource, install);
+      const unmet = location.gates.find((gate) => gate.kind === 'installed' && !gate.met);
+      if (unmet?.kind !== 'installed') continue;
+      const surfaces = held.get(unmet.probe) ?? [];
+      if (location.channel === 'files' && location.own !== null) surfaces.push(surface);
+      held.set(unmet.probe, surfaces);
+    }
+    const settings = hookToolPaths[tool]?.settings;
+    if (settings) {
+      // reconcileHooksToAllTools injects while either root exists.
+      const gateRoot = toolGateRoot(tool, settings, localConfig.toolRoots);
+      const hookRoots = [hookSettingsFile(tool, baseDir, gateRoot)];
+      if (localConfig.scope === 'project') hookRoots.push(path.join(localConfig.projectRoot ?? baseDir, gateRoot));
+      const root = hookRoots.find((candidate) => held.has(candidate));
+      if (root !== undefined && !(await Promise.all(hookRoots.map((dir) => pathExists(dir)))).includes(true)) held.get(root)?.push('hooks');
+    }
+    for (const [root, surfaces] of held) {
+      if (surfaces.length === 0) continue;
+      checks.push({
+        name: `${tool} receives ${nameList(surfaces)}`,
+        source: 'local',
+        check: async () => false,
+        fix: `teamai delivers ${tool}'s skills to ${skills.path}, but writes its ${nameList(surfaces)} only once `
+          + `${root} exists, and it does not, so a pull holds them back from ${tool}. teamai does not write them `
+          + 'where this install reads its skills yet, so there is nothing to fix on this machine.',
+      });
+    }
+  }
   return checks;
 }
 
@@ -325,6 +383,12 @@ async function buildHookChecks(
 ): Promise<Check[]> {
   const checks: Check[] = [];
   for (const [tool, paths] of Object.entries(toolPaths)) {
+    if (tool === 'kiro') {
+      if (!await pathExists(path.join(getUserHome(), '.kiro'))) continue;
+      const { hasKiroHooks } = await import('./kiro-hooks.js');
+      checks.push({ name: 'teamai hooks in Kiro standalone hook file (requires Kiro CLI V3)', source: 'local', check: hasKiroHooks, fix: 'Run `teamai hooks inject`; standalone hooks require Kiro CLI V3.' });
+      continue;
+    }
     if (tool === 'pi') {
       const installed = await isToolInstalledForConfig(tool, paths.skills ?? '.pi/skills', localConfig);
       if (!installed) continue;
@@ -357,7 +421,7 @@ async function buildHookChecks(
     const hookPath = hookToolPaths[tool]?.hooks
       ? path.join(resolveToolBaseDir(tool, { ...localConfig, scope: resolveHookScope(localConfig).scope }), hookToolPaths[tool]?.hooks ?? paths.hooks)
       : settings
-        ? hookSettingsPath(tool, baseDir, settings)
+        ? hookSettingsFile(tool, baseDir, settings)
         : undefined;
     if (!hookPath) continue;
     const settingsPath = hookPath;
@@ -679,6 +743,7 @@ export async function buildChecks(ctx: DoctorContext, stage: CheckStage = 'docto
     ...buildToolRootChecks(localConfig, teamConfig),
     ...buildToolHomeChecks(localConfig),
     ...await buildEnabledToolChecks(ctx),
+    ...await buildHeldSurfaceChecks(ctx),
     ...await buildHookChecks(toolPaths, hookToolPaths, baseDir, localConfig),
     ...await buildDeliveryChecks(ctx),
     ...await buildSkillDirChecks(ctx),
@@ -824,6 +889,14 @@ export function formatCheckResult({ name, ok, fix }: CheckResult): string[] {
   return fix ? [`  ✖ ${name}`, `    → ${fix}`] : [`  ✖ ${name}`];
 }
 
+/** The run mode row: the mode and its source, with a warning when TEAMAI_MODE held a value it ignored. */
+function formatRunMode(runMode: ExplainedRunMode): string {
+  const { mode, source } = runMode;
+  return 'ignored' in runMode && runMode.ignored !== undefined
+    ? `  ⚠ Run mode: ${mode} (${source}). TEAMAI_MODE="${runMode.ignored}" is not attended or unattended, so it is ignored.`
+    : `  ✔ Run mode: ${mode} (${source})`;
+}
+
 function renderResult(result: CheckResult): void {
   for (const line of formatCheckResult(result)) console.log(line);
 }
@@ -835,6 +908,8 @@ export async function doctor(options: DoctorOptions): Promise<boolean> {
   if (jsonMode) setStderrOnly(true);
 
   log.info('Running diagnostics...\n');
+  // Information, not a check: an unknown TEAMAI_MODE fails nothing.
+  const runMode = explainRunMode(process.env);
   const ctx = await resolveDoctorContext();
   if (!ctx) {
     const notInitialized: CheckResult = {
@@ -843,9 +918,10 @@ export async function doctor(options: DoctorOptions): Promise<boolean> {
       fix: 'Run `teamai init <repo-url>` in a project, or add `--scope user` for all projects',
     };
     if (jsonMode) {
-      emitReport({ ok: false, scope: null, checks: [notInitialized] });
+      emitReport({ ok: false, scope: null, runMode, checks: [notInitialized] });
     } else {
       console.log('  Scope: not initialized\n');
+      console.log(formatRunMode(runMode));
       renderResult(notInitialized);
       console.log('');
     }
@@ -858,6 +934,7 @@ export async function doctor(options: DoctorOptions): Promise<boolean> {
   if (!jsonMode) {
     const scopeLabel = `${installScopeName(scope)}${scope === 'project' && localConfig.projectRoot ? ` (${localConfig.projectRoot})` : ''}`;
     console.log(`  Scope: ${scopeLabel}\n`);
+    console.log(formatRunMode(runMode));
   }
 
   // --fix runs before the checks, so the report reflects the post-cleanup state.
@@ -914,13 +991,13 @@ export async function doctor(options: DoctorOptions): Promise<boolean> {
     ...await skillReadNotes(ctx),
     ...await recordedPlaceNotes(ctx, 'rules'),
     ...await recordedPlaceNotes(ctx, 'blocks'),
-    ...await agentReadNotes(ctx),
   ];
 
   if (jsonMode) {
     emitReport({
       ok: allPassed,
       scope,
+      runMode,
       checks: results,
       // pkgDoctorReport renders its own lines; they are human text, not checks.
       ...(packageReport ? { packages: { ok: packageReport.allPassed, lines: packageReport.lines } } : {}),

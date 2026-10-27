@@ -881,7 +881,10 @@ Upgrading from the per-checkout layout:
   `recall maintenance` and `recall promote` stop with exit code 1 and write
   nothing when either the reports lock (they rank by its votes) or the
   learnings lock is taken; the error names the lock and says to run the command
-  again, or to check that the partition is writable.
+  again, or to check that the partition is writable. Their refresh fetches into
+  the team clone, so it also takes the sync lock: while a pull or push holds
+  it, `recall maintenance` stops the same way, and the `recall promote` listing
+  reads both checkouts as they are.
 
 A git-mode install keeps the same checkouts and queue at the same partition
 paths (beside `<partition>/team-repo`), so after a project switches mode the
@@ -914,6 +917,22 @@ checkout's learnings: the queue, docs, rules, skills and older learnings stay
 recallable, and a plain `recall` runs no git. `digest` and the dashboard (`viz`:
 its throwaway index and its promotion and prune candidates) use the same roots.
 
+Promotion publishes the new knowledge entry from a disposable worktree based on
+the freshly fetched default branch, for both separate team repositories and self
+mode. Only the new entry is staged on a review branch; the user's active branch,
+index and working files are left alone. The artifact push must succeed before
+`promoted_to` is written to the learning. That marker is then published through
+the existing learnings maintenance journal, so a failed marker push can retry on
+the next pull without generating the knowledge entry again. A failed artifact
+push leaves the learning eligible. Existing targets are refused, never replaced.
+The marker keeps the learning out of the candidates only while a commit on
+origin's default branch or on a `teamai/push/*` review branch has touched its
+target, so renaming or deleting the merged entry later does not offer it again.
+`recall promote` fetches both first, under the sync lock, and prunes the review
+branches origin deleted, so a review closed unmerged, once its branch is
+deleted, offers the learning again. While a pull or push holds the lock, the
+listing skips the fetch and uses the last one. Promoting it again replaces the
+marker. The dashboard applies the same rule to the refs as last fetched.
 
 Those builds, and the reports checkout `teamai recall feedback --negative` counts
 the team's upvotes from, take the votes directory from `indexableVotesDir`,

@@ -22,16 +22,11 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { getWorkBuddyProjectsDir } from './fs.js';
 import { findSqlite3 } from './sqlite.js';
 
- /** WorkBuddy data root (`~/.workbuddy`; projects/ and the DB live under it). */
-export function getWorkBuddyHome(): string {
-  return path.dirname(getWorkBuddyProjectsDir());
-}
-
-export function getWorkBuddyDbPath(): string {
-  return path.join(getWorkBuddyHome(), 'workbuddy.db');
+/** WorkBuddy's database, in the data root that holds its session store (`<root>/projects`). */
+function workBuddyDbPath(store: string): string {
+  return path.join(path.dirname(store), 'workbuddy.db');
 }
 
 function esc(value: string): string {
@@ -91,7 +86,7 @@ function readUserId(dbPath: string): string | null {
     }
   }
 
-  const home = getWorkBuddyHome();
+  const home = path.dirname(dbPath);
 
    // 2) connectors/<uuid> directory names
   try {
@@ -117,6 +112,8 @@ function readUserId(dbPath: string): string | null {
 }
 
 export interface RegisterWorkBuddySessionArgs {
+  /** The session store the transcript went to (`sessionStoreDir('workbuddy', …)`). */
+  store: string;
    /** Session working directory (absolute; decides which space it lands in). */
   cwd: string;
   sessionId: string;
@@ -139,7 +136,7 @@ export interface RegisterWorkBuddyResult {
  * Idempotent: re-migrating the same sessionId hits ON CONFLICT DO UPDATE -- no duplicates.
  */
 export function registerWorkBuddySession(args: RegisterWorkBuddySessionArgs): RegisterWorkBuddyResult {
-  const dbPath = getWorkBuddyDbPath();
+  const dbPath = workBuddyDbPath(args.store);
   if (!fs.existsSync(dbPath)) {
     return { ok: false, reason: `workbuddy.db not found: ${dbPath}` };
   }
@@ -179,8 +176,8 @@ export function registerWorkBuddySession(args: RegisterWorkBuddySessionArgs): Re
 }
 
  /** Remove the session from WorkBuddy's list (called on rollback / delete). */
-export function unregisterWorkBuddySession(sessionId: string): RegisterWorkBuddyResult {
-  const dbPath = getWorkBuddyDbPath();
+export function unregisterWorkBuddySession(store: string, sessionId: string): RegisterWorkBuddyResult {
+  const dbPath = workBuddyDbPath(store);
   if (!fs.existsSync(dbPath)) return { ok: false, reason: 'workbuddy.db not found' };
   const sql =
     'PRAGMA busy_timeout=5000;\n' +

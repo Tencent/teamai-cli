@@ -16,7 +16,8 @@ import { resolveMemberToolRoots } from '../config.js';
 import { getTeamaiHomeDir, type LocalConfig } from '../types.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { ADAPTER_REGISTRY, listAvailablePlatforms, listInstalledPlatforms } from './adapters/index.js';
-import { SESSION_PLATFORM_FACTS, sessionPlatformFacts } from './adapters/platform-facts.js';
+import { isSessionPlatform, sessionPlatformFacts } from './adapters/platform-facts.js';
+import { sessionPlatformOwner, sessionPlatformsOf } from '../tools.js';
 import { ToolUnavailableError, type AgentAdapter, type SessionMeta, type SubagentsRead } from './adapters/base.js';
 import { imagePlaceholderText, type ContentBlock, type Message, type Session } from './ir.js';
 import { deriveTargetSessionId, legacyTargetSessionIds } from './ids.js';
@@ -516,15 +517,17 @@ function transcript(session: Session): AgentSessionTranscriptEntry[] {
   }));
 }
 
-/** The session platform a tool (a workflow step's `tool`) reads and writes, or undefined when it has none. */
+/**
+ * The session platform a tool (a workflow step's `tool`) reads and writes: the first of its
+ * `TOOLS` entry's `sessions`, or a platform named directly. Undefined when it has none.
+ */
 function platformForTool(tool: string): string | undefined {
-  if (sessionPlatformFacts(tool)) return tool;
-  return Object.entries(SESSION_PLATFORM_FACTS).find(([, facts]) => facts.tool === tool)?.[0];
+  return sessionPlatformsOf(tool)[0] ?? (isSessionPlatform(tool) ? tool : undefined);
 }
 
 /** The tool whose sessions `platform` holds, the reverse of `platformForTool`. */
 function toolForPlatform(platform: string): string {
-  return sessionPlatformFacts(platform)?.tool ?? platform;
+  return sessionPlatformOwner(platform) ?? sessionPlatformFacts(platform)?.tool ?? platform;
 }
 
 export const AgentSession = { list, copy, find, transcript, platformForTool, toolForPlatform } as const satisfies AgentSession;

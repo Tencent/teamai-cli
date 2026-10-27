@@ -155,6 +155,18 @@ The judge reads at most 200,000 characters of a session. A session scorer that n
 
 The label is kept in the scope the session ran in, from whichever directory you score it. It records `agent`, what the session ran as, from the captures the session-start hook writes. It records `used.skills`, the team skills the session or its subagents loaded that its captures show teamai delivered, unchanged, when it started, including by the pull it runs at start. A later pull does not change that. A skill the captures cannot place, such as a member's own skill with a team skill's name, is left out. `--push` publishes every pending label of that scope. With [usage reporting](reporting.md) off, it prints `Usage reporting is off, so labels stay on this machine.` and the labels stay pending. An http team repo has no `teamai-reports`, so `--push` fails with `unsupported_repo` and the labels stay here. `teamai doctor` warns while a label waits to be published.
 
+### Try a scorer file
+
+```console
+$ teamai score --session 7c1e… --scorer ./scorers/review-quality.md
+```
+
+Before you push a new or edited scorer, try it on a session from your checkout of the team repo. `--scorer` takes a path, a value with a `/` or ending in `.md`, relative to the current directory. The file is checked as `teamai pull` checks it, and an invalid file fails with pull's message before any judge runs. The judge runs as it does for a cached scorer, also with `--batch` and inside a session.
+
+The file's label is never stored, so the command takes no `--push`, and `--run` takes scorer names only. The output prints the label with its reasoning and `"stored": false`. Next to it, `stored` lists the newest label kept on this machine for that session and the scorer of the same name, one per rubric, so you see whether your edit changes the verdict. `control` is the file judged a second time, on the session's first prompt alone. When it passes, it carries a warning: the rubric passes a session where the agent did nothing, so it may not judge the work. It warns and never fails, since a rubric may judge the prompt by design.
+
+A workflow or a whole team branch is tried with `teamai pull --team-ref <branch>` ([distribution](distribution.md)).
+
 ### Finished sessions
 
 A member who sets `scoring.sessions: true` in `config.yaml` turns each session captured in that scope into judge work once nothing has happened in it for six hours, for every scorer with `sessions: true`, sampled by its `samplingRate`. A namespace scorer judges a session only when the roles and projects each of its starts recorded make that namespace active. `score --next` hands out workflow work first, then sessions. A session lease has `"source":"session"`, and its `cwd` is where to submit from.

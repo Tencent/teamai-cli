@@ -94,7 +94,7 @@ export function describeSkippedSkillDirectory(skillName: string, tool: string, b
   return `Skipped ${skillName} (${tool}): ${why}. ${next}`;
 }
 
-function describeSkillDirectoryBlock(block: SkillDirectoryBlock): string {
+export function describeSkillDirectoryBlock(block: SkillDirectoryBlock): string {
   switch (block.kind) {
     case 'not-directory': return `${block.path} is not a directory; the existing file was left unchanged`;
     case 'outside-base': return `${block.target} is outside ${block.baseDir}`;

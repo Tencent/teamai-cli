@@ -318,6 +318,32 @@ describe('hookDispatchCli', () => {
     }
   });
 
+  it.each([
+    [{ CI: 'true', TEAMAI_WORKFLOW_ATTEMPT: 'r0123456789abcdef/a0000000a' }, { runMode: 'unattended', launchedBy: 'workflow' }],
+    [{}, { runMode: 'attended' }],
+  ])('forwards the run mode and launcher of %o to the detached pass, never the ones the host payload names (#1384)', async (env, forwarded) => {
+    const stdinFile = path.join(os.tmpdir(), `run-hook-${process.pid}-${Date.now()}.json`);
+    fs.writeFileSync(stdinFile, JSON.stringify({ hook_event_name: 'Stop', session_id: 's', cwd: process.cwd(), teamai_run: { runMode: 'unattended', launchedBy: 'host' } }));
+    let detachedPayload = '';
+    mockSpawn.mockReturnValue({
+      on: vi.fn(),
+      stdin: { on: vi.fn(), end: vi.fn((raw: string, done: () => void) => {
+        detachedPayload = raw;
+        done();
+      }) },
+      unref: vi.fn(),
+    });
+    for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value);
+
+    try {
+      await hookDispatchCli('stop', 'claude', '*', { stdinFile });
+      expect(JSON.parse(detachedPayload).teamai_run).toEqual(forwarded);
+    } finally {
+      vi.unstubAllEnvs();
+      fs.rmSync(stdinFile, { force: true });
+    }
+  });
+
   it('captures the session before the detached pull starts, and hands it the capture and the one git state it read (#1178)', async () => {
     const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'capture-hook-')));
     const team = path.join(root, 'team');

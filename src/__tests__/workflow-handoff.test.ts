@@ -402,6 +402,32 @@ describe('workflow handoff through teamai-reports', () => {
     });
   });
 
+  it('keeps the mode a run started in through a claim, and records each pass in the mode of the driver that ran it (#1384)', async () => {
+    const acme = team();
+    const alice = await acme.member('alice');
+    const bob = await acme.member('bob');
+    const started = await startRun(alice.config, 'build', {}, { secrets: await knownSecrets(alice.config), runMode: 'attended' });
+    if ('error' in started) throw new Error(started.error.message);
+    const runId = String(started.data.run);
+    const next = await leaseNext(alice.config, runId, alice.driver, { runMode: 'attended' });
+    if (!('data' in next) || !next.data.lease) throw new Error(`no lease: ${JSON.stringify(next)}`);
+    const lease = next.data.lease as { attempt: string; revision: number };
+    await reportAttempt(alice.config, runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: alice.driver });
+    await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout });
+    expect(await claimRun(bob.config, runId, { checkout: bob.checkout })).toMatchObject({ ok: true });
+
+    vi.stubEnv('CI', 'true');
+    try {
+      expect(await runLocalDriver(bob.config, runId, bob.checkout, { hitl: false })).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+
+    expect(JSON.parse(originFile(acme.origin, `workflows/runs/${runId}.json`) ?? '{}')).toMatchObject({
+      phase: 'end', runMode: 'attended', steps: [{ step: 'one', runMode: 'attended' }, { step: 'two', runMode: 'unattended' }],
+    });
+  });
+
   it('names the owner by the team username, as the run records do', async () => {
     const acme = team();
     const alice = await acme.member('alice');

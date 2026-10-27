@@ -112,12 +112,57 @@ describe('gh-cli launches the resolved executable', () => {
     expect(r.stdout).toBe('gh version 2.0.0');
   });
 
+  it('returns a successful run when cross-spawn reports error: null', () => {
+    mockedExecFileSync.mockReturnValue(`${GH_EXE}\r\n`);
+    mockedCrossSpawnSync.mockReturnValue({ status: 0, stdout: 'gh version 2.0.0\n', stderr: '', error: null });
+
+    const r = ghExec(['--version'], { timeoutMs: 30_000 });
+
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('gh version 2.0.0');
+    expect(r.timedOut).toBeUndefined();
+  });
+
   it('forwards inheritStdio through cross-spawn', () => {
     mockedExecFileSync.mockReturnValue(`${GH_EXE}\r\n`);
     ghExec(['auth', 'status'], { inheritStdio: true });
     expect(mockedCrossSpawnSync).toHaveBeenCalledWith(
       GH_EXE, ['auth', 'status'], expect.objectContaining({ stdio: 'inherit' }),
     );
+  });
+
+  it('reports a deadline instead of a silent non-zero exit', () => {
+    mockedExecFileSync.mockReturnValue(`${GH_EXE}\r\n`);
+    // `spawnSync` reports a killed child as `status: null` plus ETIMEDOUT, with
+    // both streams empty — the shape that was indistinguishable from `gh`
+    // exiting non-zero while printing nothing.
+    mockedCrossSpawnSync.mockReturnValue({
+      status: null,
+      stdout: '',
+      stderr: '',
+      error: Object.assign(new Error('spawnSync gh ETIMEDOUT'), { code: 'ETIMEDOUT' }),
+    });
+
+    const r = ghExec(['api', '/orgs/example/repos'], { timeoutMs: 30_000 });
+
+    expect(r.timedOut).toBe(true);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toBe('');
+  });
+
+  it('does not report a plain non-zero exit as a deadline', () => {
+    mockedExecFileSync.mockReturnValue(`${GH_EXE}\r\n`);
+    mockedCrossSpawnSync.mockReturnValue({
+      status: 1,
+      stdout: '',
+      stderr: 'gh: Not Found (HTTP 404)',
+      error: new Error('Command failed'),
+    });
+
+    const r = ghExec(['api', '/orgs/missing/repos'], { timeoutMs: 30_000 });
+
+    expect(r.timedOut).toBeUndefined();
+    expect(r.status).toBe(1);
   });
 
   it('reports gh as installed exactly when the resolver finds it', () => {

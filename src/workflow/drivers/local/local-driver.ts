@@ -540,7 +540,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options
       const turn = { ...resolved, secrets: rememberSecrets(seen, resolved.secrets) };
       env = turn;
       const next = await leaseNext(config, runId, driver, {
-        running, canTakeLease, can, autoApprove: options.autoApprove, ...(base ? { base } : {}), env: turn,
+        running, canTakeLease, can, autoApprove: options.autoApprove, runMode: mode, ...(base ? { base } : {}), env: turn,
       });
       if (signalled) continue;
       if (isWorkflowError(next)) return next;

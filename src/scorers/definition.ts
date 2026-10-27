@@ -9,6 +9,11 @@ import { splitFrontmatter } from '../utils/frontmatter.js';
 
 const TOKEN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
+/** Whether `--scorer <value>` names a scorer file, relative to the current directory: a value with a `/` or ending in `.md`. Else it is a scorer's name. */
+export function isScorerFile(value: string): boolean {
+  return value.includes('/') || value.endsWith('.md');
+}
+
 const text = (message: string) => z.string({ required_error: message, invalid_type_error: message }).refine((value) => value.trim() !== '', message);
 const number = (message: string) => z.number({ required_error: message, invalid_type_error: message }).finite(message);
 
@@ -83,6 +88,7 @@ export function parseScorer(relativePath: string, content: string): ParsedScorer
   const fail = (...messages: string[]): ParsedScorer => ({ ok: false, diagnostics: messages.map((message) => ({ file: relativePath, message })) });
   const name = path.posix.basename(relativePath, '.md');
   if (!TOKEN.test(name)) return fail('the file name must be a token such as review-quality.md');
+  if (name.endsWith('.md')) return fail('a scorer\'s name cannot end in .md, since teamai score --scorer reads such a value as a scorer file');
   const { data, valid, body, raw } = splitFrontmatter(content);
   if (raw === '') return fail('a scorer starts with YAML frontmatter between --- lines');
   if (!valid) return fail('the frontmatter must be a YAML mapping');

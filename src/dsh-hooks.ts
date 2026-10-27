@@ -12,7 +12,7 @@ import YAML from 'yaml';
 import { reconcileHooks } from './hooks.js';
 import type { BuiltinHookOverride } from './builtin-hooks.js';
 import { isAgentExcluded, type HookDef, type LocalConfig } from './types.js';
-import { getUserHome } from './utils/home.js';
+import { hookAdapterDir } from './locate.js';
 import { toolHome } from './tool-home.js';
 import { pathExists, readFileSafe, remove, writeIfChanged } from './utils/fs.js';
 import { log } from './utils/logger.js';
@@ -38,13 +38,8 @@ export async function isDshInstalled(): Promise<boolean> {
   return pathExists(resolveDshHome());
 }
 
-/** The TeamAI-managed DSH bridge directory under the resolved user home. */
-export function resolveDshHooksDir(): string {
-  return path.join(getUserHome(), '.teamai', 'dsh');
-}
-
 export function resolveDshHookConfigPath(): string {
-  return path.join(resolveDshHooksDir(), DSH_HOOK_CONFIG_FILE);
+  return path.join(hookAdapterDir('dsh-hooks'), DSH_HOOK_CONFIG_FILE);
 }
 
 /**
@@ -53,7 +48,7 @@ export function resolveDshHookConfigPath(): string {
  * home patch already mounts the hooks, so inserting them again would load them twice.
  */
 export function resolveDshPatchPath(): string {
-  return path.join(resolveDshHooksDir(), DSH_PATCH_FILE);
+  return path.join(hookAdapterDir('dsh-hooks'), DSH_PATCH_FILE);
 }
 
 const DSH_LEGACY_PATCH = '# teamai mounts its hooks from $DSH_HOME/cordis.patch.yml. Passing this file to dsh --patch is no longer needed.\n[]\n';

@@ -27,7 +27,6 @@ import { AgentAdapter, type SessionMeta, type SessionReadRef } from './base.js';
 import type { Session, Message, ContentBlock, ThinkingBlock, ToolCallBlock, ToolResultBlock } from '../ir.js';
 import { imagePlaceholderText } from '../ir.js';
 import {
-  getWorkBuddyProjectsDir,
   encodeCwdCodeBuddy,
   decodeCwdGeneric,
   readJsonl,
@@ -37,6 +36,7 @@ import {
   dirExists,
   removeDirRecursive,
 } from '../fs.js';
+import { sessionStoreDir } from '../../locate.js';
 import { cleanTitleText, fallbackTitle, isInjectedText, titleFromCandidates, titleFromUserText } from '../title.js';
 import { assertSafeSessionFileId, deriveTargetSessionId } from '../ids.js';
 import { registerWorkBuddySession, unregisterWorkBuddySession } from '../workbuddy-store.js';
@@ -186,21 +186,20 @@ function readMeta(jsonlPath: string): WorkBuddyMeta {
 
 export class WorkBuddyAdapter extends AgentAdapter {
   readonly platform = 'workbuddy';
+  private readonly storageRoot: string;
 
-  static isAvailable(): boolean {
-    return dirExists(getWorkBuddyProjectsDir());
+  /** @param storageRoot The session store (the registry passes the member's, `sessionStoreDir`). */
+  constructor(storageRoot = sessionStoreDir('workbuddy', undefined)) {
+    super();
+    this.storageRoot = storageRoot;
   }
 
   isReady(): boolean {
-    return dirExists(getWorkBuddyProjectsDir());
-  }
-
-  static getDefaultStoragePath(): string {
-    return getWorkBuddyProjectsDir();
+    return dirExists(this.storageRoot);
   }
 
   private resolveProjectDir(projectPath?: string): string {
-    const root = getWorkBuddyProjectsDir();
+    const root = this.storageRoot;
     if (projectPath) {
       // Must use the same encoding as writeSession (encodeCwdCodeBuddy, which keeps spaces):
       // native workspace directory names keep spaces. encodeCwdGeneric (space → '-') points at an empty directory,
@@ -215,7 +214,7 @@ export class WorkBuddyAdapter extends AgentAdapter {
       const target = path.join(this.resolveProjectDir(projectPath), `${sessionId}.jsonl`);
       return fileExists(target) ? target : null;
     }
-    const root = getWorkBuddyProjectsDir();
+    const root = this.storageRoot;
     if (!dirExists(root)) return null;
     for (const projDir of fs.readdirSync(root)) {
       const candidate = path.join(root, projDir, `${sessionId}.jsonl`);
@@ -226,7 +225,7 @@ export class WorkBuddyAdapter extends AgentAdapter {
 
   async listConversations(projectPath?: string): Promise<SessionMeta[]> {
     const metas: SessionMeta[] = [];
-    const root = getWorkBuddyProjectsDir();
+    const root = this.storageRoot;
     if (!dirExists(root)) return [];
 
     const projDirs = projectPath
@@ -520,7 +519,7 @@ export class WorkBuddyAdapter extends AgentAdapter {
     // WorkBuddy is isomorphic with CodeBuddy: project directory names keep spaces (observed CodeBuddy on disk as
     // `Users-caiwenzhe-Desktop-Code-teamai cli`). encodeCwdGeneric would also turn spaces into
     // `-`, so the directory name would not match what the client computes from the current cwd → the session would not appear in that project's list.
-    const projDir = path.join(getWorkBuddyProjectsDir(), encodeCwdCodeBuddy(cwd));
+    const projDir = path.join(this.storageRoot, encodeCwdCodeBuddy(cwd));
     const jsonlPath = path.join(projDir, `${sessionId}.jsonl`);
 
     const records: Record<string, unknown>[] = [];
@@ -687,6 +686,7 @@ export class WorkBuddyAdapter extends AgentAdapter {
     // (jsonl is only the session body; list entries and space membership live in the DB). Best-effort.
     try {
       const reg = registerWorkBuddySession({
+        store: this.storageRoot,
         cwd,
         sessionId,
         title: resolveSessionTitle(session, sessionId),
@@ -720,7 +720,7 @@ export class WorkBuddyAdapter extends AgentAdapter {
 
     // Drop the DB registration (otherwise deleting the jsonl leaves an unopenable session in the WorkBuddy list)
     try {
-      unregisterWorkBuddySession(sessionId);
+      unregisterWorkBuddySession(this.storageRoot, sessionId);
     } catch {
       // best-effort
     }

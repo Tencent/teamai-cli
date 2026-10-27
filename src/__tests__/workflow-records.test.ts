@@ -238,7 +238,7 @@ describe('#1083 workflow run records', () => {
       // Refusals of teamai score --run, answered to the member who asked for a pass to be judged.
       'scoring_unavailable', 'pass_not_found', 'scorer_not_found', 'entry_leased',
       // Refusals of teamai score --session, answered to the member who asked for a session to be judged.
-      'session_required', 'source_required', 'session_not_found', 'session_ambiguous',
+      'session_required', 'source_required', 'session_not_found', 'session_ambiguous', 'scorer_invalid',
       // Why a judge attempt closed: kept with the attempt under scores/, never on a run.
       ...JUDGE_FAILURES];
     const src = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');

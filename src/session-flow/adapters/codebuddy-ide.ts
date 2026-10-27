@@ -156,16 +156,8 @@ function safeConversationName(name: string): string {
 export class CodeBuddyIdeAdapter extends AgentAdapter {
   readonly platform = 'codebuddy-ide';
 
-  static isAvailable(): boolean {
-    return listIdeHistoryRoots().length > 0;
-  }
-
   isReady(): boolean {
     return listIdeHistoryRoots().length > 0;
-  }
-
-  static getDefaultStoragePath(): string {
-    return listIdeHistoryRoots()[0] ?? '';
   }
 
   async listConversations(projectPath?: string): Promise<SessionMeta[]> {

@@ -136,11 +136,12 @@ describe('#1083 workflow run records reach the reports branch', () => {
     expect(endRecord.teamRevision).toBe(teamRevision);
     expect(endRecord.stepCounts).toEqual({ total: 3, succeeded: 3, failed: 0, skipped: 0, cancelled: 0 });
     expect(endRecord.steps).toEqual([
-      { step: 'one', pass: 1, outcome: 'success' },
-      { step: 'two', pass: 1, outcome: 'success' },
+      { step: 'one', pass: 1, runMode: 'attended', outcome: 'success' },
+      { step: 'two', pass: 1, runMode: 'attended', outcome: 'success' },
       {
         step: 'review',
         pass: 1,
+        runMode: 'attended',
         agent: {
           v: 1,
           definition: { name: 'reviewer', applied: 'main' },

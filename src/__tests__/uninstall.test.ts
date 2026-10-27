@@ -64,6 +64,7 @@ import { switchModelProfile } from '../models/switch.js';
 import { getTeamSecretsPath } from '../secret-store.js';
 import YAML from 'yaml';
 import type { TeamaiConfig, LocalConfig } from '../types.js';
+import { hookAdapterDir } from '../locate.js';
 
 // ─── Helpers ───────────────────────────────────────────
 
@@ -880,9 +881,9 @@ describe('uninstall', () => {
       let globalFile: string;
       let configBefore: string | undefined;
       if (tool === 'omp') {
-        const { injectOmpHooks, resolveOmpExtensionsDir, OMP_HOOK_FILE } = await import('../omp-hooks.js');
+        const { injectOmpHooks, OMP_HOOK_FILE } = await import('../omp-hooks.js');
         await injectOmpHooks();
-        globalFile = path.join(resolveOmpExtensionsDir(), OMP_HOOK_FILE);
+        globalFile = path.join(hookAdapterDir('omp-extension'), OMP_HOOK_FILE);
       } else {
         const { injectHermesHooks, getInstructionsPluginDir } = await import('../hermes-hooks.js');
         await injectHermesHooks();
@@ -972,9 +973,9 @@ describe('uninstall', () => {
       kept = path.join(homeDir, '.pi', 'agent', 'extensions', 'teamai-hooks.ts');
       await fse.outputFile(kept, TEAMAI_PI_HOOK);
     } else if (tool === 'omp') {
-      const { injectOmpHooks, resolveOmpExtensionsDir, OMP_HOOK_FILE } = await import('../omp-hooks.js');
+      const { injectOmpHooks, OMP_HOOK_FILE } = await import('../omp-hooks.js');
       await injectOmpHooks();
-      kept = path.join(resolveOmpExtensionsDir(), OMP_HOOK_FILE);
+      kept = path.join(hookAdapterDir('omp-extension'), OMP_HOOK_FILE);
     } else if (tool === 'opencode') {
       kept = path.join(homeDir, '.config', 'opencode', 'plugin', 'teamai-hooks.ts');
       await fse.outputFile(kept, '// [teamai] hooks plugin');
@@ -2722,6 +2723,53 @@ describe('uninstall', () => {
     expect(cleaned).toContain(legacySettings);
     // The un-relocated home path is not a target and must not be created.
     expect(await fse.pathExists(path.join(homeDir, '.claude'))).toBe(false);
+  });
+
+  it('removes CodeBuddy hooks from CODEBUDDY_CONFIG_DIR and the default-home copy an earlier release wrote (#1221)', async () => {
+    const homeDir = path.join(tmpDir, 'home');
+    const configDir = path.join(tmpDir, 'cb');
+    const repoPath = path.join(homeDir, '.teamai', 'team-repo');
+    const teamaiHooks = {
+      hooks: { SessionStart: [{ matcher: '*', hooks: [{ type: 'command', command: 'teamai hook-dispatch session-start' }], description: '[teamai] Auto-pull' }] },
+    };
+    const movedSettings = path.join(configDir, 'settings.json');
+    const defaultSettings = path.join(homeDir, '.codebuddy', 'settings.json');
+    await fse.outputJson(movedSettings, teamaiHooks);
+    await fse.outputJson(defaultSettings, teamaiHooks);
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+    vi.stubEnv('CODEBUDDY_CONFIG_DIR', configDir);
+    const teamConfig = makeTeamConfig({ toolPaths: { codebuddy: { skills: '.codebuddy/skills', settings: '.codebuddy/settings.json' } } });
+    mockAutoDetectInit.mockResolvedValue({ localConfig: makeLocalConfig(homeDir, repoPath, { enabledAgents: ['codebuddy'] }), teamConfig });
+
+    await uninstall({ force: true, agent: 'codebuddy' });
+
+    const cleaned = mockReconcileHooks.mock.calls.map((call) => call[0]);
+    expect(cleaned).toContain(movedSettings);
+    expect(cleaned).toContain(defaultSettings);
+  });
+
+  it.each([
+    { tool: 'opencode', env: 'XDG_CONFIG_HOME', moved: ['opencode', 'plugin'], fallback: ['.config', 'opencode', 'plugin'], file: 'teamai-hooks.ts', marker: '// [teamai] hooks plugin' },
+    { tool: 'pi', env: 'PI_CODING_AGENT_DIR', moved: ['extensions'], fallback: ['.pi', 'agent', 'extensions'], file: 'teamai-hooks.ts', marker: '// [teamai] hooks extension' },
+  ])('removes the $tool hook from its moved home and the default-home copy an earlier release wrote (#1221)', async ({ tool, env, moved, fallback, file, marker }) => {
+    const homeDir = path.join(tmpDir, 'home');
+    const movedHome = path.join(tmpDir, 'moved');
+    const repoPath = path.join(homeDir, '.teamai', 'team-repo');
+    const movedFile = path.join(movedHome, ...moved, file);
+    const defaultFile = path.join(homeDir, ...fallback, file);
+    await fse.outputFile(movedFile, marker);
+    await fse.outputFile(defaultFile, marker);
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+    vi.stubEnv(env, movedHome);
+    const teamConfig = makeTeamConfig({ toolPaths: { [tool]: { skills: `.${tool}/skills` } } });
+    mockAutoDetectInit.mockResolvedValue({ localConfig: makeLocalConfig(homeDir, repoPath, { enabledAgents: [tool] }), teamConfig });
+
+    await uninstall({ force: true, agent: tool });
+
+    expect(await fse.pathExists(movedFile)).toBe(false);
+    expect(await fse.pathExists(defaultFile)).toBe(false);
   });
 
   it('保留用户自建的 skills', async () => {

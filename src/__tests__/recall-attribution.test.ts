@@ -461,13 +461,13 @@ class Harness {
    * The main session's Stop with TEAMAI_UPVOTE_JUDGE=1, as its detached pass
    * runs the judge: Claude's transcript holds `entries`, then a final reply.
    */
-  async judgeStop(entries: object[]): Promise<void> {
+  async judgeStop(entries: object[], payload: Record<string, unknown> = {}): Promise<void> {
     const transcript = path.join(this.tmp, 'transcript.jsonl');
     const reply = { type: 'assistant', message: { id: 'msg-final', content: [{ type: 'text', text: 'Raised the pool size.' }] } };
     fs.writeFileSync(transcript, [...entries, reply].map((e) => `${JSON.stringify(e)}\n`).join(''));
     this.env({ TEAMAI_UPVOTE_JUDGE: '1' });
     try {
-      await this.dispatch('stop', { hook_event_name: 'Stop', stop_hook_active: false, transcript_path: transcript },
+      await this.dispatch('stop', { hook_event_name: 'Stop', stop_hook_active: false, transcript_path: transcript, ...payload },
         this.root, 'claude', { background: true });
     } finally {
       this.env({ TEAMAI_UPVOTE_JUDGE: undefined });
@@ -2150,6 +2150,26 @@ describe('recall attribution acceptance (#884)', () => {
     judgeAdoption.mockClear();
     await stop();
     expect(judgeAdoption).not.toHaveBeenCalled();
+    expect(await h.upvotes(h.project)).toEqual({ 'redis-timeout': 1 });
+  });
+
+  it('12: a Claude Stop that also carries the final reply is still judged from its transcript', async () => {
+    await h.setUp();
+    // The recall log has no run of this session; only the transcript shows the recall.
+    const { output, files } = await h.recall('redis timeout', { env: { CLAUDE_CODE_SESSION_ID: '00000000-0000-4000-8000-000000000001' }, claim: false });
+    await h.judgeStop(Harness.bashEntries('toolu_recall', 'teamai recall "redis timeout"', output), { last_assistant_message: 'Raised the pool size.' });
+    expect(judgeAdoption).toHaveBeenCalledWith('Raised the pool size.', ['redis-timeout'], { 'redis-timeout': files[0] }, expect.any(Array));
+    expect(await h.upvotes(h.project)).toEqual({ 'redis-timeout': 1 });
+  });
+
+  it('12: a Codex Stop whose transcript_path is its own rollout is judged from the recall log', async () => {
+    await h.setUp();
+    await h.recall('redis timeout');
+    const rollout = path.join(h.tmp, 'rollout.jsonl');
+    fs.writeFileSync(rollout, `${JSON.stringify({ type: 'event_msg', payload: { type: 'agent_message', message: 'Raised the pool size.' } })}\n`);
+    h.env({ TEAMAI_UPVOTE_JUDGE: '1' });
+    await h.dispatch('stop', { hook_event_name: 'Stop', transcript_path: rollout, last_assistant_message: 'Raised the pool size.' }, h.root, 'codex', { background: true });
+    expect(judgeAdoption).toHaveBeenCalledWith('Raised the pool size.', ['redis-timeout'], { 'redis-timeout': h.docs['redis-timeout'] }, expect.any(Array));
     expect(await h.upvotes(h.project)).toEqual({ 'redis-timeout': 1 });
   });
 

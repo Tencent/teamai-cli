@@ -37,7 +37,8 @@ import {
 } from '../types.js';
 import type { LocalConfig, State, TeamaiConfig } from '../types.js';
 import { reconcileCoAuthorForConfig } from '../coauthor-reconcile.js';
-import { getCursorProjectsDir, encodeCwdGeneric } from '../session-flow/fs.js';
+import { encodeCwdGeneric } from '../session-flow/fs.js';
+import { sessionStoreDir } from '../locate.js';
 import { getAdapter } from '../session-flow/adapters/index.js';
 import { getCursorStateRoot } from '../session-flow/cursor-store.js';
 
@@ -129,14 +130,26 @@ describe('Cursor roots', () => {
       // `os.homedir()`, which is what the fs.ts helper reads, rather than the
       // stubbed HOME: on Windows the two disagree inside vitest.
       const fallback = path.join(os.homedir(), DEFAULT_CURSOR_ROOT, 'projects');
-      expect(getCursorProjectsDir()).toBe(fallback);
+      expect(sessionStoreDir('cursor', undefined)).toBe(fallback);
       // The config root is a separate directory and must not move the store.
-      expect(getCursorProjectsDir({ [CURSOR_CONFIG_TOOL_ID]: path.join(home, '.cursor-config') })).toBe(fallback);
+      expect(sessionStoreDir('cursor', { [CURSOR_CONFIG_TOOL_ID]: path.join(home, '.cursor-config') })).toBe(fallback);
     });
 
     it('resolves <data root>/projects from the recorded root', () => {
       const root = path.join(home, '.cursor-data');
-      expect(getCursorProjectsDir({ [CURSOR_DATA_TOOL_ID]: root })).toBe(path.join(root, 'projects'));
+      expect(sessionStoreDir('cursor', { [CURSOR_DATA_TOOL_ID]: root })).toBe(path.join(root, 'projects'));
+    });
+
+    it('keeps the recorded root when the profile home is not HOME, as on Windows', () => {
+      // init accepted the root under HOME; only the default store sits under the profile home.
+      const root = path.join(home, '.cursor-data');
+      const profile = vi.spyOn(os, 'homedir').mockReturnValue(path.join(tmpDir, 'profile'));
+      try {
+        expect(sessionStoreDir('cursor', { [CURSOR_DATA_TOOL_ID]: root })).toBe(path.join(root, 'projects'));
+        expect(sessionStoreDir('cursor', undefined)).toBe(path.join(tmpDir, 'profile', DEFAULT_CURSOR_ROOT, 'projects'));
+      } finally {
+        profile.mockRestore();
+      }
     });
 
     it('reads and writes under the recorded root, not ~/.cursor', async () => {

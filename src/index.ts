@@ -202,6 +202,9 @@ program
     + '— skills, knowledge for rules, agents, learnings, docs, env, hooks, mcp, models, and more (from manifest/projects.yaml)')
   .option('--shared', 'Place new resources at the shared root for all roles; cannot combine with --role or --project')
   .option('--branch <name>', 'Push to this destination branch instead of a generated teamai/push branch')
+  .option('--carried <path@blob>', 'Override the stop for a push that would overwrite or delete a placed agent file a teammate changed. '
+    + 'Use it only after carrying that change into your root copy, with the value the stop printed; '
+    + 'a later team edit stops the push again. Repeatable', (val: string, acc: string[]) => acc.concat(val), [] as string[])
   .action(async (cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
     const { push } = await import('./push.js');
@@ -373,7 +376,7 @@ registerPackagesCommand(program);
 
 program
   .command('doctor')
-  .description('Diagnose configuration issues')
+  .description('Diagnose configuration issues, and print the run mode (attended or unattended) and what set it: TEAMAI_MODE, CI, or the default')
   .option('--json', 'Output the report as JSON (suitable for CI)')
   .option('--fix', 'Remove lock files left behind by dead processes')
   .action(async (cmdOpts) => {
@@ -730,10 +733,9 @@ envCmd
   .command('list')
   .description('List team environment variables')
   .option('--reveal', 'Show env variable values in plaintext (default: masked)')
-  .action(async (cmdOpts) => {
-    const globalOpts = program.opts() as GlobalOptions;
+  .action(async (_cmdOpts, command: Command) => {
     const { envList } = await import('./env-commands.js');
-    await envList({ ...globalOpts, ...cmdOpts });
+    await envList(command.optsWithGlobals() as GlobalOptions & { reveal?: boolean });
   });
 
 envCmd
@@ -912,7 +914,7 @@ program
   .option('--pass <n>', 'With --run: the pass to judge; default the step\'s latest succeeded pass')
   .option('--session <id>', 'Judge this finished session of an agent tool on this machine, whatever sampling says, with --scorer. Prints the session\'s first prompt and directory first, then the label; the session and the judge\'s reasoning are never published.')
   .option('--source <platform>', 'With --session: the tool that holds it, as session migrate --source names it (claude-code, codex, opencode, …); needed unless the agent session variable names that session, or the captures its session-start hook wrote here name one platform for it')
-  .option('--scorer <name>', 'With --run: a scorer the run pinned or one teamai pull cached. With --session, or alone inside a session: a scorer teamai pull cached. Repeatable.', (value: string, previous: string[]) => previous.concat(value), [] as string[])
+  .option('--scorer <name>', 'With --run: a scorer the run pinned or one teamai pull cached. With --session, or alone inside a session: a scorer teamai pull cached, or a scorer file to try before pushing it: a path with / or ending in .md. A file\'s label is never stored, so it takes no --push; the output adds the labels stored for its scorer (stored) and its verdict on the session\'s first prompt alone (control). Repeatable.', (value: string, previous: string[]) => previous.concat(value), [] as string[])
   .option('--queue', 'With --run: leave the work to any driver\'s score --next instead of judging it here')
   .option('--batch', 'With --run or --session: the scorers share one judge call when they resolve to the same tool and model')
   .option('--push', 'Publish every pending label of this machine to scores/<member>/<YYYY-MM>.jsonl on teamai-reports, alone or after --session. Labels only: never the session, the prompt or the judge\'s reasoning. With usage reporting off, or when the push fails, they stay pending for the next --push.')
@@ -1556,7 +1558,7 @@ recallCmd
 
     const { autoDetectInit } = await import('./config.js');
     const { localConfig } = await autoDetectInit(undefined, { dryRun: cmdOpts.dryRun });
-    const paths = await maintenancePathsOrExit(localConfig, cmdOpts.dryRun);
+    const paths = await maintenancePathsOrExit(localConfig, { dryRun: cmdOpts.dryRun });
     if (!paths) return;
     const {
       repoPath, votesDir, learningsReadDirs, learningsWriteDir,
@@ -1639,28 +1641,68 @@ recallCmd
 
 recallCmd
   .command('promote [learningId]')
-  .description('Promote a high-confidence learning to formal knowledge (docs/skills/rules)')
-  .option('--category <cat>', 'Target category: skills | rules | docs; skills use <learningId>/SKILL.md')
+  .description('Publish a high-confidence learning as new knowledge on a review branch, then mark it promoted')
+  .addOption(new Option('--category <cat>', 'Target category: skills | rules | docs; skills use <learningId>/SKILL.md').choices(['skills', 'rules', 'docs']))
   .option('--dry-run', 'Show what would be done without making changes')
   .action(async (learningId, localOpts) => {
     // As in `recall maintenance`: `--dry-run` reaches the root's options only (#900).
     const cmdOpts = { ...(program.opts() as GlobalOptions), ...localOpts };
     const { autoDetectInit } = await import('./config.js');
-    const { localConfig } = await autoDetectInit(undefined, { dryRun: cmdOpts.dryRun });
+    const { localConfig, teamConfig } = await autoDetectInit(undefined, { dryRun: cmdOpts.dryRun });
+    const { safeDeliveredLearningsNamespaces } = await import('./workspace-children.js');
+    const learningsNamespaces = await safeDeliveredLearningsNamespaces(localConfig, 'recall promote');
+    if (learningId && !cmdOpts.dryRun) {
+      const { promoteAndPublish } = await import('./maintenance/promotion-publish.js');
+      await promoteAndPublish(learningId, localConfig, teamConfig, {
+        category: cmdOpts.category,
+        namespaces: learningsNamespaces,
+      });
+      return;
+    }
     const {
       findPromotionCandidates,
       executePromotion,
+      fetchPromotionRefs,
     } = await import('./maintenance/index.js');
-    const paths = await maintenancePathsOrExit(localConfig, cmdOpts.dryRun);
+    const { log } = await import('./utils/logger.js');
+
+    // An HTTP team repo has no git checkout: its directory may sit in the business repo.
+    const { usesBranchWorktree, getKnowledgeDir } = await import('./types.js');
+    const knowledgeCheckout = usesBranchWorktree(localConfig) ? getKnowledgeDir(localConfig) : undefined;
+    let paths: MaintenancePaths | undefined;
+    if (knowledgeCheckout && !cmdOpts.dryRun) {
+      // A fetch beside a pull in the same clone pushes the pull into its reset
+      // fallback, so the checkouts and the review branches share one hold of the sync lock.
+      const refreshForListing = async () => {
+        const refreshed = await maintenancePathsOrExit(localConfig, { holdsSyncLock: true });
+        if (refreshed) {
+          await fetchPromotionRefs(knowledgeCheckout).catch((e: unknown) => {
+            log.warn(`Could not fetch the review branches, so candidates follow the last fetch: ${e instanceof Error ? e.message : String(e)}`);
+          });
+        }
+        return refreshed;
+      };
+      const { syncLockPath } = await import('./utils/learnings-publish.js');
+      const { withFileLock } = await import('./update.js');
+      const lock = syncLockPath(localConfig);
+      const listed = lock === null
+        ? { held: true as const, value: await refreshForListing() }
+        : await withFileLock(lock, { attempts: 1, delayMs: 0 }, refreshForListing);
+      if (listed.held) {
+        paths = listed.value;
+      } else {
+        log.warn('Another teamai pull/push is in progress, so candidates follow the last fetch.');
+        // As a dry run does: both checkouts as they are, neither refreshed nor created.
+        paths = await maintenancePathsOrExit(localConfig, { dryRun: true });
+      }
+    } else {
+      paths = await maintenancePathsOrExit(localConfig, { dryRun: cmdOpts.dryRun });
+    }
     if (!paths) return;
     const {
       repoPath, votesDir, learningsReadDirs, learningsWriteDir,
     } = paths;
-    const { safeDeliveredLearningsNamespaces } = await import('./workspace-children.js');
-    const learningsNamespaces = await safeDeliveredLearningsNamespaces(localConfig, 'recall promote');
-    const { log } = await import('./utils/logger.js');
-
-    const candidates = await findPromotionCandidates(learningsReadDirs, votesDir, {
+    const candidates = await findPromotionCandidates(learningsReadDirs, votesDir, knowledgeCheckout, {
       namespaces: learningsNamespaces,
     });
 
@@ -1684,14 +1726,11 @@ recallCmd
       return;
     }
 
-    const { marked } = await executePromotion(candidate, repoPath, {
+    await executePromotion(candidate, repoPath, {
       category: cmdOpts.category as 'skills' | 'rules' | 'docs' | undefined,
       dryRun: cmdOpts.dryRun,
       learningsWriteDir,
     });
-    if (marked) {
-      await publishMaintenance(localConfig, `[teamai] Mark ${candidate.docId} as promoted`, [marked]);
-    }
   });
 
 
@@ -1701,15 +1740,19 @@ recallCmd
  * maintenance would rewrite, or an old one in the way of the shared checkout it
  * would write into, which the next publish would then delete. The refusal names
  * the checkout and the way out, and has already been printed. Also when the
- * reports or learnings lock cannot be taken, so the checkout cannot be checked.
+ * reports or learnings lock cannot be taken, so the checkout cannot be checked,
+ * and while a pull/push holds the sync lock, so neither is refreshed.
  */
-async function maintenancePathsOrExit(localConfig: LocalConfig, dryRun?: boolean): Promise<MaintenancePaths | undefined> {
-  const { CheckoutLockedError, CheckoutUnavailableError, resolveMaintenancePaths } = await import('./maintenance/index.js');
+async function maintenancePathsOrExit(
+  localConfig: LocalConfig,
+  options: { dryRun?: boolean; holdsSyncLock?: boolean },
+): Promise<MaintenancePaths | undefined> {
+  const { CheckoutLockedError, CheckoutUnavailableError, SyncLockedError, resolveMaintenancePaths } = await import('./maintenance/index.js');
   const { CheckoutRefusedError } = await import('./utils/branch-worktree.js');
   try {
-    return await resolveMaintenancePaths(localConfig, { dryRun });
+    return await resolveMaintenancePaths(localConfig, options);
   } catch (e) {
-    if (e instanceof CheckoutLockedError || e instanceof CheckoutUnavailableError) {
+    if (e instanceof CheckoutLockedError || e instanceof CheckoutUnavailableError || e instanceof SyncLockedError) {
       const { log } = await import('./utils/logger.js');
       log.error(e.message);
     } else if (!(e instanceof CheckoutRefusedError)) {

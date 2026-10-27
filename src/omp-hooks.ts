@@ -37,7 +37,7 @@
 
 import path from 'node:path';
 import { generatedFileState, writeIfChanged, remove } from './utils/fs.js';
-import { getUserHome } from './utils/home.js';
+import { hookAdapterDir } from './locate.js';
 import { log } from './utils/logger.js';
 import { resolveCliEntry } from './builtin-hooks.js';
 
@@ -46,16 +46,6 @@ export const OMP_HOOK_FILE = 'teamai-hooks.ts';
 
 /** Marker so `teamai uninstall` / `teamai hooks list` can recognize our generated file. */
 const TEAMAI_MARKER = '[teamai]';
-
-/**
- * Directory OMP auto-discovers user extensions in: the active agent dir's
- * `extensions/`. Only the default `~/.omp/agent/` layout is supported —
- * OMP profiles (`OMP_PROFILE` / `PI_CODING_AGENT_DIR` / `PI_CONFIG_DIR`)
- * relocate the agent dir and are out of scope.
- */
-export function resolveOmpExtensionsDir(): string {
-  return path.join(getUserHome(), '.omp', 'agent', 'extensions');
-}
 
 /**
  * Build the teamai OMP extension source.
@@ -249,7 +239,7 @@ export default function teamaiHooks(pi) {
  * OMP config dir on its own.
  */
 export async function injectOmpHooks(): Promise<void> {
-  const file = path.join(resolveOmpExtensionsDir(), OMP_HOOK_FILE);
+  const file = path.join(hookAdapterDir('omp-extension'), OMP_HOOK_FILE);
   if (await hasForeignOmpHooks()) {
     log.warn(`Skipping OMP hook injection: ${file} exists without the TeamAI marker`);
     return;
@@ -263,13 +253,13 @@ export async function injectOmpHooks(): Promise<void> {
 
 /** Remove the teamai OMP extension if present. */
 export async function removeOmpHooks(): Promise<void> {
-  const file = path.join(resolveOmpExtensionsDir(), OMP_HOOK_FILE);
+  const file = path.join(hookAdapterDir('omp-extension'), OMP_HOOK_FILE);
   if (!await hasOmpHooks()) return;
   await remove(file);
   log.success(`Removed teamai OMP hook from ${file}`);
 }
 
-const ompHookState = () => generatedFileState(path.join(resolveOmpExtensionsDir(), OMP_HOOK_FILE), `${TEAMAI_MARKER} hooks extension`);
+const ompHookState = () => generatedFileState(path.join(hookAdapterDir('omp-extension'), OMP_HOOK_FILE), `${TEAMAI_MARKER} hooks extension`);
 
 /** Whether the OMP extension file is teamai's. */
 export async function hasOmpHooks(): Promise<boolean> {

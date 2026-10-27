@@ -61,6 +61,8 @@ type RowCommon = {
   readonly platforms?: readonly Platform[];
   /** null: nothing says whether the tool is installed, so the location has no `installed` gate. */
   readonly installed: { readonly probe: Spot; readonly met: boolean } | null;
+  /** `none`: the resource puts no gate on teamai's write, not even `selected` (sessions). */
+  readonly gates?: 'none';
   readonly readableConfig?: { readonly file: Spot; readonly met: boolean };
   readonly retired?: readonly { readonly at: Spot; readonly was: Retired<Place>['was'] }[];
   readonly source: string;
@@ -140,6 +142,7 @@ function hostFor(row: MatrixRow, cell: Cell): Host {
     platform: cell.platform,
     path: flavorOf(cell.platform),
     home: HOMES[cell.platform],
+    profileHome: HOMES[cell.platform],
     env: cell.env,
     toolHomes: { kind: 'ok', homes: expand(row.toolHomes, cell) },
     cwd: () => cwdOf(cell.platform, cell.cwd),
@@ -225,7 +228,8 @@ export function describeLocateMatrix(resource: Resource, rows: readonly MatrixRo
             const where: Location = await locate(row.tool, resource, installFor(row, cell), host);
             const installed = row.installed === null ? [] : [{ kind: 'installed', probe: at(row.installed.probe, cell), met: row.installed.met }];
             const readable = row.readableConfig === undefined ? [] : [{ kind: 'readable-config', file: at(row.readableConfig.file, cell), met: row.readableConfig.met }];
-            expect(where.gates).toEqual([{ kind: 'selected', met: !(row.install?.disabledAgents ?? []).includes(row.tool) }, ...installed, ...readable]);
+            const selected = { kind: 'selected', met: !(row.install?.disabledAgents ?? []).includes(row.tool) };
+            expect(where.gates).toEqual(row.gates === 'none' ? [] : [selected, ...installed, ...readable]);
             expect(where.retired.map((retired) => ({ path: retired.place.path, was: retired.was })))
               .toEqual((row.retired ?? []).map((retired) => ({ path: at(retired.at, cell), was: retired.was })));
             if (isFilesRow(row)) {

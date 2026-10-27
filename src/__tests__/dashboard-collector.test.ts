@@ -14,6 +14,7 @@ import {
   aggregateSessionInterventions,
   aggregateSessionMetrics,
   compactEvents,
+  memberEvents,
   reconcileRequestLog,
   dedupeEvents,
   dashboardReport,
@@ -2265,6 +2266,47 @@ describe('compactEvents', () => {
 
     const kept = fs.readFileSync(eventsPath, 'utf-8').split('\n').filter(Boolean).map((line) => JSON.parse(line).sessionId);
     expect(kept).toEqual(['pid-live', 'pid-live']);
+  });
+
+  it('keeps only the first launched event of a session teamai launched, so a member resume of it stays cut off however often the log compacts (#1384)', async () => {
+    const eventsPath = path.join(tmpDir, '.teamai', 'dashboard', 'events.jsonl');
+    fs.mkdirSync(path.dirname(eventsPath), { recursive: true });
+    const old = Date.now() - 3_600_000;
+    const at = (sessionId: string, type: string, second: number, extra: Record<string, unknown> = {}) =>
+      JSON.stringify({ type, timestamp: new Date(old + second * 1_000).toISOString(), sessionId, tool: 'claude', runMode: 'attended', ...extra });
+    const fillers = Array.from({ length: 5_000 }, (_, i) => at(`filler-${i}`, 'session_end', 0));
+    fs.writeFileSync(eventsPath, [
+      at('continued', 'stop', 1), at('continued', 'stop', 2, { launchedBy: 'workflow' }), at('continued', 'session_end', 3, { launchedBy: 'workflow' }),
+      at('member', 'stop', 1), at('member', 'session_end', 2),
+      at('step', 'stop', 1, { launchedBy: 'workflow' }), at('step', 'session_end', 2, { launchedBy: 'workflow' }),
+      at('month-old step', 'stop', -31 * 24 * 3_600, { launchedBy: 'workflow' }),
+      ...fillers,
+    ].join('\n') + '\n');
+
+    await compactEvents(eventsPath);
+    fs.appendFileSync(eventsPath, fillers.join('\n') + '\n');
+    await compactEvents(eventsPath);
+
+    const kept = fs.readFileSync(eventsPath, 'utf-8').split('\n').filter(Boolean).map((line) => JSON.parse(line) as DashboardEvent);
+    expect(kept.map((event) => [event.sessionId, event.timestamp])).toEqual([
+      ['continued', new Date(old + 2_000).toISOString()], ['step', new Date(old + 1_000).toISOString()],
+    ]);
+    const resumed = (sessionId: string): DashboardEvent => ({ type: 'stop', timestamp: new Date().toISOString(), sessionId, tool: 'claude', runMode: 'attended' });
+    expect(memberEvents([...kept, resumed('continued'), resumed('step')])).toEqual([]);
+  });
+
+  it('keeps every event of a launched session that stopped a moment ago, so the dashboard does not list it again (#1384)', async () => {
+    const eventsPath = path.join(tmpDir, '.teamai', 'dashboard', 'events.jsonl');
+    fs.mkdirSync(path.dirname(eventsPath), { recursive: true });
+    const at = (type: string, minutesAgo: number) =>
+      JSON.stringify({ type, timestamp: new Date(Date.now() - minutesAgo * 60_000).toISOString(), sessionId: 'step', tool: 'claude', launchedBy: 'workflow' });
+    const filler = JSON.stringify({ type: 'session_end', timestamp: new Date(Date.now() - 3_600_000).toISOString(), sessionId: 'filler', tool: 'claude' });
+    fs.writeFileSync(eventsPath, [at('session_start', 10), at('session_end', 1), ...Array.from({ length: 5_000 }, () => filler)].join('\n') + '\n');
+
+    await compactEvents(eventsPath);
+
+    const kept = fs.readFileSync(eventsPath, 'utf-8').split('\n').filter(Boolean).map((line) => JSON.parse(line) as DashboardEvent);
+    expect(rebuildSessions(kept)).toEqual([]);
   });
 });
 
