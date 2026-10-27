@@ -151,6 +151,15 @@ export const SharingConfigSchema = z.object({
      *  per-machine via `coAuthorEnabled` in local config. */
     enabled: z.boolean().default(true),
   }).optional(),
+  // Optional: absent = no opinion, and teamai leaves every tool's own
+  // auto-compact setting alone. See resolveAutoCompactTokens().
+  autoCompact: z.object({
+    /** Context size, in tokens, at which members' AI tools compact the
+     *  conversation. Each tool expresses it its own way (window, limit or
+     *  ratio); see autocompact-reconcile.ts. Members can override per machine
+     *  via `autoCompactTokens` in local config. */
+    tokens: z.number().int().positive(),
+  }).optional(),
   // Optional (not .default) so existing TeamaiConfig literals stay valid; use
   // getMcpSharing() for the defaulted view.
   mcp: z.object({
@@ -330,6 +339,22 @@ export function resolveCoAuthor(
 ): boolean | undefined {
   if (localConfig.coAuthorEnabled !== undefined) return localConfig.coAuthorEnabled;
   return teamConfig.sharing?.coAuthor?.enabled;
+}
+
+/**
+ * Resolve the auto-compact threshold in tokens. The member's per-machine
+ * `autoCompactTokens` wins (0 = opt out); else the team's
+ * `sharing.autoCompact.tokens`. Undefined means teamai sets nothing, and takes
+ * back what it set before.
+ */
+export function resolveAutoCompactTokens(
+  localConfig: { autoCompactTokens?: number },
+  teamConfig: { sharing?: { autoCompact?: { tokens?: number } } },
+): number | undefined {
+  if (localConfig.autoCompactTokens !== undefined) {
+    return localConfig.autoCompactTokens > 0 ? localConfig.autoCompactTokens : undefined;
+  }
+  return teamConfig.sharing?.autoCompact?.tokens;
 }
 
 // ─── Source config (cross-team subscription) ─────────
@@ -859,6 +884,9 @@ export const LocalConfigSchema = z.object({
    *  takes precedence over the team `sharing.coAuthor` default. Undefined means
    *  "defer to the team" (see resolveCoAuthor). */
   coAuthorEnabled: z.boolean().optional(),
+  /** Per-machine override of the team's `sharing.autoCompact.tokens`. 0 opts
+   *  out; undefined defers to the team (see resolveAutoCompactTokens). */
+  autoCompactTokens: z.number().int().min(0).optional(),
   /** Per-machine opt-out of trusting in Codex what teamai writes for it: the
    *  hooks (`hooks.state`) and, for project hooks, the project (#955).
    *  Undefined means on. */
