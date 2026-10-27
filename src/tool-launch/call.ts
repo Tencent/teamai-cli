@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { loadLocalConfig } from '../config.js';
-import { resolveRunMode, RUN_MODE_ENV, type LaunchedBy } from '../launch-context.js';
+import { LAUNCHED_BY_ENV, resolveRunMode, RUN_MODE_ENV, type LaunchedBy } from '../launch-context.js';
 import { getUserConfigPath, type LocalConfig } from '../types.js';
 import { resolveCliPath } from '../utils/cli-path.js';
 import { log } from '../utils/logger.js';
@@ -17,7 +17,7 @@ const DEFAULT_CONCURRENCY = 3;
 export type CallResult = { text: string; tool: LaunchOrderTool; tokens?: TokenUsage };
 
 export interface CallOptions {
-  /** Who in teamai makes the call, which the launched session carries as `TEAMAI_LAUNCHED_BY`. */
+  /** Who in teamai makes the call, which the launched session carries as `LAUNCHED_BY_ENV`. */
   launchedBy: LaunchedBy;
   timeout?: number;
 }
@@ -57,7 +57,7 @@ type Picked = { tool: LaunchOrderTool; executable: string };
 function callEnv(launchedBy: LaunchedBy): NodeJS.ProcessEnv {
   const { TEAMAI_LAUNCHED_TOOL: _tool, TEAMAI_LAUNCHED_CHECKOUT: _checkout, ...env } = process.env;
   // Our own session, not the user's: its hooks would print the share-learnings hint into the answer we read.
-  return { ...env, TEAMAI_CONTRIBUTE_HINT_DISABLED: '1', TEAMAI_LAUNCHED_BY: launchedBy, [RUN_MODE_ENV]: resolveRunMode(process.env) };
+  return { ...env, TEAMAI_CONTRIBUTE_HINT_DISABLED: '1', [LAUNCHED_BY_ENV]: launchedBy, [RUN_MODE_ENV]: resolveRunMode(process.env) };
 }
 
 /** A caller that resolves its tool once and reuses it for every call. */
