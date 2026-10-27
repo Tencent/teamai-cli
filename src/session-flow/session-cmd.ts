@@ -33,6 +33,7 @@ import { SessionSearchEngine, type LoadedSession } from './search.js';
 import { isSafeSessionFileId } from './ids.js';
 import { isInteractive } from '../utils/prompt.js';
 import { updateReports } from '../utils/reports-branch.js';
+import { knownSecrets } from '../env-resolution.js';
 import { pushSession } from './archive.js';
 import { registerMigrationCommand } from './session-migrate-cmd.js';
 import {
@@ -235,6 +236,8 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
       }
 
       const toolRootsFor = toolRootsLookup();
+      // The team's declared secrets are known only for the teamai install's own archive, not for a --repo-root clone.
+      const scrub = opts.scrub ? { secrets: reports ? await knownSecrets(reports) : {} } : false;
       const commitMessage = (saved: number) => `sync: push ${saved} session(s) from ${source}${opts.all ? ' (all workspaces)' : ''}`;
       /** Saves the selected sessions into the archive at `root`: how many, or undefined once a failure that stops the push was reported. */
       const archiveInto = async (syncMgr: SyncManager, root: string): Promise<number | undefined> => {
@@ -246,7 +249,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
           // What gets archived is the full original text, and the team can read it: redact first when --scrub is set; when not redacted, say so once explicitly.
           const found = await AgentSession.find(
             { platform: source, sessionId: m.sessionId, cwd: opts.all ? undefined : workCwd, filePath: m.filePath },
-            { scrub: Boolean(opts.scrub), toolRootsFor },
+            { scrub, toolRootsFor },
           );
           if (found.status === 'failed') {
             // This session alone is skipped; the rest of the batch is still archived.

@@ -37,6 +37,7 @@ afterEach(() => {
   if (saved.gitConfig === undefined) delete process.env.GIT_CONFIG_GLOBAL;
   else process.env.GIT_CONFIG_GLOBAL = saved.gitConfig;
   process.env.HOME = saved.home;
+  vi.unstubAllEnvs();
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
@@ -383,6 +384,25 @@ describe('session commands without --repo-root outside a workspace install', () 
     expect(transcript).toContain('Planned it.');
     expect(transcript).not.toContain(token);
     expect(archived(team.origin, 'main')).toEqual([]);
+  });
+
+  it('mask a secret the team declares, whatever its name, in the sessions push --scrub archives', async () => {
+    const team = await userInstall();
+    fs.mkdirSync(path.join(team.checkout, 'env'), { recursive: true });
+    fs.writeFileSync(path.join(team.checkout, 'env', 'secrets.yaml'), 'secrets:\n  - key: WAREHOUSE_DSN\n');
+    const dsn = 'mysql-prod-7Hq2xVb9Lk';
+    vi.stubEnv('WAREHOUSE_DSN', dsn);
+    const { checkout } = repository('product');
+    await claudeSession(checkout, { answers: [`Found two problems in ${dsn}.`] });
+
+    const pushed = await session('push', '--source', 'claude-code', '--cwd', checkout, '--scrub');
+
+    expect(pushed.code, pushed.stderr).toBe(0);
+    const [file, ...more] = archived(team.origin, 'teamai-reports').filter((name) => name.endsWith('.jsonl'));
+    expect(more).toEqual([]);
+    const transcript = git(team.checkout, 'show', `origin/teamai-reports:${file}`);
+    expect(transcript).toContain('Found two problems in');
+    expect(transcript).not.toContain(dsn);
   });
 
   it('archive no start of a secret that the first prompt carries past the title length, in titles, the index or file names', async () => {
