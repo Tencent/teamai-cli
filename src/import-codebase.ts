@@ -85,9 +85,19 @@ function keepEnrichedComponents(manifests: { published: unknown; staged: unknown
 
 const PROVIDER_SLUG_PREFIXES = ['github__', 'gitlab__', 'tgit__'] as const;
 
-/** The source a `source-manifest.json` names: a repository, and the directory in it that was extracted. */
-const CodebaseSourceSchema = z.object({ repoUrl: z.string().min(1), sourceSubdir: z.string().optional() });
+/**
+ * The source a `source-manifest.json` names: a repository, or for a checkout
+ * with no remote the hashed root it was read from, and the directory in it
+ * that was extracted.
+ */
+const CodebaseSourceSchema = z.union([
+  z.object({ repoUrl: z.string().min(1), sourceSubdir: z.string().optional() })
+    .transform((source) => ({ kind: 'remote' as const, ...source })),
+  z.object({ localRootHash: z.string().min(1), sourceSubdir: z.string().optional() })
+    .transform((source) => ({ kind: 'local' as const, ...source })),
+]);
 type CodebaseSource = z.infer<typeof CodebaseSourceSchema>;
+type RemoteSource = Extract<CodebaseSource, { kind: 'remote' }>;
 
 async function readCodebaseSource(evidenceDir: string): Promise<CodebaseSource | null> {
   const parsed = CodebaseSourceSchema.safeParse(await readJsonIfPresent(path.join(evidenceDir, 'source-manifest.json')));
@@ -97,7 +107,7 @@ async function readCodebaseSource(evidenceDir: string): Promise<CodebaseSource |
 /** Whether the published evidence of a slug came from the source being imported over it. */
 type PublishedSource =
   | { kind: 'same' }
-  | { kind: 'different'; published: CodebaseSource; staged: CodebaseSource | null }
+  | { kind: 'different'; published: RemoteSource; staged: CodebaseSource | null }
   | { kind: 'unknown' };
 
 /**
@@ -106,33 +116,42 @@ type PublishedSource =
  *
  * The evidence came from the same source when both manifests name the same
  * repository and directory in it, and from a different one when only the
- * published manifest names a repository or the two differ. Teamwikis written
- * before the per-codebase `source-manifest.json` existed have no published
- * identity; there a provider-namespaced slug (`gitlab__group__repo`) still
- * names the remote repository, so the slug itself is the identity. A bare
- * `--dir` basename is not, and nothing is known.
+ * published manifest names a repository or the two differ. Two checkouts with
+ * no remote are the same source when they hashed the same root and extracted
+ * the same directory in it; otherwise nothing is known, since a checkout moved
+ * to another path hashes differently. Teamwikis written before the
+ * per-codebase `source-manifest.json` existed have no published identity;
+ * there a provider-namespaced slug (`gitlab__group__repo`) still names the
+ * remote repository, so the slug itself is the identity. A bare `--dir`
+ * basename is not, and nothing is known.
  */
 async function publishedSource(dirs: { publishedDir: string; stagedDir: string; slug: string }): Promise<PublishedSource> {
   const [published, staged] = await Promise.all([readCodebaseSource(dirs.publishedDir), readCodebaseSource(dirs.stagedDir)]);
-  if (published) {
-    const sameRepo = staged !== null && remotesMatch(published.repoUrl, staged.repoUrl);
+  if (published?.kind === 'remote') {
+    const sameRepo = staged?.kind === 'remote' && remotesMatch(published.repoUrl, staged.repoUrl);
     const sameDir = published.sourceSubdir === undefined || staged?.sourceSubdir === undefined
       || published.sourceSubdir === staged.sourceSubdir;
     return sameRepo && sameDir ? { kind: 'same' } : { kind: 'different', published, staged };
   }
-  return staged && PROVIDER_SLUG_PREFIXES.some((prefix) => dirs.slug.startsWith(prefix))
+  if (published?.kind === 'local' && staged?.kind === 'local') {
+    return published.localRootHash === staged.localRootHash
+      && (published.sourceSubdir ?? '') === (staged.sourceSubdir ?? '')
+      ? { kind: 'same' }
+      : { kind: 'unknown' };
+  }
+  return staged?.kind === 'remote' && PROVIDER_SLUG_PREFIXES.some((prefix) => dirs.slug.startsWith(prefix))
     ? { kind: 'same' }
     : { kind: 'unknown' };
 }
 
-function describeSource(source: CodebaseSource): string {
+function describeSource(source: RemoteSource): string {
   return source.sourceSubdir ? `${source.sourceSubdir} in ${source.repoUrl}` : source.repoUrl;
 }
 
-function differentSourceError(slug: string, source: { published: CodebaseSource; staged: CodebaseSource | null }): Error {
+function differentSourceError(slug: string, source: { published: RemoteSource; staged: CodebaseSource | null }): Error {
   const evidence = `teamwiki/evidence/code/${slug}/`;
   const published = describeSource(source.published);
-  return new Error(source.staged
+  return new Error(source.staged?.kind === 'remote'
     ? `${evidence} holds the evidence of ${published}, and this checkout is ${describeSource(source.staged)}. Not replacing it. `
       + `Import the checkout from a directory with another name, or remove ${evidence} if that codebase is gone.`
     : `${evidence} holds the evidence of ${published}, and this checkout has no origin remote. Not replacing it. `
