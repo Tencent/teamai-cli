@@ -53,7 +53,7 @@ const key = ({ platform, sessionId }: Pick<CapturedSession, 'platform' | 'sessio
 /**
  * Each session captured here by run mode (a capture with no mode counts as attended) and state: an attended one is
  * active until it is finished, an unattended one waits for a drain until one reaches it; a finished one waits to be
- * archived while `publish` is `auto` for its mode.
+ * archived while `publish` is `auto` for its mode. One whose file is gone and that was not archived is left out.
  */
 async function capturedHere(config: LocalConfig, now: string, publish: SessionPolicies): Promise<CapturedSessions> {
   const sessions = await SessionCaptures.list(config);
@@ -68,6 +68,7 @@ async function capturedHere(config: LocalConfig, now: string, publish: SessionPo
       counts[mode].archived += 1;
       continue;
     }
+    if (await SessionWork.isGone(one)) continue;
     if (finished.has(key(one))) {
       if (publish[mode].policy === 'auto') counts[mode].waitingToArchive += 1;
       else counts[mode].finished += 1;

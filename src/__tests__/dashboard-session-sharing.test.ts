@@ -142,6 +142,21 @@ describe('the session sharing read model', () => {
     for (const secret of [PROMPT, ANSWER, ATTENDED_ACTIVE, UNATTENDED_DRAINED, path.join(root, 'app'), mocks.home]) expect(served).not.toContain(secret);
   });
 
+  it('leaves out of the counts a captured session whose file is gone, which is neither judged nor published', async () => {
+    const config = await team();
+    captured(ATTENDED_ACTIVE, 'attended', { idleFor: HOUR });
+    captured(UNATTENDED_OPEN, 'unattended', { idleFor: HOUR });
+    fs.rmSync(path.join(mocks.home, '.claude', 'projects'), { recursive: true });
+
+    expect(await readSessionSharing(config, { env: {}, now: NOW })).toMatchObject({
+      captured: {
+        attended: { active: 0, finished: 0, waitingToArchive: 0, archived: 0 },
+        unattended: { waitingForDrain: 0, finished: 0, waitingToArchive: 0, archived: 0 },
+      },
+      next: [],
+    });
+  });
+
   it('counts an unattended session as archived once an unattended drain published it', async () => {
     vi.stubEnv('PATH', ['/usr/bin', '/bin'].join(path.delimiter));
     const config = await team();

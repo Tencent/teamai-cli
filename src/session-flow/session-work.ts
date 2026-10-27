@@ -256,6 +256,11 @@ async function lastActiveAt(captured: CapturedSession, events: ReadonlyMap<strin
 
 const sessionKey = (platform: string, sessionId: string) => `${platform}\0${sessionId}`;
 
+/** Whether a file the hooks of `captured` named is gone, so it is never finished, judged or published. */
+async function isGone(captured: CapturedSession): Promise<boolean> {
+  return await lastActiveAt(captured, new Map()) === undefined;
+}
+
 /**
  * The sessions of `captured` finished at `now`, oldest activity first, of the run modes `includes` keeps (a capture with
  * no mode counts as attended): an attended session once nothing happened in it for six hours, an unattended one once a
@@ -402,4 +407,4 @@ function leaseCwd(config: LocalConfig): string {
   return config.scope === 'project' && config.projectRoot ? config.projectRoot : getDataHome(config);
 }
 
-export const SessionWork = { entries, entriesOf, finished, isLabelled, launchesToday, gone, read, ensureEvidence, leaseCwd, sessionScorers } as const;
+export const SessionWork = { entries, entriesOf, finished, isLabelled, launchesToday, gone, read, ensureEvidence, leaseCwd, sessionScorers, isGone } as const;
