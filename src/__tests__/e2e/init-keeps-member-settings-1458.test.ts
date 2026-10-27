@@ -21,6 +21,7 @@ import { startMockServer, type MockServerHandle } from '../helpers/mock-server.j
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLI = path.resolve(__dirname, '..', '..', '..', 'dist', 'index.js');
 const TEAM_URL = 'https://git.example.test/team/a.git';
+const OTHER_TEAM_URL = 'https://git.example.test/team/b.git';
 const API_KEY = 'e2e-http-key';
 const GIT_ENV = {
   GIT_AUTHOR_NAME: 'TeamAI CI',
@@ -57,21 +58,25 @@ interface Run { code: number | null; output: string }
 let sandbox: string;
 let detached: ReturnType<typeof trackDetachedProcesses>;
 let server: MockServerHandle;
-let teamRemote: string;
+/** The bare repository each team URL is cloned from. */
+const teamRemotes = new Map<string, string>();
 
 beforeAll(async () => {
   if (!fs.existsSync(CLI)) throw new Error(`CLI binary not found at ${CLI}. Run "npm run build" first.`);
   sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-init-keeps-settings-1458-')));
   detached = trackDetachedProcesses(sandbox);
   server = await startMockServer({ apiKey: API_KEY });
-  const seed = path.join(sandbox, 'team-seed');
-  fs.mkdirSync(seed);
-  fs.writeFileSync(path.join(seed, 'teamai.yaml'), `team: a\nrepo: ${TEAM_URL}\nprovider: git\nreviewers: []\n`);
-  git(['init', '-q', '-b', 'main'], seed);
-  git(['add', '.'], seed);
-  git(['commit', '-qm', 'seed'], seed);
-  teamRemote = path.join(sandbox, 'team.git');
-  git(['clone', '-q', '--bare', seed, teamRemote], sandbox);
+  for (const [team, url] of [['a', TEAM_URL], ['b', OTHER_TEAM_URL]]) {
+    const seed = path.join(sandbox, `team-${team}-seed`);
+    fs.mkdirSync(seed);
+    fs.writeFileSync(path.join(seed, 'teamai.yaml'), `team: ${team}\nrepo: ${url}\nprovider: git\nreviewers: []\n`);
+    git(['init', '-q', '-b', 'main'], seed);
+    git(['add', '.'], seed);
+    git(['commit', '-qm', 'seed'], seed);
+    const remote = path.join(sandbox, `team-${team}.git`);
+    git(['clone', '-q', '--bare', seed, remote], sandbox);
+    teamRemotes.set(url, remote);
+  }
 });
 
 afterAll(async () => {
@@ -102,7 +107,7 @@ function member(name: string) {
   delete env.CODEX_HOME;
   delete env.TEAMAI_API_TOKEN;
   delete env.TEAMAI_API_KEY;
-  git(['config', '--global', `url.${teamRemote}.insteadOf`, TEAM_URL], base, env);
+  for (const [url, remote] of teamRemotes) git(['config', '--global', `url.${remote}.insteadOf`, url], base, env);
   fs.writeFileSync(path.join(dir, 'README.md'), '# app\n');
   git(['init', '-q', '-b', 'main'], dir, env);
   git(['add', '.'], dir, env);
@@ -141,5 +146,23 @@ describe('init --force in a workspace keeps the member\'s own settings (#1458)',
     const saved: Record<string, unknown> = YAML.parse(fs.readFileSync(m.config, 'utf8'));
     const kept = Object.fromEntries(Object.keys(MEMBER_SETTINGS).map((key) => [key, saved[key]]));
     expect(kept).toEqual(MEMBER_SETTINGS);
+  }, 120_000);
+
+  it('drops the tag subscription and skill exclusions when it switches to another team repo', async () => {
+    const m = member('team-switch');
+    const first = await m.cli(['init', TEAM_URL, '--provider', 'git', '--agent', 'claude']);
+    expect(first.code, first.output).toBe(0);
+    const installed: Record<string, unknown> = YAML.parse(fs.readFileSync(m.config, 'utf8'));
+    fs.writeFileSync(m.config, YAML.stringify({ ...installed, ...MEMBER_SETTINGS }));
+
+    const other = await m.cli(['init', OTHER_TEAM_URL, '--provider', 'git', '--agent', 'claude', '--force']);
+    expect(other.code, other.output).toBe(0);
+
+    // Tags and skill names belong to the team repo they were chosen from; the rest hold on any team.
+    const { subscribedTags: _tags, excludedSkills: _skills, ...elsewhere } = MEMBER_SETTINGS;
+    const saved: Record<string, unknown> = YAML.parse(fs.readFileSync(m.config, 'utf8'));
+    expect(saved).not.toHaveProperty('subscribedTags');
+    expect(saved).not.toHaveProperty('excludedSkills');
+    expect(Object.fromEntries(Object.keys(elsewhere).map((key) => [key, saved[key]]))).toEqual(elsewhere);
   }, 120_000);
 });
