@@ -198,8 +198,8 @@ vi.mock('../project-agent-root.js', () => ({
 }));
 
 // No scope scores finished sessions unless a test says so; a detached process is never started for real.
-const mockSessionScoringScopes = vi.fn().mockResolvedValue([]);
-vi.mock('../score-sessions.js', () => ({ sessionScoringScopes: mockSessionScoringScopes }));
+const mockBackgroundPassScopes = vi.fn().mockResolvedValue([]);
+vi.mock('../score-sessions.js', () => ({ backgroundPassScopes: mockBackgroundPassScopes }));
 const { mockSpawn } = vi.hoisted(() => ({ mockSpawn: vi.fn(() => ({ on: vi.fn().mockReturnThis(), unref: vi.fn() })) }));
 vi.mock('node:child_process', async (importOriginal) => ({ ...(await importOriginal<typeof import('node:child_process')>()), spawn: mockSpawn }));
 
@@ -523,23 +523,23 @@ describe('hook-handlers registry', () => {
   it('session-start pull starts score-sessions detached once the late usage report settles, when a scope scores sessions (#1179)', async () => {
     const handler = sessionStartPull();
     const cwd = fs.realpathSync.native(os.tmpdir());
-    mockSessionScoringScopes.mockResolvedValueOnce([scope]);
+    mockBackgroundPassScopes.mockResolvedValueOnce([scope]);
 
     await handler.execute({ cwd }, 'claude', scope);
 
-    expect(mockSessionScoringScopes).toHaveBeenCalledWith(cwd);
+    expect(mockBackgroundPassScopes).toHaveBeenCalledWith(cwd);
     expect(mockSpawn).toHaveBeenCalledWith(process.execPath, [expect.any(String), 'score-sessions'], expect.objectContaining({ cwd, detached: true, stdio: 'ignore' }));
     expect(mockSettleLateUsageReport.mock.invocationCallOrder.at(-1)).toBeLessThan(mockSpawn.mock.invocationCallOrder.at(-1) ?? 0);
   });
 
   it('session-start pull scores the sessions of the directory it runs in when the payload names none (#1179)', async () => {
     const handler = sessionStartPull();
-    mockSessionScoringScopes.mockResolvedValueOnce([scope]);
+    mockBackgroundPassScopes.mockResolvedValueOnce([scope]);
     mockSpawn.mockClear();
 
     await handler.execute({}, 'claude', scope);
 
-    expect(mockSessionScoringScopes).toHaveBeenLastCalledWith(process.cwd());
+    expect(mockBackgroundPassScopes).toHaveBeenLastCalledWith(process.cwd());
     expect(mockSpawn).toHaveBeenCalledWith(process.execPath, [expect.any(String), 'score-sessions'], expect.objectContaining({ cwd: process.cwd() }));
   });
 

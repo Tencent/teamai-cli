@@ -150,14 +150,14 @@ const pullHandler: HookHandler = {
     // cut the push of a report pull() stopped waiting for. The host does not
     // wait for this pass, so waiting here does not delay the session.
     await settleLateUsageReport();
-    // Finished sessions are judged in a process this pass does not wait for, where a scope turns that on.
-    const { sessionScoringScopes } = await import('./score-sessions.js');
-    const scoringCwd = await pathExists(hintCwd) ? hintCwd : os.homedir();
-    const scoring = await sessionScoringScopes(scoringCwd).catch((e: unknown) => {
-      log.debug(`hook-dispatch: could not tell whether sessions are scored here: ${e instanceof Error ? e.message : String(e)}`);
+    // Finished attended sessions are judged or published in a process this pass does not wait for, where a scope turns that on.
+    const { backgroundPassScopes } = await import('./score-sessions.js');
+    const passCwd = await pathExists(hintCwd) ? hintCwd : os.homedir();
+    const scopes = await backgroundPassScopes(passCwd).catch((e: unknown) => {
+      log.debug(`hook-dispatch: could not tell whether sessions are scored or published here: ${e instanceof Error ? e.message : String(e)}`);
       return [];
     });
-    if (scoring.length > 0) await spawnDetachedScoreSessions(scoringCwd);
+    if (scopes.length > 0) await spawnDetachedScoreSessions(passCwd);
     return null;
   },
 };

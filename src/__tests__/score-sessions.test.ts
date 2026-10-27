@@ -14,7 +14,7 @@ import type { LocalConfig } from '../types.js';
 import { scoresDir } from '../scorers/attempts.js';
 import { parseScoreLabels } from '../scorers/label.js';
 import { syncScorerDefinitions } from '../scorers/cache.js';
-import { scoreSessions, sessionScoringScopes } from '../score-sessions.js';
+import { scoreSessions, backgroundPassScopes } from '../score-sessions.js';
 import { encodeCwdClaude } from '../session-flow/fs.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { projectDataHome } from '../utils/partition.js';
@@ -160,7 +160,7 @@ describe('teamai score-sessions', () => {
   });
 });
 
-describe('the scopes a session start scores sessions in', () => {
+describe('the scopes a session start scores or publishes sessions in', () => {
   /** The user scope's config.yaml, with `scoring` as given. */
   function userConfig(scoring: string): void {
     const knowledge = path.join(root, 'knowledge');
@@ -172,7 +172,7 @@ describe('the scopes a session start scores sessions in', () => {
 
   it('is the user scope from a directory that no longer exists, when it turns session scoring on', async () => {
     userConfig('scoring:\n  sessions: true\n');
-    expect(await sessionScoringScopes(path.join(root, 'gone'))).toMatchObject([{ scope: 'user' }]);
+    expect(await backgroundPassScopes(path.join(root, 'gone'))).toMatchObject([{ scope: 'user' }]);
   });
 
   /** A workspace that selects project billing, with a child repo that selects checkout, and `files` in the team repo. */
@@ -202,16 +202,21 @@ describe('the scopes a session start scores sessions in', () => {
 
   it('reads the settings of the namespaces a workspace child makes active', async () => {
     const ws = workspace({ 'scorers/scoring.yaml': 'sessions: true\n', 'scorers/checkout/scoring.yaml': 'sessions: false\n' });
-    expect(await sessionScoringScopes(ws)).toEqual([]);
+    expect(await backgroundPassScopes(ws)).toEqual([]);
   });
 
   it('is the workspace when only a workspace child\'s namespace turns session scoring on', async () => {
     const ws = workspace({ 'scorers/checkout/scoring.yaml': 'sessions: true\n' });
-    expect(await sessionScoringScopes(ws)).toMatchObject([{ scope: 'project', children: expect.any(Object) }]);
+    expect(await backgroundPassScopes(ws)).toMatchObject([{ scope: 'project', children: expect.any(Object) }]);
+  });
+
+  it('is the user scope when it publishes attended sessions automatically, though it scores none', async () => {
+    userConfig('sessions:\n  publish:\n    attended: auto\n');
+    expect(await backgroundPassScopes(path.join(root, 'gone'))).toMatchObject([{ scope: 'user' }]);
   });
 
   it('is none while no scope turns session scoring on', async () => {
     userConfig('');
-    expect(await sessionScoringScopes(path.join(root, 'gone'))).toEqual([]);
+    expect(await backgroundPassScopes(path.join(root, 'gone'))).toEqual([]);
   });
 });

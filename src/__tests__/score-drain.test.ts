@@ -20,6 +20,7 @@ import { dataHomeKey } from '../dashboard-collector.js';
 import { syncScorerDefinitions } from '../scorers/cache.js';
 import { LabelStore } from '../scorers/label-store.js';
 import { scoreCommand, type ScoreOptions } from '../score-commands.js';
+import { scoreSessionsCommand } from '../score-sessions.js';
 import YAML from 'yaml';
 import { encodeCwdClaude } from '../session-flow/fs.js';
 import type { LocalConfig } from '../types.js';
@@ -533,5 +534,21 @@ describe('teamai score --drain', () => {
     const draining = resumed.lines.indexOf('ℹ Draining before exit (teamai score --drain)');
     expect(draining, resumed.lines.join('\n')).toBeGreaterThanOrEqual(0);
     expect(resumed.lines.slice(draining)).toContain('✔ Judged 1 sampled session here (quality)');
+  });
+
+});
+
+describe('the background pass a session start begins (teamai score-sessions)', () => {
+  it('archives attended sessions idle six hours when sessions.publish is auto for attended, though it scores none', async () => {
+    const { origin, config } = await team({ 'teamai.yaml': 'team: acme\nrepo: https://example.com/acme/team.git\nsessions:\n  publish: { attended: auto }\n' });
+    capturedSession(SESSION, 'attended', { answer: 'The idle answer.' });
+    capturedSession('7c1e0000-0000-4000-8000-000000000012', 'attended', { idleFor: 0, answer: 'The active answer.' });
+    fakeClaude();
+
+    await scoreSessionsCommand();
+
+    const archived = onReports(origin, 'sessions').filter((file) => file.endsWith('.jsonl'));
+    expect(archived.map((file) => readOnReports(origin, file))).toEqual([expect.stringContaining('The idle answer.')]);
+    expect(await LabelStore.local(config)).toEqual([]);
   });
 });
