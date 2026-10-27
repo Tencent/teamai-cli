@@ -1,9 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ALL_MODEL_AGENTS } from '../models/profile.js';
-import { isToolId, TOOLS, type Support } from '../tools.js';
+import { isAgentToolId, isToolId, TOOLS, type Support } from '../tools.js';
+import { AGENT_SESSION_ENV, agentSessionFromEnv } from '../utils/session-id.js';
 import { DEFAULT_TOOL_PATHS, type ToolId } from '../types.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -42,8 +43,25 @@ function decided(support: Support): '✓' | '—' | undefined {
   return cell.startsWith('✓') || cell.startsWith('◐') ? '✓' : '—';
 }
 
+/** The tools whose session the skill driver names from the agent session variable it sets. */
+async function namedSessionTools(): Promise<Set<string>> {
+  const named = new Set<string>();
+  for (const variable of AGENT_SESSION_ENV) {
+    for (const other of AGENT_SESSION_ENV) vi.stubEnv(other, other === variable ? 'session-1' : '');
+    const { agent } = await agentSessionFromEnv();
+    if (agent !== undefined && isAgentToolId(agent)) named.add(agent);
+  }
+  vi.unstubAllEnvs();
+  return named;
+}
+
 describe('README agent matrix', () => {
   const matrix = rows('README.md');
+  let named = new Set<string>();
+
+  beforeAll(async () => {
+    named = await namedSessionTools();
+  });
 
   it('lists every tool but the internal builds', () => {
     const tools = Object.keys(DEFAULT_TOOL_PATHS).filter(isToolId).filter((tool) => !UNLISTED.includes(tool));
@@ -63,6 +81,7 @@ describe('README agent matrix', () => {
     expect(cell(row, 'models')).toBe(ALL_MODEL_AGENTS.some((agent) => agent === tool) ? '✓' : '—');
     const usage = decided(d.features.stats);
     if (usage !== undefined) expect(cell(row, 'usage')).toBe(usage);
-    expect(cell(row, 'scorers')).toBe(Array.isArray(d.sessions) ? '✓' : '—');
+    // Without a session reader, a tool the skill driver names judges only the workflow runs its session drives (✓³).
+    expect(cell(row, 'scorers')).toBe(Array.isArray(d.sessions) ? '✓' : named.has(tool) ? '✓³' : '—');
   });
 });
