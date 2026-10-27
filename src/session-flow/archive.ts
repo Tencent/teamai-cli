@@ -235,7 +235,7 @@ async function archiveOnReports(
     case 'busy':
       return { status: 'busy', message: 'Another teamai process is writing teamai-reports.' };
     case 'failed':
-      return { status: 'failed', message: `Writing teamai-reports failed: ${result.reason}` };
+      return { status: 'failed', message: result.reason };
     default: {
       const unhandled: never = result;
       return unhandled;

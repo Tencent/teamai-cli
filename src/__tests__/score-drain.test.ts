@@ -355,6 +355,7 @@ describe('teamai score --drain', () => {
     expect(failed.lines.filter((printed) => printed.startsWith('✖'))).toEqual([
       expect.stringMatching(/^✖ Could not publish 1 label and 1 session to teamai-reports: [\s\S]*push refused[\s\S]*\. They stay pending; run teamai score --drain again\.$/),
     ]);
+    expect(failed.lines.join('\n').split('push refused')).toHaveLength(2);
     expect(onReports(origin, '')).toEqual([]);
 
     fs.rmSync(hook);
