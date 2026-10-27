@@ -21,6 +21,7 @@ import { driverIdentity } from '../driver-identity.js';
 import { syncScorerDefinitions } from '../scorers/cache.js';
 import { LabelStore } from '../scorers/label-store.js';
 import { scoreCommand, type ScoreOptions } from '../score-commands.js';
+import { Drain } from '../score-drain.js';
 import { judgePassLock, scoreSessionsCommand } from '../score-sessions.js';
 import YAML from 'yaml';
 import { encodeCwdClaude } from '../session-flow/fs.js';
@@ -346,6 +347,24 @@ describe('teamai score --drain', () => {
     expect(drained.lines).toContain('ℹ Left open: 1 judge entry: another judge pass on this machine is running. Run teamai score --drain again once it ends.');
     expect(drained.lines.filter((printed) => printed.includes('Judged'))).toEqual([]);
     expect(drained.lines).not.toContain('✔ Nothing left to do here');
+  });
+
+  it('warns once, and writes nothing into the repository, for a project whose teamai data is still inside it', async () => {
+    const { config } = await team();
+    const checkout = path.join(root, 'app');
+    fs.mkdirSync(checkout, { recursive: true });
+    const legacy: LocalConfig = { ...config, scope: 'project', projectRoot: checkout, dataHome: path.join(checkout, '.teamai') };
+    fakeClaude();
+    const warnings: string[] = [];
+    vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+      warnings.push(args.map(String).join(' '));
+    });
+
+    await Drain.run([legacy], { mode: 'attended' });
+
+    expect(warnings.filter((printed) => printed.includes('Scoring is off for this project'))).toHaveLength(1);
+    expect(fs.existsSync(judgePassLock(legacy))).toBe(false);
+    expect(fs.existsSync(path.dirname(judgePassLock(legacy)))).toBe(false);
   });
 
   it('prints a failed judgment and exits 1, and a second drain exits 0 without judging it again', async () => {

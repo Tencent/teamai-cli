@@ -91,6 +91,12 @@ async function judge(config: LocalConfig, clock: () => string): Promise<Pick<Dra
   let leftOpen: SkippedEntry[] = [];
   let unmetIsolation = 0;
   const tried = new Set<string>();
+  // Its scores would land inside the repository, the lock with them.
+  const unavailable = scoringUnavailable(config);
+  if (unavailable) {
+    log.warn(unavailable);
+    return { judged, failed, leftOpen, unmetIsolation, noJudgeTool: 0, otherPassRunning: 0 };
+  }
   const offers = await localJudgeOffers();
   if (offers.length === 0) return { judged, failed, leftOpen, unmetIsolation, noJudgeTool: await openJudgeEntries(config, clock()), otherPassRunning: 0 };
   const lock = judgePassLock(config);
