@@ -496,7 +496,7 @@ export const TOOLS = {
     },
     hooks: { user: { channel: 'settings', format: 'cursor', reads: [{ base: 'home', path: '.cursor/hooks.json', evidence: 'source' }] }, self: { channel: 'settings', format: 'cursor', reads: [{ base: 'project', path: '.cursor/hooks.json', when: 'workspaceUnder', evidence: 'source' }] } },
     sessions: ['cursor'],
-    launch: 'none',
+    launch: 'cursor',
     features: {
       env: '?',
       workflows: { cell: '+s', note: 'Cursor IDE: —' },

@@ -13,7 +13,7 @@ import { execCommand, probeBinary } from '../utils/exec.js';
 import { runTool } from '../tool-launch/run.js';
 import { toolStdout } from '../tool-launch/stdout.js';
 import { LAUNCH_ADAPTERS, type JudgeProfile } from '../tool-launch/adapters.js';
-import { JUDGE_TOOLS, launchAdapterIdOf, opencodeModelArgs, type JudgeTool } from '../tool-launch/tools.js';
+import { executableOf, JUDGE_TOOLS, launchAdapterIdOf, opencodeModelArgs, type JudgeTool } from '../tool-launch/tools.js';
 import { JudgeAnswerSchema, type JudgeAnswer } from './batch.js';
 import type { ScoreLabel, Isolation, JudgeAccess, JudgeUsage } from './label.js';
 
@@ -29,7 +29,7 @@ export function isJudgeTool(value: string): value is JudgeTool {
 /** The judge tools on this machine's PATH: `preferred` first, then the rest in launch-tool order. */
 export function installedJudgeTools(preferred: readonly string[], { resolveTool = resolveCliPath }: { resolveTool?: (tool: string) => string | null } = {}): JudgeTool[] {
   const tools = new Set([...preferred, ...JUDGE_TOOLS].filter(isJudgeTool));
-  return [...tools].filter((tool) => resolveTool(tool) !== null);
+  return [...tools].filter((tool) => resolveTool(executableOf(tool)) !== null);
 }
 
 function judgeProfile(tool: JudgeTool): JudgeProfile {
@@ -53,7 +53,7 @@ export interface JudgeToolLevel {
 
 /** The version of `tool` and the isolation its judge profile reaches on this machine; undefined when it is not on PATH. */
 export async function judgeToolLevel(tool: JudgeTool, { resolveTool = resolveCliPath }: { resolveTool?: (tool: string) => string | null } = {}): Promise<JudgeToolLevel | undefined> {
-  const executable = resolveTool(tool);
+  const executable = resolveTool(executableOf(tool));
   if (executable === null) return undefined;
   const tmp = await fs.realpath(os.tmpdir());
   const version = await probeBinary(executable, ['--version'], (command, args, options) => execCommand(command, args, { ...options, env: judgeEnv(tool), cwd: tmp }));
@@ -194,22 +194,37 @@ function records(stdout: string): Array<Record<string, unknown>> {
   });
 }
 
-function answerFrom(tool: JudgeTool, stdout: string): JudgeAnswer | undefined {
+/** The judge's answer in what its tool left: Codex's answer file, a result record, OpenCode's text parts, or a reply. */
+async function answerFrom(tool: JudgeTool, stdout: string, tmp: string): Promise<JudgeAnswer | undefined> {
   const family = launchAdapterIdOf(tool);
-  const events = records(stdout);
-  if (family === 'claude' || family === 'codebuddy') {
-    const last = events.filter((record) => record.type === 'result').at(-1);
-    const structured = JudgeAnswerSchema.safeParse(last?.structured_output);
-    if (structured.success) return structured.data;
-    return parseAnswer(typeof last?.result === 'string' ? last.result : '');
+  switch (family) {
+    case 'codex':
+      return parseAnswer(await optionalFile(path.join(tmp, 'answer.json')) ?? '');
+    // Claude's result record, which CodeBuddy and Cursor print too; only Claude and CodeBuddy fill structured_output.
+    case 'claude':
+    case 'codebuddy':
+    case 'cursor': {
+      const last = records(stdout).filter((record) => record.type === 'result').at(-1);
+      const structured = JudgeAnswerSchema.safeParse(last?.structured_output);
+      if (structured.success) return structured.data;
+      return parseAnswer(typeof last?.result === 'string' ? last.result : '');
+    }
+    case 'opencode': {
+      const texts = records(stdout).flatMap((record) => {
+        const parsed = z.object({ type: z.string().optional(), part: z.object({ text: z.string().optional() }).optional() }).safeParse(record);
+        return parsed.success && parsed.data.type === 'text' ? parsed.data.part?.text ?? [] : [];
+      });
+      return parseAnswer(texts.join('\n'));
+    }
+    case 'pi': {
+      const reading = LAUNCH_ADAPTERS.pi.call.read({ stdout, lastMessage: undefined });
+      return reading.ok ? parseAnswer(reading.text) : undefined;
+    }
+    default: {
+      const unhandled: never = family;
+      throw new Error(`No judge answer reader for adapter ${String(unhandled)}`);
+    }
   }
-  const texts = events.flatMap((record) => {
-    const parsed = z.object({ type: z.string().optional(), part: z.object({ text: z.string().optional() }).optional() }).safeParse(record);
-    if (!parsed.success) return [];
-    if (family === 'opencode' && parsed.data.type === 'text') return parsed.data.part?.text ?? [];
-    return [];
-  });
-  return parseAnswer(texts.join('\n'));
 }
 
 function parseAnswer(text: string): JudgeAnswer | undefined {
@@ -235,7 +250,7 @@ async function noInstructionsAbove(cwd: string): Promise<void> {
 }
 
 export async function runLocalJudge(input: JudgeInput, { resolveTool = resolveCliPath }: { resolveTool?: (tool: string) => string | null } = {}): Promise<LocalJudgeResult> {
-  const executable = resolveTool(input.tool);
+  const executable = resolveTool(executableOf(input.tool));
   if (!executable) return { ok: false, code: 'judge_tool_unavailable', message: `The ${input.tool} executable is not available on PATH. Install it, or submit this lease through another driver.` };
   const tmp = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-judge-')));
   try {
@@ -280,6 +295,10 @@ export async function runLocalJudge(input: JudgeInput, { resolveTool = resolveCl
       args = ['-p', '--tools', 'Read,Grep,Glob', '--strict-mcp-config', '--no-session-persistence', '--setting-sources', '', '--permission-mode', 'dontAsk', '--settings', JSON.stringify({ permissions: { allow: ['Read(./**)'] } }), '--output-format', 'json', '--json-schema', JSON.stringify(input.schema), ...model];
       prompt += await fs.readFile(path.join(evidence, 'prompt.md'), 'utf8');
       break;
+    case 'cursor':
+      args = ['-p', '--output-format', 'json', '--mode', 'ask', '--sandbox', 'enabled', '--trust', ...model];
+      prompt += await fs.readFile(path.join(evidence, 'prompt.md'), 'utf8');
+      break;
     case 'pi':
       args = ['-p', '--mode', 'json', '--tools', 'read,grep,find,ls', '--no-context-files', '--no-extensions', '--no-skills', '--no-session', ...model];
       prompt += await fs.readFile(path.join(evidence, 'prompt.md'), 'utf8');
@@ -315,9 +334,7 @@ export async function runLocalJudge(input: JudgeInput, { resolveTool = resolveCl
       if (deleted.code !== 0) return { ok: false, code: 'judge_failed', message: 'OpenCode could not delete the judge session. Delete it with opencode session delete before retrying.', raw: deleted.stderr, ...spent };
     }
     if (result.code !== 0) return { ok: false, code: 'judge_failed', message: `${input.tool} exited with code ${result.code}. See the saved output, then retry or submit the lease through another driver.`, raw: result.stdout + '\n' + result.stderr, ...spent };
-    const answer = family === 'codex' ? parseAnswer(await optionalFile(path.join(tmp, 'answer.json')) ?? '')
-      : family === 'pi' ? (reading.ok ? parseAnswer(reading.text) : undefined)
-        : answerFrom(input.tool, result.stdout);
+    const answer = await answerFrom(input.tool, result.stdout, tmp);
     if (!answer) return { ok: false, code: 'judge_answer_invalid', message: `${input.tool} did not return JSON with label and reasoning. See the saved output, then retry.`, raw: result.stdout + '\n' + result.stderr, ...spent };
     const ranModel = observedModel({ requested: input.model?.name ?? configuredModel, reported: report?.model });
     const ranEffort = observedEffort({ requested: input.model?.effort });

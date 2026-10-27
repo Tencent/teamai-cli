@@ -10,7 +10,7 @@ import { writeJsonAtomic } from '../../../utils/fs.js';
 import { log } from '../../../utils/logger.js';
 import { stopProcess } from '../../../tool-launch/process-stop.js';
 import { toolStdout, type TokenUsage, type ToolReport } from '../../../tool-launch/stdout.js';
-import { launchAdapterIdOf, opencodeModelArgs, type LaunchTool } from '../../../tool-launch/tools.js';
+import { executableOf, launchAdapterIdOf, opencodeModelArgs, type LaunchTool } from '../../../tool-launch/tools.js';
 import type { StepModel } from '../../step-model.js';
 import type { WorkflowFailure } from '../../types.js';
 
@@ -163,7 +163,7 @@ export function createLocalToolAdapter(
   const launch =
     async (tool: LaunchTool, input: LocalToolRun, signal: AbortSignal | undefined, interactive: boolean): Promise<LocalToolResult> => {
       await fs.mkdir(path.dirname(input.resultPath), { recursive: true });
-      const executable = resolveTool(tool);
+      const executable = resolveTool(executableOf(tool));
       if (!executable) {
         return {
           started: false,

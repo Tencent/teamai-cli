@@ -1,6 +1,6 @@
 import { TOOLS } from '../tools.js';
 import type { ToolId } from '../types.js';
-import { LAUNCH_ADAPTERS, type LaunchAdapterId } from './adapters.js';
+import { LAUNCH_ADAPTERS, type LaunchAdapter, type LaunchAdapterId } from './adapters.js';
 
 /** The tools whose `launch` facet names an adapter. */
 export type LaunchedToolId = { [T in ToolId]: (typeof TOOLS)[T]['launch'] extends 'none' ? never : T }[ToolId];
@@ -9,7 +9,7 @@ export type LaunchedToolId = { [T in ToolId]: (typeof TOOLS)[T]['launch'] extend
  * Every tool teamai launches, in the order an AI call takes the first one on PATH. Each list of tools that can run a
  * profile keeps this order, so a tool added at the end changes no member's default.
  */
-export const LAUNCH_ORDER = ['claude', 'claude-internal', 'tclaude', 'codex', 'codex-internal', 'tcodex', 'opencode', 'codebuddy', 'workbuddy', 'openclaw', 'pi', 'omp', 'muse'] as const satisfies readonly LaunchedToolId[];
+export const LAUNCH_ORDER = ['claude', 'claude-internal', 'tclaude', 'codex', 'codex-internal', 'tcodex', 'opencode', 'codebuddy', 'workbuddy', 'openclaw', 'cursor', 'pi', 'omp', 'muse'] as const satisfies readonly LaunchedToolId[];
 
 export type LaunchOrderTool = (typeof LAUNCH_ORDER)[number];
 
@@ -20,6 +20,12 @@ export function launchAdapterIdOf<T extends LaunchOrderTool>(tool: T): (typeof T
 
 export function launchAdapterOf(tool: LaunchOrderTool): (typeof LAUNCH_ADAPTERS)[LaunchAdapterId] {
   return LAUNCH_ADAPTERS[launchAdapterIdOf(tool)];
+}
+
+/** The command that starts `tool`: its adapter's executable, or the tool's id. */
+export function executableOf(tool: LaunchOrderTool): string {
+  const adapter: LaunchAdapter = launchAdapterOf(tool);
+  return adapter.executable ?? tool;
 }
 
 type Profile = 'step' | 'judge';

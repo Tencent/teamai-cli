@@ -49,6 +49,8 @@ export interface JudgeProfile {
 }
 
 export interface LaunchAdapter {
+  /** The command that starts the tool, when it is not the tool's id. */
+  readonly executable?: string;
   readonly call: CallProfile;
   readonly step?: StepProfile;
   readonly judge?: JudgeProfile;
@@ -226,6 +228,12 @@ export const LAUNCH_ADAPTERS = {
   // One embedded turn with ephemeral state, so no call leaves a session in the member's conversations (#1308).
   openclaw: {
     call: { evidence: 'docs', prompt: 'stdin', args: () => ['agent', 'exec', '--json', '--message-file', '-'], read: readOpenClawExec },
+  },
+  cursor: {
+    executable: 'cursor-agent',
+    // Ask mode answers without editing.
+    call: { evidence: 'docs', prompt: 'stdin', args: () => ['-p', '--output-format', 'json', '--mode', 'ask', '--trust'], read: readClaudeResult },
+    judge: { evidence: 'docs', env: ['CURSOR_API_KEY', 'CURSOR_CONFIG_DIR', 'CURSOR_DATA_DIR'], access: 'full' },
   },
   pi: {
     call: { evidence: 'source', prompt: 'stdin', args: () => ['-p', '--mode', 'json', '--no-session'], read: readPiJson },

@@ -8,7 +8,7 @@ import { resolveCliPath } from '../utils/cli-path.js';
 import { log } from '../utils/logger.js';
 import { runTool } from './run.js';
 import type { TokenUsage } from './stdout.js';
-import { LAUNCH_ORDER, launchAdapterOf, type LaunchOrderTool } from './tools.js';
+import { executableOf, LAUNCH_ORDER, launchAdapterOf, type LaunchOrderTool } from './tools.js';
 
 const DEFAULT_TIMEOUT_MS = 600_000;
 const DEFAULT_CONCURRENCY = 3;
@@ -70,7 +70,7 @@ export function createToolCaller({ resolveTool = resolveCliPath, loadConfig = lo
         ? `TEAMAI_AI_TOOL is "${value}", which is not a tool teamai launches. Set it to one of: ${LAUNCH_ORDER.join(', ')}. Or unset it.`
         : `ai.tool in ${getUserConfigPath()} is "${value}", which is not a tool teamai launches. Set it to one of: ${LAUNCH_ORDER.join(', ')}. Or remove it.`);
     }
-    const executable = resolveTool(tool);
+    const executable = resolveTool(executableOf(tool));
     if (executable === null) {
       throw new CallError('override_invalid', source === 'TEAMAI_AI_TOOL'
         ? `TEAMAI_AI_TOOL is "${tool}", which is not on PATH. Install ${tool}, or unset TEAMAI_AI_TOOL to use the first installed tool.`
@@ -85,7 +85,7 @@ export function createToolCaller({ resolveTool = resolveCliPath, loadConfig = lo
     const configured = (await loadConfig())?.ai?.tool;
     if (configured) return named('ai.tool', configured);
     for (const tool of LAUNCH_ORDER) {
-      const executable = resolveTool(tool);
+      const executable = resolveTool(executableOf(tool));
       if (executable !== null) {
         log.debug(`[tool-launch] using ${tool} (${executable}), from LAUNCH_ORDER`);
         return { tool, executable };

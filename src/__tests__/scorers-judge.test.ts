@@ -284,6 +284,29 @@ it('runs pi with only its read tools, no context files, extensions, skills or sa
   expect(invocation.env).not.toHaveProperty('GH_TOKEN');
 });
 
+it('runs Cursor in ask mode with its sandbox on, the prompt on stdin, at best-effort and with full access', async () => {
+  root = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-judge-'));
+  const evidence = path.join(root, 'evidence');
+  await fs.mkdir(evidence);
+  await fs.writeFile(path.join(evidence, 'prompt.md'), 'CURSOR-INLINE-PROMPT');
+  vi.stubEnv('CURSOR_API_KEY', 'cursor-key');
+  const record = path.join(root, 'invocation.json');
+  const executable = await recordingFake(root, record, "console.log(JSON.stringify({type:'result',subtype:'success',is_error:false,result:'{\"label\":\"good\",\"reasoning\":\"done\"}'}));");
+  const resolved: string[] = [];
+
+  const result = await runLocalJudge({ tool: 'cursor', evidence, schema: {} }, { resolveTool: (command) => { resolved.push(command); return executable; } });
+
+  expect(result).toMatchObject({ ok: true, answer: { label: 'good' }, judge: { tool: 'cursor', access: 'full', isolation: 'best-effort' } });
+  expect(resolved).toEqual(['cursor-agent']);
+  const invocation = z.object({ args: z.array(z.string()), env: z.record(z.string()), stdin: z.string() }).parse(JSON.parse(await fs.readFile(record, 'utf8')));
+  expect(invocation.args.slice(0, 1)).toEqual(['-p']);
+  for (const [flag, value] of [['--output-format', 'json'], ['--mode', 'ask'], ['--sandbox', 'enabled']]) {
+    expect(invocation.args[invocation.args.indexOf(flag) + 1]).toBe(value);
+  }
+  expect(invocation.stdin).toContain('CURSOR-INLINE-PROMPT');
+  expect(invocation.env.CURSOR_API_KEY).toBe('cursor-key');
+});
+
 it('fails a CodeBuddy judge that is not signed in, though CodeBuddy exits 0', async () => {
   root = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-judge-'));
   const evidence = path.join(root, 'evidence');
