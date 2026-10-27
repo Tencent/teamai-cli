@@ -307,6 +307,44 @@ describe('the usage report counts what finished sessions delivered (#1387)', () 
     expect((await readSessionOutcomes()).map((event) => event.outcomes)).toEqual([[{ kind: 'commit', sha: mine }, { kind: 'pr', url }]]);
   });
 
+  it.each([
+    { secondPushed: true, pr: 'https://github.com/acme/app/pull/42' },
+    { secondPushed: false, pr: undefined },
+  ])('counts the pull request of the branch the session last stopped on, not one a report found on an earlier branch (pushed: $secondPushed)', async ({ secondPushed, pr }) => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const work = checkout();
+    const origin = path.join(tmpDir, 'origin.git');
+    gitIn(tmpDir, ['init', '-q', '--bare', origin]);
+    const start = commitIn(work, 'base', ME);
+    gitIn(work, ['remote', 'add', 'origin', origin]);
+    gitIn(work, ['push', '-q', 'origin', 'main']);
+    gitIn(work, ['checkout', '-q', '-b', 'fix-retry']);
+    const first = commitIn(work, 'the first branch', ME);
+    gitIn(work, ['push', '-q', 'origin', 'fix-retry']);
+    const urls: Record<string, string> = { 'fix-retry': 'https://github.com/acme/app/pull/41', 'fix-timeout': 'https://github.com/acme/app/pull/42' };
+    prMocks.findDelivered.mockImplementation(async (_cwd: string, ref: { branch: string }) =>
+      (urls[ref.branch] ? { kind: 'found', pr: urls[ref.branch] } : { kind: 'none' }));
+    const [begin, stop] = session('switched-branch', 1, { cwd: work });
+    const startedOn = { ...begin, gitAtStart: { head: start, dirty: false } };
+    const stoppedOnFirst = { ...stop, gitHead: first, gitBranch: 'fix-retry' };
+    writeEvents([startedOn, stoppedOnFirst]);
+    await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
+
+    // The session goes on, on another branch.
+    vi.setSystemTime(Date.now() + HOUR);
+    gitIn(work, ['checkout', '-q', '-b', 'fix-timeout']);
+    const second = commitIn(work, 'the second branch', ME);
+    if (secondPushed) gitIn(work, ['push', '-q', 'origin', 'fix-timeout']);
+    const [, laterStop] = session('switched-branch', 0, { cwd: work });
+    writeEvents([startedOn, stoppedOnFirst, { ...laterStop, gitHead: second, gitBranch: 'fix-timeout' }]);
+    vi.setSystemTime(Date.now() + 6 * HOUR);
+    await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
+
+    expect((await readSessionOutcomes()).map((event) => event.outcomes)).toEqual([[
+      { kind: 'commit', sha: first }, { kind: 'commit', sha: second }, ...(pr ? [{ kind: 'pr', url: pr }] : []),
+    ]]);
+  });
+
   it('looks up the pull request of the branch the session last stopped on, after the checkout moved on', async () => {
     const work = checkout();
     const origin = path.join(tmpDir, 'origin.git');

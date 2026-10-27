@@ -170,8 +170,8 @@ async function sessionCommits(cwd: string, facts: Facts): Promise<string[]> {
   return listed.code === 0 ? listed.stdout.split('\n').filter((sha) => CommitIdSchema.safeParse(sha).success) : [];
 }
 
-/** A session's pull request lookup that got an answer: the open pull request it found, or none. */
-const PrLookupSchema = z.object({ url: PrUrlSchema.optional() });
+/** A session's pull request lookup that got an answer, for the branch it asked about: the open pull request it found, or none. */
+const PrLookupSchema = z.object({ branch: z.string(), url: PrUrlSchema.optional() });
 type PrLookup = z.infer<typeof PrLookupSchema>;
 
 function prCachePath(config: LocalConfig): string {
@@ -196,8 +196,8 @@ async function lookUpPr({ cwd, branch, commits }: { cwd: string; branch: string;
   if (!pushed.includes(true)) return undefined;
   const found = await findDelivered(cwd, { branch, target });
   switch (found.kind) {
-    case 'found': return { url: found.pr };
-    case 'none': return {};
+    case 'found': return { branch, url: found.pr };
+    case 'none': return { branch };
     case 'failed':
     case 'unsafe': return undefined;
     default: {
@@ -240,7 +240,8 @@ async function fold(input: FoldInput): Promise<OutcomeFold> {
   const finished = (await Promise.all(pending.map(async ({ sessionId, facts, isDue }): Promise<FinishedSession[]> => {
     const cwd = await checkoutOf(facts);
     const commits = cwd ? await sessionCommits(cwd, facts) : [];
-    if (cwd && commits.length > 0 && facts.endBranch && !prs[sessionId]) {
+    // A session that has since stopped on another branch is asked about that one.
+    if (cwd && commits.length > 0 && facts.endBranch && prs[sessionId]?.branch !== facts.endBranch) {
       const looked = await lookUpPr({ cwd, branch: facts.endBranch, commits }).catch((e: unknown) => {
         log.debug(`outcomes: pull request lookup for session ${sessionId} failed: ${e instanceof Error ? e.message : String(e)}`);
         return undefined;
@@ -252,7 +253,8 @@ async function fold(input: FoldInput): Promise<OutcomeFold> {
       }
     }
     if (!isDue) return [];
-    const pr = prs[sessionId]?.url;
+    const lookup: PrLookup | undefined = prs[sessionId];
+    const pr = lookup && lookup.branch === facts.endBranch ? lookup.url : undefined;
     const { tokens } = promptTokensEntry(input.totals.promptTokens[sessionId]);
     const interventions = Object.values(interventionsEntry(input.totals.interventions[sessionId])).reduce((sum, n) => sum + n, 0);
     return [{
