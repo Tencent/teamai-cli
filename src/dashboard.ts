@@ -429,6 +429,24 @@ export async function startDashboard(port?: number): Promise<void> {
       return;
     }
 
+    if (url.pathname === '/api/session-sharing') {
+      // Whether the workspace's sessions are published and scored (#1385): counts
+      // and setting names, never a session's text or path.
+      try {
+        const { readSessionSharing } = await import('./dashboard/session-sharing.js');
+        const sharing = workspace?.config
+          ? await readSessionSharing(workspace.config, { env: process.env, now: new Date().toISOString() })
+          : { configured: false };
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify(sharing));
+      } catch (e) {
+        log.debug(`dashboard: /api/session-sharing failed: ${e instanceof Error ? e.message : String(e)}`);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Failed to load session sharing.' }));
+      }
+      return;
+    }
+
     if (url.pathname === '/api/resources/rules') {
       // Rules inventory for the Resources page (#1028): names and metadata
       // only, never rule bodies or environment values. The user scope and the
