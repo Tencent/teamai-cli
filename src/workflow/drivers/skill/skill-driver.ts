@@ -18,7 +18,7 @@ import { AttemptIdSchema, RunIdSchema, takeRunLock, type AttemptId, type LockTak
 import { canFor, HOST_CHOICES, type HostChoice } from './host-profiles.js';
 import { journalCall } from './journal.js';
 import { describeLiteral, invocationOf, type Invocation } from './literals.js';
-import { askFor, attendedReason, ceilingOf, checkStartAnswers, localPromptTool, localReason, neededAnswers, type HitlMode } from './preflight.js';
+import { askFor, attendedReason, ceilingOf, checkStartAnswers, localPromptTool, localReason, neededAnswers, needsTool, type HitlMode } from './preflight.js';
 import { drivesRun, readSkillState, writeSkillState } from './skill-state.js';
 import { detachedRunners, runRunner } from './skill-runner.js';
 import { agentReport, foreground, plannedState, poll } from './tick.js';
@@ -346,12 +346,12 @@ async function start(call: Extract<SkillCall, { kind: 'describe' | 'start' }>, c
     const attended = attendedReason(description, 'start');
     const { row, verdict } = describeRow({
       needed: neededAnswers(description), ...denied, ...(undeliverable ? { undeliverable: undeliverable.message } : {}), ...why, judged: judgedBy(judging) !== undefined,
-      mode: context.mode, ...(attended !== undefined ? { attended } : {}), needsTool: context.tool === undefined && description.facts.prompts.length + description.facts.scored.length > 0,
+      mode: context.mode, ...(attended !== undefined ? { attended } : {}), needsTool: needsTool(description, context.tool),
     });
     context.trace?.(row);
     return { data: { describe: { workflow: description, judging, ask: askFor(verdict, description, context.invocation, judging, { local: localPromptTool(context), session: call.tool }) } } };
   }
-  const check = checkStartAnswers({ description, answers: call.answers, inputs: call.inputs, ceiling });
+  const check = checkStartAnswers({ description, answers: call.answers, inputs: call.inputs, ceiling, tool: context.tool });
   const judge = call.answers.judge !== false ? judgedBy(judging) : undefined;
   const attended = context.mode === 'unattended' ? attendedReason(description, 'start') : undefined;
   const taken = startRow({ name: description.name, check, ...why, ...(attended !== undefined ? { attended } : {}), prompts: description.facts.prompts.length > 0, ...(judge !== undefined ? { judge } : {}) });

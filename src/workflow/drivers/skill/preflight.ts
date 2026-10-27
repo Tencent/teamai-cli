@@ -10,10 +10,15 @@ import { judgedBy, type DescribeVerdict } from './transitions.js';
 import type { DescribeAsk } from './turn.js';
 
 /**
- * The answers a start must carry: the person's yes for `invoke: ask`, the inputs, how many steps run at once, and how
- * optional gates are answered.
+ * The answers a start must carry: the person's yes for `invoke: ask`, the inputs, how many steps run at once, how
+ * optional gates are answered, and the tool of a session whose host names none (`needsTool`).
  */
-export type StartAnswer = 'confirmed' | 'inputs' | 'parallel' | 'hitl';
+export type StartAnswer = 'confirmed' | 'inputs' | 'parallel' | 'hitl' | 'tool';
+
+/** Whether a session working in `tool` must name it before it runs `description`: it names none, and a prompt or scored step needs one. */
+export function needsTool(description: WorkflowDescription, tool: ToolId | undefined): boolean {
+  return tool === undefined && description.facts.prompts.length + description.facts.scored.length > 0;
+}
 
 /**
  * How a run answers its optional gates, as the person picked at start: the agent asks the person (`person`), the agent
@@ -78,12 +83,13 @@ export function checkStartAnswers(input: {
   answers: { parallel?: number; confirmed: boolean; hitl?: HitlMode };
   inputs: unknown;
   ceiling: number;
+  tool: ToolId | undefined;
 }): StartCheck {
   const { description, answers, inputs, ceiling } = input;
   const given: Record<StartAnswer, boolean> = {
-    confirmed: answers.confirmed, inputs: inputs !== undefined, parallel: answers.parallel !== undefined, hitl: answers.hitl !== undefined,
+    confirmed: answers.confirmed, inputs: inputs !== undefined, parallel: answers.parallel !== undefined, hitl: answers.hitl !== undefined, tool: input.tool !== undefined,
   };
-  const missing = neededAnswers(description).filter((answer) => !given[answer]);
+  const missing = [...neededAnswers(description), ...(needsTool(description, input.tool) ? ['tool' as const] : [])].filter((answer) => !given[answer]);
   const outOfRange = answers.parallel !== undefined && answers.parallel > ceiling ? { parallel: answers.parallel, ceiling } : undefined;
   if (missing.length > 0 || outOfRange) return { kind: 'confirm-needed', missing, ...(outOfRange ? { outOfRange } : {}) };
   return { kind: 'ok', parallel: answers.parallel ?? 1, hitl: answers.hitl ?? 'person' };

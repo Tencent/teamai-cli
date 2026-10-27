@@ -252,7 +252,9 @@ function refusalMessage(refusal: Refusal, local: { invocation: Invocation; tool?
       return `Workflow ${refusal.name} must run with the local driver. ${refusal.reason} Ask the person to run ${literal} in their own terminal.`;
     }
     case 'confirm_needed': {
-      const lacks = refusal.missing.map((answer) => ({ confirmed: '--confirmed, the person\'s yes', inputs: '--inputs', parallel: '--parallel', hitl: '--hitl or --auto-approve' })[answer]);
+      const lacks = refusal.missing.map((answer) => ({
+        confirmed: '--confirmed, the person\'s yes', inputs: '--inputs', parallel: '--parallel', hitl: '--hitl or --auto-approve', tool: '--tools default=<tool>, the tool this coding session works in',
+      })[answer]);
       const said = [
         ...(lacks.length > 0 ? [`it needs ${lacks.join(', ')}`] : []),
         ...(refusal.outOfRange ? [`--parallel ${refusal.outOfRange.parallel} is above the most this machine runs at once, ${refusal.outOfRange.ceiling}`] : []),
