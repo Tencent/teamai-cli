@@ -137,7 +137,7 @@ AI tools then compact a conversation at their next compaction check once its con
 
 A tool still compacts by its model's own window when that is smaller, so a model with a small window is not affected. teamai skips a tool and says why when the tool cannot take the number: an environment variable overrides the setting, a custom CodeBuddy model has no `maxInputTokens`, or no DeepSeek Harness model fits. Cursor has no such setting. Restart the tool after a pull.
 
-A value you set yourself is never overwritten. `autoCompactTokens` in `~/.teamai/config.yaml` on your machine wins; `0` opts out. When the team drops the block, the next `teamai pull` removes the values teamai wrote.
+These files are shared by the machine, so one scope decides: the user scope when there is one, else the workspace the pull runs in. A value you set yourself is never overwritten. `autoCompactTokens` in that scope's config wins; `0` opts out. When the team drops the block, the next `teamai pull` removes the values teamai wrote.
 
 ## Keeping Delivered Files Out of Git
 

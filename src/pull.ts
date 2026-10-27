@@ -3342,7 +3342,12 @@ export async function pull(
   unwritten.push(...await reconcileCoAuthorAllScopes(reconcileUser, reconcileProject, options, deliveryRecorder));
 
   // 3.8. Reconcile the team auto-compact threshold into each tool's own config.
-  await reconcileAutoCompact(reconcileUser ?? reconcileProject, options);
+  //      The user scope decides when there is one, also when this pull skipped
+  //      or only inherited it. A contended one is left to the next pull: handing
+  //      the decision to the project would flip the value.
+  const autoCompactUser = activeUserConfig ?? inheritedUserConfig
+    ?? (projectMode && !inheritUserScope ? await loadLocalConfigForScope('user', undefined, { dryRun: options.dryRun }) : null);
+  if (!autoCompactUser || !contended.has(autoCompactUser)) await reconcileAutoCompact(autoCompactUser ?? reconcileProject, options);
 
   // 4. Auto-report usage data to all active scopes. Skill usage lives in each
   //    scope's own file (`<dataHome>/usage.jsonl`, the user scope's

@@ -137,7 +137,7 @@ sharing:
 
 模型自身窗口更小时，工具仍按模型窗口压缩，所以小窗口模型不受影响。工具无法接受这个数时，teamai 跳过它并说明原因：有环境变量覆盖了该设置、CodeBuddy 自定义模型没有 `maxInputTokens`、或 DeepSeek Harness 没有合适的模型。Cursor 没有这类设置。pull 之后重启工具生效。
 
-你自己设的值不会被覆盖。本机 `~/.teamai/config.yaml` 的 `autoCompactTokens` 优先，`0` 表示不参与。团队删掉这一项后，下一次 `teamai pull` 移除 teamai 写入的值。
+这些文件是整台机器共用的，所以只由一个 scope 决定：有 user scope 时用它，否则用 pull 所在的 workspace。你自己设的值不会被覆盖。该 scope 配置里的 `autoCompactTokens` 优先，`0` 表示不参与。团队删掉这一项后，下一次 `teamai pull` 移除 teamai 写入的值。
 
 ## 让分发的文件不进入 git
 

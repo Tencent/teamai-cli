@@ -121,4 +121,25 @@ describe.skipIf(process.platform === 'win32')('auto-compact threshold on pull', 
     expect(readText('.codex/config.toml')).toMatch(/^# mine\nmodel = "gpt-6\.1-sol"\n\n\[desktop\]\nx = 1\n/);
     expect(readJson('.codebuddy/settings.json').autoCompactWindow).toBe(300_000);
   }, 180_000);
+
+  it('keeps the user scope\'s value when a pull runs in a workspace that opts out', async () => {
+    publishTeam(true);
+    const userPull = await runCLI(['pull', '--force'], home);
+    expect(userPull.code, userPull.output).toBe(0);
+    expect(readJson('.claude/settings.json').autoCompactWindow).toBe(433_000);
+
+    const project = path.join(home, 'work', 'p');
+    fs.mkdirSync(project, { recursive: true });
+    git(['init', '-q', '-b', 'main'], project);
+    const init = await runCLI(['init', URL, '--provider', 'git', '--agent', 'claude', '--force'], project);
+    expect(init.code, init.output).toBe(0);
+    const partitions = fs.readdirSync(path.join(home, '.teamai', 'projects'));
+    expect(partitions).toHaveLength(1);
+    fs.appendFileSync(path.join(home, '.teamai', 'projects', partitions[0], 'config.yaml'), 'autoCompactTokens: 0\n');
+
+    const projectPull = await runCLI(['pull', '--force'], project);
+    expect(projectPull.code, projectPull.output).toBe(0);
+    expect(projectPull.output).not.toMatch(/Removed the auto-compact setting/);
+    expect(readJson('.claude/settings.json').autoCompactWindow).toBe(433_000);
+  }, 180_000);
 });
