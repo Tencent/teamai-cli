@@ -141,7 +141,7 @@ export const LAUNCH_ADAPTERS = {
     },
   },
   codex: {
-    call: { evidence: 'verified', args: (lastMessageFile) => ['exec', '--json', '-o', lastMessageFile, '-'], read: readCodexExec },
+    call: { evidence: 'verified', args: (lastMessageFile) => ['exec', '--json', '--skip-git-repo-check', '-o', lastMessageFile, '-'], read: readCodexExec },
     step: { evidence: 'verified' },
     judge: { evidence: 'verified', env: ['CODEX_HOME', 'OPENAI_API_KEY', 'OPENAI_BASE_URL'], homeEnv: 'CODEX_HOME', verified: /^codex-cli 0\.163\.0$/, access: 'read' },
   },

@@ -98,6 +98,8 @@ it('runs Codex with the prompt on stdin, reads its last message from the -o file
   expect(answer).toEqual({ text: 'docs', tool: 'codex', tokens: { input: 20, output: 2, cachedInput: 4 } });
   const { args, stdin } = await codex.invocation();
   expect(args.slice(0, 2)).toEqual(['exec', '--json']);
+  // Outside a git repo, as a CI job's bare checkout or a temp dir can be, Codex refuses to run without it.
+  expect(args).toContain('--skip-git-repo-check');
   expect(args.at(-1)).toBe('-');
   expect(stdin).toBe('Classify this entry');
 });
