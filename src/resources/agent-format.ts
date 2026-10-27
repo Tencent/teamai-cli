@@ -412,7 +412,8 @@ function traeEditionExtras(spec: AgentSpec): { readonly trae: Record<string, unk
   return { trae, cn };
 }
 
-function traeExtrasClashes(spec: AgentSpec): string[] {
+/** The `tool_extras` keys the two Trae editions give different values, which their shared project file cannot carry. */
+export function traeExtrasClashes(spec: AgentSpec): string[] {
   const { trae, cn } = traeEditionExtras(spec);
   return Object.keys(trae).filter((key) => key in cn && !isDeepStrictEqual(trae[key], cn[key]));
 }
@@ -1005,6 +1006,21 @@ export function toolExtrasFor(spec: AgentSpec, tool: ToolName): Record<string, u
   const extras = spec.tool_extras;
   const base = EXTRAS_BASE_TOOL[tool];
   return base ? { ...extras?.[base], ...extras?.[tool] } : extras?.[tool];
+}
+
+/**
+ * The extras `tool` renders in `scope` from another tool's `tool_extras`,
+ * which push cannot change from `tool`'s copy: tclaude's and tcodex's base
+ * tool's, and in a project the other Trae edition's but `model`, as both
+ * editions read one file.
+ */
+export function inheritedExtras(spec: AgentSpec, tool: ToolName, scope: Scope | undefined): { readonly from: ToolName; readonly extras: Record<string, unknown> } | undefined {
+  if (scope !== 'user' && (tool === 'trae' || tool === 'trae-cn')) {
+    const { trae, cn } = traeEditionExtras(spec);
+    return tool === 'trae' ? { from: 'trae-cn', extras: cn } : { from: 'trae', extras: trae };
+  }
+  const base = EXTRAS_BASE_TOOL[tool];
+  return base === undefined ? undefined : { from: base, extras: spec.tool_extras?.[base] ?? {} };
 }
 
 /** The agent-file field `tool` reads a reasoning effort from, if it has one. */

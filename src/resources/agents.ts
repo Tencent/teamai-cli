@@ -32,7 +32,8 @@ import {
   mergeReverseResults,
   agentEffortField,
   toolExtrasFor,
-  EXTRAS_BASE_TOOL,
+  inheritedExtras,
+  traeExtrasClashes,
   AGENT_FILE_EXTENSIONS,
   agentStemFromFilename,
   museAgentDrops,
@@ -771,13 +772,17 @@ export class AgentsHandler extends ResourceHandler {
         }
       }
     }
-    for (const { tool, dest, render, origin } of renders) {
-      const rejected = agentRejection({ tool, name: spec?.name ?? item.name, spec, scope: localConfig.scope });
-      if (rejected !== null) {
+    // A tool that would not load the agent as rendered gets no copy (`renderedForTool`); say why.
+    if (spec) {
+      for (const { tool } of await this.agentToolDirs(teamConfig, localConfig)) {
+        if (spec.targets && !spec.targets.includes(tool)) continue;
+        const rejected = agentRejection({ tool, name: spec.name, spec, scope: localConfig.scope });
+        if (rejected === null) continue;
         log.warn(`[agents] Skipped ${item.name} for ${tool}: ${rejected}`);
         ledger?.toolsMissingAgents.add(tool);
-        continue;
       }
+    }
+    for (const { tool, dest, render, origin } of renders) {
       const destDir = path.dirname(dest);
       try {
         if (ledger && await keepsEditedCopy(ledger, item, { tool, dest, content: render.content, origin })) {
@@ -1217,6 +1222,7 @@ export class AgentsHandler extends ResourceHandler {
     const parsed = parseAgentYaml(content, `${item.name}.yaml`);
     if (!parsed.ok) return null;
     if (parsed.spec.targets && !parsed.spec.targets.includes(tool)) return null;
+    if (agentRejection({ tool, name: parsed.spec.name, spec: parsed.spec, scope }) !== null) return null;
     if (recorded) return renderWithModel(parsed.spec, tool, recorded, scope);
     const resolved = renderResolved(parsed.spec, tool, aliases, scope);
     return resolved.ok ? resolved.render : null;
@@ -1441,9 +1447,11 @@ function mergeCanonicalEdits(
     if (!baseline.ok) return { merge: { ok: false, conflicts: [{ field: tool, values: { error: baseline.reason } }] }, drift };
     const before: Record<string, unknown> = { ...Object.values(baseline.spec.tool_extras ?? {})[0] };
     const after: Record<string, unknown> = { ...Object.values(edited.tool_extras ?? {})[0] };
-    // tclaude and tcodex also render what `claude` and `codex` carry.
-    const base = EXTRAS_BASE_TOOL[tool];
-    const inherited: Record<string, unknown> = (base && canonical.tool_extras?.[base]) || {};
+    // tclaude and tcodex also render what `claude` and `codex` carry, and a
+    // project's Trae copy what the other edition carries.
+    const inheritance = inheritedExtras(canonical, tool, scope);
+    const base = inheritance?.from;
+    const inherited: Record<string, unknown> = inheritance?.extras ?? {};
     // A model pin, the tool's own or inherited, reaches the copy as its native
     // `model`, which reverse parsing reads as the root field: compared as an
     // extras key, a change to it stays this tool's, and the root model and the
@@ -1537,6 +1545,11 @@ function mergeCanonicalEdits(
   for (const change of changes.values()) change.apply();
   if (Object.keys(extras).length) merged.tool_extras = extras;
   else delete merged.tool_extras;
+  // A project's Trae copy changed a key the other edition gives: pull would skip the agent for Trae.
+  const clashes = scope === 'user' ? [] : traeExtrasClashes(merged);
+  if (clashes.length > traeExtrasClashes(canonical).length) {
+    return { merge: { ok: false, conflicts: [{ field: 'tool_extras.trae', values: { differsFrom: 'tool_extras.trae-cn', keys: clashes } }] }, drift };
+  }
   return { merge: { ok: true, spec: merged }, drift };
 }
 

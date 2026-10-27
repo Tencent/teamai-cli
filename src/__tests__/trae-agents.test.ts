@@ -117,6 +117,39 @@ describe('Trae subagents', () => {
     expect(warnings.join('\n')).toContain('tool_extras.trae.disallowedTools and tool_extras.trae-cn.disallowedTools');
   });
 
+  describe('pushing an edit to a project key the other edition gives', () => {
+    const editAndScan = async (edit: (content: string) => string) => {
+      await fse.writeFile(item.sourcePath, `${AGENT_YAML}tool_extras:\n  trae-cn:\n    disallowedTools: Bash\n`);
+      const config = configFor('trae', 'project');
+      const file = path.join(projectRoot, '.trae', 'agents', `${AGENT}.md`);
+      await new AgentsHandler().pullItem(item, teamConfig, config);
+      await fse.writeFile(file, edit(await fse.readFile(file, 'utf8')));
+      return new AgentsHandler().scanLocalForPush(teamConfig, config);
+    };
+
+    it('refuses a changed value, which would give the two editions different values', async () => {
+      const candidates = await editAndScan((content) => content.replace('disallowedTools: Bash', 'disallowedTools: Write'));
+
+      expect(candidates).toHaveLength(1);
+      expect(candidates[0]?.mergedSpec).toBeUndefined();
+      expect(candidates[0]?.skipReason).toContain('tool_extras.trae-cn');
+    });
+
+    it('refuses a removed key, which only tool_extras.trae-cn can drop', async () => {
+      const candidates = await editAndScan((content) => content.replace('disallowedTools: Bash\n', ''));
+
+      expect(candidates).toHaveLength(1);
+      expect(candidates[0]?.mergedSpec).toBeUndefined();
+      expect(candidates[0]?.skipReason).toContain('tool_extras.trae-cn');
+    });
+  });
+
+  it('gives doctor no Trae copy to check for a project agent pull skips', async () => {
+    await fse.writeFile(item.sourcePath, `${AGENT_YAML}tool_extras:\n  trae:\n    disallowedTools: Bash\n  trae-cn:\n    disallowedTools: Write\n`);
+
+    expect(await new AgentsHandler().deliveryTargets(teamConfig, configFor('trae', 'project', ['trae', 'trae-cn']), item)).toEqual([]);
+  });
+
   it('keeps an agent the team gives no tools without tools, since Trae gives every tool to one with no tools field', async () => {
     await fse.writeFile(item.sourcePath, AGENT_YAML.replace('tools: [Read, Grep, Glob]', 'tools: []'));
     await new AgentsHandler().pullItem(item, teamConfig, configFor('trae-cn', 'project'));
