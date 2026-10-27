@@ -173,6 +173,48 @@ describe('import --dir', () => {
     expect(lines.join('\n')).not.toContain('under resources.wiki');
   });
 
+  it('moves a suffixed checkout\'s own evidence to the remote slug once it gains an origin, and names the stale resources.wiki entry', async () => {
+    // Another checkout's evidence, which recorded no source, holds the directory name.
+    const evidenceRoot = path.join(teamRepoDir, 'teamwiki', 'evidence', 'code');
+    await fs.outputJson(path.join(evidenceRoot, 'my-project', 'source-manifest.json'), { project: 'my-project', files: [] });
+    await runImportDir({ dir: projectDir });
+    const own = `my-project-${createHash('sha256').update(await fs.realpath(projectDir)).digest('hex').slice(0, 8)}`;
+    await fs.outputFile(path.join(evidenceRoot, own, 'docs', 'curated.md'), '# curated\n');
+    await fs.outputFile(path.join(teamRepoDir, 'manifest', 'roles.yaml'),
+      `version: 1\nroles:\n  - id: backend\n    resources: { knowledge: [], skills: [], wiki: [${own}] }\n`);
+    // The checkout gained an origin.
+    vi.mocked(defaultProjectSlug).mockResolvedValueOnce('github__acme__my-project');
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => { lines.push(args.map(String).join(' ')); });
+    try {
+      await runImportDir({ dir: projectDir });
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect((await fs.readdir(evidenceRoot)).sort()).toEqual(['github__acme__my-project', 'my-project']);
+    expect(await fs.readFile(path.join(evidenceRoot, 'github__acme__my-project', 'docs', 'curated.md'), 'utf8')).toBe('# curated\n');
+    expect(lines.join('\n')).toContain(`Moved teamwiki/evidence/code/${own}/ to teamwiki/evidence/code/github__acme__my-project/`);
+    expect(lines.join('\n')).not.toContain('teamwiki/evidence/code/my-project/ names no repository');
+    expect(lines.join('\n')).toContain(`role backend lists "${own}" under resources.wiki, `
+      + 'and this codebase is now teamwiki/evidence/code/github__acme__my-project/. '
+      + 'Change that entry to "github__acme__my-project" so it stays scoped to it.');
+  });
+
+  it('dryRun without a team repo or --output previews the directory slug', async () => {
+    vi.mocked(autoDetectInit).mockRejectedValueOnce(new Error('teamai is not initialized. Run `teamai init` first.'));
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => { lines.push(args.map(String).join(' ')); });
+    try {
+      await runImportDir({ dir: projectDir, dryRun: true });
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(lines.join('\n')).toContain('(project: my-project)');
+    expect(extractCodebase).not.toHaveBeenCalled();
+  });
+
   it('dryRun prints the slug the import would publish under, and writes nothing', async () => {
     await runImportDir({ dir: projectDir });
     const other = path.join(tmpDir, 'other', 'my-project');

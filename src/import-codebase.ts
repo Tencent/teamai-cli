@@ -201,8 +201,7 @@ export async function localCheckoutSlug(opts: { sourceDir: string; slug: string;
     return slug;
   }
 
-  const digest = createHash('sha256').update(await fs.realpath(opts.sourceDir)).digest('hex');
-  const [occupant, ...suffixed] = await Promise.all([slug, `${slug}-${digest.slice(0, 8)}`, `${slug}-${digest}`]
+  const [occupant, ...suffixed] = await Promise.all([slug, ...await suffixedSlugs(opts.sourceDir, slug)]
     .map(async (candidate) => {
       const evidenceDir = path.join(wikiRoot, 'evidence', 'code', candidate);
       return { slug: candidate, isEmpty: !(await fs.pathExists(evidenceDir)), source: await readCodebaseSource(evidenceDir) };
@@ -222,6 +221,25 @@ export async function localCheckoutSlug(opts: { sourceDir: string; slug: string;
     + `If teamwiki/evidence/code/${slug}/ is an older copy of this checkout, move any curated docs you want to keep from it, `
     + `remove it, and change any resources.wiki entry that means this checkout from "${slug}" to "${free.slug}".`);
   return free.slug;
+}
+
+/** The slugs a checkout without an origin moves to when its directory name holds another source's evidence. */
+async function suffixedSlugs(sourceDir: string, slug: string): Promise<string[]> {
+  const digest = createHash('sha256').update(await fs.realpath(sourceDir)).digest('hex');
+  return [`${slug}-${digest.slice(0, 8)}`, `${slug}-${digest}`];
+}
+
+/**
+ * Where a checkout that gained an origin published before it had one: the
+ * suffixed slug `localCheckoutSlug` gave it, else its directory name (#1422).
+ */
+export async function ownLegacySlug(opts: { sourceDir: string; slug: string; wikiRoot: string }): Promise<string> {
+  const source = await sourceRepositoryMetadata(opts.sourceDir);
+  for (const candidate of await suffixedSlugs(opts.sourceDir, opts.slug)) {
+    const published = await readCodebaseSource(path.join(opts.wikiRoot, 'evidence', 'code', candidate));
+    if (published?.kind === 'local' && sameLocalSource(published, source)) return candidate;
+  }
+  return opts.slug;
 }
 
 /**

@@ -440,26 +440,32 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
       }
       const { checkoutName, defaultProjectSlug } = await import('./codebase-extract.js');
       const dirSlug = await defaultProjectSlug(dirPath);
-      const legacySlug = await checkoutName(dirPath);
+      const checkoutSlug = await checkoutName(dirPath);
 
       // <output>/teamwiki, else the team repo's teamwiki/; never the source directory.
       const { lockTeamwiki, resolveTeamwiki } = await import('./utils/teamwiki-root.js');
-      const target = await resolveTeamwiki({ output: opts.output, dryRun: opts.dryRun });
-      const { wikiRoot, team } = target;
-      const { importLocalCheckout, localCheckoutSlug } = await import('./import-codebase.js');
+      const { importLocalCheckout, localCheckoutSlug, ownLegacySlug } = await import('./import-codebase.js');
 
       if (opts.dryRun) {
-        // The slug depends on the evidence already published, so the preview reads it.
-        const slug = await localCheckoutSlug({ sourceDir: dirPath, slug: dirSlug, wikiRoot });
+        // The slug depends on the evidence already published, so the preview reads
+        // it; a preview without a teamwiki still reports what it can.
+        const preview = await resolveTeamwiki({ output: opts.output, dryRun: true }).catch(() => undefined);
+        const slug = preview ? await localCheckoutSlug({ sourceDir: dirPath, slug: dirSlug, wikiRoot: preview.wikiRoot }) : dirSlug;
         log.info(`Scanning local directory: ${dirPath} (project: ${slug})`);
         log.info(`[dry-run] skipping code extraction, no action taken`);
         log.success(`Local directory ${slug} import complete (dry-run)`);
         return;
       }
 
+      const target = await resolveTeamwiki({ output: opts.output });
+      const { wikiRoot, team } = target;
       const releaseImportLock = await lockTeamwiki(target);
       try {
         const slug = await localCheckoutSlug({ sourceDir: dirPath, slug: dirSlug, wikiRoot });
+        // A checkout that gained an origin may have published under a suffix before.
+        const legacySlug = slug === dirSlug && checkoutSlug !== slug
+          ? await ownLegacySlug({ sourceDir: dirPath, slug: checkoutSlug, wikiRoot })
+          : checkoutSlug;
         log.info(`Scanning local directory: ${dirPath} (project: ${slug})`);
         const updated = await importLocalCheckout({
           sourceDir: dirPath,
