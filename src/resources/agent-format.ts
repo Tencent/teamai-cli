@@ -4,6 +4,7 @@ import matter from 'gray-matter';
 import { stringify as stringifyToml, parse as parseToml } from 'smol-toml';
 import { getDispatchCommand } from '../builtin-hooks.js';
 import type { AgentToolId } from '../tools.js';
+import type { Scope } from '../types.js';
 
 // ─── Tool name type ──────────────────────────────────────────────────────────
 
@@ -399,14 +400,17 @@ export function agentNameRejection({ tool, name }: { readonly tool: string; read
 
 /**
  * Trae and Trae CN take `tools` as one comma-separated string, and a `model`
- * only from their own ids, which differ per edition while both read the
- * project's `.trae/agents`. So the spec's own `model` is left out; one an
- * alias or `tool_extras.<tool>` gives the edition is written.
+ * only from their own ids, which differ per edition. So the spec's own
+ * `model` is left out. In a user scope, one an alias or `tool_extras.<tool>`
+ * gives the edition is written; a project's `.trae/agents` is read by both
+ * editions, so it gets none and both render the same bytes.
  */
-function renderForTrae(spec: AgentSpec, extras: Record<string, unknown> | undefined, resolved: ResolvedAgentModel | undefined): string {
-  const { tools, ...rest } = resolved ? withModel(spec, resolved.model) : withModel(spec, undefined);
+function renderForTrae(spec: AgentSpec, extras: Record<string, unknown> | undefined, resolved: ResolvedAgentModel | undefined, scope: Scope | undefined): string {
+  const editionModel = scope === 'user';
+  const { tools, ...rest } = withModel(spec, editionModel ? resolved?.model : undefined);
+  const { model: _shared, ...projectExtras } = extras ?? {};
   const joined = traeTools(tools);
-  return renderMarkdownAgent(rest, extras, joined === undefined ? undefined : { tools: joined });
+  return renderMarkdownAgent(rest, editionModel ? extras : projectExtras, joined === undefined ? undefined : { tools: joined });
 }
 
 function traeTools(tools: string[] | string | undefined): string | undefined {
@@ -1018,9 +1022,10 @@ export interface ResolvedAgentModel {
  * @param spec - The agent specification.
  * @param tool - Target tool name.
  * @param resolved - The model and effort resolved for this tool, if any.
+ * @param scope - The scope the copy lands in: Trae writes an edition's model only in a user scope.
  * @returns Rendered file extension and content.
  */
-export function renderForTool(spec: AgentSpec, tool: ToolName, resolved?: ResolvedAgentModel): RenderResult {
+export function renderForTool(spec: AgentSpec, tool: ToolName, resolved?: ResolvedAgentModel, scope?: Scope): RenderResult {
   const target = resolved ? withModel(spec, resolved.model) : spec;
   const effortField = agentEffortField(tool);
   const fields = effortField && resolved?.effort !== undefined ? { [effortField]: resolved.effort } : undefined;
@@ -1049,7 +1054,7 @@ export function renderForTool(spec: AgentSpec, tool: ToolName, resolved?: Resolv
     case 'muse': return renderForMuse(target);
     case 'trae':
     case 'trae-cn':
-      return { ext, content: renderForTrae(spec, toolExtrasFor(spec, tool), resolved) };
+      return { ext, content: renderForTrae(spec, toolExtrasFor(spec, tool), resolved, scope) };
   }
 }
 

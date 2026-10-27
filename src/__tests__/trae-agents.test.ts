@@ -71,12 +71,25 @@ describe('Trae subagents', () => {
     });
   }
 
-  it('trae-cn: a model the team gives the edition in tool_extras is written', async () => {
+  it('trae-cn: a model the team gives the edition in tool_extras is written in ~/.trae-cn/agents', async () => {
     await fse.writeFile(item.sourcePath, `${AGENT_YAML}tool_extras:\n  trae-cn:\n    model: kimi-k2.5\n`);
-    await new AgentsHandler().pullItem(item, teamConfig, configFor('trae-cn', 'project'));
+    await new AgentsHandler().pullItem(item, teamConfig, configFor('trae-cn', 'user'));
 
-    const { data } = matter(await fse.readFile(path.join(projectRoot, '.trae', 'agents', `${AGENT}.md`), 'utf8'));
+    const { data } = matter(await fse.readFile(path.join(sandbox, 'home', '.trae-cn', 'agents', `${AGENT}.md`), 'utf8'));
     expect(data['model']).toBe('kimi-k2.5');
+  });
+
+  it('both editions in a project share one .trae/agents file without an edition\'s model, and a second pull leaves it alone', async () => {
+    await fse.writeFile(item.sourcePath, `${AGENT_YAML}tool_extras:\n  trae-cn:\n    model: kimi-k2.5\n`);
+    const config = { ...configFor('trae', 'project'), enabledAgents: ['trae', 'trae-cn'] } as LocalConfig;
+    const file = path.join(projectRoot, '.trae', 'agents', `${AGENT}.md`);
+
+    await new AgentsHandler().pullItem(item, teamConfig, config);
+    const first = await fse.readFile(file, 'utf8');
+    await new AgentsHandler().pullItem(item, teamConfig, config);
+
+    expect(matter(first).data).toEqual({ name: AGENT, description: 'Review team changes', tools: 'Read, Grep, Glob' });
+    expect(await fse.readFile(file, 'utf8')).toBe(first);
   });
 
   it('trae-cn: a user-scope team agent lands in ~/.trae-cn/agents', async () => {
