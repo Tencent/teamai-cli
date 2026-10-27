@@ -2285,7 +2285,7 @@ steps:
     });
     try {
       expect(await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout, sessions: resumableSessions })).toMatchObject({
-        ok: false, error: { code: 'sessions_not_archived', message: expect.stringContaining('writing teamai-reports') },
+        ok: false, error: { code: 'sessions_not_archived', message: expect.stringContaining('did not reach the team session archive (another teamai process is writing teamai-reports). Publish again,') },
       });
     } finally {
       await releaseLock(lock);

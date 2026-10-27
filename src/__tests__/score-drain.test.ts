@@ -26,7 +26,7 @@ import { judgePassLock, scoreSessionsCommand } from '../score-sessions.js';
 import YAML from 'yaml';
 import { encodeCwdClaude } from '../session-flow/fs.js';
 import { SessionWork } from '../session-flow/session-work.js';
-import type { LocalConfig } from '../types.js';
+import { getReportsDir, REPORTS_LOCK_FILENAME, type LocalConfig } from '../types.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { AGENT_SESSION_ENV } from '../utils/session-id.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
@@ -443,6 +443,24 @@ describe('teamai score --drain', () => {
     expect(again.lines).toEqual(expect.arrayContaining(['✔ Published 1 label to teamai-reports', '✔ Archived 1 captured session to teamai-reports (scrubbed)']));
     expect(onReports(origin, 'scores')).toHaveLength(1);
     expect(onReports(origin, 'sessions').filter((file) => file.endsWith('.jsonl'))).toHaveLength(1);
+  });
+
+  it('says once that another process is writing teamai-reports, for labels and sessions alike', async () => {
+    const { config } = await team();
+    capturedSession(SESSION, 'unattended');
+    fakeClaude();
+    vi.stubEnv('CI', 'true');
+    const lock = path.join(path.dirname(getReportsDir(config)), REPORTS_LOCK_FILENAME);
+    expect(await acquireLock(lock)).toBe(true);
+    let drained: Awaited<ReturnType<typeof drain>>;
+    try {
+      drained = await drain();
+    } finally {
+      await releaseLock(lock);
+    }
+
+    expect(drained.code, drained.lines.join('\n')).toBe(1);
+    expect(drained.lines, drained.lines.join('\n')).toContain('✖ Could not publish 1 label and 1 session to teamai-reports: another teamai process is writing teamai-reports. They stay pending; run teamai score --drain again.');
   });
 
   it('publishes the workflow run records a run could not publish to teamai-reports', async () => {

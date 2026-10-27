@@ -322,7 +322,7 @@ function sessionRef({ tool, id }: SessionRef): SessionRef {
 function sessionsNotArchived(runId: string, reason: string): HandoffError {
   return {
     code: 'sessions_not_archived',
-    message: `Run ${runId} was not published: the sessions its steps continue did not reach the team session archive. ${sanitizeGitUrl(reason)} ` +
+    message: `Run ${runId} was not published: the sessions its steps continue did not reach the team session archive (${sanitizeGitUrl(reason).replace(/\.$/, '')}). ` +
       'Publish again, or publish without --sessions and those steps start new sessions.',
   };
 }

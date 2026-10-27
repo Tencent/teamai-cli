@@ -235,7 +235,7 @@ async function archiveOnReports(
     case 'already-present':
       return { status: 'archived' };
     case 'busy':
-      return { status: 'busy', message: 'Another teamai process is writing teamai-reports.' };
+      return { status: 'busy', message: 'another teamai process is writing teamai-reports' };
     case 'failed':
       return { status: 'failed', message: result.reason };
     default: {
