@@ -54,6 +54,7 @@ import {
   resolveToolBaseDir,
   resolveHookScope,
   getDataHome,
+  getTeamaiHomeDir,
   getProjectSearchIndexPath,
   isRecallEnabled,
   isUsageReportEnabled,
@@ -4103,17 +4104,15 @@ async function scopeEnv(localConfig: LocalConfig, teamEnvs: Map<LocalConfig, Tea
 
 /**
  * The auto-compact step of a workspace pull that skipped the user scope. The
- * user scope still decides when it is set up. Its clone is read under its sync
- * lock, held for this step only; while another process holds it, the step is
- * left to the next pull.
+ * user scope still decides when it is set up. Its config and clone are read
+ * under its sync lock, held for this step only; while another process holds
+ * it, the step is left to the next pull.
  */
 async function reconcileAutoCompactPastSkippedUser(projectConfig: LocalConfig | null, options: GlobalOptions): Promise<void> {
   if (options.dryRun) return;
-  const userConfig = await loadLocalConfigForScope('user');
-  if (!userConfig) return reconcileAutoCompact(projectConfig, options);
-  if (userConfig.repo.kind === 'http') return reconcileAutoCompact(userConfig, options);
-  const lock = path.join(getDataHome(userConfig), SYNC_LOCK_FILENAME);
-  const run = await withFileLock(lock, { attempts: 1, delayMs: 0 }, () => reconcileAutoCompact(userConfig, options));
+  const lock = path.join(getTeamaiHomeDir(), SYNC_LOCK_FILENAME);
+  const run = await withFileLock(lock, { attempts: 1, delayMs: 0 }, async () =>
+    reconcileAutoCompact((await loadLocalConfigForScope('user')) ?? projectConfig, options));
   if (!run.held) log.debug('[autocompact] skipped: another teamai process holds the user scope\'s sync lock; the next pull retries');
 }
 
