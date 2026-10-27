@@ -465,7 +465,9 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
           skipEnrich: opts.skipEnrich ?? false,
           maxFiles,
         });
-        if (team && legacySlug !== slug) {
+        // While the old name still holds evidence (another repo's, or a copy the
+        // import warned about), a scope on it still points at that evidence.
+        if (team && legacySlug !== slug && !(await fs.pathExists(path.join(wikiRoot, 'evidence', 'code', legacySlug)))) {
           await warnStaleWikiScopes({ teamRepo: team.localConfig.repo.localPath, legacySlug, slug });
         }
         if (!team) {

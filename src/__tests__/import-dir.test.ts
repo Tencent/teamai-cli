@@ -123,6 +123,24 @@ describe('import --dir', () => {
       + 'Change those entries to "github__acme__my-project" so it stays scoped to them.');
   });
 
+  it('leaves a resources.wiki entry alone while the directory-named slug still holds another repo\'s evidence', async () => {
+    vi.mocked(defaultProjectSlug).mockResolvedValueOnce('github__other__my-project');
+    await fs.outputJson(path.join(teamRepoDir, 'teamwiki', 'evidence', 'code', 'my-project', 'source-manifest.json'),
+      { repoUrl: 'https://github.com/acme/my-project' });
+    await fs.outputFile(path.join(teamRepoDir, 'manifest', 'roles.yaml'),
+      'version: 1\nroles:\n  - id: backend\n    resources: { knowledge: [], skills: [], wiki: [my-project] }\n');
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => { lines.push(args.map(String).join(' ')); });
+    try {
+      await runImportDir({ dir: projectDir });
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(await fs.pathExists(path.join(teamRepoDir, 'teamwiki', 'evidence', 'code', 'my-project', 'source-manifest.json'))).toBe(true);
+    expect(lines.join('\n')).not.toContain('under resources.wiki');
+  });
+
   it('--output writes to specified dir without touching team-repo', async () => {
     const outputDir = path.join(tmpDir, 'output');
     await fs.ensureDir(outputDir);
