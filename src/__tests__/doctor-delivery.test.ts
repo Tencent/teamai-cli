@@ -832,7 +832,7 @@ describe('doctor — where a tool takes skills', () => {
     return reports;
   }
 
-  it('judges a project install\'s reads from a session at the project root, whatever directory doctor runs from', async () => {
+  it('notes a project directory a tool reads only from a session started at the project root, and judges its reads from there, whatever directory doctor runs from', async () => {
     const project = path.join(await fse.realpath(tempDir), 'project');
     await fse.ensureDir(path.join(project, '.pi'));
     Object.assign(localConfig, { scope: 'project', projectRoot: project });
@@ -840,10 +840,11 @@ describe('doctor — where a tool takes skills', () => {
 
     const [atRoot, inSubdir, elsewhere] = await reportsFrom([project, path.join(project, 'src'), path.join(tempDir, 'elsewhere')]);
 
-    expect(atRoot.notes?.filter((note) => note.startsWith('pi '))).toEqual([]);
+    expect(atRoot.notes).toContain(`pi reads project skills only from a session started in ${project}.`);
     expect([inSubdir.notes, elsewhere.notes]).toEqual([atRoot.notes, atRoot.notes]);
     const readChecks = ({ checks }: DoctorReport) => checks.filter((check) => check.name.includes(' reads the '));
     expect(readChecks(atRoot).map((check) => check.name)).toEqual(['pi reads the skills teamai writes']);
+    expect(readChecks(atRoot).map((check) => check.ok)).toEqual([true]);
     expect([readChecks(inSubdir), readChecks(elsewhere)]).toEqual([readChecks(atRoot), readChecks(atRoot)]);
   });
 

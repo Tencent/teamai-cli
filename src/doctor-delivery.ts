@@ -24,7 +24,7 @@ import {
 } from './utils/shell-profile.js';
 import { getUserHome } from './utils/home.js';
 import { loadStateForScope } from './config.js';
-import { installOf, isInstalledFor, locate, ownOf, unreadWrites, writable, writesOf, type DirPlace, type FilesChannel, type Install, type Location, type Unread } from './locate.js';
+import { installOf, isInstalledFor, locate, ownOf, unreadWrites, writable, writesOf, type DirPlace, type FilesChannel, type Location, type Unread } from './locate.js';
 import { codexProjectTrust, codexTrustFix } from './codex-project-trust.js';
 import { amongPlaces, placesRecordOf, samePlaces } from './resources/places.js';
 import { realHost } from './tool-home.js';
@@ -348,15 +348,14 @@ export async function buildDeliveryChecks(ctx: DoctorContext): Promise<Check[]> 
   }));
 }
 
-/** Each tool teamai writes skills for now, with where it takes them. */
 /**
- * The session doctor judges reads from, so its verdict is the same from every
- * directory it runs in: a project install's session starts at the project
- * root; a user install's anywhere, so a read limited to one place is named.
+ * The session doctor judges reads from: any, so a read limited to one place is
+ * always named and the report is the same from every directory doctor runs in.
+ * The read checks count only writes no session reads (`not-read`, `shadowed`).
  */
-function doctorSession(install: Install): string | null {
-  return install.scope === 'project' ? install.projectRoot : null;
-}
+const ANY_SESSION = null;
+
+/** Each tool teamai writes skills for now, with where it takes them. */
 
 async function writableSkillLocations(ctx: DoctorContext): Promise<{ tool: string; own: string; where: Location<'skills'>; unread: readonly Unread[] }[]> {
   const { localConfig, teamConfig } = ctx;
@@ -366,7 +365,7 @@ async function writableSkillLocations(ctx: DoctorContext): Promise<{ tool: strin
   for (const tool of Object.keys(ctx.toolPaths)) {
     const where = await locate(tool, 'skills', install);
     const own = writable(where);
-    if (own !== null) located.push({ tool, own: own.path, where, unread: unreadWrites(where, realHost(), doctorSession(install)) });
+    if (own !== null) located.push({ tool, own: own.path, where, unread: unreadWrites(where, realHost(), ANY_SESSION) });
   }
   return located;
 }
@@ -545,7 +544,7 @@ async function writtenPlaces(ctx: DoctorContext, resource: 'rules' | 'blocks'): 
       tool,
       own: own.path,
       writes: writesOf(where).map((place) => place.path),
-      unread: where.reads === 'unknown' ? 'unknown' : unreadWrites(where, realHost(), doctorSession(install)),
+      unread: where.reads === 'unknown' ? 'unknown' : unreadWrites(where, realHost(), ANY_SESSION),
     });
   }
   return located;
@@ -1483,7 +1482,7 @@ export async function mcpTransportNotes(ctx: DoctorContext): Promise<string[]> {
     }
     const own = writable(where);
     if (where.channel !== 'files' || own === null) continue;
-    for (const unread of unreadWrites(where, realHost(), doctorSession(install))) {
+    for (const unread of unreadWrites(where, realHost(), ANY_SESSION)) {
       if (unread.reason === 'cwd-only') notes.push(`${tool} reads project MCP servers only from a session started in ${unread.readFrom}.`);
     }
     if (tool === 'zcode' && install.scope === 'user') {
@@ -1633,7 +1632,7 @@ export async function buildMcpReadFileChecks(ctx: DoctorContext): Promise<Check[
   for (const target of await resolveMcpTargets(teamConfig, localConfig)) {
     if (isAgentExcluded(localConfig, target.tool)) continue;
     const where = await locate(target.tool, 'mcp', install);
-    const unread = unreadWrites(where, realHost(), doctorSession(install)).filter((read) => read.reason === 'not-read' || read.reason === 'shadowed');
+    const unread = unreadWrites(where, realHost(), ANY_SESSION).filter((read) => read.reason === 'not-read' || read.reason === 'shadowed');
     if (where.channel === 'files' && where.reads !== 'unknown') checks.push({
       name: `${target.tool} reads the MCP servers teamai writes`, source: 'local',
       check: async () => unread.length === 0,
