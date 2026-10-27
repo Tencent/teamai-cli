@@ -8,7 +8,7 @@ import { parseDocument } from 'yaml';
 import {
   applyOpenClawAgentHook, removeOpenClawAgentHook, injectOpenClawHooks, removeOpenClawHookEntry, removeOpenClawHooks, OPENCLAW_HOOK_DIR,
 } from '../openclaw-hooks.js';
-import { reconcileHooksToAllTools } from '../hooks.js';
+import { injectHooksToAllTools, reconcileHooksToAllTools } from '../hooks.js';
 import { openclawWorkspaceDir } from '../locate.js';
 import { log } from '../utils/logger.js';
 import * as builtinHooks from '../builtin-hooks.js';
@@ -448,6 +448,18 @@ describe('removeOpenClawHooks', () => {
     }
     expect(fs.existsSync(profileHook)).toBe(false);
   });
+});
+
+describe('injectHooksToAllTools with an OpenClaw variant beside OpenClaw', () => {
+    it('leaves OpenClaw\'s handler dispatching for openclaw', async () => {
+        const toolPaths = { openclaw: { skills: '.openclaw/skills' }, qclaw: { skills: '.qclaw/skills' } } as Record<string, { settings?: string }>;
+
+        await injectHooksToAllTools(toolPaths, tmpDir);
+
+        const handler = fs.readFileSync(path.join(wsDir, 'hooks', OPENCLAW_HOOK_DIR, 'handler.ts'), 'utf-8');
+        expect(handler).toContain('"openclaw"');
+        expect(handler).not.toContain('qclaw');
+    });
 });
 
 describe('reconcileHooksToAllTools routes the OpenClaw family to its adapter', () => {

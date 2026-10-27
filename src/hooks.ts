@@ -3063,7 +3063,8 @@ export async function injectHooksToAllTools(toolPaths: Record<string, { settings
       } catch (e) {
         log.warn(`Failed to inject hook into ${tool}: ${(e as Error).message}`);
       }
-    } else if (OPENCLAW_TOOLS.has(tool)) {
+    } else if (tool === 'openclaw') {
+      // Only OpenClaw itself, as in reconcileHooksToAllTools: a claw variant here would overwrite OpenClaw's handler with its own --tool.
       try {
         const { injectOpenClawHooks } = await import('./openclaw-hooks.js');
         await injectOpenClawHooks(tool);
