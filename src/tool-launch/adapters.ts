@@ -198,6 +198,10 @@ export const LAUNCH_ADAPTERS = {
       access: 'full',
     },
   },
+  // pi's fork: the same call and events, with flags of its own elsewhere.
+  omp: {
+    call: { evidence: 'docs', args: () => ['-p', '--mode', 'json', '--no-session'], read: readPiJson },
+  },
 } as const satisfies Record<string, LaunchAdapter>;
 
 export type LaunchAdapterId = keyof typeof LAUNCH_ADAPTERS;

@@ -796,7 +796,7 @@ export const TOOLS = {
     },
     hooks: { user: { channel: 'adapter', adapter: 'omp-extension', evidence: 'verified' }, self: 'user' },
     sessions: 'none',
-    launch: 'none',
+    launch: 'omp',
     features: {
       env: '✓s',
       workflows: '+s',

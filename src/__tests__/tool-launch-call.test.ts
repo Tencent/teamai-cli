@@ -80,7 +80,7 @@ it('fails with no_tool when no tool teamai launches is on PATH', async () => {
   vi.stubEnv('TEAMAI_AI_TOOL', '');
   const caller = createToolCaller({ resolveTool: () => null, loadConfig: async () => null });
 
-  await expect(caller.callTool('hi', { launchedBy: 'codebase' })).rejects.toMatchObject({ kind: 'no_tool', message: 'No AI tool teamai launches is on PATH. Install one of: claude, claude-internal, tclaude, codex, codex-internal, tcodex, opencode, codebuddy, workbuddy, openclaw, pi, or set TEAMAI_AI_TOOL to one you have.' });
+  await expect(caller.callTool('hi', { launchedBy: 'codebase' })).rejects.toMatchObject({ kind: 'no_tool', message: 'No AI tool teamai launches is on PATH. Install one of: claude, claude-internal, tclaude, codex, codex-internal, tcodex, opencode, codebuddy, workbuddy, openclaw, pi, omp, or set TEAMAI_AI_TOOL to one you have.' });
 });
 
 it('runs Codex with the prompt on stdin, reads its last message from the -o file and its tokens from the turn', async () => {
@@ -175,6 +175,17 @@ it('fails with the error pi reports on its reply, though pi exits 0', async () =
   await expect(only('pi', pi.executable).callTool('Classify', { launchedBy: 'recall-promote' })).rejects.toMatchObject({ kind: 'call_failed', message: 'AI call failed (tool: pi): OpenAI API error (400): model_not_found' });
 });
 
+it('runs omp as it runs pi, its fork, and reads the same events', async () => {
+  const omp = await fakeTool('omp', { stdout: piEvents({ content: [{ type: 'text', text: 'docs' }], usage: { input: 5, output: 1 }, stopReason: 'stop' }) });
+
+  const answer = await only('omp', omp.executable).callTool('Classify', { launchedBy: 'recall-promote' });
+
+  expect(answer).toEqual({ text: 'docs', tool: 'omp', tokens: { input: 5, output: 1 } });
+  const { args, stdin } = await omp.invocation();
+  expect(args).toEqual(['-p', '--mode', 'json', '--no-session']);
+  expect(stdin).toBe('Classify');
+});
+
 it('runs the tool TEAMAI_AI_TOOL names, though an earlier tool in the launch order is on PATH', async () => {
   const claude = await fakeTool('claude', { stdout: JSON.stringify({ type: 'result', result: 'from claude' }) });
   const codex = await fakeTool('codex', { lastMessage: 'from codex' });
@@ -200,10 +211,10 @@ it('runs the tool ai.tool names when TEAMAI_AI_TOOL is unset, and TEAMAI_AI_TOOL
 });
 
 it.each([
-  { source: 'TEAMAI_AI_TOOL', named: 'gemini', message: 'TEAMAI_AI_TOOL is "gemini", which is not a tool teamai launches. Set it to one of: claude, claude-internal, tclaude, codex, codex-internal, tcodex, opencode, codebuddy, workbuddy, openclaw, pi. Or unset it.' },
+  { source: 'TEAMAI_AI_TOOL', named: 'gemini', message: 'TEAMAI_AI_TOOL is "gemini", which is not a tool teamai launches. Set it to one of: claude, claude-internal, tclaude, codex, codex-internal, tcodex, opencode, codebuddy, workbuddy, openclaw, pi, omp. Or unset it.' },
   { source: 'TEAMAI_AI_TOOL', named: 'codex', message: 'TEAMAI_AI_TOOL is "codex", which is not on PATH. Install codex, or unset TEAMAI_AI_TOOL to use the first installed tool.' },
   { source: 'TEAMAI_AI_TOOL', named: 'cursor', message: 'TEAMAI_AI_TOOL is "cursor", which is not a tool teamai launches.' },
-  { source: 'ai.tool', named: 'gemini', message: 'ai.tool in /home/member/.teamai/config.yaml is "gemini", which is not a tool teamai launches. Set it to one of: claude, claude-internal, tclaude, codex, codex-internal, tcodex, opencode, codebuddy, workbuddy, openclaw, pi. Or remove it.' },
+  { source: 'ai.tool', named: 'gemini', message: 'ai.tool in /home/member/.teamai/config.yaml is "gemini", which is not a tool teamai launches. Set it to one of: claude, claude-internal, tclaude, codex, codex-internal, tcodex, opencode, codebuddy, workbuddy, openclaw, pi, omp. Or remove it.' },
   { source: 'ai.tool', named: 'codex', message: 'ai.tool in /home/member/.teamai/config.yaml is "codex", which is not on PATH. Install codex, or remove ai.tool to use the first installed tool.' },
 ] as const)('fails the call when $source names $named, rather than run another tool', async ({ source, named, message }) => {
   const claude = await fakeTool('claude', { stdout: JSON.stringify({ type: 'result', result: 'from claude' }) });

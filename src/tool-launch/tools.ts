@@ -9,7 +9,7 @@ export type LaunchedToolId = { [T in ToolId]: (typeof TOOLS)[T]['launch'] extend
  * Every tool teamai launches, in the order an AI call takes the first one on PATH. Each list of tools that can run a
  * profile keeps this order, so a tool added at the end changes no member's default.
  */
-export const LAUNCH_ORDER = ['claude', 'claude-internal', 'tclaude', 'codex', 'codex-internal', 'tcodex', 'opencode', 'codebuddy', 'workbuddy', 'openclaw', 'pi'] as const satisfies readonly LaunchedToolId[];
+export const LAUNCH_ORDER = ['claude', 'claude-internal', 'tclaude', 'codex', 'codex-internal', 'tcodex', 'opencode', 'codebuddy', 'workbuddy', 'openclaw', 'pi', 'omp'] as const satisfies readonly LaunchedToolId[];
 
 export type LaunchOrderTool = (typeof LAUNCH_ORDER)[number];
 
