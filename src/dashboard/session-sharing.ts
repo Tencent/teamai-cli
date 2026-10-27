@@ -100,9 +100,12 @@ async function stepsWaitingToArchive(config: LocalConfig, publish: SessionPolici
 /**
  * A drain finishes and publishes the sessions of its own run mode only, while any drain publishes pending labels. So
  * each mode with sessions that a drain would act on gets its drain, run in that mode, and pending labels alone get
- * this machine's.
+ * this machine's. Another mode is set as the shell of `platform` sets a variable: PowerShell on Windows.
  */
-function nextSteps({ runMode, archive, publish, scoring, captured, stepSessionsWaitingToArchive, pendingLabels }: Omit<Configured, 'configured' | 'problems' | 'unreadTools' | 'next'>): Configured['next'] {
+function nextSteps(
+  { runMode, archive, publish, scoring, captured, stepSessionsWaitingToArchive, pendingLabels }: Omit<Configured, 'configured' | 'problems' | 'unreadTools' | 'next'>,
+  platform: NodeJS.Platform,
+): Configured['next'] {
   const acts = (mode: RunMode) => publish[mode].policy === 'auto'
     || (scoring.state === 'ok' && scoring.policies[mode].policy === 'auto' && scoring.scorers.length > 0);
   const waits: Record<RunMode, boolean> = {
@@ -111,11 +114,12 @@ function nextSteps({ runMode, archive, publish, scoring, captured, stepSessionsW
   };
   const modes = RUN_MODES.filter((mode) => waits[mode]);
   if (modes.length === 0 && pendingLabels > 0 && archive === 'teamai-reports') modes.push(runMode.mode);
-  return modes.map((mode) => ({ mode, command: mode === runMode.mode ? 'teamai score --drain' : `${RUN_MODE_ENV}=${mode} teamai score --drain` }));
+  const inMode = (mode: RunMode) => (platform === 'win32' ? `$env:${RUN_MODE_ENV}='${mode}'; teamai score --drain` : `${RUN_MODE_ENV}=${mode} teamai score --drain`);
+  return modes.map((mode) => ({ mode, command: mode === runMode.mode ? 'teamai score --drain' : inMode(mode) }));
 }
 
-/** What the panel shows for `config`, read with `env` as this machine's environment, at `now`. */
-export async function readSessionSharing(config: LocalConfig, { env, now }: { env: NodeJS.ProcessEnv; now: string }): Promise<SessionSharing> {
+/** What the panel shows for `config`, read with `env` as this machine's environment and `platform` as its OS, at `now`. */
+export async function readSessionSharing(config: LocalConfig, { env, platform, now }: { env: NodeJS.ProcessEnv; platform: NodeJS.Platform; now: string }): Promise<SessionSharing> {
   const team = await loadTeamConfig(config.repo.localPath);
   const publish = SessionPolicy.publish(config, team);
   const unavailable = scoringUnavailable(config);
@@ -136,6 +140,6 @@ export async function readSessionSharing(config: LocalConfig, { env, now }: { en
     ...read,
     problems: [...publish.problems, ...(scored.ok ? scored.problems : [])].map((problem) => `${problem}.`),
     unreadTools: team ? Object.keys(scopedToolPaths(team, config)).filter((tool) => !isAgentExcluded(config, tool) && AgentSession.platformForTool(tool) === undefined).sort() : [],
-    next: nextSteps(read),
+    next: nextSteps(read, platform),
   };
 }

@@ -86,7 +86,7 @@ describe('the session sharing read model', () => {
   it('reads a team with no settings, from an attended machine, as the defaults with nothing waiting', async () => {
     const config = await team();
 
-    expect(await readSessionSharing(config, { env: {}, now: NOW })).toMatchObject({
+    expect(await readSessionSharing(config, { env: {}, platform: 'linux', now: NOW })).toMatchObject({
       configured: true,
       runMode: { mode: 'attended', source: 'default' },
       archive: 'teamai-reports',
@@ -103,7 +103,7 @@ describe('the session sharing read model', () => {
       'scorers/scoring.yaml': 'sessions: { unattended: off }\n',
     });
 
-    expect(await readSessionSharing(config, { env: { CI: 'true' }, now: NOW })).toMatchObject({
+    expect(await readSessionSharing(config, { env: { CI: 'true' }, platform: 'linux', now: NOW })).toMatchObject({
       runMode: { mode: 'unattended', source: 'CI' },
       publish: { attended: { policy: 'ask', source: 'the default' }, unattended: { policy: 'off', source: 'teamai.yaml sessions.publish.unattended' } },
       scoring: { state: 'ok', policies: { attended: { policy: 'off', source: 'the default' }, unattended: { policy: 'off', source: 'scorers/scoring.yaml sessions.unattended' } } },
@@ -115,7 +115,7 @@ describe('the session sharing read model', () => {
     const config = await team({}, 'http');
 
     const http = { policy: 'off', source: 'an HTTP team repo, which keeps no session archive' };
-    expect(await readSessionSharing(config, { env: {}, now: NOW })).toMatchObject({
+    expect(await readSessionSharing(config, { env: {}, platform: 'linux', now: NOW })).toMatchObject({
       archive: 'none',
       publish: { attended: http, unattended: http },
       problems: ['Sessions are not published: the team repo is an HTTP repo, which keeps no session archive, so sessions.publish acts as off.'],
@@ -130,7 +130,7 @@ describe('the session sharing read model', () => {
     captured(UNATTENDED_DRAINED, 'unattended', { idleFor: HOUR });
     await SessionCaptures.markDrained(config, { platform: 'claude-code', sessionId: UNATTENDED_DRAINED }, NOW);
 
-    const sharing = await readSessionSharing(config, { env: {}, now: NOW });
+    const sharing = await readSessionSharing(config, { env: {}, platform: 'linux', now: NOW });
 
     expect(sharing).toMatchObject({
       captured: {
@@ -148,7 +148,7 @@ describe('the session sharing read model', () => {
     captured(UNATTENDED_OPEN, 'unattended', { idleFor: HOUR });
     fs.rmSync(path.join(mocks.home, '.claude', 'projects'), { recursive: true });
 
-    expect(await readSessionSharing(config, { env: {}, now: NOW })).toMatchObject({
+    expect(await readSessionSharing(config, { env: {}, platform: 'linux', now: NOW })).toMatchObject({
       captured: {
         attended: { active: 0, finished: 0, waitingToArchive: 0, archived: 0 },
         unattended: { waitingForDrain: 0, finished: 0, waitingToArchive: 0, archived: 0 },
@@ -165,7 +165,7 @@ describe('the session sharing read model', () => {
     const drained = await Drain.run([config], { mode: 'unattended' });
 
     expect(drained.capturedArchived).toBe(1);
-    expect(await readSessionSharing(config, { env: {}, now: new Date().toISOString() })).toMatchObject({
+    expect(await readSessionSharing(config, { env: {}, platform: 'linux', now: new Date().toISOString() })).toMatchObject({
       captured: { unattended: { waitingForDrain: 0, finished: 0, waitingToArchive: 0, archived: 1 } },
     });
   });
@@ -178,11 +178,23 @@ describe('the session sharing read model', () => {
       source: 'session', subject: { platform: 'claude-code', sessionId: ATTENDED_FINISHED }, judge: { kind: 'human' }, scoredAt: NOW,
     }, 'Did the work.');
 
-    expect(await readSessionSharing(config, { env: {}, now: NOW })).toMatchObject({
+    expect(await readSessionSharing(config, { env: {}, platform: 'linux', now: NOW })).toMatchObject({
       pendingLabels: 1,
       next: [{ mode: 'unattended', command: 'TEAMAI_MODE=unattended teamai score --drain' }],
     });
-    expect(await readSessionSharing(config, { env: { CI: 'true' }, now: NOW })).toMatchObject({
+    expect(await readSessionSharing(config, { env: { CI: 'true' }, platform: 'linux', now: NOW })).toMatchObject({
+      next: [{ mode: 'unattended', command: 'teamai score --drain' }],
+    });
+  });
+
+  it('names the drain of another run mode as PowerShell sets its variable when the dashboard runs on Windows', async () => {
+    const config = await team();
+    captured(UNATTENDED_OPEN, 'unattended', { idleFor: HOUR });
+
+    expect(await readSessionSharing(config, { env: {}, platform: 'win32', now: NOW })).toMatchObject({
+      next: [{ mode: 'unattended', command: "$env:TEAMAI_MODE='unattended'; teamai score --drain" }],
+    });
+    expect(await readSessionSharing(config, { env: { CI: 'true' }, platform: 'win32', now: NOW })).toMatchObject({
       next: [{ mode: 'unattended', command: 'teamai score --drain' }],
     });
   });
@@ -195,14 +207,14 @@ describe('the session sharing read model', () => {
     const config = await team();
     await LabelStore.append(config, label, 'Did the work.');
 
-    expect(await readSessionSharing(config, { env: {}, now: NOW })).toMatchObject({ next: [{ mode: 'attended', command: 'teamai score --drain' }] });
-    expect(await readSessionSharing({ ...config, repo: { ...config.repo, kind: 'http' } }, { env: {}, now: NOW })).toMatchObject({ pendingLabels: 1, next: [] });
+    expect(await readSessionSharing(config, { env: {}, platform: 'linux', now: NOW })).toMatchObject({ next: [{ mode: 'attended', command: 'teamai score --drain' }] });
+    expect(await readSessionSharing({ ...config, repo: { ...config.repo, kind: 'http' } }, { env: {}, platform: 'linux', now: NOW })).toMatchObject({ pendingLabels: 1, next: [] });
   });
 
   it('names the enabled tools whose sessions are never captured, and the scorers that judge sessions', async () => {
     const config = await team({ 'scorers/style.md': SCORER.replace('sessions: true\n', '') });
 
-    expect(await readSessionSharing({ ...config, enabledAgents: ['claude', 'pi', 'copilot'] }, { env: {}, now: NOW })).toMatchObject({
+    expect(await readSessionSharing({ ...config, enabledAgents: ['claude', 'pi', 'copilot'] }, { env: {}, platform: 'linux', now: NOW })).toMatchObject({
       unreadTools: ['copilot', 'pi'],
       scoring: { state: 'ok', scorers: ['quality'] },
     });
@@ -213,7 +225,7 @@ describe('the session sharing read model', () => {
     await settledRun(config, 'unattended', { tool: 'claude', session: STEP_UNATTENDED });
     await settledRun(config, 'attended', { tool: 'claude', session: STEP_ATTENDED });
 
-    expect(await readSessionSharing(config, { env: {}, now: NOW })).toMatchObject({
+    expect(await readSessionSharing(config, { env: {}, platform: 'linux', now: NOW })).toMatchObject({
       stepSessionsWaitingToArchive: { attended: 0, unattended: 1 },
       next: [{ mode: 'unattended', command: 'TEAMAI_MODE=unattended teamai score --drain' }],
     });
@@ -226,7 +238,7 @@ describe('the session sharing read model', () => {
     });
     captured(UNATTENDED_OPEN, 'unattended', { idleFor: HOUR });
 
-    expect(await readSessionSharing(config, { env: {}, now: NOW })).toMatchObject({
+    expect(await readSessionSharing(config, { env: {}, platform: 'linux', now: NOW })).toMatchObject({
       scoring: { state: 'ok', policies: { unattended: { policy: 'auto' } }, scorers: [] },
       captured: { unattended: { waitingForDrain: 1 } },
       next: [],

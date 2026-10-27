@@ -435,7 +435,7 @@ export async function startDashboard(port?: number): Promise<void> {
       try {
         const { readSessionSharing } = await import('./dashboard/session-sharing.js');
         const sharing = workspace?.config
-          ? await readSessionSharing(workspace.config, { env: process.env, now: new Date().toISOString() })
+          ? await readSessionSharing(workspace.config, { env: process.env, platform: process.platform, now: new Date().toISOString() })
           : { configured: false };
         res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify(sharing));
