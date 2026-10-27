@@ -647,7 +647,7 @@ function manifestMatchesSource(
  * remote. Hashes in source-manifest.json are relative to the extraction root,
  * so retain only the relative path from the verified Git root.
  */
-async function sourceRepositoryMetadata(
+export async function sourceRepositoryMetadata(
   root: string,
   explicitRepoUrl?: string,
 ): Promise<SourceRepositoryMetadata> {
@@ -672,10 +672,15 @@ async function sourceRepositoryMetadata(
     // unknown. Extraction itself still works for non-Git directories.
   }
 
+  // A directory without a repository still answers by a local root: its own
+  // real path, hashed like the git root above, so a later run (and the
+  // same-basename disambiguation in import-codebase) can recognise this
+  // checkout without publishing the member's path in the teamwiki (#1422).
+  const localRoot = localRootHash ?? createHash('sha256').update(await realpath(root)).digest('hex');
   if (!remoteUrl) {
     return {
       ...(sourceSubdir !== undefined ? { sourceSubdir } : {}),
-      ...(localRootHash !== undefined ? { localRootHash } : {}),
+      localRootHash: localRoot,
     };
   }
   const safeUrl = sanitizeRepoUrl(remoteUrl);

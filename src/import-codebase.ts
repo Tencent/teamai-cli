@@ -1,9 +1,10 @@
 import os from 'node:os';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 
 import fs from 'fs-extra';
 
-import { extractCodebase } from './codebase-extract.js';
+import { extractCodebase, sourceRepositoryMetadata } from './codebase-extract.js';
 import type { TeamaiInit } from './config.js';
 import { log } from './utils/logger.js';
 import { repoIdentity } from './utils/git.js';
@@ -95,6 +96,103 @@ async function sameRepository(publishedDir: string, stagedDir: string, slug: str
   const publishedSubdir = typeof published?.['sourceSubdir'] === 'string' ? published['sourceSubdir'] : '';
   const stagedSubdir = typeof staged?.['sourceSubdir'] === 'string' ? staged['sourceSubdir'] : '';
   return publishedSubdir === stagedSubdir;
+}
+
+/**
+ * Read a published evidence sidecar, or null when the slug has none.
+ */
+async function publishedSidecar(wikiRoot: string, slug: string): Promise<Record<string, unknown> | null> {
+  return await readJsonIfPresent(path.join(wikiRoot, 'evidence', 'code', slug, 'source-manifest.json'));
+}
+
+/**
+ * Whether a sidecar carries an identity marker to compare against. The
+ * earliest manifests predate both `repoIdentity` and `localRootHash`; for
+ * those, today's behaviour stands and the caller keeps the slug as-is.
+ */
+function sidecarHasMarker(published: Record<string, unknown> | null): boolean {
+  if (!published) return false;
+  const identity = typeof published['repoIdentity'] === 'string' && published['repoIdentity'].trim();
+  const url = typeof published['repoUrl'] === 'string' && published['repoUrl'].trim();
+  const root = typeof published['localRootHash'] === 'string' && published['localRootHash'].trim();
+  return Boolean(identity || url || root);
+}
+
+/**
+ * Whether a sidecar names this source: a remote answers by `repoIdentity`,
+ * an origin-less checkout by its hashed local root together with the
+ * subdirectory (two same-named extractions of one repository stay apart).
+ * One side answering by a remote and the other only by a local root is not
+ * one source. A marker-less sidecar cannot be told apart and never matches.
+ */
+function namesSameSource(
+  published: Record<string, unknown> | null,
+  identity: string,
+  rootHash: string,
+  subdir: string,
+): boolean {
+  if (!published) return false;
+  const publishedIdentity = typeof published['repoIdentity'] === 'string' && published['repoIdentity'].trim()
+    ? published['repoIdentity'].trim()
+    : typeof published['repoUrl'] === 'string' && published['repoUrl'].trim()
+      ? repoIdentity(published['repoUrl'])
+      : '';
+  if (identity && publishedIdentity) return identity === publishedIdentity;
+  if (!identity && !publishedIdentity) {
+    const publishedRoot = typeof published['localRootHash'] === 'string' ? published['localRootHash'] : '';
+    const publishedSubdir = typeof published['sourceSubdir'] === 'string' ? published['sourceSubdir'] : '';
+    return rootHash !== '' && rootHash === publishedRoot && subdir === publishedSubdir;
+  }
+  return false;
+}
+
+/**
+ * A `--dir` slug comes from the basename (`defaultProjectSlug`), so two
+ * checkouts named `svc` point at one evidence directory and the second import
+ * replaced the first's (#1422). Before anything is seeded or extracted,
+ * decide the slug once — so the extraction, the carry-over pass and the index
+ * refresh all target the same directory:
+ *
+ * - The slug's occupant is compared with this source. A matching occupant
+ *   keeps the slug (every checkout of one repo shares evidence, whatever its
+ *   path — #823); a differing one moves this import to a suffixed directory
+ *   instead of overwriting, and a marker-less legacy occupant keeps today's
+ *   behaviour. No raw path is published: identity is `repoIdentity`, or the
+ *   hashed local root #1427 records (extended to directories without a
+ *   repository) together with the subdirectory.
+ * - The suffix comes from the remote identity when there is one, so one
+ *   repository converges on one destination from any checkout path and
+ *   machine; only a directory without a remote falls back to its real path.
+ * - The suffixed destination is verified too: if it names yet another source
+ *   (the same checkout path on a different machine), the full digest is
+ *   tried, and a destination that still names another source is refused
+ *   rather than replaced.
+ */
+async function disambiguateDirSlug(
+  wikiRoot: string,
+  slug: string,
+  sourceDir: string,
+  explicitRepoUrl?: string,
+): Promise<string> {
+  const occupant = await publishedSidecar(wikiRoot, slug);
+  if (!occupant || !sidecarHasMarker(occupant)) return slug;
+
+  const sourceRepo = await sourceRepositoryMetadata(sourceDir, explicitRepoUrl);
+  const identity = sourceRepo.repoIdentity ?? '';
+  const rootHash = sourceRepo.localRootHash ?? '';
+  const subdir = sourceRepo.sourceSubdir ?? '';
+  if (namesSameSource(occupant, identity, rootHash, subdir)) return slug;
+
+  const stable = identity || await fs.realpath(sourceDir);
+  const digest = createHash('sha256').update(stable).digest('hex');
+  for (const candidate of [`${slug}-${digest.slice(0, 8)}`, `${slug}-${digest}`]) {
+    const holder = await publishedSidecar(wikiRoot, candidate);
+    if (!holder || !sidecarHasMarker(holder)) return candidate;
+    if (namesSameSource(holder, identity, rootHash, subdir)) return candidate;
+  }
+  throw new Error(
+    `teamwiki/evidence/code/ holds a different source under both ${slug}-${digest.slice(0, 8)} and ${slug}-${digest}; not replacing it (#1422)`,
+  );
 }
 
 /**
@@ -345,6 +443,14 @@ export async function publishTeamwikiViaMR(team: TeamaiInit, message: string): P
  * @returns whether the teamwiki changed
  */
 export async function importLocalCheckout(opts: ImportCodebaseOptions): Promise<boolean> {
+  // Same-basename `--dir` checkouts must not share one evidence directory
+  // (#1422); decided here, once, so the extraction, the reconcile pass and
+  // the index refresh below all target the same slug.
+  const slug = await disambiguateDirSlug(opts.wikiRoot, opts.slug, opts.sourceDir, opts.repoUrl);
+  if (slug !== opts.slug) {
+    log.info(`[import] evidence/code/${opts.slug}/ holds a different source; publishing this one under ${slug}`);
+    opts.slug = slug;
+  }
   const updated = await importCodebase(opts);
   if (!updated) {
     log.info(`${opts.slug}: no source changes since the last import, teamwiki unchanged`);
