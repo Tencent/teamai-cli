@@ -17,17 +17,19 @@ vi.mock('../config.js', async (importOriginal) => ({
 import type { RunMode } from '../launch-context.js';
 import { saveLocalConfig } from '../config.js';
 import { dataHomeKey } from '../dashboard-collector.js';
+import { driverIdentity } from '../driver-identity.js';
 import { syncScorerDefinitions } from '../scorers/cache.js';
 import { LabelStore } from '../scorers/label-store.js';
 import { scoreCommand, type ScoreOptions } from '../score-commands.js';
 import { scoreSessionsCommand } from '../score-sessions.js';
 import YAML from 'yaml';
 import { encodeCwdClaude } from '../session-flow/fs.js';
+import { SessionWork } from '../session-flow/session-work.js';
 import type { LocalConfig } from '../types.js';
 import { AGENT_SESSION_ENV } from '../utils/session-id.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, parseReport, reportAttempt, startRun } from '../workflow/engine.js';
-import { nextJudgeLease } from '../workflow/scoring.js';
+import { nextJudgeLease, submitJudgeLease } from '../workflow/scoring.js';
 import type { WorkflowEnvelope } from '../workflow/types.js';
 import { workflowResume, workflowStart } from '../workflow-commands.js';
 
@@ -302,6 +304,22 @@ describe('teamai score --drain', () => {
     expect(drained.lines).not.toContain('✔ Nothing left to do here');
     const other = { driver: { kind: 't3', machine: 'm2', workspace: '/w' }, judge: { isolation: 'best-effort' as const, tools: ['claude'] as [string] }, running: [] };
     expect(await nextJudgeLease(config, other)).toMatchObject({ data: { lease: { source: 'session', subject: { sessionId: SESSION } } } });
+  });
+
+  it('leaves the session lease the background pass holds live when no judge tool is installed here', async () => {
+    const { config } = await team({ 'scorers/scoring.yaml': 'sessions: true\n' });
+    capturedSession(SESSION, 'attended');
+    capturedSession(STEP_SESSION, 'attended');
+    const driver = driverIdentity('local', SessionWork.leaseCwd(config));
+    const taken = data(await nextJudgeLease(config, { driver, judge: { isolation: 'best-effort', tools: ['claude'] }, running: [], only: 'session' }));
+    const { ref } = taken.lease as { ref: string };
+
+    const drained = await drain();
+
+    expect(drained.code, drained.lines.join('\n')).toBe(0);
+    expect(drained.lines).toContain('ℹ Left open: 1 judge entry: no judge tool is installed here. '
+      + 'A driver whose tools judge it takes it with: teamai score --next --json \'{"driver":{…,"can":{"judge":{…}}}}\'');
+    expect(data(await submitJudgeLease(config, ref, { driver, outcome: 'success', answer: { label: 'good', reasoning: 'r' } }))).toMatchObject({ label: { label: 'good' } });
   });
 
   it('prints a failed judgment and exits 1, and a second drain exits 0 without judging it again', async () => {

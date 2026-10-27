@@ -17,7 +17,7 @@ import { reportUsage } from './team-push.js';
 import { isUsageReportEnabled, usesBranchWorktree, type LocalConfig } from './types.js';
 import { log } from './utils/logger.js';
 import { pendingRecords, publishPendingRecords } from './workflow/records.js';
-import { judgeLease, submitJudgeLease, takeJudgeLease, type SkippedEntry, type TakenLease } from './workflow/scoring.js';
+import { judgeLease, openJudgeEntries, submitJudgeLease, takeJudgeLease, type SkippedEntry, type TakenLease } from './workflow/scoring.js';
 
 /** A lease judged here: a workflow pass or a session, by the scorers it carried. */
 interface Judged {
@@ -87,11 +87,7 @@ async function judge(config: LocalConfig, clock: () => string): Promise<Pick<Dra
   let unmetIsolation = 0;
   const tried = new Set<string>();
   const offers = await localJudgeOffers();
-  if (offers.length === 0) {
-    // Takes nothing: only the count of open entries, which no tool offered here could judge.
-    const taken = await takeJudgeLease(config, { driver, judge: { isolation: 'best-effort', tools: ['none'] }, running: [], canTakeLease: false }, clock());
-    return { judged, failed, leftOpen, unmetIsolation, noJudgeTool: taken.kind === 'idle' ? taken.open : 0 };
-  }
+  if (offers.length === 0) return { judged, failed, leftOpen, unmetIsolation, noJudgeTool: await openJudgeEntries(config, clock()) };
   for (const offer of offers) {
     for (;;) {
       const taken = await takeJudgeLease(config, { driver, judge: offer, running: [] }, clock());

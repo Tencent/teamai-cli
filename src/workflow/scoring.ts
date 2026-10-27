@@ -455,46 +455,72 @@ type LockedLease =
   | { kind: 'raced' }
   | { kind: 'none' };
 
-async function takeOneLease(config: LocalConfig, request: JudgeRequest, now: string): Promise<OneLease | { kind: 'busy' } | { kind: 'evidence_empty'; closed: ClosedEntry[] } | { kind: 'raced' }> {
+/**
+ * The judge entries of `config` that `request` names, and whether the day's session launches are spent, after warning
+ * of what in the scoring settings is off; undefined while scoring is unavailable here.
+ */
+async function requestedEntries(config: LocalConfig, request: Pick<JudgeRequest, 'only' | 'entries' | 'run'>, now: string) {
   const unavailable = scoringUnavailable(config);
   if (unavailable) {
     log.warn(unavailable);
-    return { kind: 'idle', open: 0, leased: 0, skipped: [] };
+    return undefined;
   }
   const scoring = await scopeScoring(config);
   if (!scoring.ok) {
     log.warn(scoring.reason);
-    return { kind: 'idle', open: 0, leased: 0, skipped: [] };
+    return undefined;
   }
   const { named, ids } = entrySources(request.entries);
   const all = request.only === 'session' || named ? [] : await scoreEntries(config, now, scoring.batch);
   const runs = all.filter((entry) => (!ids || ids.includes(entry.id)) && (request.run === undefined || entry.subject.runId === request.run));
   const { entries: sessions, captured } = named ? { entries: await SessionWork.entriesOf(config, named, now), captured: undefined }
     : request.entries || request.run !== undefined ? { entries: [], captured: undefined } : await SessionWork.entries(config, now, scoring);
+  for (const unknown of requiredIsolation(scoring.isolation).unknown) log.warn(`${unknownIsolationText(unknown)}.`);
+  for (const problem of scoring.problems) log.warn(`${problem}.`);
+  const limited = !named && sessions.length > 0 && SessionWork.launchesToday([...(await AttemptStore.read(config)).values()].flat(), now) >= scoring.sessions.dailyLimit;
+  return { scoring, all, runs, sessions, captured, limited, named: named !== undefined };
+}
+
+/**
+ * Whether `entry` is open judge work. A pass released under the attempts lock is open again; a session is judged once,
+ * so a release closes it unless the request named it, and none is open while the day's session launches are spent
+ * (`limited`).
+ */
+function isOpenEntry(entry: ScoreEntry, { limited, released, named }: { limited: boolean; released: ReadonlySet<string>; named: boolean }): boolean {
+  switch (entry.source) {
+    case 'workflow':
+      return entry.state.kind === 'open' || released.has(entry.id);
+    case 'session':
+      // A named session's lease this driver gave up under this lock leaves it open again.
+      return (entry.state.kind === 'open' || (named && released.has(entry.id))) && !limited;
+    default: {
+      const unhandled: never = entry;
+      return unhandled;
+    }
+  }
+}
+
+/** How many judge entries of `config` are open, as the idle answer of `takeJudgeLease` counts them, with no lock or write. */
+export async function openJudgeEntries(config: LocalConfig, now: string): Promise<number> {
+  const requested = await requestedEntries(config, {}, now);
+  if (!requested) return 0;
+  const { runs, sessions, limited } = requested;
+  return [...runs, ...sessions].filter((entry) => isOpenEntry(entry, { limited, released: new Set(), named: false })).length;
+}
+
+async function takeOneLease(config: LocalConfig, request: JudgeRequest, now: string): Promise<OneLease | { kind: 'busy' } | { kind: 'evidence_empty'; closed: ClosedEntry[] } | { kind: 'raced' }> {
+  const requested = await requestedEntries(config, request, now);
+  if (!requested) return { kind: 'idle', open: 0, leased: 0, skipped: [] };
+  const { scoring, all, runs, sessions, captured, named } = requested;
   const found: ScoreEntry[] = [...runs, ...sessions];
   const { dailyLimit } = scoring.sessions;
   const aliases = await loadModelAliases(config);
   const { isolation } = scoring;
-  for (const unknown of requiredIsolation(isolation).unknown) log.warn(`${unknownIsolationText(unknown)}.`);
-  for (const problem of scoring.problems) log.warn(`${problem}.`);
   const skipped: SkippedEntry[] = [];
   const released = new Set<string>();
   // Whether the day's session launches are spent: then no session is open, until the next local day.
-  let limited = !named && sessions.length > 0 && SessionWork.launchesToday([...(await AttemptStore.read(config)).values()].flat(), now) >= dailyLimit;
-  // A session is judged once: a release under this lock closes it rather than opening it again.
-  const isOpen = (entry: ScoreEntry): boolean => {
-    switch (entry.source) {
-      case 'workflow':
-        return entry.state.kind === 'open' || released.has(entry.id);
-      case 'session':
-        // A named session's lease this driver gave up under this lock leaves it open again.
-        return (entry.state.kind === 'open' || (named !== undefined && released.has(entry.id))) && !limited;
-      default: {
-        const unhandled: never = entry;
-        return unhandled;
-      }
-    }
-  };
+  let { limited } = requested;
+  const isOpen = (entry: ScoreEntry): boolean => isOpenEntry(entry, { limited, released, named });
   const leasable = (entry: ScoreEntry) => isOpen(entry) && meets(request.judge.isolation, requiredFor(isolation, entry));
   const judges = (entry: ScoreEntry) => leasable(entry) && chooseJudgeModel(aliases, entry.definition, request.judge.tools).ok;
   const running = new Set(request.running.flatMap((ref) => parseLeaseRef(ref)?.attempt ?? []));
