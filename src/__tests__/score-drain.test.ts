@@ -21,11 +21,12 @@ import { driverIdentity } from '../driver-identity.js';
 import { syncScorerDefinitions } from '../scorers/cache.js';
 import { LabelStore } from '../scorers/label-store.js';
 import { scoreCommand, type ScoreOptions } from '../score-commands.js';
-import { scoreSessionsCommand } from '../score-sessions.js';
+import { judgePassLock, scoreSessionsCommand } from '../score-sessions.js';
 import YAML from 'yaml';
 import { encodeCwdClaude } from '../session-flow/fs.js';
 import { SessionWork } from '../session-flow/session-work.js';
 import type { LocalConfig } from '../types.js';
+import { acquireLock, releaseLock } from '../update.js';
 import { AGENT_SESSION_ENV } from '../utils/session-id.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, parseReport, reportAttempt, startRun } from '../workflow/engine.js';
@@ -320,6 +321,31 @@ describe('teamai score --drain', () => {
     expect(drained.lines).toContain('ℹ Left open: 1 judge entry: no judge tool is installed here. '
       + 'A driver whose tools judge it takes it with: teamai score --next --json \'{"driver":{…,"can":{"judge":{…}}}}\'');
     expect(data(await submitJudgeLease(config, ref, { driver, outcome: 'success', answer: { label: 'good', reasoning: 'r' } }))).toMatchObject({ label: { label: 'good' } });
+  });
+
+  it('judges nothing while the background pass judges, leaves its session lease live, and says what it left open', async () => {
+    const { config } = await team({ 'scorers/scoring.yaml': 'sessions: true\n' });
+    capturedSession(SESSION, 'attended');
+    capturedSession(STEP_SESSION, 'attended');
+    const driver = driverIdentity('local', SessionWork.leaseCwd(config));
+    const lock = judgePassLock(config);
+    expect(await acquireLock(lock)).toBe(true);
+    let drained: Awaited<ReturnType<typeof drain>>;
+    try {
+      // The pass offered a tool this drain does not: it holds a lease with codex.
+      const taken = data(await nextJudgeLease(config, { driver, judge: { isolation: 'best-effort', tools: ['codex'] }, running: [], only: 'session' }));
+      fakeClaude();
+      drained = await drain();
+      const { ref } = taken.lease as { ref: string };
+      expect(data(await submitJudgeLease(config, ref, { driver, outcome: 'success', answer: { label: 'good', reasoning: 'r' } }))).toMatchObject({ label: { label: 'good' } });
+    } finally {
+      await releaseLock(lock);
+    }
+
+    expect(drained.code, drained.lines.join('\n')).toBe(0);
+    expect(drained.lines).toContain('ℹ Left open: 1 judge entry: another judge pass on this machine is running. Run teamai score --drain again once it ends.');
+    expect(drained.lines.filter((printed) => printed.includes('Judged'))).toEqual([]);
+    expect(drained.lines).not.toContain('✔ Nothing left to do here');
   });
 
   it('prints a failed judgment and exits 1, and a second drain exits 0 without judging it again', async () => {

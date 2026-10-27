@@ -253,7 +253,7 @@ $ teamai score --drain
 Every unattended driver ends with `teamai score --drain`. The local driver runs it at the end of an unattended run, unless publishing and scoring of unattended sessions are both `off`. The skill driver, T3, Paseo and a CI script run it as their last step. It works in this order:
 
 1. In unattended mode, every session this data home captured as unattended counts as finished, the calling session included. Attended sessions keep the six-hour rule.
-2. It judges every open judge entry this machine can judge: sampled step passes, and sampled sessions the policies allow, within `daily_limit`.
+2. It judges every open judge entry this machine can judge: sampled step passes, and sampled sessions the policies allow, within `daily_limit`. While another judge pass runs on this machine, such as the background judge, it judges nothing and says so. Run the drain again once that pass ends.
 3. It publishes every pending label, as `score --push` does, and the workflow run records a run could not publish, as `teamai pull` does.
 4. With `publish: auto` for the current mode, it archives on `teamai-reports`, scrubbed, the finished captured sessions of that mode and the step sessions of the runs driven here that are not archived yet. A step session it cannot archive from here, because teamai reads no sessions from its tool or this machine cannot read it, is listed once as skipped with the reason, and never tried again. The other step sessions of that run are still archived.
 5. It reports usage to `stats/<member>.yaml`, as `teamai pull` does, so the counts of an ephemeral runner reach the team.

@@ -39,6 +39,12 @@ export async function localJudgeOffers(): Promise<Array<{ isolation: Isolation; 
   return offers;
 }
 
+/**
+ * The lock a pass that judges the entries of `config` here holds: the background pass, and the judging of a drain. Both
+ * take leases as the same local driver, so a lease one holds would read as the other's own.
+ */
+export const judgePassLock = (config: LocalConfig): string => path.join(scoresDir(config), 'score-sessions.lock');
+
 /** What the background pass does with the attended sessions of `config`: judge them, publish them, both or neither. */
 async function attendedWork(config: LocalConfig): Promise<{ judges: boolean; publishes: boolean }> {
   const scoring = scoringUnavailable(config) ? undefined : await scopeScoring(config);
@@ -59,7 +65,7 @@ export async function scoreSessions(configs: readonly LocalConfig[], { clock = (
   for (const config of configs) {
     const { judges, publishes } = await attendedWork(config);
     if (!judges && !publishes) continue;
-    const lock = path.join(scoresDir(config), 'score-sessions.lock');
+    const lock = judgePassLock(config);
     if (!await acquireLock(lock)) continue;
     try {
       if (publishes) {

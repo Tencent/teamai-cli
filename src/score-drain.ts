@@ -6,7 +6,7 @@
 import { loadTeamConfig } from './config.js';
 import { driverIdentity } from './driver-identity.js';
 import type { RunMode } from './launch-context.js';
-import { localJudgeOffers } from './score-sessions.js';
+import { judgePassLock, localJudgeOffers } from './score-sessions.js';
 import { scoringUnavailable } from './scorers/home.js';
 import { scopeScoring } from './scorers/settings.js';
 import { SessionCaptures } from './session-flow/captures.js';
@@ -17,6 +17,7 @@ import type { RunSubject, SessionSubject } from './scorers/label.js';
 import { LabelStore } from './scorers/label-store.js';
 import { reportUsage } from './team-push.js';
 import { isUsageReportEnabled, usesBranchWorktree, type LocalConfig } from './types.js';
+import { acquireLock, releaseLock } from './update.js';
 import { log } from './utils/logger.js';
 import { pendingRecords, publishPendingRecords } from './workflow/records.js';
 import { judgeLease, openJudgeEntries, submitJudgeLease, takeJudgeLease, type SkippedEntry, type TakenLease } from './workflow/scoring.js';
@@ -51,6 +52,8 @@ export interface DrainResult {
   unmetIsolation: number;
   /** How many judge entries are open while no judge tool is installed here, left open for another driver. */
   noJudgeTool: number;
+  /** How many judge entries are open while another judge pass on this machine runs, left open for it or the next drain. */
+  otherPassRunning: number;
   /** Runs whose queued workflow run records reached teamai-reports. */
   runRecordsPublished: number;
   labelsPublished: number;
@@ -78,9 +81,10 @@ const scorersOf = (lease: Lease): readonly string[] => ('scorers' in lease ? lea
  * Judges every judge entry of `config` a local judge tool here can take, with labels left pending, and says which
  * entries the last offer, the least strict, left for another driver. A pass lease whose judgment failed is settled as
  * failed, so it is not handed back; a session lease closed when its judge failed. A lease handed back all the same,
- * because that settle found the attempts locked, ends the offer: one drain judges a lease once.
+ * because that settle found the attempts locked, ends the offer: one drain judges a lease once. While another judge pass
+ * here holds `judgePassLock`, it judges nothing, so it neither releases nor takes back a lease that pass holds.
  */
-async function judge(config: LocalConfig, clock: () => string): Promise<Pick<DrainResult, 'judged' | 'failed' | 'leftOpen' | 'unmetIsolation' | 'noJudgeTool'>> {
+async function judge(config: LocalConfig, clock: () => string): Promise<Pick<DrainResult, 'judged' | 'failed' | 'leftOpen' | 'unmetIsolation' | 'noJudgeTool' | 'otherPassRunning'>> {
   const driver = driverIdentity('local', SessionWork.leaseCwd(config));
   const judged: Judged[] = [];
   const failed: FailedJudgment[] = [];
@@ -88,25 +92,31 @@ async function judge(config: LocalConfig, clock: () => string): Promise<Pick<Dra
   let unmetIsolation = 0;
   const tried = new Set<string>();
   const offers = await localJudgeOffers();
-  if (offers.length === 0) return { judged, failed, leftOpen, unmetIsolation, noJudgeTool: await openJudgeEntries(config, clock()) };
-  for (const offer of offers) {
-    for (;;) {
-      const taken = await takeJudgeLease(config, { driver, judge: offer, running: [] }, clock());
-      // Of the open entries an idle answer counts, those it did not skip for their model need more isolation.
-      if (taken.kind === 'idle') [leftOpen, unmetIsolation] = [taken.skipped, taken.open - taken.skipped.length];
-      if (taken.kind !== 'lease' || tried.has(taken.lease.ref)) break;
-      const { lease } = taken;
-      tried.add(lease.ref);
-      const settled = await judgeLease(config, lease.ref, driver, { clock, publish: false });
-      if (!('error' in settled)) {
-        judged.push({ source: lease.source, scorers: settled.attempts.map((attempt) => attempt.scorer) });
-        continue;
+  if (offers.length === 0) return { judged, failed, leftOpen, unmetIsolation, noJudgeTool: await openJudgeEntries(config, clock()), otherPassRunning: 0 };
+  const lock = judgePassLock(config);
+  if (!await acquireLock(lock)) return { judged, failed, leftOpen, unmetIsolation, noJudgeTool: 0, otherPassRunning: await openJudgeEntries(config, clock()) };
+  try {
+    for (const offer of offers) {
+      for (;;) {
+        const taken = await takeJudgeLease(config, { driver, judge: offer, running: [] }, clock());
+        // Of the open entries an idle answer counts, those it did not skip for their model need more isolation.
+        if (taken.kind === 'idle') [leftOpen, unmetIsolation] = [taken.skipped, taken.open - taken.skipped.length];
+        if (taken.kind !== 'lease' || tried.has(taken.lease.ref)) break;
+        const { lease } = taken;
+        tried.add(lease.ref);
+        const settled = await judgeLease(config, lease.ref, driver, { clock, publish: false });
+        if (!('error' in settled)) {
+          judged.push({ source: lease.source, scorers: settled.attempts.map((attempt) => attempt.scorer) });
+          continue;
+        }
+        failed.push({ scorers: scorersOf(lease), subject: lease.subject, code: settled.error.code });
+        if (lease.source === 'workflow') await submitJudgeLease(config, lease.ref, { driver, outcome: 'failed' }, clock());
       }
-      failed.push({ scorers: scorersOf(lease), subject: lease.subject, code: settled.error.code });
-      if (lease.source === 'workflow') await submitJudgeLease(config, lease.ref, { driver, outcome: 'failed' }, clock());
     }
+  } finally {
+    await releaseLock(lock);
   }
-  return { judged, failed, leftOpen, unmetIsolation, noJudgeTool: 0 };
+  return { judged, failed, leftOpen, unmetIsolation, noJudgeTool: 0, otherPassRunning: 0 };
 }
 
 /** Publishes the workflow run records of `config` that a run queued and could not publish, as pull does. */
@@ -147,16 +157,17 @@ async function publishLabels(config: LocalConfig): Promise<Pick<DrainResult, 'la
 
 /** Drains each scope of `configs`, in order, in run mode `mode`. */
 async function run(configs: readonly LocalConfig[], { mode, clock = () => new Date().toISOString() }: { mode: RunMode; clock?: () => string }): Promise<DrainResult> {
-  const result: DrainResult = { judged: [], failed: [], leftOpen: [], unmetIsolation: 0, noJudgeTool: 0, runRecordsPublished: 0, labelsPublished: 0, capturedArchived: 0, steps: [], unpublished: [], usage: [] };
+  const result: DrainResult = { judged: [], failed: [], leftOpen: [], unmetIsolation: 0, noJudgeTool: 0, otherPassRunning: 0, runRecordsPublished: 0, labelsPublished: 0, capturedArchived: 0, steps: [], unpublished: [], usage: [] };
   for (const config of configs) {
     const team = await loadTeamConfig(config.repo.localPath);
     if (mode === 'unattended') await finishUnattended(config, clock());
-    const { judged, failed, leftOpen, unmetIsolation, noJudgeTool } = await judge(config, clock);
+    const { judged, failed, leftOpen, unmetIsolation, noJudgeTool, otherPassRunning } = await judge(config, clock);
     result.judged.push(...judged);
     result.failed.push(...failed);
     result.leftOpen.push(...leftOpen);
     result.unmetIsolation += unmetIsolation;
     result.noJudgeTool += noJudgeTool;
+    result.otherPassRunning += otherPassRunning;
     const records = await publishRunRecords(config);
     result.runRecordsPublished += records.runRecordsPublished;
     result.unpublished.push(...records.unpublished);
@@ -257,7 +268,7 @@ function print(result: DrainResult): void {
     if (reported) log.success(`Reported usage to stats/${member}.yaml`);
     else log.error(`Could not report usage to stats/${member}.yaml on teamai-reports. It stays on this machine; run teamai score --drain again.`);
   }
-  const { leftOpen, unmetIsolation, noJudgeTool } = result;
+  const { leftOpen, unmetIsolation, noJudgeTool, otherPassRunning } = result;
   const ofSessions = leftOpen.filter((entry) => 'sessionId' in entry.subject).length;
   printLeftOpen({
     count: leftOpen.length,
@@ -274,7 +285,10 @@ function print(result: DrainResult): void {
     what: `${plural({ count: noJudgeTool, one: 'judge entry', many: 'judge entries' })}: no judge tool is installed here`,
     driver: (them) => `whose tools judge ${them}`,
   });
-  if (leftOpen.length === 0 && unmetIsolation === 0 && noJudgeTool === 0 && !hasFailed(result)) log.success('Nothing left to do here');
+  if (otherPassRunning > 0) {
+    log.info(`Left open: ${plural({ count: otherPassRunning, one: 'judge entry', many: 'judge entries' })}: another judge pass on this machine is running. Run teamai score --drain again once it ends.`);
+  }
+  if (leftOpen.length === 0 && unmetIsolation === 0 && noJudgeTool === 0 && otherPassRunning === 0 && !hasFailed(result)) log.success('Nothing left to do here');
 }
 
 export const Drain = { run, print, hasFailed, drainsUnattendedRun } as const;
