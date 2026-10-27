@@ -941,27 +941,6 @@ describe('hooksRemove', () => {
         }
     });
 
-    it('also deletes the OMP extension an earlier release wrote in the default home (#1221)', async () => {
-        const tmp = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-hooks-remove-omp-moved-'));
-        const restoreHome = mockHome(tmp);
-        vi.stubEnv('OMP_PROFILE', 'work');
-        const defaultOmpHook = path.join(tmp, '.omp', 'agent', 'extensions', 'teamai-hooks.ts');
-        await fse.outputFile(defaultOmpHook, '// [teamai] hooks extension');
-        mockedAutoDetectInit.mockResolvedValue({
-            localConfig: mockLocalConfig,
-            teamConfig: { toolPaths: { omp: { skills: '.omp/skills' } } },
-        });
-
-        try {
-            await hooksRemove({});
-            expect(await fse.pathExists(defaultOmpHook)).toBe(false);
-        } finally {
-            vi.unstubAllEnvs();
-            restoreHome();
-            await fse.remove(tmp);
-        }
-    });
-
     it('removes standalone Copilot hooks under COPILOT_HOME', async () => {
         const originalCopilotHome = process.env.COPILOT_HOME;
         process.env.COPILOT_HOME = COPILOT_HOME_FIXTURE;

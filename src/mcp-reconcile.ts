@@ -414,8 +414,8 @@ async function localMcpFileOf(tool: string, projectRoot: string, toolRoots: Read
 }
 
 /**
- * `host` as every release before #1221 saw it for the tools that wrote their
- * servers under the default home whatever moved it (`hasDefaultHomeLeftovers`).
+ * `host` as every release before #1221 saw it for OpenCode, Muse and Pi,
+ * which wrote their servers under the default home whatever moved it.
  */
 function unmovedHost(host: Host): Host {
   return { ...host, env: {}, toolHomes: { kind: 'missing' } };

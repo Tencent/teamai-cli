@@ -79,6 +79,6 @@ describe('the descriptor\'s channels agree with the tables they replaced', () =>
   });
 
   it('marks the tools earlier releases left hooks and MCP servers for in the default home', () => {
-    expect(TOOL_IDS.filter(hasDefaultHomeLeftovers)).toEqual(['omp', 'pi', 'codebuddy', 'opencode', 'muse']);
+    expect(TOOL_IDS.filter(hasDefaultHomeLeftovers)).toEqual(['pi', 'codebuddy', 'opencode', 'muse']);
   });
 });

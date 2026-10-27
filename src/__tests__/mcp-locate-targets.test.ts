@@ -431,25 +431,6 @@ describe('pull writes MCP servers where each tool reads them (#1221)', () => {
       expect(vi.mocked(log.info).mock.calls.filter(([line]) => line === left)).toHaveLength(1);
     });
 
-    it('names once, and keeps, the servers an earlier release wrote to OMP\'s default home after OMP_PROFILE moves it (#1221)', async () => {
-      const api = renderJsonEntry('claude', API);
-      const before = path.join(home, '.omp', 'agent', 'mcp.json');
-      await fse.outputJson(before, { mcpServers: { api } });
-      await fse.outputJson(path.join(home, '.teamai', 'managed-mcp.json'), { omp: [{ name: 'api', hash: entryHash(api) }] });
-      const now = path.join(home, '.omp', 'profiles', 'work', 'agent', 'mcp.json');
-      await fse.ensureDir(path.dirname(now));
-      vi.stubEnv('OMP_PROFILE', 'work');
-      const left = `[user] omp takes MCP servers from ${now} now, so teamai no longer updates its entries in ${before} (api). `
-        + 'Remove them once no tool reads that file.';
-
-      await reconcileMcpForConfig(team(), userConfig('omp'));
-      await reconcileMcpForConfig(team(), userConfig('omp'));
-
-      expect((await fse.readJson(now)).mcpServers).toEqual({ api });
-      expect(await fse.readJson(before)).toEqual({ mcpServers: { api } });
-      expect(vi.mocked(log.info).mock.calls.filter(([line]) => line === left)).toHaveLength(1);
-    });
-
     // Uninstall takes teamai's unchanged servers out of the file each record names, whatever the tool now reads:
     // under an earlier home (an earlier release's record notes no file) or an earlier toolPaths mapping.
     const json = (tool: Parameters<typeof renderJsonEntry>[0], key: string) => ({

@@ -2772,25 +2772,6 @@ describe('uninstall', () => {
     expect(await fse.pathExists(defaultFile)).toBe(false);
   });
 
-  it('removes the omp extension from its profile and the default-home copy an earlier release wrote (#1221)', async () => {
-    const homeDir = path.join(tmpDir, 'home');
-    const repoPath = path.join(homeDir, '.teamai', 'team-repo');
-    const movedFile = path.join(homeDir, '.omp', 'profiles', 'work', 'agent', 'extensions', 'teamai-hooks.ts');
-    const defaultFile = path.join(homeDir, '.omp', 'agent', 'extensions', 'teamai-hooks.ts');
-    await fse.outputFile(movedFile, '// [teamai] hooks extension');
-    await fse.outputFile(defaultFile, '// [teamai] hooks extension');
-    vi.stubEnv('HOME', homeDir);
-    vi.stubEnv('SHELL', '/bin/zsh');
-    vi.stubEnv('OMP_PROFILE', 'work');
-    const teamConfig = makeTeamConfig({ toolPaths: { omp: { skills: '.omp/skills' } } });
-    mockAutoDetectInit.mockResolvedValue({ localConfig: makeLocalConfig(homeDir, repoPath, { enabledAgents: ['omp'] }), teamConfig });
-
-    await uninstall({ force: true, agent: 'omp' });
-
-    expect(await fse.pathExists(movedFile)).toBe(false);
-    expect(await fse.pathExists(defaultFile)).toBe(false);
-  });
-
   it('保留用户自建的 skills', async () => {
     const { homeDir, repoPath } = await setupFixture(tmpDir);
     vi.stubEnv('HOME', homeDir);

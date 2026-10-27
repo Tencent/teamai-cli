@@ -103,11 +103,8 @@ async function removeAdapterHooks(adapter: HookAdapterId, dir: string): Promise<
         }
         case 'pi-extension':
             return removePiHooks(dir);
-        case 'omp-extension': {
-            const { removeOmpHooks } = await import('./omp-hooks.js');
-            return removeOmpHooks(dir);
-        }
         // These adapters' homes have no default-home leftovers (`Home.moves.defaultHomeLeftovers`).
+        case 'omp-extension':
         case 'hermes-plugin':
         case 'openclaw-hook':
         case 'dsh-hooks':
