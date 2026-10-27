@@ -50,7 +50,8 @@ async function repoWithUpkeep(root: string): Promise<number | undefined> {
   return idleProcess({ cwd: path.join(root, 'repo') });
 }
 
-it('names what reappeared and the process still in the directory when rmSync meets ENOTEMPTY', async () => {
+// Processes are found with /proc, or ps and lsof; Windows has neither.
+it.skipIf(process.platform === 'win32')('names what reappeared and the process still in the directory when rmSync meets ENOTEMPTY', async () => {
   const { rmSync } = await wrapLosingRemovals();
   const root = tempRoot();
   const pid = await repoWithUpkeep(root);
@@ -63,7 +64,7 @@ it('names what reappeared and the process still in the directory when rmSync mee
   expect(message).toContain(`still running in or on ${root}:\n  ${pid} `);
 });
 
-it('names the process still in the directory when fs.promises.rm meets ENOTEMPTY', async () => {
+it.skipIf(process.platform === 'win32')('names the process still in the directory when fs.promises.rm meets ENOTEMPTY', async () => {
   const { rm } = await wrapLosingRemovals();
   const root = tempRoot();
   const pid = await repoWithUpkeep(root);
