@@ -421,6 +421,19 @@ describe('importCodebase: the extraction every import source shares', () => {
     expect(logs.join('\n')).toContain('teamwiki/evidence/code/svc/ is an older copy of teamwiki/evidence/code/github__acme__svc/.');
   });
 
+  it('refuses to replace the evidence of a same-named subdirectory of the same repo', async () => {
+    const repo = await makeRepo(root, 'mono', 'export function greet() { return "hi"; }\n');
+    await fs.outputFile(path.join(repo, 'apps', 'api', 'main.ts'), 'export const app = 1;\n');
+    await fs.outputFile(path.join(repo, 'libs', 'api', 'main.ts'), 'export const lib = 1;\n');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '-q', '-m', 'apis');
+    await importCodebase({ sourceDir: path.join(repo, 'apps', 'api'), slug: 'api', wikiRoot, skipEnrich: true });
+
+    await expect(importCodebase({ sourceDir: path.join(repo, 'libs', 'api'), slug: 'api', wikiRoot, skipEnrich: true }))
+      .rejects.toThrow('teamwiki/evidence/code/api/ holds the evidence of apps/api in https://github.com/acme/mono, '
+        + 'and this checkout is libs/api in https://github.com/acme/mono. Not replacing it.');
+  });
+
   it('treats an SSH and an HTTPS clone of one repo as the same source', async () => {
     const repo = await makeRepo(root, 'svc', 'export function greet() { return "hi"; }\n');
     const slug = 'github__acme__svc';

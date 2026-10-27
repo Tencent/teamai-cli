@@ -66,9 +66,9 @@ const CodebaseManifestSchema = z.object({
  * and the edges between them), with the entrypoints just extracted; a new
  * component keeps its static entry.
  */
-function keepEnrichedComponents(published: unknown, staged: unknown): Record<string, unknown> | null {
-  const publishedManifest = CodebaseManifestSchema.safeParse(published);
-  const stagedManifest = CodebaseManifestSchema.safeParse(staged);
+function keepEnrichedComponents(manifests: { published: unknown; staged: unknown }): Record<string, unknown> | null {
+  const publishedManifest = CodebaseManifestSchema.safeParse(manifests.published);
+  const stagedManifest = CodebaseManifestSchema.safeParse(manifests.staged);
   if (!publishedManifest.success || !stagedManifest.success) return null;
   const enriched = new Map(publishedManifest.data.components.map((component) => [component.slug, component]));
   const components = stagedManifest.data.components.map((component) => {
@@ -85,10 +85,19 @@ function keepEnrichedComponents(published: unknown, staged: unknown): Record<str
 
 const PROVIDER_SLUG_PREFIXES = ['github__', 'gitlab__', 'tgit__'] as const;
 
+/** The source a `source-manifest.json` names: a repository, and the directory in it that was extracted. */
+const CodebaseSourceSchema = z.object({ repoUrl: z.string().min(1), sourceSubdir: z.string().optional() });
+type CodebaseSource = z.infer<typeof CodebaseSourceSchema>;
+
+async function readCodebaseSource(evidenceDir: string): Promise<CodebaseSource | null> {
+  const parsed = CodebaseSourceSchema.safeParse(await readJsonIfPresent(path.join(evidenceDir, 'source-manifest.json')));
+  return parsed.success ? parsed.data : null;
+}
+
 /** Whether the published evidence of a slug came from the source being imported over it. */
 type PublishedSource =
   | { kind: 'same' }
-  | { kind: 'different'; publishedUrl: string; stagedUrl: string }
+  | { kind: 'different'; published: CodebaseSource; staged: CodebaseSource | null }
   | { kind: 'unknown' };
 
 /**
@@ -96,36 +105,38 @@ type PublishedSource =
  * directory, so two such checkouts named `svc` share one evidence directory.
  *
  * The evidence came from the same source when both manifests name the same
- * repository, and from a different one when only the published manifest names
- * it or the two differ. Teamwikis written before the per-codebase
- * `source-manifest.json` existed have no published identity; there a
- * provider-namespaced slug (`gitlab__group__repo`) still names the remote
- * repository, so the slug itself is the identity. A bare `--dir` basename is
- * not, and nothing is known.
+ * repository and directory in it, and from a different one when only the
+ * published manifest names a repository or the two differ. Teamwikis written
+ * before the per-codebase `source-manifest.json` existed have no published
+ * identity; there a provider-namespaced slug (`gitlab__group__repo`) still
+ * names the remote repository, so the slug itself is the identity. A bare
+ * `--dir` basename is not, and nothing is known.
  */
-async function publishedSource(publishedDir: string, stagedDir: string, slug: string): Promise<PublishedSource> {
-  const [published, staged] = await Promise.all([
-    readJsonIfPresent(path.join(publishedDir, 'source-manifest.json')),
-    readJsonIfPresent(path.join(stagedDir, 'source-manifest.json')),
-  ]);
-  const publishedUrl = typeof published?.['repoUrl'] === 'string' ? published['repoUrl'] : '';
-  const stagedUrl = typeof staged?.['repoUrl'] === 'string' ? staged['repoUrl'] : '';
-  if (publishedUrl) {
-    return stagedUrl && remotesMatch(publishedUrl, stagedUrl)
-      ? { kind: 'same' }
-      : { kind: 'different', publishedUrl, stagedUrl };
+async function publishedSource(dirs: { publishedDir: string; stagedDir: string; slug: string }): Promise<PublishedSource> {
+  const [published, staged] = await Promise.all([readCodebaseSource(dirs.publishedDir), readCodebaseSource(dirs.stagedDir)]);
+  if (published) {
+    const sameRepo = staged !== null && remotesMatch(published.repoUrl, staged.repoUrl);
+    const sameDir = published.sourceSubdir === undefined || staged?.sourceSubdir === undefined
+      || published.sourceSubdir === staged.sourceSubdir;
+    return sameRepo && sameDir ? { kind: 'same' } : { kind: 'different', published, staged };
   }
-  return stagedUrl && PROVIDER_SLUG_PREFIXES.some((prefix) => slug.startsWith(prefix))
+  return staged && PROVIDER_SLUG_PREFIXES.some((prefix) => dirs.slug.startsWith(prefix))
     ? { kind: 'same' }
     : { kind: 'unknown' };
 }
 
-function differentSourceError(slug: string, source: { publishedUrl: string; stagedUrl: string }): Error {
+function describeSource(source: CodebaseSource): string {
+  return source.sourceSubdir ? `${source.sourceSubdir} in ${source.repoUrl}` : source.repoUrl;
+}
+
+function differentSourceError(slug: string, source: { published: CodebaseSource; staged: CodebaseSource | null }): Error {
   const evidence = `teamwiki/evidence/code/${slug}/`;
-  const reason = source.stagedUrl
-    ? `${evidence} holds the evidence of ${source.publishedUrl}, and this checkout is ${source.stagedUrl}. Not replacing it.`
-    : `${evidence} holds the evidence of ${source.publishedUrl}, and this checkout has no origin remote. Not replacing it.`;
-  return new Error(`${reason} Import the checkout from a directory with another name, or remove ${evidence} if that codebase is gone.`);
+  const published = describeSource(source.published);
+  return new Error(source.staged
+    ? `${evidence} holds the evidence of ${published}, and this checkout is ${describeSource(source.staged)}. Not replacing it. `
+      + `Import the checkout from a directory with another name, or remove ${evidence} if that codebase is gone.`
+    : `${evidence} holds the evidence of ${published}, and this checkout has no origin remote. Not replacing it. `
+      + `Import the checkout from a directory with another name, or remove ${evidence} if that codebase is gone.`);
 }
 
 /**
@@ -216,7 +227,7 @@ export async function importCodebase(opts: ImportCodebaseOptions): Promise<boole
     if (legacySlug && legacySlug !== slug) {
       const legacyDest = path.join(wikiRoot, 'evidence', 'code', legacySlug);
       if (await fs.pathExists(legacyDest)
-        && (await publishedSource(legacyDest, stagingEvidence, legacySlug)).kind === 'same') {
+        && (await publishedSource({ publishedDir: legacyDest, stagedDir: stagingEvidence, slug: legacySlug })).kind === 'same') {
         if (await fs.pathExists(evidenceDest)) {
           log.warn(`teamwiki/evidence/code/${legacySlug}/ is an older copy of teamwiki/evidence/code/${slug}/. `
             + 'Move any curated docs you want to keep from it, then remove it.');
@@ -241,8 +252,18 @@ export async function importCodebase(opts: ImportCodebaseOptions): Promise<boole
     // A missing manifest is the only case where nothing can be pruned.
     const hasManifest = Boolean(stagedManifest);
 
-    const source = await publishedSource(evidenceDest, stagingEvidence, slug);
-    if (source.kind === 'different') throw differentSourceError(slug, source);
+    const source = await publishedSource({ publishedDir: evidenceDest, stagedDir: stagingEvidence, slug });
+    switch (source.kind) {
+      case 'different':
+        throw differentSourceError(slug, source);
+      case 'same':
+      case 'unknown':
+        break;
+      default: {
+        const unhandled: never = source;
+        throw new Error(`Unhandled published source: ${JSON.stringify(unhandled)}`);
+      }
+    }
     if (source.kind === 'same') {
       // Carry over the artifacts that only AI enrichment and deep enrich write.
       // Extraction never regenerates them, so replacing the published evidence
@@ -256,7 +277,7 @@ export async function importCodebase(opts: ImportCodebaseOptions): Promise<boole
         if (!(await fs.pathExists(published))) continue;
         await fs.copy(published, path.join(stagingEvidence, artifact), { overwrite: false, errorOnExist: false });
       }
-      const enrichedManifest = opts.skipEnrich ? keepEnrichedComponents(publishedManifest, stagedManifest) : null;
+      const enrichedManifest = opts.skipEnrich ? keepEnrichedComponents({ published: publishedManifest, staged: stagedManifest }) : null;
       if (enrichedManifest) {
         await fs.writeJson(path.join(stagingEvidence, '_manifest.json'), enrichedManifest, { spaces: 2 });
       }
