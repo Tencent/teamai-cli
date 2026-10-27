@@ -191,10 +191,17 @@ function withLocalMemberSettings(config: LocalConfig): LocalConfig {
 export async function refreshRoleAssignment(config: LocalConfig): Promise<void> {
   let resolved = await applyRoleAssignment(withLocalRoles(withLocalMemberSettings(config)));
   if (config.roleAssignment && !resolved.roleAssignment) resolved = await resolveLegacyRole(resolved);
+  if (resolved.roleAssignment) delete resolved.roleUnresolved;
   if (resolved.scope !== 'user') resolved = applyMachineSettings(resolved, await loadMemberSettings());
 
   for (const key of MEMBER_SETTING_KEYS) delete (config as Record<string, unknown>)[key];
   delete config.memberSettingsOverlay;
+  // Role assignment is runtime-only too. Clear the old overlay before copying
+  // the refreshed result, otherwise an assignment removal keeps the previous
+  // role metadata on the same object even though `resolved` handed it back.
+  delete config.roleAssignment;
+  delete config.roleUnresolved;
+  delete config.primaryRole;
   Object.assign(config, resolved);
 }
 
