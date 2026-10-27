@@ -113,7 +113,7 @@ type GateFact = WorkflowDescription['facts']['gates'][number];
 function optionalGateFact(gate: GateFact): string {
   switch (gate.kind) {
     case 'approve':
-      return `Optional approval at ${gate.step}: ${guardsFact(gate.guards)}.`;
+      return `Optional approval at ${gate.step}: ${guardsFact(gate.guards)}${gate.deliver ? ', then opens a pull request' : ''}.`;
     case 'choose': {
       const picks = gate.default !== undefined ? `"answer automatically" picks ${gate.default}` : 'no default, so "answer automatically" leaves it to you';
       return `Optional choice at ${gate.step}: one of ${gate.options.join(', ')}; ${picks}.`;

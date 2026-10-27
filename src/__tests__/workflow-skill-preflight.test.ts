@@ -375,6 +375,17 @@ describe('skill driver preflight of optional gates', () => {
       'How should it run?',
     ].join('\n') } } } } });
   });
+
+  it('says an optional approval comes before a step that then opens a pull request', async () => {
+    expect(await questionOf({ gates: gates(`  - id: integrate
+    approve: Integrate?
+    workspace: new
+    deliver: pr
+    prompt: Integrate the change.
+`) })).toMatchObject({ data: { describe: { ask: { kind: 'ask', question: { text: expect.stringContaining(
+      '- Optional approval at integrate: before a prompt step, which a child agent works, then opens a pull request.\n',
+    ) } } } } });
+  });
 });
 
 describe('skill driver preflight in an unattended run', () => {
