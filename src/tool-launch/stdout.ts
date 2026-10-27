@@ -1,4 +1,4 @@
-import { localToolFamily, type LaunchTool } from './tools.js';
+import { launchAdapterIdOf, type LaunchOrderTool } from './tools.js';
 
 export interface TokenUsage {
   input?: number;
@@ -129,7 +129,9 @@ export function readToolMetadata(stdout: string): ToolReport | null {
   return found;
 }
 
-export function toolStdout(tool: LaunchTool, stdout: string): ToolReport | null {
-  if (localToolFamily(tool) === 'claude') return claudeStdout(stdout);
+/** What a tool's stdout reports. CodeBuddy prints Claude's result record. */
+export function toolStdout(tool: LaunchOrderTool, stdout: string): ToolReport | null {
+  const adapter = launchAdapterIdOf(tool);
+  if (adapter === 'claude' || adapter === 'codebuddy') return claudeStdout(stdout);
   return readToolMetadata(stdout);
 }

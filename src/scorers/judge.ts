@@ -12,31 +12,15 @@ import { resolveCliPath } from '../utils/cli-path.js';
 import { execCommand, probeBinary } from '../utils/exec.js';
 import { runTool } from '../tool-launch/run.js';
 import { toolStdout } from '../tool-launch/stdout.js';
-import { LAUNCH_TOOLS, localToolFamily, opencodeModelArgs, type LaunchTool } from '../tool-launch/tools.js';
+import { LAUNCH_ADAPTERS, type JudgeProfile } from '../tool-launch/adapters.js';
+import { JUDGE_TOOLS, launchAdapterIdOf, opencodeModelArgs, type JudgeTool } from '../tool-launch/tools.js';
 import { JudgeAnswerSchema, type JudgeAnswer } from './batch.js';
 import type { ScoreLabel, Isolation, JudgeAccess, JudgeUsage } from './label.js';
 
 const RecordSchema = z.record(z.unknown());
 const JUDGE_TIMEOUT_MS = 10 * 60_000;
 const COMMON_ENV = ['PATH', 'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'SystemRoot', 'WINDIR', 'TMPDIR', 'TMP', 'TEMP', 'LANG', 'LC_ALL', 'TERM', 'USER', 'LOGNAME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME', 'HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY', 'SSL_CERT_FILE', 'NODE_EXTRA_CA_CERTS'];
-const CLAUDE_ENV = ['CLAUDE_CONFIG_DIR', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'ANTHROPIC_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY'];
-const TOOL_ENV = {
-  claude: CLAUDE_ENV,
-  codex: ['CODEX_HOME', 'OPENAI_API_KEY', 'OPENAI_BASE_URL'],
-  opencode: ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GOOGLE_GENERATIVE_AI_API_KEY', 'GEMINI_API_KEY', 'OPENROUTER_API_KEY', 'OPENCODE_API_KEY'],
-  codebuddy: ['CODEBUDDY_API_KEY', 'CODEBUDDY_AUTH_TOKEN', 'CODEBUDDY_CONFIG_DIR'],
-} as const;
-/** The variable each tool reads its home from. A judge started outside the member's shell, as background scoring is, gets the recorded one. */
-const HOME_ENV = { claude: 'CLAUDE_CONFIG_DIR', codex: 'CODEX_HOME', opencode: undefined, codebuddy: 'CODEBUDDY_CONFIG_DIR' } as const satisfies Record<keyof typeof TOOL_ENV, string | undefined>;
 const CODEX_DISABLED = ['hooks', 'plugins', 'apps', 'browser_use', 'computer_use', 'multi_agent', 'multi_agent_v2'];
-const VERIFIED = { claude: /^2\.1\.308 \(Claude Code\)$/, codex: /^codex-cli 0\.163\.0$/, opencode: /^opencode v2\.1\.2$/, codebuddy: undefined } as const;
-/** What each profile lets the judge do. CodeBuddy lists about 70 tools whatever `--tools` says. */
-const ACCESS = { claude: 'read', codex: 'read', opencode: 'read', codebuddy: 'full' } as const satisfies Record<keyof typeof TOOL_ENV, JudgeAccess>;
-
-/** The tools the local judge launches: those a workflow step runs, and CodeBuddy. */
-const JUDGE_TOOLS = [...LAUNCH_TOOLS, 'codebuddy'] as const;
-
-export type JudgeTool = LaunchTool | 'codebuddy';
 
 export function isJudgeTool(value: string): value is JudgeTool {
   return (JUDGE_TOOLS as readonly string[]).includes(value);
@@ -48,17 +32,17 @@ export function installedJudgeTools(preferred: readonly string[], { resolveTool 
   return [...tools].filter((tool) => resolveTool(tool) !== null);
 }
 
-function judgeFamily(tool: JudgeTool): keyof typeof TOOL_ENV {
-  return tool === 'codebuddy' ? 'codebuddy' : localToolFamily(tool);
+function judgeProfile(tool: JudgeTool): JudgeProfile {
+  return LAUNCH_ADAPTERS[launchAdapterIdOf(tool)].judge;
 }
 
-/** What the judge teamai launches for `tool` can do beyond answering, by its family's profile. */
+/** What the judge teamai launches for `tool` can do beyond answering, by its adapter's profile. */
 export function judgeAccess(tool: JudgeTool): JudgeAccess {
-  return ACCESS[judgeFamily(tool)];
+  return judgeProfile(tool).access;
 }
 
 function profileIsolation(tool: JudgeTool, version: string, insideCheckout: boolean): Isolation {
-  return VERIFIED[judgeFamily(tool)]?.test(version) && !insideCheckout ? 'verified' : 'best-effort';
+  return judgeProfile(tool).verified?.test(version) && !insideCheckout ? 'verified' : 'best-effort';
 }
 
 export interface JudgeToolLevel {
@@ -73,7 +57,7 @@ export async function judgeToolLevel(tool: JudgeTool, { resolveTool = resolveCli
   if (executable === null) return undefined;
   const tmp = await fs.realpath(os.tmpdir());
   const version = await probeBinary(executable, ['--version'], (command, args, options) => execCommand(command, args, { ...options, env: judgeEnv(tool), cwd: tmp }));
-  return { tool, version, isolation: profileIsolation(tool, version, judgeFamily(tool) === 'opencode' && await insideCheckout(tmp)) };
+  return { tool, version, isolation: profileIsolation(tool, version, launchAdapterIdOf(tool) === 'opencode' && await insideCheckout(tmp)) };
 }
 
 /** Each judge tool on PATH, its version, and the isolation its judge profile reaches on this machine. */
@@ -107,10 +91,10 @@ function memberEnv(): NodeJS.ProcessEnv {
 
 function judgeEnv(tool: JudgeTool): NodeJS.ProcessEnv {
   const restored = memberEnv();
-  const variable = HOME_ENV[judgeFamily(tool)];
+  const { env: toolEnv, homeEnv: variable } = judgeProfile(tool);
   const moved = variable !== undefined && restored[variable] === undefined && isToolId(tool) ? movedToolHome(tool, realHost({ env: restored })) : null;
   return {
-    ...Object.fromEntries([...COMMON_ENV, ...TOOL_ENV[judgeFamily(tool)]].flatMap((key) => restored[key] === undefined ? [] : [[key, restored[key]]])),
+    ...Object.fromEntries([...COMMON_ENV, ...toolEnv].flatMap((key) => restored[key] === undefined ? [] : [[key, restored[key]]])),
     ...(variable !== undefined && moved !== null ? { [variable]: moved } : {}),
     [LAUNCHED_BY_ENV]: 'scorer',
   };
@@ -125,7 +109,7 @@ async function claudeSettings(tool: JudgeTool, env: NodeJS.ProcessEnv, tmp: stri
   const file = path.join(env.CLAUDE_CONFIG_DIR || toolHome(tool), 'settings.json');
   const text = await optionalFile(file);
   const settings = text ? z.object({ env: z.record(z.string()).optional(), model: z.string().optional() }).parse(JSON.parse(text)) : {};
-  const allowed = Object.fromEntries(Object.entries(settings.env ?? {}).filter(([key]) => CLAUDE_ENV.includes(key)));
+  const allowed = Object.fromEntries(Object.entries(settings.env ?? {}).filter(([key]) => judgeProfile(tool).env.includes(key)));
   const target = path.join(tmp, 'claude-settings.json');
   await fs.writeFile(target, JSON.stringify({ env: allowed, ...(settings.model ? { model: settings.model } : {}) }));
   return target;
@@ -210,7 +194,7 @@ function records(stdout: string): Array<Record<string, unknown>> {
 }
 
 function answerFrom(tool: JudgeTool, stdout: string): JudgeAnswer | undefined {
-  const family = judgeFamily(tool);
+  const family = launchAdapterIdOf(tool);
   const events = records(stdout);
   if (family === 'claude' || family === 'codebuddy') {
     const last = events.filter((record) => record.type === 'result').at(-1);
@@ -256,7 +240,7 @@ export async function runLocalJudge(input: JudgeInput, { resolveTool = resolveCl
   try {
     const evidence = await fs.realpath(input.evidence);
     const env = judgeEnv(input.tool);
-    const family = judgeFamily(input.tool);
+    const family = launchAdapterIdOf(input.tool);
     const codex = family === 'codex' ? await codexSettings(input.tool, env) : { args: [], model: undefined };
     let configuredModel = codex.model;
     if (family === 'codex') {
@@ -278,18 +262,24 @@ export async function runLocalJudge(input: JudgeInput, { resolveTool = resolveCl
     let prompt = 'Apply the rubric to the evidence. Return only the requested JSON answer.\n';
     let args: string[];
     const model = input.model ? ['--model', input.model.name] : [];
-    if (family === 'claude') {
+    switch (family) {
+    case 'claude': {
       const settings = await claudeSettings(input.tool, env, tmp);
       args = ['-p', '--restricted', '--tools=Read,Grep,Glob', '--strict-mcp-config', '--no-session-persistence', '--permission-prompts', 'none', '--output-format', 'stream-json', '--verbose', '--json-schema', JSON.stringify(input.schema), '--append-system-prompt-file', path.join(evidence, 'prompt.md'), '--settings', settings, ...model, ...(input.model?.effort ? ['--effort', input.model.effort] : [])];
-    } else if (family === 'codex') {
+      break;
+    }
+    case 'codex': {
       const schema = path.join(tmp, 'schema.json');
       await fs.writeFile(schema, JSON.stringify(input.schema));
       args = ['-a', 'never', 'exec', '--json', '--ephemeral', '--skip-git-repo-check', '--ignore-rules', '--output-schema', schema, ...CODEX_DISABLED.flatMap((feature) => ['--disable', feature]), '-o', path.join(tmp, 'answer.json'), ...codex.args, ...model, ...(input.model?.effort ? ['-c', `model_reasoning_effort=${JSON.stringify(input.model.effort)}`] : []), '-'];
       prompt += await fs.readFile(path.join(evidence, 'prompt.md'), 'utf8');
-    } else if (family === 'codebuddy') {
+      break;
+    }
+    case 'codebuddy':
       args = ['-p', '--tools', 'Read,Grep,Glob', '--strict-mcp-config', '--no-session-persistence', '--setting-sources', '', '--permission-mode', 'dontAsk', '--settings', JSON.stringify({ permissions: { allow: ['Read(./**)'] } }), '--output-format', 'json', '--json-schema', JSON.stringify(input.schema), ...model];
       prompt += await fs.readFile(path.join(evidence, 'prompt.md'), 'utf8');
-    } else {
+      break;
+    case 'opencode': {
       await fs.cp(evidence, cwd, { recursive: true, dereference: false });
       const entries = await fs.readdir(cwd, { recursive: true, withFileTypes: true });
       if (entries.some((entry) => entry.isSymbolicLink())) throw new Error('OpenCode judge evidence contains a symlink. Rebuild the evidence before judging.');
@@ -297,13 +287,18 @@ export async function runLocalJudge(input: JudgeInput, { resolveTool = resolveCl
       configuredModel = await openCodeSettings(env, tmp);
       args = ['run', '--standalone', '--format', 'json', ...opencodeModelArgs(input.model, input.model?.effort ? await opencodeMajorVersion(executable) : 2)];
       prompt += await fs.readFile(path.join(cwd, 'prompt.md'), 'utf8');
+      break;
+    }
+    default: {
+      const unhandled: never = family;
+      throw new Error(`No judge profile for adapter ${String(unhandled)}`);
+    }
     }
     const result = await runTool({ executable, args, cwd, env, stdin: prompt, timeoutMs: JUDGE_TIMEOUT_MS, group: input.group });
     if (family === 'codebuddy' && /Authentication required/.test(result.stdout + result.stderr)) {
       return { ok: false, code: 'judge_tool_unavailable', message: 'CodeBuddy is not signed in. Sign in with codebuddy /login or set CODEBUDDY_API_KEY, then retry, or submit this lease through another driver.', raw: result.stdout + '\n' + result.stderr };
     }
-    // CodeBuddy prints Claude's result record.
-    const report = toolStdout(input.tool === 'codebuddy' ? 'claude' : input.tool, result.stdout);
+    const report = toolStdout(input.tool, result.stdout);
     const tokens = report?.tokens;
     const cost = records(result.stdout).filter((record) => typeof record.total_cost_usd === 'number').at(-1)?.total_cost_usd;
     const spent = tokens || typeof cost === 'number'
@@ -319,7 +314,7 @@ export async function runLocalJudge(input: JudgeInput, { resolveTool = resolveCl
     const ranModel = observedModel({ requested: input.model?.name ?? configuredModel, reported: report?.model });
     const ranEffort = observedEffort({ requested: input.model?.effort });
     if (!version) isolation = 'best-effort';
-    return { ok: true, answer, judge: { tool: input.tool, ...(ranModel ? { model: ranModel } : {}), ...(ranEffort ? { effort: ranEffort } : {}), isolation, access: ACCESS[family], ...spent } };
+    return { ok: true, answer, judge: { tool: input.tool, ...(ranModel ? { model: ranModel } : {}), ...(ranEffort ? { effort: ranEffort } : {}), isolation, access: judgeProfile(input.tool).access, ...spent } };
   } catch (error) {
     return { ok: false, code: 'judge_failed', message: `The judge could not run: ${error instanceof Error ? error.message : String(error)}. Fix that, then retry this lease.` };
   } finally { await fs.rm(tmp, { recursive: true, force: true, maxRetries: 3 }); }

@@ -10,7 +10,7 @@ import { writeJsonAtomic } from '../../../utils/fs.js';
 import { log } from '../../../utils/logger.js';
 import { stopProcess } from '../../../tool-launch/process-stop.js';
 import { toolStdout, type TokenUsage, type ToolReport } from '../../../tool-launch/stdout.js';
-import { localToolFamily, opencodeModelArgs, type LaunchTool } from '../../../tool-launch/tools.js';
+import { launchAdapterIdOf, opencodeModelArgs, type LaunchTool } from '../../../tool-launch/tools.js';
 import type { StepModel } from '../../step-model.js';
 import type { WorkflowFailure } from '../../types.js';
 
@@ -68,12 +68,12 @@ function resultInstruction(input: LocalToolRun, prompt: string): string {
 
 /** Codex, and OpenCode 1 for a subagent, which `opencode run --agent` does not start, get the definition's instructions in the prompt. */
 function promptHandoff(tool: LaunchTool, input: LocalToolRun, opencodeMajor: number): boolean {
-  const family = localToolFamily(tool);
+  const family = launchAdapterIdOf(tool);
   return family === 'codex' || (family === 'opencode' && opencodeMajor < 2 && input.agent?.settings?.['mode'] === 'subagent');
 }
 
 function invocation(tool: LaunchTool, input: LocalToolRun, opencodeMajor: number, interactive: boolean): string[] {
-  const family = localToolFamily(tool);
+  const family = launchAdapterIdOf(tool);
   const viaPrompt = promptHandoff(tool, input, opencodeMajor);
   const agentPrompt = input.agent?.instructions
     ? `${input.agent.instructions}\n\n${input.prompt}`
@@ -163,7 +163,7 @@ export function createLocalToolAdapter(
           failure: { code: 'tool_unavailable', message: `The ${tool} executable is not available on PATH` },
         };
       }
-      const opencode = localToolFamily(tool) === 'opencode';
+      const opencode = launchAdapterIdOf(tool) === 'opencode';
       const opencodeMajor = opencode && (input.agent || input.model?.effort) ? await opencodeMajorVersion(executable) : 1;
       if (opencode && input.agent) {
         const { name, model, settings = {} } = input.agent;

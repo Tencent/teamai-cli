@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { JudgeAccess } from '../scorers/label.js';
 import type { Evidence } from '../tools.js';
 import { readToolMetadata, type TokenUsage } from './stdout.js';
 
@@ -19,8 +20,28 @@ export interface CallProfile {
   read(output: CallOutput): CallReading;
 }
 
+/** A workflow step: a session the adapter starts and resumes, in `local-tool-adapter.ts`. */
+export interface StepProfile {
+  readonly evidence: Evidence;
+}
+
+/** A confined judge for scorers, in `scorers/judge.ts`. */
+export interface JudgeProfile {
+  readonly evidence: Evidence;
+  /** The member's variables the judge keeps, beyond the common ones. */
+  readonly env: readonly string[];
+  /** The variable the tool reads its home from. A judge started outside the member's shell, as background scoring is, gets the recorded one. */
+  readonly homeEnv?: string;
+  /** The versions whose confinement has been checked; any other version judges at best-effort. */
+  readonly verified?: RegExp;
+  /** What the judge can do beyond answering. */
+  readonly access: JudgeAccess;
+}
+
 export interface LaunchAdapter {
   readonly call: CallProfile;
+  readonly step?: StepProfile;
+  readonly judge?: JudgeProfile;
 }
 
 function jsonLines(stdout: string): unknown[] {
@@ -110,15 +131,29 @@ function readOpenClawExec({ stdout }: CallOutput): CallReading {
 export const LAUNCH_ADAPTERS = {
   claude: {
     call: { evidence: 'verified', args: () => ['-p', '--output-format', 'json'], read: readClaudeResult },
+    step: { evidence: 'verified' },
+    judge: {
+      evidence: 'verified',
+      env: ['CLAUDE_CONFIG_DIR', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'ANTHROPIC_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY'],
+      homeEnv: 'CLAUDE_CONFIG_DIR',
+      verified: /^2\.1\.308 \(Claude Code\)$/,
+      access: 'read',
+    },
   },
   codex: {
     call: { evidence: 'verified', args: (lastMessageFile) => ['exec', '--json', '-o', lastMessageFile, '-'], read: readCodexExec },
+    step: { evidence: 'verified' },
+    judge: { evidence: 'verified', env: ['CODEX_HOME', 'OPENAI_API_KEY', 'OPENAI_BASE_URL'], homeEnv: 'CODEX_HOME', verified: /^codex-cli 0\.163\.0$/, access: 'read' },
   },
   opencode: {
     call: { evidence: 'verified', args: () => ['run', '--format', 'json'], read: readOpenCodeRun },
+    step: { evidence: 'verified' },
+    judge: { evidence: 'verified', env: ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GOOGLE_GENERATIVE_AI_API_KEY', 'GEMINI_API_KEY', 'OPENROUTER_API_KEY', 'OPENCODE_API_KEY'], verified: /^opencode v2\.1\.2$/, access: 'read' },
   },
   codebuddy: {
     call: { evidence: 'verified', args: () => ['-p', '--output-format', 'json'], read: readClaudeResult },
+    // CodeBuddy lists about 70 tools whatever `--tools` says.
+    judge: { evidence: 'docs', env: ['CODEBUDDY_API_KEY', 'CODEBUDDY_AUTH_TOKEN', 'CODEBUDDY_CONFIG_DIR'], homeEnv: 'CODEBUDDY_CONFIG_DIR', access: 'full' },
   },
   // One embedded turn with ephemeral state, so no call leaves a session in the member's conversations (#1308).
   openclaw: {

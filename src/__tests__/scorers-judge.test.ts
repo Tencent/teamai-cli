@@ -305,6 +305,22 @@ it('offers every launch tool on PATH as a judge, the preferred one first', () =>
   expect(installedJudgeTools(['codebuddy'], { resolveTool: (tool) => onPath.has(tool) ? `/bin/${tool}` : null })).toEqual(['codebuddy', 'tclaude', 'codex-internal']);
 });
 
+it('judges with WorkBuddy through the CodeBuddy profile, at best-effort and with full access', async () => {
+  root = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-judge-'));
+  const evidence = path.join(root, 'evidence');
+  await fs.mkdir(evidence);
+  await fs.writeFile(path.join(evidence, 'prompt.md'), 'prompt');
+  const record = path.join(root, 'invocation.json');
+  const executable = await codeBuddyFake(root, record, "console.log(JSON.stringify({type:'result',structured_output:{label:'good',reasoning:'done'}}));");
+
+  expect(installedJudgeTools([], { resolveTool: (tool) => tool === 'workbuddy' ? executable : null })).toEqual(['workbuddy']);
+  const result = await runLocalJudge({ tool: 'workbuddy', evidence, schema: {} }, { resolveTool: () => executable });
+
+  expect(result).toMatchObject({ ok: true, answer: { label: 'good' }, judge: { tool: 'workbuddy', access: 'full', isolation: 'best-effort' } });
+  const { args } = z.object({ args: z.array(z.string()) }).parse(JSON.parse(await fs.readFile(record, 'utf8')));
+  expect(args[args.indexOf('--permission-mode') + 1]).toBe('dontAsk');
+});
+
 it('gives a Claude judge the home the tool-homes record names when nothing in the environment moves it', async () => {
   root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-judge-')));
   const evidence = path.join(root, 'evidence');

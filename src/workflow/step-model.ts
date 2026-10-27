@@ -13,7 +13,7 @@ import {
 } from '../resources/agent-format.js';
 import { isAgentToolId } from '../tools.js';
 import type { LocalConfig, TeamaiConfig } from '../types.js';
-import { isLaunchTool, localToolFamily, type LaunchTool } from '../tool-launch/tools.js';
+import { isLaunchTool, launchAdapterIdOf, type LaunchTool } from '../tool-launch/tools.js';
 import { readFileSafe } from '../utils/fs.js';
 import type { WorkflowFailure } from './types.js';
 
@@ -75,7 +75,7 @@ export async function chooseStepModel(request: StepModelRequest): Promise<StepMo
     : agent?.model === undefined && request.defaultModel !== undefined ? { origin: 'defaults', value: request.defaultModel } : undefined;
   if (!chosen) {
     // A tool teamai does not launch starts the agent itself, from the file it reads the model from.
-    const family = isLaunchTool(tool) ? localToolFamily(tool) : undefined;
+    const family = isLaunchTool(tool) ? launchAdapterIdOf(tool) : undefined;
     if (!agent?.model || family === undefined || family === 'claude') return { ok: true };
     const variant = family === 'opencode' ? toolExtrasFor(agent, 'opencode')?.['variant'] : undefined;
     return { ok: true, by: 'definition', model: { name: agent.model, ...(variant !== undefined ? { effort: String(variant) } : {}) } };
@@ -95,7 +95,7 @@ export async function chooseStepModel(request: StepModelRequest): Promise<StepMo
 }
 
 function reverseAgent(tool: LaunchTool, file: string, content: string) {
-  const family = localToolFamily(tool);
+  const family = launchAdapterIdOf(tool);
   if (family === 'claude') return reverseFromClaude(file, content);
   if (family === 'codex') return reverseFromCodex(file, content);
   return reverseFromOpencode(file, content);

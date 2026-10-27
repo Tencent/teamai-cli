@@ -32,7 +32,7 @@ import { attemptDir, AttemptIdSchema, attemptResultPath, attemptsDir, readRun, R
 import { abandonPlace, placeLeaseOf, placeOf, placeRoot, preparePlace, runPlaceSetup, type StepEnd } from '../../place/place.js';
 import { commandEnd, managedReport, unreadablePlace } from '../../protocol.js';
 import { startGroupedCommand, stopRecordedGroup, type CommandExit, type GroupedCommand } from '../../../tool-launch/process-stop.js';
-import { isLaunchTool, localToolFamily, type LaunchTool } from '../../../tool-launch/tools.js';
+import { isLaunchTool, launchAdapterIdOf, type LaunchTool } from '../../../tool-launch/tools.js';
 import { chooseStepModel, loadDeployedAgent } from '../../step-model.js';
 import type { DriverIdentity, StepHitl, WorkflowEnvelope, WorkflowFailure } from '../../types.js';
 import { isWorkflowError, WORKSPACE_MODES } from '../../types.js';
@@ -179,7 +179,7 @@ function ignoredCodexSettings(agent: AgentSpec): string[] {
 }
 
 function definitionRun(tool: LaunchTool, name: string, agent: AgentSpec): NonNullable<LocalToolRun['agent']> {
-  const settings = localToolFamily(tool) === 'opencode' ? toolExtrasFor(agent, 'opencode') : undefined;
+  const settings = launchAdapterIdOf(tool) === 'opencode' ? toolExtrasFor(agent, 'opencode') : undefined;
   return { name, instructions: agent.instructions, ...(agent.model ? { model: agent.model } : {}), ...(settings ? { settings } : {}) };
 }
 
@@ -237,14 +237,14 @@ async function stageLease(lease: Lease, { config, lock, root, values, mode, sign
 async function resumeSession(archive: SessionArchive, lease: Lease, tool: LaunchTool, cwd: string): Promise<{ id: string; resumed: SessionRef } | undefined> {
   const to = AgentSession.platformForTool(tool);
   if (!lease.session || !to) return undefined;
-  const resumes = localToolFamily(tool) !== 'opencode';
+  const resumes = launchAdapterIdOf(tool) !== 'opencode';
   const misses: string[] = [];
   for (const session of [lease.session, ...(lease.session.earlier ?? [])]) {
     if (!supportedTool(session.tool)) continue;
     const from = AgentSession.platformForTool(session.tool);
     if (!from) continue;
     const resumed = { tool: session.tool, id: session.id };
-    if (localToolFamily(session.tool) === localToolFamily(tool) && resumes) {
+    if (launchAdapterIdOf(session.tool) === launchAdapterIdOf(tool) && resumes) {
       const found = await AgentSession.find({ platform: from, sessionId: session.id }, { scrub: false });
       if (found.status === 'done') return { id: session.id, resumed };
       misses.push(found.failure.message);
@@ -320,7 +320,7 @@ async function promptReport(
     step: lease.step, tool: selected, model: lease.model, defaultModel: lease.defaultModel, agent: agent ?? undefined, config: stepConfig,
   });
   if (!chosen.ok) return giveUp(chosen.failure, selected);
-  if (agent && localToolFamily(selected) === 'codex') {
+  if (agent && launchAdapterIdOf(selected) === 'codex') {
     const ignored = ignoredCodexSettings(agent);
     if (ignored.length > 0) {
       log.warn(`Agent "${agent.name}" on ${selected} does not apply ${ignored.join(', ')} from the deployed agent file. codex exec still has a shell. The step is not blocked.`);
@@ -350,7 +350,7 @@ async function promptReport(
     delivered ? deliveredTeamSkills(stepConfig, cwd, delivered).catch(() => undefined) : undefined,
   ]);
   // Only headless Claude has a turn limit; any other launch reports the cap as not enforced.
-  const capsTurns = lease.maxTurns !== undefined && !lease.interactive && localToolFamily(selected) === 'claude';
+  const capsTurns = lease.maxTurns !== undefined && !lease.interactive && launchAdapterIdOf(selected) === 'claude';
   let result: LocalToolResult;
   const launchedAt = Date.now();
   try {

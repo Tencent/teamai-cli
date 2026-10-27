@@ -15,7 +15,8 @@ import { answerSchema, evidenceDirOf, type Rubrics } from '../scorers/evidence.j
 import { scoringUnavailable } from '../scorers/home.js';
 import { requiredIsolation, scorerIsolationSource, type RequiredIsolation } from '../scorers/isolation.js';
 import { scopeScoring } from '../scorers/settings.js';
-import { installedJudgeTools, runLocalJudge, type JudgeTool, type LocalJudgeResult } from '../scorers/judge.js';
+import { installedJudgeTools, runLocalJudge, type LocalJudgeResult } from '../scorers/judge.js';
+import type { JudgeTool } from '../tool-launch/tools.js';
 import { chooseJudgeModel, type JudgeModelChoice } from '../scorers/judge-model.js';
 import type { ScoreLabel, SessionSubject } from '../scorers/label.js';
 import { LabelStore, reasoningPath, shareFailedLabelHint } from '../scorers/label-store.js';
