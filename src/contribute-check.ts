@@ -183,7 +183,19 @@ export async function writeContributeState(sessionId: string, state: ContributeS
 const STALE_SESSION_MS = 24 * 60 * 60 * 1000;
 
 /**
- * Remove session files older than 24h. Skips the current session.
+ * How long a swept session's reminder decision is kept: the dashboard compares the sessions the friction reminder fired
+ * on with those it did not over a 30 days window (#1182), longer than a state file lives.
+ */
+const SWEPT_RECORD_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** `<sessions>/swept/<sanitized id>.json`: what the sweep keeps of a removed state file, `{ hinted }` only. */
+function sweptDir(sessionsDir: string): string {
+  return path.join(sessionsDir, 'swept');
+}
+
+/**
+ * Remove session files older than 24h. Skips the current session. Each removed file leaves a record of whether its
+ * friction reminder fired, false included, kept for 30 days; older records are removed here too.
  *
  * @param dir              Sessions directory.
  * @param currentSessionId Raw sessionId of the just-written session (will be
@@ -205,12 +217,41 @@ export async function cleanupStaleSessions(dir: string, currentSessionId: string
     try {
       const stat = await fs.promises.stat(filePath);
       if (now - stat.mtimeMs > STALE_SESSION_MS) {
+        const raw = await readJson<Record<string, unknown>>(filePath);
+        if (raw) await writeJson(path.join(sweptDir(dir), entry), { hinted: raw.hinted === true });
         await fs.promises.unlink(filePath);
       }
     } catch {
       // Ignore — file may have been removed by another session
     }
   }
+  for (const entry of await fs.promises.readdir(sweptDir(dir)).catch(() => [])) {
+    const filePath = path.join(sweptDir(dir), entry);
+    try {
+      if (now - (await fs.promises.stat(filePath)).mtimeMs > SWEPT_RECORD_MS) await fs.promises.unlink(filePath);
+    } catch {
+      // Ignore — another session's sweep may have removed it
+    }
+  }
+}
+
+/**
+ * Whether the friction reminder fired, by sanitized session id, for every session this machine has contribute state
+ * for: the live state files, and the records the sweep kept for 30 days. A session that either says fired counts as
+ * fired, since a session resumed after its sweep starts a new state file. A session with neither has no entry.
+ */
+export async function readReminderDecisions(): Promise<Map<string, boolean>> {
+  const dir = path.join(getUserHome(), '.teamai', 'sessions');
+  const read = async (folder: string) => (await Promise.all((await fs.promises.readdir(folder).catch(() => []))
+    .filter((entry) => entry.endsWith('.json'))
+    .map(async (entry) => {
+      const raw = await readJson<Record<string, unknown>>(path.join(folder, entry)).catch(() => null);
+      return raw ? [[entry.slice(0, -'.json'.length), raw.hinted === true] as const] : [];
+    }))).flat();
+  const [swept, live] = await Promise.all([read(sweptDir(dir)), read(dir)]);
+  const decisions = new Map<string, boolean>();
+  for (const [session, hinted] of [...swept, ...live]) decisions.set(session, hinted || decisions.get(session) === true);
+  return decisions;
 }
 
 /** Points from the tool-error retry gradient (highest matching tier wins). */
