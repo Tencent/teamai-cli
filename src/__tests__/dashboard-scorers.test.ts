@@ -188,6 +188,14 @@ describe('team reads between clicks', () => {
     write(path.join(config.dataHome ?? '', 'scores', 'labels.jsonl'), `${JSON.stringify(sessionLabel('mine'))}\n`);
     expect(await n()).toBe(3);
   });
+
+  it('still answers from this machine\'s labels when the team clone is gone', async () => {
+    const { config } = team();
+    fs.rmSync(config.repo.localPath, { recursive: true, force: true });
+    write(path.join(config.dataHome ?? '', 'scores', 'labels.jsonl'), `${JSON.stringify(sessionLabel('mine'))}\n`);
+    const view = await scorerResults({ config, query: { windowDays: 30 }, now: NOW });
+    expect(view.selected?.cohort.stats.n).toBe(1);
+  });
 });
 
 describe('reminder table over a long window', () => {

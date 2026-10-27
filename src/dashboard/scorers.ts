@@ -117,9 +117,10 @@ type TeamReads = {
  */
 const teamReadsCache = new Map<string, { at: string; reads: Promise<TeamReads> }>();
 
+/** The commit checked out in `dir`, or undefined when it has none or is gone: then nothing read from it is kept. */
 async function headOf(dir: string): Promise<string | undefined> {
-  const { code, stdout } = await execCommand('git', ['rev-parse', '--verify', '--quiet', 'HEAD'], { cwd: dir, timeoutMs: 10_000 });
-  return code === 0 ? stdout.trim() : undefined;
+  const head = await execCommand('git', ['rev-parse', '--verify', '--quiet', 'HEAD'], { cwd: dir, timeoutMs: 10_000 }).catch(() => undefined);
+  return head?.code === 0 ? head.stdout.trim() : undefined;
 }
 
 async function readTeam(config: LocalConfig): Promise<TeamReads> {
@@ -135,10 +136,13 @@ async function readTeam(config: LocalConfig): Promise<TeamReads> {
   };
 }
 
-/** The team reads at the current commits, from memory when neither checkout moved. A checkout with no commit is never kept. */
+/**
+ * The team reads at the current commits, from memory when neither checkout moved. Nothing is kept for a checkout with no
+ * commit, or for reports that are not a branch worktree, which a sync rewrites without a commit.
+ */
 async function teamReads(config: LocalConfig): Promise<TeamReads> {
   const dir = getReportsDir(config);
-  const [reportsHead, teamHead] = await Promise.all([headOf(dir), headOf(config.repo.localPath)]);
+  const [reportsHead, teamHead] = usesBranchWorktree(config) ? await Promise.all([headOf(dir), headOf(config.repo.localPath)]) : [];
   const at = reportsHead && teamHead ? `${reportsHead} ${teamHead}` : undefined;
   const kept = teamReadsCache.get(dir);
   if (at && kept?.at === at) return kept.reads;
