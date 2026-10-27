@@ -2382,6 +2382,28 @@ describe('uninstall', () => {
     expect(await fse.readJson(ocConfig)).toEqual({ hooks: { internal: { entries: { mine: { enabled: true } } } } });
   });
 
+  it('uninstalling another tool leaves OpenClaw\'s workspace hook and its openclaw.json entry', async () => {
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+    const wsHookDir = path.join(homeDir, '.openclaw', 'workspace', 'hooks', 'teamai-status-report');
+    await fse.ensureDir(wsHookDir);
+    await fse.writeFile(path.join(wsHookDir, 'HOOK.md'), '---\nname: [teamai] status-report\n---\n');
+    await fse.writeFile(path.join(wsHookDir, 'handler.ts'), '// teamai');
+    const ocConfig = path.join(homeDir, '.openclaw', 'openclaw.json');
+    const entries = { hooks: { internal: { entries: { 'teamai-status-report': { enabled: true } } } } };
+    await fse.writeJson(ocConfig, entries);
+    const teamConfig = makeTeamConfig({
+      toolPaths: { hermes: { skills: '.hermes/skills' }, openclaw: { skills: '.openclaw/skills' } },
+    });
+    mockAutoDetectInit.mockResolvedValue({ localConfig: makeLocalConfig(homeDir, repoPath), teamConfig });
+
+    await uninstall({ force: true, agent: 'hermes' });
+
+    expect(await fse.pathExists(path.join(wsHookDir, 'handler.ts'))).toBe(true);
+    expect(await fse.readJson(ocConfig)).toEqual(entries);
+  });
+
   it('project-scope uninstall keeps the user OpenCode plugin and removes the project copy', async () => {
     const projectRoot = path.join(tmpDir, 'oc-project');
     const homeDir = path.join(tmpDir, 'home');

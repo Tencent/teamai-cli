@@ -4,7 +4,7 @@ import { autoDetectInit, loadLocalConfig, loadStateForScope, readConfigFrom, res
 import { createDeliveryRecorder, deliveredOwner, deliveredOwnerElsewhere } from './git-exclude-delivered.js';
 import { gitExcludeFile, gitTracks, gitUntracked, MCP_EXCLUDE_OWNER, realFilePath, remove as removeGitExclude, stateHomeRecord, type GitExcludeFileRemoval } from './git-exclude.js';
 import {
-  codexTrustPolicy, migrateLegacyManagedHooks, reconcileHooks, hasTeamaiHooks, hasUnrecordedTeamHooks, mainCheckoutHookFile, resolveMainCheckoutHooks, selfLocalTeamHookFile,
+  codexTrustPolicy, migrateLegacyManagedHooks, OPENCLAW_TOOLS, reconcileHooks, hasTeamaiHooks, hasUnrecordedTeamHooks, mainCheckoutHookFile, resolveMainCheckoutHooks, selfLocalTeamHookFile,
   stopCodexTeamHookDispatch, teamHookHistory, canonicalProjectRoot, getToolCheckouts, unregisterCheckoutFromSharedManifest,
   type CodexTrustPolicy, type MainCheckoutHooks, type SharedHooksManifest, type TeamHookHistory,
 } from './hooks.js';
@@ -639,16 +639,16 @@ async function discoverToolResources(
         }
       }
     }
-  } else {
-    // OpenClaw-style agents (no settings file) inject a HOOK.md + handler.ts
-    // under <hooksDir>/<OPENCLAW_HOOK_DIR>. Check the default path, the
-    // resolved state dir (OPENCLAW_STATE_DIR, OPENCLAW_HOME or OPENCLAW_PROFILE), and the
-    // resolved workspace dir — injection now targets `<workspace>/hooks`, so
-    // teardown must cover it too, otherwise the hook is orphaned on uninstall.
+  } else if (OPENCLAW_TOOLS.has(tool)) {
+    // OpenClaw and its variants inject a HOOK.md + handler.ts under
+    // <hooksDir>/<OPENCLAW_HOOK_DIR>. Check the default path, the
+    // resolved state dir (OPENCLAW_STATE_DIR, OPENCLAW_HOME or OPENCLAW_PROFILE), and,
+    // for OpenClaw only, the resolved workspace dir: injection targets `<workspace>/hooks`
+    // for OpenClaw alone, so a variant's uninstall must not take OpenClaw's hook.
     const defaultHooksDir = path.join(baseDir, `.${tool}`, 'hooks');
     const resolvedHooksDir = resolveOpenClawHooksDir(tool);
     const dirsToCheck = new Set([defaultHooksDir, resolvedHooksDir]);
-    const workspaceDir = await openclawWorkspaceDir();
+    const workspaceDir = tool === 'openclaw' ? await openclawWorkspaceDir() : null;
     if (workspaceDir) {
       dirsToCheck.add(path.join(workspaceDir, 'hooks'));
     }
