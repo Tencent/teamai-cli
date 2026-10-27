@@ -64,6 +64,15 @@ teamai digest
   Breakdown: interrupt 8 · reject 6 · correction 8
   By run mode: attended 15 · unattended 1 · not recorded 2 sessions
 
+📦 Session Outcomes (finished sessions):
+  runMode       outcome    sessions   tokens/session   interventions/session
+  attended      pr         12         410.0K           6.1
+  attended      learning   5          220.0K           3.0
+  attended      none       31         95.0K            2.2
+  unattended    pr         20         380.0K           0.4
+  not recorded  none       7          120.0K           1.9
+  A session with a pull request and a learning is in both rows, so rows do not add up.
+
 💬 Lifetime Conversation & Token Usage:
   Lifetime human prompts: 320
   By run mode: attended 280 · unattended 8 · not recorded 32 prompts
@@ -91,5 +100,30 @@ unattended:
 ```
 
 `interventions`、`prompts`、`tokens` 和 `daily` 同理。两种模式都不包含的部分（这里是 32 个 prompt）记录时没有模式：包括 teamai 记录模式之前上报的计数，以及升级 teamai 后没有再记录任何事件的会话。一个会话自上次上报以来新增的轮次，按它最新一条事件的模式计入。`teamai digest` 和仪表盘把它显示为 `not recorded`。
+
+### 你的会话产出了什么
+
+你的一个会话空闲 6 小时后，下一次上报会把它计入 `outcomes`，按它的运行模式和它的产出分行：
+
+```yaml
+outcomes:
+  attended:
+    pr:       { sessions: 12, tokens: { input: …, output: … }, interventions: 73 }
+    learning: { sessions: 5, tokens: { input: …, output: … }, interventions: 15 }
+    none:     { sessions: 31, tokens: { input: …, output: … }, interventions: 68 }
+  unattended:
+    pr:       { sessions: 20, tokens: { input: …, output: … }, interventions: 8 }
+  notRecorded:
+    none:     { sessions: 7, tokens: { input: …, output: … }, interventions: 13 }
+```
+
+| 产出 | 会话产出了什么 |
+|---|---|
+| `commit` | 在会话所在检出中、从会话开始到最后一次 Stop 之间，以你的 git 身份提交的 commit |
+| `pr` | 检出当前分支上包含其中某个 commit 的已打开拉取请求。只查询一次，使用 `deliver: pr` 所用的凭据；查询失败则不计入 |
+| `learning` | `teamai contribute` 为该会话记录的经验（`--session-id`，否则为智能体当前会话） |
+| `none` | 以上都没有 |
+
+一个既有拉取请求又有经验的会话会同时出现在两行，因此各行不能相加。每个会话只计入一次：与其他上报基线同目录的 `reported-outcomes.json` 会标记它。上报只发布计数；会话 ID、commit 哈希、拉取请求 URL 和经验 ID 只保存在本机的仪表盘事件中。无人值守的会话同样在空闲 6 小时后才计入，因此到那时已经销毁的运行器不会上报它的会话。
 
 以下情况记一次技能使用：agent 调用技能工具，读取某个技能的 `SKILL.md`，或者提示词点名技能：提示词开头的 `/code-review`，Codex 中的 `$code-review`，Pi 中的 `/skill:code-review`。只统计该工具已安装的技能，每个技能在一次提示中只记一次。`/Volumes/External/project` 这样的路径和 URL 中的路径段不算技能调用。已经记录的使用数据保持不变。

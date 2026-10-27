@@ -418,7 +418,7 @@ Generated: do not edit by hand. Regenerate with
   - `--file <path>` — Path to the contribution document
   - `--title <title>` — Title for the contribution document
   - `--namespace <ns>` — Write to an active learnings namespace, or to the shared root with "" (default: the only active namespace, or the shared root when none or several are active)
-  - `--session-id <id>` — Session ID for dedup tracking
+  - `--session-id <id>` — Session the learning came from (default: the agent's session, e.g. $CLAUDE_CODE_SESSION_ID). Recorded as `session` in the learning and counted as that session's outcome. Inside a workflow attempt, the learning is also recorded on the step
   - `--scope <scope>` — Target scope: user or workspace
 
 ## recall

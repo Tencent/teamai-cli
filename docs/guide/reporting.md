@@ -65,6 +65,15 @@ teamai digest
   Breakdown: interrupt 8 · reject 6 · correction 8
   By run mode: attended 15 · unattended 1 · not recorded 2 sessions
 
+📦 Session Outcomes (finished sessions):
+  runMode       outcome    sessions   tokens/session   interventions/session
+  attended      pr         12         410.0K           6.1
+  attended      learning   5          220.0K           3.0
+  attended      none       31         95.0K            2.2
+  unattended    pr         20         380.0K           0.4
+  not recorded  none       7          120.0K           1.9
+  A session with a pull request and a learning is in both rows, so rows do not add up.
+
 💬 Lifetime Conversation & Token Usage:
   Lifetime human prompts: 320
   By run mode: attended 280 · unattended 8 · not recorded 32 prompts
@@ -92,5 +101,30 @@ unattended:
 ```
 
 `interventions`, `prompts`, `tokens`, and `daily` work the same way. What neither mode holds, here 32 prompts, was recorded without a mode: counts reported before teamai recorded modes, and sessions that recorded nothing after teamai was upgraded. The turns a session added since the last report count in the mode of its latest event. `teamai digest` and the dashboard show it as `not recorded`.
+
+### What your sessions delivered
+
+Once a session of yours has been idle for 6 hours, the next report adds it to `outcomes`, by its run mode and by what it delivered:
+
+```yaml
+outcomes:
+  attended:
+    pr:       { sessions: 12, tokens: { input: …, output: … }, interventions: 73 }
+    learning: { sessions: 5, tokens: { input: …, output: … }, interventions: 15 }
+    none:     { sessions: 31, tokens: { input: …, output: … }, interventions: 68 }
+  unattended:
+    pr:       { sessions: 20, tokens: { input: …, output: … }, interventions: 8 }
+  notRecorded:
+    none:     { sessions: 7, tokens: { input: …, output: … }, interventions: 13 }
+```
+
+| Outcome | What the session delivered |
+|---|---|
+| `commit` | Commits made with your git identity in the session's checkout, between its start and its last Stop |
+| `pr` | The open pull request of the checkout's branch, when it holds one of those commits. Looked up once, with the credentials `deliver: pr` uses; a lookup that fails leaves it out |
+| `learning` | A learning `teamai contribute` recorded for the session (`--session-id`, else the agent's session) |
+| `none` | Nothing of the above |
+
+A session with a pull request and a learning is in both rows, so rows do not add up. Each session is added once: `reported-outcomes.json`, beside the other report baselines, flags it. The report publishes counts only; the session id, commit shas, pull request URLs and learning ids stay in this machine's dashboard events. An unattended session is also added after 6 hours idle, so a runner that is gone by then never reports its sessions.
 
 A skill use is counted when the agent calls its skill tool, reads a skill's `SKILL.md`, or the prompt names the skill: `/code-review` at the start of the prompt, `$code-review` in Codex, `/skill:code-review` in Pi. Only skills installed for the tool count, and each skill counts once per prompt. Paths such as `/Volumes/External/project` and URL components are not skill invocations. Previously recorded usage stays.
