@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from 'node:child_process';
+import childProcess, { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import os from 'node:os';
@@ -11,16 +11,26 @@ import { expect, it, onTestFinished, vi } from 'vitest';
 // rmSync on Linux almost never loses it), so the setup file is loaded over
 // removals that always lose, while the writers are real processes.
 
-/** fs.rmSync and fs.promises.rm as the setup file wraps removals that fail with ENOTEMPTY while `losing` holds. */
-async function wrapLosingRemovals(losing = () => true): Promise<{ rmSync: typeof fs.rmSync; rm: typeof fs.promises.rm }> {
+/**
+ * fs.rmSync and fs.promises.rm as the setup file wraps removals that fail with ENOTEMPTY while `isLosing` holds. The
+ * setup file's hold on child_process and NODE_OPTIONS lasts until the test ends, for the children the test starts.
+ */
+async function wrapLosingRemovals(isLosing = () => true): Promise<{ rmSync: typeof fs.rmSync; rm: typeof fs.promises.rm }> {
   const installed = { rmSync: fs.rmSync, rm: fs.promises.rm };
+  const spawning = { ...childProcess };
+  const nodeOptions = process.env.NODE_OPTIONS;
+  onTestFinished(() => {
+    Object.assign(childProcess, spawning);
+    syncBuiltinESMExports();
+    process.env.NODE_OPTIONS = nodeOptions;
+  });
   const lost = (target: fs.PathLike) => Object.assign(new Error(`ENOTEMPTY: directory not empty, rmdir '${String(target)}'`), { code: 'ENOTEMPTY' });
   fs.rmSync = (target, options) => {
-    if (losing()) throw lost(target);
+    if (isLosing()) throw lost(target);
     installed.rmSync(target, options);
   };
   fs.promises.rm = async (target, options) => {
-    if (losing()) throw lost(target);
+    if (isLosing()) throw lost(target);
     await installed.rm(target, options);
   };
   try {
@@ -67,15 +77,15 @@ function isRunning(pid: number): boolean {
 
 /**
  * Run a node parent that exits at once and leaves a detached child running for
- * `ms`, as hook-dispatch leaves its --bg-only pass. The parent gets the
- * environment every test passes on, and nothing that tracks its children.
+ * `ms`, as hook-dispatch leaves its --bg-only pass. The parent gets `env`, the
+ * environment every test passes on by default, and nothing that tracks its children.
  */
-async function leaveDetachedChild(ms: number): Promise<number> {
+async function leaveDetachedChild(ms: number, env?: NodeJS.ProcessEnv): Promise<number> {
   const pidFile = path.join(tempRoot(), 'detached.pid');
   const child = `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setTimeout(() => {}, ${ms})`;
   const parent = spawnSync(process.execPath, ['-e', `
     require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(child)}], { detached: true, stdio: 'ignore' }).unref();
-  `], { encoding: 'utf-8' });
+  `], { encoding: 'utf-8', env });
   expect(parent.status, parent.stderr).toBe(0);
   while (!fs.existsSync(pidFile) || fs.readFileSync(pidFile, 'utf-8') === '') await new Promise((resolve) => setTimeout(resolve, 10));
   const pid = Number(fs.readFileSync(pidFile, 'utf-8'));
@@ -104,6 +114,19 @@ it('waits for a detached child the suite started before fs.promises.rm gives up 
   writer = await leaveDetachedChild(1_500);
 
   await rm(root, { recursive: true, force: true });
+
+  expect(fs.existsSync(root)).toBe(false);
+  expect(isRunning(writer)).toBe(false);
+});
+
+it('waits for a detached child of a process the test started with a NODE_OPTIONS of its own', async () => {
+  let writer: number | undefined;
+  const { rmSync } = await wrapLosingRemovals(() => writer !== undefined && isRunning(writer));
+  const root = tempRoot();
+  fs.writeFileSync(path.join(root, 'state.json'), '{}');
+  writer = await leaveDetachedChild(1_500, { ...process.env, NODE_OPTIONS: '--no-deprecation' });
+
+  rmSync(root, { recursive: true, force: true });
 
   expect(fs.existsSync(root)).toBe(false);
   expect(isRunning(writer)).toBe(false);

@@ -27,7 +27,7 @@ require('node:module').syncBuiltinESMExports();
         process.kill(pid, 0);
         return true;
       } catch (e) {
-        if ((e as NodeJS.ErrnoException).code !== 'ESRCH') throw e;
+        if (!(e instanceof Error && 'code' in e && e.code === 'ESRCH')) throw e;
         fs.unlinkSync(path.join(children, String(pid)));
         return false;
       }
