@@ -25,6 +25,7 @@ import path from 'node:path';
 
 import chalk from 'chalk';
 import fse from 'fs-extra';
+import YAML from 'yaml';
 
 import { resolveConfigForDir } from './config.js';
 import { caseFoldKey, isSafeNamespaceSegment, NAMESPACE_RULE } from './manifest-schema.js';
@@ -56,6 +57,7 @@ import { scorerModelUnavailableText } from './scorers/judge-model.js';
 import { loadCachedScorer, SCORING_FILE, syncScorerDefinitions, type CachedScorer } from './scorers/cache.js';
 import { requiredIsolation, unknownIsolationText } from './scorers/isolation.js';
 import { parseScoringFile } from './scorers/settings.js';
+import { SessionPolicy } from './session-flow/session-policy.js';
 
 // ─── Findings ────────────────────────────────────────────────────────────────
 
@@ -63,7 +65,7 @@ import { parseScoringFile } from './scorers/settings.js';
 export type FindingLevel = 'fail' | 'warn' | 'info';
 
 /** Which group of checks produced a finding. */
-export type FindingCheck = 'structure' | 'naming' | 'duplicates' | 'format' | 'leaks' | 'safety' | 'workflows' | 'scorers' | 'models';
+export type FindingCheck = 'structure' | 'naming' | 'duplicates' | 'format' | 'leaks' | 'safety' | 'workflows' | 'scorers' | 'sessions' | 'models';
 
 /** One thing worth reporting about the branch. */
 export interface Finding {
@@ -1196,6 +1198,21 @@ async function scoringSettingsFindings(repoDir: string, readText: (p: string) =>
   return findings;
 }
 
+/** The branch's `teamai.yaml` `sessions.publish` (#1385): each value pull ignores, or why the file cannot be read. */
+async function sessionsFindings(repoDir: string, readText: (p: string) => Promise<string | null>): Promise<Finding[]> {
+  const text = await readText(path.join(repoDir, 'teamai.yaml'));
+  if (text === null) return [];
+  const finding = (message: string): Finding => ({ level: 'fail', check: 'sessions', path: 'teamai.yaml', message });
+  let team: unknown;
+  try {
+    team = YAML.parse(text);
+  } catch (error) {
+    return [finding(`teamai.yaml is not valid YAML: ${error instanceof Error ? error.message : String(error)}`)];
+  }
+  const sessions = typeof team === 'object' && team !== null && 'sessions' in team ? team.sessions : undefined;
+  return SessionPolicy.readPublish('teamai.yaml', sessions).problems.map(finding);
+}
+
 /**
  * The prompt steps a run of `definition` reaches, with each step's path, such as `check.classify`, and the
  * `defaults.model` in effect for it: an inline workflow uses the enclosing one, and a workflow file another runs its
@@ -1407,6 +1424,7 @@ export async function reviewBranchDir(branch: string, repoDir: string): Promise<
     ...await leakFindings(repoDir, resources, readText),
     ...await workflowFindings(repoDir),
     ...await scoringSettingsFindings(repoDir, readText),
+    ...await sessionsFindings(repoDir, readText),
     ...await modelFindings(repoDir, resources, readText, roles, projects),
   ];
 
@@ -1419,12 +1437,12 @@ export async function reviewBranchDir(branch: string, repoDir: string): Promise<
 // ─── Read-only branch reader ─────────────────────────────────────────────────
 
 /**
- * The repo roots read out of the branch; everything else is irrelevant here.
+ * The repo roots read out of the branch, and `teamai.yaml`; everything else is irrelevant here.
  * Wiki is read from its authoritative root `teamwiki/evidence/code`, matching
  * where the resource handler and pull actually read it — reading `wiki/` would
  * let everything under the real root bypass review.
  */
-const READ_ROOTS = [...PLACEABLE_TYPES.map(repoRootFor), 'manifest'];
+const READ_ROOTS = [...PLACEABLE_TYPES.map(repoRootFor), 'manifest', 'teamai.yaml'];
 
 /**
  * The ref to read `branch` from: the name itself when it resolves locally, else

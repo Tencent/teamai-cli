@@ -86,4 +86,4 @@ function publish(config: LocalConfig, team: TeamaiConfig | null): { policies: Se
   };
 }
 
-export const SessionPolicy = { read, resolve, publish } as const;
+export const SessionPolicy = { read, resolve, readPublish, publish } as const;

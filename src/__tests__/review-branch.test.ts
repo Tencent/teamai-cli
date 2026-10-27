@@ -1434,6 +1434,29 @@ describe('materializeRef — branch materialization from git', () => {
       await fse.remove(destDir);
     }
   });
+  it('carries teamai.yaml, and the review fails a sessions.publish value pull would ignore', async () => {
+    const gitRepo = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-git-repo-'));
+    const destDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-dest-'));
+    try {
+      execFileSync('git', ['init', '-q', gitRepo]);
+      execFileSync('git', ['-C', gitRepo, 'config', 'user.name', 'Test']);
+      execFileSync('git', ['-C', gitRepo, 'config', 'user.email', 'test@example.com']);
+      await fse.outputFile(path.join(gitRepo, 'teamai.yaml'), 'team: acme\nrepo: https://example.com/acme/team.git\nsessions:\n  publish:\n    unattended: always\n    nightly: auto\n');
+      execFileSync('git', ['-C', gitRepo, 'add', '.']);
+      execFileSync('git', ['-C', gitRepo, 'commit', '-q', '-m', 'initial']);
+
+      await materializeRef(gitRepo, 'HEAD', destDir);
+      const review = await reviewBranchDir(BRANCH, destDir);
+
+      expect(review.findings).toEqual([
+        { level: 'fail', check: 'sessions', path: 'teamai.yaml', message: 'teamai.yaml sessions.publish.unattended is "always", not off, ask or auto, so it is ignored' },
+        { level: 'fail', check: 'sessions', path: 'teamai.yaml', message: 'teamai.yaml sessions.publish.nightly is not a run mode (attended, unattended), so it is ignored' },
+      ]);
+    } finally {
+      await fse.remove(gitRepo);
+      await fse.remove(destDir);
+    }
+  });
   it('preserves symlinks so validators observe symbolic links rather than regular files', async () => {
     const gitRepo = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-git-repo-'));
     const destDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-dest-'));
