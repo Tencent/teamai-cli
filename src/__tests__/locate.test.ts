@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { nextToolHomes } from '../tool-home-record.js';
 import { cleanupOf, installOf, ownOf, unreadWrites, writable, writesOf, type EntryPlace, type FilePlace, type FilesChannel, type Read } from '../locate.js';
-import { envToolHome, ompTaskAgentHost, toolHome, type Host } from '../tool-home.js';
+import { envToolHome, type Host } from '../tool-home.js';
 import { isToolId, TOOLS } from '../tools.js';
 import { samePlaces } from '../resources/places.js';
 
@@ -178,21 +178,11 @@ describe('homes that follow the tool\'s own rules', () => {
     expect(envToolHome('omp', at({ PI_PROFILE: 'default' }))).toEqual({ dir: '/home/m/.omp/agent', variable: 'PI_PROFILE', kind: 'own' });
   });
 
-  it('moves OMP\'s default profile alone with PI_CODING_AGENT_DIR, and roots every profile in PI_CONFIG_DIR', () => {
-    expect(dirOf('omp', at({ PI_CODING_AGENT_DIR: '/agent' }))).toBe('/agent');
+  it('roots every OMP profile in PI_CONFIG_DIR, and leaves PI_CODING_AGENT_DIR to Pi', () => {
+    expect(dirOf('omp', at({ PI_CODING_AGENT_DIR: '/agent' }))).toBeNull();
     expect(dirOf('omp', at({ OMP_PROFILE: 'work', PI_CODING_AGENT_DIR: '/agent' }))).toBe('/home/m/.omp/profiles/work/agent');
     expect(dirOf('omp', at({ PI_CONFIG_DIR: '.alt', OMP_PROFILE: 'work' }))).toBe('/home/m/.alt/profiles/work/agent');
     expect(dirOf('omp', at({ PI_CONFIG_DIR: '.alt' }))).toBe('/home/m/.alt/agent');
-  });
-
-  it('ignores a PI_CODING_AGENT_DIR that is the agent dir of the PI_PROFILE an OMP_PROFILE bypasses', () => {
-    expect(dirOf('omp', at({ OMP_PROFILE: '', PI_PROFILE: 'work', PI_CODING_AGENT_DIR: '/home/m/.omp/profiles/work/agent' }))).toBeNull();
-  });
-
-  it('keeps OMP\'s task agents out of PI_CODING_AGENT_DIR, while they follow a recorded profile home', () => {
-    expect(toolHome('omp', ompTaskAgentHost(at({ PI_CODING_AGENT_DIR: '/agent' })))).toBe('/home/m/.omp/agent');
-    expect(toolHome('omp', ompTaskAgentHost(at({}, {}, { omp: '/home/m/.omp/profiles/work/agent' })))).toBe('/home/m/.omp/profiles/work/agent');
-    expect(toolHome('omp', ompTaskAgentHost(at({}, {}, { omp: '/agent' })))).toBe('/home/m/.omp/agent');
   });
 
   it('appends HERMES_DATA_DIR_SUFFIX as written, and lets HERMES_HOME win over it', () => {

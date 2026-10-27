@@ -263,11 +263,11 @@ const ROWS: readonly MatrixRow[] = [
     source: OMP_SOURCE,
   },
   {
-    tool: 'omp', scope: 'user', env: { PI_CODING_AGENT_DIR: '/omp-agent' },
-    writes: ['/omp-agent/rules'],
-    existingDirs: ['/omp-agent'], installed: { probe: '/omp-agent', met: true },
-    reads: [{ at: '/omp-agent/rules', when: 'always' }],
-    source: OMP_SOURCE,
+    tool: 'omp', scope: 'user', env: { PI_CODING_AGENT_DIR: '/pi-agent' },
+    writes: ['~/.omp/agent/rules'],
+    existingDirs: ['~/.omp'], installed: { probe: '~/.omp', met: true },
+    reads: [{ at: '~/.omp/agent/rules', when: 'always' }],
+    source: `${OMP_SOURCE}; teamai does not follow PI_CODING_AGENT_DIR for OMP: Pi owns that directory (docs/designs/model-profiles.md)`,
   },
   {
     tool: 'omp', scope: 'user', envLiterals: { PI_CONFIG_DIR: '.omp-alt', PI_PROFILE: 'work' },

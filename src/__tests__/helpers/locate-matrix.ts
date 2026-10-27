@@ -247,7 +247,7 @@ function moveSettingsOf(tool: ToolId, move: HomeMove): MoveSetting[] {
     case 'openclaw-state':
       return [setting('OPENCLAW_STATE_DIR', '/moved'), setting('OPENCLAW_HOME', '/moved'), setting('OPENCLAW_PROFILE', 'moved')];
     case 'omp-agent':
-      return [setting('OMP_PROFILE', 'moved'), setting('PI_PROFILE', 'moved'), setting('PI_CONFIG_DIR', '.moved'), setting('PI_CODING_AGENT_DIR', '/moved')];
+      return [setting('OMP_PROFILE', 'moved'), setting('PI_PROFILE', 'moved'), setting('PI_CONFIG_DIR', '.moved')];
     case 'hermes-home':
       return [
         setting('HERMES_HOME', '/moved'), setting('HERMES_DATA_DIR_SUFFIX', '-moved'),

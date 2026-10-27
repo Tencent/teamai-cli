@@ -126,35 +126,10 @@ function ompAgentDir(host: Host): EnvToolHome | null {
   const { env } = host;
   const base = p.join(host.home, env.PI_CONFIG_DIR || '.omp');
   const selector = env.OMP_PROFILE !== undefined ? 'OMP_PROFILE' : env.PI_PROFILE !== undefined ? 'PI_PROFILE' : null;
-  const profileDir = (name: string | undefined): string | null => {
-    const profile = name?.trim();
-    return !profile || profile === 'default' ? null : p.join(base, 'profiles', profile, 'agent');
-  };
-  const named = selector === null ? null : profileDir(env[selector]);
-  if (selector !== null && named !== null) return { dir: named, variable: selector, kind: 'own' };
-  const override = env.PI_CODING_AGENT_DIR?.trim();
-  // A PI_CODING_AGENT_DIR that is the bypassed PI_PROFILE's agent dir came from that profile, not from the member.
-  const inherited = override && selector === 'OMP_PROFILE' && profileDir(env.PI_PROFILE) === p.resolve(override);
-  if (override && !inherited) return { dir: absoluteOn(override, host), variable: 'PI_CODING_AGENT_DIR', kind: 'own' };
+  const profile = selector === null ? undefined : env[selector]?.trim();
+  if (selector !== null && profile && profile !== 'default') return { dir: p.join(base, 'profiles', profile, 'agent'), variable: selector, kind: 'own' };
   if (env.PI_CONFIG_DIR) return { dir: p.join(base, 'agent'), variable: 'PI_CONFIG_DIR', kind: 'own' };
-  return selector !== null && env[selector]?.trim() ? { dir: p.join(base, 'agent'), variable: selector, kind: 'own' } : null;
-}
-
-/**
- * OMP's agent dir as its task-agent loader reads it, which no
- * `PI_CODING_AGENT_DIR` moves: a recorded home counts when it has the shape a
- * profile or `PI_CONFIG_DIR` gives (`~/<dir>/agent`, `~/<dir>/profiles/<name>/agent`).
- */
-export function ompTaskAgentHost(host: Host): Host {
-  const p = host.path;
-  const { omp: recorded, ...others } = recordedHomes(host);
-  const parts = recorded === undefined ? [] : p.relative(host.home, recorded).split(p.sep);
-  const profileShaped = parts.at(-1) === 'agent' && !parts[0]?.startsWith('..') && (parts.length === 2 || (parts.length === 4 && parts[1] === 'profiles'));
-  return {
-    ...host,
-    env: { ...host.env, PI_CODING_AGENT_DIR: undefined },
-    toolHomes: { kind: 'ok', homes: profileShaped && recorded !== undefined ? { ...others, omp: recorded } : others },
-  };
+  return selector !== null && profile ? { dir: p.join(base, 'agent'), variable: selector, kind: 'own' } : null;
 }
 
 function hermesHome(host: Host): EnvToolHome | null {

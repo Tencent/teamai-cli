@@ -29,7 +29,7 @@ export type HomeMove =
    * Oh My Pi's agent dir. The profile is `OMP_PROFILE` when defined, even
    * empty, else `PI_PROFILE`; a blank or `default` one is the default profile.
    * A named profile is `~/<PI_CONFIG_DIR or .omp>/profiles/<name>/agent`; the
-   * default one is `PI_CODING_AGENT_DIR`, else `~/<PI_CONFIG_DIR or .omp>/agent`.
+   * default one is `~/<PI_CONFIG_DIR or .omp>/agent`.
    */
   | { readonly kind: 'omp-agent'; readonly evidence: Evidence }
   /**
@@ -165,8 +165,6 @@ export type BlocksChannels = Scoped<BlocksTarget<HomeRead>, BlocksTarget<HomeRea
 export type AgentsTarget<R> = {
   readonly reads: Reads<R>;
   readonly readGates?: readonly ReadGateKind[];
-  /** The tool loads these agents from its profile's agent dir whatever `PI_CODING_AGENT_DIR` says (OMP's task-agent loader). */
-  readonly skipsAgentDirOverride?: true;
 };
 export type AgentsChannels = Scoped<AgentsTarget<HomeRead>, AgentsTarget<HomeRead | ProjectRead>>;
 
@@ -832,6 +830,8 @@ export const TOOLS = {
   },
   // Extensions capture the installed Node/CLI launcher instead of depending on the host PATH.
   // utils/src/dirs.ts at a70f001c. A `--profile` flag another process starts with is out of teamai's sight: init records the home for it.
+  // OMP also reads PI_CODING_AGENT_DIR for its default profile. teamai does not follow it: Pi owns that directory, and both
+  // tools' files there, the hook extension's one name included, would overwrite each other.
   omp: {
     home: { dir: '.omp', moves: { root: '.omp/agent', by: [{ kind: 'omp-agent', evidence: 'source' }] } },
     skillLoad: { calls: [] },
@@ -848,8 +848,7 @@ export const TOOLS = {
       retired: { user: ['.omp/agent/AGENTS.md'], project: ['.omp/AGENTS.md'] },
     },
     agents: {
-      // coding-agent/src/config.ts at a70f001c joins the config dir name to the OS home, so PI_CODING_AGENT_DIR does not move task agents.
-      user: { reads: [{ base: 'home', path: '.omp/agent/agents', evidence: 'verified' }], skipsAgentDirOverride: true },
+      user: { reads: [{ base: 'home', path: '.omp/agent/agents', evidence: 'verified' }] },
       project: { reads: [{ base: 'project', path: '.omp/agents', when: 'workspaceUnder', evidence: 'verified' }] },
     },
     mcp: {
@@ -1230,7 +1229,7 @@ export function homeVariables(tool: ToolId): readonly string[] {
       case 'openclaw-state':
         return ['OPENCLAW_STATE_DIR', 'OPENCLAW_HOME', 'OPENCLAW_PROFILE'];
       case 'omp-agent':
-        return ['OMP_PROFILE', 'PI_PROFILE', 'PI_CONFIG_DIR', 'PI_CODING_AGENT_DIR'];
+        return ['OMP_PROFILE', 'PI_PROFILE', 'PI_CONFIG_DIR'];
       case 'hermes-home':
         return ['HERMES_HOME', 'HERMES_DATA_DIR_SUFFIX'];
       default: {

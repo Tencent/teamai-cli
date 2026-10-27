@@ -21,7 +21,7 @@ import {
   WORKBUDDY_NEW_GENERATION_ROOT, WORKBUDDY_TOOL_ID, WORKBUDDY_TOOL_ROOT,
   type HomePaths, type LocalConfig, type Scope, type TeamaiConfig, type ToolId,
 } from './types.js';
-import { defaultToolHome, homeRoot, movedToolHome, ompTaskAgentHost, realHost, toolHome, type Host } from './tool-home.js';
+import { defaultToolHome, homeRoot, movedToolHome, realHost, toolHome, type Host } from './tool-home.js';
 import { resolveOpenclawConfigPath, resolveOpenclawWorkspace, type OpenclawWorkspace } from './openclaw-home.js';
 import { hasWorkspaceChildren } from './workspace-children.js';
 
@@ -796,15 +796,14 @@ async function locateAgents(tool: string, install: Install, host: Host): Promise
   const channel = channelsOf(tool).agents[install.scope];
   const roots = rootsOf(tool, install, host);
   const gates = await gatesOf(tool, install, host, roots);
-  const agentRoots = typeof channel === 'object' && channel.skipsAgentDirOverride ? rootsOf(tool, install, ompTaskAgentHost(host)) : roots;
-  const dir = agentRoots.configured('agents');
+  const dir = roots.configured('agents');
   const own: DirPlace | null = dir === null ? null : { kind: 'dir', path: dir };
   // An earlier release copied team agents verbatim into any configured agents directory.
   if (channel === 'none' || channel === 'unknown') return { channel, retired: own === null ? [] : [{ place: own, was: 'configured' }], gates };
   return {
     channel: 'files',
     own,
-    reads: await readsOf(channel.reads, agentRoots, host),
+    reads: await readsOf(channel.reads, roots, host),
     readGates: await readGatesOf(channel.readGates, install, host),
     retired: [],
     gates,

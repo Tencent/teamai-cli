@@ -220,6 +220,26 @@ describe('reconcileHooksToAllTools routes omp to the extension adapter', () => {
     expect(await fse.pathExists(path.join(home, '.omp'))).toBe(false);
   });
 
+  it('keeps OMP\'s extension in ~/.omp/agent when PI_CODING_AGENT_DIR moves Pi, so each pull leaves both unchanged (#1221)', async () => {
+    const piAgent = path.join(tmp, 'pi-agent');
+    vi.stubEnv('PI_CODING_AGENT_DIR', piAgent);
+    await fse.ensureDir(piAgent);
+    await fse.ensureDir(path.join(home, '.omp', 'agent'));
+    const both = { pi: { skills: '.pi/skills' }, omp: { skills: '.omp/skills' } } as Record<string, { settings?: string }>;
+    const piFile = path.join(piAgent, 'extensions', 'teamai-hooks.ts');
+    const read = async () => [await fse.readFile(piFile, 'utf8'), await fse.readFile(extFile(), 'utf8')];
+    try {
+      await reconcileHooksToAllTools(both, home, [], manifest());
+      const first = await read();
+      await reconcileHooksToAllTools(both, home, [], manifest());
+      expect(first[0]).toContain('"--tool", "pi"');
+      expect(first[1]).toContain('"--tool", "omp"');
+      expect(await read()).toEqual(first);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('settingsOnly skips the omp adapter', async () => {
     await fse.ensureDir(path.join(home, '.omp', 'agent'));
     await reconcileHooksToAllTools(toolPaths, home, [], manifest(), { settingsOnly: true });
