@@ -259,7 +259,7 @@ function lockBusy(context: SkillContext, run: RunId, same: Literal): SkillAnswer
 async function called(context: SkillContext, lock: RunLock, same: Literal, input: { takeover?: { confirmed: boolean }; report?: AttemptId; resume?: Resume } = {}): Promise<{ state: SkillState } | { answer: SkillAnswer }> {
   const { run } = lock;
   const read = await readSkillState(context.config, run);
-  const localTool = localPromptTool(context.config, context.tool);
+  const localTool = localPromptTool(context);
   if (read.kind === 'unreadable') {
     return { answer: { error: { code: 'run_unreadable', message: `The skill driver's state of run ${run} cannot be read (${read.reason}). The person can continue the run in a terminal with ${resumeLiteral(context.invocation, run, { tool: localTool })}.`, next: null } } };
   }
@@ -317,7 +317,7 @@ async function finish(context: SkillContext, lock: RunLock, state: SkillState, t
   const events = unseenEvents(state, context.session);
   const shown = traced(context, turnRow(state, { session: context.session, ticked }));
   await writeSkillState(context.config, lock, shown.state, context.env.secrets);
-  return { data: { turn: rendered(shown.state, shown.turn, { events, ...(shown.waiting ? { waiting: shown.waiting } : {}), localTool: localPromptTool(context.config, context.tool) }) } };
+  return { data: { turn: rendered(shown.state, shown.turn, { events, ...(shown.waiting ? { waiting: shown.waiting } : {}), localTool: localPromptTool(context) }) } };
 }
 
 /**
@@ -412,7 +412,7 @@ async function invokeRefused(context: SkillContext, run: RunId, call: Extract<Fo
   const refused = traced(context, invokeRow(await context.client.resumeRefusal(run, { caller, published: call.kind === 'resume' })));
   if (!refused) return undefined;
   const confirmed = literalOf(context.invocation, run, { ...call, confirmed: true });
-  return { error: errorOf(refused.answer, { invocation: context.invocation, same: confirmed, localTool: localPromptTool(context.config, context.tool) }) };
+  return { error: errorOf(refused.answer, { invocation: context.invocation, same: confirmed, localTool: localPromptTool(context) }) };
 }
 
 /**
@@ -534,7 +534,7 @@ export async function poll(context: SkillContext, run: RunId): Promise<SkillAnsw
       last = 'state' in polled ? polled.state : result.state;
       await writeSkillState(context.config, lock, last, context.env.secrets);
       if (!('turn' in polled)) return 'sleep';
-      return { data: { turn: rendered(last, polled.turn, { events, ...(polled.waiting ? { waiting: polled.waiting } : {}), localTool: localPromptTool(context.config, context.tool) }) } };
+      return { data: { turn: rendered(last, polled.turn, { events, ...(polled.waiting ? { waiting: polled.waiting } : {}), localTool: localPromptTool(context) }) } };
     }, 0);
     switch (ticked.kind) {
       case 'held':

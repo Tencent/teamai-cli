@@ -221,6 +221,8 @@ interface HarnessOptions {
   scoring?: LocalConfig['scoring'];
   /** An install of a `sharedTeam` to drive from, instead of a checkout and team repository of the harness's own. */
   install?: TeamInstall;
+  /** The member's `ai.tool`, in the ~/.teamai/config.yaml of the harness's home. */
+  aiTool?: string;
 }
 
 /** A member's install of a `sharedTeam`: its config, and the business checkout its runs start from. */
@@ -303,6 +305,10 @@ export async function skillHarness(workflows: Record<string, string>, options: H
   fs.mkdirSync(home);
   vi.stubEnv('HOME', home);
   vi.stubEnv('USERPROFILE', home);
+  if (options.aiTool) {
+    fs.mkdirSync(path.join(home, '.teamai'));
+    fs.writeFileSync(path.join(home, '.teamai', 'config.yaml'), `repo:\n  localPath: ${root}\n  remote: local\nusername: test\nai:\n  tool: ${options.aiTool}\n`);
+  }
   const { config, checkout: work } = options.install ?? await ownInstall(root, workflows, options);
   const env = await resolveWorkflowEnv(config);
   // Every tool's default paths, as a team repository that sets no toolPaths has them.
@@ -312,7 +318,7 @@ export async function skillHarness(workflows: Record<string, string>, options: H
   const client = scheduler.settingUp(inProcessClient({ config, env }));
   const rows: string[] = [];
   const context: SkillContext = {
-    config, toolPaths, env, client: scheduler.judging(options.client ? options.client(client) : client), session: options.session ?? 'session-a', tool: 'claude', invocation: 'teamai', evidence: options.evidence ?? { kind: 'none' }, mode: options.mode ?? 'attended', cwd: work,
+    config, toolPaths, env, client: scheduler.judging(options.client ? options.client(client) : client), session: options.session ?? 'session-a', tool: 'claude', aiTool: production.aiTool, invocation: 'teamai', evidence: options.evidence ?? { kind: 'none' }, mode: options.mode ?? 'attended', cwd: work,
     now: scheduler.now, runners: scheduler.track(options.runners ? options.runners(scheduler.runners) : scheduler.runners),
     locks: { take: (run, body, waitMs) => takeRunLock(config, run, body, { waitMs }) },
     trace: (row) => { rows.push(row); },

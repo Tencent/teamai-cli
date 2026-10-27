@@ -291,6 +291,13 @@ describe('skill driver preflight', () => {
     } } });
   });
 
+  it("leaves the session tool out of a local start when the member's ai.tool names the tool steps run on", async () => {
+    const made = await harness({ 'release-docs': RELEASE_DOCS }, { aiTool: 'codex' });
+    expect(await made.call({ kind: 'describe', name: 'release-docs' })).toMatchObject({ data: { describe: {
+      ask: { kind: 'local', start: 'teamai workflow start release-docs --driver local' },
+    } } });
+  });
+
   it('keeps the session tool in a local start when TEAMAI_AI_TOOL names a tool that runs no steps', async () => {
     vi.stubEnv('TEAMAI_AI_TOOL', 'pi');
     const made = await harness({ 'release-docs': RELEASE_DOCS });

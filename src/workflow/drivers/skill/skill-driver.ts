@@ -5,6 +5,7 @@
 import path from 'node:path';
 import { z } from 'zod';
 import { resolveCliEntry } from '../../../builtin-hooks.js';
+import { loadLocalConfig } from '../../../config.js';
 import type { WorkflowEnv } from '../../../env-resolution.js';
 import type { ToolName } from '../../../resources/agent-format.js';
 import { resolveRunMode, type RunMode } from '../../../launch-context.js';
@@ -92,6 +93,8 @@ export interface SkillContext {
   mode: RunMode;
   /** The tool of that session, which a child's model is resolved for; undefined when its host names none. */
   tool: ToolName | undefined;
+  /** The member's `ai.tool`, from ~/.teamai/config.yaml whatever `config`'s scope. */
+  aiTool: string | undefined;
   invocation: Invocation;
   /** The checkout a start runs from. */
   cwd: string;
@@ -117,6 +120,7 @@ export async function skillContext(input: Pick<SkillContext, 'config' | 'toolPat
     evidence: evidence.kind === 'none' ? { kind: 'skill-driver' } : evidence,
     mode: resolveRunMode(process.env),
     tool: session.agent !== undefined && isAgentToolId(session.agent) ? session.agent : undefined,
+    aiTool: (await loadLocalConfig())?.ai?.tool,
     invocation: invocationOf(resolveCliEntry() ?? undefined),
     client: inProcessClient({ config, env }),
     now: () => new Date(),
@@ -329,7 +333,7 @@ async function start(call: Extract<SkillCall, { kind: 'describe' | 'start' }>, c
       mode: context.mode, ...(attended !== undefined ? { attended } : {}),
     });
     context.trace?.(row);
-    return { data: { describe: { workflow: description, judging, ask: askFor(verdict, description, context.invocation, judging, { tool: localPromptTool(context.config, context.tool) }) } } };
+    return { data: { describe: { workflow: description, judging, ask: askFor(verdict, description, context.invocation, judging, { tool: localPromptTool(context) }) } } };
   }
   const check = checkStartAnswers({ description, answers: call.answers, inputs: call.inputs, ceiling });
   const judge = judging.kind === 'here' && call.answers.judge !== false ? judging.tool : undefined;
@@ -339,7 +343,7 @@ async function start(call: Extract<SkillCall, { kind: 'describe' | 'start' }>, c
   if (taken.row === 'R25') return { error: { ...taken.error, next: null } };
   if (taken.row !== 'R10') {
     const same = describeLiteral(context.invocation, description.name);
-    return { error: errorOf({ kind: 'error', refusal: taken.refusal }, { invocation: context.invocation, same, localTool: localPromptTool(context.config, context.tool) }) };
+    return { error: errorOf({ kind: 'error', refusal: taken.refusal }, { invocation: context.invocation, same, localTool: localPromptTool(context) }) };
   }
   const planned = taken.start;
   const started = await context.client.start(description.name, {
