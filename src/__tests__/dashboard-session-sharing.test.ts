@@ -199,6 +199,19 @@ describe('the session sharing read model', () => {
     });
   });
 
+  it('sets the mode in every drain it names on Windows once one of them sets it, as PowerShell keeps it for the session', async () => {
+    const config = await team({ 'teamai.yaml': 'team: acme\nrepo: https://example.com/acme/team.git\nsessions:\n  publish: { attended: auto }\n' });
+    captured(ATTENDED_FINISHED, 'attended', { idleFor: 7 * HOUR });
+    captured(UNATTENDED_OPEN, 'unattended', { idleFor: HOUR });
+
+    expect(await readSessionSharing(config, { env: { CI: 'true' }, platform: 'win32', now: NOW })).toMatchObject({
+      next: [
+        { mode: 'attended', command: "$env:TEAMAI_MODE='attended'; teamai score --drain" },
+        { mode: 'unattended', command: "$env:TEAMAI_MODE='unattended'; teamai score --drain" },
+      ],
+    });
+  });
+
   it('names the drain of this machine for pending labels alone, and none where no session archive can take them', async () => {
     const label = {
       scorer: 'quality', rubric: { sourceHash: 'h1' }, label: 'good', score: 1, passed: true,

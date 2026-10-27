@@ -114,7 +114,9 @@ function nextSteps(
   const modes = RUN_MODES.filter((mode) => waits[mode]);
   if (modes.length === 0 && pendingLabels > 0 && archive === 'teamai-reports') modes.push(runMode.mode);
   const inMode = (mode: RunMode) => (platform === 'win32' ? `$env:${RUN_MODE_ENV}='${mode}'; teamai score --drain` : `${RUN_MODE_ENV}=${mode} teamai score --drain`);
-  return modes.map((mode) => ({ mode, command: mode === runMode.mode ? 'teamai score --drain' : inMode(mode) }));
+  // PowerShell keeps a variable a command sets for the rest of the session, so once one command sets the mode, each does.
+  const setsEach = platform === 'win32' && modes.some((mode) => mode !== runMode.mode);
+  return modes.map((mode) => ({ mode, command: mode === runMode.mode && !setsEach ? 'teamai score --drain' : inMode(mode) }));
 }
 
 /** What the panel shows for `config`, read with `env` as this machine's environment and `platform` as its OS, at `now`. */
