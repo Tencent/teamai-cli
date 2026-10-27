@@ -385,7 +385,14 @@ Every process TeamAI starts for a step, setup included, gets the run's `TEAMAI_M
 
 A required approval reaches only the person. The session shows it and gives them the `teamai workflow respond` command for their own terminal, or they answer in [`teamai dashboard`](dashboard.md#workflow-runs). TeamAI decides who answered from the process that sends the answer. Any answer sent from inside an agent session counts as the agent's: `respond --driver skill`, `respond --json` with a driver identity, and a dashboard started from that session. A required approval refuses it with `agent_in_path`. These variables are evidence, not proof: a process that unsets them, or opens a terminal, passes as the person.
 
-Optional approvals and choices are answered as the person picked at the start. With `--hitl person`, the agent asks the person. With `--hitl recommend`, the agent decides and says why. With `--auto-approve`, TeamAI answers an approval yes and a choice with its default.
+Optional approvals and choices are answered as the person picked at the start. The start question says what each one guards: the command, prompt step, workflow or end it comes before, or the steps that wait for it; for a choice, its options and default. A command shows its first line, cut after 80 characters. For example:
+
+```text
+- Optional approval at contribute: before `teamai contribute --file "$FILE" --title "$TITLE" --namespace "$NS" --session-id…`.
+- The recommended start lets this session's agent answer optional approvals and say why; "answer optional approvals automatically" answers each approval yes.
+```
+
+With `--hitl person`, the agent asks the person. With `--hitl recommend`, the agent decides and says why. With `--auto-approve`, TeamAI answers an approval yes and a choice with its default.
 
 ### Judging
 

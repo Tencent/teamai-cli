@@ -17,6 +17,7 @@ All notable changes to this project will be documented in this file. See [standa
 
 ### Changed
 
+- With `--driver skill`, the start question says what each optional approval and choice guards: the command, prompt step, workflow or end it comes before, or the steps that wait for it, and a choice's options and default. It used to list only the gated steps' names. The workflow's `facts.gates` in the describe reply gains `guards`, plus `options` and `default` for a choice and `deliver` for an approval before a pull request (for [#1416](https://github.com/Tencent/teamai-cli/issues/1416)).
 - Sessions a workflow step launches no longer count as the member's sessions, interventions, prompts and tokens, in either run mode. `stats/<member>.yaml` gains `attended` and `unattended`, which hold the part of those counts recorded in each mode; `teamai digest` and the dashboard show the rest as `not recorded`. Dashboard events, session captures, run records, step passes and score labels record `runMode`, and `teamai doctor` prints the run mode and what set it (for [#1384](https://github.com/Tencent/teamai-cli/issues/1384)).
 - The local driver in a terminal answers optional approvals yes and choices with their default when started with `--auto-approve`. It used to ask anyway (for [#1086](https://github.com/Tencent/teamai-cli/issues/1086)).
 - `teamai push --skill` refuses a generated `workflow-<name>` skill and a skill the CLI owns, such as `teamai` (for [#1086](https://github.com/Tencent/teamai-cli/issues/1086)).

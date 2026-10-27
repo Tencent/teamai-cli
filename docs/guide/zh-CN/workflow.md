@@ -385,7 +385,14 @@ skill 驱动声明 `env: "commands"`（见[要求和限制](workflow-advanced.md
 
 必需审批只交给本人。会话展示它，并把 `teamai workflow respond` 命令交给本人在自己的终端运行，或由本人在 [`teamai dashboard`](dashboard.md#工作流运行workflow-runs) 中回答。TeamAI 根据发送回答的进程判断是谁回答的。从 agent 会话内发出的回答都算 agent 的：`respond --driver skill`、带驱动身份的 `respond --json`，以及从该会话启动的 dashboard。必需审批会以 `agent_in_path` 拒绝这样的回答。这些变量是证据，不是证明：取消这些变量或打开终端的进程可以冒充本人。
 
-可选审批和选择按本人在启动时选的方式回答。`--hitl person` 时，agent 问本人。`--hitl recommend` 时，agent 自己决定并说明理由。`--auto-approve` 时，TeamAI 对审批回答 yes，对选择取其默认值。
+可选审批和选择按本人在启动时选的方式回答。启动问题会说明每一个守着什么：它之前的命令、prompt 步骤、工作流或 end，或者等它的步骤；选择则说明它的选项和默认值。命令只显示第一行，超过 80 个字符的部分会截掉。例如：
+
+```text
+- Optional approval at contribute: before `teamai contribute --file "$FILE" --title "$TITLE" --namespace "$NS" --session-id…`.
+- The recommended start lets this session's agent answer optional approvals and say why; "answer optional approvals automatically" answers each approval yes.
+```
+
+`--hitl person` 时，agent 问本人。`--hitl recommend` 时，agent 自己决定并说明理由。`--auto-approve` 时，TeamAI 对审批回答 yes，对选择取其默认值。
 
 ### 评审
 
