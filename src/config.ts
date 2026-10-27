@@ -193,6 +193,10 @@ export async function refreshRoleAssignment(config: LocalConfig): Promise<void> 
   if (config.roleAssignment && !resolved.roleAssignment) resolved = await resolveLegacyRole(resolved);
   if (resolved.roleAssignment) delete resolved.roleUnresolved;
   if (resolved.scope !== 'user') resolved = applyMachineSettings(resolved, await loadMemberSettings());
+  // A user init promotes a settings-only machine file, and saveLocalConfig
+  // keeps its settings below the in-memory ones. Rank them the same here so
+  // the reconcile that follows acts on what the save writes (#1484).
+  else resolved = { ...await readSettingsOnlyConfig(expandHome(getUserConfigPath())), ...resolved };
 
   // `resolved` can alias `config` when there is no role or settings overlay.
   // Snapshot it before clearing runtime-only values; otherwise the cleanup
