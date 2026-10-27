@@ -2593,9 +2593,10 @@ export async function addGitStateAtStart(event: DashboardEvent, known?: HeadStat
 
 /**
  * Add to a `stop` event the commit its `cwd` has checked out, and the branch, so the commits a session made are the
- * range from its start's `gitAtStart` to its last Stop's `gitHead`, and its pull request that of its last Stop's branch,
- * known without reading the checkout as it is when the session is folded (#1387). Other events, events with no cwd, and
- * a cwd with no commit or whose git fails or times out are left as they are; a detached HEAD records no branch.
+ * range from its start's `gitAtStart` to its last Stop's `gitHead`, and its pull request that of the last branch a Stop
+ * recorded, known without reading the checkout as it is when the session is folded (#1387). Other events, events with
+ * no cwd, and a cwd with no commit or whose git fails or times out are left as they are; a detached HEAD records no
+ * branch.
  */
 export async function addGitHeadAtStop(event: DashboardEvent): Promise<void> {
   if (event.type !== 'stop' || !event.cwd) return;

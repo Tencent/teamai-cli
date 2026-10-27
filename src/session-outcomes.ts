@@ -184,7 +184,7 @@ async function readPrCache(config: LocalConfig): Promise<Record<string, PrLookup
 }
 
 /**
- * The open pull request of `branch`, the one the session last stopped on, when origin's copy of it holds one of
+ * The open pull request of `branch`, the last one the session stopped on, when origin's copy of it holds one of
  * `commits`, looked up as `deliver: pr` looks one up. Undefined, so not cached, when the host was not asked (origin's
  * branch holds no commit yet) or gave no answer (the lookup failed, or teamai has no credentials for it).
  */

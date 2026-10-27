@@ -121,7 +121,7 @@ outcomes:
 | Outcome | What the session delivered |
 |---|---|
 | `commit` | Commits made with your git identity in the session's checkout, between its start and its last Stop |
-| `pr` | The pull request of the branch the session last stopped on that holds one of those commits, open when a report looked it up. Each report looks until it finds one, so one merged before the session is finished still counts. It uses the credentials `deliver: pr` uses; a lookup that fails leaves it out |
+| `pr` | The pull request of the last branch the session stopped on that holds one of those commits, open when a report looked it up. A Stop on a detached HEAD, as in a rebase, keeps the branch before it. Each report looks until it finds one, so one merged before the session is finished still counts. It uses the credentials `deliver: pr` uses; a lookup that fails leaves it out |
 | `learning` | A learning `teamai contribute` recorded for the session (`--session-id`, else the agent's session) |
 | `none` | Nothing of the above |
 
