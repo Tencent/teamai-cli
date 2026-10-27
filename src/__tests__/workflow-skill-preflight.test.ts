@@ -403,7 +403,13 @@ describe('skill driver preflight in an unattended run', () => {
     const made = await harness({ wide: WIDE });
     expect(await made.call({ kind: 'describe', name: 'wide' })).toMatchObject({ data: { describe: { ask: { kind: 'ask' } } } });
     expect(await made.call({ kind: 'describe', name: 'wide' }, unattended)).toMatchObject({ data: { describe: { ask: {
-      kind: 'start', start: 'teamai workflow start wide --driver skill --parallel 2 --auto-approve',
+      kind: 'start',
+      say: [
+        '- It can run up to 2 steps at once.',
+        '- Optional approval at review: before `node -e "process.exit(0)"`.',
+        '- It answers optional approvals automatically: each approval yes.',
+      ].join('\n'),
+      start: 'teamai workflow start wide --driver skill --parallel 2 --auto-approve',
     } } } });
   });
 
