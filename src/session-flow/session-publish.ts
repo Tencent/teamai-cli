@@ -36,6 +36,7 @@ function recordFile(config: LocalConfig, key: PublishedKey): string {
   return path.join(getDataHome(config), 'sessions', 'published', `${name}.json`);
 }
 
+/** Whether this data home archived `key`, or recorded it as one it can never archive from here. */
 async function isRecorded(config: LocalConfig, key: PublishedKey): Promise<boolean> {
   return fs.stat(recordFile(config, key)).then(() => true, () => false);
 }
@@ -137,4 +138,4 @@ async function steps(config: LocalConfig, mode: RunMode, now: string): Promise<S
   return published;
 }
 
-export const SessionPublish = { captured, steps } as const;
+export const SessionPublish = { captured, steps, isRecorded } as const;

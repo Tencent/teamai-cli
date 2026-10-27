@@ -3,9 +3,6 @@
  * mode and why, and what waits for a drain. Policy names, setting names and counts only: never a transcript, a
  * prompt, a judge's reasoning or a native path.
  */
-import { createHash } from 'node:crypto';
-import fs from 'node:fs/promises';
-import path from 'node:path';
 import { loadTeamConfig } from '../config.js';
 import { explainRunMode, RUN_MODE_ENV, RUN_MODES, type ExplainedRunMode, type RunMode } from '../launch-context.js';
 import { scoringUnavailable } from '../scorers/home.js';
@@ -15,8 +12,9 @@ import { AgentSession } from '../session-flow/agent-session.js';
 import { SessionCaptures, type CapturedSession } from '../session-flow/captures.js';
 import { sessionArchiveRoot } from '../session-flow/session-cmd-shared.js';
 import { SessionPolicy, type SessionPolicies } from '../session-flow/session-policy.js';
+import { SessionPublish } from '../session-flow/session-publish.js';
 import { SessionWork } from '../session-flow/session-work.js';
-import { getDataHome, isAgentExcluded, scopedToolPaths, type LocalConfig } from '../types.js';
+import { isAgentExcluded, scopedToolPaths, type LocalConfig } from '../types.js';
 
 /** The sessions of one run mode that a drain or the background pass has finished, by what became of them. */
 type Settled = { finished: number; waitingToArchive: number; archived: number };
@@ -51,15 +49,6 @@ type Configured = Extract<SessionSharing, { configured: true }>;
 const key = ({ platform, sessionId }: Pick<CapturedSession, 'platform' | 'sessionId'>) => `${platform}\0${sessionId}`;
 
 /**
- * Whether this data home archived `captured`: the record `SessionPublish` writes for each session it archives, read
- * by the name it gives it, since that module keeps its reader to itself.
- */
-async function isArchivedHere(config: LocalConfig, captured: CapturedSession): Promise<boolean> {
-  const name = createHash('sha256').update(key(captured)).digest('hex').slice(0, 32);
-  return fs.stat(path.join(getDataHome(config), 'sessions', 'published', `${name}.json`)).then(() => true, () => false);
-}
-
-/**
  * Each session captured here by run mode (a capture with no mode counts as attended) and state: an attended one is
  * active until it is finished, an unattended one waits for a drain until one reaches it; a finished one waits to be
  * archived while `publish` is `auto` for its mode.
@@ -73,7 +62,7 @@ async function capturedHere(config: LocalConfig, now: string, publish: SessionPo
   };
   for (const one of sessions) {
     const mode = SessionCaptures.runModeOf(one.captures) ?? 'attended';
-    if (await isArchivedHere(config, one)) {
+    if (await SessionPublish.isRecorded(config, one)) {
       counts[mode].archived += 1;
       continue;
     }
