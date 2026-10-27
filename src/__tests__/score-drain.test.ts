@@ -130,11 +130,11 @@ function capturedSession(sessionId: string, runMode: RunMode, { idleFor = 7 * HO
 }
 
 /** A Claude judge on PATH that answers good, or with `fails` exits 1 without an answer. */
-function fakeClaude({ fails = false } = {}): void {
+function fakeClaude({ fails = false, version = '2.1.308 (Claude Code)' } = {}): void {
   const bin = path.join(root, 'bin');
   fs.mkdirSync(bin, { recursive: true });
   fs.writeFileSync(path.join(bin, 'claude'), `#!${process.execPath}
-if (process.argv.includes('--version')) { console.log('2.1.308 (Claude Code)'); process.exit(); }
+if (process.argv.includes('--version')) { console.log(${JSON.stringify(version)}); process.exit(); }
 ${fails ? 'process.exit(1);' : ''}
 process.stdin.resume(); process.stdin.on('end', () => {
 console.log(JSON.stringify({ type: 'system', subtype: 'init', model: 'm1' }));
@@ -271,6 +271,20 @@ describe('teamai score --drain', () => {
     expect(drained.lines).not.toContain('✔ Nothing left to do here');
     const other = { driver: { kind: 't3', machine: 'm2', workspace: '/w' }, judge: { isolation: 'best-effort' as const, tools: ['codex'] as [string] }, running: [] };
     expect(await nextJudgeLease(config, other)).toMatchObject({ data: { lease: { source: 'session', subject: { sessionId: SESSION } } } });
+  });
+
+  it('leaves a session whose isolation no judge tool here reaches to another driver, says so, and exits 0', async () => {
+    await team({ 'scorers/scoring.yaml': 'isolation: verified\n' });
+    capturedSession(SESSION, 'unattended');
+    fakeClaude({ version: '2.0.0 (Claude Code)' });
+    vi.stubEnv('CI', 'true');
+
+    const drained = await drain();
+
+    expect(drained.code, drained.lines.join('\n')).toBe(0);
+    expect(drained.lines).toContain('ℹ Left open: 1 entry that needs an isolation no judge tool here reaches. '
+      + 'A driver whose judge reaches it takes it with: teamai score --next --json \'{"driver":{…,"can":{"judge":{…}}}}\'');
+    expect(drained.lines).not.toContain('✔ Nothing left to do here');
   });
 
   it('prints a failed judgment and exits 1, and a second drain exits 0 without judging it again', async () => {

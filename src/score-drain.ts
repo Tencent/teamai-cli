@@ -44,6 +44,8 @@ export interface DrainResult {
   failed: FailedJudgment[];
   /** Judge entries no judge tool here runs the scorer's model for, left open for another driver's `score --next`. */
   leftOpen: SkippedEntry[];
+  /** How many judge entries need an isolation no judge tool here reaches, left open for another driver. */
+  unmetIsolation: number;
   labelsPublished: number;
   /** Captured sessions archived on teamai-reports. */
   capturedArchived: number;
@@ -71,16 +73,18 @@ const scorersOf = (lease: Lease): readonly string[] => ('scorers' in lease ? lea
  * failed, so it is not handed back; a session lease closed when its judge failed. A lease handed back all the same,
  * because that settle found the attempts locked, ends the offer: one drain judges a lease once.
  */
-async function judge(config: LocalConfig, clock: () => string): Promise<Pick<DrainResult, 'judged' | 'failed' | 'leftOpen'>> {
+async function judge(config: LocalConfig, clock: () => string): Promise<Pick<DrainResult, 'judged' | 'failed' | 'leftOpen' | 'unmetIsolation'>> {
   const driver = driverIdentity('local', SessionWork.leaseCwd(config));
   const judged: Judged[] = [];
   const failed: FailedJudgment[] = [];
   let leftOpen: SkippedEntry[] = [];
+  let unmetIsolation = 0;
   const tried = new Set<string>();
   for (const offer of await localJudgeOffers()) {
     for (;;) {
       const taken = await takeJudgeLease(config, { driver, judge: offer, running: [] }, clock());
-      if (taken.kind === 'idle') leftOpen = taken.skipped;
+      // Of the open entries an idle answer counts, those it did not skip for their model need more isolation.
+      if (taken.kind === 'idle') [leftOpen, unmetIsolation] = [taken.skipped, taken.open - taken.skipped.length];
       if (taken.kind !== 'lease' || tried.has(taken.lease.ref)) break;
       const { lease } = taken;
       tried.add(lease.ref);
@@ -93,7 +97,7 @@ async function judge(config: LocalConfig, clock: () => string): Promise<Pick<Dra
       if (lease.source === 'workflow') await submitJudgeLease(config, lease.ref, { driver, outcome: 'failed' }, clock());
     }
   }
-  return { judged, failed, leftOpen };
+  return { judged, failed, leftOpen, unmetIsolation };
 }
 
 /** Publishes the pending labels of `config`, as `score --push` does. Nothing is pending while usage reporting is off. */
@@ -117,14 +121,15 @@ async function publishLabels(config: LocalConfig): Promise<Pick<DrainResult, 'la
 
 /** Drains each scope of `configs`, in order, in run mode `mode`. */
 async function run(configs: readonly LocalConfig[], { mode, clock = () => new Date().toISOString() }: { mode: RunMode; clock?: () => string }): Promise<DrainResult> {
-  const result: DrainResult = { judged: [], failed: [], leftOpen: [], labelsPublished: 0, capturedArchived: 0, steps: [], unpublished: [], usage: [] };
+  const result: DrainResult = { judged: [], failed: [], leftOpen: [], unmetIsolation: 0, labelsPublished: 0, capturedArchived: 0, steps: [], unpublished: [], usage: [] };
   for (const config of configs) {
     const team = await loadTeamConfig(config.repo.localPath);
     if (mode === 'unattended') await finishUnattended(config, clock());
-    const { judged, failed, leftOpen } = await judge(config, clock);
+    const { judged, failed, leftOpen, unmetIsolation } = await judge(config, clock);
     result.judged.push(...judged);
     result.failed.push(...failed);
     result.leftOpen.push(...leftOpen);
+    result.unmetIsolation += unmetIsolation;
     const labels = await publishLabels(config);
     result.labelsPublished += labels.labelsPublished;
     result.unpublished.push(...labels.unpublished);
@@ -204,7 +209,12 @@ function print(result: DrainResult): void {
     log.info(`Left open: ${passesAndSessions(leftOpen.length - ofSessions, ofSessions)} whose scorer pins a model no judge tool here runs (judge_model_unavailable). `
       + `A driver whose tools run ${leftOpen.length === 1 ? 'it' : 'them'} takes ${leftOpen.length === 1 ? 'it' : 'them'} with: teamai score --next --json '{"driver":{…,"can":{"judge":{…}}}}'`);
   }
-  if (leftOpen.length === 0 && !hasFailed(result)) log.success('Nothing left to do here');
+  const { unmetIsolation } = result;
+  if (unmetIsolation > 0) {
+    log.info(`Left open: ${plural(unmetIsolation, 'entry that needs', 'entries that need')} an isolation no judge tool here reaches. `
+      + `A driver whose judge reaches it takes ${unmetIsolation === 1 ? 'it' : 'them'} with: teamai score --next --json '{"driver":{…,"can":{"judge":{…}}}}'`);
+  }
+  if (leftOpen.length === 0 && unmetIsolation === 0 && !hasFailed(result)) log.success('Nothing left to do here');
 }
 
 export const Drain = { run, print, hasFailed } as const;
