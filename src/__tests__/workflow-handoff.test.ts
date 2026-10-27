@@ -14,7 +14,7 @@ import { updateReports } from '../utils/reports-branch.js';
 import * as workflowCache from '../workflow/cache.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, reportAttempt, resumableSessions, startRun } from '../workflow/engine.js';
-import { claimRun, publishRun, resumeRun, settledSteps } from '../workflow/handoff.js';
+import { claimOffered, claimRun, publishRun, resumeRun, settledSteps } from '../workflow/handoff.js';
 import { pendingRecords, publishPendingRecords, queueRunRecord } from '../workflow/records.js';
 import { runLocalDriver } from '../workflow/drivers/local/local-driver.js';
 import { cancelRun, retryStep } from '../workflow/run-controls.js';
@@ -2652,5 +2652,74 @@ describe('settledSteps', () => {
     expect(of({ status: 'running' })).toEqual(expect.arrayContaining(['sub', 'sub.draft', 'gate']));
     expect(of({ status: 'running' })).not.toContain('review');
     expect(of({ status: 'succeeded' })).not.toContain('review');
+  });
+});
+
+describe('offering a run to a runner (#1390)', () => {
+  /** Names `url` as the origin of each member's business checkout, which a run with no workspace never reaches. */
+  function originAt(url: string, members: Member[]): void {
+    for (const { checkout } of members) git(checkout, 'remote', 'set-url', 'origin', url);
+  }
+
+  it('offers a running run it publishes, under its business repository, and a claim takes the offer away with the ownership', async () => {
+    const acme = team();
+    const alice = await acme.member('alice');
+    const bob = await acme.member('bob');
+    originAt('https://github.com/acme/app.git', [alice, bob]);
+    const runId = await start(alice);
+    await runStep(alice, runId);
+
+    expect(await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout })).toMatchObject({ ok: true, value: { publication: 'published', offered: true } });
+    const offered = JSON.parse(originFile(acme.origin, `workflows/runs/${runId}/state.json`) ?? '{}');
+    expect(offered).toMatchObject({ owner: { user: 'alice' }, offered: { at: expect.any(String) }, repository: 'github.com/acme/app' });
+
+    expect(await claimRun(bob.config, runId, { checkout: bob.checkout })).toMatchObject({ ok: true, value: { ownership: 'claimed' } });
+    const claimed = JSON.parse(originFile(acme.origin, `workflows/runs/${runId}/state.json`) ?? '{}');
+    expect(claimed).toMatchObject({ owner: { user: 'bob' }, repository: 'github.com/acme/app' });
+    expect(claimed).not.toHaveProperty('offered');
+  });
+
+  it('refuses a next of the earlier owner once its reports checkout shows another install claimed the run', async () => {
+    const acme = team();
+    const alice = await acme.member('alice');
+    const bob = await acme.member('bob');
+    const runId = await start(alice);
+    await runStep(alice, runId);
+    await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout });
+    await claimRun(bob.config, runId, { checkout: bob.checkout });
+
+    // A pull fetches teamai-reports, so alice's checkout then shows bob's claim.
+    await reportsBranch.readableReportsWorktree(alice.config);
+    const next = await leaseNext(alice.config, runId, alice.driver);
+    expect(next).toMatchObject({ error: { code: 'not_owner', owner: { user: 'bob' } } });
+    expect(await readRun(alice.config, runId)).toMatchObject({ steps: [{ id: 'one', status: 'succeeded' }, { id: 'two', status: 'pending' }] });
+  });
+
+  it('lets one of two runners that take the same offered run at once claim it, and the other gets state_moved', async () => {
+    const acme = team();
+    const alice = await acme.member('alice');
+    const runners = [await acme.member('runner-1'), await acme.member('runner-2')];
+    const runId = await start(alice);
+    await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout });
+
+    const taken = await Promise.all(runners.map((runner) => claimOffered(runner.config, runId, { checkout: runner.checkout })));
+    expect(taken.filter((claim) => claim.ok)).toHaveLength(1);
+    expect(taken.filter((claim) => !claim.ok)).toMatchObject([{ error: { code: 'state_moved' } }]);
+    const winner = runners[taken.findIndex((claim) => claim.ok)];
+    expect(JSON.parse(originFile(acme.origin, `workflows/runs/${runId}/state.json`) ?? '{}')).toMatchObject({ owner: { user: winner?.config.username }, stateRevision: 2 });
+  });
+
+  it('claims no run that is no longer offered, though any claim could take it over', async () => {
+    const acme = team();
+    const alice = await acme.member('alice');
+    const bob = await acme.member('bob');
+    const runner = await acme.member('runner');
+    const runId = await start(alice);
+    await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout });
+    await claimRun(bob.config, runId, { checkout: bob.checkout });
+
+    expect(await claimOffered(runner.config, runId, { checkout: runner.checkout })).toMatchObject({ ok: false, error: { code: 'state_moved' } });
+    expect(await readRun(runner.config, runId)).toBe('missing');
+    expect(JSON.parse(originFile(acme.origin, `workflows/runs/${runId}/state.json`) ?? '{}')).toMatchObject({ owner: { user: 'bob' } });
   });
 });

@@ -196,7 +196,7 @@ export function unattendedReason(name: string, needs: string, act: 'start' | 'co
  * evidence, such as the person's terminal or CI, and for a session's start of a workflow the cache lacks, which the start
  * answers.
  */
-function invokeRefusal(definition: WorkflowDefinition | undefined, caller: InvokeCaller, act: InvokeAct): WorkflowFailure | undefined {
+export function invokeRefusal(definition: WorkflowDefinition | undefined, caller: InvokeCaller, act: InvokeAct): WorkflowFailure | undefined {
   const { evidence } = caller;
   switch (evidence.kind) {
     case 'none':
