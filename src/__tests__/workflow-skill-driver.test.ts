@@ -365,7 +365,7 @@ describe('skill driver', () => {
     const harness = await skillHarness({ check: CHECK.replace('invoke: allow\n', '') });
     roots.push(harness.root);
     // The test env carries no agent session variable, as a host that sets none.
-    const { evidence } = await skillContext({ config: harness.config, toolPaths: harness.context.toolPaths, env: harness.context.env, cwd: harness.work, aiTool: undefined });
+    const { evidence } = await skillContext({ config: harness.config, toolPaths: harness.context.toolPaths, env: harness.context.env, cwd: harness.work, aiTools: [] });
     const message = 'Workflow "check" has invoke: deny, so no coding agent starts it, with any driver, and this command uses --driver skill, which only a coding agent drives. The person can start it from their own terminal with teamai workflow start check --driver local. To let agents start it, the team sets invoke: allow, or invoke: ask for a start after the person agrees, in workflows/check.yaml.';
     expect(await harness.call({ kind: 'describe', name: 'check' }, { evidence })).toMatchObject({ data: { describe: { ask: { kind: 'denied', reason: message } } } });
     expect(await harness.call({ kind: 'start', name: 'check', answers: { confirmed: false }, inputs: undefined }, { evidence }))
@@ -841,7 +841,7 @@ steps:
     const alive = (): boolean => { try { return process.kill(pid, 0); } catch { return false; } };
     expect(alive()).toBe(true);
 
-    const { runners } = await skillContext({ config: harness.config, toolPaths: harness.context.toolPaths, env: harness.context.env, cwd: harness.work, aiTool: undefined });
+    const { runners } = await skillContext({ config: harness.config, toolPaths: harness.context.toolPaths, env: harness.context.env, cwd: harness.work, aiTools: [] });
     await runners.stopLeft(run, attempt);
     expect(alive()).toBe(false);
     expect(await setup).toMatchObject({ code: 'setup_failed' });
@@ -1095,7 +1095,7 @@ describe('detached runners', () => {
     roots.push(harness.root);
     const checkout = path.join(harness.root, 'removed');
     const run = RunIdSchema.parse('r0123456789abcdef');
-    const { runners } = await skillContext({ config: harness.config, toolPaths: harness.context.toolPaths, env: harness.context.env, cwd: harness.work, aiTool: undefined });
+    const { runners } = await skillContext({ config: harness.config, toolPaths: harness.context.toolPaths, env: harness.context.env, cwd: harness.work, aiTools: [] });
     const spawned = runners.spawn({ run, attempt: AttemptIdSchema.parse('a00000000'), checkout, mode: 'attended' });
     await expect(spawned).rejects.toThrow(`The runner of attempt a00000000 cannot start in ${checkout}, the checkout run ${run} started from: it does not exist. Restore that checkout at that path, then run the same call again, or end the run with teamai workflow cancel ${run}.`);
   });

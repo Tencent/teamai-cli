@@ -286,13 +286,13 @@ function inputsOf(description: WorkflowDescription): Array<{ name: string; type:
 
 /**
  * The prompt tool a person's local run must be told: the session's `tool`, when nothing on this machine picks the tool
- * prompt steps run on and the local driver launches `tool`. `workflows.tools.default` picks one, and so do
- * TEAMAI_AI_TOOL and `aiTool`, the member's `ai.tool`, unless they name a tool teamai calls but runs no steps on, which
- * the step passes over. Undefined when one of those picks a tool, or when no tool the local driver launches is known.
+ * prompt steps run on and the local driver launches `tool`. `workflows.tools.default` picks one, and so does each of
+ * `aiTools`, the tools the member names, unless it names a tool teamai calls but runs no steps on, which the step passes
+ * over. Undefined when one of those picks a tool, or when no tool the local driver launches is known.
  */
-export function localPromptTool({ config, tool, aiTool }: { config: LocalConfig; tool: ToolName | undefined; aiTool: string | undefined }): LaunchTool | undefined {
-  const picks = (named: string | undefined) => !!named && (isLaunchTool(named) || !LAUNCH_ORDER.some((launched) => launched === named));
-  const picked = !!config.workflows?.tools.default || picks(process.env.TEAMAI_AI_TOOL) || picks(aiTool);
+export function localPromptTool({ config, tool, aiTools }: { config: LocalConfig; tool: ToolName | undefined; aiTools: readonly string[] }): LaunchTool | undefined {
+  const picks = (named: string) => isLaunchTool(named) || !LAUNCH_ORDER.some((launched) => launched === named);
+  const picked = !!config.workflows?.tools.default || aiTools.some(picks);
   return !picked && tool !== undefined && isLaunchTool(tool) ? tool : undefined;
 }
 

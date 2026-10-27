@@ -273,8 +273,78 @@ export async function loadTeamAgentLanguageForHook(
   }
 }
 
+/** The keys of ~/.teamai/config.yaml that are the member's own settings, which hold in every scope. */
+const MEMBER_SETTING_KEYS: ReadonlySet<string> = new Set(['ai']);
+
 /**
- * Load the local config (~/.teamai/config.yaml)
+ * Whether a parsed config file holds only the member's own settings, such as `ai.tool`, and no install. A member with
+ * no user-scope install writes ~/.teamai/config.yaml by hand this way.
+ */
+function holdsMemberSettingsOnly(raw: unknown): boolean {
+  return typeof raw === 'object' && raw !== null && !Array.isArray(raw) && Object.keys(raw).every((key) => MEMBER_SETTING_KEYS.has(key));
+}
+
+/** Whether `configPath` holds an install. A file that cannot be read or parsed counts as one, so its install is kept. */
+async function holdsInstall(configPath: string): Promise<boolean> {
+  if (!(await pathExists(configPath))) return false;
+  const content = await readFileSafe(configPath);
+  if (content === null) return true;
+  try {
+    return !holdsMemberSettingsOnly(YAML.parse(content));
+  } catch {
+    return true;
+  }
+}
+
+/** Whether ~/.teamai/config.yaml holds a user-scope install, rather than nothing or only the member's settings. */
+export async function hasUserScopeInstall(): Promise<boolean> {
+  return holdsInstall(expandHome(getUserConfigPath()));
+}
+
+/**
+ * The `ai` setting of the config file `configPath`. Only `ai` is parsed, so a file that holds no install, or one with
+ * an unrelated key the full config would refuse, still sets it.
+ */
+async function readAiSetting(configPath: string): Promise<LocalConfig['ai']> {
+  const content = await readFileSafe(configPath);
+  if (!content) return undefined;
+  try {
+    const parsed = LocalConfigSchema.pick({ ai: true }).safeParse(YAML.parse(content));
+    if (parsed.success) return parsed.data.ai;
+    log.warn(`Ignoring ai in ${configPath}: ${describeConfigError(parsed.error)}. Set it as ai: { tool: <tool id> }.`);
+  } catch (e) {
+    log.warn(`Ignoring ai.tool: ${configPath} is not valid YAML (${describeConfigError(e)}).`);
+  }
+  return undefined;
+}
+
+/** `ai.tool` as one level sets it: the current scope's own config (`project`) or ~/.teamai/config.yaml (`machine`). */
+export interface AiToolSetting {
+  level: 'project' | 'machine';
+  tool: string;
+  /** The file it is set in, which a message tells the member to change. */
+  file: string;
+}
+
+/**
+ * The `ai.tool` settings that apply in `scope`, the project's first: its own config when it is a project, self or
+ * workspace install, then ~/.teamai/config.yaml. Without a scope, or in user scope, only the machine's.
+ */
+export async function aiToolSettings(scope: LocalConfig | undefined): Promise<AiToolSetting[]> {
+  const machine = expandHome(getUserConfigPath());
+  const project = scope && scope.scope !== 'user' ? path.join(getDataHome(scope), 'config.yaml') : undefined;
+  const levels = [...(project && project !== machine ? [{ level: 'project' as const, file: project }] : []), { level: 'machine' as const, file: machine }];
+  const settings: AiToolSetting[] = [];
+  for (const { level, file } of levels) {
+    const tool = (await readAiSetting(file))?.tool;
+    if (tool) settings.push({ level, tool, file });
+  }
+  return settings;
+}
+
+/**
+ * Load the local config (~/.teamai/config.yaml). Null when it is missing, holds only the member's settings, or
+ * cannot be used, which is logged.
  */
 export async function loadLocalConfig(options: LoadOptions = {}): Promise<LocalConfig | null> {
   const configPath = expandHome(getUserConfigPath());
@@ -282,6 +352,7 @@ export async function loadLocalConfig(options: LoadOptions = {}): Promise<LocalC
   if (!content) return null;
   try {
     const raw = YAML.parse(content);
+    if (holdsMemberSettingsOnly(raw)) return null;
     const parsed = LocalConfigSchema.parse(raw);
     return await migrateLegacyRoleConfig(await applyRoleAssignment(parsed), configPath, options);
   } catch (e) {
@@ -386,7 +457,7 @@ export async function requireInit(options: LoadOptions = {}): Promise<TeamaiInit
  * so those two are named here.
  */
 export async function throwMissingOrInvalid(configPath: string): Promise<never> {
-  if (!(await pathExists(configPath))) {
+  if (!(await holdsInstall(configPath))) {
     throw new NotInitializedError('teamai is not initialized. Run `teamai init` first.');
   }
   const content = await readFileSafe(configPath);

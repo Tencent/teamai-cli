@@ -3,7 +3,7 @@ import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { toolExtrasFor, type AgentSpec } from '../../../resources/agent-format.js';
 import { observeLaunch, type Used } from '../../../agent-observation.js';
-import { detectProjectConfig, loadLocalConfig } from '../../../config.js';
+import { detectProjectConfig } from '../../../config.js';
 import { driverIdentity } from '../../../driver-identity.js';
 import { commandSignalPolicy, exitLike, stepEnvironment, terminalReachesCommand } from '../../../env-exec.js';
 import { knownSecrets, resolveWorkflowEnv, type WorkflowEnv } from '../../../env-resolution.js';
@@ -31,6 +31,7 @@ import {
 import { attemptDir, AttemptIdSchema, attemptResultPath, attemptsDir, readRun, RunIdSchema, withRunLock, type RunId, type RunLock } from '../../store.js';
 import { abandonPlace, placeLeaseOf, placeOf, placeRoot, preparePlace, runPlaceSetup, type StepEnd } from '../../place/place.js';
 import { commandEnd, managedReport, unreadablePlace } from '../../protocol.js';
+import { memberTools, type MemberTool } from '../../../tool-launch/call.js';
 import { startGroupedCommand, stopRecordedGroup, type CommandExit, type GroupedCommand } from '../../../tool-launch/process-stop.js';
 import { isLaunchTool, LAUNCH_ORDER, LAUNCH_TOOLS, launchAdapterIdOf, type LaunchTool } from '../../../tool-launch/tools.js';
 import { chooseStepModel, loadDeployedAgent } from '../../step-model.js';
@@ -175,19 +176,20 @@ function supportedTool(value: string): value is LaunchTool {
 
 /**
  * The tool a prompt step runs on: `--tools`, then `workflows.tools`, the agent's entry before the default, with the
- * member's own AI tool between them: TEAMAI_AI_TOOL before `workflows.tools.default`, and `aiTool`, the member's `ai.tool`,
- * after it. A member's tool that teamai does not launch fails the step; one that runs no workflow step gives way to the
- * next rung.
+ * member's own AI tool between them: TEAMAI_AI_TOOL before `workflows.tools.default`, and `ai.tool`, the project's before
+ * the machine's, after it. A member's tool that teamai does not launch fails the step; one that runs no workflow step
+ * gives way to the next rung.
  */
-function stepTool(agent: string | undefined, config: LocalConfig, flags: Record<string, string>, aiTool: string | undefined): { ok: true; tool: string | undefined } | { ok: false; failure: WorkflowFailure } {
+function stepTool(agent: string | undefined, config: LocalConfig, flags: Record<string, string>, members: MemberTool[]): { ok: true; tool: string | undefined } | { ok: false; failure: WorkflowFailure } {
   const configured = config.workflows?.tools ?? {};
+  const member = ({ setting, tool }: MemberTool) => ({ source: setting, named: tool, member: true });
   const rungs = [
     { source: '--tools', named: agent ? flags[agent] : undefined, member: false },
     { source: `workflows.tools.${agent}`, named: agent ? configured[agent] : undefined, member: false },
     { source: '--tools', named: flags.default, member: false },
-    { source: 'TEAMAI_AI_TOOL', named: process.env.TEAMAI_AI_TOOL, member: true },
+    ...members.filter(({ source }) => source === 'TEAMAI_AI_TOOL').map(member),
     { source: 'workflows.tools.default', named: configured.default, member: false },
-    { source: 'ai.tool', named: aiTool, member: true },
+    ...members.filter(({ source }) => source !== 'TEAMAI_AI_TOOL').map(member),
   ];
   const passed: { source: string; named: string }[] = [];
   for (const { source, named, member } of rungs) {
@@ -333,7 +335,7 @@ async function promptReport(
     const reported = unrestored ? { ...failure, message: `${failure.message.replace(/\.?$/, '.')} ${unrestored}` } : failure;
     return { attempt: lease.attempt, revision: lease.revision, driver, ...(tool ? { tool } : {}), ...failureReport(reported) };
   };
-  const choice = stepTool(lease.agent, config, options.tools ?? {}, (await loadLocalConfig())?.ai?.tool);
+  const choice = stepTool(lease.agent, config, options.tools ?? {}, await memberTools(config));
   if (!choice.ok) return giveUp(choice.failure);
   const selected = choice.tool;
   if (!selected) return giveUp({ code: 'tool_unconfigured', message: 'No local workflow tool is configured for this prompt step' });

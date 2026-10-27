@@ -92,8 +92,8 @@ export interface SkillContext {
   mode: RunMode;
   /** The tool of that session, which a child's model is resolved for; undefined when its host names none. */
   tool: ToolName | undefined;
-  /** The member's `ai.tool`, from ~/.teamai/config.yaml whatever `config`'s scope. */
-  aiTool: string | undefined;
+  /** The tools the member names for `config`'s scope, the most specific first: TEAMAI_AI_TOOL, then `ai.tool`. */
+  aiTools: readonly string[];
   invocation: Invocation;
   /** The checkout a start runs from. */
   cwd: string;
@@ -108,7 +108,7 @@ export interface SkillContext {
  * The context of a call from this process: its agent session, how the member ran teamai, the in-process protocol,
  * detached runners, and the real clock.
  */
-export async function skillContext(input: Pick<SkillContext, 'config' | 'toolPaths' | 'env' | 'cwd' | 'aiTool' | 'trace'>): Promise<SkillContext> {
+export async function skillContext(input: Pick<SkillContext, 'config' | 'toolPaths' | 'env' | 'cwd' | 'aiTools' | 'trace'>): Promise<SkillContext> {
   const { config, env } = input;
   const session = await agentSessionFromEnv();
   const evidence = agentEvidence(process.env);

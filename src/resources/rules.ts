@@ -5,13 +5,13 @@ import { listFilesRecursive, pathExists, copyFile, ensureDir, remove, fileConten
 import { log } from '../utils/logger.js';
 import { getUserHome } from '../utils/home.js';
 import { debugOnce, warnOnce } from '../utils/warn-once.js';
-import { TEAMAI_RULES_START, TEAMAI_RULES_END, TEAMAI_TEAM_RULES_START, TEAMAI_TEAM_RULES_END, resolveToolBaseDir, resolveToolRootDir, isAgentExcluded, SELF_KNOWLEDGE_SCAN_KEY, getUserConfigPath, installScopeName } from '../types.js';
+import { TEAMAI_RULES_START, TEAMAI_RULES_END, TEAMAI_TEAM_RULES_START, TEAMAI_TEAM_RULES_END, resolveToolBaseDir, resolveToolRootDir, isAgentExcluded, SELF_KNOWLEDGE_SCAN_KEY, installScopeName } from '../types.js';
 import { EXCLUDED_RULE_NAMES, isDeployedRecallRule, TEAMAI_CONTEXT_RULE_NAME } from '../builtin-rules.js';
 import { rulePaths, teamRuleBody, teamRuleData } from './team-rule.js';
 import { joycodeQuotedGlobsWarning } from './joycode-rule.js';
 import type { OpencodeRulesTarget } from './opencode-config.js';
 import { assertWithinRoot } from '../utils/path-safety.js';
-import { loadStateForScope } from '../config.js';
+import { hasUserScopeInstall, loadStateForScope } from '../config.js';
 import { placedResourcePath } from '../push-namespaces.js';
 import { recordedNamespace } from '../utils/pending-push.js';
 import { deliversEveryNamespace } from '../resource-namespaces.js';
@@ -964,7 +964,7 @@ export class RulesHandler extends ResourceHandler {
   private async removeStaleProjectSoulRules(localConfig: LocalConfig): Promise<void> {
     if (isAgentExcluded(localConfig, 'hermes')) return;
     // An unreadable user config still represents an install whose rules we must keep.
-    if (await pathExists(getUserConfigPath())) return;
+    if (await hasUserScopeInstall()) return;
     const { getHermesSoulPath, readSoulRules, removeSoulRules } = await import('../hermes-config.js');
     if (await readSoulRules() === null) return;
     try {

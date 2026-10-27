@@ -1,10 +1,11 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, expect, it, onTestFinished, vi } from 'vitest';
 import { z } from 'zod';
 import { createToolCaller } from '../tool-launch/call.js';
-import { LocalConfigSchema, type LocalConfig } from '../types.js';
+import { getUserConfigPath, type LocalConfig } from '../types.js';
+import { log } from '../utils/logger.js';
 
 let root = '';
 afterEach(async () => { vi.unstubAllEnvs(); if (root) await fs.rm(root, { recursive: true, force: true }); root = ''; });
@@ -46,12 +47,8 @@ let stdin = ''; process.stdin.on('data', (d) => stdin += d); process.stdin.on('e
   return executable;
 }
 
-function localConfig(fields: Record<string, unknown>): LocalConfig {
-  return LocalConfigSchema.parse({ repo: { localPath: '/team', remote: 'https://example.com/team/repo.git' }, username: 'member', ...fields });
-}
-
 function only(tool: string, executable: string) {
-  return createToolCaller({ resolveTool: (command) => command === tool ? executable : null, loadConfig: async () => null });
+  return createToolCaller({ resolveTool: (command) => command === tool ? executable : null, resolveScope: async () => undefined });
 }
 
 it('runs Claude headless with the prompt on stdin and returns its answer and tokens', async () => {
@@ -89,7 +86,7 @@ it.each([
 
 it('fails with no_tool when no tool teamai launches is on PATH', async () => {
   vi.stubEnv('TEAMAI_AI_TOOL', '');
-  const caller = createToolCaller({ resolveTool: () => null, loadConfig: async () => null });
+  const caller = createToolCaller({ resolveTool: () => null, resolveScope: async () => undefined });
 
   await expect(caller.callTool('hi', { launchedBy: 'codebase' })).rejects.toMatchObject({ kind: 'no_tool', message: 'No AI tool teamai launches is on PATH. Install one of: claude, claude-internal, tclaude, codex, codex-internal, tcodex, opencode, codebuddy, workbuddy, openclaw, cursor, copilot, qoder, kiro, pi, omp, muse, hermes, or set TEAMAI_AI_TOOL to one you have.' });
 });
@@ -98,7 +95,7 @@ it('picks the tool again on the next call when no tool was on PATH, so a long-li
   vi.stubEnv('TEAMAI_AI_TOOL', '');
   const claude = await fakeTool('claude', { stdout: JSON.stringify({ type: 'result', result: 'ok' }) });
   let installed = false;
-  const caller = createToolCaller({ resolveTool: (command) => installed && command === 'claude' ? claude.executable : null, loadConfig: async () => null });
+  const caller = createToolCaller({ resolveTool: (command) => installed && command === 'claude' ? claude.executable : null, resolveScope: async () => undefined });
 
   await expect(caller.callTool('hi', { launchedBy: 'codebase' })).rejects.toMatchObject({ kind: 'no_tool' });
   installed = true;
@@ -251,7 +248,7 @@ it('fails with the reason a muse run ends without completing', async () => {
 
 it('runs Cursor through its cursor-agent executable, read-only, with the prompt on stdin', async () => {
   const cursor = await fakeTool('cursor-agent', { stdout: JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: 'skills', session_id: 's1' }) });
-  const caller = createToolCaller({ resolveTool: (command) => command === 'cursor-agent' ? cursor.executable : null, loadConfig: async () => null });
+  const caller = createToolCaller({ resolveTool: (command) => command === 'cursor-agent' ? cursor.executable : null, resolveScope: async () => undefined });
 
   const answer = await caller.callTool('Classify', { launchedBy: 'recall-promote' });
 
@@ -278,7 +275,7 @@ it.each([
   { tool: 'hermes', executable: 'hermes', args: ['-z', 'Classify'] },
 ])('runs $tool through $executable with the prompt as an argument, and reads the reply it prints', async ({ tool, executable, args }) => {
   const fake = await fakeTool(executable, { stdout: 'rules\n' });
-  const caller = createToolCaller({ resolveTool: (command) => command === executable ? fake.executable : null, loadConfig: async () => null });
+  const caller = createToolCaller({ resolveTool: (command) => command === executable ? fake.executable : null, resolveScope: async () => undefined });
 
   const answer = await caller.callTool('Classify', { launchedBy: 'recall-promote' });
 
@@ -292,37 +289,104 @@ it('runs the tool TEAMAI_AI_TOOL names, though an earlier tool in the launch ord
   const onPath: Record<string, string> = { claude: claude.executable, codex: codex.executable };
   vi.stubEnv('TEAMAI_AI_TOOL', 'codex');
 
-  const answer = await createToolCaller({ resolveTool: (command) => onPath[command] ?? null, loadConfig: async () => null }).callTool('hi', { launchedBy: 'codebase' });
+  const answer = await createToolCaller({ resolveTool: (command) => onPath[command] ?? null, resolveScope: async () => undefined }).callTool('hi', { launchedBy: 'codebase' });
 
   expect(answer).toMatchObject({ text: 'from codex', tool: 'codex' });
 });
 
-it('runs the tool ai.tool names when TEAMAI_AI_TOOL is unset, and TEAMAI_AI_TOOL over it', async () => {
-  const claude = await fakeTool('claude', { stdout: JSON.stringify({ type: 'result', result: 'from claude' }) });
-  const codex = await fakeTool('codex', { lastMessage: 'from codex' });
-  const opencode = await fakeTool('opencode', { stdout: JSON.stringify({ type: 'text', part: { text: 'from opencode' } }) });
-  const onPath: Record<string, string> = { claude: claude.executable, codex: codex.executable, opencode: opencode.executable };
-  const caller = () => createToolCaller({ resolveTool: (command) => onPath[command] ?? null, loadConfig: async () => localConfig({ ai: { tool: 'opencode' } }) });
-  vi.stubEnv('TEAMAI_AI_TOOL', '');
+/** A project install whose own config sets `project`, and ~/.teamai/config.yaml with `machine`; each written only when given. */
+async function aiToolFiles({ project, machine }: { project?: string; machine?: string }, name = 'project'): Promise<{ scope: LocalConfig; projectFile: string; machineFile: string }> {
+  root ||= await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-call-'));
+  const dataHome = path.join(root, 'partitions', name);
+  await fs.mkdir(dataHome, { recursive: true });
+  const projectFile = path.join(dataHome, 'config.yaml');
+  const machineFile = getUserConfigPath();
+  await fs.mkdir(path.dirname(machineFile), { recursive: true });
+  await fs.rm(machineFile, { force: true });
+  onTestFinished(() => fs.rm(machineFile, { force: true }));
+  const install = `repo:\n  localPath: ${root}\n  remote: local\nusername: member\nscope: workspace\n`;
+  await fs.writeFile(projectFile, install + (project ? `ai:\n  tool: ${project}\n` : ''));
+  if (machine) await fs.writeFile(machineFile, `ai:\n  tool: ${machine}\n`);
+  const scope: LocalConfig = { repo: { localPath: root, remote: 'local' }, username: 'member', scope: 'project', projectRoot: root, dataHome, additionalRoles: [] };
+  return { scope, projectFile, machineFile };
+}
 
-  expect(await caller().callTool('hi', { launchedBy: 'codebase' })).toMatchObject({ tool: 'opencode' });
-  vi.stubEnv('TEAMAI_AI_TOOL', 'codex');
-  expect(await caller().callTool('hi', { launchedBy: 'codebase' })).toMatchObject({ tool: 'codex' });
+/** claude, codex and opencode on PATH, each answering with its own name. */
+async function threeTools(): Promise<(command: string) => string | null> {
+  const onPath: Record<string, string> = {
+    claude: (await fakeTool('claude', { stdout: JSON.stringify({ type: 'result', result: 'from claude' }) })).executable,
+    codex: (await fakeTool('codex', { lastMessage: 'from codex' })).executable,
+    opencode: (await fakeTool('opencode', { stdout: JSON.stringify({ type: 'text', part: { text: 'from opencode' } }) })).executable,
+  };
+  return (command) => onPath[command] ?? null;
+}
+
+it.each([
+  { env: 'codex', project: 'opencode', machine: 'claude', tool: 'codex', source: 'TEAMAI_AI_TOOL' },
+  { env: '', project: 'opencode', machine: 'codex', tool: 'opencode', source: 'ai.tool (project)' },
+  { env: '', project: undefined, machine: 'codex', tool: 'codex', source: 'ai.tool (machine)' },
+  { env: '', project: undefined, machine: undefined, tool: 'claude', source: 'LAUNCH_ORDER' },
+])('takes TEAMAI_AI_TOOL, then the project\'s ai.tool, then the machine\'s: $env / $project / $machine runs $tool, from $source', async ({ env, project, machine, tool, source }) => {
+  vi.stubEnv('TEAMAI_AI_TOOL', env);
+  const { scope } = await aiToolFiles({ project, machine });
+  const debug = vi.spyOn(log, 'debug');
+  onTestFinished(() => debug.mockRestore());
+
+  const answer = await createToolCaller({ resolveTool: await threeTools(), resolveScope: async () => scope }).callTool('hi', { launchedBy: 'codebase' });
+
+  expect(answer).toMatchObject({ tool, text: `from ${tool}` });
+  expect(debug.mock.calls.flat()).toContainEqual(expect.stringMatching(new RegExp(`using ${tool} \\(.*\\), from ${source.replace(/[()]/g, '\\$&')}$`)));
+});
+
+it('takes only the machine\'s ai.tool for a call with no scope', async () => {
+  vi.stubEnv('TEAMAI_AI_TOOL', '');
+  await aiToolFiles({ project: 'opencode', machine: 'codex' });
+
+  const answer = await createToolCaller({ resolveTool: await threeTools(), resolveScope: async () => undefined }).callTool('hi', { launchedBy: 'codebase' });
+
+  expect(answer).toMatchObject({ tool: 'codex' });
 });
 
 it.each([
-  { source: 'TEAMAI_AI_TOOL', named: 'gemini', message: 'TEAMAI_AI_TOOL is "gemini", which is not a tool teamai launches. Set it to one of: claude, claude-internal, tclaude, codex, codex-internal, tcodex, opencode, codebuddy, workbuddy, openclaw, cursor, copilot, qoder, kiro, pi, omp, muse, hermes. Or unset it.' },
-  { source: 'TEAMAI_AI_TOOL', named: 'codex', message: 'TEAMAI_AI_TOOL is "codex", which is not on PATH. Install codex, or unset TEAMAI_AI_TOOL to use the first installed tool.' },
-  { source: 'TEAMAI_AI_TOOL', named: 'trae', message: 'TEAMAI_AI_TOOL is "trae", which is not a tool teamai launches.' },
-  { source: 'ai.tool', named: 'gemini', message: 'ai.tool in /home/member/.teamai/config.yaml is "gemini", which is not a tool teamai launches. Set it to one of: claude, claude-internal, tclaude, codex, codex-internal, tcodex, opencode, codebuddy, workbuddy, openclaw, cursor, copilot, qoder, kiro, pi, omp, muse, hermes. Or remove it.' },
-  { source: 'ai.tool', named: 'codex', message: 'ai.tool in /home/member/.teamai/config.yaml is "codex", which is not on PATH. Install codex, or remove ai.tool to use the first installed tool.' },
-] as const)('fails the call when $source names $named, rather than run another tool', async ({ source, named, message }) => {
-  const claude = await fakeTool('claude', { stdout: JSON.stringify({ type: 'result', result: 'from claude' }) });
-  vi.stubEnv('TEAMAI_AI_TOOL', source === 'TEAMAI_AI_TOOL' ? named : '');
-  vi.stubEnv('HOME', '/home/member');
-  const caller = createToolCaller({ resolveTool: (command) => command === 'claude' ? claude.executable : null, loadConfig: async () => localConfig(source === 'ai.tool' ? { ai: { tool: named } } : {}) });
+  { case: 'holds only ai', content: 'ai:\n  tool: codex\n' },
+  { case: 'also has an unrelated key the full config refuses', content: 'username: 42\nai:\n  tool: codex\n' },
+])('reads ai.tool from a ~/.teamai/config.yaml that $case', async ({ content }) => {
+  vi.stubEnv('TEAMAI_AI_TOOL', '');
+  const { machineFile } = await aiToolFiles({});
+  await fs.writeFile(machineFile, content);
 
-  await expect(caller.callTool('hi', { launchedBy: 'codebase' })).rejects.toMatchObject({ name: 'CallError', kind: 'override_invalid', message: expect.stringContaining(message) });
+  const answer = await createToolCaller({ resolveTool: await threeTools(), resolveScope: async () => undefined }).callTool('hi', { launchedBy: 'codebase' });
+
+  expect(answer).toMatchObject({ tool: 'codex' });
+});
+
+it('picks once per scope, so a process that works in two projects runs each project\'s tool', async () => {
+  vi.stubEnv('TEAMAI_AI_TOOL', '');
+  const first = await aiToolFiles({ project: 'opencode' }, 'first');
+  const second = await aiToolFiles({ project: 'codex' }, 'second');
+  let scope = first.scope;
+  const caller = createToolCaller({ resolveTool: await threeTools(), resolveScope: async () => scope });
+
+  expect(await caller.callTool('hi', { launchedBy: 'codebase' })).toMatchObject({ tool: 'opencode' });
+  scope = second.scope;
+  expect(await caller.callTool('hi', { launchedBy: 'codebase' })).toMatchObject({ tool: 'codex' });
+  scope = first.scope;
+  expect(await caller.callTool('hi', { launchedBy: 'codebase' })).toMatchObject({ tool: 'opencode' });
+});
+
+it.each([
+  { level: 'TEAMAI_AI_TOOL', named: 'gemini', message: () => 'TEAMAI_AI_TOOL is "gemini", which is not a tool teamai launches. Set it to one of: claude, claude-internal, tclaude, codex, codex-internal, tcodex, opencode, codebuddy, workbuddy, openclaw, cursor, copilot, qoder, kiro, pi, omp, muse, hermes. Or unset it.' },
+  { level: 'TEAMAI_AI_TOOL', named: 'kiro', message: () => 'TEAMAI_AI_TOOL is "kiro", which is not on PATH. Install kiro, or unset TEAMAI_AI_TOOL to use the next setting or the first installed tool.' },
+  { level: 'TEAMAI_AI_TOOL', named: 'trae', message: () => 'TEAMAI_AI_TOOL is "trae", which is not a tool teamai launches.' },
+  { level: 'project', named: 'gemini', message: (file: string) => `ai.tool in ${file} is "gemini", which is not a tool teamai launches. Set it to one of: claude, claude-internal, tclaude, codex, codex-internal, tcodex, opencode, codebuddy, workbuddy, openclaw, cursor, copilot, qoder, kiro, pi, omp, muse, hermes. Or remove it.` },
+  { level: 'project', named: 'kiro', message: (file: string) => `ai.tool in ${file} is "kiro", which is not on PATH. Install kiro, or remove it to use the next setting or the first installed tool.` },
+  { level: 'machine', named: 'kiro', message: (file: string) => `ai.tool in ${file} is "kiro", which is not on PATH. Install kiro, or remove it to use the next setting or the first installed tool.` },
+] as const)('fails the call when $level names $named, naming the setting to change, rather than run another tool', async ({ level, named, message }) => {
+  vi.stubEnv('TEAMAI_AI_TOOL', level === 'TEAMAI_AI_TOOL' ? named : '');
+  const { scope, projectFile, machineFile } = await aiToolFiles({ project: level === 'project' ? named : undefined, machine: level === 'machine' ? named : 'opencode' });
+  const caller = createToolCaller({ resolveTool: await threeTools(), resolveScope: async () => scope });
+
+  await expect(caller.callTool('hi', { launchedBy: 'codebase' })).rejects.toMatchObject({ name: 'CallError', kind: 'override_invalid', message: expect.stringContaining(message(level === 'project' ? projectFile : machineFile)) });
 });
 
 it('fails a batch with the override error itself, before it runs any call', async () => {

@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { z } from 'zod';
-import { autoDetectInit, loadLocalConfig, loadLocalConfigForScope, loadTeamConfig } from './config.js';
+import { autoDetectInit, loadLocalConfigForScope, loadTeamConfig } from './config.js';
 import { resolveWorkflowEnv, type WorkflowEnv } from './env-resolution.js';
 import { isLeaseRef } from './scorers/entry.js';
 import { log, setStderrOnly } from './utils/logger.js';
@@ -17,6 +17,7 @@ import { parseInputsFlag, parseSkillCall, runSkillCall, sessionDrivesRun, skillC
 import { loadCachedWorkflow } from './workflow/cache.js';
 import { findRunConfig } from './workflow/run-location.js';
 import { resolveRunMode } from './launch-context.js';
+import { memberTools } from './tool-launch/call.js';
 import { agentEvidence, isAttemptRunner, nestedCall, nestedStart, nestedWorkflowError, type Nested } from './workflow/attempt-marker.js';
 import type { WorkflowEnvelope, WorkflowFailure } from './workflow/types.js';
 
@@ -169,7 +170,7 @@ async function workflowSkill(raw: Parameters<typeof parseSkillCall>[0]): Promise
   }
   const context = await skillContext({
     config: loaded.config, toolPaths: loaded.teamConfig.toolPaths, env: loaded.env, cwd: process.cwd(),
-    aiTool: (await loadLocalConfig())?.ai?.tool,
+    aiTools: (await memberTools(loaded.config)).map(({ tool }) => tool),
     trace: (row) => log.debug(`[workflow] skill driver took row ${row}`),
   });
   writeEnvelope(await runSkillCall(call, context), loaded.secrets);

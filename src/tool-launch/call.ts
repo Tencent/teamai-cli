@@ -1,9 +1,9 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { loadLocalConfig } from '../config.js';
+import { aiToolSettings, detectProjectConfig } from '../config.js';
 import { LAUNCHED_BY_ENV, resolveRunMode, RUN_MODE_ENV, type LaunchedBy } from '../launch-context.js';
-import { getUserConfigPath, type LocalConfig } from '../types.js';
+import { getDataHome, type LocalConfig } from '../types.js';
 import { resolveCliPath } from '../utils/cli-path.js';
 import { log } from '../utils/logger.js';
 import { runTool } from './run.js';
@@ -33,7 +33,35 @@ export interface ToolCaller {
 
 export interface ToolCallerDeps {
   resolveTool?: (command: string) => string | null;
-  loadConfig?: () => Promise<LocalConfig | null>;
+  /** The scope a call runs in: the one a command resolves from its working directory, or none. */
+  resolveScope?: () => Promise<LocalConfig | undefined>;
+}
+
+/** Where the member names the tool for teamai's AI work, the most specific first. */
+export type MemberToolSource = 'TEAMAI_AI_TOOL' | 'ai.tool (project)' | 'ai.tool (machine)';
+
+/** A tool the member names: where, and the setting a message tells them to change. */
+export interface MemberTool {
+  source: MemberToolSource;
+  tool: string;
+  setting: string;
+}
+
+/**
+ * The tools the member names for `scope`, the most specific first: TEAMAI_AI_TOOL, then `ai.tool` in the scope's own
+ * config, then in ~/.teamai/config.yaml. AI calls take the first; a workflow step puts its own settings between them.
+ */
+export async function memberTools(scope: LocalConfig | undefined): Promise<MemberTool[]> {
+  const env = process.env.TEAMAI_AI_TOOL;
+  return [
+    ...(env ? [{ source: 'TEAMAI_AI_TOOL' as const, tool: env, setting: 'TEAMAI_AI_TOOL' }] : []),
+    ...(await aiToolSettings(scope)).map(({ level, tool, file }) => ({ source: `ai.tool (${level})` as const, tool, setting: `ai.tool in ${file}` })),
+  ];
+}
+
+/** The scope of a command run here, as the command resolves it, read without writing anything. */
+async function scopeHere(): Promise<LocalConfig | undefined> {
+  return await detectProjectConfig(process.cwd(), undefined, { dryRun: true, suppressMigrationNotice: true }) ?? undefined;
 }
 
 /** Why a call did not answer: no tool to run it, an override that names a tool teamai cannot run, or the tool failed. */
@@ -60,30 +88,26 @@ function callEnv(launchedBy: LaunchedBy): NodeJS.ProcessEnv {
   return { ...env, TEAMAI_CONTRIBUTE_HINT_DISABLED: '1', [LAUNCHED_BY_ENV]: launchedBy, [RUN_MODE_ENV]: resolveRunMode(process.env) };
 }
 
-/** A caller that resolves its tool once and reuses it for every call. */
-export function createToolCaller({ resolveTool = resolveCliPath, loadConfig = loadLocalConfig }: ToolCallerDeps = {}): ToolCaller {
-  /** The tool an override names. A member who names a tool means it, so one teamai cannot run fails the call. */
-  const named = (source: 'TEAMAI_AI_TOOL' | 'ai.tool', value: string): Picked => {
+/** A caller that resolves its tool once per scope and reuses it for every call there. */
+export function createToolCaller({ resolveTool = resolveCliPath, resolveScope = scopeHere }: ToolCallerDeps = {}): ToolCaller {
+  /** The tool the member names. A member who names a tool means it, so one teamai cannot run fails the call. */
+  const named = ({ source, tool: value, setting }: MemberTool): Picked => {
+    const env = source === 'TEAMAI_AI_TOOL';
     const tool = LAUNCH_ORDER.find((candidate) => candidate === value);
     if (tool === undefined) {
-      throw new CallError('override_invalid', source === 'TEAMAI_AI_TOOL'
-        ? `TEAMAI_AI_TOOL is "${value}", which is not a tool teamai launches. Set it to one of: ${LAUNCH_ORDER.join(', ')}. Or unset it.`
-        : `ai.tool in ${getUserConfigPath()} is "${value}", which is not a tool teamai launches. Set it to one of: ${LAUNCH_ORDER.join(', ')}. Or remove it.`);
+      throw new CallError('override_invalid', `${setting} is "${value}", which is not a tool teamai launches. Set it to one of: ${LAUNCH_ORDER.join(', ')}. Or ${env ? 'unset' : 'remove'} it.`);
     }
     const executable = resolveTool(executableOf(tool));
     if (executable === null) {
-      throw new CallError('override_invalid', source === 'TEAMAI_AI_TOOL'
-        ? `TEAMAI_AI_TOOL is "${tool}", which is not on PATH. Install ${tool}, or unset TEAMAI_AI_TOOL to use the first installed tool.`
-        : `ai.tool in ${getUserConfigPath()} is "${tool}", which is not on PATH. Install ${tool}, or remove ai.tool to use the first installed tool.`);
+      throw new CallError('override_invalid', `${setting} is "${tool}", which is not on PATH. Install ${tool}, or ${env ? 'unset TEAMAI_AI_TOOL' : 'remove it'} to use the next setting or the first installed tool.`);
     }
     log.debug(`[tool-launch] using ${tool} (${executable}), from ${source}`);
     return { tool, executable };
   };
 
-  const resolve = async (): Promise<Picked> => {
-    if (process.env.TEAMAI_AI_TOOL) return named('TEAMAI_AI_TOOL', process.env.TEAMAI_AI_TOOL);
-    const configured = (await loadConfig())?.ai?.tool;
-    if (configured) return named('ai.tool', configured);
+  const resolve = async (scope: LocalConfig | undefined): Promise<Picked> => {
+    const [first] = await memberTools(scope);
+    if (first) return named(first);
     for (const tool of LAUNCH_ORDER) {
       const executable = resolveTool(executableOf(tool));
       if (executable !== null) {
@@ -93,9 +117,18 @@ export function createToolCaller({ resolveTool = resolveCliPath, loadConfig = lo
     }
     throw new CallError('no_tool', `No AI tool teamai launches is on PATH. Install one of: ${LAUNCH_ORDER.join(', ')}, or set TEAMAI_AI_TOOL to one you have.`);
   };
-  // Only a pick that succeeded is kept, so a long-lived process such as the dashboard sees a tool installed since.
-  let picked: Promise<Picked> | undefined;
-  const pick = (): Promise<Picked> => picked ??= resolve().catch((error: unknown) => { picked = undefined; throw error; });
+  // One pick per scope, so a process that works in several projects never takes another project's tool. Only a pick
+  // that succeeded is kept, so a long-lived process sees a tool installed or a setting fixed since.
+  const picked = new Map<string, Promise<Picked>>();
+  const pick = async (): Promise<Picked> => {
+    const scope = await resolveScope();
+    const key = scope && scope.scope !== 'user' ? getDataHome(scope) : 'machine';
+    const cached = picked.get(key);
+    if (cached) return cached;
+    const picking = resolve(scope).catch((error: unknown) => { picked.delete(key); throw error; });
+    picked.set(key, picking);
+    return picking;
+  };
 
   const callTool: ToolCaller['callTool'] = async (prompt, { launchedBy, timeout = DEFAULT_TIMEOUT_MS }) => {
       const { tool, executable } = await pick();

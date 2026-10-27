@@ -14,6 +14,8 @@ import {
   NotInitializedError,
   detectProjectConfig,
   findUnreadableProjectConfig,
+  hasUserScopeInstall,
+  aiToolSettings,
   requireInit,
   UnreadableProjectConfigError,
 } from '../config.js';
@@ -41,6 +43,18 @@ describe('requireInit: missing config versus unreadable config', () => {
 
   it('is NotInitializedError when there is no config file', async () => {
     await expect(requireInit()).rejects.toBeInstanceOf(NotInitializedError);
+  });
+
+  it("is NotInitializedError, with nothing logged, when the file holds only the member's settings", async () => {
+    const configPath = path.join(home, '.teamai', 'config.yaml');
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, 'ai:\n  tool: codex\n');
+    vi.mocked(log.error).mockClear();
+
+    await expect(requireInit()).rejects.toBeInstanceOf(NotInitializedError);
+    expect(log.error).not.toHaveBeenCalled();
+    expect(await hasUserScopeInstall()).toBe(false);
+    expect(await aiToolSettings(undefined)).toEqual([{ level: 'machine', tool: 'codex', file: configPath }]);
   });
 
   it('names the file, and is not NotInitializedError, when the config exists but does not parse', async () => {

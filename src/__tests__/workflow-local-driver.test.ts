@@ -38,8 +38,17 @@ const dirs: string[] = [];
 function memberAiTool(tool: string): void {
   const file = getUserConfigPath();
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, `repo:\n  localPath: ${os.tmpdir()}\n  remote: local\nusername: tester\nai:\n  tool: ${tool}\n`);
+  // The file a member writes by hand on a machine with no user-scope install.
+  fs.writeFileSync(file, `ai:\n  tool: ${tool}\n`);
   onTestFinished(() => { fs.rmSync(file, { force: true }); });
+}
+
+/** Sets `ai.tool` in the config of `config`'s own scope, and returns that file. */
+function projectAiTool(config: LocalConfig, tool: string): string {
+  const file = path.join(getDataHome(config), 'config.yaml');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, `ai:\n  tool: ${tool}\n`);
+  return file;
 }
 
 async function fixture(agent?: string): Promise<{ config: LocalConfig; workspace: string; runId: string }> {
@@ -148,19 +157,21 @@ describe('local workflow prompt driver', () => {
     expect(await readRun(config, runId)).toMatchObject({ steps: [{ runMode: mode }] });
   });
 
-  it.each<{ case: string; flags: Record<string, string>; configured: Record<string, string>; env: string; ai: string | undefined; ran: string }>([
-    { case: 'TEAMAI_AI_TOOL over workflows.tools.default', flags: {}, configured: { default: 'claude' }, env: 'codex', ai: undefined, ran: 'codex' },
-    { case: '--tools over TEAMAI_AI_TOOL', flags: { default: 'claude' }, configured: {}, env: 'codex', ai: undefined, ran: 'claude' },
-    { case: 'workflows.tools.default over ai.tool', flags: {}, configured: { default: 'codex' }, env: '', ai: 'opencode', ran: 'codex' },
-    { case: 'ai.tool when nothing else names a tool', flags: {}, configured: {}, env: '', ai: 'opencode', ran: 'opencode' },
-    { case: 'the next rung when TEAMAI_AI_TOOL names a tool without workflow steps', flags: {}, configured: { default: 'claude' }, env: 'openclaw', ai: undefined, ran: 'claude' },
-  ])('runs a prompt step on $case', async ({ flags, configured, env, ai, ran }) => {
+  it.each<{ case: string; flags: Record<string, string>; configured: Record<string, string>; env: string; project?: string; machine?: string; ran: string }>([
+    { case: 'TEAMAI_AI_TOOL over workflows.tools.default', flags: {}, configured: { default: 'claude' }, env: 'codex', ran: 'codex' },
+    { case: '--tools over TEAMAI_AI_TOOL', flags: { default: 'claude' }, configured: {}, env: 'codex', ran: 'claude' },
+    { case: "workflows.tools.default over the project's ai.tool", flags: {}, configured: { default: 'codex' }, env: '', project: 'opencode', machine: 'claude', ran: 'codex' },
+    { case: "the project's ai.tool over the machine's", flags: {}, configured: {}, env: '', project: 'codex', machine: 'opencode', ran: 'codex' },
+    { case: "the machine's ai.tool when nothing else names a tool", flags: {}, configured: {}, env: '', machine: 'opencode', ran: 'opencode' },
+    { case: "the machine's ai.tool when the project's names a tool without workflow steps", flags: {}, configured: {}, env: '', project: 'pi', machine: 'opencode', ran: 'opencode' },
+    { case: 'the next rung when TEAMAI_AI_TOOL names a tool without workflow steps', flags: {}, configured: { default: 'claude' }, env: 'openclaw', ran: 'claude' },
+  ])('runs a prompt step on $case', async ({ flags, configured, env, project, machine, ran }) => {
     vi.stubEnv('TEAMAI_AI_TOOL', env);
     onTestFinished(() => { vi.unstubAllEnvs(); });
     const { config, workspace, runId } = await fixture();
     config.workflows = { tools: configured };
-    // ai.tool is the member's, in ~/.teamai/config.yaml whatever the run's scope.
-    if (ai) memberAiTool(ai);
+    if (project) projectAiTool(config, project);
+    if (machine) memberAiTool(machine);
     const tools: string[] = [];
     const adapter: LocalToolAdapter = { runInteractive: vi.fn(), run: vi.fn(async (tool: string) => { tools.push(tool); return { started: true as const, exitCode: 0 }; }) };
 
@@ -169,17 +180,20 @@ describe('local workflow prompt driver', () => {
     expect(tools).toEqual([ran]);
   });
 
-  it("ignores ai.tool in the run's scope config, which is not where a member sets it", async () => {
+  it("fails a prompt step when the project's ai.tool names a tool teamai does not launch, naming its file", async () => {
+    vi.stubEnv('TEAMAI_AI_TOOL', '');
+    onTestFinished(() => { vi.unstubAllEnvs(); });
     const { config, workspace, runId } = await fixture();
     config.workflows = { tools: {} };
-    config.ai = { tool: 'codex' };
-    memberAiTool('opencode');
-    const tools: string[] = [];
-    const adapter: LocalToolAdapter = { runInteractive: vi.fn(), run: vi.fn(async (tool: string) => { tools.push(tool); return { started: true as const, exitCode: 0 }; }) };
+    const file = projectAiTool(config, 'gemini');
+    const adapter: LocalToolAdapter = { runInteractive: vi.fn(), run: vi.fn() };
 
     await runLocalDriver(config, runId, workspace, { adapter, toolPaths });
 
-    expect(tools).toEqual(['opencode']);
+    expect(adapter.run).not.toHaveBeenCalled();
+    expect(await readRun(config, runId)).toMatchObject({
+      steps: [{ failure: { code: 'tool_unsupported', message: expect.stringContaining(`ai.tool in ${file} is "gemini", which is not a tool teamai launches.`) } }],
+    });
   });
 
   it('fails a prompt step when TEAMAI_AI_TOOL names a tool teamai does not launch', async () => {

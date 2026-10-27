@@ -16,9 +16,9 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { loadLocalConfig, loadTeamConfig } from '../config.js';
+import { hasUserScopeInstall, loadLocalConfig, loadTeamConfig } from '../config.js';
 import { acquireLock, releaseLock } from '../update.js';
-import { getDataHome, getTeamaiHome, getTeamaiHomeDir, getUserConfigPath, type LocalConfig } from '../types.js';
+import { getDataHome, getTeamaiHome, getTeamaiHomeDir, type LocalConfig } from '../types.js';
 import { pathExists, readFileIfExists, readFileSafe, writeFileAtomic } from '../utils/fs.js';
 import { gitCommonDir, nearestGitEntry } from '../utils/git.js';
 import { log } from '../utils/logger.js';
@@ -266,7 +266,7 @@ export class EnvScopesUnreadableError extends Error {
  * stays out of shells until it is pulled. Null when there is no user scope.
  */
 async function userScopeLine(): Promise<string | null> {
-  if (!await pathExists(getUserConfigPath())) return null;
+  if (!await hasUserScopeInstall()) return null;
   const user = await loadLocalConfig({ dryRun: true, suppressMigrationNotice: true });
   const team = user ? await loadTeamConfig(user.repo.localPath) : null;
   if (!user || !team) {
@@ -307,7 +307,7 @@ export async function isLastEnvScope(localConfig: LocalConfig): Promise<boolean>
   const found = await scopeEntry(localConfig);
   // A row that cannot be found counts as another scope's: the loader stays.
   const entry = found === 'repository-unreadable' ? null : found;
-  const hasUserConfig = await pathExists(getUserConfigPath());
+  const hasUserConfig = await hasUserScopeInstall();
   const registry = await readEnvScopes();
   // Which scopes it still routes is unknown, so the loader stays.
   if (registry.kind === 'unreadable') return false;
@@ -337,7 +337,7 @@ export async function hasEnvLoadingScope(except?: LocalConfig): Promise<boolean>
 export async function removeEnvLoader(): Promise<void> {
   // A registry that cannot be read keeps everything (`unregisterEnvScope` warned).
   if ((await readEnvScopes()).kind === 'unreadable') return;
-  if (!await pathExists(getUserConfigPath())) {
+  if (!await hasUserScopeInstall()) {
     await updateEnvScopes((lines) => lines.filter((line) => !line.startsWith(USER_LINE)));
   }
   await fs.promises.rm(envLoaderPath(), { force: true });
