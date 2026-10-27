@@ -181,4 +181,23 @@ describe('--dir slug collision (#1422)', () => {
     expect(fs.readFileSync(path.join(legacy, 'docs', 'curated.md'), 'utf-8')).toBe('# curated\n');
     expect(localRootHashOf(wikiRoot, `svc-${hash8(b)}`)).toBe(sha256(b));
   });
+
+  it('refuses a subdirectory of a repository with an origin over a checkout without one', async () => {
+    const parent = temp('teamai-1422-dir-');
+    const wikiRoot = path.join(temp('teamai-1422-wiki-'), 'teamwiki');
+    await importDir(plainDir(parent, 'svc', 'plain'), wikiRoot);
+    const curated = path.join(wikiRoot, 'evidence', 'code', 'svc', 'docs', 'curated.md');
+    fs.mkdirSync(path.dirname(curated), { recursive: true });
+    fs.writeFileSync(curated, '# curated\n');
+    const repo = path.join(parent, 'mono');
+    const sub = path.join(repo, 'apps', 'svc');
+    fs.mkdirSync(sub, { recursive: true });
+    fs.writeFileSync(path.join(sub, 'svc.ts'), 'export const svc = 1;\n');
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, stdio: 'ignore' });
+    git('init', '--quiet');
+    git('remote', 'add', 'origin', 'https://github.com/acme/mono.git');
+
+    await expect(importDir(sub, wikiRoot)).rejects.toThrow('Not replacing it');
+    expect(fs.readFileSync(curated, 'utf-8')).toBe('# curated\n');
+  });
 });

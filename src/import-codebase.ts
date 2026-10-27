@@ -172,15 +172,27 @@ function differentSourceError(slug: string, source: { published: RemoteSource; s
  * root and directory in it, see #1427), or at the slug when nothing is there.
  * Over evidence that names another source, or none, it moves to
  * `<slug>-<hash8>` of its real path, then the full digest, and never reuses a
- * suffix that holds another source's evidence. A checkout with a remote, and
- * one over a remote's evidence, keep the slug: `publishedSource` decides
- * whether the import may replace what is there.
+ * suffix that holds another source's evidence. One over a remote's evidence
+ * keeps the slug, and `publishedSource` decides whether the import may
+ * replace it. A checkout with a remote keeps its slug, and is refused over the
+ * evidence of a checkout without one: nothing shows that evidence is this
+ * checkout's from before it had an origin.
  */
 export async function localCheckoutSlug(opts: { sourceDir: string; slug: string; wikiRoot: string; repoUrl?: string }): Promise<string> {
   const { slug, wikiRoot } = opts;
   const source = await sourceRepositoryMetadata(opts.sourceDir, opts.repoUrl);
   const { localRootHash } = source;
-  if (source.repoUrl || !localRootHash) return slug;
+  if (source.repoUrl) {
+    const evidence = `teamwiki/evidence/code/${slug}/`;
+    if ((await readCodebaseSource(path.join(wikiRoot, 'evidence', 'code', slug)))?.kind === 'local') {
+      throw new Error(`${evidence} holds the evidence of a checkout without an origin remote, and this checkout is `
+        + `${describeSource({ kind: 'remote', repoUrl: source.repoUrl, sourceSubdir: source.sourceSubdir })}. Not replacing it. `
+        + `If it is this checkout's from before it had an origin, move any curated docs you want to keep from ${evidence}, `
+        + 'remove it and import again; otherwise import this checkout from a directory with another name.');
+    }
+    return slug;
+  }
+  if (!localRootHash) return slug;
 
   const digest = createHash('sha256').update(await fs.realpath(opts.sourceDir)).digest('hex');
   const [occupant, ...suffixed] = await Promise.all([slug, `${slug}-${digest.slice(0, 8)}`, `${slug}-${digest}`]
@@ -188,10 +200,10 @@ export async function localCheckoutSlug(opts: { sourceDir: string; slug: string;
       const evidenceDir = path.join(wikiRoot, 'evidence', 'code', candidate);
       return { slug: candidate, isEmpty: !(await fs.pathExists(evidenceDir)), source: await readCodebaseSource(evidenceDir) };
     }));
-  const own = [occupant, ...suffixed].find((candidate) => candidate?.source?.kind === 'local'
+  const own = [occupant, ...suffixed].find((candidate) => candidate.source?.kind === 'local'
     && sameLocalSource(candidate.source, { localRootHash, sourceSubdir: source.sourceSubdir }));
   if (own) return own.slug;
-  if (!occupant || occupant.isEmpty || occupant.source?.kind === 'remote') return slug;
+  if (occupant.isEmpty || occupant.source?.kind === 'remote') return slug;
 
   const free = suffixed.find((candidate) => candidate.isEmpty);
   if (!free) {
