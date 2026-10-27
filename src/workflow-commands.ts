@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { z } from 'zod';
-import { autoDetectInit, loadLocalConfigForScope, loadTeamConfig } from './config.js';
+import { autoDetectInit, loadLocalConfigForScope, loadTeamConfig, machineWorkflowAllowProblem } from './config.js';
 import { resolveWorkflowEnv, type WorkflowEnv } from './env-resolution.js';
 import { isLeaseRef } from './scorers/entry.js';
 import { log, setStderrOnly } from './utils/logger.js';
@@ -76,6 +76,8 @@ function refuseSkill(envelope: WorkflowEnvelope): void {
 async function loadConfig(readOnly = false): Promise<{ config: LocalConfig; teamConfig: TeamaiConfig } | WorkflowEnvelope> {
   try {
     const { localConfig, teamConfig } = await autoDetectInit(undefined, readOnly ? { dryRun: true, selfHeal: false, suppressMigrationNotice: true } : {});
+    const allowProblem = await machineWorkflowAllowProblem();
+    if (allowProblem) return { error: { code: 'not_initialized', message: allowProblem } };
     return { config: localConfig, teamConfig };
   } catch (error) {
     return {

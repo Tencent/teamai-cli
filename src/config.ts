@@ -389,6 +389,27 @@ export async function loadMemberSettings(configPath = expandHome(getUserConfigPa
   return MemberSettingsSchema.parse(settings);
 }
 
+/**
+ * What is wrong with `workflows.allow` in ~/.teamai/config.yaml, or undefined. Another bad machine value is skipped
+ * with a warning, but skipping a restriction lifts it, so a workflow command refuses to run on this one.
+ */
+export async function machineWorkflowAllowProblem(): Promise<string | undefined> {
+  const configPath = expandHome(getUserConfigPath());
+  const content = await readFileSafe(configPath);
+  if (!content) return undefined;
+  let workflows: Record<string, unknown> | undefined;
+  try {
+    workflows = asRecord(asRecord(YAML.parse(content))?.workflows);
+  } catch {
+    return undefined;
+  }
+  if (!workflows || !Object.prototype.hasOwnProperty.call(workflows, 'allow')) return undefined;
+  const parsed = AllowSchema.safeParse(workflows.allow);
+  if (parsed.success) return undefined;
+  return `workflows.allow in ${configPath} is not valid: ${describeConfigError(parsed.error)}. `
+    + 'A workflow does not run while a restriction it sets may be lifted. Fix or remove it.';
+}
+
 /** Overlay the machine settings below a workspace/self config and remember that config's own values for a later save. */
 function applyMachineSettings(config: LocalConfig, machine: MemberSettings): LocalConfig {
   if (config.scope === 'user' || config.memberSettingsOverlay) return config;

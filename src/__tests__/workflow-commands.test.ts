@@ -2,8 +2,8 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { LocalConfig } from '../types.js';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { getUserConfigPath, type LocalConfig } from '../types.js';
 
 const state = vi.hoisted(() => ({ config: undefined as LocalConfig | undefined }));
 
@@ -220,6 +220,26 @@ steps:
     const started = await capture(() => workflowStart('fix', { inputs: '{"issue":"42"}' }));
 
     expect(started).toEqual({ error: { code: 'invalid_inputs', message: 'inputs.issue must be a number' } });
+    expect(process.exitCode).toBe(1);
+    expect(fs.existsSync(path.join(config.dataHome!, 'workflows', 'runs'))).toBe(false);
+  });
+
+  it.each([
+    { case: 'a value of the wrong type', allow: '    network: flase\n', names: 'network' },
+    { case: 'a key it does not know', allow: '    netwrok: false\n', names: 'netwrok' },
+  ])("refuses to start while this machine's workflows.allow has $case, and creates no run", async ({ allow, names }) => {
+    const config = inputsConfig();
+    await syncWorkflowDefinitions(config);
+    state.config = config;
+    const machineFile = getUserConfigPath();
+    fs.mkdirSync(path.dirname(machineFile), { recursive: true });
+    fs.writeFileSync(machineFile, `workflows:\n  allow:\n${allow}`);
+    onTestFinished(() => fs.rmSync(machineFile, { force: true }));
+
+    const started = await capture(() => workflowStart('fix', { inputs: '{"issue":42}' }));
+
+    expect(started.error).toMatchObject({ code: 'not_initialized', message: expect.stringContaining(`workflows.allow in ${machineFile}`) });
+    expect(started.error?.message).toContain(names);
     expect(process.exitCode).toBe(1);
     expect(fs.existsSync(path.join(config.dataHome!, 'workflows', 'runs'))).toBe(false);
   });
