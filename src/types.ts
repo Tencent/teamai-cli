@@ -847,6 +847,7 @@ export const MemberSettingsSchema = z.object({
   codexTrustEnabled: z.boolean().optional(),
   updatePolicy: z.enum(['auto', 'prompt', 'skip']).optional(),
   modelAliases: z.record(z.string(), z.string()).optional(),
+  sessions: z.unknown().optional(),
   workflows: MemberWorkflowSettingsSchema.optional(),
 });
 export type MemberSettings = z.infer<typeof MemberSettingsSchema>;
