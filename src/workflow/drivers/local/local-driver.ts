@@ -382,8 +382,8 @@ async function promptReport(
     workflowLaunch(stepConfig, selected),
     delivered ? deliveredTeamSkills(stepConfig, cwd, delivered).catch(() => undefined) : undefined,
   ]);
-  // Only headless Claude has a turn limit; any other launch reports the cap as not enforced.
-  const capsTurns = lease.maxTurns !== undefined && !lease.interactive && launchAdapterIdOf(selected) === 'claude';
+  // Only headless Claude and CodeBuddy have a turn limit; any other launch reports the cap as not enforced.
+  const capsTurns = lease.maxTurns !== undefined && !lease.interactive && (launchAdapterIdOf(selected) === 'claude' || launchAdapterIdOf(selected) === 'codebuddy');
   let result: LocalToolResult;
   const launchedAt = Date.now();
   try {

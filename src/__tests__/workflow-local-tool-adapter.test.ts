@@ -89,6 +89,24 @@ describe('local tool adapter', () => {
     });
   });
 
+  it('runs a WorkBuddy step on CodeBuddy\'s Claude-like flags, without --effort, and reads its session and tokens', async () => {
+    const resultPath = path.join(os.tmpdir(), `teamai-workflow-codebuddy-${Date.now()}.json`);
+    files.push(resultPath);
+    const spawnTool = vi.fn(() => child(claudeStream('glm-5', { session_id: 'session-2', usage: { input_tokens: 7, output_tokens: 3 }, result: JSON.stringify({ ok: true }) }))) as unknown as ToolSpawn;
+    const adapter = createLocalToolAdapter(spawnTool, () => '/bin/workbuddy');
+
+    const result = await adapter.run('workbuddy', { prompt: 'Review.', cwd: os.tmpdir(), resultPath, model: { name: 'glm-5', effort: 'high' }, resume: 'session-1', maxTurns: 3 });
+
+    const args = vi.mocked(spawnTool).mock.calls[0]?.[1] ?? [];
+    expect(args.slice(0, 1)).toEqual(['-p']);
+    for (const [flag, value] of [['--output-format', 'stream-json'], ['--model', 'glm-5'], ['--resume', 'session-1'], ['--max-turns', '3']]) {
+      expect(args[args.indexOf(flag) + 1]).toBe(value);
+    }
+    expect(args).toContain('--verbose');
+    expect(args).not.toContain('--effort');
+    expect(result).toMatchObject({ output: { ok: true }, session: 'session-2', tokens: { input: 7, output: 3 } });
+  });
+
   it('passes maxTurns to headless Claude as --max-turns', async () => {
     const resultPath = path.join(os.tmpdir(), `teamai-workflow-turns-${Date.now()}.json`);
     files.push(resultPath);

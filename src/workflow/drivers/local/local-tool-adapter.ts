@@ -83,21 +83,29 @@ function invocation(tool: LaunchTool, input: LocalToolRun, opencodeMajor: number
   const model = input.model ? ['--model', input.model.name] : [];
   const effort = input.model?.effort;
   const resume = input.resume ? ['--resume', input.resume] : [];
-  if (interactive) {
-    if (family === 'claude') return [...agent, ...model, ...(effort ? ['--effort', effort] : []), ...resume, prompt];
-    if (family === 'codex') return [...(input.resume ? ['resume', input.resume] : []), ...model, ...(effort ? ['-c', `model_reasoning_effort=${effort}`] : []), prompt];
-    return [...agent, ...model, '--prompt', prompt];
+  const turns = input.maxTurns !== undefined ? ['--max-turns', String(input.maxTurns)] : [];
+  switch (family) {
+    case 'claude':
+      if (interactive) return [...agent, ...model, ...(effort ? ['--effort', effort] : []), ...resume, prompt];
+      return ['-p', prompt, '--output-format', 'stream-json', '--verbose', ...turns, ...agent, ...model, ...(effort ? ['--effort', effort] : []), ...resume];
+    case 'codebuddy':
+      // Claude's flags, with no --effort.
+      if (interactive) return [...agent, ...model, ...resume, prompt];
+      return ['-p', prompt, '--output-format', 'stream-json', '--verbose', ...turns, ...agent, ...model, ...resume];
+    case 'codex': {
+      if (interactive) return [...(input.resume ? ['resume', input.resume] : []), ...model, ...(effort ? ['-c', `model_reasoning_effort=${effort}`] : []), prompt];
+      const codexModel = input.model?.name ?? input.agent?.model;
+      const codexResume = input.resume ? ['resume', input.resume] : [];
+      return ['exec', ...codexResume, '--json', ...(codexModel ? ['--model', codexModel] : []), ...(effort ? ['-c', `model_reasoning_effort=${effort}`] : []), prompt];
+    }
+    case 'opencode':
+      if (interactive) return [...agent, ...model, '--prompt', prompt];
+      return ['run', '--format', 'json', prompt, ...agent, ...opencodeModelArgs(input.model, opencodeMajor)];
+    default: {
+      const unhandled: never = family;
+      throw new Error(`No workflow step profile for adapter ${String(unhandled)}`);
+    }
   }
-  if (family === 'claude') {
-    const turns = input.maxTurns !== undefined ? ['--max-turns', String(input.maxTurns)] : [];
-    return ['-p', prompt, '--output-format', 'stream-json', '--verbose', ...turns, ...agent, ...model, ...(effort ? ['--effort', effort] : []), ...resume];
-  }
-  if (family === 'codex') {
-    const codexModel = input.model?.name ?? input.agent?.model;
-    const codexResume = input.resume ? ['resume', input.resume] : [];
-    return ['exec', ...codexResume, '--json', ...(codexModel ? ['--model', codexModel] : []), ...(effort ? ['-c', `model_reasoning_effort=${effort}`] : []), prompt];
-  }
-  return ['run', '--format', 'json', prompt, ...agent, ...opencodeModelArgs(input.model, opencodeMajor)];
 }
 
 function parseResultFile(value: unknown): ResultFile | null {

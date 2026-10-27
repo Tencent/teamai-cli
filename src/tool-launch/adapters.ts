@@ -151,7 +151,9 @@ export const LAUNCH_ADAPTERS = {
     judge: { evidence: 'verified', env: ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GOOGLE_GENERATIVE_AI_API_KEY', 'GEMINI_API_KEY', 'OPENROUTER_API_KEY', 'OPENCODE_API_KEY'], verified: /^opencode v2\.1\.2$/, access: 'read' },
   },
   codebuddy: {
-    call: { evidence: 'verified', args: () => ['-p', '--output-format', 'json'], read: readClaudeResult },
+    call: { evidence: 'docs', args: () => ['-p', '--output-format', 'json'], read: readClaudeResult },
+    // Claude's flags and stream, without --effort.
+    step: { evidence: 'docs' },
     // CodeBuddy lists about 70 tools whatever `--tools` says.
     judge: { evidence: 'docs', env: ['CODEBUDDY_API_KEY', 'CODEBUDDY_AUTH_TOKEN', 'CODEBUDDY_CONFIG_DIR'], homeEnv: 'CODEBUDDY_CONFIG_DIR', access: 'full' },
   },
