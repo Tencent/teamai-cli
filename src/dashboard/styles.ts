@@ -43,4 +43,5 @@ aside{background:var(--sidebar)}.brand svg g[stroke]{stroke:var(--logo)}.brand s
 .scorer-groups td:first-child{min-width:180px}
 .session-table.compact{min-width:0}.session-table.compact td:first-child{min-width:0}
 @media(max-width:760px){.kpis{grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.kpi{padding:12px}.kpi .big{font-size:24px;letter-spacing:-0.8px}.kpi .statusline{font-size:11px}.scorer-controls{flex-direction:column;align-items:stretch}.scorer-controls select,.scorer-controls input{width:100%;min-width:0}.trend-chart{padding:0 12px 14px}.trend-chart svg{height:170px}.compact th,.compact td{padding-left:12px;padding-right:12px}.compact .meter{width:40px}}
+.outcomes{display:flex;flex-wrap:wrap;gap:4px;align-items:center}.tag.outcome{white-space:nowrap;max-width:100%;overflow:hidden;text-overflow:ellipsis}
 `;

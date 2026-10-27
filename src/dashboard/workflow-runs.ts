@@ -16,6 +16,7 @@ import { z } from 'zod';
 import { getReportsDir, usesBranchWorktree, type LocalConfig } from '../types.js';
 import { knownSecrets } from '../env-resolution.js';
 import { LabelStore, type PassScore } from '../scorers/label-store.js';
+import { WorkOutcomeSchema, type WorkOutcome } from '../outcomes.js';
 import { locateStep } from '../workflow/engine.js';
 import { buildEndRecord, RECORDS_DIR, runRecordStates, type RecordState, type WorkflowRunRecord } from '../workflow/records.js';
 import { callerProvenance, respondProvenance, respondToHitl } from '../workflow/run-controls.js';
@@ -35,7 +36,7 @@ type ReadRecord = Pick<WorkflowRunRecord,
   'run' | 'workflow' | 'sourceHash' | 'teamRevision' | 'driver' | 'status' | 'end' | 'startedAt' | 'endedAt' | 'durationMs' | 'stepCounts' | 'username'>
   & { steps?: StepEntry[]; prs?: unknown[] };
 type StepEntry = Pick<NonNullable<WorkflowRunRecord['steps']>[number], 'step' | 'pass' | 'outcome' | 'tokens'>
-  & { answer?: { choice: string; channel: string } };
+  & { answer?: { choice: string; channel: string }; outcomes?: unknown[] };
 
 const TokensSchema: z.ZodType<TokenUsage> = z.object({ input: z.number().optional(), output: z.number().optional(), cachedInput: z.number().optional() });
 /** Only links a browser opens as a web page; a `javascript:` URL from either source never becomes a link. */
@@ -67,6 +68,7 @@ const RecordSchema: z.ZodType<ReadRecord, z.ZodTypeDef, unknown> = z.object({
     outcome: z.enum(['success', 'failed', 'timeout', 'cancelled']).optional(),
     tokens: TokensSchema.optional(),
     answer: z.object({ choice: z.string(), channel: z.string() }).optional(),
+    outcomes: z.array(z.unknown()).optional().catch(undefined),
   })).optional(),
   prs: z.array(z.unknown()).optional().catch(undefined),
 });
@@ -117,6 +119,8 @@ interface StepRow {
   gate?: Gate;
   /** The labels scorers gave this pass. */
   scores?: PassScore[];
+  /** What this pass delivered (#1387): the outcomes the page can read, a pull request only on https. */
+  outcomes?: WorkOutcome[];
 }
 
 /** What judging a run cost, kept apart from the run's own tokens: every attempt on this machine, or the published labels. */
@@ -153,6 +157,10 @@ function rowOf(record: ReadRecord): RunRow {
 
 function stepRow(entry: StepEntry, status: string, scores: ReadonlyMap<string, PassScore[]> | undefined, gate?: Gate): StepRow {
   const passScores = scores?.get(`${entry.step}#${entry.pass}`);
+  const outcomes = entry.outcomes?.flatMap((outcome) => {
+    const parsed = WorkOutcomeSchema.safeParse(outcome);
+    return parsed.success ? [parsed.data] : [];
+  });
   return {
     step: entry.step,
     pass: entry.pass,
@@ -161,6 +169,7 @@ function stepRow(entry: StepEntry, status: string, scores: ReadonlyMap<string, P
     ...(entry.answer ? { answer: { choice: entry.answer.choice, channel: entry.answer.channel } } : {}),
     ...(gate ? { gate } : {}),
     ...(passScores ? { scores: passScores.map(({ scorer, label, passed }) => ({ scorer, label, passed })) } : {}),
+    ...(outcomes?.length ? { outcomes } : {}),
   };
 }
 
