@@ -617,7 +617,7 @@ steps:
 
 `unenforced` 出现在租约、步骤和运行记录中。每个 `interactive: true` 步骤还需要支持 HITL 的驱动，见 [HITL](#hitl人在回路中)。
 
-成员可以在本地配置中、`max_parallel` 旁边，设置本机上任何驱动可以使用什么：
+成员可以在 `~/.teamai/config.yaml` 或某个 workspace 自己的 `config.yaml` 中、`max_parallel` 旁边，设置本机上任何驱动可以使用什么：
 
 ```yaml
 workflows:

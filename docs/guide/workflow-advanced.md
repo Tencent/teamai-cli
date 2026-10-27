@@ -617,7 +617,7 @@ steps:
 
 `unenforced` is on the lease, the step, and the run record. Each `interactive: true` step also needs a driver with HITL, as [HITL](#hitl-human-in-the-loop) describes.
 
-A member can set what any driver may use on their machine, beside `max_parallel` in local config:
+A member can set what any driver may use on their machine, beside `max_parallel` in `~/.teamai/config.yaml` or a workspace's own `config.yaml`:
 
 ```yaml
 workflows:
