@@ -14,7 +14,7 @@ import { getAdapter } from './adapters/index.js';
 import { AgentSession, noAdapter, recordedToolRoots, writeCopyOnce } from './agent-session.js';
 import type { Session } from './ir.js';
 import { degradeThinkingBlocks } from './migrate.js';
-import { archiveBusyMessage, authorForCwd, sessionArchiveRoot } from './session-cmd-shared.js';
+import { archiveBusyMessage, authorForCwd, deriveArchiveIdentity, sessionArchiveRoot } from './session-cmd-shared.js';
 import { SyncManager, defaultSyncMeta, getRepoIdentity, type SessionSyncMeta } from './sync.js';
 
 /** A session in one tool, by the id that tool gave it. */
@@ -26,7 +26,8 @@ export type ArchiveDelivery<T extends ArchiveSessionRef = ArchiveSessionRef> =
   | { status: 'archived'; archived: T[]; skipped: T[] }
   | { status: 'failed'; message: string };
 
-type Delivered = { status: 'archived' } | { status: 'failed'; message: string };
+/** What became of one session pushed to the team session archive. `busy`: another write held teamai-reports, and nothing was written. */
+export type SessionPush = { status: 'archived' } | { status: 'busy'; message: string } | { status: 'failed'; message: string };
 
 /** The team session archive as one workflow driver run restores sessions from it. */
 export type SessionArchive = {
@@ -175,6 +176,26 @@ export async function archiveSessions<T extends ArchiveSessionRef>(
 }
 
 /**
+ * Pushes session `ref`, read from this machine's tool and scrubbed, to the team session archive on teamai-reports, under
+ * its lock. It is filed under the repository of the workspace it ran in, as that workspace's git author. Never prompts.
+ */
+export async function pushSession(config: LocalConfig, ref: ArchiveSessionRef): Promise<SessionPush> {
+  if (!sessionArchiveRoot(config)) return { status: 'failed', message: 'This team keeps no session archive.' };
+  const found = await AgentSession.find(ref, { scrub: true });
+  if (found.status === 'failed') return { status: 'failed', message: found.failure.message };
+  const { session } = found;
+  const meta = defaultSyncMeta({
+    platform: ref.platform,
+    author: authorForCwd(session.cwd, config.username),
+    cwd: session.cwd,
+    sessionId: ref.sessionId,
+    repoIdentity: deriveArchiveIdentity(session, ref.platform),
+    title: session.title,
+  }, session.createdAt);
+  return archiveOnReports(config, [{ session, meta }], `sync: push 1 session(s) from ${ref.platform}`);
+}
+
+/**
  * The newest session of `chain` the archive holds: teamai-reports at `root` as it is, then on a git-kind team the
  * archive teamai kept before on the default branch, read from origin's latest commit.
  */
@@ -199,7 +220,7 @@ async function archiveOnReports(
   config: LocalConfig,
   sessions: ReadonlyArray<{ session: Session; meta: SessionSyncMeta }>,
   message: string,
-): Promise<Delivered> {
+): Promise<SessionPush> {
   let unsaved: string | undefined;
   const result = await updateReports(config, async (worktree) => {
     const archive = new SyncManager(worktree);
@@ -212,7 +233,7 @@ async function archiveOnReports(
     case 'already-present':
       return { status: 'archived' };
     case 'busy':
-      return { status: 'failed', message: 'Another teamai process is writing teamai-reports.' };
+      return { status: 'busy', message: 'Another teamai process is writing teamai-reports.' };
     case 'failed':
       return { status: 'failed', message: `Writing teamai-reports failed: ${result.reason}` };
     default: {

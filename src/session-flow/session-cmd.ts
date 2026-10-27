@@ -33,6 +33,7 @@ import { SessionSearchEngine, type LoadedSession } from './search.js';
 import { isSafeSessionFileId } from './ids.js';
 import { isInteractive } from '../utils/prompt.js';
 import { updateReports } from '../utils/reports-branch.js';
+import { pushSession } from './archive.js';
 import { registerMigrationCommand } from './session-migrate-cmd.js';
 import {
   REPORTS_ARCHIVE_BUSY,
@@ -124,9 +125,10 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
     .command('push')
     .description('Push local sessions to the team repo')
     .option('--source <platform>', 'Source platform to read sessions from')
+    .option('--session <id>', 'Push only this session of --source, from any workspace, redacted, without prompting, to teamai-reports of the teamai install for this directory (not with --all or --repo-root)')
     .option('--repo-root <path>', 'Team repo clone that holds the session archive (default: the teamai install for this directory, else your user install)')
     .option('--cwd <path>', 'Working directory (defaults to current directory)')
-    .option('--limit <n>', 'Max sessions to push (default: 5; ignored with --all)', '5')
+    .option('--limit <n>', 'Max sessions to push (default: 5; ignored with --all or --session)', '5')
     .option('--all', 'Push every session of the platform across all workspace directories (ignores --limit)')
     .option('-y, --yes', 'Skip confirmation prompts, including archiving unredacted transcripts (--all)')
     .option('--scrub', 'Redact secrets before archiving (archived sessions are team-readable)')
@@ -137,6 +139,36 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
         console.error('Error: --source <platform> required.');
         console.error('Usage: teamai session push --source <platform> [--repo-root <path>] [--all]');
         process.exit(1);
+      }
+      if (opts.session) {
+        const { reports: config } = await resolveRepoRoot(opts.repoRoot, { dryRun: isDryRun() });
+        if (opts.all || !config) {
+          console.error('Error: --session pushes one session to teamai-reports of the teamai install for this directory, so it takes neither --all nor --repo-root.');
+          process.exitCode = 1;
+          return;
+        }
+        if (isDryRun()) {
+          console.log(`Dry-run: would archive ${source} session ${safeText(opts.session)}, redacted, on teamai-reports.`);
+          return;
+        }
+        const pushed = await pushSession(config, { platform: source, sessionId: opts.session });
+        switch (pushed.status) {
+          case 'archived':
+            console.log(`\n  ✓ Pushed ${source} session ${safeText(opts.session)} to teamai-reports (redacted)\n`);
+            return;
+          case 'busy':
+            console.error(`Error: ${REPORTS_ARCHIVE_BUSY}`);
+            process.exitCode = 1;
+            return;
+          case 'failed':
+            console.error(`Error: ${safeText(pushed.message)}`);
+            process.exitCode = 1;
+            return;
+          default: {
+            const unhandled: never = pushed;
+            return unhandled;
+          }
+        }
       }
       const workCwd = opts.cwd ?? process.cwd();
       const archive = await resolveRepoRoot(opts.repoRoot, { dryRun: isDryRun() });

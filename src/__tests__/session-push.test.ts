@@ -57,11 +57,11 @@ function repository(name: string): { origin: string; checkout: string } {
   return { origin, checkout };
 }
 
-/** Writes the Claude Code session a tool left in `cwd`, with one assistant answer per entry of `answers`. */
-async function claudeSession(cwd: string, { id = 'review-1', title = 'Review this project', answers = ['Found two problems.'] } = {}): Promise<void> {
+/** Writes the Claude Code session a tool left in `cwd`, with one assistant answer per entry of `answers`, and returns the id it got. */
+async function claudeSession(cwd: string, { id = 'review-1', title = 'Review this project', answers = ['Found two problems.'] } = {}): Promise<string> {
   fs.mkdirSync(cwd, { recursive: true });
   fs.mkdirSync(path.join(os.homedir(), '.claude', 'projects'), { recursive: true });
-  await getAdapter('claude-code').writeSession({
+  return getAdapter('claude-code').writeSession({
     sessionId: id,
     title,
     cwd,
@@ -364,6 +364,24 @@ describe('session commands without --repo-root outside a workspace install', () 
       expect.stringMatching(/claude-code_plan-the-release_\S*\s+tester\s+claude-code\s+2\s/),
     ]);
     expect(listed.stdout).toContain('2 session(s)');
+  });
+
+  it('push exactly the session --session names, scrubbed, to teamai-reports', async () => {
+    const team = await userInstall();
+    const { checkout } = repository('product');
+    const token = `ghp_${'A1b2C3d4E5'.repeat(4)}`;
+    const plan = await claudeSession(checkout, { id: 'plan-1', title: 'Plan the release', answers: [`Planned it. The deploy token is ${token}.`] });
+    await claudeSession(checkout, { answers: ['Found two problems.', 'The second one is in the parser.'] });
+
+    const pushed = await session('push', '--session', plan, '--source', 'claude-code', '--scrub');
+
+    expect(pushed.code, pushed.stderr).toBe(0);
+    const files = archived(team.origin, 'teamai-reports').filter((file) => file.endsWith('.jsonl'));
+    expect(files, files.join('\n')).toEqual([expect.stringContaining('claude-code_plan-the-release_')]);
+    const transcript = git(team.checkout, 'show', `origin/teamai-reports:${files[0]}`);
+    expect(transcript).toContain('Planned it.');
+    expect(transcript).not.toContain(token);
+    expect(archived(team.origin, 'main')).toEqual([]);
   });
 
   it('throw that teamai is not set up when there is no install at all', async () => {
