@@ -3359,7 +3359,8 @@ export async function pull(
         // Per-target opt-out (teamai.yaml `usageReport: false`, or the member's
         // `usageReportEnabled: false`): a scope that disables stat commits is
         // dropped from the targets — e.g. teams pulling from a read-only
-        // remote never accumulate unpushable commits.
+        // remote never accumulate unpushable commits. Clear an excluded
+        // scope's old pending notice without consuming its retained data.
         if (reconcileProject && reconcileProject.repo.kind !== 'http'
           && !await usageReportDisabled(reconcileProject)) {
           targets.push({
@@ -3371,6 +3372,8 @@ export async function pull(
               selfConfig: reconcileProject,
             },
           });
+        } else if (reconcileProject) {
+          reportOutcomes.set(reconcileProject, { reported: true, at: new Date().toISOString() });
         }
         if (reconcileUser && reconcileUser.repo.kind !== 'http'
           && !await usageReportDisabled(reconcileUser)) {
@@ -3384,6 +3387,8 @@ export async function pull(
               selfConfig: reconcileUser,
             },
           });
+        } else if (reconcileUser) {
+          reportOutcomes.set(reconcileUser, { reported: true, at: new Date().toISOString() });
         }
 
         // Credit the sessions whose recall evidence is still pending (a read

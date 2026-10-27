@@ -21,8 +21,9 @@ usageReportEnabled: false
 
 If an automatic report is not confirmed, the data stays local. `teamai status`
 shows `auto-report: pending since <time>` and suggests `teamai pull --verbose`
-to retry and see why. Repeated failures keep the first timestamp; a successful
-report clears it. A retained local usage file alone does not mean reporting failed.
+to retry and see why. Repeated failures keep the first timestamp. A successful
+report, or a pull after reporting is disabled, clears the notice. Disabling
+reporting keeps the local data. A retained usage file alone does not mean reporting failed.
 
 See the team's week:
 

@@ -228,6 +228,36 @@ describe('real CLI report completion', () => {
     expect(f.stats()).toEqual(stats);
   }, 60_000);
 
+  it.each(['member', 'team'])('clears a pending report when the %s disables reporting after a rejection', async (optOut) => {
+    const f = fixture('claude', 'git');
+    await f.pull();
+    await f.seedEvents();
+    f.receiver('reject');
+    await f.pull();
+    expect(f.run(['status'])).toContain('auto-report: pending since');
+    const retainedUsage = fs.readFileSync(f.usage, 'utf8');
+
+    if (optOut === 'member') {
+      const configPath = path.join(f.home, '.teamai/config.yaml');
+      const config = YAML.parse(fs.readFileSync(configPath, 'utf8'));
+      fs.writeFileSync(configPath, YAML.stringify({ ...config, usageReportEnabled: false }));
+    } else {
+      const teamPath = path.join(f.clone, 'teamai.yaml');
+      const config = YAML.parse(fs.readFileSync(teamPath, 'utf8'));
+      fs.writeFileSync(teamPath, YAML.stringify({ ...config, usageReport: false }));
+      git(['add', 'teamai.yaml'], f.clone, f.env);
+      git(['commit', '-q', '-m', 'disable usage reporting'], f.clone, f.env);
+      git(['push', '-q', 'origin', 'HEAD:main'], f.clone, f.env);
+    }
+    await f.pull();
+
+    expect(f.run(['status'])).not.toContain('auto-report:');
+    expect(JSON.parse(fs.readFileSync(path.join(f.home, '.teamai/state.json'), 'utf8')))
+      .not.toHaveProperty('autoReportPendingSince');
+    expect(fs.readFileSync(f.usage, 'utf8')).toBe(retainedUsage);
+    expect(f.snapshot('prompt-tokens')[f.runId]).toBeUndefined();
+  }, 60_000);
+
   it('does not report for a member who set usageReportEnabled: false', async () => {
     const f = fixture('claude', 'git');
     const configPath = path.join(f.home, '.teamai/config.yaml');

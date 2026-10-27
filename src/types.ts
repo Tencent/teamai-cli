@@ -1102,7 +1102,7 @@ export type DeliverySelection = z.infer<typeof DeliverySelectionSchema>;
 export const StateSchema = z.object({
   lastPush: z.string().nullable().default(null),
   lastPull: z.string().nullable().default(null),
-  /** First unconfirmed auto-report; cleared after a report succeeds. */
+  /** First unconfirmed auto-report; cleared after success or when reporting is disabled. */
   autoReportPendingSince: z.string().optional(),
   /** Git commit hash (short) of the team repo at the time of last successful pull. */
   lastPullRev: z.string().nullable().default(null),
