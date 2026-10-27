@@ -533,10 +533,11 @@ async function unreadSessionToolNotes({ localConfig, teamConfig, toolPaths }: Do
   const publish = SessionPolicy.publish(localConfig, teamConfig).policies;
   const scoring = scoringUnavailable(localConfig) ? undefined : await scopeScoring(localConfig);
   const scored = scoring?.ok ? scoring.sessions.policies : undefined;
-  const described = (policy: Policy | undefined, words: Record<Exclude<Policy, 'off'>, string>) => (policy === undefined || policy === 'off' ? undefined : words[policy]);
+  // `ask` acts as `off` for now (#1388): nothing is offered.
+  const described = (policy: Policy | undefined, word: string) => (policy === 'auto' ? word : undefined);
   return RUN_MODES.flatMap((mode) => {
-    const published = described(publish[mode].policy, { ask: 'offered for publishing', auto: 'published' });
-    const judged = described(scored?.[mode].policy, { ask: 'offered for scoring', auto: 'scored' });
+    const published = described(publish[mode].policy, 'published');
+    const judged = described(scored?.[mode].policy, 'scored');
     if (published === undefined && judged === undefined) return [];
     const lead = [published, judged].filter((part) => part !== undefined).join(' and ');
     const outcome = published && judged ? 'neither published nor judged' : published ? 'not published' : 'not judged';
