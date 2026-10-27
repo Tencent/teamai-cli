@@ -901,7 +901,7 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       const describe = { kind: 'describe', name: 'release-docs' } as const;
       const named = { ...made.config, workflows: { tools: { default: 'codex' } } };
       expect(await made.call(describe, { config: named })).toMatchObject({ data: { describe: { ask: { start: 'teamai workflow start release-docs --driver local' } } } });
-      expect(await made.call(describe, { tool: 'codebuddy' })).toMatchObject({ data: { describe: { ask: { start: 'teamai workflow start release-docs --driver local' } } } });
+      expect(await made.call(describe, { tool: 'cursor' })).toMatchObject({ data: { describe: { ask: { start: 'teamai workflow start release-docs --driver local' } } } });
       expect(await made.call({ kind: 'start', name: 'release-docs', answers: { confirmed: false }, inputs: undefined })).toMatchObject({ error: {
         code: 'needs_local_driver', message: expect.stringContaining('Ask the person to run teamai workflow start release-docs --driver local --tools default=claude in their own terminal.'),
       } });
