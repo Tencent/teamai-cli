@@ -234,7 +234,7 @@ describe('#1083 workflow run records', () => {
       // An error thrown inside a --driver skill call, answered to the agent as one envelope with its message.
       'skill_call_failed',
       // Why the skill driver stopped judging a run, told to the agent in a judging-off event.
-      'judge_runner_gone',
+      'judge_runner_gone', 'no_child_agent',
       // Refusals of teamai score --run, answered to the member who asked for a pass to be judged.
       'scoring_unavailable', 'pass_not_found', 'scorer_not_found', 'entry_leased',
       // Refusals of teamai score --session, answered to the member who asked for a session to be judged.
