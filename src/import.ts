@@ -80,7 +80,6 @@ interface MrExtraction {
   learningFile?: string;
 }
 
-/** Parse --max-files: a positive integer, or undefined to keep the extractor's default. */
 /**
  * `--dir` wrote a checkout with an origin under its directory name before it
  * took the remote's slug. A role or project that scoped that name under
@@ -117,6 +116,7 @@ async function warnStaleWikiScopes(scope: { teamRepo: string; legacySlug: string
   }
 }
 
+/** Parse --max-files: a positive integer, or undefined to keep the extractor's default. */
 function parseMaxFiles(value: string | undefined): number | undefined {
   if (value === undefined) return undefined;
   const parsed = Number(value);
