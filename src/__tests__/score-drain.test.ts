@@ -379,4 +379,41 @@ describe('teamai score --drain', () => {
     expect(drained.lines).toContain('✔ Reported usage to stats/tester.yaml');
     expect(YAML.parse(readOnReports(origin, 'stats/tester.yaml'))).toMatchObject({ unattended: { interventions: { sessions: 1 }, prompts: 1 } });
   });
+
+  it('judges sampled sessions within daily_limit, with every scorer that judges sessions', async () => {
+    const { config } = await team({
+      'scorers/rare.md': SCORER.replace('samplingRate: 100', 'samplingRate: 0'),
+      'scorers/scoring.yaml': 'daily_limit: 1\n',
+    });
+    capturedSession(SESSION, 'unattended');
+    capturedSession('7c1e0000-0000-4000-8000-000000000012', 'unattended');
+    fakeClaude();
+    vi.stubEnv('CI', 'true');
+
+    const drained = await drain();
+
+    expect(drained.code, drained.lines.join('\n')).toBe(0);
+    expect(drained.lines).toContain('✔ Judged 1 sampled session here (quality)');
+    expect((await LabelStore.local(config)).map((label) => label.scorer)).toEqual(['quality']);
+  });
+
+  it('with unattended: off in teamai.yaml and scoring.yaml, neither judges nor archives an unattended job\'s sessions', async () => {
+    const { origin, config } = await team({
+      'teamai.yaml': 'team: acme\nrepo: https://example.com/acme/team.git\nsessions:\n  publish: { unattended: off }\n',
+      'scorers/scoring.yaml': 'sessions: { unattended: off }\n',
+      'workflows/review.yaml': WORKFLOW.replace('    scorers: [quality]\n', ''),
+    });
+    capturedSession(SESSION, 'unattended');
+    claudeSession(STEP_SESSION, 'Reviewed it.');
+    await settledRun(config, 'unattended', { tool: 'claude', session: STEP_SESSION });
+    fakeClaude();
+    vi.stubEnv('CI', 'true');
+
+    const drained = await drain();
+
+    expect(drained.code, drained.lines.join('\n')).toBe(0);
+    expect(drained.lines.filter((printed) => /Judged|Published|Archived/.test(printed))).toEqual([]);
+    expect(await LabelStore.local(config)).toEqual([]);
+    expect(onReports(origin, 'sessions')).toEqual([]);
+  });
 });
