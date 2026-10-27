@@ -346,6 +346,40 @@ describe('importCodebase: the extraction every import source shares', () => {
     expect((await fs.readJson(path.join(evidence, 'source-manifest.json'))).repoUrl).toBe('https://github.com/acme/svc');
   });
 
+  it('moves the evidence a checkout published under its directory name to the slug named after its remote', async () => {
+    const repo = await makeRepo(root, 'svc', 'export function greet() { return "hi"; }\n');
+    await importCodebase({ sourceDir: repo, slug: 'svc', wikiRoot, skipEnrich: true });
+    const legacy = path.join(wikiRoot, 'evidence', 'code', 'svc');
+    await fs.outputFile(path.join(legacy, 'docs', 'curated.md'), '# curated\n');
+
+    expect(await importCodebase({
+      sourceDir: repo, slug: 'github__acme__svc', legacySlug: 'svc', wikiRoot, skipEnrich: true,
+    })).toBe(true);
+
+    const evidence = path.join(wikiRoot, 'evidence', 'code', 'github__acme__svc');
+    expect(await fs.pathExists(legacy)).toBe(false);
+    expect(await fs.readFile(path.join(evidence, 'docs', 'curated.md'), 'utf8')).toBe('# curated\n');
+    expect((await fs.readJson(path.join(evidence, 'source-manifest.json'))).project).toBe('github__acme__svc');
+  });
+
+  it('keeps the evidence under the directory name, with a warning, when the remote slug already has evidence', async () => {
+    const repo = await makeRepo(root, 'svc', 'export function greet() { return "hi"; }\n');
+    await importCodebase({ sourceDir: repo, slug: 'svc', wikiRoot, skipEnrich: true });
+    await run(repo, 'github__acme__svc');
+    const legacy = path.join(wikiRoot, 'evidence', 'code', 'svc');
+    await fs.outputFile(path.join(legacy, 'docs', 'curated.md'), '# curated\n');
+
+    await fs.writeFile(path.join(repo, 'src', 'main.ts'), 'export function greet() { return "hello"; }\n');
+    git(repo, 'commit', '-q', '-am', 'change');
+    logs.length = 0;
+    expect(await importCodebase({
+      sourceDir: repo, slug: 'github__acme__svc', legacySlug: 'svc', wikiRoot, skipEnrich: true,
+    })).toBe(true);
+
+    expect(await fs.readFile(path.join(legacy, 'docs', 'curated.md'), 'utf8')).toBe('# curated\n');
+    expect(logs.join('\n')).toContain('teamwiki/evidence/code/svc/ is an older copy of teamwiki/evidence/code/github__acme__svc/.');
+  });
+
   it('does not carry curated docs between remote-less checkouts that share a slug', async () => {
     const first = await makeRepo(root, 'first-svc', 'export function one() { return 1; }\n');
     execFileSync('git', ['remote', 'remove', 'origin'], { cwd: first, stdio: 'ignore' });

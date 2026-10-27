@@ -9,6 +9,7 @@ vi.mock('../codebase-extract.js', () => ({
   extractCodebase: vi.fn(),
   // The fixtures are outside git, where the slug is the directory's name.
   defaultProjectSlug: async (dir: string) => path.basename(dir),
+  checkoutName: async (dir: string) => path.basename(dir),
 }));
 
 vi.mock('../graph-aggregate.js', () => ({

@@ -17,6 +17,8 @@ export interface ImportCodebaseOptions {
   sourceDir: string;
   /** Evidence slug: `teamwiki/evidence/code/<slug>/`. */
   slug: string;
+  /** A slug the same source was published under before; its evidence moves to `slug`. */
+  legacySlug?: string;
   /** The teamwiki the evidence is published into. */
   wikiRoot: string;
   /** Re-extract only what changed since this codebase's published baseline. */
@@ -177,6 +179,23 @@ export async function importCodebase(opts: ImportCodebaseOptions): Promise<boole
 
     const stagingEvidence = path.join(stagingWiki, 'evidence', 'code', slug);
     const evidenceDest = path.join(wikiRoot, 'evidence', 'code', slug);
+
+    // `--dir` named a checkout with an origin after its directory before it took
+    // the remote's slug: adopt that evidence rather than leave a duplicate.
+    const { legacySlug } = opts;
+    if (legacySlug && legacySlug !== slug) {
+      const legacyDest = path.join(wikiRoot, 'evidence', 'code', legacySlug);
+      if (await fs.pathExists(legacyDest)
+        && (await publishedSource(legacyDest, stagingEvidence, legacySlug)).kind === 'same') {
+        if (await fs.pathExists(evidenceDest)) {
+          log.warn(`teamwiki/evidence/code/${legacySlug}/ is an older copy of teamwiki/evidence/code/${slug}/. `
+            + 'Move any curated docs you want to keep from it, then remove it.');
+        } else {
+          await fs.move(legacyDest, evidenceDest);
+          log.info(`Moved teamwiki/evidence/code/${legacySlug}/ to teamwiki/evidence/code/${slug}/`);
+        }
+      }
+    }
 
     const [publishedManifest, stagedManifest] = await Promise.all([
       readJsonIfPresent(path.join(evidenceDest, '_manifest.json')),

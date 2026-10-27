@@ -402,7 +402,7 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
       if (!(await fs.pathExists(dirPath))) {
         throw new Error(`Directory not found: ${dirPath}`);
       }
-      const { defaultProjectSlug } = await import('./codebase-extract.js');
+      const { checkoutName, defaultProjectSlug } = await import('./codebase-extract.js');
       const slug = await defaultProjectSlug(dirPath);
       log.info(`Scanning local directory: ${dirPath} (project: ${slug})`);
 
@@ -422,6 +422,7 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
         const updated = await importLocalCheckout({
           sourceDir: dirPath,
           slug,
+          legacySlug: await checkoutName(dirPath),
           wikiRoot,
           incremental: opts.incremental ?? false,
           skipEnrich: opts.skipEnrich ?? false,
