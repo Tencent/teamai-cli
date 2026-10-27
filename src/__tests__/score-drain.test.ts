@@ -366,6 +366,44 @@ describe('teamai score --drain', () => {
     expect(onReports(origin, 'sessions').filter((file) => file.endsWith('.jsonl'))).toHaveLength(1);
   });
 
+  it('publishes the workflow run records a run could not publish to teamai-reports', async () => {
+    const { origin, config } = await team({ 'workflows/review.yaml': WORKFLOW.replace('    scorers: [quality]\n', '') });
+    const hook = path.join(origin, 'hooks', 'pre-receive');
+    fs.writeFileSync(hook, '#!/bin/sh\necho "push refused" >&2\nexit 1\n', { mode: 0o755 });
+    const runId = await settledRun(config, 'unattended');
+    fs.rmSync(hook);
+
+    const drained = await drain();
+
+    expect(drained.code, drained.lines.join('\n')).toBe(0);
+    expect(drained.lines).toContain('✔ Published 1 workflow run record to teamai-reports');
+    expect(onReports(origin, 'workflows/runs')).toEqual([`workflows/runs/${runId}.json`]);
+
+    const again = await drain();
+
+    expect(again).toEqual({ code: 0, lines: ['✔ Nothing left to do here'] });
+  });
+
+  it('exits 1 while a workflow run record still cannot reach teamai-reports, and the next drain publishes it', async () => {
+    const { origin, config } = await team({ 'workflows/review.yaml': WORKFLOW.replace('    scorers: [quality]\n', '') });
+    const hook = path.join(origin, 'hooks', 'pre-receive');
+    fs.writeFileSync(hook, '#!/bin/sh\necho "push refused" >&2\nexit 1\n', { mode: 0o755 });
+    const runId = await settledRun(config, 'unattended');
+
+    const failed = await drain();
+
+    expect(failed.code, failed.lines.join('\n')).toBe(1);
+    expect(failed.lines.filter((printed) => printed.startsWith('✖'))).toEqual([
+      expect.stringMatching(/^✖ Could not publish 1 workflow run record to teamai-reports: [\s\S]*push refused[\s\S]*\. It stays pending; run teamai score --drain again\.$/),
+    ]);
+
+    fs.rmSync(hook);
+    const again = await drain();
+
+    expect(again.code, again.lines.join('\n')).toBe(0);
+    expect(onReports(origin, 'workflows/runs')).toEqual([`workflows/runs/${runId}.json`]);
+  });
+
   it('archives each session captured unattended once, scrubbed, on teamai-reports', async () => {
     const { origin } = await team();
     capturedSession(SESSION, 'unattended', { answer: `Added the retries. The deploy token is ${TOKEN}.` });
@@ -557,7 +595,7 @@ describe('teamai score --drain', () => {
     expect(draining, started.lines.join('\n')).toBeGreaterThanOrEqual(0);
     expect(started.lines.slice(draining)).toEqual(expect.arrayContaining([
       '✔ Judged 1 sampled session here (quality)',
-      expect.stringMatching(/^✖ Could not publish 1 label and 1 session to teamai-reports: /),
+      expect.stringMatching(/^✖ Could not publish 1 workflow run record, 1 label and 1 session to teamai-reports: /),
     ]));
   });
 

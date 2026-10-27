@@ -16,6 +16,7 @@ import { LabelStore } from './scorers/label-store.js';
 import { reportUsage } from './team-push.js';
 import { isUsageReportEnabled, usesBranchWorktree, type LocalConfig } from './types.js';
 import { log } from './utils/logger.js';
+import { pendingRecords, publishPendingRecords } from './workflow/records.js';
 import { judgeLease, submitJudgeLease, takeJudgeLease, type SkippedEntry, type TakenLease } from './workflow/scoring.js';
 
 /** A lease judged here: a workflow pass or a session, by the scorers it carried. */
@@ -33,6 +34,7 @@ interface FailedJudgment {
 
 /** What could not reach teamai-reports, and why. It stays pending, and the next drain retries it. */
 interface Unpublished {
+  runRecords: number;
   labels: number;
   sessions: number;
   reason: string;
@@ -46,6 +48,8 @@ export interface DrainResult {
   leftOpen: SkippedEntry[];
   /** How many judge entries need an isolation no judge tool here reaches, left open for another driver. */
   unmetIsolation: number;
+  /** Runs whose queued workflow run records reached teamai-reports. */
+  runRecordsPublished: number;
   labelsPublished: number;
   /** Captured sessions archived on teamai-reports. */
   capturedArchived: number;
@@ -100,6 +104,23 @@ async function judge(config: LocalConfig, clock: () => string): Promise<Pick<Dra
   return { judged, failed, leftOpen, unmetIsolation };
 }
 
+/** Publishes the workflow run records of `config` that a run queued and could not publish, as pull does. */
+async function publishRunRecords(config: LocalConfig): Promise<Pick<DrainResult, 'runRecordsPublished' | 'unpublished'>> {
+  const runs = new Set((await pendingRecords(config)).map((record) => record.run)).size;
+  if (runs === 0) return { runRecordsPublished: 0, unpublished: [] };
+  const delivery = await publishPendingRecords(config);
+  switch (delivery.state) {
+    case 'published':
+      return { runRecordsPublished: runs, unpublished: [] };
+    case 'pending':
+      return { runRecordsPublished: 0, unpublished: [{ runRecords: runs, labels: 0, sessions: 0, reason: delivery.reason }] };
+    default: {
+      const unhandled: never = delivery;
+      return unhandled;
+    }
+  }
+}
+
 /** Publishes the pending labels of `config`, as `score --push` does. Nothing is pending while usage reporting is off. */
 async function publishLabels(config: LocalConfig): Promise<Pick<DrainResult, 'labelsPublished' | 'unpublished'>> {
   const pending = await LabelStore.unpublished(config);
@@ -109,7 +130,7 @@ async function publishLabels(config: LocalConfig): Promise<Pick<DrainResult, 'la
     case 'published':
       return { labelsPublished: pending, unpublished: [] };
     case 'pending':
-      return { labelsPublished: 0, unpublished: [{ labels: pending, sessions: 0, reason: delivery.reason }] };
+      return { labelsPublished: 0, unpublished: [{ runRecords: 0, labels: pending, sessions: 0, reason: delivery.reason }] };
     case 'unsupported':
       return { labelsPublished: 0, unpublished: [] };
     default: {
@@ -121,7 +142,7 @@ async function publishLabels(config: LocalConfig): Promise<Pick<DrainResult, 'la
 
 /** Drains each scope of `configs`, in order, in run mode `mode`. */
 async function run(configs: readonly LocalConfig[], { mode, clock = () => new Date().toISOString() }: { mode: RunMode; clock?: () => string }): Promise<DrainResult> {
-  const result: DrainResult = { judged: [], failed: [], leftOpen: [], unmetIsolation: 0, labelsPublished: 0, capturedArchived: 0, steps: [], unpublished: [], usage: [] };
+  const result: DrainResult = { judged: [], failed: [], leftOpen: [], unmetIsolation: 0, runRecordsPublished: 0, labelsPublished: 0, capturedArchived: 0, steps: [], unpublished: [], usage: [] };
   for (const config of configs) {
     const team = await loadTeamConfig(config.repo.localPath);
     if (mode === 'unattended') await finishUnattended(config, clock());
@@ -130,16 +151,19 @@ async function run(configs: readonly LocalConfig[], { mode, clock = () => new Da
     result.failed.push(...failed);
     result.leftOpen.push(...leftOpen);
     result.unmetIsolation += unmetIsolation;
+    const records = await publishRunRecords(config);
+    result.runRecordsPublished += records.runRecordsPublished;
+    result.unpublished.push(...records.unpublished);
     const labels = await publishLabels(config);
     result.labelsPublished += labels.labelsPublished;
     result.unpublished.push(...labels.unpublished);
     if (SessionPolicy.publish(config, team).policies[mode].policy === 'auto') {
       const captured = await SessionPublish.captured(config, mode, clock());
       result.capturedArchived += captured.archived;
-      result.unpublished.push(...captured.unpublished.map(({ sessions, reason }) => ({ labels: 0, sessions, reason })));
+      result.unpublished.push(...captured.unpublished.map(({ sessions, reason }) => ({ runRecords: 0, labels: 0, sessions, reason })));
       const steps = await SessionPublish.steps(config, mode, clock());
       result.steps.push(...steps);
-      result.unpublished.push(...steps.flatMap(({ unpublished }) => (unpublished ? [{ labels: 0, ...unpublished }] : [])));
+      result.unpublished.push(...steps.flatMap(({ unpublished }) => (unpublished ? [{ runRecords: 0, labels: 0, ...unpublished }] : [])));
     }
     // As pull reports it, so the counts of this data home leave an ephemeral runner.
     if (usesBranchWorktree(config) && isUsageReportEnabled(config, team ?? {})) {
@@ -171,11 +195,17 @@ function failedText({ scorers, subject, code }: FailedJudgment): string {
 
 /** What could not reach teamai-reports, each reason once, and that the next drain retries it. */
 function unpublishedText(unpublished: readonly Unpublished[]): string {
+  const runRecords = unpublished.reduce((sum, entry) => sum + entry.runRecords, 0);
   const labels = unpublished.reduce((sum, entry) => sum + entry.labels, 0);
   const sessions = unpublished.reduce((sum, entry) => sum + entry.sessions, 0);
-  const what = [labels > 0 ? plural(labels, 'label', 'labels') : '', sessions > 0 ? plural(sessions, 'session', 'sessions') : ''].filter(Boolean).join(' and ');
+  const kinds = [
+    runRecords > 0 ? plural(runRecords, 'workflow run record', 'workflow run records') : '',
+    labels > 0 ? plural(labels, 'label', 'labels') : '',
+    sessions > 0 ? plural(sessions, 'session', 'sessions') : '',
+  ].filter(Boolean);
+  const what = kinds.length > 1 ? `${kinds.slice(0, -1).join(', ')} and ${kinds.at(-1)}` : kinds.join('');
   const reasons = [...new Set(unpublished.map((entry) => entry.reason))].join('; ');
-  return `Could not publish ${what} to teamai-reports: ${reasons}. ${labels + sessions === 1 ? 'It stays' : 'They stay'} pending; run teamai score --drain again.`;
+  return `Could not publish ${what} to teamai-reports: ${reasons}. ${runRecords + labels + sessions === 1 ? 'It stays' : 'They stay'} pending; run teamai score --drain again.`;
 }
 
 /** Whether a judgment or a publish the drain tried here failed, so its command exits 1. */
@@ -190,6 +220,7 @@ function print(result: DrainResult): void {
   if (passes.length > 0) log.success(`Judged ${plural(passes.length, 'sampled pass', 'sampled passes')} here (${scorerNames(passes)})`);
   if (sessions.length > 0) log.success(`Judged ${plural(sessions.length, 'sampled session', 'sampled sessions')} here (${scorerNames(sessions)})`);
   for (const failed of result.failed) log.error(failedText(failed));
+  if (result.runRecordsPublished > 0) log.success(`Published ${plural(result.runRecordsPublished, 'workflow run record', 'workflow run records')} to teamai-reports`);
   if (result.labelsPublished > 0) log.success(`Published ${plural(result.labelsPublished, 'label', 'labels')} to teamai-reports`);
   if (result.capturedArchived > 0) log.success(`Archived ${plural(result.capturedArchived, 'captured session', 'captured sessions')} to teamai-reports (scrubbed)`);
   for (const { run: runId, archived, skipped } of result.steps) {
