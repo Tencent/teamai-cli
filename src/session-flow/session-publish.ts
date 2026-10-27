@@ -1,14 +1,19 @@
 /**
  * Sessions published under `sessions.publish` `auto` (#1385): the captured sessions of a run mode once they are
- * finished, each archived once, scrubbed, on teamai-reports. A data home records each session it archived, so a later
- * pass skips it; a push that failed records nothing, and the next pass tries it again.
+ * finished, and the step sessions of the runs driven here in that mode once they ended, each archived once, scrubbed,
+ * on teamai-reports. A data home records each session it archived, so a later pass skips it; a push that failed
+ * records nothing, and the next pass tries it again.
  */
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { RunMode } from '../launch-context.js';
 import { getDataHome, type LocalConfig } from '../types.js';
-import { pushSession, type ArchiveSessionRef } from './archive.js';
+import { runPasses } from '../workflow/loop.js';
+import { localRuns, settledHere } from '../workflow/scoring.js';
+import { installOwner } from '../workflow/store.js';
+import { AgentSession } from './agent-session.js';
+import { archiveSessions, pushSession, type ArchiveSessionRef } from './archive.js';
 import { SessionCaptures } from './captures.js';
 import { SessionWork } from './session-work.js';
 
@@ -67,4 +72,47 @@ async function captured(config: LocalConfig, mode: RunMode, now: string): Promis
   return published;
 }
 
-export const SessionPublish = { captured } as const;
+/** What one publish pass did with the step sessions of one run. */
+export interface StepSessionsPublished {
+  run: string;
+  archived: number;
+  /** The passes whose tool teamai reads no sessions from. */
+  skipped: Array<{ step: string; pass: number; tool: string }>;
+  unpublished?: { sessions: number; reason: string };
+}
+
+/**
+ * Archives the step sessions of each run of this data home that ended in `mode` (a run with no mode counts as
+ * attended): of each pass settled here that names its tool and session, the session, unless it was archived from here
+ * already. One push per run, filed under the repository of the checkout the run started in.
+ */
+async function steps(config: LocalConfig, mode: RunMode, now: string): Promise<StepSessionsPublished[]> {
+  const install = (await installOwner(config)).id;
+  const published: StepSessionsPublished[] = [];
+  for (const run of await localRuns(config)) {
+    if (run.status === 'running' || (run.runMode ?? 'attended') !== mode) continue;
+    const refs = new Map<string, ArchiveSessionRef>();
+    const skipped: StepSessionsPublished['skipped'] = [];
+    for (const pass of runPasses(run)) {
+      if (pass.tool === undefined || pass.session === undefined || !settledHere(run, pass, install)) continue;
+      const platform = AgentSession.platformForTool(pass.tool);
+      if (!platform) skipped.push({ step: pass.step, pass: pass.pass, tool: pass.tool });
+      else if (!await isRecorded(config, { platform, sessionId: pass.session })) refs.set(`${platform}\0${pass.session}`, { platform, sessionId: pass.session });
+    }
+    if (refs.size === 0) {
+      if (skipped.length > 0) published.push({ run: run.id, archived: 0, skipped });
+      continue;
+    }
+    const chains = [...refs.values()].map((ref) => [ref]);
+    const delivered = await archiveSessions(config, chains, { run: run.id, checkout: run.checkout ?? SessionWork.leaseCwd(config) });
+    if (delivered.status === 'failed') {
+      published.push({ run: run.id, archived: 0, skipped, unpublished: { sessions: refs.size, reason: delivered.message } });
+      continue;
+    }
+    for (const ref of delivered.archived) await record(config, ref, now);
+    published.push({ run: run.id, archived: delivered.archived.length, skipped });
+  }
+  return published;
+}
+
+export const SessionPublish = { captured, steps } as const;

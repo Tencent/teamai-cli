@@ -48,6 +48,7 @@ steps:
 `;
 
 const SESSION = '7c1e0000-0000-4000-8000-000000000011';
+const STEP_SESSION = '7c1e0000-0000-4000-8000-000000000021';
 const TOKEN = `ghp_${'A1b2C3d4E5'.repeat(4)}`;
 const HOUR = 60 * 60 * 1000;
 
@@ -93,11 +94,8 @@ async function team(files: Record<string, string> = {}): Promise<{ origin: strin
 
 const line = (record: unknown): string => `${JSON.stringify(record)}\n`;
 
-/**
- * A Claude session `sessionId` in `<root>/app` whose answer is `answer`, captured in the user scope's data home in
- * `runMode`, with nothing happening in it for `idleFor`.
- */
-function capturedSession(sessionId: string, runMode: RunMode, { idleFor = 7 * HOUR, answer = 'Added the retries.' } = {}): void {
+/** Writes the Claude session `sessionId` that ran in `<root>/app`, whose answer is `answer`, and returns its file. */
+function claudeSession(sessionId: string, answer: string): string {
   const cwd = path.join(root, 'app');
   fs.mkdirSync(cwd, { recursive: true });
   const project = path.join(mocks.home, '.claude', 'projects', encodeCwdClaude(cwd));
@@ -107,6 +105,15 @@ function capturedSession(sessionId: string, runMode: RunMode, { idleFor = 7 * HO
     line({ type: 'user', uuid: 'u1', parentUuid: null, cwd, sessionId, timestamp: '2026-10-20T10:00:00.000Z', message: { role: 'user', content: 'Add retries to the client' } })
     + line({ type: 'assistant', uuid: 'u2', parentUuid: 'u1', cwd, sessionId, timestamp: '2026-10-20T10:00:01.000Z',
       message: { role: 'assistant', model: 'claude-x', content: [{ type: 'text', text: answer }] } }));
+  return file;
+}
+
+/**
+ * A Claude session `sessionId` in `<root>/app` whose answer is `answer`, captured in the user scope's data home in
+ * `runMode`, with nothing happening in it for `idleFor`.
+ */
+function capturedSession(sessionId: string, runMode: RunMode, { idleFor = 7 * HOUR, answer = 'Added the retries.' } = {}): void {
+  const file = claudeSession(sessionId, answer);
   const idleSince = new Date(Date.now() - idleFor);
   fs.utimesSync(file, idleSince, idleSince);
   const captures = path.join(mocks.home, '.teamai', 'sessions', 'captures', 'claude-code', sessionId);
@@ -323,5 +330,30 @@ describe('teamai score --drain', () => {
     expect(again.code, again.lines.join('\n')).toBe(0);
     expect(again.lines.filter((printed) => /Judged|Published|Archived/.test(printed))).toEqual([]);
     expect(again.lines).toContain('✔ Nothing left to do here');
+  });
+
+  it('archives the step sessions of the runs it drives in this mode once, scrubbed, and lists a pass whose tool it reads no sessions from', async () => {
+    const { origin, config } = await team({ 'workflows/review.yaml': WORKFLOW.replace('    scorers: [quality]\n', '') });
+    claudeSession(STEP_SESSION, `Reviewed it. The deploy token is ${TOKEN}.`);
+    const archivedRun = await settledRun(config, 'unattended', { tool: 'claude', session: STEP_SESSION });
+    const skippedRun = await settledRun(config, 'unattended', { tool: 'pi', session: 'pi-1' });
+    await settledRun(config, 'attended', { tool: 'claude', session: '7c1e0000-0000-4000-8000-000000000022' });
+    vi.stubEnv('CI', 'true');
+
+    const drained = await drain();
+
+    expect(drained.code, drained.lines.join('\n')).toBe(0);
+    expect(drained.lines).toEqual(expect.arrayContaining([
+      `✔ Archived 1 step session of ${archivedRun} to teamai-reports (scrubbed)`,
+      `ℹ Skipped 1 step session of ${skippedRun}: teamai reads no sessions from pi (review, pass 1)`,
+    ]));
+    const [archived, ...more] = onReports(origin, 'sessions').filter((file) => file.endsWith('.jsonl'));
+    expect(more).toEqual([]);
+    expect(readOnReports(origin, archived)).toContain('Reviewed it.');
+    expect(readOnReports(origin, archived)).not.toContain(TOKEN);
+
+    const again = await drain();
+
+    expect(again.lines.filter((printed) => printed.includes('Archived'))).toEqual([]);
   });
 });

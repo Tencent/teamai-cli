@@ -53,7 +53,7 @@ interface ScorablePass {
 }
 
 /** Whether this install settled `pass`: its stamp, or, for a pass settled before stamps, a run no other install handed over. */
-function settledHere(run: RunState, pass: RunPass, install: string): boolean {
+export function settledHere(run: RunState, pass: RunPass, install: string): boolean {
   return pass.installId === undefined ? run.publication === undefined : pass.installId === install;
 }
 
@@ -175,7 +175,7 @@ interface RunEntry {
 type ScoreEntry = RunEntry | SessionEntry;
 
 /** Every readable run of this scope, oldest first. */
-async function localRuns(config: LocalConfig): Promise<RunState[]> {
+export async function localRuns(config: LocalConfig): Promise<RunState[]> {
   const files = await fs.readdir(runsDir(config)).catch(() => []);
   const ids = files.filter((file) => file.endsWith('.json')).map((file) => file.slice(0, -'.json'.length)).filter(isRunId);
   const runs = await Promise.all(ids.map((id) => readRun(config, id)));

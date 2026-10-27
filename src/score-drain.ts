@@ -9,7 +9,7 @@ import type { RunMode } from './launch-context.js';
 import { localJudgeOffers } from './score-sessions.js';
 import { SessionCaptures } from './session-flow/captures.js';
 import { SessionPolicy } from './session-flow/session-policy.js';
-import { SessionPublish } from './session-flow/session-publish.js';
+import { SessionPublish, type StepSessionsPublished } from './session-flow/session-publish.js';
 import { SessionWork } from './session-flow/session-work.js';
 import type { RunSubject, SessionSubject } from './scorers/label.js';
 import { LabelStore } from './scorers/label-store.js';
@@ -46,6 +46,8 @@ export interface DrainResult {
   labelsPublished: number;
   /** Captured sessions archived on teamai-reports. */
   capturedArchived: number;
+  /** The step sessions of each run ended here, archived on teamai-reports or skipped. */
+  steps: StepSessionsPublished[];
   unpublished: Unpublished[];
 }
 
@@ -112,7 +114,7 @@ async function publishLabels(config: LocalConfig): Promise<Pick<DrainResult, 'la
 
 /** Drains each scope of `configs`, in order, in run mode `mode`. */
 async function run(configs: readonly LocalConfig[], { mode, clock = () => new Date().toISOString() }: { mode: RunMode; clock?: () => string }): Promise<DrainResult> {
-  const result: DrainResult = { judged: [], failed: [], leftOpen: [], labelsPublished: 0, capturedArchived: 0, unpublished: [] };
+  const result: DrainResult = { judged: [], failed: [], leftOpen: [], labelsPublished: 0, capturedArchived: 0, steps: [], unpublished: [] };
   for (const config of configs) {
     if (mode === 'unattended') await finishUnattended(config, clock());
     const { judged, failed, leftOpen } = await judge(config, clock);
@@ -126,6 +128,9 @@ async function run(configs: readonly LocalConfig[], { mode, clock = () => new Da
     const captured = await SessionPublish.captured(config, mode, clock());
     result.capturedArchived += captured.archived;
     result.unpublished.push(...captured.unpublished.map(({ sessions, reason }) => ({ labels: 0, sessions, reason })));
+    const steps = await SessionPublish.steps(config, mode, clock());
+    result.steps.push(...steps);
+    result.unpublished.push(...steps.flatMap(({ unpublished }) => (unpublished ? [{ labels: 0, ...unpublished }] : [])));
   }
   return result;
 }
@@ -172,6 +177,13 @@ function print(result: DrainResult): void {
   for (const failed of result.failed) log.error(failedText(failed));
   if (result.labelsPublished > 0) log.success(`Published ${plural(result.labelsPublished, 'label', 'labels')} to teamai-reports`);
   if (result.capturedArchived > 0) log.success(`Archived ${plural(result.capturedArchived, 'captured session', 'captured sessions')} to teamai-reports (scrubbed)`);
+  for (const { run: runId, archived, skipped } of result.steps) {
+    if (archived > 0) log.success(`Archived ${plural(archived, 'step session', 'step sessions')} of ${runId} to teamai-reports (scrubbed)`);
+    for (const tool of new Set(skipped.map((pass) => pass.tool))) {
+      const passes = skipped.filter((pass) => pass.tool === tool);
+      log.info(`Skipped ${plural(passes.length, 'step session', 'step sessions')} of ${runId}: teamai reads no sessions from ${tool} (${passes.map((pass) => `${pass.step}, pass ${pass.pass}`).join('; ')})`);
+    }
+  }
   if (result.unpublished.length > 0) log.error(unpublishedText(result.unpublished));
   const { leftOpen } = result;
   if (leftOpen.length > 0) {
