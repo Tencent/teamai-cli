@@ -244,6 +244,7 @@ async function memberSettingsReport(ctx: DoctorContext): Promise<MemberSettingsR
     if (key === 'mrHintEnabled') return readPath(teamSharing, ['mrHint', 'enabled']);
     if (key === 'coAuthorEnabled') return readPath(teamSharing, ['coAuthor', 'enabled']);
     if (key === 'autoCompactTokens') return readPath(teamSharing, ['autoCompact', 'tokens']);
+    if (key === 'usageReportEnabled') return team?.usageReport;
     if (key === 'updatePolicy') return team?.autoUpdate === false ? 'skip' : team?.autoUpdate === true ? 'auto' : undefined;
     return undefined;
   };
