@@ -147,6 +147,22 @@ it('stops waiting once a detached child the worker started has exited, though th
   expect(performance.now() - started).toBeLessThan(5_000);
 });
 
+it('waits for a detached shell command started without an argument list', async () => {
+  const scratch = tempRoot();
+  const done = path.join(scratch, 'done');
+  const script = path.join(scratch, 'late-writer.js');
+  fs.writeFileSync(script, `setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(done)}, ''), 1500)`);
+  const { rmSync } = await wrapLosingRemovals(() => !fs.existsSync(done));
+  const root = tempRoot();
+  fs.writeFileSync(path.join(root, 'state.json'), '{}');
+  // The shape of startGroupedCommand's spawn, as a workflow step runs it.
+  spawn(`"${process.execPath}" "${script}"`, { shell: true, detached: true, stdio: 'ignore' }).unref();
+
+  rmSync(root, { recursive: true, force: true });
+
+  expect(fs.existsSync(root)).toBe(false);
+});
+
 it('keeps what promisify(execFile) resolves to', async () => {
   const run = promisify(childProcess.execFile);
 

@@ -14,7 +14,8 @@ const cp = require('node:child_process');
 const spawn = cp.spawn;
 cp.spawn = function (...args) {
   const child = spawn.apply(this, args);
-  if (args[2]?.detached && child.pid) {
+  const options = Array.isArray(args[1]) ? args[2] : args[1];
+  if (options?.detached && child.pid) {
     fs.writeFileSync(path.join(${JSON.stringify(children)}, String(child.pid)), '');
   }
   return child;
