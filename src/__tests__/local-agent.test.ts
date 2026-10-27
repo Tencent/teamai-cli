@@ -2210,6 +2210,21 @@ describe('local-agent: cmds[] migration', () => {
     expect(trust).not.toHaveBeenCalled();
   });
 
+  it('install_hook_rule leaves a Codex hook untrusted when only this machine\'s settings turn trust off (#1459)', async () => {
+    const trust = vi.mocked(trustCodexHooks);
+    trust.mockClear();
+    await fse.ensureDir(path.join(tmpDir, '.codex'));
+    // The file a member writes by hand with no user-scope install: settings, no repo.
+    await fse.outputFile(path.join(tmpDir, '.teamai', 'config.yaml'), 'codexTrustEnabled: false\n');
+    const acks = await runResponse({ cmds: [{
+      id: 58, type: 'install_hook_rule', handle_type: 'hook', slug: 'cx-machine-opted-out',
+      event: 'Stop', cmd: 'echo machine opted out', scope: 'user',
+    }] }, undefined, 'codex');
+    expect(acks.find((a) => a.id === 58)).toMatchObject({ status: 'failed' });
+    expect(String(acks.find((a) => a.id === 58)?.error)).toContain('codexTrustEnabled is false');
+    expect(trust).not.toHaveBeenCalled();
+  });
+
   it('keeps the other Codex hooks trusted when an agent hook is reinstalled or removed (#1220)', async () => {
     const actual = await vi.importActual<typeof import('../codex-trust.js')>('../codex-trust.js');
     vi.mocked(trustCodexHooks).mockImplementation(actual.trustCodexHooks);
