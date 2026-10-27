@@ -335,6 +335,27 @@ describe('skill driver preflight of optional gates', () => {
       'How should it run?',
     ].join('\n') } } } } });
   });
+
+  it('names the steps that wait for an optional approval with no action, in file order', async () => {
+    expect(await questionOf({ gates: gates(`  - id: ship-ok
+    approve: Ship it?
+  - id: deploy
+    needs: [ship-ok]
+    command: echo deployed
+  - id: notify
+    needs: [ship-ok]
+    command: echo notified
+  - id: wrap-ok
+    needs: [deploy, notify]
+    approve: Wrap up?
+`) })).toMatchObject({ data: { describe: { ask: { kind: 'ask', question: { text: [
+      '- It can run up to 2 steps at once.',
+      '- Optional approval at ship-ok: no action; deploy and notify wait for it.',
+      '- Optional approval at wrap-ok: no action; no step waits for it.',
+      approvalsAnswer,
+      'How should it run?',
+    ].join('\n') } } } } });
+  });
 });
 
 describe('skill driver preflight in an unattended run', () => {

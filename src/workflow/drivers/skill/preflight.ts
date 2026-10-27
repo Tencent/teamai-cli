@@ -127,7 +127,7 @@ function guardsFact(guards: GateGuards): string {
     case 'end':
       return `before ${guards.workflow ?? 'the run'} ends ${guards.end}`;
     case 'none':
-      return 'no action';
+      return `no action; ${guards.waiting.length > 0 ? `${listOf(guards.waiting)} wait${guards.waiting.length > 1 ? '' : 's'} for it` : 'no step waits for it'}`;
     default: {
       const unhandled: never = guards;
       return unhandled;
