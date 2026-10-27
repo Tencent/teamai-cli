@@ -18,10 +18,29 @@ export type HomeMove =
   | { readonly kind: 'env'; readonly name: string; readonly evidence: Evidence }
   /** `$XDG_CONFIG_HOME/<child>`. */
   | { readonly kind: 'xdg'; readonly child: string; readonly evidence: Evidence }
-  /** `%LOCALAPPDATA%\<child>` on Windows, whatever the env says. */
-  | { readonly kind: 'win32-appdata'; readonly child: string; readonly evidence: Evidence }
-  /** `~/<dir>-<value>` for a value other than `default`. */
-  | { readonly kind: 'profile-suffix'; readonly name: string; readonly evidence: Evidence };
+  /**
+   * OpenClaw's state dir: `OPENCLAW_STATE_DIR`, else `.openclaw`, or
+   * `.openclaw-<profile>` for an `OPENCLAW_PROFILE` other than `default`, in
+   * `OPENCLAW_HOME`, else in `$HOME`. `OPENCLAW_HOME` replaces the OS home
+   * OpenClaw's defaults use, `~` in `OPENCLAW_STATE_DIR` included.
+   */
+  | { readonly kind: 'openclaw-state'; readonly evidence: Evidence }
+  /**
+   * Oh My Pi's agent dir. The profile is `OMP_PROFILE` when defined, even
+   * empty, else `PI_PROFILE`; a blank or `default` one is the default profile.
+   * A named profile is `~/<PI_CONFIG_DIR or .omp>/profiles/<name>/agent`; the
+   * default one is `PI_CODING_AGENT_DIR`, else `~/<PI_CONFIG_DIR or .omp>/agent`.
+   */
+  | { readonly kind: 'omp-agent'; readonly evidence: Evidence }
+  /**
+   * Hermes's home: `HERMES_HOME`, else `~/.hermes<suffix>`, or
+   * `%LOCALAPPDATA%\hermes<suffix>` on Windows, with `HERMES_DATA_DIR_SUFFIX`
+   * appended as written. Unless `HERMES_HOME` is itself a `profiles/<name>`
+   * dir, a profile `active_profile` names, other than `default`, is
+   * `profiles/<name>` in that home while the directory exists; the
+   * `active_profile` read is the platform one when `HERMES_HOME` is inside it.
+   */
+  | { readonly kind: 'hermes-home'; readonly evidence: Evidence };
 
 /**
  * `dir` is relative to `$HOME`. The first of `moves.by` that applies moves the
@@ -143,7 +162,12 @@ export type BlocksChannels = Scoped<BlocksTarget<HomeRead>, BlocksTarget<HomeRea
  * tool id itself (`renderForTool`), so no entry can point a tool at another
  * tool's renderer.
  */
-export type AgentsTarget<R> = { readonly reads: Reads<R>; readonly readGates?: readonly ReadGateKind[] };
+export type AgentsTarget<R> = {
+  readonly reads: Reads<R>;
+  readonly readGates?: readonly ReadGateKind[];
+  /** The tool loads these agents from its profile's agent dir whatever `PI_CODING_AGENT_DIR` says (OMP's task-agent loader). */
+  readonly skipsAgentDirOverride?: true;
+};
 export type AgentsChannels = Scoped<AgentsTarget<HomeRead>, AgentsTarget<HomeRead | ProjectRead>>;
 
 /**
@@ -807,8 +831,9 @@ export const TOOLS = {
     },
   },
   // Extensions capture the installed Node/CLI launcher instead of depending on the host PATH.
+  // utils/src/dirs.ts at a70f001c. A `--profile` flag another process starts with is out of teamai's sight: init records the home for it.
   omp: {
-    home: { dir: '.omp' },
+    home: { dir: '.omp', moves: { root: '.omp/agent', by: [{ kind: 'omp-agent', evidence: 'source' }] } },
     skillLoad: { calls: [] },
     skills: { user: [{ base: 'home', path: '.omp/agent/skills', evidence: 'verified' }], project: 'unknown' },
     rules: {
@@ -823,7 +848,8 @@ export const TOOLS = {
       retired: { user: ['.omp/agent/AGENTS.md'], project: ['.omp/AGENTS.md'] },
     },
     agents: {
-      user: { reads: [{ base: 'home', path: '.omp/agent/agents', evidence: 'verified' }] },
+      // coding-agent/src/config.ts at a70f001c joins the config dir name to the OS home, so PI_CODING_AGENT_DIR does not move task agents.
+      user: { reads: [{ base: 'home', path: '.omp/agent/agents', evidence: 'verified' }], skipsAgentDirOverride: true },
       project: { reads: [{ base: 'project', path: '.omp/agents', when: 'workspaceUnder', evidence: 'verified' }] },
     },
     mcp: {
@@ -933,7 +959,8 @@ export const TOOLS = {
   openclaw: {
     home: {
       dir: '.openclaw',
-      moves: { by: [{ kind: 'env', name: 'OPENCLAW_STATE_DIR', evidence: 'source' }, { kind: 'profile-suffix', name: 'OPENCLAW_PROFILE', evidence: 'source' }] },
+      // docs.openclaw.ai/help/environment; OPENCLAW_STATE_DIR and OPENCLAW_PROFILE also in src/config/paths.ts at 884a96d1.
+      moves: { by: [{ kind: 'openclaw-state', evidence: 'docs' }] },
     },
     skillLoad: 'unknown',
     skills: UNKNOWN_READS,
@@ -962,12 +989,10 @@ export const TOOLS = {
       agentHooks: '◐s',
     },
   },
-  // hermes_constants.py: HERMES_HOME, else %LOCALAPPDATA%\hermes on Windows, else ~/.hermes. Hermes reads it in either scope.
+  // hermes_constants.py and hermes_cli/main.py at 68134629 (the same rules at 7e9eb8d9). Hermes reads its home in either scope.
+  // Out of teamai's sight: another process's -p/--profile flag, and the supervised, desktop SSH and s6 gateway starts that skip active_profile.
   hermes: {
-    home: {
-      dir: '.hermes',
-      moves: { by: [{ kind: 'env', name: 'HERMES_HOME', evidence: 'source' }, { kind: 'win32-appdata', child: 'hermes', evidence: 'source' }] },
-    },
+    home: { dir: '.hermes', moves: { by: [{ kind: 'hermes-home', evidence: 'source' }] } },
     skillLoad: 'unknown',
     skills: {
       user: [{ base: 'home', path: '.hermes/skills', evidence: 'source' }],
@@ -1193,18 +1218,21 @@ export function hasDefaultHomeLeftovers(tool: ToolId): boolean {
   return home.moves?.defaultHomeLeftovers === true;
 }
 
-/** The env variables that move `tool`'s home (`Home.moves.by`): a tool's own, and `XDG_CONFIG_HOME` for an XDG home. */
+/** The env variables that move `tool`'s home (`Home.moves.by`): a tool's own, and `XDG_CONFIG_HOME` for an XDG home. `LOCALAPPDATA` is not one: it is where Windows keeps a home that did not move. */
 export function homeVariables(tool: ToolId): readonly string[] {
   const { home }: ToolDescriptor = TOOLS[tool];
   return (home.moves?.by ?? []).flatMap((move): string[] => {
     switch (move.kind) {
       case 'env':
-      case 'profile-suffix':
         return [move.name];
       case 'xdg':
         return ['XDG_CONFIG_HOME'];
-      case 'win32-appdata':
-        return [];
+      case 'openclaw-state':
+        return ['OPENCLAW_STATE_DIR', 'OPENCLAW_HOME', 'OPENCLAW_PROFILE'];
+      case 'omp-agent':
+        return ['OMP_PROFILE', 'PI_PROFILE', 'PI_CONFIG_DIR', 'PI_CODING_AGENT_DIR'];
+      case 'hermes-home':
+        return ['HERMES_HOME', 'HERMES_DATA_DIR_SUFFIX'];
       default: {
         const unhandled: never = move;
         return unhandled;

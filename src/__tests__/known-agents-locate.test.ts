@@ -9,7 +9,7 @@ function linuxHost(env: Record<string, string>, existing: readonly string[]): Ho
   return {
     platform: 'linux', path: path.posix, home: '/home/m', profileHome: '/home/m', env, toolHomes: { kind: 'missing' }, cwd: () => '/home/m',
     exists: async (file) => existing.includes(file), readJson: async () => ({ kind: 'missing' }),
-    realpath: async (file) => file, readText: async () => null, userToolRoots: async () => undefined,
+    realpath: async (file) => file, readText: async () => null, existsNow: () => false, readTextNow: () => null, userToolRoots: async () => undefined,
   };
 }
 

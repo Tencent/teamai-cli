@@ -108,8 +108,9 @@ function homeMove(move: HomeMove, dir: string): string {
   switch (move.kind) {
     case 'env': return `\`$${move.name}\``;
     case 'xdg': return `\`$XDG_CONFIG_HOME/${move.child}\``;
-    case 'win32-appdata': return `\`%LOCALAPPDATA%\\${move.child}\``;
-    case 'profile-suffix': return `\`~/${dir}-$${move.name}\``;
+    case 'openclaw-state': return `\`$OPENCLAW_STATE_DIR\` \`$OPENCLAW_HOME/${dir}[-$OPENCLAW_PROFILE]\``;
+    case 'omp-agent': return '`~/$PI_CONFIG_DIR/profiles/$OMP_PROFILE/agent` `$PI_CODING_AGENT_DIR`';
+    case 'hermes-home': return `\`$HERMES_HOME\` \`~/${dir}$HERMES_DATA_DIR_SUFFIX\` \`%LOCALAPPDATA%\\hermes$HERMES_DATA_DIR_SUFFIX\` \`<home>/profiles/<active_profile>\``;
     default: {
       const unhandled: never = move;
       return unhandled;

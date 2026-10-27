@@ -642,7 +642,7 @@ async function discoverToolResources(
   } else {
     // OpenClaw-style agents (no settings file) inject a HOOK.md + handler.ts
     // under <hooksDir>/<OPENCLAW_HOOK_DIR>. Check the default path, the
-    // resolved state dir (OPENCLAW_STATE_DIR or OPENCLAW_PROFILE), and the
+    // resolved state dir (OPENCLAW_STATE_DIR, OPENCLAW_HOME or OPENCLAW_PROFILE), and the
     // resolved workspace dir — injection now targets `<workspace>/hooks`, so
     // teardown must cover it too, otherwise the hook is orphaned on uninstall.
     const defaultHooksDir = path.join(baseDir, `.${tool}`, 'hooks');

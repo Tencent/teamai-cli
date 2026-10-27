@@ -1,6 +1,6 @@
 import { withFileLock } from './update.js';
-import { homeVariables, isToolId, TOOLS, type HomeMove } from './tools.js';
-import { envToolHome, realHost, recordedHomes, reloadToolHomes, saveToolHomes, toolHomesPath, type Host } from './tool-home.js';
+import { homeVariables, isToolId, TOOLS } from './tools.js';
+import { envToolHome, realHost, type EnvToolHome, recordedHomes, reloadToolHomes, saveToolHomes, toolHomesPath, type Host } from './tool-home.js';
 import type { ToolId } from './types.js';
 import { log } from './utils/logger.js';
 
@@ -16,11 +16,10 @@ type RecordRule = { readonly replacesRecord: boolean; readonly needsExistingHome
  * where one exists. The Windows default is not a move, so it only fills a
  * missing record.
  */
-const INIT_RECORDS: Readonly<Record<HomeMove['kind'], RecordRule>> = {
-  env: { replacesRecord: true, needsExistingHome: false },
-  'profile-suffix': { replacesRecord: true, needsExistingHome: false },
+const INIT_RECORDS: Readonly<Record<EnvToolHome['kind'], RecordRule>> = {
+  own: { replacesRecord: true, needsExistingHome: false },
   xdg: { replacesRecord: true, needsExistingHome: true },
-  'win32-appdata': { replacesRecord: false, needsExistingHome: true },
+  'platform-default': { replacesRecord: false, needsExistingHome: true },
 };
 
 const PULL_RECORDS: RecordRule = { replacesRecord: false, needsExistingHome: true };
@@ -40,7 +39,7 @@ export async function nextToolHomes(
   const changes: ToolHomeChange[] = [];
   for (const tool of Object.keys(TOOLS).filter(isToolId)) {
     const moved = envToolHome(tool, host);
-    const blank = by === 'init' && homes[tool] !== undefined && (moved === null || moved.kind === 'win32-appdata')
+    const blank = by === 'init' && homes[tool] !== undefined && (moved === null || moved.kind === 'platform-default')
       && homeVariables(tool).find((name) => host.env[name] !== undefined && host.env[name]?.trim() === '');
     if (blank) {
       delete homes[tool];

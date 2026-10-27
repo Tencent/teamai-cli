@@ -2938,16 +2938,15 @@ async function clearEarlierHomeHooks(target: {
  * writes exactly one copy, in the user agent dir, matching the OpenCode
  * plugin policy and the settings.json hooks of every other tool (which also
  * live in HOME and gate on the `cwd` fed to hook-dispatch). Install only when
- * ~/.omp exists, so a machine without OMP never grows a config dir.
+ * ~/.omp or OMP's moved agent dir exists, so a machine without OMP never grows a config dir.
  */
 async function reconcileOmpExtension(removeAll = false): Promise<void> {
-  const home = getUserHome();
   const { injectOmpHooks, removeOmpHooks } = await import('./omp-hooks.js');
   if (removeAll) {
     await removeOmpHooks();
     return;
   }
-  if (await pathExists(path.join(home, '.omp'))) {
+  if (await pathExists(path.join(getUserHome(), '.omp')) || await pathExists(toolHome('omp'))) {
     await injectOmpHooks();
   }
 }

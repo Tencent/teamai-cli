@@ -1,5 +1,11 @@
 import { describeLocateMatrix, type MatrixRow } from './helpers/locate-matrix.js';
 
+const HERMES_PROFILE_SOURCE = 'Hermes 68134629 hermes_constants.py and hermes_cli/main.py: HERMES_DATA_DIR_SUFFIX is appended literally to ~/.hermes, or %LOCALAPPDATA%\\hermes on Windows; with no profile-shaped HERMES_HOME, <root>/active_profile names the profile, <root>/profiles/<name>, when that directory exists';
+
+const OPENCLAW_HOME_SOURCE = 'OpenClaw docs help/environment: OPENCLAW_HOME replaces the OS home for its defaults, so the state dir is <OPENCLAW_HOME>/.openclaw or .openclaw-<profile>, and ~ in OPENCLAW_STATE_DIR expands against it';
+
+const OMP_SOURCE = 'Oh My Pi a70f001c utils/src/dirs.ts: profile = OMP_PROFILE if defined, else PI_PROFILE; a named profile is ~/<PI_CONFIG_DIR or .omp>/profiles/<name>/agent, else PI_CODING_AGENT_DIR, else ~/<PI_CONFIG_DIR or .omp>/agent';
+
 const OPENCLAW_SOURCE = 'OpenClaw agents/agent-scope-config.ts and agents/workspace-default-path.ts, as src/openclaw-home.ts records them: state dir OPENCLAW_STATE_DIR, else ~/.openclaw-<profile>, else ~/.openclaw; workspace agents.defaults.workspace in OPENCLAW_CONFIG_PATH or <state>/openclaw.json, else OPENCLAW_WORKSPACE_DIR, else <state>/workspace';
 
 const ROWS: readonly MatrixRow[] = [
@@ -207,6 +213,30 @@ const ROWS: readonly MatrixRow[] = [
     source: 'Oh My Pi 18.2.1 run: RULES.md is an always-applied rule beside the single user context file',
   },
   {
+    tool: 'omp', scope: 'user', envLiterals: { OMP_PROFILE: 'work' },
+    writes: [{ at: '~/.omp/profiles/work/agent/RULES.md', owned: false, header: null }],
+    existingDirs: ['~/.omp/profiles/work/agent'], installed: { probe: '~/.omp/profiles/work/agent', met: true },
+    reads: [{ at: '~/.omp/profiles/work/agent/RULES.md', when: 'always' }],
+    retired: [{ at: '~/.omp/profiles/work/agent/AGENTS.md', was: 'default' }],
+    source: OMP_SOURCE,
+  },
+  {
+    tool: 'omp', scope: 'user', env: { PI_CODING_AGENT_DIR: '/omp-agent' },
+    writes: [{ at: '/omp-agent/RULES.md', owned: false, header: null }],
+    existingDirs: ['/omp-agent'], installed: { probe: '/omp-agent', met: true },
+    reads: [{ at: '/omp-agent/RULES.md', when: 'always' }],
+    retired: [{ at: '/omp-agent/AGENTS.md', was: 'default' }],
+    source: OMP_SOURCE,
+  },
+  {
+    tool: 'omp', scope: 'user', envLiterals: { PI_CONFIG_DIR: '.omp-alt', PI_PROFILE: 'work' },
+    writes: [{ at: '~/.omp-alt/profiles/work/agent/RULES.md', owned: false, header: null }],
+    existingDirs: ['~/.omp-alt/profiles/work/agent'], installed: { probe: '~/.omp-alt/profiles/work/agent', met: true },
+    reads: [{ at: '~/.omp-alt/profiles/work/agent/RULES.md', when: 'always' }],
+    retired: [{ at: '~/.omp-alt/profiles/work/agent/AGENTS.md', was: 'default' }],
+    source: OMP_SOURCE,
+  },
+  {
     tool: 'omp', scope: 'project',
     channel: { via: 'extension', probe: 'omp-extension', limit: null },
     existingDirs: ['~/.omp'], installed: { probe: '~/.omp', met: true },
@@ -296,6 +326,46 @@ const ROWS: readonly MatrixRow[] = [
     readableConfig: { file: '~/.openclaw-work/openclaw.json', met: true },
     reads: 'unknown',
     source: `${OPENCLAW_SOURCE}; a profile other than default is ~/.openclaw-<profile>`,
+  },
+  {
+    tool: 'openclaw', scope: 'user', env: { OPENCLAW_HOME: '/oc-home' },
+    writes: [{ at: '/oc-home/.openclaw/workspace/AGENTS.md', owned: false, header: null }],
+    existingDirs: ['/oc-home/.openclaw/workspace'], installed: { probe: '/oc-home/.openclaw/workspace', met: true },
+    readableConfig: { file: '/oc-home/.openclaw/openclaw.json', met: true },
+    reads: 'unknown',
+    source: OPENCLAW_HOME_SOURCE,
+  },
+  {
+    tool: 'openclaw', scope: 'user', env: { OPENCLAW_HOME: '/oc-home' }, envLiterals: { OPENCLAW_PROFILE: 'work' },
+    writes: [{ at: '/oc-home/.openclaw-work/workspace/AGENTS.md', owned: false, header: null }],
+    existingDirs: ['/oc-home/.openclaw-work/workspace'], installed: { probe: '/oc-home/.openclaw-work/workspace', met: true },
+    readableConfig: { file: '/oc-home/.openclaw-work/openclaw.json', met: true },
+    reads: 'unknown',
+    source: OPENCLAW_HOME_SOURCE,
+  },
+  {
+    tool: 'hermes', scope: 'user', platforms: ['darwin', 'linux'], envLiterals: { HERMES_DATA_DIR_SUFFIX: '-canary' },
+    writes: ['~/.hermes-canary/SOUL.md'],
+    existingDirs: ['~/.hermes-canary'], installed: { probe: '~/.hermes-canary', met: true },
+    reads: [{ at: '~/.hermes-canary/SOUL.md', when: 'always' }],
+    retired: [{ at: '~/AGENTS.md', was: 'default' }],
+    source: HERMES_PROFILE_SOURCE,
+  },
+  {
+    tool: 'hermes', scope: 'user', platforms: ['win32'], envLiterals: { HERMES_DATA_DIR_SUFFIX: '-canary' },
+    writes: ['$LOCALAPPDATA/hermes-canary/SOUL.md'],
+    existingDirs: ['$LOCALAPPDATA/hermes-canary'], installed: { probe: '$LOCALAPPDATA/hermes-canary', met: true },
+    reads: [{ at: '$LOCALAPPDATA/hermes-canary/SOUL.md', when: 'always' }],
+    retired: [{ at: '~/AGENTS.md', was: 'default' }],
+    source: HERMES_PROFILE_SOURCE,
+  },
+  {
+    tool: 'hermes', scope: 'user', platforms: ['darwin', 'linux'], texts: [{ at: '~/.hermes/active_profile', text: 'work\n' }],
+    writes: ['~/.hermes/profiles/work/SOUL.md'],
+    existingDirs: ['~/.hermes/profiles/work'], installed: { probe: '~/.hermes/profiles/work', met: true },
+    reads: [{ at: '~/.hermes/profiles/work/SOUL.md', when: 'always' }],
+    retired: [{ at: '~/AGENTS.md', was: 'default' }],
+    source: HERMES_PROFILE_SOURCE,
   },
   {
     tool: 'openclaw', scope: 'user', env: { OPENCLAW_WORKSPACE_DIR: '/oc-ws' },

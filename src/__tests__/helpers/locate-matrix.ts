@@ -159,6 +159,8 @@ function hostFor(row: MatrixRow, cell: Cell): Host {
     },
     realpath: async (file) => file,
     readText: async (file) => texts.get(file) ?? null,
+    existsNow: (file) => existing.has(file),
+    readTextNow: (file) => texts.get(file) ?? null,
     userToolRoots: async () => row.userToolRoots && expand(row.userToolRoots, cell),
   };
 }
@@ -223,19 +225,35 @@ function expectFiles(row: FilesRow, where: Location, cell: Cell, host: Host): vo
   expect(unreadWrites<Place>(where, host).map((unread) => unread.reason)).toEqual(broken ? [broken.reason] : []);
 }
 
-/** A setting that moves a tool's home (`Home.moves`), as a row sets it: an env value, or a Windows cell for `%LOCALAPPDATA%`. */
-type MoveSetting = { readonly tool: ToolId; readonly name: string; readonly env: Readonly<Record<string, string>>; readonly win32: boolean };
+/**
+ * A setting that moves a tool's home (`Home.moves`), as a row sets it: env
+ * values, a text file (Hermes's `active_profile`), or a Windows cell for `%LOCALAPPDATA%`.
+ */
+type MoveSetting = {
+  readonly tool: ToolId;
+  readonly name: string;
+  readonly env: Readonly<Record<string, string>>;
+  readonly text?: { readonly at: Spot; readonly text: string };
+  readonly win32: boolean;
+};
 
-function moveSettingOf(tool: ToolId, move: HomeMove): MoveSetting {
+function moveSettingsOf(tool: ToolId, move: HomeMove): MoveSetting[] {
+  const setting = (name: string, value: string): MoveSetting => ({ tool, name, env: { [name]: value }, win32: false });
   switch (move.kind) {
     case 'env':
-      return { tool, name: move.name, env: { [move.name]: '/moved' }, win32: false };
+      return [setting(move.name, '/moved')];
     case 'xdg':
-      return { tool, name: 'XDG_CONFIG_HOME', env: { XDG_CONFIG_HOME: '/moved' }, win32: false };
-    case 'win32-appdata':
-      return { tool, name: 'LOCALAPPDATA', env: { LOCALAPPDATA: 'D:\\moved' }, win32: true };
-    case 'profile-suffix':
-      return { tool, name: move.name, env: { [move.name]: 'moved' }, win32: false };
+      return [setting('XDG_CONFIG_HOME', '/moved')];
+    case 'openclaw-state':
+      return [setting('OPENCLAW_STATE_DIR', '/moved'), setting('OPENCLAW_HOME', '/moved'), setting('OPENCLAW_PROFILE', 'moved')];
+    case 'omp-agent':
+      return [setting('OMP_PROFILE', 'moved'), setting('PI_PROFILE', 'moved'), setting('PI_CONFIG_DIR', '.moved'), setting('PI_CODING_AGENT_DIR', '/moved')];
+    case 'hermes-home':
+      return [
+        setting('HERMES_HOME', '/moved'), setting('HERMES_DATA_DIR_SUFFIX', '-moved'),
+        { tool, name: 'LOCALAPPDATA', env: { LOCALAPPDATA: 'D:\\moved' }, win32: true },
+        { tool, name: 'active_profile', env: {}, text: { at: '~/.hermes/active_profile', text: 'moved' }, win32: false },
+      ];
     default: {
       const unhandled: never = move;
       return unhandled;
@@ -246,13 +264,13 @@ function moveSettingOf(tool: ToolId, move: HomeMove): MoveSetting {
 function moveSettings(): MoveSetting[] {
   return Object.keys(TOOLS).filter(isToolId).flatMap((tool) => {
     const { home }: ToolDescriptor = TOOLS[tool];
-    return (home.moves?.by ?? []).map((move) => moveSettingOf(tool, move));
+    return (home.moves?.by ?? []).flatMap((move) => moveSettingsOf(tool, move));
   });
 }
 
 /** The paths `tool` writes `resource` to on a host where every path exists, with `env` set. */
-async function writesWith(resource: Resource, tool: ToolId, scope: 'user' | 'project', platform: Platform, env: Readonly<Record<string, string>>): Promise<string[]> {
-  const row: MatrixRow = { tool, scope, existingDirs: [], installed: null, channel: 'none', source: '' };
+async function writesWith(resource: Resource, tool: ToolId, scope: 'user' | 'project', platform: Platform, env: Readonly<Record<string, string>>, texts: RowCommon['texts'] = []): Promise<string[]> {
+  const row: MatrixRow = { tool, scope, existingDirs: [], texts, installed: null, channel: 'none', source: '' };
   const cell: Cell = { platform, cwd: 'project-root', env };
   const host: Host = { ...hostFor(row, cell), exists: async () => true };
   return writesOf<Place>(await locate(tool, resource, installFor(row, cell), host)).map((place) => place.path);
@@ -269,11 +287,14 @@ async function uncoveredMoves(resource: Resource, rows: readonly MatrixRow[]): P
       const platform: Platform = move.win32 ? 'win32' : 'darwin';
       const base = envFor({ tool: move.tool, scope, existingDirs: [], installed: null, channel: 'none', source: '' }, platform, 'project-root');
       const moved = { ...base, ...move.env };
-      const [before, after] = await Promise.all([writesWith(resource, move.tool, scope, platform, base), writesWith(resource, move.tool, scope, platform, moved)]);
+      const texts = move.text === undefined ? [] : [move.text];
+      const [before, after] = await Promise.all([writesWith(resource, move.tool, scope, platform, base), writesWith(resource, move.tool, scope, platform, moved, texts)]);
       if (JSON.stringify(before) === JSON.stringify(after)) continue;
+      const { text } = move;
       const covered = rows.some((row) => row.tool === move.tool && row.scope === scope && (move.win32
         ? (row.platforms ?? ['win32']).includes('win32')
-        : Object.hasOwn(row.env ?? {}, move.name) || Object.hasOwn(row.envLiterals ?? {}, move.name)));
+        : text !== undefined ? (row.texts ?? []).some((file) => file.at === text.at)
+          : Object.hasOwn(row.env ?? {}, move.name) || Object.hasOwn(row.envLiterals ?? {}, move.name)));
       if (!covered) uncovered.push(`${move.tool} ${scope} ${move.name}`);
     }
   }

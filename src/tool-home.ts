@@ -27,6 +27,9 @@ export type Host = {
   realpath(file: string): Promise<string>;
   /** A small text file, or null when it is missing or unreadable: a linked worktree's `.git` and its `commondir`. */
   readText(file: string): Promise<string | null>;
+  /** `exists` and `readText` for a home move, which resolves synchronously: Hermes's `active_profile` and its profile dir. */
+  existsNow(file: string): boolean;
+  readTextNow(file: string): string | null;
   /** The `toolRoots` the member's user config records: a project config that records none follows them (`resolveMemberToolRoots`). */
   userToolRoots(): Promise<Readonly<Record<string, string>> | undefined>;
 };
@@ -45,11 +48,25 @@ export function realHost(overrides: Partial<Pick<Host, 'env' | 'home'>> = {}): H
     readJson: readJsonObject,
     realpath: (file) => fs.promises.realpath(file).catch(() => file),
     readText: readFileSafe,
+    existsNow: (file) => fs.existsSync(file),
+    readTextNow: (file) => {
+      try {
+        return fs.readFileSync(file, 'utf8');
+      } catch {
+        return null;
+      }
+    },
     userToolRoots: async () => (await (await import('./config.js')).loadLocalConfig())?.toolRoots,
   };
 }
 
-export type EnvToolHome = { readonly dir: string; readonly variable: string; readonly kind: HomeMove['kind'] };
+/**
+ * A home the host env moves, and how init records it (`INIT_RECORDS`): `own`,
+ * the tool's own setting; `xdg`, `XDG_CONFIG_HOME`, which moves every XDG
+ * tool at once; `platform-default`, the Windows home, which is not a move.
+ * `variable` names the setting, or the file (Hermes's `active_profile`).
+ */
+export type EnvToolHome = { readonly dir: string; readonly variable: string; readonly kind: 'own' | 'xdg' | 'platform-default' };
 
 /**
  * Where the host env moves `tool`'s home (the first of
@@ -62,36 +79,101 @@ export type EnvToolHome = { readonly dir: string; readonly variable: string; rea
 export function envToolHome(tool: ToolId, host: Host = realHost()): EnvToolHome | null {
   const { home } = TOOLS[tool];
   if (!('moves' in home)) return null;
-  const p = host.path;
   for (const move of home.moves.by) {
-    switch (move.kind) {
-      case 'env': {
-        const value = host.env[move.name]?.trim();
-        if (value) return { dir: absoluteOn(value, host), variable: move.name, kind: move.kind };
-        break;
-      }
-      case 'xdg': {
-        const dir = absoluteEnv(host, 'XDG_CONFIG_HOME');
-        if (dir !== null) return { dir: p.join(dir, move.child), variable: 'XDG_CONFIG_HOME', kind: move.kind };
-        break;
-      }
-      case 'win32-appdata':
-        if (host.platform === 'win32') {
-          return { dir: p.join(absoluteEnv(host, 'LOCALAPPDATA') ?? p.join(host.home, 'AppData', 'Local'), move.child), variable: 'LOCALAPPDATA', kind: move.kind };
-        }
-        break;
-      case 'profile-suffix': {
-        const value = host.env[move.name]?.trim();
-        if (value) return { dir: p.join(host.home, value.toLowerCase() === 'default' ? home.dir : `${home.dir}-${value}`), variable: move.name, kind: move.kind };
-        break;
-      }
-      default: {
-        const unhandled: never = move;
-        return unhandled;
-      }
-    }
+    const moved = moveOf(move, host);
+    if (moved !== null) return moved;
   }
   return null;
+}
+
+function moveOf(move: HomeMove, host: Host): EnvToolHome | null {
+  switch (move.kind) {
+    case 'env': {
+      const value = host.env[move.name]?.trim();
+      return value ? { dir: absoluteOn(value, host), variable: move.name, kind: 'own' } : null;
+    }
+    case 'xdg': {
+      const dir = absoluteEnv(host, 'XDG_CONFIG_HOME');
+      return dir === null ? null : { dir: host.path.join(dir, move.child), variable: 'XDG_CONFIG_HOME', kind: 'xdg' };
+    }
+    case 'openclaw-state':
+      return openclawState(host);
+    case 'omp-agent':
+      return ompAgentDir(host);
+    case 'hermes-home':
+      return hermesHome(host);
+    default: {
+      const unhandled: never = move;
+      return unhandled;
+    }
+  }
+}
+
+function openclawState(host: Host): EnvToolHome | null {
+  const raw = host.env.OPENCLAW_HOME?.trim();
+  const openclawHome = raw && raw !== 'undefined' && raw !== 'null' ? absoluteOn(raw, host) : null;
+  const effective: Host = openclawHome === null ? host : { ...host, home: openclawHome };
+  const state = host.env.OPENCLAW_STATE_DIR?.trim();
+  if (state) return { dir: absoluteOn(state, effective), variable: 'OPENCLAW_STATE_DIR', kind: 'own' };
+  const profile = host.env.OPENCLAW_PROFILE?.trim();
+  const dir = !profile || profile.toLowerCase() === 'default' ? '.openclaw' : `.openclaw-${profile}`;
+  if (openclawHome !== null) return { dir: host.path.join(openclawHome, dir), variable: profile ? 'OPENCLAW_HOME and OPENCLAW_PROFILE' : 'OPENCLAW_HOME', kind: 'own' };
+  return profile ? { dir: host.path.join(host.home, dir), variable: 'OPENCLAW_PROFILE', kind: 'own' } : null;
+}
+
+function ompAgentDir(host: Host): EnvToolHome | null {
+  const p = host.path;
+  const { env } = host;
+  const base = p.join(host.home, env.PI_CONFIG_DIR || '.omp');
+  const selector = env.OMP_PROFILE !== undefined ? 'OMP_PROFILE' : env.PI_PROFILE !== undefined ? 'PI_PROFILE' : null;
+  const profileDir = (name: string | undefined): string | null => {
+    const profile = name?.trim();
+    return !profile || profile === 'default' ? null : p.join(base, 'profiles', profile, 'agent');
+  };
+  const named = selector === null ? null : profileDir(env[selector]);
+  if (selector !== null && named !== null) return { dir: named, variable: selector, kind: 'own' };
+  const override = env.PI_CODING_AGENT_DIR?.trim();
+  // A PI_CODING_AGENT_DIR that is the bypassed PI_PROFILE's agent dir came from that profile, not from the member.
+  const inherited = override && selector === 'OMP_PROFILE' && profileDir(env.PI_PROFILE) === p.resolve(override);
+  if (override && !inherited) return { dir: absoluteOn(override, host), variable: 'PI_CODING_AGENT_DIR', kind: 'own' };
+  if (env.PI_CONFIG_DIR) return { dir: p.join(base, 'agent'), variable: 'PI_CONFIG_DIR', kind: 'own' };
+  return selector !== null && env[selector]?.trim() ? { dir: p.join(base, 'agent'), variable: selector, kind: 'own' } : null;
+}
+
+/**
+ * OMP's agent dir as its task-agent loader reads it, which no
+ * `PI_CODING_AGENT_DIR` moves: a recorded home counts when it has the shape a
+ * profile or `PI_CONFIG_DIR` gives (`~/<dir>/agent`, `~/<dir>/profiles/<name>/agent`).
+ */
+export function ompTaskAgentHost(host: Host): Host {
+  const p = host.path;
+  const { omp: recorded, ...others } = recordedHomes(host);
+  const parts = recorded === undefined ? [] : p.relative(host.home, recorded).split(p.sep);
+  const profileShaped = parts.at(-1) === 'agent' && !parts[0]?.startsWith('..') && (parts.length === 2 || (parts.length === 4 && parts[1] === 'profiles'));
+  return {
+    ...host,
+    env: { ...host.env, PI_CODING_AGENT_DIR: undefined },
+    toolHomes: { kind: 'ok', homes: profileShaped && recorded !== undefined ? { ...others, omp: recorded } : others },
+  };
+}
+
+function hermesHome(host: Host): EnvToolHome | null {
+  const p = host.path;
+  const suffix = host.env.HERMES_DATA_DIR_SUFFIX ?? '';
+  const appData = host.platform === 'win32' ? absoluteEnv(host, 'LOCALAPPDATA') ?? p.join(host.home, 'AppData', 'Local') : null;
+  const native = appData === null ? p.join(host.home, `.hermes${suffix}`) : p.join(appData, `hermes${suffix}`);
+  const raw = host.env.HERMES_HOME?.trim();
+  const explicit = raw ? absoluteOn(raw, host) : null;
+  const processHome: EnvToolHome | null = explicit !== null ? { dir: explicit, variable: 'HERMES_HOME', kind: 'own' }
+    : suffix ? { dir: native, variable: 'HERMES_DATA_DIR_SUFFIX', kind: 'own' }
+      : appData !== null ? { dir: native, variable: 'LOCALAPPDATA', kind: 'platform-default' } : null;
+  if (explicit !== null && p.basename(p.dirname(explicit)) === 'profiles') return processHome;
+  const inNative = explicit === null || !p.relative(native, explicit).startsWith('..') && !p.isAbsolute(p.relative(native, explicit));
+  const activeProfile = p.join(inNative ? native : explicit, 'active_profile');
+  const name = host.readTextNow(activeProfile)?.trim();
+  if (!name || name === 'default') return processHome;
+  const dir = p.join(explicit ?? native, 'profiles', name);
+  return host.existsNow(dir) ? { dir, variable: activeProfile, kind: 'own' } : processHome;
 }
 
 function absoluteEnv(host: Host, name: string): string | null {

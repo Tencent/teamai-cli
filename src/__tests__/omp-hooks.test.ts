@@ -206,6 +206,20 @@ describe('reconcileHooksToAllTools routes omp to the extension adapter', () => {
     expect(await fse.pathExists(extFile())).toBe(false);
   });
 
+  it('injects into the named profile\'s agent dir under PI_CONFIG_DIR, with no ~/.omp', async () => {
+    vi.stubEnv('PI_CONFIG_DIR', '.omp-alt');
+    vi.stubEnv('OMP_PROFILE', 'work');
+    const agentDir = path.join(home, '.omp-alt', 'profiles', 'work', 'agent');
+    await fse.ensureDir(agentDir);
+    try {
+      await reconcileHooksToAllTools(toolPaths, home, [], manifest());
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    expect(await fse.pathExists(path.join(agentDir, 'extensions', OMP_HOOK_FILE))).toBe(true);
+    expect(await fse.pathExists(path.join(home, '.omp'))).toBe(false);
+  });
+
   it('settingsOnly skips the omp adapter', async () => {
     await fse.ensureDir(path.join(home, '.omp', 'agent'));
     await reconcileHooksToAllTools(toolPaths, home, [], manifest(), { settingsOnly: true });

@@ -3,7 +3,7 @@
  *
  * OMP has no settings.json-style shell-command hook list. It auto-loads
  * TypeScript *extensions* from the active agent dir — `~/.omp/agent/extensions`
- * by default (`--hook` is an alias of `--extension`, and the legacy
+ * by default, moved by a profile (`TOOLS.omp.home`) (`--hook` is an alias of `--extension`, and the legacy
  * `hooks/pre|post` TS files feed the same runner). An extension default-exports
  * a factory that receives the ExtensionAPI; teamai subscribes to OMP's own
  * events and shells out to the same `teamai hook-dispatch` entry point every

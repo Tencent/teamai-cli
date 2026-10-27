@@ -15,7 +15,7 @@
  * which OpenClaw loads only once openclaw.json enables its entry
  * (`hooks.internal.entries.teamai-status-report.enabled`). The workspace and
  * state dir resolve the way OpenClaw resolves them: OPENCLAW_STATE_DIR,
- * OPENCLAW_PROFILE, OPENCLAW_CONFIG_PATH, OPENCLAW_WORKSPACE_DIR.
+ * OPENCLAW_HOME, OPENCLAW_PROFILE, OPENCLAW_CONFIG_PATH, OPENCLAW_WORKSPACE_DIR.
  *
  * Events (OpenClaw calls the handler with `{ type, action, sessionKey, context }`):
  *   command:new, command:reset, session:auto-reset, gateway:startup

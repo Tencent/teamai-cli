@@ -1,5 +1,11 @@
 import { describeLocateMatrix, type FilesRow, type OtherRow, type Spot } from './helpers/locate-matrix.js';
 
+const HERMES_PROFILE_SOURCE = 'Hermes 68134629 hermes_constants.py and hermes_cli/main.py: HERMES_DATA_DIR_SUFFIX is appended literally to ~/.hermes, or %LOCALAPPDATA%\\hermes on Windows; with no profile-shaped HERMES_HOME, <root>/active_profile names the profile, <root>/profiles/<name>, when that directory exists';
+
+const OPENCLAW_HOME_SOURCE = 'OpenClaw docs help/environment: OPENCLAW_HOME replaces the OS home for its defaults, so the state dir is <OPENCLAW_HOME>/.openclaw or .openclaw-<profile>, and ~ in OPENCLAW_STATE_DIR expands against it';
+
+const OMP_SOURCE = 'Oh My Pi a70f001c utils/src/dirs.ts: profile = OMP_PROFILE if defined, else PI_PROFILE; a named profile is ~/<PI_CONFIG_DIR or .omp>/profiles/<name>/agent, else PI_CODING_AGENT_DIR, else ~/<PI_CONFIG_DIR or .omp>/agent';
+
 const HOOK_LIST = ['hooks'] as const;
 const CODEBUDDY_SOURCE = 'CodeBuddy 2.176.0 bundle: CODEBUDDY_CONFIG_DIR replaces ~/.codebuddy, settings.json included (issue #1221, `codebuddy mcp list` at 2.168.0)';
 const MUSE_SOURCE = 'muse-bin 1.4.11: $XDG_CONFIG_HOME/muse, else ~/.config/muse; with XDG_CONFIG_HOME set, ~/.config/muse is never read';
@@ -166,6 +172,22 @@ const ROWS: readonly (FilesRow | OtherRow)[] = [
     source: `issue #1221 matrix, PI_CODING_AGENT_DIR row (v); ${TEAM}`,
   }),
   adapter('omp', 'user', '~/.omp/agent/extensions', '~/.omp', { source: 'issue #1221 matrix, Oh My Pi user hooks (v, 18.2.1)' }),
+  adapter('openclaw', 'user', '/oc-home/.openclaw/workspace/hooks', '/oc-home/.openclaw/workspace', { env: { OPENCLAW_HOME: '/oc-home' }, source: OPENCLAW_HOME_SOURCE }),
+  adapter('openclaw', 'user', '/oc-home/.openclaw-work/workspace/hooks', '/oc-home/.openclaw-work/workspace', { env: { OPENCLAW_HOME: '/oc-home' }, envLiterals: { OPENCLAW_PROFILE: 'work' }, source: OPENCLAW_HOME_SOURCE }),
+  adapter('hermes', 'user', '~/.hermes-canary/hooks', '~/.hermes-canary', { platforms: ['darwin', 'linux'], envLiterals: { HERMES_DATA_DIR_SUFFIX: '-canary' }, source: HERMES_PROFILE_SOURCE }),
+  adapter('hermes', 'user', '$LOCALAPPDATA/hermes-canary/hooks', '$LOCALAPPDATA/hermes-canary', { platforms: ['win32'], envLiterals: { HERMES_DATA_DIR_SUFFIX: '-canary' }, source: HERMES_PROFILE_SOURCE }),
+  adapter('hermes', 'user', '~/.hermes/profiles/work/hooks', '~/.hermes/profiles/work', { platforms: ['darwin', 'linux'], texts: [{ at: '~/.hermes/active_profile', text: 'work\n' }], source: HERMES_PROFILE_SOURCE }),
+  adapter('openclaw', 'project', '/oc-home/.openclaw/workspace/hooks', '/oc-home/.openclaw/workspace', { env: { OPENCLAW_HOME: '/oc-home' }, source: `${OPENCLAW_HOME_SOURCE}; ${TEAM}` }),
+  adapter('openclaw', 'project', '/oc-home/.openclaw-work/workspace/hooks', '/oc-home/.openclaw-work/workspace', { env: { OPENCLAW_HOME: '/oc-home' }, envLiterals: { OPENCLAW_PROFILE: 'work' }, source: `${OPENCLAW_HOME_SOURCE}; ${TEAM}` }),
+  adapter('hermes', 'project', '~/.hermes-canary/hooks', '~/.hermes-canary', { platforms: ['darwin', 'linux'], envLiterals: { HERMES_DATA_DIR_SUFFIX: '-canary' }, source: `${HERMES_PROFILE_SOURCE}; ${TEAM}` }),
+  adapter('hermes', 'project', '$LOCALAPPDATA/hermes-canary/hooks', '$LOCALAPPDATA/hermes-canary', { platforms: ['win32'], envLiterals: { HERMES_DATA_DIR_SUFFIX: '-canary' }, source: `${HERMES_PROFILE_SOURCE}; ${TEAM}` }),
+  adapter('hermes', 'project', '~/.hermes/profiles/work/hooks', '~/.hermes/profiles/work', { platforms: ['darwin', 'linux'], texts: [{ at: '~/.hermes/active_profile', text: 'work\n' }], source: `${HERMES_PROFILE_SOURCE}; ${TEAM}` }),
+  adapter('omp', 'user', '~/.omp/profiles/work/agent/extensions', '~/.omp/profiles/work/agent', { envLiterals: { OMP_PROFILE: 'work' }, source: OMP_SOURCE }),
+  adapter('omp', 'project', '~/.omp/profiles/work/agent/extensions', '~/.omp/profiles/work/agent', { envLiterals: { OMP_PROFILE: 'work' }, source: `${OMP_SOURCE}; ${TEAM}` }),
+  adapter('omp', 'user', '/omp-agent/extensions', '/omp-agent', { env: { PI_CODING_AGENT_DIR: '/omp-agent' }, source: OMP_SOURCE }),
+  adapter('omp', 'project', '/omp-agent/extensions', '/omp-agent', { env: { PI_CODING_AGENT_DIR: '/omp-agent' }, source: `${OMP_SOURCE}; ${TEAM}` }),
+  adapter('omp', 'user', '~/.omp-alt/profiles/work/agent/extensions', '~/.omp-alt/profiles/work/agent', { envLiterals: { PI_CONFIG_DIR: '.omp-alt', PI_PROFILE: 'work' }, source: OMP_SOURCE }),
+  adapter('omp', 'project', '~/.omp-alt/profiles/work/agent/extensions', '~/.omp-alt/profiles/work/agent', { envLiterals: { PI_CONFIG_DIR: '.omp-alt', PI_PROFILE: 'work' }, source: `${OMP_SOURCE}; ${TEAM}` }),
   adapter('hermes', 'user', '~/.hermes/hooks', '~/.hermes', { platforms: ['darwin', 'linux'], source: HERMES_SOURCE }),
   adapter('hermes', 'user', '$LOCALAPPDATA/hermes/hooks', '$LOCALAPPDATA/hermes', { platforms: ['win32'], source: HERMES_SOURCE }),
   adapter('hermes', 'user', '/hermes/hooks', '/hermes', { env: { HERMES_HOME: '/hermes' }, source: HERMES_SOURCE }),

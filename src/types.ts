@@ -605,8 +605,8 @@ export const DEFAULT_TOOL_PATHS = {
   // extensions rather than a settings hook list, so there is no `settings`
   // path — the adapter in omp-hooks.ts writes the single user-root extension
   // (~/.omp/agent/extensions/teamai-hooks.ts). Profiles (OMP_PROFILE /
-  // PI_CODING_AGENT_DIR / PI_CONFIG_DIR) move the agent dir and are not
-  // supported for hooks.
+  // PI_PROFILE / PI_CODING_AGENT_DIR / PI_CONFIG_DIR) move the agent dir,
+  // and these user paths with it (`TOOLS.omp.home`).
   omp: {
     skills: '.omp/skills',
     rules: '.omp/rules',

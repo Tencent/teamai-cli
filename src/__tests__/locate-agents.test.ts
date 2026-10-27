@@ -1,5 +1,7 @@
 import { describeLocateMatrix, type MatrixRow } from './helpers/locate-matrix.js';
 
+const OMP_SOURCE = 'Oh My Pi a70f001c utils/src/dirs.ts: profile = OMP_PROFILE if defined, else PI_PROFILE; a named profile is ~/<PI_CONFIG_DIR or .omp>/profiles/<name>/agent, else PI_CODING_AGENT_DIR, else ~/<PI_CONFIG_DIR or .omp>/agent';
+
 const ROWS: readonly MatrixRow[] = [
   {
     tool: 'claude', scope: 'user',
@@ -251,6 +253,27 @@ const ROWS: readonly MatrixRow[] = [
     existingDirs: ['~/.omp'], installed: { probe: '~/.omp', met: true },
     reads: [{ at: '~/.omp/agent/agents', when: 'always' }],
     source: 'Oh My Pi run: user agents in ~/.omp/agent/agents; #1221 matrix user Agents ◐v (a profile moves them)',
+  },
+  {
+    tool: 'omp', scope: 'user', envLiterals: { OMP_PROFILE: 'work' },
+    writes: ['~/.omp/profiles/work/agent/agents'],
+    existingDirs: ['~/.omp/profiles/work/agent'], installed: { probe: '~/.omp/profiles/work/agent', met: true },
+    reads: [{ at: '~/.omp/profiles/work/agent/agents', when: 'always' }],
+    source: OMP_SOURCE,
+  },
+  {
+    tool: 'omp', scope: 'user', env: { PI_CODING_AGENT_DIR: '/omp-agent' },
+    writes: ['~/.omp/agent/agents'],
+    existingDirs: ['/omp-agent'], installed: { probe: '/omp-agent', met: true },
+    reads: [{ at: '~/.omp/agent/agents', when: 'always' }],
+    source: `${OMP_SOURCE}; coding-agent/src/config.ts: task agents load from ~/<config dir>/agent/agents, which PI_CODING_AGENT_DIR does not move`,
+  },
+  {
+    tool: 'omp', scope: 'user', envLiterals: { PI_CONFIG_DIR: '.omp-alt', PI_PROFILE: 'work' },
+    writes: ['~/.omp-alt/profiles/work/agent/agents'],
+    existingDirs: ['~/.omp-alt/profiles/work/agent'], installed: { probe: '~/.omp-alt/profiles/work/agent', met: true },
+    reads: [{ at: '~/.omp-alt/profiles/work/agent/agents', when: 'always' }],
+    source: OMP_SOURCE,
   },
   {
     tool: 'omp', scope: 'project',
