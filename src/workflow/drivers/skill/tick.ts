@@ -289,7 +289,7 @@ async function called(context: SkillContext, lock: RunLock, same: Literal, input
     const attended = readied.kind === 'ready' && context.mode === 'unattended' ? attendedReason(readied.description, 'continue', new Set(readied.settled)) : undefined;
     const taken = traced(context, readiedRow({
       run, readied, kept: state !== undefined, mode: context.mode, ...(local !== undefined ? { local } : {}), ...(attended !== undefined ? { attended } : {}), answers,
-      needsTool: readied.kind === 'ready' && needsTool(readied.description, context.tool),
+      needsTool: readied.kind === 'ready' && needsTool(readied.description, { tool: context.tool, judged: answers.judge !== false }),
     }));
     if (taken && 'answer' in taken) return { answer: { error: errorOf(taken.answer, { invocation: context.invocation, same, localTool, tool: input.resume?.tool }) } };
     if (taken) {

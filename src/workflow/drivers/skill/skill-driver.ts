@@ -346,7 +346,7 @@ async function start(call: Extract<SkillCall, { kind: 'describe' | 'start' }>, c
     const attended = attendedReason(description, 'start');
     const { row, verdict } = describeRow({
       needed: neededAnswers(description), ...denied, ...(undeliverable ? { undeliverable: undeliverable.message } : {}), ...why, judged: judgedBy(judging) !== undefined,
-      mode: context.mode, ...(attended !== undefined ? { attended } : {}), needsTool: needsTool(description, context.tool),
+      mode: context.mode, ...(attended !== undefined ? { attended } : {}), needsTool: needsTool(description, { tool: context.tool, judged: true }),
     });
     context.trace?.(row);
     return { data: { describe: { workflow: description, judging, ask: askFor(verdict, description, context.invocation, judging, { local: localPromptTool(context), session: call.tool }) } } };

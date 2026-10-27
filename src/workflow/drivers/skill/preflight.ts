@@ -15,9 +15,12 @@ import type { DescribeAsk } from './turn.js';
  */
 export type StartAnswer = 'confirmed' | 'inputs' | 'parallel' | 'hitl' | 'tool';
 
-/** Whether a session working in `tool` must name it before it runs `description`: it names none, and a step's model or judging needs one. */
-export function needsTool(description: WorkflowDescription, tool: ToolId | undefined): boolean {
-  return tool === undefined && description.facts.modeled.length + description.facts.scored.length > 0;
+/**
+ * Whether a session working in `tool` must name it before it runs `description`: it names none, and a step's model
+ * needs one, or a scored step does when the run is `judged`.
+ */
+export function needsTool(description: WorkflowDescription, input: { tool: ToolId | undefined; judged: boolean }): boolean {
+  return input.tool === undefined && (description.facts.modeled.length > 0 || (input.judged && description.facts.scored.length > 0));
 }
 
 /**
@@ -80,7 +83,7 @@ export function attendedReason(description: WorkflowDescription, act: 'start' | 
 /** Checks a start of `description` against what describe asked. `ceiling` is the most steps the driver runs at once. */
 export function checkStartAnswers(input: {
   description: WorkflowDescription;
-  answers: { parallel?: number; confirmed: boolean; hitl?: HitlMode };
+  answers: { parallel?: number; confirmed: boolean; hitl?: HitlMode; judge?: false };
   inputs: unknown;
   ceiling: number;
   tool: ToolId | undefined;
@@ -89,7 +92,7 @@ export function checkStartAnswers(input: {
   const given: Record<StartAnswer, boolean> = {
     confirmed: answers.confirmed, inputs: inputs !== undefined, parallel: answers.parallel !== undefined, hitl: answers.hitl !== undefined, tool: input.tool !== undefined,
   };
-  const missing = [...neededAnswers(description), ...(needsTool(description, input.tool) ? ['tool' as const] : [])].filter((answer) => !given[answer]);
+  const missing = [...neededAnswers(description), ...(needsTool(description, { tool: input.tool, judged: answers.judge !== false }) ? ['tool' as const] : [])].filter((answer) => !given[answer]);
   const outOfRange = answers.parallel !== undefined && answers.parallel > ceiling ? { parallel: answers.parallel, ceiling } : undefined;
   if (missing.length > 0 || outOfRange) return { kind: 'confirm-needed', missing, ...(outOfRange ? { outOfRange } : {}) };
   return { kind: 'ok', parallel: answers.parallel ?? 1, hitl: answers.hitl ?? 'person' };

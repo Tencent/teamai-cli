@@ -1037,8 +1037,9 @@ steps:
       message: 'Start review from its describe reply: it needs --tools default=<tool>, the tool this coding session works in. Run the describe literal.',
       next: 'teamai workflow start --describe review --driver skill',
     } });
-    // A run of commands alone needs no tool.
+    // A run of commands alone needs no tool, and neither does a scored step that pins no model, once judging is off.
     expect(await harness.call({ kind: 'start', name: 'check', answers: { confirmed: false }, inputs: undefined })).toMatchObject({ data: { turn: { status: 'driving' } } });
+    expect(await harness.call({ kind: 'start', name: 'review', answers: { confirmed: false, judge: false }, inputs: undefined })).toMatchObject({ data: { turn: { status: 'driving' } } });
   });
 
   it('a step that needs a model fails once a session whose host names no tool takes the run over, and says how to name it', async () => {
