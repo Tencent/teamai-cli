@@ -64,13 +64,22 @@ describe('the session sharing panel', () => {
     expect(stuck).not.toContain('Labels waiting to be published');
   });
 
+  it('shows the step sessions of ended runs that wait to be archived in their mode and with what waits', () => {
+    const shown = text(render({ ...defaults, stepSessionsWaitingToArchive: { attended: 0, unattended: 2 } }).html);
+
+    expect(shown).toContain('Unattended Published and scored');
+    expect(shown).toMatch(/Unattended .* 2 step sessions waiting to be archived .*Waiting/);
+    expect(shown).toContain('Step sessions waiting to be archived: 2');
+  });
+
   it('has a Chinese message for every text it shows, leaving setting names as they are written', () => {
     const http = { policy: 'off', source: 'an HTTP team repo, which keeps no session archive' } as const;
     const variants: SessionSharing[] = [
       defaults,
       { ...defaults, runMode: { mode: 'unattended', source: 'CI', ignored: 'yes' }, scoring: { ...defaults.scoring, scorers: [] } as typeof defaults.scoring,
         next: [{ mode: 'attended', command: 'TEAMAI_MODE=attended teamai score --drain' }, { mode: 'unattended', command: 'teamai score --drain' }],
-        captured: { attended: { active: 0, finished: 0, waitingToArchive: 1, archived: 0 }, unattended: { waitingForDrain: 1, finished: 1, waitingToArchive: 1, archived: 0 } } },
+        captured: { attended: { active: 0, finished: 0, waitingToArchive: 1, archived: 0 }, unattended: { waitingForDrain: 1, finished: 1, waitingToArchive: 1, archived: 0 } },
+        stepSessionsWaitingToArchive: { attended: 1, unattended: 1 } },
       { ...defaults, runMode: { mode: 'attended', source: 'TEAMAI_MODE' }, archive: 'none', publish: { attended: http, unattended: http },
         scoring: { state: 'unavailable', reason: 'Scoring is off for this project.' }, unreadTools: [], problems: [], next: [] },
       { ...defaults, publish: { attended: { policy: 'auto', source: 'config.yaml sessions.publish.attended' }, unattended: { policy: 'off', source: 'teamai.yaml sessions.publish.unattended' } } },

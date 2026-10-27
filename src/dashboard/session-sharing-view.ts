@@ -14,14 +14,15 @@ function sharingVerdict(published, scored) { return published&&scored?'Published
 function sharingPolicy(name, cell, note) { return '<dt>'+label(name)+'</dt><dd><b data-verbatim>'+e(cell.policy)+'</b>'+(note?'<small>'+label(note)+'</small>':'')+'<small>'+label('Set by')+' <span data-verbatim>'+label(cell.source)+'</span></small></dd>'; }
 function sharingMode(s, mode) {
  const publish=s.publish[mode], scoring=s.scoring.state==='ok'?s.scoring:null, score=scoring&&scoring.policies[mode];
- const published=publish.policy==='auto', judged=!!score&&score.policy==='auto'&&scoring.scorers.length>0, counts=s.captured[mode];
+ const published=publish.policy==='auto', judged=!!score&&score.policy==='auto'&&scoring.scorers.length>0, counts=s.captured[mode], steps=s.stepSessionsWaitingToArchive[mode];
  const scoreRow=score?sharingPolicy('Score',score,score.policy==='ask'?'acts as off for now':score.policy==='auto'&&!scoring.scorers.length?'no scorer sets sessions: true':'')
   :'<dt>'+label('Score')+'</dt><dd><b>off</b><small class="amber">'+label('Scoring is unavailable here')+'</small></dd>';
  return '<article class="sharing-mode'+(s.runMode.mode===mode?' here':'')+'"><h3>'+label(sharingModeNames[mode])+'</h3>'
   +'<p class="verdict'+(published||judged?' on':'')+'">'+label(sharingVerdict(published,judged))+'</p>'
   +(published||judged?'<p class="label">'+label(sharingWhen[mode])+'</p>':'')
   +'<dl class="sharing-policies">'+sharingPolicy('Publish',publish,publish.policy==='ask'?'acts as off for now':'')+scoreRow+'</dl>'
-  +'<ul class="sharing-counts">'+sharingStates[mode].map(([key,name])=>'<li class="'+(!counts[key]?'muted':key.startsWith('waiting')?'amber':'')+'"><b>'+number(counts[key])+'</b> '+label(name)+'</li>').join('')+'</ul></article>';
+  +'<ul class="sharing-counts">'+sharingStates[mode].map(([key,name])=>'<li class="'+(!counts[key]?'muted':key.startsWith('waiting')?'amber':'')+'"><b>'+number(counts[key])+'</b> '+label(name)+'</li>').join('')
+  +(steps?'<li class="amber"><b>'+number(steps)+'</b> '+label('step sessions waiting to be archived')+'</li>':'')+'</ul></article>';
 }
 function sharingNext(s) {
  if(!s.next.length)return '';
@@ -29,6 +30,7 @@ function sharingNext(s) {
  const waiting=[
   [drainsUnattended?s.captured.unattended.waitingForDrain:0,'Unattended sessions waiting for a drain'],
   [s.captured.attended.waitingToArchive+s.captured.unattended.waitingToArchive,'Sessions waiting to be archived'],
+  [s.stepSessionsWaitingToArchive.attended+s.stepSessionsWaitingToArchive.unattended,'Step sessions waiting to be archived'],
   [s.pendingLabels,'Labels waiting to be published']
  ].filter(([count])=>count>0);
  return '<div class="sharing-next"><h3>'+label('Waiting')+'</h3><ul>'+waiting.map(([count,what])=>'<li>'+label(what)+': <b>'+number(count)+'</b></li>').join('')+'</ul>'
