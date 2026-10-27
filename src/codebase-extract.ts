@@ -552,9 +552,31 @@ function buildOverview(
  * root, the main one or a linked worktree, takes its repo's name (repoName:
  * the main checkout's real name, or a bare repo's), so every checkout of a repo
  * writes the repo's evidence, whatever path it was opened by (#823); any other
- * directory keeps its own name.
+ * directory keeps its own name. A root whose `origin` names a repo takes the
+ * slug `--from-repo` gives that repo, so two checkouts named `svc` of different
+ * repos do not share one evidence directory, and `--dir` updates the evidence
+ * CI publishes for the repo.
  */
 export async function defaultProjectSlug(dir: string): Promise<string> {
+  const name = await checkoutName(dir);
+  const anchors = statSync(dir, { throwIfNoEntry: false })?.isDirectory() ? await resolveAnchors(dir) : null;
+  if (!anchors || await realpath(dir) !== anchors.workspaceRoot) return name;
+  const origin = (await createGit(dir).getRemotes(true).catch(() => []))
+    .find((remote) => remote.name === 'origin')?.refs.fetch;
+  if (!origin) return name;
+  const { repoSlugForUrl } = await import('./import-repo.js');
+  try {
+    return repoSlugForUrl(origin);
+  } catch {
+    return name;
+  }
+}
+
+/**
+ * The slug `--dir` gave `dir` before a checkout with an origin was named after
+ * its remote: the repo's name for a checkout root, else the directory's own.
+ */
+export async function checkoutName(dir: string): Promise<string> {
   if (!statSync(dir, { throwIfNoEntry: false })?.isDirectory()) return path.basename(dir);
   const anchors = await resolveAnchors(dir);
   if (anchors && await realpath(dir) === anchors.workspaceRoot) {
