@@ -379,7 +379,7 @@ interface ClosedEntry {
 }
 
 /** Work none of this driver's tools can run the scorer's model for, left open for a driver whose tools can. */
-interface SkippedEntry {
+export interface SkippedEntry {
   scorer: string;
   subject: RunSubject | SessionSubject;
   code: 'judge_model_unavailable';

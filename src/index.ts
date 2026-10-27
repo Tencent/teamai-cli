@@ -918,7 +918,8 @@ program
   .option('--queue', 'With --run: leave the work to any driver\'s score --next instead of judging it here')
   .option('--batch', 'With --run or --session: the scorers share one judge call when they resolve to the same tool and model')
   .option('--push', 'Publish every pending label of this machine to scores/<member>/<YYYY-MM>.jsonl on teamai-reports, alone or after --session. Labels only: never the session, the prompt or the judge\'s reasoning. With usage reporting off, or when the push fails, they stay pending for the next --push.')
-  .action(async (cmdOpts: { next?: boolean; lease?: string; submit?: boolean; json?: string; stdin?: boolean; run?: string; step?: string; pass?: string; scorer?: string[]; queue?: boolean; batch?: boolean; session?: string; source?: string; push?: boolean }) => {
+  .option('--drain', 'Judge the judge work this machine can run, and print what is left for other drivers.')
+  .action(async (cmdOpts: { next?: boolean; lease?: string; submit?: boolean; json?: string; stdin?: boolean; run?: string; step?: string; pass?: string; scorer?: string[]; queue?: boolean; batch?: boolean; session?: string; source?: string; push?: boolean; drain?: boolean }) => {
     const { scoreCommand } = await import('./score-commands.js');
     await scoreCommand(cmdOpts);
   });

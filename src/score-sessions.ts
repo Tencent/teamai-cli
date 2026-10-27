@@ -26,7 +26,7 @@ const RUN_MAX_MS = 30 * 60 * 1000;
  * What the local judge tools can offer, strictest first: those whose profile reaches `verified`, then every installed
  * tool at `best-effort`. A tool is never offered at a level it cannot reach, since its judge would refuse the lease.
  */
-async function localJudgeOffers(): Promise<Array<{ isolation: Isolation; tools: [string, ...string[]] }>> {
+export async function localJudgeOffers(): Promise<Array<{ isolation: Isolation; tools: [string, ...string[]] }>> {
   const levels = await judgeToolLevels();
   const offers: Array<{ isolation: Isolation; tools: [string, ...string[]] }> = [];
   const [verified, ...moreVerified] = levels.filter((level) => level.isolation === 'verified').map((level) => level.tool);
@@ -68,19 +68,28 @@ export async function scoreSessions(configs: readonly LocalConfig[], { clock = (
 }
 
 /**
- * The scopes `cwd` reaches that turn session scoring on: its project scope, with its workspace children, whose
- * namespaces set scoring too, then the user scope, each data home once. A directory that no longer exists reaches the
- * user scope only.
+ * The scopes `cwd` reaches: its project scope, with its workspace children, whose namespaces set scoring too, then the
+ * user scope, each data home once. A directory that no longer exists reaches the user scope only.
  */
-export async function sessionScoringScopes(cwd?: string): Promise<LocalConfig[]> {
+export async function reachedScopes(cwd?: string): Promise<LocalConfig[]> {
   const detected = cwd === undefined || await pathExists(cwd) ? await detectProjectConfig(cwd).catch(() => null) : null;
   const project = detected && await readWorkspaceChildren(detected);
   const user = await loadLocalConfig();
   const homes = new Set<string>();
   const scopes: LocalConfig[] = [];
   for (const config of [project, user]) {
-    if (config === null || homes.has(getDataHome(config)) || scoringUnavailable(config)) continue;
+    if (config === null || homes.has(getDataHome(config))) continue;
     homes.add(getDataHome(config));
+    scopes.push(config);
+  }
+  return scopes;
+}
+
+/** The scopes `cwd` reaches that turn session scoring on. */
+export async function sessionScoringScopes(cwd?: string): Promise<LocalConfig[]> {
+  const scopes: LocalConfig[] = [];
+  for (const config of await reachedScopes(cwd)) {
+    if (scoringUnavailable(config)) continue;
     const scoring = await scopeScoring(config);
     if (scoring.ok && scoring.sessions.policies.attended.policy === 'auto') scopes.push(config);
   }

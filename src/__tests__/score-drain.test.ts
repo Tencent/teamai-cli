@@ -1,0 +1,252 @@
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const mocks = vi.hoisted(() => ({ home: '' }));
+vi.mock('node:os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:os')>();
+  return { ...actual, homedir: () => mocks.home, default: { ...actual, homedir: () => mocks.home } };
+});
+vi.mock('../config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../config.js')>()),
+  detectProjectConfig: async () => null,
+}));
+
+import type { RunMode } from '../launch-context.js';
+import { saveLocalConfig } from '../config.js';
+import { syncScorerDefinitions } from '../scorers/cache.js';
+import { LabelStore } from '../scorers/label-store.js';
+import { scoreCommand } from '../score-commands.js';
+import { encodeCwdClaude } from '../session-flow/fs.js';
+import type { LocalConfig } from '../types.js';
+import { AGENT_SESSION_ENV } from '../utils/session-id.js';
+import { syncWorkflowDefinitions } from '../workflow/cache.js';
+import { leaseNext, parseReport, reportAttempt, startRun } from '../workflow/engine.js';
+import { nextJudgeLease } from '../workflow/scoring.js';
+import type { WorkflowEnvelope } from '../workflow/types.js';
+
+const SCORER = `---
+labels:
+  - { value: good, score: 1, description: Did the work }
+  - { value: bad, score: 0, description: Did not }
+passingScore: 0.5
+samplingRate: 100
+sessions: true
+---
+Judge the session.
+`;
+
+const WORKFLOW = `schemaVersion: v1alpha1
+name: review
+description: One reviewed step.
+steps:
+  - id: review
+    prompt: Review the change.
+    scorers: [quality]
+`;
+
+const SESSION = '7c1e0000-0000-4000-8000-000000000011';
+const HOUR = 60 * 60 * 1000;
+
+let root = '';
+beforeEach(() => {
+  root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-score-drain-')));
+  mocks.home = path.join(root, 'home');
+  fs.mkdirSync(path.join(mocks.home, '.claude', 'projects'), { recursive: true });
+  fs.writeFileSync(path.join(mocks.home, '.gitconfig'), '[user]\n\tname = tester\n\temail = tester@example.com\n[gc]\n\tauto = 0\n');
+  for (const name of AGENT_SESSION_ENV) vi.stubEnv(name, '');
+  vi.stubEnv('HOME', mocks.home);
+  vi.stubEnv('USERPROFILE', mocks.home);
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.restoreAllMocks();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+function git(cwd: string, ...args: string[]): string {
+  return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: 'pipe' }).trim();
+}
+
+/** A git-kind team whose repo holds `files`, cloned and saved as this machine's user install, with its scorers cached. */
+async function team(files: Record<string, string> = {}): Promise<{ origin: string; config: LocalConfig }> {
+  const seed = path.join(root, 'seed');
+  for (const [file, text] of Object.entries({ 'teamai.yaml': 'team: acme\n', 'scorers/quality.md': SCORER, ...files })) {
+    fs.mkdirSync(path.dirname(path.join(seed, file)), { recursive: true });
+    fs.writeFileSync(path.join(seed, file), text);
+  }
+  git(seed, 'init', '-q', '-b', 'main');
+  git(seed, 'add', '-A');
+  git(seed, 'commit', '-qm', 'team');
+  const origin = path.join(root, 'team.git');
+  git(root, 'clone', '-q', '--bare', seed, origin);
+  const clone = path.join(root, 'team');
+  git(root, 'clone', '-q', origin, clone);
+  const config: LocalConfig = { repo: { localPath: clone, remote: origin, kind: 'git' }, username: 'tester', scope: 'user', additionalRoles: [] };
+  await saveLocalConfig(config);
+  await syncScorerDefinitions(config);
+  return { origin, config };
+}
+
+const line = (record: unknown): string => `${JSON.stringify(record)}\n`;
+
+/**
+ * A Claude session `sessionId` in `<root>/app` whose answer is `answer`, captured in the user scope's data home in
+ * `runMode`, with nothing happening in it for `idleFor`.
+ */
+function capturedSession(sessionId: string, runMode: RunMode, { idleFor = 7 * HOUR, answer = 'Added the retries.' } = {}): void {
+  const cwd = path.join(root, 'app');
+  fs.mkdirSync(cwd, { recursive: true });
+  const project = path.join(mocks.home, '.claude', 'projects', encodeCwdClaude(cwd));
+  fs.mkdirSync(project, { recursive: true });
+  const file = path.join(project, `${sessionId}.jsonl`);
+  fs.writeFileSync(file,
+    line({ type: 'user', uuid: 'u1', parentUuid: null, cwd, sessionId, timestamp: '2026-10-20T10:00:00.000Z', message: { role: 'user', content: 'Add retries to the client' } })
+    + line({ type: 'assistant', uuid: 'u2', parentUuid: 'u1', cwd, sessionId, timestamp: '2026-10-20T10:00:01.000Z',
+      message: { role: 'assistant', model: 'claude-x', content: [{ type: 'text', text: answer }] } }));
+  const idleSince = new Date(Date.now() - idleFor);
+  fs.utimesSync(file, idleSince, idleSince);
+  const captures = path.join(mocks.home, '.teamai', 'sessions', 'captures', 'claude-code', sessionId);
+  fs.mkdirSync(captures, { recursive: true });
+  const captureId = `0b6f2a52-5d7e-4c7e-9a43-${sessionId.slice(-12)}`;
+  fs.writeFileSync(path.join(captures, `${captureId}.json`), JSON.stringify({ captureId, platform: 'claude-code', sessionId,
+    capturedAt: idleSince.toISOString(), runMode, agent: { v: 1, tool: { name: 'claude' }, teamai: '1.0.0', driver: 'session' }, sessionFile: file }));
+}
+
+/** A Claude judge on PATH that answers good, or with `fails` exits 1 without an answer. */
+function fakeClaude({ fails = false } = {}): void {
+  const bin = path.join(root, 'bin');
+  fs.mkdirSync(bin, { recursive: true });
+  fs.writeFileSync(path.join(bin, 'claude'), `#!${process.execPath}
+if (process.argv.includes('--version')) { console.log('2.1.308 (Claude Code)'); process.exit(); }
+${fails ? 'process.exit(1);' : ''}
+process.stdin.resume(); process.stdin.on('end', () => {
+console.log(JSON.stringify({ type: 'system', subtype: 'init', model: 'm1' }));
+console.log(JSON.stringify({ type: 'result', structured_output: { label: 'good', reasoning: 'the reasoning' } }));
+});\n`, { mode: 0o755 });
+  vi.stubEnv('PATH', [bin, '/usr/bin', '/bin'].join(path.delimiter));
+}
+
+function data(envelope: WorkflowEnvelope): Record<string, unknown> {
+  if ('error' in envelope) throw new Error(`${envelope.error.code}: ${envelope.error.message}`);
+  return envelope.data;
+}
+
+/** Runs the review workflow in `config` to its end, its one step settled by `report` as an external driver would. */
+async function settledRun(config: LocalConfig, runMode: RunMode, report: Record<string, unknown> = {}): Promise<string> {
+  await syncWorkflowDefinitions(config);
+  const checkout = path.join(root, 'app');
+  fs.mkdirSync(checkout, { recursive: true });
+  const runId = String(data(await startRun(config, 'review', {}, { secrets: {}, runMode, checkout })).run);
+  const driver = { kind: 'external', machine: 'm1', workspace: checkout };
+  const lease = data(await leaseNext(config, runId, driver, { runMode })).lease;
+  const { attempt, revision } = lease as { attempt: string; revision: number };
+  const parsed = parseReport({ attempt, revision, outcome: 'success', driver, outputs: {}, ...report });
+  if (typeof parsed === 'string') throw new Error(parsed);
+  data(await reportAttempt(config, runId, parsed.report));
+  expect(data(await leaseNext(config, runId, driver))).toMatchObject({ done: { outcome: 'succeeded' } });
+  return runId;
+}
+
+/** Runs `teamai score --drain` and returns its exit code and the lines it printed. */
+async function drain(): Promise<{ code: number; lines: string[] }> {
+  const lines: string[] = [];
+  const print = (...args: unknown[]) => {
+    lines.push(args.map(String).join(' '));
+  };
+  vi.spyOn(console, 'log').mockImplementation(print);
+  vi.spyOn(console, 'error').mockImplementation(print);
+  process.exitCode = 0;
+  try {
+    await scoreCommand({ drain: true });
+    return { code: Number(process.exitCode ?? 0), lines };
+  } finally {
+    vi.mocked(console.log).mockRestore();
+    vi.mocked(console.error).mockRestore();
+    process.exitCode = 0;
+  }
+}
+
+describe('teamai score --drain', () => {
+  it('says nothing is left and exits 0 when there is nothing to do here', async () => {
+    await team();
+
+    const drained = await drain();
+
+    expect(drained.code, drained.lines.join('\n')).toBe(0);
+    expect(drained.lines).toContain('✔ Nothing left to do here');
+  });
+
+  it('in an unattended job with no settings, judges each session captured unattended with every scorer that judges sessions', async () => {
+    const { config } = await team();
+    capturedSession(SESSION, 'unattended', { idleFor: 0 });
+    fakeClaude();
+    vi.stubEnv('CI', 'true');
+
+    const drained = await drain();
+
+    expect(drained.code, drained.lines.join('\n')).toBe(0);
+    expect(drained.lines).toContain('✔ Judged 1 sampled session here (quality)');
+    expect(await LabelStore.local(config)).toMatchObject([{ scorer: 'quality', source: 'session', subject: { platform: 'claude-code', sessionId: SESSION }, runMode: 'unattended' }]);
+  });
+
+  it('leaves a session whose scorer pins a model no judge tool here runs to another driver, says so, and exits 0', async () => {
+    const { config } = await team({
+      'scorers/quality.md': SCORER.replace('sessions: true\n', 'sessions: true\nmodel: strong\n'),
+      'models/aliases.yaml': 'aliases:\n  strong:\n    codex: gpt-6\n',
+    });
+    capturedSession(SESSION, 'unattended');
+    fakeClaude();
+    vi.stubEnv('CI', 'true');
+
+    const drained = await drain();
+
+    expect(drained.code, drained.lines.join('\n')).toBe(0);
+    expect(drained.lines).toContain('ℹ Left open: 1 session whose scorer pins a model no judge tool here runs (judge_model_unavailable). '
+      + 'A driver whose tools run it takes it with: teamai score --next --json \'{"driver":{…,"can":{"judge":{…}}}}\'');
+    expect(drained.lines).not.toContain('✔ Nothing left to do here');
+    const other = { driver: { kind: 't3', machine: 'm2', workspace: '/w' }, judge: { isolation: 'best-effort' as const, tools: ['codex'] as [string] }, running: [] };
+    expect(await nextJudgeLease(config, other)).toMatchObject({ data: { lease: { source: 'session', subject: { sessionId: SESSION } } } });
+  });
+
+  it('prints a failed judgment and exits 1, and a second drain exits 0 without judging it again', async () => {
+    await team();
+    capturedSession(SESSION, 'unattended');
+    fakeClaude({ fails: true });
+    vi.stubEnv('CI', 'true');
+
+    const failed = await drain();
+
+    expect(failed.code, failed.lines.join('\n')).toBe(1);
+    expect(failed.lines).toContain(`✖ quality on claude-code session ${SESSION}: judge_failed. A failed judgment is final and is not retried. `
+      + `To ask for a new one: teamai score --session ${SESSION} --source claude-code --scorer quality`);
+
+    fakeClaude();
+    const again = await drain();
+
+    expect(again.code, again.lines.join('\n')).toBe(0);
+    expect(again.lines.filter((printed) => printed.includes('Judged'))).toEqual([]);
+    expect(again.lines).toContain('✔ Nothing left to do here');
+  });
+
+  it('prints a failed judgment of a pass and exits 1, and a second drain exits 0 without judging it again', async () => {
+    const { config } = await team({ 'workflows/review.yaml': WORKFLOW });
+    const runId = await settledRun(config, 'unattended');
+    fakeClaude({ fails: true });
+    vi.stubEnv('CI', 'true');
+
+    const failed = await drain();
+
+    expect(failed.code, failed.lines.join('\n')).toBe(1);
+    expect(failed.lines).toContain(`✖ quality on pass 1 of step review in run ${runId}: judge_failed. A failed judgment is final and is not retried. `
+      + `To ask for a new one: teamai score --run ${runId} --step review --pass 1 --scorer quality`);
+
+    fakeClaude();
+    const again = await drain();
+
+    expect(again.code, again.lines.join('\n')).toBe(0);
+    expect(again.lines.filter((printed) => printed.includes('Judged'))).toEqual([]);
+  });
+});
