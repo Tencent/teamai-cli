@@ -273,15 +273,14 @@ export async function loadTeamAgentLanguageForHook(
   }
 }
 
-/** The keys of ~/.teamai/config.yaml that are the member's own settings, which hold in every scope. */
-const MEMBER_SETTING_KEYS: ReadonlySet<string> = new Set(['ai']);
-
 /**
- * Whether a parsed config file holds only the member's own settings, such as `ai.tool`, and no install. A member with
- * no user-scope install writes ~/.teamai/config.yaml by hand this way.
+ * Whether a config file is an install record. Member settings live in the same
+ * path as the historical user install, but a file without `repo` is only a
+ * machine-settings file and must not be treated as an initialized user scope.
  */
-function holdsMemberSettingsOnly(raw: unknown): boolean {
-  return typeof raw === 'object' && raw !== null && !Array.isArray(raw) && Object.keys(raw).every((key) => MEMBER_SETTING_KEYS.has(key));
+function isSettingsOnlyConfig(raw: unknown): raw is Record<string, unknown> {
+  return typeof raw === 'object' && raw !== null && !Array.isArray(raw)
+    && !Object.prototype.hasOwnProperty.call(raw, 'repo');
 }
 
 /** Whether `configPath` holds an install. A file that cannot be read or parsed counts as one, so its install is kept. */
@@ -290,7 +289,7 @@ async function holdsInstall(configPath: string): Promise<boolean> {
   const content = await readFileSafe(configPath);
   if (content === null) return true;
   try {
-    return !holdsMemberSettingsOnly(YAML.parse(content));
+    return !isSettingsOnlyConfig(YAML.parse(content));
   } catch {
     return true;
   }
@@ -352,7 +351,7 @@ export async function loadLocalConfig(options: LoadOptions = {}): Promise<LocalC
   if (!content) return null;
   try {
     const raw = YAML.parse(content);
-    if (holdsMemberSettingsOnly(raw)) return null;
+    if (isSettingsOnlyConfig(raw)) return null;
     const parsed = LocalConfigSchema.parse(raw);
     return await migrateLegacyRoleConfig(await applyRoleAssignment(parsed), configPath, options);
   } catch (e) {
@@ -372,22 +371,38 @@ export async function loadLocalConfig(options: LoadOptions = {}): Promise<LocalC
  * Only a write that happens anyway uses it (a save, or the legacy role
  * migration); a plain load leaves a `scope: project` file as it is.
  */
-function serializeLocalConfig(config: LocalConfig): string {
+function serializeLocalConfig(config: LocalConfig, carriedSettings?: Record<string, unknown>): string {
   // The overlaid roles are the team's, read fresh on every load. Writing them
   // would leave a stale copy behind once the assignment changes or the file
   // goes, and a stale copy is exactly what a member must not be able to keep.
   const { dataHome: _dataHome, roleUnresolved: _roleUnresolved, children: _children, roleAssignment: _assignment, ...persisted } = withLocalRoles(config);
-  return YAML.stringify({ ...persisted, scope: installScopeName(persisted.scope) });
+  return YAML.stringify({ ...carriedSettings, ...persisted, scope: installScopeName(persisted.scope) });
+}
+
+/** Read a hand-written machine settings file before user init promotes it to an install. */
+async function readSettingsOnlyConfig(configPath: string): Promise<Record<string, unknown>> {
+  const content = await readFileSafe(configPath);
+  if (!content) return {};
+  try {
+    const raw = YAML.parse(content);
+    return isSettingsOnlyConfig(raw) ? raw : {};
+  } catch {
+    return {};
+  }
 }
 
 /**
- * Save the local config
+ * Save the local config. User-scope init may promote a settings-only machine
+ * file, so retain all of its settings rather than only the historical ai key.
  */
 export async function saveLocalConfig(config: LocalConfig): Promise<void> {
-  await writeLocalConfig(expandHome(getUserConfigPath()), config);
+  const configPath = expandHome(getUserConfigPath());
+  const carriedSettings = await readSettingsOnlyConfig(configPath);
+  const ai = config.ai ?? await readAiSetting(configPath);
+  await writeFileAtomic(configPath, serializeLocalConfig(ai ? { ...config, ai } : config, carriedSettings));
 }
 
-/** Writes `config` to `configPath`, keeping the `ai` the member set there when `config` has none, as an init's does not. */
+/** Writes a project/local config; its own file remains an install record. */
 async function writeLocalConfig(configPath: string, config: LocalConfig): Promise<void> {
   const ai = config.ai ?? await readAiSetting(configPath);
   await writeFileAtomic(configPath, serializeLocalConfig(ai ? { ...config, ai } : config));
@@ -518,7 +533,7 @@ export async function loadLocalConfigForScope(
   if (!content) return null;
   try {
     const raw = YAML.parse(content);
-    if (holdsMemberSettingsOnly(raw)) return null;
+    if (scope === 'user' && isSettingsOnlyConfig(raw)) return null;
     const parsed = LocalConfigSchema.parse(raw);
     return await migrateLegacyRoleConfig(await applyRoleAssignment(parsed), configPath, options);
   } catch (e) {
