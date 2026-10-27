@@ -34,14 +34,14 @@ function sharingNext(s) {
   [s.stepSessionsWaitingToArchive.attended+s.stepSessionsWaitingToArchive.unattended,'Step sessions waiting to be archived'],
   [s.pendingLabels,'Labels waiting to be published']
  ].filter(([count])=>count>0);
- return '<div class="sharing-next"><h3>'+label('Waiting')+'</h3><ul>'+waiting.map(([count,what])=>'<li>'+label(what)+': <b>'+number(count)+'</b></li>').join('')+'</ul>'
+ return '<div class="sharing-next"><h3>'+label('Waiting')+'</h3><ul>'+waiting.map(([count,what])=>'<li>'+label(what)+label(': ')+'<b>'+number(count)+'</b></li>').join('')+'</ul>'
   +'<p>'+label('Run in a terminal in this workspace:')+'</p>'+s.next.map(step=>'<code class="command">'+step.command.split(' ').map(word=>'<span class="nowrap">'+e(word)+'</span>').join(' ')+'</code>').join('')
   +(s.next.some(step=>step.mode!==s.runMode.mode)?'<p class="label">'+label('A drain finishes and publishes only the sessions of its own run mode, so the command sets TEAMAI_MODE for the sessions that wait.')+'</p>':'')+'</div>';
 }
 function sharingFacts(s) {
  const rows=[['Archive',s.archive==='teamai-reports'?label('teamai-reports, scrubbed'):'<span class="amber">'+label('None: an HTTP team repo keeps no session archive')+'</span>']];
  rows.push(['Judging',s.scoring.state==='ok'
-  ?label('Up to')+' <b>'+number(s.scoring.dailyLimit)+'</b> '+label('sessions a day on this machine (daily_limit)')+'<small>'+(s.scoring.scorers.length?label('Scorers that judge sessions')+': <span data-verbatim>'+s.scoring.scorers.map(e).join(', ')+'</span>':label('No scorer sets sessions: true, so no session is judged.'))+'</small>'
+  ?label('Up to')+' <b>'+number(s.scoring.dailyLimit)+'</b> '+label('sessions a day on this machine (daily_limit)')+'<small>'+(s.scoring.scorers.length?label('Scorers that judge sessions')+label(': ')+'<span data-verbatim>'+s.scoring.scorers.map(e).join(', ')+'</span>':label('No scorer sets sessions: true, so no session is judged.'))+'</small>'
   :'<span class="amber">'+e(s.scoring.reason)+'</span>']);
  if(s.pendingLabels&&!s.next.length)rows.push(['Labels','<b>'+number(s.pendingLabels)+'</b> '+label('pending on this machine')]);
  if(s.unreadTools.length)rows.push(['Never captured','<span data-verbatim>'+s.unreadTools.map(e).join(', ')+'</span><small>'+label('teamai reads no sessions from these tools, so their sessions are never published or scored.')+'</small>']);
@@ -50,9 +50,9 @@ function sharingFacts(s) {
 }
 function sessionSharingPanel(s) {
  if(!s.configured)return '';
- const ignored=s.runMode.ignored!==undefined?' · '+label('TEAMAI_MODE ignored')+': <span data-verbatim>'+e(s.runMode.ignored)+'</span>':'';
+ const ignored=s.runMode.ignored!==undefined?' · '+label('TEAMAI_MODE ignored')+label(': ')+'<span data-verbatim>'+e(s.runMode.ignored)+'</span>':'';
  return '<section class="panel sharing" aria-labelledby="sharing-title"><div class="panelhead"><h2 id="sharing-title">'+label('Session sharing')+'</h2>'
-  +'<span class="tag">'+label('This machine')+': '+label(sharingModeNames[s.runMode.mode])+' · '+label(sharingModeSources[s.runMode.source])+ignored+'</span></div>'
+  +'<span class="tag">'+label('This machine')+label(': ')+label(sharingModeNames[s.runMode.mode])+' · '+label(sharingModeSources[s.runMode.source])+ignored+'</span></div>'
   +'<div class="sharing-modes">'+sharingMode(s,'attended')+sharingMode(s,'unattended')+'</div>'+sharingNext(s)+sharingFacts(s)+'</section>';
 }
 `;

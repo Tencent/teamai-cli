@@ -94,4 +94,19 @@ describe('the session sharing panel', () => {
     expect(settings).toContain('teamai.yaml sessions.publish.unattended');
     expect(text(render(variants[2], 'zh-CN').html)).toContain(dashboardMessages['an HTTP team repo, which keeps no session archive']);
   });
+
+  it('puts a full-width colon between a label and its value in Chinese, and a colon and a space in English', () => {
+    const waiting = { ...defaults, runMode: { mode: 'unattended' as const, source: 'CI' as const, ignored: 'yes' } };
+
+    const chinese = text(render(waiting, 'zh-CN').html);
+    const english = text(render(waiting).html);
+
+    for (const shown of [`${dashboardMessages['This machine']}：`, `${dashboardMessages['TEAMAI_MODE ignored']}：`, `${dashboardMessages['Unattended sessions waiting for a drain']}：`, `${dashboardMessages['Scorers that judge sessions']}：`]) {
+      expect(chinese).toContain(shown);
+    }
+    expect(chinese).not.toMatch(/[\u4e00-\u9fff]: /);
+    for (const shown of ['This machine: ', 'TEAMAI_MODE ignored: ', 'Unattended sessions waiting for a drain: ', 'Scorers that judge sessions: ']) {
+      expect(english).toContain(shown);
+    }
+  });
 });

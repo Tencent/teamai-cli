@@ -432,6 +432,7 @@ export const dashboardMessages: Record<string, string> = {
   "Loading session sharing…": "正在加载会话共享…",
   "Could not load session sharing.": "无法加载会话共享。",
   "This machine": "本机",
+  ": ": "：",
   "set by TEAMAI_MODE": "由 TEAMAI_MODE 设置",
   "set by CI": "由 CI 设置",
   "neither TEAMAI_MODE nor CI is set": "未设置 TEAMAI_MODE 或 CI",
