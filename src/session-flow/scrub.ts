@@ -19,7 +19,7 @@
  */
 
 import type { Session, Message, ContentBlock } from './ir.js';
-import { redactWithEnv } from '../utils/redact.js';
+import { collectEnvSecrets, redact } from '../utils/redact.js';
 import { imagePlaceholderText } from './ir.js';
 
 export interface ScrubResult {
@@ -44,18 +44,18 @@ function countRedactions(before: string, after: string): number {
 
 function scrubBlock(
   block: ContentBlock,
-  dropImagePaths: boolean,
+  { dropImagePaths, mask }: { dropImagePaths: boolean; mask: (text: string) => string },
 ): { block: ContentBlock; count: number } {
   switch (block.type) {
     case 'text': {
-      const next = redactWithEnv(block.text);
+      const next = mask(block.text);
       return {
         block: next === block.text ? block : { type: 'text', text: next },
         count: countRedactions(block.text, next),
       };
     }
     case 'thinking': {
-      const next = redactWithEnv(block.text);
+      const next = mask(block.text);
       return {
         block: next === block.text ? block : { ...block, text: next },
         count: countRedactions(block.text, next),
@@ -65,7 +65,7 @@ function scrubBlock(
       // Arguments are structured: serialize, redact as a whole, then parse
       // back so string fields are covered too, not just top-level strings.
       const raw = JSON.stringify(block.arguments ?? {});
-      const next = redactWithEnv(raw);
+      const next = mask(raw);
       const count = countRedactions(raw, next);
       if (count === 0) return { block, count: 0 };
       let parsed: Record<string, unknown> = {};
@@ -79,7 +79,7 @@ function scrubBlock(
       return { block: { ...block, arguments: parsed }, count };
     }
     case 'tool_result': {
-      const next = redactWithEnv(block.content);
+      const next = mask(block.content);
       return {
         block: next === block.content ? block : { ...block, content: next },
         count: countRedactions(block.content, next),
@@ -115,18 +115,23 @@ function scrubBlock(
  * `dropImagePaths` (default true) removes the absolute local path of image
  * blocks -- required before archiving to a team repo, unwanted for a local
  * migration where the target can still read the file.
+ *
+ * `secrets` are values masked besides those the environment shows to be secret,
+ * such as the team's declared secrets (`knownSecrets`), keyed by name.
  */
 export function scrubSession(
   session: Session,
-  opts: { dropImagePaths?: boolean } = {},
+  opts: { dropImagePaths?: boolean; secrets?: Record<string, string> } = {},
 ): ScrubResult {
   const dropImagePaths = opts.dropImagePaths !== false;
+  const envSecrets = { ...collectEnvSecrets(), ...opts.secrets };
+  const mask = (text: string): string => redact(text, { envSecrets });
   let redactedCount = 0;
 
   const messages: Message[] = session.messages.map((msg) => {
     let contentChanged = false;
     const content = msg.content.map((block) => {
-      const { block: next, count } = scrubBlock(block, dropImagePaths);
+      const { block: next, count } = scrubBlock(block, { dropImagePaths, mask });
       redactedCount += count;
       if (next !== block) contentChanged = true;
       return next;
@@ -134,7 +139,7 @@ export function scrubSession(
     return contentChanged ? { ...msg, content } : msg;
   });
 
-  const title = redactWithEnv(session.title);
+  const title = mask(session.title);
 
   return {
     session: { ...session, title, messages },

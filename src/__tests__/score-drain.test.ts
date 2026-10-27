@@ -505,6 +505,27 @@ describe('teamai score --drain', () => {
     expect(again.lines).toContain('✔ Nothing left to do here');
   });
 
+  it('masks the value of a secret the team declares, whatever its name, in the sessions it archives', async () => {
+    const dsn = 'mysql-prod-7Hq2xVb9Lk';
+    const { origin, config } = await team({ 'env/secrets.yaml': 'secrets:\n  - key: WAREHOUSE_DSN\n', 'workflows/review.yaml': WORKFLOW.replace('    scorers: [quality]\n', '') });
+    vi.stubEnv('WAREHOUSE_DSN', dsn);
+    capturedSession(SESSION, 'unattended', { answer: `Added the retries against ${dsn}.` });
+    claudeSession(STEP_SESSION, `Reviewed it against ${dsn}.`);
+    await settledRun(config, 'unattended', { tool: 'claude', session: STEP_SESSION });
+    fakeClaude();
+    vi.stubEnv('CI', 'true');
+
+    const drained = await drain();
+
+    expect(drained.code, drained.lines.join('\n')).toBe(0);
+    const archived = onReports(origin, 'sessions').filter((file) => file.endsWith('.jsonl'));
+    expect(archived).toHaveLength(2);
+    const texts = archived.map((file) => readOnReports(origin, file));
+    expect(texts.join('\n')).toContain('Added the retries against');
+    expect(texts.join('\n')).toContain('Reviewed it against');
+    for (const text of texts) expect(text).not.toContain(dsn);
+  });
+
   it('archives the step sessions of the runs it drives in this mode once, scrubbed, and lists once a pass whose tool it reads no sessions from', async () => {
     const { origin, config } = await team({ 'workflows/review.yaml': WORKFLOW.replace('    scorers: [quality]\n', '') });
     claudeSession(STEP_SESSION, `Reviewed it. The deploy token is ${TOKEN}.`);

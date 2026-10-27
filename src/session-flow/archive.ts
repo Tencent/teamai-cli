@@ -6,6 +6,7 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { knownSecrets } from '../env-resolution.js';
 import { isSelfMode, type LocalConfig } from '../types.js';
 import { createGit, getDefaultBranch } from '../utils/git.js';
 import { log } from '../utils/logger.js';
@@ -124,7 +125,7 @@ async function fetchLatest(teamClone: string): Promise<LatestArchive> {
 
 /**
  * Pushes, for each chain of `chains` (its sessions newest first), the newest session this machine's tools can read,
- * read and scrubbed, to the team session archive, where a member who continues workflow run `run` restores them. A
+ * read and scrubbed of the team's secrets too, to the team session archive, where a member who continues workflow run `run` restores them. A
  * session newer than that one, which this machine cannot read, is skipped and listed. A chain with none readable fails
  * the push before anything is written. The sessions are filed under the repository of business checkout `checkout`,
  * where the run's steps ran, as its git author, on teamai-reports under its lock.
@@ -139,6 +140,7 @@ export async function archiveSessions<T extends ArchiveSessionRef>(
   const toolRoots = recordedToolRoots(checkout);
   const repoIdentity = getRepoIdentity(checkout);
   const author = authorForCwd(checkout, config.username);
+  const scrub = { secrets: await knownSecrets(config) };
   const read: Array<{ session: Session; meta: SessionSyncMeta }> = [];
   const archived: T[] = [];
   const skipped: T[] = [];
@@ -146,7 +148,7 @@ export async function archiveSessions<T extends ArchiveSessionRef>(
     const unreadable: string[] = [];
     let newest: { ref: T; session: Session; meta: SessionSyncMeta } | undefined;
     for (const ref of chain) {
-      const found = await AgentSession.find(ref, { scrub: true, toolRootsFor: () => toolRoots });
+      const found = await AgentSession.find(ref, { scrub, toolRootsFor: () => toolRoots });
       if (found.status === 'failed') {
         skipped.push(ref);
         unreadable.push(`The ${ref.platform} session ${ref.sessionId} could not be read: ${found.failure.message}`);
@@ -176,12 +178,12 @@ export async function archiveSessions<T extends ArchiveSessionRef>(
 }
 
 /**
- * Pushes session `ref`, read from this machine's tool and scrubbed, to the team session archive on teamai-reports, under
+ * Pushes session `ref`, read from this machine's tool and scrubbed of the team's secrets too, to the team session archive on teamai-reports, under
  * its lock. It is filed under the repository of the workspace it ran in, as that workspace's git author. Never prompts.
  */
 export async function pushSession(config: LocalConfig, ref: ArchiveSessionRef): Promise<SessionPush> {
   if (!sessionArchiveRoot(config)) return { status: 'failed', message: 'This team keeps no session archive.' };
-  const found = await AgentSession.find(ref, { scrub: true });
+  const found = await AgentSession.find(ref, { scrub: { secrets: await knownSecrets(config) } });
   if (found.status === 'failed') return { status: 'failed', message: found.failure.message };
   const { session } = found;
   const meta = defaultSyncMeta({
