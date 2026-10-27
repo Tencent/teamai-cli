@@ -1,0 +1,142 @@
+/**
+ * The Session sharing panel (#1385): for one workspace, whether its sessions are published and scored in each run
+ * mode and why, and what waits for a drain. Policy names, setting names and counts only: never a transcript, a
+ * prompt, a judge's reasoning or a native path.
+ */
+import { createHash } from 'node:crypto';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { loadTeamConfig } from '../config.js';
+import { explainRunMode, RUN_MODE_ENV, RUN_MODES, type ExplainedRunMode, type RunMode } from '../launch-context.js';
+import { scoringUnavailable } from '../scorers/home.js';
+import { LabelStore } from '../scorers/label-store.js';
+import { scopeScoring } from '../scorers/settings.js';
+import { AgentSession } from '../session-flow/agent-session.js';
+import { SessionCaptures, type CapturedSession } from '../session-flow/captures.js';
+import { sessionArchiveRoot } from '../session-flow/session-cmd-shared.js';
+import { SessionPolicy, type SessionPolicies } from '../session-flow/session-policy.js';
+import { SessionWork } from '../session-flow/session-work.js';
+import { getDataHome, isAgentExcluded, scopedToolPaths, type LocalConfig } from '../types.js';
+
+/** The sessions of one run mode that a drain or the background pass has finished, by what became of them. */
+type Settled = { finished: number; waitingToArchive: number; archived: number };
+
+/** The sessions captured on this machine in each run mode, by state. */
+export type CapturedSessions = { attended: Settled & { active: number }; unattended: Settled & { waitingForDrain: number } };
+
+export type SessionSharing =
+  | { configured: false }
+  | {
+    configured: true;
+    /** The run mode this dashboard's environment launches, and what set it. */
+    runMode: ExplainedRunMode;
+    /** Where this scope archives published sessions: teamai-reports, or nowhere on an HTTP team. */
+    archive: 'teamai-reports' | 'none';
+    publish: SessionPolicies;
+    /** Scoring as this scope resolves it, with the scorers that set `sessions: true`; unavailable when it cannot score. */
+    scoring: { state: 'ok'; policies: SessionPolicies; dailyLimit: number; scorers: string[] } | { state: 'unavailable'; reason: string };
+    /** Each problem of the session settings, as `teamai doctor` prints it. */
+    problems: string[];
+    /** The enabled tools teamai reads no sessions from: their sessions are never captured, published or judged. */
+    unreadTools: string[];
+    captured: CapturedSessions;
+    /** Labels judged here that a drain publishes to teamai-reports. */
+    pendingLabels: number;
+    /** The drain to run for what waits: one per run mode whose sessions wait for it, else this machine's for pending labels. */
+    next: Array<{ mode: RunMode; command: string }>;
+  };
+
+type Configured = Extract<SessionSharing, { configured: true }>;
+
+const key = ({ platform, sessionId }: Pick<CapturedSession, 'platform' | 'sessionId'>) => `${platform}\0${sessionId}`;
+
+/**
+ * Whether this data home archived `captured`: the record `SessionPublish` writes for each session it archives, read
+ * by the name it gives it, since that module keeps its reader to itself.
+ */
+async function isArchivedHere(config: LocalConfig, captured: CapturedSession): Promise<boolean> {
+  const name = createHash('sha256').update(key(captured)).digest('hex').slice(0, 32);
+  return fs.stat(path.join(getDataHome(config), 'sessions', 'published', `${name}.json`)).then(() => true, () => false);
+}
+
+/**
+ * Each session captured here by run mode (a capture with no mode counts as attended) and state: an attended one is
+ * active until it is finished, an unattended one waits for a drain until one reaches it; a finished one waits to be
+ * archived while `publish` is `auto` for its mode.
+ */
+async function capturedHere(config: LocalConfig, now: string, publish: SessionPolicies): Promise<CapturedSessions> {
+  const sessions = await SessionCaptures.list(config);
+  const finished = new Set((await SessionWork.finished(sessions, now, () => true)).map(key));
+  const counts: CapturedSessions = {
+    attended: { active: 0, finished: 0, waitingToArchive: 0, archived: 0 },
+    unattended: { waitingForDrain: 0, finished: 0, waitingToArchive: 0, archived: 0 },
+  };
+  for (const one of sessions) {
+    const mode = SessionCaptures.runModeOf(one.captures) ?? 'attended';
+    if (await isArchivedHere(config, one)) {
+      counts[mode].archived += 1;
+      continue;
+    }
+    if (finished.has(key(one))) {
+      if (publish[mode].policy === 'auto') counts[mode].waitingToArchive += 1;
+      else counts[mode].finished += 1;
+      continue;
+    }
+    switch (mode) {
+      case 'attended':
+        counts.attended.active += 1;
+        break;
+      case 'unattended':
+        if (one.drained) counts.unattended.finished += 1;
+        else counts.unattended.waitingForDrain += 1;
+        break;
+      default: {
+        const unhandled: never = mode;
+        return unhandled;
+      }
+    }
+  }
+  return counts;
+}
+
+/**
+ * A drain finishes and publishes the sessions of its own run mode only, while any drain publishes pending labels. So
+ * each mode with sessions that a drain would act on gets its drain, run in that mode, and pending labels alone get
+ * this machine's.
+ */
+function nextSteps({ runMode, archive, publish, scoring, captured, pendingLabels }: Omit<Configured, 'configured' | 'problems' | 'unreadTools' | 'next'>): Configured['next'] {
+  const acts = (mode: RunMode) => publish[mode].policy === 'auto'
+    || (scoring.state === 'ok' && scoring.policies[mode].policy === 'auto' && scoring.scorers.length > 0);
+  const waits: Record<RunMode, boolean> = {
+    attended: captured.attended.waitingToArchive > 0,
+    unattended: captured.unattended.waitingToArchive > 0 || (captured.unattended.waitingForDrain > 0 && acts('unattended')),
+  };
+  const modes = RUN_MODES.filter((mode) => waits[mode]);
+  if (modes.length === 0 && pendingLabels > 0 && archive === 'teamai-reports') modes.push(runMode.mode);
+  return modes.map((mode) => ({ mode, command: mode === runMode.mode ? 'teamai score --drain' : `${RUN_MODE_ENV}=${mode} teamai score --drain` }));
+}
+
+/** What the panel shows for `config`, read with `env` as this machine's environment, at `now`. */
+export async function readSessionSharing(config: LocalConfig, { env, now }: { env: NodeJS.ProcessEnv; now: string }): Promise<SessionSharing> {
+  const team = await loadTeamConfig(config.repo.localPath);
+  const publish = SessionPolicy.publish(config, team);
+  const unavailable = scoringUnavailable(config);
+  const scored = unavailable === undefined ? await scopeScoring(config) : { ok: false as const, reason: unavailable };
+  const read = {
+    runMode: explainRunMode(env),
+    archive: sessionArchiveRoot(config) ? 'teamai-reports' : 'none',
+    publish: publish.policies,
+    scoring: scored.ok
+      ? { state: 'ok', policies: scored.sessions.policies, dailyLimit: scored.sessions.dailyLimit, scorers: (await SessionWork.sessionScorers(config)).map(({ scorer }) => scorer).sort() }
+      : { state: 'unavailable', reason: scored.reason },
+    captured: await capturedHere(config, now, publish.policies),
+    pendingLabels: await LabelStore.unpublished(config),
+  } satisfies Omit<Configured, 'configured' | 'problems' | 'unreadTools' | 'next'>;
+  return {
+    configured: true,
+    ...read,
+    problems: [...publish.problems, ...(scored.ok ? scored.problems : [])].map((problem) => `${problem}.`),
+    unreadTools: team ? Object.keys(scopedToolPaths(team, config)).filter((tool) => !isAgentExcluded(config, tool) && AgentSession.platformForTool(tool) === undefined).sort() : [],
+    next: nextSteps(read),
+  };
+}

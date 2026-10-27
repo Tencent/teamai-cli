@@ -402,4 +402,4 @@ function leaseCwd(config: LocalConfig): string {
   return config.scope === 'project' && config.projectRoot ? config.projectRoot : getDataHome(config);
 }
 
-export const SessionWork = { entries, entriesOf, finished, isLabelled, launchesToday, gone, read, ensureEvidence, leaseCwd } as const;
+export const SessionWork = { entries, entriesOf, finished, isLabelled, launchesToday, gone, read, ensureEvidence, leaseCwd, sessionScorers } as const;
