@@ -84,14 +84,34 @@ toolRoots:
   claude: ~/.claude-work
   codex: ~/.codex-alt
 ai:
-  tool: codex                  # the tool teamai's own AI calls run on; TEAMAI_AI_TOOL wins over it
+  tool: codex                  # the tool teamai's own AI calls run on; see AI tool below
 ```
 
 The role, project and tag fields hold this directory's own selection. A workspace also delivers the selections of the repos set up inside it, read at each pull and never written here. See [Workspaces with repos inside](./distribution.md#workspaces-with-repos-inside).
 
 #### AI tool (`ai.tool`)
 
-teamai's own AI calls (enrich, codebase, import, promote, the votes judge) run on the first installed tool that teamai launches: Claude Code and its internal builds first, then Codex and its internal builds, then the other tools [Tool support](./tool-support.md) marks for AI calls. To use another, set `TEAMAI_AI_TOOL` for one shell or `ai.tool` for this machine, to a tool id such as `codex`. A name teamai does not launch, or a tool not on PATH, fails the call and says which setting to change. Workflow steps fall back to the same settings; see [Workflows](./workflow.md).
+teamai's own AI calls (enrich, codebase, import, promote, the votes judge) run on the first installed tool that teamai launches: Claude Code and its internal builds first, then Codex and its internal builds, then the other tools [Tool support](./tool-support.md) marks for AI calls. To use another, name a tool id such as `codex`. The first of these that is set wins:
+
+1. `TEAMAI_AI_TOOL`, for one shell.
+2. `ai.tool` in the config of the workspace or self install the command runs in, `~/.teamai/projects/<slug>/config.yaml`.
+3. `ai.tool` in `~/.teamai/config.yaml`, for this machine. A command outside any install reads only this one.
+
+`~/.teamai/config.yaml` can hold only this setting on a machine with no user-scope install:
+
+```yaml
+# ~/.teamai/config.yaml
+ai:
+  tool: codex
+```
+
+```yaml
+# ~/.teamai/projects/<slug>/config.yaml, beside the fields init wrote
+ai:
+  tool: opencode
+```
+
+A name teamai does not launch, or a tool not on PATH, fails the call and names the setting and file to change. A re-init keeps `ai`. Workflow steps fall back to the same settings; see [Workflows](./workflow.md).
 
 #### Relocated tool roots (`toolRoots`)
 

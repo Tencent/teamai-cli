@@ -159,7 +159,7 @@ workflows:
     implementer: codex
 ```
 
-有 agent 专用配置时优先于 `default`。支持 `claude`、`claude-internal`、`tclaude`、`codex`、`codex-internal`、`tcodex`、`opencode`、`codebuddy` 和 `workbuddy`。CI 可以在单次启动时用 `--tools default=claude,implementer=codex` 覆盖。没有专用配置的步骤依次使用 `TEAMAI_AI_TOOL`、`default`、[`ai.tool`](./reference.md#configyaml本地配置)。`TEAMAI_AI_TOOL` 或 `ai.tool` 指定的工具不能运行步骤时，步骤会跳过它并给出警告；指定的名称根本不是 teamai 能启动的工具时，步骤以 `tool_unsupported` 失败。命名 agent 从 `teamai pull` 已经部署到该工具、该 scope 目录里的文件读取。
+有 agent 专用配置时优先于 `default`。支持 `claude`、`claude-internal`、`tclaude`、`codex`、`codex-internal`、`tcodex`、`opencode`、`codebuddy` 和 `workbuddy`。CI 可以在单次启动时用 `--tools default=claude,implementer=codex` 覆盖。没有专用配置的步骤依次使用 `TEAMAI_AI_TOOL`、`default`、运行所在 workspace 配置中的 [`ai.tool`](./reference.md#ai-工具aitool)、`~/.teamai/config.yaml` 中的 `ai.tool`。`TEAMAI_AI_TOOL` 或 `ai.tool` 指定的工具不能运行步骤时，步骤会跳过它并给出警告；指定的名称根本不是 teamai 能启动的工具时，步骤以 `tool_unsupported` 失败。命名 agent 从 `teamai pull` 已经部署到该工具、该 scope 目录里的文件读取。
 
 ```text
 teamai workflow start build --driver local
@@ -371,7 +371,7 @@ agent 运行 `teamai workflow start --describe <name> --driver skill`。回复�
 
 skill 驱动声明 `env: "commands"`（见[要求和限制](workflow-advanced.md#要求和限制)）。命令步骤和 setup 像在本地驱动中一样获得各自的 `requires.env` 键。带 `requires.env` 的提示词步骤会等待，因为 TeamAI 只在自己启动的进程中限定团队 env。该驱动从不声明 `tokens`、`max_turns` 或 `network`，因为没有宿主会把子 agent 的 token 或轮次报告给 TeamAI。处于 `budget` 下的无头提示词步骤会等待，所以运行级的 `budget` 会让该运行的所有无头提示词步骤等待。`max_turns` 和 `requires.network: false` 会列入 `unenforced`。worktree 不是 sandbox：`requires.isolation: sandbox` 也会列入 `unenforced`。
 
-当一个因 env 或 budget 而等待的步骤，在同一次运行中较早步骤打开的工作区里工作时，describe 会把整个运行交给本地驱动，由本人在自己的终端启动。否则会话先运行它能运行的部分。只剩等待的步骤时，它把运行交给本人，由本人在自己的终端用 `teamai workflow resume <run>` 继续。本地驱动用本地配置中 `workflows.tools` 指定的、或 `--tools` 选择的无头工具运行提示词步骤。`TEAMAI_AI_TOOL`、`workflows.tools.default` 和 `ai.tool` 都没有指定工具时，会话给出的本地启动命令和 `resume` 命令会带上 `--tools default=<会话的工具>`。
+当一个因 env 或 budget 而等待的步骤，在同一次运行中较早步骤打开的工作区里工作时，describe 会把整个运行交给本地驱动，由本人在自己的终端启动。否则会话先运行它能运行的部分。只剩等待的步骤时，它把运行交给本人，由本人在自己的终端用 `teamai workflow resume <run>` 继续。本地驱动用本地配置中 `workflows.tools` 指定的、或 `--tools` 选择的无头工具运行提示词步骤。`TEAMAI_AI_TOOL`、`workflows.tools.default` 和两处 `ai.tool` 都没有指定工具时，会话给出的本地启动命令和 `resume` 命令会带上 `--tools default=<会话的工具>`。
 
 ### 有人值守与无人值守的运行
 

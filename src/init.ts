@@ -2,7 +2,7 @@ import YAML from 'yaml';
 import fs from 'node:fs';
 import path from 'node:path';
 import { readWorkspaceChildren } from './workspace-children.js';
-import { saveLocalConfig, loadTeamConfig, saveLocalConfigForScope, loadLocalConfigForScope, loadStateForScope, refreshRoleAssignment, saveStateForScope, resolveProjectDataHome } from './config.js';
+import { hasUserScopeInstall, saveLocalConfig, loadTeamConfig, saveLocalConfigForScope, loadLocalConfigForScope, loadStateForScope, refreshRoleAssignment, saveStateForScope, resolveProjectDataHome } from './config.js';
 import { codexTrustPolicy, deliveredHookFiles, describeUnappliedTeamHooks, hasTeamaiHooks, reconcileHooks, reconcileTeamHooksForConfig, reportCodexTrust, trustCodexForScope } from './hooks.js';
 import { configureGitUser, resolveAnchors, initRepo, isGitRepo, getRemoteUrl, getConfiguredRemoteUrl, remotesMatch, redactGitCredentials, pullRepoFastForward, DetachedTeamRepoError, pushRepoDirectly, autoPushViaMR, gitBlockTimeoutMs, createGitWithBlockTimeout } from './utils/git.js';
 import { withTimeout } from './utils/async.js';
@@ -27,7 +27,7 @@ async function settleModeSwitch(previous: LocalConfig | null, next: LocalConfig,
   const switched = await setAsideQueueOnModeSwitch(previous, next, async () => {
     const ownerChanged = previous
       ? !sameQueueOwner(queueOwner(previous), queueOwner(next))
-      : fs.existsSync(path.join(getDataHome(next), 'config.yaml'));
+      : await holdsInstallFor(next.scope, path.join(getDataHome(next), 'config.yaml'));
     if (ownerChanged) await dropAllSearchIndexes(getDataHome(previous ?? next));
     await save();
   });
@@ -38,6 +38,11 @@ async function settleModeSwitch(previous: LocalConfig | null, next: LocalConfig,
     );
     process.exit(1);
   }
+}
+
+/** Whether `scope`'s config file holds an install. ~/.teamai/config.yaml may hold only the member's own settings. */
+async function holdsInstallFor(scope: Scope, configPath: string): Promise<boolean> {
+  return scope === 'user' ? hasUserScopeInstall() : pathExists(configPath);
 }
 
 /**
@@ -735,7 +740,7 @@ export async function initHttp(
 
   // Re-init guard
   const existingConfigPath = path.join(teamaiHome, 'config.yaml');
-  if (await pathExists(existingConfigPath) && !options.force) {
+  if (await holdsInstallFor(scope, existingConfigPath) && !options.force) {
     const confirmed = await askConfirmation(`teamai already initialized at ${existingConfigPath}. Overwrite? [y/N] `);
     if (!confirmed) {
       log.info('Aborted. Existing config is unchanged.');
@@ -1711,7 +1716,7 @@ export async function init(options: GlobalOptions & {
   }
 
   // Step 0.5: Re-init guard — warn if config already exists
-  if (await pathExists(existingConfigPath)) {
+  if (await holdsInstallFor(scope, existingConfigPath)) {
     log.warn(`teamai is already initialized for ${installScopeName(scope)} scope at ${existingConfigPath}`);
     if (options.force) {
       log.info('Overwriting existing config (--force)');
@@ -1804,7 +1809,7 @@ export async function init(options: GlobalOptions & {
     };
     const replacesAnother = existingLocalConfig
       ? !sameQueueOwner(queueOwner(existingLocalConfig), queueOwner(next))
-      : await pathExists(existingConfigPath);
+      : await holdsInstallFor(scope, existingConfigPath);
     if (replacesAnother) await settleModeSwitch(existingLocalConfig, next, () => moveConfigAside(existingConfigPath, next));
     replacedInstallSettled = true;
   };

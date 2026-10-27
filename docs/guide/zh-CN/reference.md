@@ -84,14 +84,34 @@ toolRoots:
   claude: ~/.claude-work
   codex: ~/.codex-alt
 ai:
-  tool: codex                  # teamai 自身 AI 调用使用的工具；TEAMAI_AI_TOOL 优先于它
+  tool: codex                  # teamai 自身 AI 调用使用的工具；见下文 AI 工具
 ```
 
 角色、项目和 tag 字段保存的是这个目录自己的选择。workspace 还会交付其中已初始化仓库的选择，这些选择在每次 pull 时读取，不会写入这里。参见[包含仓库的 workspace](./distribution.md#包含仓库的-workspace)。
 
 #### AI 工具（`ai.tool`）
 
-teamai 自身的 AI 调用（enrich、codebase、import、promote、投票评审）使用 teamai 能启动的第一个已安装工具：先是 Claude Code 及其内部版本，然后是 Codex 及其内部版本，再是[工具支持](./tool-support.md)中标记为支持 AI 调用的其他工具。要换用其他工具，可以用 `TEAMAI_AI_TOOL` 为单个 shell 设置，或用 `ai.tool` 为本机设置，值为工具 id，例如 `codex`。指定的名称不是 teamai 能启动的工具，或工具不在 PATH 上时，调用会失败，并说明该修改哪个设置。工作流步骤也会回退到这些设置，见[工作流](./workflow.md)。
+teamai 自身的 AI 调用（enrich、codebase、import、promote、投票评审）使用 teamai 能启动的第一个已安装工具：先是 Claude Code 及其内部版本，然后是 Codex 及其内部版本，再是[工具支持](./tool-support.md)中标记为支持 AI 调用的其他工具。要换用其他工具，指定一个工具 id，例如 `codex`。以下设置中第一个有值的生效：
+
+1. `TEAMAI_AI_TOOL`，作用于单个 shell。
+2. 命令所在的 workspace 或 self 安装的配置 `~/.teamai/projects/<slug>/config.yaml` 中的 `ai.tool`。
+3. `~/.teamai/config.yaml` 中的 `ai.tool`，作用于本机。不在任何安装中运行的命令只读取这一项。
+
+本机没有 user scope 安装时，`~/.teamai/config.yaml` 可以只包含这一项设置：
+
+```yaml
+# ~/.teamai/config.yaml
+ai:
+  tool: codex
+```
+
+```yaml
+# ~/.teamai/projects/<slug>/config.yaml，与 init 写入的字段放在一起
+ai:
+  tool: opencode
+```
+
+指定的名称不是 teamai 能启动的工具，或工具不在 PATH 上时，调用会失败，并说明该修改哪个文件中的哪个设置。重新 init 会保留 `ai`。工作流步骤也会回退到这些设置，见[工作流](./workflow.md)。
 
 #### 迁移后的工具根目录（`toolRoots`）
 

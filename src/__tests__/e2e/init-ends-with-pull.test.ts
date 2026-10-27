@@ -183,6 +183,23 @@ describe.skipIf(process.platform === 'win32')('teamai init does not pull team re
     expect(fs.existsSync(path.join(home, '.claude.json'))).toBe(false);
   }, 90_000);
 
+  it("user scope: init over a ~/.teamai/config.yaml that holds only the member's ai.tool keeps it, and sets nothing aside", async () => {
+    const cwd = path.join(sandbox, 'elsewhere');
+    fs.mkdirSync(cwd, { recursive: true });
+    const configPath = path.join(home, '.teamai', 'config.yaml');
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, 'ai:\n  tool: codex\n');
+
+    const result = await runCLI(['init', FAKE_URL, '--scope', 'user', '--agent', 'claude'], cwd);
+
+    expect(result.code, result.output).toBe(0);
+    expect(result.output).not.toMatch(/already initialized|Moved .*config\.yaml/);
+    expect(fs.existsSync(`${configPath}.previous`)).toBe(false);
+    const saved = fs.readFileSync(configPath, 'utf8');
+    expect(saved).toMatch(/^repo:/m);
+    expect(saved).toMatch(/^ai:\n {2}tool: codex$/m);
+  }, 90_000);
+
   it('user scope run inside a project checkout does not pull that user scope', async () => {
     const project = makeBusinessRepo(`app-${Math.random().toString(36).slice(2)}`);
     const first = await runCLI(['init', FAKE_URL, '--scope', 'project', '--agent', 'codex', '--force'], project);

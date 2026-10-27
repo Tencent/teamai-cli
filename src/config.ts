@@ -384,7 +384,13 @@ function serializeLocalConfig(config: LocalConfig): string {
  * Save the local config
  */
 export async function saveLocalConfig(config: LocalConfig): Promise<void> {
-  await writeFileAtomic(expandHome(getUserConfigPath()), serializeLocalConfig(config));
+  await writeLocalConfig(expandHome(getUserConfigPath()), config);
+}
+
+/** Writes `config` to `configPath`, keeping the `ai` the member set there when `config` has none, as an init's does not. */
+async function writeLocalConfig(configPath: string, config: LocalConfig): Promise<void> {
+  const ai = config.ai ?? await readAiSetting(configPath);
+  await writeFileAtomic(configPath, serializeLocalConfig(ai ? { ...config, ai } : config));
 }
 
 /**
@@ -533,7 +539,7 @@ export async function saveLocalConfigForScope(
 ): Promise<void> {
   const dataHome = getDataHome(config);
   const configPath = path.join(dataHome, 'config.yaml');
-  await writeFileAtomic(expandHome(configPath), serializeLocalConfig(config));
+  await writeLocalConfig(expandHome(configPath), config);
   // If the config lives in a project partition, drop the `anchor` reverse-lookup
   // file next to it (issue #374 P3). Previously only migration wrote it, so
   // freshly-init'd partitions had no anchor and `status --all` could not resolve
