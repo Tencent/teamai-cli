@@ -138,6 +138,7 @@ document.addEventListener('change',event=>{
  if(event.target.id==='scorer-window')setScorerQuery({window:event.target.value});
  else if(event.target.id==='scorer-group')setScorerQuery({groupBy:event.target.value});
 });
+document.addEventListener('input',event=>{ if(event.target.id==='scorer-commit')scorerCommitDraft=event.target.value; });
 document.addEventListener('submit',event=>{ if(!event.target.closest('[data-scorer-form]'))return; event.preventDefault(); scorerCommitDraft=$('scorer-commit').value.trim(); setScorerQuery({commit:scorerCommitDraft}); });
 document.addEventListener('click',event=>{
  const scorer=event.target.closest('[data-scorer]'), cohort=event.target.closest('[data-cohort]'), group=event.target.closest('[data-scorer-group]');

@@ -275,6 +275,7 @@ ${scorersClient}
 function render() {
  const focus=document.activeElement;
  const focusKey=focus?.dataset.session, retryKey=focus?.dataset.retry, runFocus=focus?.dataset.run;
+ const fieldId=focus?.id&&focus.closest('#view')?focus.id:'', caret=fieldId&&typeof focus.selectionStart==='number'?[focus.selectionStart,focus.selectionEnd]:null;
  const opened=[...document.querySelectorAll('#kb-content details[open]')].map(d=>[...d.parentElement.children].indexOf(d));
  $('nav').innerHTML=Object.keys(pageNames).map(key=>'<button data-page="'+key+'" class="'+(page===key?'active':'')+'" '+(page===key?'aria-current="page"':'')+'>'+icon(key)+label(pageNames[key])+'</button>').join('');
  $('title').textContent=t(pageNames[page]);$('crumb').textContent=t(pageNames[page]);
@@ -285,6 +286,7 @@ function render() {
  if(focusKey) [...document.querySelectorAll('[data-session]')].find(el=>el.dataset.session===focusKey)?.focus({preventScroll:true});
  else if(retryKey) document.querySelector('[data-retry="'+retryKey+'"]')?.focus({preventScroll:true});
  else if(runFocus) [...document.querySelectorAll('[data-run]')].find(el=>el.dataset.run===runFocus)?.focus({preventScroll:true});
+ else if(fieldId){const field=$(fieldId);field?.focus({preventScroll:true});if(caret&&field?.setSelectionRange)field.setSelectionRange(caret[0],caret[1]);}
 }
     // ─── Lightweight inline markdown parser ─────────────
     // Backtick char via hex escape (cannot use literal backtick inside TS template)
