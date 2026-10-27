@@ -1027,6 +1027,16 @@ steps:
     }]) } } });
   });
 
+  it('a resume that names the tool gives it to a run started without one, and its steps then resolve their model for it', async () => {
+    const harness = await skillHarness({ review: REVIEW.replace('    prompt: Review the change.', '    prompt: Review the change.\n    model: claude-opus-4-1') }, { tool: null });
+    roots.push(harness.root);
+    const started = await harness.call({ kind: 'start', name: 'review', answers: { confirmed: false }, inputs: undefined });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+    const run = RunIdSchema.parse(started.data.turn.run);
+    expect(await harness.call({ kind: 'resume', run, claim: false, confirmed: false, answers: {}, tool: 'claude' })).toMatchObject({ data: { turn: { run } } });
+    expect(await harness.call({ kind: 'choose', run, choice: 'h1' })).toMatchObject({ data: { turn: { actions: [{ kind: 'dispatch', model: { by: 'step', name: 'claude-opus-4-1' } }] } } });
+  });
+
   it('a takeover hands the run to the new session\'s tool, which the steps it prepares resolve their model for', async () => {
     const harness = await skillHarness({ review: REVIEW.replace('    prompt: Review the change.', '    prompt: Review the change.\n    model: claude-opus-4-1') });
     roots.push(harness.root);
