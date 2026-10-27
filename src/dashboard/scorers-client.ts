@@ -4,7 +4,7 @@
  * `workspaceGeneration`. Every value from the API is escaped with `e`. A workflow row opens its run through the
  * Workflow Runs dialog.
  */
-import { DIMENSIONS_OFFERED, FAILING_PAGE, SCORER_WINDOWS, type Dimension } from '../scorers/results.js';
+import { DIMENSIONS_OFFERED, FAILING_MAX, FAILING_PAGE, SCORER_WINDOWS, type Dimension } from '../scorers/results.js';
 
 /** The name the page gives each dimension, in English; `label` translates it. */
 const DIMENSION_NAMES: Record<Dimension, string> = {
@@ -21,7 +21,7 @@ const DIMENSION_NAMES: Record<Dimension, string> = {
 
 export const scorersClient = `
 let scorerData=null, scorerError='', scorerLoading=false, scorerHtml='', scorerRequest=0, scorerCommitDraft='';
-const failingPage=${FAILING_PAGE};
+const failingPage=${FAILING_PAGE}, failingMax=${FAILING_MAX};
 const scorerWindows=${JSON.stringify(SCORER_WINDOWS.map(String))};
 const scorerDimensions=${JSON.stringify(Object.fromEntries(DIMENSIONS_OFFERED.map((dimension) => [dimension, DIMENSION_NAMES[dimension]])))};
 const savedWindow=read('teamai-dashboard-scorer-window','30'), savedGroup=read('teamai-dashboard-scorer-group','');
@@ -91,7 +91,7 @@ function failingPanel(sel){
  return '<section class="panel sessions"><div class="panelhead"><h2>'+label('Failing labels')+' <span class="count">'+number(total)+'</span></h2>'+(scorerQuery.group?'<button class="link" data-scorer-group="">'+label('Show every group')+'</button>':'<span class="label">'+label('Newest first')+'</span>')+'</div>'
   +(rows.length?'<div class="table-scroll"><table class="session-table"><thead><tr>'+['SCORED','AUTHOR','LABEL','PLATFORM','SKILLS','OPEN'].map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'
   +rows.map(r=>'<tr><td>'+e(when(r.scoredAt))+'</td><td data-verbatim>'+e(r.author)+'</td><td class="amber" data-verbatim>'+e(r.label)+'</td><td data-verbatim>'+e(r.platform||(r.run?t('Workflow run'):'—'))+'</td><td>'+(r.skills?r.skills.map(s=>'<span class="tag" data-verbatim>'+e(s)+'</span>').join(' '):'—')+'</td><td>'+subject(r)+'</td></tr>').join('')
-  +'</tbody></table></div>'+(rows.length<total?'<div class="cardfoot scorer-foot"><span class="label">'+number(rows.length)+' / '+number(total)+'</span> <button class="link" data-scorer-more>'+label('Show more')+'</button></div>':''):'<div class="empty"><p>'+label('No failing labels in this window.')+'</p></div>')+'</section>';
+  +'</tbody></table></div>'+(rows.length<total?'<div class="cardfoot scorer-foot"><span class="label">'+number(rows.length)+' / '+number(total)+'</span> '+(rows.length<failingMax?'<button class="link" data-scorer-more>'+label('Show more')+'</button>':'<span class="label">'+label('Pick a group or a shorter window to list the rest.')+'</span>')+'</div>':''):'<div class="empty"><p>'+label('No failing labels in this window.')+'</p></div>')+'</section>';
 }
 function remindersPanel(sel){
  if(!sel.reminders)return '';
@@ -153,7 +153,7 @@ document.addEventListener('click',event=>{
  if(scorer)setScorerQuery({scorer:scorer.dataset.scorer,cohort:''});
  else if(cohort)setScorerQuery({cohort:cohort.dataset.cohort});
  else if(group)setScorerQuery({group:scorerQuery.group===group.dataset.scorerGroup?'':group.dataset.scorerGroup});
- else if(event.target.closest('[data-scorer-more]'))setScorerQuery({group:scorerQuery.group,failing:String(scorerData.selected.failing.labels.length+failingPage)});
+ else if(event.target.closest('[data-scorer-more]'))setScorerQuery({group:scorerQuery.group,failing:String(Math.min(scorerData.selected.failing.labels.length+failingPage,failingMax))});
  else if(event.target.closest('[data-scorer-clear]')){scorerCommitDraft='';setScorerQuery({commit:''});}
 });
 `;

@@ -116,6 +116,9 @@ export type ScorerResultsQuery = {
 /** How many failing labels a view lists unless asked for more. */
 export const FAILING_PAGE = 25;
 
+/** The most failing labels one answer lists, however many the page asks for. */
+export const FAILING_MAX = 1000;
+
 /** A failing label as the view lists it: never its subject's native session id, reasoning or prompt. */
 export type FailingLabel = { author: string; scoredAt: string; label: string; skills?: string[] } & (
   | { source: 'session'; platform: string; sessionName?: string }

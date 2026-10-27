@@ -13,7 +13,7 @@ import { readReminderDecisions, REMINDER_RECORD_DAYS, sanitizeSessionId } from '
 import { memberEvents } from '../dashboard-collector.js';
 import type { ScoreLabel } from '../scorers/label.js';
 import { LabelStore } from '../scorers/label-store.js';
-import { DIMENSIONS_OFFERED, SCORER_WINDOWS, ScorerResults, type ReminderInput, type ScorerResultsQuery, type ScorerResultsView, type Side, type ViewedLabel } from '../scorers/results.js';
+import { DIMENSIONS_OFFERED, FAILING_MAX, SCORER_WINDOWS, ScorerResults, type ReminderInput, type ScorerResultsQuery, type ScorerResultsView, type Side, type ViewedLabel } from '../scorers/results.js';
 import { sessionArchiveRoot } from '../session-flow/session-cmd-shared.js';
 import { SyncManager } from '../session-flow/sync.js';
 import { getReportsDir, usesBranchWorktree, type DashboardEvent, type LocalConfig } from '../types.js';
@@ -21,9 +21,6 @@ import { execCommand } from '../utils/exec.js';
 import { buildEndRecord, RECORDS_DIR } from '../workflow/records.js';
 import { isRunId, readRun, runsDir } from '../workflow/store.js';
 import { HttpError } from './http.js';
-
-/** The most failing labels one answer lists, however many the page asks for. */
-const FAILING_MAX = 1000;
 
 /** What the page asks for: the view's query, with the team commit to split at as the member typed it. */
 export type ScorerQuery = Omit<ScorerResultsQuery, 'split'> & { commit?: string };
