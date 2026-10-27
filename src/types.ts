@@ -1100,6 +1100,13 @@ export type DeliverySelection = z.infer<typeof DeliverySelectionSchema>;
 export const StateSchema = z.object({
   lastPush: z.string().nullable().default(null),
   lastPull: z.string().nullable().default(null),
+  /**
+   * When the last auto-report push went unconfirmed (#1453): the usage events
+   * this scope recorded are still waiting to reach the reports branch. Set by
+   * the first unconfirmed push, cleared by the next confirmed one. Absent means
+   * nothing is pending.
+   */
+  pendingReportSince: z.string().optional(),
   /** Git commit hash (short) of the team repo at the time of last successful pull. */
   lastPullRev: z.string().nullable().default(null),
   /** Installed, enabled tool targets that completed the last full pull. */

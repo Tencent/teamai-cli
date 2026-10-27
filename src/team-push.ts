@@ -10,6 +10,7 @@ import { readEvents, aggregateSessionMetrics, dataHomeKey, memberEvents, session
 import { RUN_MODES, type RunMode, type SessionRun } from './launch-context.js';
 import { writeFile, readFileSafe, ensureDir, pathExists, readJson, writeJson } from './utils/fs.js';
 import { log } from './utils/logger.js';
+import { loadStateForScope, saveStateForScope } from './config.js';
 import type {
   UserStats, UserModeStats, UserInterventionStats, SessionMetrics, TokenUsage, DashboardEvent, LocalConfig, RequestCostMetrics, UserVotesV2,
 } from './types.js';
@@ -955,6 +956,34 @@ function changedCounters(existing: UserModeStats | undefined, delta: UsageDelta)
 }
 
 /**
+ * Record that this scope's report data is still waiting for a confirmed push
+ * (#1453). The first unconfirmed push keeps its timestamp, so `status` can say
+ * since when. Best-effort: a state write never fails the report.
+ */
+async function markReportPending(config: LocalConfig): Promise<void> {
+  try {
+    const state = await loadStateForScope(config);
+    if (state.pendingReportSince) return;
+    state.pendingReportSince = new Date().toISOString();
+    await saveStateForScope(state, config);
+  } catch (e) {
+    log.debug(`Could not record the pending report: ${(e as Error).message}`);
+  }
+}
+
+/** The report reached origin, or nothing is left to send: clear the marker. */
+async function clearReportPending(config: LocalConfig): Promise<void> {
+  try {
+    const state = await loadStateForScope(config);
+    if (!state.pendingReportSince) return;
+    delete state.pendingReportSince;
+    await saveStateForScope(state, config);
+  } catch (e) {
+    log.debug(`Could not clear the pending report: ${(e as Error).message}`);
+  }
+}
+
+/**
  * Auto-report usage data to team repo during pull.
  * Merges new events with existing stats to preserve historical data.
  * Best-effort: silently fails on any error.
@@ -1112,6 +1141,7 @@ export async function reportUsageToTeam(
     }
     if (!hasStats && !hasVotes) {
       log.debug('No usage events or votes to report');
+      await clearReportPending(reportsConfig);
       return true;
     }
     const { updateReports } = await import('./utils/reports-branch.js');
@@ -1132,10 +1162,12 @@ export async function reportUsageToTeam(
     const pushed = isPublished(result);
     if (!pushed) {
       log.debug('Auto-report push was not confirmed; keeping local report data');
+      await markReportPending(reportsConfig);
       await restoreStats?.();
       return false;
     }
     restoreStats = undefined;
+    await clearReportPending(reportsConfig);
 
     // Success — truncate reported usage events (only if caller allows it)
     if (hasUsage && !options.skipTruncate) {

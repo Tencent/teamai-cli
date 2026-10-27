@@ -217,6 +217,23 @@ describe('teamai list / status resource coverage', () => {
     expect(out).toMatch(/mcp:\s*1/);
   });
 
+  it('status shows an unconfirmed auto-report and drops it after a confirmed one (#1453)', async () => {
+    const { loadStateForScope } = await import('../config.js');
+    vi.mocked(loadStateForScope).mockResolvedValueOnce({
+      lastPush: null, lastPull: null, pendingReportSince: '2026-10-27T06:00:00.000Z',
+    } as never);
+
+    await status({});
+    const out = lines.join('\n');
+    expect(out).toContain('pending report: since 2026-10-27T06:00:00.000Z');
+    expect(out).toContain('teamai pull --verbose');
+
+    lines.length = 0;
+    vi.mocked(loadStateForScope).mockResolvedValueOnce({ lastPush: null, lastPull: null } as never);
+    await status({});
+    expect(lines.join('\n')).not.toContain('pending report');
+  });
+
   it('names an undelivered MCP entry even when another entry makes resolution fail', async () => {
     localConfig.primaryRole = 'worker';
     await fse.outputFile(path.join(repoPath, 'manifest', 'roles.yaml'), [
