@@ -72,43 +72,44 @@ teamai 为每个工具把每类资源写到哪里，以及工具读取哪里，�
 
 用户范围，取自 #1221 的矩阵；之后合入的修复标为 `t` 并附注。`✓` 可用。`◐` 默认可用，但某个条件会让它失效，而 doctor 仍报告已送达。`✗` 默认配置下不可用。`+` 工具支持，teamai 尚未实现。`—` 工具没有此功能。`?` 未知。标记后的字母是依据，含义同上。
 
-| 工具 | 环境变量 | 工作流 | Recall | 统计 | AI 后端 | 投票评审 | HTTP agent hooks |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| Claude Code | ✓t | ✓v | ✓v | ✓v | ✓v | ✓v | ✓v |
-| Codex CLI | ✓t | ✓t | ✓v | ✓t<sup>1</sup> | ✓v | ✓t<sup>2</sup> | ✓t<sup>3</sup> |
-| Codex CLI Internal | ? | ✓t | ? | ? | ✓t | ? | ? |
-| Claude Code Internal | ? | ✓t | ? | ? | ✓t | ? | ? |
-| TClaude | ? | ✓t | ? | ? | ✓t | ? | ? |
-| TCodex | ? | ✓t | ? | ? | ✓t | ? | ? |
-| Cursor | ? | +s<sup>4</sup> | ✗v<sup>5</sup> | ✓v<sup>6</sup> | ✓d | +s | +t<sup>7</sup> |
-| Copilot | ? | +s | ✓v | ✓t<sup>1</sup> | ✓d | ? | —t |
-| JoyCode | ? | ? | ◐s | ? | ? | ? | ? |
-| Qoder | ? | ? | ◐s | ✓s | ✓d | ? | ✓s |
-| Qoder CN | ? | ? | ◐s | ✓s | ? | ? | ✓t<sup>8</sup> |
-| Kiro | ? | ? | ◐d | ? | ✓d | ? | ? |
-| Trae | ? | ? | ? | ? | ? | ? | ? |
-| Trae CN | ? | ? | ? | ? | ? | ? | ? |
-| ZCode | ✓t | +s | ✓s | ✓s | +s | ✓t<sup>2</sup> | +t<sup>9</sup> |
-| Oh My Pi | ✓s | +s | ✓v | ✓t<sup>1</sup> | ✓d | ? | —t |
-| Pi Coding Agent | ✓s | +v | ✓v | ✓t<sup>1</sup> | ✓s | ? | ? |
-| CodeBuddy | ? | ✓d | ✓s | ✓v | ✓d | +v | ✓s |
-| OpenClaw | ◐d | +d | ✓s | +s | ✓d | —t | ◐s |
-| Hermes | ◐s | +s | ✓v | +s | ✓s | —t | ✓t<sup>10</sup> |
-| DeepSeek Harness | ✗s | +s | ✓s | ✓t<sup>1</sup> | +s | ? | —t |
-| WorkBuddy | ? | ✓t | ✓t | ? | ✓t | ? | ? |
-| OpenCode | ? | ✓t | ✓v | ✓t<sup>1</sup> | ✓v | ? | ◐t |
-| Muse Code | ✓t | +v | ✓t | ✓v | ✓v | ✓t<sup>2</sup> | ✓t<sup>11</sup> |
+| 工具 | 环境变量 | 工作流 | Recall | 统计 | AI 后端 | 投票评审 | 会话评审 | HTTP agent hooks |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Claude Code | ✓t | ✓v | ✓v | ✓v | ✓v | ✓v | ✓t<sup>1</sup> | ✓v |
+| Codex CLI | ✓t | ✓t | ✓v | ✓t<sup>2</sup> | ✓v | ✓t<sup>3</sup> | ✓t<sup>1</sup> | ✓t<sup>4</sup> |
+| Codex CLI Internal | ? | ✓t | ? | ? | ✓t | ? | ? | ? |
+| Claude Code Internal | ? | ✓t | ? | ? | ✓t | ? | ? | ? |
+| TClaude | ? | ✓t | ? | ? | ✓t | ? | ? | ? |
+| TCodex | ? | ✓t | ? | ? | ✓t | ? | ? | ? |
+| Cursor | ? | +s<sup>5</sup> | ✗v<sup>6</sup> | ✓v<sup>7</sup> | ✓d | +s | ✓t<sup>1</sup> | +t<sup>8</sup> |
+| Copilot | ? | +s | ✓v | ✓t<sup>2</sup> | ✓d | ? | ✓t<sup>1</sup> | —t |
+| JoyCode | ? | ? | ◐s | ? | ? | ? | ? | ? |
+| Qoder | ? | ? | ◐s | ✓s | ✓d | ? | ? | ✓s |
+| Qoder CN | ? | ? | ◐s | ✓s | ? | ? | ? | ✓t<sup>9</sup> |
+| Kiro | ? | ? | ◐d | ? | ✓d | ? | ? | ? |
+| Trae | ? | ? | ? | ? | ? | ? | ? | ? |
+| Trae CN | ? | ? | ? | ? | ? | ? | ? | ? |
+| ZCode | ✓t | +s | ✓s | ✓s | +s | ✓t<sup>3</sup> | ? | +t<sup>10</sup> |
+| Oh My Pi | ✓s | +s | ✓v | ✓t<sup>2</sup> | ✓d | ? | ? | —t |
+| Pi Coding Agent | ✓s | +v | ✓v | ✓t<sup>2</sup> | ✓s | ? | —t | ? |
+| CodeBuddy | ? | ✓d | ✓s | ✓v | ✓d | +v | ✓t<sup>1</sup> | ✓s |
+| OpenClaw | ◐d | +d | ✓s | +s | ✓d | —t | ? | ◐s |
+| Hermes | ◐s | +s | ✓v | +s | ✓s | —t | ? | ✓t<sup>11</sup> |
+| DeepSeek Harness | ✗s | +s | ✓s | ✓t<sup>2</sup> | +s | ? | ? | —t |
+| WorkBuddy | ? | ✓t | ✓t | ? | ✓t | ? | ? | ? |
+| OpenCode | ? | ✓t | ✓v | ✓t<sup>2</sup> | ✓v | ? | ✓t<sup>1</sup> | ◐t |
+| Muse Code | ✓t | +v | ✓t | ✓v | ✓v | ✓t<sup>3</sup> | ✓t<sup>1</sup> | ✓t<sup>12</sup> |
 
 注：
 
-1. A1 (#1245) records its skill loads; not rerun
-2. #1374 judges the reply in its Stop payload; not rerun
-3. #1224 runs the Codex trust pass; not rerun
-4. Cursor IDE: —
-5. Cursor IDE: ✓v
-6. Cursor IDE: ✓t
-7. teamai refuses agent hooks in the Cursor hook format
-8. #1224 writes ~/.qoder-cn/settings.json; not rerun
-9. refused until teamai writes the hooks.events shape (#1224)
-10. #1224 maps the events to Hermes's; not rerun
-11. #1224 writes them to settings.json; not rerun
+1. #1386 the session judges its skill-driven run; not rerun
+2. A1 (#1245) records its skill loads; not rerun
+3. #1374 judges the reply in its Stop payload; not rerun
+4. #1224 runs the Codex trust pass; not rerun
+5. Cursor IDE: —
+6. Cursor IDE: ✓v
+7. Cursor IDE: ✓t
+8. teamai refuses agent hooks in the Cursor hook format
+9. #1224 writes ~/.qoder-cn/settings.json; not rerun
+10. refused until teamai writes the hooks.events shape (#1224)
+11. #1224 maps the events to Hermes's; not rerun
+12. #1224 writes them to settings.json; not rerun

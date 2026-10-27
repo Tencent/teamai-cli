@@ -81,7 +81,9 @@ describe('README agent matrix', () => {
     expect(cell(row, 'models')).toBe(ALL_MODEL_AGENTS.some((agent) => agent === tool) ? '✓' : '—');
     const usage = decided(d.features.stats);
     if (usage !== undefined) expect(cell(row, 'usage')).toBe(usage);
-    // Without a session reader, a tool the skill driver names judges only the workflow runs its session drives (✓³).
-    expect(cell(row, 'scorers')).toBe(Array.isArray(d.sessions) ? '✓' : named.has(tool) ? '✓³' : '—');
+    const sessionJudge = decided(d.features.sessionJudge) === '✓';
+    expect(sessionJudge, 'features.sessionJudge follows the agent session variable the skill driver names the tool from').toBe(named.has(tool));
+    // Without a session reader, a tool whose session judges its skill-driven runs scores only those (✓³).
+    expect(cell(row, 'scorers')).toBe(Array.isArray(d.sessions) ? '✓' : sessionJudge ? '✓³' : '—');
   });
 });
