@@ -16,7 +16,7 @@ const SHELL_KEYS = (key: string) => key.startsWith('ANTHROPIC_') || key.startsWi
   || key === 'CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY';
 
 beforeEach(async () => {
-  const keys = ['HOME', 'SHELL', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'XDG_CONFIG_HOME', 'OPENCODE_CONFIG', 'PI_CODING_AGENT_DIR', 'TEAMAI_TEST_MODEL_KEY', 'ZDOTDIR',
+  const keys = ['HOME', 'SHELL', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'XDG_CONFIG_HOME', 'OPENCODE_CONFIG', 'PI_CODING_AGENT_DIR', 'OMP_PROFILE', 'PI_PROFILE', 'PI_CONFIG_DIR', 'TEAMAI_TEST_MODEL_KEY', 'ZDOTDIR',
     ...Object.keys(process.env).filter(SHELL_KEYS)];
   originalEnv = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   for (const key of keys) delete process.env[key];
@@ -602,6 +602,25 @@ describe('Pi model switching', () => {
     process.env.PI_CODING_AGENT_DIR = first;
     expect((await restoreModelProfiles(['pi']))[0].status).toBe('restored');
     expect(Object.keys((await fse.readJson(path.join(first, 'models.json'))).providers)).toEqual(['Mine']);
+  });
+
+  it('writes OMP\'s models.yml into the OMP_PROFILE agent dir, and does not restore from another profile', async () => {
+    const work = path.join(home, '.omp', 'profiles', 'work', 'agent', 'models.yml');
+    const other = path.join(home, '.omp', 'profiles', 'other', 'agent', 'models.yml');
+    process.env.OMP_PROFILE = 'work';
+    await fse.outputFile(work, 'providers:\n  Mine:\n    baseUrl: https://mine.example/v1\n');
+    expect((await switchModelProfile(routed({ 'openai-chat-completions': ['team-model'] }), ['omp']))[0].status).toBe('switched');
+    expect(await fse.readFile(work, 'utf8')).toContain('team:tokenhub');
+    expect(await fse.pathExists(path.join(home, '.omp', 'agent', 'models.yml'))).toBe(false);
+    process.env.OMP_PROFILE = 'other';
+    await fse.outputFile(other, 'providers:\n  Other:\n    baseUrl: https://other.example/v1\n');
+    const skipped = (await restoreModelProfiles(['omp']))[0];
+    expect(skipped.status).toBe('skipped');
+    expect(skipped.message).toContain(work);
+    expect(skipped.message).toContain(other);
+    process.env.OMP_PROFILE = 'work';
+    expect((await restoreModelProfiles(['omp']))[0].status).toBe('restored');
+    expect(await fse.readFile(work, 'utf8')).not.toContain('team:tokenhub');
   });
 
   it('writes into the Pi home recorded on this machine, from a shell without PI_CODING_AGENT_DIR', async () => {

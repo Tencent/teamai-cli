@@ -127,11 +127,10 @@ function piSettingsPath(): string {
 }
 
 /**
- * OMP (Oh My Pi) keeps its provider catalog in `models.yml` under the default
- * agent dir. Only that default layout is supported: `PI_CODING_AGENT_DIR`
- * relocates the agent dir and is honored for Pi above, so reading it here too
- * would send OMP's file into Pi's directory (or the reverse) on a machine that
- * sets it for either tool. The OMP hook adapter takes the same position.
+ * OMP (Oh My Pi) keeps its provider catalog in `models.yml` in its agent dir,
+ * which a profile or `PI_CONFIG_DIR` moves (`TOOLS.omp.home`). teamai does not
+ * follow `PI_CODING_AGENT_DIR` for OMP: it is honored for Pi above, so
+ * following it here too would send OMP's file into Pi's directory.
  *
  * The file is YAML, not JSON, and OMP only ever reads it — it rewrites neither
  * the file nor its layout, so TeamAI owns the bytes. An `apiKey` is used
@@ -139,7 +138,7 @@ function piSettingsPath(): string {
  * held in the environment cannot stay there and is written out resolved.
  */
 function ompSettingsPath(): string {
-  return path.join(getUserHome(), '.omp', 'agent', 'models.yml');
+  return path.join(toolHome('omp'), 'models.yml');
 }
 
 /** Muse Code reads `model` and `endpoint_transport` from its user settings.json. */
