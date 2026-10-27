@@ -28,16 +28,7 @@ import {
   parseAgentYaml,
   serializeAgentYaml,
   renderForTool,
-  reverseFromClaude,
-  reverseFromCodebuddy,
-  reverseFromCodex,
-  reverseFromCursor,
-  reverseFromCopilot,
-  reverseFromJoycode,
-  reverseFromKiro,
-  reverseFromMuse,
-  reverseFromOpencode,
-  reverseFromWorkbuddy,
+  reverseByTool,
   mergeReverseResults,
   agentEffortField,
   toolExtrasFor,
@@ -46,7 +37,7 @@ import {
   agentStemFromFilename,
   museAgentDrops,
 } from './agent-format.js';
-import type { AgentSpec, ToolName, ReverseResult, ParseResult, MergeResult, RenderResult } from './agent-format.js';
+import type { AgentSpec, ToolName, ParseResult, MergeResult, RenderResult } from './agent-format.js';
 
 /**
  * Extended ResourceItem for agents — carries merged spec or skip reason
@@ -1842,50 +1833,3 @@ async function agentContentEqual(tool: string, localPath: string, teamPath: stri
   return localContent === renderForTool(parsed.spec, tool).content;
 }
 
-/**
- * Dispatch reverse parsing to the correct function for each tool, keying the
- * extras by that tool: several tools share a parser, and each renders its own key.
- */
-function reverseByTool(tool: ToolName, filePath: string, content: string): ReverseResult {
-  const result = reverseByParser(tool, filePath, content);
-  const extras = result.ok ? Object.values(result.spec.tool_extras ?? {})[0] : undefined;
-  if (result.ok && extras) result.spec.tool_extras = { [tool]: extras };
-  return result;
-}
-
-function reverseByParser(tool: ToolName, filePath: string, content: string): ReverseResult {
-  switch (tool) {
-    case 'claude':
-    case 'claude-internal':
-    case 'tclaude':
-      return reverseFromClaude(filePath, content);
-    case 'codebuddy':
-      return reverseFromCodebuddy(filePath, content);
-    case 'codex':
-    case 'codex-internal':
-    case 'tcodex':
-      return reverseFromCodex(filePath, content);
-    case 'cursor':
-      return reverseFromCursor(filePath, content);
-    case 'copilot':
-      return reverseFromCopilot(filePath, content);
-    case 'joycode':
-      return reverseFromJoycode(filePath, content);
-    case 'qoder':
-      return reverseFromClaude(filePath, content);
-    case 'qoder-cn':
-      return reverseFromClaude(filePath, content);
-    case 'kiro':
-      return reverseFromKiro(filePath, content);
-    case 'zcode':
-      return reverseFromClaude(filePath, content);
-    case 'omp':
-      return reverseFromClaude(filePath, content);
-    case 'opencode':
-      return reverseFromOpencode(filePath, content);
-    case 'workbuddy':
-      return reverseFromWorkbuddy(filePath, content);
-    case 'muse':
-      return reverseFromMuse(filePath, content);
-  }
-}
