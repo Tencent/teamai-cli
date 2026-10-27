@@ -381,7 +381,9 @@ describe('importCodebase: the extraction every import source shares', () => {
     execFileSync('git', ['remote', 'remove', 'origin'], { cwd: second, stdio: 'ignore' });
     await expect(importCodebase({ sourceDir: second, slug, wikiRoot, skipEnrich: true }))
       .rejects.toThrow('teamwiki/evidence/code/svc/ holds the evidence of https://github.com/acme/svc, '
-        + 'and this checkout has no origin remote. Not replacing it.');
+        + 'and this checkout has no origin remote. Not replacing it. '
+        + 'If this checkout is that repository, add its origin remote back and import it again; '
+        + 'otherwise import it from a directory with another name, or remove teamwiki/evidence/code/svc/ if that codebase is gone.');
 
     expect((await fs.readdir(evidence)).sort()).toEqual(before);
     expect((await fs.readJson(path.join(evidence, 'source-manifest.json'))).repoUrl).toBe('https://github.com/acme/svc');

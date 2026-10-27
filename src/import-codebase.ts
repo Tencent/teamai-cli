@@ -155,7 +155,8 @@ function differentSourceError(slug: string, source: { published: RemoteSource; s
     ? `${evidence} holds the evidence of ${published}, and this checkout is ${describeSource(source.staged)}. Not replacing it. `
       + `Import the checkout from a directory with another name, or remove ${evidence} if that codebase is gone.`
     : `${evidence} holds the evidence of ${published}, and this checkout has no origin remote. Not replacing it. `
-      + `Import the checkout from a directory with another name, or remove ${evidence} if that codebase is gone.`);
+      + 'If this checkout is that repository, add its origin remote back and import it again; '
+      + `otherwise import it from a directory with another name, or remove ${evidence} if that codebase is gone.`);
 }
 
 /**
