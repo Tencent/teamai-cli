@@ -80,7 +80,7 @@ function groupsPanel(sel){
 function valuesPanel(sel){
  if(!sel.values.length)return '';
  const n=sel.cohort.stats.n;
- return '<section class="panel sessions"><div class="panelhead"><h2>'+label('Labels by value')+' <span class="count">'+number(sel.values.length)+'</span></h2><span class="label">'+label('Each value as the labels stored it, highest score first. Read precision or recall from these counts.')+'</span></div><div class="table-scroll"><table class="session-table scorer-values"><thead><tr>'+['LABEL','SCORE','LABELS','SHARE'].map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'
+ return '<section class="panel sessions"><div class="panelhead"><h2>'+label('Labels by value')+' <span class="count">'+number(sel.values.length)+'</span></h2><span class="label">'+label('Each value as the labels stored it, highest score first. Read precision or recall from these counts.')+'</span></div><div class="table-scroll"><table class="session-table compact"><thead><tr>'+['LABEL','SCORE','LABELS','SHARE'].map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'
   +sel.values.map(v=>'<tr><td data-verbatim>'+e(v.label)+'</td><td>'+number(v.score)+'</td><td>'+number(v.n)+'</td><td>'+meter(n?v.n/n:null)+' '+pct(n?v.n/n:null)+'</td></tr>').join('')
   +'</tbody></table></div></section>';
 }
@@ -95,7 +95,7 @@ function failingPanel(sel){
 }
 function remindersPanel(sel){
  if(!sel.reminders)return '';
- return '<section class="panel sessions"><div class="panelhead"><h2>'+label('Friction reminder')+'</h2><span class="tag">'+label('Sessions run on this machine')+' · '+label('last')+' '+number(sel.reminders.days)+' '+label('days')+'</span></div><div class="table-scroll"><table class="session-table"><thead><tr>'+['REMINDER FIRED','SESSIONS','LABELLED','PASSED'].map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'
+ return '<section class="panel sessions"><div class="panelhead"><h2>'+label('Friction reminder')+'</h2><span class="tag">'+label('Sessions run on this machine')+' · '+label('last')+' '+number(sel.reminders.days)+' '+label('days')+'</span></div><div class="table-scroll"><table class="session-table compact"><thead><tr>'+['REMINDER FIRED','SESSIONS','LABELLED','PASSED'].map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'
   +sel.reminders.rows.map(r=>'<tr><td>'+(r.reminder==='yes'?label('Yes'):r.reminder==='no'?label('No'):label('Not recorded'))+'</td><td>'+number(r.sessions)+'</td><td>'+number(r.labelled)+'</td><td>'+(r.rate==null?'—':meter(r.rate)+' '+pct(r.rate))+'</td></tr>').join('')
   +'</tbody></table></div><p class="scorer-hint">'+label('Sessions are your own sessions that started on this machine in the window, at most the 30 days this machine keeps reminder decisions. The pass rate is over labelled sessions only. A session with no reminder state here is not recorded.')+'</p></section>';
 }
