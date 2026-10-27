@@ -458,6 +458,7 @@ export const dashboardMessages: Record<string, string> = {
   "Unattended sessions waiting for a drain": "等待 drain 的无人值守会话",
   "Sessions waiting to be archived": "等待归档的会话",
   "Step sessions waiting to be archived": "等待归档的步骤会话",
+  "step session waiting to be archived": "个步骤会话等待归档",
   "step sessions waiting to be archived": "个步骤会话等待归档",
   "Labels waiting to be published": "等待发布的标签",
   "Run in a terminal in this workspace:": "在此工作区的终端中运行：",

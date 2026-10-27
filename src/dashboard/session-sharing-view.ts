@@ -22,7 +22,7 @@ function sharingMode(s, mode) {
   +(published||judged?'<p class="label">'+label(sharingWhen[mode])+'</p>':'')
   +'<dl class="sharing-policies">'+sharingPolicy('Publish',publish,publish.policy==='ask'?'acts as off for now':'')+scoreRow+'</dl>'
   +'<ul class="sharing-counts">'+sharingStates[mode].map(([key,name])=>'<li class="'+(!counts[key]?'muted':key.startsWith('waiting')?'amber':'')+'"><b>'+number(counts[key])+'</b> '+label(name)+'</li>').join('')
-  +(steps?'<li class="amber"><b>'+number(steps)+'</b> '+label('step sessions waiting to be archived')+'</li>':'')+'</ul></article>';
+  +(steps?'<li class="amber"><b>'+number(steps)+'</b> '+label(steps===1?'step session waiting to be archived':'step sessions waiting to be archived')+'</li>':'')+'</ul></article>';
 }
 function sharingNext(s) {
  if(!s.next.length)return '';
