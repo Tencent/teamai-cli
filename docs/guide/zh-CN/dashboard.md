@@ -92,6 +92,7 @@ teamai session migrate <sessionId> -s codebuddy-ide -t claude-code
 teamai session migrate --all -s codebuddy -t claude-code   # --limit 可限量
 teamai session rollback <id> --platform claude-code
 teamai session push --source codebuddy                     # --all：该平台全部工作区
+teamai session push --session <id> --source claude-code    # 只推送这一个会话，已脱敏
 teamai session pull
 teamai session list                                        # --all：全部项目
 teamai session search <query>
@@ -102,10 +103,12 @@ teamai session resume <name> --platform claude-code
 
 脚本可用 `migrate <sessionId> -s <工具> -t <工具> --json`：stdout 只输出一行，格式与 `teamai workflow` 相同，即 `{ "data": ... }` 或 `{ "error": { "code", "message" } }`；进度信息走 stderr。`data` 包含目标 `sessionId`、`cwd`、`reused` 和 `fidelity` 报告。`error.code` 标明失败原因，如 `no_adapter`（未知工具）、`tool_unavailable`（源工具或目标工具未安装，或其 CLI 无法运行）、`not_found`、`unreadable`，退出码为 1。`--json` 从不询问：缺少会话 id、`-s` 或 `-t` 时以 `prompt_refused` 失败，`--push` 需要 `-y` 或 `--scrub`。
 
-`--dry-run` 只预览。`--scrub` 先脱敏再归档；不加时，交互运行会询问，脚本需要 `-y`。`--all` 超过 10 条要确认（push 为 5 条）。归档在 `sessions/repos/<repo>/<author>/`，按会话自己的 git remote；否则归入 `_unattributed`。工作流步骤在自己工作树里运行的会话，归到该工作树所属检出目录的仓库下。
+`--dry-run` 只预览。`--scrub` 先脱敏再归档；不加时，交互运行会询问，脚本需要 `-y`。`--all` 超过 10 条要确认（push 为 5 条）。`push --session <id>` 只推送 `--source` 的这一个会话，不限工作区，总会脱敏，也不询问。归档在团队仓库 `teamai-reports` 分支的 `sessions/repos/<repo>/<author>/`，按会话自己的 git remote；否则归入 `_unattributed`。工作流步骤在自己工作树里运行的会话，归到该工作树所属检出目录的仓库下。
 
 session 命令使用本项目安装的团队仓库克隆，没有时使用用户级安装的克隆，所以只有要指向另一个克隆时才需要 `--repo-root`。没有任何安装时，它们输出 `teamai is not set up for this directory.`，提示 `teamai init` 和 `--repo-root`，并以退出码 1 退出。
 
-业务仓库自己当团队仓库时，归档在 `teamai-reports` 分支上。另一个 teamai 命令正在写这个分支时，`session push`、`session migrate --push` 和 `session pull` 输出 `Error: Another teamai command is writing teamai-reports`，以退出码 1 退出，不改动该分支。`migrate --push` 会保留它生成的副本。等另一个命令结束后再执行一次。
+旧版 teamai 归档在默认分支上的会话仍可在那里读取。`session list`、`search` 和 `pull` 会读取两处，先读 `teamai-reports`，两处都有的会话只列出一次。`session resume` 先读 `teamai-reports`，再读旧归档。无人值守任务用 `teamai score --drain` 归档自己的会话（见[会话](sharing.md#会话)）。
+
+另一个 teamai 命令正在写 `teamai-reports` 时，`session push`、`session migrate --push` 和 `session pull` 输出 `Error: Another teamai command is writing teamai-reports`，以退出码 1 退出，不改动该分支。`migrate --push` 会保留它生成的副本。等另一个命令结束后再执行一次。
 
 同一台机器上的 `session push`、`migrate --push` 和 `session pull` 会串行执行归档修改与 Git 发布。后来的命令最多等待十秒，仍被占用时会报告锁路径并提示重试。归档写入失败后，会先删除新文件或恢复原有 transcript 与 metadata，再返回错误；重试沿用会话名。若回滚本身失败，错误会指出保留的备份路径，便于恢复。

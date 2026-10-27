@@ -293,6 +293,35 @@ packages:
 
 After pull, run `teamai packages`.
 
+## Sessions
+
+Unattended runs now publish their sessions by default. In CI, on a cloud VM or in a hosted job, [`teamai score --drain`](scorers.md#drain-before-an-unattended-job-ends) archives the sessions this machine captured as unattended, and the step sessions of the workflow runs driven here, scrubbed, on `teamai-reports`. The local driver runs it at the end of an unattended run. To keep the old behavior, set `unattended: off`:
+
+```yaml
+# teamai.yaml
+sessions: { publish: { unattended: off } }
+```
+
+`sessions.publish` takes `off`, `ask` or `auto` for each run mode. These are the defaults, written out:
+
+```yaml
+# teamai.yaml
+sessions:
+  publish: { attended: ask, unattended: auto }
+```
+
+`ask` acts as `off` for now, so a person's sessions are archived only by a command such as `teamai session push`. Attended `auto` archives a session once nothing has happened in it for six hours, in the background pass that judges finished sessions. Publishing always scrubs. An HTTP team keeps no session archive, so there `sessions.publish` acts as `off`, and `teamai doctor` says so.
+
+A member's `config.yaml` wins, one mode at a time. A mode it does not name falls through to `teamai.yaml`:
+
+```yaml
+# config.yaml
+sessions:
+  publish: { attended: ask }   # attended only; unattended still follows the team
+```
+
+`teamai doctor` reports a value that is not `off`, `ask` or `auto`, with its file and key, and teamai ignores it, so that mode falls to the next level. [Finished sessions](scorers.md#finished-sessions) covers `sessions` in `scorers/scoring.yaml`, which decides whether sessions are judged.
+
 ## Docs
 
 Put files in the team repo's `docs/`. Members receive them on `pull`. To limit a directory, declare it under `resources.docs`:

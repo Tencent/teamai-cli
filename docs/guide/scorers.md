@@ -186,17 +186,91 @@ A workflow or a whole team branch is tried with `teamai pull --team-ref <branch>
 
 ### Finished sessions
 
-A member who sets `scoring.sessions: true` in `config.yaml` turns each session captured in that scope into judge work once nothing has happened in it for six hours, for every scorer with `sessions: true`, sampled by its `samplingRate`. A namespace scorer judges a session only when the roles and projects each of its starts recorded make that namespace active. `score --next` hands out workflow work first, then sessions. A session lease has `"source":"session"`, and its `cwd` is where to submit from.
+Unattended runs now publish and score their sessions by default. In CI, on a cloud VM or in a hosted job ([`CI` or `TEAMAI_MODE=unattended`](workflow.md#attended-and-unattended-runs)), [`teamai score --drain`](#drain-before-an-unattended-job-ends) archives the sessions this machine captured as unattended, and the step sessions of the workflow runs driven here, scrubbed, on `teamai-reports`. Every scorer with `sessions: true` judges a sample of those captured sessions, within `daily_limit`. To keep the old behavior, set `unattended: off` in both team files:
 
-The team can set `sessions` and `daily_limit` in `scorers/scoring.yaml` or in an active namespace's `scoring.yaml`, which overrides the root file. When two active namespaces disagree, `sessions: false` and the lowest `daily_limit` win. A member's `config.yaml` overrides them all.
+```yaml
+# teamai.yaml
+sessions: { publish: { unattended: off } }
+```
 
-A session is judged once per scorer and rubric. A release, a lapse, or a local judge that fails closes it. An answer to a lapsed lease is still recorded, unless a judge has labelled the session since or [your own judge](#with-your-own-judge) leased it again. `scoring.daily_limit` in `config.yaml` sets how many sessions one data home leases per local day, 10 by default, counting those that failed or could not be read. `0` turns session scoring off. Editing a scorer's rubric makes the captured sessions judge work again for it, and the daily limit spreads that over the following days.
+```yaml
+# scorers/scoring.yaml
+sessions: { unattended: off }
+```
 
-You do not have to run a driver. After the pull at a session's start, when the session's project or your user scope scores sessions, teamai starts a background judge for both scopes. It judges each finished session with a judge tool installed here, stops taking work after 30 minutes, and leaves the labels pending for the next `teamai pull` to publish. Each lease is one judge call on your account, at most `daily_limit` a day. A session scorer with a cheap [model alias](#choose-the-judges-model), such as `model: fast`, keeps that cheap. To stop it, set `scoring.sessions: false` in `config.yaml`.
+`sessions` in `scorers/scoring.yaml` takes a policy for each run mode. The boolean form keeps working:
+
+```yaml
+# scorers/scoring.yaml, or scorers/<namespace>/scoring.yaml
+sessions: { attended: auto, unattended: auto }   # true = auto in both modes, false = off in both
+daily_limit: 10                                  # per data home: on a fresh CI runner it caps one job, not one day
+```
+
+| Policy | `attended` | `unattended` |
+|---|---|---|
+| `off` | Nothing. The default. | Nothing. |
+| `ask` | Acts as `off` for now. | Acts as `off`, since nobody is there to answer. |
+| `auto` | A session is judged once nothing has happened in it for six hours, by the background judge. | A session is judged when `teamai score --drain` runs, before the job ends. The default. |
+
+Each mode resolves on its own, from the first of these that sets it: a member's `scoring.sessions` in `config.yaml`, the active namespaces' `scoring.yaml` files, the root `scorers/scoring.yaml`, the default. When two active namespaces disagree, the most restrictive policy wins (`off`, then `ask`, then `auto`), and so does the lowest `daily_limit`. A partial mapping such as `{ attended: ask }` leaves the other mode to the next level:
+
+```yaml
+# config.yaml
+scoring:
+  sessions: { attended: ask }   # attended only; unattended still follows the team
+```
+
+`teamai doctor` reports a value that is not `off`, `ask` or `auto` (or a boolean), with its file and key, and teamai ignores it, so that mode falls to the next level. [Sessions](sharing.md#sessions) covers `sessions.publish`, which decides whether sessions are archived.
+
+| What is judged | Set by |
+|---|---|
+| A workflow step's passes | The step's `scorers`, sampled by each scorer's `samplingRate`. `sessions` plays no part. |
+| A captured session: yours, or one a `CI` or `TEAMAI_MODE` job ran that teamai did not launch | `sessions` for the session's run mode, for every scorer with `sessions: true`, sampled by its `samplingRate`. |
+| A session teamai launched, such as a workflow step or a judge | Nothing. It writes no capture, and its step is judged as a pass. |
+| A session of a tool teamai reads no sessions from, such as Pi | Nothing. `teamai doctor` names the tool while a policy is not `off`. |
+
+A namespace scorer judges a session only when the roles and projects each of its starts recorded make that namespace active. `score --next` hands out workflow work first, then sessions. A session lease has `"source":"session"`, and its `cwd` is where to submit from.
+
+A session is judged once per scorer and rubric. A release, a lapse, or a local judge that fails closes it. An answer to a lapsed lease is still recorded, unless a judge has labelled the session since or [your own judge](#with-your-own-judge) leased it again. `scoring.daily_limit` in `config.yaml` sets how many sessions one data home leases per local day, 10 by default, counting those that failed or could not be read. On a fresh CI runner each job starts a new data home, so the limit caps one job, not one day. `0` turns session scoring off. Editing a scorer's rubric makes the captured sessions judge work again for it, and the daily limit spreads that over the following days.
+
+With `attended: auto`, you do not have to run a driver. After the pull at a session's start, when the session's project or your user scope scores sessions, teamai starts a background judge for both scopes. It judges each finished session with a judge tool installed here, stops taking work after 30 minutes, and leaves the labels pending for the next `teamai pull` to publish. Each lease is one judge call on your account, at most `daily_limit` a day. A session scorer with a cheap [model alias](#choose-the-judges-model), such as `model: fast`, keeps that cheap. To stop it, set `scoring.sessions: { attended: off }` in `config.yaml`.
 
 The background judge uses the tool's home that `teamai init` recorded, such as a moved `CLAUDE_CONFIG_DIR`. It does not see a credential or base URL that only your shell sets, notably on Windows. Keep those in the tool's sign-in, your user environment, or the tool's `settings.json` `env`.
 
 A teamai older than this one rejects a scorer with `sessions: true`, so update teamai on every member's machine before the team adds one. An older teamai that takes judge work on your machine, such as a driver's own copy, removes the rubrics of session leases, so update every copy there before you turn on `scoring.sessions`.
+
+### Drain before an unattended job ends
+
+```console
+$ teamai score --drain
+✔ Judged 1 sampled session here (review-quality)
+✔ Published 1 label to teamai-reports
+✔ Archived 1 captured session to teamai-reports (scrubbed)
+✔ Reported usage to stats/<member>.yaml
+ℹ Left open: 1 session whose scorer pins a model no judge tool here runs (judge_model_unavailable). A driver whose tools run it takes it with: teamai score --next --json '{"driver":{…,"can":{"judge":{…}}}}'
+```
+
+Every unattended driver ends with `teamai score --drain`. The local driver runs it at the end of an unattended run. The skill driver, T3, Paseo and a CI script run it as their last step. It works in this order:
+
+1. In unattended mode, every session this data home captured as unattended counts as finished, the calling session included. Attended sessions keep the six-hour rule.
+2. It judges every open judge entry this machine can judge: sampled step passes, and sampled sessions the policies allow, within `daily_limit`.
+3. It publishes every pending label, as `score --push` does.
+4. With `publish: auto` for the current mode, it archives on `teamai-reports`, scrubbed, the finished captured sessions of that mode and the step sessions of the runs driven here that are not archived yet. A step whose tool has no session platform is listed as skipped.
+5. It reports usage to `stats/<member>.yaml`, as `teamai pull` does, so the counts of an ephemeral runner reach the team.
+6. It prints what is left: entries whose scorer pins a model no judge tool here runs (`judge_model_unavailable`), or whose isolation this machine does not meet. Those wait for another driver's `score --next`.
+
+The drain exits 0 when nothing is left that it can do here, entries left for other drivers included. It exits 1 when a judgment or a publish failed. A failed publish stays pending, and the next `--drain` retries it. A failed judgment is final: the drain prints it and never retries it. To ask for a new one, run `teamai score --session <id> --source <platform> --scorer <name>`.
+
+Where the drain runs decides what it sees of the calling session:
+
+```text
+CI job:  claude -p "…"  →  tool exits  →  teamai score --drain      # the job's last step: the session is complete
+skill:   … last turn of an unattended session → teamai score --drain  # the session as it stands now
+```
+
+As the job's last step, after the tool exits, the drain sees the session complete. From inside a session, it judges and publishes that session as it stands, and its later turns are neither judged nor published again.
+
+Runs, judge attempts and leases live in the runner's data home. A lapsed session lease or a failed judge attempt is final, and a runner killed before its drain loses that judging. A long-lived VM runs `teamai score --drain` at the end of each job.
 
 ## Batching
 

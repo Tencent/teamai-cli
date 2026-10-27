@@ -293,6 +293,35 @@ packages:
 
 pull 之后跑 `teamai packages`。
 
+## 会话
+
+无人值守的运行现在默认发布自己的会话。在 CI、云虚拟机或托管任务中，[`teamai score --drain`](scorers.md#无人值守任务结束前运行-drain) 会把本机记录为无人值守的已捕获会话，以及在这里驱动的工作流运行的步骤会话，脱敏后归档到 `teamai-reports`。本地驱动在无人值守运行结束时执行它。要保持原来的行为，设置 `unattended: off`：
+
+```yaml
+# teamai.yaml
+sessions: { publish: { unattended: off } }
+```
+
+`sessions.publish` 按运行模式分别取 `off`、`ask` 或 `auto`。下面写出的是默认值：
+
+```yaml
+# teamai.yaml
+sessions:
+  publish: { attended: ask, unattended: auto }
+```
+
+`ask` 目前等同于 `off`，所以成员的会话只会通过 `teamai session push` 等命令归档。有人值守的 `auto` 在会话六小时没有任何活动后归档它，由评判已结束会话的后台任务完成。发布总会脱敏。HTTP 团队没有会话归档，因此在那里 `sessions.publish` 等同于 `off`，`teamai doctor` 会说明这一点。
+
+成员的 `config.yaml` 优先，按模式分别生效。它没有写的模式沿用 `teamai.yaml`：
+
+```yaml
+# config.yaml
+sessions:
+  publish: { attended: ask }   # 只设置有人值守；无人值守仍按团队设置
+```
+
+值不是 `off`、`ask` 或 `auto` 时，`teamai doctor` 会报告它所在的文件和键，teamai 忽略该值，这种模式交给下一级。会话是否评判由 `scorers/scoring.yaml` 中的 `sessions` 决定，见[已结束的会话](scorers.md#已结束的会话)。
+
 ## Docs（文档）
 
 把文件放进团队仓库的 `docs/`，提交后成员 `pull` 时同步。某个目录只给一部分人时，在 `resources.docs` 里声明：
