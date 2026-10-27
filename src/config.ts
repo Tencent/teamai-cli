@@ -379,13 +379,38 @@ function serializeLocalConfig(config: LocalConfig, carriedSettings?: Record<stri
   return YAML.stringify({ ...carriedSettings, ...persisted, scope: installScopeName(persisted.scope) });
 }
 
-/** Read a hand-written machine settings file before user init promotes it to an install. */
+/** Read valid member settings before user init promotes a machine file to an install. */
 async function readSettingsOnlyConfig(configPath: string): Promise<Record<string, unknown>> {
   const content = await readFileSafe(configPath);
   if (!content) return {};
   try {
     const raw = YAML.parse(content);
-    return isSettingsOnlyConfig(raw) ? raw : {};
+    if (!isSettingsOnlyConfig(raw)) return {};
+
+    const settings: Record<string, unknown> = {};
+    const keys = [
+      'ai',
+      'recallEnabled',
+      'contributeHintEnabled',
+      'mrHintEnabled',
+      'usageReportEnabled',
+      'coAuthorEnabled',
+      'autoCompactTokens',
+      'codexTrustEnabled',
+      'updatePolicy',
+      'modelAliases',
+      'workflows',
+    ] as const;
+    for (const key of keys) {
+      if (!Object.prototype.hasOwnProperty.call(raw, key)) continue;
+      const parsed = LocalConfigSchema.shape[key].safeParse(raw[key]);
+      if (parsed.success) {
+        settings[key] = parsed.data;
+      } else {
+        warnOnce(`Ignoring ${key} in ${configPath}: ${describeConfigError(parsed.error)}.`);
+      }
+    }
+    return settings;
   } catch {
     return {};
   }

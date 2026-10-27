@@ -349,6 +349,21 @@ describe("the member's ai.tool across a write of the config file", () => {
     expect(await aiToolSettings(undefined)).toEqual([{ level: 'machine', tool: 'codex', file: machineFile }]);
   });
 
+  it('skips a wrong-typed machine setting while preserving valid siblings', async () => {
+    const machineFile = path.join(home, '.teamai', 'config.yaml');
+    fs.mkdirSync(path.dirname(machineFile), { recursive: true });
+    fs.writeFileSync(machineFile, 'recallEnabled: "yes"\ncoAuthorEnabled: false\n');
+    vi.mocked(log.warn).mockClear();
+
+    await saveLocalConfig(freshInstall('user'));
+
+    const saved = YAML.parse(fs.readFileSync(machineFile, 'utf8'));
+    expect(saved).not.toHaveProperty('recallEnabled');
+    expect(saved).toMatchObject({ coAuthorEnabled: false });
+    expect(vi.mocked(log.warn).mock.calls.flat().join('\\n')).toContain('Ignoring recallEnabled');
+    expect(await hasUserScopeInstall()).toBe(true);
+  });
+
   it('keeps all machine settings when a user-scope init writes the install record', async () => {
     const machineFile = path.join(home, '.teamai', 'config.yaml');
     fs.mkdirSync(path.dirname(machineFile), { recursive: true });
