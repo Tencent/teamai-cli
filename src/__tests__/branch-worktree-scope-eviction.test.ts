@@ -64,7 +64,7 @@ describe('side-branch worktree ownership across scopes (#1443)', () => {
       username: 'tester',
       scope: 'project',
       projectRoot: business,
-      dataHome: path.join(sandbox, 'projects', 'workspace'),
+      dataHome: path.join(process.env.HOME!, '.teamai', 'projects', 'workspace'),
       additionalRoles: [],
     };
   });
@@ -98,5 +98,14 @@ describe('side-branch worktree ownership across scopes (#1443)', () => {
 
     expect(fs.existsSync(elsewhere)).toBe(true);
     expect(fs.existsSync(path.join(process.env.HOME!, '.teamai', 'reports-wt'))).toBe(false);
+  });
+
+  it('leaves a member checkout under a non-teamai projects path alone', async () => {
+    const memberWt = path.join(sandbox, 'code', 'projects', 'demo', 'reports-wt');
+    fs.mkdirSync(path.dirname(memberWt), { recursive: true });
+    git(['worktree', 'add', memberWt, 'teamai-reports'], business);
+
+    await expect(ensureReportsWorktree(projectConfig)).rejects.toThrow(/already checked out|still has/);
+    expect(fs.existsSync(memberWt)).toBe(true);
   });
 });
