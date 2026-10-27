@@ -16,8 +16,8 @@ Open `http://localhost:3721`. The sidebar is Overview, Team Execution, Workflow 
 The Overview's **Session sharing** panel says, for the selected workspace, whether its sessions are published to `teamai-reports` and scored in each [run mode](workflow.md#attended-and-unattended-runs), and why:
 
 - Each mode's publish and scoring policy, and the setting it came from, such as `the default` or `teamai.yaml sessions.publish.unattended`. `ask` acts as `off` for now.
-- The sessions captured on this machine in each mode: active, waiting for a drain, kept on this machine, waiting to be archived, and archived.
-- What waits, and the drain to run for it. A drain finishes and publishes only the sessions of its own run mode, so on an attended machine the panel names `TEAMAI_MODE=unattended teamai score --drain` for unattended sessions.
+- The sessions captured on this machine in each mode: active, waiting for a drain, kept on this machine, waiting to be archived, and archived. A session whose file is gone is not counted. Also the step sessions of ended runs that wait to be archived.
+- What waits, and the drain to run for it. A drain finishes and publishes only the sessions of its own run mode, so on an attended machine the panel names `TEAMAI_MODE=unattended teamai score --drain` for unattended sessions, or `$env:TEAMAI_MODE='unattended'; teamai score --drain` on Windows.
 - The archive, `daily_limit`, the scorers that judge sessions, the enabled tools teamai reads no sessions from, and the settings problems `teamai doctor` reports.
 
 **This machine** is the run mode of the shell that started `teamai dashboard`. The panel shows counts and setting names, never a session's text, and changes no setting. The settings are in [Sessions](sharing.md#sessions) and [Finished sessions](scorers.md#finished-sessions).

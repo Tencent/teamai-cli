@@ -16,8 +16,8 @@ teamai dashboard --port 8080
 总览页的**会话共享**面板针对当前工作区，说明在每种[运行模式](workflow.md#有人值守与无人值守的运行)下会话是否发布到 `teamai-reports`、是否评分，以及原因：
 
 - 每种模式的发布和评分策略，以及它来自哪项设置，如 `the default` 或 `teamai.yaml sessions.publish.unattended`。`ask` 目前等同于 `off`。
-- 本机在每种模式下捕获的会话：活跃、等待 drain、保留在本机、等待归档、已归档。
-- 正在等待的内容，以及要运行的 drain。drain 只结束并发布与其运行模式相同的会话，因此在有人值守的机器上，面板会为无人值守会话给出 `TEAMAI_MODE=unattended teamai score --drain`。
+- 本机在每种模式下捕获的会话：活跃、等待 drain、保留在本机、等待归档、已归档。文件已不存在的会话不计入。另有已结束运行中等待归档的步骤会话。
+- 正在等待的内容，以及要运行的 drain。drain 只结束并发布与其运行模式相同的会话，因此在有人值守的机器上，面板会为无人值守会话给出 `TEAMAI_MODE=unattended teamai score --drain`，在 Windows 上则是 `$env:TEAMAI_MODE='unattended'; teamai score --drain`。
 - 归档位置、`daily_limit`、评判会话的评分器、teamai 不读取其会话的已启用工具，以及 `teamai doctor` 报告的设置问题。
 
 **本机**是启动 `teamai dashboard` 的 shell 的运行模式。面板只显示计数和设置名，从不显示会话内容，也不修改任何设置。相关设置见[会话](sharing.md#会话)和[已结束的会话](scorers.md#已结束的会话)。
