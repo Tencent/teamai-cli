@@ -76,28 +76,28 @@ User scope, from #1221's matrix; a fix merged since is marked `t`, with a note. 
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | Claude Code | ✓t | ✓v | ✓v | ✓v | ✓v | ✓v | ✓v |
 | Codex CLI | ✓t | ✓t | ✓v | ✓t<sup>1</sup> | ✓v | ✓t<sup>2</sup> | ✓t<sup>3</sup> |
-| Codex CLI Internal | ? | ? | ? | ? | ✓t | ? | ? |
-| Claude Code Internal | ? | ? | ? | ? | ✓t | ? | ? |
-| TClaude | ? | ? | ? | ? | ✓t | ? | ? |
-| TCodex | ? | ? | ? | ? | ✓t | ? | ? |
-| Cursor | ? | +s<sup>4</sup> | ✗v<sup>5</sup> | ✓v<sup>6</sup> | +s | +s | +t<sup>7</sup> |
-| Copilot | ? | +s | ✓v | ✓t<sup>1</sup> | +s | ? | —t |
+| Codex CLI Internal | ? | ✓t | ? | ? | ✓t | ? | ? |
+| Claude Code Internal | ? | ✓t | ? | ? | ✓t | ? | ? |
+| TClaude | ? | ✓t | ? | ? | ✓t | ? | ? |
+| TCodex | ? | ✓t | ? | ? | ✓t | ? | ? |
+| Cursor | ? | +s<sup>4</sup> | ✗v<sup>5</sup> | ✓v<sup>6</sup> | ✓d | +s | +t<sup>7</sup> |
+| Copilot | ? | +s | ✓v | ✓t<sup>1</sup> | ✓d | ? | —t |
 | JoyCode | ? | ? | ◐s | ? | ? | ? | ? |
-| Qoder | ? | ? | ◐s | ✓s | ? | ? | ✓s |
+| Qoder | ? | ? | ◐s | ✓s | ✓d | ? | ✓s |
 | Qoder CN | ? | ? | ◐s | ✓s | ? | ? | ✓t<sup>8</sup> |
-| Kiro | ? | ? | ◐d | ? | ? | ? | ? |
+| Kiro | ? | ? | ◐d | ? | ✓d | ? | ? |
 | Trae | ? | ? | ? | ? | ? | ? | ? |
 | Trae CN | ? | ? | ? | ? | ? | ? | ? |
 | ZCode | ✓t | +s | ✓s | ✓s | +s | ✓t<sup>2</sup> | +t<sup>9</sup> |
-| Oh My Pi | ✓s | +s | ✓v | ✓t<sup>1</sup> | +s | ? | —t |
-| Pi Coding Agent | ✓s | +v | ✓v | ✓t<sup>1</sup> | +v | ? | ? |
-| CodeBuddy | ? | +t | ✓s | ✓v | ? | +v | ✓s |
-| OpenClaw | ◐d | +d | ✓s | +s | ✓t<sup>10</sup> | —t | ◐s |
-| Hermes | ◐s | +s | ✓v | +s | +s | —t | ✓t<sup>11</sup> |
+| Oh My Pi | ✓s | +s | ✓v | ✓t<sup>1</sup> | ✓d | ? | —t |
+| Pi Coding Agent | ✓s | +v | ✓v | ✓t<sup>1</sup> | ✓s | ? | ? |
+| CodeBuddy | ? | ✓d | ✓s | ✓v | ✓d | +v | ✓s |
+| OpenClaw | ◐d | +d | ✓s | +s | ✓d | —t | ◐s |
+| Hermes | ◐s | +s | ✓v | +s | ✓s | —t | ✓t<sup>10</sup> |
 | DeepSeek Harness | ✗s | +s | ✓s | ✓t<sup>1</sup> | +s | ? | —t |
-| WorkBuddy | ? | ? | ✓t | ? | ? | ? | ? |
-| OpenCode | ? | ✓t | ✓v | ✓t<sup>1</sup> | +v | ? | ◐t |
-| Muse Code | ✓t | +v | ✓t | ✓v | +v | ✓t<sup>2</sup> | ✓t<sup>12</sup> |
+| WorkBuddy | ? | ✓t | ✓t | ? | ✓t | ? | ? |
+| OpenCode | ? | ✓t | ✓v | ✓t<sup>1</sup> | ✓v | ? | ◐t |
+| Muse Code | ✓t | +v | ✓t | ✓v | ✓v | ✓t<sup>2</sup> | ✓t<sup>11</sup> |
 
 Notes:
 
@@ -110,6 +110,5 @@ Notes:
 7. teamai refuses agent hooks in the Cursor hook format
 8. #1224 writes ~/.qoder-cn/settings.json; not rerun
 9. refused until teamai writes the hooks.events shape (#1224)
-10. runs `openclaw agent --message`; each call leaves a session behind (#1308)
-11. #1224 maps the events to Hermes's; not rerun
-12. #1224 writes them to settings.json; not rerun
+10. #1224 maps the events to Hermes's; not rerun
+11. #1224 writes them to settings.json; not rerun
