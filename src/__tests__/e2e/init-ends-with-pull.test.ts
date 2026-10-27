@@ -183,12 +183,12 @@ describe.skipIf(process.platform === 'win32')('teamai init does not pull team re
     expect(fs.existsSync(path.join(home, '.claude.json'))).toBe(false);
   }, 90_000);
 
-  it("user scope: init over a ~/.teamai/config.yaml that holds only the member's ai.tool keeps it, and sets nothing aside", async () => {
+  it('user scope: init promotes a settings-only machine config without setting it aside', async () => {
     const cwd = path.join(sandbox, 'elsewhere');
     fs.mkdirSync(cwd, { recursive: true });
     const configPath = path.join(home, '.teamai', 'config.yaml');
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
-    fs.writeFileSync(configPath, 'ai:\n  tool: codex\n');
+    fs.writeFileSync(configPath, 'ai:\n  tool: codex\nrecallEnabled: true\nworkflows:\n  tools:\n    default: codex\n');
 
     const result = await runCLI(['init', FAKE_URL, '--scope', 'user', '--agent', 'claude'], cwd);
 
@@ -198,6 +198,8 @@ describe.skipIf(process.platform === 'win32')('teamai init does not pull team re
     const saved = fs.readFileSync(configPath, 'utf8');
     expect(saved).toMatch(/^repo:/m);
     expect(saved).toMatch(/^ai:\n {2}tool: codex$/m);
+    expect(saved).toMatch(/^recallEnabled: true$/m);
+    expect(saved).toMatch(/^workflows:\n {2}tools:\n {4}default: codex$/m);
   }, 90_000);
 
   it('user scope run inside a project checkout does not pull that user scope', async () => {
