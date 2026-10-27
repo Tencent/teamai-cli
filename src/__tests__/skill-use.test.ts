@@ -3,7 +3,7 @@
  * HOME per case. Payloads are the captured runs in fixtures/skill-use, with
  * paths replaced by ${HOME}/${CWD}.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -28,6 +28,12 @@ let home: string;
 let cwd: string;
 let originalHome: string | undefined;
 let originalCwd: string;
+
+// The skill handlers import skill-use.js on their first call. Under vitest that import transforms the module graph,
+// which on a cold Windows runner took longer than the handler's 4.5s budget; the built CLI loads it from its bundle.
+beforeAll(async () => {
+  await import('../skill-use.js');
+});
 
 beforeEach(() => {
   vi.mocked(sendWebhook).mockClear();
