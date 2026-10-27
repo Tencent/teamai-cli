@@ -183,7 +183,7 @@ projects:
       mcp: [checkout]          # mcp/checkout/mcp.yaml
       models: [checkout]       # models/checkout/models.yaml
       docs: [checkout]         # docs/checkout/
-      wiki: [checkout]         # 代码库 slug，evidence/code/checkout/
+      wiki: [github__acme__checkout]  # teamai import 输出的 project: slug
 ```
 
 把这两份文件提交。在项目里：

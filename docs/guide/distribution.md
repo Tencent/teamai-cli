@@ -183,7 +183,7 @@ projects:
       mcp: [checkout]          # mcp/checkout/mcp.yaml
       models: [checkout]       # models/checkout/models.yaml
       docs: [checkout]         # docs/checkout/
-      wiki: [checkout]         # codebase slug, evidence/code/checkout/
+      wiki: [github__acme__checkout]  # the slug teamai import printed as project:
 ```
 
 Commit both files. In the project:
