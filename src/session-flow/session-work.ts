@@ -21,6 +21,7 @@ import { LabelStore } from '../scorers/label-store.js';
 import { pinnedDefinition, type PinnedScorer } from '../scorers/pin.js';
 import { isSampled } from '../scorers/sampling.js';
 import type { ScopeScoring } from '../scorers/settings.js';
+import { RUN_MODES } from '../launch-context.js';
 import { typedIn, usedSkills } from '../skill-use.js';
 import { getDataHome, type LocalConfig } from '../types.js';
 import { readWorkspaceChildren } from '../workspace-children.js';
@@ -263,12 +264,14 @@ async function prunableBy(config: LocalConfig): Promise<ReadonlySet<string> | un
 
 /**
  * The session entries of this scope, oldest activity first: each finished session captured here, for each scorer of
- * the scope that judges sessions and samples it, and every session captured here by `platform\0sessionId`. None while
- * the scope does not turn session scoring on or no scorer judges sessions; `captured` is then listed only while
- * session attempts are kept, so they are pruned after the team or the member turned it off.
+ * the scope that judges sessions and samples it, while the policy of the run mode it was captured in is `auto` (a
+ * capture with no mode counts as attended), and every session captured here by `platform\0sessionId`. None while no
+ * mode's policy is `auto` or no scorer judges sessions; `captured` is then listed only while session attempts are kept,
+ * so they are pruned after the team or the member turned it off.
  */
 async function entries(config: LocalConfig, now: string, scoring: Extract<ScopeScoring, { ok: true }>): Promise<{ entries: SessionEntry[]; captured?: ReadonlySet<string> }> {
-  if (!scoring.sessions.enabled) return { entries: [], captured: await prunableBy(config) };
+  const { policies } = scoring.sessions;
+  if (!RUN_MODES.some((mode) => policies[mode].policy === 'auto')) return { entries: [], captured: await prunableBy(config) };
   const scorers = await sessionScorers(config);
   if (scorers.length === 0) return { entries: [], captured: await prunableBy(config) };
   const captured = await SessionCaptures.list(config);
@@ -277,6 +280,7 @@ async function entries(config: LocalConfig, now: string, scoring: Extract<ScopeS
   const events = await lastEvents();
   const finished: Array<{ captured: CapturedSession; activeAt: number }> = [];
   for (const one of captured) {
+    if (policies[SessionCaptures.runModeOf(one.captures) ?? 'attended'].policy !== 'auto') continue;
     const activeAt = await lastActiveAt(one, events);
     if (activeAt !== undefined && activeAt + FINISHED_AFTER_MS <= Date.parse(now)) finished.push({ captured: one, activeAt });
   }

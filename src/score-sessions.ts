@@ -46,7 +46,7 @@ export async function scoreSessions(configs: readonly LocalConfig[], { clock = (
   for (const config of configs) {
     if (scoringUnavailable(config)) continue;
     const scoring = await scopeScoring(config);
-    if (!scoring.ok || !scoring.sessions.enabled) continue;
+    if (!scoring.ok || scoring.sessions.policies.attended.policy !== 'auto') continue;
     const lock = path.join(scoresDir(config), 'score-sessions.lock');
     if (!await acquireLock(lock)) continue;
     try {
@@ -82,7 +82,7 @@ export async function sessionScoringScopes(cwd?: string): Promise<LocalConfig[]>
     if (config === null || homes.has(getDataHome(config)) || scoringUnavailable(config)) continue;
     homes.add(getDataHome(config));
     const scoring = await scopeScoring(config);
-    if (scoring.ok && scoring.sessions.enabled) scopes.push(config);
+    if (scoring.ok && scoring.sessions.policies.attended.policy === 'auto') scopes.push(config);
   }
   return scopes;
 }

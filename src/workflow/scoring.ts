@@ -472,7 +472,7 @@ async function takeOneLease(config: LocalConfig, request: JudgeRequest, now: str
   const { entries: sessions, captured } = named ? { entries: await SessionWork.entriesOf(config, named, now), captured: undefined }
     : request.entries || request.run !== undefined ? { entries: [], captured: undefined } : await SessionWork.entries(config, now, scoring);
   const found: ScoreEntry[] = [...runs, ...sessions];
-  const dailyLimit = scoring.sessions.enabled ? scoring.sessions.dailyLimit : 0;
+  const { dailyLimit } = scoring.sessions;
   const aliases = await loadModelAliases(config);
   const { isolation } = scoring;
   for (const unknown of requiredIsolation(isolation).unknown) log.warn(`${unknownIsolationText(unknown)}.`);
