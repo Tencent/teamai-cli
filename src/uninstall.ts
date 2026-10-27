@@ -2,7 +2,7 @@ import { lstat, readdir, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { autoDetectInit, loadLocalConfig, loadStateForScope, readConfigFrom, resolveMemberToolRoots, saveLocalConfig, saveLocalConfigForScope, saveStateForScope, UnreadableProjectConfigError, detectProjectConfig } from './config.js';
 import { createDeliveryRecorder, deliveredOwner, deliveredOwnerElsewhere } from './git-exclude-delivered.js';
-import { gitExcludeFile, gitTracks, MCP_EXCLUDE_OWNER, realFilePath, remove as removeGitExclude, stateHomeRecord, type GitExcludeFileRemoval } from './git-exclude.js';
+import { gitExcludeFile, gitTracks, gitUntracked, MCP_EXCLUDE_OWNER, realFilePath, remove as removeGitExclude, stateHomeRecord, type GitExcludeFileRemoval } from './git-exclude.js';
 import {
   codexTrustPolicy, migrateLegacyManagedHooks, reconcileHooks, hasTeamaiHooks, hasUnrecordedTeamHooks, mainCheckoutHookFile, resolveMainCheckoutHooks, selfLocalTeamHookFile,
   stopCodexTeamHookDispatch, teamHookHistory, canonicalProjectRoot, getToolCheckouts, unregisterCheckoutFromSharedManifest,
@@ -69,7 +69,7 @@ import {
 } from './builtin-skills.js';
 import { cleanupOf, hookAdapterDir, hookSettingsFile, installOf, isInstalledFor, locate, openclawWorkspaceDir, ownOf, SHARED_AGENT_SKILLS_PATH, workspaceHooksOf, writesOf, type Location } from './locate.js';
 import { toolHome } from './tool-home.js';
-import { channelsOf } from './tools.js';
+import { channelsOf, hookFormatOf } from './tools.js';
 import { CODEX_TOOL_IDS } from './utils/tool-names.js';
 import { allowsSkillDirectory, CODEX_TOOL, describeOutsideSkillLink, describeSkillDirectoryBlock, findSkillDirectoryBlock, skillOrigin } from './resources/skills.js';
 import { describeKeptDir, describeMembersDirLeft, isLink, keepsTrackedCopy, ownsSkillDir, teamaiSkillFiles } from './resources/delivered-copies.js';
@@ -393,6 +393,19 @@ function isEmptyHooksResidue(parsed: Record<string, unknown> | null): boolean {
   if (parsed == null || !('hooks' in parsed) || typeof parsed.hooks !== 'object' || parsed.hooks == null) return false;
   const entries = Object.values(parsed.hooks as Record<string, unknown>);
   return entries.length > 0 && entries.every((v) => Array.isArray(v) && v.length === 0);
+}
+
+/**
+ * Delete `file`, a standalone Copilot hook file teamai wrote, once removing
+ * teamai's entries left it holding only the events they emptied: Copilot runs
+ * nothing from it. One git tracks stays, as the hook pass keeps it.
+ */
+async function removeEmptiedCopilotHookFile(file: string): Promise<void> {
+  const parsed = await readJson<Record<string, unknown>>(file);
+  if (parsed === null || !Object.keys(parsed).every((key) => key === 'version' || key === 'hooks') || !isEmptyHooksResidue(parsed)) return;
+  if (!await gitUntracked(file, 'entry')) return;
+  await remove(file);
+  log.success(`Removed ${file}: no hooks left in it`);
 }
 
 // ─── Discovery ─────────────────────────────────────────
@@ -2083,6 +2096,7 @@ async function executeRemoval(
         } : {}),
         ...(teamHookProjectRoot ? { teamHookProjectRoot } : {}),
       });
+      if (hookFormatOf(tool) === 'copilot') await removeEmptiedCopilotHookFile(settingsPath);
     } catch (e) {
       failedRecords.add(records);
       log.warn(`Failed to remove hooks from ${settingsPath}: ${(e as Error).message}`);

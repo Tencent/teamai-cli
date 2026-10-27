@@ -4083,6 +4083,73 @@ describe('uninstall', () => {
     );
   });
 
+  it('deletes the Copilot hook file it emptied in COPILOT_HOME, and keeps one holding a member hook', async () => {
+    const { reconcileHooks } = await vi.importActual<typeof import('../hooks.js')>('../hooks.js');
+    mockReconcileHooks.mockImplementation(reconcileHooks);
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    const copilotHome = path.join(tmpDir, 'custom-copilot-home');
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('COPILOT_HOME', copilotHome);
+    vi.stubEnv('SHELL', '/bin/zsh');
+    const teamaiEntry = {
+      type: 'command',
+      bash: 'teamai hook-dispatch session-start --tool copilot',
+      powershell: 'teamai hook-dispatch session-start --tool copilot',
+    };
+    const memberEntry = { type: 'command', bash: 'echo mine', powershell: 'echo mine' };
+    const hookPath = path.join(copilotHome, 'hooks', 'teamai.json');
+    const memberPath = path.join(copilotHome, 'hooks', 'mine.json');
+    await fse.ensureDir(path.dirname(hookPath));
+    await fse.writeJson(hookPath, { version: 1, hooks: { SessionStart: [teamaiEntry], UserPromptSubmit: [teamaiEntry] } });
+    await fse.writeJson(memberPath, { version: 1, hooks: { SessionStart: [memberEntry] } });
+
+    const teamConfig = makeTeamConfig({
+      toolPaths: {
+        copilot: {
+          skills: '.github/skills',
+          hooks: '.github/hooks/teamai.json',
+          userScope: { skills: 'skills', hooks: 'hooks/teamai.json' },
+        },
+      },
+    });
+    mockAutoDetectInit.mockResolvedValue({ localConfig: makeLocalConfig(homeDir, repoPath, { enabledAgents: ['copilot'] }), teamConfig });
+
+    commitTeamRepo(repoPath);
+    await uninstall({ force: true });
+
+    expect(await fse.pathExists(hookPath)).toBe(false);
+    expect(await fse.readJson(memberPath)).toEqual({ version: 1, hooks: { SessionStart: [memberEntry] } });
+  });
+
+  it('keeps the Copilot hook file when a member hook is left beside teamai\'s', async () => {
+    const { reconcileHooks } = await vi.importActual<typeof import('../hooks.js')>('../hooks.js');
+    mockReconcileHooks.mockImplementation(reconcileHooks);
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    const copilotHome = path.join(tmpDir, 'custom-copilot-home');
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('COPILOT_HOME', copilotHome);
+    vi.stubEnv('SHELL', '/bin/zsh');
+    const teamaiEntry = {
+      type: 'command',
+      bash: 'teamai hook-dispatch session-start --tool copilot',
+      powershell: 'teamai hook-dispatch session-start --tool copilot',
+    };
+    const memberEntry = { type: 'command', bash: 'echo mine', powershell: 'echo mine' };
+    const hookPath = path.join(copilotHome, 'hooks', 'teamai.json');
+    await fse.ensureDir(path.dirname(hookPath));
+    await fse.writeJson(hookPath, { version: 1, hooks: { SessionStart: [teamaiEntry, memberEntry] } });
+
+    const teamConfig = makeTeamConfig({
+      toolPaths: { copilot: { skills: '.github/skills', hooks: '.github/hooks/teamai.json', userScope: { skills: 'skills', hooks: 'hooks/teamai.json' } } },
+    });
+    mockAutoDetectInit.mockResolvedValue({ localConfig: makeLocalConfig(homeDir, repoPath, { enabledAgents: ['copilot'] }), teamConfig });
+
+    commitTeamRepo(repoPath);
+    await uninstall({ force: true });
+
+    expect(await fse.readJson(hookPath)).toEqual({ version: 1, hooks: { SessionStart: [memberEntry] } });
+  });
+
   it('--agent claude 但 codex 仍有资源 → 保留共享', async () => {
     const { homeDir, repoPath, teamaiHome } = await setupFixture(tmpDir);
     vi.stubEnv('HOME', homeDir);
