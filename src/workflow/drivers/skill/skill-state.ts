@@ -158,9 +158,10 @@ const SkillStateSchema = z.object({
   gate: GateSchema.optional(),
   /**
    * The session that drives the run, when its host names one, and when it last called. `tool`: the tool that session
-   * works in, which `--tools default=<tool>` names or its host does, so a runner resolves its children's models for it.
+   * works in, which `--tools default=<tool>` names or its host does, so a runner resolves its children's models for it;
+   * dropped when this teamai knows no such tool.
    */
-  orchestrator: z.object({ session: z.string().optional(), tool: z.custom<ToolId>((tool) => typeof tool === 'string' && isToolId(tool)).optional(), lastCallAt: z.string() }),
+  orchestrator: z.object({ session: z.string().optional(), tool: z.custom<ToolId>((tool) => typeof tool === 'string' && isToolId(tool)).optional().catch(undefined), lastCallAt: z.string() }),
   attempts: z.array(AttemptStateSchema),
   /** Present while this driver judges the run's scored steps with the confined judge of `tool`. `open`: the judge running now. */
   judging: z.object({ tool: z.string(), open: JudgeSchema.optional() }).optional(),

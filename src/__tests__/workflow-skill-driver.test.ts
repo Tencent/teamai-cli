@@ -347,6 +347,20 @@ describe('skill driver', () => {
     expect(await eventsToDone(harness, run)).toContainEqual(expect.objectContaining({ kind: 'settled', step: 'show', outcome: 'success', tail: 'TEAMAI_MODE=attended' }));
   });
 
+  it('drives a run whose skill state names a tool this teamai does not know, as one a newer teamai wrote', async () => {
+    const harness = await skillHarness({ check: CHECK });
+    roots.push(harness.root);
+    harness.hold(true);
+    const started = await harness.call({ kind: 'start', name: 'check', answers: { confirmed: false }, inputs: undefined });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+    const { run } = started.data.turn;
+    const file = skillStatePath(harness.config, run);
+    const state = z.object({ orchestrator: z.record(z.unknown()) }).passthrough().parse(JSON.parse(fs.readFileSync(file, 'utf8')));
+    fs.writeFileSync(file, JSON.stringify({ ...state, orchestrator: { ...state.orchestrator, tool: 'newer-tool' } }));
+    harness.hold(false);
+    expect(await harness.call({ kind: 'next', run, wait: false })).toMatchObject({ data: { turn: { run } } });
+  });
+
   it('answers held to a step command that reports its own attempt, and the runner alone reports it', async () => {
     const harness = await skillHarness({ check: CHECK });
     roots.push(harness.root);
