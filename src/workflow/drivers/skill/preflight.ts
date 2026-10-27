@@ -6,7 +6,7 @@ import type { GateGuards, WorkflowDescription } from '../../describe.js';
 import { INVOKE_ASK_NEED, unattendedReason, type Judging } from '../../protocol.js';
 import type { OutputSchema } from '../../types.js';
 import { localStartLiteral, startLiteral, type Invocation, type Literal } from './literals.js';
-import type { DescribeVerdict } from './transitions.js';
+import { judgedBy, type DescribeVerdict } from './transitions.js';
 import type { DescribeAsk } from './turn.js';
 
 /**
@@ -228,6 +228,8 @@ function factsOf(description: WorkflowDescription, judging: Judging, answering: 
     ...facts.budgets.map(({ step, tokens }) => (step === undefined ? `It may spend at most ${tokens} tokens.` : `${step} may spend at most ${tokens} tokens each time it starts.`)),
     ...(facts.timeout !== undefined ? [`It stops after ${durationOf(facts.timeout)}.`] : []),
     ...(judging.kind === 'here' ? [`${judging.tool} judges ${scored} here, with one confined judge call per pass.`] : []),
+    ...(judging.kind === 'session' ? [`${scored} ${facts.scored.length > 1 ? 'are' : 'is'} judged by this session in a subagent once the run is done, at best-effort isolation. ${judging.reason}`] : []),
+    ...(judging.kind === 'session' && judging.verified ? [`${listOf(judging.verified)} ${judging.verified.length > 1 ? 'ask' : 'asks'} for verified isolation, so that work stays open for another driver.`] : []),
     ...(judging.kind === 'elsewhere' ? [`${scored} ${facts.scored.length > 1 ? 'are' : 'is'} not judged on this machine. ${judging.reason}`] : []),
     ...(description.invoke === 'ask' ? ['The team asks that you agree before it starts.'] : []),
   ];
@@ -241,7 +243,7 @@ function optionsOf(description: WorkflowDescription, judging: Judging, invocatio
   const { name, facts } = description;
   const flags = startFlags(description);
   const noun = gatesNoun(facts.gates.filter((gate) => !gate.required), true);
-  const here = judging.kind === 'here';
+  const judged = judgedBy(judging) !== undefined;
   const recommended = recommendedPick(description);
   const others: Array<{ label: string; pick: StartPick }> = [
     ...(recommended.hitl ? [
@@ -249,12 +251,12 @@ function optionsOf(description: WorkflowDescription, judging: Judging, invocatio
       { label: `Same, but ${autoAnswered(noun)}`, pick: { ...recommended, hitl: 'auto-approve' as const } },
     ] : []),
     ...(recommended.parallel !== undefined ? [{ label: 'Same, but one step at a time', pick: { ...recommended, parallel: 1 } }] : []),
-    ...(here ? [{ label: 'Same, but without judging', pick: { ...recommended, noJudge: true as const } }] : []),
+    ...(judged ? [{ label: 'Same, but without judging', pick: { ...recommended, noJudge: true as const } }] : []),
   ];
   const parts = [
     ...(recommended.parallel !== undefined ? [`up to ${recommended.parallel} steps at once`] : []),
     ...(recommended.hitl ? [`you decide optional ${noun}`] : []),
-    ...(here ? ['with judging'] : []),
+    ...(judged ? ['with judging'] : []),
   ];
   const first = others.length > 0 ? `Recommended: ${parts.join(', ')}` : flags.confirmed ? 'Yes, start it' : 'Start it';
   return [{ label: first, pick: recommended }, ...others].map(({ label, pick }) => ({ label, start: startLiteral(invocation, name, { ...flags, ...pick }) }));

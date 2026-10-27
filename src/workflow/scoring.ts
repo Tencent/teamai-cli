@@ -251,6 +251,20 @@ function requiredFor(settings: readonly IsolationSetting[], { scorer, pin, defin
   return requiredIsolation([...settings, { source: scorerIsolationSource(scorer, pin.relativePath), value: definition.isolation }]).level;
 }
 
+/**
+ * The scorers among `names` whose judge must be `verified` here, as the team, the scorer and this machine ask; or why
+ * this scope's scoring settings cannot be read. A scorer is read as `pinned` holds it, such as a run's, else as cached now.
+ */
+export async function verifiedScorers(config: LocalConfig, names: readonly string[], pinned?: Record<string, PinnedScorer>): Promise<{ ok: true; scorers: string[] } | { ok: false; reason: string }> {
+  const scoring = await scopeScoring(config);
+  if (!scoring.ok) return scoring;
+  const pins = Object.entries(pinned ?? await pinScorers(config, names)).filter(([scorer]) => names.includes(scorer));
+  return { ok: true, scorers: pins.flatMap(([scorer, pin]) => {
+    const definition = pinnedDefinition(scorer, pin);
+    return definition && requiredFor(scoring.isolation, { scorer, pin, definition }) === 'verified' ? [scorer] : [];
+  }) };
+}
+
 /** Whether a judge at `offered` isolation may judge for a scorer that asks for `required`. */
 function meets(offered: Isolation, required: Isolation): boolean {
   return ISOLATIONS.indexOf(offered) >= ISOLATIONS.indexOf(required);

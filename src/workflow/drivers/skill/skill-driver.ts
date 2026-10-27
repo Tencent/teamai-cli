@@ -23,7 +23,7 @@ import { askFor, attendedReason, ceilingOf, checkStartAnswers, localPromptTool, 
 import { drivesRun, readSkillState, writeSkillState } from './skill-state.js';
 import { detachedRunners, runRunner } from './skill-runner.js';
 import { agentReport, foreground, plannedState, poll } from './tick.js';
-import { describeRow, startRow, type ResumeAnswers, type RowId } from './transitions.js';
+import { describeRow, judgedBy, startRow, type ResumeAnswers, type RowId } from './transitions.js';
 import { errorOf, type SkillAnswer, type SkillError } from './turn.js';
 
 export type SkillCall =
@@ -327,14 +327,14 @@ async function start(call: Extract<SkillCall, { kind: 'describe' | 'start' }>, c
     const denied = description.invoke === 'deny' && context.evidence.kind !== 'none' ? { denied: invokeDeniedMessage(description.name, context.evidence, { kind: 'start' }) } : {};
     const attended = attendedReason(description, 'start');
     const { row, verdict } = describeRow({
-      needed: neededAnswers(description), ...denied, ...(undeliverable ? { undeliverable: undeliverable.message } : {}), ...why, judgingHere: judging.kind === 'here',
+      needed: neededAnswers(description), ...denied, ...(undeliverable ? { undeliverable: undeliverable.message } : {}), ...why, judged: judgedBy(judging) !== undefined,
       mode: context.mode, ...(attended !== undefined ? { attended } : {}),
     });
     context.trace?.(row);
     return { data: { describe: { workflow: description, judging, ask: askFor(verdict, description, context.invocation, judging, { tool: localPromptTool(context) }) } } };
   }
   const check = checkStartAnswers({ description, answers: call.answers, inputs: call.inputs, ceiling });
-  const judge = judging.kind === 'here' && call.answers.judge !== false ? judging.tool : undefined;
+  const judge = call.answers.judge !== false ? judgedBy(judging) : undefined;
   const attended = context.mode === 'unattended' ? attendedReason(description, 'start') : undefined;
   const taken = startRow({ name: description.name, check, ...why, ...(attended !== undefined ? { attended } : {}), prompts: description.facts.prompts.length > 0, ...(judge !== undefined ? { judge } : {}) });
   context.trace?.(taken.row);

@@ -8,7 +8,7 @@ import type { OutputSchema, WorkflowFailure } from '../../types.js';
 import { HOST_CHOICES, HOST_PROFILES, HOST_QUESTION, type HostChoice } from './host-profiles.js';
 import {
   ackLiteral, adoptLiteral, chooseHostLiteral, describeLiteral, localStartLiteral, nextLiteral, personRespondLiteral, pollLiteral, reportLiteral, respondLiteral, resumeLiteral,
-  skillResumeLiteral, takeoverLiteral, unavailableLiteral, type Invocation, type Literal,
+  sessionJudgeLiteral, skillResumeLiteral, takeoverLiteral, unavailableLiteral, type Invocation, type Literal,
 } from './literals.js';
 import type { AttemptState, Dispatch, Gate, ModelPick, SkillState, StopReason, TurnEvent } from './skill-state.js';
 import { childCap, reportedByAgent, type Answer, type Refusal } from './transitions.js';
@@ -139,8 +139,11 @@ export type Action =
   | GateAction
   | PersonAction
   | HandoffAction
-  /** `judging`: the judge running now, on the pass of `step` that `scorers` judge. */
-  | { kind: 'done'; outcome: NonNullable<SkillState['done']>['outcome']; failure?: WorkflowFailure; prs: string[]; judging?: { step: string; scorers: string[] } };
+  /**
+   * `judging`: the judge running now, on the pass of `step` that `scorers` judge. `score`: the `score --next` that leases
+   * the run's judge work to the session's own judge, when the session judges the run.
+   */
+  | { kind: 'done'; outcome: NonNullable<SkillState['done']>['outcome']; failure?: WorkflowFailure; prs: string[]; judging?: { step: string; scorers: string[] }; score?: Literal };
 
 export interface RunningEntry {
   attempt: AttemptId;
@@ -356,6 +359,7 @@ function actionsOf(state: SkillState): Action[] {
   const judge = state.judging?.open;
   const end: Action[] = state.done ? [{
     kind: 'done', outcome: state.done.outcome, ...(state.done.failure ? { failure: state.done.failure } : {}), prs: state.done.prs, ...(judge ? { judging: { step: judge.step, scorers: judge.scorers } } : {}),
+    ...(state.sessionJudge ? { score: sessionJudgeLiteral(state.invocation, state.run, state.driver, state.sessionJudge.tool) } : {}),
   }] : [];
   const gate = state.gate && !state.done ? [gateAction(state, state.gate)] : [];
   return [...stops, ...offers, ...places, ...gate, ...end];

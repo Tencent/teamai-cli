@@ -396,7 +396,7 @@ With `--hitl person`, the agent asks the person. With `--hitl recommend`, the ag
 
 ### Judging
 
-When a step lists [scorers](scorers.md) and the confined judge of the session's tool is installed on this machine, TeamAI judges each scored pass in the background, and the session tells the person the labels. To leave the scored steps unjudged on this machine, the person picks the start option without judging (`--no-judge`). The orchestrating agent never judges.
+When a step lists [scorers](scorers.md) and the confined judge of the session's tool is installed on this machine, TeamAI judges each scored pass in the background, and the session tells the person the labels. When this machine has no verified judge of the session's tool, such as Cursor's, the session takes the run's judge work once the run is done and judges each pass in a fresh subagent at `best-effort` isolation. Work a scorer requires `verified` for stays open for another driver. To leave the scored steps unjudged on this machine, the person picks the start option without judging (`--no-judge`). The orchestrating agent never judges a pass in its own context.
 
 ### Limits
 

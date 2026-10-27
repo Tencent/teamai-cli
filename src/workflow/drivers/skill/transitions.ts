@@ -4,7 +4,7 @@
  * are the tables under `## The skill driver` in docs/dev/workflow-engine.md, cell by cell.
  */
 import type { RunMode } from '../../../launch-context.js';
-import type { RunReadied, RunVersion } from '../../protocol.js';
+import type { Judging, RunReadied, RunVersion } from '../../protocol.js';
 import type { EnvScope } from '../../requirements.js';
 import type { AttemptId, RunId } from '../../store.js';
 import type { WorkflowFailure } from '../../types.js';
@@ -27,7 +27,7 @@ export interface TransitionRow {
 export const TRANSITIONS = [
   { id: 'R1', state: 'none', input: 'describe', guard: '`invoke: deny` and the caller has agent evidence', effects: 'none', next: 'none', action: 'describe `ask.kind: denied` with the reason, no literal' },
   { id: 'R2', state: 'none', input: 'describe', guard: 'run mode `attended`, and the definition has a local route: a step this driver takes and a later one it is held from for env or tokens work in one workspace copy', effects: 'none', next: 'none', action: 'describe `ask.kind: local` with the reason and the `--driver local` start literal, with `--tools default=<session tool>` when `localPromptTool` names one' },
-  { id: 'R3', state: 'none', input: 'describe', guard: 'something to ask: `invoke: ask`, a required input, width above 1, an optional gate, or judging here', effects: 'none', next: 'none', action: 'describe `ask.kind: ask`: one question stating every fact, and at most five start literals, the recommended first' },
+  { id: 'R3', state: 'none', input: 'describe', guard: 'something to ask: `invoke: ask`, a required input, width above 1, an optional gate, or judging here or by the session', effects: 'none', next: 'none', action: 'describe `ask.kind: ask`: one question stating every fact, and at most five start literals, the recommended first' },
   { id: 'R4', state: 'none', input: 'describe', guard: 'nothing to ask', effects: 'none', next: 'none', action: 'describe `ask.kind: start` with the one start literal, and the facts to tell the person' },
   { id: 'R16', state: 'none', input: 'describe', guard: '`deliveryProblem` answers for the checkout: a `deliver: pr` step the definition cannot deliver (`bad_delivery`), or a detached HEAD (`no_base_branch`)', effects: 'none', next: 'none', action: 'describe `ask.kind: denied` with its message, no literal' },
   { id: 'R23', state: 'none', input: 'describe', guard: 'run mode `unattended`, R1 and R16 do not apply, and the definition has a local route, as R2\'s', effects: 'none', next: 'none', action: 'describe `ask.kind: denied` with the local route\'s reason, no literal: nobody is there to run the local driver' },
@@ -36,7 +36,7 @@ export const TRANSITIONS = [
   { id: 'R8', state: 'none', input: 'start `--driver skill`, or R19\'s input', guard: 'the definition has a local route; for R19\'s input, the run\'s own definition, once R20 and R21 do not apply, or, in run mode `unattended`, as the run stands before the claim', effects: 'none', next: 'none', action: 'error `needs_local_driver` with the reason, next null; for R19\'s input it names the person\'s `teamai workflow resume <run>` literal, and the run stays readied here, or, unattended, as it was: nothing is claimed' },
   { id: 'R25', state: 'none', input: 'start `--driver skill`', guard: 'run mode `unattended`, R8 does not apply, and `attendedReason` names what needs a person, as R17\'s', effects: 'none', next: 'none', action: 'error `unattended_denied` with that reason, next null: no run is created' },
   { id: 'R9', state: 'none', input: 'start `--driver skill`', guard: '`checkStartAnswers` answers `confirm-needed`, and R8 and R25 do not apply', effects: 'none', next: 'none', action: 'error `confirm_needed`, next: the describe literal' },
-  { id: 'R10', state: 'none', input: 'start `--driver skill`', guard: '`checkStartAnswers` answers `ok`', effects: '`WorkflowClient.start`; write skill.json: identity `{skill, machine, run checkout}`, invocation, options (`--parallel`, the HITL mode, the caller\'s run mode), host `pending` when the definition has a prompt step, owner := the caller\'s session; judging on with the session tool when describe judges here and the start has no `--no-judge`', next: 'host when it has a prompt step, else drive', action: 'the turn of a tick' },
+  { id: 'R10', state: 'none', input: 'start `--driver skill`', guard: '`checkStartAnswers` answers `ok`', effects: '`WorkflowClient.start`; write skill.json: identity `{skill, machine, run checkout}`, invocation, options (`--parallel`, the HITL mode, the caller\'s run mode), host `pending` when the definition has a prompt step, owner := the caller\'s session; judging on with the session tool when describe judges here, or `sessionJudge` with it when describe judges by the session, and the start has no `--no-judge`', next: 'host when it has a prompt step, else drive', action: 'the turn of a tick' },
   { id: 'R11', state: 'none', input: 'next, report `--driver skill`', guard: 'this machine has no skill.json for the run', effects: 'none', next: 'none', action: 'error `not_skill_run`, next: the `resume <run> --driver skill` literal' },
   { id: 'R19', state: 'any', input: 'resume `--driver skill`; `next --takeover` with no skill.json here', guard: '`WorkflowClient.resume` readied the run: it took a run this machine lacks, or with `--claim` one another install owns, or found the run here and this install its owner, and released each lease this machine\'s local driver left on it, once the process group that lease\'s setup or command left is stopped, and stopped the group each attempt of that driver the run already stopped left; no skill.json is kept here, or the claim installed the published state; R8 and R24 do not apply', effects: 'write skill.json as R10 does, with the caller\'s run mode and the options of `--parallel`, `--hitl` or `--auto-approve` and `--no-judge`, else a start\'s: one step at a time, HITL mode `person`, or `auto-approve` in an unattended run', next: 'host when the run has a prompt step, else drive', action: 'the turn of a tick' },
   { id: 'R20', state: 'any', input: 'R19\'s input', guard: '`WorkflowClient.resume` answers that another install owns the run (a resume without `--claim`, or a takeover), or that this machine lacks it (a takeover)', effects: 'none', next: 'unchanged', action: 'error `not_owner` or `run_not_found`, next: the `resume <run> --driver skill --claim` literal, run only when the person agrees' },
@@ -69,7 +69,7 @@ export const TRANSITIONS = [
   { id: 'D14', state: 'drive', input: 'reply wait', guard: 'it lists `held`, and no attempt is open', effects: 'none', next: 'drive', action: '`person why:handoff` with the person\'s `teamai workflow resume <run>` literal, with `--tools default=<session tool>` when `localPromptTool` names one; waiting `held`; no `then`' },
   { id: 'D15', state: 'drive', input: 'reply wait', guard: '', effects: 'none', next: 'drive', action: 'waiting' },
   { id: 'D27', state: 'drive', input: 'reply wait, after its row', guard: 'it lists `held`, and no reply of this tick came to a `next` that took no lease', effects: 'engine `next` as D1, with `canTakeLease: false`, since the engine answers a held step before a gate; H5, then D10 to D12 for a gate, take its reply', next: 'drive', action: '' },
-  { id: 'D16', state: 'drive', input: 'reply done', guard: '', effects: '`seq` := seq + 1, so every session has the end to see; keep with the end the run file\'s version, read after, when the end is out and its status and receipts agree with the end', next: 'done', action: '`done {outcome, failure, prs, judging}`' },
+  { id: 'D16', state: 'drive', input: 'reply done', guard: '', effects: '`seq` := seq + 1, so every session has the end to see; keep with the end the run file\'s version, read after, when the end is out and its status and receipts agree with the end', next: 'done', action: '`done {outcome, failure, prs, judging, score}`' },
   { id: 'D17', state: 'drive', input: 'reply error', guard: '', effects: 'none', next: 'drive', action: 'error with the engine\'s code, next: the next literal' },
   { id: 'D18', state: 'drive', input: 'a foreground call', guard: 'it spawned runners', effects: 'release the lock; wait up to `WAIT_GRACE_MS` for them, re-taking the lock per check', next: 'drive', action: '' },
   { id: 'D19', state: 'any', input: 'a foreground call', guard: 'the lock is not free within `TICK_LOCK_WAIT_MS` (`report`: `WAIT_BOUND_MS`)', effects: 'none', next: 'unchanged', action: 'error `driver_running`, next: the same literal' },
@@ -168,15 +168,36 @@ export type JudgeAnswer = { kind: 'judged'; labels: Array<{ scorer: string; labe
 
 /**
  * What describe knows before the rows choose how to start. `denied`: why an agent session may not start the workflow.
- * `local`: why the local driver must run it. `judgingHere`: the session tool's confined judge would judge the scored
- * steps here. `undeliverable`: why a start from the checkout would be refused for its delivery. `mode`: the run mode of
- * the caller. `attended`: why a run of the workflow needs a person.
+ * `local`: why the local driver must run it. `judged`: the scored steps are judged on this machine, by the session
+ * tool's confined judge or by the session itself, so the person may turn judging off. `undeliverable`: why a start from
+ * the checkout would be refused for its delivery. `mode`: the run mode of the caller. `attended`: why a run of the
+ * workflow needs a person.
  */
-export interface DescribeInput { needed: StartAnswer[]; denied?: string; undeliverable?: string; local?: string; judgingHere: boolean; mode: RunMode; attended?: string }
+export interface DescribeInput { needed: StartAnswer[]; denied?: string; undeliverable?: string; local?: string; judged: boolean; mode: RunMode; attended?: string }
 
-/** What a start knows before the rows decide it. `judge`: the session tool whose confined judge judges the run, when describe judges here and the start keeps judging. */
+/** Who judges a run's scored steps on this machine: the confined judge of `tool` here, or the session itself with `tool`. */
+export type JudgedBy = { kind: 'here'; tool: string } | { kind: 'session'; tool: string };
+
+/** Who judges on this machine as `judging` says, so the person may turn judging off; undefined when nobody does. */
+export function judgedBy(judging: Judging): JudgedBy | undefined {
+  switch (judging.kind) {
+    case 'here':
+      return { kind: 'here', tool: judging.tool };
+    case 'session':
+      return { kind: 'session', tool: judging.tool };
+    case 'none':
+    case 'elsewhere':
+      return undefined;
+    default: {
+      const unhandled: never = judging;
+      return unhandled;
+    }
+  }
+}
+
+/** What a start knows before the rows decide it. `judge`: who judges the run on this machine, when describe found one and the start keeps judging. */
 /** `attended`: what in the definition needs a person, in an unattended run, as `attendedReason` says. */
-export interface StartInput { name: string; check: StartCheck; local?: string; attended?: string; prompts: boolean; judge?: string }
+export interface StartInput { name: string; check: StartCheck; local?: string; attended?: string; prompts: boolean; judge?: JudgedBy }
 
 /** What the shell does for a row, beyond saving its state. `applyEffects` applies each kind, in order. */
 export type Effect =
@@ -213,8 +234,8 @@ export type Refusal =
  */
 export type DescribeVerdict = { ask: 'start' | 'ask' | 'unattended' } | { ask: 'local' | 'denied'; reason: string };
 
-/** The run R10 starts: its options, whether it asks the host question first, and the tool that judges it. */
-export interface StartRun { parallel: number; hitl: HitlMode; host: 'none' | 'pending'; judge?: string }
+/** The run R10 starts: its options, whether it asks the host question first, and who judges it on this machine. */
+export interface StartRun { parallel: number; hitl: HitlMode; host: 'none' | 'pending'; judge?: JudgedBy }
 
 /** A refusal of the skill driver; its code decides the literal it names to run instead. */
 type Refused = { kind: 'error'; refusal: Refusal };
@@ -329,7 +350,7 @@ export function describeRow(input: DescribeInput): { row: 'R1' | 'R16' | 'R2' | 
   if (input.mode === 'unattended') {
     return input.attended !== undefined ? { row: 'R17', verdict: { ask: 'denied', reason: input.attended } } : { row: 'R18', verdict: { ask: 'unattended' } };
   }
-  if (input.needed.length > 0 || input.judgingHere) return { row: 'R3', verdict: { ask: 'ask' } };
+  if (input.needed.length > 0 || input.judged) return { row: 'R3', verdict: { ask: 'ask' } };
   return { row: 'R4', verdict: { ask: 'start' } };
 }
 
@@ -375,7 +396,7 @@ export function readiedRow(input: { run: RunId; readied: RunReadied; kept: boole
       const { description, judging } = readied;
       if (input.local !== undefined) return { row: 'R8', answer: { kind: 'error', refusal: { code: 'needs_local_driver', name: description.name, reason: input.local, run } } };
       if (unattended && input.attended !== undefined) return { row: 'R24', answer: { kind: 'engine-error', error: { code: 'unattended_denied', message: input.attended }, next: null } };
-      const judge = judging.kind === 'here' && answers.judge !== false ? judging.tool : undefined;
+      const judge = answers.judge !== false ? judgedBy(judging) : undefined;
       return {
         row: 'R19',
         start: {

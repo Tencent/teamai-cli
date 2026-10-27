@@ -205,8 +205,8 @@ async function eventsToDone(harness: Harness, run: RunId): Promise<unknown[]> {
 }
 
 /** Starts `review` with the skill driver, has its child review the change and report, and answers the turn that follows. */
-async function reviewed(harness: Harness, mode: RunMode = 'attended'): Promise<{ run: RunId; turn: unknown }> {
-  const answers = mode === 'unattended' ? { confirmed: false, hitl: 'auto-approve' as const } : { confirmed: false };
+async function reviewed(harness: Harness, mode: RunMode = 'attended', options: { judge?: false } = {}): Promise<{ run: RunId; turn: unknown }> {
+  const answers = { ...(mode === 'unattended' ? { confirmed: false, hitl: 'auto-approve' as const } : { confirmed: false }), ...options };
   const started = await harness.call({ kind: 'start', name: 'review', answers, inputs: undefined }, { mode });
   if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
   const run = RunIdSchema.parse(started.data.turn.run);
@@ -220,6 +220,14 @@ async function reviewed(harness: Harness, mode: RunMode = 'attended'): Promise<{
   fs.writeFileSync(file, JSON.stringify({ kind: 'output', output: 'Reviewed the change.' }));
   expect(await harness.call({ kind: 'report', run, attempt: dispatch.attempt, role: 'agent', modelUnavailable: false })).toMatchObject({ data: { runner: { status: 'reported' } } });
   return { run, turn: await harness.call({ kind: 'next', run, wait: false }, { mode }) };
+}
+
+/** A claude on PATH without a verified judge profile, so no confined judge of it runs here. */
+function unverifiedClaude(harness: Harness): void {
+  const bin = path.join(harness.root, 'bin');
+  fs.mkdirSync(bin, { recursive: true });
+  fs.writeFileSync(path.join(bin, 'claude'), `#!${process.execPath}\nconsole.log('0.0.1 (Claude Code)');\n`, { mode: 0o755 });
+  vi.stubEnv('PATH', `${bin}${path.delimiter}${process.env.PATH ?? ''}`);
 }
 
 /** A Claude Code session of the harness's checkout, captured and idle for 7 hours: finished, for session scoring to judge. */
@@ -933,22 +941,29 @@ steps:
     for (const turn of [done, judged]) expect(JSON.stringify(turn)).not.toMatch(/"kind":"(choose|person)"/);
   });
 
-  it('an unattended run whose judge is elsewhere reaches done without waiting, and leaves the pass to score --next', async () => {
+  it('an unattended run its session judges reaches done without waiting, and done names the score --next that leases the pass to it', async () => {
     const harness = await skillHarness({ review: REVIEW }, { scorers: { 'review-quality': REVIEW_QUALITY } });
     roots.push(harness.root);
-    // A claude without a verified judge profile: describe finds the judge elsewhere.
-    const bin = path.join(harness.root, 'bin');
-    fs.mkdirSync(bin, { recursive: true });
-    fs.writeFileSync(path.join(bin, 'claude'), `#!${process.execPath}\nconsole.log('0.0.1 (Claude Code)');\n`, { mode: 0o755 });
-    vi.stubEnv('PATH', `${bin}${path.delimiter}${process.env.PATH ?? ''}`);
+    unverifiedClaude(harness);
     expect(await harness.call({ kind: 'describe', name: 'review' }, { mode: 'unattended' })).toMatchObject({ data: { describe: {
-      judging: { kind: 'elsewhere' }, ask: { kind: 'start' },
+      judging: { kind: 'session', tool: 'claude' }, ask: { kind: 'start' },
     } } });
     const { run, turn: done } = await reviewed(harness, 'unattended');
-    expect(done).toMatchObject({ data: { turn: { status: 'done', actions: [{ kind: 'done', outcome: 'succeeded' }] } } });
     expect(done).not.toHaveProperty(['data', 'turn', 'then']);
-    const judge = { driver: { kind: 'external', machine: 'm2', workspace: '/w', can: { judge: { isolation: 'verified', tools: ['claude'] } } }, running: [] };
-    expect(await harness.context.client.scoreNext(judge)).toMatchObject({ data: { lease: { subject: { runId: run, step: 'review' } } } });
+    const [action] = z.object({ data: z.object({ turn: z.object({ actions: z.array(z.object({ kind: z.literal('done'), outcome: z.string(), score: z.string() })) }) }) }).parse(done).data.turn.actions;
+    expect(action).toMatchObject({ outcome: 'succeeded', score: expect.stringMatching(/^teamai score --next --json '\{.*\}'$/) });
+    const payload: unknown = JSON.parse(action?.score.slice(action.score.indexOf("'") + 1, -1) ?? '');
+    expect(payload).toEqual({ run, driver: { kind: 'skill', machine: expect.any(String), workspace: harness.work, can: { judge: { isolation: 'best-effort', access: 'read', tools: ['claude'] } } }, running: [] });
+    expect(await harness.context.client.scoreNext(payload)).toMatchObject({ data: { lease: { subject: { runId: run, step: 'review' }, judge: { tool: 'claude', isolation: 'best-effort' } } } });
+  });
+
+  it('a run started without judging reaches done without the score --next of the session\'s own judge', async () => {
+    const harness = await skillHarness({ review: REVIEW }, { scorers: { 'review-quality': REVIEW_QUALITY } });
+    roots.push(harness.root);
+    unverifiedClaude(harness);
+    const { turn: done } = await reviewed(harness, 'attended', { judge: false });
+    expect(done).toMatchObject({ data: { turn: { status: 'done', actions: [{ kind: 'done', outcome: 'succeeded' }] } } });
+    expect(done).not.toHaveProperty(['data', 'turn', 'actions', 0, 'score']);
   });
 
   it('a skill run judges only its own passes: never a finished session, never another run\'s pass', async () => {

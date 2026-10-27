@@ -1,6 +1,7 @@
 /** Every command line the skill driver prints, and the permission patterns that pre-approve them. */
 import { z } from 'zod';
 import type { AttemptId, RunId } from '../../store.js';
+import type { DriverIdentity } from '../../types.js';
 import type { HostChoice } from './host-profiles.js';
 import type { HitlMode } from './preflight.js';
 
@@ -132,6 +133,12 @@ export function reportLiteral(invocation: Invocation, run: RunId, attempt: Attem
  */
 export function adoptLiteral(invocation: Invocation, run: RunId, attempt: AttemptId, dir?: string): Literal {
   return LiteralSchema.parse(`${invocation} workflow next ${run} --driver skill --attempt ${attempt} --adopt ${dir === undefined ? "'{dir}'" : shellWord(dir)}`);
+}
+
+/** Leases the next judge work of `run` to the session's own judge: `tool`, at best-effort, reading only the evidence. */
+export function sessionJudgeLiteral(invocation: Invocation, run: RunId, driver: DriverIdentity, tool: string): Literal {
+  const request = { run, driver: { ...driver, can: { judge: { isolation: 'best-effort', access: 'read', tools: [tool] } } }, running: [] };
+  return LiteralSchema.parse(`${invocation} score --next --json ${shellWord(JSON.stringify(request))}`);
 }
 
 /** Reports that the host cannot run the model the dispatch of `attempt` names. */

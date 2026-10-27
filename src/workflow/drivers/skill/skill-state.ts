@@ -11,6 +11,7 @@ import { AttemptIdSchema, RunIdSchema, skillStatePath, type RunId, type RunLock 
 import { HOST_CHOICES } from './host-profiles.js';
 import { INVOCATIONS } from './literals.js';
 import { HITL_MODES } from './preflight.js';
+import type { JudgedBy } from './transitions.js';
 
 
 /** A report as the runner sends it, kept before it is sent so a crash between the two loses nothing. */
@@ -159,6 +160,8 @@ const SkillStateSchema = z.object({
   attempts: z.array(AttemptStateSchema),
   /** Present while this driver judges the run's scored steps with the confined judge of `tool`. `open`: the judge running now. */
   judging: z.object({ tool: z.string(), open: JudgeSchema.optional() }).optional(),
+  /** Present when the session itself judges the run's scored steps with `tool` once the run is done, as no verified judge of `tool` is here. */
+  sessionJudge: z.object({ tool: z.string() }).optional(),
   /** The sequence number of the last event. */
   seq: z.number().int(),
   events: z.array(z.object({ seq: z.number().int(), event: TurnEventSchema })),
@@ -176,17 +179,32 @@ export type SkillState = z.infer<typeof SkillStateSchema>;
 
 /**
  * The state of a run this driver starts to drive for `session`, from `at` on: nothing open and nothing shown yet, and
- * `judge`, the session tool whose confined judge judges its scored steps here, when it judges them.
+ * `judge`, who judges its scored steps on this machine, when anyone does.
  */
 export function newSkillState(input: {
-  run: RunId; driver: SkillState['driver']; invocation: SkillState['invocation']; options: SkillState['options']; host: 'none' | 'pending'; session: string | undefined; at: string; judge?: string;
+  run: RunId; driver: SkillState['driver']; invocation: SkillState['invocation']; options: SkillState['options']; host: 'none' | 'pending'; session: string | undefined; at: string; judge?: JudgedBy;
 }): SkillState {
   const { run, driver, invocation, options, host, session, at, judge } = input;
   return {
     version: 1, run, driver, invocation, options, host: { kind: host },
     orchestrator: { ...(session !== undefined ? { session } : {}), lastCallAt: at },
-    attempts: [], ...(judge !== undefined ? { judging: { tool: judge } } : {}), seq: 0, events: [], seen: {}, settled: [],
+    attempts: [], ...judgingState(judge), seq: 0, events: [], seen: {}, settled: [],
   };
+}
+
+/** The skill state field of who judges the run on this machine: `judging` for the confined judge, `sessionJudge` for the session. */
+function judgingState(judge: JudgedBy | undefined): Pick<SkillState, 'judging' | 'sessionJudge'> {
+  if (judge === undefined) return {};
+  switch (judge.kind) {
+    case 'here':
+      return { judging: { tool: judge.tool } };
+    case 'session':
+      return { sessionJudge: { tool: judge.tool } };
+    default: {
+      const unhandled: never = judge;
+      return unhandled;
+    }
+  }
 }
 
 /** Whether `session` is the one that drives the run of `state`: it passed the run's `invoke` check when it started or took the run. */
