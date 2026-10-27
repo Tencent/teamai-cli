@@ -68,8 +68,31 @@ function publishTeam(autoCompact: boolean): void {
     '',
   ].join('\n'));
   git(['add', '-A'], seed);
-  git(['commit', '-q', '-m', autoCompact ? 'set autoCompact' : 'drop autoCompact'], seed);
+  git(['commit', '-q', '--allow-empty', '-m', autoCompact ? 'set autoCompact' : 'drop autoCompact'], seed);
   git(['push', '-q', remote, 'HEAD:main'], seed);
+}
+
+/** A machine of its own: a fresh HOME with Claude Code installed, reaching the team remote. */
+function freshMachine(name: string): void {
+  home = path.join(sandbox, name);
+  fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
+  git(['config', '--global', `url.${remote}.insteadOf`, URL], sandbox, { HOME: home, USERPROFILE: home });
+}
+
+/** A user-scope install in HOME and a workspace one in ~/work/p, both pulled; returns the workspace dir and its config file. */
+async function installUserAndWorkspace(): Promise<{ project: string; workspaceConfig: string }> {
+  const userInit = await runCLI(['init', URL, '--provider', 'git', '--agent', 'claude', '--scope', 'user', '--force'], home);
+  expect(userInit.code, userInit.output).toBe(0);
+  const userPull = await runCLI(['pull'], home);
+  expect(userPull.code, userPull.output).toBe(0);
+  const project = path.join(home, 'work', 'p');
+  fs.mkdirSync(project, { recursive: true });
+  git(['init', '-q', '-b', 'main'], project);
+  const init = await runCLI(['init', URL, '--provider', 'git', '--agent', 'claude', '--force'], project);
+  expect(init.code, init.output).toBe(0);
+  const partitions = fs.readdirSync(path.join(home, '.teamai', 'projects'));
+  expect(partitions).toHaveLength(1);
+  return { project, workspaceConfig: path.join(home, '.teamai', 'projects', partitions[0], 'config.yaml') };
 }
 
 const readJson = (rel: string) => JSON.parse(fs.readFileSync(path.join(home, rel), 'utf8'));
@@ -79,18 +102,11 @@ describe.skipIf(process.platform === 'win32')('auto-compact threshold on pull', 
   beforeAll(() => {
     if (!fs.existsSync(CLI)) throw new Error(`CLI binary not found at ${CLI}. Run "npm run build" first.`);
     sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-autocompact-e2e-')));
-    home = path.join(sandbox, 'home');
     seed = path.join(sandbox, 'seed');
     remote = path.join(sandbox, 'autocompact.git');
-    for (const dir of ['.claude', '.codex', '.codebuddy']) fs.mkdirSync(path.join(home, dir), { recursive: true });
-    writeFile(path.join(home, '.codex', 'config.toml'), '# mine\nmodel = "gpt-6.1-sol"\n\n[desktop]\nx = 1\n');
-    // The member's own CodeBuddy value, which teamai must leave alone.
-    writeFile(path.join(home, '.codebuddy', 'settings.json'), '{\n  "autoCompactWindow": 300000\n}\n');
     writeFile(path.join(seed, 'skills', 'team-skill', 'SKILL.md'), '---\nname: team-skill\ndescription: Team skill fixture\n---\n\n# Team skill\n');
     git(['init', '-q', '-b', 'main'], seed);
     git(['init', '-q', '--bare', '-b', 'main', remote], sandbox);
-    publishTeam(true);
-    git(['config', '--global', `url.${remote}.insteadOf`, URL], sandbox, { HOME: home, USERPROFILE: home });
   });
 
   afterAll(() => {
@@ -98,6 +114,12 @@ describe.skipIf(process.platform === 'win32')('auto-compact threshold on pull', 
   });
 
   it('writes each tool\'s setting, keeps the member\'s own, and takes its values back when the team drops the policy', async () => {
+    freshMachine('home-policy');
+    publishTeam(true);
+    for (const dir of ['.codex', '.codebuddy']) fs.mkdirSync(path.join(home, dir), { recursive: true });
+    writeFile(path.join(home, '.codex', 'config.toml'), '# mine\nmodel = "gpt-6.1-sol"\n\n[desktop]\nx = 1\n');
+    // The member's own CodeBuddy value, which teamai must leave alone.
+    writeFile(path.join(home, '.codebuddy', 'settings.json'), '{\n  "autoCompactWindow": 300000\n}\n');
     const init = await runCLI(['init', URL, '--provider', 'git', '--agent', 'claude,codex,codebuddy', '--scope', 'user', '--force'], home);
     expect(init.code, init.output).toBe(0);
     const pulled = await runCLI(['pull'], home);
@@ -123,23 +145,35 @@ describe.skipIf(process.platform === 'win32')('auto-compact threshold on pull', 
   }, 180_000);
 
   it('keeps the user scope\'s value when a pull runs in a workspace that opts out', async () => {
+    freshMachine('home-workspace-opt-out');
     publishTeam(true);
-    const userPull = await runCLI(['pull', '--force'], home);
-    expect(userPull.code, userPull.output).toBe(0);
+    const { project, workspaceConfig } = await installUserAndWorkspace();
     expect(readJson('.claude/settings.json').autoCompactWindow).toBe(433_000);
-
-    const project = path.join(home, 'work', 'p');
-    fs.mkdirSync(project, { recursive: true });
-    git(['init', '-q', '-b', 'main'], project);
-    const init = await runCLI(['init', URL, '--provider', 'git', '--agent', 'claude', '--force'], project);
-    expect(init.code, init.output).toBe(0);
-    const partitions = fs.readdirSync(path.join(home, '.teamai', 'projects'));
-    expect(partitions).toHaveLength(1);
-    fs.appendFileSync(path.join(home, '.teamai', 'projects', partitions[0], 'config.yaml'), 'autoCompactTokens: 0\n');
+    fs.appendFileSync(workspaceConfig, 'autoCompactTokens: 0\n');
 
     const projectPull = await runCLI(['pull', '--force'], project);
     expect(projectPull.code, projectPull.output).toBe(0);
     expect(projectPull.output).not.toMatch(/Removed the auto-compact setting/);
     expect(readJson('.claude/settings.json').autoCompactWindow).toBe(433_000);
+  }, 180_000);
+
+  it('leaves the value alone while another process holds the user scope\'s sync lock, and applies the user scope\'s change once it is free', async () => {
+    freshMachine('home-user-locked');
+    publishTeam(true);
+    const { project } = await installUserAndWorkspace();
+    fs.appendFileSync(path.join(home, '.teamai', 'config.yaml'), 'autoCompactTokens: 300000\n');
+    const lock = path.join(home, '.teamai', '.sync-lock');
+    // A live holder: this test process.
+    fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString(), owner: 'other-pull' }));
+
+    const locked = await runCLI(['pull', '--force'], project);
+    expect(locked.code, locked.output).toBe(0);
+    expect(readJson('.claude/settings.json').autoCompactWindow).toBe(433_000);
+
+    fs.rmSync(lock);
+    const free = await runCLI(['pull', '--force'], project);
+    expect(free.code, free.output).toBe(0);
+    expect(readJson('.claude/settings.json').autoCompactWindow).toBe(333_000);
+    expect(fs.existsSync(lock)).toBe(false);
   }, 180_000);
 });

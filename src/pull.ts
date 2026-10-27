@@ -81,7 +81,7 @@ import { envShVariables, keptFromUserScope, resolvesTeamEnv, resolveTeamEnv, var
 import { reservedTeamEnvWarning } from './env-reserved.js';
 import { describeEnvAdvisory, envAdvisories } from './env-advisories.js';
 import { getUserHome } from './utils/home.js';
-import { acquireLock, releaseLock } from './update.js';
+import { acquireLock, releaseLock, withFileLock } from './update.js';
 import { mirrorLearnings } from './utils/learnings-mirror.js';
 import { withTimeout } from './utils/async.js';
 import { runDeclaredPostPull } from './post-pull.js';
@@ -3345,9 +3345,14 @@ export async function pull(
   //      The user scope decides when there is one, also when this pull skipped
   //      or only inherited it. A contended one is left to the next pull: handing
   //      the decision to the project would flip the value.
-  const autoCompactUser = activeUserConfig ?? inheritedUserConfig
-    ?? (projectMode && !inheritUserScope ? await loadLocalConfigForScope('user', undefined, { dryRun: options.dryRun }) : null);
-  if (!autoCompactUser || !contended.has(autoCompactUser)) await reconcileAutoCompact(autoCompactUser ?? reconcileProject, options);
+  const userScope = activeUserConfig ?? inheritedUserConfig;
+  if (userScope) {
+    if (!contended.has(userScope)) await reconcileAutoCompact(userScope, options);
+  } else if (projectMode && !inheritUserScope) {
+    await reconcileAutoCompactPastSkippedUser(reconcileProject, options);
+  } else {
+    await reconcileAutoCompact(reconcileProject, options);
+  }
 
   // 4. Auto-report usage data to all active scopes. Skill usage lives in each
   //    scope's own file (`<dataHome>/usage.jsonl`, the user scope's
@@ -4094,6 +4099,22 @@ async function scopeEnv(localConfig: LocalConfig, teamEnvs: Map<LocalConfig, Tea
   const teamEnv = await resolveTeamEnv(localConfig);
   teamEnvs.set(localConfig, teamEnv);
   return teamEnv;
+}
+
+/**
+ * The auto-compact step of a workspace pull that skipped the user scope. The
+ * user scope still decides when it is set up. Its clone is read under its sync
+ * lock, held for this step only; while another process holds it, the step is
+ * left to the next pull.
+ */
+async function reconcileAutoCompactPastSkippedUser(projectConfig: LocalConfig | null, options: GlobalOptions): Promise<void> {
+  if (options.dryRun) return;
+  const userConfig = await loadLocalConfigForScope('user');
+  if (!userConfig) return reconcileAutoCompact(projectConfig, options);
+  if (userConfig.repo.kind === 'http') return reconcileAutoCompact(userConfig, options);
+  const lock = path.join(getDataHome(userConfig), SYNC_LOCK_FILENAME);
+  const run = await withFileLock(lock, { attempts: 1, delayMs: 0 }, () => reconcileAutoCompact(userConfig, options));
+  if (!run.held) log.debug('[autocompact] skipped: another teamai process holds the user scope\'s sync lock; the next pull retries');
 }
 
 /**
