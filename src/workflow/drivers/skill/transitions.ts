@@ -50,7 +50,7 @@ export const TRANSITIONS = [
   { id: 'R13', state: 'host', input: 'next `--choice h`', guard: '', effects: 'host := `HOST_PROFILES[h]`; on `h4`, which starts no child agent, drop `sessionJudge`', next: 'drive', action: 'the turn of a tick, with event `judging-off` `no_child_agent` when it dropped `sessionJudge`' },
   { id: 'R14', state: 'host', input: 'report, next `--ack` or `--adopt`', guard: '', effects: 'none', next: 'host', action: 'error `choice_pending`, next: the next literal' },
   { id: 'R15', state: 'drive, done', input: 'next `--choice h`', guard: '', effects: 'none', next: 'unchanged', action: 'error `unknown_choice`, next: the next literal' },
-  { id: 'S1', state: 'host, drive, done', input: 'an agent call from session s', guard: 'the owner is s, or either session is unknown', effects: '`lastCallAt` := now; owner := s, working in s\'s tool, when unknown; else the tool := s\'s when the run has none and s is its owner or neither is known', next: 'unchanged', action: 'the input\'s row' },
+  { id: 'S1', state: 'host, drive, done', input: 'an agent call from session s', guard: 'the owner is s, or either session is unknown', effects: '`lastCallAt` := now; the tool := the one the call declares with `--tools`; else owner := s, working in s\'s tool, when unknown; else the tool := s\'s when the run has none and s is its owner or neither is known', next: 'unchanged', action: 'the input\'s row' },
   { id: 'S2', state: 'host, drive, done', input: 'an agent call from session s without `--takeover`', guard: 'owner o is not s, and both are known, however long o has been idle', effects: 'none', next: 'unchanged', action: 'error `orchestrator_active` with `idleSeconds`, the seconds since o\'s last call, next: the takeover literal' },
   { id: 'S4', state: 'host, drive, done', input: 'next `--takeover` from session s', guard: '', effects: 'owner := s, working in the tool its host names; `lastCallAt` := now; `seen[s]` := `seen[o]` when that is later; every offered or dispatched attempt becomes offered with `reissued`', next: 'unchanged', action: 'event `takeover`; the turn of a tick' },
   { id: 'S5', state: 'any', input: 'a runner call (`report --attempt a` with the marker `<run>/a`)', guard: '', effects: 'no session check, no `lastCallAt`', next: 'unchanged', action: 'C rows' },
@@ -435,9 +435,9 @@ export function invokeRow(refusal: WorkflowFailure | undefined): Answered<'R22',
 
 /**
  * The session row of an agent call from `input.session` (S1, S2, S4), or R11 when this machine keeps no skill state of
- * the run. `takeover`: the call is `next --takeover`.
+ * the run. `takeover`: the call is `next --takeover`. `declared`: the tool the call names with `--tools default=<tool>`.
  */
-export function callRow(state: SkillState | undefined, input: { run: RunId; session: string | undefined; tool: ToolId | undefined; at: string; takeover: boolean }): Moved<'S1' | 'S4'> | Answered<'R11' | 'S2'> {
+export function callRow(state: SkillState | undefined, input: { run: RunId; session: string | undefined; tool: ToolId | undefined; declared?: ToolId; at: string; takeover: boolean }): Moved<'S1' | 'S4'> | Answered<'R11' | 'S2'> {
   if (!state) return { row: 'R11', answer: { kind: 'error', refusal: { code: 'not_skill_run', run: input.run, toolNamed: input.tool !== undefined } } };
   if (input.takeover) return { row: 'S4', state: takenOver(state, input) };
   const owner = state.orchestrator.session;
@@ -445,10 +445,11 @@ export function callRow(state: SkillState | undefined, input: { run: RunId; sess
     const idleSeconds = Math.round((Date.parse(input.at) - Date.parse(state.orchestrator.lastCallAt)) / 1000);
     return { row: 'S2', answer: { kind: 'error', refusal: { code: 'orchestrator_active', run: state.run, idleSeconds } } };
   }
-  // A session that becomes the owner works in its own tool; otherwise the run's tool is filled only from its owner.
+  // A tool the call declares wins; a session that becomes the owner works in its own; otherwise the run's tool is filled only from its owner.
   const adopts = owner === undefined && input.session !== undefined;
-  const tool = adopts ? input.tool ?? state.orchestrator.tool
+  const kept = adopts ? input.tool ?? state.orchestrator.tool
     : owner === undefined || owner === input.session ? state.orchestrator.tool ?? input.tool : state.orchestrator.tool;
+  const tool = input.declared ?? kept;
   return { row: 'S1', state: { ...state, orchestrator: { ...state.orchestrator, session: state.orchestrator.session ?? input.session, ...(tool !== undefined ? { tool } : {}), lastCallAt: input.at } } };
 }
 

@@ -298,7 +298,7 @@ async function called(context: SkillContext, lock: RunLock, same: Literal, input
   const unattended = state && context.mode === 'unattended' && (input.resume !== undefined || input.takeover) ? traced(context, unattendedRow(state, answers)) : undefined;
   const kept = unattended?.state ?? state;
   if (kept && input.report !== undefined && traced(context, reportCallRow(kept, input.report))) return { state: kept };
-  const taken = traced(context, callRow(kept, { run, session: context.session, tool: context.tool, at: context.now().toISOString(), takeover: input.takeover !== undefined }));
+  const taken = traced(context, callRow(kept, { run, session: context.session, tool: context.tool, declared: input.resume?.tool, at: context.now().toISOString(), takeover: input.takeover !== undefined }));
   if ('answer' in taken) return { answer: { error: errorOf(taken.answer, { invocation: context.invocation, same, run, localTool }) } };
   return { state: taken.state };
 }

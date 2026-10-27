@@ -95,7 +95,7 @@ Test parsing through `parseWorkflow` and `syncWorkflowDefinitions`. Test the eng
 
 | Row | State | Input | Guard | Effects | Next | Action |
 |---|---|---|---|---|---|---|
-| S1 | host, drive, done | an agent call from session s | the owner is s, or either session is unknown | `lastCallAt` := now; owner := s, working in s's tool, when unknown; else the tool := s's when the run has none and s is its owner or neither is known | unchanged | the input's row |
+| S1 | host, drive, done | an agent call from session s | the owner is s, or either session is unknown | `lastCallAt` := now; the tool := the one the call declares with `--tools`; else owner := s, working in s's tool, when unknown; else the tool := s's when the run has none and s is its owner or neither is known | unchanged | the input's row |
 | S2 | host, drive, done | an agent call from session s without `--takeover` | owner o is not s, and both are known, however long o has been idle | none | unchanged | error `orchestrator_active` with `idleSeconds`, the seconds since o's last call, next: the takeover literal |
 | S4 | host, drive, done | next `--takeover` from session s | | owner := s, working in the tool its host names; `lastCallAt` := now; `seen[s]` := `seen[o]` when that is later; every offered or dispatched attempt becomes offered with `reissued` | unchanged | event `takeover`; the turn of a tick |
 | S5 | any | a runner call (`report --attempt a` with the marker `<run>/a`) | | no session check, no `lastCallAt` | unchanged | C rows |
