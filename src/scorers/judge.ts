@@ -318,7 +318,7 @@ export async function runLocalJudge(input: JudgeInput, { resolveTool = resolveCl
       throw new Error(`No judge profile for adapter ${String(unhandled)}`);
     }
     }
-    const result = await runTool({ executable, args, cwd, env, stdin: prompt, timeoutMs: JUDGE_TIMEOUT_MS, group: input.group });
+    const result = await runTool({ executable, args, cwd, env, stdin: prompt, timeoutMs: JUDGE_TIMEOUT_MS, detached: true, group: input.group });
     if (family === 'codebuddy' && /Authentication required/.test(result.stdout + result.stderr)) {
       return { ok: false, code: 'judge_tool_unavailable', message: 'CodeBuddy is not signed in. Sign in with codebuddy /login or set CODEBUDDY_API_KEY, then retry, or submit this lease through another driver.', raw: result.stdout + '\n' + result.stderr };
     }
@@ -330,7 +330,7 @@ export async function runLocalJudge(input: JudgeInput, { resolveTool = resolveCl
       ? { usage: { ...(tokens?.input !== undefined ? { inputTokens: tokens.input } : {}), ...(tokens?.output !== undefined ? { outputTokens: tokens.output } : {}), ...(typeof cost === 'number' ? { cost: { amount: cost, unit: 'USD' } } : {}) } }
       : {};
     if (family === 'opencode' && report?.session) {
-      const deleted = await runTool({ executable, args: ['session', 'delete', report.session, '--standalone'], cwd, env, stdin: '', timeoutMs: JUDGE_TIMEOUT_MS });
+      const deleted = await runTool({ executable, args: ['session', 'delete', report.session, '--standalone'], cwd, env, stdin: '', timeoutMs: JUDGE_TIMEOUT_MS, detached: true });
       if (deleted.code !== 0) return { ok: false, code: 'judge_failed', message: 'OpenCode could not delete the judge session. Delete it with opencode session delete before retrying.', raw: deleted.stderr, ...spent };
     }
     if (result.code !== 0) return { ok: false, code: 'judge_failed', message: `${input.tool} exited with code ${result.code}. See the saved output, then retry or submit the lease through another driver.`, raw: result.stdout + '\n' + result.stderr, ...spent };

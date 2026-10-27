@@ -336,6 +336,21 @@ it('stops a call that outlives its timeout and fails with the timeout', async ()
   await expect(only('claude', hanging).callTool('hi', { launchedBy: 'codebase', timeout: 600 })).rejects.toMatchObject({ kind: 'call_failed', message: 'AI call timed out after 1s (tool: claude)' });
 });
 
+it.runIf(process.platform !== 'win32')("keeps a call in teamai's process group, so Ctrl-C in the terminal stops it too", async () => {
+  root ||= await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-call-'));
+  const reporting = path.join(root, 'claude-group');
+  await fs.writeFile(reporting, `#!${process.execPath}
+const group = require('child_process').execFileSync('ps', ['-o', 'pgid=', '-p', String(process.pid)], { encoding: 'utf8' }).trim();
+process.stdout.write(JSON.stringify({ type: 'result', result: group }));
+`, { mode: 0o755 });
+  const { execFileSync } = await import('node:child_process');
+  const ours = execFileSync('ps', ['-o', 'pgid=', '-p', String(process.pid)], { encoding: 'utf8' }).trim();
+
+  const { text } = await only('claude', reporting).callTool('hi', { launchedBy: 'codebase' });
+
+  expect(text).toBe(ours);
+});
+
 it('runs no more calls of a batch at once than its concurrency', async () => {
   root ||= await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-call-'));
   const running = path.join(root, 'running');

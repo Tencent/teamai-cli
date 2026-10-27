@@ -10,11 +10,12 @@ export interface ToolRun {
 }
 
 /**
- * Runs a headless tool with `stdin` as its input. Outside Windows the tool leads its own process group, recorded in
- * `group` when given, so a timeout stops whatever it started too.
+ * Runs a headless tool with `stdin` as its input, stopping whatever it started at `timeoutMs`. A `detached` tool
+ * leads its own process group outside Windows, recorded in `group` when given, so it outlives no stop but also gets
+ * no Ctrl-C from the terminal: only a run nobody waits on in the foreground detaches.
  */
-export async function runTool(input: { executable: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv; stdin: string; timeoutMs: number; group?: string }): Promise<ToolRun> {
-  const detached = process.platform !== 'win32';
+export async function runTool(input: { executable: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv; stdin: string; timeoutMs: number; detached: boolean; group?: string }): Promise<ToolRun> {
+  const detached = input.detached && process.platform !== 'win32';
   const child = crossSpawn(input.executable, input.args, { cwd: input.cwd, env: input.env, stdio: ['pipe', 'pipe', 'pipe'], detached, windowsHide: true });
   if (detached && input.group !== undefined) recordGroup(child, input.group);
   const stdout: string[] = [];

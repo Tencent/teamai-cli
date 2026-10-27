@@ -106,7 +106,7 @@ export function createToolCaller({ resolveTool = resolveCliPath, loadConfig = lo
         const promptFile = path.join(scratch, 'prompt.md');
         if (call.prompt === 'file') await fs.writeFile(promptFile, prompt);
         const args = call.args({ prompt, promptFile, lastMessageFile });
-        const run = await runTool({ executable, args, cwd: process.cwd(), env: callEnv(launchedBy), stdin: call.prompt === 'stdin' ? prompt : '', timeoutMs: timeout });
+        const run = await runTool({ executable, args, cwd: process.cwd(), env: callEnv(launchedBy), stdin: call.prompt === 'stdin' ? prompt : '', timeoutMs: timeout, detached: false });
         if (run.timedOut) throw new CallError('call_failed', `AI call timed out after ${Math.round(timeout / 1000)}s (tool: ${tool})`);
         const lastMessage = await fs.readFile(lastMessageFile, 'utf8').catch(() => undefined);
         const reading = call.read({ stdout: run.stdout, lastMessage });
