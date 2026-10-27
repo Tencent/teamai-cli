@@ -83,9 +83,15 @@ scoring:
 toolRoots:
   claude: ~/.claude-work
   codex: ~/.codex-alt
+ai:
+  tool: codex                  # teamai 自身 AI 调用使用的工具；TEAMAI_AI_TOOL 优先于它
 ```
 
 角色、项目和 tag 字段保存的是这个目录自己的选择。workspace 还会交付其中已初始化仓库的选择，这些选择在每次 pull 时读取，不会写入这里。参见[包含仓库的 workspace](./distribution.md#包含仓库的-workspace)。
+
+#### AI 工具（`ai.tool`）
+
+teamai 自身的 AI 调用（enrich、codebase、import、promote、投票评审）使用 teamai 能启动的第一个已安装工具：先是 Claude Code 及其内部版本，然后是 Codex 及其内部版本，再是[工具支持](./tool-support.md)中标记为支持 AI 调用的其他工具。要换用其他工具，可以用 `TEAMAI_AI_TOOL` 为单个 shell 设置，或用 `ai.tool` 为本机设置，值为工具 id，例如 `codex`。指定的名称不是 teamai 能启动的工具，或工具不在 PATH 上时，调用会失败，并说明该修改哪个设置。工作流步骤也会回退到这些设置，见[工作流](./workflow.md)。
 
 #### 迁移后的工具根目录（`toolRoots`）
 

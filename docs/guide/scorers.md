@@ -224,7 +224,9 @@ The local judge runs each tool in its own profile:
 | Claude Code 2.1.308 | `verified` | `read` | `--restricted`, Read, Grep and Glob only, no MCP, no saved session. |
 | codex-cli 0.163.0 | `verified` | `read` | A temporary home whose permission profile lets its shell read only the evidence, with no network and no writes. |
 | OpenCode v2.1.2 | `verified` outside any git or hg checkout, else `best-effort` | `read` | Standalone, with isolated settings, database and data dirs; command, edit, web and external-directory permissions denied; judge sessions deleted after reading. |
-| CodeBuddy | `best-effort` | `full` | Read-only tools, no MCP, no saved session. It lists about 70 tools whatever `--tools` says. Not signed in fails `judge_tool_unavailable`. |
+| CodeBuddy, WorkBuddy | `best-effort` | `full` | Read-only tools, no MCP, no saved session. It lists about 70 tools whatever `--tools` says. Not signed in fails `judge_tool_unavailable`. |
+| Cursor CLI | `best-effort` | `full` | Ask mode in Cursor's sandbox. |
+| Pi Coding Agent | `best-effort` | `full` | Only its read, grep, find and ls tools; no context files, extensions or skills; no saved session. |
 | Any other version | `best-effort` | as above | The same profile, unproven. |
 
 A `best-effort` tool cannot judge for a scorer that requires `verified`. Prompts travel through stdin or a file. Tool login and supported model-switch settings are kept. A scorer's model that no judge tool here runs leaves the work open for another driver, without changing the workflow result. [Choose the judge's model](#choose-the-judges-model) says which tool judges.

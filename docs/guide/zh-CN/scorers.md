@@ -224,7 +224,9 @@ Judge tools here: claude 2.1.308 (Claude Code) is verified, codebuddy 2.3.0 is b
 | Claude Code 2.1.308 | `verified` | `read` | `--restricted`，只开放 Read、Grep 和 Glob，不加载 MCP，不保存会话。 |
 | codex-cli 0.163.0 | `verified` | `read` | 临时主目录，其权限配置只允许 shell 读取证据，禁止网络和写入。 |
 | OpenCode v2.1.2 | 不在任何 git 或 hg 检出内时为 `verified`，否则 `best-effort` | `read` | standalone 模式，使用独立的配置、数据库和数据目录；禁止命令、编辑、网页和目录外访问；读取结果后删除评判会话。 |
-| CodeBuddy | `best-effort` | `full` | 只读工具，不加载 MCP，不保存会话。无论 `--tools` 如何设置，它都会列出约 70 个工具。未登录时以 `judge_tool_unavailable` 失败。 |
+| CodeBuddy、WorkBuddy | `best-effort` | `full` | 只读工具，不加载 MCP，不保存会话。无论 `--tools` 如何设置，它都会列出约 70 个工具。未登录时以 `judge_tool_unavailable` 失败。 |
+| Cursor CLI | `best-effort` | `full` | 在 Cursor 沙箱中以 ask 模式运行。 |
+| Pi Coding Agent | `best-effort` | `full` | 只开放 read、grep、find 和 ls 工具；不加载上下文文件、扩展和技能；不保存会话。 |
 | 其他版本 | `best-effort` | 同上 | 相同配置，未经验证。 |
 
 `best-effort` 工具不能评判要求 `verified` 的评分器。提示通过标准输入或文件传入。保留工具登录和受支持的模型切换设置。本机没有评审工具能运行评分器的模型时，评审任务保持打开，留给其他 driver，不改变工作流结果。由哪个工具评审见[选择评审者的模型](#选择评审者的模型)。
