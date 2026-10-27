@@ -1457,6 +1457,18 @@ describe('materializeRef — branch materialization from git', () => {
       await fse.remove(destDir);
     }
   });
+  it('reports nothing about sessions when the branch teamai.yaml is not valid YAML', async () => {
+    const destDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-dest-'));
+    try {
+      await fse.outputFile(path.join(destDir, 'teamai.yaml'), 'team: acme\nsessions: [\n');
+
+      const review = await reviewBranchDir(BRANCH, destDir);
+
+      expect(review.findings).toEqual([]);
+    } finally {
+      await fse.remove(destDir);
+    }
+  });
   it('preserves symlinks so validators observe symbolic links rather than regular files', async () => {
     const gitRepo = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-git-repo-'));
     const destDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-dest-'));

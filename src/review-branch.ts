@@ -26,6 +26,7 @@ import path from 'node:path';
 import chalk from 'chalk';
 import fse from 'fs-extra';
 import YAML from 'yaml';
+import { z } from 'zod';
 
 import { resolveConfigForDir } from './config.js';
 import { caseFoldKey, isSafeNamespaceSegment, NAMESPACE_RULE } from './manifest-schema.js';
@@ -1198,19 +1199,21 @@ async function scoringSettingsFindings(repoDir: string, readText: (p: string) =>
   return findings;
 }
 
-/** The branch's `teamai.yaml` `sessions.publish` (#1385): each value pull ignores, or why the file cannot be read. */
+const TeamSessionsSchema = z.object({ sessions: z.unknown() });
+
+/** The branch's `teamai.yaml` `sessions.publish` (#1385): each value pull ignores. A file that does not parse reports nothing here. */
 async function sessionsFindings(repoDir: string, readText: (p: string) => Promise<string | null>): Promise<Finding[]> {
   const text = await readText(path.join(repoDir, 'teamai.yaml'));
   if (text === null) return [];
-  const finding = (message: string): Finding => ({ level: 'fail', check: 'sessions', path: 'teamai.yaml', message });
   let team: unknown;
   try {
     team = YAML.parse(text);
-  } catch (error) {
-    return [finding(`teamai.yaml is not valid YAML: ${error instanceof Error ? error.message : String(error)}`)];
+  } catch {
+    return [];
   }
-  const sessions = typeof team === 'object' && team !== null && 'sessions' in team ? team.sessions : undefined;
-  return SessionPolicy.readPublish('teamai.yaml', sessions).problems.map(finding);
+  const parsed = TeamSessionsSchema.safeParse(team);
+  const sessions = parsed.success ? parsed.data.sessions : undefined;
+  return SessionPolicy.readPublish('teamai.yaml', sessions).problems.map((message): Finding => ({ level: 'fail', check: 'sessions', path: 'teamai.yaml', message }));
 }
 
 /**
