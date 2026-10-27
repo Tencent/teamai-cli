@@ -38,7 +38,7 @@ afterEach(() => {
 
 describe('injectOpenClawHooks', () => {
   it('writes HOOK.md + handler.ts under <workspace>/hooks/teamai-status-report', async () => {
-    await injectOpenClawHooks(wsDir, 'openclaw');
+    await injectOpenClawHooks('openclaw');
 
     // Hooks land in the resolved workspace dir, where the engine reads them.
     const dir = path.join(wsDir, 'hooks', OPENCLAW_HOOK_DIR);
@@ -53,8 +53,8 @@ describe('injectOpenClawHooks', () => {
 
 
   it('is idempotent (re-inject overwrites cleanly)', async () => {
-    await injectOpenClawHooks(wsDir, 'openclaw');
-    await injectOpenClawHooks(wsDir, 'openclaw');
+    await injectOpenClawHooks('openclaw');
+    await injectOpenClawHooks('openclaw');
     const dir = path.join(wsDir, 'hooks', OPENCLAW_HOOK_DIR);
     expect(fs.existsSync(path.join(dir, 'HOOK.md'))).toBe(true);
   });
@@ -62,11 +62,11 @@ describe('injectOpenClawHooks', () => {
   it('reports the injection only when the hook files change', async () => {
     const success = vi.spyOn(log, 'success').mockImplementation(() => {});
     try {
-      await injectOpenClawHooks(wsDir, 'openclaw');
+      await injectOpenClawHooks('openclaw');
       expect(success).toHaveBeenCalledWith(expect.stringContaining('Injected teamai OpenClaw hook'));
       success.mockClear();
 
-      await injectOpenClawHooks(wsDir, 'openclaw');
+      await injectOpenClawHooks('openclaw');
       expect(success).not.toHaveBeenCalled();
     } finally {
       success.mockRestore();
@@ -92,7 +92,7 @@ describe('injectOpenClawHooks enables the hook in openclaw.json', () => {
   afterEach(() => { warn.mockRestore(); });
 
   it('adds the entry when the config has no master flag, keeping every other field', async () => {
-    await injectOpenClawHooks(wsDir, 'openclaw');
+    await injectOpenClawHooks('openclaw');
 
     const cfg = readCfg();
     // Workspace hooks load only with their own entry enabled.
@@ -110,7 +110,7 @@ describe('injectOpenClawHooks enables the hook in openclaw.json', () => {
     fs.renameSync(cfgPath(), target);
     fs.symlinkSync(target, cfgPath());
 
-    await injectOpenClawHooks(wsDir, 'openclaw');
+    await injectOpenClawHooks('openclaw');
 
     expect(fs.lstatSync(cfgPath()).isSymbolicLink()).toBe(true);
     expect(JSON.parse(fs.readFileSync(target, 'utf-8')).hooks.internal.entries['teamai-status-report']).toEqual({ enabled: true });
@@ -127,7 +127,7 @@ describe('injectOpenClawHooks enables the hook in openclaw.json', () => {
       hooks: { internal: { enabled: true, entries: { 'session-memory': { enabled: true, env: { A: '1' } } } } },
     });
 
-    await injectOpenClawHooks(wsDir, 'openclaw');
+    await injectOpenClawHooks('openclaw');
 
     expect(readCfg().hooks.internal).toEqual({
       enabled: true,
@@ -139,11 +139,11 @@ describe('injectOpenClawHooks enables the hook in openclaw.json', () => {
   });
 
   it('is a no-op once the entry is enabled', async () => {
-    await injectOpenClawHooks(wsDir, 'openclaw');
+    await injectOpenClawHooks('openclaw');
     const before = fs.readFileSync(cfgPath(), 'utf-8');
     const mtime = fs.statSync(cfgPath()).mtimeMs;
 
-    await injectOpenClawHooks(wsDir, 'openclaw');
+    await injectOpenClawHooks('openclaw');
 
     expect(fs.readFileSync(cfgPath(), 'utf-8')).toBe(before);
     expect(fs.statSync(cfgPath()).mtimeMs).toBe(mtime);
@@ -157,7 +157,7 @@ describe('injectOpenClawHooks enables the hook in openclaw.json', () => {
     writeCfg({ agents: { defaults: { workspace: wsDir } }, hooks: { internal } });
     const before = fs.readFileSync(cfgPath(), 'utf-8');
 
-    await injectOpenClawHooks(wsDir, 'openclaw');
+    await injectOpenClawHooks('openclaw');
 
     expect(fs.readFileSync(cfgPath(), 'utf-8')).toBe(before);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining(wording));
@@ -168,7 +168,7 @@ describe('injectOpenClawHooks enables the hook in openclaw.json', () => {
     const json5 = '{\n  // comment\n  agents: { defaults: { workspace: "x" } },\n}\n';
     fs.writeFileSync(cfgPath(), json5);
 
-    await injectOpenClawHooks(wsDir, 'openclaw');
+    await injectOpenClawHooks('openclaw');
 
     expect(fs.readFileSync(cfgPath(), 'utf-8')).toBe(json5);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('openclaw hooks enable teamai-status-report'));
@@ -177,7 +177,7 @@ describe('injectOpenClawHooks enables the hook in openclaw.json', () => {
   it('creates no state dir that OpenClaw does not have', async () => {
     process.env.OPENCLAW_STATE_DIR = path.join(tmpDir, 'missing-state');
 
-    await injectOpenClawHooks(wsDir, 'openclaw');
+    await injectOpenClawHooks('openclaw');
 
     expect(fs.existsSync(path.join(tmpDir, 'missing-state'))).toBe(false);
   });
@@ -200,7 +200,7 @@ describe('the OpenClaw workspace and state dir follow OpenClaw\'s resolution', (
     fs.mkdirSync(path.join(home, '.openclaw', 'workspace'), { recursive: true });
 
     expect(await resolveOpenclawWorkspaceDir()).toBe(path.join(state, 'workspace'));
-    await injectOpenClawHooks(undefined, 'openclaw');
+    await injectOpenClawHooks('openclaw');
 
     expect(fs.existsSync(path.join(state, 'workspace', 'hooks', OPENCLAW_HOOK_DIR, 'handler.ts'))).toBe(true);
     const cfg = JSON.parse(fs.readFileSync(path.join(state, 'openclaw.json'), 'utf-8'));
@@ -256,7 +256,7 @@ describe('the OpenClaw workspace and state dir follow OpenClaw\'s resolution', (
 
 describe('HOOK.md', () => {
   it('parses as YAML and subscribes only to events OpenClaw emits', async () => {
-    await injectOpenClawHooks(wsDir, 'openclaw');
+    await injectOpenClawHooks('openclaw');
     const { errors, data } = readHookFrontmatter(path.join(wsDir, 'hooks', OPENCLAW_HOOK_DIR));
 
     // A frontmatter error marks the hook's metadata invalid, and OpenClaw then
@@ -298,7 +298,7 @@ fs.appendFileSync(${JSON.stringify(logFile)}, process.argv.slice(2).join(' ') + 
 
   /** Transpile handler.ts the way a TypeScript-stripping loader would, beside the original. */
   async function loadHandler(): Promise<(event: unknown) => Promise<void>> {
-    await injectOpenClawHooks(wsDir, 'openclaw');
+    await injectOpenClawHooks('openclaw');
     const dir = path.join(wsDir, 'hooks', OPENCLAW_HOOK_DIR);
     const { code } = transformSync(fs.readFileSync(path.join(dir, 'handler.ts'), 'utf-8'), { loader: 'ts', format: 'esm' });
     const out = path.join(dir, 'handler.test-build.mjs');
@@ -390,7 +390,7 @@ describe('applyOpenClawAgentHook', () => {
 
   it('selects the hook in openclaw.json, so the teamai entry does not leave it out of the allowlist', async () => {
     const cfgPath = path.join(tmpDir, 'openclaw.json');
-    await injectOpenClawHooks(wsDir, 'openclaw');
+    await injectOpenClawHooks('openclaw');
     await applyOpenClawAgentHook({ slug: 'team-check', event: 'SessionStart', command: 'echo hi' });
 
     const { data } = readHookFrontmatter(path.join(tmpDir, 'hooks', 'team-check'));
@@ -425,7 +425,7 @@ describe('applyOpenClawAgentHook', () => {
 describe('removeOpenClawHooks', () => {
   it('removes the injected hook dir and is a no-op when absent', async () => {
     const hooksDir = path.join(wsDir, 'hooks');
-    await injectOpenClawHooks(wsDir, 'openclaw');
+    await injectOpenClawHooks('openclaw');
     // removeOpenClawHooks removes the passed-in hooks dir's teamai-status-report.
     await removeOpenClawHooks(hooksDir);
     expect(fs.existsSync(path.join(hooksDir, OPENCLAW_HOOK_DIR))).toBe(false);

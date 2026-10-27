@@ -33,9 +33,9 @@ import {
   type TeamaiConfig,
   installScopeName,
 } from './types.js';
-import { hookSettingsFile, installOf, isInstalledFor, locate, writable, type Gate, type Install } from './locate.js';
+import { hookSettingsFile, installOf, isInstalledFor, locate, ownOf, writable, type Gate, type Install } from './locate.js';
 import { samePlace } from './resources/places.js';
-import { describeInvalidToolHomes, envToolHome, realHost, reloadToolHomes, toolHomesPath } from './tool-home.js';
+import { describeInvalidToolHomes, envToolHome, realHost, reloadToolHomes, toolHome, toolHomesPath } from './tool-home.js';
 import { isToolId } from './tools.js';
 import { isCodexTool } from './utils/tool-names.js';
 import { TEAMAI_HOOK_SUBCOMMANDS, isCodexTrustGatedTool, codexTrustReminder, keptTeamHookEntries, readCodexHookTrustForScope } from './hooks.js';
@@ -420,9 +420,9 @@ async function buildHookChecks(
     if (tool === 'openclaw') {
       // OpenClaw has no settings file: its hook is a workspace hook directory,
       // which OpenClaw loads only once openclaw.json enables its entry.
-      const { resolveOpenclawWorkspaceDir, isOpenclawHookEnabled, OPENCLAW_HOOK_DIR, OPENCLAW_HOOK_KEY } = await import('./openclaw-hooks.js');
-      const workspace = await resolveOpenclawWorkspaceDir();
-      if (!workspace || !await pathExists(path.join(workspace, 'hooks', OPENCLAW_HOOK_DIR))) continue;
+      const { isOpenclawHookEnabled, OPENCLAW_HOOK_DIR, OPENCLAW_HOOK_KEY } = await import('./openclaw-hooks.js');
+      const hooksDir = ownOf(await locate(tool, 'hooks', install))?.path;
+      if (!hooksDir || !await pathExists(path.join(hooksDir, OPENCLAW_HOOK_DIR))) continue;
       checks.push({
         name: 'OpenClaw hook enabled',
         source: 'local',
@@ -436,7 +436,7 @@ async function buildHookChecks(
     }
     const settings = hookToolPaths[tool]?.settings;
     const hookPath = hookToolPaths[tool]?.hooks
-      ? path.join(resolveToolBaseDir(tool, { ...localConfig, scope: resolveHookScope(localConfig).scope }), hookToolPaths[tool]?.hooks ?? paths.hooks)
+      ? path.join(tool === COPILOT_TOOL_ID && resolveHookScope(localConfig).scope === 'user' ? toolHome(COPILOT_TOOL_ID) : baseDir, hookToolPaths[tool]?.hooks ?? paths.hooks)
       : settings
         ? hookSettingsFile(tool, baseDir, settings)
         : undefined;

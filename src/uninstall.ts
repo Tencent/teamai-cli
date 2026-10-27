@@ -15,7 +15,6 @@ import {
   OPENCLAW_HOOK_DIR,
   OPENCLAW_HOOK_KEY,
   resolveOpenClawHooksDir,
-  resolveOpenclawWorkspaceDir,
 } from './openclaw-hooks.js';
 import {
   TEAMAI_RULES_START,
@@ -28,6 +27,7 @@ import {
   TEAMAI_RECALL_RULES_END,
   TEAMAI_TEAM_RULES_START,
   TEAMAI_TEAM_RULES_END,
+  COPILOT_TOOL_ID,
   getDataHome,
   getTeamaiHome,
   getManagedHooksPath,
@@ -68,7 +68,8 @@ import {
   removeOwnedFiles,
   skillsGuardBase,
 } from './builtin-skills.js';
-import { cleanupOf, hookAdapterDir, hookSettingsFile, installOf, isInstalledFor, locate, ownOf, SHARED_AGENT_SKILLS_PATH, writesOf, type Location } from './locate.js';
+import { cleanupOf, hookAdapterDir, hookSettingsFile, installOf, isInstalledFor, locate, openclawWorkspaceDir, ownOf, SHARED_AGENT_SKILLS_PATH, writesOf, type Location } from './locate.js';
+import { toolHome } from './tool-home.js';
 import { channelsOf } from './tools.js';
 import { CODEX_TOOL_IDS } from './utils/tool-names.js';
 import { allowsSkillDirectory, CODEX_TOOL, describeOutsideSkillLink, describeSkillDirectoryBlock, findSkillDirectoryBlock, skillOrigin } from './resources/skills.js';
@@ -631,7 +632,7 @@ async function discoverToolResources(
     const defaultHooksDir = path.join(baseDir, `.${tool}`, 'hooks');
     const resolvedHooksDir = resolveOpenClawHooksDir(tool);
     const dirsToCheck = new Set([defaultHooksDir, resolvedHooksDir]);
-    const workspaceDir = await resolveOpenclawWorkspaceDir();
+    const workspaceDir = await openclawWorkspaceDir();
     if (workspaceDir) {
       dirsToCheck.add(path.join(workspaceDir, 'hooks'));
     }
@@ -1053,11 +1054,10 @@ async function buildRemovalPlan(
 
   // A project uninstall leaves Copilot's shared built-ins available to other projects.
   if (localConfig.scope === 'project' && primaryHookScope.scope === 'user') {
-    const userConfig = { ...localConfig, scope: primaryHookScope.scope };
     const hooks = hookToolPaths.copilot?.hooks;
     const res = perTool.get('copilot');
     if (hooks && res) {
-      const file = path.join(resolveToolBaseDir('copilot', userConfig), hooks);
+      const file = path.join(toolHome(COPILOT_TOOL_ID), hooks);
       if (await pathExists(file) && await hasTeamaiHooks(file, 'copilot')) res.keptGlobal.push(file);
     }
   }

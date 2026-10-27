@@ -501,6 +501,16 @@ async function openclawWorkspaceOf(roots: Roots, host: Host): Promise<OpenclawWo
   return resolveOpenclawWorkspace(undefined, { host, stateDir: openclawStateDir(roots, host) });
 }
 
+/** The workspace OpenClaw's skills and hooks go to: the one it reads, else the one an unreadable openclaw.json leaves (`fallback`). */
+function openclawWritesTo(workspace: OpenclawWorkspace): string | null {
+  return workspace.kind === 'found' ? workspace.dir : workspace.kind === 'unreadable-config' ? workspace.fallback : null;
+}
+
+/** OpenClaw's workspace on `host`, where its skills and hooks go; null when there is none. Its hooks need no `Install`. */
+export async function openclawWorkspaceDir(host: Host = realHost()): Promise<string | null> {
+  return openclawWritesTo(await resolveOpenclawWorkspace(undefined, { host, stateDir: toolHome('openclaw', host) }));
+}
+
 function openclawStateDir(roots: Roots, host: Host): string {
   return roots.home?.dir ?? roots.join(host.home, '.openclaw');
 }
@@ -607,8 +617,7 @@ async function locateSkills(tool: string, install: Install, host: Host): Promise
   }
   let shared: string | null = null;
   if (tool === 'openclaw') {
-    const workspace = await openclawWorkspaceOf(roots, host);
-    const dir = workspace.kind === 'found' ? workspace.dir : workspace.kind === 'unreadable-config' ? workspace.fallback : null;
+    const dir = openclawWritesTo(await openclawWorkspaceOf(roots, host));
     own = dir === null ? null : host.path.join(dir, 'skills');
   } else if (tool === 'hermes' && roots.home) {
     own = host.path.join(roots.home.dir, 'skills');
@@ -1057,8 +1066,7 @@ async function adapterHooksOf(tool: string, channel: HookAdapter, install: Insta
   const { adapter } = channel;
   let dir: string | null;
   if (adapter === 'openclaw-hook') {
-    const workspace = await openclawWorkspaceOf(roots, host);
-    const found = workspace.kind === 'found' ? workspace.dir : workspace.kind === 'unreadable-config' ? workspace.fallback : null;
+    const found = openclawWritesTo(await openclawWorkspaceOf(roots, host));
     dir = found === null ? null : host.path.join(found, 'hooks');
   } else {
     dir = adapterDirIn(adapter, (id) => toolHome(id, host), host);

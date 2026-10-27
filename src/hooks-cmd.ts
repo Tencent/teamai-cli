@@ -1,5 +1,5 @@
 import { hookToolPathsForConfig } from './types.js';
-import { hookAdapterDir, hookSettingsFile, installOf, locate } from './locate.js';
+import { hookAdapterDir, hookSettingsFile, installOf, locate, openclawWorkspaceDir } from './locate.js';
 import path from 'node:path';
 import { autoDetectInit } from './config.js';
 import { codexTrustPolicy, migrateLegacyManagedHooks, reconcileHooks, reconcileHooksToAllTools, reconcileTeamHooksForConfig, removeCopilotGlobalBuiltins, sweepLegacyProjectHooks, getHookStatus, reportCodexTrust, resolveMainCheckoutHooks, teamHookHistory, trustCodexForScope, type HookStatus } from './hooks.js';
@@ -14,10 +14,11 @@ import {
     getManagedHooksPath,
     isAgentExcluded,
     isSelfMode,
+    resolveBaseDir,
     resolveHookScope,
-    resolveToolBaseDir,
     scopedToolPaths,
 } from './types.js';
+import { toolHome } from './tool-home.js';
 import { getUserHome } from './utils/home.js';
 import { pathExists } from './utils/fs.js';
 import { hasPiHooks, removePiHooks, PI_HOOK_FILE } from './pi-hooks.js';
@@ -84,8 +85,8 @@ async function adapterHookArtifacts(tool: string): Promise<string[] | null> {
         return [getReportScriptPath()];
     }
     if (tool === 'openclaw') {
-        const { resolveOpenclawWorkspaceDir, OPENCLAW_HOOK_DIR } = await import('./openclaw-hooks.js');
-        const workspace = await resolveOpenclawWorkspaceDir();
+        const { OPENCLAW_HOOK_DIR } = await import('./openclaw-hooks.js');
+        const workspace = await openclawWorkspaceDir();
         if (!workspace) return null;
         // The engine needs both halves: the HOOK.md descriptor and the handler
         // it points at.
@@ -208,7 +209,7 @@ export async function hooksList(_options: GlobalOptions): Promise<void> {
             continue;
         }
         const hookPath = hookScopedPaths[tool]?.hooks
-            ? path.join(resolveToolBaseDir(tool, { ...localConfig, scope: hookScope }), hookScopedPaths[tool]?.hooks ?? paths.hooks)
+            ? path.join(tool === COPILOT_TOOL_ID && hookScope === 'user' ? toolHome(COPILOT_TOOL_ID) : baseDir, hookScopedPaths[tool]?.hooks ?? paths.hooks)
             : hookScopedPaths[tool]?.settings
                 ? hookSettingsFile(tool, baseDir, hookScopedPaths[tool].settings)
                 : undefined;
@@ -362,7 +363,7 @@ export async function hooksRemove(_options: GlobalOptions): Promise<void> {
     const copilotPaths = scopedToolPaths(teamConfig, localConfig)[COPILOT_TOOL_ID];
     if (copilotPaths?.hooks) {
         await reconcileHooks(
-            path.join(resolveToolBaseDir(COPILOT_TOOL_ID, localConfig), copilotPaths.hooks),
+            path.join(localConfig.scope === 'user' ? toolHome(COPILOT_TOOL_ID) : resolveBaseDir(localConfig), copilotPaths.hooks),
             COPILOT_TOOL_ID,
             [],
             {

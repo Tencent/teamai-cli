@@ -30,6 +30,7 @@ import { debugOnce } from './utils/warn-once.js';
 import { getUserHome } from './utils/home.js';
 import { resolveOpenclawConfigPath, resolveOpenclawStateDir, resolveOpenclawWorkspace } from './openclaw-home.js';
 import { resolveCliEntry } from './builtin-hooks.js';
+import { openclawWorkspaceDir } from './locate.js';
 
 /**
  * Resolve the managed hooks directory for an OpenClaw-family tool:
@@ -145,16 +146,15 @@ export default async function handler(event?: HookEvent): Promise<void> {
  * the two files only when their content changes. Skips (no-op) when the
  * workspace dir cannot be resolved.
  *
- * @param workspacePath optional server-sent workspace path (highest priority)
- * @param tool          claw variant (openclaw/qclaw/easyclaw/autoclaw)
+ * @param tool claw variant (openclaw/qclaw/easyclaw/autoclaw)
  */
-export async function injectOpenClawHooks(workspacePath?: string, tool = 'openclaw'): Promise<void> {
+export async function injectOpenClawHooks(tool = 'openclaw'): Promise<void> {
   const entry = resolveCliEntry();
   if (!entry) {
     log.warn('OpenClaw: cannot resolve the teamai CLI entry; run `teamai hooks inject` from the installed CLI.');
     return;
   }
-  const wsDir = await resolveOpenclawWorkspaceDir(workspacePath);
+  const wsDir = await openclawWorkspaceDir();
   if (!wsDir) {
     log.debug(`openclaw: skip hook injection for ${tool} — workspace dir not found`);
     return;
