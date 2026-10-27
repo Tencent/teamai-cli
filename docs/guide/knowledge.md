@@ -103,6 +103,8 @@ teamai recall maintenance --update-quality
 
 `--archive` puts aside learnings whose confidence is below 0.15. `--update-quality` writes a `.draft.md`. Rename it to `.md` when the draft is right.
 
+Digest and maintenance commands (`teamai digest`, `teamai recall maintenance`, and `teamai recall promote`) include the active learnings namespaces for the current scope alongside the shared root.
+
 Confidence is an activity score from 0 to 1, not a probability that the knowledge is correct or a task succeeded. Its upvote-to-recall ratio is capped at 1, so repeated positive feedback cannot exceed that factor's 30% weight. Recency uses the later of the last recall and the last upvote, so a fresh upvote also refreshes recency.
 
 ### Promoting Learnings
@@ -150,7 +152,7 @@ The extraction reads the MR's review threads along with its description, commits
 
 If an AI-generated MR learning has a non-string `title`, the MR title is used for its summary and queued filename. Only string entries in a `tags` array are displayed. The draft content is not rewritten to repair metadata.
 
-`--incremental` re-extracts only the files changed since the last import; each codebase keeps that baseline in its own `evidence/code/<slug>/`. A remote repo's slug is `<provider>__<owner>__<repo>`, shared by `--from-repo`, `--from-mr` and `teamai ci extract-mr`; `--dir` uses the repo name.
+`--incremental` re-extracts only the files changed since the last import; each codebase keeps that baseline in its own `evidence/code/<slug>/`. A remote repo's slug is `<provider>__<owner>__<repo>`, shared by `--from-repo`, `--from-mr` and `teamai ci extract-mr`. `--dir` uses it too when the checkout's `origin` names the repo; otherwise it uses the repo or directory name, and refuses to replace evidence there that another remote repo, or another directory of the same repo, published.
 
 `--max-files` raises the cap on source files collected per repository (default 200). Files are collected key-file first; a source with more files is truncated, and the run warns with both counts instead of dropping the rest silently.
 

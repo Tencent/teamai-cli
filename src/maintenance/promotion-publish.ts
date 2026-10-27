@@ -18,7 +18,7 @@ export async function promoteAndPublish(
   learningId: string,
   localConfig: LocalConfig,
   teamConfig: TeamaiConfig,
-  options: Pick<PromoteOptions, 'category'>,
+  options: Pick<PromoteOptions, 'category'> & { namespaces?: readonly string[] },
 ): Promise<void> {
   assertNotReadOnly(localConfig, 'teamai recall promote');
   if (localConfig.repo.ref !== undefined) {
@@ -31,7 +31,9 @@ export async function promoteAndPublish(
   try {
     const { repoPath: knowledgeCheckout, votesDir, learningsReadDirs, learningsWriteDir } = await resolveMaintenancePaths(localConfig, { holdsSyncLock: true });
     await fetchPromotionRefs(knowledgeCheckout);
-    const candidates = await findPromotionCandidates(learningsReadDirs, votesDir, knowledgeCheckout);
+    const candidates = await findPromotionCandidates(learningsReadDirs, votesDir, knowledgeCheckout, {
+      namespaces: options.namespaces,
+    });
     const candidate = candidates.find((entry) => entry.docId === learningId);
     if (!candidate) throw new Error(`Learning "${learningId}" not found or not eligible for promotion.`);
 

@@ -102,6 +102,71 @@ describe('codebase deep-enrich', () => {
     expect(fs.existsSync(path.join(docsDir, 'architecture.md'))).toBe(false);
   });
 
+  it.skipIf(process.platform === 'win32')('does not overwrite a file outside the teamwiki through a docs symlink', async () => {
+    const root = createEnrichFixture();
+    const docsDir = path.join(root, 'teamwiki', 'evidence', 'code', 'faketest', 'docs');
+    const outside = path.join(root, 'outside.md');
+    fs.mkdirSync(docsDir, { recursive: true });
+    fs.writeFileSync(outside, 'keep this content');
+    fs.symlinkSync(outside, path.join(docsDir, 'graph-g1-relations.md'), 'file');
+
+    await expect(runHiddenDeepEnrich({ project: 'faketest', wikiRoot: path.join(root, 'teamwiki') }))
+      .rejects.toThrow(/symbolic link/i);
+    expect(fs.readFileSync(outside, 'utf8')).toBe('keep this content');
+  });
+
+  it('does not write docs through a symlinked docs directory', async () => {
+    const root = createEnrichFixture();
+    const docsDir = path.join(root, 'teamwiki', 'evidence', 'code', 'faketest', 'docs');
+    const outside = path.join(root, 'outside');
+    fs.mkdirSync(outside);
+    fs.symlinkSync(outside, docsDir, process.platform === 'win32' ? 'junction' : 'dir');
+
+    await expect(runHiddenDeepEnrich({ project: 'faketest', wikiRoot: path.join(root, 'teamwiki') }))
+      .rejects.toThrow(/symbolic link/i);
+    expect(fs.readdirSync(outside)).toEqual([]);
+  });
+
+  it('does not write docs through a symlinked evidence directory', async () => {
+    const root = createEnrichFixture();
+    const wikiRoot = path.join(root, 'teamwiki');
+    const evidenceDir = path.join(wikiRoot, 'evidence', 'code', 'faketest');
+    const outside = path.join(root, 'outside');
+    fs.renameSync(evidenceDir, outside);
+    fs.symlinkSync(outside, evidenceDir, process.platform === 'win32' ? 'junction' : 'dir');
+
+    await expect(runHiddenDeepEnrich({ project: 'faketest', wikiRoot }))
+      .rejects.toThrow(/symbolic link/i);
+    expect(fs.existsSync(path.join(outside, 'docs'))).toBe(false);
+  });
+
+  it('does not write progress through a symlinked review directory', async () => {
+    const root = createEnrichFixture();
+    const wikiRoot = path.join(root, 'teamwiki');
+    const reviewDir = path.join(wikiRoot, 'evidence', 'code', 'faketest', '_review');
+    const outside = path.join(root, 'outside');
+    fs.mkdirSync(outside);
+    fs.symlinkSync(outside, reviewDir, process.platform === 'win32' ? 'junction' : 'dir');
+
+    await expect(runHiddenDeepEnrich({ project: 'faketest', wikiRoot }))
+      .rejects.toThrow(/symbolic link/i);
+    expect(fs.readdirSync(outside)).toEqual([]);
+  });
+
+  it.skipIf(process.platform === 'win32')('does not overwrite an outside file through a progress symlink', async () => {
+    const root = createEnrichFixture();
+    const wikiRoot = path.join(root, 'teamwiki');
+    const reviewDir = path.join(wikiRoot, 'evidence', 'code', 'faketest', '_review');
+    const outside = path.join(root, 'outside.json');
+    fs.mkdirSync(reviewDir);
+    fs.writeFileSync(outside, 'keep this content');
+    fs.symlinkSync(outside, path.join(reviewDir, 'progress.json'), 'file');
+
+    await expect(runHiddenDeepEnrich({ project: 'faketest', wikiRoot }))
+      .rejects.toThrow(/symbolic link/i);
+    expect(fs.readFileSync(outside, 'utf8')).toBe('keep this content');
+  });
+
   it('does not report success when the evidence dir has no components', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-deep-enrich-empty-'));
     temporaryDirectories.push(root);

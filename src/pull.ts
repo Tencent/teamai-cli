@@ -3340,6 +3340,9 @@ export async function pull(
   // strips a trailer once the team drops the policy.
   unwritten.push(...await reconcileCoAuthorAllScopes(reconcileUser, reconcileProject, options, deliveryRecorder));
 
+  // 3.8. Reconcile the team auto-compact threshold into each tool's own config.
+  await reconcileAutoCompact(reconcileUser ?? reconcileProject, options);
+
   // 4. Auto-report usage data to all active scopes. Skill usage lives in each
   //    scope's own file (`<dataHome>/usage.jsonl`, the user scope's
   //    `~/.teamai/user-usage.jsonl`), so each target reports and then
@@ -4060,6 +4063,44 @@ async function scopeEnv(localConfig: LocalConfig, teamEnvs: Map<LocalConfig, Tea
   const teamEnv = await resolveTeamEnv(localConfig);
   teamEnvs.set(localConfig, teamEnv);
   return teamEnv;
+}
+
+/**
+ * Apply the auto-compact threshold to every installed tool. The files are all
+ * per-machine (each tool's home), so one scope decides: the user scope when
+ * there is one, else the project's. What teamai wrote is kept in one
+ * machine-wide record, so it stays teamai's when the deciding scope changes and
+ * a member's own value is never overwritten.
+ */
+async function reconcileAutoCompact(localConfig: LocalConfig | null, options: GlobalOptions): Promise<void> {
+  if (options.dryRun || !localConfig) return;
+  try {
+    const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
+    if (!teamConfig) return;
+    const { reconcileAutoCompactLocked } = await import('./autocompact-reconcile.js');
+    const changes = await reconcileAutoCompactLocked(teamConfig, localConfig);
+    if (!changes) {
+      log.debug('[autocompact] skipped: another teamai process holds the record lock; the next pull retries');
+      return;
+    }
+    for (const c of changes) {
+      if (c.action === 'skipped') log.debug(`[autocompact] ${c.tool}: skipped — ${c.reason}`);
+    }
+    if (options.silent) return;
+    const updated = changes.filter((c) => c.action === 'updated');
+    if (updated.length > 0) {
+      log.info(`Auto-compact threshold applied to ${[...new Set(updated.map((c) => c.tool))].join(', ')}. Restart your AI tool to apply.`);
+    }
+    const removed = changes.filter((c) => c.action === 'removed');
+    if (removed.length > 0) {
+      log.info(`Removed the auto-compact setting teamai wrote for ${[...new Set(removed.map((c) => c.tool))].join(', ')}.`);
+    }
+    for (const c of changes.filter((change) => change.notable)) {
+      log.warn(`Auto-compact threshold not applied to ${c.tool}: ${c.reason}`);
+    }
+  } catch (e) {
+    log.debug(`[autocompact] reconcile failed: ${(e as Error).message}`);
+  }
 }
 
 /**

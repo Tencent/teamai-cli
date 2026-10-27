@@ -3,11 +3,12 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 
 import fs from 'fs-extra';
+import { z } from 'zod';
 
 import { extractCodebase, sourceRepositoryMetadata } from './codebase-extract.js';
 import type { TeamaiInit } from './config.js';
 import { log } from './utils/logger.js';
-import { repoIdentity } from './utils/git.js';
+import { remotesMatch } from './utils/git.js';
 import { assertSafeResourceName } from './utils/path-safety.js';
 
 /** The caches an incremental extraction reuses, kept with each codebase's evidence. */
@@ -18,6 +19,8 @@ export interface ImportCodebaseOptions {
   sourceDir: string;
   /** Evidence slug: `teamwiki/evidence/code/<slug>/`. */
   slug: string;
+  /** A slug the same source was published under before; its evidence moves to `slug`. */
+  legacySlug?: string;
   /** The teamwiki the evidence is published into. */
   wikiRoot: string;
   /** Re-extract only what changed since this codebase's published baseline. */
@@ -52,50 +55,109 @@ function componentSlugs(manifest: EvidenceJson | null): Set<string> {
     .filter((slug): slug is string => typeof slug === 'string' && slug.length > 0));
 }
 
+/** The parts of `_manifest.json` a skipped-enrichment import merges; the rest passes through. */
+const CodebaseManifestSchema = z.object({
+  components: z.array(z.object({ slug: z.string() }).passthrough()),
+  edges: z.array(z.object({ from: z.string(), to: z.string() }).passthrough()).default([]),
+}).passthrough();
+
+/**
+ * `--skip-enrich` writes the static fallback manifest. Keep what AI enrichment
+ * wrote for each component still in the code (its category, responsibilities,
+ * and the edges between them), with the doc path and entrypoints just
+ * extracted; a new component keeps its static entry.
+ */
+function keepEnrichedComponents(manifests: { published: unknown; staged: unknown }): Record<string, unknown> | null {
+  const publishedManifest = CodebaseManifestSchema.safeParse(manifests.published);
+  const stagedManifest = CodebaseManifestSchema.safeParse(manifests.staged);
+  if (!publishedManifest.success || !stagedManifest.success) return null;
+  const enriched = new Map(publishedManifest.data.components.map((component) => [component.slug, component]));
+  const components = stagedManifest.data.components.map((component) => {
+    const previous = enriched.get(component.slug);
+    return previous ? { ...previous, docPath: component['docPath'], entrypoints: component['entrypoints'] } : component;
+  });
+  const slugs = new Set(components.map((component) => component.slug));
+  return {
+    ...stagedManifest.data,
+    components,
+    edges: publishedManifest.data.edges.filter((edge) => slugs.has(edge.from) && slugs.has(edge.to)),
+  };
+}
+
 const PROVIDER_SLUG_PREFIXES = ['github__', 'gitlab__', 'tgit__'] as const;
 
 /**
- * `--dir` imports derive the slug from the directory basename, so two checkouts
- * named `svc` share one evidence directory. Carrying curated artifacts across
- * such an import would attach the first repo's docs and domain to the second.
- *
- * Keep them only when the two manifests name the same repository and the same
- * directory in it. A checkout with a remote names it by `repoUrl`. One with no
- * remote has no canonical identity (#1422), so the hashed git root it was read
- * from is the only stable statement of "this source": the same checkout carries
- * its docs over, while a different checkout with the same basename does not.
- * The directory matters as much as the root there — two subdirectories of one
- * origin-less repo hash to the same root and are still two codebases.
- * Teamwikis written before the per-codebase `source-manifest.json` existed have
- * no published identity; there a provider-namespaced slug
- * (`gitlab__group__repo`) still names the remote repository, so the slug itself
- * is the identity. A bare `--dir` basename is not, and replaces the evidence
- * like base.
+ * The source a `source-manifest.json` names: a repository, or for a checkout
+ * with no remote the hashed root it was read from, and the directory in it
+ * that was extracted.
  */
-async function sameRepository(publishedDir: string, stagedDir: string, slug: string): Promise<boolean> {
-  const [published, staged] = await Promise.all([
-    readJsonIfPresent(path.join(publishedDir, 'source-manifest.json')),
-    readJsonIfPresent(path.join(stagedDir, 'source-manifest.json')),
-  ]);
-  const publishedUrl = typeof published?.['repoUrl'] === 'string' ? published['repoUrl'] : '';
-  const stagedUrl = typeof staged?.['repoUrl'] === 'string' ? staged['repoUrl'] : '';
-  if (publishedUrl && stagedUrl) return repoIdentity(publishedUrl) === repoIdentity(stagedUrl);
-  if (publishedUrl || stagedUrl) {
-    return !publishedUrl
-      && PROVIDER_SLUG_PREFIXES.some((prefix) => slug.startsWith(prefix));
+const CodebaseSourceSchema = z.union([
+  z.object({ repoUrl: z.string().min(1), sourceSubdir: z.string().optional() })
+    .transform((source) => ({ kind: 'remote' as const, ...source })),
+  z.object({ localRootHash: z.string().min(1), sourceSubdir: z.string().optional() })
+    .transform((source) => ({ kind: 'local' as const, ...source })),
+]);
+type CodebaseSource = z.infer<typeof CodebaseSourceSchema>;
+type RemoteSource = Extract<CodebaseSource, { kind: 'remote' }>;
+
+async function readCodebaseSource(evidenceDir: string): Promise<CodebaseSource | null> {
+  const parsed = CodebaseSourceSchema.safeParse(await readJsonIfPresent(path.join(evidenceDir, 'source-manifest.json')));
+  return parsed.success ? parsed.data : null;
+}
+
+/** Whether the published evidence of a slug came from the source being imported over it. */
+type PublishedSource =
+  | { kind: 'same' }
+  | { kind: 'different'; published: RemoteSource; staged: CodebaseSource | null }
+  | { kind: 'unknown' };
+
+/**
+ * A `--dir` checkout without a remote, or a subdirectory, is named after its
+ * directory, so two such checkouts named `svc` share one evidence directory.
+ *
+ * The evidence came from the same source when both manifests name the same
+ * repository and directory in it, and from a different one when only the
+ * published manifest names a repository or the two differ. Two checkouts with
+ * no remote are the same source when they hashed the same root and extracted
+ * the same directory in it; otherwise nothing is known, since a checkout moved
+ * to another path hashes differently. Teamwikis written before the
+ * per-codebase `source-manifest.json` existed have no published identity;
+ * there a provider-namespaced slug (`gitlab__group__repo`) still names the
+ * remote repository, so the slug itself is the identity. A bare `--dir`
+ * basename is not, and nothing is known.
+ */
+async function publishedSource(dirs: { publishedDir: string; stagedDir: string; slug: string }): Promise<PublishedSource> {
+  const [published, staged] = await Promise.all([readCodebaseSource(dirs.publishedDir), readCodebaseSource(dirs.stagedDir)]);
+  if (published?.kind === 'remote') {
+    const sameRepo = staged?.kind === 'remote' && remotesMatch(published.repoUrl, staged.repoUrl);
+    const sameDir = published.sourceSubdir === undefined || staged?.sourceSubdir === undefined
+      || published.sourceSubdir === staged.sourceSubdir;
+    return sameRepo && sameDir ? { kind: 'same' } : { kind: 'different', published, staged };
   }
-  // Neither side names a remote. Two origin-less runs are the same source only
-  // when both recorded the same verified git root *and* the same directory in
-  // it: `service-a/svc` and `service-b/svc` of one repo share one git root but
-  // are different codebases, so the root alone would carry docs across them.
-  // A manifest written before `localRootHash` existed is not evidence of the
-  // same source.
-  const publishedRoot = typeof published?.['localRootHash'] === 'string' ? published['localRootHash'] : '';
-  const stagedRoot = typeof staged?.['localRootHash'] === 'string' ? staged['localRootHash'] : '';
-  if (publishedRoot === '' || publishedRoot !== stagedRoot) return false;
-  const publishedSubdir = typeof published?.['sourceSubdir'] === 'string' ? published['sourceSubdir'] : '';
-  const stagedSubdir = typeof staged?.['sourceSubdir'] === 'string' ? staged['sourceSubdir'] : '';
-  return publishedSubdir === stagedSubdir;
+  if (published?.kind === 'local' && staged?.kind === 'local') {
+    return published.localRootHash === staged.localRootHash
+      && (published.sourceSubdir ?? '') === (staged.sourceSubdir ?? '')
+      ? { kind: 'same' }
+      : { kind: 'unknown' };
+  }
+  return staged?.kind === 'remote' && PROVIDER_SLUG_PREFIXES.some((prefix) => dirs.slug.startsWith(prefix))
+    ? { kind: 'same' }
+    : { kind: 'unknown' };
+}
+
+function describeSource(source: RemoteSource): string {
+  return source.sourceSubdir ? `${source.sourceSubdir} in ${source.repoUrl}` : source.repoUrl;
+}
+
+function differentSourceError(slug: string, source: { published: RemoteSource; staged: CodebaseSource | null }): Error {
+  const evidence = `teamwiki/evidence/code/${slug}/`;
+  const published = describeSource(source.published);
+  return new Error(source.staged?.kind === 'remote'
+    ? `${evidence} holds the evidence of ${published}, and this checkout is ${describeSource(source.staged)}. Not replacing it. `
+      + `Import the checkout from a directory with another name, or remove ${evidence} if that codebase is gone.`
+    : `${evidence} holds the evidence of ${published}, and this checkout has no origin remote. Not replacing it. `
+      + 'If this checkout is that repository, add its origin remote back and import it again; '
+      + `otherwise import it from a directory with another name, or remove ${evidence} if that codebase is gone.`);
 }
 
 /**
@@ -277,6 +339,38 @@ export async function importCodebase(opts: ImportCodebaseOptions): Promise<boole
     const stagingEvidence = path.join(stagingWiki, 'evidence', 'code', slug);
     const evidenceDest = path.join(wikiRoot, 'evidence', 'code', slug);
 
+    // `--dir` named a checkout with an origin after its directory before it took
+    // the remote's slug: adopt that evidence rather than leave a duplicate.
+    const { legacySlug } = opts;
+    const legacyDest = legacySlug && legacySlug !== slug ? path.join(wikiRoot, 'evidence', 'code', legacySlug) : null;
+    if (legacySlug && legacyDest && await fs.pathExists(legacyDest)) {
+      const legacy = await publishedSource({ publishedDir: legacyDest, stagedDir: stagingEvidence, slug: legacySlug });
+      switch (legacy.kind) {
+        case 'same':
+          if (await fs.pathExists(evidenceDest)) {
+            log.warn(`teamwiki/evidence/code/${legacySlug}/ is an older copy of teamwiki/evidence/code/${slug}/. `
+              + 'Move any curated docs you want to keep from it, then remove it.');
+          } else {
+            await fs.move(legacyDest, evidenceDest);
+            log.info(`Moved teamwiki/evidence/code/${legacySlug}/ to teamwiki/evidence/code/${slug}/`);
+          }
+          break;
+        case 'unknown':
+          // Evidence older than its source manifest, or from before the checkout
+          // had an origin, cannot be shown to be this repo's, so it is not moved.
+          log.warn(`teamwiki/evidence/code/${legacySlug}/ names no repository, so it was left in place. `
+            + `If it is an older copy of teamwiki/evidence/code/${slug}/, move any curated docs you want to keep from it, then remove it.`);
+          break;
+        case 'different':
+          // Another repository's evidence keeps its own name.
+          break;
+        default: {
+          const unhandled: never = legacy;
+          throw new Error(`Unhandled published source: ${JSON.stringify(unhandled)}`);
+        }
+      }
+    }
+
     const [publishedManifest, stagedManifest] = await Promise.all([
       readJsonIfPresent(path.join(evidenceDest, '_manifest.json')),
       readJsonIfPresent(path.join(stagingEvidence, '_manifest.json')),
@@ -291,7 +385,19 @@ export async function importCodebase(opts: ImportCodebaseOptions): Promise<boole
     // A missing manifest is the only case where nothing can be pruned.
     const hasManifest = Boolean(stagedManifest);
 
-    if (await sameRepository(evidenceDest, stagingEvidence, slug)) {
+    const source = await publishedSource({ publishedDir: evidenceDest, stagedDir: stagingEvidence, slug });
+    switch (source.kind) {
+      case 'different':
+        throw differentSourceError(slug, source);
+      case 'same':
+      case 'unknown':
+        break;
+      default: {
+        const unhandled: never = source;
+        throw new Error(`Unhandled published source: ${JSON.stringify(unhandled)}`);
+      }
+    }
+    if (source.kind === 'same') {
       // Carry over the artifacts that only AI enrichment and deep enrich write.
       // Extraction never regenerates them, so replacing the published evidence
       // would silently drop curated docs and domain metadata. Existing staged
@@ -303,6 +409,10 @@ export async function importCodebase(opts: ImportCodebaseOptions): Promise<boole
         const published = path.join(evidenceDest, artifact);
         if (!(await fs.pathExists(published))) continue;
         await fs.copy(published, path.join(stagingEvidence, artifact), { overwrite: false, errorOnExist: false });
+      }
+      const enrichedManifest = opts.skipEnrich ? keepEnrichedComponents({ published: publishedManifest, staged: stagedManifest }) : null;
+      if (enrichedManifest) {
+        await fs.writeJson(path.join(stagingEvidence, '_manifest.json'), enrichedManifest, { spaces: 2 });
       }
 
       const stagedDocsDir = path.join(stagingEvidence, 'docs');

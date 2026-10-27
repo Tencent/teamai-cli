@@ -102,10 +102,10 @@ export async function writeBackConfidence(
   learningsDirs: readonly string[],
   confidenceMap: Map<string, number>,
   writeRoot?: string,
-  options: { dryRun?: boolean } = {},
+  options: { dryRun?: boolean; namespaces?: readonly string[] } = {},
 ): Promise<string[]> {
   const written: string[] = [];
-  const files = await listLearningFiles(learningsDirs);
+  const files = await listLearningFiles(learningsDirs, options.namespaces);
 
   for (const { file, absPath } of files) {
     const docId = file.replace(/\.md$/i, '');

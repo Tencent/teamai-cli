@@ -229,10 +229,15 @@ async function isLinkedWorktree(root: string): Promise<boolean> {
   return pointer !== null && pathExists(path.join(path.resolve(root, pointer[1].trim()), 'commondir'));
 }
 
-/** Checkouts teamai itself creates: its knowledge and reports worktrees, under the scope's data home or team clone. */
+/** Checkouts teamai itself creates: its knowledge and reports worktrees, under the scope's data home, the team clone, or the user-scope side-branch names. */
 async function isOwnCheckout(cwd: string, config: LocalConfig): Promise<boolean> {
-  const { getDataHome } = await import('./types.js');
-  return isWithin(cwd, [getDataHome(config), config.repo.localPath, ...await ownCheckoutsDir(cwd)]);
+  const { getDataHome, getTeamaiHomeDir, WORKTREE_DIRNAMES } = await import('./types.js');
+  return isWithin(cwd, [
+    getDataHome(config),
+    config.repo.localPath,
+    ...WORKTREE_DIRNAMES.map((dirname) => path.join(getTeamaiHomeDir(), dirname)),
+    ...await ownCheckoutsDir(cwd),
+  ]);
 }
 
 /**

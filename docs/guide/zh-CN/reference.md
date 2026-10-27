@@ -41,6 +41,8 @@ sharing:
     injectShellProfile: true
   coAuthor:
     enabled: false
+  autoCompact:
+    tokens: 400000
   gitExclude:
     enabled: true              # init 为新团队写入 true
   contributeHint:
@@ -71,6 +73,7 @@ scope: workspace               # workspace（init 默认）或 user；project �
 projectRoot: /path/to/my-workspace
 inheritUserScope: true
 coAuthorEnabled: true
+autoCompactTokens: 0           # 0 表示不参与团队的 autoCompact
 gitExcludeEnabled: true
 contributeHintEnabled: false
 usageReportEnabled: false

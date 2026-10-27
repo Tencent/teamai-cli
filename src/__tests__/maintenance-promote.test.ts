@@ -39,14 +39,13 @@ function makeHighVotes(votesDir: string, docId: string): void {
   // Create votes from 3 users with high upvote ratio (meets MIN_USERS=2, MIN_UPVOTED=5)
   // Need confidence >= 0.90: high base + high recency + high ratio
   for (const user of ['alice', 'bob', 'carol']) {
-    const data: UserVotesV2 = {
-      version: 2,
-      votes: {
-        [docId]: { recalled_count: 5, upvoted_count: 4, last_recalled_at: recentDate, last_upvoted_at: recentDate },
-      },
-      deltas: {},
-    };
-    fs.writeFileSync(path.join(votesDir, `${user}.yaml`), YAML.stringify(data));
+    const filePath = path.join(votesDir, `${user}.yaml`);
+    let data: UserVotesV2 = { version: 2, votes: {}, deltas: {} };
+    if (fs.existsSync(filePath)) {
+      try { data = YAML.parse(fs.readFileSync(filePath, 'utf-8')); } catch {}
+    }
+    data.votes[docId] = { recalled_count: 5, upvoted_count: 4, last_recalled_at: recentDate, last_upvoted_at: recentDate };
+    fs.writeFileSync(filePath, YAML.stringify(data));
   }
 }
 
@@ -114,6 +113,28 @@ describe('findPromotionCandidates', () => {
     const candidates = await findPromotionCandidates([learningsDir], votesDir, undefined);
     expect(candidates.find((c) => c.docId === 'too-new')).toBeUndefined();
   });
+  it('finds namespaced learnings when active namespaces are provided', async () => {
+    const learningsDir = path.join(tmpDir, 'learnings');
+    const votesDir = path.join(tmpDir, 'votes');
+    fs.mkdirSync(path.join(learningsDir, 'k8s'), { recursive: true });
+    fs.mkdirSync(votesDir, { recursive: true });
+
+    makeLearning(learningsDir, 'root-doc');
+    makeHighVotes(votesDir, 'root-doc');
+
+    const nsLearningPath = path.join(learningsDir, 'k8s', 'helm-values.md');
+    const date = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    fs.writeFileSync(nsLearningPath, matter.stringify('Helm details', { title: 'helm-values', date }));
+    makeHighVotes(votesDir, path.join('k8s', 'helm-values'));
+
+    // Without namespaces: only root-doc
+    const rootOnly = await findPromotionCandidates([learningsDir], votesDir);
+    expect(rootOnly.map((c) => c.docId)).toEqual(['root-doc']);
+
+    // With namespaces: both root-doc and namespaced learning
+    const withNs = await findPromotionCandidates([learningsDir], votesDir, { namespaces: ['k8s'] });
+    expect(withNs.map((c) => c.docId).sort()).toEqual([path.join('k8s', 'helm-values'), 'root-doc'].sort());
+  });
 });
 
 describe('executePromotion', () => {
@@ -134,7 +155,7 @@ describe('executePromotion', () => {
     };
 
     const { targetPath, marked } = await executePromotion(candidate, tmpDir, { dryRun: true });
-    expect(targetPath).toContain('skills/candidate/SKILL.md');
+    expect(targetPath).toContain(path.join('skills', 'candidate', 'SKILL.md'));
     expect(marked).toBeNull();
     expect(fs.existsSync(path.join(tmpDir, 'skills', 'candidate', 'SKILL.md'))).toBe(false);
     // Not even the category directory: a preview creates nothing (#900).
@@ -167,5 +188,62 @@ describe('executePromotion', () => {
     const original = fs.readFileSync(path.join(learningsDir, 'ready.md'), 'utf-8');
     const { data } = matter(original);
     expect(data.promoted_to).toBe('skills/ready/SKILL.md');
+  });
+  it('promotes a namespaced learning keeping the namespace in target path', async () => {
+    const learningsDir = path.join(tmpDir, 'learnings');
+    const skillsDir = path.join(tmpDir, 'skills');
+    fs.mkdirSync(path.join(learningsDir, 'k8s'), { recursive: true });
+
+    const nsFile = path.join('k8s', 'helm-values.md');
+    const absPath = path.join(learningsDir, nsFile);
+    fs.writeFileSync(absPath, matter.stringify('Step by step procedure', { title: 'helm-values', date: '2026-01-01' }));
+
+    const candidate = {
+      docId: path.join('k8s', 'helm-values'),
+      filename: nsFile,
+      path: absPath,
+      confidence: 0.95,
+      upvotedCount: 10,
+      userCount: 3,
+      title: 'helm-values',
+      suggestedCategory: 'skills' as const,
+    };
+
+    const { targetPath, marked } = await executePromotion(candidate, tmpDir, { category: 'skills' });
+    expect(marked).toBe(absPath);
+    expect(targetPath).toBe(path.join(tmpDir, 'skills', 'k8s', 'helm-values', 'SKILL.md'));
+    expect(fs.existsSync(path.join(skillsDir, 'k8s', 'helm-values', 'SKILL.md'))).toBe(true);
+
+    const original = fs.readFileSync(absPath, 'utf-8');
+    const { data } = matter(original);
+    expect(data.promoted_to).toBe('skills/k8s/helm-values/SKILL.md');
+  });
+
+  it('normalizes path separators in candidate filename when promoting', async () => {
+    const learningsDir = path.join(tmpDir, 'learnings');
+    const skillsDir = path.join(tmpDir, 'skills');
+    fs.mkdirSync(path.join(learningsDir, 'k8s'), { recursive: true });
+
+    const absPath = path.join(learningsDir, 'k8s', 'helm-values.md');
+    fs.writeFileSync(absPath, matter.stringify('Step by step procedure', { title: 'helm-values', date: '2026-01-01' }));
+
+    const candidate = {
+      docId: 'k8s/helm-values',
+      filename: path.join('k8s', 'helm-values.md'),
+      path: absPath,
+      confidence: 0.95,
+      upvotedCount: 10,
+      userCount: 3,
+      title: 'helm-values',
+      suggestedCategory: 'skills' as const,
+    };
+
+    const { targetPath } = await executePromotion(candidate, tmpDir, { category: 'skills' });
+    expect(targetPath).toBe(path.join(tmpDir, 'skills', 'k8s', 'helm-values', 'SKILL.md'));
+    expect(fs.existsSync(path.join(skillsDir, 'k8s', 'helm-values', 'SKILL.md'))).toBe(true);
+
+    const original = fs.readFileSync(absPath, 'utf-8');
+    const { data } = matter(original);
+    expect(data.promoted_to).toBe('skills/k8s/helm-values/SKILL.md');
   });
 });

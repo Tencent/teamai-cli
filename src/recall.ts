@@ -12,7 +12,7 @@ import { queryCodeKnowledge } from './code-knowledge-recall.js';
 import type { SourceAnchor } from './code-knowledge-recall.js';
 import { annotateCodebaseSourceFreshness } from './codebase-freshness.js';
 import { resolveResourceNamespaces } from './resource-namespaces.js';
-import { deliveredLearningsNamespaces, readWorkspaceChildren } from './workspace-children.js';
+import { deliveredLearningsNamespaces, formatProjectsManifestWarning, readWorkspaceChildren } from './workspace-children.js';
 import { recordRecallQuality } from './recall-quality.js';
 import { agentSessionFromEnv, deriveSessionId } from './utils/session-id.js';
 import type { EnvAgentSession } from './utils/session-id.js';
@@ -438,11 +438,6 @@ async function loadOrBuildScopeIndex(
     const nothingDelivered: Pick<BuildIndexOptions, 'docFiles' | 'ruleFiles' | 'skills'> = {
       docFiles: [], ruleFiles: [], skills: { kind: 'dirs', dirs: [] },
     };
-    // A workspace's children's too (#913), for the warning below.
-    const projects = [...new Set([
-      ...localConfig.projects ?? [],
-      ...localConfig.children?.children.flatMap((child) => child.selection.projects ?? []) ?? [],
-    ])];
     let learningsNamespaces: string[] = [];
     let delivered: Pick<BuildIndexOptions, 'docFiles' | 'ruleFiles' | 'skills'> | undefined;
     try {
@@ -450,9 +445,12 @@ async function loadOrBuildScopeIndex(
     } catch (e) {
       // The shared root only: every namespace would expose other projects' learnings.
       // What pull delivers reads the same file, so it is left out in the same warning.
-      log.warn(`Recall indexed the shared learnings only: ${e instanceof Error ? e.message : String(e)}. `
-        + `The learnings of ${projects.length === 1 ? 'project' : 'projects'} ${projects.join(', ')}, and docs, rules and skills, `
-        + 'stay out of recall until manifest/projects.yaml is fixed and `teamai pull` rebuilds the index; `teamai doctor` shows the problem.');
+      log.warn(formatProjectsManifestWarning('Recall', e, localConfig, {
+        verb: 'indexed',
+        extraHeldBack: 'docs, rules and skills',
+        targetName: 'recall',
+        rebuildAction: '`teamai pull` rebuilds the index',
+      }));
       delivered = nothingDelivered;
     }
     try {

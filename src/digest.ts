@@ -226,13 +226,14 @@ async function getRecentSessions(repoPath: string): Promise<string[]> {
  */
 async function getRecentLearnings(
   learningsDirs: readonly string[],
+  namespaces?: readonly string[],
 ): Promise<{ recent: LearningInfo[]; total: number }> {
   const recent: LearningInfo[] = [];
   let total = 0;
 
   try {
     const { listLearningFiles } = await import('./utils/learnings-roots.js');
-    const mdFiles = await listLearningFiles(learningsDirs);
+    const mdFiles = await listLearningFiles(learningsDirs, namespaces);
     total = mdFiles.length;
 
     // Calculate 7-day cutoff as YYYY-MM-DD string for comparison
@@ -525,8 +526,14 @@ export async function generateDigest(): Promise<void> {
     // Not another repository's learnings checkout, if one sits where this
     // project's would (#808).
     const { indexableLearningsRoots } = await import('./utils/learnings-roots.js');
+    const { readWorkspaceChildren, safeDeliveredLearningsNamespaces } = await import('./workspace-children.js');
+    const learningsNamespaces = await safeDeliveredLearningsNamespaces(
+      await readWorkspaceChildren(localConfig),
+      'digest',
+    );
     const { recent: recentLearnings, total: totalLearnings } = await getRecentLearnings(
       await indexableLearningsRoots(localConfig),
+      learningsNamespaces,
     );
     if (recentLearnings.length > 0) {
       console.log(`📚 New Learnings This Week: ${recentLearnings.length}`);

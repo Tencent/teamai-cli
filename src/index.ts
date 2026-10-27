@@ -1563,11 +1563,16 @@ recallCmd
     const {
       repoPath, votesDir, learningsReadDirs, learningsWriteDir,
     } = paths;
+    const { safeDeliveredLearningsNamespaces } = await import('./workspace-children.js');
+    const learningsNamespaces = await safeDeliveredLearningsNamespaces(localConfig, 'recall maintenance');
 
     if (cmdOpts.confidenceWriteback) {
       const { computeAllConfidence, writeBackConfidence } = await import('./maintenance/index.js');
       const map = await computeAllConfidence(votesDir);
-      const written = await writeBackConfidence(learningsReadDirs, map, learningsWriteDir, { dryRun: cmdOpts.dryRun });
+      const written = await writeBackConfidence(learningsReadDirs, map, learningsWriteDir, {
+        dryRun: cmdOpts.dryRun,
+        namespaces: learningsNamespaces,
+      });
       if (written.length > 0 && !cmdOpts.dryRun) {
         await publishMaintenance(localConfig, `[teamai] Update confidence for ${written.length} learning(s)`, written);
       }
@@ -1578,6 +1583,7 @@ recallCmd
       const { findPruneCandidates, executePrune } = await import('./maintenance/index.js');
       const candidates = await findPruneCandidates(learningsReadDirs, votesDir, {
         threshold: cmdOpts.threshold,
+        namespaces: learningsNamespaces,
       });
       if (candidates.length === 0) {
         const { log } = await import('./utils/logger.js');
@@ -1618,7 +1624,9 @@ recallCmd
 
       log.info('\nGenerating AI-powered update drafts...');
       for (const entry of entries) {
-        const related = await findRelatedAdoptedLearnings(entry, votesDir, learningsReadDirs);
+        const related = await findRelatedAdoptedLearnings(entry, votesDir, learningsReadDirs, {
+          namespaces: learningsNamespaces,
+        });
         const draft = await generateUpdateDraft(entry, related);
         if (draft) {
           const draftPath = `${entry.path}.draft.md`;
@@ -1641,9 +1649,14 @@ recallCmd
     const cmdOpts = { ...(program.opts() as GlobalOptions), ...localOpts };
     const { autoDetectInit } = await import('./config.js');
     const { localConfig, teamConfig } = await autoDetectInit(undefined, { dryRun: cmdOpts.dryRun });
+    const { safeDeliveredLearningsNamespaces } = await import('./workspace-children.js');
+    const learningsNamespaces = await safeDeliveredLearningsNamespaces(localConfig, 'recall promote');
     if (learningId && !cmdOpts.dryRun) {
       const { promoteAndPublish } = await import('./maintenance/promotion-publish.js');
-      await promoteAndPublish(learningId, localConfig, teamConfig, { category: cmdOpts.category });
+      await promoteAndPublish(learningId, localConfig, teamConfig, {
+        category: cmdOpts.category,
+        namespaces: learningsNamespaces,
+      });
       return;
     }
     const {
@@ -1689,7 +1702,9 @@ recallCmd
     const {
       repoPath, votesDir, learningsReadDirs, learningsWriteDir,
     } = paths;
-    const candidates = await findPromotionCandidates(learningsReadDirs, votesDir, knowledgeCheckout);
+    const candidates = await findPromotionCandidates(learningsReadDirs, votesDir, knowledgeCheckout, {
+      namespaces: learningsNamespaces,
+    });
 
     if (candidates.length === 0) {
       log.info('No learnings eligible for promotion yet.');

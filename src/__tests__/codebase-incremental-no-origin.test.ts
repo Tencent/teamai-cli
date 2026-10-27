@@ -221,7 +221,7 @@ describe('curated docs of a --dir checkout with no origin (#1422)', { timeout: 1
     expect(fs.existsSync(curated(wikiRoot, 'svc'))).toBe(false);
   });
 
-  it('replaces the docs when the published manifest names a remote', async () => {
+  it('refuses to replace the evidence when the published manifest names a remote', async () => {
     const wikiRoot = path.join(temp('teamai-1422-wiki-'), 'teamwiki');
     const withOrigin = makeRepo(true, 'svc');
     await importCodebase({
@@ -234,7 +234,9 @@ describe('curated docs of a --dir checkout with no origin (#1422)', { timeout: 1
     writeCurated(wikiRoot, 'svc', '# from the remote checkout\n');
 
     const localOnly = makeRepo(false, 'svc');
-    expect(await importDir(localOnly, 'svc', wikiRoot)).toBe(true);
-    expect(fs.existsSync(curated(wikiRoot, 'svc'))).toBe(false);
+    await expect(importDir(localOnly, 'svc', wikiRoot)).rejects.toThrow(
+      'teamwiki/evidence/code/svc/ holds the evidence of https://github.com/acme/svc, and this checkout has no origin remote. Not replacing it.',
+    );
+    expect(fs.existsSync(curated(wikiRoot, 'svc'))).toBe(true);
   });
 });

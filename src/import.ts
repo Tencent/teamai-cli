@@ -80,6 +80,42 @@ interface MrExtraction {
   learningFile?: string;
 }
 
+/**
+ * `--dir` wrote a checkout with an origin under its directory name before it
+ * took the remote's slug. A role or project that scoped that name under
+ * `resources.wiki` no longer matches the codebase, which recall then shares
+ * with everyone: name them so the team can update the entry.
+ */
+async function warnStaleWikiScopes(scope: { teamRepo: string; legacySlug: string; slug: string }): Promise<void> {
+  const { legacySlug, slug } = scope;
+  let declarers: string[];
+  try {
+    const { loadRolesManifestIfPresent } = await import('./roles.js');
+    const { loadProjectsManifest } = await import('./projects.js');
+    const [roles, projects] = await Promise.all([
+      loadRolesManifestIfPresent(scope.teamRepo),
+      loadProjectsManifest(scope.teamRepo),
+    ]);
+    declarers = [
+      ...(roles?.roles ?? []).filter((role) => role.resources.wiki?.includes(legacySlug)).map((role) => `role ${role.id}`),
+      ...(projects?.projects ?? []).filter((project) => project.resources.wiki?.includes(legacySlug)).map((project) => `project ${project.id}`),
+    ];
+  } catch (err) {
+    // The import already succeeded; a manifest pull would reject is reported there.
+    log.debug(`resources.wiki check skipped: ${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
+  const [only, ...more] = declarers;
+  if (!only) return;
+  if (more.length === 0) {
+    log.warn(`${only} lists "${legacySlug}" under resources.wiki, and this codebase is now teamwiki/evidence/code/${slug}/. `
+      + `Change that entry to "${slug}" so it stays scoped to it.`);
+  } else {
+    log.warn(`${declarers.join(' and ')} list "${legacySlug}" under resources.wiki, and this codebase is now teamwiki/evidence/code/${slug}/. `
+      + `Change those entries to "${slug}" so it stays scoped to them.`);
+  }
+}
+
 /** Parse --max-files: a positive integer, or undefined to keep the extractor's default. */
 function parseMaxFiles(value: string | undefined): number | undefined {
   if (value === undefined) return undefined;
@@ -402,8 +438,9 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
       if (!(await fs.pathExists(dirPath))) {
         throw new Error(`Directory not found: ${dirPath}`);
       }
-      const { defaultProjectSlug } = await import('./codebase-extract.js');
+      const { checkoutName, defaultProjectSlug } = await import('./codebase-extract.js');
       const slug = await defaultProjectSlug(dirPath);
+      const legacySlug = await checkoutName(dirPath);
       log.info(`Scanning local directory: ${dirPath} (project: ${slug})`);
 
       if (opts.dryRun) {
@@ -422,11 +459,17 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
         const updated = await importLocalCheckout({
           sourceDir: dirPath,
           slug,
+          legacySlug,
           wikiRoot,
           incremental: opts.incremental ?? false,
           skipEnrich: opts.skipEnrich ?? false,
           maxFiles,
         });
+        // While the old name still holds evidence (another repo's, or a copy the
+        // import warned about), a scope on it still points at that evidence.
+        if (team && legacySlug !== slug && !(await fs.pathExists(path.join(wikiRoot, 'evidence', 'code', legacySlug)))) {
+          await warnStaleWikiScopes({ teamRepo: team.localConfig.repo.localPath, legacySlug, slug });
+        }
         if (!team) {
           log.info(`Output written: ${wikiRoot}`);
         } else if (updated) {

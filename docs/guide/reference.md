@@ -41,6 +41,8 @@ sharing:
     injectShellProfile: true
   coAuthor:
     enabled: false
+  autoCompact:
+    tokens: 400000
   gitExclude:
     enabled: true              # init writes true for a new team
   contributeHint:
@@ -71,6 +73,7 @@ scope: workspace               # workspace (default from init) or user; project 
 projectRoot: /path/to/my-workspace
 inheritUserScope: true
 coAuthorEnabled: true
+autoCompactTokens: 0           # 0 opts out of the team's autoCompact
 gitExcludeEnabled: true
 contributeHintEnabled: false
 usageReportEnabled: false

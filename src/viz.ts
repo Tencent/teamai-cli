@@ -462,12 +462,13 @@ export async function buildVizData(paths: VizPaths): Promise<VizData> {
   const trend = buildTrend(metrics);
   const authors = buildAuthors(metrics);
 
+  const namespaces = paths.learningsNamespaces.ok ? paths.learningsNamespaces.namespaces : undefined;
   const [promote, prune, stale] = await Promise.all([
-    findPromotionCandidates(paths.learningsDirs, paths.votesDir, paths.promotionCheckout).catch((err: Error) => {
+    findPromotionCandidates(paths.learningsDirs, paths.votesDir, paths.promotionCheckout, { namespaces }).catch((err: Error) => {
       console.warn(`Warning: could not load promotion candidates: ${err.message}`);
       return [] as PromotionCandidate[];
     }),
-    findPruneCandidates(paths.learningsDirs, paths.votesDir).catch((err: Error) => {
+    findPruneCandidates(paths.learningsDirs, paths.votesDir, { namespaces }).catch((err: Error) => {
       console.warn(`Warning: could not load prune candidates: ${err.message}`);
       return [] as PruneCandidate[];
     }),

@@ -23,7 +23,7 @@ import {
   type KnowledgeType,
 } from '../types.js';
 import { getUserHome } from './home.js';
-import { isSafeNamespaceSegment } from '../manifest-schema.js';
+import { walkLearningsTree } from './learnings-roots.js';
 
 /**
  * Self mode keeps one index per checkout, but every checkout shares the
@@ -703,42 +703,19 @@ async function collectLearningsEntries(
   // entry: the first root's. Deduplicating here rather than downstream is what
   // keeps votes from being counted twice and keeps recall from silently
   // dropping whichever copy it happened to see second (#485).
-  const out: SearchIndexEntry[] = [];
-  const claimed = new Set<string>();
-  for (const dir of dirs) {
-    for (const entry of await collectLearningsEntriesFromDir(dir, namespaces, reads)) {
-      if (claimed.has(entry.filename)) continue;
-      claimed.add(entry.filename);
-      out.push(entry);
-    }
-  }
-  return out;
-}
-
-async function collectLearningsEntriesFromDir(
-  dir: string,
-  namespaces: string[] | undefined,
-  reads: BuildReads,
-): Promise<SearchIndexEntry[]> {
-  // Root-level .md = always shared.
-  const out: SearchIndexEntry[] = await collectFlatMdEntries(dir, 'learnings', reads);
-
-  for (const ns of namespaces ?? []) {
-    // Defense-in-depth: a namespace is a path segment (learnings/<ns>/). Skip
-    // anything that isn't a safe single segment so a hand-edited config can't
-    // make the index scan outside the learnings directory. The rule must be the
-    // one `contribute` writes with, or a learning filed under a valid non-ASCII
-    // namespace would never be indexed.
-    if (!isSafeNamespaceSegment(ns)) continue;
-    const nsDir = path.join(dir, ns);
-    const { files, kept } = await listMdFilesUnder(nsDir, 'learnings', reads);
-    out.push(...kept);
-    // Prefix the id with the namespace so it stays unique against the root and
-    // other namespaces (e.g. `hai-inference/deploy-note.md`).
-    out.push(...await entriesFromMdFiles(
-      files.map((rel) => ({ absPath: path.join(nsDir, rel), id: path.join(ns, rel) })), 'learnings', reads));
-  }
-  return out;
+  return walkLearningsTree<SearchIndexEntry>(dirs, namespaces, {
+    onRoot: (dir) => collectFlatMdEntries(dir, 'learnings', reads),
+    onNamespace: async (_dir, ns, nsDir) => {
+      const { files, kept } = await listMdFilesUnder(nsDir, 'learnings', reads);
+      const newEntries = await entriesFromMdFiles(
+        files.map((rel) => ({ absPath: path.join(nsDir, rel), id: path.join(ns, rel) })),
+        'learnings',
+        reads,
+      );
+      return [...kept, ...newEntries];
+    },
+    getId: (item) => item.filename,
+  });
 }
 
 /**

@@ -33,6 +33,7 @@ import { bundledShellFor, findGitBashWindows, resetBundledRuntimeCache, resolveC
 
 export const TEAMAI_BIN_DIR = '.teamai/bin';
 const WRAPPER_NAME = 'teamai';
+const CODEBUDDY_HOOK_WRAPPER = 'teamai-codebuddy-hook';
 
 /**
  * Tools whose hook commands need a shell to execute at all: their hook runner
@@ -137,6 +138,11 @@ export function ensureTeamaiWrapper(): string | null {
     fs.writeFileSync(wrapperPath, script, { mode: 0o755 });
     if (process.platform === 'win32') {
       fs.writeFileSync(path.join(binDir, `${WRAPPER_NAME}.cmd`), cmdScript);
+      fs.writeFileSync(path.join(binDir, CODEBUDDY_HOOK_WRAPPER), [
+        '#!/bin/sh',
+        `"${nodeBin}" "${entryScript}" "$@" 2>/dev/null || true`,
+        '',
+      ].join('\n'), { mode: 0o755 });
     }
     return binDir;
   } catch {
@@ -290,10 +296,16 @@ export function getRawDispatchCommand(event: string, tool: string, matcher?: str
  * wrapper script is found even without the user's login shell PATH.
  * Used by GUI tools (WorkBuddy, CodeBuddy) and POSIX DSH that spawn hook subprocesses
  * with a limited environment. The PATH value uses the `$HOME` shell literal
- * so that golden fixture output stays stable across machines.
+ * so that golden fixture output stays stable across machines. On Windows,
+ * CodeBuddy IDE runs commands in cmd.exe while CodeBuddy CLI uses Git Bash;
+ * both can invoke the same explicitly named Git Bash and script.
  */
 function getWrapperDispatchCommand(event: string, tool: string, matcher?: string): string {
   const matcherArg = matcher && matcher !== '*' ? ` --matcher ${matcher}` : '';
+  if (tool === 'codebuddy' && process.platform === 'win32') {
+    const wrapper = path.join(getUserHome(), TEAMAI_BIN_DIR, CODEBUDDY_HOOK_WRAPPER).split(path.sep).join('/');
+    return `${getHookShellCommand()} "${wrapper}" hook-dispatch ${event} --tool ${tool}${matcherArg} || exit 0`;
+  }
   return `PATH="$HOME/${TEAMAI_BIN_DIR}:$PATH" teamai hook-dispatch ${event} --tool ${tool}${matcherArg} 2>/dev/null || true`;
 }
 
@@ -397,10 +409,10 @@ const SUBAGENT_STOP_TOOLS = new Set([
  * HookDef into each tool's on-disk shape.
  *
  * GUI tools (WorkBuddy, CodeBuddy) use the wrapper dispatch command so their
- * hook subprocesses can find `teamai` even without the user's full PATH. Both
- * run hook commands through a POSIX shell on every platform — WorkBuddy
- * through the MSYS sh in its bundled PortableGit, CodeBuddy through Git Bash,
- * which it requires on Windows — so the POSIX wrapper form always applies.
+ * hook subprocesses can find `teamai` even without the user's full PATH.
+ * WorkBuddy runs through its bundled MSYS shell. On Windows CodeBuddy's CLI
+ * uses Git Bash but its IDE uses cmd.exe, so its built-ins launch Git Bash
+ * explicitly through a script that keeps the fail-open contract.
  */
 const WRAPPER_TOOLS = SHELL_DEPENDENT_TOOLS;
 

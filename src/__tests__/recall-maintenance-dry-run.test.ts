@@ -87,7 +87,7 @@ describe('recall maintenance and recall promote under --dry-run (#900)', () => {
     expect(m.autoDetectInit).toHaveBeenCalledWith(undefined, { dryRun: true });
     for (const call of vi.mocked(m.executePrune).mock.calls) expect(call[2]).toMatchObject({ dryRun: true });
     for (const call of vi.mocked(m.executePromotion).mock.calls) expect(call[2]).toMatchObject({ dryRun: true });
-    for (const call of vi.mocked(m.writeBackConfidence).mock.calls) expect(call[3]).toEqual({ dryRun: true });
+    for (const call of vi.mocked(m.writeBackConfidence).mock.calls) expect(call[3]).toMatchObject({ dryRun: true });
     expect(m.generateUpdateDraft).not.toHaveBeenCalled();
     expect(m.publishLearningsMaintenance).not.toHaveBeenCalled();
     expect(m.promoteAndPublish).not.toHaveBeenCalled();

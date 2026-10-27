@@ -3,8 +3,6 @@ import path from 'node:path';
 
 import matter from 'gray-matter';
 
-import { isSafeNamespaceSegment } from '../manifest-schema.js';
-import { listFilesRecursive, pathExists } from './fs.js';
 import { listLearningFiles, type LearningFile } from './learnings-roots.js';
 import { log } from './logger.js';
 
@@ -100,23 +98,7 @@ async function listComparableLearnings(
   learningsDirs: readonly string[],
   namespaces: readonly string[],
 ): Promise<LearningFile[]> {
-  const out = await listLearningFiles(learningsDirs);
-  const claimed = new Set(out.map(({ file }) => file));
-  for (const root of learningsDirs) {
-    for (const ns of namespaces) {
-      // A namespace is one path segment, as the index requires.
-      if (!isSafeNamespaceSegment(ns)) continue;
-      const nsDir = path.join(root, ns);
-      if (!await pathExists(nsDir)) continue;
-      for (const rel of await listFilesRecursive(nsDir)) {
-        const file = path.join(ns, rel);
-        if (!rel.endsWith('.md') || claimed.has(file)) continue;
-        claimed.add(file);
-        out.push({ file, absPath: path.join(nsDir, rel), root });
-      }
-    }
-  }
-  return out;
+  return listLearningFiles(learningsDirs, namespaces);
 }
 
 /**

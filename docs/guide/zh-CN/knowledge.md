@@ -103,6 +103,8 @@ teamai recall maintenance --update-quality
 
 `--archive` 收走置信度低于 0.15 的 learning。`--update-quality` 写出 `.draft.md`，改好后把文件名改成 `.md`。
 
+知识摘要与维护命令（`teamai digest`、`teamai recall maintenance` 及 `teamai recall promote`）均涵盖当前作用域内活跃的项目命名空间经验以及共享根目录经验。
+
 置信度是 0 到 1 的活动评分，不是知识正确或任务成功的概率。正反馈计数与召回计数的比值最高按 1 计算，因此重复正反馈不会超出这一项 30% 的权重。近期度取最近一次召回与最近一次正反馈中较晚的时间，因此新的正反馈也会刷新近期度。
 
 ### 晋升 Learnings
@@ -150,7 +152,7 @@ GitLab 的 `--from-org`，以及 GitHub `--from-org` 的 `gh` 路径与回退到
 
 AI 生成的 MR learning 中，`title` 不是字符串时，摘要和入队文件名使用 MR 标题；`tags` 只展示数组中的字符串项。不会为了修复元数据而改写草稿正文。
 
-`--incremental` 只重新提取上次导入后改过的文件，基线随每个代码库存在它自己的 `evidence/code/<slug>/` 里。远端仓库的 slug 是 `<provider>__<owner>__<repo>`，`--from-repo`、`--from-mr` 和 `teamai ci extract-mr` 用的都是它；`--dir` 用仓库名。
+`--incremental` 只重新提取上次导入后改过的文件，基线随每个代码库存在它自己的 `evidence/code/<slug>/` 里。远端仓库的 slug 是 `<provider>__<owner>__<repo>`，`--from-repo`、`--from-mr` 和 `teamai ci extract-mr` 用的都是它。checkout 的 `origin` 指向该仓库时，`--dir` 也用它；否则用仓库名或目录名，并且不会覆盖另一个远端仓库、或同一仓库的另一个目录在那里发布的 evidence。
 
 `--max-files` 调整单个仓库采集源码文件的上限（默认 200）。采集按关键文件优先；文件数超出上限时会截断，并输出同时带两个计数的警告，不再静默丢弃。
 

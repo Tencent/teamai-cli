@@ -17,7 +17,7 @@ teamai remove rules <name> --force
 
 `doctor` exits 1 when any check fails. `stats` adds a recall section when that scope has recall runs. See [Recall adoption and upvotes](./knowledge.md#recall-adoption-and-upvotes).
 
-Generated-hook checks compare the handler logic and accept an existing absolute launcher recorded by another installation of the same build. Running `doctor` from a different CLI path alone does not require reinstalling hooks. A missing saved launcher or changed handler still requires `teamai hooks inject` or `teamai pull`.
+Generated-hook checks accept a launcher from another installation when the handler logic matches. Running `doctor` from a different CLI path alone does not require reinstalling hooks. The saved paths must be files, and the runtime must be named `node`, `nodejs`, or `bun`. Node names may have a numeric version suffix such as `node-22` or `nodejs-22`; `.exe` names are also accepted. An invalid saved launcher or changed handler still requires `teamai hooks inject` or `teamai pull`.
 
 If a file occupies a tool's skills directory, `pull` keeps it, names the blocked path, and continues delivering to other tools. `doctor` fails the skills-directory check instead of treating the skipped tool as delivered. Move the file aside, then run `teamai pull` again to deliver the missing skills. `uninstall` preserves the blocking file and continues cleaning the tool's other managed resources.
 

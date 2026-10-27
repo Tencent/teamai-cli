@@ -97,6 +97,51 @@ describe('learningsRoots', () => {
 
     expect(new Set(roots.read).size).toBe(roots.read.length);
   });
+  it('lists root .md files plus namespaced .md files recursively when namespaces are provided', async () => {
+    const root = path.join(home, 'wt', 'learnings');
+    fs.mkdirSync(path.join(root, 'k8s', 'sub'), { recursive: true });
+    fs.mkdirSync(path.join(root, 'other'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'root.md'), 'root');
+    fs.writeFileSync(path.join(root, 'k8s', 'helm-values.md'), 'helm');
+    fs.writeFileSync(path.join(root, 'k8s', 'sub', 'nested.md'), 'nested');
+    fs.writeFileSync(path.join(root, 'other', 'ignored.md'), 'ignored');
+
+    const files = await listLearningFiles([root], ['k8s']);
+
+    expect(files.map((f) => f.file).sort()).toEqual([
+      path.join('k8s', 'helm-values.md'),
+      path.join('k8s', 'sub', 'nested.md'),
+      'root.md',
+    ].sort());
+    expect(files.find((f) => f.file === path.join('k8s', 'helm-values.md'))?.absPath)
+      .toBe(path.join(root, 'k8s', 'helm-values.md'));
+  });
+
+  it('skips unsafe namespace segments (e.g. parent traversal, windows device names)', async () => {
+    const root = path.join(home, 'wt', 'learnings');
+    fs.mkdirSync(path.join(root, 'k8s'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'k8s', 'helm.md'), 'helm');
+
+    const files = await listLearningFiles([root], ['k8s', '..', 'CON', 'bad/segment', 'trailing. ']);
+
+    expect(files.map((f) => f.file)).toEqual([path.join('k8s', 'helm.md')]);
+  });
+
+  it('first root wins for namespaced files across roots', async () => {
+    const recent = path.join(home, 'wt', 'learnings');
+    const inherited = path.join(home, 'clone', 'learnings');
+    fs.mkdirSync(path.join(recent, 'k8s'), { recursive: true });
+    fs.mkdirSync(path.join(inherited, 'k8s'), { recursive: true });
+    fs.writeFileSync(path.join(recent, 'k8s', 'helm.md'), 'recent');
+    fs.writeFileSync(path.join(inherited, 'k8s', 'helm.md'), 'inherited');
+
+    const files = await listLearningFiles([recent, inherited], ['k8s']);
+
+    expect(files).toHaveLength(1);
+    expect(files[0]?.file).toBe(path.join('k8s', 'helm.md'));
+    expect(files[0]?.absPath).toBe(path.join(recent, 'k8s', 'helm.md'));
+    expect(files[0]?.root).toBe(recent);
+  });
 });
 
 describe('listLearningFiles', () => {

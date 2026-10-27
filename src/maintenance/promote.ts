@@ -39,16 +39,26 @@ const MIN_AGE_DAYS = 14;
  * unmerged and its branch deleted is offered again. Without a checkout, the
  * marker alone keeps it out.
  */
+export interface PromotionCandidatesOptions {
+  namespaces?: readonly string[];
+}
+
 export async function findPromotionCandidates(
   learningsDirs: readonly string[],
   votesDir: string,
-  knowledgeCheckout: string | undefined,
+  knowledgeCheckout?: string | PromotionCandidatesOptions,
+  options?: PromotionCandidatesOptions,
 ): Promise<PromotionCandidate[]> {
+  const checkout = typeof knowledgeCheckout === 'string' ? knowledgeCheckout : undefined;
+  const opts = typeof knowledgeCheckout === 'object' && knowledgeCheckout !== null
+    ? knowledgeCheckout
+    : options;
+  const namespaces = opts?.namespaces;
   const confidenceMap = await computeAllConfidence(votesDir);
   const eligible: Array<Omit<PromotionCandidate, 'suggestedCategory'> & { content: string; promotedTo?: string }> = [];
 
   const perDoc = await aggregatePerDocVotes(votesDir);
-  const files = await listLearningFiles(learningsDirs);
+  const files = await listLearningFiles(learningsDirs, namespaces);
   const now = Date.now();
 
   for (const { file, absPath } of files) {
@@ -94,7 +104,7 @@ export async function findPromotionCandidates(
     });
   }
 
-  const inPlace = await promotionTargetsInPlace(knowledgeCheckout, eligible.flatMap((entry) => entry.promotedTo ?? []));
+  const inPlace = await promotionTargetsInPlace(checkout, eligible.flatMap((entry) => entry.promotedTo ?? []));
   const candidates: PromotionCandidate[] = [];
   for (const { content, promotedTo, ...entry } of eligible) {
     if (promotedTo !== undefined && inPlace.has(promotedTo)) continue;
@@ -217,9 +227,10 @@ export async function executePromotion(
   if (!['skills', 'rules', 'docs'].includes(category)) {
     throw new Error(`Invalid promotion category "${category}". Use skills, rules, or docs.`);
   }
+  const normalizedFilename = candidate.filename.split(path.sep).join('/');
   const relativePath = category === 'skills'
-    ? path.posix.join(category, candidate.filename.replace(/\.md$/i, ''), 'SKILL.md')
-    : path.posix.join(category, candidate.filename);
+    ? path.posix.join(category, normalizedFilename.replace(/\.md$/i, ''), 'SKILL.md')
+    : path.posix.join(category, normalizedFilename);
   const targetPath = path.join(repoPath, relativePath);
   assertSafePath(targetPath, [repoPath]);
   if (await pathExists(targetPath)) {
@@ -240,7 +251,7 @@ export async function executePromotion(
   let promotedContent = await generatePromotedContent(originalContent, category, candidate.title);
   if (category === 'skills') {
     const { withSkillFrontmatter } = await import('../resources/skills.js');
-    const skillName = path.posix.basename(candidate.filename).replace(/\.md$/i, '');
+    const skillName = path.posix.basename(normalizedFilename).replace(/\.md$/i, '');
     promotedContent = withSkillFrontmatter(promotedContent, skillName);
   }
   await ensureDir(path.dirname(targetPath));

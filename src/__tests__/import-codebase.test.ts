@@ -231,6 +231,47 @@ describe('importCodebase: the extraction every import source shares', () => {
     expect(docs).toContain('architecture.md');
   });
 
+  it('keeps the AI-written components of the published manifest on a skipped-enrichment import', async () => {
+    const repo = await makeRepo(root, 'svc', 'export function greet() { return "hi"; }\n');
+    await fs.outputFile(path.join(repo, 'auth', 'main.ts'), 'export const auth = 1;\n');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '-q', '-m', 'modules');
+    const slug = 'github__acme__svc';
+    mockEnrichWithAI.mockResolvedValue({
+      manifest: {
+        schemaVersion: 'team-wiki.codebase-output-manifest.v2',
+        project: slug,
+        generatedAt: new Date().toISOString(),
+        components: [{
+          slug: 'auth',
+          docPath: `evidence/code/${slug}/auth.md`,
+          title: 'auth',
+          category: 'service',
+          confidence: 'INFERRED',
+          responsibilities: ['Signs users in'],
+        }],
+        edges: [{ from: 'auth', to: 'src', relation: 'DEPENDS_ON', confidence: 'EXTRACTED' }],
+      },
+      domains: [],
+      repoDomain: 'Identity',
+      repoDescription: 'identity',
+      repoKeywords: [],
+    });
+    await run(repo, slug, false, false);
+
+    await fs.outputFile(path.join(repo, 'billing', 'main.ts'), 'export const billing = 1;\n');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '-q', '-m', 'billing');
+    expect(await run(repo, slug, true)).toBe(true);
+
+    const manifest = await fs.readJson(path.join(wikiRoot, 'evidence', 'code', slug, '_manifest.json'));
+    const bySlug = new Map(manifest.components.map((component: { slug: string }) => [component.slug, component]));
+    expect(bySlug.get('auth')).toMatchObject({ category: 'service', confidence: 'INFERRED', responsibilities: ['Signs users in'] });
+    // A module the AI has not seen yet gets the static entry.
+    expect(bySlug.get('billing')).toMatchObject({ confidence: 'EXTRACTED' });
+    expect(manifest.edges).toEqual([{ from: 'auth', to: 'src', relation: 'DEPENDS_ON', confidence: 'EXTRACTED' }]);
+  });
+
   it('prunes a component removed by a skipped-enrichment import', async () => {
     const repo = await makeRepo(root, 'svc', 'export function greet() { return "hi"; }\n');
     await fs.outputFile(path.join(repo, 'auth', 'main.ts'), 'export const auth = 1;\n');
@@ -254,7 +295,7 @@ describe('importCodebase: the extraction every import source shares', () => {
     expect(await fs.pathExists(path.join(evidence, 'docs', 'billing.md'))).toBe(false);
   });
 
-  it('does not carry curated docs from a different repo that shares the slug', async () => {
+  it('refuses to replace the evidence of a different repo that shares the slug', async () => {
     const repo = await makeRepo(root, 'svc', 'export function greet() { return "hi"; }\n');
     const slug = 'github__acme__svc';
     await run(repo, slug);
@@ -264,16 +305,16 @@ describe('importCodebase: the extraction every import source shares', () => {
 
     await fs.writeFile(path.join(repo, 'src', 'main.ts'), 'export function other() { return 1; }\n');
     git(repo, 'commit', '-q', '-am', 'change');
-    expect(await importCodebase({
+    await expect(importCodebase({
       sourceDir: repo,
       slug,
       wikiRoot,
       incremental: true,
       skipEnrich: true,
       repoUrl: 'https://github.com/acme/another-repo',
-    })).toBe(true);
+    })).rejects.toThrow('this checkout is https://github.com/acme/another-repo. Not replacing it.');
 
-    expect(await fs.pathExists(path.join(evidence, 'docs', 'curated.md'))).toBe(false);
+    expect(await fs.readFile(path.join(evidence, 'docs', 'curated.md'), 'utf8')).toBe('# curated\n');
   });
 
   it('keeps curated docs when older evidence has no sidecar and the slug names the repo', async () => {
@@ -326,6 +367,151 @@ describe('importCodebase: the extraction every import source shares', () => {
     })).toBe(true);
 
     expect(await fs.pathExists(path.join(evidence, 'docs', 'curated.md'))).toBe(true);
+  });
+
+  it('refuses to replace the evidence of a repo with a checkout of another source that shares the slug', async () => {
+    const first = await makeRepo(path.join(root, 'a'), 'svc', 'export function one() { return 1; }\n');
+    const slug = 'svc';
+    await importCodebase({ sourceDir: first, slug, wikiRoot, skipEnrich: true });
+    const evidence = path.join(wikiRoot, 'evidence', 'code', slug);
+    await fs.outputFile(path.join(evidence, 'docs', 'curated.md'), '# curated\n');
+    const before = (await fs.readdir(evidence)).sort();
+
+    const second = await makeRepo(path.join(root, 'b'), 'svc', 'export function two() { return 2; }\n');
+    execFileSync('git', ['remote', 'remove', 'origin'], { cwd: second, stdio: 'ignore' });
+    await expect(importCodebase({ sourceDir: second, slug, wikiRoot, skipEnrich: true }))
+      .rejects.toThrow('teamwiki/evidence/code/svc/ holds the evidence of https://github.com/acme/svc, '
+        + 'and this checkout has no origin remote. Not replacing it. '
+        + 'If this checkout is that repository, add its origin remote back and import it again; '
+        + 'otherwise import it from a directory with another name, or remove teamwiki/evidence/code/svc/ if that codebase is gone.');
+
+    expect((await fs.readdir(evidence)).sort()).toEqual(before);
+    expect((await fs.readJson(path.join(evidence, 'source-manifest.json'))).repoUrl).toBe('https://github.com/acme/svc');
+  });
+
+  it('moves the evidence a checkout published under its directory name to the slug named after its remote', async () => {
+    const repo = await makeRepo(root, 'svc', 'export function greet() { return "hi"; }\n');
+    await importCodebase({ sourceDir: repo, slug: 'svc', wikiRoot, skipEnrich: true });
+    const legacy = path.join(wikiRoot, 'evidence', 'code', 'svc');
+    await fs.outputFile(path.join(legacy, 'docs', 'curated.md'), '# curated\n');
+
+    expect(await importCodebase({
+      sourceDir: repo, slug: 'github__acme__svc', legacySlug: 'svc', wikiRoot, skipEnrich: true,
+    })).toBe(true);
+
+    const evidence = path.join(wikiRoot, 'evidence', 'code', 'github__acme__svc');
+    expect(await fs.pathExists(legacy)).toBe(false);
+    expect(await fs.readFile(path.join(evidence, 'docs', 'curated.md'), 'utf8')).toBe('# curated\n');
+    expect((await fs.readJson(path.join(evidence, 'source-manifest.json'))).project).toBe('github__acme__svc');
+  });
+
+  it.each([
+    ['was published before the per-codebase source manifest existed', async (repo: string) => {
+      await importCodebase({ sourceDir: repo, slug: 'svc', wikiRoot, skipEnrich: true });
+      await fs.remove(path.join(wikiRoot, 'evidence', 'code', 'svc', 'source-manifest.json'));
+    }],
+    ['was published before the checkout had an origin', async (repo: string) => {
+      git(repo, 'remote', 'remove', 'origin');
+      await importCodebase({ sourceDir: repo, slug: 'svc', wikiRoot, skipEnrich: true });
+      git(repo, 'remote', 'add', 'origin', 'https://github.com/acme/svc');
+    }],
+  ])('leaves directory-named evidence that names no repository in place, with a warning, when it %s', async (_, publishLegacy) => {
+    const repo = await makeRepo(root, 'svc', 'export function greet() { return "hi"; }\n');
+    await publishLegacy(repo);
+    const legacy = path.join(wikiRoot, 'evidence', 'code', 'svc');
+    await fs.outputFile(path.join(legacy, 'docs', 'curated.md'), '# curated\n');
+    logs.length = 0;
+
+    expect(await importCodebase({
+      sourceDir: repo, slug: 'github__acme__svc', legacySlug: 'svc', wikiRoot, skipEnrich: true,
+    })).toBe(true);
+
+    expect(await fs.readFile(path.join(legacy, 'docs', 'curated.md'), 'utf8')).toBe('# curated\n');
+    expect(logs.join('\n')).toContain('teamwiki/evidence/code/svc/ names no repository, so it was left in place. '
+      + 'If it is an older copy of teamwiki/evidence/code/github__acme__svc/, move any curated docs you want to keep from it, then remove it.');
+  });
+
+  it('points the kept AI components at the moved evidence on a skipped-enrichment import', async () => {
+    const repo = await makeRepo(root, 'svc', 'export function greet() { return "hi"; }\n');
+    await fs.outputFile(path.join(repo, 'auth', 'main.ts'), 'export const auth = 1;\n');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '-q', '-m', 'modules');
+    mockEnrichWithAI.mockResolvedValue({
+      manifest: {
+        schemaVersion: 'team-wiki.codebase-output-manifest.v2',
+        project: 'svc',
+        generatedAt: new Date().toISOString(),
+        components: [{
+          slug: 'auth',
+          docPath: 'evidence/code/svc/auth.md',
+          title: 'auth',
+          category: 'service',
+          confidence: 'INFERRED',
+          responsibilities: ['Signs users in'],
+        }],
+        edges: [],
+      },
+      domains: [],
+      repoDomain: 'Identity',
+      repoDescription: 'identity',
+      repoKeywords: [],
+    });
+    await importCodebase({ sourceDir: repo, slug: 'svc', wikiRoot, skipEnrich: false });
+
+    await importCodebase({ sourceDir: repo, slug: 'github__acme__svc', legacySlug: 'svc', wikiRoot, skipEnrich: true });
+
+    const manifest = await fs.readJson(path.join(wikiRoot, 'evidence', 'code', 'github__acme__svc', '_manifest.json'));
+    expect(manifest.components.find((component: { slug: string }) => component.slug === 'auth')).toMatchObject({
+      docPath: 'evidence/code/github__acme__svc/auth.md',
+      responsibilities: ['Signs users in'],
+    });
+  });
+
+  it('keeps the evidence under the directory name, with a warning, when the remote slug already has evidence', async () => {
+    const repo = await makeRepo(root, 'svc', 'export function greet() { return "hi"; }\n');
+    await importCodebase({ sourceDir: repo, slug: 'svc', wikiRoot, skipEnrich: true });
+    await run(repo, 'github__acme__svc');
+    const legacy = path.join(wikiRoot, 'evidence', 'code', 'svc');
+    await fs.outputFile(path.join(legacy, 'docs', 'curated.md'), '# curated\n');
+
+    await fs.writeFile(path.join(repo, 'src', 'main.ts'), 'export function greet() { return "hello"; }\n');
+    git(repo, 'commit', '-q', '-am', 'change');
+    logs.length = 0;
+    expect(await importCodebase({
+      sourceDir: repo, slug: 'github__acme__svc', legacySlug: 'svc', wikiRoot, skipEnrich: true,
+    })).toBe(true);
+
+    expect(await fs.readFile(path.join(legacy, 'docs', 'curated.md'), 'utf8')).toBe('# curated\n');
+    expect(logs.join('\n')).toContain('teamwiki/evidence/code/svc/ is an older copy of teamwiki/evidence/code/github__acme__svc/.');
+  });
+
+  it('refuses to replace the evidence of a same-named subdirectory of the same repo', async () => {
+    const repo = await makeRepo(root, 'mono', 'export function greet() { return "hi"; }\n');
+    await fs.outputFile(path.join(repo, 'apps', 'api', 'main.ts'), 'export const app = 1;\n');
+    await fs.outputFile(path.join(repo, 'libs', 'api', 'main.ts'), 'export const lib = 1;\n');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '-q', '-m', 'apis');
+    await importCodebase({ sourceDir: path.join(repo, 'apps', 'api'), slug: 'api', wikiRoot, skipEnrich: true });
+
+    await expect(importCodebase({ sourceDir: path.join(repo, 'libs', 'api'), slug: 'api', wikiRoot, skipEnrich: true }))
+      .rejects.toThrow('teamwiki/evidence/code/api/ holds the evidence of apps/api in https://github.com/acme/mono, '
+        + 'and this checkout is libs/api in https://github.com/acme/mono. Not replacing it.');
+  });
+
+  it('treats an SSH and an HTTPS clone of one repo as the same source', async () => {
+    const repo = await makeRepo(root, 'svc', 'export function greet() { return "hi"; }\n');
+    const slug = 'github__acme__svc';
+    await importCodebase({ sourceDir: repo, slug, wikiRoot, skipEnrich: true, repoUrl: 'https://github.com/acme/svc.git' });
+    const evidence = path.join(wikiRoot, 'evidence', 'code', slug);
+    await fs.outputFile(path.join(evidence, 'docs', 'curated.md'), '# curated\n');
+
+    await fs.writeFile(path.join(repo, 'src', 'main.ts'), 'export function greet() { return "hello"; }\n');
+    git(repo, 'commit', '-q', '-am', 'change');
+    expect(await importCodebase({
+      sourceDir: repo, slug, wikiRoot, incremental: true, skipEnrich: true, repoUrl: 'git@github.com:acme/svc.git',
+    })).toBe(true);
+
+    expect(await fs.readFile(path.join(evidence, 'docs', 'curated.md'), 'utf8')).toBe('# curated\n');
   });
 
   it('does not carry curated docs between remote-less checkouts that share a slug', async () => {
