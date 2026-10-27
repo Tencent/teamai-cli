@@ -94,7 +94,8 @@ async function capturedHere(config: LocalConfig, now: string, publish: SessionPo
 /** The step sessions of the runs that ended here in each run mode that a drain in that mode archives. */
 async function stepsWaitingToArchive(config: LocalConfig, publish: SessionPolicies): Promise<Record<RunMode, number>> {
   const waiting = async (mode: RunMode) => (publish[mode].policy === 'auto' ? SessionPublish.waitingSteps(config, mode) : 0);
-  return { attended: await waiting('attended'), unattended: await waiting('unattended') };
+  const [attended, unattended] = await Promise.all([waiting('attended'), waiting('unattended')]);
+  return { attended, unattended };
 }
 
 /**
@@ -120,20 +121,28 @@ function nextSteps(
 
 /** What the panel shows for `config`, read with `env` as this machine's environment and `platform` as its OS, at `now`. */
 export async function readSessionSharing(config: LocalConfig, { env, platform, now }: { env: NodeJS.ProcessEnv; platform: NodeJS.Platform; now: string }): Promise<SessionSharing> {
-  const team = await loadTeamConfig(config.repo.localPath);
-  const publish = SessionPolicy.publish(config, team);
   const unavailable = scoringUnavailable(config);
-  const scored = unavailable === undefined ? await scopeScoring(config) : { ok: false as const, reason: unavailable };
+  const [team, scored] = await Promise.all([
+    loadTeamConfig(config.repo.localPath),
+    unavailable === undefined ? scopeScoring(config) : { ok: false as const, reason: unavailable },
+  ]);
+  const publish = SessionPolicy.publish(config, team);
+  const [scorers, captured, stepSessionsWaitingToArchive, pendingLabels] = await Promise.all([
+    scored.ok ? SessionWork.sessionScorers(config) : [],
+    capturedHere(config, now, publish.policies),
+    stepsWaitingToArchive(config, publish.policies),
+    LabelStore.unpublished(config),
+  ]);
   const read = {
     runMode: explainRunMode(env),
     archive: sessionArchiveRoot(config) ? 'teamai-reports' : 'none',
     publish: publish.policies,
     scoring: scored.ok
-      ? { state: 'ok', policies: scored.sessions.policies, dailyLimit: scored.sessions.dailyLimit, scorers: (await SessionWork.sessionScorers(config)).map(({ scorer }) => scorer).sort() }
+      ? { state: 'ok', policies: scored.sessions.policies, dailyLimit: scored.sessions.dailyLimit, scorers: scorers.map(({ scorer }) => scorer).sort() }
       : { state: 'unavailable', reason: scored.reason },
-    captured: await capturedHere(config, now, publish.policies),
-    stepSessionsWaitingToArchive: await stepsWaitingToArchive(config, publish.policies),
-    pendingLabels: await LabelStore.unpublished(config),
+    captured,
+    stepSessionsWaitingToArchive,
+    pendingLabels,
   } satisfies Omit<Configured, 'configured' | 'problems' | 'unreadTools' | 'next'>;
   return {
     configured: true,
