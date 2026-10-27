@@ -11,7 +11,8 @@ const sharingStates = {
  unattended: [['waitingForDrain','waiting for a drain'],['finished','kept on this machine'],['waitingToArchive','waiting to be archived'],['archived','archived']]
 };
 function sharingVerdict(published, scored) { return published&&scored?'Published and scored':published?'Published, not scored':scored?'Scored, not published':'Neither published nor scored'; }
-function sharingPolicy(name, cell, note) { return '<dt>'+label(name)+'</dt><dd><b data-verbatim>'+e(cell.policy)+'</b>'+(note?'<small>'+label(note)+'</small>':'')+'<small>'+label('Set by')+' <span data-verbatim>'+label(cell.source)+'</span></small></dd>'; }
+function sharingSource(source) { return source.kind==='setting'?e(source.key):label(source.kind==='http-team'?'an HTTP team repo, which keeps no session archive':'the default'); }
+function sharingPolicy(name, cell, note) { return '<dt>'+label(name)+'</dt><dd><b data-verbatim>'+e(cell.policy)+'</b>'+(note?'<small>'+label(note)+'</small>':'')+'<small>'+label('Set by')+' <span data-verbatim>'+sharingSource(cell.source)+'</span></small></dd>'; }
 function sharingMode(s, mode) {
  const publish=s.publish[mode], scoring=s.scoring.state==='ok'?s.scoring:null, score=scoring&&scoring.policies[mode];
  const published=publish.policy==='auto', judged=!!score&&score.policy==='auto'&&scoring.scorers.length>0, counts=s.captured[mode], steps=s.stepSessionsWaitingToArchive[mode];

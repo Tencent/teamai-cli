@@ -13,10 +13,11 @@ export type SessionPolicy = typeof POLICIES[number];
 const SessionPolicySchema = z.enum(POLICIES);
 const MappingSchema = z.record(z.string(), z.unknown());
 
-/** The policy of each run mode, with the setting it came from. */
-export type SessionPolicies = Record<RunMode, { policy: SessionPolicy; source: string }>;
+/** What set a policy: its default, the setting `key` (such as `teamai.yaml sessions.publish.unattended`), or an HTTP team repo, which keeps no session archive. */
+export type PolicySource = { kind: 'default' } | { kind: 'setting'; key: string } | { kind: 'http-team' };
 
-const DEFAULT_SOURCE = 'the default';
+/** The policy of each run mode, with what set it. */
+export type SessionPolicies = Record<RunMode, { policy: SessionPolicy; source: PolicySource }>;
 
 /**
  * The policies `value`, the setting `key` names (such as `teamai.yaml sessions.publish`), sets: a mapping of run modes
@@ -26,7 +27,8 @@ const DEFAULT_SOURCE = 'the default';
 function read(key: string, value: unknown, { booleans = false }: { booleans?: boolean } = {}): { set: Partial<SessionPolicies>; problems: string[] } {
   if (booleans && typeof value === 'boolean') {
     const policy = value ? 'auto' : 'off';
-    return { set: { attended: { policy, source: key }, unattended: { policy, source: key } }, problems: [] };
+    const source = { kind: 'setting', key } as const;
+    return { set: { attended: { policy, source }, unattended: { policy, source } }, problems: [] };
   }
   const mapping = MappingSchema.safeParse(value);
   if (!mapping.success) {
@@ -40,7 +42,7 @@ function read(key: string, value: unknown, { booleans = false }: { booleans?: bo
     const parsed = SessionPolicySchema.safeParse(policy);
     if (!mode.success) problems.push(`${key}.${name} is not a run mode (attended, unattended), so it is ignored`);
     else if (!parsed.success) problems.push(`${key}.${name} is ${JSON.stringify(policy)}, not off, ask or auto, so it is ignored`);
-    else set[mode.data] = { policy: parsed.data, source: `${key}.${name}` };
+    else set[mode.data] = { policy: parsed.data, source: { kind: 'setting', key: `${key}.${name}` } };
   }
   return { set, problems };
 }
@@ -55,7 +57,7 @@ function resolve(levels: ReadonlyArray<ReadonlyArray<Partial<SessionPolicies>>>,
       const [strictest] = level.flatMap((set) => set[mode] ?? []).sort((left, right) => POLICIES.indexOf(left.policy) - POLICIES.indexOf(right.policy));
       if (strictest) return strictest;
     }
-    return { policy: defaults[mode], source: DEFAULT_SOURCE };
+    return { policy: defaults[mode], source: { kind: 'default' } };
   };
   return { attended: of('attended'), unattended: of('unattended') };
 }
@@ -78,7 +80,7 @@ function publish(config: LocalConfig, team: TeamaiConfig | null): { policies: Se
   const policies = resolve([[member.set], [ofTeam.set]], { attended: 'ask', unattended: 'auto' });
   const problems = [...member.problems, ...ofTeam.problems];
   if (usesBranchWorktree(config)) return { policies, problems };
-  const off = { policy: 'off', source: 'an HTTP team repo, which keeps no session archive' } as const;
+  const off = { policy: 'off', source: { kind: 'http-team' } } as const;
   const wouldPublish = policies.attended.policy !== 'off' || policies.unattended.policy !== 'off';
   return {
     policies: { attended: off, unattended: off },

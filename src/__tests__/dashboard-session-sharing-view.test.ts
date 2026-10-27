@@ -23,8 +23,8 @@ const defaults: Extract<SessionSharing, { configured: true }> = {
   configured: true,
   runMode: { mode: 'attended', source: 'default' },
   archive: 'teamai-reports',
-  publish: { attended: { policy: 'ask', source: 'the default' }, unattended: { policy: 'auto', source: 'the default' } },
-  scoring: { state: 'ok', policies: { attended: { policy: 'off', source: 'the default' }, unattended: { policy: 'auto', source: 'the default' } }, dailyLimit: 10, scorers: ['quality'] },
+  publish: { attended: { policy: 'ask', source: { kind: 'default' } }, unattended: { policy: 'auto', source: { kind: 'default' } } },
+  scoring: { state: 'ok', policies: { attended: { policy: 'off', source: { kind: 'default' } }, unattended: { policy: 'auto', source: { kind: 'default' } } }, dailyLimit: 10, scorers: ['quality'] },
   problems: ['teamai.yaml sessions.publish.unattended is "<b>yes</b>", not off, ask or auto, so it is ignored.'],
   unreadTools: ['pi'],
   captured: {
@@ -74,7 +74,7 @@ describe('the session sharing panel', () => {
   });
 
   it('has a Chinese message for every text it shows, leaving setting names as they are written', () => {
-    const http = { policy: 'off', source: 'an HTTP team repo, which keeps no session archive' } as const;
+    const http = { policy: 'off', source: { kind: 'http-team' } } as const;
     const variants: SessionSharing[] = [
       defaults,
       { ...defaults, runMode: { mode: 'unattended', source: 'CI', ignored: 'yes' }, scoring: { ...defaults.scoring, scorers: [] } as typeof defaults.scoring,
@@ -83,13 +83,15 @@ describe('the session sharing panel', () => {
         stepSessionsWaitingToArchive: { attended: 1, unattended: 2 } },
       { ...defaults, runMode: { mode: 'attended', source: 'TEAMAI_MODE' }, archive: 'none', publish: { attended: http, unattended: http },
         scoring: { state: 'unavailable', reason: 'Scoring is off for this project.' }, unreadTools: [], problems: [], next: [] },
-      { ...defaults, publish: { attended: { policy: 'auto', source: 'config.yaml sessions.publish.attended' }, unattended: { policy: 'off', source: 'teamai.yaml sessions.publish.unattended' } } },
+      { ...defaults, publish: { attended: { policy: 'auto', source: { kind: 'setting', key: 'config.yaml sessions.publish.attended' } }, unattended: { policy: 'off', source: { kind: 'setting', key: 'teamai.yaml sessions.publish.unattended' } } } },
     ];
     const keys = variants.flatMap((sharing) => render(sharing).keys);
-    const settingNames = keys.filter((key) => /\.yaml /.test(key));
 
-    expect(settingNames.length).toBeGreaterThan(0);
-    expect(keys.filter((key) => !settingNames.includes(key) && !Object.hasOwn(dashboardMessages, key))).toEqual([]);
+    expect(keys.filter((key) => !Object.hasOwn(dashboardMessages, key))).toEqual([]);
     expect(text(render(defaults, 'zh-CN').html)).toContain(dashboardMessages['Neither published nor scored']);
+    const settings = text(render(variants[3], 'zh-CN').html);
+    expect(settings).toContain('config.yaml sessions.publish.attended');
+    expect(settings).toContain('teamai.yaml sessions.publish.unattended');
+    expect(text(render(variants[2], 'zh-CN').html)).toContain(dashboardMessages['an HTTP team repo, which keeps no session archive']);
   });
 });

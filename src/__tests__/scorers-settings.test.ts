@@ -28,8 +28,8 @@ function teamRepo(files: Record<string, string>, member: Partial<LocalConfig> = 
 }
 
 const MACHINE = { source: 'config.yaml scoring.isolation', value: undefined };
-const both = (policy: string, source: string) => ({ attended: { policy, source }, unattended: { policy, source } });
-const SESSIONS_DEFAULT = { policies: { attended: { policy: 'off', source: 'the default' }, unattended: { policy: 'auto', source: 'the default' } }, dailyLimit: 10 };
+const both = (policy: string, key: string) => ({ attended: { policy, source: { kind: 'setting', key } }, unattended: { policy, source: { kind: 'setting', key } } });
+const SESSIONS_DEFAULT = { policies: { attended: { policy: 'off', source: { kind: 'default' } }, unattended: { policy: 'auto', source: { kind: 'default' } } }, dailyLimit: 10 };
 
 describe('scopeScoring isolation', () => {
   it('reads the root file, and an active namespace file in its place; an inactive one is not read', async () => {
@@ -103,7 +103,7 @@ describe('scopeScoring sessions', () => {
     expect(await scopeScoring(teamRepo({}))).toMatchObject({
       ok: true,
       problems: [],
-      sessions: { policies: { attended: { policy: 'off', source: 'the default' }, unattended: { policy: 'auto', source: 'the default' } }, dailyLimit: 10 },
+      sessions: { policies: { attended: { policy: 'off', source: { kind: 'default' } }, unattended: { policy: 'auto', source: { kind: 'default' } } }, dailyLimit: 10 },
     });
   });
 
@@ -119,7 +119,7 @@ describe('scopeScoring sessions', () => {
     const files = { 'scorers/scoring.yaml': 'sessions: true\n' };
     expect(await scopeScoring(teamRepo(files, member({ sessions: { attended: 'ask', unattended: 'yes' } })))).toMatchObject({
       problems: ['config.yaml scoring.sessions.unattended is "yes", not off, ask or auto, so it is ignored'],
-      sessions: { policies: { attended: { policy: 'ask', source: 'config.yaml scoring.sessions.attended' }, unattended: { policy: 'auto', source: 'scorers/scoring.yaml sessions' } } },
+      sessions: { policies: { attended: { policy: 'ask', source: { kind: 'setting', key: 'config.yaml scoring.sessions.attended' } }, unattended: { policy: 'auto', source: { kind: 'setting', key: 'scorers/scoring.yaml sessions' } } } },
     });
   });
 
@@ -163,7 +163,7 @@ describe('scopeScoring team session defaults', () => {
     const files = { 'scorers/scoring.yaml': 'sessions: { attended: ask }\n', 'scorers/ops/scoring.yaml': 'sessions: { unattended: off }\n' };
     expect(await scopeScoring(teamRepo(files, { primaryRole: 'ops' }))).toMatchObject({
       problems: [],
-      sessions: { policies: { attended: { policy: 'ask', source: 'scorers/scoring.yaml sessions.attended' }, unattended: { policy: 'off', source: 'scorers/ops/scoring.yaml sessions.unattended' } } },
+      sessions: { policies: { attended: { policy: 'ask', source: { kind: 'setting', key: 'scorers/scoring.yaml sessions.attended' } }, unattended: { policy: 'off', source: { kind: 'setting', key: 'scorers/ops/scoring.yaml sessions.unattended' } } } },
     });
   });
 
@@ -174,7 +174,7 @@ describe('scopeScoring team session defaults', () => {
       'scorers/sre/scoring.yaml': 'sessions: { attended: ask, unattended: auto }\n',
     };
     expect(await scopeScoring(teamRepo(files, ops))).toMatchObject({
-      sessions: { policies: { attended: { policy: 'ask', source: 'scorers/sre/scoring.yaml sessions.attended' }, unattended: { policy: 'ask', source: 'scorers/ops/scoring.yaml sessions.unattended' } } },
+      sessions: { policies: { attended: { policy: 'ask', source: { kind: 'setting', key: 'scorers/sre/scoring.yaml sessions.attended' } }, unattended: { policy: 'ask', source: { kind: 'setting', key: 'scorers/ops/scoring.yaml sessions.unattended' } } } },
     });
   });
 

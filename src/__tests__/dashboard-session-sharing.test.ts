@@ -90,8 +90,8 @@ describe('the session sharing read model', () => {
       configured: true,
       runMode: { mode: 'attended', source: 'default' },
       archive: 'teamai-reports',
-      publish: { attended: { policy: 'ask', source: 'the default' }, unattended: { policy: 'auto', source: 'the default' } },
-      scoring: { state: 'ok', policies: { attended: { policy: 'off', source: 'the default' }, unattended: { policy: 'auto', source: 'the default' } }, dailyLimit: 10 },
+      publish: { attended: { policy: 'ask', source: { kind: 'default' } }, unattended: { policy: 'auto', source: { kind: 'default' } } },
+      scoring: { state: 'ok', policies: { attended: { policy: 'off', source: { kind: 'default' } }, unattended: { policy: 'auto', source: { kind: 'default' } } }, dailyLimit: 10 },
       problems: [],
       next: [],
     });
@@ -105,8 +105,8 @@ describe('the session sharing read model', () => {
 
     expect(await readSessionSharing(config, { env: { CI: 'true' }, platform: 'linux', now: NOW })).toMatchObject({
       runMode: { mode: 'unattended', source: 'CI' },
-      publish: { attended: { policy: 'ask', source: 'the default' }, unattended: { policy: 'off', source: 'teamai.yaml sessions.publish.unattended' } },
-      scoring: { state: 'ok', policies: { attended: { policy: 'off', source: 'the default' }, unattended: { policy: 'off', source: 'scorers/scoring.yaml sessions.unattended' } } },
+      publish: { attended: { policy: 'ask', source: { kind: 'default' } }, unattended: { policy: 'off', source: { kind: 'setting', key: 'teamai.yaml sessions.publish.unattended' } } },
+      scoring: { state: 'ok', policies: { attended: { policy: 'off', source: { kind: 'default' } }, unattended: { policy: 'off', source: { kind: 'setting', key: 'scorers/scoring.yaml sessions.unattended' } } } },
       problems: [],
     });
   });
@@ -114,7 +114,7 @@ describe('the session sharing read model', () => {
   it('reads an HTTP team as keeping no archive, so nothing is published, and says so as doctor does', async () => {
     const config = await team({}, 'http');
 
-    const http = { policy: 'off', source: 'an HTTP team repo, which keeps no session archive' };
+    const http = { policy: 'off', source: { kind: 'http-team' } };
     expect(await readSessionSharing(config, { env: {}, platform: 'linux', now: NOW })).toMatchObject({
       archive: 'none',
       publish: { attended: http, unattended: http },

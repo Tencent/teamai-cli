@@ -28,7 +28,7 @@ describe('SessionPolicy.publish', () => {
     const { config, team } = await scope();
 
     expect(SessionPolicy.publish(config, team)).toEqual({
-      policies: { attended: { policy: 'ask', source: 'the default' }, unattended: { policy: 'auto', source: 'the default' } },
+      policies: { attended: { policy: 'ask', source: { kind: 'default' } }, unattended: { policy: 'auto', source: { kind: 'default' } } },
       problems: [],
     });
   });
@@ -37,8 +37,8 @@ describe('SessionPolicy.publish', () => {
     const { config, team } = await scope({ teamYaml: 'sessions:\n  publish: { attended: auto, unattended: off }\n', memberYaml: 'sessions:\n  publish: { attended: off }\n' });
 
     expect(SessionPolicy.publish(config, team).policies).toEqual({
-      attended: { policy: 'off', source: 'config.yaml sessions.publish.attended' },
-      unattended: { policy: 'off', source: 'teamai.yaml sessions.publish.unattended' },
+      attended: { policy: 'off', source: { kind: 'setting', key: 'config.yaml sessions.publish.attended' } },
+      unattended: { policy: 'off', source: { kind: 'setting', key: 'teamai.yaml sessions.publish.unattended' } },
     });
   });
 
@@ -47,7 +47,7 @@ describe('SessionPolicy.publish', () => {
 
     expect(team).not.toBeNull();
     expect(SessionPolicy.publish(config, team)).toEqual({
-      policies: { attended: { policy: 'ask', source: 'the default' }, unattended: { policy: 'auto', source: 'the default' } },
+      policies: { attended: { policy: 'ask', source: { kind: 'default' } }, unattended: { policy: 'auto', source: { kind: 'default' } } },
       problems: [
         'config.yaml sessions.publish.attended is "always", not off, ask or auto, so it is ignored',
         'config.yaml sessions.publish.nightly is not a run mode (attended, unattended), so it is ignored',
@@ -65,7 +65,7 @@ describe('SessionPolicy.publish', () => {
 
   it('publishes nothing on an HTTP team, and says so while a mode would publish', async () => {
     const { config, team } = await scope({ kind: 'http', memberYaml: 'sessions: { publish: { attended: auto } }\n' });
-    const off = { policy: 'off', source: 'an HTTP team repo, which keeps no session archive' };
+    const off = { policy: 'off', source: { kind: 'http-team' } };
 
     expect(SessionPolicy.publish(config, team)).toEqual({
       policies: { attended: off, unattended: off },

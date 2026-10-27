@@ -128,7 +128,7 @@ function sessionScoring(config: LocalConfig, rootFile: TeamFile | undefined, inN
     : lowest ?? (rootFile?.dailyLimit === undefined ? undefined : { value: rootFile.dailyLimit, source: `${rootFile.relativePath} daily_limit` });
   if (!daily) return { policies, dailyLimit: SESSION_DAILY_LIMIT };
   if (daily.value > 0) return { policies, dailyLimit: daily.value };
-  const off = { policy: 'off', source: daily.source } as const;
+  const off = { policy: 'off', source: { kind: 'setting', key: daily.source } } as const;
   return { policies: { attended: off, unattended: off }, dailyLimit: 0 };
 }
 
