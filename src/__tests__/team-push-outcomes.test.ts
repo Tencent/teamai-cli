@@ -183,6 +183,19 @@ describe('the usage report counts what finished sessions delivered (#1387)', () 
     expect((await readSessionOutcomes()).map((event) => [event.sessionId, event.outcomes])).toEqual([['with-commit', [{ kind: 'commit', sha: mine }]]]);
   });
 
+  it('finds the commits of a member whose git email has a + tag', async () => {
+    const work = checkout();
+    gitIn(work, ['config', 'user.email', 'me+team@example.com']);
+    const start = commitIn(work, 'base', 'me+team@example.com');
+    const mine = commitIn(work, 'mine', 'me+team@example.com');
+    const [first, stop] = session('tagged-email', 7, { cwd: work });
+    writeEvents([{ ...first, gitAtStart: { head: start, dirty: false } }, { ...stop, gitHead: mine }]);
+
+    await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
+
+    expect((await readSessionOutcomes()).map((event) => event.outcomes)).toEqual([[{ kind: 'commit', sha: mine }]]);
+  });
+
   it('counts the open pull request that holds a commit of each session, as it was first looked up', async () => {
     const work = checkout();
     const origin = path.join(tmpDir, 'origin.git');

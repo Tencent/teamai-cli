@@ -141,10 +141,9 @@ async function sessionCommits(facts: Facts): Promise<string[]> {
   if (!cwd || !startHead || !endHead || startHead === endHead) return [];
   const email = (await git(cwd, ['config', '--get', 'user.email'], { timeoutMs: GIT_TIMEOUT_MS })).stdout.trim();
   if (!email) return [];
-  const author = `<${email.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}>`;
   // A commit dated before the session started came in with a pull, whoever wrote it.
   const listed = await git(cwd, [
-    'log', '--reverse', '--format=%H', `--author=${author}`, ...(startedAt ? [`--since=${startedAt}`] : []), `${startHead}..${endHead}`,
+    'log', '--reverse', '--format=%H', '--fixed-strings', `--author=<${email}>`, ...(startedAt ? [`--since=${startedAt}`] : []), `${startHead}..${endHead}`,
   ], { timeoutMs: GIT_TIMEOUT_MS });
   return listed.code === 0 ? listed.stdout.split('\n').filter((sha) => CommitIdSchema.safeParse(sha).success) : [];
 }
