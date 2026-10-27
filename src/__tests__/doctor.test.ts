@@ -1396,6 +1396,15 @@ describe('doctor — member settings (#1459)', () => {
         expect(printed.filter((line) => line.startsWith('  contributeHintEnabled:'))).toEqual([]);
     });
 
+    it('reports in user scope when the config holds an empty ai.tool, which only the member settings refuse', async () => {
+        mockedLoadLocalConfig.mockResolvedValue({ ...mockLocalConfig, ai: { tool: '' }, usageReportEnabled: false });
+
+        await doctor({ json: true });
+
+        const report = JSON.parse(String(consoleSpy.mock.calls.at(-1)?.[0])) as DoctorReport;
+        expect(report.notes).toContain(`Usage reporting: off, from usageReportEnabled: false in the user config ${machineFile()}.`);
+    });
+
     it('names the machine config in the usage-reporting note when only this machine turns reporting off', async () => {
         // A workspace load overlays the machine's usageReportEnabled, and keeps what its own file set.
         const workspace = { ...mockLocalConfig, scope: 'project', projectRoot: '/tmp/ws', dataHome: '/tmp/ws-data', usageReportEnabled: false, memberSettingsOverlay: { local: {} } };

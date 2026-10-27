@@ -452,9 +452,12 @@ async function applyConfigOverlays(config: LocalConfig): Promise<LocalConfig> {
   return applyMachineSettings(assigned, await loadMemberSettings());
 }
 
-/** The member settings `config`'s own file sets, without the machine's overlaid below them. */
+/**
+ * The member settings `config`'s own file sets, without the machine's overlaid below them. A config with no overlay
+ * holds only its own, which its load already validated.
+ */
 export function ownMemberSettings(config: LocalConfig): MemberSettings {
-  return config.memberSettingsOverlay?.local ?? MemberSettingsSchema.parse(config);
+  return config.memberSettingsOverlay?.local ?? config;
 }
 
 /** Mark settings a command deliberately wrote, so a later save keeps them even when they equal a machine value. */
