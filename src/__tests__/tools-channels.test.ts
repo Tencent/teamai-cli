@@ -74,8 +74,8 @@ describe('the descriptor\'s channels agree with the tables they replaced', () =>
     expect(hookFormatOf(tool)).toBe(BEFORE.hookFormats[tool] ?? 'claude');
   });
 
-  it('renders agents for the same tools', () => {
-    expect([...AGENT_TOOLS].sort()).toEqual([...BEFORE.agentTools].sort());
+  it('renders agents for the same tools, and for the Trae editions their subagents directory added since', () => {
+    expect([...AGENT_TOOLS].sort()).toEqual([...BEFORE.agentTools, 'trae', 'trae-cn'].sort());
   });
 
   it('marks the tools earlier releases left hooks and MCP servers for in the default home', () => {

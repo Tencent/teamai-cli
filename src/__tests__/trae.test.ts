@@ -23,6 +23,7 @@ describe('Trae support', () => {
     expect(config.toolPaths.trae).toEqual({
       skills: '.trae/skills',
       rules: '.trae/rules',
+      agents: '.trae/agents',
       mcpProject: '.trae/mcp.json',
       userScope: { rules: '.trae/user_rules' },
     });
@@ -32,10 +33,12 @@ describe('Trae support', () => {
     expect(config.toolPaths['trae-cn']).toEqual({
       skills: '.trae/skills',
       rules: '.trae/rules',
+      agents: '.trae/agents',
       mcpProject: '.trae/mcp.json',
       userScope: {
         skills: '.trae-cn/skills',
         rules: '.trae-cn/user_rules',
+        agents: '.trae-cn/agents',
       },
     });
   });
@@ -67,7 +70,7 @@ describe('Trae support', () => {
     }
   });
 
-  it('registers both builds for discovery and Markdown rules, without subagent sync', () => {
+  it('registers both builds for discovery, Markdown rules and subagent sync', () => {
     expect(KNOWN_AGENTS.find((agent) => agent.id === 'trae')).toMatchObject({
       displayName: 'Trae',
       skillsPath: '.trae/skills',
@@ -77,8 +80,7 @@ describe('Trae support', () => {
       skillsPath: '.trae-cn/skills',
     });
     for (const id of ['trae', 'trae-cn']) {
-      // Trae has no subagents directory, so it is not in AGENT_TOOLS.
-      expect(AGENT_TOOLS).not.toContain(id);
+      expect(AGENT_TOOLS).toContain(id);
       expect(ruleFileExtensionForTool(id)).toBe('.md');
       expect(usesMdcRules(id)).toBe(false);
       expect(ruleFormatForTool(id)?.scopeFields).toEqual(['globs', 'alwaysApply']);

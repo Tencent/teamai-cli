@@ -560,11 +560,12 @@ export const DEFAULT_TOOL_PATHS = {
   // teamai-writable cross-platform file: the IDE keeps it next to its
   // user settings (~/Library/Application Support/Trae/User/mcp.json on
   // macOS, %APPDATA%/… on Windows), so only `mcpProject` is set. Trae has
-  // no settings-based hook surface and no subagents directory, so those
-  // keys stay absent (like JoyCode, users sync via `teamai pull`).
+  // no settings-based hook surface, so that key stays absent. Subagents are
+  // Markdown in <root>/.trae/agents (Trae 3.5.67).
   trae: {
     skills: '.trae/skills',
     rules: '.trae/rules',
+    agents: '.trae/agents',
     mcpProject: '.trae/mcp.json',
     userScope: { rules: '.trae/user_rules' },
   },
@@ -577,10 +578,12 @@ export const DEFAULT_TOOL_PATHS = {
   'trae-cn': {
     skills: '.trae/skills',
     rules: '.trae/rules',
+    agents: '.trae/agents',
     mcpProject: '.trae/mcp.json',
     userScope: {
       skills: '.trae-cn/skills',
       rules: '.trae-cn/user_rules',
+      agents: '.trae-cn/agents',
     },
   },
   // ZCode: user-level config lives at ~/.zcode/cli/config.json (a shared file

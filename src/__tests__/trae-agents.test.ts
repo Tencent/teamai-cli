@@ -1,0 +1,94 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import fse from 'fs-extra';
+import matter from 'gray-matter';
+import os from 'node:os';
+import path from 'node:path';
+import { AgentsHandler } from '../resources/agents.js';
+import { TeamaiConfigSchema, type LocalConfig, type TeamaiConfig } from '../types.js';
+
+vi.mock('../utils/logger.js', () => ({
+  log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn() },
+}));
+
+/** Trae's subagent frontmatter rules (docs.trae.ai/ide/subagents): the name it loads, and only its own model ids. */
+const TRAE_NAME = /^[A-Za-z][A-Za-z0-9-]{0,48}[A-Za-z0-9]$/;
+
+const AGENT = 'reviewer';
+const AGENT_YAML = `name: ${AGENT}
+description: Review team changes
+instructions: Review the requested change and report defects.
+model: claude-sonnet-4.6
+tools: [Read, Grep, Glob]
+`;
+
+describe('Trae subagents', () => {
+  let sandbox: string;
+  let teamRepo: string;
+  let projectRoot: string;
+  let teamConfig: TeamaiConfig;
+  let item: { name: string; type: 'agents'; sourcePath: string; relativePath: string };
+
+  beforeEach(async () => {
+    sandbox = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-trae-agents-'));
+    const home = path.join(sandbox, 'home');
+    teamRepo = path.join(sandbox, 'team-repo');
+    projectRoot = path.join(sandbox, 'project');
+    await fse.ensureDir(path.join(teamRepo, 'agents'));
+    await fse.ensureDir(projectRoot);
+    await fse.writeFile(path.join(teamRepo, 'agents', `${AGENT}.yaml`), AGENT_YAML);
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('USERPROFILE', home);
+    teamConfig = TeamaiConfigSchema.parse({ team: 'trae-agents-test', repo: 'fixture', provider: 'git' });
+    item = { name: AGENT, type: 'agents', sourcePath: path.join(teamRepo, 'agents', `${AGENT}.yaml`), relativePath: `agents/${AGENT}.yaml` };
+  });
+
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    await fse.remove(sandbox);
+  });
+
+  const configFor = (tool: string, scope: 'user' | 'project'): LocalConfig => ({
+    repo: { localPath: teamRepo, remote: 'fixture' },
+    username: 'tester',
+    scope,
+    ...(scope === 'project' ? { projectRoot } : {}),
+    enabledAgents: [tool],
+    additionalRoles: [],
+  } as unknown as LocalConfig);
+
+  for (const tool of ['trae', 'trae-cn']) {
+    it(`${tool}: a project's team agent lands in .trae/agents with frontmatter Trae loads`, async () => {
+      await new AgentsHandler().pullItem(item, teamConfig, configFor(tool, 'project'));
+
+      const file = path.join(projectRoot, '.trae', 'agents', `${AGENT}.md`);
+      const content = await fse.readFile(file, 'utf8');
+      expect(content.startsWith('---\n')).toBe(true);
+      const { data, content: body } = matter(content);
+      expect(data).toEqual({ name: AGENT, description: 'Review team changes', tools: 'Read, Grep, Glob' });
+      expect(data['name']).toMatch(TRAE_NAME);
+      expect(body.trim()).toBe('Review the requested change and report defects.');
+    });
+  }
+
+  it('trae-cn: a model the team gives the edition in tool_extras is written', async () => {
+    await fse.writeFile(item.sourcePath, `${AGENT_YAML}tool_extras:\n  trae-cn:\n    model: kimi-k2.5\n`);
+    await new AgentsHandler().pullItem(item, teamConfig, configFor('trae-cn', 'project'));
+
+    const { data } = matter(await fse.readFile(path.join(projectRoot, '.trae', 'agents', `${AGENT}.md`), 'utf8'));
+    expect(data['model']).toBe('kimi-k2.5');
+  });
+
+  it('trae-cn: a user-scope team agent lands in ~/.trae-cn/agents', async () => {
+    await new AgentsHandler().pullItem(item, teamConfig, configFor('trae-cn', 'user'));
+
+    const { data } = matter(await fse.readFile(path.join(sandbox, 'home', '.trae-cn', 'agents', `${AGENT}.md`), 'utf8'));
+    expect(data).toEqual({ name: AGENT, description: 'Review team changes', tools: 'Read, Grep, Glob' });
+  });
+
+  it('trae: a user-scope pull writes no agent, since where Trae reads them is unknown', async () => {
+    await new AgentsHandler().pullItem(item, teamConfig, configFor('trae', 'user'));
+
+    expect(await fse.pathExists(path.join(sandbox, 'home', '.trae', 'agents', `${AGENT}.md`))).toBe(false);
+    expect(await fse.pathExists(path.join(sandbox, 'home', '.trae-cn', 'agents', `${AGENT}.md`))).toBe(false);
+  });
+});

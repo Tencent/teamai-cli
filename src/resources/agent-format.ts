@@ -88,6 +88,8 @@ export interface AgentSpec {
     opencode?: Record<string, unknown>;
     workbuddy?: Record<string, unknown>;
     muse?: Record<string, unknown>;
+    trae?: Record<string, unknown>;
+    'trae-cn'?: Record<string, unknown>;
   };
   /**
    * Which tools this agent should be deployed to.
@@ -403,6 +405,32 @@ export function renderForMuse(spec: AgentSpec): RenderResult {
   if (requested !== undefined && requested !== null) frontmatterData['tools'] = museTools(requested).kept;
   else delete frontmatterData['tools'];
   return { ext: agentFileExtensionForTool('muse'), content: matter.stringify(spec.instructions, frontmatterData) };
+}
+
+/**
+ * Trae and Trae CN take `tools` as one comma-separated string, and a `model`
+ * only from their own ids, which differ per edition while both read the
+ * project's `.trae/agents`. So the spec's own `model` is left out; one an
+ * alias or `tool_extras.<tool>` gives the edition is written.
+ */
+function renderForTrae(spec: AgentSpec, extras: Record<string, unknown> | undefined, resolved: ResolvedAgentModel | undefined): string {
+  const { tools, ...rest } = resolved ? withModel(spec, resolved.model) : withModel(spec, undefined);
+  const joined = traeTools(tools);
+  return renderMarkdownAgent(rest, extras, joined === undefined ? undefined : { tools: joined });
+}
+
+function traeTools(tools: string[] | string | undefined): string | undefined {
+  if (tools === undefined || tools.length === 0) return undefined;
+  return Array.isArray(tools) ? tools.join(', ') : tools;
+}
+
+/** Reverse a Trae subagent: Claude's Markdown, with `tools` a comma-separated string. */
+export function reverseFromTrae(filePath: string, content: string): ReverseResult {
+  const result = reverseFromClaude(filePath, content);
+  if (!result.ok) return result;
+  const tools: unknown = result.spec.tools;
+  if (typeof tools === 'string') result.spec.tools = tools.split(',').map((tool) => tool.trim()).filter(Boolean);
+  return result;
 }
 
 /**
@@ -1029,6 +1057,9 @@ export function renderForTool(spec: AgentSpec, tool: ToolName, resolved?: Resolv
     case 'opencode': return renderForOpencode(target, fields);
     case 'workbuddy': return renderForWorkbuddy(target);
     case 'muse': return renderForMuse(target);
+    case 'trae':
+    case 'trae-cn':
+      return { ext, content: renderForTrae(spec, toolExtrasFor(spec, tool), resolved) };
   }
 }
 
@@ -1082,5 +1113,8 @@ function reverseByParser(tool: ToolName, filePath: string, content: string): Rev
       return reverseFromWorkbuddy(filePath, content);
     case 'muse':
       return reverseFromMuse(filePath, content);
+    case 'trae':
+    case 'trae-cn':
+      return reverseFromTrae(filePath, content);
   }
 }

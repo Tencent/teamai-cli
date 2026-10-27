@@ -710,7 +710,12 @@ export const TOOLS = {
       project: { channel: 'dir', format: 'trae', reads: [{ base: 'project', path: '.trae/rules', when: 'workspaceUnder', evidence: 'assumed' }] },
     },
     blocks: NONE,
-    agents: UNKNOWN,
+    // Trae loads `.trae/agents` only while its Beta "Enable Subagents Directory" switch is on, a setting teamai cannot read.
+    agents: {
+      // Its docs give ~/.trae-cn/agents, a copy of Trae CN's page; nothing shows ~/.trae/agents.
+      user: 'unknown',
+      project: { reads: [{ base: 'project', path: '.trae/agents', when: 'cwdOnly', evidence: 'source' }] },
+    },
     mcp: {
       user: 'none',
       project: { format: 'claude', reads: [{ base: 'project', path: '.trae/mcp.json', when: 'workspaceUnder', evidence: 'docs' }] },
@@ -740,7 +745,11 @@ export const TOOLS = {
       project: { channel: 'dir', format: 'trae', reads: [{ base: 'project', path: '.trae/rules', when: 'workspaceUnder', evidence: 'assumed' }] },
     },
     blocks: NONE,
-    agents: UNKNOWN,
+    // Trae CN loads them only while its Beta "Enable Subagents Directory" switch is on (on by default, its docs say).
+    agents: {
+      user: { reads: [{ base: 'home', path: '.trae-cn/agents', evidence: 'docs' }] },
+      project: { reads: [{ base: 'project', path: '.trae/agents', when: 'cwdOnly', evidence: 'source' }] },
+    },
     mcp: {
       user: 'none',
       project: { format: 'claude', reads: [{ base: 'project', path: '.trae/mcp.json', when: 'workspaceUnder', evidence: 'docs' }] },
