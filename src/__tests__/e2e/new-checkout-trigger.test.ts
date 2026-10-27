@@ -12,7 +12,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { trackDetachedProcesses } from '../helpers/detached-processes.js';
+import { waitForDetachedChildren } from '../helpers/detached-processes.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -28,7 +28,6 @@ describe.skipIf(!configHooks || process.platform === 'win32')('a worktree create
   let home: string;
   let project: string;
   let deployLog: string;
-  let detached: ReturnType<typeof trackDetachedProcesses>;
 
   const env = (): NodeJS.ProcessEnv => {
     const base: NodeJS.ProcessEnv = {
@@ -37,7 +36,6 @@ describe.skipIf(!configHooks || process.platform === 'win32')('a worktree create
     };
     delete base.CLAUDE_CONFIG_DIR;
     delete base.CODEX_HOME;
-    base.NODE_OPTIONS = [base.NODE_OPTIONS, detached.nodeOptions].filter(Boolean).join(' ');
     return base;
   };
   const run = (command: string, args: string[], cwd: string): { code: number | null; output: string } => {
@@ -83,7 +81,6 @@ describe.skipIf(!configHooks || process.platform === 'win32')('a worktree create
   beforeAll(() => {
     if (!fs.existsSync(CLI)) throw new Error(`CLI binary not found at ${CLI}. Run "npm run build" first.`);
     sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-new-checkout-e2e-')));
-    detached = trackDetachedProcesses(sandbox);
     home = path.join(sandbox, 'home');
     fs.mkdirSync(home);
     deployLog = path.join(sandbox, 'post-deploy.log');
@@ -114,7 +111,7 @@ describe.skipIf(!configHooks || process.platform === 'win32')('a worktree create
   }, 60_000);
 
   afterAll(async () => {
-    if (detached) await detached.waitForExit();
+    await waitForDetachedChildren();
     if (sandbox) fs.rmSync(sandbox, { recursive: true, force: true });
   }, 65_000);
 
@@ -123,7 +120,7 @@ describe.skipIf(!configHooks || process.platform === 'win32')('a worktree create
     expect(fs.existsSync(skill(dir))).toBe(false);
 
     expect(await enterWorktree(dir)).toBe(0);
-    await detached.waitForExit();
+    await waitForDetachedChildren();
 
     expect(fs.existsSync(skill(dir))).toBe(true);
     expect(fs.existsSync(rule(dir))).toBe(true);
@@ -134,7 +131,7 @@ describe.skipIf(!configHooks || process.platform === 'win32')('a worktree create
     const dir = hooklessWorktree('wt-parallel');
 
     expect(await Promise.all([enterWorktree(dir), enterWorktree(dir), enterWorktree(dir)])).toEqual([0, 0, 0]);
-    await detached.waitForExit();
+    await waitForDetachedChildren();
 
     expect(fs.existsSync(skill(dir))).toBe(true);
     expect(deploys(dir)).toBe(1);
@@ -144,11 +141,11 @@ describe.skipIf(!configHooks || process.platform === 'win32')('a worktree create
   it('a checkout with a delivery record costs a tool use nothing more', async () => {
     const dir = hooklessWorktree('wt-recorded');
     await enterWorktree(dir);
-    await detached.waitForExit();
+    await waitForDetachedChildren();
     fs.rmSync(skill(dir));
 
     await enterWorktree(dir);
-    await detached.waitForExit();
+    await waitForDetachedChildren();
 
     expect(fs.existsSync(skill(dir))).toBe(false);
     expect(deploys(dir)).toBe(1);
@@ -165,9 +162,9 @@ describe.skipIf(!configHooks || process.platform === 'win32')('a worktree create
       const dir = hooklessWorktree('wt-offline');
 
       await enterWorktree(dir);
-      await detached.waitForExit();
+      await waitForDetachedChildren();
       await enterWorktree(dir);
-      await detached.waitForExit();
+      await waitForDetachedChildren();
 
       expect(fs.existsSync(skill(dir))).toBe(true);
       expect(deploys(dir)).toBe(1);
@@ -187,7 +184,7 @@ describe.skipIf(!configHooks || process.platform === 'win32')('a worktree create
     fs.renameSync(remote, `${remote}.away`);
     try {
       gitOk(['worktree', 'add', '-q', '--detach', dir, 'HEAD'], project);
-      await detached.waitForExit();
+      await waitForDetachedChildren();
       expect(deploys(dir)).toBe(0);
     } finally {
       fs.renameSync(`${remote}.away`, remote);
@@ -195,7 +192,7 @@ describe.skipIf(!configHooks || process.platform === 'win32')('a worktree create
     }
 
     await enterWorktree(dir);
-    await detached.waitForExit();
+    await waitForDetachedChildren();
 
     expect(fs.existsSync(skill(dir))).toBe(true);
     expect(deploys(dir)).toBe(1);
@@ -211,7 +208,7 @@ describe.skipIf(!configHooks || process.platform === 'win32')('a worktree create
     fs.renameSync(remote, `${remote}.away`);
     try {
       gitOk(['worktree', 'add', '-q', '--detach', dir, 'HEAD'], project);
-      await detached.waitForExit();
+      await waitForDetachedChildren();
     } finally {
       fs.renameSync(`${remote}.away`, remote);
       fs.writeFileSync(stamp, fetched);
@@ -231,12 +228,12 @@ describe.skipIf(!configHooks || process.platform === 'win32')('a worktree create
   it('a worktree removed and created again at the same path is prepared again, postDeploy included', async () => {
     const dir = path.join(sandbox, 'wt-again');
     gitOk(['worktree', 'add', '-q', '--detach', dir, 'HEAD'], project);
-    await detached.waitForExit();
+    await waitForDetachedChildren();
     expect(deploys(dir)).toBe(1);
     gitOk(['worktree', 'remove', '--force', dir], project);
 
     gitOk(['worktree', 'add', '-q', '--detach', dir, 'HEAD'], project);
-    await detached.waitForExit();
+    await waitForDetachedChildren();
 
     expect(fs.existsSync(skill(dir))).toBe(true);
     expect(deploys(dir)).toBe(2);
@@ -246,7 +243,7 @@ describe.skipIf(!configHooks || process.platform === 'win32')('a worktree create
     const dir = hooklessWorktree('wt-session');
 
     expect(await dispatch('session-start', { cwd: dir, hook_event_name: 'SessionStart', source: 'startup' })).toBe(0);
-    await detached.waitForExit();
+    await waitForDetachedChildren();
 
     expect(fs.existsSync(skill(dir))).toBe(true);
     expect(deploys(dir)).toBe(1);
@@ -262,7 +259,7 @@ describe.skipIf(!configHooks || process.platform === 'win32')('a worktree create
         spawn('git', ['worktree', 'add', '-q', added], { cwd: project, env: env(), stdio: 'ignore' }).on('close', resolve);
       }),
     ]);
-    await detached.waitForExit();
+    await waitForDetachedChildren();
 
     expect([tool, git]).toEqual([0, 0]);
     expect(fs.existsSync(skill(dir))).toBe(true);

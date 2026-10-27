@@ -8,7 +8,7 @@ import YAML from 'yaml';
 import { KNOWN_AGENTS } from '../../known-agents.js';
 import { TOOLS } from '../../tools.js';
 import { projectSlug } from '../../utils/partition.js';
-import { trackDetachedProcesses } from '../helpers/detached-processes.js';
+import { waitForDetachedChildren } from '../helpers/detached-processes.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -34,7 +34,6 @@ interface Fixture {
 
 describe('init --agent validates ids against built-in and team agents', () => {
   let sandbox: string;
-  let detached: ReturnType<typeof trackDetachedProcesses>;
   let homeCount = 0;
 
   const makeEnv = (home: string): NodeJS.ProcessEnv => {
@@ -50,7 +49,6 @@ describe('init --agent validates ids against built-in and team agents', () => {
       TEAMAI_API_TOKEN: 'test-token',
       FORCE_COLOR: '0',
     };
-    testEnv.NODE_OPTIONS = [testEnv.NODE_OPTIONS, detached?.nodeOptions].filter(Boolean).join(' ');
     return testEnv;
   };
 
@@ -111,11 +109,10 @@ describe('init --agent validates ids against built-in and team agents', () => {
   beforeAll(() => {
     if (!fs.existsSync(CLI)) throw new Error('Build first: ' + CLI + ' is missing');
     sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-init-agent-validation-')));
-    detached = trackDetachedProcesses(sandbox);
   });
 
   afterAll(async () => {
-    if (detached) await detached.waitForExit();
+    await waitForDetachedChildren();
     fs.rmSync(sandbox, { recursive: true, force: true });
   });
 

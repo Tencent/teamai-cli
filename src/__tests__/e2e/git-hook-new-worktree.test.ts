@@ -15,7 +15,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { trackDetachedProcesses } from '../helpers/detached-processes.js';
+import { waitForDetachedChildren } from '../helpers/detached-processes.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -50,13 +50,11 @@ describe.skipIf(!configHooks)('git hook: a new worktree gets the team\'s resourc
   let home: string;
   let remote: string;
   let claudeProject: string;
-  let detached: ReturnType<typeof trackDetachedProcesses>;
 
   const env = (extra: Record<string, string> = {}): NodeJS.ProcessEnv => {
     const base: NodeJS.ProcessEnv = { ...process.env, ...GIT_ENV, HOME: home, USERPROFILE: home, FORCE_COLOR: '0', ...extra };
     delete base.CLAUDE_CONFIG_DIR;
     delete base.CODEX_HOME;
-    base.NODE_OPTIONS = [base.NODE_OPTIONS, detached.nodeOptions].filter(Boolean).join(' ');
     return base;
   };
 
@@ -127,7 +125,6 @@ describe.skipIf(!configHooks)('git hook: a new worktree gets the team\'s resourc
     if (!fs.existsSync(CLI)) throw new Error(`CLI binary not found at ${CLI}. Run "npm run build" first.`);
 
     sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-git-hook-e2e-')));
-    detached = trackDetachedProcesses(sandbox);
     home = path.join(sandbox, 'home');
     remote = path.join(sandbox, 'team.git');
     const seed = path.join(sandbox, 'seed');
@@ -155,7 +152,7 @@ describe.skipIf(!configHooks)('git hook: a new worktree gets the team\'s resourc
   afterAll(async () => {
     // The parent hook exits before its child finishes. Join every child before
     // deleting HOME; a moment without a sync lock does not mean it has exited.
-    if (detached) await detached.waitForExit();
+    await waitForDetachedChildren();
     if (sandbox) fs.rmSync(sandbox, { recursive: true, force: true });
   }, 65_000);
 
@@ -448,7 +445,7 @@ describe.skipIf(!configHooks)('git hook: a new worktree gets the team\'s resourc
       const fromHook = traced.slice(traced.indexOf('hook-dispatch post-rewrite'));
       expect(fromHook).toContain('hook-dispatch post-rewrite');
       expect(fromHook).not.toMatch(/\b(fetch|upload-pack|ls-remote|push|pull)\b/);
-      await detached.waitForExit();
+      await waitForDetachedChildren();
       expect(hasSkill(repo, 'amend-only-skill')).toBe(false);
     });
 

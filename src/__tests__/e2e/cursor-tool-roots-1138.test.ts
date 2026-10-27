@@ -22,7 +22,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
-import { trackDetachedProcesses } from '../helpers/detached-processes.js';
+import { waitForDetachedChildren } from '../helpers/detached-processes.js';
 import { projectSlug } from '../../utils/partition.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -49,7 +49,6 @@ interface Run {
 describe('Cursor tool roots (#1138)', () => {
   let sandbox: string;
   let home: string;
-  let detached: ReturnType<typeof trackDetachedProcesses>;
   let counter = 0;
 
   /**
@@ -74,7 +73,6 @@ describe('Cursor tool roots (#1138)', () => {
     for (const name of ['CURSOR_DATA_DIR', 'CURSOR_CONFIG_DIR']) {
       if (!(name in extra)) delete base[name];
     }
-    base.NODE_OPTIONS = [base.NODE_OPTIONS, detached.nodeOptions].filter(Boolean).join(' ');
     return base;
   };
   /** stdin is a pipe, never a terminal. A run past `timeout` ms is killed and reports code null. */
@@ -132,11 +130,10 @@ describe('Cursor tool roots (#1138)', () => {
     sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-cursor-roots-')));
     home = path.join(sandbox, 'home');
     fs.mkdirSync(path.join(home, DEFAULT_ROOT), { recursive: true });
-    detached = trackDetachedProcesses(sandbox);
   });
 
   afterAll(async () => {
-    if (detached) await detached.waitForExit();
+    await waitForDetachedChildren();
     fs.rmSync(sandbox, { recursive: true, force: true });
   });
 

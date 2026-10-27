@@ -14,7 +14,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
-import { trackDetachedProcesses } from '../helpers/detached-processes.js';
+import { waitForDetachedChildren } from '../helpers/detached-processes.js';
 import { projectSlug } from '../../utils/partition.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -39,7 +39,6 @@ interface Run {
 describe('init . --agent sets up only the tools passed (#993 bug 9)', () => {
   let sandbox: string;
   let home: string;
-  let detached: ReturnType<typeof trackDetachedProcesses>;
   let counter = 0;
 
   const env = (): NodeJS.ProcessEnv => {
@@ -55,7 +54,6 @@ describe('init . --agent sets up only the tools passed (#993 bug 9)', () => {
     delete base.GIT_CONFIG_GLOBAL;
     delete base.CLAUDE_CONFIG_DIR;
     delete base.CODEX_HOME;
-    base.NODE_OPTIONS = [base.NODE_OPTIONS, detached.nodeOptions].filter(Boolean).join(' ');
     return base;
   };
   /** stdin is a pipe, never a terminal. A run past `timeout` ms is killed and reports code null. */
@@ -125,11 +123,10 @@ describe('init . --agent sets up only the tools passed (#993 bug 9)', () => {
     sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-init-self-agent-')));
     home = path.join(sandbox, 'home');
     for (const tool of HOME_TOOLS) fs.mkdirSync(path.join(home, tool), { recursive: true });
-    detached = trackDetachedProcesses(sandbox);
   });
 
   afterAll(async () => {
-    if (detached) await detached.waitForExit();
+    await waitForDetachedChildren();
     fs.rmSync(sandbox, { recursive: true, force: true });
   });
 

@@ -14,7 +14,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { trackDetachedProcesses } from '../helpers/detached-processes.js';
+import { waitForDetachedChildren } from '../helpers/detached-processes.js';
 import { startMockServer, type MockCommand, type MockServerHandle } from '../helpers/mock-server.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -30,17 +30,15 @@ const GIT_ENV = {
 interface Run { code: number | null; output: string }
 
 let sandbox: string;
-let detached: ReturnType<typeof trackDetachedProcesses>;
 let server: MockServerHandle;
 
 beforeAll(async () => {
   sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-local-agent-teardown-915-')));
-  detached = trackDetachedProcesses(sandbox);
   server = await startMockServer({ apiKey: API_KEY });
 });
 
 afterAll(async () => {
-  await detached?.waitForExit();
+  await waitForDetachedChildren();
   await server?.close();
   if (sandbox) fs.rmSync(sandbox, { recursive: true, force: true });
 });
@@ -52,7 +50,6 @@ function machine(name: string) {
   const env: NodeJS.ProcessEnv = {
     ...process.env, ...GIT_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: path.join(home, '.config'),
     GIT_CONFIG_NOSYSTEM: '1', SHELL: '/bin/bash', FORCE_COLOR: '0',
-    NODE_OPTIONS: [process.env.NODE_OPTIONS, detached.nodeOptions].filter(Boolean).join(' '),
   };
   delete env.CLAUDE_CONFIG_DIR;
   delete env.TEAMAI_API_TOKEN;
@@ -102,7 +99,7 @@ function machine(name: string) {
       server.seedCommands(commands);
       const run = await cli(['hook-dispatch', 'session-start', '--tool', tool], cwd,
         JSON.stringify({ cwd, session_id: `s-${path.basename(cwd)}-${tool}`, hook_event_name: 'SessionStart', source: 'startup' }));
-      await detached.waitForExit();
+      await waitForDetachedChildren();
       expect(run.code, run.output).toBe(0);
     },
   };

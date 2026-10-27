@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, it } from 'vitest';
-import { trackDetachedProcesses } from '../helpers/detached-processes.js';
+import { waitForDetachedChildren } from '../helpers/detached-processes.js';
 
 const CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../dist/index.js');
 
@@ -17,8 +17,7 @@ it('installs, lists and removes Pi hooks in the recorded agent directory', async
   fs.writeFileSync(path.join(moved, 'extensions', 'personal.ts'), '// keep moved personal');
   fs.mkdirSync(path.join(home, '.pi', 'agent'), { recursive: true });
   fs.mkdirSync(project);
-  const detached = trackDetachedProcesses(root);
-  const env: NodeJS.ProcessEnv = { ...process.env, PI_CODING_AGENT_DIR: moved, NODE_OPTIONS: detached.nodeOptions, HOME: home, USERPROFILE: home, GIT_CONFIG_GLOBAL: path.join(home, '.gitconfig'),
+  const env: NodeJS.ProcessEnv = { ...process.env, PI_CODING_AGENT_DIR: moved, HOME: home, USERPROFILE: home, GIT_CONFIG_GLOBAL: path.join(home, '.gitconfig'),
     GIT_AUTHOR_NAME: 'Fixture', GIT_AUTHOR_EMAIL: 'fixture@example.test',
     GIT_COMMITTER_NAME: 'Fixture', GIT_COMMITTER_EMAIL: 'fixture@example.test', FORCE_COLOR: '0' };
   const cli = (...args: string[]) => execFileSync(process.execPath, [CLI, ...args], { cwd: project, env, encoding: 'utf8' });
@@ -51,7 +50,7 @@ it('installs, lists and removes Pi hooks in the recorded agent directory', async
     expect(fs.existsSync(extension)).toBe(false);
     expect(fs.readFileSync(path.join(moved, 'extensions', 'personal.ts'), 'utf8')).toBe('// keep moved personal');
   } finally {
-    await detached.waitForExit();
+    await waitForDetachedChildren();
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

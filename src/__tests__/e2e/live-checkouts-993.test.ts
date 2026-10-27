@@ -20,7 +20,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { trackDetachedProcesses } from '../helpers/detached-processes.js';
+import { waitForDetachedChildren } from '../helpers/detached-processes.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -44,7 +44,6 @@ interface Run {
 describe.skipIf(process.platform === 'win32')('live checkouts are probed, not inferred from the worktree list (#993)', () => {
   let sandbox: string;
   let home: string;
-  let detached: ReturnType<typeof trackDetachedProcesses>;
   /** PATH for git before 2.36, set in beforeAll. */
   let oldGit: Record<string, string>;
 
@@ -61,7 +60,6 @@ describe.skipIf(process.platform === 'win32')('live checkouts are probed, not in
     };
     delete base.CLAUDE_CONFIG_DIR;
     delete base.CODEX_HOME;
-    base.NODE_OPTIONS = [base.NODE_OPTIONS, detached.nodeOptions].filter(Boolean).join(' ');
     return base;
   };
   const run = (command: string, args: string[], cwd: string, extra: Record<string, string> = {}): Run => {
@@ -95,7 +93,7 @@ describe.skipIf(process.platform === 'win32')('live checkouts are probed, not in
   const initTeamai = async (dir: string): Promise<void> => {
     teamaiOk(['init', FAKE_URL, '--scope', 'project', '--force', '--agent', 'claude'], dir);
     teamaiOk(['pull'], dir);
-    await detached.waitForExit();
+    await waitForDetachedChildren();
   };
 
   /** A business repo whose git directory lives outside it (`git init --separate-git-dir`). */
@@ -115,9 +113,9 @@ describe.skipIf(process.platform === 'win32')('live checkouts are probed, not in
   const addWorktree = async (repo: string, name: string): Promise<string> => {
     const dir = path.join(sandbox, name);
     gitOk(['worktree', 'add', '-q', dir, '-b', name], repo);
-    await detached.waitForExit();
+    await waitForDetachedChildren();
     teamaiOk(['pull'], dir);
-    await detached.waitForExit();
+    await waitForDetachedChildren();
     expect(fs.existsSync(rule(dir)), `${dir} did not receive the team rule`).toBe(true);
     return dir;
   };
@@ -165,7 +163,6 @@ describe.skipIf(process.platform === 'win32')('live checkouts are probed, not in
     if (!fs.existsSync(CLI)) throw new Error(`CLI binary not found at ${CLI}. Run "npm run build" first.`);
 
     sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-live-checkouts-e2e-')));
-    detached = trackDetachedProcesses(sandbox);
     home = path.join(sandbox, 'home');
     fs.mkdirSync(home);
     const remote = path.join(sandbox, 'team.git');
@@ -206,7 +203,7 @@ describe.skipIf(process.platform === 'win32')('live checkouts are probed, not in
   }, 60_000);
 
   afterAll(async () => {
-    if (detached) await detached.waitForExit();
+    await waitForDetachedChildren();
     if (sandbox) fs.rmSync(sandbox, { recursive: true, force: true });
   }, 65_000);
 
@@ -292,9 +289,9 @@ describe.skipIf(process.platform === 'win32')('live checkouts are probed, not in
     const partition = partitionOf(main);
     for (const name of ['plain-live', 'plain-removed']) {
       gitOk(['worktree', 'add', '-q', path.join(viaLink, name), '-b', name], path.join(viaLink, 'plain'));
-      await detached.waitForExit();
+      await waitForDetachedChildren();
       teamaiOk(['pull'], path.join(viaLink, name));
-      await detached.waitForExit();
+      await waitForDetachedChildren();
     }
     const live = path.join(real, 'plain-live');
     const removed = path.join(real, 'plain-removed');
@@ -374,7 +371,7 @@ describe.skipIf(process.platform === 'win32')('live checkouts are probed, not in
     commitApp(main);
     teamaiOk(['init', url, '--scope', 'project', '--force', '--agent', 'claude'], main);
     teamaiOk(['pull'], main);
-    await detached.waitForExit();
+    await waitForDetachedChildren();
     const sibling = await addWorktree(main, `${name}/sibling`);
     const mcpJson = (checkout: string): string => fs.readFileSync(path.join(checkout, '.mcp.json'), 'utf8');
     const excludeLines = (): string[] => fs.readFileSync(path.join(main, '.git', 'info', 'exclude'), 'utf8').split('\n');

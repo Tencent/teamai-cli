@@ -15,7 +15,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { installFakeCodex } from '../helpers/fake-codex.js';
-import { trackDetachedProcesses } from '../helpers/detached-processes.js';
+import { waitForDetachedChildren } from '../helpers/detached-processes.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -34,7 +34,6 @@ interface Run { code: number | null; output: string }
 let sandbox: string;
 let home: string;
 let fakeCodexDir: string;
-let detached: ReturnType<typeof trackDetachedProcesses>;
 
 function env(): NodeJS.ProcessEnv {
   const base: NodeJS.ProcessEnv = {
@@ -46,7 +45,6 @@ function env(): NodeJS.ProcessEnv {
     GIT_CONFIG_NOSYSTEM: '1',
     CODEX_HOME: path.join(home, '.codex'),
     PATH: `${fakeCodexDir}${path.delimiter}${process.env.PATH ?? ''}`,
-    NODE_OPTIONS: [process.env.NODE_OPTIONS, detached.nodeOptions].filter(Boolean).join(' '),
     FORCE_COLOR: '0',
   };
   delete base.CLAUDE_CONFIG_DIR;
@@ -153,11 +151,10 @@ describe('an MCP config that is a symlink (#993)', () => {
     fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
     fs.mkdirSync(path.join(home, '.codex'), { recursive: true });
     fakeCodexDir = installFakeCodex();
-    detached = trackDetachedProcesses(sandbox);
   });
 
   afterAll(async () => {
-    if (detached) await detached.waitForExit();
+    await waitForDetachedChildren();
     if (sandbox) fs.rmSync(sandbox, { recursive: true, force: true });
     if (fakeCodexDir) fs.rmSync(fakeCodexDir, { recursive: true, force: true });
   });

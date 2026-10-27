@@ -16,7 +16,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dataHomeKey } from '../../dashboard-collector.js';
 import { projectSlug } from '../../utils/partition.js';
-import { trackDetachedProcesses } from '../helpers/detached-processes.js';
+import { waitForDetachedChildren } from '../helpers/detached-processes.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -46,24 +46,10 @@ const SESSION = 's-b';
 /** The turns that use `team-skill`: p1's call, p2's `/team-skill` (its call and `track` repeat it), p3's `track-slash`. */
 const SKILL_USES = 3;
 
-// Every scenario's CLI child runs with this preload, so each detached
-// grandchild it spawns (the --bg-only pass of SessionEnd and Stop) records
-// its pid. Teardown joins those pids before removing the sandbox: the child
-// keeps writing `state.json` and `debug.log` under `.teamai` for a moment
-// after the events it records have landed, which is what raced the removal
-// into ENOTEMPTY on CI (#1413) — the events-settled wait above watches what
-// the child wrote, never the writer itself. One shared tracker for the file:
-// scenarios are sequential, so an afterAll waiting here waits only for
-// children earlier or none at all, never for a later scenario's.
-const detachedRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-810-detached-'));
-const detached = trackDetachedProcesses(detachedRoot);
-afterAll(() => fs.rmSync(detachedRoot, { recursive: true, force: true }));
-
 function cliEnv(home: string): NodeJS.ProcessEnv {
   // The host's session id would override the payloads' own.
   const { CLAUDE_SESSION_ID: _ignored, ...env } = process.env;
-  const nodeOptions = [process.env.NODE_OPTIONS ?? '', detached.nodeOptions].filter(Boolean).join(' ');
-  return { ...env, ...GIT_ENV, HOME: home, USERPROFILE: home, FORCE_COLOR: '0', NO_COLOR: '1', NODE_OPTIONS: nodeOptions };
+  return { ...env, ...GIT_ENV, HOME: home, USERPROFILE: home, FORCE_COLOR: '0', NO_COLOR: '1' };
 }
 
 function runCLI(args: string[], cwd: string, home: string, input = ''): Promise<RunResult> {
@@ -197,7 +183,7 @@ function scenario({ userScope, breakProjectConfig = false, bare = false, project
     await hook('post-tool-use', { ...skillUse, prompt_id: 'p1' });
     // Its credit is written by the detached pass, which also prepares the new
     // worktree (#1424); the turn ends before the worktree goes.
-    await detached.waitForExit();
+    await waitForDetachedChildren();
     if (movedOn) {
       // Another repo, in the user scope: it records a scope and an anchor of its own.
       const elsewhere = path.join(sandbox, 'elsewhere');
@@ -251,10 +237,10 @@ function scenario({ userScope, breakProjectConfig = false, bare = false, project
   // events that child writes, never for the child itself to exit: it keeps
   // writing `state.json` and `debug.log` under `.teamai` for a moment after,
   // so a removal that runs straight afterwards raced it into ENOTEMPTY on CI
-  // (#1413). Teardown joins every detached pid the preload recorded before
+  // (#1413). Teardown joins every detached pid the suite recorded before
   // removing the sandbox; the maxRetries rmSync stays as a backstop.
   const cleanup = async (): Promise<void> => {
-    await detached.waitForExit();
+    await waitForDetachedChildren();
     fs.rmSync(sandbox, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   };
   return { state, setup, afterRemoval, cleanup, hook, writeSessionState };

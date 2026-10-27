@@ -20,7 +20,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
-import { trackDetachedProcesses } from '../helpers/detached-processes.js';
+import { waitForDetachedChildren } from '../helpers/detached-processes.js';
 import { projectSlug } from '../../utils/partition.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -47,7 +47,6 @@ interface Run { code: number | null; output: string }
 
 let sandbox: string;
 let attempt = 0;
-let detached: ReturnType<typeof trackDetachedProcesses>;
 
 interface Member {
   dir: string;
@@ -83,7 +82,6 @@ function member(base: string, opts: { teamaiYaml?: string; committed?: Record<st
     XDG_CONFIG_HOME: path.join(home, '.config'),
     GIT_CONFIG_NOSYSTEM: '1',
     FORCE_COLOR: '0',
-    NODE_OPTIONS: [process.env.NODE_OPTIONS, detached.nodeOptions].filter(Boolean).join(' '),
   };
   delete env.GIT_CONFIG_GLOBAL;
   delete env.CLAUDE_CONFIG_DIR;
@@ -159,11 +157,10 @@ const hasSessionStart = (commands: string[]): boolean => commands.some((c) => c.
 beforeAll(() => {
   if (!fs.existsSync(CLI)) throw new Error(`CLI binary not found at ${CLI}. Run "npm run build" first.`);
   sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-self-git-exclude-')));
-  detached = trackDetachedProcesses(sandbox);
 });
 
 afterAll(async () => {
-  if (detached) await detached.waitForExit();
+  await waitForDetachedChildren();
   if (sandbox) fs.rmSync(sandbox, { recursive: true, force: true });
 });
 
@@ -320,7 +317,7 @@ describe('a single-repo team keeps what teamai delivers out of git (#915)', () =
     const wt = path.join(sandbox, `self-mcp-linked-${attempt}`);
     m.git(['worktree', 'add', '-q', '-b', 'feature', wt]);
     // Its post-checkout hook pulls there in the background: let it finish, or the next pull finds the lock held.
-    await detached.waitForExit();
+    await waitForDetachedChildren();
     writeFile(path.join(wt, '.teamai', 'mcp', 'mcp.yaml'), `servers:\n${server('main-api')}${server('feature-api')}`);
     m.git(['commit', '-q', '-am', 'feature server'], wt);
     /** The servers Claude Code reads in `checkout`: its `.mcp.json` and the local scope of the key every worktree shares. */
@@ -334,9 +331,9 @@ describe('a single-repo team keeps what teamai delivers out of git (#915)', () =
 
     for (const step of ['first', 'second']) {
       m.ok(['pull'], wt);
-      await detached.waitForExit();
+      await waitForDetachedChildren();
       m.ok(['pull']);
-      await detached.waitForExit();
+      await waitForDetachedChildren();
       expect(claudeServers(m.dir), step).toEqual(['main-api']);
       expect(claudeServers(wt), step).toEqual(['feature-api', 'main-api']);
       expect(m.status(), step).toEqual(MEMBER_STATUS);

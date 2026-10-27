@@ -4,7 +4,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { trackDetachedProcesses } from '../helpers/detached-processes.js';
+import { waitForDetachedChildren } from '../helpers/detached-processes.js';
 import { AGENT_SESSION_ENV } from '../../utils/session-id.js';
 
 const cli = fileURLToPath(new URL('../../../dist/index.js', import.meta.url));
@@ -14,9 +14,7 @@ describe('session workflow public CLI (#1086)', () => {
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-session-workflow-')));
     const home = path.join(root, 'home'); const repo = path.join(root, 'product'); const outside = path.join(root, 'outside'); const bare = path.join(root, 'origin.git');
     for (const dir of [home, repo, outside]) fs.mkdirSync(dir);
-    const detached = trackDetachedProcesses(root);
     const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, USERPROFILE: home, FORCE_COLOR: '0',
-      NODE_OPTIONS: [process.env.NODE_OPTIONS, detached.nodeOptions].filter(Boolean).join(' '),
       GIT_AUTHOR_NAME: 'Fixture', GIT_AUTHOR_EMAIL: 'fixture@example.invalid', GIT_COMMITTER_NAME: 'Fixture', GIT_COMMITTER_EMAIL: 'fixture@example.invalid' };
     delete env.CLAUDE_CONFIG_DIR; delete env.CODEX_HOME;
     const run = (command: string, args: string[], cwd = repo, input?: string) => spawnSync(command, args, { cwd, env, input, encoding: 'utf8', timeout: 30_000 });
@@ -59,7 +57,7 @@ steps:
       expect(hook.stdout).not.toContain('Make a reviewed change.');
       expect(fs.readFileSync(path.join(repo, '.claude', 'skills', 'workflow-change', 'SKILL.md'), 'utf8')).toContain('Alias: ship.');
       expect(fs.existsSync(path.join(repo, '.claude', 'skills', 'workflow-private'))).toBe(false);
-      await detached.waitForExit();
+      await waitForDetachedChildren();
       const described = call(['workflow', 'start', 'ship', '--describe']); expect(described.status, described.stderr).toBe(0);
       expect(envelope(described.stdout)).toMatchObject({ data: { name: 'change', inputs: { task: { type: 'string' } } } });
       expect(described.stdout).not.toContain('Polish the implementation.');
@@ -100,7 +98,7 @@ steps:
       const pairReport = call(['workflow', 'report', pairId, '--json', JSON.stringify({ driver, attempt: pairLease.attempt, revision: pairLease.revision, outcome: 'success' })]);
       expect(envelope(pairReport.stdout)).toMatchObject({ data: { step: { status: 'succeeded' } } });
       expect(fs.readFileSync(path.join(repo, 'pair.txt'), 'utf8')).toBe('human edits\n');
-    } finally { await detached.waitForExit(); fs.rmSync(root, { recursive: true, force: true }); }
+    } finally { await waitForDetachedChildren(); fs.rmSync(root, { recursive: true, force: true }); }
   });
 
   it('judges a scored step of a skill run in the background with the session tool\'s confined judge, and the poll after done returns judged', async () => {
@@ -113,9 +111,7 @@ process.stdin.resume(); process.stdin.on('end', () => {
 console.log(JSON.stringify({ type: 'system', subtype: 'init', model: 'm1' }));
 console.log(JSON.stringify({ type: 'result', structured_output: { label: 'thorough', reasoning: 'It read the change.' } }));
 });\n`, { mode: 0o755 });
-    const detached = trackDetachedProcesses(root);
     const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, USERPROFILE: home, FORCE_COLOR: '0', PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}`,
-      NODE_OPTIONS: [process.env.NODE_OPTIONS, detached.nodeOptions].filter(Boolean).join(' '),
       GIT_AUTHOR_NAME: 'Fixture', GIT_AUTHOR_EMAIL: 'fixture@example.invalid', GIT_COMMITTER_NAME: 'Fixture', GIT_COMMITTER_EMAIL: 'fixture@example.invalid' };
     for (const name of ['CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'TEAMAI_WORKFLOW_ATTEMPT', ...AGENT_SESSION_ENV]) delete env[name];
     env.CLAUDE_CODE_SESSION_ID = 'session-judged';
@@ -159,6 +155,6 @@ console.log(JSON.stringify({ type: 'result', structured_output: { label: 'thorou
         then: { kind: 'poll' } });
       const judged = literal(done.then.run, 120_000).data.turn;
       expect(judged).toEqual({ run: turn.run, status: 'done', running: [], events: [{ kind: 'judged', step: 'review', scorer: 'review-quality', label: 'thorough' }], actions: [{ kind: 'done', outcome: 'succeeded', prs: [] }] });
-    } finally { await detached.waitForExit(); fs.rmSync(root, { recursive: true, force: true }); }
+    } finally { await waitForDetachedChildren(); fs.rmSync(root, { recursive: true, force: true }); }
   });
 });

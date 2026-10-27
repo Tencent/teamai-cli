@@ -30,7 +30,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { trackDetachedProcesses } from '../helpers/detached-processes.js';
+import { waitForDetachedChildren } from '../helpers/detached-processes.js';
 import { startMockServer, type MockServerHandle } from '../helpers/mock-server.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -47,7 +47,6 @@ const GIT_ENV = {
 interface Run { code: number | null; output: string }
 
 let sandbox: string;
-let detached: ReturnType<typeof trackDetachedProcesses>;
 
 const write = (file: string, content: string): void => {
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -102,7 +101,6 @@ function member(name: string, sharing = ON): Member {
     };
     delete e.CLAUDE_CONFIG_DIR;
     delete e.CODEX_HOME;
-    e.NODE_OPTIONS = [e.NODE_OPTIONS, detached.nodeOptions].filter(Boolean).join(' ');
     return e;
   };
   const run = (command: string, args: string[], cwd: string, extraEnv?: NodeJS.ProcessEnv, input?: string): Run => {
@@ -159,16 +157,16 @@ function member(name: string, sharing = ON): Member {
     },
     worktree: async (repo, dir) => {
       git(['worktree', 'add', '-q', dir, '-b', path.basename(dir)], repo);
-      await detached.waitForExit();
+      await waitForDetachedChildren();
       const real = fs.realpathSync.native(dir);
       teamai(['pull'], real);
-      await detached.waitForExit();
+      await waitForDetachedChildren();
       return real;
     },
     sessionStart: async (dir) => {
       const r = run(process.execPath, [CLI, 'hook-dispatch', 'session-start', '--tool', 'claude'], dir, undefined,
         JSON.stringify({ cwd: dir, session_id: `${path.basename(base)}-session`, hook_event_name: 'SessionStart', source: 'startup' }));
-      await detached.waitForExit();
+      await waitForDetachedChildren();
       return r;
     },
     partitionConfig: () => {
@@ -225,11 +223,10 @@ function holdLock(excludeFile: string): () => void {
 beforeAll(() => {
   if (!fs.existsSync(CLI)) throw new Error(`CLI binary not found at ${CLI}. Run "npm run build" first.`);
   sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-git-exclude-doctor-e2e-')));
-  detached = trackDetachedProcesses(sandbox);
 });
 
 afterAll(async () => {
-  if (detached) await detached.waitForExit();
+  await waitForDetachedChildren();
   if (sandbox) fs.rmSync(sandbox, { recursive: true, force: true });
 }, 65_000);
 
@@ -605,7 +602,6 @@ describe.skipIf(process.platform === 'win32')('the git exclude setting in HTTP m
     const env: NodeJS.ProcessEnv = {
       ...process.env, ...GIT_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: path.join(home, '.config'),
       GIT_CONFIG_NOSYSTEM: '1', FORCE_COLOR: '0',
-      NODE_OPTIONS: [process.env.NODE_OPTIONS, detached.nodeOptions].filter(Boolean).join(' '),
     };
     delete env.CLAUDE_CONFIG_DIR;
     delete env.TEAMAI_API_TOKEN;

@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, it } from 'vitest';
-import { trackDetachedProcesses } from '../helpers/detached-processes.js';
+import { waitForDetachedChildren } from '../helpers/detached-processes.js';
 
 const CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../dist/index.js');
 
@@ -14,8 +14,7 @@ it.runIf(process.platform !== 'win32')('loads project instructions through the i
   const project = path.join(root, 'project');
   fs.mkdirSync(path.join(home, '.hermes'), { recursive: true });
   fs.mkdirSync(project);
-  const detached = trackDetachedProcesses(root);
-  const env = { ...process.env, NODE_OPTIONS: detached.nodeOptions, HOME: home, USERPROFILE: home, GIT_CONFIG_GLOBAL: path.join(home, '.gitconfig'),
+  const env = { ...process.env, HOME: home, USERPROFILE: home, GIT_CONFIG_GLOBAL: path.join(home, '.gitconfig'),
     GIT_AUTHOR_NAME: 'Fixture', GIT_AUTHOR_EMAIL: 'fixture@example.test',
     HERMES_HOME: path.join(home, '.hermes'), GIT_COMMITTER_NAME: 'Fixture', GIT_COMMITTER_EMAIL: 'fixture@example.test', FORCE_COLOR: '0' };
   const cli = (...args: string[]) => execFileSync(process.execPath, [CLI, ...args], { cwd: project, env, encoding: 'utf8' });
@@ -49,11 +48,11 @@ it.runIf(process.platform !== 'win32')('loads project instructions through the i
     const probe = path.join(root, 'status-probe.cjs');
     fs.writeFileSync(probe, `if (process.argv.includes('session-start') && !process.argv.includes('--bg-only')) require('node:fs').writeFileSync(${JSON.stringify(observed)}, JSON.stringify(process.argv.slice(2)));`);
     execFileSync('/bin/bash', [path.join(home, '.hermes', 'hooks', 'teamai-status-report.sh')], {
-      cwd: project, env: { ...env, PATH: '/usr/bin:/bin', NODE_OPTIONS: env.NODE_OPTIONS + ' --require ' + JSON.stringify(probe) }, timeout: 30_000,
+      cwd: project, env: { ...env, PATH: '/usr/bin:/bin', NODE_OPTIONS: '--require ' + JSON.stringify(probe) }, timeout: 30_000,
     });
     expect(JSON.parse(fs.readFileSync(observed, 'utf8'))).toEqual(['hook-dispatch', 'session-start', '--tool', 'hermes']);
   } finally {
-    await detached.waitForExit();
+    await waitForDetachedChildren();
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

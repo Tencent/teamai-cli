@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, it } from 'vitest';
-import { trackDetachedProcesses } from '../helpers/detached-processes.js';
+import { waitForDetachedChildren } from '../helpers/detached-processes.js';
 
 const CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../dist/index.js');
 
@@ -14,8 +14,7 @@ it('loads project instructions through the installed OMP extension without teama
   const project = path.join(root, 'project');
   fs.mkdirSync(path.join(home, '.omp', 'agent'), { recursive: true });
   fs.mkdirSync(project);
-  const detached = trackDetachedProcesses(root);
-  const env = { ...process.env, NODE_OPTIONS: detached.nodeOptions, HOME: home, USERPROFILE: home, GIT_CONFIG_GLOBAL: path.join(home, '.gitconfig'),
+  const env = { ...process.env, HOME: home, USERPROFILE: home, GIT_CONFIG_GLOBAL: path.join(home, '.gitconfig'),
     GIT_AUTHOR_NAME: 'Fixture', GIT_AUTHOR_EMAIL: 'fixture@example.test',
     GIT_COMMITTER_NAME: 'Fixture', GIT_COMMITTER_EMAIL: 'fixture@example.test', FORCE_COLOR: '0' };
   const cli = (...args: string[]) => execFileSync(process.execPath, [CLI, ...args], { cwd: project, env, encoding: 'utf8' });
@@ -66,7 +65,7 @@ const $ = (_strings, launcher, args, response) => {
     expect(answer).toContain('OMP-LAUNCH-CONTEXT');
     expect(answer).toContain('original');
   } finally {
-    await detached.waitForExit();
+    await waitForDetachedChildren();
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

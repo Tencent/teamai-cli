@@ -15,7 +15,7 @@ import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
 import type { LocalConfigInput } from '../../types.js';
 import { projectSlug } from '../../utils/partition.js';
-import { trackDetachedProcesses } from '../helpers/detached-processes.js';
+import { waitForDetachedChildren } from '../helpers/detached-processes.js';
 import { startMockServer, type MockServerHandle } from '../helpers/mock-server.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -56,7 +56,6 @@ const MEMBER_SETTINGS = {
 interface Run { code: number | null; output: string }
 
 let sandbox: string;
-let detached: ReturnType<typeof trackDetachedProcesses>;
 let server: MockServerHandle;
 /** The bare repository each team URL is cloned from. */
 const teamRemotes = new Map<string, string>();
@@ -64,7 +63,6 @@ const teamRemotes = new Map<string, string>();
 beforeAll(async () => {
   if (!fs.existsSync(CLI)) throw new Error(`CLI binary not found at ${CLI}. Run "npm run build" first.`);
   sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-init-keeps-settings-1458-')));
-  detached = trackDetachedProcesses(sandbox);
   server = await startMockServer({ apiKey: API_KEY });
   for (const [team, url] of [['a', TEAM_URL], ['b', OTHER_TEAM_URL]]) {
     const seed = path.join(sandbox, `team-${team}-seed`);
@@ -80,7 +78,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await detached?.waitForExit();
+  await waitForDetachedChildren();
   await server?.close();
   if (sandbox) fs.rmSync(sandbox, { recursive: true, force: true });
 });
@@ -100,7 +98,6 @@ function member(name: string) {
   const env: NodeJS.ProcessEnv = {
     ...process.env, ...GIT_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: path.join(home, '.config'),
     GIT_CONFIG_NOSYSTEM: '1', FORCE_COLOR: '0',
-    NODE_OPTIONS: [process.env.NODE_OPTIONS, detached.nodeOptions].filter(Boolean).join(' '),
   };
   delete env.GIT_CONFIG_GLOBAL;
   delete env.CLAUDE_CONFIG_DIR;

@@ -18,7 +18,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { installFakeCodex } from '../helpers/fake-codex.js';
-import { trackDetachedProcesses } from '../helpers/detached-processes.js';
+import { waitForDetachedChildren } from '../helpers/detached-processes.js';
 import { projectSlug } from '../../utils/partition.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -38,7 +38,6 @@ let sandbox: string;
 let home: string;
 let fakeCodexDir: string;
 let stubBin: string;
-let detached: ReturnType<typeof trackDetachedProcesses>;
 
 function env(): NodeJS.ProcessEnv {
   const base: NodeJS.ProcessEnv = {
@@ -50,7 +49,6 @@ function env(): NodeJS.ProcessEnv {
     GIT_CONFIG_NOSYSTEM: '1',
     CODEX_HOME: path.join(home, '.codex'),
     PATH: [stubBin, fakeCodexDir, process.env.PATH ?? ''].join(path.delimiter),
-    NODE_OPTIONS: detached.nodeOptions,
     FORCE_COLOR: '0',
   };
   delete base.CLAUDE_CONFIG_DIR;
@@ -150,11 +148,10 @@ describe('no machine state in the working tree (#993 bug 4)', () => {
     stubBin = path.join(sandbox, 'stub-bin');
     writeFile(path.join(stubBin, 'npm'), '#!/bin/sh\nexit 0\n');
     fs.chmodSync(path.join(stubBin, 'npm'), 0o755);
-    detached = trackDetachedProcesses(sandbox);
   });
 
   afterAll(async () => {
-    if (detached) await detached.waitForExit();
+    await waitForDetachedChildren();
     if (sandbox) fs.rmSync(sandbox, { recursive: true, force: true });
     if (fakeCodexDir) fs.rmSync(fakeCodexDir, { recursive: true, force: true });
   });
