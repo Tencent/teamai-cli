@@ -284,6 +284,19 @@ it('runs pi with only its read tools, no context files, extensions, skills or sa
   expect(invocation.env).not.toHaveProperty('GH_TOKEN');
 });
 
+it('fails a pi judge with the error pi reports, though pi exits 0', async () => {
+  root = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-judge-'));
+  const evidence = path.join(root, 'evidence');
+  await fs.mkdir(evidence);
+  await fs.writeFile(path.join(evidence, 'prompt.md'), 'Judge it.');
+  const reply = { type: 'message_end', message: { role: 'assistant', content: [], stopReason: 'error', errorMessage: 'OpenAI API error (400): model_not_found' } };
+  const executable = await recordingFake(root, path.join(root, 'invocation.json'), `console.log(${JSON.stringify(JSON.stringify(reply))});`);
+
+  const result = await runLocalJudge({ tool: 'pi', evidence, schema: { type: 'object' } }, { resolveTool: () => executable });
+
+  expect(result).toMatchObject({ ok: false, code: 'judge_failed', message: 'pi reported an error: OpenAI API error (400): model_not_found. Fix that, then retry or submit the lease through another driver.' });
+});
+
 it('runs Cursor in ask mode with its sandbox on, the prompt on stdin, at best-effort and with full access', async () => {
   root = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-judge-'));
   const evidence = path.join(root, 'evidence');

@@ -335,6 +335,8 @@ export async function runLocalJudge(input: JudgeInput, { resolveTool = resolveCl
     }
     if (result.code !== 0) return { ok: false, code: 'judge_failed', message: `${input.tool} exited with code ${result.code}. See the saved output, then retry or submit the lease through another driver.`, raw: result.stdout + '\n' + result.stderr, ...spent };
     const answer = await answerFrom(input.tool, result.stdout, tmp);
+    // pi exits 0 on a provider error, which its reply carries.
+    if (!answer && !reading.ok && reading.message) return { ok: false, code: 'judge_failed', message: `${input.tool} reported an error: ${reading.message.replace(/\.?$/, '.')} Fix that, then retry or submit the lease through another driver.`, raw: result.stdout + '\n' + result.stderr, ...spent };
     if (!answer) return { ok: false, code: 'judge_answer_invalid', message: `${input.tool} did not return JSON with label and reasoning. See the saved output, then retry.`, raw: result.stdout + '\n' + result.stderr, ...spent };
     const ranModel = observedModel({ requested: input.model?.name ?? configuredModel, reported: report?.model });
     const ranEffort = observedEffort({ requested: input.model?.effort });
