@@ -151,6 +151,22 @@ describe('the usage report counts what finished sessions delivered (#1387)', () 
     expect(stats().outcomes).toEqual({ attended: { learning: { sessions: 1, tokens: { input: 10, output: 5 }, interventions: 1 } } });
   });
 
+  it('counts a resumed session with the usage the report kept of a rollout compaction dropped', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const rollout = (transcriptPath: string, input: number, interrupt: number): object =>
+      ({ type: 'stop', timestamp: at(1), sessionId: 'resumed', tool: 'codex', cwd: '/p', runMode: 'attended', transcriptPath,
+        tokenScope: 'transcript', tokens: { input, output: 0, cacheRead: 0, cacheCreation: 0 }, interventions: { interrupt, toolReject: 0 } });
+    writeEvents([rollout('/rollouts/a.jsonl', 100, 2)]);
+    await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
+    // Compaction dropped rollout A; the resume wrote rollout B.
+    writeEvents([rollout('/rollouts/b.jsonl', 10, 1)]);
+
+    vi.setSystemTime(Date.now() + 7 * HOUR);
+    await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
+
+    expect(stats().outcomes).toEqual({ attended: { none: { sessions: 1, tokens: { input: 110, output: 0 }, interventions: 3 } } });
+  });
+
   it('counts the commits the member made during the session, and keeps their shas on this machine only', async () => {
     const work = checkout();
     const start = commitIn(work, 'base', ME);

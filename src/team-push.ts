@@ -1030,10 +1030,14 @@ export async function reportUsageToTeam(
       ...await reportedBeyondShared(reportedPromptTokens, reportedInterventions, reportedDailySessions),
     ], await dataHomeKey(getDataHome(reportsConfig)));
 
-    // What the scope's finished sessions delivered (#1387), counted once each.
+    // What the scope's finished sessions delivered (#1387), counted once each, with the usage this report counts for them.
     const outcomeFold = await SessionOutcomes.fold({
-      config: reportsConfig, logged, scoped: scopedEvents, member: dashboardEvents, metrics,
-      reported: { promptTokens: reportedPromptTokens, interventions: reportedInterventions }, now: Date.now(),
+      config: reportsConfig, logged, scoped: scopedEvents, member: dashboardEvents,
+      totals: {
+        promptTokens: { ...reportedPromptTokens, ...nextReportedPromptTokens },
+        interventions: { ...reportedInterventions, ...nextReported },
+      },
+      now: Date.now(),
     });
 
     const hasUsage = events.length > 0;

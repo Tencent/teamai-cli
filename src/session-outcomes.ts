@@ -16,7 +16,7 @@ import { appendEvent, dataHomeKey, readSessionOutcomes, SESSION_OUTCOME_RETENTIO
 import { addCounts, uniqueOutcomes, type SessionOutcomeEvent, type SessionUsage, type WorkOutcome } from './outcomes.js';
 import { interventionsEntry, promptTokensEntry, snapshotPathIn, type ReportedInterventions, type ReportedPromptTokens } from './session-owners.js';
 import { FINISHED_AFTER_MS } from './session-flow/session-work.js';
-import { getDataHome, type DashboardEvent, type LocalConfig, type SessionMetrics, type UserOutcomeStats } from './types.js';
+import { getDataHome, type DashboardEvent, type LocalConfig, type UserOutcomeStats } from './types.js';
 import { readJson, writeJson } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import { CommitIdSchema } from './workflow/delivery-schema.js';
@@ -61,9 +61,11 @@ export interface FoldInput {
   scoped: DashboardEvent[];
   /** The scope's events of the member's own sessions (`memberEvents`). */
   member: DashboardEvent[];
-  metrics: Map<string, SessionMetrics>;
-  /** What the report already published of each session, for one whose events are gone. */
-  reported: { promptTokens: ReportedPromptTokens; interventions: ReportedInterventions };
+  /**
+   * What the usage report has counted of each session once this report is pushed, rollouts compaction dropped
+   * included, so a session is counted here with the usage the report counts for it.
+   */
+  totals: { promptTokens: ReportedPromptTokens; interventions: ReportedInterventions };
   now: number;
 }
 
@@ -222,11 +224,8 @@ async function fold(input: FoldInput): Promise<OutcomeFold> {
       }
     }
     const pr = prs[sessionId]?.url;
-    const metrics = input.metrics.get(sessionId);
-    const tokens = metrics?.tokens ?? promptTokensEntry(input.reported.promptTokens[sessionId]).tokens;
-    const interventions = metrics
-      ? metrics.interrupt + metrics.toolReject + metrics.correction
-      : Object.values(interventionsEntry(input.reported.interventions[sessionId])).reduce((sum, n) => sum + n, 0);
+    const { tokens } = promptTokensEntry(input.totals.promptTokens[sessionId]);
+    const interventions = Object.values(interventionsEntry(input.totals.interventions[sessionId])).reduce((sum, n) => sum + n, 0);
     return {
       sessionId,
       ...(facts.tool ? { tool: facts.tool } : {}),
