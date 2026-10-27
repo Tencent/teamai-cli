@@ -358,7 +358,7 @@ export const TOOLS = {
     },
     hooks: { user: { channel: 'settings', format: 'codex', reads: [{ base: 'home', path: '.codex/hooks.json', evidence: 'verified' }] }, self: { channel: 'settings', format: 'codex', reads: [{ base: 'project', path: '.codex/hooks.json', when: 'workspaceUnder', evidence: 'verified' }] } },
     sessions: ['codex'],
-    launch: 'none',
+    launch: 'codex',
     features: {
       env: '✓t',
       workflows: '✓t',
@@ -383,7 +383,7 @@ export const TOOLS = {
     mcp: UNKNOWN,
     hooks: { user: { channel: 'settings', format: 'codex', reads: [{ base: 'home', path: '.codex-internal/hooks.json', evidence: 'assumed' }] }, self: { channel: 'settings', format: 'codex', reads: 'unknown' } },
     sessions: ['codex-internal'],
-    launch: 'none',
+    launch: 'codex',
     features: {
       env: '?',
       workflows: '?',
@@ -453,7 +453,7 @@ export const TOOLS = {
     mcp: UNKNOWN,
     hooks: { user: { channel: 'settings', format: 'codex', reads: [{ base: 'home', path: '.tcodex/hooks.json', evidence: 'assumed' }] }, self: { channel: 'settings', format: 'codex', reads: 'unknown' } },
     sessions: ['tcodex'],
-    launch: 'none',
+    launch: 'codex',
     features: {
       env: '?',
       workflows: '?',
@@ -878,7 +878,7 @@ export const TOOLS = {
     },
     hooks: { user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.codebuddy/settings.json', evidence: 'source' }] }, self: { channel: 'settings', format: 'claude', reads: [{ base: 'project', path: '.codebuddy/settings.json', when: 'cwdOnly', evidence: 'source' }] } },
     sessions: ['codebuddy'],
-    launch: 'none',
+    launch: 'codebuddy',
     features: {
       env: '?',
       workflows: '+t',
@@ -911,7 +911,7 @@ export const TOOLS = {
     hooks: { user: { channel: 'adapter', adapter: 'openclaw-hook', evidence: 'verified' }, self: 'user' },
     // OpenClaw 2026.10: rows in ~/.openclaw/agents/<id>/agent/openclaw-agent.sqlite, moved by OPENCLAW_STATE_DIR.
     sessions: 'none',
-    launch: 'none',
+    launch: 'openclaw',
     features: {
       env: '◐d',
       workflows: '+d',
@@ -1019,7 +1019,7 @@ export const TOOLS = {
     },
     hooks: { user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.workbuddy/settings.json', evidence: 'assumed' }] }, self: { channel: 'settings', format: 'claude', reads: 'unknown' } },
     sessions: ['workbuddy'],
-    launch: 'none',
+    launch: 'codebuddy',
     features: {
       env: '?',
       workflows: '?',
@@ -1082,7 +1082,7 @@ export const TOOLS = {
     },
     hooks: { user: { channel: 'adapter', adapter: 'opencode-plugin', evidence: 'source' }, self: 'user' },
     sessions: ['opencode'],
-    launch: 'none',
+    launch: 'opencode',
     features: {
       env: '?',
       workflows: '✓t',

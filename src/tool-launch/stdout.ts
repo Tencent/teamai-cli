@@ -122,7 +122,7 @@ function absorbMetadata(record: Record<string, unknown>, found: ToolReport, dept
   }
 }
 
-function readToolMetadata(stdout: string): ToolReport | null {
+export function readToolMetadata(stdout: string): ToolReport | null {
   const found: ToolReport = {};
   for (const record of jsonRecords(stdout)) absorbMetadata(record, found, 0);
   if (!found.model && !found.session && !found.tokens) return null;

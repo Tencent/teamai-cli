@@ -1,3 +1,6 @@
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { resolveRunMode, RUN_MODE_ENV, type LaunchedBy } from '../launch-context.js';
 import type { LocalConfig } from '../types.js';
 import { resolveCliPath } from '../utils/cli-path.js';
@@ -7,6 +10,7 @@ import type { TokenUsage } from './stdout.js';
 import { LAUNCH_ORDER, launchAdapterOf, type LaunchOrderTool } from './tools.js';
 
 const DEFAULT_TIMEOUT_MS = 600_000;
+const DEFAULT_CONCURRENCY = 3;
 
 /** An AI call's answer, and the tool that gave it. */
 export type CallResult = { text: string; tool: LaunchOrderTool; tokens?: TokenUsage };
@@ -19,6 +23,11 @@ export interface CallOptions {
 
 export interface ToolCaller {
   callTool(prompt: string, options: CallOptions): Promise<CallResult>;
+  /**
+   * Runs every call, at most `concurrency` at a time, and returns the parsed answers in input order. When any call or
+   * parse fails, it fails after the others finish, with an AggregateError of each failure.
+   */
+  callToolParallel<T>(tasks: ReadonlyArray<{ prompt: string; parse: (text: string) => T }>, options: CallOptions & { concurrency?: number }): Promise<T[]>;
 }
 
 export interface ToolCallerDeps {
@@ -51,21 +60,44 @@ export function createToolCaller({ resolveTool = resolveCliPath }: ToolCallerDep
     throw new Error(`No AI tool teamai launches is on PATH. Install one of: ${LAUNCH_ORDER.join(', ')}, or set TEAMAI_AI_TOOL to one you have.`);
   };
 
-  return {
-    async callTool(prompt, { launchedBy, timeout = DEFAULT_TIMEOUT_MS }) {
+  const callTool: ToolCaller['callTool'] = async (prompt, { launchedBy, timeout = DEFAULT_TIMEOUT_MS }) => {
       const { tool, executable } = pick();
       const { call } = launchAdapterOf(tool);
       log.debug(`[tool-launch] ${launchedBy} → ${tool}, timeout=${Math.round(timeout / 1000)}s`);
-      const run = await runTool({ executable, args: [...call.args], cwd: process.cwd(), env: callEnv(launchedBy), stdin: prompt, timeoutMs: timeout });
-      if (run.timedOut) throw new Error(`AI call timed out after ${Math.round(timeout / 1000)}s (tool: ${tool})`);
-      const reading = call.read(run.stdout);
-      if (run.code !== 0 || !reading.ok) {
-        const reason = (reading.ok ? undefined : reading.message) || run.stderr.trim() || run.stdout.trim() || `exit code ${run.code}`;
-        throw new Error(`AI call failed (tool: ${tool}): ${reason}`);
+      const scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-call-'));
+      try {
+        const lastMessageFile = path.join(scratch, 'last-message.txt');
+        const run = await runTool({ executable, args: call.args(lastMessageFile), cwd: process.cwd(), env: callEnv(launchedBy), stdin: prompt, timeoutMs: timeout });
+        if (run.timedOut) throw new Error(`AI call timed out after ${Math.round(timeout / 1000)}s (tool: ${tool})`);
+        const lastMessage = await fs.readFile(lastMessageFile, 'utf8').catch(() => undefined);
+        const reading = call.read({ stdout: run.stdout, lastMessage });
+        if (run.code !== 0 || !reading.ok) {
+          const reason = (reading.ok ? undefined : reading.message) || run.stderr.trim() || run.stdout.trim() || `exit code ${run.code}`;
+          throw new Error(`AI call failed (tool: ${tool}): ${reason}`);
+        }
+        return { text: reading.text, tool, ...(reading.tokens ? { tokens: reading.tokens } : {}) };
+      } finally {
+        await fs.rm(scratch, { recursive: true, force: true, maxRetries: 3 });
       }
-      return { text: reading.text, tool, ...(reading.tokens ? { tokens: reading.tokens } : {}) };
-    },
   };
+
+  async function callToolParallel<T>(tasks: ReadonlyArray<{ prompt: string; parse: (text: string) => T }>, { concurrency = DEFAULT_CONCURRENCY, ...options }: CallOptions & { concurrency?: number }): Promise<T[]> {
+    const settled: ({ ok: true; value: T } | { ok: false; reason: unknown })[] = [];
+    let next = 0;
+    const worker = async (): Promise<void> => {
+      for (let index = next++; index < tasks.length; index = next++) {
+        const task = tasks[index];
+        try { settled[index] = { ok: true, value: task.parse((await callTool(task.prompt, options)).text) }; }
+        catch (reason) { settled[index] = { ok: false, reason }; }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(concurrency, tasks.length) }, worker));
+    const errors = settled.flatMap((outcome) => outcome.ok ? [] : [outcome.reason]);
+    if (errors.length > 0) throw new AggregateError(errors, `${errors.length} AI task(s) failed`);
+    return settled.flatMap((outcome) => outcome.ok ? [outcome.value] : []);
+  }
+
+  return { callTool, callToolParallel };
 }
 
-export const { callTool } = createToolCaller();
+export const { callTool, callToolParallel } = createToolCaller();
