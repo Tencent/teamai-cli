@@ -804,7 +804,7 @@ async function commitAndPushAt(
       const stalled = pushErr instanceof GitPluginError && pushErr.plugin === 'timeout';
       if (attempt === maxRetries || stalled) {
         log.debug(`[${spec.logTag}] push failed after ${attempt} attempts: ${(pushErr as Error).message}`);
-        return { status: 'failed', reason: (pushErr as Error).message };
+        return { status: 'failed', reason: failureReason(pushErr) };
       }
       // The commit took only `files`: anything else staged or modified would
       // make git refuse to rebase, on this attempt and every later one.

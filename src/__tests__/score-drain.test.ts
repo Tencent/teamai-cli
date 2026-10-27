@@ -394,7 +394,7 @@ describe('teamai score --drain', () => {
 
     expect(failed.code, failed.lines.join('\n')).toBe(1);
     expect(failed.lines.filter((printed) => printed.startsWith('✖'))).toEqual([
-      expect.stringMatching(/^✖ Could not publish 1 workflow run record to teamai-reports: [\s\S]*push refused[\s\S]*\. It stays pending; run teamai score --drain again\.$/),
+      expect.stringMatching(/^✖ Could not publish 1 workflow run record to teamai-reports: [^\n]*remote: push refused; error: failed to push some refs[^\n]*\. It stays pending; run teamai score --drain again\.$/),
     ]);
 
     fs.rmSync(hook);
