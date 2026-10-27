@@ -20,7 +20,8 @@ it('judges a native Codex Stop without a Claude transcript and credits the recal
   // Only the model boundary is replaced: recall, dispatch, grounding and votes
   // all run through the built CLI against the scratch team and HOME.
   const fake = path.join(bin, 'claude');
-  fs.writeFileSync(fake, `#!${process.execPath}\nconst fs=require('node:fs'); fs.appendFileSync(${JSON.stringify(prompts)},JSON.stringify(process.argv)+'\\n'); console.log('["retry"]');\n`);
+  // Answers as `claude -p --output-format json` does: the prompt on stdin, the reply in a result record.
+  fs.writeFileSync(fake, `#!${process.execPath}\nconst fs=require('node:fs'); const prompt=fs.readFileSync(0,'utf8'); fs.appendFileSync(${JSON.stringify(prompts)},JSON.stringify(prompt)+'\\n'); console.log(JSON.stringify({type:'result',result:'["retry"]'}));\n`);
   fs.chmodSync(fake, 0o755);
   const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, USERPROFILE: home,
     PATH: `${bin}:/usr/bin:/bin`, XDG_CONFIG_HOME: path.join(home, '.config'),

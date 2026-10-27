@@ -395,16 +395,13 @@ describe('self mode with a linked worktree (#808)', () => {
       'esac',
       '',
     ].join('\n'), { mode: 0o755 });
+    // Answers as `claude -p --output-format json` does: the prompt on stdin, the reply in a result record.
     fs.writeFileSync(path.join(bin, 'claude'), [
       '#!/usr/bin/env bash',
-      "cat <<'MD'",
-      '---',
-      'title: Retry flaky uploads',
-      '---',
-      '# Retry flaky uploads',
-      '',
-      'Wrap uploads in retry(3).',
-      'MD',
+      'cat > /dev/null',
+      "cat <<'JSON'",
+      JSON.stringify({ type: 'result', result: '---\ntitle: Retry flaky uploads\n---\n# Retry flaky uploads\n\nWrap uploads in retry(3).\n' }),
+      'JSON',
       '',
     ].join('\n'), { mode: 0o755 });
 

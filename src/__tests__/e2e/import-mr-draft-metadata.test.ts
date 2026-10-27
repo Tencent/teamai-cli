@@ -36,8 +36,13 @@ describe('import --from-mr AI draft metadata (real CLI)', () => {
         'username: test-user', 'scope: user', '',
       ].join('\n'));
       const ai = path.join(sandbox, 'ai.cjs');
+      // Answers as `claude -p --output-format json` does: the prompt on stdin, the reply in a result record.
       fs.writeFileSync(ai, `const drafts = ${JSON.stringify(drafts)};
-process.stdout.write(drafts[process.argv[2].includes('MR 1') ? 0 : 1]);
+let prompt = '';
+process.stdin.on('data', (chunk) => { prompt += chunk; });
+process.stdin.on('end', () => {
+  process.stdout.write(JSON.stringify({ type: 'result', result: drafts[prompt.includes('MR 1') ? 0 : 1] }));
+});
 `);
       const preload = path.join(sandbox, 'ai-fixture.mjs');
       // Replace only AI CLI discovery and launch. MR fetching, parsing and file
@@ -53,7 +58,7 @@ childProcess.execFileSync = (command, args, ...rest) => {
 };
 const spawn = childProcess.spawn;
 childProcess.spawn = (command, args, options) => command === process.execPath && args[0] === '-p'
-  ? spawn(process.execPath, [${JSON.stringify(ai)}, args[1]], options)
+  ? spawn(process.execPath, [${JSON.stringify(ai)}], options)
   : spawn(command, args, options);
 syncBuiltinESMExports();
 `);

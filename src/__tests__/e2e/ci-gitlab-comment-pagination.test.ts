@@ -58,7 +58,8 @@ describe('ci extract-mr GitLab comment pagination (real CLI)', () => {
       if (!address || typeof address === 'string') throw new Error('Expected a TCP address');
       const origin = `http://127.0.0.1:${address.port}`;
       const ai = path.join(sandbox, 'ai.cjs');
-      fs.writeFileSync(ai, `process.stdout.write('---\\ntitle: Pagination\\n---\\nFixture learning.');\n`);
+      // Answers as `claude -p --output-format json` does: a result record on stdout.
+      fs.writeFileSync(ai, `process.stdout.write(JSON.stringify({ type: 'result', result: '---\\ntitle: Pagination\\n---\\nFixture learning.' }));\n`);
       const preload = path.join(sandbox, 'ai-fixture.mjs');
       // Replace only AI discovery and launch; GitLab HTTP and comment writes
       // run through the built CLI against the local API fixture.
