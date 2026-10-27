@@ -65,6 +65,7 @@ vi.mock('../hooks.js', () => ({
 vi.mock('../mcp-reconcile.js', () => ({
   reconcileMcpForConfig: vi.fn().mockResolvedValue({ changes: [], wrote: false }),
   describeKeptMemberServer: vi.fn(() => ''),
+  judgeTeamaiOnlyMcpConfigs: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock('../team-push.js', () => ({
@@ -95,6 +96,10 @@ vi.mock('../roles.js', () => ({
 vi.mock('../update.js', () => ({
   acquireLock: vi.fn().mockResolvedValue(true),
   releaseLock: vi.fn().mockResolvedValue(undefined),
+  withFileLock: vi.fn(async <T>(_lock: string, _wait: unknown, body: () => Promise<T>) => ({
+    held: true as const,
+    value: await body(),
+  })),
 }));
 
 import { pull, settleLateUsageReport } from '../pull.js';
