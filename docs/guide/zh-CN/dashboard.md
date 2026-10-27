@@ -118,7 +118,7 @@ teamai session resume <name> --platform claude-code
 
 session 命令使用本项目安装的团队仓库克隆，没有时使用用户级安装的克隆，所以只有要指向另一个克隆时才需要 `--repo-root`。没有任何安装时，它们输出 `teamai is not set up for this directory.`，提示 `teamai init` 和 `--repo-root`，并以退出码 1 退出。
 
-旧版 teamai 归档在默认分支上的会话仍可在那里读取。`session list`、`search` 和 `pull` 会读取两处，先读 `teamai-reports`，两处都有的会话只列出一次。`session resume` 先读 `teamai-reports`，再读旧归档。无人值守任务用 `teamai score --drain` 归档自己的会话（见[会话](sharing.md#会话)）。
+旧版 teamai 归档在默认分支上的会话仍可在那里读取。`session list`、`search` 和 `pull` 会读取两处，先读 `teamai-reports`，两处都有的会话只列出一次。`session resume` 先读 `teamai-reports`，再读旧归档。teamai 0.28.0 及更早版本只读取默认分支，因此要让每位成员都升级，才能看到队友归档在 `teamai-reports` 上的会话。无人值守任务用 `teamai score --drain` 归档自己的会话（见[会话](sharing.md#会话)）。
 
 另一个 teamai 命令正在写 `teamai-reports` 时，`session push`、`session migrate --push` 和 `session pull` 输出 `Error: Another teamai command is writing teamai-reports`，以退出码 1 退出，不改动该分支。`migrate --push` 会保留它生成的副本。等另一个命令结束后再执行一次。
 

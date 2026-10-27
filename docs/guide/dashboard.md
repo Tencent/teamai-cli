@@ -118,7 +118,7 @@ For a script, `migrate <sessionId> -s <tool> -t <tool> --json` prints one line o
 
 Session commands use the team repo clone of this project's install, else of the user install, so you need `--repo-root` only to point at another clone. With no install, they print `teamai is not set up for this directory.`, name `teamai init` and `--repo-root`, and exit 1.
 
-Sessions archived on the default branch by an older teamai stay readable there. `session list`, `search` and `pull` read both places, `teamai-reports` first, and list a session in both once. `session resume` reads `teamai-reports`, then the old archive. An unattended job archives its own sessions with `teamai score --drain` ([Sessions](sharing.md#sessions)).
+Sessions archived on the default branch by an older teamai stay readable there. `session list`, `search` and `pull` read both places, `teamai-reports` first, and list a session in both once. `session resume` reads `teamai-reports`, then the old archive. teamai 0.28.0 and earlier read only the default branch, so upgrade every member to see the sessions teammates archive on `teamai-reports`. An unattended job archives its own sessions with `teamai score --drain` ([Sessions](sharing.md#sessions)).
 
 While another teamai command writes `teamai-reports`, `session push`, `session migrate --push`, and `session pull` print `Error: Another teamai command is writing teamai-reports` and exit 1 without changing the branch. `migrate --push` keeps the copy it made. Run the command again once the other one has finished.
 
