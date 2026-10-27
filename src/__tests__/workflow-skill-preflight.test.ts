@@ -412,7 +412,7 @@ describe('skill driver preflight of optional gates', () => {
       '- Optional choice at target: one of staging, prod; "answer automatically" picks staging.',
       '- Optional choice at region: one of eu, us; no default, so "answer automatically" leaves it to you.',
       '- Optional approval at ship-ok: before `echo shipped`.',
-      '- The recommended start lets this session\'s agent answer optional approvals and choices and say why; "answer optional approvals and choices automatically" answers each approval yes and each choice with its default.',
+      '- The recommended start lets this session\'s agent answer optional approvals and choices and say why; "answer optional approvals and choices automatically" answers each approval yes and each choice with its default, if it has one.',
       'How should it run?',
     ].join('\n') } } } } });
   });

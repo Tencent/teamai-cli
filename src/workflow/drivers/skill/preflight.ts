@@ -152,8 +152,9 @@ function guardsFact(guards: GateGuards): string {
  */
 function optionalAnswersFact(optional: readonly GateFact[], answering: 'picked' | 'auto-approve'): string {
   const noun = gatesNoun(optional, true);
-  const kinds = new Set(optional.map((gate) => gate.kind));
-  const answers = [...(kinds.has('approve') ? ['each approval yes'] : []), ...(kinds.has('choose') ? ['each choice with its default'] : [])].join(' and ');
+  const choices = optional.filter((gate) => gate.kind === 'choose');
+  const choiceAnswer = `each choice with its default${choices.some((gate) => gate.default === undefined) ? ', if it has one' : ''}`;
+  const answers = [...(optional.some((gate) => gate.kind === 'approve') ? ['each approval yes'] : []), ...(choices.length > 0 ? [choiceAnswer] : [])].join(' and ');
   return answering === 'auto-approve' ? `It answers optional ${noun} automatically: ${answers}.`
     : `The recommended start lets this session's agent answer optional ${noun} and say why; "${autoAnswered(noun)}" answers ${answers}.`;
 }
