@@ -2,8 +2,11 @@ import { hookToolPathsForConfig } from './types.js';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { detectProjectConfig, loadLocalConfig, loadTeamConfig } from './config.js';
-import { SessionPolicy } from './session-flow/session-policy.js';
-import { explainRunMode, type ExplainedRunMode } from './launch-context.js';
+import { AgentSession } from './session-flow/agent-session.js';
+import { SessionPolicy, type SessionPolicy as Policy } from './session-flow/session-policy.js';
+import { explainRunMode, RUN_MODES, type ExplainedRunMode } from './launch-context.js';
+import { scoringUnavailable } from './scorers/home.js';
+import { scopeScoring } from './scorers/settings.js';
 import { readWorkspaceChildren } from './workspace-children.js';
 import { pathExists, readFileSafe } from './utils/fs.js';
 import { getUserHome } from './utils/home.js';
@@ -521,6 +524,27 @@ function usageReportNote({ localConfig, teamConfig }: DoctorContext): string {
 }
 
 /**
+ * Each enabled tool teamai reads no sessions from, in each run mode whose sessions it publishes or scores (#1385):
+ * such a tool's sessions are never captured, so they are neither published nor judged.
+ */
+async function unreadSessionToolNotes({ localConfig, teamConfig, toolPaths }: DoctorContext): Promise<string[]> {
+  const tools = Object.keys(toolPaths).filter((tool) => AgentSession.platformForTool(tool) === undefined);
+  if (tools.length === 0) return [];
+  const publish = SessionPolicy.publish(localConfig, teamConfig).policies;
+  const scoring = scoringUnavailable(localConfig) ? undefined : await scopeScoring(localConfig);
+  const scored = scoring?.ok ? scoring.sessions.policies : undefined;
+  const described = (policy: Policy | undefined, words: Record<Exclude<Policy, 'off'>, string>) => (policy === undefined || policy === 'off' ? undefined : words[policy]);
+  return RUN_MODES.flatMap((mode) => {
+    const published = described(publish[mode].policy, { ask: 'offered for publishing', auto: 'published' });
+    const judged = described(scored?.[mode].policy, { ask: 'offered for scoring', auto: 'scored' });
+    if (published === undefined && judged === undefined) return [];
+    const lead = [published, judged].filter((part) => part !== undefined).join(' and ');
+    const outcome = published && judged ? 'neither published nor judged' : published ? 'not published' : 'not judged';
+    return tools.map((tool) => `Sessions are ${lead} in ${mode} mode, but teamai reads no sessions from ${tool}: they are ${outcome}.`);
+  });
+}
+
+/**
  * Whether the public Codex will run the hooks teamai wrote in this scope (#955),
  * asked read-only through `codex app-server` `hooks/list`. A check when Codex
  * answers; the trust reminder as a note when it cannot (no `codex` on PATH, the
@@ -988,6 +1012,7 @@ export async function doctor(options: DoctorOptions): Promise<boolean> {
     ...toolPathsDroppedKeyNotes(ctx),
     usageReportNote(ctx),
     ...SessionPolicy.publish(localConfig, ctx.teamConfig).problems.map((problem) => `${problem}.`),
+    ...await unreadSessionToolNotes(ctx),
     // What git sees of the delivered team resources, and what no pull changes (#915).
     ...await deliveredGitExcludeNotes(ctx),
     ...await localAgentGitExcludeNotes(),

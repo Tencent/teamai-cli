@@ -732,6 +732,30 @@ describe('doctor — JSON report', () => {
         expect(emittedReport().notes).toContain('Sessions are not published: the team repo is an HTTP repo, which keeps no session archive, so sessions.publish acts as off.');
     });
 
+    it('names each enabled tool teamai reads no sessions from, in each mode whose sessions are published or scored', async () => {
+        mockedLoadTeamConfig.mockResolvedValue({ ...mockTeamConfig, toolPaths: { ...mockTeamConfig.toolPaths, muse: { skills: '.config/muse/skills' } } });
+
+        await doctor({ json: true });
+
+        expect(emittedReport().notes?.filter((note) => note.includes('reads no sessions from'))).toEqual([
+            'Sessions are offered for publishing in attended mode, but teamai reads no sessions from muse: they are not published.',
+            'Sessions are published and scored in unattended mode, but teamai reads no sessions from muse: they are neither published nor judged.',
+        ]);
+    });
+
+    it('names no tool teamai reads no sessions from while sessions are neither published nor scored', async () => {
+        mockedLoadLocalConfig.mockResolvedValue({ ...mockLocalConfig, scoring: { sessions: false } });
+        mockedLoadTeamConfig.mockResolvedValue({
+            ...mockTeamConfig,
+            toolPaths: { ...mockTeamConfig.toolPaths, muse: { skills: '.config/muse/skills' } },
+            sessions: { publish: { attended: 'off', unattended: 'off' } },
+        });
+
+        await doctor({ json: true });
+
+        expect(emittedReport().notes?.filter((note) => note.includes('reads no sessions from'))).toEqual([]);
+    });
+
     it.each([
         [{ CI: 'true' }, { mode: 'unattended', source: 'CI' }],
         [{ CI: 'true', TEAMAI_MODE: 'attended' }, { mode: 'attended', source: 'TEAMAI_MODE' }],
