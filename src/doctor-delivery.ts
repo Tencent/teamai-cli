@@ -1247,7 +1247,12 @@ export async function buildAgentsDeliveryChecks(ctx: DoctorContext): Promise<Che
   // model aliases check names the reason.
   const { heldAgentNames } = await import('./doctor-agent-models.js');
   const held = await heldAgentNames(ctx);
-  const unreachable = unreceived.filter((name) => !held.has(name));
+  // A tool that would not load an agent gets no copy; this check, not the unreachable one, says why.
+  const rejections: { name: string; tool: string; reason: string }[] = [];
+  for (const item of items) {
+    for (const { tool, reason } of await handler.rejectedTools(teamConfig, localConfig, item)) rejections.push({ name: item.name, tool, reason });
+  }
+  const unreachable = unreceived.filter((name) => !held.has(name) && !rejections.some((rejection) => rejection.name === name));
 
   const checks: Check[] = [...byTool].map(([tool, delivery]) => {
     const modelChanged = delivery.problems.has(MODEL_CHANGED);
@@ -1274,6 +1279,15 @@ export async function buildAgentsDeliveryChecks(ctx: DoctorContext): Promise<Che
   // installed, "reaches no tool" is the machine, not the team repo. The gate is
   // the installed tools rather than the deliveries, or a set of agents that all
   // fail to render would report nothing at all.
+  if (rejections.length > 0) {
+    checks.push({
+      name: 'Every team agent loads in the tools it targets',
+      source: 'local',
+      check: async () => false,
+      fix: `Pull gives these agents no copy, since the tool would not load them. ${rejections.map(({ name, tool, reason }) => `${name} for ${tool}: ${reason}`).join(' ')} Fix the agent in the team repo.`,
+    });
+  }
+
   const agentTools = await handler.agentToolDirs(teamConfig, localConfig);
   if (unreachable.length > 0 && agentTools.length > 0) {
     checks.push({

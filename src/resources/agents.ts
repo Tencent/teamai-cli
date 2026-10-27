@@ -772,15 +772,10 @@ export class AgentsHandler extends ResourceHandler {
         }
       }
     }
-    // A tool that would not load the agent as rendered gets no copy (`renderedForTool`); say why.
-    if (spec) {
-      for (const { tool } of await this.agentToolDirs(teamConfig, localConfig)) {
-        if (spec.targets && !spec.targets.includes(tool)) continue;
-        const rejected = agentRejection({ tool, name: spec.name, spec, scope: localConfig.scope });
-        if (rejected === null) continue;
-        log.warn(`[agents] Skipped ${item.name} for ${tool}: ${rejected}`);
-        ledger?.toolsMissingAgents.add(tool);
-      }
+    // A tool that would not load the agent as rendered gets no copy (`resolveRenders`); say why.
+    for (const { tool, reason } of await this.rejectedTools(teamConfig, localConfig, item)) {
+      log.warn(`[agents] Skipped ${item.name} for ${tool}: ${reason}`);
+      ledger?.toolsMissingAgents.add(tool);
     }
     for (const { tool, dest, render, origin } of renders) {
       const destDir = path.dirname(dest);
@@ -1128,8 +1123,10 @@ export class AgentsHandler extends ResourceHandler {
     const agentItem = item as AgentResourceItem;
     const renders: { tool: ToolName; dest: string; render: AgentRender; origin: CopyOrigin }[] = [];
     const modelAliases = aliases ?? await loadModelAliases(localConfig);
+    const spec = await this.parsedSpec(agentItem);
 
     for (const { tool, dir } of await this.agentToolDirs(teamConfig, localConfig)) {
+      if (spec && agentRejection({ tool, name: spec.name, spec, scope: localConfig.scope }) !== null) continue;
       const render = await this.renderedForTool(agentItem, tool, modelAliases, localConfig.scope, recorded?.[tool]);
       if (!render) continue;
 
@@ -1193,6 +1190,31 @@ export class AgentsHandler extends ResourceHandler {
       .map(({ tool, dest, render, origin }) => ({ tool, dest, content: render.content, origin }));
   }
 
+  /**
+   * The installed tools `item` targets that would not load it as teamai
+   * renders it, and why (`agentRejection`). They get no copy.
+   */
+  async rejectedTools(teamConfig: TeamaiConfig, localConfig: LocalConfig, item: ResourceItem): Promise<{ tool: ToolName; reason: string }[]> {
+    const spec = await this.parsedSpec(item as AgentResourceItem);
+    if (!spec) return [];
+    const rejected: { tool: ToolName; reason: string }[] = [];
+    for (const { tool } of await this.agentToolDirs(teamConfig, localConfig)) {
+      if (spec.targets && !spec.targets.includes(tool)) continue;
+      const reason = agentRejection({ tool, name: spec.name, spec, scope: localConfig.scope });
+      if (reason !== null) rejected.push({ tool, reason });
+    }
+    return rejected;
+  }
+
+  /** `item`'s spec, or undefined for a legacy `.md` or a team file that cannot be read or parsed. */
+  private async parsedSpec(item: AgentResourceItem): Promise<AgentSpec | undefined> {
+    if (isLegacyAgent(item)) return undefined;
+    const content = await readFileSafe(item.sourcePath);
+    if (content === null) return undefined;
+    const parsed = parseAgentYaml(content, `${item.name}.yaml`);
+    return parsed.ok ? parsed.spec : undefined;
+  }
+
   /** Whether `item`'s team file can be read and, for a YAML spec, parses. */
   private async parsesAsAgent(item: AgentResourceItem): Promise<boolean> {
     const content = await readFileSafe(item.sourcePath);
@@ -1222,7 +1244,6 @@ export class AgentsHandler extends ResourceHandler {
     const parsed = parseAgentYaml(content, `${item.name}.yaml`);
     if (!parsed.ok) return null;
     if (parsed.spec.targets && !parsed.spec.targets.includes(tool)) return null;
-    if (agentRejection({ tool, name: parsed.spec.name, spec: parsed.spec, scope }) !== null) return null;
     if (recorded) return renderWithModel(parsed.spec, tool, recorded, scope);
     const resolved = renderResolved(parsed.spec, tool, aliases, scope);
     return resolved.ok ? resolved.render : null;

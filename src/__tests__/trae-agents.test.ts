@@ -144,6 +144,19 @@ describe('Trae subagents', () => {
     });
   });
 
+  it('keeps the root copy when the namespace agent replacing it is one pull skips for Trae', async () => {
+    const config = configFor('trae', 'project');
+    await new AgentsHandler().pullItem(item, teamConfig, config);
+    const file = path.join(projectRoot, '.trae', 'agents', `${AGENT}.md`);
+    await fse.ensureDir(path.join(teamRepo, 'agents', 'fe'));
+    await fse.writeFile(path.join(teamRepo, 'agents', 'fe', `${AGENT}.yaml`),
+      `${AGENT_YAML}tool_extras:\n  trae:\n    disallowedTools: Bash\n  trae-cn:\n    disallowedTools: Write\n`);
+
+    await new AgentsHandler().cleanupInactiveNamespaces(teamConfig, config, ['fe']);
+
+    expect(await fse.pathExists(file)).toBe(true);
+  });
+
   it('gives doctor no Trae copy to check for a project agent pull skips', async () => {
     await fse.writeFile(item.sourcePath, `${AGENT_YAML}tool_extras:\n  trae:\n    disallowedTools: Bash\n  trae-cn:\n    disallowedTools: Write\n`);
 
