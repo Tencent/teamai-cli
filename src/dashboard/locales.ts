@@ -330,7 +330,7 @@ export const dashboardMessages: Record<string, string> = {
   "Pass rate": "通过率",
   "labels": "个标签",
   "Passed": "通过",
-  "After the commit": "该提交之后",
+  "Before and after team commit": "团队提交前后对比",
   "Before": "之前",
   "pts": "个百分点",
   "local changes": "含本地改动",
@@ -365,7 +365,7 @@ export const dashboardMessages: Record<string, string> = {
   "Labels appear here once a workflow scorer or teamai score labels work and the labels reach teamai-reports.": "工作流评分器或 teamai score 为工作打上标签、且标签到达 teamai-reports 后，会显示在这里。",
   "Counted by when labels were scored, not when the work happened.": "按标签的评分时间统计，而不是工作发生的时间。",
   "Pass or fail as each label stored it.": "通过与否以每个标签保存的结果为准。",
-  "Split at": "拆分于",
+  "After": "之后",
   "After means the team revision contains the commit, checked in this machine's team clone. A label on a revision this clone does not have is not recorded.": "“之后”表示团队修订包含该提交，由本机的团队克隆检查。修订不在本机克隆中的标签记为未记录。",
   "Could not load scorer results.": "无法加载评分结果。",
   "Tool": "工具",
@@ -395,5 +395,7 @@ export const dashboardMessages: Record<string, string> = {
   "LABELLED": "已标注",
   "SCORER": "评分器",
   "MEASUREMENT": "度量",
-  "TREND": "趋势"
+  "TREND": "趋势",
+  "Show the newest 10": "只显示最新 10 条",
+  "Show all": "显示全部"
 };

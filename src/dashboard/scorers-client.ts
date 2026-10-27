@@ -4,12 +4,12 @@
  * Every value from the API is escaped with `e`. A workflow row opens its run through the Workflow Runs dialog.
  */
 export const scorersClient = `
-let scorerData=null, scorerError='', scorerLoading=false, scorerHtml='', scorerGroup='';
+let scorerData=null, scorerError='', scorerLoading=false, scorerHtml='', scorerGroup='', scorerAllFailing=false;
 const scorerWindows=['7','30','90','180'];
 const scorerDimensions={tool:'Tool',model:'Model',teamRevision:'Team revision',definition:'Agent definition',role:'Role',project:'Project',tag:'Tag',fingerprint:'Fingerprint',skill:'Skill used'};
 const savedWindow=read('teamai-dashboard-scorer-window','30'), savedGroup=read('teamai-dashboard-scorer-group','');
 let scorerQuery={window:scorerWindows.includes(savedWindow)?savedWindow:'30',scorer:'',cohort:'',groupBy:Object.hasOwn(scorerDimensions,savedGroup)?savedGroup:'',commit:''};
-function resetScorers(){scorerData=null;scorerError='';scorerLoading=false;scorerHtml='';scorerGroup='';scorerQuery={...scorerQuery,scorer:'',cohort:'',commit:''};}
+function resetScorers(){scorerData=null;scorerError='';scorerLoading=false;scorerHtml='';scorerGroup='';scorerAllFailing=false;scorerQuery={...scorerQuery,scorer:'',cohort:'',commit:''};}
 const pct=rate=>rate==null?'—':number(Math.round(rate*100))+'%';
 const short=hash=>e(String(hash||'').slice(0,7));
 function judgeText(j){ if(j.kind==='human')return label('Hand label'); return '<span data-verbatim>'+e(j.tool)+'</span> / '+(j.model?'<span data-verbatim>'+e(j.model.id)+'</span>'+(j.model.reported?'':' <small>'+label('requested')+'</small>')+(j.model.alias?' <small data-verbatim>'+e(j.model.alias)+'</small>':''):label('model not recorded')); }
@@ -23,8 +23,8 @@ function sparkline(weeks){
  return '<svg class="spark" viewBox="0 0 100 28" preserveAspectRatio="none" aria-hidden="true">'+runs.map(run=>run.length===1?'<circle cx="'+run[0].split(',')[0]+'" cy="'+run[0].split(',')[1]+'" r="1.8"/>':'<polyline points="'+run.join(' ')+'"/>').join('')+'</svg>';
 }
 function trendChart(weeks){
- const bar=36, gap=10, height=120, width=weeks.length*(bar+gap);
- const every=Math.max(1,Math.ceil(weeks.length/8));
+ const width=760, height=120, slot=width/Math.max(1,weeks.length), bar=Math.min(64,slot*0.72), gap=slot-bar;
+ const every=Math.max(1,Math.ceil(weeks.length/10));
  return '<div class="trend-chart"><svg viewBox="0 0 '+width+' '+(height+34)+'" role="img" aria-label="'+e(t('Weekly pass rate'))+'">'
   +[0,0.5,1].map(y=>'<line class="grid" x1="0" x2="'+width+'" y1="'+(10+(1-y)*height)+'" y2="'+(10+(1-y)*height)+'"/>').join('')
   +weeks.map((week,i)=>{const x=i*(bar+gap)+gap/2; const tip=e(week.week)+': '+(week.rate==null?e(t('No labels')):pct(week.rate)+' · '+number(week.passed)+'/'+number(week.n));
@@ -32,10 +32,23 @@ function trendChart(weeks){
    return '<g><title>'+tip+'</title>'+shape+(i%every===0?'<text x="'+(x+bar/2)+'" y="'+(height+28)+'" class="axis">'+e(week.week.slice(5))+'</text>':'')+'</g>';}).join('')
   +'</svg><p class="label">'+label('Weeks start on Monday, UTC. A dashed week had no labels: it is a gap, not 0%.')+'</p></div>';
 }
-function kpis(stats, split){
- const card=(title, value, foot)=>'<article class="card kpi"><div class="cardtop">'+title+'</div><div class="big">'+value+'</div>'+(foot?'<div class="statusline">'+foot+'</div>':'')+'</article>';
- return '<div class="kpis">'+card(label('Pass rate'),pct(stats.rate),number(stats.n)+' '+label('labels'))+card(label('Passed'),'<span class="good">'+number(stats.passed)+'</span>')+card(label('Failed'),'<span class="amber">'+number(stats.failed)+'</span>')
-  +(split?card(label('After the commit'),pct(split.after.rate),number(split.after.n)+' '+label('labels')+' · '+label('Before')+' '+pct(split.before.rate)+' ('+number(split.before.n)+')'+(split.after.rate!=null&&split.before.rate!=null?' · <b class="'+(split.after.rate>=split.before.rate?'good':'amber')+'">'+(split.after.rate>=split.before.rate?'+':'')+number(Math.round((split.after.rate-split.before.rate)*100))+' '+label('pts')+'</b>':'')):'')+'</div>';
+const kpiCard=(title, value, foot)=>'<article class="card kpi"><div class="cardtop">'+title+'</div><div class="big">'+value+'</div>'+(foot?'<div class="statusline">'+foot+'</div>':'')+'</article>';
+function kpis(stats){
+ return '<div class="kpis">'+kpiCard(label('Pass rate'),pct(stats.rate),number(stats.n)+' '+label('labels'))+kpiCard(label('Passed'),'<span class="good">'+number(stats.passed)+'</span>')+kpiCard(label('Failed'),'<span class="amber">'+number(stats.failed)+'</span>')+'</div>';
+}
+function splitCards(split){
+ const delta=split.after.rate!=null&&split.before.rate!=null?Math.round((split.after.rate-split.before.rate)*100):null;
+ return '<h2 class="section-label">'+label('Before and after team commit')+' <span class="tag" title="'+e(split.commit)+'" data-verbatim>'+short(split.commit)+'</span></h2><div class="kpis">'
+  +kpiCard(label('Before'),pct(split.before.rate),number(split.before.n)+' '+label('labels'))
+  +kpiCard(label('After'),pct(split.after.rate),number(split.after.n)+' '+label('labels')+(delta===null?'':' · <b class="'+(delta>=0?'good':'amber')+'">'+(delta>=0?'+':'')+number(delta)+' '+label('pts')+'</b>'))
+  +kpiCard(label('Not recorded'),'<span class="muted">'+number(split.notRecorded.n)+'</span>',label('labels'))+'</div>'
+  +'<p class="label">'+label('After means the team revision contains the commit, checked in this machine\\'s team clone. A label on a revision this clone does not have is not recorded.')+'</p>';
+}
+function cohortPicker(data, sel){
+ const cohorts=data.scorers.find(s=>s.scorer===sel.cohort.scorer).cohorts, rubrics=[];
+ for(const c of cohorts){ let r=rubrics.find(r=>r.hash===c.rubric.sourceHash); if(!r){r={hash:c.rubric.sourceHash,first:c,list:[]};rubrics.push(r);} r.list.push(c); }
+ return '<div class="cohorts" role="group" aria-label="'+e(t('Measurements'))+'">'+rubrics.map(r=>'<div class="rubric-row"><span class="label">'+rubricText(r.first)+'</span><div class="chips">'
+  +r.list.map(c=>'<button class="chip'+(c.id===sel.cohort.id?' active':'')+'" data-cohort="'+e(c.id)+'" aria-pressed="'+(c.id===sel.cohort.id)+'">'+(c.source==='session'?label('Session labels'):label('Workflow labels'))+' · '+runModeText(c.runMode)+' · '+judgeText(c.judge)+' <b>'+number(c.stats.n)+'</b></button>').join('')+'</div></div>').join('')+'</div>';
 }
 function meter(rate){ return '<span class="meter" aria-hidden="true"><span style="width:'+(rate==null?0:Math.round(rate*100))+'%"></span></span>'; }
 function groupName(g){ if(g.kind==='none')return label('None'); if(g.kind==='not recorded')return '<span class="muted">'+label('Not recorded')+'</span>'; const long=['teamRevision','fingerprint'].includes(scorerData.selected.groupBy); return '<span data-verbatim title="'+e(g.value)+'">'+(long?short(g.value):e(g.value))+'</span>'+(g.reported===false?' <small>'+label('requested')+'</small>':'')+(g.localChanges?' <small class="amber">'+label('local changes')+'</small>':''); }
@@ -53,8 +66,8 @@ function failingPanel(sel){
   :(r.sessionName?'<code class="command" data-verbatim>teamai session resume '+e(r.sessionName)+'</code>':'<span class="muted">'+label('Not pushed to the team archive')+'</span>');
  return '<section class="panel sessions"><div class="panelhead"><h2>'+label('Failing labels')+' <span class="count">'+number(rows.length)+'</span></h2>'+(scorerGroup?'<button class="link" data-scorer-group="">'+label('Show every group')+'</button>':'<span class="label">'+label('Newest first')+'</span>')+'</div>'
   +(rows.length?'<div class="table-scroll"><table class="session-table"><thead><tr>'+['SCORED','AUTHOR','LABEL','PLATFORM','SKILLS','OPEN'].map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'
-  +rows.map(r=>'<tr><td>'+e(when(r.scoredAt))+'</td><td data-verbatim>'+e(r.author)+'</td><td class="amber" data-verbatim>'+e(r.label)+'</td><td data-verbatim>'+e(r.platform||(r.run?t('Workflow run'):'—'))+'</td><td>'+(r.skills?r.skills.map(s=>'<span class="tag" data-verbatim>'+e(s)+'</span>').join(' '):'—')+'</td><td>'+subject(r)+'</td></tr>').join('')
-  +'</tbody></table></div>':'<div class="empty"><p>'+label('No failing labels in this window.')+'</p></div>')+'</section>';
+  +rows.slice(0,scorerAllFailing?rows.length:10).map(r=>'<tr><td>'+e(when(r.scoredAt))+'</td><td data-verbatim>'+e(r.author)+'</td><td class="amber" data-verbatim>'+e(r.label)+'</td><td data-verbatim>'+e(r.platform||(r.run?t('Workflow run'):'—'))+'</td><td>'+(r.skills?r.skills.map(s=>'<span class="tag" data-verbatim>'+e(s)+'</span>').join(' '):'—')+'</td><td>'+subject(r)+'</td></tr>').join('')
+  +'</tbody></table></div>'+(rows.length>10?'<div class="cardfoot"><button class="link" data-scorer-failing>'+(scorerAllFailing?label('Show the newest 10'):label('Show all')+' '+number(rows.length))+'</button></div>':''):'<div class="empty"><p>'+label('No failing labels in this window.')+'</p></div>')+'</section>';
 }
 function remindersPanel(sel){
  if(!sel.reminders)return '';
@@ -74,7 +87,7 @@ function scorerControls(data){
   +'<label>'+label('Group by')+'<select id="scorer-group"><option value="">'+label('No grouping')+'</option>'+Object.keys(scorerDimensions).map(k=>'<option value="'+k+'"'+(scorerQuery.groupBy===k?' selected':'')+'>'+label(scorerDimensions[k])+'</option>').join('')+'</select></label>'
   +'<label>'+label('Split at team commit')+'<span class="inline"><input id="scorer-commit" name="commit" autocomplete="off" spellcheck="false" placeholder="'+e(t('commit SHA'))+'" value="'+e(scorerQuery.commit)+'" pattern="[0-9a-fA-F]{4,64}"><button class="primary" type="submit">'+label('Split')+'</button>'+(scorerQuery.commit?'<button class="ghost" type="button" data-scorer-clear>'+label('Clear')+'</button>':'')+'</span></label>'
   +'</form>'
-  +(sel?'<div class="cohorts" role="group" aria-label="'+e(t('Measurements'))+'">'+data.scorers.find(s=>s.scorer===sel.cohort.scorer).cohorts.map(c=>'<button class="chip'+(c.id===sel.cohort.id?' active':'')+'" data-cohort="'+e(c.id)+'" aria-pressed="'+(c.id===sel.cohort.id)+'">'+cohortText(c)+' <b>'+number(c.stats.n)+'</b></button>').join('')+'</div>':'');
+  +(sel?cohortPicker(data,sel):'');
 }
 function scorersPage(){
  if(page==='scorers'&&!scorerData&&!scorerLoading&&!scorerError)loadScorers();
@@ -87,9 +100,8 @@ function scorersPage(){
  return (scorerError?'<div class="error-panel" role="alert"><p>'+e(scorerError)+'</p></div>':'')
   +'<div class="statusline"><span>'+label('Window')+': '+e(when(w.from))+' – '+e(when(w.to))+'</span><span>'+label('Counted by when labels were scored, not when the work happened.')+'</span><span>'+label('Pass or fail as each label stored it.')+'</span></div>'
   +scorerSummary(scorerData)+scorerControls(scorerData)
-  +(sel?'<h2 class="section-label"><span data-verbatim>'+e(sel.cohort.scorer)+'</span> <span class="tag">'+(sel.cohort.source==='session'?label('Session labels'):label('Workflow labels'))+'</span></h2>'+kpis(sel.headline,sel.split)
+  +(sel?'<h2 class="section-label"><span data-verbatim>'+e(sel.cohort.scorer)+'</span> <span class="tag">'+(sel.cohort.source==='session'?label('Session labels'):label('Workflow labels'))+'</span></h2>'+kpis(sel.headline)+(sel.split?splitCards(sel.split):'')
    +'<section class="panel trend-panel"><div class="panelhead"><h2>'+label('Weekly pass rate')+'</h2><span class="label">'+cohortText(sel.cohort)+'</span></div>'+trendChart(sel.trend)+'</section>'
-   +(sel.split?'<p class="label">'+label('Split at')+' <span data-verbatim title="'+e(sel.split.commit)+'">'+short(sel.split.commit)+'</span>: '+label('After means the team revision contains the commit, checked in this machine\\'s team clone. A label on a revision this clone does not have is not recorded.')+' '+label('Not recorded')+': '+number(sel.split.notRecorded.n)+'</p>':'')
    +groupsPanel(sel)+failingPanel(sel)+remindersPanel(sel):'')
   +note;
 }
@@ -116,6 +128,7 @@ document.addEventListener('click',event=>{
  if(scorer)setScorerQuery({scorer:scorer.dataset.scorer,cohort:''});
  else if(cohort)setScorerQuery({cohort:cohort.dataset.cohort});
  else if(group){scorerGroup=scorerGroup===group.dataset.scorerGroup?'':group.dataset.scorerGroup;scorerHtml='';render();}
+ else if(event.target.closest('[data-scorer-failing]')){scorerAllFailing=!scorerAllFailing;scorerHtml='';render();}
  else if(event.target.closest('[data-scorer-clear]'))setScorerQuery({commit:''});
 });
 `;
