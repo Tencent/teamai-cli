@@ -318,10 +318,15 @@ function defaultCohort(cohorts: ReadonlyArray<{ summary: CohortSummary; all: Vie
 }
 
 export const ScorerResults = {
+  /** The `days` before `now`, as the view counts them: by when labels were scored, not when the work happened. */
+  window(days: number, now: Date): ScorerResultsView['window'] {
+    return { days, from: new Date(now.getTime() - days * DAY_MS).toISOString(), to: now.toISOString() };
+  },
+
   /** The results of every scorer in `labels`, with the selected scorer's cohort counted over the window. */
   of({ labels, query, now, reminders }: { labels: readonly ViewedLabel[]; query: ScorerResultsQuery; now: Date; reminders?: ReminderInput }): ScorerResultsView {
-    const from = new Date(now.getTime() - query.windowDays * DAY_MS).toISOString();
-    const to = now.toISOString();
+    const window = ScorerResults.window(query.windowDays, now);
+    const { from, to } = window;
     const inWindow = (entry: ViewedLabel) => entry.label.scoredAt >= from && entry.label.scoredAt <= to;
 
     const byCohort = new Map<string, { cohort: ReturnType<typeof cohortOf>; all: ViewedLabel[] }>();
@@ -358,7 +363,6 @@ export const ScorerResults = {
     const cohortId = scorer?.cohorts.some((cohort) => cohort.id === query.cohort) ? query.cohort : scorer?.defaultCohort;
     const chosen = cohortId ? byCohort.get(cohortId) : undefined;
     const summary = scorer?.cohorts.find((cohort) => cohort.id === cohortId);
-    const window = { days: query.windowDays, from, to };
     if (!chosen || !summary) return { window, scorers };
     const counted = chosen.all.filter(inWindow);
     const { groupBy, split } = query;

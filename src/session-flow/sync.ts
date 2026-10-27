@@ -523,7 +523,10 @@ export class SyncManager {
   // ------------------------------------------------------------------
 
   private readIndex(repoIdentity: string | null): RepoIndex {
-    const p = this.indexPath(repoIdentity);
+    return this.readIndexFile(this.indexPath(repoIdentity), repoIdentity);
+  }
+
+  private readIndexFile(p: string, repoIdentity: string | null): RepoIndex {
     try {
       if (fs.existsSync(p)) {
         return JSON.parse(fs.readFileSync(p, 'utf-8')) as RepoIndex;
@@ -895,6 +898,12 @@ export class SyncManager {
       sessions = sessions.filter((s) => s.author === author);
     }
     return sessions;
+  }
+
+  /** Every session the archive indexes, under every repo and unattributed. Reads the indexes as they are. */
+  listAllSessions(): IndexEntry[] {
+    const dirs = [this.repoDir(null), ...this.listRepos().map((dir) => path.join(this.sessionsDir, 'repos', dir))];
+    return dirs.flatMap((dir) => this.readIndexFile(path.join(dir, '_index.json'), null).sessions);
   }
 
   /**
