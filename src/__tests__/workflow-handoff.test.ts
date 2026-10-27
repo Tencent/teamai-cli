@@ -5,6 +5,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getAdapter } from '../session-flow/adapters/index.js';
 import { AgentSession } from '../session-flow/agent-session.js';
+import { SyncManager, defaultSyncMeta, getRepoIdentity } from '../session-flow/sync.js';
 import type { LocalConfig } from '../types.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { log } from '../utils/logger.js';
@@ -246,6 +247,18 @@ function holdBasePin(business: string): { held: () => Promise<void>; release: ()
 /** Installs a pre-receive hook on `origin`; `exit 0` lets every push through again. */
 function receiveHook(origin: string, script: string): void {
   fs.writeFileSync(path.join(origin, 'hooks', 'pre-receive'), `#!/bin/sh\n${script}\n`, { mode: 0o755 });
+}
+
+/** Archives Claude Code session `session` of the member's checkout on the team repo's default branch, as teamai did before sessions moved to teamai-reports. */
+async function archiveOnDefaultBranch({ config, checkout }: Member, session: string): Promise<void> {
+  const found = await AgentSession.find({ platform: 'claude-code', sessionId: session });
+  if (found.status !== 'done') throw new Error(found.failure.message);
+  const archive = new SyncManager(config.repo.localPath);
+  await archive.saveSession(found.session, defaultSyncMeta({
+    platform: 'claude-code', author: config.username, cwd: checkout, sessionId: session, repoIdentity: getRepoIdentity(checkout), title: found.session.title,
+  }, found.session.createdAt));
+  archive.gitCommit('sync: archive 1 session(s)');
+  archive.gitPush();
 }
 
 async function editRun(config: LocalConfig, runId: string, edit: (run: RunState) => RunState): Promise<void> {
@@ -2004,10 +2017,10 @@ steps:
     const state = originFile(acme.origin, `workflows/runs/${runId}/state.json`) ?? '';
     expect(state).toContain(session);
     expect(state).not.toContain('Found two problems');
-    const archived = execFileSync('git', ['--git-dir', acme.origin, 'ls-tree', '-r', '--name-only', 'main', 'sessions'], { encoding: 'utf8' })
+    const archived = execFileSync('git', ['--git-dir', acme.origin, 'ls-tree', '-r', '--name-only', 'teamai-reports', 'sessions'], { encoding: 'utf8' })
       .split('\n').filter((file) => file.endsWith('.jsonl'));
     expect(archived).toHaveLength(1);
-    const transcript = execFileSync('git', ['--git-dir', acme.origin, 'show', `main:${archived[0]}`], { encoding: 'utf8' });
+    const transcript = execFileSync('git', ['--git-dir', acme.origin, 'show', `teamai-reports:${archived[0]}`], { encoding: 'utf8' });
     expect(transcript).toContain('Found two problems.');
     expect(transcript).not.toContain(TOKEN);
 
@@ -2044,12 +2057,12 @@ steps:
     const session = await claudeSession(alice.checkout, 'Found two problems.');
     await reviewed(alice, runId, session);
     expect(await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout })).toMatchObject({ ok: true, value: { stateRevision: 1 } });
-    const head = reportsHead(acme.origin);
+    const snapshot = originFile(acme.origin, `workflows/runs/${runId}/state.json`);
 
     const again = await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout, sessions: resumableSessions });
 
     expect(again).toMatchObject({ ok: true, value: { publication: 'unchanged', stateRevision: 1, sessions: [{ tool: 'claude', id: session }] } });
-    expect(reportsHead(acme.origin)).toBe(head);
+    expect(originFile(acme.origin, `workflows/runs/${runId}/state.json`)).toBe(snapshot);
     await forget(alice.checkout, session);
     await claimsAndResumes(await acme.member('bob'), runId, session);
   });
@@ -2085,7 +2098,7 @@ steps:
     expect(git(bob.config.repo.localPath, 'rev-parse', 'HEAD')).toBe(clone);
   });
 
-  it('fetches the archive once per run, and starts new sessions from the team clone saying why when that fetch fails', async () => {
+  it('fetches the default-branch archive once per run for sessions teamai-reports lacks, and starts new sessions from the team clone saying why when that fetch fails', async () => {
     const SPLIT = `schemaVersion: v1alpha1
 name: split
 description: Two steps that continue the plan's session.
@@ -2107,7 +2120,8 @@ steps:
     const runId = await startIn(alice, 'split');
     const session = await claudeSession(alice.checkout, 'Planned it.');
     await reviewed(alice, runId, session);
-    expect(await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout, sessions: resumableSessions })).toMatchObject({ ok: true });
+    await archiveOnDefaultBranch(alice, session);
+    expect(await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout })).toMatchObject({ ok: true });
     await forget(alice.checkout, session);
     bob.config.workflows = { tools: { default: 'claude' } };
     expect(await claimRun(bob.config, runId, { checkout: bob.checkout })).toMatchObject({ ok: true });
@@ -2207,7 +2221,7 @@ steps:
       ok: true,
       value: { publication: 'published', sessions: [{ tool: 'claude', id: session }], skipped: [{ tool: 'claude', id: 'copy-1' }] },
     });
-    const archived = execFileSync('git', ['--git-dir', acme.origin, 'ls-tree', '-r', '--name-only', 'main', 'sessions'], { encoding: 'utf8' })
+    const archived = execFileSync('git', ['--git-dir', acme.origin, 'ls-tree', '-r', '--name-only', 'teamai-reports', 'sessions'], { encoding: 'utf8' })
       .split('\n').filter((file) => file.endsWith('.jsonl'));
     expect(archived).toHaveLength(1);
   });
@@ -2414,6 +2428,23 @@ steps:
 
     expect(await answers(resumed[0])).toEqual(['Found two problems.', 'The second one is in the parser.']);
     expect(git(bob.config.repo.localPath, 'rev-parse', 'HEAD')).toBe(clone);
+    expect(fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith('teamai-sessions-'))).toEqual([]);
+  });
+
+  it('restores a session another machine archived on the default branch before sessions moved to teamai-reports', async () => {
+    const acme = team({ review: REVIEW });
+    const alice = await acme.member('alice');
+    const bob = await acme.member('bob');
+    const runId = await startIn(alice, 'review');
+    const session = await claudeSession(alice.checkout, 'review-a', ['Found two problems.']);
+    await reviewed(alice, runId, session);
+    await archiveOnDefaultBranch(alice, session);
+    expect(await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout })).toMatchObject({ ok: true });
+    await forget(alice.checkout, session);
+
+    const resumed = await claimAndDrive(bob, runId);
+
+    expect(await answers(resumed[0])).toEqual(['Found two problems.']);
     expect(fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith('teamai-sessions-'))).toEqual([]);
   });
 

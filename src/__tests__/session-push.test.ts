@@ -57,20 +57,20 @@ function repository(name: string): { origin: string; checkout: string } {
   return { origin, checkout };
 }
 
-/** Writes the Claude Code session a tool left in `cwd`. */
-async function claudeSession(cwd: string): Promise<void> {
+/** Writes the Claude Code session a tool left in `cwd`, with one assistant answer per entry of `answers`. */
+async function claudeSession(cwd: string, { id = 'review-1', title = 'Review this project', answers = ['Found two problems.'] } = {}): Promise<void> {
   fs.mkdirSync(cwd, { recursive: true });
   fs.mkdirSync(path.join(os.homedir(), '.claude', 'projects'), { recursive: true });
   await getAdapter('claude-code').writeSession({
-    sessionId: 'review-1',
-    title: 'Review this project',
+    sessionId: id,
+    title,
     cwd,
     platform: 'claude-code',
     createdAt: '2026-10-01T10:00:00.000Z',
-    updatedAt: '2026-10-01T10:00:05.000Z',
+    updatedAt: `2026-10-01T10:0${answers.length}:00.000Z`,
     messages: [
       { role: 'user', timestamp: '2026-10-01T10:00:00.000Z', content: [{ type: 'text', text: 'Review this project.' }] },
-      { role: 'assistant', timestamp: '2026-10-01T10:00:05.000Z', content: [{ type: 'text', text: 'Found two problems.' }] },
+      ...answers.map((text, index) => ({ role: 'assistant' as const, timestamp: `2026-10-01T10:0${index + 1}:00.000Z`, content: [{ type: 'text' as const, text }] })),
     ],
     metadata: {},
   }, cwd);
@@ -318,7 +318,8 @@ describe('session push of a session a workflow step ran', () => {
 });
 
 describe('session commands without --repo-root outside a workspace install', () => {
-  it('archive to the team clone of the user install', async () => {
+  /** A team repo clone with its config, saved as this machine's user install. */
+  async function userInstall(): Promise<{ origin: string; checkout: string }> {
     const team = repository('team');
     fs.writeFileSync(path.join(team.checkout, 'teamai.yaml'), 'team: acme\nrepo: https://github.com/acme/team.git\nprovider: github\n');
     git(team.checkout, 'add', '-A');
@@ -330,13 +331,39 @@ describe('session commands without --repo-root outside a workspace install', () 
       scope: 'user',
       additionalRoles: [],
     });
+    return team;
+  }
+
+  it('archive on teamai-reports of the user install, not on its default branch', async () => {
+    const team = await userInstall();
     const { checkout } = repository('product');
     await claudeSession(checkout);
 
     const pushed = await session('push', '--source', 'claude-code', '--cwd', checkout, '-y');
 
     expect(pushed.code, pushed.stderr).toBe(0);
-    expect(archived(team.origin, 'main')).toContainEqual(expect.stringMatching(/\.jsonl$/));
+    expect(archived(team.origin, 'teamai-reports')).toContainEqual(expect.stringMatching(/\.jsonl$/));
+    expect(archived(team.origin, 'main')).toEqual([]);
+  });
+
+  it('list a session archived on teamai-reports and on the default branch once, from teamai-reports, and one only the default branch holds', async () => {
+    const team = await userInstall();
+    const { checkout } = repository('product');
+    await claudeSession(checkout, { answers: ['Found two problems.'] });
+    await claudeSession(checkout, { id: 'plan-1', title: 'Plan the release' });
+    expect((await session('push', '--source', 'claude-code', '--cwd', checkout, '-y', '--repo-root', team.checkout)).code).toBe(0);
+    await claudeSession(checkout, { answers: ['Found two problems.', 'The second one is in the parser.'] });
+    expect((await session('push', '--source', 'claude-code', '--cwd', checkout, '-y', '--limit', '1')).code).toBe(0);
+
+    const listed = await session('list', '--cwd', checkout);
+
+    expect(listed.code, listed.stderr).toBe(0);
+    const rows = listed.stdout.split('\n').filter((line) => line.includes('claude-code_'));
+    expect(rows, listed.stdout).toEqual([
+      expect.stringMatching(/claude-code_review-this-project_\S*\s+tester\s+claude-code\s+3\s/),
+      expect.stringMatching(/claude-code_plan-the-release_\S*\s+tester\s+claude-code\s+2\s/),
+    ]);
+    expect(listed.stdout).toContain('2 session(s)');
   });
 
   it('throw that teamai is not set up when there is no install at all', async () => {

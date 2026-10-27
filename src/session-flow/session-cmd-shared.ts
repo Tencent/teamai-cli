@@ -210,10 +210,9 @@ export function deriveArchiveIdentity(session: { cwd: string }, platform: string
   return null;
 }
 
-/** Where this machine has the team session archive: the reports checkout in self mode, else the team repo clone. An http team has none. */
+/** Where this machine has the team session archive: the teamai-reports checkout. An http team has none. */
 export function sessionArchiveRoot(config: LocalConfig): string | undefined {
-  if (!usesBranchWorktree(config)) return undefined;
-  return isSelfMode(config) ? getReportsDir(config) : config.repo.localPath;
+  return usesBranchWorktree(config) ? getReportsDir(config) : undefined;
 }
 
 /**
@@ -221,12 +220,13 @@ export function sessionArchiveRoot(config: LocalConfig): string | undefined {
  * install, else of the user install (see sessionArchiveRoot). Without one, this throws, and the CLI entry point
  * reports the reason and fails the run.
  * `reports` is set when that archive is the teamai-reports checkout: a write there goes through `updateReports` with it.
- * A `read` gets that checkout as `readableReportsWorktree` leaves it.
+ * A `read` gets that checkout as `readableReportsWorktree` leaves it. On a git-kind team, `legacy` is the team clone,
+ * which holds the archive teamai kept on the default branch before: it is read after `root`, and never written.
  */
 export async function resolveRepoRoot(
   repoRoot: string | undefined,
   options: { dryRun: boolean; read?: boolean },
-): Promise<{ root: string; reports?: LocalConfig }> {
+): Promise<{ root: string; reports?: LocalConfig; legacy?: string }> {
   if (repoRoot?.trim()) return { root: repoRoot.trim() };
   const { detectProjectConfig, requireInit, NotInitializedError } = await import('../config.js');
   const loadOpts = { dryRun: options.dryRun };
@@ -245,11 +245,11 @@ export async function resolveRepoRoot(
       'This teamai install keeps no team repo clone on this machine, so it has no session archive. Pass --repo-root <path to a team repo clone>.',
     );
   }
-  if (!isSelfMode(cfg)) return { root };
+  const legacy = isSelfMode(cfg) ? {} : { legacy: cfg.repo.localPath };
   // A writer opens the checkout itself, under the lock, in updateReports.
-  if (!options.read) return { root, reports: cfg };
+  if (!options.read) return { root, reports: cfg, ...legacy };
   try {
-    return { root: await readableReportsWorktree(cfg, { dryRun: options.dryRun }), reports: cfg };
+    return { root: await readableReportsWorktree(cfg, { dryRun: options.dryRun }), reports: cfg, ...legacy };
   } catch (e) {
     throw new Error(safeText(e instanceof Error ? e.message : String(e)));
   }

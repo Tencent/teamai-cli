@@ -28,7 +28,7 @@ import {
   toolRootsLookup,
   writeCopyOnce,
 } from './agent-session.js';
-import { SyncManager, getGitAuthor, defaultSyncMeta, withSessionPublicationLock } from './sync.js';
+import { SyncManager, getGitAuthor, defaultSyncMeta, withSessionPublicationLock, type IndexEntry } from './sync.js';
 import { SessionSearchEngine, type LoadedSession } from './search.js';
 import { isSafeSessionFileId } from './ids.js';
 import { isInteractive } from '../utils/prompt.js';
@@ -53,6 +53,31 @@ import {
   safeGetAdapter,
   safeText,
 } from './session-cmd-shared.js';
+
+/**
+ * The sessions of `identities` that the archives at `roots` hold, read in that order: a session a later archive also
+ * holds, under the same repository, name and author, is kept from the first.
+ */
+function archivedSessions(
+  roots: readonly string[],
+  identities: (archive: SyncManager) => Array<string | null>,
+  author?: string,
+): Array<{ archive: SyncManager; identity: string | null; entry: IndexEntry }> {
+  const seen = new Set<string>();
+  const found: Array<{ archive: SyncManager; identity: string | null; entry: IndexEntry }> = [];
+  for (const root of roots) {
+    const archive = new SyncManager(root);
+    for (const identity of identities(archive)) {
+      for (const entry of archive.listSessions(identity, author)) {
+        const key = JSON.stringify([identity, entry.sessionName, entry.author]);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        found.push({ archive, identity, entry });
+      }
+    }
+  }
+  return found;
+}
 
 // ---------------------------------------------------------------------------
 // Command registration
@@ -313,8 +338,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
     .option('--all', 'Rebuild indexes for every repo in the team repo (not just the current project)')
     .action(async (opts) => {
       const workCwd = opts.cwd ?? process.cwd();
-      const archive = await resolveRepoRoot(opts.repoRoot, { dryRun: isDryRun() });
-      const { root: repoRoot, reports } = archive;
+      const { root: repoRoot, reports, legacy } = await resolveRepoRoot(opts.repoRoot, { dryRun: isDryRun() });
 
       if (isDryRun()) {
         console.log(`Dry-run: would pull from the team repo remote and rebuild indexes (repo root: ${repoRoot}).`);
@@ -369,6 +393,12 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
           process.exitCode = 1;
           return true;
         }
+        if (!legacy) return pulled;
+        const pulledLegacy = await pullArchive(new SyncManager(legacy), legacy);
+        if (pulledLegacy.status === 'failed') {
+          console.error(`Error: Pulling the sessions archived on the default branch in ${legacy} failed: ${safeText(pulledLegacy.reason)}`);
+          process.exitCode = 1;
+        }
         return pulled;
       });
       if (publication.status === 'busy') reportArchiveBusy(repoRoot, publication.lockPath);
@@ -385,15 +415,15 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
     .option('--all', 'List sessions across all projects in the team repo (not just the current one)')
     .action(async (opts) => {
       const workCwd = opts.cwd ?? process.cwd();
-      const archive = await resolveRepoRoot(opts.repoRoot, { dryRun: isDryRun(), read: true });
-      const { root: repoRoot } = archive;
+      const { root: repoRoot, legacy } = await resolveRepoRoot(opts.repoRoot, { dryRun: isDryRun(), read: true });
       const repoIdentity = resolveRepoIdentity(workCwd);
 
-      const syncMgr = new SyncManager(repoRoot);
       // P2: --all uses the cross-repo view (including _unattributed); each entry's repoIdentity marks the source
-      const sessions = opts.all
-        ? syncMgr.listSessionsAcrossRepos(opts.author)
-        : syncMgr.listSessions(repoIdentity, opts.author);
+      const sessions = archivedSessions(
+        [repoRoot, ...(legacy ? [legacy] : [])],
+        (archive) => (opts.all ? archive.listAllRepoIdentities() : [repoIdentity]),
+        opts.author,
+      ).map(({ identity, entry }) => ({ ...entry, repoIdentity: entry.repoIdentity ?? identity }));
 
       if (sessions.length === 0) {
         console.log('No team sessions found.');
@@ -451,11 +481,13 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
         return;
       }
       const workCwd = opts.cwd ?? process.cwd();
-      const archive = await resolveRepoRoot(opts.repoRoot, { dryRun: isDryRun(), read: true });
-      const { root: repoRoot } = archive;
+      const { root: repoRoot, legacy } = await resolveRepoRoot(opts.repoRoot, { dryRun: isDryRun(), read: true });
       const repoIdentity = resolveRepoIdentity(workCwd);
 
-      const syncMgr = new SyncManager(repoRoot);
+      // A session teamai-reports does not hold is read from the archive the team kept on its default branch before.
+      const [held] = archivedSessions([repoRoot, ...(legacy ? [legacy] : [])], () => [repoIdentity], opts.author)
+        .filter(({ entry }) => entry.sessionName === sessionName);
+      const syncMgr = held?.archive ?? new SyncManager(repoRoot);
       // Without try/catch, a loadSession error on resume hits the terminal as an uncaught exception.
       // The usual root cause is that the session was archived under another project name (repoIdentity mismatch).
       // Give an actionable hint instead of a raw stack trace (see design doc P9).
@@ -517,30 +549,27 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
     .option('--all', 'Search across all projects (not just current)')
     .action(async (query, opts) => {
       const workCwd = opts.cwd ?? process.cwd();
-      const archive = await resolveRepoRoot(opts.repoRoot, { dryRun: isDryRun(), read: true });
-      const { root: repoRoot } = archive;
+      const { root: repoRoot, legacy } = await resolveRepoRoot(opts.repoRoot, { dryRun: isDryRun(), read: true });
       const repoIdentity = resolveRepoIdentity(workCwd);
       const limitRaw = parseInt(opts.limit, 10);
       const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : 10;
 
-      const syncMgr = new SyncManager(repoRoot);
       const loadedSessions: LoadedSession[] = [];
 
       // P1: --all walks every repo (including _unattributed) and loads sessions;
       // without --all, only the current repo is loaded. The old implementation's loop body was dead code: listRepos()
       // returns encoded directory names and has no decoder, so the canonical identity can only be
       // recovered from each repo's _index.json (see SyncManager.listAllRepoIdentities).
-      const identitiesToSearch: Array<string | null> = opts.all
-        ? syncMgr.listAllRepoIdentities()
-        : [repoIdentity];
-      for (const identity of identitiesToSearch) {
-        for (const entry of syncMgr.listSessions(identity)) {
-          try {
-            const { session } = syncMgr.loadSession(identity, entry.sessionName, entry.author);
-            loadedSessions.push({ sessionName: entry.sessionName, author: entry.author, session });
-          } catch {
-            // skip corrupted
-          }
+      const found = archivedSessions(
+        [repoRoot, ...(legacy ? [legacy] : [])],
+        (archive) => (opts.all ? archive.listAllRepoIdentities() : [repoIdentity]),
+      );
+      for (const { archive, identity, entry } of found) {
+        try {
+          const { session } = archive.loadSession(identity, entry.sessionName, entry.author);
+          loadedSessions.push({ sessionName: entry.sessionName, author: entry.author, session });
+        } catch {
+          // skip corrupted
         }
       }
 
