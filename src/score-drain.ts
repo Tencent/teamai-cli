@@ -3,10 +3,13 @@
  * of an unattended run. It judges the judge work this machine can run, publishes labels and sessions, reports usage, and
  * says what is left for other drivers.
  */
+import { loadTeamConfig } from './config.js';
 import { driverIdentity } from './driver-identity.js';
 import type { RunMode } from './launch-context.js';
 import { localJudgeOffers } from './score-sessions.js';
 import { SessionCaptures } from './session-flow/captures.js';
+import { SessionPolicy } from './session-flow/session-policy.js';
+import { SessionPublish } from './session-flow/session-publish.js';
 import { SessionWork } from './session-flow/session-work.js';
 import type { RunSubject, SessionSubject } from './scorers/label.js';
 import { LabelStore } from './scorers/label-store.js';
@@ -27,7 +30,7 @@ interface FailedJudgment {
   code: string;
 }
 
-/** What could not reach teamai-reports for one reason. It stays pending, and the next drain retries it. */
+/** What could not reach teamai-reports, and why. It stays pending, and the next drain retries it. */
 interface Unpublished {
   labels: number;
   sessions: number;
@@ -41,6 +44,8 @@ export interface DrainResult {
   /** Judge entries no judge tool here runs the scorer's model for, left open for another driver's `score --next`. */
   leftOpen: SkippedEntry[];
   labelsPublished: number;
+  /** Captured sessions archived on teamai-reports. */
+  capturedArchived: number;
   unpublished: Unpublished[];
 }
 
@@ -107,7 +112,7 @@ async function publishLabels(config: LocalConfig): Promise<Pick<DrainResult, 'la
 
 /** Drains each scope of `configs`, in order, in run mode `mode`. */
 async function run(configs: readonly LocalConfig[], { mode, clock = () => new Date().toISOString() }: { mode: RunMode; clock?: () => string }): Promise<DrainResult> {
-  const result: DrainResult = { judged: [], failed: [], leftOpen: [], labelsPublished: 0, unpublished: [] };
+  const result: DrainResult = { judged: [], failed: [], leftOpen: [], labelsPublished: 0, capturedArchived: 0, unpublished: [] };
   for (const config of configs) {
     if (mode === 'unattended') await finishUnattended(config, clock());
     const { judged, failed, leftOpen } = await judge(config, clock);
@@ -117,6 +122,10 @@ async function run(configs: readonly LocalConfig[], { mode, clock = () => new Da
     const labels = await publishLabels(config);
     result.labelsPublished += labels.labelsPublished;
     result.unpublished.push(...labels.unpublished);
+    if (SessionPolicy.publish(config, await loadTeamConfig(config.repo.localPath)).policies[mode].policy !== 'auto') continue;
+    const captured = await SessionPublish.captured(config, mode, clock());
+    result.capturedArchived += captured.archived;
+    result.unpublished.push(...captured.unpublished.map(({ sessions, reason }) => ({ labels: 0, sessions, reason })));
   }
   return result;
 }
@@ -140,10 +149,13 @@ function failedText({ scorers, subject, code }: FailedJudgment): string {
   return `${scorers.join(', ')} on ${what}: ${code}. A failed judgment is final and is not retried. To ask for a new one: ${ask}`;
 }
 
-/** What could not reach teamai-reports for one reason, and that the next drain retries it. */
-function unpublishedText({ labels, sessions, reason }: Unpublished): string {
+/** What could not reach teamai-reports, each reason once, and that the next drain retries it. */
+function unpublishedText(unpublished: readonly Unpublished[]): string {
+  const labels = unpublished.reduce((sum, entry) => sum + entry.labels, 0);
+  const sessions = unpublished.reduce((sum, entry) => sum + entry.sessions, 0);
   const what = [labels > 0 ? plural(labels, 'label', 'labels') : '', sessions > 0 ? plural(sessions, 'session', 'sessions') : ''].filter(Boolean).join(' and ');
-  return `Could not publish ${what} to teamai-reports: ${reason}. ${labels + sessions === 1 ? 'It stays' : 'They stay'} pending; run teamai score --drain again.`;
+  const reasons = [...new Set(unpublished.map((entry) => entry.reason))].join('; ');
+  return `Could not publish ${what} to teamai-reports: ${reasons}. ${labels + sessions === 1 ? 'It stays' : 'They stay'} pending; run teamai score --drain again.`;
 }
 
 /** Whether a judgment or a publish the drain tried here failed, so its command exits 1. */
@@ -159,7 +171,8 @@ function print(result: DrainResult): void {
   if (sessions.length > 0) log.success(`Judged ${plural(sessions.length, 'sampled session', 'sampled sessions')} here (${scorerNames(sessions)})`);
   for (const failed of result.failed) log.error(failedText(failed));
   if (result.labelsPublished > 0) log.success(`Published ${plural(result.labelsPublished, 'label', 'labels')} to teamai-reports`);
-  for (const unpublished of result.unpublished) log.error(unpublishedText(unpublished));
+  if (result.capturedArchived > 0) log.success(`Archived ${plural(result.capturedArchived, 'captured session', 'captured sessions')} to teamai-reports (scrubbed)`);
+  if (result.unpublished.length > 0) log.error(unpublishedText(result.unpublished));
   const { leftOpen } = result;
   if (leftOpen.length > 0) {
     const ofSessions = leftOpen.filter((entry) => 'sessionId' in entry.subject).length;

@@ -48,6 +48,7 @@ steps:
 `;
 
 const SESSION = '7c1e0000-0000-4000-8000-000000000011';
+const TOKEN = `ghp_${'A1b2C3d4E5'.repeat(4)}`;
 const HOUR = 60 * 60 * 1000;
 
 let root = '';
@@ -153,10 +154,15 @@ async function settledRun(config: LocalConfig, runMode: RunMode, report: Record<
 /** The files under `dir` on teamai-reports of bare repository `origin`. */
 function onReports(origin: string, dir: string): string[] {
   try {
-    return execFileSync('git', ['--git-dir', origin, 'ls-tree', '-r', '--name-only', 'teamai-reports', dir], { encoding: 'utf8', stdio: 'pipe' }).split('\n').filter(Boolean);
+    return execFileSync('git', ['--git-dir', origin, 'ls-tree', '-r', '--name-only', 'teamai-reports', ...(dir ? [dir] : [])], { encoding: 'utf8', stdio: 'pipe' }).split('\n').filter(Boolean);
   } catch {
     return [];
   }
+}
+
+/** The text of `file` on teamai-reports of bare repository `origin`. */
+function readOnReports(origin: string, file: string): string {
+  return execFileSync('git', ['--git-dir', origin, 'show', `teamai-reports:${file}`], { encoding: 'utf8', stdio: 'pipe' });
 }
 
 /** Runs `teamai score --drain` and returns its exit code and the lines it printed. */
@@ -283,14 +289,39 @@ describe('teamai score --drain', () => {
     const failed = await drain();
 
     expect(failed.code, failed.lines.join('\n')).toBe(1);
-    expect(failed.lines).toContainEqual(expect.stringMatching(/^✖ Could not publish 1 label to teamai-reports: [\s\S]+\. It stays pending; run teamai score --drain again\.$/));
-    expect(onReports(origin, 'scores')).toEqual([]);
+    expect(failed.lines.filter((printed) => printed.startsWith('✖'))).toEqual([
+      expect.stringMatching(/^✖ Could not publish 1 label and 1 session to teamai-reports: [\s\S]*push refused[\s\S]*\. They stay pending; run teamai score --drain again\.$/),
+    ]);
+    expect(onReports(origin, '')).toEqual([]);
 
     fs.rmSync(hook);
     const again = await drain();
 
     expect(again.code, again.lines.join('\n')).toBe(0);
-    expect(again.lines).toContain('✔ Published 1 label to teamai-reports');
+    expect(again.lines).toEqual(expect.arrayContaining(['✔ Published 1 label to teamai-reports', '✔ Archived 1 captured session to teamai-reports (scrubbed)']));
     expect(onReports(origin, 'scores')).toHaveLength(1);
+    expect(onReports(origin, 'sessions').filter((file) => file.endsWith('.jsonl'))).toHaveLength(1);
+  });
+
+  it('archives each session captured unattended once, scrubbed, on teamai-reports', async () => {
+    const { origin } = await team();
+    capturedSession(SESSION, 'unattended', { answer: `Added the retries. The deploy token is ${TOKEN}.` });
+    fakeClaude();
+    vi.stubEnv('CI', 'true');
+
+    const drained = await drain();
+
+    expect(drained.code, drained.lines.join('\n')).toBe(0);
+    expect(drained.lines).toContain('✔ Archived 1 captured session to teamai-reports (scrubbed)');
+    const [archived, ...more] = onReports(origin, 'sessions').filter((file) => file.endsWith('.jsonl'));
+    expect(more).toEqual([]);
+    expect(readOnReports(origin, archived)).toContain('Added the retries.');
+    expect(readOnReports(origin, archived)).not.toContain(TOKEN);
+
+    const again = await drain();
+
+    expect(again.code, again.lines.join('\n')).toBe(0);
+    expect(again.lines.filter((printed) => /Judged|Published|Archived/.test(printed))).toEqual([]);
+    expect(again.lines).toContain('✔ Nothing left to do here');
   });
 });
