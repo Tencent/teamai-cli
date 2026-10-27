@@ -257,7 +257,7 @@ Every unattended driver ends with `teamai score --drain`. The local driver runs 
 3. It publishes every pending label, as `score --push` does, and the workflow run records a run could not publish, as `teamai pull` does.
 4. With `publish: auto` for the current mode, it archives on `teamai-reports`, scrubbed, the finished captured sessions of that mode and the step sessions of the runs driven here that are not archived yet. A step session it cannot archive from here, because teamai reads no sessions from its tool or this machine cannot read it, is listed once as skipped with the reason, and never tried again. The other step sessions of that run are still archived.
 5. It reports usage to `stats/<member>.yaml`, as `teamai pull` does, so the counts of an ephemeral runner reach the team.
-6. It prints what is left: entries whose scorer pins a model no judge tool here runs (`judge_model_unavailable`), or whose isolation this machine does not meet. Those wait for another driver's `score --next`.
+6. It prints what is left: entries whose scorer pins a model no judge tool here runs (`judge_model_unavailable`), or whose isolation this machine does not meet, and every open entry when no judge tool is installed here. Those wait for another driver's `score --next`.
 
 The drain exits 0 when nothing is left that it can do here, entries left for other drivers included. It exits 1 when a judgment, a publish or a usage report failed. A failed publish or usage report stays pending, and the next `--drain` retries it. A failed judgment is final: the drain prints it and never retries it. To ask for a new one, run `teamai score --session <id> --source <platform> --scorer <name>`.
 

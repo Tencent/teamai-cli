@@ -289,6 +289,21 @@ describe('teamai score --drain', () => {
     expect(drained.lines).not.toContain('✔ Nothing left to do here');
   });
 
+  it('leaves the judge entries to another driver when no judge tool is installed here, says so, and exits 0', async () => {
+    const { config } = await team();
+    capturedSession(SESSION, 'unattended');
+    vi.stubEnv('CI', 'true');
+
+    const drained = await drain();
+
+    expect(drained.code, drained.lines.join('\n')).toBe(0);
+    expect(drained.lines).toContain('ℹ Left open: 1 judge entry: no judge tool is installed here. '
+      + 'A driver whose tools judge it takes it with: teamai score --next --json \'{"driver":{…,"can":{"judge":{…}}}}\'');
+    expect(drained.lines).not.toContain('✔ Nothing left to do here');
+    const other = { driver: { kind: 't3', machine: 'm2', workspace: '/w' }, judge: { isolation: 'best-effort' as const, tools: ['claude'] as [string] }, running: [] };
+    expect(await nextJudgeLease(config, other)).toMatchObject({ data: { lease: { source: 'session', subject: { sessionId: SESSION } } } });
+  });
+
   it('prints a failed judgment and exits 1, and a second drain exits 0 without judging it again', async () => {
     await team();
     capturedSession(SESSION, 'unattended');
@@ -493,7 +508,7 @@ describe('teamai score --drain', () => {
   });
 
   it('says only that nothing is left when a second drain finds nothing new, usage included', async () => {
-    await team();
+    await team({ 'scorers/quality.md': SCORER.replace('sessions: true\n', '') });
     capturedSession(SESSION, 'unattended');
     const key = await dataHomeKey(path.join(mocks.home, '.teamai'));
     fs.mkdirSync(path.join(mocks.home, '.teamai', 'dashboard'), { recursive: true });
