@@ -1023,7 +1023,7 @@ steps:
     const started = await harness.call({ kind: 'start', name: 'review', answers: { confirmed: false }, inputs: undefined });
     if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
     expect(await harness.call({ kind: 'choose', run: RunIdSchema.parse(started.data.turn.run), choice: 'h1' })).toMatchObject({ data: { turn: { events: expect.arrayContaining([{
-      kind: 'settled', step: 'review', outcome: 'failed', failure: { code: 'model_unavailable', message: 'Step "review" needs model claude-opus-4-1, and this coding session names no tool to resolve it for: start the workflow with --tools default=<tool>, the tool it works in.' },
+      kind: 'settled', step: 'review', outcome: 'failed', failure: { code: 'model_unavailable', message: 'Step "review" needs model claude-opus-4-1, and this coding session names no tool to resolve it for: start or resume the workflow with --tools default=<tool>, the tool it works in.' },
     }]) } } });
   });
 
