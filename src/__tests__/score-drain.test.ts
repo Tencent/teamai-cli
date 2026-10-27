@@ -148,18 +148,20 @@ function data(envelope: WorkflowEnvelope): Record<string, unknown> {
   return envelope.data;
 }
 
-/** Runs the review workflow in `config` to its end, its one step settled by `report` as an external driver would. */
-async function settledRun(config: LocalConfig, runMode: RunMode, report: Record<string, unknown> = {}): Promise<string> {
+/** Runs the review workflow in `config` to its end, its steps settled in order by `reports` as an external driver would. */
+async function settledRun(config: LocalConfig, runMode: RunMode, ...reports: Record<string, unknown>[]): Promise<string> {
   await syncWorkflowDefinitions(config);
   const checkout = path.join(root, 'app');
   fs.mkdirSync(checkout, { recursive: true });
   const runId = String(data(await startRun(config, 'review', {}, { secrets: {}, runMode, checkout })).run);
   const driver = { kind: 'external', machine: 'm1', workspace: checkout };
-  const lease = data(await leaseNext(config, runId, driver, { runMode })).lease;
-  const { attempt, revision } = lease as { attempt: string; revision: number };
-  const parsed = parseReport({ attempt, revision, outcome: 'success', driver, outputs: {}, ...report });
-  if (typeof parsed === 'string') throw new Error(parsed);
-  data(await reportAttempt(config, runId, parsed.report));
+  for (const report of reports.length > 0 ? reports : [{}]) {
+    const lease = data(await leaseNext(config, runId, driver, { runMode })).lease;
+    const { attempt, revision } = lease as { attempt: string; revision: number };
+    const parsed = parseReport({ attempt, revision, outcome: 'success', driver, outputs: {}, ...report });
+    if (typeof parsed === 'string') throw new Error(parsed);
+    data(await reportAttempt(config, runId, parsed.report));
+  }
   expect(data(await leaseNext(config, runId, driver))).toMatchObject({ done: { outcome: 'succeeded' } });
   return runId;
 }
@@ -386,7 +388,7 @@ describe('teamai score --drain', () => {
     expect(again.lines).toContain('✔ Nothing left to do here');
   });
 
-  it('archives the step sessions of the runs it drives in this mode once, scrubbed, and lists a pass whose tool it reads no sessions from', async () => {
+  it('archives the step sessions of the runs it drives in this mode once, scrubbed, and lists once a pass whose tool it reads no sessions from', async () => {
     const { origin, config } = await team({ 'workflows/review.yaml': WORKFLOW.replace('    scorers: [quality]\n', '') });
     claudeSession(STEP_SESSION, `Reviewed it. The deploy token is ${TOKEN}.`);
     const archivedRun = await settledRun(config, 'unattended', { tool: 'claude', session: STEP_SESSION });
@@ -408,7 +410,28 @@ describe('teamai score --drain', () => {
 
     const again = await drain();
 
-    expect(again.lines.filter((printed) => printed.includes('Archived'))).toEqual([]);
+    expect(again).toEqual({ code: 0, lines: ['✔ Nothing left to do here'] });
+  });
+
+  it('lists once, with why, a step session it cannot read here, and still archives the readable step sessions of its run', async () => {
+    const { origin, config } = await team({ 'workflows/review.yaml': `${WORKFLOW.replace('    scorers: [quality]\n', '')}  - id: check\n    needs: [review]\n    prompt: Check the change.\n` });
+    const unreadable = '7c1e0000-0000-4000-8000-000000000023';
+    claudeSession(STEP_SESSION, 'Reviewed it.');
+    const runId = await settledRun(config, 'unattended', { tool: 'claude', session: STEP_SESSION }, { tool: 'claude', session: unreadable });
+    vi.stubEnv('CI', 'true');
+
+    const drained = await drain();
+
+    expect(drained.code, drained.lines.join('\n')).toBe(0);
+    expect(drained.lines).toEqual(expect.arrayContaining([
+      `✔ Archived 1 step session of ${runId} to teamai-reports (scrubbed)`,
+      expect.stringMatching(new RegExp(`^ℹ Skipped 1 step session of ${runId}: the claude-code session ${unreadable} cannot be read here: .+ \\(check, pass 1\\)$`)),
+    ]));
+    expect(onReports(origin, 'sessions').filter((file) => file.endsWith('.jsonl'))).toHaveLength(1);
+
+    const again = await drain();
+
+    expect(again).toEqual({ code: 0, lines: ['✔ Nothing left to do here'] });
   });
 
   it('reports the usage of an unattended session to stats/<member>.yaml under unattended, on a data home that never ran pull', async () => {

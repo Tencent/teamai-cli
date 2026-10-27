@@ -194,9 +194,9 @@ function print(result: DrainResult): void {
   if (result.capturedArchived > 0) log.success(`Archived ${plural(result.capturedArchived, 'captured session', 'captured sessions')} to teamai-reports (scrubbed)`);
   for (const { run: runId, archived, skipped } of result.steps) {
     if (archived > 0) log.success(`Archived ${plural(archived, 'step session', 'step sessions')} of ${runId} to teamai-reports (scrubbed)`);
-    for (const tool of new Set(skipped.map((pass) => pass.tool))) {
-      const passes = skipped.filter((pass) => pass.tool === tool);
-      log.info(`Skipped ${plural(passes.length, 'step session', 'step sessions')} of ${runId}: teamai reads no sessions from ${tool} (${passes.map((pass) => `${pass.step}, pass ${pass.pass}`).join('; ')})`);
+    for (const reason of new Set(skipped.map((pass) => pass.reason))) {
+      const passes = skipped.filter((pass) => pass.reason === reason);
+      log.info(`Skipped ${plural(passes.length, 'step session', 'step sessions')} of ${runId}: ${reason} (${passes.map((pass) => `${pass.step}, pass ${pass.pass}`).join('; ')})`);
     }
   }
   if (result.unpublished.length > 0) log.error(unpublishedText(result.unpublished));
