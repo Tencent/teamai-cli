@@ -1,4 +1,5 @@
 /** `runs/<run>/skill.json`: what the skill driver keeps of a run between calls. This module is its only reader and writer. */
+import fs from 'node:fs/promises';
 import { z } from 'zod';
 import { DriverSchema } from '../../../driver-identity.js';
 import { RunModeSchema } from '../../../launch-context.js';
@@ -240,4 +241,9 @@ export async function readSkillState(config: LocalConfig, run: RunId): Promise<{
 /** Saves `state`, masked with `secrets`. Only a holder of the run lock writes it. */
 export async function writeSkillState(config: LocalConfig, lock: RunLock, state: SkillState, secrets: Record<string, string>): Promise<void> {
   await writeJsonAtomic(skillStatePath(config, lock.run), redactJson(state, secrets));
+}
+
+/** Removes the skill state of the run, so no session drives it from here. Only a holder of the run lock removes it. */
+export async function removeSkillState(config: LocalConfig, lock: RunLock): Promise<void> {
+  await fs.rm(skillStatePath(config, lock.run), { force: true });
 }

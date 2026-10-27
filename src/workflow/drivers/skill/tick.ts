@@ -17,7 +17,7 @@ import {
   type Literal,
 } from './literals.js';
 import { attendedReason, ceilingOf, localPromptTool, localReason, needsTool } from './preflight.js';
-import { drivesRun, newSkillState, readSkillState, writeSkillState, type AttemptState, type ReportBody, type SkillState, type TurnEvent } from './skill-state.js';
+import { drivesRun, newSkillState, readSkillState, removeSkillState, writeSkillState, type AttemptState, type ReportBody, type SkillState, type TurnEvent } from './skill-state.js';
 import {
   ackRow, adoptRow, callRow, cancelledRow, chooseRow, doneRow, gateCheckRow, graceRow, hasSlot, heldProbeRow, invokeRow, judgeFreeRow, judgeTickRow, lockBusyRow, pollRow, readiedRow, reopenedRow, replyRow,
   reportCallRow, reportedRow, reportRow, resendRow, respondedRow, runnerFreeRow, scoreReplyRow, tickRow, turnRow, unattendedRow, unqueueRow, unseenEvents, type Answer,
@@ -292,7 +292,12 @@ async function called(context: SkillContext, lock: RunLock, same: Literal, input
       run, readied, kept: state !== undefined, mode: context.mode, ...(local !== undefined ? { local } : {}), ...(attended !== undefined ? { attended } : {}), answers, confirmed,
       needsTool: readied.kind === 'ready' && needsTool(readied.description, { tool: context.tool, judged: answers.judge !== false }),
     }));
-    if (taken && 'answer' in taken) return { answer: { error: errorOf(taken.answer, { invocation: context.invocation, same, localTool, tool: input.resume?.tool }) } };
+    if (taken && 'answer' in taken) {
+      // R28 with a skill.json kept here comes after the resume installed the published run over it, which made it stale: the
+      // resume its next names must ready the run anew, as R19 would have.
+      if (taken.row === 'R28' && state !== undefined) await removeSkillState(context.config, lock);
+      return { answer: { error: errorOf(taken.answer, { invocation: context.invocation, same, localTool, tool: input.resume?.tool }) } };
+    }
     if (taken) {
       return { state: plannedState(context, run, taken.start) };
     }

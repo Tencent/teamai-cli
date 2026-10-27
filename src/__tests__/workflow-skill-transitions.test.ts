@@ -1062,6 +1062,31 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     },
   },
   {
+    name: 'a claim refused for the tool the run needs drops the skill.json kept here, so the resume that names the tool drives the claimed run anew',
+    rows: ['R28', 'R19'],
+    run: async () => {
+      const team = sharedTeam({ handed: HANDED.replace('    prompt: Write the API.', '    prompt: Write the API.\n    model: sonnet') });
+      const ci = await team.install('ci');
+      // CI drives the run with the skill driver, so it keeps a skill.json, and publishes it.
+      const first = await harness({}, { install: ci, tool: 'claude' });
+      const { run } = await turnOf(await first.call({ kind: 'start', name: 'handed', answers: { confirmed: false, parallel: 1 }, inputs: undefined }));
+      await first.call({ kind: 'choose', run, choice: 'h1' });
+      for (let poll = 0; poll < 3; poll += 1) await first.call({ kind: 'next', run, wait: true });
+      expect(await publishRun(ci.config, run, { checkout: ci.checkout })).toMatchObject({ ok: true });
+      // A member takes it over and publishes it.
+      const member = await team.install('member');
+      await turnOf(await (await harness({}, { install: member, tool: 'claude' })).call({ kind: 'resume', run, claim: false, confirmed: false, answers: {} }));
+      expect(await publishRun(member.config, run, { checkout: member.checkout })).toMatchObject({ ok: true });
+      // Back on CI, a session that names no tool claims it back.
+      const back = await harness({}, { install: ci, tool: null });
+      expect(await back.call({ kind: 'resume', run, claim: true, confirmed: false, answers: { parallel: 2 } }))
+        .toMatchObject({ error: { code: 'tool_needed', next: `teamai workflow resume ${run} --driver skill --tools default='{tool}' --parallel 2` } });
+      expect(await turnOf(await back.call({ kind: 'resume', run, claim: false, confirmed: false, answers: { parallel: 2 }, tool: 'claude' })))
+        .toMatchObject({ run, actions: [{ kind: 'choose', about: 'host' }] });
+      return back.rows;
+    },
+  },
+  {
     name: 'a session resumes a run another machine published mid-step: it claims it, keeps the options and mode of the resume, and drives it to done',
     rows: ['R19'],
     run: async () => {
