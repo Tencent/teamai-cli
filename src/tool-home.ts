@@ -63,10 +63,12 @@ export function realHost(overrides: Partial<Pick<Host, 'env' | 'home'>> = {}): H
 /**
  * A home the host env moves, and how init records it (`INIT_RECORDS`): `own`,
  * the tool's own setting; `xdg`, `XDG_CONFIG_HOME`, which moves every XDG
- * tool at once; `platform-default`, the Windows home, which is not a move.
- * `variable` names the setting, or the file (Hermes's `active_profile`).
+ * tool at once; `platform-default`, the Windows home, which is not a move;
+ * `tool-state`, a file the tool itself rewrites (Hermes's `active_profile`),
+ * which is followed on every run and never recorded.
+ * `variable` names the setting, or the file.
  */
-export type EnvToolHome = { readonly dir: string; readonly variable: string; readonly kind: 'own' | 'xdg' | 'platform-default' };
+export type EnvToolHome = { readonly dir: string; readonly variable: string; readonly kind: 'own' | 'xdg' | 'platform-default' | 'tool-state' };
 
 /**
  * Where the host env moves `tool`'s home (the first of
@@ -151,7 +153,7 @@ function hermesHome(host: Host): EnvToolHome | null {
   const name = host.readTextNow(activeProfile)?.trim();
   if (!name || name === 'default') return processHome;
   const dir = p.join(explicit ?? native, 'profiles', name);
-  return host.existsNow(dir) ? { dir, variable: activeProfile, kind: 'own' } : processHome;
+  return host.existsNow(dir) ? { dir, variable: activeProfile, kind: 'tool-state' } : processHome;
 }
 
 function absoluteEnv(host: Host, name: string): string | null {

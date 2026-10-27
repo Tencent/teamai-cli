@@ -88,6 +88,29 @@ describe('a home recorded on this machine', () => {
   });
 });
 
+describe('Hermes\'s active profile', () => {
+  let tmp: string;
+  beforeEach(() => {
+    tmp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-hermes-profile-')));
+    vi.stubEnv('HOME', tmp);
+    vi.stubEnv('HERMES_HOME', undefined);
+    vi.stubEnv('HERMES_DATA_DIR_SUFFIX', undefined);
+  });
+  afterEach(() => { vi.unstubAllEnvs(); fs.rmSync(tmp, { recursive: true, force: true }); });
+
+  it('is followed on every run, so switching back to default needs no init', async () => {
+    const native = path.join(tmp, '.hermes');
+    fs.mkdirSync(path.join(native, 'profiles', 'work'), { recursive: true });
+    fs.writeFileSync(path.join(native, 'active_profile'), 'work\n');
+    await recordToolHomes('pull');
+    expect(toolHome('hermes')).toBe(path.join(native, 'profiles', 'work'));
+
+    fs.writeFileSync(path.join(native, 'active_profile'), 'default\n');
+
+    expect(toolHome('hermes')).toBe(native);
+  });
+});
+
 describe('the real host\'s reads for a checkout key', () => {
   it('resolves a path through its links and reads a small text file, and answers for a missing one', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-host-reads-'));

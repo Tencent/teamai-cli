@@ -10,25 +10,34 @@ export type ToolHomeChange = { readonly tool: ToolId; readonly variable: string;
 type RecordRule = { readonly replacesRecord: boolean; readonly needsExistingHome: boolean };
 
 /**
- * What init records, by what moved the home. A tool's own variable is the
- * member's choice for that tool, so init records it before the home exists.
- * `XDG_CONFIG_HOME` moves every XDG tool at once, so it names a home only
- * where one exists. The Windows default is not a move, so it only fills a
- * missing record.
+ * What init records, by what moved the home; null records nothing. A tool's
+ * own variable is the member's choice for that tool, so init records it
+ * before the home exists. `XDG_CONFIG_HOME` moves every XDG tool at once, so
+ * it names a home only where one exists. The Windows default is not a move,
+ * so it only fills a missing record. A home from the tool's own state file
+ * changes outside any shell, so recording it would pin a home the tool has
+ * left.
  */
-const INIT_RECORDS: Readonly<Record<EnvToolHome['kind'], RecordRule>> = {
+const INIT_RECORDS: Readonly<Record<EnvToolHome['kind'], RecordRule | null>> = {
   own: { replacesRecord: true, needsExistingHome: false },
   xdg: { replacesRecord: true, needsExistingHome: true },
   'platform-default': { replacesRecord: false, needsExistingHome: true },
+  'tool-state': null,
 };
 
-const PULL_RECORDS: RecordRule = { replacesRecord: false, needsExistingHome: true };
+const PULL_FILLS: RecordRule = { replacesRecord: false, needsExistingHome: true };
+const PULL_RECORDS: Readonly<Record<EnvToolHome['kind'], RecordRule | null>> = {
+  own: PULL_FILLS,
+  xdg: PULL_FILLS,
+  'platform-default': PULL_FILLS,
+  'tool-state': null,
+};
 
 /**
  * The record after reading the host env (`INIT_RECORDS`, `PULL_RECORDS`).
  * Init also clears a record when one of the tool's variables is set but
- * blank, the explicit way to end a move, which the Windows default does not
- * override.
+ * blank, the explicit way to end a move, which a home that would not replace
+ * the record does not override.
  */
 export async function nextToolHomes(
   recorded: Readonly<Record<string, string>>,
@@ -39,7 +48,7 @@ export async function nextToolHomes(
   const changes: ToolHomeChange[] = [];
   for (const tool of Object.keys(TOOLS).filter(isToolId)) {
     const moved = envToolHome(tool, host);
-    const blank = by === 'init' && homes[tool] !== undefined && (moved === null || moved.kind === 'platform-default')
+    const blank = by === 'init' && homes[tool] !== undefined && (moved === null || INIT_RECORDS[moved.kind]?.replacesRecord !== true)
       && homeVariables(tool).find((name) => host.env[name] !== undefined && host.env[name]?.trim() === '');
     if (blank) {
       delete homes[tool];
@@ -48,8 +57,8 @@ export async function nextToolHomes(
     }
     if (!moved) continue;
     const current = homes[tool];
-    const rule = by === 'pull' ? PULL_RECORDS : INIT_RECORDS[moved.kind];
-    if (current === moved.dir || (current !== undefined && !rule.replacesRecord) || (rule.needsExistingHome && !await host.exists(moved.dir))) continue;
+    const rule = (by === 'pull' ? PULL_RECORDS : INIT_RECORDS)[moved.kind];
+    if (rule === null || current === moved.dir || (current !== undefined && !rule.replacesRecord) || (rule.needsExistingHome && !await host.exists(moved.dir))) continue;
     homes[tool] = moved.dir;
     changes.push({ tool, variable: moved.variable, dir: moved.dir });
   }

@@ -763,6 +763,16 @@ describe('doctor — where a tool takes skills', () => {
     expect((await failing()).map((c) => c.name)).not.toContain('opencode home matches XDG_CONFIG_HOME');
   });
 
+  it('leaves a recorded Hermes home alone when only active_profile names another', async () => {
+    const recorded = path.join(tempDir, 'recorded', 'hermes');
+    await fse.ensureDir(recorded);
+    await saveToolHomes({ hermes: recorded });
+    await fse.ensureDir(path.join(homeDir, '.hermes', 'profiles', 'work'));
+    await fse.writeFile(path.join(homeDir, '.hermes', 'active_profile'), 'work\n');
+
+    expect((await failing()).map((c) => c.name).filter((name) => name.startsWith('hermes home'))).toEqual([]);
+  });
+
   it('fails when the home recorded for a tool is gone, whatever the shell says', async () => {
     const recorded = path.join(tempDir, 'recorded', 'opencode');
     await saveToolHomes({ opencode: recorded });

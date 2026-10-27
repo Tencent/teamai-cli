@@ -73,6 +73,28 @@ describe('nextToolHomes', () => {
   });
 });
 
+describe('nextToolHomes and Hermes\'s active_profile', () => {
+  const sticky: Host = {
+    ...linuxHost({}, ['/home/m/.hermes/profiles/work']),
+    existsNow: (file) => file === '/home/m/.hermes/profiles/work',
+    readTextNow: (file) => (file === '/home/m/.hermes/active_profile' ? 'work\n' : null),
+  };
+
+  it('records nothing for a profile Hermes itself made active, on init or pull', async () => {
+    for (const by of ['init', 'pull'] as const) {
+      expect(await nextToolHomes({}, sticky, by)).toEqual({ homes: {}, changes: [] });
+      expect(await nextToolHomes({ hermes: '/srv/hermes' }, sticky, by)).toEqual({ homes: { hermes: '/srv/hermes' }, changes: [] });
+    }
+  });
+
+  it('clears a recorded home when init sees HERMES_HOME blank, whatever active_profile says', async () => {
+    const { homes, changes } = await nextToolHomes({ hermes: '/srv/hermes' }, { ...sticky, env: { HERMES_HOME: '' } }, 'init');
+
+    expect(homes).toEqual({});
+    expect(changes).toEqual([{ tool: 'hermes', variable: 'HERMES_HOME', dir: null }]);
+  });
+});
+
 describe('nextToolHomes on Windows', () => {
   const windowsHost = (env: Record<string, string>, existing: readonly string[]): Host => ({
     platform: 'win32', path: path.win32, home: 'C:\\Users\\m', profileHome: 'C:\\Users\\m', env, toolHomes: { kind: 'missing' },
@@ -192,7 +214,7 @@ describe('homes that follow the tool\'s own rules', () => {
 
   it('takes the profile active_profile names while its directory exists, but not default', () => {
     const profile = { '/home/m/.hermes/active_profile': 'work\n', '/home/m/.hermes/profiles/work/SOUL.md': '' };
-    expect(envToolHome('hermes', at({}, profile))).toEqual({ dir: '/home/m/.hermes/profiles/work', variable: '/home/m/.hermes/active_profile', kind: 'own' });
+    expect(envToolHome('hermes', at({}, profile))).toEqual({ dir: '/home/m/.hermes/profiles/work', variable: '/home/m/.hermes/active_profile', kind: 'tool-state' });
     expect(dirOf('hermes', at({}, { '/home/m/.hermes/active_profile': 'work' }))).toBeNull();
     expect(dirOf('hermes', at({}, { '/home/m/.hermes/active_profile': 'default', '/home/m/.hermes/profiles/default/x': '' }))).toBeNull();
   });

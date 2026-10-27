@@ -375,7 +375,8 @@ function buildToolHomeChecks(localConfig: LocalConfig): Check[] {
         + `Re-run \`teamai init\` from a shell that sets the home ${tool} uses, or remove "${tool}" from ${file}.`,
     });
     const live = envToolHome(tool, host);
-    if (live === null) continue;
+    // init never records a home from the tool's own state, so it cannot fix a mismatch with one.
+    if (live === null || live.kind === 'tool-state') continue;
     checks.push({
       name: `${tool} home matches ${live.variable}`,
       source: 'local',
