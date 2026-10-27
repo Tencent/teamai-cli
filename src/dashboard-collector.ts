@@ -42,6 +42,7 @@ import {
 import { getUserHome } from './utils/home.js';
 import type { HeadState } from './utils/git.js';
 import type { SessionRun } from './launch-context.js';
+import { SessionOutcomeEventSchema, type SessionOutcomeEvent } from './outcomes.js';
 import { estimateClaudeRequest } from './model-pricing.js';
 
 // ─── Event collection data flow ─────────────────────────
@@ -1739,17 +1740,17 @@ async function removeOrphanTemps(target: string): Promise<void> {
 }
 
 /**
- * Append a DashboardEvent to the events JSONL file.
+ * Append a DashboardEvent, or a session outcome event, to the events JSONL file.
  * Silently fails on I/O errors to avoid disrupting the AI session.
  */
-export async function appendEvent(event: DashboardEvent): Promise<void> {
+export async function appendEvent(event: DashboardEvent | SessionOutcomeEvent): Promise<void> {
   try {
     const eventsPath = getEventsPath();
     await ensureDir(path.dirname(eventsPath));
     const line = JSON.stringify(event) + '\n';
-    const detail = event.toolName
+    const detail = 'toolName' in event && event.toolName
       ? ` [tool=${event.toolName}]`
-      : event.promptSummary
+      : 'promptSummary' in event && event.promptSummary
         ? ` [prompt=${event.promptSummary}]`
         : '';
     const summary = `dashboard: recorded ${event.type} for session ${event.sessionId.slice(0, 16)}${detail}`;
@@ -1805,6 +1806,22 @@ async function readEventsRaw(filePath: string): Promise<DashboardEvent[]> {
   } catch {
     return [];
   }
+}
+
+/** The session outcome events of the log at `eventsPath` (the default log when absent), in file order. */
+export async function readSessionOutcomes(eventsPath?: string): Promise<SessionOutcomeEvent[]> {
+  const content = await fs.promises.readFile(eventsPath ?? getEventsPath(), 'utf-8').catch(() => '');
+  const outcomes: SessionOutcomeEvent[] = [];
+  for (const line of content.split('\n')) {
+    if (!line.includes('"session_outcome"')) continue;
+    try {
+      const parsed = SessionOutcomeEventSchema.safeParse(JSON.parse(line));
+      if (parsed.success) outcomes.push(parsed.data);
+    } catch {
+      // Skip corrupted lines
+    }
+  }
+  return outcomes;
 }
 
 /**
