@@ -23,14 +23,14 @@ fs.rmSync = function rmSyncNamingWriter(target, options) {
 };
 syncBuiltinESMExports();
 
-const LISTED = 10;
+const MAX_LISTED = 10;
 
 function describeWriters(dir: string): string {
-  return `\nEntries that reappeared during removal:\n${lines(reappeared(dir))}`
-    + `\nProcesses still running in or on ${dir}:\n${lines(processesIn(dir))}`;
+  return `\nEntries that reappeared during removal:\n${indentedList(reappeared(dir))}`
+    + `\nProcesses still running in or on ${dir}:\n${indentedList(processesIn(dir))}`;
 }
 
-function lines(entries: string[]): string {
+function indentedList(entries: string[]): string {
   return entries.length > 0 ? entries.map((entry) => `  ${entry}`).join('\n') : '  none found';
 }
 
@@ -51,11 +51,15 @@ function reappeared(dir: string): string[] {
     }
   });
   entries.sort((a, b) => b.mtime - a.mtime);
-  const listed = entries.slice(0, LISTED).map(({ name, mtime }) => `${name} (written ${Math.max(0, Math.round(now - mtime))}ms ago)`);
-  return entries.length > LISTED ? [...listed, `and ${entries.length - LISTED} more`] : listed;
+  const listed = entries.slice(0, MAX_LISTED).map(({ name, mtime }) => `${name} (written ${Math.max(0, Math.round(now - mtime))}ms ago)`);
+  return entries.length > MAX_LISTED ? [...listed, `and ${entries.length - MAX_LISTED} more`] : listed;
 }
 
-/** Each process whose working directory is in `dir` or whose command line names it, as `<pid> <command line>`. */
+/**
+ * Each process whose working directory is in `dir`, or whose command line or
+ * environment names it, as `<pid> <command line>`. The environment is matched,
+ * never printed: CI logs must not carry it.
+ */
 function processesIn(dir: string): string[] {
   let resolved = dir;
   try {
@@ -63,34 +67,40 @@ function processesIn(dir: string): string[] {
   } catch {
     // Gone already: match the spelling the caller passed.
   }
-  const inDir = (candidate: string) => [dir, resolved].some((root) => candidate === root || candidate.startsWith(`${root}${path.sep}`));
+  const isInside = (candidate: string) => [dir, resolved].some((root) => candidate === root || candidate.startsWith(`${root}${path.sep}`));
+  const names = (text: string) => text.includes(dir) || text.includes(resolved);
   try {
     return runningProcesses()
-      .filter(({ pid, cwd, args }) => pid !== process.pid && ((cwd !== undefined && inDir(cwd)) || args.includes(dir) || args.includes(resolved)))
+      .filter(({ pid, cwd, args, env }) => pid !== process.pid && ((cwd !== undefined && isInside(cwd)) || names(args) || names(env)))
       .map(({ pid, args }) => `${pid} ${args}`);
   } catch (error) {
     return [`could not list processes: ${String(error)}`];
   }
 }
 
-function runningProcesses(): Array<{ pid: number; cwd: string | undefined; args: string }> {
+function runningProcesses(): Array<{ pid: number; cwd: string | undefined; args: string; env: string }> {
   if (process.platform === 'linux') {
     return fs.readdirSync('/proc').filter((name) => /^\d+$/.test(name)).flatMap((name) => {
       try {
         const args = fs.readFileSync(`/proc/${name}/cmdline`, 'utf-8').split('\0').join(' ').trim();
         let cwd: string | undefined;
+        let env = '';
         try {
           cwd = fs.readlinkSync(`/proc/${name}/cwd`);
+          env = fs.readFileSync(`/proc/${name}/environ`, 'utf-8');
         } catch {
           // Another user's process, or one that just exited.
         }
-        return [{ pid: Number(name), cwd, args }];
+        return [{ pid: Number(name), cwd, args, env }];
       } catch {
         return [];
       }
     });
   }
-  // macOS and the other Unixes: ps for command lines, lsof for working directories.
+  // macOS and the other Unixes: ps for command lines, lsof for working
+  // directories. macOS keeps other processes' environments from ps, so a
+  // writer that reaches the directory only through its environment (teamai's
+  // detached children find ~/.teamai through HOME) is named on Linux alone.
   // lsof exits non-zero when it cannot read some process, with the rest still
   // listed; without lsof, command lines still name a writer passed the path.
   const cwds = new Map<number, string>();
@@ -101,6 +111,6 @@ function runningProcesses(): Array<{ pid: number; cwd: string | undefined; args:
   }
   return execFileSync('ps', ['-axo', 'pid=,args='], { encoding: 'utf-8' }).split('\n').flatMap((line) => {
     const match = /^\s*(\d+)\s+(.*)$/.exec(line);
-    return match ? [{ pid: Number(match[1]), cwd: cwds.get(Number(match[1])), args: match[2] }] : [];
+    return match ? [{ pid: Number(match[1]), cwd: cwds.get(Number(match[1])), args: match[2], env: '' }] : [];
   });
 }
