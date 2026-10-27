@@ -1,4 +1,5 @@
 import { toolHome } from '../tool-home.js';
+import { getTeamaiHomeDir } from '../types.js';
 import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest';
 import path from 'node:path';
 
@@ -668,6 +669,50 @@ describe('doctor — JSON report', () => {
         expect(names).toContain('Team repo exists locally');
         expect(names).toContain('teamai hooks in claude settings');
         expect(report.checks.every((c) => c.ok)).toBe(true);
+    });
+
+    it('reports only validated machine settings, merged aliases, workflow defaults, and local team provenance', async () => {
+        mockedLoadLocalConfig.mockResolvedValue({
+            ...mockLocalConfig,
+            scope: 'project',
+            projectRoot: '/tmp/project',
+            repo: { localPath: '/tmp/team', remote: 'https://example.test/team.git' },
+        });
+        mockedLoadTeamConfig.mockResolvedValue({
+            ...mockTeamConfig,
+            sharing: { recall: { enabled: true } },
+        });
+        mockedReadFileSafe.mockImplementation(async (filePath: string) => {
+            if (filePath === path.join(getTeamaiHomeDir(), 'config.yaml')) {
+                return 'recallEnabled: "yes"\nmodelAliases:\n  gateway: claude-sonnet-4\n';
+            }
+            if (filePath === path.join('/tmp/project', '.teamai', 'config.yaml')) {
+                return 'recallEnabled: false\nmodelAliases:\n  local: claude-opus-4\n';
+            }
+            if (filePath.endsWith('settings.json')) return buildFullHooksContent();
+            return null;
+        });
+
+        await doctor({ json: true });
+
+        const settings = emittedReport().memberSettings ?? [];
+        const byKey = Object.fromEntries(settings.map((setting) => [setting.key, setting]));
+        expect(byKey.recallEnabled).toMatchObject({
+            effective: false,
+            source: { level: 'scope', value: false },
+            levels: [
+                { level: 'scope', value: false, file: path.join('/tmp/project', '.teamai', 'config.yaml') },
+                { level: 'team', value: true, file: path.join('/tmp/team', 'teamai.yaml') },
+                { level: 'default', value: false },
+            ],
+        });
+        expect(byKey.modelAliases).toMatchObject({
+            effective: { gateway: 'claude-sonnet-4', local: 'claude-opus-4' },
+            source: { level: 'scope', value: { local: 'claude-opus-4' } },
+        });
+        expect(byKey['workflows.max_parallel']).toMatchObject({ effective: 1, source: { level: 'default', value: 1 } });
+        expect(byKey['workflows.auto_approve']).toMatchObject({ effective: false, source: { level: 'default', value: false } });
+        expect(byKey['workflows.allow.network']).toMatchObject({ effective: true, source: { level: 'default', value: true } });
     });
 
     it('carries the fix string of a failing check', async () => {

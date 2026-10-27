@@ -2,7 +2,7 @@ import YAML from 'yaml';
 import { hookToolPathsForConfig } from './types.js';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import { detectProjectConfig, loadLocalConfig, loadTeamConfig } from './config.js';
+import { detectProjectConfig, loadLocalConfig, loadMemberSettings, loadTeamConfig } from './config.js';
 import { AgentSession } from './session-flow/agent-session.js';
 import { SessionPolicy, type SessionPolicy as Policy } from './session-flow/session-policy.js';
 import { explainRunMode, RUN_MODES, type ExplainedRunMode } from './launch-context.js';
@@ -229,9 +229,13 @@ function settingSource(level: MemberSettingLevel, value: unknown, file?: string,
 
 async function memberSettingsReport(ctx: DoctorContext): Promise<MemberSettingsReport[]> {
   const machineFile = path.join(getTeamaiHomeDir(), 'config.yaml');
-  const machine = await readYamlObject(machineFile);
+  const rawMachine = await readYamlObject(machineFile);
+  // The report must describe runtime behavior, not unvalidated YAML. In
+  // particular, a bad machine key is ignored by the overlay loader and cannot
+  // be reported as its effective value.
+  const machine = await loadMemberSettings(machineFile);
   const scopeFile = getDataHome(ctx.localConfig) + path.sep + 'config.yaml';
-  const scope = ctx.localConfig.scope === 'user' ? machine : await readYamlObject(scopeFile);
+  const rawScope = ctx.localConfig.scope === 'user' ? rawMachine : await readYamlObject(scopeFile);
   const team = ctx.teamConfig as unknown as Record<string, unknown> | null;
   const teamSharing = team?.sharing as Record<string, unknown> | undefined;
   const teamValue = (key: string): unknown => {
@@ -244,6 +248,9 @@ async function memberSettingsReport(ctx: DoctorContext): Promise<MemberSettingsR
     return undefined;
   };
   const defaultValue = (key: string): unknown => {
+    if (key === 'workflows.max_parallel') return 1;
+    if (key === 'workflows.auto_approve') return false;
+    if (key === 'workflows.allow.network') return true;
     if (key === 'recallEnabled') return false;
     if (key === 'contributeHintEnabled' || key === 'mrHintEnabled' || key === 'usageReportEnabled') return true;
     if (key === 'updatePolicy') return 'auto';
@@ -253,20 +260,33 @@ async function memberSettingsReport(ctx: DoctorContext): Promise<MemberSettingsR
   const reports: MemberSettingsReport[] = [];
   for (const key of MEMBER_SETTING_REPORT_KEYS) {
     const parts = key.split('.');
-    const scopeValue = readPath(scope, parts);
+    const scopeValue = readPath(rawScope, parts);
     const machineValue = readPath(machine, parts);
     const levels: MemberSettingSource[] = [];
     if (scopeValue !== undefined) levels.push(settingSource('scope', scopeValue, ctx.localConfig.scope === 'user' ? machineFile : scopeFile));
     if (machineValue !== undefined && ctx.localConfig.scope !== 'user') levels.push(settingSource('machine', machineValue, machineFile));
     const teamValueForKey = teamValue(key);
-    if (teamValueForKey !== undefined) levels.push(settingSource('team', teamValueForKey, team?.repo ? `${team.repo}/teamai.yaml` : undefined));
+    if (teamValueForKey !== undefined) {
+      const teamFile = ctx.localConfig.repo.localPath ? path.join(ctx.localConfig.repo.localPath, 'teamai.yaml') : undefined;
+      levels.push(settingSource('team', teamValueForKey, teamFile));
+    }
     const fallback = defaultValue(key);
     if (fallback !== undefined) levels.push(settingSource('default', fallback));
     const envName = variable(key);
     const envValue = envName ? process.env[envName] : undefined;
     if (envValue !== undefined) levels.unshift(settingSource('environment', envValue, undefined, envName));
     const source = levels[0];
-    if (source) reports.push({ key, effective: source.value, source, levels });
+    if (!source) continue;
+    let effective = source.value;
+    if (key === 'modelAliases') {
+      const machineAliases = readPath(machine, parts);
+      const scopeAliases = readPath(rawScope, parts);
+      if ((typeof machineAliases === 'object' && machineAliases !== null)
+        || (typeof scopeAliases === 'object' && scopeAliases !== null)) {
+        effective = { ...(machineAliases as Record<string, unknown> | undefined), ...(scopeAliases as Record<string, unknown> | undefined) };
+      }
+    }
+    reports.push({ key, effective, source, levels });
   }
   return reports;
 }
