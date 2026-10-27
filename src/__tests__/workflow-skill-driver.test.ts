@@ -1020,15 +1020,13 @@ steps:
     } } } });
   });
 
-  it('tells a session whose host names no tool to name it on the resume of a run it does not drive', async () => {
+  it('gives a session whose host names no tool a resume of a run it does not drive with a {tool} slot to fill', async () => {
     const harness = await skillHarness({ check: CHECK }, { tool: null });
     roots.push(harness.root);
     const other = await harness.context.client.start('check', { checkout: harness.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
     if (!('data' in other) || typeof other.data.run !== 'string') throw new Error(JSON.stringify(other));
     const run = RunIdSchema.parse(other.data.run);
-    expect(await harness.call({ kind: 'next', run, wait: false })).toMatchObject({ error: {
-      code: 'not_skill_run', message: expect.stringMatching(/ This coding session names no tool: add --tools default=<tool>, the tool it works in, to the command in next\.$/), next: `teamai workflow resume ${run} --driver skill`,
-    } });
+    expect(await harness.call({ kind: 'next', run, wait: false })).toMatchObject({ error: { code: 'not_skill_run', next: `teamai workflow resume ${run} --driver skill --tools default='{tool}'` } });
   });
 
   it('refuses a start that needs a tool this session does not name, pointing at the describe that asks for it', async () => {

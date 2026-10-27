@@ -223,7 +223,9 @@ function refusalNext(refusal: Refusal, context: { invocation: Invocation; same: 
       // Only a start is refused for it, and its describe keeps the tool the start declared.
       return context.same;
     case 'not_skill_run':
-      return skillResumeLiteral(invocation, refusal.run);
+      return skillResumeLiteral(invocation, refusal.run, { tool: refusal.toolNamed ? undefined : '{tool}' });
+    case 'tool_needed':
+      return skillResumeLiteral(invocation, refusal.run, { tool: '{tool}' });
     case 'not_owner':
     case 'run_not_found':
       return skillResumeLiteral(invocation, refusal.run, { claim: true, tool: context.tool });
@@ -262,7 +264,9 @@ function refusalMessage(refusal: Refusal, local: { invocation: Invocation; tool?
       return `Start ${refusal.name} from its describe reply: ${said.join('; ')}. Run the describe literal and ask the person.`;
     }
     case 'not_skill_run':
-      return `Run ${refusal.run} is not driven by the skill driver on this machine. Ask the person whether to continue it from this session, and run the command in next only when they agree: it takes the run over from the machine that last drove it. The person can instead continue it in a terminal with ${resumeLiteral(local.invocation, refusal.run, { tool: local.tool })}.${refusal.toolNamed ? '' : ' This coding session names no tool: add --tools default=<tool>, the tool it works in, to the command in next.'}`;
+      return `Run ${refusal.run} is not driven by the skill driver on this machine. Ask the person whether to continue it from this session, and run the command in next only when they agree: it takes the run over from the machine that last drove it. The person can instead continue it in a terminal with ${resumeLiteral(local.invocation, refusal.run, { tool: local.tool })}.`;
+    case 'tool_needed':
+      return `Run ${refusal.run} has prompt or scored steps, which need the tool this coding session works in, and it names none.`;
     case 'not_owner':
       return `Run ${refusal.run} is owned by ${refusal.owner}, who claimed it at ${refusal.since}. Ask the person whether that install is done with it, and run the command in next only when they agree to take it from there; otherwise the run goes on there.`;
     case 'run_not_found':

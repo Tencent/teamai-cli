@@ -1040,6 +1040,24 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     },
   },
   {
+    name: 'a resume or takeover that would drive a run here from a session that names no tool the run needs answers tool_needed, whose next fills the tool',
+    rows: ['R28', 'R19'],
+    run: async () => {
+      const made = await harness({ review: REVIEW }, { scorers: SCORERS, tool: null });
+      const other = await made.context.client.start('review', { checkout: made.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
+      if (!('data' in other) || typeof other.data.run !== 'string') throw new Error(JSON.stringify(other));
+      const run = RunIdSchema.parse(other.data.run);
+      const refused = { error: {
+        code: 'tool_needed', message: `Run ${run} has prompt or scored steps, which need the tool this coding session works in, and it names none.`,
+        next: `teamai workflow resume ${run} --driver skill --tools default='{tool}'`,
+      } };
+      expect(await made.call({ kind: 'resume', run, claim: false, confirmed: false, answers: {} })).toEqual(refused);
+      expect(await made.call({ kind: 'takeover', run, confirmed: false })).toEqual(refused);
+      expect(await turnOf(await made.call({ kind: 'resume', run, claim: false, confirmed: false, answers: {}, tool: 'claude' }))).toMatchObject({ run, actions: [{ kind: 'choose', about: 'host' }] });
+      return made.rows;
+    },
+  },
+  {
     name: 'a session resumes a run another machine published mid-step: it claims it, keeps the options and mode of the resume, and drives it to done',
     rows: ['R19'],
     run: async () => {

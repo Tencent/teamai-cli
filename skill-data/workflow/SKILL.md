@@ -117,7 +117,7 @@ The `done` action carries the `outcome`, the pull requests the run opened in `pr
 
 ## Errors
 
-A reply with `error` carries `code`, `message` and `next`. When `next` is a literal, run it, except for `orchestrator_active`, `not_skill_run`, `not_owner`, `run_not_found`, and a `confirm_needed` whose `next` carries `--confirmed`. When it is null, tell the person `message`: only they can act on it.
+A reply with `error` carries `code`, `message` and `next`. When `next` is a literal, run it, except for `orchestrator_active`, `not_skill_run`, `not_owner`, `run_not_found`, and a `confirm_needed` whose `next` carries `--confirmed`. When `next` holds `{tool}`, replace it with the id of the tool you work in before you run it, as for `ask.kind: tool`. When it is null, tell the person `message`: only they can act on it.
 
 `agent_in_path` means an answer only the person can give came from your session. Hand the person the command `message` names, for their own terminal.
 
