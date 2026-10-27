@@ -11,7 +11,7 @@ You orchestrate. You run the literal commands the CLI prints, and you keep the p
 
 ## Start
 
-Run `teamai workflow start --describe <name> --driver skill` with the workflow name from the skill that sent you. Where this machine runs teamai through `npx teamai-cli`, use that in its place; every literal the CLI prints after this already does.
+Run `teamai workflow start --describe <name> --driver skill` with the workflow name from the skill that sent you. Where this machine runs teamai through `npx teamai-cli`, use that in its place; every literal the CLI prints after this already does. When the reply says this coding session names no tool, run the describe again with `--tools default=<tool>`, the tool you work in, and act on that reply instead.
 
 Act on `data.describe.ask.kind`:
 

@@ -349,7 +349,7 @@ async function start(call: Extract<SkillCall, { kind: 'describe' | 'start' }>, c
       mode: context.mode, ...(attended !== undefined ? { attended } : {}),
     });
     context.trace?.(row);
-    return { data: { describe: { workflow: description, judging, ask: askFor(verdict, description, context.invocation, judging, { local: localPromptTool(context), session: call.tool }) } } };
+    return { data: { describe: { workflow: description, judging, ask: askFor(verdict, description, context.invocation, judging, { local: localPromptTool(context), session: call.tool, named: context.tool !== undefined }) } } };
   }
   const check = checkStartAnswers({ description, answers: call.answers, inputs: call.inputs, ceiling });
   const judge = call.answers.judge !== false ? judgedBy(judging) : undefined;

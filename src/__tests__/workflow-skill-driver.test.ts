@@ -993,8 +993,17 @@ steps:
     const harness = await skillHarness({ review: REVIEW }, { scorers: { 'review-quality': REVIEW_QUALITY }, tool: null });
     roots.push(harness.root);
     expect(await harness.call({ kind: 'describe', name: 'review' })).toMatchObject({ data: { describe: {
-      judging: { kind: 'elsewhere', reason: 'This coding session names no tool: describe and start the workflow with --tools default=<tool>, the tool it works in.' },
+      judging: { kind: 'elsewhere', reason: 'This coding session names no tool.' },
+      ask: { say: '- This coding session names no tool for its prompt steps and judging: describe the workflow again with --tools default=<tool>, the tool it works in, and start it from that reply.\n- review is not judged on this machine. This coding session names no tool.' },
     } } });
+  });
+
+  it('describe tells a session whose host names no tool to name it, when the workflow has prompt steps and nothing scored', async () => {
+    const harness = await skillHarness({ review: REVIEW.replace('    scorers: [review-quality]', '    model: claude-opus-4-1') }, { tool: null });
+    roots.push(harness.root);
+    expect(await harness.call({ kind: 'describe', name: 'review' })).toMatchObject({ data: { describe: { judging: { kind: 'none' }, ask: {
+      kind: 'start', say: expect.stringContaining('- This coding session names no tool for its prompt steps and judging: describe the workflow again with --tools default=<tool>, the tool it works in, and start it from that reply.'),
+    } } } });
   });
 
   it('a step that needs a model fails in a session whose host names no tool, and says how to name it', async () => {
