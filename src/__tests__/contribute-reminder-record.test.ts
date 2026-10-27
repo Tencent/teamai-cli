@@ -45,6 +45,15 @@ describe('reminder decisions kept past the 24 hours sweep', () => {
     expect((await readReminderDecisions()).get('quiet')).toBe(false);
   });
 
+  it('still says yes for a session resumed after its sweep whose new state file was swept too', async () => {
+    await stateOf('resumed', true, 10);
+    await writeContributeState('next-session', { contributed: false });
+    await stateOf('resumed', undefined, 3);
+    await writeContributeState('later-session', { contributed: false });
+    expect(fs.existsSync(path.join(home, '.teamai', 'sessions', 'resumed.json'))).toBe(false);
+    expect((await readReminderDecisions()).get('resumed')).toBe(true);
+  });
+
   it('forgets a swept session 30 days after its sweep', async () => {
     await stateOf('old', true, 2);
     await writeContributeState('next-session', { contributed: false });

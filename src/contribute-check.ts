@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { z } from 'zod';
 import { log } from './utils/logger.js';
 import { RELAY_TO_USER_PREFIX, relayWhenHidden } from './utils/hook-output.js';
 import { readJson, writeJson, ensureDir } from './utils/fs.js';
@@ -193,9 +194,18 @@ function sweptDir(sessionsDir: string): string {
   return path.join(sessionsDir, 'swept');
 }
 
+const HintedSchema = z.object({ hinted: z.boolean().optional() });
+
+/** Whether the state file or swept record at `file` says the reminder fired; undefined when it is missing or unreadable. */
+async function readHinted(file: string): Promise<boolean | undefined> {
+  const parsed = HintedSchema.safeParse(await readJson<unknown>(file).catch(() => null));
+  return parsed.success ? parsed.data.hinted === true : undefined;
+}
+
 /**
  * Remove session files older than 24h. Skips the current session. Each removed file leaves a record of whether its
- * friction reminder fired, false included, kept for 30 days; older records are removed here too.
+ * friction reminder fired, false included, kept for 30 days; a record that says fired stays so when the session is
+ * resumed and swept again. Older records are removed here too.
  *
  * @param dir              Sessions directory.
  * @param currentSessionId Raw sessionId of the just-written session (will be
@@ -217,8 +227,9 @@ export async function cleanupStaleSessions(dir: string, currentSessionId: string
     try {
       const stat = await fs.promises.stat(filePath);
       if (now - stat.mtimeMs > STALE_SESSION_MS) {
-        const raw = await readJson<Record<string, unknown>>(filePath);
-        if (raw) await writeJson(path.join(sweptDir(dir), entry), { hinted: raw.hinted === true });
+        const hinted = await readHinted(filePath);
+        const record = path.join(sweptDir(dir), entry);
+        if (hinted !== undefined) await writeJson(record, { hinted: hinted || (await readHinted(record)) === true });
         await fs.promises.unlink(filePath);
       }
     } catch {
@@ -245,8 +256,8 @@ export async function readReminderDecisions(): Promise<Map<string, boolean>> {
   const read = async (folder: string) => (await Promise.all((await fs.promises.readdir(folder).catch(() => []))
     .filter((entry) => entry.endsWith('.json'))
     .map(async (entry) => {
-      const raw = await readJson<Record<string, unknown>>(path.join(folder, entry)).catch(() => null);
-      return raw ? [[entry.slice(0, -'.json'.length), raw.hinted === true] as const] : [];
+      const hinted = await readHinted(path.join(folder, entry));
+      return hinted === undefined ? [] : [[entry.slice(0, -'.json'.length), hinted] as const];
     }))).flat();
   const [swept, live] = await Promise.all([read(sweptDir(dir)), read(dir)]);
   const decisions = new Map<string, boolean>();
