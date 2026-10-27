@@ -318,6 +318,8 @@ export const dashboardMessages: Record<string, string> = {
   "OUTCOMES": "产出",
   "Commit": "提交",
   "Learning": "经验",
+  "Outcomes": "产出",
+  "A learning shows once contribute records it. Commits and pull requests show once the usage report counts the session, 6 hours after it goes quiet.": "经验在 contribute 记录后显示。提交和拉取请求在使用报告统计该会话后显示，即会话静默 6 小时之后。",
   "The dashboard shows only what a run record publishes: never prompts, inputs, outputs, or HITL messages.": "仪表盘只显示运行记录发布的内容：绝不显示提示词、输入、输出或 HITL 消息。",
   "Could not load this run.": "无法加载此运行。",
   "Scorers": "评分器",

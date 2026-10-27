@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { log } from './utils/logger.js';
 import { ensureDir } from './utils/fs.js';
-import { readEvents, rebuildSessions, appendEvent, memberEvents, sessionRuns } from './dashboard-collector.js';
+import { readEvents, readSessionOutcomes, rebuildSessions, appendEvent, memberEvents, sessionRuns } from './dashboard-collector.js';
 import { isProcessAlive } from './pid-monitor.js';
 import {
   DASHBOARD_DEFAULT_PORT,
@@ -87,13 +87,13 @@ export async function startDashboard(port?: number): Promise<void> {
   const pushSessions = async () => {
     pushedStamp = await eventsStamp();
     try {
-      const events = await readEvents(eventsPath);
+      const [events, outcomes] = await Promise.all([readEvents(eventsPath), readSessionOutcomes(eventsPath)]);
       const workspaces = await getWorkspaces(events);
-      const sessions = rebuildSessions(events);
+      const sessions = rebuildSessions(events, outcomes);
       const data = JSON.stringify(sessions);
       for (const client of clients) {
         const workspace = workspaces.find(w => w.id === clientScopes.get(client));
-        client.write(`data: ${workspace ? JSON.stringify(rebuildSessions(workspaceEvents(events, workspace, workspaces))) : data}\n\n`);
+        client.write(`data: ${workspace ? JSON.stringify(rebuildSessions(workspaceEvents(events, workspace, workspaces), outcomes)) : data}\n\n`);
       }
     } catch (e) {
       log.debug(`dashboard: SSE push error: ${(e as Error).message}`);
@@ -372,8 +372,8 @@ export async function startDashboard(port?: number): Promise<void> {
     if (url.pathname === '/api/sessions') {
       // Return current sessions as JSON
       try {
-        const events = await scopedEvents(scopeId);
-        const sessions = rebuildSessions(events);
+        const [events, outcomes] = await Promise.all([scopedEvents(scopeId), readSessionOutcomes(eventsPath)]);
+        const sessions = rebuildSessions(events, outcomes);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(sessions));
       } catch (e) {
@@ -592,8 +592,8 @@ export async function startDashboard(port?: number): Promise<void> {
 
       // Send initial state immediately
       try {
-        const events = await scopedEvents(scopeId);
-        const sessions = rebuildSessions(events);
+        const [events, outcomes] = await Promise.all([scopedEvents(scopeId), readSessionOutcomes(eventsPath)]);
+        const sessions = rebuildSessions(events, outcomes);
         res.write(`data: ${JSON.stringify(sessions)}\n\n`);
       } catch {
         // Ignore initial send errors

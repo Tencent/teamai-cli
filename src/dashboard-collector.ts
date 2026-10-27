@@ -42,7 +42,7 @@ import {
 import { getUserHome } from './utils/home.js';
 import type { HeadState } from './utils/git.js';
 import type { SessionRun } from './launch-context.js';
-import { SessionOutcomeEventSchema, type SessionOutcomeEvent } from './outcomes.js';
+import { SessionOutcomeEventSchema, uniqueOutcomes, type SessionOutcomeEvent, type WorkOutcome } from './outcomes.js';
 import { estimateClaudeRequest } from './model-pricing.js';
 
 // ─── Event collection data flow ─────────────────────────
@@ -1934,11 +1934,13 @@ export async function readEvents(eventsPath?: string): Promise<DashboardEvent[]>
  * Then apply timeouts: idle after 5 min, remove stale after 30 min.
  * Stopped sessions are kept for 30 seconds before removal.
  */
-export function rebuildSessions(events: DashboardEvent[]): DashboardSession[] {
+export function rebuildSessions(events: DashboardEvent[], outcomes: readonly SessionOutcomeEvent[] = []): DashboardSession[] {
   const sessions = new Map<string, DashboardSession>();
   const now = Date.now();
   const keys = repoKeys(events);
   const allKeys = new Set(keys.values());
+  const delivered = new Map<string, WorkOutcome[]>();
+  for (const outcome of outcomes) delivered.set(outcome.sessionId, uniqueOutcomes([...delivered.get(outcome.sessionId) ?? [], ...outcome.outcomes]));
 
   for (const event of events) {
     let session = sessions.get(event.sessionId);
@@ -1963,6 +1965,7 @@ export function rebuildSessions(events: DashboardEvent[]): DashboardSession[] {
         interventionCount: 0,
         promptCount: 0,
         tokens: emptyTokenUsage(),
+        outcomes: delivered.get(event.sessionId) ?? [],
       };
       sessions.set(event.sessionId, session);
     }

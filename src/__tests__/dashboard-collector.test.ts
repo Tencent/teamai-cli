@@ -1736,6 +1736,21 @@ describe('rebuildSessions', () => {
     expect(sessions[0].cwd).toBe('/proj');
   });
 
+  it('folds in what each session delivered so far, each outcome once (#1387)', () => {
+    const events: DashboardEvent[] = [
+      { type: 'session_start', timestamp: now, sessionId: 's1', tool: 'claude', cwd: '/proj' },
+      { type: 'session_start', timestamp: now, sessionId: 's2', tool: 'codex', cwd: '/proj' },
+    ];
+    const learning = { kind: 'learning' as const, id: 'k8s/pod-startup-timeouts-2026-10-24-k3x9q2' };
+    const commit = { kind: 'commit' as const, sha: 'c'.repeat(40) };
+    const sessions = rebuildSessions(events, [
+      { type: 'session_outcome', timestamp: now, sessionId: 's1', outcomes: [learning] },
+      { type: 'session_outcome', timestamp: now, sessionId: 's1', outcomes: [commit, learning], counted: { tokens: { input: 1, output: 1 }, interventions: 0 } },
+      { type: 'session_outcome', timestamp: now, sessionId: 'gone', outcomes: [commit] },
+    ]);
+    expect(sessions.map((s) => [s.sessionId, s.outcomes])).toEqual([['s1', [learning, commit]], ['s2', []]]);
+  });
+
   it('updates session on tool_use', () => {
     const events: DashboardEvent[] = [
       { type: 'session_start', timestamp: now, sessionId: 's1', tool: 'claude', cwd: '/proj' },

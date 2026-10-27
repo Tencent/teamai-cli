@@ -9,7 +9,7 @@ import { channelsOf } from './tools.js';
 import type { WorkspaceChildren } from './workspace-children.js';
 import type { HeadState } from './utils/git.js';
 import type { RunMode } from './launch-context.js';
-import type { OutcomeKind } from './outcomes.js';
+import type { OutcomeKind, WorkOutcome } from './outcomes.js';
 import { AllowSchema } from './workflow/requirements.js';
 
 const COPILOT_USER_MCP_CONFIG = 'mcp-config.json';
@@ -2139,6 +2139,8 @@ export interface DashboardSession {
   promptCount: number;
   /** Cumulative token usage for this session (zero when no transcript usage). */
   tokens: TokenUsage;
+  /** What the session delivered so far (#1387): learnings recorded for it, and what the usage report found once it finished. */
+  outcomes: WorkOutcome[];
 }
 
 // DASHBOARD_EVENTS_DIR / DASHBOARD_EVENTS_PATH were module-load consts that no
