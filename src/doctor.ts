@@ -2,7 +2,7 @@ import YAML from 'yaml';
 import { hookToolPathsForConfig } from './types.js';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import { detectProjectConfig, loadLocalConfig, loadMemberSettings, loadTeamConfig, ownMemberSettings } from './config.js';
+import { detectProjectConfig, hasUserScopeInstall, loadLocalConfig, loadMemberSettings, loadTeamConfig, ownMemberSettings } from './config.js';
 import { memberTools } from './tool-launch/call.js';
 import { AgentSession } from './session-flow/agent-session.js';
 import { SessionPolicy, type SessionPolicy as Policy } from './session-flow/session-policy.js';
@@ -38,6 +38,7 @@ import {
   type LocalConfig,
   type TeamaiConfig,
   installScopeName,
+  MemberSettingsSchema,
 } from './types.js';
 import { hookSettingsFile, installOf, isInstalledFor, locate, ownOf, writable, type Gate, type Install } from './locate.js';
 import { samePlace } from './resources/places.js';
@@ -779,6 +780,16 @@ function usageReportNote({ localConfig, teamConfig }: DoctorContext): string {
   return `Usage reporting: ${isUsageReportEnabled(localConfig, teamConfig ?? {}) ? 'on' : 'off'}, from ${source}.`;
 }
 
+/** The keys of a ~/.teamai/config.yaml with no install that no command reads: only its member settings apply. */
+async function machineUnreadKeyNotes(): Promise<string[]> {
+  if (await hasUserScopeInstall()) return [];
+  const machineFile = path.join(getTeamaiHomeDir(), 'config.yaml');
+  const unread = Object.keys(await readYamlObject(machineFile)).filter((key) => !(key in MemberSettingsSchema.shape));
+  return unread.length > 0
+    ? [`Not read from ${machineFile}, which holds no user-scope install so only its member settings apply: ${unread.join(', ')}.`]
+    : [];
+}
+
 /**
  * The enabled tools teamai reads no sessions from, in one note per run mode whose sessions it publishes or scores
  * (#1385): such a tool's sessions are never captured, so they are neither published nor judged.
@@ -1268,6 +1279,7 @@ export async function doctor(options: DoctorOptions): Promise<boolean> {
     ...codexTrust.notes,
     ...toolPathsDroppedKeyNotes(ctx),
     usageReportNote(ctx),
+    ...await machineUnreadKeyNotes(),
     ...SessionPolicy.publish(localConfig, ctx.teamConfig).problems.map((problem) => `${problem}.`),
     ...await unreadSessionToolNotes(ctx),
     // What git sees of the delivered team resources, and what no pull changes (#915).

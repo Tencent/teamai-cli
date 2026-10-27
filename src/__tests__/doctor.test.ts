@@ -1416,4 +1416,19 @@ describe('doctor — member settings (#1459)', () => {
         const report = JSON.parse(String(consoleSpy.mock.calls.at(-1)?.[0])) as DoctorReport;
         expect(report.notes).toContain(`Usage reporting: off, from usageReportEnabled: false in the machine config ${machineFile()}.`);
     });
+
+    it('names the keys of a machine config with no install that no command reads, being no member settings', async () => {
+        const workspace = { ...mockLocalConfig, scope: 'project', projectRoot: '/tmp/ws', dataHome: '/tmp/ws-data', memberSettingsOverlay: { local: {} } };
+        mockedDetectProjectConfig.mockResolvedValue(workspace);
+        onTestFinished(() => { mockedDetectProjectConfig.mockResolvedValue(null); });
+        const otherReads = mockedReadFileSafe.getMockImplementation();
+        mockedReadFileSafe.mockImplementation(async (filePath: string) => (
+            filePath === machineFile() ? 'recallEnabled: true\nexcludedSkills: [lint]\nusername: someone\n' : otherReads?.(filePath)
+        ));
+
+        await doctor({ json: true });
+
+        const report = JSON.parse(String(consoleSpy.mock.calls.at(-1)?.[0])) as DoctorReport;
+        expect(report.notes).toContain(`Not read from ${machineFile()}, which holds no user-scope install so only its member settings apply: excludedSkills, username.`);
+    });
 });
