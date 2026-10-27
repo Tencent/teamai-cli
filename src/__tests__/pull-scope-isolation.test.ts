@@ -116,7 +116,7 @@ import { reportUsageToTeam } from '../team-push.js';
 import { capUsageEvents, readUsageEvents, truncateUsageAfterReport } from '../usage-tracker.js';
 import { drainRecallLog } from '../recall-adoption.js';
 import { releaseLock } from '../update.js';
-import { StateSchema, SYNC_LOCK_FILENAME, type TeamaiConfig, type LocalConfig, type State } from '../types.js';
+import { StateSchema, SYNC_LOCK_FILENAME, getTeamaiHomeDir, type TeamaiConfig, type LocalConfig, type State } from '../types.js';
 
 const SKIP_MSG = 'workspace scope detected, skipped user scope';
 
@@ -354,10 +354,11 @@ describe('pull scope isolation (issue #73)', () => {
     expect(truncateUsageAfterReport).not.toHaveBeenCalled();
     // Partition sync-locks stay held until the late report finishes. The
     // reports worktree lock (.reports-lock) is acquired and released around
-    // the earlier read-only refresh, which is independent of that wait.
+    // the earlier read-only refresh, which is independent of that wait, and so
+    // is the user scope's lock, held for the auto-compact step only.
     expect(
       vi.mocked(releaseLock).mock.calls.filter(
-        ([lock]) => typeof lock === 'string' && path.basename(lock) === SYNC_LOCK_FILENAME,
+        ([lock]) => typeof lock === 'string' && path.basename(lock) === SYNC_LOCK_FILENAME && path.dirname(lock) !== getTeamaiHomeDir(),
       ),
     ).toEqual([]);
     expect(pullSources).toHaveBeenCalled();
@@ -383,8 +384,9 @@ describe('pull scope isolation (issue #73)', () => {
 
     await pull({ silent: true });
 
-    // User scope must never be loaded / pulled.
-    expect(loadLocalConfigForScope).not.toHaveBeenCalled();
+    // User scope is never pulled: it is read only to decide the machine-wide
+    // auto-compact value (#1456).
+    expect(vi.mocked(loadLocalConfigForScope).mock.calls).toEqual([['user']]);
     // The skip notice is printed.
     expect(log.info).toHaveBeenCalledWith(SKIP_MSG);
     // Source pull still runs (decision 1), against the project config.

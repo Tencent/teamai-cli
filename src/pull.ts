@@ -82,7 +82,7 @@ import { envShVariables, keptFromUserScope, resolvesTeamEnv, resolveTeamEnv, var
 import { reservedTeamEnvWarning } from './env-reserved.js';
 import { describeEnvAdvisory, envAdvisories } from './env-advisories.js';
 import { getUserHome } from './utils/home.js';
-import { acquireLock, releaseLock, withFileLock } from './update.js';
+import { acquireLock, releaseLock } from './update.js';
 import { mirrorLearnings } from './utils/learnings-mirror.js';
 import { withTimeout } from './utils/async.js';
 import { runDeclaredPostPull } from './post-pull.js';
@@ -4111,9 +4111,15 @@ async function scopeEnv(localConfig: LocalConfig, teamEnvs: Map<LocalConfig, Tea
 async function reconcileAutoCompactPastSkippedUser(projectConfig: LocalConfig | null, options: GlobalOptions): Promise<void> {
   if (options.dryRun) return;
   const lock = path.join(getTeamaiHomeDir(), SYNC_LOCK_FILENAME);
-  const run = await withFileLock(lock, { attempts: 1, delayMs: 0 }, async () =>
-    reconcileAutoCompact((await loadLocalConfigForScope('user')) ?? projectConfig, options));
-  if (!run.held) log.debug('[autocompact] skipped: another teamai process holds the user scope\'s sync lock; the next pull retries');
+  if (!(await acquireLock(lock))) {
+    log.debug('[autocompact] skipped: another teamai process holds the user scope\'s sync lock; the next pull retries');
+    return;
+  }
+  try {
+    await reconcileAutoCompact((await loadLocalConfigForScope('user')) ?? projectConfig, options);
+  } finally {
+    await releaseLock(lock);
+  }
 }
 
 /**
