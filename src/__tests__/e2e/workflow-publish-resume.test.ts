@@ -4,12 +4,12 @@
  * its branches from the business origin; the first member then gets `not_owner` until it takes the run back.
  */
 import { execFileSync, spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { REPORTS_LOCK_FILENAME } from '../../types.js';
 import { acquireLock, releaseLock } from '../../update.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
@@ -353,9 +353,9 @@ describe('workflow publish and resume across members', () => {
     })]);
     expect(reported.envelope(), said(reported)).toMatchObject({ data: { accepted: true } });
 
-    const archive = path.join(homeOf('alice'), '.teamai', 'team-repo');
-    const lockKey = createHash('sha256').update(fs.realpathSync(archive)).digest('hex').slice(0, 16);
-    const lock = path.join(homeOf('alice'), '.teamai', 'locks', `session-publish-${lockKey}.lock`);
+    // The session archive is on teamai-reports, with the run's published state: one lock, beside its checkout, holds both.
+    const lock = path.join(homeOf('alice'), '.teamai', REPORTS_LOCK_FILENAME);
+    const archivedOn = (branch: string) => originGit(teamOrigin, 'ls-tree', '-r', '--name-only', branch, 'sessions').split('\n').filter((file) => file.endsWith('.jsonl'));
     expect(await acquireLock(lock)).toBe(true);
     let blocked: RunResult;
     try {
@@ -364,18 +364,18 @@ describe('workflow publish and resume across members', () => {
       await releaseLock(lock);
     }
     expect(blocked.code, said(blocked)).toBe(1);
-    expect(blocked.envelope()).toMatchObject({
-      error: { code: 'sessions_not_archived', message: expect.stringContaining('another teamai command is writing the session archive') },
+    expect(blocked.envelope(), said(blocked)).toMatchObject({
+      error: { code: 'busy', message: 'Another teamai process is writing teamai-reports; try again.' },
     });
-    expect(git(archive, ['status', '--porcelain'], envOf('alice'))).toBe('');
-    expect(originGit(teamOrigin, 'ls-tree', '-r', '--name-only', 'main', 'sessions')).toBe('');
+    expect(archivedOn('teamai-reports')).toEqual([]);
 
     const published = await teamai('alice', ['workflow', 'publish', run, '--sessions']);
     expect(published.code, said(published)).toBe(0);
     expect(published.envelope()).toMatchObject({ data: { run, publication: 'published', sessions: [{ tool: 'claude', id: session }] } });
-    const archived = originGit(teamOrigin, 'ls-tree', '-r', '--name-only', 'main', 'sessions').split('\n').filter((file) => file.endsWith('.jsonl'));
+    const archived = archivedOn('teamai-reports');
     expect(archived).toHaveLength(1);
-    const transcript = originGit(teamOrigin, 'show', `main:${archived[0]}`);
+    expect(archivedOn('main')).toEqual([]);
+    const transcript = originGit(teamOrigin, 'show', `teamai-reports:${archived[0]}`);
     expect(transcript).toContain('Found two problems.');
     expect(transcript).not.toContain(token);
     expect(originGit(teamOrigin, 'show', `teamai-reports:workflows/runs/${run}/state.json`)).not.toContain('Found two problems.');
