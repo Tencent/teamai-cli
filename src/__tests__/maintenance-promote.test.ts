@@ -7,14 +7,18 @@ import YAML from 'yaml';
 import matter from 'gray-matter';
 
 import { findPromotionCandidates, executePromotion } from '../maintenance/promote.js';
+import { callTool } from '../tool-launch/call.js';
 import type { UserVotesV2 } from '../types.js';
 
-// Mock AI client to avoid real CLI calls in tests
 vi.mock('../utils/ai-client.js', () => ({
-  callClaude: vi.fn(async (prompt: string) => {
-    if (prompt.includes('Classify')) return 'skills';
-    return '---\ntitle: promoted content\ntags: [test]\ndate: 2026-07-03\n---\nPromoted by AI.';
-  }),
+  callClaude: vi.fn(async () => { throw new Error('ai-client must not be reached'); }),
+}));
+
+vi.mock('../tool-launch/call.js', () => ({
+  callTool: vi.fn(async (prompt: string) => ({
+    tool: 'claude',
+    text: prompt.includes('Classify') ? 'skills' : '---\ntitle: promoted content\ntags: [test]\ndate: 2026-07-03\n---\nPromoted by AI.',
+  })),
 }));
 
 let tmpDir: string;
@@ -81,7 +85,8 @@ describe('findPromotionCandidates', () => {
     const candidates = await findPromotionCandidates([learningsDir], votesDir, undefined);
     expect(candidates.length).toBeGreaterThan(0);
     expect(candidates[0].docId).toBe('great-doc');
-    expect(candidates[0].suggestedCategory).toBeDefined();
+    expect(candidates[0].suggestedCategory).toBe('skills');
+    expect(callTool).toHaveBeenCalledWith(expect.stringContaining('Classify'), expect.objectContaining({ launchedBy: 'recall-promote' }));
   });
 
   it('skips already-promoted learnings', async () => {
@@ -188,6 +193,8 @@ describe('executePromotion', () => {
     const original = fs.readFileSync(path.join(learningsDir, 'ready.md'), 'utf-8');
     const { data } = matter(original);
     expect(data.promoted_to).toBe('skills/ready/SKILL.md');
+    expect(fs.readFileSync(path.join(skillsDir, 'ready', 'SKILL.md'), 'utf-8')).toContain('Promoted by AI.');
+    expect(callTool).toHaveBeenCalledWith(expect.stringContaining('promoting a team learning'), expect.objectContaining({ launchedBy: 'recall-promote' }));
   });
   it('promotes a namespaced learning keeping the namespace in target path', async () => {
     const learningsDir = path.join(tmpDir, 'learnings');

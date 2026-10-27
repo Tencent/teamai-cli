@@ -1,6 +1,7 @@
 import type { McpFormat } from './resources/mcp-format.js';
 import type { RuleFormatId } from './resources/rule-format.js';
 import type { SessionPlatform, StoredSessionPlatform } from './session-flow/adapters/platform-facts.js';
+import type { LaunchAdapterId } from './tool-launch/adapters.js';
 import type { ToolId } from './types.js';
 
 export type Evidence = 'verified' | 'source' | 'docs' | 'assumed';
@@ -265,6 +266,8 @@ export type ToolDescriptor = {
    * adapter for. `'unknown'`: where it keeps them is unknown.
    */
   readonly sessions: readonly [StoredSessionPlatform, ...StoredSessionPlatform[]] | 'none' | 'unknown';
+  /** The adapter teamai launches the tool headless with (`src/tool-launch/adapters.ts`), or `'none'` when teamai never launches it. */
+  readonly launch: LaunchAdapterId | 'none';
   /** Data only: nothing reads it but the support page (`tool-support.ts`). */
   readonly features: ToolFeatures;
 };
@@ -317,6 +320,7 @@ export const TOOLS = {
     },
     hooks: { user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.claude/settings.json', evidence: 'verified' }] }, self: { channel: 'settings', format: 'claude', reads: [{ base: 'project', path: '.claude/settings.json', when: 'workspaceUnder', evidence: 'verified' }, { base: 'project', path: '.claude/settings.local.json', when: 'workspaceUnder', evidence: 'verified' }] } },
     sessions: ['claude-code'],
+    launch: 'claude',
     features: {
       env: '✓t',
       workflows: '✓v',
@@ -354,6 +358,7 @@ export const TOOLS = {
     },
     hooks: { user: { channel: 'settings', format: 'codex', reads: [{ base: 'home', path: '.codex/hooks.json', evidence: 'verified' }] }, self: { channel: 'settings', format: 'codex', reads: [{ base: 'project', path: '.codex/hooks.json', when: 'workspaceUnder', evidence: 'verified' }] } },
     sessions: ['codex'],
+    launch: 'none',
     features: {
       env: '✓t',
       workflows: '✓t',
@@ -378,6 +383,7 @@ export const TOOLS = {
     mcp: UNKNOWN,
     hooks: { user: { channel: 'settings', format: 'codex', reads: [{ base: 'home', path: '.codex-internal/hooks.json', evidence: 'assumed' }] }, self: { channel: 'settings', format: 'codex', reads: 'unknown' } },
     sessions: ['codex-internal'],
+    launch: 'none',
     features: {
       env: '?',
       workflows: '?',
@@ -398,6 +404,7 @@ export const TOOLS = {
     mcp: UNKNOWN,
     hooks: { user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.claude-internal/settings.json', evidence: 'assumed' }] }, self: { channel: 'settings', format: 'claude', reads: 'unknown' } },
     sessions: ['claude-internal'],
+    launch: 'claude',
     features: {
       env: '?',
       workflows: '?',
@@ -421,6 +428,7 @@ export const TOOLS = {
     },
     hooks: { user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.tclaude/settings.json', evidence: 'assumed' }] }, self: { channel: 'settings', format: 'claude', reads: 'unknown' } },
     sessions: ['tclaude'],
+    launch: 'claude',
     features: {
       env: '?',
       workflows: '?',
@@ -445,6 +453,7 @@ export const TOOLS = {
     mcp: UNKNOWN,
     hooks: { user: { channel: 'settings', format: 'codex', reads: [{ base: 'home', path: '.tcodex/hooks.json', evidence: 'assumed' }] }, self: { channel: 'settings', format: 'codex', reads: 'unknown' } },
     sessions: ['tcodex'],
+    launch: 'none',
     features: {
       env: '?',
       workflows: '?',
@@ -487,6 +496,7 @@ export const TOOLS = {
     },
     hooks: { user: { channel: 'settings', format: 'cursor', reads: [{ base: 'home', path: '.cursor/hooks.json', evidence: 'source' }] }, self: { channel: 'settings', format: 'cursor', reads: [{ base: 'project', path: '.cursor/hooks.json', when: 'workspaceUnder', evidence: 'source' }] } },
     sessions: ['cursor'],
+    launch: 'none',
     features: {
       env: '?',
       workflows: { cell: '+s', note: 'Cursor IDE: —' },
@@ -530,6 +540,7 @@ export const TOOLS = {
     },
     hooks: { user: { channel: 'settings', format: 'copilot', reads: [{ base: 'home', path: '.copilot/hooks/teamai.json', evidence: 'source' }] }, self: { channel: 'settings', format: 'copilot', reads: [{ base: 'project', path: '.github/hooks/teamai.json', when: 'workspaceUnder', evidence: 'source' }] } },
     sessions: 'none',
+    launch: 'none',
     features: {
       env: '?',
       workflows: '+s',
@@ -557,6 +568,7 @@ export const TOOLS = {
     mcp: NONE,
     hooks: { user: 'none', self: 'none' },
     sessions: 'unknown',
+    launch: 'none',
     features: {
       env: '?',
       workflows: '?',
@@ -588,6 +600,7 @@ export const TOOLS = {
     hooks: { user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.qoder/settings.json', evidence: 'source' }] }, self: { channel: 'settings', format: 'claude', reads: [{ base: 'project', path: '.qoder/settings.json', when: 'cwdOnly', evidence: 'source' }] } },
     // Qoder CLI 1.1.78: <id>.jsonl under ~/.qoder/projects/<cwd>, moved by QODER_CONFIG_DIR.
     sessions: 'none',
+    launch: 'none',
     features: {
       env: '?',
       workflows: '?',
@@ -619,6 +632,7 @@ export const TOOLS = {
     hooks: { user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.qoder-cn/settings.json', evidence: 'source' }] }, self: { channel: 'settings', format: 'claude', reads: [{ base: 'project', path: '.qoder/settings.json', when: 'cwdOnly', evidence: 'source' }] } },
     // Qoder CN: the same layout under ~/.qoder-cn, moved by the QODERCN_ variables.
     sessions: 'none',
+    launch: 'none',
     features: {
       env: '?',
       workflows: '?',
@@ -650,6 +664,7 @@ export const TOOLS = {
     hooks: { user: { channel: 'adapter', adapter: 'kiro-hooks', evidence: 'docs' }, self: 'user' },
     // Kiro CLI docs: sessions under ~/.kiro, moved by KIRO_HOME.
     sessions: 'none',
+    launch: 'none',
     features: {
       env: '?',
       workflows: '?',
@@ -679,6 +694,7 @@ export const TOOLS = {
     hooks: { user: 'unknown', self: 'unknown' },
     // Trae docs: chat history in the IDE's ModularData database, which no variable moves.
     sessions: 'none',
+    launch: 'none',
     features: {
       env: '?',
       workflows: '?',
@@ -707,6 +723,7 @@ export const TOOLS = {
     hooks: { user: 'unknown', self: 'unknown' },
     // Trae CN docs: the same database under Trae CN's application data.
     sessions: 'none',
+    launch: 'none',
     features: {
       env: '?',
       workflows: '?',
@@ -742,6 +759,7 @@ export const TOOLS = {
     },
     hooks: { user: { channel: 'settings', format: 'zcode', reads: [{ base: 'home', path: '.zcode/cli/config.json', evidence: 'source' }] }, self: 'user' },
     sessions: 'none',
+    launch: 'none',
     features: {
       env: '✓t',
       workflows: '+s',
@@ -778,6 +796,7 @@ export const TOOLS = {
     },
     hooks: { user: { channel: 'adapter', adapter: 'omp-extension', evidence: 'verified' }, self: 'user' },
     sessions: 'none',
+    launch: 'none',
     features: {
       env: '✓s',
       workflows: '+s',
@@ -812,6 +831,7 @@ export const TOOLS = {
     hooks: { user: { channel: 'adapter', adapter: 'pi-extension', evidence: 'verified' }, self: 'user' },
     // Pi 0.99: <ts>_<uuid>.jsonl under ~/.pi/agent/sessions/<cwd>, moved by PI_CODING_AGENT_SESSION_DIR or PI_CODING_AGENT_DIR.
     sessions: 'none',
+    launch: 'none',
     features: {
       env: '✓s',
       workflows: '+v',
@@ -858,6 +878,7 @@ export const TOOLS = {
     },
     hooks: { user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.codebuddy/settings.json', evidence: 'source' }] }, self: { channel: 'settings', format: 'claude', reads: [{ base: 'project', path: '.codebuddy/settings.json', when: 'cwdOnly', evidence: 'source' }] } },
     sessions: ['codebuddy'],
+    launch: 'none',
     features: {
       env: '?',
       workflows: '+t',
@@ -890,6 +911,7 @@ export const TOOLS = {
     hooks: { user: { channel: 'adapter', adapter: 'openclaw-hook', evidence: 'verified' }, self: 'user' },
     // OpenClaw 2026.10: rows in ~/.openclaw/agents/<id>/agent/openclaw-agent.sqlite, moved by OPENCLAW_STATE_DIR.
     sessions: 'none',
+    launch: 'none',
     features: {
       env: '◐d',
       workflows: '+d',
@@ -922,6 +944,7 @@ export const TOOLS = {
     mcp: NONE,
     hooks: { user: { channel: 'adapter', adapter: 'hermes-plugin', evidence: 'verified' }, self: 'user' },
     sessions: 'none',
+    launch: 'none',
     features: {
       env: '◐s',
       workflows: '+s',
@@ -948,6 +971,7 @@ export const TOOLS = {
     mcp: NONE,
     hooks: { user: { channel: 'adapter', adapter: 'dsh-hooks', evidence: 'source' }, self: 'user' },
     sessions: 'none',
+    launch: 'none',
     features: {
       env: '✗s',
       workflows: '+s',
@@ -995,6 +1019,7 @@ export const TOOLS = {
     },
     hooks: { user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.workbuddy/settings.json', evidence: 'assumed' }] }, self: { channel: 'settings', format: 'claude', reads: 'unknown' } },
     sessions: ['workbuddy'],
+    launch: 'none',
     features: {
       env: '?',
       workflows: '?',
@@ -1057,6 +1082,7 @@ export const TOOLS = {
     },
     hooks: { user: { channel: 'adapter', adapter: 'opencode-plugin', evidence: 'source' }, self: 'user' },
     sessions: ['opencode'],
+    launch: 'none',
     features: {
       env: '?',
       workflows: '✓t',
@@ -1099,6 +1125,7 @@ export const TOOLS = {
     // Muse takes Codex's hook shape: it drops a group carrying any key but `matcher` and `hooks`, so Claude's described groups never reach it.
     hooks: { user: { channel: 'settings', format: 'codex', reads: [{ base: 'home', path: '.config/muse/settings.json', evidence: 'verified' }] }, self: { channel: 'settings', format: 'codex', reads: [{ base: 'project', path: '.muse/hooks.json', when: 'workspaceUnder', evidence: 'verified' }] } },
     sessions: 'none',
+    launch: 'none',
     features: {
       env: '✓t',
       workflows: '+v',

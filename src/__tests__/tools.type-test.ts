@@ -2,6 +2,7 @@
 import type {
   AgentToolId, BlocksTarget, HomeRead, InlineRulesWithoutBlocksFile, RunTime, ToolDescriptor, ToolsWithTwoMcpFormats,
 } from '../tools.js';
+import type { LaunchedToolId, LaunchOrderTool } from '../tool-launch/tools.js';
 
 declare const full: ToolDescriptor;
 declare const withoutMcp: Omit<ToolDescriptor, 'mcp'>;
@@ -72,3 +73,14 @@ export const noFeatures: ToolDescriptor = withoutFeatures;
 
 // @ts-expect-error a cell carries its evidence after the mark
 export const bareMark: ToolDescriptor = { ...full, features: { ...full.features, env: '✓' } };
+
+declare const withoutLaunch: Omit<ToolDescriptor, 'launch'>;
+
+// @ts-expect-error every tool states the adapter teamai launches it with, or 'none'
+export const noLaunch: ToolDescriptor = withoutLaunch;
+
+// @ts-expect-error a tool launches through an adapter teamai has
+export const unknownAdapter: ToolDescriptor = { ...full, launch: 'gemini' };
+
+/** LAUNCH_ORDER lists every tool whose `launch` names an adapter, so none is left out of the call order. */
+export const launchOrderCoversLaunchedTools: [Exclude<LaunchedToolId, LaunchOrderTool>] extends [never] ? true : false = true;

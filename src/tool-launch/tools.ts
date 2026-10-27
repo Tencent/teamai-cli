@@ -1,4 +1,21 @@
+import { TOOLS } from '../tools.js';
 import type { ToolId } from '../types.js';
+import { LAUNCH_ADAPTERS, type LaunchAdapterId } from './adapters.js';
+
+/** The tools whose `launch` facet names an adapter. */
+export type LaunchedToolId = { [T in ToolId]: (typeof TOOLS)[T]['launch'] extends 'none' ? never : T }[ToolId];
+
+/**
+ * Every tool teamai launches, in the order an AI call takes the first one on PATH. Each list of tools that can run a
+ * profile keeps this order, so a tool added at the end changes no member's default.
+ */
+export const LAUNCH_ORDER = ['claude', 'claude-internal', 'tclaude'] as const satisfies readonly LaunchedToolId[];
+
+export type LaunchOrderTool = (typeof LAUNCH_ORDER)[number];
+
+export function launchAdapterOf(tool: LaunchOrderTool): (typeof LAUNCH_ADAPTERS)[LaunchAdapterId] {
+  return LAUNCH_ADAPTERS[TOOLS[tool].launch];
+}
 
 /** The AI coding tools TeamAI launches headless, and the family whose flags and output each one shares. */
 export const LAUNCH_TOOLS = ['claude', 'claude-internal', 'tclaude', 'codex', 'codex-internal', 'tcodex', 'opencode'] as const satisfies readonly ToolId[];

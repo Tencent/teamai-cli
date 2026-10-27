@@ -1,7 +1,6 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import crossSpawn from 'cross-spawn';
 import { z } from 'zod';
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml';
 import { observedEffort, observedModel } from '../agent-observation.js';
@@ -11,13 +10,14 @@ import { movedToolHome, realHost, toolHome } from '../tool-home.js';
 import { isToolId } from '../tools.js';
 import { resolveCliPath } from '../utils/cli-path.js';
 import { execCommand, probeBinary } from '../utils/exec.js';
-import { recordGroup, stopProcess } from '../tool-launch/process-stop.js';
+import { runTool } from '../tool-launch/run.js';
 import { toolStdout } from '../tool-launch/stdout.js';
 import { LAUNCH_TOOLS, localToolFamily, opencodeModelArgs, type LaunchTool } from '../tool-launch/tools.js';
 import { JudgeAnswerSchema, type JudgeAnswer } from './batch.js';
 import type { ScoreLabel, Isolation, JudgeAccess, JudgeUsage } from './label.js';
 
 const RecordSchema = z.record(z.unknown());
+const JUDGE_TIMEOUT_MS = 10 * 60_000;
 const COMMON_ENV = ['PATH', 'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'SystemRoot', 'WINDIR', 'TMPDIR', 'TMP', 'TEMP', 'LANG', 'LC_ALL', 'TERM', 'USER', 'LOGNAME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME', 'HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY', 'SSL_CERT_FILE', 'NODE_EXTRA_CA_CERTS'];
 const CLAUDE_ENV = ['CLAUDE_CONFIG_DIR', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'ANTHROPIC_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY'];
 const TOOL_ENV = {
@@ -234,23 +234,6 @@ function parseAnswer(text: string): JudgeAnswer | undefined {
   } catch { return undefined; }
 }
 
-async function run(executable: string, args: string[], cwd: string, env: NodeJS.ProcessEnv, prompt: string, group?: string): Promise<{ stdout: string; stderr: string; code: number }> {
-  const detached = process.platform !== 'win32';
-  const child = crossSpawn(executable, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'], detached, windowsHide: true });
-  if (detached && group !== undefined) recordGroup(child, group);
-  const stdout: string[] = [];
-  const stderr: string[] = [];
-  child.stdout?.setEncoding('utf8').on('data', (text: string) => stdout.push(text));
-  child.stderr?.setEncoding('utf8').on('data', (text: string) => stderr.push(text));
-  const exited = new Promise<number>((resolve, reject) => { child.once('error', reject); child.once('close', (code) => resolve(code ?? 1)); });
-  const stop = stopProcess(child, exited, detached);
-  const timer = setTimeout(() => { void stop(); }, 10 * 60_000);
-  child.stdin?.on('error', () => {});
-  child.stdin?.end(prompt);
-  try { const code = await exited; return { stdout: stdout.join(''), stderr: stderr.join(''), code }; }
-  finally { clearTimeout(timer); }
-}
-
 /** Whether `dir` or a directory above it holds `.git` or `.hg`: OpenCode then lets its file tools read the whole checkout. */
 async function insideCheckout(dir: string): Promise<boolean> {
   for (let at = dir;; at = path.dirname(at)) {
@@ -315,7 +298,7 @@ export async function runLocalJudge(input: JudgeInput, { resolveTool = resolveCl
       args = ['run', '--standalone', '--format', 'json', ...opencodeModelArgs(input.model, input.model?.effort ? await opencodeMajorVersion(executable) : 2)];
       prompt += await fs.readFile(path.join(cwd, 'prompt.md'), 'utf8');
     }
-    const result = await run(executable, args, cwd, env, prompt, input.group);
+    const result = await runTool({ executable, args, cwd, env, stdin: prompt, timeoutMs: JUDGE_TIMEOUT_MS, group: input.group });
     if (family === 'codebuddy' && /Authentication required/.test(result.stdout + result.stderr)) {
       return { ok: false, code: 'judge_tool_unavailable', message: 'CodeBuddy is not signed in. Sign in with codebuddy /login or set CODEBUDDY_API_KEY, then retry, or submit this lease through another driver.', raw: result.stdout + '\n' + result.stderr };
     }
@@ -327,7 +310,7 @@ export async function runLocalJudge(input: JudgeInput, { resolveTool = resolveCl
       ? { usage: { ...(tokens?.input !== undefined ? { inputTokens: tokens.input } : {}), ...(tokens?.output !== undefined ? { outputTokens: tokens.output } : {}), ...(typeof cost === 'number' ? { cost: { amount: cost, unit: 'USD' } } : {}) } }
       : {};
     if (family === 'opencode' && report?.session) {
-      const deleted = await run(executable, ['session', 'delete', report.session, '--standalone'], cwd, env, '');
+      const deleted = await runTool({ executable, args: ['session', 'delete', report.session, '--standalone'], cwd, env, stdin: '', timeoutMs: JUDGE_TIMEOUT_MS });
       if (deleted.code !== 0) return { ok: false, code: 'judge_failed', message: 'OpenCode could not delete the judge session. Delete it with opencode session delete before retrying.', raw: deleted.stderr, ...spent };
     }
     if (result.code !== 0) return { ok: false, code: 'judge_failed', message: `${input.tool} exited with code ${result.code}. See the saved output, then retry or submit the lease through another driver.`, raw: result.stdout + '\n' + result.stderr, ...spent };
