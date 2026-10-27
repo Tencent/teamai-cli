@@ -4,26 +4,38 @@ import { syncBuiltinESMExports } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// A recursive rmSync fails with ENOTEMPTY when something keeps writing into
+// A recursive removal fails with ENOTEMPTY when something keeps writing into
 // the directory while it is removed, and retries cannot outlast a writer the
 // test started and never joined. The bare error named neither, so CI failures
 // could not tell git's background upkeep from teamai's own detached work
-// (#1413). Every teardown in the suite now reports what reappeared and which
-// processes are still running in or on the directory.
+// (#1413). Every rmSync and fs.promises.rm in the suite now reports what
+// reappeared and which processes are still running in or on the directory.
 const rmSync = fs.rmSync;
 fs.rmSync = function rmSyncNamingWriter(target, options) {
   try {
     rmSync(target, options);
   } catch (error) {
-    if (error instanceof Error && 'code' in error && error.code === 'ENOTEMPTY') {
-      error.message += describeWriters(target instanceof URL ? fileURLToPath(target) : target.toString());
-    }
-    throw error;
+    throw withWriters(error, target);
+  }
+};
+const rm = fs.promises.rm;
+fs.promises.rm = async function rmNamingWriter(target, options) {
+  try {
+    await rm(target, options);
+  } catch (error) {
+    throw withWriters(error, target);
   }
 };
 syncBuiltinESMExports();
 
 const MAX_LISTED = 10;
+
+function withWriters(error: unknown, target: fs.PathLike): unknown {
+  if (error instanceof Error && 'code' in error && error.code === 'ENOTEMPTY') {
+    error.message += describeWriters(target instanceof URL ? fileURLToPath(target) : target.toString());
+  }
+  return error;
+}
 
 function describeWriters(dir: string): string {
   return `\nEntries that reappeared during removal:\n${indentedList(reappeared(dir))}`

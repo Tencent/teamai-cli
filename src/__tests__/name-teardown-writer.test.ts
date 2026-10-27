@@ -7,13 +7,18 @@ import { expect, it } from 'vitest';
 // A teardown that loses the race to a late writer fails with ENOTEMPTY. The
 // error has to name the writer, or the next CI failure is as blind as #1413.
 
-/** Start `writer` (a looping node script), let it run, and return the error removing `root` fails with. */
-async function removeWhileWriting(root: string, writer: string, options: SpawnOptions): Promise<{ message: string; pid: number | undefined }> {
+/** Start `writer` (a looping node script), let it run, and return the error removing `root` with `remove` fails with. */
+async function removeWhileWriting(
+  root: string,
+  writer: string,
+  options: SpawnOptions,
+  remove: (dir: string) => unknown = (dir) => fs.rmSync(dir, { recursive: true, force: true }),
+): Promise<{ message: string; pid: number | undefined }> {
   const child = spawn(process.execPath, ['-e', writer], { ...options, stdio: 'ignore' });
   try {
     await new Promise((resolve) => setTimeout(resolve, 200));
     let failure: unknown;
-    try { fs.rmSync(root, { recursive: true, force: true }); } catch (e) { failure = e; }
+    try { await remove(root); } catch (e) { failure = e; }
     expect(failure).toMatchObject({ code: 'ENOTEMPTY' });
     return { message: failure instanceof Error ? failure.message : '', pid: child.pid };
   } finally {
@@ -57,4 +62,19 @@ it.runIf(process.platform === 'linux')('names a writer that reaches the director
 
   expect(message).toContain(`still running in or on ${root}:\n  ${pid} `);
   expect(message).not.toContain(`HOME=${home}`);
+});
+
+it('names the writer when an async removal meets ENOTEMPTY', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-teardown-writer-'));
+  const repo = path.join(root, 'repo');
+  fs.mkdirSync(repo);
+  const { message, pid } = await removeWhileWriting(root, `
+    const fs = require('node:fs');
+    for (let n = 0; ; n++) {
+      try { fs.mkdirSync('objects/pack', { recursive: true }); fs.writeFileSync('objects/pack/tmp_pack_' + n, ''); } catch {}
+    }
+  `, { cwd: repo }, (dir) => fs.promises.rm(dir, { recursive: true, force: true }));
+
+  expect(message).toMatch(/reappeared during removal:\n(?: {2}.+\n)* {2}repo\/objects\/pack\/tmp_pack_\d+ /);
+  expect(message).toContain(`still running in or on ${root}:\n  ${pid} `);
 });
