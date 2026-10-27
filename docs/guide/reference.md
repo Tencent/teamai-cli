@@ -89,6 +89,32 @@ ai:
 
 The role, project and tag fields hold this directory's own selection. A workspace also delivers the selections of the repos set up inside it, read at each pull and never written here. See [Workspaces with repos inside](./distribution.md#workspaces-with-repos-inside).
 
+#### Member settings
+
+A member setting is read in this order. The first level that sets it wins:
+
+1. An environment variable or flag, where the setting has one (`TEAMAI_AI_TOOL`, `TEAMAI_RECALL_DISABLED`, `--tools`, …).
+2. The config of the scope the command runs in: `~/.teamai/projects/<slug>/config.yaml` for a workspace or self install, `~/.teamai/config.yaml` in user scope.
+3. `~/.teamai/config.yaml`, for this machine. It needs no `repo` or `username`, so it works with no user-scope install.
+4. The team's `teamai.yaml`, where the setting has a team key.
+5. The default.
+
+The member settings are `ai.tool`, `workflows.*`, `recallEnabled`, `contributeHintEnabled`, `mrHintEnabled`, `coAuthorEnabled`, `usageReportEnabled`, `codexTrustEnabled`, `modelAliases`, `autoCompactTokens` and `updatePolicy`. In `workflows.tools`, `workflows.allow` and `modelAliases`, each entry counts on its own. `updatePolicy` is read only from a user-scope install. Every other key belongs to one install and is never read from the machine.
+
+```yaml
+# ~/.teamai/config.yaml: this machine, no install needed
+recallEnabled: true
+workflows:
+  tools: { default: codex }
+```
+
+```yaml
+# ~/.teamai/projects/<slug>/config.yaml: this workspace only
+recallEnabled: false
+```
+
+A value of the wrong type in `~/.teamai/config.yaml` is skipped with a warning, and the next level decides. `workflows.allow` is the exception: a bad value there stops workflow commands until you fix it. A save never copies a machine value into a workspace's file; `recall enable` and `recall disable` write theirs. `teamai doctor` lists each member setting some level sets, with the level that set it and the values below it.
+
 #### AI tool (`ai.tool`)
 
 teamai's own AI calls (enrich, codebase, import, promote, the votes judge) run on the first installed tool that teamai launches: Claude Code and its internal builds first, then Codex and its internal builds, then the other tools [Tool support](./tool-support.md) marks for AI calls. To use another, name a tool id such as `codex`. The first of these that is set wins:
@@ -111,7 +137,7 @@ ai:
   tool: opencode
 ```
 
-A name teamai does not launch, or a tool not on PATH, fails the call and names the setting and file to change. A re-init keeps `ai`. Workflow steps fall back to the same settings; see [Workflows](./workflow.md).
+A name teamai does not launch, or a tool not on PATH, fails the call and names the setting and file to change. So does a workspace config here that cannot be read. A re-init keeps `ai`. Workflow steps fall back to the same settings; see [Workflows](./workflow.md).
 
 #### Relocated tool roots (`toolRoots`)
 

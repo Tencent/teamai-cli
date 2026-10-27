@@ -54,7 +54,7 @@ A wrong `running` or `canTakeLease` returns `invalid_json` with `running must be
 
 ### Run local commands in parallel
 
-`--driver local` runs up to `workflows.max_parallel` command steps at once. Set it in the local config. It defaults to 1, and no flag sets it.
+`--driver local` runs up to `workflows.max_parallel` command steps at once. Set it in `~/.teamai/config.yaml`, or in a workspace's own `config.yaml`. It defaults to 1, and no flag sets it.
 
 ```yaml
 workflows:
@@ -628,7 +628,7 @@ workflows:
     env: [NPM_TOKEN]
 ```
 
-- `allow.network: false` holds each step that requires `network: true`. `allow.env` holds each step whose `requires.env`, or whose setup's, names a key it does not list. `wait.held[].missing` names `policy.network` or `policy.env`.
+- `allow.network: false` holds each step that requires `network: true`. `allow.env` holds each step whose `requires.env`, or whose setup's, names a key it does not list. `wait.held[].missing` names `policy.network` or `policy.env`. A bad `allow` in `~/.teamai/config.yaml` stops workflow commands until it is fixed, so a typo never lifts a restriction.
 - `sandbox: true` says this host contains what it runs, such as a CI VM or a container, so the local driver declares `sandbox` isolation.
 - `max_parallel` also caps how many leases of one run every driver on this machine holds at once.
 

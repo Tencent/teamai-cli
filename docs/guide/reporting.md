@@ -11,7 +11,7 @@
 usageReport: false
 ```
 
-One machine overrides it in that scope's `config.yaml`:
+One machine overrides it in `~/.teamai/config.yaml`, and one workspace in its own `config.yaml` (see [Member settings](./reference.md#member-settings)):
 
 ```yaml
 usageReportEnabled: false

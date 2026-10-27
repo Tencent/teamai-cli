@@ -150,7 +150,7 @@ A step can also write the workflow it runs in place, to treat a group of steps a
 
 An inline workflow has `steps` and optional `ends` and `outputs`, which work as in a file. It has no `inputs` and its step has no `with`: its steps read the enclosing workflow's inputs and the steps the enclosing step needs, directly or through their needs. A step inside it with the same id as an outer step hides that step. Its steps are leased by path, such as `check.classify`, and an `end` inside it finishes only the inline workflow. An inline workflow can run a workflow file or contain another inline workflow.
 
-Choose headless tools per machine in the local config:
+Choose headless tools for this machine in `~/.teamai/config.yaml`, or for one workspace in its own `config.yaml` (see [Member settings](./reference.md#member-settings)):
 
 ```yaml
 workflows:

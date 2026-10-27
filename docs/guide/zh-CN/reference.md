@@ -89,6 +89,32 @@ ai:
 
 角色、项目和 tag 字段保存的是这个目录自己的选择。workspace 还会交付其中已初始化仓库的选择，这些选择在每次 pull 时读取，不会写入这里。参见[包含仓库的 workspace](./distribution.md#包含仓库的-workspace)。
 
+#### 成员设置
+
+成员设置按以下顺序读取，第一个设置了它的层级生效：
+
+1. 环境变量或命令行参数，如果该设置有的话（`TEAMAI_AI_TOOL`、`TEAMAI_RECALL_DISABLED`、`--tools` 等）。
+2. 命令所在 scope 的配置：workspace 或 self 安装是 `~/.teamai/projects/<slug>/config.yaml`，user scope 是 `~/.teamai/config.yaml`。
+3. `~/.teamai/config.yaml`，即本机。它不需要 `repo` 或 `username`，没有 user scope 安装时也有效。
+4. 团队的 `teamai.yaml`，如果该设置有对应的团队键。
+5. 默认值。
+
+成员设置包括 `ai.tool`、`workflows.*`、`recallEnabled`、`contributeHintEnabled`、`mrHintEnabled`、`coAuthorEnabled`、`usageReportEnabled`、`codexTrustEnabled`、`modelAliases`、`autoCompactTokens` 和 `updatePolicy`。`workflows.tools`、`workflows.allow` 和 `modelAliases` 中的每一项单独计算。`updatePolicy` 只从 user scope 安装读取。其他键都属于某一个安装，不会从本机读取。
+
+```yaml
+# ~/.teamai/config.yaml：本机，不需要安装
+recallEnabled: true
+workflows:
+  tools: { default: codex }
+```
+
+```yaml
+# ~/.teamai/projects/<slug>/config.yaml：仅这个 workspace
+recallEnabled: false
+```
+
+`~/.teamai/config.yaml` 中类型错误的值会被跳过并给出警告，由下一层级决定。`workflows.allow` 例外：其中的错误值会让工作流命令停止运行，直到你修正它。保存配置时不会把本机的值复制进 workspace 的文件；`recall enable` 和 `recall disable` 会写入它们自己的值。`teamai doctor` 会列出每个由某一层级设置的成员设置、设置它的层级，以及更低层级的值。
+
 #### AI 工具（`ai.tool`）
 
 teamai 自身的 AI 调用（enrich、codebase、import、promote、投票评审）使用 teamai 能启动的第一个已安装工具：先是 Claude Code 及其内部版本，然后是 Codex 及其内部版本，再是[工具支持](./tool-support.md)中标记为支持 AI 调用的其他工具。要换用其他工具，指定一个工具 id，例如 `codex`。以下设置中第一个有值的生效：
@@ -111,7 +137,7 @@ ai:
   tool: opencode
 ```
 
-指定的名称不是 teamai 能启动的工具，或工具不在 PATH 上时，调用会失败，并说明该修改哪个文件中的哪个设置。重新 init 会保留 `ai`。工作流步骤也会回退到这些设置，见[工作流](./workflow.md)。
+指定的名称不是 teamai 能启动的工具，或工具不在 PATH 上时，调用会失败，并说明该修改哪个文件中的哪个设置。当前目录的 workspace 配置无法读取时，调用同样会失败。重新 init 会保留 `ai`。工作流步骤也会回退到这些设置，见[工作流](./workflow.md)。
 
 #### 迁移后的工具根目录（`toolRoots`）
 

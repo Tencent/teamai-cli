@@ -11,7 +11,7 @@
 usageReport: false
 ```
 
-本机覆盖写在该 scope 的 `config.yaml`：
+本机覆盖写在 `~/.teamai/config.yaml`，单个 workspace 的覆盖写在它自己的 `config.yaml`（见[成员设置](./reference.md#成员设置)）：
 
 ```yaml
 usageReportEnabled: false
