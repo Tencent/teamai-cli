@@ -182,14 +182,26 @@ function differentSourceError(slug: string, source: { published: RemoteSource; s
  * `<slug>-<hash8>` of its real path, then the full digest, and never reuses a
  * suffix that holds another source's evidence. One over a remote's evidence
  * keeps the slug, and `publishedSource` decides whether the import may
- * replace it. A checkout with a remote keeps its slug, and is refused over the
- * evidence of another checkout without one; evidence with its own hashed root
- * and directory is its own from before it had an origin.
+ * replace it. A checkout with a remote keeps its slug, or the suffix it
+ * published under before it had an origin, and is refused over the evidence
+ * of another checkout without one; evidence with its own hashed root and
+ * directory is its own from before it had an origin.
  */
 export async function localCheckoutSlug(opts: { sourceDir: string; slug: string; wikiRoot: string }): Promise<string> {
   const { slug, wikiRoot } = opts;
   const source = await sourceRepositoryMetadata(opts.sourceDir);
   if (source.repoUrl) {
+    // A subdirectory keeps its directory name once it has an origin, so a
+    // suffix it was given before is still its own: found by its hashed root
+    // on the first import, and by the repository it names after that.
+    for (const candidate of await suffixedSlugs(opts.sourceDir, slug)) {
+      const published = await readCodebaseSource(path.join(wikiRoot, 'evidence', 'code', candidate));
+      const isOwn = published?.kind === 'local'
+        ? sameLocalSource(published, source)
+        : published?.kind === 'remote' && remotesMatch(published.repoUrl, source.repoUrl)
+          && (published.sourceSubdir ?? '') === (source.sourceSubdir ?? '');
+      if (isOwn) return candidate;
+    }
     const evidence = `teamwiki/evidence/code/${slug}/`;
     const published = await readCodebaseSource(path.join(wikiRoot, 'evidence', 'code', slug));
     if (published?.kind === 'local' && !sameLocalSource(published, source)) {

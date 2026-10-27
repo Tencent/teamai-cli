@@ -221,4 +221,33 @@ describe('--dir slug collision (#1422)', () => {
     expect(fs.readFileSync(curated, 'utf-8')).toBe('# curated\n');
     expect(fs.readFileSync(path.join(wikiRoot, 'evidence', 'code', 'svc', 'source-manifest.json'), 'utf-8')).toContain('acme/mono');
   });
+
+  it('a suffixed subdirectory that gains an origin keeps re-importing into its suffix', async () => {
+    const parent = temp('teamai-1422-dir-');
+    const wikiRoot = path.join(temp('teamai-1422-wiki-'), 'teamwiki');
+    const plain = plainDir(parent, 'svc', 'plain');
+    await importDir(plain, wikiRoot);
+    const repo = path.join(parent, 'mono');
+    const sub = path.join(repo, 'apps', 'svc');
+    fs.mkdirSync(sub, { recursive: true });
+    fs.writeFileSync(path.join(sub, 'svc.ts'), 'export const svc = 1;\n');
+    execFileSync('git', ['init', '--quiet'], { cwd: repo, stdio: 'ignore' });
+    await importDir(sub, wikiRoot);
+    const suffix = `svc-${hash8(sub)}`;
+    const curated = path.join(wikiRoot, 'evidence', 'code', suffix, 'docs', 'curated.md');
+    fs.mkdirSync(path.dirname(curated), { recursive: true });
+    fs.writeFileSync(curated, '# curated\n');
+    execFileSync('git', ['remote', 'add', 'origin', 'https://github.com/acme/mono.git'], { cwd: repo, stdio: 'ignore' });
+
+    // The first import after gaining the origin finds the suffix by its hashed
+    // root, later ones by the repository it now names.
+    await importDir(sub, wikiRoot);
+    fs.writeFileSync(path.join(sub, 'svc.ts'), 'export const svc = 2;\n');
+    await importDir(sub, wikiRoot);
+
+    expect(evidenceSlugs(wikiRoot)).toEqual(['svc', suffix].sort());
+    expect(fs.readFileSync(curated, 'utf-8')).toBe('# curated\n');
+    expect(fs.readFileSync(path.join(wikiRoot, 'evidence', 'code', suffix, 'source-manifest.json'), 'utf-8')).toContain('acme/mono');
+    expect(localRootHashOf(wikiRoot, 'svc')).toBe(sha256(plain));
+  });
 });
