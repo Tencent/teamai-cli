@@ -115,7 +115,26 @@ afterEach(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
+describe('the first report on a release that counts outcomes (#1387)', () => {
+  it('leaves out the sessions an earlier release recorded and finished before it, and adds the ones still going', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    writeEvents([...session('before-upgrade', 30), ...session('also-before-upgrade', 8), ...session('still-going', 1)]);
+
+    await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
+    expect(stats().outcomes).toBeUndefined();
+
+    vi.setSystemTime(Date.now() + 6 * HOUR);
+    await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
+    expect(stats().outcomes).toEqual({ attended: { none: { sessions: 1, tokens: { input: 10, output: 5 }, interventions: 1 } } });
+  });
+});
+
 describe('the usage report counts what finished sessions delivered (#1387)', () => {
+  // The member's first report on this release came before any of these sessions.
+  beforeEach(async () => {
+    await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
+  });
+
   it('adds a finished session to the row of its run mode and outcome, with counts only', async () => {
     writeEvents([...session('7c1e-finished', 7), learning('7c1e-finished', 7.5, 'k8s/pod-startup-timeouts-2026-10-24-k3x9q2')]);
 
@@ -259,6 +278,33 @@ describe('the usage report counts what finished sessions delivered (#1387)', () 
       first: [{ kind: 'commit', sha: first }, { kind: 'pr', url }],
       second: [{ kind: 'commit', sha: second }, { kind: 'pr', url }],
     });
+  });
+
+  it('counts the pull request a report found while the session was still going, though it merged before the session finished', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const work = checkout();
+    const origin = path.join(tmpDir, 'origin.git');
+    gitIn(tmpDir, ['init', '-q', '--bare', origin]);
+    const start = commitIn(work, 'base', ME);
+    gitIn(work, ['remote', 'add', 'origin', origin]);
+    gitIn(work, ['push', '-q', 'origin', 'main']);
+    gitIn(work, ['checkout', '-q', '-b', 'fix-retry']);
+    const mine = commitIn(work, 'the session', ME);
+    gitIn(work, ['push', '-q', 'origin', 'fix-retry']);
+    const url = 'https://github.com/acme/app/pull/42';
+    let isOpen = true;
+    prMocks.findDelivered.mockImplementation(async (cwd: string, ref: { branch: string; target: string }) =>
+      (isOpen && cwd === work && ref.branch === 'fix-retry' && ref.target === 'main' ? { kind: 'found', pr: url } : { kind: 'none' }));
+    const [begin, stop] = session('merged-early', 1, { cwd: work });
+    writeEvents([{ ...begin, gitAtStart: { head: start, dirty: false } }, { ...stop, gitHead: mine, gitBranch: 'fix-retry' }]);
+
+    await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
+    // Merged by the next report, which finds no open one.
+    isOpen = false;
+    vi.setSystemTime(Date.now() + 6 * HOUR);
+    await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
+
+    expect((await readSessionOutcomes()).map((event) => event.outcomes)).toEqual([[{ kind: 'commit', sha: mine }, { kind: 'pr', url }]]);
   });
 
   it('looks up the pull request of the branch the session last stopped on, after the checkout moved on', async () => {

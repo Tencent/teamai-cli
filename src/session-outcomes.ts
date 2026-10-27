@@ -3,11 +3,14 @@
  *
  *   report ─ fold(): each member session of the scope's log → its facts in reported-outcomes.json, until it is
  *            │       finished (6 hours idle); a finished one gets its outcomes (learnings recorded for it, commits
- *            │       its member made, the open pull request holding one) and adds to its (run mode, kind) rows
+ *            │       its member made, the open pull request holding one, as a report found it) and adds to its
+ *            │       (run mode, kind) rows
  *            └ push confirmed ─ markReported(): flagged reported, and a `counted` session outcome event written
  *
  * Facts are kept between reports because compaction may drop a session's events once it has been quiet for 30 minutes,
- * long before it is finished. Ids, shas and URLs stay on this machine; the report publishes counts only.
+ * long before it is finished. Ids, shas and URLs stay on this machine; the report publishes counts only. The first report
+ * on a release with this file counts none of the sessions already finished: the release that recorded them kept no Stop
+ * head and no learning of theirs, so each would count as one that delivered nothing.
  */
 import path from 'node:path';
 import { z } from 'zod';
@@ -77,9 +80,14 @@ function baselinePath(config: LocalConfig): string {
   return snapshotPathIn(getDataHome(config), 'outcomes');
 }
 
-async function readBaseline(config: LocalConfig): Promise<Record<string, Entry>> {
+/** The scope's baseline, or none before its first report on this release (or when the file is not readable). */
+async function readBaseline(config: LocalConfig): Promise<Record<string, Entry> | undefined> {
   const parsed = z.record(EntrySchema).safeParse(await readJson<unknown>(baselinePath(config)));
-  return parsed.success ? parsed.data : {};
+  return parsed.success ? parsed.data : undefined;
+}
+
+function isFinished(facts: Facts, now: number): boolean {
+  return Date.parse(facts.activeAt) + FINISHED_AFTER_MS <= now;
 }
 
 /** The facts the scope's member events give each session, merged over what an earlier report kept. */
@@ -205,26 +213,31 @@ async function lookUpPr({ cwd, branch, commits }: { cwd: string; branch: string;
  */
 async function fold(input: FoldInput): Promise<OutcomeFold> {
   const outcomes = await scopeOutcomes(input);
-  const baseline = await readBaseline(input.config);
-  let changed = false;
+  const kept = await readBaseline(input.config);
+  const baseline = kept ?? {};
+  // Written on the first report even with no session, so a later one never takes its sessions for an earlier release's.
+  let changed = kept === undefined;
   for (const [sessionId, seen] of factsOf(input.member, outcomes)) {
     const entry = baseline[sessionId];
     if (entry?.reported) continue;
     const facts = merged(entry?.facts, seen);
-    if (JSON.stringify(facts) !== JSON.stringify(entry?.facts)) {
+    if (kept === undefined && isFinished(facts, input.now)) {
+      baseline[sessionId] = { reported: true };
+    } else if (JSON.stringify(facts) !== JSON.stringify(entry?.facts)) {
       baseline[sessionId] = { reported: false, facts };
       changed = true;
     }
   }
   if (changed) await writeJson(baselinePath(input.config), baseline);
 
-  const due = Object.entries(baseline).flatMap(([sessionId, entry]) =>
-    (!entry.reported && Date.parse(entry.facts.activeAt) + FINISHED_AFTER_MS <= input.now ? [{ sessionId, facts: entry.facts }] : []));
-  // A session's pull request is looked up once, and the answer kept for a report whose push fails.
+  const pending = Object.entries(baseline).flatMap(([sessionId, entry]) =>
+    (entry.reported ? [] : [{ sessionId, facts: entry.facts, isDue: isFinished(entry.facts, input.now) }]));
+  // A session's pull request is looked up at each report until one is found, so one merged before the session is
+  // finished still counts, and once more when it is; the answer is kept for a report whose push fails.
   const prs = await readPrCache(input.config);
   let prsChanged = false;
   // Each lookup may wait on a host, so they run together; one that fails leaves its pull request out.
-  const finished = await Promise.all(due.map(async ({ sessionId, facts }): Promise<FinishedSession> => {
+  const finished = (await Promise.all(pending.map(async ({ sessionId, facts, isDue }): Promise<FinishedSession[]> => {
     const cwd = await checkoutOf(facts);
     const commits = cwd ? await sessionCommits(cwd, facts) : [];
     if (cwd && commits.length > 0 && facts.endBranch && !prs[sessionId]) {
@@ -232,15 +245,17 @@ async function fold(input: FoldInput): Promise<OutcomeFold> {
         log.debug(`outcomes: pull request lookup for session ${sessionId} failed: ${e instanceof Error ? e.message : String(e)}`);
         return undefined;
       });
-      if (looked) {
+      // A session still going may yet open one, so it keeps only a pull request found.
+      if (looked && (isDue || looked.url)) {
         prs[sessionId] = looked;
         prsChanged = true;
       }
     }
+    if (!isDue) return [];
     const pr = prs[sessionId]?.url;
     const { tokens } = promptTokensEntry(input.totals.promptTokens[sessionId]);
     const interventions = Object.values(interventionsEntry(input.totals.interventions[sessionId])).reduce((sum, n) => sum + n, 0);
-    return {
+    return [{
       sessionId,
       ...(facts.tool ? { tool: facts.tool } : {}),
       ...(facts.runMode ? { runMode: facts.runMode } : {}),
@@ -250,8 +265,8 @@ async function fold(input: FoldInput): Promise<OutcomeFold> {
         ...outcomes.filter((outcome) => outcome.sessionId === sessionId).flatMap((outcome) => outcome.outcomes),
       ]),
       counted: { tokens: { input: tokens.input, output: tokens.output }, interventions },
-    };
-  }));
+    }];
+  }))).flat();
   if (prsChanged) await writeJson(prCachePath(input.config), prs);
   return { delta: rowsOf(finished), finished };
 }
@@ -306,7 +321,7 @@ function summarize(events: readonly SessionOutcomeEvent[], { dataHomeKey: key, n
  */
 async function markReported(config: LocalConfig, finished: readonly FinishedSession[]): Promise<void> {
   if (finished.length === 0) return;
-  const baseline = await readBaseline(config);
+  const baseline = await readBaseline(config) ?? {};
   for (const { sessionId } of finished) baseline[sessionId] = { reported: true };
   await writeJson(baselinePath(config), baseline);
   const prs = await readPrCache(config);

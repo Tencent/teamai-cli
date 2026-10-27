@@ -121,10 +121,10 @@ outcomes:
 | Outcome | What the session delivered |
 |---|---|
 | `commit` | Commits made with your git identity in the session's checkout, between its start and its last Stop |
-| `pr` | The open pull request of the branch the session last stopped on, when it holds one of those commits. Looked up once, with the credentials `deliver: pr` uses; a lookup that fails leaves it out |
+| `pr` | The pull request of the branch the session last stopped on that holds one of those commits, open when a report looked it up. Each report looks until it finds one, so one merged before the session is finished still counts. It uses the credentials `deliver: pr` uses; a lookup that fails leaves it out |
 | `learning` | A learning `teamai contribute` recorded for the session (`--session-id`, else the agent's session) |
 | `none` | Nothing of the above |
 
-A session with a pull request and a learning is in both rows, so rows do not add up. Each session is added once: `reported-outcomes.json`, beside the other report baselines, flags it. The report publishes counts only; the session id, commit shas, pull request URLs and learning ids stay in this machine's dashboard events. An unattended session is also added after 6 hours idle, so a runner that is gone by then never reports its sessions.
+A session with a pull request and a learning is in both rows, so rows do not add up. Each session is added once: `reported-outcomes.json`, beside the other report baselines, flags it. Your first report on a release with outcomes adds none of the sessions already finished, since the release that recorded them kept no commit or learning of theirs. The report publishes counts only; the session id, commit shas, pull request URLs and learning ids stay in this machine's dashboard events. An unattended session is also added after 6 hours idle, so a runner that is gone by then never reports its sessions.
 
 A skill use is counted when the agent calls its skill tool, reads a skill's `SKILL.md`, or the prompt names the skill: `/code-review` at the start of the prompt, `$code-review` in Codex, `/skill:code-review` in Pi. Only skills installed for the tool count, and each skill counts once per prompt. Paths such as `/Volumes/External/project` and URL components are not skill invocations. Previously recorded usage stays.
