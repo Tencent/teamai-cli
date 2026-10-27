@@ -97,7 +97,7 @@ vi.mock('../update.js', () => ({
   releaseLock: vi.fn().mockResolvedValue(undefined),
 }));
 
-import { pull } from '../pull.js';
+import { pull, settleLateUsageReport } from '../pull.js';
 import { getTeamSecretsPath } from '../secret-store.js';
 import { EnvHandler, readEnvBackup } from '../resources/env.js';
 import {
@@ -116,7 +116,7 @@ import { reportUsageToTeam } from '../team-push.js';
 import { capUsageEvents, readUsageEvents, truncateUsageAfterReport } from '../usage-tracker.js';
 import { drainRecallLog } from '../recall-adoption.js';
 import { releaseLock } from '../update.js';
-import { SYNC_LOCK_FILENAME, type TeamaiConfig, type LocalConfig, type State } from '../types.js';
+import { StateSchema, SYNC_LOCK_FILENAME, type TeamaiConfig, type LocalConfig, type State } from '../types.js';
 
 const SKIP_MSG = 'workspace scope detected, skipped user scope';
 
@@ -132,6 +132,7 @@ describe('pull scope isolation (issue #73)', () => {
 
   beforeEach(async () => {
     vi.mocked(reportUsageToTeam).mockReset().mockResolvedValue(true);
+    vi.mocked(saveStateForScope).mockReset();
     vi.mocked(readUsageEvents).mockResolvedValue([]);
     tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-scope-iso-'));
     homeDir = path.join(tmpDir, 'home');
@@ -226,6 +227,33 @@ describe('pull scope isolation (issue #73)', () => {
     else expect(truncateUsageAfterReport).not.toHaveBeenCalled();
   });
 
+  it.each(['first failure', 'repeated failure', 'recovery', 'success', 'exception'])(
+    'persists the auto-report outcome after the other state writers: %s', async (outcome) => {
+      const since = '2026-10-26T10:00:00.000Z';
+      const wasPending = outcome === 'repeated failure' || outcome === 'recovery';
+      vi.mocked(detectProjectConfig).mockResolvedValue(projectConfig);
+      let saved: State = {
+        ...StateSchema.parse({ lastPullRev: 'abc1234', pushedSkills: ['keep-me'] }),
+        ...(wasPending ? { autoReportPendingSince: since } : {}),
+      };
+      vi.mocked(loadStateForScope).mockImplementation(async () => structuredClone(saved));
+      vi.mocked(saveStateForScope).mockImplementation(async (state) => { saved = structuredClone(state); });
+      if (outcome === 'exception') vi.mocked(reportUsageToTeam).mockRejectedValueOnce(new Error('offline'));
+      else vi.mocked(reportUsageToTeam).mockResolvedValueOnce(outcome === 'success' || outcome === 'recovery');
+
+      await pull({ silent: true });
+
+      expect(saved.pushedSkills).toEqual(['keep-me']);
+      if (outcome === 'success' || outcome === 'recovery') {
+        expect(saved).not.toHaveProperty('autoReportPendingSince');
+      } else if (wasPending) {
+        expect(saved).toHaveProperty('autoReportPendingSince', since);
+      } else {
+        expect(saved).toHaveProperty('autoReportPendingSince', expect.any(String));
+      }
+    },
+  );
+
   it.each([true, false])('caps the usage file only after the report has truncated it (#788): %s', async (success) => {
     vi.mocked(detectProjectConfig).mockResolvedValue(projectConfig);
     vi.mocked(readUsageEvents).mockResolvedValue([{ skill: 'review', timestamp: new Date().toISOString(), tool: 'claude' }]);
@@ -308,6 +336,10 @@ describe('pull scope isolation (issue #73)', () => {
     expect(reportUsageToTeam).toHaveBeenCalledTimes(1);
     finish(success);
     await vi.advanceTimersByTimeAsync(0);
+    await settleLateUsageReport();
+    const saved = vi.mocked(saveStateForScope).mock.lastCall?.[0] ?? {};
+    if (success) expect(saved).not.toHaveProperty('autoReportPendingSince');
+    else expect(saved).toHaveProperty('autoReportPendingSince', expect.any(String));
     if (success) {
       expect(truncateUsageAfterReport).toHaveBeenCalledTimes(1);
       expect(truncateUsageAfterReport).toHaveBeenCalledWith(1, projectConfig);

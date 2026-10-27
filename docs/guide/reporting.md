@@ -19,6 +19,11 @@ usageReportEnabled: false
 
 `teamai doctor` says whether reporting is on and where that comes from.
 
+If an automatic report is not confirmed, the data stays local. `teamai status`
+shows `auto-report: pending since <time>` and suggests `teamai pull --verbose`
+to retry and see why. Repeated failures keep the first timestamp; a successful
+report clears it. A retained local usage file alone does not mean reporting failed.
+
 See the team's week:
 
 ```bash

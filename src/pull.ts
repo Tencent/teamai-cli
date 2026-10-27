@@ -3080,6 +3080,7 @@ export async function pull(
   const contended = new Set<LocalConfig>();
   const heldLocks = new Map<LocalConfig, string>();
   let usageReport: Promise<void> | undefined;
+  const reportOutcomes = new Map<LocalConfig, { reported: boolean; at: string }>();
   // Team repo whose pull completed, for `scripts.postPull` — run at the very
   // end of pull(). The config is kept so postPull and postDeploy receive the
   // checkout identity, not only the repo path.
@@ -3400,11 +3401,14 @@ export async function pull(
         // still truncates, even if pull has already stopped waiting.
         for (const t of targets) {
           const eventCount = (await readUsageEvents(t.opts.selfConfig)).length;
+          let reported = false;
           try {
-            const reported = await reportUsageToTeam(t.repoPath, t.username, t.opts);
+            reported = await reportUsageToTeam(t.repoPath, t.username, t.opts);
             if (reported && eventCount > 0) await truncateUsageAfterReport(eventCount, t.opts.selfConfig);
           } catch (e) {
             log.error(`Auto-report to ${t.repoPath} skipped: ${(e as Error).message}`);
+          } finally {
+            reportOutcomes.set(t.opts.selfConfig, { reported, at: new Date().toISOString() });
           }
           // Drain queued workflow run records (#1083): a publication that
           // failed at run start/end is retried here, once per pull.
@@ -3537,18 +3541,35 @@ export async function pull(
       }
     }
     if (result) result.completed = syncResult.completed && !syncResult.docsSyncFailed && !syncResult.agentModelsHeld;
-    const releaseSyncLocks = async () => {
+    const finishReportAndReleaseLocks = async () => {
+      // Other pull stages save whole state snapshots. Record report outcomes
+      // after those writers, still under the sync locks, including late pushes.
+      for (const [config, outcome] of reportOutcomes) {
+        try {
+          const state = await loadStateForScope(config);
+          if (outcome.reported) {
+            if (state.autoReportPendingSince === undefined) continue;
+            delete state.autoReportPendingSince;
+          } else {
+            if (state.autoReportPendingSince !== undefined) continue;
+            state.autoReportPendingSince = outcome.at;
+          }
+          await saveStateForScope(state, config);
+        } catch (error) {
+          log.error(`Could not save auto-report status: ${(error as Error).message}`);
+        }
+      }
       for (const lock of heldLocks.values()) await releaseLock(lock);
     };
     // Late reporting still writes the shared clone and local acknowledgement.
     // Keep its partition locks until completion so another CLI cannot re-report
     // the same data while this pull is no longer waiting.
     if (usageReport && usageReport === pendingUsageReport) {
-      lateUsageReport = usageReport.then(releaseSyncLocks, releaseSyncLocks).catch((e) => {
+      lateUsageReport = usageReport.then(finishReportAndReleaseLocks, finishReportAndReleaseLocks).catch((e) => {
         log.error(`Could not release report sync locks: ${(e as Error).message}`);
       });
     } else {
-      await releaseSyncLocks();
+      await finishReportAndReleaseLocks();
     }
   }
 

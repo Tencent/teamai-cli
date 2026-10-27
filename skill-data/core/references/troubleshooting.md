@@ -399,6 +399,9 @@ built-in and enterprise plugins support both OpenCode 1.18.23 (`server`) and V2
 
 - Re-run the failing command with `-v` / `--verbose` for detail.
 - `teamai status` shows exactly how local differs from the team repo.
+- If status shows `auto-report: pending since <time>`, report data is still
+  local after an unconfirmed push. Run `teamai pull --verbose` to retry and
+  see the cause. A successful report clears the notice.
 - Report unexpected behavior at https://github.com/Tencent/teamai-cli/issues
   with the agent name, platform, and the step that failed.
 
