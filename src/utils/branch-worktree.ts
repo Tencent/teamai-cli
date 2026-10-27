@@ -306,18 +306,28 @@ async function openWorktree(
 }
 
 /**
- * Self mode used to check this branch out in each checkout's own `.teamai/`
- * (#808). Git checks a branch out in one worktree only, so a checkout left
- * there by an older teamai blocks the shared one at `wt`, from every checkout
- * of the repo. Remove it the way a member would: without --force, so a checkout
- * with uncommitted changes stays, and the member is told what to do with them.
- * Its commits are on the branch, which the new checkout reuses.
+ * A side branch is checked out in one worktree only, and a user-scope install
+ * and a single-repo project partition of the same repository compute different
+ * worktree paths. Remove a checkout only when it is a path teamai manages:
+ * the legacy `<checkout>/.teamai/<dirname>` or a project partition
+ * `~/.teamai/projects/<slug>/<dirname>`. An arbitrary worktree a member placed
+ * elsewhere is left alone: git will refuse the second checkout, and the caller
+ * reports it instead of silently deleting the member's checkout (#1443, #808).
+ * Remove the way a member would: without --force, so a checkout with
+ * uncommitted changes stays, and the member is told what to do with them. Its
+ * commits are on the branch, which the new checkout reuses.
  */
 async function removeOldCheckoutsInDotTeamai(spec: BranchWorktreeSpec, git: SimpleGit, wt: string): Promise<void> {
   const oldSuffix = `${path.sep}${path.join('.teamai', spec.worktreeDirname)}`;
   for (const checkout of await checkoutsOfBranch(spec, git)) {
     // resolve: git prints forward slashes on Windows too.
-    if (!path.resolve(checkout).endsWith(oldSuffix) || path.resolve(checkout) === path.resolve(wt)) continue;
+    const resolved = path.resolve(checkout);
+    if (resolved === path.resolve(wt)) continue;
+    const parts = resolved.split(path.sep).filter(Boolean);
+    const projectPartition = parts.length >= 3
+      && parts[parts.length - 3] === 'projects'
+      && parts[parts.length - 1] === spec.worktreeDirname;
+    if (!resolved.endsWith(oldSuffix) && !projectPartition) continue;
     try {
       await git.raw(['worktree', 'remove', checkout]);
       log.debug(`[${spec.logTag}] removed the old checkout at ${checkout}`);
