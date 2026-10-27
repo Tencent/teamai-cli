@@ -3,7 +3,9 @@ import fs from 'node:fs';
 import { createRequire, syncBuiltinESMExports } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import { afterAll } from 'vitest';
 import { trackDetachedProcesses } from './detached-processes.js';
 
@@ -24,12 +26,20 @@ createRequire(import.meta.url)(tracker.preload);
 // would otherwise start it untracked.
 for (const name of ['spawn', 'spawnSync', 'execFile', 'execFileSync', 'exec', 'execSync', 'fork'] as const) {
   const start = childProcess[name];
-  Object.assign(childProcess, { [name]: (...args: unknown[]): unknown => Reflect.apply(start, childProcess, args.map(withTrackedEnv)) });
+  const tracked = (...args: unknown[]): unknown => Reflect.apply(start, childProcess, args.map(withTrackedEnv));
+  // promisify(execFile) and promisify(exec) resolve to { stdout, stderr } only through their own promisified form.
+  const promised: unknown = Reflect.get(start, promisify.custom);
+  if (typeof promised === 'function') {
+    Object.assign(tracked, { [promisify.custom]: (...args: unknown[]): unknown => Reflect.apply(promised, childProcess, args.map(withTrackedEnv)) });
+  }
+  Object.assign(childProcess, { [name]: tracked });
 }
 
 // Under the hook timeouts, so a writer that never exits fails the removal rather than the hook.
 const JOIN_MS = 10_000;
 const POLL_MS = 25;
+// Clocks a test's fake timers cannot freeze, or the join would never time out.
+const now = performance.now.bind(performance);
 
 const rmSync = fs.rmSync;
 fs.rmSync = function rmSyncJoiningWriters(target, options) {
@@ -39,8 +49,8 @@ fs.rmSync = function rmSyncJoiningWriters(target, options) {
   } catch (error) {
     if (!isNotEmptyError(error)) throw error;
   }
-  const deadline = Date.now() + JOIN_MS;
-  while (tracker.running().length > 0 && Date.now() < deadline) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, POLL_MS);
+  const deadline = now() + JOIN_MS;
+  while (tracker.running().length > 0 && now() < deadline) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, POLL_MS);
   try {
     rmSync(target, options);
   } catch (error) {
@@ -66,15 +76,16 @@ syncBuiltinESMExports();
 
 // Every config loads this setup file first, so this runs after every other
 // teardown, each removal of which could still need the tracker. A child still
-// running would fail to record its own children once the tracker is gone.
+// running would fail to record its own children once the tracker is gone, so
+// the tracker stays while one runs.
 afterAll(async () => {
   await joinWriters();
-  fs.rmSync(trackerRoot, { recursive: true, force: true });
+  if (tracker.running().length === 0) fs.rmSync(trackerRoot, { recursive: true, force: true });
 });
 
 async function joinWriters(): Promise<void> {
-  const deadline = Date.now() + JOIN_MS;
-  while (tracker.running().length > 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+  const deadline = now() + JOIN_MS;
+  while (tracker.running().length > 0 && now() < deadline) await sleep(POLL_MS);
 }
 
 function withTracker(nodeOptions: string | undefined): string {

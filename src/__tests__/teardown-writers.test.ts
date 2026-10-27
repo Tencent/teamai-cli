@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
 import { expect, it, onTestFinished, vi } from 'vitest';
 
 // A teardown that loses the race to a late writer fails with ENOTEMPTY. The
@@ -130,6 +131,26 @@ it('waits for a detached child of a process the test started with a NODE_OPTIONS
 
   expect(fs.existsSync(root)).toBe(false);
   expect(isRunning(writer)).toBe(false);
+});
+
+it('stops waiting once a detached child the worker started has exited, though the worker has not reaped it', async () => {
+  const done = path.join(tempRoot(), 'done');
+  const { rmSync } = await wrapLosingRemovals(() => !fs.existsSync(done));
+  const root = tempRoot();
+  fs.writeFileSync(path.join(root, 'state.json'), '{}');
+  spawn(process.execPath, ['-e', `setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(done)}, ''), 300)`], { detached: true, stdio: 'ignore' }).unref();
+
+  const started = performance.now();
+  rmSync(root, { recursive: true, force: true });
+
+  expect(fs.existsSync(root)).toBe(false);
+  expect(performance.now() - started).toBeLessThan(5_000);
+});
+
+it('keeps what promisify(execFile) resolves to', async () => {
+  const run = promisify(childProcess.execFile);
+
+  await expect(run(process.execPath, ['-e', 'process.stdout.write("out"); process.stderr.write("err")'])).resolves.toEqual({ stdout: 'out', stderr: 'err' });
 });
 
 // Processes are found with /proc, or ps and lsof; Windows has neither.

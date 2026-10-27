@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -25,7 +26,7 @@ require('node:module').syncBuiltinESMExports();
     return fs.readdirSync(children).map(Number).filter((pid) => {
       try {
         process.kill(pid, 0);
-        return true;
+        return !isZombie(pid);
       } catch (e) {
         if (!(e instanceof Error && 'code' in e && e.code === 'ESRCH')) throw e;
         fs.unlinkSync(path.join(children, String(pid)));
@@ -45,4 +46,21 @@ require('node:module').syncBuiltinESMExports();
       }
     },
   };
+}
+
+/**
+ * Whether `pid` has exited and waits for its parent to reap it. Signal 0 still
+ * reaches it, and a parent blocked in a synchronous wait never reaps it.
+ */
+function isZombie(pid: number): boolean {
+  if (process.platform === 'win32') return false;
+  if (process.platform === 'linux') {
+    try {
+      const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf-8');
+      return stat.slice(stat.lastIndexOf(')') + 2).startsWith('Z');
+    } catch {
+      return false;
+    }
+  }
+  return (spawnSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf-8' }).stdout ?? '').trim().startsWith('Z');
 }
