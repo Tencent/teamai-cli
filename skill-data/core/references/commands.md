@@ -224,7 +224,7 @@ Generated: do not edit by hand. Regenerate with
 ## workflow
 
 - `teamai workflow` — Run a validated workflow from workflows/<name>.yaml. Writable steps may set deliver: pr to open review requests; TeamAI never merges them.
-  - `teamai workflow start <name>` — Create a run. With --driver skill, the current coding session drives it; with --driver local, this process runs it headless, and in unattended mode (TEAMAI_MODE=unattended or CI) runs teamai score --drain once the run settles, before it exits.
+  - `teamai workflow start <name>` — Create a run. With --driver skill, the current coding session drives it; with --driver local, this process runs it headless, and in unattended mode (TEAMAI_MODE=unattended or CI) runs teamai score --drain once the run settles, before it exits, unless sessions.publish and session scoring are both off for unattended.
     - `--describe` — Show workflow metadata and required input schemas without creating a run. With --driver skill, also say how to start it: the start command, a question for the person, or the local driver.
     - `--driver <kind>` — Select skill for the current coding session, which then runs the commands each reply prints, or local for headless execution in this process.
     - `--parallel <n>` — With --driver skill: the most steps that run at once, as the describe reply offered

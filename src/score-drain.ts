@@ -7,6 +7,8 @@ import { loadTeamConfig } from './config.js';
 import { driverIdentity } from './driver-identity.js';
 import type { RunMode } from './launch-context.js';
 import { localJudgeOffers } from './score-sessions.js';
+import { scoringUnavailable } from './scorers/home.js';
+import { scopeScoring } from './scorers/settings.js';
 import { SessionCaptures } from './session-flow/captures.js';
 import { SessionPolicy } from './session-flow/session-policy.js';
 import { SessionPublish, type StepSessionsPublished } from './session-flow/session-publish.js';
@@ -179,6 +181,16 @@ async function run(configs: readonly LocalConfig[], { mode, clock = () => new Da
   return result;
 }
 
+/**
+ * Whether the local driver drains `config` at the end of an unattended run: while its unattended `sessions.publish` or
+ * unattended session scoring is not `off`. With both `off` it does nothing more than before #1385.
+ */
+async function drainsUnattendedRun(config: LocalConfig): Promise<boolean> {
+  if (SessionPolicy.publish(config, await loadTeamConfig(config.repo.localPath)).policies.unattended.policy !== 'off') return true;
+  const scoring = scoringUnavailable(config) ? undefined : await scopeScoring(config);
+  return scoring?.ok === true && scoring.sessions.policies.unattended.policy !== 'off';
+}
+
 const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
 
 /** The scorers of `judged`, each once, in the order they were first judged. */
@@ -259,4 +271,4 @@ function print(result: DrainResult): void {
   if (leftOpen.length === 0 && unmetIsolation === 0 && noJudgeTool === 0 && !hasFailed(result)) log.success('Nothing left to do here');
 }
 
-export const Drain = { run, print, hasFailed } as const;
+export const Drain = { run, print, hasFailed, drainsUnattendedRun } as const;

@@ -250,7 +250,7 @@ $ teamai score --drain
 ℹ Left open: 1 session whose scorer pins a model no judge tool here runs (judge_model_unavailable). A driver whose tools run it takes it with: teamai score --next --json '{"driver":{…,"can":{"judge":{…}}}}'
 ```
 
-Every unattended driver ends with `teamai score --drain`. The local driver runs it at the end of an unattended run. The skill driver, T3, Paseo and a CI script run it as their last step. It works in this order:
+Every unattended driver ends with `teamai score --drain`. The local driver runs it at the end of an unattended run, unless publishing and scoring of unattended sessions are both `off`. The skill driver, T3, Paseo and a CI script run it as their last step. It works in this order:
 
 1. In unattended mode, every session this data home captured as unattended counts as finished, the calling session included. Attended sessions keep the six-hour rule.
 2. It judges every open judge entry this machine can judge: sampled step passes, and sampled sessions the policies allow, within `daily_limit`.

@@ -633,6 +633,25 @@ describe('teamai score --drain', () => {
     ]));
   });
 
+  it('does not run at the end of an unattended local run with unattended: off in teamai.yaml and scoring.yaml', async () => {
+    const { origin, config } = await team({
+      'teamai.yaml': 'team: acme\nrepo: https://example.com/acme/team.git\nsessions:\n  publish: { unattended: off }\n',
+      'scorers/scoring.yaml': 'sessions: { unattended: off }\n',
+      'workflows/mark.yaml': MARK,
+    });
+    await syncWorkflowDefinitions(config);
+    capturedSession(SESSION, 'unattended');
+    fakeClaude();
+    vi.stubEnv('CI', 'true');
+
+    const started = await driveLocally(() => workflowStart('mark', { driver: 'local' }));
+
+    expect(started.envelope).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(started.lines).not.toContain('ℹ Draining before exit (teamai score --drain)');
+    expect(await LabelStore.local(config)).toEqual([]);
+    expect(onReports(origin, 'sessions')).toEqual([]);
+  });
+
   it('does not run at the end of an attended local run', async () => {
     const { config } = await team({ 'workflows/mark.yaml': MARK });
     await syncWorkflowDefinitions(config);

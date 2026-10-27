@@ -36,15 +36,16 @@ function writeEnvelope(envelope: WorkflowEnvelope, secrets: Record<string, strin
 
 /**
  * Prints what the local driver answered for a run of `config`, then, once an unattended run is done, drains the run's
- * scope as `teamai score --drain` does. The run's outcome keeps setting the exit code: what the drain could not do is
- * printed.
+ * scope as `teamai score --drain` does unless its unattended publishing and session scoring are both `off`. The run's
+ * outcome keeps setting the exit code: what the drain could not do is printed.
  */
 async function writeDriven(config: LocalConfig, envelope: WorkflowEnvelope, secrets: Record<string, string>): Promise<void> {
   writeEnvelope(envelope, secrets);
   if ('error' in envelope || !('done' in envelope.data) || resolveRunMode(process.env) !== 'unattended') return;
-  log.info('Draining before exit (teamai score --drain)');
   const { Drain } = await import('./score-drain.js');
   try {
+    if (!await Drain.drainsUnattendedRun(config)) return;
+    log.info('Draining before exit (teamai score --drain)');
     Drain.print(await Drain.run([config], { mode: 'unattended' }));
   } catch (error) {
     log.error(`The drain stopped: ${error instanceof Error ? error.message : String(error)}. Run teamai score --drain to finish it.`);

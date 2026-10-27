@@ -250,7 +250,7 @@ $ teamai score --drain
 ℹ Left open: 1 session whose scorer pins a model no judge tool here runs (judge_model_unavailable). A driver whose tools run it takes it with: teamai score --next --json '{"driver":{…,"can":{"judge":{…}}}}'
 ```
 
-每个无人值守的 driver 都以 `teamai score --drain` 结束。本地驱动在无人值守运行结束时自动执行它。skill 驱动、T3、Paseo 和 CI 脚本把它作为最后一步执行。它按以下顺序工作：
+每个无人值守的 driver 都以 `teamai score --drain` 结束。本地驱动在无人值守运行结束时自动执行它，除非无人值守会话的发布和评判都设为 `off`。skill 驱动、T3、Paseo 和 CI 脚本把它作为最后一步执行。它按以下顺序工作：
 
 1. 在无人值守模式下，本数据目录记录为无人值守的每个已捕获会话都算已结束，包括调用它的会话。有人值守的会话仍按六小时规则。
 2. 评判本机能评判的每个未完成的评审项：抽样的步骤 pass，以及策略允许的抽样会话，受 `daily_limit` 限制。
