@@ -1825,6 +1825,23 @@ describe('local-agent: cmds[] migration', () => {
     expect(content).toContain('# content');
   });
 
+  it('leaves the fallback OpenClaw workspace alone when openclaw.json cannot be read, and says why in the ACK', async () => {
+    const workspace = path.join(tmpDir, 'openclaw-workspace');
+    const configFile = path.join(tmpDir, '.openclaw', 'openclaw.json');
+    await fse.ensureDir(workspace);
+    await fse.outputFile(configFile, '{ agents: { defaults: { workspace: "/elsewhere" } } }');
+    vi.stubEnv('OPENCLAW_CONFIG_PATH', configFile);
+    vi.stubEnv('OPENCLAW_WORKSPACE_DIR', workspace);
+
+    const acks = await runResponse({ cmds: [{
+      id: 69, type: 'install_prompt_rule', handle_type: 'prompt', slug: 'openclaw-doc',
+      version: '1.0.0', download_url: 'http://127.0.0.1:42100/openclaw-doc.md', scope: 'user',
+    }] }, undefined, 'openclaw');
+
+    expect(await fse.pathExists(path.join(workspace, 'AGENTS.md'))).toBe(false);
+    expect(acks.find((ack) => ack.id === 69)).toMatchObject({ status: 'failed', error: expect.stringContaining(configFile) });
+  });
+
   it('handle_type=prompt strips the block an earlier release left in ~/AGENTS.md (#945)', async () => {
     const legacy = path.join(tmpDir, 'AGENTS.md');
     await fse.writeFile(legacy, `# mine\n\n${TEAMAI_CLAUDEMD_START}\nanother member's selection\n<!-- [teamai:claudemd:end] -->\n`);

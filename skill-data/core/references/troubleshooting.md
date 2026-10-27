@@ -429,7 +429,9 @@ An HTTP prompt sync that cannot clean retired blocks reports a failed ACK and
 keeps its previous cache and manifest for the server's retry.
 OpenClaw HTTP prompts require an existing resolved user workspace, but not an
 existing `AGENTS.md`: the prompt sync creates that file and preserves personal
-text already in it.
+text already in it. When the server sends no workspace and `openclaw.json` is
+not plain JSON, the prompt goes nowhere and the ACK fails with that reason:
+make the file plain JSON, then retry.
 
 OpenCode registration saves ownership before activating a new config entry.
 If the state write fails, repair the state directory's permissions and retry

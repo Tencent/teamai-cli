@@ -31,8 +31,8 @@ import { getAgentVersion } from './agent-version.js';
 import { getMachineId, deriveLocalAgentId } from './machine-id.js';
 import { EXCLUDED_RULE_NAMES } from './builtin-rules.js';
 import { ruleStemFromFilename } from './resources/rule-format.js';
+import { unreadableConfigOf } from './resources/rules.js';
 import { resolveTeamaiEntryScript } from './builtin-hooks.js';
-import { resolveOpenclawWorkspaceDir } from './openclaw-hooks.js';
 import { assertSafeResourceName } from './utils/path-safety.js';
 import {
   detectMcpFormat,
@@ -2822,12 +2822,22 @@ async function syncClaudemd(
     }
     const location = await locate(tool, 'blocks', install);
     // A server-sent workspace can exist where OpenClaw's own lookup finds none.
-    const openclawWs = tool === 'openclaw' && localConfig.scope !== 'project' ? await resolveOpenclawWorkspaceDir(workspacePath) : null;
-    const own: FilePlace | null = openclawWs
-      ? { kind: 'file', path: path.join(openclawWs, 'AGENTS.md'), owned: false, header: null }
+    const sentWorkspace = tool === 'openclaw' && localConfig.scope !== 'project' && workspacePath !== undefined && await pathExists(workspacePath)
+      ? workspacePath
+      : null;
+    const own: FilePlace | null = sentWorkspace !== null
+      ? { kind: 'file', path: path.join(sentWorkspace, 'AGENTS.md'), owned: false, header: null }
       : ownOf(location);
+    const unreadable = sentWorkspace === null ? unreadableConfigOf(location) : undefined;
+    if (unreadable !== undefined) {
+      const problem = `teamai cannot read ${unreadable.file} as plain JSON, so it cannot tell which workspace ${tool} reads, `
+        + 'and writes no instructions there. Make that file plain JSON (no comments or trailing commas), then retry.';
+      log.warn(problem);
+      skipped.push(problem);
+      continue;
+    }
     if (own === null) continue;
-    const toolInstalled = openclawWs ? await pathExists(openclawWs) : writable(location) !== null;
+    const toolInstalled = sentWorkspace !== null || writable(location) !== null;
     if (!toolInstalled) {
       log.debug(`Skipped CLAUDE.md sync for ${tool}: target not found`);
       continue;
