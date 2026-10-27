@@ -322,7 +322,7 @@ export async function runLocalJudge(input: JudgeInput, { resolveTool = resolveCl
     if (family === 'codebuddy' && /Authentication required/.test(result.stdout + result.stderr)) {
       return { ok: false, code: 'judge_tool_unavailable', message: 'CodeBuddy is not signed in. Sign in with codebuddy /login or set CODEBUDDY_API_KEY, then retry, or submit this lease through another driver.', raw: result.stdout + '\n' + result.stderr };
     }
-    const report = toolStdout(input.tool, result.stdout);
+    const report = toolStdout(family, result.stdout);
     const reading = LAUNCH_ADAPTERS[family].call.read({ stdout: result.stdout, lastMessage: undefined });
     const tokens = report?.tokens ?? (reading.ok ? reading.tokens : undefined);
     const cost = records(result.stdout).filter((record) => typeof record.total_cost_usd === 'number').at(-1)?.total_cost_usd;

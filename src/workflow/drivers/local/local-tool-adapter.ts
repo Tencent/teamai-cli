@@ -255,7 +255,7 @@ export function createLocalToolAdapter(
         };
       }
       const fileResult = await readResultFile(input.resultPath);
-      const reported = toolStdout(tool, completed.stdout);
+      const reported = toolStdout(launchAdapterIdOf(tool), completed.stdout);
       const result = combineResults(fileResult, reported) ?? (interactive ? {} : null);
       if (!result) {
         return {
