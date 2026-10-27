@@ -92,6 +92,31 @@ describe('Trae subagents', () => {
     expect(await fse.readFile(file, 'utf8')).toBe(first);
   });
 
+  it('gives the project file both editions read the tool_extras of either edition, whichever edition the member enables', async () => {
+    await fse.writeFile(item.sourcePath, `${AGENT_YAML}tool_extras:\n  trae-cn:\n    disallowedTools: Bash\n`);
+    const config = configFor('trae', 'project');
+    const file = path.join(projectRoot, '.trae', 'agents', `${AGENT}.md`);
+
+    await new AgentsHandler().pullItem(item, teamConfig, config);
+    const first = await fse.readFile(file, 'utf8');
+    await new AgentsHandler().pullItem(item, teamConfig, config);
+
+    expect(matter(first).data['disallowedTools']).toBe('Bash');
+    expect(await fse.readFile(file, 'utf8')).toBe(first);
+  });
+
+  it('skips a project agent for Trae when the editions give one tool_extras key different values, saying which', async () => {
+    await fse.writeFile(item.sourcePath, `${AGENT_YAML}tool_extras:\n  trae:\n    disallowedTools: Bash\n  trae-cn:\n    disallowedTools: Write\n`);
+    vi.mocked(log.warn).mockClear();
+
+    await new AgentsHandler().pullItem(item, teamConfig, configFor('trae', 'project', ['trae', 'trae-cn']));
+
+    expect(await fse.pathExists(path.join(projectRoot, '.trae', 'agents', `${AGENT}.md`))).toBe(false);
+    const warnings = vi.mocked(log.warn).mock.calls.map(([message]) => String(message));
+    expect(warnings.filter((message) => message.includes(`Skipped ${AGENT} for trae`))).toHaveLength(2);
+    expect(warnings.join('\n')).toContain('tool_extras.trae.disallowedTools and tool_extras.trae-cn.disallowedTools');
+  });
+
   it('keeps an agent the team gives no tools without tools, since Trae gives every tool to one with no tools field', async () => {
     await fse.writeFile(item.sourcePath, AGENT_YAML.replace('tools: [Read, Grep, Glob]', 'tools: []'));
     await new AgentsHandler().pullItem(item, teamConfig, configFor('trae-cn', 'project'));

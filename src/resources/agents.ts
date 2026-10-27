@@ -36,7 +36,7 @@ import {
   AGENT_FILE_EXTENSIONS,
   agentStemFromFilename,
   museAgentDrops,
-  agentNameRejection,
+  agentRejection,
 } from './agent-format.js';
 import type { AgentSpec, ToolName, ParseResult, MergeResult, RenderResult } from './agent-format.js';
 
@@ -772,7 +772,7 @@ export class AgentsHandler extends ResourceHandler {
       }
     }
     for (const { tool, dest, render, origin } of renders) {
-      const rejected = agentNameRejection({ tool, name: spec?.name ?? item.name });
+      const rejected = agentRejection({ tool, name: spec?.name ?? item.name, spec, scope: localConfig.scope });
       if (rejected !== null) {
         log.warn(`[agents] Skipped ${item.name} for ${tool}: ${rejected}`);
         ledger?.toolsMissingAgents.add(tool);

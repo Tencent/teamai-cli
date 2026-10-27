@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import matter from 'gray-matter';
 import { stringify as stringifyToml, parse as parseToml } from 'smol-toml';
@@ -390,27 +391,46 @@ export function renderForMuse(spec: AgentSpec): RenderResult {
 /** The subagent names Trae loads (docs.trae.ai/ide/subagents); it ignores a file with any other. */
 const TRAE_AGENT_NAME = /^[A-Za-z](?:[A-Za-z0-9-]{0,48}[A-Za-z0-9])?$/;
 
-/** Why `tool` would ignore an agent named `name`, or null when it loads it. */
-export function agentNameRejection({ tool, name }: { readonly tool: string; readonly name: string }): string | null {
-  if ((tool === 'trae' || tool === 'trae-cn') && !TRAE_AGENT_NAME.test(name)) {
+/** Why teamai cannot give `tool` the agent `name` in `scope`, or null when it can. */
+export function agentRejection({ tool, name, spec, scope }: {
+  readonly tool: string; readonly name: string; readonly spec: AgentSpec | undefined; readonly scope: Scope;
+}): string | null {
+  if (tool !== 'trae' && tool !== 'trae-cn') return null;
+  if (!TRAE_AGENT_NAME.test(name)) {
     return 'Trae loads a subagent only when its name starts with a letter, holds only letters, digits and -, ends with a letter or digit, and is at most 50 characters.';
   }
-  return null;
+  const clashes = scope === 'user' || spec === undefined ? [] : traeExtrasClashes(spec);
+  if (clashes.length === 0) return null;
+  const pairs = clashes.map((key) => `tool_extras.trae.${key} and tool_extras.trae-cn.${key}`).join(', ');
+  return `Trae and Trae CN read one project file, and ${pairs} differ. Give both editions the same value, or set it for one edition only.`;
+}
+
+/** Both editions' `tool_extras` but `model`, which differs per edition: what the project file they share takes. */
+function traeEditionExtras(spec: AgentSpec): { readonly trae: Record<string, unknown>; readonly cn: Record<string, unknown> } {
+  const { model: _trae, ...trae } = spec.tool_extras?.['trae'] ?? {};
+  const { model: _cn, ...cn } = spec.tool_extras?.['trae-cn'] ?? {};
+  return { trae, cn };
+}
+
+function traeExtrasClashes(spec: AgentSpec): string[] {
+  const { trae, cn } = traeEditionExtras(spec);
+  return Object.keys(trae).filter((key) => key in cn && !isDeepStrictEqual(trae[key], cn[key]));
 }
 
 /**
  * Trae and Trae CN take `tools` as one comma-separated string, and a `model`
  * only from their own ids, which differ per edition. So the spec's own
- * `model` is left out. In a user scope, one an alias or `tool_extras.<tool>`
- * gives the edition is written; a project's `.trae/agents` is read by both
- * editions, so it gets none and both render the same bytes.
+ * `model` is left out. In a user scope, the edition's own `tool_extras` and
+ * the model an alias or they give it are written; a project's `.trae/agents`
+ * is read by both editions, so it gets both editions' `tool_extras` but no
+ * model, and both render the same bytes (`agentRejection` skips a clash).
  */
-function renderForTrae(spec: AgentSpec, extras: Record<string, unknown> | undefined, resolved: ResolvedAgentModel | undefined, scope: Scope | undefined): string {
-  const editionModel = scope === 'user';
-  const { tools, ...rest } = withModel(spec, editionModel ? resolved?.model : undefined);
-  const { model: _shared, ...projectExtras } = extras ?? {};
+function renderForTrae(spec: AgentSpec, tool: 'trae' | 'trae-cn', resolved: ResolvedAgentModel | undefined, scope: Scope | undefined): string {
+  const isUser = scope === 'user';
+  const { tools, ...rest } = withModel(spec, isUser ? resolved?.model : undefined);
+  const { trae, cn } = traeEditionExtras(spec);
   const joined = traeTools(tools);
-  return renderMarkdownAgent(rest, editionModel ? extras : projectExtras, joined === undefined ? undefined : { tools: joined });
+  return renderMarkdownAgent(rest, isUser ? toolExtrasFor(spec, tool) : { ...cn, ...trae }, joined === undefined ? undefined : { tools: joined });
 }
 
 /** Trae gives an agent with no `tools` every tool, and one with `tools: ''` none. */
@@ -1055,7 +1075,7 @@ export function renderForTool(spec: AgentSpec, tool: ToolName, resolved?: Resolv
     case 'muse': return renderForMuse(target);
     case 'trae':
     case 'trae-cn':
-      return { ext, content: renderForTrae(spec, toolExtrasFor(spec, tool), resolved, scope) };
+      return { ext, content: renderForTrae(spec, tool, resolved, scope) };
   }
 }
 
