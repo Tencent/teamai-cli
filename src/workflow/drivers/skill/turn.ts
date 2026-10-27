@@ -276,7 +276,7 @@ function refusalMessage(refusal: Refusal, local: { invocation: Invocation; tool?
     case 'choice_pending':
       return `Run ${refusal.run} waits for the host question. Run the next literal, then the run of the option that fits your host.`;
     case 'unknown_choice':
-      return `Run ${refusal.run} asks no host question now: its host is already chosen, or it has no prompt step. Run the next literal to see the run.`;
+      return `Run ${refusal.run} asks no host question now: its host is already chosen, or nothing in it needs a child agent. Run the next literal to see the run.`;
     case 'unknown_offer':
       return `Attempt ${refusal.attempt} of run ${refusal.run} has no dispatch to ack. Run the next literal to see the run.`;
     case 'unknown_attempt':

@@ -1139,6 +1139,17 @@ steps:
     expect(done).not.toHaveProperty(['data', 'turn', 'actions', 0, 'score']);
   });
 
+  it('a run of commands alone that its session judges asks the host question, so a host that starts no child does not judge it', async () => {
+    const gated = 'schemaVersion: v1alpha1\nname: gated\ndescription: Check, scored\ninvoke: allow\nsteps:\n  - id: checks\n    workflow: check\n    scorers: [review-quality]\n';
+    const harness = await skillHarness({ check: CHECK, gated }, { scorers: { 'review-quality': REVIEW_QUALITY }, tool: 'pi' });
+    roots.push(harness.root);
+    const started = await harness.call({ kind: 'start', name: 'gated', answers: { confirmed: false }, inputs: undefined });
+    expect(started).toMatchObject({ data: { turn: { actions: [{ kind: 'choose', about: 'host' }] } } });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+    const run = RunIdSchema.parse(started.data.turn.run);
+    expect(await harness.call({ kind: 'choose', run, choice: 'h4' })).toMatchObject({ data: { turn: { events: expect.arrayContaining([{ kind: 'judging-off', failure: { code: 'no_child_agent', message: expect.any(String) } }]) } } });
+  });
+
   it('a run started without judging reaches done without the score --next of the session\'s own judge', async () => {
     const harness = await skillHarness({ review: REVIEW }, { scorers: { 'review-quality': REVIEW_QUALITY } });
     roots.push(harness.root);

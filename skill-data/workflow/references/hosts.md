@@ -1,6 +1,6 @@
 # The host question
 
-The host question asks how this coding session starts a child agent, and so how many prompt steps the run hands out at once. Every child works from its brief in the `dir` its dispatch names. When your host starts its children in a sandbox, a container or a VM, read `sandbox.md` beside this file first.
+The host question asks how this coding session starts a child agent, and so how many prompt steps the run hands out at once, and whether the session can judge the run in a fresh subagent. Every child works from its brief in the `dir` its dispatch names. When your host starts its children in a sandbox, a container or a VM, read `sandbox.md` beside this file first.
 
 1. Find the most specialized way your host has to start a child agent, in this order:
    1. App orchestration tools: a tool of the app you run in that starts a child task or thread with a prompt and a model.
