@@ -127,6 +127,34 @@ function readOpenClawExec({ stdout }: CallOutput): CallReading {
   return { ok: true, text: final.trim(), ...(Object.keys(tokens).length > 0 ? { tokens } : {}) };
 }
 
+const PiReply = z.object({
+  type: z.literal('message_end'),
+  message: z.object({
+    role: z.literal('assistant'),
+    content: z.array(z.object({ type: z.string(), text: z.string().optional() })),
+    usage: z.object({ input: z.number(), output: z.number(), cacheRead: z.number() }).partial().optional(),
+    stopReason: z.string().optional(),
+    errorMessage: z.string().optional(),
+  }),
+});
+
+/** pi and omp print the turn's events; the assistant's `message_end` carries the reply, its usage and any error. */
+function readPiJson({ stdout }: CallOutput): CallReading {
+  const reply = jsonLines(stdout).flatMap((line) => { const parsed = PiReply.safeParse(line); return parsed.success ? [parsed.data.message] : []; }).at(-1);
+  if (!reply) return { ok: false };
+  // pi exits 0 on a provider error; the reply's stop reason says it failed.
+  if (reply.stopReason === 'error' || reply.stopReason === 'aborted') return { ok: false, ...(reply.errorMessage ? { message: reply.errorMessage } : {}) };
+  const text = reply.content.flatMap((part) => part.type === 'text' && part.text !== undefined ? [part.text] : []).join('\n').trim();
+  if (!text) return { ok: false };
+  const { usage } = reply;
+  const tokens: TokenUsage = {
+    ...(usage?.input !== undefined ? { input: usage.input } : {}),
+    ...(usage?.output !== undefined ? { output: usage.output } : {}),
+    ...(usage?.cacheRead !== undefined ? { cachedInput: usage.cacheRead } : {}),
+  };
+  return { ok: true, text, ...(Object.keys(tokens).length > 0 ? { tokens } : {}) };
+}
+
 /** How teamai launches each family of tools headless. A tool picks its adapter with the `launch` facet in `TOOLS`. */
 export const LAUNCH_ADAPTERS = {
   claude: {
@@ -160,6 +188,15 @@ export const LAUNCH_ADAPTERS = {
   // One embedded turn with ephemeral state, so no call leaves a session in the member's conversations (#1308).
   openclaw: {
     call: { evidence: 'docs', args: () => ['agent', 'exec', '--json', '--message-file', '-'], read: readOpenClawExec },
+  },
+  pi: {
+    call: { evidence: 'source', args: () => ['-p', '--mode', 'json', '--no-session'], read: readPiJson },
+    judge: {
+      evidence: 'docs',
+      env: ['PI_CODING_AGENT_DIR', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GEMINI_API_KEY', 'OPENROUTER_API_KEY', 'DEEPSEEK_API_KEY', 'GROQ_API_KEY'],
+      homeEnv: 'PI_CODING_AGENT_DIR',
+      access: 'full',
+    },
   },
 } as const satisfies Record<string, LaunchAdapter>;
 

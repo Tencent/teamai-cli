@@ -280,6 +280,10 @@ export async function runLocalJudge(input: JudgeInput, { resolveTool = resolveCl
       args = ['-p', '--tools', 'Read,Grep,Glob', '--strict-mcp-config', '--no-session-persistence', '--setting-sources', '', '--permission-mode', 'dontAsk', '--settings', JSON.stringify({ permissions: { allow: ['Read(./**)'] } }), '--output-format', 'json', '--json-schema', JSON.stringify(input.schema), ...model];
       prompt += await fs.readFile(path.join(evidence, 'prompt.md'), 'utf8');
       break;
+    case 'pi':
+      args = ['-p', '--mode', 'json', '--tools', 'read,grep,find,ls', '--no-context-files', '--no-extensions', '--no-skills', '--no-session', ...model];
+      prompt += await fs.readFile(path.join(evidence, 'prompt.md'), 'utf8');
+      break;
     case 'opencode': {
       await fs.cp(evidence, cwd, { recursive: true, dereference: false });
       const entries = await fs.readdir(cwd, { recursive: true, withFileTypes: true });
@@ -300,7 +304,8 @@ export async function runLocalJudge(input: JudgeInput, { resolveTool = resolveCl
       return { ok: false, code: 'judge_tool_unavailable', message: 'CodeBuddy is not signed in. Sign in with codebuddy /login or set CODEBUDDY_API_KEY, then retry, or submit this lease through another driver.', raw: result.stdout + '\n' + result.stderr };
     }
     const report = toolStdout(input.tool, result.stdout);
-    const tokens = report?.tokens;
+    const reading = LAUNCH_ADAPTERS[family].call.read({ stdout: result.stdout, lastMessage: undefined });
+    const tokens = report?.tokens ?? (reading.ok ? reading.tokens : undefined);
     const cost = records(result.stdout).filter((record) => typeof record.total_cost_usd === 'number').at(-1)?.total_cost_usd;
     const spent = tokens || typeof cost === 'number'
       ? { usage: { ...(tokens?.input !== undefined ? { inputTokens: tokens.input } : {}), ...(tokens?.output !== undefined ? { outputTokens: tokens.output } : {}), ...(typeof cost === 'number' ? { cost: { amount: cost, unit: 'USD' } } : {}) } }
@@ -310,7 +315,9 @@ export async function runLocalJudge(input: JudgeInput, { resolveTool = resolveCl
       if (deleted.code !== 0) return { ok: false, code: 'judge_failed', message: 'OpenCode could not delete the judge session. Delete it with opencode session delete before retrying.', raw: deleted.stderr, ...spent };
     }
     if (result.code !== 0) return { ok: false, code: 'judge_failed', message: `${input.tool} exited with code ${result.code}. See the saved output, then retry or submit the lease through another driver.`, raw: result.stdout + '\n' + result.stderr, ...spent };
-    const answer = family === 'codex' ? parseAnswer(await optionalFile(path.join(tmp, 'answer.json')) ?? '') : answerFrom(input.tool, result.stdout);
+    const answer = family === 'codex' ? parseAnswer(await optionalFile(path.join(tmp, 'answer.json')) ?? '')
+      : family === 'pi' ? (reading.ok ? parseAnswer(reading.text) : undefined)
+        : answerFrom(input.tool, result.stdout);
     if (!answer) return { ok: false, code: 'judge_answer_invalid', message: `${input.tool} did not return JSON with label and reasoning. See the saved output, then retry.`, raw: result.stdout + '\n' + result.stderr, ...spent };
     const ranModel = observedModel({ requested: input.model?.name ?? configuredModel, reported: report?.model });
     const ranEffort = observedEffort({ requested: input.model?.effort });

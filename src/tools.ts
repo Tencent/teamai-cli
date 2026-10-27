@@ -831,7 +831,7 @@ export const TOOLS = {
     hooks: { user: { channel: 'adapter', adapter: 'pi-extension', evidence: 'verified' }, self: 'user' },
     // Pi 0.99: <ts>_<uuid>.jsonl under ~/.pi/agent/sessions/<cwd>, moved by PI_CODING_AGENT_SESSION_DIR or PI_CODING_AGENT_DIR.
     sessions: 'none',
-    launch: 'none',
+    launch: 'pi',
     features: {
       env: '✓s',
       workflows: '+v',

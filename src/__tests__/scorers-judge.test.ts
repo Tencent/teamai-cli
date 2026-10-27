@@ -218,7 +218,7 @@ it('judges with OpenCode only at best-effort when the evidence it reads sits ins
   expect(await runLocalJudge({ tool: 'opencode', evidence, schema: {}, isolation: 'verified' }, { resolveTool: () => executable })).toMatchObject({ ok: false, code: 'judge_tool_unavailable' });
 });
 
-async function codeBuddyFake(dir: string, record: string, body: string): Promise<string> {
+async function recordingFake(dir: string, record: string, body: string): Promise<string> {
   const executable = path.join(dir, 'codebuddy-fake');
   await fs.writeFile(executable, `#!${process.execPath}
 const fs=require('fs'); const args=process.argv.slice(2);
@@ -239,7 +239,7 @@ it('runs CodeBuddy with its Claude-like flags, the prompt on stdin, at best-effo
   vi.stubEnv('GH_TOKEN', 'must-not-leak');
   vi.stubEnv('TEAMAI_MODE', 'unattended');
   const record = path.join(root, 'invocation.json');
-  const executable = await codeBuddyFake(root, record,
+  const executable = await recordingFake(root, record,
     "console.log(JSON.stringify({type:'result',subtype:'success',result:'',structured_output:{label:'good',reasoning:'done'},usage:{input_tokens:5,output_tokens:2},total_cost_usd:0.02}));");
 
   const result = await runLocalJudge({ tool: 'codebuddy', evidence, schema: { type: 'object' } }, { resolveTool: () => executable });
@@ -260,12 +260,36 @@ it('runs CodeBuddy with its Claude-like flags, the prompt on stdin, at best-effo
   expect(invocation.env).not.toHaveProperty('GH_TOKEN');
 });
 
+it('runs pi with only its read tools, no context files, extensions, skills or saved session, at best-effort and with full access', async () => {
+  root = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-judge-'));
+  const evidence = path.join(root, 'evidence');
+  await fs.mkdir(evidence);
+  await fs.writeFile(path.join(evidence, 'prompt.md'), 'PI-INLINE-PROMPT');
+  vi.stubEnv('OPENAI_API_KEY', 'openai-key');
+  vi.stubEnv('GH_TOKEN', 'must-not-leak');
+  const record = path.join(root, 'invocation.json');
+  const reply = { type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: '{"label":"good","reasoning":"done"}' }], usage: { input: 9, output: 4 }, stopReason: 'stop' } };
+  const executable = await recordingFake(root, record, `console.log(${JSON.stringify(JSON.stringify(reply))});`);
+
+  const result = await runLocalJudge({ tool: 'pi', evidence, schema: { type: 'object' } }, { resolveTool: () => executable });
+
+  expect(result).toMatchObject({ ok: true, answer: { label: 'good' }, judge: { tool: 'pi', access: 'full', isolation: 'best-effort', usage: { inputTokens: 9, outputTokens: 4 } } });
+  const invocation = z.object({ args: z.array(z.string()), env: z.record(z.string()), stdin: z.string(), cwd: z.string() }).parse(JSON.parse(await fs.readFile(record, 'utf8')));
+  expect(invocation.args.slice(0, 3)).toEqual(['-p', '--mode', 'json']);
+  expect(invocation.args[invocation.args.indexOf('--tools') + 1]).toBe('read,grep,find,ls');
+  expect(invocation.args).toEqual(expect.arrayContaining(['--no-context-files', '--no-extensions', '--no-skills', '--no-session']));
+  expect(invocation.stdin).toContain('PI-INLINE-PROMPT');
+  expect(invocation.cwd).toBe(await fs.realpath(evidence));
+  expect(invocation.env.OPENAI_API_KEY).toBe('openai-key');
+  expect(invocation.env).not.toHaveProperty('GH_TOKEN');
+});
+
 it('fails a CodeBuddy judge that is not signed in, though CodeBuddy exits 0', async () => {
   root = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-judge-'));
   const evidence = path.join(root, 'evidence');
   await fs.mkdir(evidence);
   await fs.writeFile(path.join(evidence, 'prompt.md'), 'prompt');
-  const executable = await codeBuddyFake(root, path.join(root, 'invocation.json'),
+  const executable = await recordingFake(root, path.join(root, 'invocation.json'),
     "process.stderr.write('Authentication required. Please use /login command to sign in to your account\\n');");
 
   expect(await runLocalJudge({ tool: 'codebuddy', evidence, schema: {} }, { resolveTool: () => executable })).toMatchObject({ ok: false, code: 'judge_tool_unavailable', message: expect.stringContaining('sign') });
@@ -313,7 +337,7 @@ it('judges with WorkBuddy through the CodeBuddy profile, at best-effort and with
   await fs.mkdir(evidence);
   await fs.writeFile(path.join(evidence, 'prompt.md'), 'prompt');
   const record = path.join(root, 'invocation.json');
-  const executable = await codeBuddyFake(root, record, "console.log(JSON.stringify({type:'result',structured_output:{label:'good',reasoning:'done'}}));");
+  const executable = await recordingFake(root, record, "console.log(JSON.stringify({type:'result',structured_output:{label:'good',reasoning:'done'}}));");
 
   expect(installedJudgeTools([], { resolveTool: (tool) => tool === 'workbuddy' ? executable : null })).toEqual(['workbuddy']);
   const result = await runLocalJudge({ tool: 'workbuddy', evidence, schema: {} }, { resolveTool: () => executable });
