@@ -19,7 +19,7 @@ import { saveLocalConfig } from '../config.js';
 import { dataHomeKey } from '../dashboard-collector.js';
 import { syncScorerDefinitions } from '../scorers/cache.js';
 import { LabelStore } from '../scorers/label-store.js';
-import { scoreCommand } from '../score-commands.js';
+import { scoreCommand, type ScoreOptions } from '../score-commands.js';
 import YAML from 'yaml';
 import { encodeCwdClaude } from '../session-flow/fs.js';
 import type { LocalConfig } from '../types.js';
@@ -415,5 +415,40 @@ describe('teamai score --drain', () => {
     expect(drained.lines.filter((printed) => /Judged|Published|Archived/.test(printed))).toEqual([]);
     expect(await LabelStore.local(config)).toEqual([]);
     expect(onReports(origin, 'sessions')).toEqual([]);
+  });
+
+  it('in attended mode with publish attended auto, archives an attended session idle six hours and leaves an active one', async () => {
+    const { origin } = await team({ 'teamai.yaml': 'team: acme\nrepo: https://example.com/acme/team.git\nsessions:\n  publish: { attended: auto }\n' });
+    capturedSession(SESSION, 'attended', { answer: 'The idle answer.' });
+    capturedSession('7c1e0000-0000-4000-8000-000000000012', 'attended', { idleFor: 0, answer: 'The active answer.' });
+
+    const drained = await drain();
+
+    expect(drained.code, drained.lines.join('\n')).toBe(0);
+    expect(drained.lines).toContain('✔ Archived 1 captured session to teamai-reports (scrubbed)');
+    const archived = onReports(origin, 'sessions').filter((file) => file.endsWith('.jsonl'));
+    expect(archived.map((file) => readOnReports(origin, file))).toEqual([expect.stringContaining('The idle answer.')]);
+  });
+
+  it.each<[string, ScoreOptions]>([
+    ['--next', { next: true }],
+    ['a payload', { json: '{}' }],
+    ['--push', { push: true }],
+    ['--scorer', { scorer: ['quality'] }],
+  ])('refuses --drain with %s', async (_, options) => {
+    await team();
+    const written: string[] = [];
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      written.push(String(chunk));
+      return true;
+    });
+    process.exitCode = 0;
+    try {
+      await scoreCommand({ drain: true, ...options });
+      expect(process.exitCode).toBe(1);
+    } finally {
+      process.exitCode = 0;
+    }
+    expect(JSON.parse(written.join(''))).toEqual({ error: { code: 'invalid_arguments', message: '--drain goes alone and takes no payload: teamai score --drain' } });
   });
 });
