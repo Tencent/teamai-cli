@@ -275,7 +275,12 @@ describe('findUnreadableProjectConfig', () => {
     fs.writeFileSync(userConfig, 'repo:\n  localPath: /x\n  remote: https://example.test/a.git\nusername: t\nscope: user\n');
     const configPath = path.join(dir, '.teamai', 'config.yaml');
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
-    fs.symlinkSync(userConfig, configPath);
+    try {
+      fs.symlinkSync(userConfig, configPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EPERM') return;
+      throw error;
+    }
 
     try {
       expect(await findUnreadableProjectConfig(dir)).toContain(configPath);
