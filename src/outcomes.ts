@@ -15,6 +15,9 @@ export const WorkOutcomeSchema = z.discriminatedUnion('kind', [
 export type WorkOutcome = z.infer<typeof WorkOutcomeSchema>;
 export type OutcomeKind = WorkOutcome['kind'];
 
+/** The rows of the usage report's `outcomes` under a run mode, in the order they are shown: each kind, then `none`. */
+export const OUTCOME_ROWS = ['pr', 'commit', 'learning', 'none'] as const satisfies ReadonlyArray<OutcomeKind | 'none'>;
+
 /** `outcomes` with each outcome once, in the order it first appears. */
 export function uniqueOutcomes(outcomes: Iterable<WorkOutcome>): WorkOutcome[] {
   const seen = new Map<string, WorkOutcome>();

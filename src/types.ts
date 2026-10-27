@@ -9,6 +9,7 @@ import { channelsOf } from './tools.js';
 import type { WorkspaceChildren } from './workspace-children.js';
 import type { HeadState } from './utils/git.js';
 import type { RunMode } from './launch-context.js';
+import type { OutcomeKind } from './outcomes.js';
 import { AllowSchema } from './workflow/requirements.js';
 
 const COPILOT_USER_MCP_CONFIG = 'mcp-config.json';
@@ -1826,7 +1827,23 @@ export interface UserStats {
    */
   attended?: UserModeStats;
   unattended?: UserModeStats;
+  /**
+   * The member's finished sessions by run mode and outcome kind (#1387), `none` for a session that delivered nothing.
+   * A session with a pull request and a learning is in both rows, so rows do not add up. Counts only: no session id,
+   * commit sha, pull request URL or learning id leaves the machine.
+   */
+  outcomes?: UserOutcomeStats;
 }
+
+/** What a row of {@link UserStats.outcomes} counts: its sessions, and their tokens and interventions in total. */
+export interface OutcomeCounts {
+  sessions: number;
+  tokens: { input: number; output: number };
+  interventions: number;
+}
+
+/** {@link UserStats.outcomes}: rows by run mode (`notRecorded` without one), then by outcome kind or `none`. */
+export type UserOutcomeStats = Partial<Record<RunMode | 'notRecorded', Partial<Record<OutcomeKind | 'none', OutcomeCounts>>>>;
 
 /** The counters of {@link UserStats} one run mode holds. */
 export type UserModeStats = Pick<UserStats, 'interventions' | 'prompts' | 'tokens' | 'daily'>;

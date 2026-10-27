@@ -8,6 +8,7 @@ import { collectTeamRepoSkills } from './agent-skills.js';
 import { BUILTIN_SKILL_NAMES } from './builtin-skills.js';
 import { readEvents, aggregateSessionMetrics, dataHomeKey, memberEvents, sessionRuns } from './dashboard-collector.js';
 import { RUN_MODES, type RunMode, type SessionRun } from './launch-context.js';
+import { addOutcomeStats, SessionOutcomes } from './session-outcomes.js';
 import { writeFile, readFileSafe, ensureDir, pathExists, readJson, writeJson } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import type {
@@ -988,7 +989,9 @@ export async function reportUsageToTeam(
     // Fold the local dashboard event log into per-session metrics once, then derive
     // both the intervention delta and the prompt-count/token delta from it.
     // Only the member's own sessions recorded in this scope (#785).
-    const dashboardEvents = memberEvents(await filterEventsByScope(await readEvents(), reportsConfig));
+    const logged = await readEvents();
+    const scopedEvents = await filterEventsByScope(logged, reportsConfig);
+    const dashboardEvents = memberEvents(scopedEvents);
     const metrics = aggregateSessionMetrics(dashboardEvents);
 
     const currentInterventions = interventionCounts(metrics);
@@ -1026,15 +1029,22 @@ export async function reportUsageToTeam(
       ...await reportedBeyondShared(reportedPromptTokens, reportedInterventions, reportedDailySessions),
     ], await dataHomeKey(getDataHome(reportsConfig)));
 
+    // What the scope's finished sessions delivered (#1387), counted once each.
+    const outcomeFold = await SessionOutcomes.fold({
+      config: reportsConfig, logged, scoped: scopedEvents, member: dashboardEvents, metrics,
+      reported: { promptTokens: reportedPromptTokens, interventions: reportedInterventions }, now: Date.now(),
+    });
+
     const hasUsage = events.length > 0;
     const hasInterventions = hasInterventionDelta(interventionDelta);
     const hasPromptTokens = hasPromptTokenDelta(promptTokenDelta);
     const hasDaily = hasDailyDelta(dailyDelta);
+    const hasOutcomes = outcomeFold.finished.length > 0;
 
-    const hasStats = hasUsage || hasInterventions || hasPromptTokens || hasDaily;
+    const hasStats = hasUsage || hasInterventions || hasPromptTokens || hasDaily || hasOutcomes;
     const commitMsg = hasUsage
       ? `[teamai] Update usage stats for ${username}`
-      : (hasInterventions || hasPromptTokens || hasDaily)
+      : (hasInterventions || hasPromptTokens || hasDaily || hasOutcomes)
         ? `[teamai] Update session stats for ${username}`
         : `[teamai] Update votes for ${username}`;
 
@@ -1072,6 +1082,7 @@ export async function reportUsageToTeam(
           const counters = { ...existing?.[mode], ...changedCounters(existing?.[mode], delta) };
           if (Object.keys(counters).length > 0) merged[mode] = counters;
         }
+        if (hasOutcomes) merged.outcomes = addOutcomeStats(existing?.outcomes, outcomeFold.delta);
 
         await writeFile(statsPath, YAML.stringify(merged));
         filesToPush.push(`stats/${username}.yaml`);
@@ -1162,7 +1173,11 @@ export async function reportUsageToTeam(
       await writeReportedDailySessions({ ...existingDaily, ...nextReportedDailySessions }, reportsConfig);
       log.debug(`Reported daily session trends (${Object.keys(dailyDelta).length} UTC day buckets) to team repo`);
     }
-    if (!hasUsage && !hasInterventions && !hasPromptTokens && !hasDaily) {
+    if (hasOutcomes) {
+      await SessionOutcomes.markReported(reportsConfig, outcomeFold.finished);
+      log.debug(`Reported the outcomes of ${outcomeFold.finished.length} finished sessions to team repo`);
+    }
+    if (!hasUsage && !hasInterventions && !hasPromptTokens && !hasDaily && !hasOutcomes) {
       log.debug('Pushed pending votes to team repo');
     }
     return true;
