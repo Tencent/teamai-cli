@@ -243,16 +243,31 @@ export async function importCodebase(opts: ImportCodebaseOptions): Promise<boole
     // `--dir` named a checkout with an origin after its directory before it took
     // the remote's slug: adopt that evidence rather than leave a duplicate.
     const { legacySlug } = opts;
-    if (legacySlug && legacySlug !== slug) {
-      const legacyDest = path.join(wikiRoot, 'evidence', 'code', legacySlug);
-      if (await fs.pathExists(legacyDest)
-        && (await publishedSource({ publishedDir: legacyDest, stagedDir: stagingEvidence, slug: legacySlug })).kind === 'same') {
-        if (await fs.pathExists(evidenceDest)) {
-          log.warn(`teamwiki/evidence/code/${legacySlug}/ is an older copy of teamwiki/evidence/code/${slug}/. `
-            + 'Move any curated docs you want to keep from it, then remove it.');
-        } else {
-          await fs.move(legacyDest, evidenceDest);
-          log.info(`Moved teamwiki/evidence/code/${legacySlug}/ to teamwiki/evidence/code/${slug}/`);
+    const legacyDest = legacySlug && legacySlug !== slug ? path.join(wikiRoot, 'evidence', 'code', legacySlug) : null;
+    if (legacySlug && legacyDest && await fs.pathExists(legacyDest)) {
+      const legacy = await publishedSource({ publishedDir: legacyDest, stagedDir: stagingEvidence, slug: legacySlug });
+      switch (legacy.kind) {
+        case 'same':
+          if (await fs.pathExists(evidenceDest)) {
+            log.warn(`teamwiki/evidence/code/${legacySlug}/ is an older copy of teamwiki/evidence/code/${slug}/. `
+              + 'Move any curated docs you want to keep from it, then remove it.');
+          } else {
+            await fs.move(legacyDest, evidenceDest);
+            log.info(`Moved teamwiki/evidence/code/${legacySlug}/ to teamwiki/evidence/code/${slug}/`);
+          }
+          break;
+        case 'unknown':
+          // Evidence older than its source manifest, or from before the checkout
+          // had an origin, cannot be shown to be this repo's, so it is not moved.
+          log.warn(`teamwiki/evidence/code/${legacySlug}/ names no repository, so it was left in place. `
+            + `If it is an older copy of teamwiki/evidence/code/${slug}/, move any curated docs you want to keep from it, then remove it.`);
+          break;
+        case 'different':
+          // Another repository's evidence keeps its own name.
+          break;
+        default: {
+          const unhandled: never = legacy;
+          throw new Error(`Unhandled published source: ${JSON.stringify(unhandled)}`);
         }
       }
     }

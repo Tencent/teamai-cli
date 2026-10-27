@@ -403,6 +403,32 @@ describe('importCodebase: the extraction every import source shares', () => {
     expect((await fs.readJson(path.join(evidence, 'source-manifest.json'))).project).toBe('github__acme__svc');
   });
 
+  it.each([
+    ['was published before the per-codebase source manifest existed', async (repo: string) => {
+      await importCodebase({ sourceDir: repo, slug: 'svc', wikiRoot, skipEnrich: true });
+      await fs.remove(path.join(wikiRoot, 'evidence', 'code', 'svc', 'source-manifest.json'));
+    }],
+    ['was published before the checkout had an origin', async (repo: string) => {
+      git(repo, 'remote', 'remove', 'origin');
+      await importCodebase({ sourceDir: repo, slug: 'svc', wikiRoot, skipEnrich: true });
+      git(repo, 'remote', 'add', 'origin', 'https://github.com/acme/svc');
+    }],
+  ])('leaves directory-named evidence that names no repository in place, with a warning, when it %s', async (_, publishLegacy) => {
+    const repo = await makeRepo(root, 'svc', 'export function greet() { return "hi"; }\n');
+    await publishLegacy(repo);
+    const legacy = path.join(wikiRoot, 'evidence', 'code', 'svc');
+    await fs.outputFile(path.join(legacy, 'docs', 'curated.md'), '# curated\n');
+    logs.length = 0;
+
+    expect(await importCodebase({
+      sourceDir: repo, slug: 'github__acme__svc', legacySlug: 'svc', wikiRoot, skipEnrich: true,
+    })).toBe(true);
+
+    expect(await fs.readFile(path.join(legacy, 'docs', 'curated.md'), 'utf8')).toBe('# curated\n');
+    expect(logs.join('\n')).toContain('teamwiki/evidence/code/svc/ names no repository, so it was left in place. '
+      + 'If it is an older copy of teamwiki/evidence/code/github__acme__svc/, move any curated docs you want to keep from it, then remove it.');
+  });
+
   it('points the kept AI components at the moved evidence on a skipped-enrichment import', async () => {
     const repo = await makeRepo(root, 'svc', 'export function greet() { return "hi"; }\n');
     await fs.outputFile(path.join(repo, 'auth', 'main.ts'), 'export const auth = 1;\n');
