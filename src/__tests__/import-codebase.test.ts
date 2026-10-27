@@ -254,7 +254,7 @@ describe('importCodebase: the extraction every import source shares', () => {
     expect(await fs.pathExists(path.join(evidence, 'docs', 'billing.md'))).toBe(false);
   });
 
-  it('does not carry curated docs from a different repo that shares the slug', async () => {
+  it('refuses to replace the evidence of a different repo that shares the slug', async () => {
     const repo = await makeRepo(root, 'svc', 'export function greet() { return "hi"; }\n');
     const slug = 'github__acme__svc';
     await run(repo, slug);
@@ -264,16 +264,16 @@ describe('importCodebase: the extraction every import source shares', () => {
 
     await fs.writeFile(path.join(repo, 'src', 'main.ts'), 'export function other() { return 1; }\n');
     git(repo, 'commit', '-q', '-am', 'change');
-    expect(await importCodebase({
+    await expect(importCodebase({
       sourceDir: repo,
       slug,
       wikiRoot,
       incremental: true,
       skipEnrich: true,
       repoUrl: 'https://github.com/acme/another-repo',
-    })).toBe(true);
+    })).rejects.toThrow('this checkout is https://github.com/acme/another-repo. Not replacing it.');
 
-    expect(await fs.pathExists(path.join(evidence, 'docs', 'curated.md'))).toBe(false);
+    expect(await fs.readFile(path.join(evidence, 'docs', 'curated.md'), 'utf8')).toBe('# curated\n');
   });
 
   it('keeps curated docs when older evidence has no sidecar and the slug names the repo', async () => {
@@ -326,6 +326,24 @@ describe('importCodebase: the extraction every import source shares', () => {
     })).toBe(true);
 
     expect(await fs.pathExists(path.join(evidence, 'docs', 'curated.md'))).toBe(true);
+  });
+
+  it('refuses to replace the evidence of a repo with a checkout of another source that shares the slug', async () => {
+    const first = await makeRepo(path.join(root, 'a'), 'svc', 'export function one() { return 1; }\n');
+    const slug = 'svc';
+    await importCodebase({ sourceDir: first, slug, wikiRoot, skipEnrich: true });
+    const evidence = path.join(wikiRoot, 'evidence', 'code', slug);
+    await fs.outputFile(path.join(evidence, 'docs', 'curated.md'), '# curated\n');
+    const before = (await fs.readdir(evidence)).sort();
+
+    const second = await makeRepo(path.join(root, 'b'), 'svc', 'export function two() { return 2; }\n');
+    execFileSync('git', ['remote', 'remove', 'origin'], { cwd: second, stdio: 'ignore' });
+    await expect(importCodebase({ sourceDir: second, slug, wikiRoot, skipEnrich: true }))
+      .rejects.toThrow('teamwiki/evidence/code/svc/ holds the evidence of https://github.com/acme/svc, '
+        + 'and this checkout has no origin remote. Not replacing it.');
+
+    expect((await fs.readdir(evidence)).sort()).toEqual(before);
+    expect((await fs.readJson(path.join(evidence, 'source-manifest.json'))).repoUrl).toBe('https://github.com/acme/svc');
   });
 
   it('does not carry curated docs between remote-less checkouts that share a slug', async () => {

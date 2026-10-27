@@ -53,48 +53,47 @@ function componentSlugs(manifest: EvidenceJson | null): Set<string> {
 
 const PROVIDER_SLUG_PREFIXES = ['github__', 'gitlab__', 'tgit__'] as const;
 
+/** Whether the published evidence of a slug came from the source being imported over it. */
+type PublishedSource =
+  | { kind: 'same' }
+  | { kind: 'different'; publishedUrl: string; stagedUrl: string }
+  | { kind: 'unknown' };
+
 /**
- * `--dir` imports derive the slug from the directory basename, so two checkouts
- * named `svc` share one evidence directory. Carrying curated artifacts across
- * such an import would attach the first repo's docs and domain to the second.
+ * A `--dir` checkout without a remote, or a subdirectory, is named after its
+ * directory, so two such checkouts named `svc` share one evidence directory.
  *
- * Keep them only when the two manifests name the same repository and the same
- * directory in it. A checkout with a remote names it by `repoUrl`. One with no
- * remote has no canonical identity (#1422), so the hashed git root it was read
- * from is the only stable statement of "this source": the same checkout carries
- * its docs over, while a different checkout with the same basename does not.
- * The directory matters as much as the root there — two subdirectories of one
- * origin-less repo hash to the same root and are still two codebases.
- * Teamwikis written before the per-codebase `source-manifest.json` existed have
- * no published identity; there a provider-namespaced slug
- * (`gitlab__group__repo`) still names the remote repository, so the slug itself
- * is the identity. A bare `--dir` basename is not, and replaces the evidence
- * like base.
+ * The evidence came from the same source when both manifests name the same
+ * repository, and from a different one when only the published manifest names
+ * it or the two differ. Teamwikis written before the per-codebase
+ * `source-manifest.json` existed have no published identity; there a
+ * provider-namespaced slug (`gitlab__group__repo`) still names the remote
+ * repository, so the slug itself is the identity. A bare `--dir` basename is
+ * not, and nothing is known.
  */
-async function sameRepository(publishedDir: string, stagedDir: string, slug: string): Promise<boolean> {
+async function publishedSource(publishedDir: string, stagedDir: string, slug: string): Promise<PublishedSource> {
   const [published, staged] = await Promise.all([
     readJsonIfPresent(path.join(publishedDir, 'source-manifest.json')),
     readJsonIfPresent(path.join(stagedDir, 'source-manifest.json')),
   ]);
   const publishedUrl = typeof published?.['repoUrl'] === 'string' ? published['repoUrl'] : '';
   const stagedUrl = typeof staged?.['repoUrl'] === 'string' ? staged['repoUrl'] : '';
-  if (publishedUrl && stagedUrl) return repoIdentity(publishedUrl) === repoIdentity(stagedUrl);
-  if (publishedUrl || stagedUrl) {
-    return !publishedUrl
-      && PROVIDER_SLUG_PREFIXES.some((prefix) => slug.startsWith(prefix));
+  if (publishedUrl) {
+    return stagedUrl && repoIdentity(publishedUrl) === repoIdentity(stagedUrl)
+      ? { kind: 'same' }
+      : { kind: 'different', publishedUrl, stagedUrl };
   }
-  // Neither side names a remote. Two origin-less runs are the same source only
-  // when both recorded the same verified git root *and* the same directory in
-  // it: `service-a/svc` and `service-b/svc` of one repo share one git root but
-  // are different codebases, so the root alone would carry docs across them.
-  // A manifest written before `localRootHash` existed is not evidence of the
-  // same source.
-  const publishedRoot = typeof published?.['localRootHash'] === 'string' ? published['localRootHash'] : '';
-  const stagedRoot = typeof staged?.['localRootHash'] === 'string' ? staged['localRootHash'] : '';
-  if (publishedRoot === '' || publishedRoot !== stagedRoot) return false;
-  const publishedSubdir = typeof published?.['sourceSubdir'] === 'string' ? published['sourceSubdir'] : '';
-  const stagedSubdir = typeof staged?.['sourceSubdir'] === 'string' ? staged['sourceSubdir'] : '';
-  return publishedSubdir === stagedSubdir;
+  return stagedUrl && PROVIDER_SLUG_PREFIXES.some((prefix) => slug.startsWith(prefix))
+    ? { kind: 'same' }
+    : { kind: 'unknown' };
+}
+
+function differentSourceError(slug: string, source: { publishedUrl: string; stagedUrl: string }): Error {
+  const evidence = `teamwiki/evidence/code/${slug}/`;
+  const reason = source.stagedUrl
+    ? `${evidence} holds the evidence of ${source.publishedUrl}, and this checkout is ${source.stagedUrl}. Not replacing it.`
+    : `${evidence} holds the evidence of ${source.publishedUrl}, and this checkout has no origin remote. Not replacing it.`;
+  return new Error(`${reason} Import the checkout from a directory with another name, or remove ${evidence} if that codebase is gone.`);
 }
 
 /**
@@ -193,7 +192,9 @@ export async function importCodebase(opts: ImportCodebaseOptions): Promise<boole
     // A missing manifest is the only case where nothing can be pruned.
     const hasManifest = Boolean(stagedManifest);
 
-    if (await sameRepository(evidenceDest, stagingEvidence, slug)) {
+    const source = await publishedSource(evidenceDest, stagingEvidence, slug);
+    if (source.kind === 'different') throw differentSourceError(slug, source);
+    if (source.kind === 'same') {
       // Carry over the artifacts that only AI enrichment and deep enrich write.
       // Extraction never regenerates them, so replacing the published evidence
       // would silently drop curated docs and domain metadata. Existing staged
