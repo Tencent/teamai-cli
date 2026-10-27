@@ -215,12 +215,13 @@ async function eventsToDone(harness: Harness, run: RunId): Promise<unknown[]> {
 }
 
 /** Starts `review` with the skill driver, has its child review the change and report, and answers the turn that follows. */
-async function reviewed(harness: Harness, mode: RunMode = 'attended', options: { judge?: false } = {}): Promise<{ run: RunId; turn: unknown }> {
-  const answers = { ...(mode === 'unattended' ? { confirmed: false, hitl: 'auto-approve' as const } : { confirmed: false }), ...options };
+async function reviewed(harness: Harness, mode: RunMode = 'attended', options: { judge?: false; host?: 'h1' | 'h4' } = {}): Promise<{ run: RunId; chosen: unknown; turn: unknown }> {
+  const { host = 'h1', ...judge } = options;
+  const answers = { ...(mode === 'unattended' ? { confirmed: false, hitl: 'auto-approve' as const } : { confirmed: false }), ...judge };
   const started = await harness.call({ kind: 'start', name: 'review', answers, inputs: undefined }, { mode });
   if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
   const run = RunIdSchema.parse(started.data.turn.run);
-  const chosen = await harness.call({ kind: 'choose', run, choice: 'h1' }, { mode });
+  const chosen = await harness.call({ kind: 'choose', run, choice: host }, { mode });
   if (!('data' in chosen) || !('turn' in chosen.data)) throw new Error(JSON.stringify(chosen));
   const [dispatch] = chosen.data.turn.actions.flatMap((action) => (action.kind === 'dispatch' ? [action] : []));
   if (!dispatch) throw new Error(JSON.stringify(chosen));
@@ -229,7 +230,7 @@ async function reviewed(harness: Harness, mode: RunMode = 'attended', options: {
   if (!file) throw new Error(`${dispatch.brief} names no result file`);
   fs.writeFileSync(file, JSON.stringify({ kind: 'output', output: 'Reviewed the change.' }));
   expect(await harness.call({ kind: 'report', run, attempt: dispatch.attempt, role: 'agent', modelUnavailable: false })).toMatchObject({ data: { runner: { status: 'reported' } } });
-  return { run, turn: await harness.call({ kind: 'next', run, wait: false }, { mode }) };
+  return { run, chosen, turn: await harness.call({ kind: 'next', run, wait: false }, { mode }) };
 }
 
 /** A claude on PATH without a verified judge profile, so no confined judge of it runs here. */
@@ -977,6 +978,16 @@ steps:
     const payload: unknown = JSON.parse(action?.score.slice(action.score.indexOf("'") + 1, -1) ?? '');
     expect(payload).toEqual({ run, driver: { kind: 'skill', machine: expect.any(String), workspace: harness.work, can: { judge: { isolation: 'best-effort', access: 'read', tools: ['claude'] } } }, running: [] });
     expect(await harness.context.client.scoreNext(payload)).toMatchObject({ data: { lease: { subject: { runId: run, step: 'review' }, judge: { tool: 'claude', isolation: 'best-effort' } } } });
+  });
+
+  it('a session whose host has no child agent does not judge its run: choosing h4 turns judging off, and done names no score --next', async () => {
+    const harness = await skillHarness({ review: REVIEW }, { scorers: { 'review-quality': REVIEW_QUALITY } });
+    roots.push(harness.root);
+    unverifiedClaude(harness);
+    const { chosen, turn: done } = await reviewed(harness, 'attended', { host: 'h4' });
+    expect(chosen).toMatchObject({ data: { turn: { events: expect.arrayContaining([{ kind: 'judging-off', failure: { code: 'no_child_agent', message: expect.any(String) } }]) } } });
+    expect(done).toMatchObject({ data: { turn: { status: 'done', actions: [{ kind: 'done', outcome: 'succeeded' }] } } });
+    expect(done).not.toHaveProperty(['data', 'turn', 'actions', 0, 'score']);
   });
 
   it('a run started without judging reaches done without the score --next of the session\'s own judge', async () => {

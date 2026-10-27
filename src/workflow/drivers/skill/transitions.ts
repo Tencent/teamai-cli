@@ -45,7 +45,7 @@ export const TRANSITIONS = [
   { id: 'R24', state: 'any', input: 'R19\'s input, or `next --takeover` with skill.json here', guard: 'run mode `unattended`, R8 does not apply, and `attendedReason` names what in the run\'s own definition needs a person, as R17\'s, counting only the steps the run has not settled for good (succeeded or skipped, a step in `for_each` items once every item settled it or a step that holds it, and every step in a workflow or `for_each` step that settled whole; none while a workflow or step loop of the run could run them again), and its `invoke: ask`; read before the claim or the takeover, from the published run a `--claim` would install, else this machine\'s copy, so R20 and R21 come after it', effects: 'none', next: 'unchanged', action: 'error `unattended_denied` with that reason, next null; the run and its skill state stay as they were: nothing is claimed or taken over' },
   { id: 'R26', state: 'any', input: 'R24\'s input, with skill.json here that R19 does not replace', guard: 'run mode `unattended`, R8 and R24 do not apply, and the skill.json\'s run mode is `attended`', effects: 'its run mode becomes `unattended`, and its HITL mode that of `--hitl` or `--auto-approve`, else `auto-approve`', next: 'unchanged', action: 'the S row of the call' },
   { id: 'R12', state: 'host', input: 'tick', guard: '', effects: 'none', next: 'host', action: '`choose about:host decide:agent`' },
-  { id: 'R13', state: 'host', input: 'next `--choice h`', guard: '', effects: 'host := `HOST_PROFILES[h]`', next: 'drive', action: 'the turn of a tick' },
+  { id: 'R13', state: 'host', input: 'next `--choice h`', guard: '', effects: 'host := `HOST_PROFILES[h]`; on `h4`, which starts no child agent, drop `sessionJudge`', next: 'drive', action: 'the turn of a tick, with event `judging-off` `no_child_agent` when it dropped `sessionJudge`' },
   { id: 'R14', state: 'host', input: 'report, next `--ack` or `--adopt`', guard: '', effects: 'none', next: 'host', action: 'error `choice_pending`, next: the next literal' },
   { id: 'R15', state: 'drive, done', input: 'next `--choice h`', guard: '', effects: 'none', next: 'unchanged', action: 'error `unknown_choice`, next: the next literal' },
   { id: 'S1', state: 'host, drive, done', input: 'an agent call from session s', guard: 'the owner is s, or either session is unknown', effects: '`lastCallAt` := now; owner := s when unknown', next: 'unchanged', action: 'the input\'s row' },
@@ -575,7 +575,11 @@ export function judgeAnsweredRow(state: SkillState, input: { attempt: AttemptId;
 /** R13: the agent's answer to the host question; R15 when the run asks none now. */
 export function chooseRow(state: SkillState, input: { choice: HostChoice; profile: HostProfile }): Moved<'R13'> | Answered<'R15'> {
   if (state.host.kind !== 'pending') return { row: 'R15', answer: { kind: 'error', refusal: { code: 'unknown_choice', run: state.run } } };
-  return { row: 'R13', state: { ...state, host: { kind: 'chosen', id: input.choice, children: input.profile.children, places: input.profile.places } } };
+  const chosen: SkillState = { ...state, host: { kind: 'chosen', id: input.choice, children: input.profile.children, places: input.profile.places } };
+  // The session judges in a fresh subagent, which a host that starts no child agent cannot give it.
+  if (input.choice !== 'h4' || chosen.sessionJudge === undefined) return { row: 'R13', state: chosen };
+  const { sessionJudge: _sessionJudge, ...rest } = chosen;
+  return { row: 'R13', state: withEvent(rest, { kind: 'judging-off', failure: { code: 'no_child_agent', message: 'This host starts no child agent, so this session does not judge the run: another driver judges its scored steps.' } }) };
 }
 
 /** K1 to K3: the ack of the dispatch of `attempt`; R14 while the host question waits. */

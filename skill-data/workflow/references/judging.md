@@ -14,7 +14,7 @@ The person opts out of judging before the run starts, by picking a `without judg
 
 ## Judging by this session
 
-When `done` carries `score`, this machine has no verified judge of your tool, and you judge the run's scored steps yourself at `best-effort` isolation. A run started or resumed with `--no-judge` has no `score`.
+When `done` carries `score`, this machine has no verified judge of your tool, and you judge the run's scored steps yourself at `best-effort` isolation. A run started or resumed with `--no-judge` has no `score`, and neither has a run whose host you answered `h4`: you start no subagent, so a `judging-off` event says another driver judges it.
 
 1. Run `score`. It answers the next `lease` of the run's judge work, or `idle` when none is left.
 2. Judge each lease in a fresh subagent that reads only the lease's `prompt` and its `evidence` directory, never this session or the checkout, and answers in the shape of `answer.schema`.
