@@ -190,7 +190,7 @@ async function run(configs: readonly LocalConfig[], { mode, clock = () => new Da
     }
     // As pull reports it, so the counts of this data home leave an ephemeral runner.
     if (usesBranchWorktree(config) && isUsageReportEnabled(config, team ?? {})) {
-      const outcome = await reportUsage(config.repo.localPath, config.username, { selfConfig: config });
+      const outcome = await reportUsage(config.repo.localPath, config.username, { selfConfig: config, isDrain: true });
       if (outcome !== 'nothing') result.usage.push({ member: config.username, reported: outcome === 'reported' });
     }
   }

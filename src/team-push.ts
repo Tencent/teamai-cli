@@ -969,7 +969,7 @@ export type UsageReportOutcome = 'reported' | 'nothing' | 'unreported';
 export async function reportUsage(
   repoPath: string,
   username: string,
-  options: { skipTruncate?: boolean; selfConfig: LocalConfig },
+  options: { skipTruncate?: boolean; selfConfig: LocalConfig; isDrain?: boolean },
 ): Promise<UsageReportOutcome> {
   const reportsConfig = options.selfConfig;
   if (!usesBranchWorktree(reportsConfig)) {
@@ -1039,6 +1039,7 @@ export async function reportUsage(
         interventions: { ...reportedInterventions, ...nextReported },
       },
       now: Date.now(),
+      isDrain: options.isDrain ?? false,
     });
 
     const hasUsage = events.length > 0;

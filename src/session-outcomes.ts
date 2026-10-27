@@ -2,7 +2,7 @@
  * What the member's finished sessions delivered, folded into the usage report once each (#1387).
  *
  *   report ─ fold(): each member session of the scope's log → its facts in reported-outcomes.json, until it is
- *            │       finished (6 hours idle); a finished one gets its outcomes (learnings recorded for it, commits
+ *            │       finished (6 hours idle, or unattended at a drain); a finished one gets its outcomes (learnings recorded for it, commits
  *            │       its member made, the open pull request holding one, as a report found it) and adds to its
  *            │       (run mode, kind) rows
  *            └ push confirmed ─ markReported(): flagged reported, and a `counted` session outcome event written
@@ -74,6 +74,8 @@ export interface FoldInput {
    */
   totals: { promptTokens: ReportedPromptTokens; interventions: ReportedInterventions };
   now: number;
+  /** Whether `teamai score --drain` makes this report, which ends the job of every unattended session here (#1385). */
+  isDrain: boolean;
 }
 
 function baselinePath(config: LocalConfig): string {
@@ -86,8 +88,13 @@ async function readBaseline(config: LocalConfig): Promise<Record<string, Entry> 
   return parsed.success ? parsed.data : undefined;
 }
 
-function isFinished(facts: Facts, now: number): boolean {
+function isIdle(facts: Facts, now: number): boolean {
   return Date.parse(facts.activeAt) + FINISHED_AFTER_MS <= now;
+}
+
+/** Idle for 6 hours, or unattended at a drain: an ephemeral runner's sessions are counted before the job ends. */
+function isFinished(facts: Facts, { now, isDrain }: Pick<FoldInput, 'now' | 'isDrain'>): boolean {
+  return isIdle(facts, now) || (isDrain && facts.runMode === 'unattended');
 }
 
 /** The facts the scope's member events give each session, merged over what an earlier report kept. */
@@ -221,7 +228,8 @@ async function fold(input: FoldInput): Promise<OutcomeFold> {
     const entry = baseline[sessionId];
     if (entry?.reported) continue;
     const facts = merged(entry?.facts, seen);
-    if (kept === undefined && isFinished(facts, input.now)) {
+    // A drain's first report is an ephemeral runner's every report, so only idle sessions are an earlier release's.
+    if (kept === undefined && isIdle(facts, input.now)) {
       baseline[sessionId] = { reported: true };
     } else if (JSON.stringify(facts) !== JSON.stringify(entry?.facts)) {
       baseline[sessionId] = { reported: false, facts };
@@ -231,7 +239,7 @@ async function fold(input: FoldInput): Promise<OutcomeFold> {
   if (changed) await writeJson(baselinePath(input.config), baseline);
 
   const pending = Object.entries(baseline).flatMap(([sessionId, entry]) =>
-    (entry.reported ? [] : [{ sessionId, facts: entry.facts, isDue: isFinished(entry.facts, input.now) }]));
+    (entry.reported ? [] : [{ sessionId, facts: entry.facts, isDue: isFinished(entry.facts, input) }]));
   // A session's pull request is looked up at each report until one is found, so one merged before the session is
   // finished still counts, and once more when it is; the answer is kept for a report whose push fails.
   const prs = await readPrCache(input.config);

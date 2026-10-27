@@ -104,7 +104,7 @@ unattended:
 
 ### What your sessions delivered
 
-Once a session of yours has been idle for 6 hours, the next report adds it to `outcomes`, by its run mode and by what it delivered:
+A session of yours is added to `outcomes`, by its run mode and by what it delivered, by the next report once it has been idle for 6 hours. An unattended session is also added by the `teamai score --drain` that ends its job, so an ephemeral runner reports its sessions:
 
 ```yaml
 outcomes:
@@ -125,6 +125,6 @@ outcomes:
 | `learning` | A learning `teamai contribute` recorded for the session (`--session-id`, else the agent's session) |
 | `none` | Nothing of the above |
 
-A session with a pull request and a learning is in both rows, so rows do not add up. Each session is added once: `reported-outcomes.json`, beside the other report baselines, flags it. Your first report on a release with outcomes adds none of the sessions already finished, since the release that recorded them kept no commit or learning of theirs. The report publishes counts only; the session id, commit shas, pull request URLs and learning ids stay in this machine's dashboard events. An unattended session is also added after 6 hours idle, so a runner that is gone by then never reports its sessions.
+A session with a pull request and a learning is in both rows, so rows do not add up. Each session is added once: `reported-outcomes.json`, beside the other report baselines, flags it. Your first report on a release with outcomes adds none of the sessions already finished, since the release that recorded them kept no commit or learning of theirs. The report publishes counts only; the session id, commit shas, pull request URLs and learning ids stay in this machine's dashboard events.
 
 A skill use is counted when the agent calls its skill tool, reads a skill's `SKILL.md`, or the prompt names the skill: `/code-review` at the start of the prompt, `$code-review` in Codex, `/skill:code-review` in Pi. Only skills installed for the tool count, and each skill counts once per prompt. Paths such as `/Volumes/External/project` and URL components are not skill invocations. Previously recorded usage stays.
