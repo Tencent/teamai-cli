@@ -5,6 +5,7 @@
  */
 import { z } from 'zod';
 import { RunModeSchema, type RunMode } from '../launch-context.js';
+import { usesBranchWorktree, type LocalConfig, type TeamaiConfig } from '../types.js';
 
 /** Most restrictive first: where two files of one level disagree, the earlier policy wins. */
 const POLICIES = ['off', 'ask', 'auto'] as const;
@@ -59,4 +60,30 @@ function resolve(levels: ReadonlyArray<ReadonlyArray<Partial<SessionPolicies>>>,
   return { attended: of('attended'), unattended: of('unattended') };
 }
 
-export const SessionPolicy = { read, resolve } as const;
+/** What the `sessions` setting of `file` sets for `publish`, read as {@link read} reads it. */
+function readPublish(file: string, sessions: unknown): { set: Partial<SessionPolicies>; problems: string[] } {
+  if (sessions === undefined) return { set: {}, problems: [] };
+  const mapping = MappingSchema.safeParse(sessions);
+  if (!mapping.success) return { set: {}, problems: [`${file} sessions is ${JSON.stringify(sessions)}, not a mapping such as publish: { unattended: off }, so it is ignored`] };
+  return read(`${file} sessions.publish`, mapping.data.publish ?? {});
+}
+
+/**
+ * Each run mode's `sessions.publish` policy for this member: its `config.yaml`, else `teamai.yaml`, else the default.
+ * An HTTP team keeps no session archive, so there every mode is `off`, with a problem while one would publish.
+ */
+function publish(config: LocalConfig, team: TeamaiConfig | null): { policies: SessionPolicies; problems: string[] } {
+  const member = readPublish('config.yaml', config.sessions);
+  const ofTeam = readPublish('teamai.yaml', team?.sessions);
+  const policies = resolve([[member.set], [ofTeam.set]], { attended: 'ask', unattended: 'auto' });
+  const problems = [...member.problems, ...ofTeam.problems];
+  if (usesBranchWorktree(config)) return { policies, problems };
+  const off = { policy: 'off', source: 'an HTTP team repo, which keeps no session archive' } as const;
+  const wouldPublish = policies.attended.policy !== 'off' || policies.unattended.policy !== 'off';
+  return {
+    policies: { attended: off, unattended: off },
+    problems: wouldPublish ? [...problems, 'Sessions are not published: the team repo is an HTTP repo, which keeps no session archive, so sessions.publish acts as off'] : problems,
+  };
+}
+
+export const SessionPolicy = { read, resolve, publish } as const;

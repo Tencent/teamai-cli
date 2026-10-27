@@ -725,6 +725,11 @@ export const TeamaiConfigBaseSchema = z.object({
    * submodules are populated and kept current. Off by default. */
   submodules: z.boolean().optional(),
   /**
+   * What happens to members' sessions, per run mode: `publish: { attended?, unattended? }` of off, ask or auto. Kept as
+   * written, so a value this teamai cannot use never fails the file; `doctor` reports it.
+   */
+  sessions: z.unknown().optional(),
+  /**
    * Language of the agent-facing texts teamai injects: the built-in
    * teamai-recall rule, the todowrite-hint, and the mr-hint.
    * `en` is English only. `zh` or omitted keeps the historical bilingual
@@ -930,6 +935,11 @@ export const LocalConfigSchema = z.object({
    * mythos + version). Unset means "match the raw model name only".
    */
   modelAliases: z.record(z.string(), z.string()).optional(),
+  /**
+   * What happens to this member's sessions, per run mode, over the team's `teamai.yaml` `sessions`:
+   * `publish: { attended?, unattended? }` of off, ask or auto. Kept as written; `doctor` reports a value it cannot use.
+   */
+  sessions: z.unknown().optional(),
   scoring: z.object({
     /** The least isolation a judge of this scope needs, raising the team's and the scorer's. A value teamai does not know counts as `verified`. */
     isolation: z.string().optional().catch(({ input }) => JSON.stringify(input)),
