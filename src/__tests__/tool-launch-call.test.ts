@@ -94,6 +94,18 @@ it('fails with no_tool when no tool teamai launches is on PATH', async () => {
   await expect(caller.callTool('hi', { launchedBy: 'codebase' })).rejects.toMatchObject({ kind: 'no_tool', message: 'No AI tool teamai launches is on PATH. Install one of: claude, claude-internal, tclaude, codex, codex-internal, tcodex, opencode, codebuddy, workbuddy, openclaw, cursor, copilot, qoder, kiro, pi, omp, muse, hermes, or set TEAMAI_AI_TOOL to one you have.' });
 });
 
+it('picks the tool again on the next call when no tool was on PATH, so a long-lived process sees one installed since', async () => {
+  vi.stubEnv('TEAMAI_AI_TOOL', '');
+  const claude = await fakeTool('claude', { stdout: JSON.stringify({ type: 'result', result: 'ok' }) });
+  let installed = false;
+  const caller = createToolCaller({ resolveTool: (command) => installed && command === 'claude' ? claude.executable : null, loadConfig: async () => null });
+
+  await expect(caller.callTool('hi', { launchedBy: 'codebase' })).rejects.toMatchObject({ kind: 'no_tool' });
+  installed = true;
+
+  expect(await caller.callTool('hi', { launchedBy: 'codebase' })).toMatchObject({ text: 'ok', tool: 'claude' });
+});
+
 it('runs TClaude as Claude Code and TCodex as Codex, each from its own executable', async () => {
   const tclaude = await fakeTool('tclaude', { stdout: JSON.stringify({ type: 'result', is_error: false, result: 'from tclaude' }) });
   const tcodex = await fakeTool('tcodex', { lastMessage: 'from tcodex' });

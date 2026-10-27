@@ -93,8 +93,9 @@ export function createToolCaller({ resolveTool = resolveCliPath, loadConfig = lo
     }
     throw new CallError('no_tool', `No AI tool teamai launches is on PATH. Install one of: ${LAUNCH_ORDER.join(', ')}, or set TEAMAI_AI_TOOL to one you have.`);
   };
+  // Only a pick that succeeded is kept, so a long-lived process such as the dashboard sees a tool installed since.
   let picked: Promise<Picked> | undefined;
-  const pick = (): Promise<Picked> => picked ??= resolve();
+  const pick = (): Promise<Picked> => picked ??= resolve().catch((error: unknown) => { picked = undefined; throw error; });
 
   const callTool: ToolCaller['callTool'] = async (prompt, { launchedBy, timeout = DEFAULT_TIMEOUT_MS }) => {
       const { tool, executable } = await pick();

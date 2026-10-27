@@ -7,7 +7,9 @@ export type LaunchedToolId = { [T in ToolId]: (typeof TOOLS)[T]['launch'] extend
 
 /**
  * Every tool teamai launches, in the order an AI call takes the first one on PATH. Each list of tools that can run a
- * profile keeps this order, so a tool added at the end changes no member's default.
+ * profile keeps this order, so a tool added at the end changes no member's default. OpenCode is the exception: AI calls
+ * did not run it before #1389, and it sits before CodeBuddy, WorkBuddy and OpenClaw, so a member with OpenCode and one
+ * of those, and no Claude or Codex, now gets OpenCode. Moving OpenCode last instead would change the default judge.
  */
 export const LAUNCH_ORDER = ['claude', 'claude-internal', 'tclaude', 'codex', 'codex-internal', 'tcodex', 'opencode', 'codebuddy', 'workbuddy', 'openclaw', 'cursor', 'copilot', 'qoder', 'kiro', 'pi', 'omp', 'muse', 'hermes'] as const satisfies readonly LaunchedToolId[];
 
