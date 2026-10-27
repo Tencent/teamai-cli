@@ -46,8 +46,8 @@ export type HomeMove =
  * `dir` is relative to `$HOME`. The first of `moves.by` that applies moves the
  * home; `moves.root` is the `$HOME`-relative directory a move replaces when it
  * is not `dir` (Pi's variable moves `.pi/agent`). `moves.defaultHomeLeftovers`:
- * releases before #1221 wrote the tool's hooks (OpenCode's plugin, Pi's
- * extension, Muse's and CodeBuddy's settings.json hooks) and MCP servers under
+ * releases before #1221 wrote the tool's hooks (OpenCode's plugin, Pi's and
+ * OMP's extensions, Muse's and CodeBuddy's settings.json hooks) and MCP servers under
  * the default home when the home moved, so uninstall and MCP ownership look there too.
  */
 export type Home = {
@@ -833,7 +833,7 @@ export const TOOLS = {
   // OMP also reads PI_CODING_AGENT_DIR for its default profile. teamai does not follow it: Pi owns that directory, and both
   // tools' files there, the hook extension's one name included, would overwrite each other.
   omp: {
-    home: { dir: '.omp', moves: { root: '.omp/agent', by: [{ kind: 'omp-agent', evidence: 'source' }] } },
+    home: { dir: '.omp', moves: { root: '.omp/agent', by: [{ kind: 'omp-agent', evidence: 'source' }], defaultHomeLeftovers: true } },
     skillLoad: { calls: [] },
     skills: { user: [{ base: 'home', path: '.omp/agent/skills', evidence: 'verified' }], project: 'unknown' },
     rules: {

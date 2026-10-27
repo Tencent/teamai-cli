@@ -240,6 +240,19 @@ describe('reconcileHooksToAllTools routes omp to the extension adapter', () => {
     }
   });
 
+  it('moves the extension into the OMP_PROFILE agent dir and deletes the one an earlier release left in ~/.omp/agent (#1221)', async () => {
+    vi.stubEnv('OMP_PROFILE', 'work');
+    await fse.outputFile(extFile(), '// [teamai] hooks extension');
+    const profileFile = path.join(home, '.omp', 'profiles', 'work', 'agent', 'extensions', OMP_HOOK_FILE);
+    try {
+      await reconcileHooksToAllTools(toolPaths, home, [], manifest());
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    expect(await fse.pathExists(profileFile)).toBe(true);
+    expect(await fse.pathExists(extFile())).toBe(false);
+  });
+
   it('settingsOnly skips the omp adapter', async () => {
     await fse.ensureDir(path.join(home, '.omp', 'agent'));
     await reconcileHooksToAllTools(toolPaths, home, [], manifest(), { settingsOnly: true });

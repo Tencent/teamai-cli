@@ -2948,6 +2948,9 @@ async function reconcileOmpExtension(removeAll = false): Promise<void> {
   }
   if (await pathExists(path.join(getUserHome(), '.omp')) || await pathExists(toolHome('omp'))) {
     await injectOmpHooks();
+    // And the extension earlier releases left under the default home (#1221).
+    const earlier = await earlierHookAdapterDir('omp-extension');
+    if (earlier) await removeOmpHooks(earlier);
   }
 }
 

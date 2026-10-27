@@ -67,7 +67,7 @@ import {
   removeOwnedFiles,
   skillsGuardBase,
 } from './builtin-skills.js';
-import { cleanupOf, hookAdapterDir, hookSettingsFile, installOf, isInstalledFor, locate, openclawWorkspaceDir, ownOf, SHARED_AGENT_SKILLS_PATH, workspaceHooksOf, writesOf, type Location } from './locate.js';
+import { cleanupOf, hookSettingsFile, installOf, isInstalledFor, locate, openclawWorkspaceDir, ownOf, SHARED_AGENT_SKILLS_PATH, workspaceHooksOf, writesOf, type Location } from './locate.js';
 import { toolHome } from './tool-home.js';
 import { channelsOf, hookFormatOf } from './tools.js';
 import { CODEX_TOOL_IDS } from './utils/tool-names.js';
@@ -115,8 +115,8 @@ interface RemovalPlan {
   openclawHookDirs: Array<{ hooksDir: string; tool: string }>;
   /** OpenCode teamai plugin files (.opencode/plugin/teamai-*.ts) to delete. */
   opencodePluginDirs: string[];
-  /** teamai-managed OMP extension file (~/.omp/agent/extensions/teamai-hooks.ts), if present. */
-  ompHookFile: string | null;
+  /** teamai-managed OMP extension files: the one OMP loads, and one an earlier release left in the default home. */
+  ompHookFiles: string[];
   kiroHookFile: string | null;
   /** Pi extension files owned by this scope (global for user, legacy project copy for project). */
   piHookFiles: string[];
@@ -245,7 +245,7 @@ interface ToolResources {
   hookFiles: Array<{ path: string; tool: string; manifestPath: string; teamOnly?: boolean; legacyManifestPath?: string; teamHookProjectRoot?: string; mainCheckout?: MainCheckoutHooks; keepRecords?: boolean }>;
   openclawHookDirs: Array<{ hooksDir: string; tool: string }>;
   opencodePluginDirs: string[];
-  ompHookFile: string | null;
+  ompHookFiles: string[];
   kiroHookFile: string | null;
   piHookFiles: string[];
   dshHookFile: string | null;
@@ -278,7 +278,7 @@ function hasToolResources(r: ToolResources): boolean {
     r.hookFiles.length > 0 ||
     r.openclawHookDirs.length > 0 ||
     r.opencodePluginDirs.length > 0 ||
-    r.ompHookFile !== null ||
+    r.ompHookFiles.length > 0 ||
     r.kiroHookFile !== null ||
     r.piHookFiles.length > 0 ||
     r.dshHookFile !== null ||
@@ -484,7 +484,7 @@ async function discoverToolResources(
   globalAdapters = scope === 'user',
 ): Promise<ToolResources> {
   const res: ToolResources = {
-    hookFiles: [], openclawHookDirs: [], opencodePluginDirs: [], ompHookFile: null, kiroHookFile: null, piHookFiles: [], dshHookFile: null,
+    hookFiles: [], openclawHookDirs: [], opencodePluginDirs: [], ompHookFiles: [], kiroHookFile: null, piHookFiles: [], dshHookFile: null,
     claudeMdFiles: [], retiredInstructionFiles: [], opencodeInstructions: [], keptGlobal: [], skillDirs: [], keptSkillDirs: [], keptFiles: [], ruleFiles: [], keptRuleFiles: [], opencodeOwnedGlobs: [], agentFiles: [],
   };
 
@@ -547,13 +547,13 @@ async function discoverToolResources(
       else res.keptGlobal.push(kiroHookFile());
     }
   } else if (tool === 'omp') {
-    // OMP hooks are a single teamai-managed TS extension in the user agent dir
-    // (~/.omp/agent/extensions/teamai-hooks.ts) — the adapter never writes a
-    // project copy, so there is just the one place to look.
+    // OMP hooks are a single teamai-managed TS extension in the user agent dir;
+    // the adapter never writes a project copy.
     const { hasOmpHooks, OMP_HOOK_FILE } = await import('./omp-hooks.js');
-    const extFile = path.join(hookAdapterDir('omp-extension'), OMP_HOOK_FILE);
-    if (await hasOmpHooks()) {
-      if (globalAdapters) res.ompHookFile = extFile;
+    for (const extensionsDir of hookDirs) {
+      if (!await hasOmpHooks(extensionsDir)) continue;
+      const extFile = path.join(extensionsDir, OMP_HOOK_FILE);
+      if (globalAdapters) res.ompHookFiles.push(extFile);
       else res.keptGlobal.push(extFile);
     }
   } else if (tool === 'pi') {
@@ -1229,7 +1229,7 @@ async function buildRemovalPlan(
     hookFiles: [],
     openclawHookDirs: [],
     opencodePluginDirs: [],
-    ompHookFile: null,
+    ompHookFiles: [],
     kiroHookFile: null,
     piHookFiles: [],
     dshHookFile: null,
@@ -1324,7 +1324,7 @@ async function buildRemovalPlan(
     plan.hookFiles.push(...res.hookFiles);
     plan.openclawHookDirs.push(...res.openclawHookDirs);
     plan.opencodePluginDirs.push(...res.opencodePluginDirs);
-    if (res.ompHookFile) plan.ompHookFile = res.ompHookFile;
+    plan.ompHookFiles.push(...res.ompHookFiles);
     if (res.kiroHookFile) plan.kiroHookFile = res.kiroHookFile;
     plan.piHookFiles.push(...res.piHookFiles);
     if (res.dshHookFile) plan.dshHookFile = res.dshHookFile;
@@ -1490,7 +1490,7 @@ function isPlanEmpty(plan: RemovalPlan): boolean {
     plan.hookFiles.length === 0 &&
     plan.openclawHookDirs.length === 0 &&
     plan.opencodePluginDirs.length === 0 &&
-    plan.ompHookFile === null &&
+    plan.ompHookFiles.length === 0 &&
     plan.kiroHookFile === null &&
     plan.piHookFiles.length === 0 &&
     plan.dshHookFile === null &&
@@ -1555,9 +1555,9 @@ function printSummary(plan: RemovalPlan, agentFilter?: string): void {
     console.log('');
   }
 
-  if (plan.ompHookFile !== null) {
+  if (plan.ompHookFiles.length > 0) {
     console.log('   OMP Hook (extension):');
-    console.log(`     ${plan.ompHookFile}`);
+    for (const file of plan.ompHookFiles) console.log(`     ${file}`);
     console.log('');
   }
   if (plan.kiroHookFile !== null) console.log(`   Kiro Hooks: ${plan.kiroHookFile}`);
@@ -2171,13 +2171,13 @@ async function executeRemoval(
     }
   }
 
-  // (a2c) Remove the teamai OMP extension (single user-agent-dir copy).
-  if (plan.ompHookFile !== null) {
+  // (a2c) Remove the teamai OMP extension.
+  for (const hookFile of plan.ompHookFiles) {
     try {
       const { removeOmpHooks } = await import('./omp-hooks.js');
-      await removeOmpHooks();
+      await removeOmpHooks(path.dirname(hookFile));
     } catch (e) {
-      log.warn(`Failed to remove OMP hook: ${(e as Error).message}`);
+      log.warn(`Failed to remove OMP hook ${hookFile}: ${(e as Error).message}`);
     }
   }
 
