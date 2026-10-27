@@ -21,7 +21,7 @@ vi.mock('../utils/logger.js', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
-import { reportUsageToTeam } from '../team-push.js';
+import { reportUsage } from '../team-push.js';
 import { dataHomeKey, readSessionOutcomes } from '../dashboard-collector.js';
 import { resolveAnchors } from '../utils/git.js';
 
@@ -120,11 +120,11 @@ describe('the first report on a release that counts outcomes (#1387)', () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     writeEvents([...session('before-upgrade', 30), ...session('also-before-upgrade', 8), ...session('still-going', 1)]);
 
-    await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
+    await reportUsage(repoDir, 'me', { selfConfig: gitConfig() });
     expect(stats().outcomes).toBeUndefined();
 
     vi.setSystemTime(Date.now() + 6 * HOUR);
-    await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
+    await reportUsage(repoDir, 'me', { selfConfig: gitConfig() });
     expect(stats().outcomes).toEqual({ attended: { none: { sessions: 1, tokens: { input: 10, output: 5 }, interventions: 1 } } });
   });
 });
@@ -132,13 +132,13 @@ describe('the first report on a release that counts outcomes (#1387)', () => {
 describe('the usage report counts what finished sessions delivered (#1387)', () => {
   // The member's first report on this release came before any of these sessions.
   beforeEach(async () => {
-    await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
+    await reportUsage(repoDir, 'me', { selfConfig: gitConfig() });
   });
 
   it('adds a finished session to the row of its run mode and outcome, with counts only', async () => {
     writeEvents([...session('7c1e-finished', 7), learning('7c1e-finished', 7.5, 'k8s/pod-startup-timeouts-2026-10-24-k3x9q2')]);
 
-    expect(await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() })).toBe(true);
+    expect(await reportUsage(repoDir, 'me', { selfConfig: gitConfig() })).toBe('reported');
 
     expect(stats().outcomes).toEqual({ attended: { learning: { sessions: 1, tokens: { input: 10, output: 5 }, interventions: 1 } } });
     expect(statsText()).not.toContain('7c1e-finished');
@@ -149,24 +149,24 @@ describe('the usage report counts what finished sessions delivered (#1387)', () 
     vi.useFakeTimers({ toFake: ['Date'] });
     writeEvents(session('quiet-2h', 2));
 
-    await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
+    await reportUsage(repoDir, 'me', { selfConfig: gitConfig() });
     expect(stats().outcomes).toBeUndefined();
 
     vi.setSystemTime(Date.now() + 5 * HOUR);
-    await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
-    await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
+    await reportUsage(repoDir, 'me', { selfConfig: gitConfig() });
+    await reportUsage(repoDir, 'me', { selfConfig: gitConfig() });
     expect(stats().outcomes).toEqual({ attended: { none: { sessions: 1, tokens: { input: 10, output: 5 }, interventions: 1 } } });
   });
 
   it('still adds a session whose events compaction dropped before it was finished, with what the report saw of it', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     writeEvents([...session('compacted', 1), learning('compacted', 1.5, 'retry-backoff')]);
-    await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
+    await reportUsage(repoDir, 'me', { selfConfig: gitConfig() });
     // Compaction keeps the outcome and drops the session's own events.
     writeEvents([learning('compacted', 1.5, 'retry-backoff')]);
 
     vi.setSystemTime(Date.now() + 6 * HOUR);
-    await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
+    await reportUsage(repoDir, 'me', { selfConfig: gitConfig() });
 
     expect(stats().outcomes).toEqual({ attended: { learning: { sessions: 1, tokens: { input: 10, output: 5 }, interventions: 1 } } });
   });
@@ -177,12 +177,12 @@ describe('the usage report counts what finished sessions delivered (#1387)', () 
       ({ type: 'stop', timestamp: at(1), sessionId: 'resumed', tool: 'codex', cwd: '/p', runMode: 'attended', transcriptPath,
         tokenScope: 'transcript', tokens: { input, output: 0, cacheRead: 0, cacheCreation: 0 }, interventions: { interrupt, toolReject: 0 } });
     writeEvents([rollout('/rollouts/a.jsonl', 100, 2)]);
-    await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
+    await reportUsage(repoDir, 'me', { selfConfig: gitConfig() });
     // Compaction dropped rollout A; the resume wrote rollout B.
     writeEvents([rollout('/rollouts/b.jsonl', 10, 1)]);
 
     vi.setSystemTime(Date.now() + 7 * HOUR);
-    await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
+    await reportUsage(repoDir, 'me', { selfConfig: gitConfig() });
 
     expect(stats().outcomes).toEqual({ attended: { none: { sessions: 1, tokens: { input: 110, output: 0 }, interventions: 3 } } });
   });
@@ -196,7 +196,7 @@ describe('the usage report counts what finished sessions delivered (#1387)', () 
     const [first, stop] = session('with-commit', 7, { cwd: work });
     writeEvents([{ ...first, gitAtStart: { head: start, dirty: false } }, { ...stop, gitHead: mine }]);
 
-    await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
+    await reportUsage(repoDir, 'me', { selfConfig: gitConfig() });
 
     expect(stats().outcomes).toEqual({ attended: { commit: { sessions: 1, tokens: { input: 10, output: 5 }, interventions: 1 } } });
     expect(statsText()).not.toContain(mine);
@@ -214,7 +214,7 @@ describe('the usage report counts what finished sessions delivered (#1387)', () 
     writeEvents([{ ...first, gitAtStart: { head: start, dirty: false } }, { ...stop, gitHead: mine, gitBranch: 'task' }]);
     gitIn(work, ['worktree', 'remove', tree]);
 
-    await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
+    await reportUsage(repoDir, 'me', { selfConfig: gitConfig() });
 
     expect((await readSessionOutcomes()).map((event) => event.outcomes)).toEqual([[{ kind: 'commit', sha: mine }]]);
   });
@@ -225,7 +225,7 @@ describe('the usage report counts what finished sessions delivered (#1387)', () 
     const [first, stop] = session('first-commits', 7, { cwd: work });
     writeEvents([first, { ...stop, gitHead: mine }]);
 
-    await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
+    await reportUsage(repoDir, 'me', { selfConfig: gitConfig() });
 
     expect((await readSessionOutcomes()).map((event) => event.outcomes)).toEqual([[{ kind: 'commit', sha: mine }]]);
   });
@@ -238,7 +238,7 @@ describe('the usage report counts what finished sessions delivered (#1387)', () 
     const [first, stop] = session('tagged-email', 7, { cwd: work });
     writeEvents([{ ...first, gitAtStart: { head: start, dirty: false } }, { ...stop, gitHead: mine }]);
 
-    await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
+    await reportUsage(repoDir, 'me', { selfConfig: gitConfig() });
 
     expect((await readSessionOutcomes()).map((event) => event.outcomes)).toEqual([[{ kind: 'commit', sha: mine }]]);
   });
@@ -268,8 +268,8 @@ describe('the usage report counts what finished sessions delivered (#1387)', () 
 
     // The first report's push fails; by the next one the pull request has merged, and an open one is no longer found.
     reportsMocks.updateReports.mockResolvedValueOnce({ status: 'failed' });
-    await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
-    await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
+    await reportUsage(repoDir, 'me', { selfConfig: gitConfig() });
+    await reportUsage(repoDir, 'me', { selfConfig: gitConfig() });
 
     const counted = { sessions: 2, tokens: { input: 20, output: 10 }, interventions: 2 };
     expect(stats().outcomes).toEqual({ attended: { commit: counted, pr: counted } });
@@ -298,11 +298,11 @@ describe('the usage report counts what finished sessions delivered (#1387)', () 
     const [begin, stop] = session('merged-early', 1, { cwd: work });
     writeEvents([{ ...begin, gitAtStart: { head: start, dirty: false } }, { ...stop, gitHead: mine, gitBranch: 'fix-retry' }]);
 
-    await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
+    await reportUsage(repoDir, 'me', { selfConfig: gitConfig() });
     // Merged by the next report, which finds no open one.
     isOpen = false;
     vi.setSystemTime(Date.now() + 6 * HOUR);
-    await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
+    await reportUsage(repoDir, 'me', { selfConfig: gitConfig() });
 
     expect((await readSessionOutcomes()).map((event) => event.outcomes)).toEqual([[{ kind: 'commit', sha: mine }, { kind: 'pr', url }]]);
   });
@@ -328,7 +328,7 @@ describe('the usage report counts what finished sessions delivered (#1387)', () 
     const startedOn = { ...begin, gitAtStart: { head: start, dirty: false } };
     const stoppedOnFirst = { ...stop, gitHead: first, gitBranch: 'fix-retry' };
     writeEvents([startedOn, stoppedOnFirst]);
-    await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
+    await reportUsage(repoDir, 'me', { selfConfig: gitConfig() });
 
     // The session goes on, on another branch.
     vi.setSystemTime(Date.now() + HOUR);
@@ -338,7 +338,7 @@ describe('the usage report counts what finished sessions delivered (#1387)', () 
     const [, laterStop] = session('switched-branch', 0, { cwd: work });
     writeEvents([startedOn, stoppedOnFirst, { ...laterStop, gitHead: second, gitBranch: 'fix-timeout' }]);
     vi.setSystemTime(Date.now() + 6 * HOUR);
-    await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
+    await reportUsage(repoDir, 'me', { selfConfig: gitConfig() });
 
     expect((await readSessionOutcomes()).map((event) => event.outcomes)).toEqual([[
       { kind: 'commit', sha: first }, { kind: 'commit', sha: second }, ...(pr ? [{ kind: 'pr', url: pr }] : []),
@@ -363,7 +363,7 @@ describe('the usage report counts what finished sessions delivered (#1387)', () 
     const [begin, stop] = session('moved-on', 7, { cwd: work });
     writeEvents([{ ...begin, gitAtStart: { head: start, dirty: false } }, { ...stop, gitHead: mine, gitBranch: 'fix-retry' }]);
 
-    await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
+    await reportUsage(repoDir, 'me', { selfConfig: gitConfig() });
 
     expect((await readSessionOutcomes()).map((event) => event.outcomes)).toEqual([[{ kind: 'commit', sha: mine }, { kind: 'pr', url }]]);
   });
@@ -384,7 +384,7 @@ describe('the usage report counts what finished sessions delivered (#1387)', () 
     const [begin, stop] = session('pushed', 7, { cwd: work });
     writeEvents([{ ...begin, gitAtStart: { head: start, dirty: false } }, { ...stop, gitHead: mine, gitBranch: 'fix-retry' }]);
 
-    await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
+    await reportUsage(repoDir, 'me', { selfConfig: gitConfig() });
 
     expect((await readSessionOutcomes()).map((event) => event.outcomes)).toEqual([[{ kind: 'commit', sha: mine }, { kind: 'pr', url }]]);
   });
@@ -395,7 +395,7 @@ describe('the usage report counts what finished sessions delivered (#1387)', () 
       { ...learning('another-home', 7, 'retry-backoff'), tool: 'pi', runMode: 'attended', dataHomeKey: 'elsewhere' },
     ]);
 
-    await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
+    await reportUsage(repoDir, 'me', { selfConfig: gitConfig() });
 
     expect(stats().outcomes).toEqual({ attended: { learning: { sessions: 1, tokens: { input: 0, output: 0 }, interventions: 0 } } });
   });
@@ -403,7 +403,7 @@ describe('the usage report counts what finished sessions delivered (#1387)', () 
   it('puts a session recorded before run modes under notRecorded', async () => {
     writeEvents(session('older-hooks', 7).map((event) => ({ ...event, runMode: undefined })));
 
-    await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
+    await reportUsage(repoDir, 'me', { selfConfig: gitConfig() });
 
     expect(stats().outcomes).toEqual({ notRecorded: { none: { sessions: 1, tokens: { input: 10, output: 5 }, interventions: 1 } } });
   });
@@ -416,7 +416,7 @@ describe('the usage report counts what finished sessions delivered (#1387)', () 
       { ...learning('step-without-hooks', 7.5, 'retry-backoff'), launchedBy: 'workflow' },
     ]);
 
-    await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
+    await reportUsage(repoDir, 'me', { selfConfig: gitConfig() });
 
     expect(stats().outcomes).toEqual({ attended: { none: { sessions: 1, tokens: { input: 10, output: 5 }, interventions: 1 } } });
   });
