@@ -20,6 +20,8 @@ export default defineConfig({
       'src/__tests__/helpers/clear-agent-session-env.ts',
       'src/__tests__/helpers/yield-between-tests.ts',
     ],
+    // The order above holds only when setup files load one after another.
+    sequence: { setupFiles: 'list' },
     // OpenCode's installer replaces a shared binary. Run it before workers.
     globalSetup: ['src/__tests__/helpers/assert-safe-tmpdir.ts', 'src/__tests__/helpers/prepare-opencode-e2e.ts'],
     testTimeout: 60_000,

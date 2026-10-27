@@ -17,6 +17,8 @@ export default defineConfig({
       'src/__tests__/helpers/isolate-home.ts',
       'src/__tests__/helpers/clear-agent-session-env.ts',
     ],
+    // The order above holds only when setup files load one after another.
+    sequence: { setupFiles: 'list' },
     // CI workers can be resource-constrained under parallel load, which made
     // otherwise-fast tests sporadically exceed vitest's 5s default timeout.
     testTimeout: 15000,
