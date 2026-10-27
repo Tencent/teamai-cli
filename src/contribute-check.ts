@@ -195,11 +195,16 @@ function sweptDir(sessionsDir: string): string {
   return path.join(sessionsDir, 'swept');
 }
 
-const HintedSchema = z.object({ hinted: z.boolean().optional() });
+/** A contribute state file: other hooks keep their own per-session files beside it, which never hold `contributed`. */
+const StateSchema = z.object({ contributed: z.boolean(), hinted: z.boolean().optional() });
+const SweptSchema = z.object({ hinted: z.boolean() });
 
-/** Whether the state file or swept record at `file` says the reminder fired; undefined when it is missing or unreadable. */
-async function readHinted(file: string): Promise<boolean | undefined> {
-  const parsed = HintedSchema.safeParse(await readJson<unknown>(file).catch(() => null));
+/**
+ * Whether the contribute state file or swept record at `file` says the reminder fired; undefined when it is missing,
+ * unreadable, or another hook's file.
+ */
+async function readHinted(file: string, schema: typeof StateSchema | typeof SweptSchema): Promise<boolean | undefined> {
+  const parsed = schema.safeParse(await readJson<unknown>(file).catch(() => null));
   return parsed.success ? parsed.data.hinted === true : undefined;
 }
 
@@ -228,9 +233,9 @@ export async function cleanupStaleSessions(dir: string, currentSessionId: string
     try {
       const stat = await fs.promises.stat(filePath);
       if (now - stat.mtimeMs > STALE_SESSION_MS) {
-        const hinted = await readHinted(filePath);
+        const hinted = await readHinted(filePath, StateSchema);
         const record = path.join(sweptDir(dir), entry);
-        if (hinted !== undefined) await writeJsonAtomic(record, { hinted: hinted || (await readHinted(record)) === true });
+        if (hinted !== undefined) await writeJsonAtomic(record, { hinted: hinted || (await readHinted(record, SweptSchema)) === true });
         await fs.promises.unlink(filePath);
       }
     } catch {
@@ -254,13 +259,13 @@ export async function cleanupStaleSessions(dir: string, currentSessionId: string
  */
 export async function readReminderDecisions(): Promise<Map<string, boolean>> {
   const dir = path.join(getUserHome(), '.teamai', 'sessions');
-  const read = async (folder: string) => (await Promise.all((await fs.promises.readdir(folder).catch(() => []))
+  const read = async (folder: string, schema: typeof StateSchema | typeof SweptSchema) => (await Promise.all((await fs.promises.readdir(folder).catch(() => []))
     .filter((entry) => entry.endsWith('.json'))
     .map(async (entry) => {
-      const hinted = await readHinted(path.join(folder, entry));
+      const hinted = await readHinted(path.join(folder, entry), schema);
       return hinted === undefined ? [] : [[entry.slice(0, -'.json'.length), hinted] as const];
     }))).flat();
-  const [swept, live] = await Promise.all([read(sweptDir(dir)), read(dir)]);
+  const [swept, live] = await Promise.all([read(sweptDir(dir), SweptSchema), read(dir, StateSchema)]);
   const decisions = new Map<string, boolean>();
   for (const [session, hinted] of [...swept, ...live]) decisions.set(session, hinted || decisions.get(session) === true);
   return decisions;

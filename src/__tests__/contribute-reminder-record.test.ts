@@ -62,6 +62,17 @@ describe('reminder decisions kept past the 24 hours sweep', () => {
     expect((await readReminderDecisions()).has('old')).toBe(false);
   });
 
+  it('keeps no reminder decision for another hook\'s per-session file, swept or not', async () => {
+    const sessions = path.join(home, '.teamai', 'sessions');
+    fs.mkdirSync(sessions, { recursive: true });
+    fs.writeFileSync(path.join(sessions, 'stale-todowrite-hint.json'), JSON.stringify({ hinted: true, ts: 1 }));
+    backdate(path.join(sessions, 'stale-todowrite-hint.json'), 2);
+    fs.writeFileSync(path.join(sessions, 'live-todowrite-hint.json'), JSON.stringify({ hinted: true, ts: 1 }));
+    await writeContributeState('next-session', { contributed: false });
+    const decisions = await readReminderDecisions();
+    expect([...decisions.keys()].sort()).toEqual(['next-session']);
+  });
+
   it('reads a session that was not swept from its state file', async () => {
     await writeContributeState('live', { contributed: false, hinted: true });
     expect((await readReminderDecisions()).get('live')).toBe(true);
