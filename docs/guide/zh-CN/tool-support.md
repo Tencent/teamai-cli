@@ -72,7 +72,7 @@ teamai 为每个工具把每类资源写到哪里，以及工具读取哪里，�
 
 用户范围，取自 #1221 的矩阵；之后合入的修复标为 `t` 并附注。`✓` 可用。`◐` 默认可用，但某个条件会让它失效，而 doctor 仍报告已送达。`✗` 默认配置下不可用。`+` 工具支持，teamai 尚未实现。`—` 工具没有此功能。`?` 未知。标记后的字母是依据，含义同上。
 
-| 工具 | 环境变量 | 工作流 | Recall | 统计 | AI 后端 | 投票评审 | 会话评审 | HTTP agent hooks |
+| 工具 | 环境变量 | 工作流（本地驱动） | Recall | 统计 | AI 后端 | 投票评审 | 会话评审 | HTTP agent hooks |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Claude Code | ✓t | ✓v | ✓v | ✓v | ✓v | ✓v | ✓t<sup>1</sup> | ✓v |
 | Codex CLI | ✓t | ✓t | ✓v | ✓t<sup>2</sup> | ✓v | ✓t<sup>3</sup> | ✓t<sup>1</sup> | ✓t<sup>4</sup> |
@@ -83,21 +83,21 @@ teamai 为每个工具把每类资源写到哪里，以及工具读取哪里，�
 | Cursor | ? | +s<sup>5</sup> | ✗v<sup>6</sup> | ✓v<sup>7</sup> | ✓d | +s | ✓t<sup>1</sup> | +t<sup>8</sup> |
 | Copilot | ? | +s | ✓v | ✓t<sup>2</sup> | ✓d | ? | ✓t<sup>1</sup> | —t |
 | JoyCode | ? | ? | ◐s | ? | ? | ? | ? | ? |
-| Qoder | ? | ? | ◐s | ✓s | ✓d | ? | ? | ✓s |
-| Qoder CN | ? | ? | ◐s | ✓s | ? | ? | ? | ✓t<sup>9</sup> |
-| Kiro | ? | ? | ◐d | ? | ✓d | ? | ? | ? |
-| Trae | ? | ? | ? | ? | ? | ? | ? | ? |
-| Trae CN | ? | ? | ? | ? | ? | ? | ? | ? |
-| ZCode | ✓t | +s | ✓s | ✓s | +s | ✓t<sup>3</sup> | ? | +t<sup>10</sup> |
-| Oh My Pi | ✓s | +s | ✓v | ✓t<sup>2</sup> | ✓d | ? | ? | —t |
-| Pi Coding Agent | ✓s | +v | ✓v | ✓t<sup>2</sup> | ✓s | ? | —t | ? |
+| Qoder | ? | ? | ◐s | ✓s | ✓d | ? | ✓s<sup>9</sup> | ✓s |
+| Qoder CN | ? | ? | ◐s | ✓s | ? | ? | ✓s<sup>9</sup> | ✓t<sup>10</sup> |
+| Kiro | ? | ? | ◐d | ? | ✓d | ? | ✓d<sup>11</sup> | ? |
+| Trae | ? | ? | ? | ? | ? | ? | ✓s<sup>12</sup> | ? |
+| Trae CN | ? | ? | ? | ? | ? | ? | ✓s<sup>12</sup> | ? |
+| ZCode | ✓t | +s | ✓s | ✓s | +s | ✓t<sup>3</sup> | ✓d<sup>13</sup> | +t<sup>14</sup> |
+| Oh My Pi | ✓s | +s | ✓v | ✓t<sup>2</sup> | ✓d | ? | ✓s<sup>15</sup> | —t |
+| Pi Coding Agent | ✓s | +v | ✓v | ✓t<sup>2</sup> | ✓s | ? | +s<sup>16</sup> | ? |
 | CodeBuddy | ? | ✓d | ✓s | ✓v | ✓d | +v | ✓t<sup>1</sup> | ✓s |
-| OpenClaw | ◐d | +d | ✓s | +s | ✓d | —t | ? | ◐s |
-| Hermes | ◐s | +s | ✓v | +s | ✓s | —t | ? | ✓t<sup>11</sup> |
-| DeepSeek Harness | ✗s | +s | ✓s | ✓t<sup>2</sup> | +s | ? | ? | —t |
-| WorkBuddy | ? | ✓t | ✓t | ? | ✓t | ? | ? | ? |
+| OpenClaw | ◐d | +d | ✓s | +s | ✓d | —t | ◐s<sup>17</sup> | ◐s |
+| Hermes | ◐s | +s | ✓v | +s | ✓s | —t | ✓s<sup>18</sup> | ✓t<sup>19</sup> |
+| DeepSeek Harness | ✗s | +s | ✓s | ✓t<sup>2</sup> | +s | ? | ◐s<sup>20</sup> | —t |
+| WorkBuddy | ? | ✓t | ✓t | ? | ✓t | ? | ✓t<sup>21</sup> | ? |
 | OpenCode | ? | ✓t | ✓v | ✓t<sup>2</sup> | ✓v | ? | ✓t<sup>1</sup> | ◐t |
-| Muse Code | ✓t | +v | ✓t | ✓v | ✓v | ✓t<sup>3</sup> | ✓t<sup>1</sup> | ✓t<sup>12</sup> |
+| Muse Code | ✓t | +v | ✓t | ✓v | ✓v | ✓t<sup>3</sup> | ✓t<sup>1</sup> | ✓t<sup>22</sup> |
 
 注：
 
@@ -109,7 +109,17 @@ teamai 为每个工具把每类资源写到哪里，以及工具读取哪里，�
 6. Cursor IDE: ✓v
 7. Cursor IDE: ✓t
 8. teamai refuses agent hooks in the Cursor hook format
-9. #1224 writes ~/.qoder-cn/settings.json; not rerun
-10. refused until teamai writes the hooks.events shape (#1224)
-11. #1224 maps the events to Hermes's; not rerun
-12. #1224 writes them to settings.json; not rerun
+9. Claude Code-style subagents, transcripts under <id>/subagents/ (qodercli 1.1.78); not run
+10. #1224 writes ~/.qoder-cn/settings.json; not rerun
+11. a subagent works in its own context window, without the conversation; not run
+12. the Task tool starts a fresh subagent; no session variable, so the session names its tool with --tools; not run
+13. the built-in general-purpose subagent works in its own context; not run
+14. refused until teamai writes the hooks.events shape (#1224)
+15. the task tool starts each child as a new agent session (omp 18.12.6); not run
+16. bare Pi starts no subagent; the subagent example extension adds one (since 0.24.0)
+17. sessions_spawn with isolated context, in the coding and messaging tool profiles; a tool policy can remove it; not run
+18. delegate_task starts a child agent with a fresh conversation; not run
+19. #1224 maps the events to Hermes's; not rerun
+20. the subagent tool with the fresh spawn backend, not fork; the minimal preset leaves it out; not run
+21. CodeBuddy's engine, whose session judges its skill-driven run; not run
+22. #1224 writes them to settings.json; not rerun
