@@ -34,11 +34,10 @@ interface FailedJudgment {
   code: string;
 }
 
-/** What could not reach teamai-reports, and why. It stays pending, and the next drain retries it. */
+/** What could not reach teamai-reports, of one kind, and why. It stays pending, and the next drain retries it. */
 interface Unpublished {
-  runRecords: number;
-  labels: number;
-  sessions: number;
+  kind: 'runRecords' | 'labels' | 'sessions';
+  count: number;
   reason: string;
 }
 
@@ -119,7 +118,7 @@ async function publishRunRecords(config: LocalConfig): Promise<Pick<DrainResult,
     case 'published':
       return { runRecordsPublished: runs, unpublished: [] };
     case 'pending':
-      return { runRecordsPublished: 0, unpublished: [{ runRecords: runs, labels: 0, sessions: 0, reason: delivery.reason }] };
+      return { runRecordsPublished: 0, unpublished: [{ kind: 'runRecords', count: runs, reason: delivery.reason }] };
     default: {
       const unhandled: never = delivery;
       return unhandled;
@@ -136,7 +135,7 @@ async function publishLabels(config: LocalConfig): Promise<Pick<DrainResult, 'la
     case 'published':
       return { labelsPublished: pending, unpublished: [] };
     case 'pending':
-      return { labelsPublished: 0, unpublished: [{ runRecords: 0, labels: pending, sessions: 0, reason: delivery.reason }] };
+      return { labelsPublished: 0, unpublished: [{ kind: 'labels', count: pending, reason: delivery.reason }] };
     case 'unsupported':
       return { labelsPublished: 0, unpublished: [] };
     default: {
@@ -167,10 +166,10 @@ async function run(configs: readonly LocalConfig[], { mode, clock = () => new Da
     if (SessionPolicy.publish(config, team).policies[mode].policy === 'auto') {
       const captured = await SessionPublish.captured(config, mode, clock());
       result.capturedArchived += captured.archived;
-      result.unpublished.push(...captured.unpublished.map(({ sessions, reason }) => ({ runRecords: 0, labels: 0, sessions, reason })));
+      result.unpublished.push(...captured.unpublished.map(({ sessions, reason }) => ({ kind: 'sessions' as const, count: sessions, reason })));
       const steps = await SessionPublish.steps(config, mode, clock());
       result.steps.push(...steps);
-      result.unpublished.push(...steps.flatMap(({ unpublished }) => (unpublished ? [{ runRecords: 0, labels: 0, ...unpublished }] : [])));
+      result.unpublished.push(...steps.flatMap(({ unpublished }) => (unpublished ? [{ kind: 'sessions' as const, count: unpublished.sessions, reason: unpublished.reason }] : [])));
     }
     // As pull reports it, so the counts of this data home leave an ephemeral runner.
     if (usesBranchWorktree(config) && isUsageReportEnabled(config, team ?? {})) {
@@ -212,9 +211,8 @@ function failedText({ scorers, subject, code }: FailedJudgment): string {
 
 /** What could not reach teamai-reports, each reason once, and that the next drain retries it. */
 function unpublishedText(unpublished: readonly Unpublished[]): string {
-  const runRecords = unpublished.reduce((sum, entry) => sum + entry.runRecords, 0);
-  const labels = unpublished.reduce((sum, entry) => sum + entry.labels, 0);
-  const sessions = unpublished.reduce((sum, entry) => sum + entry.sessions, 0);
+  const count = (kind: Unpublished['kind']) => unpublished.filter((entry) => entry.kind === kind).reduce((sum, entry) => sum + entry.count, 0);
+  const [runRecords, labels, sessions] = [count('runRecords'), count('labels'), count('sessions')];
   const kinds = [
     runRecords > 0 ? plural(runRecords, 'workflow run record', 'workflow run records') : '',
     labels > 0 ? plural(labels, 'label', 'labels') : '',

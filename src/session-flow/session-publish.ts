@@ -25,22 +25,39 @@ export interface SessionsPublished {
 }
 
 /** A session by the platform teamai reads it from, or, when teamai reads no sessions from its tool, by that tool. */
-type PublishedKey = ArchiveSessionRef | { tool: string; sessionId: string };
+type PublishedKey = { kind: 'platform'; platform: string; sessionId: string } | { kind: 'tool'; tool: string; sessionId: string };
+
+const platformKey = ({ platform, sessionId }: ArchiveSessionRef): PublishedKey => ({ kind: 'platform', platform, sessionId });
 
 /** What a data home did with a session, once: archived it, or skipped it for a reason that will not change here. */
 type PublicationRecord = PublishedKey & ({ publishedAt: string } | { skippedAt: string; reason: string });
 
 /** The file that records what this data home did with `key`: its name hashes the platform, or the tool, and the id. */
 function recordFile(config: LocalConfig, key: PublishedKey): string {
-  const of = 'platform' in key ? `${key.platform}\0${key.sessionId}` : `tool\0${key.tool}\0${key.sessionId}`;
-  const name = createHash('sha256').update(of).digest('hex').slice(0, 32);
+  const name = createHash('sha256').update(recordName(key)).digest('hex').slice(0, 32);
   return path.join(getDataHome(config), 'sessions', 'published', `${name}.json`);
 }
 
+function recordName(key: PublishedKey): string {
+  switch (key.kind) {
+    case 'platform':
+      return `${key.platform}\0${key.sessionId}`;
+    case 'tool':
+      return `tool\0${key.tool}\0${key.sessionId}`;
+    default: {
+      const unhandled: never = key;
+      return unhandled;
+    }
+  }
+}
+
 /** Whether this data home archived `key`, or recorded it as one it can never archive from here. */
-async function isRecorded(config: LocalConfig, key: PublishedKey): Promise<boolean> {
+async function hasRecord(config: LocalConfig, key: PublishedKey): Promise<boolean> {
   return fs.stat(recordFile(config, key)).then(() => true, () => false);
 }
+
+/** Whether this data home archived session `ref`. */
+const isRecorded = (config: LocalConfig, ref: ArchiveSessionRef): Promise<boolean> => hasRecord(config, platformKey(ref));
 
 async function record(config: LocalConfig, entry: PublicationRecord): Promise<void> {
   const file = recordFile(config, entry);
@@ -65,7 +82,7 @@ async function captured(config: LocalConfig, mode: RunMode, now: string): Promis
     const pushed = await pushSession(config, ref);
     switch (pushed.status) {
       case 'archived':
-        await record(config, { ...ref, publishedAt: now });
+        await record(config, { ...platformKey(ref), publishedAt: now });
         published.archived += 1;
         break;
       case 'busy':
@@ -92,10 +109,19 @@ export interface StepSessionsPublished {
 
 /** Why step session `key` can never be archived from this machine, or undefined when this machine reads it. */
 async function unarchivable(key: PublishedKey, toolRootsFor: ToolRootsLookup): Promise<string | undefined> {
-  if (!('platform' in key)) return `teamai reads no sessions from ${key.tool}`;
-  const found = await AgentSession.find(key, { scrub: false, toolRootsFor });
-  if (found.status === 'done') return undefined;
-  return `the ${key.platform} session ${key.sessionId} cannot be read here: ${found.failure.message.replace(/\.$/, '')}`;
+  switch (key.kind) {
+    case 'tool':
+      return `teamai reads no sessions from ${key.tool}`;
+    case 'platform': {
+      const found = await AgentSession.find({ platform: key.platform, sessionId: key.sessionId }, { scrub: false, toolRootsFor });
+      if (found.status === 'done') return undefined;
+      return `the ${key.platform} session ${key.sessionId} cannot be read here: ${found.failure.message.replace(/\.$/, '')}`;
+    }
+    default: {
+      const unhandled: never = key;
+      return unhandled;
+    }
+  }
 }
 
 type UnrecordedPass = { pass: RunPass; key: PublishedKey };
@@ -115,8 +141,8 @@ async function unrecordedSteps(config: LocalConfig, mode: RunMode): Promise<Arra
     for (const pass of runPasses(run)) {
       if (pass.tool === undefined || pass.session === undefined || !settledHere(run, pass, install)) continue;
       const platform = AgentSession.platformForTool(pass.tool);
-      const key: PublishedKey = platform ? { platform, sessionId: pass.session } : { tool: pass.tool, sessionId: pass.session };
-      if (!await isRecorded(config, key)) passes.push({ pass, key });
+      const key: PublishedKey = platform ? { kind: 'platform', platform, sessionId: pass.session } : { kind: 'tool', tool: pass.tool, sessionId: pass.session };
+      if (!await hasRecord(config, key)) passes.push({ pass, key });
     }
     runs.push({ run, passes });
   }
@@ -145,7 +171,7 @@ async function steps(config: LocalConfig, mode: RunMode, now: string): Promise<S
       if (reason !== undefined) {
         skipped.push({ step: pass.step, pass: pass.pass, reason });
         await record(config, { ...key, skippedAt: now, reason });
-      } else if ('platform' in key) refs.set(`${key.platform}\0${key.sessionId}`, key);
+      } else if (key.kind === 'platform') refs.set(`${key.platform}\0${key.sessionId}`, { platform: key.platform, sessionId: key.sessionId });
     }
     if (refs.size === 0) {
       if (skipped.length > 0) published.push({ run: run.id, archived: 0, skipped });
@@ -156,7 +182,7 @@ async function steps(config: LocalConfig, mode: RunMode, now: string): Promise<S
       published.push({ run: run.id, archived: 0, skipped, unpublished: { sessions: refs.size, reason: delivered.message } });
       continue;
     }
-    for (const { platform, sessionId } of delivered.archived) await record(config, { platform, sessionId, publishedAt: now });
+    for (const ref of delivered.archived) await record(config, { ...platformKey(ref), publishedAt: now });
     published.push({ run: run.id, archived: delivered.archived.length, skipped });
   }
   return published;
