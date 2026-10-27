@@ -2,6 +2,7 @@ import { loadModelAliases } from './models/aliases.js';
 import { cachedScorerNames, loadCachedScorer } from './scorers/cache.js';
 import { formatScorerDiagnostic } from './scorers/definition.js';
 import { installedJudgeTools, judgeToolLevels } from './scorers/judge.js';
+import { JUDGE_TOOLS } from './tool-launch/tools.js';
 import { chooseJudgeModel } from './scorers/judge-model.js';
 import { scoringUnavailable } from './scorers/home.js';
 import { requiredIsolation, unknownIsolationText } from './scorers/isolation.js';
@@ -24,7 +25,7 @@ async function isolationNotes(localConfig: LocalConfig, verified: readonly strin
 
 async function judgeToolsNote(resolveTool: ResolveTool | undefined): Promise<string> {
   const tools = await judgeToolLevels(resolveTool ? { resolveTool } : {});
-  if (tools.length === 0) return 'Judge tools here: none on PATH. Install Claude Code, Codex, OpenCode or CodeBuddy to judge on this machine.';
+  if (tools.length === 0) return `Judge tools here: none on PATH. Install one of: ${JUDGE_TOOLS.join(', ')} to judge on this machine.`;
   return `Judge tools here: ${tools.map(({ tool, version, isolation }) => `${tool} ${version || '(version unknown)'} is ${isolation}`).join(', ')}.`;
 }
 

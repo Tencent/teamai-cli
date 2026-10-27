@@ -27,6 +27,7 @@ import {
 } from '../scorers/label.js';
 import { LabelStore, reasoningPath, shareFailedLabelHint } from '../scorers/label-store.js';
 import { installedJudgeTools, isJudgeTool, runLocalJudge } from '../scorers/judge.js';
+import { JUDGE_TOOLS } from '../tool-launch/tools.js';
 import { loadModelAliases } from '../models/aliases.js';
 import { chooseJudgeModel } from '../scorers/judge-model.js';
 import { isSampled } from '../scorers/sampling.js';
@@ -1194,7 +1195,7 @@ export async function scoreOnDemand(config: LocalConfig, demand: ScoreDemand, no
   if (demand.queue) return ok({ queued: asked.map(({ scorer }) => ({ scorer, subject })) });
 
   const [tool, ...tools] = installedJudgeTools(evidencePlan(run, subject).passes.flatMap((judged) => judged.tool ?? []));
-  if (!tool) return error('judge_tool_unavailable', 'No judge tool is on PATH. Install Claude Code, Codex, OpenCode or CodeBuddy, or add --queue so another driver judges this pass.');
+  if (!tool) return error('judge_tool_unavailable', `No judge tool is on PATH. Install one of: ${JUDGE_TOOLS.join(', ')}, or add --queue so another driver judges this pass.`);
   const driver = driverIdentity('local', process.cwd());
   const ids = asked.map(({ scorer }) => entryIdOf(scorer, subject));
   const labelled: SucceededAttempt[] = [];
