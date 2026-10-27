@@ -39,6 +39,8 @@ export type HomeMove =
    * dir, a profile `active_profile` names, other than `default`, is
    * `profiles/<name>` in that home while the directory exists; the
    * `active_profile` read is the platform one when `HERMES_HOME` is inside it.
+   * The profile is applied on every run, inside a recorded home too, and never
+   * recorded: Hermes rewrites `active_profile` outside any shell.
    */
   | { readonly kind: 'hermes-home'; readonly evidence: Evidence };
 

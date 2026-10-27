@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { nextToolHomes } from '../tool-home-record.js';
 import { cleanupOf, installOf, ownOf, unreadWrites, writable, writesOf, type EntryPlace, type FilePlace, type FilesChannel, type Read } from '../locate.js';
-import { envToolHome, type Host } from '../tool-home.js';
+import { envToolHome, movedToolHome, toolHome, type Host } from '../tool-home.js';
 import { isToolId, TOOLS } from '../tools.js';
 import { samePlaces } from '../resources/places.js';
 
@@ -87,6 +87,18 @@ describe('nextToolHomes and Hermes\'s active_profile', () => {
     }
   });
 
+  it('records HERMES_HOME on init while active_profile names a profile in it', async () => {
+    const host: Host = { ...sticky, env: { HERMES_HOME: '/srv/hermes' }, existsNow: (file) => file === '/srv/hermes/profiles/work', readTextNow: (file) => (file === '/srv/hermes/active_profile' ? 'work\n' : null) };
+
+    expect((await nextToolHomes({}, host, 'init')).homes).toEqual({ hermes: '/srv/hermes' });
+  });
+
+  it('takes the profile active_profile names inside a recorded home, from a shell without HERMES_HOME', () => {
+    const host: Host = { ...sticky, toolHomes: { kind: 'ok', homes: { hermes: '/srv/hermes' } }, existsNow: (file) => file === '/srv/hermes/profiles/work', readTextNow: (file) => (file === '/srv/hermes/active_profile' ? 'work\n' : null) };
+
+    expect(toolHome('hermes', host)).toBe('/srv/hermes/profiles/work');
+  });
+
   it('clears a recorded home when init sees HERMES_HOME blank, whatever active_profile says', async () => {
     const { homes, changes } = await nextToolHomes({ hermes: '/srv/hermes' }, { ...sticky, env: { HERMES_HOME: '' } }, 'init');
 
@@ -115,6 +127,16 @@ describe('nextToolHomes on Windows', () => {
 
     expect(homes).toEqual({});
     expect(changes).toEqual([{ tool: 'hermes', variable: 'HERMES_HOME', dir: null }]);
+  });
+
+  it('follows active_profile inside the Windows default a pull recorded', async () => {
+    const native = `${appData}\\hermes`;
+    const host: Host = {
+      ...windowsHost({ LOCALAPPDATA: appData }, [native]), toolHomes: { kind: 'ok', homes: { hermes: native } },
+      existsNow: (file) => file === `${native}\\profiles\\work`, readTextNow: (file) => (file === `${native}\\active_profile` ? 'work' : null),
+    };
+
+    expect(toolHome('hermes', host)).toBe(`${native}\\profiles\\work`);
   });
 
   it('fills a missing Hermes record with the Windows default only when it exists', async () => {
@@ -174,7 +196,7 @@ describe('homes that follow the tool\'s own rules', () => {
     existsNow: (file) => Object.keys(files).some((known) => known === file || known.startsWith(`${file}/`)),
     readTextNow: (file) => files[file] ?? null,
   });
-  const dirOf = (tool: 'openclaw' | 'omp' | 'hermes', host: Host): string | null => envToolHome(tool, host)?.dir ?? null;
+  const dirOf = (tool: 'openclaw' | 'omp' | 'hermes', host: Host): string | null => movedToolHome(tool, host);
 
   it('puts OpenClaw\'s state dir in OPENCLAW_HOME, its profile included, and expands ~ in OPENCLAW_HOME against the OS home', () => {
     expect(dirOf('openclaw', at({ OPENCLAW_HOME: '/oc' }))).toBe('/oc/.openclaw');
@@ -214,7 +236,8 @@ describe('homes that follow the tool\'s own rules', () => {
 
   it('takes the profile active_profile names while its directory exists, but not default', () => {
     const profile = { '/home/m/.hermes/active_profile': 'work\n', '/home/m/.hermes/profiles/work/SOUL.md': '' };
-    expect(envToolHome('hermes', at({}, profile))).toEqual({ dir: '/home/m/.hermes/profiles/work', variable: '/home/m/.hermes/active_profile', kind: 'tool-state' });
+    expect(dirOf('hermes', at({}, profile))).toBe('/home/m/.hermes/profiles/work');
+    expect(envToolHome('hermes', at({}, profile))).toBeNull();
     expect(dirOf('hermes', at({}, { '/home/m/.hermes/active_profile': 'work' }))).toBeNull();
     expect(dirOf('hermes', at({}, { '/home/m/.hermes/active_profile': 'default', '/home/m/.hermes/profiles/default/x': '' }))).toBeNull();
   });

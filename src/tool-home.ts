@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
-import { TOOLS, type HomeMove } from './tools.js';
+import { TOOLS, type HomeMove, type ToolDescriptor } from './tools.js';
 import type { ToolId } from './types.js';
 import { pathExists, readFileSafe, readJsonObject, writeJsonAtomic, type JsonObjectRead } from './utils/fs.js';
 import { getUserHome, normalizeHomePath } from './utils/home.js';
@@ -63,12 +63,10 @@ export function realHost(overrides: Partial<Pick<Host, 'env' | 'home'>> = {}): H
 /**
  * A home the host env moves, and how init records it (`INIT_RECORDS`): `own`,
  * the tool's own setting; `xdg`, `XDG_CONFIG_HOME`, which moves every XDG
- * tool at once; `platform-default`, the Windows home, which is not a move;
- * `tool-state`, a file the tool itself rewrites (Hermes's `active_profile`),
- * which is followed on every run and never recorded.
- * `variable` names the setting, or the file.
+ * tool at once; `platform-default`, the Windows home, which is not a move.
+ * `variable` names the setting.
  */
-export type EnvToolHome = { readonly dir: string; readonly variable: string; readonly kind: 'own' | 'xdg' | 'platform-default' | 'tool-state' };
+export type EnvToolHome = { readonly dir: string; readonly variable: string; readonly kind: 'own' | 'xdg' | 'platform-default' };
 
 /**
  * Where the host env moves `tool`'s home (the first of
@@ -136,24 +134,37 @@ function ompAgentDir(host: Host): EnvToolHome | null {
 }
 
 function hermesHome(host: Host): EnvToolHome | null {
+  const raw = host.env.HERMES_HOME?.trim();
+  if (raw) return { dir: absoluteOn(raw, host), variable: 'HERMES_HOME', kind: 'own' };
+  const { native, appData } = hermesNative(host);
+  if (host.env.HERMES_DATA_DIR_SUFFIX) return { dir: native, variable: 'HERMES_DATA_DIR_SUFFIX', kind: 'own' };
+  return appData ? { dir: native, variable: 'LOCALAPPDATA', kind: 'platform-default' } : null;
+}
+
+function hermesNative(host: Host): { readonly native: string; readonly appData: boolean } {
   const p = host.path;
   const suffix = host.env.HERMES_DATA_DIR_SUFFIX ?? '';
-  const appData = host.platform === 'win32' ? absoluteEnv(host, 'LOCALAPPDATA') ?? p.join(host.home, 'AppData', 'Local') : null;
-  const native = appData === null ? p.join(host.home, `.hermes${suffix}`) : p.join(appData, `hermes${suffix}`);
-  const raw = host.env.HERMES_HOME?.trim();
-  const explicit = raw ? absoluteOn(raw, host) : null;
-  const processHome: EnvToolHome | null = explicit !== null ? { dir: explicit, variable: 'HERMES_HOME', kind: 'own' }
-    : suffix ? { dir: native, variable: 'HERMES_DATA_DIR_SUFFIX', kind: 'own' }
-      : appData !== null ? { dir: native, variable: 'LOCALAPPDATA', kind: 'platform-default' } : null;
-  if (explicit !== null && p.basename(p.dirname(explicit)) === 'profiles') return processHome;
-  // Hermes looks for active_profile in its native home unless HERMES_HOME lies outside it.
-  const fromNative = explicit === null ? '' : p.relative(native, explicit);
-  const outsideNative = explicit !== null && (fromNative.startsWith('..') || p.isAbsolute(fromNative));
-  const activeProfile = p.join(outsideNative ? explicit : native, 'active_profile');
-  const name = host.readTextNow(activeProfile)?.trim();
-  if (!name || name === 'default') return processHome;
-  const dir = p.join(explicit ?? native, 'profiles', name);
-  return host.existsNow(dir) ? { dir, variable: activeProfile, kind: 'tool-state' } : processHome;
+  if (host.platform !== 'win32') return { native: p.join(host.home, `.hermes${suffix}`), appData: false };
+  return { native: p.join(absoluteEnv(host, 'LOCALAPPDATA') ?? p.join(host.home, 'AppData', 'Local'), `hermes${suffix}`), appData: true };
+}
+
+/**
+ * The profile Hermes's `active_profile` makes active in `home`, read on every
+ * run because Hermes rewrites it, so no record pins it: `home` itself when it
+ * is a `profiles/<name>` dir, when the profile is `default`, or when its
+ * directory is missing. The file sits in the native home unless `home` lies
+ * outside it.
+ */
+function hermesProfile(home: string, host: Host): string {
+  const p = host.path;
+  if (p.basename(p.dirname(home)) === 'profiles') return home;
+  const { native } = hermesNative(host);
+  const fromNative = p.relative(native, home);
+  const outsideNative = fromNative.startsWith('..') || p.isAbsolute(fromNative);
+  const name = host.readTextNow(p.join(outsideNative ? home : native, 'active_profile'))?.trim();
+  if (!name || name === 'default') return home;
+  const dir = p.join(home, 'profiles', name);
+  return host.existsNow(dir) ? dir : home;
 }
 
 function absoluteEnv(host: Host, name: string): string | null {
@@ -170,7 +181,16 @@ export function toolHome(tool: ToolId, host: Host = realHost()): string {
 
 /** The recorded home, else the env's, or null when nothing moves `tool`'s home. */
 export function movedToolHome(tool: ToolId, host: Host = realHost()): string | null {
-  return recordedHomes(host)[tool] ?? envToolHome(tool, host)?.dir ?? null;
+  const moved = recordedHomes(host)[tool] ?? envToolHome(tool, host)?.dir ?? null;
+  if (!followsActiveProfile(tool)) return moved;
+  const unmoved = defaultToolHome(tool, host);
+  const home = hermesProfile(moved ?? unmoved, host);
+  return moved === null && home === unmoved ? null : home;
+}
+
+function followsActiveProfile(tool: ToolId): boolean {
+  const { home }: ToolDescriptor = TOOLS[tool];
+  return home.moves?.by.some((move) => move.kind === 'hermes-home') ?? false;
 }
 
 /** The homes `host` records: none while the record is missing or invalid. */
