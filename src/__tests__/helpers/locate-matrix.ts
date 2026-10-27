@@ -10,9 +10,9 @@
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { locate, unreadWrites, writesOf, type Install, type Location, type Place, type Resource, type Retired } from '../../locate.js';
-import type { BlocksHeader, ChannelProbe, ReadGateKind, RunTimeVia } from '../../tools.js';
+import { isToolId, TOOLS, type BlocksHeader, type ChannelProbe, type HomeMove, type ReadGateKind, type RunTimeVia, type ToolDescriptor } from '../../tools.js';
 import type { Host } from '../../tool-home.js';
-import { DEFAULT_TOOL_PATHS, type TeamaiConfig } from '../../types.js';
+import { DEFAULT_TOOL_PATHS, type TeamaiConfig, type ToolId } from '../../types.js';
 
 type Platform = 'darwin' | 'linux' | 'win32';
 /** The session's directory: a project root in $HOME, a subdirectory of it, or a root outside $HOME (#1197). */
@@ -223,6 +223,63 @@ function expectFiles(row: FilesRow, where: Location, cell: Cell, host: Host): vo
   expect(unreadWrites<Place>(where, host).map((unread) => unread.reason)).toEqual(broken ? [broken.reason] : []);
 }
 
+/** A setting that moves a tool's home (`Home.moves`), as a row sets it: an env value, or a Windows cell for `%LOCALAPPDATA%`. */
+type MoveSetting = { readonly tool: ToolId; readonly name: string; readonly env: Readonly<Record<string, string>>; readonly win32: boolean };
+
+function moveSettingOf(tool: ToolId, move: HomeMove): MoveSetting {
+  switch (move.kind) {
+    case 'env':
+      return { tool, name: move.name, env: { [move.name]: '/moved' }, win32: false };
+    case 'xdg':
+      return { tool, name: 'XDG_CONFIG_HOME', env: { XDG_CONFIG_HOME: '/moved' }, win32: false };
+    case 'win32-appdata':
+      return { tool, name: 'LOCALAPPDATA', env: { LOCALAPPDATA: 'D:\\moved' }, win32: true };
+    case 'profile-suffix':
+      return { tool, name: move.name, env: { [move.name]: 'moved' }, win32: false };
+    default: {
+      const unhandled: never = move;
+      return unhandled;
+    }
+  }
+}
+
+function moveSettings(): MoveSetting[] {
+  return Object.keys(TOOLS).filter(isToolId).flatMap((tool) => {
+    const { home }: ToolDescriptor = TOOLS[tool];
+    return (home.moves?.by ?? []).map((move) => moveSettingOf(tool, move));
+  });
+}
+
+/** The paths `tool` writes `resource` to on a host where every path exists, with `env` set. */
+async function writesWith(resource: Resource, tool: ToolId, scope: 'user' | 'project', platform: Platform, env: Readonly<Record<string, string>>): Promise<string[]> {
+  const row: MatrixRow = { tool, scope, existingDirs: [], installed: null, channel: 'none', source: '' };
+  const cell: Cell = { platform, cwd: 'project-root', env };
+  const host: Host = { ...hostFor(row, cell), exists: async () => true };
+  return writesOf<Place>(await locate(tool, resource, installFor(row, cell), host)).map((place) => place.path);
+}
+
+/**
+ * The home moves that move a write of `resource` and no row sets: each one a
+ * cell the matrix lacks (issue #1221: "each env override").
+ */
+async function uncoveredMoves(resource: Resource, rows: readonly MatrixRow[]): Promise<string[]> {
+  const uncovered: string[] = [];
+  for (const move of moveSettings()) {
+    for (const scope of ['user', 'project'] as const) {
+      const platform: Platform = move.win32 ? 'win32' : 'darwin';
+      const base = envFor({ tool: move.tool, scope, existingDirs: [], installed: null, channel: 'none', source: '' }, platform, 'project-root');
+      const moved = { ...base, ...move.env };
+      const [before, after] = await Promise.all([writesWith(resource, move.tool, scope, platform, base), writesWith(resource, move.tool, scope, platform, moved)]);
+      if (JSON.stringify(before) === JSON.stringify(after)) continue;
+      const covered = rows.some((row) => row.tool === move.tool && row.scope === scope && (move.win32
+        ? (row.platforms ?? ['win32']).includes('win32')
+        : Object.hasOwn(row.env ?? {}, move.name) || Object.hasOwn(row.envLiterals ?? {}, move.name)));
+      if (!covered) uncovered.push(`${move.tool} ${scope} ${move.name}`);
+    }
+  }
+  return uncovered;
+}
+
 export function describeLocateMatrix(resource: Resource, rows: readonly MatrixRow[]): void {
   describe(`locate: ${resource} matrix`, () => {
     for (const row of rows) {
@@ -250,6 +307,10 @@ export function describeLocateMatrix(resource: Resource, rows: readonly MatrixRo
         }
       }
     }
+
+    it('every home move that moves a write has a row that sets it', async () => {
+      expect(await uncoveredMoves(resource, rows)).toEqual([]);
+    });
 
     it('every row write is among its reads, or the row names its issue', () => {
       const spotOf = (write: PlaceSpec): Spot => typeof write === 'string' ? write : write.at;

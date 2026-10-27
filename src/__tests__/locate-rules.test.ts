@@ -1,5 +1,7 @@
 import { describeLocateMatrix, type MatrixRow } from './helpers/locate-matrix.js';
 
+const OPENCLAW_SOURCE = 'OpenClaw agents/agent-scope-config.ts and agents/workspace-default-path.ts, as src/openclaw-home.ts records them: state dir OPENCLAW_STATE_DIR, else ~/.openclaw-<profile>, else ~/.openclaw; workspace agents.defaults.workspace in OPENCLAW_CONFIG_PATH or <state>/openclaw.json, else OPENCLAW_WORKSPACE_DIR, else <state>/workspace';
+
 const ROWS: readonly MatrixRow[] = [
   {
     tool: 'claude', scope: 'user',
@@ -295,6 +297,13 @@ const ROWS: readonly MatrixRow[] = [
     source: 'CodeBuddy 2.168.0 run: user rules from ~/.codebuddy/rules',
   },
   {
+    tool: 'codebuddy', scope: 'user', env: { CODEBUDDY_CONFIG_DIR: '/cb-home' },
+    writes: ['/cb-home/rules'],
+    existingDirs: ['/cb-home'], installed: { probe: '/cb-home', met: true },
+    reads: [{ at: '/cb-home/rules', when: 'always' }],
+    source: 'CodeBuddy 2.176.0 bundle: CODEBUDDY_CONFIG_DIR replaces ~/.codebuddy, its rules directory included',
+  },
+  {
     tool: 'codebuddy', scope: 'project',
     writes: ['<root>/.codebuddy/rules'],
     existingDirs: ['<root>/.codebuddy'], installed: { probe: '<root>/.codebuddy', met: true },
@@ -311,6 +320,39 @@ const ROWS: readonly MatrixRow[] = [
     source: 'OpenClaw 884a96d1 source: no rules directory; the team rules are a block in the workspace AGENTS.md (#946)',
   },
   {
+    tool: 'openclaw', scope: 'user', env: { OPENCLAW_STATE_DIR: '/oc-state' },
+    writes: [{ at: '/oc-state/workspace/AGENTS.md', owned: false, header: null }],
+    existingDirs: ['/oc-state/workspace'], installed: { probe: '/oc-state/workspace', met: true },
+    readableConfig: { file: '/oc-state/openclaw.json', met: true },
+    reads: 'unknown',
+    source: `${OPENCLAW_SOURCE}; OPENCLAW_STATE_DIR moves the state dir, its openclaw.json and its workspace`,
+  },
+  {
+    tool: 'openclaw', scope: 'user', envLiterals: { OPENCLAW_PROFILE: 'work' },
+    writes: [{ at: '~/.openclaw-work/workspace/AGENTS.md', owned: false, header: null }],
+    existingDirs: ['~/.openclaw-work/workspace'], installed: { probe: '~/.openclaw-work/workspace', met: true },
+    readableConfig: { file: '~/.openclaw-work/openclaw.json', met: true },
+    reads: 'unknown',
+    source: `${OPENCLAW_SOURCE}; a profile other than default is ~/.openclaw-<profile>`,
+  },
+  {
+    tool: 'openclaw', scope: 'user', env: { OPENCLAW_WORKSPACE_DIR: '/oc-ws' },
+    writes: [{ at: '/oc-ws/AGENTS.md', owned: false, header: null }],
+    existingDirs: ['/oc-ws'], installed: { probe: '/oc-ws', met: true },
+    readableConfig: { file: '~/.openclaw/openclaw.json', met: true },
+    reads: 'unknown',
+    source: `${OPENCLAW_SOURCE}; OPENCLAW_WORKSPACE_DIR names the workspace when openclaw.json names none`,
+  },
+  {
+    tool: 'openclaw', scope: 'user', env: { OPENCLAW_CONFIG_PATH: '/oc-cfg/openclaw.json', OPENCLAW_WORKSPACE_DIR: '/oc-ws' },
+    json: [{ at: '/oc-cfg/openclaw.json', value: { agents: { defaults: { workspace: '~/oc-cfg-ws' } } } }],
+    writes: [{ at: '~/oc-cfg-ws/AGENTS.md', owned: false, header: null }],
+    existingDirs: ['~/oc-cfg-ws', '/oc-ws'], installed: { probe: '~/oc-cfg-ws', met: true },
+    readableConfig: { file: '/oc-cfg/openclaw.json', met: true },
+    reads: 'unknown',
+    source: `${OPENCLAW_SOURCE}; OPENCLAW_CONFIG_PATH names the openclaw.json read, whose workspace wins over OPENCLAW_WORKSPACE_DIR`,
+  },
+  {
     tool: 'openclaw', scope: 'project',
     channel: 'none',
     existingDirs: ['~/.openclaw/workspace'], installed: { probe: '~/.openclaw/workspace', met: true },
@@ -322,6 +364,20 @@ const ROWS: readonly MatrixRow[] = [
     existingDirs: ['~/.hermes'], installed: { probe: '~/.hermes', met: true },
     reads: [{ at: '~/.hermes/SOUL.md', when: 'always' }],
     source: 'Hermes 7e9eb8d9 prompt_builder: standing instructions from SOUL.md in HERMES_HOME; no rules directory',
+  },
+  {
+    tool: 'hermes', scope: 'user', env: { HERMES_HOME: '/hermes' },
+    writes: [{ at: '/hermes/SOUL.md', owned: false, header: null }],
+    existingDirs: ['/hermes'], installed: { probe: '/hermes', met: true },
+    reads: [{ at: '/hermes/SOUL.md', when: 'always' }],
+    source: 'Hermes 7e9eb8d9 prompt_builder: SOUL.md from HERMES_HOME',
+  },
+  {
+    tool: 'hermes', scope: 'user', platforms: ['win32'],
+    writes: [{ at: '$LOCALAPPDATA/hermes/SOUL.md', owned: false, header: null }],
+    existingDirs: ['$LOCALAPPDATA/hermes'], installed: { probe: '$LOCALAPPDATA/hermes', met: true },
+    reads: [{ at: '$LOCALAPPDATA/hermes/SOUL.md', when: 'always' }],
+    source: 'hermes-agent hermes_constants.py:51-58: %LOCALAPPDATA%\\hermes on Windows; SOUL.md from that home',
   },
   {
     tool: 'hermes', scope: 'project', platforms: ['darwin', 'linux'],

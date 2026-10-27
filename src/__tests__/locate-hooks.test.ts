@@ -6,6 +6,7 @@ const MUSE_SOURCE = 'muse-bin 1.4.11: $XDG_CONFIG_HOME/muse, else ~/.config/muse
 const OPENCODE_SOURCE = 'opencode v2.1.1 Global.Path: OPENCODE_CONFIG_DIR, else (XDG_CONFIG_HOME || ~/.config)/opencode; plugins load from its plugin directory';
 const HERMES_SOURCE = 'hermes-agent hermes_constants.py:51-58: HERMES_HOME, else %LOCALAPPDATA%\\hermes on Windows, else ~/.hermes; shell hooks registered in config.yaml';
 const SELF = 'issue #1221 matrix, Self scope';
+const TEAM = 'resolveHookScope: a workspace takes the user hooks (#264)';
 
 /** A tool's hook list in `file`, which it reads from any session: `probe` says it is installed. */
 const settings = (tool: string, scope: 'user' | 'project', file: Spot, probe: Spot, rest: Partial<FilesRow> = {}): FilesRow => ({
@@ -124,6 +125,11 @@ const ROWS: readonly (FilesRow | OtherRow)[] = [
     source: `${MUSE_SOURCE}; earlier releases wrote the hooks to ~/.config/muse`,
   }),
   selfSettings('muse', '<root>/.muse/hooks.json', '~/.config/muse', 'workspaceUnder', { source: `${SELF}: runs only in a trusted workspace` }),
+  settings('muse', 'project', '/xdg/muse/settings.json', '/xdg/muse', {
+    env: { XDG_CONFIG_HOME: '/xdg' }, reads: [{ at: '/xdg/muse/settings.json', when: 'always', key: HOOK_LIST }],
+    retired: [{ at: '~/.config/muse/settings.json', was: 'default' }],
+    source: `${MUSE_SOURCE}; ${TEAM}`,
+  }),
   settings('zcode', 'user', '~/.zcode/cli/config.json', '~/.zcode'),
   settings('zcode', 'project', '~/.zcode/cli/config.json', '~/.zcode', {
     install: { self: true },
@@ -138,6 +144,14 @@ const ROWS: readonly (FilesRow | OtherRow)[] = [
     env: { OPENCODE_CONFIG_DIR: '/oc' }, retired: [{ at: '~/.config/opencode/plugin', was: 'default' }],
     source: OPENCODE_SOURCE,
   }),
+  adapter('opencode', 'project', '/xdg/opencode/plugin', '/xdg/opencode', {
+    env: { XDG_CONFIG_HOME: '/xdg' }, retired: [{ at: '~/.config/opencode/plugin', was: 'default' }],
+    source: `${OPENCODE_SOURCE}; ${TEAM}`,
+  }),
+  adapter('opencode', 'project', '/oc/plugin', '/oc', {
+    env: { OPENCODE_CONFIG_DIR: '/oc' }, retired: [{ at: '~/.config/opencode/plugin', was: 'default' }],
+    source: `${OPENCODE_SOURCE}; ${TEAM}`,
+  }),
   adapter('opencode', 'project', '~/.config/opencode/plugin', '~/.config/opencode', {
     install: { self: true }, source: `${SELF}: OpenCode loads the HOME plugin, so one copy dispatches every event once`,
   }),
@@ -147,10 +161,16 @@ const ROWS: readonly (FilesRow | OtherRow)[] = [
     source: 'issue #1221 matrix, PI_CODING_AGENT_DIR row (v); earlier releases wrote the extension to ~/.pi/agent',
   }),
   adapter('pi', 'project', '~/.pi/agent/extensions', '~/.pi', { install: { self: true }, source: `${SELF}: as user scope, the HOME extension` }),
+  adapter('pi', 'project', '/pi-agent/extensions', '/pi-agent', {
+    env: { PI_CODING_AGENT_DIR: '/pi-agent' }, retired: [{ at: '~/.pi/agent/extensions', was: 'default' }],
+    source: `issue #1221 matrix, PI_CODING_AGENT_DIR row (v); ${TEAM}`,
+  }),
   adapter('omp', 'user', '~/.omp/agent/extensions', '~/.omp', { source: 'issue #1221 matrix, Oh My Pi user hooks (v, 18.2.1)' }),
   adapter('hermes', 'user', '~/.hermes/hooks', '~/.hermes', { platforms: ['darwin', 'linux'], source: HERMES_SOURCE }),
   adapter('hermes', 'user', '$LOCALAPPDATA/hermes/hooks', '$LOCALAPPDATA/hermes', { platforms: ['win32'], source: HERMES_SOURCE }),
   adapter('hermes', 'user', '/hermes/hooks', '/hermes', { env: { HERMES_HOME: '/hermes' }, source: HERMES_SOURCE }),
+  adapter('hermes', 'project', '/hermes/hooks', '/hermes', { env: { HERMES_HOME: '/hermes' }, source: `${HERMES_SOURCE}; ${TEAM}` }),
+  adapter('hermes', 'project', '$LOCALAPPDATA/hermes/hooks', '$LOCALAPPDATA/hermes', { platforms: ['win32'], source: `${HERMES_SOURCE}; ${TEAM}` }),
   adapter('hermes', 'user', '/recorded/hermes/hooks', '/recorded/hermes', {
     toolHomes: { hermes: '/recorded/hermes' }, source: `${HERMES_SOURCE}; a recorded home wins over a shell without HERMES_HOME`,
   }),
@@ -159,6 +179,23 @@ const ROWS: readonly (FilesRow | OtherRow)[] = [
   }),
   adapter('openclaw', 'user', '/oc-state/workspace/hooks', '/oc-state/workspace', {
     env: { OPENCLAW_STATE_DIR: '/oc-state' }, source: 'OpenClaw: the workspace defaults to <state dir>/workspace',
+  }),
+  adapter('openclaw', 'project', '/oc-state/workspace/hooks', '/oc-state/workspace', {
+    env: { OPENCLAW_STATE_DIR: '/oc-state' }, source: `OpenClaw: the workspace defaults to <state dir>/workspace; ${TEAM}`,
+  }),
+  adapter('openclaw', 'user', '~/.openclaw-work/workspace/hooks', '~/.openclaw-work/workspace', {
+    envLiterals: { OPENCLAW_PROFILE: 'work' }, source: 'OpenClaw: a profile other than default is ~/.openclaw-<profile>, its workspace included',
+  }),
+  adapter('openclaw', 'project', '~/.openclaw-work/workspace/hooks', '~/.openclaw-work/workspace', {
+    envLiterals: { OPENCLAW_PROFILE: 'work' }, source: `OpenClaw: a profile other than default is ~/.openclaw-<profile>; ${TEAM}`,
+  }),
+  adapter('openclaw', 'user', '/oc-ws/hooks', '/oc-ws', {
+    env: { OPENCLAW_WORKSPACE_DIR: '/oc-ws' }, source: 'OpenClaw: OPENCLAW_WORKSPACE_DIR names the workspace when openclaw.json names none',
+  }),
+  adapter('openclaw', 'user', '~/oc-cfg-ws/hooks', '~/oc-cfg-ws', {
+    env: { OPENCLAW_CONFIG_PATH: '/oc-cfg/openclaw.json', OPENCLAW_WORKSPACE_DIR: '/oc-ws' },
+    json: [{ at: '/oc-cfg/openclaw.json', value: { agents: { defaults: { workspace: '~/oc-cfg-ws' } } } }],
+    source: 'OpenClaw: OPENCLAW_CONFIG_PATH names the openclaw.json read, whose workspace wins over OPENCLAW_WORKSPACE_DIR',
   }),
   adapter('openclaw', 'user', '~/.openclaw/workspace/hooks', '~/.openclaw/workspace', {
     invalidJson: ['~/.openclaw/openclaw.json'],

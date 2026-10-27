@@ -183,6 +183,13 @@ const ROWS: readonly FilesRow[] = [
     source: 'issue #1221 scan: CodeBuddy reads ~/.codebuddy/skills',
   },
   {
+    tool: 'codebuddy', scope: 'user', env: { CODEBUDDY_CONFIG_DIR: '/cb-home' },
+    writes: ['/cb-home/skills'],
+    existingDirs: ['/cb-home'], installed: { probe: '/cb-home', met: true },
+    reads: [{ at: '/cb-home/skills', when: 'always' }],
+    source: 'CodeBuddy 2.176.0 bundle: CODEBUDDY_CONFIG_DIR replaces ~/.codebuddy, its skills directory included',
+  },
+  {
     tool: 'codex', scope: 'user',
     writes: ['~/.codex/skills', '~/.agents/skills'],
     existingDirs: ['~/.codex'], installed: { probe: '~/.codex', met: true },
@@ -251,6 +258,20 @@ const ROWS: readonly FilesRow[] = [
     existingDirs: ['~/.openclaw-work/workspace'], installed: { probe: '~/.openclaw-work/workspace', met: true },
     reads: 'unknown',
     source: OPENCLAW_SOURCE,
+  },
+  {
+    tool: 'openclaw', scope: 'project', env: { OPENCLAW_STATE_DIR: '/oc-state' },
+    writes: ['/oc-state/workspace/skills'],
+    existingDirs: ['/oc-state/workspace'], installed: { probe: '/oc-state/workspace', met: true },
+    reads: 'unknown',
+    source: `${OPENCLAW_SOURCE}; the workspace is the same in either scope`,
+  },
+  {
+    tool: 'openclaw', scope: 'project', envLiterals: { OPENCLAW_PROFILE: 'work' },
+    writes: ['~/.openclaw-work/workspace/skills'],
+    existingDirs: ['~/.openclaw-work/workspace'], installed: { probe: '~/.openclaw-work/workspace', met: true },
+    reads: 'unknown',
+    source: `${OPENCLAW_SOURCE}; the workspace is the same in either scope`,
   },
   {
     tool: 'openclaw', scope: 'user', envLiterals: { OPENCLAW_PROFILE: 'default' },

@@ -31,6 +31,7 @@ const ROWS: readonly (FilesRow | OtherRow)[] = [
   store('cursor', '~/.cursor/projects', { toolRoots: { 'cursor-config': '~/.cursor-config' }, source: 'CURSOR_CONFIG_DIR moves cli-config.json only (RELOCATABLE_TOOLS)' }),
   store('codebuddy', '~/.codebuddy/projects', { source: CODEBUDDY_SOURCE }),
   store('codebuddy', '/cb/projects', { env: { CODEBUDDY_CONFIG_DIR: '/cb' }, source: CODEBUDDY_SOURCE }),
+  store('codebuddy', '/cb/projects', { scope: 'project', env: { CODEBUDDY_CONFIG_DIR: '/cb' }, source: `${CODEBUDDY_SOURCE}; a project's sessions go to the same store` }),
   store('codebuddy', '/cb/projects', { toolRoots: { codebuddy: '~/.cb-work' }, env: { CODEBUDDY_CONFIG_DIR: '/cb' }, source: `${IGNORED_ROOT}, so the moved home still holds it` }),
   store('codebuddy', '/recorded/codebuddy/projects', { toolHomes: { codebuddy: '/recorded/codebuddy' }, source: `${CODEBUDDY_SOURCE}; a recorded home wins over a shell without the variable` }),
   store('workbuddy', '~/.workbuddy/projects', { source: 'WorkBuddy: <uuid>.jsonl and <uuid>.meta.json under ~/.workbuddy/projects (session-flow/adapters/workbuddy.ts)' }),
