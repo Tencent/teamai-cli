@@ -165,7 +165,10 @@ const SkillStateSchema = z.object({
   attempts: z.array(AttemptStateSchema),
   /** Present while this driver judges the run's scored steps with the confined judge of `tool`. `open`: the judge running now. */
   judging: z.object({ tool: z.string(), open: JudgeSchema.optional() }).optional(),
-  /** Present when the session itself judges the run's scored steps with `tool` once the run is done, as no verified judge of `tool` is here. */
+  /**
+   * Present when the session itself judges the run's scored steps once the run is done, as no verified judge of `tool`,
+   * the session's tool at the start, is here. The session judges with the run's tool, `orchestrator.tool`, else `tool`.
+   */
   sessionJudge: z.object({ tool: z.string() }).optional(),
   /** The sequence number of the last event. */
   seq: z.number().int(),

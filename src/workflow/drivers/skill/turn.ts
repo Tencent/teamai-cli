@@ -363,7 +363,7 @@ function actionsOf(state: SkillState): Action[] {
   const judge = state.judging?.open;
   const end: Action[] = state.done ? [{
     kind: 'done', outcome: state.done.outcome, ...(state.done.failure ? { failure: state.done.failure } : {}), prs: state.done.prs, ...(judge ? { judging: { step: judge.step, scorers: judge.scorers } } : {}),
-    ...(state.sessionJudge ? { score: sessionJudgeLiteral(state.invocation, state.run, state.driver, state.sessionJudge.tool) } : {}),
+    ...(state.sessionJudge ? { score: sessionJudgeLiteral(state.invocation, state.run, state.driver, state.orchestrator.tool ?? state.sessionJudge.tool) } : {}),
   }] : [];
   const gate = state.gate && !state.done ? [gateAction(state, state.gate)] : [];
   return [...stops, ...offers, ...places, ...gate, ...end];

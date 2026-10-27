@@ -1096,6 +1096,15 @@ steps:
     expect(done).toMatchObject({ data: { turn: { status: 'done', actions: [{ kind: 'done', outcome: 'succeeded', score: expect.stringContaining('"tools":["claude"]') }] } } });
   });
 
+  it('a session that takes a run over judges it with its own tool', async () => {
+    const harness = await skillHarness({ review: REVIEW }, { scorers: { 'review-quality': REVIEW_QUALITY } });
+    roots.push(harness.root);
+    unverifiedClaude(harness);
+    const { run } = await reviewed(harness);
+    expect(await harness.call({ kind: 'takeover', run, confirmed: false }, { session: 'session-b', tool: 'pi' }))
+      .toMatchObject({ data: { turn: { status: 'done', actions: [{ kind: 'done', score: expect.stringContaining('"tools":["pi"]') }] } } });
+  });
+
   it('a session whose host has no child agent does not judge its run: choosing h4 turns judging off, and done names no score --next', async () => {
     const harness = await skillHarness({ review: REVIEW }, { scorers: { 'review-quality': REVIEW_QUALITY } });
     roots.push(harness.root);
