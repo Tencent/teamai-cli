@@ -31,6 +31,7 @@ const defaults: Extract<SessionSharing, { configured: true }> = {
     attended: { active: 2, finished: 1, waitingToArchive: 0, archived: 0 },
     unattended: { waitingForDrain: 1, finished: 0, waitingToArchive: 0, archived: 3 },
   },
+  stepSessionsWaitingToArchive: { attended: 0, unattended: 0 },
   pendingLabels: 2,
   next: [{ mode: 'unattended', command: 'TEAMAI_MODE=unattended teamai score --drain' }],
 };

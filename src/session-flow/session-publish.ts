@@ -9,9 +9,10 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { RunMode } from '../launch-context.js';
 import { getDataHome, type LocalConfig } from '../types.js';
-import { runPasses } from '../workflow/loop.js';
+import { runPasses, type RunPass } from '../workflow/loop.js';
 import { localRuns, settledHere } from '../workflow/scoring.js';
 import { installOwner } from '../workflow/store.js';
+import type { RunState } from '../workflow/types.js';
 import { AgentSession, recordedToolRoots, type ToolRootsLookup } from './agent-session.js';
 import { archiveSessions, pushSession, type ArchiveSessionRef } from './archive.js';
 import { SessionCaptures } from './captures.js';
@@ -97,26 +98,49 @@ async function unarchivable(key: PublishedKey, toolRootsFor: ToolRootsLookup): P
   return `the ${key.platform} session ${key.sessionId} cannot be read here: ${found.failure.message.replace(/\.$/, '')}`;
 }
 
+type UnrecordedPass = { pass: RunPass; key: PublishedKey };
+
 /**
- * Archives the step sessions of each run of this data home that ended in `mode` (a run with no mode counts as
- * attended): of each pass settled here that names its tool and session, the session, unless this data home recorded it
- * already. A session this machine cannot read is recorded as skipped, and the readable ones of its run are still
- * archived. One push per run, filed under the repository of the checkout the run started in.
+ * Each run of this data home that ended in `mode` (a run with no mode counts as attended), with the step sessions a
+ * publish pass has yet to archive or skip: of each pass settled here that names its tool and session, the session,
+ * unless this data home recorded it already.
  */
-async function steps(config: LocalConfig, mode: RunMode, now: string): Promise<StepSessionsPublished[]> {
+async function unrecordedSteps(config: LocalConfig, mode: RunMode): Promise<Array<{ run: RunState; passes: UnrecordedPass[] }>> {
+  const ended = (await localRuns(config)).filter((run) => run.status !== 'running' && (run.runMode ?? 'attended') === mode);
+  if (ended.length === 0) return [];
   const install = (await installOwner(config)).id;
-  const published: StepSessionsPublished[] = [];
-  for (const run of await localRuns(config)) {
-    if (run.status === 'running' || (run.runMode ?? 'attended') !== mode) continue;
-    const checkout = run.checkout ?? SessionWork.leaseCwd(config);
-    const toolRoots = recordedToolRoots(checkout);
-    const refs = new Map<string, ArchiveSessionRef>();
-    const skipped: StepSessionsPublished['skipped'] = [];
+  const runs: Array<{ run: RunState; passes: UnrecordedPass[] }> = [];
+  for (const run of ended) {
+    const passes: UnrecordedPass[] = [];
     for (const pass of runPasses(run)) {
       if (pass.tool === undefined || pass.session === undefined || !settledHere(run, pass, install)) continue;
       const platform = AgentSession.platformForTool(pass.tool);
       const key: PublishedKey = platform ? { platform, sessionId: pass.session } : { tool: pass.tool, sessionId: pass.session };
-      if (await isRecorded(config, key)) continue;
+      if (!await isRecorded(config, key)) passes.push({ pass, key });
+    }
+    runs.push({ run, passes });
+  }
+  return runs;
+}
+
+/** How many step sessions of the runs that ended in `mode` the next publish pass in that mode archives or skips. */
+async function waitingSteps(config: LocalConfig, mode: RunMode): Promise<number> {
+  return (await unrecordedSteps(config, mode)).reduce((sum, { passes }) => sum + passes.length, 0);
+}
+
+/**
+ * Archives the step sessions of each run of this data home that ended in `mode` and that it has not recorded yet. A
+ * session this machine cannot read is recorded as skipped, and the readable ones of its run are still archived. One
+ * push per run, filed under the repository of the checkout the run started in.
+ */
+async function steps(config: LocalConfig, mode: RunMode, now: string): Promise<StepSessionsPublished[]> {
+  const published: StepSessionsPublished[] = [];
+  for (const { run, passes } of await unrecordedSteps(config, mode)) {
+    const checkout = run.checkout ?? SessionWork.leaseCwd(config);
+    const toolRoots = recordedToolRoots(checkout);
+    const refs = new Map<string, ArchiveSessionRef>();
+    const skipped: StepSessionsPublished['skipped'] = [];
+    for (const { pass, key } of passes) {
       const reason = await unarchivable(key, () => toolRoots);
       if (reason !== undefined) {
         skipped.push({ step: pass.step, pass: pass.pass, reason });
@@ -138,4 +162,4 @@ async function steps(config: LocalConfig, mode: RunMode, now: string): Promise<S
   return published;
 }
 
-export const SessionPublish = { captured, steps, isRecorded } as const;
+export const SessionPublish = { captured, steps, waitingSteps, isRecorded } as const;

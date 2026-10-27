@@ -19,6 +19,9 @@ import { SessionCaptures } from '../session-flow/captures.js';
 import { encodeCwdClaude } from '../session-flow/fs.js';
 import type { LocalConfig } from '../types.js';
 import { AGENT_SESSION_ENV } from '../utils/session-id.js';
+import { syncWorkflowDefinitions } from '../workflow/cache.js';
+import { leaseNext, parseReport, reportAttempt, startRun } from '../workflow/engine.js';
+import type { WorkflowEnvelope } from '../workflow/types.js';
 
 const SCORER = `---
 labels:
@@ -29,6 +32,14 @@ samplingRate: 100
 sessions: true
 ---
 Judge the session.
+`;
+
+const WORKFLOW = `schemaVersion: v1alpha1
+name: review
+description: One step.
+steps:
+  - id: review
+    prompt: Review the change.
 `;
 
 const NOW = new Date().toISOString();
@@ -182,6 +193,17 @@ describe('the session sharing read model', () => {
     });
   });
 
+  it('counts the step sessions of ended runs that wait to be archived where publish is auto for their mode, and names their drain', async () => {
+    const config = await team({ 'workflows/review.yaml': WORKFLOW });
+    await settledRun(config, 'unattended', { tool: 'claude', session: STEP_UNATTENDED });
+    await settledRun(config, 'attended', { tool: 'claude', session: STEP_ATTENDED });
+
+    expect(await readSessionSharing(config, { env: {}, now: NOW })).toMatchObject({
+      stepSessionsWaitingToArchive: { attended: 0, unattended: 1 },
+      next: [{ mode: 'unattended', command: 'TEAMAI_MODE=unattended teamai score --drain' }],
+    });
+  });
+
   it('names no drain for an unattended session it would neither publish nor judge', async () => {
     const config = await team({
       'teamai.yaml': 'team: acme\nrepo: https://example.com/acme/team.git\nsessions:\n  publish: { unattended: off }\n',
@@ -202,6 +224,8 @@ const ATTENDED_ACTIVE = '7c1e0000-0000-4000-8000-000000000001';
 const ATTENDED_FINISHED = '7c1e0000-0000-4000-8000-000000000002';
 const UNATTENDED_OPEN = '7c1e0000-0000-4000-8000-000000000003';
 const UNATTENDED_DRAINED = '7c1e0000-0000-4000-8000-000000000004';
+const STEP_UNATTENDED = '7c1e0000-0000-4000-8000-000000000021';
+const STEP_ATTENDED = '7c1e0000-0000-4000-8000-000000000022';
 const PROMPT = 'Rotate the PROMPT-SECRET-7 key';
 const ANSWER = 'Rotated it as ANSWER-SECRET-9.';
 
@@ -227,4 +251,23 @@ function captured(sessionId: string, runMode: RunMode, { idleFor }: { idleFor: n
   const captureId = `0b6f2a52-5d7e-4c7e-9a43-${sessionId.slice(-12)}`;
   fs.writeFileSync(path.join(dir, `${captureId}.json`), JSON.stringify({ captureId, platform: 'claude-code', sessionId,
     capturedAt: idleSince.toISOString(), runMode, agent: { v: 1, tool: { name: 'claude' }, teamai: '1.0.0', driver: 'session' }, sessionFile: file }));
+}
+
+function data(envelope: WorkflowEnvelope): Record<string, unknown> {
+  if ('error' in envelope) throw new Error(`${envelope.error.code}: ${envelope.error.message}`);
+  return envelope.data;
+}
+
+/** Runs the review workflow in `config` to its end in `runMode`, its step settled by `report` as an external driver would. */
+async function settledRun(config: LocalConfig, runMode: RunMode, report: Record<string, unknown>): Promise<void> {
+  await syncWorkflowDefinitions(config);
+  const checkout = path.join(root, 'app');
+  fs.mkdirSync(checkout, { recursive: true });
+  const runId = String(data(await startRun(config, 'review', {}, { secrets: {}, runMode, checkout })).run);
+  const driver = { kind: 'external', machine: 'm1', workspace: checkout };
+  const { attempt, revision } = data(await leaseNext(config, runId, driver, { runMode })).lease as { attempt: string; revision: number };
+  const parsed = parseReport({ attempt, revision, outcome: 'success', driver, outputs: {}, ...report });
+  if (typeof parsed === 'string') throw new Error(parsed);
+  data(await reportAttempt(config, runId, parsed.report));
+  expect(data(await leaseNext(config, runId, driver))).toMatchObject({ done: { outcome: 'succeeded' } });
 }

@@ -38,6 +38,8 @@ export type SessionSharing =
     /** The enabled tools teamai reads no sessions from: their sessions are never captured, published or judged. */
     unreadTools: string[];
     captured: CapturedSessions;
+    /** The step sessions of the runs that ended here in each run mode that wait to be archived: none while `publish` is not `auto` for it. */
+    stepSessionsWaitingToArchive: Record<RunMode, number>;
     /** Labels judged here that a drain publishes to teamai-reports. */
     pendingLabels: number;
     /** The drain to run for what waits: one per run mode whose sessions wait for it, else this machine's for pending labels. */
@@ -88,17 +90,23 @@ async function capturedHere(config: LocalConfig, now: string, publish: SessionPo
   return counts;
 }
 
+/** The step sessions of the runs that ended here in each run mode that a drain in that mode archives. */
+async function stepsWaitingToArchive(config: LocalConfig, publish: SessionPolicies): Promise<Record<RunMode, number>> {
+  const waiting = async (mode: RunMode) => (publish[mode].policy === 'auto' ? SessionPublish.waitingSteps(config, mode) : 0);
+  return { attended: await waiting('attended'), unattended: await waiting('unattended') };
+}
+
 /**
  * A drain finishes and publishes the sessions of its own run mode only, while any drain publishes pending labels. So
  * each mode with sessions that a drain would act on gets its drain, run in that mode, and pending labels alone get
  * this machine's.
  */
-function nextSteps({ runMode, archive, publish, scoring, captured, pendingLabels }: Omit<Configured, 'configured' | 'problems' | 'unreadTools' | 'next'>): Configured['next'] {
+function nextSteps({ runMode, archive, publish, scoring, captured, stepSessionsWaitingToArchive, pendingLabels }: Omit<Configured, 'configured' | 'problems' | 'unreadTools' | 'next'>): Configured['next'] {
   const acts = (mode: RunMode) => publish[mode].policy === 'auto'
     || (scoring.state === 'ok' && scoring.policies[mode].policy === 'auto' && scoring.scorers.length > 0);
   const waits: Record<RunMode, boolean> = {
-    attended: captured.attended.waitingToArchive > 0,
-    unattended: captured.unattended.waitingToArchive > 0 || (captured.unattended.waitingForDrain > 0 && acts('unattended')),
+    attended: captured.attended.waitingToArchive > 0 || stepSessionsWaitingToArchive.attended > 0,
+    unattended: captured.unattended.waitingToArchive > 0 || stepSessionsWaitingToArchive.unattended > 0 || (captured.unattended.waitingForDrain > 0 && acts('unattended')),
   };
   const modes = RUN_MODES.filter((mode) => waits[mode]);
   if (modes.length === 0 && pendingLabels > 0 && archive === 'teamai-reports') modes.push(runMode.mode);
@@ -119,6 +127,7 @@ export async function readSessionSharing(config: LocalConfig, { env, now }: { en
       ? { state: 'ok', policies: scored.sessions.policies, dailyLimit: scored.sessions.dailyLimit, scorers: (await SessionWork.sessionScorers(config)).map(({ scorer }) => scorer).sort() }
       : { state: 'unavailable', reason: scored.reason },
     captured: await capturedHere(config, now, publish.policies),
+    stepSessionsWaitingToArchive: await stepsWaitingToArchive(config, publish.policies),
     pendingLabels: await LabelStore.unpublished(config),
   } satisfies Omit<Configured, 'configured' | 'problems' | 'unreadTools' | 'next'>;
   return {
