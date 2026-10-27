@@ -1,5 +1,5 @@
 import type http from 'node:http';
-import { dashboardWorkspaces, machineWideEvents, workspaceEvents, type DashboardWorkspace } from './dashboard/workspaces.js';
+import { dashboardWorkspaces, ownSessionEvents, workspaceEvents, type DashboardWorkspace } from './dashboard/workspaces.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { log } from './utils/logger.js';
@@ -318,7 +318,7 @@ export async function startDashboard(port?: number): Promise<void> {
       const query = parseScorerQuery(url.searchParams);
       const refresh = Date.now() - (scorersRefreshed.get(workspace.id) ?? 0) > KB_SUMMARY_TTL_MS;
       const allEvents = await readEvents(eventsPath);
-      const events = machineWideEvents(allEvents, workspace, await getWorkspaces(allEvents));
+      const events = ownSessionEvents(allEvents, workspace, await getWorkspaces(allEvents));
       const view = await scorerResults({ config: workspace.config, query, events, refresh });
       if (refresh) scorersRefreshed.set(workspace.id, Date.now());
       json(200, { configured: true, ...view });

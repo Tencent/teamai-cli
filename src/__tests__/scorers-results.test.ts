@@ -73,7 +73,7 @@ describe('scorer results', () => {
     ];
     const [scorer] = ScorerResults.of({ labels, query: { windowDays: 30 }, now: NOW }).scorers;
     expect(scorer?.cohorts.map((cohort) => ({ judge: cohort.judge, n: cohort.stats.n }))).toEqual([
-      { judge: { kind: 'model', tool: 'claude', model: { id: 'claude-haiku-5-5', reported: true, alias: 'fast' } }, n: 2 },
+      { judge: { kind: 'model', tool: 'claude', model: { id: 'claude-haiku-5-5', isReported: true, alias: 'fast' } }, n: 2 },
     ]);
   });
 
@@ -102,7 +102,7 @@ describe('scorer results', () => {
     });
     const groups = (labels: ViewedLabel[], groupBy: Parameters<typeof ScorerResults.of>[0]['query']['groupBy']) =>
       ScorerResults.of({ labels, query: { windowDays: 30, groupBy }, now: NOW }).selected?.groups
-        ?.map((group) => `${group.kind === 'value' ? group.value : group.kind}${group.kind === 'value' && group.reported === false ? ' (requested)' : ''} n=${group.stats.n}`);
+        ?.map((group) => `${group.kind === 'value' ? group.value : group.kind}${group.kind === 'value' && group.isReported === false ? ' (requested)' : ''} n=${group.stats.n}`);
 
     it('keeps reported and requested-only models apart, and puts labels with no model under not recorded', () => {
       const labels = [
@@ -238,7 +238,7 @@ describe('scorer results', () => {
     const routing = (label: string, score: number) => viewed(sessionLabel({ label, score, passed: score > 0 }));
     const labels = [routing('missed', 0), routing('fit', 1), routing('extra', 0), routing('fit', 1), routing('extra', 0), routing('fit', 1)];
     const { selected } = ScorerResults.of({ labels, query: { windowDays: 30 }, now: NOW });
-    expect(selected?.values).toEqual([
+    expect(selected?.cohort.values).toEqual([
       { label: 'fit', score: 1, n: 3 },
       { label: 'extra', score: 0, n: 2 },
       { label: 'missed', score: 0, n: 1 },
@@ -254,6 +254,6 @@ describe('scorer results', () => {
       viewed(sessionLabel({ label: 'bad', score: 0, passed: false, scoredAt: '2025-12-01T00:00:00.000Z' })),
     ];
     const { selected } = ScorerResults.of({ labels, query: { windowDays: 30 }, now: NOW });
-    expect(selected?.values).toEqual([{ label: 'good', score: 1, n: 1 }]);
+    expect(selected?.cohort.values).toEqual([{ label: 'good', score: 1, n: 1 }]);
   });
 });

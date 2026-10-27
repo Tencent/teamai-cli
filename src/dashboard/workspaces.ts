@@ -123,10 +123,11 @@ export function workspaceEvents(events: DashboardEvent[], workspace: DashboardWo
 }
 
 /**
- * The events a view of machine-wide state reads for `workspace`, such as the friction reminder table (#1182): a user
- * scope install owns every session no project workspace owns, which the session views list as unassigned instead.
+ * The events of the sessions `workspace` counts as its own on this machine, for a view of machine-wide state such as the
+ * friction reminder table (#1182): a user scope install owns every session no project workspace owns, which the session
+ * views list as unassigned instead.
  */
-export function machineWideEvents(events: DashboardEvent[], workspace: DashboardWorkspace, workspaces: DashboardWorkspace[]): DashboardEvent[] {
+export function ownSessionEvents(events: DashboardEvent[], workspace: DashboardWorkspace, workspaces: DashboardWorkspace[]): DashboardEvent[] {
   const owners = sessionOwners(events, workspaces);
   const owner = workspace.scope === 'user' ? 'unassigned' : workspace.id;
   return events.filter(event => owners.get(event.sessionId) === owner);

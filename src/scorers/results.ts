@@ -25,7 +25,7 @@ export type ViewedLabel = {
 /** A judge as a cohort tells judges apart: a model judge by its tool and the model it recorded. */
 export type JudgeCohort =
   | { kind: 'human' }
-  | { kind: 'model'; tool: string; model?: { id: string; reported: boolean; alias?: string } };
+  | { kind: 'model'; tool: string; model?: { id: string; isReported: boolean; alias?: string } };
 
 /** One measurement. `runMode` is null for labels that recorded none. */
 export type Cohort = {
@@ -45,8 +45,8 @@ export type CohortSummary = Cohort & { stats: Stats; trend: TrendWeek[]; lastSco
 
 export type ScorerSummary = { scorer: string; defaultCohort: string; cohorts: CohortSummary[] };
 
-/** A group's value as the label recorded it. `reported` is false for a model the tool did not report, only requested. */
-type GroupValue = { value: string; reported?: boolean; localChanges?: boolean };
+/** A group's value as the label recorded it. `isReported` is false for a model the tool did not report, only requested. */
+type GroupValue = { value: string; isReported?: boolean; localChanges?: boolean };
 
 const observed = (agent: RecordedAgent | undefined): AgentObservation | undefined => (agent && 'v' in agent ? agent : undefined);
 const one = (value: string | undefined): GroupValue[] | undefined => (value === undefined ? undefined : [{ value }]);
@@ -65,8 +65,8 @@ const DIMENSIONS: Record<Dimension, (entry: ViewedLabel) => GroupValue[] | undef
   tool: ({ agent }) => one(observed(agent)?.tool.name),
   model: ({ agent }) => {
     const model = observed(agent)?.model;
-    if (model?.reported) return [{ value: model.reported, reported: true }];
-    return model?.requested ? [{ value: model.requested, reported: false }] : undefined;
+    if (model?.reported) return [{ value: model.reported, isReported: true }];
+    return model?.requested ? [{ value: model.requested, isReported: false }] : undefined;
   },
   teamRevision: ({ agent }) => {
     const team = observed(agent)?.team;
@@ -142,10 +142,11 @@ export type ValueCount = { label: string; score: number; n: number };
 export type TrendWeek = Stats & { week: string };
 
 export type SelectedCohort = {
-  /** The cohort with its counts and weekly trend over the window. */
-  cohort: CohortSummary;
-  /** The cohort's labels by stored value, highest score first: what a pass rate folds together. */
-  values: ValueCount[];
+  /**
+   * The cohort with its counts and weekly trend over the window, and its labels by stored value, highest score first:
+   * what a pass rate folds together.
+   */
+  cohort: CohortSummary & { values: ValueCount[] };
   groupBy?: Dimension;
   groups?: Group[];
   split?: Split;
@@ -172,7 +173,7 @@ function judgeCohort(judge: ScoreLabel['judge']): JudgeCohort {
       return { kind: 'human' };
     case 'model': {
       const id = judge.model?.reported ?? judge.model?.requested;
-      return { kind: 'model', tool: judge.tool, ...(id ? { model: { id, reported: judge.model?.reported !== undefined } } : {}) };
+      return { kind: 'model', tool: judge.tool, ...(id ? { model: { id, isReported: judge.model?.reported !== undefined } } : {}) };
     }
     default: {
       const unhandled: never = judge;
@@ -252,7 +253,7 @@ function trend({ labels, from, to }: { labels: readonly ViewedLabel[]; from: str
 
 /** Group keys, built from the group's parts so a recorded value can never read as another value or as `none`. */
 function groupKey(value: GroupValue): string {
-  return JSON.stringify(['value', value.value, value.reported ?? null, value.localChanges ?? false]);
+  return JSON.stringify(['value', value.value, value.isReported ?? null, value.localChanges ?? false]);
 }
 const NONE_KEY = JSON.stringify(['none']);
 const NOT_RECORDED_KEY = JSON.stringify(['not recorded']);
@@ -438,8 +439,7 @@ export const ScorerResults = {
       window,
       scorers,
       selected: {
-        cohort: summary,
-        values: valueCounts(counted),
+        cohort: { ...summary, values: valueCounts(counted) },
         ...(groupBy ? { groupBy, groups: groups(counted, groupBy, split?.sideOf) } : {}),
         ...(split ? { split: { commit: split.commit, ...splitStats(counted, split.sideOf) } } : {}),
         failing: { labels: failing.slice(0, query.failing?.limit ?? FAILING_PAGE).map(failingLabel), total: failing.length },

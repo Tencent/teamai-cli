@@ -29,7 +29,7 @@ let scorerQuery={window:scorerWindows.includes(savedWindow)?savedWindow:'30',sco
 function resetScorers(){scorerCommitDraft='';scorerData=null;scorerError='';scorerLoading=false;scorerHtml='';scorerQuery={...scorerQuery,scorer:'',cohort:'',commit:'',group:'',failing:''};}
 const pct=rate=>rate==null?'—':number(Math.round(rate*100))+'%';
 const short=hash=>e(String(hash||'').slice(0,7));
-function judgeText(j){ if(j.kind==='human')return label('Hand label'); return '<span data-verbatim>'+e(j.tool)+'</span> / '+(j.model?'<span data-verbatim>'+e(j.model.id)+'</span>'+(j.model.reported?'':' <small>'+label('requested')+'</small>')+(j.model.alias?' <small data-verbatim>'+e(j.model.alias)+'</small>':''):label('model not recorded')); }
+function judgeText(j){ if(j.kind==='human')return label('Hand label'); return '<span data-verbatim>'+e(j.tool)+'</span> / '+(j.model?'<span data-verbatim>'+e(j.model.id)+'</span>'+(j.model.isReported?'':' <small>'+label('requested')+'</small>')+(j.model.alias?' <small data-verbatim>'+e(j.model.alias)+'</small>':''):label('model not recorded')); }
 function runModeText(mode){ return mode==='attended'?label('Attended'):mode==='unattended'?label('Unattended'):label('Not recorded'); }
 function rubricText(c){ return label('Rubric')+' <span title="'+e(c.rubric.sourceHash)+'" data-verbatim>'+short(c.rubric.sourceHash)+'</span>'+(c.rubric.teamRevision?' · '+label('Team revision')+' <span title="'+e(c.rubric.teamRevision)+'" data-verbatim>'+short(c.rubric.teamRevision)+'</span>':' · <span class="amber">'+label('No team revision')+'</span>'); }
 function cohortText(c){ return rubricText(c)+' · '+(c.source==='session'?label('Session labels'):label('Workflow labels'))+' · '+runModeText(c.runMode)+' · '+judgeText(c.judge); }
@@ -68,7 +68,7 @@ function cohortPicker(data, sel){
   +r.list.map(c=>'<button class="chip'+(c.id===sel.cohort.id?' active':'')+'" data-cohort="'+e(c.id)+'" aria-pressed="'+(c.id===sel.cohort.id)+'">'+(c.source==='session'?label('Session labels'):label('Workflow labels'))+' · '+runModeText(c.runMode)+' · '+judgeText(c.judge)+' <b>'+number(c.stats.n)+'</b></button>').join('')+'</div></div>').join('')+'</div>';
 }
 function meter(rate){ return '<span class="meter" aria-hidden="true"><span style="width:'+(rate==null?0:Math.round(rate*100))+'%"></span></span>'; }
-function groupName(g){ if(g.kind==='none')return label('None'); if(g.kind==='not recorded')return '<span class="muted">'+label('Not recorded')+'</span>'; const long=['teamRevision','fingerprint'].includes(scorerData.selected.groupBy); return '<span data-verbatim title="'+e(g.value)+'">'+(long?short(g.value):e(g.value))+'</span>'+(g.reported===false?' <small>'+label('requested')+'</small>':'')+(g.localChanges?' <small class="amber">'+label('local changes')+'</small>':''); }
+function groupName(g){ if(g.kind==='none')return label('None'); if(g.kind==='not recorded')return '<span class="muted">'+label('Not recorded')+'</span>'; const long=['teamRevision','fingerprint'].includes(scorerData.selected.groupBy); return '<span data-verbatim title="'+e(g.value)+'">'+(long?short(g.value):e(g.value))+'</span>'+(g.isReported===false?' <small>'+label('requested')+'</small>':'')+(g.localChanges?' <small class="amber">'+label('local changes')+'</small>':''); }
 function groupsPanel(sel){
  if(!sel.groups)return '';
  const split=!!sel.split;
@@ -78,10 +78,10 @@ function groupsPanel(sel){
   +'</tbody></table></div></section>';
 }
 function valuesPanel(sel){
- if(!sel.values.length)return '';
+ if(!sel.cohort.values.length)return '';
  const n=sel.cohort.stats.n;
- return '<section class="panel sessions"><div class="panelhead"><h2>'+label('Labels by value')+' <span class="count">'+number(sel.values.length)+'</span></h2><span class="label">'+label('Each value as the labels stored it, highest score first. Read precision or recall from these counts.')+'</span></div><div class="table-scroll"><table class="session-table compact"><thead><tr>'+['LABEL','SCORE','LABELS','SHARE'].map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'
-  +sel.values.map(v=>'<tr><td data-verbatim>'+e(v.label)+'</td><td>'+number(v.score)+'</td><td>'+number(v.n)+'</td><td>'+meter(n?v.n/n:null)+' '+pct(n?v.n/n:null)+'</td></tr>').join('')
+ return '<section class="panel sessions"><div class="panelhead"><h2>'+label('Labels by value')+' <span class="count">'+number(sel.cohort.values.length)+'</span></h2><span class="label">'+label('Each value as the labels stored it, highest score first. Read precision or recall from these counts.')+'</span></div><div class="table-scroll"><table class="session-table compact"><thead><tr>'+['LABEL','SCORE','LABELS','SHARE'].map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'
+  +sel.cohort.values.map(v=>'<tr><td data-verbatim>'+e(v.label)+'</td><td>'+number(v.score)+'</td><td>'+number(v.n)+'</td><td>'+meter(n?v.n/n:null)+' '+pct(n?v.n/n:null)+'</td></tr>').join('')
   +'</tbody></table></div></section>';
 }
 function failingPanel(sel){
