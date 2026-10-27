@@ -15,6 +15,7 @@ export default defineConfig({
     setupFiles: [
       'src/__tests__/helpers/isolate-e2e-env.ts',
       'src/__tests__/helpers/clear-agent-session-env.ts',
+      'src/__tests__/helpers/name-teardown-writer.ts',
       'src/__tests__/helpers/yield-between-tests.ts',
     ],
     // OpenCode's installer replaces a shared binary. Run it before workers.
