@@ -200,9 +200,10 @@ export interface MemberSettingsReport {
 function describeMemberSettingLevel({ level, file, variable }: MemberSettingSource, scope: LocalConfig['scope']): { from: string; short: string } {
   switch (level) {
     case 'environment': return { from: variable ?? 'the environment', short: variable ?? 'environment' };
-    // In user scope this scope's config is this machine's, named once.
-    case 'scope': return scope === 'user'
-      ? { from: `the user config ${file}, also this machine's`, short: 'user config' }
+    // This machine's config is the user scope's: this scope's own in user scope, and in a workspace the one that holds
+    // a setting the user scope decides for the whole machine.
+    case 'scope': return file === path.join(getTeamaiHomeDir(), 'config.yaml')
+      ? { from: `the user config ${file}${scope === 'user' ? ", also this machine's" : ''}`, short: 'user config' }
       : { from: `the workspace config ${file}`, short: 'workspace' };
     case 'machine': return { from: `the machine config ${file}`, short: 'machine' };
     case 'team': return { from: "the team's teamai.yaml", short: 'team' };

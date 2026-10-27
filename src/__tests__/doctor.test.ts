@@ -1419,6 +1419,22 @@ describe('doctor — member settings (#1459)', () => {
         expect(report.notes).toContain(`Usage reporting: off, from usageReportEnabled: false in the machine config ${machineFile()}.`);
     });
 
+    it('names the user config for a setting the user scope decides for the whole machine', async () => {
+        const workspace = { ...mockLocalConfig, scope: 'project', projectRoot: '/tmp/ws', dataHome: '/tmp/ws-data', memberSettingsOverlay: { local: {} } };
+        mockedDetectProjectConfig.mockResolvedValue(workspace);
+        onTestFinished(() => { mockedDetectProjectConfig.mockResolvedValue(null); });
+        mockedLoadLocalConfig.mockResolvedValue({ ...mockLocalConfig, updatePolicy: 'skip' });
+        const otherReads = mockedReadFileSafe.getMockImplementation();
+        mockedReadFileSafe.mockImplementation(async (filePath: string) => (
+            filePath === path.join('/tmp/ws-data', 'config.yaml') ? 'updatePolicy: auto\n' : otherReads?.(filePath)
+        ));
+
+        await doctor({});
+
+        const printed = consoleSpy.mock.calls.map(([line]) => String(line));
+        expect(printed).toContain(`  updatePolicy: skip, from the user config ${machineFile()}`);
+    });
+
     it('prints each model alias in effect, the workspace\'s entries over the machine\'s', async () => {
         const workspace = { ...mockLocalConfig, scope: 'project', projectRoot: '/tmp/ws', dataHome: '/tmp/ws-data', memberSettingsOverlay: { local: {} } };
         mockedDetectProjectConfig.mockResolvedValue(workspace);
