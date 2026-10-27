@@ -32,7 +32,7 @@ import { attemptDir, AttemptIdSchema, attemptResultPath, attemptsDir, readRun, R
 import { abandonPlace, placeLeaseOf, placeOf, placeRoot, preparePlace, runPlaceSetup, type StepEnd } from '../../place/place.js';
 import { commandEnd, managedReport, unreadablePlace } from '../../protocol.js';
 import { startGroupedCommand, stopRecordedGroup, type CommandExit, type GroupedCommand } from '../../../tool-launch/process-stop.js';
-import { isLaunchTool, launchAdapterIdOf, type LaunchTool } from '../../../tool-launch/tools.js';
+import { isLaunchTool, LAUNCH_ORDER, LAUNCH_TOOLS, launchAdapterIdOf, type LaunchTool } from '../../../tool-launch/tools.js';
 import { chooseStepModel, loadDeployedAgent } from '../../step-model.js';
 import type { DriverIdentity, StepHitl, WorkflowEnvelope, WorkflowFailure } from '../../types.js';
 import { isWorkflowError, WORKSPACE_MODES } from '../../types.js';
@@ -173,6 +173,38 @@ function supportedTool(value: string): value is LaunchTool {
   return isLaunchTool(value);
 }
 
+/**
+ * The tool a prompt step runs on: `--tools`, then `workflows.tools`, the agent's entry before the default, with the
+ * member's own AI tool between them: TEAMAI_AI_TOOL before `workflows.tools.default`, and `ai.tool` after it. A member's
+ * tool that teamai does not launch fails the step; one that runs no workflow step gives way to the next rung.
+ */
+function stepTool(agent: string | undefined, config: LocalConfig, flags: Record<string, string>): { ok: true; tool: string | undefined } | { ok: false; failure: WorkflowFailure } {
+  const configured = config.workflows?.tools ?? {};
+  const rungs = [
+    { source: '--tools', named: agent ? flags[agent] : undefined, member: false },
+    { source: `workflows.tools.${agent}`, named: agent ? configured[agent] : undefined, member: false },
+    { source: '--tools', named: flags.default, member: false },
+    { source: 'TEAMAI_AI_TOOL', named: process.env.TEAMAI_AI_TOOL, member: true },
+    { source: 'workflows.tools.default', named: configured.default, member: false },
+    { source: 'ai.tool', named: config.ai?.tool, member: true },
+  ];
+  const passed: { source: string; named: string }[] = [];
+  for (const { source, named, member } of rungs) {
+    if (!named) continue;
+    if (member && !isLaunchTool(named)) {
+      if (!LAUNCH_ORDER.some((tool) => tool === named)) {
+        return { ok: false, failure: { code: 'tool_unsupported', message: `${source} is "${named}", which is not a tool teamai launches. Set it to one of: ${LAUNCH_TOOLS.join(', ')}.` } };
+      }
+      passed.push({ source, named });
+      continue;
+    }
+    for (const skipped of passed) log.warn(`${skipped.source} is "${skipped.named}", which cannot run a workflow step. Using ${source} (${named}) instead.`);
+    return { ok: true, tool: named };
+  }
+  for (const skipped of passed) log.warn(`${skipped.source} is "${skipped.named}", which cannot run a workflow step.`);
+  return { ok: true, tool: undefined };
+}
+
 function ignoredCodexSettings(agent: AgentSpec): string[] {
   const extras = Object.keys(agent.tool_extras?.codex ?? {});
   return agent.tools?.length ? ['tools', ...extras] : extras;
@@ -289,19 +321,20 @@ async function promptReport(
   lock: RunLock,
   driver: DriverIdentity,
   lease: Lease,
-  tools: Record<string, string>,
   adapter: LocalToolAdapter,
   options: LocalDriverOptions,
   archive: SessionArchive,
   signal: AbortSignal,
   mode: RunMode,
 ): Promise<ReportBody> {
-  const selected = lease.agent && tools[lease.agent] ? tools[lease.agent] : tools.default;
   const giveUp = async (failure: WorkflowFailure, tool?: string): Promise<ReportBody> => {
     const unrestored = await abandonPlace({ config, lock, attempt: lease.attempt });
     const reported = unrestored ? { ...failure, message: `${failure.message.replace(/\.?$/, '.')} ${unrestored}` } : failure;
     return { attempt: lease.attempt, revision: lease.revision, driver, ...(tool ? { tool } : {}), ...failureReport(reported) };
   };
+  const choice = stepTool(lease.agent, config, options.tools ?? {});
+  if (!choice.ok) return giveUp(choice.failure);
+  const selected = choice.tool;
   if (!selected) return giveUp({ code: 'tool_unconfigured', message: 'No local workflow tool is configured for this prompt step' });
   if (!supportedTool(selected)) {
     return giveUp({ code: 'tool_unsupported', message: `The local workflow tool "${selected}" is not supported` }, selected);
@@ -460,7 +493,6 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options
   const canHitl = options.hitl ?? (mode === 'attended' && process.stdin.isTTY === true && process.stderr.isTTY === true);
   const can = localCan(config, canHitl);
   const driver = driverIdentity('local', cwd);
-  const tools = { ...config.workflows?.tools, ...options.tools };
   const adapter = options.adapter ?? createLocalToolAdapter();
   const archive = openSessionArchive(config);
   const maxParallel = config.workflows?.max_parallel ?? 1;
@@ -631,7 +663,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options
             }
             if (failure) return unstaged(lease, failure);
             interactiveIgnores = ignored;
-            return promptReport(config, lock, driver, lease, tools, adapter, options, archive, controller.signal, mode);
+            return promptReport(config, lock, driver, lease, adapter, options, archive, controller.signal, mode);
           })() };
         }
       }

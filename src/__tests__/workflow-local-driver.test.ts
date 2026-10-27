@@ -140,6 +140,40 @@ describe('local workflow prompt driver', () => {
     expect(await readRun(config, runId)).toMatchObject({ steps: [{ runMode: mode }] });
   });
 
+  it.each<{ case: string; flags: Record<string, string>; configured: Record<string, string>; env: string; ai: string | undefined; ran: string }>([
+    { case: 'TEAMAI_AI_TOOL over workflows.tools.default', flags: {}, configured: { default: 'claude' }, env: 'codex', ai: undefined, ran: 'codex' },
+    { case: '--tools over TEAMAI_AI_TOOL', flags: { default: 'claude' }, configured: {}, env: 'codex', ai: undefined, ran: 'claude' },
+    { case: 'workflows.tools.default over ai.tool', flags: {}, configured: { default: 'codex' }, env: '', ai: 'opencode', ran: 'codex' },
+    { case: 'ai.tool when nothing else names a tool', flags: {}, configured: {}, env: '', ai: 'opencode', ran: 'opencode' },
+    { case: 'the next rung when TEAMAI_AI_TOOL names a tool without workflow steps', flags: {}, configured: { default: 'claude' }, env: 'openclaw', ai: undefined, ran: 'claude' },
+  ])('runs a prompt step on $case', async ({ flags, configured, env, ai, ran }) => {
+    vi.stubEnv('TEAMAI_AI_TOOL', env);
+    onTestFinished(() => { vi.unstubAllEnvs(); });
+    const { config, workspace, runId } = await fixture();
+    config.workflows = { tools: configured };
+    if (ai) config.ai = { tool: ai };
+    const tools: string[] = [];
+    const adapter: LocalToolAdapter = { runInteractive: vi.fn(), run: vi.fn(async (tool: string) => { tools.push(tool); return { started: true as const, exitCode: 0 }; }) };
+
+    await runLocalDriver(config, runId, workspace, { adapter, toolPaths, tools: flags });
+
+    expect(tools).toEqual([ran]);
+  });
+
+  it('fails a prompt step when TEAMAI_AI_TOOL names a tool teamai does not launch', async () => {
+    vi.stubEnv('TEAMAI_AI_TOOL', 'gemini');
+    onTestFinished(() => { vi.unstubAllEnvs(); });
+    const { config, workspace, runId } = await fixture();
+    const adapter: LocalToolAdapter = { runInteractive: vi.fn(), run: vi.fn() };
+
+    await runLocalDriver(config, runId, workspace, { adapter, toolPaths });
+
+    expect(adapter.run).not.toHaveBeenCalled();
+    expect(await readRun(config, runId)).toMatchObject({
+      steps: [{ failure: { code: 'tool_unsupported', message: expect.stringContaining('TEAMAI_AI_TOOL is "gemini", which is not a tool teamai launches.') } }],
+    });
+  });
+
   it('fails without a configured tool and does not invoke the adapter', async () => {
     const { config, workspace, runId } = await fixture();
     config.workflows = undefined;

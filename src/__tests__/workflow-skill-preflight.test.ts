@@ -283,6 +283,14 @@ describe('skill driver preflight', () => {
     expect(runCount(made)).toBe(0);
   });
 
+  it('leaves the session tool out of a local start when TEAMAI_AI_TOOL names the tool steps run on', async () => {
+    vi.stubEnv('TEAMAI_AI_TOOL', 'codex');
+    const made = await harness({ 'release-docs': RELEASE_DOCS });
+    expect(await made.call({ kind: 'describe', name: 'release-docs' })).toMatchObject({ data: { describe: {
+      ask: { kind: 'local', start: 'teamai workflow start release-docs --driver local' },
+    } } });
+  });
+
   it('names the env keys of a local route as the held step facts do', async () => {
     const made = await harness({ 'release-docs': RELEASE_DOCS.replace('[SIGNING_KEY]', '[SIGNING_KEY, RELEASE_KEY]') });
     expect(await made.call({ kind: 'describe', name: 'release-docs' })).toMatchObject({ data: { describe: { ask: {

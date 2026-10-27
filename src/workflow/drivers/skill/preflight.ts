@@ -285,12 +285,13 @@ function inputsOf(description: WorkflowDescription): Array<{ name: string; type:
 }
 
 /**
- * The prompt tool a person's local run must be told: the session's `tool`, when this machine's config names no default
- * prompt tool (`workflows.tools.default`) and the local driver launches `tool`. Undefined when the config names one,
- * or when no tool the local driver launches is known.
+ * The prompt tool a person's local run must be told: the session's `tool`, when nothing on this machine names the tool
+ * prompt steps run on (TEAMAI_AI_TOOL, `workflows.tools.default`, `ai.tool`) and the local driver launches `tool`.
+ * Undefined when one of those names a tool, or when no tool the local driver launches is known.
  */
 export function localPromptTool(config: LocalConfig, tool: ToolName | undefined): LaunchTool | undefined {
-  return config.workflows?.tools.default === undefined && tool !== undefined && isLaunchTool(tool) ? tool : undefined;
+  const named = process.env.TEAMAI_AI_TOOL || config.workflows?.tools.default || config.ai?.tool;
+  return !named && tool !== undefined && isLaunchTool(tool) ? tool : undefined;
 }
 
 /** The describe reply's `ask` of the kind the transitions chose. `local.tool`: the prompt tool a local start names. */
