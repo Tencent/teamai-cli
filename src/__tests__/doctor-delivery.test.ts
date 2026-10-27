@@ -848,6 +848,19 @@ describe('doctor — where a tool takes skills', () => {
     expect([readChecks(inSubdir), readChecks(elsewhere)]).toEqual([readChecks(atRoot), readChecks(atRoot)]);
   });
 
+  it('names no project read that every session in the project makes, whatever directory doctor runs from', async () => {
+    const project = path.join(await fse.realpath(tempDir), 'project');
+    await fse.ensureDir(path.join(project, '.claude'));
+    Object.assign(localConfig, { scope: 'project', projectRoot: project });
+    teamConfig.toolPaths = { claude: { skills: '.claude/skills', rules: '.claude/rules' } };
+    await fse.outputFile(path.join(tempDir, 'team-repo', 'rules', 'style.md'), '# Style\n');
+
+    const [atRoot, inSubdir] = await reportsFrom([project, path.join(project, 'src')]);
+
+    expect(atRoot.notes?.filter((note) => note.startsWith('claude reads '))).toEqual([]);
+    expect(inSubdir.notes).toEqual(atRoot.notes);
+  });
+
   it('notes a user read limited to sessions under a directory, whatever directory doctor runs from', async () => {
     teamConfig.toolPaths = { cursor: { rules: '.cursor/rules' } };
     await fse.ensureDir(path.join(homeDir, '.cursor'));

@@ -303,12 +303,24 @@ export type Unread =
   | { readonly write: string; readonly reason: 'cwd-only' | 'outside-workspace'; readonly readFrom: string };
 
 /**
- * The writes of `location` the tool would not read from a session in
- * `session` (`host.cwd()` by default), or with `session` null from some
- * session, so each read limited to sessions in one place counts; none when it
- * writes no files or its reads are unknown.
+ * Where the sessions a read is judged for start: in one directory, anywhere at
+ * or under a project root, or anywhere at all.
  */
-export function unreadWrites<P extends Place>(location: Located<P> & Beside<P>, host: Host = realHost(), session: string | null = host.cwd()): readonly Unread[] {
+export type Session =
+  | { readonly kind: 'at'; readonly dir: string }
+  | { readonly kind: 'within'; readonly root: string }
+  | { readonly kind: 'anywhere' };
+
+/**
+ * The writes of `location` the tool would not read from every session
+ * `session` covers (a session in `host.cwd()` by default); none when it writes
+ * no files or its reads are unknown.
+ */
+export function unreadWrites<P extends Place>(
+  location: Located<P> & Beside<P>,
+  host: Host = realHost(),
+  session: Session = { kind: 'at', dir: host.cwd() },
+): readonly Unread[] {
   if (location.channel !== 'files' || location.reads === 'unknown') return [];
   const { reads } = location;
   const p = host.path;
@@ -327,10 +339,10 @@ export function unreadWrites<P extends Place>(location: Located<P> & Beside<P>, 
       case 'always':
         break;
       case 'cwdOnly':
-        if (session === null || !samePathOn(p, session, read.root)) unread.push({ write: write.path, reason: 'cwd-only', readFrom: read.root });
+        if (!(session.kind === 'at' && samePathOn(p, session.dir, read.root))) unread.push({ write: write.path, reason: 'cwd-only', readFrom: read.root });
         break;
       case 'workspaceUnder':
-        if (session === null || !isAtOrUnder(p, session, read.root)) unread.push({ write: write.path, reason: 'outside-workspace', readFrom: read.root });
+        if (!readsUnderFor(p, session, read.root)) unread.push({ write: write.path, reason: 'outside-workspace', readFrom: read.root });
         break;
       default: {
         const unhandled: never = read;
@@ -339,6 +351,22 @@ export function unreadWrites<P extends Place>(location: Located<P> & Beside<P>, 
     }
   }
   return unread;
+}
+
+/** Whether every session `session` covers starts at or under `root`. */
+function readsUnderFor(p: path.PlatformPath, session: Session, root: string): boolean {
+  switch (session.kind) {
+    case 'at':
+      return isAtOrUnder(p, session.dir, root);
+    case 'within':
+      return isAtOrUnder(p, session.root, root);
+    case 'anywhere':
+      return false;
+    default: {
+      const unhandled: never = session;
+      return unhandled;
+    }
+  }
 }
 
 function readsPlace(p: path.PlatformPath, read: Read, write: Place): boolean {
