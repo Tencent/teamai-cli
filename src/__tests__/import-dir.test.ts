@@ -1,5 +1,6 @@
 // -*- coding: utf-8 -*-
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'fs-extra';
@@ -142,6 +143,53 @@ describe('import --dir', () => {
 
     expect(await fs.pathExists(path.join(teamRepoDir, 'teamwiki', 'evidence', 'code', 'my-project', 'source-manifest.json'))).toBe(true);
     expect(lines.join('\n')).not.toContain('under resources.wiki');
+  });
+
+  it('tells a suffixed checkout without an origin to repoint resources.wiki only while the directory-named copy may be its own', async () => {
+    // Evidence a release that recorded no source published for this checkout, scoped to a role.
+    const legacy = path.join(teamRepoDir, 'teamwiki', 'evidence', 'code', 'my-project');
+    await fs.outputJson(path.join(legacy, 'source-manifest.json'), { project: 'my-project', files: [] });
+    await fs.outputFile(path.join(teamRepoDir, 'manifest', 'roles.yaml'),
+      'version: 1\nroles:\n  - id: backend\n    resources: { knowledge: [], skills: [], wiki: [my-project] }\n');
+    const other = path.join(tmpDir, 'other', 'my-project');
+    await fs.outputFile(path.join(other, 'main.py'), '# other\n');
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => { lines.push(args.map(String).join(' ')); });
+    try {
+      await runImportDir({ dir: projectDir });
+      const own = `my-project-${createHash('sha256').update(await fs.realpath(projectDir)).digest('hex').slice(0, 8)}`;
+      expect(lines.join('\n')).toContain('teamwiki/evidence/code/my-project/ holds evidence that names another source, or no source, ');
+      expect(lines.join('\n')).toContain(`change any resources.wiki entry that means this checkout from "my-project" to "${own}".`);
+      await runImportDir({ dir: other });
+      // The older copy was moved over by hand and removed.
+      await fs.remove(legacy);
+      lines.length = 0;
+      await runImportDir({ dir: projectDir });
+      await runImportDir({ dir: other });
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(lines.join('\n')).not.toContain('under resources.wiki');
+  });
+
+  it('dryRun prints the slug the import would publish under, and writes nothing', async () => {
+    await runImportDir({ dir: projectDir });
+    const other = path.join(tmpDir, 'other', 'my-project');
+    await fs.outputFile(path.join(other, 'main.py'), '# other\n');
+    vi.clearAllMocks();
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => { lines.push(args.map(String).join(' ')); });
+    try {
+      await runImportDir({ dir: other, dryRun: true });
+    } finally {
+      spy.mockRestore();
+    }
+
+    const suffixed = `my-project-${createHash('sha256').update(await fs.realpath(other)).digest('hex').slice(0, 8)}`;
+    expect(lines.join('\n')).toContain(`(project: ${suffixed})`);
+    expect(await fs.readdir(path.join(teamRepoDir, 'teamwiki', 'evidence', 'code'))).toEqual(['my-project']);
+    expect(extractCodebase).not.toHaveBeenCalled();
   });
 
   it('prints the slug a same-named directory without an origin is published under', async () => {

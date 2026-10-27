@@ -405,15 +405,33 @@ describe('importCodebase: the extraction every import source shares', () => {
     expect((await fs.readJson(path.join(evidence, 'source-manifest.json'))).project).toBe('github__acme__svc');
   });
 
+  it('moves the evidence a checkout published under its directory name before it had an origin', async () => {
+    const repo = await makeRepo(root, 'svc', 'export function greet() { return "hi"; }\n');
+    git(repo, 'remote', 'remove', 'origin');
+    await importCodebase({ sourceDir: repo, slug: 'svc', wikiRoot, skipEnrich: true });
+    const legacy = path.join(wikiRoot, 'evidence', 'code', 'svc');
+    await fs.outputFile(path.join(legacy, 'docs', 'curated.md'), '# curated\n');
+    git(repo, 'remote', 'add', 'origin', 'https://github.com/acme/svc');
+
+    expect(await importCodebase({
+      sourceDir: repo, slug: 'github__acme__svc', legacySlug: 'svc', wikiRoot, skipEnrich: true,
+    })).toBe(true);
+
+    const evidence = path.join(wikiRoot, 'evidence', 'code', 'github__acme__svc');
+    expect(await fs.pathExists(legacy)).toBe(false);
+    expect(await fs.readFile(path.join(evidence, 'docs', 'curated.md'), 'utf8')).toBe('# curated\n');
+    expect((await fs.readJson(path.join(evidence, 'source-manifest.json'))).repoUrl).toBe('https://github.com/acme/svc');
+  });
+
   it.each([
     ['was published before the per-codebase source manifest existed', async (repo: string) => {
       await importCodebase({ sourceDir: repo, slug: 'svc', wikiRoot, skipEnrich: true });
       await fs.remove(path.join(wikiRoot, 'evidence', 'code', 'svc', 'source-manifest.json'));
     }],
-    ['was published before the checkout had an origin', async (repo: string) => {
-      git(repo, 'remote', 'remove', 'origin');
-      await importCodebase({ sourceDir: repo, slug: 'svc', wikiRoot, skipEnrich: true });
-      git(repo, 'remote', 'add', 'origin', 'https://github.com/acme/svc');
+    ['was published by another checkout without an origin', async () => {
+      const other = await makeRepo(path.join(root, 'other'), 'svc', 'export function greet() { return "hi"; }\n');
+      git(other, 'remote', 'remove', 'origin');
+      await importCodebase({ sourceDir: other, slug: 'svc', wikiRoot, skipEnrich: true });
     }],
   ])('leaves directory-named evidence that names no repository in place, with a warning, when it %s', async (_, publishLegacy) => {
     const repo = await makeRepo(root, 'svc', 'export function greet() { return "hi"; }\n');

@@ -200,4 +200,25 @@ describe('--dir slug collision (#1422)', () => {
     await expect(importDir(sub, wikiRoot)).rejects.toThrow('Not replacing it');
     expect(fs.readFileSync(curated, 'utf-8')).toBe('# curated\n');
   });
+
+  it('a subdirectory that gains an origin re-imports over its own evidence and keeps the curated docs', async () => {
+    const parent = temp('teamai-1422-dir-');
+    const wikiRoot = path.join(temp('teamai-1422-wiki-'), 'teamwiki');
+    const repo = path.join(parent, 'mono');
+    const sub = path.join(repo, 'apps', 'svc');
+    fs.mkdirSync(sub, { recursive: true });
+    fs.writeFileSync(path.join(sub, 'svc.ts'), 'export const svc = 1;\n');
+    execFileSync('git', ['init', '--quiet'], { cwd: repo, stdio: 'ignore' });
+    await importDir(sub, wikiRoot);
+    const curated = path.join(wikiRoot, 'evidence', 'code', 'svc', 'docs', 'curated.md');
+    fs.mkdirSync(path.dirname(curated), { recursive: true });
+    fs.writeFileSync(curated, '# curated\n');
+    execFileSync('git', ['remote', 'add', 'origin', 'https://github.com/acme/mono.git'], { cwd: repo, stdio: 'ignore' });
+
+    await importDir(sub, wikiRoot);
+
+    expect(evidenceSlugs(wikiRoot)).toEqual(['svc']);
+    expect(fs.readFileSync(curated, 'utf-8')).toBe('# curated\n');
+    expect(fs.readFileSync(path.join(wikiRoot, 'evidence', 'code', 'svc', 'source-manifest.json'), 'utf-8')).toContain('acme/mono');
+  });
 });

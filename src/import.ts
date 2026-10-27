@@ -442,20 +442,23 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
       const dirSlug = await defaultProjectSlug(dirPath);
       const legacySlug = await checkoutName(dirPath);
 
+      // <output>/teamwiki, else the team repo's teamwiki/; never the source directory.
+      const { lockTeamwiki, resolveTeamwiki } = await import('./utils/teamwiki-root.js');
+      const target = await resolveTeamwiki({ output: opts.output, dryRun: opts.dryRun });
+      const { wikiRoot, team } = target;
+      const { importLocalCheckout, localCheckoutSlug } = await import('./import-codebase.js');
+
       if (opts.dryRun) {
-        log.info(`Scanning local directory: ${dirPath} (project: ${dirSlug})`);
+        // The slug depends on the evidence already published, so the preview reads it.
+        const slug = await localCheckoutSlug({ sourceDir: dirPath, slug: dirSlug, wikiRoot });
+        log.info(`Scanning local directory: ${dirPath} (project: ${slug})`);
         log.info(`[dry-run] skipping code extraction, no action taken`);
-        log.success(`Local directory ${dirSlug} import complete (dry-run)`);
+        log.success(`Local directory ${slug} import complete (dry-run)`);
         return;
       }
 
-      // <output>/teamwiki, else the team repo's teamwiki/; never the source directory.
-      const { lockTeamwiki, resolveTeamwiki } = await import('./utils/teamwiki-root.js');
-      const target = await resolveTeamwiki({ output: opts.output });
-      const { wikiRoot, team } = target;
       const releaseImportLock = await lockTeamwiki(target);
       try {
-        const { importLocalCheckout, localCheckoutSlug } = await import('./import-codebase.js');
         const slug = await localCheckoutSlug({ sourceDir: dirPath, slug: dirSlug, wikiRoot });
         log.info(`Scanning local directory: ${dirPath} (project: ${slug})`);
         const updated = await importLocalCheckout({
@@ -469,8 +472,11 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
           maxFiles,
         });
         // While the old name still holds evidence (another repo's, or a copy the
-        // import warned about), a scope on it still points at that evidence.
-        if (team && legacySlug !== slug && !(await fs.pathExists(path.join(wikiRoot, 'evidence', 'code', legacySlug)))) {
+        // import warned about), a scope on it still points at that evidence. A
+        // suffixed checkout was never published under the old name, so such a
+        // scope is not its own.
+        if (team && slug === dirSlug && legacySlug !== slug
+          && !(await fs.pathExists(path.join(wikiRoot, 'evidence', 'code', legacySlug)))) {
           await warnStaleWikiScopes({ teamRepo: team.localConfig.repo.localPath, legacySlug, slug });
         }
         if (!team) {
