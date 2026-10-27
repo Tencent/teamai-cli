@@ -311,7 +311,7 @@ export function localPromptTool({ config, tool, aiTools }: { config: LocalConfig
  * The describe reply's `ask` of the kind the transitions chose. `tools.local`: the prompt tool a local start names.
  * `tools.session`: the tool the session declared, which every skill start it offers keeps.
  */
-export function askFor(verdict: DescribeVerdict, description: WorkflowDescription, invocation: Invocation, judging: Judging, tools: { local?: string; session?: ToolId } = {}): DescribeAsk {
+export function askFor(verdict: DescribeVerdict, description: WorkflowDescription, invocation: Invocation, judging: Judging, tools: { local?: string; session?: ToolId }): DescribeAsk {
   const { name } = description;
   const session = tools.session !== undefined ? { tool: tools.session } : {};
   const facts = factsOf(description, judging, verdict.ask === 'unattended' ? 'auto-approve' : 'picked').map((fact) => `- ${fact}`);
