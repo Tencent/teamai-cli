@@ -67,70 +67,55 @@ async function repoWithUpkeep(root: string): Promise<number | undefined> {
   return idleProcess({ cwd: path.join(root, 'repo') });
 }
 
-function isRunning(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /**
- * Run a node parent that exits at once and leaves a detached child running for
- * `ms`, as hook-dispatch leaves its --bg-only pass. The parent gets `env`, the
- * environment every test passes on by default, and nothing that tracks its children.
+ * Run a node parent that exits at once and leaves a detached child that writes
+ * `done` after `ms` and exits, as hook-dispatch leaves its --bg-only pass. The
+ * parent gets `env`, the environment every test passes on by default, and
+ * nothing that tracks its children. The child's last write marks its end:
+ * signal 0 still reaches it as a zombie until its new parent reaps it.
  */
-async function leaveDetachedChild(ms: number, env?: NodeJS.ProcessEnv): Promise<number> {
-  const pidFile = path.join(tempRoot(), 'detached.pid');
-  const child = `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setTimeout(() => {}, ${ms})`;
+function leaveDetachedChild(done: string, ms: number, env?: NodeJS.ProcessEnv): void {
+  const child = `setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(done)}, ''), ${ms})`;
   const parent = spawnSync(process.execPath, ['-e', `
     require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(child)}], { detached: true, stdio: 'ignore' }).unref();
   `], { encoding: 'utf-8', env });
   expect(parent.status, parent.stderr).toBe(0);
-  while (!fs.existsSync(pidFile) || fs.readFileSync(pidFile, 'utf-8') === '') await new Promise((resolve) => setTimeout(resolve, 10));
-  const pid = Number(fs.readFileSync(pidFile, 'utf-8'));
-  onTestFinished(() => { if (isRunning(pid)) process.kill(pid); });
-  return pid;
 }
 
 it('waits for a detached child the suite started before rmSync gives up on ENOTEMPTY', async () => {
-  let writer: number | undefined;
-  const { rmSync } = await wrapLosingRemovals(() => writer !== undefined && isRunning(writer));
+  const done = path.join(tempRoot(), 'done');
+  const { rmSync } = await wrapLosingRemovals(() => !fs.existsSync(done));
   const root = tempRoot();
   fs.writeFileSync(path.join(root, 'state.json'), '{}');
-  writer = await leaveDetachedChild(1_500);
+  leaveDetachedChild(done, 1_500);
 
   rmSync(root, { recursive: true, force: true });
 
   expect(fs.existsSync(root)).toBe(false);
-  expect(isRunning(writer)).toBe(false);
 });
 
 it('waits for a detached child the suite started before fs.promises.rm gives up on ENOTEMPTY', async () => {
-  let writer: number | undefined;
-  const { rm } = await wrapLosingRemovals(() => writer !== undefined && isRunning(writer));
+  const done = path.join(tempRoot(), 'done');
+  const { rm } = await wrapLosingRemovals(() => !fs.existsSync(done));
   const root = tempRoot();
   fs.writeFileSync(path.join(root, 'state.json'), '{}');
-  writer = await leaveDetachedChild(1_500);
+  leaveDetachedChild(done, 1_500);
 
   await rm(root, { recursive: true, force: true });
 
   expect(fs.existsSync(root)).toBe(false);
-  expect(isRunning(writer)).toBe(false);
 });
 
 it('waits for a detached child of a process the test started with a NODE_OPTIONS of its own', async () => {
-  let writer: number | undefined;
-  const { rmSync } = await wrapLosingRemovals(() => writer !== undefined && isRunning(writer));
+  const done = path.join(tempRoot(), 'done');
+  const { rmSync } = await wrapLosingRemovals(() => !fs.existsSync(done));
   const root = tempRoot();
   fs.writeFileSync(path.join(root, 'state.json'), '{}');
-  writer = await leaveDetachedChild(1_500, { ...process.env, NODE_OPTIONS: '--no-deprecation' });
+  leaveDetachedChild(done, 1_500, { ...process.env, NODE_OPTIONS: '--no-deprecation' });
 
   rmSync(root, { recursive: true, force: true });
 
   expect(fs.existsSync(root)).toBe(false);
-  expect(isRunning(writer)).toBe(false);
 });
 
 it('stops waiting once a detached child the worker started has exited, though the worker has not reaped it', async () => {
