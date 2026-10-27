@@ -4,6 +4,7 @@ import matter from 'gray-matter';
 import os from 'node:os';
 import path from 'node:path';
 import { AgentsHandler } from '../resources/agents.js';
+import { log } from '../utils/logger.js';
 import { TeamaiConfigSchema, type LocalConfig, type TeamaiConfig } from '../types.js';
 
 vi.mock('../utils/logger.js', () => ({
@@ -83,6 +84,22 @@ describe('Trae subagents', () => {
 
     const { data } = matter(await fse.readFile(path.join(sandbox, 'home', '.trae-cn', 'agents', `${AGENT}.md`), 'utf8'));
     expect(data).toEqual({ name: AGENT, description: 'Review team changes', tools: 'Read, Grep, Glob' });
+  });
+
+  it('skips a team agent whose name Trae ignores for trae and trae-cn, saying why, and writes it for other tools', async () => {
+    const name = 'code_reviewer';
+    await fse.writeFile(path.join(teamRepo, 'agents', `${name}.yaml`), AGENT_YAML.replace(`name: ${AGENT}`, `name: ${name}`));
+    const underscored = { ...item, name, sourcePath: path.join(teamRepo, 'agents', `${name}.yaml`), relativePath: `agents/${name}.yaml` };
+    const config = { ...configFor('trae', 'project'), enabledAgents: ['trae', 'trae-cn', 'claude'] } as LocalConfig;
+    await fse.ensureDir(path.join(projectRoot, '.claude'));
+
+    await new AgentsHandler().pullItem(underscored, teamConfig, config);
+
+    expect(await fse.pathExists(path.join(projectRoot, '.trae', 'agents', `${name}.md`))).toBe(false);
+    expect(await fse.pathExists(path.join(projectRoot, '.claude', 'agents', `${name}.md`))).toBe(true);
+    const warnings = vi.mocked(log.warn).mock.calls.map(([message]) => message);
+    expect(warnings).toContain(`[agents] Skipped ${name} for trae: Trae loads a subagent only when its name starts with a letter, holds only letters, digits and -, ends with a letter or digit, and is at most 50 characters.`);
+    expect(warnings).toContain(`[agents] Skipped ${name} for trae-cn: Trae loads a subagent only when its name starts with a letter, holds only letters, digits and -, ends with a letter or digit, and is at most 50 characters.`);
   });
 
   it('trae: a user-scope pull writes no agent, since where Trae reads them is unknown', async () => {
