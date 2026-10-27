@@ -58,7 +58,6 @@ import { resolveDocsDestination } from './resources/docs.js';
 import { listTeamAgentDirs, ownsAgentCopy } from './resources/agents.js';
 import { RulesHandler, inlineRulesLabelOf, inlineRulesLocationOf, isLegacyLayoutCopy, ownsRuleCopy } from './resources/rules.js';
 import { deliveredHashes, projectCheckouts, syncDeliveredGitExclude } from './pull.js';
-import { isToolInstalledForConfig } from './resources/base.js';
 import { BUILTIN_AGENT_NAMES } from './builtin-agents.js';
 import {
   BUILTIN_SKILL_NAMES,
@@ -69,7 +68,7 @@ import {
   removeOwnedFiles,
   skillsGuardBase,
 } from './builtin-skills.js';
-import { cleanupOf, hookAdapterDir, hookSettingsFile, installOf, locate, ownOf, SHARED_AGENT_SKILLS_PATH, writesOf, type Location } from './locate.js';
+import { cleanupOf, hookAdapterDir, hookSettingsFile, installOf, isInstalledFor, locate, ownOf, SHARED_AGENT_SKILLS_PATH, writesOf, type Location } from './locate.js';
 import { channelsOf } from './tools.js';
 import { CODEX_TOOL_IDS } from './utils/tool-names.js';
 import { allowsSkillDirectory, CODEX_TOOL, describeOutsideSkillLink, describeSkillDirectoryBlock, findSkillDirectoryBlock, skillOrigin } from './resources/skills.js';
@@ -1179,7 +1178,7 @@ async function buildRemovalPlan(
   for (const [tool, toolPath] of Object.entries(toolPaths)) {
     if (isAgentExcluded(localConfig, tool)) continue;
     const probePath = toolPath.skills ?? toolPath.rules ?? toolPath.settings ?? toolPath.claudemd;
-    if (probePath && await isToolInstalledForConfig(tool, probePath, localConfig)) {
+    if (probePath && isInstalledFor(await locate(tool, 'rules', install))) {
       activeTools.add(tool);
     }
   }

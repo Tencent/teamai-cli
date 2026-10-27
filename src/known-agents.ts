@@ -12,7 +12,7 @@ import {
   detectToolRoot,
 } from './types.js';
 import { isToolId, TOOLS } from './tools.js';
-import { installOf, locate, ownOf } from './locate.js';
+import { installOf, isInstalledFor, locate, ownOf } from './locate.js';
 import type { LocalConfig, TeamaiConfig, Scope } from './types.js';
 import { getUserHome } from './utils/home.js';
 import { realHost, type Host } from './tool-home.js';
@@ -384,7 +384,7 @@ export async function detectInstalledAgents(localConfig: LocalConfig, teamConfig
     const location = isToolId(agent.id) ? await locate(agent.id, 'skills', install, host) : null;
     const own = location === null ? null : ownOf(location);
     const [absoluteSkillsPath, installed] = location !== null && own !== null
-      ? [own.path, location.gates.every((gate) => gate.kind !== 'installed' || gate.met)]
+      ? [own.path, isInstalledFor(location)]
       : [
         host.path.join(base, ...agent.skillsPath.split('/')),
         await host.exists(host.path.join(base, ...toolGateRoot(agent.id, agent.skillsPath, localConfig.toolRoots).split('/'))),

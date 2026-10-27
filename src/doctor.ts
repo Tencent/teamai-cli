@@ -21,6 +21,7 @@ import {
   toolRootRejection,
   resolveHookScope,
   legacyManagedHooksPath,
+  resolveBaseDir,
   resolveToolBaseDir,
   isAgentExcluded,
   scopedToolPaths,
@@ -32,8 +33,7 @@ import {
   type TeamaiConfig,
   installScopeName,
 } from './types.js';
-import { isToolInstalledForConfig } from './resources/base.js';
-import { hookSettingsFile, installOf, locate, writable } from './locate.js';
+import { hookSettingsFile, installOf, isInstalledFor, locate, writable, type Gate, type Install } from './locate.js';
 import { samePlace } from './resources/places.js';
 import { describeInvalidToolHomes, envToolHome, realHost, reloadToolHomes, toolHomesPath } from './tool-home.js';
 import { isToolId } from './tools.js';
@@ -182,33 +182,24 @@ export interface DoctorReport {
  * `enabledAgents` the team's tool list is aspirational, so an absent tool stays
  * silent, as it always has.
  *
- * The probe uses a resource path rather than the settings path: resources land
- * under `resolveToolBaseDir` (the project root in project scope), which is the
- * root a pull would have to write into.
+ * The probe is the install gate `locate` gives the resource the tool takes
+ * first, the gate a pull checks before it writes there.
  */
 async function buildEnabledToolChecks(ctx: DoctorContext): Promise<Check[]> {
   const { localConfig, toolPaths } = ctx;
   if (!localConfig.enabledAgents) return [];
 
+  const install = installOf(ctx.teamConfig ?? { toolPaths }, localConfig);
   const checks: Check[] = [];
   for (const [tool, paths] of Object.entries(toolPaths)) {
     // Copilot counts itself installed as soon as enabledAgents names it
-    // (isToolInstalledForConfig), so this check could never fail for it. Its
+    // (`locate`'s install gate), so this check could never fail for it. Its
     // delivery check still reports what did not arrive.
     if (tool === COPILOT_TOOL_ID) continue;
 
-    const probePath = paths.skills ?? paths.rules ?? paths.agents ?? paths.settings ?? paths.hooks;
-    if (!probePath) continue;
-
-    // A tool that receives skills is asked the way the skills write path asks:
-    // OpenClaw lives at its workspace directory, not at the tool root, so the
-    // generic probe passes for a `~/.openclaw` with no workspace while delivery
-    // silently skips it — the same "reported success, received nothing" this
-    // check exists to catch. A tool with no skills path (rules only) has no
-    // such resolver, so it keeps the generic probe.
-    const isInstalled = paths.skills
-      ? async (): Promise<boolean> => writable(await locate(tool, 'skills', installOf(ctx.teamConfig ?? { toolPaths }, localConfig))) !== null
-      : (): Promise<boolean> => isToolInstalledForConfig(tool, probePath, localConfig);
+    const probe = await installProbeOf(tool, paths, install);
+    if (probe === null) continue;
+    const unmet = probe.gates.find((gate) => gate.kind === 'installed' && !gate.met);
 
     // Pushed whether or not it passes. Every other check in the registry
     // reports both ways, and `doctor --json` is consumed by hooks and CI, where
@@ -216,15 +207,37 @@ async function buildEnabledToolChecks(ctx: DoctorContext): Promise<Check[]> {
     checks.push({
       name: `${tool} is installed`,
       source: 'local',
-      check: isInstalled,
-      fix: `enabledAgents lists ${tool}, but it has no directory under `
-        + `${resolveToolBaseDir(tool, localConfig)}, so a pull delivers nothing to it. `
+      check: async () => probe.isInstalled,
+      fix: `enabledAgents lists ${tool}, but ${unmet?.kind === 'installed' ? `${unmet.probe} does not exist` : `it has no directory under ${resolveBaseDir(localConfig)}`}, `
+        + 'so a pull delivers nothing to it. '
         + `Install ${tool} (in workspace scope, opening a session there creates its root), `
         + `or run \`teamai uninstall --agent ${tool}\` to stop syncing to it.`,
     });
   }
 
   return checks;
+}
+
+/**
+ * A tool that receives skills is asked the way the skills write path asks:
+ * OpenClaw lives at its workspace directory, not at the tool root, so the
+ * generic probe passes for a `~/.openclaw` with no workspace while delivery
+ * silently skips it — the same "reported success, received nothing" this
+ * check exists to catch.
+ */
+async function installProbeOf(
+  tool: string,
+  paths: TeamaiConfig['toolPaths'][string],
+  install: Install,
+): Promise<{ readonly isInstalled: boolean; readonly gates: readonly Gate[] } | null> {
+  if (paths.skills) {
+    const skills = await locate(tool, 'skills', install);
+    return { isInstalled: writable(skills) !== null, gates: skills.gates };
+  }
+  const resource = paths.rules ? 'rules' : paths.agents ? 'agents' : paths.settings ?? paths.hooks ? 'hooks' : null;
+  if (resource === null) return null;
+  const location = await locate(tool, resource, install);
+  return { isInstalled: isInstalledFor(location), gates: location.gates };
 }
 
 /** The surfaces `locate` gates per tool, as a fix names them. */
@@ -384,6 +397,7 @@ async function buildHookChecks(
   hookToolPaths: TeamaiConfig['toolPaths'],
   baseDir: string,
   localConfig: LocalConfig,
+  install: Install,
 ): Promise<Check[]> {
   const checks: Check[] = [];
   for (const [tool, paths] of Object.entries(toolPaths)) {
@@ -394,8 +408,7 @@ async function buildHookChecks(
       continue;
     }
     if (tool === 'pi') {
-      const installed = await isToolInstalledForConfig(tool, paths.skills ?? '.pi/skills', localConfig);
-      if (!installed) continue;
+      if (!isInstalledFor(await locate(tool, 'hooks', install))) continue;
       checks.push({
         name: 'teamai hooks in pi extension',
         source: 'local',
@@ -431,7 +444,7 @@ async function buildHookChecks(
     const settingsPath = hookPath;
     const parentDir = path.dirname(settingsPath);
     const installed = tool === COPILOT_TOOL_ID
-      ? await isToolInstalledForConfig(tool, hookToolPaths[tool]?.hooks ?? paths.settings ?? '', localConfig)
+      ? isInstalledFor(await locate(tool, 'hooks', install))
       : await pathExists(parentDir);
     // An uninstalled tool has no hooks to check. Whether it should be installed
     // at all is a different question — see buildEnabledToolChecks.
@@ -772,7 +785,7 @@ export async function buildChecks(ctx: DoctorContext, stage: CheckStage = 'docto
     ...buildToolHomeChecks(localConfig),
     ...await buildEnabledToolChecks(ctx),
     ...await buildHeldSurfaceChecks(ctx),
-    ...await buildHookChecks(toolPaths, hookToolPaths, baseDir, localConfig),
+    ...await buildHookChecks(toolPaths, hookToolPaths, baseDir, localConfig, installOf(teamConfig ?? { toolPaths }, localConfig)),
     ...await buildDeliveryChecks(ctx),
     ...await buildSkillDirChecks(ctx),
     ...await buildRecordedPlaceChecks(ctx, 'rules'),

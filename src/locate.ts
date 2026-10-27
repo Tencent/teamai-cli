@@ -272,6 +272,11 @@ export function ownOf<P extends Place>(location: Located<P>): P | null {
   return location.channel === 'files' ? location.own : null;
 }
 
+/** Whether the tool counts as installed for this resource: its `installed` gate, when it has one, is met. Selection is the caller's question. */
+export function isInstalledFor(location: { readonly gates: readonly Gate[] }): boolean {
+  return location.gates.every((gate) => gate.kind !== 'installed' || gate.met);
+}
+
 /** Every place teamai writes the tool's resource to: its own, then the shared one. */
 export function writesOf<P extends Place>(location: Located<P> & Beside<P>): P[] {
   if (location.channel !== 'files') return [];
