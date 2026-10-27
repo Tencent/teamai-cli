@@ -600,7 +600,7 @@ export const TOOLS = {
     hooks: { user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.qoder/settings.json', evidence: 'source' }] }, self: { channel: 'settings', format: 'claude', reads: [{ base: 'project', path: '.qoder/settings.json', when: 'cwdOnly', evidence: 'source' }] } },
     // Qoder CLI 1.1.78: <id>.jsonl under ~/.qoder/projects/<cwd>, moved by QODER_CONFIG_DIR.
     sessions: 'none',
-    launch: 'none',
+    launch: 'qoder',
     features: {
       env: '?',
       workflows: '?',
@@ -664,7 +664,7 @@ export const TOOLS = {
     hooks: { user: { channel: 'adapter', adapter: 'kiro-hooks', evidence: 'docs' }, self: 'user' },
     // Kiro CLI docs: sessions under ~/.kiro, moved by KIRO_HOME.
     sessions: 'none',
-    launch: 'none',
+    launch: 'kiro',
     features: {
       env: '?',
       workflows: '?',
@@ -944,7 +944,7 @@ export const TOOLS = {
     mcp: NONE,
     hooks: { user: { channel: 'adapter', adapter: 'hermes-plugin', evidence: 'verified' }, self: 'user' },
     sessions: 'none',
-    launch: 'none',
+    launch: 'hermes',
     features: {
       env: '◐s',
       workflows: '+s',

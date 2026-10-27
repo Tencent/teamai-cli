@@ -262,6 +262,17 @@ export const LAUNCH_ADAPTERS = {
   muse: {
     call: { evidence: 'verified', prompt: 'file', args: ({ promptFile }) => ['exec', '--json', '--no-session-log', '--prompt-file', promptFile], read: readMuseExec },
   },
+  qoder: {
+    executable: 'qodercli',
+    call: { evidence: 'docs', prompt: 'argv', args: ({ prompt }) => ['-p', prompt], read: readPlainReply },
+  },
+  kiro: {
+    executable: 'kiro-cli',
+    call: { evidence: 'docs', prompt: 'argv', args: ({ prompt }) => ['chat', '--no-interactive', prompt], read: readPlainReply },
+  },
+  hermes: {
+    call: { evidence: 'source', prompt: 'argv', args: ({ prompt }) => ['-z', prompt], read: readPlainReply },
+  },
 } as const satisfies Record<string, LaunchAdapter>;
 
 export type LaunchAdapterId = keyof typeof LAUNCH_ADAPTERS;

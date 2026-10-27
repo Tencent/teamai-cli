@@ -81,7 +81,7 @@ it('fails with no_tool when no tool teamai launches is on PATH', async () => {
   vi.stubEnv('TEAMAI_AI_TOOL', '');
   const caller = createToolCaller({ resolveTool: () => null, loadConfig: async () => null });
 
-  await expect(caller.callTool('hi', { launchedBy: 'codebase' })).rejects.toMatchObject({ kind: 'no_tool', message: 'No AI tool teamai launches is on PATH. Install one of: claude, claude-internal, tclaude, codex, codex-internal, tcodex, opencode, codebuddy, workbuddy, openclaw, cursor, copilot, pi, omp, muse, or set TEAMAI_AI_TOOL to one you have.' });
+  await expect(caller.callTool('hi', { launchedBy: 'codebase' })).rejects.toMatchObject({ kind: 'no_tool', message: 'No AI tool teamai launches is on PATH. Install one of: claude, claude-internal, tclaude, codex, codex-internal, tcodex, opencode, codebuddy, workbuddy, openclaw, cursor, copilot, qoder, kiro, pi, omp, muse, hermes, or set TEAMAI_AI_TOOL to one you have.' });
 });
 
 it('runs Codex with the prompt on stdin, reads its last message from the -o file and its tokens from the turn', async () => {
@@ -240,6 +240,20 @@ it('runs Copilot with the prompt as its -p argument, silent, and reads the reply
   expect(stdin).toBe('');
 });
 
+it.each([
+  { tool: 'qoder', executable: 'qodercli', args: ['-p', 'Classify'] },
+  { tool: 'kiro', executable: 'kiro-cli', args: ['chat', '--no-interactive', 'Classify'] },
+  { tool: 'hermes', executable: 'hermes', args: ['-z', 'Classify'] },
+])('runs $tool through $executable with the prompt as an argument, and reads the reply it prints', async ({ tool, executable, args }) => {
+  const fake = await fakeTool(executable, { stdout: 'rules\n' });
+  const caller = createToolCaller({ resolveTool: (command) => command === executable ? fake.executable : null, loadConfig: async () => null });
+
+  const answer = await caller.callTool('Classify', { launchedBy: 'recall-promote' });
+
+  expect(answer).toEqual({ text: 'rules', tool });
+  expect((await fake.invocation()).args).toEqual(args);
+});
+
 it('runs the tool TEAMAI_AI_TOOL names, though an earlier tool in the launch order is on PATH', async () => {
   const claude = await fakeTool('claude', { stdout: JSON.stringify({ type: 'result', result: 'from claude' }) });
   const codex = await fakeTool('codex', { lastMessage: 'from codex' });
@@ -265,10 +279,10 @@ it('runs the tool ai.tool names when TEAMAI_AI_TOOL is unset, and TEAMAI_AI_TOOL
 });
 
 it.each([
-  { source: 'TEAMAI_AI_TOOL', named: 'gemini', message: 'TEAMAI_AI_TOOL is "gemini", which is not a tool teamai launches. Set it to one of: claude, claude-internal, tclaude, codex, codex-internal, tcodex, opencode, codebuddy, workbuddy, openclaw, cursor, copilot, pi, omp, muse. Or unset it.' },
+  { source: 'TEAMAI_AI_TOOL', named: 'gemini', message: 'TEAMAI_AI_TOOL is "gemini", which is not a tool teamai launches. Set it to one of: claude, claude-internal, tclaude, codex, codex-internal, tcodex, opencode, codebuddy, workbuddy, openclaw, cursor, copilot, qoder, kiro, pi, omp, muse, hermes. Or unset it.' },
   { source: 'TEAMAI_AI_TOOL', named: 'codex', message: 'TEAMAI_AI_TOOL is "codex", which is not on PATH. Install codex, or unset TEAMAI_AI_TOOL to use the first installed tool.' },
   { source: 'TEAMAI_AI_TOOL', named: 'trae', message: 'TEAMAI_AI_TOOL is "trae", which is not a tool teamai launches.' },
-  { source: 'ai.tool', named: 'gemini', message: 'ai.tool in /home/member/.teamai/config.yaml is "gemini", which is not a tool teamai launches. Set it to one of: claude, claude-internal, tclaude, codex, codex-internal, tcodex, opencode, codebuddy, workbuddy, openclaw, cursor, copilot, pi, omp, muse. Or remove it.' },
+  { source: 'ai.tool', named: 'gemini', message: 'ai.tool in /home/member/.teamai/config.yaml is "gemini", which is not a tool teamai launches. Set it to one of: claude, claude-internal, tclaude, codex, codex-internal, tcodex, opencode, codebuddy, workbuddy, openclaw, cursor, copilot, qoder, kiro, pi, omp, muse, hermes. Or remove it.' },
   { source: 'ai.tool', named: 'codex', message: 'ai.tool in /home/member/.teamai/config.yaml is "codex", which is not on PATH. Install codex, or remove ai.tool to use the first installed tool.' },
 ] as const)('fails the call when $source names $named, rather than run another tool', async ({ source, named, message }) => {
   const claude = await fakeTool('claude', { stdout: JSON.stringify({ type: 'result', result: 'from claude' }) });
