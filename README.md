@@ -148,7 +148,7 @@ Three layers of capability, built on Git:
 
 <sup>✓²</sup> Env reaches it only through `teamai env exec`.
 
-<sup>✓³</sup> Only for workflows run with the skill driver: the session judges their scored steps itself, at best-effort isolation. Its own sessions are not scored.
+<sup>✓³</sup> Only workflows run with the skill driver are scored.
 
 ## Learn More
 

@@ -148,7 +148,7 @@ teamai init https://github.com/your-org/your-repo --scope user
 
 <sup>✓²</sup> env ส่งถึงได้ผ่าน `teamai env exec` เท่านั้น
 
-<sup>✓³</sup> เฉพาะ workflow ที่รันด้วย skill driver: เซสชันประเมินขั้นที่มี scorer ด้วยตัวเองที่ isolation แบบ best-effort ส่วนตัวเซสชันเองไม่ถูกประเมิน
+<sup>✓³</sup> ให้คะแนนเฉพาะ workflow ที่รันด้วย skill driver
 
 ## เรียนรู้เพิ่มเติม
 

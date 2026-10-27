@@ -148,7 +148,7 @@ Git を基盤に、3 層の能力を構築します：
 
 <sup>✓²</sup> env は `teamai env exec` 経由でのみ渡されます。
 
-<sup>✓³</sup> skill driver で実行するワークフローのみ：スコアラー付きのステップはセッション自身が best-effort の分離で評価します。セッション自体は評価されません。
+<sup>✓³</sup> skill driver で実行したワークフローのみ評価されます。
 
 ## 詳細情報
 

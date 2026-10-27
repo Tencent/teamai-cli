@@ -148,7 +148,7 @@ Git을 기반으로 세 층의 역량을 구축합니다:
 
 <sup>✓²</sup> env는 `teamai env exec`를 통해서만 전달됩니다.
 
-<sup>✓³</sup> skill driver로 실행하는 워크플로에 한합니다. 스코어러가 있는 단계는 세션이 best-effort 격리로 직접 평가하며, 세션 자체는 평가하지 않습니다.
+<sup>✓³</sup> skill driver로 실행한 워크플로만 평가합니다.
 
 ## 자세히 알아보기
 

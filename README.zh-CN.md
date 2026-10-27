@@ -154,7 +154,7 @@ teamai init https://github.com/your-org/your-repo --scope user
 
 <sup>✓²</sup> env 仅通过 `teamai env exec` 送达。
 
-<sup>✓³</sup> 仅限用 skill driver 运行的工作流：会话自己以 best-effort 隔离评审其中带评分器的步骤，会话本身不评分。
+<sup>✓³</sup> 仅对用 skill driver 运行的工作流评分。
 
 ## 了解更多
 
