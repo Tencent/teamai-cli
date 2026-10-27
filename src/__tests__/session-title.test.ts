@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { ClaudeCodeAdapter } from '../session-flow/adapters/claude-code.js';
 import { WorkBuddyAdapter } from '../session-flow/adapters/workbuddy.js';
 import { scrubSession } from '../session-flow/scrub.js';
 import { cleanTitleText, fallbackTitle, isInjectedText, titleFromCandidates } from '../session-flow/title.js';
@@ -71,6 +72,23 @@ describe('a WorkBuddy session title', () => {
       const { session } = scrubSession(await new WorkBuddyAdapter().readSession({ sessionId, filePath: file }), { secrets: { WAREHOUSE_DSN: 'mysql-prod-7Hq2xVb9Lk' } });
 
       expect(session.title).toBe(`${start}<REDACTED:WAREHOUSE`);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('a Claude Code session title', () => {
+  it('keeps no start of a declared secret its title cuts inside after the same secret in full', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-claude-title-'));
+    const sessionId = '7c1e0000-0000-4000-8000-000000000034';
+    const file = path.join(dir, `${sessionId}.jsonl`);
+    const prompt = 'Use mysql-prod-7Hq2xVb9Lk and compare with mysql-prod-7Hq2xVb9Lk';
+    fs.writeFileSync(file, `${JSON.stringify({ type: 'user', uuid: 'u1', parentUuid: null, cwd: dir, sessionId, timestamp: '2026-10-20T10:00:00.000Z', message: { role: 'user', content: prompt } })}\n`);
+    try {
+      const { session } = scrubSession(await new ClaudeCodeAdapter().readSession({ sessionId, filePath: file }), { secrets: { DSN: 'mysql-prod-7Hq2xVb9Lk' } });
+
+      expect(session.title).toBe('Use <REDACTED:DSN> and compare with <REDACTED:DSN>');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

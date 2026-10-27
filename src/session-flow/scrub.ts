@@ -141,7 +141,8 @@ export function scrubSession(
     return contentChanged ? { ...msg, content } : msg;
   });
 
-  const title = maskCutSecret(mask(session.title), opts.secrets ?? {});
+  // Masking a whole value changes the title's length, so the cut is checked first.
+  const title = mask(maskCutSecret(session.title, opts.secrets ?? {}));
 
   return {
     session: { ...session, title, messages },
