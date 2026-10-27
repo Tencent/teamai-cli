@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { expect, it, onTestFinished, vi } from 'vitest';
+import { waitForDetachedChildren } from './helpers/detached-processes.js';
 
 // A teardown that loses the race to a late writer fails with ENOTEMPTY. The
 // error has to name the writer, or the next CI failure is as blind as #1413.
@@ -14,16 +15,16 @@ import { expect, it, onTestFinished, vi } from 'vitest';
 
 /**
  * fs.rmSync and fs.promises.rm as the setup file wraps removals that fail with ENOTEMPTY while `isLosing` holds. The
- * setup file's hold on child_process and NODE_OPTIONS lasts until the test ends, for the children the test starts.
+ * setup file's hold on child_process and the environment lasts until the test ends, for the children the test starts.
  */
 async function wrapLosingRemovals(isLosing = () => true): Promise<{ rmSync: typeof fs.rmSync; rm: typeof fs.promises.rm }> {
   const installed = { rmSync: fs.rmSync, rm: fs.promises.rm };
   const spawning = { ...childProcess };
-  const nodeOptions = process.env.NODE_OPTIONS;
+  const { NODE_OPTIONS, TEAMAI_TEST_DETACHED_ROOT } = process.env;
   onTestFinished(() => {
     Object.assign(childProcess, spawning);
     syncBuiltinESMExports();
-    process.env.NODE_OPTIONS = nodeOptions;
+    Object.assign(process.env, { NODE_OPTIONS, TEAMAI_TEST_DETACHED_ROOT });
   });
   const lost = (target: fs.PathLike) => Object.assign(new Error(`ENOTEMPTY: directory not empty, rmdir '${String(target)}'`), { code: 'ENOTEMPTY' });
   fs.rmSync = (target, options) => {
@@ -146,6 +147,15 @@ it('waits for a detached shell command started without an argument list', async 
   rmSync(root, { recursive: true, force: true });
 
   expect(fs.existsSync(root)).toBe(false);
+});
+
+it('lets a test wait for the detached children of a process it started before it asserts what they wrote', async () => {
+  const done = path.join(tempRoot(), 'done');
+  leaveDetachedChild(done, 500);
+
+  await waitForDetachedChildren();
+
+  expect(fs.existsSync(done)).toBe(true);
 });
 
 it('keeps what promisify(execFile) resolves to', async () => {

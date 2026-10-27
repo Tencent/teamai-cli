@@ -22,31 +22,45 @@ cp.spawn = function (...args) {
 };
 require('node:module').syncBuiltinESMExports();
 `);
-  /** The tracked pids still running; each exited one is forgotten. */
-  function running(): number[] {
-    return fs.readdirSync(children).map(Number).filter((pid) => {
-      try {
-        process.kill(pid, 0);
-        return !isZombie(pid);
-      } catch (e) {
-        if (!(e instanceof Error && 'code' in e && e.code === 'ESRCH')) throw e;
-        fs.unlinkSync(path.join(children, String(pid)));
-        return false;
-      }
-    });
-  }
   return {
     preload,
     nodeOptions: `--require ${JSON.stringify(preload)}`,
-    running,
-    async waitForExit() {
-      const deadline = Date.now() + 60_000;
-      while (running().length > 0) {
-        if (Date.now() >= deadline) throw new Error(`Detached fixture processes did not exit: ${running().join(', ')}`);
-        await new Promise(resolve => setTimeout(resolve, 25));
-      }
-    },
+    running: () => runningIn(children),
+    waitForExit: () => waitForExitIn(children),
   };
+}
+
+/**
+ * Wait for the detached children of every process this worker started, as a
+ * test does before it asserts what they wrote. The teardown-writers setup file
+ * tracks them.
+ */
+export function waitForDetachedChildren(): Promise<void> {
+  const root = process.env.TEAMAI_TEST_DETACHED_ROOT;
+  if (!root) throw new Error('No detached-process tracker: add src/__tests__/helpers/teardown-writers.ts to setupFiles.');
+  return waitForExitIn(path.join(root, 'detached-children'));
+}
+
+/** The tracked pids still running; each exited one is forgotten. */
+function runningIn(children: string): number[] {
+  return fs.readdirSync(children).map(Number).filter((pid) => {
+    try {
+      process.kill(pid, 0);
+      return !isZombie(pid);
+    } catch (e) {
+      if (!(e instanceof Error && 'code' in e && e.code === 'ESRCH')) throw e;
+      fs.unlinkSync(path.join(children, String(pid)));
+      return false;
+    }
+  });
+}
+
+async function waitForExitIn(children: string): Promise<void> {
+  const deadline = Date.now() + 60_000;
+  while (runningIn(children).length > 0) {
+    if (Date.now() >= deadline) throw new Error(`Detached fixture processes did not exit: ${runningIn(children).join(', ')}`);
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
 }
 
 /**

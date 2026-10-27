@@ -20,6 +20,8 @@ import { trackDetachedProcesses } from './detached-processes.js';
 // directory.
 const trackerRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-detached-'));
 const tracker = trackDetachedProcesses(trackerRoot);
+// Where waitForDetachedChildren finds this tracker.
+process.env.TEAMAI_TEST_DETACHED_ROOT = trackerRoot;
 process.env.NODE_OPTIONS = withTracker(process.env.NODE_OPTIONS);
 createRequire(import.meta.url)(tracker.preload);
 // A test that hands a child an environment of its own, NODE_OPTIONS included,
