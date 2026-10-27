@@ -231,6 +231,47 @@ describe('importCodebase: the extraction every import source shares', () => {
     expect(docs).toContain('architecture.md');
   });
 
+  it('keeps the AI-written components of the published manifest on a skipped-enrichment import', async () => {
+    const repo = await makeRepo(root, 'svc', 'export function greet() { return "hi"; }\n');
+    await fs.outputFile(path.join(repo, 'auth', 'main.ts'), 'export const auth = 1;\n');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '-q', '-m', 'modules');
+    const slug = 'github__acme__svc';
+    mockEnrichWithAI.mockResolvedValue({
+      manifest: {
+        schemaVersion: 'team-wiki.codebase-output-manifest.v2',
+        project: slug,
+        generatedAt: new Date().toISOString(),
+        components: [{
+          slug: 'auth',
+          docPath: `evidence/code/${slug}/auth.md`,
+          title: 'auth',
+          category: 'service',
+          confidence: 'INFERRED',
+          responsibilities: ['Signs users in'],
+        }],
+        edges: [{ from: 'auth', to: 'src', relation: 'DEPENDS_ON', confidence: 'EXTRACTED' }],
+      },
+      domains: [],
+      repoDomain: 'Identity',
+      repoDescription: 'identity',
+      repoKeywords: [],
+    });
+    await run(repo, slug, false, false);
+
+    await fs.outputFile(path.join(repo, 'billing', 'main.ts'), 'export const billing = 1;\n');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '-q', '-m', 'billing');
+    expect(await run(repo, slug, true)).toBe(true);
+
+    const manifest = await fs.readJson(path.join(wikiRoot, 'evidence', 'code', slug, '_manifest.json'));
+    const bySlug = new Map(manifest.components.map((component: { slug: string }) => [component.slug, component]));
+    expect(bySlug.get('auth')).toMatchObject({ category: 'service', confidence: 'INFERRED', responsibilities: ['Signs users in'] });
+    // A module the AI has not seen yet gets the static entry.
+    expect(bySlug.get('billing')).toMatchObject({ confidence: 'EXTRACTED' });
+    expect(manifest.edges).toEqual([{ from: 'auth', to: 'src', relation: 'DEPENDS_ON', confidence: 'EXTRACTED' }]);
+  });
+
   it('prunes a component removed by a skipped-enrichment import', async () => {
     const repo = await makeRepo(root, 'svc', 'export function greet() { return "hi"; }\n');
     await fs.outputFile(path.join(repo, 'auth', 'main.ts'), 'export const auth = 1;\n');

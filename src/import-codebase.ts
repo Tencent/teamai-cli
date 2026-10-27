@@ -2,6 +2,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import fs from 'fs-extra';
+import { z } from 'zod';
 
 import { extractCodebase } from './codebase-extract.js';
 import type { TeamaiInit } from './config.js';
@@ -51,6 +52,35 @@ function componentSlugs(manifest: EvidenceJson | null): Set<string> {
       ? (component as Record<string, unknown>)['slug']
       : undefined))
     .filter((slug): slug is string => typeof slug === 'string' && slug.length > 0));
+}
+
+/** The parts of `_manifest.json` a skipped-enrichment import merges; the rest passes through. */
+const CodebaseManifestSchema = z.object({
+  components: z.array(z.object({ slug: z.string() }).passthrough()),
+  edges: z.array(z.object({ from: z.string(), to: z.string() }).passthrough()).default([]),
+}).passthrough();
+
+/**
+ * `--skip-enrich` writes the static fallback manifest. Keep what AI enrichment
+ * wrote for each component still in the code (its category, responsibilities,
+ * and the edges between them), with the entrypoints just extracted; a new
+ * component keeps its static entry.
+ */
+function keepEnrichedComponents(published: unknown, staged: unknown): Record<string, unknown> | null {
+  const publishedManifest = CodebaseManifestSchema.safeParse(published);
+  const stagedManifest = CodebaseManifestSchema.safeParse(staged);
+  if (!publishedManifest.success || !stagedManifest.success) return null;
+  const enriched = new Map(publishedManifest.data.components.map((component) => [component.slug, component]));
+  const components = stagedManifest.data.components.map((component) => {
+    const previous = enriched.get(component.slug);
+    return previous ? { ...previous, entrypoints: component['entrypoints'] } : component;
+  });
+  const slugs = new Set(components.map((component) => component.slug));
+  return {
+    ...stagedManifest.data,
+    components,
+    edges: publishedManifest.data.edges.filter((edge) => slugs.has(edge.from) && slugs.has(edge.to)),
+  };
 }
 
 const PROVIDER_SLUG_PREFIXES = ['github__', 'gitlab__', 'tgit__'] as const;
@@ -225,6 +255,10 @@ export async function importCodebase(opts: ImportCodebaseOptions): Promise<boole
         const published = path.join(evidenceDest, artifact);
         if (!(await fs.pathExists(published))) continue;
         await fs.copy(published, path.join(stagingEvidence, artifact), { overwrite: false, errorOnExist: false });
+      }
+      const enrichedManifest = opts.skipEnrich ? keepEnrichedComponents(publishedManifest, stagedManifest) : null;
+      if (enrichedManifest) {
+        await fs.writeJson(path.join(stagingEvidence, '_manifest.json'), enrichedManifest, { spaces: 2 });
       }
 
       const stagedDocsDir = path.join(stagingEvidence, 'docs');
