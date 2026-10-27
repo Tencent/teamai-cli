@@ -420,7 +420,9 @@ export async function hookDispatchCli(
   matcher: string,
   options: { bgOnly?: boolean; copilotGlobal?: string; stdinFile?: string; hookArgs?: string[] } = {},
 ): Promise<void> {
-  if (launchedBy(process.env) === 'scorer') return;
+  // A session teamai launched for itself, a judge or an AI call, is not the member's: only a workflow step's runs hooks.
+  const launcher = launchedBy(process.env);
+  if (launcher && launcher !== 'workflow') return;
   const { bgOnly = false, stdinFile } = options;
   setStderrOnly(true);
   if (claudeHookRunsInAnotherHost(tool, process.env, false)) {

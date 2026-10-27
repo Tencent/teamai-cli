@@ -237,6 +237,7 @@ it('runs CodeBuddy with its Claude-like flags, the prompt on stdin, at best-effo
   await fs.writeFile(path.join(evidence, 'prompt.md'), 'CODEBUDDY-INLINE-PROMPT');
   vi.stubEnv('CODEBUDDY_API_KEY', 'buddy-key');
   vi.stubEnv('GH_TOKEN', 'must-not-leak');
+  vi.stubEnv('TEAMAI_MODE', 'unattended');
   const record = path.join(root, 'invocation.json');
   const executable = await codeBuddyFake(root, record,
     "console.log(JSON.stringify({type:'result',subtype:'success',result:'',structured_output:{label:'good',reasoning:'done'},usage:{input_tokens:5,output_tokens:2},total_cost_usd:0.02}));");
@@ -255,6 +256,7 @@ it('runs CodeBuddy with its Claude-like flags, the prompt on stdin, at best-effo
   expect(invocation.cwd).toBe(await fs.realpath(evidence));
   expect(invocation.env.CODEBUDDY_API_KEY).toBe('buddy-key');
   expect(invocation.env.TEAMAI_LAUNCHED_BY).toBe('scorer');
+  expect(invocation.env.TEAMAI_MODE).toBe('unattended');
   expect(invocation.env).not.toHaveProperty('GH_TOKEN');
 });
 

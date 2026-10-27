@@ -60,10 +60,10 @@ describe('deriveDispatchSessionId', () => {
 });
 
 describe('hookDispatchCli', () => {
-  it('skips scorer hooks before reading stdin or resolving config, including background children', async () => {
+  it.each(['scorer', 'recall-promote', 'codebase'])('skips the hooks of a session teamai launched for %s before reading stdin or resolving config, including background children', async (launchedBy) => {
     const resolveConfig = vi.spyOn(await import('../dashboard-collector.js'), 'resolveHookConfig');
     const readFile = vi.spyOn(fs, 'readFileSync');
-    vi.stubEnv('TEAMAI_LAUNCHED_BY', 'scorer');
+    vi.stubEnv('TEAMAI_LAUNCHED_BY', launchedBy);
     try {
       for (const bgOnly of [false, true]) await hookDispatchCli('SessionStart', 'claude', '*', { bgOnly, stdinFile: '/missing-judge-payload' });
       expect(resolveConfig).not.toHaveBeenCalled();

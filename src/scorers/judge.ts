@@ -4,7 +4,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml';
 import { observedEffort, observedModel } from '../agent-observation.js';
-import { LAUNCHED_BY_ENV } from '../launch-context.js';
+import { LAUNCHED_BY_ENV, resolveRunMode, RUN_MODE_ENV } from '../launch-context.js';
 import { opencodeMajorVersion } from '../opencode-hooks.js';
 import { movedToolHome, realHost, toolHome } from '../tool-home.js';
 import { isToolId } from '../tools.js';
@@ -97,6 +97,7 @@ function judgeEnv(tool: JudgeTool): NodeJS.ProcessEnv {
     ...Object.fromEntries([...COMMON_ENV, ...toolEnv].flatMap((key) => restored[key] === undefined ? [] : [[key, restored[key]]])),
     ...(variable !== undefined && moved !== null ? { [variable]: moved } : {}),
     [LAUNCHED_BY_ENV]: 'scorer',
+    [RUN_MODE_ENV]: resolveRunMode(process.env),
   };
 }
 
