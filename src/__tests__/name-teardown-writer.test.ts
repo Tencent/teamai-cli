@@ -1,45 +1,69 @@
-import { spawn, type SpawnOptions } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { expect, it } from 'vitest';
+import { expect, it, onTestFinished } from 'vitest';
 
 // A teardown that loses the race to a late writer fails with ENOTEMPTY. The
 // error has to name the writer, or the next CI failure is as blind as #1413.
 
-/** Start `writer` (a looping node script), let it run, and return the error removing `root` with `remove` fails with. */
-async function removeWhileWriting(
-  root: string,
-  writer: string,
-  options: SpawnOptions,
-  remove: (dir: string) => unknown = (dir) => fs.rmSync(dir, { recursive: true, force: true }),
-): Promise<{ message: string; pid: number | undefined }> {
-  const child = spawn(process.execPath, ['-e', writer], { ...options, stdio: 'ignore' });
-  try {
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    let failure: unknown;
-    try { await remove(root); } catch (e) { failure = e; }
-    expect(failure).toMatchObject({ code: 'ENOTEMPTY' });
-    return { message: failure instanceof Error ? failure.message : '', pid: child.pid };
-  } finally {
-    child.kill();
-    await new Promise((resolve) => child.once('exit', resolve));
-    fs.rmSync(root, { recursive: true, force: true });
+const ATTEMPTS = 5;
+
+/**
+ * Start `writer` (a node script looping writes into `writes`), wait until it
+ * has written, and return the error removing `root` with `remove` fails with.
+ * A removal that wins the race takes the writer's tree with it, so it is tried
+ * again with a fresh writer.
+ */
+async function removeWhileWriting({ root, writer, writes, cwd, env, remove = (dir) => fs.rmSync(dir, { recursive: true, force: true }) }: {
+  root: string;
+  writer: string;
+  writes: string;
+  cwd: string;
+  env?: NodeJS.ProcessEnv;
+  remove?: (dir: string) => unknown;
+}): Promise<{ message: string; pid: number | undefined }> {
+  for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
+    fs.mkdirSync(cwd, { recursive: true });
+    const child = spawn(process.execPath, ['-e', writer], { cwd, env, stdio: 'ignore' });
+    try {
+      const deadline = Date.now() + 10_000;
+      while (!(fs.existsSync(writes) && fs.readdirSync(writes).length > 0)) {
+        if (Date.now() > deadline) throw new Error(`the writer did not write into ${writes} within 10s`);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      let failure: unknown;
+      try { await remove(root); } catch (e) { failure = e; }
+      if (failure === undefined) continue;
+      expect(failure).toMatchObject({ code: 'ENOTEMPTY' });
+      return { message: failure instanceof Error ? failure.message : '', pid: child.pid };
+    } finally {
+      child.kill();
+      await new Promise((resolve) => child.once('exit', resolve));
+    }
   }
+  throw new Error(`every removal of ${root} in ${ATTEMPTS} attempts beat the writer`);
 }
 
-it('names what reappeared and the process still writing when a removal meets ENOTEMPTY', async () => {
+function tempRoot(): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-teardown-writer-'));
+  onTestFinished(() => fs.rmSync(root, { recursive: true, force: true }));
+  return root;
+}
+
+// Shaped like git's detached upkeep: it runs inside the repo and its command
+// line does not name the directory the teardown removes.
+const UPKEEP = `
+  const fs = require('node:fs');
+  for (let n = 0; ; n++) {
+    try { fs.mkdirSync('objects/pack', { recursive: true }); fs.writeFileSync('objects/pack/tmp_pack_' + n, ''); } catch {}
+  }
+`;
+
+it('names what reappeared and the process still writing when a removal meets ENOTEMPTY', async () => {
+  const root = tempRoot();
   const repo = path.join(root, 'repo');
-  fs.mkdirSync(repo);
-  // Shaped like git's detached upkeep: it runs inside the repo and its
-  // command line does not name the directory the teardown removes.
-  const { message, pid } = await removeWhileWriting(root, `
-    const fs = require('node:fs');
-    for (let n = 0; ; n++) {
-      try { fs.mkdirSync('objects/pack', { recursive: true }); fs.writeFileSync('objects/pack/tmp_pack_' + n, ''); } catch {}
-    }
-  `, { cwd: repo });
+  const { message, pid } = await removeWhileWriting({ root, writer: UPKEEP, writes: path.join(repo, 'objects', 'pack'), cwd: repo });
 
   expect(message).toMatch(/reappeared during removal:\n(?: {2}.+\n)* {2}repo\/objects\/pack\/tmp_pack_\d+ /);
   expect(message).toContain(`still running in or on ${root}:\n  ${pid} `);
@@ -47,34 +71,41 @@ it('names what reappeared and the process still writing when a removal meets ENO
 
 // macOS keeps other processes' environments from ps; CI runs e2e on Linux.
 it.runIf(process.platform === 'linux')('names a writer that reaches the directory only through its environment', async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-teardown-writer-'));
+  const root = tempRoot();
   const home = path.join(root, 'home');
-  fs.mkdirSync(home);
   // Shaped like teamai's detached --bg-only child: it starts outside the
   // sandbox and finds ~/.teamai through HOME alone.
-  const { message, pid } = await removeWhileWriting(root, `
-    const fs = require('node:fs');
-    const dir = process.env.HOME + '/.teamai';
-    for (let n = 0; ; n++) {
-      try { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(dir + '/debug-' + n + '.log', ''); } catch {}
-    }
-  `, { cwd: os.tmpdir(), env: { ...process.env, HOME: home } });
+  const { message, pid } = await removeWhileWriting({
+    root,
+    writer: `
+      const fs = require('node:fs');
+      const dir = process.env.HOME + '/.teamai';
+      for (let n = 0; ; n++) {
+        try { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(dir + '/debug-' + n + '.log', ''); } catch {}
+      }
+    `,
+    writes: path.join(home, '.teamai'),
+    cwd: os.tmpdir(),
+    env: { ...process.env, HOME: home },
+  });
 
   expect(message).toContain(`still running in or on ${root}:\n  ${pid} `);
   expect(message).not.toContain(`HOME=${home}`);
 });
 
 it('names the writer when an async removal meets ENOTEMPTY', async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-teardown-writer-'));
+  const root = tempRoot();
   const repo = path.join(root, 'repo');
-  fs.mkdirSync(repo);
-  const { message, pid } = await removeWhileWriting(root, `
-    const fs = require('node:fs');
-    for (let n = 0; ; n++) {
-      try { fs.mkdirSync('objects/pack', { recursive: true }); fs.writeFileSync('objects/pack/tmp_pack_' + n, ''); } catch {}
-    }
-  `, { cwd: repo }, (dir) => fs.promises.rm(dir, { recursive: true, force: true }));
+  const { message, pid } = await removeWhileWriting({
+    root,
+    writer: UPKEEP,
+    writes: path.join(repo, 'objects', 'pack'),
+    cwd: repo,
+    remove: (dir) => fs.promises.rm(dir, { recursive: true, force: true }),
+  });
 
-  expect(message).toMatch(/reappeared during removal:\n(?: {2}.+\n)* {2}repo\/objects\/pack\/tmp_pack_\d+ /);
+  // Not which entries: the rejected removal's sibling unlinks still run on the
+  // thread pool while the entries are listed.
+  expect(message).toContain('Entries that reappeared during removal:');
   expect(message).toContain(`still running in or on ${root}:\n  ${pid} `);
 });
