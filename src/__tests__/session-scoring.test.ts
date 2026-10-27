@@ -19,8 +19,9 @@ import { syncScorerDefinitions } from '../scorers/cache.js';
 import { encodeCwdClaude } from '../session-flow/fs.js';
 import { projectDataHome } from '../utils/partition.js';
 import { AGENT_SESSION_ENV } from '../utils/session-id.js';
-import { scoreSession } from '../session-flow/scoring.js';
+import { scoreSession, type OwnJudge, type SessionDemand } from '../session-flow/scoring.js';
 import { getTeamSecretsPath, writeSecretStore } from '../secret-store.js';
+import { submitJudgeLease } from '../workflow/scoring.js';
 import type { WorkflowEnvelope } from '../workflow/types.js';
 
 const SCORER = `---
@@ -1252,6 +1253,143 @@ describe('teamai score --session', () => {
       }));
 
       expect(await usedBy(config)).toEqual({ skills: [] });
+    });
+  });
+
+  describe('with a driver\'s own judge', () => {
+    const driver = { kind: 'cursor', machine: 'm1', workspace: '/w' };
+    const cursor: OwnJudge = { driver, judge: { isolation: 'best-effort', access: 'read', tools: ['cursor'] }, running: [] };
+    const LeaseSchema = z.object({ ref: z.string(), prompt: z.string() }).passthrough();
+    const leaseOf = (envelope: WorkflowEnvelope) => LeaseSchema.parse(data(envelope).lease);
+
+    it('leases the session to the driver, and keeps the label it submits with its tool, its access and the model it reports', async () => {
+      const config = await fixture();
+      plantClaudeSession(path.join(root, 'app'), 'Add retries to the client');
+
+      const leased = await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: ['quality'], ownJudge: cursor });
+      const lease = leaseOf(leased);
+      expect(lease).toMatchObject({
+        source: 'session', scorer: 'quality', subject: { platform: 'claude-code', sessionId: SESSION },
+        judge: { tool: 'cursor', isolation: 'best-effort', access: 'read' }, submit: `teamai score --lease ${lease.ref} --submit --stdin`,
+      });
+      expect(fs.readFileSync(lease.prompt, 'utf8')).toContain('Added the retries.');
+      expect(fs.existsSync(path.join(root, 'calls'))).toBe(false);
+
+      const answer = { label: 'good', reasoning: 'Added the retries it was asked for.' };
+      expect(data(await submitJudgeLease(config, lease.ref, { driver, outcome: 'success', answer, judge: { tool: 'cursor', model: 'cursor-small' } })))
+        .toMatchObject({ label: { scorer: 'quality', label: 'good', passed: true } });
+      expect(parseScoreLabels(fs.readFileSync(path.join(root, 'data', 'scores', 'labels.jsonl'), 'utf8'))).toEqual([expect.objectContaining({
+        source: 'session', subject: { platform: 'claude-code', sessionId: SESSION },
+        judge: { kind: 'model', tool: 'cursor', isolation: 'best-effort', access: 'read', model: { reported: 'cursor-small' } },
+      })]);
+    });
+
+    it('answers busy while a live lease holds the session, and leases it again once that lease is released or labelled', async () => {
+      const config = await fixture();
+      plantClaudeSession(path.join(root, 'app'), 'Add retries to the client');
+      const demand: SessionDemand = { session: SESSION, source: 'claude-code', scorers: ['quality'], ownJudge: cursor };
+
+      const first = leaseOf(await scoreSession(config, demand));
+      expect(await scoreSession(config, demand)).toEqual({ error: {
+        code: 'busy', message: `A live judge lease holds quality on claude-code session ${SESSION}. Submit or release it, or ask again once it lapses, 30 minutes after it was taken or renewed.`,
+      } });
+      expect(data(await submitJudgeLease(config, first.ref, { driver, outcome: 'released' }))).toEqual({ settled: { ref: first.ref, status: 'released' } });
+
+      const second = leaseOf(await scoreSession(config, demand));
+      expect(second.ref).not.toBe(first.ref);
+      data(await submitJudgeLease(config, second.ref, { driver, outcome: 'success', answer: { label: 'bad', reasoning: 'Left the retries out.' } }));
+      const third = leaseOf(await scoreSession(config, demand));
+      expect([first.ref, second.ref]).not.toContain(third.ref);
+    });
+
+    it('leases the session again to the driver that holds it, once that driver offers another tool', async () => {
+      const config = await fixture();
+      plantClaudeSession(path.join(root, 'app'), 'Add retries to the client');
+      const first = leaseOf(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: ['quality'], ownJudge: cursor }));
+
+      const claude: OwnJudge = { ...cursor, judge: { ...cursor.judge, tools: ['claude'] } };
+      const second = LeaseSchema.extend({ judge: z.object({ tool: z.string() }) }).parse(data(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: ['quality'], ownJudge: claude })).lease);
+      expect(second.ref).not.toBe(first.ref);
+      expect(second.judge.tool).toBe('claude');
+    });
+
+    it('refuses the answer of a lapsed lease once another lease holds the session, and keeps the answer of that one', async () => {
+      const config = await fixture();
+      plantClaudeSession(path.join(root, 'app'), 'Add retries to the client');
+      const demand: SessionDemand = { session: SESSION, source: 'claude-code', scorers: ['quality'], ownJudge: cursor };
+      const first = leaseOf(await scoreSession(config, demand, '2026-10-27T12:00:00.000Z'));
+      const second = leaseOf(await scoreSession(config, demand, '2026-10-27T12:31:00.000Z'));
+
+      expect(await submitJudgeLease(config, first.ref, { driver, outcome: 'success', answer: { label: 'good', reasoning: 'Added the retries.' } }, '2026-10-27T12:32:00.000Z'))
+        .toEqual({ error: { code: 'lease_expired', message: `Judge lease ${first.ref} expired at 2026-10-27T12:30:00.000Z and another lease now holds this session.` } });
+      expect(data(await submitJudgeLease(config, second.ref, { driver, outcome: 'success', answer: { label: 'bad', reasoning: 'Left the retries out.' } }, '2026-10-27T12:33:00.000Z')))
+        .toMatchObject({ label: { scorer: 'quality', label: 'bad' } });
+    });
+
+    it('keeps the label a driver submits for a session a judge labelled before the lease', async () => {
+      const config = await fixture();
+      plantClaudeSession(path.join(root, 'app'), 'Add retries to the client');
+      fakeClaude('bad');
+      data(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: ['quality'] }));
+
+      const lease = leaseOf(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: ['quality'], ownJudge: cursor }));
+      expect(data(await submitJudgeLease(config, lease.ref, { driver, outcome: 'success', answer: { label: 'good', reasoning: 'Added the retries.' } })))
+        .toMatchObject({ label: { label: 'good' } });
+    });
+
+    it('takes nothing when a scorer asks for more isolation than the driver offers', async () => {
+      const config = await fixture({ secure: SCORER.replace('samplingRate: 0', 'samplingRate: 0\nisolation: verified') });
+      plantClaudeSession(path.join(root, 'app'), 'Add retries to the client');
+
+      expect(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: ['secure'], ownJudge: cursor })).toEqual({ error: {
+        code: 'isolation_unmet', message: 'scorers/secure.md isolation asks for verified, and this driver offers best-effort. No judge work was taken.',
+      } });
+      expect(await AttemptStore.read(config)).toEqual(new Map());
+    });
+
+    it('leases a scorer that pins a literal model to a recognized tool no alias maps, and refuses a tool it does not recognize', async () => {
+      const config = await fixture({ quality: SCORER.replace('samplingRate: 0', 'samplingRate: 0\nmodel: composer-1') });
+      plantClaudeSession(path.join(root, 'app'), 'Add retries to the client');
+
+      expect(leaseOf(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: ['quality'], ownJudge: cursor })))
+        .toMatchObject({ judge: { tool: 'cursor', by: 'scorer', model: { name: 'composer-1' } } });
+      const mine: OwnJudge = { ...cursor, judge: { ...cursor.judge, tools: ['my-judge'] } };
+      expect(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: ['quality'], ownJudge: mine })).toEqual({ error: {
+        code: 'judge_model_unavailable', message: expect.stringContaining('Scorer "quality" asks for model "composer-1"'),
+      } });
+    });
+
+    it('leases several scorers in one batch lease with --batch, and refuses them without it or when they need different models', async () => {
+      const config = await fixture({ quality: SCORER, style: SCORER, costly: SCORER.replace('samplingRate: 0', 'samplingRate: 0\nmodel: composer-1') });
+      plantClaudeSession(path.join(root, 'app'), 'Add retries to the client');
+      const demand = { session: SESSION, source: 'claude-code', ownJudge: cursor };
+
+      expect(await scoreSession(config, { ...demand, scorers: ['quality', 'style'] })).toEqual({ error: {
+        code: 'invalid_arguments', message: 'A lease judges one scorer, or several in one judge call. Pass one --scorer, or add --batch.',
+      } });
+      expect(await scoreSession(config, { ...demand, scorers: ['quality', 'costly'], batch: true })).toEqual({ error: {
+        code: 'invalid_arguments', message: '--batch shares one judge call, and these scorers need different models: quality cursor\'s default, costly composer-1. Lease them one --scorer at a time.',
+      } });
+      expect(await AttemptStore.read(config)).toEqual(new Map());
+      expect(leaseOf(await scoreSession(config, { ...demand, scorers: ['quality', 'style'], batch: true }))).toMatchObject({ scorers: ['quality', 'style'], batched: true });
+    });
+
+    it('refuses a scorer file and --push, which only judging here takes', async () => {
+      const config = await fixture();
+      const demand = { session: SESSION, source: 'claude-code', ownJudge: cursor };
+
+      expect(await scoreSession(config, { ...demand, scorers: ['./scorers/quality.md'] })).toEqual({ error: {
+        code: 'invalid_arguments', message: 'A lease judges cached scorers, and ./scorers/quality.md is a scorer file. Leave out --json to try it here.',
+      } });
+      expect(await scoreSession(config, { ...demand, scorers: ['quality'], push: true })).toEqual({ error: {
+        code: 'invalid_arguments', message: 'A lease\'s label is published when its answer is submitted. Leave out --push.',
+      } });
+    });
+
+    it('fails session_not_found for a platform teamai reads no sessions of, whatever tool the driver judges with', async () => {
+      const config = await fixture();
+
+      expect(await scoreSession(config, { session: SESSION, source: 'pi', scorers: ['quality'], ownJudge: cursor })).toMatchObject({ error: { code: 'session_not_found' } });
     });
   });
 });

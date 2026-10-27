@@ -111,11 +111,11 @@ JSON
 {"data":{"label":{"scorer":"review-quality","label":"good","score":1,"passed":true,…},"published":true}}
 ```
 
-带 `run` 时，`score --next` 按运行 id 找到运行的 scope，所以 driver 可以在运行的工作树里或运行起始检出目录之外请求。
+带 `run` 时，`score --next` 按运行 id 找到运行的 scope，所以 driver 可以在运行的工作树里或运行起始检出目录之外请求，并在那里评审和提交租约。要按 id 评审一个会话，用 [`score --session`](#用自己的评审者) 租出它。
 
 | `can.judge` | 含义 |
 |---|---|
-| `isolation` | `verified` 或 `best-effort`。只租出它满足[所需级别](#隔离)的任务。 |
+| `isolation` | `verified` 或 `best-effort`。只租出它满足[所需级别](#隔离)的任务。[按 id 租出的会话](#用自己的评审者)要求更高级别时，以 `isolation_unmet` 失败。 |
 | `access` | 评审者能做什么：`answer`（不用工具）、`read`（读取证据）或 `full`（任意工具，默认值）。标签会记录该值。 |
 | `tools` | 按你的偏好排序。首个能解析评分器模型的工具胜出。 |
 
@@ -155,6 +155,23 @@ $ teamai score --session 7c1e… --source codex --scorer review-quality --push
 
 无论在哪个目录评分，标签都保存在会话所在的作用域。标签记录 `agent`，即会话启动时的运行配置，来自会话启动 hook 写入的捕获记录。标签还记录 `used.skills`，即会话或其子 agent 加载过、且捕获记录显示会话启动时（包括启动时那次 pull）由 teamai 交付并未经修改的团队技能。之后的 pull 不会改变它。捕获记录无法确认来源的技能不记录，例如与团队技能同名的成员自有技能。`--push` 发布该作用域所有待发布的标签。关闭[用量上报](reporting.md)时，它输出 `Usage reporting is off, so labels stay on this machine.`，标签继续待发布。http 团队仓库没有 `teamai-reports`，因此 `--push` 以 `unsupported_repo` 失败，标签留在本机。有标签等待发布时，`teamai doctor` 会给出警告。
 
+### 用自己的评审者
+
+用自己工具评审的 driver（例如 Cursor 会话或编排器）可以租出会话，而不是在本机评审。用 `--json` 声明 `can.judge`（与 [`score --next`](#任意-driver) 相同）时，`score --session` 返回一个租约。由子 agent 或另一个 agent 只根据 `prompt.md` 和证据目录评审，再由 driver 提交答案：
+
+```console
+$ teamai score --session 7c1e… --source cursor --scorer review-quality \
+    --json '{"driver":{"kind":"cursor","machine":"m1","workspace":"/work","can":{"judge":{"isolation":"best-effort","access":"read","tools":["cursor"]}}}}'
+{"data":{"lease":{"ref":"s0c4a9e2f7b1d3/a6e8f2107","source":"session","scorer":"review-quality","prompt":"…/prompt.md","cwd":"/work/app",
+  "submit":"teamai score --lease s0c4a9e2f7b1d3/a6e8f2107 --submit --stdin",…}}}
+$ teamai score --lease s0c4a9e2f7b1d3/a6e8f2107 --submit --stdin <<'JSON'
+{"driver":{"kind":"cursor","machine":"m1","workspace":"/work"},"outcome":"success",
+ "answer":{"label":"good","reasoning":"…"},"judge":{"tool":"cursor","model":"…"}}
+JSON
+```
+
+`--source` 指定从哪里读取会话，`tools` 指定由什么评审。无论抽样、六小时空闲、`scoring.sessions`、评分器的 `sessions`、之前的标签或 `daily_limit` 如何，都会租出，并计入当天的 `daily_limit`。多个评分器加 `--batch` 时共用一个租约。评分器要求的[隔离](#隔离)高于你提供的级别时（`isolation_unmet`）、评分器指定的模型你的工具都无法运行时（`judge_model_unavailable`：指定模型需要 teamai 认识的工具，例如 `cursor`），或另一个有效租约持有该任务时（`busy`），不租出任何任务。标签记录你的工具、`access` 和你报告的模型。
+
 ### 试用评分器文件
 
 ```console
@@ -173,7 +190,7 @@ $ teamai score --session 7c1e… --scorer ./scorers/review-quality.md
 
 团队可以在 `scorers/scoring.yaml` 或某个生效命名空间的 `scoring.yaml` 中设置 `sessions` 和 `daily_limit`，命名空间的设置覆盖根文件。两个生效命名空间不一致时，`sessions: false` 和最低的 `daily_limit` 生效。成员的 `config.yaml` 覆盖以上所有设置。
 
-每个会话对同一评分器和评分标准只评判一次。释放、过期或本地评审失败都会关闭它。过期租约的答案仍会被记录，除非之后已有评审者为该会话打了标签。`config.yaml` 中的 `scoring.daily_limit` 设置每个数据目录每个本地日最多租出多少个会话，默认 10，失败或无法读取的会话也计入。`0` 关闭会话评分。修改评分器的评分标准后，已捕获的会话会重新成为它的评审工作，每日上限会把这些工作分摊到之后几天。
+每个会话对同一评分器和评分标准只评判一次。释放、过期或本地评审失败都会关闭它。过期租约的答案仍会被记录，除非之后已有评审者为该会话打了标签，或[你自己的评审者](#用自己的评审者)又租走了它。`config.yaml` 中的 `scoring.daily_limit` 设置每个数据目录每个本地日最多租出多少个会话，默认 10，失败或无法读取的会话也计入。`0` 关闭会话评分。修改评分器的评分标准后，已捕获的会话会重新成为它的评审工作，每日上限会把这些工作分摊到之后几天。
 
 你不需要自己运行 driver。会话启动时的 pull 之后，如果会话所在项目或你的用户作用域开启了会话评分，teamai 会为这两个作用域在后台启动评审。它用本机安装的评审工具评判每个已结束的会话，30 分钟后不再领取新工作，标签保持待发布，由下一次 `teamai pull` 发布。每个租约是一次在你账号上的评审调用，每天最多 `daily_limit` 次。会话评分器指定便宜的[模型别名](#选择评审者的模型)（例如 `model: fast`）可以控制成本。要停止，在 `config.yaml` 中设置 `scoring.sessions: false`。
 
@@ -229,7 +246,7 @@ Judge tools here: claude 2.1.308 (Claude Code) is verified, codebuddy 2.3.0 is b
 | Pi Coding Agent | `best-effort` | `full` | 只开放 read、grep、find 和 ls 工具；不加载上下文文件、扩展和技能；不保存会话。 |
 | 其他版本 | `best-effort` | 同上 | 相同配置，未经验证。 |
 
-`best-effort` 工具不能评判要求 `verified` 的评分器。提示通过标准输入或文件传入。保留工具登录和受支持的模型切换设置。本机没有评审工具能运行评分器的模型时，评审任务保持打开，留给其他 driver，不改变工作流结果。由哪个工具评审见[选择评审者的模型](#选择评审者的模型)。
+`best-effort` 工具不能评判要求 `verified` 的评分器，[你自己的评审者](#用自己的评审者)低于所需级别时也不能。提示通过标准输入或文件传入。保留工具登录和受支持的模型切换设置。本机没有评审工具能运行评分器的模型时，评审任务保持打开，留给其他 driver，不改变工作流结果。由哪个工具评审见[选择评审者的模型](#选择评审者的模型)。
 
 ## 标签存放位置
 

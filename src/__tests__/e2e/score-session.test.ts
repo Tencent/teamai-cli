@@ -19,9 +19,10 @@ const PHRASE = 'Only-the-session-said-this-wombat';
 
 const EnvelopeSchema = z.object({ data: z.record(z.unknown()).optional(), error: z.object({ code: z.string(), message: z.string() }).optional() });
 
-function runCLI(args: string[], cwd: string, env: NodeJS.ProcessEnv): Promise<{ code: number | null; stdout: string; stderr: string }> {
+function runCLI(args: string[], cwd: string, env: NodeJS.ProcessEnv, input = ''): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [CLI, ...args], { cwd, env: { ...env, FORCE_COLOR: '0' }, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, [CLI, ...args], { cwd, env: { ...env, FORCE_COLOR: '0' }, stdio: ['pipe', 'pipe', 'pipe'] });
+    child.stdin.end(input);
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
@@ -237,5 +238,39 @@ console.log(JSON.stringify({ type: 'result', structured_output: { label, reasoni
     expect(dry.stderr).toContain('teamai score has no --dry-run preview, nothing was run');
     expect(files()).toEqual(stored);
     expect(git(team, 'rev-parse', 'teamai-reports')).toBe(reportsNow);
+  });
+
+  it('leases a session to a driver that judges it with its own tool, and keeps the label that driver submits', async () => {
+    const driver = { kind: 'cursor', machine: 'm1', workspace: app };
+    const lease = (payload: unknown, ...scorers: string[]) =>
+      runCLI(['score', '--session', SESSION, '--source', 'claude-code', ...scorers.flatMap((scorer) => ['--scorer', scorer]), '--json', JSON.stringify(payload)], app, env);
+    const cursor = { driver: { ...driver, can: { judge: { isolation: 'best-effort', access: 'read', tools: ['cursor'] } } } };
+
+    const undeclared = await lease({ driver }, 'review-quality');
+    expect(undeclared.code).toBe(1);
+    expect(envelope(undeclared.stdout).error).toEqual({ code: 'invalid_json', message: expect.stringContaining('driver.can.judge is required') });
+    const unbatched = await lease(cursor, 'review-quality', 'style');
+    expect(envelope(unbatched.stdout).error?.code).toBe('invalid_arguments');
+    const ofRun = await lease({ ...cursor, run: 'r0123456789abc' }, 'review-quality');
+    expect(envelope(ofRun.stdout).error).toEqual({ code: 'invalid_json', message: 'A --session payload leases the session it names: leave out run and canTakeLease.' });
+
+    const leased = await lease(cursor, 'review-quality');
+    expect(leased.code, leased.stdout + leased.stderr).toBe(0);
+    const taken = z.object({ ref: z.string(), prompt: z.string(), cwd: z.string(), submit: z.string() }).passthrough().parse(envelope(leased.stdout).data?.lease);
+    expect(taken).toMatchObject({
+      source: 'session', scorer: 'review-quality', subject: { platform: 'claude-code', sessionId: SESSION },
+      judge: { tool: 'cursor', isolation: 'best-effort', access: 'read' }, submit: `teamai score --lease ${taken.ref} --submit --stdin`,
+    });
+    expect(fs.readFileSync(taken.prompt, 'utf8')).toContain('Added the retries.');
+    expect(envelope((await lease(cursor, 'review-quality')).stdout).error?.code).toBe('busy');
+
+    const answer = { driver, outcome: 'success', answer: { label: 'thorough', reasoning: 'Ran the tests.' }, judge: { tool: 'cursor', model: 'composer-1' } };
+    const submitted = await runCLI(['score', '--lease', taken.ref, '--submit', '--stdin'], taken.cwd, env, JSON.stringify(answer));
+    expect(envelope(submitted.stdout).data, submitted.stdout + submitted.stderr).toMatchObject({ label: { scorer: 'review-quality', label: 'thorough', passed: true }, published: true });
+    const stored = fs.readFileSync(path.join(taken.cwd, 'scores', 'labels.jsonl'), 'utf8').trim().split('\n').at(-1) ?? 'null';
+    expect(JSON.parse(stored)).toMatchObject({
+      source: 'session', subject: { platform: 'claude-code', sessionId: SESSION }, label: 'thorough',
+      judge: { kind: 'model', tool: 'cursor', isolation: 'best-effort', access: 'read', model: { reported: 'composer-1' } },
+    });
   });
 });

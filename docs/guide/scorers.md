@@ -111,11 +111,11 @@ JSON
 {"data":{"label":{"scorer":"review-quality","label":"good","score":1,"passed":true,…},"published":true}}
 ```
 
-With `run`, `score --next` finds the run's scope by its id, so a driver can ask from the run's worktree or from outside the checkout the run started in.
+With `run`, `score --next` finds the run's scope by its id, so a driver can ask from the run's worktree or from outside the checkout the run started in, and judge and submit its lease from there too. To judge one session by id, lease it with [`score --session`](#with-your-own-judge).
 
 | `can.judge` | Meaning |
 |---|---|
-| `isolation` | `verified` or `best-effort`. Only work whose [required level](#isolation) it meets is leased. |
+| `isolation` | `verified` or `best-effort`. Only work whose [required level](#isolation) it meets is leased. A [session you lease by id](#with-your-own-judge) that asks for more fails `isolation_unmet`. |
 | `access` | What the judge can do: `answer` (no tools), `read` (reads the evidence) or `full` (any tool), the default. Labels record it. |
 | `tools` | In your order of preference. The first that resolves the scorer's model wins. |
 
@@ -155,6 +155,23 @@ The judge reads at most 200,000 characters of a session. A session scorer that n
 
 The label is kept in the scope the session ran in, from whichever directory you score it. It records `agent`, what the session ran as, from the captures the session-start hook writes. It records `used.skills`, the team skills the session or its subagents loaded that its captures show teamai delivered, unchanged, when it started, including by the pull it runs at start. A later pull does not change that. A skill the captures cannot place, such as a member's own skill with a team skill's name, is left out. `--push` publishes every pending label of that scope. With [usage reporting](reporting.md) off, it prints `Usage reporting is off, so labels stay on this machine.` and the labels stay pending. An http team repo has no `teamai-reports`, so `--push` fails with `unsupported_repo` and the labels stay here. `teamai doctor` warns while a label waits to be published.
 
+### With your own judge
+
+A driver that judges with its own tool, such as a Cursor session or an orchestrator, leases a session instead of having it judged here. With `--json` declaring `can.judge`, as [`score --next`](#any-driver) takes it, `score --session` answers a lease. A subagent or a separate agent judges it from `prompt.md` and the evidence directory only, and the driver submits the answer:
+
+```console
+$ teamai score --session 7c1e… --source cursor --scorer review-quality \
+    --json '{"driver":{"kind":"cursor","machine":"m1","workspace":"/work","can":{"judge":{"isolation":"best-effort","access":"read","tools":["cursor"]}}}}'
+{"data":{"lease":{"ref":"s0c4a9e2f7b1d3/a6e8f2107","source":"session","scorer":"review-quality","prompt":"…/prompt.md","cwd":"/work/app",
+  "submit":"teamai score --lease s0c4a9e2f7b1d3/a6e8f2107 --submit --stdin",…}}}
+$ teamai score --lease s0c4a9e2f7b1d3/a6e8f2107 --submit --stdin <<'JSON'
+{"driver":{"kind":"cursor","machine":"m1","workspace":"/work"},"outcome":"success",
+ "answer":{"label":"good","reasoning":"…"},"judge":{"tool":"cursor","model":"…"}}
+JSON
+```
+
+`--source` names where the session is read, and `tools` what judges it. The lease is taken whatever sampling, the six idle hours, `scoring.sessions`, the scorer's `sessions`, an earlier label or `daily_limit` say, and counts toward the day's `daily_limit`. Several scorers share one lease with `--batch`. Nothing is taken when a scorer asks for more [isolation](#isolation) than you offer (`isolation_unmet`), when a scorer pins a model none of your tools runs (`judge_model_unavailable`: a pinned model needs a tool teamai knows, such as `cursor`), or while another live lease holds the work (`busy`). The label records your tool, `access` and the model you report.
+
 ### Try a scorer file
 
 ```console
@@ -173,7 +190,7 @@ A member who sets `scoring.sessions: true` in `config.yaml` turns each session c
 
 The team can set `sessions` and `daily_limit` in `scorers/scoring.yaml` or in an active namespace's `scoring.yaml`, which overrides the root file. When two active namespaces disagree, `sessions: false` and the lowest `daily_limit` win. A member's `config.yaml` overrides them all.
 
-A session is judged once per scorer and rubric. A release, a lapse, or a local judge that fails closes it. An answer to a lapsed lease is still recorded, unless a judge has labelled the session since. `scoring.daily_limit` in `config.yaml` sets how many sessions one data home leases per local day, 10 by default, counting those that failed or could not be read. `0` turns session scoring off. Editing a scorer's rubric makes the captured sessions judge work again for it, and the daily limit spreads that over the following days.
+A session is judged once per scorer and rubric. A release, a lapse, or a local judge that fails closes it. An answer to a lapsed lease is still recorded, unless a judge has labelled the session since or [your own judge](#with-your-own-judge) leased it again. `scoring.daily_limit` in `config.yaml` sets how many sessions one data home leases per local day, 10 by default, counting those that failed or could not be read. `0` turns session scoring off. Editing a scorer's rubric makes the captured sessions judge work again for it, and the daily limit spreads that over the following days.
 
 You do not have to run a driver. After the pull at a session's start, when the session's project or your user scope scores sessions, teamai starts a background judge for both scopes. It judges each finished session with a judge tool installed here, stops taking work after 30 minutes, and leaves the labels pending for the next `teamai pull` to publish. Each lease is one judge call on your account, at most `daily_limit` a day. A session scorer with a cheap [model alias](#choose-the-judges-model), such as `model: fast`, keeps that cheap. To stop it, set `scoring.sessions: false` in `config.yaml`.
 
@@ -229,7 +246,7 @@ The local judge runs each tool in its own profile:
 | Pi Coding Agent | `best-effort` | `full` | Only its read, grep, find and ls tools; no context files, extensions or skills; no saved session. |
 | Any other version | `best-effort` | as above | The same profile, unproven. |
 
-A `best-effort` tool cannot judge for a scorer that requires `verified`. Prompts travel through stdin or a file. Tool login and supported model-switch settings are kept. A scorer's model that no judge tool here runs leaves the work open for another driver, without changing the workflow result. [Choose the judge's model](#choose-the-judges-model) says which tool judges.
+A `best-effort` tool cannot judge for a scorer that requires `verified`, nor can [your own judge](#with-your-own-judge) at a lower level than required. Prompts travel through stdin or a file. Tool login and supported model-switch settings are kept. A scorer's model that no judge tool here runs leaves the work open for another driver, without changing the workflow result. [Choose the judge's model](#choose-the-judges-model) says which tool judges.
 
 ## Where labels go
 

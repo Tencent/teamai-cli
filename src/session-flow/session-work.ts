@@ -12,7 +12,7 @@ import { AttemptStore, type AttemptRecord } from '../scorers/attempts.js';
 import { batchesScorers } from '../scorers/batch.js';
 import { cachedScorerNames, pinScorers, scorerNamespaces } from '../scorers/cache.js';
 import type { ScorerDefinition } from '../scorers/definition.js';
-import { hasLapsed, sessionEntryIdOf, sessionEntryState, type SessionEntryState } from '../scorers/entry.js';
+import { hasLapsed, liveSessionLease, sessionEntryIdOf, sessionEntryState, type SessionEntryState } from '../scorers/entry.js';
 import {
   fencedEvidence, isEvidenceReady, keepEnds, rubricPrompt, writeEvidence, EVIDENCE_MAX_CHARS, TOOL_CALL_MAX_CHARS, type EvidenceGap, type Rubrics,
 } from '../scorers/evidence.js';
@@ -301,9 +301,29 @@ async function entries(config: LocalConfig, now: string, scoring: Extract<ScopeS
   return { entries: found, captured: keys };
 }
 
-/** Whether a judge has labelled this key with a model label on this machine since it was offered. */
-async function isLabelled(config: LocalConfig, entry: Pick<SessionEntry, 'scorer' | 'pin' | 'subject'>): Promise<boolean> {
-  return (await LabelStore.local(config)).some((label) => label.judge.kind === 'model' && sameSessionKey(label, entry.scorer, entry.pin.sourceHash, entry.subject));
+/**
+ * A session and the scorers an explicit `score --session` request names on it. Judge work whatever sampling, the six
+ * idle hours, the `scoring.sessions` switch, the scorer's `sessions` or an earlier label or attempt say.
+ */
+export interface NamedSession {
+  subject: SessionSubject;
+  scorers: ReadonlyArray<Pick<SessionEntry, 'scorer' | 'pin' | 'definition'>>;
+  batch: boolean;
+}
+
+/** The entries of a named session: each open, unless a live lease holds it. */
+async function entriesOf(config: LocalConfig, { subject, scorers, batch }: NamedSession, now: string): Promise<SessionEntry[]> {
+  const attempts = await AttemptStore.read(config);
+  return scorers.map(({ scorer, pin, definition }) => {
+    const id = sessionEntryIdOf(scorer, pin.sourceHash, subject);
+    const live = liveSessionLease(attempts.get(id) ?? [], now);
+    return { source: 'session', id, scorer, pin, definition, subject, batch, state: live ? { kind: 'leased', attempt: live } : { kind: 'open' } };
+  });
+}
+
+/** Whether a judge has labelled this key with a model label on this machine, at `since` or later when it is given. */
+async function isLabelled(config: LocalConfig, entry: Pick<SessionEntry, 'scorer' | 'pin' | 'subject'>, since = ''): Promise<boolean> {
+  return (await LabelStore.local(config)).some((label) => label.judge.kind === 'model' && label.scoredAt >= since && sameSessionKey(label, entry.scorer, entry.pin.sourceHash, entry.subject));
 }
 
 const localDay = (at: string) => new Date(at).toDateString();
@@ -356,4 +376,4 @@ function leaseCwd(config: LocalConfig): string {
   return config.scope === 'project' && config.projectRoot ? config.projectRoot : getDataHome(config);
 }
 
-export const SessionWork = { entries, isLabelled, launchesToday, gone, read, ensureEvidence, leaseCwd } as const;
+export const SessionWork = { entries, entriesOf, isLabelled, launchesToday, gone, read, ensureEvidence, leaseCwd } as const;

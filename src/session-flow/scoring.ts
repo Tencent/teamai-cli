@@ -26,6 +26,7 @@ import { readWorkspaceChildren } from '../workspace-children.js';
 import { readFileSafe } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { redact } from '../utils/redact.js';
+import { sessionJudgeLease, type JudgeRequest } from '../workflow/scoring.js';
 import type { WorkflowEnvelope } from '../workflow/types.js';
 import { agentSessionFromEnv } from '../utils/session-id.js';
 import { AgentSession } from './agent-session.js';
@@ -40,7 +41,10 @@ function failure(code: string, message: string): Failure {
   return { error: { code, message } };
 }
 
-/** What `teamai score --session <id> [--source <platform>] --scorer <name>… [--batch] [--push]` asks for. */
+/** The judge a driver offers for a session: the `score --next` payload's `driver`, its `can.judge`, and `running`. */
+export type OwnJudge = Pick<JudgeRequest, 'driver' | 'judge' | 'running'>;
+
+/** What `teamai score --session <id> [--source <platform>] --scorer <name>… [--batch] [--push] [--json <driver>]` asks for. */
 export interface SessionDemand {
   session?: string;
   source?: string;
@@ -49,6 +53,8 @@ export interface SessionDemand {
   batch?: boolean;
   /** Publish the scope's pending labels after scoring, as `teamai score --push` does. */
   push?: boolean;
+  /** Lease the session to this driver's own judge instead of judging it here. */
+  ownJudge?: OwnJudge;
 }
 
 interface Asked {
@@ -161,6 +167,12 @@ function storedOf(labels: readonly ScoreLabel[], scorer: string, subject: Sessio
  * label is tried and never kept: it is printed next to the stored labels of its scorer and the control's verdict.
  */
 export async function scoreSession(from: LocalConfig, demand: SessionDemand, now = new Date().toISOString()): Promise<WorkflowEnvelope> {
+  if (demand.ownJudge) {
+    const file = demand.scorers.find(isScorerFile);
+    if (file !== undefined) return failure('invalid_arguments', `A lease judges cached scorers, and ${file} is a scorer file. Leave out --json to try it here.`);
+    if (new Set(demand.scorers).size > 1 && !demand.batch) return failure('invalid_arguments', 'A lease judges one scorer, or several in one judge call. Pass one --scorer, or add --batch.');
+    if (demand.push) return failure('invalid_arguments', 'A lease\'s label is published when its answer is submitted. Leave out --push.');
+  }
   const files = new Map<string, Asked>();
   for (const value of new Set(demand.scorers)) {
     if (!isScorerFile(value)) continue;
@@ -199,6 +211,10 @@ export async function scoreSession(from: LocalConfig, demand: SessionDemand, now
       return failure('invalid_arguments', `--scorer ${twin.file ?? twin.scorer} and --scorer ${candidate.file ?? candidate.scorer} are both scorer ${candidate.scorer}. Judge them in separate commands: a file's output lists the labels stored for its scorer.`);
     }
     asked.push(candidate);
+  }
+  if (demand.ownJudge) {
+    const subject = { platform, sessionId: session.sessionId };
+    return sessionJudgeLease(config, { ...demand.ownJudge, entries: { source: 'session', subject, scorers: asked, batch: demand.batch === true } }, now);
   }
   log.info(`Scoring ${platform} session ${session.sessionId} in ${session.cwd || '(directory unknown)'}`);
   const envSecrets = await knownSecrets(config);

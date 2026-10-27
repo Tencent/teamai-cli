@@ -2,7 +2,7 @@ import { autoDetectInit, loadLocalConfigForScope } from './config.js';
 import { AttemptStore, isRunAttempt } from './scorers/attempts.js';
 import { isScorerFile } from './scorers/definition.js';
 import { parseLeaseRef } from './scorers/entry.js';
-import { scoreSession, type SessionDemand } from './session-flow/scoring.js';
+import { scoreSession, type OwnJudge, type SessionDemand } from './session-flow/scoring.js';
 import type { LocalConfig } from './types.js';
 import { LabelStore } from './scorers/label-store.js';
 import { setStderrOnly } from './utils/logger.js';
@@ -76,8 +76,8 @@ function demandOf(options: ScoreOptions): ScoreDemand | WorkflowEnvelope {
 
 /** The session `--session` asks for, or the failure that says what is missing. */
 function sessionDemandOf(options: ScoreOptions): SessionDemand | WorkflowEnvelope {
-  if (options.next || options.lease !== undefined || options.json !== undefined || options.stdin) {
-    return failure('invalid_arguments', '--session takes no --next, --lease or payload: teamai score [--session <id>] [--source <platform>] --scorer <name> [--batch]');
+  if (options.next || options.lease !== undefined) {
+    return failure('invalid_arguments', '--session takes no --next or --lease: teamai score [--session <id>] [--source <platform>] --scorer <name> [--batch] [--json <driver>]');
   }
   const [scorer, ...scorers] = options.scorer ?? [];
   if (scorer === undefined) return failure('invalid_arguments', 'Pass --scorer <name> to judge a session: teamai score [--session <id>] [--source <platform>] --scorer <name> [--batch]');
@@ -140,9 +140,20 @@ async function score(options: ScoreOptions): Promise<WorkflowEnvelope> {
   if (asksForSession) {
     const demand = sessionDemandOf(options);
     if (!('scorers' in demand)) return demand;
+    let ownJudge: OwnJudge | undefined;
+    if (options.json !== undefined || options.stdin) {
+      const payload = await payloadOf(options);
+      if (!payload.ok) return payload.envelope;
+      const request = parseJudgeRequest(payload.value);
+      if (typeof request === 'string') return failure('invalid_json', request);
+      if (request.run !== undefined || request.canTakeLease !== undefined) {
+        return failure('invalid_json', 'A --session payload leases the session it names: leave out run and canTakeLease.');
+      }
+      ownJudge = { driver: request.driver, judge: request.judge, running: request.running };
+    }
     const loaded = await localConfig();
     if (!loaded.ok) return loaded.envelope;
-    return scoreSession(loaded.config, demand);
+    return scoreSession(loaded.config, ownJudge ? { ...demand, ownJudge } : demand);
   }
   if (options.push) {
     if (options.json !== undefined || options.stdin) return failure('invalid_arguments', '--push takes no payload: teamai score --push');

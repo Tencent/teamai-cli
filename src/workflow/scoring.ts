@@ -18,7 +18,7 @@ import { cachedScorerNames, pinScorers } from '../scorers/cache.js';
 import { pinnedDefinition, type PinnedScorer } from '../scorers/pin.js';
 import type { ScorerDefinition } from '../scorers/definition.js';
 import {
-  ENTRY_WINDOW_MS, LEASE_TTL_MS, entryIdOf, entryState, hasLapsed, leaseRefOf, parseLeaseRef, type EntryState,
+  ENTRY_WINDOW_MS, LEASE_TTL_MS, entryIdOf, entryState, hasLapsed, leaseRefOf, liveSessionLease, parseLeaseRef, type EntryState,
 } from '../scorers/entry.js';
 import { observedEffort, observedModel } from '../agent-observation.js';
 import {
@@ -36,7 +36,7 @@ import { requiredIsolation, scorerIsolationSource, unknownIsolationText, type Is
 import { scopeScoring } from '../scorers/settings.js';
 import { answerSchema, evidenceDirOf, sweepEvidence, type Rubrics } from '../scorers/evidence.js';
 import { agreedRunMode } from '../launch-context.js';
-import { sessionLabel, SessionWork, writeSessionEvidence, type JudgedSession, type SessionEntry } from '../session-flow/session-work.js';
+import { sessionLabel, SessionWork, writeSessionEvidence, type JudgedSession, type NamedSession, type SessionEntry } from '../session-flow/session-work.js';
 import { buildEvidence, evidencePlan } from './scoring-evidence.js';
 import { error, ok } from './engine.js';
 import { firstSettled, passesWithin, runPasses, type RunPass } from './loop.js';
@@ -96,8 +96,11 @@ export interface JudgeRequest {
   judge: { isolation: Isolation; access?: JudgeAccess; tools: [string, ...string[]] };
   /** The lease refs the driver is still running; each is renewed. A live lease of this driver it leaves out is handed back. */
   running: string[];
-  /** On demand: only these entries. Never a session. */
-  entries?: readonly string[];
+  /**
+   * On demand, only this work, whatever sampling says: the passes of these entry ids, or the scorers an explicit
+   * `score --session` request names on one session, whatever the background filters say.
+   */
+  entries?: { source: 'workflow'; ids: readonly string[] } | ({ source: 'session' } & NamedSession);
   /** Only the workflow work of this run, never a session: a driver that judges the run it drives. */
   run?: string;
   /** `session`: only finished sessions, as the background driver judges. Else workflow work first, then sessions. */
@@ -383,7 +386,9 @@ export type TakenLease = (OneLease & { closed: ClosedEntry[] }) | { kind: 'busy'
  * leases the first open entry, oldest run first, whose isolation the driver meets. When its step batches scorers, the
  * other open entries of the same pass that resolve to the same tool and model join that lease. Answers `idle` with
  * counts when there is none. An entry whose evidence is empty closes, and the next one is tried. An entry whose scorer's
- * model none of the driver's tools runs is skipped and stays open for another driver.
+ * model none of the driver's tools runs is skipped and stays open for another driver. With `entries` of a named
+ * session, it leases that session's scorers whole, whatever the background filters and the daily limit say, while no
+ * live lease holds any of them; an empty evidence closes them and answers `idle`.
  */
 export async function takeJudgeLease(config: LocalConfig, request: JudgeRequest, now: string): Promise<TakenLease> {
   const earlier: ClosedEntry[] = [];
@@ -392,6 +397,8 @@ export async function takeJudgeLease(config: LocalConfig, request: JudgeRequest,
     switch (taken.kind) {
       case 'evidence_empty':
         earlier.push(...taken.closed);
+        // A named session is open again after a failed attempt, so reading it again would fail again.
+        if (request.entries?.source === 'session') return { kind: 'idle', open: 0, leased: 0, skipped: [], closed: earlier };
         break;
       case 'raced':
         break;
@@ -404,6 +411,21 @@ export async function takeJudgeLease(config: LocalConfig, request: JudgeRequest,
         const unhandled: never = taken;
         return unhandled;
       }
+    }
+  }
+}
+
+/** The named session `entries` asks for, or the workflow entry ids it keeps to; neither when it asks for no entries. */
+function entrySources(entries: JudgeRequest['entries']): { named?: NamedSession; ids?: readonly string[] } {
+  if (entries === undefined) return {};
+  switch (entries.source) {
+    case 'workflow':
+      return { ids: entries.ids };
+    case 'session':
+      return { named: entries };
+    default: {
+      const unhandled: never = entries;
+      return unhandled;
     }
   }
 }
@@ -430,9 +452,11 @@ async function takeOneLease(config: LocalConfig, request: JudgeRequest, now: str
     log.warn(scoring.reason);
     return { kind: 'idle', open: 0, leased: 0, skipped: [] };
   }
-  const all = request.only === 'session' ? [] : await scoreEntries(config, now, scoring.batch);
-  const runs = all.filter((entry) => (!request.entries || request.entries.includes(entry.id)) && (request.run === undefined || entry.subject.runId === request.run));
-  const { entries: sessions, captured } = request.entries || request.run !== undefined ? { entries: [], captured: undefined } : await SessionWork.entries(config, now, scoring);
+  const { named, ids } = entrySources(request.entries);
+  const all = request.only === 'session' || named ? [] : await scoreEntries(config, now, scoring.batch);
+  const runs = all.filter((entry) => (!ids || ids.includes(entry.id)) && (request.run === undefined || entry.subject.runId === request.run));
+  const { entries: sessions, captured } = named ? { entries: await SessionWork.entriesOf(config, named, now), captured: undefined }
+    : request.entries || request.run !== undefined ? { entries: [], captured: undefined } : await SessionWork.entries(config, now, scoring);
   const found: ScoreEntry[] = [...runs, ...sessions];
   const dailyLimit = scoring.sessions.enabled ? scoring.sessions.dailyLimit : 0;
   const aliases = await loadModelAliases(config);
@@ -442,14 +466,15 @@ async function takeOneLease(config: LocalConfig, request: JudgeRequest, now: str
   const skipped: SkippedEntry[] = [];
   const released = new Set<string>();
   // Whether the day's session launches are spent: then no session is open, until the next local day.
-  let limited = sessions.length > 0 && SessionWork.launchesToday([...(await AttemptStore.read(config)).values()].flat(), now) >= dailyLimit;
+  let limited = !named && sessions.length > 0 && SessionWork.launchesToday([...(await AttemptStore.read(config)).values()].flat(), now) >= dailyLimit;
   // A session is judged once: a release under this lock closes it rather than opening it again.
   const isOpen = (entry: ScoreEntry): boolean => {
     switch (entry.source) {
       case 'workflow':
         return entry.state.kind === 'open' || released.has(entry.id);
       case 'session':
-        return entry.state.kind === 'open' && !limited;
+        // A named session's lease this driver gave up under this lock leaves it open again.
+        return (entry.state.kind === 'open' || (named !== undefined && released.has(entry.id))) && !limited;
       default: {
         const unhandled: never = entry;
         return unhandled;
@@ -505,16 +530,20 @@ async function takeOneLease(config: LocalConfig, request: JudgeRequest, now: str
     const [back] = mine.values();
     if (request.canTakeLease === false) return { kind: 'none' };
     if (back) return { kind: 'workflow', members: back, handedBack: true };
-    const untried = async (entry: SessionEntry) => (await AttemptStore.ofEntry(config, entry.id)).length === 0 && !await SessionWork.isLabelled(config, entry);
-    // A session key is leased once: still untried, while the day has launches left, and only as read before the lock.
+    // A session key is leased once: still untried, while the day has launches left, and only as read before the lock. A
+    // named one is leased while no live lease holds it.
+    const isFree = async (entry: SessionEntry) => {
+      const attempts = await AttemptStore.ofEntry(config, entry.id);
+      return named ? liveSessionLease(attempts, now) === undefined : attempts.length === 0 && !await SessionWork.isLabelled(config, entry);
+    };
     const leaseSession = async (entry: SessionEntry): Promise<LockedLease | undefined> => {
-      if (!leasable(entry) || !await untried(entry)) return undefined;
+      if (!leasable(entry) || !await isFree(entry)) return undefined;
       const chosen = chooseJudgeModel(aliases, entry.definition, request.judge.tools);
       if (!chosen.ok) {
         skipped.push({ scorer: entry.scorer, subject: entry.subject, code: chosen.code, message: chosen.message });
         return undefined;
       }
-      if (SessionWork.launchesToday([...(await AttemptStore.read(config)).values()].flat(), now) >= dailyLimit) {
+      if (!named && SessionWork.launchesToday([...(await AttemptStore.read(config)).values()].flat(), now) >= dailyLimit) {
         limited = true;
         return { kind: 'none' };
       }
@@ -523,8 +552,10 @@ async function takeOneLease(config: LocalConfig, request: JudgeRequest, now: str
       for (const other of entry.batch ? sessions : []) {
         if (other === entry || other.subject.platform !== entry.subject.platform || other.subject.sessionId !== entry.subject.sessionId) continue;
         const choice = chooseJudgeModel(aliases, other.definition, request.judge.tools);
-        if (choice.ok && sameChoice(choice.choice, chosen.choice) && leasable(other) && await untried(other)) mates.push({ entry: other, choice: choice.choice });
+        if (choice.ok && sameChoice(choice.choice, chosen.choice) && leasable(other) && await isFree(other)) mates.push({ entry: other, choice: choice.choice });
       }
+      // A named session is leased whole: a scorer another lease holds keeps the rest waiting for it.
+      if (named && mates.length < sessions.length - 1) return { kind: 'none' };
       const attempt = newAttemptId();
       const tried = [{ entry, choice: chosen.choice }, ...mates];
       const batch = mates.length > 0 ? tried.map((member) => member.entry.id) : undefined;
@@ -646,6 +677,49 @@ export async function nextJudgeLease(config: LocalConfig, request: JudgeRequest,
       return ok({ lease: taken.lease, ...(taken.closed.length ? { closed: taken.closed } : {}), ...(taken.skipped.length ? { skipped: taken.skipped } : {}) });
     case 'idle':
       return ok({ idle: { open: taken.open, leased: taken.leased }, ...(taken.closed.length ? { closed: taken.closed } : {}), ...(taken.skipped.length ? { skipped: taken.skipped } : {}) });
+    case 'busy':
+      return error('busy', 'The judge attempts are locked by another process. Ask again.');
+    default: {
+      const unhandled: never = taken;
+      return unhandled;
+    }
+  }
+}
+
+/**
+ * `teamai score --session <id> --scorer <name>… --json`: a lease on the scorers `request.entries` names on one session,
+ * for the driver's own judge, as `score --next` hands one out. It takes nothing when a scorer asks for more isolation
+ * than the driver offers, when none of its tools runs a scorer's model, when the scorers of a batch need different
+ * models, or while a live lease holds any of them.
+ */
+export async function sessionJudgeLease(config: LocalConfig, request: JudgeRequest & { entries: { source: 'session' } & NamedSession }, now = new Date().toISOString()): Promise<WorkflowEnvelope> {
+  const { scorers, subject } = request.entries;
+  const scoring = await scopeScoring(config);
+  if (!scoring.ok) return error('scoring_settings_invalid', scoring.reason);
+  const required = requiredIsolation([...scoring.isolation, ...scorers.map(({ scorer, pin, definition }) => ({ source: scorerIsolationSource(scorer, pin.relativePath), value: definition.isolation }))]);
+  if (!meets(request.judge.isolation, required.level)) {
+    return error('isolation_unmet', `${required.setBy.join(' and ')} asks for ${required.level}, and this driver offers ${request.judge.isolation}. No judge work was taken.`);
+  }
+  const aliases = await loadModelAliases(config);
+  const chosen: Array<{ scorer: string; choice: JudgeChoice }> = [];
+  for (const { scorer, definition } of scorers) {
+    const choice = chooseJudgeModel(aliases, definition, request.judge.tools);
+    if (!choice.ok) return error('judge_model_unavailable', choice.message);
+    chosen.push({ scorer, choice: choice.choice });
+  }
+  const [first] = chosen;
+  if (first && chosen.some(({ choice }) => !sameChoice(choice, first.choice))) {
+    const models = chosen.map(({ scorer, choice }) => `${scorer} ${choice.model?.name ?? `${choice.tool}'s default`}`).join(', ');
+    return error('invalid_arguments', `--batch shares one judge call, and these scorers need different models: ${models}. Lease them one --scorer at a time.`);
+  }
+  const taken = await takeJudgeLease(config, request, now);
+  switch (taken.kind) {
+    case 'lease':
+      return ok({ lease: taken.lease });
+    case 'idle':
+      return taken.closed.length > 0
+        ? error('evidence_empty', `${subject.platform} session ${subject.sessionId} holds nothing to judge.`)
+        : error('busy', `A live judge lease holds ${scorers.map(({ scorer }) => scorer).join(', ')} on ${subject.platform} session ${subject.sessionId}. Submit or release it, or ask again once it lapses, 30 minutes after it was taken or renewed.`);
     case 'busy':
       return error('busy', 'The judge attempts are locked by another process. Ask again.');
     default: {
@@ -779,9 +853,13 @@ async function settleJudgeLease<T extends { kind: string }>(
     const leased = leasedSettling(lease);
     if (settledAs || !leased) return error('lease_settled', `Judge lease ${ref} was already settled as ${settledAs ?? 'settled'}.`);
     if (leased.source === 'session') {
-      // A session is tried once: a lapsed lease still settles, unless a judge has labelled the session since.
+      // A lapsed lease still settles, unless a judge has labelled the session since or an explicit request leased it again.
       for (const { attempt, pin } of leased.members) {
-        if (await SessionWork.isLabelled(config, { scorer: attempt.scorer, pin, subject: attempt.subject })) {
+        const live = liveSessionLease(await AttemptStore.ofEntry(config, attempt.entry), now);
+        if (live && live.attempt !== attempt.attempt) {
+          return error('lease_expired', `Judge lease ${ref} expired at ${attempt.expiresAt} and another lease now holds this session.`);
+        }
+        if (await SessionWork.isLabelled(config, { scorer: attempt.scorer, pin, subject: attempt.subject }, attempt.leasedAt)) {
           return error('lease_expired', `Judge lease ${ref} is not recorded: another judge has labelled this session since it was leased.`);
         }
       }
@@ -1201,7 +1279,7 @@ export async function scoreOnDemand(config: LocalConfig, demand: ScoreDemand, no
   const labelled: SucceededAttempt[] = [];
   let published = true;
   for (;;) {
-    const taken = await takeJudgeLease(config, { driver, judge: { isolation: 'verified', tools: [tool, ...tools] }, running: [], entries: ids }, now);
+    const taken = await takeJudgeLease(config, { driver, judge: { isolation: 'verified', tools: [tool, ...tools] }, running: [], entries: { source: 'workflow', ids } }, now);
     if (taken.kind === 'busy') return error('busy', 'The judge attempts are locked by another process. Ask again.');
     if (taken.closed.some((closed) => closed.code === 'evidence_empty')) {
       return error('evidence_empty', 'No recorded evidence could be read for this pass. Restore its commits or session, then run this command again.');
