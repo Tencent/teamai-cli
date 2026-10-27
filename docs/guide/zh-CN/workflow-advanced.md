@@ -842,4 +842,4 @@ teamai score --next --json '{"driver":{"kind":"script","machine":"runner","works
 
 评审任务来自 `teamai score --next`，从不来自 `workflow next`。见[评分器](scorers.md#任意-driver)。
 
-无人值守的 driver 以 `teamai score --drain` 结束。它评判本机能评判的工作，发布标签和会话，并输出留给其他 driver 的工作。本地驱动在无人值守运行结束时执行它。运行的退出状态仍是运行本身的结果，drain 失败时只输出失败信息。见[无人值守任务结束前运行 drain](scorers.md#无人值守任务结束前运行-drain)。
+无人值守的 driver 以 `teamai score --drain` 结束。它评判本机能评判的工作，发布运行记录、标签和会话，并输出留给其他 driver 的工作。本地驱动在无人值守运行结束时执行它：先在 stdout 输出运行的 `done` 信封，再在 stderr 输出 drain 的各行。退出状态仍是运行本身的结果，drain 失败时也一样。见[无人值守任务结束前运行 drain](scorers.md#无人值守任务结束前运行-drain)。

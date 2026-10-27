@@ -227,7 +227,7 @@ scoring:
 | A workflow step's passes | The step's `scorers`, sampled by each scorer's `samplingRate`. `sessions` plays no part. |
 | A captured session: yours, or one a `CI` or `TEAMAI_MODE` job ran that teamai did not launch | `sessions` for the session's run mode, for every scorer with `sessions: true`, sampled by its `samplingRate`. |
 | A session teamai launched, such as a workflow step or a judge | Nothing. It writes no capture, and its step is judged as a pass. |
-| A session of a tool teamai reads no sessions from, such as Pi | Nothing. `teamai doctor` names the tool while a policy is not `off`. |
+| A session of a tool teamai reads no sessions from, such as Pi | Nothing. `teamai doctor` notes each such tool the team enables, in each mode whose publish or scoring policy is not `off`. With the defaults, that is both modes. |
 
 A namespace scorer judges a session only when the roles and projects each of its starts recorded make that namespace active. `score --next` hands out workflow work first, then sessions. A session lease has `"source":"session"`, and its `cwd` is where to submit from.
 
@@ -254,12 +254,12 @@ Every unattended driver ends with `teamai score --drain`. The local driver runs 
 
 1. In unattended mode, every session this data home captured as unattended counts as finished, the calling session included. Attended sessions keep the six-hour rule.
 2. It judges every open judge entry this machine can judge: sampled step passes, and sampled sessions the policies allow, within `daily_limit`.
-3. It publishes every pending label, as `score --push` does.
-4. With `publish: auto` for the current mode, it archives on `teamai-reports`, scrubbed, the finished captured sessions of that mode and the step sessions of the runs driven here that are not archived yet. A step whose tool has no session platform is listed as skipped.
+3. It publishes every pending label, as `score --push` does, and the workflow run records a run could not publish, as `teamai pull` does.
+4. With `publish: auto` for the current mode, it archives on `teamai-reports`, scrubbed, the finished captured sessions of that mode and the step sessions of the runs driven here that are not archived yet. A step session it cannot archive from here, because teamai reads no sessions from its tool or this machine cannot read it, is listed once as skipped with the reason, and never tried again. The other step sessions of that run are still archived.
 5. It reports usage to `stats/<member>.yaml`, as `teamai pull` does, so the counts of an ephemeral runner reach the team.
 6. It prints what is left: entries whose scorer pins a model no judge tool here runs (`judge_model_unavailable`), or whose isolation this machine does not meet. Those wait for another driver's `score --next`.
 
-The drain exits 0 when nothing is left that it can do here, entries left for other drivers included. It exits 1 when a judgment or a publish failed. A failed publish stays pending, and the next `--drain` retries it. A failed judgment is final: the drain prints it and never retries it. To ask for a new one, run `teamai score --session <id> --source <platform> --scorer <name>`.
+The drain exits 0 when nothing is left that it can do here, entries left for other drivers included. It exits 1 when a judgment, a publish or a usage report failed. A failed publish or usage report stays pending, and the next `--drain` retries it. A failed judgment is final: the drain prints it and never retries it. To ask for a new one, run `teamai score --session <id> --source <platform> --scorer <name>`.
 
 Where the drain runs decides what it sees of the calling session:
 
