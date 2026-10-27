@@ -9,7 +9,7 @@ vi.mock('../utils/logger.js', () => ({
   setStderrOnly: vi.fn(() => false),
 }));
 
-import { loadLocalConfigForScope, saveLocalConfigForScope } from '../config.js';
+import { loadLocalConfigForScope, refreshRoleAssignment, saveLocalConfigForScope } from '../config.js';
 import { log } from '../utils/logger.js';
 
 function writeConfig(file: string, value: unknown): void {
@@ -112,5 +112,21 @@ describe('member settings overlay', () => {
     expect(loaded?.codexTrustEnabled).toBe(false);
     expect(loaded?.workflows?.tools).toEqual({ default: 'codex' });
     expect(vi.mocked(log.warn)).toHaveBeenCalled();
+  });
+
+  it('keeps a local setting when refresh resolves the same config object', async () => {
+    writeConfig(projectConfig, {
+      repo: { localPath: path.join(home, 'team-repo'), remote: 'https://example.test/team.git' },
+      username: 'member',
+      scope: 'project',
+      projectRoot,
+      recallEnabled: false,
+    });
+
+    const loaded = await loadLocalConfigForScope('project', projectRoot);
+    expect(loaded).not.toBeNull();
+    await refreshRoleAssignment(loaded!);
+
+    expect(loaded?.recallEnabled).toBe(false);
   });
 });

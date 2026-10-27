@@ -194,6 +194,11 @@ export async function refreshRoleAssignment(config: LocalConfig): Promise<void> 
   if (resolved.roleAssignment) delete resolved.roleUnresolved;
   if (resolved.scope !== 'user') resolved = applyMachineSettings(resolved, await loadMemberSettings());
 
+  // `resolved` can alias `config` when there is no role or settings overlay.
+  // Snapshot it before clearing runtime-only values; otherwise the cleanup
+  // below deletes the values from both objects and Object.assign cannot restore
+  // a local override such as recallEnabled: false.
+  const refreshed = { ...resolved };
   for (const key of MEMBER_SETTING_KEYS) delete (config as Record<string, unknown>)[key];
   delete config.memberSettingsOverlay;
   // Role assignment is runtime-only too. Clear the old overlay before copying
@@ -202,7 +207,7 @@ export async function refreshRoleAssignment(config: LocalConfig): Promise<void> 
   delete config.roleAssignment;
   delete config.roleUnresolved;
   delete config.primaryRole;
-  Object.assign(config, resolved);
+  Object.assign(config, refreshed);
 }
 
 /** `roles` as this member's effective selection, primary first. */
