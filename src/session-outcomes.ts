@@ -17,7 +17,8 @@ import { addCounts, uniqueOutcomes, type SessionOutcomeEvent, type SessionUsage,
 import { interventionsEntry, promptTokensEntry, snapshotPathIn, type ReportedInterventions, type ReportedPromptTokens } from './session-owners.js';
 import { FINISHED_AFTER_MS } from './session-flow/session-work.js';
 import { getDataHome, type DashboardEvent, type LocalConfig, type UserOutcomeStats } from './types.js';
-import { readJson, writeJson } from './utils/fs.js';
+import { pathExists, readJson, writeJson } from './utils/fs.js';
+import { checkoutForProjectAnchor } from './utils/git.js';
 import { log } from './utils/logger.js';
 import { CommitIdSchema } from './workflow/delivery-schema.js';
 import { findDelivered } from './workflow/pr-delivery.js';
@@ -32,6 +33,8 @@ const FactsSchema = z.object({
   tool: z.string().optional(),
   runMode: RunModeSchema.optional(),
   cwd: z.string().optional(),
+  /** The repository `cwd` is in (`projectAnchor`), whose other checkouts still hold its commits once `cwd` is removed. */
+  anchor: z.string().optional(),
   startedAt: z.string().optional(),
   startHead: z.string().optional(),
   endHead: z.string().optional(),
@@ -92,6 +95,7 @@ function factsOf(member: DashboardEvent[], outcomes: SessionOutcomeEvent[]): Map
       tool: event.tool,
       ...(runMode ? { runMode } : {}),
       ...(event.cwd ? { cwd: event.cwd } : {}),
+      ...(event.projectAnchor ? { anchor: event.projectAnchor } : {}),
       ...(event.gitAtStart && known.startHead === undefined ? { startedAt: event.timestamp, startHead: event.gitAtStart.head } : {}),
       ...(event.gitHead ? { endHead: event.gitHead } : {}),
       ...(event.gitHead && event.gitBranch ? { endBranch: event.gitBranch } : {}),
@@ -135,10 +139,16 @@ async function scopeOutcomes(input: FoldInput): Promise<SessionOutcomeEvent[]> {
     && (scoped.has(outcome.sessionId) ? member.has(outcome.sessionId) : !logged.has(outcome.sessionId) && outcome.dataHomeKey === key));
 }
 
-/** The commits the member authored in `facts.cwd` from the session's start to its last Stop, oldest first. */
-async function sessionCommits(facts: Facts): Promise<string[]> {
-  const { cwd, startHead, endHead, startedAt } = facts;
-  if (!cwd || !startHead || !endHead || startHead === endHead) return [];
+/** Where the session's git is read: its own checkout, else, once that is gone (a removed worktree), one of its repository. */
+async function checkoutOf(facts: Facts): Promise<string | undefined> {
+  if (facts.cwd && await pathExists(facts.cwd)) return facts.cwd;
+  return facts.anchor ? await checkoutForProjectAnchor(facts.anchor) ?? undefined : undefined;
+}
+
+/** The commits the member authored in `cwd`, the session's checkout, from its start to its last Stop, oldest first. */
+async function sessionCommits(cwd: string, facts: Facts): Promise<string[]> {
+  const { startHead, endHead, startedAt } = facts;
+  if (!startHead || !endHead || startHead === endHead) return [];
   const email = (await git(cwd, ['config', '--get', 'user.email'], { timeoutMs: GIT_TIMEOUT_MS })).stdout.trim();
   if (!email) return [];
   // A commit dated before the session started came in with a pull, whoever wrote it.
@@ -211,9 +221,10 @@ async function fold(input: FoldInput): Promise<OutcomeFold> {
   let prsChanged = false;
   // Each lookup may wait on a host, so they run together; one that fails leaves its pull request out.
   const finished = await Promise.all(due.map(async ({ sessionId, facts }): Promise<FinishedSession> => {
-    const commits = await sessionCommits(facts);
-    if (commits.length > 0 && facts.cwd && facts.endBranch && !prs[sessionId]) {
-      const looked = await lookUpPr({ cwd: facts.cwd, branch: facts.endBranch, commits }).catch((e: unknown) => {
+    const cwd = await checkoutOf(facts);
+    const commits = cwd ? await sessionCommits(cwd, facts) : [];
+    if (cwd && commits.length > 0 && facts.endBranch && !prs[sessionId]) {
+      const looked = await lookUpPr({ cwd, branch: facts.endBranch, commits }).catch((e: unknown) => {
         log.debug(`outcomes: pull request lookup for session ${sessionId} failed: ${e instanceof Error ? e.message : String(e)}`);
         return undefined;
       });

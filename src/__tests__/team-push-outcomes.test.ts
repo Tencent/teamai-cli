@@ -23,6 +23,7 @@ vi.mock('../utils/logger.js', () => ({
 
 import { reportUsageToTeam } from '../team-push.js';
 import { dataHomeKey, readSessionOutcomes } from '../dashboard-collector.js';
+import { resolveAnchors } from '../utils/git.js';
 
 const HOUR = 3_600_000;
 
@@ -181,6 +182,22 @@ describe('the usage report counts what finished sessions delivered (#1387)', () 
     expect(stats().outcomes).toEqual({ attended: { commit: { sessions: 1, tokens: { input: 10, output: 5 }, interventions: 1 } } });
     expect(statsText()).not.toContain(mine);
     expect((await readSessionOutcomes()).map((event) => [event.sessionId, event.outcomes])).toEqual([['with-commit', [{ kind: 'commit', sha: mine }]]]);
+  });
+
+  it('finds the commits of a session whose worktree was removed before it was finished, in its repository', async () => {
+    const work = checkout();
+    const start = commitIn(work, 'base', ME);
+    const tree = path.join(tmpDir, 'task-tree');
+    gitIn(work, ['worktree', 'add', '-q', '-b', 'task', tree]);
+    const mine = commitIn(tree, 'in the worktree', ME);
+    const anchor = (await resolveAnchors(tree))?.projectAnchor;
+    const [first, stop] = session('in-worktree', 7, { cwd: tree, projectAnchor: anchor });
+    writeEvents([{ ...first, gitAtStart: { head: start, dirty: false } }, { ...stop, gitHead: mine, gitBranch: 'task' }]);
+    gitIn(work, ['worktree', 'remove', tree]);
+
+    await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
+
+    expect((await readSessionOutcomes()).map((event) => event.outcomes)).toEqual([[{ kind: 'commit', sha: mine }]]);
   });
 
   it('finds the commits of a member whose git email has a + tag', async () => {
