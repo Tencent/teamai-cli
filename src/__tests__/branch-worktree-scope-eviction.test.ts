@@ -105,7 +105,7 @@ describe('side-branch worktree ownership across scopes (#1443)', () => {
     fs.mkdirSync(path.dirname(memberWt), { recursive: true });
     git(['worktree', 'add', memberWt, 'teamai-reports'], business);
 
-    await expect(ensureReportsWorktree(projectConfig)).rejects.toThrow(/already checked out|still has/);
+    await expect(ensureReportsWorktree(projectConfig)).rejects.toThrow(/already (used by worktree|checked out)|still has/);
     expect(fs.existsSync(memberWt)).toBe(true);
   });
 });
