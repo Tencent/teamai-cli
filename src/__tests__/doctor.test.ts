@@ -1417,6 +1417,23 @@ describe('doctor — member settings (#1459)', () => {
         expect(report.notes).toContain(`Usage reporting: off, from usageReportEnabled: false in the machine config ${machineFile()}.`);
     });
 
+    it('prints the model aliases in effect, the workspace\'s entries over the machine\'s', async () => {
+        const workspace = { ...mockLocalConfig, scope: 'project', projectRoot: '/tmp/ws', dataHome: '/tmp/ws-data', memberSettingsOverlay: { local: {} } };
+        mockedDetectProjectConfig.mockResolvedValue(workspace);
+        onTestFinished(() => { mockedDetectProjectConfig.mockResolvedValue(null); });
+        const otherReads = mockedReadFileSafe.getMockImplementation();
+        mockedReadFileSafe.mockImplementation(async (filePath: string) => (
+            filePath === machineFile() ? 'modelAliases:\n  gateway: claude-sonnet-4\n  local: claude-haiku-4\n'
+                : filePath === path.join('/tmp/ws-data', 'config.yaml') ? 'modelAliases:\n  local: claude-opus-4\n'
+                : otherReads?.(filePath)
+        ));
+
+        await doctor({});
+
+        const printed = consoleSpy.mock.calls.map(([line]) => String(line));
+        expect(printed).toContain(`  modelAliases: {"gateway":"claude-sonnet-4","local":"claude-opus-4"}, from the workspace config ${path.join('/tmp/ws-data', 'config.yaml')} (the machine says {"gateway":"claude-sonnet-4","local":"claude-haiku-4"})`);
+    });
+
     it('names the keys of a machine config with no install that no command reads, being no member settings', async () => {
         const workspace = { ...mockLocalConfig, scope: 'project', projectRoot: '/tmp/ws', dataHome: '/tmp/ws-data', memberSettingsOverlay: { local: {} } };
         mockedDetectProjectConfig.mockResolvedValue(workspace);

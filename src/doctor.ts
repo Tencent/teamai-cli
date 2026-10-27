@@ -214,14 +214,14 @@ function describeMemberSettingLevel({ level, file, variable }: MemberSettingSour
   }
 }
 
-/** Doctor's `Member settings` lines: each setting some level sets, the level that won, and the values below it. */
+/** Doctor's `Member settings` lines: each setting some level sets, its value in effect, the level that won, and the values below it. */
 function memberSettingLines(reports: MemberSettingsReport[], scope: LocalConfig['scope']): string[] {
   const shown = (value: unknown): string => typeof value === 'string' ? value : JSON.stringify(value);
-  return reports.flatMap(({ key, source, levels }) => {
+  return reports.flatMap(({ key, effective, source, levels }) => {
     if (!source || source.level === 'default') return [];
     const below = levels.slice(levels.indexOf(source) + 1).filter(({ level }) => level !== 'default')
       .map((lower, index) => `the ${describeMemberSettingLevel(lower, scope).short}${index === 0 ? ' says' : ''} ${shown(lower.value)}`);
-    return [`  ${key}: ${shown(source.value)}, from ${describeMemberSettingLevel(source, scope).from}${below.length > 0 ? ` (${below.join(', ')})` : ''}`];
+    return [`  ${key}: ${shown(effective)}, from ${describeMemberSettingLevel(source, scope).from}${below.length > 0 ? ` (${below.join(', ')})` : ''}`];
   });
 }
 
