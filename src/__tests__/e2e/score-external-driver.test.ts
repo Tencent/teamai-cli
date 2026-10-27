@@ -104,6 +104,18 @@ async function joinedApp(root: string, scope: 'user' | 'project'): Promise<{ tea
   return { team, app, home, env };
 }
 
+/** A team repository `other` under `root`, with no workflow, that a checkout joins at OTHER_URL once `home`'s git config points there. */
+function otherTeam(root: string, home: string): void {
+  const other = path.join(root, 'other');
+  fs.mkdirSync(other);
+  fs.writeFileSync(path.join(other, 'teamai.yaml'), `team: other\nrepo: ${OTHER_URL}\nprovider: github\n`);
+  git(root, 'init', '-q', '-b', 'main', other);
+  git(other, 'add', '-A');
+  git(other, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'other');
+  git(root, 'clone', '-q', '--bare', other, `${other}.git`);
+  fs.appendFileSync(path.join(home, '.gitconfig'), `[url "file://${other}.git"]\n\tinsteadOf = ${OTHER_URL}\n`);
+}
+
 /** Starts WORKFLOW in `app` and drives it to its end as `driver`, from `app`. The run id. */
 async function drivenToDone(input: { app: string; home: string; env: NodeJS.ProcessEnv; driver: { kind: string; machine: string; workspace: string } }): Promise<string> {
   const { app, home, env, driver } = input;
@@ -193,28 +205,37 @@ describe('teamai score with an external driver', () => {
     expect(envelope(unknown.stdout).error).toMatchObject({ code: 'step_not_found', message: expect.stringContaining('plan, review') });
   });
 
-  it('takes the judge work of the run it names from outside the checkout that run started in', async () => {
+  it('takes, judges and settles the judge work of a run from another project, as that run\'s scope holds it', async () => {
     const scoped = fs.mkdtempSync(path.join(root, 'project-'));
     const { app, home, env } = await joinedApp(scoped, 'project');
     const driver = { kind: 'ext', machine: 'e2e', workspace: app };
     const runId = await drivenToDone({ app, home, env, driver });
+    // Project B: another checkout, joined to another team in a project scope of its own.
+    otherTeam(scoped, home);
+    const b = path.join(scoped, 'b');
+    fs.mkdirSync(b);
+    git(b, 'init', '-q', '-b', 'main');
+    const joined = await runCLI(['init', OTHER_URL, '--provider', 'git', '--agent', 'claude', '--scope', 'project', '--force'], b, env);
+    expect(joined.code, `${joined.stdout}\n${joined.stderr}`).toBe(0);
+
     const judge = { driver: { ...driver, can: { judge: { isolation: 'verified', tools: ['claude'] } } }, running: [], run: runId };
-    const next = await runCLI(['score', '--next', '--json', JSON.stringify(judge)], scoped, env);
-    expect(envelope(next.stdout).data?.lease, next.stdout + next.stderr).toMatchObject({ subject: { runId, step: 'review', pass: 1 } });
+    const next = await runCLI(['score', '--next', '--json', JSON.stringify(judge)], b, env);
+    const lease = JudgeLeaseSchema.parse(envelope(next.stdout).data?.lease);
+    expect(lease, next.stdout + next.stderr).toMatchObject({ subject: { runId, step: 'review', pass: 1 } });
+
+    // Judging here reads the lease from B: only its driver may, so another one is refused rather than not found.
+    const judged = await runCLI(['score', '--lease', lease.ref, '--json', JSON.stringify({ driver: { ...driver, machine: 'other' } })], b, env);
+    expect(envelope(judged.stdout).error?.code, judged.stdout + judged.stderr).toBe('wrong_driver');
+    const answer = JSON.stringify({ driver, outcome: 'success', answer: { label: 'thorough', reasoning: 'Named the off-by-one.' }, judge: { tool: 'claude' } });
+    const settled = await runCLI(['score', '--lease', lease.ref, '--submit', '--stdin'], b, env, answer);
+    expect(envelope(settled.stdout).data, settled.stdout + settled.stderr).toMatchObject({ label: { scorer: 'review-quality', label: 'thorough' } });
   });
 
   it('settles the judge work of a user-scope run from the project it started in, whose own team lacks the workflow', async () => {
     const scoped = fs.mkdtempSync(path.join(root, 'shadowed-'));
     const { app, home, env } = await joinedApp(scoped, 'user');
     // The project joins another team, which has no review workflow, so `workflow start review` runs the user scope's.
-    const other = path.join(scoped, 'other');
-    fs.mkdirSync(other);
-    fs.writeFileSync(path.join(other, 'teamai.yaml'), `team: other\nrepo: ${OTHER_URL}\nprovider: github\n`);
-    git(scoped, 'init', '-q', '-b', 'main', other);
-    git(other, 'add', '-A');
-    git(other, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'other');
-    git(scoped, 'clone', '-q', '--bare', other, `${other}.git`);
-    fs.appendFileSync(path.join(home, '.gitconfig'), `[url "file://${other}.git"]\n\tinsteadOf = ${OTHER_URL}\n`);
+    otherTeam(scoped, home);
     const joined = await runCLI(['init', OTHER_URL, '--provider', 'git', '--agent', 'claude', '--scope', 'project', '--force'], app, env);
     expect(joined.code, `${joined.stdout}\n${joined.stderr}`).toBe(0);
     const driver = { kind: 'ext', machine: 'e2e', workspace: app };

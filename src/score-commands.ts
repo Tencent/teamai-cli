@@ -1,12 +1,12 @@
 import { autoDetectInit, loadLocalConfigForScope } from './config.js';
-import { AttemptStore } from './scorers/attempts.js';
+import { AttemptStore, isRunAttempt } from './scorers/attempts.js';
 import { isScorerFile } from './scorers/definition.js';
 import { parseLeaseRef } from './scorers/entry.js';
 import { scoreSession, type SessionDemand } from './session-flow/scoring.js';
 import type { LocalConfig } from './types.js';
 import { LabelStore } from './scorers/label-store.js';
 import { setStderrOnly } from './utils/logger.js';
-import { findRunConfig } from './workflow/run-location.js';
+import { findRunConfig, partitionConfig, projectPartitions } from './workflow/run-location.js';
 import { nextJudgeLease, parseJudgeRequest, parseJudgeSubmission, runJudgeLease, scoreOnDemand, submitJudgeLease, type ScoreDemand } from './workflow/scoring.js';
 import type { WorkflowEnvelope } from './workflow/types.js';
 
@@ -107,15 +107,25 @@ async function runConfig(run: string): Promise<{ ok: true; config: LocalConfig }
 }
 
 /**
- * The config of the scope that holds judge lease `ref`: this directory's, else the user scope's. A lease's cwd is its
- * run's checkout, and a run of the user scope may start in a project with its own scope.
+ * The config of the scope that holds judge lease `ref`, in the scopes `runConfig` searches: this directory's, the user
+ * scope's, else a project's, as a run's lease is found from any directory. A run's lease is read in its run's scope.
  */
 async function leaseConfig(ref: string): Promise<{ ok: true; config: LocalConfig } | { ok: false; envelope: WorkflowEnvelope }> {
   const current = await localConfig();
   const lease = parseLeaseRef(ref);
-  if (lease === undefined || (current.ok && await AttemptStore.get(current.config, lease.entry, lease.attempt))) return current;
+  if (lease === undefined) return current;
+  const held = (config: LocalConfig) => AttemptStore.get(config, lease.entry, lease.attempt);
+  if (current.ok && await held(current.config)) return current;
   const user = await loadLocalConfigForScope('user', undefined, { dryRun: true });
-  return user && await AttemptStore.get(user, lease.entry, lease.attempt) ? { ok: true, config: user } : current;
+  if (user && await held(user)) return { ok: true, config: user };
+  for (const partition of await projectPartitions()) {
+    const attempt = await held(partition);
+    if (!attempt) continue;
+    if (isRunAttempt(attempt)) return runConfig(attempt.subject.runId);
+    const config = await partitionConfig(partition);
+    if (config) return { ok: true, config };
+  }
+  return current;
 }
 
 async function score(options: ScoreOptions): Promise<WorkflowEnvelope> {
