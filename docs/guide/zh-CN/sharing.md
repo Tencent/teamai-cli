@@ -320,7 +320,7 @@ sessions:
   publish: { attended: ask }   # 只设置有人值守；无人值守仍按团队设置
 ```
 
-值不是 `off`、`ask` 或 `auto` 时，`teamai doctor` 会报告它所在的文件和键，teamai 忽略该值，这种模式交给下一级。分支的 `teamai.yaml` 含有这样的值或不是合法 YAML 时，`teamai review --branch` 判定失败。会话是否评判由 `scorers/scoring.yaml` 中的 `sessions` 决定，见[已结束的会话](scorers.md#已结束的会话)。
+值不是 `off`、`ask` 或 `auto` 时，`teamai doctor` 会报告它所在的文件和键，teamai 忽略该值，这种模式交给下一级。分支的 `teamai.yaml` 含有这样的值时，`teamai review --branch` 判定失败。会话是否评判由 `scorers/scoring.yaml` 中的 `sessions` 决定，见[已结束的会话](scorers.md#已结束的会话)。
 
 ## Docs（文档）
 

@@ -320,7 +320,7 @@ sessions:
   publish: { attended: ask }   # attended only; unattended still follows the team
 ```
 
-`teamai doctor` reports a value that is not `off`, `ask` or `auto`, with its file and key, and teamai ignores it, so that mode falls to the next level. `teamai review --branch` fails a branch whose `teamai.yaml` has such a value or is not valid YAML. [Finished sessions](scorers.md#finished-sessions) covers `sessions` in `scorers/scoring.yaml`, which decides whether sessions are judged.
+`teamai doctor` reports a value that is not `off`, `ask` or `auto`, with its file and key, and teamai ignores it, so that mode falls to the next level. `teamai review --branch` fails a branch whose `teamai.yaml` has such a value. [Finished sessions](scorers.md#finished-sessions) covers `sessions` in `scorers/scoring.yaml`, which decides whether sessions are judged.
 
 ## Docs
 
