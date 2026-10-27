@@ -219,7 +219,7 @@ describe('executePromotion', () => {
     expect(data.promoted_to).toBe('skills/k8s/helm-values/SKILL.md');
   });
 
-  it('normalizes backslash separators in candidate filename when promoting', async () => {
+  it('normalizes path separators in candidate filename when promoting', async () => {
     const learningsDir = path.join(tmpDir, 'learnings');
     const skillsDir = path.join(tmpDir, 'skills');
     fs.mkdirSync(path.join(learningsDir, 'k8s'), { recursive: true });
@@ -229,7 +229,7 @@ describe('executePromotion', () => {
 
     const candidate = {
       docId: 'k8s/helm-values',
-      filename: 'k8s\\helm-values.md',
+      filename: path.join('k8s', 'helm-values.md'),
       path: absPath,
       confidence: 0.95,
       upvotedCount: 10,

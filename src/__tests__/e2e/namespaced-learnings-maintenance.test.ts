@@ -137,4 +137,60 @@ describe('digest and maintenance with namespaced learnings (#1395)', () => {
     expect(promoteResult.output).toContain(k8sId);
     expect(promoteResult.output).toContain('2 learning(s) eligible for promotion');
   });
+
+  it('includes child-selected namespaces in digest when workspace has no projects of its own', async () => {
+    const today = new Date().toISOString().slice(0, 10);
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+    // Workspace has empty projects
+    writeYaml(configPath, {
+      repo: { localPath: clone, remote: origin, kind: 'git' },
+      username: 'member', scope: 'project', projectRoot: project,
+      updatePolicy: 'skip', additionalRoles: [], projects: [], enabledAgents: ['claude'],
+    });
+
+    // Child repo under project selecting infra
+    const childDir = path.join(project, 'child-svc');
+    fs.mkdirSync(childDir, { recursive: true });
+    git(['init', '-q'], childDir);
+    writeYaml(path.join(childDir, '.teamai', 'config.yaml'), {
+      repo: { localPath: clone, remote: origin, kind: 'git' },
+      username: 'member', scope: 'project', projectRoot: childDir,
+      updatePolicy: 'skip', additionalRoles: [], projects: ['infra'], enabledAgents: ['claude'],
+    });
+
+    // 1. Root learning
+    const learningsDir = path.join(clone, 'learnings');
+    fs.mkdirSync(learningsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(learningsDir, `teamai-${today}-pod-timeouts.md`),
+      matter.stringify('Fix pod timeouts', { title: 'Pod Startup Timeouts', date: thirtyDaysAgo }),
+    );
+
+    // 2. Namespaced k8s learning
+    const k8sDir = path.join(learningsDir, 'k8s');
+    fs.mkdirSync(k8sDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(k8sDir, `teamai-${today}-helm-values.md`),
+      matter.stringify('Helm values config procedure', { title: 'Helm Values Config', date: thirtyDaysAgo }),
+    );
+
+    // Stats
+    const reportsSeed = path.join(sandbox, 'reports-seed');
+    fs.mkdirSync(reportsSeed);
+    git(['init', '-q', '-b', 'teamai-reports'], reportsSeed);
+    const statsDir = path.join(reportsSeed, 'stats');
+    fs.mkdirSync(statsDir, { recursive: true });
+    fs.writeFileSync(path.join(statsDir, 'member.yaml'), 'username: member\nskills: {}\n');
+    git(['add', '.'], reportsSeed);
+    git(['commit', '-qm', 'stats'], reportsSeed);
+    git(['push', '-q', origin, 'teamai-reports'], reportsSeed);
+
+    // Run teamai digest
+    const digestResult = run(['digest']);
+    expect(digestResult.code).toBe(0);
+    expect(digestResult.output).toContain('Pod Startup Timeouts');
+    expect(digestResult.output).toContain('Helm Values Config');
+    expect(digestResult.output).toContain('2 learnings');
+  });
 });

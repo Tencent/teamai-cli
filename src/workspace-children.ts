@@ -179,28 +179,60 @@ export async function deliveredLearningsNamespaces(config: LocalConfig): Promise
 }
 
 /**
+ * All projects selected by this scope, including those selected by its children (#913).
+ */
+export function selectedProjects(config: LocalConfig): string[] {
+  return [...new Set([
+    ...config.projects ?? [],
+    ...config.children?.children.flatMap((child) => child.selection.projects ?? []) ?? [],
+  ])];
+}
+
+/**
+ * Warning text for when manifest/projects.yaml cannot be read and namespaced learnings
+ * are held back. Shared between `recall` and maintenance/digest callers.
+ */
+export function formatProjectsManifestWarning(
+  caller: string,
+  error: unknown,
+  config: LocalConfig,
+  options: {
+    verb?: string;
+    extraHeldBack?: string;
+    targetName?: string;
+    rebuildAction?: string;
+  } = {},
+): string {
+  const projects = selectedProjects(config);
+  const verb = options.verb ?? 'read';
+  const errText = error instanceof Error ? error.message : String(error);
+  const action = options.rebuildAction ? ` and ${options.rebuildAction}` : '';
+  let subject = '';
+  if (projects.length > 0) {
+    subject = `The learnings of ${projects.length === 1 ? 'project' : 'projects'} ${projects.join(', ')}`;
+    if (options.extraHeldBack) subject += `, and ${options.extraHeldBack},`;
+  } else if (options.extraHeldBack) {
+    subject = options.extraHeldBack.charAt(0).toUpperCase() + options.extraHeldBack.slice(1);
+  }
+  const projectSummary = subject === ''
+    ? ''
+    : ` ${subject} stay out of ${options.targetName ?? caller} until manifest/projects.yaml is fixed${action}; \`teamai doctor\` shows the problem.`;
+  return `${caller} ${verb} the shared learnings only: ${errText}.${projectSummary}`;
+}
+
+/**
  * Active learnings namespaces for this configuration. When resolution fails
  * (e.g. an unreadable manifest/projects.yaml), logs a warning matching `recall`
  * and falls back to the shared root (empty namespaces).
  */
 export async function safeDeliveredLearningsNamespaces(
   config: LocalConfig,
-  caller = 'maintenance',
+  caller: string,
 ): Promise<string[]> {
   try {
     return await deliveredLearningsNamespaces(config);
   } catch (e) {
-    const projects = [...new Set([
-      ...config.projects ?? [],
-      ...config.children?.children.flatMap((child) => child.selection.projects ?? []) ?? [],
-    ])];
-    const projectSummary = projects.length === 0
-      ? ''
-      : ` The learnings of ${projects.length === 1 ? 'project' : 'projects'} ${projects.join(', ')} `
-        + `stay out of ${caller} until manifest/projects.yaml is fixed; \`teamai doctor\` shows the problem.`;
-    log.warn(
-      `${caller} read the shared learnings only: ${e instanceof Error ? e.message : String(e)}.${projectSummary}`,
-    );
+    log.warn(formatProjectsManifestWarning(caller, e, config));
     return [];
   }
 }

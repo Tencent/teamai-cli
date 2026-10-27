@@ -54,4 +54,41 @@ describe('digest — namespaced learnings support', () => {
       `teamai-${today}-root.md`,
     ].sort());
   });
+
+  it('includes namespaces selected by workspace children in safeDeliveredLearningsNamespaces', async () => {
+    const { safeDeliveredLearningsNamespaces } = await import('../workspace-children.js');
+    const manifestDir = path.join(tmpDir, 'manifest');
+    fs.mkdirSync(manifestDir, { recursive: true });
+    fs.writeFileSync(path.join(manifestDir, 'projects.yaml'), [
+      'version: 1',
+      'projects:',
+      '  - id: infra',
+      '    resources:',
+      '      learnings:',
+      '        - k8s',
+    ].join('\n'));
+
+    const config: any = {
+      scope: 'project',
+      projectRoot: tmpDir,
+      repo: { localPath: tmpDir, kind: 'git' },
+      projects: [],
+      children: {
+        children: [
+          {
+            path: 'svc-a',
+            root: path.join(tmpDir, 'svc-a'),
+            anchor: 'anchor-a',
+            selection: { projects: ['infra'], additionalRoles: [], excludedSkills: [] },
+          },
+        ],
+        leftOut: [],
+        roots: [],
+        fingerprint: 'fp',
+      },
+    };
+
+    const namespaces = await safeDeliveredLearningsNamespaces(config, 'digest');
+    expect(namespaces).toEqual(['k8s']);
+  });
 });
