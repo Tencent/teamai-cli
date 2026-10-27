@@ -124,6 +124,8 @@ function guardsFact(guards: GateGuards): string {
       return 'before an interactive step, which you work here with this session\'s agent';
     case 'workflow':
       return guards.name !== undefined ? `before workflow ${guards.name}` : 'before an inline workflow';
+    case 'end':
+      return `before ${guards.workflow ?? 'the run'} ends ${guards.end}`;
     case 'none':
       return 'no action';
     default: {

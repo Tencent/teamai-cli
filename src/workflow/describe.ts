@@ -20,6 +20,8 @@ export type GateGuards =
   | { kind: 'interactive' }
   /** `name`: the workflow it runs; absent when that workflow is inline. */
   | { kind: 'workflow'; name?: string }
+  /** `workflow`: the workflow step whose workflow it ends, by path; absent when it ends the run. */
+  | { kind: 'end'; end: string; workflow?: string }
   | { kind: 'none'; waiting: string[] };
 
 /** The most characters of a command a gate shows before it cuts the rest. */
@@ -31,12 +33,13 @@ function commandLine(command: string): string {
   return line.length > COMMAND_SHOWN ? `${line.slice(0, COMMAND_SHOWN)}…` : line;
 }
 
-/** What `step`, gated, guards. */
-function guardsOf(step: WorkflowStep): GateGuards {
+/** What `step`, gated, guards; `workflow` is the workflow step it sits in, by path, when it is not at the top level. */
+function guardsOf(step: WorkflowStep, workflow: string | undefined): GateGuards {
   if (step.command !== undefined) return { kind: 'command', line: commandLine(step.command) };
   if (step.interactive) return { kind: 'interactive' };
   if (step.prompt !== undefined || step.promptFile !== undefined) return { kind: 'prompt' };
   if (step.workflow !== undefined) return { kind: 'workflow', ...(typeof step.workflow === 'string' ? { name: step.workflow } : {}) };
+  if (step.end !== undefined) return { kind: 'end', end: step.end, ...(workflow !== undefined ? { workflow } : {}) };
   return { kind: 'none', waiting: [] };
 }
 
@@ -154,7 +157,7 @@ export function describeWorkflow(input: {
     for (const step of steps) {
       const path = `${scope.prefix}${step.id}`;
       const child = childOf(step);
-      if (step.hitl) facts.gates.push({ step: path, kind: step.hitl.kind, required: step.hitl.required, hasDefault: step.hitl.default !== undefined, guards: guardsOf(step) });
+      if (step.hitl) facts.gates.push({ step: path, kind: step.hitl.kind, required: step.hitl.required, hasDefault: step.hitl.default !== undefined, guards: guardsOf(step, scope.prefix === '' ? undefined : scope.prefix.slice(0, -1)) });
       if (!child && step.end === undefined && !runsInCheckout(step, scope.ancestors)) facts.inWorkspace.push(path);
       if (step.prompt !== undefined || step.promptFile !== undefined) facts.prompts.push(path);
       if (step.interactive) facts.interactive.push(path);

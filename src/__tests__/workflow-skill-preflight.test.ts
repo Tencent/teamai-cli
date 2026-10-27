@@ -315,6 +315,26 @@ describe('skill driver preflight of optional gates', () => {
       'How should it run?',
     ].join('\n') } } } } });
   });
+
+  it('names the end an optional approval comes before, and the workflow step it ends inside a nested workflow', async () => {
+    expect(await questionOf({ gates: gates(`  - id: wrap
+    workflow:
+      ends: { wrapped: succeeded }
+      steps:
+        - id: close
+          approve: Close the wrap?
+          end: wrapped
+  - id: done
+    needs: [wrap]
+    approve: Close the run?
+    end: shipped
+`).replace('steps:\n  - id: wrap', 'ends: { shipped: succeeded }\nsteps:\n  - id: wrap') })).toMatchObject({ data: { describe: { ask: { kind: 'ask', question: { text: [
+      '- Optional approval at wrap.close: before wrap ends wrapped.',
+      '- Optional approval at done: before the run ends shipped.',
+      approvalsAnswer,
+      'How should it run?',
+    ].join('\n') } } } } });
+  });
 });
 
 describe('skill driver preflight in an unattended run', () => {
