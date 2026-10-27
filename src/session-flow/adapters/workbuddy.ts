@@ -354,7 +354,7 @@ export class WorkBuddyAdapter extends AgentAdapter {
       if (rtype === 'ai-title') {
         // Same as the codebuddy adapter: injected-block text is occasionally stored as ai-title, and taking it as-is pollutes the migration path
         const t = String(rec.aiTitle ?? '');
-        if (t && !isInjectedText(t)) title = t.slice(0, 100);
+        if (t && !isInjectedText(t)) title = cutTitle(t, 100);
         continue;
       }
 

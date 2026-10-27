@@ -34,7 +34,7 @@ import {
   type IdeConversationEntry,
   type IdeMessageParsed,
 } from '../ide-history.js';
-import { isInjectedText, titleFromCandidates } from '../title.js';
+import { cutTitle, isInjectedText, titleFromCandidates } from '../title.js';
 import { deriveTargetSessionId } from '../ids.js';
 
 // ---------------------------------------------------------------------------
@@ -146,7 +146,7 @@ function firstUserText(messages: IdeMessageParsed[]): string {
  * (list titles, readSession.title, and target-side titles are all the prompt verbatim).
  */
 function safeConversationName(name: string): string {
-  return name && !isInjectedText(name) ? name.slice(0, 100) : '';
+  return name && !isInjectedText(name) ? cutTitle(name, 100) : '';
 }
 
 // ---------------------------------------------------------------------------
