@@ -17,6 +17,7 @@ export const WINDOWS_TESTS = [
   'src/__tests__/hooks-shell-check.test.ts',
   'src/__tests__/hooks-skill-retire.test.ts',
   'src/__tests__/hooks-windows-bash.test.ts',
+  'src/__tests__/installed-launcher-readiness.test.ts',
   'src/__tests__/joycode.test.ts',
   'src/__tests__/locate-agents.test.ts',
   'src/__tests__/locate-blocks.test.ts',
