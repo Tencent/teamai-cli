@@ -259,6 +259,8 @@ $ teamai score --drain
 5. 像 `teamai pull` 一样把用量上报到 `stats/<member>.yaml`，让临时 runner 的计数到达团队。
 6. 输出剩下的工作：评分器固定的模型本机没有评审工具能运行（`judge_model_unavailable`），或本机达不到其隔离要求的评审项；本机没有安装评审工具时，是所有未完成的评审项。它们等待其他 driver 的 `score --next`。
 
+drain 只结束并发布与其运行模式相同的会话，因此在不处于无人值守模式的机器上，要处理无人值守会话，请运行 `TEAMAI_MODE=unattended teamai score --drain`。
+
 在这里没有能做的事时，drain 以 0 退出，留给其他 driver 的评审项也算在内。评审、发布或用量上报失败时以 1 退出。发布或上报失败的内容保持待发布，下一次 `--drain` 会重试。评审失败是最终结果：drain 输出这次失败，但从不重试。要重新请求评审，运行 `teamai score --session <id> --source <platform> --scorer <name>`。
 
 drain 在哪里运行，决定它看到的调用会话是什么样子：

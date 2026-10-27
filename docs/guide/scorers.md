@@ -259,6 +259,8 @@ Every unattended driver ends with `teamai score --drain`. The local driver runs 
 5. It reports usage to `stats/<member>.yaml`, as `teamai pull` does, so the counts of an ephemeral runner reach the team.
 6. It prints what is left: entries whose scorer pins a model no judge tool here runs (`judge_model_unavailable`), or whose isolation this machine does not meet, and every open entry when no judge tool is installed here. Those wait for another driver's `score --next`.
 
+A drain finishes and publishes only the sessions of its own run mode, so on a machine that is not in unattended mode, run `TEAMAI_MODE=unattended teamai score --drain` to drain unattended sessions.
+
 The drain exits 0 when nothing is left that it can do here, entries left for other drivers included. It exits 1 when a judgment, a publish or a usage report failed. A failed publish or usage report stays pending, and the next `--drain` retries it. A failed judgment is final: the drain prints it and never retries it. To ask for a new one, run `teamai score --session <id> --source <platform> --scorer <name>`.
 
 Where the drain runs decides what it sees of the calling session:
