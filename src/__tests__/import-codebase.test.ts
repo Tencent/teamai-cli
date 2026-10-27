@@ -421,6 +421,22 @@ describe('importCodebase: the extraction every import source shares', () => {
     expect(logs.join('\n')).toContain('teamwiki/evidence/code/svc/ is an older copy of teamwiki/evidence/code/github__acme__svc/.');
   });
 
+  it('treats an SSH and an HTTPS clone of one repo as the same source', async () => {
+    const repo = await makeRepo(root, 'svc', 'export function greet() { return "hi"; }\n');
+    const slug = 'github__acme__svc';
+    await importCodebase({ sourceDir: repo, slug, wikiRoot, skipEnrich: true, repoUrl: 'https://github.com/acme/svc.git' });
+    const evidence = path.join(wikiRoot, 'evidence', 'code', slug);
+    await fs.outputFile(path.join(evidence, 'docs', 'curated.md'), '# curated\n');
+
+    await fs.writeFile(path.join(repo, 'src', 'main.ts'), 'export function greet() { return "hello"; }\n');
+    git(repo, 'commit', '-q', '-am', 'change');
+    expect(await importCodebase({
+      sourceDir: repo, slug, wikiRoot, incremental: true, skipEnrich: true, repoUrl: 'git@github.com:acme/svc.git',
+    })).toBe(true);
+
+    expect(await fs.readFile(path.join(evidence, 'docs', 'curated.md'), 'utf8')).toBe('# curated\n');
+  });
+
   it('does not carry curated docs between remote-less checkouts that share a slug', async () => {
     const first = await makeRepo(root, 'first-svc', 'export function one() { return 1; }\n');
     execFileSync('git', ['remote', 'remove', 'origin'], { cwd: first, stdio: 'ignore' });

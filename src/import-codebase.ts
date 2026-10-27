@@ -7,7 +7,7 @@ import { z } from 'zod';
 import { extractCodebase } from './codebase-extract.js';
 import type { TeamaiInit } from './config.js';
 import { log } from './utils/logger.js';
-import { repoIdentity } from './utils/git.js';
+import { remotesMatch } from './utils/git.js';
 import { assertSafeResourceName } from './utils/path-safety.js';
 
 /** The caches an incremental extraction reuses, kept with each codebase's evidence. */
@@ -111,7 +111,7 @@ async function publishedSource(publishedDir: string, stagedDir: string, slug: st
   const publishedUrl = typeof published?.['repoUrl'] === 'string' ? published['repoUrl'] : '';
   const stagedUrl = typeof staged?.['repoUrl'] === 'string' ? staged['repoUrl'] : '';
   if (publishedUrl) {
-    return stagedUrl && repoIdentity(publishedUrl) === repoIdentity(stagedUrl)
+    return stagedUrl && remotesMatch(publishedUrl, stagedUrl)
       ? { kind: 'same' }
       : { kind: 'different', publishedUrl, stagedUrl };
   }
