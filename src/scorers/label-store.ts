@@ -95,11 +95,12 @@ export const LabelStore = {
    * The outbox entry commits the label: a failure before it records no label, and one after it leaves a label that
    * `local` reads and `publish` still sends. Returns the label's `id` and the `version` that names its reasoning file.
    * `prompt`, the redacted first prompt of a judged session, heads the reasoning file so a member finds it with grep.
+   * A hand label has no `reasoning`, and no reasoning file.
    */
-  async append(config: LocalConfig, label: ScoreLabel, reasoning: string, prompt?: string): Promise<{ id: string; version: string }> {
+  async append(config: LocalConfig, label: ScoreLabel, reasoning: string | undefined, prompt?: string): Promise<{ id: string; version: string }> {
     const id = labelId(label);
     const version = labelVersion(label);
-    await writeFileAtomic(reasoningPath(config, version), reasoningText(label, reasoning, prompt));
+    if (reasoning !== undefined) await writeFileAtomic(reasoningPath(config, version), reasoningText(label, reasoning, prompt));
     await writeJsonAtomic(path.join(pendingDir(config), `${id}.json`), label);
     await fs.appendFile(labelsFile(config), `${JSON.stringify(label)}\n`, 'utf8');
     return { id, version };

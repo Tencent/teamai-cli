@@ -27,6 +27,9 @@ export interface ScoreOptions {
   source?: string;
   push?: boolean;
   drain?: boolean;
+  label?: string;
+  teamSession?: string;
+  author?: string;
 }
 
 function writeEnvelope(envelope: WorkflowEnvelope): void {
@@ -82,10 +85,17 @@ function sessionDemandOf(options: ScoreOptions): SessionDemand | WorkflowEnvelop
     return failure('invalid_arguments', '--session takes no --next or --lease: teamai score [--session <id>] [--source <platform>] --scorer <name> [--batch] [--json <driver>]');
   }
   const [scorer, ...scorers] = options.scorer ?? [];
+  if (scorer === undefined && options.label !== undefined) return failure('invalid_arguments', 'Pass --scorer <name> with --label: the scorer the value is a label of.');
   if (scorer === undefined) return failure('invalid_arguments', 'Pass --scorer <name> to judge a session: teamai score [--session <id>] [--source <platform>] --scorer <name> [--batch]');
+  if (options.teamSession !== undefined && (options.session !== undefined || options.source !== undefined)) {
+    return failure('invalid_arguments', '--team-session names a pushed session, and --session and --source one on this machine. Pass one of them.');
+  }
+  if (options.author !== undefined && options.teamSession === undefined) return failure('invalid_arguments', '--author picks who pushed --team-session <name>. Pass it with --team-session.');
   return {
     scorers: [scorer, ...scorers],
     ...(options.session !== undefined ? { session: options.session } : {}), ...(options.source !== undefined ? { source: options.source } : {}),
+    ...(options.teamSession !== undefined ? { teamSession: { name: options.teamSession, ...(options.author !== undefined ? { author: options.author } : {}) } } : {}),
+    ...(options.label !== undefined ? { label: options.label } : {}),
     ...(options.batch ? { batch: true } : {}), ...(options.push ? { push: true } : {}),
   };
 }
@@ -133,8 +143,9 @@ async function leaseConfig(ref: string): Promise<{ ok: true; config: LocalConfig
 async function score(options: ScoreOptions): Promise<WorkflowEnvelope> {
   if (options.drain) return failure('invalid_arguments', '--drain goes alone and takes no payload: teamai score --drain');
   const asksForPass = options.run !== undefined || options.step !== undefined || options.pass !== undefined || options.queue;
-  const asksForSession = options.session !== undefined || options.source !== undefined || (!asksForPass && (options.scorer?.length || options.batch));
-  if (asksForPass && (options.session !== undefined || options.source !== undefined)) return failure('invalid_arguments', 'Pass --run to judge a workflow pass or --session to judge a session, not both');
+  const namesSession = options.session !== undefined || options.source !== undefined || options.teamSession !== undefined || options.author !== undefined || options.label !== undefined;
+  const asksForSession = namesSession || (!asksForPass && (options.scorer?.length || options.batch));
+  if (asksForPass && namesSession) return failure('invalid_arguments', 'Pass --run to judge a workflow pass or --session to judge a session, not both');
   if (options.push && (asksForPass || options.next || options.lease !== undefined)) {
     return failure('invalid_arguments', '--push goes alone or with a session: teamai score --push, or teamai score [--session <id>] --scorer <name> --push');
   }

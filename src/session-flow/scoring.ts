@@ -10,7 +10,7 @@ import { loadModelAliases } from '../models/aliases.js';
 import { AttemptStore, newAttemptId, scoresDir } from '../scorers/attempts.js';
 import { batchesScorers, verdictsOf, type Verdict } from '../scorers/batch.js';
 import { cachedScorerNames, NOT_A_SCORER, pinScorers, scorerSourceHash } from '../scorers/cache.js';
-import { formatScorerDiagnostic, isScorerFile, parseScorer, type ScorerDefinition } from '../scorers/definition.js';
+import { formatScorerDiagnostic, isScorerFile, parseScorer, type ScorerDefinition, type ScorerLabel } from '../scorers/definition.js';
 import { answerSchema, evidenceDirOf, type Rubrics } from '../scorers/evidence.js';
 import { scoringUnavailable } from '../scorers/home.js';
 import { requiredIsolation, scorerIsolationSource, type RequiredIsolation } from '../scorers/isolation.js';
@@ -31,7 +31,11 @@ import type { WorkflowEnvelope } from '../workflow/types.js';
 import { agentSessionFromEnv } from '../utils/session-id.js';
 import { AgentSession } from './agent-session.js';
 import { listAvailablePlatforms, listInstalledPlatforms } from './adapters/index.js';
+import type { SubagentsRead } from './adapters/base.js';
 import { SessionCaptures } from './captures.js';
+import { safeText, sessionArchives } from './session-cmd-shared.js';
+import { scrubSession } from './scrub.js';
+import { getRepoIdentity, SyncManager } from './sync.js';
 import { firstPromptOnly, judgeSession, sessionLabel, writeSessionEvidence, type JudgedSession } from './session-work.js';
 import type { Session } from './ir.js';
 
@@ -44,6 +48,12 @@ function failure(code: string, message: string): Failure {
 /** The judge a driver offers for a session: the `score --next` payload's `driver`, its `can.judge`, and `running`. */
 export type OwnJudge = Pick<JudgeRequest, 'driver' | 'judge' | 'running'>;
 
+/** `teamai score --team-session <name> [--author <member>]`: a session as `teamai session list` names it. */
+export interface TeamSession {
+  name: string;
+  author?: string;
+}
+
 /** What `teamai score --session <id> [--source <platform>] --scorer <name>… [--batch] [--push] [--json <driver>]` asks for. */
 export interface SessionDemand {
   session?: string;
@@ -53,6 +63,10 @@ export interface SessionDemand {
   batch?: boolean;
   /** Publish the scope's pending labels after scoring, as `teamai score --push` does. */
   push?: boolean;
+  /** A value of the one scorer, given by hand: stored as the member's label, and no judge runs. */
+  label?: string;
+  /** A session pushed to the team archive, instead of one of a tool on this machine. */
+  teamSession?: TeamSession;
   /** Lease the session to this driver's own judge instead of judging it here. */
   ownJudge?: OwnJudge;
 }
@@ -105,6 +119,67 @@ async function scopeOf(config: LocalConfig, platform: string, session: Session):
   const { resolveHookConfig } = await import('../dashboard-collector.js');
   const resolved = await resolveHookConfig({ cwd: session.cwd, session_id: session.sessionId }, AgentSession.toolForPlatform(platform));
   return resolved ? readWorkspaceChildren(resolved) : config;
+}
+
+/**
+ * The session a scoring names, read redacted, and the scope its labels are kept in. A pushed one names the member who
+ * pushed it, and has no captures here.
+ */
+interface Named {
+  platform: string;
+  found: { session: Session; subagents?: SubagentsRead };
+  config: LocalConfig;
+  pushedBy?: string;
+}
+
+/** The session of a tool on this machine that `--session`, or the agent session variable, names. */
+async function nativeSession(from: LocalConfig, demand: SessionDemand): Promise<Named | Failure> {
+  const named = await sessionOf(from, demand);
+  if ('error' in named) return named;
+  const { platform, sessionId } = named;
+  const found = await AgentSession.find({ platform, sessionId }, { subagents: true });
+  if (found.status !== 'done') return failure('session_not_found', found.failure.message);
+  const { session } = found;
+  if (session.sessionId !== sessionId) {
+    const ids = (await AgentSession.list({ platforms: [platform], archived: true })).sessions.map((listed) => listed.sessionId).filter((id) => id.endsWith(sessionId)).sort();
+    if (ids.length > 1) return failure('session_ambiguous', `--session ${sessionId} names more than one ${platform} session: ${ids.join(', ')}. Pass the whole id of one.`);
+  }
+  return { platform, found, config: await scopeOf(from, platform, session) };
+}
+
+/**
+ * The session pushed to the team archive as `name`, for this directory's repository, as `teamai session resume` finds
+ * it: on teamai-reports, else in the archive a git-kind team kept on its default branch before. `author` picks one of
+ * two members who pushed that name, within the archive that holds it. Its subject is its origin, so its labels pair
+ * with those of the same session scored where it ran. It is redacted as `AgentSession.find` redacts a session.
+ */
+async function pushedSession(config: LocalConfig, { name, author }: TeamSession): Promise<Named | Failure> {
+  let archives: Awaited<ReturnType<typeof sessionArchives>>;
+  try {
+    archives = await sessionArchives(config, { dryRun: false, read: true });
+  } catch (e) {
+    return failure('archive_unavailable', e instanceof Error ? e.message : String(e));
+  }
+  if (!archives) return failure('unsupported_repo', 'This team keeps no session archive here, so it has no pushed session to score. Score a session on this machine with --session <id>.');
+  const repoIdentity = getRepoIdentity(process.cwd());
+  for (const root of [archives.root, ...(archives.legacy ? [archives.legacy] : [])]) {
+    const archive = new SyncManager(root);
+    const held = archive.listSessions(repoIdentity, author).filter((entry) => entry.sessionName === name);
+    const [entry, ...others] = held;
+    if (!entry) continue;
+    if (others.length > 0) {
+      return failure('session_ambiguous', `--team-session ${name} names sessions pushed by ${held.map((one) => safeText(one.author)).join(', ')}. Pass --author with one of them.`);
+    }
+    let session: Session;
+    try {
+      ({ session } = archive.loadSession(repoIdentity, name, entry.author));
+    } catch (e) {
+      return failure('session_not_found', `The pushed session ${name} could not be read: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    if (!session.platform || !session.sessionId) return failure('session_not_found', `The pushed session ${name} records no platform or session id it ran as, so it cannot be scored.`);
+    return { platform: session.platform, found: { session: scrubSession(session).session }, config, pushedBy: entry.author };
+  }
+  return failure('session_not_found', `No session ${name}${author === undefined ? '' : ` by ${author}`} is pushed for ${repoIdentity ?? 'this directory'}. Run teamai session list to see the pushed sessions, after teamai session pull for the newest.`);
 }
 
 /** One scorer file the command tries: the labels stored for its scorer, and the control's verdict or why it has none. */
@@ -172,6 +247,15 @@ export async function scoreSession(from: LocalConfig, demand: SessionDemand, now
     if (file !== undefined) return failure('invalid_arguments', `A lease judges cached scorers, and ${file} is a scorer file. Leave out --json to try it here.`);
     if (new Set(demand.scorers).size > 1 && !demand.batch) return failure('invalid_arguments', 'A lease judges one scorer, or several in one judge call. Pass one --scorer, or add --batch.');
     if (demand.push) return failure('invalid_arguments', 'A lease\'s label is published when its answer is submitted. Leave out --push.');
+    if (demand.teamSession) return failure('invalid_arguments', 'A lease\'s judge reads the session from a tool on this machine, and --team-session names a pushed one. Leave out --json to judge it here.');
+  }
+  if (demand.label !== undefined) {
+    const [scorer, ...more] = new Set(demand.scorers);
+    if (more.length > 0) return failure('invalid_arguments', '--label is a value of one scorer. Pass one --scorer.');
+    if (scorer !== undefined && isScorerFile(scorer)) {
+      return failure('invalid_arguments', `--label is stored, and the label of the scorer file ${scorer} is never stored. Pass the name of a scorer teamai pull cached.`);
+    }
+    if (demand.batch || demand.ownJudge) return failure('invalid_arguments', '--label runs no judge. Leave out --batch and --json.');
   }
   const files = new Map<string, Asked>();
   for (const value of new Set(demand.scorers)) {
@@ -180,17 +264,10 @@ export async function scoreSession(from: LocalConfig, demand: SessionDemand, now
     if ('error' in read) return read;
     files.set(value, read);
   }
-  const named = await sessionOf(from, demand);
+  const named = demand.teamSession ? await pushedSession(from, demand.teamSession) : await nativeSession(from, demand);
   if ('error' in named) return named;
-  const { platform, sessionId } = named;
-  const found = await AgentSession.find({ platform, sessionId }, { subagents: true });
-  if (found.status !== 'done') return failure('session_not_found', found.failure.message);
+  const { platform, found, config, pushedBy } = named;
   const { session } = found;
-  if (session.sessionId !== sessionId) {
-    const ids = (await AgentSession.list({ platforms: [platform], archived: true })).sessions.map((listed) => listed.sessionId).filter((id) => id.endsWith(sessionId)).sort();
-    if (ids.length > 1) return failure('session_ambiguous', `--session ${sessionId} names more than one ${platform} session: ${ids.join(', ')}. Pass the whole id of one.`);
-  }
-  const config = await scopeOf(from, platform, session);
   const unavailable = scoringUnavailable(config);
   if (unavailable) return failure('scoring_unavailable', unavailable);
   const scoring = await scopeScoring(config);
@@ -216,12 +293,20 @@ export async function scoreSession(from: LocalConfig, demand: SessionDemand, now
     const subject = { platform, sessionId: session.sessionId };
     return sessionJudgeLease(config, { ...demand.ownJudge, entries: { source: 'session', subject, scorers: asked, batch: demand.batch === true } }, now);
   }
-  log.info(`Scoring ${platform} session ${session.sessionId} in ${session.cwd || '(directory unknown)'}`);
+  const byHand = demand.label === undefined ? undefined : handValueOf(asked, demand.label);
+  if (byHand && 'error' in byHand) return byHand;
+  log.info(safeText(`${byHand ? 'Labelling' : 'Scoring'} ${platform} session ${session.sessionId} in ${session.cwd || '(directory unknown)'}`));
+  if (pushedBy !== undefined) log.info(`Pushed by ${safeText(pushedBy)}`);
   const envSecrets = await knownSecrets(config);
   const mask = (text: string): string => redact(text, { envSecrets });
-  const judged = judgeSession({ platform, found, captures: await SessionCaptures.read(config, platform, session.sessionId), mask });
+  const captures = pushedBy === undefined ? await SessionCaptures.read(config, platform, session.sessionId) : [];
+  const judged = judgeSession({ platform, found, captures, mask });
   const { subject, context: { prompt, used } } = judged;
-  log.info(`First prompt: ${prompt || '(none)'}`);
+  log.info(`First prompt: ${safeText(prompt) || '(none)'}`);
+  if (byHand) {
+    const labelled = await labelByHand(config, { ...byHand, judged, now });
+    return 'error' in labelled ? labelled : answered(config, labelled, demand.push);
+  }
 
   const tools = installedJudgeTools([]);
   if (tools.length === 0) {
@@ -303,7 +388,42 @@ export async function scoreSession(from: LocalConfig, demand: SessionDemand, now
   const scored = only && more.length === 0
     ? { label: only, ...(firstTried ? { stored: firstTried.stored, control: firstTried.control } : {}) }
     : { labels: answers, ...(firstTried ? { stored: Object.fromEntries(tried.map(({ scorer, stored }) => [scorer, stored])), control: Object.fromEntries(tried.map(({ scorer, control }) => [scorer, control])) } : {}) };
-  if (!demand.push) return { data: scored };
+  return answered(config, scored, demand.push);
+}
+
+/** The answer of a scoring, after publishing the scope's pending labels with `push`. */
+async function answered(config: LocalConfig, scored: Record<string, unknown>, push: boolean | undefined): Promise<WorkflowEnvelope> {
+  if (!push) return { data: scored };
   const pushed = await LabelStore.push(config);
   return 'data' in pushed ? { data: { ...scored, ...pushed.data } } : pushed;
+}
+
+/** The value `value` of the one scorer `asked` names, as `--label` gives it, or why it is not one of its labels. */
+function handValueOf(asked: readonly Asked[], value: string): { member: Asked; value: ScorerLabel } | Failure {
+  const [member] = asked;
+  const label = member?.definition.labels.find((candidate) => candidate.value === value);
+  if (member && label) return { member, value: label };
+  return failure('label_invalid', `"${value}" is not a label of scorer ${member?.scorer}. Use one of: ${member?.definition.labels.map((candidate) => candidate.value).join(', ')}.`);
+}
+
+/**
+ * Keeps the member's own label of `judged` with `value`, its score and verdict as the scorer gives them, as a model
+ * label is kept but with no judge and no reasoning file. It shares no key with a model label, so neither replaces the other.
+ */
+async function labelByHand(config: LocalConfig, { member, value, judged, now }: { member: Asked; value: ScorerLabel; judged: JudgedSession; now: string }): Promise<{ label: Record<string, unknown> } | Failure> {
+  const { scorer, pin, definition } = member;
+  const passed = value.score >= definition.passingScore;
+  const label = sessionLabel({
+    scorer,
+    rubric: { sourceHash: pin.sourceHash, ...(pin.teamRevision ? { teamRevision: pin.teamRevision } : {}) },
+    label: value.value,
+    score: value.score,
+    passed,
+    judge: { kind: 'human' },
+    scoredAt: now,
+  }, judged.subject, judged.context);
+  const written = await AttemptStore.locked(config, () => LabelStore.append(config, label, undefined));
+  if (written.status === 'busy') return failure('busy', 'Another teamai process holds the label store, so no label was written. Label the session again.');
+  log.info(`${scorer}: ${value.value} (score ${value.score}, ${passed ? 'passed' : 'did not pass'}), by hand. No judge ran.`);
+  return { label: { scorer, subject: judged.subject, label: value.value, score: value.score, passed, judge: { kind: 'human' }, labelId: written.value.id } };
 }

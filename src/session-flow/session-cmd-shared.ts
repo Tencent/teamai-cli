@@ -239,12 +239,25 @@ export async function resolveRepoRoot(
       'teamai is not set up for this directory. It has no workspace install, and there is no user install. Run `teamai init`, or pass --repo-root <path to the team repo clone>.',
     );
   }
-  const root = cfg.repo.localPath?.trim() ? sessionArchiveRoot(cfg) : undefined;
-  if (!root) {
+  const archives = await sessionArchives(cfg, options);
+  if (!archives) {
     throw new Error(
       'This teamai install keeps no team repo clone on this machine, so it has no session archive. Pass --repo-root <path to a team repo clone>.',
     );
   }
+  return archives;
+}
+
+/**
+ * The session archive of install `cfg`, as `resolveRepoRoot` gives it, or undefined when it keeps none: an http team,
+ * or an install with no team repo clone. Throws when the teamai-reports checkout cannot be read.
+ */
+export async function sessionArchives(
+  cfg: LocalConfig,
+  options: { dryRun: boolean; read?: boolean },
+): Promise<{ root: string; reports: LocalConfig; legacy?: string } | undefined> {
+  const root = cfg.repo.localPath?.trim() ? sessionArchiveRoot(cfg) : undefined;
+  if (!root) return undefined;
   const legacy = isSelfMode(cfg) ? {} : { legacy: cfg.repo.localPath };
   // A writer opens the checkout itself, under the lock, in updateReports.
   if (!options.read) return { root, reports: cfg, ...legacy };
