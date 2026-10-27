@@ -3,6 +3,7 @@ import { hookToolPathsForConfig } from './types.js';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { detectProjectConfig, loadLocalConfig, loadMemberSettings, loadTeamConfig } from './config.js';
+import { memberTools } from './tool-launch/call.js';
 import { AgentSession } from './session-flow/agent-session.js';
 import { SessionPolicy, type SessionPolicy as Policy } from './session-flow/session-policy.js';
 import { explainRunMode, RUN_MODES, type ExplainedRunMode } from './launch-context.js';
@@ -28,7 +29,12 @@ import {
   toolGateRoot,
   getDataHome,
   getTeamaiHomeDir,
+  isContributeHintEnabled,
+  isMrHintEnabled,
+  isRecallEnabled,
   isUsageReportEnabled,
+  resolveAutoCompactTokens,
+  resolveCoAuthor,
   type LocalConfig,
   type TeamaiConfig,
   installScopeName,
@@ -200,10 +206,34 @@ const MEMBER_SETTING_REPORT_KEYS = [
   'coAuthorEnabled',
   'usageReportEnabled',
   'codexTrustEnabled',
-  'modelAliases',
   'updatePolicy',
   'autoCompactTokens',
 ] as const;
+
+const MACHINE_WIDE_MEMBER_SETTINGS = new Set(['updatePolicy', 'autoCompactTokens']);
+
+function addWorkflowReportKeys(target: Set<string>, value: unknown): void {
+  const workflows = readPath(value, ['workflows']);
+  if (typeof workflows !== 'object' || workflows === null || Array.isArray(workflows)) return;
+  const tools = (workflows as Record<string, unknown>).tools;
+  if (typeof tools === 'object' && tools !== null && !Array.isArray(tools)) {
+    for (const name of Object.keys(tools as Record<string, unknown>)) target.add(`workflows.tools.${name}`);
+  }
+  const allow = (workflows as Record<string, unknown>).allow;
+  if (typeof allow === 'object' && allow !== null && !Array.isArray(allow)
+    && Object.prototype.hasOwnProperty.call(allow, 'env')) target.add('workflows.allow.env');
+}
+
+/** Map settings need one provenance row per key: one merged object cannot name two winners. */
+function addModelAliasReportKeys(target: Set<string>, value: unknown): void {
+  const aliases = readPath(value, ['modelAliases']);
+  if (typeof aliases !== 'object' || aliases === null || Array.isArray(aliases)) return;
+  for (const name of Object.keys(aliases as Record<string, unknown>)) target.add(`modelAliases.${name}`);
+}
+
+function nonEmptyAiTool(value: unknown): unknown {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
 
 function readPath(value: unknown, parts: string[]): unknown {
   let current = value;
@@ -230,12 +260,17 @@ function settingSource(level: MemberSettingLevel, value: unknown, file?: string,
 async function memberSettingsReport(ctx: DoctorContext): Promise<MemberSettingsReport[]> {
   const machineFile = path.join(getTeamaiHomeDir(), 'config.yaml');
   const rawMachine = await readYamlObject(machineFile);
-  // The report must describe runtime behavior, not unvalidated YAML. In
-  // particular, a bad machine key is ignored by the overlay loader and cannot
-  // be reported as its effective value.
   const machine = await loadMemberSettings(machineFile);
   const scopeFile = getDataHome(ctx.localConfig) + path.sep + 'config.yaml';
   const rawScope = ctx.localConfig.scope === 'user' ? rawMachine : await readYamlObject(scopeFile);
+  const userConfig = ctx.localConfig.scope === 'user' ? ctx.localConfig : await loadLocalConfig();
+  const userSettings = userConfig?.scope === 'user' ? userConfig : {};
+  const reportKeys = new Set<string>(MEMBER_SETTING_REPORT_KEYS);
+  addWorkflowReportKeys(reportKeys, rawMachine);
+  addWorkflowReportKeys(reportKeys, rawScope);
+  addModelAliasReportKeys(reportKeys, machine);
+  addModelAliasReportKeys(reportKeys, rawScope);
+
   const team = ctx.teamConfig as unknown as Record<string, unknown> | null;
   const teamSharing = team?.sharing as Record<string, unknown> | undefined;
   const teamValue = (key: string): unknown => {
@@ -254,18 +289,30 @@ async function memberSettingsReport(ctx: DoctorContext): Promise<MemberSettingsR
     if (key === 'workflows.allow.network') return true;
     if (key === 'recallEnabled') return false;
     if (key === 'contributeHintEnabled' || key === 'mrHintEnabled' || key === 'usageReportEnabled') return true;
+    if (key === 'coAuthorEnabled' || key === 'codexTrustEnabled') return true;
     if (key === 'updatePolicy') return 'auto';
     return undefined;
   };
-  const variable = (key: string): string | undefined => key === 'ai.tool' ? 'TEAMAI_AI_TOOL' : undefined;
-  const reports: MemberSettingsReport[] = [];
-  for (const key of MEMBER_SETTING_REPORT_KEYS) {
+
+  const levelsFor = (key: string): MemberSettingSource[] => {
     const parts = key.split('.');
-    const scopeValue = readPath(rawScope, parts);
-    const machineValue = readPath(machine, parts);
+    let scopeValue = readPath(rawScope, parts);
+    let scopeSourceFile = ctx.localConfig.scope === 'user' ? machineFile : scopeFile;
+    if (MACHINE_WIDE_MEMBER_SETTINGS.has(key) && userConfig?.scope === 'user') {
+      scopeValue = readPath(userSettings, parts);
+      scopeSourceFile = machineFile;
+    }
+    let machineValue = readPath(machine, parts);
+    if (key === 'ai.tool') {
+      scopeValue = nonEmptyAiTool(scopeValue);
+      machineValue = nonEmptyAiTool(machineValue);
+    }
     const levels: MemberSettingSource[] = [];
-    if (scopeValue !== undefined) levels.push(settingSource('scope', scopeValue, ctx.localConfig.scope === 'user' ? machineFile : scopeFile));
-    if (machineValue !== undefined && ctx.localConfig.scope !== 'user') levels.push(settingSource('machine', machineValue, machineFile));
+    if (scopeValue !== undefined) levels.push(settingSource('scope', scopeValue, scopeSourceFile));
+    if (machineValue !== undefined && ctx.localConfig.scope !== 'user'
+      && !(MACHINE_WIDE_MEMBER_SETTINGS.has(key) && userConfig?.scope === 'user')) {
+      levels.push(settingSource('machine', machineValue, machineFile));
+    }
     const teamValueForKey = teamValue(key);
     if (teamValueForKey !== undefined) {
       const teamFile = ctx.localConfig.repo.localPath ? path.join(ctx.localConfig.repo.localPath, 'teamai.yaml') : undefined;
@@ -273,21 +320,36 @@ async function memberSettingsReport(ctx: DoctorContext): Promise<MemberSettingsR
     }
     const fallback = defaultValue(key);
     if (fallback !== undefined) levels.push(settingSource('default', fallback));
-    const envName = variable(key);
-    const envValue = envName ? process.env[envName] : undefined;
-    if (envValue !== undefined) levels.unshift(settingSource('environment', envValue, undefined, envName));
-    const source = levels[0];
-    if (!source) continue;
-    let effective = source.value;
-    if (key === 'modelAliases') {
-      const machineAliases = readPath(machine, parts);
-      const scopeAliases = readPath(rawScope, parts);
-      if ((typeof machineAliases === 'object' && machineAliases !== null)
-        || (typeof scopeAliases === 'object' && scopeAliases !== null)) {
-        effective = { ...(machineAliases as Record<string, unknown> | undefined), ...(scopeAliases as Record<string, unknown> | undefined) };
-      }
+    if (key === 'ai.tool' && process.env.TEAMAI_AI_TOOL) levels.unshift(settingSource('environment', process.env.TEAMAI_AI_TOOL, undefined, 'TEAMAI_AI_TOOL'));
+    if (key === 'recallEnabled' && process.env.TEAMAI_RECALL_DISABLED === '1') levels.unshift(settingSource('environment', false, undefined, 'TEAMAI_RECALL_DISABLED'));
+    if (key === 'contributeHintEnabled' && process.env.TEAMAI_CONTRIBUTE_HINT_DISABLED === '1') levels.unshift(settingSource('environment', false, undefined, 'TEAMAI_CONTRIBUTE_HINT_DISABLED'));
+    if (key === 'mrHintEnabled' && process.env.TEAMAI_MR_HINT_DISABLED === '1') levels.unshift(settingSource('environment', false, undefined, 'TEAMAI_MR_HINT_DISABLED'));
+    return levels;
+  };
+
+  const decidingConfig = userConfig ?? ctx.localConfig;
+  const aiTool = async (): Promise<string | undefined> => (await memberTools(ctx.localConfig))[0]?.tool;
+  const effectiveValue = async (key: string, levels: MemberSettingSource[]): Promise<unknown> => {
+    if (key === 'ai.tool') return await aiTool();
+    if (key === 'recallEnabled') return isRecallEnabled(ctx.localConfig, ctx.teamConfig ?? {});
+    if (key === 'contributeHintEnabled') return isContributeHintEnabled(ctx.localConfig, ctx.teamConfig ?? {});
+    if (key === 'mrHintEnabled') return isMrHintEnabled(ctx.localConfig, ctx.teamConfig ?? {});
+    if (key === 'usageReportEnabled') return isUsageReportEnabled(ctx.localConfig, ctx.teamConfig ?? {});
+    if (key === 'coAuthorEnabled') return resolveCoAuthor(ctx.localConfig, ctx.teamConfig ?? {}) ?? true;
+    if (key === 'autoCompactTokens') return resolveAutoCompactTokens(decidingConfig, ctx.teamConfig ?? {});
+    if (key === 'updatePolicy') {
+      const { resolveEffectiveUpdatePolicy } = await import('./update-policy.js');
+      return resolveEffectiveUpdatePolicy(decidingConfig, ctx.teamConfig);
     }
-    reports.push({ key, effective, source, levels });
+    return levels[0]?.value;
+  };
+
+  const reports: MemberSettingsReport[] = [];
+  for (const key of reportKeys) {
+    const levels = levelsFor(key);
+    const effective = await effectiveValue(key, levels);
+    if (effective === undefined && levels.length === 0) continue;
+    reports.push({ key, effective, source: levels[0], levels });
   }
   return reports;
 }

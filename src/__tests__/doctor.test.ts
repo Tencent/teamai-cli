@@ -8,6 +8,7 @@ import path from 'node:path';
 vi.mock('../config.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../config.js')>()),
     loadLocalConfig: vi.fn(),
+    loadMemberSettings: vi.fn(),
     loadTeamConfig: vi.fn(),
     detectProjectConfig: vi.fn().mockResolvedValue(null),
     // resolveDesiredAgents reads placement records to mirror what pull delivers.
@@ -80,7 +81,7 @@ vi.mock('../hooks.js', async (importOriginal) => ({
 
 // ── Imports (after mocks) ────────────────────────────────
 
-import { loadLocalConfig, loadTeamConfig } from '../config.js';
+import { loadLocalConfig, loadMemberSettings, loadTeamConfig } from '../config.js';
 import { pathExists, readFileSafe } from '../utils/fs.js';
 import { TEAMAI_HOOK_SUBCOMMANDS, readCodexHookTrustForScope } from '../hooks.js';
 import { log, setStderrOnly } from '../utils/logger.js';
@@ -89,6 +90,7 @@ import { buildChecks, doctor, resolveDoctorContext } from '../doctor.js';
 import type { DoctorReport } from '../doctor.js';
 
 const mockedLoadLocalConfig = loadLocalConfig as Mock;
+const mockedLoadMemberSettings = loadMemberSettings as Mock;
 const mockedLoadTeamConfig = loadTeamConfig as Mock;
 const mockedPathExists = pathExists as Mock;
 const mockedReadFileSafe = readFileSafe as Mock;
@@ -137,7 +139,12 @@ beforeEach(() => {
     vi.clearAllMocks();
     delete process.env.CLAUDE_CONFIG_DIR;
     delete process.env.CODEX_HOME;
+    delete process.env.TEAMAI_AI_TOOL;
+    delete process.env.TEAMAI_RECALL_DISABLED;
+    delete process.env.TEAMAI_CONTRIBUTE_HINT_DISABLED;
+    delete process.env.TEAMAI_MR_HINT_DISABLED;
     mockedLoadLocalConfig.mockResolvedValue(mockLocalConfig);
+    mockedLoadMemberSettings.mockResolvedValue({});
     mockedLoadTeamConfig.mockResolvedValue(mockTeamConfig);
     mockedPathExists.mockResolvedValue(true);
     // One blob answers every read, except the role/project manifests the
@@ -671,49 +678,107 @@ describe('doctor — JSON report', () => {
         expect(report.checks.every((c) => c.ok)).toBe(true);
     });
 
-    it('reports only validated machine settings, merged aliases, workflow defaults, and local team provenance', async () => {
-        mockedLoadLocalConfig.mockResolvedValue({
+    it('reports the same winners as runtime resolvers across user, environment, and workflow-map settings', async () => {
+        const project = {
             ...mockLocalConfig,
             scope: 'project',
             projectRoot: '/tmp/project',
             repo: { localPath: '/tmp/team', remote: 'https://example.test/team.git' },
+            recallEnabled: true,
+            contributeHintEnabled: true,
+            mrHintEnabled: true,
+            usageReportEnabled: true,
+            workflows: { tools: { default: 'opencode', implementer: 'claude' }, allow: { env: ['CI'] } },
+        };
+        const user = {
+            ...mockLocalConfig,
+            scope: 'user',
+            repo: { localPath: '/tmp/user-team', remote: 'https://example.test/user.git' },
+            updatePolicy: 'skip',
+            autoCompactTokens: 100000,
+        };
+        mockedLoadLocalConfig.mockResolvedValueOnce(project).mockResolvedValue(user);
+        mockedLoadMemberSettings.mockResolvedValue({
+            ai: { tool: 'codex' },
+            modelAliases: { gateway: 'claude-sonnet-4' },
+            workflows: { tools: { implementer: 'claude' }, allow: { env: ['CI'] } },
         });
         mockedLoadTeamConfig.mockResolvedValue({
             ...mockTeamConfig,
-            sharing: { recall: { enabled: true } },
-            usageReport: false,
+            sharing: { recall: { enabled: true }, contributeHint: { enabled: true }, mrHint: { enabled: true } },
+            usageReport: true,
         });
         mockedReadFileSafe.mockImplementation(async (filePath: string) => {
             if (filePath === path.join(getTeamaiHomeDir(), 'config.yaml')) {
-                return 'recallEnabled: "yes"\nmodelAliases:\n  gateway: claude-sonnet-4\n';
+                return [
+                    'repo:',
+                    '  localPath: /tmp/user-team',
+                    '  remote: https://example.test/user.git',
+                    'username: testuser',
+                    'scope: user',
+                    'updatePolicy: skip',
+                    'autoCompactTokens: 100000',
+                    'modelAliases:',
+                    '  gateway: claude-sonnet-4',
+                    'ai:',
+                    '  tool: codex',
+                    'workflows:',
+                    '  tools:',
+                    '    implementer: claude',
+                    '  allow:',
+                    '    env: [CI]',
+                ].join('\n');
             }
             if (filePath === path.join('/tmp/project', '.teamai', 'config.yaml')) {
-                return 'recallEnabled: false\nmodelAliases:\n  local: claude-opus-4\n';
+                return [
+                    'repo:',
+                    '  localPath: /tmp/team',
+                    '  remote: https://example.test/team.git',
+                    'username: testuser',
+                    'scope: project',
+                    'updatePolicy: auto',
+                    'autoCompactTokens: 50000',
+                    'modelAliases:',
+                    '  local: claude-opus-4',
+                    'ai:',
+                    '  tool: ""',
+                    'workflows:',
+                    '  tools:',
+                    '    default: opencode',
+                ].join('\n');
             }
             if (filePath.endsWith('settings.json')) return buildFullHooksContent();
             return null;
         });
+        process.env.TEAMAI_RECALL_DISABLED = '1';
+        process.env.TEAMAI_CONTRIBUTE_HINT_DISABLED = '1';
+        process.env.TEAMAI_MR_HINT_DISABLED = '1';
+        process.env.TEAMAI_AI_TOOL = '';
 
         await doctor({ json: true });
 
-        const settings = emittedReport().memberSettings ?? [];
-        const byKey = Object.fromEntries(settings.map((setting) => [setting.key, setting]));
-        expect(byKey.recallEnabled).toMatchObject({
-            effective: false,
-            source: { level: 'scope', value: false },
-            levels: [
-                { level: 'scope', value: false, file: path.join('/tmp/project', '.teamai', 'config.yaml') },
-                { level: 'team', value: true, file: path.join('/tmp/team', 'teamai.yaml') },
-                { level: 'default', value: false },
-            ],
+        const byKey = Object.fromEntries((emittedReport().memberSettings ?? []).map((setting) => [setting.key, setting]));
+        expect(byKey.updatePolicy).toMatchObject({ effective: 'skip', source: { level: 'scope', value: 'skip', file: path.join(getTeamaiHomeDir(), 'config.yaml') } });
+        expect(byKey.autoCompactTokens).toMatchObject({ effective: 100000, source: { level: 'scope', value: 100000, file: path.join(getTeamaiHomeDir(), 'config.yaml') } });
+        expect(byKey['ai.tool']).toMatchObject({ effective: 'codex', source: { level: 'machine', value: 'codex' } });
+        expect(byKey['modelAliases.gateway']).toMatchObject({
+            effective: 'claude-sonnet-4',
+            source: { level: 'machine', value: 'claude-sonnet-4' },
         });
-        expect(byKey.modelAliases).toMatchObject({
-            effective: { gateway: 'claude-sonnet-4', local: 'claude-opus-4' },
-            source: { level: 'scope', value: { local: 'claude-opus-4' } },
+        expect(byKey['modelAliases.local']).toMatchObject({
+            effective: 'claude-opus-4',
+            source: { level: 'scope', value: 'claude-opus-4' },
         });
-        expect(byKey['workflows.max_parallel']).toMatchObject({ effective: 1, source: { level: 'default', value: 1 } });
-        expect(byKey['workflows.auto_approve']).toMatchObject({ effective: false, source: { level: 'default', value: false } });
-        expect(byKey['workflows.allow.network']).toMatchObject({ effective: true, source: { level: 'default', value: true } });
+        expect(byKey.recallEnabled).toMatchObject({ effective: false, source: { level: 'environment', value: false, variable: 'TEAMAI_RECALL_DISABLED' } });
+        expect(byKey.contributeHintEnabled).toMatchObject({ effective: false, source: { level: 'environment', value: false, variable: 'TEAMAI_CONTRIBUTE_HINT_DISABLED' } });
+        expect(byKey.mrHintEnabled).toMatchObject({ effective: false, source: { level: 'environment', value: false, variable: 'TEAMAI_MR_HINT_DISABLED' } });
+        expect(byKey['workflows.tools.implementer']).toMatchObject({ effective: 'claude', source: { level: 'machine', value: 'claude' } });
+        expect(byKey['workflows.allow.env']).toMatchObject({ effective: ['CI'], source: { level: 'machine', value: ['CI'] } });
+        expect(byKey.coAuthorEnabled).toMatchObject({ effective: true, source: { level: 'default', value: true } });
+        expect(byKey.codexTrustEnabled).toMatchObject({ effective: true, source: { level: 'default', value: true } });
+        for (const report of Object.values(byKey) as Array<{ effective: unknown; levels: Array<{ value: unknown }> }>) {
+            expect(report.levels[0]?.value).toEqual(report.effective);
+        }
     });
 
     it('carries the fix string of a failing check', async () => {

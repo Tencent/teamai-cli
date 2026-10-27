@@ -279,7 +279,7 @@ export function isUnmigratedDataHome(localConfig: { scope?: string; projectRoot?
 }
 
 /**
- * Resolve whether recall is enabled: env kill switch > user override >
+ * Resolve whether recall is enabled: environment kill switch > user override >
  * team config > default (false).
  */
 export function isRecallEnabled(
