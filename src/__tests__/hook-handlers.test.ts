@@ -1886,6 +1886,12 @@ describe('dashboard-report team correction keywords', () => {
     await handler().execute({ hook_event_name: 'Stop', session_id: 's' }, 'claude', scopeWithTeam());
     expect(mockParseHookEvent).toHaveBeenCalledWith(expect.any(String), 'claude', { correctionKeywords: [] });
   });
+
+  it("prices a stop with the model aliases of the hook's own scope", async () => {
+    const workspace: LocalConfig = { ...scopeWithTeam(), scope: 'project', projectRoot: teamRepo, modelAliases: { 'gw-sonnet': 'claude-sonnet-4' } };
+    await handler().execute({ hook_event_name: 'Stop', session_id: 's' }, 'claude', workspace);
+    expect(mockParseHookEvent).toHaveBeenCalledWith(expect.any(String), 'claude', { correctionKeywords: [], modelAliases: { 'gw-sonnet': 'claude-sonnet-4' } });
+  });
 });
 
 // Regression #702 (event mapping) + #701 (field whitelist). The handler used to
