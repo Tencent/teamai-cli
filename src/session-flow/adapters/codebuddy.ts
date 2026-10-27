@@ -40,7 +40,7 @@ import {
   removeDirRecursive,
 } from '../fs.js';
 import { sessionStoreDir } from '../../locate.js';
-import { isInjectedText, fallbackTitle, titleFromCandidates } from '../title.js';
+import { cutTitle, isInjectedText, fallbackTitle, titleFromCandidates } from '../title.js';
 
 // ---------------------------------------------------------------------------
 // Tool-name normalization map
@@ -271,7 +271,7 @@ export class CodeBuddyAdapter extends AgentAdapter {
     // The first "user message" is often an injected block such as system-reminder. Without cleaning,
     // the session list shows the entire prompt verbatim.
     if (aiTitle && !isInjectedText(aiTitle)) {
-      title = aiTitle.slice(0, 60);
+      title = cutTitle(aiTitle);
     } else {
       title = titleFromCandidates(userTextCandidates) || fallbackTitle(sessionId);
     }
@@ -347,7 +347,7 @@ export class CodeBuddyAdapter extends AgentAdapter {
         // CodeBuddy sometimes stores injected-block text as ai-title. Taking it as-is pollutes the whole migration path
         // (preview and target-side titles are the prompt verbatim).
         const t = String(rec.aiTitle ?? '');
-        if (t && !isInjectedText(t)) title = t.slice(0, 100);
+        if (t && !isInjectedText(t)) title = cutTitle(t, 100);
         continue;
       }
 

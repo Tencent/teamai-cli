@@ -37,7 +37,7 @@ import {
   removeDirRecursive,
 } from '../fs.js';
 import { sessionStoreDir } from '../../locate.js';
-import { cleanTitleText, fallbackTitle, isInjectedText, titleFromCandidates, titleFromUserText } from '../title.js';
+import { cleanTitleText, cutTitle, fallbackTitle, isInjectedText, titleFromCandidates, titleFromUserText } from '../title.js';
 import { assertSafeSessionFileId, deriveTargetSessionId } from '../ids.js';
 import { registerWorkBuddySession, unregisterWorkBuddySession } from '../workbuddy-store.js';
 import { log } from '../../utils/logger.js';
@@ -297,7 +297,7 @@ export class WorkBuddyAdapter extends AgentAdapter {
 
     // aiTitle is the title WorkBuddy itself chose, so it is the most reliable; injected-text cleaning matches the codebuddy adapter
     title =
-      (aiTitle && !isInjectedText(aiTitle) && aiTitle.slice(0, 60)) ||
+      (aiTitle && !isInjectedText(aiTitle) && cutTitle(aiTitle)) ||
       titleFromCandidates(userTextCandidates) ||
       fallbackTitle(sessionId);
 

@@ -6,6 +6,7 @@ import { Command } from 'commander';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getAdapter } from '../session-flow/adapters/index.js';
 import { saveLocalConfig } from '../config.js';
+import { encodeCwdClaude } from '../session-flow/fs.js';
 import { registerSessionFlowCommands } from '../session-flow/session-cmd.js';
 import { encodeRepoIdentity, withSessionPublicationLock } from '../session-flow/sync.js';
 import { getReportsDir, REPORTS_LOCK_FILENAME, type LocalConfig } from '../types.js';
@@ -382,6 +383,35 @@ describe('session commands without --repo-root outside a workspace install', () 
     expect(transcript).toContain('Planned it.');
     expect(transcript).not.toContain(token);
     expect(archived(team.origin, 'main')).toEqual([]);
+  });
+
+  it('archive no start of a secret that the first prompt carries past the title length, in titles, the index or file names', async () => {
+    const team = await userInstall();
+    const { checkout } = repository('product');
+    const github = `ghp_${'A1b2C3d4E5F6'.repeat(3)}`;
+    const anthropic = `sk-ant-api03-${'Q9w8E7r6T5'.repeat(4)}`;
+    await claudeSession(checkout);
+    const projectDir = path.join(os.homedir(), '.claude', 'projects', encodeCwdClaude(checkout));
+    const prompts = { deploy: `Deploy the staging build with the token ${github} now`, summary: `Call the model for the summary with key ${anthropic} please` };
+    for (const [id, prompt] of Object.entries(prompts)) {
+      const records = [
+        { type: 'user', uuid: `${id}-u`, parentUuid: null, sessionId: id, cwd: checkout, timestamp: '2026-10-02T10:00:00.000Z', message: { role: 'user', content: prompt } },
+        { type: 'assistant', uuid: `${id}-a`, parentUuid: `${id}-u`, sessionId: id, cwd: checkout, timestamp: '2026-10-02T10:01:00.000Z', message: { role: 'assistant', content: [{ type: 'text', text: 'Done.' }] } },
+      ];
+      fs.writeFileSync(path.join(projectDir, `${id}.jsonl`), records.map((record) => JSON.stringify(record)).join('\n') + '\n');
+    }
+
+    const pushed = await session('push', '--source', 'claude-code', '--cwd', checkout, '-y', '--scrub');
+
+    expect(pushed.code, pushed.stderr).toBe(0);
+    const files = archived(team.origin, 'teamai-reports');
+    expect(files.filter((file) => file.endsWith('.meta.json')), files.join('\n')).toHaveLength(3);
+    const archive = [...files, ...files.map((file) => git(team.checkout, 'show', `origin/teamai-reports:${file}`))].join('\n');
+    for (const secret of [github, anthropic]) {
+      const start = secret.slice(0, 8);
+      expect(archive).not.toContain(start);
+      expect(archive).not.toContain(start.toLowerCase().replace(/[^a-z0-9]+/g, '-'));
+    }
   });
 
   it('throw that teamai is not set up when there is no install at all', async () => {
