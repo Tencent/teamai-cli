@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import matter from 'gray-matter';
 
-import { callTool } from './tool-launch/call.js';
+import { callTool, isOverrideInvalid } from './tool-launch/call.js';
 import { createGit } from './utils/git.js';
 import { stripFrontmatter } from './utils/frontmatter.js';
 import { log } from './utils/logger.js';
@@ -490,6 +490,7 @@ export async function lintCodebaseMd(codebaseMd: string): Promise<LintReport> {
       summary: typeof parsed.summary === 'string' ? parsed.summary : '检查完成',
     };
   } catch (err) {
+    if (isOverrideInvalid(err)) throw err;
     log.debug(`lintCodebaseMd: 解析失败 — ${String(err)}`);
     return { issues: [], summary: '解析失败，无法 lint' };
   }

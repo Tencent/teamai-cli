@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { createToolCaller } from '../tool-launch/call.js';
+import { LocalConfigSchema, type LocalConfig } from '../types.js';
 
 let root = '';
 afterEach(async () => { vi.unstubAllEnvs(); if (root) await fs.rm(root, { recursive: true, force: true }); root = ''; });
@@ -44,6 +45,10 @@ let stdin = ''; process.stdin.on('data', (d) => stdin += d); process.stdin.on('e
   return executable;
 }
 
+function localConfig(fields: Record<string, unknown>): LocalConfig {
+  return LocalConfigSchema.parse({ repo: { localPath: '/team', remote: 'https://example.com/team/repo.git' }, username: 'member', ...fields });
+}
+
 function only(tool: string, executable: string) {
   return createToolCaller({ resolveTool: (command) => command === tool ? executable : null, loadConfig: async () => null });
 }
@@ -68,7 +73,14 @@ it('runs Claude headless with the prompt on stdin and returns its answer and tok
 it('fails with the error Claude reports in its result, not its stderr tag', async () => {
   const claude = await fakeTool('claude', { stdout: JSON.stringify({ type: 'result', subtype: 'success', is_error: true, result: 'There\'s an issue with the selected model (x).' }), stderr: '[claude-code:unrecognized_model] {}', exitCode: 1 });
 
-  await expect(only('claude', claude.executable).callTool('hi', { launchedBy: 'codebase' })).rejects.toThrow('AI call failed (tool: claude): There\'s an issue with the selected model (x).');
+  await expect(only('claude', claude.executable).callTool('hi', { launchedBy: 'codebase' })).rejects.toMatchObject({ kind: 'call_failed', message: 'AI call failed (tool: claude): There\'s an issue with the selected model (x).' });
+});
+
+it('fails with no_tool when no tool teamai launches is on PATH', async () => {
+  vi.stubEnv('TEAMAI_AI_TOOL', '');
+  const caller = createToolCaller({ resolveTool: () => null, loadConfig: async () => null });
+
+  await expect(caller.callTool('hi', { launchedBy: 'codebase' })).rejects.toMatchObject({ kind: 'no_tool', message: 'No AI tool teamai launches is on PATH. Install one of: claude, claude-internal, tclaude, codex, codex-internal, tcodex, opencode, codebuddy, workbuddy, openclaw, or set TEAMAI_AI_TOOL to one you have.' });
 });
 
 it('runs Codex with the prompt on stdin, reads its last message from the -o file and its tokens from the turn', async () => {
@@ -132,6 +144,52 @@ it('fails with the error in OpenClaw\'s envelope', async () => {
   const openclaw = await fakeTool('openclaw', { stdout: JSON.stringify({ ok: false, status: 'error', error: { message: 'no provider key', kind: 'incomplete_turn' } }), exitCode: 1 });
 
   await expect(only('openclaw', openclaw.executable).callTool('Classify', { launchedBy: 'recall-promote' })).rejects.toThrow('AI call failed (tool: openclaw): no provider key');
+});
+
+it('runs the tool TEAMAI_AI_TOOL names, though an earlier tool in the launch order is on PATH', async () => {
+  const claude = await fakeTool('claude', { stdout: JSON.stringify({ type: 'result', result: 'from claude' }) });
+  const codex = await fakeTool('codex', { lastMessage: 'from codex' });
+  const onPath: Record<string, string> = { claude: claude.executable, codex: codex.executable };
+  vi.stubEnv('TEAMAI_AI_TOOL', 'codex');
+
+  const answer = await createToolCaller({ resolveTool: (command) => onPath[command] ?? null, loadConfig: async () => null }).callTool('hi', { launchedBy: 'codebase' });
+
+  expect(answer).toMatchObject({ text: 'from codex', tool: 'codex' });
+});
+
+it('runs the tool ai.tool names when TEAMAI_AI_TOOL is unset, and TEAMAI_AI_TOOL over it', async () => {
+  const claude = await fakeTool('claude', { stdout: JSON.stringify({ type: 'result', result: 'from claude' }) });
+  const codex = await fakeTool('codex', { lastMessage: 'from codex' });
+  const opencode = await fakeTool('opencode', { stdout: JSON.stringify({ type: 'text', part: { text: 'from opencode' } }) });
+  const onPath: Record<string, string> = { claude: claude.executable, codex: codex.executable, opencode: opencode.executable };
+  const caller = () => createToolCaller({ resolveTool: (command) => onPath[command] ?? null, loadConfig: async () => localConfig({ ai: { tool: 'opencode' } }) });
+  vi.stubEnv('TEAMAI_AI_TOOL', '');
+
+  expect(await caller().callTool('hi', { launchedBy: 'codebase' })).toMatchObject({ tool: 'opencode' });
+  vi.stubEnv('TEAMAI_AI_TOOL', 'codex');
+  expect(await caller().callTool('hi', { launchedBy: 'codebase' })).toMatchObject({ tool: 'codex' });
+});
+
+it.each([
+  { source: 'TEAMAI_AI_TOOL', named: 'gemini', message: 'TEAMAI_AI_TOOL is "gemini", which is not a tool teamai launches. Set it to one of: claude, claude-internal, tclaude, codex, codex-internal, tcodex, opencode, codebuddy, workbuddy, openclaw. Or unset it.' },
+  { source: 'TEAMAI_AI_TOOL', named: 'codex', message: 'TEAMAI_AI_TOOL is "codex", which is not on PATH. Install codex, or unset TEAMAI_AI_TOOL to use the first installed tool.' },
+  { source: 'TEAMAI_AI_TOOL', named: 'cursor', message: 'TEAMAI_AI_TOOL is "cursor", which is not a tool teamai launches.' },
+  { source: 'ai.tool', named: 'gemini', message: 'ai.tool in /home/member/.teamai/config.yaml is "gemini", which is not a tool teamai launches. Set it to one of: claude, claude-internal, tclaude, codex, codex-internal, tcodex, opencode, codebuddy, workbuddy, openclaw. Or remove it.' },
+  { source: 'ai.tool', named: 'codex', message: 'ai.tool in /home/member/.teamai/config.yaml is "codex", which is not on PATH. Install codex, or remove ai.tool to use the first installed tool.' },
+] as const)('fails the call when $source names $named, rather than run another tool', async ({ source, named, message }) => {
+  const claude = await fakeTool('claude', { stdout: JSON.stringify({ type: 'result', result: 'from claude' }) });
+  vi.stubEnv('TEAMAI_AI_TOOL', source === 'TEAMAI_AI_TOOL' ? named : '');
+  vi.stubEnv('HOME', '/home/member');
+  const caller = createToolCaller({ resolveTool: (command) => command === 'claude' ? claude.executable : null, loadConfig: async () => localConfig(source === 'ai.tool' ? { ai: { tool: named } } : {}) });
+
+  await expect(caller.callTool('hi', { launchedBy: 'codebase' })).rejects.toMatchObject({ name: 'CallError', kind: 'override_invalid', message: expect.stringContaining(message) });
+});
+
+it('fails a batch with the override error itself, before it runs any call', async () => {
+  vi.stubEnv('TEAMAI_AI_TOOL', 'gemini');
+  const { callToolParallel } = only('claude', await echoingClaude());
+
+  await expect(callToolParallel(['a', 'b'].map((prompt) => ({ prompt, parse: (text: string) => text })), { launchedBy: 'import-local' })).rejects.toMatchObject({ name: 'CallError', kind: 'override_invalid' });
 });
 
 it('runs a batch of calls in input order and parses each answer', async () => {

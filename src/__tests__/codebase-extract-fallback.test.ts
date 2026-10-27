@@ -6,7 +6,8 @@ import os from 'node:os';
 import path from 'node:path';
 
 // Mock the AI client so extract/deep-enrich cannot hang on a live CLI.
-vi.mock('../tool-launch/call.js', () => ({
+vi.mock('../tool-launch/call.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../tool-launch/call.js')>(),
   callTool: vi.fn(async () => {
     throw new Error('mock: AI unavailable');
   }),

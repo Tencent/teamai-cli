@@ -5,7 +5,8 @@ import path from 'node:path';
 
 // Mock the AI client so deepEnrich's LLM calls fail instantly instead of
 // waiting on real 600s timeouts. deepEnrich treats these as non-blocking skips.
-vi.mock('../tool-launch/call.js', () => ({
+vi.mock('../tool-launch/call.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../tool-launch/call.js')>(),
   callTool: vi.fn(async () => {
     throw new Error('mock: AI unavailable');
   }),

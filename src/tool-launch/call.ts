@@ -1,8 +1,9 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { loadLocalConfig } from '../config.js';
 import { resolveRunMode, RUN_MODE_ENV, type LaunchedBy } from '../launch-context.js';
-import type { LocalConfig } from '../types.js';
+import { getUserConfigPath, type LocalConfig } from '../types.js';
 import { resolveCliPath } from '../utils/cli-path.js';
 import { log } from '../utils/logger.js';
 import { runTool } from './run.js';
@@ -35,6 +36,21 @@ export interface ToolCallerDeps {
   loadConfig?: () => Promise<LocalConfig | null>;
 }
 
+/** Why a call did not answer: no tool to run it, an override that names a tool teamai cannot run, or the tool failed. */
+export type CallErrorKind = 'no_tool' | 'override_invalid' | 'call_failed';
+
+export class CallError extends Error {
+  constructor(readonly kind: CallErrorKind, message: string) {
+    super(message);
+    this.name = 'CallError';
+  }
+}
+
+/** Whether a call failed because the member named a tool teamai cannot run, which a caller's fallback must not hide. */
+export function isOverrideInvalid(error: unknown): error is CallError {
+  return error instanceof CallError && error.kind === 'override_invalid';
+}
+
 type Picked = { tool: LaunchOrderTool; executable: string };
 
 /** The environment a call's tool runs in: the member's own, marked as teamai's launch, without an outer launch's checkout. */
@@ -45,35 +61,55 @@ function callEnv(launchedBy: LaunchedBy): NodeJS.ProcessEnv {
 }
 
 /** A caller that resolves its tool once and reuses it for every call. */
-export function createToolCaller({ resolveTool = resolveCliPath }: ToolCallerDeps = {}): ToolCaller {
-  let picked: Picked | undefined;
-  const pick = (): Picked => {
-    if (picked) return picked;
+export function createToolCaller({ resolveTool = resolveCliPath, loadConfig = loadLocalConfig }: ToolCallerDeps = {}): ToolCaller {
+  /** The tool an override names. A member who names a tool means it, so one teamai cannot run fails the call. */
+  const named = (source: 'TEAMAI_AI_TOOL' | 'ai.tool', value: string): Picked => {
+    const tool = LAUNCH_ORDER.find((candidate) => candidate === value);
+    if (tool === undefined) {
+      throw new CallError('override_invalid', source === 'TEAMAI_AI_TOOL'
+        ? `TEAMAI_AI_TOOL is "${value}", which is not a tool teamai launches. Set it to one of: ${LAUNCH_ORDER.join(', ')}. Or unset it.`
+        : `ai.tool in ${getUserConfigPath()} is "${value}", which is not a tool teamai launches. Set it to one of: ${LAUNCH_ORDER.join(', ')}. Or remove it.`);
+    }
+    const executable = resolveTool(tool);
+    if (executable === null) {
+      throw new CallError('override_invalid', source === 'TEAMAI_AI_TOOL'
+        ? `TEAMAI_AI_TOOL is "${tool}", which is not on PATH. Install ${tool}, or unset TEAMAI_AI_TOOL to use the first installed tool.`
+        : `ai.tool in ${getUserConfigPath()} is "${tool}", which is not on PATH. Install ${tool}, or remove ai.tool to use the first installed tool.`);
+    }
+    log.debug(`[tool-launch] using ${tool} (${executable}), from ${source}`);
+    return { tool, executable };
+  };
+
+  const resolve = async (): Promise<Picked> => {
+    if (process.env.TEAMAI_AI_TOOL) return named('TEAMAI_AI_TOOL', process.env.TEAMAI_AI_TOOL);
+    const configured = (await loadConfig())?.ai?.tool;
+    if (configured) return named('ai.tool', configured);
     for (const tool of LAUNCH_ORDER) {
       const executable = resolveTool(tool);
       if (executable !== null) {
-        picked = { tool, executable };
         log.debug(`[tool-launch] using ${tool} (${executable}), from LAUNCH_ORDER`);
-        return picked;
+        return { tool, executable };
       }
     }
-    throw new Error(`No AI tool teamai launches is on PATH. Install one of: ${LAUNCH_ORDER.join(', ')}, or set TEAMAI_AI_TOOL to one you have.`);
+    throw new CallError('no_tool', `No AI tool teamai launches is on PATH. Install one of: ${LAUNCH_ORDER.join(', ')}, or set TEAMAI_AI_TOOL to one you have.`);
   };
+  let picked: Promise<Picked> | undefined;
+  const pick = (): Promise<Picked> => picked ??= resolve();
 
   const callTool: ToolCaller['callTool'] = async (prompt, { launchedBy, timeout = DEFAULT_TIMEOUT_MS }) => {
-      const { tool, executable } = pick();
+      const { tool, executable } = await pick();
       const { call } = launchAdapterOf(tool);
       log.debug(`[tool-launch] ${launchedBy} → ${tool}, timeout=${Math.round(timeout / 1000)}s`);
       const scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-call-'));
       try {
         const lastMessageFile = path.join(scratch, 'last-message.txt');
         const run = await runTool({ executable, args: call.args(lastMessageFile), cwd: process.cwd(), env: callEnv(launchedBy), stdin: prompt, timeoutMs: timeout });
-        if (run.timedOut) throw new Error(`AI call timed out after ${Math.round(timeout / 1000)}s (tool: ${tool})`);
+        if (run.timedOut) throw new CallError('call_failed', `AI call timed out after ${Math.round(timeout / 1000)}s (tool: ${tool})`);
         const lastMessage = await fs.readFile(lastMessageFile, 'utf8').catch(() => undefined);
         const reading = call.read({ stdout: run.stdout, lastMessage });
         if (run.code !== 0 || !reading.ok) {
           const reason = (reading.ok ? undefined : reading.message) || run.stderr.trim() || run.stdout.trim() || `exit code ${run.code}`;
-          throw new Error(`AI call failed (tool: ${tool}): ${reason}`);
+          throw new CallError('call_failed', `AI call failed (tool: ${tool}): ${reason}`);
         }
         return { text: reading.text, tool, ...(reading.tokens ? { tokens: reading.tokens } : {}) };
       } finally {
@@ -82,6 +118,8 @@ export function createToolCaller({ resolveTool = resolveCliPath }: ToolCallerDep
   };
 
   async function callToolParallel<T>(tasks: ReadonlyArray<{ prompt: string; parse: (text: string) => T }>, { concurrency = DEFAULT_CONCURRENCY, ...options }: CallOptions & { concurrency?: number }): Promise<T[]> {
+    // A batch has one tool, so a tool that cannot be picked fails the batch once rather than once per task.
+    await pick();
     const settled: ({ ok: true; value: T } | { ok: false; reason: unknown })[] = [];
     let next = 0;
     const worker = async (): Promise<void> => {

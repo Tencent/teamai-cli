@@ -188,9 +188,8 @@ Remove anecdotal context. State the constraint as an absolute standard.`,
 Remove personal narrative. Write as objective technical documentation.`,
   };
 
+  const { callTool, isOverrideInvalid } = await import('../tool-launch/call.js');
   try {
-    const { callTool } = await import('../tool-launch/call.js');
-
     const prompt = `You are a technical knowledge engineer promoting a team learning into formal knowledge.
 
 The following "learning" has been repeatedly validated by the team (high confidence, adopted by multiple members). Transform it into ${categoryGuide[category]}
@@ -205,6 +204,7 @@ Output ONLY the transformed markdown content (including YAML frontmatter with ti
     const { text } = await callTool(prompt, { launchedBy: 'recall-promote', timeout: 60_000 });
     return text.trim();
   } catch (e) {
+    if (isOverrideInvalid(e)) throw e;
     log.warn(`AI content generation failed, using original content: ${(e as Error).message}`);
     return originalContent;
   }
@@ -297,9 +297,8 @@ function inferCategoryByKeywords(content: string, title: string): 'skills' | 'ru
  * Falls back to keyword-based inference if AI is unavailable.
  */
 async function inferCategory(content: string, title: string): Promise<'skills' | 'rules' | 'docs'> {
+  const { callTool, isOverrideInvalid } = await import('../tool-launch/call.js');
   try {
-    const { callTool } = await import('../tool-launch/call.js');
-
     const prompt = `Classify the following team knowledge entry into exactly ONE category. Reply with ONLY the category name (no explanation):
 
 - "skills" — reusable workflows, SOPs, step-by-step procedures, CLI recipes, operational playbooks
@@ -319,7 +318,8 @@ Category:`;
     if (category === 'skills' || category === 'rules' || category === 'docs') {
       return category;
     }
-  } catch {
+  } catch (e) {
+    if (isOverrideInvalid(e)) throw e;
     // AI unavailable — fall back to keywords
   }
 

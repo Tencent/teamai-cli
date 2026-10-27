@@ -37,8 +37,9 @@ vi.mock('../utils/git.js', () => ({
   })),
 }));
 
-// ─── mock utils/ai-client ─────────────────────────────────────────────────
-vi.mock('../tool-launch/call.js', () => ({
+// ─── mock tool-launch/call ─────────────────────────────────────────────────
+vi.mock('../tool-launch/call.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../tool-launch/call.js')>(),
   callTool: vi.fn(),
 }));
 

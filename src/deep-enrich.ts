@@ -2,7 +2,7 @@ import { readFile, writeFile, readdir, mkdir, unlink, lstat, rename } from 'node
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { pathExists } from './utils/fs.js';
-import { callTool, callToolParallel } from './tool-launch/call.js';
+import { callTool, callToolParallel, isOverrideInvalid } from './tool-launch/call.js';
 import { log } from './utils/logger.js';
 import { assertSafeResourceName, assertWithinRoot } from './utils/path-safety.js';
 
@@ -449,7 +449,8 @@ async function runPhaseComponents(
     let results: string[];
     try {
       results = await callToolParallel(tasks, { launchedBy: 'deep-enrich', concurrency: BATCH });
-    } catch {
+    } catch (e) {
+      if (isOverrideInvalid(e)) throw e;
       // AggregateError — 部分可能成功，graceful fallback
       log.warn(`deep-enrich[${project}]: batch[${i}] partially failed, falling back to sequential`);
       results = await Promise.all(
@@ -507,6 +508,7 @@ async function runPhaseArchitecture(
   try {
     content = (await callTool(prompt, { launchedBy: 'deep-enrich' })).text;
   } catch (e) {
+    if (isOverrideInvalid(e)) throw e;
     log.warn(`deep-enrich[${project}]: Architecture overview generation failed, skipping: ${(e as Error).message}`);
     return;
   }
@@ -700,6 +702,7 @@ async function runPhaseAiGraph(
       g5Generated = true;
     }
   } catch (e) {
+    if (isOverrideInvalid(e)) throw e;
     log.warn(`deep-enrich[${project}]: G5 scenario generation failed, skipping: ${(e as Error).message}`);
   }
   return { g5Generated, g6Generated: g6HasEdges };

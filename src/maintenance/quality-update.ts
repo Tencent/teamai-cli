@@ -184,7 +184,7 @@ export async function generateUpdateDraft(
   const currentContent = await readFileSafe(staleEntry.path);
   if (!currentContent) return null;
 
-  const { callTool } = await import('../tool-launch/call.js');
+  const { callTool, isOverrideInvalid } = await import('../tool-launch/call.js');
 
   const learningContext = relatedLearnings.length > 0
     ? `\n\nThe following learnings were actually adopted by team members (these represent what the team found more useful):\n\n${relatedLearnings.map((l, i) => `--- Learning ${i + 1} ---\n${l}`).join('\n\n')}`
@@ -213,6 +213,7 @@ Output ONLY the updated markdown file content (including frontmatter).`;
     const draft = (await callTool(prompt, { launchedBy: 'quality-update' })).text;
     return draft.trim();
   } catch (e) {
+    if (isOverrideInvalid(e)) throw e;
     log.error(`AI update generation failed: ${(e as Error).message}`);
     return null;
   }
