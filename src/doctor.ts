@@ -440,8 +440,10 @@ async function buildHookChecks(
         const content = await readFileSafe(settingsPath);
         if (!content) return false;
 
+        // Windows CodeBuddy's executable script is quoted in the JSON file.
         const missing = TEAMAI_HOOK_SUBCOMMANDS.filter(
-          (sub) => !content.includes(`teamai ${sub}`),
+          (sub) => !content.includes(`teamai ${sub}`)
+            && !(tool === 'codebuddy' && content.includes(`teamai-codebuddy-hook\\" ${sub}`)),
         );
         return missing.length === 0;
       },
