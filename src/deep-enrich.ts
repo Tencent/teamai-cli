@@ -4,7 +4,7 @@ import path from 'node:path';
 import { pathExists } from './utils/fs.js';
 import { callClaude, callClaudeParallel } from './utils/ai-client.js';
 import { log } from './utils/logger.js';
-import { assertSafeResourceName } from './utils/path-safety.js';
+import { assertSafeResourceName, assertWithinRoot } from './utils/path-safety.js';
 
 export interface DeepEnrichOptions {
   project: string;
@@ -69,14 +69,14 @@ async function readFileSafe(filePath: string): Promise<string> {
   }
 }
 
-async function assertSafeDocsDir(docsDir: string): Promise<void> {
+async function assertSafeOutputDir(dir: string): Promise<void> {
   try {
-    if ((await lstat(docsDir)).isSymbolicLink()) {
-      throw new Error(`Cannot deep-enrich through a symbolic link: ${docsDir}`);
+    if ((await lstat(dir)).isSymbolicLink()) {
+      throw new Error(`Cannot deep-enrich through a symbolic link: ${dir}`);
     }
-    for (const entry of await readdir(docsDir, { withFileTypes: true })) {
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
       if (entry.isSymbolicLink()) {
-        throw new Error(`Cannot deep-enrich through a symbolic link: ${path.join(docsDir, entry.name)}`);
+        throw new Error(`Cannot deep-enrich through a symbolic link: ${path.join(dir, entry.name)}`);
       }
     }
   } catch (error) {
@@ -84,11 +84,22 @@ async function assertSafeDocsDir(docsDir: string): Promise<void> {
   }
 }
 
-async function writeDoc(docsDir: string, name: string, content: string): Promise<void> {
-  await mkdir(docsDir, { recursive: true });
-  await assertSafeDocsDir(docsDir);
-  const target = path.join(docsDir, name);
-  const pending = path.join(docsDir, `.${name}.${randomUUID()}.tmp`);
+async function assertSafeEvidencePath(wikiRoot: string, evidenceDir: string): Promise<void> {
+  assertWithinRoot(wikiRoot, evidenceDir);
+  const root = path.resolve(wikiRoot);
+  for (let dir = path.resolve(evidenceDir); ; dir = path.dirname(dir)) {
+    if ((await lstat(dir)).isSymbolicLink()) {
+      throw new Error(`Cannot deep-enrich through a symbolic link: ${dir}`);
+    }
+    if (dir === root) break;
+  }
+}
+
+async function writeGeneratedFile(dir: string, name: string, content: string): Promise<void> {
+  await mkdir(dir, { recursive: true });
+  await assertSafeOutputDir(dir);
+  const target = path.join(dir, name);
+  const pending = path.join(dir, `.${name}.${randomUUID()}.tmp`);
   try {
     await writeFile(pending, content, { encoding: 'utf-8', flag: 'wx' });
     await rename(pending, target);
@@ -180,10 +191,8 @@ async function loadProgress(evidenceDir: string, project: string, allComponents:
 }
 
 async function saveProgress(evidenceDir: string, state: ProgressState): Promise<void> {
-  const p = progressPath(evidenceDir);
-  await mkdir(path.dirname(p), { recursive: true });
   const updated: ProgressState = { ...state, updatedAt: new Date().toISOString() };
-  await writeFile(p, JSON.stringify(updated, null, 2), 'utf-8');
+  await writeGeneratedFile(path.dirname(progressPath(evidenceDir)), PROGRESS_FILENAME, JSON.stringify(updated, null, 2));
 }
 
 // ─── Prompt 构建 ────────────────────────────────────────────
@@ -466,7 +475,7 @@ async function runPhaseComponents(
         continue;
       }
       const outPath = path.join(docsDir, `${comp.slug}.md`);
-      await writeDoc(docsDir, `${comp.slug}.md`, content);
+      await writeGeneratedFile(docsDir, `${comp.slug}.md`, content);
       progress.componentsDone.push(comp.slug);
       await saveProgress(evidenceDir, progress);
       log.debug(`deep-enrich[${project}]: Component doc written: ${outPath}`);
@@ -508,7 +517,7 @@ async function runPhaseArchitecture(
   }
 
   const outPath = path.join(docsDir, 'architecture.md');
-  await writeDoc(docsDir, 'architecture.md', content);
+  await writeGeneratedFile(docsDir, 'architecture.md', content);
   log.debug(`deep-enrich[${project}]: Architecture overview written: ${outPath}`);
 }
 
@@ -529,9 +538,9 @@ async function runPhaseGraph(
   const g3 = buildG3InterfacesDoc(interfacesMd);
 
   await Promise.all([
-    writeDoc(docsDir, 'graph-g1-relations.md', g1),
-    writeDoc(docsDir, 'graph-g2-dataflow.md', g2),
-    writeDoc(docsDir, 'graph-g3-interfaces.md', g3),
+    writeGeneratedFile(docsDir, 'graph-g1-relations.md', g1),
+    writeGeneratedFile(docsDir, 'graph-g2-dataflow.md', g2),
+    writeGeneratedFile(docsDir, 'graph-g3-interfaces.md', g3),
   ]);
   log.debug(`deep-enrich[${project}]: Graph docs written: ${docsDir}`);
 }
@@ -657,7 +666,7 @@ async function runPhaseAiGraph(
   // G6: 确定性 BFS（不需要 AI）
   const g6HasEdges = (ctx.manifest.edges ?? []).length > 0;
   const g6 = buildG6Content(project, ctx.manifest);
-  await writeDoc(docsDir, 'graph-g6-multihop.md', g6);
+  await writeGeneratedFile(docsDir, 'graph-g6-multihop.md', g6);
   log.debug(`deep-enrich[${project}]: G6 multi-hop analysis written`);
 
   const g5Path = path.join(docsDir, 'graph-g5-scenarios.md');
@@ -686,7 +695,7 @@ async function runPhaseAiGraph(
   try {
     const g5Content = await callClaude(prompt);
     if (g5Content.trim()) {
-      await writeDoc(docsDir, 'graph-g5-scenarios.md', g5Content);
+      await writeGeneratedFile(docsDir, 'graph-g5-scenarios.md', g5Content);
       log.debug(`deep-enrich[${project}]: G5 scenario diagrams written`);
       g5Generated = true;
     }
@@ -714,7 +723,7 @@ async function runPhaseIndexEnhance(
     hasG5: graphFlags?.g5Generated ?? false,
     hasG6: graphFlags?.g6Generated ?? true,
   });
-  await writeDoc(docsDir, 'README.md', graphReadme);
+  await writeGeneratedFile(docsDir, 'README.md', graphReadme);
   log.debug(`deep-enrich[${project}]: graph/README.md routing table written`);
 
   // 增量更新顶层 router.md 和 index.md（追加/更新当前项目条目，不覆盖其他项目）
@@ -877,7 +886,9 @@ export async function deepEnrich(opts: DeepEnrichOptions): Promise<DeepEnrichRes
     return { project, complete: false, missingComponents: [], missingArchitecture: true };
   }
 
-  await assertSafeDocsDir(docsDir);
+  await assertSafeEvidencePath(opts.wikiRoot, evidenceDir);
+  await assertSafeOutputDir(docsDir);
+  await assertSafeOutputDir(path.dirname(progressPath(evidenceDir)));
 
   if (opts.maxModules && components.length > opts.maxModules) {
     log.info(`deep-enrich[${project}]: Limited to first ${opts.maxModules} components (${components.length} total)`);
