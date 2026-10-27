@@ -20,12 +20,12 @@ const DIMENSION_NAMES: Record<Dimension, string> = {
 };
 
 export const scorersClient = `
-let scorerData=null, scorerError='', scorerLoading=false, scorerHtml='', scorerGroup='', scorerAllFailing=false, scorerRequest=0;
+let scorerData=null, scorerError='', scorerLoading=false, scorerHtml='', scorerGroup='', scorerAllFailing=false, scorerRequest=0, scorerCommitDraft='';
 const scorerWindows=${JSON.stringify(SCORER_WINDOWS.map(String))};
 const scorerDimensions=${JSON.stringify(Object.fromEntries(DIMENSIONS_OFFERED.map((dimension) => [dimension, DIMENSION_NAMES[dimension]])))};
 const savedWindow=read('teamai-dashboard-scorer-window','30'), savedGroup=read('teamai-dashboard-scorer-group','');
 let scorerQuery={window:scorerWindows.includes(savedWindow)?savedWindow:'30',scorer:'',cohort:'',groupBy:Object.hasOwn(scorerDimensions,savedGroup)?savedGroup:'',commit:''};
-function resetScorers(){scorerData=null;scorerError='';scorerLoading=false;scorerHtml='';scorerGroup='';scorerAllFailing=false;scorerQuery={...scorerQuery,scorer:'',cohort:'',commit:''};}
+function resetScorers(){scorerCommitDraft='';scorerData=null;scorerError='';scorerLoading=false;scorerHtml='';scorerGroup='';scorerAllFailing=false;scorerQuery={...scorerQuery,scorer:'',cohort:'',commit:''};}
 const pct=rate=>rate==null?'—':number(Math.round(rate*100))+'%';
 const short=hash=>e(String(hash||'').slice(0,7));
 function judgeText(j){ if(j.kind==='human')return label('Hand label'); return '<span data-verbatim>'+e(j.tool)+'</span> / '+(j.model?'<span data-verbatim>'+e(j.model.id)+'</span>'+(j.model.reported?'':' <small>'+label('requested')+'</small>')+(j.model.alias?' <small data-verbatim>'+e(j.model.alias)+'</small>':''):label('model not recorded')); }
@@ -101,7 +101,7 @@ function scorerControls(data){
  return '<form class="scorer-controls" data-scorer-form>'
   +'<label>'+label('Window')+'<select id="scorer-window">'+scorerWindows.map(w=>'<option value="'+w+'"'+(scorerQuery.window===w?' selected':'')+'>'+number(Number(w))+' '+label('days')+'</option>').join('')+'</select></label>'
   +'<label>'+label('Group by')+'<select id="scorer-group"><option value="">'+label('No grouping')+'</option>'+Object.keys(scorerDimensions).map(k=>'<option value="'+k+'"'+(scorerQuery.groupBy===k?' selected':'')+'>'+label(scorerDimensions[k])+'</option>').join('')+'</select></label>'
-  +'<label>'+label('Split at team commit')+'<span class="inline"><input id="scorer-commit" name="commit" autocomplete="off" spellcheck="false" placeholder="'+e(t('commit SHA'))+'" value="'+e(scorerQuery.commit)+'" pattern="[0-9a-fA-F]{4,64}"><button class="primary" type="submit">'+label('Split')+'</button>'+(scorerQuery.commit?'<button class="ghost" type="button" data-scorer-clear>'+label('Clear')+'</button>':'')+'</span></label>'
+  +'<label>'+label('Split at team commit')+'<span class="inline"><input id="scorer-commit" name="commit" autocomplete="off" spellcheck="false" placeholder="'+e(t('commit SHA'))+'" value="'+e(scorerCommitDraft)+'" pattern="[0-9a-fA-F]{4,64}"><button class="primary" type="submit">'+label('Split')+'</button>'+(scorerQuery.commit?'<button class="ghost" type="button" data-scorer-clear>'+label('Clear')+'</button>':'')+'</span></label>'
   +'</form>'
   +(sel?cohortPicker(data,sel):'');
 }
@@ -128,7 +128,7 @@ async function loadScorers(){
   const response=await fetch(apiQuery('/api/scorers',params),{signal:AbortSignal.timeout(30000)});
   const data=await response.json().catch(()=>null);
   if(!current())return;
-  if(!response.ok){scorerError=data&&data.error?data.error:t('Could not load scorer results.');if(response.status===400)scorerQuery.commit='';}
+  if(!response.ok){scorerError=data&&data.error?data.error:t('Could not load scorer results.');if(response.status===400)scorerQuery.commit=scorerData&&scorerData.selected&&scorerData.selected.split?scorerData.selected.split.commit:'';}
   else{scorerData=data;scorerError='';if(data.selected){scorerQuery.scorer=data.selected.cohort.scorer;scorerQuery.cohort=data.selected.cohort.id;}if(!data.selected||!data.selected.groups)scorerGroup='';}
  }catch{if(current())scorerError=t('Could not load scorer results.');}
  finally{if(current()){scorerLoading=false;if(page==='scorers'){const html=scorersPage();if(html!==scorerHtml){scorerHtml=html;render();}}}}
@@ -138,13 +138,13 @@ document.addEventListener('change',event=>{
  if(event.target.id==='scorer-window')setScorerQuery({window:event.target.value});
  else if(event.target.id==='scorer-group')setScorerQuery({groupBy:event.target.value});
 });
-document.addEventListener('submit',event=>{ if(!event.target.closest('[data-scorer-form]'))return; event.preventDefault(); setScorerQuery({commit:$('scorer-commit').value.trim()}); });
+document.addEventListener('submit',event=>{ if(!event.target.closest('[data-scorer-form]'))return; event.preventDefault(); scorerCommitDraft=$('scorer-commit').value.trim(); setScorerQuery({commit:scorerCommitDraft}); });
 document.addEventListener('click',event=>{
  const scorer=event.target.closest('[data-scorer]'), cohort=event.target.closest('[data-cohort]'), group=event.target.closest('[data-scorer-group]');
  if(scorer)setScorerQuery({scorer:scorer.dataset.scorer,cohort:''});
  else if(cohort)setScorerQuery({cohort:cohort.dataset.cohort});
  else if(group){scorerGroup=scorerGroup===group.dataset.scorerGroup?'':group.dataset.scorerGroup;scorerHtml='';render();}
  else if(event.target.closest('[data-scorer-failing]')){scorerAllFailing=!scorerAllFailing;scorerHtml='';render();}
- else if(event.target.closest('[data-scorer-clear]'))setScorerQuery({commit:''});
+ else if(event.target.closest('[data-scorer-clear]')){scorerCommitDraft='';setScorerQuery({commit:''});}
 });
 `;
