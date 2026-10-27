@@ -266,7 +266,7 @@ function refusalMessage(refusal: Refusal, local: { invocation: Invocation; tool?
     case 'not_skill_run':
       return `Run ${refusal.run} is not driven by the skill driver on this machine. Ask the person whether to continue it from this session, and run the command in next only when they agree: it takes the run over from the machine that last drove it. The person can instead continue it in a terminal with ${resumeLiteral(local.invocation, refusal.run, { tool: local.tool })}.`;
     case 'tool_needed':
-      return `Run ${refusal.run} has prompt or scored steps, which need the tool this coding session works in, and it names none.`;
+      return `Run ${refusal.run} needs the tool this coding session works in, for the models of its steps or its judging, and it names none.`;
     case 'not_owner':
       return `Run ${refusal.run} is owned by ${refusal.owner}, who claimed it at ${refusal.since}. Ask the person whether that install is done with it, and run the command in next only when they agree to take it from there; otherwise the run goes on there.`;
     case 'run_not_found':

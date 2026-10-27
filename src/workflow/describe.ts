@@ -57,6 +57,11 @@ export interface WorkflowDescription {
     prompts: string[];
     /** Interactive prompt steps, by path: a person works in them with the agent. */
     interactive: string[];
+    /**
+     * Prompt steps, by path, whose child runs a model resolved for the session's tool: the step's `model`, or the
+     * `defaults.model` in effect for a step that names no `agent`.
+     */
+    modeled: string[];
     /** The most steps a run may have leased at once, at most `ceiling`. */
     width: number;
     /** The questions asked before a step runs, by path, with what the step does once answered. */
@@ -94,6 +99,8 @@ interface Scope {
   setup?: Setup;
   /** The step that opened the copy its steps work in, by path. */
   copy?: string;
+  /** The `defaults.model` in effect, as the engine's scope keeps it. */
+  defaultModel?: string;
 }
 
 /** Whether `step` leaves commits on a branch: it writes in a copy, or a step of the workflow it runs does. */
@@ -114,7 +121,7 @@ export function describeWorkflow(input: {
   const { definition, workflows, ceiling, can, allow, env, base } = input;
   const runEnvKeys = requiredEnvKeys([definition, ...Object.values(workflows)]);
   const facts: WorkflowDescription['facts'] = {
-    prompts: [], interactive: [], width: 0, gates: [], inWorkspace: [], scored: [], deliver: [], ...(base !== undefined ? { base } : {}),
+    prompts: [], interactive: [], modeled: [], width: 0, gates: [], inWorkspace: [], scored: [], deliver: [], ...(base !== undefined ? { base } : {}),
     requiresEnv: { keys: [...runEnvKeys], missingHere: [...runEnvKeys].filter((key) => sameEnvName(env.present, key) === undefined) },
     ...(definition.timeout !== undefined ? { timeout: definition.timeout } : {}),
     budgets: definition.budget ? [{ tokens: definition.budget.tokens }] : [],
@@ -168,6 +175,7 @@ export function describeWorkflow(input: {
       if (!child && step.end === undefined && !runsInCheckout(step, scope.ancestors)) facts.inWorkspace.push(path);
       if (step.prompt !== undefined || step.promptFile !== undefined) facts.prompts.push(path);
       if (step.interactive) facts.interactive.push(path);
+      if ((step.prompt !== undefined || step.promptFile !== undefined) && (step.model !== undefined || (step.agent === undefined && scope.defaultModel !== undefined))) facts.modeled.push(path);
       if (step.scorers && step.scorers.names.length > 0) facts.scored.push({ step: path, scorers: step.scorers.names });
       if (step.deliver === 'pr') {
         const seen = new Set<string>();
@@ -179,6 +187,7 @@ export function describeWorkflow(input: {
       if (child) {
         const named = typeof step.workflow === 'string' ? workflows[step.workflow] : undefined;
         const setup = named?.setup ?? scope.setup;
+        const defaultModel = named?.defaults?.model ?? scope.defaultModel;
         const limits = [step.forEach ? undefined : step.budget, named?.budget].flatMap((budget) => (budget ? [budget.tokens] : []));
         if (limits.length > 0) facts.budgets.push({ step: path, tokens: Math.min(...limits) });
         own = visit(child.steps, {
@@ -187,6 +196,7 @@ export function describeWorkflow(input: {
           budgeted: scope.budgeted || step.budget !== undefined || named?.budget !== undefined,
           ...(setup ? { setup } : {}),
           ...(opensCopy(step) ? { copy: path } : scope.copy !== undefined ? { copy: scope.copy } : {}),
+          ...(defaultModel !== undefined ? { defaultModel } : {}),
         });
       } else if (step.command !== undefined || step.prompt !== undefined || step.promptFile !== undefined) {
         own = 1;
@@ -201,6 +211,7 @@ export function describeWorkflow(input: {
   facts.width = Math.min(ceiling, visit(definition.steps, {
     prefix: '', ancestors: [], requires: mergeRequirements(definition.defaults?.requires), budgeted: definition.budget !== undefined,
     ...(definition.setup ? { setup: definition.setup } : {}),
+    ...(definition.defaults?.model !== undefined ? { defaultModel: definition.defaults.model } : {}),
   }));
   const route = [...copies].find(([, copy]) => copy.taken && copy.held);
   if (route?.[1].held) facts.localRoute = { opener: route[0], held: route[1].held.step, missing: route[1].held.missing };

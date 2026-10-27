@@ -1048,7 +1048,7 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       if (!('data' in other) || typeof other.data.run !== 'string') throw new Error(JSON.stringify(other));
       const run = RunIdSchema.parse(other.data.run);
       const refused = { error: {
-        code: 'tool_needed', message: `Run ${run} has prompt or scored steps, which need the tool this coding session works in, and it names none.`,
+        code: 'tool_needed', message: `Run ${run} needs the tool this coding session works in, for the models of its steps or its judging, and it names none.`,
         next: `teamai workflow resume ${run} --driver skill --tools default='{tool}'`,
       } };
       expect(await made.call({ kind: 'resume', run, claim: false, confirmed: false, answers: {} })).toEqual(refused);
@@ -1997,18 +1997,23 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     name: 'describe asks a session whose host names no tool for it, with a describe whose {tool} slot it fills, when the run needs a tool',
     rows: ['R27', 'R3', 'R4'],
     run: async () => {
-      const made = await harness({ review: REVIEW, check: CHECK }, { scorers: SCORERS, tool: null });
+      const plain = REVIEW.replace('    scorers: [review-quality]\n', '');
+      const defaulted = plain.replace('name: review', 'name: defaulted').replace('steps:', 'defaults:\n  model: claude-opus-4-1\nsteps:');
+      const made = await harness({ review: REVIEW, check: CHECK, plain: plain.replace('name: review', 'name: plain'), defaulted }, { scorers: SCORERS, tool: null });
       for (const mode of ['attended', 'unattended'] as const) {
         expect(await made.call({ kind: 'describe', name: 'review' }, { mode })).toMatchObject({ data: { describe: { ask: {
-          kind: 'tool', reason: 'This coding session names no tool, which its prompt steps and judging need.',
+          kind: 'tool', reason: 'This coding session names no tool, which the run needs for the models of its steps or its judging.',
           describe: "teamai workflow start --describe review --driver skill --tools default='{tool}'", tools: expect.arrayContaining(['claude', 'omp', 'qoder']),
         } } } });
       }
       expect(await made.call({ kind: 'describe', name: 'review', tool: 'claude' })).toMatchObject({ data: { describe: { ask: { kind: 'ask', question: {
         options: [{ label: 'Recommended: with judging', start: 'teamai workflow start review --driver skill --tools default=claude' }, { label: 'Same, but without judging', start: 'teamai workflow start review --driver skill --tools default=claude --no-judge' }],
       } } } } });
-      // A run of commands alone needs no tool.
+      // A model the workflow's defaults pin needs the tool too.
+      expect(await made.call({ kind: 'describe', name: 'defaulted' })).toMatchObject({ data: { describe: { ask: { kind: 'tool' } } } });
+      // A run of commands alone needs no tool, and neither does a prompt step that pins no model and is not judged.
       expect(await made.call({ kind: 'describe', name: 'check' })).toMatchObject({ data: { describe: { ask: { kind: 'start', start: 'teamai workflow start check --driver skill' } } } });
+      expect(await made.call({ kind: 'describe', name: 'plain' })).toMatchObject({ data: { describe: { ask: { kind: 'start', start: 'teamai workflow start plain --driver skill' } } } });
       return made.rows;
     },
   },

@@ -15,9 +15,9 @@ import type { DescribeAsk } from './turn.js';
  */
 export type StartAnswer = 'confirmed' | 'inputs' | 'parallel' | 'hitl' | 'tool';
 
-/** Whether a session working in `tool` must name it before it runs `description`: it names none, and a prompt or scored step needs one. */
+/** Whether a session working in `tool` must name it before it runs `description`: it names none, and a step's model or judging needs one. */
 export function needsTool(description: WorkflowDescription, tool: ToolId | undefined): boolean {
-  return tool === undefined && description.facts.prompts.length + description.facts.scored.length > 0;
+  return tool === undefined && description.facts.modeled.length + description.facts.scored.length > 0;
 }
 
 /**
@@ -322,7 +322,7 @@ export function askFor(verdict: DescribeVerdict, description: WorkflowDescriptio
     }
     case 'tool':
       return {
-        kind: 'tool', reason: 'This coding session names no tool, which its prompt steps and judging need.', describe: describeLiteral(invocation, name, { tool: '{tool}' }), tools: Object.keys(TOOLS),
+        kind: 'tool', reason: 'This coding session names no tool, which the run needs for the models of its steps or its judging.', describe: describeLiteral(invocation, name, { tool: '{tool}' }), tools: Object.keys(TOOLS),
       };
     case 'local':
     case 'denied':
