@@ -52,19 +52,15 @@ const observed = (agent: RecordedAgent | undefined): AgentObservation | undefine
 const one = (value: string | undefined): GroupValue[] | undefined => (value === undefined ? undefined : [{ value }]);
 const many = (values: readonly string[] | undefined): GroupValue[] | undefined => values?.map((value) => ({ value }));
 
+/** The dimensions a cohort can be grouped by, in the order the page offers them. */
+export const DIMENSIONS_OFFERED = ['tool', 'model', 'teamRevision', 'definition', 'role', 'project', 'tag', 'fingerprint', 'skill'] as const;
+export type Dimension = (typeof DIMENSIONS_OFFERED)[number];
+
 /**
  * The recorded configuration a cohort can be grouped by. Each reads the values a label counts under: undefined when
  * the label did not record that part, so it is `not recorded` and never guessed; [] when it recorded none, as a session
  * that loaded no team skill. A label listing two values counts under both.
  */
-/** The dimensions a cohort can be grouped by, in the order the page offers them. */
-export const DIMENSIONS_OFFERED = ['tool', 'model', 'teamRevision', 'definition', 'role', 'project', 'tag', 'fingerprint', 'skill'] as const;
-export type Dimension = (typeof DIMENSIONS_OFFERED)[number];
-
-export function isDimension(name: string): name is Dimension {
-  return DIMENSIONS_OFFERED.some((dimension) => dimension === name);
-}
-
 const DIMENSIONS: Record<Dimension, (entry: ViewedLabel) => GroupValue[] | undefined> = {
   tool: ({ agent }) => one(observed(agent)?.tool.name),
   model: ({ agent }) => {
@@ -119,17 +115,10 @@ export type ScorerResultsQuery = {
  * A failing label as the view lists it: never its subject's native session id, reasoning or prompt. `groups` are the
  * keys of the groups it counts under, when the view is grouped.
  */
-export type FailingLabel = {
-  author: string;
-  scoredAt: string;
-  label: string;
-  source: ScoreLabel['source'];
-  platform?: string;
-  skills?: string[];
-  sessionName?: string;
-  run?: { id: string; step: string; pass: number; source: 'local' | 'reported' };
-  groups?: string[];
-};
+export type FailingLabel = { author: string; scoredAt: string; label: string; skills?: string[]; groups?: string[] } & (
+  | { source: 'session'; platform: string; sessionName?: string }
+  | { source: 'workflow'; run: { id: string; step: string; pass: number; source: 'local' | 'reported' } }
+);
 
 /**
  * The friction reminder per session run on this machine (#1182): `hinted` from the member's contribute state, by
@@ -139,9 +128,6 @@ export type ReminderInput = { sessions: readonly string[]; hinted: ReadonlyMap<s
 
 /** One row of the reminder table. `rate` is over `labelled` sessions only. */
 export type ReminderRow = { reminder: 'yes' | 'no' | 'not recorded'; sessions: number; labelled: number; passed: number; rate: number | null };
-
-/** The most failing labels a view lists. */
-const FAILING_LIMIT = 100;
 
 /** One UTC week of the trend, named by its Monday. */
 export type TrendWeek = Stats & { week: string };
@@ -166,15 +152,27 @@ export type ScorerResultsView = {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+/** The windows a view offers, in days of `scoredAt`. */
+export const SCORER_WINDOWS = [7, 30, 90, 180] as const;
+
 function judgeCohort(judge: ScoreLabel['judge']): JudgeCohort {
-  if (judge.kind === 'human') return { kind: 'human' };
-  const id = judge.model?.reported ?? judge.model?.requested;
-  const alias = judge.model?.alias;
-  return {
-    kind: 'model',
-    tool: judge.tool,
-    ...(id ? { model: { id, reported: judge.model?.reported !== undefined, ...(alias ? { alias } : {}) } } : {}),
-  };
+  switch (judge.kind) {
+    case 'human':
+      return { kind: 'human' };
+    case 'model': {
+      const id = judge.model?.reported ?? judge.model?.requested;
+      const alias = judge.model?.alias;
+      return {
+        kind: 'model',
+        tool: judge.tool,
+        ...(id ? { model: { id, reported: judge.model?.reported !== undefined, ...(alias ? { alias } : {}) } } : {}),
+      };
+    }
+    default: {
+      const unhandled: never = judge;
+      return unhandled;
+    }
+  }
 }
 
 function cohortOf(label: ScoreLabel): Omit<Cohort, 'rubric'> & { rubric: { sourceHash: string } } {
@@ -210,7 +208,7 @@ function weekOf(iso: string): string {
 }
 
 /** Every week the window touches, oldest first, each with its own labels. */
-function trend(labels: readonly ViewedLabel[], from: string, to: string): TrendWeek[] {
+function trend({ labels, from, to }: { labels: readonly ViewedLabel[]; from: string; to: string }): TrendWeek[] {
   const weeks: TrendWeek[] = [];
   for (let week = weekOf(from); week <= to.slice(0, 10); week = new Date(Date.parse(`${week}T00:00:00Z`) + 7 * DAY_MS).toISOString().slice(0, 10)) {
     weeks.push({ week, ...stats(labels.filter(({ label }) => weekOf(label.scoredAt) === week)) });
@@ -246,12 +244,19 @@ function failingLabel(entry: ViewedLabel, groupBy: Dimension | undefined): Faili
     author: entry.author,
     scoredAt: label.scoredAt,
     label: label.label,
-    source: label.source,
     ...label.used?.skills.length ? { skills: label.used.skills } : {},
     ...groupBy ? { groups: groupKeys(entry, groupBy) } : {},
   };
-  if (label.source === 'session') return { ...shared, platform: label.subject.platform, ...entry.sessionName ? { sessionName: entry.sessionName } : {} };
-  return { ...shared, run: { id: label.subject.runId, step: label.subject.step, pass: label.subject.pass, source: entry.runSource ?? 'reported' } };
+  switch (label.source) {
+    case 'session':
+      return { ...shared, source: 'session', platform: label.subject.platform, ...entry.sessionName ? { sessionName: entry.sessionName } : {} };
+    case 'workflow':
+      return { ...shared, source: 'workflow', run: { id: label.subject.runId, step: label.subject.step, pass: label.subject.pass, source: entry.runSource ?? 'reported' } };
+    default: {
+      const unhandled: never = label;
+      return unhandled;
+    }
+  }
 }
 
 /** The reminder table of a session cohort: each session counts once, under the label of this cohort it has. */
@@ -324,6 +329,14 @@ export const ScorerResults = {
     return { days, from: new Date(now.getTime() - days * DAY_MS).toISOString(), to: now.toISOString() };
   },
 
+  /** The team revisions `labels` record their work ran on: what a split at a team commit asks the team clone about. */
+  revisions(labels: readonly ViewedLabel[]): Set<string> {
+    return new Set(labels.flatMap(({ agent }) => {
+      const revision = observed(agent)?.team?.revision;
+      return revision === undefined ? [] : [revision];
+    }));
+  },
+
   /** The results of every scorer in `labels`, with the selected scorer's cohort counted over the window. */
   of({ labels, query, now, reminders }: { labels: readonly ViewedLabel[]; query: ScorerResultsQuery; now: Date; reminders?: ReminderInput }): ScorerResultsView {
     const window = ScorerResults.window(query.windowDays, now);
@@ -346,7 +359,7 @@ export const ScorerResults = {
         ...cohort,
         rubric: { sourceHash: cohort.rubric.sourceHash, ...(teamRevision ? { teamRevision } : {}) },
         stats: stats(all.filter(inWindow)),
-        trend: trend(all.filter(inWindow), from, to),
+        trend: trend({ labels: all.filter(inWindow), from, to }),
         lastScoredAt: newest(all),
       };
       byScorer.set(cohort.scorer, [...byScorer.get(cohort.scorer) ?? [], { summary, all }]);
@@ -370,7 +383,6 @@ export const ScorerResults = {
     const { groupBy, split } = query;
     const failing = counted.filter(({ label }) => !label.passed)
       .sort((left, right) => right.label.scoredAt.localeCompare(left.label.scoredAt))
-      .slice(0, FAILING_LIMIT)
       .map((entry) => failingLabel(entry, groupBy));
     return {
       window,
@@ -378,7 +390,7 @@ export const ScorerResults = {
       selected: {
         cohort: summary,
         headline: stats(counted),
-        trend: trend(counted, from, to),
+        trend: trend({ labels: counted, from, to }),
         ...(groupBy ? { groupBy, groups: groups(counted, groupBy, split?.sideOf) } : {}),
         ...(split ? { split: { commit: split.commit, ...splitStats(counted, split.sideOf) } } : {}),
         failing,

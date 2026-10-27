@@ -160,6 +160,17 @@ describe('scorer results', () => {
     ]);
   });
 
+  it('lists every failing label of a group, however many newer failing labels other groups have', () => {
+    const failing = (skill: string, scoredAt: string) => viewed(sessionLabel({ passed: false, label: 'poor', scoredAt, used: { skills: [skill] } }));
+    const labels = [
+      failing('review', '2026-03-01T00:00:00.000Z'),
+      ...Array.from({ length: 150 }, (_, index) => failing('tdd', `2026-03-10T00:00:${String(index % 60).padStart(2, '0')}.${String(index).padStart(3, '0')}Z`)),
+    ];
+    const selected = ScorerResults.of({ labels, query: { windowDays: 30, groupBy: 'skill' }, now: NOW }).selected;
+    expect(selected?.failing.filter((row) => row.groups?.includes('review'))).toHaveLength(1);
+    expect(selected?.failing).toHaveLength(151);
+  });
+
   it('compares the sessions the friction reminder fired on with those it did not, over labelled sessions only', () => {
     const on = (sessionId: string, passed: boolean) => viewed(sessionLabel({ subject: { platform: 'claude', sessionId }, passed }));
     const labels = [on('fired-1', false), on('fired-2', true), on('quiet-1', true), on('unknown-1', true), on('elsewhere', false)];

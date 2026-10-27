@@ -12,7 +12,7 @@ import { readRecordedAgent, type RecordedAgent } from '../agent-observation.js';
 import { readReminderDecisions, sanitizeSessionId } from '../contribute-check.js';
 import { memberEvents } from '../dashboard-collector.js';
 import { LabelStore } from '../scorers/label-store.js';
-import { isDimension, ScorerResults, type ScorerResultsQuery, type ScorerResultsView, type Side, type ViewedLabel } from '../scorers/results.js';
+import { DIMENSIONS_OFFERED, SCORER_WINDOWS, ScorerResults, type ScorerResultsQuery, type ScorerResultsView, type Side, type ViewedLabel } from '../scorers/results.js';
 import { sessionArchiveRoot } from '../session-flow/session-cmd-shared.js';
 import { SyncManager } from '../session-flow/sync.js';
 import { getReportsDir, usesBranchWorktree, type DashboardEvent, type LocalConfig } from '../types.js';
@@ -21,17 +21,14 @@ import { buildEndRecord, RECORDS_DIR } from '../workflow/records.js';
 import { isRunId, readRun } from '../workflow/store.js';
 import { HttpError } from './http.js';
 
-/** The windows the page offers, in days of `scoredAt`. */
-export const SCORER_WINDOWS = [7, 30, 90, 180] as const;
-
 /** What the page asks for: the view's query, with the team commit to split at as the member typed it. */
 export type ScorerQuery = Omit<ScorerResultsQuery, 'split'> & { commit?: string };
 
 const QuerySchema = z.object({
-  window: z.enum(['7', '30', '90', '180']).optional(),
+  window: z.coerce.number().refine((days) => SCORER_WINDOWS.some((offered) => offered === days)).optional(),
   scorer: z.string().min(1).optional(),
   cohort: z.string().min(1).optional(),
-  groupBy: z.string().refine(isDimension).optional(),
+  groupBy: z.enum(DIMENSIONS_OFFERED).optional(),
   commit: z.string().regex(/^[0-9a-fA-F]{4,64}$/).optional(),
 });
 
@@ -46,10 +43,10 @@ export function parseScorerQuery(params: URLSearchParams): ScorerQuery {
   }
   const { window, scorer, cohort, groupBy, commit } = parsed.data;
   return {
-    windowDays: window ? Number(window) : 30,
+    windowDays: window ?? 30,
     ...(scorer ? { scorer } : {}),
     ...(cohort ? { cohort } : {}),
-    ...(groupBy && isDimension(groupBy) ? { groupBy } : {}),
+    ...(groupBy ? { groupBy } : {}),
     ...(commit ? { commit: commit.toLowerCase() } : {}),
   };
 }
@@ -60,9 +57,10 @@ const RecordSchema = z.object({
   benchmark: z.unknown().optional(),
 });
 
-type RunAgents = { source: 'local' | 'reported'; benchmark: boolean; agents: Map<string, RecordedAgent> };
+type RunAgents = { source: 'local' | 'reported'; isBenchmark: boolean; agents: Map<string, RecordedAgent> };
 
 const passKey = (step: string, pass: number) => `${step}#${pass}`;
+const sessionKey = (platform: string, sessionId: string) => `${platform}\0${sessionId}`;
 
 /** The run a workflow label judges: this machine's run file when it has one, else the record the team published. */
 async function runAgents(config: LocalConfig, runId: string): Promise<RunAgents | undefined> {
@@ -72,11 +70,11 @@ async function runAgents(config: LocalConfig, runId: string): Promise<RunAgents 
     const recorded = readRecordedAgent(agent);
     return recorded ? [[passKey(step, pass), recorded] as const] : [];
   }));
-  if (typeof local === 'object') return { source: 'local', benchmark: false, agents: read(buildEndRecord(local, local.driver, '').steps) };
+  if (typeof local === 'object') return { source: 'local', isBenchmark: false, agents: read(buildEndRecord(local, local.driver, '').steps) };
   try {
     const parsed = RecordSchema.safeParse(JSON.parse(await fs.readFile(path.join(getReportsDir(config), RECORDS_DIR, `${runId}.json`), 'utf8')));
     if (!parsed.success) return undefined;
-    return { source: 'reported', benchmark: parsed.data.benchmark !== undefined, agents: read(parsed.data.steps) };
+    return { source: 'reported', isBenchmark: parsed.data.benchmark !== undefined, agents: read(parsed.data.steps) };
   } catch {
     return undefined;
   }
@@ -87,9 +85,8 @@ function archivedNames(config: LocalConfig): Map<string, string> {
   const root = sessionArchiveRoot(config);
   if (!root) return new Map();
   const entries = new SyncManager(root).listAllSessions()
-    .filter((entry) => entry.sessionId)
     .sort((left, right) => left.updatedAt.localeCompare(right.updatedAt));
-  return new Map(entries.map((entry) => [`${entry.platform}\0${entry.sessionId}`, entry.sessionName]));
+  return new Map(entries.flatMap((entry) => (entry.sessionId ? [[sessionKey(entry.platform, entry.sessionId), entry.sessionName] as const] : [])));
 }
 
 async function teamGit(config: LocalConfig, args: string[]) {
@@ -115,7 +112,7 @@ async function sidesOf(config: LocalConfig, commit: string, revisions: ReadonlyS
 }
 
 /** The member's own sessions that started on this machine in the window, and whether their reminder fired. */
-async function reminderInput(events: readonly DashboardEvent[], from: string, to: string) {
+async function reminderInput({ events, from, to }: { events: readonly DashboardEvent[]; from: string; to: string }) {
   const sessions = [...new Set(memberEvents([...events])
     .filter((event) => event.type === 'session_start' && event.timestamp >= from && event.timestamp <= to)
     .map((event) => event.sessionId))];
@@ -153,11 +150,11 @@ export async function scorerResults({ config, query, now = new Date(), events, r
   const names = archivedNames(config);
   const viewed: ViewedLabel[] = labels.flatMap(({ label, author }): ViewedLabel[] => {
     if (label.source === 'session') {
-      const sessionName = names.get(`${label.subject.platform}\0${label.subject.sessionId}`);
+      const sessionName = names.get(sessionKey(label.subject.platform, label.subject.sessionId));
       return [{ label, author, ...label.agent ? { agent: label.agent } : {}, ...sessionName ? { sessionName } : {} }];
     }
     const run = runs.get(label.subject.runId);
-    if (run?.benchmark) return [];
+    if (run?.isBenchmark) return [];
     const agent = run?.agents.get(passKey(label.subject.step, label.subject.pass));
     return [{ label, author, ...agent ? { agent } : {}, ...run ? { runSource: run.source } : {} }];
   });
@@ -167,10 +164,9 @@ export async function scorerResults({ config, query, now = new Date(), events, r
   const [split, reminders] = await Promise.all([
     commit ? (async () => {
       const full = await resolveCommit(config, commit);
-      const revisions = new Set(viewed.flatMap(({ agent }) => (agent && 'v' in agent && agent.team ? [agent.team.revision] : [])));
-      return { commit: full, sideOf: await sidesOf(config, full, revisions) };
+      return { commit: full, sideOf: await sidesOf(config, full, ScorerResults.revisions(viewed)) };
     })() : undefined,
-    events ? reminderInput(events, window.from, window.to) : undefined,
+    events ? reminderInput({ events, ...window }) : undefined,
   ]);
   return ScorerResults.of({ labels: viewed, query: { ...rest, ...split ? { split } : {} }, now, ...reminders ? { reminders } : {} });
 }

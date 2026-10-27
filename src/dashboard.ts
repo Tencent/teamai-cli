@@ -305,10 +305,6 @@ export async function startDashboard(port?: number): Promise<void> {
       res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
       res.end(JSON.stringify(body));
     };
-    if (url.pathname !== '/api/scorers') {
-      json(404, { error: 'Not supported.' });
-      return;
-    }
     if (req.method !== 'GET') {
       json(405, { error: 'Not supported.' });
       return;
@@ -330,7 +326,7 @@ export async function startDashboard(port?: number): Promise<void> {
         json(e.status, { error: e.message });
         return;
       }
-      log.debug(`dashboard: ${url.pathname} failed: ${(e as Error).message}`);
+      log.debug(`dashboard: ${url.pathname} failed: ${e instanceof Error ? e.message : String(e)}`);
       json(500, { error: 'Failed to load scorer results.' });
     }
   };
@@ -458,7 +454,7 @@ export async function startDashboard(port?: number): Promise<void> {
       return;
     }
 
-    if (url.pathname === '/api/scorers' || url.pathname.startsWith('/api/scorers/')) {
+    if (url.pathname === '/api/scorers') {
       await handleScorers(req, res, url, workspace);
       return;
     }

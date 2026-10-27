@@ -1,12 +1,28 @@
 /**
  * The Scorers page of the dashboard client (#1182), embedded in `dashboardClient`'s closure, whose helpers it uses:
- * `$`, `e`, `t`, `label`, `number`, `when`, `json`, `apiQuery`, `errorPanel`, `render`, `page` and `workspaceGeneration`.
- * Every value from the API is escaped with `e`. A workflow row opens its run through the Workflow Runs dialog.
+ * `$`, `e`, `t`, `label`, `number`, `when`, `json`, `read`, `save`, `apiQuery`, `errorPanel`, `render`, `page` and
+ * `workspaceGeneration`. Every value from the API is escaped with `e`. A workflow row opens its run through the
+ * Workflow Runs dialog.
  */
+import { DIMENSIONS_OFFERED, SCORER_WINDOWS, type Dimension } from '../scorers/results.js';
+
+/** The name the page gives each dimension, in English; `label` translates it. */
+const DIMENSION_NAMES: Record<Dimension, string> = {
+  tool: 'Tool',
+  model: 'Model',
+  teamRevision: 'Team revision',
+  definition: 'Agent definition',
+  role: 'Role',
+  project: 'Project',
+  tag: 'Tag',
+  fingerprint: 'Fingerprint',
+  skill: 'Skill used',
+};
+
 export const scorersClient = `
 let scorerData=null, scorerError='', scorerLoading=false, scorerHtml='', scorerGroup='', scorerAllFailing=false;
-const scorerWindows=['7','30','90','180'];
-const scorerDimensions={tool:'Tool',model:'Model',teamRevision:'Team revision',definition:'Agent definition',role:'Role',project:'Project',tag:'Tag',fingerprint:'Fingerprint',skill:'Skill used'};
+const scorerWindows=${JSON.stringify(SCORER_WINDOWS.map(String))};
+const scorerDimensions=${JSON.stringify(Object.fromEntries(DIMENSIONS_OFFERED.map((dimension) => [dimension, DIMENSION_NAMES[dimension]])))};
 const savedWindow=read('teamai-dashboard-scorer-window','30'), savedGroup=read('teamai-dashboard-scorer-group','');
 let scorerQuery={window:scorerWindows.includes(savedWindow)?savedWindow:'30',scorer:'',cohort:'',groupBy:Object.hasOwn(scorerDimensions,savedGroup)?savedGroup:'',commit:''};
 function resetScorers(){scorerData=null;scorerError='';scorerLoading=false;scorerHtml='';scorerGroup='';scorerAllFailing=false;scorerQuery={...scorerQuery,scorer:'',cohort:'',commit:''};}
