@@ -183,7 +183,7 @@ program
   // WITHOUT the greedy `<name...>` variadic that would swallow the `[repo]`
   // positional (e.g. `init --agent claude .` must keep `.` as the repo arg).
   .option('--agent <name>', 'AI tools to set up (e.g. claude, codex, cursor, codebuddy, workbuddy, dsh). Repeatable or comma-separated. In single-repo mode, selects which tool dirs to create; a custom agent defined only in teamai.yaml\'s toolPaths also gets its root created here (git-backed init only — an HTTP init has no local teamai.yaml to read custom paths from). Omit for an interactive picker. Additive on repeated runs.', (val: string, acc: string[]) => acc.concat(val), [] as string[])
-  .option('--force', 'Overwrite existing config without confirmation')
+  .option('--force', 'Rewrite the existing config without confirmation, keeping the settings init does not set')
   .action(async (repoArg, cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
     const { init } = await import('./init.js');
