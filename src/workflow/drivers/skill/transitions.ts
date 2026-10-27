@@ -12,7 +12,7 @@ import type { WorkflowFailure } from '../../types.js';
 import type { ChildResult } from './child-brief.js';
 import type { HostChoice, HostProfile } from './host-profiles.js';
 import type { HitlMode, StartAnswer, StartCheck } from './preflight.js';
-import type { AttemptState, Dispatch, Gate, Judge, PlaceAsk, ReportBody, SkillState, StopReason, TurnEvent } from './skill-state.js';
+import type { AttemptState, Dispatch, Gate, Judge, PlaceAsk, ReportBody, SkillState, StopReason, TurnEvent, UnansweredHost } from './skill-state.js';
 import type { Waiting } from './turn.js';
 
 export interface TransitionRow {
@@ -38,7 +38,7 @@ export const TRANSITIONS = [
   { id: 'R8', state: 'none', input: 'start `--driver skill`, or R19\'s input', guard: 'the definition has a local route; for R19\'s input, the run\'s own definition, once R20 and R21 do not apply, or, in run mode `unattended`, as the run stands before the claim', effects: 'none', next: 'none', action: 'error `needs_local_driver` with the reason, next null; for R19\'s input it names the person\'s `teamai workflow resume <run>` literal, and the run stays readied here, or, unattended, as it was: nothing is claimed' },
   { id: 'R25', state: 'none', input: 'start `--driver skill`', guard: 'run mode `unattended`, R8 does not apply, and `attendedReason` names what needs a person, as R17\'s', effects: 'none', next: 'none', action: 'error `unattended_denied` with that reason, next null: no run is created' },
   { id: 'R9', state: 'none', input: 'start `--driver skill`', guard: '`checkStartAnswers` answers `confirm-needed`, and R8 and R25 do not apply', effects: 'none', next: 'none', action: 'error `confirm_needed`, next: the describe literal' },
-  { id: 'R10', state: 'none', input: 'start `--driver skill`', guard: '`checkStartAnswers` answers `ok`', effects: '`WorkflowClient.start`; write skill.json: identity `{skill, machine, run checkout}`, invocation, options (`--parallel`, the HITL mode, the caller\'s run mode), host `pending` when the definition has a prompt step or the session judges the run, owner := the caller\'s session, working in the tool its `--tools default=<tool>` names, else the one its host names; judging on with the session tool when describe judges here, or `sessionJudge` with it when describe judges by the session, and the start has no `--no-judge`', next: 'host when it has a prompt step or the session judges it, else drive', action: 'the turn of a tick' },
+  { id: 'R10', state: 'none', input: 'start `--driver skill`', guard: '`checkStartAnswers` answers `ok`', effects: '`WorkflowClient.start`; write skill.json: identity `{skill, machine, run checkout}`, invocation, options (`--parallel`, the HITL mode, the caller\'s run mode), host `pending` when the definition has a prompt step or the session judges the run, with whether it has a prompt step, owner := the caller\'s session, working in the tool its `--tools default=<tool>` names, else the one its host names; judging on with the session tool when describe judges here, or `sessionJudge` with it when describe judges by the session, and the start has no `--no-judge`', next: 'host when it has a prompt step or the session judges it, else drive', action: 'the turn of a tick' },
   { id: 'R11', state: 'none', input: 'next, report `--driver skill`', guard: 'this machine has no skill.json for the run', effects: 'none', next: 'none', action: 'error `not_skill_run`, next: the `resume <run> --driver skill` literal, with `--tools default=\'{tool}\'` for a session with no tool to fill' },
   { id: 'R28', state: 'any', input: 'R19\'s input', guard: 'R19 would take the run, R8 and R24 do not apply, and the session names no tool while the run has a step whose model or judging needs one (`needsTool`)', effects: 'none', next: 'unchanged', action: 'error `tool_needed`, next: the `resume <run> --driver skill --tools default=\'{tool}\'` literal, whose slot the agent fills with its tool' },
   { id: 'R19', state: 'any', input: 'resume `--driver skill`; `next --takeover` with no skill.json here', guard: '`WorkflowClient.resume` readied the run: it took a run this machine lacks, or with `--claim` one another install owns, or found the run here and this install its owner, and released each lease this machine\'s local driver left on it, once the process group that lease\'s setup or command left is stopped, and stopped the group each attempt of that driver the run already stopped left; no skill.json is kept here, or the claim installed the published state; R8, R24 and R28 do not apply', effects: 'write skill.json as R10 does, with the caller\'s run mode and the options of `--parallel`, `--hitl` or `--auto-approve` and `--no-judge`, else a start\'s: one step at a time, HITL mode `person`, or `auto-approve` in an unattended run', next: 'host when the run has a prompt step or the session judges it, else drive', action: 'the turn of a tick' },
@@ -48,7 +48,7 @@ export const TRANSITIONS = [
   { id: 'R24', state: 'any', input: 'R19\'s input, or `next --takeover` with skill.json here', guard: 'run mode `unattended`, R8 does not apply, and `attendedReason` names what in the run\'s own definition needs a person, as R17\'s, counting only the steps the run has not settled for good (succeeded or skipped, a step in `for_each` items once every item settled it or a step that holds it, and every step in a workflow or `for_each` step that settled whole; none while a workflow or step loop of the run could run them again), and its `invoke: ask`; read before the claim or the takeover, from the published run a `--claim` would install, else this machine\'s copy, so R20 and R21 come after it', effects: 'none', next: 'unchanged', action: 'error `unattended_denied` with that reason, next null; the run and its skill state stay as they were: nothing is claimed or taken over' },
   { id: 'R26', state: 'any', input: 'R24\'s input, with skill.json here that R19 does not replace', guard: 'run mode `unattended`, R8 and R24 do not apply, and the skill.json\'s run mode is `attended`', effects: 'its run mode becomes `unattended`, and its HITL mode that of `--hitl` or `--auto-approve`, else `auto-approve`', next: 'unchanged', action: 'the S row of the call' },
   { id: 'R12', state: 'host', input: 'tick', guard: '', effects: 'none', next: 'host', action: '`choose about:host decide:agent`' },
-  { id: 'R13', state: 'host', input: 'next `--choice h`', guard: '', effects: 'host := `HOST_PROFILES[h]`; on `h4`, which starts no child agent, drop `sessionJudge`', next: 'drive', action: 'the turn of a tick, with event `judging-off` `no_child_agent` when it dropped `sessionJudge`' },
+  { id: 'R13', state: 'host', input: 'next `--choice h`', guard: '', effects: 'host := `HOST_PROFILES[h]`, or `none` for a run without a prompt step, which asked it only for its judge; on `h4`, which starts no child agent, drop `sessionJudge`', next: 'drive', action: 'the turn of a tick, with event `judging-off` `no_child_agent` when it dropped `sessionJudge`' },
   { id: 'R14', state: 'host', input: 'report, next `--ack` or `--adopt`', guard: '', effects: 'none', next: 'host', action: 'error `choice_pending`, next: the next literal' },
   { id: 'R15', state: 'drive, done', input: 'next `--choice h`', guard: '', effects: 'none', next: 'unchanged', action: 'error `unknown_choice`, next: the next literal' },
   { id: 'S1', state: 'host, drive, done', input: 'an agent call from session s', guard: 'the owner is s, or either session is unknown', effects: '`lastCallAt` := now; the tool := the one the call declares with `--tools`; else owner := s, working in s\'s tool, when unknown; else the tool := s\'s when the run has none and s is its owner or neither is known', next: 'unchanged', action: 'the input\'s row' },
@@ -240,7 +240,7 @@ export type Refusal =
 export type DescribeVerdict = { ask: 'start' | 'ask' | 'unattended' | 'tool' } | { ask: 'local' | 'denied'; reason: string };
 
 /** The run R10 starts: its options, whether it asks the host question first, and who judges it on this machine. */
-export interface StartRun { parallel: number; hitl: HitlMode; host: 'none' | 'pending'; judge?: JudgedBy }
+export interface StartRun { parallel: number; hitl: HitlMode; host: UnansweredHost; judge?: JudgedBy }
 
 /** A refusal of the skill driver; its code decides the literal it names to run instead. */
 type Refused = { kind: 'error'; refusal: Refusal };
@@ -375,8 +375,8 @@ export function startRow(input: StartInput): { row: 'R8' | 'R9'; refusal: Refusa
  * Whether a run asks the host question: it has a prompt step, which a child agent works, or its session judges it in a
  * subagent, which a host that starts no child (`h4`) cannot.
  */
-function hostOf(prompts: boolean, judge: JudgedBy | undefined): 'pending' | 'none' {
-  return prompts || judge?.kind === 'session' ? 'pending' : 'none';
+function hostOf(hasPromptStep: boolean, judge: JudgedBy | undefined): UnansweredHost {
+  return hasPromptStep || judge?.kind === 'session' ? { kind: 'pending', hasPromptStep } : { kind: 'none' };
 }
 
 /** The options a resume carries: `--parallel`, the HITL mode of `--hitl` or `--auto-approve`, and `judge: false` for `--no-judge`. */
@@ -594,7 +594,10 @@ export function judgeAnsweredRow(state: SkillState, input: { attempt: AttemptId;
 /** R13: the agent's answer to the host question; R15 when the run asks none now. */
 export function chooseRow(state: SkillState, input: { choice: HostChoice; profile: HostProfile }): Moved<'R13'> | Answered<'R15'> {
   if (state.host.kind !== 'pending') return { row: 'R15', answer: { kind: 'error', refusal: { code: 'unknown_choice', run: state.run } } };
-  const chosen: SkillState = { ...state, host: { kind: 'chosen', id: input.choice, children: input.profile.children, places: input.profile.places } };
+  // A run without a prompt step asked only for its judge, so its commands run as on any host.
+  const chosen: SkillState = {
+    ...state, host: state.host.hasPromptStep ? { kind: 'chosen', id: input.choice, children: input.profile.children, places: input.profile.places } : { kind: 'none' },
+  };
   // The session judges in a fresh subagent, which a host that starts no child agent cannot give it.
   if (input.choice !== 'h4' || chosen.sessionJudge === undefined) return { row: 'R13', state: chosen };
   const { sessionJudge: _sessionJudge, ...rest } = chosen;

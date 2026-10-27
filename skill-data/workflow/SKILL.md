@@ -49,7 +49,7 @@ A `report` you run answers with `data.runner`, not a turn. After one, go on with
 
 A `choose` action asks for one answer, and `about` says what it is for:
 
-- `host`: comes once per run that has prompt steps. Follow `reference`: it says which option fits your host and how to run it.
+- `host`: comes once per run that has prompt steps, or that you judge. Follow `reference`: it says which option fits your host and how to run it.
 - `gate`: an optional approval or choice at `step`. `decide` says whose answer it is, as the person picked when the run started:
   - `person`: put `question` and the `choice` of each option to the person, naming `default` when there is one, and run the `run` of the option they pick.
   - `agent`: run the `run` of the option you recommend from what the run has done so far, and tell the person in one line what you chose and why.

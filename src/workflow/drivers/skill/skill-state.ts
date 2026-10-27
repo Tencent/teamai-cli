@@ -149,10 +149,13 @@ const SkillStateSchema = z.object({
   invocation: z.enum(INVOCATIONS),
   /** `mode`: the run mode its start resolved, which every process of its attempts gets; a state from before it was kept is attended. */
   options: z.object({ parallel: z.number().int().min(1), hitl: z.enum(HITL_MODES), mode: RunModeSchema.default('attended') }),
-  /** `none`: the run has no prompt step. `pending`: the agent has not answered the host question yet. */
+  /**
+   * `none`: the run has no prompt step. `pending`: the agent has not answered the host question yet; a run without a
+   * prompt step (`hasPromptStep` false) asks it only for its judge, and a state from before it was kept had one.
+   */
   host: z.discriminatedUnion('kind', [
     z.object({ kind: z.literal('none') }),
-    z.object({ kind: z.literal('pending') }),
+    z.object({ kind: z.literal('pending'), hasPromptStep: z.boolean().default(true) }),
     z.object({ kind: z.literal('chosen'), id: z.enum(HOST_CHOICES), children: z.enum(['parallel', 'serial']), places: z.enum(['teamai', 'host']) }),
   ]),
   gate: GateSchema.optional(),
@@ -185,16 +188,19 @@ const SkillStateSchema = z.object({
 });
 export type SkillState = z.infer<typeof SkillStateSchema>;
 
+/** The host of a run before the agent answers the host question, as R10 or R19 starts it. */
+export type UnansweredHost = Exclude<SkillState['host'], { kind: 'chosen' }>;
+
 /**
  * The state of a run this driver starts to drive for `session`, working in `tool`, from `at` on: nothing open and nothing
  * shown yet, and `judge`, who judges its scored steps on this machine, when anyone does.
  */
 export function newSkillState(input: {
-  run: RunId; driver: SkillState['driver']; invocation: SkillState['invocation']; options: SkillState['options']; host: 'none' | 'pending'; session: string | undefined; tool: ToolId | undefined; at: string; judge?: JudgedBy;
+  run: RunId; driver: SkillState['driver']; invocation: SkillState['invocation']; options: SkillState['options']; host: UnansweredHost; session: string | undefined; tool: ToolId | undefined; at: string; judge?: JudgedBy;
 }): SkillState {
   const { run, driver, invocation, options, host, session, tool, at, judge } = input;
   return {
-    version: 1, run, driver, invocation, options, host: { kind: host },
+    version: 1, run, driver, invocation, options, host,
     orchestrator: { ...(session !== undefined ? { session } : {}), ...(tool !== undefined ? { tool } : {}), lastCallAt: at },
     attempts: [], ...judgingState(judge), seq: 0, events: [], seen: {}, settled: [],
   };
