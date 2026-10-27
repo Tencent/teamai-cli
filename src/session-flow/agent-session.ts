@@ -130,6 +130,7 @@ export type AgentSession = {
   find(ref: AgentSessionRef, options?: AgentSessionFindOptions): Promise<AgentSessionFound>;
   transcript(session: Session): AgentSessionTranscriptEntry[];
   platformForTool(tool: string): string | undefined;
+  toolsWithoutSessions(tools: readonly string[]): string[];
   toolForPlatform(platform: string): string;
 };
 
@@ -525,6 +526,11 @@ function platformForTool(tool: string): string | undefined {
   return sessionPlatformsOf(tool)[0] ?? (isSessionPlatform(tool) ? tool : undefined);
 }
 
+/** The tools of `tools` teamai reads no sessions from, in their order: their sessions are never captured, published or judged. */
+function toolsWithoutSessions(tools: readonly string[]): string[] {
+  return tools.filter((tool) => platformForTool(tool) === undefined);
+}
+
 /** One string per session, for a set or a map keyed by session. */
 export const sessionKey = ({ platform, sessionId }: Pick<AgentSessionRef, 'platform' | 'sessionId'>): string => `${platform}\0${sessionId}`;
 
@@ -533,4 +539,4 @@ function toolForPlatform(platform: string): string {
   return sessionPlatformOwner(platform) ?? sessionPlatformFacts(platform)?.tool ?? platform;
 }
 
-export const AgentSession = { list, copy, find, transcript, platformForTool, toolForPlatform } as const satisfies AgentSession;
+export const AgentSession = { list, copy, find, transcript, platformForTool, toolsWithoutSessions, toolForPlatform } as const satisfies AgentSession;

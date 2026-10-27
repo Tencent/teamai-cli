@@ -146,7 +146,7 @@ export async function readSessionSharing(config: LocalConfig, { env, platform, n
     configured: true,
     ...read,
     problems: [...publish.problems, ...(scored.ok ? scored.problems : [])].map((problem) => `${problem}.`),
-    unreadTools: team ? Object.keys(scopedToolPaths(team, config)).filter((tool) => !isAgentExcluded(config, tool) && AgentSession.platformForTool(tool) === undefined).sort() : [],
+    unreadTools: team ? AgentSession.toolsWithoutSessions(Object.keys(scopedToolPaths(team, config)).filter((tool) => !isAgentExcluded(config, tool))).sort() : [],
     next: nextSteps(read, platform),
   };
 }

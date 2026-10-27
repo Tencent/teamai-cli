@@ -528,7 +528,7 @@ function usageReportNote({ localConfig, teamConfig }: DoctorContext): string {
  * (#1385): such a tool's sessions are never captured, so they are neither published nor judged.
  */
 async function unreadSessionToolNotes({ localConfig, teamConfig, toolPaths }: DoctorContext): Promise<string[]> {
-  const tools = Object.keys(toolPaths).filter((tool) => AgentSession.platformForTool(tool) === undefined);
+  const tools = AgentSession.toolsWithoutSessions(Object.keys(toolPaths));
   if (tools.length === 0) return [];
   const publish = SessionPolicy.publish(localConfig, teamConfig).policies;
   const scoring = scoringUnavailable(localConfig) ? undefined : await scopeScoring(localConfig);
