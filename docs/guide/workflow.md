@@ -359,7 +359,7 @@ In self mode, a workflow worktree holds the team files as committed. Commit a wo
 
 The agent runs `teamai workflow start --describe <name> --driver skill`. The reply says how to start the run: directly, after one question to the person, or with the local driver. The question covers the inputs, how many steps run at once, who answers optional approvals, and whether to judge.
 
-TeamAI names the session's tool from the session variable its host sets. When it finds none, as in OpenClaw or Trae, describe says so, and the agent passes `--tools default=<tool>` to describe and start. The run keeps that tool: the steps' models resolve for it, and it judges the scored steps.
+TeamAI names the session's tool from the session variable its host sets. When it finds none, as in Oh My Pi or Qoder, describe says so, and the agent passes `--tools default=<tool>` to describe and start. The run keeps that tool: it judges the scored steps, and the steps' models resolve for it when teamai installs agents for that tool.
 
 After the start, every reply is a turn: the actions for the agent, the steps that run, what happened since the last call, and the command to run next. The run's state stays in the CLI, so the agent keeps nothing between calls. After a compaction, or in a new session, `teamai workflow next <run> --driver skill` prints the current turn. When another session still drives the run, it answers `orchestrator_active`, and the person decides whether this session takes over with `--takeover`.
 
