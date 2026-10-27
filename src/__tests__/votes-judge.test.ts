@@ -86,19 +86,19 @@ describe('judgeAdoption', () => {
   });
 
   it('returns [] immediately when there are no candidates (no CLI call)', async () => {
-    const callClaude = vi.fn();
-    vi.doMock('../utils/ai-client.js', () => ({ callClaude, getAICliName: () => 'claude' }));
+    const callTool = vi.fn();
+    vi.doMock('../tool-launch/call.js', () => ({ callTool }));
     const { judgeAdoption } = await import('../votes-judge.js');
     expect(await judgeAdoption('some reply', [])).toEqual([]);
-    expect(callClaude).not.toHaveBeenCalled();
+    expect(callTool).not.toHaveBeenCalled();
   });
 
   it('returns [] when the reply is empty (no CLI call)', async () => {
-    const callClaude = vi.fn();
-    vi.doMock('../utils/ai-client.js', () => ({ callClaude, getAICliName: () => 'claude' }));
+    const callTool = vi.fn();
+    vi.doMock('../tool-launch/call.js', () => ({ callTool }));
     const { judgeAdoption } = await import('../votes-judge.js');
     expect(await judgeAdoption('   ', ['doc-a'])).toEqual([]);
-    expect(callClaude).not.toHaveBeenCalled();
+    expect(callTool).not.toHaveBeenCalled();
   });
 
   it('returns the judged subset gated to GROUNDED candidates', async () => {
@@ -107,12 +107,12 @@ describe('judgeAdoption', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-judge-gated-'));
     fs.writeFileSync(path.join(root, 'doc-a.md'), '# doc-a\nsome guidance');
     fs.writeFileSync(path.join(root, 'doc-b.md'), '# doc-b\nother guidance');
-    const callClaude = vi.fn().mockResolvedValue('["doc-a","not-a-candidate"]');
-    vi.doMock('../utils/ai-client.js', () => ({ callClaude, getAICliName: () => 'claude' }));
+    const callTool = vi.fn().mockResolvedValue({ text: '["doc-a","not-a-candidate"]', tool: 'claude' });
+    vi.doMock('../tool-launch/call.js', () => ({ callTool }));
     const { judgeAdoption } = await import('../votes-judge.js');
     const paths = { 'doc-a': path.join(root, 'doc-a.md'), 'doc-b': path.join(root, 'doc-b.md') };
     expect(await judgeAdoption('used doc-a', ['doc-a', 'doc-b'], paths, [root])).toEqual(['doc-a']);
-    expect(callClaude).toHaveBeenCalledOnce();
+    expect(callTool).toHaveBeenCalledOnce();
     fs.rmSync(root, { recursive: true, force: true });
   });
 
@@ -122,8 +122,8 @@ describe('judgeAdoption', () => {
     // — this defeats a forged recall marker earning an upvote from its id alone.
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-judge-ungrounded-'));
     fs.writeFileSync(path.join(root, 'doc-a.md'), '# doc-a\nguidance');
-    const callClaude = vi.fn().mockResolvedValue('["doc-a","doc-b"]');
-    vi.doMock('../utils/ai-client.js', () => ({ callClaude, getAICliName: () => 'claude' }));
+    const callTool = vi.fn().mockResolvedValue({ text: '["doc-a","doc-b"]', tool: 'claude' });
+    vi.doMock('../tool-launch/call.js', () => ({ callTool }));
     const { judgeAdoption } = await import('../votes-judge.js');
     const paths = { 'doc-a': path.join(root, 'doc-a.md'), 'doc-b': '/nonexistent/doc-b.md' };
     expect(await judgeAdoption('used both', ['doc-a', 'doc-b'], paths, [root])).toEqual(['doc-a']);
@@ -131,19 +131,19 @@ describe('judgeAdoption', () => {
   });
 
   it('returns [] (no CLI call) when NO candidate has a readable excerpt', async () => {
-    const callClaude = vi.fn().mockResolvedValue('["doc-a"]');
-    vi.doMock('../utils/ai-client.js', () => ({ callClaude, getAICliName: () => 'claude' }));
+    const callTool = vi.fn().mockResolvedValue({ text: '["doc-a"]', tool: 'claude' });
+    vi.doMock('../tool-launch/call.js', () => ({ callTool }));
     const { judgeAdoption } = await import('../votes-judge.js');
     // No paths at all → nothing grounded → no CLI call, no upvote.
     expect(await judgeAdoption('used doc-a', ['doc-a', 'doc-b'])).toEqual([]);
-    expect(callClaude).not.toHaveBeenCalled();
+    expect(callTool).not.toHaveBeenCalled();
   });
 
   it('soft-fails to [] when the CLI throws (e.g. no CLI installed)', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-judge-throw-'));
     fs.writeFileSync(path.join(root, 'doc-a.md'), '# doc-a\nguidance');
-    const callClaude = vi.fn().mockRejectedValue(new Error('AI CLI unavailable'));
-    vi.doMock('../utils/ai-client.js', () => ({ callClaude, getAICliName: () => { throw new Error('none'); } }));
+    const callTool = vi.fn().mockRejectedValue(new Error('AI CLI unavailable'));
+    vi.doMock('../tool-launch/call.js', () => ({ callTool }));
     const { judgeAdoption } = await import('../votes-judge.js');
     expect(await judgeAdoption('reply', ['doc-a'], { 'doc-a': path.join(root, 'doc-a.md') }, [root])).toEqual([]);
     fs.rmSync(root, { recursive: true, force: true });
@@ -166,11 +166,11 @@ describe('judgeAdoption — excerpt read is confined to trusted roots', () => {
 
   async function runWithCapture(paths: Record<string, string>, roots: string[]): Promise<string> {
     let captured = '';
-    const callClaude = vi.fn().mockImplementation(async (prompt: string) => {
+    const callTool = vi.fn().mockImplementation(async (prompt: string) => {
       captured = prompt;
-      return '[]';
+      return { text: '[]', tool: 'claude' };
     });
-    vi.doMock('../utils/ai-client.js', () => ({ callClaude, getAICliName: () => 'claude' }));
+    vi.doMock('../tool-launch/call.js', () => ({ callTool }));
     const { judgeAdoption } = await import('../votes-judge.js');
     await judgeAdoption('the final reply used the doc', Object.keys(paths), paths, roots);
     return captured;

@@ -2,7 +2,7 @@ import { readFile, writeFile, readdir, mkdir, unlink, lstat, rename } from 'node
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { pathExists } from './utils/fs.js';
-import { callClaude, callClaudeParallel } from './utils/ai-client.js';
+import { callTool, callToolParallel } from './tool-launch/call.js';
 import { log } from './utils/logger.js';
 import { assertSafeResourceName, assertWithinRoot } from './utils/path-safety.js';
 
@@ -448,14 +448,14 @@ async function runPhaseComponents(
 
     let results: string[];
     try {
-      results = await callClaudeParallel(tasks, BATCH);
+      results = await callToolParallel(tasks, { launchedBy: 'deep-enrich', concurrency: BATCH });
     } catch {
       // AggregateError — 部分可能成功，graceful fallback
       log.warn(`deep-enrich[${project}]: batch[${i}] partially failed, falling back to sequential`);
       results = await Promise.all(
         batch.map(async (_, idx) => {
           try {
-            return await callClaude(tasks[idx].prompt);
+            return (await callTool(tasks[idx].prompt, { launchedBy: 'deep-enrich' })).text;
           } catch (e) {
             log.warn(`deep-enrich[${project}]: Skipping component ${batch[idx].slug}: ${(e as Error).message}`);
             return null as unknown as string;
@@ -505,7 +505,7 @@ async function runPhaseArchitecture(
 
   let content: string;
   try {
-    content = await callClaude(prompt);
+    content = (await callTool(prompt, { launchedBy: 'deep-enrich' })).text;
   } catch (e) {
     log.warn(`deep-enrich[${project}]: Architecture overview generation failed, skipping: ${(e as Error).message}`);
     return;
@@ -693,7 +693,7 @@ async function runPhaseAiGraph(
   const prompt = buildG5Prompt(project, architectureMd, ctx.callChains, moduleList);
 
   try {
-    const g5Content = await callClaude(prompt);
+    const g5Content = (await callTool(prompt, { launchedBy: 'deep-enrich' })).text;
     if (g5Content.trim()) {
       await writeGeneratedFile(docsDir, 'graph-g5-scenarios.md', g5Content);
       log.debug(`deep-enrich[${project}]: G5 scenario diagrams written`);

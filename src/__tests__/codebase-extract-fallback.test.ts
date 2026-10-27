@@ -6,17 +6,16 @@ import os from 'node:os';
 import path from 'node:path';
 
 // Mock the AI client so extract/deep-enrich cannot hang on a live CLI.
-vi.mock('../utils/ai-client.js', () => ({
-  getAICliName: () => 'mock-cli',
-  callClaude: vi.fn(async () => {
+vi.mock('../tool-launch/call.js', () => ({
+  callTool: vi.fn(async () => {
     throw new Error('mock: AI unavailable');
   }),
-  callClaudeParallel: vi.fn(async () => {
+  callToolParallel: vi.fn(async () => {
     throw new Error('mock: AI batch unavailable');
   }),
 }));
 
-import { callClaudeParallel } from '../utils/ai-client.js';
+import { callToolParallel } from '../tool-launch/call.js';
 import { extractCodebase } from '../codebase-extract.js';
 import { repoIdentity } from '../utils/git.js';
 import { codebaseCmd } from '../codebase-cmd.js';
@@ -426,7 +425,7 @@ describe('extract writes a fallback evidence manifest (#508)', () => {
         '',
       ].join('\n'),
     );
-    vi.mocked(callClaudeParallel).mockImplementation(async (tasks) =>
+    vi.mocked(callToolParallel).mockImplementation(async (tasks) =>
       tasks.map((task) =>
         task.parse(
           '{"domain":"widgets","responsibilities":["render"],"layer":"service","summary":"ui","description":"ui kit","keywords":["widget"]}',

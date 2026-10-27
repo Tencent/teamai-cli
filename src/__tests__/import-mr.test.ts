@@ -37,8 +37,8 @@ vi.mock('../config.js', async (importOriginal) => ({
 vi.mock('../providers/github/mr-fetch.js', () => ({
   fetchGitHubPR: vi.fn(async (url: string) => ({ title: 'Retry budget', description: '', commits: [], diff: '', url })),
 }));
-vi.mock('../utils/ai-client.js', () => ({
-  callClaude: vi.fn(async () => `---\ntitle: Retry budget\n---\n${DRAFT_BODY}\n`),
+vi.mock('../tool-launch/call.js', () => ({
+  callTool: vi.fn(async () => ({ text: `---\ntitle: Retry budget\n---\n${DRAFT_BODY}\n`, tool: 'claude' })),
 }));
 const { question } = vi.hoisted(() => ({ question: vi.fn(async (_prompt: string) => 'n') }));
 vi.mock('node:readline/promises', () => ({
@@ -48,7 +48,7 @@ vi.mock('node:readline/promises', () => ({
 import { importFromMR, parseLearningDraft } from '../import-mr.js';
 import { importCmd } from '../import.js';
 import { log, setSilent } from '../utils/logger.js';
-import { callClaude } from '../utils/ai-client.js';
+import { callTool } from '../tool-launch/call.js';
 import { fetchGitHubPR } from '../providers/github/mr-fetch.js';
 
 describe('parseLearningDraft', () => {
@@ -102,7 +102,7 @@ describe('importFromMR AI draft metadata', () => {
     { tags: ['agent', 'retry'], displayed: 'agent, retry' },
   ])('saves the original draft when tags are $tags', async ({ tags, displayed }) => {
     const content = `---\ntitle: Retry budget\ntags: ${JSON.stringify(tags)}\n---\n${DRAFT_BODY}\n`;
-    vi.mocked(callClaude).mockResolvedValueOnce(content);
+    vi.mocked(callTool).mockResolvedValueOnce({ text: content, tool: 'claude' });
 
     const result = await importFromMR({ url, all: true, learningsDirs: [], outputDir: root });
 
@@ -116,7 +116,7 @@ describe('importFromMR AI draft metadata', () => {
   it.each([{ title: 42 }, { title: true }, { title: { text: 'Retry budget' } }, { title: ['Retry budget'] }])(
     'uses the MR title to queue a draft with a non-string title $title', async ({ title }) => {
       const content = `---\ntitle: ${JSON.stringify(title)}\ntags: [agent]\n---\n${DRAFT_BODY}\n`;
-      vi.mocked(callClaude).mockResolvedValueOnce(content);
+      vi.mocked(callTool).mockResolvedValueOnce({ text: content, tool: 'claude' });
       const queueLearning = vi.fn(async (filename: string) => path.join(root, filename));
 
       const result = await importFromMR({ url, all: true, learningsDirs: [], queueLearning });
@@ -274,7 +274,7 @@ describe('teamai import --from-mr <url...> (#1104)', () => {
     vi.mocked(log.warn).mockClear();
     vi.mocked(log.info).mockClear();
     vi.mocked(log.error).mockClear();
-    vi.mocked(callClaude).mockClear();
+    vi.mocked(callTool).mockClear();
     vi.mocked(fetchGitHubPR).mockClear();
     exitCode = process.exitCode;
   });
@@ -293,7 +293,7 @@ describe('teamai import --from-mr <url...> (#1104)', () => {
     }
 
     expect(vi.mocked(fetchGitHubPR).mock.calls.map(([url]) => url)).toEqual(urls);
-    expect(callClaude).toHaveBeenCalledTimes(2);
+    expect(callTool).toHaveBeenCalledTimes(2);
     expect(infos()).toContainEqual(`[1/2] ${urls[0]}`);
     expect(infos()).toContainEqual(`[2/2] ${urls[1]}`);
   });
@@ -321,7 +321,7 @@ describe('teamai import --from-mr <url...> (#1104)', () => {
       write.mockRestore();
     }
 
-    expect(vi.mocked(callClaude).mock.calls[0][0]).toContain('Write in English');
+    expect(vi.mocked(callTool).mock.calls[0][0]).toContain('Write in English');
   });
 
   it('keeps going when one MR fails, reports it and exits non-zero', async () => {
@@ -333,7 +333,7 @@ describe('teamai import --from-mr <url...> (#1104)', () => {
       write.mockRestore();
     }
 
-    expect(callClaude).toHaveBeenCalledTimes(1);
+    expect(callTool).toHaveBeenCalledTimes(1);
     expect(warnings()).toContainEqual(expect.stringContaining(`${urls[0]}`) && expect.stringContaining('MR not found'));
     expect(infos()).toContainEqual('Import from MR complete: 1 succeeded, 1 failed');
     expect(process.exitCode).toBe(1);

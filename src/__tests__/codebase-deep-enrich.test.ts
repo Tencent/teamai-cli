@@ -5,17 +5,16 @@ import path from 'node:path';
 
 // Mock the AI client so deepEnrich's LLM calls fail instantly instead of
 // waiting on real 600s timeouts. deepEnrich treats these as non-blocking skips.
-vi.mock('../utils/ai-client.js', () => ({
-  getAICliName: () => 'mock-cli',
-  callClaude: vi.fn(async () => {
+vi.mock('../tool-launch/call.js', () => ({
+  callTool: vi.fn(async () => {
     throw new Error('mock: AI unavailable');
   }),
-  callClaudeParallel: vi.fn(async () => {
+  callToolParallel: vi.fn(async () => {
     throw new Error('mock: AI batch unavailable');
   }),
 }));
 
-import { callClaude, callClaudeParallel } from '../utils/ai-client.js';
+import { callTool, callToolParallel } from '../tool-launch/call.js';
 import { codebaseCmd } from '../codebase-cmd.js';
 import { runHiddenDeepEnrich } from '../deep-enrich.js';
 
@@ -209,8 +208,8 @@ describe('codebase deep-enrich', () => {
     const graphBefore = fs.readFileSync(path.join(docsDir, 'graph-g1-relations.md'), 'utf8');
 
     process.exitCode = undefined;
-    vi.mocked(callClaude).mockResolvedValue('# Architecture\n\nAuth sits at the edge.\n');
-    vi.mocked(callClaudeParallel).mockImplementation(async (tasks) => (
+    vi.mocked(callTool).mockResolvedValue({ text: '# Architecture\n\nAuth sits at the edge.\n', tool: 'claude' });
+    vi.mocked(callToolParallel).mockImplementation(async (tasks) => (
       tasks.map(() => '# Auth\n\nAuthenticates users.\n')
     ));
 
@@ -224,8 +223,8 @@ describe('codebase deep-enrich', () => {
     expect(fs.readFileSync(path.join(docsDir, 'graph-g1-relations.md'), 'utf8')).toBe(graphBefore);
 
     process.exitCode = undefined;
-    vi.mocked(callClaude).mockRejectedValue(new Error('mock: AI unavailable'));
-    vi.mocked(callClaudeParallel).mockRejectedValue(new Error('mock: AI batch unavailable'));
+    vi.mocked(callTool).mockRejectedValue(new Error('mock: AI unavailable'));
+    vi.mocked(callToolParallel).mockRejectedValue(new Error('mock: AI batch unavailable'));
     await codebaseCmd({ deepEnrich: true, project: 'faketest', output: root, json: true });
     expect(process.exitCode).toBeUndefined();
     expect(JSON.parse(String(log.mock.calls.at(-1)?.[0]))).toMatchObject({ complete: true });
@@ -311,8 +310,8 @@ describe('codebase deep-enrich', () => {
     fs.writeFileSync(path.join(docsDir, 'graph-g1-relations.md'), '# graph placeholder\n');
     fs.writeFileSync(path.join(docsDir, 'graph-g5-scenarios.md'), '# OLD G5');
 
-    vi.mocked(callClaude).mockResolvedValue('# NEW architecture\n');
-    vi.mocked(callClaudeParallel).mockImplementation(async (tasks) => (
+    vi.mocked(callTool).mockResolvedValue({ text: '# NEW architecture\n', tool: 'claude' });
+    vi.mocked(callToolParallel).mockImplementation(async (tasks) => (
       tasks.map(() => '# NEW Auth\n')
     ));
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);

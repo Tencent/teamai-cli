@@ -188,7 +188,7 @@ export async function judgeAdoption(
   }
 
   try {
-    const { callClaude, getAICliName } = await import('./utils/ai-client.js');
+    const { callTool } = await import('./tool-launch/call.js');
     // Build only GROUNDED candidates: a doc whose excerpt could not be securely
     // read (path missing, out of a trusted root, symlink, non-.md, unreadable)
     // is DROPPED, not sent as "(no content available)". Otherwise the judge
@@ -208,8 +208,8 @@ export async function judgeAdoption(
     }
     const allowedIds = candidates.map((c) => c.docId);
     const prompt = buildJudgePrompt(finalReply, candidates);
-    log.debug(`[votes-judge] calling ${getAICliName()} for ${candidates.length} grounded candidate(s)`);
-    const raw = await callClaude(prompt, { timeout: JUDGE_TIMEOUT_MS });
+    log.debug(`[votes-judge] calling AI for ${candidates.length} grounded candidate(s)`);
+    const raw = (await callTool(prompt, { launchedBy: 'votes-judge', timeout: JUDGE_TIMEOUT_MS })).text;
     // Allow-list is the GROUNDED ids only, so an ungrounded id can never survive.
     const adopted = parseJudgeOutput(raw, allowedIds);
     log.debug(`[votes-judge] adopted ${adopted.length}/${candidates.length}: [${adopted.join(', ')}]`);

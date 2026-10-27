@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { writeFile, mkdir } from 'node:fs/promises';
-import { callClaudeParallel, getAICliName } from './utils/ai-client.js';
+import { callToolParallel } from './tool-launch/call.js';
 import { log } from './utils/logger.js';
 import { assertSafeResourceName } from './utils/path-safety.js';
 import type { CodeFact } from './wiki-engine/adapters/index.js';
@@ -205,7 +205,7 @@ export async function enrichWithAI(ctx: EnrichContext): Promise<EnrichResult | n
     return null;
   }
 
-  log.debug(`enrichWithAI: ${moduleEntries.length} modules, AI model: ${getAICliName()}`);
+  log.debug(`enrichWithAI: ${moduleEntries.length} modules`);
 
   // Step 1: AI enrichment per module (parallel)
   const tasks = moduleEntries.map(([moduleName, moduleFacts]) => ({
@@ -218,7 +218,7 @@ export async function enrichWithAI(ctx: EnrichContext): Promise<EnrichResult | n
 
   let moduleResults: Array<{ name: string; result: ModuleAIResult }>;
   try {
-    const results = await callClaudeParallel(tasks, 3);
+    const results = await callToolParallel(tasks, { launchedBy: 'enrich-with-ai', concurrency: 3 });
     moduleResults = results.filter((r): r is { name: string; result: ModuleAIResult } => r !== null);
   } catch (e) {
     log.warn(`enrichWithAI: module analysis failed (non-blocking): ${(e as Error).message}`);
@@ -243,7 +243,7 @@ export async function enrichWithAI(ctx: EnrichContext): Promise<EnrichResult | n
         return parseJSON<{ domain: string; description: string; keywords: string[] }>(raw);
       },
     }];
-    const [domainResult] = await callClaudeParallel(domainTasks, 1);
+    const [domainResult] = await callToolParallel(domainTasks, { launchedBy: 'enrich-with-ai', concurrency: 1 });
     if (domainResult) {
       repoDomain = domainResult.domain;
       repoDescription = domainResult.description;

@@ -7,8 +7,8 @@ import fs from 'fs-extra';
 
 // ─── Mocks ──────────────────────────────────────────────
 
-vi.mock('../utils/ai-client.js', () => ({
-    callClaude: vi.fn(),
+vi.mock('../tool-launch/call.js', () => ({
+    callTool: vi.fn(),
 }));
 
 vi.mock('../utils/iwiki-client.js', () => ({
@@ -42,7 +42,7 @@ vi.mock('../review-store.js', async (importOriginal) => {
 // ─── Imports (after mocks) ───────────────────────────────
 
 import { importFromIWikiDual } from '../iwiki-dual.js';
-import { callClaude } from '../utils/ai-client.js';
+import { callTool } from '../tool-launch/call.js';
 import { appendPendingReview } from '../review-store.js';
 
 // ─── 辅助 ────────────────────────────────────────────────
@@ -77,7 +77,7 @@ describe('importFromIWikiDual', () => {
     });
 
     it('首次创建写出三章节骨架', async () => {
-        (callClaude as ReturnType<typeof vi.fn>).mockResolvedValue(VALID_AI_OUTPUT);
+        (callTool as ReturnType<typeof vi.fn>).mockResolvedValue({ text: VALID_AI_OUTPUT, tool: 'claude' });
 
         await importFromIWikiDual({ input: '12345', token: 'test-token' });
 
@@ -91,7 +91,7 @@ describe('importFromIWikiDual', () => {
 
     it('二次调用按锚点替换，未指定的章节不动', async () => {
         // 第一次：写全部三章节
-        (callClaude as ReturnType<typeof vi.fn>).mockResolvedValue(VALID_AI_OUTPUT);
+        (callTool as ReturnType<typeof vi.fn>).mockResolvedValue({ text: VALID_AI_OUTPUT, tool: 'claude' });
         await importFromIWikiDual({ input: '12345', token: 'test-token' });
 
         const filePath = path.join(cwd, 'docs/team-codebase/external-knowledge.md');
@@ -103,7 +103,7 @@ describe('importFromIWikiDual', () => {
             'external-knowledge': '',
             'glossary': '',
         });
-        (callClaude as ReturnType<typeof vi.fn>).mockResolvedValue(updatedOutput);
+        (callTool as ReturnType<typeof vi.fn>).mockResolvedValue({ text: updatedOutput, tool: 'claude' });
 
         await importFromIWikiDual({
             input: '12345',
@@ -123,7 +123,7 @@ describe('importFromIWikiDual', () => {
     });
 
     it('AI 输出非 JSON → warn 并不写', async () => {
-        (callClaude as ReturnType<typeof vi.fn>).mockResolvedValue('这不是 JSON 内容');
+        (callTool as ReturnType<typeof vi.fn>).mockResolvedValue({ text: '这不是 JSON 内容', tool: 'claude' });
 
         const result = await importFromIWikiDual({ input: '12345', token: 'test-token' });
 
@@ -134,7 +134,7 @@ describe('importFromIWikiDual', () => {
     });
 
     it('requireReview=true → 调 appendPendingReview 且不动 external-knowledge.md', async () => {
-        (callClaude as ReturnType<typeof vi.fn>).mockResolvedValue(VALID_AI_OUTPUT);
+        (callTool as ReturnType<typeof vi.fn>).mockResolvedValue({ text: VALID_AI_OUTPUT, tool: 'claude' });
 
         const result = await importFromIWikiDual({
             input: '12345',
