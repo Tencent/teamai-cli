@@ -115,6 +115,7 @@ import {
   update,
   resolveNpmCommand,
   prefixFromEntryPath,
+  isVoltaPackageImage,
 } from '../update.js';
 import { resolveTeamaiEntryScript } from '../builtin-hooks.js';
 import type { LocalConfig } from '../types.js';
@@ -968,6 +969,34 @@ describe('resolveNpmCommand', () => {
   });
 });
 
+describe('isVoltaPackageImage', () => {
+  const image = path.join('/Users', 'x', '.volta', 'tools', 'image', 'packages', 'teamai-cli');
+
+  it('matches the default macOS image and a directory inside it', () => {
+    expect(isVoltaPackageImage(image, '')).toBe(true);
+    expect(isVoltaPackageImage(path.join(image, 'lib'), '')).toBe(true);
+  });
+
+  it('matches the default Windows image', () => {
+    expect(isVoltaPackageImage(
+      'C:\\Users\\x\\AppData\\Local\\Volta\\tools\\image\\packages\\teamai-cli',
+      '',
+    )).toBe(true);
+  });
+
+  it('matches a custom VOLTA_HOME whose path does not contain "volta"', () => {
+    const home = path.join('/opt', 'team-volta');
+    const installed = path.join(home, 'tools', 'image', 'packages', 'teamai-cli');
+    expect(isVoltaPackageImage(installed, home)).toBe(true);
+    expect(isVoltaPackageImage(installed, '')).toBe(false);
+  });
+
+  it('does not match a normal npm prefix or a path that only contains the word volta', () => {
+    expect(isVoltaPackageImage(path.join('/usr', 'local', 'lib', 'node_modules', 'teamai-cli'), '')).toBe(false);
+    expect(isVoltaPackageImage(path.join('/home', 'volta', 'project', 'node_modules', 'teamai-cli'), '')).toBe(false);
+  });
+});
+
 describe('prefixFromEntryPath', () => {
   let existsSpy: MockInstance<typeof fs.existsSync>;
 
@@ -1087,6 +1116,23 @@ describe('self-update install-target safety', () => {
       expect.arrayContaining(['install']),
       expect.anything(),
     );
+  });
+
+  it('refuses to run npm against a Volta package image', async () => {
+    restorePlatform = stubPlatform('linux');
+    fileURLToPathMock.mockReturnValue(path.join(
+      '/Users', 'x', '.volta', 'tools', 'image', 'packages', 'teamai-cli',
+      'lib', 'node_modules', 'teamai-cli', 'dist', 'index.js',
+    ));
+    mockedExecSync.mockResolvedValue({ stdout: '99.0.0\n', stderr: '' });
+
+    await doUpdate(null);
+
+    const skipped = expect.stringContaining('is managed by Volta');
+    expect(log.warn).toHaveBeenCalledWith(skipped);
+    expect(mockedLog.persist).toHaveBeenCalledWith(expect.stringContaining('volta install'));
+    expect(mockedExecSync).toHaveBeenCalledTimes(1); // the version check only
+    expectNoInstall();
   });
 
   it('refuses to run npm when the running CLI is a linked checkout', async () => {
