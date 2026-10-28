@@ -1835,6 +1835,8 @@ describe('uninstall', () => {
       await fse.outputFile(path.join(skill, 'SKILL.md'), '# Team Skill');
       const rule = path.join(projectRoot, '.trae', 'rules', 'team-rule.md');
       await fse.outputFile(rule, '---\nalwaysApply: true\n---\n\n# Team Rule\n');
+      const agentFile = path.join(projectRoot, '.trae', 'agents', 'teamai-recall.md');
+      await fse.outputFile(agentFile, '---\nname: teamai-recall\ndescription: Recall\n---\nRecall.\n');
       // What a pull recorded delivering: proves the copies teamai's (#993),
       // so a removal run takes them instead of keeping them as the member's.
       const state = await loadStateForScope(localConfig);
@@ -1842,8 +1844,24 @@ describe('uninstall', () => {
         [await checkoutKey(projectRoot)]: { rev: 'old', targets: [], delivered: { [path.join(skill, 'SKILL.md')]: (await fileHash(path.join(skill, 'SKILL.md')))! } },
       };
       await saveStateForScope(state, localConfig);
-      return { skill, rule, localConfig };
+      return { skill, rule, agentFile, localConfig };
     }
+
+    it.each(['trae', 'trae-cn'] as const)('uninstall --agent %s keeps the shared project agents the other still reads', async (agent) => {
+      const { agentFile } = await sharedFixture(agent);
+
+      await uninstall({ force: true, agent });
+
+      expect(await fse.pathExists(agentFile)).toBe(true);
+    });
+
+    it('a full uninstall removes the shared project agents', async () => {
+      const { agentFile } = await sharedFixture(undefined);
+
+      await uninstall({ force: true });
+
+      expect(await fse.pathExists(agentFile)).toBe(false);
+    });
 
     it.each(['trae', 'trae-cn'] as const)('uninstall --agent %s keeps the shared skills the other still reads', async (agent) => {
       const { skill, rule } = await sharedFixture(agent);

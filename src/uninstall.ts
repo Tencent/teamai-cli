@@ -1348,9 +1348,12 @@ async function buildRemovalPlan(
   // project Trae and Trae CN share `.trae/skills` (#904), as Qoder and Qoder
   // CN share `.qoder/skills`.
   const retainedSkillDirs = new Set<string>();
+  // So do the agent files in it, as Trae and Trae CN share `.trae/agents`.
+  const retainedAgentFiles = new Set<string>();
   for (const [tool, resources] of perTool) {
     if (toolsToMerge.includes(tool) || !activeTools.has(tool)) continue;
     for (const entry of resources.skillDirs) retainedSkillDirs.add(entry.dir);
+    for (const file of resources.agentFiles) retainedAgentFiles.add(file);
   }
 
   // Merge tool-specific resources for selected tools. Entries a sibling
@@ -1401,7 +1404,10 @@ async function buildRemovalPlan(
     }
     plan.keptRuleFiles.push(...res.keptRuleFiles);
     plan.opencodeOwnedGlobs.push(...res.opencodeOwnedGlobs);
-    plan.agentFiles.push(...res.agentFiles);
+    for (const file of res.agentFiles) {
+      if (retainedAgentFiles.has(file)) retainedSharedEntries++;
+      else if (!plan.agentFiles.includes(file)) plan.agentFiles.push(file);
+    }
   }
   plan.sharedRetentionOnly = agentFilter !== undefined && retainedSharedEntries > 0;
   // The active home's SOUL.md is an instruction file already, which loses the block with the others.
