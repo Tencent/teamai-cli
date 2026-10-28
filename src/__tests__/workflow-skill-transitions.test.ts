@@ -1183,9 +1183,10 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     },
   },
   ...([
-    { announce: ANNOUNCE, rows: ['R19'], name: 'an unattended resume counts only the steps left: a run whose required approval already ran continues with its optional gates auto-approved' },
-    { announce: `${ANNOUNCE}    loop: { back_to: go-live, max_iterations: 2 }\n`, rows: ['R24'], name: 'an unattended resume still counts a required approval that ran when a loop can run it again' },
-  ] as const).map(({ announce, rows, name }) => ({
+    { announce: ANNOUNCE, cancel: false, rows: ['R19'], name: 'an unattended resume counts only the steps left: a run whose required approval already ran continues with its optional gates auto-approved' },
+    { announce: `${ANNOUNCE}    loop: { back_to: go-live, max_iterations: 2 }\n`, cancel: false, rows: ['R24'], name: 'an unattended resume still counts a required approval that ran when a loop can run it again' },
+    { announce: ANNOUNCE, cancel: true, rows: ['R19'], name: 'an unattended resume of a run that already ended needs no person: a run cancelled while its required approval\'s step ran readies as it ended' },
+  ] as const).map(({ announce, cancel, rows, name }) => ({
     name,
     rows: [...rows],
     run: async () => {
@@ -1206,14 +1207,24 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
           continue;
         }
         if (!lease) throw new Error(JSON.stringify(answer));
+        if (cancel && lease.step === 'go-live') break;
         const outcome = lease.step === 'announce' ? 'released' : 'success';
         expect(await client.report(run, { attempt: lease.attempt, revision: lease.revision, outcome, driver })).not.toHaveProperty('error');
         if (outcome === 'released') break;
       }
-      expect(await readRun(made.config, run)).toMatchObject({ status: 'running', steps: expect.arrayContaining([expect.objectContaining({ id: 'go-live', status: 'succeeded' })]) });
+      if (cancel) {
+        expect(await client.cancel(run)).not.toHaveProperty('error');
+        expect(await readRun(made.config, run)).toMatchObject({ status: 'cancelled', steps: expect.arrayContaining([expect.objectContaining({ id: 'go-live', status: 'cancelled' })]) });
+      } else {
+        expect(await readRun(made.config, run)).toMatchObject({ status: 'running', steps: expect.arrayContaining([expect.objectContaining({ id: 'go-live', status: 'succeeded' })]) });
+      }
       const resumed = await made.call({ kind: 'resume', run, claim: 'lacking', confirmed: false, answers: {} });
       if (rows[0] === 'R24') {
         expect(resumed).toMatchObject({ error: { code: 'unattended_denied', message: expect.stringContaining('the approval at go-live'), next: null } });
+        return made.rows;
+      }
+      if (cancel) {
+        expect(await turnOf(resumed)).toMatchObject({ run, status: 'done', actions: [{ kind: 'done', outcome: 'cancelled' }] });
         return made.rows;
       }
       expect(await turnOf(resumed)).toMatchObject({ run });

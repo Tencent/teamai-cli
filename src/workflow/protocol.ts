@@ -22,7 +22,7 @@ import { cancelRun, respondProvenance, respondToHitl, retryStep, type CallerProv
 import { nextJudgeLease, parseJudgeRequest, runJudgeLease, verifiedScorers } from './scoring.js';
 import { attemptDir, AttemptIdSchema, readRun, RunIdSchema, withRunLock, type AttemptId, type RunId, type RunLock } from './store.js';
 import type { DriverCan } from './requirements.js';
-import { isWorkflowError, type DriverIdentity, type RunState, type WorkflowDefinition, type WorkflowEnvelope, type WorkflowFailure } from './types.js';
+import { isWorkflowError, type DriverIdentity, type RunState, type RunStatus, type WorkflowDefinition, type WorkflowEnvelope, type WorkflowFailure } from './types.js';
 import { deliveryProblem } from './workspace.js';
 import { headCommit } from './worktree.js';
 
@@ -108,7 +108,7 @@ export interface WorkflowClient {
    * Run `runId` as it stands before `resume` changes anything, as `resumeRefusal` reads it: its own definition described
    * as `describe` does, and the steps it settled for good. Undefined when this machine cannot read it.
    */
-  carried(runId: RunId, options: { published: boolean; claim: boolean; ceiling: number; can: DriverCan }): Promise<{ description: WorkflowDescription; settled: string[] } | undefined>;
+  carried(runId: RunId, options: { published: boolean; claim: boolean; ceiling: number; can: DriverCan }): Promise<{ description: WorkflowDescription; settled: string[]; status: RunStatus } | undefined>;
   /** Why `caller` may not continue run `runId`, by a resume or a takeover, as `resumeRefusal` decides it. */
   resumeRefusal(runId: RunId, options: { caller: InvokeCaller; published: boolean }): Promise<WorkflowFailure | undefined>;
   /** Takes or renews judge work, as `teamai score --next` does with `body` as its payload. */
@@ -132,7 +132,7 @@ export type ResumeClaim = 'lacking' | 'any' | 'offered';
  * refused for `failure`.
  */
 export type RunReadied =
-  | { kind: 'ready'; installed: boolean; description: WorkflowDescription; settled: string[]; judging: Judging }
+  | { kind: 'ready'; installed: boolean; description: WorkflowDescription; settled: string[]; status: RunStatus; judging: Judging }
   | { kind: 'not-here' }
   | { kind: 'not-owner'; owner: string; since: string }
   | { kind: 'failed'; failure: WorkflowFailure };
@@ -483,13 +483,13 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
       const unreconciled = await reconcileTakenCopies(config, runId, run.checkout ?? checkout);
       if (unreconciled) return { kind: 'failed', failure: unreconciled };
       const description = describeWorkflow({ definition: run.definition, workflows: run.workflows ?? {}, ceiling, can, allow: config.workflows?.allow ?? {}, env: env.facts });
-      return { kind: 'ready', installed: resumed.value?.ownership === 'claimed', description, settled: settledSteps(run), judging: await judgingOf(config, description, tool, run.scorers) };
+      return { kind: 'ready', installed: resumed.value?.ownership === 'claimed', description, settled: settledSteps(run), status: run.status, judging: await judgingOf(config, description, tool, run.scorers) };
     },
     carried: async (runId, { published, claim, ceiling, can }) => {
       const carried = await carriedRun(config, runId, { published, claim });
       if (!carried.ok || carried.value === undefined) return undefined;
-      const { definition, workflows, settled } = carried.value;
-      return { description: describeWorkflow({ definition, workflows, ceiling, can, allow: config.workflows?.allow ?? {}, env: env.facts }), settled };
+      const { definition, workflows, settled, status } = carried.value;
+      return { description: describeWorkflow({ definition, workflows, ceiling, can, allow: config.workflows?.allow ?? {}, env: env.facts }), settled, status };
     },
     resumeRefusal: (runId, { caller, published }) => resumeRefusal(config, runId, caller, { published }),
     scoreNext: async (body) => {

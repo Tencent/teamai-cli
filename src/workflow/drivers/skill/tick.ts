@@ -274,9 +274,9 @@ async function called(context: SkillContext, lock: RunLock, same: Literal, input
       published: input.resume !== undefined, claim: input.resume !== undefined && input.resume.claim !== 'lacking', ceiling: ceilingOf(context.config), can: canFor(undefined),
     });
     const local = carried ? localReason(carried.description) : undefined;
-    const attended = carried ? attendedReason(carried.description, 'continue', new Set(carried.settled)) : undefined;
+    const attended = carried ? attendedNow(carried) : undefined;
     if (carried && (local !== undefined || attended !== undefined)) {
-      const readied: RunReadied = { kind: 'ready', installed: false, description: carried.description, settled: carried.settled, judging: { kind: 'none' } };
+      const readied: RunReadied = { kind: 'ready', installed: false, ...carried, judging: { kind: 'none' } };
       const refused = traced(context, readiedRow({ run, readied, kept: false, mode: context.mode, ...(local !== undefined ? { local } : {}), ...(attended !== undefined ? { attended } : {}), needsTool: false, answers, confirmed }));
       if (refused && 'answer' in refused) return { answer: { error: errorOf(refused.answer, { invocation: context.invocation, same, localTool }) } };
     }
@@ -287,7 +287,7 @@ async function called(context: SkillContext, lock: RunLock, same: Literal, input
       ...(context.tool !== undefined ? { tool: context.tool } : {}),
     });
     const local = readied.kind === 'ready' ? localReason(readied.description) : undefined;
-    const attended = readied.kind === 'ready' && context.mode === 'unattended' ? attendedReason(readied.description, 'continue', new Set(readied.settled)) : undefined;
+    const attended = readied.kind === 'ready' && context.mode === 'unattended' ? attendedNow(readied) : undefined;
     const taken = traced(context, readiedRow({
       run, readied, kept: state !== undefined, mode: context.mode, ...(local !== undefined ? { local } : {}), ...(attended !== undefined ? { attended } : {}), answers, confirmed,
       needsTool: readied.kind === 'ready' && needsTool(readied.description, { tool: context.tool, judged: answers.judge !== false }),
@@ -308,6 +308,11 @@ async function called(context: SkillContext, lock: RunLock, same: Literal, input
   const taken = traced(context, callRow(kept, { run, session: context.session, tool: context.tool, declared: input.resume?.tool, at: context.now().toISOString(), takeover: input.takeover !== undefined }));
   if ('answer' in taken) return { answer: { error: errorOf(taken.answer, { invocation: context.invocation, same, run, localTool }) } };
   return { state: taken.state };
+}
+
+/** What still needs a person to continue a run: nothing once it ended, since a resume then only readies it as it ended. */
+function attendedNow(run: Pick<Extract<RunReadied, { kind: 'ready' }>, 'description' | 'settled' | 'status'>): string | undefined {
+  return run.status === 'running' ? attendedReason(run.description, 'continue', new Set(run.settled)) : undefined;
 }
 
 /** The turn of `state` as `answer` renders it, from the events the session has not seen and why the run waits. */
