@@ -13,7 +13,8 @@ import { readReminderDecisions, REMINDER_RECORD_DAYS, sanitizeSessionId } from '
 import { memberEvents } from '../dashboard-collector.js';
 import type { ScoreLabel } from '../scorers/label.js';
 import { LabelStore } from '../scorers/label-store.js';
-import { cachedScorerNames, loadCachedScorer } from '../scorers/cache.js';
+import { cachedScorerNames, loadCachedScorer, scorerSourceHash } from '../scorers/cache.js';
+import { parseScorer } from '../scorers/definition.js';
 import { DIMENSIONS_OFFERED, FAILING_MAX, SCORER_WINDOWS, ScorerResults, type ReminderInput, type RubricLabels, type ScorerResultsQuery, type ScorerResultsView, type Side, type ViewedLabel } from '../scorers/results.js';
 import { sessionArchiveRoot } from '../session-flow/session-cmd-shared.js';
 import { SyncManager } from '../session-flow/sync.js';
@@ -161,10 +162,62 @@ async function teamReads(config: LocalConfig): Promise<TeamReads> {
   }
 }
 
-/** The values each scorer this machine caches lists, by its rubric's source hash: which hand labels its rubric pairs. */
-async function cachedRubricLabels(config: LocalConfig): Promise<RubricLabels> {
+/** The values a scorer file at a team commit lists, by commit, scorer and source hash. A commit never changes. */
+const committedRubrics = new Map<string, Promise<readonly string[] | undefined>>();
+
+/**
+ * The values the rubric `sourceHash` of `scorer` lists, read at `teamRevision` from this machine's team clone: the root
+ * or namespace file of that name whose text is the rubric. Undefined when the clone lacks the commit or holds no such
+ * file at it.
+ */
+async function committedRubric(config: LocalConfig, { scorer, sourceHash, teamRevision }: { scorer: string; sourceHash: string; teamRevision: string }): Promise<readonly string[] | undefined> {
+  const listed = await teamGit(config, ['ls-tree', '-r', '--name-only', teamRevision, '--', 'scorers']);
+  if (listed.code !== 0) return undefined;
+  const files = listed.stdout.split('\n').filter((file) => path.posix.basename(file) === `${scorer}.md` && [path.posix.dirname(file), path.posix.dirname(path.posix.dirname(file))].includes('scorers'));
+  for (const file of files) {
+    const shown = await teamGit(config, ['show', `${teamRevision}:${file}`]);
+    if (shown.code !== 0 || scorerSourceHash(shown.stdout) !== sourceHash) continue;
+    const parsed = parseScorer(file, shown.stdout);
+    return parsed.ok ? parsed.definition.labels.map((label) => label.value) : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * The values each rubric lists, by source hash: which hand labels it pairs. The rubric of a scorer this machine caches
+ * is read from the cache, and any other rubric of a scorer with a hand label from the team clone at a team revision its
+ * labels carry. A rubric neither reads stays out, and the view falls back to the values its labels stored.
+ */
+async function rubricLabelsOf(config: LocalConfig, labels: readonly ScoreLabel[]): Promise<RubricLabels> {
   const cached = await Promise.all((await cachedScorerNames(config)).map((name) => loadCachedScorer(config, name)));
-  return new Map(cached.flatMap((scorer) => (scorer ? [[scorer.sourceHash, scorer.definition.labels.map((label) => label.value)] as const] : [])));
+  const known = new Map<string, readonly string[]>(cached.flatMap((scorer) => (scorer ? [[scorer.sourceHash, scorer.definition.labels.map((label) => label.value)] as const] : [])));
+  const handLabelled = new Set(labels.flatMap((label) => (label.judge.kind === 'human' ? [label.scorer] : [])));
+  const revisions = new Map<string, { scorer: string; sourceHash: string; teamRevisions: Set<string> }>();
+  for (const { scorer, rubric: { sourceHash, teamRevision } } of labels) {
+    if (!handLabelled.has(scorer) || known.has(sourceHash) || !teamRevision || !/^[0-9a-f]{40,64}$/.test(teamRevision)) continue;
+    const key = `${scorer}\0${sourceHash}`;
+    const rubric = revisions.get(key) ?? { scorer, sourceHash, teamRevisions: new Set<string>() };
+    rubric.teamRevisions.add(teamRevision);
+    revisions.set(key, rubric);
+  }
+  const pending = [...revisions.values()];
+  for (let start = 0; start < pending.length; start += SPLIT_GIT_BATCH) {
+    await Promise.all(pending.slice(start, start + SPLIT_GIT_BATCH).map(async ({ scorer, sourceHash, teamRevisions }) => {
+      for (const teamRevision of teamRevisions) {
+        const key = `${teamRevision}\0${scorer}\0${sourceHash}`;
+        const read = committedRubrics.get(key) ?? committedRubric(config, { scorer, sourceHash, teamRevision });
+        committedRubrics.set(key, read);
+        const values = await read;
+        if (values) {
+          known.set(sourceHash, values);
+          return;
+        }
+        // A commit this clone lacks may arrive with the next pull, so only an answer is kept.
+        committedRubrics.delete(key);
+      }
+    }));
+  }
+  return known;
 }
 
 /** The runs this machine has a run file for. */
@@ -236,7 +289,7 @@ export async function scorerResults({ config, query, now = new Date(), events, r
     const { readableReportsWorktree } = await import('../utils/reports-branch.js');
     await readableReportsWorktree(config, { dryRun: !refresh });
   }
-  const [local, team, localRuns, rubricLabels] = await Promise.all([LabelStore.local(config), teamReads(config), localRunIds(config), cachedRubricLabels(config)]);
+  const [local, team, localRuns] = await Promise.all([LabelStore.local(config), teamReads(config), localRunIds(config)]);
   const labels = [
     ...local.map((label) => ({ label, author: config.username ?? 'unknown' })),
     ...team.labels.map(({ member, label }) => ({ label, author: member })),
@@ -257,12 +310,13 @@ export async function scorerResults({ config, query, now = new Date(), events, r
   });
 
   const { commit, ...rest } = query;
-  const [split, reminders] = await Promise.all([
+  const [split, reminders, rubricLabels] = await Promise.all([
     commit ? (async () => {
       const full = await resolveCommit(config, commit);
       return { commit: full, sideOf: await sidesOf(config, full, ScorerResults.revisions(viewed)) };
     })() : undefined,
     events ? reminderInput({ events, windowDays: query.windowDays, now }) : undefined,
+    rubricLabelsOf(config, viewed.map(({ label }) => label)),
   ]);
   return ScorerResults.of({ labels: viewed, query: { ...rest, ...split ? { split } : {} }, now, rubricLabels, ...reminders ? { reminders } : {} });
 }

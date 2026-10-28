@@ -64,7 +64,7 @@ partial failed     alice  good passed  codex / gpt-5.1-codex            10/26/20
 
 Here the Codex judge passed two sessions the team failed, so its pass rate reads high. Open those sessions, then sharpen the rubric's prompt or its label descriptions.
 
-- Each judge label of the rubric in the window pairs with the newest hand label of its session, whoever gave it and whenever. A hand label pairs only while the rubric lists its value, as `teamai pull` cached the scorer or as the rubric's labels stored it. So after a prompt edit, the new rubric's judge labels pair with the hand labels already given.
+- Each judge label of the rubric in the window pairs with the newest hand label of its session, whoever gave it and whenever. A hand label pairs only while the rubric lists its value: in the scorer `teamai pull` cached, or in the scorer file at the team revision the rubric's labels carry in this machine's team clone. So after a prompt edit, the new rubric's judge labels pair with the hand labels already given.
 - Agreement is on pass or fail. **Judge passed, human failed** means the judge is more lenient than members, **judge failed, human passed** that it is stricter.
 - **Where they disagree** lists each disagreement, newest first.
 - The scorer table's **Agrees with hand labels** column shows the same for each scorer's default measurement.

@@ -187,6 +187,32 @@ describe('dashboard scorer results', () => {
     expect(view.selected?.agreement.judges).toMatchObject([{ labels: 2, paired: 2, agree: 1, judgePassedHumanFailed: 1 }]);
   });
 
+  it('pairs hand labels with an older rubric by the values the scorer listed at its team revision', async () => {
+    const { config } = team();
+    const repo = config.repo.localPath;
+    const rubric = (prompt: string) => `---\nlabels:\n  - { value: good, score: 1, description: Fixed it }\n  - { value: missed-bug, score: 0, description: Left the bug }\npassingScore: 1\n---\n${prompt}\n`;
+    const commit = (prompt: string) => {
+      write(path.join(repo, 'scorers', 'review-quality.md'), rubric(prompt));
+      git(repo, 'add', '-A');
+      git(repo, 'commit', '-q', '-m', prompt);
+      return { sourceHash: scorerSourceHash(rubric(prompt)), teamRevision: git(repo, 'rev-parse', 'HEAD') };
+    };
+    const first = commit('Judge whether the session fixed the bug.');
+    const second = commit('Judge whether the session fixed the bug. Read the tests it ran.');
+    commit('Judge whether the session fixed the bug and added a test.');
+    await syncScorerDefinitions(config);
+    publishLabels(config, 'bob', [
+      sessionLabel('one', { rubric: first, judge: { kind: 'human' }, label: 'missed-bug', score: 0, passed: false }),
+      sessionLabel('two', { rubric: first, judge: { kind: 'human' } }),
+      sessionLabel('one', { rubric: second }),
+      sessionLabel('two', { rubric: second }),
+    ]);
+    const opened = await scorerResults({ config, query: { windowDays: 30 }, now: NOW });
+    const cohort = opened.scorers[0]?.cohorts.find((one) => one.rubric.sourceHash === second.sourceHash && one.judge.kind === 'model');
+    const view = await scorerResults({ config, query: { windowDays: 30, scorer: 'review-quality', cohort: cohort?.id }, now: NOW });
+    expect(view.selected?.agreement.judges).toMatchObject([{ labels: 2, paired: 2, agree: 1, judgePassedHumanFailed: 1 }]);
+  });
+
   it('builds the reminder table from this machine\'s member sessions and contribute state only', async () => {
     const { config } = team();
     publishLabels(config, 'bob', [sessionLabel('fired'), sessionLabel('quiet', { passed: false }), sessionLabel('no-state'), sessionLabel('other-machine')]);
