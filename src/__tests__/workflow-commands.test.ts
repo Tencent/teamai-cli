@@ -365,6 +365,36 @@ steps:
     expect(printed).toContainEqual({ line: expect.stringMatching(new RegExp(`Run ${runId} started\\. .*teamai workflow resume ${runId}$`)), ran: false });
     expect(fs.existsSync(path.join(work, 'ran.marker'))).toBe(true);
   });
+
+  it('prints why each step failed and how to retry it on stderr when the run fails, and only the envelope on stdout', async () => {
+    const config = testConfig();
+    fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'release.yaml'), `schemaVersion: v1alpha1
+name: release
+description: Sign the build.
+steps:
+  - id: sign
+    requires: { env: [SIGNING_KEY] }
+    command: node -e ""
+`);
+    await syncWorkflowDefinitions(config);
+    state.config = config;
+    vi.stubEnv('SIGNING_KEY', undefined);
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-workflow-start-'));
+    dirs.push(work);
+    vi.spyOn(process, 'cwd').mockReturnValue(work);
+    const printed: string[] = [];
+    vi.spyOn(console, 'error').mockImplementation((...parts: unknown[]) => {
+      printed.push(parts.map(String).join(' '));
+    });
+
+    const started = await capture(() => workflowStart('release', { driver: 'local' }));
+
+    expect(started).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    const done = started.data?.done;
+    const runId = typeof done === 'object' && done !== null && 'run' in done ? String(done.run) : '';
+    expect(printed).toContainEqual(expect.stringMatching(/Step "sign" failed with missing_env: .*teamai env add SIGNING_KEY --secret .*teamai env set SIGNING_KEY/));
+    expect(printed).toContainEqual(expect.stringContaining(`Retry it with teamai workflow retry ${runId} sign, then continue the run with teamai workflow resume ${runId}`));
+  });
 });
 
 describe('workflow start in a project whose cache lacks the workflow', () => {

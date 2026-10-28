@@ -226,8 +226,16 @@ function hitlMessage(scope: Scope, states: StepState[], state: StepState, defini
  * a placeholder such as `<option>`. A fan-out step path such as `items[0].ask` is quoted.
  */
 export function respondCommand(run: string, step: string, choice: string, pass: number): string {
-  const stepArgument = /^[A-Za-z0-9_.-]+$/.test(step) ? step : `'${step}'`;
-  return `teamai workflow respond ${run} ${stepArgument} ${choice} --pass ${pass}`;
+  return `teamai workflow respond ${run} ${stepArgument(step)} ${choice} --pass ${pass}`;
+}
+
+/** The command the person runs to retry step `step` of run `run`, quoted as `respondCommand` quotes it. */
+export function retryCommand(run: string, step: string): string {
+  return `teamai workflow retry ${run} ${stepArgument(step)}`;
+}
+
+function stepArgument(step: string): string {
+  return /^[A-Za-z0-9_.-]+$/.test(step) ? step : `'${step}'`;
 }
 
 function waitingHitl(run: RunState): Record<string, unknown> | undefined {
