@@ -9,7 +9,7 @@ import { requiredIsolation, scorerIsolationSource, type IsolationSetting } from 
 import { installedJudgeTools } from './scorers/judge.js';
 import { scopeScoring } from './scorers/settings.js';
 import { AgentSession } from './session-flow/agent-session.js';
-import { SessionPolicy, type PolicySource, type SessionPolicies } from './session-flow/session-policy.js';
+import { SessionPolicy, type SessionPolicies } from './session-flow/session-policy.js';
 import { SessionWork, type SampledScorer } from './session-flow/session-work.js';
 import { getDataHome, type LocalConfig, type SessionCloseOffered } from './types.js';
 import { nestedStart } from './workflow/attempt-marker.js';
@@ -47,28 +47,12 @@ function listOf(items: readonly string[]): string {
   return items.length > 1 ? `${items.slice(0, -1).join(', ')} and ${items.slice(-1).join('')}` : items.join('');
 }
 
-/** What set a policy, as a reason names it. */
-function setBy(source: PolicySource): string {
-  switch (source.kind) {
-    case 'default':
-      return 'the default';
-    case 'setting':
-      return source.key;
-    case 'http-team':
-      return 'the team repo, an HTTP repo that keeps no session archive';
-    default: {
-      const unhandled: never = source;
-      return unhandled;
-    }
-  }
-}
-
 function publishProposal(policy: SessionPolicies['attended']): Proposal<boolean> {
   switch (policy.policy) {
     case 'ask':
-      return { value: true, why: `${PUBLISH_WHY} Proposed because the attended publish policy (${setBy(policy.source)}) is ask. You confirm it again from your own terminal or the dashboard before it runs.` };
+      return { value: true, why: `${PUBLISH_WHY} Proposed because the attended publish policy (${SessionPolicy.setBy(policy.source)}) is ask. You confirm it again from your own terminal or the dashboard before it runs.` };
     case 'off':
-      return { value: false, why: `${PUBLISH_WHY} Not proposed: the attended publish policy (${setBy(policy.source)}) is off.` };
+      return { value: false, why: `${PUBLISH_WHY} Not proposed: the attended publish policy (${SessionPolicy.setBy(policy.source)}) is off.` };
     case 'auto':
       return { value: false, why: `${PUBLISH_WHY} Not proposed: the attended publish policy is auto, so teamai publishes this session, scrubbed, once it has been idle 6 hours.` };
     default: {
@@ -169,7 +153,7 @@ async function propose(
       return { session, source, publish, judge, scorers: scorersProposal(sampled, { judge: () => judge().value, team: scoring.isolation }) };
     }
     case 'off':
-      return { session, source, publish, judge, scorers: { value: [], why: `${SCORERS_WHY} None proposed: the attended scoring policy (${setBy(policy.source)}) is off. ${NAME_ANY}` } };
+      return { session, source, publish, judge, scorers: { value: [], why: `${SCORERS_WHY} None proposed: the attended scoring policy (${SessionPolicy.setBy(policy.source)}) is off. ${NAME_ANY}` } };
     case 'auto':
       return { session, source, publish, judge, scorers: { value: [], why: `${SCORERS_WHY} None proposed: the attended scoring policy is auto, so the background judge scores this session once it has been idle 6 hours. ${NAME_ANY}` } };
     default: {

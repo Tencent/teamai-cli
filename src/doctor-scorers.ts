@@ -8,12 +8,13 @@ import { scoringUnavailable } from './scorers/home.js';
 import { requiredIsolation, unknownIsolationText } from './scorers/isolation.js';
 import { scopeScoring, type SessionScoring } from './scorers/settings.js';
 import { RUN_MODES } from './launch-context.js';
-import type { PolicySource } from './session-flow/session-policy.js';
+import { SessionPolicy, type PolicySource } from './session-flow/session-policy.js';
 import type { LocalConfig } from './types.js';
 import { isSilent, setSilent } from './utils/logger.js';
 import { formatUnknownScorer, syncWorkflowDefinitions } from './workflow/cache.js';
 
-async function isolationNotes(localConfig: LocalConfig, verified: readonly string[]): Promise<string[]> {
+/** What scoring in this scope follows: its isolation, what decides session judging, and the problems with its settings. */
+async function scoringNotes(localConfig: LocalConfig, verified: readonly string[]): Promise<string[]> {
   const scoring = await scopeScoring(localConfig);
   if (!scoring.ok) return [scoring.reason];
   const required = requiredIsolation(scoring.isolation);
@@ -33,9 +34,9 @@ async function isolationNotes(localConfig: LocalConfig, verified: readonly strin
 function sessionJudgingNote({ policies, dailyLimit, dailyLimitSource }: SessionScoring): string[] {
   const sources = [...RUN_MODES.map((mode) => policies[mode].source), dailyLimitSource];
   if (sources.every((source) => source.kind === 'default')) return [];
-  const setBy = (source: PolicySource) => (source.kind === 'setting' ? `set by ${source.key}` : 'the default');
-  const modes = RUN_MODES.map((mode) => `${mode} ${policies[mode].policy}, ${setBy(policies[mode].source)}`);
-  return [`Session judging: ${[...modes, `up to ${dailyLimit} sessions a day, ${setBy(dailyLimitSource)}`].join('; ')}.`];
+  const named = (source: PolicySource) => (source.kind === 'default' ? 'the default' : `set by ${SessionPolicy.setBy(source)}`);
+  const modes = RUN_MODES.map((mode) => `${mode} ${policies[mode].policy}, ${named(policies[mode].source)}`);
+  return [`Session judging: ${[...modes, `up to ${dailyLimit} sessions a day, ${named(dailyLimitSource)}`].join('; ')}.`];
 }
 
 async function judgeToolsNote(resolveTool: ResolveTool | undefined): Promise<string> {
@@ -79,7 +80,7 @@ export async function scorerNotes(localConfig: LocalConfig, { resolveTool }: { r
     const scored = result.scorers.cached.length > 0;
     const unavailable = scored ? scoringUnavailable(localConfig) : undefined;
     return [
-      ...(unavailable ? [unavailable] : scored ? [...await isolationNotes(localConfig, result.scorers.verified), await judgeToolsNote(resolveTool)] : []),
+      ...(unavailable ? [unavailable] : scored ? [...await scoringNotes(localConfig, result.scorers.verified), await judgeToolsNote(resolveTool)] : []),
       ...result.scorers.invalid.map((diagnostic) => `Invalid scorer: ${formatScorerDiagnostic(diagnostic)}`),
       ...result.unknownScorers.map((unknown) => `Unknown scorer: ${formatUnknownScorer(unknown)}`),
       ...await scorerModelNotes(localConfig, resolveTool),

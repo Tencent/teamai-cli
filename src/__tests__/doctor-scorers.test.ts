@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, onTestFinished } from 'vitest';
 import { localAliasesPath } from '../models/aliases.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { scorerNotes } from '../doctor-scorers.js';
-import type { LocalConfig } from '../types.js';
+import { getUserConfigPath, type LocalConfig } from '../types.js';
 
 const dirs: string[] = [];
 
@@ -113,7 +113,7 @@ describe('scorerNotes', () => {
   });
 
   it('prints what sets session judging in each run mode and the daily limit, once a setting does', async () => {
-    const machineFile = path.join(process.env.HOME ?? '', '.teamai', 'config.yaml');
+    const machineFile = getUserConfigPath();
     fs.mkdirSync(path.dirname(machineFile), { recursive: true });
     fs.writeFileSync(machineFile, 'scoring:\n  sessions: { unattended: off }\n  daily_limit: 2\n');
     onTestFinished(() => fs.rmSync(machineFile, { force: true }));
