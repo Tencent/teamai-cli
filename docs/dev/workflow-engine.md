@@ -139,7 +139,7 @@ Test parsing through `parseWorkflow` and `syncWorkflowDefinitions`. Test the eng
 
 | Row | State | Input | Guard | Effects | Next | Action |
 |---|---|---|---|---|---|---|
-| C1 | preparing | runner: prepared | job `command` | run the command outside the lock with `{...stepEnvironment(values, envScope).env, ...lease.env, TEAMAI_WORKFLOW_ATTEMPT}` (`process.env` for a lease without `envScope`), output masked into `output.log` | running | |
+| C1 | preparing | runner: prepared | job `command` | run the command outside the lock with `{...stepEnvironment(env, envScope).env, ...lease.env, TEAMAI_WORKFLOW_ATTEMPT}` (`process.env` for a lease without `envScope`), output masked into `output.log` | running | |
 | C2 | preparing | runner: prepared | job `prompt` | `pickChildModel`; `writeChildBrief` | offered | `dispatch` in each foreground turn until acked |
 | C3 | preparing | runner: prepared | job `prompt`; `pickChildModel` fails `model_unavailable` | write-ahead `failed` with that failure | reporting | |
 | C4 | preparing | runner: place busy, behind b | | `behind` := b | queued | |
