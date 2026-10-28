@@ -6,6 +6,7 @@
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { DefaultWorkflows } from './default-workflows.js';
 import type { WorkflowEnv } from './env-resolution.js';
 import { log } from './utils/logger.js';
 import { getReportsDir, usesBranchWorktree, type LocalConfig } from './types.js';
@@ -118,7 +119,7 @@ async function offerOf(config: LocalConfig, snapshot: RunSnapshot, at: string, {
   if (!definitions.ok) return { at, needs: [], uses: { env: [], prompts: [] }, lacks: [], refusal: { code: definitions.error.code, message: definitions.error.message } };
   const { definition, workflows } = definitions.value;
   const description = describeWorkflow({
-    definition, workflows, ceiling: ceilingOf(config), can: canFor(undefined), allow: config.workflows?.allow ?? {}, env: env.facts,
+    definition, source: DefaultWorkflows.sourceOfRun(snapshot), workflows, ceiling: ceilingOf(config), can: canFor(undefined), allow: config.workflows?.allow ?? {}, env: env.facts,
   });
   const settled = new Set(settledSteps({ definition, workflows, steps: snapshot.steps }));
   const needs = stepNeeds(description, settled);

@@ -1,5 +1,6 @@
 /** The workflow protocol in process: the calls behind `workflow start`, `next`, `report`, `respond`, `retry` and `cancel`, for every driver. */
 import path from 'node:path';
+import { DefaultWorkflows } from '../default-workflows.js';
 import { driverIdentity, sameDriver } from '../driver-identity.js';
 import type { WorkflowEnv } from '../env-resolution.js';
 import { scoringUnavailable } from '../scorers/home.js';
@@ -401,7 +402,7 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
       if ('failed' in tree) return { error: tree.failed };
       const head = checkout === undefined ? undefined : await headCommit(checkout);
       const description = describeWorkflow({
-        definition: cached.definition, workflows: tree.workflows, ceiling, can, allow: config.workflows?.allow ?? {}, env: env.facts, ...(head?.ref !== undefined ? { base: head.ref } : {}),
+        definition: cached.definition, source: cached.source, workflows: tree.workflows, ceiling, can, allow: config.workflows?.allow ?? {}, env: env.facts, ...(head?.ref !== undefined ? { base: head.ref } : {}),
       });
       const undeliverable = deliveryProblem(cached.definition, tree.workflows, head);
       return { description, judging: await judgingOf(config, description, tool), ...(undeliverable ? { undeliverable } : {}) };
@@ -499,14 +500,16 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
       }
       const unreconciled = await reconcileTakenCopies(config, runId, run.checkout ?? checkout);
       if (unreconciled) return { kind: 'failed', failure: unreconciled };
-      const description = describeWorkflow({ definition: run.definition, workflows: run.workflows ?? {}, ceiling, can, allow: config.workflows?.allow ?? {}, env: env.facts });
+      const description = describeWorkflow({
+        definition: run.definition, source: DefaultWorkflows.sourceOfRun(run), workflows: run.workflows ?? {}, ceiling, can, allow: config.workflows?.allow ?? {}, env: env.facts,
+      });
       return { kind: 'ready', installed: resumed.value?.ownership === 'claimed', description, settled: settledSteps(run), status: run.status, judging: await judgingOf(config, description, tool, run.scorers) };
     },
     carried: async (runId, { published, claim, ceiling, can }) => {
       const carried = await carriedRun(config, runId, { published, claim });
       if (!carried.ok || carried.value === undefined) return undefined;
-      const { definition, workflows, settled, status } = carried.value;
-      return { description: describeWorkflow({ definition, workflows, ceiling, can, allow: config.workflows?.allow ?? {}, env: env.facts }), settled, status };
+      const { definition, workflows, source, settled, status } = carried.value;
+      return { description: describeWorkflow({ definition, source, workflows, ceiling, can, allow: config.workflows?.allow ?? {}, env: env.facts }), settled, status };
     },
     resumeRefusal: (runId, { caller, published }) => resumeRefusal(config, runId, caller, { published }),
     scoreNext: async (body) => {

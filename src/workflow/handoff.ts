@@ -22,7 +22,7 @@ import {
 } from './snapshot.js';
 import { takeOver, type UnleasedStep } from './step-state.js';
 import { installOwner, isRunId, readRun, updateRun } from './store.js';
-import type { RunState, RunStatus, WorkflowDefinition, WorkflowFailure, WorkflowStep } from './types.js';
+import type { RunState, RunStatus, WorkflowDefinition, WorkflowFailure, WorkflowSource, WorkflowStep } from './types.js';
 import { branchName, stepMode, type LeaseSession, type SessionRef } from './workspace.js';
 import { fetchMissingCommits, git, reconcileCopy } from './worktree.js';
 
@@ -685,6 +685,7 @@ function settledForGood({ definition, workflows }: Definitions, byId: ReadonlyMa
 
 /** What a run carries: its definitions, the steps it settled for good, and its status. */
 export interface CarriedRun extends Definitions {
+  source: WorkflowSource;
   settled: string[];
   status: RunStatus;
 }
@@ -697,14 +698,17 @@ export interface CarriedRun extends Definitions {
 export async function carriedRun(config: LocalConfig, runId: string, { published: alreadyPublished, claim = false }: { published: boolean; claim?: boolean }): Promise<Result<CarriedRun | undefined>> {
   const stored = await readRun(config, runId);
   if (stored === 'corrupt') return refused(runUnreadable(runId));
-  const local = stored === 'missing' ? undefined : { definition: stored.definition, workflows: stored.workflows ?? {}, settled: settledSteps(stored), status: stored.status };
+  const local = stored === 'missing' ? undefined
+    : { definition: stored.definition, workflows: stored.workflows ?? {}, source: DefaultWorkflows.sourceOfRun(stored), settled: settledSteps(stored), status: stored.status };
   if (local && !claim) return ok(local);
   if (!alreadyPublished) return ok(local);
   // Read from the team repository rather than the reports checkout, which a refused resume would otherwise leave synced.
   const origin = await publishedRun(config, runId, { checkout: false });
   if (!origin.ok || origin.value === 'absent') return origin.ok || local ? ok(local) : origin;
   const definitions = await definitionsOf(config, origin.value);
-  return definitions.ok ? ok({ ...definitions.value, settled: settledSteps({ ...definitions.value, steps: origin.value.steps }), status: origin.value.status }) : definitions;
+  return definitions.ok
+    ? ok({ ...definitions.value, source: DefaultWorkflows.sourceOfRun(origin.value), settled: settledSteps({ ...definitions.value, steps: origin.value.steps }), status: origin.value.status })
+    : definitions;
 }
 
 /**

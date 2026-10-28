@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { getCurrentVersion } from './package-info.js';
 import { formatDiagnostic, parseWorkflow } from './workflow/parse.js';
-import type { CachedWorkflow, ResolvedWorkflow } from './workflow/types.js';
+import type { CachedWorkflow, ResolvedWorkflow, WorkflowSource } from './workflow/types.js';
 
 // ─── Default workflows (#1388) ───────────────────────────
 //
@@ -78,4 +78,9 @@ function originOf(resolved: ResolvedWorkflow): RunOrigin {
   return resolved.source === 'default' ? { source: 'default', teamaiVersion: getCurrentVersion() } : { source: 'team' };
 }
 
-export const DefaultWorkflows = { named, all, originOf } as const;
+/** The source of a run's definition: a run started before origins were recorded ran the team's, as only those existed. */
+function sourceOfRun(run: { origin?: RunOrigin }): WorkflowSource {
+  return run.origin?.source ?? 'team';
+}
+
+export const DefaultWorkflows = { named, all, originOf, sourceOfRun } as const;

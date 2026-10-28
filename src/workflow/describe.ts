@@ -1,6 +1,6 @@
 import { sameEnvName } from '../resources/env-key.js';
 import { mergeRequirements, negotiate, requiredEnvKeys, type Allow, type DriverCan, type EnvFacts, type Missing, type Requirements, type Setup } from './requirements.js';
-import type { Invoke, OutputSchema, WorkflowDefinition, WorkflowStep } from './types.js';
+import type { Invoke, OutputSchema, WorkflowDefinition, WorkflowSource, WorkflowStep } from './types.js';
 import { opensCopy, resolveMode, runsInCheckout } from './workspace.js';
 
 /**
@@ -49,6 +49,8 @@ export interface WorkflowDescription {
   name: string;
   description: string;
   alias?: string;
+  /** Whether the team's file or teamai's default runs under this name. */
+  source: WorkflowSource;
   invoke: Invoke;
   /** Every input `start --inputs` must pass. */
   inputs: Record<string, OutputSchema>;
@@ -121,9 +123,9 @@ function writes(step: WorkflowStep, ancestors: WorkflowStep[], childOf: (step: W
  * run wider than it.
  */
 export function describeWorkflow(input: {
-  definition: WorkflowDefinition; workflows: Record<string, WorkflowDefinition>; ceiling: number; can: DriverCan; allow: Allow; env: EnvFacts; base?: string;
+  definition: WorkflowDefinition; source: WorkflowSource; workflows: Record<string, WorkflowDefinition>; ceiling: number; can: DriverCan; allow: Allow; env: EnvFacts; base?: string;
 }): WorkflowDescription {
-  const { definition, workflows, ceiling, can, allow, env, base } = input;
+  const { definition, source, workflows, ceiling, can, allow, env, base } = input;
   const runEnvKeys = requiredEnvKeys([definition, ...Object.values(workflows)]);
   const facts: WorkflowDescription['facts'] = {
     prompts: [], interactive: [], modeled: [], width: 0, gates: [], inWorkspace: [], scored: [], deliver: [], ...(base !== undefined ? { base } : {}),
@@ -229,5 +231,5 @@ export function describeWorkflow(input: {
   const route = [...copies].find(([, copy]) => copy.taken && copy.held);
   if (route?.[1].held) facts.localRoute = { opener: route[0], held: route[1].held.step, missing: route[1].held.missing };
   const { name, description, alias, invoke, inputs } = definition;
-  return { name, description, ...(alias ? { alias } : {}), invoke: invoke ?? 'deny', inputs: inputs ?? {}, facts };
+  return { name, description, ...(alias ? { alias } : {}), source, invoke: invoke ?? 'deny', inputs: inputs ?? {}, facts };
 }

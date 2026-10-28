@@ -253,7 +253,7 @@ export async function workflowStart(name: string, options: {
       return;
     }
     const { description, alias, invoke, inputs } = cached.definition;
-    writeEnvelope({ data: { name: cached.definition.name, description, ...(alias ? { alias } : {}), invoke: invoke ?? 'deny', inputs: inputs ?? {} } }, secrets);
+    writeEnvelope({ data: { name: cached.definition.name, description, ...(alias ? { alias } : {}), source: cached.source, invoke: invoke ?? 'deny', inputs: inputs ?? {} } }, secrets);
     return;
   }
   if (options.driver !== undefined && options.driver !== 'local') {

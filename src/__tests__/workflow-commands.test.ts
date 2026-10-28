@@ -414,11 +414,13 @@ steps:
     const { project, user } = await installs();
     const userWorkflow = path.join(user.repo.localPath, 'workflows', 'session-close.yaml');
 
-    expect(await capture(() => workflowStart('session-close', { describe: true }))).toMatchObject({ data: { name: 'session-close', invoke: 'ask' } });
+    expect(await capture(() => workflowStart('session-close', { describe: true }))).toMatchObject({ data: { name: 'session-close', invoke: 'ask', source: 'default' } });
+    expect(await capture(() => workflowStart('session-close', { driver: 'skill', describe: true }))).toMatchObject({ data: { describe: { workflow: { name: 'session-close', source: 'default' } } } });
 
     fs.writeFileSync(userWorkflow, ship('Close the session the user team way').replace('name: ship', 'name: session-close'));
     await syncWorkflowDefinitions(user);
-    expect(await capture(() => workflowStart('session-close', { describe: true }))).toMatchObject({ data: { description: 'Close the session the user team way' } });
+    expect(await capture(() => workflowStart('session-close', { describe: true }))).toMatchObject({ data: { description: 'Close the session the user team way', source: 'team' } });
+    expect(await capture(() => workflowStart('session-close', { driver: 'skill', describe: true }))).toMatchObject({ data: { describe: { workflow: { source: 'team' } } } });
     const started = await capture(() => workflowStart('session-close', {}));
     const runId = String(started.data?.run);
     expect(typeof await readRun(user, runId)).toBe('object');
