@@ -142,22 +142,23 @@ async function publishedSource(dirs: {
   /** The checkout being imported, whose hashed root is read whether or not it has a remote. */
   sourceDir: string;
 }): Promise<PublishedSource> {
-  const [published, staged, own] = await Promise.all([
-    readCodebaseSource(dirs.publishedDir),
-    readCodebaseSource(dirs.stagedDir),
-    sourceRepositoryMetadata(dirs.sourceDir),
-  ]);
-  if (published?.kind === 'local' && sameLocalSource(published, own)) {
-    return { kind: 'same' };
-  }
-  // A published manifest that hashed a root this checkout did not come from
-  // names another checkout without an origin: it is not this source's, and
-  // no warning is needed on every later import that merely passes its name
-  // as a legacy slug (#1502). The same root with a different directory in
-  // it stays below: that is this repository's own older scope, and a
-  // manifest without a recorded hash says nothing.
-  if (published?.kind === 'local' && published.localRootHash && published.localRootHash !== own.localRootHash) {
-    return { kind: 'other-checkout' };
+  const [published, staged] = await Promise.all([readCodebaseSource(dirs.publishedDir), readCodebaseSource(dirs.stagedDir)]);
+  if (published?.kind === 'local') {
+    // Read lazily: a destination that does not name a local source never
+    // reaches for the checkout's metadata (nor for git).
+    const own = await sourceRepositoryMetadata(dirs.sourceDir);
+    if (sameLocalSource(published, own)) {
+      return { kind: 'same' };
+    }
+    // A published manifest that hashed a root this checkout did not come
+    // from names another checkout without an origin: it is not this
+    // source's, and no warning is needed on every later import that
+    // merely passes its name as a legacy slug (#1502). The same root with
+    // a different directory in it stays below: that is this repository's
+    // own older scope, and a manifest without a recorded hash says nothing.
+    if (published.localRootHash && published.localRootHash !== own.localRootHash) {
+      return { kind: 'other-checkout' };
+    }
   }
   if (published?.kind === 'remote') {
     const sameRepo = staged?.kind === 'remote' && remotesMatch(published.repoUrl, staged.repoUrl);
