@@ -190,7 +190,12 @@ function memoryRunners(command: Runners['command']): {
             await park(id);
             waitingLocks.add(id);
             try {
-              return await takeRunLock(config, run, body, { waitMs });
+              return await takeRunLock(config, run, async (lock) => {
+                // The lock has been acquired. From here on the runner is executing
+                // its body, so settle must restore its normal spin detection.
+                waitingLocks.delete(id);
+                return body(lock);
+              }, { waitMs });
             } finally {
               waitingLocks.delete(id);
             }
