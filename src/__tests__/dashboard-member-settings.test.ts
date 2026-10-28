@@ -4,11 +4,11 @@ import path from 'node:path';
 import YAML from 'yaml';
 import { afterEach, describe, expect, it } from 'vitest';
 import { refreshRoleAssignment } from '../config.js';
-import { readMemberSettings } from '../dashboard/member-settings.js';
-import { LocalConfigSchema, type LocalConfig } from '../types.js';
+import { readMemberSettingsPanel } from '../dashboard/member-settings.js';
+import { getUserConfigPath, LocalConfigSchema, type LocalConfig } from '../types.js';
 
 const dirs: string[] = [];
-const machineFile = (): string => path.join(process.env.HOME ?? '', '.teamai', 'config.yaml');
+const machineFile = getUserConfigPath;
 
 afterEach(() => {
   fs.rmSync(machineFile(), { force: true });
@@ -32,13 +32,13 @@ async function workspace(workspaceYaml: string): Promise<{ config: LocalConfig; 
   return { config, scopeFile };
 }
 
-describe('readMemberSettings', () => {
+describe('readMemberSettingsPanel', () => {
   it('lists each member setting a level sets, the level that won, and the levels below it', async () => {
     fs.mkdirSync(path.dirname(machineFile()), { recursive: true });
     fs.writeFileSync(machineFile(), 'ai: { tool: codex }\nrecallEnabled: true\nworkflows: { tools: { default: codex } }\nexcludedSkills: [lint]\n');
     const { config, scopeFile } = await workspace('ai: { tool: claude }\nrecallEnabled: false\n');
 
-    const read = await readMemberSettings(config);
+    const read = await readMemberSettingsPanel(config);
 
     expect(read).toMatchObject({ configured: true, scope: 'workspace', machineFile: machineFile(), unread: ['excludedSkills'] });
     expect(read.configured && read.rows).toEqual(expect.arrayContaining([

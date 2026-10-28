@@ -452,8 +452,8 @@ export async function startDashboard(port?: number): Promise<void> {
     if (url.pathname === '/api/member-settings') {
       // Each member setting a level sets for the workspace, as `teamai doctor` lists them (#1459).
       try {
-        const { readMemberSettings } = await import('./dashboard/member-settings.js');
-        const settings = workspace?.config ? await readMemberSettings(workspace.config) : { configured: false };
+        const { readMemberSettingsPanel } = await import('./dashboard/member-settings.js');
+        const settings = workspace?.config ? await readMemberSettingsPanel(workspace.config) : { configured: false };
         res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify(settings));
       } catch (e) {
