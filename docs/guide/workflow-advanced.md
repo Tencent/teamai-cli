@@ -812,9 +812,20 @@ After a claim, `resume` can also answer `branch_diverged` when a local branch ca
 
 | Steps left | Lacking here when | Listed fix |
 |---|---|---|
-| A step or its `setup` with `requires.env` | a key has no value here, or the team env cannot be read | `teamai env set <KEY>`, or set it in the environment |
+| A step or its `setup` with `requires.env` | a key has no value here, or the team env cannot be read | set it in the environment, or `teamai env set <KEY>` for a key the team declares (below) |
 | A prompt step, with the local driver | `--tools`, `workflows.tools` and your AI tool name no tool for its agent, or only one teamai does not launch | `--tools default=<tool>` (or `<agent>=<tool>`), or `workflows.tools.default` |
 | A prompt step, with the local driver | the tool they name is not on `PATH` | install it, or `--tools` names one that is |
+
+`teamai env set` refuses a key the team does not declare, so the fix depends on the key. Here the team declares `NPM_TOKEN` in `env/secrets.yaml` and not `SIGNING_KEY`:
+
+```console
+$ teamai workflow resume --next --auto-approve
+⚠ Left ra144cbe1999a43d3 (publish-package) offered: publish requires env NPM_TOKEN, which has no value here: run teamai env set NPM_TOKEN, or set it in the environment
+⚠ Left r1358d32ebc750306 (sign-docs) offered: sign requires env SIGNING_KEY, which has no value here: set it in the environment, or declare it in the team repo with teamai env add SIGNING_KEY --secret and teamai push
+{"data":{"idle":{"offered":2}}}
+```
+
+Once the declaration is merged, `teamai pull` on the runner says ``SIGNING_KEY is not set. Run `teamai env set SIGNING_KEY`.`` A step that fails with `missing_env` gives the same fix.
 
 A step that already settled for good counts for none of these, as for a person. With `--driver skill` the session runs the prompt steps, so only env counts. It claims the first one left as `resume <run>` would, and drives it with the driver `--driver` names. A claim that another runner beat answers `state_moved` inside `--next`, which then tries the next run. On stderr it says why it left each offered run of this repository: `Left <run> (<workflow>) offered for a person: …`, or a warning `Left <run> (<workflow>) offered: <what this machine lacks>: <what gives it>`. With nothing to take, it prints `{"data":{"idle":{"offered":N}}}` and exits 0: `N` counts the runs other installs offer that it left.
 
