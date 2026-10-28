@@ -157,9 +157,12 @@ describe('a workspace delivers what the repos inside it select (#913)', () => {
   let cliEnv: Record<string, string>;
 
   const run = (args: string[], cwd: string): Promise<RunResult> => runCLI(args, cwd, home, cliEnv);
+  // The team's skills the selection delivers: teamai's own, the CLI's and those pull generates from workflows, are left out.
   const skillsIn = (root: string): string[] => {
     const dir = path.join(root, '.claude', 'skills');
-    return fs.existsSync(dir) ? fs.readdirSync(dir).filter((name) => !name.startsWith('teamai')).sort() : [];
+    return fs.existsSync(dir)
+      ? fs.readdirSync(dir).filter((name) => !name.startsWith('teamai') && !name.startsWith('workflow-')).sort()
+      : [];
   };
   const setUpRepo = async (dir: string, args: string[], url = FAKE_URL): Promise<void> => {
     fs.mkdirSync(path.join(dir, '.claude'), { recursive: true });
