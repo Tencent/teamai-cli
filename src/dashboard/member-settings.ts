@@ -4,7 +4,7 @@
  * ~/.teamai/config.yaml that no command reads.
  */
 import { loadTeamConfig } from '../config.js';
-import { machineUnreadKeys, memberSettingRows, memberSettingsReport, type MemberSettingRow } from '../doctor.js';
+import { machineUnreadKeys, memberSettingRows, memberSettingsReport, type MemberSettingRow } from '../member-settings-report.js';
 import { getUserConfigPath, isSelfMode, type LocalConfig } from '../types.js';
 import { getUserHome } from '../utils/home.js';
 
