@@ -1,4 +1,5 @@
 import { scorersClient } from './scorers-client.js';
+import { handoffView } from './handoff-view.js';
 import { sessionSharingView } from './session-sharing-view.js';
 
 /** Browser application, embedded in the standalone dashboard HTML by tsup. */
@@ -231,18 +232,24 @@ function currentSteps(r) { const parts=[...r.waiting.map(step=>'<span class="amb
 function recordState(r) { return r.record==='pending'?'<span class="amber">'+label('Pending publication')+'</span>':label('Published'); }
 function runTable(rows, local) {
  const heads=['WORKFLOW / RUN','STATUS',...(local?['CURRENT STEP']:[]),'END','DURATION','Tokens','TEAM REVISION','PULL REQUESTS'];
- return '<div class="table-scroll"><table class="session-table"><thead><tr>'+heads.map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'+rows.map(r=>'<tr class="'+(r.status==='running'?'':'row-ended')+'"><td><button class="link" data-run="'+e(r.run)+'" data-run-source="'+e(r.source)+'"><span class="sr-only">'+label('Details')+' </span><span data-verbatim>'+e(r.workflow)+'</span> ↗</button><small><span data-verbatim>'+e(r.run)+'</span>'+(local?'':' · <span data-verbatim>'+e(r.username)+'</span>')+' · '+e(when(r.startedAt))+'</small></td><td>'+runStatus(r.status)+'<small><span data-verbatim>'+e(r.driver||'—')+'</span>'+(r.record?' · '+recordState(r):'')+'</small></td>'+(local?'<td>'+currentSteps(r)+'</td>':'')+'<td data-verbatim>'+e(r.end||'—')+'</td><td>'+runDurationHtml(r)+'</td><td>'+number(r.tokens)+'</td><td>'+revision(r)+'</td><td>'+prLinks(r)+'</td></tr>').join('')+'</tbody></table></div>';
+ return '<div class="table-scroll"><table class="session-table"><thead><tr>'+heads.map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'+rows.map(r=>'<tr class="'+(r.status==='running'?'':'row-ended')+'"><td><button class="link" data-run="'+e(r.run)+'" data-run-source="'+e(r.source)+'"><span class="sr-only">'+label('Details')+' </span><span data-verbatim>'+e(r.workflow)+'</span> ↗</button><small><span data-verbatim>'+e(r.run)+'</span>'+(local?'':' · <span data-verbatim>'+e(r.username)+'</span>')+' · '+e(when(r.startedAt))+'</small></td><td>'+runStatus(r.status)+'<small><span data-verbatim>'+e(r.driver||'—')+'</span>'+(r.record?' · '+recordState(r):'')+(local?handoffBadge(r.run):'')+'</small></td>'+(local?'<td>'+currentSteps(r)+'</td>':'')+'<td data-verbatim>'+e(r.end||'—')+'</td><td>'+runDurationHtml(r)+'</td><td>'+number(r.tokens)+'</td><td>'+revision(r)+'</td><td>'+prLinks(r)+'</td></tr>').join('')+'</tbody></table></div>';
 }
+// Runs handed over on teamai-reports (#1390): offered to whoever takes one next, or held by the install that claimed it.
+function handoffsOf() { return workflows&&workflows.reported&&workflows.reported.state==='ok'?workflows.reported.handoffs||[]:[]; }
+function handoffBadge(id) { const h=handoffsOf().find(x=>x.run===id); return !h?'':h.offer?' · <span class="good">'+label('Offered')+'</span>':h.isMine?'':' · <span class="amber">'+label('Held by')+' <span data-verbatim>'+e(h.owner.user)+'</span></span>'; }
+${handoffView}
+async function copyCommand(button) { try { await navigator.clipboard.writeText(button.dataset.copy); button.textContent=t('Copied'); } catch { button.textContent=t('Select and copy'); } }
 function runPanel(title, source, rows, local, empty) { return '<section class="panel sessions"><div class="panelhead"><h2>'+label(title)+' <span class="count">'+number(rows.length)+'</span></h2><span class="tag">'+label(source)+'</span></div>'+(rows.length?runTable(rows,local):'<div class="empty"><p>'+label(empty)+'</p></div>')+'</section>'; }
 function workflowRuns() {
  if(page==='workflows'&&!workflows&&!workflowsLoading&&!workflowsError)loadWorkflows();
  if(workflowsError&&!workflows)return errorPanel('Could not load workflow runs.','workflows');
  if(!workflows)return '<div class="empty" role="status">'+label('Loading workflow runs…')+'</div>';
  if(!workflows.configured)return '<section class="panel"><div class="empty"><h2>'+label('No TeamAI scope in this workspace')+'</h2><p>'+label('Pick a project workspace above, or set one up with teamai init.')+'</p></div></section>';
- const waiting=workflows.local.reduce((sum,r)=>sum+r.waiting.length,0), reported=workflows.reported;
+ const waiting=workflows.local.reduce((sum,r)=>sum+r.waiting.length,0), reported=workflows.reported, offered=handoffsOf().filter(h=>h.offer), person=offered.filter(h=>needsPerson(h.offer)).length;
  return (workflowsError?errorPanel('Could not refresh workflow runs. Any displayed runs are the last successful result.','workflows'):'')
-  +'<div class="statusline"><span>'+number(workflows.local.filter(r=>r.status==='running').length)+' '+label('Running here')+'</span><span class="'+(waiting?'amber':'')+'">'+number(waiting)+' '+label('Waiting for an answer')+'</span>'+(reported.state==='ok'?'<span>'+number(reported.runs.length)+' '+label('Reported by the team')+'</span>':'')+'</div>'
+  +'<div class="statusline"><span>'+number(workflows.local.filter(r=>r.status==='running').length)+' '+label('Running here')+'</span><span class="'+(waiting?'amber':'')+'">'+number(waiting)+' '+label('Waiting for an answer')+'</span>'+(reported.state==='ok'?'<span>'+number(offered.length)+' '+label('Offered on teamai-reports')+'</span>'+(person?'<span class="amber">'+number(person)+' '+label('Need a person')+'</span>':'')+'<span>'+number(reported.runs.length)+' '+label('Reported by the team')+'</span>':'')+'</div>'
   +runPanel('Local runs','Local live · this machine',workflows.local,true,'No workflow runs on this machine in this workspace. Start one with teamai workflow start.')
+  +(reported.state==='ok'?handoffPanel(handoffsOf(), new Set(workflows.local.map(r=>r.run))):'')
   +(reported.state==='ok'?runPanel('Team-reported history','Team reports · teamai-reports branch',reported.runs,false,'No run records published yet.'):errorPanel('Could not read the team run records. Local runs are unaffected.','workflows'));
 }
 function gate(s) {
@@ -493,6 +500,8 @@ document.addEventListener('click',event=>{
  if(answer)answerGate(answer.dataset.answerStep,answer.dataset.answerPass,answer.dataset.answerChoice);
  if(event.target.closest('[data-close]'))$('session-dialog').close();
  if(retry){if(retry.dataset.retry==='trends')loadTrends();else if(retry.dataset.retry==='outcomes')loadOutcomes();else if(retry.dataset.retry==='kb')loadKb();else if(retry.dataset.retry==='rules')loadRules();else if(retry.dataset.retry==='sharing')loadSharing();else if(retry.dataset.retry==='skills')loadSkills();else if(retry.dataset.retry==='distribution')loadDistribution();else if(retry.dataset.retry==='workflows')loadWorkflows();else if(retry.dataset.retry==='run')loadRunDetail();else if(retry.dataset.retry==='scorers'){scorerError='';loadScorers();}else{eventSource?.close();clearTimeout(reconnectTimer);connect();}}
+ const copy=event.target.closest('[data-copy]');
+ if(copy)copyCommand(copy);
  if(event.target.closest('[data-preview-button]'))previewSelection();
  if(event.target.closest('[data-save-button]'))saveSelection();
 });

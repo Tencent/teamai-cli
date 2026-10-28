@@ -40,9 +40,10 @@ describe('init member registration failures (#1267)', () => {
       git(['remote', 'add', 'origin', REMOTE_URL]);
 
       const partition = path.join(home, '.teamai', 'projects', projectSlug(repo));
-      const lock = path.join(partition, '.reports-lock');
+      const shared = path.join(partition, 'side-branches');
+      const lock = path.join(shared, '.reports-lock');
       if (status === 'busy') {
-        fs.mkdirSync(partition, { recursive: true });
+        fs.mkdirSync(shared, { recursive: true });
         fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString(), owner: 'fixture' }));
       } else {
         // The reports branch's first commit fails before the member callback.

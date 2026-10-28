@@ -273,6 +273,36 @@ jobs:
 
 `--auto-approve` 对可选的 `approve` 请求回答 yes，对可选的 `choose` 请求选择默认值。无人值守的作业里没人能回答必需的请求，因此它所在的步骤以 `hitl_required` 失败，运行也随之失败。要从另一条分支启动运行（例如 CI 失败的分支），请按分支名检出它，例如在 `pull_request` 事件中使用 `ref: ${{ github.head_ref }}`。默认的 `pull_request` checkout 是 detached merge commit，`workflow start` 会拒绝它。TeamAI 不安装触发器，也不等待 CI 或合并。
 
+### 从 CI 接手交出的运行
+
+运行器作业不自己启动运行，而是把成员[交给它](#把运行交给运行器)的运行跑完。在 self 模式下（`teamai init .`），业务仓库同时也是团队仓库，作业自己的 token 就能访问两者，因此不需要个人 token：
+
+```yaml
+# .github/workflows/teamai-runner.yml
+on:
+  workflow_dispatch:
+  schedule: [{ cron: "*/15 * * * *" }]
+concurrency: teamai-runner
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    permissions: { contents: write, pull-requests: write }
+    env:
+      TEAMAI_MODE: unattended                                 # CI 已经设置了它；在 VM 上用 cron 运行的作业需要它
+      GH_TOKEN: ${{ github.token }}                           # deliver: pr 用它开 pull request
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}     # 提示词步骤所用工具的密钥
+    steps:
+      - uses: actions/checkout@v5
+      - run: npm install -g @anthropic-ai/claude-code         # --tools 指定的工具
+      - run: git config --global user.name acme-runner && git config --global user.email runner@acme.example
+      - run: npx teamai-cli init . --provider git && npx teamai-cli pull
+      - run: npx teamai-cli workflow resume --next --tools default=claude --auto-approve
+      - if: always()
+        run: npx teamai-cli score --drain                     # 评审并发布被中断的作业留下的内容
+```
+
+每个作业最多接手一个运行，下一个由下一次定时触发接手。`git config user.name` 是运行器的成员名：团队分配角色时，把它列进 [`.teamai/manifest/members.yaml`](distribution.md#在团队仓库里分配角色)（团队仓库单独存在时是 `manifest/members.yaml`）。团队仓库与业务仓库分开时，需要一个能向团队仓库推送的凭据（`teamai-reports` 在团队仓库里），例如在 `teamai init <team repo URL> --provider git` 之前配置好、带写权限的部署密钥。
+
 ## 在另一台机器上继续运行
 
 运行保存在启动它的那台机器的 TeamAI 数据目录里。要在别处接着运行，先发布它，再在另一台机器上继续。适用的情况：工具在运行中途用完了 token，把运行交给队友，或者 CI 里的运行失败了，你想在自己的机器上把它跑完。
@@ -286,13 +316,65 @@ teamai workflow resume <run>      # 在另一台机器上，位于同一个仓�
 
 已发布的运行只有所有者能继续。在另一个已有该运行的安装实例上，`resume` 和 `publish` 都返回 `not_owner`，带上所有者的用户名和安装实例 id。同一成员的两个安装实例显示相同的用户名，靠安装实例 id 区分。要接管这个运行，执行 `teamai workflow resume <run> --claim`。认领会替换本机的运行副本，并释放其他机器持有的租约。此后原所有者不能再发布或继续这个运行，除非它再认领回来。
 
-要在编程会话中继续这个运行，由 agent 执行 `teamai workflow resume <run> --driver skill`，加 `--claim` 则从所有者那里接管。它以同样的方式认领运行，然后在会话的运行模式下用 skill 驱动运行它，选项与 skill 启动相同：`--parallel`、`--hitl` 或 `--auto-approve`，以及 `--no-judge`。不带这些选项时，一次只运行一个步骤，agent 在回答可选关卡前会先问你。在无人值守的运行中，它像 `--auto-approve` 那样回答可选关卡，并在认领之前拒绝剩余步骤需要人参与的运行（`unattended_denied`）；已经执行过的审批或交互步骤不再计入，除非循环可能再次执行它。它的第一个回合在工作流有 prompt 步骤或由会话评审时提出宿主问题，并重新派发另一台机器持有租约的步骤。必须用本地驱动运行的工作流会以 `teamai workflow resume <run>` 交还给你。接管运行由你决定，所以 agent 执行这两条命令前都会先问你。
+要在编程会话中继续这个运行，由 agent 执行 `teamai workflow resume <run> --driver skill`，加 `--claim` 则从所有者那里接管。它以同样的方式认领运行，然后在会话的运行模式下用 skill 驱动运行它，选项与 skill 启动相同：`--parallel`、`--hitl` 或 `--auto-approve`，以及 `--no-judge`。不带这些选项时，一次只运行一个步骤，agent 在回答可选关卡前会先问你。在无人值守的运行中，它像 `--auto-approve` 那样回答可选关卡，并在认领之前拒绝剩余步骤需要人参与的运行（`unattended_denied`）；已经执行过的审批或交互步骤不再计入，除非循环可能再次执行它。已经结束的运行不需要任何人，所以从不因此被拒绝。无人值守的运行中会拒绝 `--hitl person`（`invalid_arguments`）：没有人会回答。它的第一个回合在工作流有 prompt 步骤或由会话评审时提出宿主问题，并重新派发另一台机器持有租约的步骤。必须用本地驱动运行的工作流会以 `teamai workflow resume <run>` 交还给你。接管运行由你决定，所以 agent 执行这两条命令前都会先问你。
 
 已发布的运行结束时，teamai 会发布它的结束状态，不带 `--sessions`。之后接手该运行的成员不会重新运行它的任何步骤。
 
 无论[使用统计上报](reporting.md)是否开启，`publish` 都会写入运行状态：这是另一台机器继续运行所需的状态，不是使用统计上报。从未发布的运行留在本机。使用统计上报开启时，只有它的[运行记录](#运行记录)会进入 `teamai-reports`。
 
 带 `session: continue` 或 `session.from` 的步骤在另一台机器上会开一个新的 agent 会话，除非发布时加上 `--sessions`。运行在机器之间来回交接时，每台继续过会话的机器都要在下一次认领前用 `--sessions` 发布，这样下一个步骤能拿到所有对话轮次。[发布和认领](workflow-advanced.md#发布和认领)说明发布的状态包含什么、每个错误及下一步怎么做，以及如何从 CI 发布。
+
+### 把运行交给运行器
+
+`publish` 还会把运行中的运行设为待接手。之后在同一个业务仓库（同一个 `origin`）的检出目录中，第一个执行的 `teamai workflow resume --next` 会认领并驱动它。你自己启动运行，让 CI 运行器把它跑完：
+
+```console
+$ teamai workflow start ship-issue --inputs '{"issue":42}'        # 不带 --driver：只创建运行，不运行任何步骤
+{"data":{"run":"rba115c30f5a3b946","name":"ship-issue","status":"running","revision":1,"record":"published"}}
+$ teamai workflow publish rba115c30f5a3b946
+{"data":{"run":"rba115c30f5a3b946","publication":"published","stateRevision":1,"offered":true,"inFlight":[]}}
+$ gh workflow run teamai-runner.yml                                # 唤醒运行器，或等它的定时触发
+```
+
+在运行器上（[作业](#从-ci-接手交出的运行)）：
+
+```console
+$ teamai workflow resume --next --auto-approve
+✔ Claimed rba115c30f5a3b946 (ship-issue) from alice
+⚠ Step "review" was approved by auto_approve.
+{"data":{"done":{"run":"rba115c30f5a3b946","outcome":"succeeded","record":"published"},"cancelled":[]}}
+
+$ teamai workflow resume --next --auto-approve
+{"data":{"idle":{"offered":1}}}      # 剩下的那个运行需要人参与，所以仍待接手
+```
+
+不带运行 id 的 `teamai workflow resume` 列出这个检出目录可以继续的运行，以及每个运行要执行的命令。下面是运行器接手 `ship-issue` 之前 bob 机器上的输出，其中有一个等待人回答的 alice 的运行，还有一个 bob 认领的运行：
+
+```console
+$ teamai workflow resume
+RUN                WORKFLOW        STATUS          OWNER                      WHERE
+r482011be75fd0ad9  release         needs a person  alice (install 4c514375…)  offered on teamai-reports, only a person can answer the approval at ship: a person runs teamai workflow resume r482011be75fd0ad9 --claim
+rba115c30f5a3b946  ship-issue      running         alice (install 4c514375…)  offered on teamai-reports: teamai workflow resume --next
+r89c346a218d2f5e9  nightly-report  running         this install               local: teamai workflow resume r89c346a218d2f5e9
+```
+
+在 alice 的机器上，被 bob 接手的运行会显示它在谁手里：
+
+```console
+r89c346a218d2f5e9  nightly-report  claimed  bob (install 6c4853e2…)  claimed on teamai-reports since 2026-10-28T00:26:42.741Z: teamai workflow resume r89c346a218d2f5e9 --claim takes it back
+```
+
+`--next` 如何处理每个待接手的运行：
+
+| 待接手的运行 | 无人值守的 `--next`（CI，或 `TEAMAI_MODE=unattended`） | 有人值守的 `--next` |
+|---|---|---|
+| 剩余步骤都不需要人参与 | 接手 | 接手 |
+| 剩余的某个步骤有必需审批、是 `interactive`，或是没有默认值的选择 | 跳过：列为 `needs a person` | 接手 |
+| 你从本安装实例发布了它 | 跳过 | 跳过 |
+| 它在另一个业务仓库中工作 | 跳过 | 跳过 |
+| 另一个运行器刚刚抢先认领了它 | 接手下一个 | 接手下一个 |
+
+任何认领都会撤下运行的待接手状态：`--next`、在没有该运行的机器上执行 `resume <run>`、`resume <run> --claim`，或驱动的 `"claim": true`。你在发布它的机器上自己执行 `resume <run>` 也会撤下；再次发布即可重新留给运行器接手。因此不会有两个运行器驱动同一个运行。请在不再驱动该运行之后再发布，因为运行器可能立即接手。Dashboard 的[工作流运行页](dashboard.md#工作流运行workflow-runs)显示同样的这些运行。[把运行留给运行器接手](workflow-advanced.md#把运行留给运行器接手)说明 agent 会话适用的规则和每个错误。
 
 ## 运行记录
 

@@ -118,6 +118,26 @@ function resolveInstallPrefix(): { prefix: string; global: boolean } | null {
   return prefixFromEntryPath(fileURLToPath(import.meta.url), process.platform !== 'win32');
 }
 
+/** `$VOLTA_HOME/tools/image/packages/<name>`, including the default `~/.volta` and `%LOCALAPPDATA%\\Volta` homes. */
+const VOLTA_PACKAGE_IMAGE = /(?:^|\/)\.?volta\/tools\/image\/packages\//i;
+
+/**
+ * A Volta package image is not an npm prefix. `npm install -g --prefix` there
+ * removes the current executable before the new one is in place.
+ * `voltaHome` defaults to `VOLTA_HOME`; pass `''` to ignore a custom home.
+ */
+export function isVoltaPackageImage(filePath: string, voltaHome = process.env.VOLTA_HOME): boolean {
+  if (voltaHome) {
+    const root = path.resolve(voltaHome, 'tools', 'image', 'packages');
+    const resolved = path.resolve(filePath);
+    const fold = (value: string) => process.platform === 'win32' ? value.toLowerCase() : value;
+    const file = fold(resolved);
+    const dir = fold(root);
+    if (file === dir || file.startsWith(dir.endsWith(path.sep) ? dir : dir + path.sep)) return true;
+  }
+  return VOLTA_PACKAGE_IMAGE.test(filePath.replace(/\\/g, '/'));
+}
+
 /**
  * Fetch the latest version from the npm registry
  * Returns null on any error (timeout, network, etc.)
@@ -718,6 +738,20 @@ export async function doUpdate(runningScope: LocalConfig | null): Promise<void> 
       'it can update in place (for example an `npm link` checkout). For a checkout, pull ' +
       'and rebuild it; to switch to the published package, run ' +
       `"npm install -g ${pkgName} --registry=${registry}".`;
+    log.warn(message);
+    log.persist(message);
+    return;
+  }
+  const entry = fileURLToPath(import.meta.url);
+  if (isVoltaPackageImage(entry) || isVoltaPackageImage(target.prefix)) {
+    // Volta's image looks like a POSIX global prefix (<image>/lib/node_modules),
+    // so the check above accepts it. npm -g then deletes the live `teamai`
+    // executable before writing the new one.
+    const message =
+      `Self-update skipped: teamai at ${target.prefix} is managed by Volta. ` +
+      'npm install -g removes the current executable before the new one is installed, ' +
+      'so an interrupted update leaves the `teamai` command missing. ' +
+      `Upgrade with "volta install ${pkgName}@latest".`;
     log.warn(message);
     log.persist(message);
     return;

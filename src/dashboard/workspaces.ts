@@ -5,7 +5,7 @@ import YAML from 'yaml';
 import { LocalConfigSchema, getDataHome, type LocalConfig, type DashboardEvent } from '../types.js';
 import { getUserHome } from '../utils/home.js';
 import { checkoutForProjectAnchor, resolveAnchors } from '../utils/git.js';
-import { readConfigFrom } from '../config.js';
+import { readConfigFrom, loadLocalConfigForScope } from '../config.js';
 import { projectCheckouts } from '../pull.js';
 import { dataHomeKey } from '../dashboard-collector.js';
 
@@ -51,7 +51,10 @@ function ownerOf(event: DashboardEvent, projects: DashboardWorkspace[]): string 
 /** Read installed scopes without bootstrapping or migrating other projects. */
 export async function dashboardWorkspaces(events: DashboardEvent[]): Promise<DashboardWorkspace[]> {
   const home = path.join(getUserHome(), '.teamai');
-  const user = await configAt(home);
+  // Through the loader, not its own parser: a self-mode user config needs its
+  // runtime branch home, or the dashboard's report writer recreates the
+  // side-branch checkout in `~/.teamai/` (#1443). A dry run adopts nothing.
+  const user = await loadLocalConfigForScope('user', undefined, { dryRun: true });
   const result: DashboardWorkspace[] = [{ id: 'user', label: 'User scope', scope: 'user', root: getUserHome(), config: user, roots: [] }];
   const seen = new Set<string>();
   async function add(anchor: string, dataHome: string, recordedRoot?: string) {

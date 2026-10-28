@@ -5,7 +5,7 @@
 import { driverIdentity } from '../../../driver-identity.js';
 import type { ToolId } from '../../../types.js';
 import { canonicalJson } from '../../../utils/canonical-json.js';
-import type { RunReadied } from '../../protocol.js';
+import type { ResumeClaim, RunReadied } from '../../protocol.js';
 import type { AttemptId, RunId, RunLock } from '../../store.js';
 import type { WorkflowFailure } from '../../types.js';
 import { readChildResult } from './child-brief.js';
@@ -13,7 +13,7 @@ import { engineReply, reportReply, respondReply, scoreReply } from './engine-rep
 import { canFor, HOST_PROFILES, judgeCan, type HostChoice } from './host-profiles.js';
 import { writeJob } from './job.js';
 import {
-  ackLiteral, adoptLiteral, chooseHostLiteral, nextLiteral, pollLiteral, reportLiteral, respondLiteral, resumeLiteral, skillResumeLiteral, takeoverLiteral, unavailableLiteral, type Invocation,
+  ackLiteral, adoptLiteral, chooseHostLiteral, nextLiteral, pollLiteral, reportLiteral, respondLiteral, resumeLiteral, skillResumeLiteral, skillResumeNextLiteral, takeoverLiteral, unavailableLiteral, type Invocation,
   type Literal,
 } from './literals.js';
 import { attendedReason, ceilingOf, localPromptTool, localReason, needsTool } from './preflight.js';
@@ -272,23 +272,23 @@ async function called(context: SkillContext, lock: RunLock, same: Literal, input
     // Nobody is there to take a run that needs a person or the local driver over from here, so it is refused before the
     // claim, which would leave this install owning it, and before a takeover makes this session its orchestrator.
     const carried = await context.client.carried(run, {
-      published: input.resume !== undefined, claim: input.resume?.claim === true, ceiling: ceilingOf(context.config), can: canFor(undefined),
+      published: input.resume !== undefined, claim: input.resume !== undefined && input.resume.claim !== 'lacking', ceiling: ceilingOf(context.config), can: canFor(undefined),
     });
     const local = carried ? localReason(carried.description) : undefined;
-    const attended = carried ? attendedReason(carried.description, 'continue', new Set(carried.settled)) : undefined;
+    const attended = carried ? attendedNow(carried) : undefined;
     if (carried && (local !== undefined || attended !== undefined)) {
-      const readied: RunReadied = { kind: 'ready', installed: false, description: carried.description, settled: carried.settled, judging: { kind: 'none' } };
+      const readied: RunReadied = { kind: 'ready', installed: false, ...carried, judging: { kind: 'none' } };
       const refused = traced(context, readiedRow({ run, readied, kept: false, mode: context.mode, ...(local !== undefined ? { local } : {}), ...(attended !== undefined ? { attended } : {}), needsTool: false, answers, confirmed }));
       if (refused && 'answer' in refused) return { answer: { error: errorOf(refused.answer, { invocation: context.invocation, same, localTool }) } };
     }
   }
   if (input.resume !== undefined || (input.takeover && !state)) {
     const readied = await context.client.resume(run, {
-      lock, claim: input.resume === undefined ? 'none' : input.resume.claim ? 'any' : 'lacking', checkout: context.cwd, ceiling: ceilingOf(context.config), can: canFor(undefined),
+      lock, claim: input.resume === undefined ? 'none' : input.resume.claim, checkout: context.cwd, ceiling: ceilingOf(context.config), can: canFor(undefined),
       ...(context.tool !== undefined ? { tool: context.tool } : {}),
     });
     const local = readied.kind === 'ready' ? localReason(readied.description) : undefined;
-    const attended = readied.kind === 'ready' && context.mode === 'unattended' ? attendedReason(readied.description, 'continue', new Set(readied.settled)) : undefined;
+    const attended = readied.kind === 'ready' && context.mode === 'unattended' ? attendedNow(readied) : undefined;
     const taken = traced(context, readiedRow({
       run, readied, kept: state !== undefined, mode: context.mode, ...(local !== undefined ? { local } : {}), ...(attended !== undefined ? { attended } : {}), answers, confirmed,
       needsTool: readied.kind === 'ready' && needsTool(readied.description, { tool: context.tool, judged: answers.judge !== false }),
@@ -309,6 +309,11 @@ async function called(context: SkillContext, lock: RunLock, same: Literal, input
   const taken = traced(context, callRow(kept, { run, session: context.session, tool: context.tool, declared: input.resume?.tool, at: context.now().toISOString(), takeover: input.takeover !== undefined }));
   if ('answer' in taken) return { answer: { error: errorOf(taken.answer, { invocation: context.invocation, same, run, localTool }) } };
   return { state: taken.state };
+}
+
+/** What still needs a person to continue a run: nothing once it ended, since a resume then only readies it as it ended. */
+function attendedNow(run: Pick<Extract<RunReadied, { kind: 'ready' }>, 'description' | 'settled' | 'status'>): string | undefined {
+  return run.status === 'running' ? attendedReason(run.description, 'continue', new Set(run.settled)) : undefined;
 }
 
 /** The turn of `state` as `answer` renders it, from the events the session has not seen and why the run waits. */
@@ -335,10 +340,10 @@ async function finish(context: SkillContext, lock: RunLock, state: SkillState, t
 }
 
 /**
- * A `resume --driver skill`: `claim` takes the run from another install that owns it; `confirmed`, the person's yes to
+ * A `resume --driver skill`: `claim`, which runs it takes from teamai-reports; `confirmed`, the person's yes to
  * continue a run of an `invoke: ask` workflow; `answers`, its options.
  */
-interface Resume { claim: boolean; confirmed: boolean; answers: ResumeAnswers; tool?: ToolId }
+interface Resume { claim: ResumeClaim; confirmed: boolean; answers: ResumeAnswers; tool?: ToolId }
 
 /**
  * A call that answers with a turn at once: `next`, a takeover, a resume, an answer to the host question, an ack, a place
@@ -359,8 +364,21 @@ function literalOf(invocation: Invocation, run: RunId, call: ForegroundCall): Li
       return nextLiteral(invocation, run);
     case 'takeover':
       return takeoverLiteral(invocation, run, { confirmed: call.confirmed });
-    case 'resume':
-      return skillResumeLiteral(invocation, run, { claim: call.claim, ...call.answers, noJudge: call.answers.judge === false, confirmed: call.confirmed, tool: call.tool });
+    case 'resume': {
+      const options = { ...call.answers, noJudge: call.answers.judge === false, confirmed: call.confirmed, tool: call.tool };
+      switch (call.claim) {
+        case 'offered':
+          // A run `--next` picked is taken only while it is offered, so the same call picks again.
+          return skillResumeNextLiteral(invocation, options);
+        case 'any':
+        case 'lacking':
+          return skillResumeLiteral(invocation, run, { claim: call.claim === 'any', ...options });
+        default: {
+          const unhandled: never = call.claim;
+          return unhandled;
+        }
+      }
+    }
     case 'choose':
       return chooseHostLiteral(invocation, run, call.choice);
     case 'ack':

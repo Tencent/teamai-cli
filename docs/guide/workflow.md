@@ -273,6 +273,36 @@ jobs:
 
 `--auto-approve` answers an optional `approve` request yes and an optional `choose` request with its default. Nobody can answer a required one in an unattended job, so its step fails with `hitl_required`, and so does the run. To start a run from another branch, such as one whose CI failed, check that branch out by name, for example `ref: ${{ github.head_ref }}` on a `pull_request` event. The default `pull_request` checkout is a detached merge commit, which `workflow start` refuses. TeamAI installs no trigger and does not wait for CI or a merge.
 
+### Take offered runs from CI
+
+A runner job finishes the runs members [hand to it](#hand-a-run-to-a-runner) instead of starting its own. In self mode, where the business repository is also the team repo (`teamai init .`), the job's own token reaches both, so it needs no personal token:
+
+```yaml
+# .github/workflows/teamai-runner.yml
+on:
+  workflow_dispatch:
+  schedule: [{ cron: "*/15 * * * *" }]
+concurrency: teamai-runner
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    permissions: { contents: write, pull-requests: write }
+    env:
+      TEAMAI_MODE: unattended                                 # CI already sets it; a cron job on a VM needs it
+      GH_TOKEN: ${{ github.token }}                           # deliver: pr opens pull requests with it
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}     # the key of the tool the prompt steps run
+    steps:
+      - uses: actions/checkout@v5
+      - run: npm install -g @anthropic-ai/claude-code         # the tool --tools names
+      - run: git config --global user.name acme-runner && git config --global user.email runner@acme.example
+      - run: npx teamai-cli init . --provider git && npx teamai-cli pull
+      - run: npx teamai-cli workflow resume --next --tools default=claude --auto-approve
+      - if: always()
+        run: npx teamai-cli score --drain                     # judges and publishes what a cut-short job left
+```
+
+Each job takes at most one run; the schedule takes the next. `git config user.name` is the runner's member name: list it in [`.teamai/manifest/members.yaml`](distribution.md#assigning-roles-in-the-team-repo) when the team assigns roles (`manifest/members.yaml` in a separate team repo). A team repo separate from the business repository needs a credential that can push to it, where `teamai-reports` lives, such as a deploy key with write access set up before `teamai init <team repo URL> --provider git`.
+
 ## Continue a run on another machine
 
 A run lives in the TeamAI data directory of the machine that started it. To continue it somewhere else, publish it, then resume it on the other machine. Use this when your tool runs out of tokens in the middle of a run, when you hand a run to a teammate, or when a CI run failed and you want to finish it on your own machine.
@@ -286,13 +316,65 @@ teamai workflow resume <run>      # on the other machine, in a checkout of the s
 
 Only the owner continues a published run. On another install that has the run, `resume` and `publish` answer `not_owner` with the owner's user name and install id. Two installs of one member show the same user name, and the install id tells them apart. To take the run over, run `teamai workflow resume <run> --claim`. The claim replaces this machine's copy of the run and releases the leases other machines held. The previous owner can then no longer publish or resume the run, unless it claims it back.
 
-To continue the run from a coding session, the agent runs `teamai workflow resume <run> --driver skill`, with `--claim` to take it from the owner. It claims the run the same way, then drives it with the skill driver in the session's run mode, with the options of a skill start: `--parallel`, `--hitl` or `--auto-approve`, and `--no-judge`. Without them, one step runs at a time and the agent asks you before it answers an optional gate. In an unattended run it answers optional gates as `--auto-approve` does, and refuses, before claiming it, a run whose steps left need a person (`unattended_denied`); an approval or interactive step that already ran no longer counts, unless a loop can run it again. Its first turn asks the host question when the workflow has prompt steps or the session judges it, and dispatches again the steps the other machine had leased. A workflow that must run with the local driver comes back to you as `teamai workflow resume <run>`. Taking the run over is your decision, so the agent asks you before it runs either command.
+To continue the run from a coding session, the agent runs `teamai workflow resume <run> --driver skill`, with `--claim` to take it from the owner. It claims the run the same way, then drives it with the skill driver in the session's run mode, with the options of a skill start: `--parallel`, `--hitl` or `--auto-approve`, and `--no-judge`. Without them, one step runs at a time and the agent asks you before it answers an optional gate. In an unattended run it answers optional gates as `--auto-approve` does, and refuses, before claiming it, a run whose steps left need a person (`unattended_denied`); an approval or interactive step that already ran no longer counts, unless a loop can run it again. A run that already ended needs nobody, so it is never refused for that. `--hitl person` is refused in an unattended run (`invalid_arguments`): nobody would answer. Its first turn asks the host question when the workflow has prompt steps or the session judges it, and dispatches again the steps the other machine had leased. A workflow that must run with the local driver comes back to you as `teamai workflow resume <run>`. Taking the run over is your decision, so the agent asks you before it runs either command.
 
 When a published run ends, teamai publishes how it ended, without `--sessions`. A member who then takes the run over runs none of its steps again.
 
 `publish` writes the run's state with [usage reporting](reporting.md) on or off: it is the state another machine needs to continue the run, not a usage report. A run you never publish stays on this machine. While usage reporting is on, only its [run records](#run-records) reach `teamai-reports`.
 
 A step with `session: continue` or `session.from` starts a new agent session on the other machine, unless you publish with `--sessions`. When a run goes back and forth, every machine that continued a session publishes with `--sessions` before the next claim, so the next step gets every turn. [Publish and claim](workflow-advanced.md#publish-and-claim) covers what the published state carries, every error and its next step, and publishing from CI.
+
+### Hand a run to a runner
+
+`publish` also offers a running run. The first `teamai workflow resume --next` in a checkout of the same business repository (the same `origin`) claims it and drives it. Start a run yourself, and let a CI runner finish it:
+
+```console
+$ teamai workflow start ship-issue --inputs '{"issue":42}'        # no --driver: creates the run, runs nothing
+{"data":{"run":"rba115c30f5a3b946","name":"ship-issue","status":"running","revision":1,"record":"published"}}
+$ teamai workflow publish rba115c30f5a3b946
+{"data":{"run":"rba115c30f5a3b946","publication":"published","stateRevision":1,"offered":true,"inFlight":[]}}
+$ gh workflow run teamai-runner.yml                                # wake the runner, or wait for its schedule
+```
+
+On the runner ([the job](#take-offered-runs-from-ci)):
+
+```console
+$ teamai workflow resume --next --auto-approve
+✔ Claimed rba115c30f5a3b946 (ship-issue) from alice
+⚠ Step "review" was approved by auto_approve.
+{"data":{"done":{"run":"rba115c30f5a3b946","outcome":"succeeded","record":"published"},"cancelled":[]}}
+
+$ teamai workflow resume --next --auto-approve
+{"data":{"idle":{"offered":1}}}      # the one run left needs a person, so it stays offered
+```
+
+`teamai workflow resume` with no run id lists what this checkout can resume, and the command for each. On bob's machine, before the runner took `ship-issue`, with a run of alice's that waits for a person and one bob claimed:
+
+```console
+$ teamai workflow resume
+RUN                WORKFLOW        STATUS          OWNER                      WHERE
+r482011be75fd0ad9  release         needs a person  alice (install 4c514375…)  offered on teamai-reports, only a person can answer the approval at ship: a person runs teamai workflow resume r482011be75fd0ad9 --claim
+rba115c30f5a3b946  ship-issue      running         alice (install 4c514375…)  offered on teamai-reports: teamai workflow resume --next
+r89c346a218d2f5e9  nightly-report  running         this install               local: teamai workflow resume r89c346a218d2f5e9
+```
+
+On alice's machine, the run bob took shows who has it:
+
+```console
+r89c346a218d2f5e9  nightly-report  claimed  bob (install 6c4853e2…)  claimed on teamai-reports since 2026-10-28T00:26:42.741Z: teamai workflow resume r89c346a218d2f5e9 --claim takes it back
+```
+
+What `--next` does with each offered run:
+
+| The offered run | Unattended `--next` (CI, or `TEAMAI_MODE=unattended`) | Attended `--next` |
+|---|---|---|
+| Nothing in its steps left needs a person | takes it | takes it |
+| A step left has a required approval, is `interactive`, or is a choice with no default | skips it: listed as `needs a person` | takes it |
+| You published it from this install | skips it | skips it |
+| It works in another business repository | skips it | skips it |
+| Another runner claimed it a moment earlier | takes the next one | takes the next one |
+
+Any claim takes the offer away: `--next`, `resume <run>` on a machine without the run, `resume <run> --claim`, or a driver's `"claim": true`. So does your own `resume <run>` on the machine that published it; publish again to offer it again. So two runners never drive one run. Publish once you stop driving the run, since a runner can take it at once. The dashboard's [Workflow Runs page](dashboard.md#workflow-runs) shows the same runs. [Offer a run to a runner](workflow-advanced.md#offer-a-run-to-a-runner) has the rules for agent sessions and every error.
 
 ## Run records
 

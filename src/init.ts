@@ -112,6 +112,7 @@ import {
   type TeamaiConfig,
   getTeamaiHomeDir,
   REPORTS_BRANCH,
+  SELF_BRANCH_HOME_DIRNAME,
   type GlobalOptions,
   type LocalConfig,
   LocalConfigSchema,
@@ -1440,6 +1441,8 @@ export async function initSelfRepo(options: GlobalOptions & {
     scope: 'project',
     projectRoot: businessRepoRoot,
     dataHome: partitionHome,
+    // Side branches are shared with the user scope of the same repo (#1443).
+    branchHome: path.join(partitionHome, SELF_BRANCH_HOME_DIRNAME),
     additionalRoles: [],
     ...(inheritUserScope !== undefined ? { inheritUserScope } : {}),
   };

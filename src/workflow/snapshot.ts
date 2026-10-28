@@ -68,12 +68,23 @@ const BodySchema = z.object({
 });
 export type SnapshotBody = z.infer<typeof BodySchema>;
 
+/**
+ * What a publish says of the run beside its state: the business repository it works in, as `host/owner/repo`, and, while
+ * it runs, that its owner offers it to whoever takes it next with `teamai workflow resume --next`. A claim drops the offer.
+ */
+const HandoffSchema = z.object({
+  repository: z.string().min(1).optional(),
+  offered: z.object({ at: z.string() }).optional(),
+});
+export type Handoff = z.infer<typeof HandoffSchema>;
+
 // Header first, `write` on its own line: two writes of one snapshot then always conflict when git rebases one onto the other.
 const SnapshotSchema = z.object({
   snapshot: z.literal(1),
   run: z.string(),
   owner: OwnerSchema,
   ownedAt: z.string(),
+  ...HandoffSchema.shape,
   stateRevision: z.number().int().positive(),
   write: z.string().min(1),
 }).merge(BodySchema).superRefine((snapshot, ctx) => {
@@ -95,8 +106,11 @@ export type SnapshotError =
 
 type Parsed<T> = { ok: true; value: T } | { ok: false; error: SnapshotError };
 
+/** Where on `teamai-reports` the snapshots are, one directory per run. */
+export const SNAPSHOTS_DIR = 'workflows/runs';
+
 export function snapshotPath(runId: string): string {
-  return `workflows/runs/${runId}/state.json`;
+  return `${SNAPSHOTS_DIR}/${runId}/state.json`;
 }
 
 /** The text a snapshot is written as: two-space JSON, one field per line, ending in a newline. */
@@ -111,7 +125,7 @@ export function definitionHash(definition: WorkflowDefinition, workflows: Record
 
 /** The body of a snapshot without its header, as compared to decide whether a publish changes anything. */
 export function snapshotBody(snapshot: RunSnapshot): SnapshotBody {
-  const { snapshot: _format, run: _run, owner: _owner, ownedAt: _ownedAt, stateRevision: _revision, write: _write, ...body } = snapshot;
+  const { snapshot: _format, run: _run, owner: _owner, ownedAt: _ownedAt, repository: _repository, offered: _offered, stateRevision: _revision, write: _write, ...body } = snapshot;
   return body;
 }
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -7,23 +7,30 @@ import { fileURLToPath } from 'node:url';
 import { managedMcpWorkspaceId } from '../../types.js';
 import { claudeHookOtherHostSkip } from '../../hooks.js';
 import { projectSlug } from '../../utils/partition.js';
+import { encodeCodebuddyProjectGate } from '../../codebuddy-team-hooks.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const CLI = path.join(ROOT, 'dist', 'index.js');
 
-function runCLI(cwd: string, home: string, args = ['hooks', 'inject']): Promise<{ code: number | null; output: string }> {
+function runCLIBytes(cwd: string, home: string, args = ['hooks', 'inject']): Promise<{ code: number | null; stdout: Buffer; stderr: Buffer }> {
   return new Promise((resolve) => {
     const child = spawn('node', [CLI, ...args], {
       cwd,
       env: { ...process.env, HOME: home, FORCE_COLOR: '0' },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
-    let output = '';
-    child.stdout.on('data', (chunk) => { output += chunk.toString(); });
-    child.stderr.on('data', (chunk) => { output += chunk.toString(); });
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    child.stdout.on('data', (chunk: Buffer) => { stdout.push(chunk); });
+    child.stderr.on('data', (chunk: Buffer) => { stderr.push(chunk); });
     child.stdin.end();
-    child.on('close', (code) => resolve({ code, output }));
+    child.on('close', (code) => resolve({ code, stdout: Buffer.concat(stdout), stderr: Buffer.concat(stderr) }));
   });
+}
+
+async function runCLI(cwd: string, home: string, args = ['hooks', 'inject']): Promise<{ code: number | null; output: string }> {
+  const result = await runCLIBytes(cwd, home, args);
+  return { code: result.code, output: Buffer.concat([result.stdout, result.stderr]).toString('utf8') };
 }
 
 describe('issue #373 project hook isolation (real CLI)', () => {
@@ -125,14 +132,43 @@ describe('issue #373 project hook isolation (real CLI)', () => {
     const settingsPath = path.join(home, '.codebuddy', 'settings.json');
     const team = readSettings(settingsPath).hooks.Stop.filter((entry) => entry.description?.startsWith('[teamai:hook:'));
     expect(team).toHaveLength(2);
-    const commandA = team.find((entry) => entry.hooks[0].command.includes('echo A'))!.hooks[0].command;
-    const commandB = team.find((entry) => entry.hooks[0].command.includes('echo B'))!.hooks[0].command;
-    expect(commandA).toContain('$PWD');
-    expect(commandB).toContain('$PWD');
-    expect(execFileSync('sh', ['-c', commandA], { cwd: projectA, encoding: 'utf8' })).toBe('A\n');
-    expect(execFileSync('sh', ['-c', commandA], { cwd: projectB, encoding: 'utf8' })).toBe('');
-    expect(execFileSync('sh', ['-c', commandB], { cwd: projectB, encoding: 'utf8' })).toBe('B\n');
-    expect(execFileSync('sh', ['-c', commandB], { cwd: projectA, encoding: 'utf8' })).toBe('');
+    const commandA = process.platform === 'win32'
+      ? team.find((entry) => entry.hooks[0].command.includes('--team-hook-command'))!.hooks[0].command
+      : team.find((entry) => entry.hooks[0].command.includes('echo A'))!.hooks[0].command;
+    const commandB = process.platform === 'win32'
+      ? team.find((entry) => entry.hooks[0].command.includes('--team-hook-command') && entry.hooks[0].command !== commandA)!.hooks[0].command
+      : team.find((entry) => entry.hooks[0].command.includes('echo B'))!.hooks[0].command;
+    if (process.platform === 'win32') {
+      // CodeBuddy IDE invokes settings commands through cmd.exe, while the CLI
+      // uses Git Bash. The dual-runner form keeps the project root and payload
+      // out of either host shell's source text.
+      expect(commandA).toContain('--team-hook-gate');
+      expect(commandB).toContain('--team-hook-gate');
+      expect(commandA).not.toContain('$PWD');
+      expect(commandB).not.toContain('$PWD');
+      const run = (command: string, cwd: string): string => {
+        const result = spawnSync(command, {
+          cwd,
+          encoding: 'utf8',
+          env: { ...process.env, HOME: home, USERPROFILE: home },
+          input: '',
+          shell: true,
+        });
+        if (result.status !== 0) throw new Error(`${result.stderr ?? ''}${result.stdout ?? ''}`);
+        return result.stdout ?? '';
+      };
+      expect(run(commandA, projectA)).toMatch(/^A\r?\n$/);
+      expect(run(commandA, projectB)).toBe('');
+      expect(run(commandB, projectB)).toMatch(/^B\r?\n$/);
+      expect(run(commandB, projectA)).toBe('');
+    } else {
+      expect(commandA).toContain('$PWD');
+      expect(commandB).toContain('$PWD');
+      expect(execFileSync('sh', ['-c', commandA], { cwd: projectA, encoding: 'utf8' })).toBe('A\n');
+      expect(execFileSync('sh', ['-c', commandA], { cwd: projectB, encoding: 'utf8' })).toBe('');
+      expect(execFileSync('sh', ['-c', commandB], { cwd: projectB, encoding: 'utf8' })).toBe('B\n');
+      expect(execFileSync('sh', ['-c', commandB], { cwd: projectA, encoding: 'utf8' })).toBe('');
+    }
     expect(JSON.parse(fs.readFileSync(path.join(home, '.teamai', 'managed-hooks.json'), 'utf8')).codebuddy).toHaveLength(2);
 
     const removed = await runCLI(projectA, home, ['hooks', 'remove']);
@@ -147,6 +183,23 @@ describe('issue #373 project hook isolation (real CLI)', () => {
     for (const project of [projectA, projectB]) {
       expect(fs.existsSync(path.join(project, '.codebuddy', 'settings.json'))).toBe(false);
     }
+  });
+
+  it('preserves UTF-8 hook output when a multibyte character spans stdout chunks', async () => {
+    const root = path.join(sandbox, 'utf8-project');
+    fs.mkdirSync(root, { recursive: true });
+    const gate = encodeCodebuddyProjectGate(root);
+    const script = 'process.stdout.write(Buffer.from([0xe7])); setTimeout(() => process.stdout.write(Buffer.from([0x8c, 0xab])), 10);';
+    const command = `node -e ${JSON.stringify(script)}`;
+    const result = await runCLIBytes(root, home, [
+      'hook-dispatch', 'Stop', '--tool', 'codebuddy', '--team-hooks',
+      '--team-hook-gate', gate,
+      '--team-hook-command', Buffer.from(command, 'utf8').toString('base64url'),
+    ]);
+
+    expect(result.code, result.stderr.toString('utf8')).toBe(0);
+    expect(result.stdout.toString('utf8')).toBe('猫');
+    expect(result.stdout.toString('utf8')).not.toContain('�');
   });
 
   it('shares one ungated Claude/Codex team-hook file in the main checkout with a linked worktree', async () => {

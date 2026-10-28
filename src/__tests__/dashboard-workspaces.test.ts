@@ -5,7 +5,10 @@ import os from 'node:os';
 import path from 'node:path';
 import YAML from 'yaml';
 import { dashboardWorkspaces, ownSessionEvents, workspaceEvents, type DashboardWorkspace } from '../dashboard/workspaces.js';
-import type { DashboardEvent } from '../types.js';
+import {
+  REPORTS_WORKTREE_DIRNAME, SELF_BRANCH_HOME_DIRNAME, getWorktreeDir, type DashboardEvent,
+} from '../types.js';
+import { projectDataHome } from '../utils/partition.js';
 
 // Minimal event factory: workspaceEvents only reads sessionId + cwd.
 const ev = (sessionId: string, cwd: string | undefined, timestamp = '2026-09-17T00:00:00Z'): DashboardEvent =>
@@ -115,6 +118,38 @@ describe('dashboardWorkspaces discovery (#809)', () => {
     const p = workspaces.find(w => w.root === main);
     expect(p, JSON.stringify(workspaces)).toBeDefined();
     expect(p && workspaceEvents(events, p, workspaces).map(e => e.sessionId)).toEqual(['s1']);
+  });
+
+  it('gives the user workspace the shared branch home of a self-mode repo (#1443)', async () => {
+    home = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-ws-discovery-')));
+    vi.stubEnv('HOME', home);
+    const repo = path.join(home, 'repo');
+    fs.mkdirSync(repo);
+    const git = (...args: string[]) => execFileSync('git', args, {
+      cwd: repo, stdio: 'pipe',
+      env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' },
+    });
+    git('init', '-q', '-b', 'main');
+    git('-c', 'user.name=T', '-c', 'user.email=t@e.invalid', 'commit', '-q', '--allow-empty', '-m', 'init');
+
+    fs.mkdirSync(path.join(home, '.teamai'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.teamai', 'config.yaml'), YAML.stringify({
+      repo: {
+        localPath: path.join(repo, '.teamai'),
+        remote: 'https://example.test/team.git',
+        kind: 'self',
+        businessRepoRoot: repo,
+      },
+      username: 'fixture', scope: 'user',
+    }));
+
+    const workspaces = await dashboardWorkspaces([]);
+    const userWs = workspaces.find(w => w.id === 'user');
+    expect(userWs?.config).toBeTruthy();
+    // The dashboard's report writer follows this path; its own parser used to
+    // leave branchHome unset and recreate ~/.teamai/reports-wt.
+    expect(getWorktreeDir(userWs!.config!, REPORTS_WORKTREE_DIRNAME))
+      .toBe(path.join(projectDataHome(repo), SELF_BRANCH_HOME_DIRNAME, REPORTS_WORKTREE_DIRNAME));
   });
 
   it('still finds a legacy config kept in a linked worktree, which its anchor does not hold', async () => {

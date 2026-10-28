@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { listHandoffs } from '../dashboard/workflow-runs.js';
 import { getAdapter } from '../session-flow/adapters/index.js';
 import { AgentSession } from '../session-flow/agent-session.js';
 import { SyncManager, defaultSyncMeta, getRepoIdentity } from '../session-flow/sync.js';
@@ -14,16 +15,17 @@ import { updateReports } from '../utils/reports-branch.js';
 import * as workflowCache from '../workflow/cache.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, reportAttempt, resumableSessions, startRun } from '../workflow/engine.js';
-import { claimRun, publishRun, resumeRun, settledSteps } from '../workflow/handoff.js';
+import { claimOffered, claimRun, publishRun, resumeRun, settledSteps } from '../workflow/handoff.js';
 import { pendingRecords, publishPendingRecords, queueRunRecord } from '../workflow/records.js';
 import { runLocalDriver } from '../workflow/drivers/local/local-driver.js';
 import { cancelRun, retryStep } from '../workflow/run-controls.js';
 import type { LocalToolAdapter } from '../workflow/drivers/local/local-tool-adapter.js';
 import type { StepPass, StepState } from '../workflow/step-state.js';
-import { readRun, runLockPath, updateRun } from '../workflow/store.js';
+import { installOwner, readRun, runLockPath, updateRun } from '../workflow/store.js';
+import { PublishedRuns, type Taker } from '../workflow-published-runs.js';
 import type { DriverIdentity, RunState, WorkflowDefinition, WorkflowEnvelope } from '../workflow/types.js';
 import { ensureWorktree, fetchMissingCommits, headCommit, markReadCopy, worktreePath } from '../workflow/worktree.js';
-import { knownSecrets } from '../env-resolution.js';
+import { knownSecrets, resolveWorkflowEnv } from '../env-resolution.js';
 import { fakeGh } from './helpers/fake-gh.js';
 
 const dirs: string[] = [];
@@ -2652,5 +2654,229 @@ describe('settledSteps', () => {
     expect(of({ status: 'running' })).toEqual(expect.arrayContaining(['sub', 'sub.draft', 'gate']));
     expect(of({ status: 'running' })).not.toContain('review');
     expect(of({ status: 'succeeded' })).not.toContain('review');
+  });
+});
+
+describe('offering a run to a runner (#1390)', () => {
+  /** Names `url` as the origin of each member's business checkout, which a run with no workspace never reaches. */
+  function originAt(url: string, members: Member[]): void {
+    for (const { checkout } of members) git(checkout, 'remote', 'set-url', 'origin', url);
+  }
+
+  it('offers a running run it publishes, under its business repository, and a claim takes the offer away with the ownership', async () => {
+    const acme = team();
+    const alice = await acme.member('alice');
+    const bob = await acme.member('bob');
+    originAt('https://github.com/acme/app.git', [alice, bob]);
+    const runId = await start(alice);
+    await runStep(alice, runId);
+
+    expect(await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout })).toMatchObject({ ok: true, value: { publication: 'published', offered: true } });
+    const offered = JSON.parse(originFile(acme.origin, `workflows/runs/${runId}/state.json`) ?? '{}');
+    expect(offered).toMatchObject({ owner: { user: 'alice' }, offered: { at: expect.any(String) }, repository: 'github.com/acme/app' });
+
+    expect(await claimRun(bob.config, runId, { checkout: bob.checkout })).toMatchObject({ ok: true, value: { ownership: 'claimed' } });
+    const claimed = JSON.parse(originFile(acme.origin, `workflows/runs/${runId}/state.json`) ?? '{}');
+    expect(claimed).toMatchObject({ owner: { user: 'bob' }, repository: 'github.com/acme/app' });
+    expect(claimed).not.toHaveProperty('offered');
+  });
+
+  it('offers no run it publishes from a checkout with no origin, since no runner could tell which repository it works in', async () => {
+    const acme = team();
+    const alice = await acme.member('alice');
+    git(alice.checkout, 'remote', 'remove', 'origin');
+    const runId = await start(alice);
+    await runStep(alice, runId);
+
+    expect(await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout })).toMatchObject({ ok: true, value: { publication: 'published', offered: false } });
+    const published = JSON.parse(originFile(acme.origin, `workflows/runs/${runId}/state.json`) ?? '{}');
+    expect(published).toMatchObject({ owner: { user: 'alice' } });
+    expect(published).not.toHaveProperty('offered');
+    expect(published).not.toHaveProperty('repository');
+  });
+
+  it('refuses a next of the earlier owner once its reports checkout shows another install claimed the run', async () => {
+    const acme = team();
+    const alice = await acme.member('alice');
+    const bob = await acme.member('bob');
+    const runId = await start(alice);
+    await runStep(alice, runId);
+    await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout });
+    await claimRun(bob.config, runId, { checkout: bob.checkout });
+
+    // A pull fetches teamai-reports, so alice's checkout then shows bob's claim.
+    await reportsBranch.readableReportsWorktree(alice.config);
+    const next = await leaseNext(alice.config, runId, alice.driver);
+    expect(next).toMatchObject({ error: { code: 'not_owner', owner: { user: 'bob' } } });
+    expect(await readRun(alice.config, runId)).toMatchObject({ steps: [{ id: 'one', status: 'succeeded' }, { id: 'two', status: 'pending' }] });
+  });
+
+  it('lets one of two runners that take the same offered run at once claim it, and the other gets state_moved', async () => {
+    const acme = team();
+    const alice = await acme.member('alice');
+    const runners = [await acme.member('runner-1'), await acme.member('runner-2')];
+    const runId = await start(alice);
+    await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout });
+
+    const taken = await Promise.all(runners.map((runner) => claimOffered(runner.config, runId, { checkout: runner.checkout })));
+    expect(taken.filter((claim) => claim.ok)).toHaveLength(1);
+    expect(taken.filter((claim) => !claim.ok)).toMatchObject([{ error: { code: 'state_moved' } }]);
+    const winner = runners[taken.findIndex((claim) => claim.ok)];
+    expect(JSON.parse(originFile(acme.origin, `workflows/runs/${runId}/state.json`) ?? '{}')).toMatchObject({ owner: { user: winner?.config.username }, stateRevision: 2 });
+  });
+
+  it('claims no run that is no longer offered, though any claim could take it over', async () => {
+    const acme = team();
+    const alice = await acme.member('alice');
+    const bob = await acme.member('bob');
+    const runner = await acme.member('runner');
+    const runId = await start(alice);
+    await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout });
+    await claimRun(bob.config, runId, { checkout: bob.checkout });
+
+    expect(await claimOffered(runner.config, runId, { checkout: runner.checkout })).toMatchObject({ ok: false, error: { code: 'state_moved' } });
+    expect(await readRun(runner.config, runId)).toBe('missing');
+    expect(JSON.parse(originFile(acme.origin, `workflows/runs/${runId}/state.json`) ?? '{}')).toMatchObject({ owner: { user: 'bob' } });
+  });
+
+  it('takes the offer away when its owner resumes the run, so no runner takes a run its owner drives, and offers it again on the next publish', async () => {
+    const acme = team();
+    const alice = await acme.member('alice');
+    const runner = await acme.member('runner');
+    const runId = await start(alice);
+    await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout });
+
+    expect(await resumeRun(alice.config, runId, { claim: false, checkout: alice.checkout })).toMatchObject({ ok: true, value: { ownership: 'already_owned' } });
+    expect(JSON.parse(originFile(acme.origin, `workflows/runs/${runId}/state.json`) ?? '{}')).not.toHaveProperty('offered');
+    expect(await claimOffered(runner.config, runId, { checkout: runner.checkout })).toMatchObject({ ok: false, error: { code: 'state_moved' } });
+
+    await runStep(alice, runId);
+    expect(await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout })).toMatchObject({ ok: true, value: { publication: 'published', offered: true } });
+    expect(await claimOffered(runner.config, runId, { checkout: runner.checkout })).toMatchObject({ ok: true, value: { ownership: 'claimed' } });
+  });
+
+  const RELEASE = `schemaVersion: v1alpha1
+name: release
+description: Build, then ship once a person approves.
+steps:
+  - id: build
+    command: echo build
+  - id: ship
+    needs: [build]
+    approve: { message: Ship it?, required: true }
+    command: echo ship
+`;
+
+  /** A process that runs teamai in a CI job, with no agent session: unattended unless `mode` says otherwise. */
+  function runnerTaker(mode: 'attended' | 'unattended' = 'unattended') {
+    return { caller: { evidence: { kind: 'none' as const }, confirmed: false, mode }, driver: 'local' as const };
+  }
+
+  /** What `member` reads of teamai-reports after a pull. */
+  async function publishedRuns(member: Member, taker: Taker = runnerTaker()) {
+    await reportsBranch.readableReportsWorktree(member.config);
+    return PublishedRuns.list(member.config, { taker, env: await resolveWorkflowEnv(member.config, {}) });
+  }
+
+  it('lists an offered run whose step left has a required approval as needing a person, which an unattended runner does not take', async () => {
+    const acme = team({ release: RELEASE });
+    const alice = await acme.member('alice');
+    const runner = await acme.member('runner');
+    originAt('https://github.com/acme/app.git', [alice, runner]);
+    const started = await startRun(alice.config, 'release', {}, { secrets: {} });
+    const runId = 'data' in started ? String(started.data.run) : '';
+    expect(await runStep(alice, runId)).toBe('build');
+    await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout });
+
+    const runs = await publishedRuns(runner);
+    expect(runs).toEqual([expect.objectContaining({
+      run: runId, workflow: 'release', owner: expect.objectContaining({ user: 'alice' }), repository: 'github.com/acme/app',
+      offer: { at: expect.any(String), needs: ['only a person can answer the approval at ship'] },
+    })]);
+    const self = (await installOwner(runner.config)).id;
+    expect(PublishedRuns.candidates(runs, { repository: 'github.com/acme/app', mode: 'unattended', self })).toEqual([]);
+    expect(PublishedRuns.candidates(runs, { repository: 'github.com/acme/app', mode: 'attended', self }).map((run) => run.run)).toEqual([runId]);
+    expect(PublishedRuns.candidates(runs, { repository: 'github.com/acme/other', mode: 'attended', self })).toEqual([]);
+  });
+
+  it('lets a runner with no agent session take an offered run of an invoke: deny workflow, and refuses it to the skill driver', async () => {
+    const acme = team();
+    const alice = await acme.member('alice');
+    const runner = await acme.member('runner');
+    originAt('https://github.com/acme/app.git', [alice, runner]);
+    const runId = await start(alice);
+    await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout });
+
+    expect(await publishedRuns(runner)).toMatchObject([{ run: runId, offer: { needs: [] } }]);
+    expect((await publishedRuns(runner))[0]?.offer).not.toHaveProperty('refusal');
+    const skill = { caller: { evidence: { kind: 'skill-driver' as const }, confirmed: false, mode: 'unattended' as const }, driver: 'skill' as const };
+    expect(await publishedRuns(runner, skill)).toMatchObject([{ run: runId, offer: { refusal: { code: 'invoke_denied' } } }]);
+  });
+
+  it('lists a claimed run as held by the install that claimed it, after the offered ones', async () => {
+    const acme = team();
+    const alice = await acme.member('alice');
+    const bob = await acme.member('bob');
+    const held = await start(alice);
+    await publishRun(alice.config, held, { env: {}, checkout: alice.checkout });
+    await claimRun(bob.config, held, { checkout: bob.checkout });
+    const offered = await start(alice);
+    await publishRun(alice.config, offered, { env: {}, checkout: alice.checkout });
+
+    const runs = await publishedRuns(alice);
+    expect(runs.map((run) => [run.run, run.owner.user, run.offer !== undefined])).toEqual([[offered, 'alice', true], [held, 'bob', false]]);
+  });
+
+  it('lists for resume the runs others offer for this repository, then the running runs here as teamai-reports shows them', async () => {
+    const acme = team();
+    const alice = await acme.member('alice');
+    const bob = await acme.member('bob');
+    originAt('https://github.com/acme/app.git', [alice, bob]);
+    const local = await start(alice);
+    const ended = await start(alice);
+    const held = await start(alice);
+    const reoffered = await start(alice);
+    for (const run of [ended, held, reoffered]) {
+      await publishRun(alice.config, run, { env: {}, checkout: alice.checkout });
+      await claimRun(bob.config, run, { checkout: bob.checkout });
+    }
+    await cancelRun(bob.config, ended, {});
+    await publishRun(bob.config, reoffered, { env: {}, checkout: bob.checkout });
+    const bobs = await start(bob);
+    await publishRun(bob.config, bobs, { env: {}, checkout: bob.checkout });
+
+    await reportsBranch.readableReportsWorktree(alice.config);
+    const env = await resolveWorkflowEnv(alice.config, {});
+    const listed = async (repository: string | undefined) => (await PublishedRuns.resumable(alice.config, { taker: runnerTaker(), env, repository }))
+      .map((row) => (row.kind === 'offered' ? [row.kind, row.published.run, row.published.owner.user] : [row.kind, row.run.id, row.kind === 'here' ? 'alice' : row.owner.user]));
+    expect(await listed('github.com/acme/app')).toEqual([
+      ['offered', reoffered, 'bob'], ['offered', bobs, 'bob'], ['claimed', held, 'bob'], ['ended', ended, 'bob'], ['here', local, 'alice'],
+    ]);
+    // `--next` takes no run in a checkout without an origin, so none is offered there.
+    expect(await listed(undefined)).toEqual([['claimed', held, 'bob'], ['ended', ended, 'bob'], ['here', local, 'alice']]);
+  });
+
+  it('shows the dashboard each run handed over, with what a runner would need, marking the ones this install published', async () => {
+    const acme = team({ build: BUILD, release: RELEASE });
+    const alice = await acme.member('alice');
+    const bob = await acme.member('bob');
+    originAt('https://github.com/acme/app.git', [alice, bob]);
+    const started = await startRun(alice.config, 'release', {}, { secrets: {} });
+    const offered = 'data' in started ? String(started.data.run) : '';
+    await publishRun(alice.config, offered, { env: {}, checkout: alice.checkout });
+    const held = await start(alice);
+    await publishRun(alice.config, held, { env: {}, checkout: alice.checkout });
+    await claimRun(bob.config, held, { checkout: bob.checkout });
+
+    await reportsBranch.readableReportsWorktree(alice.config);
+    const rows = await listHandoffs(alice.config);
+    expect(rows).toEqual([
+      expect.objectContaining({
+        run: offered, workflow: 'release', isMine: true, owner: expect.objectContaining({ user: 'alice' }), repository: 'github.com/acme/app',
+        offer: { at: expect.any(String), needs: ['only a person can answer the approval at ship'] },
+      }),
+      expect.objectContaining({ run: held, workflow: 'build', isMine: false, owner: expect.objectContaining({ user: 'bob' }) }),
+    ]);
+    expect(rows[1]).not.toHaveProperty('offer');
   });
 });

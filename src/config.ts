@@ -21,6 +21,7 @@ import {
   MemberWorkflowSettingsSchema,
   type MemberSettings,
   type MemberWorkflowSettings,
+  SELF_BRANCH_HOME_DIRNAME,
 } from './types.js';
 import { readFileIfExists, readFileSafe, readJson, writeFileAtomic, writeJsonAtomic, expandHome, pathExists } from './utils/fs.js';
 import { nearestGitEntry, resolveAnchors } from './utils/git.js';
@@ -531,7 +532,7 @@ export async function loadLocalConfig(options: LoadOptions = {}): Promise<LocalC
     const raw = YAML.parse(content);
     if (isSettingsOnlyConfig(raw)) return null;
     const parsed = LocalConfigSchema.parse(raw);
-    return await migrateLegacyRoleConfig(await applyConfigOverlays(parsed), configPath, options);
+    return await withBranchHome(await migrateLegacyRoleConfig(await applyConfigOverlays(parsed), configPath, options), options);
   } catch (e) {
     log.error(`Invalid local config: ${describeConfigError(e)}`);
     return null;
@@ -553,7 +554,7 @@ function serializeLocalConfig(config: LocalConfig, carriedSettings?: MemberSetti
   // The overlaid roles are the team's, read fresh on every load. Writing them
   // would leave a stale copy behind once the assignment changes or the file
   // goes, and a stale copy is exactly what a member must not be able to keep.
-  const { dataHome: _dataHome, roleUnresolved: _roleUnresolved, children: _children, roleAssignment: _assignment, memberSettingsOverlay: overlay, ...persisted } = withLocalRoles(config);
+  const { dataHome: _dataHome, branchHome: _branchHome, roleUnresolved: _roleUnresolved, children: _children, roleAssignment: _assignment, memberSettingsOverlay: overlay, ...persisted } = withLocalRoles(config);
   const localSettings = overlay?.local ?? MemberSettingsSchema.parse(persisted);
   const settings = {
     ...localSettings,
@@ -716,7 +717,10 @@ export async function loadLocalConfigForScope(
     // "detect the active project" and "load a named project's config".
     const detected = await findProjectConfig(projectRoot, undefined, options);
     if (!detected) return null;
-    return migrateLegacyRoleConfig(await applyRoleAssignment(detected), path.join(getDataHome(detected), 'config.yaml'), options);
+    return await withBranchHome(
+      await migrateLegacyRoleConfig(await applyRoleAssignment(detected), path.join(getDataHome(detected), 'config.yaml'), options),
+      options,
+    );
   }
   const configPath = getConfigPath(scope, projectRoot);
   const content = await readFileSafe(expandHome(configPath));
@@ -725,7 +729,7 @@ export async function loadLocalConfigForScope(
     const raw = YAML.parse(content);
     if (scope === 'user' && isSettingsOnlyConfig(raw)) return null;
     const parsed = LocalConfigSchema.parse(raw);
-    return await migrateLegacyRoleConfig(await applyConfigOverlays(parsed), configPath, options);
+    return await withBranchHome(await migrateLegacyRoleConfig(await applyConfigOverlays(parsed), configPath, options), options);
   } catch (e) {
     log.error(`Invalid ${installScopeName(scope)} config at ${configPath}: ${describeConfigError(e)}`);
     return null;
@@ -1039,7 +1043,10 @@ export async function readConfigFrom(
       }
       return null;
     }
-    return await applyMachineSettings(await applyRoleAssignment(anchorProjectConfig(config, dataHomeDir, projectRoot)), await loadMemberSettings());
+    return await withBranchHome(
+      await applyMachineSettings(await applyRoleAssignment(anchorProjectConfig(config, dataHomeDir, projectRoot)), await loadMemberSettings()),
+      options,
+    );
   } catch (e) {
     onUnreadable?.(configPath, describeConfigError(e));
     return null;
@@ -1055,7 +1062,9 @@ async function previewSelfHeal(repoRoot: string, dataHomeDir: string, projectRoo
   try {
     const { previewSelfBootstrap } = await import('./bootstrap.js');
     const config = await previewSelfBootstrap(repoRoot);
-    return config ? anchorProjectConfig(LocalConfigSchema.parse(config), dataHomeDir, projectRoot) : null;
+    return config
+      ? await withBranchHome(anchorProjectConfig(LocalConfigSchema.parse(config), dataHomeDir, projectRoot), { dryRun: true })
+      : null;
   } catch {
     return null;
   }
@@ -1085,6 +1094,28 @@ function anchorProjectConfig(config: LocalConfig, dataHomeDir: string, projectRo
     };
   }
   return resolved;
+}
+
+/**
+ * Attach the shared side-branch home (#1443). For a single-repo team both the
+ * user scope and the project partition keep `reports-wt` / `learnings-wt` in a
+ * subdirectory of the repository's project partition, so every scope and every
+ * checkout of the business repo resolve one checkout and one lock per branch,
+ * and a git-mode clone in the same partition (whose checkouts are its siblings)
+ * never claims the same paths.
+ *
+ * Keyed on the shared project anchor (`resolvePartitionDir`, so a partition
+ * under its pre-#546 name is adopted, not recreated). No anchor (outside git)
+ * leaves it unset and `getWorktreeDir` keeps the scope's historical location.
+ * Runtime-only: `serializeLocalConfig` drops it, like `dataHome`.
+ */
+async function withBranchHome(config: LocalConfig, options: LoadOptions = {}): Promise<LocalConfig> {
+  if (config.repo.kind !== 'self') return config;
+  const root = config.repo.businessRepoRoot ?? path.dirname(expandHome(config.repo.localPath));
+  const anchors = await resolveAnchors(root);
+  if (!anchors) return config;
+  const partition = await resolvePartitionDir(anchors.projectAnchor, { dryRun: options.dryRun });
+  return { ...config, branchHome: path.join(partition, SELF_BRANCH_HOME_DIRNAME) };
 }
 
 /**

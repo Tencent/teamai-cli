@@ -5,21 +5,22 @@ import { knownSecrets } from '../env-resolution.js';
 import { pinScorers } from '../scorers/cache.js';
 import { AgentSession } from '../session-flow/agent-session.js';
 import { archiveSessions, type ArchiveSessionRef } from '../session-flow/archive.js';
-import { usesBranchWorktree, type LocalConfig } from '../types.js';
+import { getRepoIdentity } from '../session-flow/sync.js';
+import { getReportsDir, usesBranchWorktree, type LocalConfig } from '../types.js';
 import { gitRoot } from '../utils/branch-worktree.js';
 import { canonicalJson } from '../utils/canonical-json.js';
 import { sanitizeGitUrl } from '../utils/redact.js';
-import { fetchReportsOriginFile, updateReports, type ReportsChange } from '../utils/reports-branch.js';
+import { fetchReportsOriginFile, readReportsOriginFile, updateReports, type ReportsChange } from '../utils/reports-branch.js';
 import { loadWorkflowBundle, loadWorkflowBundleAt, type WorkflowBundle } from './cache.js';
 import { stepLoops } from './loop.js';
 import { pendingRecords, publishPendingRecords, type RecordDelivery } from './records.js';
 import {
   definitionHash, parseSnapshot, projectRun, snapshotBody, snapshotPath, snapshotText,
-  type HandoffOwner, type RunSnapshot, type SnapshotBody, type SnapshotError,
+  type Handoff, type HandoffOwner, type RunSnapshot, type SnapshotBody, type SnapshotError,
 } from './snapshot.js';
 import { takeOver, type UnleasedStep } from './step-state.js';
 import { installOwner, isRunId, readRun, updateRun } from './store.js';
-import type { RunState, WorkflowDefinition, WorkflowFailure, WorkflowStep } from './types.js';
+import type { RunState, RunStatus, WorkflowDefinition, WorkflowFailure, WorkflowStep } from './types.js';
 import { branchName, stepMode, type LeaseSession, type SessionRef } from './workspace.js';
 import { fetchMissingCommits, git, reconcileCopy } from './worktree.js';
 
@@ -62,6 +63,8 @@ export interface PublishReceipt {
   run: string;
   publication: 'published' | 'unchanged';
   stateRevision: number;
+  /** Whether teamai-reports offers the run to whoever takes it next with `workflow resume --next`: while it runs. */
+  offered: boolean;
   inFlight: InFlightLease[];
   /** When asked to: the sessions put in the team session archive, which the steps that have not settled continue. */
   sessions?: SessionRef[];
@@ -213,13 +216,14 @@ export async function publishRun(
   if (!before.ok) return before;
   const elsewhere = before.value === 'absent' ? undefined : ownershipRefusal(stored, before.value, owner);
   if (elsewhere) return refused(elsewhere);
+  const checkout = stored.checkout ?? options.checkout;
+  const repository = getRepoIdentity(checkout) ?? undefined;
   // Origin already holds the run as it is, so there is nothing to write and nothing to check on the business origin: a
   // finished run's branches may be gone or have moved on, and its end is not published again.
-  if (before.value !== 'absent' && options.sessions === undefined && holdsRun(stored, before.value, projected.value)
+  if (before.value !== 'absent' && options.sessions === undefined && holdsRun(stored, before.value, { body: projected.value, repository })
     && !(await pendingRecords(config)).some((record) => record.run === runId)) {
     return ok(receipt(runId, 'unchanged', before.value));
   }
-  const checkout = stored.checkout ?? options.checkout;
   const pinned = await checkOrigin(checkout, stored, { side: 'publish' });
   if (!pinned.ok) return pinned;
 
@@ -232,7 +236,7 @@ export async function publishRun(
 
   const result = await updateReports(config, async (worktree): Promise<ReportsChange<Result<PublishVerdict>>> => {
     const origin = await readOrigin(worktree, runId);
-    const verdict = origin.ok ? await decideLocked(config, runId, { origin: origin.value, checked, sessions: options.sessions, owner, secrets }) : origin;
+    const verdict = origin.ok ? await decideLocked(config, runId, { origin: origin.value, checked, sessions: options.sessions, owner, secrets, repository }) : origin;
     if (!verdict.ok) return { value: verdict, write: null };
     const write = verdict.value.kind === 'write' ? await writeSnapshot(worktree, verdict.value.snapshot, `[teamai] Publish workflow run ${runId}`) : null;
     return { value: verdict, write };
@@ -349,7 +353,7 @@ function writeFailed(runId: string, result: { status: string; reason?: string })
 
 function receipt(runId: string, publication: PublishReceipt['publication'], snapshot: RunSnapshot, shared?: SessionShare): PublishReceipt {
   return {
-    run: runId, publication, stateRevision: snapshot.stateRevision, inFlight: inFlight(snapshot),
+    run: runId, publication, stateRevision: snapshot.stateRevision, offered: snapshot.offered !== undefined, inFlight: inFlight(snapshot),
     ...(shared ? { sessions: shared.archived, ...(shared.skipped.length > 0 ? { skipped: shared.skipped } : {}) } : {}),
   };
 }
@@ -436,49 +440,70 @@ function checkedOutsideLocks(run: RunState, sessions?: (run: RunState) => LeaseS
   return canonicalJson({ base: run.base?.commit, commits: Object.fromEntries(commits), sessions: sessions?.(run) ?? [] });
 }
 
-/** What a publish decides against: the snapshot origin holds, and what it checked of the run outside the locks. */
+/**
+ * What a publish decides against: the snapshot origin holds, what it checked of the run outside the locks, and the
+ * business repository of the checkout the run works in.
+ */
 interface PublishAgainst {
   origin: RunSnapshot | 'absent';
   checked: string;
   sessions?: (run: RunState) => LeaseSession[];
   owner: HandoffOwner;
   secrets: Record<string, string>;
+  repository: string | undefined;
 }
 
 /** Decides a publish against the snapshot origin holds, and records the write it makes before it is pushed. */
 async function decidePublish(
   local: RunState,
-  { origin, checked, sessions, owner, secrets }: PublishAgainst,
+  { origin, checked, sessions, owner, secrets, repository }: PublishAgainst,
 ): Promise<{ value: Result<PublishVerdict>; write?: RunState }> {
   const body = projectRun(local, secrets);
   if (!body.ok) return { value: body };
   if (checkedOutsideLocks(local, sessions) !== checked) return { value: refused(publishMoved(local.id)) };
   const now = new Date().toISOString();
+  const handoff = handoffOf(local, repository, origin, now);
   if (origin === 'absent') {
     const seen = local.publication?.stateRevision ?? 0;
-    const snapshot = header(local.id, owner, now, seen + 1, body.value);
+    const snapshot = header(local.id, owner, now, seen + 1, body.value, handoff);
     return { value: ok({ kind: 'write', snapshot }), write: published(local, { stateRevision: seen, pending: snapshot.write }) };
   }
   const elsewhere = ownershipRefusal(local, origin, owner);
   if (elsewhere) return { value: refused(elsewhere) };
   const seen = acknowledged(local, origin);
   if (seen !== origin.stateRevision) return { value: refused(stateConflict(local.id, origin.stateRevision, seen)) };
-  if (canonicalJson(body.value) === canonicalJson(snapshotBody(origin))) {
+  if (holdsState(origin, body.value, handoff)) {
     const write = local.publication?.pending === undefined ? undefined : published(local, { stateRevision: seen });
     return { value: ok({ kind: 'unchanged', snapshot: origin }), ...(write ? { write } : {}) };
   }
-  const snapshot = header(local.id, owner, origin.ownedAt, origin.stateRevision + 1, body.value);
+  const snapshot = header(local.id, owner, origin.ownedAt, origin.stateRevision + 1, body.value, handoff);
   return { value: ok({ kind: 'write', snapshot }), write: published(local, { stateRevision: seen, pending: snapshot.write }) };
 }
 
 /**
- * Whether origin's snapshot already holds run `local` as it is: the same body, at the state revision this machine
- * acknowledged, with no write of this machine's still pending.
+ * What a publish of `local` says beside its state: business repository `repository`, and, while the run is running in a
+ * known repository, an offer, which keeps the time origin's offer has, so the run keeps its place among the runs offered
+ * before it. A run whose repository is unknown is not offered, since `--next` takes runs by repository.
  */
-function holdsRun(local: RunState, origin: RunSnapshot, body: SnapshotBody): boolean {
+function handoffOf(local: RunState, repository: string | undefined, origin: RunSnapshot | 'absent', now: string): Handoff {
+  const offered = local.status !== 'running' || repository === undefined ? undefined : origin !== 'absent' && origin.offered ? origin.offered : { at: now };
+  return { ...(repository !== undefined ? { repository } : {}), ...(offered ? { offered } : {}) };
+}
+
+/** Whether `origin` holds `body`, and says `handoff` of it. */
+function holdsState(origin: RunSnapshot, body: SnapshotBody, handoff: Handoff): boolean {
+  return canonicalJson(body) === canonicalJson(snapshotBody(origin))
+    && canonicalJson(handoff) === canonicalJson({ repository: origin.repository, offered: origin.offered });
+}
+
+/**
+ * Whether origin's snapshot already holds run `local` as it is, in business repository `repository`: the same body and
+ * offer, at the state revision this machine acknowledged, with no write of this machine's still pending.
+ */
+function holdsRun(local: RunState, origin: RunSnapshot, { body, repository }: { body: SnapshotBody; repository: string | undefined }): boolean {
   return local.publication?.pending === undefined
     && acknowledged(local, origin) === origin.stateRevision
-    && canonicalJson(body) === canonicalJson(snapshotBody(origin));
+    && holdsState(origin, body, handoffOf(local, repository, origin, ''));
 }
 
 /** Why `owner` may not publish `local` over `origin`: the published run is another run, or another install's. */
@@ -494,8 +519,8 @@ function published(local: RunState, known: { stateRevision: number; pending?: st
   return { ...local, publication: { ...kept, ...known } };
 }
 
-function header(runId: string, owner: HandoffOwner, ownedAt: string, stateRevision: number, body: SnapshotBody): RunSnapshot {
-  return { snapshot: 1, run: runId, owner, ownedAt, stateRevision, write: randomUUID(), ...body };
+function header(runId: string, owner: HandoffOwner, ownedAt: string, stateRevision: number, body: SnapshotBody, handoff: Handoff): RunSnapshot {
+  return { snapshot: 1, run: runId, owner, ownedAt, ...handoff, stateRevision, write: randomUUID(), ...body };
 }
 
 /** Records that origin holds `snapshot`, which this machine wrote, unless the run has since recorded another write. */
@@ -532,7 +557,7 @@ type ClaimVerdict =
   | { kind: 'owned'; snapshot: RunSnapshot }
   | { kind: 'claimed'; snapshot: RunSnapshot; replaces: string; definitions: Definitions; handed: Handover };
 
-interface Definitions {
+export interface Definitions {
   definition: WorkflowDefinition;
   workflows: Record<string, WorkflowDefinition>;
 }
@@ -543,7 +568,30 @@ interface Definitions {
  * the run continues in.
  */
 export async function claimRun(config: LocalConfig, runId: string, options: { checkout: string }): Promise<Result<ClaimReceipt>> {
-  return acquire(config, runId, await publishedRun(config, runId), { transfer: true, checkout: options.checkout });
+  return acquire(config, runId, await publishedRun(config, runId), { take: 'any', checkout: options.checkout });
+}
+
+/**
+ * `claimRun`, only while teamai-reports still offers run `runId`, as `workflow resume --next` takes it: a run another
+ * install claimed since, or that ended, answers `state_moved` and changes nothing.
+ */
+export async function claimOffered(config: LocalConfig, runId: string, options: { checkout: string }): Promise<Result<ClaimReceipt>> {
+  return acquire(config, runId, await publishedRun(config, runId), { take: 'offered', checkout: options.checkout });
+}
+
+/**
+ * Why a driver may not lease run `runId` from this machine's copy: another install claimed it, as the snapshot on this
+ * machine's teamai-reports checkout shows it since its last fetch (a pull, a resume, a publish). Reads no network, and
+ * checks no run this machine never published, nor a snapshot of another run under that id or one it cannot read.
+ */
+export async function claimedAway(config: LocalConfig, runId: string): Promise<HandoffError | undefined> {
+  if (!usesBranchWorktree(config)) return undefined;
+  const local = await readRun(config, runId);
+  if (typeof local !== 'object' || local.publication === undefined) return undefined;
+  const text = await readReportsOriginFile(getReportsDir(config), snapshotPath(runId));
+  const snapshot = text === null ? undefined : parseSnapshot(text, runId);
+  if (!snapshot?.ok || snapshot.value.createdAt !== local.createdAt) return undefined;
+  return snapshot.value.owner.id === (await installOwner(config)).id ? undefined : notOwner(runId, snapshot.value);
 }
 
 /**
@@ -554,12 +602,12 @@ export async function claimRun(config: LocalConfig, runId: string, options: { ch
 export async function resumeRun(config: LocalConfig, runId: string, options: { claim: boolean; checkout: string }): Promise<Result<ClaimReceipt | null>> {
   const stored = await readRun(config, runId);
   if (stored === 'corrupt') return refused(runUnreadable(runId));
-  if (stored === 'missing' || options.claim) return acquire(config, runId, await publishedRun(config, runId), { transfer: true, checkout: options.checkout });
+  if (stored === 'missing' || options.claim) return acquire(config, runId, await publishedRun(config, runId), { take: 'any', checkout: options.checkout });
   if (stored.publication === undefined) return ok(null);
   const origin = await publishedRun(config, runId);
   // No other install can have claimed a run origin never showed, and this one never saw it there.
   if (origin.ok && origin.value === 'absent' && stored.publication.stateRevision === 0) return ok(null);
-  return acquire(config, runId, origin, { transfer: false, checkout: options.checkout });
+  return acquire(config, runId, origin, { take: 'own', checkout: options.checkout });
 }
 
 /**
@@ -633,9 +681,10 @@ function settledForGood({ definition, workflows }: Definitions, byId: ReadonlyMa
   return (id: string): boolean => done(id);
 }
 
-/** What a run carries: its definitions, and the steps it settled for good. */
+/** What a run carries: its definitions, the steps it settled for good, and its status. */
 export interface CarriedRun extends Definitions {
   settled: string[];
+  status: RunStatus;
 }
 
 /**
@@ -646,14 +695,14 @@ export interface CarriedRun extends Definitions {
 export async function carriedRun(config: LocalConfig, runId: string, { published: alreadyPublished, claim = false }: { published: boolean; claim?: boolean }): Promise<Result<CarriedRun | undefined>> {
   const stored = await readRun(config, runId);
   if (stored === 'corrupt') return refused(runUnreadable(runId));
-  const local = stored === 'missing' ? undefined : { definition: stored.definition, workflows: stored.workflows ?? {}, settled: settledSteps(stored) };
+  const local = stored === 'missing' ? undefined : { definition: stored.definition, workflows: stored.workflows ?? {}, settled: settledSteps(stored), status: stored.status };
   if (local && !claim) return ok(local);
   if (!alreadyPublished) return ok(local);
   // Read from the team repository rather than the reports checkout, which a refused resume would otherwise leave synced.
   const origin = await publishedRun(config, runId, { checkout: false });
   if (!origin.ok || origin.value === 'absent') return origin.ok || local ? ok(local) : origin;
   const definitions = await definitionsOf(config, origin.value);
-  return definitions.ok ? ok({ ...definitions.value, settled: settledSteps({ ...definitions.value, steps: origin.value.steps }) }) : definitions;
+  return definitions.ok ? ok({ ...definitions.value, settled: settledSteps({ ...definitions.value, steps: origin.value.steps }), status: origin.value.status }) : definitions;
 }
 
 /**
@@ -693,24 +742,34 @@ async function publishedRun(config: LocalConfig, runId: string, { checkout = tru
   return checkout ? readPublished(config, runId) : readOrigin(gitRoot(config), runId);
 }
 
+/**
+ * Which published runs an acquisition takes from another install: `own`, none, so a run another install owns answers
+ * `not_owner`; `any`, every one; `offered`, only one origin still offers.
+ */
+type Take = 'own' | 'any' | 'offered';
+
 async function acquire(
   config: LocalConfig,
   runId: string,
   origin: OriginSnapshot,
-  { transfer, checkout }: { transfer: boolean; checkout: string },
+  { take, checkout }: { take: Take; checkout: string },
 ): Promise<Result<ClaimReceipt>> {
   if (!origin.ok) return origin;
   const owner = await installOwner(config);
   const secrets = await knownSecrets(config);
   // Decided outside the reports lock: rebuilding definitions and checking the business origin can take a while.
-  const decided = await decideClaim(config, runId, origin.value, owner, { transfer, checkout });
+  const decided = await decideClaim(config, runId, origin.value, owner, { take, checkout });
   if (!decided.ok) return decided;
   const verdict = decided.value;
   switch (verdict.kind) {
-    case 'owned':
-      return settleOwned(config, runId, checkout, owner, verdict.snapshot, secrets);
+    case 'owned': {
+      const settled = await settleOwned(config, runId, checkout, owner, verdict.snapshot, secrets);
+      if (!settled.ok || verdict.snapshot.offered === undefined) return settled;
+      const withdrawn = await withdrawOffer(config, runId, verdict.snapshot);
+      return withdrawn.ok ? settled : withdrawn;
+    }
     case 'claimed': {
-      const landed = await replaceSnapshot(config, runId, verdict.replaces, verdict.snapshot);
+      const landed = await replaceSnapshot(config, runId, verdict.replaces, verdict.snapshot, `[teamai] Claim workflow run ${runId}`);
       // Origin took no claim this machine can prove, so nothing local changes; claiming again finds out.
       if (!landed.ok) return landed;
       return install(config, runId, checkout, verdict.snapshot, verdict.definitions, verdict.handed, secrets);
@@ -732,17 +791,39 @@ async function readPublished(config: LocalConfig, runId: string): Promise<Origin
   return result.value ?? refused(result.status === 'busy' ? REPORTS_BUSY : writeFailed(runId, result));
 }
 
-/** Writes `snapshot` to teamai-reports only while origin still holds the write `replaces`. */
-async function replaceSnapshot(config: LocalConfig, runId: string, replaces: string, snapshot: RunSnapshot): Promise<Result<void>> {
+/**
+ * Takes the offer of run `runId` away as its owner drives it again, so no runner takes it meanwhile. The run's state is
+ * unchanged, so its state revision stays; the new write makes a claim prepared against the offer answer `state_moved`.
+ */
+async function withdrawOffer(config: LocalConfig, runId: string, snapshot: RunSnapshot): Promise<Result<void>> {
+  const { offered: _offer, ...kept } = snapshot;
+  const landed = await replaceSnapshot(config, runId, snapshot.write, { ...kept, write: randomUUID() }, `[teamai] Resume workflow run ${runId}`);
+  if (landed.ok || landed.error.code !== 'state_moved') return landed;
+  const now = await readPublished(config, runId);
+  if (now.ok && now.value !== 'absent' && now.value.owner.id !== snapshot.owner.id) return refused(notOwner(runId, now.value));
+  return refused({
+    code: 'state_moved',
+    message: `Run ${runId} changed on teamai-reports while this machine resumed it, so it was not resumed. Resume it again: teamai workflow resume ${runId}`,
+  });
+}
+
+/** Writes `snapshot` to teamai-reports, committed as `message`, only while origin still holds the write `replaces`. */
+async function replaceSnapshot(config: LocalConfig, runId: string, replaces: string, snapshot: RunSnapshot, message: string): Promise<Result<void>> {
   const result = await updateReports(config, async (worktree): Promise<ReportsChange<Result<void>>> => {
     const origin = await readOrigin(worktree, runId);
     if (!origin.ok) return { value: origin, write: null };
     if (origin.value === 'absent' || origin.value.write !== replaces) return { value: refused(stateMoved(runId)), write: null };
-    return { value: ok(undefined), write: await writeSnapshot(worktree, snapshot, `[teamai] Claim workflow run ${runId}`) };
+    return { value: ok(undefined), write: await writeSnapshot(worktree, snapshot, message) };
   });
   if (result.value && !result.value.ok) return result.value;
   if (result.status === 'busy') return refused(REPORTS_BUSY);
-  if (result.status !== 'published' && result.status !== 'already-present') return refused(writeFailed(runId, result));
+  if (result.status !== 'published' && result.status !== 'already-present') {
+    // The claim may still have landed, or another write of the run landed first, as when two claims race: origin decides.
+    const now = await readPublished(config, runId);
+    if (now.ok && now.value !== 'absent' && now.value.write === snapshot.write) return ok(undefined);
+    if (now.ok && now.value !== 'absent' && now.value.write !== replaces) return refused(stateMoved(runId));
+    return refused(writeFailed(runId, result));
+  }
   return ok(undefined);
 }
 
@@ -760,12 +841,19 @@ function stateMoved(runId: string): HandoffError {
   };
 }
 
+function noLongerOffered(runId: string): HandoffError {
+  return {
+    code: 'state_moved',
+    message: `Run ${runId} is no longer offered on teamai-reports: another install claimed it, or it ended. Nothing was claimed. Take the next offered run: teamai workflow resume --next`,
+  };
+}
+
 async function decideClaim(
   config: LocalConfig,
   runId: string,
   origin: RunSnapshot | 'absent',
   owner: HandoffOwner,
-  { transfer, checkout }: { transfer: boolean; checkout: string },
+  { take, checkout }: { take: Take; checkout: string },
 ): Promise<Result<ClaimVerdict>> {
   if (origin === 'absent') {
     return refused({
@@ -777,7 +865,8 @@ async function decideClaim(
   if (local === 'corrupt') return refused(runUnreadable(runId));
   if (local !== 'missing' && local.createdAt !== origin.createdAt) return refused(mismatch(runId, local, origin));
   if (origin.owner.id === owner.id) return ok({ kind: 'owned', snapshot: origin });
-  if (!transfer) return refused(notOwner(runId, origin));
+  if (take === 'own') return refused(notOwner(runId, origin));
+  if (take === 'offered' && origin.offered === undefined) return refused(noLongerOffered(runId));
   const definitions = await definitionsOf(config, origin);
   if (!definitions.ok) return definitions;
   const handed = handedOver(origin, definitions.value);
@@ -787,7 +876,9 @@ async function decideClaim(
     const onOrigin = await checkOrigin(checkout, { id: runId, base: origin.base, copies: handed.copies }, { side: 'claim', publisher: origin.owner });
     if (!onOrigin.ok) return onOrigin;
   }
-  const claimed: RunSnapshot = { ...header(runId, owner, new Date().toISOString(), origin.stateRevision + 1, snapshotBody(origin)), ...handed };
+  // The write that makes this install the owner takes the offer away, so no runner takes the run while it is driven here.
+  const repository = origin.repository !== undefined ? { repository: origin.repository } : {};
+  const claimed: RunSnapshot = { ...header(runId, owner, new Date().toISOString(), origin.stateRevision + 1, snapshotBody(origin), repository), ...handed };
   return ok({ kind: 'claimed', snapshot: claimed, replaces: origin.write, definitions: definitions.value, handed });
 }
 
@@ -816,7 +907,7 @@ function handedOver(snapshot: RunSnapshot, definitions: Definitions): Handover {
  * The definitions run `snapshot` executes, exactly as the machine that ran it had them: this machine's cache when it holds
  * the same ones, else the team commit the run ran at.
  */
-async function definitionsOf(config: LocalConfig, snapshot: RunSnapshot): Promise<Result<Definitions>> {
+export async function definitionsOf(config: LocalConfig, snapshot: RunSnapshot): Promise<Result<Definitions>> {
   const same = (bundle: WorkflowBundle): boolean => bundle.sourceHash === snapshot.sourceHash
     && definitionHash(bundle.definition, bundle.workflows) === snapshot.definitionHash;
   const cached = await loadWorkflowBundle(config, snapshot.name);

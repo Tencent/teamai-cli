@@ -41,4 +41,4 @@ A step gets the team env keys its `requires.env` lists, and no other team key. A
 
 ## CI
 
-When you set up a CI job that starts a run, read `references/ci.md`.
+When you set up a CI job that starts a run, or one that takes the runs members offer, read `references/ci.md`.

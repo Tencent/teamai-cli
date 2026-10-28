@@ -1286,7 +1286,7 @@ hooks:
     tools: [${tool}]
 `;
 
-  it('renders the POSIX gate for codebuddy, which runs hooks through Git Bash', async () => {
+  it('renders the explicit CodeBuddy dispatcher on Windows so cmd.exe and Git Bash share one gate', async () => {
     const platformSpy = vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
     try {
       await writeYaml(telemetryYaml('codebuddy'));
@@ -1294,28 +1294,20 @@ hooks:
       await reconcileTeamHooksForConfig(codebuddyOnly, localConfig());
 
       const [command] = await teamStopCommands('.codebuddy/settings.json');
-      expect(command.startsWith('if [ "$PWD" = ')).toBe(true);
-      expect(command.endsWith('); fi')).toBe(true);
-      // The runner names its cwd the MSYS way: on Windows that is `/c/...`,
-      // never the `C:\...` this root resolves to, so the gate must carry both
-      // spellings or it silently never fires. A root without a drive letter is
-      // already the shell's spelling and the gate carries a single test, which
-      // is what the suite's Linux and macOS jobs exercise.
-      if (/^[A-Za-z]:[\\/]/.test(project)) {
-        expect(command, 'a Windows root is tested in both spellings').toMatch(/\] \|\| \[ "\$PWD" = '\/[a-z]\//);
-      } else {
-        expect(command, 'a POSIX root needs one spelling').not.toContain(' || [ "$PWD" = ');
-      }
-      // 0.26.0 rendered a cmd.exe gate here. Git Bash cannot run it: `findstr`
-      // errors out, the gate never matches, and the `>nul` redirect leaves a
-      // file literally named `nul` in the project.
+      expect(command).toContain('teamai-codebuddy-hook');
+      expect(command).toContain('hook-dispatch Stop --tool codebuddy --team-hooks');
+      expect(command).toContain('--team-hook-id telemetry');
+      expect(command).toContain('--team-hook-gate ');
+      expect(command).toContain('--team-hook-command ');
+      // Both old forms put the project path in host-parsed shell source. The
+      // new form carries only base64url arguments through cmd.exe and Bash.
+      expect(command).not.toContain('if [ "$PWD" = ');
       expect(command).not.toContain('findstr');
       expect(command).not.toContain('exit /b 0');
     } finally {
       platformSpy.mockRestore();
     }
   });
-
   it('keeps the POSIX gate for a tool whose runner is not cmd.exe', async () => {
     const platformSpy = vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
     try {
@@ -1403,7 +1395,9 @@ hooks:
     });
   }
 
-  it.skipIf(!executor)(
+  // CodeBuddy renders this POSIX gate on macOS/Linux. Windows uses the
+  // dispatcher gate above, so there is no POSIX command to execute here.
+  it.skipIf(process.platform === 'win32' || !executor)(
     'fires inside the project and stays an exit-0 no-op outside it, under a real shell',
     async () => {
       const execRoot = await fse.mkdtemp(path.join(execBase, '.teamai-gate-'));
@@ -1447,8 +1441,33 @@ hooks:
     // than the cmd.exe the gate used to be tested with.
     60_000,
   );
-});
 
+  it('keeps the encoded project root and payload out of the cmd.exe command text', async () => {
+    const platformSpy = vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+    try {
+      const root = path.join(project, 'sp&x');
+      await fse.ensureDir(root);
+      await writeYaml(`
+hooks:
+  - id: gate
+    description: gate probe
+    event: Stop
+    matcher: "*"
+    command: echo TEAMAI_GATE_PAYLOAD
+    tools: [codebuddy]
+`);
+      await fse.ensureDir(path.join(home, '.codebuddy'));
+      await reconcileTeamHooksForConfig(codebuddyOnly, { ...localConfig(), projectRoot: root } as LocalConfig);
+      const [command] = await teamStopCommands('.codebuddy/settings.json');
+      expect(command).not.toContain(root);
+      expect(command).not.toContain('TEAMAI_GATE_PAYLOAD');
+      expect(command).toMatch(/--team-hook-gate [A-Za-z0-9_-]+/);
+      expect(command).toMatch(/--team-hook-command [A-Za-z0-9_-]+/);
+    } finally {
+      platformSpy.mockRestore();
+    }
+  });
+});
 describe('reconcileHooks — a hook a workspace holds back (#913)', () => {
   // Every format a HOME-installed tool's gated team hook is written in.
   it.each(['cursor', 'copilot', 'zcode', 'codebuddy', 'codex-internal'])(

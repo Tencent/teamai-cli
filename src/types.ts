@@ -1035,6 +1035,16 @@ export const LOCAL_CONFIG_INSTALL_KEYS = [
  */
 export type LocalConfig = z.infer<typeof LocalConfigSchema> & {
   dataHome?: string;
+  /**
+   * Where this repository keeps the side branches' checkouts (`reports-wt`,
+   * `learnings-wt`) and their lock files (#1443). Runtime-only, resolved when
+   * the config loads, never read from YAML and never saved. For `kind: self`
+   * both the user scope and the project partition resolve it as the
+   * `side-branches/` subdirectory of the repository's project partition, so
+   * every scope shares one checkout and one lock per branch. Absent means
+   * "fall back to the scope's data home".
+   */
+  branchHome?: string;
   roleUnresolved?: true;
   children?: WorkspaceChildren;
   roleAssignment?: RoleAssignment;
@@ -3165,6 +3175,13 @@ export const WORKTREE_DIRNAMES: readonly string[] = [
 ];
 /** Lock filename (beside the reports-wt checkout) guarding concurrent reports-branch writes. */
 export const REPORTS_LOCK_FILENAME = '.reports-lock';
+/**
+ * Partition subdirectory that holds a self-mode repo's side-branch checkouts
+ * (#1443). A git-mode team clone inside the same partition keeps its checkouts
+ * as siblings of the clone, directly under the partition, so this keeps two
+ * installs sharing one partition from claiming the same paths.
+ */
+export const SELF_BRANCH_HOME_DIRNAME = 'side-branches';
 /** Lock filename (beside the learnings-wt checkout) guarding concurrent learnings-branch writes. */
 export const LEARNINGS_LOCK_FILENAME = '.learnings-lock';
 /** Lock filename (under <repo>/.teamai) guarding concurrent self-mode bootstrap. */
@@ -3231,7 +3248,8 @@ export function getProjectSearchIndexPath(localConfig: LocalConfig): string {
 /**
  * Directory holding reports data (members/sessions/votes/stats).
  * - http: same as knowledge (localPath) — HTTP does not use the git reports branch.
- * - self: <dataHome>/reports-wt — in the partition, shared by every checkout.
+ * - self: `<branchHome>/reports-wt` — the `side-branches/` subdirectory of the
+ *   repository's project partition, shared by both scopes and every checkout (#1443).
  * - git (and legacy configs with no kind): sibling of the clone
  *   (`<dirname(localPath)>/reports-wt`) so clone `reset --hard` cannot nest-destroy it.
  * Callers must ensure the worktree exists first (see ensureReportsWorktree)
@@ -3244,9 +3262,11 @@ export function getReportsDir(localConfig: LocalConfig): string {
 /**
  * Where a side-branch worktree lives for this repo.
  * - http: the knowledge dir itself — HTTP has no git branch to check out.
- * - self: <dataHome>/<dirname> — in the partition, not in the checkout's
- *   `.teamai/`: git checks a branch out in one worktree only, so every
- *   checkout of the business repo shares this one (#808).
+ * - self: `<branchHome>/<dirname>` — the `side-branches/` subdirectory of the
+ *   repository's project partition, for both scopes (#1443), so the user scope
+ *   and the project partition and every checkout of the business repo share one
+ *   checkout and one lock. Falls back to the scope's data home when no anchor
+ *   could be resolved.
  * - git (and legacy configs with no kind): sibling of the clone
  *   (`<dirname(localPath)>/<dirname>`) so clone `reset --hard` cannot
  *   nest-destroy it.
@@ -3258,7 +3278,7 @@ export function getWorktreeDir(localConfig: LocalConfig, dirname: string): strin
     return localConfig.repo.localPath;
   }
   if (isSelfMode(localConfig)) {
-    return path.join(getDataHome(localConfig), dirname);
+    return path.join(localConfig.branchHome ?? getDataHome(localConfig), dirname);
   }
   return path.join(path.dirname(localConfig.repo.localPath), dirname);
 }

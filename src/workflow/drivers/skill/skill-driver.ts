@@ -12,7 +12,7 @@ import { isToolId, TOOLS } from '../../../tools.js';
 import type { LocalConfig, TeamaiConfig, ToolId } from '../../../types.js';
 import { agentSessionFromEnv } from '../../../utils/session-id.js';
 import { agentEvidence, isAttemptRunner, type AgentEvidence } from '../../attempt-marker.js';
-import { inProcessClient, invokeDeniedMessage, type WorkflowClient } from '../../protocol.js';
+import { inProcessClient, invokeDeniedMessage, type ResumeClaim, type WorkflowClient } from '../../protocol.js';
 import type { WorkflowFailure } from '../../types.js';
 import { AttemptIdSchema, RunIdSchema, takeRunLock, type AttemptId, type LockTaken, type RunId, type RunLock } from '../../store.js';
 import { canFor, HOST_CHOICES, type HostChoice } from './host-profiles.js';
@@ -25,16 +25,21 @@ import { agentReport, foreground, plannedState, poll } from './tick.js';
 import { describeRow, judgedBy, startRow, type ResumeAnswers, type RowId } from './transitions.js';
 import { errorOf, type SkillAnswer, type SkillError } from './turn.js';
 
+// What the runs offered on teamai-reports are judged by outside this driver, as a resume through it judges them.
+export { canFor } from './host-profiles.js';
+export { ceilingOf, localReason, stepNeeds } from './preflight.js';
+
 /** `tool`: `--tools default=<tool>`, the tool of the calling session, which its host may not name. */
 export type SkillCall =
   | { kind: 'describe'; name: string; tool?: ToolId }
   /** `judge: false`: `--no-judge`, which leaves the scored steps unjudged here. `hitl`: `--hitl`, or `--auto-approve`. */
   | { kind: 'start'; name: string; answers: { parallel?: number; confirmed: boolean; hitl?: HitlMode; judge?: false }; inputs: unknown; tool?: ToolId }
   /**
-   * `resume --driver skill`: this session drives a run another machine published; `claim` takes it from another install.
-   * `confirmed`: `--confirmed`, the agent's word that the person agreed to continue a run of an `invoke: ask` workflow.
+   * `resume --driver skill`: this session drives a run another machine published; `claim` which runs it takes from
+   * teamai-reports, `any` with `--claim`, `offered` for the run `--next` picked. `confirmed`: `--confirmed`, the agent's
+   * word that the person agreed to continue a run of an `invoke: ask` workflow.
    */
-  | { kind: 'resume'; run: RunId; claim: boolean; confirmed: boolean; answers: ResumeAnswers; tool?: ToolId }
+  | { kind: 'resume'; run: RunId; claim: ResumeClaim; confirmed: boolean; answers: ResumeAnswers; tool?: ToolId }
   | { kind: 'next'; run: RunId; wait: boolean }
   /** `next --takeover`: this session drives the run from now on, as the person agreed; `confirmed` as a resume's. */
   | { kind: 'takeover'; run: RunId; confirmed: boolean }
@@ -169,7 +174,8 @@ const StartOptionsSchema = RunOptionsSchema.extend({
   confirmed: z.boolean().optional(),
   inputs: z.string().optional(),
 }).refine(ONE_HITL.check, { message: ONE_HITL.message });
-const ResumeOptionsSchema = RunOptionsSchema.extend({ claim: z.boolean().optional(), confirmed: z.boolean().optional() }).refine(ONE_HITL.check, { message: ONE_HITL.message });
+const ResumeOptionsSchema = RunOptionsSchema.extend({ claim: z.boolean().optional(), next: z.boolean().optional(), confirmed: z.boolean().optional() })
+  .refine(ONE_HITL.check, { message: ONE_HITL.message });
 const OFFER = /^dispatch\.(.+)$/;
 const NextOptionsSchema = z.object({
   wait: z.boolean().optional(),
@@ -217,6 +223,33 @@ function invalid(error: z.ZodError): { error: SkillError } {
   return { error: { code: 'invalid_arguments', message: error.issues[0]?.message ?? 'invalid options', next: null } };
 }
 
+/** `--hitl person` in an unattended run: each optional gate would wait for a person nobody is there to be. */
+const NOBODY_ANSWERS: SkillError = {
+  code: 'invalid_arguments',
+  message: '--hitl person leaves the optional gates to a person, and this run is unattended (TEAMAI_MODE or CI says so), so nobody would answer them. Pass --auto-approve or --hitl recommend, or set TEAMAI_MODE=attended where a person attends.',
+  next: null,
+};
+
+/** The HITL mode `options` answer optional gates with, unless nobody would answer them in an unattended run. */
+function hitlOf(options: { hitl?: 'person' | 'recommend'; autoApprove?: boolean }, env: NodeJS.ProcessEnv): { hitl?: HitlMode } | { error: SkillError } {
+  const hitl: HitlMode | undefined = options.autoApprove ? 'auto-approve' : options.hitl;
+  if (hitl === 'person' && resolveRunMode(env) === 'unattended') return { error: NOBODY_ANSWERS };
+  return hitl !== undefined ? { hitl } : {};
+}
+
+/** The resume a `--driver skill` command line asks for, apart from its run, which `resume --next` checks before it picks one. */
+export function parseSkillResume(options: unknown, env: NodeJS.ProcessEnv): Omit<Extract<SkillCall, { kind: 'resume' }>, 'kind' | 'run'> | { error: SkillError } {
+  const parsed = ResumeOptionsSchema.safeParse(options);
+  if (!parsed.success) return invalid(parsed.error);
+  const { claim, next, confirmed, parallel, judge, tools } = parsed.data;
+  const hitl = hitlOf(parsed.data, env);
+  if ('error' in hitl) return hitl;
+  return {
+    claim: next ? 'offered' : claim ? 'any' : 'lacking', confirmed: confirmed === true, ...(tools !== undefined ? { tool: tools } : {}),
+    answers: { ...(parallel !== undefined ? { parallel } : {}), ...hitl, ...(judge === false ? { judge } : {}) },
+  };
+}
+
 /**
  * Reads a `--driver skill` command line into a call. `env` tells a runner, which carries its attempt's marker, from
  * an agent.
@@ -237,24 +270,19 @@ export function parseSkillCall(
     const read = options.data.inputs === undefined ? { inputs: undefined } : parseInputsFlag(options.data.inputs);
     if ('error' in read) return { error: { ...read.error, next: null } };
     const { inputs } = read;
-    const { parallel, confirmed, judge, autoApprove } = options.data;
-    const hitl: HitlMode | undefined = autoApprove ? 'auto-approve' : options.data.hitl;
+    const { parallel, confirmed, judge } = options.data;
+    const hitl = hitlOf(options.data, env);
+    if ('error' in hitl) return hitl;
     return {
       kind: 'start', name: raw.name, inputs, ...tool,
-      answers: { ...(parallel !== undefined ? { parallel } : {}), confirmed: confirmed === true, ...(hitl !== undefined ? { hitl } : {}), ...(judge === false ? { judge } : {}) },
+      answers: { ...(parallel !== undefined ? { parallel } : {}), confirmed: confirmed === true, ...hitl, ...(judge === false ? { judge } : {}) },
     };
   }
   const run = RunIdSchema.safeParse(raw.run);
   if (!run.success) return invalid(run.error);
   if (raw.kind === 'resume') {
-    const options = ResumeOptionsSchema.safeParse(raw.options);
-    if (!options.success) return invalid(options.error);
-    const { claim, confirmed, parallel, judge, autoApprove, tools } = options.data;
-    const hitl: HitlMode | undefined = autoApprove ? 'auto-approve' : options.data.hitl;
-    return {
-      kind: 'resume', run: run.data, claim: claim === true, confirmed: confirmed === true, ...(tools !== undefined ? { tool: tools } : {}),
-      answers: { ...(parallel !== undefined ? { parallel } : {}), ...(hitl !== undefined ? { hitl } : {}), ...(judge === false ? { judge } : {}) },
-    };
+    const resume = parseSkillResume(raw.options, env);
+    return 'error' in resume ? resume : { kind: 'resume', run: run.data, ...resume };
   }
   if (raw.kind === 'next') {
     const options = NextOptionsSchema.safeParse(raw.options);

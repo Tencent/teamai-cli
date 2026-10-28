@@ -728,6 +728,7 @@ A single-step `cancel` stops pending, waiting, leased, running, or delivering wo
 ```sh
 teamai workflow publish <run> [--sessions]
 teamai workflow resume <run> [--claim]
+teamai workflow resume [--next]
 ```
 
 [Continue a run on another machine](workflow.md#continue-a-run-on-another-machine) shows the common case. This section covers the rules.
@@ -735,8 +736,10 @@ teamai workflow resume <run> [--claim]
 The first `publish` makes this install the run's owner. The owner is an install id, kept in `workflows/owner.json` under the TeamAI data directory, plus the member's TeamAI username, the one the run records carry. Two installs of one member show the same user name, and the id tells them apart. `publish` prints one envelope:
 
 ```json
-{"data":{"run":"<run>","publication":"published","stateRevision":1,"inFlight":[{"step":"fix","attempt":"<attempt>","driverKind":"local"}]}}
+{"data":{"run":"<run>","publication":"published","stateRevision":1,"offered":true,"inFlight":[{"step":"fix","attempt":"<attempt>","driverKind":"local"}]}}
 ```
+
+`offered` is true while the run is running: see [Offer a run to a runner](#offer-a-run-to-a-runner).
 
 `inFlight` lists the leases still open. A claim releases them, so those steps run again. Publishing a run that has not changed since its last publish answers `"publication":"unchanged"` with the same `stateRevision`, and writes nothing. Each publish that changes the run adds the whole state to the history of `teamai-reports`, so publish when you hand a run over, not after every step. Only the owner can publish the run. On another install, `publish` answers `not_owner` and changes nothing.
 
@@ -794,6 +797,38 @@ Every refusal is one JSON envelope with `error.code`, `error.message`, and the e
 
 After a claim, `resume` can also answer `branch_diverged` when a local branch cannot be brought to the commit the run recorded. The message names the workspace and what to do. See [Workspaces in your own driver](#workspaces-in-your-own-driver).
 
+### Offer a run to a runner
+
+[Hand a run to a runner](workflow.md#hand-a-run-to-a-runner) shows the common case. A publish of a running run writes `repository` and `offered` into the header of the published state, `workflows/runs/<run>/state.json`:
+
+```text
+{"snapshot":1,"run":"r482011be75fd0ad9","owner":{"id":"4c514375-352d-44ad-83f9-9f7a06a25e3f","user":"alice"},"ownedAt":"2026-10-28T00:26:39.443Z",
+ "repository":"github.com/acme/web-app","offered":{"at":"2026-10-28T00:26:39.443Z"},"stateRevision":1,"write":"4f071543-…", …the run's state}
+```
+
+`repository` is the business repository, read from the checkout's `origin` as `host/owner/repo`. It stays through later claims. `offered` stays until a claim: every claim drops it in the same write that changes the owner. A run that ended is not offered, and neither is one published from a directory with no `origin`, since `--next` takes runs by repository. A run published by a teamai without offers carries neither field, and `--next` never takes it.
+
+`teamai workflow resume --next` fetches `teamai-reports` as `teamai pull` does, then tries the offered runs oldest offer first. It skips a run this install published, a run of another `repository` than this checkout's `origin`, a run its caller may not take, and, in an unattended run, a run whose steps left need a person. It claims the first one left as `resume <run>` would, and drives it with the driver `--driver` names. A claim that another runner beat answers `state_moved` inside `--next`, which then tries the next run. With nothing to take, it prints `{"data":{"idle":{"offered":N}}}` and exits 0: `N` counts the runs other installs offer that it left.
+
+Who may take an offered run follows the workflow's `invoke`, as `resume` does:
+
+| Caller of `--next` | `invoke: allow` | `invoke: ask` | `invoke: deny` |
+|---|---|---|---|
+| A job or a terminal, no agent session | takes it | takes it | takes it |
+| An agent session, attended | takes it | takes it with `--confirmed` | skips it (`invoke_denied`) |
+| An agent session, unattended | takes it | skips it | skips it |
+
+`--driver skill` always counts as an agent session, and also skips a run only the local driver can run (`needs_local_driver`). The listing shows a run skipped this way with the refusal's code, or as `needs the local driver`.
+
+`teamai workflow resume` with no run id lists, after the same fetch, the offered runs of this checkout's business repository and this machine's running runs, once each. `STATUS` is `running`, `needs a person` (a person takes it over with `resume <run> --claim`), `needs the local driver`, `claimed` (another install took your run), `succeeded`, `failed` or `cancelled` (your run ended on the install that took it, and `--claim` brings how it ended here), or the code of another refusal. A checkout without an origin lists no offered run, since `--next` takes none there. When the fetch fails, it warns and lists what the last fetch saw.
+
+| Code | What happened | Next step |
+|---|---|---|
+| `invalid_arguments` | `--next` came with a run id, or with `--claim`. | Pass one: a run id, or `--next`. |
+| `unsupported_repo` | The team repo is an `http` repo, which has no `teamai-reports`. | Use a git team repo. |
+| `origin_unavailable` | This checkout has no `origin`, so there is no business repository to match. | Run it in a checkout of the business repository. |
+| `reports_unreachable` | `teamai-reports` could not be fetched. Nothing was claimed. | Check the connection, then try again. |
+
 ### Publish from CI
 
 A CI job that runs a workflow with `--driver local` can publish the run when it fails, so a member resumes it on their own machine. The job publishes from the checkout the run started in. `publish` pushes the run's base to the business repository's origin once, as `teamai/<run>/base`, without force, and reads the run's branches there with `git ls-remote`. The job's token therefore needs push access to the business repository, which on GitHub Actions is `permissions: contents: write`. A workflow that runs for a pull request from a fork gets a read-only token and cannot publish. The job also needs write access to the team repo, where `teamai-reports` lives.
@@ -806,7 +841,7 @@ A driver other than `local` claims a run by adding `"claim": true` to its first 
 teamai workflow next <run> --json '{"claim":true,"driver":{"kind":"script","machine":"runner","workspace":"/work"}}'
 ```
 
-The claim runs before `next` leases anything, and checks a running run's branches on the origin of `driver.workspace`. It then brings each local branch to the commit the run recorded, as `resume` does, and answers `branch_diverged` when it cannot. A run this install already owns stays as it is. A claim refusal comes back as the `next` error envelope. From an agent session, the claim follows the run's `invoke` as `resume` does: a payload cannot carry the person's yes, so an `ask` run answers `confirm_needed`, and once the person agrees the session continues it with `teamai workflow resume <run> --claim --confirmed`. On `state_moved`, send the claim again. A value other than a boolean answers `invalid_json` with `claim must be a boolean`. A driver whose runs another machine may continue reports full commit ids in `changes` and `read`. `publish` refuses a run with any other commit value as `snapshot_unsupported`, naming the field.
+The claim takes the run's offer away, as every claim does. A `next` without `claim` on a run another install claimed answers `not_owner` once this machine's `teamai-reports` checkout shows that claim (after `teamai pull` or `workflow resume`), instead of leasing from the stale copy here. The claim runs before `next` leases anything, and checks a running run's branches on the origin of `driver.workspace`. It then brings each local branch to the commit the run recorded, as `resume` does, and answers `branch_diverged` when it cannot. A run this install already owns stays as it is, but no longer offered. A claim refusal comes back as the `next` error envelope. From an agent session, the claim follows the run's `invoke` as `resume` does: a payload cannot carry the person's yes, so an `ask` run answers `confirm_needed`, and once the person agrees the session continues it with `teamai workflow resume <run> --claim --confirmed`. On `state_moved`, send the claim again. A value other than a boolean answers `invalid_json` with `claim must be a boolean`. A driver whose runs another machine may continue reports full commit ids in `changes` and `read`. `publish` refuses a run with any other commit value as `snapshot_unsupported`, naming the field.
 
 ## Workspaces in your own driver
 

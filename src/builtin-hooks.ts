@@ -140,7 +140,7 @@ export function ensureTeamaiWrapper(): string | null {
       fs.writeFileSync(path.join(binDir, `${WRAPPER_NAME}.cmd`), cmdScript);
       fs.writeFileSync(path.join(binDir, CODEBUDDY_HOOK_WRAPPER), [
         '#!/bin/sh',
-        `"${nodeBin}" "${entryScript}" "$@" 2>/dev/null || true`,
+        `"${nodeBin}" "${entryScript}" "$@"`,
         '',
       ].join('\n'), { mode: 0o755 });
     }
@@ -265,6 +265,27 @@ export function toolUsesPwshShell(tool: string): boolean {
 export function getTeamHookDispatchCommand(event: string, tool: string): string {
   const shell = isCodexTool(tool) ? 'bash' : getHookShellCommand();
   return `${shell} -lc "teamai hook-dispatch ${event} --tool ${tool} --team-hooks"`;
+}
+
+/**
+ * CodeBuddy's project hooks share one settings entry between two Windows
+ * runners: the IDE starts it with cmd.exe, while the CLI starts it with Git
+ * Bash. Launch the Git-Bash wrapper explicitly, then let hook-dispatch apply
+ * the project gate and preserve the team hook's exit status. The arguments are
+ * base64url strings emitted by codebuddy-team-hooks.ts, so cmd.exe and Bash can
+ * both pass them through without interpreting a project path or shell command.
+ */
+export function getCodebuddyTeamHookDispatchCommand(
+  event: string,
+  id: string,
+  encodedGate: string,
+  encodedCommand: string,
+  timeout?: number,
+): string {
+  const wrapper = path.join(getUserHome(), TEAMAI_BIN_DIR, CODEBUDDY_HOOK_WRAPPER).split(path.sep).join('/');
+  const timeoutArg = timeout === undefined ? '' : ` --team-hook-timeout ${timeout}`;
+  return `${getHookShellCommand()} "${wrapper}" hook-dispatch ${event} --tool codebuddy --team-hooks`
+    + ` --team-hook-id ${id} --team-hook-gate ${encodedGate} --team-hook-command ${encodedCommand}${timeoutArg}`;
 }
 
 /**

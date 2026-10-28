@@ -243,6 +243,14 @@ export async function readRun(config: LocalConfig, runId: string): Promise<RunSt
   }
 }
 
+/** Every run of this scope whose file this machine can read. */
+export async function readRuns(config: LocalConfig): Promise<RunState[]> {
+  const files = await fs.readdir(runsDir(config)).catch(() => []);
+  const ids = files.filter((file) => file.endsWith('.json')).map((file) => file.slice(0, -'.json'.length)).filter(isRunId);
+  const runs = await Promise.all(ids.map((id) => readRun(config, id)));
+  return runs.filter((run): run is RunState => typeof run === 'object');
+}
+
 const LOCK_ATTEMPTS = 40;
 const LOCK_WAIT_MS = 25;
 

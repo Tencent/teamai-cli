@@ -728,6 +728,7 @@ teamai workflow resume <run> --tools default=claude
 ```sh
 teamai workflow publish <run> [--sessions]
 teamai workflow resume <run> [--claim]
+teamai workflow resume [--next]
 ```
 
 [在另一台机器上继续运行](workflow.md#在另一台机器上继续运行)介绍常见用法。本节说明具体规则。
@@ -735,8 +736,10 @@ teamai workflow resume <run> [--claim]
 第一次 `publish` 让本安装实例成为该运行的所有者。所有者是一个安装实例 id（保存在 TeamAI 数据目录下的 `workflows/owner.json`）加上成员的 TeamAI 用户名，与运行记录中的相同。同一成员的两个安装实例显示相同的用户名，用 id 区分它们。`publish` 输出一个信封：
 
 ```json
-{"data":{"run":"<run>","publication":"published","stateRevision":1,"inFlight":[{"step":"fix","attempt":"<attempt>","driverKind":"local"}]}}
+{"data":{"run":"<run>","publication":"published","stateRevision":1,"offered":true,"inFlight":[{"step":"fix","attempt":"<attempt>","driverKind":"local"}]}}
 ```
+
+运行仍在进行时，`offered` 为 true：见[把运行留给运行器接手](#把运行留给运行器接手)。
 
 `inFlight` 列出仍未结束的租约。认领会释放它们，所以这些步骤会重新运行。发布一个自上次发布以来没有变化的运行，返回 `"publication":"unchanged"` 和相同的 `stateRevision`，不写入任何内容。每次发布有变化的运行，都会把完整状态加入 `teamai-reports` 的历史，所以在交接运行时发布，而不是每个步骤后都发布。只有所有者能发布该运行。在另一个安装实例上，`publish` 返回 `not_owner`，不做任何改动。
 
@@ -794,6 +797,38 @@ teamai workflow resume <run> [--claim]
 
 认领之后，如果本地分支无法移到运行记录的提交，`resume` 也可能返回 `branch_diverged`。消息里写明工作区和该怎么做。见[在自己的驱动里使用工作区](#在自己的驱动里使用工作区)。
 
+### 把运行留给运行器接手
+
+[把运行交给运行器](workflow.md#把运行交给运行器)介绍常见用法。发布运行中的运行时，会把 `repository` 和 `offered` 写进发布状态 `workflows/runs/<run>/state.json` 的头部：
+
+```text
+{"snapshot":1,"run":"r482011be75fd0ad9","owner":{"id":"4c514375-352d-44ad-83f9-9f7a06a25e3f","user":"alice"},"ownedAt":"2026-10-28T00:26:39.443Z",
+ "repository":"github.com/acme/web-app","offered":{"at":"2026-10-28T00:26:39.443Z"},"stateRevision":1,"write":"4f071543-…", …the run's state}
+```
+
+`repository` 是业务仓库，从检出目录的 `origin` 读取，形如 `host/owner/repo`。之后的认领会保留它。`offered` 保留到被认领为止：每次认领都在更换所有者的同一次写入中去掉它。已结束的运行不会待接手，从没有 `origin` 的目录发布的运行也不会，因为 `--next` 按仓库接手运行。不支持待接手的 teamai 版本发布的运行不带这两个字段，`--next` 从不接手它。
+
+`teamai workflow resume --next` 像 `teamai pull` 一样 fetch `teamai-reports`，然后从最早待接手的运行开始逐个尝试。它跳过本安装实例发布的运行、`repository` 与本检出目录的 `origin` 不同的运行、调用方不能接手的运行，以及在无人值守的运行中剩余步骤需要人参与的运行。它像 `resume <run>` 一样认领剩下的第一个运行，并用 `--driver` 指定的驱动驱动它。被另一个运行器抢先的认领在 `--next` 内部返回 `state_moved`，`--next` 随后尝试下一个运行。没有可接手的运行时，它输出 `{"data":{"idle":{"offered":N}}}` 并以 0 退出：`N` 是它跳过的、由其他安装实例设为待接手的运行数。
+
+谁能接手待接手的运行，像 `resume` 一样取决于工作流的 `invoke`：
+
+| `--next` 的调用方 | `invoke: allow` | `invoke: ask` | `invoke: deny` |
+|---|---|---|---|
+| 作业或终端，不在 agent 会话中 | 接手 | 接手 | 接手 |
+| 有人值守的 agent 会话 | 接手 | 带 `--confirmed` 时接手 | 跳过（`invoke_denied`） |
+| 无人值守的 agent 会话 | 接手 | 跳过 | 跳过 |
+
+`--driver skill` 总是算作 agent 会话，还会跳过只有本地驱动能运行的运行（`needs_local_driver`）。这样被跳过的运行在列表中显示拒绝的代码，或显示为 `needs the local driver`。
+
+不带运行 id 的 `teamai workflow resume` 在同样的 fetch 之后，列出本检出目录所属业务仓库的待接手运行，以及本机仍在运行的运行，每个只列一次。`STATUS` 为 `running`、`needs a person`（由人用 `resume <run> --claim` 接管）、`needs the local driver`、`claimed`（另一个安装实例接手了你的运行）、`succeeded`、`failed` 或 `cancelled`（你的运行已在接手它的安装实例上结束，`--claim` 把它的结束状态带到本机），或其他拒绝的代码。没有 origin 的检出目录不列出待接手运行，因为 `--next` 在那里不接手任何运行。fetch 失败时，它给出警告，并列出上一次 fetch 看到的内容。
+
+| 代码 | 发生了什么 | 下一步 |
+|---|---|---|
+| `invalid_arguments` | `--next` 和运行 id 一起传入，或和 `--claim` 一起传入。 | 只传其中一个：运行 id，或 `--next`。 |
+| `unsupported_repo` | 团队仓库是 `http` 仓库，没有 `teamai-reports`。 | 使用 git 团队仓库。 |
+| `origin_unavailable` | 本检出目录没有 `origin`，因此没有可匹配的业务仓库。 | 在业务仓库的检出目录中执行。 |
+| `reports_unreachable` | 无法 fetch `teamai-reports`。没有认领任何运行。 | 检查网络连接后重试。 |
+
 ### 从 CI 发布
 
 用 `--driver local` 运行工作流的 CI 任务可以在运行失败时发布它，让成员在自己的机器上继续。任务在运行开始时所在的检出目录中发布。`publish` 把运行的基准以 `teamai/<run>/base` 推送到业务仓库的 origin，只推一次且不强制推送，并用 `git ls-remote` 读取运行在那里的分支。因此任务的 token 需要业务仓库的推送权限：在 GitHub Actions 上是 `permissions: contents: write`。为来自 fork 的 pull request 运行的工作流只拿到只读 token，无法发布。任务还需要团队仓库的写权限，因为 `teamai-reports` 在团队仓库里。
@@ -806,7 +841,7 @@ teamai workflow resume <run> [--claim]
 teamai workflow next <run> --json '{"claim":true,"driver":{"kind":"script","machine":"runner","workspace":"/work"}}'
 ```
 
-认领在 `next` 租出任何步骤之前执行，并在 `driver.workspace` 的 origin 上检查仍在运行的运行的分支。随后它像 `resume` 一样，把每个本地分支移到运行记录的提交，无法移动时返回 `branch_diverged`。本安装实例已经拥有的运行保持原样。认领被拒绝时，作为 `next` 的错误信封返回。从 agent 会话发出时，认领像 `resume` 一样遵循运行的 `invoke`：payload 无法带上本人的同意，所以 `ask` 运行返回 `confirm_needed`，本人同意后，会话用 `teamai workflow resume <run> --claim --confirmed` 继续它。遇到 `state_moved` 时，再发送一次认领。非布尔值返回 `invalid_json`，消息为 `claim must be a boolean`。运行可能被其他机器继续的驱动，要在 `changes` 和 `read` 中上报完整的提交 id。`publish` 遇到其他形式的提交值时以 `snapshot_unsupported` 拒绝，并写明字段。
+和所有认领一样，这个认领会撤下运行的待接手状态。对已被另一个安装实例认领的运行，不带 `claim` 的 `next` 在本机的 `teamai-reports` 检出显示这次认领后（`teamai pull` 或 `workflow resume` 之后）返回 `not_owner`，而不是从本机过时的副本租出步骤。认领在 `next` 租出任何步骤之前执行，并在 `driver.workspace` 的 origin 上检查仍在运行的运行的分支。随后它像 `resume` 一样，把每个本地分支移到运行记录的提交，无法移动时返回 `branch_diverged`。本安装实例已经拥有的运行保持原样，但不再留给运行器接手。认领被拒绝时，作为 `next` 的错误信封返回。从 agent 会话发出时，认领像 `resume` 一样遵循运行的 `invoke`：payload 无法带上本人的同意，所以 `ask` 运行返回 `confirm_needed`，本人同意后，会话用 `teamai workflow resume <run> --claim --confirmed` 继续它。遇到 `state_moved` 时，再发送一次认领。非布尔值返回 `invalid_json`，消息为 `claim must be a boolean`。运行可能被其他机器继续的驱动，要在 `changes` 和 `read` 中上报完整的提交 id。`publish` 遇到其他形式的提交值时以 `snapshot_unsupported` 拒绝，并写明字段。
 
 ## 在自己的驱动里使用工作区
 

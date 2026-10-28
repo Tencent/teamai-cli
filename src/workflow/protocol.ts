@@ -12,7 +12,7 @@ import { nestedWorkflowError, type AgentEvidence } from './attempt-marker.js';
 import { loadCachedWorkflow, loadWorkflowTree } from './cache.js';
 import { describeWorkflow, type WorkflowDescription } from './describe.js';
 import { LeaseIdSchema, LeaseWireSchema } from './lease-wire.js';
-import { carriedRun, reconcileTakenCopies, resumeRun, settledSteps } from './handoff.js';
+import { carriedRun, claimOffered, reconcileTakenCopies, resumeRun, settledSteps } from './handoff.js';
 import { leaseNext, parseNextPayload, parseReport, parseResponsePayload, reportable, reportAttempt, startRun, withIgnored, type NextOptions, type ReportInput } from './engine.js';
 import {
   abandonPlace, adoptedPlaceOf, finishPlace, placeHeldBy, placeLeaseOf, placeOf, placeRecorded, preparePlace, releasePlace, runPlaceSetup, type PlaceLease, type PlacePrepared,
@@ -22,7 +22,7 @@ import { cancelRun, respondProvenance, respondToHitl, retryStep, type CallerProv
 import { nextJudgeLease, parseJudgeRequest, runJudgeLease, verifiedScorers } from './scoring.js';
 import { attemptDir, AttemptIdSchema, readRun, RunIdSchema, withRunLock, type AttemptId, type RunId, type RunLock } from './store.js';
 import type { DriverCan } from './requirements.js';
-import { isWorkflowError, type DriverIdentity, type RunState, type WorkflowDefinition, type WorkflowEnvelope, type WorkflowFailure } from './types.js';
+import { isWorkflowError, type DriverIdentity, type RunState, type RunStatus, type WorkflowDefinition, type WorkflowEnvelope, type WorkflowFailure } from './types.js';
 import { deliveryProblem } from './workspace.js';
 import { headCommit } from './worktree.js';
 
@@ -98,17 +98,17 @@ export interface WorkflowClient {
   cancel(runId: string, step?: string): Promise<WorkflowEnvelope>;
   /**
    * Readies run `runId` for a driver of this machine as `workflow resume` does, under the caller's run `lock`, and brings
-   * the branches of a run taken over to the commits it recorded. `claim` says which runs it takes from teamai-reports:
-   * `lacking`, a run this machine lacks; `any`, also one another install owns; `none`, no run. A lease this machine's
+   * the branches of a run taken over to the commits it recorded. `claim` says which runs it takes from teamai-reports,
+   * as {@link ResumeClaim} reads, or `none`, no run. A lease this machine's
    * local driver still holds is released, as that driver would on its way out: it drives only while it holds the run
    * lock, so it is gone. Describes the run's own definition as `describe` does.
    */
-  resume(runId: RunId, options: { lock: RunLock; claim: 'none' | 'lacking' | 'any'; checkout: string; ceiling: number; can: DriverCan; tool?: string }): Promise<RunReadied>;
+  resume(runId: RunId, options: { lock: RunLock; claim: 'none' | ResumeClaim; checkout: string; ceiling: number; can: DriverCan; tool?: string }): Promise<RunReadied>;
   /**
    * Run `runId` as it stands before `resume` changes anything, as `resumeRefusal` reads it: its own definition described
    * as `describe` does, and the steps it settled for good. Undefined when this machine cannot read it.
    */
-  carried(runId: RunId, options: { published: boolean; claim: boolean; ceiling: number; can: DriverCan }): Promise<{ description: WorkflowDescription; settled: string[] } | undefined>;
+  carried(runId: RunId, options: { published: boolean; claim: boolean; ceiling: number; can: DriverCan }): Promise<{ description: WorkflowDescription; settled: string[]; status: RunStatus } | undefined>;
   /** Why `caller` may not continue run `runId`, by a resume or a takeover, as `resumeRefusal` decides it. */
   resumeRefusal(runId: RunId, options: { caller: InvokeCaller; published: boolean }): Promise<WorkflowFailure | undefined>;
   /** Takes or renews judge work, as `teamai score --next` does with `body` as its payload. */
@@ -121,12 +121,35 @@ export interface WorkflowClient {
 }
 
 /**
+ * Which runs a resume takes from teamai-reports: `lacking`, a run this machine lacks; `any`, also one another install
+ * owns (`--claim`); `offered`, a run only while teamai-reports still offers it (`--next`).
+ */
+export type ResumeClaim = 'lacking' | 'any' | 'offered';
+
+/** Readies run `runId` here as `claim` says: claimed only while offered, claimed whoever owns it, or resumed as it is. */
+function readiedHere(config: LocalConfig, runId: RunId, claim: 'none' | ResumeClaim, checkout: string): ReturnType<typeof resumeRun> {
+  switch (claim) {
+    case 'offered':
+      return claimOffered(config, runId, { checkout });
+    case 'any':
+      return resumeRun(config, runId, { claim: true, checkout });
+    case 'lacking':
+    case 'none':
+      return resumeRun(config, runId, { claim: false, checkout });
+    default: {
+      const unhandled: never = claim;
+      return unhandled;
+    }
+  }
+}
+
+/**
  * What `resume` made of a run: ready to drive here, with `installed` true when the published state replaced this
  * machine's; not on this machine, when nothing was to be claimed; owned by `owner`, another install, since `since`; or
  * refused for `failure`.
  */
 export type RunReadied =
-  | { kind: 'ready'; installed: boolean; description: WorkflowDescription; settled: string[]; judging: Judging }
+  | { kind: 'ready'; installed: boolean; description: WorkflowDescription; settled: string[]; status: RunStatus; judging: Judging }
   | { kind: 'not-here' }
   | { kind: 'not-owner'; owner: string; since: string }
   | { kind: 'failed'; failure: WorkflowFailure };
@@ -196,7 +219,7 @@ export function unattendedReason(name: string, needs: string, act: 'start' | 'co
  * evidence, such as the person's terminal or CI, and for a session's start of a workflow the cache lacks, which the start
  * answers.
  */
-function invokeRefusal(definition: WorkflowDefinition | undefined, caller: InvokeCaller, act: InvokeAct): WorkflowFailure | undefined {
+export function invokeRefusal(definition: WorkflowDefinition | undefined, caller: InvokeCaller, act: InvokeAct): WorkflowFailure | undefined {
   const { evidence } = caller;
   switch (evidence.kind) {
     case 'none':
@@ -447,7 +470,7 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
     cancel: (runId, step) => cancelRun(config, runId, env.secrets, step),
     resume: async (runId, { lock, claim, checkout, ceiling, can, tool }) => {
       if (claim === 'none' && await readRun(config, runId) === 'missing') return { kind: 'not-here' };
-      const resumed = await resumeRun(config, runId, { claim: claim === 'any', checkout });
+      const resumed = await readiedHere(config, runId, claim, checkout);
       if (!resumed.ok) {
         const { error } = resumed;
         return error.code === 'not_owner'
@@ -477,13 +500,13 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
       const unreconciled = await reconcileTakenCopies(config, runId, run.checkout ?? checkout);
       if (unreconciled) return { kind: 'failed', failure: unreconciled };
       const description = describeWorkflow({ definition: run.definition, workflows: run.workflows ?? {}, ceiling, can, allow: config.workflows?.allow ?? {}, env: env.facts });
-      return { kind: 'ready', installed: resumed.value?.ownership === 'claimed', description, settled: settledSteps(run), judging: await judgingOf(config, description, tool, run.scorers) };
+      return { kind: 'ready', installed: resumed.value?.ownership === 'claimed', description, settled: settledSteps(run), status: run.status, judging: await judgingOf(config, description, tool, run.scorers) };
     },
     carried: async (runId, { published, claim, ceiling, can }) => {
       const carried = await carriedRun(config, runId, { published, claim });
       if (!carried.ok || carried.value === undefined) return undefined;
-      const { definition, workflows, settled } = carried.value;
-      return { description: describeWorkflow({ definition, workflows, ceiling, can, allow: config.workflows?.allow ?? {}, env: env.facts }), settled };
+      const { definition, workflows, settled, status } = carried.value;
+      return { description: describeWorkflow({ definition, workflows, ceiling, can, allow: config.workflows?.allow ?? {}, env: env.facts }), settled, status };
     },
     resumeRefusal: (runId, { caller, published }) => resumeRefusal(config, runId, caller, { published }),
     scoreNext: async (body) => {
