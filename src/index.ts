@@ -870,8 +870,9 @@ workflowCmd
   });
 
 workflowCmd
-  .command('resume <run>')
-  .description("Continue a run with the local driver after retry, respond, or a stopped driver (Ctrl-C or closed terminal). Uses this machine's open local lease workspace, then the latest local driver's workspace on this machine, then cwd. Another live local driver returns driver_running. A settled run returns done. A run this machine does not have is taken from teamai-reports, where workflow publish put it; a published run continues only while this install owns it, else not_owner names the owner. With --driver skill, the current coding session continues the run instead, as after a skill start, and the reply is its first turn. In unattended mode, the local driver runs teamai score --drain once the run settles, as start does.")
+  .command('resume [run]')
+  .description("Continue a run with the local driver after retry, respond, or a stopped driver (Ctrl-C or closed terminal). Uses this machine's open local lease workspace, then the latest local driver's workspace on this machine, then cwd. Another live local driver returns driver_running. A settled run returns done. A run this machine does not have is taken from teamai-reports, where workflow publish put it; a published run continues only while this install owns it, else not_owner names the owner. With --driver skill, the current coding session continues the run instead, as after a skill start, and the reply is its first turn. In unattended mode, the local driver runs teamai score --drain once the run settles, as start does. Without a run id, fetches teamai-reports as pull does and lists the runs this checkout can resume: the runs teamai-reports offers for its business repository (origin), each with what holds it back, and this machine's running runs, each with the command to resume it.")
+  .option('--next', 'Instead of a run id: take the oldest run teamai-reports offers for this checkout\'s business repository (origin) that nothing refuses this caller, claim it, and drive it as resume <run> does; a workflow publish offers a running run until someone claims it. In an unattended run (TEAMAI_MODE=unattended or CI) it skips a run whose steps left need a person: a required approval, an interactive step, or a choice with no default. With --driver skill it also skips a run that needs the local driver. Prints {"data":{"idle":{"offered":N}}} when it takes none, N being the offered runs it left')
   .option('--driver <kind>', 'local, the default, to drive the run in this process, or skill for the current coding session, which then runs the commands each reply prints. An agent runs it only when the person agrees')
   .option('--parallel <n>', 'With --driver skill: the most steps that run at once; 1 when left out')
   .option('--hitl <mode>', 'With --driver skill: who answers optional approvals and choices: person (the agent asks the person; the default) or recommend (the agent answers). A required approval always goes to the person')
@@ -880,14 +881,14 @@ workflowCmd
   .option('--auto-approve', 'Answer optional approve HITL requests yes and choose requests with their default: with --driver local in this process, with --driver skill for this run. A required approval still goes to the person')
   .option('--claim', 'Take the published run over from the install that owns it, replacing this machine\'s copy and releasing its leases')
   .option('--confirmed', 'The person agreed to continue this run, as the confirm_needed answer asked. From an agent session, a run of an invoke: ask workflow continues only with it, with any driver; teamai takes the agent\'s word for it. In an unattended run (TEAMAI_MODE=unattended or CI) an agent cannot continue a run of an invoke: ask workflow, with or without it')
-  .action(async (run: string, options: { driver?: string; parallel?: string; hitl?: string; judge?: boolean; tools?: string; autoApprove?: boolean; claim?: boolean; confirmed?: boolean }) => {
+  .action(async (run: string | undefined, options: { driver?: string; parallel?: string; hitl?: string; judge?: boolean; tools?: string; autoApprove?: boolean; claim?: boolean; confirmed?: boolean; next?: boolean }) => {
     const { workflowResume } = await import('./workflow-commands.js');
     await workflowResume(run, options);
   });
 
 workflowCmd
   .command('publish <run>')
-  .description("Publish a run's state to teamai-reports so another member or a runner can continue it with workflow resume. The first publish makes this install the run's owner; publishing an unchanged run writes nothing. Refuses a run with records not yet on teamai-reports, or with a value that looks like a secret. Prints one JSON envelope listing the leases still in flight.")
+  .description("Publish a run's state to teamai-reports so another member or a runner can continue it with workflow resume. A running run is also offered: the first workflow resume --next in a checkout of its business repository (origin) claims it, and any claim takes the offer away, so two runners never take one run. The first publish makes this install the run's owner; publishing an unchanged run writes nothing. Refuses a run with records not yet on teamai-reports, or with a value that looks like a secret. Prints one JSON envelope with offered, and listing the leases still in flight.")
   .option('--sessions', "Also put the agent sessions that the run's unsettled steps continue (session: continue or session.from) in the team session archive, scrubbed, so whoever continues the run resumes them; listed in the envelope as sessions. Without it, those steps start new sessions on another machine")
   .action(async (run: string, options: { sessions?: boolean }) => {
     const { workflowPublish } = await import('./workflow-commands.js');

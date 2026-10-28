@@ -69,11 +69,11 @@ describe.each(INVOCATIONS)('skill driver literals run as %s', (invocation) => {
     expect(skillCall(nextLiteral(invocation, RUN), invocation)).toEqual({ kind: 'next', run: RUN, wait: false });
     expect(skillCall(pollLiteral(invocation, RUN), invocation)).toEqual({ kind: 'next', run: RUN, wait: true });
     expect(skillCall(takeoverLiteral(invocation, RUN), invocation)).toEqual({ kind: 'takeover', run: RUN, confirmed: false });
-    expect(skillCall(skillResumeLiteral(invocation, RUN), invocation)).toEqual({ kind: 'resume', run: RUN, claim: false, confirmed: false, answers: {} });
+    expect(skillCall(skillResumeLiteral(invocation, RUN), invocation)).toEqual({ kind: 'resume', run: RUN, claim: 'lacking', confirmed: false, answers: {} });
     expect(skillCall(skillResumeLiteral(invocation, RUN, { claim: true, parallel: 2, hitl: 'auto-approve', noJudge: true }), invocation))
-      .toEqual({ kind: 'resume', run: RUN, claim: true, confirmed: false, answers: { parallel: 2, hitl: 'auto-approve', judge: false } });
-    expect(skillCall(skillResumeLiteral(invocation, RUN, { hitl: 'recommend' }), invocation)).toEqual({ kind: 'resume', run: RUN, claim: false, confirmed: false, answers: { hitl: 'recommend' } });
-    expect(skillCall(skillResumeLiteral(invocation, RUN, { claim: true, confirmed: true }), invocation)).toEqual({ kind: 'resume', run: RUN, claim: true, confirmed: true, answers: {} });
+      .toEqual({ kind: 'resume', run: RUN, claim: 'any', confirmed: false, answers: { parallel: 2, hitl: 'auto-approve', judge: false } });
+    expect(skillCall(skillResumeLiteral(invocation, RUN, { hitl: 'recommend' }), invocation)).toEqual({ kind: 'resume', run: RUN, claim: 'lacking', confirmed: false, answers: { hitl: 'recommend' } });
+    expect(skillCall(skillResumeLiteral(invocation, RUN, { claim: true, confirmed: true }), invocation)).toEqual({ kind: 'resume', run: RUN, claim: 'any', confirmed: true, answers: {} });
     expect(skillCall(takeoverLiteral(invocation, RUN, { confirmed: true }), invocation)).toEqual({ kind: 'takeover', run: RUN, confirmed: true });
     expect(skillCall(reportLiteral(invocation, RUN, ATTEMPT), invocation)).toEqual({ kind: 'report', run: RUN, attempt: ATTEMPT, role: 'agent', modelUnavailable: false });
     expect(skillCall(unavailableLiteral(invocation, RUN, ATTEMPT), invocation)).toEqual({ kind: 'report', run: RUN, attempt: ATTEMPT, role: 'agent', modelUnavailable: true });
@@ -132,7 +132,7 @@ describe('--tools of the skill driver', () => {
     expect(parseSkillCall({ kind: 'resume', run: RUN, options: { tools: ' default = hermes ' } }, {})).toMatchObject({ kind: 'resume', run: RUN, tool: 'hermes' });
     expect(skillCall(startLiteral('teamai', 'check', { tool: 'omp' }), 'teamai')).toMatchObject({ kind: 'start', name: 'check', tool: 'omp' });
     expect(skillCall(describeLiteral('teamai', 'check', { tool: 'omp' }), 'teamai')).toEqual({ kind: 'describe', name: 'check', tool: 'omp' });
-    expect(skillCall(skillResumeLiteral('teamai', RUN, { claim: true, tool: 'omp' }), 'teamai')).toMatchObject({ kind: 'resume', run: RUN, claim: true, tool: 'omp' });
+    expect(skillCall(skillResumeLiteral('teamai', RUN, { claim: true, tool: 'omp' }), 'teamai')).toMatchObject({ kind: 'resume', run: RUN, claim: 'any', tool: 'omp' });
     // The describe a session with no tool is asked to run, once it fills the {tool} slot.
     expect(skillCall(describeLiteral('teamai', 'check', { tool: '{tool}' }).replace("'{tool}'", 'omp'), 'teamai')).toEqual({ kind: 'describe', name: 'check', tool: 'omp' });
   });
@@ -157,6 +157,7 @@ describe('start and respond options of the skill driver', () => {
     expect(parseSkillCall({ kind: 'respond', run: RUN, step: 'review', choice: 'yes', options: {} }, {}))
       .toEqual({ error: { code: 'invalid_arguments', message: '--driver skill needs --pass, as the choose action printed it', next: null } });
   });
+
 });
 
 describe('next options of the skill driver', () => {

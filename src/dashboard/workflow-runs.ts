@@ -20,7 +20,7 @@ import { WorkOutcomeSchema, type WorkOutcome } from '../outcomes.js';
 import { locateStep } from '../workflow/engine.js';
 import { buildEndRecord, RECORDS_DIR, runRecordStates, type RecordState, type WorkflowRunRecord } from '../workflow/records.js';
 import { callerProvenance, respondProvenance, respondToHitl } from '../workflow/run-controls.js';
-import { isRunId, readRun, runsDir } from '../workflow/store.js';
+import { isRunId, readRun, readRuns } from '../workflow/store.js';
 import type { TokenUsage } from '../tool-launch/stdout.js';
 import type { StepHitl, RunState } from '../workflow/types.js';
 import { HttpError } from './http.js';
@@ -200,16 +200,9 @@ function newestFirst<T extends { startedAt: string }>(rows: T[]): T[] {
   return rows.sort((left, right) => right.startedAt.localeCompare(left.startedAt));
 }
 
-async function localRuns(config: LocalConfig): Promise<RunState[]> {
-  const files = await fs.readdir(runsDir(config)).catch(() => []);
-  const ids = files.filter((file) => file.endsWith('.json')).map((file) => file.slice(0, -'.json'.length)).filter(isRunId);
-  const runs = await Promise.all(ids.map((id) => readRun(config, id)));
-  return runs.filter((run): run is RunState => typeof run === 'object');
-}
-
 /** This machine's runs in the scope: every running one, then the newest settled ones. */
 export async function listLocalRuns(config: LocalConfig): Promise<LocalRunRow[]> {
-  const runs = (await localRuns(config)).sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  const runs = (await readRuns(config)).sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   const running = runs.filter((run) => run.status === 'running');
   const settled = runs.filter((run) => run.status !== 'running').slice(0, Math.max(0, RUN_LIMIT - running.length));
   const records = await runRecordStates(config, settled);

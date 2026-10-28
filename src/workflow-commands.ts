@@ -6,12 +6,16 @@ import { isLeaseRef } from './scorers/entry.js';
 import { log, setStderrOnly } from './utils/logger.js';
 import { collectEnvSecrets, redactJson } from './utils/redact.js';
 import { parseNextPayload, parseReport, parseResponsePayload, resumableSessions, withIgnored, type ParsedResponsePayload } from './workflow/engine.js';
-import { publishRun, resumeRun } from './workflow/handoff.js';
+import { claimedAway, claimOffered, publishRun, resumeRun, type HandoffError } from './workflow/handoff.js';
+import { PublishedRuns, type PublishedRun, type Taker } from './workflow/published-runs.js';
+import type { HandoffOwner } from './workflow/snapshot.js';
+import { getRepoIdentity } from './session-flow/sync.js';
+import { readableReportsWorktree } from './utils/reports-branch.js';
 import { callerProvenance, cancelRun, respondProvenance, respondToHitl, retryStep } from './workflow/run-controls.js';
 import { runLocalDriver, withDriverLock } from './workflow/drivers/local/local-driver.js';
 import { driverIdentity } from './driver-identity.js';
-import { getBusinessRoot, getDataHome, type LocalConfig, type TeamaiConfig } from './types.js';
-import { AttemptIdSchema, readRun, RunIdSchema } from './workflow/store.js';
+import { getBusinessRoot, getDataHome, usesBranchWorktree, type LocalConfig, type TeamaiConfig } from './types.js';
+import { AttemptIdSchema, installOwner, readRun, readRuns, RunIdSchema } from './workflow/store.js';
 import { inProcessClient, resumeRefusal, workflowNotFound, type InvokeCaller, type NextPrepare } from './workflow/protocol.js';
 import { parseInputsFlag, parseSkillCall, runSkillCall, sessionDrivesRun, skillContext } from './workflow/drivers/skill/skill-driver.js';
 import { loadCachedWorkflow } from './workflow/cache.js';
@@ -19,7 +23,7 @@ import { findRunConfig } from './workflow/run-location.js';
 import { resolveRunMode } from './launch-context.js';
 import { memberTools } from './tool-launch/call.js';
 import { agentEvidence, isAttemptRunner, nestedCall, nestedStart, nestedWorkflowError, type Nested } from './workflow/attempt-marker.js';
-import type { WorkflowEnvelope, WorkflowFailure } from './workflow/types.js';
+import type { RunState, WorkflowEnvelope, WorkflowFailure } from './workflow/types.js';
 
 /** Prints `envelope` with each of `secrets` masked, and sets the exit code from the envelope as the operation returned it. */
 function writeEnvelope(envelope: WorkflowEnvelope, secrets: Record<string, string>): void {
@@ -187,24 +191,28 @@ function parseTools(value: string | undefined): Record<string, string> | string 
 /** Runs a `--driver skill` call: the skill driver answers with a describe reply, a turn, or an error naming what to run. */
 async function workflowSkill(raw: Parameters<typeof parseSkillCall>[0]): Promise<void> {
   setStderrOnly(true);
+  const { envelope, secrets } = await skillAnswer(raw);
+  writeEnvelope(envelope, secrets);
+}
+
+/** What the skill driver answers `raw` with, and the secrets its envelope masks. */
+async function skillAnswer(raw: Parameters<typeof parseSkillCall>[0]): Promise<{ envelope: WorkflowEnvelope; secrets: Record<string, string> }> {
   const call = parseSkillCall(raw, process.env);
-  if ('error' in call) {
-    writeEnvelope(call, collectEnvSecrets());
-    return;
-  }
+  if ('error' in call) return { envelope: call, secrets: collectEnvSecrets() };
   // A resume, or a takeover, readies a run this machine may lack, so the skill driver answers for it.
   const loaded = call.kind === 'describe' || call.kind === 'start' ? await readyStartConfig(call.name)
     : await readyRunConfig(call.run, { allowRemote: call.kind === 'resume' || call.kind === 'takeover' });
   if (!('config' in loaded)) {
-    refuseSkill(loaded);
-    return;
+    // Every `--driver skill` error carries `next`: null, since nothing here names what to run.
+    const refused: WorkflowEnvelope | { error: WorkflowFailure & { next: null } } = 'error' in loaded ? { error: { ...loaded.error, next: null } } : loaded;
+    return { envelope: refused, secrets: collectEnvSecrets() };
   }
   const context = await skillContext({
     config: loaded.config, toolPaths: loaded.teamConfig.toolPaths, env: loaded.env, cwd: process.cwd(),
     aiTools: (await memberTools(loaded.config)).map(({ tool }) => tool),
     trace: (row) => log.debug(`[workflow] skill driver took row ${row}`),
   });
-  writeEnvelope(await runSkillCall(call, context), loaded.secrets);
+  return { envelope: await runSkillCall(call, context), secrets: loaded.secrets };
 }
 
 /** The flags of `workflow start` and `resume` without `--driver skill`. The skill driver's flags are refused, the first given in this order. */
@@ -494,11 +502,20 @@ export async function workflowPublish(runId: string, options: { sessions?: boole
   writeEnvelope(published.ok ? { data: { ...published.value } } : { error: published.error }, secrets);
 }
 
-/** `judge` is false with `--no-judge`. */
-export async function workflowResume(runId: string, options: {
-  driver?: string; tools?: string; autoApprove?: boolean; claim?: boolean; confirmed?: boolean; parallel?: string; hitl?: string; judge?: boolean;
-}): Promise<void> {
+type ResumeOptions = {
+  driver?: string; tools?: string; autoApprove?: boolean; claim?: boolean; confirmed?: boolean; parallel?: string; hitl?: string; judge?: boolean; next?: boolean;
+};
+
+/**
+ * `judge` is false with `--no-judge`. Without a run id, lists the runs this checkout can resume, or with `--next` takes
+ * the oldest one teamai-reports offers.
+ */
+export async function workflowResume(runId: string | undefined, options: ResumeOptions): Promise<void> {
   if (refusedNested(nestedCall(process.env), options.driver === 'skill')) return;
+  if (options.next || runId === undefined) {
+    await resumeOffered(runId, options);
+    return;
+  }
   if (options.driver === 'skill') {
     const { driver: _skill, ...rest } = options;
     await workflowSkill({ kind: 'resume', run: runId, options: rest });
@@ -552,4 +569,142 @@ export async function workflowResume(runId: string, options: {
       : stored.driver?.kind === 'local' && stored.driver.machine === local.machine ? stored.driver.workspace : process.cwd();
     return drive(cwd, { tools, toolPaths: loaded.teamConfig.toolPaths, autoApprove: options.autoApprove });
   }), secrets);
+}
+
+/** `workflow resume` without a run id: lists the runs this checkout can resume, or with `--next` takes the oldest offered one. */
+async function resumeOffered(runId: string | undefined, options: ResumeOptions): Promise<void> {
+  setStderrOnly(true);
+  const skill = options.driver === 'skill';
+  const answer = skill ? refuseSkill : refuse;
+  if (runId !== undefined) {
+    answer({ error: { code: 'invalid_arguments', message: `--next takes the oldest run teamai-reports offers, so it takes no run id. To continue run ${runId}: teamai workflow resume ${runId}` } });
+    return;
+  }
+  if (options.next && options.claim) {
+    answer({ error: { code: 'invalid_arguments', message: '--next claims the run it takes, so it takes no --claim' } });
+    return;
+  }
+  if (!skill && options.driver !== undefined && options.driver !== 'local') {
+    answer({ error: unsupportedDriver(options.driver) });
+    return;
+  }
+  const nonSkill = skill ? undefined : NonSkillRunOptionsSchema.safeParse(options);
+  if (nonSkill && !nonSkill.success) {
+    refuseOptions(nonSkill.error);
+    return;
+  }
+  const loaded = await readyConfig();
+  if (!('config' in loaded)) {
+    answer(loaded);
+    return;
+  }
+  const evidence = agentEvidence(process.env);
+  // `--driver skill` counts as an agent's, as it does for a start.
+  const caller: InvokeCaller = { ...invokeCaller(options.confirmed), ...(skill && evidence.kind === 'none' ? { evidence: { kind: 'skill-driver' } } : {}) };
+  const taker: Taker = { caller, driver: skill ? 'skill' : 'local' };
+  if (!options.next) {
+    await listResumable(loaded, taker);
+    return;
+  }
+  const { config, secrets } = loaded;
+  const repository = getRepoIdentity(process.cwd()) ?? undefined;
+  const unready = !usesBranchWorktree(config)
+    ? { code: 'unsupported_repo', message: 'workflow resume --next takes the runs teamai-reports offers, and an http team repo has no teamai-reports.' }
+    : repository === undefined
+      ? { code: 'origin_unavailable', message: `${process.cwd()} has no origin, so resume --next cannot tell which business repository's runs to take. Run it in a checkout of the business repository.` }
+      : await refreshedReports(config);
+  if (unready) {
+    answer({ error: unready });
+    return;
+  }
+  const runs = await PublishedRuns.list(config, { taker, env: loaded.env });
+  const self = (await installOwner(config)).id;
+  const others = runs.filter((run) => run.offer !== undefined && run.owner.id !== self);
+  let moved = 0;
+  for (const run of PublishedRuns.candidates(runs, { repository, mode: caller.mode, self })) {
+    const taken = skill ? await skillAnswer({ kind: 'resume', run: run.run, options: { ...withoutDriver(options), next: true } }) : { envelope: await driveOffered(loaded, run, options), secrets };
+    if ('error' in taken.envelope && taken.envelope.error.code === 'state_moved') {
+      moved += 1;
+      continue;
+    }
+    if (!('error' in taken.envelope)) log.success(`Claimed ${run.run} (${run.workflow}) from ${run.owner.user}`);
+    if (skill) writeEnvelope(taken.envelope, taken.secrets);
+    else await writeDriven(config, taken.envelope, secrets);
+    return;
+  }
+  writeEnvelope({ data: { idle: { offered: others.length - moved } } }, secrets);
+}
+
+function withoutDriver(options: ResumeOptions): Omit<ResumeOptions, 'driver' | 'next'> {
+  const { driver: _driver, next: _next, ...rest } = options;
+  return rest;
+}
+
+/** Claims offered run `run` under this machine's driver lock, as `resume <run>` does, and drives it with the local driver. */
+async function driveOffered({ config, teamConfig }: Ready, run: PublishedRun, options: ResumeOptions): Promise<WorkflowEnvelope> {
+  const tools = parseTools(options.tools);
+  if (typeof tools === 'string') return { error: { code: 'invalid_tools', message: tools } };
+  return withDriverLock(config, run.run, async (drive) => {
+    const claimed = await claimOffered(config, run.run, { checkout: process.cwd() });
+    if (!claimed.ok) return { error: claimed.error };
+    return drive(process.cwd(), { tools, toolPaths: teamConfig.toolPaths, autoApprove: options.autoApprove });
+  });
+}
+
+/** Fetches teamai-reports into this machine's reports checkout, as `teamai pull` does, or says why it could not. */
+async function refreshedReports(config: LocalConfig): Promise<WorkflowFailure | undefined> {
+  try {
+    await readableReportsWorktree(config);
+    return undefined;
+  } catch (error) {
+    return { code: 'reports_unreachable', message: `teamai-reports could not be read from the team repo's origin (${error instanceof Error ? error.message : String(error)}). Check the connection and try again.` };
+  }
+}
+
+/**
+ * Prints the runs this checkout can resume, a row each: the runs teamai-reports offers for its business repository,
+ * oldest offer first, then this machine's running runs, newest first. A run that is both is listed once, as this
+ * machine's. Fetches teamai-reports as `teamai pull` does, and lists from the last fetch when it cannot.
+ */
+async function listResumable({ config, env }: Ready, taker: Taker): Promise<void> {
+  const unread = usesBranchWorktree(config) ? await refreshedReports(config) : undefined;
+  if (unread) log.warn(`${unread.message} Listing the runs this machine last saw there.`);
+  const self = (await installOwner(config)).id;
+  const repository = getRepoIdentity(process.cwd()) ?? undefined;
+  const local = (await readRuns(config)).filter((run) => run.status === 'running').sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  const here = new Set(local.map((run) => run.id));
+  const published = await PublishedRuns.list(config, { taker, env });
+  const offered = published.filter((run) => run.offer !== undefined && run.owner.id !== self && run.repository === repository && !here.has(run.run));
+  const rows = [
+    ...offered.map(offeredRow),
+    ...await Promise.all(local.map(async (run) => localRow(run, published.find((one) => one.run === run.id), await claimedAway(config, run.id)))),
+  ];
+  if (rows.length === 0) {
+    process.stdout.write(`No runs to resume here: this machine has no running run, and teamai-reports offers none for ${repository ?? 'this checkout'}.\n`);
+    return;
+  }
+  process.stdout.write(table([['RUN', 'WORKFLOW', 'STATUS', 'OWNER', 'WHERE'], ...rows]));
+}
+
+function ownerText(owner: HandoffOwner): string {
+  return `${owner.user} (install ${owner.id.slice(0, 8)}…)`;
+}
+
+/** An offered run as a row: what a runner's `--next` does with it, or why a person resumes it instead. */
+function offeredRow({ run, workflow, owner, offer }: PublishedRun): string[] {
+  if (offer?.refusal) return [run, workflow, offer.refusal.code === 'needs_local_driver' ? 'needs the local driver' : offer.refusal.code, ownerText(owner), `offered on teamai-reports: ${offer.refusal.message}`];
+  if (offer && offer.needs.length > 0) return [run, workflow, 'needs a person', ownerText(owner), `offered on teamai-reports, ${offer.needs.join('; ')}: a person runs teamai workflow resume ${run}`];
+  return [run, workflow, 'running', ownerText(owner), 'offered on teamai-reports: teamai workflow resume --next'];
+}
+
+/** A running run of this machine as a row: resumed here, unless the snapshot on teamai-reports shows another install took it. */
+function localRow(run: RunState, published: PublishedRun | undefined, away: HandoffError | undefined): string[] {
+  if (away?.code === 'not_owner') return [run.id, run.name, 'claimed', ownerText(away.owner), `claimed on teamai-reports since ${away.ownedAt}: teamai workflow resume ${run.id} --claim takes it back`];
+  return [run.id, run.name, 'running', 'this install', `local${published?.offer ? ', offered on teamai-reports' : ''}: teamai workflow resume ${run.id}`];
+}
+
+/** `rows` as columns padded to their widest cell, two spaces apart, the last left unpadded. */
+function table(rows: string[][]): string {
+  const widths = rows[0]?.map((_, column) => Math.max(...rows.map((row) => row[column]?.length ?? 0))) ?? [];
+  return rows.map((row) => row.map((cell, column) => (column === row.length - 1 ? cell : cell.padEnd(widths[column] ?? 0))).join('  ')).join('\n').concat('\n');
 }

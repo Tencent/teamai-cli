@@ -12,7 +12,7 @@ import { nestedWorkflowError, type AgentEvidence } from './attempt-marker.js';
 import { loadCachedWorkflow, loadWorkflowTree } from './cache.js';
 import { describeWorkflow, type WorkflowDescription } from './describe.js';
 import { LeaseIdSchema, LeaseWireSchema } from './lease-wire.js';
-import { carriedRun, reconcileTakenCopies, resumeRun, settledSteps } from './handoff.js';
+import { carriedRun, claimOffered, reconcileTakenCopies, resumeRun, settledSteps } from './handoff.js';
 import { leaseNext, parseNextPayload, parseReport, parseResponsePayload, reportable, reportAttempt, startRun, withIgnored, type NextOptions, type ReportInput } from './engine.js';
 import {
   abandonPlace, adoptedPlaceOf, finishPlace, placeHeldBy, placeLeaseOf, placeOf, placeRecorded, preparePlace, releasePlace, runPlaceSetup, type PlaceLease, type PlacePrepared,
@@ -98,12 +98,12 @@ export interface WorkflowClient {
   cancel(runId: string, step?: string): Promise<WorkflowEnvelope>;
   /**
    * Readies run `runId` for a driver of this machine as `workflow resume` does, under the caller's run `lock`, and brings
-   * the branches of a run taken over to the commits it recorded. `claim` says which runs it takes from teamai-reports:
-   * `lacking`, a run this machine lacks; `any`, also one another install owns; `none`, no run. A lease this machine's
+   * the branches of a run taken over to the commits it recorded. `claim` says which runs it takes from teamai-reports,
+   * as {@link ResumeClaim} reads, or `none`, no run. A lease this machine's
    * local driver still holds is released, as that driver would on its way out: it drives only while it holds the run
    * lock, so it is gone. Describes the run's own definition as `describe` does.
    */
-  resume(runId: RunId, options: { lock: RunLock; claim: 'none' | 'lacking' | 'any'; checkout: string; ceiling: number; can: DriverCan; tool?: string }): Promise<RunReadied>;
+  resume(runId: RunId, options: { lock: RunLock; claim: 'none' | ResumeClaim; checkout: string; ceiling: number; can: DriverCan; tool?: string }): Promise<RunReadied>;
   /**
    * Run `runId` as it stands before `resume` changes anything, as `resumeRefusal` reads it: its own definition described
    * as `describe` does, and the steps it settled for good. Undefined when this machine cannot read it.
@@ -119,6 +119,12 @@ export interface WorkflowClient {
    */
   judge(ref: string, body: unknown, options: { group: string }): Promise<WorkflowEnvelope>;
 }
+
+/**
+ * Which runs a resume takes from teamai-reports: `lacking`, a run this machine lacks; `any`, also one another install
+ * owns (`--claim`); `offered`, a run only while teamai-reports still offers it (`--next`).
+ */
+export type ResumeClaim = 'lacking' | 'any' | 'offered';
 
 /**
  * What `resume` made of a run: ready to drive here, with `installed` true when the published state replaced this
@@ -447,7 +453,7 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
     cancel: (runId, step) => cancelRun(config, runId, env.secrets, step),
     resume: async (runId, { lock, claim, checkout, ceiling, can, tool }) => {
       if (claim === 'none' && await readRun(config, runId) === 'missing') return { kind: 'not-here' };
-      const resumed = await resumeRun(config, runId, { claim: claim === 'any', checkout });
+      const resumed = claim === 'offered' ? await claimOffered(config, runId, { checkout }) : await resumeRun(config, runId, { claim: claim === 'any', checkout });
       if (!resumed.ok) {
         const { error } = resumed;
         return error.code === 'not_owner'

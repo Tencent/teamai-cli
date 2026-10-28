@@ -12,7 +12,7 @@ import { isToolId, TOOLS } from '../../../tools.js';
 import type { LocalConfig, TeamaiConfig, ToolId } from '../../../types.js';
 import { agentSessionFromEnv } from '../../../utils/session-id.js';
 import { agentEvidence, isAttemptRunner, type AgentEvidence } from '../../attempt-marker.js';
-import { inProcessClient, invokeDeniedMessage, type WorkflowClient } from '../../protocol.js';
+import { inProcessClient, invokeDeniedMessage, type ResumeClaim, type WorkflowClient } from '../../protocol.js';
 import type { WorkflowFailure } from '../../types.js';
 import { AttemptIdSchema, RunIdSchema, takeRunLock, type AttemptId, type LockTaken, type RunId, type RunLock } from '../../store.js';
 import { canFor, HOST_CHOICES, type HostChoice } from './host-profiles.js';
@@ -31,10 +31,11 @@ export type SkillCall =
   /** `judge: false`: `--no-judge`, which leaves the scored steps unjudged here. `hitl`: `--hitl`, or `--auto-approve`. */
   | { kind: 'start'; name: string; answers: { parallel?: number; confirmed: boolean; hitl?: HitlMode; judge?: false }; inputs: unknown; tool?: ToolId }
   /**
-   * `resume --driver skill`: this session drives a run another machine published; `claim` takes it from another install.
-   * `confirmed`: `--confirmed`, the agent's word that the person agreed to continue a run of an `invoke: ask` workflow.
+   * `resume --driver skill`: this session drives a run another machine published; `claim` which runs it takes from
+   * teamai-reports, `any` with `--claim`, `offered` for the run `--next` picked. `confirmed`: `--confirmed`, the agent's
+   * word that the person agreed to continue a run of an `invoke: ask` workflow.
    */
-  | { kind: 'resume'; run: RunId; claim: boolean; confirmed: boolean; answers: ResumeAnswers; tool?: ToolId }
+  | { kind: 'resume'; run: RunId; claim: ResumeClaim; confirmed: boolean; answers: ResumeAnswers; tool?: ToolId }
   | { kind: 'next'; run: RunId; wait: boolean }
   /** `next --takeover`: this session drives the run from now on, as the person agreed; `confirmed` as a resume's. */
   | { kind: 'takeover'; run: RunId; confirmed: boolean }
@@ -169,7 +170,9 @@ const StartOptionsSchema = RunOptionsSchema.extend({
   confirmed: z.boolean().optional(),
   inputs: z.string().optional(),
 }).refine(ONE_HITL.check, { message: ONE_HITL.message });
-const ResumeOptionsSchema = RunOptionsSchema.extend({ claim: z.boolean().optional(), confirmed: z.boolean().optional() }).refine(ONE_HITL.check, { message: ONE_HITL.message });
+const ResumeOptionsSchema = RunOptionsSchema.extend({ claim: z.boolean().optional(), next: z.boolean().optional(), confirmed: z.boolean().optional() })
+  .refine(ONE_HITL.check, { message: ONE_HITL.message })
+  .refine((options) => !(options.claim && options.next), { message: '--next claims the run it takes, so it takes no --claim' });
 const OFFER = /^dispatch\.(.+)$/;
 const NextOptionsSchema = z.object({
   wait: z.boolean().optional(),
@@ -249,10 +252,10 @@ export function parseSkillCall(
   if (raw.kind === 'resume') {
     const options = ResumeOptionsSchema.safeParse(raw.options);
     if (!options.success) return invalid(options.error);
-    const { claim, confirmed, parallel, judge, autoApprove, tools } = options.data;
+    const { claim, next, confirmed, parallel, judge, autoApprove, tools } = options.data;
     const hitl: HitlMode | undefined = autoApprove ? 'auto-approve' : options.data.hitl;
     return {
-      kind: 'resume', run: run.data, claim: claim === true, confirmed: confirmed === true, ...(tools !== undefined ? { tool: tools } : {}),
+      kind: 'resume', run: run.data, claim: next ? 'offered' : claim ? 'any' : 'lacking', confirmed: confirmed === true, ...(tools !== undefined ? { tool: tools } : {}),
       answers: { ...(parallel !== undefined ? { parallel } : {}), ...(hitl !== undefined ? { hitl } : {}), ...(judge === false ? { judge } : {}) },
     };
   }

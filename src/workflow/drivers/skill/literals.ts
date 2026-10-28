@@ -91,6 +91,16 @@ export function skillResumeLiteral(invocation: Invocation, run: RunId, options: 
   ].join(' '));
 }
 
+/** Takes the oldest run teamai-reports offers and continues it from this coding session, with a resume's options. */
+export function skillResumeNextLiteral(invocation: Invocation, options: { parallel?: number; hitl?: HitlMode; noJudge?: boolean; confirmed?: boolean; tool?: string } = {}): Literal {
+  return LiteralSchema.parse([
+    `${invocation} workflow resume --next --driver skill`,
+    ...toolsWords(options.tool),
+    ...runOptionWords(options),
+    ...(options.confirmed ? ['--confirmed'] : []),
+  ].join(' '));
+}
+
 export function nextLiteral(invocation: Invocation, run: RunId): Literal {
   return LiteralSchema.parse(`${invocation} workflow next ${run} --driver skill`);
 }
