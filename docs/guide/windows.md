@@ -28,6 +28,9 @@ checks out paths before role filtering, so even an inactive namespace's deeply
 nested skill assets need long-path support. Other Git commands and tools may
 still need their own long-path configuration.
 
+If your Git configuration explicitly sets `core.longpaths=false`, some Git
+versions still require changing that setting to `true`.
+
 ## If hooks still do not fire
 
 - **Git for Windows is missing.** Without it the dispatch commands degrade to a

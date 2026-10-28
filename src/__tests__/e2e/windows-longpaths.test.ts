@@ -36,7 +36,6 @@ describe.skipIf(process.platform !== 'win32')('Windows team-repo long paths', ()
     const cli = (args: string[]) => execFileSync(process.execPath, [CLI, ...args], {
       cwd: workspace, env, encoding: 'utf8', timeout: 45_000, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
     });
-    git(['config', '--global', 'core.longpaths', 'false']);
     git(['config', '--global', 'core.hooksPath', path.join(sandbox, 'no-hooks')]);
     git(['config', '--global', 'gc.auto', '0']);
     git(['config', '--global', `url.${remote.replace(/\\/g, '/')}.insteadOf`, REPO_URL]);
@@ -60,24 +59,27 @@ describe.skipIf(process.platform !== 'win32')('Windows team-repo long paths', ()
     const config = YAML.parse(fs.readFileSync(path.join(workspace, '.teamai', 'config.yaml'), 'utf8')) as {
       repo: { localPath: string };
     };
-    // Override the global value too: TeamAI must not persist either setting.
-    git(['config', '--local', 'core.longpaths', 'false'], config.repo.localPath);
     const globalBefore = fs.readFileSync(env.GIT_CONFIG_GLOBAL, 'utf8');
     const localBefore = fs.readFileSync(path.join(config.repo.localPath, '.git', 'config'), 'utf8');
     const relative = path.join('skills', 'inactive', 'deep-demo', ...Array<string>(14).fill('nested-template-source'), 'asset.txt');
     expect(path.join(config.repo.localPath, relative).length).toBeGreaterThan(260);
-    fs.mkdirSync(path.dirname(path.join(seed, relative)), { recursive: true });
-    fs.writeFileSync(path.join(seed, relative), 'inactive asset\n');
     fs.appendFileSync(skill, '\nUpdated active skill\n');
-    git(['-c', 'core.longpaths=true', 'add', '-A'], seed);
+    // Seed the long tree entry directly: preparing the remote must not depend
+    // on the Git version's ability to scan an untracked long directory.
+    const asset = path.join(sandbox, 'asset.txt');
+    fs.writeFileSync(asset, 'inactive asset\n');
+    const blob = git(['hash-object', '-w', asset], seed);
+    git(['update-index', '--add', '--cacheinfo', '100644', blob, relative.replace(/\\/g, '/')], seed);
+    git(['add', '--', 'skills/active/demo/SKILL.md'], seed);
     git(['-c', 'core.longpaths=true', 'commit', '-q', '-m', 'long inactive asset and active update'], seed);
-    git(['push', '-q', remote, 'HEAD:main'], seed);
+    git(['-c', 'core.longpaths=true', 'push', '-q', remote, 'HEAD:main'], seed);
+    expect(git(['ls-tree', '-r', '--name-only', 'main'], remote)).toContain(relative.replace(/\\/g, '/'));
 
     // Confirm this exact tree fails under ordinary Git with long paths off.
-    const control = spawnSync('git', ['clone', '-q', remote, path.join(sandbox, 'control')], {
+    const control = spawnSync('git', ['clone', '-q', '-c', 'core.longpaths=false', remote, path.join(sandbox, 'control')], {
       cwd: sandbox, env, encoding: 'utf8', timeout: 30_000, windowsHide: true,
     });
-    expect(control.status).not.toBe(0);
+    expect(control.status, control.stderr).not.toBe(0);
     expect(control.stderr).toMatch(/Filename too long/i);
 
     const output = cli(['pull', '--force']);
