@@ -139,7 +139,7 @@ export async function runTeamHooksFor(
   let stderr = '';
   for (const run of runs) {
     if (run.timedOut) stderr += `teamai: team hook ${run.hook.id} timed out after ${run.hook.timeout ?? 600}s\n`;
-    else if (run.stderr.trim()) stderr += run.stderr;
+    if (run.stderr.trim()) stderr += run.stderr;
   }
   if (runs.some((run) => run.code === 2)) return { code: 2, stdout: '', stderr };
   return { code: 0, stdout: mergeRuns(runs.filter((run) => run.code === 0 && run.stdout.trim()).map((run) => contextOf(run.stdout)).filter((text) => text.trim())), stderr };

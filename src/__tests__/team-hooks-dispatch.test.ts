@@ -109,6 +109,16 @@ describe('live team hooks for OpenCode and OMP (#1492)', () => {
     expect(fse.pathExistsSync(teamHookBridgeIndexPath())).toBe(false);
   });
 
+  it("keeps a timed-out hook's stderr after the timeout diagnostic", async () => {
+    const command = `"${process.execPath}" -e "console.error('HUNG_REASON'); for (;;) {}"`;
+    await apply([def({ key: 'hung', command, timeout: 0.1 })]);
+
+    const result = await runTeamHooksFor('opencode', 'SessionStart', '{}', { cwd: home });
+    expect(result.code).toBe(0);
+    expect(result.stderr).toContain('HUNG_REASON');
+    expect(result.stderr.indexOf('HUNG_REASON')).toBeGreaterThan(result.stderr.indexOf('timed out'));
+  });
+
   it('stops already-applied hooks under the kill switch', async () => {
     await apply([def({ key: 'context' })]);
     vi.stubEnv('TEAMAI_HOOKS_DISABLED', '1');

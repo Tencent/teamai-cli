@@ -1147,7 +1147,7 @@ export const TOOLS = {
         ],
       },
     },
-    hooks: { user: { channel: 'adapter', adapter: 'opencode-plugin', evidence: 'source' }, self: 'user' },
+    hooks: { user: { channel: 'adapter', adapter: 'opencode-plugin', evidence: 'source', teamHooks: true }, self: 'user' },
     sessions: ['opencode'],
     launch: 'opencode',
     features: {
