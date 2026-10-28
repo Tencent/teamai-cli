@@ -395,6 +395,40 @@ steps:
     expect(printed).toContainEqual(expect.stringMatching(/Step "sign" failed with missing_env: .*teamai env add SIGNING_KEY --secret .*teamai env set SIGNING_KEY/));
     expect(printed).toContainEqual(expect.stringContaining(`Retry it with teamai workflow retry ${runId} sign, then continue the run with teamai workflow resume ${runId}`));
   });
+
+  it('names the item that failed, not the fan-out step that failed because of it', async () => {
+    const config = testConfig();
+    fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'release.yaml'), `schemaVersion: v1alpha1
+name: release
+description: Sign each target.
+inputs:
+  targets: [string]
+steps:
+  - id: sign
+    for_each: inputs.targets
+    requires: { env: [SIGNING_KEY] }
+    command: node -e ""
+`);
+    await syncWorkflowDefinitions(config);
+    state.config = config;
+    vi.stubEnv('SIGNING_KEY', undefined);
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-workflow-start-'));
+    dirs.push(work);
+    vi.spyOn(process, 'cwd').mockReturnValue(work);
+    const printed: string[] = [];
+    vi.spyOn(console, 'error').mockImplementation((...parts: unknown[]) => {
+      printed.push(parts.map(String).join(' '));
+    });
+
+    const started = await capture(() => workflowStart('release', { driver: 'local', inputs: '{"targets":["linux"]}' }));
+
+    expect(started).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    const done = started.data?.done;
+    const runId = typeof done === 'object' && done !== null && 'run' in done ? String(done.run) : '';
+    expect(printed).toContainEqual(expect.stringMatching(/Step "sign\[0\]" failed with missing_env: /));
+    expect(printed).toContainEqual(expect.stringContaining(`Retry it with teamai workflow retry ${runId} 'sign[0]', then`));
+    expect(printed.filter((line) => line.includes('Step "sign" failed') || line.includes(`retry ${runId} sign,`))).toEqual([]);
+  });
 });
 
 describe('workflow start in a project whose cache lacks the workflow', () => {

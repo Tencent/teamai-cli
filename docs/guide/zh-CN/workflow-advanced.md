@@ -773,7 +773,7 @@ teamai workflow resume <run> --tools default=claude
 
 指定步骤的 cancel 停止 pending、waiting、leased、running 或 delivering 工作，同时停止尚未结束的后代。cancelled 属于 stopped，因此依赖步骤会跳过，除非其 if 读取取消结果来恢复；运行通常失败。取消整个运行立即以 `cancelled` 结束，不启动下一轮。cancel 不增加修订号。迟到的报告返回 `lease_cancelled`，`next.cancelled` 告诉驱动停止哪些工具。
 
-在重试、回答、Ctrl-C 或关闭终端后，用 resume 继续本地运行。`workflow start --driver local` 在运行开始时就把运行 id 和继续它的 `resume` 命令输出到 stderr。本地运行失败时，`start` 和 `resume` 会在 stderr 写出每个步骤失败的原因，以及它的 `retry` 和 `resume` 命令，见[必需的键在本机没有值](#必需的键在本机没有值)。它优先使用本机未结本地租约的工作目录，其次使用最近调用 `next` 的驱动工作目录（该驱动必须是本机本地驱动），最后使用当前目录。因此重试后即使从子目录继续，也会保留原来的本地工作目录。每个运行同时只能有一个本地驱动。重复 resume 返回 driver_running 和持有者进程号，请停止该驱动或等待；死进程留下的锁会自动回收。已结算运行返回 done。本地运行以 failed 或 cancelled 结束时退出码为 1；控制命令成功时退出码为 0，即使返回的运行状态为 failed 或 cancelled。
+在重试、回答、Ctrl-C 或关闭终端后，用 resume 继续本地运行。`workflow start --driver local` 在运行开始时就把运行 id 和继续它的 `resume` 命令输出到 stderr。它优先使用本机未结本地租约的工作目录，其次使用最近调用 `next` 的驱动工作目录（该驱动必须是本机本地驱动），最后使用当前目录。因此重试后即使从子目录继续，也会保留原来的本地工作目录。每个运行同时只能有一个本地驱动。重复 resume 返回 driver_running 和持有者进程号，请停止该驱动或等待；死进程留下的锁会自动回收。已结算运行返回 done。本地运行失败时，`start`、`resume` 和 `resume --next` 会在 stderr 写出每个步骤失败的原因，以及它的 `retry` 和 `resume` 命令，见[必需的键在本机没有值](#必需的键在本机没有值)。本地运行以 failed 或 cancelled 结束时退出码为 1；控制命令成功时退出码为 0，即使返回的运行状态为 failed 或 cancelled。
 
 ## 发布和认领
 

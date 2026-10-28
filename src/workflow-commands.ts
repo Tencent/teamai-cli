@@ -40,7 +40,7 @@ function writeEnvelope(envelope: WorkflowEnvelope, secrets: Record<string, strin
 }
 
 /**
- * Prints what the local driver answered for a run of `config`, then, once an unattended run is done, drains the run's
+ * Prints what the local driver answered for a run of `config`, with why each step of a failed run failed, then, once an unattended run is done, drains the run's
  * scope as `teamai score --drain` does unless its unattended publishing and session scoring are both `off`. The run's
  * outcome keeps setting the exit code: what the drain could not do is printed.
  */
@@ -71,8 +71,11 @@ async function explainFailedSteps(config: LocalConfig, done: unknown, secrets: R
   const { run: runId } = failed.data;
   const run = await readRun(config, runId);
   if (typeof run === 'string') return;
+  const failedIds = run.steps.filter((step) => step.status === 'failed').map((step) => step.id);
+  // A fan-out or workflow step fails, with no failure of its own, when a step under it fails: name that step instead.
+  const failedUnder = (id: string): boolean => failedIds.some((other) => other.startsWith(`${id}.`) || other.startsWith(`${id}[`));
   for (const step of run.steps) {
-    if (step.status !== 'failed') continue;
+    if (step.status !== 'failed' || (!step.failure && failedUnder(step.id))) continue;
     const why = step.failure ? ` with ${step.failure.code}: ${step.failure.message}` : step.message ? `: ${step.message}` : '';
     log.error(redact(`Step "${step.id}" failed${why}`, { envSecrets: secrets, patterns: false }));
     log.info(`Retry it with ${retryCommand(runId, step.id)}, then continue the run with teamai workflow resume ${runId}`);

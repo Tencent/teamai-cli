@@ -37,7 +37,7 @@ Inside a workflow step, every `teamai workflow` command that changes a run answe
 
 ## Env and secrets
 
-A step gets the team env keys its `requires.env` lists, and no other team key. A key with no value on this machine fails the step `missing_env` before it runs, and the message names the fix: `teamai env set KEY` for a key the team declares; for one it does not, the environment, or `teamai env add KEY --secret` (you may run it) followed by `teamai env set KEY`, which the person runs in their own terminal. A CI job exports each secret under its key name instead. TeamAI masks the value of every key in `env/secrets.yaml` in run files and output.
+A step gets the team env keys its `requires.env` lists, and no other team key. A key with no value on this machine fails the step `missing_env` before it runs, and the message names the fix: `teamai env set KEY` for a key the team declares; for one it does not, the environment, or `teamai env add KEY --secret` followed by `teamai env set KEY`. The person runs `env set` in their own terminal. A CI job exports each secret under its key name instead. TeamAI masks the value of every key in `env/secrets.yaml` in run files and output.
 
 ## CI
 
