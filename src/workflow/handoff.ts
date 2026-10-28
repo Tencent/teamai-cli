@@ -481,11 +481,12 @@ async function decidePublish(
 }
 
 /**
- * What a publish of `local` says beside its state: business repository `repository`, and, while the run is running, an
- * offer, which keeps the time origin's offer has, so the run keeps its place among the runs offered before it.
+ * What a publish of `local` says beside its state: business repository `repository`, and, while the run is running in a
+ * known repository, an offer, which keeps the time origin's offer has, so the run keeps its place among the runs offered
+ * before it. A run whose repository is unknown is not offered, since `--next` takes runs by repository.
  */
 function handoffOf(local: RunState, repository: string | undefined, origin: RunSnapshot | 'absent', now: string): Handoff {
-  const offered = local.status !== 'running' ? undefined : origin !== 'absent' && origin.offered ? origin.offered : { at: now };
+  const offered = local.status !== 'running' || repository === undefined ? undefined : origin !== 'absent' && origin.offered ? origin.offered : { at: now };
   return { ...(repository !== undefined ? { repository } : {}), ...(offered ? { offered } : {}) };
 }
 

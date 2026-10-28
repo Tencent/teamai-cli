@@ -2681,6 +2681,20 @@ describe('offering a run to a runner (#1390)', () => {
     expect(claimed).not.toHaveProperty('offered');
   });
 
+  it('offers no run it publishes from a checkout with no origin, since no runner could tell which repository it works in', async () => {
+    const acme = team();
+    const alice = await acme.member('alice');
+    git(alice.checkout, 'remote', 'remove', 'origin');
+    const runId = await start(alice);
+    await runStep(alice, runId);
+
+    expect(await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout })).toMatchObject({ ok: true, value: { publication: 'published', offered: false } });
+    const published = JSON.parse(originFile(acme.origin, `workflows/runs/${runId}/state.json`) ?? '{}');
+    expect(published).toMatchObject({ owner: { user: 'alice' } });
+    expect(published).not.toHaveProperty('offered');
+    expect(published).not.toHaveProperty('repository');
+  });
+
   it('refuses a next of the earlier owner once its reports checkout shows another install claimed the run', async () => {
     const acme = team();
     const alice = await acme.member('alice');
@@ -2830,11 +2844,6 @@ steps:
     await publishRun(bob.config, reoffered, { env: {}, checkout: bob.checkout });
     const bobs = await start(bob);
     await publishRun(bob.config, bobs, { env: {}, checkout: bob.checkout });
-    // Published from a checkout without an origin, so it names no business repository.
-    const carol = await acme.member('carol');
-    git(carol.checkout, 'remote', 'remove', 'origin');
-    const nowhere = await start(carol);
-    expect(await publishRun(carol.config, nowhere, { env: {}, checkout: carol.checkout })).toMatchObject({ ok: true, value: { offered: true } });
 
     await reportsBranch.readableReportsWorktree(alice.config);
     const env = await resolveWorkflowEnv(alice.config, {});

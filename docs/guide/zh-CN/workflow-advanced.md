@@ -806,7 +806,7 @@ teamai workflow resume [--next]
  "repository":"github.com/acme/web-app","offered":{"at":"2026-10-28T00:26:39.443Z"},"stateRevision":1,"write":"4f071543-…", …the run's state}
 ```
 
-`repository` 是业务仓库，从检出目录的 `origin` 读取，形如 `host/owner/repo`。之后的认领会保留它。`offered` 保留到被认领为止：每次认领都在更换所有者的同一次写入中去掉它，已结束的运行不会待接手。不支持待接手的 teamai 版本发布的运行不带这两个字段，`--next` 从不接手它。
+`repository` 是业务仓库，从检出目录的 `origin` 读取，形如 `host/owner/repo`。之后的认领会保留它。`offered` 保留到被认领为止：每次认领都在更换所有者的同一次写入中去掉它。已结束的运行不会待接手，从没有 `origin` 的目录发布的运行也不会，因为 `--next` 按仓库接手运行。不支持待接手的 teamai 版本发布的运行不带这两个字段，`--next` 从不接手它。
 
 `teamai workflow resume --next` 像 `teamai pull` 一样 fetch `teamai-reports`，然后从最早待接手的运行开始逐个尝试。它跳过本安装实例发布的运行、`repository` 与本检出目录的 `origin` 不同的运行、调用方不能接手的运行，以及在无人值守的运行中剩余步骤需要人参与的运行。它像 `resume <run>` 一样认领剩下的第一个运行，并用 `--driver` 指定的驱动驱动它。被另一个运行器抢先的认领在 `--next` 内部返回 `state_moved`，`--next` 随后尝试下一个运行。没有可接手的运行时，它输出 `{"data":{"idle":{"offered":N}}}` 并以 0 退出：`N` 是它跳过的、由其他安装实例设为待接手的运行数。
 

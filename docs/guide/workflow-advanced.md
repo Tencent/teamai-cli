@@ -806,7 +806,7 @@ After a claim, `resume` can also answer `branch_diverged` when a local branch ca
  "repository":"github.com/acme/web-app","offered":{"at":"2026-10-28T00:26:39.443Z"},"stateRevision":1,"write":"4f071543-…", …the run's state}
 ```
 
-`repository` is the business repository, read from the checkout's `origin` as `host/owner/repo`. It stays through later claims. `offered` stays until a claim: every claim drops it in the same write that changes the owner, and a run that ended is not offered. A run published by a teamai without offers carries neither field, and `--next` never takes it.
+`repository` is the business repository, read from the checkout's `origin` as `host/owner/repo`. It stays through later claims. `offered` stays until a claim: every claim drops it in the same write that changes the owner. A run that ended is not offered, and neither is one published from a directory with no `origin`, since `--next` takes runs by repository. A run published by a teamai without offers carries neither field, and `--next` never takes it.
 
 `teamai workflow resume --next` fetches `teamai-reports` as `teamai pull` does, then tries the offered runs oldest offer first. It skips a run this install published, a run of another `repository` than this checkout's `origin`, a run its caller may not take, and, in an unattended run, a run whose steps left need a person. It claims the first one left as `resume <run>` would, and drives it with the driver `--driver` names. A claim that another runner beat answers `state_moved` inside `--next`, which then tries the next run. With nothing to take, it prints `{"data":{"idle":{"offered":N}}}` and exits 0: `N` counts the runs other installs offer that it left.
 
