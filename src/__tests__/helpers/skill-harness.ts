@@ -82,6 +82,8 @@ function memoryRunners(command: Runners['command']): {
   let base: SkillContext | undefined;
   /** Every runner still going, by its own id, `<run>/<attempt>#<n>`. A runner spawned again gets a new id. */
   const live = new Map<string, Promise<unknown>>();
+  /** A runner waiting inside takeRunLock: a legitimate wait that settle must not call a spin. */
+  const waitingLocks = new Set<string>();
   let spawned = 0;
   /** What lets each parked runner go on, or makes it crash, by runner. */
   const parked = new Map<string, { resume: () => void; crash: () => void }>();
@@ -112,9 +114,14 @@ function memoryRunners(command: Runners['command']): {
         clearTimeout(timer);
         if (exited === 'late') throw new Error(`${[...commands.values()].join('; ')} did not end within ${COMMAND_EXIT_MS} ms. Fake a setup or a command that runs until it is stopped with the harness's client or runners option.`);
       }
-      const moving = [...live.keys()].filter((id) => !parked.has(id));
-      if (moving.length === 0 && commands.size === 0 && turn > 0 && failures.length === 0) return;
-      if (turn >= SETTLE_TURNS) throw new Error(`The runner of ${moving.join(', ')} neither parked at a lock or a sleep nor ended within ${SETTLE_TURNS} turns: it loops without waiting.`);
+      // A runner inside the real lock wait is still live work: settle must wait for
+      // it to acquire the lock and finish its body before the foreground turn ends.
+      // It is a legitimate wait, not a spin, so exclude it only from the guard's
+      // diagnostic/turn budget—not from the quiescence check.
+      const waiting = [...live.keys()].filter((id) => !parked.has(id) && waitingLocks.has(id));
+      const moving = [...live.keys()].filter((id) => !parked.has(id) && !waitingLocks.has(id));
+      if (moving.length === 0 && waiting.length === 0 && commands.size === 0 && turn > 0 && failures.length === 0) return;
+      if (turn >= SETTLE_TURNS && moving.length > 0) throw new Error(`The runner of ${moving.join(', ')} neither parked at a lock or a sleep nor ended within ${SETTLE_TURNS} turns: it loops without waiting.`);
       await new Promise((resolve) => { setTimeout(resolve, 1); });
     }
   };
@@ -174,18 +181,18 @@ function memoryRunners(command: Runners['command']): {
         spawned += 1;
         const id = `${job.run}/${job.attempt}#${spawned}`;
         const call: SkillCall = { kind: 'report', run: job.run, attempt: job.attempt, role: 'runner' };
-        // Keep the runner parked while it waits for a busy run lock. Waiting inside
-        // takeRunLock would make it disappear from the harness until the lock's
-        // real-time wait expired, so settle would mistake a legitimate wait for a
-        // spin. A zero-wait probe between parks models the engine without hiding
-        // the lock wait from the fake scheduler.
+        // Preserve the production lock wait and the original runner/scheduler order.
+        // The marker only tells settle that the runner is legitimately inside that
+        // wait after its harness park; it must not replace the wait with probes,
+        // which changes the interleaving of concurrent dispatches.
         const locks: SkillContext['locks'] = {
           take: async (run, body, waitMs) => {
-            const until = Date.now() + waitMs;
-            for (;;) {
-              await park(id);
-              const taken = await takeRunLock(config, run, body, { waitMs: 0 });
-              if (taken.kind === 'held' || Date.now() >= until) return taken;
+            await park(id);
+            waitingLocks.add(id);
+            try {
+              return await takeRunLock(config, run, body, { waitMs });
+            } finally {
+              waitingLocks.delete(id);
             }
           },
         };
