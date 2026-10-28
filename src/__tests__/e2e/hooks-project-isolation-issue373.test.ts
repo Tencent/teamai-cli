@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -125,14 +125,39 @@ describe('issue #373 project hook isolation (real CLI)', () => {
     const settingsPath = path.join(home, '.codebuddy', 'settings.json');
     const team = readSettings(settingsPath).hooks.Stop.filter((entry) => entry.description?.startsWith('[teamai:hook:'));
     expect(team).toHaveLength(2);
-    const commandA = team.find((entry) => entry.hooks[0].command.includes('echo A'))!.hooks[0].command;
-    const commandB = team.find((entry) => entry.hooks[0].command.includes('echo B'))!.hooks[0].command;
-    expect(commandA).toContain('$PWD');
-    expect(commandB).toContain('$PWD');
-    expect(execFileSync('sh', ['-c', commandA], { cwd: projectA, encoding: 'utf8' })).toBe('A\n');
-    expect(execFileSync('sh', ['-c', commandA], { cwd: projectB, encoding: 'utf8' })).toBe('');
-    expect(execFileSync('sh', ['-c', commandB], { cwd: projectB, encoding: 'utf8' })).toBe('B\n');
-    expect(execFileSync('sh', ['-c', commandB], { cwd: projectA, encoding: 'utf8' })).toBe('');
+    const commandA = team.find((entry) => entry.hooks[0].command.includes('--team-hook-command'))!.hooks[0].command;
+    const commandB = team.find((entry) => entry.hooks[0].command.includes('--team-hook-command') && entry.hooks[0].command !== commandA)!.hooks[0].command;
+    if (process.platform === 'win32') {
+      // CodeBuddy IDE invokes settings commands through cmd.exe, while the CLI
+      // uses Git Bash. The dual-runner form keeps the project root and payload
+      // out of either host shell's source text.
+      expect(commandA).toContain('--team-hook-gate');
+      expect(commandB).toContain('--team-hook-gate');
+      expect(commandA).not.toContain('$PWD');
+      expect(commandB).not.toContain('$PWD');
+      const run = (command: string, cwd: string): string => {
+        const result = spawnSync(command, {
+          cwd,
+          encoding: 'utf8',
+          env: { ...process.env, HOME: home, USERPROFILE: home },
+          input: '',
+          shell: true,
+        });
+        if (result.status !== 0) throw new Error(`${result.stderr ?? ''}${result.stdout ?? ''}`);
+        return result.stdout ?? '';
+      };
+      expect(run(commandA, projectA)).toMatch(/^A\r?\n$/);
+      expect(run(commandA, projectB)).toBe('');
+      expect(run(commandB, projectB)).toMatch(/^B\r?\n$/);
+      expect(run(commandB, projectA)).toBe('');
+    } else {
+      expect(commandA).toContain('$PWD');
+      expect(commandB).toContain('$PWD');
+      expect(execFileSync('sh', ['-c', commandA], { cwd: projectA, encoding: 'utf8' })).toBe('A\n');
+      expect(execFileSync('sh', ['-c', commandA], { cwd: projectB, encoding: 'utf8' })).toBe('');
+      expect(execFileSync('sh', ['-c', commandB], { cwd: projectB, encoding: 'utf8' })).toBe('B\n');
+      expect(execFileSync('sh', ['-c', commandB], { cwd: projectA, encoding: 'utf8' })).toBe('');
+    }
     expect(JSON.parse(fs.readFileSync(path.join(home, '.teamai', 'managed-hooks.json'), 'utf8')).codebuddy).toHaveLength(2);
 
     const removed = await runCLI(projectA, home, ['hooks', 'remove']);

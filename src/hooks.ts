@@ -35,7 +35,8 @@ import {
   resolveGitExclude,
   resolveToolRootDir,
 } from './types.js';
-import { builtinHookDefs, applyBuiltinOverride, getRawDispatchCommand, skipToolsWithoutShell } from './builtin-hooks.js';
+import { builtinHookDefs, applyBuiltinOverride, getCodebuddyTeamHookDispatchCommand, getRawDispatchCommand, skipToolsWithoutShell } from './builtin-hooks.js';
+import { encodeCodebuddyProjectGate, isCodebuddyTeamGateForProject, parseCodebuddyTeamGate, regateCodebuddyTeamHookCommand } from './codebuddy-team-hooks.js';
 import type { BuiltinHookOverride } from './builtin-hooks.js';
 import { parseTeamHooks, readBuiltinOverride, resolveTeamHooks, teamHookToDef } from './resources/hooks.js';
 import { entryLayout } from './namespaced-entries.js';
@@ -344,6 +345,8 @@ export interface ReconcileHooksOptions {
    * from `teamHookHistory`; a matching command alone is not ownership.
    */
   teamOnly?: boolean;
+  /** Render CodeBuddy project hooks through its Windows IDE/CLI dual-runner dispatcher. */
+  codebuddyDualRunner?: boolean;
   /** Shared main-checkout ownership to reconcile before changing this file. */
   mainCheckout?: MainCheckoutHooks;
   /** The team's hooks at every revision, to recognize entries the manifest does not record (#993). */
@@ -749,12 +752,12 @@ function cmdProjectGate(root: string): string {
 /**
  * Keep a project-scope team hook from firing in every project on the machine.
  *
- * Every tool runs hook commands through a POSIX shell on every platform
- * (WorkBuddy's bundled MSYS sh, CodeBuddy's required Git Bash, `bash -lc` for
- * the rest), so the gate is always the POSIX form. Outside the project it is a
- * no-op that exits 0 and inside it the payload's own status is passed through:
- * a gate mismatch that returned non-zero would make CodeBuddy read the hook as
- * `allowed:false` and BLOCK every UserPromptSubmit outside the project.
+ * Most tools run the gate through a POSIX shell (WorkBuddy's bundled MSYS sh,
+ * `bash -lc` for the rest), so their gate is the POSIX form. CodeBuddy's
+ * Windows project hooks use their dedicated dispatcher instead because the IDE
+ * and CLI parse the same settings entry with different shells. Outside the
+ * project a gate is a no-op that exits 0; inside it the payload's own status
+ * is passed through.
  *
  * A Windows root is tested in both spellings. The shell names its cwd the MSYS
  * way (`/c/proj`); the native form is kept because it is what previous versions
@@ -792,6 +795,8 @@ function gateTeamHookCommand(command: string, projectRoot: string | undefined, c
  * `childRoots` (#913); null when it carries no gate this renderer writes.
  */
 function regateTeamHookCommand(command: string, projectRoot: string, childRoots: readonly string[]): string | null {
+  const codebuddy = regateCodebuddyTeamHookCommand(command, projectRoot, childRoots);
+  if (codebuddy !== null) return codebuddy;
   const [head, tail] = gateTeamHookCommand('\0', projectRoot).split('(\0)');
   if (!command.startsWith(head) || !command.endsWith(tail)) return null;
   const run = command.slice(head.length, command.length - tail.length);
@@ -883,12 +888,14 @@ function heldEntryCheck(
 /** Recognise a project gate written by either renderer (entries outlive a platform switch). */
 function isGatedForProject(command: string, projectRoot: string): boolean {
   const root = canonicalProjectRoot(projectRoot);
-  return command.startsWith(`if [ "$PWD" = ${shellQuote(root)} ]`)
+  return isCodebuddyTeamGateForProject(command, root)
+    || command.startsWith(`if [ "$PWD" = ${shellQuote(root)} ]`)
     || command.startsWith(cmdProjectGate(root));
 }
 
 function isProjectGatedCommand(command: string): boolean {
-  return command.startsWith('if [ "$PWD" = ') || command.startsWith('cd| findstr ');
+  return parseCodebuddyTeamGate(command) !== null
+    || command.startsWith('if [ "$PWD" = ') || command.startsWith('cd| findstr ');
 }
 
 /**
@@ -1478,12 +1485,26 @@ function scopedTeamDefs(
   tool: string,
   legacyGuard = false,
   childRoots: readonly string[] = [],
+  codebuddyDualRunner = false,
 ): HookDef[] {
   const prepared = teamDefs.map((def) => ({
     ...def,
     command: skipWhenAnotherHostLoadsClaudeSettings(def, tool, legacyGuard),
   }));
   if (!projectRoot) return prepared;
+  if (tool === 'codebuddy' && process.platform === 'win32' && codebuddyDualRunner) {
+    const encodedGate = encodeCodebuddyProjectGate(canonicalProjectRoot(projectRoot), childRoots.map(canonicalProjectRoot));
+    return prepared.map((def) => ({
+      ...def,
+      command: getCodebuddyTeamHookDispatchCommand(
+        def.event,
+        def.key,
+        encodedGate,
+        Buffer.from(def.command, 'utf8').toString('base64url'),
+        def.timeout,
+      ),
+    }));
+  }
   return prepared.map((def) => ({ ...def, command: gateTeamHookCommand(def.command, projectRoot, childRoots) }));
 }
 
@@ -1493,10 +1514,11 @@ function manifestRecordsForTool(
   removeAll: boolean,
   projectRoot?: string,
   childRoots: readonly string[] = [],
+  codebuddyDualRunner = false,
 ): ManagedHookRecord[] {
   if (removeAll) return [];
   // The command as the file holds it, the children's gate included (#913).
-  return teamDefsForTool(scopedTeamDefs(teamDefs, projectRoot, tool, false, childRoots), tool).map((d) => ({
+  return teamDefsForTool(scopedTeamDefs(teamDefs, projectRoot, tool, false, childRoots, codebuddyDualRunner), tool).map((d) => ({
     id: d.key,
     event: d.event,
     ...(d.matcher && d.matcher !== '*' ? { matcher: d.matcher } : {}),
@@ -2619,7 +2641,8 @@ export async function reconcileHooks(
     await writeJson(expandHome(opts.manifestPath), manifest);
   }
   const allPriorRecords = manifest?.[tool] ?? [];
-  const scopedDefs = scopedTeamDefs(teamDefs, opts.teamHookProjectRoot, tool, false, opts.teamHookChildRoots);
+  const renderCodebuddyWindows = tool === 'codebuddy' && process.platform === 'win32' && opts.codebuddyDualRunner === true;
+  const scopedDefs = scopedTeamDefs(teamDefs, opts.teamHookProjectRoot, tool, false, opts.teamHookChildRoots, renderCodebuddyWindows);
   const projectRecords = opts.teamHookProjectRoot
     ? allPriorRecords.filter((r) => isGatedForProject(r.command, opts.teamHookProjectRoot!))
     : allPriorRecords;
@@ -2671,7 +2694,7 @@ export async function reconcileHooks(
       return index === undefined ? record : { ...record, codexEntryIndex: index };
     };
     const records = [
-      ...codex?.records ?? manifestRecordsForTool(teamDefs, tool, !!opts.removeAll, opts.teamHookProjectRoot, opts.teamHookChildRoots),
+      ...codex?.records ?? manifestRecordsForTool(teamDefs, tool, !!opts.removeAll, opts.teamHookProjectRoot, opts.teamHookChildRoots, renderCodebuddyWindows),
       ...heldRecords.filter((r) => keptHeld.has(r)).map((r) => followCodexMove({ ...r, command: keptHeld.get(r)! })),
     ];
     const prev = manifest[tool] ?? [];
@@ -3140,7 +3163,7 @@ export async function reconcileHooksToAllTools(
   teamDefs: HookDef[],
   manifestPath: string,
   opts: {
-    removeAll?: boolean; builtinOverride?: BuiltinHookOverride; filterAgents?: string[]; settingsOnly?: boolean; installedBaseDir?: string; teamHookProjectRoot?: string; teamHookChildRoots?: readonly string[]; heldTeamHookIds?: readonly string[]; scope?: Scope; builtinsOnly?: BuiltinsOnly; mainCheckout?: MainCheckoutHooks | null; teamHookHistory?: TeamHookHistory;
+    removeAll?: boolean; builtinOverride?: BuiltinHookOverride; filterAgents?: string[]; settingsOnly?: boolean; installedBaseDir?: string; teamHookProjectRoot?: string; teamHookChildRoots?: readonly string[]; heldTeamHookIds?: readonly string[]; scope?: Scope; builtinsOnly?: BuiltinsOnly; mainCheckout?: MainCheckoutHooks | null; teamHookHistory?: TeamHookHistory; codebuddyDualRunner?: boolean;
     /**
      * The active config's `toolRoots`, so the gate probes a member's recorded
      * root rather than the path's two-segment shape (see `toolGateRoot`).
@@ -3388,6 +3411,7 @@ export async function reconcileHooksToAllTools(
             teamHookHistory: opts.teamHookHistory,
             codexTrust: opts.codexTrust,
             keepRecords: opts.keepRecordsFor?.has(tool),
+            codebuddyDualRunner: opts.codebuddyDualRunner,
           });
         }
       }
@@ -4001,6 +4025,7 @@ export async function reconcileTeamHooksForConfig(
     scope: localConfig.scope,
     toolRoots: localConfig.toolRoots,
     builtinsOnly,
+    codebuddyDualRunner: process.platform === 'win32',
     mainCheckout,
     teamHookHistory: history,
     unwritten,

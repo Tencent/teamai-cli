@@ -1228,7 +1228,11 @@ program
   .option('--bg-only', 'Internal: run only fire-and-forget background handlers (used by the detached child)')
   .option('--stdin-file <path>', 'Internal: read the hook payload from this file instead of STDIN')
   .option('--team-hooks', 'Run the team hooks of the project the hook\'s cwd belongs to (Codex, when the project\'s .codex/hooks.json is not teamai\'s alone)')
-  .action(async (event: string, hookArgs: string[], cmdOpts: { stdin?: boolean; tool?: string; matcher?: string; bgOnly?: boolean; copilotGlobal?: string; stdinFile?: string; teamHooks?: boolean }) => {
+  .option('--team-hook-id <id>', 'Internal: CodeBuddy team hook id')
+  .option('--team-hook-gate <encoded>', 'Internal: CodeBuddy project gate')
+  .option('--team-hook-command <encoded>', 'Internal: CodeBuddy team hook command')
+  .option('--team-hook-timeout <seconds>', 'Internal: CodeBuddy team hook timeout')
+  .action(async (event: string, hookArgs: string[], cmdOpts: { stdin?: boolean; tool?: string; matcher?: string; bgOnly?: boolean; copilotGlobal?: string; stdinFile?: string; teamHooks?: boolean; teamHookId?: string; teamHookGate?: string; teamHookCommand?: string; teamHookTimeout?: string }) => {
     const bgOnly = cmdOpts.bgOnly ?? false;
     const tool = cmdOpts.tool ?? 'claude';
 
@@ -1240,9 +1244,17 @@ program
         if (tool === 'codex') {
           const { runCodexDispatcher } = await import('./codex-team-hooks.js');
           code = await runCodexDispatcher(event);
+        } else if (tool === 'codebuddy' && cmdOpts.teamHookGate && cmdOpts.teamHookCommand) {
+          const parsedTimeout = cmdOpts.teamHookTimeout === undefined ? undefined : Number(cmdOpts.teamHookTimeout);
+          if (parsedTimeout !== undefined && (!Number.isFinite(parsedTimeout) || parsedTimeout <= 0)) {
+            throw new Error(`invalid CodeBuddy team hook timeout ${JSON.stringify(cmdOpts.teamHookTimeout)}`);
+          }
+          const { runCodebuddyTeamHook } = await import('./codebuddy-team-hooks.js');
+          code = await runCodebuddyTeamHook(cmdOpts.teamHookGate, cmdOpts.teamHookCommand, parsedTimeout);
         }
       } catch (e) {
         process.stderr.write(`teamai: team hooks did not run: ${(e as Error).message}\n`);
+        code = 1;
       }
       process.exit(code);
     }
