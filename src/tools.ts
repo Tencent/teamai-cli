@@ -631,8 +631,8 @@ export const TOOLS = {
       project: { channel: 'dir', format: 'qoder', reads: [{ base: 'project', path: '.qoder/rules', when: 'workspaceUnder', evidence: 'verified' }] },
     },
     blocks: {
-      user: { channel: 'file', file: { in: 'rules-dir', name: 'teamai-context.md', owned: true, header: 'trigger-always-on' }, reads: [{ base: 'home', path: '.qoder/rules', evidence: 'verified' }] },
-      project: { channel: 'file', file: { in: 'rules-dir', name: 'teamai-context.md', owned: true, header: 'trigger-always-on' }, reads: [{ base: 'project', path: '.qoder/rules', when: 'workspaceUnder', evidence: 'verified' }] },
+      user: { channel: 'file', file: { in: 'rules-dir', name: 'teamai-context.md', owned: true, header: 'trigger-always-on' }, reads: [{ base: 'home', path: '.qoder/rules', evidence: 'assumed' }] },
+      project: { channel: 'file', file: { in: 'rules-dir', name: 'teamai-context.md', owned: true, header: 'trigger-always-on' }, reads: [{ base: 'project', path: '.qoder/rules', when: 'workspaceUnder', evidence: 'assumed' }] },
     },
     agents: {
       user: { reads: [{ base: 'home', path: '.qoder/agents', evidence: 'source' }] },
@@ -667,8 +667,8 @@ export const TOOLS = {
       project: { channel: 'dir', format: 'qoder', reads: [{ base: 'project', path: '.qoder/rules', when: 'workspaceUnder', evidence: 'verified' }] },
     },
     blocks: {
-      user: { channel: 'file', file: { in: 'rules-dir', name: 'teamai-context.md', owned: true, header: 'trigger-always-on' }, reads: [{ base: 'home', path: '.qoder-cn/rules', evidence: 'verified' }] },
-      project: { channel: 'file', file: { in: 'rules-dir', name: 'teamai-context.md', owned: true, header: 'trigger-always-on' }, reads: [{ base: 'project', path: '.qoder/rules', when: 'workspaceUnder', evidence: 'verified' }] },
+      user: { channel: 'file', file: { in: 'rules-dir', name: 'teamai-context.md', owned: true, header: 'trigger-always-on' }, reads: [{ base: 'home', path: '.qoder-cn/rules', evidence: 'assumed' }] },
+      project: { channel: 'file', file: { in: 'rules-dir', name: 'teamai-context.md', owned: true, header: 'trigger-always-on' }, reads: [{ base: 'project', path: '.qoder/rules', when: 'workspaceUnder', evidence: 'assumed' }] },
     },
     agents: {
       user: { reads: [{ base: 'home', path: '.qoder-cn/agents', evidence: 'source' }] },
