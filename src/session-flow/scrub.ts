@@ -19,7 +19,7 @@
  */
 
 import type { Session, Message, ContentBlock } from './ir.js';
-import { collectEnvSecrets, redact } from '../utils/redact.js';
+import { collectEnvSecrets, redact, redactJson } from '../utils/redact.js';
 import { imagePlaceholderText } from './ir.js';
 import { maskCutSecret } from './title.js';
 
@@ -45,7 +45,7 @@ function countRedactions(before: string, after: string): number {
 
 function scrubBlock(
   block: ContentBlock,
-  { dropImagePaths, mask }: { dropImagePaths: boolean; mask: (text: string) => string },
+  { dropImagePaths, mask, envSecrets }: { dropImagePaths: boolean; mask: (text: string) => string; envSecrets: Record<string, string> },
 ): { block: ContentBlock; count: number } {
   switch (block.type) {
     case 'text': {
@@ -65,8 +65,10 @@ function scrubBlock(
     case 'tool_call': {
       // Arguments are structured: serialize, redact as a whole, then parse
       // back so string fields are covered too, not just top-level strings.
+      // Known secrets are masked in each string first: one with a quote or
+      // backslash is escaped in the serialized form and would not match there.
       const raw = JSON.stringify(block.arguments ?? {});
-      const next = mask(raw);
+      const next = mask(JSON.stringify(redactJson(block.arguments ?? {}, envSecrets)));
       const count = countRedactions(raw, next);
       if (count === 0) return { block, count: 0 };
       let parsed: Record<string, unknown> = {};
@@ -133,7 +135,7 @@ export function scrubSession(
   const messages: Message[] = session.messages.map((msg) => {
     let contentChanged = false;
     const content = msg.content.map((block) => {
-      const { block: next, count } = scrubBlock(block, { dropImagePaths, mask });
+      const { block: next, count } = scrubBlock(block, { dropImagePaths, mask, envSecrets });
       redactedCount += count;
       if (next !== block) contentChanged = true;
       return next;
