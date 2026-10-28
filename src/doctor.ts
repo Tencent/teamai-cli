@@ -217,18 +217,34 @@ function describeMemberSettingLevel({ level, file, variable }: MemberSettingSour
   }
 }
 
+/** A member setting some level sets: its value in effect, the level that won, the levels below it, and the values set but not used. */
+export interface MemberSettingRow {
+  key: string;
+  value: unknown;
+  source: MemberSettingSource;
+  below: MemberSettingSource[];
+  /** Values set but not read, such as a workspace's own updatePolicy while the user scope decides it. */
+  unused: MemberSettingSource[];
+}
+
+/** The settings of `reports` that some level sets, as doctor and the dashboard show them. */
+export function memberSettingRows(reports: MemberSettingsReport[]): MemberSettingRow[] {
+  return reports.flatMap(({ key, effective, source, levels }) => {
+    if (!source || (source.level === 'default' && levels.every(({ used }) => used !== false))) return [];
+    const below = levels.slice(levels.indexOf(source) + 1).filter(({ level, used }) => level !== 'default' && used !== false);
+    return [{ key, value: effective, source, below, unused: levels.filter(({ used }) => used === false) }];
+  });
+}
+
 /** Doctor's `Member settings` lines: each setting some level sets, its value in effect, the level that won, and the values below it. */
 function memberSettingLines(reports: MemberSettingsReport[], scope: LocalConfig['scope']): string[] {
   const shown = (value: unknown): string => typeof value === 'string' ? value : JSON.stringify(value);
-  return reports.flatMap(({ key, effective, source, levels }) => {
-    if (!source || (source.level === 'default' && levels.every(({ used }) => used !== false))) return [];
-    const below = levels.slice(levels.indexOf(source) + 1).filter(({ level, used }) => level !== 'default' && used !== false)
-      .map((lower, index) => `the ${describeMemberSettingLevel(lower, scope).short}${index === 0 ? ' says' : ''} ${shown(lower.value)}`);
-    // A value set but not read, such as a workspace's own updatePolicy while the user scope decides it.
-    const unused = levels.filter(({ used }) => used === false)
-      .map((ignored) => `the ${describeMemberSettingLevel(ignored, scope).short}'s ${shown(ignored.value)} is not used`);
-    const notes = [...below, ...unused];
-    return [`  ${key}: ${shown(effective)}, from ${describeMemberSettingLevel(source, scope).from}${notes.length > 0 ? ` (${notes.join(', ')})` : ''}`];
+  return memberSettingRows(reports).map(({ key, value, source, below, unused }) => {
+    const notes = [
+      ...below.map((lower, index) => `the ${describeMemberSettingLevel(lower, scope).short}${index === 0 ? ' says' : ''} ${shown(lower.value)}`),
+      ...unused.map((ignored) => `the ${describeMemberSettingLevel(ignored, scope).short}'s ${shown(ignored.value)} is not used`),
+    ];
+    return `  ${key}: ${shown(value)}, from ${describeMemberSettingLevel(source, scope).from}${notes.length > 0 ? ` (${notes.join(', ')})` : ''}`;
   });
 }
 
@@ -310,7 +326,7 @@ function settingSource(level: MemberSettingLevel, value: unknown, file?: string,
   return { level, value, ...(file ? { file } : {}), ...(variable ? { variable } : {}), ...(used ? {} : { used: false }) };
 }
 
-async function memberSettingsReport(ctx: DoctorContext): Promise<MemberSettingsReport[]> {
+export async function memberSettingsReport(ctx: Pick<DoctorContext, 'localConfig' | 'teamConfig'>): Promise<MemberSettingsReport[]> {
   const machineFile = path.join(getTeamaiHomeDir(), 'config.yaml');
   const rawMachine = await readYamlObject(machineFile);
   const machine = await loadMemberSettings(machineFile);
@@ -813,12 +829,15 @@ function usageReportNote({ localConfig, teamConfig }: DoctorContext): string {
 }
 
 /** The keys of a ~/.teamai/config.yaml with no install that no command reads: only its member settings apply. */
-async function machineUnreadKeyNotes(): Promise<string[]> {
+export async function machineUnreadKeys(): Promise<string[]> {
   if (await hasUserScopeInstall()) return [];
-  const machineFile = path.join(getTeamaiHomeDir(), 'config.yaml');
-  const unread = Object.keys(await readYamlObject(machineFile)).filter((key) => !(key in MemberSettingsSchema.shape));
+  return Object.keys(await readYamlObject(path.join(getTeamaiHomeDir(), 'config.yaml'))).filter((key) => !(key in MemberSettingsSchema.shape));
+}
+
+async function machineUnreadKeyNotes(): Promise<string[]> {
+  const unread = await machineUnreadKeys();
   return unread.length > 0
-    ? [`Not read from ${machineFile}, which holds no user-scope install so only its member settings apply: ${unread.join(', ')}.`]
+    ? [`Not read from ${path.join(getTeamaiHomeDir(), 'config.yaml')}, which holds no user-scope install so only its member settings apply: ${unread.join(', ')}.`]
     : [];
 }
 
