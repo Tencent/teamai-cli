@@ -354,4 +354,19 @@ describe('agreement with hand labels', () => {
       { scorer: 'tests-added', agreement: { paired: 0, agree: 0 } },
     ]);
   });
+
+  it.each([
+    ['on the judge\'s rubric', { sourceHash: 'first', teamRevision: REV_A }],
+    ['on a newer rubric the judge has not scored with yet', { sourceHash: 'second', teamRevision: 'b'.repeat(40) }],
+  ])('opens a scorer on its judge when members hand-labelled more sessions than it judged %s', (_case, handRubric) => {
+    const judged = { sourceHash: 'first', teamRevision: REV_A };
+    const labels = [
+      ...[0, 1].map((n) => viewed(sessionLabel({ subject: session(n), rubric: judged, scoredAt: '2026-03-10T00:00:00.000Z' }))),
+      ...[0, 1, 2].map((n) => viewed(byHand(n, { rubric: handRubric, ...(n === 0 ? missedBug : {}) }))),
+    ];
+    const rubricLabels = new Map([['first', ['good', 'missed-bug']], ['second', ['good', 'missed-bug']]]);
+    const { scorers, selected } = ScorerResults.of({ labels, query: { windowDays: 30 }, now: NOW, rubricLabels });
+    expect(selected?.cohort).toMatchObject({ rubric: judged, judge: { kind: 'model' }, stats: { n: 2 } });
+    expect(scorers[0]?.agreement).toEqual({ paired: 2, agree: 1 });
+  });
 });

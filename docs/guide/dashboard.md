@@ -34,7 +34,7 @@ A waiting approve or choose request can be answered from the run's details. The 
 
 The Scorers page shows the pass rate of every [scorer](scorers.md) that has labels, from `scores/<member>/<YYYY-MM>.jsonl` on `teamai-reports` and from this machine's label store. It answers two questions: is a scorer's pass rate moving, and does it differ by tool, model, team revision or definition.
 
-**One measurement at a time.** A measurement fixes the scorer, the rubric version (`rubric.sourceHash`, with its `teamRevision` when it has one), the source (`workflow` or `session`), the run mode, and the judge (a hand label, or the judge's tool and recorded model). Labels that differ in any of these are never counted together. A scorer opens on its newest rubric whose labels carry a `teamRevision`, so an uncommitted draft does not become the default. The other measurements are listed above the numbers. Labels without a run mode are counted under `Not recorded`.
+**One measurement at a time.** A measurement fixes the scorer, the rubric version (`rubric.sourceHash`, with its `teamRevision` when it has one), the source (`workflow` or `session`), the run mode, and the judge (a hand label, or the judge's tool and recorded model). Labels that differ in any of these are never counted together. A scorer opens on a model judge's measurement when it has one, even when members hand-labelled more sessions, and on its newest rubric whose labels carry a `teamRevision`, so an uncommitted draft does not become the default. The other measurements are listed above the numbers. Labels without a run mode are counted under `Not recorded`.
 
 **What it shows:**
 

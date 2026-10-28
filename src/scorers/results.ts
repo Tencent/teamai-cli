@@ -461,11 +461,14 @@ function newest(labels: readonly ViewedLabel[]): string {
 }
 
 /**
- * The cohort a scorer opens on: the newest rubric whose labels carry `rubric.teamRevision`, so a member's uncommitted
+ * The cohort a scorer opens on: a model judge's when it has one, since hand labels are what a judge is compared with,
+ * not the measurement. Of those, the newest rubric whose labels carry `rubric.teamRevision`, so a member's uncommitted
  * draft does not become the team's view, else the rubric scored last. Within it, the cohort with the most labels in the
  * window, then the one scored last.
  */
-function defaultCohort(cohorts: ReadonlyArray<{ summary: CohortSummary; all: ViewedLabel[] }>): CohortSummary | undefined {
+function defaultCohort(scored: ReadonlyArray<{ summary: CohortSummary; all: ViewedLabel[] }>): CohortSummary | undefined {
+  const judged = scored.filter(({ summary }) => summary.judge.kind === 'model');
+  const cohorts = judged.length > 0 ? judged : scored;
   const committed = cohorts.flatMap(({ summary, all }) => all.filter(({ label }) => label.rubric.teamRevision).map(({ label }) => ({ hash: summary.rubric.sourceHash, at: label.scoredAt })));
   const anyLabel = cohorts.map(({ summary }) => ({ hash: summary.rubric.sourceHash, at: summary.lastScoredAt }));
   const rubric = (committed.length > 0 ? committed : anyLabel).reduce<{ hash: string; at: string } | undefined>((best, entry) => (!best || entry.at > best.at ? entry : best), undefined);
