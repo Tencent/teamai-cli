@@ -2413,6 +2413,7 @@ servers:
       beforeEach(() => {
         vi.mocked(log.info).mockClear();
         vi.mocked(log.debug).mockClear();
+        vi.mocked(log.warn).mockClear();
       });
 
       afterEach(() => {
@@ -2431,14 +2432,21 @@ servers:
 
         await reconcileMcpForConfig(unmovedConfig(), claudeOnly());
 
-        if (_label === 'it does not parse') {
-          expect(vi.mocked(log.warn)).toHaveBeenCalledWith(expect.stringContaining('left its MCP servers'));
-        }
         expect(await fse.readFile(mcpJson(), 'utf-8')).not.toContain('super-secret-value');
         expect(await excludeOf(projectRoot)).not.toContain('teamai');
         // The member never saw the line go in, so its rollback is not news.
         expect(vi.mocked(log.info).mock.calls.flat().join('\n')).not.toMatch(/Removed/);
         expect(vi.mocked(log.debug).mock.calls.flat().join('\n')).toMatch(/\/\.mcp\.json/);
+      });
+
+      it('says teamai left its MCP servers unchanged when the config does not parse', async () => {
+        await pulledBefore();
+        await fse.writeFile(mcpJson(), '{ "mcpServers": ');
+        await writeMcpYaml(withSecret);
+
+        await reconcileMcpForConfig(unmovedConfig(), claudeOnly());
+
+        expect(vi.mocked(log.warn)).toHaveBeenCalledWith(expect.stringContaining('left its MCP servers'));
       });
 
       it.each([false, true])('handles a failed ownership write after adding a credential, restoration fails=%s', async (restoreFails) => {
