@@ -1,9 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { waitForDetachedChildren } from '../helpers/detached-processes.js';
 
 // ─── Antigravity CLI (agy) support ──────────────────────────────────────────
 //
@@ -78,7 +79,28 @@ describe('Antigravity CLI resource delivery', () => {
       fs.mkdirSync(path.dirname(path.join(seed, rel)), { recursive: true });
       fs.writeFileSync(path.join(seed, rel), content);
     };
-    write('teamai.yaml', `team: agy-e2e\nrepo: ${FAKE_URL}\nprovider: git\nreviewers: []\n`);
+    write('teamai.yaml', `team: agy-e2e\nrepo: ${FAKE_URL}\nprovider: git\nreviewers: []\nsharing:\n  hooks:\n    requireTeamScripts: false\n`);
+    // The team's own hooks: two scoped to agy, one to Claude Code only.
+    write('hooks/hooks.yaml', [
+      'hooks:',
+      '  - id: block-rm-rf',
+      '    description: Block recursive deletes',
+      '    event: PreToolUse',
+      '    matcher: Bash',
+      '    tools: [agy]',
+      `    command: ${JSON.stringify('case "$(cat)" in *"rm -rf"*) echo "rm -rf is blocked here; run git clean -n first." >&2; exit 2;; esac')}`,
+      '  - id: payments-context',
+      '    description: Where the payments code lives',
+      '    event: SessionStart',
+      '    tools: [agy]',
+      '    command: echo "Payments code lives in services/pay; never log card numbers."',
+      '  - id: claude-statusline',
+      '    description: Claude Code only',
+      '    event: SessionStart',
+      '    tools: [claude]',
+      '    command: echo CLAUDE-ONLY-HOOK',
+      '',
+    ].join('\n'));
     write('skills/release-notes/SKILL.md', '---\nname: release-notes\ndescription: Draft release notes from merged PRs\n---\n\n# Release notes\n');
     write('rules/no-console.md', 'Never leave console.log in committed code.\n');
     write('rules/api-errors.md', '---\npaths:\n  - "src/api/**/*.ts"\n---\n\nReturn typed errors from API handlers.\n');
@@ -113,11 +135,13 @@ describe('Antigravity CLI resource delivery', () => {
     git(['clone', '-q', '--bare', seed, remote], sandbox);
   });
 
-  afterAll(() => {
+  afterAll(async () => {
+    // A session-start dispatch detaches its background pass; join it before HOME goes.
+    await waitForDetachedChildren();
     if (sandbox) fs.rmSync(sandbox, { recursive: true, force: true });
   });
 
-  it('delivers skills, rules, culture, agents and MCP to ~/.gemini/config in user scope, leaving Gemini CLI files alone', async () => {
+  it('delivers skills, rules, culture, agents, MCP and hooks, team hooks included, to ~/.gemini/config in user scope, leaving Gemini CLI files alone', async () => {
     const home = makeHome('home-user');
     const cwd = fs.mkdtempSync(path.join(sandbox, 'user-work-'));
     const init = await runCLI(['init', FAKE_URL, '--scope', 'user', '--role', 'dev', '--agent', 'agy', '--force'], cwd, home);
@@ -143,6 +167,37 @@ describe('Antigravity CLI resource delivery', () => {
         docs: { url: 'https://mcp.example.com/mcp', headers: { 'X-Team': 'acme' } },
       },
     });
+
+    // teamai owns the hook named `teamai` in agy's hooks.json; PreToolUse is there because a team hook needs it.
+    const hooks = JSON.parse(read(path.join(config, 'hooks.json')));
+    expect(Object.keys(hooks)).toEqual(['teamai']);
+    expect(Object.keys(hooks.teamai).sort()).toEqual(['PostToolUse', 'PreInvocation', 'PreToolUse', 'SessionStart', 'Stop']);
+    expect(hooks.teamai.PreToolUse[0].hooks[0].command).toContain('teamai hook-dispatch pre-tool-use --tool agy');
+
+    // What agy sends (its camelCase payload), and what it gets back.
+    const dispatch = (event: string, payload: Record<string, unknown>): string => {
+      const r = spawnSync('node', [CLI, 'hook-dispatch', event, '--tool', 'agy'], {
+        cwd: config,
+        encoding: 'utf8',
+        env: { ...process.env, HOME: home, USERPROFILE: home, FORCE_COLOR: '0' },
+        input: JSON.stringify({ conversationId: 'c0ffee00-0000-4000-8000-000000000001', workspacePaths: [cwd], modelName: 'gemini-3.8-flash-low', ...payload }),
+      });
+      expect(r.status, r.stderr).toBe(0);
+      return r.stdout;
+    };
+    const start = JSON.parse(dispatch('session-start', {}));
+    const injected = start.injectSteps[0].systemMessage.systemMessage;
+    expect(injected).toContain('Payments code lives in services/pay');
+    expect(injected).not.toContain('CLAUDE-ONLY-HOOK');
+    expect(JSON.parse(dispatch('pre-tool-use', { toolCall: { name: 'run_command', args: { CommandLine: 'rm -rf build', Cwd: cwd } } })))
+      .toEqual({ decision: 'deny', reason: 'rm -rf is blocked here; run git clean -n first.' });
+    expect(dispatch('pre-tool-use', { toolCall: { name: 'run_command', args: { CommandLine: 'ls build', Cwd: cwd } } })).toBe('');
+
+    // A member's own hook survives a user uninstall; teamai's goes.
+    fs.writeFileSync(path.join(config, 'hooks.json'), JSON.stringify({ ...hooks, 'lint-on-save': { PostToolUse: [{ matcher: 'write_to_file', hooks: [{ type: 'command', command: './lint.sh' }] }] } }));
+    const uninstall = await runCLI(['uninstall', '--agent', 'agy', '--force'], cwd, home);
+    expect(uninstall.code, uninstall.output).toBe(0);
+    expect(Object.keys(JSON.parse(read(path.join(config, 'hooks.json'))))).toEqual(['lint-on-save']);
 
     // Gemini CLI reads ~/.gemini/skills and ~/.gemini/GEMINI.md: agy must not write them.
     expect(fs.existsSync(path.join(home, '.gemini', 'skills'))).toBe(false);
@@ -174,5 +229,7 @@ describe('Antigravity CLI resource delivery', () => {
     const uninstall = await runCLI(['uninstall', '--agent', 'agy', '--force'], projectRoot, home);
     expect(uninstall.code, uninstall.output).toBe(0);
     expect(fs.existsSync(plugin)).toBe(false);
+    // hooks.json is user-wide: a project uninstall keeps teamai's hook for the other scopes.
+    expect(Object.keys(JSON.parse(read(path.join(home, '.gemini', 'config', 'hooks.json'))))).toEqual(['teamai']);
   });
 });

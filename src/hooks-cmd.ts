@@ -109,6 +109,7 @@ async function removeAdapterHooks(adapter: HookAdapterId, dir: string): Promise<
         case 'openclaw-hook':
         case 'dsh-hooks':
         case 'kiro-hooks':
+        case 'agy-hooks':
             return;
         default: {
             const unhandled: never = adapter;
@@ -195,6 +196,12 @@ export async function hooksList(_options: GlobalOptions): Promise<void> {
         if (tool === 'kiro') {
             if (!await pathExists(path.join(getUserHome(), '.kiro'))) continue;
             rows.push({ tool, status: await hasKiroHooks() ? 'installed' : 'missing', settingsPath: formatDisplayPath(kiroHookFile()), builtinDefs: installedBuiltinHookDefs(tool, false) });
+            continue;
+        }
+        if (tool === 'agy') {
+            if (!await pathExists(hookAdapterDir('agy-hooks'))) continue;
+            const { agyHookFile, hasAgyHooks } = await import('./agy-hooks.js');
+            rows.push({ tool, status: await hasAgyHooks() ? 'installed' : 'missing', settingsPath: formatDisplayPath(agyHookFile()), builtinDefs: installedBuiltinHookDefs(tool, false) });
             continue;
         }
         if (tool === 'pi') {
@@ -403,6 +410,10 @@ export async function hooksRemove(_options: GlobalOptions): Promise<void> {
         await removePiHooks();
     }
     if (teamConfig.toolPaths.kiro) await removeKiroHooks();
+    if (teamConfig.toolPaths.agy) {
+        const { reconcileAgyHooks } = await import('./agy-hooks.js');
+        await reconcileAgyHooks({ removeAll: true });
+    }
 
     const left = new Set([...keepRecordsFor, ...unwritten]);
     if (left.size > 0) {

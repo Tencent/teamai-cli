@@ -1054,6 +1054,9 @@ function adapterDirIn(adapter: Exclude<HookAdapterId, 'openclaw-hook'>, homeOf: 
       return p.join(homeOf('hermes'), 'hooks');
     case 'kiro-hooks':
       return p.join(homeOf('kiro'), 'hooks');
+    // agy reads `hooks.json` from its config root itself.
+    case 'agy-hooks':
+      return homeOf('agy');
     // The bridge config lives with teamai; dsh loads it through the row teamai keeps in `$DSH_HOME/cordis.patch.yml`.
     case 'dsh-hooks':
       return p.join(host.home, '.teamai', 'dsh');

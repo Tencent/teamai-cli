@@ -122,6 +122,7 @@ interface RemovalPlan {
   /** teamai's OMP extension in every profile that has one (~/.omp/agent/extensions/teamai-hooks.ts, ~/.omp/profiles/<name>/agent/…). */
   ompHookFiles: string[];
   kiroHookFile: string | null;
+  agyHookFile: string | null;
   /** Pi extension files owned by this scope (global for user, legacy project copy for project). */
   piHookFiles: string[];
   /** DeepSeek Harness home mount, generated hook config, or legacy overlay, if present. */
@@ -257,6 +258,7 @@ interface ToolResources {
   opencodePluginDirs: string[];
   ompHookFiles: string[];
   kiroHookFile: string | null;
+  agyHookFile: string | null;
   piHookFiles: string[];
   dshHookFile: string | null;
   bridgedTeamHookFiles: string[];
@@ -291,6 +293,7 @@ function hasToolResources(r: ToolResources): boolean {
     r.opencodePluginDirs.length > 0 ||
     r.ompHookFiles.length > 0 ||
     r.kiroHookFile !== null ||
+    r.agyHookFile !== null ||
     r.piHookFiles.length > 0 ||
     r.dshHookFile !== null ||
     r.bridgedTeamHookFiles.length > 0 ||
@@ -496,7 +499,7 @@ async function discoverToolResources(
   globalAdapters = scope === 'user',
 ): Promise<ToolResources> {
   const res: ToolResources = {
-    hookFiles: [], openclawHookDirs: [], opencodePluginDirs: [], ompHookFiles: [], kiroHookFile: null, piHookFiles: [], dshHookFile: null, bridgedTeamHookFiles: [],
+    hookFiles: [], openclawHookDirs: [], opencodePluginDirs: [], ompHookFiles: [], kiroHookFile: null, agyHookFile: null, piHookFiles: [], dshHookFile: null, bridgedTeamHookFiles: [],
     claudeMdFiles: [], retiredInstructionFiles: [], opencodeInstructions: [], keptGlobal: [], skillDirs: [], keptSkillDirs: [], keptFiles: [], ruleFiles: [], keptRuleFiles: [], opencodeOwnedGlobs: [], agentFiles: [],
   };
 
@@ -557,6 +560,13 @@ async function discoverToolResources(
     if (await ownsKiroHooks()) {
       if (globalAdapters) res.kiroHookFile = kiroHookFile();
       else res.keptGlobal.push(kiroHookFile());
+    }
+  } else if (tool === 'agy') {
+    // One user-wide hooks.json; teamai's entry is the one named `teamai`.
+    const { hasAgyHooks, agyHookFile } = await import('./agy-hooks.js');
+    if (await hasAgyHooks()) {
+      if (globalAdapters) res.agyHookFile = agyHookFile();
+      else res.keptGlobal.push(agyHookFile());
     }
   } else if (tool === 'omp') {
     // OMP hooks are a single teamai-managed TS extension in the user agent dir
@@ -1291,6 +1301,7 @@ async function buildRemovalPlan(
     opencodePluginDirs: [],
     ompHookFiles: [],
     kiroHookFile: null,
+    agyHookFile: null,
     piHookFiles: [],
     dshHookFile: null,
     bridgedTeamHookFiles: [],
@@ -1393,6 +1404,7 @@ async function buildRemovalPlan(
     plan.ompHookFiles.push(...res.ompHookFiles);
     plan.bridgedTeamHookFiles.push(...res.bridgedTeamHookFiles);
     if (res.kiroHookFile) plan.kiroHookFile = res.kiroHookFile;
+    if (res.agyHookFile) plan.agyHookFile = res.agyHookFile;
     plan.piHookFiles.push(...res.piHookFiles);
     if (res.dshHookFile) plan.dshHookFile = res.dshHookFile;
     plan.opencodeInstructions.push(...res.opencodeInstructions);
@@ -1565,6 +1577,7 @@ function isPlanEmpty(plan: RemovalPlan): boolean {
     plan.ompHookFiles.length === 0 &&
     plan.bridgedTeamHookFiles.length === 0 &&
     plan.kiroHookFile === null &&
+    plan.agyHookFile === null &&
     plan.piHookFiles.length === 0 &&
     plan.dshHookFile === null &&
     plan.hermesHomes.length === 0 &&
@@ -1649,6 +1662,7 @@ function printSummary(plan: RemovalPlan, agentFilter?: string): void {
     console.log('');
   }
   if (plan.kiroHookFile !== null) console.log(`   Kiro Hooks: ${plan.kiroHookFile}`);
+  if (plan.agyHookFile !== null) console.log(`   Antigravity CLI Hooks: ${plan.agyHookFile} (the "teamai" entry)`);
   if (plan.bridgedTeamHookFiles.length > 0) {
     console.log(`   Team hooks teamai runs (${plan.bridgedTeamHookFiles.length} files):`);
     for (const file of plan.bridgedTeamHookFiles) console.log(`     ${file}`);
@@ -2276,6 +2290,15 @@ async function executeRemoval(
   if (plan.kiroHookFile !== null) {
     const { removeKiroHooks } = await import('./kiro-hooks.js');
     await removeKiroHooks();
+  }
+
+  if (plan.agyHookFile !== null) {
+    try {
+      const { reconcileAgyHooks } = await import('./agy-hooks.js');
+      await reconcileAgyHooks({ removeAll: true });
+    } catch (e) {
+      log.warn(`Failed to remove Antigravity CLI hooks from ${plan.agyHookFile}: ${(e as Error).message}`);
+    }
   }
 
   // (a2c) Remove the generated Pi extension.

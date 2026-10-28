@@ -212,7 +212,7 @@ export type HookFormat = 'claude' | 'cursor' | 'codex' | 'copilot' | 'zcode';
 export type HookSettings<R> = { readonly channel: 'settings'; readonly format: HookFormat; readonly reads: Reads<R> };
 
 /** A file or directory of teamai's own the tool loads from its home, written by the tool's own adapter. */
-export type HookAdapterId = 'opencode-plugin' | 'pi-extension' | 'omp-extension' | 'hermes-plugin' | 'openclaw-hook' | 'dsh-hooks' | 'kiro-hooks';
+export type HookAdapterId = 'opencode-plugin' | 'pi-extension' | 'omp-extension' | 'hermes-plugin' | 'openclaw-hook' | 'dsh-hooks' | 'kiro-hooks' | 'agy-hooks';
 export type HookAdapter = { readonly channel: 'adapter'; readonly adapter: HookAdapterId; readonly evidence: Evidence };
 
 /**
@@ -1240,7 +1240,8 @@ export const TOOLS = {
   agy: {
     home: { dir: '.gemini/config' },
     installedBy: 'home',
-    skillLoad: 'unknown',
+    // A skill loads as a read of its SKILL.md (`view_file` or `read_file`).
+    skillLoad: { calls: [] },
     skills: {
       user: [{ base: 'home', path: '.gemini/config/skills', evidence: 'verified' }, { base: 'home', path: '.agents/skills', evidence: 'verified' }],
       project: [{ base: 'project', path: '.agents/skills', when: 'workspaceUnder', evidence: 'verified' }],
@@ -1261,7 +1262,7 @@ export const TOOLS = {
       user: { format: 'agy', reads: [{ base: 'home', path: '.gemini/config/mcp_config.json', evidence: 'verified' }] },
       project: { format: 'agy', reads: [{ base: 'project', path: '.agents/plugins/teamai/mcp_config.json', when: 'workspaceUnder', evidence: 'verified' }] },
     },
-    hooks: { user: 'unknown', self: 'unknown' },
+    hooks: { user: { channel: 'adapter', adapter: 'agy-hooks', evidence: 'verified' }, self: 'user' },
     sessions: 'unknown',
     launch: 'none',
     features: {
