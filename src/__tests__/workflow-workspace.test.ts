@@ -1784,7 +1784,8 @@ steps:
     expect(done, JSON.stringify(done)).toMatchObject({ data: { done: { outcome: 'failed' } } });
     const run = await readRun(config, runId);
     const join = typeof run === 'object' ? run.steps.find((step) => step.id === 'join') : undefined;
-    expect(join && 'failure' in join ? join.failure : undefined).toMatchObject({ code: 'merge_conflict' });
+    expect(join && 'failure' in join ? join.failure : undefined, JSON.stringify(typeof run === 'object' ? run.steps : null))
+      .toMatchObject({ code: 'merge_conflict' });
   });
 
   it('keeps a prompt resolution of an agent conflict', async () => {
@@ -2249,7 +2250,8 @@ steps:
     expect(done, JSON.stringify(done)).toMatchObject({ data: { done: { outcome: 'failed' } } });
     const run = await readRun(config, runId);
     const join = typeof run === 'object' ? run.steps.find((step) => step.id === 'join') : undefined;
-    expect(join && 'failure' in join ? join.failure : undefined).toMatchObject({ code: 'merge_conflict' });
+    expect(join && 'failure' in join ? join.failure : undefined, JSON.stringify(typeof run === 'object' ? run.steps : null))
+      .toMatchObject({ code: 'merge_conflict' });
     expect(git(['show', `${branchName(runId, 'join', 1)}:AGENTS.md`], workspace)).not.toContain('<<<<<<<');
   });
 
@@ -2493,7 +2495,8 @@ steps:
     expect(done, JSON.stringify(done)).toMatchObject({ data: { done: { outcome: 'failed' } } });
     const run = await readRun(config, runId);
     const join = typeof run === 'object' ? run.steps.find((step) => step.id === 'join') : undefined;
-    expect(join && 'failure' in join ? join.failure : undefined).toMatchObject({ code: 'merge_conflict' });
+    expect(join && 'failure' in join ? join.failure : undefined, JSON.stringify(typeof run === 'object' ? run.steps : null))
+      .toMatchObject({ code: 'merge_conflict' });
     expect(git(['rev-list', '--parents', '-n', '1', branchName(runId, 'join', 1)], workspace).trim().split(' ')).toHaveLength(2);
   });
 
