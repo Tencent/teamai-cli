@@ -812,7 +812,7 @@ teamai workflow resume [--next]
 
 | 剩余步骤 | 本机缺少的情况 | 列出的补救 |
 |---|---|---|
-| 带 `requires.env` 的步骤或其 `setup` | 某个键在本机没有值，或读不到团队 env | `teamai env set <KEY>`，或在环境中设置 |
+| 带 `requires.env` 的步骤或其 `setup` | 某个键在本机没有值，或读不到团队 env | 团队已声明的键用 `teamai env set <KEY>`；未声明的键先 `teamai env add <KEY> --secret` 再 `teamai env set <KEY>`；或在环境中设置 |
 | 提示词步骤，使用本地驱动 | `--tools`、`workflows.tools` 和你的 AI 工具都没有为其 agent 指定工具，或只指定了 teamai 不启动的工具 | `--tools default=<tool>`（或 `<agent>=<tool>`），或 `workflows.tools.default` |
 | 提示词步骤，使用本地驱动 | 指定的工具不在 `PATH` 上 | 安装它，或用 `--tools` 指定一个在 `PATH` 上的工具 |
 
