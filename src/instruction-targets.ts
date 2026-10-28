@@ -632,7 +632,7 @@ async function planFile(
   // deliberately available for the blocks this plan is about to write.
   // Treating an empty target like an arbitrary member file would lose the
   // culture/shared-instruction blocks on the same pull (#915).
-  if (existing !== null && !hasTeamaiBlock(existing)
+  if (existing !== null && target.owned && !hasTeamaiBlock(existing)
     && existing.trim() !== '' && existing !== (target.header ?? '')) {
     warnings.push(`${target.path} was not written by teamai, so teamai left it unchanged. Move or rename it so teamai can deliver the team instructions there.`);
     return null;
