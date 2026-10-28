@@ -98,6 +98,21 @@ describe('createGit', () => {
     const options = simpleGitCalls.at(-1)![0] as { baseDir?: string };
     expect(options.baseDir).toBe('/some/path');
   });
+
+  it.each(['win32', 'linux', 'darwin'])('scopes long-path support to Git processes on %s', (platform) => {
+    const platformSpy = vi.spyOn(process, 'platform', 'get').mockReturnValue(platform as NodeJS.Platform);
+    try {
+      for (const factory of [createGit, createGitWithBlockTimeout]) {
+        for (const basePath of [undefined, '/some/path']) {
+          factory(basePath);
+          const options = simpleGitCalls.at(-1)![0] as { config: string[] };
+          expect(options.config.includes('core.longpaths=true')).toBe(platform === 'win32');
+        }
+      }
+    } finally {
+      platformSpy.mockRestore();
+    }
+  });
 });
 
 describe('createGitWithBlockTimeout', () => {

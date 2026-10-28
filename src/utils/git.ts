@@ -178,9 +178,12 @@ export function gitBlockTimeoutMs(): number {
  * instead of hanging on a prompt that can never be answered.
  */
 export function createGit(basePath?: string, abort?: AbortSignal): SimpleGit {
+  // Role filtering happens after checkout: an inactive skill's long path can
+  // otherwise block the whole pull. Keep this override in the Git process.
+  const config = process.platform === 'win32' ? ['core.longpaths=true'] : [];
   const git = basePath
-    ? simpleGit({ baseDir: basePath, binary: gitBinary(), abort })
-    : simpleGit({ binary: gitBinary(), abort });
+    ? simpleGit({ baseDir: basePath, binary: gitBinary(), abort, config })
+    : simpleGit({ binary: gitBinary(), abort, config });
   return git.outputHandler(markOutputSeen);
 }
 
@@ -205,7 +208,10 @@ export function createGitWithBlockTimeout(basePath?: string): SimpleGit {
   // connection, and the CLI with it, until the server dropped it. curl's own
   // stall limit ends the helper, a second after the kill so the kill still
   // decides how the command fails.
-  const config = ['http.lowSpeedLimit=1', `http.lowSpeedTime=${Math.ceil(block / 1000) + 1}`];
+  const config = [
+    ...(process.platform === 'win32' ? ['core.longpaths=true'] : []),
+    'http.lowSpeedLimit=1', `http.lowSpeedTime=${Math.ceil(block / 1000) + 1}`,
+  ];
   const git = basePath
     ? simpleGit({ baseDir: basePath, binary: gitBinary(), timeout: { block }, config })
     : simpleGit({ binary: gitBinary(), timeout: { block }, config });
