@@ -552,7 +552,7 @@ describe('workflow resume lists the runs a checkout can resume, and --next takes
     const listed = await teamai('runner', ['workflow', 'resume'], { env: unattended });
     expect(listed.code, said(listed)).toBe(0);
     expect(rowsOf(listed)).toEqual(expect.arrayContaining([
-      expect.stringMatching(new RegExp(`^${sign} +sign +cannot run here +${OWNER('alice')} +offered on teamai-reports, sign requires env SIGNING_KEY, which has no value here: teamai env set SIGNING_KEY, or set it in the environment, then teamai workflow resume --next$`)),
+      expect.stringMatching(new RegExp(`^${sign} +sign +cannot run here +${OWNER('alice')} +offered on teamai-reports, sign requires env SIGNING_KEY, which has no value here: teamai env set SIGNING_KEY, or set it in the environment; then teamai workflow resume --next$`)),
     ]));
 
     const idle = await teamai('runner', ['workflow', 'resume', '--next'], { env: unattended });
@@ -578,7 +578,7 @@ describe('workflow resume lists the runs a checkout can resume, and --next takes
     const listed = await teamai('runner', ['workflow', 'resume', ...claude], { env: runner });
     expect(listed.code, said(listed)).toBe(0);
     expect(rowsOf(listed)).toEqual(expect.arrayContaining([
-      expect.stringMatching(new RegExp(`^${docs} +docs +cannot run here +${OWNER('alice')} +offered on teamai-reports, the prompt step notes run on claude, which is not on PATH here: install claude, or pass --tools default=<tool> for one that is, then teamai workflow resume --next$`)),
+      expect.stringMatching(new RegExp(`^${docs} +docs +cannot run here +${OWNER('alice')} +offered on teamai-reports, the prompt step notes run on claude, which is not on PATH here: install claude, or pass --tools default=<tool> for one that is; then teamai workflow resume --next$`)),
     ]));
 
     const idle = await teamai('runner', ['workflow', 'resume', '--next', ...claude], { env: runner });

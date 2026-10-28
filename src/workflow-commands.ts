@@ -725,8 +725,8 @@ function resumableRow(resumable: ResumableRun): string[] {
       // Another install's run: `--claim` takes it over whether or not this machine still holds an earlier copy of it.
       if (offer.needs.length > 0) return [run, workflow, 'needs a person', ownerText(owner), `offered on teamai-reports, ${offer.needs.join('; ')}: a person runs teamai workflow resume ${run} --claim`];
       if (offer.lacks.length > 0) {
-        const lacks = `${offer.lacks.map((lack) => lack.reason).join('; ')}: ${offer.lacks.map((lack) => lack.fix).join('; ')}`;
-        return [run, workflow, 'cannot run here', ownerText(owner), `offered on teamai-reports, ${lacks}, then teamai workflow resume --next`];
+        const lacks = offer.lacks.map((lack) => `${lack.reason}: ${lack.fix}`).join('; ');
+        return [run, workflow, 'cannot run here', ownerText(owner), `offered on teamai-reports, ${lacks}; then teamai workflow resume --next`];
       }
       return [run, workflow, 'running', ownerText(owner), 'offered on teamai-reports: teamai workflow resume --next'];
     }
