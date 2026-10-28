@@ -4,9 +4,17 @@ import os from 'node:os';
 import path from 'node:path';
 import * as bundledRuntime from '../bundled-runtime.js';
 import { _resetShellCache } from '../builtin-hooks.js';
-import { codexTeamHookIndexPath, dispatchedCodexHooks, reconcileCodexDispatchers, setCodexDispatcherHooks, type CodexTeamHook } from '../codex-team-hooks.js';
+import { codexTeamHookIndexPath, decodeHookOutput, dispatchedCodexHooks, reconcileCodexDispatchers, setCodexDispatcherHooks, type CodexTeamHook } from '../codex-team-hooks.js';
 
 const hook = (command: string): CodexTeamHook[] => [{ id: 'team', event: 'Stop', command }];
+
+describe('Codex hook output decoding', () => {
+  it('joins split UTF-8 bytes before decoding', () => {
+    const bytes = Buffer.from('前缀猫尾声', 'utf8');
+    const split = bytes.indexOf(0xe7) + 1;
+    expect(decodeHookOutput([bytes.subarray(0, split), bytes.subarray(split)])).toBe('前缀猫尾声');
+  });
+});
 
 describe('Codex team-hook index keeps each checkout\'s own hooks', () => {
   const originalHome = process.env.HOME;

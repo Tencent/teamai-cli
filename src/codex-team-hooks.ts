@@ -253,18 +253,23 @@ function matches(hook: CodexTeamHook, payload: Record<string, unknown>): boolean
 
 interface HookRun { hook: CodexTeamHook; code: number | null; stdout: string; stderr: string; timedOut: boolean }
 
+/** Decode pipe chunks only after the child closes, so UTF-8 characters split across chunks survive. */
+export function decodeHookOutput(chunks: readonly Buffer[]): string {
+  return Buffer.concat(chunks).toString('utf8');
+}
+
 /** Run one team hook as Codex would: through a shell, in `cwd`, the payload on stdin, bounded by its timeout. */
 function runHook(hook: CodexTeamHook, payload: string, cwd: string | undefined): Promise<HookRun> {
   return new Promise((resolve) => {
     const group = process.platform !== 'win32';
-    let stdout = '';
-    let stderr = '';
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
     let settled = false;
     const finish = (code: number | null, timedOut = false) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve({ hook, code, stdout, stderr, timedOut });
+      resolve({ hook, code, stdout: decodeHookOutput(stdoutChunks), stderr: decodeHookOutput(stderrChunks), timedOut });
     };
     const child = spawn(hook.command, {
       shell: true,
@@ -283,9 +288,9 @@ function runHook(hook: CodexTeamHook, payload: string, cwd: string | undefined):
       }
       finish(null, true);
     }, (hook.timeout ?? defaultTimeout(hook.event)) * 1000);
-    child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf8'); });
-    child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8'); });
-    child.on('error', (e) => { stderr += e.message; finish(null); });
+    child.stdout?.on('data', (chunk: Buffer) => { stdoutChunks.push(Buffer.from(chunk)); });
+    child.stderr?.on('data', (chunk: Buffer) => { stderrChunks.push(Buffer.from(chunk)); });
+    child.on('error', (e) => { stderrChunks.push(Buffer.from(e.message)); finish(null); });
     child.on('close', (code) => finish(code));
     child.stdin?.on('error', () => {});
     child.stdin?.end(payload);
