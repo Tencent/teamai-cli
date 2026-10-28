@@ -485,7 +485,7 @@ describe('workflow resume lists the runs a checkout can resume, and --next takes
     const listed = await teamai('runner', ['workflow', 'resume']);
     expect(listed.code, said(listed)).toBe(0);
     expect(rowsOf(listed)).toEqual([
-      expect.stringMatching(new RegExp(`^${release} +release +needs a person +${OWNER('alice')} +offered on teamai-reports, only a person can answer the approval at ship: a person runs teamai workflow resume ${release}$`)),
+      expect.stringMatching(new RegExp(`^${release} +release +needs a person +${OWNER('alice')} +offered on teamai-reports, only a person can answer the approval at ship: a person runs teamai workflow resume ${release} --claim$`)),
       expect.stringMatching(new RegExp(`^${quick} +quick +running +${OWNER('alice')} +offered on teamai-reports: teamai workflow resume --next$`)),
     ]);
 

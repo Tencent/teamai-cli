@@ -721,7 +721,8 @@ function resumableRow(resumable: ResumableRun): string[] {
     case 'offered': {
       const { run, workflow, owner, offer } = resumable.published;
       if (offer.refusal) return [run, workflow, offer.refusal.code === 'needs_local_driver' ? 'needs the local driver' : offer.refusal.code, ownerText(owner), `offered on teamai-reports: ${offer.refusal.message}`];
-      if (offer.needs.length > 0) return [run, workflow, 'needs a person', ownerText(owner), `offered on teamai-reports, ${offer.needs.join('; ')}: a person runs teamai workflow resume ${run}`];
+      // Another install's run: `--claim` takes it over whether or not this machine still holds an earlier copy of it.
+      if (offer.needs.length > 0) return [run, workflow, 'needs a person', ownerText(owner), `offered on teamai-reports, ${offer.needs.join('; ')}: a person runs teamai workflow resume ${run} --claim`];
       return [run, workflow, 'running', ownerText(owner), 'offered on teamai-reports: teamai workflow resume --next'];
     }
     case 'here': {

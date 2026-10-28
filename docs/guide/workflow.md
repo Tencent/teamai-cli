@@ -353,7 +353,7 @@ $ teamai workflow resume --next --auto-approve
 ```console
 $ teamai workflow resume
 RUN                WORKFLOW        STATUS          OWNER                      WHERE
-r482011be75fd0ad9  release         needs a person  alice (install 4c514375…)  offered on teamai-reports, only a person can answer the approval at ship: a person runs teamai workflow resume r482011be75fd0ad9
+r482011be75fd0ad9  release         needs a person  alice (install 4c514375…)  offered on teamai-reports, only a person can answer the approval at ship: a person runs teamai workflow resume r482011be75fd0ad9 --claim
 rba115c30f5a3b946  ship-issue      running         alice (install 4c514375…)  offered on teamai-reports: teamai workflow resume --next
 r89c346a218d2f5e9  nightly-report  running         this install               local: teamai workflow resume r89c346a218d2f5e9
 ```

@@ -820,7 +820,7 @@ Who may take an offered run follows the workflow's `invoke`, as `resume` does:
 
 `--driver skill` always counts as an agent session, and also skips a run only the local driver can run (`needs_local_driver`). The listing shows a run skipped this way with the refusal's code, or as `needs the local driver`.
 
-`teamai workflow resume` with no run id lists, after the same fetch, the offered runs of this checkout's business repository and this machine's running runs, once each. `STATUS` is `running`, `needs a person`, `needs the local driver`, `claimed` (another install took your run), or the code of another refusal. When the fetch fails, it warns and lists what the last fetch saw.
+`teamai workflow resume` with no run id lists, after the same fetch, the offered runs of this checkout's business repository and this machine's running runs, once each. `STATUS` is `running`, `needs a person` (a person takes it over with `resume <run> --claim`), `needs the local driver`, `claimed` (another install took your run), `succeeded`, `failed` or `cancelled` (your run ended on the install that took it, and `--claim` brings how it ended here), or the code of another refusal. A checkout without an origin lists no offered run, since `--next` takes none there. When the fetch fails, it warns and lists what the last fetch saw.
 
 | Code | What happened | Next step |
 |---|---|---|

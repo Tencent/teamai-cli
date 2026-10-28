@@ -820,7 +820,7 @@ teamai workflow resume [--next]
 
 `--driver skill` 总是算作 agent 会话，还会跳过只有本地驱动能运行的运行（`needs_local_driver`）。这样被跳过的运行在列表中显示拒绝的代码，或显示为 `needs the local driver`。
 
-不带运行 id 的 `teamai workflow resume` 在同样的 fetch 之后，列出本检出目录所属业务仓库的待接手运行，以及本机仍在运行的运行，每个只列一次。`STATUS` 为 `running`、`needs a person`、`needs the local driver`、`claimed`（另一个安装实例接手了你的运行），或其他拒绝的代码。fetch 失败时，它给出警告，并列出上一次 fetch 看到的内容。
+不带运行 id 的 `teamai workflow resume` 在同样的 fetch 之后，列出本检出目录所属业务仓库的待接手运行，以及本机仍在运行的运行，每个只列一次。`STATUS` 为 `running`、`needs a person`（由人用 `resume <run> --claim` 接管）、`needs the local driver`、`claimed`（另一个安装实例接手了你的运行）、`succeeded`、`failed` 或 `cancelled`（你的运行已在接手它的安装实例上结束，`--claim` 把它的结束状态带到本机），或其他拒绝的代码。没有 origin 的检出目录不列出待接手运行，因为 `--next` 在那里不接手任何运行。fetch 失败时，它给出警告，并列出上一次 fetch 看到的内容。
 
 | 代码 | 发生了什么 | 下一步 |
 |---|---|---|
