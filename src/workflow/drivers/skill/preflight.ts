@@ -74,9 +74,7 @@ export function attendedReason(description: WorkflowDescription, act: 'start' | 
  */
 export function stepNeeds(description: WorkflowDescription, settled: ReadonlySet<string> = new Set()): string[] {
   const { facts } = description;
-  // `a.b.c` is settled when `a`, `a.b` or `a.b.c` is: a workflow's steps exist in the run only once it starts, and an
-  // item's path (`a[0].b`) is not the definition's (`a.b`).
-  const left = (step: string): boolean => !step.split('.').some((_, at, segments) => settled.has(segments.slice(0, at + 1).join('.')));
+  const left = (step: string): boolean => isLeft(step, settled);
   const interactive = facts.interactive.filter(left);
   const gates = facts.gates.filter((gate) => left(gate.step));
   const required = gates.filter((gate) => gate.required);
@@ -86,6 +84,15 @@ export function stepNeeds(description: WorkflowDescription, settled: ReadonlySet
     ...(required.length > 0 ? [`only a person can answer the ${gatesNoun(required)} at ${listOf(required.map((gate) => gate.step))}`] : []),
     ...(open.length > 0 ? [`the ${open.length > 1 ? 'choices' : 'choice'} at ${listOf(open.map((gate) => gate.step))} ${open.length > 1 ? 'have' : 'has'} no default, so --auto-approve leaves ${open.length > 1 ? 'them' : 'it'} to a person`] : []),
   ];
+}
+
+/**
+ * Whether step `step`, by its definition path, is left to run in a run whose steps `settled` for good. `a.b.c` is settled
+ * when `a`, `a.b` or `a.b.c` is: a workflow's steps exist in the run only once it starts, and an item's path (`a[0].b`)
+ * is not the definition's (`a.b`).
+ */
+export function isLeft(step: string, settled: ReadonlySet<string>): boolean {
+  return !step.split('.').some((_, at, segments) => settled.has(segments.slice(0, at + 1).join('.')));
 }
 
 /** Checks a start of `description` against what describe asked. `ceiling` is the most steps the driver runs at once. */
@@ -107,7 +114,7 @@ export function checkStartAnswers(input: {
 }
 
 /** `items` as an English list: `a`, `a and b`, `a, b and c`. */
-function listOf(items: readonly string[]): string {
+export function listOf(items: readonly string[]): string {
   return items.length > 1 ? `${items.slice(0, -1).join(', ')} and ${items.slice(-1).join('')}` : items.join('');
 }
 

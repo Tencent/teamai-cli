@@ -10,7 +10,10 @@ import type { WorkflowEnv } from './env-resolution.js';
 import { log } from './utils/logger.js';
 import { getReportsDir, usesBranchWorktree, type LocalConfig } from './types.js';
 import { describeWorkflow } from './workflow/describe.js';
-import { canFor, ceilingOf, localReason, stepNeeds } from './workflow/drivers/skill/skill-driver.js';
+import { canFor, ceilingOf, isLeft, localReason, stepNeeds } from './workflow/drivers/skill/skill-driver.js';
+import { listOf } from './workflow/drivers/skill/preflight.js';
+import { sameEnvName } from './resources/env-key.js';
+import type { EnvFacts } from './workflow/requirements.js';
 import { definitionsOf, settledSteps } from './workflow/handoff.js';
 import { invokeRefusal, type InvokeCaller } from './workflow/protocol.js';
 import { parseSnapshot, SNAPSHOTS_DIR, snapshotPath, type HandoffOwner, type RunSnapshot } from './workflow/snapshot.js';
@@ -27,11 +30,19 @@ export interface Taker {
   hasPerson: boolean;
 }
 
+/** Something the steps an offered run has left need that this machine lacks: why, as a clause, and what gives it. */
+export interface Lack {
+  reason: string;
+  fix: string;
+}
+
 /** An offered run, as `taker` would find it. */
 export interface Offer {
   at: string;
   /** What in the steps the run has not settled for good needs a person, a clause each; empty when a runner can finish it. */
   needs: string[];
+  /** What those steps need that this machine lacks: env with no value here. */
+  lacks: Lack[];
   /** Why `taker` may not take it at all: its `invoke` refuses the caller, it needs the local driver, or its workflows cannot be read here. */
   refusal?: WorkflowFailure;
 }
@@ -100,16 +111,36 @@ async function readSnapshot(config: LocalConfig, run: RunId): Promise<RunSnapsho
  */
 async function offerOf(config: LocalConfig, snapshot: RunSnapshot, at: string, { taker, env }: { taker: Taker; env: WorkflowEnv }): Promise<Offer> {
   const definitions = await definitionsOf(config, snapshot);
-  if (!definitions.ok) return { at, needs: [], refusal: { code: definitions.error.code, message: definitions.error.message } };
+  if (!definitions.ok) return { at, needs: [], lacks: [], refusal: { code: definitions.error.code, message: definitions.error.message } };
   const { definition, workflows } = definitions.value;
   const description = describeWorkflow({
     definition, workflows, ceiling: ceilingOf(config), can: canFor(undefined), allow: config.workflows?.allow ?? {}, env: env.facts,
   });
-  const needs = stepNeeds(description, new Set(settledSteps({ definition, workflows, steps: snapshot.steps })));
+  const settled = new Set(settledSteps({ definition, workflows, steps: snapshot.steps }));
+  const needs = stepNeeds(description, settled);
+  const left = description.facts.runs.filter((run) => isLeft(run.step, settled));
   const local = taker.driver === 'skill' ? localReason(description) : undefined;
   const refusal = invokeRefusal(definition, taker.caller, { kind: 'continue', run: RunIdSchema.parse(snapshot.run) })
     ?? (local !== undefined ? { code: 'needs_local_driver', message: local } : undefined);
-  return { at, needs, ...(refusal ? { refusal } : {}) };
+  return { at, needs, lacks: envLacks(left, env.facts), ...(refusal ? { refusal } : {}) };
+}
+
+/** What `runs` require of env that `env` cannot give here: a key with no value, or any key while the team env is unreadable. */
+function envLacks(runs: ReadonlyArray<{ step: string; env: string[] }>, env: EnvFacts): Lack[] {
+  const absent = (keys: readonly string[]): string[] => (env.unreadable !== undefined ? [...keys] : keys.filter((key) => sameEnvName(env.present, key) === undefined));
+  const short = runs.filter((run) => absent(run.env).length > 0);
+  if (short.length === 0) return [];
+  const keys = [...new Set(short.flatMap((run) => absent(run.env)))];
+  const steps = short.map((run) => run.step);
+  const require = `${listOf(steps)} require${steps.length > 1 ? '' : 's'} env ${listOf(keys)}`;
+  if (env.unreadable !== undefined) {
+    return [{ reason: `${require}, and the team env cannot be read here: ${env.unreadable}`, fix: 'teamai env list, and fix what it reports' }];
+  }
+  const one = keys.length === 1;
+  return [{
+    reason: `${require}, which ${one ? 'has' : 'have'} no value here`,
+    fix: `${keys.map((key) => `teamai env set ${key}`).join(', ')}, or set ${one ? 'it' : 'them'} in the environment`,
+  }];
 }
 
 /**
@@ -119,7 +150,7 @@ async function offerOf(config: LocalConfig, snapshot: RunSnapshot, at: string, {
  */
 function candidates(runs: readonly PublishedRun[], { repository, hasPerson, self }: { repository: string | undefined; hasPerson: boolean; self: string }): PublishedRun[] {
   return runs.filter(({ offer, owner, repository: of }) => offer !== undefined && owner.id !== self && repository !== undefined && of === repository
-    && offer.refusal === undefined && (hasPerson || offer.needs.length === 0));
+    && offer.refusal === undefined && offer.lacks.length === 0 && (hasPerson || offer.needs.length === 0));
 }
 
 /**

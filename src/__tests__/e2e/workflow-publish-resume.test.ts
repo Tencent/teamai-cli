@@ -63,6 +63,18 @@ steps:
     command: node -e "console.log('ship')"
 `;
 
+const SIGN = `schemaVersion: v1alpha1
+name: sign
+description: Build, then sign with the release key.
+steps:
+  - id: build
+    command: node -e "console.log('build')"
+  - id: sign
+    needs: [build]
+    requires: { env: [SIGNING_KEY] }
+    command: node -e "console.log('signed')"
+`;
+
 const REVIEW = `schemaVersion: v1alpha1
 name: review
 description: Review the project twice in one session.
@@ -448,6 +460,7 @@ describe('workflow resume lists the runs a checkout can resume, and --next takes
       'teamai.yaml': `team: acme\nrepo: ${TEAM_URL}\nprovider: github\n`,
       'workflows/quick.yaml': QUICK,
       'workflows/release.yaml': RELEASE,
+      'workflows/sign.yaml': SIGN,
     }, 'team repo', teamOrigin);
     seed(path.join(sandbox, 'seed-business'), { 'README.md': '# business\n' }, 'business repo', businessOrigin);
     await join('alice');
@@ -518,6 +531,27 @@ describe('workflow resume lists the runs a checkout can resume, and --next takes
     expect(idle.envelope()).toMatchObject({ data: { idle: { offered: expect.any(Number) } } });
     expect(idle.stderr).not.toContain(`Claimed ${release}`);
     expect(publishedState(release)).toMatchObject({ status: 'running', offered: { at: expect.any(String) } });
+  }, 180_000);
+
+  it('leaves a run whose steps left require env the runner has no value for, lists why, and takes it once the value is there', async () => {
+    const sign = await offer('sign');
+    const unattended = { TEAMAI_MODE: 'unattended' };
+
+    const listed = await teamai('runner', ['workflow', 'resume'], { env: unattended });
+    expect(listed.code, said(listed)).toBe(0);
+    expect(rowsOf(listed)).toEqual(expect.arrayContaining([
+      expect.stringMatching(new RegExp(`^${sign} +sign +cannot run here +${OWNER('alice')} +offered on teamai-reports, sign requires env SIGNING_KEY, which has no value here: teamai env set SIGNING_KEY, or set it in the environment, then teamai workflow resume --next$`)),
+    ]));
+
+    const idle = await teamai('runner', ['workflow', 'resume', '--next'], { env: unattended });
+    expect(idle.code, said(idle)).toBe(0);
+    expect(idle.envelope()).toMatchObject({ data: { idle: { offered: expect.any(Number) } } });
+    expect(publishedState(sign)).toMatchObject({ status: 'running', offered: { at: expect.any(String) } });
+
+    const taken = await teamai('runner', ['workflow', 'resume', '--next'], { env: { ...unattended, SIGNING_KEY: 'test-key' } });
+    expect(taken.code, said(taken)).toBe(0);
+    expect(taken.stderr).toContain(`Claimed ${sign} (sign) from alice`);
+    expect(taken.envelope()).toMatchObject({ data: { done: { run: sign, outcome: 'succeeded' } } });
   }, 180_000);
 
   it('refuses --next with a run id, since it picks the run itself', async () => {

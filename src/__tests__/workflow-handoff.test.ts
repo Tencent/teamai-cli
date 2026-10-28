@@ -2773,9 +2773,9 @@ steps:
   }
 
   /** What `member` reads of teamai-reports after a pull. */
-  async function publishedRuns(member: Member, taker: Taker = runnerTaker()) {
+  async function publishedRuns(member: Member, taker: Taker = runnerTaker(), env: NodeJS.ProcessEnv = {}) {
     await reportsBranch.readableReportsWorktree(member.config);
-    return PublishedRuns.list(member.config, { taker, env: await resolveWorkflowEnv(member.config, {}) });
+    return PublishedRuns.list(member.config, { taker, env: await resolveWorkflowEnv(member.config, env) });
   }
 
   it('lists an offered run whose step left has a required approval as needing a person, which a runner no person attends does not take', async () => {
@@ -2791,12 +2791,47 @@ steps:
     const runs = await publishedRuns(runner);
     expect(runs).toEqual([expect.objectContaining({
       run: runId, workflow: 'release', owner: expect.objectContaining({ user: 'alice' }), repository: 'github.com/acme/app',
-      offer: { at: expect.any(String), needs: ['only a person can answer the approval at ship'] },
+      offer: { at: expect.any(String), needs: ['only a person can answer the approval at ship'], lacks: [] },
     })]);
     const self = (await installOwner(runner.config)).id;
     expect(PublishedRuns.candidates(runs, { repository: 'github.com/acme/app', hasPerson: false, self })).toEqual([]);
     expect(PublishedRuns.candidates(runs, { repository: 'github.com/acme/app', hasPerson: true, self }).map((run) => run.run)).toEqual([runId]);
     expect(PublishedRuns.candidates(runs, { repository: 'github.com/acme/other', hasPerson: true, self })).toEqual([]);
+  });
+
+  const SIGN = `schemaVersion: v1alpha1
+name: sign
+description: Build, then sign with the release key.
+steps:
+  - id: build
+    command: echo build
+  - id: sign
+    needs: [build]
+    requires: { env: [SIGNING_KEY] }
+    command: echo sign
+`;
+
+  it('lists an offered run whose steps left require env with no value here as lacking it, which no runner here takes', async () => {
+    const acme = team({ sign: SIGN });
+    const alice = await acme.member('alice');
+    const runner = await acme.member('runner');
+    originAt('https://github.com/acme/app.git', [alice, runner]);
+    const started = await startRun(alice.config, 'sign', {}, { secrets: {} });
+    const runId = 'data' in started ? String(started.data.run) : '';
+    await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout });
+
+    const runs = await publishedRuns(runner);
+    expect(runs).toEqual([expect.objectContaining({
+      run: runId, offer: { at: expect.any(String), needs: [], lacks: [{
+        reason: 'sign requires env SIGNING_KEY, which has no value here', fix: 'teamai env set SIGNING_KEY, or set it in the environment',
+      }] },
+    })]);
+    const self = (await installOwner(runner.config)).id;
+    expect(PublishedRuns.candidates(runs, { repository: 'github.com/acme/app', hasPerson: true, self })).toEqual([]);
+
+    const keyed = await publishedRuns(runner, runnerTaker(), { SIGNING_KEY: 'k' });
+    expect(keyed[0]?.offer).toMatchObject({ lacks: [] });
+    expect(PublishedRuns.candidates(keyed, { repository: 'github.com/acme/app', hasPerson: false, self }).map((run) => run.run)).toEqual([runId]);
   });
 
   it('lets a runner with no agent session take an offered run of an invoke: deny workflow, and refuses it to the skill driver', async () => {
@@ -2873,7 +2908,7 @@ steps:
     expect(rows).toEqual([
       expect.objectContaining({
         run: offered, workflow: 'release', isMine: true, owner: expect.objectContaining({ user: 'alice' }), repository: 'github.com/acme/app',
-        offer: { at: expect.any(String), needs: ['only a person can answer the approval at ship'] },
+        offer: { at: expect.any(String), needs: ['only a person can answer the approval at ship'], lacks: [] },
       }),
       expect.objectContaining({ run: held, workflow: 'build', isMine: false, owner: expect.objectContaining({ user: 'bob' }) }),
     ]);

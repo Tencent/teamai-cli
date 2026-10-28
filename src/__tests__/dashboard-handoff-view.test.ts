@@ -29,8 +29,8 @@ function row(run: string, { isMine, offer }: Pick<HandoffRow, 'isMine' | 'offer'
   };
 }
 
-const RUNNABLE = { at: '2026-10-28T09:05:00.000Z', needs: [] };
-const GATED = { at: '2026-10-28T09:05:00.000Z', needs: ['only a person can answer the approval at ship'] };
+const RUNNABLE = { at: '2026-10-28T09:05:00.000Z', needs: [], lacks: [] };
+const GATED = { at: '2026-10-28T09:05:00.000Z', needs: ['only a person can answer the approval at ship'], lacks: [] };
 
 describe('the Handed-off runs panel', () => {
   it('gives each run the command that takes it from this install', () => {

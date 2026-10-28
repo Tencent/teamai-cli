@@ -83,6 +83,11 @@ export interface WorkflowDescription {
     timeout?: number;
     /** The tokens a run may spend, and those a workflow step may each time it starts, by path. */
     budgets: Array<{ step?: string; tokens: number }>;
+    /**
+     * Each step that runs a command or a prompt, by path, with what the machine that runs it needs: the `requires.env`
+     * keys of the step and its setup, and the agent of a prompt step, whose tool the driver picks.
+     */
+    runs: Array<{ step: string; executor: 'command' | 'prompt'; env: string[]; agent?: string }>;
     /** Steps the describing driver is held from, by path, with what it lacks, and the `requires.env` keys they need. */
     held: Array<{ step: string; missing: Missing[]; env: string[] }>;
     localRoute?: LocalRoute;
@@ -125,6 +130,7 @@ export function describeWorkflow(input: {
     requiresEnv: { keys: [...runEnvKeys], missingHere: [...runEnvKeys].filter((key) => sameEnvName(env.present, key) === undefined) },
     ...(definition.timeout !== undefined ? { timeout: definition.timeout } : {}),
     budgets: definition.budget ? [{ tokens: definition.budget.tokens }] : [],
+    runs: [],
     held: [],
   };
   /** By the step that opened each copy: whether the driver takes a step in it, and the first step in it the driver is held from. */
@@ -134,8 +140,11 @@ export function describeWorkflow(input: {
   const offer = (step: WorkflowStep, path: string, scope: Scope): void => {
     const hasContract = !runsInCheckout(step, scope.ancestors);
     const requires = mergeRequirements(scope.requires, step.requires);
+    const executor = step.command !== undefined ? 'command' : 'prompt';
+    const setupEnv = hasContract ? scope.setup?.requires?.env ?? [] : [];
+    facts.runs.push({ step: path, executor, env: [...new Set([...requires.env ?? [], ...setupEnv])], ...(executor === 'prompt' && step.agent !== undefined ? { agent: step.agent } : {}) });
     const negotiation = negotiate({
-      step: path, executor: step.command !== undefined ? 'command' : 'prompt', requires,
+      step: path, executor, requires,
       interactive: step.interactive === true, hasContract, envKeys: Object.keys(step.env ?? {}), runEnvKeys, budgeted: step.prompt !== undefined && scope.budgeted,
       ...(step.maxTurns !== undefined ? { maxTurns: step.maxTurns } : {}), ...(hasContract && scope.setup ? { setup: scope.setup } : {}),
     }, can, allow, env);
