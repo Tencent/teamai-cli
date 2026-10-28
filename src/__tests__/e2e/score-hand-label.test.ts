@@ -61,11 +61,17 @@ describe('teamai score --label and --team-session', () => {
   let root: string;
   let team: string;
   let judged: string;
-  const members: Record<'alice' | 'bob', { app: string; env: NodeJS.ProcessEnv; home: string }> = {} as never;
+
+  /** Where `who` lives, and the environment their teamai runs with: the fake judge first on PATH. */
+  function member(who: 'alice' | 'bob'): { app: string; env: NodeJS.ProcessEnv; home: string } {
+    const home = path.join(root, who);
+    const env = { ...process.env, HOME: home, USERPROFILE: home, GIT_CONFIG_GLOBAL: path.join(home, '.gitconfig'), PATH: `${path.join(root, 'bin')}${path.delimiter}${process.env.PATH ?? ''}` };
+    return { app: path.join(home, 'app'), env, home };
+  }
 
   /** A Claude Code session `who` ran in their app, with `prompt` first. */
   function plantSession(who: 'alice' | 'bob', sessionId: string, prompt: string): void {
-    const { home, app } = members[who];
+    const { home, app } = member(who);
     const project = path.join(home, '.claude', 'projects', encodeCwdClaude(app));
     fs.mkdirSync(project, { recursive: true });
     fs.writeFileSync(path.join(project, `${sessionId}.jsonl`),
@@ -104,15 +110,11 @@ console.log(JSON.stringify({ type: 'result', structured_output: { label: 'good',
 });\n`, { mode: 0o755 });
 
     for (const who of ['alice', 'bob'] as const) {
-      const home = path.join(root, who);
-      const app = path.join(home, 'app');
+      const { app, env, home } = member(who);
       fs.mkdirSync(app, { recursive: true });
       git(app, 'init', '-q', '-b', 'main');
       git(app, 'remote', 'add', 'origin', APP_URL);
       fs.writeFileSync(path.join(home, '.gitconfig'), `[user]\n\tname = ${who}\n\temail = ${who}@example.com\n[url "file://${team}"]\n\tinsteadOf = ${TEAM_URL}\n`);
-      const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, USERPROFILE: home, GIT_CONFIG_GLOBAL: path.join(home, '.gitconfig'), PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}` };
-      for (const name of ['CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'CLAUDE_CODE_SESSION_ID', 'CODEX_SESSION_ID', 'CODEBUDDY_SESSION_ID', 'COPILOT_AGENT_SESSION_ID', 'CURSOR_CONVERSATION_ID', 'CLAUDE_SESSION_ID', 'OPENCODE_SESSION_ID', 'TEAMAI_AGENT_SESSION_ID', 'PI_SESSION_ID', 'MUSE_SESSION_ID']) delete env[name];
-      members[who] = { app, env, home };
       for (const command of [['init', TEAM_URL, '--provider', 'git', '--agent', 'claude', '--scope', 'user', '--force'], ['pull']]) {
         const result = await runCLI(command, app, env);
         expect(result.code, `${result.stdout}\n${result.stderr}`).toBe(0);
@@ -126,7 +128,7 @@ console.log(JSON.stringify({ type: 'result', structured_output: { label: 'good',
   });
 
   it('labels the current session by hand, publishes it, and keeps it beside the model label of the same session', async () => {
-    const { app, env } = members.alice;
+    const { app, env } = member('alice');
     const inside = { ...env, CLAUDE_CODE_SESSION_ID: SESSION };
 
     const unnamed = await runCLI(['score', '--label', 'missed-bug'], app, inside);
@@ -135,7 +137,7 @@ console.log(JSON.stringify({ type: 'result', structured_output: { label: 'good',
     const unknown = await runCLI(['score', '--scorer', 'review-quality', '--label', 'flaky'], app, inside);
     expect(unknown.code).toBe(1);
     expect(envelope(unknown.stdout).error).toEqual({ code: 'label_invalid', message: '"flaky" is not a label of scorer review-quality. Use one of: good, missed-bug.' });
-    expect(fs.existsSync(path.join(members.alice.home, '.teamai', 'scores'))).toBe(false);
+    expect(fs.existsSync(path.join(member('alice').home, '.teamai', 'scores'))).toBe(false);
 
     const byHand = await runCLI(['score', '--scorer', 'review-quality', '--label', 'missed-bug', '--push'], app, inside);
     expect(byHand.code, byHand.stdout + byHand.stderr).toBe(0);
@@ -145,7 +147,7 @@ console.log(JSON.stringify({ type: 'result', structured_output: { label: 'good',
     });
     expect(byHand.stderr).toContain('review-quality: missed-bug (score 0, did not pass), by hand. No judge ran.');
     expect(fs.existsSync(judged)).toBe(false);
-    expect(fs.existsSync(path.join(members.alice.home, '.teamai', 'scores', 'reasoning'))).toBe(false);
+    expect(fs.existsSync(path.join(member('alice').home, '.teamai', 'scores', 'reasoning'))).toBe(false);
 
     const byModel = await runCLI(['score', '--session', SESSION, '--source', 'claude-code', '--scorer', 'review-quality', '--push'], app, env);
     expect(byModel.code, byModel.stdout + byModel.stderr).toBe(0);
@@ -156,9 +158,10 @@ console.log(JSON.stringify({ type: 'result', structured_output: { label: 'good',
   });
 
   it('labels and judges a session a teammate pushed without --scrub, by its name, redacted for the judge', async () => {
-    const pushedByAlice = await runCLI(['session', 'push', '--source', 'claude-code', '--cwd', members.alice.app, '-y'], members.alice.app, members.alice.env);
+    const alice = member('alice');
+    const pushedByAlice = await runCLI(['session', 'push', '--source', 'claude-code', '--cwd', alice.app, '-y'], alice.app, alice.env);
     expect(pushedByAlice.code, pushedByAlice.stdout + pushedByAlice.stderr).toBe(0);
-    const { app, env } = members.bob;
+    const { app, env } = member('bob');
     const listed = await runCLI(['session', 'list'], app, env);
     const name = /\b(claude-code_\S+)\s+alice\b/.exec(listed.stdout)?.[1];
     expect(name, listed.stdout + listed.stderr).toBeDefined();
@@ -204,13 +207,13 @@ console.log(JSON.stringify({ type: 'result', structured_output: { label: 'good',
       sessionId: legacyId, title: 'Plan the release', cwd: '/home/carol/app', platform: 'claude-code', createdAt: '2026-06-01T10:00:00.000Z', updatedAt: '2026-06-01T11:00:00.000Z',
       messages: [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'Plan the release' }] }],
     };
-    const meta = defaultSyncMeta({ platform: 'claude-code', author: 'carol', cwd: session.cwd, sessionId: legacyId, repoIdentity: getRepoIdentity(members.bob.app), title: session.title }, session.createdAt);
+    const meta = defaultSyncMeta({ platform: 'claude-code', author: 'carol', cwd: session.cwd, sessionId: legacyId, repoIdentity: getRepoIdentity(member('bob').app), title: session.title }, session.createdAt);
     const saved = await new SyncManager(clone).saveSession(session, meta);
     if (saved.status !== 'written') throw new Error('the legacy archive is busy');
     git(clone, 'add', '-A');
     git(clone, '-c', 'user.name=carol', '-c', 'user.email=c@c', 'commit', '-qm', 'sync: push 1 session(s) from claude-code');
     git(clone, 'push', '-q', 'origin', 'main');
-    const { app, env } = members.bob;
+    const { app, env } = member('bob');
     expect((await runCLI(['session', 'pull'], app, env)).code).toBe(0);
 
     const labelled = await runCLI(['score', '--team-session', path.basename(saved.value, '.jsonl'), '--scorer', 'review-quality', '--label', 'good'], app, env);

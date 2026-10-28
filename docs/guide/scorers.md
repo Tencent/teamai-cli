@@ -190,8 +190,15 @@ Alice pushed her session with `teamai session push`. In your checkout of the sam
 ```console
 $ teamai session pull
 $ teamai session list
-  SESSION                                             AUTHOR  PLATFORM     MSGS  UPDATED
-  claude-code_fix-the-retry-loop-in-sync-ts_20261021  alice   claude-code  84    2026-10-21
+
+Sessions for github.com/acme/app:
+
+  SESSION                                             AUTHOR      PLATFORM        MSGS  UPDATED
+  ─────────────────────────────────────────────────────────────────────────────────────────────
+  claude-code_fix-the-retry-loop-in-sync-ts_20261021  alice       claude-code       84  2026-10-21
+
+  1 session(s)
+
 $ teamai score --team-session claude-code_fix-the-retry-loop-in-sync-ts_20261021 --scorer review-quality --label missed-bug --push
 ℹ Labelling claude-code session 7c1e… in /home/alice/app
 ℹ Pushed by alice

@@ -54,10 +54,11 @@ export interface TeamSession {
   author?: string;
 }
 
-/** What `teamai score --session <id> [--source <platform>] --scorer <name>… [--batch] [--push] [--json <driver>]` asks for. */
-export interface SessionDemand {
-  session?: string;
-  source?: string;
+/**
+ * What `teamai score [--session <id> [--source <platform>] | --team-session <name>] --scorer <name>… [--batch] [--push]
+ * [--json <driver>]` asks for: a session of a tool on this machine, or one a member pushed to the team archive.
+ */
+export type SessionDemand = {
   /** Cached scorers by name, or scorer files (`isScorerFile`) relative to the current directory, whose labels are only tried. */
   scorers: readonly [string, ...string[]];
   batch?: boolean;
@@ -65,11 +66,12 @@ export interface SessionDemand {
   push?: boolean;
   /** A value of the one scorer, given by hand: stored as the member's label, and no judge runs. */
   label?: string;
-  /** A session pushed to the team archive, instead of one of a tool on this machine. */
-  teamSession?: TeamSession;
   /** Lease the session to this driver's own judge instead of judging it here. */
   ownJudge?: OwnJudge;
-}
+} & (
+  | { teamSession: TeamSession; session?: never; source?: never }
+  | { teamSession?: never; session?: string; source?: string }
+);
 
 interface Asked {
   scorer: string;
@@ -125,7 +127,7 @@ async function scopeOf(config: LocalConfig, platform: string, session: Session):
  * The session a scoring names, read redacted, and the scope its labels are kept in. A pushed one names the member who
  * pushed it, and has no captures here.
  */
-interface Named {
+interface NamedSession {
   platform: string;
   found: { session: Session; subagents?: SubagentsRead };
   config: LocalConfig;
@@ -133,7 +135,7 @@ interface Named {
 }
 
 /** The session of a tool on this machine that `--session`, or the agent session variable, names. */
-async function nativeSession(from: LocalConfig, demand: SessionDemand): Promise<Named | Failure> {
+async function nativeSession(from: LocalConfig, demand: SessionDemand): Promise<NamedSession | Failure> {
   const named = await sessionOf(from, demand);
   if ('error' in named) return named;
   const { platform, sessionId } = named;
@@ -148,17 +150,17 @@ async function nativeSession(from: LocalConfig, demand: SessionDemand): Promise<
 }
 
 /**
- * The session pushed to the team archive as `name`, for this directory's repository, as `teamai session resume` finds
- * it: on teamai-reports, else in the archive a git-kind team kept on its default branch before. `author` picks one of
- * two members who pushed that name, within the archive that holds it. Its subject is its origin, so its labels pair
+ * The session pushed to the team archive as `name`, for this directory's repository, where `teamai session resume` looks
+ * for it: on teamai-reports, else in the archive a git-kind team kept on its default branch before. Where resume takes
+ * the first member who pushed that name, this fails unless `author` picks one, within the archive that holds it. Its subject is its origin, so its labels pair
  * with those of the same session scored where it ran. It is redacted as `AgentSession.find` redacts a session.
  */
-async function pushedSession(config: LocalConfig, { name, author }: TeamSession): Promise<Named | Failure> {
+async function pushedSession(config: LocalConfig, { name, author }: TeamSession): Promise<NamedSession | Failure> {
   let archives: Awaited<ReturnType<typeof sessionArchives>>;
   try {
     archives = await sessionArchives(config, { dryRun: false, read: true });
   } catch (e) {
-    return failure('archive_unavailable', e instanceof Error ? e.message : String(e));
+    return failure('reports_unreachable', `teamai-reports, where pushed sessions are kept, could not be read (${e instanceof Error ? e.message : String(e)}). Check the connection and run the command again.`);
   }
   if (!archives) return failure('unsupported_repo', 'This team keeps no session archive here, so it has no pushed session to score. Score a session on this machine with --session <id>.');
   const repoIdentity = getRepoIdentity(process.cwd());
@@ -398,32 +400,32 @@ async function answered(config: LocalConfig, scored: Record<string, unknown>, pu
   return 'data' in pushed ? { data: { ...scored, ...pushed.data } } : pushed;
 }
 
-/** The value `value` of the one scorer `asked` names, as `--label` gives it, or why it is not one of its labels. */
-function handValueOf(asked: readonly Asked[], value: string): { member: Asked; value: ScorerLabel } | Failure {
-  const [member] = asked;
-  const label = member?.definition.labels.find((candidate) => candidate.value === value);
-  if (member && label) return { member, value: label };
-  return failure('label_invalid', `"${value}" is not a label of scorer ${member?.scorer}. Use one of: ${member?.definition.labels.map((candidate) => candidate.value).join(', ')}.`);
+/** The label `value` of the one scorer `asked` names, as `--label` gives it, or why it is not one of its labels. */
+function handValueOf([member]: readonly Asked[], value: string): { member: Asked; given: ScorerLabel } | Failure {
+  if (!member) return failure('invalid_arguments', 'Pass --scorer <name> with --label: the scorer the value is a label of.');
+  const given = member.definition.labels.find((candidate) => candidate.value === value);
+  if (given) return { member, given };
+  return failure('label_invalid', `"${value}" is not a label of scorer ${member.scorer}. Use one of: ${member.definition.labels.map((candidate) => candidate.value).join(', ')}.`);
 }
 
 /**
  * Keeps the member's own label of `judged` with `value`, its score and verdict as the scorer gives them, as a model
  * label is kept but with no judge and no reasoning file. It shares no key with a model label, so neither replaces the other.
  */
-async function labelByHand(config: LocalConfig, { member, value, judged, now }: { member: Asked; value: ScorerLabel; judged: JudgedSession; now: string }): Promise<{ label: Record<string, unknown> } | Failure> {
+async function labelByHand(config: LocalConfig, { member, given, judged, now }: { member: Asked; given: ScorerLabel; judged: JudgedSession; now: string }): Promise<{ label: Record<string, unknown> } | Failure> {
   const { scorer, pin, definition } = member;
-  const passed = value.score >= definition.passingScore;
+  const passed = given.score >= definition.passingScore;
   const label = sessionLabel({
     scorer,
     rubric: { sourceHash: pin.sourceHash, ...(pin.teamRevision ? { teamRevision: pin.teamRevision } : {}) },
-    label: value.value,
-    score: value.score,
+    label: given.value,
+    score: given.score,
     passed,
     judge: { kind: 'human' },
     scoredAt: now,
   }, judged.subject, judged.context);
   const written = await AttemptStore.locked(config, () => LabelStore.append(config, label, undefined));
   if (written.status === 'busy') return failure('busy', 'Another teamai process holds the label store, so no label was written. Label the session again.');
-  log.info(`${scorer}: ${value.value} (score ${value.score}, ${passed ? 'passed' : 'did not pass'}), by hand. No judge ran.`);
-  return { label: { scorer, subject: judged.subject, label: value.value, score: value.score, passed, judge: { kind: 'human' }, labelId: written.value.id } };
+  log.info(`${scorer}: ${given.value} (score ${given.score}, ${passed ? 'passed' : 'did not pass'}), by hand. No judge ran.`);
+  return { label: { scorer, subject: judged.subject, label: given.value, score: given.score, passed, judge: { kind: 'human' }, labelId: written.value.id } };
 }

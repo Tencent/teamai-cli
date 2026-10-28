@@ -91,10 +91,12 @@ function sessionDemandOf(options: ScoreOptions): SessionDemand | WorkflowEnvelop
     return failure('invalid_arguments', '--team-session names a pushed session, and --session and --source one on this machine. Pass one of them.');
   }
   if (options.author !== undefined && options.teamSession === undefined) return failure('invalid_arguments', '--author picks who pushed --team-session <name>. Pass it with --team-session.');
+  const named = options.teamSession !== undefined
+    ? { teamSession: { name: options.teamSession, ...(options.author !== undefined ? { author: options.author } : {}) } }
+    : { ...(options.session !== undefined ? { session: options.session } : {}), ...(options.source !== undefined ? { source: options.source } : {}) };
   return {
     scorers: [scorer, ...scorers],
-    ...(options.session !== undefined ? { session: options.session } : {}), ...(options.source !== undefined ? { source: options.source } : {}),
-    ...(options.teamSession !== undefined ? { teamSession: { name: options.teamSession, ...(options.author !== undefined ? { author: options.author } : {}) } } : {}),
+    ...named,
     ...(options.label !== undefined ? { label: options.label } : {}),
     ...(options.batch ? { batch: true } : {}), ...(options.push ? { push: true } : {}),
   };
@@ -145,7 +147,7 @@ async function score(options: ScoreOptions): Promise<WorkflowEnvelope> {
   const asksForPass = options.run !== undefined || options.step !== undefined || options.pass !== undefined || options.queue;
   const namesSession = options.session !== undefined || options.source !== undefined || options.teamSession !== undefined || options.author !== undefined || options.label !== undefined;
   const asksForSession = namesSession || (!asksForPass && (options.scorer?.length || options.batch));
-  if (asksForPass && namesSession) return failure('invalid_arguments', 'Pass --run to judge a workflow pass or --session to judge a session, not both');
+  if (asksForPass && namesSession) return failure('invalid_arguments', 'Pass --run to judge a workflow pass, or --session, --team-session or --label to score a session, not both');
   if (options.push && (asksForPass || options.next || options.lease !== undefined)) {
     return failure('invalid_arguments', '--push goes alone or with a session: teamai score --push, or teamai score [--session <id>] --scorer <name> --push');
   }
