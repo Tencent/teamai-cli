@@ -140,7 +140,7 @@ export function ensureTeamaiWrapper(): string | null {
       fs.writeFileSync(path.join(binDir, `${WRAPPER_NAME}.cmd`), cmdScript);
       fs.writeFileSync(path.join(binDir, CODEBUDDY_HOOK_WRAPPER), [
         '#!/bin/sh',
-        `"${nodeBin}" "${entryScript}" "$@" 2>/dev/null`,
+        `"${nodeBin}" "${entryScript}" "$@"`,
         '',
       ].join('\n'), { mode: 0o755 });
     }

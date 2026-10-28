@@ -125,8 +125,12 @@ describe('issue #373 project hook isolation (real CLI)', () => {
     const settingsPath = path.join(home, '.codebuddy', 'settings.json');
     const team = readSettings(settingsPath).hooks.Stop.filter((entry) => entry.description?.startsWith('[teamai:hook:'));
     expect(team).toHaveLength(2);
-    const commandA = team.find((entry) => entry.hooks[0].command.includes('--team-hook-command'))!.hooks[0].command;
-    const commandB = team.find((entry) => entry.hooks[0].command.includes('--team-hook-command') && entry.hooks[0].command !== commandA)!.hooks[0].command;
+    const commandA = process.platform === 'win32'
+      ? team.find((entry) => entry.hooks[0].command.includes('--team-hook-command'))!.hooks[0].command
+      : team.find((entry) => entry.hooks[0].command.includes('echo A'))!.hooks[0].command;
+    const commandB = process.platform === 'win32'
+      ? team.find((entry) => entry.hooks[0].command.includes('--team-hook-command') && entry.hooks[0].command !== commandA)!.hooks[0].command
+      : team.find((entry) => entry.hooks[0].command.includes('echo B'))!.hooks[0].command;
     if (process.platform === 'win32') {
       // CodeBuddy IDE invokes settings commands through cmd.exe, while the CLI
       // uses Git Bash. The dual-runner form keeps the project root and payload

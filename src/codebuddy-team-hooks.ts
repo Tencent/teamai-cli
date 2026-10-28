@@ -141,6 +141,7 @@ function runHook(command: string, cwd: string, timeout: number | undefined, stdi
     let stdout = '';
     let stderr = '';
     let settled = false;
+    let timeoutTriggered = false;
     const finish = (code: number | null, timedOut = false) => {
       if (settled) return;
       settled = true;
@@ -154,19 +155,43 @@ function runHook(command: string, cwd: string, timeout: number | undefined, stdi
       windowsHide: true,
       detached: group,
     });
-    const timer = setTimeout(() => {
+    const kill = (): void => {
       try {
-        if (group && child.pid) process.kill(-child.pid, 'SIGKILL');
-        else child.kill('SIGKILL');
+        child.kill('SIGKILL');
       } catch {
         // The child already exited.
       }
-      finish(null, true);
+    };
+    const timer = setTimeout(() => {
+      timeoutTriggered = true;
+      if (process.platform === 'win32' && child.pid) {
+        // Killing Git Bash alone leaves its foreground children alive. Wait for
+        // taskkill's /T tree termination before returning a timeout to the host.
+        try {
+          const taskkill = spawn('taskkill.exe', ['/pid', String(child.pid), '/T', '/F'], {
+            stdio: 'ignore',
+            windowsHide: true,
+          });
+          taskkill.once('error', () => { kill(); finish(null, true); });
+          taskkill.once('close', () => finish(null, true));
+        } catch {
+          kill();
+          finish(null, true);
+        }
+      } else {
+        try {
+          if (group && child.pid) process.kill(-child.pid, 'SIGKILL');
+          else kill();
+        } catch {
+          // The child already exited.
+        }
+        finish(null, true);
+      }
     }, (timeout ?? 60) * 1_000);
     child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf8'); });
     child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8'); });
-    child.on('error', (error) => { stderr += error.message; finish(null); });
-    child.on('close', (code) => finish(code));
+    child.on('error', (error) => { stderr += error.message; finish(null, timeoutTriggered); });
+    child.on('close', (code) => { if (!timeoutTriggered) finish(code); });
     child.stdin?.on('error', () => {});
     child.stdin?.end(stdin);
   });
