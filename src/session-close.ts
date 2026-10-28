@@ -11,9 +11,10 @@ import { scopeScoring } from './scorers/settings.js';
 import { AgentSession } from './session-flow/agent-session.js';
 import { SessionPolicy, type PolicySource, type SessionPolicies } from './session-flow/session-policy.js';
 import { SessionWork, type SampledScorer } from './session-flow/session-work.js';
-import type { LocalConfig, SessionCloseOffered } from './types.js';
+import { getDataHome, type LocalConfig, type SessionCloseOffered } from './types.js';
 import { nestedStart } from './workflow/attempt-marker.js';
 import { resolveStart } from './workflow/cache.js';
+import { projectPartitions } from './workflow/run-location.js';
 import type { OutputSchema } from './workflow/types.js';
 
 /** The name of teamai's default close-out workflow, and of a team file that replaces it. */
@@ -202,10 +203,10 @@ async function reminderOffer(
   if ((start.workflow?.definition.invoke ?? 'deny') === 'deny') return undefined;
   // The skill driver imports this module for describe, so this one loads it only here.
   const { drivesUndoneRun } = await import('./workflow/drivers/skill/skill-driver.js');
-  // A run lives in the data home of the scope it was started in, so from a project the user scope's runs count too.
-  const user = config.scope === 'project' ? await loadLocalConfigForScope('user', undefined, { dryRun: true }) : null;
-  const homes = user ? [config, user] : [config];
-  if ((await Promise.all(homes.map((home) => drivesUndoneRun(home, sessionId)))).some(Boolean)) return undefined;
+  // A run lives in the data home of the scope it was started in, and a session drives it from any directory.
+  const [user, partitions] = await Promise.all([loadLocalConfigForScope('user', undefined, { dryRun: true }), projectPartitions()]);
+  const homes = new Map([config, ...(user ? [user] : []), ...partitions].map((home) => [getDataHome(home), home]));
+  if ((await Promise.all([...homes.values()].map((home) => drivesUndoneRun(home, sessionId)))).some(Boolean)) return undefined;
   const { publish, scorers } = await propose(start.config, { tool, sessionId }, options);
   return { publish: publish.value, scorers: scorers.value };
 }

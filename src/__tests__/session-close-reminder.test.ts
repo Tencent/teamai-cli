@@ -195,4 +195,25 @@ steps:
 
     expect(await SessionClose.reminderOffer(inProject, { tool: 'claude', sessionId: SESSION, cwd: project, run: { runMode: 'attended' } }, { judgeTools: () => [] })).toBeUndefined();
   });
+
+  it('is nothing outside any project while the session drives a run of a project on this machine', async () => {
+    const user = await memberConfig();
+    fs.mkdirSync(path.join(user.repo.localPath, 'workflows'));
+    fs.writeFileSync(path.join(user.repo.localPath, 'workflows', 'note.yaml'), NOTE);
+    execFileSync('git', ['init', '-q', '-b', 'main', project]);
+    execFileSync('git', ['-C', project, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-q', '--allow-empty', '-m', 'fixture']);
+    const partition = path.join(home, '.teamai', 'projects', 'app');
+    fs.mkdirSync(partition, { recursive: true });
+    fs.writeFileSync(path.join(partition, 'config.yaml'), `repo:\n  localPath: ${user.repo.localPath}\n  remote: https://example.test/acme/team.git\nusername: tester\nscope: project\nprojectRoot: ${project}\n`);
+    const inProject: LocalConfig = { ...user, scope: 'project', projectRoot: project, dataHome: partition };
+    await syncWorkflowDefinitions(inProject);
+    const harness = await skillHarness({}, { install: { config: inProject, checkout: project } });
+    onTestFinished(() => fs.rmSync(harness.root, { recursive: true, force: true }));
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('USERPROFILE', home);
+    const started = await harness.call({ kind: 'start', name: 'note', answers: { confirmed: false }, inputs: undefined }, { session: SESSION });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+
+    expect(await SessionClose.reminderOffer(user, { tool: 'claude', sessionId: SESSION, cwd: home, run: { runMode: 'attended' } }, { judgeTools: () => [] })).toBeUndefined();
+  });
 });
