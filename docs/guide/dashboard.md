@@ -47,6 +47,28 @@ The Scorers page shows the pass rate of every [scorer](scorers.md) that has labe
 - **Failing labels**, newest first: author, scored time, platform and the skills used. The page lists 25 at a time, up to 1,000; **Show more** lists the next ones. Select a group to list only its failing labels. A session pushed to the team archive shows `teamai session resume <name> --platform <platform>`. A workflow label opens its run.
 - **Friction reminder**, for a session measurement: the sessions the friction reminder fired on and those it did not, with how many have a label of this measurement and how many of those passed. It covers your own sessions that started on this machine in the window, at most the last 30 days, because the reminder state is only kept on this machine. A project workspace covers its own sessions. The user scope workspace covers the sessions that started outside every project workspace on this machine. The pass rate is over labelled sessions only. A session with no reminder state here is `Not recorded`. When a session's state file is removed a day after its last write, teamai keeps whether its reminder fired for 30 days.
 
+**Judge agreement with hand labels**, for a session measurement. A [hand label](scorers.md#label-a-session-by-hand) is a member's own reading of a session. The panel shows whether to trust the judge's pass rate:
+
+```text
+Judge agreement with hand labels   13 hand-labelled sessions
+JUDGE                            LABELS  PAIRED  AGREE  AGREEMENT  JUDGE PASSED, HUMAN FAILED  JUDGE FAILED, HUMAN PASSED
+claude-code / claude-sonnet-4-5  23      8       6      75%        1                           1
+codex / gpt-5.1-codex            12      3       1      33%        2                           0
+Hand label                       13
+
+Where they disagree
+HAND LABEL         BY     JUDGE SAID   JUDGE                            SCORED      OPEN
+missed-bug failed  bob    good passed  claude-code / claude-sonnet-4-5  10/27/2026  Not pushed to the team archive
+partial failed     alice  good passed  codex / gpt-5.1-codex            10/26/2026  teamai session resume claude-code_add-a-timeout-to-the-webhook-client_20261026 --platform claude-code
+```
+
+Here the Codex judge passed two sessions the team failed, so its pass rate reads high. Open those sessions, then sharpen the rubric's prompt or its label descriptions.
+
+- Each judge label of the rubric in the window pairs with the newest hand label of its session, whoever gave it and whenever. A hand label pairs only while the rubric lists its value, as `teamai pull` cached the scorer or as the rubric's labels stored it. So after a prompt edit, the new rubric's judge labels pair with the hand labels already given.
+- Agreement is on pass or fail. **Judge passed, human failed** means the judge is more lenient than members, **judge failed, human passed** that it is stricter.
+- **Where they disagree** lists each disagreement, newest first.
+- The scorer table's **Agrees with hand labels** column shows the same for each scorer's default measurement.
+
 Labels from benchmark runs are left out. The page reads labels and recorded configuration only. It never reads or shows a judge's reasoning, a prompt, a transcript, a diff, or a session's own id.
 
 Labels from sessions and workflow runs show how the tools did on the work that came along. To compare tools, models or team assets on the same tasks, run a benchmark.

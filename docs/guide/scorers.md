@@ -155,6 +155,76 @@ The judge reads at most 200,000 characters of a session. A session scorer that n
 
 The label is kept in the scope the session ran in, from whichever directory you score it. It records `agent`, what the session ran as, from the captures the session-start hook writes. It records `used.skills`, the team skills the session or its subagents loaded that its captures show teamai delivered, unchanged, when it started, including by the pull it runs at start. A later pull does not change that. A skill the captures cannot place, such as a member's own skill with a team skill's name, is left out. `--push` publishes every pending label of that scope. With [usage reporting](reporting.md) off, it prints `Usage reporting is off, so labels stay on this machine.` and the labels stay pending. An http team repo has no `teamai-reports`, so `--push` fails with `unsupported_repo` and the labels stay here. `teamai doctor` warns while a label waits to be published.
 
+### Label a session by hand
+
+A judge is a model, and a model can be wrong. Label a few sessions yourself, and the [Scorers page](dashboard.md#scorers) shows how often the judge agrees with you.
+
+The agent just said the retry loop is fixed, and it is not. Still inside the session:
+
+```console
+$ teamai score --scorer review-quality --label missed-bug --push
+ℹ Labelling claude-code session 7c1e… in /work/app
+ℹ First prompt: Fix the retry loop in sync.ts
+ℹ review-quality: missed-bug (score 0, did not pass), by hand. No judge ran.
+```
+
+A session you finished yesterday, from any directory:
+
+```console
+$ teamai score --session 7c1e… --source claude-code --scorer review-quality --label good --push
+```
+
+A value the scorer does not list fails, and nothing is written:
+
+```console
+$ teamai score --scorer review-quality --label flaky
+{"error":{"code":"label_invalid","message":"\"flaky\" is not a label of scorer review-quality. Use one of: good, partial, missed-bug."}}
+```
+
+`--label` takes one `--scorer`, a name `teamai pull` cached. The label's `score` and pass come from the scorer, as for a judge's label, and it has no reasoning file. It is stored and published as a judge's label is, with `judge: { kind: "human" }`. A hand label and a judge's label of the same session are kept side by side: rescoring with the judge never replaces a hand label. When several members label one session by hand, the newest hand label is the one counted.
+
+### A session a teammate pushed
+
+Alice pushed her session with `teamai session push`. In your checkout of the same project:
+
+```console
+$ teamai session pull
+$ teamai session list
+  SESSION                                             AUTHOR  PLATFORM     MSGS  UPDATED
+  claude-code_fix-the-retry-loop-in-sync-ts_20261021  alice   claude-code  84    2026-10-21
+$ teamai score --team-session claude-code_fix-the-retry-loop-in-sync-ts_20261021 --scorer review-quality --label missed-bug --push
+ℹ Labelling claude-code session 7c1e… in /home/alice/app
+ℹ Pushed by alice
+ℹ First prompt: Fix the retry loop in sync.ts
+ℹ review-quality: missed-bug (score 0, did not pass), by hand. No judge ran.
+```
+
+The label is about the session Alice ran, so it pairs with the judge's label from her machine. Leave out `--label` and the judge scores the pushed session:
+
+```console
+$ teamai score --team-session claude-code_fix-the-retry-loop-in-sync-ts_20261021 --scorer review-quality
+ℹ Scoring claude-code session 7c1e… in /home/alice/app
+ℹ Pushed by alice
+ℹ First prompt: Fix the retry loop in sync.ts
+ℹ review-quality: good (score 1, passed). Reasoning: ~/.teamai/scores/reasoning/2b7d….md
+```
+
+When two members pushed a session with that name, the command fails and lists them. Pick one with `--author`:
+
+```console
+$ teamai score --team-session claude-code_fix-the-retry-loop-in-sync-ts_20261021 --author bob --scorer review-quality --label good
+```
+
+`--team-session` reads the sessions pushed for the project of the current directory, as `teamai session resume` does: on `teamai-reports` first, then, on a git team, where teamai kept sessions on the default branch before. It cannot be combined with `--session`, `--source` or `--json`. The session is redacted before the judge reads it, also when it was pushed without `--scrub`. Its label has no `agent`, because what a session ran as is recorded only on the machine that ran it, so the Scorers page counts it as `Not recorded` by tool and model.
+
+### When the scorer changes
+
+| You change | Hand labels |
+|---|---|
+| The prompt, or a label's `description` | Still pair. A hand label is your reading of the session, and the judge's prompt does not change it. Rescore with the judge, and the new rubric shows how often it agrees with the hand labels you already gave. |
+| A label's `value`, such as `bad` to `missed-bug` | A hand label of `bad` pairs with no label of the new rubric. Label those sessions again. |
+| `passingScore`, or a label's `score` | Label again: a hand label keeps the pass it was stored with. |
+
 ### With your own judge
 
 A driver that judges with its own tool, such as a Cursor session or an orchestrator, leases a session instead of having it judged here. With `--json` declaring `can.judge`, as [`score --next`](#any-driver) takes it, `score --session` answers a lease. A subagent or a separate agent judges it from `prompt.md` and the evidence directory only, and the driver submits the answer:

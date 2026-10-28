@@ -155,6 +155,76 @@ $ teamai score --session 7c1e… --source codex --scorer review-quality --push
 
 无论在哪个目录评分，标签都保存在会话所在的作用域。标签记录 `agent`，即会话启动时的运行配置，来自会话启动 hook 写入的捕获记录。标签还记录 `used.skills`，即会话或其子 agent 加载过、且捕获记录显示会话启动时（包括启动时那次 pull）由 teamai 交付并未经修改的团队技能。之后的 pull 不会改变它。捕获记录无法确认来源的技能不记录，例如与团队技能同名的成员自有技能。`--push` 发布该作用域所有待发布的标签。关闭[用量上报](reporting.md)时，它输出 `Usage reporting is off, so labels stay on this machine.`，标签继续待发布。http 团队仓库没有 `teamai-reports`，因此 `--push` 以 `unsupported_repo` 失败，标签留在本机。有标签等待发布时，`teamai doctor` 会给出警告。
 
+### 手动标注会话
+
+评审者是模型，模型也会出错。自己标注几个会话，[评分器页面](dashboard.md#评分器scorers)就会显示评审者与你一致的频率。
+
+agent 刚说重试循环已经修好，其实没有。仍在该会话内：
+
+```console
+$ teamai score --scorer review-quality --label missed-bug --push
+ℹ Labelling claude-code session 7c1e… in /work/app
+ℹ First prompt: Fix the retry loop in sync.ts
+ℹ review-quality: missed-bug (score 0, did not pass), by hand. No judge ran.
+```
+
+昨天结束的会话，在任意目录：
+
+```console
+$ teamai score --session 7c1e… --source claude-code --scorer review-quality --label good --push
+```
+
+评分器没有列出的值会失败，且不写入任何内容：
+
+```console
+$ teamai score --scorer review-quality --label flaky
+{"error":{"code":"label_invalid","message":"\"flaky\" is not a label of scorer review-quality. Use one of: good, partial, missed-bug."}}
+```
+
+`--label` 只接受一个 `--scorer`，且必须是 `teamai pull` 缓存的评分器名。标签的 `score` 和是否通过来自评分器，与评审者的标签相同，没有推理文件。它与评审者的标签一样存储和发布，`judge` 为 `{ kind: "human" }`。同一会话的手动标签和评审者标签并存：用评审者重新评分不会替换手动标签。多个成员手动标注同一会话时，只计入最新的那个手动标签。
+
+### 队友推送的会话
+
+Alice 用 `teamai session push` 推送了她的会话。在你检出的同一项目中：
+
+```console
+$ teamai session pull
+$ teamai session list
+  SESSION                                             AUTHOR  PLATFORM     MSGS  UPDATED
+  claude-code_fix-the-retry-loop-in-sync-ts_20261021  alice   claude-code  84    2026-10-21
+$ teamai score --team-session claude-code_fix-the-retry-loop-in-sync-ts_20261021 --scorer review-quality --label missed-bug --push
+ℹ Labelling claude-code session 7c1e… in /home/alice/app
+ℹ Pushed by alice
+ℹ First prompt: Fix the retry loop in sync.ts
+ℹ review-quality: missed-bug (score 0, did not pass), by hand. No judge ran.
+```
+
+这个标签针对的是 Alice 运行的会话，因此会与她机器上评审者给出的标签配对。省略 `--label` 时，由评审者为推送的会话评分：
+
+```console
+$ teamai score --team-session claude-code_fix-the-retry-loop-in-sync-ts_20261021 --scorer review-quality
+ℹ Scoring claude-code session 7c1e… in /home/alice/app
+ℹ Pushed by alice
+ℹ First prompt: Fix the retry loop in sync.ts
+ℹ review-quality: good (score 1, passed). Reasoning: ~/.teamai/scores/reasoning/2b7d….md
+```
+
+两个成员推送了同名会话时，命令失败并列出他们。用 `--author` 选择其一：
+
+```console
+$ teamai score --team-session claude-code_fix-the-retry-loop-in-sync-ts_20261021 --author bob --scorer review-quality --label good
+```
+
+`--team-session` 读取为当前目录所在项目推送的会话，与 `teamai session resume` 相同：先读 `teamai-reports`，在 git 团队上再读 teamai 以前保存在默认分支上的会话。它不能与 `--session`、`--source` 或 `--json` 同时使用。评审者读取前会对会话脱敏，即使推送时没有使用 `--scrub`。它的标签没有 `agent`，因为会话的运行配置只记录在运行它的机器上，所以评分器页面按工具和模型分组时将其计为“未记录”。
+
+### 评分器变更时
+
+| 你修改了 | 手动标签 |
+|---|---|
+| 提示词，或某个标签的 `description` | 仍然配对。手动标签是你对会话的判断，评审者的提示词不会改变它。用评审者重新评分，新 rubric 会显示它与你已给出的手动标签的一致程度。 |
+| 某个标签的 `value`，例如 `bad` 改为 `missed-bug` | 值为 `bad` 的手动标签不与新 rubric 的任何标签配对。请重新标注这些会话。 |
+| `passingScore`，或某个标签的 `score` | 请重新标注：手动标签保留存储时的通过结果。 |
+
 ### 用自己的评审者
 
 用自己工具评审的 driver（例如 Cursor 会话或编排器）可以租出会话，而不是在本机评审。用 `--json` 声明 `can.judge`（与 [`score --next`](#任意-driver) 相同）时，`score --session` 返回一个租约。由子 agent 或另一个 agent 只根据 `prompt.md` 和证据目录评审，再由 driver 提交答案：
