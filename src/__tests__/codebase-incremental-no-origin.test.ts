@@ -240,3 +240,49 @@ describe('curated docs of a --dir checkout with no origin (#1422)', { timeout: 1
     expect(fs.existsSync(curated(wikiRoot, 'svc'))).toBe(true);
   });
 });
+
+describe('incremental baseline for a subdirectory import (#1502)', { timeout: 120_000 }, () => {
+  it('re-extracts only the files changed inside the subdirectory', async () => {
+    const repo = makeRepo(false, 'repo');
+    const subdir = makeSubdir(repo, 'apps/svc');
+    const out = temp('teamai-1502-out-');
+    await runExtract(subdir, out, false);
+
+    // A commit that touches the subdirectory, the repository root, and a
+    // sibling whose name shares the prefix: only the first may re-extract.
+    fs.writeFileSync(path.join(subdir, 'a.ts'), 'export const a = 111;\n');
+    fs.writeFileSync(path.join(repo, 'b.ts'), 'export const b = 222;\n');
+    fs.mkdirSync(path.join(repo, 'apps', 'svcs'), { recursive: true });
+    fs.writeFileSync(path.join(repo, 'apps', 'svcs', 'x.ts'), 'export const x = 1;\n');
+    git(repo, 'add', '.');
+    git(repo, 'commit', '--quiet', '-m', 'changes');
+
+    const logs = await runExtract(subdir, out, true);
+    expect(logs).not.toContain('no matching source baseline');
+    expect(logs).toContain('incremental: 1 files changed');
+  });
+
+  it('skips the re-extraction when every change is outside the subdirectory', async () => {
+    const repo = makeRepo(false, 'repo');
+    const subdir = makeSubdir(repo, 'apps/svc');
+    const out = temp('teamai-1502-out-');
+    await runExtract(subdir, out, false);
+
+    fs.writeFileSync(path.join(repo, 'b.ts'), 'export const b = 222;\n');
+    git(repo, 'add', '.');
+    git(repo, 'commit', '--quiet', '-m', 'outside only');
+
+    const logs = await runExtract(subdir, out, true);
+    expect(logs).toContain('no changes, skipped');
+  });
+
+  it('does not reuse the repository root\'s baseline for its subdirectory', async () => {
+    const repo = makeRepo(false, 'repo');
+    const subdir = makeSubdir(repo, 'apps/svc');
+    const out = temp('teamai-1502-out-');
+    await runExtract(repo, out, false);
+
+    const logs = await runExtract(subdir, out, true);
+    expect(logs).toContain('no matching source baseline');
+  });
+});
