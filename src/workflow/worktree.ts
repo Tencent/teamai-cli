@@ -64,17 +64,18 @@ export interface GitResult {
 // write, so the command runs again. The path is matched, not git's message, which git translates.
 const HALF_WRITTEN_WORKTREE = /[\\/]worktrees[\\/][^\\/\r\n]+[\\/]commondir\b/;
 // Five seconds: a loaded runner can stall the writer that long. An add that died there leaves the entry half written for good.
-const HALF_WRITTEN_RETRY = { attempts: 100, delayMs: 50 };
+const HALF_WRITTEN_RETRY = { forMs: 5_000, everyMs: 50 };
 
 /**
  * Runs git in `cwd`, writing `input` to its stdin, or stopping it once `timeoutMs` passed. Waits out a worktree entry
  * another `git worktree add` in the repository is still writing.
  */
 export async function git(cwd: string, args: string[], options?: { input: string } | { timeoutMs: number; env?: NodeJS.ProcessEnv }): Promise<GitResult> {
-  for (let attempt = 1; ; attempt++) {
+  const deadline = Date.now() + HALF_WRITTEN_RETRY.forMs;
+  for (;;) {
     const result = await gitOnce(cwd, args, options);
-    if (result.code === 0 || attempt === HALF_WRITTEN_RETRY.attempts || !HALF_WRITTEN_WORKTREE.test(result.stderr)) return result;
-    await new Promise((resolve) => setTimeout(resolve, HALF_WRITTEN_RETRY.delayMs));
+    if (result.code === 0 || !HALF_WRITTEN_WORKTREE.test(result.stderr) || Date.now() >= deadline) return result;
+    await new Promise((resolve) => setTimeout(resolve, HALF_WRITTEN_RETRY.everyMs));
   }
 }
 
