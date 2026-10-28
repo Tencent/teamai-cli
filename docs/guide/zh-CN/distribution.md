@@ -215,6 +215,17 @@ default: []        # 这个文件未列出的成员所持有的角色
 - 文件未列出的成员持有 `default`——除非另行声明即为无角色——并且只接收共享资源，而不是没有该文件时无角色成员得到的全量同步。
 - 谁可以分配角色由代码平台决定，和 `roles.yaml` 一样：保护分支、合并请求、`manifest/` 的 code owner。teamai 自己不维护任何权限名单。
 
+自动化程序也和其他成员一样是成员。[接手交出的运行](workflow.md#从-ci-接手交出的运行)的 CI 运行器会执行 `teamai init --provider git`，它把 `git config user.name` 记录为用户名，所以要列出这个名字：
+
+```yaml
+# manifest/members.yaml（团队仓库就是业务仓库时为 .teamai/manifest/members.yaml）
+version: 1
+members:
+  alice: [frontend]
+  acme-runner: [backend]    # 它的运行所需技能对应的角色；作业设置 git config user.name acme-runner
+default: []
+```
+
 成员的键是该成员本地 teamai 配置里的用户名，由 `teamai init` 从 Git 平台记录。删除该文件后，角色选择重新回到每个成员手里。teamai 从团队仓库已拉取的默认分支读取该文件，而不是成员机器上的克隆副本，所以改写或删除本地副本不起作用：只有代码平台已合并的内容才算。
 
 重新分配会在下一次 pull 时生效。
