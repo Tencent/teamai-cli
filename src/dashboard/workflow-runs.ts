@@ -244,7 +244,7 @@ export async function listReportedRuns(config: LocalConfig): Promise<ReportedRun
 }
 
 /** A person at this machine's terminal, who would take an offered run with the local driver. */
-const PERSON: Taker = { caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' }, driver: 'local', hasPerson: true };
+const PERSON: Taker = { caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' }, driver: 'local', tools: {}, hasPerson: true };
 
 /**
  * The runs handed over on the scope's reports checkout, as `listReportedRuns` last refreshed it: each offered one says

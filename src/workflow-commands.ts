@@ -607,7 +607,7 @@ async function resumeOffered(runId: string | undefined, options: ResumeOptions):
   // `--driver skill` counts as an agent's, as it does for a start.
   const caller: InvokeCaller = { ...invokeCaller(options.confirmed), ...(isSkill && evidence.kind === 'none' ? { evidence: { kind: 'skill-driver' } } : {}) };
   // The skill driver's session asks the person; the local driver asks at this terminal, which a cron job has not.
-  const taker: Taker = { caller, driver: isSkill ? 'skill' : 'local', hasPerson: isSkill ? caller.mode === 'attended' : personAnswers(caller.mode) };
+  const taker: Taker = isSkill ? { caller, driver: 'skill', hasPerson: caller.mode === 'attended' } : { caller, driver: 'local', tools, hasPerson: personAnswers(caller.mode) };
   if (options.next) await takeNext(loaded, taker, options, tools);
   else await listResumable(loaded, taker);
 }

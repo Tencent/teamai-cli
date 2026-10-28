@@ -208,6 +208,19 @@ function stepTool(agent: string | undefined, config: LocalConfig, flags: Record<
   return { ok: true, tool: undefined };
 }
 
+/**
+ * The tool teamai launches for a prompt step of `agent` here, as {@link stepTool} picks it with `--tools` `flags`, or why
+ * none: no tool is configured, or the one picked is not one teamai launches, which `tool` then names.
+ */
+export function launchToolFor(agent: string | undefined, config: LocalConfig, flags: Record<string, string>, members: MemberTool[]): { ok: true; tool: LaunchTool } | { ok: false; failure: WorkflowFailure; tool?: string } {
+  const choice = stepTool(agent, config, flags, members);
+  if (!choice.ok) return choice;
+  const selected = choice.tool;
+  if (!selected) return { ok: false, failure: { code: 'tool_unconfigured', message: 'No local workflow tool is configured for this prompt step' } };
+  if (!supportedTool(selected)) return { ok: false, failure: { code: 'tool_unsupported', message: `The local workflow tool "${selected}" is not supported` }, tool: selected };
+  return { ok: true, tool: selected };
+}
+
 function ignoredCodexSettings(agent: AgentSpec): string[] {
   const extras = Object.keys(agent.tool_extras?.codex ?? {});
   return agent.tools?.length ? ['tools', ...extras] : extras;
@@ -335,13 +348,9 @@ async function promptReport(
     const reported = unrestored ? { ...failure, message: `${failure.message.replace(/\.?$/, '.')} ${unrestored}` } : failure;
     return { attempt: lease.attempt, revision: lease.revision, driver, ...(tool ? { tool } : {}), ...failureReport(reported) };
   };
-  const choice = stepTool(lease.agent, config, options.tools ?? {}, await memberTools(config));
-  if (!choice.ok) return giveUp(choice.failure);
+  const choice = launchToolFor(lease.agent, config, options.tools ?? {}, await memberTools(config));
+  if (!choice.ok) return giveUp(choice.failure, choice.tool);
   const selected = choice.tool;
-  if (!selected) return giveUp({ code: 'tool_unconfigured', message: 'No local workflow tool is configured for this prompt step' });
-  if (!supportedTool(selected)) {
-    return giveUp({ code: 'tool_unsupported', message: `The local workflow tool "${selected}" is not supported` }, selected);
-  }
   // A worktree has its own pull record, so the tool launched there is observed and bound as that checkout.
   const stepConfig = lease.workspace && lease.cwd ? await detectProjectConfig(lease.cwd) ?? config : config;
   const loaded = lease.agent ? await loadDeployedAgent({ tool: selected, name: lease.agent, config: stepConfig, toolPaths: options.toolPaths }) : undefined;

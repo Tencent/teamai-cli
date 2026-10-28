@@ -2769,7 +2769,7 @@ steps:
 
   /** A process that runs teamai in a CI job, with no agent session: unattended unless `mode` says otherwise. */
   function runnerTaker(mode: 'attended' | 'unattended' = 'unattended') {
-    return { caller: { evidence: { kind: 'none' as const }, confirmed: false, mode }, driver: 'local' as const, hasPerson: false };
+    return { caller: { evidence: { kind: 'none' as const }, confirmed: false, mode }, driver: 'local' as const, tools: {}, hasPerson: false };
   }
 
   /** What `member` reads of teamai-reports after a pull. */
@@ -2832,6 +2832,33 @@ steps:
     const keyed = await publishedRuns(runner, runnerTaker(), { SIGNING_KEY: 'k' });
     expect(keyed[0]?.offer).toMatchObject({ lacks: [] });
     expect(PublishedRuns.candidates(keyed, { repository: 'github.com/acme/app', hasPerson: false, self }).map((run) => run.run)).toEqual([runId]);
+  });
+
+  const DOCS = `schemaVersion: v1alpha1
+name: docs
+description: Build, then write the release notes.
+steps:
+  - id: build
+    command: echo build
+  - id: notes
+    needs: [build]
+    prompt: Write the release notes.
+`;
+
+  it('lists an offered run whose prompt steps left have no tool here as lacking one, which the skill driver, running them in its session, does not', async () => {
+    const acme = team({ docs: DOCS });
+    const alice = await acme.member('alice');
+    const runner = await acme.member('runner');
+    originAt('https://github.com/acme/app.git', [alice, runner]);
+    const started = await startRun(alice.config, 'docs', {}, { secrets: {} });
+    const runId = 'data' in started ? String(started.data.run) : '';
+    await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout });
+
+    expect((await publishedRuns(runner))[0]?.offer?.lacks).toEqual([{
+      reason: 'no tool is configured here for the prompt step notes', fix: 'pass --tools default=<tool>, or set workflows.tools.default',
+    }]);
+    const skill = { caller: { evidence: { kind: 'skill-driver' as const }, confirmed: false, mode: 'attended' as const }, driver: 'skill' as const, hasPerson: true };
+    expect((await publishedRuns(runner, skill))[0]?.offer?.lacks).toEqual([]);
   });
 
   it('lets a runner with no agent session take an offered run of an invoke: deny workflow, and refuses it to the skill driver', async () => {

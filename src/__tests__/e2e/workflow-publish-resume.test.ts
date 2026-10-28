@@ -75,6 +75,17 @@ steps:
     command: node -e "console.log('signed')"
 `;
 
+const DOCS = `schemaVersion: v1alpha1
+name: docs
+description: Build, then write the release notes.
+steps:
+  - id: build
+    command: echo build
+  - id: notes
+    needs: [build]
+    prompt: Write the release notes.
+`;
+
 const REVIEW = `schemaVersion: v1alpha1
 name: review
 description: Review the project twice in one session.
@@ -461,6 +472,7 @@ describe('workflow resume lists the runs a checkout can resume, and --next takes
       'workflows/quick.yaml': QUICK,
       'workflows/release.yaml': RELEASE,
       'workflows/sign.yaml': SIGN,
+      'workflows/docs.yaml': DOCS,
     }, 'team repo', teamOrigin);
     seed(path.join(sandbox, 'seed-business'), { 'README.md': '# business\n' }, 'business repo', businessOrigin);
     await join('alice');
@@ -552,6 +564,40 @@ describe('workflow resume lists the runs a checkout can resume, and --next takes
     expect(taken.code, said(taken)).toBe(0);
     expect(taken.stderr).toContain(`Claimed ${sign} (sign) from alice`);
     expect(taken.envelope()).toMatchObject({ data: { done: { run: sign, outcome: 'succeeded' } } });
+  }, 180_000);
+
+  it('leaves a run whose prompt steps left run on a tool not on PATH, lists why, and takes it once the tool is there', async () => {
+    const docs = await offer('docs');
+    // Only git, and the system's own commands: no agent tool, whatever this machine has installed.
+    const bin = path.join(homeOf('runner'), 'tool-bin');
+    fs.mkdirSync(bin, { recursive: true });
+    fs.symlinkSync(execFileSync('which', ['git'], { encoding: 'utf8' }).trim(), path.join(bin, 'git'));
+    const runner = { TEAMAI_MODE: 'unattended', PATH: [bin, '/usr/bin', '/bin'].join(path.delimiter) };
+    const claude = ['--tools', 'default=claude'];
+
+    const listed = await teamai('runner', ['workflow', 'resume', ...claude], { env: runner });
+    expect(listed.code, said(listed)).toBe(0);
+    expect(rowsOf(listed)).toEqual(expect.arrayContaining([
+      expect.stringMatching(new RegExp(`^${docs} +docs +cannot run here +${OWNER('alice')} +offered on teamai-reports, the prompt step notes run on claude, which is not on PATH here: install claude, or pass --tools default=<tool> for one that is, then teamai workflow resume --next$`)),
+    ]));
+
+    const idle = await teamai('runner', ['workflow', 'resume', '--next', ...claude], { env: runner });
+    expect(idle.code, said(idle)).toBe(0);
+    expect(idle.envelope()).toMatchObject({ data: { idle: { offered: expect.any(Number) } } });
+    expect(publishedState(docs)).toMatchObject({ status: 'running', offered: { at: expect.any(String) } });
+
+    fs.writeFileSync(path.join(bin, 'claude'), [
+      '#!/bin/sh',
+      'if [ "$1" = "--version" ]; then echo "2.1.0 (Claude Code)"; exit 0; fi',
+      `echo '${JSON.stringify({ type: 'system', subtype: 'init', model: 'claude-sonnet-4' })}'`,
+      `echo '${JSON.stringify({ type: 'result', result: 'done' })}'`,
+      '',
+    ].join('\n'));
+    fs.chmodSync(path.join(bin, 'claude'), 0o755);
+    const taken = await teamai('runner', ['workflow', 'resume', '--next', ...claude], { env: runner });
+    expect(taken.code, said(taken)).toBe(0);
+    expect(taken.stderr).toContain(`Claimed ${docs} (docs) from alice`);
+    expect(taken.envelope()).toMatchObject({ data: { done: { run: docs, outcome: 'succeeded' } } });
   }, 180_000);
 
   it('refuses --next with a run id, since it picks the run itself', async () => {

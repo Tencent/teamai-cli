@@ -12,6 +12,10 @@ import { getReportsDir, usesBranchWorktree, type LocalConfig } from './types.js'
 import { describeWorkflow } from './workflow/describe.js';
 import { canFor, ceilingOf, isLeft, localReason, stepNeeds } from './workflow/drivers/skill/skill-driver.js';
 import { listOf } from './workflow/drivers/skill/preflight.js';
+import { launchToolFor } from './workflow/drivers/local/local-driver.js';
+import { memberTools, type MemberTool } from './tool-launch/call.js';
+import { executableOf, type LaunchTool } from './tool-launch/tools.js';
+import { resolveCliPath } from './utils/cli-path.js';
 import { sameEnvName } from './resources/env-key.js';
 import type { EnvFacts } from './workflow/requirements.js';
 import { definitionsOf, settledSteps } from './workflow/handoff.js';
@@ -21,14 +25,11 @@ import { installOwner, readRuns, RunIdSchema, type RunId } from './workflow/stor
 import type { RunState, RunStatus, WorkflowFailure } from './workflow/types.js';
 
 /**
- * Who would take an offered run: the calling process, as `invoke` judges it, the driver it would drive the run with, and
- * whether a person answers what the run asks them, as that driver finds out.
+ * Who would take an offered run: the calling process, as `invoke` judges it, whether a person answers what the run asks
+ * them, as its driver finds out, and the driver it would drive the run with: the local driver with `--tools` `tools`, or
+ * the skill driver, whose session runs the prompt steps.
  */
-export interface Taker {
-  caller: InvokeCaller;
-  driver: 'local' | 'skill';
-  hasPerson: boolean;
-}
+export type Taker = { caller: InvokeCaller; hasPerson: boolean } & ({ driver: 'local'; tools: Record<string, string> } | { driver: 'skill' });
 
 /** Something the steps an offered run has left need that this machine lacks: why, as a clause, and what gives it. */
 export interface Lack {
@@ -41,7 +42,7 @@ export interface Offer {
   at: string;
   /** What in the steps the run has not settled for good needs a person, a clause each; empty when a runner can finish it. */
   needs: string[];
-  /** What those steps need that this machine lacks: env with no value here. */
+  /** What those steps need that this machine lacks: env with no value here, or for the local driver a prompt tool. */
   lacks: Lack[];
   /** Why `taker` may not take it at all: its `invoke` refuses the caller, it needs the local driver, or its workflows cannot be read here. */
   refusal?: WorkflowFailure;
@@ -82,13 +83,14 @@ async function list(config: LocalConfig, { taker, env }: { taker: Taker; env: Wo
     return entry.isDirectory() && run.success ? [readSnapshot(config, run.data)] : [];
   }));
   const running = snapshots.filter((snapshot): snapshot is RunSnapshot => snapshot?.status === 'running');
+  const tools = taker.driver === 'local' ? toolLacks(config, taker.tools, await memberTools(config)) : () => [];
   const runs = await Promise.all(running.map(async (snapshot): Promise<PublishedRun> => ({
     run: RunIdSchema.parse(snapshot.run),
     workflow: snapshot.name,
     owner: snapshot.owner,
     ownedAt: snapshot.ownedAt,
     ...(snapshot.repository !== undefined ? { repository: snapshot.repository } : {}),
-    ...(snapshot.offered ? { offer: await offerOf(config, snapshot, snapshot.offered.at, { taker, env }) } : {}),
+    ...(snapshot.offered ? { offer: await offerOf(config, snapshot, snapshot.offered.at, { taker, env, tools }) } : {}),
   })));
   const offered = runs.filter((run) => run.offer).sort((left, right) => (left.offer?.at ?? '').localeCompare(right.offer?.at ?? ''));
   const held = runs.filter((run) => !run.offer).sort((left, right) => right.ownedAt.localeCompare(left.ownedAt));
@@ -109,7 +111,7 @@ async function readSnapshot(config: LocalConfig, run: RunId): Promise<RunSnapsho
  * steps the run has not settled for good that need a person, as the skill driver's unattended resume counts them; the
  * run's `invoke` for the caller; and, for the skill driver, a local route.
  */
-async function offerOf(config: LocalConfig, snapshot: RunSnapshot, at: string, { taker, env }: { taker: Taker; env: WorkflowEnv }): Promise<Offer> {
+async function offerOf(config: LocalConfig, snapshot: RunSnapshot, at: string, { taker, env, tools }: { taker: Taker; env: WorkflowEnv; tools: ToolLacks }): Promise<Offer> {
   const definitions = await definitionsOf(config, snapshot);
   if (!definitions.ok) return { at, needs: [], lacks: [], refusal: { code: definitions.error.code, message: definitions.error.message } };
   const { definition, workflows } = definitions.value;
@@ -122,7 +124,35 @@ async function offerOf(config: LocalConfig, snapshot: RunSnapshot, at: string, {
   const local = taker.driver === 'skill' ? localReason(description) : undefined;
   const refusal = invokeRefusal(definition, taker.caller, { kind: 'continue', run: RunIdSchema.parse(snapshot.run) })
     ?? (local !== undefined ? { code: 'needs_local_driver', message: local } : undefined);
-  return { at, needs, lacks: envLacks(left, env.facts), ...(refusal ? { refusal } : {}) };
+  return { at, needs, lacks: [...envLacks(left, env.facts), ...tools(left)], ...(refusal ? { refusal } : {}) };
+}
+
+/** What the prompt steps among `runs` lack here: a tool to run on, or one on PATH. */
+type ToolLacks = (runs: ReadonlyArray<{ step: string; executor: 'command' | 'prompt'; agent?: string }>) => Lack[];
+
+/**
+ * {@link ToolLacks} for the local driver here with `--tools` `flags`: the tool a prompt step of each agent runs on, as the
+ * driver picks it, and whether its executable is on PATH, looked up once a tool.
+ */
+function toolLacks(config: LocalConfig, flags: Record<string, string>, members: MemberTool[]): ToolLacks {
+  const onPath = new Map<LaunchTool, boolean>();
+  const found = (tool: LaunchTool): boolean => onPath.get(tool) ?? onPath.set(tool, resolveCliPath(executableOf(tool)) !== null).get(tool) === true;
+  return (runs) => {
+    const byAgent = new Map<string | undefined, Array<{ step: string }>>();
+    for (const run of runs) if (run.executor === 'prompt') byAgent.set(run.agent, [...byAgent.get(run.agent) ?? [], run]);
+    return [...byAgent].flatMap(([agent, prompts]): Lack[] => {
+      const steps = `the prompt step${prompts.length > 1 ? 's' : ''} ${listOf(prompts.map((run) => run.step))}`;
+      const flag = agent === undefined ? 'default' : agent;
+      const choice = launchToolFor(agent, config, flags, members);
+      if (choice.ok) {
+        return found(choice.tool) ? [] : [{ reason: `${steps} run on ${choice.tool}, which is not on PATH here`, fix: `install ${choice.tool}, or pass --tools ${flag}=<tool> for one that is` }];
+      }
+      if (choice.failure.code === 'tool_unconfigured') {
+        return [{ reason: `no tool is configured here for ${steps}`, fix: `pass --tools ${flag}=<tool>, or set workflows.tools.${flag}` }];
+      }
+      return [{ reason: `${choice.failure.message}, for ${steps}`, fix: `pass --tools ${flag}=<tool> with a tool teamai launches` }];
+    });
+  };
 }
 
 /** What `runs` require of env that `env` cannot give here: a key with no value, or any key while the team env is unreadable. */
