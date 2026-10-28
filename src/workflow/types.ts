@@ -369,6 +369,12 @@ export interface CachedWorkflow {
   validatedAt: string;
 }
 
+/** Where a workflow `start` runs comes from: a team file `teamai pull` validated, or a default this teamai ships. */
+export type WorkflowSource = 'team' | 'default';
+
+/** A workflow as the cache resolves a name: a team version first, else teamai's default. */
+export type ResolvedWorkflow = CachedWorkflow & { source: WorkflowSource };
+
 export type WorkflowEnvelope =
   | { data: Record<string, unknown> }
   | { error: { code: string; message: string; labels?: Array<Record<string, unknown>> } };
