@@ -805,18 +805,18 @@ export async function doUpdate(runningScope: LocalConfig | null): Promise<void> 
     );
     log.success(`Updated teamai to v${result.latest}`);
 
-    const entry = resolveTeamaiEntryScript();
+    const updatedEntry = resolveTeamaiEntryScript();
 
     // Verify the RUNNING install actually changed: a stale success message
     // here is exactly how self-update silently stops working.
-    if (entry) {
+    if (updatedEntry) {
       try {
         const installed = JSON.parse(fs.readFileSync(
-          path.join(path.dirname(path.dirname(entry)), 'package.json'), 'utf-8',
+          path.join(path.dirname(path.dirname(updatedEntry)), 'package.json'), 'utf-8',
         )) as { version?: string };
         if (installed.version !== result.latest) {
           log.warn(
-            `The running install at ${path.dirname(path.dirname(entry))} is still ` +
+            `The running install at ${path.dirname(path.dirname(updatedEntry))} is still ` +
             `v${installed.version ?? 'unknown'} (expected v${result.latest}) — it may need a manual update.`,
           );
         }
@@ -828,8 +828,8 @@ export async function doUpdate(runningScope: LocalConfig | null): Promise<void> 
     // run the resolved entry with the current Node binary — spawning the .js
     // directly only works behind a shebang + PATH on POSIX.
     try {
-      const refresh = entry
-        ? { cmd: process.execPath, args: [entry, 'hooks', 'inject', '--silent'] }
+      const refresh = updatedEntry
+        ? { cmd: process.execPath, args: [updatedEntry, 'hooks', 'inject', '--silent'] }
         : { cmd: 'teamai', args: ['hooks', 'inject', '--silent'] };
       await execFileAsync(refresh.cmd, refresh.args, {
         timeout: 15_000,
