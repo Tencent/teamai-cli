@@ -64,7 +64,7 @@ function data(envelope: WorkflowEnvelope): Record<string, unknown> {
   return envelope.data;
 }
 
-async function fixture(scorers: Record<string, string> = { quality: SCORER }, kind: 'self' | 'git' = 'self'): Promise<LocalConfig> {
+async function fixture(scorers: Record<string, string> = { quality: SCORER }, kind: 'self' | 'git' | 'http' = 'self'): Promise<LocalConfig> {
   const knowledge = path.join(root, 'knowledge');
   fs.mkdirSync(path.join(knowledge, 'scorers'), { recursive: true });
   for (const [name, text] of Object.entries(scorers)) fs.writeFileSync(path.join(knowledge, 'scorers', `${name}.md`), text);
@@ -1421,6 +1421,15 @@ describe('teamai score --label', () => {
     expect(fs.existsSync(path.join(root, 'data', 'scores', 'reasoning'))).toBe(false);
   });
 
+  it('passes a hand label whose value scores exactly the passing score, as a judge\'s label of it passes', async () => {
+    const config = await fixture({ quality: SCORER.replace('passingScore: 0.5', 'passingScore: 1') });
+    plantClaudeSession(path.join(root, 'app'), 'Add retries to the client');
+
+    expect(data(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: ['quality'], label: 'good' }))).toMatchObject({
+      label: { label: 'good', score: 1, passed: true, judge: { kind: 'human' } },
+    });
+  });
+
   it('refuses a value the scorer does not list, names the ones it does, and writes nothing', async () => {
     const config = await fixture();
     plantClaudeSession(path.join(root, 'app'), 'Add retries to the client');
@@ -1528,6 +1537,27 @@ describe('teamai score --team-session', () => {
       code: 'session_not_found',
       message: `No session claude-code_no-such-session_20261020 is pushed for ${getRepoIdentity(process.cwd()) ?? 'this directory'}. Run teamai session list to see the pushed sessions, after teamai session pull for the newest.`,
     } });
+    expect(await scoreSession(config, { teamSession: { name: await pushed(getReportsDir(config), { author: 'alice' }), author: 'dave' }, scorers: ['quality'], label: 'good' })).toMatchObject({ error: {
+      code: 'session_not_found', message: expect.stringContaining(' by dave is pushed for '),
+    } });
     expect(fs.existsSync(path.join(root, 'data', 'scores', 'labels.jsonl'))).toBe(false);
+  });
+
+  it('refuses a pushed session that records no session id, since its labels would pair with no run of it', async () => {
+    const config = await fixture(undefined, 'git');
+    const name = await pushed(getReportsDir(config), { author: 'alice', sessionId: '' });
+
+    expect(await scoreSession(config, { teamSession: { name }, scorers: ['quality'], label: 'good' })).toEqual({ error: {
+      code: 'session_not_found', message: `The pushed session ${name} records no platform or session id it ran as, so it cannot be scored.`,
+    } });
+    expect(fs.existsSync(path.join(root, 'data', 'scores', 'labels.jsonl'))).toBe(false);
+  });
+
+  it('refuses a team that keeps no session archive, such as an http team', async () => {
+    const config = await fixture(undefined, 'http');
+
+    expect(await scoreSession(config, { teamSession: { name: 'claude-code_fix-the-retry-loop_20261020' }, scorers: ['quality'], label: 'good' })).toEqual({ error: {
+      code: 'unsupported_repo', message: 'This team keeps no session archive here, so it has no pushed session to score. Score a session on this machine with --session <id>.',
+    } });
   });
 });

@@ -202,15 +202,51 @@ describe('dashboard scorer results', () => {
     commit('Judge whether the session fixed the bug and added a test.');
     await syncScorerDefinitions(config);
     publishLabels(config, 'bob', [
-      sessionLabel('one', { rubric: first, judge: { kind: 'human' }, label: 'missed-bug', score: 0, passed: false }),
-      sessionLabel('two', { rubric: first, judge: { kind: 'human' } }),
       sessionLabel('one', { rubric: second }),
       sessionLabel('two', { rubric: second }),
+      sessionLabel('one', { rubric: first, judge: { kind: 'human' }, label: 'missed-bug', score: 0, passed: false }),
+      sessionLabel('two', { rubric: first, judge: { kind: 'human' } }),
     ]);
     const opened = await scorerResults({ config, query: { windowDays: 30 }, now: NOW });
     const cohort = opened.scorers[0]?.cohorts.find((one) => one.rubric.sourceHash === second.sourceHash && one.judge.kind === 'model');
     const view = await scorerResults({ config, query: { windowDays: 30, scorer: 'review-quality', cohort: cohort?.id }, now: NOW });
     expect(view.selected?.agreement.judges).toMatchObject([{ labels: 2, paired: 2, agree: 1, judgePassedHumanFailed: 1 }]);
+  });
+
+  it('pairs hand labels with a rubric whose commit this clone lacks by the values its labels stored', async () => {
+    const { config } = team();
+    const elsewhere = { sourceHash: 'rubric-2', teamRevision: 'f'.repeat(40) };
+    publishLabels(config, 'bob', [
+      sessionLabel('one', { rubric: elsewhere, judge: { kind: 'human' }, label: 'missed-bug', score: 0, passed: false }),
+      sessionLabel('two', { rubric: elsewhere, judge: { kind: 'human' } }),
+      sessionLabel('one', { rubric: elsewhere, label: 'missed-bug', score: 0, passed: false }),
+      sessionLabel('two', { rubric: elsewhere, label: 'missed-bug', score: 0, passed: false }),
+    ]);
+    const opened = await scorerResults({ config, query: { windowDays: 30 }, now: NOW });
+    expect(opened.selected?.agreement.judges).toMatchObject([{ labels: 2, paired: 2, agree: 1, judgeFailedHumanPassed: 1 }]);
+  });
+
+  it.each([
+    ['the scorer file there is another text, such as a rubric edited before its commit', (text: string, head: string) => ({ sourceHash: scorerSourceHash(`${text}Read the tests it ran.\n`), teamRevision: head })],
+    ['the team revision is not a commit hash', (text: string) => ({ sourceHash: scorerSourceHash(text), teamRevision: 'HEAD' })],
+  ])('pairs hand labels by the values the judge\'s labels stored when %s', async (_case, rubricAt) => {
+    const { config } = team();
+    const repo = config.repo.localPath;
+    const text = '---\nlabels:\n  - { value: good, score: 1, description: Fixed it }\n  - { value: missed-bug, score: 0, description: Left the bug }\npassingScore: 1\n---\nJudge whether the session fixed the bug.\n';
+    write(path.join(repo, 'scorers', 'review-quality.md'), text);
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '-q', '-m', 'scorer');
+    const rubric = rubricAt(text, git(repo, 'rev-parse', 'HEAD'));
+    publishLabels(config, 'bob', [
+      sessionLabel('one', { rubric }),
+      sessionLabel('two', { rubric }),
+      sessionLabel('one', { judge: { kind: 'human' }, label: 'missed-bug', score: 0, passed: false }),
+      sessionLabel('two', { judge: { kind: 'human' } }),
+    ]);
+    const opened = await scorerResults({ config, query: { windowDays: 30 }, now: NOW });
+    const cohort = opened.scorers[0]?.cohorts.find((one) => one.rubric.sourceHash === rubric.sourceHash);
+    const view = await scorerResults({ config, query: { windowDays: 30, scorer: 'review-quality', cohort: cohort?.id }, now: NOW });
+    expect(view.selected?.agreement.judges).toMatchObject([{ labels: 2, paired: 1, agree: 1 }]);
   });
 
   it('builds the reminder table from this machine\'s member sessions and contribute state only', async () => {

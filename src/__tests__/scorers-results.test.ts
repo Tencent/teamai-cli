@@ -299,6 +299,20 @@ describe('agreement with hand labels', () => {
     expect(agreementOf('missed-bug-removed')).toEqual({ handLabelled: 10, paired: 10, agree: 10 });
   });
 
+  it('gives each judge of the rubric its own row and counts, the judge with the most labels first', () => {
+    const codex = { kind: 'model', tool: 'codex', model: { reported: 'gpt-5.1-codex' }, isolation: 'best-effort', access: 'read' } as const;
+    const labels = [
+      viewed(sessionLabel({ subject: session(0) })),
+      ...[1, 2].map((n) => viewed(sessionLabel({ subject: session(n), judge: codex }))),
+      ...[0, 1, 2].map((n) => viewed(byHand(n, n === 2 ? missedBug : {}))),
+    ];
+    const { selected } = ScorerResults.of({ labels, query: { windowDays: 30 }, now: NOW });
+    expect(selected?.agreement.judges).toMatchObject([
+      { judge: { tool: 'codex' }, labels: 2, paired: 2, agree: 1, judgePassedHumanFailed: 1 },
+      { judge: { tool: 'claude' }, labels: 1, paired: 1, agree: 1, judgePassedHumanFailed: 0 },
+    ]);
+  });
+
   it('counts only the newest hand label of a session, whichever member gave it', () => {
     const labels = [
       viewed(sessionLabel({ subject: session(0) })),

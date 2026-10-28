@@ -161,8 +161,9 @@ console.log(JSON.stringify({ type: 'result', structured_output: { label: 'good',
     const alice = member('alice');
     const pushedByAlice = await runCLI(['session', 'push', '--source', 'claude-code', '--cwd', alice.app, '-y'], alice.app, alice.env);
     expect(pushedByAlice.code, pushedByAlice.stdout + pushedByAlice.stderr).toBe(0);
+    // Alice passes the name on, so bob's score reads teamai-reports before any other command of his does.
+    const listed = await runCLI(['session', 'list'], alice.app, alice.env);
     const { app, env } = member('bob');
-    const listed = await runCLI(['session', 'list'], app, env);
     const name = /\b(claude-code_\S+)\s+alice\b/.exec(listed.stdout)?.[1];
     expect(name, listed.stdout + listed.stderr).toBeDefined();
     if (!name) return;
