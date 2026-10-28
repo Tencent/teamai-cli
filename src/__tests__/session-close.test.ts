@@ -52,7 +52,7 @@ afterEach(() => {
  */
 async function member({ scorers, files = {}, config = {} }: { scorers: Record<string, string>; files?: Record<string, string>; config?: Partial<LocalConfig> }): Promise<LocalConfig> {
   const knowledge = path.join(root, 'knowledge');
-  for (const [file, text] of Object.entries({ 'manifest/roles.yaml': ROLES, ...files, ...Object.fromEntries(Object.entries(scorers).map(([name, text]) => [`scorers/${name}`, text])) })) {
+  for (const [file, text] of Object.entries({ 'manifest/roles.yaml': ROLES, ...files, ...Object.fromEntries(Object.entries(scorers).map(([name, source]) => [`scorers/${name}`, source])) })) {
     fs.mkdirSync(path.dirname(path.join(knowledge, file)), { recursive: true });
     fs.writeFileSync(path.join(knowledge, file), text);
   }
