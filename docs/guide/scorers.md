@@ -222,7 +222,7 @@ When two members pushed a session with that name, the command fails and lists th
 $ teamai score --team-session claude-code_fix-the-retry-loop-in-sync-ts_20261021 --author bob --scorer review-quality --label good
 ```
 
-`--team-session` reads the sessions pushed for the project of the current directory, as `teamai session resume` does: on `teamai-reports` first, then, on a git team, where teamai kept sessions on the default branch before. It cannot be combined with `--session`, `--source` or `--json`. The session is redacted before the judge reads it, also when it was pushed without `--scrub`. Its label has no `agent`, because what a session ran as is recorded only on the machine that ran it, so the Scorers page counts it as `Not recorded` by tool and model.
+`--team-session` reads the sessions pushed for the project of the current directory on `teamai-reports`. On a git team it reads where teamai kept sessions on the default branch before only when `teamai-reports` has no session of that name, and `--author` picks among the members who pushed the name where it was found. It cannot be combined with `--session`, `--source` or `--json`. The session is redacted before the judge reads it, also when it was pushed without `--scrub`. Its label has no `agent`, because what a session ran as is recorded only on the machine that ran it, so the Scorers page counts it as `Not recorded` by tool and model.
 
 ### When the scorer changes
 

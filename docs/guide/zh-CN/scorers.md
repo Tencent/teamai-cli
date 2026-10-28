@@ -222,7 +222,7 @@ $ teamai score --team-session claude-code_fix-the-retry-loop-in-sync-ts_20261021
 $ teamai score --team-session claude-code_fix-the-retry-loop-in-sync-ts_20261021 --author bob --scorer review-quality --label good
 ```
 
-`--team-session` 读取为当前目录所在项目推送的会话，与 `teamai session resume` 相同：先读 `teamai-reports`，在 git 团队上再读 teamai 以前保存在默认分支上的会话。它不能与 `--session`、`--source` 或 `--json` 同时使用。评审者读取前会对会话脱敏，即使推送时没有使用 `--scrub`。它的标签没有 `agent`，因为会话的运行配置只记录在运行它的机器上，所以评分器页面按工具和模型分组时将其计为“未记录”。
+`--team-session` 在 `teamai-reports` 上读取为当前目录所在项目推送的会话。在 git 团队上，只有 `teamai-reports` 中没有该名称的会话时，才读取 teamai 以前保存在默认分支上的会话；`--author` 只在找到该名称的位置推送过它的成员中选择。它不能与 `--session`、`--source` 或 `--json` 同时使用。评审者读取前会对会话脱敏，即使推送时没有使用 `--scrub`。它的标签没有 `agent`，因为会话的运行配置只记录在运行它的机器上，所以评分器页面按工具和模型分组时将其计为“未记录”。
 
 ### 评分器变更时
 

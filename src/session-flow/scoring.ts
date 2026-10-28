@@ -165,14 +165,15 @@ async function pushedSession(config: LocalConfig, { name, author }: TeamSession)
   }
   if (!archives) return failure('unsupported_repo', 'This team keeps no session archive here, so it has no pushed session to score. Score a session on this machine with --session <id>.');
   const repoIdentity = getRepoIdentity(process.cwd());
-  for (const root of [archives.root, ...(archives.legacy ? [archives.legacy] : [])]) {
+  const kept = [{ root: archives.root, where: 'teamai-reports' }, ...(archives.legacy ? [{ root: archives.legacy, where: 'the default branch' }] : [])];
+  for (const { root, where } of kept) {
     const archive = new SyncManager(root);
     const named = archive.listSessions(repoIdentity).filter((entry) => entry.sessionName === name);
     if (named.length === 0) continue;
     const held = author === undefined ? named : named.filter((entry) => entry.author === author);
     const [entry, ...others] = held;
     if (!entry) {
-      return failure('session_not_found', `--team-session ${name} names sessions pushed by ${named.map((one) => safeText(one.author)).join(', ')}, not by ${author}. Pass --author with one of them.`);
+      return failure('session_not_found', `--team-session ${name} on ${where} names sessions pushed by ${named.map((one) => safeText(one.author)).join(', ')}, not by ${safeText(author ?? '')}, and a name found there is read only there. Pass --author with one of them.`);
     }
     if (others.length > 0) {
       return failure('session_ambiguous', `--team-session ${name} names sessions pushed by ${held.map((one) => safeText(one.author)).join(', ')}. Pass --author with one of them.`);

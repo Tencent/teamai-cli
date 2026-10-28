@@ -1528,7 +1528,7 @@ describe('teamai score --team-session', () => {
     } });
     expect(data(await label(both, 'bob'))).toMatchObject({ label: { subject: { sessionId: 'b0000000-0000-4000-8000-00000000000b' } } });
     expect(await label(both, 'carol')).toEqual({ error: {
-      code: 'session_not_found', message: `--team-session ${both} names sessions pushed by alice, bob, not by carol. Pass --author with one of them.`,
+      code: 'session_not_found', message: `--team-session ${both} on teamai-reports names sessions pushed by alice, bob, not by carol, and a name found there is read only there. Pass --author with one of them.`,
     } });
   });
 
