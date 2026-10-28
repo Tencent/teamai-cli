@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { z } from 'zod';
-import { autoDetectInit, loadLocalConfigForScope, loadTeamConfig, machineWorkflowAllowProblem } from './config.js';
+import { autoDetectInit, loadTeamConfig, machineWorkflowAllowProblem } from './config.js';
 import { resolveWorkflowEnv, type WorkflowEnv } from './env-resolution.js';
 import { isLeaseRef } from './scorers/entry.js';
 import { log, setStderrOnly } from './utils/logger.js';
@@ -19,7 +19,7 @@ import { getBusinessRoot, getDataHome, usesBranchWorktree, type LocalConfig, typ
 import { AttemptIdSchema, installOwner, readRun, RunIdSchema } from './workflow/store.js';
 import { inProcessClient, resumeRefusal, workflowNotFound, type InvokeCaller, type NextPrepare } from './workflow/protocol.js';
 import { parseInputsFlag, parseSkillCall, parseSkillResume, runSkillCall, sessionDrivesRun, skillContext } from './workflow/drivers/skill/skill-driver.js';
-import { loadCachedWorkflow } from './workflow/cache.js';
+import { loadCachedWorkflow, resolveStart } from './workflow/cache.js';
 import { findRunConfig } from './workflow/run-location.js';
 import { resolveRunMode } from './launch-context.js';
 import { memberTools } from './tool-launch/call.js';
@@ -132,20 +132,16 @@ async function readyConfig(): Promise<Ready | WorkflowEnvelope> {
   return { ...loaded, env, secrets: env.secrets };
 }
 
-/**
- * `readyConfig`, or the user scope's when this is a project whose cache has no team version of `name` and the user
- * scope's has one: the skills a user-scope pull generates show in every directory, so `start` finds what they name. A
- * teamai default of `name` runs in this scope only when neither team has a version: project, then user, then default.
- */
+/** `readyConfig`, or the user scope's when a start of `name` runs there, as {@link resolveStart} decides. */
 async function readyStartConfig(name: string): Promise<Ready | WorkflowEnvelope> {
   const loaded = await readyConfig();
-  if (!('config' in loaded) || loaded.config.scope !== 'project' || (await loadCachedWorkflow(loaded.config, name))?.source === 'team') return loaded;
-  const user = await loadLocalConfigForScope('user', undefined, { dryRun: true });
-  if (!user || (await loadCachedWorkflow(user, name))?.source !== 'team') return loaded;
-  const teamConfig = await loadTeamConfig(user.repo.localPath);
+  if (!('config' in loaded)) return loaded;
+  const { config } = await resolveStart(loaded.config, name);
+  if (config === loaded.config) return loaded;
+  const teamConfig = await loadTeamConfig(config.repo.localPath);
   if (!teamConfig) return loaded;
-  const env = await resolveWorkflowEnv(user);
-  return { config: user, teamConfig, env, secrets: env.secrets };
+  const env = await resolveWorkflowEnv(config);
+  return { config, teamConfig, env, secrets: env.secrets };
 }
 
 /** `allowRemote`: a run no config here has is the current config's, as a call that may claim it from teamai-reports needs. */

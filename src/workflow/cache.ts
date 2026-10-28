@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { loadLocalConfigForScope } from '../config.js';
 import { syncScorerDefinitions, type SyncScorerOptions, type SyncScorerResult } from '../scorers/cache.js';
 import { log } from '../utils/logger.js';
 import { pathExists, readFileSafe, remove, writeJsonAtomic } from '../utils/fs.js';
@@ -128,6 +129,19 @@ export async function loadCachedWorkflow(config: LocalConfig, name: string): Pro
   if (aliases.length === 1) return { ...aliases[0], source: 'team' };
   const shipped = DefaultWorkflows.named(name);
   return shipped && !team.some((entry) => entry.definition.alias === name) ? { ...shipped, source: 'default' } : null;
+}
+
+/**
+ * Where a start of workflow `name` from `config`'s directory runs, and what it runs: a team version in `config`'s scope,
+ * else, from a project, one in the user scope, whose generated skills show in every directory, else teamai's default in
+ * `config`'s scope. `workflow` is null when none of them runs.
+ */
+export async function resolveStart(config: LocalConfig, name: string): Promise<{ config: LocalConfig; workflow: ResolvedWorkflow | null }> {
+  const here = await loadCachedWorkflow(config, name);
+  if (here?.source === 'team' || config.scope !== 'project') return { config, workflow: here };
+  const user = await loadLocalConfigForScope('user', undefined, { dryRun: true });
+  const there = user ? await loadCachedWorkflow(user, name) : null;
+  return user && there?.source === 'team' ? { config: user, workflow: there } : { config, workflow: here };
 }
 
 /**

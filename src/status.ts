@@ -1,7 +1,7 @@
 import path from 'node:path';
 import YAML from 'yaml';
-import { autoDetectInit, loadLocalConfigForScope, loadStateForScope } from './config.js';
-import { listCachedWorkflows, loadCachedWorkflow } from './workflow/cache.js';
+import { autoDetectInit, loadStateForScope } from './config.js';
+import { listCachedWorkflows, resolveStart } from './workflow/cache.js';
 import { summarizeWorkspaceChildren } from './workspace-children.js';
 import { teamRefNotice } from './team-ref.js';
 import { getDefaultBranch, getHeadRev, getRepoStatus } from './utils/git.js';
@@ -455,15 +455,12 @@ async function workflowSourceLines(
   files: ReadonlyArray<{ name: string; sourcePath: string }>,
   options: ListOptions,
 ): Promise<string[]> {
-  const resolved = new Map((await listCachedWorkflows(localConfig)).map(({ definition, source }) => [definition.name, source]));
   const paths = new Map(files.map((file) => [file.name.replace(/\.yaml$/, ''), file.sourcePath]));
-  const user = localConfig.scope === 'project' ? await loadLocalConfigForScope('user', undefined, { dryRun: true }) : null;
-  const names = [...new Set([...paths.keys(), ...resolved.keys()])].sort();
+  const names = [...new Set([...paths.keys(), ...(await listCachedWorkflows(localConfig)).map(({ definition }) => definition.name)])].sort();
   if (names.length === 0) return ['  (none)'];
   const lines: string[] = [];
   for (const name of names) {
-    const here = resolved.get(name);
-    const source = here === 'team' || (user && (await loadCachedWorkflow(user, name))?.source === 'team') ? 'team' : here ?? 'not runnable';
+    const source = (await resolveStart(localConfig, name)).workflow?.source ?? 'not runnable';
     lines.push(`  ${name}  (${source})`);
     const sourcePath = paths.get(name);
     if (options.verbose && sourcePath) lines.push(`    path: ${sourcePath}`);
