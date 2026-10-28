@@ -87,23 +87,36 @@ function filesOf(sources: readonly string[]): string {
  * agent, which judges only best-effort. `judge` is asked only when a scorer needs verified isolation.
  */
 function scorersProposal(sampled: readonly SampledScorer[], { judge, team }: { judge: () => Judge; team: readonly IsolationSetting[] }): Proposal<string[]> {
-  const open = sampled.filter(({ state }) => state.kind === 'open');
   const verifiedBy = (one: SampledScorer) => {
     const required = requiredIsolation([...team, { source: scorerIsolationSource(one.scorer, one.pin.relativePath), value: one.definition.isolation }]);
     return required.level === 'verified' && judge() === 'driver' ? required.setBy : undefined;
   };
-  const proposed = open.filter((one) => verifiedBy(one) === undefined);
-  const leftOut = new Map<string, string[]>();
-  for (const one of open) {
-    const files = verifiedBy(one);
-    if (files) leftOut.set(filesOf(files), [...leftOut.get(filesOf(files)) ?? [], one.scorer]);
+  const proposed: SampledScorer[] = [];
+  const leftOut = new Map<string, { sources: readonly string[]; scorers: string[] }>();
+  for (const one of sampled.filter(({ state }) => state.kind === 'open')) {
+    const sources = verifiedBy(one);
+    if (sources === undefined) {
+      proposed.push(one);
+      continue;
+    }
+    const key = sources.join('\0');
+    leftOut.set(key, { sources, scorers: [...leftOut.get(key)?.scorers ?? [], one.scorer] });
   }
-  const left = [...leftOut].map(([files, scorers]) => `${listOf(scorers)} ${scorers.length > 1 ? 'are' : 'is'} left out: ${files} ${files.includes(' and ') ? 'ask' : 'asks'} for verified isolation, which this session's agent cannot give.`);
-  const sampling = proposed.length === 1
-    ? [`${proposed[0]?.scorer} samples this session (samplingRate ${proposed[0]?.definition.samplingRate}).`]
-    : proposed.length > 1 ? [`${listOf(proposed.map(({ scorer, definition }) => `${scorer} (samplingRate ${definition.samplingRate})`))} sample this session.`] : [];
-  if (proposed.length > 0) return { value: proposed.map(({ scorer }) => scorer), why: [SCORERS_WHY, ...sampling, ...left, '[] skips scoring.'].join(' ') };
+  const left = [...leftOut.values()].map(leftOutWhy);
+  if (proposed.length > 0) return { value: proposed.map(({ scorer }) => scorer), why: [SCORERS_WHY, samplingWhy(proposed), ...left, '[] skips scoring.'].join(' ') };
   return { value: [], why: [SCORERS_WHY, `None proposed: ${left.length > 0 ? left.join(' ') : 'no scorer samples this session.'}`, NAME_ANY].join(' ') };
+}
+
+/** That `proposed`, one scorer or more, sample this session, with their sampling rates. */
+function samplingWhy(proposed: readonly SampledScorer[]): string {
+  const [only, ...more] = proposed;
+  if (only !== undefined && more.length === 0) return `${only.scorer} samples this session (samplingRate ${only.definition.samplingRate}).`;
+  return `${listOf(proposed.map(({ scorer, definition }) => `${scorer} (samplingRate ${definition.samplingRate})`))} sample this session.`;
+}
+
+/** That `scorers` are left out for the session's agent, because the files of `sources` ask for verified isolation. */
+function leftOutWhy({ sources, scorers }: { sources: readonly string[]; scorers: readonly string[] }): string {
+  return `${listOf(scorers)} ${scorers.length > 1 ? 'are' : 'is'} left out: ${filesOf(sources)} ${sources.length > 1 ? 'ask' : 'asks'} for verified isolation, which this session's agent cannot give.`;
 }
 
 /** How the offer finds the judge tools installed here: asked once, and only when needed, since each tool missing costs shell lookups. */
