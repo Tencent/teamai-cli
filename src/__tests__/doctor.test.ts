@@ -1,5 +1,6 @@
 import { toolHome } from '../tool-home.js';
 import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest';
+import os from 'node:os';
 import path from 'node:path';
 
 // ── Mocks ────────────────────────────────────────────────
@@ -260,7 +261,7 @@ describe('doctor — hook checks', () => {
     });
 
     it('checks standalone Copilot hooks under COPILOT_HOME', async () => {
-        const copilotHome = '/tmp/teamai-doctor-copilot';
+        const copilotHome = path.join(os.tmpdir(), 'teamai-doctor-copilot');
         const originalCopilotHome = process.env.COPILOT_HOME;
         process.env.COPILOT_HOME = copilotHome;
         mockedLoadLocalConfig.mockResolvedValue({
@@ -362,8 +363,8 @@ describe('doctor — hook checks', () => {
     });
 
     it('does not infer project Copilot installation from .github/hooks alone', async () => {
-        const projectRoot = '/tmp/teamai-doctor-unselected-copilot';
-        const copilotHome = '/tmp/teamai-doctor-unselected-home';
+        const projectRoot = path.join(os.tmpdir(), 'teamai-doctor-unselected-copilot');
+        const copilotHome = path.join(os.tmpdir(), 'teamai-doctor-unselected-home');
         const originalCopilotHome = process.env.COPILOT_HOME;
         process.env.COPILOT_HOME = copilotHome;
         mockedLoadLocalConfig.mockResolvedValue({
