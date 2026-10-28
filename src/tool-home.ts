@@ -211,7 +211,12 @@ export async function toolHomesAcrossProfiles(tool: 'hermes' | 'omp', host: Host
       break;
     case 'omp':
       homes.push(...moves);
-      for (const base of new Set([p.dirname(defaultToolHome(tool, host)), p.join(host.home, host.env.PI_CONFIG_DIR || '.omp')])) {
+      // A moved home is `<root>/agent` or `<root>/profiles/<name>/agent`; its root holds the other profiles.
+      const roots = moves.map((home) => {
+        const profiles = p.dirname(p.dirname(home));
+        return p.basename(profiles) === 'profiles' ? p.dirname(profiles) : p.dirname(home);
+      });
+      for (const base of new Set([p.dirname(defaultToolHome(tool, host)), p.join(host.home, host.env.PI_CONFIG_DIR || '.omp'), ...roots])) {
         homes.push(p.join(base, 'agent'), ...(await subdirs(p.join(base, 'profiles'))).map((name) => p.join(base, 'profiles', name, 'agent')));
       }
       break;

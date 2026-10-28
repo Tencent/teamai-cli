@@ -3913,6 +3913,33 @@ describe('uninstall', () => {
     expect(await fse.readFile(foreign, 'utf8')).toBe('// my own extension\n');
   });
 
+  it("removes teamai's Oh My Pi extension from the default profile of the PI_CONFIG_DIR init recorded, from a shell without it (#1221)", async () => {
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+    const { injectOmpHooks, OMP_HOOK_FILE } = await import('../omp-hooks.js');
+    vi.stubEnv('PI_CONFIG_DIR', '.omp-alt');
+    await injectOmpHooks();
+    vi.stubEnv('OMP_PROFILE', 'work');
+    await injectOmpHooks();
+    await fse.outputJson(path.join(homeDir, '.teamai', 'tool-homes.json'), { omp: path.join(homeDir, '.omp-alt', 'profiles', 'work', 'agent') });
+    vi.stubEnv('PI_CONFIG_DIR', '');
+    vi.stubEnv('OMP_PROFILE', '');
+    const extensions = [
+      path.join(homeDir, '.omp-alt', 'agent', 'extensions', OMP_HOOK_FILE),
+      path.join(homeDir, '.omp-alt', 'profiles', 'work', 'agent', 'extensions', OMP_HOOK_FILE),
+    ];
+
+    const defaults = TeamaiConfigSchema.parse({ team: 't', repo: 'owner/repo' }).toolPaths;
+    mockAutoDetectInit.mockResolvedValue({
+      localConfig: makeLocalConfig(homeDir, repoPath, { enabledAgents: ['omp'] }),
+      teamConfig: makeTeamConfig({ toolPaths: { omp: defaults.omp } }),
+    });
+    await uninstall({ force: true });
+
+    for (const file of extensions) expect(await fse.pathExists(file)).toBe(false);
+  });
+
   it('a project-scope uninstall leaves the SOUL.md rules block, which only a user-scope pull writes (#946)', async () => {
     const projectRoot = path.join(tmpDir, 'hermes-project');
     const homeDir = path.join(tmpDir, 'home');
