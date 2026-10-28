@@ -2742,11 +2742,11 @@ ${steps}`);
     expect(worktrees(workspace)).toEqual([]);
   });
 
-  async function slowSetup(maxParallel: number, timeout = ''): Promise<{ config: LocalConfig; workspace: string; runId: string; pidFile: string; marker: string }> {
+  async function slowSetup(maxParallel: number, { timeout = '', setupMs = 4000 } = {}): Promise<{ config: LocalConfig; workspace: string; runId: string; pidFile: string; marker: string }> {
     const pidFile = path.join(os.tmpdir(), `teamai-setup-pid-${randomUUID()}`);
     const marker = path.join(os.tmpdir(), `teamai-setup-step-${randomUUID()}`);
     dirs.push(pidFile, marker);
-    const script = `require('fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setTimeout(() => {}, 4000)`;
+    const script = `require('fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setTimeout(() => {}, ${setupMs})`;
     const built = await setupFixture(`  command: ${JSON.stringify(`node -e ${JSON.stringify(script)}`)}`, `  - id: change
     workspace: new
     command: touch ${JSON.stringify(marker)}
@@ -2817,12 +2817,15 @@ ${timeout}`);
     expect(adapter.runInteractive).not.toHaveBeenCalled();
   });
 
-  it.each([1, 2])('stops setup when the lease passes its timeout at max_parallel %i, and never runs the step', async (maxParallel) => {
-    const { config, workspace, runId, pidFile, marker } = await slowSetup(maxParallel, '    timeout: 1s\n');
+  // The timeout counts from the lease, and a loaded runner took more than a second to make the worktree, so a 1s
+  // timeout passed before setup started (#1504). This one leaves the worktree room and setup outlasts it; the real
+  // setup processes and the timeout share the budget.
+  it.each([1, 2])('stops setup when the lease passes its timeout at max_parallel %i, and never runs the step', { timeout: 60_000 }, async (maxParallel) => {
+    const { config, workspace, runId, pidFile, marker } = await slowSetup(maxParallel, { timeout: '    timeout: 5s\n', setupMs: 9000 });
     const startedAt = Date.now();
     const done = await runLocalDriver(config, runId, workspace, { hitl: false });
     expect(done).toMatchObject({ data: { done: { outcome: 'failed' } } });
-    expect(Date.now() - startedAt, 'the driver did not wait for setup to finish').toBeLessThan(3500);
+    expect(Date.now() - startedAt, 'the driver did not wait for setup to finish').toBeLessThan(7500);
     expect(await exitsWithin(await setupPid(pidFile), 1000)).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 4500));
     expect(fs.existsSync(marker)).toBe(false);
