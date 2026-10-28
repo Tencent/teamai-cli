@@ -5,6 +5,7 @@
  */
 import { z } from 'zod';
 import { RunModeSchema, type RunMode } from '../launch-context.js';
+import { ownMemberSettings } from '../config.js';
 import { usesBranchWorktree, type LocalConfig, type TeamaiConfig } from '../types.js';
 
 /** Most restrictive first: where two files of one level disagree, the earlier policy wins. */
@@ -74,11 +75,14 @@ function readPublish(file: string, sessions: unknown): { set: Partial<SessionPol
 const publishDefaults = { attended: 'ask', unattended: 'auto' } as const satisfies Record<RunMode, SessionPolicy>;
 
 /**
- * Each run mode's `sessions.publish` policy for this member: its `config.yaml`, else `teamai.yaml`, else the default.
- * An HTTP team keeps no session archive, so there every mode is `off`, with a problem while one would publish.
+ * Each run mode's `sessions.publish` policy for this member: its `config.yaml`, else ~/.teamai/config.yaml below a
+ * workspace or self scope, else `teamai.yaml`, else the default. An HTTP team keeps no session archive, so there every
+ * mode is `off`, with a problem while one would publish.
  */
 function publish(config: LocalConfig, team: TeamaiConfig | null): { policies: SessionPolicies; problems: string[] } {
-  const member = readPublish('config.yaml', config.sessions);
+  // A workspace that sets no `sessions` holds the machine's, which its own file does not.
+  const fromMachine = config.sessions !== undefined && ownMemberSettings(config).sessions === undefined;
+  const member = readPublish(fromMachine ? '~/.teamai/config.yaml' : 'config.yaml', config.sessions);
   const ofTeam = readPublish('teamai.yaml', team?.sessions);
   const policies = resolve([[member.set], [ofTeam.set]], publishDefaults);
   const problems = [...member.problems, ...ofTeam.problems];
