@@ -243,3 +243,9 @@ jobs:
       # teamai.cmd. The file skips itself off Windows.
       - name: Hook shells
         run: npx vitest run --config vitest.e2e.config.ts src/__tests__/e2e/hook-shells-windows.test.ts
+
+      # The CodeBuddy project gate (#1494): cmd.exe and Git Bash run the same
+      # gate, and only Windows shows that. The unit list above runs Windows-safe
+      # files only, so the gate's e2e cases run here.
+      - name: CodeBuddy project gate
+        run: npx vitest run --config vitest.e2e.config.ts src/__tests__/e2e/hooks-project-isolation-issue373.test.ts
