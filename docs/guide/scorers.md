@@ -297,6 +297,22 @@ scoring:
   sessions: { attended: ask }   # attended only; unattended still follows the team
 ```
 
+`scoring` in `~/.teamai/config.yaml` applies in every workspace and self scope on the machine, to each mode and limit their own `config.yaml` leaves unset, and only where it is stricter than the team: a mode the team leaves on can be turned off, and a lower `daily_limit` applies. A machine never starts judging:
+
+| `scorers/scoring.yaml` | `~/.teamai/config.yaml` | In a workspace |
+|---|---|---|
+| `sessions: true` | `scoring: { sessions: { unattended: off } }` | attended `auto`, unattended `off` |
+| `sessions: { attended: ask }` | `scoring: { sessions: false }` | `off` in both modes |
+| `sessions: false` | `scoring: { sessions: true }` | `off` in both modes: the team's `off` stays |
+| `daily_limit: 4` | `scoring: { daily_limit: 2 }` | 2 sessions a day |
+| `daily_limit: 4` | `scoring: { daily_limit: 20 }` | 4 sessions a day |
+
+`teamai doctor` says what decided each mode and the limit, once a setting does:
+
+```text
+Session judging: attended auto, set by scorers/scoring.yaml sessions; unattended off, set by ~/.teamai/config.yaml scoring.sessions.unattended; up to 2 sessions a day, set by ~/.teamai/config.yaml scoring.daily_limit.
+```
+
 `teamai doctor` reports a value that is not `off`, `ask` or `auto` (or a boolean), with its file and key, and teamai ignores it, so that mode falls to the next level. [Sessions](sharing.md#sessions) covers `sessions.publish`, which decides whether sessions are archived.
 
 | What is judged | Set by |
@@ -310,7 +326,7 @@ A namespace scorer judges a session only when the roles and projects each of its
 
 A session is judged once per scorer and rubric. A release, a lapse, or a local judge that fails closes it. An answer to a lapsed lease is still recorded, unless a judge has labelled the session since or [your own judge](#with-your-own-judge) leased it again. `scoring.daily_limit` in `config.yaml` sets how many sessions one data home leases per local day, 10 by default, counting those that failed or could not be read. On a fresh CI runner each job starts a new data home, so the limit caps one job, not one day. `0` turns session scoring off. Editing a scorer's rubric makes the captured sessions judge work again for it, and the daily limit spreads that over the following days.
 
-With `attended: auto`, you do not have to run a driver. After the pull at a session's start, when the session's project or your user scope scores sessions, teamai starts a background judge for both scopes. It judges each finished session with a judge tool installed here, stops taking work after 30 minutes, and leaves the labels pending for the next `teamai pull` to publish. Each lease is one judge call on your account, at most `daily_limit` a day. A session scorer with a cheap [model alias](#choose-the-judges-model), such as `model: fast`, keeps that cheap. To stop it, set `scoring.sessions: { attended: off }` in `config.yaml`.
+With `attended: auto`, you do not have to run a driver. After the pull at a session's start, when the session's project or your user scope scores sessions, teamai starts a background judge for both scopes. It judges each finished session with a judge tool installed here, stops taking work after 30 minutes, and leaves the labels pending for the next `teamai pull` to publish. Each lease is one judge call on your account, at most `daily_limit` a day. A session scorer with a cheap [model alias](#choose-the-judges-model), such as `model: fast`, keeps that cheap. To stop it, set `scoring.sessions: { attended: off }` in `config.yaml`, or in `~/.teamai/config.yaml` for every workspace on this machine.
 
 The background judge uses the tool's home that `teamai init` recorded, such as a moved `CLAUDE_CONFIG_DIR`. It does not see a credential or base URL that only your shell sets, notably on Windows. Keep those in the tool's sign-in, your user environment, or the tool's `settings.json` `env`.
 
@@ -379,7 +395,7 @@ batch: true
 
 `scorers/scoring.yaml` holds the team's scoring settings. `scorers/ops/scoring.yaml` applies to members with the `ops` namespace active, as its scorers do, and replaces the root file's key of the same name. When two active namespaces set `isolation`, the strictest wins. When they set `batch` differently, those members get no judge work until one file changes.
 
-The team's `isolation`, a scorer's `isolation`, and `scoring.isolation` in this scope's `config.yaml` may each ask for `verified`. The strictest wins; the default is `best-effort`. A value teamai does not know counts as `verified`, with a warning. `teamai doctor` prints the level, what sets it, the scorers that ask for more, and the level each judge tool here reaches:
+The team's `isolation`, a scorer's `isolation`, and `scoring.isolation` in this scope's `config.yaml` or in `~/.teamai/config.yaml` may each ask for `verified`. The strictest wins; the default is `best-effort`. A value teamai does not know counts as `verified`, with a warning. `teamai doctor` prints the level, what sets it, the scorers that ask for more, and the level each judge tool here reaches:
 
 ```text
 Scoring isolation: verified, set by scorers/scoring.yaml isolation.

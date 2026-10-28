@@ -18,9 +18,22 @@ teamai dashboard --port 8080
 - 每种模式的发布和评分策略，以及它来自哪项设置，如 `the default` 或 `teamai.yaml sessions.publish.unattended`。有人值守的 `ask` 显示“摩擦提醒提供 session-close 时提议”（见 [session-close](workflow.md#session-close)）；无人值守的 `ask` 显示“等同于 off：无人在场确认”。
 - 本机在每种模式下捕获的会话：活跃、等待 drain、保留在本机、等待归档、已归档。文件已不存在的会话不计入。另有已结束运行中等待归档的步骤会话。
 - 正在等待的内容，以及要运行的 drain。drain 只结束并发布与其运行模式相同的会话，因此在有人值守的机器上，面板会为无人值守会话给出 `TEAMAI_MODE=unattended teamai score --drain`，在 Windows 上则是 `$env:TEAMAI_MODE='unattended'; teamai score --drain`。
-- 归档位置、`daily_limit`、评判会话的评分器、teamai 不读取其会话的已启用工具，以及 `teamai doctor` 报告的设置问题。
+- 归档位置、`daily_limit` 及其来自哪项设置、评判会话的评分器、teamai 不读取其会话的已启用工具，以及 `teamai doctor` 报告的设置问题。
 
 **本机**是启动 `teamai dashboard` 的 shell 的运行模式。面板只显示计数和设置名，从不显示会话内容，也不修改任何设置。相关设置见[会话](sharing.md#会话)和[已结束的会话](scorers.md#已结束的会话)。
+
+## 成员设置（Member settings）
+
+总览页的**成员设置**面板针对当前工作区，像 `teamai doctor` 一样列出每个由某一层级设置的[成员设置](reference.md#成员设置)：生效值、设置它的层级和文件，以及更低层级的值。
+
+| 设置项 | 生效值 | 来自 | 其他层级 |
+|---|---|---|---|
+| `ai.tool` | `claude` | 此工作区，`~/.teamai/projects/<slug>/config.yaml` | 本机 `codex` |
+| `workflows.tools.default` | `codex` | 本机，`~/.teamai/config.yaml` | — |
+| `recallEnabled` | `false` | 此工作区，`~/.teamai/projects/<slug>/config.yaml` | 本机 `true`，团队 `false` |
+| `updatePolicy` | `skip` | 用户配置，`~/.teamai/config.yaml` | 此工作区 `auto`，未使用 |
+
+由 user scope 决定 `updatePolicy` 或 `autoCompactTokens` 时，此工作区自己的值标为“未使用”。**未读取**列出没有 user scope 安装的 `~/.teamai/config.yaml` 中不是成员设置的键，如 `excludedSkills`。在侧边栏选择另一个工作区即可对比。面板不修改任何设置：请编辑它给出的文件。
 
 ## 工作流运行（Workflow Runs）
 

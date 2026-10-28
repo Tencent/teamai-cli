@@ -297,6 +297,22 @@ scoring:
   sessions: { attended: ask }   # 只设置有人值守；无人值守仍按团队设置
 ```
 
+`~/.teamai/config.yaml` 中的 `scoring` 作用于本机每个 workspace 和 self scope 中其自身 `config.yaml` 没有设置的模式和上限，且只在比团队更严格时生效：团队开启的模式可以被关闭，更低的 `daily_limit` 生效。本机永远不会开启评判：
+
+| `scorers/scoring.yaml` | `~/.teamai/config.yaml` | 在 workspace 中 |
+|---|---|---|
+| `sessions: true` | `scoring: { sessions: { unattended: off } }` | 有人值守 `auto`，无人值守 `off` |
+| `sessions: { attended: ask }` | `scoring: { sessions: false }` | 两种模式都是 `off` |
+| `sessions: false` | `scoring: { sessions: true }` | 两种模式都是 `off`：团队的 `off` 保持不变 |
+| `daily_limit: 4` | `scoring: { daily_limit: 2 }` | 每天 2 个会话 |
+| `daily_limit: 4` | `scoring: { daily_limit: 20 }` | 每天 4 个会话 |
+
+一旦有设置（而不是默认值）决定了某种模式或上限，`teamai doctor` 会说明它来自哪里：
+
+```text
+Session judging: attended auto, set by scorers/scoring.yaml sessions; unattended off, set by ~/.teamai/config.yaml scoring.sessions.unattended; up to 2 sessions a day, set by ~/.teamai/config.yaml scoring.daily_limit.
+```
+
 值不是 `off`、`ask` 或 `auto`（也不是布尔值）时，`teamai doctor` 会报告它所在的文件和键，teamai 忽略该值，这种模式交给下一级。会话是否归档由 `sessions.publish` 决定，见[会话](sharing.md#会话)。
 
 | 评判对象 | 由谁决定 |
@@ -310,7 +326,7 @@ scoring:
 
 每个会话对同一评分器和评分标准只评判一次。释放、过期或本地评审失败都会关闭它。过期租约的答案仍会被记录，除非之后已有评审者为该会话打了标签，或[你自己的评审者](#用自己的评审者)又租走了它。`config.yaml` 中的 `scoring.daily_limit` 设置每个数据目录每个本地日最多租出多少个会话，默认 10，失败或无法读取的会话也计入。在全新的 CI runner 上，每次任务都从新的数据目录开始，所以这个上限限制的是一次任务，而不是一天。`0` 关闭会话评分。修改评分器的评分标准后，已捕获的会话会重新成为它的评审工作，每日上限会把这些工作分摊到之后几天。
 
-设置 `attended: auto` 后，你不需要自己运行 driver。会话启动时的 pull 之后，如果会话所在项目或你的用户作用域开启了会话评分，teamai 会为这两个作用域在后台启动评审。它用本机安装的评审工具评判每个已结束的会话，30 分钟后不再领取新工作，标签保持待发布，由下一次 `teamai pull` 发布。每个租约是一次在你账号上的评审调用，每天最多 `daily_limit` 次。会话评分器指定便宜的[模型别名](#选择评审者的模型)（例如 `model: fast`）可以控制成本。要停止，在 `config.yaml` 中设置 `scoring.sessions: { attended: off }`。
+设置 `attended: auto` 后，你不需要自己运行 driver。会话启动时的 pull 之后，如果会话所在项目或你的用户作用域开启了会话评分，teamai 会为这两个作用域在后台启动评审。它用本机安装的评审工具评判每个已结束的会话，30 分钟后不再领取新工作，标签保持待发布，由下一次 `teamai pull` 发布。每个租约是一次在你账号上的评审调用，每天最多 `daily_limit` 次。会话评分器指定便宜的[模型别名](#选择评审者的模型)（例如 `model: fast`）可以控制成本。要停止，在 `config.yaml` 中设置 `scoring.sessions: { attended: off }`；写在 `~/.teamai/config.yaml` 中则对本机所有 workspace 生效。
 
 后台评审使用 `teamai init` 记录的工具主目录，例如移动过的 `CLAUDE_CONFIG_DIR`。它看不到只在你的 shell 中设置的凭据或 base URL，在 Windows 上尤其如此。请把它们放在工具的登录状态、用户环境变量或工具 `settings.json` 的 `env` 中。
 
@@ -379,7 +395,7 @@ batch: true
 
 `scorers/scoring.yaml` 存放团队的评分设置。`scorers/ops/scoring.yaml` 对启用了 `ops` 命名空间的成员生效（与该目录下的评分器相同），并替换根文件中同名的键。两个启用的命名空间都设置了 `isolation` 时，取最严格的一项。两者设置的 `batch` 不同时，这些成员拿不到评审任务，直到其中一个文件被修改。
 
-团队的 `isolation`、评分器的 `isolation`，以及本作用域 `config.yaml` 中的 `scoring.isolation` 都可以要求 `verified`。取最严格的一项；默认是 `best-effort`。teamai 不认识的值按 `verified` 处理，并给出警告。`teamai doctor` 打印该级别、其来源、要求更高级别的评分器，以及本机每个评审工具能达到的级别：
+团队的 `isolation`、评分器的 `isolation`，以及本作用域 `config.yaml` 或 `~/.teamai/config.yaml` 中的 `scoring.isolation` 都可以要求 `verified`。取最严格的一项；默认是 `best-effort`。teamai 不认识的值按 `verified` 处理，并给出警告。`teamai doctor` 打印该级别、其来源、要求更高级别的评分器，以及本机每个评审工具能达到的级别：
 
 ```text
 Scoring isolation: verified, set by scorers/scoring.yaml isolation.

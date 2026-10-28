@@ -18,9 +18,22 @@ The Overview's **Session sharing** panel says, for the selected workspace, wheth
 - Each mode's publish and scoring policy, and the setting it came from, such as `the default` or `teamai.yaml sessions.publish.unattended`. Attended `ask` reads "proposed when the friction reminder offers session-close" ([session-close](workflow.md#session-close)); unattended `ask` reads "acts as off: nobody is there to confirm".
 - The sessions captured on this machine in each mode: active, waiting for a drain, kept on this machine, waiting to be archived, and archived. A session whose file is gone is not counted. Also the step sessions of ended runs that wait to be archived.
 - What waits, and the drain to run for it. A drain finishes and publishes only the sessions of its own run mode, so on an attended machine the panel names `TEAMAI_MODE=unattended teamai score --drain` for unattended sessions, or `$env:TEAMAI_MODE='unattended'; teamai score --drain` on Windows.
-- The archive, `daily_limit`, the scorers that judge sessions, the enabled tools teamai reads no sessions from, and the settings problems `teamai doctor` reports.
+- The archive, `daily_limit` and the setting it came from, the scorers that judge sessions, the enabled tools teamai reads no sessions from, and the settings problems `teamai doctor` reports.
 
 **This machine** is the run mode of the shell that started `teamai dashboard`. The panel shows counts and setting names, never a session's text, and changes no setting. The settings are in [Sessions](sharing.md#sessions) and [Finished sessions](scorers.md#finished-sessions).
+
+## Member settings
+
+The Overview's **Member settings** panel lists, for the selected workspace, each [member setting](reference.md#member-settings) some level sets, as `teamai doctor` does: the value in effect, the level and file that set it, and what the levels below say.
+
+| Setting | In effect | Set by | Also set |
+|---|---|---|---|
+| `ai.tool` | `claude` | This workspace, `~/.teamai/projects/<slug>/config.yaml` | This machine `codex` |
+| `workflows.tools.default` | `codex` | This machine, `~/.teamai/config.yaml` | — |
+| `recallEnabled` | `false` | This workspace, `~/.teamai/projects/<slug>/config.yaml` | This machine `true`, Team `false` |
+| `updatePolicy` | `skip` | User config, `~/.teamai/config.yaml` | This workspace `auto`, not used |
+
+`not used` marks this workspace's own `updatePolicy` or `autoCompactTokens` when the user scope decides them. **Not read** lists the keys of a `~/.teamai/config.yaml` with no user-scope install that are not member settings, such as `excludedSkills`. Pick another workspace in the sidebar to compare. The panel changes no setting: edit the file it names.
 
 ## Workflow Runs
 

@@ -99,21 +99,80 @@ A member setting is read in this order. The first level that sets it wins:
 4. The team's `teamai.yaml`, where the setting has a team key.
 5. The default.
 
-The member settings are `ai.tool`, `workflows.*`, `recallEnabled`, `contributeHintEnabled`, `mrHintEnabled`, `coAuthorEnabled`, `usageReportEnabled`, `codexTrustEnabled`, `modelAliases`, `sessions`, `autoCompactTokens` and `updatePolicy`. In `workflows.tools`, `workflows.allow` and `modelAliases`, each entry counts on its own. `updatePolicy` and `autoCompactTokens` act on the whole machine, so one scope decides them: the user scope when there is one, else the scope that runs. Every other key belongs to one install and is never read from the machine. `doctor` names such a key in a `~/.teamai/config.yaml` that holds no install.
+The member settings are `ai.tool`, `workflows.*`, `recallEnabled`, `contributeHintEnabled`, `mrHintEnabled`, `coAuthorEnabled`, `usageReportEnabled`, `codexTrustEnabled`, `modelAliases`, `sessions`, `scoring`, `autoCompactTokens` and `updatePolicy`. In `workflows.tools`, `workflows.allow` and `modelAliases`, each entry counts on its own. `scoring` from `~/.teamai/config.yaml` only makes session judging stricter than the team's ([Finished sessions](./scorers.md#finished-sessions)). `updatePolicy` and `autoCompactTokens` act on the whole machine, so one scope decides them: the user scope when there is one, else the scope that runs. Every other key belongs to one install and is never read from the machine. `doctor` names such a key in a `~/.teamai/config.yaml` that holds no install.
+
+| You want | Write | In |
+|---|---|---|
+| Codex for one command | `TEAMAI_AI_TOOL=codex teamai import --dir .` | the shell |
+| Codex for teamai's AI calls in every workspace | `ai: { tool: codex }` | `~/.teamai/config.yaml` |
+| Claude in one workspace all the same | `ai: { tool: claude }` | that workspace's `~/.teamai/projects/<slug>/config.yaml` |
+| Recall on for the whole team | `sharing: { recall: { enabled: true } }` | the team's `teamai.yaml` |
+| No judging of the sessions you run by hand, in any workspace | `scoring: { sessions: { attended: off } }` | `~/.teamai/config.yaml` |
+
+`teamai doctor` names the file of the workspace it runs in. The dashboard's [Member settings](./dashboard.md#member-settings) panel shows the same for the workspace you select.
+
+**One machine default, one workspace that differs.** Ana runs teamai's AI calls and workflow steps on Codex, with recall on. A client's repository stays on Claude, without recall:
 
 ```yaml
 # ~/.teamai/config.yaml: this machine, no install needed
+ai: { tool: codex }
 recallEnabled: true
 workflows:
   tools: { default: codex }
 ```
 
 ```yaml
-# ~/.teamai/projects/<slug>/config.yaml: this workspace only
+# ~/.teamai/projects/<slug>/config.yaml: ~/work/client only
+ai: { tool: claude }
 recallEnabled: false
 ```
 
-A value of the wrong type in `~/.teamai/config.yaml` is skipped with a warning, and the next level decides. `workflows.allow` is the exception: a bad value there, or a file that cannot be read or parsed, stops workflow commands until you fix it. A save never copies a machine value into a workspace's file; `recall enable` and `recall disable` write theirs. `teamai doctor` lists each member setting some level sets, with the level that set it and the values below it.
+```console
+$ cd ~/work/client && teamai doctor
+ℹ Member settings:
+  ai.tool: claude, from the workspace config /home/ana/.teamai/projects/<slug>/config.yaml (the machine says codex)
+  workflows.tools.default: codex, from the machine config /home/ana/.teamai/config.yaml
+  recallEnabled: false, from the workspace config /home/ana/.teamai/projects/<slug>/config.yaml (the machine says true, the team false)
+$ cd ~/work/api && teamai import --dir .   # runs on codex, from the machine config
+```
+
+**One entry of a map.** A workspace that sets one `workflows.tools` entry keeps the machine's others:
+
+```yaml
+# ~/.teamai/config.yaml
+workflows:
+  tools: { default: codex, reviewer: claude }
+```
+
+```yaml
+# ~/.teamai/projects/<slug>/config.yaml
+workflows:
+  tools: { implementer: claude }
+```
+
+In that workspace `implementer` and `reviewer` run on Claude, and every other agent on Codex.
+
+**Share less from one laptop than the team asks.** The team publishes and judges every session. On her laptop Ana keeps the sessions she runs by hand off `teamai-reports`, judges none from the jobs it runs, and caps judging at two sessions a day:
+
+```yaml
+# ~/.teamai/config.yaml
+sessions:
+  publish: { attended: off }
+scoring:
+  sessions: { unattended: off }
+  daily_limit: 2
+```
+
+```console
+$ teamai doctor
+ℹ Member settings:
+  sessions.publish.attended: off, from the machine config /home/ana/.teamai/config.yaml
+ℹ Session judging: attended auto, set by scorers/scoring.yaml sessions; unattended off, set by ~/.teamai/config.yaml scoring.sessions.unattended; up to 2 sessions a day, set by ~/.teamai/config.yaml scoring.daily_limit.
+```
+
+A machine `scoring` never turns judging on or raises the limit: where the team says `off`, a machine `auto` changes nothing. A workspace's own `scoring` still wins, one mode at a time.
+
+A value of the wrong type in `~/.teamai/config.yaml` is skipped with a warning, and the next level decides. `workflows.allow` is the exception: a bad value there, or a file that cannot be read or parsed, stops workflow commands until you fix it. A save never copies a machine value into a workspace's file; `recall enable` and `recall disable` write theirs.
 
 #### AI tool (`ai.tool`)
 

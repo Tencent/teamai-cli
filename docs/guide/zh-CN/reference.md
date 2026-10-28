@@ -99,21 +99,80 @@ ai:
 4. 团队的 `teamai.yaml`，如果该设置有对应的团队键。
 5. 默认值。
 
-成员设置包括 `ai.tool`、`workflows.*`、`recallEnabled`、`contributeHintEnabled`、`mrHintEnabled`、`coAuthorEnabled`、`usageReportEnabled`、`codexTrustEnabled`、`modelAliases`、`sessions`、`autoCompactTokens` 和 `updatePolicy`。`workflows.tools`、`workflows.allow` 和 `modelAliases` 中的每一项单独计算。`updatePolicy` 和 `autoCompactTokens` 作用于整台机器，因此由一个 scope 决定：有 user scope 时由它决定，否则由运行的 scope 决定。其他键都属于某一个安装，不会从本机读取。`~/.teamai/config.yaml` 不是安装时，`doctor` 会列出其中这类键。
+成员设置包括 `ai.tool`、`workflows.*`、`recallEnabled`、`contributeHintEnabled`、`mrHintEnabled`、`coAuthorEnabled`、`usageReportEnabled`、`codexTrustEnabled`、`modelAliases`、`sessions`、`scoring`、`autoCompactTokens` 和 `updatePolicy`。`workflows.tools`、`workflows.allow` 和 `modelAliases` 中的每一项单独计算。`~/.teamai/config.yaml` 中的 `scoring` 只会让会话评判比团队的设置更严格（[已结束的会话](./scorers.md#已结束的会话)）。`updatePolicy` 和 `autoCompactTokens` 作用于整台机器，因此由一个 scope 决定：有 user scope 时由它决定，否则由运行的 scope 决定。其他键都属于某一个安装，不会从本机读取。`~/.teamai/config.yaml` 不是安装时，`doctor` 会列出其中这类键。
+
+| 你想要 | 写入 | 位置 |
+|---|---|---|
+| 某一条命令用 Codex | `TEAMAI_AI_TOOL=codex teamai import --dir .` | shell |
+| 所有 workspace 里 teamai 自己的 AI 调用都用 Codex | `ai: { tool: codex }` | `~/.teamai/config.yaml` |
+| 但某一个 workspace 仍用 Claude | `ai: { tool: claude }` | 该 workspace 的 `~/.teamai/projects/<slug>/config.yaml` |
+| 整个团队开启 recall | `sharing: { recall: { enabled: true } }` | 团队的 `teamai.yaml` |
+| 在任何 workspace 都不评判你手动运行的会话 | `scoring: { sessions: { attended: off } }` | `~/.teamai/config.yaml` |
+
+`teamai doctor` 会给出它所在 workspace 的配置文件路径。Dashboard 的[成员设置](./dashboard.md#成员设置member-settings)面板会为你选中的 workspace 显示同样的信息。
+
+**本机一个默认值，一个 workspace 不同。** Ana 让 teamai 自己的 AI 调用和工作流步骤都跑在 Codex 上，并开启 recall。某个客户的仓库仍用 Claude，且不开 recall：
 
 ```yaml
 # ~/.teamai/config.yaml：本机，不需要安装
+ai: { tool: codex }
 recallEnabled: true
 workflows:
   tools: { default: codex }
 ```
 
 ```yaml
-# ~/.teamai/projects/<slug>/config.yaml：仅这个 workspace
+# ~/.teamai/projects/<slug>/config.yaml：仅 ~/work/client
+ai: { tool: claude }
 recallEnabled: false
 ```
 
-`~/.teamai/config.yaml` 中类型错误的值会被跳过并给出警告，由下一层级决定。`workflows.allow` 例外：其中的错误值，或无法读取或解析的文件，会让工作流命令停止运行，直到你修正它。保存配置时不会把本机的值复制进 workspace 的文件；`recall enable` 和 `recall disable` 会写入它们自己的值。`teamai doctor` 会列出每个由某一层级设置的成员设置、设置它的层级，以及更低层级的值。
+```console
+$ cd ~/work/client && teamai doctor
+ℹ Member settings:
+  ai.tool: claude, from the workspace config /home/ana/.teamai/projects/<slug>/config.yaml (the machine says codex)
+  workflows.tools.default: codex, from the machine config /home/ana/.teamai/config.yaml
+  recallEnabled: false, from the workspace config /home/ana/.teamai/projects/<slug>/config.yaml (the machine says true, the team false)
+$ cd ~/work/api && teamai import --dir .   # 跑在 codex 上，来自本机配置
+```
+
+**映射中的一项。** workspace 只设置 `workflows.tools` 的一项时，本机的其他项仍然生效：
+
+```yaml
+# ~/.teamai/config.yaml
+workflows:
+  tools: { default: codex, reviewer: claude }
+```
+
+```yaml
+# ~/.teamai/projects/<slug>/config.yaml
+workflows:
+  tools: { implementer: claude }
+```
+
+在这个 workspace 中，`implementer` 和 `reviewer` 跑在 Claude 上，其他 agent 跑在 Codex 上。
+
+**一台笔记本比团队要求的共享得更少。** 团队会发布并评判每个会话。在自己的笔记本上，Ana 不把手动运行的会话发布到 `teamai-reports`，不评判这台机器运行的任务中的会话，并且每天最多评判两个会话：
+
+```yaml
+# ~/.teamai/config.yaml
+sessions:
+  publish: { attended: off }
+scoring:
+  sessions: { unattended: off }
+  daily_limit: 2
+```
+
+```console
+$ teamai doctor
+ℹ Member settings:
+  sessions.publish.attended: off, from the machine config /home/ana/.teamai/config.yaml
+ℹ Session judging: attended auto, set by scorers/scoring.yaml sessions; unattended off, set by ~/.teamai/config.yaml scoring.sessions.unattended; up to 2 sessions a day, set by ~/.teamai/config.yaml scoring.daily_limit.
+```
+
+本机的 `scoring` 不会开启评判，也不会提高上限：团队设为 `off` 时，本机的 `auto` 不起作用。workspace 自己的 `scoring` 仍然优先，按模式逐个生效。
+
+`~/.teamai/config.yaml` 中类型错误的值会被跳过并给出警告，由下一层级决定。`workflows.allow` 例外：其中的错误值，或无法读取或解析的文件，会让工作流命令停止运行，直到你修正它。保存配置时不会把本机的值复制进 workspace 的文件；`recall enable` 和 `recall disable` 会写入它们自己的值。
 
 #### AI 工具（`ai.tool`）
 

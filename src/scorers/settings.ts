@@ -148,7 +148,7 @@ function failed(cause: string): ScopeScoring {
   return { ok: false, reason: `${cause}. Scoring is off in this scope until the team repo fixes it.` };
 }
 
-/** The team's scoring files this member reads, with this scope's `config.yaml` `scoring.isolation`. */
+/** The team's scoring files this member reads, with `scoring` from this scope's `config.yaml` and from ~/.teamai/config.yaml. */
 export async function scopeScoring(config: LocalConfig): Promise<ScopeScoring> {
   const root = path.join(getKnowledgeDir(config), 'scorers');
   const dirs: string[] = [];
