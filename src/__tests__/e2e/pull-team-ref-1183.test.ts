@@ -548,14 +548,14 @@ it('removes skills delivered by a pin whose docs phase failed', () => {
   expect(fs.existsSync(m.copy('trial')), unpin.output).toBe(false);
 });
 
-it.each(['workspace', 'user'])('keeps an attached unpinned %s pull successful when its remote is unavailable', (scope) => {
+it.each(['workspace', 'user'])('fails an attached unpinned %s pull when its remote is unavailable (#1500)', (scope) => {
   const m = machine(scope === 'workspace');
   if (scope === 'user') m.ok(['init', m.url, '--provider', 'git', '--scope', 'user', '--agent', 'claude', '--force']);
   const clone = scope === 'workspace' ? m.clone() : YAML.parse(read(path.join(m.home, '.teamai/config.yaml'))).repo.localPath;
   m.git(['remote', 'set-url', 'origin', path.join(m.root, 'missing.git')], clone);
   const result = m.run(['pull']);
   expect(result.output).toContain('Pull failed:');
-  expect(result.code, result.output).toBe(0);
+  expect(result.code, result.output).toBe(1);
 });
 
 it('fails stale-detached recovery when its remote is unavailable', () => {

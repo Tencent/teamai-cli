@@ -1411,7 +1411,9 @@ async function pullForScope(
     pullSpin.fail(reason);
     log.persist(reason);
     if (result) { result.teamRepoFailed = true; result.delivery = 'failed'; }
-    if (localConfig.repo.ref !== undefined || options.teamRef !== undefined || e instanceof DetachedRecoveryError) process.exitCode = 1;
+    // A person's pull reports the failure to its caller; a hook's must never fail the session (#1500).
+    const startedByPerson = options.interactive === true && !options.gitHook;
+    if (startedByPerson || localConfig.repo.ref !== undefined || options.teamRef !== undefined || e instanceof DetachedRecoveryError) process.exitCode = 1;
     if (options.gitHook && localConfig.scope === 'project') {
       const { recordGitHookFailure } = await import('./git-hook.js');
       const at = new Date().toISOString();
