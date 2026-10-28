@@ -220,6 +220,13 @@ function invalid(error: z.ZodError): { error: SkillError } {
   return { error: { code: 'invalid_arguments', message: error.issues[0]?.message ?? 'invalid options', next: null } };
 }
 
+/** `--hitl person` in an unattended run: each optional gate would wait for a person nobody is there to be. */
+const NOBODY_ANSWERS: SkillError = {
+  code: 'invalid_arguments',
+  message: '--hitl person leaves the optional gates to a person, and this run is unattended (TEAMAI_MODE or CI says so), so nobody would answer them. Pass --auto-approve or --hitl recommend, or set TEAMAI_MODE=attended where a person attends.',
+  next: null,
+};
+
 /**
  * Reads a `--driver skill` command line into a call. `env` tells a runner, which carries its attempt's marker, from
  * an agent.
@@ -242,6 +249,7 @@ export function parseSkillCall(
     const { inputs } = read;
     const { parallel, confirmed, judge, autoApprove } = options.data;
     const hitl: HitlMode | undefined = autoApprove ? 'auto-approve' : options.data.hitl;
+    if (hitl === 'person' && resolveRunMode(env) === 'unattended') return { error: NOBODY_ANSWERS };
     return {
       kind: 'start', name: raw.name, inputs, ...tool,
       answers: { ...(parallel !== undefined ? { parallel } : {}), confirmed: confirmed === true, ...(hitl !== undefined ? { hitl } : {}), ...(judge === false ? { judge } : {}) },
@@ -254,6 +262,7 @@ export function parseSkillCall(
     if (!options.success) return invalid(options.error);
     const { claim, next, confirmed, parallel, judge, autoApprove, tools } = options.data;
     const hitl: HitlMode | undefined = autoApprove ? 'auto-approve' : options.data.hitl;
+    if (hitl === 'person' && resolveRunMode(env) === 'unattended') return { error: NOBODY_ANSWERS };
     return {
       kind: 'resume', run: run.data, claim: next ? 'offered' : claim ? 'any' : 'lacking', confirmed: confirmed === true, ...(tools !== undefined ? { tool: tools } : {}),
       answers: { ...(parallel !== undefined ? { parallel } : {}), ...(hitl !== undefined ? { hitl } : {}), ...(judge === false ? { judge } : {}) },

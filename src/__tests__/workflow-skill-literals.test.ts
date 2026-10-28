@@ -158,6 +158,19 @@ describe('start and respond options of the skill driver', () => {
       .toEqual({ error: { code: 'invalid_arguments', message: '--driver skill needs --pass, as the choose action printed it', next: null } });
   });
 
+  it('refuse --hitl person in an unattended run, which would leave each optional gate to nobody', () => {
+    const nobody = {
+      code: 'invalid_arguments',
+      message: '--hitl person leaves the optional gates to a person, and this run is unattended (TEAMAI_MODE or CI says so), so nobody would answer them. Pass --auto-approve or --hitl recommend, or set TEAMAI_MODE=attended where a person attends.',
+      next: null,
+    };
+    const unattended = { TEAMAI_MODE: 'unattended' };
+    expect(parseSkillCall({ kind: 'start', name: 'check', options: { hitl: 'person' } }, unattended)).toEqual({ error: nobody });
+    expect(parseSkillCall({ kind: 'resume', run: RUN, options: { hitl: 'person' } }, { CI: 'true' })).toEqual({ error: nobody });
+    expect(parseSkillCall({ kind: 'resume', run: RUN, options: { next: true, hitl: 'person' } }, unattended)).toEqual({ error: nobody });
+    expect(parseSkillCall({ kind: 'resume', run: RUN, options: { hitl: 'recommend' } }, unattended)).toMatchObject({ kind: 'resume', answers: { hitl: 'recommend' } });
+    expect(parseSkillCall({ kind: 'start', name: 'check', options: { hitl: 'person' } }, {})).toMatchObject({ kind: 'start', answers: { hitl: 'person' } });
+  });
 });
 
 describe('next options of the skill driver', () => {
