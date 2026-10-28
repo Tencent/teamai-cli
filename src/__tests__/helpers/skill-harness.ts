@@ -104,7 +104,13 @@ function memoryRunners(command: Runners['command']): {
     }, { once: true });
   });
   const settle = async (): Promise<void> => {
-    for (let turn = 0; ; turn += 1) {
+    // Count only turns in which a runner is doing active work. A runner waiting
+    // inside takeRunLock can consume an arbitrary number of scheduler turns; that
+    // legitimate contention must not spend the spin budget of the body that runs
+    // after the lock is acquired.
+    let activeTurns = 0;
+    let observedTurn = false;
+    for (;;) {
       const [failure] = failures.splice(0);
       if (failure !== undefined) throw failure;
       if (commands.size > 0) {
@@ -120,8 +126,11 @@ function memoryRunners(command: Runners['command']): {
       // diagnostic/turn budget—not from the quiescence check.
       const waiting = [...live.keys()].filter((id) => !parked.has(id) && waitingLocks.has(id));
       const moving = [...live.keys()].filter((id) => !parked.has(id) && !waitingLocks.has(id));
-      if (moving.length === 0 && waiting.length === 0 && commands.size === 0 && turn > 0 && failures.length === 0) return;
-      if (turn >= SETTLE_TURNS && moving.length > 0) throw new Error(`The runner of ${moving.join(', ')} neither parked at a lock or a sleep nor ended within ${SETTLE_TURNS} turns: it loops without waiting.`);
+      if (moving.length === 0 && waiting.length === 0 && commands.size === 0 && observedTurn && failures.length === 0) return;
+      if (moving.length > 0) activeTurns += 1;
+      else activeTurns = 0;
+      if (activeTurns >= SETTLE_TURNS) throw new Error(`The runner of ${moving.join(', ')} neither parked at a lock or a sleep nor ended within ${SETTLE_TURNS} turns: it loops without waiting.`);
+      observedTurn = true;
       await new Promise((resolve) => { setTimeout(resolve, 1); });
     }
   };
