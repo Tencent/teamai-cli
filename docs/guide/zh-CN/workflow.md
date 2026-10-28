@@ -291,6 +291,7 @@ jobs:
       TEAMAI_MODE: unattended                                 # CI 已经设置了它；在 VM 上用 cron 运行的作业需要它
       GH_TOKEN: ${{ github.token }}                           # deliver: pr 用它开 pull request
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}     # 提示词步骤所用工具的密钥
+      SIGNING_KEY: ${{ secrets.SIGNING_KEY }}                 # 它应接手的运行中每个 requires.env 键
     steps:
       - uses: actions/checkout@v5
       - run: npm install -g @anthropic-ai/claude-code         # --tools 指定的工具
@@ -364,12 +365,58 @@ r89c346a218d2f5e9  nightly-report  running         this install               lo
 r89c346a218d2f5e9  nightly-report  claimed  bob (install 6c4853e2…)  claimed on teamai-reports since 2026-10-28T00:26:42.741Z: teamai workflow resume r89c346a218d2f5e9 --claim takes it back
 ```
 
+运行器缺少运行所需的东西时，会让运行继续待接手，而不是把它跑失败。比如 alice 设为待接手的 `release-docs`，剩余步骤是一个提示词步骤和一个签名步骤：
+
+```yaml
+# workflows/release-docs.yaml
+schemaVersion: v1alpha1
+name: release-docs
+description: Write the release notes, then sign the docs bundle.
+steps:
+  - id: notes
+    prompt: Write the release notes for the latest tag into NOTES.md.
+  - id: sign
+    needs: [notes]
+    requires: { env: [SIGNING_KEY] }
+    command: ./scripts/sign-docs.sh
+```
+
+作业没有设置 `SIGNING_KEY`、也没有安装 `claude` 的运行器上，`--next` 只接手 `nightly-report`。列表会说明 `release-docs` 缺什么、怎样补上：
+
+```console
+$ teamai workflow resume --next --tools default=claude --auto-approve
+✔ Claimed r6c56bc111126a2fb (nightly-report) from alice
+{"data":{"done":{"run":"r6c56bc111126a2fb","outcome":"succeeded","record":"published"},"cancelled":[]}}
+
+$ teamai workflow resume --tools default=claude
+RUN                WORKFLOW      STATUS           OWNER                      WHERE
+r23ef5eb6cde85ed3  release       needs a person   alice (install fb8d4b19…)  offered on teamai-reports, only a person can answer the approval at ship: a person runs teamai workflow resume r23ef5eb6cde85ed3 --claim
+r7604975256bd994b  release-docs  cannot run here  alice (install fb8d4b19…)  offered on teamai-reports, sign requires env SIGNING_KEY, which has no value here: teamai env set SIGNING_KEY, or set it in the environment; the prompt step notes run on claude, which is not on PATH here: install claude, or pass --tools default=<tool> for one that is; then teamai workflow resume --next
+```
+
+像[该作业](#从-ci-接手交出的运行)那样，在作业的 `env` 中加上 `SIGNING_KEY` 并安装 `claude`，下一次 `--next` 就会接手它：
+
+```console
+$ teamai workflow resume --next --tools default=claude --auto-approve
+✔ Claimed r7604975256bd994b (release-docs) from alice
+{"data":{"done":{"run":"r7604975256bd994b","outcome":"succeeded","record":"published"},"cancelled":[]}}
+```
+
+VM 上的 cron 作业如果没有设置 `TEAMAI_MODE`，就是有人值守，但没有终端，没人能回答 `ship` 处的审批。这时 `--next` 同样把 `release` 留给人：
+
+```console
+$ teamai workflow resume --next --tools default=claude     # crontab，未设置 TEAMAI_MODE
+{"data":{"idle":{"offered":2}}}
+```
+
 `--next` 如何处理每个待接手的运行：
 
 | 待接手的运行 | 无人值守的 `--next`（CI，或 `TEAMAI_MODE=unattended`） | 有人值守的 `--next` |
 |---|---|---|
 | 剩余步骤都不需要人参与 | 接手 | 接手 |
-| 剩余的某个步骤有必需审批、是 `interactive`，或是没有默认值的选择 | 跳过：列为 `needs a person` | 接手 |
+| 剩余的某个步骤有必需审批、是 `interactive`，或是没有默认值的选择 | 跳过：列为 `needs a person` | 在终端中接手；没有终端（如 cron）时跳过 |
+| 剩余的某个步骤要求的 env 在本机没有值 | 跳过：列为 `cannot run here` | 跳过 |
+| 剩余的某个提示词步骤在本机没有工具：`--tools`、`workflows.tools` 和你的 AI 工具都没有指定，或指定的工具不在 `PATH` 上 | 跳过：列为 `cannot run here` | 跳过 |
 | 你从本安装实例发布了它 | 跳过 | 跳过 |
 | 它在另一个业务仓库中工作 | 跳过 | 跳过 |
 | 另一个运行器刚刚抢先认领了它 | 接手下一个 | 接手下一个 |

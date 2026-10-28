@@ -808,7 +808,15 @@ After a claim, `resume` can also answer `branch_diverged` when a local branch ca
 
 `repository` is the business repository, read from the checkout's `origin` as `host/owner/repo`. It stays through later claims. `offered` stays until a claim: every claim drops it in the same write that changes the owner. A run that ended is not offered, and neither is one published from a directory with no `origin`, since `--next` takes runs by repository. A run published by a teamai without offers carries neither field, and `--next` never takes it.
 
-`teamai workflow resume --next` fetches `teamai-reports` as `teamai pull` does, then tries the offered runs oldest offer first. It skips a run this install published, a run of another `repository` than this checkout's `origin`, a run its caller may not take, and, in an unattended run, a run whose steps left need a person. It claims the first one left as `resume <run>` would, and drives it with the driver `--driver` names. A claim that another runner beat answers `state_moved` inside `--next`, which then tries the next run. With nothing to take, it prints `{"data":{"idle":{"offered":N}}}` and exits 0: `N` counts the runs other installs offer that it left.
+`teamai workflow resume --next` fetches `teamai-reports` as `teamai pull` does, then tries the offered runs oldest offer first. It skips a run this install published, a run of another `repository` than this checkout's `origin`, a run its caller may not take, a run whose steps left need a person when nobody here would answer, and a run whose steps left need what this machine lacks. Nobody answers in an unattended run, or with the local driver and no terminal. What a machine can lack:
+
+| Steps left | Lacking here when | Listed fix |
+|---|---|---|
+| A step or its `setup` with `requires.env` | a key has no value here, or the team env cannot be read | `teamai env set <KEY>`, or set it in the environment |
+| A prompt step, with the local driver | `--tools`, `workflows.tools` and your AI tool name no tool for its agent | `--tools default=<tool>` (or `<agent>=<tool>`), or `workflows.tools.default` |
+| A prompt step, with the local driver | the tool they name is not on `PATH` | install it, or `--tools` names one that is |
+
+A step that already settled for good counts for none of these, as for a person. With `--driver skill` the session runs the prompt steps, so only env counts. It claims the first one left as `resume <run>` would, and drives it with the driver `--driver` names. A claim that another runner beat answers `state_moved` inside `--next`, which then tries the next run. With nothing to take, it prints `{"data":{"idle":{"offered":N}}}` and exits 0: `N` counts the runs other installs offer that it left.
 
 Who may take an offered run follows the workflow's `invoke`, as `resume` does:
 
@@ -820,7 +828,7 @@ Who may take an offered run follows the workflow's `invoke`, as `resume` does:
 
 `--driver skill` always counts as an agent session, and also skips a run only the local driver can run (`needs_local_driver`). The listing shows a run skipped this way with the refusal's code, or as `needs the local driver`.
 
-`teamai workflow resume` with no run id lists, after the same fetch, the offered runs of this checkout's business repository and this machine's running runs, once each. `STATUS` is `running`, `needs a person` (a person takes it over with `resume <run> --claim`), `needs the local driver`, `claimed` (another install took your run), `succeeded`, `failed` or `cancelled` (your run ended on the install that took it, and `--claim` brings how it ended here), or the code of another refusal. A checkout without an origin lists no offered run, since `--next` takes none there. When the fetch fails, it warns and lists what the last fetch saw.
+`teamai workflow resume` with no run id lists, after the same fetch, the offered runs of this checkout's business repository and this machine's running runs, once each. `STATUS` is `running`, `needs a person` (a person takes it over with `resume <run> --claim`), `cannot run here` (with what this machine lacks and what gives it), `needs the local driver`, `claimed` (another install took your run), `succeeded`, `failed` or `cancelled` (your run ended on the install that took it, and `--claim` brings how it ended here), or the code of another refusal. A checkout without an origin lists no offered run, since `--next` takes none there. When the fetch fails, it warns and lists what the last fetch saw.
 
 | Code | What happened | Next step |
 |---|---|---|

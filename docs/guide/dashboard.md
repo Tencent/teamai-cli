@@ -32,9 +32,10 @@ The Workflow Runs page has three lists for the selected workspace. **Local runs*
 |---|---|---|
 | `release` · Offered · alice | Needs a person: only a person can answer the approval at ship | `teamai workflow resume <run> --claim`, run by a person |
 | `ship-issue` · Offered · alice | Nothing: a runner can finish it | `teamai workflow resume --next`, in a checkout of that repository |
+| `release-docs` · Offered · alice | A runner needs: env `SIGNING_KEY`, a tool for notes. Not on this machine: sign requires env SIGNING_KEY, which has no value here → teamai env set SIGNING_KEY, or set it in the environment | `teamai workflow resume --next`, on a runner that has both |
 | `nightly-report` · Held · bob | — | `teamai workflow resume <run> --claim` takes it over from bob |
 
-On the install that offered a run, the next step is `teamai workflow resume <run>` instead, which takes it back there. A local run that is offered, or that another install now holds, says so under its status. The status line counts the offered runs and the ones that need a person. The page claims nothing: the command runs a driver on the machine that takes the run.
+On the install that offered a run, the next step is `teamai workflow resume <run>` instead, which takes it back there. A local run that is offered, or that another install now holds, says so under its status. **A runner needs** lists the `requires.env` keys and prompt steps of the steps left: set those up on the runner, as [its job](workflow.md#take-offered-runs-from-ci) does. **Not on this machine** is what this machine lacks of them, as `teamai workflow resume` lists it as `cannot run here`. The status line counts the offered runs and the ones that need a person. The page claims nothing: the command runs a driver on the machine that takes the run.
 
 The page shows what a run record publishes, plus each step's live status and the options of a waiting HITL request. Inputs, `for_each` items, outputs, prompts, HITL messages, and local paths stay in the run file. Read a HITL question where the run's driver asks it. A run's details show what each pass delivered: the commits on its branch, the pull request delivered for it, and the learnings `teamai contribute` recorded inside its attempt.
 

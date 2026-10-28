@@ -808,7 +808,15 @@ teamai workflow resume [--next]
 
 `repository` 是业务仓库，从检出目录的 `origin` 读取，形如 `host/owner/repo`。之后的认领会保留它。`offered` 保留到被认领为止：每次认领都在更换所有者的同一次写入中去掉它。已结束的运行不会待接手，从没有 `origin` 的目录发布的运行也不会，因为 `--next` 按仓库接手运行。不支持待接手的 teamai 版本发布的运行不带这两个字段，`--next` 从不接手它。
 
-`teamai workflow resume --next` 像 `teamai pull` 一样 fetch `teamai-reports`，然后从最早待接手的运行开始逐个尝试。它跳过本安装实例发布的运行、`repository` 与本检出目录的 `origin` 不同的运行、调用方不能接手的运行，以及在无人值守的运行中剩余步骤需要人参与的运行。它像 `resume <run>` 一样认领剩下的第一个运行，并用 `--driver` 指定的驱动驱动它。被另一个运行器抢先的认领在 `--next` 内部返回 `state_moved`，`--next` 随后尝试下一个运行。没有可接手的运行时，它输出 `{"data":{"idle":{"offered":N}}}` 并以 0 退出：`N` 是它跳过的、由其他安装实例设为待接手的运行数。
+`teamai workflow resume --next` 像 `teamai pull` 一样 fetch `teamai-reports`，然后从最早待接手的运行开始逐个尝试。它跳过本安装实例发布的运行、`repository` 与本检出目录的 `origin` 不同的运行、调用方不能接手的运行、本机无人回答时剩余步骤需要人参与的运行，以及剩余步骤需要本机所缺之物的运行。无人值守的运行中无人回答，使用本地驱动且没有终端时也无人回答。本机可能缺少的东西：
+
+| 剩余步骤 | 本机缺少的情况 | 列出的补救 |
+|---|---|---|
+| 带 `requires.env` 的步骤或其 `setup` | 某个键在本机没有值，或读不到团队 env | `teamai env set <KEY>`，或在环境中设置 |
+| 提示词步骤，使用本地驱动 | `--tools`、`workflows.tools` 和你的 AI 工具都没有为其 agent 指定工具 | `--tools default=<tool>`（或 `<agent>=<tool>`），或 `workflows.tools.default` |
+| 提示词步骤，使用本地驱动 | 指定的工具不在 `PATH` 上 | 安装它，或用 `--tools` 指定一个在 `PATH` 上的工具 |
+
+已经彻底结束的步骤不计入以上任何一项，与需要人参与的判断相同。使用 `--driver skill` 时由会话运行提示词步骤，所以只看 env。它像 `resume <run>` 一样认领剩下的第一个运行，并用 `--driver` 指定的驱动驱动它。被另一个运行器抢先的认领在 `--next` 内部返回 `state_moved`，`--next` 随后尝试下一个运行。没有可接手的运行时，它输出 `{"data":{"idle":{"offered":N}}}` 并以 0 退出：`N` 是它跳过的、由其他安装实例设为待接手的运行数。
 
 谁能接手待接手的运行，像 `resume` 一样取决于工作流的 `invoke`：
 
@@ -820,7 +828,7 @@ teamai workflow resume [--next]
 
 `--driver skill` 总是算作 agent 会话，还会跳过只有本地驱动能运行的运行（`needs_local_driver`）。这样被跳过的运行在列表中显示拒绝的代码，或显示为 `needs the local driver`。
 
-不带运行 id 的 `teamai workflow resume` 在同样的 fetch 之后，列出本检出目录所属业务仓库的待接手运行，以及本机仍在运行的运行，每个只列一次。`STATUS` 为 `running`、`needs a person`（由人用 `resume <run> --claim` 接管）、`needs the local driver`、`claimed`（另一个安装实例接手了你的运行）、`succeeded`、`failed` 或 `cancelled`（你的运行已在接手它的安装实例上结束，`--claim` 把它的结束状态带到本机），或其他拒绝的代码。没有 origin 的检出目录不列出待接手运行，因为 `--next` 在那里不接手任何运行。fetch 失败时，它给出警告，并列出上一次 fetch 看到的内容。
+不带运行 id 的 `teamai workflow resume` 在同样的 fetch 之后，列出本检出目录所属业务仓库的待接手运行，以及本机仍在运行的运行，每个只列一次。`STATUS` 为 `running`、`needs a person`（由人用 `resume <run> --claim` 接管）、`cannot run here`（附本机缺少什么、怎样补上）、`needs the local driver`、`claimed`（另一个安装实例接手了你的运行）、`succeeded`、`failed` 或 `cancelled`（你的运行已在接手它的安装实例上结束，`--claim` 把它的结束状态带到本机），或其他拒绝的代码。没有 origin 的检出目录不列出待接手运行，因为 `--next` 在那里不接手任何运行。fetch 失败时，它给出警告，并列出上一次 fetch 看到的内容。
 
 | 代码 | 发生了什么 | 下一步 |
 |---|---|---|

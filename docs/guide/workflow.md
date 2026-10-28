@@ -291,6 +291,7 @@ jobs:
       TEAMAI_MODE: unattended                                 # CI already sets it; a cron job on a VM needs it
       GH_TOKEN: ${{ github.token }}                           # deliver: pr opens pull requests with it
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}     # the key of the tool the prompt steps run
+      SIGNING_KEY: ${{ secrets.SIGNING_KEY }}                 # each requires.env key of the runs it should take
     steps:
       - uses: actions/checkout@v5
       - run: npm install -g @anthropic-ai/claude-code         # the tool --tools names
@@ -364,12 +365,58 @@ On alice's machine, the run bob took shows who has it:
 r89c346a218d2f5e9  nightly-report  claimed  bob (install 6c4853e2…)  claimed on teamai-reports since 2026-10-28T00:26:42.741Z: teamai workflow resume r89c346a218d2f5e9 --claim takes it back
 ```
 
+A runner that lacks what a run needs leaves the run offered instead of failing it. Say alice offers `release-docs`, whose steps left are a prompt step and a step that signs:
+
+```yaml
+# workflows/release-docs.yaml
+schemaVersion: v1alpha1
+name: release-docs
+description: Write the release notes, then sign the docs bundle.
+steps:
+  - id: notes
+    prompt: Write the release notes for the latest tag into NOTES.md.
+  - id: sign
+    needs: [notes]
+    requires: { env: [SIGNING_KEY] }
+    command: ./scripts/sign-docs.sh
+```
+
+On a runner whose job sets no `SIGNING_KEY` and installs no `claude`, `--next` takes only `nightly-report`. The listing says what `release-docs` lacks, and what gives it:
+
+```console
+$ teamai workflow resume --next --tools default=claude --auto-approve
+✔ Claimed r6c56bc111126a2fb (nightly-report) from alice
+{"data":{"done":{"run":"r6c56bc111126a2fb","outcome":"succeeded","record":"published"},"cancelled":[]}}
+
+$ teamai workflow resume --tools default=claude
+RUN                WORKFLOW      STATUS           OWNER                      WHERE
+r23ef5eb6cde85ed3  release       needs a person   alice (install fb8d4b19…)  offered on teamai-reports, only a person can answer the approval at ship: a person runs teamai workflow resume r23ef5eb6cde85ed3 --claim
+r7604975256bd994b  release-docs  cannot run here  alice (install fb8d4b19…)  offered on teamai-reports, sign requires env SIGNING_KEY, which has no value here: teamai env set SIGNING_KEY, or set it in the environment; the prompt step notes run on claude, which is not on PATH here: install claude, or pass --tools default=<tool> for one that is; then teamai workflow resume --next
+```
+
+Add `SIGNING_KEY` to the job's `env` and install `claude`, as [the job](#take-offered-runs-from-ci) does, and the next `--next` takes it:
+
+```console
+$ teamai workflow resume --next --tools default=claude --auto-approve
+✔ Claimed r7604975256bd994b (release-docs) from alice
+{"data":{"done":{"run":"r7604975256bd994b","outcome":"succeeded","record":"published"},"cancelled":[]}}
+```
+
+A cron job on a VM that leaves `TEAMAI_MODE` unset runs attended, but has no terminal, so nobody could answer the approval at `ship`. `--next` leaves `release` for a person there too:
+
+```console
+$ teamai workflow resume --next --tools default=claude     # crontab, TEAMAI_MODE unset
+{"data":{"idle":{"offered":2}}}
+```
+
 What `--next` does with each offered run:
 
 | The offered run | Unattended `--next` (CI, or `TEAMAI_MODE=unattended`) | Attended `--next` |
 |---|---|---|
 | Nothing in its steps left needs a person | takes it | takes it |
-| A step left has a required approval, is `interactive`, or is a choice with no default | skips it: listed as `needs a person` | takes it |
+| A step left has a required approval, is `interactive`, or is a choice with no default | skips it: listed as `needs a person` | takes it from a terminal; with no terminal, such as cron, skips it |
+| A step left requires env with no value here | skips it: listed as `cannot run here` | skips it |
+| A prompt step left has no tool here: `--tools`, `workflows.tools` and your AI tool name none, or the one they name is not on `PATH` | skips it: listed as `cannot run here` | skips it |
 | You published it from this install | skips it | skips it |
 | It works in another business repository | skips it | skips it |
 | Another runner claimed it a moment earlier | takes the next one | takes the next one |
