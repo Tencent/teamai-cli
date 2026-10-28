@@ -174,8 +174,21 @@ function memoryRunners(command: Runners['command']): {
         spawned += 1;
         const id = `${job.run}/${job.attempt}#${spawned}`;
         const call: SkillCall = { kind: 'report', run: job.run, attempt: job.attempt, role: 'runner' };
-        // A runner parks at each lock and sleep until the next sleep of the session, so it never waits on itself.
-        const locks: SkillContext['locks'] = { take: async (run, body, waitMs) => { await park(id); return takeRunLock(config, run, body, { waitMs }); } };
+        // Keep the runner parked while it waits for a busy run lock. Waiting inside
+        // takeRunLock would make it disappear from the harness until the lock's
+        // real-time wait expired, so settle would mistake a legitimate wait for a
+        // spin. A zero-wait probe between parks models the engine without hiding
+        // the lock wait from the fake scheduler.
+        const locks: SkillContext['locks'] = {
+          take: async (run, body, waitMs) => {
+            const until = Date.now() + waitMs;
+            for (;;) {
+              await park(id);
+              const taken = await takeRunLock(config, run, body, { waitMs: 0 });
+              if (taken.kind === 'held' || Date.now() >= until) return taken;
+            }
+          },
+        };
         const runners = { ...base.runners, sleep: (_ms: number, signal?: AbortSignal) => park(id, signal) };
         const running = runSkillCall(call, { ...base, session: undefined, locks, runners })
           .catch((error: unknown) => { if (!(error instanceof Crash)) failures.push(error); })
