@@ -573,7 +573,7 @@ $ teamai list workflows
 inputs: { session: string, source: string, publish: boolean, scorers: [string], judge: here | driver }
 
 learning        interactive：会话的 agent 和本人一起运行 `teamai skill get share`
-                → { verdict: share, file, title, namespace }，或 { verdict: skip }
+                → { verdict: share, file, title, namespace }，或 { verdict: skip }，其余为空
 └─ contribute   只在 share 时运行。可选审批：Share "<title>" with the team?
                 → teamai contribute --file … --title … --namespace … --session-id <session>
 publish         只在 publish: true 时运行。必需审批：只有本人能回答
@@ -632,7 +632,7 @@ agent   starts with "scorers":[] → score succeeds at once with no label
 
 # 没什么可分享，只归档转录
 person  nothing to share, just archive it
-agent   learning → { verdict: skip }: contribute is skipped and asks nothing; publish still asks the person
+agent   learning → { verdict: skip }, the rest empty: contribute is skipped and asks nothing; publish still asks the person
 ```
 
 谁回答每个审批：
@@ -690,7 +690,7 @@ inputs: { session: string, source: string }
 steps:
   - id: learning
     interactive: true
-    prompt: "Run `teamai skill get share` and follow it with the person for the {{ inputs.source }} session {{ inputs.session }}. If the person finds nothing worth sharing, return verdict skip. Otherwise write the learning to a file outside the repository and return verdict share, its path, its title, and the learnings namespace (an empty string for the shared root)."
+    prompt: "Run `teamai skill get share` and follow it with the person for the {{ inputs.source }} session {{ inputs.session }}. If the person finds nothing worth sharing, return verdict skip, with an empty title, file and namespace. Otherwise write the learning to a file outside the repository and return verdict share, its path, its title, and the learnings namespace (an empty string for the shared root)."
     output: { verdict: share | skip, title: string, file: string, namespace: string }
   - id: contribute
     needs: [learning]

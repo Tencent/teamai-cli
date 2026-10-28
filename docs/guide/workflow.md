@@ -573,7 +573,7 @@ For one name, the first runnable version wins: the project's team file, then the
 inputs: { session: string, source: string, publish: boolean, scorers: [string], judge: here | driver }
 
 learning        interactive: the session's agent runs `teamai skill get share` with the person
-                → { verdict: share, file, title, namespace }, or { verdict: skip }
+                → { verdict: share, file, title, namespace }, or { verdict: skip } with the rest empty
 └─ contribute   on share only. Optional approval: Share "<title>" with the team?
                 → teamai contribute --file … --title … --namespace … --session-id <session>
 publish         on publish: true only. Required approval: only the person answers
@@ -632,7 +632,7 @@ agent   starts with "scorers":[] → score succeeds at once with no label
 
 # Nothing worth sharing, only archive the transcript
 person  nothing to share, just archive it
-agent   learning → { verdict: skip }: contribute is skipped and asks nothing; publish still asks the person
+agent   learning → { verdict: skip }, the rest empty: contribute is skipped and asks nothing; publish still asks the person
 ```
 
 Who answers each approval:
@@ -690,7 +690,7 @@ inputs: { session: string, source: string }
 steps:
   - id: learning
     interactive: true
-    prompt: "Run `teamai skill get share` and follow it with the person for the {{ inputs.source }} session {{ inputs.session }}. If the person finds nothing worth sharing, return verdict skip. Otherwise write the learning to a file outside the repository and return verdict share, its path, its title, and the learnings namespace (an empty string for the shared root)."
+    prompt: "Run `teamai skill get share` and follow it with the person for the {{ inputs.source }} session {{ inputs.session }}. If the person finds nothing worth sharing, return verdict skip, with an empty title, file and namespace. Otherwise write the learning to a file outside the repository and return verdict share, its path, its title, and the learnings namespace (an empty string for the shared root)."
     output: { verdict: share | skip, title: string, file: string, namespace: string }
   - id: contribute
     needs: [learning]

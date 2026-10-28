@@ -6,7 +6,7 @@ inputs: { session: string, source: string, publish: boolean, scorers: [string], 
 steps:
   - id: learning
     interactive: true
-    prompt: "Run `teamai skill get share` and follow it with the person for the {{ inputs.source }} session {{ inputs.session }}. If the person finds nothing worth sharing, return verdict skip. Otherwise write the learning to a file outside the repository and return verdict share, its path, its title, and the learnings namespace (an empty string for the shared root)."
+    prompt: "Run `teamai skill get share` and follow it with the person for the {{ inputs.source }} session {{ inputs.session }}. If the person finds nothing worth sharing, return verdict skip, with an empty title, file and namespace. Otherwise write the learning to a file outside the repository and return verdict share, its path, its title, and the learnings namespace (an empty string for the shared root)."
     output: { verdict: share | skip, title: string, file: string, namespace: string }
   - id: contribute
     needs: [learning]
