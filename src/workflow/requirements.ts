@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { envValueAdvice } from '../env-advice.js';
 import { ENV_KEY_RE, sameEnvName } from '../resources/env-key.js';
 import { WORKSPACE_MODES, type WorkflowDefaults, type WorkflowFailure, type WorkflowStep } from './types.js';
 import type { WorkspaceMode } from './workspace.js';
@@ -298,7 +299,8 @@ function envUnavailable(who: string, keys: readonly string[], env: EnvFacts): Wo
   const absent = keys.filter((key) => sameEnvName(env.present, key) === undefined);
   if (absent.length === 0) return undefined;
   const one = absent.length === 1;
-  return { code: 'missing_env', message: `${who} requires env ${absent.join(', ')}, which ${one ? 'has' : 'have'} no value on this machine. Run ${absent.map((key) => `teamai env set ${key}`).join(', ')}, or set ${one ? 'it' : 'them'} in the environment, then retry the step.` };
+  // The command names only a key the team declares, since `teamai env set` refuses any other (#1513).
+  return { code: 'missing_env', message: `${who} requires env ${absent.join(', ')}, which ${one ? 'has' : 'have'} no value on this machine. ${envValueAdvice(absent, env.declared)}, then retry the step.` };
 }
 
 function rank(level: Isolation): number {

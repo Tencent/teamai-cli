@@ -6,6 +6,7 @@
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { envValueAdvice } from './env-advice.js';
 import type { WorkflowEnv } from './env-resolution.js';
 import { log } from './utils/logger.js';
 import { getReportsDir, usesBranchWorktree, type LocalConfig } from './types.js';
@@ -162,7 +163,8 @@ function toolLacks(config: LocalConfig, flags: Record<string, string>, members: 
       const flag = agent === undefined ? 'default' : agent;
       const choice = launchToolFor(agent, config, flags, members);
       if (choice.ok) {
-        return isOnPath(choice.tool) ? [] : [{ reason: `${steps} run on ${choice.tool}, which is not on PATH here`, fix: `install ${choice.tool}, or pass --tools ${flag}=<tool> for one that is` }];
+        const verb = prompts.length > 1 ? 'run' : 'runs';
+        return isOnPath(choice.tool) ? [] : [{ reason: `${steps} ${verb} on ${choice.tool}, which is not on PATH here`, fix: `install ${choice.tool}, or pass --tools ${flag}=<tool> for one that is` }];
       }
       if (choice.failure.code === 'tool_unconfigured') {
         return [{ reason: `no tool is configured here for ${steps}`, fix: `pass --tools ${flag}=<tool>, or set workflows.tools.${flag}` }];
@@ -186,7 +188,8 @@ function envLacks(runs: readonly StepRun[], env: EnvFacts): Lack[] {
   const one = keys.length === 1;
   return [{
     reason: `${require}, which ${one ? 'has' : 'have'} no value here`,
-    fix: `${keys.map((key) => `teamai env set ${key}`).join(', ')}, or set ${one ? 'it' : 'them'} in the environment`,
+    // The command names only a key the team declares, since `teamai env set` refuses any other (#1513).
+    fix: envValueAdvice(keys, env.declared),
   }];
 }
 

@@ -80,7 +80,7 @@ limitsConformanceScenarios.push(
     ],
     expectState: { steps: [{ id: 'deploy', status: 'failed', failure: {
       code: 'missing_env',
-      message: 'Step "deploy" requires env CONFORMANCE_TOKEN, which has no value on this machine. Run teamai env set CONFORMANCE_TOKEN, or set it in the environment, then retry the step.',
+      message: 'Step "deploy" requires env CONFORMANCE_TOKEN, which has no value on this machine. Set it in the environment, or declare it in the team repo (teamai env add CONFORMANCE_TOKEN --secret), then retry the step.',
     } }, { id: 'build', status: 'succeeded' }] },
     expectRecord: { failure: { code: 'missing_env' } },
     refusedBy: { 'skill-bare': { at: 'build', expect: { data: { lease: { step: 'build', unenforced: [{ requirement: 'withhold', keys: ['CONFORMANCE_TOKEN'] }] } } } } },

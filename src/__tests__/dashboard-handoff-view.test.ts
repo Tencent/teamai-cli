@@ -34,7 +34,7 @@ const RUNNABLE = { at: '2026-10-28T09:05:00.000Z', needs: [], uses: NONE, lacks:
 const GATED = { at: '2026-10-28T09:05:00.000Z', needs: ['only a person can answer the approval at ship'], uses: NONE, lacks: [] };
 const SIGNED = {
   at: '2026-10-28T09:05:00.000Z', needs: [], uses: { env: ['SIGNING_KEY'], prompts: ['notes'] },
-  lacks: [{ reason: 'sign requires env SIGNING_KEY, which has no value here', fix: 'teamai env set SIGNING_KEY, or set it in the environment' }],
+  lacks: [{ reason: 'sign requires env SIGNING_KEY, which has no value here', fix: 'Set it in the environment, or declare it in the team repo (teamai env add SIGNING_KEY --secret)' }],
 };
 
 describe('the Handed-off runs panel', () => {
@@ -64,7 +64,7 @@ describe('the Handed-off runs panel', () => {
     expect(html).toContain('a tool for <span data-verbatim>notes</span>');
     expect(html).toContain('Not on this machine');
     expect(html).toContain('sign requires env SIGNING_KEY, which has no value here');
-    expect(html).toContain('teamai env set SIGNING_KEY, or set it in the environment');
+    expect(html).toContain('Set it in the environment, or declare it in the team repo (teamai env add SIGNING_KEY --secret)');
     expect(html).not.toContain('Nothing: a runner can finish it');
   });
 

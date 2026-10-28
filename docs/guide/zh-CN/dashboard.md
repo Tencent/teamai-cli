@@ -32,7 +32,7 @@ teamai dashboard --port 8080
 |---|---|---|
 | `release` · 待接手 · alice | 需要人工：only a person can answer the approval at ship | 由人运行 `teamai workflow resume <run> --claim` |
 | `ship-issue` · 待接手 · alice | 无：运行器可以完成 | 在该仓库的检出中运行 `teamai workflow resume --next` |
-| `release-docs` · 待接手 · alice | 运行器需要：环境变量 `SIGNING_KEY`、运行 notes 的工具。本机缺少：sign requires env SIGNING_KEY, which has no value here → teamai env set SIGNING_KEY, or set it in the environment | 在该仓库的检出中运行 `teamai workflow resume --next` |
+| `release-docs` · 待接手 · alice | 运行器需要：环境变量 `SIGNING_KEY`、运行 notes 的工具。本机缺少：sign requires env SIGNING_KEY, which has no value here → Set it in the environment, or declare it in the team repo (teamai env add SIGNING_KEY --secret) | 在该仓库的检出中运行 `teamai workflow resume --next` |
 | `nightly-report` · 持有中 · bob | — | `teamai workflow resume <run> --claim` 从 bob 接管 |
 
 在交出运行的那个安装上，下一步改为 `teamai workflow resume <run>`，在那里把它收回。待接手的本机运行，或现在由其他安装持有的本机运行，会在状态下方注明。**运行器需要**（需要人工的运行上为**其机器需要**）列出剩余步骤的 `requires.env` 键和提示词步骤：照[其作业](workflow.md#从-ci-接手交出的运行)那样在运行器上配好。**本机缺少**是本机缺的那部分，与 `teamai workflow resume` 列为 `cannot run here` 的一致。状态栏统计待接手的运行和需要人工的运行。页面本身不认领任何运行：命令在接手运行的机器上启动驱动。

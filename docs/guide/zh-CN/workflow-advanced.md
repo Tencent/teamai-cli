@@ -607,7 +607,7 @@ steps:
 
 | 键 | 作用 | 驱动做不到时 |
 |---|---|---|
-| `requires.env` | 把这些[团队 env](sharing.md#env环境变量) 键交给步骤。其他团队 env 键，以及运行中其他步骤要求的键，都不会交给它。运行中只记录键名。某个键在本机没有值时，步骤在运行前以 `missing_env` 失败，并给出要执行的 `teamai env set` 命令。步骤 `env:` 中的项与团队 secret 或被要求的键同名时，以 `env_conflict` 失败。 | 步骤等待。 |
+| `requires.env` | 把这些[团队 env](sharing.md#env环境变量) 键交给步骤。其他团队 env 键，以及运行中其他步骤要求的键，都不会交给它。运行中只记录键名。某个键在本机没有值时，步骤在运行前以 `missing_env` 失败，并给出建议：在环境中设置该键，或对团队已声明的键执行 `teamai env set` 命令。步骤 `env:` 中的项与团队 secret 或被要求的键同名时，以 `env_conflict` 失败。 | 步骤等待。 |
 | `requires.network` | `false` 要求步骤不能访问网络。 | 步骤照常运行，其 `unenforced` 列出 `network`。本地驱动无法禁止网络。 |
 | `requires.isolation` | `none`、`worktree` 或 `sandbox`。有工作区的步骤至少是 `worktree`。 | 步骤照常运行，其 `unenforced` 列出 `isolation`。 |
 | `setup` | 驱动在它创建的每个工作区中、在步骤之前运行 `command`。setup 获得它的 `requires.env` 键；步骤只有自己也要求时才会获得。setup 以非零退出（`setup_failed`）、改动 git 会提交的文件（`setup_dirty`），或把自己某个键的值留在它写入的文件中（包括被忽略的文件，`setup_secret`）时，步骤不运行即失败，工作区被删除。步骤的 `timeout` 也约束 setup。 | 带工作区的步骤等待。 |
@@ -812,7 +812,7 @@ teamai workflow resume [--next]
 
 | 剩余步骤 | 本机缺少的情况 | 列出的补救 |
 |---|---|---|
-| 带 `requires.env` 的步骤或其 `setup` | 某个键在本机没有值，或读不到团队 env | `teamai env set <KEY>`，或在环境中设置 |
+| 带 `requires.env` 的步骤或其 `setup` | 某个键在本机没有值，或读不到团队 env | 团队已声明的键用 `teamai env set <KEY>`，其余在环境中设置 |
 | 提示词步骤，使用本地驱动 | `--tools`、`workflows.tools` 和你的 AI 工具都没有为其 agent 指定工具，或只指定了 teamai 不启动的工具 | `--tools default=<tool>`（或 `<agent>=<tool>`），或 `workflows.tools.default` |
 | 提示词步骤，使用本地驱动 | 指定的工具不在 `PATH` 上 | 安装它，或用 `--tools` 指定一个在 `PATH` 上的工具 |
 

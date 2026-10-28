@@ -387,13 +387,13 @@ steps:
 ```console
 $ teamai workflow resume --next --tools default=claude --auto-approve
 ℹ Left r482011be75fd0ad9 (release) offered for a person: only a person can answer the approval at ship
-⚠ Left r814cea92baadffac (release-docs) offered: sign requires env SIGNING_KEY, which has no value here: teamai env set SIGNING_KEY, or set it in the environment; the prompt step notes run on claude, which is not on PATH here: install claude, or pass --tools default=<tool> for one that is
+⚠ Left r814cea92baadffac (release-docs) offered: sign requires env SIGNING_KEY, which has no value here: Set it in the environment, or declare it in the team repo (teamai env add SIGNING_KEY --secret); the prompt step notes runs on claude, which is not on PATH here: install claude, or pass --tools default=<tool> for one that is
 {"data":{"idle":{"offered":2}}}
 
 $ teamai workflow resume --tools default=claude
 RUN                WORKFLOW      STATUS           OWNER                      WHERE
 r482011be75fd0ad9  release       needs a person   alice (install 4c514375…)  offered on teamai-reports, only a person can answer the approval at ship: a person runs teamai workflow resume r482011be75fd0ad9 --claim
-r814cea92baadffac  release-docs  cannot run here  alice (install 4c514375…)  offered on teamai-reports, sign requires env SIGNING_KEY, which has no value here: teamai env set SIGNING_KEY, or set it in the environment; the prompt step notes run on claude, which is not on PATH here: install claude, or pass --tools default=<tool> for one that is; then teamai workflow resume --next
+r814cea92baadffac  release-docs  cannot run here  alice (install 4c514375…)  offered on teamai-reports, sign requires env SIGNING_KEY, which has no value here: Set it in the environment, or declare it in the team repo (teamai env add SIGNING_KEY --secret); the prompt step notes runs on claude, which is not on PATH here: install claude, or pass --tools default=<tool> for one that is; then teamai workflow resume --next
 ```
 
 像[该作业](#从-ci-接手交出的运行)那样，在作业的 `env` 中加上 `SIGNING_KEY` 并安装 `claude`，下一次 `--next` 就会接手它：

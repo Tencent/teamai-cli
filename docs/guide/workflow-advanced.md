@@ -607,7 +607,7 @@ steps:
 
 | Key | What it does | A driver that cannot do it |
 |---|---|---|
-| `requires.env` | Gives the step these [team env](sharing.md#env-environment-variables) keys. Every other team env key, and every key another step of the run requires, is kept from it. Only key names enter the run. A key with no value on this machine fails the step `missing_env` before it runs, with the `teamai env set` command to run. A step `env:` entry that names a team secret or a required key fails `env_conflict`. | The step waits. |
+| `requires.env` | Gives the step these [team env](sharing.md#env-environment-variables) keys. Every other team env key, and every key another step of the run requires, is kept from it. Only key names enter the run. A key with no value on this machine fails the step `missing_env` before it runs, with the advice to set it in the environment, or the `teamai env set` command for a key the team declares. A step `env:` entry that names a team secret or a required key fails `env_conflict`. | The step waits. |
 | `requires.network` | `false` asks that the step get no network. | The step runs, and its `unenforced` lists `network`. The local driver cannot deny the network. |
 | `requires.isolation` | `none`, `worktree`, or `sandbox`. A step with a workspace has at least `worktree`. | The step runs, and its `unenforced` lists `isolation`. |
 | `setup` | The driver runs `command` in each workspace it creates, before the step. Setup gets its `requires.env` keys; a step gets them only if it requires them too. Setup fails the step without running it, and the workspace is removed, when it exits non-zero (`setup_failed`), changes a file git would commit (`setup_dirty`), or leaves the value of one of its keys in a file it wrote, ignored files included (`setup_secret`). The step's `timeout` bounds setup. | Steps with a workspace wait. |
@@ -812,7 +812,7 @@ After a claim, `resume` can also answer `branch_diverged` when a local branch ca
 
 | Steps left | Lacking here when | Listed fix |
 |---|---|---|
-| A step or its `setup` with `requires.env` | a key has no value here, or the team env cannot be read | `teamai env set <KEY>`, or set it in the environment |
+| A step or its `setup` with `requires.env` | a key has no value here, or the team env cannot be read | `teamai env set <KEY>` for a key the team declares, or set it in the environment |
 | A prompt step, with the local driver | `--tools`, `workflows.tools` and your AI tool name no tool for its agent, or only one teamai does not launch | `--tools default=<tool>` (or `<agent>=<tool>`), or `workflows.tools.default` |
 | A prompt step, with the local driver | the tool they name is not on `PATH` | install it, or `--tools` names one that is |
 

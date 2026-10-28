@@ -2823,7 +2823,7 @@ steps:
     const runs = await publishedRuns(runner);
     expect(runs).toEqual([expect.objectContaining({
       run: runId, offer: { at: expect.any(String), needs: [], uses: { env: ['SIGNING_KEY'], prompts: [] }, lacks: [{
-        reason: 'sign requires env SIGNING_KEY, which has no value here', fix: 'teamai env set SIGNING_KEY, or set it in the environment',
+        reason: 'sign requires env SIGNING_KEY, which has no value here', fix: 'Set it in the environment, or declare it in the team repo (teamai env add SIGNING_KEY --secret)',
       }] },
     })]);
     const self = (await installOwner(runner.config)).id;
