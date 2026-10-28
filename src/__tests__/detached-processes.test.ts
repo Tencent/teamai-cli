@@ -31,9 +31,7 @@ it('forgets a pid the runner cannot signal, as macOS answers EPERM for a recycle
   const children = path.join(root, 'detached-children');
   fs.writeFileSync(path.join(children, '4242'), '');
   const kill = vi.spyOn(process, 'kill').mockImplementation(() => {
-    const error = new Error('EPERM: operation not permitted, kill') as Error & { code: string };
-    error.code = 'EPERM';
-    throw error;
+    throw Object.assign(new Error('EPERM: operation not permitted, kill'), { code: 'EPERM' });
   });
   try {
     // The pid is alive, but it is not this runner's child any more: it is

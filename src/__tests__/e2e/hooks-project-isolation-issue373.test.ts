@@ -51,7 +51,9 @@ describe('issue #373 project hook isolation (real CLI)', () => {
 
   beforeEach(() => {
     if (!fs.existsSync(CLI)) throw new Error('Run npm run build before e2e tests');
-    sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-373-e2e-'));
+    // The long path, like every other temp root (#870): Windows hands out a short
+    // 8.3 tmpdir, and a path the CLI resolves later does not match that spelling.
+    sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-373-e2e-')));
     home = path.join(sandbox, 'home');
     projectA = path.join(sandbox, 'project-a');
     projectB = path.join(sandbox, 'project-b');
