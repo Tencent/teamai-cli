@@ -6,7 +6,7 @@ import { detectProjectConfig, hasUserScopeInstall, loadLocalConfig, loadMemberSe
 import { memberTools } from './tool-launch/call.js';
 import { AgentSession } from './session-flow/agent-session.js';
 import { SessionPolicy, type SessionPolicy as Policy } from './session-flow/session-policy.js';
-import { explainRunMode, RUN_MODES, type ExplainedRunMode } from './launch-context.js';
+import { explainRunMode, RUN_MODES, type ExplainedRunMode, type RunMode } from './launch-context.js';
 import { scoringUnavailable } from './scorers/home.js';
 import { scopeScoring } from './scorers/settings.js';
 import { readWorkspaceChildren } from './workspace-children.js';
@@ -243,9 +243,16 @@ const MEMBER_SETTING_REPORT_KEYS = [
   'coAuthorEnabled',
   'usageReportEnabled',
   'codexTrustEnabled',
+  'sessions.publish.attended',
+  'sessions.publish.unattended',
   'updatePolicy',
   'autoCompactTokens',
 ] as const;
+
+/** The run mode a `sessions.publish.<mode>` report key names. */
+function publishMode(key: string): RunMode | undefined {
+  return RUN_MODES.find((mode) => key === `sessions.publish.${mode}`);
+}
 
 const MACHINE_WIDE_MEMBER_SETTINGS = new Set(['updatePolicy', 'autoCompactTokens']);
 
@@ -331,6 +338,8 @@ async function memberSettingsReport(ctx: DoctorContext): Promise<MemberSettingsR
     if (key === 'autoCompactTokens') return readPath(selectedSharing, ['autoCompact', 'tokens']);
     if (key === 'usageReportEnabled') return selectedTeam?.usageReport;
     if (key === 'updatePolicy') return selectedTeam?.autoUpdate === false ? 'skip' : selectedTeam?.autoUpdate === true ? 'auto' : undefined;
+    const mode = publishMode(key);
+    if (mode) return SessionPolicy.readPublish('teamai.yaml', ctx.teamConfig?.sessions).set[mode]?.policy;
     return undefined;
   };
   const defaultValue = (key: string): unknown => {
@@ -341,6 +350,8 @@ async function memberSettingsReport(ctx: DoctorContext): Promise<MemberSettingsR
     if (key === 'contributeHintEnabled' || key === 'mrHintEnabled' || key === 'usageReportEnabled') return true;
     if (key === 'coAuthorEnabled' || key === 'codexTrustEnabled') return true;
     if (key === 'updatePolicy') return 'auto';
+    const mode = publishMode(key);
+    if (mode) return SessionPolicy.publishDefaults[mode];
     return undefined;
   };
 
@@ -357,6 +368,11 @@ async function memberSettingsReport(ctx: DoctorContext): Promise<MemberSettingsR
     if (key === 'ai.tool') {
       scopeValue = nonEmptyAiTool(scopeValue);
       machineValue = nonEmptyAiTool(machineValue);
+    }
+    const mode = publishMode(key);
+    if (mode) {
+      scopeValue = SessionPolicy.readPublish('config.yaml', readPath(rawScope, ['sessions'])).set[mode]?.policy;
+      machineValue = SessionPolicy.readPublish('config.yaml', machine.sessions).set[mode]?.policy;
     }
     const levels: MemberSettingSource[] = [];
     if (key === 'ai.tool' && process.env.TEAMAI_AI_TOOL) levels.push(settingSource('environment', process.env.TEAMAI_AI_TOOL, undefined, 'TEAMAI_AI_TOOL'));
@@ -398,6 +414,8 @@ async function memberSettingsReport(ctx: DoctorContext): Promise<MemberSettingsR
     if (key === 'mrHintEnabled') return isMrHintEnabled(ctx.localConfig, ctx.teamConfig ?? {});
     if (key === 'usageReportEnabled') return isUsageReportEnabled(ctx.localConfig, ctx.teamConfig ?? {});
     if (key === 'coAuthorEnabled') return resolveCoAuthor(ctx.localConfig, ctx.teamConfig ?? {}) ?? true;
+    const mode = publishMode(key);
+    if (mode) return SessionPolicy.publish(ctx.localConfig, ctx.teamConfig).policies[mode].policy;
     if (key === 'autoCompactTokens') return resolveAutoCompactTokens(decidingConfig, decidingTeam ?? {});
     if (key === 'updatePolicy') {
       const { resolveEffectiveUpdatePolicy } = await import('./update-policy.js');

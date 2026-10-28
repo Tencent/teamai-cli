@@ -1454,6 +1454,19 @@ describe('doctor — member settings (#1459)', () => {
         expect(printed).toContain(`  modelAliases.local: claude-opus-4, from the workspace config ${path.join('/tmp/ws-data', 'config.yaml')} (the machine says claude-haiku-4)`);
     });
 
+    it('prints the session publishing policy of each run mode a level sets', async () => {
+        // A workspace load overlays the machine's sessions when its own file sets none.
+        const workspace = { ...mockLocalConfig, scope: 'project', projectRoot: '/tmp/ws', dataHome: '/tmp/ws-data', sessions: { publish: { unattended: 'off' } }, memberSettingsOverlay: { local: {} } };
+        mockedDetectProjectConfig.mockResolvedValue(workspace);
+        onTestFinished(() => { mockedDetectProjectConfig.mockResolvedValue(null); });
+        mockedLoadMemberSettings.mockResolvedValue({ sessions: { publish: { unattended: 'off' } } });
+
+        await doctor({});
+
+        const printed = consoleSpy.mock.calls.map(([line]) => String(line));
+        expect(printed).toContain(`  sessions.publish.unattended: off, from the machine config ${machineFile()}`);
+    });
+
     it('names the keys of a machine config with no install that no command reads, being no member settings', async () => {
         const workspace = { ...mockLocalConfig, scope: 'project', projectRoot: '/tmp/ws', dataHome: '/tmp/ws-data', memberSettingsOverlay: { local: {} } };
         mockedDetectProjectConfig.mockResolvedValue(workspace);

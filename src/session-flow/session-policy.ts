@@ -70,6 +70,9 @@ function readPublish(file: string, sessions: unknown): { set: Partial<SessionPol
   return read(`${file} sessions.publish`, mapping.data.publish ?? {});
 }
 
+/** Each run mode's `sessions.publish` policy when neither `config.yaml` nor `teamai.yaml` sets one. */
+const publishDefaults = { attended: 'ask', unattended: 'auto' } as const satisfies Record<RunMode, SessionPolicy>;
+
 /**
  * Each run mode's `sessions.publish` policy for this member: its `config.yaml`, else `teamai.yaml`, else the default.
  * An HTTP team keeps no session archive, so there every mode is `off`, with a problem while one would publish.
@@ -77,7 +80,7 @@ function readPublish(file: string, sessions: unknown): { set: Partial<SessionPol
 function publish(config: LocalConfig, team: TeamaiConfig | null): { policies: SessionPolicies; problems: string[] } {
   const member = readPublish('config.yaml', config.sessions);
   const ofTeam = readPublish('teamai.yaml', team?.sessions);
-  const policies = resolve([[member.set], [ofTeam.set]], { attended: 'ask', unattended: 'auto' });
+  const policies = resolve([[member.set], [ofTeam.set]], publishDefaults);
   const problems = [...member.problems, ...ofTeam.problems];
   if (usesBranchWorktree(config)) return { policies, problems };
   const off = { policy: 'off', source: { kind: 'http-team' } } as const;
@@ -88,4 +91,4 @@ function publish(config: LocalConfig, team: TeamaiConfig | null): { policies: Se
   };
 }
 
-export const SessionPolicy = { read, resolve, readPublish, publish } as const;
+export const SessionPolicy = { read, resolve, readPublish, publish, publishDefaults } as const;
