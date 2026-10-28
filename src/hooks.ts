@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import { realpathSync } from 'node:fs';
+import { mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { lstat, readdir, realpath, rm } from 'node:fs/promises';
 import { readJson, readJsonObject, writeJson, readFileSafe, writeFile, expandHome, ensureDir, pathExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
@@ -35,7 +35,7 @@ import {
   resolveGitExclude,
   resolveToolRootDir,
 } from './types.js';
-import { builtinHookDefs, applyBuiltinOverride, getRawDispatchCommand, skipToolsWithoutShell } from './builtin-hooks.js';
+import { builtinHookDefs, applyBuiltinOverride, getHookShellCommand, getRawDispatchCommand, skipToolsWithoutShell, TEAMAI_BIN_DIR } from './builtin-hooks.js';
 import type { BuiltinHookOverride } from './builtin-hooks.js';
 import { parseTeamHooks, readBuiltinOverride, resolveTeamHooks, teamHookToDef } from './resources/hooks.js';
 import { entryLayout } from './namespaced-entries.js';
@@ -749,11 +749,14 @@ function cmdProjectGate(root: string): string {
 /**
  * Keep a project-scope team hook from firing in every project on the machine.
  *
- * Every tool runs hook commands through a POSIX shell on every platform
- * (WorkBuddy's bundled MSYS sh, CodeBuddy's required Git Bash, `bash -lc` for
- * the rest), so the gate is always the POSIX form. Outside the project it is a
- * no-op that exits 0 and inside it the payload's own status is passed through:
- * a gate mismatch that returned non-zero would make CodeBuddy read the hook as
+ * Every other tool runs hook commands through a POSIX shell on every platform
+ * (WorkBuddy's bundled MSYS sh, `bash -lc` for the rest), so the gate is the
+ * POSIX form. CodeBuddy on Windows is the exception: its IDE runs cmd.exe while
+ * its Code CLI runs Git Bash, and both read one `command` string, so a
+ * project-scope team hook moves into a script either can launch
+ * (codebuddyGateLauncher, #1446). Outside the project the gate is a no-op that
+ * exits 0 and inside it the payload's own status is passed through: a gate
+ * mismatch that returned non-zero would make CodeBuddy read the hook as
  * `allowed:false` and BLOCK every UserPromptSubmit outside the project.
  *
  * A Windows root is tested in both spellings. The shell names its cwd the MSYS
@@ -765,7 +768,75 @@ function cmdProjectGate(root: string): string {
  * Legacy cmd.exe gates are still recognised on read by isGatedForProject(), so
  * a re-render replaces 0.26.0's cmd gate instead of stacking a second one.
  */
-function gateTeamHookCommand(command: string, projectRoot: string | undefined, childRoots: readonly string[] = []): string {
+const CODEBUDDY_GATE_DIRNAME = 'codebuddy-gates';
+const CODEBUDDY_GATE_MARKER = '# teamai codebuddy project gate';
+
+/**
+ * The gate script behind a CodeBuddy launcher command, and the file itself,
+ * or null for any other command. Recognising the file lets re-renders,
+ * removal and held-hook regating read today's gate back (#1446).
+ */
+function readCodebuddyGate(command: string): { script: string; file: string } | null {
+  const file = /"([^"\n]+[\\/]codebuddy-gates[\\/][^"\n]+\.sh)"/.exec(command)?.[1];
+  if (!file) return null;
+  try {
+    const text = readFileSync(file, 'utf8');
+    if (!text.startsWith(`${CODEBUDDY_GATE_MARKER}\n`)) return null;
+    return { script: text.slice(CODEBUDDY_GATE_MARKER.length + 1).replace(/\n$/, ''), file };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Run a project-gated CodeBuddy hook from a script file (#1446).
+ *
+ * On Windows CodeBuddy IDE runs a hook's `command` through cmd.exe while
+ * CodeBuddy Code CLI runs it through Git Bash, and both read the same
+ * `command` string. A POSIX gate is a syntax error in cmd.exe and a cmd gate
+ * is one in Git Bash, so neither can be the command. Both shells can launch
+ * the same explicitly named Git Bash on a script file, though — the shape
+ * #1451 uses for the built-ins — so the gate and the payload move into a
+ * script the file holds. Exit status and stdio pass through, which is what a
+ * team hook's blocking decision needs (unlike the built-ins' `|| exit 0`).
+ *
+ * The file name is the hook key plus a hash of the project root, so the same
+ * hook in another project gets its own file and a re-render overwrites it.
+ */
+function codebuddyGateLauncher(
+  script: string,
+  root: string,
+  name: string | undefined,
+  existingFile: string | undefined,
+): string {
+  const dir = path.join(getUserHome(), TEAMAI_BIN_DIR, CODEBUDDY_GATE_DIRNAME);
+  const slug = (name ?? 'hook').replace(/[^A-Za-z0-9._-]+/g, '-').slice(0, 48);
+  const file = existingFile ?? path.join(dir, `${slug}-${createHash('sha256').update(root).digest('hex').slice(0, 8)}.sh`);
+  try {
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, `${CODEBUDDY_GATE_MARKER}\n${script}\n`, { mode: 0o755 });
+  } catch (e) {
+    log.debug(`teamai hooks: could not write the CodeBuddy gate script ${file}: ${(e as Error).message}`);
+    return script;
+  }
+  return `${getHookShellCommand()} "${file.split(path.sep).join('/')}"`;
+}
+
+interface GateOptions {
+  /** Render for CodeBuddy on Windows: a script both cmd.exe and Git Bash can run (#1446). */
+  codebuddyWindows?: boolean;
+  /** Stable file name for that script: the hook's key and event. */
+  scriptName?: string;
+  /** Reuse the file a previous render wrote, when regating. */
+  scriptPath?: string;
+}
+
+function gateTeamHookCommand(
+  command: string,
+  projectRoot: string | undefined,
+  childRoots: readonly string[] = [],
+  options: GateOptions = {},
+): string {
   if (!projectRoot) return command;
   const root = canonicalProjectRoot(projectRoot);
   const msys = msysProjectRoot(root);
@@ -779,12 +850,17 @@ function gateTeamHookCommand(command: string, projectRoot: string | undefined, c
     return forms.flatMap((form) => [form, `${form}/*`]);
   });
   const run = childPatterns.length > 0 ? `case "$PWD" in ${childPatterns.join('|')}) ;; *) (${command});; esac` : `(${command})`;
+  let gated: string;
   if (msys === root) {
-    return `if [ "$PWD" = ${quoted} ] || case "$PWD" in ${quoted}/*) true;; *) false;; esac; then ${run}; fi`;
+    gated = `if [ "$PWD" = ${quoted} ] || case "$PWD" in ${quoted}/*) true;; *) false;; esac; then ${run}; fi`;
+  } else {
+    const shellQuoted = shellQuote(msys);
+    gated = `if [ "$PWD" = ${quoted} ] || [ "$PWD" = ${shellQuoted} ]`
+      + ` || case "$PWD" in ${quoted}/*|${shellQuoted}/*) true;; *) false;; esac; then ${run}; fi`;
   }
-  const shellQuoted = shellQuote(msys);
-  return `if [ "$PWD" = ${quoted} ] || [ "$PWD" = ${shellQuoted} ]`
-    + ` || case "$PWD" in ${quoted}/*|${shellQuoted}/*) true;; *) false;; esac; then ${run}; fi`;
+  return options.codebuddyWindows
+    ? codebuddyGateLauncher(gated, root, options.scriptName, options.scriptPath)
+    : gated;
 }
 
 /**
@@ -792,11 +868,16 @@ function gateTeamHookCommand(command: string, projectRoot: string | undefined, c
  * `childRoots` (#913); null when it carries no gate this renderer writes.
  */
 function regateTeamHookCommand(command: string, projectRoot: string, childRoots: readonly string[]): string | null {
+  const gate = readCodebuddyGate(command);
+  const gated = gate?.script ?? command;
   const [head, tail] = gateTeamHookCommand('\0', projectRoot).split('(\0)');
-  if (!command.startsWith(head) || !command.endsWith(tail)) return null;
-  const run = command.slice(head.length, command.length - tail.length);
+  if (!gated.startsWith(head) || !gated.endsWith(tail)) return null;
+  const run = gated.slice(head.length, gated.length - tail.length);
   const payload = /^case "\$PWD" in .*?\) ;; \*\) \(([\s\S]*)\);; esac$/.exec(run)?.[1] ?? /^\(([\s\S]*)\)$/.exec(run)?.[1];
-  return payload === undefined ? null : gateTeamHookCommand(payload, projectRoot, childRoots);
+  if (payload === undefined) return null;
+  return gateTeamHookCommand(payload, projectRoot, childRoots, gate
+    ? { codebuddyWindows: true, scriptPath: gate.file, scriptName: path.basename(gate.file, '.sh') }
+    : {});
 }
 
 /** `value` with each string in it, at any depth, replaced by `map`'s result. */
@@ -883,12 +964,14 @@ function heldEntryCheck(
 /** Recognise a project gate written by either renderer (entries outlive a platform switch). */
 function isGatedForProject(command: string, projectRoot: string): boolean {
   const root = canonicalProjectRoot(projectRoot);
-  return command.startsWith(`if [ "$PWD" = ${shellQuote(root)} ]`)
+  const gate = readCodebuddyGate(command);
+  return (gate?.script ?? command).startsWith(`if [ "$PWD" = ${shellQuote(root)} ]`)
     || command.startsWith(cmdProjectGate(root));
 }
 
 function isProjectGatedCommand(command: string): boolean {
-  return command.startsWith('if [ "$PWD" = ') || command.startsWith('cd| findstr ');
+  return command.startsWith('if [ "$PWD" = ') || command.startsWith('cd| findstr ')
+    || readCodebuddyGate(command) !== null;
 }
 
 /**
@@ -899,9 +982,9 @@ function isProjectGatedCommand(command: string): boolean {
  * Built-in hooks exit inside hook-dispatch instead of here.
  *
  * `tool` here keys the cursor/copilot wrapper, which is orthogonal to the
- * project gate: the gate lost its per-tool form once every render became POSIX
- * (CodeBuddy's Windows hooks run through Git Bash), but this wrapper still
- * needs to know which tool it is rendering for.
+ * project gate: the gate is one script for every tool except CodeBuddy on
+ * Windows, whose renderer launches Git Bash on a script (#1446). This wrapper
+ * still needs to know which tool it is rendering for.
  */
 function skipWhenAnotherHostLoadsClaudeSettings(def: HookDef, tool: string, legacyGuard = false): string {
   if (tool !== 'claude') return def.command;
@@ -925,7 +1008,7 @@ const POSIX_GATE_ROOT_RE = /^if \[ "\$PWD" = ('(?:[^']|'"'"')*') \](?: \|\| \[ "
  * that moved to the main checkout (MAIN_CHECKOUT_TEAM_HOOK_TOOLS) ever wrote.
  */
 function gatedProjectRoot(command: string): string | null {
-  const quoted = POSIX_GATE_ROOT_RE.exec(command)?.[1];
+  const quoted = POSIX_GATE_ROOT_RE.exec(readCodebuddyGate(command)?.script ?? command)?.[1];
   return quoted ? quoted.slice(1, -1).split(`'"'"'`).join("'") : null;
 }
 
@@ -1484,7 +1567,14 @@ function scopedTeamDefs(
     command: skipWhenAnotherHostLoadsClaudeSettings(def, tool, legacyGuard),
   }));
   if (!projectRoot) return prepared;
-  return prepared.map((def) => ({ ...def, command: gateTeamHookCommand(def.command, projectRoot, childRoots) }));
+  const codebuddyWindows = tool === 'codebuddy' && process.platform === 'win32';
+  return prepared.map((def) => ({
+    ...def,
+    command: gateTeamHookCommand(def.command, projectRoot, childRoots, {
+      codebuddyWindows,
+      ...(codebuddyWindows ? { scriptName: `${def.key}-${def.event}` } : {}),
+    }),
+  }));
 }
 
 function manifestRecordsForTool(

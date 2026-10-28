@@ -1286,31 +1286,39 @@ hooks:
     tools: [${tool}]
 `;
 
-  it('renders the POSIX gate for codebuddy, which runs hooks through Git Bash', async () => {
+  it('renders a launcher for codebuddy, whose IDE runs cmd.exe and CLI Git Bash', async () => {
     const platformSpy = vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
     try {
       await writeYaml(telemetryYaml('codebuddy'));
       await fse.ensureDir(path.join(home, '.codebuddy'));
       await reconcileTeamHooksForConfig(codebuddyOnly, localConfig());
 
+      // One string both shells parse: an explicitly named Git Bash and a
+      // script file (#1446). A POSIX gate is a syntax error in cmd.exe, which
+      // CodeBuddy IDE uses; a cmd gate is one in Git Bash, which CodeBuddy
+      // Code uses.
       const [command] = await teamStopCommands('.codebuddy/settings.json');
-      expect(command.startsWith('if [ "$PWD" = ')).toBe(true);
-      expect(command.endsWith('); fi')).toBe(true);
+      expect(command).toMatch(/^"?[^"\n]*bash(?:\.exe)?"? "[^"]+\/codebuddy-gates\/telemetry-Stop-[0-9a-f]{8}\.sh"$/);
+      const script = fse.readFileSync(/"([^"]+)"$/.exec(command)![1], 'utf8');
+      expect(script.startsWith('# teamai codebuddy project gate\n')).toBe(true);
+      const gate = script.split('\n')[1];
+      expect(gate.startsWith('if [ "$PWD" = ')).toBe(true);
+      expect(script.trimEnd().endsWith('); fi')).toBe(true);
       // The runner names its cwd the MSYS way: on Windows that is `/c/...`,
       // never the `C:\...` this root resolves to, so the gate must carry both
       // spellings or it silently never fires. A root without a drive letter is
       // already the shell's spelling and the gate carries a single test, which
       // is what the suite's Linux and macOS jobs exercise.
       if (/^[A-Za-z]:[\\/]/.test(project)) {
-        expect(command, 'a Windows root is tested in both spellings').toMatch(/\] \|\| \[ "\$PWD" = '\/[a-z]\//);
+        expect(gate, 'a Windows root is tested in both spellings').toMatch(/\] \|\| \[ "\$PWD" = '\/[a-z]\//);
       } else {
-        expect(command, 'a POSIX root needs one spelling').not.toContain(' || [ "$PWD" = ');
+        expect(gate, 'a POSIX root needs one spelling').not.toContain(' || [ "$PWD" = ');
       }
       // 0.26.0 rendered a cmd.exe gate here. Git Bash cannot run it: `findstr`
       // errors out, the gate never matches, and the `>nul` redirect leaves a
       // file literally named `nul` in the project.
-      expect(command).not.toContain('findstr');
-      expect(command).not.toContain('exit /b 0');
+      expect(script).not.toContain('findstr');
+      expect(script).not.toContain('exit /b 0');
     } finally {
       platformSpy.mockRestore();
     }

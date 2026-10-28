@@ -181,15 +181,17 @@ export function findGitBashWindows(
 /**
  * The shell CodeBuddy runs hook commands with on Windows: Git Bash.
  *
- * CodeBuddy requires Git for Windows there — without it the CLI refuses to run
- * hook commands and tells the user to install it — and it runs each hook's
- * `command` string through that Git Bash, not cmd.exe. The rendered command
- * must therefore be POSIX. This resolver answers the same question WorkBuddy's
- * does: "does the tool provide a shell its hook commands can execute with?"
- * Null when Git Bash is absent, which correctly skips injection (the hooks
- * could never run) rather than gating the tool on /bin/sh — a false negative on
- * Windows, because the CLI's own Node build has no /bin/sh. Memoized like its
- * WorkBuddy sibling.
+ * CodeBuddy requires Git for Windows there — without it the Code CLI refuses to
+ * run hook commands and tells the user to install it — and the CLI runs each
+ * hook's `command` string through that Git Bash. The IDE is a separate product
+ * with its own runner and runs the same string through cmd.exe, so the built-in
+ * and project-gate commands name this Git Bash explicitly and hand it a script
+ * (#1451, #1446) rather than relying on the runner's shell. This resolver
+ * answers the same question WorkBuddy's does: "does the tool provide a shell
+ * its hook commands can execute with?" Null when Git Bash is absent, which
+ * correctly skips injection (the hooks could never run) rather than gating the
+ * tool on /bin/sh — a false negative on Windows, because the IDE's own Node
+ * build has no /bin/sh. Memoized like its WorkBuddy sibling.
  */
 function resolveCodebuddyShell(): string | null {
   if (_cbShellCache === undefined) {

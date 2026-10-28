@@ -200,7 +200,7 @@ let _winBashLauncherCache: string | undefined;
  * plain `bash` only when Git is absent — there the old form was already
  * dead anyway.
  */
-function getHookShellCommand(): string {
+export function getHookShellCommand(): string {
   if (process.platform !== 'win32') return 'bash';
   if (_winBashLauncherCache === undefined) {
     const found = findGitBashWindows();
