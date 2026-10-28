@@ -1485,6 +1485,21 @@ describe('doctor — member settings (#1459)', () => {
         expect(printed).toContain("  sessions.publish.unattended: auto, from the default (the machine's off is not used)");
     });
 
+    it('names the HTTP team repo for session publishing it turns off, and the workspace value it leaves unused', async () => {
+        const workspace = { ...mockLocalConfig, repo: { ...mockLocalConfig.repo, kind: 'http' }, scope: 'project', projectRoot: '/tmp/ws', dataHome: '/tmp/ws-data', sessions: { publish: { unattended: 'auto' } }, memberSettingsOverlay: { local: { sessions: { publish: { unattended: 'auto' } } } } };
+        mockedDetectProjectConfig.mockResolvedValue(workspace);
+        onTestFinished(() => { mockedDetectProjectConfig.mockResolvedValue(null); });
+        const otherReads = mockedReadFileSafe.getMockImplementation();
+        mockedReadFileSafe.mockImplementation(async (filePath: string) => (
+            filePath === path.join('/tmp/ws-data', 'config.yaml') ? 'sessions:\n  publish:\n    unattended: auto\n' : otherReads?.(filePath)
+        ));
+
+        await doctor({});
+
+        const printed = consoleSpy.mock.calls.map(([line]) => String(line));
+        expect(printed).toContain("  sessions.publish.unattended: off, from the HTTP team repo, which keeps no session archive (the workspace's auto is not used)");
+    });
+
     it('names the keys of a machine config with no install that no command reads, being no member settings', async () => {
         const workspace = { ...mockLocalConfig, scope: 'project', projectRoot: '/tmp/ws', dataHome: '/tmp/ws-data', memberSettingsOverlay: { local: {} } };
         mockedDetectProjectConfig.mockResolvedValue(workspace);

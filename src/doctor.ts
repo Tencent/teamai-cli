@@ -178,7 +178,8 @@ export interface DoctorReport {
   memberSettings?: MemberSettingsReport[];
 }
 
-export type MemberSettingLevel = 'environment' | 'scope' | 'machine' | 'team' | 'default';
+/** `http-team`: an HTTP team repo, which keeps no session archive, so it turns session publishing off whatever a level sets. */
+export type MemberSettingLevel = 'environment' | 'scope' | 'machine' | 'team' | 'http-team' | 'default';
 
 export interface MemberSettingSource {
   level: MemberSettingLevel;
@@ -207,6 +208,7 @@ function describeMemberSettingLevel({ level, file, variable }: MemberSettingSour
       : { from: `the workspace config ${file}`, short: 'workspace' };
     case 'machine': return { from: `the machine config ${file}`, short: 'machine' };
     case 'team': return { from: "the team's teamai.yaml", short: 'team' };
+    case 'http-team': return { from: 'the HTTP team repo, which keeps no session archive', short: 'HTTP team repo' };
     case 'default': return { from: 'the default', short: 'default' };
     default: {
       const unhandled: never = level;
@@ -355,6 +357,7 @@ async function memberSettingsReport(ctx: DoctorContext): Promise<MemberSettingsR
     return undefined;
   };
 
+  const publishing = SessionPolicy.publish(ctx.localConfig, ctx.teamConfig).policies;
   const levelsFor = (key: string): MemberSettingSource[] => {
     const parts = reportPathParts(key);
     let scopeValue = readPath(rawScope, parts);
@@ -405,6 +408,9 @@ async function memberSettingsReport(ctx: DoctorContext): Promise<MemberSettingsR
       if (workspaceValue !== undefined) levels.push(settingSource('scope', workspaceValue, scopeFile, undefined, false));
     }
     if (machineShadowed && machineValue !== undefined) levels.push(settingSource('machine', machineValue, machineFile, undefined, false));
+    if (mode && publishing[mode].source.kind === 'http-team') {
+      return [settingSource('http-team', 'off'), ...levels.map((level) => level.level === 'default' ? level : { ...level, used: false })];
+    }
     return levels;
   };
 
@@ -418,7 +424,7 @@ async function memberSettingsReport(ctx: DoctorContext): Promise<MemberSettingsR
     if (key === 'usageReportEnabled') return isUsageReportEnabled(ctx.localConfig, ctx.teamConfig ?? {});
     if (key === 'coAuthorEnabled') return resolveCoAuthor(ctx.localConfig, ctx.teamConfig ?? {}) ?? true;
     const mode = publishMode(key);
-    if (mode) return SessionPolicy.publish(ctx.localConfig, ctx.teamConfig).policies[mode].policy;
+    if (mode) return publishing[mode].policy;
     if (key === 'autoCompactTokens') return resolveAutoCompactTokens(decidingConfig, decidingTeam ?? {});
     if (key === 'updatePolicy') {
       const { resolveEffectiveUpdatePolicy } = await import('./update-policy.js');
