@@ -149,8 +149,9 @@ function runRecipe(origin: string, required: boolean): { recipe: CiRecipe; ran: 
   };
   for (const name of ['XDG_CONFIG_HOME', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'GITHUB_TOKEN', 'GH_TOKEN']) delete env[name];
 
-  const [recipe, ...others] = ciRecipesOf(GUIDE);
-  if (!recipe || others.length > 0) throw new Error(`${GUIDE} shows ${others.length + (recipe ? 1 : 0)} GitHub Actions workflows, not one`);
+  // The guide also shows the runner job that takes the runs members offer; this test runs the one that starts a run.
+  const [recipe, ...others] = ciRecipesOf(GUIDE).filter((shown) => runCommandsOf(shown).some((command) => command.includes('teamai-cli workflow start ')));
+  if (!recipe || others.length > 0) throw new Error(`${GUIDE} shows ${others.length + (recipe ? 1 : 0)} GitHub Actions workflows that start a run, not one`);
   const [job, ...jobs] = Object.values(recipe.jobs);
   if (!job || jobs.length > 0) throw new Error('the recipe has more than one job');
   const checkout = job.steps.find((step) => step.uses?.startsWith('actions/checkout@'));
