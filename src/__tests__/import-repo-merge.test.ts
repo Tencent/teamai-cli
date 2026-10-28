@@ -26,6 +26,10 @@ vi.mock('../codebase-extract.js', () => ({
     extractCodebase: vi.fn(),
 }));
 
+vi.mock('../deep-enrich.js', () => ({
+    deepEnrich: vi.fn(),
+}));
+
 vi.mock('../config.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../config.js')>()),
     autoDetectInit: vi.fn().mockRejectedValue(new Error('no config in test')),
@@ -36,6 +40,7 @@ vi.mock('../config.js', async (importOriginal) => ({
 import { importFromRepo } from '../import-repo.js';
 import { shallowClone, shallowFetch } from '../clone.js';
 import { extractCodebase } from '../codebase-extract.js';
+import { deepEnrich } from '../deep-enrich.js';
 
 // ─── Constants ──────────────────────────────────────────
 
@@ -75,12 +80,14 @@ describe('importFromRepo — AI narrative appended to overview.md', () => {
     let workdir: string;
     let output: string;
     let evidenceDir: string;
+    let writesManifest: boolean;
     const TEST_URL = 'https://github.com/owner/mergetest';
 
     beforeEach(async () => {
         workdir = await makeWorkdir();
         output = path.join(workdir, '.teamai', 'team-repo');
         evidenceDir = path.join(output, 'teamwiki', 'evidence', 'code', SLUG);
+        writesManifest = false;
         vi.spyOn(process, 'cwd').mockReturnValue(workdir);
         process.env.TEAMAI_CACHE_DIR = path.join(workdir, 'cache');
 
@@ -103,12 +110,15 @@ describe('importFromRepo — AI narrative appended to overview.md', () => {
             await fs.writeFile(path.join(wikiRoot, 'source-manifest.json'), manifest, 'utf8');
             await fs.writeFile(path.join(indicesDir, 'graph-index.json'), JSON.stringify({ nodes: [], edges: [] }), 'utf8');
             await fs.writeFile(path.join(indicesDir, 'facts-cache.json'), '[]', 'utf8');
+            // Deep enrich runs on an extraction that wrote a manifest.
+            if (writesManifest) await fs.writeJson(path.join(stagedEvidence, '_manifest.json'), { components: [{ slug: 'src' }] });
             return true;
         });
     });
 
     afterEach(async () => {
         vi.clearAllMocks();
+        process.exitCode = undefined;
         delete process.env.TEAMAI_CACHE_DIR;
         await fs.remove(workdir);
     });
@@ -126,6 +136,35 @@ describe('importFromRepo — AI narrative appended to overview.md', () => {
         expect(content).toContain('## AI Architecture Narrative');
         expect(content).toContain('固定的项目概述内容，不会改变。');
         expect(content).toContain('技术栈');
+    });
+
+    it('import --from-repo exits 1 and names the retry command when deep enrich leaves AI docs missing', async () => {
+        writesManifest = true;
+        vi.mocked(deepEnrich).mockResolvedValue({
+            project: SLUG, complete: false, missingComponents: ['src'], missingArchitecture: true,
+        });
+        const lines: string[] = [];
+        const spy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => { lines.push(args.map(String).join(' ')); });
+        try {
+            const { importCmd } = await import('../import.js');
+            await importCmd({ fromRepo: TEST_URL, output });
+        } finally {
+            spy.mockRestore();
+        }
+
+        expect(process.exitCode).toBe(1);
+        expect(lines.join('\n')).toContain(
+            `Deep enrich incomplete: ${SLUG}. Run \`teamai codebase --deep-enrich --project ${SLUG} --output ${output}\` to retry.`,
+        );
+        expect(await fs.pathExists(path.join(evidenceDir, 'overview.md'))).toBe(true);
+    });
+
+    it('reports an unfinished deep enrich to its caller and leaves the exit status to it', async () => {
+        writesManifest = true;
+        vi.mocked(deepEnrich).mockRejectedValue(new Error('teamwiki is locked'));
+
+        expect(await importFromRepo({ url: TEST_URL, output })).toBe(false);
+        expect(process.exitCode).toBeUndefined();
     });
 
     it('docs/team-codebase/repos/ 不再被创建', async () => {

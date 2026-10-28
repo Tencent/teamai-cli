@@ -51,7 +51,7 @@ function plainDir(parent: string, name: string, marker: string): string {
 /** `teamai import --dir <sourceDir> --skip-enrich` of a directory named `svc`. */
 async function importDir(sourceDir: string, wikiRoot: string): Promise<boolean> {
   const slug = await localCheckoutSlug({ sourceDir, slug: 'svc', wikiRoot });
-  return await importLocalCheckout({ sourceDir, slug, wikiRoot, skipEnrich: true });
+  return (await importLocalCheckout({ sourceDir, slug, wikiRoot, skipEnrich: true })).updated;
 }
 
 function evidenceSlugs(wikiRoot: string): string[] {

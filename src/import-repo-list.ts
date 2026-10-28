@@ -2,8 +2,8 @@
 import fs from 'fs-extra';
 import { loadRepoList } from './repo-list/store.js';
 import { isOrgEntry, type RepoListEntry } from './repo-list/schema.js';
-import { importFromRepo } from './import-repo.js';
-import { publishTeamwikiViaMR, refreshTeamwikiIndexes } from './import-codebase.js';
+import { importFromRepo, repoSlugForUrl } from './import-repo.js';
+import { failIncompleteDeepEnrich, publishTeamwikiViaMR, refreshTeamwikiIndexes } from './import-codebase.js';
 import { log } from './utils/logger.js';
 import { DetachedTeamRepoError } from './utils/git.js';
 import { lockTeamwiki, resolveTeamwiki, type TeamwikiTarget } from './utils/teamwiki-root.js';
@@ -119,7 +119,7 @@ export async function importFromRepoList(
         const entryForceSsh = entry.auth === 'ssh' || forceSsh;
 
         try {
-            await importFromRepo({
+            const deepEnrichComplete = await importFromRepo({
                 url: entry.url,
                 forceSsh: entryForceSsh,
                 forceAnonymous: isPublic,
@@ -131,6 +131,7 @@ export async function importFromRepoList(
                 skipEnrich,
                 maxFiles,
             });
+            if (!deepEnrichComplete) failIncompleteDeepEnrich({ slug: repoSlugForUrl(entry.url), output });
             succeeded.push(1);
         } catch (err) {
             const message = err instanceof Error ? err.message : String(err);

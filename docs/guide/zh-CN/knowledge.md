@@ -181,6 +181,25 @@ teamai codebase --lint
 
 没有团队仓库时，给 `teamai import` 和 `teamai codebase` 都加上 `--output <dir>`，两者都用 `<dir>/teamwiki/`。
 
+`import` 也会用你的 AI 工具执行这一步 deep enrich。没能完成时，evidence 照样发布，但 `import` 以 1 退出，并打印继续执行的命令：
+
+```text
+$ teamai import --dir ./orders-api --output ./wiki
+...
+⚠ deep-enrich[orders-api]: incomplete — missing component docs: billing, architecture: true
+...
+✔ Local directory orders-api import complete
+⚠ Deep enrich incomplete: orders-api. Run `teamai codebase --deep-enrich --project orders-api --output ./wiki` to retry.
+$ echo $?
+1
+```
+
+只需要提取结果、运行环境里没有 AI 工具的任务，跳过 AI 这一步，以 0 退出：
+
+```bash
+teamai import --from-repo https://github.com/acme/orders-api --skip-enrich
+```
+
 `teamai codebase --extract` 已移除，改用 `teamai import --dir`。
 
 AI 子进程失败时优先显示 stderr，否则显示 stdout；都没有内容时显示退出码或终止信号。因此，OpenClaw 在 stdout 打印的服务错误会在深度加工时保留具体原因，不再只显示空的 `AI call failed:`。

@@ -198,7 +198,7 @@ async function importMergedCheckout(teamRepo: string, repoUrl: string, mrUrl: st
   try {
     const { repoSlugForUrl } = await import('../import-repo.js');
     const { importLocalCheckout } = await import('../import-codebase.js');
-    return await importLocalCheckout({
+    const { updated } = await importLocalCheckout({
       sourceDir,
       slug: repoSlugForUrl(repoUrl),
       wikiRoot: path.join(teamRepoDir, 'teamwiki'),
@@ -206,6 +206,7 @@ async function importMergedCheckout(teamRepo: string, repoUrl: string, mrUrl: st
       repoUrl,
       sourceMrUrl: mrUrl,
     });
+    return updated;
   } catch (err) {
     log.warn(`teamwiki update failed (non-blocking): ${err instanceof Error ? err.message : String(err)}`);
     return false;

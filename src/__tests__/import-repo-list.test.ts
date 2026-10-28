@@ -8,11 +8,13 @@ import { stringify as yamlStringify } from 'yaml';
 
 // ─── Mocks ──────────────────────────────────────────────
 
-vi.mock('../import-repo.js', () => ({
-    importFromRepo: vi.fn().mockResolvedValue(undefined),
+vi.mock('../import-repo.js', async (importOriginal) => ({
+    repoSlugForUrl: (await importOriginal<typeof import('../import-repo.js')>()).repoSlugForUrl,
+    importFromRepo: vi.fn().mockResolvedValue(true),
 }));
 
-vi.mock('../import-codebase.js', () => ({
+vi.mock('../import-codebase.js', async (importOriginal) => ({
+    failIncompleteDeepEnrich: (await importOriginal<typeof import('../import-codebase.js')>()).failIncompleteDeepEnrich,
     refreshTeamwikiIndexes: vi.fn().mockResolvedValue(undefined),
     publishTeamwikiViaMR: vi.fn().mockResolvedValue(undefined),
 }));
@@ -47,6 +49,7 @@ describe('importFromRepoList', () => {
     });
 
     afterEach(async () => {
+        process.exitCode = undefined;
         process.chdir(originalCwd);
         await fs.remove(tmpDir);
         vi.restoreAllMocks();
@@ -98,6 +101,7 @@ describe('importFromRepoList', () => {
             } finally {
                 active--;
             }
+            return true;
         });
 
         const batch = importFromRepoList({ listPath, concurrency, dryRun: true });
@@ -109,7 +113,29 @@ describe('importFromRepoList', () => {
         expect(await batch).toEqual({ succeeded: 4, failed: [{ url: repos[0].url, error: 'Fixture failure' }], skipped: [] });
         expect(peak).toBe(concurrency);
         expect(active).toBe(0);
-        vi.mocked(importFromRepo).mockResolvedValue(undefined);
+        vi.mocked(importFromRepo).mockResolvedValue(true);
+    });
+
+    it('exits 1 and names the retry command for each repo whose deep enrich did not finish', async () => {
+        const filePath = await writeYaml('repos.yaml', {
+            version: 1,
+            repos: [{ url: 'https://github.com/org/repo-1' }, { url: 'https://github.com/org/repo-2' }],
+        });
+        vi.mocked(importFromRepo).mockImplementation(async ({ url }) => !url.endsWith('repo-2'));
+        const lines: string[] = [];
+        const spy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => { lines.push(args.map(String).join(' ')); });
+        try {
+            await importFromRepoList({ listPath: filePath, output: 'wiki' });
+        } finally {
+            spy.mockRestore();
+        }
+
+        expect(process.exitCode).toBe(1);
+        const output = lines.join('\n');
+        expect(output).toContain(
+            'Deep enrich incomplete: github__org__repo-2. Run `teamai codebase --deep-enrich --project github__org__repo-2 --output wiki` to retry.',
+        );
+        expect(output).not.toContain('github__org__repo-1');
     });
 
     it('加载 yaml → 调度 → 汇总数字正确（2 个成功）', async () => {
@@ -149,7 +175,7 @@ describe('importFromRepoList', () => {
     it('单仓抛错 → failed +1，不中断其他', async () => {
         vi.mocked(importFromRepo)
             .mockRejectedValueOnce(new Error('克隆失败'))
-            .mockResolvedValue(undefined);
+            .mockResolvedValue(true);
 
         const filePath = await writeYaml('repos.yaml', {
             version: 1,
@@ -171,6 +197,7 @@ describe('importFromRepoList', () => {
         const callOrder: string[] = [];
         vi.mocked(importFromRepo).mockImplementation(async (opts) => {
             callOrder.push(opts.url);
+            return true;
         });
 
         const filePath = await writeYaml('repos.yaml', {

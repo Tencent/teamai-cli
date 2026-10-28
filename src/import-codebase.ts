@@ -517,14 +517,17 @@ export async function importCodebase(opts: ImportCodebaseOptions): Promise<boole
 
 /**
  * Reconcile product docs with code knowledge, then deep-enrich the codebase.
- * Both are non-blocking; deep enrich runs only when `_manifest.json` exists.
+ * Reconcile is non-blocking; deep enrich runs only when `_manifest.json` exists.
+ *
+ * @returns false when deep enrich ran and did not finish; what is missing, or
+ *   the error, is already printed as a warning
  */
 export async function reconcileAndDeepEnrich(params: {
   slug: string;
   wikiRoot: string;
   sourceDir: string;
   skipEnrich: boolean;
-}): Promise<void> {
+}): Promise<boolean> {
   const { slug, wikiRoot, sourceDir, skipEnrich } = params;
   try {
     const { reconcileKnowledge } = await import('./wiki-engine/adapters/index.js');
@@ -537,15 +540,27 @@ export async function reconcileAndDeepEnrich(params: {
   }
 
   const evidenceDir = path.join(wikiRoot, 'evidence', 'code', slug);
-  if (skipEnrich || !(await fs.pathExists(path.join(evidenceDir, '_manifest.json')))) return;
+  if (skipEnrich || !(await fs.pathExists(path.join(evidenceDir, '_manifest.json')))) return true;
   try {
     const { deepEnrich } = await import('./deep-enrich.js');
-    await deepEnrich({ project: slug, evidenceDir, wikiRoot, cacheDir: sourceDir });
-    log.info(`Deep enrich complete: ${slug}`);
+    const result = await deepEnrich({ project: slug, evidenceDir, wikiRoot, cacheDir: sourceDir });
+    if (result.complete) log.info(`Deep enrich complete: ${slug}`);
+    return result.complete;
   } catch (err) {
     if (isOverrideInvalid(err)) throw err;
-    log.debug(`deep-enrich failed for ${slug} (non-blocking): ${(err as Error).message}`);
+    log.warn(`Deep enrich failed for ${slug}: ${err instanceof Error ? err.message : String(err)}`);
+    return false;
   }
+}
+
+/**
+ * Fail the import a person ran whose deep enrich did not finish, and say how to
+ * resume it. The extracted evidence stays published.
+ */
+export function failIncompleteDeepEnrich({ slug, output }: { slug: string; output: string | undefined }): void {
+  const retry = `teamai codebase --deep-enrich --project ${slug}${output ? ` --output ${output}` : ''}`;
+  log.warn(`Deep enrich incomplete: ${slug}. Run \`${retry}\` to retry.`);
+  process.exitCode = 1;
 }
 
 /** Rebuild the global graph and router.md / index.md after evidence changed. */
@@ -583,18 +598,21 @@ export async function publishTeamwikiViaMR(team: TeamaiInit, message: string): P
  * `teamai import --dir`, and the teamwiki update of `teamai ci extract-mr`:
  * import a checkout, reconcile and deep-enrich it, and refresh the indexes.
  *
- * @returns whether the teamwiki changed
+ * @returns whether the teamwiki changed, and for a change whether deep enrich
+ *   finished (true when it did not run)
  */
-export async function importLocalCheckout(opts: ImportCodebaseOptions): Promise<boolean> {
+export async function importLocalCheckout(
+  opts: ImportCodebaseOptions,
+): Promise<{ updated: false } | { updated: true; deepEnrichComplete: boolean }> {
   const updated = await importCodebase(opts);
   if (!updated) {
     log.info(`${opts.slug}: no source changes since the last import, teamwiki unchanged`);
-    return false;
+    return { updated: false };
   }
   log.info(`teamwiki/ knowledge graph updated: ${opts.slug}`);
-  await reconcileAndDeepEnrich({
+  const deepEnrichComplete = await reconcileAndDeepEnrich({
     slug: opts.slug, wikiRoot: opts.wikiRoot, sourceDir: opts.sourceDir, skipEnrich: opts.skipEnrich ?? false,
   });
   await refreshTeamwikiIndexes(opts.wikiRoot);
-  return true;
+  return { updated: true, deepEnrichComplete };
 }
