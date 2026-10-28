@@ -2,8 +2,10 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { z } from 'zod';
+import { getCurrentVersion } from './package-info.js';
 import { formatDiagnostic, parseWorkflow } from './workflow/parse.js';
-import type { CachedWorkflow } from './workflow/types.js';
+import type { CachedWorkflow, ResolvedWorkflow } from './workflow/types.js';
 
 // ─── Default workflows (#1388) ───────────────────────────
 //
@@ -61,4 +63,19 @@ function all(): CachedWorkflow[] {
   return [...defaults().values()];
 }
 
-export const DefaultWorkflows = { named, all } as const;
+/**
+ * Where the definition a run executes came from: the team's files, or the default the teamai that started it ships, by
+ * version, since another version may ship other bytes and no team commit holds them.
+ */
+export const RunOriginSchema = z.discriminatedUnion('source', [
+  z.object({ source: z.literal('team') }),
+  z.object({ source: z.literal('default'), teamaiVersion: z.string().min(1) }),
+]);
+export type RunOrigin = z.infer<typeof RunOriginSchema>;
+
+/** The origin a run of `resolved` records. */
+function originOf(resolved: ResolvedWorkflow): RunOrigin {
+  return resolved.source === 'default' ? { source: 'default', teamaiVersion: getCurrentVersion() } : { source: 'team' };
+}
+
+export const DefaultWorkflows = { named, all, originOf } as const;

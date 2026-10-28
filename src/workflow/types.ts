@@ -1,5 +1,6 @@
 /** Workflow types for the v1alpha1 local-driver subset. */
 
+import type { RunOrigin } from '../default-workflows.js';
 import type { RunMode } from '../launch-context.js';
 import type { PinnedScorer } from '../scorers/pin.js';
 import type { DeliveryReceipt, UnresolvedCreate } from './delivery-schema.js';
@@ -278,6 +279,8 @@ export interface RunState {
   teamRevision?: string;
   /** The run mode `workflow start` resolved. A claim keeps it. Absent on runs started before it was recorded. */
   runMode?: RunMode;
+  /** Whether `definition` is the team's or teamai's default. A claim keeps it. Absent on runs started before it was recorded, all team runs. */
+  origin?: RunOrigin;
   definition: WorkflowDefinition;
   /** The sub-workflows the run uses, by name, as they were cached when it started. */
   workflows?: Record<string, WorkflowDefinition>;

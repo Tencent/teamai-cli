@@ -28,6 +28,9 @@ import { ensureWorktree, fetchMissingCommits, headCommit, markReadCopy, worktree
 import { knownSecrets, resolveWorkflowEnv } from '../env-resolution.js';
 import { fakeGh } from './helpers/fake-gh.js';
 
+/** The version in the package manifest, which a run of teamai's default records. */
+const PACKAGE_VERSION: string = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, '..', '..', 'package.json'), 'utf8')).version;
+
 const dirs: string[] = [];
 
 afterEach(() => {
@@ -1823,6 +1826,37 @@ steps:
       error: { code: 'definition_mismatch', teamRevision: snapshot.teamRevision, message: expect.stringContaining('same teamai version') },
     });
     expect(await readRun(bob.config, runId)).toBe('missing');
+  });
+
+  it('claims a run of teamai\'s default from a machine on the same teamai, and refuses one another version ran, naming both versions', async () => {
+    const acme = team();
+    const alice = await acme.member('alice');
+    const bob = await acme.member('bob');
+    const inputs = { session: 's1', source: 'claude', publish: false, scorers: [], judge: 'here' };
+    const startClose = async (): Promise<string> => {
+      const started = await startRun(alice.config, 'session-close', inputs, { secrets: await knownSecrets(alice.config) });
+      if ('error' in started) throw new Error(started.error.message);
+      const runId = String(started.data.run);
+      await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout });
+      return runId;
+    };
+    const same = await startClose();
+    expect(await claimRun(bob.config, same, { checkout: bob.checkout })).toMatchObject({ ok: true });
+
+    const older = await startClose();
+    const editor = path.join(path.dirname(acme.origin), 'editor');
+    git(path.dirname(acme.origin), 'clone', '-q', '--branch', 'teamai-reports', acme.origin, editor);
+    const rel = `workflows/runs/${older}/state.json`;
+    const snapshot: Record<string, unknown> = JSON.parse(fs.readFileSync(path.join(editor, rel), 'utf8'));
+    fs.writeFileSync(path.join(editor, rel), `${JSON.stringify({ ...snapshot, sourceHash: '0'.repeat(64), origin: { source: 'default', teamaiVersion: '0.0.1' } }, null, 2)}\n`);
+    git(editor, 'commit', '-qam', 'an older teamai');
+    git(editor, 'push', '-q', 'origin', 'teamai-reports');
+
+    expect(await claimRun(bob.config, older, { checkout: bob.checkout })).toMatchObject({
+      ok: false,
+      error: { code: 'definition_mismatch', message: `Run ${older} runs teamai's default workflow "session-close" of teamai 0.0.1, which differs from the one teamai ${PACKAGE_VERSION} ships. Continue it on a machine with teamai 0.0.1, or start a new run.` },
+    });
+    expect(await readRun(bob.config, older)).toBe('missing');
   });
 
   it('claims a run of a team that keeps its workflows in the business repository, as the commit it ran at holds them', async () => {

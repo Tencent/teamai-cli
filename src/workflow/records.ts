@@ -23,6 +23,7 @@ import { redactJson } from '../utils/redact.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { isLaunchTool } from '../tool-launch/tools.js';
 import type { RunMode } from '../launch-context.js';
+import type { RunOrigin } from '../default-workflows.js';
 import { uniqueOutcomes, type WorkOutcome } from '../outcomes.js';
 import { stepDefinitions } from './scope.js';
 import { snapshotPath } from './snapshot.js';
@@ -64,6 +65,8 @@ export type WorkflowRunRecord = {
   phase: 'start' | 'end';
   /** The run mode `workflow start` resolved. Absent on runs started before it was recorded. */
   runMode?: RunMode;
+  /** Whether the run executed the team's workflow or teamai's default, with its version. Absent on runs started before it was recorded. */
+  origin?: RunOrigin;
   /**
    * Driver kind only. The workspace is a local path (banned, #1083) and the
    * hostname is machine-identifying (#1126 review) — neither is published.
@@ -155,6 +158,7 @@ export function buildStartRecord(
     ...(run.teamRevision ? { teamRevision: run.teamRevision } : {}),
     phase: 'start',
     ...(run.runMode ? { runMode: run.runMode } : {}),
+    ...(run.origin ? { origin: run.origin } : {}),
     // A start record may have no driver yet (a remote driver leases later);
     // the end record always carries the driver that completed the run.
     // Kind only: the workspace is a banned local path and the hostname is
