@@ -43,7 +43,8 @@ export type Stats = { n: number; passed: number; failed: number; rate: number | 
 /** A cohort with its counts over the window and its weekly trend. */
 export type CohortSummary = Cohort & { stats: Stats; trend: TrendWeek[]; lastScoredAt: string };
 
-export type ScorerSummary = { scorer: string; defaultCohort: string; cohorts: CohortSummary[] };
+/** `agreement`: when the scorer opens on a model judge, its labels in the window paired with hand labels, and how many agree. */
+export type ScorerSummary = { scorer: string; defaultCohort: string; cohorts: CohortSummary[]; agreement?: Pick<JudgeAgreement, 'paired' | 'agree'> };
 
 /** A group's value as the label recorded it. `isReported` is false for a model the tool did not report, only requested. */
 type GroupValue = { value: string; isReported?: boolean; localChanges?: boolean };
@@ -119,11 +120,13 @@ export const FAILING_PAGE = 25;
 /** The most failing labels one answer lists, however many the page asks for. */
 export const FAILING_MAX = 1000;
 
-/** A failing label as the view lists it: never its subject's native session id, reasoning or prompt. */
-export type FailingLabel = { author: string; scoredAt: string; label: string; skills?: string[] } & (
+/** The work a label judged, as the view shows it: never a session's native id. */
+export type SubjectRef =
   | { source: 'session'; platform: string; sessionName?: string }
-  | { source: 'workflow'; run: { id: string; step: string; pass: number; source?: 'local' | 'reported' } }
-);
+  | { source: 'workflow'; run: { id: string; step: string; pass: number; source?: 'local' | 'reported' } };
+
+/** A failing label as the view lists it: never its subject's native session id, reasoning or prompt. */
+export type FailingLabel = { author: string; scoredAt: string; label: string; skills?: string[] } & SubjectRef;
 
 /**
  * The friction reminder per session run on this machine (#1182): `hinted` from the member's contribute state, by
@@ -141,12 +144,49 @@ export type ValueCount = { label: string; score: number; n: number };
 /** One UTC week of the trend, named by its Monday. */
 export type TrendWeek = Stats & { week: string };
 
+/** A model judge's labels of one rubric and source in the window, against the hand labels of the same subjects. */
+export type JudgeAgreement = {
+  judge: JudgeCohort;
+  labels: number;
+  /** Its labels whose subject has a hand label the rubric lists. */
+  paired: number;
+  /** Paired labels that pass or fail as the hand label does. */
+  agree: number;
+  judgePassedHumanFailed: number;
+  judgeFailedHumanPassed: number;
+};
+
+/**
+ * How the model judges of one rubric and source agree with hand labels (#1269). A hand label is the member's verdict on
+ * the work, which a new rubric does not change: the newest hand label of a subject, whoever gave it and under whichever
+ * rubric of the scorer, pairs with this rubric's model labels while the rubric lists its value.
+ */
+export type Agreement = {
+  /** The subjects whose newest hand label this rubric lists, whenever it was given. */
+  handLabelled: number;
+  judges: JudgeAgreement[];
+  /** The paired subjects a judge and the member disagree on, the judge's newest label first. */
+  disagreements: Disagreement[];
+};
+
+/** A subject a model judge passed and the member failed, or the other way round. */
+export type Disagreement = SubjectRef & {
+  judge: JudgeCohort;
+  judged: { label: string; passed: boolean; scoredAt: string };
+  hand: { label: string; passed: boolean; author: string; scoredAt: string };
+};
+
+/** The values each rubric the caller could read lists, by `rubric.sourceHash`. */
+export type RubricLabels = ReadonlyMap<string, readonly string[]>;
+
 export type SelectedCohort = {
   /**
    * The cohort with its counts and weekly trend over the window, and its labels by stored value, highest score first:
    * what a pass rate folds together.
    */
   cohort: CohortSummary & { values: ValueCount[] };
+  /** The model judges of the cohort's rubric and source against hand labels. */
+  agreement: Agreement;
   groupBy?: Dimension;
   groups?: Group[];
   split?: Split;
@@ -276,24 +316,29 @@ function groupKeys(entry: ViewedLabel, dimension: Dimension): string[] {
   return recorded.length === 0 ? [NONE_KEY] : recorded.map(groupKey);
 }
 
-function failingLabel(entry: ViewedLabel): FailingLabel {
+function subjectRef(entry: ViewedLabel): SubjectRef {
   const { label } = entry;
-  const shared = {
-    author: entry.author,
-    scoredAt: label.scoredAt,
-    label: label.label,
-    ...label.used?.skills.length ? { skills: label.used.skills } : {},
-  };
   switch (label.source) {
     case 'session':
-      return { ...shared, source: 'session', platform: label.subject.platform, ...entry.sessionName ? { sessionName: entry.sessionName } : {} };
+      return { source: 'session', platform: label.subject.platform, ...entry.sessionName ? { sessionName: entry.sessionName } : {} };
     case 'workflow':
-      return { ...shared, source: 'workflow', run: { id: label.subject.runId, step: label.subject.step, pass: label.subject.pass, ...entry.runSource ? { source: entry.runSource } : {} } };
+      return { source: 'workflow', run: { id: label.subject.runId, step: label.subject.step, pass: label.subject.pass, ...entry.runSource ? { source: entry.runSource } : {} } };
     default: {
       const unhandled: never = label;
       return unhandled;
     }
   }
+}
+
+function failingLabel(entry: ViewedLabel): FailingLabel {
+  const { label } = entry;
+  return {
+    author: entry.author,
+    scoredAt: label.scoredAt,
+    label: label.label,
+    ...label.used?.skills.length ? { skills: label.used.skills } : {},
+    ...subjectRef(entry),
+  };
 }
 
 /** The reminder table of a session cohort: each session counts once, under the label of this cohort it has. */
@@ -349,6 +394,63 @@ function valueCounts(labels: readonly ViewedLabel[]): ValueCount[] {
   return [...counts.values()].sort((left, right) => right.score - left.score || left.label.localeCompare(right.label));
 }
 
+const subjectKey = (label: ScoreLabel): string => canonicalJson({ source: label.source, subject: label.subject });
+
+/**
+ * The agreement of the model judges of `scorer`'s rubric `sourceHash` on `source` with hand labels, over `labels`, the
+ * newest per key. The values the rubric lists come from `rubricLabels` when the caller read it, else from the labels
+ * stored under it: a value one of them stored is listed, so a hand label is never paired with a rubric that lacks it.
+ */
+function agreement({ labels, scorer, sourceHash, source, inWindow, rubricLabels }: {
+  labels: readonly ViewedLabel[];
+  scorer: string;
+  sourceHash: string;
+  source: ScoreLabel['source'];
+  inWindow: (entry: ViewedLabel) => boolean;
+  rubricLabels: RubricLabels | undefined;
+}): Agreement {
+  const ofScorer = labels.filter(({ label }) => label.scorer === scorer && label.source === source);
+  const listed = new Set(rubricLabels?.get(sourceHash) ?? ofScorer.filter(({ label }) => label.rubric.sourceHash === sourceHash).map(({ label }) => label.label));
+  const hand = new Map<string, ViewedLabel>();
+  for (const entry of ofScorer) {
+    if (entry.label.judge.kind !== 'human') continue;
+    const kept = hand.get(subjectKey(entry.label));
+    if (!kept || entry.label.scoredAt > kept.label.scoredAt) hand.set(subjectKey(entry.label), entry);
+  }
+  const pairable = new Map([...hand].filter(([, { label }]) => listed.has(label.label)));
+  const rows = new Map<string, JudgeAgreement>();
+  const disagreements: Disagreement[] = [];
+  for (const entry of ofScorer) {
+    const { label } = entry;
+    if (label.judge.kind !== 'model' || label.rubric.sourceHash !== sourceHash || !inWindow(entry)) continue;
+    const judge = judgeCohort(label.judge);
+    const key = canonicalJson(judge);
+    const row = rows.get(key) ?? { judge, labels: 0, paired: 0, agree: 0, judgePassedHumanFailed: 0, judgeFailedHumanPassed: 0 };
+    rows.set(key, row);
+    row.labels += 1;
+    const paired = pairable.get(subjectKey(label));
+    if (!paired) continue;
+    row.paired += 1;
+    if (paired.label.passed === label.passed) {
+      row.agree += 1;
+      continue;
+    }
+    if (label.passed) row.judgePassedHumanFailed += 1;
+    else row.judgeFailedHumanPassed += 1;
+    disagreements.push({
+      ...subjectRef(entry),
+      judge,
+      judged: { label: label.label, passed: label.passed, scoredAt: label.scoredAt },
+      hand: { label: paired.label.label, passed: paired.label.passed, author: paired.author, scoredAt: paired.label.scoredAt },
+    });
+  }
+  return {
+    handLabelled: pairable.size,
+    judges: [...rows.values()].sort((left, right) => right.labels - left.labels),
+    disagreements: disagreements.sort((left, right) => right.judged.scoredAt.localeCompare(left.judged.scoredAt)),
+  };
+}
+
 function stats(labels: readonly ViewedLabel[]): Stats {
   const passed = labels.filter(({ label }) => label.passed).length;
   return { n: labels.length, passed, failed: labels.length - passed, rate: labels.length === 0 ? null : passed / labels.length };
@@ -387,13 +489,14 @@ export const ScorerResults = {
   },
 
   /** The results of every scorer in `labels`, with the selected scorer's cohort counted over the window. */
-  of({ labels, query, now, reminders }: { labels: readonly ViewedLabel[]; query: ScorerResultsQuery; now: Date; reminders?: ReminderInput }): ScorerResultsView {
+  of({ labels, query, now, reminders, rubricLabels }: { labels: readonly ViewedLabel[]; query: ScorerResultsQuery; now: Date; reminders?: ReminderInput; rubricLabels?: RubricLabels }): ScorerResultsView {
     const window = ScorerResults.window(query.windowDays, now);
     const { from, to } = window;
     const inWindow = (entry: ViewedLabel) => entry.label.scoredAt >= from && entry.label.scoredAt <= to;
 
+    const kept = current(labels);
     const byCohort = new Map<string, { cohort: CohortIdentity; all: ViewedLabel[] }>();
-    for (const entry of current(labels)) {
+    for (const entry of kept) {
       const { cohort } = identityOf(entry.label);
       const group = byCohort.get(cohort.id) ?? { cohort, all: [] };
       group.all.push(entry);
@@ -421,7 +524,12 @@ export const ScorerResults = {
       if (!opened) continue;
       const ordered = cohorts.map(({ summary }) => summary)
         .sort((left, right) => Number(right.id === opened.id) - Number(left.id === opened.id) || right.lastScoredAt.localeCompare(left.lastScoredAt));
-      scorers.push({ scorer, defaultCohort: opened.id, cohorts: ordered });
+      const judge = byCohort.get(opened.id)?.cohort.judge;
+      const judged = judge?.kind === 'model'
+        ? agreement({ labels: kept, scorer, sourceHash: opened.rubric.sourceHash, source: opened.source, inWindow, rubricLabels }).judges
+          .find((row) => canonicalJson(row.judge) === canonicalJson(judge))
+        : undefined;
+      scorers.push({ scorer, defaultCohort: opened.id, cohorts: ordered, ...(judged ? { agreement: { paired: judged.paired, agree: judged.agree } } : {}) });
     }
 
     const scorer = scorers.find((summary) => summary.scorer === query.scorer) ?? scorers[0];
@@ -440,6 +548,7 @@ export const ScorerResults = {
       scorers,
       selected: {
         cohort: { ...summary, values: valueCounts(counted) },
+        agreement: agreement({ labels: kept, scorer: summary.scorer, sourceHash: summary.rubric.sourceHash, source: summary.source, inWindow, rubricLabels }),
         ...(groupBy ? { groupBy, groups: groups(counted, groupBy, split?.sideOf) } : {}),
         ...(split ? { split: { commit: split.commit, ...splitStats(counted, split.sideOf) } } : {}),
         failing: { labels: failing.slice(0, query.failing?.limit ?? FAILING_PAGE).map(failingLabel), total: failing.length },

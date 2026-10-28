@@ -257,3 +257,87 @@ describe('scorer results', () => {
     expect(selected?.cohort.values).toEqual([{ label: 'good', score: 1, n: 1 }]);
   });
 });
+
+describe('agreement with hand labels', () => {
+  const session = (n: number) => ({ platform: 'claude-code', sessionId: `s-${n}` });
+  const byHand = (n: number, overrides: Partial<Extract<ScoreLabel, { source: 'session' }>> = {}) => sessionLabel({ subject: session(n), judge: { kind: 'human' }, ...overrides });
+  const missedBug = { label: 'missed-bug', score: 0, passed: false } as const;
+
+  it('pairs a judge\'s labels with hand labels of the same sessions, whoever gave them, and splits disagreements by direction', () => {
+    const labels = [
+      ...Array.from({ length: 14 }, (_, n) => viewed(sessionLabel({ subject: session(n) }))),
+      ...Array.from({ length: 12 }, (_, n) => viewed(byHand(n, n < 2 ? missedBug : {}), { author: 'bob' })),
+    ];
+    const { selected } = ScorerResults.of({ labels, query: { windowDays: 30 }, now: NOW });
+    expect(selected?.agreement).toMatchObject({
+      handLabelled: 12,
+      judges: [{
+        judge: { kind: 'model', tool: 'claude', model: { id: 'claude-haiku-5-5', isReported: true } },
+        labels: 14, paired: 12, agree: 10, judgePassedHumanFailed: 2, judgeFailedHumanPassed: 0,
+      }],
+    });
+  });
+
+  it('pairs the hand labels with every rubric of the scorer that still lists their value', () => {
+    const rubric = (sourceHash: string, scoredAt: string) => Array.from({ length: 12 }, (_, n) => viewed(sessionLabel({ subject: session(n), rubric: { sourceHash }, scoredAt })));
+    const labels = [
+      ...rubric('first', '2026-03-10T00:00:00.000Z'),
+      ...Array.from({ length: 12 }, (_, n) => viewed(byHand(n, { rubric: { sourceHash: 'first' }, scoredAt: '2026-03-11T00:00:00.000Z', ...(n < 2 ? missedBug : {}) }))),
+      ...rubric('prompt-edited', '2026-03-12T00:00:00.000Z'),
+      ...rubric('missed-bug-removed', '2026-03-13T00:00:00.000Z'),
+    ];
+    const rubricLabels = new Map([['first', ['good', 'missed-bug']], ['prompt-edited', ['good', 'missed-bug']], ['missed-bug-removed', ['good', 'partial']]]);
+    const agreementOf = (sourceHash: string) => {
+      const opened = ScorerResults.of({ labels, query: { windowDays: 30 }, now: NOW, rubricLabels });
+      const cohort = opened.scorers[0]?.cohorts.find((one) => one.rubric.sourceHash === sourceHash && one.judge.kind === 'model');
+      const { agreement } = ScorerResults.of({ labels, query: { windowDays: 30, scorer: 'review-quality', cohort: cohort?.id }, now: NOW, rubricLabels }).selected ?? {};
+      return agreement && { handLabelled: agreement.handLabelled, paired: agreement.judges[0]?.paired, agree: agreement.judges[0]?.agree };
+    };
+
+    expect(agreementOf('first')).toEqual({ handLabelled: 12, paired: 12, agree: 10 });
+    expect(agreementOf('prompt-edited')).toEqual({ handLabelled: 12, paired: 12, agree: 10 });
+    expect(agreementOf('missed-bug-removed')).toEqual({ handLabelled: 10, paired: 10, agree: 10 });
+  });
+
+  it('counts only the newest hand label of a session, whichever member gave it', () => {
+    const labels = [
+      viewed(sessionLabel({ subject: session(0) })),
+      viewed(byHand(0, { ...missedBug, scoredAt: '2026-03-18T10:00:00.000Z' }), { author: 'bob' }),
+      viewed(byHand(0, { scoredAt: '2026-03-19T10:00:00.000Z' }), { author: 'carol' }),
+    ];
+    const { selected } = ScorerResults.of({ labels, query: { windowDays: 30 }, now: NOW });
+    expect(selected?.agreement.judges).toMatchObject([{ paired: 1, agree: 1 }]);
+  });
+
+  it('lists the sessions the judge and the member disagree on, newest first, by session name and never by id', () => {
+    const labels = [
+      viewed(sessionLabel({ subject: session(0), scoredAt: '2026-03-17T00:00:00.000Z' }), { sessionName: 'claude-code_fix-the-retry-loop_20260316' }),
+      viewed(byHand(0, missedBug), { author: 'bob', sessionName: 'claude-code_fix-the-retry-loop_20260316' }),
+      viewed(sessionLabel({ subject: session(1), ...missedBug, scoredAt: '2026-03-18T00:00:00.000Z' })),
+      viewed(byHand(1), { author: 'carol' }),
+      viewed(sessionLabel({ subject: session(2) })),
+      viewed(byHand(2), { author: 'bob' }),
+    ];
+    const { selected } = ScorerResults.of({ labels, query: { windowDays: 30 }, now: NOW });
+    const judge = { kind: 'model', tool: 'claude', model: { id: 'claude-haiku-5-5', isReported: true } };
+    expect(selected?.agreement.disagreements).toEqual([
+      { judge, judged: { label: 'missed-bug', passed: false, scoredAt: '2026-03-18T00:00:00.000Z' }, hand: { label: 'good', passed: true, author: 'carol', scoredAt: '2026-03-18T10:00:00.000Z' }, source: 'session', platform: 'claude-code' },
+      { judge, judged: { label: 'good', passed: true, scoredAt: '2026-03-17T00:00:00.000Z' }, hand: { label: 'missed-bug', passed: false, author: 'bob', scoredAt: '2026-03-18T10:00:00.000Z' }, source: 'session', platform: 'claude-code', sessionName: 'claude-code_fix-the-retry-loop_20260316' },
+    ]);
+    expect(JSON.stringify(selected?.agreement)).not.toContain('s-0');
+  });
+
+  it('shows how often the judge of each scorer\'s opening measurement agrees with hand labels', () => {
+    const labels = [
+      ...[0, 1, 2].map((n) => viewed(sessionLabel({ subject: session(n) }))),
+      viewed(byHand(0)),
+      viewed(byHand(1, missedBug)),
+      viewed(sessionLabel({ scorer: 'tests-added' })),
+    ];
+    const { scorers } = ScorerResults.of({ labels, query: { windowDays: 30 }, now: NOW });
+    expect(scorers.map(({ scorer, agreement }) => ({ scorer, agreement }))).toEqual([
+      { scorer: 'review-quality', agreement: { paired: 2, agree: 1 } },
+      { scorer: 'tests-added', agreement: { paired: 0, agree: 0 } },
+    ]);
+  });
+});

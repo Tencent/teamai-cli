@@ -14,6 +14,7 @@ vi.mock('../utils/reports-branch.js', async (importOriginal) => {
 import type { AgentObservation } from '../agent-observation.js';
 import { HttpError } from '../dashboard/http.js';
 import { parseScorerQuery, scorerResults } from '../dashboard/scorers.js';
+import { scorerSourceHash, syncScorerDefinitions } from '../scorers/cache.js';
 import type { ScoreLabel } from '../scorers/label.js';
 import { getReportsDir, type DashboardEvent, type LocalConfig } from '../types.js';
 import { readRun, runFilePath } from '../workflow/store.js';
@@ -166,6 +167,24 @@ describe('dashboard scorer results', () => {
     archive(config.repo.localPath, 'on-main', 'plan-the-release');
     const view = await scorerResults({ config, query: { windowDays: 30 }, now: NOW });
     expect(view.selected?.failing?.labels).toMatchObject([{ sessionName: 'add-retries' }, { sessionName: 'plan-the-release' }]);
+  });
+
+  it('pairs hand labels with a rubric by the values its cached scorer lists, not only those its labels stored', async () => {
+    const { config } = team();
+    const scorer = '---\nlabels:\n  - { value: good, score: 1, description: Fixed it }\n  - { value: missed-bug, score: 0, description: Left the bug }\npassingScore: 1\n---\nJudge whether the session fixed the bug.\n';
+    write(path.join(config.repo.localPath, 'scorers', 'review-quality.md'), scorer);
+    await syncScorerDefinitions(config);
+    const cached = { sourceHash: scorerSourceHash(scorer) };
+    publishLabels(config, 'bob', [
+      sessionLabel('one', { rubric: cached }),
+      sessionLabel('two', { rubric: cached }),
+      sessionLabel('one', { judge: { kind: 'human' }, label: 'missed-bug', score: 0, passed: false }),
+      sessionLabel('two', { judge: { kind: 'human' } }),
+    ]);
+    const opened = await scorerResults({ config, query: { windowDays: 30 }, now: NOW });
+    const cohort = opened.scorers[0]?.cohorts.find((one) => one.rubric.sourceHash === cached.sourceHash && one.judge.kind === 'model');
+    const view = await scorerResults({ config, query: { windowDays: 30, scorer: 'review-quality', cohort: cohort?.id }, now: NOW });
+    expect(view.selected?.agreement.judges).toMatchObject([{ labels: 2, paired: 2, agree: 1, judgePassedHumanFailed: 1 }]);
   });
 
   it('builds the reminder table from this machine\'s member sessions and contribute state only', async () => {

@@ -13,7 +13,8 @@ import { readReminderDecisions, REMINDER_RECORD_DAYS, sanitizeSessionId } from '
 import { memberEvents } from '../dashboard-collector.js';
 import type { ScoreLabel } from '../scorers/label.js';
 import { LabelStore } from '../scorers/label-store.js';
-import { DIMENSIONS_OFFERED, FAILING_MAX, SCORER_WINDOWS, ScorerResults, type ReminderInput, type ScorerResultsQuery, type ScorerResultsView, type Side, type ViewedLabel } from '../scorers/results.js';
+import { cachedScorerNames, loadCachedScorer } from '../scorers/cache.js';
+import { DIMENSIONS_OFFERED, FAILING_MAX, SCORER_WINDOWS, ScorerResults, type ReminderInput, type RubricLabels, type ScorerResultsQuery, type ScorerResultsView, type Side, type ViewedLabel } from '../scorers/results.js';
 import { sessionArchiveRoot } from '../session-flow/session-cmd-shared.js';
 import { SyncManager } from '../session-flow/sync.js';
 import { getReportsDir, isSelfMode, usesBranchWorktree, type DashboardEvent, type LocalConfig } from '../types.js';
@@ -160,6 +161,12 @@ async function teamReads(config: LocalConfig): Promise<TeamReads> {
   }
 }
 
+/** The values each scorer this machine caches lists, by its rubric's source hash: which hand labels its rubric pairs. */
+async function cachedRubricLabels(config: LocalConfig): Promise<RubricLabels> {
+  const cached = await Promise.all((await cachedScorerNames(config)).map((name) => loadCachedScorer(config, name)));
+  return new Map(cached.flatMap((scorer) => (scorer ? [[scorer.sourceHash, scorer.definition.labels.map((label) => label.value)] as const] : [])));
+}
+
 /** The runs this machine has a run file for. */
 async function localRunIds(config: LocalConfig): Promise<Set<string>> {
   const entries = await fs.readdir(runsDir(config)).catch(() => []);
@@ -229,7 +236,7 @@ export async function scorerResults({ config, query, now = new Date(), events, r
     const { readableReportsWorktree } = await import('../utils/reports-branch.js');
     await readableReportsWorktree(config, { dryRun: !refresh });
   }
-  const [local, team, localRuns] = await Promise.all([LabelStore.local(config), teamReads(config), localRunIds(config)]);
+  const [local, team, localRuns, rubricLabels] = await Promise.all([LabelStore.local(config), teamReads(config), localRunIds(config), cachedRubricLabels(config)]);
   const labels = [
     ...local.map((label) => ({ label, author: config.username ?? 'unknown' })),
     ...team.labels.map(({ member, label }) => ({ label, author: member })),
@@ -257,5 +264,5 @@ export async function scorerResults({ config, query, now = new Date(), events, r
     })() : undefined,
     events ? reminderInput({ events, windowDays: query.windowDays, now }) : undefined,
   ]);
-  return ScorerResults.of({ labels: viewed, query: { ...rest, ...split ? { split } : {} }, now, ...reminders ? { reminders } : {} });
+  return ScorerResults.of({ labels: viewed, query: { ...rest, ...split ? { split } : {} }, now, rubricLabels, ...reminders ? { reminders } : {} });
 }

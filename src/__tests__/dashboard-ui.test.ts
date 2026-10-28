@@ -97,7 +97,7 @@ describe('unified dashboard', () => {
     expect(html).toContain('Labels from sessions and workflow runs show how the tools did on the work that came along. To compare tools, models or team assets on the same tasks, run a benchmark.');
     const literals = [...scorersClient.matchAll(/\b(?:label|t)\('((?:[^'\\]|\\.)+)'\)/g)].map((match) => (match[1] ?? '').replace(/\\'/g, "'"));
     const dimensions = Object.values(z.record(z.string()).parse(JSON.parse(scorersClient.match(/const scorerDimensions=(\{[^}]*\})/)?.[1] ?? 'null')));
-    const headings = [...scorersClient.matchAll(/\[((?:'[A-Z][A-Z ]+',?)+)\]/g)].flatMap((match) => [...(match[1] ?? '').matchAll(/'([^']+)'/g)].map((heading) => heading[1] ?? ''));
+    const headings = [...scorersClient.matchAll(/\[((?:'[A-Z][A-Z ,]+',?)+)\]/g)].flatMap((match) => [...(match[1] ?? '').matchAll(/'([^']+)'/g)].map((heading) => heading[1] ?? ''));
     const all = [...new Set([...literals, ...dimensions, ...headings])];
     expect(all.length).toBeGreaterThan(60);
     expect(all.filter((text) => !Object.hasOwn(dashboardMessages, text))).toEqual([]);

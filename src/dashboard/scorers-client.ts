@@ -84,13 +84,37 @@ function valuesPanel(sel){
   +sel.cohort.values.map(v=>'<tr><td data-verbatim>'+e(v.label)+'</td><td>'+number(v.score)+'</td><td>'+number(v.n)+'</td><td>'+meter(n?v.n/n:null)+' '+pct(n?v.n/n:null)+'</td></tr>').join('')
   +'</tbody></table></div></section>';
 }
+function subjectCell(r){
+ return r.run?(r.run.source?'<button class="link" data-run="'+e(r.run.id)+'" data-run-source="'+e(r.run.source)+'"><span data-verbatim>'+e(r.run.id)+'</span> ↗</button>':'<span data-verbatim>'+e(r.run.id)+'</span> <span class="muted">'+label('Run not found')+'</span>')+'<small data-verbatim>'+e(r.run.step)+' #'+e(r.run.pass)+'</small>'
+  :(r.sessionName?'<code class="command" data-verbatim>teamai session resume '+e(r.sessionName)+' --platform '+e(r.platform)+'</code>':'<span class="muted">'+label('Not pushed to the team archive')+'</span>');
+}
+function agreementCell(a){
+ if(!a||!a.paired)return '<span class="muted" title="'+e(t('No hand labels to compare with yet'))+'">—</span>';
+ return meter(a.agree/a.paired)+' '+pct(a.agree/a.paired)+'<small>'+number(a.agree)+' / '+number(a.paired)+' '+label('paired')+'</small>';
+}
+const verdict=(value,passed)=>'<span class="'+(passed?'good':'amber')+'" data-verbatim>'+e(value)+'</span> <small>'+(passed?label('passed'):label('failed'))+'</small>';
+const sameJudge=(a,b)=>a.kind===b.kind&&(a.kind==='human'||(a.tool===b.tool&&(a.model?a.model.id:'')===(b.model?b.model.id:'')&&(a.model?a.model.isReported:true)===(b.model?b.model.isReported:true)));
+function agreementPanel(sel){
+ const a=sel.agreement, c=sel.cohort;
+ if(c.source!=='session'&&!a.handLabelled)return '';
+ const how='<p class="scorer-hint">'+label('Label the session you are in, or one a teammate pushed (from teamai session list):')+'</p><code class="command" data-verbatim>teamai score --scorer '+e(c.scorer)+' --label &lt;value&gt; --push\\nteamai score --team-session &lt;name&gt; --scorer '+e(c.scorer)+' --label &lt;value&gt; --push</code>';
+ const head='<div class="panelhead"><h2>'+label('Judge agreement with hand labels')+' <span class="count">'+number(a.handLabelled)+' '+label('hand-labelled sessions')+'</span></h2><span class="label">'+label('Does the judge pass and fail the sessions members do?')+'</span></div>';
+ if(!a.handLabelled)return '<section class="panel sessions agreement">'+head+'<div class="empty agreement-empty"><p>'+label('No hand label this rubric can pair with yet. A few hand labels show whether to trust this pass rate.')+'</p>'+how+'</div></section>';
+ const rows=a.judges.map(j=>'<tr class="'+(sameJudge(j.judge,c.judge)?'selected-row':'')+'"><td>'+judgeText(j.judge)+'</td><td>'+number(j.labels)+'</td><td>'+number(j.paired)+'</td><td>'+number(j.agree)+'</td><td>'+(j.paired?meter(j.agree/j.paired)+' '+pct(j.agree/j.paired):'—')+'</td><td'+(j.judgePassedHumanFailed?' class="amber"':'')+'>'+number(j.judgePassedHumanFailed)+'</td><td'+(j.judgeFailedHumanPassed?' class="amber"':'')+'>'+number(j.judgeFailedHumanPassed)+'</td></tr>').join('')
+  +'<tr><td>'+label('Hand label')+'</td><td>'+number(a.handLabelled)+'</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>';
+ const off=a.disagreements;
+ const list=off.length?'<h3 class="agreement-sub">'+label('Where they disagree')+' <span class="count">'+number(off.length)+'</span></h3><div class="table-scroll"><table class="session-table"><thead><tr>'+['SCORED','JUDGE','JUDGE SAID','HAND LABEL','BY','OPEN'].map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'
+  +off.map(d=>'<tr><td>'+e(when(d.judged.scoredAt))+'</td><td>'+judgeText(d.judge)+'</td><td>'+verdict(d.judged.label,d.judged.passed)+'</td><td>'+verdict(d.hand.label,d.hand.passed)+'</td><td data-verbatim>'+e(d.hand.author)+'</td><td>'+subjectCell(d)+'</td></tr>').join('')
+  +'</tbody></table></div>':'';
+ return '<section class="panel sessions agreement">'+head+'<div class="table-scroll"><table class="session-table compact"><thead><tr>'+['JUDGE','LABELS','PAIRED','AGREE','AGREEMENT','JUDGE PASSED, HUMAN FAILED','JUDGE FAILED, HUMAN PASSED'].map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'+rows+'</tbody></table></div>'
+  +'<p class="scorer-hint">'+label('A judge label in the window pairs with the newest hand label of its session, whoever gave it and whenever, while this rubric lists its value. Judge passed, human failed: the judge is more lenient than members. Judge failed, human passed: it is stricter.')+'</p>'
+  +list+how+'</section>';
+}
 function failingPanel(sel){
  const rows=sel.failing.labels, total=sel.failing.total;
- const subject=r=>r.run?(r.run.source?'<button class="link" data-run="'+e(r.run.id)+'" data-run-source="'+e(r.run.source)+'"><span data-verbatim>'+e(r.run.id)+'</span> ↗</button>':'<span data-verbatim>'+e(r.run.id)+'</span> <span class="muted">'+label('Run not found')+'</span>')+'<small data-verbatim>'+e(r.run.step)+' #'+e(r.run.pass)+'</small>'
-  :(r.sessionName?'<code class="command" data-verbatim>teamai session resume '+e(r.sessionName)+' --platform '+e(r.platform)+'</code>':'<span class="muted">'+label('Not pushed to the team archive')+'</span>');
  return '<section class="panel sessions"><div class="panelhead"><h2>'+label('Failing labels')+' <span class="count">'+number(total)+'</span></h2>'+(scorerQuery.group?'<button class="link" data-scorer-group="">'+label('Show every group')+'</button>':'<span class="label">'+label('Newest first')+'</span>')+'</div>'
   +(rows.length?'<div class="table-scroll"><table class="session-table"><thead><tr>'+['SCORED','AUTHOR','LABEL','PLATFORM','SKILLS','OPEN'].map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'
-  +rows.map(r=>'<tr><td>'+e(when(r.scoredAt))+'</td><td data-verbatim>'+e(r.author)+'</td><td class="amber" data-verbatim>'+e(r.label)+'</td><td data-verbatim>'+e(r.platform||(r.run?t('Workflow run'):'—'))+'</td><td>'+(r.skills?r.skills.map(s=>'<span class="tag" data-verbatim>'+e(s)+'</span>').join(' '):'—')+'</td><td>'+subject(r)+'</td></tr>').join('')
+  +rows.map(r=>'<tr><td>'+e(when(r.scoredAt))+'</td><td data-verbatim>'+e(r.author)+'</td><td class="amber" data-verbatim>'+e(r.label)+'</td><td data-verbatim>'+e(r.platform||(r.run?t('Workflow run'):'—'))+'</td><td>'+(r.skills?r.skills.map(s=>'<span class="tag" data-verbatim>'+e(s)+'</span>').join(' '):'—')+'</td><td>'+subjectCell(r)+'</td></tr>').join('')
   +'</tbody></table></div>'+(rows.length<total?'<div class="cardfoot scorer-foot"><span class="label">'+number(rows.length)+' / '+number(total)+'</span> '+(rows.length<failingMax?'<button class="link" data-scorer-more>'+label('Show more')+'</button>':'<span class="label">'+label('Pick a group or a shorter window to list the rest.')+'</span>')+'</div>':''):'<div class="empty"><p>'+label('No failing labels in this window.')+'</p></div>')+'</section>';
 }
 function remindersPanel(sel){
@@ -100,8 +124,8 @@ function remindersPanel(sel){
   +'</tbody></table></div><p class="scorer-hint">'+label('Sessions are your own sessions that started on this machine in the window, at most the 30 days this machine keeps reminder decisions. The pass rate is over labelled sessions only. A session with no reminder state here is not recorded.')+'</p></section>';
 }
 function scorerSummary(data){
- return '<section class="panel sessions"><div class="panelhead"><h2>'+label('Scorers')+' <span class="count">'+number(data.scorers.length)+'</span></h2><span class="label">'+label('Each scorer opens on its newest committed rubric.')+'</span></div><div class="table-scroll"><table class="session-table"><thead><tr>'+['SCORER','MEASUREMENT','LABELS','PASS RATE','TREND'].map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'
-  +data.scorers.map(s=>{const c=s.cohorts.find(c=>c.id===s.defaultCohort)||s.cohorts[0]; const selected=data.selected&&data.selected.cohort.scorer===s.scorer; return '<tr class="'+(selected?'selected-row':'')+'"><td><button class="link" data-scorer="'+e(s.scorer)+'" aria-pressed="'+selected+'" data-verbatim>'+e(s.scorer)+'</button><small>'+number(s.cohorts.length)+' '+(s.cohorts.length===1?label('measurement'):label('measurements'))+'</small></td><td><small>'+cohortText(c)+'</small></td><td>'+number(c.stats.n)+'</td><td>'+meter(c.stats.rate)+' '+pct(c.stats.rate)+'</td><td>'+sparkline(c.trend)+'</td></tr>';}).join('')
+ return '<section class="panel sessions"><div class="panelhead"><h2>'+label('Scorers')+' <span class="count">'+number(data.scorers.length)+'</span></h2><span class="label">'+label('Each scorer opens on its newest committed rubric.')+'</span></div><div class="table-scroll"><table class="session-table"><thead><tr>'+['SCORER','MEASUREMENT','LABELS','PASS RATE','AGREES WITH HAND LABELS','TREND'].map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'
+  +data.scorers.map(s=>{const c=s.cohorts.find(c=>c.id===s.defaultCohort)||s.cohorts[0]; const selected=data.selected&&data.selected.cohort.scorer===s.scorer; return '<tr class="'+(selected?'selected-row':'')+'"><td><button class="link" data-scorer="'+e(s.scorer)+'" aria-pressed="'+selected+'" data-verbatim>'+e(s.scorer)+'</button><small>'+number(s.cohorts.length)+' '+(s.cohorts.length===1?label('measurement'):label('measurements'))+'</small></td><td><small>'+cohortText(c)+'</small></td><td>'+number(c.stats.n)+'</td><td>'+meter(c.stats.rate)+' '+pct(c.stats.rate)+'</td><td>'+agreementCell(s.agreement)+'</td><td>'+sparkline(c.trend)+'</td></tr>';}).join('')
   +'</tbody></table></div></section>';
 }
 function scorerControls(data){
@@ -124,7 +148,7 @@ function scorersPage(){
  return (scorerError?'<div class="error-panel" role="alert"><p>'+e(scorerError)+'</p></div>':'')
   +'<div class="statusline"><span>'+label('Window')+': '+e(when(w.from))+' – '+e(when(w.to))+'</span><span>'+label('Counted by when labels were scored, not when the work happened.')+'</span><span>'+label('Pass or fail as each label stored it.')+'</span></div>'
   +scorerSummary(scorerData)+scorerControls(scorerData)
-  +(sel?'<h2 class="section-label"><span data-verbatim>'+e(sel.cohort.scorer)+'</span> <span class="tag">'+(sel.cohort.source==='session'?label('Session labels'):label('Workflow labels'))+'</span></h2>'+kpis(sel.cohort.stats)+valuesPanel(sel)+(sel.split?splitCards(sel.split):'')
+  +(sel?'<h2 class="section-label"><span data-verbatim>'+e(sel.cohort.scorer)+'</span> <span class="tag">'+(sel.cohort.source==='session'?label('Session labels'):label('Workflow labels'))+'</span></h2>'+kpis(sel.cohort.stats)+agreementPanel(sel)+valuesPanel(sel)+(sel.split?splitCards(sel.split):'')
    +'<section class="panel trend-panel"><div class="panelhead"><h2>'+label('Weekly pass rate')+'</h2><span class="label">'+cohortText(sel.cohort)+'</span></div>'+trendChart(sel.cohort.trend)+'</section>'
    +groupsPanel(sel)+failingPanel(sel)+remindersPanel(sel):'')
   +note;
