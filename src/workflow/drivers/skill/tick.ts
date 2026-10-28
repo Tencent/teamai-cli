@@ -365,8 +365,18 @@ function literalOf(invocation: Invocation, run: RunId, call: ForegroundCall): Li
       return takeoverLiteral(invocation, run, { confirmed: call.confirmed });
     case 'resume': {
       const options = { ...call.answers, noJudge: call.answers.judge === false, confirmed: call.confirmed, tool: call.tool };
-      // A run `--next` picked is taken only while it is offered, so the same call picks again.
-      return call.claim === 'offered' ? skillResumeNextLiteral(invocation, options) : skillResumeLiteral(invocation, run, { claim: call.claim === 'any', ...options });
+      switch (call.claim) {
+        case 'offered':
+          // A run `--next` picked is taken only while it is offered, so the same call picks again.
+          return skillResumeNextLiteral(invocation, options);
+        case 'any':
+        case 'lacking':
+          return skillResumeLiteral(invocation, run, { claim: call.claim === 'any', ...options });
+        default: {
+          const unhandled: never = call.claim;
+          return unhandled;
+        }
+      }
     }
     case 'choose':
       return chooseHostLiteral(invocation, run, call.choice);

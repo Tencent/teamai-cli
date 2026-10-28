@@ -126,6 +126,23 @@ export interface WorkflowClient {
  */
 export type ResumeClaim = 'lacking' | 'any' | 'offered';
 
+/** Readies run `runId` here as `claim` says: claimed only while offered, claimed whoever owns it, or resumed as it is. */
+function readiedHere(config: LocalConfig, runId: RunId, claim: 'none' | ResumeClaim, checkout: string): ReturnType<typeof resumeRun> {
+  switch (claim) {
+    case 'offered':
+      return claimOffered(config, runId, { checkout });
+    case 'any':
+      return resumeRun(config, runId, { claim: true, checkout });
+    case 'lacking':
+    case 'none':
+      return resumeRun(config, runId, { claim: false, checkout });
+    default: {
+      const unhandled: never = claim;
+      return unhandled;
+    }
+  }
+}
+
 /**
  * What `resume` made of a run: ready to drive here, with `installed` true when the published state replaced this
  * machine's; not on this machine, when nothing was to be claimed; owned by `owner`, another install, since `since`; or
@@ -453,7 +470,7 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
     cancel: (runId, step) => cancelRun(config, runId, env.secrets, step),
     resume: async (runId, { lock, claim, checkout, ceiling, can, tool }) => {
       if (claim === 'none' && await readRun(config, runId) === 'missing') return { kind: 'not-here' };
-      const resumed = claim === 'offered' ? await claimOffered(config, runId, { checkout }) : await resumeRun(config, runId, { claim: claim === 'any', checkout });
+      const resumed = await readiedHere(config, runId, claim, checkout);
       if (!resumed.ok) {
         const { error } = resumed;
         return error.code === 'not_owner'
