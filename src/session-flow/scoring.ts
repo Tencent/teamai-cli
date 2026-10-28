@@ -152,8 +152,9 @@ async function nativeSession(from: LocalConfig, demand: SessionDemand): Promise<
 /**
  * The session pushed to the team archive as `name`, for this directory's repository, where `teamai session resume` looks
  * for it: on teamai-reports, else in the archive a git-kind team kept on its default branch before. Where resume takes
- * the first member who pushed that name, this fails unless `author` picks one, within the archive that holds it. Its subject is its origin, so its labels pair
- * with those of the same session scored where it ran. It is redacted as `AgentSession.find` redacts a session.
+ * the first member who pushed that name, this fails unless `author` picks one of those who pushed it to the first archive
+ * that holds the name. Its subject is its origin, so its labels pair with those of the same session scored where it ran.
+ * It is redacted as `AgentSession.find` redacts a session.
  */
 async function pushedSession(config: LocalConfig, { name, author }: TeamSession): Promise<NamedSession | Failure> {
   let archives: Awaited<ReturnType<typeof sessionArchives>>;
@@ -166,9 +167,13 @@ async function pushedSession(config: LocalConfig, { name, author }: TeamSession)
   const repoIdentity = getRepoIdentity(process.cwd());
   for (const root of [archives.root, ...(archives.legacy ? [archives.legacy] : [])]) {
     const archive = new SyncManager(root);
-    const held = archive.listSessions(repoIdentity, author).filter((entry) => entry.sessionName === name);
+    const named = archive.listSessions(repoIdentity).filter((entry) => entry.sessionName === name);
+    if (named.length === 0) continue;
+    const held = author === undefined ? named : named.filter((entry) => entry.author === author);
     const [entry, ...others] = held;
-    if (!entry) continue;
+    if (!entry) {
+      return failure('session_not_found', `--team-session ${name} names sessions pushed by ${named.map((one) => safeText(one.author)).join(', ')}, not by ${author}. Pass --author with one of them.`);
+    }
     if (others.length > 0) {
       return failure('session_ambiguous', `--team-session ${name} names sessions pushed by ${held.map((one) => safeText(one.author)).join(', ')}. Pass --author with one of them.`);
     }
@@ -181,7 +186,7 @@ async function pushedSession(config: LocalConfig, { name, author }: TeamSession)
     if (!session.platform || !session.sessionId) return failure('session_not_found', `The pushed session ${name} records no platform or session id it ran as, so it cannot be scored.`);
     return { platform: session.platform, found: { session: scrubSession(session).session }, config, pushedBy: entry.author };
   }
-  return failure('session_not_found', `No session ${name}${author === undefined ? '' : ` by ${author}`} is pushed for ${repoIdentity ?? 'this directory'}. Run teamai session list to see the pushed sessions, after teamai session pull for the newest.`);
+  return failure('session_not_found', `No session ${name} is pushed for ${repoIdentity ?? 'this directory'}. Run teamai session list to see the pushed sessions, after teamai session pull for the newest.`);
 }
 
 /** One scorer file the command tries: the labels stored for its scorer, and the control's verdict or why it has none. */

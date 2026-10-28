@@ -1527,6 +1527,9 @@ describe('teamai score --team-session', () => {
       code: 'session_ambiguous', message: `--team-session ${both} names sessions pushed by alice, bob. Pass --author with one of them.`,
     } });
     expect(data(await label(both, 'bob'))).toMatchObject({ label: { subject: { sessionId: 'b0000000-0000-4000-8000-00000000000b' } } });
+    expect(await label(both, 'carol')).toEqual({ error: {
+      code: 'session_not_found', message: `--team-session ${both} names sessions pushed by alice, bob, not by carol. Pass --author with one of them.`,
+    } });
   });
 
   it('names teamai session list when no pushed session has the name', async () => {
@@ -1536,9 +1539,6 @@ describe('teamai score --team-session', () => {
     expect(await scoreSession(config, { teamSession: { name: 'claude-code_no-such-session_20261020' }, scorers: ['quality'], label: 'good' })).toEqual({ error: {
       code: 'session_not_found',
       message: `No session claude-code_no-such-session_20261020 is pushed for ${getRepoIdentity(process.cwd()) ?? 'this directory'}. Run teamai session list to see the pushed sessions, after teamai session pull for the newest.`,
-    } });
-    expect(await scoreSession(config, { teamSession: { name: await pushed(getReportsDir(config), { author: 'alice' }), author: 'dave' }, scorers: ['quality'], label: 'good' })).toMatchObject({ error: {
-      code: 'session_not_found', message: expect.stringContaining(' by dave is pushed for '),
     } });
     expect(fs.existsSync(path.join(root, 'data', 'scores', 'labels.jsonl'))).toBe(false);
   });
