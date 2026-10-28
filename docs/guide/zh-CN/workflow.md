@@ -301,7 +301,7 @@ jobs:
         run: npx teamai-cli score --drain                     # 评审并发布被中断的作业留下的内容
 ```
 
-每个作业最多接手一个运行，下一个由下一次定时触发接手。`git config user.name` 是运行器的成员名：团队分配角色时，把它列进 [`manifest/members.yaml`](distribution.md#在团队仓库里分配角色)。团队仓库与业务仓库分开时，需要一个能向团队仓库推送的凭据（`teamai-reports` 在团队仓库里），例如在 `teamai init <team repo URL> --provider git` 之前配置好、带写权限的部署密钥。这份配置还没有在 GitHub Actions 上实际运行过。
+每个作业最多接手一个运行，下一个由下一次定时触发接手。`git config user.name` 是运行器的成员名：团队分配角色时，把它列进 [`.teamai/manifest/members.yaml`](distribution.md#在团队仓库里分配角色)（团队仓库单独存在时是 `manifest/members.yaml`）。团队仓库与业务仓库分开时，需要一个能向团队仓库推送的凭据（`teamai-reports` 在团队仓库里），例如在 `teamai init <team repo URL> --provider git` 之前配置好、带写权限的部署密钥。这份配置还没有在 GitHub Actions 上实际运行过。
 
 ## 在另一台机器上继续运行
 

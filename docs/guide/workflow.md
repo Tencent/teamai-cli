@@ -301,7 +301,7 @@ jobs:
         run: npx teamai-cli score --drain                     # judges and publishes what a cut-short job left
 ```
 
-Each job takes at most one run; the schedule takes the next. `git config user.name` is the runner's member name: list it in [`manifest/members.yaml`](distribution.md#assigning-roles-in-the-team-repo) when the team assigns roles. A team repo separate from the business repository needs a credential that can push to it, where `teamai-reports` lives, such as a deploy key with write access set up before `teamai init <team repo URL> --provider git`. This recipe has not run on GitHub Actions yet.
+Each job takes at most one run; the schedule takes the next. `git config user.name` is the runner's member name: list it in [`.teamai/manifest/members.yaml`](distribution.md#assigning-roles-in-the-team-repo) when the team assigns roles (`manifest/members.yaml` in a separate team repo). A team repo separate from the business repository needs a credential that can push to it, where `teamai-reports` lives, such as a deploy key with write access set up before `teamai init <team repo URL> --provider git`. This recipe has not run on GitHub Actions yet.
 
 ## Continue a run on another machine
 
