@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import YAML from 'yaml';
 
-import { envExec, exitLike, inTerminalForeground } from '../env-exec.js';
+import { envExec, exitLike, inTerminalForeground, stepEnvironment } from '../env-exec.js';
 import { EnvHandler } from '../resources/env.js';
 import { envLoaderPath } from '../resources/env-loader.js';
 import { envShMarker } from '../env-sh-exports.js';
@@ -1036,3 +1036,15 @@ async function filesUnder(roots: string[]): Promise<string[]> {
   for (const root of roots) await walk(root);
   return files;
 }
+
+describe('stepEnvironment', () => {
+  const facts = { declared: new Set(['NPM_TOKEN']), secrets: new Set(['NPM_TOKEN']), present: new Set<string>() };
+
+  it.each([
+    ['NPM_TOKEN', 'Env NPM_TOKEN has no value on this machine any more: run teamai env set NPM_TOKEN, or set it in the environment. Then retry the step.'],
+    ['SIGNING_KEY', 'Env SIGNING_KEY has no value on this machine any more: set it in the environment, or declare it in the team repo with teamai env add SIGNING_KEY --secret and teamai push. Then retry the step.'],
+  ])('fails a provided key %s with no value as missing_env, with the fix for a key the team declares or not', async (key, message) => {
+    expect(await stepEnvironment({ values: new Map(), facts }, { provide: [key], withhold: [] }))
+      .toEqual({ ok: false, failure: { code: 'missing_env', message } });
+  });
+});

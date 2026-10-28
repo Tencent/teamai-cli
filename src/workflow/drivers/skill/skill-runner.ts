@@ -259,7 +259,7 @@ async function begin(context: SkillContext, lock: RunLock, attempt: AttemptId, p
   const { dir, job: { lease } } = prepared;
   const failed = (failure: WorkflowFailure, cause: 'place' | 'model'): Promise<Stage> => fail(context, lock, { state, attempt, revision: open.revision, failure, cause });
   if (lease.executor === 'command') {
-    const scoped = lease.envScope ? await stepEnvironment(context.env.values, lease.envScope) : { ok: true as const, env: process.env };
+    const scoped = lease.envScope ? await stepEnvironment(context.env, lease.envScope) : { ok: true as const, env: process.env };
     if (!scoped.ok) return failed(scoped.failure, 'place');
     // A runner that restarts a command already running starts it again in the place it was prepared in.
     const running = open.phase === 'preparing' ? traced(context, preparedRow(state, attempt))?.state ?? state : state;
