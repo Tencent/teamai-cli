@@ -248,7 +248,7 @@ function factsOf(description: WorkflowDescription, judging: Judging, answering: 
     ...facts.deliver.map(({ step, onto }) => (onto !== undefined ? `It opens a pull request from ${step} onto the pull request of ${onto}.`
       : facts.base !== undefined ? `It opens a pull request from ${step} into ${facts.base}.`
         : `${step} opens a pull request, which needs a branch to target: check out a branch here before you start it.`)),
-    ...(missing.length > 0 ? [`${listOf(missing)} ${one ? 'has' : 'have'} no value on this machine, so the steps that require ${one ? 'it fail until it has' : 'them fail until they have'} one: ${envFix(missing, facts.requiresEnv.declared)}.`] : []),
+    ...(missing.length > 0 ? [`${listOf(missing)} ${one ? 'has' : 'have'} no value on this machine, so the steps that require ${one ? 'it fail until it has' : 'them fail until they have'} one: ${envFix({ keys: missing, declared: facts.requiresEnv.declared })}.`] : []),
     ...facts.held.map(heldFact),
     ...facts.budgets.map(({ step, tokens }) => (step === undefined ? `It may spend at most ${tokens} tokens.` : `${step} may spend at most ${tokens} tokens each time it starts.`)),
     ...(facts.timeout !== undefined ? [`It stops after ${durationOf(facts.timeout)}.`] : []),

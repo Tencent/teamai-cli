@@ -183,7 +183,7 @@ function envLacks(runs: readonly StepRun[], env: EnvFacts): Lack[] {
   if (env.unreadable !== undefined) {
     return [{ reason: `${require}, and the team env cannot be read here: ${env.unreadable}`, fix: 'teamai env list, and fix what it reports' }];
   }
-  return [{ reason: `${require}, which ${keys.length === 1 ? 'has' : 'have'} no value here`, fix: envFix(keys, env.declared) }];
+  return [{ reason: `${require}, which ${keys.length === 1 ? 'has' : 'have'} no value here`, fix: envFix({ keys, declared: env.declared }) }];
 }
 
 /**

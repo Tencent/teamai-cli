@@ -190,16 +190,16 @@ export interface EnvFacts {
  * team declares (`EnvFacts.declared`); the environment gives any key. Once a declared key reaches a machine, `teamai pull`
  * there says to set it.
  */
-export function envFix(keys: readonly string[], declared: Iterable<string>): string {
+export function envFix({ keys, declared }: { keys: readonly string[]; declared: Iterable<string> }): string {
   const names = [...declared];
-  const known = keys.filter((key) => sameEnvName(names, key) !== undefined);
-  const unknown = keys.filter((key) => sameEnvName(names, key) === undefined);
-  const them = (group: readonly string[]): string => (group.length === 1 ? 'it' : 'them');
+  const declaredKeys = keys.filter((key) => sameEnvName(names, key) !== undefined);
+  const undeclaredKeys = keys.filter((key) => sameEnvName(names, key) === undefined);
+  const pronoun = (group: readonly string[]): string => (group.length === 1 ? 'it' : 'them');
   // With both kinds, each clause names its keys, since one pronoun cannot say which are which.
-  const named = (group: readonly string[]): string => (known.length > 0 && unknown.length > 0 ? group.join(', ') : them(group));
+  const subject = (group: readonly string[]): string => (declaredKeys.length > 0 && undeclaredKeys.length > 0 ? group.join(', ') : pronoun(group));
   return [
-    ...(known.length > 0 ? [`run ${known.map((key) => `teamai env set ${key}`).join(', ')}, or set ${named(known)} in the environment`] : []),
-    ...(unknown.length > 0 ? [`set ${named(unknown)} in the environment, or declare ${them(unknown)} in the team repo with ${unknown.map((key) => `teamai env add ${key} --secret`).join(', ')} and teamai push`] : []),
+    ...(declaredKeys.length > 0 ? [`run ${declaredKeys.map((key) => `teamai env set ${key}`).join(', ')}, or set ${subject(declaredKeys)} in the environment`] : []),
+    ...(undeclaredKeys.length > 0 ? [`set ${subject(undeclaredKeys)} in the environment, or declare ${pronoun(undeclaredKeys)} in the team repo with ${undeclaredKeys.map((key) => `teamai env add ${key} --secret`).join(', ')} and teamai push`] : []),
   ].join('; ');
 }
 
@@ -315,8 +315,7 @@ function envUnavailable(who: string, keys: readonly string[], env: EnvFacts): Wo
   }
   const absent = keys.filter((key) => sameEnvName(env.present, key) === undefined);
   if (absent.length === 0) return undefined;
-  const fix = envFix(absent, env.declared);
-  return { code: 'missing_env', message: `${who} requires env ${absent.join(', ')}, which ${absent.length === 1 ? 'has' : 'have'} no value on this machine. ${fix.charAt(0).toUpperCase()}${fix.slice(1)}. Then retry the step.` };
+  return { code: 'missing_env', message: `${who} requires env ${absent.join(', ')}, which ${absent.length === 1 ? 'has' : 'have'} no value on this machine: ${envFix({ keys: absent, declared: env.declared })}. Then retry the step.` };
 }
 
 function rank(level: Isolation): number {
