@@ -2,7 +2,8 @@
  * E2E (#1500 Part 2): `teamai init <url>` against a single-repo team URL (a repo
  * holding .teamai/teamai.yaml with mode: self on its default branch and no root
  * teamai.yaml) refuses to initialize as a standalone team repo, pushes nothing,
- * removes the clone, and leaves no local config.
+ * removes the clone when freshly created (preserving existing reused clones),
+ * and leaves no local config.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
@@ -73,7 +74,7 @@ function createMemberEnv(name: string): { home: string; env: NodeJS.ProcessEnv }
 }
 
 describe('init refuses single-repo team URL (#1500)', () => {
-  it('A1: refuses single-repo team URL, leaves remote main unchanged, removes clone and writes no local config', () => {
+  it('A1: refuses single-repo team URL, leaves remote main unchanged, removes newly created clone and writes no local config', () => {
     const { home, env } = createMemberEnv('single-repo-a1');
     const bizUrl = 'https://git.example.invalid/team/biz.git';
     const seed = path.join(sandbox, 'biz-seed');
@@ -113,8 +114,52 @@ describe('init refuses single-repo team URL (#1500)', () => {
     // No local config created
     expect(fs.existsSync(path.join(home, '.teamai', 'config.yaml'))).toBe(false);
 
-    // Cloned directory removed
+    // Freshly created cloned directory removed
     expect(fs.existsSync(path.join(home, '.teamai', 'team-repo'))).toBe(false);
+  });
+
+  it('A1 (preservation): preserves an existing reused clone and its files when refusing a single-repo team', () => {
+    const { home, env } = createMemberEnv('reused-single-repo');
+    const bizUrl = 'https://git.example.invalid/team/biz-reused.git';
+    const seed = path.join(sandbox, 'biz-reused-seed');
+    const bare = path.join(sandbox, 'biz-reused.git');
+    fs.mkdirSync(path.join(seed, '.teamai'), { recursive: true });
+    fs.writeFileSync(path.join(seed, '.teamai', 'teamai.yaml'), YAML.stringify({
+      team: 'biz-team',
+      mode: 'self',
+      repo: bizUrl,
+      provider: 'git',
+    }));
+    fs.writeFileSync(path.join(seed, 'README.md'), '# Biz Reused\n');
+
+    git(['init', '-q', '-b', 'main'], seed, env);
+    git(['add', '-A'], seed, env);
+    git(['commit', '-q', '-m', 'biz seed commit'], seed, env);
+    git(['clone', '-q', '--bare', seed, bare], sandbox, env);
+
+    git(['config', '--global', `url.${pathToFileURL(bare).href}.insteadOf`, bizUrl], home, env);
+
+    // Pre-seed an existing clone in ~/.teamai/team-repo using bizUrl so remote matches
+    const teamRepo = path.join(home, '.teamai', 'team-repo');
+    git(['clone', '-q', bizUrl, teamRepo], sandbox, env);
+    const uncommittedFile = path.join(teamRepo, 'uncommitted-work.txt');
+    fs.writeFileSync(uncommittedFile, 'precious work that must not be deleted\n');
+
+    const res = teamai(
+      ['init', bizUrl, '--provider', 'git', '--agent', 'claude', '--scope', 'user', '--force'],
+      home,
+      env,
+    );
+
+    expect(res.code).toBe(1);
+    expect(res.output).toContain(
+      `${bizUrl} is a single-repo team: its config is .teamai/teamai.yaml. Clone the repository and run \`teamai init --self\` in it.`,
+    );
+
+    // Existing clone and the uncommitted work must be preserved intact!
+    expect(fs.existsSync(teamRepo)).toBe(true);
+    expect(fs.existsSync(uncommittedFile)).toBe(true);
+    expect(fs.readFileSync(uncommittedFile, 'utf8')).toBe('precious work that must not be deleted\n');
   });
 
   it('A2: empty repository is not refused as a single-repo team', () => {

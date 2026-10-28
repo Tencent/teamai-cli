@@ -2006,7 +2006,8 @@ export async function init(options: GlobalOptions & {
     log.info(`Clone path: ${localPath}`);
   }
 
-  if (!await pathExists(localPath)) {
+  const clonedThisRun = !await pathExists(localPath);
+  if (clonedThisRun) {
     await settleReplacedInstall();
 
     const cloneSpin = (await spinner('Cloning team repo...')).start();
@@ -2109,7 +2110,9 @@ export async function init(options: GlobalOptions & {
 
   // Refuse to initialize a single-repo team as a standalone team repo (#1500).
   if (await isSingleRepoTeam(localPath)) {
-    await remove(localPath);
+    if (clonedThisRun) {
+      await remove(localPath);
+    }
     log.error(
       `${repoInput} is a single-repo team: its config is .teamai/teamai.yaml. ` +
         'Clone the repository and run `teamai init --self` in it.',

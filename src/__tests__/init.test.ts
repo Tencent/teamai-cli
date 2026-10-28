@@ -309,17 +309,22 @@ describe('init', () => {
       expect(await isSingleRepoTeam('/fake/repo')).toBe(false);
     });
 
-    it('refuses to initialize a single-repo team as a standalone team repo, removes clone, and exits 1', async () => {
+    it('refuses to initialize a single-repo team as a standalone team repo, removes newly created clone, and exits 1', async () => {
       const { log } = await import('../utils/logger.js');
       mockExit.mockClear();
       mockRemove.mockClear();
       vi.mocked(log.error).mockClear();
 
+      let cloned = false;
       pathExistsFn = (p: string) => {
-        if (p === localPath) return true;
-        if (p === path.join(localPath, '.teamai', 'teamai.yaml')) return true;
+        if (p === localPath) return cloned;
+        if (p === path.join(localPath, '.teamai', 'teamai.yaml')) return cloned;
         return false;
       };
+
+      mockGfRepoClone.mockImplementation(() => {
+        cloned = true;
+      });
 
       vi.mocked(readFileSafe).mockImplementation(async (p: string) => {
         if (p === path.join(localPath, '.teamai', 'teamai.yaml')) {
@@ -338,6 +343,41 @@ describe('init', () => {
       expect(mockExit).toHaveBeenCalledWith(1);
       expect(mockGit.commit).not.toHaveBeenCalled();
       expect(mockGit.push).not.toHaveBeenCalled();
+
+      vi.mocked(readFileSafe).mockResolvedValue(null);
+    });
+
+    it('preserves an existing reused clone when refusing a single-repo team', async () => {
+      const { log } = await import('../utils/logger.js');
+      mockExit.mockClear();
+      mockRemove.mockClear();
+      vi.mocked(log.error).mockClear();
+
+      pathExistsFn = (p: string) => {
+        if (p === localPath) return true;
+        if (p === path.join(localPath, '.teamai', 'teamai.yaml')) return true;
+        return false;
+      };
+      (fse.pathExists as any)
+        .mockResolvedValueOnce(true)
+        .mockResolvedValueOnce(true);
+
+      vi.mocked(readFileSafe).mockImplementation(async (p: string) => {
+        if (p === path.join(localPath, '.teamai', 'teamai.yaml')) {
+          return JSON.stringify({ team: 'biz', mode: 'self', repo: 'https://git.woa.com/HyperAI/biz-repo.git' });
+        }
+        return null;
+      });
+
+      await init({ repo: 'https://git.woa.com/HyperAI/biz-repo.git', scope: 'user' });
+
+      // Reused clone must NOT be removed
+      expect(mockRemove).not.toHaveBeenCalledWith(localPath);
+      expect(log.error).toHaveBeenCalledWith(
+        'https://git.woa.com/HyperAI/biz-repo.git is a single-repo team: its config is .teamai/teamai.yaml. ' +
+          'Clone the repository and run `teamai init --self` in it.',
+      );
+      expect(mockExit).toHaveBeenCalledWith(1);
 
       vi.mocked(readFileSafe).mockResolvedValue(null);
     });
