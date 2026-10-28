@@ -20,10 +20,11 @@ const DISCOVERY = 'src/workflow/discovery/';
 const FLAT = 'src/workflow/';
 
 /** Rule 1: what a module under `drivers/skill/` may import, besides its siblings, `zod` and `node:*`. */
-const SKILL_IMPORTS: Record<string, { typeOnly?: true; names?: string[] }> = {
+const SKILL_IMPORTS: Record<string, { typeOnly?: true; names?: string[]; values?: string[] }> = {
   'src/workflow/protocol.ts': {},
   'src/workflow/types.ts': { typeOnly: true },
-  'src/workflow/requirements.ts': { typeOnly: true },
+  // The declared env facts, and the advice a missing key gets, which the preflight prints before a start.
+  'src/workflow/requirements.ts': { typeOnly: true, values: ['envAdvice'] },
   'src/workflow/describe.ts': { typeOnly: true },
   'src/workflow/attempt-marker.ts': {},
   // The wire shapes the engine answers with, which every driver parses with the same schema.
@@ -88,7 +89,10 @@ function rule1(edges: Edge[]): RuleResult {
     if (path.posix.dirname(edge.to) === path.posix.dirname(edge.from)) return false;
     const allowed = SKILL_IMPORTS[edge.to];
     if (!allowed) return true;
-    if (allowed.typeOnly && !edge.typeOnly) return true;
+    if (allowed.typeOnly && !edge.typeOnly) {
+      // A value import is allowed only for the values the entry lists; anything else must be a type.
+      return edge.names.some((name) => !(allowed.values ?? []).includes(name));
+    }
     const names = allowed.names;
     return names !== undefined && edge.names.some((name) => !names.includes(name));
   }).map(show);
