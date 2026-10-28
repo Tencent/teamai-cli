@@ -374,7 +374,7 @@ What `--next` does with each offered run:
 | It works in another business repository | skips it | skips it |
 | Another runner claimed it a moment earlier | takes the next one | takes the next one |
 
-Any claim takes the offer away: `--next`, `resume <run>` on a machine without the run, `resume <run> --claim`, or a driver's `"claim": true`. So two runners never drive one run. The dashboard's [Workflow Runs page](dashboard.md#workflow-runs) shows the same runs. [Offer a run to a runner](workflow-advanced.md#offer-a-run-to-a-runner) has the rules for agent sessions and every error.
+Any claim takes the offer away: `--next`, `resume <run>` on a machine without the run, `resume <run> --claim`, or a driver's `"claim": true`. So does your own `resume <run>` on the machine that published it; publish again to offer it again. So two runners never drive one run. Publish once you stop driving the run, since a runner can take it at once. The dashboard's [Workflow Runs page](dashboard.md#workflow-runs) shows the same runs. [Offer a run to a runner](workflow-advanced.md#offer-a-run-to-a-runner) has the rules for agent sessions and every error.
 
 ## Run records
 

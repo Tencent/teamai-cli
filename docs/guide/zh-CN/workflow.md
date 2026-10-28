@@ -374,7 +374,7 @@ r89c346a218d2f5e9  nightly-report  claimed  bob (install 6c4853e2…)  claimed o
 | 它在另一个业务仓库中工作 | 跳过 | 跳过 |
 | 另一个运行器刚刚抢先认领了它 | 接手下一个 | 接手下一个 |
 
-任何认领都会撤下运行的待接手状态：`--next`、在没有该运行的机器上执行 `resume <run>`、`resume <run> --claim`，或驱动的 `"claim": true`。因此不会有两个运行器驱动同一个运行。Dashboard 的[工作流运行页](dashboard.md#工作流运行workflow-runs)显示同样的这些运行。[把运行留给运行器接手](workflow-advanced.md#把运行留给运行器接手)说明 agent 会话适用的规则和每个错误。
+任何认领都会撤下运行的待接手状态：`--next`、在没有该运行的机器上执行 `resume <run>`、`resume <run> --claim`，或驱动的 `"claim": true`。你在发布它的机器上自己执行 `resume <run>` 也会撤下；再次发布即可重新留给运行器接手。因此不会有两个运行器驱动同一个运行。请在不再驱动该运行之后再发布，因为运行器可能立即接手。Dashboard 的[工作流运行页](dashboard.md#工作流运行workflow-runs)显示同样的这些运行。[把运行留给运行器接手](workflow-advanced.md#把运行留给运行器接手)说明 agent 会话适用的规则和每个错误。
 
 ## 运行记录
 

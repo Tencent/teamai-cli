@@ -888,7 +888,7 @@ workflowCmd
 
 workflowCmd
   .command('publish <run>')
-  .description("Publish a run's state to teamai-reports so another member or a runner can continue it with workflow resume. A running run is also offered: the first workflow resume --next in a checkout of its business repository (origin) claims it, and any claim takes the offer away, so two runners never take one run. The first publish makes this install the run's owner; publishing an unchanged run writes nothing. Refuses a run with records not yet on teamai-reports, or with a value that looks like a secret. Prints one JSON envelope with offered, and listing the leases still in flight.")
+  .description("Publish a run's state to teamai-reports so another member or a runner can continue it with workflow resume. A running run is also offered: the first workflow resume --next in a checkout of its business repository (origin) claims it, and any claim, or the owner's own workflow resume, takes the offer away, so two runners never take one run. Publish once you stop driving the run. The first publish makes this install the run's owner; publishing an unchanged run writes nothing. Refuses a run with records not yet on teamai-reports, or with a value that looks like a secret. Prints one JSON envelope with offered, and listing the leases still in flight.")
   .option('--sessions', "Also put the agent sessions that the run's unsettled steps continue (session: continue or session.from) in the team session archive, scrubbed, so whoever continues the run resumes them; listed in the envelope as sessions. Without it, those steps start new sessions on another machine")
   .action(async (run: string, options: { sessions?: boolean }) => {
     const { workflowPublish } = await import('./workflow-commands.js');

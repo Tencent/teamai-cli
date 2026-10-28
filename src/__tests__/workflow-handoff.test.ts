@@ -2725,6 +2725,22 @@ describe('offering a run to a runner (#1390)', () => {
     expect(JSON.parse(originFile(acme.origin, `workflows/runs/${runId}/state.json`) ?? '{}')).toMatchObject({ owner: { user: 'bob' } });
   });
 
+  it('takes the offer away when its owner resumes the run, so no runner takes a run its owner drives, and offers it again on the next publish', async () => {
+    const acme = team();
+    const alice = await acme.member('alice');
+    const runner = await acme.member('runner');
+    const runId = await start(alice);
+    await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout });
+
+    expect(await resumeRun(alice.config, runId, { claim: false, checkout: alice.checkout })).toMatchObject({ ok: true, value: { ownership: 'already_owned' } });
+    expect(JSON.parse(originFile(acme.origin, `workflows/runs/${runId}/state.json`) ?? '{}')).not.toHaveProperty('offered');
+    expect(await claimOffered(runner.config, runId, { checkout: runner.checkout })).toMatchObject({ ok: false, error: { code: 'state_moved' } });
+
+    await runStep(alice, runId);
+    expect(await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout })).toMatchObject({ ok: true, value: { publication: 'published', offered: true } });
+    expect(await claimOffered(runner.config, runId, { checkout: runner.checkout })).toMatchObject({ ok: true, value: { ownership: 'claimed' } });
+  });
+
   const RELEASE = `schemaVersion: v1alpha1
 name: release
 description: Build, then ship once a person approves.

@@ -761,10 +761,14 @@ async function acquire(
   if (!decided.ok) return decided;
   const verdict = decided.value;
   switch (verdict.kind) {
-    case 'owned':
-      return settleOwned(config, runId, checkout, owner, verdict.snapshot, secrets);
+    case 'owned': {
+      const settled = await settleOwned(config, runId, checkout, owner, verdict.snapshot, secrets);
+      if (!settled.ok || verdict.snapshot.offered === undefined) return settled;
+      const withdrawn = await withdrawOffer(config, runId, verdict.snapshot);
+      return withdrawn.ok ? settled : withdrawn;
+    }
     case 'claimed': {
-      const landed = await replaceSnapshot(config, runId, verdict.replaces, verdict.snapshot);
+      const landed = await replaceSnapshot(config, runId, verdict.replaces, verdict.snapshot, `[teamai] Claim workflow run ${runId}`);
       // Origin took no claim this machine can prove, so nothing local changes; claiming again finds out.
       if (!landed.ok) return landed;
       return install(config, runId, checkout, verdict.snapshot, verdict.definitions, verdict.handed, secrets);
@@ -786,13 +790,29 @@ async function readPublished(config: LocalConfig, runId: string): Promise<Origin
   return result.value ?? refused(result.status === 'busy' ? REPORTS_BUSY : writeFailed(runId, result));
 }
 
-/** Writes `snapshot` to teamai-reports only while origin still holds the write `replaces`. */
-async function replaceSnapshot(config: LocalConfig, runId: string, replaces: string, snapshot: RunSnapshot): Promise<Result<void>> {
+/**
+ * Takes the offer of run `runId` away as its owner drives it again, so no runner takes it meanwhile. The run's state is
+ * unchanged, so its state revision stays; the new write makes a claim prepared against the offer answer `state_moved`.
+ */
+async function withdrawOffer(config: LocalConfig, runId: string, snapshot: RunSnapshot): Promise<Result<void>> {
+  const { offered: _offer, ...kept } = snapshot;
+  const landed = await replaceSnapshot(config, runId, snapshot.write, { ...kept, write: randomUUID() }, `[teamai] Resume workflow run ${runId}`);
+  if (landed.ok || landed.error.code !== 'state_moved') return landed;
+  const now = await readPublished(config, runId);
+  if (now.ok && now.value !== 'absent' && now.value.owner.id !== snapshot.owner.id) return refused(notOwner(runId, now.value));
+  return refused({
+    code: 'state_moved',
+    message: `Run ${runId} changed on teamai-reports while this machine resumed it, so it was not resumed. Resume it again: teamai workflow resume ${runId}`,
+  });
+}
+
+/** Writes `snapshot` to teamai-reports, committed as `message`, only while origin still holds the write `replaces`. */
+async function replaceSnapshot(config: LocalConfig, runId: string, replaces: string, snapshot: RunSnapshot, message: string): Promise<Result<void>> {
   const result = await updateReports(config, async (worktree): Promise<ReportsChange<Result<void>>> => {
     const origin = await readOrigin(worktree, runId);
     if (!origin.ok) return { value: origin, write: null };
     if (origin.value === 'absent' || origin.value.write !== replaces) return { value: refused(stateMoved(runId)), write: null };
-    return { value: ok(undefined), write: await writeSnapshot(worktree, snapshot, `[teamai] Claim workflow run ${runId}`) };
+    return { value: ok(undefined), write: await writeSnapshot(worktree, snapshot, message) };
   });
   if (result.value && !result.value.ok) return result.value;
   if (result.status === 'busy') return refused(REPORTS_BUSY);
