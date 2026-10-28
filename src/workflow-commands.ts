@@ -133,14 +133,15 @@ async function readyConfig(): Promise<Ready | WorkflowEnvelope> {
 }
 
 /**
- * `readyConfig`, or the user scope's when this is a project whose cache has no runnable version of `name` and the user
- * scope's has one: the skills a user-scope pull generates show in every directory, so `start` finds what they name.
+ * `readyConfig`, or the user scope's when this is a project whose cache has no team version of `name` and the user
+ * scope's has one: the skills a user-scope pull generates show in every directory, so `start` finds what they name. A
+ * teamai default of `name` runs in this scope only when neither team has a version: project, then user, then default.
  */
 async function readyStartConfig(name: string): Promise<Ready | WorkflowEnvelope> {
   const loaded = await readyConfig();
-  if (!('config' in loaded) || loaded.config.scope !== 'project' || await loadCachedWorkflow(loaded.config, name)) return loaded;
+  if (!('config' in loaded) || loaded.config.scope !== 'project' || (await loadCachedWorkflow(loaded.config, name))?.source === 'team') return loaded;
   const user = await loadLocalConfigForScope('user', undefined, { dryRun: true });
-  if (!user || !await loadCachedWorkflow(user, name)) return loaded;
+  if (!user || (await loadCachedWorkflow(user, name))?.source !== 'team') return loaded;
   const teamConfig = await loadTeamConfig(user.repo.localPath);
   if (!teamConfig) return loaded;
   const env = await resolveWorkflowEnv(user);

@@ -410,6 +410,21 @@ steps:
     expect(await readRun(project, runId)).toBe('missing');
   });
 
+  it('starts the user scope\'s session-close before the project\'s teamai default, and the default when neither team has one', async () => {
+    const { project, user } = await installs();
+    const userWorkflow = path.join(user.repo.localPath, 'workflows', 'session-close.yaml');
+
+    expect(await capture(() => workflowStart('session-close', { describe: true }))).toMatchObject({ data: { name: 'session-close', invoke: 'ask' } });
+
+    fs.writeFileSync(userWorkflow, ship('Close the session the user team way').replace('name: ship', 'name: session-close'));
+    await syncWorkflowDefinitions(user);
+    expect(await capture(() => workflowStart('session-close', { describe: true }))).toMatchObject({ data: { description: 'Close the session the user team way' } });
+    const started = await capture(() => workflowStart('session-close', {}));
+    const runId = String(started.data?.run);
+    expect(typeof await readRun(user, runId)).toBe('object');
+    expect(await readRun(project, runId)).toBe('missing');
+  });
+
   it('publishes a user-scope run from the project it was started in as a run of the user scope', async () => {
     const { user } = await installs();
     // The user scope's team repository, with an origin to publish to.
