@@ -596,6 +596,44 @@ builtin:
     expect(await fse.pathExists(path.join(home, '.claude', 'settings.json'))).toBe(false);
   });
 
+  it('records self-mode team hooks for the OpenCode/OMP bridges (#1492)', async () => {
+    await fse.ensureDir(path.join(home, '.config', 'opencode'));
+    await fse.ensureDir(path.join(home, '.omp', 'agent'));
+    const selfConfig = {
+      repo: { localPath: repo, remote: 'x', kind: 'self', businessRepoRoot: project },
+      username: 'u',
+      scope: 'project',
+      projectRoot: project,
+      additionalRoles: [],
+    } as unknown as LocalConfig;
+    await writeYaml(`
+hooks:
+  - id: self-bridge
+    description: self-mode bridge hook
+    event: SessionStart
+    command: printf SELF_BRIDGE
+    tools: [opencode, omp]
+`);
+
+    const bridgeConfig = {
+      ...teamConfig,
+      toolPaths: {
+        ...teamConfig.toolPaths,
+        opencode: { settings: '.config/opencode/opencode.json' },
+        omp: { settings: '.omp/agent/settings.json' },
+      },
+    } as unknown as TeamaiConfig;
+    await reconcileTeamHooksForConfig(bridgeConfig, selfConfig);
+
+    const index = await fse.readJson(path.join(home, '.teamai', 'team-hook-bridges.json'));
+    for (const tool of ['opencode', 'omp']) {
+      const projects = index[tool]?.projects ?? {};
+      const [key] = Object.keys(projects);
+      expect(key, `${tool} record`).toBeDefined();
+      expect(projects[key].map((hook: { id: string }) => hook.id)).toContain('self-bridge');
+    }
+  });
+
   it('keeps the Claude hook a self-mode workspace installed when a child defines it differently (#913)', async () => {
     await fse.ensureDir(path.join(project, '.claude'));
     await fse.outputFile(path.join(repo, 'manifest', 'projects.yaml'),

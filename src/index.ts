@@ -1227,7 +1227,7 @@ program
   .option('--copilot-global <source>', 'Internal: identify a Copilot user built-in to prevent duplicate project execution')
   .option('--bg-only', 'Internal: run only fire-and-forget background handlers (used by the detached child)')
   .option('--stdin-file <path>', 'Internal: read the hook payload from this file instead of STDIN')
-  .option('--team-hooks', 'Run the team hooks of the project the hook\'s cwd belongs to (Codex, when the project\'s .codex/hooks.json is not teamai\'s alone)')
+  .option('--team-hooks', 'Run the team hooks of the project the hook\'s cwd belongs to (OpenCode and OMP; Codex when the project\'s .codex/hooks.json is not teamai\'s alone; CodeBuddy project gates)')
   .option('--team-hook-id <id>', 'Internal: CodeBuddy team hook id')
   .option('--team-hook-gate <encoded>', 'Internal: CodeBuddy project gate')
   .option('--team-hook-command <encoded>', 'Internal: CodeBuddy team hook command')
@@ -1251,6 +1251,9 @@ program
           }
           const { runCodebuddyTeamHook } = await import('./codebuddy-team-hooks.js');
           code = await runCodebuddyTeamHook(cmdOpts.teamHookGate, cmdOpts.teamHookCommand, parsedTimeout);
+        } else {
+          const { LIVE_TEAM_HOOK_TOOLS, runLiveTeamHooksDispatcher } = await import('./team-hooks-dispatch.js');
+          if (LIVE_TEAM_HOOK_TOOLS.includes(tool)) code = await runLiveTeamHooksDispatcher(tool, event);
         }
       } catch (e) {
         process.stderr.write(`teamai: team hooks did not run: ${(e as Error).message}\n`);

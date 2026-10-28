@@ -294,11 +294,20 @@ describe('OMP extension: team instructions in the system prompt (#945)', () => {
     await on.session_start({}, ctx);
     expect(await on.before_agent_start({ prompt: 'one', systemPrompt: ['BASE'] }, ctx)).toBeUndefined();
   });
+
+  it('adds the project team hooks\' output to the prompt (#1492)', async () => {
+    const { on, dispatches } = loadOmpExtension((args) => args.includes('--team-hooks') ? `team-${args[1]}\n` : '');
+    await on.session_start({}, ctx);
+    const turn = await on.before_agent_start({ prompt: 'one', systemPrompt: ['BASE'] }, ctx);
+    expect(turn).toEqual({ systemPrompt: ['BASE', 'team-session-start', 'team-prompt-submit'] });
+    expect(dispatches.filter((d) => d.args.includes('--team-hooks')).map((d) => d.args[1]))
+      .toEqual(['session-start', 'prompt-submit']);
+  });
 });
 
 // Recall attribution (#884): the extension evaluated in `vm`, with a fake host.
 /** The lifecycle dispatches, without the team-instructions request (#945), which has its own tests. */
-const lifecycle = (dispatches: ExtensionDispatch[]) => dispatches.filter((d) => d.args[1] !== 'instructions');
+const lifecycle = (dispatches: ExtensionDispatch[]) => dispatches.filter((d) => d.args[1] !== 'instructions' && !d.args.includes('--team-hooks'));
 
 describe('OMP extension: bridge payloads (#884)', () => {
   const main = { cwd: '/work/proj', sessionManager: { getSessionId: () => 'omp-main' }, agent: { kind: 'main' as const, id: 'Main', name: 'main', depth: 0 } };

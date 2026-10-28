@@ -69,11 +69,23 @@ export function loadPiExtension(stdoutFor: (args: string[]) => string = () => ''
 export function loadOmpExtension(stdoutFor: (args: string[]) => string = () => ''): LoadedExtension {
   const dispatches: ExtensionDispatch[] = [];
   const $ = (_strings: TemplateStringsArray, _launcher: string[], args: string[], stdin: Response) => {
-    const run = (async () => {
-      dispatches.push({ args, payload: JSON.parse(await stdin.text()) as Record<string, unknown> });
-      return stdoutFor(args);
-    })();
-    const output = Object.assign(run, { text: async () => run });
+    // The real Bun ShellPromise is both awaitable (to a ShellOutput with text(),
+    // exitCode and stderr) and has .text() itself; callers use both forms.
+    let executed: string | undefined;
+    const execute = async () => {
+      if (executed === undefined) {
+        const payload = JSON.parse(await stdin.text()) as Record<string, unknown>;
+        dispatches.push({ args, payload });
+        executed = stdoutFor(args);
+      }
+      return executed;
+    };
+    const output = {
+      text: async () => execute(),
+      // oxlint-disable-next-line unicorn/no-thenable -- emulates Bun's ShellPromise
+      then: (resolve: (value: unknown) => void, reject: (reason: unknown) => void) =>
+        execute().then((stdout) => ({ text: async () => stdout, exitCode: 0, stderr: Buffer.from('') })).then(resolve, reject),
+    };
     return { quiet: () => ({ nothrow: () => output }) };
   };
   const on = register(buildOmpExtensionSource(), { $, Response, fs, path, Buffer });

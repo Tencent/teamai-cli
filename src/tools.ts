@@ -206,7 +206,7 @@ export type HookSettings<R> = { readonly channel: 'settings'; readonly format: H
 
 /** A file or directory of teamai's own the tool loads from its home, written by the tool's own adapter. */
 export type HookAdapterId = 'opencode-plugin' | 'pi-extension' | 'omp-extension' | 'hermes-plugin' | 'openclaw-hook' | 'dsh-hooks' | 'kiro-hooks';
-export type HookAdapter = { readonly channel: 'adapter'; readonly adapter: HookAdapterId; readonly evidence: Evidence };
+export type HookAdapter = { readonly channel: 'adapter'; readonly adapter: HookAdapterId; readonly evidence: Evidence; /** The adapter also runs the team's custom hooks, not only the built-ins. */ readonly teamHooks?: boolean };
 
 /**
  * Where teamai installs the tool's hooks. A workspace takes the user hooks
@@ -855,7 +855,7 @@ export const TOOLS = {
       user: { format: 'claude', reads: [{ base: 'home', path: '.omp/agent/mcp.json', evidence: 'verified' }] },
       project: { format: 'claude', reads: [{ base: 'project', path: '.omp/mcp.json', when: 'cwdOnly', evidence: 'verified' }] },
     },
-    hooks: { user: { channel: 'adapter', adapter: 'omp-extension', evidence: 'verified' }, self: 'user' },
+    hooks: { user: { channel: 'adapter', adapter: 'omp-extension', evidence: 'verified', teamHooks: true }, self: 'user' },
     sessions: 'none',
     launch: 'omp',
     features: {

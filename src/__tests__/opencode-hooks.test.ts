@@ -49,6 +49,8 @@ describe('buildPluginSource', () => {
     const resolver = vi.spyOn(builtinHooks, 'resolveCliEntry').mockReturnValue(entry);
     const spawn = vi.fn((_command: string, _args: string[], _options: Record<string, unknown>) => {
       const child = new EventEmitter() as any;
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
       child.stdin = { write: vi.fn(), end: () => queueMicrotask(() => child.emit('close', 0)) };
       return child;
     });
@@ -139,6 +141,33 @@ describe('buildPluginSource', () => {
     expect(spawns.every(({ options }) => options.stdio[0] === 'pipe')).toBe(true);
     expect(spawns.every(({ child }) => child.listenerCount('close') === 0)).toBe(true);
     expect(spawns.every(({ child }) => child.listenerCount('error') === 0)).toBe(true);
+  });
+
+  it('adds a project team hook\'s output to the next request\'s system prompt (#1492)', async () => {
+    const spawn = vi.fn((_command: string, args: string[]) => {
+      const child = new EventEmitter() as any;
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.stdin = {
+        write: vi.fn(),
+        end: () => queueMicrotask(() => {
+          if (args.includes('--team-hooks')) child.stdout.emit('data', Buffer.from('TEAM-CTX'));
+          child.emit('close', 0);
+        }),
+      };
+      return child;
+    });
+    const plugin = loadPluginDefinition(src, { __childProcess: { spawn } });
+    const hooks = await plugin.server({ directory: '/work/proj' });
+    await hooks.event({ event: { type: 'session.created', properties: { sessionID: 'ses_1' } } });
+
+    const output = { system: ['BASE'] };
+    await hooks['experimental.chat.system.transform']({ sessionID: 'ses_1' }, output);
+    expect(output.system).toEqual(['BASE', 'TEAM-CTX']);
+
+    // The SessionStart context rides every request; a prompt hook\'s output once.
+    await hooks['experimental.chat.system.transform']({ sessionID: 'ses_1' }, output);
+    expect(output.system).toEqual(['BASE', 'TEAM-CTX', 'TEAM-CTX']);
   });
 });
 
@@ -492,6 +521,27 @@ describe('OpenCode V2 built-in plugin', () => {
     await host.cleanup?.();
     expect(host.disposed.sort()).toEqual(['session.compaction', 'session.context', 'session.prompt', 'tool.execute.after']);
   });
+
+  it('adds project team hooks to the V2 context channel (#1492)', async () => {
+    const spawn = vi.fn((_command: string, args: string[]) => {
+      const child = new EventEmitter() as any;
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.stdin = {
+        write: vi.fn(),
+        end: () => queueMicrotask(() => {
+          if (args.includes('--team-hooks')) child.stdout.emit('data', Buffer.from('V2-CTX'));
+          child.emit('close', 0);
+        }),
+      };
+      return child;
+    });
+    const host = await loadV2Plugin(buildPluginSource(), { __childProcess: { spawn } });
+    const event = { sessionID: 'ses_v2', system: [] as Array<{ type: string; text: string }> };
+    await host.callbacks['session.context'](event);
+    expect(event.system.map((part) => part.text)).toContain('V2-CTX');
+    await host.cleanup?.();
+  });
 });
 
 // #915: on OpenCode V2 the team MCP servers reach a project through the plugin,
@@ -663,6 +713,7 @@ describe('OpenCode subprocess failures', () => {
     const children: EventEmitter[] = [];
     const spawn = () => {
       const child = new EventEmitter() as EventEmitter & { stdin: { write: () => void; end: () => void } };
+      Object.assign(child, { stdout: new EventEmitter(), stderr: new EventEmitter() });
       child.stdin = { write: () => {}, end: () => {} };
       children.push(child);
       void Promise.resolve().then(() => child.emit('error', new Error('missing executable')));

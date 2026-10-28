@@ -176,6 +176,30 @@ export default function teamaiHooks(pi) {
     }
   };
 
+  // Team hooks live in the project's hooks/hooks.yaml, not in this user-wide
+  // extension: the dispatcher resolves the project from the payload's cwd and
+  // returns the hook output for the system prompt. OMP has no context channel
+  // after before_agent_start, so SessionStart output is kept until the first
+  // turn and a prompt hook's output is added to that turn.
+  // OMP exposes no subagent-start event: team context reaches the main
+  // session's system prompt only.
+  const dispatchTeam = async (event, ctx, payload) => {
+    try {
+      const stdin = JSON.stringify({ cwd: ctx.cwd, ...sessionOf(ctx), ...(payload || {}) });
+      const args = ["hook-dispatch", event, "--tool", "omp", "--team-hooks"];
+      const result = await $\`\${launcher} \${args} < \${new Response(stdin)}\`.quiet().nothrow();
+      const out = await result.text();
+      const code = typeof result.exitCode === "number" ? result.exitCode : 0;
+      const err = result.stderr ? String(result.stderr) : "";
+      // The dispatcher reports a failing or timed-out hook on stderr but keeps
+      // its own exit 0 unless the hook blocks with 2; show it either way.
+      if (err.trim()) console.error(err.trimEnd());
+      return typeof out === "string" ? out.trim() : "";
+    } catch {
+      return "";
+    }
+  };
+
   // The member's culture, claudemd and recall blocks for a project session,
   // or "" (user scope, or teamai unavailable). Fetched once per session.
   let instructions;
@@ -198,14 +222,20 @@ export default function teamaiHooks(pi) {
 
   pi.on("session_stop", async (_event, ctx) => {
     await dispatch("stop", ctx);
+    await dispatchTeam("stop", ctx);
   });
 
   // OMP rebuilds the system prompt from its base each turn, so appending
   // here adds the blocks to every request once, without piling up.
   pi.on("before_agent_start", async (event, ctx) => {
     await dispatch("prompt-submit", ctx, { prompt: event.prompt });
+    // SessionStart runs per turn, so a prompt hook's level change reaches this
+    // turn's system prompt (#1492).
+    const teamSession = await dispatchTeam("session-start", ctx);
+    const teamPrompt = await dispatchTeam("prompt-submit", ctx, { prompt: event.prompt });
     const text = await (instructions ??= loadInstructions(ctx));
-    return text ? { systemPrompt: [...event.systemPrompt, text] } : undefined;
+    const extra = [text, teamSession, teamPrompt].filter((value) => typeof value === "string" && value);
+    return extra.length ? { systemPrompt: [...event.systemPrompt, ...extra] } : undefined;
   });
 
   // Subagent sessions already linked: a session's parent never changes.
@@ -227,6 +257,7 @@ export default function teamaiHooks(pi) {
       linked.add(child);
     }
     await dispatch("post-tool-use", ctx, payload);
+    await dispatchTeam("post-tool-use", ctx, payload);
   });
 }
 `;
