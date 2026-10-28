@@ -176,4 +176,23 @@ steps:
     }
     expect(await offerTo(SESSION)).toEqual({ publish: true, scorers: [] });
   });
+
+  it('is nothing in a project while the session drives a run of the user scope', async () => {
+    const user = await memberConfig();
+    fs.mkdirSync(path.join(user.repo.localPath, 'workflows'));
+    fs.writeFileSync(path.join(user.repo.localPath, 'workflows', 'note.yaml'), NOTE);
+    await syncWorkflowDefinitions(user);
+    execFileSync('git', ['init', '-q', '-b', 'main', project]);
+    execFileSync('git', ['-C', project, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-q', '--allow-empty', '-m', 'fixture']);
+    const harness = await skillHarness({}, { install: { config: user, checkout: project } });
+    onTestFinished(() => fs.rmSync(harness.root, { recursive: true, force: true }));
+    // The harness gives itself a home; the member's user scope is in this one.
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('USERPROFILE', home);
+    const started = await harness.call({ kind: 'start', name: 'note', answers: { confirmed: false }, inputs: undefined }, { session: SESSION });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+    const inProject: LocalConfig = { ...user, scope: 'project', projectRoot: project, dataHome: path.join(project, '.teamai') };
+
+    expect(await SessionClose.reminderOffer(inProject, { tool: 'claude', sessionId: SESSION, cwd: project, run: { runMode: 'attended' } }, { judgeTools: () => [] })).toBeUndefined();
+  });
 });
