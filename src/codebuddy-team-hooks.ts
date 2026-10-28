@@ -138,15 +138,20 @@ function runHook(command: string, cwd: string, timeout: number | undefined, stdi
     const gitBash = process.platform === 'win32' ? findGitBashWindows() : null;
     const shell = process.platform === 'win32' ? (gitBash ?? true) : true;
     const spawnArgs = process.platform === 'win32' && gitBash ? ['-lc', command] : [];
-    let stdout = '';
-    let stderr = '';
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
     let settled = false;
     let timeoutTriggered = false;
     const finish = (code: number | null, timedOut = false) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve({ code, stdout, stderr, timedOut });
+      resolve({
+        code,
+        stdout: Buffer.concat(stdoutChunks).toString('utf8'),
+        stderr: Buffer.concat(stderrChunks).toString('utf8'),
+        timedOut,
+      });
     };
     const child = spawn(shell === true ? command : shell, spawnArgs, {
       ...(shell === true ? { shell: true } : {}),
@@ -188,9 +193,9 @@ function runHook(command: string, cwd: string, timeout: number | undefined, stdi
         finish(null, true);
       }
     }, (timeout ?? 60) * 1_000);
-    child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf8'); });
-    child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8'); });
-    child.on('error', (error) => { stderr += error.message; finish(null, timeoutTriggered); });
+    child.stdout?.on('data', (chunk: Buffer | string) => { stdoutChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)); });
+    child.stderr?.on('data', (chunk: Buffer | string) => { stderrChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)); });
+    child.on('error', (error) => { stderrChunks.push(Buffer.from(error.message)); finish(null, timeoutTriggered); });
     child.on('close', (code) => { if (!timeoutTriggered) finish(code); });
     child.stdin?.on('error', () => {});
     child.stdin?.end(stdin);

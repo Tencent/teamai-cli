@@ -1254,7 +1254,10 @@ program
         }
       } catch (e) {
         process.stderr.write(`teamai: team hooks did not run: ${(e as Error).message}\n`);
-        code = 1;
+        // CodeBuddy must report dispatcher failures to its host. Codex keeps
+        // its historical fail-open wrapper: its hook runner reports the
+        // diagnostic but the shared `--team-hooks` command remains successful.
+        if (tool === 'codebuddy') code = 1;
       }
       process.exit(code);
     }
