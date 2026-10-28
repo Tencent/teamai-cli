@@ -3838,6 +3838,31 @@ describe('uninstall', () => {
     expect(await fse.readJson(path.join(hermesHome, 'shell-hooks-allowlist.json'))).toEqual({ approvals: [] });
   });
 
+  it('removes the Hermes hook and plugin from the root of a recorded profile home, from a shell without HERMES_HOME (#1221)', async () => {
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+    const root = path.join(tmpDir, 'srv-hermes');
+    const work = path.join(root, 'profiles', 'work');
+    const { injectHermesHooks } = await import('../hermes-hooks.js');
+    vi.stubEnv('HERMES_HOME', root);
+    await injectHermesHooks();
+    vi.stubEnv('HERMES_HOME', work);
+    await injectHermesHooks();
+    await fse.outputJson(path.join(homeDir, '.teamai', 'tool-homes.json'), { hermes: work });
+    vi.stubEnv('HERMES_HOME', '');
+
+    const teamConfig = makeTeamConfig();
+    teamConfig.toolPaths.hermes = { skills: '.hermes/skills' };
+    mockAutoDetectInit.mockResolvedValue({ localConfig: makeLocalConfig(homeDir, repoPath), teamConfig });
+    await uninstall({ force: true });
+
+    for (const home of [root, work]) {
+      expect(await fse.pathExists(path.join(home, 'hooks', 'teamai-status-report.sh'))).toBe(false);
+      expect(await fse.pathExists(path.join(home, 'plugins', 'teamai-instructions'))).toBe(false);
+    }
+  });
+
   it("removes teamai's Hermes hook, plugin and SOUL.md block from the default home and every profile, and lists them (#1221)", async () => {
     const { homeDir, repoPath } = await setupFixture(tmpDir);
     vi.stubEnv('HOME', homeDir);

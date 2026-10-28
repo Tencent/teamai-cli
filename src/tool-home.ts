@@ -205,7 +205,9 @@ export async function toolHomesAcrossProfiles(tool: 'hermes' | 'omp', host: Host
   const homes = [toolHome(tool, host)];
   switch (tool) {
     case 'hermes':
-      for (const base of [defaultToolHome(tool, host), ...moves]) {
+      // A `profiles/<name>` home sits in a root that holds the default and the other profiles.
+      for (const base of new Set([defaultToolHome(tool, host), ...moves.flatMap((home) =>
+        p.basename(p.dirname(home)) === 'profiles' ? [home, p.dirname(p.dirname(home))] : [home])])) {
         homes.push(base, ...(await subdirs(p.join(base, 'profiles'))).map((name) => p.join(base, 'profiles', name)));
       }
       break;
