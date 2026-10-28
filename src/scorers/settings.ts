@@ -10,7 +10,9 @@
  * is, and replaces the root key of the same name. Two active namespaces asking for an isolation give the strictest;
  * two that set `batch` differently are a failure, as one model alias in two active namespaces is. For sessions, each run
  * mode takes the most restrictive policy of the active namespaces (`off` < `ask` < `auto`), and the lowest
- * `daily_limit` of them wins. A member's `config.yaml` `scoring` overrides both, one mode at a time.
+ * `daily_limit` of them wins. A member's `config.yaml` `scoring` overrides both, one mode at a time. Below a workspace
+ * or self scope, `scoring` in ~/.teamai/config.yaml applies where that leaves it to the team, and only where it is
+ * stricter, so a machine can turn judging off or lower the limit but never start judging.
  *
  * A file that cannot be parsed fails the load, so no judge works to a default the team did not choose. A key or value
  * this teamai does not know is dropped with a problem instead, so a newer CLI's additions never stop this one.
@@ -109,32 +111,37 @@ interface TeamFile {
   dailyLimit?: number;
 }
 
-/** The machine file as a scoring source names it, beside a scope's own `config.yaml`. */
-const MACHINE_CONFIG = '~/.teamai/config.yaml';
-
 /**
  * Each run mode's `sessions` policy as the member's `config.yaml` `scoring` sets it, else the most restrictive of the
  * active namespace files, else the root file, else `off` attended and `auto` unattended; and `daily_limit` as the member
  * sets it, else the lowest of the namespace files, else the root file. `machine`, the `scoring` of ~/.teamai/config.yaml
- * below a workspace or self scope, replaces the team's policy or limit only where it is stricter. A member value it
- * cannot use is reported and sets nothing. A limit of 0 turns session scoring off in both modes.
+ * below a workspace or self scope, replaces the team's policy or limit only where it is stricter; where both are alike,
+ * the team set it. A member value it cannot use is reported to `problems` and sets nothing. A limit of 0 turns session
+ * scoring off in both modes.
  */
-function sessionScoring(config: LocalConfig, machine: LocalConfig['scoring'], rootFile: TeamFile | undefined, inNamespaces: readonly TeamFile[], problems: string[]): SessionScoring {
+function sessionScoring({ config, machine, rootFile, inNamespaces, problems }: {
+  config: LocalConfig;
+  machine: LocalConfig['scoring'];
+  rootFile: TeamFile | undefined;
+  inNamespaces: readonly TeamFile[];
+  problems: string[];
+}): SessionScoring {
   const member = config.scoring?.sessions;
   const limit = config.scoring?.daily_limit;
   if (typeof limit === 'string') problems.push(`config.yaml scoring.daily_limit is ${limit}, not a whole number of 0 or more, so it is ignored`);
-  if (typeof machine?.daily_limit === 'string') problems.push(`${MACHINE_CONFIG} scoring.daily_limit is ${machine.daily_limit}, not a whole number of 0 or more, so it is ignored`);
+  if (typeof machine?.daily_limit === 'string') problems.push(`~/.teamai/config.yaml scoring.daily_limit is ${machine.daily_limit}, not a whole number of 0 or more, so it is ignored`);
   const fromMember = SessionPolicy.read('config.yaml scoring.sessions', member ?? {}, { booleans: true });
-  const fromMachine = SessionPolicy.read(`${MACHINE_CONFIG} scoring.sessions`, machine?.sessions ?? {}, { booleans: true });
+  const fromMachine = SessionPolicy.read('~/.teamai/config.yaml scoring.sessions', machine?.sessions ?? {}, { booleans: true });
   problems.push(...fromMember.problems, ...fromMachine.problems);
   const defaults = { attended: 'off', unattended: 'auto' } as const;
   const ofTeam = SessionPolicy.resolve([inNamespaces.map((file) => file.sessions ?? {}), [rootFile?.sessions ?? {}]], defaults);
-  const policies = SessionPolicy.resolve([[fromMember.set], [fromMachine.set, ofTeam]], defaults);
+  // The team's comes first, so it keeps the credit where the machine says the same.
+  const policies = SessionPolicy.resolve([[fromMember.set], [ofTeam, fromMachine.set]], defaults);
   const [lowest] = inNamespaces.flatMap((file) => (file.dailyLimit === undefined ? [] : [{ value: file.dailyLimit, source: `${file.relativePath} daily_limit` }]))
     .sort((left, right) => left.value - right.value);
   const ofTeamLimit = lowest ?? (rootFile?.dailyLimit === undefined ? undefined : { value: rootFile.dailyLimit, source: `${rootFile.relativePath} daily_limit` });
-  const machineLimit = typeof machine?.daily_limit === 'number' && machine.daily_limit <= (ofTeamLimit?.value ?? SESSION_DAILY_LIMIT)
-    ? { value: machine.daily_limit, source: `${MACHINE_CONFIG} scoring.daily_limit` }
+  const machineLimit = typeof machine?.daily_limit === 'number' && machine.daily_limit < (ofTeamLimit?.value ?? SESSION_DAILY_LIMIT)
+    ? { value: machine.daily_limit, source: '~/.teamai/config.yaml scoring.daily_limit' }
     : undefined;
   const daily = typeof limit === 'number' ? { value: limit, source: 'config.yaml scoring.daily_limit' } : machineLimit ?? ofTeamLimit;
   if (!daily) return { policies, dailyLimit: SESSION_DAILY_LIMIT, dailyLimitSource: { kind: 'default' } };
@@ -189,9 +196,9 @@ export async function scopeScoring(config: LocalConfig): Promise<ScopeScoring> {
     isolation: [
       ...teamIsolation.map((file) => ({ source: `${file.relativePath} isolation`, value: file.isolation })),
       { source: 'config.yaml scoring.isolation', value: config.scoring?.isolation },
-      ...(machine?.isolation === undefined ? [] : [{ source: `${MACHINE_CONFIG} scoring.isolation`, value: machine.isolation }]),
+      ...(machine?.isolation === undefined ? [] : [{ source: '~/.teamai/config.yaml scoring.isolation', value: machine.isolation }]),
     ],
-    sessions: sessionScoring(config, machine, rootFile, inNamespaces, problems),
+    sessions: sessionScoring({ config, machine, rootFile, inNamespaces, problems }),
     problems,
   };
 }

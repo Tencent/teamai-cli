@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { LocalConfigSchema, type LocalConfig } from '../types.js';
+import { getUserConfigPath, LocalConfigSchema, type LocalConfig } from '../types.js';
 import { scopeScoring } from '../scorers/settings.js';
 
 const dirs: string[] = [];
@@ -27,7 +27,7 @@ function teamRepo(files: Record<string, string>, member: Partial<LocalConfig> = 
   return { repo: { localPath: knowledge, remote: 'local' }, username: 'tester', scope: 'project', additionalRoles: [], projectRoot: root, dataHome: path.join(root, 'data'), ...member };
 }
 
-const MACHINE = { source: 'config.yaml scoring.isolation', value: undefined };
+const SCOPE_ISOLATION = { source: 'config.yaml scoring.isolation', value: undefined };
 const both = (policy: string, key: string) => ({ attended: { policy, source: { kind: 'setting', key } }, unattended: { policy, source: { kind: 'setting', key } } });
 const SESSIONS_DEFAULT = { policies: { attended: { policy: 'off', source: { kind: 'default' } }, unattended: { policy: 'auto', source: { kind: 'default' } } }, dailyLimit: 10, dailyLimitSource: { kind: 'default' } };
 
@@ -36,10 +36,10 @@ describe('scopeScoring isolation', () => {
     const files = { 'scorers/scoring.yaml': 'isolation: best-effort\n', 'scorers/ops/scoring.yaml': 'isolation: verified\n' };
 
     expect(await scopeScoring(teamRepo(files, { primaryRole: 'dev' }))).toEqual({
-      ok: true, batch: undefined, problems: [], isolation: [{ source: 'scorers/scoring.yaml isolation', value: 'best-effort' }, MACHINE], sessions: SESSIONS_DEFAULT,
+      ok: true, batch: undefined, problems: [], isolation: [{ source: 'scorers/scoring.yaml isolation', value: 'best-effort' }, SCOPE_ISOLATION], sessions: SESSIONS_DEFAULT,
     });
     expect(await scopeScoring(teamRepo(files, { primaryRole: 'ops' }))).toEqual({
-      ok: true, batch: undefined, problems: [], isolation: [{ source: 'scorers/ops/scoring.yaml isolation', value: 'verified' }, MACHINE], sessions: SESSIONS_DEFAULT,
+      ok: true, batch: undefined, problems: [], isolation: [{ source: 'scorers/ops/scoring.yaml isolation', value: 'verified' }, SCOPE_ISOLATION], sessions: SESSIONS_DEFAULT,
     });
   });
 
@@ -48,7 +48,7 @@ describe('scopeScoring isolation', () => {
 
     expect(await scopeScoring(teamRepo(files, { primaryRole: 'ops', additionalRoles: ['sre'] }))).toMatchObject({
       ok: true,
-      isolation: [{ source: 'scorers/ops/scoring.yaml isolation', value: 'verified' }, { source: 'scorers/sre/scoring.yaml isolation', value: 'best-effort' }, MACHINE],
+      isolation: [{ source: 'scorers/ops/scoring.yaml isolation', value: 'verified' }, { source: 'scorers/sre/scoring.yaml isolation', value: 'best-effort' }, SCOPE_ISOLATION],
     });
   });
 
@@ -190,7 +190,7 @@ describe('scopeScoring team session defaults', () => {
 });
 
 describe('scopeScoring machine settings', () => {
-  const machineFile = (): string => path.join(process.env.HOME ?? '', '.teamai', 'config.yaml');
+  const machineFile = getUserConfigPath;
   const onMachine = (yaml: string): void => {
     fs.mkdirSync(path.dirname(machineFile()), { recursive: true });
     fs.writeFileSync(machineFile(), yaml);
@@ -222,6 +222,18 @@ describe('scopeScoring machine settings', () => {
     });
   });
 
+  it('credits the team, not the machine, with a policy or limit both set alike', async () => {
+    onMachine('scoring:\n  sessions: true\n  daily_limit: 4\n');
+
+    expect(await scopeScoring(teamRepo({ 'scorers/scoring.yaml': 'daily_limit: 4\n' }))).toMatchObject({
+      sessions: {
+        policies: { attended: { policy: 'off', source: { kind: 'default' } }, unattended: { policy: 'auto', source: { kind: 'default' } } },
+        dailyLimit: 4,
+        dailyLimitSource: { kind: 'setting', key: 'scorers/scoring.yaml daily_limit' },
+      },
+    });
+  });
+
   it("lets the workspace's own scoring win, one mode at a time", async () => {
     onMachine('scoring:\n  sessions: false\n');
 
@@ -246,13 +258,13 @@ describe('scopeScoring machine settings', () => {
     expect(await scopeScoring(teamRepo({ 'scorers/scoring.yaml': 'sessions: true\ndaily_limit: 4\n' }, workspace))).toMatchObject({ problems: [], sessions });
   });
 
-  it('adds its isolation to the ones the strictest of is required', async () => {
+  it("adds its isolation beside the team's and the workspace's, so the strictest applies", async () => {
     onMachine('scoring:\n  isolation: verified\n');
 
     expect(await scopeScoring(teamRepo({ 'scorers/scoring.yaml': 'isolation: best-effort\n' }))).toMatchObject({
       isolation: [
         { source: 'scorers/scoring.yaml isolation', value: 'best-effort' },
-        MACHINE,
+        SCOPE_ISOLATION,
         { source: '~/.teamai/config.yaml scoring.isolation', value: 'verified' },
       ],
     });
