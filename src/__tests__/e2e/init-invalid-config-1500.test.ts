@@ -122,6 +122,30 @@ describe('init --force over a config that does not validate (#1500)', () => {
     expect(fs.existsSync(`${m.config}.previous`)).toBe(false);
   }, 120_000);
 
+  it('carries the agents, the inherit-user-scope choice and the queued learnings as for a readable config', async () => {
+    const m = member('same-team-carry');
+    const first = await m.cli(['init', TEAM_URL, '--provider', 'git', '--agent', 'claude,codex', '--inherit-user-scope']);
+    expect(first.code, first.output).toBe(0);
+    const installed: Record<string, unknown> = YAML.parse(fs.readFileSync(m.config, 'utf8'));
+    expect(installed.inheritUserScope).toBe(true);
+    expect(installed.enabledAgents).toEqual(['claude', 'codex']);
+    fs.writeFileSync(m.config, YAML.stringify({ ...installed, recallEnabled: 'yes' }));
+    const queue = path.join(path.dirname(m.config), 'pending-learnings');
+    fs.mkdirSync(queue, { recursive: true });
+    fs.writeFileSync(path.join(queue, 'l1.md'), 'a learning\n');
+
+    const again = await m.cli([...INIT(TEAM_URL), '--force']);
+    expect(again.code, again.output).toBe(0);
+
+    const saved: Record<string, unknown> = YAML.parse(fs.readFileSync(m.config, 'utf8'));
+    expect(saved).not.toHaveProperty('recallEnabled');
+    expect(saved.inheritUserScope).toBe(true);
+    expect(saved.enabledAgents).toEqual(['claude', 'codex']);
+    expect(saved.disabledAgents ?? []).toEqual([]);
+    expect(fs.existsSync(path.join(queue, 'l1.md'))).toBe(true);
+    expect(fs.existsSync(`${queue}.unknown`)).toBe(false);
+  }, 120_000);
+
   it('still moves the config aside when it records another team repo', async () => {
     const m = await withInvalidConfig('other-team', OTHER_TEAM_URL);
 
