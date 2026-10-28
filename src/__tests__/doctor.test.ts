@@ -834,6 +834,45 @@ describe('doctor — JSON report', () => {
         expect(byKey.autoCompactTokens.levels.some((level: { level: string; value?: unknown; used?: boolean }) => level.level === 'scope' && level.value === 50000 && level.used === false)).toBe(true);
     });
 
+    it('does not expose an unused machine-wide scope value as the provenance source', async () => {
+        const project = {
+            ...mockLocalConfig,
+            scope: 'project',
+            projectRoot: '/tmp/project',
+            repo: { localPath: '/tmp/project-team', remote: 'https://example.test/project.git' },
+            autoCompactTokens: 50000,
+        };
+        const user = {
+            ...mockLocalConfig,
+            scope: 'user',
+            repo: { localPath: '/tmp/user-team', remote: 'https://example.test/user.git' },
+            autoCompactTokens: undefined,
+        };
+        mockedLoadLocalConfig.mockImplementation(async (options?: { dryRun?: boolean }) => options?.dryRun ? project : user);
+        mockedLoadMemberSettings.mockResolvedValue({});
+        mockedLoadTeamConfig.mockResolvedValue({ ...mockTeamConfig, sharing: {} });
+        mockedReadFileSafe.mockImplementation(async (filePath: string) => {
+            if (filePath === path.join(getTeamaiHomeDir(), 'config.yaml')) {
+                return ['repo:', '  localPath: /tmp/user-team', '  remote: https://example.test/user.git', 'username: testuser', 'scope: user'].join('\n');
+            }
+            if (filePath === path.join('/tmp/project', '.teamai', 'config.yaml')) {
+                return ['repo:', '  localPath: /tmp/project-team', '  remote: https://example.test/project.git', 'username: testuser', 'scope: project', 'autoCompactTokens: 50000'].join('\n');
+            }
+            if (filePath.endsWith('settings.json')) return buildFullHooksContent();
+            return null;
+        });
+
+        await doctor({ json: true });
+
+        const autoCompact = (emittedReport().memberSettings ?? []).find((setting) => setting.key === 'autoCompactTokens');
+        expect(autoCompact).toBeDefined();
+        expect(autoCompact?.effective).toBeUndefined();
+        expect(autoCompact?.source).toBeUndefined();
+        expect(autoCompact?.levels).toEqual([
+            expect.objectContaining({ level: 'scope', value: 50000, used: false }),
+        ]);
+    });
+
     it('carries the fix string of a failing check', async () => {
         mockedReadFileSafe.mockImplementation(async (filePath: string) => {
             if (filePath.includes('settings.json')) {

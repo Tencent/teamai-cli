@@ -278,7 +278,7 @@ async function memberSettingsReport(ctx: DoctorContext): Promise<MemberSettingsR
   // exists, it decides these values even while doctor is inspecting a project.
   // Load the same team file that pull/update use for that deciding install.
   const decidingTeam = userConfig?.scope === 'user'
-    ? (await loadTeamConfig(userConfig.repo.localPath)) ?? ctx.teamConfig
+    ? await loadTeamConfig(userConfig.repo.localPath)
     : ctx.teamConfig;
   const reportKeys = new Set<string>(MEMBER_SETTING_REPORT_KEYS);
   addWorkflowReportKeys(reportKeys, rawMachine);
@@ -376,7 +376,7 @@ async function memberSettingsReport(ctx: DoctorContext): Promise<MemberSettingsR
     const levels = levelsFor(key);
     const effective = await effectiveValue(key, levels);
     if (effective === undefined && levels.length === 0) continue;
-    reports.push({ key, effective, source: levels[0], levels });
+    reports.push({ key, effective, source: levels.find((level) => level.used !== false), levels });
   }
   return reports;
 }
