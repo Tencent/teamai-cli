@@ -192,7 +192,7 @@ describe('the session-close offer', () => {
   it('offers in the reminder the same publish and scorers describe proposes, looking for judge tools only when a scorer needs verified isolation', async () => {
     const judgeTools = vi.fn(() => []);
     const plain = await member({ scorers: { 'review-quality.md': scorer('samplingRate: 100\nsessions: true\n') } });
-    expect(await SessionClose.offered(plain, { tool: 'claude', sessionId: SESSION }, { now: NOW, judgeTools })).toEqual({ publish: true, scorers: ['review-quality'] });
+    expect(await SessionClose.reminderOffer(plain, { tool: 'claude', sessionId: SESSION, cwd: root, run: { runMode: 'attended' } }, { now: NOW, judgeTools })).toEqual({ publish: true, scorers: ['review-quality'] });
     expect(judgeTools).not.toHaveBeenCalled();
 
     const verified = await member({ scorers: {
@@ -200,7 +200,7 @@ describe('the session-close offer', () => {
       'secure-review.md': scorer('samplingRate: 100\nsessions: true\nisolation: verified\n'),
     } });
     const proposed = await offerOf(verified, 'claude', []);
-    expect(await SessionClose.offered(verified, { tool: 'claude', sessionId: SESSION }, { now: NOW, judgeTools }))
+    expect(await SessionClose.reminderOffer(verified, { tool: 'claude', sessionId: SESSION, cwd: root, run: { runMode: 'attended' } }, { now: NOW, judgeTools }))
       .toEqual({ publish: proposed.publish.value, scorers: proposed.scorers.value });
     expect(proposed.scorers.value).toEqual(['review-quality']);
     expect(judgeTools).toHaveBeenCalledTimes(1);

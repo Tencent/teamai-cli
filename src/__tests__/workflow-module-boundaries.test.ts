@@ -30,7 +30,7 @@ const SKILL_IMPORTS: Record<string, { typeOnly?: true; names?: string[]; values?
   // The wire shapes the engine answers with, which every driver parses with the same schema.
   'src/workflow/lease-wire.ts': { names: ['LeaseWireSchema'] },
   'src/workflow/step-state.ts': { names: ['FailureSchema'] },
-  'src/workflow/store.ts': { names: ['takeRunLock', 'LockTaken', 'RunLock', 'attemptDir', 'attemptResultPath', 'skillStatePath', 'RunIdSchema', 'RunId', 'AttemptIdSchema', 'AttemptId', 'withRunnerLock', 'runnerAlive'] },
+  'src/workflow/store.ts': { names: ['takeRunLock', 'LockTaken', 'RunLock', 'attemptDir', 'attemptResultPath', 'skillStatePath', 'runsDir', 'RunIdSchema', 'RunId', 'AttemptIdSchema', 'AttemptId', 'withRunnerLock', 'runnerAlive'] },
   'src/workflow/step-model.ts': {},
   'src/env-resolution.ts': {},
   'src/env-exec.ts': { names: ['stepEnvironment'] },
@@ -50,6 +50,8 @@ const SKILL_IMPORTS: Record<string, { typeOnly?: true; names?: string[]; values?
   // What the confined judge of the session tool can do, which the driver declares on `score --next`.
   'src/scorers/judge.ts': { names: ['isJudgeTool', 'judgeAccess'] },
   'src/scorers/label.ts': { typeOnly: true },
+  // What describe proposes for the inputs of teamai's default session-close workflow, for the calling session.
+  'src/session-close.ts': { names: ['SessionClose'] },
   // The identity every driver reports, the repository's atomic file writes, and the shared config types.
   'src/driver-identity.ts': {},
   // The run mode: whether a person attends the run, which describe answers for and every attempt's process gets.

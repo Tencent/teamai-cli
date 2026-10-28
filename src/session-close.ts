@@ -4,13 +4,16 @@
  * made from these values, and `workflow start --describe` proposes them, each with why, as the workflow's inputs.
  */
 import { loadTeamConfig } from './config.js';
+import type { SessionRun } from './launch-context.js';
 import { requiredIsolation, scorerIsolationSource, type IsolationSetting } from './scorers/isolation.js';
 import { installedJudgeTools } from './scorers/judge.js';
 import { scopeScoring } from './scorers/settings.js';
 import { AgentSession } from './session-flow/agent-session.js';
 import { SessionPolicy, type PolicySource, type SessionPolicies } from './session-flow/session-policy.js';
 import { SessionWork, type SampledScorer } from './session-flow/session-work.js';
-import type { LocalConfig } from './types.js';
+import type { LocalConfig, SessionCloseOffered } from './types.js';
+import { nestedStart } from './workflow/attempt-marker.js';
+import { resolveStart } from './workflow/cache.js';
 import type { OutputSchema } from './workflow/types.js';
 
 /** The name of teamai's default close-out workflow, and of a team file that replaces it. */
@@ -166,11 +169,26 @@ async function offer(config: LocalConfig, session: { tool: string; sessionId: st
 }
 
 /**
- * What the friction reminder offers session `sessionId` of `tool`: the `publish` and `scorers` describe proposes for it.
- * It looks for judge tools only when a sampled scorer needs verified isolation.
+ * What the friction reminder offers session `sessionId` of `tool`, whose Stop hook runs under `config` in `cwd`, in a
+ * session of `run`: the `publish` and `scorers` describe proposes for it. Undefined, so the reminder stays today's, in
+ * a session teamai launched, one that runs unattended, one in a workflow place, where no start is allowed, one that
+ * drives a skill-driven run not done yet, its own session-close included, and where session-close resolves to no
+ * definition or to one whose `invoke` is deny. The values are those of the scope a start would run in. It looks for
+ * judge tools only when a sampled scorer needs verified isolation.
  */
-async function offered(config: LocalConfig, session: { tool: string; sessionId: string }, options: OfferOptions = {}): Promise<{ publish: boolean; scorers: string[] }> {
-  const { publish, scorers } = await propose(config, session, options);
+async function reminderOffer(
+  config: LocalConfig,
+  { tool, sessionId, cwd, run }: { tool: string; sessionId: string; cwd: string; run: SessionRun },
+  options: OfferOptions = {},
+): Promise<SessionCloseOffered | undefined> {
+  if (run.launchedBy !== undefined || run.runMode === 'unattended' || (await nestedStart(process.env, cwd)) !== undefined) return undefined;
+  const start = await resolveStart(config, NAME);
+  if ((start.workflow?.definition.invoke ?? 'deny') === 'deny') return undefined;
+  // The skill driver imports this module for describe, so this one loads it only here.
+  const { drivesUndoneRun } = await import('./workflow/drivers/skill/skill-driver.js');
+  const homes = start.config === config ? [config] : [config, start.config];
+  if ((await Promise.all(homes.map((home) => drivesUndoneRun(home, sessionId)))).some(Boolean)) return undefined;
+  const { publish, scorers } = await propose(start.config, { tool, sessionId }, options);
   return { publish: publish.value, scorers: scorers.value };
 }
 
@@ -217,4 +235,4 @@ async function proposals(
   return Object.fromEntries(matching.map((input) => [input, proposed[input]]));
 }
 
-export const SessionClose = { NAME, offer, offered, proposals } as const;
+export const SessionClose = { NAME, offer, reminderOffer, proposals } as const;

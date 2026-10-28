@@ -2360,6 +2360,17 @@ export interface ContributeState {
    * that deliver the hint directly through the Stop hook.
    */
   pendingHint?: string;
+  /**
+   * What the reminder offered with the session-close workflow (#1388), set in the write that sets `hinted`: whether to
+   * publish the session, and the scorers to judge it with. Absent when the reminder named no workflow.
+   */
+  offered?: SessionCloseOffered;
+}
+
+/** What the friction reminder offers a session with the session-close workflow. */
+export interface SessionCloseOffered {
+  publish: boolean;
+  scorers: string[];
 }
 
 /**
