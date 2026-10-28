@@ -809,7 +809,8 @@ describe('doctor — JSON report', () => {
             updatePolicy: undefined,
             autoCompactTokens: undefined,
         };
-        mockedLoadLocalConfig.mockImplementation(async (options?: { dryRun?: boolean }) => options?.dryRun ? project : user);
+        // Doctor loads this workspace's config, then the user install that decides machine-wide settings.
+        mockedLoadLocalConfig.mockResolvedValueOnce(project).mockResolvedValue(user);
         mockedLoadMemberSettings.mockResolvedValue({});
         mockedLoadTeamConfig.mockImplementation(async (repoPath: string) => repoPath === '/tmp/user-team'
             ? { ...mockTeamConfig, autoUpdate: false, sharing: { autoCompact: { tokens: 90000 } } }
@@ -850,7 +851,8 @@ describe('doctor — JSON report', () => {
             repo: { localPath: '/tmp/user-team', remote: 'https://example.test/user.git' },
             autoCompactTokens: undefined,
         };
-        mockedLoadLocalConfig.mockImplementation(async (options?: { dryRun?: boolean }) => options?.dryRun ? project : user);
+        // Doctor loads this workspace's config, then the user install that decides machine-wide settings.
+        mockedLoadLocalConfig.mockResolvedValueOnce(project).mockResolvedValue(user);
         mockedLoadMemberSettings.mockResolvedValue({});
         mockedLoadTeamConfig.mockResolvedValue({ ...mockTeamConfig, sharing: {} });
         mockedReadFileSafe.mockImplementation(async (filePath: string) => {

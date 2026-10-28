@@ -178,7 +178,7 @@ export async function memberSettingsReport(ctx: { localConfig: LocalConfig; team
   const machine = await loadMemberSettings(machineFile);
   const scopeFile = getDataHome(ctx.localConfig) + path.sep + 'config.yaml';
   const rawScope = ctx.localConfig.scope === 'user' ? rawMachine : await readYamlObject(scopeFile);
-  const userConfig = ctx.localConfig.scope === 'user' ? ctx.localConfig : await loadLocalConfig();
+  const userConfig = ctx.localConfig.scope === 'user' ? ctx.localConfig : await loadLocalConfig({ dryRun: true });
   const userSettings = userConfig?.scope === 'user' ? userConfig : {};
   // updatePolicy and autoCompactTokens are machine-wide: when a user install
   // exists, it decides these values even while doctor is inspecting a project.

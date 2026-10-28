@@ -47,4 +47,18 @@ describe('readMemberSettingsPanel', () => {
       { key: 'workflows.tools.default', value: 'codex', source: { level: 'machine', value: 'codex', file: machineFile() }, below: [], unused: [] },
     ]));
   });
+
+  it('leaves a user install whose legacy role migration is pending as it is', async () => {
+    const { config } = await workspace('');
+    const team = config.repo.localPath;
+    fs.mkdirSync(path.join(team, 'manifest'), { recursive: true });
+    fs.writeFileSync(path.join(team, 'manifest', 'roles.yaml'), 'version: 1\nroles:\n  - id: hai\n    resources: { knowledge: [], skills: [hai] }\n');
+    fs.mkdirSync(path.dirname(machineFile()), { recursive: true });
+    fs.writeFileSync(machineFile(), `repo: { localPath: ${JSON.stringify(team)}, remote: origin }\nusername: tester\n`);
+    const before = fs.readFileSync(machineFile(), 'utf8');
+
+    await readMemberSettingsPanel(config);
+
+    expect(fs.readFileSync(machineFile(), 'utf8')).toBe(before);
+  });
 });
