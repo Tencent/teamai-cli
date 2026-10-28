@@ -1025,6 +1025,11 @@ export function hookAdapterDir(adapter: Exclude<HookAdapterId, 'openclaw-hook'>,
   return adapterDirIn(adapter, (tool) => toolHome(tool, host), host);
 }
 
+/** The directory `adapter` writes teamai's hook file into when its tool's home is `home`: one of the homes uninstall cleans. */
+export function hookAdapterDirIn(adapter: Exclude<HookAdapterId, 'openclaw-hook' | 'dsh-hooks'>, home: string, host: Host = realHost()): string {
+  return adapterDirIn(adapter, () => home, host);
+}
+
 /**
  * Where earlier releases wrote `adapter`'s hook file, under its tool's default home, when the home
  * has moved since; else null. A default home linked to the moved one is the same directory.

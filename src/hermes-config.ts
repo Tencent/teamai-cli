@@ -8,9 +8,9 @@ import { TEAMAI_RULES_START, TEAMAI_RULES_END } from './types.js';
 const RULES_BLOCK_START = TEAMAI_RULES_START;
 const RULES_BLOCK_END = TEAMAI_RULES_END;
 
-/** Absolute path to the Hermes config.yaml. */
-export function getHermesConfigPath(): string {
-  return path.join(toolHome('hermes'), 'config.yaml');
+/** Absolute path to the Hermes config.yaml in `home`. */
+export function getHermesConfigPath(home = toolHome('hermes')): string {
+  return path.join(home, 'config.yaml');
 }
 
 /** Hermes uses an explicit cap, or a model-dependent cap with a 20,000-character floor. */
@@ -32,8 +32,8 @@ export async function hermesContextFileBudget(): Promise<{ limit: number; explic
  * Read the Hermes config.yaml as a YAML Document, preserving comments and
  * formatting. Returns an empty Document when the file is missing or empty.
  */
-async function readConfigDoc(): Promise<YAML.Document.Parsed> {
-  const content = await readFileSafe(getHermesConfigPath());
+async function readConfigDoc(home = toolHome('hermes')): Promise<YAML.Document.Parsed> {
+  const content = await readFileSafe(getHermesConfigPath(home));
   if (!content || content.trim() === '') return new YAML.Document({}) as YAML.Document.Parsed;
   const doc = YAML.parseDocument(content);
   // If the top level is not a map (unexpected), start fresh to stay safe.
@@ -47,9 +47,9 @@ async function readConfigDoc(): Promise<YAML.Document.Parsed> {
  * Serialize and write the Hermes config.yaml Document, creating the home dir
  * if needed. Comments and key order in the original file are preserved.
  */
-async function writeConfigDoc(doc: YAML.Document.Parsed): Promise<void> {
-  await ensureDir(toolHome('hermes'));
-  await writeFile(getHermesConfigPath(), doc.toString());
+async function writeConfigDoc(doc: YAML.Document.Parsed, home = toolHome('hermes')): Promise<void> {
+  await ensureDir(home);
+  await writeFile(getHermesConfigPath(home), doc.toString());
 }
 
 /**
@@ -161,9 +161,9 @@ export async function removeSoulRules(soulPath: string): Promise<void> {
   await upsertSoulRules(soulPath, '');
 }
 
-/** Absolute path to the Hermes shell-hooks allowlist JSON. */
-export function getHermesAllowlistPath(): string {
-  return path.join(toolHome('hermes'), 'shell-hooks-allowlist.json');
+/** Absolute path to the Hermes shell-hooks allowlist JSON in `home`. */
+export function getHermesAllowlistPath(home = toolHome('hermes')): string {
+  return path.join(home, 'shell-hooks-allowlist.json');
 }
 
 /** Shape of a single hook entry in config.yaml `hooks.<event>[]`. */
@@ -225,8 +225,8 @@ export async function upsertHermesHook(
  *
  * @param command - The command string to remove.
  */
-export async function removeHermesHookByCommand(command: string): Promise<void> {
-  const doc = await readConfigDoc();
+export async function removeHermesHookByCommand(command: string, home = toolHome('hermes')): Promise<void> {
+  const doc = await readConfigDoc(home);
 
   // Get hooks as a plain JS object for iteration.
   const rawHooks = doc.getIn(['hooks']);
@@ -261,7 +261,7 @@ export async function removeHermesHookByCommand(command: string): Promise<void> 
     doc.deleteIn(['hooks']);
   }
 
-  await writeConfigDoc(doc);
+  await writeConfigDoc(doc, home);
 }
 
 /**
@@ -287,13 +287,13 @@ export async function addHermesAllowlist(event: string, command: string): Promis
 }
 
 /** Whether these exact managed commands remain in hooks or their approvals. */
-export async function hasHermesHookCommands(commands: readonly string[]): Promise<boolean> {
-  const doc = await readConfigDoc();
+export async function hasHermesHookCommands(commands: readonly string[], home = toolHome('hermes')): Promise<boolean> {
+  const doc = await readConfigDoc(home);
   const raw = doc.getIn(['hooks']);
   const hooks = YAML.isMap(raw) ? raw.toJSON() as Record<string, unknown> : {};
   if (Object.values(hooks).some(entries => Array.isArray(entries)
     && entries.some((entry: HookEntry) => entry && typeof entry === 'object' && commands.includes(entry.command)))) return true;
-  const approvals = await readJson<AllowlistFile>(getHermesAllowlistPath());
+  const approvals = await readJson<AllowlistFile>(getHermesAllowlistPath(home));
   return Array.isArray(approvals?.approvals) && approvals.approvals.some(entry => commands.includes(entry.command));
 }
 
@@ -304,8 +304,8 @@ export async function hasHermesHookCommands(commands: readonly string[]): Promis
  * @param event   - Hook event name.
  * @param command - Absolute path of the script to de-approve.
  */
-export async function removeHermesAllowlist(event: string, command: string): Promise<void> {
-  const filePath = getHermesAllowlistPath();
+export async function removeHermesAllowlist(event: string, command: string, home = toolHome('hermes')): Promise<void> {
+  const filePath = getHermesAllowlistPath(home);
   const raw = await readJson<AllowlistFile>(filePath);
   if (!raw || !Array.isArray(raw.approvals)) return;
 
@@ -335,8 +335,8 @@ export async function enableHermesPlugin(name: string): Promise<boolean> {
 }
 
 /** Remove `name` from `plugins.enabled` in the Hermes config.yaml, dropping keys left empty. */
-export async function disableHermesPlugin(name: string): Promise<void> {
-  const doc = await readConfigDoc();
+export async function disableHermesPlugin(name: string, home = toolHome('hermes')): Promise<void> {
+  const doc = await readConfigDoc(home);
   const enabled = doc.getIn(['plugins', 'enabled']);
   if (!YAML.isSeq(enabled)) return;
   const list = enabled.toJSON() as unknown[];
@@ -346,7 +346,7 @@ export async function disableHermesPlugin(name: string): Promise<void> {
   else doc.deleteIn(['plugins', 'enabled']);
   const plugins = doc.getIn(['plugins']);
   if (YAML.isMap(plugins) && plugins.items.length === 0) doc.deleteIn(['plugins']);
-  await writeConfigDoc(doc);
+  await writeConfigDoc(doc, home);
 }
 
 /** Whether the member put `name` in `plugins.disabled`, which enabling leaves alone. */

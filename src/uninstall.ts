@@ -194,9 +194,12 @@ interface RemovalPlan {
   keptForProjects: KeptForProjects;
   /** Whether shared resources (docs / ~/.teamai / shell profile) are part of this removal. */
   includeShared: boolean;
-  /** Whether this removal targets Hermes (clears its SOUL.md block + config.yaml hook). */
-  hermesCleanup: boolean;
-  /** The SOUL.md whose rules block goes with `hermesCleanup`: only a user-scope pull writes one (#946). */
+  /**
+   * The Hermes homes holding teamai's hook, plugin or config.yaml entries. Resolved with the plan:
+   * removing the data home takes the tool-homes record that names a recorded home (#1221).
+   */
+  hermesHomes: string[];
+  /** The SOUL.md whose rules block goes with `hermesHomes`: only a user-scope pull writes one (#946). */
   hermesSoul: string | null;
   /** Scope being uninstalled (issue #73: surfaced to the user). */
   scope: Scope;
@@ -1267,7 +1270,7 @@ async function buildRemovalPlan(
       : [],
     keptForProjects: projectsKept,
     includeShared,
-    hermesCleanup: globalAdapters && toolsToMerge.includes('hermes') && await (await import('./hermes-hooks.js')).hasHermesHooks(),
+    hermesHomes: globalAdapters && toolsToMerge.includes('hermes') && await (await import('./hermes-hooks.js')).hasHermesHooks() ? [toolHome('hermes')] : [],
     hermesSoul: localConfig.scope === 'user' ? ownOf(await locate('hermes', 'blocks', install))?.path ?? null : null,
     scope: localConfig.scope,
     globalAdapters,
@@ -1494,7 +1497,7 @@ function isPlanEmpty(plan: RemovalPlan): boolean {
     plan.kiroHookFile === null &&
     plan.piHookFiles.length === 0 &&
     plan.dshHookFile === null &&
-    !plan.hermesCleanup &&
+    plan.hermesHomes.length === 0 &&
     plan.claudeMdFiles.length === 0 &&
     plan.opencodeInstructions.length === 0 &&
     plan.skillDirs.length === 0 &&
@@ -2462,13 +2465,13 @@ async function executeRemoval(
   }
 
   // (h) Hermes: clear teamai-managed entries — the SOUL.md rules block (user scope), the
-  // status-report hook (config.yaml + allowlist + script). Gated on hermesCleanup
-  // so a targeted `--agent <other>` uninstall never touches ~/.hermes. No-op safe.
-  if (plan.hermesCleanup) {
+  // status-report hook (config.yaml + allowlist + script) and the plugin, in each home the plan
+  // found them. A targeted `--agent <other>` uninstall finds none, so never touches ~/.hermes.
+  if (plan.hermesHomes.length > 0) {
     try {
       const { removeHermesHooks } = await import('./hermes-hooks.js');
       const { removeSoulRules } = await import('./hermes-config.js');
-      await removeHermesHooks();
+      for (const home of plan.hermesHomes) await removeHermesHooks(home);
       if (plan.hermesSoul !== null) await removeSoulRules(plan.hermesSoul);
     } catch (e) {
       log.debug(`Hermes uninstall cleanup skipped: ${(e as Error).message}`);
