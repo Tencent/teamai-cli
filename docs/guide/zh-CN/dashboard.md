@@ -33,7 +33,7 @@ teamai dashboard --port 8080
 | `recallEnabled` | `false` | 此工作区，`~/.teamai/projects/<slug>/config.yaml` | 本机 `true`，团队 `false` |
 | `updatePolicy` | `skip` | 用户配置，`~/.teamai/config.yaml` | 此工作区 `auto`，未使用 |
 
-由 user scope 决定 `updatePolicy` 或 `autoCompactTokens` 时，此工作区自己的值标为“未使用”。**未读取**列出没有 user scope 安装的 `~/.teamai/config.yaml` 中不是成员设置的键，如 `excludedSkills`。在侧边栏选择另一个工作区即可对比。面板不修改任何设置：请编辑它给出的文件。
+由 user scope 决定 `updatePolicy` 或 `autoCompactTokens` 时，此工作区自己的值标为“未使用”。面板不列出 `scoring`，因为本机的 `scoring` 只会让评判更严格：每种模式和每日上限来自哪项设置，见会话共享面板。**未读取**列出没有 user scope 安装的 `~/.teamai/config.yaml` 中不是成员设置的键，如 `excludedSkills`。在侧边栏选择另一个工作区即可对比。面板不修改任何设置：请编辑它给出的文件。
 
 ## 工作流运行（Workflow Runs）
 

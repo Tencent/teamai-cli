@@ -33,7 +33,7 @@ The Overview's **Member settings** panel lists, for the selected workspace, each
 | `recallEnabled` | `false` | This workspace, `~/.teamai/projects/<slug>/config.yaml` | This machine `true`, Team `false` |
 | `updatePolicy` | `skip` | User config, `~/.teamai/config.yaml` | This workspace `auto`, not used |
 
-`not used` marks this workspace's own `updatePolicy` or `autoCompactTokens` when the user scope decides them. **Not read** lists the keys of a `~/.teamai/config.yaml` with no user-scope install that are not member settings, such as `excludedSkills`. Pick another workspace in the sidebar to compare. The panel changes no setting: edit the file it names.
+`not used` marks this workspace's own `updatePolicy` or `autoCompactTokens` when the user scope decides them. `scoring` is not listed, because the machine's only makes judging stricter: Session sharing shows what set each mode and the daily limit. **Not read** lists the keys of a `~/.teamai/config.yaml` with no user-scope install that are not member settings, such as `excludedSkills`. Pick another workspace in the sidebar to compare. The panel changes no setting: edit the file it names.
 
 ## Workflow Runs
 

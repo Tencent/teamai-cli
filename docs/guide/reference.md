@@ -164,9 +164,9 @@ scoring:
 ```
 
 ```console
-$ teamai doctor
+$ cd ~/work/api && teamai doctor
 ℹ Member settings:
-  sessions.publish.attended: off, from the machine config /home/ana/.teamai/config.yaml
+  sessions.publish.attended: off, from the machine config /home/ana/.teamai/config.yaml (the team says auto)
 ℹ Session judging: attended auto, set by scorers/scoring.yaml sessions; unattended off, set by ~/.teamai/config.yaml scoring.sessions.unattended; up to 2 sessions a day, set by ~/.teamai/config.yaml scoring.daily_limit.
 ```
 
