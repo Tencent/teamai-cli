@@ -66,7 +66,7 @@ describe('detectHomeInstalledAgents', () => {
     await fse.ensureDir(path.join(home, '.codex'));
     await fse.ensureDir(path.join(home, '.claude'));
     const found = await detectHomeInstalledAgents();
-    // candidate order is claude, codex, cursor, copilot, pi, joycode, codebuddy, workbuddy, muse
+    // candidate order is claude, codex, cursor, copilot, pi, joycode, codebuddy, workbuddy, muse, agy
     expect(found).toEqual(['claude', 'codex']);
   });
 
@@ -78,13 +78,22 @@ describe('detectHomeInstalledAgents', () => {
     expect(await detectHomeInstalledAgents()).toEqual(expected);
   });
 
+  // Gemini CLI also creates ~/.gemini; only agy creates ~/.gemini/config.
+  it.each([
+    ['~/.gemini/config', ['.gemini', 'config'], ['agy']],
+    ['only ~/.gemini', ['.gemini'], []],
+  ])('detects Antigravity CLI from %s', async (_label, segments, expected) => {
+    await fse.ensureDir(path.join(home, ...segments));
+    expect(await detectHomeInstalledAgents()).toEqual(expected);
+  });
+
   it('respects a custom candidate list', async () => {
     await fse.ensureDir(path.join(home, '.cursor'));
     await fse.ensureDir(path.join(home, '.claude'));
     expect(await detectHomeInstalledAgents(['cursor'])).toEqual(['cursor']);
   });
 
-  it('SELF_MODE_AGENT_CHOICES includes Pi, Copilot, JoyCode and Muse Code among the common coding agents', () => {
+  it('SELF_MODE_AGENT_CHOICES includes Pi, Copilot, JoyCode, Muse Code and Antigravity CLI among the common coding agents', () => {
     expect([...SELF_MODE_AGENT_CHOICES]).toEqual([
       'claude',
       'codex',
@@ -95,6 +104,7 @@ describe('detectHomeInstalledAgents', () => {
       'codebuddy',
       'workbuddy',
       'muse',
+      'agy',
     ]);
   });
 });

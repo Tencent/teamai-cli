@@ -388,6 +388,29 @@ export function renderForMuse(spec: AgentSpec): RenderResult {
   return { ext: agentFileExtensionForTool('muse'), content: matter.stringify(spec.instructions, frontmatterData) };
 }
 
+/**
+ * Render an AgentSpec for Antigravity CLI: name, description, then
+ * `tool_extras.agy`. agy 1.4.8 skips an agent whose `model` it does not know
+ * (`sonnet` included) and names its tools its own way (`run_command`,
+ * `view_file`), so the team's `model` and `tools` stay out; only a model
+ * resolved for agy reaches the file.
+ */
+export function renderForAgy(spec: AgentSpec, resolved?: ResolvedAgentModel): RenderResult {
+  const frontmatterData: Record<string, unknown> = { name: spec.name, description: spec.description };
+  if (resolved?.model !== undefined) frontmatterData['model'] = resolved.model;
+  Object.assign(frontmatterData, spec.tool_extras?.agy);
+  return { ext: agentFileExtensionForTool('agy'), content: matter.stringify(spec.instructions, frontmatterData) };
+}
+
+/** Reverse an agy agent: its `model` and `tools` are agy's own, so they go back as `tool_extras.agy`, never the team's. */
+export function reverseFromAgy(filePath: string, content: string): ReverseResult {
+  const result = reverseFromClaude(filePath, content);
+  if (!result.ok) return result;
+  const { model, tools, tool_extras, ...spec } = result.spec;
+  const extras = { ...tool_extras?.['claude'], ...(model !== undefined ? { model } : {}), ...(tools !== undefined ? { tools } : {}) };
+  return { ok: true, spec: Object.keys(extras).length > 0 ? { ...spec, tool_extras: { agy: extras } } : spec };
+}
+
 /** The subagent names Trae loads (docs.trae.ai/ide/subagents); it ignores a file with any other. */
 const TRAE_AGENT_NAME = /^[A-Za-z](?:[A-Za-z0-9-]{0,48}[A-Za-z0-9])?$/;
 
@@ -1089,6 +1112,7 @@ export function renderForTool(spec: AgentSpec, tool: ToolName, resolved?: Resolv
     case 'opencode': return renderForOpencode(target, fields);
     case 'workbuddy': return renderForWorkbuddy(target);
     case 'muse': return renderForMuse(target);
+    case 'agy': return renderForAgy(spec, resolved);
     case 'trae':
     case 'trae-cn':
       return { ext, content: renderForTrae(spec, tool, resolved, scope) };
@@ -1145,6 +1169,8 @@ function reverseByParser(tool: ToolName, filePath: string, content: string): Rev
       return reverseFromWorkbuddy(filePath, content);
     case 'muse':
       return reverseFromMuse(filePath, content);
+    case 'agy':
+      return reverseFromAgy(filePath, content);
     case 'trae':
     case 'trae-cn':
       return reverseFromTrae(filePath, content);

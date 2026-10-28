@@ -1236,6 +1236,45 @@ export const TOOLS = {
       agentHooks: { cell: '✓t', note: '#1224 writes them to settings.json; not rerun' },
     },
   },
+  // agy 1.4.8 runs: ~/.gemini/config holds the user customizations, <root>/.agents a project's.
+  agy: {
+    home: { dir: '.gemini/config' },
+    installedBy: 'home',
+    skillLoad: 'unknown',
+    skills: {
+      user: [{ base: 'home', path: '.gemini/config/skills', evidence: 'verified' }, { base: 'home', path: '.agents/skills', evidence: 'verified' }],
+      project: [{ base: 'project', path: '.agents/skills', when: 'workspaceUnder', evidence: 'verified' }],
+    },
+    rules: {
+      user: { channel: 'dir', format: 'agy', reads: [{ base: 'home', path: '.gemini/config/rules', evidence: 'verified' }] },
+      project: { channel: 'dir', format: 'agy', reads: [{ base: 'project', path: '.agents/rules', when: 'workspaceUnder', evidence: 'verified' }] },
+    },
+    blocks: {
+      user: { channel: 'file', file: { in: 'rules-dir', name: 'teamai-context.md', owned: true, header: 'trigger-always-on' }, reads: [{ base: 'home', path: '.gemini/config/rules', evidence: 'verified' }] },
+      project: { channel: 'file', file: { in: 'rules-dir', name: 'teamai-context.md', owned: true, header: 'trigger-always-on' }, reads: [{ base: 'project', path: '.agents/rules', when: 'workspaceUnder', evidence: 'verified' }] },
+    },
+    agents: {
+      user: { reads: [{ base: 'home', path: '.gemini/config/agents', evidence: 'verified' }] },
+      project: { reads: [{ base: 'project', path: '.agents/agents', when: 'workspaceUnder', evidence: 'verified' }] },
+    },
+    mcp: {
+      user: { format: 'agy', reads: [{ base: 'home', path: '.gemini/config/mcp_config.json', evidence: 'verified' }] },
+      project: { format: 'agy', reads: [{ base: 'project', path: '.agents/plugins/teamai/mcp_config.json', when: 'workspaceUnder', evidence: 'verified' }] },
+    },
+    hooks: { user: 'unknown', self: 'unknown' },
+    sessions: 'unknown',
+    launch: 'none',
+    features: {
+      env: '?',
+      workflows: '?',
+      recall: '?',
+      stats: '?',
+      aiBackend: '?',
+      votesJudge: '?',
+      sessionJudge: '?',
+      agentHooks: '?',
+    },
+  },
 } as const satisfies Record<ToolId, ToolDescriptor>;
 
 export function isToolId(value: string): value is ToolId {

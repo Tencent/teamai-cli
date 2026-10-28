@@ -691,6 +691,19 @@ export const DEFAULT_TOOL_PATHS = {
     agents: '.agents/agents',
     userScope: { skills: '.config/muse/skills', settings: '.config/muse/settings.json', agents: '.config/muse/agents' },
   },
+  // Antigravity CLI (Google, binary `agy`) reads user customizations from
+  // ~/.gemini/config and a project's from <root>/.agents. Its rules need a
+  // `trigger` frontmatter. ~/.gemini/skills and ~/.gemini/GEMINI.md belong to
+  // Gemini CLI, so nothing here points at them.
+  agy: {
+    skills: '.agents/skills',
+    rules: '.agents/rules',
+    agents: '.agents/agents',
+    // agy reads a project's MCP servers only from a plugin, so teamai's ride a plugin of its own.
+    mcp: '.gemini/config/mcp_config.json',
+    mcpProject: '.agents/plugins/teamai/mcp_config.json',
+    userScope: { skills: '.gemini/config/skills', rules: '.gemini/config/rules', agents: '.gemini/config/agents' },
+  },
 } satisfies Record<string, z.infer<typeof ToolPathsSchema>>;
 
 /** A built-in tool. Custom tools in a team's `toolPaths` stay plain strings. */

@@ -4,7 +4,7 @@
  * The team repo always stores rules as tool-neutral `<name>.md`. A tool with
  * a rules format of its own gets a render of it (`RULE_FORMATS`): Cursor and
  * JoyCode `.mdc`, Copilot `.instructions.md`, Kiro steering, Qoder, CodeBuddy
- * (which WorkBuddy shares), Oh My Pi and Trae rules `.md` with their own
+ * (which WorkBuddy shares), Oh My Pi, Trae and Antigravity CLI rules `.md` with their own
  * frontmatter. A tool with no rules format reads the team rules from a block
  * in a file of its own in user scope (`userRulesFile`, instruction-targets.ts),
  * or takes a verbatim `.md` copy.
@@ -21,6 +21,7 @@
 
 import { ruleFormatIdOf, runTimeRulesOf } from '../tools.js';
 import type { Scope } from '../types.js';
+import { AGY_RULE_FORMAT } from './agy-rule.js';
 import { CODEBUDDY_RULE_FORMAT } from './codebuddy-rule.js';
 import { COPILOT_INSTRUCTIONS_FORMAT } from './copilot-instructions.js';
 import { CURSOR_MDC_FORMAT } from './cursor-mdc.js';
@@ -67,6 +68,7 @@ const RULE_FORMATS = {
   trae: TRAE_RULE_FORMAT,
   codebuddy: CODEBUDDY_RULE_FORMAT,
   omp: OMP_RULE_FORMAT,
+  agy: AGY_RULE_FORMAT,
 } as const satisfies Readonly<Record<string, RuleFormat>>;
 
 export type RuleFormatId = keyof typeof RULE_FORMATS;
