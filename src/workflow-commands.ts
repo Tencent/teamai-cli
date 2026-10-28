@@ -627,7 +627,7 @@ async function resumeOffered(runId: string | undefined, options: ResumeOptions):
       moved += 1;
       continue;
     }
-    if (!('error' in taken.envelope)) log.success(`Claimed ${run.run} (${run.workflow}) from ${run.owner.user}`);
+    if (skill && !('error' in taken.envelope)) saidClaimed(run);
     if (skill) writeEnvelope(taken.envelope, taken.secrets);
     else await writeDriven(config, taken.envelope, secrets);
     return;
@@ -647,8 +647,13 @@ async function driveOffered({ config, teamConfig }: Ready, run: PublishedRun, op
   return withDriverLock(config, run.run, async (drive) => {
     const claimed = await claimOffered(config, run.run, { checkout: process.cwd() });
     if (!claimed.ok) return { error: claimed.error };
+    saidClaimed(run);
     return drive(process.cwd(), { tools, toolPaths: teamConfig.toolPaths, autoApprove: options.autoApprove });
   });
+}
+
+function saidClaimed(run: PublishedRun): void {
+  log.success(`Claimed ${run.run} (${run.workflow}) from ${run.owner.user}`);
 }
 
 /** Fetches teamai-reports into this machine's reports checkout, as `teamai pull` does, or says why it could not. */
