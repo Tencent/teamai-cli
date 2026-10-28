@@ -16,8 +16,8 @@ import { generatedSkillAt, readGenerated } from './generated-marker.js';
 import { renderWorkflowSkill, type AdvertisedWorkflow } from './render.js';
 
 /**
- * Every cached `invoke: allow` or `ask` workflow, each with its alias only when the alias starts it. The cache is what
- * `start` resolves from, so no skill names a workflow that cannot start.
+ * Every runnable `invoke: allow` or `ask` workflow, a cached team file or teamai's default, each with its alias only when
+ * the alias starts it. The cache is what `start` resolves from, so no skill names a workflow that cannot start.
  */
 async function advertisedWorkflows(config: LocalConfig): Promise<AdvertisedWorkflow[]> {
   const advertised: AdvertisedWorkflow[] = [];

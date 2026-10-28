@@ -128,7 +128,7 @@ export async function loadCachedWorkflow(config: LocalConfig, name: string): Pro
   const aliases = team.filter((entry) => entry.definition.alias === name);
   if (aliases.length === 1) return { ...aliases[0], source: 'team' };
   const shipped = DefaultWorkflows.named(name);
-  return shipped && !team.some((entry) => entry.definition.alias === name) ? { ...shipped, source: 'default' } : null;
+  return shipped && aliases.length === 0 ? { ...shipped, source: 'default' } : null;
 }
 
 /**

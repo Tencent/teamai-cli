@@ -20,18 +20,21 @@ import type { OutputSchema } from './workflow/types.js';
 const NAME = 'session-close';
 
 /** A value teamai proposes for one input, and why it proposes that value. */
-export interface Proposal<T> {
+interface Proposal<T> {
   value: T;
   why: string;
 }
 
+/** Who judges the session: teamai's own judge on this machine, or the session's agent. */
+type Judge = 'here' | 'driver';
+
 /** What teamai proposes for each input of the session-close input contract, for one session. */
-export interface SessionCloseOffer {
+interface SessionCloseOffer {
   session: Proposal<string>;
   source: Proposal<string>;
   publish: Proposal<boolean>;
   scorers: Proposal<string[]>;
-  judge: Proposal<'here' | 'driver'>;
+  judge: Proposal<Judge>;
 }
 
 const PUBLISH_WHY = 'Archive this session\'s transcript, scrubbed, for the team.';
@@ -83,7 +86,7 @@ function filesOf(sources: readonly string[]): string {
  * The open scorers of `sampled`, without those whose required isolation is verified when `judge` is the session's
  * agent, which judges only best-effort. `judge` is asked only when a scorer needs verified isolation.
  */
-function scorersProposal(sampled: readonly SampledScorer[], { judge, team }: { judge: () => 'here' | 'driver'; team: readonly IsolationSetting[] }): Proposal<string[]> {
+function scorersProposal(sampled: readonly SampledScorer[], { judge, team }: { judge: () => Judge; team: readonly IsolationSetting[] }): Proposal<string[]> {
   const open = sampled.filter(({ state }) => state.kind === 'open');
   const verifiedBy = (one: SampledScorer) => {
     const required = requiredIsolation([...team, { source: scorerIsolationSource(one.scorer, one.pin.relativePath), value: one.definition.isolation }]);
@@ -122,9 +125,9 @@ async function propose(
   config: LocalConfig,
   { tool, sessionId }: { tool: string; sessionId: string },
   { now = new Date().toISOString(), judgeTools = () => installedJudgeTools([]) }: OfferOptions,
-): Promise<Omit<SessionCloseOffer, 'judge'> & { judge: () => Proposal<'here' | 'driver'> }> {
-  let found: Proposal<'here' | 'driver'> | undefined;
-  const judge = (): Proposal<'here' | 'driver'> => {
+): Promise<Omit<SessionCloseOffer, 'judge'> & { judge: () => Proposal<Judge> }> {
+  let found: Proposal<Judge> | undefined;
+  const judge = (): Proposal<Judge> => {
     if (found) return found;
     const [installed] = judgeTools();
     found = installed

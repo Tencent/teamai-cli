@@ -458,14 +458,11 @@ async function workflowSourceLines(
   const paths = new Map(files.map((file) => [file.name.replace(/\.yaml$/, ''), file.sourcePath]));
   const names = [...new Set([...paths.keys(), ...(await listCachedWorkflows(localConfig)).map(({ definition }) => definition.name)])].sort();
   if (names.length === 0) return ['  (none)'];
-  const lines: string[] = [];
-  for (const name of names) {
-    const source = (await resolveStart(localConfig, name)).workflow?.source ?? 'not runnable';
-    lines.push(`  ${name}  (${source})`);
+  const sources = await Promise.all(names.map(async (name) => (await resolveStart(localConfig, name)).workflow?.source ?? 'not runnable'));
+  return names.flatMap((name, index) => {
     const sourcePath = paths.get(name);
-    if (options.verbose && sourcePath) lines.push(`    path: ${sourcePath}`);
-  }
-  return lines;
+    return [`  ${name}  (${sources[index]})`, ...(options.verbose && sourcePath ? [`    path: ${sourcePath}`] : [])];
+  });
 }
 
 async function printLocalAgentsSection(

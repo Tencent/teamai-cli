@@ -2367,11 +2367,9 @@ export interface ContributeState {
   offered?: SessionCloseOffered;
 }
 
-/** What the friction reminder offers a session with the session-close workflow. */
-export interface SessionCloseOffered {
-  publish: boolean;
-  scorers: string[];
-}
+/** What the friction reminder offers a session with the session-close workflow, as the session's state keeps it. */
+export const SessionCloseOfferedSchema = z.object({ publish: z.boolean(), scorers: z.array(z.string()) });
+export type SessionCloseOffered = z.infer<typeof SessionCloseOfferedSchema>;
 
 /**
  * Layer 1 (fast-path) threshold: if toolCount < this, skip reading events.jsonl.

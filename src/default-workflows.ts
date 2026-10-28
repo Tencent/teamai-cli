@@ -11,10 +11,12 @@ import type { CachedWorkflow, ResolvedWorkflow, WorkflowSource } from './workflo
 //
 //  The CLI ships workflows a team gets without writing them,
 //  as workflows/<name>.yaml in the npm package. A team file of
-//  the same name replaces one. Only the workflow cache serves
-//  them (loadCachedWorkflow, listCachedWorkflows), and only
-//  while no team version of that name runs; they are never
-//  written to the cache or the team repo.
+//  the same name replaces one. The workflow cache resolves
+//  them (loadCachedWorkflow, listCachedWorkflows) only while
+//  no team version of that name runs; they are never written
+//  to the cache or the team repo. A run records which one it
+//  ran (originOf), and a handoff refuses a default run whose
+//  shipped file differs on the other machine.
 //
 
 /** `workflows/` in the package root. This file sits one level below it, in src/ and in the bundle in dist/ alike. */

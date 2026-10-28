@@ -25,6 +25,7 @@ import {
   CONTRIBUTE_TOOLERROR_TIERS,
   CONTRIBUTE_SKILL_BONUS,
   CONTRIBUTE_DIVERSITY_BONUS_MAX,
+  SessionCloseOfferedSchema,
 } from './types.js';
 import { getUserHome } from './utils/home.js';
 
@@ -143,8 +144,6 @@ function defaultState(): ContributeState {
   };
 }
 
-const OfferedSchema = z.object({ publish: z.boolean(), scorers: z.array(z.string()) });
-
 /**
  * Read persisted contribute state. A session whose state file the sweep removed starts from what its swept record
  * kept, so a session resumed days later is not reminded again. Returns defaults if missing or corrupted.
@@ -172,7 +171,7 @@ export async function readContributeState(sessionId: string): Promise<Contribute
         ? normalizePromptSummary(raw.promptSummary)
         : undefined,
       pendingHint: typeof raw.pendingHint === 'string' ? raw.pendingHint : undefined,
-      offered: OfferedSchema.safeParse(raw.offered).data,
+      offered: SessionCloseOfferedSchema.safeParse(raw.offered).data,
     };
   } catch {
     return defaultState();
@@ -215,9 +214,9 @@ function sweptDir(sessionsDir: string): string {
 }
 
 /** A contribute state file: other hooks keep their own per-session files beside it, which never hold `contributed`. */
-const StateSchema = z.object({ contributed: z.boolean(), hinted: z.boolean().optional(), offered: OfferedSchema.optional() });
+const StateSchema = z.object({ contributed: z.boolean(), hinted: z.boolean().optional(), offered: SessionCloseOfferedSchema.optional() });
 /** A swept record; one written before #1388 holds `hinted` only. */
-const SweptSchema = z.object({ hinted: z.boolean(), contributed: z.boolean().optional(), offered: OfferedSchema.optional() });
+const SweptSchema = z.object({ hinted: z.boolean(), contributed: z.boolean().optional(), offered: SessionCloseOfferedSchema.optional() });
 type OfferFacts = z.infer<typeof SweptSchema>;
 
 /**

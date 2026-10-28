@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { z } from 'zod';
 import { loadLocalConfigForScope } from '../config.js';
 import { readContributeState, writeContributeState } from '../contribute-check.js';
 import { buildHandlerRegistry } from '../hook-handlers.js';
@@ -63,9 +64,8 @@ async function stopOf(tool: string, config: LocalConfig | null, payload: Record<
   if (!stop) throw new Error('no contribute-check handler');
   const output = await stop.execute({ session_id: SESSION, cwd: project, ...payload }, tool, config);
   if (output === null) return null;
-  const parsed: unknown = JSON.parse(output);
-  const context = (parsed as { hookSpecificOutput?: { additionalContext?: unknown } }).hookSpecificOutput?.additionalContext;
-  return typeof context === 'string' ? context : null;
+  const parsed = z.object({ hookSpecificOutput: z.object({ additionalContext: z.string() }) }).safeParse(JSON.parse(output));
+  return parsed.success ? parsed.data.hookSpecificOutput.additionalContext : null;
 }
 
 describe('the friction reminder offers session-close', () => {

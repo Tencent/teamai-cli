@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import type { LocalConfig } from '../types.js';
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
 import { respondProvenance, respondToHitl } from '../workflow/run-controls.js';
@@ -14,20 +15,20 @@ const person = respondProvenance({ kind: 'terminal', caller: { tty: true, eviden
 const SHARE = { verdict: 'share', title: 'Retry the pod readiness probe', file: '/tmp/pod-startup.md', namespace: 'k8s' };
 const SKIP = { verdict: 'skip', title: '', file: '', namespace: '' };
 
-interface Turn {
-  lease?: { step: string; attempt: string; revision: number; prompt?: string; command?: string };
-  hitl?: { step: string; required: boolean };
-  done?: { outcome: string };
-}
+const TurnSchema = z.object({
+  lease: z.object({ step: z.string(), attempt: z.string(), revision: z.number(), prompt: z.string().optional(), command: z.string().optional() }).optional(),
+  hitl: z.object({ step: z.string(), required: z.boolean() }).optional(),
+  done: z.object({ outcome: z.string() }).optional(),
+});
 
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 
-function turnOf(envelope: WorkflowEnvelope): Turn {
+function turnOf(envelope: WorkflowEnvelope): z.infer<typeof TurnSchema> {
   if ('error' in envelope) throw new Error(envelope.error.message);
-  return envelope.data as Turn;
+  return TurnSchema.parse(envelope.data);
 }
 
 /**
