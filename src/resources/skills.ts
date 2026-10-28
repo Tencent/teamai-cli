@@ -23,7 +23,7 @@ import { openPrDestinations, recordedNamespace } from '../utils/pending-push.js'
 import { splitFrontmatter, stringifyFrontmatter } from '../utils/frontmatter.js';
 import {
   blockingEntries, deliveredSkillFiles, describeKeptDir, describeMembersDirLeft, describeMembersFile, describeMembersLink, describeSkippedLink, isLink, judgeCopy, judgeRemoval, keepsEditedCopy, keepsTrackedCopy,
-  isRecordedFromTeamSkill, isTeamaiSkillCopy, isTeamSkillAsDelivered, isUneditedSkillCopy, membersLinkAt, ownsSkillDir, recordDelivered, recordedUnder, teamaiSkillFiles,
+  forgetDelivered, isRecordedFromTeamSkill, isTeamaiSkillCopy, isTeamSkillAsDelivered, isUneditedSkillCopy, membersLinkAt, ownsSkillDir, recordDelivered, recordedUnder, teamaiSkillFiles,
   type DeliveredHashes, type DeliveryLedger,
 } from './delivered-copies.js';
 
@@ -163,6 +163,32 @@ async function holdsTeamSkillCopy(sharedDir: string, repoPath: string, previous:
     if (!teamSkills.has(name)) continue;
     const dir = path.join(sharedDir, name);
     if (recordedUnder(previous ?? {}, dir).length > 0 || await isTeamaiSkillCopy(dir, skillOrigin(repoPath, name))) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether Codex holds the team's skills in two directories that a full pull
+ * now joins (#1501): a skill on the record `previous` in Codex's own
+ * directory, with its place in the shared one free, while the shared one
+ * holds teamai's copy of a team skill. The "Already synced" fast path syncs
+ * then, so an install an older release split is joined on the next pull.
+ */
+export async function codexSkillsSplit(
+  teamConfig: Pick<TeamaiConfig, 'toolPaths'>, localConfig: LocalConfig, previous: DeliveredHashes | undefined,
+): Promise<boolean> {
+  if (previous === undefined) return false;
+  const where = await locate(CODEX_TOOL, 'skills', installOf(teamConfig, localConfig));
+  const skillsDir = writable(where)?.path;
+  const sharedDir = where.shared?.path;
+  if (skillsDir === undefined || sharedDir === undefined) return false;
+  const recorded = new Set(Object.keys(previous)
+    .filter((file) => file.startsWith(skillsDir + path.sep))
+    .map((file) => path.relative(skillsDir, file).split(path.sep)[0]));
+  for (const name of recorded) {
+    if (await pathExists(path.join(skillsDir, name)) && !await pathExists(path.join(sharedDir, name))) {
+      return holdsTeamSkillCopy(sharedDir, localConfig.repo.localPath, previous);
+    }
   }
   return false;
 }
@@ -1295,6 +1321,9 @@ export class SkillsHandler extends ResourceHandler {
       const ownsShared = async (dest: string): Promise<boolean> =>
         await allowsSkillDirectory(guard, dest) && (await judgeCopy(ledger?.previous, item, { tool, dest, origin })).kind !== 'member';
       const dest = await skillTarget({ tool, skillName: item.name, ownsShared, sourcePath });
+      // Codex's copy moved into the shared directory: the record of the one it left goes with it.
+      const left = path.join(skillsDir, item.name);
+      if (ledger && dest !== left && !await pathExists(left)) forgetDelivered(ledger.hashes, left);
       if (dest) targets.push({ tool, dest, origin });
     }
     return targets;

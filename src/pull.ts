@@ -29,7 +29,7 @@ import {
   resolveDesiredDocs, resolveDocsDestination,
 } from './resources/docs.js';
 import { ResourceHandler } from './resources/base.js';
-import { CODEX_TOOL, mayDeleteSkillCopy, skillOrigin } from './resources/skills.js';
+import { CODEX_TOOL, codexSkillsSplit, mayDeleteSkillCopy, skillOrigin } from './resources/skills.js';
 import { installOf, locate, ownOf, SHARED_AGENT_SKILLS_PATH, writable, writesOf } from './locate.js';
 import { describeToolHomeChange, recordToolHomes } from './tool-home-record.js';
 import { describeInvalidToolHomes, realHost } from './tool-home.js';
@@ -73,7 +73,6 @@ import type { CultureFrontmatter } from './types.js';
 import { deliversEveryNamespace } from './resource-namespaces.js';
 import { reportEntryResolution } from './namespaced-entries.js';
 import { resetWarnOnce, warnOnce } from './utils/warn-once.js';
-import { historicalVersions } from './utils/team-history.js';
 import { describeNoLongerTeamaiOnly, describeUnknownTracking, judgeTeamaiOnlyFiles, keptOutByMcpExclude, type SharedFileJudgement } from './teamai-only-files.js';
 import { GitContext, realFilePath } from './git-exclude.js';
 import type { EnvVariable } from './resources/env.js';
@@ -419,7 +418,7 @@ export async function cleanupInactiveNamespaceSkills(
  */
 async function sweepSharedSkillCopies(
   localConfig: LocalConfig,
-  swept: (name: string, dir: string) => boolean | Promise<boolean>,
+  swept: (name: string, dir: string) => boolean,
   ledger: DeliveryLedger | undefined,
   scopeLabel: string,
 ): Promise<string[]> {
@@ -427,7 +426,7 @@ async function sweepSharedSkillCopies(
   const removed: string[] = [];
   for (const name of await listDirs(sharedDir)) {
     const dir = path.join(sharedDir, name);
-    if (BUILTIN_SKILL_NAMES.has(name) || !await swept(name, dir)) continue;
+    if (BUILTIN_SKILL_NAMES.has(name) || !swept(name, dir)) continue;
     if (!await removeUndeliveredSkillCopy(localConfig, { dir, name, origin: skillOrigin(localConfig.repo.localPath, name) }, ledger, scopeLabel)) continue;
     removed.push(name);
     log.debug(`[${scopeLabel}] Removed skill ${name} from ${SHARED_AGENT_SKILLS_PATH}: no longer delivered here`);
@@ -448,6 +447,10 @@ async function removeUndeliveredSkillCopy(
   scopeLabel: string,
 ): Promise<boolean> {
   const { dir, name, origin } = copy;
+  if (await hasVcsMetadataRecursive(dir)) {
+    warnOnce(`[${scopeLabel}] Kept ${dir}: teamai no longer delivers ${name} here, but it has local VCS metadata (.git) that may hold unpushed history. Back it up, then delete it manually.`);
+    return false;
+  }
   const removal = await judgeRemoval(ledger?.previous, dir, origin, ledger?.otherRecords);
   if (removal === 'edited') {
     warnOnce(`[${scopeLabel}] Kept ${dir}: teamai no longer delivers ${name} here, but you changed this copy. Delete it when you no longer need it.`);
@@ -1820,8 +1823,10 @@ async function pullForScope(
         currentPlaces = await placesOf(installOf(freshConfig, localConfig));
         const recordedPlaces = placesRecordOf(checkout);
         if (targetSetMatches && recordedPlaces === undefined) log.debug(`[${scopeLabel}] No record of the skills directories yet, syncing`);
+        const codexSplit = targetSetMatches && await codexSkillsSplit(freshConfig, localConfig, await deliveredHashes(localConfig, state));
+        if (codexSplit) log.debug(`[${scopeLabel}] Codex has team skills in two directories, syncing`);
 
-        if (targetSetMatches && recordedPlaces !== undefined
+        if (targetSetMatches && recordedPlaces !== undefined && !codexSplit
           && await placesUnmoved({ places: recordedPlaces, sessionToolHomes: checkout?.sessionToolHomes }, currentPlaces)) {
           if (await checkoutRemoved()) return;
           log.success(`[${scopeLabel}] Already synced at ${currentRev}, skipping`);
@@ -2281,17 +2286,16 @@ async function pullForScope(
   // Step 3b: Clean up local skills not in the desired union set (role + tags)
   if (!options.dryRun && desiredSkillNames && knownRepoSkillNames) {
     const install = installOf(freshConfig, localConfig);
-    // On record here, from a team repo whose history never had it: a skill
-    // the current team deleted is the tombstone cleanup's to judge (Step 3).
-    const isOtherTeamsSkill = async (name: string, dir: string): Promise<boolean> =>
-      recordedUnder(ledger.previous ?? {}, dir).length > 0
-      && ((await historicalVersions(localConfig.repo.localPath, `${skillOrigin(localConfig.repo.localPath, name).pathspec}/SKILL.md`))?.length ?? 0) === 0;
+    // On record here, and not a skill the team removed, which Step 3 has judged and named already.
+    const removedByTeam = new Set([...await getHandler('skills').readTombstones(localConfig), ...revisionRemovals?.skills ?? []]);
+    const isOtherTeamsSkill = (name: string, dir: string): boolean =>
+      !removedByTeam.has(name) && recordedUnder(ledger.previous ?? {}, dir).length > 0;
     for (const tool of Object.keys(install.toolPaths)) {
       const skillsDir = writable(await locate(tool, 'skills', install))?.path ?? null;
       if (skillsDir === null) continue;
       if (tool === CODEX_TOOL) {
-        const swept = async (name: string, dir: string): Promise<boolean> =>
-          !desiredSkillNames.has(name) && (knownRepoSkillNames.has(name) || await isOtherTeamsSkill(name, dir));
+        const swept = (name: string, dir: string): boolean =>
+          !desiredSkillNames.has(name) && (knownRepoSkillNames.has(name) || isOtherTeamsSkill(name, dir));
         for (const name of await sweepSharedSkillCopies(localConfig, swept, ledger, scopeLabel)) {
           if (excludedSkills.has(name)) continue;
           undeliveredSkills.add(name);
@@ -2309,7 +2313,7 @@ async function pullForScope(
           // A skill an earlier pull delivered from a team repo this checkout no
           // longer pulls, as after `init <other team> --force` (#1501): only the
           // record proves it teamai's, so only an unchanged copy goes.
-          if (!await isOtherTeamsSkill(dir, skillDir)) continue;
+          if (!isOtherTeamsSkill(dir, skillDir)) continue;
           if (!await removeUndeliveredSkillCopy(localConfig, { dir: skillDir, name: dir }, ledger, scopeLabel)) continue;
           undeliveredSkills.add(dir);
           log.debug(`[${scopeLabel}] Removed skill ${dir} from ${tool}: no longer delivered here`);

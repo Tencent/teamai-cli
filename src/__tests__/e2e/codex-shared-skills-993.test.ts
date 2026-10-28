@@ -307,6 +307,24 @@ describe('Codex receives all of one team\'s skills in one directory (#1501 part 
     expect(doctor.output).toContain('✔ codex skills are where the last pull wrote them');
   });
 
+  it('joins an install already split between the two directories on a plain pull of an unchanged team repo, then skips again', () => {
+    const m = machine('one-dir-synced', LINKED);
+    const shared = path.join(m.home, '.agents', 'skills');
+    const codex = path.join(m.home, '.codex', 'skills');
+    deliver(m, 'user', m.home);
+    expect(fs.existsSync(path.join(codex, 'review', 'SKILL.md'))).toBe(true);
+    // teamai's copy of `lint` in the shared directory too, as an older release left it.
+    writeFile(path.join(shared, 'lint', 'SKILL.md'), read(path.join(codex, 'lint', 'SKILL.md')));
+
+    const joined = m.ok(['pull'], m.home);
+
+    expect(joined.output).not.toContain('Already synced');
+    expect(fs.existsSync(path.join(shared, 'review', 'SKILL.md')), joined.output).toBe(true);
+    expect(fs.existsSync(path.join(codex, 'review')), joined.output).toBe(false);
+    expect(fs.existsSync(path.join(codex, 'lint')), joined.output).toBe(false);
+    expect(m.ok(['pull'], m.home).output).toContain('Already synced');
+  });
+
   it('leaves the member\'s own skill in ~/.agents/skills and names the conflict, while the rest follow teamai\'s copy there', () => {
     const m = machine('one-dir-member', { ...LINKED, ...TEAM });
     const shared = path.join(m.home, '.agents', 'skills');
