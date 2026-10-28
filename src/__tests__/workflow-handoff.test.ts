@@ -2823,7 +2823,8 @@ steps:
     const runs = await publishedRuns(runner);
     expect(runs).toEqual([expect.objectContaining({
       run: runId, offer: { at: expect.any(String), needs: [], uses: { env: ['SIGNING_KEY'], prompts: [] }, lacks: [{
-        reason: 'sign requires env SIGNING_KEY, which has no value here', fix: 'teamai env set SIGNING_KEY, or set it in the environment',
+        reason: 'sign requires env SIGNING_KEY, which has no value here',
+        fix: 'set it in the environment, or declare it in the team repo with teamai env add SIGNING_KEY --secret and teamai push',
       }] },
     })]);
     const self = (await installOwner(runner.config)).id;
@@ -2832,6 +2833,35 @@ steps:
     const keyed = await publishedRuns(runner, runnerTaker(), { SIGNING_KEY: 'k' });
     expect(keyed[0]?.offer).toMatchObject({ lacks: [] });
     expect(PublishedRuns.candidates(keyed, { repository: 'github.com/acme/app', hasPerson: false, self }).map((run) => run.run)).toEqual([runId]);
+  });
+
+  it('says to set a required key the team declares as a secret with teamai env set', async () => {
+    const acme = team({ sign: SIGN }, { 'env/secrets.yaml': 'secrets:\n  - key: SIGNING_KEY\n' });
+    const alice = await acme.member('alice');
+    const runner = await acme.member('runner');
+    originAt('https://github.com/acme/app.git', [alice, runner]);
+    const started = await startRun(alice.config, 'sign', {}, { secrets: {} });
+    const runId = 'data' in started ? String(started.data.run) : '';
+    await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout });
+
+    expect((await publishedRuns(runner))[0]?.offer?.lacks).toEqual([{
+      reason: 'sign requires env SIGNING_KEY, which has no value here', fix: 'run teamai env set SIGNING_KEY, or set it in the environment',
+    }]);
+  });
+
+  it('names each key in the fix when a step requires one key the team declares and one it does not', async () => {
+    const acme = team({ sign: SIGN.replace('env: [SIGNING_KEY]', 'env: [NPM_TOKEN, SIGNING_KEY]') }, { 'env/secrets.yaml': 'secrets:\n  - key: NPM_TOKEN\n' });
+    const alice = await acme.member('alice');
+    const runner = await acme.member('runner');
+    originAt('https://github.com/acme/app.git', [alice, runner]);
+    const started = await startRun(alice.config, 'sign', {}, { secrets: {} });
+    const runId = 'data' in started ? String(started.data.run) : '';
+    await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout });
+
+    expect((await publishedRuns(runner))[0]?.offer?.lacks).toEqual([{
+      reason: 'sign requires env NPM_TOKEN and SIGNING_KEY, which have no value here',
+      fix: 'run teamai env set NPM_TOKEN, or set NPM_TOKEN in the environment; set SIGNING_KEY in the environment, or declare it in the team repo with teamai env add SIGNING_KEY --secret and teamai push',
+    }]);
   });
 
   const DOCS = `schemaVersion: v1alpha1

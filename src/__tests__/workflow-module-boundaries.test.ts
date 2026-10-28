@@ -23,7 +23,8 @@ const FLAT = 'src/workflow/';
 const SKILL_IMPORTS: Record<string, { typeOnly?: true; names?: string[] }> = {
   'src/workflow/protocol.ts': {},
   'src/workflow/types.ts': { typeOnly: true },
-  'src/workflow/requirements.ts': { typeOnly: true },
+  // Its types, and the advice for a required key with no value, which preflight gives before a run as the engine does when a step fails.
+  'src/workflow/requirements.ts': { names: ['DriverCan', 'EnvScope', 'envFix'] },
   'src/workflow/describe.ts': { typeOnly: true },
   'src/workflow/attempt-marker.ts': {},
   // The wire shapes the engine answers with, which every driver parses with the same schema.

@@ -16,7 +16,7 @@ import { memberTools, type MemberTool } from './tool-launch/call.js';
 import { executableOf, type LaunchTool } from './tool-launch/tools.js';
 import { resolveCliPath } from './utils/cli-path.js';
 import { sameEnvName } from './resources/env-key.js';
-import type { EnvFacts } from './workflow/requirements.js';
+import { envFix, type EnvFacts } from './workflow/requirements.js';
 import { definitionsOf, settledSteps } from './workflow/handoff.js';
 import { invokeRefusal, type InvokeCaller } from './workflow/protocol.js';
 import { parseSnapshot, SNAPSHOTS_DIR, snapshotPath, type HandoffOwner, type RunSnapshot } from './workflow/snapshot.js';
@@ -162,7 +162,7 @@ function toolLacks(config: LocalConfig, flags: Record<string, string>, members: 
       const flag = agent === undefined ? 'default' : agent;
       const choice = launchToolFor(agent, config, flags, members);
       if (choice.ok) {
-        return isOnPath(choice.tool) ? [] : [{ reason: `${steps} run on ${choice.tool}, which is not on PATH here`, fix: `install ${choice.tool}, or pass --tools ${flag}=<tool> for one that is` }];
+        return isOnPath(choice.tool) ? [] : [{ reason: `${steps} ${prompts.length > 1 ? 'run' : 'runs'} on ${choice.tool}, which is not on PATH here`, fix: `install ${choice.tool}, or pass --tools ${flag}=<tool> for one that is` }];
       }
       if (choice.failure.code === 'tool_unconfigured') {
         return [{ reason: `no tool is configured here for ${steps}`, fix: `pass --tools ${flag}=<tool>, or set workflows.tools.${flag}` }];
@@ -183,11 +183,7 @@ function envLacks(runs: readonly StepRun[], env: EnvFacts): Lack[] {
   if (env.unreadable !== undefined) {
     return [{ reason: `${require}, and the team env cannot be read here: ${env.unreadable}`, fix: 'teamai env list, and fix what it reports' }];
   }
-  const one = keys.length === 1;
-  return [{
-    reason: `${require}, which ${one ? 'has' : 'have'} no value here`,
-    fix: `${keys.map((key) => `teamai env set ${key}`).join(', ')}, or set ${one ? 'it' : 'them'} in the environment`,
-  }];
+  return [{ reason: `${require}, which ${keys.length === 1 ? 'has' : 'have'} no value here`, fix: envFix(keys, env.declared) }];
 }
 
 /**
