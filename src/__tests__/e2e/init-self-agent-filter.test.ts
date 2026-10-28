@@ -73,13 +73,15 @@ describe('init . --agent sets up only the tools passed (#993 bug 9)', () => {
    * checks here needs the remote, so origin is an https URL on a closed local
    * port. It must be https: the self-heal skips a remote it cannot parse.
    */
-  const project = (): string => {
+  const project = (withCommit = true): string => {
     const repo = path.join(sandbox, `self-${++counter}`);
     fs.mkdirSync(repo);
     fs.writeFileSync(path.join(repo, 'README.md'), '# project\n');
     gitOk(['init', '-q', '-b', 'main'], repo);
-    gitOk(['add', '-A'], repo);
-    gitOk(['commit', '-q', '-m', 'project'], repo);
+    if (withCommit) {
+      gitOk(['add', '-A'], repo);
+      gitOk(['commit', '-q', '-m', 'project'], repo);
+    }
     gitOk(['remote', 'add', 'origin', `https://127.0.0.1:9/team/self-${counter}.git`], repo);
     return repo;
   };
@@ -145,6 +147,31 @@ describe('init . --agent sets up only the tools passed (#993 bug 9)', () => {
     for (const dir of ['.codex', '.cursor', '.codebuddy', '.github']) {
       expect(fs.existsSync(path.join(repo, dir)), dir).toBe(false);
     }
+  });
+
+  it.each(['existing', 'unborn'])('keeps business changes out of the skeleton commit with an %s HEAD', (head) => {
+    const repo = project(head === 'existing');
+    const business = path.join(repo, 'business.ts');
+    fs.writeFileSync(business, 'staged business\n');
+    gitOk(['add', 'business.ts'], repo);
+    if (head === 'existing') gitOk(['rm', 'README.md'], repo);
+    fs.writeFileSync(business, 'unstaged business\n');
+    const businessPaths = ['business.ts', 'README.md'];
+    const stagedBefore = gitOk(['diff', '--cached', '--binary', '--', ...businessPaths], repo);
+
+    const init = teamai(['init', '.', '--provider', 'git', '--agent', 'claude'], repo);
+
+    expect(init.code, init.output).toBe(0);
+    expect(init.output).not.toContain('Could not commit');
+    const committedFiles = gitOk(['diff-tree', '--root', '--no-commit-id', '--name-only', '-r', 'HEAD'], repo)
+      .trim().split('\n');
+    expect(committedFiles).toContain('.teamai/teamai.yaml');
+    expect(committedFiles).toContain('.claude/settings.json');
+    expect(committedFiles).not.toContain('business.ts');
+    expect(committedFiles).not.toContain('README.md');
+    expect(gitOk(['diff', '--cached', '--binary', '--', ...businessPaths], repo)).toBe(stagedBefore);
+    expect(gitOk(['show', ':business.ts'], repo)).toBe('staged business\n');
+    expect(fs.readFileSync(business, 'utf8')).toBe('unstaged business\n');
   });
 
   it('re-running init keeps the tools already enabled and adds --agent', () => {
