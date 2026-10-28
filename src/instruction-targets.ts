@@ -46,6 +46,8 @@ import {
 const HEADERS: { readonly [H in BlocksHeader]: string } = {
   'always-apply': '---\nalwaysApply: true\n---\n',
   'apply-to-all': '---\napplyTo: "**"\n---\n',
+  'trigger-always-on': '---\ntrigger: always_on\n---\n',
+  'inclusion-always': '---\ninclusion: always\n---\n',
 };
 
 type MarkerPair = readonly [start: string, end: string, name: string];

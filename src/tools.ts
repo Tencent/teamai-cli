@@ -106,7 +106,7 @@ export type RunTimeVia = 'session-hook' | 'extension' | 'plugin';
 export type ReadGateKind = 'codex-project-trust';
 
 /** The frontmatter teamai writes above its blocks when it creates an owned blocks file a rules loader reads. */
-export type BlocksHeader = 'always-apply' | 'apply-to-all';
+export type BlocksHeader = 'always-apply' | 'apply-to-all' | 'trigger-always-on' | 'inclusion-always';
 
 /** `limit`: the size the channel takes before the tool drops the text whole. */
 export type RunTime = { readonly channel: RunTimeVia; readonly probe: ChannelProbe; readonly limit?: number; readonly evidence: Evidence };
@@ -630,7 +630,10 @@ export const TOOLS = {
       user: { channel: 'dir', format: 'qoder', reads: [{ base: 'home', path: '.qoder/rules', evidence: 'verified' }] },
       project: { channel: 'dir', format: 'qoder', reads: [{ base: 'project', path: '.qoder/rules', when: 'workspaceUnder', evidence: 'verified' }] },
     },
-    blocks: NONE,
+    blocks: {
+      user: { channel: 'file', file: { in: 'rules-dir', name: 'teamai-context.md', owned: true, header: 'trigger-always-on' }, reads: [{ base: 'home', path: '.qoder/rules', evidence: 'verified' }] },
+      project: { channel: 'file', file: { in: 'rules-dir', name: 'teamai-context.md', owned: true, header: 'trigger-always-on' }, reads: [{ base: 'project', path: '.qoder/rules', when: 'workspaceUnder', evidence: 'verified' }] },
+    },
     agents: {
       user: { reads: [{ base: 'home', path: '.qoder/agents', evidence: 'source' }] },
       project: { reads: [{ base: 'project', path: '.qoder/agents', when: 'workspaceUnder', evidence: 'source' }] },
@@ -663,7 +666,10 @@ export const TOOLS = {
       user: { channel: 'dir', format: 'qoder', reads: [{ base: 'home', path: '.qoder-cn/rules', evidence: 'verified' }] },
       project: { channel: 'dir', format: 'qoder', reads: [{ base: 'project', path: '.qoder/rules', when: 'workspaceUnder', evidence: 'verified' }] },
     },
-    blocks: NONE,
+    blocks: {
+      user: { channel: 'file', file: { in: 'rules-dir', name: 'teamai-context.md', owned: true, header: 'trigger-always-on' }, reads: [{ base: 'home', path: '.qoder-cn/rules', evidence: 'verified' }] },
+      project: { channel: 'file', file: { in: 'rules-dir', name: 'teamai-context.md', owned: true, header: 'trigger-always-on' }, reads: [{ base: 'project', path: '.qoder/rules', when: 'workspaceUnder', evidence: 'verified' }] },
+    },
     agents: {
       user: { reads: [{ base: 'home', path: '.qoder-cn/agents', evidence: 'source' }] },
       project: { reads: [{ base: 'project', path: '.qoder/agents', when: 'workspaceUnder', evidence: 'assumed' }] },
@@ -695,7 +701,10 @@ export const TOOLS = {
       user: { channel: 'dir', format: 'kiro-steering', reads: [{ base: 'home', path: '.kiro/steering', evidence: 'docs' }] },
       project: { channel: 'dir', format: 'kiro-steering', reads: [{ base: 'project', path: '.kiro/steering', when: 'workspaceUnder', evidence: 'docs' }] },
     },
-    blocks: NONE,
+    blocks: {
+      user: { channel: 'file', file: { in: 'rules-dir', name: 'teamai-context.md', owned: true, header: 'inclusion-always' }, reads: [{ base: 'home', path: '.kiro/steering', evidence: 'docs' }] },
+      project: { channel: 'file', file: { in: 'rules-dir', name: 'teamai-context.md', owned: true, header: 'inclusion-always' }, reads: [{ base: 'project', path: '.kiro/steering', when: 'workspaceUnder', evidence: 'docs' }] },
+    },
     agents: {
       user: { reads: [{ base: 'home', path: '.kiro/agents', evidence: 'docs' }] },
       project: { reads: [{ base: 'project', path: '.kiro/agents', when: 'workspaceUnder', evidence: 'docs' }] },
@@ -730,7 +739,10 @@ export const TOOLS = {
       user: { channel: 'dir', format: 'trae', reads: 'unknown' },
       project: { channel: 'dir', format: 'trae', reads: [{ base: 'project', path: '.trae/rules', when: 'workspaceUnder', evidence: 'assumed' }] },
     },
-    blocks: NONE,
+    blocks: {
+      user: { channel: 'file', file: { in: 'rules-dir', name: 'teamai-context.md', owned: true, header: 'always-apply' }, reads: [{ base: 'home', path: '.trae/user_rules', evidence: 'docs' }] },
+      project: { channel: 'file', file: { in: 'rules-dir', name: 'teamai-context.md', owned: true, header: 'always-apply' }, reads: [{ base: 'project', path: '.trae/rules', when: 'workspaceUnder', evidence: 'docs' }] },
+    },
     // Trae loads `.trae/agents` only while its Beta "Enable Subagents Directory" switch is on, a setting teamai cannot read.
     agents: {
       // Its docs give ~/.trae-cn/agents, a copy of Trae CN's page; nothing shows ~/.trae/agents.
@@ -765,7 +777,10 @@ export const TOOLS = {
       user: { channel: 'dir', format: 'trae', reads: 'unknown' },
       project: { channel: 'dir', format: 'trae', reads: [{ base: 'project', path: '.trae/rules', when: 'workspaceUnder', evidence: 'assumed' }] },
     },
-    blocks: NONE,
+    blocks: {
+      user: { channel: 'file', file: { in: 'rules-dir', name: 'teamai-context.md', owned: true, header: 'always-apply' }, reads: [{ base: 'home', path: '.trae-cn/user_rules', evidence: 'docs' }] },
+      project: { channel: 'file', file: { in: 'rules-dir', name: 'teamai-context.md', owned: true, header: 'always-apply' }, reads: [{ base: 'project', path: '.trae/rules', when: 'workspaceUnder', evidence: 'docs' }] },
+    },
     // Trae CN loads them only while its Beta "Enable Subagents Directory" switch is on (on by default, its docs say).
     agents: {
       user: { reads: [{ base: 'home', path: '.trae-cn/agents', evidence: 'docs' }] },

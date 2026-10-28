@@ -33,6 +33,11 @@ team:
 | Codex 系列 | `$CODEX_HOME/AGENTS.md` | session-start hook |
 | Cursor | `~/.cursor/rules/teamai-context.mdc`；工作区不在主目录下时由 session-start hook 加入 | `.cursor/rules/teamai-context.mdc` |
 | CodeBuddy、WorkBuddy | 各自的用户文件 | 共用 `.codebuddy/rules/teamai-context.md` |
+| Qoder | `~/.qoder/rules/teamai-context.md` | `.qoder/rules/teamai-context.md` |
+| Qoder CN | `~/.qoder-cn/rules/teamai-context.md` | 共用 `.qoder/rules/teamai-context.md` |
+| Kiro | `~/.kiro/steering/teamai-context.md` | `.kiro/steering/teamai-context.md` |
+| Trae | `~/.trae/user_rules/teamai-context.md` | `.trae/rules/teamai-context.md` |
+| Trae CN | `~/.trae-cn/user_rules/teamai-context.md` | 共用 `.trae/rules/teamai-context.md` |
 | OpenCode | `~/.config/opencode/teamai-context.md` | `.opencode/teamai-context.md` |
 | Pi | 存在时写入 `~/.pi/agent/AGENTS.override.md`，否则写入 `AGENTS.md` | 扩展加进系统提示 |
 | Oh My Pi | 它的用户文件 | 扩展加进系统提示 |
