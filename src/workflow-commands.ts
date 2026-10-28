@@ -7,7 +7,7 @@ import { log, setStderrOnly } from './utils/logger.js';
 import { collectEnvSecrets, redactJson } from './utils/redact.js';
 import { parseNextPayload, parseReport, parseResponsePayload, resumableSessions, withIgnored, type ParsedResponsePayload } from './workflow/engine.js';
 import { claimOffered, publishRun, resumeRun } from './workflow/handoff.js';
-import { PublishedRuns, type PublishedRun, type ResumableRun, type Taker } from './workflow-published-runs.js';
+import { PublishedRuns, type Lack, type PublishedRun, type ResumableRun, type Taker } from './workflow-published-runs.js';
 import { safeText } from './session-flow/session-cmd-shared.js';
 import type { HandoffOwner } from './workflow/snapshot.js';
 import { getRepoIdentity } from './session-flow/sync.js';
@@ -608,7 +608,7 @@ async function resumeOffered(runId: string | undefined, options: ResumeOptions):
   const caller: InvokeCaller = { ...invokeCaller(options.confirmed), ...(isSkill && evidence.kind === 'none' ? { evidence: { kind: 'skill-driver' } } : {}) };
   // The skill driver's session asks the person; the local driver asks at this terminal, which a cron job has not.
   const taker: Taker = isSkill ? { caller, driver: 'skill', hasPerson: caller.mode === 'attended' } : { caller, driver: 'local', tools, hasPerson: personAnswers(caller.mode) };
-  if (options.next) await takeNext(loaded, taker, options, tools);
+  if (options.next) await takeNext(loaded, taker, options);
   else await listResumable(loaded, taker);
 }
 
@@ -629,9 +629,10 @@ function resumeOfferedRefusal(runId: string | undefined, options: ResumeOptions)
 /**
  * Claims and drives the oldest run teamai-reports offers that `taker` can finish in this checkout's business
  * repository, trying the next one when another runner claimed it first, or answers `idle` with the count of offered
- * runs it skipped. The local driver runs prompt steps on `tools`.
+ * runs it skipped. Says why it left each run of this repository it skipped. The local driver runs prompt steps on the
+ * taker's `tools`.
  */
-async function takeNext(loaded: Ready, taker: Taker, options: ResumeOptions, tools: Record<string, string>): Promise<void> {
+async function takeNext(loaded: Ready, taker: Taker, options: ResumeOptions): Promise<void> {
   const { config, secrets } = loaded;
   const isSkill = taker.driver === 'skill';
   const answer = isSkill ? refuseSkill : refuse;
@@ -647,11 +648,13 @@ async function takeNext(loaded: Ready, taker: Taker, options: ResumeOptions, too
   }
   const [runs, self] = await Promise.all([PublishedRuns.list(config, { taker, env: loaded.env }), installOwner(config)]);
   const others = runs.filter((run) => run.offer !== undefined && run.owner.id !== self.id);
+  const candidates = PublishedRuns.candidates(runs, { repository, hasPerson: taker.hasPerson, self: self.id });
+  for (const run of others) if (run.repository === repository && !candidates.includes(run)) saidLeft(run);
   let moved = 0;
-  for (const run of PublishedRuns.candidates(runs, { repository, hasPerson: taker.hasPerson, self: self.id })) {
-    const taken = isSkill
+  for (const run of candidates) {
+    const taken = taker.driver === 'skill'
       ? await skillAnswer({ kind: 'resume', run: run.run, options: { ...withoutDriver(options), next: true } })
-      : { envelope: await driveOffered(loaded, run, { tools, autoApprove: options.autoApprove }), secrets };
+      : { envelope: await driveOffered(loaded, run, { tools: taker.tools, autoApprove: options.autoApprove }), secrets };
     if ('error' in taken.envelope && taken.envelope.error.code === 'state_moved') {
       moved += 1;
       continue;
@@ -684,6 +687,19 @@ async function driveOffered({ config, teamConfig }: Ready, run: PublishedRun, op
 
 function saidClaimed(run: PublishedRun): void {
   log.success(`Claimed ${run.run} (${run.workflow}) from ${safeText(run.owner.user)}`);
+}
+
+/** Says why `--next` left offered run `run`: what this machine lacks, which someone should fix, else who it is left for. */
+function saidLeft({ run, workflow, offer }: PublishedRun): void {
+  if (!offer) return;
+  if (offer.refusal) log.info(safeText(`Left ${run} (${workflow}) offered: ${offer.refusal.message}`));
+  else if (offer.lacks.length > 0) log.warn(safeText(`Left ${run} (${workflow}) offered: ${lacksText(offer.lacks)}`));
+  else log.info(safeText(`Left ${run} (${workflow}) offered for a person: ${offer.needs.join('; ')}`));
+}
+
+/** Each lack with what gives it, as `workflow resume` lists them and `--next` says them. */
+function lacksText(lacks: readonly Lack[]): string {
+  return lacks.map((lack) => `${lack.reason}: ${lack.fix}`).join('; ');
 }
 
 /** Fetches teamai-reports into this machine's reports checkout, as `teamai pull` does, or says why it could not. */
@@ -724,10 +740,7 @@ function resumableRow(resumable: ResumableRun): string[] {
       if (offer.refusal) return [run, workflow, offer.refusal.code === 'needs_local_driver' ? 'needs the local driver' : offer.refusal.code, ownerText(owner), `offered on teamai-reports: ${offer.refusal.message}`];
       // Another install's run: `--claim` takes it over whether or not this machine still holds an earlier copy of it.
       if (offer.needs.length > 0) return [run, workflow, 'needs a person', ownerText(owner), `offered on teamai-reports, ${offer.needs.join('; ')}: a person runs teamai workflow resume ${run} --claim`];
-      if (offer.lacks.length > 0) {
-        const lacks = offer.lacks.map((lack) => `${lack.reason}: ${lack.fix}`).join('; ');
-        return [run, workflow, 'cannot run here', ownerText(owner), `offered on teamai-reports, ${lacks}; then teamai workflow resume --next`];
-      }
+      if (offer.lacks.length > 0) return [run, workflow, 'cannot run here', ownerText(owner), `offered on teamai-reports, ${lacksText(offer.lacks)}; then teamai workflow resume --next`];
       return [run, workflow, 'running', ownerText(owner), 'offered on teamai-reports: teamai workflow resume --next'];
     }
     case 'here': {

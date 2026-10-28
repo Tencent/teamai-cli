@@ -558,6 +558,7 @@ describe('workflow resume lists the runs a checkout can resume, and --next takes
     const idle = await teamai('runner', ['workflow', 'resume', '--next'], { env: unattended });
     expect(idle.code, said(idle)).toBe(0);
     expect(idle.envelope()).toMatchObject({ data: { idle: { offered: expect.any(Number) } } });
+    expect(idle.stderr).toContain(`Left ${sign} (sign) offered: sign requires env SIGNING_KEY, which has no value here: teamai env set SIGNING_KEY, or set it in the environment`);
     expect(publishedState(sign)).toMatchObject({ status: 'running', offered: { at: expect.any(String) } });
 
     const taken = await teamai('runner', ['workflow', 'resume', '--next'], { env: { ...unattended, SIGNING_KEY: 'test-key' } });
@@ -584,6 +585,7 @@ describe('workflow resume lists the runs a checkout can resume, and --next takes
     const idle = await teamai('runner', ['workflow', 'resume', '--next', ...claude], { env: runner });
     expect(idle.code, said(idle)).toBe(0);
     expect(idle.envelope()).toMatchObject({ data: { idle: { offered: expect.any(Number) } } });
+    expect(idle.stderr).toContain(`Left ${docs} (docs) offered: the prompt step notes run on claude, which is not on PATH here: install claude, or pass --tools default=<tool> for one that is`);
     expect(publishedState(docs)).toMatchObject({ status: 'running', offered: { at: expect.any(String) } });
 
     fs.writeFileSync(path.join(bin, 'claude'), [
