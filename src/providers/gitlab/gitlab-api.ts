@@ -315,6 +315,7 @@ interface GitLabUser {
 async function resolveReviewerIds(
   reviewers: string[] | undefined,
   token: string,
+  signal: AbortSignal,
 ): Promise<number[]> {
   if (!reviewers?.length) return [];
   const ids: number[] = [];
@@ -322,13 +323,14 @@ async function resolveReviewerIds(
     try {
       const resp = await fetch(
         `${gitlabApiBase()}/users?username=${encodeURIComponent(username)}`,
-        { headers: authHeaders(token), redirect: 'manual' },
+        { headers: authHeaders(token), redirect: 'manual', signal },
       );
       if (!resp.ok) continue;
       const users = (await resp.json()) as GitLabUser[];
       const exact = users.find((u) => u.username.toLowerCase() === username.toLowerCase());
       if (exact) ids.push(exact.id);
     } catch {
+      signal.throwIfAborted();
       // Non-fatal: an unresolvable reviewer should not block MR creation.
     }
   }
@@ -342,6 +344,9 @@ async function resolveReviewerIds(
 export async function gitlabMrCreate(opts: GitLabMrCreateOptions): Promise<string> {
   const token = requireToken();
   const projectId = encodeURIComponent(opts.repo);
+  // Reviewer lookup and response bodies consume the same budget as creation.
+  // An expired lookup must not continue in the background and post a late MR.
+  const signal = AbortSignal.timeout(opts.spawnTimeoutMs ?? 30_000);
 
   const body: Record<string, unknown> = {
     source_branch: opts.source,
@@ -350,7 +355,7 @@ export async function gitlabMrCreate(opts: GitLabMrCreateOptions): Promise<strin
   };
   if (opts.description) body.description = opts.description;
 
-  const reviewerIds = await resolveReviewerIds(opts.reviewers, token);
+  const reviewerIds = await resolveReviewerIds(opts.reviewers, token, signal);
   if (reviewerIds.length > 0) body.reviewer_ids = reviewerIds;
 
   const resp = await fetch(`${gitlabApiBase()}/projects/${projectId}/merge_requests`, {
@@ -358,7 +363,7 @@ export async function gitlabMrCreate(opts: GitLabMrCreateOptions): Promise<strin
     headers: authHeaders(token),
     body: JSON.stringify(body),
     redirect: 'manual',
-    ...(opts.spawnTimeoutMs ? { signal: AbortSignal.timeout(opts.spawnTimeoutMs) } : {}),
+    signal,
   });
   if (!resp.ok) {
     const errBody = await resp.text().catch(() => '');
