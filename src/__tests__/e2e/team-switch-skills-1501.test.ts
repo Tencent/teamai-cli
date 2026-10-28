@@ -45,8 +45,8 @@ function git(args: string[], cwd: string): void {
   if (r.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${r.stdout}${r.stderr}`);
 }
 
-function teamai(args: string[]): Run {
-  const r = spawnSync(process.execPath, [CLI, ...args], { cwd: app, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+function teamai(args: string[], cwd = app, runEnv = env): Run {
+  const r = spawnSync(process.execPath, [CLI, ...args], { cwd, env: runEnv, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   const run = { code: r.status, output: `${r.stdout ?? ''}${r.stderr ?? ''}` };
   if (run.code !== 0) throw new Error(`teamai ${args.join(' ')} failed: ${run.output}`);
   return run;
@@ -127,5 +127,30 @@ describe('init <other team> --force, then pull (#1501 part 2)', () => {
     expect(pulled.output).toContain(`Kept ${kept}: teamai no longer delivers storybook here, but you changed this copy.`);
     expect(exists('.claude/rules/frontend-style.md')).toBe(false);
     expect(exists('.claude/rules/platform-style.md')).toBe(true);
+  }, 120_000);
+
+  it('removes the old team\'s skills from Codex\'s shared ~/.agents/skills in user scope', () => {
+    const userHome = path.join(sandbox, 'user-home');
+    fs.mkdirSync(path.join(userHome, '.codex'), { recursive: true });
+    const userEnv = { ...env, HOME: userHome, USERPROFILE: userHome, XDG_CONFIG_HOME: path.join(userHome, '.config') };
+    for (const [url, remote] of [[FRONTEND_URL, 'frontend'], [PLATFORM_URL, 'platform']]) {
+      const r = spawnSync('git', ['config', '--global', `url.${path.join(sandbox, `${remote}.git`)}.insteadOf`, url], { env: userEnv, encoding: 'utf8' });
+      if (r.status !== 0) throw new Error(r.stderr);
+    }
+    const shared = path.join(userHome, '.agents', 'skills');
+    // An older release's copy of one frontend skill there: every frontend skill follows it.
+    writeFile(path.join(shared, 'react-review', 'SKILL.md'), skillMd('react-review', 'Review React components.'));
+    writeFile(path.join(shared, 'react-review', 'checklist.md'), '- hooks rules\n');
+    const agents = ['--provider', 'git', '--agent', 'codex', '--scope', 'user'];
+    teamai(['init', FRONTEND_URL, ...agents], userHome, userEnv);
+    teamai(['pull'], userHome, userEnv);
+    expect(fs.existsSync(path.join(shared, 'storybook', 'SKILL.md'))).toBe(true);
+
+    teamai(['init', PLATFORM_URL, ...agents, '--force'], userHome, userEnv);
+    const pulled = teamai(['pull'], userHome, userEnv);
+
+    expect(fs.existsSync(path.join(shared, 'react-review')), pulled.output).toBe(false);
+    expect(fs.existsSync(path.join(shared, 'storybook')), pulled.output).toBe(false);
+    expect(fs.existsSync(path.join(userHome, '.codex', 'skills', 'terraform-plan', 'SKILL.md')), pulled.output).toBe(true);
   }, 120_000);
 });

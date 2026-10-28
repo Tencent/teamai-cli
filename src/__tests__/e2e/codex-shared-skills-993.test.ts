@@ -293,8 +293,10 @@ describe('Codex receives all of one team\'s skills in one directory (#1501 part 
 
     const run = deliver(m, 'user', m.home);
 
-    expect(fs.existsSync(path.join(shared, 'lint', 'SKILL.md')), run.output).toBe(true);
-    expect(read(path.join(shared, 'review', 'SKILL.md')), run.output).toBe(LINKED['skills/review/SKILL.md']);
+    const review = path.join(shared, 'review', 'SKILL.md');
+    expect(read(review), run.output).toBe(LINKED['skills/review/SKILL.md']);
+    const link = /\]\(([^)]+)\)/.exec(read(review))?.[1] ?? '';
+    expect(fs.existsSync(path.resolve(path.dirname(review), link)), link).toBe(true);
     expect(fs.existsSync(path.join(codex, 'review')), run.output).toBe(false);
     expect(fs.existsSync(path.join(codex, 'lint'))).toBe(false);
     expect(run.output).not.toContain('Codex skill conflict');

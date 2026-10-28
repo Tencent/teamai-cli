@@ -289,6 +289,7 @@ describe('pull keeps a delivered copy the member changed (#822 item 5)', () => {
     expect(read(claudeScript())).toBe('echo mine\n');
     expect(read(claudeRule())).toContain('My version.');
     expect(output).toContain(`Kept ${claudeSkill()}: the team removed team-skill, but you changed this copy.`);
+    expect(output.split(`Kept ${claudeSkill()}:`).length - 1, output).toBe(1);
     expect(output).toContain(`Kept ${claudeRule()}: the team removed team-rule, but you changed this copy.`);
     expect(output).toContain(`Kept ${claudeAgent()}: the team removed team-helper, but you changed this copy.`);
     expect(read(claudeAgent())).toContain('My extra instruction.');

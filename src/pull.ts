@@ -41,7 +41,7 @@ import {
   type DeliveredHashes, type DeliveryLedger,
 } from './resources/delivered-copies.js';
 import { BUILTIN_SKILL_NAMES } from './builtin-skills.js';
-import type { AgentModelRecords, CodexBuildSkew, GlobalOptions, ResourceType, ResourceItem, TeamaiConfig, LocalConfig, State } from './types.js';
+import type { AgentModelRecords, CodexBuildSkew, CopyOrigin, GlobalOptions, ResourceType, ResourceItem, TeamaiConfig, LocalConfig, State } from './types.js';
 import {
   getUserLearningsDir,
   TEAMAI_CULTURE_START,
@@ -73,6 +73,7 @@ import type { CultureFrontmatter } from './types.js';
 import { deliversEveryNamespace } from './resource-namespaces.js';
 import { reportEntryResolution } from './namespaced-entries.js';
 import { resetWarnOnce, warnOnce } from './utils/warn-once.js';
+import { historicalVersions } from './utils/team-history.js';
 import { describeNoLongerTeamaiOnly, describeUnknownTracking, judgeTeamaiOnlyFiles, keptOutByMcpExclude, type SharedFileJudgement } from './teamai-only-files.js';
 import { GitContext, realFilePath } from './git-exclude.js';
 import type { EnvVariable } from './resources/env.js';
@@ -418,7 +419,7 @@ export async function cleanupInactiveNamespaceSkills(
  */
 async function sweepSharedSkillCopies(
   localConfig: LocalConfig,
-  swept: (name: string, dir: string) => boolean,
+  swept: (name: string, dir: string) => boolean | Promise<boolean>,
   ledger: DeliveryLedger | undefined,
   scopeLabel: string,
 ): Promise<string[]> {
@@ -426,24 +427,41 @@ async function sweepSharedSkillCopies(
   const removed: string[] = [];
   for (const name of await listDirs(sharedDir)) {
     const dir = path.join(sharedDir, name);
-    if (BUILTIN_SKILL_NAMES.has(name) || !swept(name, dir)) continue;
-    const removal = await judgeRemoval(ledger?.previous, dir, skillOrigin(localConfig.repo.localPath, name), ledger?.otherRecords);
-    if (removal === 'edited') {
-      warnOnce(`[${scopeLabel}] Kept ${dir}: teamai no longer delivers ${name} here, but you changed this copy. Delete it when you no longer need it.`);
-      continue;
-    }
-    if (removal === 'notTeamais') {
-      warnOnce(`[${scopeLabel}] ${describeMembersDirLeft(dir, `skills/${name}`, 'pull')}`);
-      continue;
-    }
-    if (await keepsTrackedCopy(dir)) continue;
-    if (!await mayDeleteSkillCopy(localConfig, dir)) continue;
-    await remove(dir);
-    if (ledger) forgetDelivered(ledger.hashes, dir);
+    if (BUILTIN_SKILL_NAMES.has(name) || !await swept(name, dir)) continue;
+    if (!await removeUndeliveredSkillCopy(localConfig, { dir, name, origin: skillOrigin(localConfig.repo.localPath, name) }, ledger, scopeLabel)) continue;
     removed.push(name);
     log.debug(`[${scopeLabel}] Removed skill ${name} from ${SHARED_AGENT_SKILLS_PATH}: no longer delivered here`);
   }
   return removed;
+}
+
+/**
+ * Remove the copy `dir` of skill `name`, which pull no longer delivers there,
+ * when `judgeRemoval` proves it teamai's and unchanged and the repository it
+ * sits in does not track it. An edited copy, or one that is not teamai's, is
+ * kept and named once. Returns whether it removed the copy.
+ */
+async function removeUndeliveredSkillCopy(
+  localConfig: LocalConfig,
+  copy: { dir: string; name: string; origin?: CopyOrigin },
+  ledger: DeliveryLedger | undefined,
+  scopeLabel: string,
+): Promise<boolean> {
+  const { dir, name, origin } = copy;
+  const removal = await judgeRemoval(ledger?.previous, dir, origin, ledger?.otherRecords);
+  if (removal === 'edited') {
+    warnOnce(`[${scopeLabel}] Kept ${dir}: teamai no longer delivers ${name} here, but you changed this copy. Delete it when you no longer need it.`);
+    return false;
+  }
+  if (removal === 'notTeamais') {
+    warnOnce(`[${scopeLabel}] ${describeMembersDirLeft(dir, `skills/${name}`, 'pull')}`);
+    return false;
+  }
+  if (await keepsTrackedCopy(dir)) return false;
+  if (!await mayDeleteSkillCopy(localConfig, dir)) return false;
+  await remove(dir);
+  if (ledger) forgetDelivered(ledger.hashes, dir);
+  return true;
 }
 
 /**
@@ -2263,12 +2281,17 @@ async function pullForScope(
   // Step 3b: Clean up local skills not in the desired union set (role + tags)
   if (!options.dryRun && desiredSkillNames && knownRepoSkillNames) {
     const install = installOf(freshConfig, localConfig);
-    const deliveredBefore = (dir: string): boolean => recordedUnder(ledger.previous ?? {}, dir).length > 0;
+    // On record here, from a team repo whose history never had it: a skill
+    // the current team deleted is the tombstone cleanup's to judge (Step 3).
+    const isOtherTeamsSkill = async (name: string, dir: string): Promise<boolean> =>
+      recordedUnder(ledger.previous ?? {}, dir).length > 0
+      && ((await historicalVersions(localConfig.repo.localPath, `${skillOrigin(localConfig.repo.localPath, name).pathspec}/SKILL.md`))?.length ?? 0) === 0;
     for (const tool of Object.keys(install.toolPaths)) {
       const skillsDir = writable(await locate(tool, 'skills', install))?.path ?? null;
       if (skillsDir === null) continue;
       if (tool === CODEX_TOOL) {
-        const swept = (name: string, dir: string): boolean => !desiredSkillNames.has(name) && (knownRepoSkillNames.has(name) || deliveredBefore(dir));
+        const swept = async (name: string, dir: string): Promise<boolean> =>
+          !desiredSkillNames.has(name) && (knownRepoSkillNames.has(name) || await isOtherTeamsSkill(name, dir));
         for (const name of await sweepSharedSkillCopies(localConfig, swept, ledger, scopeLabel)) {
           if (excludedSkills.has(name)) continue;
           undeliveredSkills.add(name);
@@ -2283,19 +2306,13 @@ async function pullForScope(
         if (desiredSkillNames.has(dir)) continue;
         const skillDir = path.join(skillsDir, dir);
         if (!knownRepoSkillNames.has(dir)) {
-          if (!deliveredBefore(skillDir)) continue;
           // A skill an earlier pull delivered from a team repo this checkout no
           // longer pulls, as after `init <other team> --force` (#1501): only the
           // record proves it teamai's, so only an unchanged copy goes.
-          if (await judgeRemoval(ledger.previous, skillDir) !== 'remove') {
-            log.warn(`[${scopeLabel}] Kept ${skillDir}: teamai no longer delivers ${dir} here, but you changed this copy. Delete it when you no longer need it.`);
-            continue;
-          }
-          if (await keepsTrackedCopy(skillDir) || !await mayDeleteSkillCopy(localConfig, skillDir)) continue;
-          await remove(skillDir);
-          forgetDelivered(ledger.hashes, skillDir);
+          if (!await isOtherTeamsSkill(dir, skillDir)) continue;
+          if (!await removeUndeliveredSkillCopy(localConfig, { dir: skillDir, name: dir }, ledger, scopeLabel)) continue;
           undeliveredSkills.add(dir);
-          log.debug(`Removed skill ${dir} from ${tool}: no longer delivered here`);
+          log.debug(`[${scopeLabel}] Removed skill ${dir} from ${tool}: no longer delivered here`);
           continue;
         }
         // Same data-safety gate as cleanupInactiveNamespaceSkills: never delete a

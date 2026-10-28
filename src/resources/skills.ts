@@ -152,13 +152,15 @@ async function sharedSkillsDelivered(install: Install, sharedDir: string): Promi
 }
 
 /**
- * Whether Codex's shared `sharedDir` holds teamai's copy of any skill of the
- * team repo at `repoPath`: on the checkout's record `previous`, or a version
+ * Whether Codex's shared `sharedDir` holds teamai's copy of a skill the team
+ * repo at `repoPath` has: on the checkout's record `previous`, or a version
  * from that repo's history. All of the team's Codex skills then go there, so a
  * relative link between two of them resolves (#1501).
  */
 async function holdsTeamSkillCopy(sharedDir: string, repoPath: string, previous: DeliveredHashes | undefined): Promise<boolean> {
+  const teamSkills = await scanSkillsRecursively(path.join(repoPath, 'skills'));
   for (const name of await listDirs(sharedDir)) {
+    if (!teamSkills.has(name)) continue;
     const dir = path.join(sharedDir, name);
     if (recordedUnder(previous ?? {}, dir).length > 0 || await isTeamaiSkillCopy(dir, skillOrigin(repoPath, name))) return true;
   }
@@ -229,7 +231,9 @@ export interface SkillTargetRequest {
 /**
  * Where a skill lands for a tool of the team's `toolPaths` on this machine, or
  * null when the tool cannot receive it (`locate`'s gates), for one run over
- * those tools.
+ * those tools. `teamSkills` is set when placing the team repo's own skills:
+ * Codex then puts all of them in one directory, judged with the checkout's
+ * record `previous`.
  *
  * One place answers that question, so `pull` writes and `doctor` checks the very
  * same paths (#598). A second copy of these gates is how "Synced 12 skills"
@@ -238,11 +242,11 @@ export interface SkillTargetRequest {
 export function skillTargetsFor(
   teamConfig: Pick<TeamaiConfig, 'toolPaths'>,
   localConfig: LocalConfig,
-  teamSkills?: { previous: DeliveredHashes | undefined },
+  teamSkills?: Pick<DeliveryLedger, 'previous'>,
 ): (request: SkillTargetRequest) => Promise<string | null> {
   const install = installOf(teamConfig, localConfig);
   const toolPaths = scopedToolPaths(teamConfig, localConfig);
-  // Asked once per run, and only once a Codex skill needs it.
+  // Asked once per resolver, and only once a Codex skill needs them.
   let sharedDelivered: Promise<boolean> | undefined;
   let sharedHoldsTeamSkill: Promise<boolean> | undefined;
   return async ({ tool, skillName, ownsShared, sourcePath }) => {
