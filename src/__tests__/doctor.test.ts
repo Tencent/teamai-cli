@@ -1506,7 +1506,7 @@ describe('doctor — member settings (#1459)', () => {
         onTestFinished(() => { mockedDetectProjectConfig.mockResolvedValue(null); });
         const otherReads = mockedReadFileSafe.getMockImplementation();
         mockedReadFileSafe.mockImplementation(async (filePath: string) => (
-            filePath === machineFile() ? 'recallEnabled: true\nexcludedSkills: [lint]\nusername: someone\n' : otherReads?.(filePath)
+            filePath === machineFile() ? 'recallEnabled: true\nexcludedSkills: [lint]\nscoring: { sessions: false }\nusername: someone\n' : otherReads?.(filePath)
         ));
 
         await doctor({ json: true });

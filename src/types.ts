@@ -881,6 +881,21 @@ export const MemberSettingsSchema = z.object({
   sessions: z.unknown().optional(),
   /** Per-machine tool selection for locally executed workflow prompt steps. */
   workflows: MemberWorkflowSettingsSchema.optional(),
+  /**
+   * How this scope judges sessions. In ~/.teamai/config.yaml below a workspace or self scope, a value applies only where
+   * it is stricter than what the team sets (`scopeScoring`), so a machine never starts paid judging.
+   */
+  scoring: z.object({
+    /** The least isolation a judge of this scope needs, raising the team's and the scorer's. A value teamai does not know counts as `verified`. */
+    isolation: z.string().optional().catch(({ input }) => JSON.stringify(input)),
+    /**
+     * Judge this scope's finished agent sessions, per run mode: `{ attended?, unattended? }` of off, ask or auto, or true
+     * or false for auto or off in both. Kept as written; the scope's scoring settings report a value they cannot use.
+     */
+    sessions: z.unknown().optional(),
+    /** How many sessions a local day may lease for judging; 0 turns session scoring off. Another value is kept as its text, which sets nothing. */
+    daily_limit: z.union([z.number().int().nonnegative(), z.string()]).optional().catch(({ input }) => JSON.stringify(input)),
+  }).optional(),
 });
 export type MemberSettings = z.infer<typeof MemberSettingsSchema>;
 
@@ -971,17 +986,6 @@ export const LocalConfigSchema = z.object({
   /** Tools explicitly excluded from all teamai sync (set by `uninstall --agent`). Removed again by `init --agent`. */
   disabledAgents: z.array(z.string()).optional(),
   ...MemberSettingsSchema.shape,
-  scoring: z.object({
-    /** The least isolation a judge of this scope needs, raising the team's and the scorer's. A value teamai does not know counts as `verified`. */
-    isolation: z.string().optional().catch(({ input }) => JSON.stringify(input)),
-    /**
-     * Judge this scope's finished agent sessions, per run mode: `{ attended?, unattended? }` of off, ask or auto, or true
-     * or false for auto or off in both. Kept as written; the scope's scoring settings report a value they cannot use.
-     */
-    sessions: z.unknown().optional(),
-    /** How many sessions a local day may lease for judging; 0 turns session scoring off. Another value is kept as its text, which sets nothing. */
-    daily_limit: z.union([z.number().int().nonnegative(), z.string()]).optional().catch(({ input }) => JSON.stringify(input)),
-  }).optional(),
 });
 
 /** Local-config keys that remain specific to one install rather than overlaying from the machine. */
@@ -989,7 +993,7 @@ export const LOCAL_CONFIG_INSTALL_KEYS = [
   'repo', 'username', 'provider', 'scope', 'primaryRole', 'additionalRoles',
   'projects', 'resourceProfileVersion', 'projectRoot', 'inheritUserScope',
   'subscribedTags', 'excludedSkills', 'gitExcludeEnabled', 'enabledAgents',
-  'toolRoots', 'disabledAgents', 'scoring',
+  'toolRoots', 'disabledAgents',
 ] as const satisfies readonly Exclude<keyof z.infer<typeof LocalConfigSchema>, keyof MemberSettings>[];
 
 /**

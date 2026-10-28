@@ -425,9 +425,11 @@ function applyMachineSettings(config: LocalConfig, machine: MemberSettings): Loc
   const local = MemberSettingsSchema.parse(config);
   // `ai.tool` has a dedicated precedence reader (`aiToolSettings`) used by
   // tool-launch. Do not inject the machine copy into every workspace config;
-  // keeping it in this overlay would create a second, stale reader.
-  const { ai: _machineAi, ...machineWithoutAi } = machine;
-  const { ai: _localAi, ...localWithoutAi } = local;
+  // keeping it in this overlay would create a second, stale reader. The
+  // machine's `scoring` only restricts, so `scopeScoring` reads it beside the
+  // scope's own instead of letting it stand in for that.
+  const { ai: _machineAi, scoring: _machineScoring, ...machineWithoutAi } = machine;
+  const { ai: _localAi, scoring: _localScoring, ...localWithoutAi } = local;
   const merged: MemberSettings = { ...machineWithoutAi, ...localWithoutAi };
 
   const mergedWorkflows = machine.workflows || local.workflows
