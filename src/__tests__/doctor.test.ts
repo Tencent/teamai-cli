@@ -1419,7 +1419,7 @@ describe('doctor — member settings (#1459)', () => {
         expect(report.notes).toContain(`Usage reporting: off, from usageReportEnabled: false in the machine config ${machineFile()}.`);
     });
 
-    it('names the user config for a setting the user scope decides for the whole machine', async () => {
+    it('names the user config for a setting the user scope decides for the whole machine, and the workspace value it leaves unused', async () => {
         const workspace = { ...mockLocalConfig, scope: 'project', projectRoot: '/tmp/ws', dataHome: '/tmp/ws-data', memberSettingsOverlay: { local: {} } };
         mockedDetectProjectConfig.mockResolvedValue(workspace);
         onTestFinished(() => { mockedDetectProjectConfig.mockResolvedValue(null); });
@@ -1432,7 +1432,7 @@ describe('doctor — member settings (#1459)', () => {
         await doctor({});
 
         const printed = consoleSpy.mock.calls.map(([line]) => String(line));
-        expect(printed).toContain(`  updatePolicy: skip, from the user config ${machineFile()}`);
+        expect(printed).toContain(`  updatePolicy: skip, from the user config ${machineFile()} (the workspace's auto is not used)`);
     });
 
     it('prints each model alias in effect, the workspace\'s entries over the machine\'s', async () => {

@@ -220,9 +220,13 @@ function memberSettingLines(reports: MemberSettingsReport[], scope: LocalConfig[
   const shown = (value: unknown): string => typeof value === 'string' ? value : JSON.stringify(value);
   return reports.flatMap(({ key, effective, source, levels }) => {
     if (!source || source.level === 'default') return [];
-    const below = levels.slice(levels.indexOf(source) + 1).filter(({ level }) => level !== 'default')
+    const below = levels.slice(levels.indexOf(source) + 1).filter(({ level, used }) => level !== 'default' && used !== false)
       .map((lower, index) => `the ${describeMemberSettingLevel(lower, scope).short}${index === 0 ? ' says' : ''} ${shown(lower.value)}`);
-    return [`  ${key}: ${shown(effective)}, from ${describeMemberSettingLevel(source, scope).from}${below.length > 0 ? ` (${below.join(', ')})` : ''}`];
+    // A value set but not read, such as a workspace's own updatePolicy while the user scope decides it.
+    const unused = levels.filter(({ used }) => used === false)
+      .map((ignored) => `the ${describeMemberSettingLevel(ignored, scope).short}'s ${shown(ignored.value)} is not used`);
+    const notes = [...below, ...unused];
+    return [`  ${key}: ${shown(effective)}, from ${describeMemberSettingLevel(source, scope).from}${notes.length > 0 ? ` (${notes.join(', ')})` : ''}`];
   });
 }
 
