@@ -44,7 +44,7 @@ describe('the session sharing panel', () => {
     expect(shown).toContain('Attended Neither published nor scored');
     expect(shown).toContain('Unattended Published and scored');
     expect(shown).toContain('by teamai score --drain before the job ends');
-    expect(shown).toContain('Publish ask acts as off for now Set by the default');
+    expect(shown).toContain('Publish ask proposed when the friction reminder offers session-close Set by the default');
     expect(shown).toContain('Score auto Set by the default');
     expect(shown).toMatch(/1 waiting for a drain/);
     expect(shown).toMatch(/3 archived/i);
@@ -52,6 +52,18 @@ describe('the session sharing panel', () => {
     expect(shown).toContain('pi');
     expect(html).toContain('&lt;b&gt;yes&lt;/b&gt;');
     expect(html).not.toContain('<b>yes</b>');
+  });
+
+  it('says ask does nothing in an unattended session, where nobody is there to confirm', () => {
+    const shown = text(render({
+      ...defaults,
+      publish: { ...defaults.publish, unattended: { policy: 'ask', source: { kind: 'default' } } },
+      scoring: { state: 'ok', policies: { attended: { policy: 'ask', source: { kind: 'default' } }, unattended: { policy: 'ask', source: { kind: 'default' } } }, dailyLimit: 10, scorers: ['quality'] },
+    }).html);
+
+    expect(shown).toContain('Score ask proposed when the friction reminder offers session-close Set by the default');
+    expect(shown).toContain('Publish ask acts as off: nobody is there to confirm Set by the default');
+    expect(shown).toContain('Score ask acts as off: nobody is there to confirm Set by the default');
   });
 
   it('lists pending labels once: with what waits while a drain takes them, else as kept on this machine', () => {
