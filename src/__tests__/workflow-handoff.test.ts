@@ -2791,7 +2791,7 @@ steps:
     const runs = await publishedRuns(runner);
     expect(runs).toEqual([expect.objectContaining({
       run: runId, workflow: 'release', owner: expect.objectContaining({ user: 'alice' }), repository: 'github.com/acme/app',
-      offer: { at: expect.any(String), needs: ['only a person can answer the approval at ship'], lacks: [] },
+      offer: { at: expect.any(String), needs: ['only a person can answer the approval at ship'], uses: { env: [], prompts: [] }, lacks: [] },
     })]);
     const self = (await installOwner(runner.config)).id;
     expect(PublishedRuns.candidates(runs, { repository: 'github.com/acme/app', hasPerson: false, self })).toEqual([]);
@@ -2822,7 +2822,7 @@ steps:
 
     const runs = await publishedRuns(runner);
     expect(runs).toEqual([expect.objectContaining({
-      run: runId, offer: { at: expect.any(String), needs: [], lacks: [{
+      run: runId, offer: { at: expect.any(String), needs: [], uses: { env: ['SIGNING_KEY'], prompts: [] }, lacks: [{
         reason: 'sign requires env SIGNING_KEY, which has no value here', fix: 'teamai env set SIGNING_KEY, or set it in the environment',
       }] },
     })]);
@@ -2935,7 +2935,7 @@ steps:
     expect(rows).toEqual([
       expect.objectContaining({
         run: offered, workflow: 'release', isMine: true, owner: expect.objectContaining({ user: 'alice' }), repository: 'github.com/acme/app',
-        offer: { at: expect.any(String), needs: ['only a person can answer the approval at ship'], lacks: [] },
+        offer: { at: expect.any(String), needs: ['only a person can answer the approval at ship'], uses: { env: [], prompts: [] }, lacks: [] },
       }),
       expect.objectContaining({ run: held, workflow: 'build', isMine: false, owner: expect.objectContaining({ user: 'bob' }) }),
     ]);

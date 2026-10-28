@@ -7,11 +7,19 @@
 export const handoffView = `
 function needsPerson(o) { return Boolean(o.refusal)||o.needs.length>0; }
 function command(text) { return '<span class="cmd-line"><code class="cmd" data-verbatim>'+e(text)+'</code><button class="link copy" data-copy="'+e(text)+'" aria-label="'+label('Copy command')+'">'+label('Copy')+'</button></span>'; }
+// What the steps left need of whichever machine takes the run, so the team can set a runner up for it.
+function uses(o, title) {
+ const env=o.uses.env.map(k=>label('env')+' <code data-verbatim>'+e(k)+'</code>'), prompts=o.uses.prompts.length?[label('a tool for')+' <span data-verbatim>'+o.uses.prompts.map(e).join(', ')+'</span>']:[];
+ return env.length||prompts.length?'<span>'+label(title)+'</span><small>'+env.concat(prompts).join('<br>')+'</small>':'';
+}
+function lacks(o) { return o.lacks.length?'<span class="amber">'+label('Not on this machine')+'</span><small data-verbatim>'+o.lacks.map(l=>e(l.reason)+': '+e(l.fix)).join('<br>')+'</small>':''; }
 function handoffRow(h, local) {
  const o=h.offer, who=h.isMine?label('You'):'<span data-verbatim>'+e(h.owner.user)+'</span>', repo=h.repository?'<span data-verbatim>'+e(h.repository)+'</span>':label('its business repository');
  const name=local.has(h.run)?'<button class="link" data-run="'+e(h.run)+'" data-run-source="local"><span class="sr-only">'+label('Details')+' </span><span data-verbatim>'+e(h.workflow)+'</span> ↗</button>':'<span data-verbatim>'+e(h.workflow)+'</span>';
  const state=(o?'<span class="good">'+label('Offered')+'</span>':'<span>'+label('Held')+'</span>')+'<small>'+who+' · '+e(when(o?o.at:h.ownedAt))+'</small>';
- const needs=!o?'—':o.refusal?'<span class="amber" data-verbatim>'+e(o.refusal.message)+'</span>':o.needs.length?'<span class="amber">'+label('Needs a person')+'</span><small data-verbatim>'+o.needs.map(e).join('<br>')+'</small>':'<span class="good">'+label('Nothing: a runner can finish it')+'</span>';
+ const needs=!o?'—':o.refusal?'<span class="amber" data-verbatim>'+e(o.refusal.message)+'</span>'
+  :(o.needs.length?'<span class="amber">'+label('Needs a person')+'</span><small data-verbatim>'+o.needs.map(e).join('<br>')+'</small>'+uses(o,'Their machine needs')
+   :uses(o,'A runner needs')||'<span class="good">'+label('Nothing: a runner can finish it')+'</span>')+lacks(o);
  // A runner's --next never takes this install's own offer, and --claim takes another install's run over even on a
  // machine that still holds an earlier copy of it.
  const next=o?(h.isMine?command('teamai workflow resume '+h.run)+'<small>'+label('Takes it back here, and the offer away')+'</small>'

@@ -29,8 +29,13 @@ function row(run: string, { isMine, offer }: Pick<HandoffRow, 'isMine' | 'offer'
   };
 }
 
-const RUNNABLE = { at: '2026-10-28T09:05:00.000Z', needs: [], lacks: [] };
-const GATED = { at: '2026-10-28T09:05:00.000Z', needs: ['only a person can answer the approval at ship'], lacks: [] };
+const NONE = { env: [], prompts: [] };
+const RUNNABLE = { at: '2026-10-28T09:05:00.000Z', needs: [], uses: NONE, lacks: [] };
+const GATED = { at: '2026-10-28T09:05:00.000Z', needs: ['only a person can answer the approval at ship'], uses: NONE, lacks: [] };
+const SIGNED = {
+  at: '2026-10-28T09:05:00.000Z', needs: [], uses: { env: ['SIGNING_KEY'], prompts: ['notes'] },
+  lacks: [{ reason: 'sign requires env SIGNING_KEY, which has no value here', fix: 'teamai env set SIGNING_KEY, or set it in the environment' }],
+};
 
 describe('the Handed-off runs panel', () => {
   it('gives each run the command that takes it from this install', () => {
@@ -52,6 +57,17 @@ describe('the Handed-off runs panel', () => {
     expect(html).toContain('This install drives it');
   });
 
+  it('says what a runner needs for the steps left, and what this machine lacks of it with what gives it', () => {
+    const { html } = render([row('r0000000000000001', { isMine: false, offer: SIGNED })]);
+    expect(html).toContain('A runner needs');
+    expect(html).toContain('<code data-verbatim>SIGNING_KEY</code>');
+    expect(html).toContain('a tool for <span data-verbatim>notes</span>');
+    expect(html).toContain('Not on this machine');
+    expect(html).toContain('sign requires env SIGNING_KEY, which has no value here');
+    expect(html).toContain('teamai env set SIGNING_KEY, or set it in the environment');
+    expect(html).not.toContain('Nothing: a runner can finish it');
+  });
+
   it('has a zh-CN translation for every message it shows', () => {
     const { keys } = render([
       row('r0000000000000001', { isMine: true, offer: RUNNABLE }),
@@ -59,6 +75,7 @@ describe('the Handed-off runs panel', () => {
       row('r0000000000000003', { isMine: false, offer: RUNNABLE }),
       row('r0000000000000004', { isMine: false }),
       row('r0000000000000005', { isMine: true }),
+      row('r0000000000000006', { isMine: false, offer: SIGNED }),
     ], 'zh-CN');
     expect(render([], 'zh-CN').keys.concat(keys).filter((key) => !Object.hasOwn(dashboardMessages, key))).toEqual([]);
   });

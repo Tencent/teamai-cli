@@ -42,6 +42,8 @@ export interface Offer {
   at: string;
   /** What in the steps the run has not settled for good needs a person, a clause each; empty when a runner can finish it. */
   needs: string[];
+  /** What those steps need of the machine that runs them, whichever it is: the env keys they require, and the prompt steps among them, which run on a tool. */
+  uses: { env: string[]; prompts: string[] };
   /** What those steps need that this machine lacks: env with no value here, or for the local driver a prompt tool. */
   lacks: Lack[];
   /** Why `taker` may not take it at all: its `invoke` refuses the caller, it needs the local driver, or its workflows cannot be read here. */
@@ -113,7 +115,7 @@ async function readSnapshot(config: LocalConfig, run: RunId): Promise<RunSnapsho
  */
 async function offerOf(config: LocalConfig, snapshot: RunSnapshot, at: string, { taker, env, tools }: { taker: Taker; env: WorkflowEnv; tools: ToolLacks }): Promise<Offer> {
   const definitions = await definitionsOf(config, snapshot);
-  if (!definitions.ok) return { at, needs: [], lacks: [], refusal: { code: definitions.error.code, message: definitions.error.message } };
+  if (!definitions.ok) return { at, needs: [], uses: { env: [], prompts: [] }, lacks: [], refusal: { code: definitions.error.code, message: definitions.error.message } };
   const { definition, workflows } = definitions.value;
   const description = describeWorkflow({
     definition, workflows, ceiling: ceilingOf(config), can: canFor(undefined), allow: config.workflows?.allow ?? {}, env: env.facts,
@@ -124,7 +126,8 @@ async function offerOf(config: LocalConfig, snapshot: RunSnapshot, at: string, {
   const local = taker.driver === 'skill' ? localReason(description) : undefined;
   const refusal = invokeRefusal(definition, taker.caller, { kind: 'continue', run: RunIdSchema.parse(snapshot.run) })
     ?? (local !== undefined ? { code: 'needs_local_driver', message: local } : undefined);
-  return { at, needs, lacks: [...envLacks(left, env.facts), ...tools(left)], ...(refusal ? { refusal } : {}) };
+  const uses = { env: [...new Set(left.flatMap((run) => run.env))], prompts: left.flatMap((run) => (run.executor === 'prompt' ? [run.step] : [])) };
+  return { at, needs, uses, lacks: [...envLacks(left, env.facts), ...tools(left)], ...(refusal ? { refusal } : {}) };
 }
 
 /** What the prompt steps among `runs` lack here: a tool to run on, or one on PATH. */
