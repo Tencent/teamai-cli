@@ -38,21 +38,27 @@ describe('the member settings panel', () => {
   it('shows each setting with its value, the level and file that set it, and the levels below it', () => {
     const shown = text(render(settings).html);
 
-    expect(shown).toContain('ai.tool claude This workspace /home/ana/.teamai/projects/work-a/config.yaml This machine codex');
-    expect(shown).toContain('recallEnabled true This machine /home/ana/.teamai/config.yaml Team false');
-    expect(shown).toContain('updatePolicy skip User config /home/ana/.teamai/config.yaml This workspace auto not used');
+    expect(shown).toContain('ai.tool claude This workspace ~/.teamai/projects/work-a/config.yaml This machine codex');
+    expect(shown).toContain('recallEnabled true This machine ~/.teamai/config.yaml Team false');
+    expect(shown).toContain('updatePolicy skip User config ~/.teamai/config.yaml This workspace auto not used');
     expect(shown).toContain('workflows.tools.default codex Environment TEAMAI_AI_TOOL');
     expect(shown).toContain('The first level that sets a setting wins: Environment › This workspace › This machine › Team › Default');
   });
 
   it('names the keys of the machine file that no command reads', () => {
-    expect(text(render(settings).html)).toContain(`Not read: excludedSkills, username Without a user-scope install, only member settings are read from ${MACHINE}`);
+    expect(text(render(settings).html)).toContain('Not read: excludedSkills, username Without a user-scope install, only member settings are read from ~/.teamai/config.yaml');
     expect(render({ ...settings, unread: [] }).html).not.toContain('Not read');
   });
 
   it('says every setting has its default when no level sets one, and nothing before teamai is set up', () => {
     expect(text(render({ ...settings, rows: [] }).html)).toContain('No level sets a member setting here, so each one has its default.');
     expect(render({ configured: false }).html).toBe('');
+  });
+
+  it('shows a file outside the home directory in full', () => {
+    const elsewhere = { ...settings.rows[0], source: { level: 'scope' as const, value: 'claude', file: '/srv/ana-other/config.yaml' } };
+
+    expect(text(render({ ...settings, rows: [elsewhere] }).html)).toContain('This workspace /srv/ana-other/config.yaml');
   });
 
   it('escapes values and file names', () => {
@@ -70,6 +76,6 @@ describe('the member settings panel', () => {
     const chinese = text(render(settings, 'zh-CN').html);
     expect(chinese).toContain(dashboardMessages['Member settings']);
     expect(chinese).toContain('ai.tool claude');
-    expect(chinese).toContain(WORKSPACE);
+    expect(chinese).toContain('~/.teamai/projects/work-a/config.yaml');
   });
 });
