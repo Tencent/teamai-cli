@@ -302,8 +302,10 @@ export function envAdvice(keys: readonly string[], declared: ReadonlySet<string>
     advice.push(`run ${known.map((key) => `teamai env set ${key}`).join(', ')}, or set ${known.length > 1 ? 'them' : 'it'} in the environment`);
   }
   if (unknown.length > 0) {
+    const them = unknown.length > 1 ? 'them' : 'it';
     const adds = unknown.map((key) => `teamai env add ${key} --secret`).join(', ');
-    advice.push(`set ${unknown.join(', ')} in the environment, or declare ${unknown.length > 1 ? 'them' : 'it'} in the team repo with ${adds}`);
+    const sets = unknown.map((key) => `teamai env set ${key}`).join(', ');
+    advice.push(`set ${unknown.join(', ')} in the environment, or declare ${them} in the team repo with ${adds} and give ${them} a value with ${sets}`);
   }
   return advice.join('; ');
 }

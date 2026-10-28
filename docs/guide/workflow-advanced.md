@@ -812,7 +812,7 @@ After a claim, `resume` can also answer `branch_diverged` when a local branch ca
 
 | Steps left | Lacking here when | Listed fix |
 |---|---|---|
-| A step or its `setup` with `requires.env` | a key has no value here, or the team env cannot be read | `teamai env set <KEY>`, or set it in the environment |
+| A step or its `setup` with `requires.env` | a key has no value here, or the team env cannot be read | `teamai env set <KEY>` for a declared key, or `teamai env add <KEY> --secret` then `teamai env set <KEY>` for an undeclared one, or set it in the environment |
 | A prompt step, with the local driver | `--tools`, `workflows.tools` and your AI tool name no tool for its agent, or only one teamai does not launch | `--tools default=<tool>` (or `<agent>=<tool>`), or `workflows.tools.default` |
 | A prompt step, with the local driver | the tool they name is not on `PATH` | install it, or `--tools` names one that is |
 

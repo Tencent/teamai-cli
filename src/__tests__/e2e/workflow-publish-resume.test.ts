@@ -566,13 +566,13 @@ describe('workflow resume lists the runs a checkout can resume, and --next takes
     const listed = await teamai('runner', ['workflow', 'resume'], { env: unattended });
     expect(listed.code, said(listed)).toBe(0);
     expect(rowsOf(listed)).toEqual(expect.arrayContaining([
-      expect.stringMatching(new RegExp(`^${sign} +sign +cannot run here +${OWNER('alice')} +offered on teamai-reports, sign requires env SIGNING_KEY, which has no value here: set SIGNING_KEY in the environment, or declare it in the team repo with teamai env add SIGNING_KEY --secret; then teamai workflow resume --next$`)),
+      expect.stringMatching(new RegExp(`^${sign} +sign +cannot run here +${OWNER('alice')} +offered on teamai-reports, sign requires env SIGNING_KEY, which has no value here: set SIGNING_KEY in the environment, or declare it in the team repo with teamai env add SIGNING_KEY --secret and give it a value with teamai env set SIGNING_KEY; then teamai workflow resume --next$`)),
     ]));
 
     const idle = await teamai('runner', ['workflow', 'resume', '--next'], { env: unattended });
     expect(idle.code, said(idle)).toBe(0);
     expect(idle.envelope()).toMatchObject({ data: { idle: { offered: expect.any(Number) } } });
-    expect(idle.stderr).toContain(`Left ${sign} (sign) offered: sign requires env SIGNING_KEY, which has no value here: set SIGNING_KEY in the environment, or declare it in the team repo with teamai env add SIGNING_KEY --secret`);
+    expect(idle.stderr).toContain(`Left ${sign} (sign) offered: sign requires env SIGNING_KEY, which has no value here: set SIGNING_KEY in the environment, or declare it in the team repo with teamai env add SIGNING_KEY --secret and give it a value with teamai env set SIGNING_KEY`);
     expect(publishedState(sign)).toMatchObject({ status: 'running', offered: { at: expect.any(String) } });
 
     const taken = await teamai('runner', ['workflow', 'resume', '--next'], { env: { ...unattended, SIGNING_KEY: 'test-key' } });
@@ -622,7 +622,7 @@ describe('workflow resume lists the runs a checkout can resume, and --next takes
     const listed = await teamai('runner', ['workflow', 'resume']);
     expect(listed.code, said(listed)).toBe(0);
     expect(rowsOf(listed)).toEqual(expect.arrayContaining([
-      expect.stringMatching(new RegExp(`^${signed} +signed-release +cannot run here +${OWNER('alice')} +offered on teamai-reports, sign requires env SIGNING_KEY, which has no value here: set SIGNING_KEY in the environment, or declare it in the team repo with teamai env add SIGNING_KEY --secret; only a person can answer the approval at ship; then a person runs teamai workflow resume ${signed} --claim$`)),
+      expect.stringMatching(new RegExp(`^${signed} +signed-release +cannot run here +${OWNER('alice')} +offered on teamai-reports, sign requires env SIGNING_KEY, which has no value here: set SIGNING_KEY in the environment, or declare it in the team repo with teamai env add SIGNING_KEY --secret and give it a value with teamai env set SIGNING_KEY; only a person can answer the approval at ship; then a person runs teamai workflow resume ${signed} --claim$`)),
     ]));
   }, 180_000);
 

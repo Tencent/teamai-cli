@@ -4,6 +4,7 @@ import { TOOLS } from '../../../tools.js';
 import type { LocalConfig, ToolId } from '../../../types.js';
 import type { GateGuards, WorkflowDescription } from '../../describe.js';
 import { INVOKE_ASK_NEED, unattendedReason, type Judging } from '../../protocol.js';
+import { envAdvice } from '../../requirements.js';
 import type { OutputSchema } from '../../types.js';
 import { describeLiteral, localStartLiteral, startLiteral, type Invocation, type Literal } from './literals.js';
 import { judgedBy, type DescribeVerdict } from './transitions.js';
@@ -247,7 +248,7 @@ function factsOf(description: WorkflowDescription, judging: Judging, answering: 
     ...facts.deliver.map(({ step, onto }) => (onto !== undefined ? `It opens a pull request from ${step} onto the pull request of ${onto}.`
       : facts.base !== undefined ? `It opens a pull request from ${step} into ${facts.base}.`
         : `${step} opens a pull request, which needs a branch to target: check out a branch here before you start it.`)),
-    ...(missing.length > 0 ? [`${listOf(missing)} ${one ? 'has' : 'have'} no value on this machine: set ${one ? 'it' : 'them'} with ${listOf(missing.map((key) => `teamai env set ${key}`))} before the steps that require ${one ? 'it' : 'them'} run, or those steps fail.`] : []),
+    ...(missing.length > 0 ? [`${listOf(missing)} ${one ? 'has' : 'have'} no value on this machine: ${envAdvice(missing, new Set(facts.requiresEnv.declaredHere))} before the steps that require ${one ? 'it' : 'them'} run, or those steps fail.`] : []),
     ...facts.held.map(heldFact),
     ...facts.budgets.map(({ step, tokens }) => (step === undefined ? `It may spend at most ${tokens} tokens.` : `${step} may spend at most ${tokens} tokens each time it starts.`)),
     ...(facts.timeout !== undefined ? [`It stops after ${durationOf(facts.timeout)}.`] : []),
