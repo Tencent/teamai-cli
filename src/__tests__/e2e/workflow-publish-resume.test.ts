@@ -505,7 +505,7 @@ describe('workflow resume lists the runs a checkout can resume, and --next takes
     const alices = await teamai('alice', ['workflow', 'resume']);
     expect(alices.code, said(alices)).toBe(0);
     expect(rowsOf(alices)).toEqual(expect.arrayContaining([
-      expect.stringMatching(new RegExp(`^${quick} +quick +claimed +${OWNER('runner')} +claimed on teamai-reports since .+: teamai workflow resume ${quick} --claim takes it back$`)),
+      expect.stringMatching(new RegExp(`^${quick} +quick +succeeded +${OWNER('runner')} +ended on teamai-reports: teamai workflow resume ${quick} --claim brings how it ended here$`)),
       expect.stringMatching(new RegExp(`^${release} +release +running +this install +local, offered on teamai-reports: teamai workflow resume ${release}$`)),
     ]));
   }, 180_000);
@@ -514,5 +514,15 @@ describe('workflow resume lists the runs a checkout can resume, and --next takes
     const refused = await teamai('runner', ['workflow', 'resume', 'r0123456789abcdef', '--next']);
     expect(refused.code, said(refused)).toBe(1);
     expect(refused.envelope()).toMatchObject({ error: { code: 'invalid_arguments' } });
+  }, 60_000);
+
+  it('refuses a command line that could take no run before it looks for one: --claim without a run, and --hitl person unattended', async () => {
+    const claim = await teamai('runner', ['workflow', 'resume', '--claim']);
+    expect(claim.code, said(claim)).toBe(1);
+    expect(claim.envelope()).toMatchObject({ error: { code: 'invalid_arguments', message: '--claim takes over the run you name: teamai workflow resume <run> --claim' } });
+
+    const person = await teamai('runner', ['workflow', 'resume', '--next', '--driver', 'skill', '--hitl', 'person'], { env: { TEAMAI_MODE: 'unattended' } });
+    expect(person.code, said(person)).toBe(1);
+    expect(person.envelope()).toMatchObject({ error: { code: 'invalid_arguments', message: expect.stringContaining('--hitl person'), next: null } });
   }, 60_000);
 });

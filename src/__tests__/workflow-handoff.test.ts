@@ -2813,6 +2813,40 @@ steps:
     expect(runs.map((run) => [run.run, run.owner.user, run.offer !== undefined])).toEqual([[offered, 'alice', true], [held, 'bob', false]]);
   });
 
+  it('lists for resume the runs others offer for this repository, then the running runs here as teamai-reports shows them', async () => {
+    const acme = team();
+    const alice = await acme.member('alice');
+    const bob = await acme.member('bob');
+    originAt('https://github.com/acme/app.git', [alice, bob]);
+    const local = await start(alice);
+    const ended = await start(alice);
+    const held = await start(alice);
+    const reoffered = await start(alice);
+    for (const run of [ended, held, reoffered]) {
+      await publishRun(alice.config, run, { env: {}, checkout: alice.checkout });
+      await claimRun(bob.config, run, { checkout: bob.checkout });
+    }
+    await cancelRun(bob.config, ended, {});
+    await publishRun(bob.config, reoffered, { env: {}, checkout: bob.checkout });
+    const bobs = await start(bob);
+    await publishRun(bob.config, bobs, { env: {}, checkout: bob.checkout });
+    // Published from a checkout without an origin, so it names no business repository.
+    const carol = await acme.member('carol');
+    git(carol.checkout, 'remote', 'remove', 'origin');
+    const nowhere = await start(carol);
+    expect(await publishRun(carol.config, nowhere, { env: {}, checkout: carol.checkout })).toMatchObject({ ok: true, value: { offered: true } });
+
+    await reportsBranch.readableReportsWorktree(alice.config);
+    const env = await resolveWorkflowEnv(alice.config, {});
+    const listed = async (repository: string | undefined) => (await PublishedRuns.resumable(alice.config, { taker: runnerTaker(), env, repository }))
+      .map((row) => (row.kind === 'offered' ? [row.kind, row.published.run, row.published.owner.user] : [row.kind, row.run.id, row.kind === 'here' ? 'alice' : row.owner.user]));
+    expect(await listed('github.com/acme/app')).toEqual([
+      ['offered', reoffered, 'bob'], ['offered', bobs, 'bob'], ['claimed', held, 'bob'], ['ended', ended, 'bob'], ['here', local, 'alice'],
+    ]);
+    // `--next` takes no run in a checkout without an origin, so none is offered there.
+    expect(await listed(undefined)).toEqual([['claimed', held, 'bob'], ['ended', ended, 'bob'], ['here', local, 'alice']]);
+  });
+
   it('shows the dashboard each run handed over, with what a runner would need, marking the ones this install published', async () => {
     const acme = team({ build: BUILD, release: RELEASE });
     const alice = await acme.member('alice');

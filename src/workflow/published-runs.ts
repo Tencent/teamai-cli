@@ -1,7 +1,8 @@
 /**
  * The running runs published on `teamai-reports`, which another install can continue: offered to whoever takes one next, or held by the
- * install that claimed it. `workflow resume` lists them, `workflow resume --next` takes one, and the dashboard shows
- * them. This module reads the reports checkout as the caller's last refresh left it, and claims nothing.
+ * install that claimed it. `workflow resume` lists them beside this machine's running runs, `workflow resume --next`
+ * takes one, and the dashboard shows them. This module reads the reports checkout as the caller's last refresh left it,
+ * and claims nothing.
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -15,8 +16,8 @@ import { ceilingOf, localReason, stepNeeds } from './drivers/skill/preflight.js'
 import { definitionsOf, settledSteps } from './handoff.js';
 import { invokeRefusal, type InvokeCaller } from './protocol.js';
 import { parseSnapshot, SNAPSHOTS_DIR, snapshotPath, type HandoffOwner, type RunSnapshot } from './snapshot.js';
-import { RunIdSchema, type RunId } from './store.js';
-import type { WorkflowFailure } from './types.js';
+import { installOwner, readRuns, RunIdSchema, type RunId } from './store.js';
+import type { RunState, RunStatus, WorkflowFailure } from './types.js';
 
 /** Who would take an offered run: the calling process, as `invoke` judges it, and the driver it would drive the run with. */
 export interface Taker {
@@ -41,9 +42,18 @@ export interface PublishedRun {
   ownedAt: string;
   /** The business repository it works in, as `host/owner/repo`; unknown for a run published before teamai recorded it. */
   repository?: string;
-  updatedAt: string;
   offer?: Offer;
 }
+
+/**
+ * A run `workflow resume` can continue in a checkout: one another install offers for its business repository, or one of
+ * this machine's running runs, as teamai-reports shows it: held here, claimed by another install since, or ended there.
+ */
+export type ResumableRun =
+  | { kind: 'offered'; published: PublishedRun & { offer: Offer } }
+  | { kind: 'here'; run: RunState; isOffered: boolean }
+  | { kind: 'claimed'; run: RunState; owner: HandoffOwner; ownedAt: string }
+  | { kind: 'ended'; run: RunState; owner: HandoffOwner; status: Exclude<RunStatus, 'running'> };
 
 /**
  * Every running run on this machine's reports checkout, offered ones first, oldest offer first, then held ones, the
@@ -65,7 +75,6 @@ async function list(config: LocalConfig, { taker, env }: { taker: Taker; env: Wo
     owner: snapshot.owner,
     ownedAt: snapshot.ownedAt,
     ...(snapshot.repository !== undefined ? { repository: snapshot.repository } : {}),
-    updatedAt: snapshot.updatedAt,
     ...(snapshot.offered ? { offer: await offerOf(config, snapshot, snapshot.offered.at, { taker, env }) } : {}),
   })));
   const offered = runs.filter((run) => run.offer).sort((left, right) => (left.offer?.at ?? '').localeCompare(right.offer?.at ?? ''));
@@ -111,4 +120,27 @@ function candidates(runs: readonly PublishedRun[], { repository, mode, self }: {
     && offer.refusal === undefined && (mode === 'attended' || offer.needs.length === 0));
 }
 
-export const PublishedRuns = { list, candidates } as const;
+/**
+ * The runs a checkout of business repository `repository` can resume, a run once: the ones other installs offer for it,
+ * oldest offer first, then this machine's running runs, newest first. A run of this machine that another install
+ * claimed and offers again is listed as offered. No run is offered to a checkout whose repository is unknown, since
+ * `--next` takes none there.
+ */
+async function resumable(config: LocalConfig, { taker, env, repository }: { taker: Taker; env: WorkflowEnv; repository: string | undefined }): Promise<ResumableRun[]> {
+  const [published, self, runs] = await Promise.all([list(config, { taker, env }), installOwner(config), readRuns(config)]);
+  const local = runs.filter((run) => run.status === 'running').sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  const mine = await Promise.all(local.map(async (run): Promise<Exclude<ResumableRun, { kind: 'offered' }> | undefined> => {
+    const read = run.publication === undefined || !usesBranchWorktree(config) ? undefined : await readSnapshot(config, RunIdSchema.parse(run.id));
+    const snapshot = read?.createdAt === run.createdAt ? read : undefined;
+    if (snapshot === undefined || snapshot.owner.id === self.id) return { kind: 'here', run, isOffered: snapshot?.offered !== undefined };
+    if (snapshot.status !== 'running') return { kind: 'ended', run, owner: snapshot.owner, status: snapshot.status };
+    return snapshot.offered === undefined ? { kind: 'claimed', run, owner: snapshot.owner, ownedAt: snapshot.ownedAt } : undefined;
+  }));
+  const held = mine.filter((row) => row !== undefined);
+  const here = new Set(held.map((row) => row.run.id));
+  const offered = published.flatMap((run): ResumableRun[] => (run.offer !== undefined && run.owner.id !== self.id && repository !== undefined
+    && run.repository === repository && !here.has(run.run) ? [{ kind: 'offered', published: { ...run, offer: run.offer } }] : []));
+  return [...offered, ...held];
+}
+
+export const PublishedRuns = { list, candidates, resumable } as const;

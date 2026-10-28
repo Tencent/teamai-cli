@@ -171,8 +171,7 @@ const StartOptionsSchema = RunOptionsSchema.extend({
   inputs: z.string().optional(),
 }).refine(ONE_HITL.check, { message: ONE_HITL.message });
 const ResumeOptionsSchema = RunOptionsSchema.extend({ claim: z.boolean().optional(), next: z.boolean().optional(), confirmed: z.boolean().optional() })
-  .refine(ONE_HITL.check, { message: ONE_HITL.message })
-  .refine((options) => !(options.claim && options.next), { message: '--next claims the run it takes, so it takes no --claim' });
+  .refine(ONE_HITL.check, { message: ONE_HITL.message });
 const OFFER = /^dispatch\.(.+)$/;
 const NextOptionsSchema = z.object({
   wait: z.boolean().optional(),
@@ -227,6 +226,26 @@ const NOBODY_ANSWERS: SkillError = {
   next: null,
 };
 
+/** The HITL mode `options` answer optional gates with, unless nobody would answer them in an unattended run. */
+function hitlOf(options: { hitl?: 'person' | 'recommend'; autoApprove?: boolean }, env: NodeJS.ProcessEnv): { hitl?: HitlMode } | { error: SkillError } {
+  const hitl: HitlMode | undefined = options.autoApprove ? 'auto-approve' : options.hitl;
+  if (hitl === 'person' && resolveRunMode(env) === 'unattended') return { error: NOBODY_ANSWERS };
+  return hitl !== undefined ? { hitl } : {};
+}
+
+/** The resume a `--driver skill` command line asks for, apart from its run, which `resume --next` checks before it picks one. */
+export function parseSkillResume(options: unknown, env: NodeJS.ProcessEnv): Omit<Extract<SkillCall, { kind: 'resume' }>, 'kind' | 'run'> | { error: SkillError } {
+  const parsed = ResumeOptionsSchema.safeParse(options);
+  if (!parsed.success) return invalid(parsed.error);
+  const { claim, next, confirmed, parallel, judge, tools } = parsed.data;
+  const hitl = hitlOf(parsed.data, env);
+  if ('error' in hitl) return hitl;
+  return {
+    claim: next ? 'offered' : claim ? 'any' : 'lacking', confirmed: confirmed === true, ...(tools !== undefined ? { tool: tools } : {}),
+    answers: { ...(parallel !== undefined ? { parallel } : {}), ...hitl, ...(judge === false ? { judge } : {}) },
+  };
+}
+
 /**
  * Reads a `--driver skill` command line into a call. `env` tells a runner, which carries its attempt's marker, from
  * an agent.
@@ -247,26 +266,19 @@ export function parseSkillCall(
     const read = options.data.inputs === undefined ? { inputs: undefined } : parseInputsFlag(options.data.inputs);
     if ('error' in read) return { error: { ...read.error, next: null } };
     const { inputs } = read;
-    const { parallel, confirmed, judge, autoApprove } = options.data;
-    const hitl: HitlMode | undefined = autoApprove ? 'auto-approve' : options.data.hitl;
-    if (hitl === 'person' && resolveRunMode(env) === 'unattended') return { error: NOBODY_ANSWERS };
+    const { parallel, confirmed, judge } = options.data;
+    const hitl = hitlOf(options.data, env);
+    if ('error' in hitl) return hitl;
     return {
       kind: 'start', name: raw.name, inputs, ...tool,
-      answers: { ...(parallel !== undefined ? { parallel } : {}), confirmed: confirmed === true, ...(hitl !== undefined ? { hitl } : {}), ...(judge === false ? { judge } : {}) },
+      answers: { ...(parallel !== undefined ? { parallel } : {}), confirmed: confirmed === true, ...hitl, ...(judge === false ? { judge } : {}) },
     };
   }
   const run = RunIdSchema.safeParse(raw.run);
   if (!run.success) return invalid(run.error);
   if (raw.kind === 'resume') {
-    const options = ResumeOptionsSchema.safeParse(raw.options);
-    if (!options.success) return invalid(options.error);
-    const { claim, next, confirmed, parallel, judge, autoApprove, tools } = options.data;
-    const hitl: HitlMode | undefined = autoApprove ? 'auto-approve' : options.data.hitl;
-    if (hitl === 'person' && resolveRunMode(env) === 'unattended') return { error: NOBODY_ANSWERS };
-    return {
-      kind: 'resume', run: run.data, claim: next ? 'offered' : claim ? 'any' : 'lacking', confirmed: confirmed === true, ...(tools !== undefined ? { tool: tools } : {}),
-      answers: { ...(parallel !== undefined ? { parallel } : {}), ...(hitl !== undefined ? { hitl } : {}), ...(judge === false ? { judge } : {}) },
-    };
+    const resume = parseSkillResume(raw.options, env);
+    return 'error' in resume ? resume : { kind: 'resume', run: run.data, ...resume };
   }
   if (raw.kind === 'next') {
     const options = NextOptionsSchema.safeParse(raw.options);
