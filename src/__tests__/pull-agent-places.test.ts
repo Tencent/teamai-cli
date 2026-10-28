@@ -103,6 +103,69 @@ describe('a pull and the agents of a moved home', () => {
     expect(await fse.pathExists(path.join(xdg, 'opencode', 'agents', 'teamai-recall.md'))).toBe(false);
   });
 
+  describe('recall turned off after a pull installed the recall agent and rule', () => {
+    const recallFiles = () => [
+      path.join(home, '.claude', 'agents', 'teamai-recall.md'),
+      path.join(home, '.claude', 'rules', 'teamai-recall.md'),
+    ];
+    const present = async () => Promise.all(recallFiles().map((file) => fse.pathExists(file)));
+
+    beforeEach(async () => {
+      await fse.ensureDir(path.join(home, '.claude', 'rules'));
+      config.enabledAgents = ['claude'];
+      config.recallEnabled = true;
+      await pull({});
+      expect(await present()).toEqual([true, true]);
+    });
+
+    it.each([
+      ['recallEnabled=false', false],
+      ['recallEnabled=false on a forced pull', true],
+    ])('removes both with %s', async (_label, force) => {
+      config.recallEnabled = false;
+      await pull({ force } as never);
+      expect(await present()).toEqual([false, false]);
+    });
+
+    it('removes both with TEAMAI_RECALL_DISABLED=1', async () => {
+      vi.stubEnv('TEAMAI_RECALL_DISABLED', '1');
+      await pull({});
+      expect(await present()).toEqual([false, false]);
+    });
+
+    it('removes both when the team turns recall off and the member has no override', async () => {
+      config.recallEnabled = undefined;
+      vi.mocked(loadTeamConfig).mockResolvedValue(
+        TeamaiConfigSchema.parse({ team: 't', repo: 'https://example.invalid/x/t.git', sharing: { recall: { enabled: false } } }),
+      );
+      await pull({});
+      expect(await present()).toEqual([false, false]);
+    });
+
+    it('keeps a recall agent the member edited and names it once', async () => {
+      const [agent, rule] = recallFiles();
+      await fse.appendFile(agent, '\nMy own instruction.\n');
+      config.recallEnabled = false;
+
+      await pull({});
+
+      expect(await present()).toEqual([true, false]);
+      const warned = vi.mocked(log.warn).mock.calls.map(([message]) => String(message)).filter((line) => line.includes(agent));
+      expect(warned).toHaveLength(1);
+      expect(warned[0]).not.toContain(rule);
+    });
+
+    it('writes both back when recall is turned on again', async () => {
+      config.recallEnabled = false;
+      await pull({});
+      expect(await present()).toEqual([false, false]);
+
+      config.recallEnabled = true;
+      await pull({});
+      expect(await present()).toEqual([true, true]);
+    });
+  });
+
   it('removes a tombstoned agent from there', async () => {
     await fse.ensureDir(path.join(xdg, 'opencode'));
     vi.stubEnv('XDG_CONFIG_HOME', xdg);

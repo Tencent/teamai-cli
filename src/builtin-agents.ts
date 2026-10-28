@@ -185,3 +185,34 @@ export async function deployBuiltinAgents(
 
   return deployed;
 }
+
+/**
+ * Remove the `teamai-recall` agent a pull wrote, for a pull that finds recall
+ * off. A copy that is not teamai's render of the shipped agent is the member's
+ * edit: it stays, and its path is returned.
+ */
+export async function removeBuiltinRecallAgents(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<string[]> {
+  const kept: string[] = [];
+  const src = path.join(getBuiltinAgentsDir(), 'teamai-recall.md');
+  const source = await readFileSafe(src);
+  const parsed = source ? reverseFromClaude(src, source) : { ok: false as const, reason: 'cannot read source file' };
+  if (!parsed.ok) return kept;
+
+  const install = installOf(teamConfig, localConfig);
+  for (const tool of Object.keys(install.toolPaths)) {
+    if (!isAgentToolId(tool)) continue;
+    const agentsDir = writable(await locate(tool, 'agents', install))?.path;
+    if (agentsDir === undefined) continue;
+    const rendered = renderForTool(parsed.spec, tool, undefined, localConfig.scope);
+    const dest = path.join(agentsDir, `teamai-recall${rendered.ext}`);
+    const current = await readFileSafe(dest);
+    if (current === null) continue;
+    if (current === rendered.content) {
+      await remove(dest);
+      log.debug(`Removed built-in recall agent from ${tool}`);
+    } else {
+      kept.push(dest);
+    }
+  }
+  return kept;
+}

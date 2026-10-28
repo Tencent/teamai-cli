@@ -831,6 +831,28 @@ async function reconcileEnvForUnchangedRepo(
 }
 
 /**
+ * With recall off, a `teamai-recall` agent and rule an earlier pull wrote would
+ * keep the agent calling recall: remove them. A copy the member edited stays,
+ * and the pull says so.
+ */
+async function removeRecallFilesQuietly(teamConfig: TeamaiConfig, localConfig: LocalConfig, dryRun?: boolean): Promise<void> {
+  if (dryRun) return;
+  try {
+    const { removeBuiltinRecallAgents } = await import('./builtin-agents.js');
+    const { removeBuiltinRecallRules } = await import('./builtin-rules.js');
+    const kept = [
+      ...await removeBuiltinRecallAgents(teamConfig, localConfig),
+      ...await removeBuiltinRecallRules(teamConfig, localConfig),
+    ];
+    if (kept.length > 0) {
+      warnOnce(`Recall is off, but ${kept.join(', ')} ${kept.length === 1 ? 'is' : 'are'} not the copy teamai installed, so ${kept.length === 1 ? 'it was' : 'they were'} kept.`);
+    }
+  } catch (e) {
+    log.debug(`Recall agent and rule removal skipped: ${(e as Error).message}`);
+  }
+}
+
+/**
  * The stub is the agent's only way into TeamAI, so a failure to deploy it is
  * not silent. A SessionStart pull runs detached with its output discarded, so
  * debug.log keeps the record.
@@ -1813,6 +1835,7 @@ async function pullForScope(
           const { recorder } = policy;
           try { const { deployBuiltinAgents } = await import('./builtin-agents.js'); await deployBuiltinAgents(freshConfig, localConfig, { skipRecall, recorder }); } catch {}
           try { const { deployBuiltinRules } = await import('./builtin-rules.js'); await deployBuiltinRules(freshConfig, localConfig, { skipRecall, recorder }); } catch {}
+          if (skipRecall) await removeRecallFilesQuietly(freshConfig, localConfig);
           try {
             const { deployBuiltinSkills } = await import('./builtin-skills.js');
             await deployBuiltinSkills(freshConfig, localConfig, { recorder });
@@ -2396,6 +2419,7 @@ async function pullForScope(
     recorder?.failed('builtin');
     log.debug(`[${scopeLabel}] Built-in agents deployment skipped: ${(e as Error).message}`);
   }
+  if (!isRecallEnabled(localConfig, freshConfig)) await removeRecallFilesQuietly(freshConfig, localConfig, dryRun);
   recorder?.succeeded('builtin');
 
   if (await checkoutRemoved()) return;
