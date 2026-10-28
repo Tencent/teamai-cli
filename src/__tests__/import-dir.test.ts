@@ -302,6 +302,22 @@ describe('import --dir', () => {
     expect(await fs.pathExists(path.join(outputDir, 'teamwiki', 'evidence', 'code', 'my-project', 'index.md'))).toBe(true);
   });
 
+  it('quotes an --output path with a space in the retry command', async () => {
+    const outputDir = path.join(tmpDir, 'my wiki');
+    vi.mocked(deepEnrich).mockImplementation(async ({ project }) => (
+      { project, complete: false, missingComponents: ['src'], missingArchitecture: false }
+    ));
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => { lines.push(args.map(String).join(' ')); });
+    try {
+      await runImportDir({ dir: projectDir, output: outputDir });
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(lines.join('\n')).toContain(`--project my-project --output '${outputDir}'\` to retry.`);
+  });
+
   it('exits 1 and prints the error when deep enrich throws', async () => {
     vi.mocked(deepEnrich).mockRejectedValue(new Error('Cannot deep-enrich through a symbolic link: docs/README.md'));
     const lines: string[] = [];

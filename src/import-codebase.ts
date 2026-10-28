@@ -10,6 +10,7 @@ import type { TeamaiInit } from './config.js';
 import { log } from './utils/logger.js';
 import { remotesMatch } from './utils/git.js';
 import { assertSafeResourceName } from './utils/path-safety.js';
+import { shellQuoteValue } from './utils/shell-profile.js';
 import { isOverrideInvalid } from './tool-launch/call.js';
 
 /** The caches an incremental extraction reuses, kept with each codebase's evidence. */
@@ -558,7 +559,9 @@ export async function reconcileAndDeepEnrich(params: {
  * resume it. The extracted evidence stays published.
  */
 export function failIncompleteDeepEnrich({ slug, output }: { slug: string; output: string | undefined }): void {
-  const retry = `teamai codebase --deep-enrich --project ${slug}${output ? ` --output ${output}` : ''}`;
+  // Quoted only when needed, so the printed command can be copied as is.
+  const outputArg = output && (/^[\w@%+=:,./-]+$/.test(output) ? output : shellQuoteValue(output));
+  const retry = `teamai codebase --deep-enrich --project ${slug}${outputArg ? ` --output ${outputArg}` : ''}`;
   log.warn(`Deep enrich incomplete: ${slug}. Run \`${retry}\` to retry.`);
   process.exitCode = 1;
 }
