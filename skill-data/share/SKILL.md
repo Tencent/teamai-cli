@@ -3,12 +3,29 @@ name: share
 description: >-
   Turn a session into a team learning: summarize what was solved, discovered or worked around,
   and publish it to the team knowledge base with `teamai contribute`. Loaded on demand by the
-  teamai discovery stub, and by the friction reminder that ends a session worth sharing.
+  teamai discovery stub, by the learning step of the session-close workflow, and by the friction
+  reminder where session-close is not offered.
 ---
 
 # Contribute — share what a session taught you with the team
 
 Summarize what this AI coding session taught you and push it to the team knowledge base.
+
+## Who sent you here
+
+- **The `learning` step of a `session-close` run** (its brief names this skill): work steps 1–3 of
+  How It Works with the person, in this session rather than a sub-agent, and save the document
+  outside the repository. Return its path, title and learnings namespace as the brief says. Do
+  not run `teamai contribute`: the run's `contribute` step runs it after its approval.
+- **The friction reminder** (its `[teamai]` text names `teamai skill get share`): teamai already
+  found that `session-close` cannot run here. Follow How It Works to the end.
+- **The person asked to share a learning, or to close, publish or score this session**: start the
+  `session-close` workflow. Run `teamai workflow start --describe session-close --driver skill`,
+  give the person each proposed input with its `why`, and start it with those values once they
+  confirm or change them (`teamai skill get workflow` covers the run). Its `learning` step brings
+  you back here. When describe refuses it (`invoke_denied`, `unattended_denied`,
+  `nested_workflow`), tell the person why and follow How It Works to the end.
+- **Anything else in When to Use**: follow How It Works to the end.
 
 **Write the document in Simplified Chinese**, as earlier releases required. Commands, flags,
 URLs, paths and code identifiers stay as they are.
@@ -50,7 +67,7 @@ teamai contribute --file /tmp/session-summary.md --title "Debugging K8s pod star
 
 ## Important
 
-- Run this as a **sub-agent** (Agent tool) to avoid polluting the main session's context
+- Outside a `session-close` run, run this as a **sub-agent** (Agent tool) to avoid polluting the main session's context
 - The document is pushed to the team repo's `teamai-learnings` branch, under `learnings/`, with no pull request
 - Team members will see it on their next `teamai pull`
 - Keep summaries concise and actionable — this is a knowledge base, not a diary
