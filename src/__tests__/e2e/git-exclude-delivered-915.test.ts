@@ -1255,11 +1255,14 @@ describe('explicit commands and layout migrations never delete a file the busine
       trigger: (m) => `${m.ok(['roles', 'set', 'fe']).output}${m.ok(['pull']).output}`,
       kept: '.claude/skills/dup/extra.md',
     },
-    // An earlier release's copy of a team rule named teamai-context, where nothing rewrites that path:
-    // OpenCode's instruction file is .opencode/teamai-context.md, and Kiro takes none.
+    // An earlier release's copy of a team rule named teamai-context. The
+    // newer context target may be the same path, but pull must still keep a
+    // file the business repository tracks (#915).
     ...([
       ['opencode', '.opencode/rules/teamai-context.md'],
       ['kiro', '.kiro/steering/teamai-context.md'],
+      ['qoder', '.qoder/rules/teamai-context.md'],
+      ['trae', '.trae/rules/teamai-context.md'],
     ] as const).map(([tool, kept]): TrackedRow => ({
       name: `${tool}'s teamai-context rule copy`,
       opts: { files: { ...TEAM_SKILLS, 'rules/teamai-context.md': rule('Context') }, agents: `claude,${tool}` },

@@ -684,7 +684,6 @@ export class RulesHandler extends ResourceHandler {
     ledger: DeliveryLedger | undefined,
   ): Promise<void> {
     const { holdsInstructionBlocks } = await import('../instruction-targets.js');
-    const install = installOf(teamConfig, localConfig);
     const relativePath = `rules/${TEAMAI_CONTEXT_RULE_NAME}.md`;
     const rule: ResourceItem = {
       name: TEAMAI_CONTEXT_RULE_NAME, type: 'rules', relativePath, sourcePath: path.join(localConfig.repo.localPath, relativePath),
@@ -702,13 +701,10 @@ export class RulesHandler extends ResourceHandler {
       const delivered = (recorded !== undefined && recorded === await fileHash(file))
         || await isDeliveredRender(deliveredRenders(tool), file, rule, localConfig.repo.localPath, deliveredRevs);
       if (!delivered) continue;
-      // Where this path is the tool's instruction file (Claude, Cursor,
-      // CodeBuddy, WorkBuddy), the instruction sync right after rewrites it,
-      // so a tracked copy shows ` M`, as any update does, and keeping the old
-      // file would block that sync. Elsewhere (OpenCode, Kiro) nothing
-      // rewrites it: a tracked copy is kept, as every removal keeps one.
-      const target = ownOf(await locate(tool, 'blocks', install))?.path;
-      if (target !== file && await keepsTrackedCopy(file)) continue;
+      // The instruction sync below may replace this path, but it must never
+      // remove a file the business repository tracks (#915). Keep the old rule
+      // copy and let the sync report that its own target is blocked instead.
+      if (await keepsTrackedCopy(file)) continue;
       await remove(file);
       if (ledger) forgetDelivered(ledger.hashes, file);
       log.info(`Removed ${file}, the copy of the team rule ${TEAMAI_CONTEXT_RULE_NAME} an earlier release delivered: the team instructions go there now`);

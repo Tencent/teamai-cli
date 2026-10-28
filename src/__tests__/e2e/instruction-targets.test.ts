@@ -524,6 +524,7 @@ describe('instruction block targets on real CLI pull (#945)', () => {
       const content = fs.readFileSync(path.join(user.home, relative), 'utf8');
       expect(content.startsWith(`${header}\n`), relative).toBe(true);
       expect(content).toContain('Be kind.');
+      expect(content).toContain('Shared team instructions.');
     }
 
     const projectSandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-1419-e2e-')));
@@ -544,6 +545,7 @@ describe('instruction block targets on real CLI pull (#945)', () => {
       const content = fs.readFileSync(path.join(member.projectRoot, relative), 'utf8');
       expect(content.startsWith(`${header}\n`), relative).toBe(true);
       expect(content).toContain('Be kind.');
+      expect(content).toContain('DEVELOPMENT-SENTINEL');
     }
 
     const removed = await runCLI(['uninstall', '--force'], { HOME: member.home }, member.projectRoot);
