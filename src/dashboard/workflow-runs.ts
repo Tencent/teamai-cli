@@ -131,8 +131,8 @@ type ScoringTotal = Awaited<ReturnType<typeof LabelStore.scoringTotal>>;
 
 export type RunDetail = { run: LocalRunRow | ReportedRunRow; steps: StepRow[]; scoring: ScoringTotal };
 
-/** A run handed over on teamai-reports: offered while `offer` is set, else held by the install that claimed it. `mine`: this install owns it. */
-export type HandoffRow = PublishedRun & { mine: boolean };
+/** A run handed over on teamai-reports: offered while `offer` is set, else held by its owner, who claimed it or resumed it. `isMine`: this install owns it. */
+export type HandoffRow = PublishedRun & { isMine: boolean };
 
 /** The team history and the runs handed over, or why they could not be read; the local runs show either way. */
 export type ReportedHistory = { state: 'ok'; runs: ReportedRunRow[]; handoffs: HandoffRow[] } | { state: 'unavailable' };
@@ -252,7 +252,7 @@ const PERSON: Taker = { caller: { evidence: { kind: 'none' }, confirmed: false, 
  */
 export async function listHandoffs(config: LocalConfig): Promise<HandoffRow[]> {
   const [runs, self] = await Promise.all([PublishedRuns.list(config, { taker: PERSON, env: await resolveWorkflowEnv(config) }), installOwner(config)]);
-  return runs.map((run) => ({ ...run, mine: run.owner.id === self.id }));
+  return runs.map((run) => ({ ...run, isMine: run.owner.id === self.id }));
 }
 
 function localDetail(run: RunState, row: LocalRunRow, scores: ReadonlyMap<string, PassScore[]> | undefined, scoring: ScoringTotal): RunDetail {

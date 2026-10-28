@@ -32,9 +32,9 @@ The Workflow Runs page has three lists for the selected workspace. **Local runs*
 |---|---|---|
 | `release` · Offered · alice | Needs a person: only a person can answer the approval at ship | `teamai workflow resume <run>`, run by a person |
 | `ship-issue` · Offered · alice | Nothing: a runner can finish it | `teamai workflow resume --next`, in a checkout of that repository |
-| `nightly-report` · Claimed · bob | — | `teamai workflow resume <run> --claim` takes it over from bob |
+| `nightly-report` · Held · bob | — | `teamai workflow resume <run> --claim` takes it over from bob |
 
-A local run that is offered, or that another install claimed, says so under its status. The status line counts the offered runs and the ones that need a person. The page claims nothing: the command runs a driver on the machine that takes the run.
+A local run that is offered, or that another install now holds, says so under its status. The status line counts the offered runs and the ones that need a person. The page claims nothing: the command runs a driver on the machine that takes the run.
 
 The page shows what a run record publishes, plus each step's live status and the options of a waiting HITL request. Inputs, `for_each` items, outputs, prompts, HITL messages, and local paths stay in the run file. Read a HITL question where the run's driver asks it. A run's details show what each pass delivered: the commits on its branch, the pull request delivered for it, and the learnings `teamai contribute` recorded inside its attempt.
 

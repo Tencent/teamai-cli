@@ -32,9 +32,9 @@ teamai dashboard --port 8080
 |---|---|---|
 | `release` · 待接手 · alice | 需要人工：only a person can answer the approval at ship | 由人运行 `teamai workflow resume <run>` |
 | `ship-issue` · 待接手 · alice | 无：运行器可以完成 | 在该仓库的检出中运行 `teamai workflow resume --next` |
-| `nightly-report` · 已认领 · bob | — | `teamai workflow resume <run> --claim` 从 bob 接管 |
+| `nightly-report` · 持有中 · bob | — | `teamai workflow resume <run> --claim` 从 bob 接管 |
 
-待接手的本机运行，或已被其他安装认领的本机运行，会在状态下方注明。状态栏统计待接手的运行和需要人工的运行。页面本身不认领任何运行：命令在接手运行的机器上启动驱动。
+待接手的本机运行，或现在由其他安装持有的本机运行，会在状态下方注明。状态栏统计待接手的运行和需要人工的运行。页面本身不认领任何运行：命令在接手运行的机器上启动驱动。
 
 页面显示运行记录会发布的内容，以及每个步骤的实时状态和等待中 HITL 请求的选项。输入、`for_each` 条目、输出、提示词、HITL 消息和本地路径都留在运行文件里。HITL 问题请在运行的驱动提问处阅读。运行详情显示每个 pass 的产出：它分支上的 commit、为它交付的拉取请求，以及 `teamai contribute` 在它的 attempt 中记录的经验。
 

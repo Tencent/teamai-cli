@@ -2863,10 +2863,10 @@ steps:
     const rows = await listHandoffs(alice.config);
     expect(rows).toEqual([
       expect.objectContaining({
-        run: offered, workflow: 'release', mine: true, owner: expect.objectContaining({ user: 'alice' }), repository: 'github.com/acme/app',
+        run: offered, workflow: 'release', isMine: true, owner: expect.objectContaining({ user: 'alice' }), repository: 'github.com/acme/app',
         offer: { at: expect.any(String), needs: ['only a person can answer the approval at ship'] },
       }),
-      expect.objectContaining({ run: held, workflow: 'build', mine: false, owner: expect.objectContaining({ user: 'bob' }) }),
+      expect.objectContaining({ run: held, workflow: 'build', isMine: false, owner: expect.objectContaining({ user: 'bob' }) }),
     ]);
     expect(rows[1]).not.toHaveProperty('offer');
   });

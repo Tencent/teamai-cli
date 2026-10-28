@@ -236,21 +236,21 @@ function runTable(rows, local) {
 // Runs handed over on teamai-reports (#1390): offered to whoever takes one next, or held by the install that claimed it.
 function handoffsOf() { return workflows&&workflows.reported&&workflows.reported.state==='ok'?workflows.reported.handoffs||[]:[]; }
 function needsPerson(o) { return Boolean(o.refusal)||o.needs.length>0; }
-function handoffBadge(id) { const h=handoffsOf().find(x=>x.run===id); return !h?'':h.offer?' · <span class="good">'+label('Offered')+'</span>':h.mine?'':' · <span class="amber">'+label('Claimed by')+' <span data-verbatim>'+e(h.owner.user)+'</span></span>'; }
+function handoffBadge(id) { const h=handoffsOf().find(x=>x.run===id); return !h?'':h.offer?' · <span class="good">'+label('Offered')+'</span>':h.isMine?'':' · <span class="amber">'+label('Held by')+' <span data-verbatim>'+e(h.owner.user)+'</span></span>'; }
 function command(text) { return '<span class="cmd-line"><code class="cmd" data-verbatim>'+e(text)+'</code><button class="link copy" data-copy="'+e(text)+'" aria-label="'+label('Copy command')+'">'+label('Copy')+'</button></span>'; }
 function handoffRow(h) {
- const o=h.offer, who=h.mine?label('You'):'<span data-verbatim>'+e(h.owner.user)+'</span>', repo=h.repository?'<span data-verbatim>'+e(h.repository)+'</span>':label('its business repository');
+ const o=h.offer, who=h.isMine?label('You'):'<span data-verbatim>'+e(h.owner.user)+'</span>', repo=h.repository?'<span data-verbatim>'+e(h.repository)+'</span>':label('its business repository');
  const local=workflows.local.some(r=>r.run===h.run);
  const name=local?'<button class="link" data-run="'+e(h.run)+'" data-run-source="local"><span class="sr-only">'+label('Details')+' </span><span data-verbatim>'+e(h.workflow)+'</span> ↗</button>':'<span data-verbatim>'+e(h.workflow)+'</span>';
- const state=(o?'<span class="good">'+label('Offered')+'</span>':'<span>'+label('Claimed')+'</span>')+'<small>'+who+' · '+e(when(o?o.at:h.ownedAt))+'</small>';
+ const state=(o?'<span class="good">'+label('Offered')+'</span>':'<span>'+label('Held')+'</span>')+'<small>'+who+' · '+e(when(o?o.at:h.ownedAt))+'</small>';
  const needs=!o?'—':o.refusal?'<span class="amber" data-verbatim>'+e(o.refusal.message)+'</span>':o.needs.length?'<span class="amber">'+label('Needs a person')+'</span><small data-verbatim>'+o.needs.map(e).join('<br>')+'</small>':'<span class="good">'+label('Nothing: a runner can finish it')+'</span>';
  const next=o?(needsPerson(o)?command('teamai workflow resume '+h.run)+'<small>'+label('A person resumes it, in a checkout of')+' '+repo+'</small>':command('teamai workflow resume --next')+'<small>'+label('A runner takes it, in a checkout of')+' '+repo+'</small>')
-  :h.mine?'<span class="muted">'+label('This install drives it')+'</span>':command('teamai workflow resume '+h.run+' --claim')+'<small>'+label('Takes it over from')+' '+who+'</small>';
+  :h.isMine?'<span class="muted">'+label('This install drives it')+'</span>':command('teamai workflow resume '+h.run+' --claim')+'<small>'+label('Takes it over from')+' '+who+'</small>';
  return '<tr><td>'+name+'<small><span data-verbatim>'+e(h.run)+'</span></small></td><td data-label="'+label('HAND-OFF')+'">'+state+'</td><td data-label="'+label('WHAT IT NEEDS')+'">'+needs+'</td><td data-label="'+label('NEXT STEP')+'">'+next+'</td></tr>';
 }
 function handoffPanel(rows) {
  const body=rows.length?'<div class="table-scroll"><table class="session-table handoffs"><thead><tr>'+['WORKFLOW / RUN','HAND-OFF','WHAT IT NEEDS','NEXT STEP'].map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'+rows.map(handoffRow).join('')+'</tbody></table></div>'
-  :'<div class="empty"><p>'+label('No run is offered or claimed on teamai-reports. Offer a running run with teamai workflow publish <run>.')+'</p></div>';
+  :'<div class="empty"><p>'+label('No run is offered or held on teamai-reports. Offer a running run with teamai workflow publish <run>.')+'</p></div>';
  return '<section class="panel sessions"><div class="panelhead"><h2>'+label('Handed-off runs')+' <span class="count">'+number(rows.length)+'</span></h2><span class="tag">'+label('Hand-offs · teamai-reports branch')+'</span></div>'+body+'</section>';
 }
 async function copyCommand(button) { try { await navigator.clipboard.writeText(button.dataset.copy); button.textContent=t('Copied'); } catch { button.textContent=t('Select and copy'); } }
