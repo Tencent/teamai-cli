@@ -184,6 +184,8 @@ export interface MemberSettingSource {
   value?: unknown;
   file?: string;
   variable?: string;
+  /** False when this value is visible for context but is not the runtime winner. */
+  used?: boolean;
 }
 
 export interface MemberSettingsReport {
@@ -235,6 +237,13 @@ function nonEmptyAiTool(value: unknown): unknown {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
+/** Report keys use dots as separators except for literal map-entry names. */
+function reportPathParts(key: string): string[] {
+  if (key.startsWith('workflows.tools.')) return ['workflows', 'tools', key.slice('workflows.tools.'.length)];
+  if (key.startsWith('modelAliases.')) return ['modelAliases', key.slice('modelAliases.'.length)];
+  return key.split('.');
+}
+
 function readPath(value: unknown, parts: string[]): unknown {
   let current = value;
   for (const part of parts) {
@@ -253,8 +262,8 @@ async function readYamlObject(file: string): Promise<Record<string, unknown>> {
   }
 }
 
-function settingSource(level: MemberSettingLevel, value: unknown, file?: string, variable?: string): MemberSettingSource {
-  return { level, value, ...(file ? { file } : {}), ...(variable ? { variable } : {}) };
+function settingSource(level: MemberSettingLevel, value: unknown, file?: string, variable?: string, used = true): MemberSettingSource {
+  return { level, value, ...(file ? { file } : {}), ...(variable ? { variable } : {}), ...(used ? {} : { used: false }) };
 }
 
 async function memberSettingsReport(ctx: DoctorContext): Promise<MemberSettingsReport[]> {
@@ -265,22 +274,28 @@ async function memberSettingsReport(ctx: DoctorContext): Promise<MemberSettingsR
   const rawScope = ctx.localConfig.scope === 'user' ? rawMachine : await readYamlObject(scopeFile);
   const userConfig = ctx.localConfig.scope === 'user' ? ctx.localConfig : await loadLocalConfig();
   const userSettings = userConfig?.scope === 'user' ? userConfig : {};
+  // updatePolicy and autoCompactTokens are machine-wide: when a user install
+  // exists, it decides these values even while doctor is inspecting a project.
+  // Load the same team file that pull/update use for that deciding install.
+  const decidingTeam = userConfig?.scope === 'user'
+    ? (await loadTeamConfig(userConfig.repo.localPath)) ?? ctx.teamConfig
+    : ctx.teamConfig;
   const reportKeys = new Set<string>(MEMBER_SETTING_REPORT_KEYS);
   addWorkflowReportKeys(reportKeys, rawMachine);
   addWorkflowReportKeys(reportKeys, rawScope);
   addModelAliasReportKeys(reportKeys, machine);
   addModelAliasReportKeys(reportKeys, rawScope);
 
-  const team = ctx.teamConfig as unknown as Record<string, unknown> | null;
-  const teamSharing = team?.sharing as Record<string, unknown> | undefined;
   const teamValue = (key: string): unknown => {
-    if (key === 'recallEnabled') return readPath(teamSharing, ['recall', 'enabled']);
-    if (key === 'contributeHintEnabled') return readPath(teamSharing, ['contributeHint', 'enabled']);
-    if (key === 'mrHintEnabled') return readPath(teamSharing, ['mrHint', 'enabled']);
-    if (key === 'coAuthorEnabled') return readPath(teamSharing, ['coAuthor', 'enabled']);
-    if (key === 'autoCompactTokens') return readPath(teamSharing, ['autoCompact', 'tokens']);
-    if (key === 'usageReportEnabled') return team?.usageReport;
-    if (key === 'updatePolicy') return team?.autoUpdate === false ? 'skip' : team?.autoUpdate === true ? 'auto' : undefined;
+    const selectedTeam = (MACHINE_WIDE_MEMBER_SETTINGS.has(key) ? decidingTeam : ctx.teamConfig) as unknown as Record<string, unknown> | null;
+    const selectedSharing = selectedTeam?.sharing as Record<string, unknown> | undefined;
+    if (key === 'recallEnabled') return readPath(selectedSharing, ['recall', 'enabled']);
+    if (key === 'contributeHintEnabled') return readPath(selectedSharing, ['contributeHint', 'enabled']);
+    if (key === 'mrHintEnabled') return readPath(selectedSharing, ['mrHint', 'enabled']);
+    if (key === 'coAuthorEnabled') return readPath(selectedSharing, ['coAuthor', 'enabled']);
+    if (key === 'autoCompactTokens') return readPath(selectedSharing, ['autoCompact', 'tokens']);
+    if (key === 'usageReportEnabled') return selectedTeam?.usageReport;
+    if (key === 'updatePolicy') return selectedTeam?.autoUpdate === false ? 'skip' : selectedTeam?.autoUpdate === true ? 'auto' : undefined;
     return undefined;
   };
   const defaultValue = (key: string): unknown => {
@@ -295,10 +310,11 @@ async function memberSettingsReport(ctx: DoctorContext): Promise<MemberSettingsR
   };
 
   const levelsFor = (key: string): MemberSettingSource[] => {
-    const parts = key.split('.');
+    const parts = reportPathParts(key);
     let scopeValue = readPath(rawScope, parts);
     let scopeSourceFile = ctx.localConfig.scope === 'user' ? machineFile : scopeFile;
-    if (MACHINE_WIDE_MEMBER_SETTINGS.has(key) && userConfig?.scope === 'user') {
+    const machineWideUser = MACHINE_WIDE_MEMBER_SETTINGS.has(key) && userConfig?.scope === 'user';
+    if (machineWideUser) {
       scopeValue = readPath(userSettings, parts);
       scopeSourceFile = machineFile;
     }
@@ -308,26 +324,37 @@ async function memberSettingsReport(ctx: DoctorContext): Promise<MemberSettingsR
       machineValue = nonEmptyAiTool(machineValue);
     }
     const levels: MemberSettingSource[] = [];
-    if (scopeValue !== undefined) levels.push(settingSource('scope', scopeValue, scopeSourceFile));
-    if (machineValue !== undefined && ctx.localConfig.scope !== 'user'
-      && !(MACHINE_WIDE_MEMBER_SETTINGS.has(key) && userConfig?.scope === 'user')) {
+    if (key === 'ai.tool' && process.env.TEAMAI_AI_TOOL) levels.push(settingSource('environment', process.env.TEAMAI_AI_TOOL, undefined, 'TEAMAI_AI_TOOL'));
+    if (key === 'recallEnabled' && process.env.TEAMAI_RECALL_DISABLED === '1') levels.push(settingSource('environment', false, undefined, 'TEAMAI_RECALL_DISABLED'));
+    if (key === 'contributeHintEnabled' && process.env.TEAMAI_CONTRIBUTE_HINT_DISABLED === '1') levels.push(settingSource('environment', false, undefined, 'TEAMAI_CONTRIBUTE_HINT_DISABLED'));
+    if (key === 'mrHintEnabled' && process.env.TEAMAI_MR_HINT_DISABLED === '1') levels.push(settingSource('environment', false, undefined, 'TEAMAI_MR_HINT_DISABLED'));
+
+    if (!machineWideUser && scopeValue !== undefined) levels.push(settingSource('scope', scopeValue, scopeSourceFile));
+    if (machineValue !== undefined && ctx.localConfig.scope !== 'user' && !machineWideUser) {
       levels.push(settingSource('machine', machineValue, machineFile));
     }
+    if (machineWideUser && scopeValue !== undefined) levels.push(settingSource('scope', scopeValue, scopeSourceFile));
     const teamValueForKey = teamValue(key);
     if (teamValueForKey !== undefined) {
-      const teamFile = ctx.localConfig.repo.localPath ? path.join(ctx.localConfig.repo.localPath, 'teamai.yaml') : undefined;
+      const teamFile = MACHINE_WIDE_MEMBER_SETTINGS.has(key) && userConfig?.scope === 'user'
+        ? path.join(userConfig.repo.localPath, 'teamai.yaml')
+        : ctx.localConfig.repo.localPath
+          ? path.join(ctx.localConfig.repo.localPath, 'teamai.yaml')
+          : undefined;
       levels.push(settingSource('team', teamValueForKey, teamFile));
     }
     const fallback = defaultValue(key);
     if (fallback !== undefined) levels.push(settingSource('default', fallback));
-    if (key === 'ai.tool' && process.env.TEAMAI_AI_TOOL) levels.unshift(settingSource('environment', process.env.TEAMAI_AI_TOOL, undefined, 'TEAMAI_AI_TOOL'));
-    if (key === 'recallEnabled' && process.env.TEAMAI_RECALL_DISABLED === '1') levels.unshift(settingSource('environment', false, undefined, 'TEAMAI_RECALL_DISABLED'));
-    if (key === 'contributeHintEnabled' && process.env.TEAMAI_CONTRIBUTE_HINT_DISABLED === '1') levels.unshift(settingSource('environment', false, undefined, 'TEAMAI_CONTRIBUTE_HINT_DISABLED'));
-    if (key === 'mrHintEnabled' && process.env.TEAMAI_MR_HINT_DISABLED === '1') levels.unshift(settingSource('environment', false, undefined, 'TEAMAI_MR_HINT_DISABLED'));
+    // Keep a workspace value visible for machine-wide settings, but mark it
+    // unused: pull/update resolve these two keys from the user install.
+    if (machineWideUser && ctx.localConfig.scope !== 'user') {
+      const workspaceValue = readPath(rawScope, parts);
+      if (workspaceValue !== undefined) levels.push(settingSource('scope', workspaceValue, scopeFile, undefined, false));
+    }
     return levels;
   };
 
-  const decidingConfig = userConfig ?? ctx.localConfig;
+  const decidingConfig = userConfig?.scope === 'user' ? userConfig : ctx.localConfig;
   const aiTool = async (): Promise<string | undefined> => (await memberTools(ctx.localConfig))[0]?.tool;
   const effectiveValue = async (key: string, levels: MemberSettingSource[]): Promise<unknown> => {
     if (key === 'ai.tool') return await aiTool();
@@ -336,10 +363,10 @@ async function memberSettingsReport(ctx: DoctorContext): Promise<MemberSettingsR
     if (key === 'mrHintEnabled') return isMrHintEnabled(ctx.localConfig, ctx.teamConfig ?? {});
     if (key === 'usageReportEnabled') return isUsageReportEnabled(ctx.localConfig, ctx.teamConfig ?? {});
     if (key === 'coAuthorEnabled') return resolveCoAuthor(ctx.localConfig, ctx.teamConfig ?? {}) ?? true;
-    if (key === 'autoCompactTokens') return resolveAutoCompactTokens(decidingConfig, ctx.teamConfig ?? {});
+    if (key === 'autoCompactTokens') return resolveAutoCompactTokens(decidingConfig, decidingTeam ?? {});
     if (key === 'updatePolicy') {
       const { resolveEffectiveUpdatePolicy } = await import('./update-policy.js');
-      return resolveEffectiveUpdatePolicy(decidingConfig, ctx.teamConfig);
+      return resolveEffectiveUpdatePolicy(decidingConfig, decidingTeam);
     }
     return levels[0]?.value;
   };

@@ -700,8 +700,8 @@ describe('doctor — JSON report', () => {
         mockedLoadLocalConfig.mockResolvedValueOnce(project).mockResolvedValue(user);
         mockedLoadMemberSettings.mockResolvedValue({
             ai: { tool: 'codex' },
-            modelAliases: { gateway: 'claude-sonnet-4' },
-            workflows: { tools: { implementer: 'claude' }, allow: { env: ['CI'] } },
+            modelAliases: { gateway: 'claude-sonnet-4', 'gateway.v1': 'claude-haiku-4' },
+            workflows: { tools: { implementer: 'claude', 'review.v2': 'codex' }, allow: { env: ['CI'] } },
         });
         mockedLoadTeamConfig.mockResolvedValue({
             ...mockTeamConfig,
@@ -720,11 +720,13 @@ describe('doctor — JSON report', () => {
                     'autoCompactTokens: 100000',
                     'modelAliases:',
                     '  gateway: claude-sonnet-4',
+                    '  gateway.v1: claude-haiku-4',
                     'ai:',
                     '  tool: codex',
                     'workflows:',
                     '  tools:',
                     '    implementer: claude',
+                    '    review.v2: codex',
                     '  allow:',
                     '    env: [CI]',
                 ].join('\n');
@@ -765,6 +767,14 @@ describe('doctor — JSON report', () => {
             effective: 'claude-sonnet-4',
             source: { level: 'machine', value: 'claude-sonnet-4' },
         });
+        expect(byKey['modelAliases.gateway.v1']).toMatchObject({
+            effective: 'claude-haiku-4',
+            source: { level: 'machine', value: 'claude-haiku-4' },
+        });
+        expect(byKey['workflows.tools.review.v2']).toMatchObject({
+            effective: 'codex',
+            source: { level: 'machine', value: 'codex' },
+        });
         expect(byKey['modelAliases.local']).toMatchObject({
             effective: 'claude-opus-4',
             source: { level: 'scope', value: 'claude-opus-4' },
@@ -779,6 +789,49 @@ describe('doctor — JSON report', () => {
         for (const report of Object.values(byKey) as Array<{ effective: unknown; levels: Array<{ value: unknown }> }>) {
             expect(report.levels[0]?.value).toEqual(report.effective);
         }
+    });
+
+    it('uses the deciding user install team and exposes workspace machine-wide values as unused', async () => {
+        const project = {
+            ...mockLocalConfig,
+            scope: 'project',
+            projectRoot: '/tmp/project',
+            repo: { localPath: '/tmp/project-team', remote: 'https://example.test/project.git' },
+            updatePolicy: 'auto',
+            autoCompactTokens: 50000,
+        };
+        const user = {
+            ...mockLocalConfig,
+            scope: 'user',
+            repo: { localPath: '/tmp/user-team', remote: 'https://example.test/user.git' },
+            updatePolicy: undefined,
+            autoCompactTokens: undefined,
+        };
+        mockedLoadLocalConfig.mockImplementation(async (options?: { dryRun?: boolean }) => options?.dryRun ? project : user);
+        mockedLoadMemberSettings.mockResolvedValue({});
+        mockedLoadTeamConfig.mockImplementation(async (repoPath: string) => repoPath === '/tmp/user-team'
+            ? { ...mockTeamConfig, autoUpdate: false, sharing: { autoCompact: { tokens: 90000 } } }
+            : { ...mockTeamConfig, autoUpdate: true, sharing: { autoCompact: { tokens: 70000 } } });
+        mockedReadFileSafe.mockImplementation(async (filePath: string) => {
+            if (filePath === path.join(getTeamaiHomeDir(), 'config.yaml')) {
+                return ['repo:', '  localPath: /tmp/user-team', '  remote: https://example.test/user.git', 'username: testuser', 'scope: user'].join('\n');
+            }
+            if (filePath === path.join('/tmp/project', '.teamai', 'config.yaml')) {
+                return ['repo:', '  localPath: /tmp/project-team', '  remote: https://example.test/project.git', 'username: testuser', 'scope: project', 'updatePolicy: auto', 'autoCompactTokens: 50000'].join('\n');
+            }
+            if (filePath.endsWith('settings.json')) return buildFullHooksContent();
+            return null;
+        });
+
+        await doctor({ json: true });
+
+        const byKey = Object.fromEntries((emittedReport().memberSettings ?? []).map((setting) => [setting.key, setting]));
+        expect(byKey.updatePolicy.effective).toBe('skip');
+        expect(byKey.updatePolicy.source).toMatchObject({ level: 'team', value: 'skip', file: path.join('/tmp/user-team', 'teamai.yaml') });
+        expect(byKey.updatePolicy.levels.some((level: { level: string; value?: unknown; used?: boolean }) => level.level === 'scope' && level.value === 'auto' && level.used === false)).toBe(true);
+        expect(byKey.autoCompactTokens.effective).toBe(90000);
+        expect(byKey.autoCompactTokens.source).toMatchObject({ level: 'team', value: 90000, file: path.join('/tmp/user-team', 'teamai.yaml') });
+        expect(byKey.autoCompactTokens.levels.some((level: { level: string; value?: unknown; used?: boolean }) => level.level === 'scope' && level.value === 50000 && level.used === false)).toBe(true);
     });
 
     it('carries the fix string of a failing check', async () => {
