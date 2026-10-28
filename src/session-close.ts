@@ -4,7 +4,7 @@
  * made from these values, and `workflow start --describe` proposes them, each with why, as the workflow's inputs.
  */
 import { loadTeamConfig } from './config.js';
-import { requiredIsolation, scorerIsolationSource } from './scorers/isolation.js';
+import { requiredIsolation, scorerIsolationSource, type IsolationSetting } from './scorers/isolation.js';
 import { installedJudgeTools } from './scorers/judge.js';
 import { scopeScoring } from './scorers/settings.js';
 import { AgentSession } from './session-flow/agent-session.js';
@@ -78,13 +78,13 @@ function filesOf(sources: readonly string[]): string {
 
 /**
  * The open scorers of `sampled`, without those whose required isolation is verified when `judge` is the session's
- * agent, which judges only best-effort.
+ * agent, which judges only best-effort. `judge` is asked only when a scorer needs verified isolation.
  */
-function scorersProposal(sampled: readonly SampledScorer[], { judge, team }: { judge: 'here' | 'driver'; team: Parameters<typeof requiredIsolation>[0] }): Proposal<string[]> {
+function scorersProposal(sampled: readonly SampledScorer[], { judge, team }: { judge: () => 'here' | 'driver'; team: readonly IsolationSetting[] }): Proposal<string[]> {
   const open = sampled.filter(({ state }) => state.kind === 'open');
   const verifiedBy = (one: SampledScorer) => {
     const required = requiredIsolation([...team, { source: scorerIsolationSource(one.scorer, one.pin.relativePath), value: one.definition.isolation }]);
-    return judge === 'driver' && required.level === 'verified' ? required.setBy : undefined;
+    return required.level === 'verified' && judge() === 'driver' ? required.setBy : undefined;
   };
   const proposed = open.filter((one) => verifiedBy(one) === undefined);
   const leftOut = new Map<string, string[]>();
@@ -100,22 +100,35 @@ function scorersProposal(sampled: readonly SampledScorer[], { judge, team }: { j
   return { value: [], why: [SCORERS_WHY, `None proposed: ${left.length > 0 ? left.join(' ') : 'no scorer samples this session.'}`, NAME_ANY].join(' ') };
 }
 
+/** How the offer finds the judge tools installed here: asked once, and only when needed, since each tool missing costs shell lookups. */
+type JudgeTools = () => readonly string[];
+
+interface OfferOptions {
+  now?: string;
+  judgeTools?: JudgeTools;
+}
+
 /**
- * What teamai proposes to close session `sessionId` of `tool` in this scope at `now`: publishing while the attended
- * publish policy is `ask`, the open scorers that sample it while the attended scoring policy is `ask`, and teamai's own
- * judge when one of `judgeTools`, the judge tools installed on this machine, is there, else the session's agent. A tool
+ * What teamai proposes to close session `sessionId` of `tool` in this scope at `now`, with the judge left to compute:
+ * publishing while the attended publish policy is `ask`, the open scorers that sample it while the attended scoring
+ * policy is `ask`, and teamai's own judge when one of `judgeTools` is installed here, else the session's agent. A tool
  * teamai reads no sessions from gets neither publishing nor scorers, since `session push` and `score` cannot read its
  * session.
  */
-async function offer(
+async function propose(
   config: LocalConfig,
   { tool, sessionId }: { tool: string; sessionId: string },
-  { now = new Date().toISOString(), judgeTools = installedJudgeTools([]) }: { now?: string; judgeTools?: readonly string[] } = {},
-): Promise<SessionCloseOffer> {
-  const [installed] = judgeTools;
-  const judge: Proposal<'here' | 'driver'> = installed
-    ? { value: 'here', why: `${installed} is installed here, so teamai's own judge scores it.` }
-    : { value: 'driver', why: 'No judge tool teamai runs is installed here, so this session\'s agent judges, best-effort.' };
+  { now = new Date().toISOString(), judgeTools = () => installedJudgeTools([]) }: OfferOptions,
+): Promise<Omit<SessionCloseOffer, 'judge'> & { judge: () => Proposal<'here' | 'driver'> }> {
+  let found: Proposal<'here' | 'driver'> | undefined;
+  const judge = (): Proposal<'here' | 'driver'> => {
+    if (found) return found;
+    const [installed] = judgeTools();
+    found = installed
+      ? { value: 'here', why: `${installed} is installed here, so teamai's own judge scores it.` }
+      : { value: 'driver', why: 'No judge tool teamai runs is installed here, so this session\'s agent judges, best-effort.' };
+    return found;
+  };
   const platform = AgentSession.platformForTool(tool);
   const session = { value: sessionId, why: 'The session to close: this one.' };
   if (platform === undefined) {
@@ -133,7 +146,7 @@ async function offer(
   switch (policy.policy) {
     case 'ask': {
       const sampled = await SessionWork.sampledScorers(config, { platform, sessionId }, now);
-      return { session, source, publish, judge, scorers: scorersProposal(sampled, { judge: judge.value, team: scoring.isolation }) };
+      return { session, source, publish, judge, scorers: scorersProposal(sampled, { judge: () => judge().value, team: scoring.isolation }) };
     }
     case 'off':
       return { session, source, publish, judge, scorers: { value: [], why: `${SCORERS_WHY} None proposed: the attended scoring policy (${setBy(policy.source)}) is off. ${NAME_ANY}` } };
@@ -144,6 +157,21 @@ async function offer(
       return unhandled;
     }
   }
+}
+
+/** Every proposal for session `sessionId` of `tool`, as describe gives them. */
+async function offer(config: LocalConfig, session: { tool: string; sessionId: string }, options: OfferOptions = {}): Promise<SessionCloseOffer> {
+  const proposed = await propose(config, session, options);
+  return { ...proposed, judge: proposed.judge() };
+}
+
+/**
+ * What the friction reminder offers session `sessionId` of `tool`: the `publish` and `scorers` describe proposes for it.
+ * It looks for judge tools only when a sampled scorer needs verified isolation.
+ */
+async function offered(config: LocalConfig, session: { tool: string; sessionId: string }, options: OfferOptions = {}): Promise<{ publish: boolean; scorers: string[] }> {
+  const { publish, scorers } = await propose(config, session, options);
+  return { publish: publish.value, scorers: scorers.value };
 }
 
 /**
@@ -189,4 +217,4 @@ async function proposals(
   return Object.fromEntries(matching.map((input) => [input, proposed[input]]));
 }
 
-export const SessionClose = { NAME, offer, proposals } as const;
+export const SessionClose = { NAME, offer, offered, proposals } as const;

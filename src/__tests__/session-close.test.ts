@@ -77,7 +77,7 @@ async function member({ scorers, files = {}, config = {} }: { scorers: Record<st
   return local;
 }
 
-const offerOf = (config: LocalConfig, tool = 'claude', judgeTools = ['claude']) => SessionClose.offer(config, { tool, sessionId: SESSION }, { now: NOW, judgeTools });
+const offerOf = (config: LocalConfig, tool = 'claude', judgeTools = ['claude']) => SessionClose.offer(config, { tool, sessionId: SESSION }, { now: NOW, judgeTools: () => judgeTools });
 
 describe('the session-close offer', () => {
   it('proposes the scorers that sample the session, as the background judge picks them', async () => {
@@ -187,5 +187,22 @@ describe('the session-close offer', () => {
       session: { value: SESSION, why: 'The session to close: this one.' },
       source: { value: 'claude-code', why: 'This session\'s tool, as teamai session list names it.' },
     });
+  });
+
+  it('offers in the reminder the same publish and scorers describe proposes, looking for judge tools only when a scorer needs verified isolation', async () => {
+    const judgeTools = vi.fn(() => []);
+    const plain = await member({ scorers: { 'review-quality.md': scorer('samplingRate: 100\nsessions: true\n') } });
+    expect(await SessionClose.offered(plain, { tool: 'claude', sessionId: SESSION }, { now: NOW, judgeTools })).toEqual({ publish: true, scorers: ['review-quality'] });
+    expect(judgeTools).not.toHaveBeenCalled();
+
+    const verified = await member({ scorers: {
+      'review-quality.md': scorer('samplingRate: 100\nsessions: true\n'),
+      'secure-review.md': scorer('samplingRate: 100\nsessions: true\nisolation: verified\n'),
+    } });
+    const proposed = await offerOf(verified, 'claude', []);
+    expect(await SessionClose.offered(verified, { tool: 'claude', sessionId: SESSION }, { now: NOW, judgeTools }))
+      .toEqual({ publish: proposed.publish.value, scorers: proposed.scorers.value });
+    expect(proposed.scorers.value).toEqual(['review-quality']);
+    expect(judgeTools).toHaveBeenCalledTimes(1);
   });
 });
