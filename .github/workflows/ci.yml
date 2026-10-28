@@ -243,3 +243,6 @@ jobs:
       # teamai.cmd. The file skips itself off Windows.
       - name: Hook shells
         run: npx vitest run --config vitest.e2e.config.ts src/__tests__/e2e/hook-shells-windows.test.ts
+
+      - name: Long-path team-repo pull
+        run: npx vitest run --config vitest.e2e.config.ts src/__tests__/e2e/windows-longpaths.test.ts
