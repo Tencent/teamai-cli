@@ -75,6 +75,19 @@ steps:
     command: node -e "console.log('signed')"
 `;
 
+const SIGNED_RELEASE = `schemaVersion: v1alpha1
+name: signed-release
+description: Sign, then ship once a person approves.
+steps:
+  - id: sign
+    requires: { env: [SIGNING_KEY] }
+    command: echo signed
+  - id: ship
+    needs: [sign]
+    approve: { message: Ship it?, required: true }
+    command: echo ship
+`;
+
 const DOCS = `schemaVersion: v1alpha1
 name: docs
 description: Build, then write the release notes.
@@ -473,6 +486,7 @@ describe('workflow resume lists the runs a checkout can resume, and --next takes
       'workflows/release.yaml': RELEASE,
       'workflows/sign.yaml': SIGN,
       'workflows/docs.yaml': DOCS,
+      'workflows/signed-release.yaml': SIGNED_RELEASE,
     }, 'team repo', teamOrigin);
     seed(path.join(sandbox, 'seed-business'), { 'README.md': '# business\n' }, 'business repo', businessOrigin);
     await join('alice');
@@ -600,6 +614,16 @@ describe('workflow resume lists the runs a checkout can resume, and --next takes
     expect(taken.code, said(taken)).toBe(0);
     expect(taken.stderr).toContain(`Claimed ${docs} (docs) from alice`);
     expect(taken.envelope()).toMatchObject({ data: { done: { run: docs, outcome: 'succeeded' } } });
+  }, 180_000);
+
+  it('lists a run that needs a person and env with no value here as cannot run here, so no person claims it here', async () => {
+    const signed = await offer('signed-release');
+
+    const listed = await teamai('runner', ['workflow', 'resume']);
+    expect(listed.code, said(listed)).toBe(0);
+    expect(rowsOf(listed)).toEqual(expect.arrayContaining([
+      expect.stringMatching(new RegExp(`^${signed} +signed-release +cannot run here +${OWNER('alice')} +offered on teamai-reports, sign requires env SIGNING_KEY, which has no value here: teamai env set SIGNING_KEY, or set it in the environment; only a person can answer the approval at ship; then a person runs teamai workflow resume ${signed} --claim$`)),
+    ]));
   }, 180_000);
 
   it('refuses --next with a run id, since it picks the run itself', async () => {

@@ -739,8 +739,10 @@ function resumableRow(resumable: ResumableRun): string[] {
       const { run, workflow, owner, offer } = resumable.published;
       if (offer.refusal) return [run, workflow, offer.refusal.code === 'needs_local_driver' ? 'needs the local driver' : offer.refusal.code, ownerText(owner), `offered on teamai-reports: ${offer.refusal.message}`];
       // Another install's run: `--claim` takes it over whether or not this machine still holds an earlier copy of it.
-      if (offer.needs.length > 0) return [run, workflow, 'needs a person', ownerText(owner), `offered on teamai-reports, ${offer.needs.join('; ')}: a person runs teamai workflow resume ${run} --claim`];
-      if (offer.lacks.length > 0) return [run, workflow, 'cannot run here', ownerText(owner), `offered on teamai-reports, ${lacksText(offer.lacks)}; then teamai workflow resume --next`];
+      const take = offer.needs.length > 0 ? `a person runs teamai workflow resume ${run} --claim` : 'teamai workflow resume --next';
+      // What this machine lacks comes first: nobody here can finish the run, a person included, until it is fixed.
+      if (offer.lacks.length > 0) return [run, workflow, 'cannot run here', ownerText(owner), `offered on teamai-reports, ${[lacksText(offer.lacks), ...offer.needs].join('; ')}; then ${take}`];
+      if (offer.needs.length > 0) return [run, workflow, 'needs a person', ownerText(owner), `offered on teamai-reports, ${offer.needs.join('; ')}: ${take}`];
       return [run, workflow, 'running', ownerText(owner), 'offered on teamai-reports: teamai workflow resume --next'];
     }
     case 'here': {
