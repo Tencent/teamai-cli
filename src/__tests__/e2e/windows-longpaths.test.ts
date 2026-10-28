@@ -51,6 +51,9 @@ describe.skipIf(process.platform !== 'win32')('Windows team-repo long paths', ()
     const skill = path.join(seed, 'skills', 'active', 'demo', 'SKILL.md');
     fs.mkdirSync(path.dirname(skill), { recursive: true });
     fs.writeFileSync(skill, '---\nname: demo\ndescription: Long path fixture\n---\n\nOriginal\n');
+    const inactiveSkill = path.join(seed, 'skills', 'inactive', 'deep-demo', 'SKILL.md');
+    fs.mkdirSync(path.dirname(inactiveSkill), { recursive: true });
+    fs.writeFileSync(inactiveSkill, '---\nname: deep-demo\ndescription: Inactive skill fixture\n---\n\nOther role only\n');
     git(['init', '-q', '-b', 'main'], seed);
     git(['add', '-A'], seed);
     git(['commit', '-q', '-m', 'seed'], seed);

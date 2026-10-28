@@ -31,6 +31,9 @@ still need their own long-path configuration.
 If your Git configuration explicitly sets `core.longpaths=false`, some Git
 versions still require changing that setting to `true`.
 
+The first `teamai init` clone uses a separate provider path: if the team repo
+already contains long paths, enable support first with `git config --global core.longpaths true`.
+
 ## If hooks still do not fire
 
 - **Git for Windows is missing.** Without it the dispatch commands degrade to a
