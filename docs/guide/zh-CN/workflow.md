@@ -346,6 +346,7 @@ $ teamai workflow resume --next --auto-approve
 {"data":{"done":{"run":"rba115c30f5a3b946","outcome":"succeeded","record":"published"},"cancelled":[]}}
 
 $ teamai workflow resume --next --auto-approve
+ℹ Left r482011be75fd0ad9 (release) offered for a person: only a person can answer the approval at ship
 {"data":{"idle":{"offered":1}}}      # 剩下的那个运行需要人参与，所以仍待接手
 ```
 
@@ -381,32 +382,35 @@ steps:
     command: ./scripts/sign-docs.sh
 ```
 
-作业没有设置 `SIGNING_KEY`、也没有安装 `claude` 的运行器上，`--next` 只接手 `nightly-report`。列表会说明 `release-docs` 缺什么、怎样补上：
+作业没有设置 `SIGNING_KEY`、也没有安装 `claude` 的运行器上，`--next` 两个运行都不接手，并说明原因。列表也是如此：
 
 ```console
 $ teamai workflow resume --next --tools default=claude --auto-approve
-✔ Claimed r6c56bc111126a2fb (nightly-report) from alice
-{"data":{"done":{"run":"r6c56bc111126a2fb","outcome":"succeeded","record":"published"},"cancelled":[]}}
+ℹ Left r482011be75fd0ad9 (release) offered for a person: only a person can answer the approval at ship
+⚠ Left r814cea92baadffac (release-docs) offered: sign requires env SIGNING_KEY, which has no value here: teamai env set SIGNING_KEY, or set it in the environment; the prompt step notes run on claude, which is not on PATH here: install claude, or pass --tools default=<tool> for one that is
+{"data":{"idle":{"offered":2}}}
 
 $ teamai workflow resume --tools default=claude
 RUN                WORKFLOW      STATUS           OWNER                      WHERE
-r23ef5eb6cde85ed3  release       needs a person   alice (install fb8d4b19…)  offered on teamai-reports, only a person can answer the approval at ship: a person runs teamai workflow resume r23ef5eb6cde85ed3 --claim
-r7604975256bd994b  release-docs  cannot run here  alice (install fb8d4b19…)  offered on teamai-reports, sign requires env SIGNING_KEY, which has no value here: teamai env set SIGNING_KEY, or set it in the environment; the prompt step notes run on claude, which is not on PATH here: install claude, or pass --tools default=<tool> for one that is; then teamai workflow resume --next
+r482011be75fd0ad9  release       needs a person   alice (install 4c514375…)  offered on teamai-reports, only a person can answer the approval at ship: a person runs teamai workflow resume r482011be75fd0ad9 --claim
+r814cea92baadffac  release-docs  cannot run here  alice (install 4c514375…)  offered on teamai-reports, sign requires env SIGNING_KEY, which has no value here: teamai env set SIGNING_KEY, or set it in the environment; the prompt step notes run on claude, which is not on PATH here: install claude, or pass --tools default=<tool> for one that is; then teamai workflow resume --next
 ```
 
 像[该作业](#从-ci-接手交出的运行)那样，在作业的 `env` 中加上 `SIGNING_KEY` 并安装 `claude`，下一次 `--next` 就会接手它：
 
 ```console
 $ teamai workflow resume --next --tools default=claude --auto-approve
-✔ Claimed r7604975256bd994b (release-docs) from alice
-{"data":{"done":{"run":"r7604975256bd994b","outcome":"succeeded","record":"published"},"cancelled":[]}}
+ℹ Left r482011be75fd0ad9 (release) offered for a person: only a person can answer the approval at ship
+✔ Claimed r814cea92baadffac (release-docs) from alice
+{"data":{"done":{"run":"r814cea92baadffac","outcome":"succeeded","record":"published"},"cancelled":[]}}
 ```
 
 VM 上的 cron 作业如果没有设置 `TEAMAI_MODE`，就是有人值守，但没有终端，没人能回答 `ship` 处的审批。这时 `--next` 同样把 `release` 留给人：
 
 ```console
 $ teamai workflow resume --next --tools default=claude     # crontab，未设置 TEAMAI_MODE
-{"data":{"idle":{"offered":2}}}
+ℹ Left r482011be75fd0ad9 (release) offered for a person: only a person can answer the approval at ship
+{"data":{"idle":{"offered":1}}}
 ```
 
 `--next` 如何处理每个待接手的运行：

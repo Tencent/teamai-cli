@@ -813,10 +813,10 @@ After a claim, `resume` can also answer `branch_diverged` when a local branch ca
 | Steps left | Lacking here when | Listed fix |
 |---|---|---|
 | A step or its `setup` with `requires.env` | a key has no value here, or the team env cannot be read | `teamai env set <KEY>`, or set it in the environment |
-| A prompt step, with the local driver | `--tools`, `workflows.tools` and your AI tool name no tool for its agent | `--tools default=<tool>` (or `<agent>=<tool>`), or `workflows.tools.default` |
+| A prompt step, with the local driver | `--tools`, `workflows.tools` and your AI tool name no tool for its agent, or only one teamai does not launch | `--tools default=<tool>` (or `<agent>=<tool>`), or `workflows.tools.default` |
 | A prompt step, with the local driver | the tool they name is not on `PATH` | install it, or `--tools` names one that is |
 
-A step that already settled for good counts for none of these, as for a person. With `--driver skill` the session runs the prompt steps, so only env counts. It claims the first one left as `resume <run>` would, and drives it with the driver `--driver` names. A claim that another runner beat answers `state_moved` inside `--next`, which then tries the next run. With nothing to take, it prints `{"data":{"idle":{"offered":N}}}` and exits 0: `N` counts the runs other installs offer that it left.
+A step that already settled for good counts for none of these, as for a person. With `--driver skill` the session runs the prompt steps, so only env counts. It claims the first one left as `resume <run>` would, and drives it with the driver `--driver` names. A claim that another runner beat answers `state_moved` inside `--next`, which then tries the next run. On stderr it says why it left each offered run of this repository: `Left <run> (<workflow>) offered for a person: …`, or a warning `Left <run> (<workflow>) offered: <what this machine lacks>: <what gives it>`. With nothing to take, it prints `{"data":{"idle":{"offered":N}}}` and exits 0: `N` counts the runs other installs offer that it left.
 
 Who may take an offered run follows the workflow's `invoke`, as `resume` does:
 

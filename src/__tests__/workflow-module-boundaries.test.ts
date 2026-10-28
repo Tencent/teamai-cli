@@ -61,7 +61,8 @@ const SKILL_IMPORTS: Record<string, { typeOnly?: true; names?: string[] }> = {
 const ENTRIES: Array<{ folder: string; entries: Record<string, string[] | 'any'>; testEntries: string[] }> = [
   { folder: SKILL, entries: { 'skill-driver.ts': 'any', 'literals.ts': ['src/workflow/discovery/render.ts'] }, testEntries: ['skill-driver.ts', 'literals.ts'] },
   { folder: PLACE, entries: { 'place.ts': ['src/workflow/protocol.ts', 'src/workflow/drivers/local/local-driver.ts'] }, testEntries: ['place.ts'] },
-  { folder: LOCAL, entries: { 'local-driver.ts': ['src/workflow-commands.ts'], 'local-tool-adapter.ts': [] }, testEntries: ['local-driver.ts', 'local-tool-adapter.ts'] },
+  // workflow-published-runs.ts judges an offered run by the tool the local driver would launch for its prompt steps.
+  { folder: LOCAL, entries: { 'local-driver.ts': ['src/workflow-commands.ts', 'src/workflow-published-runs.ts'], 'local-tool-adapter.ts': [] }, testEntries: ['local-driver.ts', 'local-tool-adapter.ts'] },
   { folder: DISCOVERY, entries: { 'workflow-skills.ts': 'any', 'generated-marker.ts': 'any' }, testEntries: ['workflow-skills.ts', 'generated-marker.ts', 'render.ts'] },
 ];
 

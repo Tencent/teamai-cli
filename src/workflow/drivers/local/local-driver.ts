@@ -178,9 +178,9 @@ function supportedTool(value: string): value is LaunchTool {
  * The tool a prompt step runs on: `--tools`, then `workflows.tools`, the agent's entry before the default, with the
  * member's own AI tool between them: TEAMAI_AI_TOOL before `workflows.tools.default`, and `ai.tool`, the project's before
  * the machine's, after it. A member's tool that teamai does not launch fails the step; one that runs no workflow step
- * gives way to the next rung.
+ * gives way to the next rung, which `warnings` says.
  */
-function stepTool(agent: string | undefined, config: LocalConfig, flags: Record<string, string>, members: MemberTool[]): { ok: true; tool: string | undefined } | { ok: false; failure: WorkflowFailure } {
+function stepTool(agent: string | undefined, config: LocalConfig, flags: Record<string, string>, members: MemberTool[]): { ok: true; tool: string | undefined; warnings: string[] } | { ok: false; failure: WorkflowFailure } {
   const configured = config.workflows?.tools ?? {};
   const member = ({ setting, tool }: MemberTool) => ({ source: setting, named: tool, member: true });
   const rungs = [
@@ -201,24 +201,23 @@ function stepTool(agent: string | undefined, config: LocalConfig, flags: Record<
       passed.push({ source, named });
       continue;
     }
-    for (const skipped of passed) log.warn(`${skipped.source} is "${skipped.named}", which cannot run a workflow step. Using ${source} (${named}) instead.`);
-    return { ok: true, tool: named };
+    return { ok: true, tool: named, warnings: passed.map((skipped) => `${skipped.source} is "${skipped.named}", which cannot run a workflow step. Using ${source} (${named}) instead.`) };
   }
-  for (const skipped of passed) log.warn(`${skipped.source} is "${skipped.named}", which cannot run a workflow step.`);
-  return { ok: true, tool: undefined };
+  return { ok: true, tool: undefined, warnings: passed.map((skipped) => `${skipped.source} is "${skipped.named}", which cannot run a workflow step.`) };
 }
 
 /**
  * The tool teamai launches for a prompt step of `agent` here, as {@link stepTool} picks it with `--tools` `flags`, or why
- * none: no tool is configured, or the one picked is not one teamai launches, which `tool` then names.
+ * none: no tool is configured, or the one picked is not one teamai launches, which `tool` then names. `warnings` says
+ * which of the member's tools gave way, for the step that launches to log.
  */
-export function launchToolFor(agent: string | undefined, config: LocalConfig, flags: Record<string, string>, members: MemberTool[]): { ok: true; tool: LaunchTool } | { ok: false; failure: WorkflowFailure; tool?: string } {
+export function launchToolFor(agent: string | undefined, config: LocalConfig, flags: Record<string, string>, members: MemberTool[]): { ok: true; tool: LaunchTool; warnings: string[] } | { ok: false; failure: WorkflowFailure; tool?: string; warnings: string[] } {
   const choice = stepTool(agent, config, flags, members);
-  if (!choice.ok) return choice;
-  const selected = choice.tool;
-  if (!selected) return { ok: false, failure: { code: 'tool_unconfigured', message: 'No local workflow tool is configured for this prompt step' } };
-  if (!supportedTool(selected)) return { ok: false, failure: { code: 'tool_unsupported', message: `The local workflow tool "${selected}" is not supported` }, tool: selected };
-  return { ok: true, tool: selected };
+  if (!choice.ok) return { ...choice, warnings: [] };
+  const { tool: selected, warnings } = choice;
+  if (!selected) return { ok: false, failure: { code: 'tool_unconfigured', message: 'No local workflow tool is configured for this prompt step' }, warnings };
+  if (!supportedTool(selected)) return { ok: false, failure: { code: 'tool_unsupported', message: `The local workflow tool "${selected}" is not supported` }, tool: selected, warnings };
+  return { ok: true, tool: selected, warnings };
 }
 
 function ignoredCodexSettings(agent: AgentSpec): string[] {
@@ -349,6 +348,7 @@ async function promptReport(
     return { attempt: lease.attempt, revision: lease.revision, driver, ...(tool ? { tool } : {}), ...failureReport(reported) };
   };
   const choice = launchToolFor(lease.agent, config, options.tools ?? {}, await memberTools(config));
+  for (const warning of choice.warnings) log.warn(warning);
   if (!choice.ok) return giveUp(choice.failure, choice.tool);
   const selected = choice.tool;
   // A worktree has its own pull record, so the tool launched there is observed and bound as that checkout.

@@ -27,7 +27,7 @@ import { errorOf, type SkillAnswer, type SkillError } from './turn.js';
 
 // What the runs offered on teamai-reports are judged by outside this driver, as a resume through it judges them.
 export { canFor } from './host-profiles.js';
-export { ceilingOf, isLeft, localReason, stepNeeds } from './preflight.js';
+export { ceilingOf, isLeft, listOf, localReason, stepNeeds } from './preflight.js';
 
 /** `tool`: `--tools default=<tool>`, the tool of the calling session, which its host may not name. */
 export type SkillCall =

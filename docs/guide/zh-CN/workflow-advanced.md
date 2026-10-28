@@ -813,10 +813,10 @@ teamai workflow resume [--next]
 | 剩余步骤 | 本机缺少的情况 | 列出的补救 |
 |---|---|---|
 | 带 `requires.env` 的步骤或其 `setup` | 某个键在本机没有值，或读不到团队 env | `teamai env set <KEY>`，或在环境中设置 |
-| 提示词步骤，使用本地驱动 | `--tools`、`workflows.tools` 和你的 AI 工具都没有为其 agent 指定工具 | `--tools default=<tool>`（或 `<agent>=<tool>`），或 `workflows.tools.default` |
+| 提示词步骤，使用本地驱动 | `--tools`、`workflows.tools` 和你的 AI 工具都没有为其 agent 指定工具，或只指定了 teamai 不启动的工具 | `--tools default=<tool>`（或 `<agent>=<tool>`），或 `workflows.tools.default` |
 | 提示词步骤，使用本地驱动 | 指定的工具不在 `PATH` 上 | 安装它，或用 `--tools` 指定一个在 `PATH` 上的工具 |
 
-已经彻底结束的步骤不计入以上任何一项，与需要人参与的判断相同。使用 `--driver skill` 时由会话运行提示词步骤，所以只看 env。它像 `resume <run>` 一样认领剩下的第一个运行，并用 `--driver` 指定的驱动驱动它。被另一个运行器抢先的认领在 `--next` 内部返回 `state_moved`，`--next` 随后尝试下一个运行。没有可接手的运行时，它输出 `{"data":{"idle":{"offered":N}}}` 并以 0 退出：`N` 是它跳过的、由其他安装实例设为待接手的运行数。
+已经彻底结束的步骤不计入以上任何一项，与需要人参与的判断相同。使用 `--driver skill` 时由会话运行提示词步骤，所以只看 env。它像 `resume <run>` 一样认领剩下的第一个运行，并用 `--driver` 指定的驱动驱动它。被另一个运行器抢先的认领在 `--next` 内部返回 `state_moved`，`--next` 随后尝试下一个运行。它在 stderr 上说明为何留下本仓库的每个待接手运行：`Left <run> (<workflow>) offered for a person: …`，或警告 `Left <run> (<workflow>) offered: <本机缺少什么>: <怎样补上>`。没有可接手的运行时，它输出 `{"data":{"idle":{"offered":N}}}` 并以 0 退出：`N` 是它跳过的、由其他安装实例设为待接手的运行数。
 
 谁能接手待接手的运行，像 `resume` 一样取决于工作流的 `invoke`：
 

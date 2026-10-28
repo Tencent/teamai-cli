@@ -9,9 +9,8 @@ import path from 'node:path';
 import type { WorkflowEnv } from './env-resolution.js';
 import { log } from './utils/logger.js';
 import { getReportsDir, usesBranchWorktree, type LocalConfig } from './types.js';
-import { describeWorkflow } from './workflow/describe.js';
-import { canFor, ceilingOf, isLeft, localReason, stepNeeds } from './workflow/drivers/skill/skill-driver.js';
-import { listOf } from './workflow/drivers/skill/preflight.js';
+import { describeWorkflow, type WorkflowDescription } from './workflow/describe.js';
+import { canFor, ceilingOf, isLeft, listOf, localReason, stepNeeds } from './workflow/drivers/skill/skill-driver.js';
 import { launchToolFor } from './workflow/drivers/local/local-driver.js';
 import { memberTools, type MemberTool } from './tool-launch/call.js';
 import { executableOf, type LaunchTool } from './tool-launch/tools.js';
@@ -85,14 +84,14 @@ async function list(config: LocalConfig, { taker, env }: { taker: Taker; env: Wo
     return entry.isDirectory() && run.success ? [readSnapshot(config, run.data)] : [];
   }));
   const running = snapshots.filter((snapshot): snapshot is RunSnapshot => snapshot?.status === 'running');
-  const tools = taker.driver === 'local' ? toolLacks(config, taker.tools, await memberTools(config)) : () => [];
+  const toolLacksOf = taker.driver === 'local' ? toolLacks(config, taker.tools, await memberTools(config)) : () => [];
   const runs = await Promise.all(running.map(async (snapshot): Promise<PublishedRun> => ({
     run: RunIdSchema.parse(snapshot.run),
     workflow: snapshot.name,
     owner: snapshot.owner,
     ownedAt: snapshot.ownedAt,
     ...(snapshot.repository !== undefined ? { repository: snapshot.repository } : {}),
-    ...(snapshot.offered ? { offer: await offerOf(config, snapshot, snapshot.offered.at, { taker, env, tools }) } : {}),
+    ...(snapshot.offered ? { offer: await offerOf(config, snapshot, snapshot.offered.at, { taker, env, toolLacksOf }) } : {}),
   })));
   const offered = runs.filter((run) => run.offer).sort((left, right) => (left.offer?.at ?? '').localeCompare(right.offer?.at ?? ''));
   const held = runs.filter((run) => !run.offer).sort((left, right) => right.ownedAt.localeCompare(left.ownedAt));
@@ -110,10 +109,11 @@ async function readSnapshot(config: LocalConfig, run: RunId): Promise<RunSnapsho
 
 /**
  * Offered run `snapshot` as `taker` finds it, judged from the run's own workflows by the rules a resume applies: the
- * steps the run has not settled for good that need a person, as the skill driver's unattended resume counts them; the
+ * steps the run has not settled for good that need a person, as the skill driver's unattended resume counts them; what
+ * those steps use of a machine, and what of it this one lacks, its env and, by `toolLacksOf`, its prompt tools; the
  * run's `invoke` for the caller; and, for the skill driver, a local route.
  */
-async function offerOf(config: LocalConfig, snapshot: RunSnapshot, at: string, { taker, env, tools }: { taker: Taker; env: WorkflowEnv; tools: ToolLacks }): Promise<Offer> {
+async function offerOf(config: LocalConfig, snapshot: RunSnapshot, at: string, { taker, env, toolLacksOf }: { taker: Taker; env: WorkflowEnv; toolLacksOf: ToolLacks }): Promise<Offer> {
   const definitions = await definitionsOf(config, snapshot);
   if (!definitions.ok) return { at, needs: [], uses: { env: [], prompts: [] }, lacks: [], refusal: { code: definitions.error.code, message: definitions.error.message } };
   const { definition, workflows } = definitions.value;
@@ -127,39 +127,53 @@ async function offerOf(config: LocalConfig, snapshot: RunSnapshot, at: string, {
   const refusal = invokeRefusal(definition, taker.caller, { kind: 'continue', run: RunIdSchema.parse(snapshot.run) })
     ?? (local !== undefined ? { code: 'needs_local_driver', message: local } : undefined);
   const uses = { env: [...new Set(left.flatMap((run) => run.env))], prompts: left.flatMap((run) => (run.executor === 'prompt' ? [run.step] : [])) };
-  return { at, needs, uses, lacks: [...envLacks(left, env.facts), ...tools(left)], ...(refusal ? { refusal } : {}) };
+  return { at, needs, uses, lacks: [...envLacks(left, env.facts), ...toolLacksOf(left)], ...(refusal ? { refusal } : {}) };
 }
 
+/** A step that runs a command or a prompt, with what it needs of the machine that runs it, as describe gives it. */
+type StepRun = WorkflowDescription['facts']['runs'][number];
+
 /** What the prompt steps among `runs` lack here: a tool to run on, or one on PATH. */
-type ToolLacks = (runs: ReadonlyArray<{ step: string; executor: 'command' | 'prompt'; agent?: string }>) => Lack[];
+type ToolLacks = (runs: readonly StepRun[]) => Lack[];
+
+/** How long a PATH lookup holds, so a dashboard that lists every few seconds does not spawn a shell each time. */
+const PATH_LOOKUP_MS = 60_000;
+const pathLookups = new Map<LaunchTool, { isFound: boolean; at: number }>();
+
+/** Whether `tool`'s executable is on PATH here, as the launcher would find it, looked up at most once a minute. */
+function isOnPath(tool: LaunchTool): boolean {
+  const known = pathLookups.get(tool);
+  if (known && Date.now() - known.at < PATH_LOOKUP_MS) return known.isFound;
+  const isFound = resolveCliPath(executableOf(tool)) !== null;
+  pathLookups.set(tool, { isFound, at: Date.now() });
+  return isFound;
+}
 
 /**
  * {@link ToolLacks} for the local driver here with `--tools` `flags`: the tool a prompt step of each agent runs on, as the
- * driver picks it, and whether its executable is on PATH, looked up once a tool.
+ * driver picks it, and whether its executable is on PATH.
  */
 function toolLacks(config: LocalConfig, flags: Record<string, string>, members: MemberTool[]): ToolLacks {
-  const onPath = new Map<LaunchTool, boolean>();
-  const found = (tool: LaunchTool): boolean => onPath.get(tool) ?? onPath.set(tool, resolveCliPath(executableOf(tool)) !== null).get(tool) === true;
   return (runs) => {
-    const byAgent = new Map<string | undefined, Array<{ step: string }>>();
+    const byAgent = new Map<string | undefined, StepRun[]>();
     for (const run of runs) if (run.executor === 'prompt') byAgent.set(run.agent, [...byAgent.get(run.agent) ?? [], run]);
     return [...byAgent].flatMap(([agent, prompts]): Lack[] => {
       const steps = `the prompt step${prompts.length > 1 ? 's' : ''} ${listOf(prompts.map((run) => run.step))}`;
       const flag = agent === undefined ? 'default' : agent;
       const choice = launchToolFor(agent, config, flags, members);
       if (choice.ok) {
-        return found(choice.tool) ? [] : [{ reason: `${steps} run on ${choice.tool}, which is not on PATH here`, fix: `install ${choice.tool}, or pass --tools ${flag}=<tool> for one that is` }];
+        return isOnPath(choice.tool) ? [] : [{ reason: `${steps} run on ${choice.tool}, which is not on PATH here`, fix: `install ${choice.tool}, or pass --tools ${flag}=<tool> for one that is` }];
       }
       if (choice.failure.code === 'tool_unconfigured') {
         return [{ reason: `no tool is configured here for ${steps}`, fix: `pass --tools ${flag}=<tool>, or set workflows.tools.${flag}` }];
       }
-      return [{ reason: `${choice.failure.message}, for ${steps}`, fix: `pass --tools ${flag}=<tool> with a tool teamai launches` }];
+      return [{ reason: `${steps} ${prompts.length > 1 ? 'have' : 'has'} no tool teamai launches here (${choice.failure.message.replace(/\.$/, '')})`, fix: `pass --tools ${flag}=<tool> with a tool teamai launches` }];
     });
   };
 }
 
 /** What `runs` require of env that `env` cannot give here: a key with no value, or any key while the team env is unreadable. */
-function envLacks(runs: ReadonlyArray<{ step: string; env: string[] }>, env: EnvFacts): Lack[] {
+function envLacks(runs: readonly StepRun[], env: EnvFacts): Lack[] {
   const absent = (keys: readonly string[]): string[] => (env.unreadable !== undefined ? [...keys] : keys.filter((key) => sameEnvName(env.present, key) === undefined));
   const short = runs.filter((run) => absent(run.env).length > 0);
   if (short.length === 0) return [];
