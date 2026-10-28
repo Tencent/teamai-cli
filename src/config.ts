@@ -338,8 +338,9 @@ function readMachineWorkflowSettings(raw: Record<string, unknown>, configPath: s
   const tools = asRecord(workflow.tools);
   if (tools) {
     const accepted: Record<string, string> = {};
+    const toolSchema = MemberWorkflowSettingsSchema.shape.tools.removeDefault().valueSchema;
     for (const [name, value] of Object.entries(tools)) {
-      const parsed = z.string().min(1).safeParse(value);
+      const parsed = toolSchema.safeParse(value);
       if (parsed.success) accepted[name] = parsed.data;
       else warnOnce(`Ignoring workflows.tools.${name} in ${configPath}: ${describeConfigError(parsed.error)}.`);
     }
