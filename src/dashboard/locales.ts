@@ -530,5 +530,22 @@ export const dashboardMessages: Record<string, string> = {
   "pending on this machine": "个在本机待发布",
   "Never captured": "从不采集",
   "teamai reads no sessions from these tools, so their sessions are never published or scored.": "teamai 不读取这些工具的会话，因此它们的会话从不发布或评分。",
-  "Settings problems": "设置问题"
+  "Settings problems": "设置问题",
+  "Member settings": "成员设置",
+  "Loading member settings…": "正在加载成员设置…",
+  "Could not load member settings.": "无法加载成员设置。",
+  "Setting": "设置项",
+  "In effect": "生效值",
+  "Also set": "其他层级",
+  "Environment": "环境变量",
+  "User config": "用户配置",
+  "This workspace": "此工作区",
+  "This repo": "此仓库",
+  "HTTP team repo": "HTTP 团队仓库",
+  "Default": "默认值",
+  "not used": "未使用",
+  "The first level that sets a setting wins": "第一个设置了它的层级生效",
+  "No level sets a member setting here, so each one has its default.": "这里没有任何层级设置成员设置，因此每一项都取默认值。",
+  "Not read": "未读取",
+  "Without a user-scope install, only member settings are read from": "没有 user scope 安装时，只从以下文件读取成员设置："
 };
