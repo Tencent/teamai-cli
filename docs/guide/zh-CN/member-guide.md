@@ -30,6 +30,15 @@ teamai init https://gitlab.example.com/yourgroup/yourrepo --provider git
 teamai init --http https://your-team-host/api --token <api-key>
 ```
 
+用同一个地址和 key 再运行一次，会保留它们。换到另一个地址或 key 需要 `--force`，不加时什么都不会改：
+
+```text
+$ teamai init --http https://new-host.example/api --token <new-key>
+...
+✖ The HTTP local agent already uses https://your-team-host/api. Re-run with --force to replace it with https://new-host.example/api.
+$ teamai init --http https://new-host.example/api --token <new-key> --force
+```
+
 ```bash
 teamai doctor
 teamai list

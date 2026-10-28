@@ -4704,10 +4704,34 @@ export async function writeTokenFile(tokenPath: string, token: string): Promise<
   await fs.promises.chmod(tokenPath, 0o600);
 }
 
+/**
+ * Throw, without writing, when pointing the HTTP local agent at `endpoint` and
+ * `token` would replace another one, so `init --http` refuses before it changes
+ * anything. The same endpoint and token again is a re-run.
+ */
+export async function assertNoLocalAgentReplacement(options: { endpoint: string; token?: string }): Promise<void> {
+  const existing = await loadLocalAgentConfig({ dryRun: true });
+  if (!existing) return;
+  const endpoint = normalizeEndpoint(options.endpoint);
+  if (existing.endpoint !== endpoint) {
+    throw new Error(
+      `The HTTP local agent already uses ${existing.endpoint}. Re-run with --force to replace it with ${endpoint}.`,
+    );
+  }
+  if (options.token !== undefined && existing.token !== options.token) {
+    throw new Error(
+      `The HTTP local agent already uses ${endpoint} with another token. Re-run with --force to replace the token.`,
+    );
+  }
+}
+
+/**
+ * Point the HTTP local agent at `endpoint`, replacing any it had; a caller that
+ * must not replace one checks `assertNoLocalAgentReplacement` first.
+ */
 export async function initLocalAgentHttp(options: {
   endpoint: string;
   token?: string;
-  force?: boolean;
   filterAgents?: string[];
 }): Promise<void> {
   const endpoint = normalizeEndpoint(options.endpoint);
@@ -4716,13 +4740,11 @@ export async function initLocalAgentHttp(options: {
   }
 
   const existing = await loadLocalAgentConfig();
-  if (existing && !options.force) {
-    throw new Error('HTTP local agent is already initialized. Re-run with --force to overwrite.');
-  }
 
   const config: LocalAgentConfig = {
     endpoint,
-    token: options.token,
+    // Never carry a token to another endpoint.
+    token: options.token ?? (existing?.endpoint === endpoint ? existing.token : undefined),
     createdAt: existing?.createdAt ?? new Date().toISOString(),
     workspaceBindings: existing?.workspaceBindings ?? {},
     userGroupId: existing?.userGroupId,

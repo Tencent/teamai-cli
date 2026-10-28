@@ -766,6 +766,12 @@ export async function initHttp(
   const requestedAgents = normalizeAgentList(options.agent);
   warnAboutUncheckedHttpAgentIds(requestedAgents);
 
+  // Step 6 below points the local agent at this endpoint; refuse a replacement
+  // now, before anything is written (resolving the scope may migrate a config),
+  // and only here: by Step 6 the local agent may read back the config this init saved.
+  const { assertNoLocalAgentReplacement, initLocalAgentHttp } = await import('./local-agent.js');
+  if (!options.force) await assertNoLocalAgentReplacement({ endpoint: url, token: options.token });
+
   // Step 0: scope (same rules as git init — default project)
   let scope: Scope;
   let projectRoot: string | undefined;
@@ -930,12 +936,7 @@ export async function initHttp(
 
   // Step 6: also initialize local-agent config so the new hook-dispatch --stdin
   // path can deliver rules/claudemd (not just skills).
-  const { initLocalAgentHttp } = await import('./local-agent.js');
-  try {
-    await initLocalAgentHttp({ endpoint: url, token: options.token, force: options.force, filterAgents });
-  } catch (e) {
-    log.debug(`Local agent init: ${(e as Error).message}`);
-  }
+  await initLocalAgentHttp({ endpoint: url, token: options.token, filterAgents });
 
   await runInitScript(localConfig, 'postInit', options.dryRun, true);
 

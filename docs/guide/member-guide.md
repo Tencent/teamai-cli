@@ -30,6 +30,15 @@ Read-only, no git:
 teamai init --http https://your-team-host/api --token <api-key>
 ```
 
+Running it again with the same endpoint and key keeps them. Moving to another endpoint or key needs `--force`, and without it nothing is changed:
+
+```text
+$ teamai init --http https://new-host.example/api --token <new-key>
+...
+✖ The HTTP local agent already uses https://your-team-host/api. Re-run with --force to replace it with https://new-host.example/api.
+$ teamai init --http https://new-host.example/api --token <new-key> --force
+```
+
 ```bash
 teamai doctor
 teamai list

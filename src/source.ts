@@ -652,8 +652,8 @@ export async function sourceAddHttp(
   }
 
   const { initLocalAgentHttp } = await import('./local-agent.js');
-  // force: true so re-running add-http updates the bypass's own endpoint/token.
-  await initLocalAgentHttp({ endpoint: trimmed, token: options.token, force: true });
+  // Re-running add-http updates the bypass's own endpoint/token.
+  await initLocalAgentHttp({ endpoint: trimmed, token: options.token });
   log.success(`HTTP source added (${trimmed}).`);
   log.info('It will report/sync on the next AI session (via the hook-dispatch hook already installed).');
 }
