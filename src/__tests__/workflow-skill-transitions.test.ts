@@ -1308,6 +1308,41 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     },
   },
   {
+    name: 'an unattended resume --claim of a published run that ended while its required approval\'s step ran readies it as it ended',
+    rows: ['R19'],
+    run: async () => {
+      const team = sharedTeam({ released: RELEASE.replace('name: release', 'name: released') + ANNOUNCE });
+      const ci = await team.install('ci');
+      const env = await resolveWorkflowEnv(ci.config);
+      const client = inProcessClient({ config: ci.config, env });
+      const created = await client.start('released', { checkout: ci.checkout, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
+      if (!('data' in created)) throw new Error(JSON.stringify(created));
+      const run = RunIdSchema.parse(created.data.run);
+      // CI's local driver runs the run until it leases go-live, the person answering both approvals, then publishes it
+      // and cancels it there, so the published run ends with go-live cancelled, not settled.
+      const driver = { kind: 'local', machine: 'ci', workspace: ci.checkout, can: { hitl: true, workspace: [...WORKSPACE_MODES] } };
+      const person = respondProvenance({ kind: 'terminal', caller: { tty: true, evidence: { kind: 'none' } } });
+      for (let turn = 0; turn < 12; turn += 1) {
+        const answer = await client.next(run, { driver });
+        if (!('data' in answer)) throw new Error(JSON.stringify(answer));
+        const { hitl, lease } = z.object({ hitl: z.object({ step: z.string(), pass: z.number() }).optional(), lease: z.object({ step: z.string(), attempt: z.string(), revision: z.number() }).optional() }).parse(answer.data);
+        if (hitl) {
+          expect(await respondToHitl(ci.config, run, env.secrets, { step: hitl.step, choice: 'yes', pass: hitl.pass, provenance: person })).not.toHaveProperty('error');
+          continue;
+        }
+        if (!lease) throw new Error(JSON.stringify(answer));
+        if (lease.step === 'go-live') break;
+        expect(await client.report(run, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver })).not.toHaveProperty('error');
+      }
+      expect(await publishRun(ci.config, run, { checkout: ci.checkout })).toMatchObject({ ok: true });
+      expect(await client.cancel(run)).not.toHaveProperty('error');
+      const made = await harness({}, { install: await team.install('member'), mode: 'unattended' });
+      expect(await turnOf(await made.call({ kind: 'resume', run, claim: 'any', confirmed: false, answers: {} })))
+        .toMatchObject({ run, status: 'done', actions: [{ kind: 'done', outcome: 'cancelled' }] });
+      return made.rows;
+    },
+  },
+  {
     name: 'an unattended resume does not count a required approval inside a workflow the run skipped',
     rows: ['R19'],
     run: async () => {
