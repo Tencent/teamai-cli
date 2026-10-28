@@ -1,5 +1,7 @@
 import { describeLocateMatrix, type MatrixRow } from './helpers/locate-matrix.js';
 
+const OMP_SOURCE = 'Oh My Pi a70f001c utils/src/dirs.ts: profile = OMP_PROFILE if defined, else PI_PROFILE; a named profile is ~/<PI_CONFIG_DIR or .omp>/profiles/<name>/agent, else PI_CODING_AGENT_DIR, else ~/<PI_CONFIG_DIR or .omp>/agent';
+
 const ROWS: readonly MatrixRow[] = [
   {
     tool: 'claude', scope: 'user',
@@ -196,25 +198,39 @@ const ROWS: readonly MatrixRow[] = [
     tool: 'trae', scope: 'user',
     channel: 'unknown',
     existingDirs: ['~/.trae'], installed: { probe: '~/.trae', met: true },
-    source: '#1221 matrix user Agents ?t: where Trae takes agents from is not established',
+    retired: [{ at: '~/.trae/agents', was: 'configured' }],
+    source: 'Trae subagents doc (2026-10-09) gives ~/.trae-cn/agents, a copy of the CN page; nothing proves ~/.trae/agents, so teamai writes none',
   },
   {
     tool: 'trae', scope: 'project',
-    channel: 'unknown',
+    writes: ['<root>/.trae/agents'],
+    existingDirs: ['~/.trae'], installed: { probe: '~/.trae', met: true },
+    reads: [{ at: '<root>/.trae/agents', when: 'cwdOnly' }],
+    broken: { 'project-subdir': { reason: 'cwd-only', issue: '#1221' } },
+    source: 'Trae subagents doc and v3.5.67 changelog: {project_folder}/.trae/agents/<name>.md; the bundle\'s file_subagents/cache.rs scans the project\'s one directory',
+  },
+  {
+    tool: 'trae', scope: 'project',
+    writes: ['<root>/.trae/agents'],
     existingDirs: [], installed: { probe: '~/.trae', met: false },
-    source: '#1221 matrix workspace Agents ?t: where Trae takes agents from is not established',
+    reads: [{ at: '<root>/.trae/agents', when: 'cwdOnly' }],
+    broken: { 'project-subdir': { reason: 'cwd-only', issue: '#1221' } },
+    source: 'editions share the project root, so the home says which is installed (#904)',
   },
   {
     tool: 'trae-cn', scope: 'user',
-    channel: 'unknown',
+    writes: ['~/.trae-cn/agents'],
     existingDirs: ['~/.trae-cn'], installed: { probe: '~/.trae-cn', met: true },
-    source: '#1221 matrix user Agents ?t: where Trae CN takes agents from is not established',
+    reads: [{ at: '~/.trae-cn/agents', when: 'always' }],
+    source: 'Trae CN subagents doc (docs.trae.cn/ide_subagents.md, 2026-10-27): user subagents in ~/.trae-cn/agents/<name>.md',
   },
   {
     tool: 'trae-cn', scope: 'project',
-    channel: 'unknown',
+    writes: ['<root>/.trae/agents'],
     existingDirs: ['~/.trae-cn'], installed: { probe: '~/.trae-cn', met: true },
-    source: '#1221 matrix workspace Agents ?t: where Trae CN takes agents from is not established',
+    reads: [{ at: '<root>/.trae/agents', when: 'cwdOnly' }],
+    broken: { 'project-subdir': { reason: 'cwd-only', issue: '#1221' } },
+    source: 'Trae CN subagents doc and v3.3.67 changelog: {project_folder}/.trae/agents, the directory Trae reads too',
   },
   {
     tool: 'zcode', scope: 'user',
@@ -237,6 +253,27 @@ const ROWS: readonly MatrixRow[] = [
     existingDirs: ['~/.omp'], installed: { probe: '~/.omp', met: true },
     reads: [{ at: '~/.omp/agent/agents', when: 'always' }],
     source: 'Oh My Pi run: user agents in ~/.omp/agent/agents; #1221 matrix user Agents ◐v (a profile moves them)',
+  },
+  {
+    tool: 'omp', scope: 'user', envLiterals: { OMP_PROFILE: 'work' },
+    writes: ['~/.omp/profiles/work/agent/agents'],
+    existingDirs: ['~/.omp/profiles/work/agent'], installed: { probe: '~/.omp/profiles/work/agent', met: true },
+    reads: [{ at: '~/.omp/profiles/work/agent/agents', when: 'always' }],
+    source: OMP_SOURCE,
+  },
+  {
+    tool: 'omp', scope: 'user', env: { PI_CODING_AGENT_DIR: '/pi-agent' },
+    writes: ['~/.omp/agent/agents'],
+    existingDirs: ['~/.omp'], installed: { probe: '~/.omp', met: true },
+    reads: [{ at: '~/.omp/agent/agents', when: 'always' }],
+    source: `${OMP_SOURCE}; teamai does not follow PI_CODING_AGENT_DIR for OMP: Pi owns that directory (docs/designs/model-profiles.md)`,
+  },
+  {
+    tool: 'omp', scope: 'user', envLiterals: { PI_CONFIG_DIR: '.omp-alt', PI_PROFILE: 'work' },
+    writes: ['~/.omp-alt/profiles/work/agent/agents'],
+    existingDirs: ['~/.omp-alt/profiles/work/agent'], installed: { probe: '~/.omp-alt/profiles/work/agent', met: true },
+    reads: [{ at: '~/.omp-alt/profiles/work/agent/agents', when: 'always' }],
+    source: OMP_SOURCE,
   },
   {
     tool: 'omp', scope: 'project',
@@ -337,14 +374,6 @@ const ROWS: readonly MatrixRow[] = [
     existingDirs: ['~/.mytool'], installed: { probe: '~/.mytool', met: true },
     retired: [{ at: '~/.mytool/agents', was: 'configured' }],
     source: 'teamai renders no agents for a custom tool; an earlier release copied team .md agents into its agents directory (pull-tombstone.test.ts, #993)',
-  },
-  {
-    tool: 'trae', scope: 'project',
-    install: { toolPaths: { trae: { skills: '.trae/skills', agents: '.trae/agents' } } },
-    channel: 'unknown',
-    existingDirs: ['~/.trae'], installed: { probe: '~/.trae', met: true },
-    retired: [{ at: '<root>/.trae/agents', was: 'configured' }],
-    source: 'Where Trae takes agents from is not established, so teamai writes none to the directory a team maps',
   },
   {
     tool: 'opencode', scope: 'user',

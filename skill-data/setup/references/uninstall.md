@@ -118,7 +118,8 @@ and give it your team repo URL."*
   does, run `teamai hooks remove` in the project first: it removes them.
   Targeted project Codex uninstall keeps project config and records its
   exclusion, even without local resources. Legacy project hook copies go.
-  User-scope uninstall removes these global channels.
+  User-scope uninstall removes these global channels, the Hermes and Oh My
+  Pi ones from every home and profile teamai wrote.
   The retained adapters respect project exclusions, including cached HTTP
   prompt injection and HTTP sync. An excluded tool does not download its
   resources again on the next session start.

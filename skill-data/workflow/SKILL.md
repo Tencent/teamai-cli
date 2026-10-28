@@ -19,6 +19,7 @@ Act on `data.describe.ask.kind`:
 - `ask`: the question is the person's to answer, once, so the run goes on without them after. In one message, give them `ask.question.text` as it is, each entry of `ask.question.inputs` to fill in, and the `label` of each option as their choices. Wait for their pick, also when an option is marked recommended. In the `start` of the option they pick, replace `{inputs}` with their answers as one JSON object, each `'` in it written as `'\''`, and run it. Those options are the whole choice: when the person wants a start none of them offers, show them the options again.
 - `local`: tell the person `ask.reason` and give them `ask.start` for their own terminal. It is theirs to run.
 - `denied`: tell the person `ask.reason`. Nothing is left to run here.
+- `tool`: this session names no tool, and the run needs one. In `ask.describe`, replace `{tool}` with the entry of `ask.tools` for the tool you work in, run it, and act on its reply instead. When none of them is the tool you work in, tell the person `ask.reason`.
 
 Done when a reply carries `data.turn` with a `run` id, or the person has `ask.reason`.
 
@@ -36,6 +37,7 @@ A turn lists the `actions` that wait for you, the `running` attempts, the `event
 Done when a turn has no `then`.
 
 In an unattended run nobody reads you: step 2 is for your own log, and you ask nothing. Keep running `then` until a turn has none, also after `done` while it carries `judging`, so the judge's label lands before your session ends.
+Run `teamai score --drain` before your session ends.
 
 An unattended session that reaches a `handoff` reports that the run waits for a person, and stops.
 
@@ -47,7 +49,7 @@ A `report` you run answers with `data.runner`, not a turn. After one, go on with
 
 A `choose` action asks for one answer, and `about` says what it is for:
 
-- `host`: comes once per run that has prompt steps. Follow `reference`: it says which option fits your host and how to run it.
+- `host`: comes once per run that has prompt steps, or that you judge. Follow `reference`: it says which option fits your host and how to run it.
 - `gate`: an optional approval or choice at `step`. `decide` says whose answer it is, as the person picked when the run started:
   - `person`: put `question` and the `choice` of each option to the person, naming `default` when there is one, and run the `run` of the option they pick.
   - `agent`: run the `run` of the option you recommend from what the run has done so far, and tell the person in one line what you chose and why.
@@ -111,11 +113,11 @@ Done when the turn carries a `dispatch` for its `attempt`.
 
 ## Done
 
-The `done` action carries the `outcome`, the pull requests the run opened in `prs`, and the `failure` when there is one. Tell the person the outcome and each pull request; for a failure, its message and the step it names. The steps are over. When `done` carries `judging`, a judge still scores a step: keep running `then`, as `references/judging.md` says.
+The `done` action carries the `outcome`, the pull requests the run opened in `prs`, and the `failure` when there is one. Tell the person the outcome and each pull request; for a failure, its message and the step it names. The steps are over. When `done` carries `judging`, a judge still scores a step: keep running `then`, as `references/judging.md` says. When `done` carries `score`, judge the run's scored steps yourself, as `references/judging.md` says.
 
 ## Errors
 
-A reply with `error` carries `code`, `message` and `next`. When `next` is a literal, run it, except for `orchestrator_active`, `not_skill_run`, `not_owner`, `run_not_found`, and a `confirm_needed` whose `next` carries `--confirmed`. When it is null, tell the person `message`: only they can act on it.
+A reply with `error` carries `code`, `message` and `next`. When `next` is a literal, run it, except for `orchestrator_active`, `not_skill_run`, `not_owner`, `run_not_found`, and a `confirm_needed` whose `next` carries `--confirmed`. When `next` holds `{tool}`, replace it with the id of the tool you work in before you run it, as for `ask.kind: tool`. When it is null, tell the person `message`: only they can act on it.
 
 `agent_in_path` means an answer only the person can give came from your session. Hand the person the command `message` names, for their own terminal.
 

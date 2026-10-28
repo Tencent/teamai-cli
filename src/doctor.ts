@@ -1,9 +1,17 @@
-import { hookSettingsPath, hookToolPathsForConfig } from './types.js';
+import YAML from 'yaml';
+import { hookToolPathsForConfig } from './types.js';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import { detectProjectConfig, loadLocalConfig, loadTeamConfig } from './config.js';
+import { detectProjectConfig, hasUserScopeInstall, loadLocalConfig, loadMemberSettings, loadTeamConfig, ownMemberSettings } from './config.js';
+import { memberTools } from './tool-launch/call.js';
+import { AgentSession } from './session-flow/agent-session.js';
+import { SessionPolicy, type SessionPolicy as Policy } from './session-flow/session-policy.js';
+import { explainRunMode, RUN_MODES, type ExplainedRunMode, type RunMode } from './launch-context.js';
+import { scoringUnavailable } from './scorers/home.js';
+import { scopeScoring } from './scorers/settings.js';
 import { readWorkspaceChildren } from './workspace-children.js';
 import { pathExists, readFileSafe } from './utils/fs.js';
+import { getUserHome } from './utils/home.js';
 import { log, setStderrOnly } from './utils/logger.js';
 import type { GlobalOptions } from './types.js';
 import {
@@ -15,18 +23,24 @@ import {
   toolRootRejection,
   resolveHookScope,
   legacyManagedHooksPath,
-  resolveToolBaseDir,
+  resolveBaseDir,
   isAgentExcluded,
   scopedToolPaths,
+  toolGateRoot,
   getDataHome,
   getTeamaiHomeDir,
+  isContributeHintEnabled,
+  isMrHintEnabled,
+  isRecallEnabled,
   isUsageReportEnabled,
+  resolveAutoCompactTokens,
+  resolveCoAuthor,
   type LocalConfig,
   type TeamaiConfig,
   installScopeName,
+  MemberSettingsSchema,
 } from './types.js';
-import { isToolInstalledForConfig } from './resources/base.js';
-import { installOf, locate, writable } from './locate.js';
+import { hookSettingsFile, installOf, isInstalledFor, locate, ownOf, writable, type Gate, type Install } from './locate.js';
 import { samePlace } from './resources/places.js';
 import { describeInvalidToolHomes, envToolHome, realHost, reloadToolHomes, toolHomesPath } from './tool-home.js';
 import { isToolId } from './tools.js';
@@ -35,6 +49,7 @@ import { TEAMAI_HOOK_SUBCOMMANDS, isCodexTrustGatedTool, codexTrustReminder, kep
 import { codexBuildSkewMessage } from './codex-trust.js';
 import {
   buildDeliveryChecks,
+  nameList,
   toolPathsDroppedKeyNotes,
   buildSkillDirChecks,
   skillReadNotes,
@@ -43,7 +58,6 @@ import {
   buildRulesDeliveryChecks,
   buildAgentsDeliveryChecks,
   buildAgentPlaceChecks,
-  agentReadNotes,
   buildInstructionDeliveryChecks,
   buildNamespaceNotes,
   buildMcpDeliveryChecks,
@@ -150,6 +164,8 @@ export interface DoctorReport {
   ok: boolean;
   /** null before initialization, when there is no config to scope. */
   scope: string | null;
+  /** The run mode this process resolves, and its source. */
+  runMode: ExplainedRunMode;
   checks: CheckResult[];
   /** Present only when the team repo declares packages. Human text, not checks. */
   packages?: { ok: boolean; lines: string[] };
@@ -158,6 +174,273 @@ export interface DoctorReport {
    * value (#875), the Codex trust reminder when Codex cannot be asked.
    */
   notes?: string[];
+  /** The member setting provenance report, ordered by precedence. */
+  memberSettings?: MemberSettingsReport[];
+}
+
+/** `http-team`: an HTTP team repo, which keeps no session archive, so it turns session publishing off whatever a level sets. */
+export type MemberSettingLevel = 'environment' | 'scope' | 'machine' | 'team' | 'http-team' | 'default';
+
+export interface MemberSettingSource {
+  level: MemberSettingLevel;
+  value?: unknown;
+  file?: string;
+  variable?: string;
+  /** False when this value is visible for context but is not the runtime winner. */
+  used?: boolean;
+}
+
+export interface MemberSettingsReport {
+  key: string;
+  effective?: unknown;
+  source?: MemberSettingSource;
+  levels: MemberSettingSource[];
+}
+
+/** A level as doctor's text names it: where a value came from, and its short name among the levels below. */
+function describeMemberSettingLevel({ level, file, variable }: MemberSettingSource, scope: LocalConfig['scope']): { from: string; short: string } {
+  switch (level) {
+    case 'environment': return { from: variable ?? 'the environment', short: variable ?? 'environment' };
+    // This machine's config is the user scope's: this scope's own in user scope, and in a workspace the one that holds
+    // a setting the user scope decides for the whole machine.
+    case 'scope': return file === path.join(getTeamaiHomeDir(), 'config.yaml')
+      ? { from: `the user config ${file}${scope === 'user' ? ", also this machine's" : ''}`, short: 'user config' }
+      : { from: `the workspace config ${file}`, short: 'workspace' };
+    case 'machine': return { from: `the machine config ${file}`, short: 'machine' };
+    case 'team': return { from: "the team's teamai.yaml", short: 'team' };
+    case 'http-team': return { from: 'the HTTP team repo, which keeps no session archive', short: 'HTTP team repo' };
+    case 'default': return { from: 'the default', short: 'default' };
+    default: {
+      const unhandled: never = level;
+      return unhandled;
+    }
+  }
+}
+
+/** Doctor's `Member settings` lines: each setting some level sets, its value in effect, the level that won, and the values below it. */
+function memberSettingLines(reports: MemberSettingsReport[], scope: LocalConfig['scope']): string[] {
+  const shown = (value: unknown): string => typeof value === 'string' ? value : JSON.stringify(value);
+  return reports.flatMap(({ key, effective, source, levels }) => {
+    if (!source || (source.level === 'default' && levels.every(({ used }) => used !== false))) return [];
+    const below = levels.slice(levels.indexOf(source) + 1).filter(({ level, used }) => level !== 'default' && used !== false)
+      .map((lower, index) => `the ${describeMemberSettingLevel(lower, scope).short}${index === 0 ? ' says' : ''} ${shown(lower.value)}`);
+    // A value set but not read, such as a workspace's own updatePolicy while the user scope decides it.
+    const unused = levels.filter(({ used }) => used === false)
+      .map((ignored) => `the ${describeMemberSettingLevel(ignored, scope).short}'s ${shown(ignored.value)} is not used`);
+    const notes = [...below, ...unused];
+    return [`  ${key}: ${shown(effective)}, from ${describeMemberSettingLevel(source, scope).from}${notes.length > 0 ? ` (${notes.join(', ')})` : ''}`];
+  });
+}
+
+const MEMBER_SETTING_REPORT_KEYS = [
+  'ai.tool',
+  'workflows.tools.default',
+  'workflows.max_parallel',
+  'workflows.auto_approve',
+  'workflows.sandbox',
+  'workflows.allow.network',
+  'recallEnabled',
+  'contributeHintEnabled',
+  'mrHintEnabled',
+  'coAuthorEnabled',
+  'usageReportEnabled',
+  'codexTrustEnabled',
+  'sessions.publish.attended',
+  'sessions.publish.unattended',
+  'updatePolicy',
+  'autoCompactTokens',
+] as const;
+
+/** The run mode a `sessions.publish.<mode>` report key names. */
+function publishMode(key: string): RunMode | undefined {
+  return RUN_MODES.find((mode) => key === `sessions.publish.${mode}`);
+}
+
+const MACHINE_WIDE_MEMBER_SETTINGS = new Set(['updatePolicy', 'autoCompactTokens']);
+
+function addWorkflowReportKeys(target: Set<string>, value: unknown): void {
+  const workflows = readPath(value, ['workflows']);
+  if (typeof workflows !== 'object' || workflows === null || Array.isArray(workflows)) return;
+  const tools = (workflows as Record<string, unknown>).tools;
+  if (typeof tools === 'object' && tools !== null && !Array.isArray(tools)) {
+    for (const name of Object.keys(tools as Record<string, unknown>)) target.add(`workflows.tools.${name}`);
+  }
+  const allow = (workflows as Record<string, unknown>).allow;
+  if (typeof allow === 'object' && allow !== null && !Array.isArray(allow)
+    && Object.prototype.hasOwnProperty.call(allow, 'env')) target.add('workflows.allow.env');
+}
+
+/** Map settings need one provenance row per key: one merged object cannot name two winners. */
+function addModelAliasReportKeys(target: Set<string>, value: unknown): void {
+  const aliases = readPath(value, ['modelAliases']);
+  if (typeof aliases !== 'object' || aliases === null || Array.isArray(aliases)) return;
+  for (const name of Object.keys(aliases as Record<string, unknown>)) target.add(`modelAliases.${name}`);
+}
+
+function nonEmptyAiTool(value: unknown): unknown {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+/** Report keys use dots as separators except for literal map-entry names. */
+function reportPathParts(key: string): string[] {
+  if (key.startsWith('workflows.tools.')) return ['workflows', 'tools', key.slice('workflows.tools.'.length)];
+  if (key.startsWith('modelAliases.')) return ['modelAliases', key.slice('modelAliases.'.length)];
+  return key.split('.');
+}
+
+function readPath(value: unknown, parts: string[]): unknown {
+  let current = value;
+  for (const part of parts) {
+    if (typeof current !== 'object' || current === null || !(part in current)) return undefined;
+    current = (current as Record<string, unknown>)[part];
+  }
+  return current;
+}
+
+async function readYamlObject(file: string): Promise<Record<string, unknown>> {
+  try {
+    const raw = YAML.parse(await readFileSafe(file) ?? '');
+    return typeof raw === 'object' && raw !== null && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+  } catch {
+    return {};
+  }
+}
+
+function settingSource(level: MemberSettingLevel, value: unknown, file?: string, variable?: string, used = true): MemberSettingSource {
+  return { level, value, ...(file ? { file } : {}), ...(variable ? { variable } : {}), ...(used ? {} : { used: false }) };
+}
+
+async function memberSettingsReport(ctx: DoctorContext): Promise<MemberSettingsReport[]> {
+  const machineFile = path.join(getTeamaiHomeDir(), 'config.yaml');
+  const rawMachine = await readYamlObject(machineFile);
+  const machine = await loadMemberSettings(machineFile);
+  const scopeFile = getDataHome(ctx.localConfig) + path.sep + 'config.yaml';
+  const rawScope = ctx.localConfig.scope === 'user' ? rawMachine : await readYamlObject(scopeFile);
+  const userConfig = ctx.localConfig.scope === 'user' ? ctx.localConfig : await loadLocalConfig();
+  const userSettings = userConfig?.scope === 'user' ? userConfig : {};
+  // updatePolicy and autoCompactTokens are machine-wide: when a user install
+  // exists, it decides these values even while doctor is inspecting a project.
+  // Load the same team file that pull/update use for that deciding install.
+  const decidingTeam = userConfig?.scope === 'user'
+    ? await loadTeamConfig(userConfig.repo.localPath)
+    : ctx.teamConfig;
+  const reportKeys = new Set<string>(MEMBER_SETTING_REPORT_KEYS);
+  addWorkflowReportKeys(reportKeys, rawMachine);
+  addWorkflowReportKeys(reportKeys, rawScope);
+  addModelAliasReportKeys(reportKeys, machine);
+  addModelAliasReportKeys(reportKeys, rawScope);
+
+  const teamValue = (key: string): unknown => {
+    const selectedTeam = (MACHINE_WIDE_MEMBER_SETTINGS.has(key) ? decidingTeam : ctx.teamConfig) as unknown as Record<string, unknown> | null;
+    const selectedSharing = selectedTeam?.sharing as Record<string, unknown> | undefined;
+    if (key === 'recallEnabled') return readPath(selectedSharing, ['recall', 'enabled']);
+    if (key === 'contributeHintEnabled') return readPath(selectedSharing, ['contributeHint', 'enabled']);
+    if (key === 'mrHintEnabled') return readPath(selectedSharing, ['mrHint', 'enabled']);
+    if (key === 'coAuthorEnabled') return readPath(selectedSharing, ['coAuthor', 'enabled']);
+    if (key === 'autoCompactTokens') return readPath(selectedSharing, ['autoCompact', 'tokens']);
+    if (key === 'usageReportEnabled') return selectedTeam?.usageReport;
+    if (key === 'updatePolicy') return selectedTeam?.autoUpdate === false ? 'skip' : selectedTeam?.autoUpdate === true ? 'auto' : undefined;
+    const mode = publishMode(key);
+    if (mode) return SessionPolicy.readPublish('teamai.yaml', ctx.teamConfig?.sessions).set[mode]?.policy;
+    return undefined;
+  };
+  const defaultValue = (key: string): unknown => {
+    if (key === 'workflows.max_parallel') return 1;
+    if (key === 'workflows.auto_approve') return false;
+    if (key === 'workflows.allow.network') return true;
+    if (key === 'recallEnabled') return false;
+    if (key === 'contributeHintEnabled' || key === 'mrHintEnabled' || key === 'usageReportEnabled') return true;
+    if (key === 'coAuthorEnabled' || key === 'codexTrustEnabled') return true;
+    if (key === 'updatePolicy') return 'auto';
+    const mode = publishMode(key);
+    if (mode) return SessionPolicy.publishDefaults[mode];
+    return undefined;
+  };
+
+  const publishing = SessionPolicy.publish(ctx.localConfig, ctx.teamConfig).policies;
+  const levelsFor = (key: string): MemberSettingSource[] => {
+    const parts = reportPathParts(key);
+    let scopeValue = readPath(rawScope, parts);
+    let scopeSourceFile = ctx.localConfig.scope === 'user' ? machineFile : scopeFile;
+    const machineWideUser = MACHINE_WIDE_MEMBER_SETTINGS.has(key) && userConfig?.scope === 'user';
+    if (machineWideUser) {
+      scopeValue = readPath(userSettings, parts);
+      scopeSourceFile = machineFile;
+    }
+    let machineValue = readPath(machine, parts);
+    if (key === 'ai.tool') {
+      scopeValue = nonEmptyAiTool(scopeValue);
+      machineValue = nonEmptyAiTool(machineValue);
+    }
+    const mode = publishMode(key);
+    if (mode) {
+      scopeValue = SessionPolicy.readPublish('config.yaml', readPath(rawScope, ['sessions'])).set[mode]?.policy;
+      machineValue = SessionPolicy.readPublish('config.yaml', machine.sessions).set[mode]?.policy;
+    }
+    // A workspace's own sessions replaces the machine's whole, whatever run modes it sets.
+    const machineShadowed = mode !== undefined && ctx.localConfig.scope !== 'user' && readPath(rawScope, ['sessions']) !== undefined;
+    const levels: MemberSettingSource[] = [];
+    if (key === 'ai.tool' && process.env.TEAMAI_AI_TOOL) levels.push(settingSource('environment', process.env.TEAMAI_AI_TOOL, undefined, 'TEAMAI_AI_TOOL'));
+    if (key === 'recallEnabled' && process.env.TEAMAI_RECALL_DISABLED === '1') levels.push(settingSource('environment', false, undefined, 'TEAMAI_RECALL_DISABLED'));
+    if (key === 'contributeHintEnabled' && process.env.TEAMAI_CONTRIBUTE_HINT_DISABLED === '1') levels.push(settingSource('environment', false, undefined, 'TEAMAI_CONTRIBUTE_HINT_DISABLED'));
+    if (key === 'mrHintEnabled' && process.env.TEAMAI_MR_HINT_DISABLED === '1') levels.push(settingSource('environment', false, undefined, 'TEAMAI_MR_HINT_DISABLED'));
+
+    if (!machineWideUser && scopeValue !== undefined) levels.push(settingSource('scope', scopeValue, scopeSourceFile));
+    if (machineValue !== undefined && ctx.localConfig.scope !== 'user' && !machineWideUser && !machineShadowed) {
+      levels.push(settingSource('machine', machineValue, machineFile));
+    }
+    if (machineWideUser && scopeValue !== undefined) levels.push(settingSource('scope', scopeValue, scopeSourceFile));
+    const teamValueForKey = teamValue(key);
+    if (teamValueForKey !== undefined) {
+      const teamFile = MACHINE_WIDE_MEMBER_SETTINGS.has(key) && userConfig?.scope === 'user'
+        ? path.join(userConfig.repo.localPath, 'teamai.yaml')
+        : ctx.localConfig.repo.localPath
+          ? path.join(ctx.localConfig.repo.localPath, 'teamai.yaml')
+          : undefined;
+      levels.push(settingSource('team', teamValueForKey, teamFile));
+    }
+    const fallback = defaultValue(key);
+    if (fallback !== undefined) levels.push(settingSource('default', fallback));
+    // Keep a workspace value visible for machine-wide settings, but mark it
+    // unused: pull/update resolve these two keys from the user install.
+    if (machineWideUser && ctx.localConfig.scope !== 'user') {
+      const workspaceValue = readPath(rawScope, parts);
+      if (workspaceValue !== undefined) levels.push(settingSource('scope', workspaceValue, scopeFile, undefined, false));
+    }
+    if (machineShadowed && machineValue !== undefined) levels.push(settingSource('machine', machineValue, machineFile, undefined, false));
+    if (mode && publishing[mode].source.kind === 'http-team') {
+      return [settingSource('http-team', 'off'), ...levels.map((level) => level.level === 'default' ? level : { ...level, used: false })];
+    }
+    return levels;
+  };
+
+  const decidingConfig = userConfig?.scope === 'user' ? userConfig : ctx.localConfig;
+  const aiTool = async (): Promise<string | undefined> => (await memberTools(ctx.localConfig))[0]?.tool;
+  const effectiveValue = async (key: string, levels: MemberSettingSource[]): Promise<unknown> => {
+    if (key === 'ai.tool') return await aiTool();
+    if (key === 'recallEnabled') return isRecallEnabled(ctx.localConfig, ctx.teamConfig ?? {});
+    if (key === 'contributeHintEnabled') return isContributeHintEnabled(ctx.localConfig, ctx.teamConfig ?? {});
+    if (key === 'mrHintEnabled') return isMrHintEnabled(ctx.localConfig, ctx.teamConfig ?? {});
+    if (key === 'usageReportEnabled') return isUsageReportEnabled(ctx.localConfig, ctx.teamConfig ?? {});
+    if (key === 'coAuthorEnabled') return resolveCoAuthor(ctx.localConfig, ctx.teamConfig ?? {}) ?? true;
+    const mode = publishMode(key);
+    if (mode) return publishing[mode].policy;
+    if (key === 'autoCompactTokens') return resolveAutoCompactTokens(decidingConfig, decidingTeam ?? {});
+    if (key === 'updatePolicy') {
+      const { resolveEffectiveUpdatePolicy } = await import('./update-policy.js');
+      return resolveEffectiveUpdatePolicy(decidingConfig, decidingTeam);
+    }
+    return levels[0]?.value;
+  };
+
+  const reports: MemberSettingsReport[] = [];
+  for (const key of reportKeys) {
+    const levels = levelsFor(key);
+    const effective = await effectiveValue(key, levels);
+    if (effective === undefined && levels.length === 0) continue;
+    reports.push({ key, effective, source: levels.find((level) => level.used !== false), levels });
+  }
+  return reports;
 }
 
 /**
@@ -173,33 +456,24 @@ export interface DoctorReport {
  * `enabledAgents` the team's tool list is aspirational, so an absent tool stays
  * silent, as it always has.
  *
- * The probe uses a resource path rather than the settings path: resources land
- * under `resolveToolBaseDir` (the project root in project scope), which is the
- * root a pull would have to write into.
+ * The probe is the install gate `locate` gives the resource the tool takes
+ * first, the gate a pull checks before it writes there.
  */
 async function buildEnabledToolChecks(ctx: DoctorContext): Promise<Check[]> {
   const { localConfig, toolPaths } = ctx;
   if (!localConfig.enabledAgents) return [];
 
+  const install = installOf(ctx.teamConfig ?? { toolPaths }, localConfig);
   const checks: Check[] = [];
   for (const [tool, paths] of Object.entries(toolPaths)) {
     // Copilot counts itself installed as soon as enabledAgents names it
-    // (isToolInstalledForConfig), so this check could never fail for it. Its
+    // (`locate`'s install gate), so this check could never fail for it. Its
     // delivery check still reports what did not arrive.
     if (tool === COPILOT_TOOL_ID) continue;
 
-    const probePath = paths.skills ?? paths.rules ?? paths.agents ?? paths.settings ?? paths.hooks;
-    if (!probePath) continue;
-
-    // A tool that receives skills is asked the way the skills write path asks:
-    // OpenClaw lives at its workspace directory, not at the tool root, so the
-    // generic probe passes for a `~/.openclaw` with no workspace while delivery
-    // silently skips it — the same "reported success, received nothing" this
-    // check exists to catch. A tool with no skills path (rules only) has no
-    // such resolver, so it keeps the generic probe.
-    const isInstalled = paths.skills
-      ? async (): Promise<boolean> => writable(await locate(tool, 'skills', installOf(ctx.teamConfig ?? { toolPaths }, localConfig))) !== null
-      : (): Promise<boolean> => isToolInstalledForConfig(tool, probePath, localConfig);
+    const probe = await installProbeOf(tool, paths, install);
+    if (probe === null) continue;
+    const unmet = probe.gates.find((gate) => gate.kind === 'installed' && !gate.met);
 
     // Pushed whether or not it passes. Every other check in the registry
     // reports both ways, and `doctor --json` is consumed by hooks and CI, where
@@ -207,14 +481,89 @@ async function buildEnabledToolChecks(ctx: DoctorContext): Promise<Check[]> {
     checks.push({
       name: `${tool} is installed`,
       source: 'local',
-      check: isInstalled,
-      fix: `enabledAgents lists ${tool}, but it has no directory under `
-        + `${resolveToolBaseDir(tool, localConfig)}, so a pull delivers nothing to it. `
+      check: async () => probe.isInstalled,
+      fix: `enabledAgents lists ${tool}, but ${unmet?.kind === 'installed' ? `${unmet.probe} does not exist` : `it has no directory under ${resolveBaseDir(localConfig)}`}, `
+        + 'so a pull delivers nothing to it. '
         + `Install ${tool} (in workspace scope, opening a session there creates its root), `
         + `or run \`teamai uninstall --agent ${tool}\` to stop syncing to it.`,
     });
   }
 
+  return checks;
+}
+
+/**
+ * A tool that receives skills is asked the way the skills write path asks:
+ * OpenClaw lives at its workspace directory, not at the tool root, so the
+ * generic probe passes for a `~/.openclaw` with no workspace while delivery
+ * silently skips it — the same "reported success, received nothing" this
+ * check exists to catch.
+ */
+async function installProbeOf(
+  tool: string,
+  paths: TeamaiConfig['toolPaths'][string],
+  install: Install,
+): Promise<{ readonly isInstalled: boolean; readonly gates: readonly Gate[] } | null> {
+  if (paths.skills) {
+    const skills = await locate(tool, 'skills', install);
+    return { isInstalled: writable(skills) !== null, gates: skills.gates };
+  }
+  const resource = paths.rules ? 'rules' : paths.agents ? 'agents' : paths.settings ?? paths.hooks ? 'hooks' : null;
+  if (resource === null) return null;
+  const location = await locate(tool, resource, install);
+  return { isInstalled: isInstalledFor(location), gates: location.gates };
+}
+
+/** The surfaces `locate` gates per tool, as a fix names them. */
+const GATED_SURFACES = [['rules', 'rules'], ['blocks', 'team instructions'], ['agents', 'agents'], ['mcp', 'MCP servers']] as const;
+
+/**
+ * A tool can take its skills while its other surfaces wait for a root that is
+ * not there: on WorkBuddy 5.7+, skills land under `.workbuddy-ai/`, while
+ * everything else still needs `.workbuddy/` (#1273). Pull writes none of those,
+ * and the delivery checks skip a tool whose gate is unmet, so with
+ * `<tool> is installed` passing on the skills root doctor would stay green.
+ * Hooks count when the hook writer finds none of its install roots and one of
+ * them is a root the other surfaces wait for.
+ */
+async function buildHeldSurfaceChecks(ctx: DoctorContext): Promise<Check[]> {
+  const { localConfig, toolPaths, hookToolPaths, baseDir } = ctx;
+  const install = installOf(ctx.teamConfig ?? { toolPaths }, localConfig);
+  const checks: Check[] = [];
+  for (const tool of Object.keys(toolPaths)) {
+    const skills = writable(await locate(tool, 'skills', install));
+    if (skills === null) continue;
+    // Keyed by every missing root, whether or not the team maps a surface to it.
+    const held = new Map<string, string[]>();
+    for (const [resource, surface] of GATED_SURFACES) {
+      const location = await locate(tool, resource, install);
+      const unmet = location.gates.find((gate) => gate.kind === 'installed' && !gate.met);
+      if (unmet?.kind !== 'installed') continue;
+      const surfaces = held.get(unmet.probe) ?? [];
+      if (location.channel === 'files' && location.own !== null) surfaces.push(surface);
+      held.set(unmet.probe, surfaces);
+    }
+    const settings = hookToolPaths[tool]?.settings;
+    if (settings) {
+      // reconcileHooksToAllTools injects while either root exists.
+      const gateRoot = toolGateRoot(tool, settings, localConfig.toolRoots);
+      const hookRoots = [hookSettingsFile(tool, baseDir, gateRoot)];
+      if (localConfig.scope === 'project') hookRoots.push(path.join(localConfig.projectRoot ?? baseDir, gateRoot));
+      const root = hookRoots.find((candidate) => held.has(candidate));
+      if (root !== undefined && !(await Promise.all(hookRoots.map((dir) => pathExists(dir)))).includes(true)) held.get(root)?.push('hooks');
+    }
+    for (const [root, surfaces] of held) {
+      if (surfaces.length === 0) continue;
+      checks.push({
+        name: `${tool} receives ${nameList(surfaces)}`,
+        source: 'local',
+        check: async () => false,
+        fix: `teamai delivers ${tool}'s skills to ${skills.path}, but writes its ${nameList(surfaces)} only once `
+          + `${root} exists, and it does not, so a pull holds them back from ${tool}. teamai does not write them `
+          + 'where this install reads its skills yet, so there is nothing to fix on this machine.',
+      });
+    }
+  }
   return checks;
 }
 
@@ -321,13 +670,18 @@ async function buildHookChecks(
   toolPaths: TeamaiConfig['toolPaths'],
   hookToolPaths: TeamaiConfig['toolPaths'],
   baseDir: string,
-  localConfig: LocalConfig,
+  install: Install,
 ): Promise<Check[]> {
   const checks: Check[] = [];
-  for (const [tool, paths] of Object.entries(toolPaths)) {
+  for (const tool of Object.keys(toolPaths)) {
+    if (tool === 'kiro') {
+      if (!await pathExists(path.join(getUserHome(), '.kiro'))) continue;
+      const { hasKiroHooks } = await import('./kiro-hooks.js');
+      checks.push({ name: 'teamai hooks in Kiro standalone hook file (requires Kiro CLI V3)', source: 'local', check: hasKiroHooks, fix: 'Run `teamai hooks inject`; standalone hooks require Kiro CLI V3.' });
+      continue;
+    }
     if (tool === 'pi') {
-      const installed = await isToolInstalledForConfig(tool, paths.skills ?? '.pi/skills', localConfig);
-      if (!installed) continue;
+      if (!isInstalledFor(await locate(tool, 'hooks', install))) continue;
       checks.push({
         name: 'teamai hooks in pi extension',
         source: 'local',
@@ -339,9 +693,9 @@ async function buildHookChecks(
     if (tool === 'openclaw') {
       // OpenClaw has no settings file: its hook is a workspace hook directory,
       // which OpenClaw loads only once openclaw.json enables its entry.
-      const { resolveOpenclawWorkspaceDir, isOpenclawHookEnabled, OPENCLAW_HOOK_DIR, OPENCLAW_HOOK_KEY } = await import('./openclaw-hooks.js');
-      const workspace = await resolveOpenclawWorkspaceDir();
-      if (!workspace || !await pathExists(path.join(workspace, 'hooks', OPENCLAW_HOOK_DIR))) continue;
+      const { isOpenclawHookEnabled, OPENCLAW_HOOK_DIR, OPENCLAW_HOOK_KEY } = await import('./openclaw-hooks.js');
+      const hooksDir = ownOf(await locate(tool, 'hooks', install))?.path;
+      if (!hooksDir || !await pathExists(path.join(hooksDir, OPENCLAW_HOOK_DIR))) continue;
       checks.push({
         name: 'OpenClaw hook enabled',
         source: 'local',
@@ -355,15 +709,15 @@ async function buildHookChecks(
     }
     const settings = hookToolPaths[tool]?.settings;
     const hookPath = hookToolPaths[tool]?.hooks
-      ? path.join(resolveToolBaseDir(tool, { ...localConfig, scope: resolveHookScope(localConfig).scope }), hookToolPaths[tool]?.hooks ?? paths.hooks)
+      ? ownOf(await locate(tool, 'hooks', install))?.path
       : settings
-        ? hookSettingsPath(tool, baseDir, settings)
+        ? hookSettingsFile(tool, baseDir, settings)
         : undefined;
     if (!hookPath) continue;
     const settingsPath = hookPath;
     const parentDir = path.dirname(settingsPath);
     const installed = tool === COPILOT_TOOL_ID
-      ? await isToolInstalledForConfig(tool, hookToolPaths[tool]?.hooks ?? paths.settings ?? '', localConfig)
+      ? isInstalledFor(await locate(tool, 'hooks', install))
       : await pathExists(parentDir);
     // An uninstalled tool has no hooks to check. Whether it should be installed
     // at all is a different question — see buildEnabledToolChecks.
@@ -376,8 +730,10 @@ async function buildHookChecks(
         const content = await readFileSafe(settingsPath);
         if (!content) return false;
 
+        // Windows CodeBuddy's executable script is quoted in the JSON file.
         const missing = TEAMAI_HOOK_SUBCOMMANDS.filter(
-          (sub) => !content.includes(`teamai ${sub}`),
+          (sub) => !content.includes(`teamai ${sub}`)
+            && !(tool === 'codebuddy' && content.includes(`teamai-codebuddy-hook\\" ${sub}`)),
         );
         return missing.length === 0;
       },
@@ -447,10 +803,45 @@ function usageReportNote({ localConfig, teamConfig }: DoctorContext): string {
   if (localConfig.repo.kind === 'http') return 'Usage reporting: off, from HTTP mode (no team repo to report to).';
   const member = localConfig.usageReportEnabled;
   const team = teamConfig?.usageReport;
-  const source = member !== undefined ? `usageReportEnabled: ${member} in ${path.join(getDataHome(localConfig), 'config.yaml')}`
+  // A workspace or self config takes the machine's value when its own file sets none.
+  const level = ownMemberSettings(localConfig).usageReportEnabled === undefined ? `the machine config ${path.join(getTeamaiHomeDir(), 'config.yaml')}`
+    : `the ${installScopeName(localConfig.scope)} config ${path.join(getDataHome(localConfig), 'config.yaml')}`;
+  const source = member !== undefined ? `usageReportEnabled: ${member} in ${level}`
     : team !== undefined ? `usageReport: ${team} in the team's teamai.yaml`
     : 'the default';
   return `Usage reporting: ${isUsageReportEnabled(localConfig, teamConfig ?? {}) ? 'on' : 'off'}, from ${source}.`;
+}
+
+/** The keys of a ~/.teamai/config.yaml with no install that no command reads: only its member settings apply. */
+async function machineUnreadKeyNotes(): Promise<string[]> {
+  if (await hasUserScopeInstall()) return [];
+  const machineFile = path.join(getTeamaiHomeDir(), 'config.yaml');
+  const unread = Object.keys(await readYamlObject(machineFile)).filter((key) => !(key in MemberSettingsSchema.shape));
+  return unread.length > 0
+    ? [`Not read from ${machineFile}, which holds no user-scope install so only its member settings apply: ${unread.join(', ')}.`]
+    : [];
+}
+
+/**
+ * The enabled tools teamai reads no sessions from, in one note per run mode whose sessions it publishes or scores
+ * (#1385): such a tool's sessions are never captured, so they are neither published nor judged.
+ */
+async function unreadSessionToolNotes({ localConfig, teamConfig, toolPaths }: DoctorContext): Promise<string[]> {
+  const tools = AgentSession.toolsWithoutSessions(Object.keys(toolPaths));
+  if (tools.length === 0) return [];
+  const publish = SessionPolicy.publish(localConfig, teamConfig).policies;
+  const scoring = scoringUnavailable(localConfig) ? undefined : await scopeScoring(localConfig);
+  const scored = scoring?.ok ? scoring.sessions.policies : undefined;
+  // `ask` acts as `off` for now (#1388): nothing is offered.
+  const described = (policy: Policy | undefined, word: string) => (policy === 'auto' ? word : undefined);
+  return RUN_MODES.flatMap((mode) => {
+    const published = described(publish[mode].policy, 'published');
+    const judged = described(scored?.[mode].policy, 'scored');
+    if (published === undefined && judged === undefined) return [];
+    const lead = [published, judged].filter((part) => part !== undefined).join(' and ');
+    const outcome = published && judged ? 'neither published nor judged' : published ? 'not published' : 'not judged';
+    return [`Sessions are ${lead} in ${mode} mode, but teamai reads no sessions from ${tools.join(', ')}: they are ${outcome}.`];
+  });
 }
 
 /**
@@ -679,7 +1070,8 @@ export async function buildChecks(ctx: DoctorContext, stage: CheckStage = 'docto
     ...buildToolRootChecks(localConfig, teamConfig),
     ...buildToolHomeChecks(localConfig),
     ...await buildEnabledToolChecks(ctx),
-    ...await buildHookChecks(toolPaths, hookToolPaths, baseDir, localConfig),
+    ...await buildHeldSurfaceChecks(ctx),
+    ...await buildHookChecks(toolPaths, hookToolPaths, baseDir, installOf(teamConfig ?? { toolPaths }, localConfig)),
     ...await buildDeliveryChecks(ctx),
     ...await buildSkillDirChecks(ctx),
     ...await buildRecordedPlaceChecks(ctx, 'rules'),
@@ -824,6 +1216,14 @@ export function formatCheckResult({ name, ok, fix }: CheckResult): string[] {
   return fix ? [`  ✖ ${name}`, `    → ${fix}`] : [`  ✖ ${name}`];
 }
 
+/** The run mode row: the mode and its source, with a warning when TEAMAI_MODE held a value it ignored. */
+function formatRunMode(runMode: ExplainedRunMode): string {
+  const { mode, source } = runMode;
+  return 'ignored' in runMode && runMode.ignored !== undefined
+    ? `  ⚠ Run mode: ${mode} (${source}). TEAMAI_MODE="${runMode.ignored}" is not attended or unattended, so it is ignored.`
+    : `  ✔ Run mode: ${mode} (${source})`;
+}
+
 function renderResult(result: CheckResult): void {
   for (const line of formatCheckResult(result)) console.log(line);
 }
@@ -835,6 +1235,8 @@ export async function doctor(options: DoctorOptions): Promise<boolean> {
   if (jsonMode) setStderrOnly(true);
 
   log.info('Running diagnostics...\n');
+  // Information, not a check: an unknown TEAMAI_MODE fails nothing.
+  const runMode = explainRunMode(process.env);
   const ctx = await resolveDoctorContext();
   if (!ctx) {
     const notInitialized: CheckResult = {
@@ -843,9 +1245,10 @@ export async function doctor(options: DoctorOptions): Promise<boolean> {
       fix: 'Run `teamai init <repo-url>` in a project, or add `--scope user` for all projects',
     };
     if (jsonMode) {
-      emitReport({ ok: false, scope: null, checks: [notInitialized] });
+      emitReport({ ok: false, scope: null, runMode, checks: [notInitialized] });
     } else {
       console.log('  Scope: not initialized\n');
+      console.log(formatRunMode(runMode));
       renderResult(notInitialized);
       console.log('');
     }
@@ -858,6 +1261,7 @@ export async function doctor(options: DoctorOptions): Promise<boolean> {
   if (!jsonMode) {
     const scopeLabel = `${installScopeName(scope)}${scope === 'project' && localConfig.projectRoot ? ` (${localConfig.projectRoot})` : ''}`;
     console.log(`  Scope: ${scopeLabel}\n`);
+    console.log(formatRunMode(runMode));
   }
 
   // --fix runs before the checks, so the report reflects the post-cleanup state.
@@ -907,6 +1311,9 @@ export async function doctor(options: DoctorOptions): Promise<boolean> {
     ...codexTrust.notes,
     ...toolPathsDroppedKeyNotes(ctx),
     usageReportNote(ctx),
+    ...await machineUnreadKeyNotes(),
+    ...SessionPolicy.publish(localConfig, ctx.teamConfig).problems.map((problem) => `${problem}.`),
+    ...await unreadSessionToolNotes(ctx),
     // What git sees of the delivered team resources, and what no pull changes (#915).
     ...await deliveredGitExcludeNotes(ctx),
     ...await localAgentGitExcludeNotes(),
@@ -914,14 +1321,16 @@ export async function doctor(options: DoctorOptions): Promise<boolean> {
     ...await skillReadNotes(ctx),
     ...await recordedPlaceNotes(ctx, 'rules'),
     ...await recordedPlaceNotes(ctx, 'blocks'),
-    ...await agentReadNotes(ctx),
   ];
 
+  const memberSettings = await memberSettingsReport(ctx);
   if (jsonMode) {
     emitReport({
       ok: allPassed,
       scope,
+      runMode,
       checks: results,
+      memberSettings,
       // pkgDoctorReport renders its own lines; they are human text, not checks.
       ...(packageReport ? { packages: { ok: packageReport.allPassed, lines: packageReport.lines } } : {}),
       ...(notes.length > 0 ? { notes } : {}),
@@ -931,6 +1340,13 @@ export async function doctor(options: DoctorOptions): Promise<boolean> {
 
   if (packageReport) {
     for (const line of packageReport.lines) console.log(line);
+  }
+
+  const settingLines = memberSettingLines(memberSettings, localConfig.scope);
+  if (settingLines.length > 0) {
+    console.log('');
+    log.info('Member settings:');
+    for (const line of settingLines) console.log(line);
   }
 
   if (notes.length > 0) {

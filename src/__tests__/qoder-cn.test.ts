@@ -9,7 +9,7 @@ import {
 } from '../resources/agent-format.js';
 import { ruleFileExtensionForTool, usesMdcRules } from '../resources/rule-format.js';
 import { TeamaiConfigSchema, scopedToolPaths } from '../types.js';
-import { isToolInstalledForConfig } from '../resources/base.js';
+import { isInstalled } from './helpers/install-gate.js';
 import type { LocalConfig } from '../types.js';
 import { AGENT_TOOLS } from '../tools.js';
 
@@ -106,16 +106,16 @@ describe('Qoder CN support', () => {
       }) as unknown as LocalConfig;
 
       // The shared project root installs neither edition by itself.
-      expect(await isToolInstalledForConfig('qoder', '.qoder/skills', localConfig())).toBe(false);
-      expect(await isToolInstalledForConfig('qoder-cn', '.qoder/skills', localConfig())).toBe(false);
+      expect(await isInstalled('qoder', 'skills', localConfig())).toBe(false);
+      expect(await isInstalled('qoder-cn', 'skills', localConfig())).toBe(false);
 
       // An explicit --agent entry bootstraps the edition before its app runs.
-      expect(await isToolInstalledForConfig('qoder-cn', '.qoder/skills', localConfig(['qoder-cn']))).toBe(true);
+      expect(await isInstalled('qoder-cn', 'skills', localConfig(['qoder-cn']))).toBe(true);
 
       // And each edition's own HOME root installs it.
       await fse.ensureDir(path.join(home, '.qoder', 'skills'));
-      expect(await isToolInstalledForConfig('qoder', '.qoder/skills', localConfig())).toBe(true);
-      expect(await isToolInstalledForConfig('qoder-cn', '.qoder/skills', localConfig())).toBe(false);
+      expect(await isInstalled('qoder', 'skills', localConfig())).toBe(true);
+      expect(await isInstalled('qoder-cn', 'skills', localConfig())).toBe(false);
     } finally {
       await fse.remove(home);
     }

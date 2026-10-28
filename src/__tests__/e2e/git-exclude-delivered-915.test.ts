@@ -27,7 +27,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { trackDetachedProcesses } from '../helpers/detached-processes.js';
+import { waitForDetachedChildren } from '../helpers/detached-processes.js';
 import { renderRuleForTool } from '../../resources/rule-format.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -47,7 +47,6 @@ let sandbox: string;
 /** Keeps a retried case off the directories its first attempt left. */
 let attempt = 0;
 /** The session-start hook leaves a detached pass behind: joined before HOME goes. */
-let detached: ReturnType<typeof trackDetachedProcesses>;
 
 function env(home: string): NodeJS.ProcessEnv {
   const base: NodeJS.ProcessEnv = {
@@ -225,10 +224,10 @@ function machine(base: string, opts: MachineOptions = {}): Machine {
       const r = spawnSync(process.execPath, [CLI, 'hook-dispatch', 'session-start', '--tool', 'claude'], {
         cwd: realDir,
         encoding: 'utf8',
-        env: { ...env(home), NODE_OPTIONS: [process.env.NODE_OPTIONS, detached.nodeOptions].filter(Boolean).join(' ') },
+        env: env(home),
         input: JSON.stringify({ cwd: realDir, session_id: `${name}-session`, hook_event_name: 'SessionStart', source: 'startup' }),
       });
-      await detached.waitForExit();
+      await waitForDetachedChildren();
       return { code: r.status, output: `${r.stdout ?? ''}${r.stderr ?? ''}` };
     },
     deliveredLines: () => {
@@ -255,11 +254,10 @@ function asOlderCliState(statePath: string): void {
 beforeAll(() => {
   if (!fs.existsSync(CLI)) throw new Error(`CLI binary not found at ${CLI}. Run "npm run build" first.`);
   sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-git-exclude-e2e-')));
-  detached = trackDetachedProcesses(sandbox);
 });
 
 afterAll(async () => {
-  if (detached) await detached.waitForExit();
+  await waitForDetachedChildren();
   if (sandbox) fs.rmSync(sandbox, { recursive: true, force: true });
 });
 

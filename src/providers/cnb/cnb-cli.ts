@@ -19,7 +19,7 @@ import { OrganizationNotFoundError, RepoCreatePermissionError } from '../types.j
  *   - a bare `cnb` therefore fails with ENOENT, and handing the resolved
  *     `cnb.cmd` to `child_process.spawnSync` fails with EINVAL.
  *
- * `cross-spawn` handles both cases (same reason `utils/ai-client.ts` uses it),
+ * `cross-spawn` handles both cases (same reason `tool-launch/run.ts` uses it),
  * while `resolveCliPath` keeps "is it installed?" and "can we run it?" based on
  * the same answer.
  *

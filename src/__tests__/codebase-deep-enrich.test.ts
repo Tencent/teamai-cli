@@ -5,17 +5,17 @@ import path from 'node:path';
 
 // Mock the AI client so deepEnrich's LLM calls fail instantly instead of
 // waiting on real 600s timeouts. deepEnrich treats these as non-blocking skips.
-vi.mock('../utils/ai-client.js', () => ({
-  getAICliName: () => 'mock-cli',
-  callClaude: vi.fn(async () => {
+vi.mock('../tool-launch/call.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../tool-launch/call.js')>(),
+  callTool: vi.fn(async () => {
     throw new Error('mock: AI unavailable');
   }),
-  callClaudeParallel: vi.fn(async () => {
+  callToolParallel: vi.fn(async () => {
     throw new Error('mock: AI batch unavailable');
   }),
 }));
 
-import { callClaude, callClaudeParallel } from '../utils/ai-client.js';
+import { callTool, callToolParallel } from '../tool-launch/call.js';
 import { codebaseCmd } from '../codebase-cmd.js';
 import { runHiddenDeepEnrich } from '../deep-enrich.js';
 
@@ -102,6 +102,71 @@ describe('codebase deep-enrich', () => {
     expect(fs.existsSync(path.join(docsDir, 'architecture.md'))).toBe(false);
   });
 
+  it.skipIf(process.platform === 'win32')('does not overwrite a file outside the teamwiki through a docs symlink', async () => {
+    const root = createEnrichFixture();
+    const docsDir = path.join(root, 'teamwiki', 'evidence', 'code', 'faketest', 'docs');
+    const outside = path.join(root, 'outside.md');
+    fs.mkdirSync(docsDir, { recursive: true });
+    fs.writeFileSync(outside, 'keep this content');
+    fs.symlinkSync(outside, path.join(docsDir, 'graph-g1-relations.md'), 'file');
+
+    await expect(runHiddenDeepEnrich({ project: 'faketest', wikiRoot: path.join(root, 'teamwiki') }))
+      .rejects.toThrow(/symbolic link/i);
+    expect(fs.readFileSync(outside, 'utf8')).toBe('keep this content');
+  });
+
+  it('does not write docs through a symlinked docs directory', async () => {
+    const root = createEnrichFixture();
+    const docsDir = path.join(root, 'teamwiki', 'evidence', 'code', 'faketest', 'docs');
+    const outside = path.join(root, 'outside');
+    fs.mkdirSync(outside);
+    fs.symlinkSync(outside, docsDir, process.platform === 'win32' ? 'junction' : 'dir');
+
+    await expect(runHiddenDeepEnrich({ project: 'faketest', wikiRoot: path.join(root, 'teamwiki') }))
+      .rejects.toThrow(/symbolic link/i);
+    expect(fs.readdirSync(outside)).toEqual([]);
+  });
+
+  it('does not write docs through a symlinked evidence directory', async () => {
+    const root = createEnrichFixture();
+    const wikiRoot = path.join(root, 'teamwiki');
+    const evidenceDir = path.join(wikiRoot, 'evidence', 'code', 'faketest');
+    const outside = path.join(root, 'outside');
+    fs.renameSync(evidenceDir, outside);
+    fs.symlinkSync(outside, evidenceDir, process.platform === 'win32' ? 'junction' : 'dir');
+
+    await expect(runHiddenDeepEnrich({ project: 'faketest', wikiRoot }))
+      .rejects.toThrow(/symbolic link/i);
+    expect(fs.existsSync(path.join(outside, 'docs'))).toBe(false);
+  });
+
+  it('does not write progress through a symlinked review directory', async () => {
+    const root = createEnrichFixture();
+    const wikiRoot = path.join(root, 'teamwiki');
+    const reviewDir = path.join(wikiRoot, 'evidence', 'code', 'faketest', '_review');
+    const outside = path.join(root, 'outside');
+    fs.mkdirSync(outside);
+    fs.symlinkSync(outside, reviewDir, process.platform === 'win32' ? 'junction' : 'dir');
+
+    await expect(runHiddenDeepEnrich({ project: 'faketest', wikiRoot }))
+      .rejects.toThrow(/symbolic link/i);
+    expect(fs.readdirSync(outside)).toEqual([]);
+  });
+
+  it.skipIf(process.platform === 'win32')('does not overwrite an outside file through a progress symlink', async () => {
+    const root = createEnrichFixture();
+    const wikiRoot = path.join(root, 'teamwiki');
+    const reviewDir = path.join(wikiRoot, 'evidence', 'code', 'faketest', '_review');
+    const outside = path.join(root, 'outside.json');
+    fs.mkdirSync(reviewDir);
+    fs.writeFileSync(outside, 'keep this content');
+    fs.symlinkSync(outside, path.join(reviewDir, 'progress.json'), 'file');
+
+    await expect(runHiddenDeepEnrich({ project: 'faketest', wikiRoot }))
+      .rejects.toThrow(/symbolic link/i);
+    expect(fs.readFileSync(outside, 'utf8')).toBe('keep this content');
+  });
+
   it('does not report success when the evidence dir has no components', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-deep-enrich-empty-'));
     temporaryDirectories.push(root);
@@ -144,8 +209,8 @@ describe('codebase deep-enrich', () => {
     const graphBefore = fs.readFileSync(path.join(docsDir, 'graph-g1-relations.md'), 'utf8');
 
     process.exitCode = undefined;
-    vi.mocked(callClaude).mockResolvedValue('# Architecture\n\nAuth sits at the edge.\n');
-    vi.mocked(callClaudeParallel).mockImplementation(async (tasks) => (
+    vi.mocked(callTool).mockResolvedValue({ text: '# Architecture\n\nAuth sits at the edge.\n', tool: 'claude' });
+    vi.mocked(callToolParallel).mockImplementation(async (tasks) => (
       tasks.map(() => '# Auth\n\nAuthenticates users.\n')
     ));
 
@@ -159,8 +224,8 @@ describe('codebase deep-enrich', () => {
     expect(fs.readFileSync(path.join(docsDir, 'graph-g1-relations.md'), 'utf8')).toBe(graphBefore);
 
     process.exitCode = undefined;
-    vi.mocked(callClaude).mockRejectedValue(new Error('mock: AI unavailable'));
-    vi.mocked(callClaudeParallel).mockRejectedValue(new Error('mock: AI batch unavailable'));
+    vi.mocked(callTool).mockRejectedValue(new Error('mock: AI unavailable'));
+    vi.mocked(callToolParallel).mockRejectedValue(new Error('mock: AI batch unavailable'));
     await codebaseCmd({ deepEnrich: true, project: 'faketest', output: root, json: true });
     expect(process.exitCode).toBeUndefined();
     expect(JSON.parse(String(log.mock.calls.at(-1)?.[0]))).toMatchObject({ complete: true });
@@ -246,8 +311,8 @@ describe('codebase deep-enrich', () => {
     fs.writeFileSync(path.join(docsDir, 'graph-g1-relations.md'), '# graph placeholder\n');
     fs.writeFileSync(path.join(docsDir, 'graph-g5-scenarios.md'), '# OLD G5');
 
-    vi.mocked(callClaude).mockResolvedValue('# NEW architecture\n');
-    vi.mocked(callClaudeParallel).mockImplementation(async (tasks) => (
+    vi.mocked(callTool).mockResolvedValue({ text: '# NEW architecture\n', tool: 'claude' });
+    vi.mocked(callToolParallel).mockImplementation(async (tasks) => (
       tasks.map(() => '# NEW Auth\n')
     ));
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);

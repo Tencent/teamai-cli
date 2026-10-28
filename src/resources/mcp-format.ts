@@ -1,7 +1,6 @@
 import crypto from 'node:crypto';
 import type { McpServerDef, McpTransport } from '../types.js';
 import { sameEnvName } from './env-key.js';
-import { mcpFormatOf } from '../tools.js';
 
 // ─── Per-tool rendering ──────────────────────────────────────
 //
@@ -19,11 +18,6 @@ import { mcpFormatOf } from '../tools.js';
 export type McpFormat = 'claude' | 'cursor' | 'buddy' | 'codex' | 'opencode' | 'copilot' | 'pi' | 'muse';
 
 const COPILOT_ALL_TOOLS = '*';
-
-/** The format of the tool's declared MCP channel, or null when none is known. */
-export function detectMcpFormat(tool: string): McpFormat | null {
-  return mcpFormatOf(tool);
-}
 
 /**
  * Top-level JSON key each format stores its server map under. Claude/cursor/buddy

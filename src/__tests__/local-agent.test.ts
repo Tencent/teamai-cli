@@ -1825,6 +1825,23 @@ describe('local-agent: cmds[] migration', () => {
     expect(content).toContain('# content');
   });
 
+  it('leaves the fallback OpenClaw workspace alone when openclaw.json cannot be read, and says why in the ACK', async () => {
+    const workspace = path.join(tmpDir, 'openclaw-workspace');
+    const configFile = path.join(tmpDir, '.openclaw', 'openclaw.json');
+    await fse.ensureDir(workspace);
+    await fse.outputFile(configFile, '{ agents: { defaults: { workspace: "/elsewhere" } } }');
+    vi.stubEnv('OPENCLAW_CONFIG_PATH', configFile);
+    vi.stubEnv('OPENCLAW_WORKSPACE_DIR', workspace);
+
+    const acks = await runResponse({ cmds: [{
+      id: 69, type: 'install_prompt_rule', handle_type: 'prompt', slug: 'openclaw-doc',
+      version: '1.0.0', download_url: 'http://127.0.0.1:42100/openclaw-doc.md', scope: 'user',
+    }] }, undefined, 'openclaw');
+
+    expect(await fse.pathExists(path.join(workspace, 'AGENTS.md'))).toBe(false);
+    expect(acks.find((ack) => ack.id === 69)).toMatchObject({ status: 'failed', error: expect.stringContaining(configFile) });
+  });
+
   it('handle_type=prompt strips the block an earlier release left in ~/AGENTS.md (#945)', async () => {
     const legacy = path.join(tmpDir, 'AGENTS.md');
     await fse.writeFile(legacy, `# mine\n\n${TEAMAI_CLAUDEMD_START}\nanother member's selection\n<!-- [teamai:claudemd:end] -->\n`);
@@ -2014,6 +2031,19 @@ describe('local-agent: cmds[] migration', () => {
     expect(manifest.hk1).toMatchObject({ tool: 'codebuddy', event: 'SessionStart', command: 'echo hi', timeout: 10 });
   });
 
+  it('uninstall_hook_rule removes a hook installed for another tool while a tool that takes no agent hooks runs', async () => {
+    await runResponse({ cmds: [{
+      id: 25, type: 'install_hook_rule', handle_type: 'hook', slug: 'hk-cross', event: 'SessionStart', cmd: 'echo hi', scope: 'user',
+    }] });
+    const acks = await runResponse({ cmds: [{
+      id: 26, type: 'uninstall_hook_rule', handle_type: 'hook', slug: 'hk-cross', scope: 'user',
+    }] }, undefined, 'omp');
+
+    expect(acks.find((a) => a.id === 26)?.status).toBe('success');
+    const settings = await fse.readJson(path.join(tmpDir, '.codebuddy', 'settings.json'));
+    expect(JSON.stringify(settings)).not.toContain(agentHookDescription('hk-cross'));
+  });
+
   it('remove-http reports failure and leaves the source intact when another operation keeps its lock', async () => {
     await setupConfig();
     const configPath = path.join(tmpDir, '.teamai', 'local-agent', 'config.json');
@@ -2177,6 +2207,21 @@ describe('local-agent: cmds[] migration', () => {
     }] }, undefined, 'codex');
     expect(optedOut.find((a) => a.id === 57)).toMatchObject({ status: 'failed' });
     expect(String(optedOut.find((a) => a.id === 57)?.error)).toContain('codexTrustEnabled is false');
+    expect(trust).not.toHaveBeenCalled();
+  });
+
+  it('install_hook_rule leaves a Codex hook untrusted when only this machine\'s settings turn trust off (#1459)', async () => {
+    const trust = vi.mocked(trustCodexHooks);
+    trust.mockClear();
+    await fse.ensureDir(path.join(tmpDir, '.codex'));
+    // The file a member writes by hand with no user-scope install: settings, no repo.
+    await fse.outputFile(path.join(tmpDir, '.teamai', 'config.yaml'), 'codexTrustEnabled: false\n');
+    const acks = await runResponse({ cmds: [{
+      id: 58, type: 'install_hook_rule', handle_type: 'hook', slug: 'cx-machine-opted-out',
+      event: 'Stop', cmd: 'echo machine opted out', scope: 'user',
+    }] }, undefined, 'codex');
+    expect(acks.find((a) => a.id === 58)).toMatchObject({ status: 'failed' });
+    expect(String(acks.find((a) => a.id === 58)?.error)).toContain('codexTrustEnabled is false');
     expect(trust).not.toHaveBeenCalled();
   });
 

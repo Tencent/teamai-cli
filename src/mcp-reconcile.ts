@@ -8,6 +8,7 @@ import type {
   McpServerDef,
   ManagedMcpManifest,
   ManagedMcpRecord,
+  ToolId,
 } from './types.js';
 import {
   DEFAULT_TOOL_PATHS,
@@ -19,11 +20,10 @@ import {
   MUSE_TOOL_ID,
   managedMcpManifestPath,
   managedMcpManifestKey,
-  resolveToolBaseDir,
+  resolveBaseDir,
 } from './types.js';
 import YAML from 'yaml';
 import {
-  detectMcpFormat,
   supportsTransport,
   supportsEnvExpansion,
   renderJsonEntry,
@@ -47,7 +47,7 @@ import { readEnvBackup } from './resources/env.js';
 import { isEnvShMarker } from './env-sh-exports.js';
 import { memberEnvironmentWithoutScope } from './member-env.js';
 import { cleanupOf, installOf, locate, ownOf, writable, type EntryPlace, type Install } from './locate.js';
-import { channelsOf, isToolId, mcpFormatOf, settingsAtDefault, TOOLS, type McpProject } from './tools.js';
+import { channelsOf, isToolId, mcpFormatOf, hasDefaultHomeLeftovers, TOOLS, type McpProject } from './tools.js';
 import { realHost, type Host } from './tool-home.js';
 import { KNOWN_AGENTS } from './known-agents.js';
 import { entryLayout, reportEntryResolution, resolveEntriesFor } from './namespaced-entries.js';
@@ -605,7 +605,7 @@ export async function resolveMcpTargets(
     const lookup = inTree ? where.lookup : null;
     const retired = inTree ? where.retired.filter(({ was }) => was === 'default').map(({ place: retiredPlace }) => ({ file: retiredPlace.path, key: retiredPlace.key })) : [];
     // Every release before #1221 wrote there under the default home: a lookup tool's mapped file (#993).
-    const unmoved = inTree && isToolId(tool) && settingsAtDefault(tool) ? await locate(tool, 'mcp', install, unmovedHost(host)) : null;
+    const unmoved = inTree && isToolId(tool) && hasDefaultHomeLeftovers(tool) ? await locate(tool, 'mcp', install, unmovedHost(host)) : null;
     const unmovedFile = unmoved?.channel === 'files' ? unmoved.lookup?.mapped ?? ownOf(unmoved)?.path : undefined;
     targets.push({
       ...mcpTargetAt(tool, museOnly ? 'muse' : channel.format, plugin && where.alternate ? where.alternate : place, projectScope),
@@ -1328,7 +1328,7 @@ export async function unclaimedMcpServers(target: McpTarget, claimed: readonly s
  * In a single-repo team Claude keeps `.mcp.json` (`mcpRelocated`), and it is
  * judged.
  */
-const NOT_TEAMAI_ONLY_MCP_TOOLS = new Set(['claude', 'tclaude', 'codebuddy', 'qoder', 'qoder-cn']);
+const NOT_TEAMAI_ONLY_MCP_TOOLS = new Set<string>(['claude', 'tclaude', 'codebuddy', 'qoder', 'qoder-cn'] satisfies ToolId[]);
 
 /**
  * Each project MCP config of this checkout that holds anything, and whether
@@ -1522,7 +1522,7 @@ export async function recordedMcpTargets(cfg: LocalConfig, known: McpTarget[]): 
     const real = await realFilePath(file);
     const mappedBy = [...new Set(reach.filter((r) => r.real === real).map((r) => r.tool))];
     const targets = entry.tools.filter((tool) => !mappedBy.includes(tool)).flatMap((tool): McpTarget[] => {
-      const format = detectMcpFormat(tool);
+      const format = mcpFormatOf(tool);
       const channel = channelsOf(tool).mcp.project;
       return format ? [{ tool, format, file, projectScope: true, ...(typeof channel === 'object' && channel.key !== undefined ? { key: channel.key } : {}) }] : [];
     });
@@ -1594,9 +1594,9 @@ export async function earlierMappedMcpTargets(
     if (typeof toolPaths !== 'object' || toolPaths === null) continue;
     for (const [tool, paths] of Object.entries(toolPaths)) {
       const rel: unknown = typeof paths === 'object' && paths !== null ? (paths as { mcpProject?: unknown }).mcpProject : undefined;
-      const format = detectMcpFormat(tool);
+      const format = mcpFormatOf(tool);
       if (typeof rel !== 'string' || !format) continue;
-      const file = path.resolve(resolveToolBaseDir(tool, cfg), rel);
+      const file = path.resolve(resolveBaseDir(cfg), rel);
       const key = `${tool}\0${file}`;
       if (found.has(key)) continue;
       const real = await realFilePath(file);
@@ -1683,7 +1683,7 @@ export function ownedByMappers(mappedBy: readonly string[], manifest: ManagedMcp
   if (mappedBy.length === 0) return undefined;
   return (target, options = {}) => mappedBy
     .filter((tool) => {
-      const format = detectMcpFormat(tool);
+      const format = mcpFormatOf(tool);
       return format !== null && (options.bare ? format === 'copilot' : sameServerKey(format, target.format));
     })
     .flatMap((tool) => manifest?.[managedMcpManifestKey(tool, true)] ?? []).map((record) => record.name);

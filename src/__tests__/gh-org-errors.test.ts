@@ -79,4 +79,30 @@ describe.each(['gh', 'fetch'] as const)('GitHub repo listing errors (%s)', (tran
     await expect(ghListOrgRepos('example')).resolves.toEqual([]);
     expect(requests[1]).toContain('/users/example/repos');
   });
+
+  it('stops after one request when the org page times out', async () => {
+    if (transport === 'gh') {
+      vi.mocked(ghExec).mockImplementation((args) => {
+        requests.push(args[args.length - 1]);
+        return { status: 1, stdout: '', stderr: '', timedOut: true };
+      });
+    } else {
+      // `AbortSignal.timeout()` aborts with exactly this reason.
+      vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+        requests.push(url);
+        throw new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+      }));
+    }
+
+    const failure = await ghListOrgRepos('example').then(() => null, (error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).name).toBe('TimeoutError');
+    // A deadline on the first page must not fall back: the second endpoint
+    // would stall in exactly the same way, turning one deadline into two.
+    expect(requests).toEqual([expect.stringContaining('/orgs/example/repos')]);
+    if (transport === 'gh') {
+      expect(vi.mocked(ghExec).mock.calls[0][1]).toEqual({ timeoutMs: 30_000 });
+    }
+  });
 });

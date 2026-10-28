@@ -9,7 +9,8 @@
 import path from 'node:path';
 
 import { isAbsolutePath, isWithin } from './agent-path.js';
-import { listFiles } from './fs.js';
+import { listFiles, listFilesRecursive } from './fs.js';
+import { isSafeNamespaceSegment } from '../manifest-schema.js';
 import { log } from './logger.js';
 import { learningsBranch } from './learnings-branch.js';
 import { ForeignCheckoutError } from './branch-worktree.js';
@@ -183,26 +184,93 @@ export interface LearningFile {
  * root wins, so a superseded copy in an inherited root is never listed twice
  * and never shadows the current one.
  */
-export async function listLearningFiles(
+export interface LearningsTreeVisitor<T> {
+  onRoot: (root: string) => Promise<T[]>;
+  onNamespace: (root: string, ns: string, nsDir: string) => Promise<T[]>;
+  getId: (item: T) => string;
+}
+
+/**
+ * Shared walk across learnings roots and active namespaces.
+ *
+ * Always enumerates the flat `.md` files at each root. When `namespaces` is
+ * provided, also enumerates `.md` files under `learnings/<ns>/` (recursive)
+ * for each safe namespace (`isSafeNamespaceSegment`).
+ *
+ * For the same id across roots, the first root wins.
+ */
+export async function walkLearningsTree<T>(
   roots: readonly string[],
-): Promise<LearningFile[]> {
-  const out: LearningFile[] = [];
+  namespaces: readonly string[] | undefined,
+  visitor: LearningsTreeVisitor<T>,
+): Promise<T[]> {
+  const out: T[] = [];
   const claimed = new Set<string>();
 
   for (const root of roots) {
-    let files: string[] = [];
-    try {
-      files = await listFiles(root);
-    } catch {
-      continue; // a root that does not exist simply contributes nothing
+    const rootItems = await visitor.onRoot(root);
+    for (const item of rootItems) {
+      const id = visitor.getId(item);
+      if (claimed.has(id)) continue;
+      claimed.add(id);
+      out.push(item);
     }
-    for (const file of files) {
-      if (!file.endsWith('.md') || claimed.has(file)) continue;
-      claimed.add(file);
-      out.push({ file, absPath: path.join(root, file), root });
+
+    if (namespaces !== undefined) {
+      for (const ns of namespaces) {
+        if (!isSafeNamespaceSegment(ns)) continue;
+        const nsDir = path.join(root, ns);
+        const nsItems = await visitor.onNamespace(root, ns, nsDir);
+        for (const item of nsItems) {
+          const id = visitor.getId(item);
+          if (claimed.has(id)) continue;
+          claimed.add(id);
+          out.push(item);
+        }
+      }
     }
   }
+
   return out;
+}
+
+/**
+ * List the flat `.md` learnings across roots, or root plus active namespaces
+ * when `namespaces` is passed, highest precedence first.
+ *
+ * Same precedence rule as the search index: for one relative path the first
+ * root wins, so a superseded copy in an inherited root is never listed twice
+ * and never shadows the current one.
+ */
+export async function listLearningFiles(
+  roots: readonly string[],
+  namespaces?: readonly string[],
+): Promise<LearningFile[]> {
+  return walkLearningsTree<LearningFile>(roots, namespaces, {
+    onRoot: async (root) => {
+      let files: string[] = [];
+      try {
+        files = await listFiles(root);
+      } catch {
+        return [];
+      }
+      return files
+        .filter((file) => file.endsWith('.md'))
+        .map((file) => ({ file, absPath: path.join(root, file), root }));
+    },
+    onNamespace: async (root, ns, nsDir) => {
+      let files: string[] = [];
+      try {
+        files = await listFilesRecursive(nsDir);
+      } catch {
+        return [];
+      }
+      return files
+        .filter((rel) => rel.endsWith('.md'))
+        .map((rel) => ({ file: path.join(ns, rel), absPath: path.join(nsDir, rel), root }));
+    },
+    getId: (item) => item.file,
+  });
 }
 
 /**

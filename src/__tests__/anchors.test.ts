@@ -246,6 +246,21 @@ describe('defaultProjectSlug (#809)', () => {
     git(dotGit, 'worktree', 'add', '-q', checkout);
     expect(await defaultProjectSlug(checkout)).toBe('proj');
   });
+
+  it('names a checkout with an origin remote as --from-repo names that repo, so same-named checkouts of different repos do not collide', async () => {
+    const slugs: string[] = [];
+    for (const [parent, owner] of [['a', 'acme'], ['b', 'other']] as const) {
+      const checkout = path.join(base, 'origin-layout', parent, 'svc');
+      fs.mkdirSync(checkout, { recursive: true });
+      git(checkout, 'init', '-q');
+      git(checkout, 'remote', 'add', 'origin', `git@github.com:${owner}/svc.git`);
+      slugs.push(await defaultProjectSlug(checkout));
+      // A subdirectory is not the repo, and keeps its own name.
+      fs.mkdirSync(path.join(checkout, 'pkg'));
+      expect(await defaultProjectSlug(path.join(checkout, 'pkg'))).toBe('pkg');
+    }
+    expect(slugs).toEqual(['github__acme__svc', 'github__other__svc']);
+  });
 });
 
 describe('listWorktrees', () => {

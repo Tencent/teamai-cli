@@ -28,13 +28,19 @@ describe('import --from-mr with paginated GitHub commits', () => {
       'username: test-user', 'scope: user', '',
     ].join('\n'));
     const ai = path.join(sandbox, 'ai.cjs');
-    fs.writeFileSync(ai, `process.stdout.write(${JSON.stringify('---\ntitle: Preserved history\n---\nFixture learning.\n')});\n`);
+    // Answers as `claude -p --output-format json` does: the prompt on stdin, the reply in a result record.
+    fs.writeFileSync(ai, `let prompt = '';
+process.stdin.on('data', (chunk) => { prompt += chunk; });
+process.stdin.on('end', () => {
+  require('node:fs').writeFileSync(process.env.PROMPT_FILE, prompt);
+  process.stdout.write(JSON.stringify({ type: 'result', result: ${JSON.stringify('---\ntitle: Preserved history\n---\nFixture learning.\n')} }));
+});
+`);
     preload = path.join(sandbox, 'github-fixture.mjs');
     // External boundaries only: actual HTTP responses and the packaged CLI's
     // extraction prompt, with a deterministic subprocess replacing the AI CLI.
     fs.writeFileSync(preload, `
 import childProcess from 'node:child_process';
-import fs from 'node:fs';
 import http from 'node:http';
 import https from 'node:https';
 import { syncBuiltinESMExports } from 'node:module';
@@ -51,10 +57,7 @@ childProcess.execFileSync = (command, args, ...rest) => {
 };
 const spawn = childProcess.spawn;
 childProcess.spawn = (command, args, options) => {
-  if (command === process.execPath && args[0] === '-p') {
-    fs.writeFileSync(process.env.PROMPT_FILE, args[1]);
-    return spawn(process.execPath, [${JSON.stringify(ai)}], options);
-  }
+  if (command === process.execPath && args[0] === '-p') return spawn(process.execPath, [${JSON.stringify(ai)}], options);
   return spawn(command, args, options);
 };
 const request = https.request;

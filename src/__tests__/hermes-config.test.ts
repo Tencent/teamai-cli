@@ -3,19 +3,22 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import YAML from 'yaml';
-import { getHermesHome } from '../hermes-home.js';
+import { toolHome } from '../tool-home.js';
 import {
   upsertSoulRules,
   removeSoulRules,
   upsertHermesHook,
   removeHermesHookByCommand,
   getHermesConfigPath,
-  getHermesSoulPath,
 } from '../hermes-config.js';
 import { TEAMAI_RULES_START, TEAMAI_RULES_END } from '../types.js';
 
 let tmpDir: string;
 let savedHermesHome: string | undefined;
+
+function soulPath(): string {
+  return path.join(tmpDir, 'SOUL.md');
+}
 
 function defaultHermesHome(): string {
   return process.platform === 'win32' ? path.join(tmpDir, 'local-app-data', 'hermes') : path.join(os.homedir(), '.hermes');
@@ -38,23 +41,23 @@ afterEach(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
-// ─── getHermesHome ────────────────────────────────────────────────────────────
+// ─── toolHome('hermes') ────────────────────────────────────────────────────────────
 
-describe('getHermesHome', () => {
+describe("toolHome('hermes')", () => {
   it('returns the HERMES_HOME env var as-is when it is an absolute path', () => {
-    expect(getHermesHome()).toBe(tmpDir);
+    expect(toolHome('hermes')).toBe(tmpDir);
   });
 
   it('resolves HERMES_HOME to an absolute path when it is relative', () => {
     process.env.HERMES_HOME = 'relative/path';
-    const result = getHermesHome();
+    const result = toolHome('hermes');
     expect(path.isAbsolute(result)).toBe(true);
     expect(result).toBe(path.resolve('relative/path'));
   });
 
   it('returns the platform default when HERMES_HOME is not set', () => {
     delete process.env.HERMES_HOME;
-    const result = getHermesHome();
+    const result = toolHome('hermes');
     expect(result).toBe(defaultHermesHome());
     // restore for afterEach cleanup
     process.env.HERMES_HOME = tmpDir;
@@ -65,20 +68,20 @@ describe('getHermesHome', () => {
 
 describe('upsertSoulRules', () => {
   it('creates SOUL.md with marker block when file does not exist', async () => {
-    await upsertSoulRules('rule body');
-    const content = fs.readFileSync(getHermesSoulPath(), 'utf-8');
+    await upsertSoulRules(soulPath(), 'rule body');
+    const content = fs.readFileSync(soulPath(), 'utf-8');
     expect(content).toContain(TEAMAI_RULES_START);
     expect(content).toContain('rule body');
     expect(content).toContain(TEAMAI_RULES_END);
   });
 
   it('preserves existing user content and appends teamai block', async () => {
-    const soulPath = getHermesSoulPath();
-    fs.mkdirSync(path.dirname(soulPath), { recursive: true });
-    fs.writeFileSync(soulPath, '# User content\n\nsome notes\n');
+    const soul = soulPath();
+    fs.mkdirSync(path.dirname(soul), { recursive: true });
+    fs.writeFileSync(soul, '# User content\n\nsome notes\n');
 
-    await upsertSoulRules('team rule');
-    const content = fs.readFileSync(soulPath, 'utf-8');
+    await upsertSoulRules(soulPath(), 'team rule');
+    const content = fs.readFileSync(soul, 'utf-8');
     expect(content).toContain('# User content');
     expect(content).toContain('some notes');
     expect(content).toContain(TEAMAI_RULES_START);
@@ -87,13 +90,13 @@ describe('upsertSoulRules', () => {
   });
 
   it('replaces existing teamai block on re-upsert (idempotent replacement)', async () => {
-    const soulPath = getHermesSoulPath();
-    fs.mkdirSync(path.dirname(soulPath), { recursive: true });
+    const soul = soulPath();
+    fs.mkdirSync(path.dirname(soul), { recursive: true });
     const initial = `# Header\n\n${TEAMAI_RULES_START}\nold rule\n${TEAMAI_RULES_END}\n\n# Footer\n`;
-    fs.writeFileSync(soulPath, initial);
+    fs.writeFileSync(soul, initial);
 
-    await upsertSoulRules('new rule');
-    const content = fs.readFileSync(soulPath, 'utf-8');
+    await upsertSoulRules(soulPath(), 'new rule');
+    const content = fs.readFileSync(soul, 'utf-8');
     expect(content).toContain('new rule');
     expect(content).not.toContain('old rule');
     // user sections outside the managed block are preserved
@@ -104,31 +107,31 @@ describe('upsertSoulRules', () => {
   });
 
   it('removes teamai block and preserves user content when called with empty string', async () => {
-    const soulPath = getHermesSoulPath();
-    fs.mkdirSync(path.dirname(soulPath), { recursive: true });
+    const soul = soulPath();
+    fs.mkdirSync(path.dirname(soul), { recursive: true });
     const initial = `# User notes\n\n${TEAMAI_RULES_START}\nrule\n${TEAMAI_RULES_END}\n`;
-    fs.writeFileSync(soulPath, initial);
+    fs.writeFileSync(soul, initial);
 
-    await upsertSoulRules('');
-    const content = fs.readFileSync(soulPath, 'utf-8');
+    await upsertSoulRules(soulPath(), '');
+    const content = fs.readFileSync(soul, 'utf-8');
     expect(content).toContain('# User notes');
     expect(content).not.toContain(TEAMAI_RULES_START);
     expect(content).not.toContain(TEAMAI_RULES_END);
   });
 
   it('deletes SOUL.md entirely when result would be blank after removing teamai block', async () => {
-    const soulPath = getHermesSoulPath();
-    fs.mkdirSync(path.dirname(soulPath), { recursive: true });
-    fs.writeFileSync(soulPath, `${TEAMAI_RULES_START}\nrule\n${TEAMAI_RULES_END}\n`);
+    const soul = soulPath();
+    fs.mkdirSync(path.dirname(soul), { recursive: true });
+    fs.writeFileSync(soul, `${TEAMAI_RULES_START}\nrule\n${TEAMAI_RULES_END}\n`);
 
-    await upsertSoulRules('');
-    expect(fs.existsSync(soulPath)).toBe(false);
+    await upsertSoulRules(soulPath(), '');
+    expect(fs.existsSync(soul)).toBe(false);
   });
 
   it('strips injected marker lines from rule body before writing (sanitize)', async () => {
     const rulesText = `legit rule\n${TEAMAI_RULES_END}\nmore legit content`;
-    await upsertSoulRules(rulesText);
-    const content = fs.readFileSync(getHermesSoulPath(), 'utf-8');
+    await upsertSoulRules(soulPath(), rulesText);
+    const content = fs.readFileSync(soulPath(), 'utf-8');
     // Only the outer markers should appear — one start, one end
     expect(content.split(TEAMAI_RULES_START).length - 1).toBe(1);
     expect(content.split(TEAMAI_RULES_END).length - 1).toBe(1);
@@ -139,8 +142,8 @@ describe('upsertSoulRules', () => {
 
 describe('removeSoulRules', () => {
   it('is a no-op when SOUL.md does not exist', async () => {
-    await expect(removeSoulRules()).resolves.toBeUndefined();
-    expect(fs.existsSync(getHermesSoulPath())).toBe(false);
+    await expect(removeSoulRules(soulPath())).resolves.toBeUndefined();
+    expect(fs.existsSync(soulPath())).toBe(false);
   });
 });
 

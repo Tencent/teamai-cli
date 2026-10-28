@@ -6,7 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import YAML from 'yaml';
 import { expect, it } from 'vitest';
 const CLI = fileURLToPath(new URL('../../../dist/index.js', import.meta.url));
-it('doctor accepts the live launcher saved by another entry to the same built CLI', () => {
+it.each(['node-22', 'nodejs'])('doctor accepts a live launcher installed through %s and inspected through another CLI entry', name => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-readiness-cli-'));
   try {
     const home = path.join(root, 'home');
@@ -27,11 +27,15 @@ it('doctor accepts the live launcher saved by another entry to the same built CL
     execFileSync('git', ['add', '.'], { cwd: team, env });
     execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: team, env });
     const cli = (entry: string, ...args: string[]) => spawnSync(process.execPath, [entry, ...args], { cwd: project, env, encoding: 'utf8', timeout: 30000 });
-    const installed = cli(first, 'hooks', 'inject');
+    const runtime = path.join(root, process.platform === 'win32' ? `${name}.exe` : name);
+    fs.copyFileSync(process.execPath, runtime);
+    const installed = spawnSync(runtime, [first, 'hooks', 'inject'], { cwd: project, env, encoding: 'utf8', timeout: 30000 });
     expect(installed.status, installed.stdout + installed.stderr).toBe(0);
     const file = path.join(home, '.pi/agent/extensions/teamai-hooks.ts');
     const before = fs.readFileSync(file, 'utf8');
     expect(before).toContain(first);
+    const runtimeLine = `const NODE = ${JSON.stringify(fs.realpathSync(runtime))};`;
+    expect(before).toContain(runtimeLine);
     const ready = () => {
       const run = cli(second, 'doctor', '--json');
       const report = JSON.parse(run.stdout) as { checks: Array<{ name: string; ok: boolean }> };
@@ -39,7 +43,19 @@ it('doctor accepts the live launcher saved by another entry to the same built CL
     };
     expect(ready()).toBe(true);
     expect(fs.readFileSync(file, 'utf8')).toBe(before);
+    const shell = path.join(root, 'sh');
+    fs.writeFileSync(shell, '#!/bin/sh\n');
+    fs.writeFileSync(file, before.replace(runtimeLine, `const NODE = ${JSON.stringify(shell)};`));
+    expect(ready()).toBe(false);
+    fs.writeFileSync(file, before.replace(runtimeLine, `const NODE = ${JSON.stringify(first)};`)
+      .replace(`const ENTRY = ${JSON.stringify(first)};`, `const ENTRY = ${JSON.stringify(runtime)};`));
+    expect(ready()).toBe(false);
+    fs.writeFileSync(file, before);
+    expect(ready()).toBe(true);
     fs.unlinkSync(first);
+    fs.mkdirSync(first);
+    expect(ready()).toBe(false);
+    fs.rmdirSync(first);
     expect(ready()).toBe(false);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 }, 60000);

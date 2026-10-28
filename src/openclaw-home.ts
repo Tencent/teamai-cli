@@ -2,8 +2,8 @@ import { absoluteOn, realHost, toolHome, type Host } from './tool-home.js';
 
 /**
  * The OpenClaw state dir: the recorded one (`toolHome`), else
- * `OPENCLAW_STATE_DIR`, else `~/.openclaw-<profile>` for a non-default
- * `OPENCLAW_PROFILE`, else `~/.openclaw`. It holds
+ * `OPENCLAW_STATE_DIR`, else `.openclaw-<profile>` for a non-default
+ * `OPENCLAW_PROFILE`, else `.openclaw`, in `OPENCLAW_HOME` or `$HOME`. It holds
  * `openclaw.json`, managed hooks and, by default, the workspace.
  */
 export function resolveOpenclawStateDir(): string {
@@ -33,7 +33,7 @@ export type OpenclawWorkspace =
  * 1. Explicit workspacePath (server-sent), when it exists
  * 2. `agents.defaults.workspace` in the resolved openclaw.json
  * 3. `OPENCLAW_WORKSPACE_DIR`
- * 4. `<state dir>/workspace` (`OPENCLAW_STATE_DIR`, profile, `~/.openclaw`)
+ * 4. `<state dir>/workspace` (`OPENCLAW_STATE_DIR`, profile, `OPENCLAW_HOME`, `~/.openclaw`)
  *
  * Found only when the directory from that order exists: another workspace
  * that happens to exist is not the one OpenClaw reads. An openclaw.json

@@ -91,6 +91,18 @@ describe('a pull and the agents of a moved home', () => {
     for (const file of recallAgents) expect(await fse.pathExists(file), file).toBe(false);
   });
 
+  it('does not deploy the recall agent when TEAMAI_RECALL_DISABLED=1, even with recall on (#1457)', async () => {
+    await fse.ensureDir(path.join(xdg, 'opencode'));
+    vi.stubEnv('XDG_CONFIG_HOME', xdg);
+    vi.stubEnv('TEAMAI_RECALL_DISABLED', '1');
+    config.recallEnabled = true;
+
+    await pull({});
+
+    expect(await fse.pathExists(path.join(xdg, 'opencode', 'agents', 'reviewer.md'))).toBe(true);
+    expect(await fse.pathExists(path.join(xdg, 'opencode', 'agents', 'teamai-recall.md'))).toBe(false);
+  });
+
   it('removes a tombstoned agent from there', async () => {
     await fse.ensureDir(path.join(xdg, 'opencode'));
     vi.stubEnv('XDG_CONFIG_HOME', xdg);

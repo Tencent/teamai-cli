@@ -20,10 +20,11 @@ it.runIf(process.platform !== 'win32')('imports code with OpenClaw as the only a
     const openclaw = path.join(bin, 'openclaw');
     fs.writeFileSync(openclaw, `#!${process.execPath}
 const fs = require('node:fs');
-const args = process.argv.slice(2);
-if (args[0] !== 'agent' || args[1] !== '--session-id' || args[3] !== '--message' || args.length !== 5) process.exit(2);
-fs.appendFileSync(process.env.TEST_OPENCLAW_RECEIPT, JSON.stringify(args) + '\\n');
-console.log(JSON.stringify({ domain: 'openclaw-proof', description: 'Fixture import', keywords: ['openclaw-proof'], responsibilities: ['Greet users'], layer: 'service', summary: 'Greeter module' }));
+if (process.argv.slice(2).join(' ') !== 'agent exec --json --message-file -') process.exit(2);
+const prompt = fs.readFileSync(0, 'utf8');
+fs.appendFileSync(process.env.TEST_OPENCLAW_RECEIPT, JSON.stringify(prompt) + '\\n');
+const reply = { domain: 'openclaw-proof', description: 'Fixture import', keywords: ['openclaw-proof'], responsibilities: ['Greet users'], layer: 'service', summary: 'Greeter module' };
+console.log(JSON.stringify({ ok: true, final: JSON.stringify(reply) }));
 `, { mode: 0o755 });
     const resolver = `#!${process.execPath}
 const args = process.argv.slice(2);
@@ -36,9 +37,9 @@ else process.exit(1);
       encoding: 'utf8', timeout: 30_000,
     });
     expect(run.status, run.stdout + run.stderr).toBe(0);
-    const calls: string[][] = fs.readFileSync(receipt, 'utf8').trim().split('\n').map(line => JSON.parse(line));
-    expect(calls.length).toBeGreaterThan(0);
-    expect(new Set(calls.map(args => args[2])).size).toBe(calls.length);
+    const prompts: string[] = fs.readFileSync(receipt, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    expect(prompts.length).toBeGreaterThan(0);
+    expect(prompts.every(prompt => prompt.trim() !== '')).toBe(true);
     const domains = path.join(output, 'teamwiki', 'evidence', 'code', 'source', '_domains.json');
     expect(fs.existsSync(domains), run.stdout + run.stderr).toBe(true);
     expect(fs.readFileSync(domains, 'utf8')).toContain('openclaw-proof');
@@ -50,7 +51,7 @@ else process.exit(1);
       cwd: home, env: { ...process.env, HOME: home, USERPROFILE: home, PATH: `${bin}:/usr/bin:/bin`, FORCE_COLOR: '0' },
       encoding: 'utf8', timeout: 30_000,
     });
-    expect(failed.stdout + failed.stderr).toContain('AI call failed: OpenClaw provider rejected the request');
+    expect(failed.stdout + failed.stderr).toContain('AI call failed (tool: openclaw): OpenClaw provider rejected the request');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

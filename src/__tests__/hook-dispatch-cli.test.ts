@@ -60,10 +60,10 @@ describe('deriveDispatchSessionId', () => {
 });
 
 describe('hookDispatchCli', () => {
-  it('skips scorer hooks before reading stdin or resolving config, including background children', async () => {
+  it.each(['scorer', 'recall-promote', 'codebase'])('skips the hooks of a session teamai launched for %s before reading stdin or resolving config, including background children', async (launchedBy) => {
     const resolveConfig = vi.spyOn(await import('../dashboard-collector.js'), 'resolveHookConfig');
     const readFile = vi.spyOn(fs, 'readFileSync');
-    vi.stubEnv('TEAMAI_LAUNCHED_BY', 'scorer');
+    vi.stubEnv('TEAMAI_LAUNCHED_BY', launchedBy);
     try {
       for (const bgOnly of [false, true]) await hookDispatchCli('SessionStart', 'claude', '*', { bgOnly, stdinFile: '/missing-judge-payload' });
       expect(resolveConfig).not.toHaveBeenCalled();
@@ -314,6 +314,32 @@ describe('hookDispatchCli', () => {
         if (saved[key] === undefined) delete process.env[key];
         else process.env[key] = saved[key];
       }
+      fs.rmSync(stdinFile, { force: true });
+    }
+  });
+
+  it.each([
+    [{ CI: 'true', TEAMAI_WORKFLOW_ATTEMPT: 'r0123456789abcdef/a0000000a' }, { runMode: 'unattended', launchedBy: 'workflow' }],
+    [{}, { runMode: 'attended' }],
+  ])('forwards the run mode and launcher of %o to the detached pass, never the ones the host payload names (#1384)', async (env, forwarded) => {
+    const stdinFile = path.join(os.tmpdir(), `run-hook-${process.pid}-${Date.now()}.json`);
+    fs.writeFileSync(stdinFile, JSON.stringify({ hook_event_name: 'Stop', session_id: 's', cwd: process.cwd(), teamai_run: { runMode: 'unattended', launchedBy: 'host' } }));
+    let detachedPayload = '';
+    mockSpawn.mockReturnValue({
+      on: vi.fn(),
+      stdin: { on: vi.fn(), end: vi.fn((raw: string, done: () => void) => {
+        detachedPayload = raw;
+        done();
+      }) },
+      unref: vi.fn(),
+    });
+    for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value);
+
+    try {
+      await hookDispatchCli('stop', 'claude', '*', { stdinFile });
+      expect(JSON.parse(detachedPayload).teamai_run).toEqual(forwarded);
+    } finally {
+      vi.unstubAllEnvs();
       fs.rmSync(stdinFile, { force: true });
     }
   });

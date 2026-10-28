@@ -1,7 +1,5 @@
 // -*- coding: utf-8 -*-
 import { describe, it, expect } from 'vitest';
-import path from 'node:path';
-import fs from 'fs-extra';
 
 describe('tclaude/tcodex adapter integration', () => {
   describe('toolPaths defaults include tclaude/tcodex', () => {
@@ -84,21 +82,6 @@ describe('tclaude/tcodex adapter integration', () => {
       expect(config.toolPaths.tclaude.settings).toBe('.tclaude/settings.json');
       // tcodex has Codex hooks.json → hooks will be injected
       expect(config.toolPaths.tcodex.settings).toBe('.tcodex/hooks.json');
-    });
-  });
-
-  describe('AI CLI detection includes tclaude/tcodex', () => {
-    it('tclaude uses -p flag (claude-style invocation)', async () => {
-      // We test by checking the source logic indirectly
-      // buildCliArgs is not exported, but we can verify through callClaude behavior
-      // For now, just verify the whitelist includes our tools
-      const aiClientSrc = await fs.readFile(
-        path.join(process.cwd(), 'src/utils/ai-client.ts'), 'utf8'
-      );
-      expect(aiClientSrc).toContain("'tclaude'");
-      expect(aiClientSrc).toContain("'tcodex'");
-      // tcodex should be in the exec branch
-      expect(aiClientSrc).toContain("cmd === 'tcodex'");
     });
   });
 });

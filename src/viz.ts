@@ -118,6 +118,8 @@ interface VizPaths {
   root: string;
   /** Root under which docs/rules/skills live (may differ from the reports root in self mode). */
   knowledgeRoot: string;
+  /** The git checkout of knowledgeRoot whose refs promotion candidates follow; none for an HTTP repo, `--repo` or ~/.teamai. */
+  promotionCheckout?: string;
   votesDir: string;
   learningsDir: string;
   /** Every learnings root to read, highest precedence first. */
@@ -229,6 +231,7 @@ export async function resolveVizRoot(opts: VizOptions): Promise<VizPaths> {
     return {
       root: knowledgeRoot,
       knowledgeRoot,
+      promotionCheckout: usesBranchWorktree(config) ? knowledgeRoot : undefined,
       votesDir: path.join(reportsRoot, 'votes'),
       learningsDir,
       learningsDirs,
@@ -459,12 +462,13 @@ export async function buildVizData(paths: VizPaths): Promise<VizData> {
   const trend = buildTrend(metrics);
   const authors = buildAuthors(metrics);
 
+  const namespaces = paths.learningsNamespaces.ok ? paths.learningsNamespaces.namespaces : undefined;
   const [promote, prune, stale] = await Promise.all([
-    findPromotionCandidates(paths.learningsDirs, paths.votesDir).catch((err: Error) => {
+    findPromotionCandidates(paths.learningsDirs, paths.votesDir, paths.promotionCheckout, { namespaces }).catch((err: Error) => {
       console.warn(`Warning: could not load promotion candidates: ${err.message}`);
       return [] as PromotionCandidate[];
     }),
-    findPruneCandidates(paths.learningsDirs, paths.votesDir).catch((err: Error) => {
+    findPruneCandidates(paths.learningsDirs, paths.votesDir, { namespaces }).catch((err: Error) => {
       console.warn(`Warning: could not load prune candidates: ${err.message}`);
       return [] as PruneCandidate[];
     }),

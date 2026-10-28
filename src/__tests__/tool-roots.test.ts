@@ -618,16 +618,15 @@ describe('toolGateRoot — the directory the installed-tool gate reads', () => {
     expect(await fse.pathExists(path.join(home, '.claude-work'))).toBe(false);
   });
 
-  it('is what isToolInstalledForConfig probes, as a single-variable pair', async () => {
-    const { isToolInstalledForConfig } = await import('../resources/base.js');
+  it('is what the install gate probes, as a single-variable pair', async () => {
+    const { isInstalled } = await import('./helpers/install-gate.js');
     const deep = path.join(home, '.config', 'cloak', 'profiles', 'work', 'claude');
-    const settings = '.config/cloak/profiles/work/claude/settings.json';
     await fse.ensureDir(path.join(home, '.config', 'cloak'));
     const config = localConfig({ toolRoots: { claude: deep } });
 
     // Only the recorded root's presence changes between these two assertions.
-    expect(await isToolInstalledForConfig('claude', settings, config)).toBe(false);
+    expect(await isInstalled('claude', 'hooks', config)).toBe(false);
     await fse.ensureDir(deep);
-    expect(await isToolInstalledForConfig('claude', settings, config)).toBe(true);
+    expect(await isInstalled('claude', 'hooks', config)).toBe(true);
   });
 });

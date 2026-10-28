@@ -1,9 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { z } from 'zod';
 import { log } from './utils/logger.js';
 import { RELAY_TO_USER_PREFIX, relayWhenHidden } from './utils/hook-output.js';
-import { readJson, writeJson, ensureDir } from './utils/fs.js';
+import { readJson, writeJson, writeJsonAtomic, ensureDir } from './utils/fs.js';
 import { readEvents, aggregateSessionMetrics, scanTranscriptStop, hookScopeDir } from './dashboard-collector.js';
 import { readRecallQuality } from './recall-quality.js';
 import { deriveSessionId } from './utils/session-id.js';
@@ -183,7 +184,34 @@ export async function writeContributeState(sessionId: string, state: ContributeS
 const STALE_SESSION_MS = 24 * 60 * 60 * 1000;
 
 /**
- * Remove session files older than 24h. Skips the current session.
+ * How long a swept session's reminder decision is kept, in days: the dashboard compares the sessions the friction
+ * reminder fired on with those it did not over at most this many days (#1182), longer than a state file lives.
+ */
+export const REMINDER_RECORD_DAYS = 30;
+const SWEPT_RECORD_MS = REMINDER_RECORD_DAYS * 24 * 60 * 60 * 1000;
+
+/** `<sessions>/swept/<sanitized id>.json`: what the sweep keeps of a removed state file, `{ hinted }` only. */
+function sweptDir(sessionsDir: string): string {
+  return path.join(sessionsDir, 'swept');
+}
+
+/** A contribute state file: other hooks keep their own per-session files beside it, which never hold `contributed`. */
+const StateSchema = z.object({ contributed: z.boolean(), hinted: z.boolean().optional() });
+const SweptSchema = z.object({ hinted: z.boolean() });
+
+/**
+ * Whether the contribute state file or swept record at `file` says the reminder fired; undefined when it is missing,
+ * unreadable, or another hook's file.
+ */
+async function readHinted(file: string, schema: typeof StateSchema | typeof SweptSchema): Promise<boolean | undefined> {
+  const parsed = schema.safeParse(await readJson<unknown>(file).catch(() => null));
+  return parsed.success ? parsed.data.hinted === true : undefined;
+}
+
+/**
+ * Remove session files older than 24h. Skips the current session. Each removed file leaves a record of whether its
+ * friction reminder fired, false included, kept for 30 days; a record that says fired stays so when the session is
+ * resumed and swept again. Older records are removed here too.
  *
  * @param dir              Sessions directory.
  * @param currentSessionId Raw sessionId of the just-written session (will be
@@ -205,12 +233,42 @@ export async function cleanupStaleSessions(dir: string, currentSessionId: string
     try {
       const stat = await fs.promises.stat(filePath);
       if (now - stat.mtimeMs > STALE_SESSION_MS) {
+        const hinted = await readHinted(filePath, StateSchema);
+        const record = path.join(sweptDir(dir), entry);
+        if (hinted !== undefined) await writeJsonAtomic(record, { hinted: hinted || (await readHinted(record, SweptSchema)) === true });
         await fs.promises.unlink(filePath);
       }
     } catch {
       // Ignore — file may have been removed by another session
     }
   }
+  for (const entry of await fs.promises.readdir(sweptDir(dir)).catch(() => [])) {
+    const filePath = path.join(sweptDir(dir), entry);
+    try {
+      if (now - (await fs.promises.stat(filePath)).mtimeMs > SWEPT_RECORD_MS) await fs.promises.unlink(filePath);
+    } catch {
+      // Ignore — another session's sweep may have removed it
+    }
+  }
+}
+
+/**
+ * Whether the friction reminder fired, by sanitized session id, for every session this machine has contribute state
+ * for: the live state files, and the records the sweep kept for 30 days. A session that either says fired counts as
+ * fired, since a session resumed after its sweep starts a new state file. A session with neither has no entry.
+ */
+export async function readReminderDecisions(): Promise<Map<string, boolean>> {
+  const dir = path.join(getUserHome(), '.teamai', 'sessions');
+  const read = async (folder: string, schema: typeof StateSchema | typeof SweptSchema) => (await Promise.all((await fs.promises.readdir(folder).catch(() => []))
+    .filter((entry) => entry.endsWith('.json'))
+    .map(async (entry) => {
+      const hinted = await readHinted(path.join(folder, entry), schema);
+      return hinted === undefined ? [] : [[entry.slice(0, -'.json'.length), hinted] as const];
+    }))).flat();
+  const [swept, live] = await Promise.all([read(sweptDir(dir), SweptSchema), read(dir, StateSchema)]);
+  const decisions = new Map<string, boolean>();
+  for (const [session, hinted] of [...swept, ...live]) decisions.set(session, hinted || decisions.get(session) === true);
+  return decisions;
 }
 
 /** Points from the tool-error retry gradient (highest matching tier wins). */

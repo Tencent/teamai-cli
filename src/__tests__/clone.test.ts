@@ -14,11 +14,12 @@ vi.mock('node:child_process', async (importOriginal) => {
 
 import { spawn } from 'node:child_process';
 import { log } from '../utils/logger.js';
-import { shallowClone } from '../clone.js';
+import { getRepoCacheDir } from '../utils/repo-cache.js';
+import { shallowClone, shallowFetch } from '../clone.js';
 
 /** A `git` that always succeeds with no output: these tests are about how the
  * child is started, not about what it prints. */
-function makeSilentProcess(): ChildProcess {
+function makeSilentProcess(result: number | Error = 0): ChildProcess {
   const listeners: Record<string, (...args: unknown[]) => void> = {};
   return {
     stdout: { on: vi.fn() },
@@ -26,7 +27,8 @@ function makeSilentProcess(): ChildProcess {
     on: vi.fn((event: string, cb: (...args: unknown[]) => void) => {
       listeners[event] = cb;
       // runCommand only settles on 'close' / 'error', so emit it eagerly.
-      if (event === 'close') void Promise.resolve().then(() => cb(0));
+      if (event === 'close' && typeof result === 'number') void Promise.resolve().then(() => cb(result));
+      if (event === 'error' && result instanceof Error) void Promise.resolve().then(() => cb(result));
     }),
     kill: vi.fn(),
   } as unknown as ChildProcess;
@@ -37,6 +39,7 @@ describe('shallowClone — windowsHide', () => {
 
   beforeEach(() => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-clone-'));
+    vi.stubEnv('TEAMAI_CACHE_DIR', tmp);
     // keep the shared debug.log free of test noise
     vi.spyOn(log, 'debug').mockImplementation(() => {});
     vi.mocked(spawn).mockReset();
@@ -45,6 +48,7 @@ describe('shallowClone — windowsHide', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 
@@ -72,12 +76,14 @@ describe('shallowClone — split UTF-8 output', () => {
 
   beforeEach(() => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-clone-'));
+    vi.stubEnv('TEAMAI_CACHE_DIR', tmp);
     vi.spyOn(log, 'debug').mockImplementation(() => {});
     vi.mocked(spawn).mockReset();
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 
@@ -110,5 +116,70 @@ describe('shallowClone — split UTF-8 output', () => {
     const result = await shallowClone('https://example.com/org/repo.git', path.join(tmp, 'repo'), 'git');
 
     expect(result.branch).toBe(branch);
+  });
+});
+
+describe('shallowClone — cache cleanup boundaries', () => {
+  let tmp: string;
+  let cacheDir: string;
+  let victimParent: string;
+  let important: string;
+
+  beforeEach(() => {
+    tmp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-clone-boundary-')));
+    vi.stubEnv('TEAMAI_CACHE_DIR', path.join(tmp, 'cache'));
+    cacheDir = getRepoCacheDir('git', 'org', 'repo');
+    fs.mkdirSync(cacheDir, { recursive: true });
+    victimParent = path.join(tmp, 'outside');
+    important = path.join(victimParent, 'repo', 'important.txt');
+    fs.mkdirSync(path.dirname(important), { recursive: true });
+    fs.writeFileSync(important, 'User data\n');
+    vi.mocked(spawn).mockReset();
+    vi.mocked(spawn).mockImplementation(() => makeSilentProcess());
+    vi.spyOn(log, 'debug').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  function replaceParentWithLink(): void {
+    const parent = path.dirname(cacheDir);
+    fs.renameSync(parent, path.join(tmp, 'original-parent'));
+    fs.symlinkSync(victimParent, parent, process.platform === 'win32' ? 'junction' : 'dir');
+  }
+
+  it('rechecks a parent replaced after the cache path was resolved', async () => {
+    replaceParentWithLink();
+
+    await expect(shallowClone('https://example.com/org/repo.git', cacheDir, 'git'))
+      .rejects.toThrow('Path traversal detected');
+    expect(spawn).not.toHaveBeenCalled();
+    expect(fs.readFileSync(important, 'utf8')).toBe('User data\n');
+  });
+
+  it.each(['git failure', 'spawn error'])('rechecks the path before cleanup after a %s', async (failure) => {
+    vi.mocked(spawn).mockImplementationOnce(() => {
+      replaceParentWithLink();
+      return makeSilentProcess(failure === 'git failure' ? 128 : new Error('Spawn failed'));
+    });
+
+    await expect(shallowClone('https://example.com/org/repo.git', cacheDir, 'git'))
+      .rejects.toThrow(failure === 'git failure' ? 'git clone failed' : 'Spawn failed');
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(fs.readFileSync(important, 'utf8')).toBe('User data\n');
+  });
+
+  it('rechecks the path after fetching and before a destructive reset', async () => {
+    vi.mocked(spawn).mockImplementation(((_command: string, args: string[]) => {
+      if (args.includes('fetch')) replaceParentWithLink();
+      return makeSilentProcess();
+    }) as unknown as typeof spawn);
+
+    await expect(shallowFetch(cacheDir, { provider: 'git' })).rejects.toThrow('Path traversal detected');
+    expect(vi.mocked(spawn).mock.calls.some(([, args]) => Array.isArray(args) && args.includes('reset'))).toBe(false);
+    expect(fs.readFileSync(important, 'utf8')).toBe('User data\n');
   });
 });

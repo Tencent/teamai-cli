@@ -188,6 +188,22 @@ describe('doctor — agents delivered on disk', () => {
     expect(check.fix).toContain('broken');
   });
 
+  it('names an agent a tool it targets would not load, and why, while other tools receive it', async () => {
+    teamConfig.toolPaths = { ...teamConfig.toolPaths, 'trae-cn': { agents: '.trae-cn/agents' } };
+    await fse.ensureDir(path.join(homeDir, '.trae-cn', 'agents'));
+    await writeTeamAgent('code_reviewer', specFor('code_reviewer'));
+    for (const tool of ['claude', 'codex']) await deliver(tool, 'code_reviewer');
+    for (const tool of ['claude', 'codex', 'trae-cn']) await deliver(tool, 'reviewer');
+
+    const built = await checks();
+    const check = built.find((c) => c.name === 'Every team agent loads in the tools it targets');
+    if (!check) throw new Error('expected the agent rejection check');
+    expect(await check.check()).toBe(false);
+    expect(check.fix).toContain('code_reviewer for trae-cn: Trae loads a subagent only when its name starts with a letter');
+    expect(await (await agentsCheck('trae-cn')).check()).toBe(true);
+    expect(built.map((c) => c.name)).not.toContain('Every team agent reaches a tool');
+  });
+
   it('reports the unreachable agents even when no agent reaches any tool', async () => {
     // The tools are installed and every agent is malformed, so there is no
     // per-tool check to hang the failure on. Taking the deliveries as proof a

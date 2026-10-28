@@ -8,7 +8,7 @@ import { LabelStore } from '../scorers/label-store.js';
 import { encodeCwdClaude } from '../session-flow/fs.js';
 import type { RunMode } from '../launch-context.js';
 import { acquireLock, releaseLock } from '../update.js';
-import { getDataHome } from '../types.js';
+import { getDataHome, type ToolId } from '../types.js';
 import { skillContext } from '../workflow/drivers/skill/skill-driver.js';
 import { inProcessClient, type WorkflowClient } from '../workflow/protocol.js';
 import { takeJudgeLease, type JudgeRequest } from '../workflow/scoring.js';
@@ -25,6 +25,16 @@ steps:
   - id: test
     needs: [lint]
     command: node -e "console.log('Tests 42 passed (42)')"
+`;
+
+// The step command appends a learning to its attempt's outcome file, in the data home beside the checkout it runs in.
+const CLOSE = `schemaVersion: v1alpha1
+name: close
+description: Record what the run learned
+invoke: allow
+steps:
+  - id: close
+    command: node -e "const [r,a]=process.env.TEAMAI_WORKFLOW_ATTEMPT.split('/');const p=require('path');const d=p.join('..','data','workflows','runs',r,'outcomes');require('fs').mkdirSync(d,{recursive:true});require('fs').appendFileSync(p.join(d,a+'.jsonl'),JSON.stringify({kind:'learning',id:'retry-backoff'})+'\\n')"
 `;
 
 const FEATURE = `schemaVersion: v1alpha1
@@ -205,12 +215,13 @@ async function eventsToDone(harness: Harness, run: RunId): Promise<unknown[]> {
 }
 
 /** Starts `review` with the skill driver, has its child review the change and report, and answers the turn that follows. */
-async function reviewed(harness: Harness, mode: RunMode = 'attended'): Promise<{ run: RunId; turn: unknown }> {
-  const answers = mode === 'unattended' ? { confirmed: false, hitl: 'auto-approve' as const } : { confirmed: false };
-  const started = await harness.call({ kind: 'start', name: 'review', answers, inputs: undefined }, { mode });
+async function reviewed(harness: Harness, mode: RunMode = 'attended', options: { judge?: false; host?: 'h1' | 'h4'; tool?: ToolId } = {}): Promise<{ run: RunId; chosen: unknown; turn: unknown }> {
+  const { host = 'h1', tool, ...judge } = options;
+  const answers = { ...(mode === 'unattended' ? { confirmed: false, hitl: 'auto-approve' as const } : { confirmed: false }), ...judge };
+  const started = await harness.call({ kind: 'start', name: 'review', answers, inputs: undefined, ...(tool !== undefined ? { tool } : {}) }, { mode });
   if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
   const run = RunIdSchema.parse(started.data.turn.run);
-  const chosen = await harness.call({ kind: 'choose', run, choice: 'h1' }, { mode });
+  const chosen = await harness.call({ kind: 'choose', run, choice: host }, { mode });
   if (!('data' in chosen) || !('turn' in chosen.data)) throw new Error(JSON.stringify(chosen));
   const [dispatch] = chosen.data.turn.actions.flatMap((action) => (action.kind === 'dispatch' ? [action] : []));
   if (!dispatch) throw new Error(JSON.stringify(chosen));
@@ -219,7 +230,15 @@ async function reviewed(harness: Harness, mode: RunMode = 'attended'): Promise<{
   if (!file) throw new Error(`${dispatch.brief} names no result file`);
   fs.writeFileSync(file, JSON.stringify({ kind: 'output', output: 'Reviewed the change.' }));
   expect(await harness.call({ kind: 'report', run, attempt: dispatch.attempt, role: 'agent', modelUnavailable: false })).toMatchObject({ data: { runner: { status: 'reported' } } });
-  return { run, turn: await harness.call({ kind: 'next', run, wait: false }, { mode }) };
+  return { run, chosen, turn: await harness.call({ kind: 'next', run, wait: false }, { mode }) };
+}
+
+/** A claude on PATH without a verified judge profile, so no confined judge of it runs here. */
+function unverifiedClaude(harness: Harness): void {
+  const bin = path.join(harness.root, 'bin');
+  fs.mkdirSync(bin, { recursive: true });
+  fs.writeFileSync(path.join(bin, 'claude'), `#!${process.execPath}\nconsole.log('0.0.1 (Claude Code)');\n`, { mode: 0o755 });
+  vi.stubEnv('PATH', `${bin}${path.delimiter}${process.env.PATH ?? ''}`);
 }
 
 /** A Claude Code session of the harness's checkout, captured and idle for 7 hours: finished, for session scoring to judge. */
@@ -246,6 +265,18 @@ const roots: string[] = [];
 afterEach(() => {
   vi.unstubAllEnvs();
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
+});
+
+describe('the outcomes a step\'s own commands report, under the skill driver (#1387)', () => {
+  it('puts what the attempt appended to its outcome file on the pass it settles', async () => {
+    const harness = await skillHarness({ close: CLOSE });
+    roots.push(harness.root);
+    const started = await harness.call({ kind: 'start', name: 'close', answers: { confirmed: false }, inputs: undefined });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+
+    expect(await eventsToDone(harness, started.data.turn.run)).toContainEqual(expect.objectContaining({ kind: 'settled', step: 'close', outcome: 'success' }));
+    expect(await readRun(harness.config, started.data.turn.run)).toMatchObject({ steps: [{ id: 'close', outcomes: [{ kind: 'learning', id: 'retry-backoff' }] }] });
+  });
 });
 
 describe('skill driver', () => {
@@ -292,12 +323,13 @@ describe('skill driver', () => {
     expect(JSON.stringify([described, started, polled, ended])).not.toMatch(/\{inputs\}|\{dir\}|<[a-z]+>/);
   });
 
-  it('gives setup and the command of an attempt the run mode its start kept, whatever mode a later call has', async () => {
+  it('gives setup, the command and the pass of an attempt the run mode its start kept, whatever mode a later call has', async () => {
     const harness = await skillHarness({ mode: MODE });
     roots.push(harness.root);
     const started = await harness.call({ kind: 'start', name: 'mode', answers: { confirmed: false, hitl: 'auto-approve' }, inputs: undefined }, { mode: 'unattended' });
     if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
     expect(await eventsToDone(harness, started.data.turn.run)).toContainEqual(expect.objectContaining({ kind: 'settled', step: 'show', outcome: 'success', tail: 'TEAMAI_MODE=unattended' }));
+    expect(await readRun(harness.config, started.data.turn.run)).toMatchObject({ steps: [{ id: 'show', runMode: 'unattended' }] });
   });
 
   it('runs a run whose skill state was written before the run mode existed as attended', async () => {
@@ -313,6 +345,20 @@ describe('skill driver', () => {
     fs.writeFileSync(file, JSON.stringify({ ...state, options }));
     harness.hold(false);
     expect(await eventsToDone(harness, run)).toContainEqual(expect.objectContaining({ kind: 'settled', step: 'show', outcome: 'success', tail: 'TEAMAI_MODE=attended' }));
+  });
+
+  it('drives a run whose skill state names a tool this teamai does not know, as one a newer teamai wrote', async () => {
+    const harness = await skillHarness({ check: CHECK });
+    roots.push(harness.root);
+    harness.hold(true);
+    const started = await harness.call({ kind: 'start', name: 'check', answers: { confirmed: false }, inputs: undefined });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+    const { run } = started.data.turn;
+    const file = skillStatePath(harness.config, run);
+    const state = z.object({ orchestrator: z.record(z.unknown()) }).passthrough().parse(JSON.parse(fs.readFileSync(file, 'utf8')));
+    fs.writeFileSync(file, JSON.stringify({ ...state, orchestrator: { ...state.orchestrator, tool: 'newer-tool' } }));
+    harness.hold(false);
+    expect(await harness.call({ kind: 'next', run, wait: false })).toMatchObject({ data: { turn: { run } } });
   });
 
   it('answers held to a step command that reports its own attempt, and the runner alone reports it', async () => {
@@ -364,7 +410,7 @@ describe('skill driver', () => {
     const harness = await skillHarness({ check: CHECK.replace('invoke: allow\n', '') });
     roots.push(harness.root);
     // The test env carries no agent session variable, as a host that sets none.
-    const { evidence } = await skillContext({ config: harness.config, toolPaths: harness.context.toolPaths, env: harness.context.env, cwd: harness.work });
+    const { evidence } = await skillContext({ config: harness.config, toolPaths: harness.context.toolPaths, env: harness.context.env, cwd: harness.work, aiTools: [] });
     const message = 'Workflow "check" has invoke: deny, so no coding agent starts it, with any driver, and this command uses --driver skill, which only a coding agent drives. The person can start it from their own terminal with teamai workflow start check --driver local. To let agents start it, the team sets invoke: allow, or invoke: ask for a start after the person agrees, in workflows/check.yaml.';
     expect(await harness.call({ kind: 'describe', name: 'check' }, { evidence })).toMatchObject({ data: { describe: { ask: { kind: 'denied', reason: message } } } });
     expect(await harness.call({ kind: 'start', name: 'check', answers: { confirmed: false }, inputs: undefined }, { evidence }))
@@ -840,7 +886,7 @@ steps:
     const alive = (): boolean => { try { return process.kill(pid, 0); } catch { return false; } };
     expect(alive()).toBe(true);
 
-    const { runners } = await skillContext({ config: harness.config, toolPaths: harness.context.toolPaths, env: harness.context.env, cwd: harness.work });
+    const { runners } = await skillContext({ config: harness.config, toolPaths: harness.context.toolPaths, env: harness.context.env, cwd: harness.work, aiTools: [] });
     await runners.stopLeft(run, attempt);
     expect(alive()).toBe(false);
     expect(await setup).toMatchObject({ code: 'setup_failed' });
@@ -932,22 +978,188 @@ steps:
     for (const turn of [done, judged]) expect(JSON.stringify(turn)).not.toMatch(/"kind":"(choose|person)"/);
   });
 
-  it('an unattended run whose judge is elsewhere reaches done without waiting, and leaves the pass to score --next', async () => {
+  it('an unattended run its session judges reaches done without waiting, and done names the score --next that leases the pass to it', async () => {
     const harness = await skillHarness({ review: REVIEW }, { scorers: { 'review-quality': REVIEW_QUALITY } });
     roots.push(harness.root);
-    // A claude without a verified judge profile: describe finds the judge elsewhere.
-    const bin = path.join(harness.root, 'bin');
-    fs.mkdirSync(bin, { recursive: true });
-    fs.writeFileSync(path.join(bin, 'claude'), `#!${process.execPath}\nconsole.log('0.0.1 (Claude Code)');\n`, { mode: 0o755 });
-    vi.stubEnv('PATH', `${bin}${path.delimiter}${process.env.PATH ?? ''}`);
+    unverifiedClaude(harness);
     expect(await harness.call({ kind: 'describe', name: 'review' }, { mode: 'unattended' })).toMatchObject({ data: { describe: {
-      judging: { kind: 'elsewhere' }, ask: { kind: 'start' },
+      judging: { kind: 'session', tool: 'claude' }, ask: { kind: 'start' },
     } } });
     const { run, turn: done } = await reviewed(harness, 'unattended');
-    expect(done).toMatchObject({ data: { turn: { status: 'done', actions: [{ kind: 'done', outcome: 'succeeded' }] } } });
     expect(done).not.toHaveProperty(['data', 'turn', 'then']);
-    const judge = { driver: { kind: 'external', machine: 'm2', workspace: '/w', can: { judge: { isolation: 'verified', tools: ['claude'] } } }, running: [] };
-    expect(await harness.context.client.scoreNext(judge)).toMatchObject({ data: { lease: { subject: { runId: run, step: 'review' } } } });
+    const [action] = z.object({ data: z.object({ turn: z.object({ actions: z.array(z.object({ kind: z.literal('done'), outcome: z.string(), score: z.string() })) }) }) }).parse(done).data.turn.actions;
+    expect(action).toMatchObject({ outcome: 'succeeded', score: expect.stringMatching(/^teamai score --next --json '\{.*\}'$/) });
+    const payload: unknown = JSON.parse(action?.score.slice(action.score.indexOf("'") + 1, -1) ?? '');
+    expect(payload).toEqual({ run, driver: { kind: 'skill', machine: expect.any(String), workspace: harness.work, can: { judge: { isolation: 'best-effort', access: 'read', tools: ['claude'] } } }, running: [] });
+    expect(await harness.context.client.scoreNext(payload)).toMatchObject({ data: { lease: { subject: { runId: run, step: 'review' }, judge: { tool: 'claude', isolation: 'best-effort' } } } });
+  });
+
+  it('names a Pi session pi from PI_SESSION_ID, though teamai renders no agents for Pi, so describe judges its scored steps by the session', async () => {
+    const harness = await skillHarness({ review: REVIEW }, { scorers: { 'review-quality': REVIEW_QUALITY } });
+    roots.push(harness.root);
+    vi.stubEnv('PI_SESSION_ID', 'pi-session-1');
+    const { tool } = await skillContext({ config: harness.config, toolPaths: harness.context.toolPaths, env: harness.context.env, cwd: harness.work, aiTools: [] });
+    expect(tool).toBe('pi');
+    expect(await harness.call({ kind: 'describe', name: 'review' }, { tool })).toMatchObject({ data: { describe: { judging: { kind: 'session', tool: 'pi' } } } });
+  });
+
+  it('describe tells a session whose host names no tool how to name it, as nobody judges its run here until it does', async () => {
+    const harness = await skillHarness({ review: REVIEW }, { scorers: { 'review-quality': REVIEW_QUALITY }, tool: null });
+    roots.push(harness.root);
+    expect(await harness.call({ kind: 'describe', name: 'review' })).toMatchObject({ data: { describe: {
+      judging: { kind: 'elsewhere', reason: 'This coding session names no tool.' },
+      ask: { kind: 'tool', describe: "teamai workflow start --describe review --driver skill --tools default='{tool}'" },
+    } } });
+  });
+
+  it('describe tells a session whose host names no tool to name it, when the workflow has prompt steps and nothing scored', async () => {
+    const harness = await skillHarness({ review: REVIEW.replace('    scorers: [review-quality]', '    model: claude-opus-4-1') }, { tool: null });
+    roots.push(harness.root);
+    expect(await harness.call({ kind: 'describe', name: 'review' })).toMatchObject({ data: { describe: { judging: { kind: 'none' }, ask: {
+      kind: 'tool', describe: "teamai workflow start --describe review --driver skill --tools default='{tool}'",
+    } } } });
+  });
+
+  it('gives a session whose host names no tool a resume of a run it does not drive with a {tool} slot to fill', async () => {
+    const harness = await skillHarness({ check: CHECK }, { tool: null });
+    roots.push(harness.root);
+    const other = await harness.context.client.start('check', { checkout: harness.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
+    if (!('data' in other) || typeof other.data.run !== 'string') throw new Error(JSON.stringify(other));
+    const run = RunIdSchema.parse(other.data.run);
+    expect(await harness.call({ kind: 'next', run, wait: false })).toMatchObject({ error: { code: 'not_skill_run', next: `teamai workflow resume ${run} --driver skill --tools default='{tool}'` } });
+  });
+
+  it('refuses a start that needs a tool this session does not name, pointing at the describe that asks for it', async () => {
+    const harness = await skillHarness({ review: REVIEW, check: CHECK }, { scorers: { 'review-quality': REVIEW_QUALITY }, tool: null });
+    roots.push(harness.root);
+    expect(await harness.call({ kind: 'start', name: 'review', answers: { confirmed: false }, inputs: undefined })).toEqual({ error: {
+      code: 'confirm_needed',
+      message: 'Start review from its describe reply: it needs --tools default=<tool>, the tool this coding session works in. Run the describe literal.',
+      next: 'teamai workflow start --describe review --driver skill',
+    } });
+    // A run of commands alone needs no tool, and neither does a scored step that pins no model, once judging is off.
+    expect(await harness.call({ kind: 'start', name: 'check', answers: { confirmed: false }, inputs: undefined })).toMatchObject({ data: { turn: { status: 'driving' } } });
+    expect(await harness.call({ kind: 'start', name: 'review', answers: { confirmed: false, judge: false }, inputs: undefined })).toMatchObject({ data: { turn: { status: 'driving' } } });
+  });
+
+  it('a step that needs a model fails once a session whose host names no tool takes the run over, and says how to name it', async () => {
+    const harness = await skillHarness({ review: REVIEW.replace('    prompt: Review the change.', '    prompt: Review the change.\n    model: claude-opus-4-1') }, { tool: null });
+    roots.push(harness.root);
+    const started = await harness.call({ kind: 'start', name: 'review', answers: { confirmed: false }, inputs: undefined, tool: 'claude' });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+    const run = RunIdSchema.parse(started.data.turn.run);
+    expect(await harness.call({ kind: 'takeover', run, confirmed: false }, { session: undefined })).toMatchObject({ data: { turn: { run } } });
+    expect(await harness.call({ kind: 'choose', run, choice: 'h1' }, { session: undefined })).toMatchObject({ data: { turn: { events: expect.arrayContaining([{
+      kind: 'settled', step: 'review', outcome: 'failed', failure: { code: 'model_unavailable', message: 'Step "review" needs model claude-opus-4-1, and this coding session names no tool to resolve it for: start or resume the workflow with --tools default=<tool>, the tool it works in.' },
+    }]) } } });
+  });
+
+  it('a resume that names the tool gives it back to a run a session with no tool took over, and its steps then resolve their model for it', async () => {
+    const harness = await skillHarness({ review: REVIEW.replace('    prompt: Review the change.', '    prompt: Review the change.\n    model: claude-opus-4-1') }, { tool: null });
+    roots.push(harness.root);
+    const started = await harness.call({ kind: 'start', name: 'review', answers: { confirmed: false }, inputs: undefined, tool: 'claude' });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+    const run = RunIdSchema.parse(started.data.turn.run);
+    expect(await harness.call({ kind: 'takeover', run, confirmed: false }, { session: undefined })).toMatchObject({ data: { turn: { run } } });
+    expect(await harness.call({ kind: 'resume', run, claim: false, confirmed: false, answers: {}, tool: 'claude' }, { session: undefined })).toMatchObject({ data: { turn: { run } } });
+    expect(await harness.call({ kind: 'choose', run, choice: 'h1' }, { session: undefined })).toMatchObject({ data: { turn: { actions: [{ kind: 'dispatch', model: { by: 'step', name: 'claude-opus-4-1' } }] } } });
+  });
+
+  it('a session that comes to own a run its starter left unowned works in its own tool, which the steps it prepares resolve their model for', async () => {
+    const harness = await skillHarness({ review: REVIEW.replace('    prompt: Review the change.', '    prompt: Review the change.\n    model: claude-opus-4-1') }, { tool: null });
+    roots.push(harness.root);
+    const started = await harness.call({ kind: 'start', name: 'review', answers: { confirmed: false }, inputs: undefined, tool: 'pi' }, { session: undefined });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+    const run = RunIdSchema.parse(started.data.turn.run);
+    expect(await harness.call({ kind: 'choose', run, choice: 'h1' }, { session: 'session-b', tool: 'claude' }))
+      .toMatchObject({ data: { turn: { actions: [{ kind: 'dispatch', model: { by: 'step', name: 'claude-opus-4-1' } }] } } });
+  });
+
+  it('a resume that names a tool replaces the one the run had, so a session that moved to another tool works in its own', async () => {
+    const harness = await skillHarness({ review: REVIEW.replace('    prompt: Review the change.', '    prompt: Review the change.\n    model: claude-opus-4-1') }, { tool: null });
+    roots.push(harness.root);
+    const started = await harness.call({ kind: 'start', name: 'review', answers: { confirmed: false }, inputs: undefined, tool: 'pi' }, { session: undefined });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+    const run = RunIdSchema.parse(started.data.turn.run);
+    expect(await harness.call({ kind: 'resume', run, claim: false, confirmed: false, answers: {}, tool: 'claude' }, { session: undefined })).toMatchObject({ data: { turn: { run } } });
+    expect(await harness.call({ kind: 'choose', run, choice: 'h1' }, { session: undefined }))
+      .toMatchObject({ data: { turn: { actions: [{ kind: 'dispatch', model: { by: 'step', name: 'claude-opus-4-1' } }] } } });
+  });
+
+  it('a takeover hands the run to the new session\'s tool, which the steps it prepares resolve their model for', async () => {
+    const harness = await skillHarness({ review: REVIEW.replace('    prompt: Review the change.', '    prompt: Review the change.\n    model: claude-opus-4-1') });
+    roots.push(harness.root);
+    const started = await harness.call({ kind: 'start', name: 'review', answers: { confirmed: false }, inputs: undefined });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+    const run = RunIdSchema.parse(started.data.turn.run);
+    expect(await harness.call({ kind: 'takeover', run, confirmed: false }, { session: 'session-b', tool: 'pi' })).toMatchObject({ data: { turn: { events: [{ kind: 'takeover', from: 'session-a' }] } } });
+    expect(await harness.call({ kind: 'choose', run, choice: 'h1' }, { session: 'session-b', tool: 'pi' })).toMatchObject({ data: { turn: { events: expect.arrayContaining([{
+      kind: 'settled', step: 'review', outcome: 'failed', failure: { code: 'model_unavailable', message: 'Step "review" needs model claude-opus-4-1, and teamai resolves no model for pi, the coding session\'s tool.' },
+    }]) } } });
+  });
+
+  it('keeps a declared tool in every start command describe offers, and in the describe command a refused start prints', async () => {
+    const harness = await skillHarness({ review: REVIEW.replace('invoke: allow', 'invoke: ask'), check: CHECK }, { scorers: { 'review-quality': REVIEW_QUALITY }, tool: null });
+    roots.push(harness.root);
+    unverifiedClaude(harness);
+    expect(await harness.call({ kind: 'describe', name: 'check', tool: 'claude' }, { mode: 'unattended' }))
+      .toMatchObject({ data: { describe: { ask: { kind: 'start', start: 'teamai workflow start check --driver skill --tools default=claude --auto-approve' } } } });
+    expect(await harness.call({ kind: 'describe', name: 'check', tool: 'claude' })).toMatchObject({ data: { describe: { ask: { kind: 'start', start: 'teamai workflow start check --driver skill --tools default=claude' } } } });
+    const starts = JSON.stringify(await harness.call({ kind: 'describe', name: 'review', tool: 'claude' })).match(/teamai workflow start review --driver skill[^"]*/g) ?? [];
+    expect(starts).not.toHaveLength(0);
+    for (const start of starts) expect(start).toMatch(/^teamai workflow start review --driver skill --tools default=claude /);
+    expect(await harness.call({ kind: 'start', name: 'review', answers: { confirmed: false }, inputs: undefined, tool: 'claude' }))
+      .toMatchObject({ error: { code: 'confirm_needed', next: 'teamai workflow start --describe review --driver skill --tools default=claude' } });
+  });
+
+  it('a session whose host names no tool names it with --tools: its runner resolves the step\'s model for that tool, and done leases the judging to it', async () => {
+    const harness = await skillHarness({ review: REVIEW.replace('    prompt: Review the change.', '    prompt: Review the change.\n    model: claude-opus-4-1') }, { scorers: { 'review-quality': REVIEW_QUALITY }, tool: null });
+    roots.push(harness.root);
+    unverifiedClaude(harness);
+    const { chosen, turn: done } = await reviewed(harness, 'attended', { tool: 'claude' });
+    expect(chosen).toMatchObject({ data: { turn: { actions: [{ kind: 'dispatch', model: { by: 'step', name: 'claude-opus-4-1' } }] } } });
+    expect(done).toMatchObject({ data: { turn: { status: 'done', actions: [{ kind: 'done', outcome: 'succeeded', score: expect.stringContaining('"tools":["claude"]') }] } } });
+  });
+
+  it('a session that takes a run over judges it with its own tool', async () => {
+    const harness = await skillHarness({ review: REVIEW }, { scorers: { 'review-quality': REVIEW_QUALITY } });
+    roots.push(harness.root);
+    unverifiedClaude(harness);
+    const { run } = await reviewed(harness);
+    expect(await harness.call({ kind: 'takeover', run, confirmed: false }, { session: 'session-b', tool: 'pi' }))
+      .toMatchObject({ data: { turn: { status: 'done', actions: [{ kind: 'done', score: expect.stringContaining('"tools":["pi"]') }] } } });
+  });
+
+  it('a session whose host has no child agent does not judge its run: choosing h4 turns judging off, and done names no score --next', async () => {
+    const harness = await skillHarness({ review: REVIEW }, { scorers: { 'review-quality': REVIEW_QUALITY } });
+    roots.push(harness.root);
+    unverifiedClaude(harness);
+    const { chosen, turn: done } = await reviewed(harness, 'attended', { host: 'h4' });
+    expect(chosen).toMatchObject({ data: { turn: { events: expect.arrayContaining([{ kind: 'judging-off', failure: { code: 'no_child_agent', message: expect.any(String) } }]) } } });
+    expect(done).toMatchObject({ data: { turn: { status: 'done', actions: [{ kind: 'done', outcome: 'succeeded' }] } } });
+    expect(done).not.toHaveProperty(['data', 'turn', 'actions', 0, 'score']);
+  });
+
+  it('a run of commands alone that its session judges asks the host question for its judging alone: h4 turns judging off, and its steps still run in a new worktree', async () => {
+    const build = 'schemaVersion: v1alpha1\nname: build\ndescription: Build\ninvoke: allow\nsteps:\n  - id: edit\n    workspace: new\n    command: node -e "require(\'fs\').writeFileSync(\'built.txt\', \'1\')"\n';
+    const gated = 'schemaVersion: v1alpha1\nname: gated\ndescription: Build, scored\ninvoke: allow\nsteps:\n  - id: built\n    workflow: build\n    scorers: [review-quality]\n';
+    const harness = await skillHarness({ build, gated }, { scorers: { 'review-quality': REVIEW_QUALITY }, tool: 'pi' });
+    roots.push(harness.root);
+    const started = await harness.call({ kind: 'start', name: 'gated', answers: { confirmed: false }, inputs: undefined });
+    expect(started).toMatchObject({ data: { turn: { actions: [{ kind: 'choose', about: 'host' }] } } });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+    const run = RunIdSchema.parse(started.data.turn.run);
+    expect(await harness.call({ kind: 'choose', run, choice: 'h4' })).toMatchObject({ data: { turn: { events: expect.arrayContaining([{ kind: 'judging-off', failure: { code: 'no_child_agent', message: expect.any(String) } }]) } } });
+    await eventsToDone(harness, run);
+  });
+
+  it('a run started without judging reaches done without the score --next of the session\'s own judge', async () => {
+    const harness = await skillHarness({ review: REVIEW }, { scorers: { 'review-quality': REVIEW_QUALITY } });
+    roots.push(harness.root);
+    unverifiedClaude(harness);
+    const { turn: done } = await reviewed(harness, 'attended', { judge: false });
+    expect(done).toMatchObject({ data: { turn: { status: 'done', actions: [{ kind: 'done', outcome: 'succeeded' }] } } });
+    expect(done).not.toHaveProperty(['data', 'turn', 'actions', 0, 'score']);
   });
 
   it('a skill run judges only its own passes: never a finished session, never another run\'s pass', async () => {
@@ -1094,7 +1306,7 @@ describe('detached runners', () => {
     roots.push(harness.root);
     const checkout = path.join(harness.root, 'removed');
     const run = RunIdSchema.parse('r0123456789abcdef');
-    const { runners } = await skillContext({ config: harness.config, toolPaths: harness.context.toolPaths, env: harness.context.env, cwd: harness.work });
+    const { runners } = await skillContext({ config: harness.config, toolPaths: harness.context.toolPaths, env: harness.context.env, cwd: harness.work, aiTools: [] });
     const spawned = runners.spawn({ run, attempt: AttemptIdSchema.parse('a00000000'), checkout, mode: 'attended' });
     await expect(spawned).rejects.toThrow(`The runner of attempt a00000000 cannot start in ${checkout}, the checkout run ${run} started from: it does not exist. Restore that checkout at that path, then run the same call again, or end the run with teamai workflow cancel ${run}.`);
   });

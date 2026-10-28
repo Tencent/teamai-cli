@@ -3,6 +3,7 @@ import path from 'node:path';
 import { driverIdentity, sameDriver } from '../driver-identity.js';
 import type { WorkflowEnv } from '../env-resolution.js';
 import { scoringUnavailable } from '../scorers/home.js';
+import type { PinnedScorer } from '../scorers/pin.js';
 import { isJudgeTool, judgeToolLevel } from '../scorers/judge.js';
 import { resolveRunMode, type RunMode } from '../launch-context.js';
 import { stopRecordedGroup } from '../tool-launch/process-stop.js';
@@ -18,7 +19,7 @@ import {
   type StepEnd,
 } from './place/place.js';
 import { cancelRun, respondProvenance, respondToHitl, retryStep, type CallerProvenance, type Via } from './run-controls.js';
-import { nextJudgeLease, parseJudgeRequest, runJudgeLease } from './scoring.js';
+import { nextJudgeLease, parseJudgeRequest, runJudgeLease, verifiedScorers } from './scoring.js';
 import { attemptDir, AttemptIdSchema, readRun, RunIdSchema, withRunLock, type AttemptId, type RunId, type RunLock } from './store.js';
 import type { DriverCan } from './requirements.js';
 import { isWorkflowError, type DriverIdentity, type RunState, type WorkflowDefinition, type WorkflowEnvelope, type WorkflowFailure } from './types.js';
@@ -261,21 +262,36 @@ export function workflowNotFound(name: string): WorkflowFailure {
 
 /**
  * Who judges a run's scored steps as the skill driver drives it: no step is scored; the confined judge of `tool`, the
- * session's tool, here; or no judge here, for `reason`.
+ * session's tool, here; the session itself with `tool` once the run is done, at best-effort, since this machine has no
+ * verified judge of it, for `reason`, leaving open the work of the `verified` scorers that ask for more; or nobody on
+ * this machine, for `reason`.
  */
-export type Judging = { kind: 'none' } | { kind: 'here'; tool: string } | { kind: 'elsewhere'; reason: string };
+export type Judging =
+  | { kind: 'none' }
+  | { kind: 'here'; tool: string }
+  | { kind: 'session'; tool: string; reason: string; verified?: string[] }
+  | { kind: 'elsewhere'; reason: string };
 
-/** Whether the confined judge of `tool` judges `description`'s scored steps on this machine. */
-async function judgingOf(config: LocalConfig, description: WorkflowDescription, tool: string | undefined): Promise<Judging> {
+/**
+ * Who judges `description`'s scored steps on this machine: the confined judge of `tool`, the session, or nobody. `pinned`:
+ * the scorers a run pinned, when it has started.
+ */
+async function judgingOf(config: LocalConfig, description: WorkflowDescription, tool: string | undefined, pinned?: Record<string, PinnedScorer>): Promise<Judging> {
   if (description.facts.scored.length === 0) return { kind: 'none' };
   const unavailable = scoringUnavailable(config);
   if (unavailable) return { kind: 'elsewhere', reason: unavailable };
-  if (tool === undefined || !isJudgeTool(tool)) return { kind: 'elsewhere', reason: `The coding session's tool${tool === undefined ? '' : `, ${tool},`} has no confined judge teamai runs.` };
-  const level = await judgeToolLevel(tool);
-  if (level?.isolation !== 'verified') {
-    return { kind: 'elsewhere', reason: level ? `${tool} ${level.version || '(version unknown)'} has no verified judge profile.` : `The ${tool} executable is not on PATH.` };
+  if (tool === undefined) return { kind: 'elsewhere', reason: 'This coding session names no tool.' };
+  const level = isJudgeTool(tool) ? await judgeToolLevel(tool) : undefined;
+  if (level?.isolation === 'verified') return { kind: 'here', tool };
+  const reason = !isJudgeTool(tool) ? `The coding session's tool, ${tool}, has no confined judge teamai runs`
+    : level ? `${tool} ${level.version || '(version unknown)'} has no verified judge profile` : `The ${tool} executable is not on PATH`;
+  const scorers = [...new Set(description.facts.scored.flatMap((step) => step.scorers))];
+  const verified = await verifiedScorers(config, scorers, pinned);
+  if (!verified.ok) return { kind: 'elsewhere', reason: `${reason}. ${verified.reason}` };
+  if (verified.scorers.length === scorers.length) {
+    return { kind: 'elsewhere', reason: `${reason}, and ${verified.scorers.join(', ')} ${verified.scorers.length > 1 ? 'ask' : 'asks'} for verified isolation.` };
   }
-  return { kind: 'here', tool };
+  return { kind: 'session', tool, reason: `${reason}.`, ...(verified.scorers.length > 0 ? { verified: verified.scorers } : {}) };
 }
 
 /** Where the host made the place of a lease: `host`, the place an earlier attempt adopted for its branch; `adopt`, `dir`. */
@@ -294,7 +310,8 @@ export type HostPlacePrepared =
   | { kind: 'needs-place'; name: string; branch: string; start: string; refused?: string };
 
 /** A lease as the run leases it now, with the checkout its place goes in and the run's other leased attempts. */
-type Leased = { kind: 'leased'; lease: PlaceLease; root: string; others: AttemptId[] };
+/** `mode`: the run mode the lease keeps, as its driver's `next` sent it. */
+type Leased = { kind: 'leased'; lease: PlaceLease; root: string; others: AttemptId[]; mode?: RunMode };
 
 /** What every driver fails a lease of run `run` with when this teamai cannot read the place it names, as a newer one writes. */
 export function unreadablePlace(run: RunId): WorkflowFailure {
@@ -311,7 +328,8 @@ async function leasedPlace(config: LocalConfig, lock: RunLock, raw: unknown): Pr
   const leased = run.steps.find((step) => step.status === 'leased' && step.lease.attempt === lease.attempt);
   if (leased?.status !== 'leased') return { kind: 'failed', failure: { code: 'wrong_attempt', message: `Attempt ${lease.attempt} is not the leased attempt` } };
   if (run.checkout === undefined) return { kind: 'failed', failure: noCheckout(lock.run, lease.attempt) };
-  return { kind: 'leased', lease: { ...lease, step: leased.id }, root: run.checkout, others: otherLeases(run, { attempt: lease.attempt, driver: leased.lease.driver }) };
+  const { driver, runMode } = leased.lease;
+  return { kind: 'leased', lease: { ...lease, step: leased.id }, root: run.checkout, others: otherLeases(run, { attempt: lease.attempt, driver }), ...(runMode ? { mode: runMode } : {}) };
 }
 
 /**
@@ -393,7 +411,7 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
       const refused = invokeRefusal(cached?.definition, caller, { kind: 'start' });
       if (refused) return { error: refused };
       const base = checkout === undefined ? undefined : await headCommit(checkout);
-      return startRun(config, name, inputs ?? {}, { secrets: env.secrets, ...(checkout !== undefined ? { checkout } : {}), ...(base ? { base } : {}) });
+      return startRun(config, name, inputs ?? {}, { secrets: env.secrets, runMode: caller.mode, ...(checkout !== undefined ? { checkout } : {}), ...(base ? { base } : {}) });
     },
     runVersion: async (runId) => {
       const run = await readRun(config, runId);
@@ -459,7 +477,7 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
       const unreconciled = await reconcileTakenCopies(config, runId, run.checkout ?? checkout);
       if (unreconciled) return { kind: 'failed', failure: unreconciled };
       const description = describeWorkflow({ definition: run.definition, workflows: run.workflows ?? {}, ceiling, can, allow: config.workflows?.allow ?? {}, env: env.facts });
-      return { kind: 'ready', installed: resumed.value?.ownership === 'claimed', description, settled: settledSteps(run), judging: await judgingOf(config, description, tool) };
+      return { kind: 'ready', installed: resumed.value?.ownership === 'claimed', description, settled: settledSteps(run), judging: await judgingOf(config, description, tool, run.scorers) };
     },
     carried: async (runId, { published, claim, ceiling, can }) => {
       const carried = await carriedRun(config, runId, { published, claim });
@@ -534,8 +552,10 @@ async function prepareLeased(input: { config: LocalConfig; lock: RunLock; driver
     return { error: { code: 'busy', message: `Attempt ${attempt} of run ${lock.run} runs in ${placed.dir}, the place of attempt ${placed.behind}, which is still open, so it was not prepared. Report attempt ${placed.behind}, then prepare this one with next --prepare --attempt ${attempt}.` } };
   }
   if (placed.kind === 'failed') return failed(placed.failure);
-  // A --json driver's run keeps no mode, so its setup runs in the mode of the process that prepares it.
-  const failure = await runPlaceSetup({ config, run: lock.run, attempt, mode: resolveRunMode(process.env), values: env.values });
+  // Setup runs in the mode the lease keeps, else in the mode of the process that prepares the attempt; never in the
+  // mode the run started in, since a run another machine claimed can run its passes in another mode.
+  const mode = (leased.kind === 'leased' ? leased.mode : undefined) ?? resolveRunMode(process.env);
+  const failure = await runPlaceSetup({ config, run: lock.run, attempt, mode, values: env.values });
   if (failure) return failed(failure);
   return { data: { ...answer.data, lease: { ...named.data, cwd: placed.dir, ...(placed.prompt !== undefined ? { prompt: placed.prompt } : {}) } } };
 }

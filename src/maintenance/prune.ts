@@ -20,6 +20,7 @@ export interface PruneOptions {
   threshold?: number;
   dryRun?: boolean;
   archive?: boolean;
+  namespaces?: readonly string[];
 }
 
 const DEFAULT_THRESHOLD = 0.15;
@@ -37,7 +38,7 @@ export async function findPruneCandidates(
   const threshold = options.threshold ?? DEFAULT_THRESHOLD;
   const confidenceMap = await computeAllConfidence(votesDir);
   const candidates: PruneCandidate[] = [];
-  const files = await listLearningFiles(learningsDirs);
+  const files = await listLearningFiles(learningsDirs, options.namespaces);
   const now = Date.now();
 
   for (const { file, absPath } of files) {
@@ -110,8 +111,8 @@ export async function executePrune(
     }
     if (options.archive) {
       const archiveDir = path.join(learningsWriteDir, '_archive');
-      await ensureDir(archiveDir);
       const archivedCopy = path.join(archiveDir, candidate.filename);
+      await ensureDir(path.dirname(archivedCopy));
       await copyFile(candidate.path, archivedCopy);
       await remove(candidate.path);
       changed.push(candidate.path, archivedCopy);

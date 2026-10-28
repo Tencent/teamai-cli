@@ -20,8 +20,14 @@ const bin = path.join(sandbox, 'bin');
 fs.mkdirSync(home);
 fs.mkdirSync(bin);
 
-// The real ~/.gitconfig is out of reach now, so fixture commits need an identity.
-fs.writeFileSync(path.join(home, '.gitconfig'), '[user]\n\tname = TeamAI E2E\n\temail = e2e@teamai.test\n');
+// The real ~/.gitconfig is out of reach now, so fixture commits need an
+// identity. Background upkeep is off as well: a fixture commit or push under
+// the defaults leaves a detached `git gc --auto` writing into `.git/objects/`
+// after the test returns, which made teardowns fail with ENOTEMPTY on CI
+// (#1413) — retries around rmSync did not keep up under parallel load.
+fs.writeFileSync(
+  path.join(home, '.gitconfig'),
+  '[user]\n\tname = TeamAI E2E\n\temail = e2e@teamai.test\n[gc]\n\tauto = 0\n[maintenance]\n\tauto = false\n');
 
 const cli = path.join(ROOT, 'dist', 'index.js');
 fs.writeFileSync(path.join(bin, 'teamai'), `#!/bin/sh\nexec "${process.execPath}" "${cli}" "$@"\n`);

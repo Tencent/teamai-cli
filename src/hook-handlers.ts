@@ -14,7 +14,7 @@ import path from 'node:path';
 
 import type { ResolvedEntry } from './namespaced-entries.js';
 import type { HookHandler } from './hook-dispatch.js';
-import type { LocalConfig } from './types.js';
+import type { GlobalOptions, LocalConfig } from './types.js';
 import type { GitHookEvent } from './git-hook.js';
 import { deriveDispatchSessionId, deriveSessionId } from './utils/session-id.js';
 import { log } from './utils/logger.js';
@@ -125,17 +125,7 @@ const pullHandler: HookHandler = {
       const { findUnreadableProjectConfig } = await import('./config.js');
       if (await findUnreadableProjectConfig(cwd) !== null) return null;
     }
-    // A tool excluded here, by `uninstall --agent` or an uninstall that could not remove its hooks,
-    // syncs nothing from its hooks: a pull would restore what was removed (#993).
-    if (config) {
-      const { isAgentExcluded } = await import('./types.js');
-      if (isAgentExcluded(config, tool)) return null;
-    }
-    if (config) {
-      const { LAUNCH_PAYLOAD_KEY, launchHoldsCheckout, readLaunch } = await import('./launch-context.js');
-      const launch = readLaunch(stdin[LAUNCH_PAYLOAD_KEY]);
-      if (launch && await launchHoldsCheckout(config, launch)) return null;
-    }
+    if (config && !await toolMayDeliver(stdin, tool, config)) return null;
     const hintCwd = cwd ?? process.cwd();
     const packageHints = await import('./pkg/pkg-hint.js');
     const packageHashBeforePull = await packageHints.packageManifestHashForCwd(hintCwd);
@@ -148,7 +138,8 @@ const pullHandler: HookHandler = {
     const { pull, settleLateUsageReport } = await import('./pull.js');
     const { SessionCaptures } = await import('./session-flow/captures.js');
     const before = config && await SessionCaptures.checkoutDelivery(config, tool);
-    await pull({ silent: true });
+    if (config && await needsPreparation(hintCwd, config)) await prepareCheckout(hintCwd, 'session-start');
+    else await pull({ silent: true });
     if (config && before) await SessionCaptures.markTeamChanged(config, tool, stdin, before);
     await packageHints.stashPackageHintAfterPull(
       hintCwd,
@@ -159,14 +150,14 @@ const pullHandler: HookHandler = {
     // cut the push of a report pull() stopped waiting for. The host does not
     // wait for this pass, so waiting here does not delay the session.
     await settleLateUsageReport();
-    // Finished sessions are judged in a process this pass does not wait for, where a scope turns that on.
-    const { sessionScoringScopes } = await import('./score-sessions.js');
-    const scoringCwd = await pathExists(hintCwd) ? hintCwd : os.homedir();
-    const scoring = await sessionScoringScopes(scoringCwd).catch((e: unknown) => {
-      log.debug(`hook-dispatch: could not tell whether sessions are scored here: ${e instanceof Error ? e.message : String(e)}`);
+    // Finished attended sessions are judged or published in a process this pass does not wait for, where a scope turns that on.
+    const { backgroundPassScopes } = await import('./score-sessions.js');
+    const passCwd = await pathExists(hintCwd) ? hintCwd : os.homedir();
+    const scopes = await backgroundPassScopes(passCwd).catch((e: unknown) => {
+      log.debug(`hook-dispatch: could not tell whether sessions are scored or published here: ${e instanceof Error ? e.message : String(e)}`);
       return [];
     });
-    if (scoring.length > 0) await spawnDetachedScoreSessions(scoringCwd);
+    if (scopes.length > 0) await spawnDetachedScoreSessions(passCwd);
     return null;
   },
 };
@@ -187,11 +178,73 @@ const sessionCaptureHandler: HookHandler = {
 };
 
 /**
- * `post-checkout` from the git hook: a new checkout (a linked worktree) of a
- * project-scope repository gets its tool roots and the team's resources. A
- * branch switch, user scope (whose resources live in HOME), and checkouts
- * teamai itself creates (its knowledge and reports worktrees, under the scope's
- * data home or team clone) do nothing.
+ * The pull each trigger of checkout preparation can afford:
+ * - `post-checkout`, git's hook for a new checkout: inline, while git waits.
+ * - `session-start`, in a checkout that needs it (needsPreparation): the session's full pull.
+ * - `tool-use`, likewise, in the background pass: inline, from the team clone as last fetched.
+ * The last two serve worktrees an agent tool created without any git hook.
+ */
+const PREPARING_PULL = {
+  'post-checkout': { inline: true, gitHook: 'post-checkout' },
+  'session-start': {},
+  'tool-use': { inline: true, localOnly: true },
+} as const satisfies Record<string, GlobalOptions>;
+
+/**
+ * Prepare a new checkout of a project-scope repository: its tool roots, then
+ * the team's resources, then `scripts.postDeploy` on its first delivery. Init
+ * does not run on this path. Git's hook records a failure for doctor; a tool's
+ * hook pulls without the roots it could not create, as its seeding does.
+ */
+async function prepareCheckout(cwd: string, trigger: keyof typeof PREPARING_PULL): Promise<void> {
+  const { createProjectToolRoots } = await import('./project-agent-root.js');
+  const roots = createProjectToolRoots({ cwd });
+  if (trigger === 'post-checkout') await roots;
+  else await roots.catch((e: unknown) => log.debug(`hook-dispatch: could not create tool roots in ${cwd}: ${e instanceof Error ? e.message : String(e)}`));
+  const { pull } = await import('./pull.js');
+  await pull({ silent: true, prepareCheckout: 'once', ...PREPARING_PULL[trigger] });
+}
+
+/**
+ * Whether a tool's hook prepares the checkout at `cwd`: a project-scope linked
+ * worktree no pull delivered into yet, which is not teamai's own. Agent tools
+ * create linked worktrees; a main checkout is where init runs. An HTTP team's
+ * checkout keeps no such record; its resources come through the local agent's sync.
+ */
+async function needsPreparation(cwd: string, config: LocalConfig): Promise<boolean> {
+  if (config.scope !== 'project' || config.repo.kind === 'http' || !config.projectRoot) return false;
+  if (!await isLinkedWorktree(config.projectRoot)) return false;
+  const { deliveringCheckoutRecord } = await import('./pull.js');
+  return !await deliveringCheckoutRecord(config) && !await isOwnCheckout(cwd, config);
+}
+
+/**
+ * Whether the checkout at `root` is a linked worktree: its `.git` file names a
+ * git dir holding `commondir`. A main checkout, `--separate-git-dir` or not,
+ * and a submodule have none.
+ */
+async function isLinkedWorktree(root: string): Promise<boolean> {
+  const { readFile } = await import('node:fs/promises');
+  const pointer = /^gitdir:\s*(.+)$/m.exec(await readFile(path.join(root, '.git'), 'utf8').catch(() => ''));
+  return pointer !== null && pathExists(path.join(path.resolve(root, pointer[1].trim()), 'commondir'));
+}
+
+/** Checkouts teamai itself creates: its knowledge and reports worktrees, under the scope's data home, the team clone, or the user-scope side-branch names. */
+async function isOwnCheckout(cwd: string, config: LocalConfig): Promise<boolean> {
+  const { getDataHome, getTeamaiHomeDir, WORKTREE_DIRNAMES } = await import('./types.js');
+  return isWithin(cwd, [
+    getDataHome(config),
+    config.repo.localPath,
+    ...WORKTREE_DIRNAMES.map((dirname) => path.join(getTeamaiHomeDir(), dirname)),
+    ...await ownCheckoutsDir(cwd),
+  ]);
+}
+
+/**
+ * `post-checkout` from the git hook: a new checkout (a linked worktree, a
+ * submodule's first checkout) is prepared before git returns
+ * (prepareCheckout). A branch switch, user scope (whose resources live in
+ * HOME), and teamai's own checkouts do nothing.
  */
 const newWorktreeHandler: HookHandler = {
   name: 'new-worktree',
@@ -200,25 +253,47 @@ const newWorktreeHandler: HookHandler = {
     const args = Array.isArray(stdin.git_args) ? stdin.git_args.map(String) : [];
     if (!config || config.scope !== 'project' || !isNewCheckout(args)) return null;
     const cwd = resolveHookCwd(stdin) ?? process.cwd();
-    const { getDataHome } = await import('./types.js');
-    if (await isWithin(cwd, [getDataHome(config), config.repo.localPath, ...await ownCheckoutsDir(cwd)])) return null;
+    if (await isOwnCheckout(cwd, config)) return null;
 
-    await recordingFailure(config, 'post-checkout', async () => {
-      const { createProjectToolRoots } = await import('./project-agent-root.js');
-      await createProjectToolRoots({ cwd });
-      const { pull } = await import('./pull.js');
-      // prepareCheckout waits for scripts.postDeploy before this returns, so a
-      // link can exist before `git worktree add` (or a submodule's first
-      // checkout) returns. Init does not run on this path.
-      await pull({ silent: true, inline: true, gitHook: 'post-checkout', prepareCheckout: true });
-    });
+    await recordingFailure(config, 'post-checkout', () => prepareCheckout(cwd, 'post-checkout'));
     // Learnings, reports, sources and the team repo itself refresh after
-    // `git worktree add` returns; it also retries what failed above.
-    // postDeploy already ran inside the pull.
-    await spawnDetachedPull(cwd, 'post-checkout');
+    // `git worktree add` returns; it also retries what failed above, and
+    // runs postDeploy when it, not the pull above, writes the first record.
+    await spawnDetachedPull(cwd, 'post-checkout', { prepareCheckout: 'once' });
     return null;
   },
 };
+
+/**
+ * A tool used in a linked worktree teamai has not delivered into: one an agent
+ * tool created without any git hook (Claude Code's `EnterWorktree`, Codex CLI's
+ * worktrees), or one made before teamai was set up. It is prepared in the
+ * background pass (prepareCheckout); the session's tool hooks find its record
+ * afterwards and do nothing.
+ */
+const newCheckoutHandler: HookHandler = {
+  name: 'new-checkout',
+  async execute(stdin, tool, config) {
+    const cwd = resolveHookCwd(stdin) ?? process.cwd();
+    if (!config || !await needsPreparation(cwd, config) || !await toolMayDeliver(stdin, tool, config)) return null;
+    await prepareCheckout(cwd, 'tool-use');
+    return null;
+  },
+};
+
+/**
+ * Whether `tool`'s hooks may deliver into the checkout: not when the tool is
+ * excluded, by `uninstall --agent` or an uninstall that could not remove its
+ * hooks, since a pull would restore what was removed (#993), nor when a
+ * workflow launched the session in a checkout it holds (#1176).
+ */
+async function toolMayDeliver(stdin: Record<string, unknown>, tool: string, config: LocalConfig): Promise<boolean> {
+  const { isAgentExcluded } = await import('./types.js');
+  if (isAgentExcluded(config, tool)) return false;
+  const { LAUNCH_PAYLOAD_KEY, launchHoldsCheckout, readLaunch } = await import('./launch-context.js');
+  const launch = readLaunch(stdin[LAUNCH_PAYLOAD_KEY]);
+  return !(launch && await launchHoldsCheckout(config, launch));
+}
 
 /** How long `git pull` waits for its hook's team repo fetch. */
 const GIT_PULL_FETCH_CAP_MS = 5_000;
@@ -279,14 +354,17 @@ async function recordingFailure(
 
 /**
  * Start a full `teamai pull --silent` in `cwd` that this process does not wait
- * for. TEAMAI_GIT_HOOK makes it record its failure, and clear the record when it
+ * for. TEAMAI_PREPARE_CHECKOUT hands it the checkout to prepare, since a
+ * fast-forward `git pull` hands over with the same event.
+ * TEAMAI_GIT_HOOK makes it record its failure, and clear the record when it
  * succeeds.
  */
-async function spawnDetachedPull(cwd: string, event: GitHookEvent): Promise<void> {
+async function spawnDetachedPull(cwd: string, event: GitHookEvent, how: { prepareCheckout?: 'once' } = {}): Promise<void> {
   const { resolveCliEntry } = await import('./builtin-hooks.js');
   const { spawn } = await import('node:child_process');
+  const prepare = how.prepareCheckout ? { TEAMAI_PREPARE_CHECKOUT: how.prepareCheckout } : {};
   spawn(process.execPath, [resolveCliEntry() ?? '', 'pull', '--silent'], {
-    cwd, detached: true, stdio: 'ignore', windowsHide: true, env: { ...process.env, TEAMAI_GIT_HOOK: event },
+    cwd, detached: true, stdio: 'ignore', windowsHide: true, env: { ...process.env, TEAMAI_GIT_HOOK: event, ...prepare },
   }).on('error', (e) => log.debug(`git hook: detached pull failed to start: ${e.message}`)).unref();
 }
 
@@ -326,9 +404,9 @@ async function isWithin(dir: string, parents: string[]): Promise<boolean> {
 
 const updateHandler: HookHandler = {
   name: 'update',
-  async execute(_stdin, _tool) {
+  async execute(_stdin, _tool, config) {
     const { doUpdate } = await import('./update.js');
-    await doUpdate();
+    await doUpdate(config);
     return null;
   },
 };
@@ -354,20 +432,13 @@ async function teamCorrectionKeywords(
 }
 
 /**
- * Per-machine gateway model-alias map from the user-scope config, used to price
- * requests whose transcript records an opaque alias instead of a Claude model
- * name. Only read on stop events (where pricing happens); an unreadable config
- * means "no aliases", i.e. built-in model-name matching only.
+ * The gateway model-alias map of the hook's scope, its own entries over this
+ * machine's, used to price requests whose transcript records an opaque alias
+ * instead of a Claude model name. Only on stop events, where pricing happens.
  */
-async function userModelAliases(stdin: Record<string, unknown>): Promise<Record<string, string> | undefined> {
+function stopModelAliases(stdin: Record<string, unknown>, config: LocalConfig): Record<string, string> | undefined {
   const eventName = typeof stdin.hook_event_name === 'string' ? stdin.hook_event_name.toLowerCase() : '';
-  if (eventName !== 'stop') return undefined;
-  try {
-    const { loadLocalConfig } = await import('./config.js');
-    return (await loadLocalConfig())?.modelAliases;
-  } catch {
-    return undefined;
-  }
+  return eventName === 'stop' ? config.modelAliases : undefined;
 }
 
 const dashboardReportHandler: HookHandler = {
@@ -375,12 +446,12 @@ const dashboardReportHandler: HookHandler = {
   async execute(stdin, tool, config) {
     // Registered with requiresConfig: a session outside any scope is not recorded.
     if (!config) return null;
-    const { parseHookEvent, appendEvent, compactEvents, dataHomeKey, eventProjectAnchor, addGitStateAtStart, gitStateIn } = await import('./dashboard-collector.js');
+    const { parseHookEvent, appendEvent, compactEvents, dataHomeKey, eventProjectAnchor, addGitStateAtStart, addGitHeadAtStop, gitStateIn } = await import('./dashboard-collector.js');
     const { getDataHome } = await import('./types.js');
     const raw = JSON.stringify(stdin);
     const event = await parseHookEvent(raw, tool, {
       correctionKeywords: await teamCorrectionKeywords(stdin, config),
-      modelAliases: await userModelAliases(stdin),
+      modelAliases: stopModelAliases(stdin, config),
     });
     if (event) {
       // The dispatcher's scope, which knows the project even when the event
@@ -389,8 +460,12 @@ const dashboardReportHandler: HookHandler = {
       const [projectAnchor] = await Promise.all([
         eventProjectAnchor(event.cwd, event.sessionId),
         addGitStateAtStart(event, gitStateIn(stdin)),
+        addGitHeadAtStop(event),
       ]);
       event.projectAnchor = projectAnchor;
+      // The foreground dispatcher's, so a background pass records what the session's own environment said.
+      const { readSessionRun } = await import('./launch-context.js');
+      Object.assign(event, readSessionRun(stdin));
       await appendEvent(event);
       // Non-blocking compaction
       compactEvents().catch(() => {});
@@ -747,17 +822,24 @@ const votesJudgeHandler: HookHandler = {
       // judge from ever running on the later turns that DO have recalls. So we
       // only spend the claim once there is real work to do.
       const { parseTranscriptForVotes } = await import('./transcript-parser.js');
-      // Codex, Muse and ZCode provide the reply directly. Their native session
-      // files are not Claude transcripts; use our settled recall log as evidence.
-      const { recalledDocsForSession } = await import('./recall-adoption.js');
-      const docs = finalReply ? await recalledDocsForSession(localConfig, dispatchSessionId) : [];
-      const voteData = finalReply ? {
-        finalAssistantText: finalReply,
-        recalledDocIds: docs.map(d => d.key),
-        recalledDocPaths: Object.fromEntries(docs.map(d => [d.key, d.path])),
-        recalledDocScopes: Object.fromEntries(docs.map(d => [d.key, d.scope])),
-      } : await parseTranscriptForVotes(transcriptPath!);
-      if (voteData.recalledDocIds.length === 0) return null;
+      // A Claude transcript stays the evidence whenever it shows a recall, even
+      // when the payload also carries the final reply (Claude Code sends both).
+      // Codex, Muse and ZCode send the reply, and their session files (Codex's
+      // rollout arrives as `transcript_path`) are not Claude transcripts, so
+      // with no recall found there, the settled recall log is the evidence.
+      const fromTranscript = transcriptPath ? await parseTranscriptForVotes(transcriptPath) : null;
+      let voteData = fromTranscript;
+      if (finalReply && !fromTranscript?.recalledDocIds.length) {
+        const { recalledDocsForSession } = await import('./recall-adoption.js');
+        const docs = await recalledDocsForSession(localConfig, dispatchSessionId);
+        voteData = {
+          finalAssistantText: finalReply,
+          recalledDocIds: docs.map(d => d.key),
+          recalledDocPaths: Object.fromEntries(docs.map(d => [d.key, d.path])),
+          recalledDocScopes: Object.fromEntries(docs.map(d => [d.key, d.scope])),
+        };
+      }
+      if (!voteData || voteData.recalledDocIds.length === 0) return null;
 
       // The session's upvote ledger holds every doc the hook path (or an earlier
       // judge pass) upvoted for it: those are not judged again (#884).
@@ -828,7 +910,7 @@ const votesJudgeHandler: HookHandler = {
       // docPaths is backfilled from the recall log above, so a subagent-recalled
       // doc the transcript gave no `File:` line for is still grounded here (#723).
       const { judgeAdoption } = await import('./votes-judge.js');
-      const adopted = await judgeAdoption(voteData.finalAssistantText, toJudge, docPaths, roots);
+      const adopted = await judgeAdoption(voteData.finalAssistantText, toJudge, docPaths, roots, localConfig);
 
       // Gate again to recalled (defensive; judgeAdoption already restricts to toJudge).
       const verified = adopted.filter((id) => recalledSet.has(id));
@@ -1243,6 +1325,9 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     { event: 'post-tool-use', matcher: 'TodoWrite', handler: todowriteHintHandler, timeoutMs: TODOWRITE_HINT_TIMEOUT_MS, requiresConfig: true },
     { event: 'post-tool-use', matcher: '*', handler: localAgentHandler, timeoutMs: LOCAL_AGENT_TIMEOUT_MS, background: true },
     { event: 'post-tool-use', matcher: '*', handler: skillUseHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true, requiresConfig: true },
+    // A worktree an agent tool entered without any git hook (Claude Code's EnterWorktree, Codex CLI) gets the
+    // team's resources on its first tool use there; any other checkout costs a few file reads.
+    { event: 'post-tool-use', matcher: '*', handler: newCheckoutHandler, timeoutMs: PULL_TIMEOUT_MS, background: true, requiresConfig: true },
 
     // ─── UserPromptSubmit ─────────────────────────────
     { event: 'prompt-submit', matcher: '*', handler: pendingHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true, requiresConfig: true },

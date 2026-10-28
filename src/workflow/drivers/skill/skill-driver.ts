@@ -6,11 +6,10 @@ import path from 'node:path';
 import { z } from 'zod';
 import { resolveCliEntry } from '../../../builtin-hooks.js';
 import type { WorkflowEnv } from '../../../env-resolution.js';
-import type { ToolName } from '../../../resources/agent-format.js';
 import { resolveRunMode, type RunMode } from '../../../launch-context.js';
 import type { CommandExit } from '../../../tool-launch/process-stop.js';
-import { isAgentToolId } from '../../../tools.js';
-import type { LocalConfig, TeamaiConfig } from '../../../types.js';
+import { isToolId, TOOLS } from '../../../tools.js';
+import type { LocalConfig, TeamaiConfig, ToolId } from '../../../types.js';
 import { agentSessionFromEnv } from '../../../utils/session-id.js';
 import { agentEvidence, isAttemptRunner, type AgentEvidence } from '../../attempt-marker.js';
 import { inProcessClient, invokeDeniedMessage, type WorkflowClient } from '../../protocol.js';
@@ -19,22 +18,23 @@ import { AttemptIdSchema, RunIdSchema, takeRunLock, type AttemptId, type LockTak
 import { canFor, HOST_CHOICES, type HostChoice } from './host-profiles.js';
 import { journalCall } from './journal.js';
 import { describeLiteral, invocationOf, type Invocation } from './literals.js';
-import { askFor, attendedReason, ceilingOf, checkStartAnswers, localPromptTool, localReason, neededAnswers, type HitlMode } from './preflight.js';
+import { askFor, attendedReason, ceilingOf, checkStartAnswers, localPromptTool, localReason, neededAnswers, needsTool, type HitlMode } from './preflight.js';
 import { drivesRun, readSkillState, writeSkillState } from './skill-state.js';
 import { detachedRunners, runRunner } from './skill-runner.js';
 import { agentReport, foreground, plannedState, poll } from './tick.js';
-import { describeRow, startRow, type ResumeAnswers, type RowId } from './transitions.js';
+import { describeRow, judgedBy, startRow, type ResumeAnswers, type RowId } from './transitions.js';
 import { errorOf, type SkillAnswer, type SkillError } from './turn.js';
 
+/** `tool`: `--tools default=<tool>`, the tool of the calling session, which its host may not name. */
 export type SkillCall =
-  | { kind: 'describe'; name: string }
+  | { kind: 'describe'; name: string; tool?: ToolId }
   /** `judge: false`: `--no-judge`, which leaves the scored steps unjudged here. `hitl`: `--hitl`, or `--auto-approve`. */
-  | { kind: 'start'; name: string; answers: { parallel?: number; confirmed: boolean; hitl?: HitlMode; judge?: false }; inputs: unknown }
+  | { kind: 'start'; name: string; answers: { parallel?: number; confirmed: boolean; hitl?: HitlMode; judge?: false }; inputs: unknown; tool?: ToolId }
   /**
    * `resume --driver skill`: this session drives a run another machine published; `claim` takes it from another install.
    * `confirmed`: `--confirmed`, the agent's word that the person agreed to continue a run of an `invoke: ask` workflow.
    */
-  | { kind: 'resume'; run: RunId; claim: boolean; confirmed: boolean; answers: ResumeAnswers }
+  | { kind: 'resume'; run: RunId; claim: boolean; confirmed: boolean; answers: ResumeAnswers; tool?: ToolId }
   | { kind: 'next'; run: RunId; wait: boolean }
   /** `next --takeover`: this session drives the run from now on, as the person agreed; `confirmed` as a resume's. */
   | { kind: 'takeover'; run: RunId; confirmed: boolean }
@@ -91,7 +91,9 @@ export interface SkillContext {
   /** The run mode of the calling process, which describe answers for and a start keeps for the run. */
   mode: RunMode;
   /** The tool of that session, which a child's model is resolved for; undefined when its host names none. */
-  tool: ToolName | undefined;
+  tool: ToolId | undefined;
+  /** The tools the member names for `config`'s scope, the most specific first: TEAMAI_AI_TOOL, then `ai.tool`. */
+  aiTools: readonly string[];
   invocation: Invocation;
   /** The checkout a start runs from. */
   cwd: string;
@@ -106,7 +108,7 @@ export interface SkillContext {
  * The context of a call from this process: its agent session, how the member ran teamai, the in-process protocol,
  * detached runners, and the real clock.
  */
-export async function skillContext(input: Pick<SkillContext, 'config' | 'toolPaths' | 'env' | 'cwd' | 'trace'>): Promise<SkillContext> {
+export async function skillContext(input: Pick<SkillContext, 'config' | 'toolPaths' | 'env' | 'cwd' | 'aiTools' | 'trace'>): Promise<SkillContext> {
   const { config, env } = input;
   const session = await agentSessionFromEnv();
   const evidence = agentEvidence(process.env);
@@ -116,7 +118,7 @@ export async function skillContext(input: Pick<SkillContext, 'config' | 'toolPat
     // Only a coding agent drives --driver skill, so a host that sets no session variable is still an agent's.
     evidence: evidence.kind === 'none' ? { kind: 'skill-driver' } : evidence,
     mode: resolveRunMode(process.env),
-    tool: session.agent !== undefined && isAgentToolId(session.agent) ? session.agent : undefined,
+    tool: session.agent !== undefined && isToolId(session.agent) ? session.agent : undefined,
     invocation: invocationOf(resolveCliEntry() ?? undefined),
     client: inProcessClient({ config, env }),
     now: () => new Date(),
@@ -135,13 +137,28 @@ export async function sessionDrivesRun(config: LocalConfig, run: RunId): Promise
 }
 
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+/** `--tools default=<tool>`: the tool this coding session works in, for a host that sets no session variable teamai reads. */
+const SessionToolSchema = z.string().transform((tools, ctx) => {
+  const [pair = '', ...more] = tools.split(',');
+  const separator = pair.indexOf('=');
+  const tool = pair.slice(separator + 1).trim();
+  if (more.length > 0 || pair.slice(0, separator).trim() !== 'default' || tool === '') {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: '--driver skill takes only --tools default=<tool>, the tool this coding session works in' });
+    return z.NEVER;
+  }
+  if (!isToolId(tool)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: `--tools default=${tool} names no tool teamai knows: ${Object.keys(TOOLS).join(', ')}` });
+    return z.NEVER;
+  }
+  return tool;
+});
 /** The options of a run that a skill start and a skill resume share. */
 const RunOptionsSchema = z.object({
   parallel: z.string().regex(/^[1-9][0-9]*$/, '--parallel takes a whole number of steps, 1 or more').transform(Number).optional(),
   judge: z.boolean().optional(),
   hitl: z.enum(['person', 'recommend'], { errorMap: () => ({ message: '--hitl takes person or recommend, as the describe reply offered' }) }).optional(),
   autoApprove: z.boolean().optional(),
-  tools: z.undefined({ invalid_type_error: '--tools is for --driver local' }),
+  tools: SessionToolSchema.optional(),
 });
 const ONE_HITL = {
   check: (options: z.infer<typeof RunOptionsSchema>) => !(options.hitl !== undefined && options.autoApprove),
@@ -215,14 +232,15 @@ export function parseSkillCall(
     if (!NAME.test(raw.name)) return { error: { code: 'invalid_arguments', message: `"${raw.name}" is not a workflow name`, next: null } };
     const options = StartOptionsSchema.safeParse(raw.options);
     if (!options.success) return invalid(options.error);
-    if (options.data.describe) return { kind: 'describe', name: raw.name };
+    const tool = options.data.tools !== undefined ? { tool: options.data.tools } : {};
+    if (options.data.describe) return { kind: 'describe', name: raw.name, ...tool };
     const read = options.data.inputs === undefined ? { inputs: undefined } : parseInputsFlag(options.data.inputs);
     if ('error' in read) return { error: { ...read.error, next: null } };
     const { inputs } = read;
     const { parallel, confirmed, judge, autoApprove } = options.data;
     const hitl: HitlMode | undefined = autoApprove ? 'auto-approve' : options.data.hitl;
     return {
-      kind: 'start', name: raw.name, inputs,
+      kind: 'start', name: raw.name, inputs, ...tool,
       answers: { ...(parallel !== undefined ? { parallel } : {}), confirmed: confirmed === true, ...(hitl !== undefined ? { hitl } : {}), ...(judge === false ? { judge } : {}) },
     };
   }
@@ -231,10 +249,10 @@ export function parseSkillCall(
   if (raw.kind === 'resume') {
     const options = ResumeOptionsSchema.safeParse(raw.options);
     if (!options.success) return invalid(options.error);
-    const { claim, confirmed, parallel, judge, autoApprove } = options.data;
+    const { claim, confirmed, parallel, judge, autoApprove, tools } = options.data;
     const hitl: HitlMode | undefined = autoApprove ? 'auto-approve' : options.data.hitl;
     return {
-      kind: 'resume', run: run.data, claim: claim === true, confirmed: confirmed === true,
+      kind: 'resume', run: run.data, claim: claim === true, confirmed: confirmed === true, ...(tools !== undefined ? { tool: tools } : {}),
       answers: { ...(parallel !== undefined ? { parallel } : {}), ...(hitl !== undefined ? { hitl } : {}), ...(judge === false ? { judge } : {}) },
     };
   }
@@ -277,7 +295,9 @@ export async function runSkillCall(call: SkillCall, context: SkillContext): Prom
   return answer;
 }
 
-async function answerOf(call: SkillCall, context: SkillContext): Promise<SkillAnswer> {
+async function answerOf(call: SkillCall, caller: SkillContext): Promise<SkillAnswer> {
+  // The tool a session declares is the one it works in, whatever its host names, as a host may pass its env on to another tool.
+  const context = 'tool' in call && call.tool !== undefined ? { ...caller, tool: call.tool } : caller;
   switch (call.kind) {
     case 'describe':
     case 'start':
@@ -287,7 +307,7 @@ async function answerOf(call: SkillCall, context: SkillContext): Promise<SkillAn
       if (call.answers.parallel !== undefined && call.answers.parallel > ceiling) {
         return { error: { code: 'invalid_arguments', message: `--parallel ${call.answers.parallel} is above the most this machine runs at once, ${ceiling}.`, next: null } };
       }
-      return foreground(context, call.run, { kind: 'resume', claim: call.claim, confirmed: call.confirmed, answers: call.answers });
+      return foreground(context, call.run, { kind: 'resume', claim: call.claim, confirmed: call.confirmed, answers: call.answers, ...(call.tool !== undefined ? { tool: call.tool } : {}) });
     }
     case 'next':
       return call.wait ? poll(context, call.run) : foreground(context, call.run, { kind: 'next' });
@@ -325,29 +345,27 @@ async function start(call: Extract<SkillCall, { kind: 'describe' | 'start' }>, c
     const denied = description.invoke === 'deny' && context.evidence.kind !== 'none' ? { denied: invokeDeniedMessage(description.name, context.evidence, { kind: 'start' }) } : {};
     const attended = attendedReason(description, 'start');
     const { row, verdict } = describeRow({
-      needed: neededAnswers(description), ...denied, ...(undeliverable ? { undeliverable: undeliverable.message } : {}), ...why, judgingHere: judging.kind === 'here',
-      mode: context.mode, ...(attended !== undefined ? { attended } : {}),
+      needed: neededAnswers(description), ...denied, ...(undeliverable ? { undeliverable: undeliverable.message } : {}), ...why, judged: judgedBy(judging) !== undefined,
+      mode: context.mode, ...(attended !== undefined ? { attended } : {}), needsTool: needsTool(description, { tool: context.tool, judged: true }),
     });
     context.trace?.(row);
-    return { data: { describe: { workflow: description, judging, ask: askFor(verdict, description, context.invocation, judging, { tool: localPromptTool(context.config, context.tool) }) } } };
+    return { data: { describe: { workflow: description, judging, ask: askFor(verdict, description, context.invocation, judging, { local: localPromptTool(context), session: call.tool }) } } };
   }
-  const check = checkStartAnswers({ description, answers: call.answers, inputs: call.inputs, ceiling });
-  const judge = judging.kind === 'here' && call.answers.judge !== false ? judging.tool : undefined;
+  const check = checkStartAnswers({ description, answers: call.answers, inputs: call.inputs, ceiling, tool: context.tool });
+  const judge = call.answers.judge !== false ? judgedBy(judging) : undefined;
   const attended = context.mode === 'unattended' ? attendedReason(description, 'start') : undefined;
   const taken = startRow({ name: description.name, check, ...why, ...(attended !== undefined ? { attended } : {}), prompts: description.facts.prompts.length > 0, ...(judge !== undefined ? { judge } : {}) });
   context.trace?.(taken.row);
   if (taken.row === 'R25') return { error: { ...taken.error, next: null } };
-  if (taken.row !== 'R10') {
-    const same = describeLiteral(context.invocation, description.name);
-    return { error: errorOf({ kind: 'error', refusal: taken.refusal }, { invocation: context.invocation, same, localTool: localPromptTool(context.config, context.tool) }) };
-  }
+  const same = describeLiteral(context.invocation, description.name, { tool: call.tool });
+  if (taken.row !== 'R10') return { error: errorOf({ kind: 'error', refusal: taken.refusal }, { invocation: context.invocation, same, localTool: localPromptTool(context) }) };
   const planned = taken.start;
   const started = await context.client.start(description.name, {
     ...(call.inputs !== undefined ? { inputs: call.inputs } : {}), checkout: context.cwd, caller: { evidence: context.evidence, confirmed: call.answers.confirmed, mode: context.mode },
   });
   if ('error' in started) {
     // No literal for a refusal no other answer fixes: a new describe would only lead back to it.
-    return { error: { ...started.error, next: ANSWERABLE_START_REFUSALS.has(started.error.code) ? describeLiteral(context.invocation, description.name) : null } };
+    return { error: { ...started.error, next: ANSWERABLE_START_REFUSALS.has(started.error.code) ? same : null } };
   }
   const run = RunIdSchema.safeParse(started.data.run);
   if (!run.success) return { error: { code: 'run_unreadable', message: 'The new run id was missing', next: null } };

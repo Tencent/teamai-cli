@@ -471,6 +471,16 @@ projects:
       return { ...localConfig, repo: { ...localConfig.repo, kind: 'self' }, projectRoot: tmpDir };
     }
 
+    it('does not propose a retired tool copy as a new agent when its canonical root copy is absent', async () => {
+      const self = selfConfig();
+      await fse.outputFile(path.join(homeDir, '.claude/agents/retired.md'),
+        '---\nname: retired\ndescription: Former team agent\n---\nEdited leftover.\n');
+      await fse.outputJson(path.join(getDataHome(self), 'state.json'), {
+        retiredPlacedAgents: { retired: 'agents/ops/retired.md' },
+      });
+      expect(await handler.scanLocalForPush(teamConfig, self)).toEqual([]);
+    });
+
     it('follows the record for a root canonical source placed in a namespace', async () => {
       const self = selfConfig();
       await fse.outputFile(path.join(repoPath, 'agents/fe/vr.yaml'),

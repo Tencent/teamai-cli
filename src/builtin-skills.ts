@@ -6,10 +6,9 @@ import { pathExists, remove } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import { warnOnce } from './utils/warn-once.js';
 import type { TeamaiConfig, LocalConfig } from './types.js';
-import { getCopilotHome, resolveBaseDir, isAgentExcluded, scopedToolPaths } from './types.js';
-import { getHermesHome } from './hermes-home.js';
-import { resolveOpenclawWorkspaceDir } from './openclaw-hooks.js';
-import { installOf, locate, SHARED_AGENT_SKILLS_PATH, writable } from './locate.js';
+import { COPILOT_TOOL_ID, resolveBaseDir, isAgentExcluded, scopedToolPaths } from './types.js';
+import { installOf, locate, openclawWorkspaceDir, SHARED_AGENT_SKILLS_PATH, writable } from './locate.js';
+import { toolHome } from './tool-home.js';
 import {
   CODEX_TOOL, allowsSkillDirectory, describeSkippedSkillDirectory, findSkillDirectoryBlock,
   skillTargetsFor,
@@ -360,7 +359,7 @@ export interface BuiltinSkillsTarget {
 /**
  * The base the link guard walks down from: the scope root — home, or the
  * project root — when `skillsDir` sits under it, since a link at or above that
- * is ordinary. Not the tool's base directory: for Copilot that is
+ * is ordinary. Not the tool's home: for Copilot that is
  * `COPILOT_HOME`, and starting there would never check whether `COPILOT_HOME`
  * itself is a link. A root outside the scope root has the walk start at the
  * parent of the tool home holding it (`COPILOT_HOME`, `HERMES_HOME`, the
@@ -373,7 +372,7 @@ export async function skillsGuardBase(scopeRoot: string, skillsDir: string): Pro
     return relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative);
   };
   if (under(scopeRoot)) return scopeRoot;
-  const homes = [getCopilotHome(), getHermesHome(), await resolveOpenclawWorkspaceDir()];
+  const homes = [toolHome(COPILOT_TOOL_ID), toolHome('hermes'), await openclawWorkspaceDir()];
   const home = homes.filter((dir): dir is string => dir !== null && under(dir)).sort((a, b) => a.length - b.length)[0];
   return home ? path.dirname(home) : path.dirname(path.dirname(skillsDir));
 }

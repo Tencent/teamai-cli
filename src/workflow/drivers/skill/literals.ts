@@ -1,6 +1,7 @@
 /** Every command line the skill driver prints, and the permission patterns that pre-approve them. */
 import { z } from 'zod';
 import type { AttemptId, RunId } from '../../store.js';
+import type { DriverIdentity } from '../../types.js';
 import type { HostChoice } from './host-profiles.js';
 import type { HitlMode } from './preflight.js';
 
@@ -25,8 +26,9 @@ export function generatedStartPatterns(name: string, alias?: string): string[] {
   return INVOCATIONS.flatMap((invocation) => [name, ...(alias ? [alias] : [])].map((start) => `Bash(${invocation} workflow start ${start} --driver skill:*)`));
 }
 
-export function describeLiteral(invocation: Invocation, name: string): Literal {
-  return LiteralSchema.parse(`${invocation} workflow start --describe ${name} --driver skill`);
+/** Describes `name` for the skill driver. `tool` names the tool of a session whose host names none. */
+export function describeLiteral(invocation: Invocation, name: string, options: { tool?: string } = {}): Literal {
+  return LiteralSchema.parse([`${invocation} workflow start --describe ${name} --driver skill`, ...toolsWords(options.tool)].join(' '));
 }
 
 /** `word` as one shell word: as is when it holds only safe characters, else single-quoted. */
@@ -45,11 +47,13 @@ function runOptionWords(options: { parallel?: number; hitl?: HitlMode; noJudge?:
 
 /**
  * Starts `name` for the skill driver. `inputs` leaves the `{inputs}` slot the agent fills with the person's answers;
- * `hitl` is how optional gates are answered; `noJudge` leaves the scored steps unjudged here.
+ * `hitl` is how optional gates are answered; `noJudge` leaves the scored steps unjudged here; `tool` names the tool of a
+ * session whose host names none.
  */
-export function startLiteral(invocation: Invocation, name: string, options: { parallel?: number; confirmed?: boolean; hitl?: HitlMode; inputs?: boolean; noJudge?: boolean } = {}): Literal {
+export function startLiteral(invocation: Invocation, name: string, options: { parallel?: number; confirmed?: boolean; hitl?: HitlMode; inputs?: boolean; noJudge?: boolean; tool?: string } = {}): Literal {
   return LiteralSchema.parse([
     `${invocation} workflow start ${name} --driver skill`,
+    ...toolsWords(options.tool),
     ...runOptionWords({ parallel: options.parallel }),
     ...(options.confirmed ? ['--confirmed'] : []),
     ...runOptionWords({ hitl: options.hitl, noJudge: options.noJudge }),
@@ -57,7 +61,7 @@ export function startLiteral(invocation: Invocation, name: string, options: { pa
   ].join(' '));
 }
 
-/** `--tools default=<tool>`, when `tool` is the prompt tool a local run must be told (`localPromptTool`). */
+/** `--tools default=<tool>`: the prompt tool a local run must be told (`localPromptTool`), or the tool a skill session names. */
 function toolsWords(tool: string | undefined): string[] {
   return tool !== undefined ? [`--tools default=${shellWord(tool)}`] : [];
 }
@@ -77,9 +81,10 @@ export function resumeLiteral(invocation: Invocation, run: RunId, options: { too
  * `claim` takes it from another install that owns it: printed only for the person to agree to. `confirmed` carries the
  * person's yes to continue a run of an `invoke: ask` workflow. The other options are a start's (`startLiteral`).
  */
-export function skillResumeLiteral(invocation: Invocation, run: RunId, options: { claim?: boolean; parallel?: number; hitl?: HitlMode; noJudge?: boolean; confirmed?: boolean } = {}): Literal {
+export function skillResumeLiteral(invocation: Invocation, run: RunId, options: { claim?: boolean; parallel?: number; hitl?: HitlMode; noJudge?: boolean; confirmed?: boolean; tool?: string } = {}): Literal {
   return LiteralSchema.parse([
     `${invocation} workflow resume ${run} --driver skill`,
+    ...toolsWords(options.tool),
     ...(options.claim ? ['--claim'] : []),
     ...runOptionWords(options),
     ...(options.confirmed ? ['--confirmed'] : []),
@@ -132,6 +137,12 @@ export function reportLiteral(invocation: Invocation, run: RunId, attempt: Attem
  */
 export function adoptLiteral(invocation: Invocation, run: RunId, attempt: AttemptId, dir?: string): Literal {
   return LiteralSchema.parse(`${invocation} workflow next ${run} --driver skill --attempt ${attempt} --adopt ${dir === undefined ? "'{dir}'" : shellWord(dir)}`);
+}
+
+/** Leases the next judge work of `run` to the session's own judge: `tool`, at best-effort, reading only the evidence. */
+export function sessionJudgeLiteral(invocation: Invocation, run: RunId, driver: DriverIdentity, tool: string): Literal {
+  const request = { run, driver: { ...driver, can: { judge: { isolation: 'best-effort', access: 'read', tools: [tool] } } }, running: [] };
+  return LiteralSchema.parse(`${invocation} score --next --json ${shellWord(JSON.stringify(request))}`);
 }
 
 /** Reports that the host cannot run the model the dispatch of `attempt` names. */

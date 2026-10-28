@@ -779,6 +779,17 @@ describe('pull skip-sync refreshes CLAUDE.md recall block (CLI upgrade)', () => 
     expect(after).toContain('# CLAUDE.md');
   });
 
+  it('removes the recall block when TEAMAI_RECALL_DISABLED=1 overrides recallEnabled: true (#1457)', async () => {
+    vi.stubEnv('TEAMAI_RECALL_DISABLED', '1');
+
+    await pull({});
+
+    const after = await fse.readFile(claudeMdPath, 'utf8');
+    expect(after).not.toContain(TEAMAI_RECALL_RULES_START);
+    expect(after).toContain('# CLAUDE.md');
+    expect(await fse.pathExists(path.join(homeDir, '.claude', 'agents', 'teamai-recall.md'))).toBe(false);
+  });
+
   it('refreshes Copilot recall instructions under a custom COPILOT_HOME', async () => {
     const copilotHome = path.join(tmpDir, 'copilot-home');
     const copilotInstructions = path.join(copilotHome, 'copilot-instructions.md');

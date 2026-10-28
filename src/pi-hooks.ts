@@ -23,7 +23,7 @@
 
 import path from 'node:path';
 import { generatedFileState, writeFile, writeIfChanged, ensureDir, remove } from './utils/fs.js';
-import { getUserHome } from './utils/home.js';
+import { earlierHookAdapterDir, hookAdapterDir } from './locate.js';
 import { log } from './utils/logger.js';
 import { resolveCliEntry } from './builtin-hooks.js';
 
@@ -39,11 +39,6 @@ const CLAUDE_TO_PI_EVENTS: Record<string, string> = {
   PostToolUse: 'tool_execution_end',
   Stop: 'agent_settled',
 };
-
-/** The global Pi agent extension directory. */
-export function resolvePiExtensionsDir(): string {
-  return path.join(getUserHome(), '.pi', 'agent', 'extensions');
-}
 
 /** Project-local Pi extension directory used only to clean up legacy copies. */
 export function resolvePiProjectExtensionsDir(baseDir: string): string {
@@ -196,7 +191,7 @@ export default function teamaiHooks(pi) {
  * TeamAI's marker is left untouched rather than overwritten.
  */
 export async function injectPiHooks(): Promise<void> {
-  const dir = resolvePiExtensionsDir();
+  const dir = hookAdapterDir('pi-extension');
   const file = path.join(dir, PI_HOOK_FILE);
   if (await generatedFileState(file, `${TEAMAI_MARKER} hooks extension`) === 'foreign') {
     log.warn(`Skipping Pi hook injection: ${file} exists without the TeamAI marker`);
@@ -209,10 +204,10 @@ export async function injectPiHooks(): Promise<void> {
   }
 }
 
-/** Remove the generated global Pi extension if present. */
-export async function removePiHooks(): Promise<void> {
-  const file = path.join(resolvePiExtensionsDir(), PI_HOOK_FILE);
-  if (!await hasPiHooks()) return;
+/** Remove the generated extension from `extensionsDir`, by default the one Pi loads, if it has TeamAI's marker. */
+export async function removePiHooks(extensionsDir = hookAdapterDir('pi-extension')): Promise<void> {
+  const file = path.join(extensionsDir, PI_HOOK_FILE);
+  if (!await hasPiHooks(extensionsDir)) return;
   await remove(file);
   log.success(`Removed teamai Pi hook from ${file}`);
 }
@@ -220,7 +215,7 @@ export async function removePiHooks(): Promise<void> {
 /** Remove a TeamAI-managed project copy written by an earlier revision. */
 export async function removePiProjectHooks(baseDir: string): Promise<void> {
   const file = path.join(resolvePiProjectExtensionsDir(baseDir), PI_HOOK_FILE);
-  if (!await hasPiHooks(baseDir)) return;
+  if (!await hasPiHooks(resolvePiProjectExtensionsDir(baseDir))) return;
   await remove(file);
   log.success(`Removed legacy project Pi hook from ${file}`);
 }
@@ -265,8 +260,8 @@ export function buildPiAgentHookExtensionSource(
 }
 
 /** Filename of one HTTP-source agent-hook extension, keyed by slug. */
-function piAgentHookFile(slug: string): string {
-  return path.join(resolvePiExtensionsDir(), `teamai-agent-${slug}.ts`);
+function piAgentHookFile(slug: string, dir = hookAdapterDir('pi-extension')): string {
+  return path.join(dir, `teamai-agent-${slug}.ts`);
 }
 
 /**
@@ -274,11 +269,11 @@ function piAgentHookFile(slug: string): string {
  * per-slug marker. Mirrors `hasPiHooks` for the main extension — write/remove
  * on this file must never touch a same-named file a user authored by hand.
  */
-export async function hasPiAgentHook(slug: string): Promise<boolean> {
-  return await piAgentHookState(slug) === 'teamai';
+export async function hasPiAgentHook(slug: string, dir?: string): Promise<boolean> {
+  return await piAgentHookState(slug, dir) === 'teamai';
 }
 
-const piAgentHookState = (slug: string) => generatedFileState(piAgentHookFile(slug), `${TEAMAI_MARKER} agent hook [${slug}]`);
+const piAgentHookState = (slug: string, dir?: string) => generatedFileState(piAgentHookFile(slug, dir), `${TEAMAI_MARKER} agent hook [${slug}]`);
 
 /**
  * Install one HTTP-source agent hook as a Pi extension.
@@ -305,7 +300,7 @@ export async function applyPiAgentHook(def: {
   if (await piAgentHookState(def.slug) === 'foreign') {
     throw new Error(`Skipping Pi agent hook [${def.slug}]: ${file} exists without the TeamAI marker`);
   }
-  await ensureDir(resolvePiExtensionsDir());
+  await ensureDir(hookAdapterDir('pi-extension'));
   await writeFile(file, source);
   log.success(`Installed Pi agent hook [${def.slug}]`);
 }
@@ -313,13 +308,16 @@ export async function applyPiAgentHook(def: {
 /** Remove one HTTP-source agent-hook extension. */
 export async function removePiAgentHook(slug: string): Promise<void> {
   assertSafeSlug(slug);
-  if (!await hasPiAgentHook(slug)) return;
-  await remove(piAgentHookFile(slug));
-  log.success(`Removed Pi agent hook [${slug}]`);
+  // And the copy an earlier release left under the default home, which Pi reads once its home stops moving (#1221).
+  for (const dir of [hookAdapterDir('pi-extension'), await earlierHookAdapterDir('pi-extension')]) {
+    if (dir === null || !await hasPiAgentHook(slug, dir)) continue;
+    await remove(piAgentHookFile(slug, dir));
+    log.success(`Removed Pi agent hook [${slug}]`);
+  }
 }
 
-/** Check whether a global or legacy project extension has TeamAI's marker. */
-export async function hasPiHooks(baseDir?: string): Promise<boolean> {
-  const file = path.join(baseDir ? resolvePiProjectExtensionsDir(baseDir) : resolvePiExtensionsDir(), PI_HOOK_FILE);
+/** Check whether the extension in `extensionsDir`, by default the one Pi loads, has TeamAI's marker. */
+export async function hasPiHooks(extensionsDir = hookAdapterDir('pi-extension')): Promise<boolean> {
+  const file = path.join(extensionsDir, PI_HOOK_FILE);
   return await generatedFileState(file, `${TEAMAI_MARKER} hooks extension`) === 'teamai';
 }

@@ -1,6 +1,6 @@
 /** The model the child of a prompt step must run, as `chooseStepModel` resolves it for the session's tool. */
-import type { ToolName } from '../../../resources/agent-format.js';
-import type { LocalConfig, TeamaiConfig } from '../../../types.js';
+import { isAgentToolId } from '../../../tools.js';
+import type { LocalConfig, TeamaiConfig, ToolId } from '../../../types.js';
 import { chooseStepModel, loadDeployedAgent } from '../../step-model.js';
 import type { WorkflowFailure } from '../../types.js';
 import type { ModelPick } from './skill-state.js';
@@ -16,21 +16,26 @@ export async function pickChildModel(input: {
   toolPaths: TeamaiConfig['toolPaths'] | undefined;
   step: string;
   /** The session's tool, undefined when its host names none. */
-  tool: ToolName | undefined;
+  tool: ToolId | undefined;
   model?: string;
   defaultModel?: string;
   agent?: string;
 }): Promise<{ ok: true; model: ModelPick } | { ok: false; failure: WorkflowFailure }> {
   const { config, toolPaths, step, tool, model, agent } = input;
-  const definition = agent !== undefined && tool !== undefined ? await loadDeployedAgent({ tool, name: agent, config, toolPaths }) : null;
+  // Agent files and model aliases exist only for a tool teamai renders agents for.
+  const agentTool = tool !== undefined && isAgentToolId(tool) ? tool : undefined;
+  const definition = agent !== undefined && agentTool !== undefined ? await loadDeployedAgent({ tool: agentTool, name: agent, config, toolPaths }) : null;
   const defaultModel = agent === undefined || definition !== null ? input.defaultModel : undefined;
   const asked = model ?? (definition?.spec.model === undefined ? defaultModel : undefined);
   if (asked === undefined) return { ok: true, model: { by: 'definition' } };
   if (tool === undefined) {
-    return { ok: false, failure: { code: 'model_unavailable', message: `Step "${step}" needs model ${asked}, and this coding session names no tool to resolve it for.` } };
+    return { ok: false, failure: { code: 'model_unavailable', message: `Step "${step}" needs model ${asked}, and this coding session names no tool to resolve it for: start or resume the workflow with --tools default=<tool>, the tool it works in.` } };
+  }
+  if (agentTool === undefined) {
+    return { ok: false, failure: { code: 'model_unavailable', message: `Step "${step}" needs model ${asked}, and teamai resolves no model for ${tool}, the coding session's tool.` } };
   }
   const chosen = await chooseStepModel({
-    step, tool, config, ...(model !== undefined ? { model } : {}), ...(defaultModel !== undefined ? { defaultModel } : {}), ...(definition !== null ? { agent: definition.spec } : {}),
+    step, tool: agentTool, config, ...(model !== undefined ? { model } : {}), ...(defaultModel !== undefined ? { defaultModel } : {}), ...(definition !== null ? { agent: definition.spec } : {}),
   });
   if (!chosen.ok) return chosen;
   if (chosen.model === undefined || chosen.by === 'definition') return { ok: true, model: { by: 'definition' } };

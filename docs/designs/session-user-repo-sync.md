@@ -4,7 +4,8 @@
 
 ## Problem
 
-`teamai session` commands store sessions in a team repo under `sessions/repos/<repoIdentity>/<author>/`.
+`teamai session` commands store sessions in a team repo under `sessions/repos/<repoIdentity>/<author>/`, on the
+`teamai-reports` branch (#1385; sessions archived on the default branch before stay readable there).
 Project-level repos (repo cloned inside the project) form a closed loop: push reads only the
 project cwd, and list/pull/resume filter by the project's `git remote` identity. User-level repos
 (the clone lives anywhere, e.g. under `~/.teamai/`) can already **receive** sessions from any
@@ -70,8 +71,8 @@ re-pushing updates the existing entry instead of generating `_1` suffixes.
   `session search --all` or `--cwd <project path>`.
 
 Deliberately **not** done: new top-level commands (Occam's razor — every change extends an
-existing command's options); branch/MR flow for session push (current behavior pushes the
-current branch; aligning with `teamai push`'s branch+MR flow is a separate discussion).
+existing command's options); branch/MR flow for session push (it then pushed the current branch, and since #1385 it pushes
+`teamai-reports`; aligning with `teamai push`'s branch+MR flow is a separate discussion).
 
 ## Affected surface
 
@@ -81,7 +82,7 @@ current branch; aligning with `teamai push`'s branch+MR flow is a separate discu
 - `src/__tests__/session-cmd.test.ts` — command layer: search --all, push --all, archive key, English output
 
 **Modified**:
-- `src/session-flow/sync.ts` — native-identity validation, dedup, `listAllRepoIdentities()`, cross-repo `listSessionsAcrossRepos()`, empty-commit detection
+- `src/session-flow/sync.ts` — native-identity validation, dedup, `listAllRepoIdentities()`, empty-commit detection
 - `src/session-flow/session-cmd.ts` — `--all` options, precise re-read, resume hint, English strings
 - `src/session-flow/adapters/claude-code.ts`, `codebuddy.ts`, `cursor.ts` — read native cwd from first record; English errors
 - `src/session-flow/adapters/codebuddy-ide.ts`, `codex.ts`, `workbuddy.ts` — no silent cwd rewrite; English errors

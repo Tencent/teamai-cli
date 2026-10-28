@@ -3,13 +3,14 @@
  *
  *   batch: true          # a step's scorers share one judge call unless the step or its workflow says
  *   isolation: verified  # the least isolation every judge of the team's scorers needs
- *   sessions: true       # members' finished sessions are judge work, unless a member's config.yaml says
+ *   sessions: { attended: off, unattended: auto }  # per run mode, off, ask or auto; true or false sets both
  *   daily_limit: 10      # sessions one data home leases per local day, unless a member's config.yaml says
  *
  * `scorers/<ns>/scoring.yaml` is read where `<ns>` is an active scorers namespace, as model aliases are where theirs
  * is, and replaces the root key of the same name. Two active namespaces asking for an isolation give the strictest;
- * two that set `batch` differently are a failure, as one model alias in two active namespaces is. For sessions, one
- * active namespace that sets `sessions: false` turns them off, and the lowest `daily_limit` of them wins.
+ * two that set `batch` differently are a failure, as one model alias in two active namespaces is. For sessions, each run
+ * mode takes the most restrictive policy of the active namespaces (`off` < `ask` < `auto`), and the lowest
+ * `daily_limit` of them wins. A member's `config.yaml` `scoring` overrides both, one mode at a time.
  *
  * A file that cannot be parsed fails the load, so no judge works to a default the team did not choose. A key or value
  * this teamai does not know is dropped with a problem instead, so a newer CLI's additions never stop this one.
@@ -22,6 +23,7 @@ import { isSafeNamespaceSegment } from '../manifest-schema.js';
 import { listDirs, pathExists } from '../utils/fs.js';
 import { SCORING_FILE, scorerNamespaces } from './cache.js';
 import { machineIsolation, type IsolationSetting } from './isolation.js';
+import { SessionPolicy, type SessionPolicies } from '../session-flow/session-policy.js';
 
 /** Every key a `scoring.yaml` may set: the parser handles each one, and the problem for any other key lists them. */
 const SCORING_KEYS = ['batch', 'isolation', 'sessions', 'daily_limit'] as const;
@@ -33,7 +35,7 @@ function isScoringKey(key: string): key is ScoringKey {
 
 /** What one `scoring.yaml` sets, or why it cannot be read; every message names the file. */
 export type ScoringFileRead =
-  | { ok: true; batch?: boolean; isolation?: string; sessions?: boolean; dailyLimit?: number; problems: string[] }
+  | { ok: true; batch?: boolean; isolation?: string; sessions?: Partial<SessionPolicies>; dailyLimit?: number; problems: string[] }
   | { ok: false; reason: string };
 
 export function parseScoringFile(relativePath: string, text: string): ScoringFileRead {
@@ -62,10 +64,12 @@ export function parseScoringFile(relativePath: string, text: string): ScoringFil
       case 'isolation':
         read.isolation = typeof value === 'string' ? value : JSON.stringify(value);
         break;
-      case 'sessions':
-        if (typeof value === 'boolean') read.sessions = value;
-        else read.problems.push(`${relativePath}: sessions is ${JSON.stringify(value)}, not true or false, so it is ignored`);
+      case 'sessions': {
+        const policies = SessionPolicy.read(`${relativePath} sessions`, value, { booleans: true });
+        read.sessions = policies.set;
+        read.problems.push(...policies.problems);
         break;
+      }
       case 'daily_limit':
         if (typeof value === 'number' && Number.isInteger(value) && value >= 0) read.dailyLimit = value;
         else read.problems.push(`${relativePath}: daily_limit is ${JSON.stringify(value)}, not a whole number of 0 or more, so it is ignored`);
@@ -79,11 +83,11 @@ export function parseScoringFile(relativePath: string, text: string): ScoringFil
   return read;
 }
 
-/** Whether this scope's finished sessions are judge work, and how many judge launches a local day may take for them. */
-export type SessionScoring = { enabled: false; reason: string } | { enabled: true; dailyLimit: number };
-
 /** Judge launches a local day takes for finished sessions in one data home, when nothing sets another limit. */
 export const SESSION_DAILY_LIMIT = 10;
+
+/** Whether this scope's finished sessions are judge work in each run mode, and how many judge launches a local day may take for them. */
+export type SessionScoring = { policies: SessionPolicies; dailyLimit: number };
 
 /**
  * What scoring in this scope follows: the team's `batch` default, every isolation setting that applies here, and whether
@@ -97,31 +101,35 @@ export type ScopeScoring =
 interface TeamFile {
   namespace: string | null;
   relativePath: string;
-  sessions?: boolean;
+  sessions?: Partial<SessionPolicies>;
   dailyLimit?: number;
 }
 
 /**
- * `sessions` and `daily_limit` as the member's `config.yaml` `scoring` sets them, else the active namespace files, else
- * the root file. A member value that is not true or false, or not a whole number of 0 or more, is reported and sets
- * nothing. A limit of 0 turns session scoring off.
+ * Each run mode's `sessions` policy as the member's `config.yaml` `scoring` sets it, else the most restrictive of the
+ * active namespace files, else the root file, else `off` attended and `auto` unattended; and `daily_limit` as the member
+ * sets it, else the lowest of the namespace files, else the root file. A member value it cannot use is reported and sets
+ * nothing. A limit of 0 turns session scoring off in both modes.
  */
 function sessionScoring(config: LocalConfig, rootFile: TeamFile | undefined, inNamespaces: readonly TeamFile[], problems: string[]): SessionScoring {
   const member = config.scoring?.sessions;
   const limit = config.scoring?.daily_limit;
-  if (typeof member === 'string') problems.push(`config.yaml scoring.sessions is "${member}", not true or false, so it is ignored`);
   if (typeof limit === 'string') problems.push(`config.yaml scoring.daily_limit is ${limit}, not a whole number of 0 or more, so it is ignored`);
-  const sessionsFile = inNamespaces.find((file) => file.sessions === false) ?? inNamespaces.find((file) => file.sessions === true)
-    ?? (rootFile?.sessions === undefined ? undefined : rootFile);
-  const enabled = typeof member === 'boolean' ? { on: member, source: 'config.yaml scoring.sessions' }
-    : sessionsFile && { on: sessionsFile.sessions === true, source: `${sessionsFile.relativePath} sessions` };
-  if (!enabled?.on) return { enabled: false, reason: enabled ? `${enabled.source} is false` : 'nothing sets scoring.sessions: true in config.yaml or sessions: true in scorers/scoring.yaml' };
+  const fromMember = SessionPolicy.read('config.yaml scoring.sessions', member ?? {}, { booleans: true });
+  problems.push(...fromMember.problems);
+  const policies = SessionPolicy.resolve([
+    [fromMember.set],
+    inNamespaces.map((file) => file.sessions ?? {}),
+    [rootFile?.sessions ?? {}],
+  ], { attended: 'off', unattended: 'auto' });
   const [lowest] = inNamespaces.flatMap((file) => (file.dailyLimit === undefined ? [] : [{ value: file.dailyLimit, source: `${file.relativePath} daily_limit` }]))
     .sort((left, right) => left.value - right.value);
   const daily = typeof limit === 'number' ? { value: limit, source: 'config.yaml scoring.daily_limit' }
     : lowest ?? (rootFile?.dailyLimit === undefined ? undefined : { value: rootFile.dailyLimit, source: `${rootFile.relativePath} daily_limit` });
-  if (!daily) return { enabled: true, dailyLimit: SESSION_DAILY_LIMIT };
-  return daily.value === 0 ? { enabled: false, reason: `${daily.source} is 0` } : { enabled: true, dailyLimit: daily.value };
+  if (!daily) return { policies, dailyLimit: SESSION_DAILY_LIMIT };
+  if (daily.value > 0) return { policies, dailyLimit: daily.value };
+  const off = { policy: 'off', source: { kind: 'setting', key: daily.source } } as const;
+  return { policies: { attended: off, unattended: off }, dailyLimit: 0 };
 }
 
 function failed(cause: string): ScopeScoring {

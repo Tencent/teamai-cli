@@ -1,4 +1,10 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { ClaudeCodeAdapter } from '../session-flow/adapters/claude-code.js';
+import { WorkBuddyAdapter } from '../session-flow/adapters/workbuddy.js';
+import { scrubSession } from '../session-flow/scrub.js';
 import { cleanTitleText, fallbackTitle, isInjectedText, titleFromCandidates } from '../session-flow/title.js';
 
 describe('session title cleaning', () => {
@@ -37,5 +43,54 @@ describe('session title cleaning', () => {
 
   it('falls back to a short id-based title', () => {
     expect(fallbackTitle('1fc6ec8d-3b68-4a03-8a82-950a736eee72')).toBe('Session 1fc6ec8d');
+  });
+});
+
+describe('a WorkBuddy session title', () => {
+  it('keeps no start of a secret its stored title carries past the title length once scrubbed', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-workbuddy-title-'));
+    const sessionId = '7c1e0000-0000-4000-8000-000000000031';
+    const token = `ghp_${'A1b2C3d4E5F6'.repeat(3)}`;
+    const file = path.join(dir, `${sessionId}.jsonl`);
+    fs.writeFileSync(file, `${JSON.stringify({ type: 'ai-title', aiTitle: `${'Deploy the staging build '.repeat(3)}now with token ${token}` })}\n`);
+    try {
+      const { session } = scrubSession(await new WorkBuddyAdapter().readSession({ sessionId, filePath: file }));
+
+      expect(session.title).not.toContain(token.slice(0, 8));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps no start of a secret the team declares that its title carries past the title length once scrubbed', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-workbuddy-title-'));
+    const sessionId = '7c1e0000-0000-4000-8000-000000000032';
+    const file = path.join(dir, `${sessionId}.jsonl`);
+    const start = `${'Load the warehouse '.repeat(4)}from `;
+    fs.writeFileSync(file, `${JSON.stringify({ type: 'ai-title', aiTitle: `${start}mysql-prod-7Hq2xVb9Lk tonight` })}\n`);
+    try {
+      const { session } = scrubSession(await new WorkBuddyAdapter().readSession({ sessionId, filePath: file }), { secrets: { WAREHOUSE_DSN: 'mysql-prod-7Hq2xVb9Lk' } });
+
+      expect(session.title).toBe(`${start}<REDACTED:WAREHOUSE`);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('a Claude Code session title', () => {
+  it('keeps no start of a declared secret its title cuts inside after the same secret in full', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-claude-title-'));
+    const sessionId = '7c1e0000-0000-4000-8000-000000000034';
+    const file = path.join(dir, `${sessionId}.jsonl`);
+    const prompt = 'Use mysql-prod-7Hq2xVb9Lk and compare with mysql-prod-7Hq2xVb9Lk';
+    fs.writeFileSync(file, `${JSON.stringify({ type: 'user', uuid: 'u1', parentUuid: null, cwd: dir, sessionId, timestamp: '2026-10-20T10:00:00.000Z', message: { role: 'user', content: prompt } })}\n`);
+    try {
+      const { session } = scrubSession(await new ClaudeCodeAdapter().readSession({ sessionId, filePath: file }), { secrets: { DSN: 'mysql-prod-7Hq2xVb9Lk' } });
+
+      expect(session.title).toBe('Use <REDACTED:DSN> and compare with <REDACTED:DSN>');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

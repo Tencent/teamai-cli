@@ -103,6 +103,26 @@ describe('findPruneCandidates', () => {
     // If it hits the stale branch, reason should contain 'no-date'; otherwise 'confidence'
     expect(nodateCandidate!.reason).toMatch(/confidence|no-date/);
   });
+  it('includes namespaced learnings when active namespaces are provided', async () => {
+    const learningsDir = path.join(tmpDir, 'learnings');
+    const votesDir = path.join(tmpDir, 'votes');
+    fs.mkdirSync(path.join(learningsDir, 'k8s'), { recursive: true });
+    fs.mkdirSync(votesDir, { recursive: true });
+
+    makeLearning(learningsDir, 'root-low', '2026-01-01');
+    makeLearning(path.join(learningsDir, 'k8s'), 'ns-low', '2026-01-01');
+
+    makeVotes(votesDir, 'user1', {
+      'root-low': { recalled_count: 1, upvoted_count: 0, last_recalled_at: '2026-01-01' },
+      [path.join('k8s', 'ns-low')]: { recalled_count: 1, upvoted_count: 0, last_recalled_at: '2026-01-01' },
+    });
+
+    const rootOnly = await findPruneCandidates([learningsDir], votesDir, { threshold: 0.5 });
+    expect(rootOnly.map((c) => c.filename)).toEqual(['root-low.md']);
+
+    const withNs = await findPruneCandidates([learningsDir], votesDir, { threshold: 0.5, namespaces: ['k8s'] });
+    expect(withNs.map((c) => c.filename).sort()).toEqual(['root-low.md', path.join('k8s', 'ns-low.md')].sort());
+  });
 });
 
 describe('executePrune', () => {
@@ -130,5 +150,24 @@ describe('executePrune', () => {
     expect(result.archived).toBe(1);
     expect(fs.existsSync(path.join(learningsDir, 'target.md'))).toBe(false);
     expect(fs.existsSync(path.join(tmpDir, 'learnings', '_archive', 'target.md'))).toBe(true);
+  });
+  it('archives namespaced learning into nested directory under _archive/', async () => {
+    const learningsDir = path.join(tmpDir, 'learnings');
+    fs.mkdirSync(path.join(learningsDir, 'k8s'), { recursive: true });
+    const nsFile = path.join('k8s', 'target.md');
+    makeLearning(path.join(learningsDir, 'k8s'), 'target', '2026-01-01');
+
+    const candidates = [{
+      filename: nsFile,
+      path: path.join(learningsDir, nsFile),
+      confidence: 0.05,
+      lastActivity: '',
+      reason: 'test',
+    }];
+    const result = await executePrune(learningsDir, candidates, { archive: true });
+
+    expect(result.archived).toBe(1);
+    expect(fs.existsSync(path.join(learningsDir, nsFile))).toBe(false);
+    expect(fs.existsSync(path.join(tmpDir, 'learnings', '_archive', 'k8s', 'target.md'))).toBe(true);
   });
 });

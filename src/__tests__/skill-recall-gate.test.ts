@@ -8,7 +8,11 @@ vi.mock('../config.js', async (importOriginal) => ({
   findUnreadableProjectConfig,
 }));
 
-import { resolveServableSkill, skillCatalog, skillGet, skillPath } from '../skill-content.js';
+// `skill list` prints the team listing first; it is not under test here.
+vi.mock('../status.js', () => ({ list: vi.fn() }));
+
+import { BLOCK_NOTES, blockMessage, blockNote, resolveServableSkill, skillCatalog, skillGet, skillPath } from '../skill-content.js';
+import { skillList } from '../skill-cmd.js';
 
 /**
  * Recall used to be decided when deploying: the share skill simply was not
@@ -65,6 +69,76 @@ describe('recall gate on served skills', () => {
     expect(stdout).toBe('');
     expect(stderr).toContain('share needs recall');
     expect(stderr).toContain('teamai recall enable');
+  });
+
+  it('blocks share when TEAMAI_RECALL_DISABLED=1, even with recall on (#1457)', async () => {
+    withRecall(true);
+    vi.stubEnv('TEAMAI_RECALL_DISABLED', '1');
+    try {
+      expect(await resolveServableSkill('share')).toEqual({ kind: 'blocked', name: 'share', reason: 'recall' });
+
+      // `teamai recall enable` would succeed and leave share blocked, so the
+      // refusal names the variable instead of sending the member there.
+      await skillGet(['share']);
+      expect(process.exitCode).toBe(1);
+      expect(stdout).toBe('');
+      expect(stderr).toContain('share needs recall, which TEAMAI_RECALL_DISABLED=1 turns off');
+      expect(stderr).toContain('Unset TEAMAI_RECALL_DISABLED');
+      expect(stderr).not.toContain('Turn it on with');
+      expect(stderr).not.toContain('disabled for this team');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('names TEAMAI_RECALL_DISABLED when --all skips share because of it (#1457)', async () => {
+    withRecall(true);
+    vi.stubEnv('TEAMAI_RECALL_DISABLED', '1');
+    try {
+      await skillGet([], { all: true });
+      expect(process.exitCode).toBeUndefined();
+      expect(stdout).not.toContain('name: share');
+      expect(stderr).toContain('Skipped share');
+      expect(stderr).toContain('Unset TEAMAI_RECALL_DISABLED');
+      expect(stderr).not.toContain('Turn it on with');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('keeps the recall-enable hint when the variable is not what turns recall off (#1457)', () => {
+    const configOff = {
+      headline: 'share needs recall, which is disabled for this team.',
+      hint: 'Turn it on with `teamai recall enable`, or ask your team admin to enable sharing.',
+    };
+    for (const env of [{}, { TEAMAI_RECALL_DISABLED: '0' }, { TEAMAI_RECALL_DISABLED: '' }, { TEAMAI_RECALL_DISABLED: 'true' }] as NodeJS.ProcessEnv[]) {
+      expect(blockMessage('share', { reason: 'recall' }, env)).toEqual(configOff);
+    }
+    const envOff = blockMessage('share', { reason: 'recall' }, { TEAMAI_RECALL_DISABLED: '1' });
+    expect(envOff.headline).toContain('TEAMAI_RECALL_DISABLED=1');
+    expect(envOff.hint).toContain('Unset TEAMAI_RECALL_DISABLED');
+    // The other reasons never mention the variable, even while it is set.
+    expect(blockMessage('share', { reason: 'read-only' }, { TEAMAI_RECALL_DISABLED: '1' }).hint).not.toContain('TEAMAI_RECALL_DISABLED');
+  });
+
+  it('names TEAMAI_RECALL_DISABLED in the skill list note only when it is the cause (#1457)', () => {
+    for (const env of [{}, { TEAMAI_RECALL_DISABLED: '0' }, { TEAMAI_RECALL_DISABLED: 'true' }] as NodeJS.ProcessEnv[]) {
+      expect(blockNote('recall', env)).toBe(BLOCK_NOTES.recall);
+    }
+    expect(blockNote('recall', { TEAMAI_RECALL_DISABLED: '1' })).toBe('needs recall — unset TEAMAI_RECALL_DISABLED');
+    expect(blockNote('read-only', { TEAMAI_RECALL_DISABLED: '1' })).toBe(BLOCK_NOTES['read-only']);
+  });
+
+  it('tells the member to unset TEAMAI_RECALL_DISABLED in skill list when it blocks share (#1457)', async () => {
+    withRecall(true);
+    vi.stubEnv('TEAMAI_RECALL_DISABLED', '1');
+    try {
+      await skillList({});
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    expect(stdout).toContain('share  (needs recall — unset TEAMAI_RECALL_DISABLED)');
+    expect(stdout).not.toContain('teamai recall enable');
   });
 
   it('serves share when recall is enabled', async () => {
@@ -143,7 +217,6 @@ describe('recall gate on served skills', () => {
     expect(stderr).toContain('Migrated legacy');
 
     stdout = '';
-    const { skillList } = await import('../skill-cmd.js');
     await skillList({ json: true });
     expect(() => JSON.parse(stdout)).not.toThrow();
   });

@@ -10,7 +10,7 @@ Where files install, which repo they come from, and who receives them are all he
 
 ### Project checkouts
 
-Linked worktrees of the same repository share the project's TeamAI configuration and data, while each checkout receives resources in its own tool directories. `init` and `pull` install Git checkout hooks that seed a new worktree's enabled tool roots and pull its resources before the checkout command returns.
+Linked worktrees of the same repository share the project's TeamAI configuration and data, while each checkout receives resources in its own tool directories. `init` and `pull` install Git checkout hooks that seed a new worktree's enabled tool roots and pull its resources before the checkout command returns. Some agent tools create worktrees without running Git hooks, such as Claude Code's `EnterWorktree` and Codex CLI. Such a worktree is prepared the same way, in the background, on the first session start or tool use there.
 
 A submodule clone created inside a superproject worktree inherits the original submodule's TeamAI configuration and data partition. Its first pull seeds the clone's tool roots from the original configuration, delivers resources into those roots, and installs hooks owned by that clone. Each checkout keeps its own hook ownership; full uninstall removes hooks recorded for every checkout. For targeted uninstall behavior, see [Uninstall](./faq.md#uninstall).
 
@@ -145,7 +145,7 @@ scripts:
 - `postInit` runs after hooks are installed. Init waits, then syncs MCP, so a value the script collected takes effect. The same skip rule applies. `teamai script run postInit` runs it again and syncs MCP.
 - `prePull` runs at the start of a full pull, before that scope is synced. It cannot read the terminal. Pull waits up to 90 seconds, then leaves it running. An inline pull does not run it.
 - `postPull` runs after a full pull. A session start waits up to 90 seconds, then leaves it running. An interactive `teamai pull` does not wait. An inline pull does not run it. A failure is a line in `~/.teamai/debug.log`.
-- `postDeploy` runs when a new linked worktree, or a submodule's first checkout, finishes the delivery that happens before that git command returns. That path does not run `teamai init`. Pull waits up to 15 seconds. Run the script again with `teamai script run postDeploy`. It should be safe to repeat, and it should leave an existing personal file alone.
+- `postDeploy` runs once for each new linked worktree or submodule checkout, when its first delivery finishes. Git's hook runs it before that git command returns, or, when that hook could not reach the team repo, the background pull after it does. For a worktree an agent tool created without Git hooks, or one made before TeamAI was set up, the tool's first session or tool use there runs it in the background. That path does not run `teamai init`. Pull waits up to 15 seconds. Run the script again with `teamai script run postDeploy`. It should be safe to repeat, and it should leave an existing personal file alone.
 
 ## Roles and projects
 
@@ -183,7 +183,7 @@ projects:
       mcp: [checkout]          # mcp/checkout/mcp.yaml
       models: [checkout]       # models/checkout/models.yaml
       docs: [checkout]         # docs/checkout/
-      wiki: [checkout]         # codebase slug, evidence/code/checkout/
+      wiki: [github__acme__checkout]  # the slug teamai import printed as project:
 ```
 
 Commit both files. In the project:

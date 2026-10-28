@@ -178,6 +178,65 @@ export async function deliveredLearningsNamespaces(config: LocalConfig): Promise
   return [...namespaces];
 }
 
+/**
+ * All projects selected by this scope, including those selected by its children (#913).
+ */
+export function selectedProjects(config: LocalConfig): string[] {
+  return [...new Set([
+    ...config.projects ?? [],
+    ...config.children?.children.flatMap((child) => child.selection.projects ?? []) ?? [],
+  ])];
+}
+
+/**
+ * Warning text for when manifest/projects.yaml cannot be read and namespaced learnings
+ * are held back. Shared between `recall` and maintenance/digest callers.
+ */
+export function formatProjectsManifestWarning(
+  caller: string,
+  error: unknown,
+  config: LocalConfig,
+  options: {
+    verb?: string;
+    extraHeldBack?: string;
+    targetName?: string;
+    rebuildAction?: string;
+  } = {},
+): string {
+  const projects = selectedProjects(config);
+  const verb = options.verb ?? 'read';
+  const errText = error instanceof Error ? error.message : String(error);
+  const action = options.rebuildAction ? ` and ${options.rebuildAction}` : '';
+  let subject = '';
+  if (projects.length > 0) {
+    subject = `The learnings of ${projects.length === 1 ? 'project' : 'projects'} ${projects.join(', ')}`;
+    if (options.extraHeldBack) subject += `, and ${options.extraHeldBack},`;
+  } else if (options.extraHeldBack) {
+    subject = options.extraHeldBack.charAt(0).toUpperCase() + options.extraHeldBack.slice(1);
+  }
+  const projectSummary = subject === ''
+    ? ''
+    : ` ${subject} stay out of ${options.targetName ?? caller} until manifest/projects.yaml is fixed${action}; \`teamai doctor\` shows the problem.`;
+  return `${caller} ${verb} the shared learnings only: ${errText}.${projectSummary}`;
+}
+
+/**
+ * Active learnings namespaces for this configuration. When resolution fails
+ * (e.g. an unreadable manifest/projects.yaml), logs a warning matching `recall`
+ * and falls back to the shared root (empty namespaces).
+ */
+export async function safeDeliveredLearningsNamespaces(
+  config: LocalConfig,
+  caller: string,
+): Promise<string[]> {
+  try {
+    return await deliveredLearningsNamespaces(config);
+  } catch (e) {
+    log.warn(formatProjectsManifestWarning(caller, e, config));
+    return [];
+  }
+}
+
 /** One name whose copies differ between two members, so the workspace delivers neither. */
 export interface HeldBackItem<TItem> {
   readonly name: string;
@@ -366,9 +425,14 @@ async function walk(input: {
  */
 async function readChildConfig(dir: string, gitWorkspace: boolean): Promise<ChildRead | null> {
   // Loaded here: config.js reaches this module through the resolvers it imports.
-  const { detectProjectConfig, readConfigFrom } = await import('./config.js');
+  const { detectProjectConfig, readConfigFrom, resolveLegacyRole } = await import('./config.js');
   let unreadable: string | null = null;
   const onUnreadable = (_configPath: string, error: string): void => { unreadable ??= error; };
+  // The fast reads below skip detection, so they resolve `hai` as it does.
+  const read = async (dataHomeDir: string): Promise<LocalConfig | null> => {
+    const config = await readConfigFrom(dataHomeDir, dir, undefined, onUnreadable, { selfHeal: false });
+    return config && resolveLegacyRole(config);
+  };
   const outcome = (config: LocalConfig | null): ChildRead | null => {
     if (unreadable !== null) return { kind: 'unreadable', reason: unreadable };
     return config ? { kind: 'config', config } : null;
@@ -382,7 +446,7 @@ async function readChildConfig(dir: string, gitWorkspace: boolean): Promise<Chil
     // Outside a repo a folder is set up through its own `.teamai`; inside one,
     // such a folder is part of the workspace's checkout, not a child.
     if (gitWorkspace) return null;
-    return outcome(await readConfigFrom(path.join(dir, '.teamai'), dir, undefined, onUnreadable, { selfHeal: false }));
+    return outcome(await read(path.join(dir, '.teamai')));
   }
 
   let anchor: string | null;
@@ -394,7 +458,7 @@ async function readChildConfig(dir: string, gitWorkspace: boolean): Promise<Chil
   }
   if (anchor === null) return probe();
   const partition = await resolvePartitionDir(anchor, { dryRun: true });
-  const fromPartition = await readConfigFrom(partition, dir, undefined, onUnreadable, { selfHeal: false });
+  const fromPartition = await read(partition);
   if (fromPartition || unreadable !== null) return outcome(fromPartition);
   return await lstatOrNull(path.join(dir, '.teamai')) ? probe() : null;
 }

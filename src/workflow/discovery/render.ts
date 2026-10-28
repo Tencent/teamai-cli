@@ -1,6 +1,7 @@
 /** The skill `teamai pull` generates for a workflow an agent may start: it routes to the guide and names the workflow. */
 import { generatedStartPatterns } from '../drivers/skill/literals.js';
 import { markerLines, signGenerated } from './generated-marker.js';
+import type { ToolId } from '../../types.js';
 
 export interface AdvertisedWorkflow {
   name: string;
@@ -11,7 +12,7 @@ export interface AdvertisedWorkflow {
 }
 
 /** The tools whose skills take `allowed-tools`, so an `invoke: allow` start runs without a permission prompt. */
-const PREAPPROVING_TOOLS = new Set(['claude', 'codebuddy']);
+const PREAPPROVING_TOOLS = new Set<string>(['claude', 'codebuddy'] satisfies ToolId[]);
 
 const DESCRIPTION_LIMIT = 400;
 

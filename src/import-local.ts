@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
 
-import { callClaudeParallel } from './utils/ai-client.js';
+import { callToolParallel, isOverrideInvalid } from './tool-launch/call.js';
 import { listFilesRecursive, readFileSafe, writeFile, expandHome, ensureDir } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import { assertSafePath, defaultAllowedRoots } from './utils/path-safety.js';
@@ -298,8 +298,9 @@ export async function classifyWithAI(
 
   let classified: ClassifiedItem[];
   try {
-    classified = await callClaudeParallel(tasks, AI_CONCURRENCY);
+    classified = await callToolParallel(tasks, { launchedBy: 'import-local', concurrency: AI_CONCURRENCY });
   } catch (err: unknown) {
+    if (isOverrideInvalid(err)) throw err;
     // AggregateError：部分失败，已在 parse 阶段尝试降级处理；此处全量 fallback 保守处理
     log.error(`AI classification partially failed, using conservative strategy for all entries: ${String(err)}`);
     classified = candidates.map((c) => ({

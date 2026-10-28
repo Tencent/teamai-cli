@@ -111,11 +111,11 @@ JSON
 {"data":{"label":{"scorer":"review-quality","label":"good","score":1,"passed":true,…},"published":true}}
 ```
 
-带 `run` 时，`score --next` 按运行 id 找到运行的 scope，所以 driver 可以在运行的工作树里或运行起始检出目录之外请求。
+带 `run` 时，`score --next` 按运行 id 找到运行的 scope，所以 driver 可以在运行的工作树里或运行起始检出目录之外请求，并在那里评审和提交租约。要按 id 评审一个会话，用 [`score --session`](#用自己的评审者) 租出它。
 
 | `can.judge` | 含义 |
 |---|---|
-| `isolation` | `verified` 或 `best-effort`。只租出它满足[所需级别](#隔离)的任务。 |
+| `isolation` | `verified` 或 `best-effort`。只租出它满足[所需级别](#隔离)的任务。[按 id 租出的会话](#用自己的评审者)要求更高级别时，以 `isolation_unmet` 失败。 |
 | `access` | 评审者能做什么：`answer`（不用工具）、`read`（读取证据）或 `full`（任意工具，默认值）。标签会记录该值。 |
 | `tools` | 按你的偏好排序。首个能解析评分器模型的工具胜出。 |
 
@@ -155,19 +155,201 @@ $ teamai score --session 7c1e… --source codex --scorer review-quality --push
 
 无论在哪个目录评分，标签都保存在会话所在的作用域。标签记录 `agent`，即会话启动时的运行配置，来自会话启动 hook 写入的捕获记录。标签还记录 `used.skills`，即会话或其子 agent 加载过、且捕获记录显示会话启动时（包括启动时那次 pull）由 teamai 交付并未经修改的团队技能。之后的 pull 不会改变它。捕获记录无法确认来源的技能不记录，例如与团队技能同名的成员自有技能。`--push` 发布该作用域所有待发布的标签。关闭[用量上报](reporting.md)时，它输出 `Usage reporting is off, so labels stay on this machine.`，标签继续待发布。http 团队仓库没有 `teamai-reports`，因此 `--push` 以 `unsupported_repo` 失败，标签留在本机。有标签等待发布时，`teamai doctor` 会给出警告。
 
+### 手动标注会话
+
+评审者是模型，模型也会出错。自己标注几个会话，[评分器页面](dashboard.md#评分器scorers)就会显示评审者与你一致的频率。
+
+agent 刚说重试循环已经修好，其实没有。仍在该会话内：
+
+```console
+$ teamai score --scorer review-quality --label missed-bug --push
+ℹ Labelling claude-code session 7c1e… in /work/app
+ℹ First prompt: Fix the retry loop in sync.ts
+ℹ review-quality: missed-bug (score 0, did not pass), by hand. No judge ran.
+```
+
+昨天结束的会话，在任意目录：
+
+```console
+$ teamai score --session 7c1e… --source claude-code --scorer review-quality --label good --push
+```
+
+评分器没有列出的值会失败，且不写入任何内容：
+
+```console
+$ teamai score --scorer review-quality --label flaky
+{"error":{"code":"label_invalid","message":"\"flaky\" is not a label of scorer review-quality. Use one of: good, partial, missed-bug."}}
+```
+
+`--label` 只接受一个 `--scorer`，且必须是 `teamai pull` 缓存的评分器名。标签的 `score` 和是否通过来自评分器，与评审者的标签相同，没有推理文件。它与评审者的标签一样存储和发布，`judge` 为 `{ kind: "human" }`。同一会话的手动标签和评审者标签并存：用评审者重新评分不会替换手动标签。多个成员手动标注同一会话时，只计入最新的那个手动标签。
+
+### 队友推送的会话
+
+Alice 用 `teamai session push` 推送了她的会话。在你检出的同一项目中：
+
+```console
+$ teamai session pull
+$ teamai session list
+
+Sessions for github.com/acme/app:
+
+  SESSION                                             AUTHOR      PLATFORM        MSGS  UPDATED
+  ─────────────────────────────────────────────────────────────────────────────────────────────
+  claude-code_fix-the-retry-loop-in-sync-ts_20261021  alice       claude-code       84  2026-10-21
+
+  1 session(s)
+
+$ teamai score --team-session claude-code_fix-the-retry-loop-in-sync-ts_20261021 --scorer review-quality --label missed-bug --push
+ℹ Labelling claude-code session 7c1e… in /home/alice/app
+ℹ Pushed by alice
+ℹ First prompt: Fix the retry loop in sync.ts
+ℹ review-quality: missed-bug (score 0, did not pass), by hand. No judge ran.
+```
+
+这个标签针对的是 Alice 运行的会话，因此会与她机器上评审者给出的标签配对。省略 `--label` 时，由评审者为推送的会话评分：
+
+```console
+$ teamai score --team-session claude-code_fix-the-retry-loop-in-sync-ts_20261021 --scorer review-quality
+ℹ Scoring claude-code session 7c1e… in /home/alice/app
+ℹ Pushed by alice
+ℹ First prompt: Fix the retry loop in sync.ts
+ℹ review-quality: good (score 1, passed). Reasoning: ~/.teamai/scores/reasoning/2b7d….md
+```
+
+两个成员推送了同名会话时，命令失败并列出他们。用 `--author` 选择其一：
+
+```console
+$ teamai score --team-session claude-code_fix-the-retry-loop-in-sync-ts_20261021 --author bob --scorer review-quality --label good
+```
+
+`--team-session` 在 `teamai-reports` 上读取为当前目录所在项目推送的会话。在 git 团队上，只有 `teamai-reports` 中没有该名称的会话时，才读取 teamai 以前保存在默认分支上的会话；`--author` 只在找到该名称的位置推送过它的成员中选择。它不能与 `--session`、`--source` 或 `--json` 同时使用。评审者读取前会对会话脱敏，即使推送时没有使用 `--scrub`。它的标签没有 `agent`，因为会话的运行配置只记录在运行它的机器上，所以评分器页面按工具和模型分组时将其计为“未记录”。
+
+### 评分器变更时
+
+| 你修改了 | 手动标签 |
+|---|---|
+| 提示词，或某个标签的 `description` | 仍然配对。手动标签是你对会话的判断，评审者的提示词不会改变它。用评审者重新评分，新 rubric 会显示它与你已给出的手动标签的一致程度。 |
+| 某个标签的 `value`，例如 `bad` 改为 `missed-bug` | 值为 `bad` 的手动标签不与新 rubric 的任何标签配对。请重新标注这些会话。 |
+| `passingScore`，或某个标签的 `score` | 请重新标注：手动标签保留存储时的通过结果。 |
+
+### 用自己的评审者
+
+用自己工具评审的 driver（例如 Cursor 会话或编排器）可以租出会话，而不是在本机评审。用 `--json` 声明 `can.judge`（与 [`score --next`](#任意-driver) 相同）时，`score --session` 返回一个租约。由子 agent 或另一个 agent 只根据 `prompt.md` 和证据目录评审，再由 driver 提交答案：
+
+```console
+$ teamai score --session 7c1e… --source cursor --scorer review-quality \
+    --json '{"driver":{"kind":"cursor","machine":"m1","workspace":"/work","can":{"judge":{"isolation":"best-effort","access":"read","tools":["cursor"]}}}}'
+{"data":{"lease":{"ref":"s0c4a9e2f7b1d3/a6e8f2107","source":"session","scorer":"review-quality","prompt":"…/prompt.md","cwd":"/work/app",
+  "submit":"teamai score --lease s0c4a9e2f7b1d3/a6e8f2107 --submit --stdin",…}}}
+$ teamai score --lease s0c4a9e2f7b1d3/a6e8f2107 --submit --stdin <<'JSON'
+{"driver":{"kind":"cursor","machine":"m1","workspace":"/work"},"outcome":"success",
+ "answer":{"label":"good","reasoning":"…"},"judge":{"tool":"cursor","model":"…"}}
+JSON
+```
+
+`--source` 指定从哪里读取会话，`tools` 指定由什么评审。无论抽样、六小时空闲、`scoring.sessions`、评分器的 `sessions`、之前的标签或 `daily_limit` 如何，都会租出，并计入当天的 `daily_limit`。多个评分器加 `--batch` 时共用一个租约。评分器要求的[隔离](#隔离)高于你提供的级别时（`isolation_unmet`）、评分器指定的模型你的工具都无法运行时（`judge_model_unavailable`：指定模型需要 teamai 认识的工具，例如 `cursor`），或另一个有效租约持有该任务时（`busy`），不租出任何任务。标签记录你的工具、`access` 和你报告的模型。
+
+### 试用评分器文件
+
+```console
+$ teamai score --session 7c1e… --scorer ./scorers/review-quality.md
+```
+
+推送新建或修改过的评分器之前，可以在团队仓库的本地检出中先拿一个会话试一下。`--scorer` 接受路径：含 `/` 或以 `.md` 结尾的值，相对当前目录。文件按 `teamai pull` 的方式校验，无效文件在任何评审运行前以 pull 的提示失败。评审方式与缓存的评分器相同，也支持 `--batch` 和在会话内运行。
+
+文件的标签从不保存，因此该命令不接受 `--push`，`--run` 也只接受评分器名称。输出给出标签及其理由，并带 `"stored": false`。旁边的 `stored` 列出本机为该会话和同名评分器保存的最新标签，每个评分标准一条，便于看出修改是否改变了结论。`control` 是用同一文件只对会话的第一条提示再评审一次的结果。它通过时会附带警告：该评分标准会让 agent 什么都没做的会话通过，可能并未评判 agent 的工作。它只警告、从不失败，因为评分标准可能本就是评判提示本身。
+
+工作流或整个团队分支用 `teamai pull --team-ref <branch>` 试用（[分发](distribution.md)）。
+
 ### 已结束的会话
 
-成员在 `config.yaml` 中设置 `scoring.sessions: true` 后，该作用域捕获的每个会话在六小时内没有任何活动时，就成为评审工作，由每个设置了 `sessions: true` 的评分器按其 `samplingRate` 抽样评判。命名空间中的评分器只在会话每次启动时记录的角色和项目都使该命名空间生效时，才评判该会话。`score --next` 先分发工作流的评审工作，再分发会话。会话租约带有 `"source":"session"`，其 `cwd` 是提交答案时所在的目录。
+无人值守的运行现在默认发布并评判自己的会话。在 CI、云虚拟机或托管任务中（[`CI` 或 `TEAMAI_MODE=unattended`](workflow.md#有人值守与无人值守的运行)），[`teamai score --drain`](#无人值守任务结束前运行-drain) 会把本机记录为无人值守的已捕获会话，以及在这里驱动的工作流运行的步骤会话，脱敏后归档到 `teamai-reports`。每个设置了 `sessions: true` 的评分器在 `daily_limit` 之内抽样评判这些已捕获的会话。要保持原来的行为，在两个团队文件中都设置 `unattended: off`：
 
-团队可以在 `scorers/scoring.yaml` 或某个生效命名空间的 `scoring.yaml` 中设置 `sessions` 和 `daily_limit`，命名空间的设置覆盖根文件。两个生效命名空间不一致时，`sessions: false` 和最低的 `daily_limit` 生效。成员的 `config.yaml` 覆盖以上所有设置。
+```yaml
+# teamai.yaml
+sessions: { publish: { unattended: off } }
+```
 
-每个会话对同一评分器和评分标准只评判一次。释放、过期或本地评审失败都会关闭它。过期租约的答案仍会被记录，除非之后已有评审者为该会话打了标签。`config.yaml` 中的 `scoring.daily_limit` 设置每个数据目录每个本地日最多租出多少个会话，默认 10，失败或无法读取的会话也计入。`0` 关闭会话评分。修改评分器的评分标准后，已捕获的会话会重新成为它的评审工作，每日上限会把这些工作分摊到之后几天。
+```yaml
+# scorers/scoring.yaml
+sessions: { unattended: off }
+```
 
-你不需要自己运行 driver。会话启动时的 pull 之后，如果会话所在项目或你的用户作用域开启了会话评分，teamai 会为这两个作用域在后台启动评审。它用本机安装的评审工具评判每个已结束的会话，30 分钟后不再领取新工作，标签保持待发布，由下一次 `teamai pull` 发布。每个租约是一次在你账号上的评审调用，每天最多 `daily_limit` 次。会话评分器指定便宜的[模型别名](#选择评审者的模型)（例如 `model: fast`）可以控制成本。要停止，在 `config.yaml` 中设置 `scoring.sessions: false`。
+`scorers/scoring.yaml` 中的 `sessions` 按运行模式分别设置策略。布尔写法仍然有效：
+
+```yaml
+# scorers/scoring.yaml，或 scorers/<namespace>/scoring.yaml
+sessions: { attended: auto, unattended: auto }   # true 等于两种模式都是 auto，false 等于都是 off
+daily_limit: 10                                  # 按数据目录计数：在全新的 CI runner 上，它限制的是一次任务，而不是一天
+```
+
+| 策略 | `attended` | `unattended` |
+|---|---|---|
+| `off` | 什么都不做。默认值。 | 什么都不做。 |
+| `ask` | 目前等同于 `off`。 | 等同于 `off`，因为没有人回答。 |
+| `auto` | 会话六小时没有任何活动后，由后台评审评判。 | 在任务结束前运行 `teamai score --drain` 时评判。默认值。 |
+
+每种模式单独解析，取下面第一个设置了它的位置：成员 `config.yaml` 中的 `scoring.sessions`、生效命名空间的 `scoring.yaml`、根目录的 `scorers/scoring.yaml`、默认值。两个生效命名空间不一致时，最严格的策略生效（`off`，其次 `ask`，最后 `auto`），`daily_limit` 也取最低值。只写一种模式的映射（例如 `{ attended: ask }`）会把另一种模式留给下一级：
+
+```yaml
+# config.yaml
+scoring:
+  sessions: { attended: ask }   # 只设置有人值守；无人值守仍按团队设置
+```
+
+值不是 `off`、`ask` 或 `auto`（也不是布尔值）时，`teamai doctor` 会报告它所在的文件和键，teamai 忽略该值，这种模式交给下一级。会话是否归档由 `sessions.publish` 决定，见[会话](sharing.md#会话)。
+
+| 评判对象 | 由谁决定 |
+|---|---|
+| 工作流步骤的 pass | 步骤的 `scorers`，按每个评分器的 `samplingRate` 抽样。与 `sessions` 无关。 |
+| 已捕获的会话：你的会话，或 `CI`、`TEAMAI_MODE` 任务中不是由 teamai 启动的会话 | 该会话运行模式对应的 `sessions`，由每个设置了 `sessions: true` 的评分器按其 `samplingRate` 抽样评判。 |
+| teamai 启动的会话，例如工作流步骤或评审 | 不评判。它不写捕获记录，它的步骤按 pass 评判。 |
+| teamai 读不到会话的工具（例如 Pi）的会话 | 不评判。对发布或评判策略不是 `off` 的每种模式，`teamai doctor` 会列出团队启用的每个这类工具。按默认值，两种模式都会列出。 |
+
+命名空间中的评分器只在会话每次启动时记录的角色和项目都使该命名空间生效时，才评判该会话。`score --next` 先分发工作流的评审工作，再分发会话。会话租约带有 `"source":"session"`，其 `cwd` 是提交答案时所在的目录。
+
+每个会话对同一评分器和评分标准只评判一次。释放、过期或本地评审失败都会关闭它。过期租约的答案仍会被记录，除非之后已有评审者为该会话打了标签，或[你自己的评审者](#用自己的评审者)又租走了它。`config.yaml` 中的 `scoring.daily_limit` 设置每个数据目录每个本地日最多租出多少个会话，默认 10，失败或无法读取的会话也计入。在全新的 CI runner 上，每次任务都从新的数据目录开始，所以这个上限限制的是一次任务，而不是一天。`0` 关闭会话评分。修改评分器的评分标准后，已捕获的会话会重新成为它的评审工作，每日上限会把这些工作分摊到之后几天。
+
+设置 `attended: auto` 后，你不需要自己运行 driver。会话启动时的 pull 之后，如果会话所在项目或你的用户作用域开启了会话评分，teamai 会为这两个作用域在后台启动评审。它用本机安装的评审工具评判每个已结束的会话，30 分钟后不再领取新工作，标签保持待发布，由下一次 `teamai pull` 发布。每个租约是一次在你账号上的评审调用，每天最多 `daily_limit` 次。会话评分器指定便宜的[模型别名](#选择评审者的模型)（例如 `model: fast`）可以控制成本。要停止，在 `config.yaml` 中设置 `scoring.sessions: { attended: off }`。
 
 后台评审使用 `teamai init` 记录的工具主目录，例如移动过的 `CLAUDE_CONFIG_DIR`。它看不到只在你的 shell 中设置的凭据或 base URL，在 Windows 上尤其如此。请把它们放在工具的登录状态、用户环境变量或工具 `settings.json` 的 `env` 中。
 
 比当前版本更旧的 teamai 会拒绝带有 `sessions: true` 的评分器，因此团队添加这样的评分器之前，请先在每位成员的机器上更新 teamai。在你的机器上领取评审工作的旧版 teamai（例如某个驱动自带的副本）会删除会话租约的评分标准，因此开启 `scoring.sessions` 之前，请先更新机器上的每一份 teamai。
+
+### 无人值守任务结束前运行 drain
+
+```console
+$ teamai score --drain
+✔ Judged 1 sampled session here (review-quality)
+✔ Published 1 label to teamai-reports
+✔ Archived 1 captured session to teamai-reports (scrubbed)
+✔ Reported usage to stats/<member>.yaml
+ℹ Left open: 1 session whose scorer pins a model no judge tool here runs (judge_model_unavailable). A driver whose tools run it takes it with: teamai score --next --json '{"driver":{…,"can":{"judge":{…}}}}'
+```
+
+每个无人值守的 driver 都以 `teamai score --drain` 结束。本地驱动在无人值守运行结束时自动执行它，除非无人值守会话的发布和评判都设为 `off`。skill 驱动、T3、Paseo 和 CI 脚本把它作为最后一步执行。它按以下顺序工作：
+
+1. 在无人值守模式下，本数据目录记录为无人值守的每个已捕获会话都算已结束，包括调用它的会话。有人值守的会话仍按六小时规则。
+2. 评判本机能评判的每个未完成的评审项：抽样的步骤 pass，以及策略允许的抽样会话，受 `daily_limit` 限制。本机有另一个评审过程（例如后台评审）正在运行时，它不评判任何评审项，并会说明这一点。等那个过程结束后再运行一次 drain。
+3. 像 `score --push` 一样发布每个待发布的标签，并像 `teamai pull` 一样发布运行当时没能发布的工作流运行记录。
+4. 当前模式的 `publish` 为 `auto` 时，把该模式下已结束、尚未归档的已捕获会话，以及在这里驱动的运行中尚未归档的步骤会话，脱敏后归档到 `teamai-reports`。无法从这里归档的步骤会话（teamai 读不到其工具的会话，或本机读不到这个会话）只列出一次已跳过及原因，之后不再重试。该运行的其他步骤会话照常归档。
+5. 像 `teamai pull` 一样把用量上报到 `stats/<member>.yaml`，让临时 runner 的计数到达团队。
+6. 输出剩下的工作：评分器固定的模型本机没有评审工具能运行（`judge_model_unavailable`），或本机达不到其隔离要求的评审项；本机没有安装评审工具时，是所有未完成的评审项。它们等待其他 driver 的 `score --next`。
+
+drain 只结束并发布与其运行模式相同的会话，因此在不处于无人值守模式的机器上，要处理无人值守会话，请运行 `TEAMAI_MODE=unattended teamai score --drain`。
+
+在这里没有能做的事时，drain 以 0 退出，留给其他 driver 的评审项也算在内。评审、发布或用量上报失败时以 1 退出。发布或上报失败的内容保持待发布，下一次 `--drain` 会重试。评审失败是最终结果：drain 输出这次失败，但从不重试。要重新请求评审，运行 `teamai score --session <id> --source <platform> --scorer <name>`。
+
+drain 在哪里运行，决定它看到的调用会话是什么样子：
+
+```text
+CI job:  claude -p "…"  →  tool exits  →  teamai score --drain      # 任务的最后一步：会话已完整
+skill:   … last turn of an unattended session → teamai score --drain  # 会话此刻的样子
+```
+
+作为任务的最后一步、在工具退出后运行时，drain 看到的是完整的会话。在会话内部运行时，它按会话此刻的样子评判并发布该会话，之后的对话轮次不会再被评判或发布。
+
+运行、评审尝试和租约都保存在 runner 的数据目录中。过期的会话租约或失败的评审尝试是最终结果，在 drain 之前被终止的 runner 会丢失那次评审。长期运行的虚拟机在每次任务结束时运行 `teamai score --drain`。
 
 ## 批量评审
 
@@ -212,10 +394,12 @@ Judge tools here: claude 2.1.308 (Claude Code) is verified, codebuddy 2.3.0 is b
 | Claude Code 2.1.308 | `verified` | `read` | `--restricted`，只开放 Read、Grep 和 Glob，不加载 MCP，不保存会话。 |
 | codex-cli 0.163.0 | `verified` | `read` | 临时主目录，其权限配置只允许 shell 读取证据，禁止网络和写入。 |
 | OpenCode v2.1.2 | 不在任何 git 或 hg 检出内时为 `verified`，否则 `best-effort` | `read` | standalone 模式，使用独立的配置、数据库和数据目录；禁止命令、编辑、网页和目录外访问；读取结果后删除评判会话。 |
-| CodeBuddy | `best-effort` | `full` | 只读工具，不加载 MCP，不保存会话。无论 `--tools` 如何设置，它都会列出约 70 个工具。未登录时以 `judge_tool_unavailable` 失败。 |
+| CodeBuddy、WorkBuddy | `best-effort` | `full` | 只读工具，不加载 MCP，不保存会话。无论 `--tools` 如何设置，它都会列出约 70 个工具。未登录时以 `judge_tool_unavailable` 失败。 |
+| Cursor CLI | `best-effort` | `full` | 在 Cursor 沙箱中以 ask 模式运行。 |
+| Pi Coding Agent | `best-effort` | `full` | 只开放 read、grep、find 和 ls 工具；不加载上下文文件、扩展和技能；不保存会话。 |
 | 其他版本 | `best-effort` | 同上 | 相同配置，未经验证。 |
 
-`best-effort` 工具不能评判要求 `verified` 的评分器。提示通过标准输入或文件传入。保留工具登录和受支持的模型切换设置。本机没有评审工具能运行评分器的模型时，评审任务保持打开，留给其他 driver，不改变工作流结果。由哪个工具评审见[选择评审者的模型](#选择评审者的模型)。
+`best-effort` 工具不能评判要求 `verified` 的评分器，[你自己的评审者](#用自己的评审者)低于所需级别时也不能。提示通过标准输入或文件传入。保留工具登录和受支持的模型切换设置。本机没有评审工具能运行评分器的模型时，评审任务保持打开，留给其他 driver，不改变工作流结果。由哪个工具评审见[选择评审者的模型](#选择评审者的模型)。
 
 ## 标签存放位置
 
@@ -227,4 +411,4 @@ Judge tools here: claude 2.1.308 (Claude Code) is verified, codebuddy 2.3.0 is b
 | `<dataHome>/sessions/captures/` | 每个会话启动时的运行配置，由会话启动 hook 写入。会话文件消失一天后删除。 |
 | `teamai-reports` 上的 `scores/<member>/<YYYY-MM>.jsonl` | 已发布的标签，每个评分器、评分标准、评分对象和评审类型只保留最新一条。推送成功前标签留在 `<dataHome>/scores/pending/`；关闭用量上报时一直留在那里。 |
 
-标签从不进入运行或它的记录。工作流运行页面显示每一轮的标签，以及评审开销，与运行本身的 token 分开统计。本机的运行统计每一次评审尝试；成员发布的运行只统计产生了标签的评审。
+标签从不进入运行或它的记录。工作流运行页面显示每一轮的标签，以及评审开销，与运行本身的 token 分开统计。本机的运行统计每一次评审尝试；成员发布的运行只统计产生了标签的评审。仪表盘的[评分器页面](dashboard.md#评分器scorers)按时间和配置显示每个评分器的通过率。

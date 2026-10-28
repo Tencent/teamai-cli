@@ -40,7 +40,12 @@ function git(cwd: string, ...args: string[]): string {
 
 function useGitConfig(extra = ''): void {
   const file = path.join(tmp, 'gitconfig');
-  fs.writeFileSync(file, `[user]\n\tname = tester\n\temail = tester@example.com\n${extra}`);
+  // GIT_CONFIG_GLOBAL replaces the isolated home's .gitconfig (whose
+  // gc/maintenance off-switch the setup file writes), so the switch is
+  // restated here: a commit or push otherwise leaves a detached
+  // `git gc --auto` writing objects/pack after the test returns (#1413) —
+  // the maxRetries rmSync below races that writer instead of removing it.
+  fs.writeFileSync(file, `[user]\n\tname = tester\n\temail = tester@example.com\n[gc]\n\tauto = 0\n[maintenance]\n\tauto = false\n${extra}`);
   process.env.GIT_CONFIG_GLOBAL = file;
   process.env.GIT_CONFIG_NOSYSTEM = '1';
 }

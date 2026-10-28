@@ -4,7 +4,7 @@
  *
  * - GitHub: 👎 reaction = reject, no reaction = approve (written by default)
  * - GitLab: 👎 (thumbsdown) award emoji = reject, no emoji = approve (written by default)
- * - TGit: resolve_state=1 = approve, resolve_state=0 = reject (not written by default)
+ * - TGit: emoji 8 (☝️) on the note = reject, no emoji = approve (written by default)
  */
 
 import { parseMrUrl } from './mr-comment.js';
@@ -17,6 +17,14 @@ import { log } from '../utils/logger.js';
 const API_TIMEOUT_MS = 15_000;
 // GitLab caps note pages at 100; same guard as fetchGitLabDiscussions (mr-fetch.ts).
 const MAX_NOTE_PAGES = 20;
+
+/**
+ * GitLab names a skin-toned emoji `thumbsdown_tone1` … `thumbsdown_tone5`.
+ * Any of those still means the reviewer rejected the suggestion.
+ */
+function isThumbsdownAward(name: string): boolean {
+  return name === 'thumbsdown' || name.startsWith('thumbsdown_tone');
+}
 
 // ─── Types ────────────────────────────────────────────────
 
@@ -215,7 +223,7 @@ async function readGitLabRejections(mrUrl: string): Promise<RejectionResult> {
     );
 
     // GitLab: 👎 (thumbsdown) = reject, no emoji = approve (written by default, same as GitHub)
-    if (awards.some((a) => a.name === 'thumbsdown')) {
+    if (awards.some((a) => isThumbsdownAward(a.name))) {
       result.rejectedIds.add(markerId);
     } else {
       result.approvedIds.add(markerId);

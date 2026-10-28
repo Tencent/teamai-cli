@@ -6,6 +6,7 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { knownSecrets } from '../env-resolution.js';
 import { isSelfMode, type LocalConfig } from '../types.js';
 import { createGit, getDefaultBranch } from '../utils/git.js';
 import { log } from '../utils/logger.js';
@@ -14,8 +15,8 @@ import { getAdapter } from './adapters/index.js';
 import { AgentSession, noAdapter, recordedToolRoots, writeCopyOnce } from './agent-session.js';
 import type { Session } from './ir.js';
 import { degradeThinkingBlocks } from './migrate.js';
-import { archiveBusyMessage, authorForCwd, pushArchive, sessionArchiveRoot } from './session-cmd-shared.js';
-import { SyncManager, defaultSyncMeta, getRepoIdentity, withSessionPublicationLock, type SessionSyncMeta } from './sync.js';
+import { archiveBusyMessage, authorForCwd, deriveArchiveIdentity, sessionArchiveRoot } from './session-cmd-shared.js';
+import { SyncManager, defaultSyncMeta, getRepoIdentity, type SessionSyncMeta } from './sync.js';
 
 /** A session in one tool, by the id that tool gave it. */
 export type ArchiveSessionRef = { platform: string; sessionId: string };
@@ -26,7 +27,8 @@ export type ArchiveDelivery<T extends ArchiveSessionRef = ArchiveSessionRef> =
   | { status: 'archived'; archived: T[]; skipped: T[] }
   | { status: 'failed'; message: string };
 
-type Delivered = { status: 'archived' } | { status: 'failed'; message: string };
+/** What became of one session pushed to the team session archive. `busy`: another write held teamai-reports, and nothing was written. */
+export type SessionPush = { status: 'archived' } | { status: 'busy'; message: string } | { status: 'failed'; message: string };
 
 /** The team session archive as one workflow driver run restores sessions from it. */
 export type SessionArchive = {
@@ -41,30 +43,32 @@ export type SessionArchive = {
 };
 
 /**
- * The archive as origin has it. On a git-kind team, origin's default branch is fetched once per archive opened, and
- * sessions are read from a temporary clone at that commit, so a session archived again under the same id restores as it
- * was last archived, and the member's team clone stays where it is. When the fetch fails, the team clone is read as it
- * is, and the answer says it may be older than origin. The reports checkout of self mode is read as it is, since the
- * claim that hands a run over has just synced it.
+ * The archive as this machine has it: the teamai-reports checkout, read as it is, since the claim that hands a run over
+ * has just synced it. On a git-kind team, a session teamai-reports does not hold is read from the archive teamai kept
+ * on the default branch before: origin's default branch is fetched once per archive opened, and sessions are read from a
+ * temporary clone at that commit, so the member's team clone stays where it is. When the fetch fails, the team clone is
+ * read as it is, and the answer says it may be older than origin.
  */
 export function openSessionArchive(config: LocalConfig): SessionArchive {
   let latest: Promise<LatestArchive> | undefined;
   return {
     restore: async (source, target) => {
-      const local = sessionArchiveRoot(config);
-      if (!local) return { status: 'fresh', reason: 'This team keeps no session archive.' };
-      let root = local;
+      const reports = sessionArchiveRoot(config);
+      if (!reports) return { status: 'fresh', reason: 'This team keeps no session archive.' };
+      const repoIdentity = getRepoIdentity(target.cwd);
+      let archive = new SyncManager(reports);
+      let entry = archive.findArchived(repoIdentity, source);
+      let where = 'on teamai-reports';
       let stale = '';
-      if (!isSelfMode(config)) {
+      if (!entry && !isSelfMode(config)) {
+        const local = config.repo.localPath;
         latest ??= fetchLatest(local);
         const fetched = await latest;
-        if ('root' in fetched) root = fetched.root;
-        else stale = ` Fetching the archive from origin failed, so ${local} was read as it is and may be older than origin: ${fetched.failed}`;
+        if ('failed' in fetched) stale = ` Fetching the archive from origin failed, so ${local} was read as it is and may be older than origin: ${fetched.failed}`;
+        archive = new SyncManager('root' in fetched ? fetched.root : local);
+        entry = archive.findArchived(repoIdentity, source);
+        where = `on teamai-reports or ${'root' in fetched ? "on origin's default branch" : `in ${local}`}`;
       }
-      const where = root === local ? `in ${local}` : 'on origin';
-      const repoIdentity = getRepoIdentity(target.cwd);
-      const archive = new SyncManager(root);
-      const entry = archive.findArchived(repoIdentity, source);
       if (!entry) return { status: 'fresh', reason: `The team session archive ${where} has no ${source.platform} session ${source.sessionId}.${stale}` };
       let session;
       try {
@@ -85,7 +89,7 @@ export function openSessionArchive(config: LocalConfig): SessionArchive {
         cwd: target.cwd,
       });
       if (written.status !== 'done') return { status: 'fresh', reason: written.failure.message };
-      if (stale) log.warn(`The ${source.platform} session ${source.sessionId} was restored from ${local}.${stale}`);
+      if (stale) log.warn(`The ${source.platform} session ${source.sessionId} was restored from ${config.repo.localPath}.${stale}`);
       return { status: 'restored', sessionId: written.sessionId };
     },
     close: async () => {
@@ -121,10 +125,10 @@ async function fetchLatest(teamClone: string): Promise<LatestArchive> {
 
 /**
  * Pushes, for each chain of `chains` (its sessions newest first), the newest session this machine's tools can read,
- * read and scrubbed, to the team session archive, where a member who continues workflow run `run` restores them. A
+ * read and scrubbed of the team's secrets too, to the team session archive, where a member who continues workflow run `run` restores them. A
  * session newer than that one, which this machine cannot read, is skipped and listed. A chain with none readable fails
  * the push before anything is written. The sessions are filed under the repository of business checkout `checkout`,
- * where the run's steps ran, as its git author. In self mode the archive is on teamai-reports and written under its lock.
+ * where the run's steps ran, as its git author, on teamai-reports under its lock.
  */
 export async function archiveSessions<T extends ArchiveSessionRef>(
   config: LocalConfig,
@@ -136,6 +140,7 @@ export async function archiveSessions<T extends ArchiveSessionRef>(
   const toolRoots = recordedToolRoots(checkout);
   const repoIdentity = getRepoIdentity(checkout);
   const author = authorForCwd(checkout, config.username);
+  const scrub = { secrets: await knownSecrets(config) };
   const read: Array<{ session: Session; meta: SessionSyncMeta }> = [];
   const archived: T[] = [];
   const skipped: T[] = [];
@@ -143,7 +148,7 @@ export async function archiveSessions<T extends ArchiveSessionRef>(
     const unreadable: string[] = [];
     let newest: { ref: T; session: Session; meta: SessionSyncMeta } | undefined;
     for (const ref of chain) {
-      const found = await AgentSession.find(ref, { scrub: true, toolRootsFor: () => toolRoots });
+      const found = await AgentSession.find(ref, { scrub, toolRootsFor: () => toolRoots });
       if (found.status === 'failed') {
         skipped.push(ref);
         unreadable.push(`The ${ref.platform} session ${ref.sessionId} could not be read: ${found.failure.message}`);
@@ -167,44 +172,49 @@ export async function archiveSessions<T extends ArchiveSessionRef>(
     archived.push(newest.ref);
     read.push({ session: newest.session, meta: newest.meta });
   }
-  const outcome = (delivered: Delivered): ArchiveDelivery<T> => (delivered.status === 'archived' ? { ...delivered, archived, skipped } : delivered);
-  if (read.length === 0) return outcome({ status: 'archived' });
-  const message = `sync: archive ${read.length} session(s) of workflow run ${run}`;
-  if (isSelfMode(config)) return outcome(await archiveOnReports(config, read, message));
-  const published = await withSessionPublicationLock(root, async (): Promise<Delivered> => {
-    const archive = new SyncManager(root);
-    const unsaved = await saveAll(archive, root, read);
-    if (unsaved) return { status: 'failed', message: unsaved };
-    let commit;
-    try {
-      commit = archive.gitCommit(message);
-    } catch (error) {
-      commit = { status: 'failed' as const, reason: error instanceof Error ? error.message : String(error) };
-    }
-    if (commit.status === 'failed') return { status: 'failed', message: `Committing the sessions in ${root} failed: ${commit.reason}` };
-    const pushed = await pushArchive(archive, root);
-    if (pushed.status === 'failed') {
-      return { status: 'failed', message: `The sessions were committed in ${root} but not pushed: ${pushed.reason}` };
-    }
-    return { status: 'archived' };
-  });
-  if (published.status === 'busy') return { status: 'failed', message: archiveBusyMessage(root, published.lockPath) };
-  return outcome(published.value);
+  if (read.length === 0) return { status: 'archived', archived, skipped };
+  const delivered = await archiveOnReports(config, read, `sync: archive ${read.length} session(s) of workflow run ${run}`);
+  return delivered.status === 'archived' ? { status: 'archived', archived, skipped } : { status: 'failed', message: delivered.message };
 }
 
-/** The newest session of `chain` the archive at `root` holds, read on a git-kind team from origin's latest commit. */
+/**
+ * Pushes session `ref`, read from this machine's tool and scrubbed of the team's secrets too, to the team session archive on teamai-reports, under
+ * its lock. It is filed under the repository of the workspace it ran in, as that workspace's git author. Never prompts.
+ */
+export async function pushSession(config: LocalConfig, ref: ArchiveSessionRef): Promise<SessionPush> {
+  if (!sessionArchiveRoot(config)) return { status: 'failed', message: 'This team keeps no session archive.' };
+  const found = await AgentSession.find(ref, { scrub: { secrets: await knownSecrets(config) } });
+  if (found.status === 'failed') return { status: 'failed', message: found.failure.message };
+  const { session } = found;
+  const meta = defaultSyncMeta({
+    platform: ref.platform,
+    author: authorForCwd(session.cwd, config.username),
+    cwd: session.cwd,
+    sessionId: ref.sessionId,
+    repoIdentity: deriveArchiveIdentity(session, ref.platform),
+    title: session.title,
+  }, session.createdAt);
+  return archiveOnReports(config, [{ session, meta }], `sync: push 1 session(s) from ${ref.platform}`);
+}
+
+/**
+ * The newest session of `chain` the archive holds: teamai-reports at `root` as it is, then on a git-kind team the
+ * archive teamai kept before on the default branch, read from origin's latest commit.
+ */
 async function alreadyArchived<T extends ArchiveSessionRef>(
   config: LocalConfig,
   root: string,
   repoIdentity: string | null,
   chain: readonly T[],
 ): Promise<T | undefined> {
-  const fetched = isSelfMode(config) ? undefined : await fetchLatest(root);
+  const find = (archive: SyncManager) => chain.find((ref) => archive.findArchived(repoIdentity, ref));
+  const kept = find(new SyncManager(root));
+  if (kept || isSelfMode(config)) return kept;
+  const fetched = await fetchLatest(config.repo.localPath);
   try {
-    const archive = new SyncManager(fetched && 'root' in fetched ? fetched.root : root);
-    return chain.find((ref) => archive.findArchived(repoIdentity, ref));
+    return find(new SyncManager('root' in fetched ? fetched.root : config.repo.localPath));
   } finally {
-    if (fetched && 'root' in fetched) await fs.rm(fetched.dir, { recursive: true, force: true });
+    if ('root' in fetched) await fs.rm(fetched.dir, { recursive: true, force: true });
   }
 }
 
@@ -212,7 +222,7 @@ async function archiveOnReports(
   config: LocalConfig,
   sessions: ReadonlyArray<{ session: Session; meta: SessionSyncMeta }>,
   message: string,
-): Promise<Delivered> {
+): Promise<SessionPush> {
   let unsaved: string | undefined;
   const result = await updateReports(config, async (worktree) => {
     const archive = new SyncManager(worktree);
@@ -225,9 +235,9 @@ async function archiveOnReports(
     case 'already-present':
       return { status: 'archived' };
     case 'busy':
-      return { status: 'failed', message: 'Another teamai process is writing teamai-reports.' };
+      return { status: 'busy', message: 'another teamai process is writing teamai-reports' };
     case 'failed':
-      return { status: 'failed', message: `Writing teamai-reports failed: ${result.reason}` };
+      return { status: 'failed', message: result.reason };
     default: {
       const unhandled: never = result;
       return unhandled;

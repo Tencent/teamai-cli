@@ -2,10 +2,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { getHermesHome } from '../hermes-home.js';
-import { resolveDshHome } from '../dsh-hooks.js';
 import { resolveOpenclawStateDir } from '../openclaw-home.js';
-import { getCopilotHome, type LocalConfig } from '../types.js';
+import type { LocalConfig } from '../types.js';
 import { skillRoots } from '../usage-tracker.js';
 import { getUserHome } from '../utils/home.js';
 import { realHost, saveToolHomes, toolHome, toolHomesPath } from '../tool-home.js';
@@ -25,7 +23,7 @@ describe('tool homes from a session whose directory was removed (#810)', () => {
   it('resolves the Hermes, Copilot, DSH and OpenClaw homes', () => {
     const home = getUserHome();
 
-    expect([getHermesHome(), getCopilotHome(), resolveDshHome(), resolveOpenclawStateDir()])
+    expect([toolHome('hermes'), toolHome('copilot'), toolHome('dsh'), resolveOpenclawStateDir()])
       .toEqual([path.join(home, '.hermes'), path.join(home, '.copilot'), path.join(home, '.dsh'), path.join(home, '.openclaw')]);
   });
 
@@ -52,7 +50,7 @@ describe('a home recorded on this machine', () => {
     await saveToolHomes({ hermes: recorded('hermes'), copilot: recorded('copilot'), dsh: recorded('dsh'), openclaw: recorded('openclaw') });
     for (const name of ['HERMES_HOME', 'COPILOT_HOME', 'DSH_HOME', 'OPENCLAW_STATE_DIR']) vi.stubEnv(name, path.join(tmp, 'shell', name));
 
-    expect([getHermesHome(), getCopilotHome(), resolveDshHome(), resolveOpenclawStateDir()])
+    expect([toolHome('hermes'), toolHome('copilot'), toolHome('dsh'), resolveOpenclawStateDir()])
       .toEqual([recorded('hermes'), recorded('copilot'), recorded('dsh'), recorded('openclaw')]);
   });
 
@@ -87,6 +85,29 @@ describe('a home recorded on this machine', () => {
 
     expect(await recordToolHomes('pull')).toEqual([]);
     expect(toolHome('hermes')).toBe(winner);
+  });
+});
+
+describe('Hermes\'s active profile', () => {
+  let tmp: string;
+  beforeEach(() => {
+    tmp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-hermes-profile-')));
+    vi.stubEnv('HOME', tmp);
+    vi.stubEnv('HERMES_HOME', undefined);
+    vi.stubEnv('HERMES_DATA_DIR_SUFFIX', undefined);
+  });
+  afterEach(() => { vi.unstubAllEnvs(); fs.rmSync(tmp, { recursive: true, force: true }); });
+
+  it('is followed on every run, so switching back to default needs no init', async () => {
+    const native = path.join(tmp, '.hermes');
+    fs.mkdirSync(path.join(native, 'profiles', 'work'), { recursive: true });
+    fs.writeFileSync(path.join(native, 'active_profile'), 'work\n');
+    await recordToolHomes('pull');
+    expect(toolHome('hermes')).toBe(path.join(native, 'profiles', 'work'));
+
+    fs.writeFileSync(path.join(native, 'active_profile'), 'default\n');
+
+    expect(toolHome('hermes')).toBe(native);
   });
 });
 

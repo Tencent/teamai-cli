@@ -15,6 +15,7 @@ import {
 } from './sync.js';
 import { isInteractive } from '../utils/prompt.js';
 import { setStderrOnly } from '../utils/logger.js';
+import { knownSecrets } from '../env-resolution.js';
 import {
   REPORTS_ARCHIVE_BUSY,
   archiveBusyMessage,
@@ -444,6 +445,8 @@ async function migrateSession(sessionId: string | undefined, opts: MigrationOpti
         return archiveFailed('archive_failed', err instanceof Error ? err.message : String(err));
       }
       const { root: repoRoot, reports } = archive;
+      // The team's declared secrets are known only for the teamai install's own archive, not for a --repo-root clone.
+      const scrub = opts.scrub ? { secrets: reports ? await knownSecrets(reports) : {} } : false;
       // When expanded across directories, sessions do not belong to workCwd; author should come from the repo the session actually lives in
       const authorCwd = migratedTargets.find((t) => t.cwd)?.cwd ?? workCwd;
       const author = getGitAuthor(authorCwd);
@@ -459,7 +462,7 @@ async function migrateSession(sessionId: string | undefined, opts: MigrationOpti
           // and scrub again with the archive default, which drops filePath.
           const readBack = await AgentSession.find(
             { platform: target, sessionId: t.sessionId, cwd: t.cwd ?? opts.targetCwd ?? workCwd },
-            { scrub: Boolean(opts.scrub), toolRootsFor },
+            { scrub, toolRootsFor },
           );
           if (readBack.status === 'failed') {
             if (json) {

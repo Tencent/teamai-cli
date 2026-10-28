@@ -16,7 +16,6 @@ vi.mock('../utils/logger.js', () => ({
 }));
 
 import {
-  resolveOmpExtensionsDir,
   injectOmpHooks,
   removeOmpHooks,
   buildOmpExtensionSource,
@@ -25,10 +24,11 @@ import {
 import { reconcileHooksToAllTools } from '../hooks.js';
 import { log } from '../utils/logger.js';
 import { loadOmpExtension, type ExtensionDispatch } from './helpers/pi-extensions.js';
+import { hookAdapterDir } from '../locate.js';
 
-describe('resolveOmpExtensionsDir', () => {
+describe('the OMP extension directory', () => {
   it('always targets the user agent dir (single-copy policy)', () => {
-    expect(resolveOmpExtensionsDir()).toBe(
+    expect(hookAdapterDir('omp-extension')).toBe(
       path.join(os.homedir(), '.omp', 'agent', 'extensions'),
     );
   });
@@ -204,6 +204,53 @@ describe('reconcileHooksToAllTools routes omp to the extension adapter', () => {
     expect(await fse.pathExists(extFile())).toBe(true);
     await reconcileHooksToAllTools(toolPaths, home, [], manifest(), { removeAll: true });
     expect(await fse.pathExists(extFile())).toBe(false);
+  });
+
+  it('injects into the named profile\'s agent dir under PI_CONFIG_DIR, with no ~/.omp', async () => {
+    vi.stubEnv('PI_CONFIG_DIR', '.omp-alt');
+    vi.stubEnv('OMP_PROFILE', 'work');
+    const agentDir = path.join(home, '.omp-alt', 'profiles', 'work', 'agent');
+    await fse.ensureDir(agentDir);
+    try {
+      await reconcileHooksToAllTools(toolPaths, home, [], manifest());
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    expect(await fse.pathExists(path.join(agentDir, 'extensions', OMP_HOOK_FILE))).toBe(true);
+    expect(await fse.pathExists(path.join(home, '.omp'))).toBe(false);
+  });
+
+  it('keeps OMP\'s extension in ~/.omp/agent when PI_CODING_AGENT_DIR moves Pi, so each pull leaves both unchanged (#1221)', async () => {
+    const piAgent = path.join(tmp, 'pi-agent');
+    vi.stubEnv('PI_CODING_AGENT_DIR', piAgent);
+    await fse.ensureDir(piAgent);
+    await fse.ensureDir(path.join(home, '.omp', 'agent'));
+    const both = { pi: { skills: '.pi/skills' }, omp: { skills: '.omp/skills' } } as Record<string, { settings?: string }>;
+    const piFile = path.join(piAgent, 'extensions', 'teamai-hooks.ts');
+    const read = async () => [await fse.readFile(piFile, 'utf8'), await fse.readFile(extFile(), 'utf8')];
+    try {
+      await reconcileHooksToAllTools(both, home, [], manifest());
+      const first = await read();
+      await reconcileHooksToAllTools(both, home, [], manifest());
+      expect(first[0]).toContain('"--tool", "pi"');
+      expect(first[1]).toContain('"--tool", "omp"');
+      expect(await read()).toEqual(first);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('writes the extension into the OMP_PROFILE agent dir and leaves the default profile\'s in ~/.omp/agent (#1221)', async () => {
+    vi.stubEnv('OMP_PROFILE', 'work');
+    await fse.outputFile(extFile(), '// [teamai] hooks extension');
+    const profileFile = path.join(home, '.omp', 'profiles', 'work', 'agent', 'extensions', OMP_HOOK_FILE);
+    try {
+      await reconcileHooksToAllTools(toolPaths, home, [], manifest());
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    expect(await fse.pathExists(profileFile)).toBe(true);
+    expect(await fse.pathExists(extFile())).toBe(true);
   });
 
   it('settingsOnly skips the omp adapter', async () => {

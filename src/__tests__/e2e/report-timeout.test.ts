@@ -166,13 +166,24 @@ describe('real CLI report completion', () => {
   it('retains a rejected report and retries its committed tree without counting twice', async () => {
     const f = fixture('codex', 'git');
     await f.pull();
+    expect(f.run(['status'])).not.toContain('auto-report:');
     await f.seedEvents();
     f.receiver('reject');
     await f.pull();
+    const statePath = path.join(f.home, '.teamai/state.json');
+    const since = JSON.parse(fs.readFileSync(statePath, 'utf8')).autoReportPendingSince;
+    expect(since).toEqual(expect.any(String));
+    const pending = f.run(['status']);
+    expect(pending).toContain(`auto-report: pending since ${since}`);
+    expect(pending).toContain('teamai pull --verbose');
+    await f.pull();
+    expect(JSON.parse(fs.readFileSync(statePath, 'utf8')).autoReportPendingSince).toBe(since);
     expect(fs.readFileSync(f.usage, 'utf8')).toBe(f.usageLine);
     expect(f.snapshot('prompt-tokens')[f.runId]).toBeUndefined();
     f.receiver('normal');
     await f.pull();
+    expect(f.run(['status'])).not.toContain('auto-report:');
+    expect(JSON.parse(fs.readFileSync(statePath, 'utf8'))).not.toHaveProperty('autoReportPendingSince');
     const stats = f.stats();
     expect(stats.skills.review.count).toBe(1);
     expect(stats.prompts).toBe(1);
@@ -198,6 +209,7 @@ describe('real CLI report completion', () => {
     await f.seedEvents();
     f.receiver('slow-reject');
     f.sessionStart();
+    expect(f.run(['status'])).toMatch(/auto-report: pending since .*teamai pull --verbose/);
     expect(fs.readFileSync(f.usage, 'utf8')).toBe(f.usageLine);
     expect(f.snapshot('prompt-tokens')[f.runId]).toBeUndefined();
     for (const lock of ['.reports-lock', '.sync-lock']) {
@@ -205,6 +217,7 @@ describe('real CLI report completion', () => {
     }
     f.receiver('normal');
     await f.pull();
+    expect(f.run(['status'])).not.toContain('auto-report:');
     const stats = f.stats();
     expect(stats.skills.review.count).toBe(1);
     expect(stats.prompts).toBe(1);
@@ -213,6 +226,36 @@ describe('real CLI report completion', () => {
     expect(f.snapshot('prompt-tokens')[f.runId]).toBeDefined();
     await f.pull();
     expect(f.stats()).toEqual(stats);
+  }, 60_000);
+
+  it.each(['member', 'team'])('clears a pending report when the %s disables reporting after a rejection', async (optOut) => {
+    const f = fixture('claude', 'git');
+    await f.pull();
+    await f.seedEvents();
+    f.receiver('reject');
+    await f.pull();
+    expect(f.run(['status'])).toContain('auto-report: pending since');
+    const retainedUsage = fs.readFileSync(f.usage, 'utf8');
+
+    if (optOut === 'member') {
+      const configPath = path.join(f.home, '.teamai/config.yaml');
+      const config = YAML.parse(fs.readFileSync(configPath, 'utf8'));
+      fs.writeFileSync(configPath, YAML.stringify({ ...config, usageReportEnabled: false }));
+    } else {
+      const teamPath = path.join(f.clone, 'teamai.yaml');
+      const config = YAML.parse(fs.readFileSync(teamPath, 'utf8'));
+      fs.writeFileSync(teamPath, YAML.stringify({ ...config, usageReport: false }));
+      git(['add', 'teamai.yaml'], f.clone, f.env);
+      git(['commit', '-q', '-m', 'disable usage reporting'], f.clone, f.env);
+      git(['push', '-q', 'origin', 'HEAD:main'], f.clone, f.env);
+    }
+    await f.pull();
+
+    expect(f.run(['status'])).not.toContain('auto-report:');
+    expect(JSON.parse(fs.readFileSync(path.join(f.home, '.teamai/state.json'), 'utf8')))
+      .not.toHaveProperty('autoReportPendingSince');
+    expect(fs.readFileSync(f.usage, 'utf8')).toBe(retainedUsage);
+    expect(f.snapshot('prompt-tokens')[f.runId]).toBeUndefined();
   }, 60_000);
 
   it('does not report for a member who set usageReportEnabled: false', async () => {
@@ -224,6 +267,7 @@ describe('real CLI report completion', () => {
     await f.pull();
     expect(() => f.stats()).toThrow();
     expect(fs.readFileSync(f.usage, 'utf8')).toBe(f.usageLine);
+    expect(f.run(['status'])).not.toContain('auto-report:');
     expect(f.run(['stats'])).toMatch(/review\s+1 uses/);
   }, 60_000);
 });

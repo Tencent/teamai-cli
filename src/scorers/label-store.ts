@@ -65,12 +65,17 @@ async function readPending(config: LocalConfig): Promise<Array<{ id: string; lab
   return read.flat();
 }
 
-async function publishedLabels(config: LocalConfig): Promise<ScoreLabel[]> {
+/** Every label on the reports checkout as it is, with the member whose `scores/<member>/` file holds it. */
+async function publishedByMember(config: LocalConfig): Promise<Array<{ member: string; label: ScoreLabel }>> {
   const root = path.join(getReportsDir(config), 'scores');
   const members = await fs.readdir(root).catch(() => []);
   const files = (await Promise.all(members.map(async (member) => (await fs.readdir(path.join(root, member)).catch(() => []))
-    .filter((file) => file.endsWith('.jsonl')).map((file) => path.join(root, member, file))))).flat();
-  return (await Promise.all(files.map(async (file) => parseScoreLabels(await readFileSafe(file) ?? '')))).flat();
+    .filter((file) => file.endsWith('.jsonl')).map((file) => ({ member, file: path.join(root, member, file) }))))).flat();
+  return (await Promise.all(files.map(async ({ member, file }) => parseScoreLabels(await readFileSafe(file) ?? '').map((label) => ({ member, label }))))).flat();
+}
+
+async function publishedLabels(config: LocalConfig): Promise<ScoreLabel[]> {
+  return (await publishedByMember(config)).map(({ label }) => label);
 }
 
 /** Whether a publish delivered every pending label, and when not, why they stay on this machine. */
@@ -90,15 +95,19 @@ export const LabelStore = {
    * The outbox entry commits the label: a failure before it records no label, and one after it leaves a label that
    * `local` reads and `publish` still sends. Returns the label's `id` and the `version` that names its reasoning file.
    * `prompt`, the redacted first prompt of a judged session, heads the reasoning file so a member finds it with grep.
+   * A hand label has no `reasoning`, and no reasoning file.
    */
-  async append(config: LocalConfig, label: ScoreLabel, reasoning: string, prompt?: string): Promise<{ id: string; version: string }> {
+  async append(config: LocalConfig, label: ScoreLabel, reasoning: string | undefined, prompt?: string): Promise<{ id: string; version: string }> {
     const id = labelId(label);
     const version = labelVersion(label);
-    await writeFileAtomic(reasoningPath(config, version), reasoningText(label, reasoning, prompt));
+    if (reasoning !== undefined) await writeFileAtomic(reasoningPath(config, version), reasoningText(label, reasoning, prompt));
     await writeJsonAtomic(path.join(pendingDir(config), `${id}.json`), label);
     await fs.appendFile(labelsFile(config), `${JSON.stringify(label)}\n`, 'utf8');
     return { id, version };
   },
+
+  /** The labels on the reports checkout as it is, every version of each, with the member who published it. */
+  published: publishedByMember,
 
   /** This machine's labels, appended or still pending, the newest per key. */
   async local(config: LocalConfig): Promise<ScoreLabel[]> {

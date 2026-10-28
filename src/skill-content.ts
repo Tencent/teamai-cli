@@ -325,10 +325,35 @@ export const BLOCK_NOTES: Record<SkillBlockReason, string> = {
   config: 'not available: the teamai config could not be loaded',
 };
 
-/** The two lines every command prints for a blocked skill. */
-export function blockMessage(name: string, block: SkillBlock): { headline: string; hint: string } {
+/**
+ * The `skill list` note for a blocked skill. Like {@link blockMessage}, it names
+ * `TEAMAI_RECALL_DISABLED` when that is what turns recall off, since
+ * `teamai recall enable` would not help.
+ */
+export function blockNote(reason: SkillBlockReason, env: NodeJS.ProcessEnv = process.env): string {
+  if (reason === 'recall' && env.TEAMAI_RECALL_DISABLED === '1') return 'needs recall — unset TEAMAI_RECALL_DISABLED';
+  return BLOCK_NOTES[reason];
+}
+
+/**
+ * The two lines every command prints for a blocked skill. With
+ * `TEAMAI_RECALL_DISABLED=1` recall is off whatever the config says, so the
+ * recall block names the variable: `teamai recall enable` would succeed and
+ * leave the skill blocked.
+ */
+export function blockMessage(
+  name: string,
+  block: SkillBlock,
+  env: NodeJS.ProcessEnv = process.env,
+): { headline: string; hint: string } {
   switch (block.reason) {
     case 'recall':
+      if (env.TEAMAI_RECALL_DISABLED === '1') {
+        return {
+          headline: `${name} needs recall, which TEAMAI_RECALL_DISABLED=1 turns off in this environment.`,
+          hint: 'Unset TEAMAI_RECALL_DISABLED to use it; `teamai recall enable` does not override the variable.',
+        };
+      }
       return {
         headline: `${name} needs recall, which is disabled for this team.`,
         hint: 'Turn it on with `teamai recall enable`, or ask your team admin to enable sharing.',

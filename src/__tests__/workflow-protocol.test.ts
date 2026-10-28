@@ -90,7 +90,7 @@ describe('workflow protocol in process', () => {
     const { config } = await fixture({ wide: WIDE });
     expect(await (await protocol(config)).describe('fan', { ceiling: 3, can: {} })).toEqual({ description: {
       name: 'wide', description: 'Fan out, review, ship.', alias: 'fan', invoke: 'ask', inputs: { targets: { type: 'array', items: { type: 'string' } } },
-      facts: { prompts: ['review'], interactive: [], width: 3, gates: [{ step: 'review', kind: 'approve', required: false, hasDefault: false }], inWorkspace: ['ship'], scored: [],
+      facts: { prompts: ['review'], interactive: [], modeled: [], width: 3, gates: [{ step: 'review', kind: 'approve', required: false, guards: { kind: 'prompt' } }], inWorkspace: ['ship'], scored: [],
         deliver: [], requiresEnv: { keys: [], missingHere: [] }, budgets: [], held: [] },
     }, judging: { kind: 'none' } });
     expect(await (await protocol(config)).describe('wide', { ceiling: 20, can: {} })).toMatchObject({ description: { facts: { width: 7 } } });

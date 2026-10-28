@@ -5,7 +5,8 @@ import path from 'node:path';
 import { onTestFinished, vi } from 'vitest';
 import { resolveWorkflowEnv } from '../../env-resolution.js';
 import type { RunMode } from '../../launch-context.js';
-import { TeamaiConfigBaseSchema, type LocalConfig } from '../../types.js';
+import { memberTools } from '../../tool-launch/call.js';
+import { getUserConfigPath, TeamaiConfigBaseSchema, type LocalConfig, type ToolId } from '../../types.js';
 import type { AgentEvidence } from '../../workflow/attempt-marker.js';
 import { syncWorkflowDefinitions } from '../../workflow/cache.js';
 import { inProcessClient, type WorkflowClient } from '../../workflow/protocol.js';
@@ -221,6 +222,10 @@ interface HarnessOptions {
   scoring?: LocalConfig['scoring'];
   /** An install of a `sharedTeam` to drive from, instead of a checkout and team repository of the harness's own. */
   install?: TeamInstall;
+  /** The member's `ai.tool` in ~/.teamai/config.yaml; none unless a test sets it. */
+  aiTool?: string;
+  /** The tool the session's host names, which its runners also run under; claude unless a test sets it, null for none. */
+  tool?: ToolId | null;
 }
 
 /** A member's install of a `sharedTeam`: its config, and the business checkout its runs start from. */
@@ -307,12 +312,17 @@ export async function skillHarness(workflows: Record<string, string>, options: H
   const env = await resolveWorkflowEnv(config);
   // Every tool's default paths, as a team repository that sets no toolPaths has them.
   const toolPaths = TeamaiConfigBaseSchema.shape.toolPaths.parse(undefined);
-  const production = await skillContext({ config, toolPaths, env, cwd: work });
+  if (options.aiTool) {
+    fs.mkdirSync(path.dirname(getUserConfigPath()), { recursive: true });
+    fs.writeFileSync(getUserConfigPath(), `ai:\n  tool: ${options.aiTool}\n`);
+  }
+  const aiTools = (await memberTools(config)).map(({ tool }) => tool);
+  const production = await skillContext({ config, toolPaths, env, cwd: work, aiTools });
   const scheduler = memoryRunners(production.runners.command);
   const client = scheduler.settingUp(inProcessClient({ config, env }));
   const rows: string[] = [];
   const context: SkillContext = {
-    config, toolPaths, env, client: scheduler.judging(options.client ? options.client(client) : client), session: options.session ?? 'session-a', tool: 'claude', invocation: 'teamai', evidence: options.evidence ?? { kind: 'none' }, mode: options.mode ?? 'attended', cwd: work,
+    config, toolPaths, env, client: scheduler.judging(options.client ? options.client(client) : client), session: options.session ?? 'session-a', tool: options.tool === null ? undefined : options.tool ?? 'claude', aiTools: production.aiTools, invocation: 'teamai', evidence: options.evidence ?? { kind: 'none' }, mode: options.mode ?? 'attended', cwd: work,
     now: scheduler.now, runners: scheduler.track(options.runners ? options.runners(scheduler.runners) : scheduler.runners),
     locks: { take: (run, body, waitMs) => takeRunLock(config, run, body, { waitMs }) },
     trace: (row) => { rows.push(row); },

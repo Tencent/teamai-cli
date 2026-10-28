@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import { AgentObservationSchema, UsedSchema } from '../agent-observation.js';
 import { DriverSchema } from '../driver-identity.js';
+import { RunModeSchema } from '../launch-context.js';
+import { WorkOutcomeSchema } from '../outcomes.js';
 import type { TokenUsage } from '../tool-launch/stdout.js';
 import { PrUrlSchema } from './pr-url.js';
 import { UnenforcedSchema } from './requirements.js';
@@ -43,7 +45,7 @@ const LeaseSessionSchema = SessionRefSchema.extend({ earlier: z.array(SessionRef
 
 const LeaseSchema: z.ZodType<StepLease> = z.object({
   attempt: z.string(), revision: z.number(), driver: DriverSchema, session: LeaseSessionSchema.optional(),
-  unenforced: z.array(UnenforcedSchema).optional(), expiresAt: z.string().optional(),
+  unenforced: z.array(UnenforcedSchema).optional(), expiresAt: z.string().optional(), runMode: RunModeSchema.optional(),
 });
 
 export const ChangesSchema = z.object({
@@ -83,6 +85,10 @@ const report = {
   installId: z.string().optional(),
   /** The best-effort requirements the attempt's driver could not enforce. */
   unenforced: z.array(UnenforcedSchema).optional(),
+  /** The run mode of the attempt's lease. Absent on passes settled before it was recorded, or whose driver sent none. */
+  runMode: RunModeSchema.optional(),
+  /** What the attempt's own commands appended to its outcome file, such as a learning `contribute` recorded (#1387). */
+  outcomes: z.array(WorkOutcomeSchema).optional().catch(undefined),
 };
 
 export const OutcomeSchema = z.enum(['success', 'failed', 'timeout', 'skipped', 'cancelled']);
@@ -358,10 +364,11 @@ export function fail(state: StepState, settlement: Settlement<FailedStep>): Fail
   return become<FailedStep>(state, { status: 'failed', outcome: 'failed', ...settlement });
 }
 
-/** What a lease the engine stops leaves on its step: the invalidated attempt and what it did not enforce. */
-function stoppedLease(state: StepState): { attempt?: string; unenforced?: StepLease['unenforced'] } {
+/** What a lease the engine stops leaves on its step: the invalidated attempt, what it did not enforce, and its run mode. */
+function stoppedLease(state: StepState): Pick<StepLease, 'unenforced' | 'runMode'> & { attempt?: string } {
   if (state.status !== 'leased') return {};
-  return { attempt: state.attempt, ...(state.lease.unenforced ? { unenforced: state.lease.unenforced } : {}) };
+  const { unenforced, runMode } = state.lease;
+  return { attempt: state.attempt, ...(unenforced ? { unenforced } : {}), ...(runMode ? { runMode } : {}) };
 }
 
 /**

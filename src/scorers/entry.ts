@@ -91,7 +91,12 @@ export type SessionEntryState =
 export function sessionEntryState(facts: { labels: readonly ScoreLabel[]; attempts: readonly AttemptRecord[]; now: string }): SessionEntryState {
   const { attempts, now } = facts;
   if (facts.labels.some((label) => label.judge.kind === 'model') || attempts.some((attempt) => attempt.status === 'succeeded')) return { kind: 'labelled' };
-  const live = attempts.find((attempt): attempt is LeasedSessionAttempt => attempt.source === 'session' && attempt.status === 'leased' && !hasLapsed(attempt, now));
+  const live = liveSessionLease(attempts, now);
   if (live) return { kind: 'leased', attempt: live };
   return attempts.length > 0 ? { kind: 'tried' } : { kind: 'open' };
+}
+
+/** The live lease among a session key's `attempts` at `now`, when one holds the key. */
+export function liveSessionLease(attempts: readonly AttemptRecord[], now: string): LeasedSessionAttempt | undefined {
+  return attempts.find((attempt): attempt is LeasedSessionAttempt => attempt.source === 'session' && attempt.status === 'leased' && !hasLapsed(attempt, now));
 }

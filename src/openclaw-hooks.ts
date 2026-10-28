@@ -15,7 +15,7 @@
  * which OpenClaw loads only once openclaw.json enables its entry
  * (`hooks.internal.entries.teamai-status-report.enabled`). The workspace and
  * state dir resolve the way OpenClaw resolves them: OPENCLAW_STATE_DIR,
- * OPENCLAW_PROFILE, OPENCLAW_CONFIG_PATH, OPENCLAW_WORKSPACE_DIR.
+ * OPENCLAW_HOME, OPENCLAW_PROFILE, OPENCLAW_CONFIG_PATH, OPENCLAW_WORKSPACE_DIR.
  *
  * Events (OpenClaw calls the handler with `{ type, action, sessionKey, context }`):
  *   command:new, command:reset, session:auto-reset, gateway:startup
@@ -26,10 +26,10 @@
 import path from 'node:path';
 import { writeFile, writeIfChanged, ensureDir, pathExists, readJsonObject, writeJsonAtomic, remove, symlinkTarget } from './utils/fs.js';
 import { log } from './utils/logger.js';
-import { debugOnce } from './utils/warn-once.js';
 import { getUserHome } from './utils/home.js';
-import { resolveOpenclawConfigPath, resolveOpenclawStateDir, resolveOpenclawWorkspace } from './openclaw-home.js';
+import { resolveOpenclawConfigPath, resolveOpenclawStateDir } from './openclaw-home.js';
 import { resolveCliEntry } from './builtin-hooks.js';
+import { openclawWorkspaceDir } from './locate.js';
 
 /**
  * Resolve the managed hooks directory for an OpenClaw-family tool:
@@ -145,16 +145,15 @@ export default async function handler(event?: HookEvent): Promise<void> {
  * the two files only when their content changes. Skips (no-op) when the
  * workspace dir cannot be resolved.
  *
- * @param workspacePath optional server-sent workspace path (highest priority)
- * @param tool          claw variant (openclaw/qclaw/easyclaw/autoclaw)
+ * @param tool claw variant (openclaw/qclaw/easyclaw/autoclaw)
  */
-export async function injectOpenClawHooks(workspacePath?: string, tool = 'openclaw'): Promise<void> {
+export async function injectOpenClawHooks(tool = 'openclaw'): Promise<void> {
   const entry = resolveCliEntry();
   if (!entry) {
     log.warn('OpenClaw: cannot resolve the teamai CLI entry; run `teamai hooks inject` from the installed CLI.');
     return;
   }
-  const wsDir = await resolveOpenclawWorkspaceDir(workspacePath);
+  const wsDir = await openclawWorkspaceDir();
   if (!wsDir) {
     log.debug(`openclaw: skip hook injection for ${tool} — workspace dir not found`);
     return;
@@ -418,25 +417,3 @@ export async function removeOpenClawAgentHook(opts: {
   if (tool === 'openclaw') await removeOpenClawHookEntry(agentHookKey(opts.slug));
 }
 
-/**
- * The workspace directory OpenClaw's hooks and skills go to, or null
- * (`resolveOpenclawWorkspace`). An unreadable openclaw.json falls back to
- * the workspace `OPENCLAW_WORKSPACE_DIR` or the state dir gives.
- */
-export async function resolveOpenclawWorkspaceDir(workspacePath?: string): Promise<string | null> {
-  const workspace = await resolveOpenclawWorkspace(workspacePath);
-  if (workspace.kind === 'unreadable-config') {
-    log.debug(`openclaw: could not parse ${workspace.file} as JSON: ${workspace.error}`);
-    if (workspace.fallback !== null) log.debug(`openclaw: resolved workspace dir to ${workspace.fallback}`);
-    return workspace.fallback;
-  }
-  if (workspace.kind === 'found') {
-    log.debug(`openclaw: resolved workspace dir to ${workspace.dir}`);
-    return workspace.dir;
-  }
-  // A missing workspace dir is the normal case when OpenClaw is not installed;
-  // callers treat null as "skip openclaw" and log their own debug line, so keep
-  // this at debug level, and once per run: callers ask per skill and file.
-  debugOnce(`openclaw: no workspace dir found (tried: ${workspace.tried})`);
-  return null;
-}

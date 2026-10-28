@@ -17,6 +17,7 @@ import { touchCacheEntry } from './utils/cache-index.js';
 import { log } from './utils/logger.js';
 import { hasFrontmatter, stripFrontmatter } from './utils/frontmatter.js';
 import { assertTeamwikiWritable, lockTeamwiki, resolveTeamwiki } from './utils/teamwiki-root.js';
+import { isOverrideInvalid } from './tool-launch/call.js';
 
 // ─── Types ──────────────────────────────────────────────
 
@@ -378,6 +379,7 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
         try {
             codebaseMd = await generateCodebaseMd({ repoPath: cacheDir });
         } catch (err) {
+            if (isOverrideInvalid(err)) throw err;
             log.warn(`AI codebase scan failed (non-blocking): ${err instanceof Error ? err.message : String(err)}`);
         }
     }

@@ -44,6 +44,7 @@ vi.mock('../config.js', async (importOriginal) => ({
   saveState: vi.fn(),
   loadLocalConfig: vi.fn(),
   loadTeamConfig: vi.fn(),
+  resolveConfigForDir: vi.fn(),
 }));
 
 vi.mock('../utils/logger.js', () => ({
@@ -63,10 +64,14 @@ vi.mock('../utils/fs.js', () => ({
   ensureDir: vi.fn(() => Promise.resolve()),
 }));
 
-vi.mock('../types.js', () => ({
-  getUpdateLockPath: () => '/tmp/test-update-lock',
-  getTeamaiHomeDir: () => '/home/test/.teamai',
-}));
+vi.mock('../types.js', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../types.js')>();
+  return {
+    ...original,
+    getUpdateLockPath: () => '/tmp/test-update-lock',
+    getTeamaiHomeDir: () => '/home/test/.teamai',
+  };
+});
 
 vi.mock('../builtin-hooks.js', () => ({
   resolveTeamaiEntryScript: vi.fn(),
@@ -94,7 +99,7 @@ import fse from 'fs-extra';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { loadState, saveState, loadLocalConfig, loadTeamConfig } from '../config.js';
+import { loadState, saveState, loadLocalConfig, loadTeamConfig, resolveConfigForDir } from '../config.js';
 import { log } from '../utils/logger.js';
 import { askConfirmation } from '../utils/prompt.js';
 
@@ -112,6 +117,7 @@ import {
   prefixFromEntryPath,
 } from '../update.js';
 import { resolveTeamaiEntryScript } from '../builtin-hooks.js';
+import type { LocalConfig } from '../types.js';
 
 // ─── Typed mock references ──────────────────────────────
 
@@ -151,6 +157,21 @@ const defaultState = {
   availableUpdate: null,
 };
 
+// The config of the scope that runs: a workspace set up without a user-scope install.
+const workspaceConfig = (overrides: Partial<LocalConfig> = {}): LocalConfig => ({
+  repo: { localPath: '/tmp/workspace-repo', remote: 'https://...' },
+  username: 'testuser',
+  scope: 'project',
+  additionalRoles: [],
+  ...overrides,
+});
+
+const expectNoInstall = () => expect(mockedExecSync).not.toHaveBeenCalledWith(
+  expect.any(String),
+  expect.arrayContaining(['install']),
+  expect.anything(),
+);
+
 // A real npm-managed global layout (<prefix>/lib/node_modules/<pkg>) so doUpdate
 // has an install target. Without one — as when the suite runs from this
 // checkout — doUpdate refuses to install (see the linked-checkout test).
@@ -177,6 +198,7 @@ beforeEach(() => {
     updatePolicy: 'auto',
   });
   mockedLoadTeamConfig.mockResolvedValue(null);
+  vi.mocked(resolveConfigForDir).mockResolvedValue(null);
   mockedFse.pathExists.mockResolvedValue(false);
   mockedFse.readFile.mockResolvedValue('');
   mockedFse.writeFile.mockResolvedValue(undefined);
@@ -370,7 +392,7 @@ describe('doUpdate', () => {
       .mockResolvedValueOnce({ stdout: '', stderr: '' })          // npm install
       .mockResolvedValueOnce({ stdout: '', stderr: '' });         // teamai hooks inject --silent
 
-    await doUpdate();
+    await doUpdate(null);
 
     expect(mockedExecSync).toHaveBeenCalledTimes(3);
     // The hook dispatcher is hidden, but every child must opt out of Windows
@@ -401,7 +423,7 @@ describe('doUpdate', () => {
     });
     mockedExecSync.mockResolvedValueOnce({ stdout: '99.0.0\n', stderr: '' });
 
-    await doUpdate();
+    await doUpdate(null);
 
     expect(mockedLog.info).toHaveBeenCalledWith(
       expect.stringContaining('Run "teamai update" to upgrade'),
@@ -428,7 +450,7 @@ describe('doUpdate', () => {
       .mockResolvedValueOnce({ stdout: '', stderr: '' })
       .mockResolvedValueOnce({ stdout: '', stderr: '' });
 
-    await doUpdate();
+    await doUpdate(null);
 
     expect(mockedExecSync).toHaveBeenCalledTimes(3);
     expect(mockedLog.success).toHaveBeenCalled();
@@ -446,7 +468,7 @@ describe('doUpdate', () => {
     });
     mockedExecSync.mockResolvedValueOnce({ stdout: '99.0.0\n', stderr: '' });
 
-    await doUpdate();
+    await doUpdate(null);
 
     expect(mockedExecSync).toHaveBeenCalledTimes(1);
     expect(mockedLog.debug).toHaveBeenCalledWith(
@@ -469,7 +491,7 @@ describe('doUpdate', () => {
     });
     mockedExecSync.mockResolvedValueOnce({ stdout: '99.0.0\n', stderr: '' });  // the version check call
 
-    await doUpdate();
+    await doUpdate(null);
 
     // Only the version-check exec ran; no npm install
     expect(mockedExecSync).toHaveBeenCalledTimes(1);
@@ -481,6 +503,42 @@ describe('doUpdate', () => {
     expect(mockedLog.debug).toHaveBeenCalledWith(
       expect.stringContaining('team policy'),
     );
+  });
+
+  it('follows the running scope\'s team when there is no user-scope config', async () => {
+    mockedLoadLocalConfig.mockResolvedValue(null);
+    mockedLoadTeamConfig.mockImplementation(async (repoPath: string) =>
+      repoPath === '/tmp/workspace-repo' ? { team: 'test', repo: 'https://...', autoUpdate: false } : null);
+    mockedExecSync.mockResolvedValueOnce({ stdout: '99.0.0\n', stderr: '' });
+
+    await doUpdate(workspaceConfig());
+
+    expectNoInstall();
+    expect(mockedLog.debug).toHaveBeenCalledWith('Auto-update skipped: team policy (autoUpdate: false)');
+  });
+
+  it('follows the running scope\'s updatePolicy when there is no user-scope config', async () => {
+    mockedLoadLocalConfig.mockResolvedValue(null);
+    mockedExecSync.mockResolvedValueOnce({ stdout: '99.0.0\n', stderr: '' });
+
+    await doUpdate(workspaceConfig({ updatePolicy: 'skip' }));
+
+    expectNoInstall();
+    expect(mockedLog.debug).toHaveBeenCalledWith('Auto-update skipped: local updatePolicy: skip');
+  });
+
+  it('lets the user scope decide over the running scope', async () => {
+    mockedLoadLocalConfig.mockResolvedValue({
+      repo: { localPath: '/tmp/repo', remote: 'https://...' },
+      username: 'testuser',
+      updatePolicy: 'skip',
+    });
+    mockedExecSync.mockResolvedValueOnce({ stdout: '99.0.0\n', stderr: '' });
+
+    await doUpdate(workspaceConfig({ updatePolicy: 'auto' }));
+
+    expectNoInstall();
+    expect(mockedLog.debug).toHaveBeenCalledWith('Auto-update skipped: local updatePolicy: skip');
   });
 
   // ─── Test: local updatePolicy beats team autoUpdate ───
@@ -502,7 +560,7 @@ describe('doUpdate', () => {
       .mockResolvedValueOnce({ stdout: '', stderr: '' })          // npm install
       .mockResolvedValueOnce({ stdout: '', stderr: '' });         // hooks inject
 
-    await doUpdate();
+    await doUpdate(null);
 
     expect(mockedExecSync).toHaveBeenCalledWith(
       expect.any(String),
@@ -520,7 +578,7 @@ describe('doUpdate', () => {
       .mockResolvedValueOnce({ stdout: '', stderr: '' })
       .mockResolvedValueOnce({ stdout: '', stderr: '' });
 
-    await doUpdate();
+    await doUpdate(null);
 
     // Created by hard-linking a fully written temp file onto the lock name.
     expect(mockedFse.link).toHaveBeenCalledWith(
@@ -547,7 +605,7 @@ describe('doUpdate', () => {
 
     mockedExecSync.mockResolvedValueOnce({ stdout: '99.0.0\n', stderr: '' });
 
-    await doUpdate();
+    await doUpdate(null);
 
     expect(mockedLog.warn).toHaveBeenCalledWith(
       expect.stringContaining('Another update is in progress'),
@@ -566,7 +624,7 @@ describe('doUpdate', () => {
         throw err;
       });
 
-    await doUpdate();
+    await doUpdate(null);
 
     expect(mockedLog.warn).toHaveBeenCalledWith(
       expect.stringContaining('Permission denied'),
@@ -583,7 +641,7 @@ describe('doUpdate', () => {
         throw new Error('ETIMEDOUT');
       });
 
-    await doUpdate();
+    await doUpdate(null);
 
     expect(mockedLog.warn).toHaveBeenCalledWith(
       expect.stringContaining('timed out'),
@@ -596,7 +654,7 @@ describe('doUpdate', () => {
     const current = getCurrentVersion();
     mockedExecSync.mockResolvedValueOnce({ stdout: `${current}\n`, stderr: '' });
 
-    await doUpdate();
+    await doUpdate(null);
 
     expect(mockedLog.info).toHaveBeenCalledWith(
       expect.stringContaining('Already up to date'),
@@ -677,6 +735,17 @@ describe('update', () => {
     );
   });
 
+  it('follows the scope of the directory it runs in when there is no user-scope config', async () => {
+    mockedLoadLocalConfig.mockResolvedValue(null);
+    vi.mocked(resolveConfigForDir).mockResolvedValue(workspaceConfig({ updatePolicy: 'skip' }));
+    mockedExecSync.mockResolvedValueOnce({ stdout: '99.0.0\n', stderr: '' });
+
+    await update({});
+
+    expectNoInstall();
+    expect(mockedLog.debug).toHaveBeenCalledWith('Auto-update skipped: local updatePolicy: skip');
+  });
+
   it('should run full update flow without --check', async () => {
     mockedExecSync
       .mockResolvedValueOnce({ stdout: '99.0.0\n', stderr: '' })
@@ -704,7 +773,7 @@ describe('hook refresh after update', () => {
       .mockResolvedValueOnce({ stdout: '', stderr: '' })          // npm install
       .mockResolvedValueOnce({ stdout: '', stderr: '' });         // hooks inject
 
-    await doUpdate();
+    await doUpdate(null);
 
     expect(mockedExecSync).toHaveBeenCalledWith(
       process.execPath,
@@ -723,7 +792,7 @@ describe('hook refresh after update', () => {
       .mockResolvedValueOnce({ stdout: '', stderr: '' })          // npm install
       .mockResolvedValueOnce({ stdout: '', stderr: '' });         // teamai hooks inject --silent
 
-    await doUpdate();
+    await doUpdate(null);
 
     expect(mockedLog.success).toHaveBeenCalledWith(
       expect.stringContaining('Updated teamai to v99.0.0'),
@@ -747,7 +816,7 @@ describe('hook refresh after update', () => {
         throw new Error('command not found');
       });
 
-    await doUpdate();
+    await doUpdate(null);
 
     expect(mockedLog.success).toHaveBeenCalledWith(
       expect.stringContaining('Updated teamai to v99.0.0'),
@@ -1004,7 +1073,7 @@ describe('self-update install-target safety', () => {
     fileURLToPathMock.mockReturnValue(FLAT_ENTRY);
     mockedExecSync.mockResolvedValue({ stdout: '99.0.0\n', stderr: '' });
 
-    await doUpdate();
+    await doUpdate(null);
 
     // A non-global npm install reconciles <prefix> as a project and prunes
     // undeclared siblings (including a co-located npm); -g lands in
@@ -1024,7 +1093,7 @@ describe('self-update install-target safety', () => {
     fileURLToPathMock.mockReturnValue(path.join('/home', 'u', 'dev', 'teamai-cli', 'dist', 'index.js'));
     mockedExecSync.mockResolvedValue({ stdout: '99.0.0\n', stderr: '' });
 
-    await doUpdate();
+    await doUpdate(null);
 
     // `npm install -g` without a prefix lands in npm's default global prefix,
     // which is exactly where `npm link` put its symlink — installing would
@@ -1051,7 +1120,7 @@ describe('self-update install-target safety', () => {
       fileURLToPathMock.mockReturnValue(path.join('/home', 'u', 'dev', 'teamai-cli', 'dist', 'index.js'));
       mockedExecSync.mockResolvedValue({ stdout: '99.0.0\n', stderr: '' });
 
-      await doUpdate();
+      await doUpdate(null);
 
       expect(askConfirmation).not.toHaveBeenCalled();
       expect(mockedLog.warn).toHaveBeenCalledWith(expect.stringContaining('Self-update skipped'));
@@ -1071,7 +1140,7 @@ describe('self-update install-target safety', () => {
     }) as unknown as typeof fs.readFileSync);
     mockedExecSync.mockResolvedValue({ stdout: '99.0.0\n', stderr: '' });
 
-    await doUpdate();
+    await doUpdate(null);
 
     expect(mockedExecSync).toHaveBeenCalledTimes(3); // view + install + hook refresh
     expect(mockedExecSync).toHaveBeenCalledWith(
@@ -1090,7 +1159,7 @@ describe('self-update install-target safety', () => {
     mockedEntry.mockReturnValue(FLAT_ENTRY);
     mockedExecSync.mockResolvedValue({ stdout: '99.0.0\n', stderr: '' });
 
-    await doUpdate();
+    await doUpdate(null);
 
     expect(mockedLog.success).toHaveBeenCalledWith(expect.stringContaining('Updated teamai to v99.0.0'));
     expect(mockedLog.warn).not.toHaveBeenCalledWith(expect.stringContaining('still v'));

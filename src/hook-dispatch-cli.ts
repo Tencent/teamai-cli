@@ -31,6 +31,7 @@ import { clearGitHookRepositoryEnv, GIT_HOOK_TOOL } from './git-hook.js';
 import { deriveDispatchSessionId } from './utils/session-id.js';
 import { claudeHookRunsInAnotherHost } from './claude-hook-host.js';
 import { claimCopilotHookEvent } from './copilot-hook-claim.js';
+import { launchedBy, SESSION_RUN_PAYLOAD_KEY, sessionRun } from './launch-context.js';
 import { isSelfMode } from './types.js';
 
 export { claudeHookRunsInAnotherHost };
@@ -419,7 +420,9 @@ export async function hookDispatchCli(
   matcher: string,
   options: { bgOnly?: boolean; copilotGlobal?: string; stdinFile?: string; hookArgs?: string[] } = {},
 ): Promise<void> {
-  if (process.env.TEAMAI_LAUNCHED_BY === 'scorer') return;
+  // A session teamai launched for itself, a judge or an AI call, is not the member's: only a workflow step's runs hooks.
+  const launcher = launchedBy(process.env);
+  if (launcher && launcher !== 'workflow') return;
   const { bgOnly = false, stdinFile } = options;
   setStderrOnly(true);
   if (claudeHookRunsInAnotherHost(tool, process.env, false)) {
@@ -504,6 +507,10 @@ export async function hookDispatchCli(
       await runDispatch(dispatcher, event, matcher, stdin, tool, 'background');
       return;
     }
+
+    // The session's mode and launcher, resolved once here: background passes read them from the payload, never from their
+    // own environment, which a child started through WMI does not inherit.
+    stdin[SESSION_RUN_PAYLOAD_KEY] = sessionRun(process.env);
 
     // What the session starts as, read before the detached pull can deliver a new revision into the checkout (#1178),
     // with the one git state the dashboard's session_start event records too.

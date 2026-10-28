@@ -1,4 +1,4 @@
-import { localToolFamily, type LaunchTool } from './tools.js';
+import type { LaunchAdapterId } from './adapters.js';
 
 export interface TokenUsage {
   input?: number;
@@ -122,14 +122,15 @@ function absorbMetadata(record: Record<string, unknown>, found: ToolReport, dept
   }
 }
 
-function readToolMetadata(stdout: string): ToolReport | null {
+export function readToolMetadata(stdout: string): ToolReport | null {
   const found: ToolReport = {};
   for (const record of jsonRecords(stdout)) absorbMetadata(record, found, 0);
   if (!found.model && !found.session && !found.tokens) return null;
   return found;
 }
 
-export function toolStdout(tool: LaunchTool, stdout: string): ToolReport | null {
-  if (localToolFamily(tool) === 'claude') return claudeStdout(stdout);
+/** What stdout of a tool on this adapter reports. CodeBuddy prints Claude's result record. */
+export function toolStdout(adapter: LaunchAdapterId, stdout: string): ToolReport | null {
+  if (adapter === 'claude' || adapter === 'codebuddy') return claudeStdout(stdout);
   return readToolMetadata(stdout);
 }

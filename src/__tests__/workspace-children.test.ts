@@ -15,7 +15,7 @@ import { mcpRelocated } from '../mcp-reconcile.js';
 import { buildRolePullContext, deliveredSkillSources, resolveDesiredAgents, resolveDesiredRules, resolveDesiredSkills } from '../resources/desired.js';
 import { readTeamSkillIndex, resolveDestination, withSkillFrontmatter } from '../resources/skills.js';
 import { contentHash } from '../resources/delivered-copies.js';
-import { deliveredLearningsNamespaces, findAncestorWorkspaces, readWorkspaceChildren, syncWorkspaceInstructionExcludes } from '../workspace-children.js';
+import { deliveredLearningsNamespaces, findAncestorWorkspaces, formatProjectsManifestWarning, readWorkspaceChildren, safeDeliveredLearningsNamespaces, syncWorkspaceInstructionExcludes } from '../workspace-children.js';
 
 const TEAM = 'https://git.example.com/team/team.git';
 const teamConfig = TeamaiConfigSchema.parse({ team: 't', repo: TEAM, provider: 'git', reviewers: [] });
@@ -270,6 +270,43 @@ describe('delivered selection of a workspace with children', () => {
     const namespaces = await deliveredLearningsNamespaces(await readWorkspaceChildren({ ...workspace, projects: ['platform'] }));
 
     expect(namespaces).toEqual(['platform', 'svc-a', 'svc-b']);
+  });
+
+  it('safeDeliveredLearningsNamespaces logs a warning and falls back to empty array when resolution fails', async () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {});
+    // Write an invalid manifest that throws on parse
+    fs.mkdirSync(path.join(repo, 'manifest'), { recursive: true });
+    fs.writeFileSync(path.join(repo, 'manifest', 'projects.yaml'), 'invalid: [yaml: unclosed');
+
+    const result = await safeDeliveredLearningsNamespaces({ ...workspace, projects: ['infra'] }, 'digest');
+    expect(result).toEqual([]);
+    expect(warn.mock.calls.flat().join('\n')).toContain('digest read the shared learnings only:');
+    expect(warn.mock.calls.flat().join('\n')).toContain('stay out of digest until manifest/projects.yaml is fixed');
+  });
+
+  it('formatProjectsManifestWarning produces matching warnings for recall and maintenance', () => {
+    const config = { ...workspace, projects: ['infra'] };
+    const err = new Error('invalid YAML');
+
+    const digestWarn = formatProjectsManifestWarning('digest', err, config);
+    expect(digestWarn).toBe(
+      'digest read the shared learnings only: invalid YAML. ' +
+      'The learnings of project infra stay out of digest until manifest/projects.yaml is fixed; `teamai doctor` shows the problem.'
+    );
+
+    const recallWarn = formatProjectsManifestWarning('Recall', err, config, {
+      verb: 'indexed',
+      extraHeldBack: 'docs, rules and skills',
+      targetName: 'recall',
+      rebuildAction: '`teamai pull` rebuilds the index',
+    });
+    expect(recallWarn).toBe(
+      'Recall indexed the shared learnings only: invalid YAML. ' +
+      'The learnings of project infra, and docs, rules and skills, stay out of recall until manifest/projects.yaml is fixed and `teamai pull` rebuilds the index; `teamai doctor` shows the problem.'
+    );
+
+    const emptyProjectsWarn = formatProjectsManifestWarning('digest', err, { ...workspace, projects: [] });
+    expect(emptyProjectsWarn).toBe('digest read the shared learnings only: invalid YAML.');
   });
 
   it("delivers each child's skills after that child's exclusions and tags, and its own exclusions on top", async () => {

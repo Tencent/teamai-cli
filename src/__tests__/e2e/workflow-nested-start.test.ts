@@ -4,7 +4,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { trackDetachedProcesses } from '../helpers/detached-processes.js';
+import { waitForDetachedChildren } from '../helpers/detached-processes.js';
 import { AGENT_SESSION_ENV } from '../../utils/session-id.js';
 
 const cli = fileURLToPath(new URL('../../../dist/index.js', import.meta.url));
@@ -14,9 +14,7 @@ function fixture(prefix: string, workflows: (root: string) => Record<string, str
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
   const home = path.join(root, 'home'); const repo = path.join(root, 'product');
   for (const dir of [home, repo]) fs.mkdirSync(dir);
-  const detached = trackDetachedProcesses(root);
   const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, USERPROFILE: home, FORCE_COLOR: '0',
-    NODE_OPTIONS: [process.env.NODE_OPTIONS, detached.nodeOptions].filter(Boolean).join(' '),
     GIT_AUTHOR_NAME: 'Fixture', GIT_AUTHOR_EMAIL: 'fixture@example.invalid', GIT_COMMITTER_NAME: 'Fixture', GIT_COMMITTER_EMAIL: 'fixture@example.invalid' };
   for (const name of ['CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'TEAMAI_WORKFLOW_ATTEMPT', ...AGENT_SESSION_ENV]) delete env[name];
   const run = (command: string, args: string[], options: { cwd?: string; extra?: Record<string, string> } = {}) => spawnSync(command, args, {
@@ -45,7 +43,7 @@ function fixture(prefix: string, workflows: (root: string) => Record<string, str
     root, repo, git, workflow,
     runFile: (id: string) => JSON.parse(fs.readFileSync(path.join(runsDir(), `${id}.json`), 'utf8')) as { status: string; steps: Array<{ id: string; status: string; outputs?: unknown }> },
     runIds: () => (fs.existsSync(runsDir()) ? fs.readdirSync(runsDir()).filter((name) => /^r[0-9a-f]+\.json$/.test(name)) : []),
-    cleanup: async () => { await detached.waitForExit(); fs.rmSync(root, { recursive: true, force: true }); },
+    cleanup: async () => { await waitForDetachedChildren(); fs.rmSync(root, { recursive: true, force: true }); },
   };
 }
 

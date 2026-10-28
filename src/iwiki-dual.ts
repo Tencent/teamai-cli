@@ -13,7 +13,7 @@ import { IWikiClient } from './utils/iwiki-client.js';
 import type { IWikiDocument, IWikiPage } from './utils/iwiki-client.js';
 import { appendPendingReview } from './review-store.js';
 import { getTeamCodebasePaths } from './utils/team-codebase-paths.js';
-import { callClaude } from './utils/ai-client.js';
+import { callTool } from './tool-launch/call.js';
 import { log } from './utils/logger.js';
 
 // ─── 常量 ────────────────────────────────────────────────
@@ -291,7 +291,7 @@ export async function importFromIWikiDual(opts: IWikiDualOptions): Promise<{
 
     // 6. AI 抽取
     const prompt = buildExtractionPrompt(documents);
-    const rawOutput = await callClaude(prompt);
+    const rawOutput = (await callTool(prompt, { launchedBy: 'iwiki-dual' })).text;
     const jsonStr = extractJson(rawOutput);
 
     let aiOutput: Partial<AiSectionOutput> = {};

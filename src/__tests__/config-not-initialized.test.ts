@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import fs, { realpathSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import YAML from 'yaml';
 
 vi.mock('../utils/logger.js', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn() },
@@ -14,9 +15,15 @@ import {
   NotInitializedError,
   detectProjectConfig,
   findUnreadableProjectConfig,
+  hasUserScopeInstall,
+  loadLocalConfigForScope,
+  loadMemberSettings,
   requireInit,
+  saveLocalConfig,
+  saveLocalConfigForScope,
   UnreadableProjectConfigError,
 } from '../config.js';
+import type { LocalConfig } from '../types.js';
 import { projectDataHome } from '../utils/partition.js';
 import { log } from '../utils/logger.js';
 
@@ -41,6 +48,40 @@ describe('requireInit: missing config versus unreadable config', () => {
 
   it('is NotInitializedError when there is no config file', async () => {
     await expect(requireInit()).rejects.toBeInstanceOf(NotInitializedError);
+  });
+
+  it("is NotInitializedError, with nothing logged, when the file holds only the member's settings", async () => {
+    const configPath = path.join(home, '.teamai', 'config.yaml');
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, 'ai:\n  tool: codex\n');
+    vi.mocked(log.error).mockClear();
+
+    await expect(requireInit()).rejects.toBeInstanceOf(NotInitializedError);
+    expect(log.error).not.toHaveBeenCalled();
+    expect(await hasUserScopeInstall()).toBe(false);
+    expect(await loadMemberSettings()).toEqual({ ai: { tool: 'codex' } });
+  });
+
+  it("loads no user scope, with nothing logged, when the file holds only the member's settings", async () => {
+    const configPath = path.join(home, '.teamai', 'config.yaml');
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, 'ai:\n  tool: codex\n');
+    vi.mocked(log.error).mockClear();
+
+    expect(await loadLocalConfigForScope('user')).toBeNull();
+    expect(log.error).not.toHaveBeenCalled();
+  });
+
+  it('treats every config without repo as machine settings, not a broken user install', async () => {
+    const configPath = path.join(home, '.teamai', 'config.yaml');
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, 'recallEnabled: true\nworkflows:\n  tools:\n    default: codex\n');
+    vi.mocked(log.error).mockClear();
+
+    await expect(requireInit()).rejects.toBeInstanceOf(NotInitializedError);
+    expect(await loadLocalConfigForScope('user')).toBeNull();
+    expect(await hasUserScopeInstall()).toBe(false);
+    expect(log.error).not.toHaveBeenCalled();
   });
 
   it('names the file, and is not NotInitializedError, when the config exists but does not parse', async () => {
@@ -68,7 +109,7 @@ describe('requireInit: missing config versus unreadable config', () => {
   it('is not NotInitializedError when the config parses but fails validation', async () => {
     const configPath = path.join(home, '.teamai', 'config.yaml');
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
-    fs.writeFileSync(configPath, 'username: 42\n');
+    fs.writeFileSync(configPath, 'repo: {}\nusername: 42\n');
 
     await expect(requireInit()).rejects.not.toBeInstanceOf(NotInitializedError);
   });
@@ -104,7 +145,7 @@ describe('requireInit: missing config versus unreadable config', () => {
     // would bury the field under a line of `[`.
     const configPath = path.join(home, '.teamai', 'config.yaml');
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
-    fs.writeFileSync(configPath, 'username: 42\n');
+    fs.writeFileSync(configPath, 'repo: {}\nusername: 42\n');
     vi.mocked(log.error).mockClear();
 
     await expect(requireInit()).rejects.toThrow('the error is printed above');
@@ -234,9 +275,14 @@ describe('findUnreadableProjectConfig', () => {
     fs.writeFileSync(userConfig, 'repo:\n  localPath: /x\n  remote: https://example.test/a.git\nusername: t\nscope: user\n');
     const configPath = path.join(dir, '.teamai', 'config.yaml');
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
-    fs.symlinkSync(userConfig, configPath);
-
     try {
+      try {
+        fs.symlinkSync(userConfig, configPath);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'EPERM') return;
+        throw error;
+      }
+
       expect(await findUnreadableProjectConfig(dir)).toContain(configPath);
     } finally {
       vi.unstubAllEnvs();
@@ -273,3 +319,72 @@ describe('findUnreadableProjectConfig', () => {
   });
 });
 
+describe("the member's ai.tool across a write of the config file", () => {
+  let home: string;
+
+  beforeEach(() => {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-config-ai-'));
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('USERPROFILE', home);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    fs.rmSync(home, { recursive: true, force: true });
+  });
+
+  /** A fresh install's config, as init builds it: no `ai`. */
+  function freshInstall(scope: LocalConfig['scope'], dataHome?: string): LocalConfig {
+    return { repo: { localPath: path.join(home, 'team'), remote: 'https://example.com/team.git' }, username: 'member', scope, additionalRoles: [], ...(dataHome ? { dataHome, projectRoot: path.join(home, 'project') } : {}) };
+  }
+
+  it('keeps the ai.tool a member wrote in ~/.teamai/config.yaml when a user-scope init writes the file', async () => {
+    const machineFile = path.join(home, '.teamai', 'config.yaml');
+    fs.mkdirSync(path.dirname(machineFile), { recursive: true });
+    fs.writeFileSync(machineFile, 'ai:\n  tool: codex\n');
+
+    await saveLocalConfig(freshInstall('user'));
+
+    expect(await hasUserScopeInstall()).toBe(true);
+    expect(await loadMemberSettings()).toEqual({ ai: { tool: 'codex' } });
+  });
+
+  it('skips a wrong-typed machine setting while preserving valid siblings', async () => {
+    const machineFile = path.join(home, '.teamai', 'config.yaml');
+    fs.mkdirSync(path.dirname(machineFile), { recursive: true });
+    fs.writeFileSync(machineFile, 'recallEnabled: "yes"\ncoAuthorEnabled: false\n');
+    vi.mocked(log.warn).mockClear();
+
+    await saveLocalConfig(freshInstall('user'));
+
+    const saved = YAML.parse(fs.readFileSync(machineFile, 'utf8'));
+    expect(saved).not.toHaveProperty('recallEnabled');
+    expect(saved).toMatchObject({ coAuthorEnabled: false });
+    expect(vi.mocked(log.warn).mock.calls.flat().join('\\n')).toContain('Ignoring recallEnabled');
+    expect(await hasUserScopeInstall()).toBe(true);
+  });
+
+  it('keeps all machine settings when a user-scope init writes the install record', async () => {
+    const machineFile = path.join(home, '.teamai', 'config.yaml');
+    fs.mkdirSync(path.dirname(machineFile), { recursive: true });
+    fs.writeFileSync(machineFile, 'recallEnabled: true\nworkflows:\n  tools:\n    default: codex\n');
+
+    await saveLocalConfig(freshInstall('user'));
+
+    const saved = YAML.parse(fs.readFileSync(machineFile, 'utf8'));
+    expect(saved).toMatchObject({ recallEnabled: true, workflows: { tools: { default: 'codex' } } });
+    expect(await hasUserScopeInstall()).toBe(true);
+  });
+
+  it("keeps a project's ai.tool when a re-init writes the project's config", async () => {
+    const dataHome = path.join(home, '.teamai', 'projects', 'project');
+    const projectFile = path.join(dataHome, 'config.yaml');
+    fs.mkdirSync(dataHome, { recursive: true });
+    fs.writeFileSync(projectFile, 'ai:\n  tool: opencode\n');
+    const config = freshInstall('project', dataHome);
+
+    await saveLocalConfigForScope(config);
+
+    expect(YAML.parse(fs.readFileSync(projectFile, 'utf8'))).toMatchObject({ ai: { tool: 'opencode' } });
+  });
+});

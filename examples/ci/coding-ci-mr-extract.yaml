@@ -1,24 +1,24 @@
-# TeamAI MR Knowledge Extract — 智研 / Coding CI（TGit / 工蜂）
+# TeamAI MR Knowledge Extract — Zhiyan / Coding CI (TGit)
 #
-# 在 MR 创建/更新时自动提炼知识建议并以 comment 贴到 MR 上；
-# MR 合入后自动将 learning、codebase、图谱建议写入团队知识仓库。
+# When an MR is opened or updated, extracts knowledge suggestions automatically and posts them as comments on the MR;
+# after the MR is merged, writes the learning, codebase and graph suggestions to the team knowledge repo automatically.
 #
-# 使用前请配置：
-#   1. 在智研 Web 端新建一条流水线：绑定本工蜂仓库 → CIfile 指向本文件路径 →
-#      触发方式勾选 MR。注意：MR 触发规则**必须**在本 YAML 的 `mr:` 块声明，
-#      仅在智研 UI 勾选无效。
-#   2. Pipeline Secret：
-#        - TGIT_TOKEN：对团队知识仓库有 push 权限的 TGit Personal Access Token
-#        - ANTHROPIC_AUTH_TOKEN：AI 认证 Token
-#      说明：teamai ci extract-mr 复用了 AI 提炼逻辑（callClaude），comment 与
-#      write 两种模式都会 spawn 本地 AI CLI，因此 AI CLI 与凭证是**必须**的，不是可选。
-#   3. 把下方 env 中的占位符改成你的实际值：
-#        - TEAMAI_KNOWLEDGE_REPO   团队知识仓库路径（如 myteam/knowledge）
-#        - ANTHROPIC_BASE_URL      AI 网关地址（如 https://api.anthropic.com）
+# Configure before use:
+#   1. Create a pipeline in the Zhiyan web console: bind this TGit repo → point CIfile at this file's path →
+#      tick MR as the trigger. Note: the MR trigger rules **must** be declared in the `mr:` block of this YAML;
+#      ticking them only in the Zhiyan UI has no effect.
+#   2. Pipeline Secrets:
+#        - TGIT_TOKEN: a TGit Personal Access Token with push access to the team knowledge repo
+#        - ANTHROPIC_AUTH_TOKEN: the AI auth token
+#      Note: teamai ci extract-mr reuses the AI extraction logic (callClaude); both the comment and
+#      write modes spawn a local AI CLI, so the AI CLI and its credentials are **required**, not optional.
+#   3. Replace the placeholders in the env below with your actual values:
+#        - TEAMAI_KNOWLEDGE_REPO   team knowledge repo path (e.g. myteam/knowledge)
+#        - ANTHROPIC_BASE_URL      AI gateway address (e.g. https://api.anthropic.com)
 
 version: 2
 
-# ── MR 触发规则（必须在 YAML 中声明，UI 配置无效）────────────
+# ── MR trigger rules (must be declared in the YAML; UI settings have no effect) ──
 mr:
   action:
   - open
@@ -28,23 +28,23 @@ mr:
   is_block_mr: true
   auto_cancel_same_merge_request: true
 
-# ── 密钥与环境变量 ────────────────────────────────────────────
+# ── Secrets and environment variables ──────────────────────────
 env:
   TGIT_TOKEN:
     secret: ${TGIT_TOKEN_SECRET}
   ANTHROPIC_AUTH_TOKEN:
     secret: ${ANTHROPIC_AUTH_TOKEN_SECRET}
-  TEAMAI_KNOWLEDGE_REPO:                                # 团队知识仓库路径（如 myteam/knowledge）
-  TEAMAI_KNOWLEDGE_BRANCH: main                        # 知识仓库默认分支
-  ANTHROPIC_BASE_URL:                                  # AI API 基础地址（如 https://api.anthropic.com）
+  TEAMAI_KNOWLEDGE_REPO:                                # team knowledge repo path (e.g. myteam/knowledge)
+  TEAMAI_KNOWLEDGE_BRANCH: main                        # knowledge repo default branch
+  ANTHROPIC_BASE_URL:                                  # AI API base URL (e.g. https://api.anthropic.com)
   ANTHROPIC_DEFAULT_SONNET_MODEL: claude-sonnet-4-6
   ANTHROPIC_DEFAULT_HAIKU_MODEL: claude-haiku-4-5
   ANTHROPIC_DEFAULT_OPUS_MODEL: claude-opus-4-8
 
-# ── 流水线阶段 ────────────────────────────────────────────────
+# ── Pipeline stages ────────────────────────────────────────────
 stages:
 
-# ── MR 创建/更新时：提炼知识并以 comment 形式展示 ──────────
+# ── When an MR is opened or updated: extract knowledge and show it as comments ──
 - stage: teamai-extract-comment
   tasks:
   - task: extract-and-comment
@@ -53,15 +53,15 @@ stages:
       params:
         cmds:
         - echo "=== [TeamAI] Installing CLI tools ==="
-        # 公网环境：npm 安装；内网无公网 npm 时改为本地 tarball，如：
+        # Public network: install from npm; on an intranet without public npm, use a local tarball instead, e.g.:
         #   npm install -g ./teamai-cli-<version>.tgz @anthropic-ai/claude-code
         - npm install -g teamai-cli @anthropic-ai/claude-code 2>&1 | tail -3
         - |
           echo "machine git.woa.com login private password ${TGIT_TOKEN}" > ~/.netrc
           chmod 600 ~/.netrc
           echo "=== [TeamAI] TGit auth configured ==="
-        # comment 模式仅通过 REST 拉取 MR 并回帖，无需克隆团队知识仓库，
-        # 因此不运行 `teamai init`（它需要交互式成员注册，在 CI 中不可用）。
+        # Comment mode only fetches the MR and replies through REST, so it does not need to clone the team knowledge repo,
+        # and therefore does not run `teamai init` (it needs interactive member registration, which is unavailable in CI).
         - |
           echo "=== [TeamAI] Trigger: ${QCI_TRIGGER_TYPE}, MR IID: ${QCI_MR_IID:-none} ==="
           if [ "${QCI_TRIGGER_TYPE}" = "TRIGGER_MR" ] && [ -n "${QCI_MR_IID}" ] && [ "${QCI_MR_IID}" != "None" ]; then
@@ -73,7 +73,7 @@ stages:
           echo "=== [TeamAI] MR_URL=$MR_URL ==="
           teamai ci extract-mr --url "$MR_URL" --mode comment --individual-comments
 
-# ── MR 合入后：将知识写入团队知识仓库 ─────────────────────
+# ── After the MR is merged: write knowledge to the team knowledge repo ──
 - stage: teamai-post-merge-write
   tasks:
   - task: write-knowledge
@@ -89,14 +89,14 @@ stages:
           fi
           MR_URL="${QCI_REPO%.git}/merge_requests/${QCI_MR_IID}"
           echo "=== [TeamAI] Writing knowledge for $MR_URL ==="
-          # 用 PAT 克隆团队知识仓库（PAT 的 git 用户名为 `private`）。
-          # 克隆到源码 checkout 之外：放在 checkout 内会被当成源码提取，CLI 会跳过 teamwiki 更新。
+          # Clone the team knowledge repo with the PAT (the PAT's git username is `private`).
+          # Clone it outside the source checkout: inside the checkout it would be extracted as source, and the CLI skips the teamwiki update.
           TEAM_REPO_DIR=/tmp/teamai-team-repo
           git clone -b "${TEAMAI_KNOWLEDGE_BRANCH}" "https://private:${TGIT_TOKEN}@git.woa.com/${TEAMAI_KNOWLEDGE_REPO}.git" "$TEAM_REPO_DIR"
-          # 在源码 checkout 中运行：teamwiki 走 `teamai import --dir . --incremental` 的同一流程，
-          # 只重新提取改过的文件，写入 teamwiki/evidence/code/tgit__<group>__<repo>/。
-          # --write-mode direct 让 CLI 自行 commit 并 push：git 身份由 TGIT_TOKEN
-          # 对应账号（REST /user）推导，满足工蜂 committer-check。无需手动 git config/commit/push。
+          # Run in the source checkout: teamwiki follows the same flow as `teamai import --dir . --incremental`,
+          # re-extracts only the changed files, and writes to teamwiki/evidence/code/tgit__<group>__<repo>/.
+          # --write-mode direct makes the CLI commit and push itself: the git identity is derived from the account
+          # behind TGIT_TOKEN (REST /user), which satisfies the TGit committer-check. No manual git config/commit/push needed.
           teamai ci extract-mr --url "$MR_URL" --mode write --individual-comments --team-repo "$TEAM_REPO_DIR" --write-mode direct
 
 worker:

@@ -10,6 +10,7 @@ vi.mock('node:os', async (importOriginal) => {
   return { ...actual, homedir: () => mocks.home, default: { ...actual, homedir: () => mocks.home } };
 });
 
+import type { RunMode } from '../launch-context.js';
 import type { LocalConfig } from '../types.js';
 import { AttemptStore } from '../scorers/attempts.js';
 import { acquireLock, releaseLock } from '../update.js';
@@ -71,8 +72,8 @@ const leaseOf = (envelope: WorkflowEnvelope) => LeaseSchema.parse(data(envelope)
 
 const line = (record: unknown): string => `${JSON.stringify(record)}\n`;
 
-/** A Claude session `sessionId` in `<root>/app`, captured in `config`'s data home, with nothing happening in it for `idleFor`. */
-function plantSession(sessionId: string, idleFor = 7 * HOUR): void {
+/** A Claude session `sessionId` in `<root>/app`, captured in `config`'s data home in `runMode`, with nothing happening in it for `idleFor`. */
+function plantSession(sessionId: string, idleFor = 7 * HOUR, runMode?: RunMode): void {
   const cwd = path.join(root, 'app');
   const project = path.join(mocks.home, '.claude', 'projects', encodeCwdClaude(cwd));
   fs.mkdirSync(project, { recursive: true });
@@ -88,14 +89,15 @@ function plantSession(sessionId: string, idleFor = 7 * HOUR): void {
   fs.mkdirSync(captures, { recursive: true });
   const captureId = `0b6f2a52-5d7e-4c7e-9a43-${sessionId.slice(-12)}`;
   fs.writeFileSync(path.join(captures, `${captureId}.json`), JSON.stringify({ captureId, platform: 'claude-code', sessionId,
-    capturedAt: '2026-10-20T10:00:00.000Z', agent: { v: 1, tool: { name: 'claude' }, teamai: '1.0.0', driver: 'session' }, sessionFile: file }));
+    capturedAt: '2026-10-20T10:00:00.000Z', ...(runMode ? { runMode } : {}), agent: { v: 1, tool: { name: 'claude' }, teamai: '1.0.0', driver: 'session' }, sessionFile: file }));
 }
 
-/** A user scope with `scoring` in its `config.yaml`, `scorerText` cached, and session `SESSION` captured `idleFor` ago. */
-async function fixture({ scorerText = SESSION_SCORER, scoring = { sessions: true }, idleFor = 7 * HOUR }: {
+/** A user scope with `scoring` in its `config.yaml`, `scorerText` cached, and session `SESSION` captured in `runMode` `idleFor` ago. */
+async function fixture({ scorerText = SESSION_SCORER, scoring = { sessions: true }, idleFor = 7 * HOUR, runMode }: {
   scorerText?: string;
   scoring?: LocalConfig['scoring'];
   idleFor?: number;
+  runMode?: RunMode;
 } = {}): Promise<LocalConfig> {
   const knowledge = path.join(root, 'knowledge');
   fs.mkdirSync(path.join(knowledge, 'scorers'), { recursive: true });
@@ -105,7 +107,7 @@ async function fixture({ scorerText = SESSION_SCORER, scoring = { sessions: true
     username: 'tester', scope: 'user', additionalRoles: [], dataHome: path.join(root, 'data'), scoring,
   };
   await syncScorerDefinitions(config);
-  plantSession(SESSION, idleFor);
+  plantSession(SESSION, idleFor, runMode);
   return config;
 }
 
@@ -153,6 +155,11 @@ describe('a finished session as judge work', () => {
     ['something happened in the session within six hours', { idleFor: 5 * HOUR }],
   ])('is not handed out when %s', async (_, options) => {
     const config = await fixture(options);
+    expect(data(await nextJudgeLease(config, request(), NOW))).toEqual(IDLE);
+  });
+
+  it('is not handed out when it ran unattended and no drain reached it, however long it has been idle', async () => {
+    const config = await fixture({ scoring: {}, runMode: 'unattended', idleFor: 30 * HOUR });
     expect(data(await nextJudgeLease(config, request(), NOW))).toEqual(IDLE);
   });
 

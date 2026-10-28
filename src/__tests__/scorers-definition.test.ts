@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatScorerDiagnostic, parseScorer } from '../scorers/definition.js';
+import { formatScorerDiagnostic, isScorerFile, parseScorer } from '../scorers/definition.js';
 
 const VALID = `---
 labels:
@@ -78,5 +78,16 @@ describe('parseScorer', () => {
 
   it('rejects a file name that is not a token', () => {
     expect(problems('scorers/.hidden.md', VALID)).toEqual(['scorers/.hidden.md: the file name must be a token such as review-quality.md']);
+  });
+
+  it('rejects a name ending in .md, which --scorer would take for a file', () => {
+    expect(problems('scorers/v1.md.md', VALID)).toEqual(['scorers/v1.md.md: a scorer\'s name cannot end in .md, since teamai score --scorer reads such a value as a scorer file']);
+  });
+});
+
+describe('isScorerFile', () => {
+  it('takes a value with a slash or ending in .md as a file, and any scorer name as a name', () => {
+    expect(['./scorers/x.md', 'scorers/x', 'x.md', '../x.md'].filter(isScorerFile)).toEqual(['./scorers/x.md', 'scorers/x', 'x.md', '../x.md']);
+    expect(['review-quality', 'v1.2', 'a_b'].filter(isScorerFile)).toEqual([]);
   });
 });

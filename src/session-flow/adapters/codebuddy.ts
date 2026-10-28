@@ -29,7 +29,6 @@ import type { Session, Message, ContentBlock, ThinkingBlock, ToolCallBlock, Tool
 import { imagePlaceholderText } from '../ir.js';
 import { assertSafeSessionFileId, deriveTargetSessionId } from '../ids.js';
 import {
-  getCodeBuddyProjectsDir,
   encodeCwdCodeBuddy,
   decodeCwdGeneric,
   readJsonl,
@@ -40,7 +39,8 @@ import {
   dirExists,
   removeDirRecursive,
 } from '../fs.js';
-import { isInjectedText, fallbackTitle, titleFromCandidates } from '../title.js';
+import { sessionStoreDir } from '../../locate.js';
+import { cutTitle, isInjectedText, fallbackTitle, titleFromCandidates } from '../title.js';
 
 // ---------------------------------------------------------------------------
 // Tool-name normalization map
@@ -141,21 +141,20 @@ function fromUnixMs(ms: number): string {
 
 export class CodeBuddyAdapter extends AgentAdapter {
   readonly platform = 'codebuddy';
+  private readonly storageRoot: string;
 
-  static isAvailable(): boolean {
-    return dirExists(getCodeBuddyProjectsDir());
+  /** @param storageRoot The session store (the registry passes the member's, `sessionStoreDir`). */
+  constructor(storageRoot = sessionStoreDir('codebuddy', undefined)) {
+    super();
+    this.storageRoot = storageRoot;
   }
 
   isReady(): boolean {
-    return dirExists(getCodeBuddyProjectsDir());
-  }
-
-  static getDefaultStoragePath(): string {
-    return getCodeBuddyProjectsDir();
+    return dirExists(this.storageRoot);
   }
 
   private resolveProjectDir(projectPath?: string): string {
-    const root = getCodeBuddyProjectsDir();
+    const root = this.storageRoot;
     if (projectPath) {
       return path.join(root, encodeCwdCodeBuddy(projectPath));
     }
@@ -167,7 +166,7 @@ export class CodeBuddyAdapter extends AgentAdapter {
       const target = path.join(this.resolveProjectDir(projectPath), `${sessionId}.jsonl`);
       return fileExists(target) ? target : null;
     }
-    const root = getCodeBuddyProjectsDir();
+    const root = this.storageRoot;
     if (!dirExists(root)) return null;
     for (const projDir of fs.readdirSync(root)) {
       const candidate = path.join(root, projDir, `${sessionId}.jsonl`);
@@ -187,7 +186,7 @@ export class CodeBuddyAdapter extends AgentAdapter {
       const target = path.join(this.resolveProjectDir(projectPath), `${sessionId}.jsonl`);
       return fileExists(target) ? [target] : [];
     }
-    const root = getCodeBuddyProjectsDir();
+    const root = this.storageRoot;
     if (!dirExists(root)) return [];
     const out: string[] = [];
     for (const projDir of fs.readdirSync(root)) {
@@ -199,7 +198,7 @@ export class CodeBuddyAdapter extends AgentAdapter {
 
   async listConversations(projectPath?: string): Promise<SessionMeta[]> {
     const metas: SessionMeta[] = [];
-    const root = getCodeBuddyProjectsDir();
+    const root = this.storageRoot;
     if (!dirExists(root)) return [];
 
     const projDirs = projectPath
@@ -272,7 +271,7 @@ export class CodeBuddyAdapter extends AgentAdapter {
     // The first "user message" is often an injected block such as system-reminder. Without cleaning,
     // the session list shows the entire prompt verbatim.
     if (aiTitle && !isInjectedText(aiTitle)) {
-      title = aiTitle.slice(0, 60);
+      title = cutTitle(aiTitle);
     } else {
       title = titleFromCandidates(userTextCandidates) || fallbackTitle(sessionId);
     }
@@ -348,7 +347,7 @@ export class CodeBuddyAdapter extends AgentAdapter {
         // CodeBuddy sometimes stores injected-block text as ai-title. Taking it as-is pollutes the whole migration path
         // (preview and target-side titles are the prompt verbatim).
         const t = String(rec.aiTitle ?? '');
-        if (t && !isInjectedText(t)) title = t.slice(0, 100);
+        if (t && !isInjectedText(t)) title = cutTitle(t, 100);
         continue;
       }
 
@@ -505,7 +504,7 @@ export class CodeBuddyAdapter extends AgentAdapter {
       targetCwd: cwd,
       sourceSessionId: session.sessionId,
     });
-    const projDir = path.join(getCodeBuddyProjectsDir(), encodeCwdCodeBuddy(cwd));
+    const projDir = path.join(this.storageRoot, encodeCwdCodeBuddy(cwd));
     const jsonlPath = path.join(projDir, `${sessionId}.jsonl`);
 
     const records: Record<string, unknown>[] = [];

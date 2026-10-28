@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { trackDetachedProcesses } from '../helpers/detached-processes.js';
+import { waitForDetachedChildren } from '../helpers/detached-processes.js';
 import { AGENT_SESSION_ENV } from '../../utils/session-id.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
@@ -55,7 +55,6 @@ interface Turn {
 let sandbox = '';
 let teamOrigin = '';
 let businessOrigin = '';
-let detached: ReturnType<typeof trackDetachedProcesses> | undefined;
 
 function homeOf(member: string): string {
   return path.join(sandbox, member);
@@ -73,7 +72,6 @@ function envOf(member: string, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv
     GIT_CONFIG_GLOBAL: path.join(homeOf(member), '.gitconfig'),
     GIT_TERMINAL_PROMPT: '0',
     FORCE_COLOR: '0',
-    NODE_OPTIONS: [process.env.NODE_OPTIONS, detached?.nodeOptions].filter(Boolean).join(' '),
     ...extra,
   };
   for (const name of ['XDG_CONFIG_HOME', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'TEAMAI_WORKFLOW_ATTEMPT', ...AGENT_SESSION_ENV]) {
@@ -165,7 +163,6 @@ async function join(member: string): Promise<void> {
 describe('a coding session claims a run another member published', () => {
   beforeAll(async () => {
     sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-workflow-skill-claim-e2e-')));
-    detached = trackDetachedProcesses(sandbox);
     teamOrigin = path.join(sandbox, 'team.git');
     businessOrigin = path.join(sandbox, 'business.git');
     git(sandbox, ['init', '-q', '--bare', '-b', 'main', teamOrigin]);
@@ -180,7 +177,7 @@ describe('a coding session claims a run another member published', () => {
   }, 120_000);
 
   afterAll(async () => {
-    await detached?.waitForExit();
+    await waitForDetachedChildren();
     if (sandbox) fs.rmSync(sandbox, { recursive: true, force: true });
   });
 

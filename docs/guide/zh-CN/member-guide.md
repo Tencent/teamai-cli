@@ -116,6 +116,29 @@ sharing:
 
 本机 `~/.teamai/config.yaml` 的 `coAuthorEnabled` 优先。下一次 `teamai pull` 写入各工具的配置。
 
+## 自动压缩阈值
+
+团队仓库的 `teamai.yaml`：
+
+```yaml
+sharing:
+  autoCompact:
+    tokens: 400000
+```
+
+之后上下文达到约 400K tokens 时，各 AI 工具会在下一次压缩检查时压缩对话；长的一轮在检查前可能略超过这个数。各工具按自己的方式换算：
+
+| 工具 | 写入的设置 |
+|------|-----------|
+| Claude Code、TClaude | `settings.json` 的 `autoCompactWindow` = tokens + 33K |
+| CodeBuddy、WorkBuddy | `settings.json` 的 `autoCompactWindow` = tokens ÷ 工具的运行中压缩比例（0.92，WorkBuddy 为 0.9） |
+| Codex、TCodex | `config.toml` 的 `model_auto_compact_token_limit` = tokens |
+| DeepSeek Harness | `cordis.patch.yml` 中 `compaction-basic` 一行，每个模型一个比例 |
+
+模型自身窗口更小时，工具仍按模型窗口压缩，所以小窗口模型不受影响。工具无法接受这个数时，teamai 跳过它并说明原因：有环境变量覆盖了该设置、CodeBuddy 自定义模型没有 `maxInputTokens`、或 DeepSeek Harness 没有合适的模型。Cursor 没有这类设置。pull 之后重启工具生效。
+
+这些文件是整台机器共用的，所以只由一个 scope 决定：有 user scope 时用它，否则用 pull 所在的 workspace。你自己设的值不会被覆盖。该 scope 配置里的 `autoCompactTokens` 优先，`0` 表示不参与。团队删掉这一项后，下一次 `teamai pull` 移除 teamai 写入的值。
+
 ## 让分发的文件不进入 git
 
 ```yaml

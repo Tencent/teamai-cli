@@ -44,7 +44,7 @@ async function deliverTeamAssets(dir: string): Promise<void> {
     const { createProjectToolRoots } = await import('../../project-agent-root.js');
     await createProjectToolRoots({ cwd: dir });
     const { pull } = await import('../../pull.js');
-    await pull({ silent: true, inline: true, gitHook: 'post-checkout', prepareCheckout: true, cwd: dir });
+    await pull({ silent: true, inline: true, gitHook: 'post-checkout', prepareCheckout: 'always', cwd: dir });
   } finally {
     process.exitCode = exitCode;
   }

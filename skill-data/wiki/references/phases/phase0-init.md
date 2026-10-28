@@ -103,7 +103,7 @@ Before the K1 deep read, use TeamAI to extract evidence-backed import/call struc
 teamai import --dir <repo_abs_path> --skip-enrich
 ```
 
-- Output: `teamwiki/evidence/code/<slug>/` pages and `teamwiki/evidence/code/<slug>/.indices/graph-index.json` (structural edges), merged into `teamwiki/.indices/graph-index.json`. `<slug>` is the repository name; reuse it for `teamai codebase --deep-enrich --project <slug>`.
+- Output: `teamwiki/evidence/code/<slug>/` pages and `teamwiki/evidence/code/<slug>/.indices/graph-index.json` (structural edges), merged into `teamwiki/.indices/graph-index.json`. `<slug>` is the `project:` the import prints (`<provider>__<owner>__<repo>` when the repo has an `origin`, else the repository name, or `<name>-<hash8>` when another checkout without an `origin` already holds that name); reuse it for `teamai codebase --deep-enrich --project <slug>`.
 - The source repository itself is left untouched.
 - When K1/K2/K3 write `edges[]` in `_manifest.json`: **prefer citing** the `code-ast` edges from the import + their `evidenceRefs` (`path:line`); label Agent inferences `INFERRED`/`AMBIGUOUS`.
 - After Phase K3, skip any extra graph compile / merge step that is not a `teamai` command. TeamAI does not ship a separate team-wiki CLI. Continue with this skill using `teamai` and the files under this skill directory. No extra plugin is required.

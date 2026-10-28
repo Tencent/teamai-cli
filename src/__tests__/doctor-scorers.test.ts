@@ -46,7 +46,13 @@ describe('scorerNotes', () => {
     const inRepo = { ...config, dataHome: path.join(config.projectRoot ?? '', '.teamai') };
 
     expect(await scorerNotes(inRepo)).toEqual([expect.stringMatching(/^Scoring is off for this project: its teamai data is still in .*\.teamai, inside the repository.*Run teamai pull/)]);
-    expect(await scorerNotes(config, { resolveTool: () => null })).toEqual(['Scoring isolation: best-effort, the default.', 'Judge tools here: none on PATH. Install Claude Code, Codex, OpenCode or CodeBuddy to judge on this machine.']);
+    expect(await scorerNotes(config, { resolveTool: () => null })).toEqual(['Scoring isolation: best-effort, the default.', 'Judge tools here: none on PATH. Install one of: claude, claude-internal, tclaude, codex, codex-internal, tcodex, opencode, codebuddy, workbuddy, cursor, pi to judge on this machine.']);
+  });
+
+  it('prints a scoring sessions value it ignores', async () => {
+    const config = teamRepo({ 'scorers/q.md': SCORER, 'scorers/scoring.yaml': 'sessions: { unattended: yes }\n' });
+
+    expect(await scorerNotes(config, { resolveTool: () => null })).toContain('scorers/scoring.yaml sessions.unattended is "yes", not off, ask or auto, so it is ignored.');
   });
 
   it.each([
@@ -57,14 +63,14 @@ describe('scorerNotes', () => {
   ])('prints the isolation every judge needs and what sets it: %o %o', async (files, machine, line) => {
     const config = { ...teamRepo({ 'scorers/q.md': SCORER, ...files }), ...machine };
 
-    expect(await scorerNotes(config, { resolveTool: () => null })).toEqual([line, 'Judge tools here: none on PATH. Install Claude Code, Codex, OpenCode or CodeBuddy to judge on this machine.']);
+    expect(await scorerNotes(config, { resolveTool: () => null })).toEqual([line, 'Judge tools here: none on PATH. Install one of: claude, claude-internal, tclaude, codex, codex-internal, tcodex, opencode, codebuddy, workbuddy, cursor, pi to judge on this machine.']);
   });
 
   it('names each scorer file that asks for more isolation than the team and this machine', async () => {
     const verified = SCORER.replace('passingScore: 0.5', 'passingScore: 0.5\nisolation: verified');
     const config = teamRepo({ 'scorers/q.md': SCORER, 'scorers/ops/strict.md': verified, 'scorers/strict-too.md': verified });
 
-    expect(await scorerNotes(config, { resolveTool: () => null })).toEqual(['Scoring isolation: best-effort, the default. scorers/ops/strict.md and scorers/strict-too.md ask for verified for their own work.', 'Judge tools here: none on PATH. Install Claude Code, Codex, OpenCode or CodeBuddy to judge on this machine.']);
+    expect(await scorerNotes(config, { resolveTool: () => null })).toEqual(['Scoring isolation: best-effort, the default. scorers/ops/strict.md and scorers/strict-too.md ask for verified for their own work.', 'Judge tools here: none on PATH. Install one of: claude, claude-internal, tclaude, codex, codex-internal, tcodex, opencode, codebuddy, workbuddy, cursor, pi to judge on this machine.']);
   });
 
   it('warns about a cached scorer whose alias no installed judge tool maps, and notes one the member sends to the tool default', async () => {
@@ -102,7 +108,7 @@ describe('scorerNotes', () => {
     ]);
     expect(await scorerNotes(config, { resolveTool: () => null })).toEqual([
       'Scoring isolation: best-effort, the default.',
-      'Judge tools here: none on PATH. Install Claude Code, Codex, OpenCode or CodeBuddy to judge on this machine.',
+      'Judge tools here: none on PATH. Install one of: claude, claude-internal, tclaude, codex, codex-internal, tcodex, opencode, codebuddy, workbuddy, cursor, pi to judge on this machine.',
     ]);
   });
 

@@ -1,5 +1,11 @@
 import { describeLocateMatrix, type FilesRow } from './helpers/locate-matrix.js';
 
+const HERMES_PROFILE_SOURCE = 'Hermes 68134629 hermes_constants.py and hermes_cli/main.py: HERMES_DATA_DIR_SUFFIX is appended literally to ~/.hermes, or %LOCALAPPDATA%\\hermes on Windows; with no profile-shaped HERMES_HOME, <root>/active_profile names the profile, <root>/profiles/<name>, when that directory exists';
+
+const OPENCLAW_HOME_SOURCE = 'OpenClaw docs help/environment: OPENCLAW_HOME replaces the OS home for its defaults, so the state dir is <OPENCLAW_HOME>/.openclaw or .openclaw-<profile>, and ~ in OPENCLAW_STATE_DIR expands against it';
+
+const OMP_SOURCE = 'Oh My Pi a70f001c utils/src/dirs.ts: profile = OMP_PROFILE if defined, else PI_PROFILE; a named profile is ~/<PI_CONFIG_DIR or .omp>/profiles/<name>/agent, else PI_CODING_AGENT_DIR, else ~/<PI_CONFIG_DIR or .omp>/agent';
+
 const OPENCODE_SOURCE = 'opencode v2.1.1 bundle, Global.Path: config = OPENCODE_CONFIG_DIR ?? (XDG_CONFIG_HOME || ~/.config)/opencode';
 const MUSE_SOURCE = 'muse-bin 1.4.11 strings: $XDG_CONFIG_HOME/muse, else $HOME/.config/muse; with XDG_CONFIG_HOME set, $HOME/.config/muse is never read';
 const HERMES_SOURCE = 'hermes-agent hermes_constants.py:51-58: HERMES_HOME, else %LOCALAPPDATA%\\hermes on Windows, else ~/.hermes';
@@ -176,11 +182,39 @@ const ROWS: readonly FilesRow[] = [
     source: 'issue #1221 scan: OMP reads ~/.omp/agent/skills',
   },
   {
+    tool: 'omp', scope: 'user', envLiterals: { OMP_PROFILE: 'work' },
+    writes: ['~/.omp/profiles/work/agent/skills'],
+    existingDirs: ['~/.omp/profiles/work/agent'], installed: { probe: '~/.omp/profiles/work/agent', met: true },
+    reads: [{ at: '~/.omp/profiles/work/agent/skills', when: 'always' }],
+    source: OMP_SOURCE,
+  },
+  {
+    tool: 'omp', scope: 'user', env: { PI_CODING_AGENT_DIR: '/pi-agent' },
+    writes: ['~/.omp/agent/skills'],
+    existingDirs: ['~/.omp'], installed: { probe: '~/.omp', met: true },
+    reads: [{ at: '~/.omp/agent/skills', when: 'always' }],
+    source: `${OMP_SOURCE}; teamai does not follow PI_CODING_AGENT_DIR for OMP: Pi owns that directory (docs/designs/model-profiles.md)`,
+  },
+  {
+    tool: 'omp', scope: 'user', envLiterals: { PI_CONFIG_DIR: '.omp-alt', PI_PROFILE: 'work' },
+    writes: ['~/.omp-alt/profiles/work/agent/skills'],
+    existingDirs: ['~/.omp-alt/profiles/work/agent'], installed: { probe: '~/.omp-alt/profiles/work/agent', met: true },
+    reads: [{ at: '~/.omp-alt/profiles/work/agent/skills', when: 'always' }],
+    source: OMP_SOURCE,
+  },
+  {
     tool: 'codebuddy', scope: 'user',
     writes: ['~/.codebuddy/skills'],
     existingDirs: ['~/.codebuddy'], installed: { probe: '~/.codebuddy', met: true },
     reads: [{ at: '~/.codebuddy/skills', when: 'always' }],
     source: 'issue #1221 scan: CodeBuddy reads ~/.codebuddy/skills',
+  },
+  {
+    tool: 'codebuddy', scope: 'user', env: { CODEBUDDY_CONFIG_DIR: '/cb-home' },
+    writes: ['/cb-home/skills'],
+    existingDirs: ['/cb-home'], installed: { probe: '/cb-home', met: true },
+    reads: [{ at: '/cb-home/skills', when: 'always' }],
+    source: 'CodeBuddy 2.176.0 bundle: CODEBUDDY_CONFIG_DIR replaces ~/.codebuddy, its skills directory included',
   },
   {
     tool: 'codex', scope: 'user',
@@ -225,6 +259,20 @@ const ROWS: readonly FilesRow[] = [
     source: `${OPENCLAW_SOURCE}; no workspace, nothing to write into`,
   },
   {
+    tool: 'openclaw', scope: 'user', invalidJson: ['~/.openclaw/openclaw.json'],
+    writes: ['~/.openclaw/workspace/skills'],
+    existingDirs: ['~/.openclaw/workspace'], installed: { probe: '~/.openclaw/workspace', met: true },
+    reads: 'unknown',
+    source: `${OPENCLAW_SOURCE}; an openclaw.json teamai cannot parse leaves the workspace OPENCLAW_WORKSPACE_DIR or the state dir gives, where skills still go`,
+  },
+  {
+    tool: 'openclaw', scope: 'user', invalidJson: ['~/.openclaw/openclaw.json'],
+    writes: [],
+    existingDirs: ['~/.openclaw'], installed: { probe: '~/.openclaw/openclaw.json', met: false },
+    reads: 'unknown',
+    source: `${OPENCLAW_SOURCE}; an unparsable openclaw.json and no fallback workspace: nothing to write into`,
+  },
+  {
     tool: 'openclaw', scope: 'user', env: { OPENCLAW_STATE_DIR: '/oc-state' },
     writes: ['/oc-state/workspace/skills'],
     existingDirs: ['/oc-state/workspace'], installed: { probe: '/oc-state/workspace', met: true },
@@ -237,6 +285,97 @@ const ROWS: readonly FilesRow[] = [
     existingDirs: ['~/.openclaw-work/workspace'], installed: { probe: '~/.openclaw-work/workspace', met: true },
     reads: 'unknown',
     source: OPENCLAW_SOURCE,
+  },
+  {
+    tool: 'openclaw', scope: 'user', env: { OPENCLAW_HOME: '/oc-home' },
+    writes: ['/oc-home/.openclaw/workspace/skills'],
+    existingDirs: ['/oc-home/.openclaw/workspace'], installed: { probe: '/oc-home/.openclaw/workspace', met: true },
+    reads: 'unknown',
+    source: OPENCLAW_HOME_SOURCE,
+  },
+  {
+    tool: 'openclaw', scope: 'user', env: { OPENCLAW_HOME: '/oc-home' }, envLiterals: { OPENCLAW_PROFILE: 'work' },
+    writes: ['/oc-home/.openclaw-work/workspace/skills'],
+    existingDirs: ['/oc-home/.openclaw-work/workspace'], installed: { probe: '/oc-home/.openclaw-work/workspace', met: true },
+    reads: 'unknown',
+    source: OPENCLAW_HOME_SOURCE,
+  },
+  {
+    tool: 'openclaw', scope: 'project', env: { OPENCLAW_HOME: '/oc-home' },
+    writes: ['/oc-home/.openclaw/workspace/skills'],
+    existingDirs: ['/oc-home/.openclaw/workspace'], installed: { probe: '/oc-home/.openclaw/workspace', met: true },
+    reads: 'unknown',
+    source: OPENCLAW_HOME_SOURCE,
+  },
+  {
+    tool: 'openclaw', scope: 'project', env: { OPENCLAW_HOME: '/oc-home' }, envLiterals: { OPENCLAW_PROFILE: 'work' },
+    writes: ['/oc-home/.openclaw-work/workspace/skills'],
+    existingDirs: ['/oc-home/.openclaw-work/workspace'], installed: { probe: '/oc-home/.openclaw-work/workspace', met: true },
+    reads: 'unknown',
+    source: OPENCLAW_HOME_SOURCE,
+  },
+  {
+    tool: 'openclaw', scope: 'user', env: { OPENCLAW_HOME: '/oc-home' }, envLiterals: { OPENCLAW_STATE_DIR: '~/oc-state' },
+    writes: ['/oc-home/oc-state/workspace/skills'],
+    existingDirs: ['/oc-home/oc-state/workspace'], installed: { probe: '/oc-home/oc-state/workspace', met: true },
+    reads: 'unknown',
+    source: OPENCLAW_HOME_SOURCE,
+  },
+  {
+    tool: 'hermes', scope: 'user', platforms: ['darwin', 'linux'], envLiterals: { HERMES_DATA_DIR_SUFFIX: '-canary' },
+    writes: ['~/.hermes-canary/skills'],
+    existingDirs: ['~/.hermes-canary'], installed: { probe: '~/.hermes-canary', met: true },
+    reads: [{ at: '~/.hermes-canary/skills', when: 'always' }],
+    source: HERMES_PROFILE_SOURCE,
+  },
+  {
+    tool: 'hermes', scope: 'user', platforms: ['win32'], envLiterals: { HERMES_DATA_DIR_SUFFIX: '-canary' },
+    writes: ['$LOCALAPPDATA/hermes-canary/skills'],
+    existingDirs: ['$LOCALAPPDATA/hermes-canary'], installed: { probe: '$LOCALAPPDATA/hermes-canary', met: true },
+    reads: [{ at: '$LOCALAPPDATA/hermes-canary/skills', when: 'always' }],
+    source: HERMES_PROFILE_SOURCE,
+  },
+  {
+    tool: 'hermes', scope: 'user', platforms: ['darwin', 'linux'], texts: [{ at: '~/.hermes/active_profile', text: 'work\n' }],
+    writes: ['~/.hermes/profiles/work/skills'],
+    existingDirs: ['~/.hermes/profiles/work'], installed: { probe: '~/.hermes/profiles/work', met: true },
+    reads: [{ at: '~/.hermes/profiles/work/skills', when: 'always' }],
+    source: HERMES_PROFILE_SOURCE,
+  },
+  {
+    tool: 'hermes', scope: 'project', platforms: ['darwin', 'linux'], envLiterals: { HERMES_DATA_DIR_SUFFIX: '-canary' },
+    writes: ['~/.hermes-canary/skills'],
+    existingDirs: ['~/.hermes-canary'], installed: { probe: '~/.hermes-canary', met: true },
+    reads: [{ at: '~/.hermes-canary/skills', when: 'always' }],
+    source: HERMES_PROFILE_SOURCE,
+  },
+  {
+    tool: 'hermes', scope: 'project', platforms: ['win32'], envLiterals: { HERMES_DATA_DIR_SUFFIX: '-canary' },
+    writes: ['$LOCALAPPDATA/hermes-canary/skills'],
+    existingDirs: ['$LOCALAPPDATA/hermes-canary'], installed: { probe: '$LOCALAPPDATA/hermes-canary', met: true },
+    reads: [{ at: '$LOCALAPPDATA/hermes-canary/skills', when: 'always' }],
+    source: HERMES_PROFILE_SOURCE,
+  },
+  {
+    tool: 'hermes', scope: 'project', platforms: ['darwin', 'linux'], texts: [{ at: '~/.hermes/active_profile', text: 'work\n' }],
+    writes: ['~/.hermes/profiles/work/skills'],
+    existingDirs: ['~/.hermes/profiles/work'], installed: { probe: '~/.hermes/profiles/work', met: true },
+    reads: [{ at: '~/.hermes/profiles/work/skills', when: 'always' }],
+    source: HERMES_PROFILE_SOURCE,
+  },
+  {
+    tool: 'openclaw', scope: 'project', env: { OPENCLAW_STATE_DIR: '/oc-state' },
+    writes: ['/oc-state/workspace/skills'],
+    existingDirs: ['/oc-state/workspace'], installed: { probe: '/oc-state/workspace', met: true },
+    reads: 'unknown',
+    source: `${OPENCLAW_SOURCE}; the workspace is the same in either scope`,
+  },
+  {
+    tool: 'openclaw', scope: 'project', envLiterals: { OPENCLAW_PROFILE: 'work' },
+    writes: ['~/.openclaw-work/workspace/skills'],
+    existingDirs: ['~/.openclaw-work/workspace'], installed: { probe: '~/.openclaw-work/workspace', met: true },
+    reads: 'unknown',
+    source: `${OPENCLAW_SOURCE}; the workspace is the same in either scope`,
   },
   {
     tool: 'openclaw', scope: 'user', envLiterals: { OPENCLAW_PROFILE: 'default' },

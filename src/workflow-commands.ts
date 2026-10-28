@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { z } from 'zod';
-import { autoDetectInit, loadLocalConfigForScope, loadTeamConfig } from './config.js';
+import { autoDetectInit, loadLocalConfigForScope, loadTeamConfig, machineWorkflowAllowProblem } from './config.js';
 import { resolveWorkflowEnv, type WorkflowEnv } from './env-resolution.js';
 import { isLeaseRef } from './scorers/entry.js';
 import { log, setStderrOnly } from './utils/logger.js';
@@ -17,6 +17,7 @@ import { parseInputsFlag, parseSkillCall, runSkillCall, sessionDrivesRun, skillC
 import { loadCachedWorkflow } from './workflow/cache.js';
 import { findRunConfig } from './workflow/run-location.js';
 import { resolveRunMode } from './launch-context.js';
+import { memberTools } from './tool-launch/call.js';
 import { agentEvidence, isAttemptRunner, nestedCall, nestedStart, nestedWorkflowError, type Nested } from './workflow/attempt-marker.js';
 import type { WorkflowEnvelope, WorkflowFailure } from './workflow/types.js';
 
@@ -30,6 +31,24 @@ function writeEnvelope(envelope: WorkflowEnvelope, secrets: Record<string, strin
   const done = envelope.data.done;
   if (done && typeof done === 'object' && ['failed', 'cancelled'].includes(String((done as { outcome?: unknown }).outcome))) {
     process.exitCode = 1;
+  }
+}
+
+/**
+ * Prints what the local driver answered for a run of `config`, then, once an unattended run is done, drains the run's
+ * scope as `teamai score --drain` does unless its unattended publishing and session scoring are both `off`. The run's
+ * outcome keeps setting the exit code: what the drain could not do is printed.
+ */
+async function writeDriven(config: LocalConfig, envelope: WorkflowEnvelope, secrets: Record<string, string>): Promise<void> {
+  writeEnvelope(envelope, secrets);
+  if ('error' in envelope || !('done' in envelope.data) || resolveRunMode(process.env) !== 'unattended') return;
+  const { Drain } = await import('./score-drain.js');
+  try {
+    if (!await Drain.drainsUnattendedRun(config)) return;
+    log.info('Draining before exit (teamai score --drain)');
+    Drain.print(await Drain.run([config], { mode: 'unattended' }));
+  } catch (error) {
+    log.error(`The drain stopped: ${error instanceof Error ? error.message : String(error)}. Run teamai score --drain to finish it.`);
   }
 }
 
@@ -89,8 +108,19 @@ function readJson(payload: string | undefined, missing: string): JsonRead {
  */
 interface Ready { config: LocalConfig; teamConfig: TeamaiConfig; env: WorkflowEnv; secrets: Record<string, string> }
 
+/**
+ * The refusal of every workflow command while this machine's `workflows.allow` cannot be used: skipping a restriction
+ * would lift it. Undefined when it can.
+ */
+async function allowRefusal(): Promise<WorkflowEnvelope | undefined> {
+  const problem = await machineWorkflowAllowProblem();
+  return problem ? { error: { code: 'not_initialized', message: problem } } : undefined;
+}
+
 /** The member's config as `Ready`, or the failure the caller prints. */
 async function readyConfig(): Promise<Ready | WorkflowEnvelope> {
+  const refusal = await allowRefusal();
+  if (refusal) return refusal;
   const loaded = await loadConfig();
   if (!('config' in loaded)) return loaded;
   const env = await resolveWorkflowEnv(loaded.config);
@@ -114,6 +144,8 @@ async function readyStartConfig(name: string): Promise<Ready | WorkflowEnvelope>
 
 /** `allowRemote`: a run no config here has is the current config's, as a call that may claim it from teamai-reports needs. */
 async function runOwner(runId: string, { allowRemote }: { allowRemote: boolean }): Promise<{ config: LocalConfig; teamConfig: TeamaiConfig } | WorkflowEnvelope> {
+  const refusal = await allowRefusal();
+  if (refusal) return refusal;
   const current = await loadConfig(true);
   const found = await findRunConfig(runId, 'config' in current ? current.config : undefined);
   if (!('config' in found)) {
@@ -169,6 +201,7 @@ async function workflowSkill(raw: Parameters<typeof parseSkillCall>[0]): Promise
   }
   const context = await skillContext({
     config: loaded.config, toolPaths: loaded.teamConfig.toolPaths, env: loaded.env, cwd: process.cwd(),
+    aiTools: (await memberTools(loaded.config)).map(({ tool }) => tool),
     trace: (row) => log.debug(`[workflow] skill driver took row ${row}`),
   });
   writeEnvelope(await runSkillCall(call, context), loaded.secrets);
@@ -240,7 +273,7 @@ export async function workflowStart(name: string, options: {
     return;
   }
   log.info(`Run ${runId} started. If it stops before it ends, continue it with: teamai workflow resume ${runId}`);
-  writeEnvelope(await runLocalDriver(config, runId, process.cwd(), { tools, toolPaths: teamConfig.toolPaths, autoApprove: options.autoApprove }), secrets);
+  await writeDriven(config, await runLocalDriver(config, runId, process.cwd(), { tools, toolPaths: teamConfig.toolPaths, autoApprove: options.autoApprove }), secrets);
 }
 
 /** Refuses `--driver <kind>` on `command`, which takes only `--driver skill`, naming the kind given. */
@@ -504,7 +537,7 @@ export async function workflowResume(runId: string, options: {
     return;
   }
   // Claimed under the driver lock, so a driver of this run already running here never drives the claimed run.
-  writeEnvelope(await withDriverLock(loaded.config, runId, async (drive) => {
+  await writeDriven(loaded.config, await withDriverLock(loaded.config, runId, async (drive) => {
     const resumed = await resumeRun(loaded.config, runId, { claim: options.claim === true, checkout: process.cwd() });
     if (!resumed.ok) return { error: resumed.error };
     const stored = await readRun(loaded.config, runId);

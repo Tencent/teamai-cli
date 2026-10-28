@@ -18,7 +18,7 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { deliveryConformanceWorkflow, workflowDeliveryConformanceScenarios, type DeliveryConformanceScenario } from '../../workflow/conformance/delivery.js';
-import { trackDetachedProcesses } from '../helpers/detached-processes.js';
+import { waitForDetachedChildren } from '../helpers/detached-processes.js';
 import { fakeGhHost, type FakeGh } from '../helpers/fake-gh.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
@@ -70,7 +70,6 @@ let productOrigin = '';
 let gh: FakeGh;
 let ghDir = '';
 let clones = 0;
-let detached: ReturnType<typeof trackDetachedProcesses>;
 
 const homeOf = (member: Member): string => path.join(sandbox, member);
 const workOf = (member: Member): string => path.join(homeOf(member), 'work');
@@ -82,7 +81,6 @@ function envOf(member: Member): NodeJS.ProcessEnv {
     HOME: homeOf(member), USERPROFILE: homeOf(member), GIT_CONFIG_GLOBAL: path.join(homeOf(member), '.gitconfig'),
     GH_CONFIG_DIR: path.join(homeOf(member), '.gh'), PATH: `${ghDir}${path.delimiter}${process.env.PATH ?? ''}`,
     GIT_TERMINAL_PROMPT: '0', GH_PROMPT_DISABLED: '1', FORCE_COLOR: '0',
-    NODE_OPTIONS: [process.env.NODE_OPTIONS, detached.nodeOptions].filter(Boolean).join(' '),
     SHIP_OPEN: path.join(ghDir, 'open.json'), SHIP_SAW: path.join(ghDir, 'ship-saw.json'),
   };
   for (const name of ['XDG_CONFIG_HOME', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'GITHUB_TOKEN', 'GH_TOKEN']) delete env[name];
@@ -365,7 +363,6 @@ const PROFILES: Profile[] = ['local', 'session', 'external', 'remote'];
 describe('workflow delivery conformance of each kind of driver through the CLI', () => {
   beforeAll(async () => {
     sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-delivery-drivers-')));
-    detached = trackDetachedProcesses(sandbox);
     teamOrigin = path.join(sandbox, 'team.git');
     productOrigin = path.join(sandbox, 'app.git');
     ghDir = path.join(sandbox, 'gh');
@@ -380,7 +377,7 @@ describe('workflow delivery conformance of each kind of driver through the CLI',
 
   afterAll(async () => {
     if (!sandbox) return;
-    await detached.waitForExit();
+    await waitForDetachedChildren();
     fs.rmSync(sandbox, { recursive: true, force: true });
   });
 

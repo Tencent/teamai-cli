@@ -26,7 +26,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { trackDetachedProcesses } from '../helpers/detached-processes.js';
+import { waitForDetachedChildren } from '../helpers/detached-processes.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -42,7 +42,6 @@ const GIT_ENV = {
 interface Run { code: number | null; output: string }
 
 let sandbox: string;
-let detached: ReturnType<typeof trackDetachedProcesses>;
 
 const write = (file: string, content: string): void => {
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -110,7 +109,6 @@ function member(name: string, opts: { files?: Record<string, string>; gitExclude
     delete e.CLAUDE_CONFIG_DIR;
     delete e.CODEX_HOME;
     delete e.LAB_TOKEN;
-    e.NODE_OPTIONS = [e.NODE_OPTIONS, detached.nodeOptions].filter(Boolean).join(' ');
     return e;
   };
   const run = (command: string, args: string[], cwd: string): Run => {
@@ -173,10 +171,10 @@ function member(name: string, opts: { files?: Record<string, string>; gitExclude
     },
     worktree: async (repo, dir, branch = path.basename(dir)) => {
       git(['worktree', 'add', '-q', dir, '-b', branch], repo);
-      await detached.waitForExit();
+      await waitForDetachedChildren();
       const real = fs.realpathSync.native(dir);
       teamai(['pull'], real);
-      await detached.waitForExit();
+      await waitForDetachedChildren();
       return real;
     },
     claudeJson,
@@ -218,11 +216,10 @@ function withoutLocal(data: ReturnType<Member['claudeJson']>, key: string): unkn
 beforeAll(() => {
   if (!fs.existsSync(CLI)) throw new Error(`CLI binary not found at ${CLI}. Run "npm run build" first.`);
   sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-claude-mcp-local-e2e-')));
-  detached = trackDetachedProcesses(sandbox);
 });
 
 afterAll(async () => {
-  if (detached) await detached.waitForExit();
+  await waitForDetachedChildren();
   if (sandbox) fs.rmSync(sandbox, { recursive: true, force: true });
 }, 65_000);
 

@@ -7,8 +7,8 @@ import type { AttemptId, RunId } from '../../store.js';
 import type { OutputSchema, WorkflowFailure } from '../../types.js';
 import { HOST_CHOICES, HOST_PROFILES, HOST_QUESTION, type HostChoice } from './host-profiles.js';
 import {
-  ackLiteral, adoptLiteral, chooseHostLiteral, describeLiteral, localStartLiteral, nextLiteral, personRespondLiteral, pollLiteral, reportLiteral, respondLiteral, resumeLiteral,
-  skillResumeLiteral, takeoverLiteral, unavailableLiteral, type Invocation, type Literal,
+  ackLiteral, adoptLiteral, chooseHostLiteral, localStartLiteral, nextLiteral, personRespondLiteral, pollLiteral, reportLiteral, respondLiteral, resumeLiteral,
+  sessionJudgeLiteral, skillResumeLiteral, takeoverLiteral, unavailableLiteral, type Invocation, type Literal,
 } from './literals.js';
 import type { AttemptState, Dispatch, Gate, ModelPick, SkillState, StopReason, TurnEvent } from './skill-state.js';
 import { childCap, reportedByAgent, type Answer, type Refusal } from './transitions.js';
@@ -30,6 +30,8 @@ export type DescribeAsk =
     };
   }
   | { kind: 'local'; reason: string; start: Literal }
+  /** The session names no tool the run needs: the agent fills `describe`'s `{tool}` slot with the one of `tools` it works in, and describes again. */
+  | { kind: 'tool'; reason: string; describe: Literal; tools: string[] }
   /** `invoke: deny` asked from an agent session, or a start this checkout would refuse for its delivery: no literal. */
   | { kind: 'denied'; reason: string };
 
@@ -139,8 +141,11 @@ export type Action =
   | GateAction
   | PersonAction
   | HandoffAction
-  /** `judging`: the judge running now, on the pass of `step` that `scorers` judge. */
-  | { kind: 'done'; outcome: NonNullable<SkillState['done']>['outcome']; failure?: WorkflowFailure; prs: string[]; judging?: { step: string; scorers: string[] } };
+  /**
+   * `judging`: the judge running now, on the pass of `step` that `scorers` judge. `score`: the `score --next` that leases
+   * the run's judge work to the session's own judge, when the session judges the run.
+   */
+  | { kind: 'done'; outcome: NonNullable<SkillState['done']>['outcome']; failure?: WorkflowFailure; prs: string[]; judging?: { step: string; scorers: string[] }; score?: Literal };
 
 export interface RunningEntry {
   attempt: AttemptId;
@@ -192,7 +197,7 @@ export interface SkillError {
  * The error a row answers, with its message and the literal to run instead. `run` names the run of an engine error;
  * `localTool`, the prompt tool a local start or resume the refusal prints names (`localPromptTool`).
  */
-export function errorOf(answer: Answer, context: { invocation: Invocation; same: Literal; run?: RunId; localTool?: string }): SkillError {
+export function errorOf(answer: Answer, context: { invocation: Invocation; same: Literal; run?: RunId; localTool?: string; tool?: string }): SkillError {
   const { invocation, same } = context;
   if (answer.kind === 'engine-error') {
     const next = answer.next === null ? null : context.run === undefined || answer.next === 'same' ? same : answer.next === 'poll' ? pollLiteral(invocation, context.run) : nextLiteral(invocation, context.run);
@@ -201,23 +206,30 @@ export function errorOf(answer: Answer, context: { invocation: Invocation; same:
   const { refusal } = answer;
   return {
     code: refusal.code, message: refusalMessage(refusal, { invocation, tool: context.localTool }), ...(refusal.code === 'orchestrator_active' ? { idleSeconds: refusal.idleSeconds } : {}),
-    next: refusalNext(refusal, { invocation, same }),
+    next: refusalNext(refusal, { invocation, same, tool: context.tool }),
   };
 }
 
-/** The literal each refusal names to run instead, null when only the person can act on it; `same` is the call refused. */
-function refusalNext(refusal: Refusal, context: { invocation: Invocation; same: Literal }): Literal | null {
+/**
+ * The literal each refusal names to run instead, null when only the person can act on it; `same` is the call refused,
+ * and `tool` the tool it declared.
+ */
+function refusalNext(refusal: Refusal, context: { invocation: Invocation; same: Literal; tool?: string }): Literal | null {
   const { invocation } = context;
   switch (refusal.code) {
     case 'needs_local_driver':
       return null;
     case 'confirm_needed':
-      return describeLiteral(invocation, refusal.name);
+      // Only a start is refused for it, and its describe keeps the tool the start declared.
+      return context.same;
     case 'not_skill_run':
-      return skillResumeLiteral(invocation, refusal.run);
+      return skillResumeLiteral(invocation, refusal.run, { tool: refusal.toolNamed ? undefined : '{tool}' });
+    case 'tool_needed':
+      // The claim the refused call made stands.
+      return skillResumeLiteral(invocation, refusal.run, { ...refusal.answers, noJudge: refusal.answers.judge === false, confirmed: refusal.confirmed, tool: '{tool}' });
     case 'not_owner':
     case 'run_not_found':
-      return skillResumeLiteral(invocation, refusal.run, { claim: true });
+      return skillResumeLiteral(invocation, refusal.run, { claim: true, tool: context.tool });
     case 'orchestrator_active':
       return takeoverLiteral(invocation, refusal.run);
     case 'choice_pending':
@@ -243,15 +255,21 @@ function refusalMessage(refusal: Refusal, local: { invocation: Invocation; tool?
       return `Workflow ${refusal.name} must run with the local driver. ${refusal.reason} Ask the person to run ${literal} in their own terminal.`;
     }
     case 'confirm_needed': {
-      const lacks = refusal.missing.map((answer) => ({ confirmed: '--confirmed, the person\'s yes', inputs: '--inputs', parallel: '--parallel', hitl: '--hitl or --auto-approve' })[answer]);
+      const lacks = refusal.missing.map((answer) => ({
+        confirmed: '--confirmed, the person\'s yes', inputs: '--inputs', parallel: '--parallel', hitl: '--hitl or --auto-approve', tool: '--tools default=<tool>, the tool this coding session works in',
+      })[answer]);
       const said = [
         ...(lacks.length > 0 ? [`it needs ${lacks.join(', ')}`] : []),
         ...(refusal.outOfRange ? [`--parallel ${refusal.outOfRange.parallel} is above the most this machine runs at once, ${refusal.outOfRange.ceiling}`] : []),
       ];
-      return `Start ${refusal.name} from its describe reply: ${said.join('; ')}. Run the describe literal and ask the person.`;
+      // The tool is the agent's own answer, which describe asks it for.
+      const act = refusal.missing.some((answer) => answer !== 'tool') || refusal.outOfRange ? 'Run the describe literal and ask the person.' : 'Run the describe literal.';
+      return `Start ${refusal.name} from its describe reply: ${said.join('; ')}. ${act}`;
     }
     case 'not_skill_run':
       return `Run ${refusal.run} is not driven by the skill driver on this machine. Ask the person whether to continue it from this session, and run the command in next only when they agree: it takes the run over from the machine that last drove it. The person can instead continue it in a terminal with ${resumeLiteral(local.invocation, refusal.run, { tool: local.tool })}.`;
+    case 'tool_needed':
+      return `Run ${refusal.run} needs the tool this coding session works in, for the models of its steps or its judging, and it names none.`;
     case 'not_owner':
       return `Run ${refusal.run} is owned by ${refusal.owner}, who claimed it at ${refusal.since}. Ask the person whether that install is done with it, and run the command in next only when they agree to take it from there; otherwise the run goes on there.`;
     case 'run_not_found':
@@ -261,7 +279,7 @@ function refusalMessage(refusal: Refusal, local: { invocation: Invocation; tool?
     case 'choice_pending':
       return `Run ${refusal.run} waits for the host question. Run the next literal, then the run of the option that fits your host.`;
     case 'unknown_choice':
-      return `Run ${refusal.run} asks no host question now: its host is already chosen, or it has no prompt step. Run the next literal to see the run.`;
+      return `Run ${refusal.run} asks no host question now: its host is already chosen, or nothing in it needs a child agent. Run the next literal to see the run.`;
     case 'unknown_offer':
       return `Attempt ${refusal.attempt} of run ${refusal.run} has no dispatch to ack. Run the next literal to see the run.`;
     case 'unknown_attempt':
@@ -356,6 +374,7 @@ function actionsOf(state: SkillState): Action[] {
   const judge = state.judging?.open;
   const end: Action[] = state.done ? [{
     kind: 'done', outcome: state.done.outcome, ...(state.done.failure ? { failure: state.done.failure } : {}), prs: state.done.prs, ...(judge ? { judging: { step: judge.step, scorers: judge.scorers } } : {}),
+    ...(state.sessionJudge ? { score: sessionJudgeLiteral(state.invocation, state.run, state.driver, state.orchestrator.tool ?? state.sessionJudge.tool) } : {}),
   }] : [];
   const gate = state.gate && !state.done ? [gateAction(state, state.gate)] : [];
   return [...stops, ...offers, ...places, ...gate, ...end];

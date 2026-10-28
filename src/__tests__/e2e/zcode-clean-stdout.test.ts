@@ -4,14 +4,13 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { expect, it } from 'vitest';
-import { trackDetachedProcesses } from '../helpers/detached-processes.js';
+import { waitForDetachedChildren } from '../helpers/detached-processes.js';
 
 const CLI = fileURLToPath(new URL('../../../dist/index.js', import.meta.url));
 const TOOL = 'zcode';
 
 it.skipIf(process.platform === 'win32')('delivers a clean JSON reply through the generated zcode process hook and real CLI', async () => {
   const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), `teamai-${TOOL}-stdout-`)));
-  const detached = trackDetachedProcesses(root);
   try {
     const home = path.join(root, 'home');
     const project = path.join(root, 'project');
@@ -25,7 +24,6 @@ it.skipIf(process.platform === 'win32')('delivers a clean JSON reply through the
       XDG_CONFIG_HOME: path.join(home, '.config'),
       GIT_AUTHOR_NAME: 'TeamAI CI', GIT_AUTHOR_EMAIL: 'ci@teamai.test',
       GIT_COMMITTER_NAME: 'TeamAI CI', GIT_COMMITTER_EMAIL: 'ci@teamai.test',
-      NODE_OPTIONS: [process.env.NODE_OPTIONS, detached.nodeOptions].filter(Boolean).join(' '),
       FORCE_COLOR: '0', TEAMAI_NONINTERACTIVE: '1',
     };
     const run = (command: string, args: string[]) => spawnSync(command, args, { cwd: project, env, encoding: 'utf8', timeout: 30_000 });
@@ -49,7 +47,7 @@ it.skipIf(process.platform === 'win32')('delivers a clean JSON reply through the
     expect(JSON.parse(result.stdout).hookSpecificOutput.additionalContext).toContain('CLEAN-HOOK-CODEWORD');
     expect(result.stdout).not.toContain('profile banner');
   } finally {
-    await detached.waitForExit();
+    await waitForDetachedChildren();
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
@@ -57,7 +55,6 @@ it.skipIf(process.platform === 'win32')('delivers a clean JSON reply through the
 
 it.skipIf(process.platform === 'win32')('delivers user-scope context without a login PATH or a project git-hook wrapper', async () => {
   const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), `teamai-${TOOL}-user-stdout-`)));
-  const detached = trackDetachedProcesses(root);
   try {
     const home = path.join(root, 'home');
     const seed = path.join(root, 'seed');
@@ -73,7 +70,7 @@ usageReport: false
     fs.writeFileSync(path.join(seed, 'rules', 'clean.md'), 'USER-HOOK-CODEWORD.\n');
     const env = { ...process.env, HOME: home, USERPROFILE: home, DSH_HOME: path.join(home, '.dsh'), XDG_CONFIG_HOME: path.join(home, '.config'),
       GIT_AUTHOR_NAME: 'TeamAI CI', GIT_AUTHOR_EMAIL: 'ci@teamai.test', GIT_COMMITTER_NAME: 'TeamAI CI', GIT_COMMITTER_EMAIL: 'ci@teamai.test',
-      NODE_OPTIONS: [process.env.NODE_OPTIONS, detached.nodeOptions].filter(Boolean).join(' '), FORCE_COLOR: '0', TEAMAI_NONINTERACTIVE: '1' };
+      FORCE_COLOR: '0', TEAMAI_NONINTERACTIVE: '1' };
     for (const args of [['init', '-q', '-b', 'main'], ['add', '.'], ['commit', '-qm', 'seed']]) {
       const result = spawnSync('git', args, { cwd: seed, env, encoding: 'utf8' });
       expect(result.status, result.stderr).toBe(0);
@@ -93,5 +90,5 @@ usageReport: false
     expect(hook.status, hook.stderr).toBe(0);
     const events = fs.readFileSync(path.join(home, '.teamai/dashboard/events.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
     expect(events).toContainEqual(expect.objectContaining({ sessionId: 'user-scope-wrapper', type: 'session_start' }));
-  } finally { await detached.waitForExit(); fs.rmSync(root, { recursive: true, force: true }); }
+  } finally { await waitForDetachedChildren(); fs.rmSync(root, { recursive: true, force: true }); }
 });

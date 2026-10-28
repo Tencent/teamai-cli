@@ -18,7 +18,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { installFakeCodex } from '../helpers/fake-codex.js';
-import { trackDetachedProcesses } from '../helpers/detached-processes.js';
+import { waitForDetachedChildren } from '../helpers/detached-processes.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -35,7 +35,6 @@ interface Run { code: number | null; stdout: string; stderr: string; output: str
 
 let sandbox: string;
 let fakeCodexDir: string;
-let detached: ReturnType<typeof trackDetachedProcesses>;
 
 function writeFile(file: string, content: string): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -106,7 +105,6 @@ function machine(base: string, opts: MachineOptions): Machine {
     PATH: `${fakeCodexDir}${path.delimiter}${process.env.PATH ?? ''}`,
     FORCE_COLOR: '0',
     // Every teamai process, git hooks' included, registers what it detaches, so afterAll can join it.
-    NODE_OPTIONS: detached.nodeOptions,
   };
   delete env.CLAUDE_CONFIG_DIR;
   const run = (command: string, args: string[], cwd: string, input = ''): Run => {
@@ -201,12 +199,11 @@ beforeAll(() => {
   if (!fs.existsSync(CLI)) throw new Error(`CLI binary not found at ${CLI}. Run "npm run build" first.`);
   sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'codex-dispatcher-e2e-')));
   fakeCodexDir = installFakeCodex();
-  detached = trackDetachedProcesses(sandbox);
 });
 
 afterAll(async () => {
   // A team hook the dispatcher timed out may still be exiting; join it before HOME goes.
-  await detached?.waitForExit();
+  await waitForDetachedChildren();
   if (sandbox) fs.rmSync(sandbox, { recursive: true, force: true });
   if (fakeCodexDir) fs.rmSync(fakeCodexDir, { recursive: true, force: true });
 });
@@ -344,7 +341,7 @@ describe('single-repo mode', () => {
     fs.mkdirSync(path.join(home, '.codex'), { recursive: true });
     const env: NodeJS.ProcessEnv = {
       ...process.env, ...GIT_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: path.join(home, '.config'),
-      GIT_CONFIG_NOSYSTEM: '1', CODEX_HOME: path.join(home, '.codex'), PATH: `${fakeCodexDir}${path.delimiter}${process.env.PATH ?? ''}`, FORCE_COLOR: '0', NODE_OPTIONS: detached.nodeOptions,
+      GIT_CONFIG_NOSYSTEM: '1', CODEX_HOME: path.join(home, '.codex'), PATH: `${fakeCodexDir}${path.delimiter}${process.env.PATH ?? ''}`, FORCE_COLOR: '0',
     };
     delete env.CLAUDE_CONFIG_DIR;
     const run = (command: string, args: string[], cwd: string, input = ''): string => {

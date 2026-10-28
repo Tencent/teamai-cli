@@ -41,6 +41,8 @@ sharing:
     injectShellProfile: true
   coAuthor:
     enabled: false
+  autoCompact:
+    tokens: 400000
   gitExclude:
     enabled: true              # init writes true for a new team
   contributeHint:
@@ -71,6 +73,7 @@ scope: workspace               # workspace (default from init) or user; project 
 projectRoot: /path/to/my-workspace
 inheritUserScope: true
 coAuthorEnabled: true
+autoCompactTokens: 0           # 0 opts out of the team's autoCompact
 gitExcludeEnabled: true
 contributeHintEnabled: false
 usageReportEnabled: false
@@ -80,9 +83,61 @@ scoring:
 toolRoots:
   claude: ~/.claude-work
   codex: ~/.codex-alt
+ai:
+  tool: codex                  # the tool teamai's own AI calls run on; see AI tool below
 ```
 
 The role, project and tag fields hold this directory's own selection. A workspace also delivers the selections of the repos set up inside it, read at each pull and never written here. See [Workspaces with repos inside](./distribution.md#workspaces-with-repos-inside).
+
+#### Member settings
+
+A member setting is read in this order. The first level that sets it wins:
+
+1. An environment variable or flag, where the setting has one (`TEAMAI_AI_TOOL`, `TEAMAI_RECALL_DISABLED`, `--tools`, …).
+2. The config of the scope the command runs in: `~/.teamai/projects/<slug>/config.yaml` for a workspace or self install, `~/.teamai/config.yaml` in user scope.
+3. `~/.teamai/config.yaml`, for this machine. It needs no `repo` or `username`, so it works with no user-scope install.
+4. The team's `teamai.yaml`, where the setting has a team key.
+5. The default.
+
+The member settings are `ai.tool`, `workflows.*`, `recallEnabled`, `contributeHintEnabled`, `mrHintEnabled`, `coAuthorEnabled`, `usageReportEnabled`, `codexTrustEnabled`, `modelAliases`, `sessions`, `autoCompactTokens` and `updatePolicy`. In `workflows.tools`, `workflows.allow` and `modelAliases`, each entry counts on its own. `updatePolicy` and `autoCompactTokens` act on the whole machine, so one scope decides them: the user scope when there is one, else the scope that runs. Every other key belongs to one install and is never read from the machine. `doctor` names such a key in a `~/.teamai/config.yaml` that holds no install.
+
+```yaml
+# ~/.teamai/config.yaml: this machine, no install needed
+recallEnabled: true
+workflows:
+  tools: { default: codex }
+```
+
+```yaml
+# ~/.teamai/projects/<slug>/config.yaml: this workspace only
+recallEnabled: false
+```
+
+A value of the wrong type in `~/.teamai/config.yaml` is skipped with a warning, and the next level decides. `workflows.allow` is the exception: a bad value there, or a file that cannot be read or parsed, stops workflow commands until you fix it. A save never copies a machine value into a workspace's file; `recall enable` and `recall disable` write theirs. `teamai doctor` lists each member setting some level sets, with the level that set it and the values below it.
+
+#### AI tool (`ai.tool`)
+
+teamai's own AI calls (enrich, codebase, import, promote, the votes judge) run on the first installed tool that teamai launches: Claude Code and its internal builds first, then Codex and its internal builds, then the other tools [Tool support](./tool-support.md) marks for AI calls. To use another, name a tool id such as `codex`. The first of these that is set wins:
+
+1. `TEAMAI_AI_TOOL`, for one shell.
+2. `ai.tool` in the config of the workspace or self install the command runs in, `~/.teamai/projects/<slug>/config.yaml`.
+3. `ai.tool` in `~/.teamai/config.yaml`, for this machine. A command outside any install reads only this one.
+
+`~/.teamai/config.yaml` can hold only this setting on a machine with no user-scope install:
+
+```yaml
+# ~/.teamai/config.yaml
+ai:
+  tool: codex
+```
+
+```yaml
+# ~/.teamai/projects/<slug>/config.yaml, beside the fields init wrote
+ai:
+  tool: opencode
+```
+
+A name teamai does not launch, or a tool not on PATH, fails the call and names the setting and file to change. So does a workspace config here that cannot be read. A re-init keeps `ai`. Workflow steps fall back to the same settings; see [Workflows](./workflow.md).
 
 #### Relocated tool roots (`toolRoots`)
 
@@ -102,7 +157,7 @@ Cursor CLI moves two directories: `CURSOR_DATA_DIR` holds the transcripts, `CURS
 
 #### Recorded tool homes (`~/.teamai/tool-homes.json`)
 
-Some tools move their home with a variable: `XDG_CONFIG_HOME` (OpenCode, Muse), `OPENCODE_CONFIG_DIR`, `HERMES_HOME`, `PI_CODING_AGENT_DIR`, `CODEBUDDY_CONFIG_DIR`, `COPILOT_HOME`, `DSH_HOME`, `OPENCLAW_STATE_DIR` and `OPENCLAW_PROFILE`. On Windows, Hermes lives in `%LOCALAPPDATA%\hermes`. A relative value of a tool's own variable resolves against the directory you run teamai from, as the tool resolves it; a relative `XDG_CONFIG_HOME` or `%LOCALAPPDATA%` is ignored. teamai syncs to the moved home. For OpenCode, Muse, Pi and CodeBuddy only part of it follows so far. With `XDG_CONFIG_HOME=/x`, OpenCode's skills, agents, rules at `/x/opencode/rules`, instruction blocks at `/x/opencode/teamai-context.md`, and the `opencode.json` that MCP and `teamai models switch` write go to `/x/opencode`. Muse's skills and agents go to `/x/muse`, its MCP config goes to `/x/muse`, and its user rules and instruction blocks are `/x/muse/AGENTS.md`. Muse model settings also follow this home; its hooks stay under `~/.config/muse`. OpenCode hooks stay under `~/.config/opencode`. With `PI_CODING_AGENT_DIR=/x`, Pi's skills, MCP config and `models.json` go to `/x`, and its user rules and instruction blocks are `/x/AGENTS.md`, while its extension stays under `~/.pi/agent`. With `CODEBUDDY_CONFIG_DIR=/x`, CodeBuddy's skills, rules, agents, `CODEBUDDY.md` and MCP files go to `/x`, `.codebuddy.json` included, while its hooks stay in `~/.codebuddy/settings.json`. `teamai doctor` notes it.
+Some tools move their home with a variable: `XDG_CONFIG_HOME` (OpenCode, Muse), `OPENCODE_CONFIG_DIR`, `HERMES_HOME`, `HERMES_DATA_DIR_SUFFIX`, `PI_CODING_AGENT_DIR` (Pi), `OMP_PROFILE`, `PI_PROFILE` and `PI_CONFIG_DIR` (Oh My Pi), `CODEBUDDY_CONFIG_DIR`, `COPILOT_HOME`, `DSH_HOME`, `OPENCLAW_STATE_DIR`, `OPENCLAW_HOME` and `OPENCLAW_PROFILE`. Hermes also moves to the profile its `active_profile` file names. teamai reads that file on every run, inside the recorded or moved Hermes home, and never records the profile, so `hermes profile use` takes effect at the next pull. Oh My Pi also reads `PI_CODING_AGENT_DIR`, but teamai keeps Oh My Pi's files out of it, because that directory is Pi's. `pull` and `teamai hooks remove` change only the active Hermes or Oh My Pi profile, since profiles run side by side. `teamai uninstall` removes teamai's Hermes hook script, instructions plugin, their `config.yaml` entries and approval, and SOUL.md block, and its Oh My Pi extension, from the default home, the recorded or moved home, and every profile under them. On Windows, Hermes lives in `%LOCALAPPDATA%\hermes`. A relative value of a tool's own variable resolves against the directory you run teamai from, as the tool resolves it; a relative `XDG_CONFIG_HOME` or `%LOCALAPPDATA%` is ignored. teamai syncs to the moved home. `teamai skill list`, `teamai skill show` and `teamai list skills --source local` read the skills there, and `teamai doctor` checks that the tool is installed there. With `XDG_CONFIG_HOME=/x`, OpenCode's skills, agents, rules at `/x/opencode/rules`, instruction blocks at `/x/opencode/teamai-context.md`, hook plugin, and the `opencode.json` that MCP and `teamai models switch` write go to `/x/opencode`. Muse's skills, agents, MCP config, model settings and hooks go to `/x/muse`, and its user rules and instruction blocks are `/x/muse/AGENTS.md`. With `PI_CODING_AGENT_DIR=/x`, Pi's skills, MCP config, `models.json` and extension go to `/x`, and its user rules and instruction blocks are `/x/AGENTS.md`. With `CODEBUDDY_CONFIG_DIR=/x`, CodeBuddy's skills, rules, agents, hooks, `CODEBUDDY.md` and MCP files go to `/x`, `.codebuddy.json` included. Earlier releases wrote the hooks of these four tools under the default home. `pull`, `teamai hooks remove` and `teamai uninstall` remove that copy: OpenCode 1.x also loads the plugins there, and a team hook left there could no longer be named for removal. [Tool support](tool-support.md) lists each tool's home, the variables that move it, and where teamai writes each resource.
 
 The first `pull` that sees the variable records the home for the whole machine in `~/.teamai/tool-homes.json` when the directory exists, and never replaces a record. `teamai init` records it too and replaces an earlier record: for a tool's own variable (`HERMES_HOME`, `OPENCLAW_PROFILE`, ...) even before the directory exists, for `XDG_CONFIG_HOME` only once it does. Hermes' Windows default only fills a missing record. So run `init` from a shell your tools run in. After that, a pull from a shell without the variable still syncs there, in every scope. To move the home, run `teamai init` with the new value. To clear the record, run it with the variable set but blank. `teamai doctor` reports `<tool> home exists` when the recorded directory is gone, and `<tool> home matches <variable>` when the shell names another directory.
 
@@ -159,7 +214,7 @@ profiles:
 | OpenCode | any | `opencode.json` |
 | CodeBuddy / WorkBuddy | `openai-chat-completions` | `models.json` (CodeBuddy follows its recorded home) |
 | Pi | any | `~/.pi/agent/models.json` |
-| OMP | any | `~/.omp/agent/models.yml` |
+| OMP | any | `~/.omp/agent/models.yml`, or the agent dir of `OMP_PROFILE` (or `PI_PROFILE`) and `PI_CONFIG_DIR` |
 | Muse Code | `openai-responses` | `<Muse home>/settings.json` (recorded home, else `$XDG_CONFIG_HOME/muse` or `~/.config/muse`), and the key as `META_API_KEY` in `~/.teamai/models/env.sh`, which your shell profile loads |
 
 The example has no `openai-responses` group, so Codex and Muse Code are left alone.
@@ -220,3 +275,7 @@ teamai models remove local:my-gateway
 ## ZCode hook stdout budget
 
 Doctor measures the serialized project-rules reply in UTF-8 bytes against `hooks.maxOutputBytes` in `~/.zcode/cli/config.json` (32768 by default). This is a lower bound: other session hints add bytes to the complete reply. ZCode truncates oversized stdout and silently drops a reply that no longer parses, even when its hook is registered. Shorten the rules or increase that positive integer limit enough for the complete reply, then start a new ZCode session. TeamAI does not change the limit or truncate rules.
+
+## Kiro lifecycle hooks
+
+Kiro CLI V3 loads `~/.kiro/hooks/teamai.json` for every agent, including the default agent. Pull and hook injection install its SessionStart hook without requiring a team agent. Before enabling it, they remove only TeamAI’s old agentSpawn command from existing Kiro agents, including member-edited copies, preserving personal hooks and agent fields. `hooks list` and `doctor` check it; hook removal and user uninstall remove it. Project uninstall preserves this shared user hook. A same-named personal file is kept and reported. Pull removes the old managed `agentSpawn` entry from rendered team agents while preserving custom hooks. Lifecycle integration requires V3; Kiro 2.x does not load this standalone hook.

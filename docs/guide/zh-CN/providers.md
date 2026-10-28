@@ -202,6 +202,8 @@ export GITLAB_API_PREFIX=api/gitlab
 export GITLAB_TOKEN=glpat-xxx
 ```
 
+GitLab 创建 MR 的超时为 30 秒，reviewer 查询、创建请求及其响应体共用这一预算；init 改用其配置的推送超时。reviewer 查询超时会停止创建，其他 reviewer 查询失败仍按尽力而为处理。创建超时后，已推送的分支仍可用于手动发起评审。若创建请求已经发出，超时不能证明 GitLab 未创建 MR，重试前应先在平台上检查。
+
 ### 默认 email 域
 
 GitLab Provider 不设默认 email 域（同 GitHub），使用用户的 git 全局配置。

@@ -77,6 +77,27 @@ describe('resolveCliPath', () => {
     expect(pickWindowsCommand(out)).toBe('C:\\npm\\gh.cmd');
   });
 
+  it('prefers a native .exe over a .cmd or .bat of the same name, as PATHEXT does', () => {
+    expect(pickWindowsCommand('C:\\tools\\claude.cmd\r\nC:\\Program Files\\Claude\\claude.exe\r\n')).toBe('C:\\Program Files\\Claude\\claude.exe');
+    expect(pickWindowsCommand('C:\\tools\\claude.bat\nC:\\tools\\claude.exe\n')).toBe('C:\\tools\\claude.exe');
+  });
+
+  it('trims the `where` lines and matches the extension case-insensitively', () => {
+    expect(pickWindowsCommand('  C:\\npm\\CLAUDE.CMD  \r\n')).toBe('C:\\npm\\CLAUDE.CMD');
+  });
+
+  it('returns null when `where` finds only the extension-less shim, or nothing', () => {
+    expect(pickWindowsCommand('C:\\npm\\claude\r\n')).toBeNull();
+    expect(pickWindowsCommand('')).toBeNull();
+    expect(pickWindowsCommand('\r\n \r\n')).toBeNull();
+  });
+
+  it('asks only `where` on Windows, never bash, zsh or which', () => {
+    mockedExecFileSync.mockImplementation(() => { throw new Error('Command failed: where claude'); });
+    expect(resolveCliPath('claude', 'win32')).toBeNull();
+    expect(mockedExecFileSync.mock.calls.map((call) => call[0])).toEqual(['where']);
+  });
+
   it('falls through bash → zsh on POSIX', () => {
     mockedExecFileSync
       .mockImplementationOnce(() => { throw new Error('no bash'); })
@@ -112,12 +133,57 @@ describe('gh-cli launches the resolved executable', () => {
     expect(r.stdout).toBe('gh version 2.0.0');
   });
 
+  it('returns a successful run when cross-spawn reports error: null', () => {
+    mockedExecFileSync.mockReturnValue(`${GH_EXE}\r\n`);
+    mockedCrossSpawnSync.mockReturnValue({ status: 0, stdout: 'gh version 2.0.0\n', stderr: '', error: null });
+
+    const r = ghExec(['--version'], { timeoutMs: 30_000 });
+
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('gh version 2.0.0');
+    expect(r.timedOut).toBeUndefined();
+  });
+
   it('forwards inheritStdio through cross-spawn', () => {
     mockedExecFileSync.mockReturnValue(`${GH_EXE}\r\n`);
     ghExec(['auth', 'status'], { inheritStdio: true });
     expect(mockedCrossSpawnSync).toHaveBeenCalledWith(
       GH_EXE, ['auth', 'status'], expect.objectContaining({ stdio: 'inherit' }),
     );
+  });
+
+  it('reports a deadline instead of a silent non-zero exit', () => {
+    mockedExecFileSync.mockReturnValue(`${GH_EXE}\r\n`);
+    // `spawnSync` reports a killed child as `status: null` plus ETIMEDOUT, with
+    // both streams empty — the shape that was indistinguishable from `gh`
+    // exiting non-zero while printing nothing.
+    mockedCrossSpawnSync.mockReturnValue({
+      status: null,
+      stdout: '',
+      stderr: '',
+      error: Object.assign(new Error('spawnSync gh ETIMEDOUT'), { code: 'ETIMEDOUT' }),
+    });
+
+    const r = ghExec(['api', '/orgs/example/repos'], { timeoutMs: 30_000 });
+
+    expect(r.timedOut).toBe(true);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toBe('');
+  });
+
+  it('does not report a plain non-zero exit as a deadline', () => {
+    mockedExecFileSync.mockReturnValue(`${GH_EXE}\r\n`);
+    mockedCrossSpawnSync.mockReturnValue({
+      status: 1,
+      stdout: '',
+      stderr: 'gh: Not Found (HTTP 404)',
+      error: new Error('Command failed'),
+    });
+
+    const r = ghExec(['api', '/orgs/missing/repos'], { timeoutMs: 30_000 });
+
+    expect(r.timedOut).toBeUndefined();
+    expect(r.status).toBe(1);
   });
 
   it('reports gh as installed exactly when the resolver finds it', () => {

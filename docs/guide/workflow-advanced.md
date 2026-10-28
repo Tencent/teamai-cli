@@ -54,7 +54,7 @@ A wrong `running` or `canTakeLease` returns `invalid_json` with `running must be
 
 ### Run local commands in parallel
 
-`--driver local` runs up to `workflows.max_parallel` command steps at once. Set it in the local config. It defaults to 1, and no flag sets it.
+`--driver local` runs up to `workflows.max_parallel` command steps at once. Set it in `~/.teamai/config.yaml`, or in a workspace's own `config.yaml`. It defaults to 1, and no flag sets it.
 
 ```yaml
 workflows:
@@ -617,7 +617,7 @@ steps:
 
 `unenforced` is on the lease, the step, and the run record. Each `interactive: true` step also needs a driver with HITL, as [HITL](#hitl-human-in-the-loop) describes.
 
-A member can set what any driver may use on their machine, beside `max_parallel` in local config:
+A member can set what any driver may use on their machine, beside `max_parallel` in `~/.teamai/config.yaml` or a workspace's own `config.yaml`:
 
 ```yaml
 workflows:
@@ -628,7 +628,7 @@ workflows:
     env: [NPM_TOKEN]
 ```
 
-- `allow.network: false` holds each step that requires `network: true`. `allow.env` holds each step whose `requires.env`, or whose setup's, names a key it does not list. `wait.held[].missing` names `policy.network` or `policy.env`.
+- `allow.network: false` holds each step that requires `network: true`. `allow.env` holds each step whose `requires.env`, or whose setup's, names a key it does not list. `wait.held[].missing` names `policy.network` or `policy.env`. A bad `allow` in `~/.teamai/config.yaml` stops workflow commands until it is fixed, so a typo never lifts a restriction.
 - `sandbox: true` says this host contains what it runs, such as a CI VM or a container, so the local driver declares `sandbox` isolation.
 - `max_parallel` also caps how many leases of one run every driver on this machine holds at once.
 
@@ -755,10 +755,10 @@ Run `resume` in a checkout of the run's business repository. A claim of a run th
 
 The published state is `workflows/runs/<run>/state.json` on `teamai-reports`. It carries what the run needs to continue: status, inputs, each step's outcome, outputs, passes and HITL answers with their notes, the base, the commit of each workspace, and the tool and id of each session copy a step continued. The workflows themselves travel only as `sourceHash`, `definitionHash`, and `teamRevision`. It leaves out step and pass `message`, the driver identity of each lease and answer (a lease keeps its driver kind), workspace owners, and the business checkout path. Every failure message becomes `The details stay on the machine that ran this step.`, and the failure `code` stays. A commit appears only as a full id (40 or 64 hex digits). `publish` checks every value and key against TeamAI's secret patterns, this process's environment secrets, and the value of each secret the team declares in [`env/secrets.yaml`](sharing.md#env-environment-variables), whatever its name, and refuses the first match with `secret_detected`. A declared value shorter than 8 characters matches only as a whole word, and one shorter than 4 is not checked: `publish` warns and names it. The refusal names the step, the field, and the kind of secret, never the value. It refuses an absolute path of this machine the same way, with `local_path_detected`: a Windows drive or share path, a `~/` path, a `file://` URL, or a `/` path whose first directory exists at this machine's root, such as `/Users/alice/data.csv`. A URL, a relative path such as `src/main.ts`, and a route such as `/api/v1` pass. Such a run cannot be handed over. Continue it on this machine, or start it again with paths relative to the repository.
 
-`--sessions` also puts the latest copy of each agent session the unsettled steps will continue (`session: continue` or `session.from`) in the team session archive, scrubbed as `teamai session push --scrub` scrubs them. That includes a step a loop is about to run again and the steps of a workflow step that has not started. It never includes a settled step's session or an earlier pass's. The envelope then lists them in `sessions` as `{"tool","id"}`, an empty list when there are none. A session this machine cannot read is left out: its chain archives the newest one it can read, and `skipped` lists the newer ones it left out. A chain with none readable refuses the publish. The sessions are archived before the state is written, so a publish refused after that leaves them archived, and an unchanged publish still archives them. On the machine that continues the run, the local driver resumes a step's session in this order:
+`--sessions` also puts the latest copy of each agent session the unsettled steps will continue (`session: continue` or `session.from`) in the team session archive on `teamai-reports`, scrubbed as `teamai session push --scrub` scrubs them. That includes a step a loop is about to run again and the steps of a workflow step that has not started. It never includes a settled step's session or an earlier pass's. The envelope then lists them in `sessions` as `{"tool","id"}`, an empty list when there are none. A session this machine cannot read is left out: its chain archives the newest one it can read, and `skipped` lists the newer ones it left out. A chain with none readable refuses the publish. The sessions are archived before the state is written, so a publish refused after that leaves them archived, and an unchanged publish still archives them. On the machine that continues the run, the local driver resumes a step's session in this order:
 
 1. The session on this machine. The step's tool resumes it by id when it is the session's tool, and gets a copy of it otherwise.
-2. A copy of the archived session. The copy is written once, and a later restore reuses it with the turns added to it. The driver reads the archive as the team repo's origin has it, fetched once per driver run, so you do not run `teamai pull` first, and your team repo clone stays as it is. When that fetch fails, it reads your clone and says it may be older than origin.
+2. A copy of the archived session. The copy is written once, and a later restore reuses it with the turns added to it. The driver reads the archive on `teamai-reports` as the claim synced it. A session an older teamai archived on the default branch is read as the team repo's origin has it, fetched once per driver run, so you do not run `teamai pull` first, and your team repo clone stays as it is. When that fetch fails, it reads your clone and says it may be older than origin.
 3. When the session is a copy another step made, and neither of those has it, the same two ways for the session that copy continued, and so on back to the first. The step then misses the turns of the copies it could not get.
 4. A new session, with a warning on stderr that starts `⚠ Step "<id>" starts a new <tool> session:` and says why each of those failed.
 
@@ -826,7 +826,7 @@ A driver that continues a [published run](#publish-and-claim) relies on these ru
 
 ### Let TeamAI prepare the workspace
 
-A driver can leave the workspace and its git to TeamAI. `next <run> --prepare --json '<payload>'` leases a step and prepares its workspace: it creates or reuses the worktree in the checkout the run started from, applies the base agent files and team delivery, and returns the directory as `lease.cwd`. Preparing again keeps the edits already there. Run the step in `lease.cwd`, and run no git there. Two attempts never share a place, and the checkout is one place, so steps that work in the checkout run one after another, even parallel ones: a lease whose place another open attempt holds answers `busy` and stays leased; prepare it with `--attempt` once that attempt reports. TeamAI stores no run mode for such a driver and runs setup in the mode of the process that calls `next --prepare` (see [Attended and unattended runs](workflow.md#attended-and-unattended-runs)), so export `TEAMAI_MODE` in the driver to keep one mode across its calls.
+A driver can leave the workspace and its git to TeamAI. `next <run> --prepare --json '<payload>'` leases a step and prepares its workspace: it creates or reuses the worktree in the checkout the run started from, applies the base agent files and team delivery, and returns the directory as `lease.cwd`. Preparing again keeps the edits already there. Run the step in `lease.cwd`, and run no git there. Two attempts never share a place, and the checkout is one place, so steps that work in the checkout run one after another, even parallel ones: a lease whose place another open attempt holds answers `busy` and stays leased; prepare it with `--attempt` once that attempt reports. Setup runs in the `runMode` the driver sent on `next`, else in the mode of the process that calls `next --prepare` (see [Attended and unattended runs](workflow.md#attended-and-unattended-runs)), never in the mode the run started in.
 
 `report` then finishes the attempt. It commits, pushes, and fills `changes` or `read` itself, so a report of a prepared attempt that carries `changes` or `read` answers `invalid_report`. TeamAI removes the worktree only after it accepts a successful report whose answer allows cleanup. A failed attempt keeps its work for a retry.
 
@@ -841,3 +841,5 @@ teamai score --next --json '{"driver":{"kind":"script","machine":"runner","works
 ```
 
 Judge work comes from `teamai score --next`, never from `workflow next`. See [Scorers](scorers.md#any-driver).
+
+An unattended driver ends with `teamai score --drain`. It judges what can be judged here, publishes run records, labels and sessions, and prints what is left for other drivers. The local driver runs it at the end of an unattended run, unless publishing and scoring of unattended sessions are both `off`, after the run's `done` envelope on stdout, and prints its lines on stderr. The exit status stays the run's outcome, also when the drain fails. See [Drain before an unattended job ends](scorers.md#drain-before-an-unattended-job-ends).

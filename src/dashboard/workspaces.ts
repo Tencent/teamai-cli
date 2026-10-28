@@ -104,7 +104,8 @@ export async function dashboardWorkspaces(events: DashboardEvent[]): Promise<Das
   }
   return result;
 }
-export function workspaceEvents(events: DashboardEvent[], workspace: DashboardWorkspace, workspaces: DashboardWorkspace[]): DashboardEvent[] {
+/** The project workspace each session belongs to by its first matching event, or `unassigned` when none owns it. */
+function sessionOwners(events: DashboardEvent[], workspaces: DashboardWorkspace[]): Map<string, string> {
   const projects = workspaces.filter(w => w.scope === 'project');
   const owners = new Map<string, string>();
   for (const event of events) {
@@ -113,5 +114,21 @@ export function workspaceEvents(events: DashboardEvent[], workspace: DashboardWo
     if (!owners.has(event.sessionId)) owners.set(event.sessionId, owner ?? 'unassigned');
     else if (owner) owners.set(event.sessionId, owner);
   }
+  return owners;
+}
+
+export function workspaceEvents(events: DashboardEvent[], workspace: DashboardWorkspace, workspaces: DashboardWorkspace[]): DashboardEvent[] {
+  const owners = sessionOwners(events, workspaces);
   return events.filter(event => owners.get(event.sessionId) === workspace.id);
+}
+
+/**
+ * The events of the sessions `workspace` counts as its own on this machine, for a view of machine-wide state such as the
+ * friction reminder table (#1182): a user scope install owns every session no project workspace owns, which the session
+ * views list as unassigned instead.
+ */
+export function ownSessionEvents(events: DashboardEvent[], workspace: DashboardWorkspace, workspaces: DashboardWorkspace[]): DashboardEvent[] {
+  const owners = sessionOwners(events, workspaces);
+  const owner = workspace.scope === 'user' ? 'unassigned' : workspace.id;
+  return events.filter(event => owners.get(event.sessionId) === owner);
 }

@@ -16,7 +16,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { trackDetachedProcesses } from '../helpers/detached-processes.js';
+import { waitForDetachedChildren } from '../helpers/detached-processes.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -33,7 +33,6 @@ interface Run { code: number | null; output: string }
 
 let sandbox: string;
 let home: string;
-let detached: ReturnType<typeof trackDetachedProcesses>;
 
 const write = (file: string, content: string): void => {
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -52,7 +51,6 @@ function env(): NodeJS.ProcessEnv {
   };
   delete e.CLAUDE_CONFIG_DIR;
   delete e.CODEX_HOME;
-  e.NODE_OPTIONS = [e.NODE_OPTIONS, detached.nodeOptions].filter(Boolean).join(' ');
   return e;
 }
 
@@ -68,7 +66,7 @@ function git(args: string[], cwd: string): void {
 
 async function teamai(args: string[], cwd: string): Promise<Run> {
   const r = run(process.execPath, [CLI, ...args], cwd);
-  await detached.waitForExit();
+  await waitForDetachedChildren();
   return r;
 }
 
@@ -92,13 +90,12 @@ function team(name: string): string {
 beforeAll(() => {
   if (!fs.existsSync(CLI)) throw new Error(`CLI binary not found at ${CLI}. Run "npm run build" first.`);
   sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-user-uninstall-1025-e2e-')));
-  detached = trackDetachedProcesses(sandbox);
   home = path.join(sandbox, 'home');
   fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
 });
 
 afterAll(async () => {
-  if (detached) await detached.waitForExit();
+  await waitForDetachedChildren();
   if (sandbox) fs.rmSync(sandbox, { recursive: true, force: true });
 }, 65_000);
 

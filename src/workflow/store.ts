@@ -10,6 +10,7 @@ import { PinnedScorerSchema } from '../scorers/pin.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { ArchivedPassSchema, ReleasedTokensSchema, SessionContinuationSchema, StepStateSchema, StoppedAttemptSchema } from './step-state.js';
 import type { HandoffOwner } from './snapshot.js';
+import { uniqueOutcomes, WorkOutcomeSchema, type WorkOutcome } from '../outcomes.js';
 import type { RunState, WorkflowDefinition } from './types.js';
 
 /**
@@ -80,6 +81,42 @@ export function placeRecordPath(config: LocalConfig, run: RunId, attempt: Attemp
 /** `attempts/<a>/result.json`: what a prompt step's tool or child agent, or a command step's driver, wrote the step produced. */
 export function attemptResultPath(config: LocalConfig, run: RunId, attempt: AttemptId): string {
   return path.join(attemptDir(config, run, attempt), 'result.json');
+}
+
+/**
+ * `runs/<run>/outcomes/<attempt>.jsonl`: one outcome per line, appended by the attempt's own commands, such as
+ * `contribute`. Not the result file, which a prompt step's tool writes whole at its end.
+ */
+export function attemptOutcomesPath(config: LocalConfig, run: RunId, attempt: AttemptId): string {
+  return path.join(runsDir(config), run, 'outcomes', `${attempt}.jsonl`);
+}
+
+/**
+ * Append `outcome` to the outcome file of the attempt `marker` (`ATTEMPT_ENV`, `<run>/<attempt>`) names.
+ * `unknown_run` when this scope holds no such run, since the engine that settles the attempt reads only its own scope.
+ */
+export async function appendAttemptOutcome(config: LocalConfig, marker: string, outcome: WorkOutcome): Promise<'appended' | 'bad_marker' | 'unknown_run'> {
+  const [runPart, attemptPart, ...rest] = marker.split('/');
+  const run = RunIdSchema.safeParse(runPart);
+  const attempt = AttemptIdSchema.safeParse(attemptPart);
+  if (!run.success || !attempt.success || rest.length > 0) return 'bad_marker';
+  if (await readFileSafe(runFilePath(config, run.data)) === null) return 'unknown_run';
+  const file = attemptOutcomesPath(config, run.data, attempt.data);
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  await fs.appendFile(file, `${JSON.stringify(outcome)}\n`, 'utf8');
+  return 'appended';
+}
+
+/** What the attempt's commands appended to its outcome file, each once; a line that is not an outcome is skipped. */
+export async function readAttemptOutcomes(config: LocalConfig, run: string, attempt: string): Promise<WorkOutcome[]> {
+  const runId = RunIdSchema.safeParse(run);
+  const attemptId = AttemptIdSchema.safeParse(attempt);
+  if (!runId.success || !attemptId.success) return [];
+  const text = await readFileSafe(attemptOutcomesPath(config, runId.data, attemptId.data));
+  return uniqueOutcomes((text ?? '').split('\n').flatMap((line) => {
+    const parsed = WorkOutcomeSchema.safeParse(parsedJson(line));
+    return parsed.success ? [parsed.data] : [];
+  }));
 }
 
 function parsedJson(text: string | null): unknown {

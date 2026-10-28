@@ -160,7 +160,7 @@ export async function deployBuiltinAgents(
         if (!parsed.ok) {
           throw new Error(`invalid built-in agent ${file}: ${parsed.reason}`);
         }
-        const rendered = renderForTool(parsed.spec, tool);
+        const rendered = renderForTool(parsed.spec, tool, undefined, localConfig.scope);
         const stem = path.basename(file, '.md');
         if (options?.dryRun) {
           options.recorder?.report('builtin', path.join(targetAgentsDir, `${stem}${rendered.ext}`));

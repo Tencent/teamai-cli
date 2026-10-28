@@ -4,7 +4,7 @@ import fse from 'fs-extra';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { detectHomeInstalledAgents, KNOWN_AGENTS } from '../known-agents.js';
 import { mcpTargetExcluded, reconcileMcpForConfig } from '../mcp-reconcile.js';
-import { isToolInstalledForConfig } from '../resources/base.js';
+import { isInstalled } from './helpers/install-gate.js';
 import { ruleFileExtensionForTool, ruleFormatForTool, usesMdcRules } from '../resources/rule-format.js';
 import { RulesHandler } from '../resources/rules.js';
 import { openLedger } from '../resources/delivered-copies.js';
@@ -23,6 +23,7 @@ describe('Trae support', () => {
     expect(config.toolPaths.trae).toEqual({
       skills: '.trae/skills',
       rules: '.trae/rules',
+      agents: '.trae/agents',
       mcpProject: '.trae/mcp.json',
       userScope: { rules: '.trae/user_rules' },
     });
@@ -32,10 +33,12 @@ describe('Trae support', () => {
     expect(config.toolPaths['trae-cn']).toEqual({
       skills: '.trae/skills',
       rules: '.trae/rules',
+      agents: '.trae/agents',
       mcpProject: '.trae/mcp.json',
       userScope: {
         skills: '.trae-cn/skills',
         rules: '.trae-cn/user_rules',
+        agents: '.trae-cn/agents',
       },
     });
   });
@@ -67,7 +70,7 @@ describe('Trae support', () => {
     }
   });
 
-  it('registers both builds for discovery and Markdown rules, without subagent sync', () => {
+  it('registers both builds for discovery, Markdown rules and subagent sync', () => {
     expect(KNOWN_AGENTS.find((agent) => agent.id === 'trae')).toMatchObject({
       displayName: 'Trae',
       skillsPath: '.trae/skills',
@@ -77,8 +80,7 @@ describe('Trae support', () => {
       skillsPath: '.trae-cn/skills',
     });
     for (const id of ['trae', 'trae-cn']) {
-      // Trae has no subagents directory, so it is not in AGENT_TOOLS.
-      expect(AGENT_TOOLS).not.toContain(id);
+      expect(AGENT_TOOLS).toContain(id);
       expect(ruleFileExtensionForTool(id)).toBe('.md');
       expect(usesMdcRules(id)).toBe(false);
       expect(ruleFormatForTool(id)?.scopeFields).toEqual(['globs', 'alwaysApply']);
@@ -150,19 +152,19 @@ describe('Trae support', () => {
         ...(enabledAgents ? { enabledAgents } : {}),
       }) as unknown as LocalConfig;
 
-      expect(await isToolInstalledForConfig('trae', '.trae/skills', localConfig())).toBe(false);
-      expect(await isToolInstalledForConfig('trae-cn', '.trae/skills', localConfig())).toBe(false);
+      expect(await isInstalled('trae', 'skills', localConfig())).toBe(false);
+      expect(await isInstalled('trae-cn', 'skills', localConfig())).toBe(false);
 
       // An explicit --agent entry bootstraps the edition its app has not run
       // for yet, exactly as the copilot probe treats its whitelist.
-      expect(await isToolInstalledForConfig('trae-cn', '.trae/skills', localConfig(['trae-cn']))).toBe(true);
-      expect(await isToolInstalledForConfig('trae', '.trae/skills', localConfig(['trae-cn']))).toBe(false);
+      expect(await isInstalled('trae-cn', 'skills', localConfig(['trae-cn']))).toBe(true);
+      expect(await isInstalled('trae', 'skills', localConfig(['trae-cn']))).toBe(false);
 
       // And each build's own HOME root installs it, symmetrically.
       await fse.ensureDir(path.join(home, '.trae', 'skills'));
-      expect(await isToolInstalledForConfig('trae', '.trae/skills', localConfig())).toBe(true);
+      expect(await isInstalled('trae', 'skills', localConfig())).toBe(true);
       await fse.ensureDir(path.join(home, '.trae-cn', 'skills'));
-      expect(await isToolInstalledForConfig('trae-cn', '.trae/skills', localConfig())).toBe(true);
+      expect(await isInstalled('trae-cn', 'skills', localConfig())).toBe(true);
 
       // No sibling clause remains: an excluded trae target is excluded, and
       // an enabled Trae CN delivers MCP through its own target instead.

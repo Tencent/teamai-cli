@@ -12,7 +12,7 @@ vi.mock('../utils/logger.js', () => ({
 
 import { buildMcpReadFileChecks, mcpTransportNotes } from '../doctor-delivery.js';
 import type { DoctorContext } from '../doctor.js';
-import { detectMcpFormat } from '../resources/mcp-format.js';
+import { mcpFormatOf } from '../tools.js';
 import { log } from '../utils/logger.js';
 import { judgeTeamaiOnlyMcpConfigs, reconcileMcpForConfig } from '../mcp-reconcile.js';
 import { entryHash, renderCodexBlock, renderJsonEntry } from '../resources/mcp-format.js';
@@ -375,21 +375,29 @@ describe('pull writes MCP servers where each tool reads them (#1221)', () => {
   it.each(['claude-internal', 'codex-internal', 'tcodex'])('doctor notes %s has an unknown MCP channel', async (tool) => {
     await fse.ensureDir(path.join(home, `.${tool}`));
 
-    expect(detectMcpFormat(tool)).toBeNull();
+    expect(mcpFormatOf(tool)).toBeNull();
     expect(await mcpTransportNotes(context(team(), userConfig(tool)))).toContain(`${tool}'s MCP channel is unknown; teamai does not write its servers.`);
   });
 
-  it('doctor notes cwd-only MCP and settings that still stay at the default home', async () => {
+  it('doctor notes cwd-only MCP from any directory, and nothing left at the default home once the home moves (#1221)', async () => {
     const agentDir = path.join(root, 'pi-agent');
     await fse.ensureDir(agentDir);
     vi.stubEnv('PI_CODING_AGENT_DIR', agentDir);
-    expect(await mcpTransportNotes(context(team(), userConfig('pi')))).toContain(
-      `pi takes MCP servers from ${path.join(agentDir, 'mcp.json')}, but teamai still writes some of its other files under ${path.join(home, '.pi', 'agent')}.`,
-    );
+    expect((await mcpTransportNotes(context(team(), userConfig('pi')))).some((note) => note.includes('still writes some of its other files'))).toBe(false);
     const project = path.join(root, 'project');
     await fse.ensureDir(path.join(project, '.pi'));
     const local: LocalConfig = { ...userConfig('pi'), scope: 'project', projectRoot: project };
-    expect(await mcpTransportNotes(context(team(), local))).toContain(`pi reads project MCP servers only from a session started in ${project}.`);
+    const note = `pi reads project MCP servers only from a session started in ${project}.`;
+    const cwd = process.cwd();
+    try {
+      for (const dir of [project, path.join(project, 'src')]) {
+        await fse.ensureDir(dir);
+        process.chdir(dir);
+        expect(await mcpTransportNotes(context(team(), local))).toContain(note);
+      }
+    } finally {
+      process.chdir(cwd);
+    }
   });
 
   describe('the file each server was written to, in its ownership record', () => {

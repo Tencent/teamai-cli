@@ -9,7 +9,7 @@ import { judgeTeamaiOnlyMcpConfigs, opencodeV1Servers } from './mcp-reconcile.js
 import { opencodeDeliversThroughPlugin } from './opencode-hooks.js';
 import { opencodeContextReference, readOpencodeInstructionList, reconcileOpencodeInstructionSet } from './resources/opencode-config.js';
 import { RulesHandler } from './resources/rules.js';
-import { resolveToolBaseDir, type LocalConfig, type TeamaiConfig } from './types.js';
+import { resolveBaseDir, type LocalConfig, type TeamaiConfig } from './types.js';
 import { readFileSafe } from './utils/fs.js';
 
 // ─── teamai-only files (#915) ─────────────────────────────────
@@ -128,7 +128,7 @@ async function opencodeInstructionEntries(
   if (target === null) return null;
   const file = target.configFile;
   const contextFile = ownOf(await locate('opencode', 'blocks', installOf(teamConfig, localConfig)))?.path;
-  const context = contextFile ? opencodeContextReference(contextFile, 'project', resolveToolBaseDir('opencode', localConfig)) : null;
+  const context = contextFile ? opencodeContextReference(contextFile, 'project', resolveBaseDir(localConfig)) : null;
   return {
     file,
     ours: (entry) => typeof entry === 'string' && (target.owns(entry) || (context?.config === file && entry === context.entry)),

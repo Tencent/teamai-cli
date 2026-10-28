@@ -1,16 +1,19 @@
 /**
- * `teamai score-sessions` (#1179): the local driver that judges this machine's finished sessions in the background,
- * started detached after a session start's pull. It takes session work only, through the same leases as any driver,
- * judges each with a local tool, and leaves the labels pending for the next pull to publish.
+ * `teamai score-sessions` (#1179): the local driver that works on this machine's finished attended sessions in the
+ * background, started detached after a session start's pull. Where `sessions.publish` is `auto` for attended sessions it
+ * archives them (#1385). Where their scoring is `auto` it takes session work only, through the same leases as any
+ * driver, judges each with a local tool, and leaves the labels pending for the next pull to publish.
  */
 import path from 'node:path';
-import { detectProjectConfig, loadLocalConfig } from './config.js';
+import { detectProjectConfig, loadLocalConfig, loadTeamConfig } from './config.js';
 import { driverIdentity } from './driver-identity.js';
 import { scoresDir } from './scorers/attempts.js';
 import { scoringUnavailable } from './scorers/home.js';
 import { judgeToolLevels } from './scorers/judge.js';
 import type { Isolation } from './scorers/label.js';
 import { scopeScoring } from './scorers/settings.js';
+import { SessionPolicy } from './session-flow/session-policy.js';
+import { SessionPublish } from './session-flow/session-publish.js';
 import { SessionWork } from './session-flow/session-work.js';
 import { getDataHome, type LocalConfig } from './types.js';
 import { acquireLock, releaseLock } from './update.js';
@@ -26,7 +29,7 @@ const RUN_MAX_MS = 30 * 60 * 1000;
  * What the local judge tools can offer, strictest first: those whose profile reaches `verified`, then every installed
  * tool at `best-effort`. A tool is never offered at a level it cannot reach, since its judge would refuse the lease.
  */
-async function localJudgeOffers(): Promise<Array<{ isolation: Isolation; tools: [string, ...string[]] }>> {
+export async function localJudgeOffers(): Promise<Array<{ isolation: Isolation; tools: [string, ...string[]] }>> {
   const levels = await judgeToolLevels();
   const offers: Array<{ isolation: Isolation; tools: [string, ...string[]] }> = [];
   const [verified, ...moreVerified] = levels.filter((level) => level.isolation === 'verified').map((level) => level.tool);
@@ -37,19 +40,39 @@ async function localJudgeOffers(): Promise<Array<{ isolation: Isolation; tools: 
 }
 
 /**
- * Judges the finished sessions of each scope in `configs`, in order, until none is left, the day's limit is spent, or
- * 30 minutes passed since it started. A scope another run is scoring is left to it.
+ * The lock a pass that judges the entries of `config` here holds: the background pass, and the judging of a drain. Both
+ * take leases as the same local driver, so a lease one holds would read as the other's own.
+ */
+export const judgePassLock = (config: LocalConfig): string => path.join(scoresDir(config), 'score-sessions.lock');
+
+/** What the background pass does with the attended sessions of `config`: judge them, publish them, both or neither. */
+async function attendedWork(config: LocalConfig): Promise<{ judges: boolean; publishes: boolean }> {
+  const scoring = scoringUnavailable(config) ? undefined : await scopeScoring(config);
+  return {
+    judges: scoring?.ok === true && scoring.sessions.policies.attended.policy === 'auto',
+    publishes: SessionPolicy.publish(config, await loadTeamConfig(config.repo.localPath)).policies.attended.policy === 'auto',
+  };
+}
+
+/**
+ * For each scope in `configs`, in order: archives its finished attended sessions where `sessions.publish` is `auto` for
+ * them, then judges its finished sessions where attended session scoring is `auto`, until none is left, the day's limit
+ * is spent, or 30 minutes passed since it started. A scope another run works on is left to it.
  */
 export async function scoreSessions(configs: readonly LocalConfig[], { clock = () => new Date().toISOString() }: { clock?: () => string } = {}): Promise<void> {
   const deadline = Date.parse(clock()) + RUN_MAX_MS;
   const offers = await localJudgeOffers();
   for (const config of configs) {
-    if (scoringUnavailable(config)) continue;
-    const scoring = await scopeScoring(config);
-    if (!scoring.ok || !scoring.sessions.enabled) continue;
-    const lock = path.join(scoresDir(config), 'score-sessions.lock');
+    const { judges, publishes } = await attendedWork(config);
+    if (!judges && !publishes) continue;
+    const lock = judgePassLock(config);
     if (!await acquireLock(lock)) continue;
     try {
+      if (publishes) {
+        const published = await SessionPublish.captured(config, 'attended', clock());
+        for (const { sessions, reason } of published.unpublished) log.debug(`[sessions] ${sessions} attended session(s) were not archived: ${reason}`);
+      }
+      if (!judges) continue;
       const driver = driverIdentity('local', SessionWork.leaseCwd(config));
       for (const judge of offers) {
         for (;;) {
@@ -68,26 +91,34 @@ export async function scoreSessions(configs: readonly LocalConfig[], { clock = (
 }
 
 /**
- * The scopes `cwd` reaches that turn session scoring on: its project scope, with its workspace children, whose
- * namespaces set scoring too, then the user scope, each data home once. A directory that no longer exists reaches the
- * user scope only.
+ * The scopes `cwd` reaches: its project scope, with its workspace children, whose namespaces set scoring too, then the
+ * user scope, each data home once. A directory that no longer exists reaches the user scope only.
  */
-export async function sessionScoringScopes(cwd?: string): Promise<LocalConfig[]> {
+export async function reachedScopes(cwd?: string): Promise<LocalConfig[]> {
   const detected = cwd === undefined || await pathExists(cwd) ? await detectProjectConfig(cwd).catch(() => null) : null;
   const project = detected && await readWorkspaceChildren(detected);
   const user = await loadLocalConfig();
   const homes = new Set<string>();
   const scopes: LocalConfig[] = [];
   for (const config of [project, user]) {
-    if (config === null || homes.has(getDataHome(config)) || scoringUnavailable(config)) continue;
+    if (config === null || homes.has(getDataHome(config))) continue;
     homes.add(getDataHome(config));
-    const scoring = await scopeScoring(config);
-    if (scoring.ok && scoring.sessions.enabled) scopes.push(config);
+    scopes.push(config);
   }
   return scopes;
 }
 
-/** The hidden command: the scopes of this directory that score sessions. */
+/** The scopes `cwd` reaches whose finished attended sessions the background pass judges or publishes. */
+export async function backgroundPassScopes(cwd?: string): Promise<LocalConfig[]> {
+  const scopes: LocalConfig[] = [];
+  for (const config of await reachedScopes(cwd)) {
+    const { judges, publishes } = await attendedWork(config);
+    if (judges || publishes) scopes.push(config);
+  }
+  return scopes;
+}
+
+/** The hidden command: the background pass over the scopes of this directory. */
 export async function scoreSessionsCommand(): Promise<void> {
-  await scoreSessions(await sessionScoringScopes());
+  await scoreSessions(await backgroundPassScopes());
 }

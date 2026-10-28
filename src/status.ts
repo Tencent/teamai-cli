@@ -93,6 +93,9 @@ export async function status(options: GlobalOptions): Promise<void> {
   log.info('Sync state:');
   console.log(`  last push: ${state.lastPush ?? 'never'}`);
   console.log(`  last pull: ${state.lastPull ?? 'never'}`);
+  if (state.autoReportPendingSince) {
+    console.log(`  auto-report: pending since ${state.autoReportPendingSince}; run \`teamai pull --verbose\` to retry and see why`);
+  }
 
   // Resource counts — cover every ResourceType, in RESOURCE_TYPES order.
   console.log('');

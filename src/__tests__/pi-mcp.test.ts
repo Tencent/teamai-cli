@@ -4,7 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { reconcileMcpForConfig } from '../mcp-reconcile.js';
 import { buildMcpDeliveryChecks, mcpTransportNotes } from '../doctor-delivery.js';
-import { detectMcpFormat, renderJsonEntry, supportsTransport } from '../resources/mcp-format.js';
+import { renderJsonEntry, supportsTransport } from '../resources/mcp-format.js';
+import { mcpFormatOf } from '../tools.js';
 import { TeamaiConfigSchema, type LocalConfig, type TeamaiConfig } from '../types.js';
 
 const yaml = `servers:
@@ -54,7 +55,7 @@ describe('Pi MCP', () => {
   });
 
   it('supports only native transports and converts timeout without rounding', () => {
-    expect(detectMcpFormat('pi')).toBe('pi');
+    expect(mcpFormatOf('pi')).toBe('pi');
     expect(supportsTransport('pi', 'sse')).toBe(false);
     expect(supportsTransport('pi', 'http')).toBe(true);
     expect(supportsTransport('pi', 'stdio')).toBe(true);

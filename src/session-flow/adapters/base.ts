@@ -128,18 +128,8 @@ export abstract class AgentAdapter {
    */
   abstract deleteSession(sessionId: string, projectPath?: string): Promise<boolean>;
 
-  /** Check whether this platform's CLI is installed and usable (static; checks the base path). */
-  static isAvailable(): boolean {
-    return false;
-  }
-
   /** Check whether this adapter instance's storage path is usable (instance method; variants may override). */
   isReady(): boolean {
     return false;
-  }
-
-  /** Return the default storage root for this platform's sessions. */
-  static getDefaultStoragePath(): string {
-    return '';
   }
 }

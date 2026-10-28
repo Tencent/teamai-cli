@@ -4,15 +4,15 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { nextToolHomes } from '../tool-home-record.js';
 import { cleanupOf, installOf, ownOf, unreadWrites, writable, writesOf, type EntryPlace, type FilePlace, type FilesChannel, type Read } from '../locate.js';
-import { envToolHome, type Host } from '../tool-home.js';
+import { envToolHome, movedToolHome, toolHome, type Host } from '../tool-home.js';
 import { isToolId, TOOLS } from '../tools.js';
 import { samePlaces } from '../resources/places.js';
 
 function linuxHost(env: Record<string, string>, existing: readonly string[] = ['/new/hermes', '/x/opencode', '/home/m/.openclaw']): Host {
   return {
-    platform: 'linux', path: path.posix, home: '/home/m', env, toolHomes: { kind: 'missing' }, cwd: () => '/home/m',
+    platform: 'linux', path: path.posix, home: '/home/m', profileHome: '/home/m', env, toolHomes: { kind: 'missing' }, cwd: () => '/home/m',
     exists: async (file) => existing.includes(file), readJson: async () => ({ kind: 'missing' }),
-    realpath: async (file) => file, readText: async () => null, userToolRoots: async () => undefined,
+    realpath: async (file) => file, readText: async () => null, existsNow: () => false, readTextNow: () => null, userToolRoots: async () => undefined,
   };
 }
 
@@ -73,11 +73,45 @@ describe('nextToolHomes', () => {
   });
 });
 
+describe('nextToolHomes and Hermes\'s active_profile', () => {
+  const sticky: Host = {
+    ...linuxHost({}, ['/home/m/.hermes/profiles/work']),
+    existsNow: (file) => file === '/home/m/.hermes/profiles/work',
+    readTextNow: (file) => (file === '/home/m/.hermes/active_profile' ? 'work\n' : null),
+  };
+
+  it('records nothing for a profile Hermes itself made active, on init or pull', async () => {
+    for (const by of ['init', 'pull'] as const) {
+      expect(await nextToolHomes({}, sticky, by)).toEqual({ homes: {}, changes: [] });
+      expect(await nextToolHomes({ hermes: '/srv/hermes' }, sticky, by)).toEqual({ homes: { hermes: '/srv/hermes' }, changes: [] });
+    }
+  });
+
+  it('records HERMES_HOME on init while active_profile names a profile in it', async () => {
+    const host: Host = { ...sticky, env: { HERMES_HOME: '/srv/hermes' }, existsNow: (file) => file === '/srv/hermes/profiles/work', readTextNow: (file) => (file === '/srv/hermes/active_profile' ? 'work\n' : null) };
+
+    expect((await nextToolHomes({}, host, 'init')).homes).toEqual({ hermes: '/srv/hermes' });
+  });
+
+  it('takes the profile active_profile names inside a recorded home, from a shell without HERMES_HOME', () => {
+    const host: Host = { ...sticky, toolHomes: { kind: 'ok', homes: { hermes: '/srv/hermes' } }, existsNow: (file) => file === '/srv/hermes/profiles/work', readTextNow: (file) => (file === '/srv/hermes/active_profile' ? 'work\n' : null) };
+
+    expect(toolHome('hermes', host)).toBe('/srv/hermes/profiles/work');
+  });
+
+  it('clears a recorded home when init sees HERMES_HOME blank, whatever active_profile says', async () => {
+    const { homes, changes } = await nextToolHomes({ hermes: '/srv/hermes' }, { ...sticky, env: { HERMES_HOME: '' } }, 'init');
+
+    expect(homes).toEqual({});
+    expect(changes).toEqual([{ tool: 'hermes', variable: 'HERMES_HOME', dir: null }]);
+  });
+});
+
 describe('nextToolHomes on Windows', () => {
   const windowsHost = (env: Record<string, string>, existing: readonly string[]): Host => ({
-    platform: 'win32', path: path.win32, home: 'C:\\Users\\m', env, toolHomes: { kind: 'missing' },
+    platform: 'win32', path: path.win32, home: 'C:\\Users\\m', profileHome: 'C:\\Users\\m', env, toolHomes: { kind: 'missing' },
     cwd: () => 'C:\\repo', exists: async (file) => existing.includes(file), readJson: async () => ({ kind: 'missing' }),
-    realpath: async (file) => file, readText: async () => null, userToolRoots: async () => undefined,
+    realpath: async (file) => file, readText: async () => null, existsNow: () => false, readTextNow: () => null, userToolRoots: async () => undefined,
   });
   const appData = 'C:\\Users\\m\\AppData\\Local';
 
@@ -93,6 +127,16 @@ describe('nextToolHomes on Windows', () => {
 
     expect(homes).toEqual({});
     expect(changes).toEqual([{ tool: 'hermes', variable: 'HERMES_HOME', dir: null }]);
+  });
+
+  it('follows active_profile inside the Windows default a pull recorded', async () => {
+    const native = `${appData}\\hermes`;
+    const host: Host = {
+      ...windowsHost({ LOCALAPPDATA: appData }, [native]), toolHomes: { kind: 'ok', homes: { hermes: native } },
+      existsNow: (file) => file === `${native}\\profiles\\work`, readTextNow: (file) => (file === `${native}\\active_profile` ? 'work' : null),
+    };
+
+    expect(toolHome('hermes', host)).toBe(`${native}\\profiles\\work`);
   });
 
   it('fills a missing Hermes record with the Windows default only when it exists', async () => {
@@ -119,8 +163,9 @@ describe('envToolHome', () => {
             { tool, env: { XDG_CONFIG_HOME: 'rel/config' }, dir: null },
             { tool, env: { XDG_CONFIG_HOME: '/abs/config' }, dir: `/abs/config/${move.child}` },
           ];
-        case 'win32-appdata':
-        case 'profile-suffix':
+        case 'openclaw-state':
+        case 'omp-agent':
+        case 'hermes-home':
           return [];
         default: {
           const unhandled: never = move;
@@ -136,12 +181,80 @@ describe('envToolHome', () => {
 
   it('puts Hermes in the Windows default when LOCALAPPDATA is relative', () => {
     const host: Host = {
-      platform: 'win32', path: path.win32, home: 'C:\\Users\\m', env: { LOCALAPPDATA: 'relative-appdata' }, toolHomes: { kind: 'missing' },
+      platform: 'win32', path: path.win32, home: 'C:\\Users\\m', profileHome: 'C:\\Users\\m', env: { LOCALAPPDATA: 'relative-appdata' }, toolHomes: { kind: 'missing' },
       cwd: () => 'C:\\repo', exists: async () => true, readJson: async () => ({ kind: 'missing' }),
-      realpath: async (file) => file, readText: async () => null, userToolRoots: async () => undefined,
+      realpath: async (file) => file, readText: async () => null, existsNow: () => false, readTextNow: () => null, userToolRoots: async () => undefined,
     };
 
-    expect(envToolHome('hermes', host)).toEqual({ dir: 'C:\\Users\\m\\AppData\\Local\\hermes', variable: 'LOCALAPPDATA', kind: 'win32-appdata' });
+    expect(envToolHome('hermes', host)).toEqual({ dir: 'C:\\Users\\m\\AppData\\Local\\hermes', variable: 'LOCALAPPDATA', kind: 'platform-default' });
+  });
+});
+
+describe('homes that follow the tool\'s own rules', () => {
+  const at = (env: Record<string, string>, files: Readonly<Record<string, string>> = {}, homes: Readonly<Record<string, string>> = {}): Host => ({
+    ...linuxHost(env), cwd: () => '/home/m/work', toolHomes: { kind: 'ok', homes },
+    existsNow: (file) => Object.keys(files).some((known) => known === file || known.startsWith(`${file}/`)),
+    readTextNow: (file) => files[file] ?? null,
+  });
+  const dirOf = (tool: 'openclaw' | 'omp' | 'hermes', host: Host): string | null => movedToolHome(tool, host);
+
+  it('puts OpenClaw\'s state dir in OPENCLAW_HOME, its profile included, and expands ~ in OPENCLAW_HOME against the OS home', () => {
+    expect(dirOf('openclaw', at({ OPENCLAW_HOME: '/oc' }))).toBe('/oc/.openclaw');
+    expect(dirOf('openclaw', at({ OPENCLAW_HOME: '/oc', OPENCLAW_PROFILE: 'work' }))).toBe('/oc/.openclaw-work');
+    expect(dirOf('openclaw', at({ OPENCLAW_HOME: '~/oc' }))).toBe('/home/m/oc/.openclaw');
+  });
+
+  it('lets OPENCLAW_STATE_DIR win, with ~ in it expanded against OPENCLAW_HOME', () => {
+    expect(dirOf('openclaw', at({ OPENCLAW_HOME: '/oc', OPENCLAW_PROFILE: 'work', OPENCLAW_STATE_DIR: '/state' }))).toBe('/state');
+    expect(dirOf('openclaw', at({ OPENCLAW_HOME: '/oc', OPENCLAW_STATE_DIR: '~/state' }))).toBe('/oc/state');
+  });
+
+  it('counts a blank, undefined or null OPENCLAW_HOME as unset', () => {
+    for (const value of [' ', 'undefined', 'null']) {
+      expect(dirOf('openclaw', at({ OPENCLAW_HOME: value }))).toBeNull();
+      expect(dirOf('openclaw', at({ OPENCLAW_HOME: value, OPENCLAW_PROFILE: 'work' }))).toBe('/home/m/.openclaw-work');
+    }
+  });
+
+  it('takes OMP_PROFILE over PI_PROFILE even when empty, and an empty or default profile is the default one', () => {
+    expect(dirOf('omp', at({ OMP_PROFILE: 'work', PI_PROFILE: 'other' }))).toBe('/home/m/.omp/profiles/work/agent');
+    expect(dirOf('omp', at({ OMP_PROFILE: '', PI_PROFILE: 'other' }))).toBeNull();
+    expect(envToolHome('omp', at({ PI_PROFILE: 'default' }))).toEqual({ dir: '/home/m/.omp/agent', variable: 'PI_PROFILE', kind: 'own' });
+  });
+
+  it('roots every OMP profile in PI_CONFIG_DIR, and leaves PI_CODING_AGENT_DIR to Pi', () => {
+    expect(dirOf('omp', at({ PI_CODING_AGENT_DIR: '/agent' }))).toBeNull();
+    expect(dirOf('omp', at({ OMP_PROFILE: 'work', PI_CODING_AGENT_DIR: '/agent' }))).toBe('/home/m/.omp/profiles/work/agent');
+    expect(dirOf('omp', at({ PI_CONFIG_DIR: '.alt', OMP_PROFILE: 'work' }))).toBe('/home/m/.alt/profiles/work/agent');
+    expect(dirOf('omp', at({ PI_CONFIG_DIR: '.alt' }))).toBe('/home/m/.alt/agent');
+  });
+
+  it('appends HERMES_DATA_DIR_SUFFIX as written, and lets HERMES_HOME win over it', () => {
+    expect(envToolHome('hermes', at({ HERMES_DATA_DIR_SUFFIX: '-canary' }))).toEqual({ dir: '/home/m/.hermes-canary', variable: 'HERMES_DATA_DIR_SUFFIX', kind: 'own' });
+    expect(dirOf('hermes', at({ HERMES_DATA_DIR_SUFFIX: '-canary', HERMES_HOME: '/h' }))).toBe('/h');
+  });
+
+  it('takes the profile active_profile names while its directory exists, but not default', () => {
+    const profile = { '/home/m/.hermes/active_profile': 'work\n', '/home/m/.hermes/profiles/work/SOUL.md': '' };
+    expect(dirOf('hermes', at({}, profile))).toBe('/home/m/.hermes/profiles/work');
+    expect(envToolHome('hermes', at({}, profile))).toBeNull();
+    expect(dirOf('hermes', at({}, { '/home/m/.hermes/active_profile': 'work' }))).toBeNull();
+    expect(dirOf('hermes', at({}, { '/home/m/.hermes/active_profile': 'default', '/home/m/.hermes/profiles/default/x': '' }))).toBeNull();
+  });
+
+  it('keeps a HERMES_HOME that is a profiles/<name> dir whatever active_profile says', () => {
+    const files = { '/home/m/.hermes/active_profile': 'work', '/home/m/.hermes/profiles/work/x': '' };
+    expect(dirOf('hermes', at({ HERMES_HOME: '/home/m/.hermes/profiles/other' }, files))).toBe('/home/m/.hermes/profiles/other');
+  });
+
+  it('reads active_profile from the platform home when HERMES_HOME is inside it, and takes the profile under HERMES_HOME', () => {
+    const files = { '/home/m/.hermes/active_profile': 'work', '/home/m/.hermes/custom/profiles/work/x': '' };
+    expect(dirOf('hermes', at({ HERMES_HOME: '/home/m/.hermes/custom' }, files))).toBe('/home/m/.hermes/custom/profiles/work');
+  });
+
+  it('reads active_profile from a HERMES_HOME outside the platform home', () => {
+    const files = { '/srv/hermes/active_profile': 'work', '/srv/hermes/profiles/work/x': '', '/home/m/.hermes/active_profile': 'other' };
+    expect(dirOf('hermes', at({ HERMES_HOME: '/srv/hermes' }, files))).toBe('/srv/hermes/profiles/work');
   });
 });
 

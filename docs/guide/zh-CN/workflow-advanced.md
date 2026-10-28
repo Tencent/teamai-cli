@@ -54,7 +54,7 @@ steps:
 
 ### 并行运行本地命令
 
-`--driver local` 最多同时运行 `workflows.max_parallel` 个命令步骤。在本地配置中设置它。默认值是 1，没有对应的命令行参数。
+`--driver local` 最多同时运行 `workflows.max_parallel` 个命令步骤。在 `~/.teamai/config.yaml` 或某个 workspace 自己的 `config.yaml` 中设置它。默认值是 1，没有对应的命令行参数。
 
 ```yaml
 workflows:
@@ -617,7 +617,7 @@ steps:
 
 `unenforced` 出现在租约、步骤和运行记录中。每个 `interactive: true` 步骤还需要支持 HITL 的驱动，见 [HITL](#hitl人在回路中)。
 
-成员可以在本地配置中、`max_parallel` 旁边，设置本机上任何驱动可以使用什么：
+成员可以在 `~/.teamai/config.yaml` 或某个 workspace 自己的 `config.yaml` 中、`max_parallel` 旁边，设置本机上任何驱动可以使用什么：
 
 ```yaml
 workflows:
@@ -628,7 +628,7 @@ workflows:
     env: [NPM_TOKEN]
 ```
 
-- `allow.network: false` 会暂缓每个要求 `network: true` 的步骤。`allow.env` 会暂缓 `requires.env`（或其 setup 的 `requires.env`）中含有未列出键的步骤。`wait.held[].missing` 指出 `policy.network` 或 `policy.env`。
+- `allow.network: false` 会暂缓每个要求 `network: true` 的步骤。`allow.env` 会暂缓 `requires.env`（或其 setup 的 `requires.env`）中含有未列出键的步骤。`wait.held[].missing` 指出 `policy.network` 或 `policy.env`。`~/.teamai/config.yaml` 中错误的 `allow` 会让工作流命令停止运行，直到修正为止，因此拼写错误不会解除限制。
 - `sandbox: true` 表示本机会隔离它运行的内容，例如 CI 虚拟机或容器，因此本地驱动声明 `sandbox` 隔离。
 - `max_parallel` 还限制本机上所有驱动同时持有同一运行的租约数。
 
@@ -755,10 +755,10 @@ teamai workflow resume <run> [--claim]
 
 发布的状态是 `teamai-reports` 上的 `workflows/runs/<run>/state.json`。它包含运行继续所需的内容：状态、输入、每个步骤的结果、输出、pass 和带备注的 HITL 回答、基准、每个工作区的提交，以及步骤继续过的每个会话副本的工具和 id。工作流本身只以 `sourceHash`、`definitionHash` 和 `teamRevision` 传递。它不包含步骤和 pass 的 `message`、每个租约和回答的驱动身份（租约保留驱动类型）、工作区所有者，以及业务检出目录的路径。每条失败消息都换成 `The details stay on the machine that ran this step.`，失败的 `code` 保留。提交只以完整 id（40 或 64 位十六进制）出现。`publish` 用 TeamAI 的密钥规则、本进程环境变量里的密钥，以及团队在 [`env/secrets.yaml`](sharing.md#env环境变量) 中声明的每个密钥的值（无论名称如何）检查每个值和键，遇到第一个匹配就以 `secret_detected` 拒绝。声明的值短于 8 个字符时只按完整单词匹配，短于 4 个字符时不检查，`publish` 会给出警告并写明它的名称。拒绝信息写明步骤、字段和密钥类型，从不包含值本身。本机的绝对路径同样以 `local_path_detected` 拒绝：Windows 盘符或共享路径、`~/` 路径、`file://` URL，以及第一级目录存在于本机根目录下的 `/` 路径，例如 `/Users/alice/data.csv`。URL、`src/main.ts` 这样的相对路径和 `/api/v1` 这样的路由可以发布。这样的运行不能交接，请在本机继续，或改用相对于仓库的路径重新启动它。
 
-`--sessions` 还会把未结算步骤将要继续的每个 agent 会话的最新副本（`session: continue` 或 `session.from`）放进团队会话归档，并像 `teamai session push --scrub` 一样脱敏。这包括循环即将再次运行的步骤，以及尚未开始的工作流步骤里的步骤。已结算步骤的会话和更早 pass 的会话从不包括在内。信封随后在 `sessions` 中以 `{"tool","id"}` 列出它们，没有时为空列表。本机读不到的会话不归档：其所在的链归档本机能读的最新会话，`skipped` 列出被跳过的较新会话。整条链都读不到时，发布被拒绝。会话在写入状态之前归档，所以之后被拒绝的发布仍会留下已归档的会话，没有变化的发布也照样归档。在接着运行的机器上，本地驱动按以下顺序恢复步骤的会话：
+`--sessions` 还会把未结算步骤将要继续的每个 agent 会话的最新副本（`session: continue` 或 `session.from`）放进 `teamai-reports` 上的团队会话归档，并像 `teamai session push --scrub` 一样脱敏。这包括循环即将再次运行的步骤，以及尚未开始的工作流步骤里的步骤。已结算步骤的会话和更早 pass 的会话从不包括在内。信封随后在 `sessions` 中以 `{"tool","id"}` 列出它们，没有时为空列表。本机读不到的会话不归档：其所在的链归档本机能读的最新会话，`skipped` 列出被跳过的较新会话。整条链都读不到时，发布被拒绝。会话在写入状态之前归档，所以之后被拒绝的发布仍会留下已归档的会话，没有变化的发布也照样归档。在接着运行的机器上，本地驱动按以下顺序恢复步骤的会话：
 
 1. 本机上的会话。步骤的工具与会话的工具相同时按 id 恢复，否则得到它的一份副本。
-2. 归档会话的副本。副本只写一次，之后的恢复会复用它，包括后来加入的对话轮次。驱动按团队仓库的 origin 上的样子读取归档，每次驱动运行 fetch 一次，所以你不需要先执行 `teamai pull`，你的团队仓库克隆也保持不变。fetch 失败时，驱动读取你的克隆，并说明它可能比 origin 旧。
+2. 归档会话的副本。副本只写一次，之后的恢复会复用它，包括后来加入的对话轮次。驱动按认领同步后的样子读取 `teamai-reports` 上的归档。旧版 teamai 归档在默认分支上的会话，按团队仓库的 origin 上的样子读取，每次驱动运行 fetch 一次，所以你不需要先执行 `teamai pull`，你的团队仓库克隆也保持不变。fetch 失败时，驱动读取你的克隆，并说明它可能比 origin 旧。
 3. 如果该会话是另一个步骤做出的副本，而前两种方式都拿不到它，就对这个副本所继续的会话用同样两种方式，依此类推直到最初的会话。这时步骤会缺少拿不到的那些副本中的对话轮次。
 4. 新会话，并在 stderr 输出以 `⚠ Step "<id>" starts a new <tool> session:` 开头的警告，说明上述每种方式为什么失败。
 
@@ -826,7 +826,7 @@ teamai workflow next <run> --json '{"claim":true,"driver":{"kind":"script","mach
 
 ### 让 TeamAI 准备工作区
 
-驱动可以把工作区及其 git 操作交给 TeamAI。`next <run> --prepare --json '<payload>'` 领取一个步骤并准备它的工作区：在运行启动时所在的检出目录中创建或复用 worktree，应用基线 agent 文件和团队资源，并以 `lease.cwd` 返回该目录。再次准备会保留已有的编辑。在 `lease.cwd` 中运行步骤，不要在那里运行 git。两个 attempt 从不共用一个位置，而检出目录是同一个位置，所以在检出目录中工作的步骤即使可以并行，也会依次运行：租约的位置被另一个未结束的 attempt 占用时，返回 `busy`，attempt 仍保持租约；等那个 attempt 报告后，用 `--attempt` 准备它。TeamAI 不为这类驱动保存运行模式，setup 按调用 `next --prepare` 的进程的模式运行（见[有人值守与无人值守的运行](workflow.md#有人值守与无人值守的运行)），因此请在驱动中自行导出 `TEAMAI_MODE`，让它的各次调用保持同一模式。
+驱动可以把工作区及其 git 操作交给 TeamAI。`next <run> --prepare --json '<payload>'` 领取一个步骤并准备它的工作区：在运行启动时所在的检出目录中创建或复用 worktree，应用基线 agent 文件和团队资源，并以 `lease.cwd` 返回该目录。再次准备会保留已有的编辑。在 `lease.cwd` 中运行步骤，不要在那里运行 git。两个 attempt 从不共用一个位置，而检出目录是同一个位置，所以在检出目录中工作的步骤即使可以并行，也会依次运行：租约的位置被另一个未结束的 attempt 占用时，返回 `busy`，attempt 仍保持租约；等那个 attempt 报告后，用 `--attempt` 准备它。setup 按驱动在 `next` 上发送的 `runMode` 运行；没有发送时，按调用 `next --prepare` 的进程的模式运行（见[有人值守与无人值守的运行](workflow.md#有人值守与无人值守的运行)），而不是运行启动时的模式。
 
 之后由 `report` 完成这个 attempt。它负责 commit、push，并自己填写 `changes` 或 `read`，所以已准备的 attempt 的报告如果带有 `changes` 或 `read`，会返回 `invalid_report`。TeamAI 只在接受了成功报告且回复允许 cleanup 后才删除 worktree。失败的 attempt 保留其工作，以便重试。
 
@@ -841,3 +841,5 @@ teamai score --next --json '{"driver":{"kind":"script","machine":"runner","works
 ```
 
 评审任务来自 `teamai score --next`，从不来自 `workflow next`。见[评分器](scorers.md#任意-driver)。
+
+无人值守的 driver 以 `teamai score --drain` 结束。它评判本机能评判的工作，发布运行记录、标签和会话，并输出留给其他 driver 的工作。本地驱动在无人值守运行结束时执行它（无人值守会话的发布和评判都设为 `off` 时除外）：先在 stdout 输出运行的 `done` 信封，再在 stderr 输出 drain 的各行。退出状态仍是运行本身的结果，drain 失败时也一样。见[无人值守任务结束前运行 drain](scorers.md#无人值守任务结束前运行-drain)。

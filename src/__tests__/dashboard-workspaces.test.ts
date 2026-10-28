@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import YAML from 'yaml';
-import { dashboardWorkspaces, workspaceEvents, type DashboardWorkspace } from '../dashboard/workspaces.js';
+import { dashboardWorkspaces, ownSessionEvents, workspaceEvents, type DashboardWorkspace } from '../dashboard/workspaces.js';
 import type { DashboardEvent } from '../types.js';
 
 // Minimal event factory: workspaceEvents only reads sessionId + cwd.
@@ -63,6 +63,14 @@ describe('workspaceEvents ownership', () => {
     expect(workspaceEvents(events, unassigned, ws).map(e => e.sessionId).sort()).toEqual(['s1', 's2']);
     // User scope no longer absorbs unmatched sessions (PR #604 review #3).
     expect(workspaceEvents(events, user, ws)).toEqual([]);
+  });
+
+  it('gives a machine-wide view of the user workspace the sessions no project owns, and a project only its own (#1182)', () => {
+    const p = project('p1', ['/repo/a']);
+    const ws = [user, p, unassigned];
+    const events = [ev('s1', '/somewhere/else'), ev('s2', '/repo/a/src'), ev('s3', undefined)];
+    expect(ownSessionEvents(events, user, ws).map(e => e.sessionId).sort()).toEqual(['s1', 's3']);
+    expect(ownSessionEvents(events, p, ws).map(e => e.sessionId)).toEqual(['s2']);
   });
 
   it('assigns an event to the project rooted at its projectAnchor, whatever its cwd (#809)', () => {

@@ -96,15 +96,17 @@ export async function repositoryStamp(dir: string): Promise<{ stamp: string; git
 /**
  * The real path of every `worktree =` value in `configFiles`, a relative one
  * taken from `gitDir` as git takes `core.worktree`, and followed as written,
- * so a symlink before a `..` resolves first. Lines in any section count, so
- * none is missed. Null when a line names `worktree` in a form this does not
- * read, or a value is quoted, escaped, commented or does not resolve: the
- * stamp could not follow it.
+ * so a symlink before a `..` resolves first. Keys in any section count, so
+ * none is missed; a section name or a value that only contains the word,
+ * such as `[branch "worktree-cleanup"]`, is no such key. Null when a
+ * `worktree` key is in a form this does not read, or a value is quoted,
+ * escaped, commented or does not resolve: the stamp could not follow it.
  */
 async function configuredWorkTrees(gitDir: string, configFiles: readonly string[]): Promise<string[] | null> {
   const texts = await Promise.all(configFiles.map((file) => fs.promises.readFile(file, 'utf8').catch(() => '')));
   const values: string[] = [];
-  for (const line of texts.flatMap((text) => text.split('\n')).filter((candidate) => /\bworktree\b/i.test(candidate))) {
+  const key = /^\s*(?:\[[^\]]*\]\s*)*worktree\s*(?:=|$)/i;
+  for (const line of texts.flatMap((text) => text.split('\n')).filter((candidate) => key.test(candidate))) {
     const value = /^\s*(?:\[[^\]"]*\]\s*)*worktree\s*=(.*)$/i.exec(line)?.[1]?.trim();
     if (value === undefined || /["\\#;]/.test(value)) return null;
     values.push(value);

@@ -2,6 +2,8 @@ import { expect, it } from 'vitest';
 import { DEFAULT_TOOL_PATHS } from '../types.js';
 import { describeLocateMatrix, type MatrixRow } from './helpers/locate-matrix.js';
 
+const OMP_SOURCE = 'Oh My Pi a70f001c utils/src/dirs.ts: profile = OMP_PROFILE if defined, else PI_PROFILE; a named profile is ~/<PI_CONFIG_DIR or .omp>/profiles/<name>/agent, else PI_CODING_AGENT_DIR, else ~/<PI_CONFIG_DIR or .omp>/agent';
+
 const CLAUDE_PROJECT_READS = [
   { at: '<root>/.mcp.json', key: ['mcpServers'], when: 'workspaceUnder' },
   { at: '~/.claude.json', key: ['mcpServers'], projectKey: '<root>', when: 'workspaceUnder' },
@@ -234,6 +236,27 @@ const COMPLETE_ROWS: readonly MatrixRow[] = [
     installed: { probe: '~/.omp', met: true },
     reads: [{ at: '~/.omp/agent/mcp.json', key: ['mcpServers'], when: 'always' }],
     source: 'Oh My Pi 18.2.1 loader and isolated MCP run, issue #1221 Matrix',
+  },
+  {
+    tool: 'omp', scope: 'user', envLiterals: { OMP_PROFILE: 'work' },
+    writes: [{ at: '~/.omp/profiles/work/agent/mcp.json', key: ['mcpServers'] }],
+    existingDirs: ['~/.omp/profiles/work/agent'], installed: { probe: '~/.omp/profiles/work/agent', met: true },
+    reads: [{ at: '~/.omp/profiles/work/agent/mcp.json', key: ['mcpServers'], when: 'always' }],
+    source: OMP_SOURCE,
+  },
+  {
+    tool: 'omp', scope: 'user', env: { PI_CODING_AGENT_DIR: '/pi-agent' },
+    writes: [{ at: '~/.omp/agent/mcp.json', key: ['mcpServers'] }],
+    existingDirs: ['~/.omp'], installed: { probe: '~/.omp', met: true },
+    reads: [{ at: '~/.omp/agent/mcp.json', key: ['mcpServers'], when: 'always' }],
+    source: `${OMP_SOURCE}; teamai does not follow PI_CODING_AGENT_DIR for OMP: Pi owns that directory (docs/designs/model-profiles.md)`,
+  },
+  {
+    tool: 'omp', scope: 'user', envLiterals: { PI_CONFIG_DIR: '.omp-alt', PI_PROFILE: 'work' },
+    writes: [{ at: '~/.omp-alt/profiles/work/agent/mcp.json', key: ['mcpServers'] }],
+    existingDirs: ['~/.omp-alt/profiles/work/agent'], installed: { probe: '~/.omp-alt/profiles/work/agent', met: true },
+    reads: [{ at: '~/.omp-alt/profiles/work/agent/mcp.json', key: ['mcpServers'], when: 'always' }],
+    source: OMP_SOURCE,
   },
   {
     tool: 'omp', scope: 'project',

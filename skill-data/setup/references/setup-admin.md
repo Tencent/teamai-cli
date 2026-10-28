@@ -242,7 +242,8 @@ needs permission to clone it and to push branches. Leave the default branch
 protected. They open pull requests against it.
 
 `teamai push` pushes a feature branch and opens a pull request. Reports and
-learnings use the branches `teamai-reports` and `teamai-learnings`.
+learnings use the branches `teamai-reports` and `teamai-learnings`, and pushed
+sessions live on `teamai-reports`.
 
 Do this before handing off the invite line below. Without branch access,
 `teamai init` or `teamai push` fails with a permission error.

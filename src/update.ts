@@ -5,12 +5,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fse from 'fs-extra';
-import { loadState, saveState, loadLocalConfig, loadTeamConfig } from './config.js';
+import { loadState, saveState, loadLocalConfig, loadTeamConfig, resolveConfigForDir } from './config.js';
 import { resolveEffectiveUpdatePolicy } from './update-policy.js';
 import { resolveTeamaiEntryScript } from './builtin-hooks.js';
 import { log } from './utils/logger.js';
 import { expandHome, ensureDir } from './utils/fs.js';
-import { getTeamaiHomeDir, getUpdateLockPath } from './types.js';
+import { getTeamaiHomeDir, getUpdateLockPath, type LocalConfig } from './types.js';
 import { askConfirmation, isInteractive } from './utils/prompt.js';
 
 // `getCurrentVersion` and `getCurrentPackageName` live in `./package-info.ts`
@@ -675,9 +675,11 @@ export async function checkForUpdate(options?: { force?: boolean; dryRun?: boole
 }
 
 /**
- * Perform the actual update (check + install based on policy)
+ * Perform the actual update (check + install based on policy). The CLI is
+ * shared by the whole machine, so one scope decides: the user scope when there
+ * is one, else `runningScope`, the scope the update runs in.
  */
-export async function doUpdate(): Promise<void> {
+export async function doUpdate(runningScope: LocalConfig | null): Promise<void> {
   const result = await checkForUpdate();
   if (!result.available) {
     log.info(`Already up to date (v${result.current})`);
@@ -686,7 +688,7 @@ export async function doUpdate(): Promise<void> {
 
   // Load configs for update policy. Team config is the default; local
   // config overrides (user always wins).
-  const localConfig = await loadLocalConfig();
+  const localConfig = (await loadLocalConfig()) ?? runningScope;
   const teamConfig = localConfig
     ? await loadTeamConfig(localConfig.repo.localPath)
     : null;
@@ -844,5 +846,5 @@ export async function update(options: UpdateOptions): Promise<void> {
     return;
   }
 
-  await doUpdate();
+  await doUpdate(await resolveConfigForDir());
 }

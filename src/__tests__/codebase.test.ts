@@ -37,14 +37,14 @@ vi.mock('../utils/git.js', () => ({
   })),
 }));
 
-// ─── mock utils/ai-client ─────────────────────────────────────────────────
-vi.mock('../utils/ai-client.js', () => ({
-  callClaude: vi.fn(),
-  getAICliName: () => 'claude',
+// ─── mock tool-launch/call ─────────────────────────────────────────────────
+vi.mock('../tool-launch/call.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../tool-launch/call.js')>(),
+  callTool: vi.fn(),
 }));
 
 import fs from 'node:fs';
-import { callClaude } from '../utils/ai-client.js';
+import { callTool } from '../tool-launch/call.js';
 import {
   generateCodebaseMd,
   generateCodebaseIndex,
@@ -53,7 +53,7 @@ import {
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
-const mockCallClaude = vi.mocked(callClaude);
+const mockCallTool = vi.mocked(callTool);
 const mockFsExistsSync = vi.mocked(fs.existsSync);
 const mockFsReaddirSync = vi.mocked(fs.readdirSync);
 const mockFsReadFileSync = vi.mocked(fs.readFileSync);
@@ -70,7 +70,7 @@ beforeEach(() => {
 
 describe('generateCodebaseMd', () => {
   it('输出顶部应包含标准 frontmatter（lastUpdated / source / generator）', async () => {
-    mockCallClaude.mockResolvedValue('# Codebase 概览\n\n## 项目概述\n内容');
+    mockCallTool.mockResolvedValue({ text: '# Codebase 概览\n\n## 项目概述\n内容', tool: 'claude' });
 
     const result = await generateCodebaseMd({ repoPath: '/repo/test' });
 
@@ -83,7 +83,7 @@ describe('generateCodebaseMd', () => {
   it('AI 输出已含 frontmatter 时应去重，最终只有一份 frontmatter', async () => {
     const aiOutputWithFrontmatter =
       '---\ntitle: 旧标题\n---\n\n# Codebase 概览\n\n## 项目概述\n内容';
-    mockCallClaude.mockResolvedValue(aiOutputWithFrontmatter);
+    mockCallTool.mockResolvedValue({ text: aiOutputWithFrontmatter, tool: 'claude' });
 
     const result = await generateCodebaseMd({ repoPath: '/repo/test' });
 
@@ -95,8 +95,8 @@ describe('generateCodebaseMd', () => {
     expect(result).not.toContain('旧标题');
   });
 
-  it('有 learningsSuggestions 时，callClaude 的 prompt 应包含建议内容', async () => {
-    mockCallClaude.mockResolvedValue('# Codebase 概览');
+  it('有 learningsSuggestions 时，callTool 的 prompt 应包含建议内容', async () => {
+    mockCallTool.mockResolvedValue({ text: '# Codebase 概览', tool: 'claude' });
 
     await generateCodebaseMd({
       repoPath: '/repo/test',
@@ -105,7 +105,7 @@ describe('generateCodebaseMd', () => {
       ],
     });
 
-    const prompt = mockCallClaude.mock.calls[0]![0] as string;
+    const prompt = mockCallTool.mock.calls[0]![0] as string;
     expect(prompt).toContain('最近 MR 提炼建议');
     expect(prompt).toContain('技术栈');
     expect(prompt).toContain('新增 vitest 依赖');
@@ -129,14 +129,14 @@ describe('generateCodebaseMd', () => {
       return '';
     });
 
-    mockCallClaude.mockResolvedValue('# Codebase 概览');
+    mockCallTool.mockResolvedValue({ text: '# Codebase 概览', tool: 'claude' });
 
     await generateCodebaseMd({
       repoPath: '/repo/test',
       learningsDir: '/repo/test/learnings',
     });
 
-    const prompt = mockCallClaude.mock.calls[0]![0] as string;
+    const prompt = mockCallTool.mock.calls[0]![0] as string;
     expect(prompt).toContain('高频标签');
   });
 });
@@ -149,7 +149,7 @@ describe('generateCodebaseIndex', () => {
       { section: '项目概述', summary: '描述项目背景', keywords: ['CLI', 'TypeScript'] },
       { section: '技术栈', summary: '列出使用的技术', keywords: ['Node.js', 'vitest', 'tsup'] },
     ]);
-    mockCallClaude.mockResolvedValue(validJson);
+    mockCallTool.mockResolvedValue({ text: validJson, tool: 'claude' });
 
     const result = await generateCodebaseIndex('# Codebase\n\n## 项目概述\n内容');
 
@@ -160,7 +160,7 @@ describe('generateCodebaseIndex', () => {
   });
 
   it('AI 返回非 JSON 时，应不抛异常并返回兜底 markdown', async () => {
-    mockCallClaude.mockResolvedValue('抱歉，我无法生成索引。');
+    mockCallTool.mockResolvedValue({ text: '抱歉，我无法生成索引。', tool: 'claude' });
 
     const result = await generateCodebaseIndex('# Codebase');
 
@@ -172,7 +172,7 @@ describe('generateCodebaseIndex', () => {
     const validJson = JSON.stringify([
       { section: '测试覆盖', summary: '测试策略与覆盖率', keywords: ['unit', 'e2e'] },
     ]);
-    mockCallClaude.mockResolvedValue(`\`\`\`json\n${validJson}\n\`\`\``);
+    mockCallTool.mockResolvedValue({ text: `\`\`\`json\n${validJson}\n\`\`\``, tool: 'claude' });
 
     const result = await generateCodebaseIndex('# Codebase\n\n## 测试覆盖\n内容');
 
@@ -203,7 +203,7 @@ describe('lintCodebaseMd', () => {
         },
       ],
     });
-    mockCallClaude.mockResolvedValue(validJson);
+    mockCallTool.mockResolvedValue({ text: validJson, tool: 'claude' });
 
     const report = await lintCodebaseMd('# Codebase');
 
@@ -214,7 +214,7 @@ describe('lintCodebaseMd', () => {
   });
 
   it('AI 返回非 JSON 时，应不抛异常并返回兜底 report', async () => {
-    mockCallClaude.mockResolvedValue('文档看起来不错！');
+    mockCallTool.mockResolvedValue({ text: '文档看起来不错！', tool: 'claude' });
 
     const report = await lintCodebaseMd('# Codebase');
 
@@ -222,8 +222,8 @@ describe('lintCodebaseMd', () => {
     expect(report.summary).toBe('解析失败，无法 lint');
   });
 
-  it('callClaude 抛出异常时，应不向上传播并返回兜底 report', async () => {
-    mockCallClaude.mockRejectedValue(new Error('AI 服务不可用'));
+  it('callTool 抛出异常时，应不向上传播并返回兜底 report', async () => {
+    mockCallTool.mockRejectedValue(new Error('AI 服务不可用'));
 
     const report = await lintCodebaseMd('# Codebase');
 
@@ -236,7 +236,7 @@ describe('lintCodebaseMd', () => {
       summary: '无问题',
       issues: [],
     });
-    mockCallClaude.mockResolvedValue(`以下是检查结果：\n${validJson}\n感谢使用。`);
+    mockCallTool.mockResolvedValue({ text: `以下是检查结果：\n${validJson}\n感谢使用。`, tool: 'claude' });
 
     const report = await lintCodebaseMd('# Codebase');
 

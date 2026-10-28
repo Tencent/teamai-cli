@@ -3,7 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { TEAMAI_HOOK_DESCRIPTION_PREFIX } from './types.js';
 import { CODEX_TOOL_IDS, isCodexTool } from './utils/tool-names.js';
-import type { HookDef } from './types.js';
+import type { HookDef, ToolId } from './types.js';
 import { getUserHome } from './utils/home.js';
 import { log } from './utils/logger.js';
 import { bundledShellFor, findGitBashWindows, resetBundledRuntimeCache, resolveCodebuddyNode, resolveWorkbuddyNode } from './bundled-runtime.js';
@@ -33,6 +33,7 @@ import { bundledShellFor, findGitBashWindows, resetBundledRuntimeCache, resolveC
 
 export const TEAMAI_BIN_DIR = '.teamai/bin';
 const WRAPPER_NAME = 'teamai';
+const CODEBUDDY_HOOK_WRAPPER = 'teamai-codebuddy-hook';
 
 /**
  * Tools whose hook commands need a shell to execute at all: their hook runner
@@ -41,7 +42,7 @@ const WRAPPER_NAME = 'teamai';
  * bundled-runtime.ts. Injection is skipped for a tool when no shell resolves,
  * because its hook commands could never run.
  */
-export const SHELL_DEPENDENT_TOOLS = new Set(['workbuddy', 'codebuddy']);
+export const SHELL_DEPENDENT_TOOLS = new Set<string>(['workbuddy', 'codebuddy'] satisfies ToolId[]);
 
 /**
  * Check whether /bin/sh exists.  Remote containers (e.g. CloudStudio AI
@@ -137,6 +138,11 @@ export function ensureTeamaiWrapper(): string | null {
     fs.writeFileSync(wrapperPath, script, { mode: 0o755 });
     if (process.platform === 'win32') {
       fs.writeFileSync(path.join(binDir, `${WRAPPER_NAME}.cmd`), cmdScript);
+      fs.writeFileSync(path.join(binDir, CODEBUDDY_HOOK_WRAPPER), [
+        '#!/bin/sh',
+        `"${nodeBin}" "${entryScript}" "$@" 2>/dev/null || true`,
+        '',
+      ].join('\n'), { mode: 0o755 });
     }
     return binDir;
   } catch {
@@ -290,10 +296,16 @@ export function getRawDispatchCommand(event: string, tool: string, matcher?: str
  * wrapper script is found even without the user's login shell PATH.
  * Used by GUI tools (WorkBuddy, CodeBuddy) and POSIX DSH that spawn hook subprocesses
  * with a limited environment. The PATH value uses the `$HOME` shell literal
- * so that golden fixture output stays stable across machines.
+ * so that golden fixture output stays stable across machines. On Windows,
+ * CodeBuddy IDE runs commands in cmd.exe while CodeBuddy CLI uses Git Bash;
+ * both can invoke the same explicitly named Git Bash and script.
  */
 function getWrapperDispatchCommand(event: string, tool: string, matcher?: string): string {
   const matcherArg = matcher && matcher !== '*' ? ` --matcher ${matcher}` : '';
+  if (tool === 'codebuddy' && process.platform === 'win32') {
+    const wrapper = path.join(getUserHome(), TEAMAI_BIN_DIR, CODEBUDDY_HOOK_WRAPPER).split(path.sep).join('/');
+    return `${getHookShellCommand()} "${wrapper}" hook-dispatch ${event} --tool ${tool}${matcherArg} || exit 0`;
+  }
   return `PATH="$HOME/${TEAMAI_BIN_DIR}:$PATH" teamai hook-dispatch ${event} --tool ${tool}${matcherArg} 2>/dev/null || true`;
 }
 
@@ -383,9 +395,9 @@ const SUBAGENT_START_SPEC: BuiltinHookSpec = {
  * to the parent; not ZCode, which has no such event and rejects the whole
  * hooks block on an unknown key.
  */
-const SUBAGENT_STOP_TOOLS = new Set([
+const SUBAGENT_STOP_TOOLS = new Set<string>([
   'claude', 'claude-internal', 'tclaude', ...CODEX_TOOL_IDS, 'codebuddy', 'qoder', 'qoder-cn',
-]);
+] satisfies ToolId[]);
 
 /**
  * Build the built-in hook definitions for a tool.
@@ -397,10 +409,10 @@ const SUBAGENT_STOP_TOOLS = new Set([
  * HookDef into each tool's on-disk shape.
  *
  * GUI tools (WorkBuddy, CodeBuddy) use the wrapper dispatch command so their
- * hook subprocesses can find `teamai` even without the user's full PATH. Both
- * run hook commands through a POSIX shell on every platform — WorkBuddy
- * through the MSYS sh in its bundled PortableGit, CodeBuddy through Git Bash,
- * which it requires on Windows — so the POSIX wrapper form always applies.
+ * hook subprocesses can find `teamai` even without the user's full PATH.
+ * WorkBuddy runs through its bundled MSYS shell. On Windows CodeBuddy's CLI
+ * uses Git Bash but its IDE uses cmd.exe, so its built-ins launch Git Bash
+ * explicitly through a script that keeps the fail-open contract.
  */
 const WRAPPER_TOOLS = SHELL_DEPENDENT_TOOLS;
 
@@ -446,12 +458,10 @@ export function builtinHookDefs(tool: string): HookDef[] {
  * cover a narrower slice, and spawn the dispatcher directly — so the shell
  * wrapper the settings tools carry would misreport what is on disk.
  *
- * A tool in neither place is not listed: JoyCode has no hook surface at all,
- * and Kiro's session-start command is embedded per agent by the agent sync
- * (`renderForKiro`), so it exists only for agents that were actually synced
- * rather than coming from the hook pipeline.
+ * A tool in neither place is not listed: JoyCode has no hook surface at all.
  */
 const ADAPTER_BUILTIN_HOOKS: Record<string, { keys: string[]; suffix?: string }> = {
+  kiro: { keys: ['Hook dispatch session-start'] },
   // hermes-hooks.ts registers one on_session_start script whose single line is
   // the dispatch command with errors swallowed (buildReportScript).
   hermes: { keys: ['Hook dispatch session-start'], suffix: ' >/dev/null 2>&1 || true' },

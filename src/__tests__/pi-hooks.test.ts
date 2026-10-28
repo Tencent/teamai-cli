@@ -39,7 +39,6 @@ vi.mock('../utils/logger.js', () => ({
 }));
 
 import {
-  resolvePiExtensionsDir,
   resolvePiProjectExtensionsDir,
   injectPiHooks,
   removePiHooks,
@@ -54,6 +53,7 @@ import { reconcileHooksToAllTools } from '../hooks.js';
 import { log } from '../utils/logger.js';
 import type { HookDef } from '../types.js';
 import { loadPiExtension, type ExtensionDispatch } from './helpers/pi-extensions.js';
+import { hookAdapterDir } from '../locate.js';
 
 describe('Pi hook extension', () => {
   let tmp: string;
@@ -73,7 +73,7 @@ describe('Pi hook extension', () => {
   });
 
   it('resolves global and project extension directories', () => {
-    expect(resolvePiExtensionsDir()).toBe(path.join(tmp, '.pi', 'agent', 'extensions'));
+    expect(hookAdapterDir('pi-extension')).toBe(path.join(tmp, '.pi', 'agent', 'extensions'));
     expect(resolvePiProjectExtensionsDir('/repo')).toBe(path.join('/repo', '.pi', 'extensions'));
   });
 
@@ -146,6 +146,24 @@ describe('Pi hook extension', () => {
     expect(await fse.pathExists(file)).toBe(false);
     await expect(applyPiAgentHook({ slug: '../escape', event: 'Stop', command: 'echo nope' }))
       .rejects.toThrow('Invalid Pi agent-hook slug');
+  });
+
+  it('removes the agent-hook extension from a moved home and the copy an earlier release left in the default home (#1221)', async () => {
+    vi.stubEnv('PI_CODING_AGENT_DIR', path.join(tmp, 'pi-moved'));
+    try {
+      await applyPiAgentHook({ slug: 'scan', event: 'Stop', command: 'echo hooked' });
+      const moved = path.join(tmp, 'pi-moved', 'extensions', 'teamai-agent-scan.ts');
+      const earlier = path.join(tmp, '.pi', 'agent', 'extensions', 'teamai-agent-scan.ts');
+      await fse.ensureDir(path.dirname(earlier));
+      await fse.copy(moved, earlier);
+
+      await removePiAgentHook('scan');
+
+      expect(await fse.pathExists(moved)).toBe(false);
+      expect(await fse.pathExists(earlier)).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('does not overwrite or delete a same-named agent-hook file without the TeamAI marker, and rejects instead of skipping silently', async () => {

@@ -1,11 +1,20 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import YAML from 'yaml';
 import { requireInit, detectProjectConfig, loadLocalConfigForScope } from './config.js';
 import { assertNotReadOnly } from './read-only.js';
 import { pathExists } from './utils/fs.js';
 import { log, spinner } from './utils/logger.js';
 import { markContributed } from './contribute-check.js';
-import { agentSessionIdFromEnv } from './utils/session-id.js';
+import { agentSessionFromEnv } from './utils/session-id.js';
+import { splitFrontmatter, stringifyFrontmatter } from './utils/frontmatter.js';
+import { AgentSession } from './session-flow/agent-session.js';
+import { SessionCaptures } from './session-flow/captures.js';
+import type { SessionSubject } from './scorers/label.js';
+import { appendEvent, dataHomeKey } from './dashboard-collector.js';
+import { ATTEMPT_ENV, sessionRun } from './launch-context.js';
+import { learningIdOf } from './outcomes.js';
+import { appendAttemptOutcome } from './workflow/store.js';
 import { pendingLearningsDir, queueWriteRefusal, savePendingLearning } from './utils/pending-learnings.js';
 import { publishQueuedLearnings } from './utils/learnings-publish.js';
 import { indexableLearningsRoots } from './utils/learnings-roots.js';
@@ -13,7 +22,7 @@ import { resolveActiveLearningsNamespaces } from './projects.js';
 import { isSafeNamespaceSegment } from './manifest-schema.js';
 import { deliveredLearningsNamespaces, readWorkspaceChildren } from './workspace-children.js';
 import type { GlobalOptions, LocalConfig, Scope } from './types.js';
-import { getProjectSearchIndexPath, isSelfMode, parseInstallScope } from './types.js';
+import { getDataHome, getProjectSearchIndexPath, isSelfMode, parseInstallScope } from './types.js';
 
 /**
  * Decide which learnings subdirectory a contribution lands in — resolved from
@@ -130,6 +139,86 @@ export function generateFilename(title?: string): string {
 }
 
 /**
+ * The session a contribution names: `--session-id`, else the tool's session variable. Its platform is resolved as
+ * `teamai score --session` resolves it: the variable's tool family when the variable names that session, else the
+ * one platform the session's captures name. Undefined when no session is named.
+ */
+async function contributedSession(localConfig: LocalConfig, named: string | undefined): Promise<ContributedSession | undefined> {
+  const env = await agentSessionFromEnv();
+  const sessionId = named || env.id;
+  if (!sessionId) return undefined;
+  const own = env.id === sessionId;
+  const fromEnv = own && env.agent ? AgentSession.platformForTool(env.agent) : undefined;
+  const captured = fromEnv === undefined ? await SessionCaptures.platformsOf(localConfig, sessionId) : [];
+  const platform = fromEnv ?? (captured.length === 1 ? captured[0] : undefined);
+  const tool = own ? env.agent : platform && AgentSession.toolForPlatform(platform);
+  return { sessionId, own, ...(platform ? { platform } : {}), ...(tool ? { tool } : {}) };
+}
+
+/** The session a contribution names, and whether this process runs in it, so its run mode and launcher are that session's. */
+interface ContributedSession {
+  sessionId: string;
+  own: boolean;
+  platform?: string;
+  tool?: string;
+}
+
+/** Record the learning at `relPath` as an outcome of `session`, on this machine only. */
+async function recordLearningOutcome(localConfig: LocalConfig, session: ContributedSession, relPath: string): Promise<void> {
+  await appendEvent({
+    type: 'session_outcome',
+    timestamp: new Date().toISOString(),
+    sessionId: session.sessionId,
+    ...(session.tool ? { tool: session.tool } : {}),
+    dataHomeKey: await dataHomeKey(getDataHome(localConfig)),
+    ...(session.own ? sessionRun(process.env) : {}),
+    outcomes: [{ kind: 'learning', id: learningIdOf(relPath) }],
+  });
+}
+
+/**
+ * Record the learning at `relPath` on the workflow attempt `marker` names, for the engine to put on the step's pass when
+ * the attempt settles. Not recording it never fails the contribution.
+ */
+async function recordStepOutcome(localConfig: LocalConfig, marker: string, relPath: string): Promise<void> {
+  const id = learningIdOf(relPath);
+  let recorded: Awaited<ReturnType<typeof appendAttemptOutcome>>;
+  try {
+    recorded = await appendAttemptOutcome(localConfig, marker, { kind: 'learning', id });
+  } catch (e) {
+    log.warn(`Learning ${id} is not recorded on workflow attempt ${marker}: ${e instanceof Error ? e.message : String(e)}`);
+    return;
+  }
+  switch (recorded) {
+    case 'appended': return;
+    case 'bad_marker':
+      log.warn(`Learning ${id} is not recorded on a workflow step: ${ATTEMPT_ENV} is "${marker}", not <run>/<attempt>.`);
+      return;
+    case 'unknown_run':
+      log.warn(`Learning ${id} is not recorded on workflow attempt ${marker}: this scope holds no such run. Run teamai contribute in the step's checkout, or pass --scope with the scope the run started in.`);
+      return;
+    default: {
+      const unhandled: never = recorded;
+      return unhandled;
+    }
+  }
+}
+
+/**
+ * `content` with `session: { platform, sessionId }` in its frontmatter. The line is added to the block as written, so
+ * the author's own fields keep their spelling; a block that already has a `session` is rewritten with this one. A block
+ * that does not parse is left as it is.
+ */
+function withSessionField(content: string, session: SessionSubject): string {
+  const line = `session: ${YAML.stringify(session, { collectionStyle: 'flow' }).trimEnd()}`;
+  const { raw, valid, data, body } = splitFrontmatter(content);
+  if (!raw) return `---\n${line}\n---\n${body}`;
+  if (!valid) return content;
+  if ('session' in data) return stringifyFrontmatter({ ...data, session }, body);
+  return raw.replace(/(\r?\n)(---[ \t]*(?:\r?\n)?)$/, `$1${line}$1$2`) + body;
+}
+
+/**
  * Handle `teamai contribute --file <path> [--title <title>]`.
  *
  * The contribution is written to the durable queue first and published from
@@ -224,13 +313,19 @@ export async function contribute(
     await migrateSelfModeGitignore(localConfig);
   }
 
+  const session = await contributedSession(localConfig, options.sessionId);
   try {
-    const queued = await savePendingLearning(localConfig, relPath, content);
+    const queued = await savePendingLearning(localConfig, relPath, session?.platform
+      ? withSessionField(content, { platform: session.platform, sessionId: session.sessionId })
+      : content);
     if (queued.status !== 'saved') {
       spin.fail(queueWriteRefusal(queued));
       process.exitCode = 1;
       return;
     }
+    if (session) await recordLearningOutcome(localConfig, session, relPath);
+    const attempt = process.env[ATTEMPT_ENV];
+    if (attempt) await recordStepOutcome(localConfig, attempt, relPath);
   } catch (e) {
     spin.fail(`Contribution failed: ${(e as Error).message}`);
     log.info('You can retry with: teamai contribute --file <path>');
@@ -265,9 +360,8 @@ export async function contribute(
   // it reaches origin: the queue always retries, and re-contributing the same
   // session would add a second copy of the same knowledge rather than fix
   // anything. `pull` and `doctor` are what tell the user it is still queued.
-  const sessionId = options.sessionId || (await agentSessionIdFromEnv()) || '';
-  if (sessionId) {
-    await markContributed(sessionId);
+  if (session) {
+    await markContributed(session.sessionId);
   }
 
   if (report.published.includes(relPath)) {

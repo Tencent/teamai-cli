@@ -13,38 +13,30 @@ import { CodeBuddyIdeAdapter } from './codebuddy-ide.js';
 import { WorkBuddyAdapter } from './workbuddy.js';
 import { CursorAdapter } from './cursor.js';
 import { OpencodeAdapter } from './opencode.js';
-import type { SESSION_PLATFORM_FACTS } from './platform-facts.js';
-import {
-  getClaudeCodeProjectsDir,
-  getClaudeInternalProjectsDir,
-  getTClaudeProjectsDir,
-  getCodexSessionsDir,
-  getCodexInternalSessionsDir,
-  getTCodexSessionsDir,
-  getCursorProjectsDir,
-} from '../fs.js';
+import type { SessionPlatform } from './platform-facts.js';
+import { sessionStoreDir } from '../../locate.js';
 
-/** Builds a platform's adapter. Claude Code, Codex and Cursor keep their stores under the member's recorded `toolRoots`. */
+/** Builds a platform's adapter on its store, which follows the member's recorded `toolRoots` (`sessionStoreDir`). */
 export type AdapterFactory = (toolRoots?: LocalConfig['toolRoots']) => AgentAdapter;
 
 export const ADAPTER_REGISTRY: Record<string, AdapterFactory> = {
   // Base platforms
-  'claude-code': (toolRoots) => new ClaudeCodeAdapter('claude-code', getClaudeCodeProjectsDir(toolRoots)),
-  codex: (toolRoots) => new CodexAdapter('codex', getCodexSessionsDir(toolRoots)),
+  'claude-code': (toolRoots) => new ClaudeCodeAdapter('claude-code', sessionStoreDir('claude-code', toolRoots)),
+  codex: (toolRoots) => new CodexAdapter('codex', sessionStoreDir('codex', toolRoots)),
   // CodeBuddy has two independent stores, split into two platforms:
-  //   codebuddy     = CLI (~/.codebuddy/projects/...)
+  //   codebuddy     = CLI (<CodeBuddy home>/projects/...)
   //   codebuddy-ide = IDE GUI (CodeBuddyExtension/.../history)
-  codebuddy: () => new CodeBuddyAdapter(),
+  codebuddy: (toolRoots) => new CodeBuddyAdapter(sessionStoreDir('codebuddy', toolRoots)),
   'codebuddy-ide': () => new CodeBuddyIdeAdapter(),
-  workbuddy: () => new WorkBuddyAdapter(),
-  cursor: (toolRoots) => new CursorAdapter('cursor', getCursorProjectsDir(toolRoots)),
-  opencode: () => new OpencodeAdapter(),
+  workbuddy: (toolRoots) => new WorkBuddyAdapter(sessionStoreDir('workbuddy', toolRoots)),
+  cursor: (toolRoots) => new CursorAdapter('cursor', sessionStoreDir('cursor', toolRoots)),
+  opencode: (toolRoots) => new OpencodeAdapter(sessionStoreDir('opencode', toolRoots)),
   // TeamAI variants (different path prefixes, identical format)
-  'claude-internal': () => new ClaudeCodeAdapter('claude-internal', getClaudeInternalProjectsDir()),
-  tclaude: () => new ClaudeCodeAdapter('tclaude', getTClaudeProjectsDir()),
-  'codex-internal': () => new CodexAdapter('codex-internal', getCodexInternalSessionsDir()),
-  tcodex: () => new CodexAdapter('tcodex', getTCodexSessionsDir()),
-} satisfies Record<keyof typeof SESSION_PLATFORM_FACTS, AdapterFactory>;
+  'claude-internal': (toolRoots) => new ClaudeCodeAdapter('claude-internal', sessionStoreDir('claude-internal', toolRoots)),
+  tclaude: (toolRoots) => new ClaudeCodeAdapter('tclaude', sessionStoreDir('tclaude', toolRoots)),
+  'codex-internal': (toolRoots) => new CodexAdapter('codex-internal', sessionStoreDir('codex-internal', toolRoots)),
+  tcodex: (toolRoots) => new CodexAdapter('tcodex', sessionStoreDir('tcodex', toolRoots)),
+} satisfies Record<SessionPlatform, AdapterFactory>;
 
 export function getAdapter(platform: string, toolRoots?: LocalConfig['toolRoots']): AgentAdapter {
   const factory = ADAPTER_REGISTRY[platform];

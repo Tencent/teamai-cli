@@ -13,7 +13,7 @@ import { getDataHome, getReportsDir, getVotesDir, REPORTS_WORKTREE_DIRNAME, type
 import { commitAndPushReports, ensureReportsWorktree, refreshReportsWorktree, updateReports } from '../utils/reports-branch.js';
 import { isPublished } from '../utils/branch-worktree.js';
 import { pushRepoDirectly } from '../utils/git.js';
-import { reportUsageToTeam } from '../team-push.js';
+import { reportUsage } from '../team-push.js';
 import { dataHomeKey, resolveHookConfig } from '../dashboard-collector.js';
 import { listMembers } from '../members.js';
 import { resolveProjectDataHome, saveLocalConfigForScope } from '../config.js';
@@ -123,7 +123,7 @@ describe('git-kind reports branch', () => {
       `${JSON.stringify({ type: 'session_start', timestamp: ts, sessionId: 's1', tool: 'claude', cwd: '/p', dataHomeKey: key })}\n` +
       `${JSON.stringify({ type: 'stop', timestamp: ts, sessionId: 's1', tool: 'claude', dataHomeKey: key, interventions: { interrupt: 1, toolReject: 0 } })}\n`,
     );
-    await reportUsageToTeam(clone, 'alice', { skipTruncate: true, selfConfig: cfg });
+    await reportUsage(clone, 'alice', { skipTruncate: true, selfConfig: cfg });
 
     const originGit = simpleGit(origin);
     const reportsTree = await originGit.raw(['ls-tree', '-r', '--name-only', 'teamai-reports']);
@@ -758,10 +758,10 @@ describe('skill usage stays in the scope that recorded it (#748)', () => {
     await useSkill(a.root, 'skill-a');
     await useSkill(c.root, 'skill-c');
 
-    await reportUsageToTeam(a.config.repo.localPath, 'alice', { selfConfig: a.config });
+    await reportUsage(a.config.repo.localPath, 'alice', { selfConfig: a.config });
     expect(await reportedSkills(a.origin)).toEqual(['skill-a']);
 
-    await reportUsageToTeam(c.config.repo.localPath, 'alice', { selfConfig: c.config });
+    await reportUsage(c.config.repo.localPath, 'alice', { selfConfig: c.config });
     expect(await reportedSkills(c.origin)).toEqual(['skill-c']);
   });
 });

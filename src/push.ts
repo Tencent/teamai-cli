@@ -535,6 +535,11 @@ function supersededPathOf(item: ResourceItem): string | undefined {
   return 'supersedes' in item && typeof item.supersedes === 'string' ? item.supersedes : undefined;
 }
 
+/** The blob this machine delivered to the placed file `item` replaces, when its merge was proven. */
+function deliveredBlobOf(item: ResourceItem): string | undefined {
+  return 'deliveredBlob' in item && typeof item.deliveredBlob === 'string' ? item.deliveredBlob : undefined;
+}
+
 /**
  * Give every resource waiting in an open PR back the destination that PR
  * recorded, rather than asking again — a different answer would silently move
@@ -909,7 +914,7 @@ async function validateWorkflows(localConfig: LocalConfig, dryRun: boolean): Pro
 }
 
 export async function push(
-  options: GlobalOptions & { all?: boolean; role?: string; project?: string; shared?: boolean; branch?: string },
+  options: GlobalOptions & { all?: boolean; role?: string; project?: string; shared?: boolean; branch?: string; carried?: string[] },
   /**
    * Optional out-param: set to `{ completed: true }` only when a real push
    * actually happened (resources or config pushed) — never on dry-run, cancel,
@@ -1074,8 +1079,14 @@ async function pendingSelfTeamConfig(localConfig: LocalConfig): Promise<string |
   return committed === null || committed.toString() !== activeConfig ? activeConfig : null;
 }
 
+/**
+ * An item whose push would overwrite (`placed` is its `relativePath`) or
+ * delete `placed`, which is at `tip` on the default branch.
+ */
+type ReplacingItem = { item: ResourceItem; placed: string; tip: string };
+
 type DefaultBranchChanges =
-  | { history: 'complete'; untouched: ResourceItem[]; edited: ResourceItem[]; retiring: ResourceItem[] }
+  | { history: 'complete'; untouched: ResourceItem[]; edited: ResourceItem[]; replacing: ReplacingItem[] }
   | { history: 'missing'; shallow: boolean; unclassified: ResourceItem[] };
 
 /**
@@ -1083,8 +1094,9 @@ type DefaultBranchChanges =
  * retired file the default branch changed since this checkout branched from it,
  * and which the checkout does not already hold at the branch's version:
  * `untouched` when the checkout still holds the version it branched from,
- * `edited` when it changed the file too, `retiring` when the push would delete
- * a file the branch changed. Self-mode scans compare the checkout with the default
+ * `edited` when it changed the file too, and independently `replacing` when the
+ * push would delete a file the branch changed, or overwrite a placed file the
+ * branch changed since this machine delivered it. Self-mode scans compare the checkout with the default
  * branch, so on a checkout behind it both read as this member's edit, and
  * pushing either reverts the other side. Without a common ancestor (a shallow
  * clone, or rewritten history), what differs from its own HEAD is
@@ -1121,13 +1133,16 @@ async function itemsChangedOnDefaultBranch(
   }
   const untouched: ResourceItem[] = [];
   const edited: ResourceItem[] = [];
-  const retiring: ResourceItem[] = [];
+  const replacing: ReplacingItem[] = [];
   for (const item of teamItems) {
-    const retired = supersededPathOf(item);
-    if (retired && blobs.get(teamFile(retired))?.atTip) {
-      retiring.push(item);
-      continue;
-    }
+    const deliveredBlob = deliveredBlobOf(item);
+    // Where this checkout is in sync, the merge-base diff is empty: only the
+    // delivered blob shows that a teammate changed the placed file since.
+    const placed = supersededPathOf(item) ?? (deliveredBlob ? item.relativePath : undefined);
+    const placedTip = placed && (deliveredBlob
+      ? (await git.raw(['rev-parse', `${defaultTip}:.teamai/${placed}`]).catch(() => '')).trim()
+      : blobs.get(teamFile(placed))?.atTip);
+    if (placed && placedTip && placedTip !== deliveredBlob) replacing.push({ item, placed, tip: placedTip });
     if (item.type === 'skills') {
       const source = path.resolve(item.sourcePath);
       const destination = teamFile(item.relativePath);
@@ -1155,8 +1170,28 @@ async function itemsChangedOnDefaultBranch(
     (behind.every((change) => change.atBase === memberBlob) ? untouched : edited).push(item);
   }
   return branchedFrom
-    ? { history: 'complete', untouched, edited, retiring }
-    : missing([...untouched, ...edited, ...retiring]);
+    ? { history: 'complete', untouched, edited, replacing }
+    : missing([...new Set([...untouched, ...edited, ...replacing.map(({ item }) => item)])]);
+}
+
+/**
+ * The `--carried <path>@<blob>` values as the placed file and the version of
+ * it on the default branch each one lets this push replace. A value that names
+ * no file in `replacing` is reported, exit 2, and nothing is returned.
+ */
+function carriedVersions(
+  values: readonly string[],
+  replacing: readonly ReplacingItem[],
+): Pick<ReplacingItem, 'placed' | 'tip'>[] | undefined {
+  const versions: Pick<ReplacingItem, 'placed' | 'tip'>[] = [];
+  for (const value of values) {
+    const [, placed, tip] = /^(?:\.teamai\/)?(.+)@([^@]+)$/.exec(value) ?? [];
+    if (placed && tip && replacing.some((entry) => entry.placed === placed)) versions.push({ placed, tip });
+    else log.error(`--carried ${value} names no placed agent file this push stops for. Nothing was pushed. Pass the <path>@<blob> value a push stop printed, or push without --carried.`);
+  }
+  if (versions.length === values.length) return versions;
+  process.exitCode = 2;
+  return undefined;
 }
 
 /**
@@ -1168,6 +1203,7 @@ async function defaultBranchGuard(
   localConfig: LocalConfig,
   memberRoot: string,
   items: readonly ResourceItem[],
+  carriedValues: readonly string[],
 ): Promise<{ leftOut: readonly ResourceItem[]; stops: (going: readonly ResourceItem[]) => Promise<boolean> }> {
   const changes = await itemsChangedOnDefaultBranch(localConfig, memberRoot, items);
   const sourceOf = (item: ResourceItem): string => path.relative(memberRoot, item.sourcePath).split(path.sep).join('/');
@@ -1190,9 +1226,16 @@ async function defaultBranchGuard(
   // selection must not hold back the rest.
   const stops = async (going: readonly ResourceItem[]): Promise<boolean> => {
     const goingOut = (list: readonly ResourceItem[]): ResourceItem[] => list.filter((item) => going.includes(item));
+    const replacingOut = changes.history === 'complete' ? changes.replacing.filter(({ item }) => going.includes(item)) : [];
+    const carried = carriedVersions(carriedValues, replacingOut);
+    if (!carried) return true;
     const edited = goingOut(changes.history === 'complete' ? changes.edited : changes.unclassified);
-    const retiring = goingOut(changes.history === 'complete' ? changes.retiring : []);
-    if (edited.length === 0 && retiring.length === 0) return false;
+    // Pull never refreshes the member's root copy, so only the member can say
+    // it carries the team's edit. --carried says it for the version a stop
+    // printed; a later team edit stops the push again.
+    const replacing = replacingOut.filter(({ placed, tip }) =>
+      !carried.some((version) => version.placed === placed && version.tip === tip));
+    if (edited.length === 0 && replacing.length === 0) return false;
     const defaultBranch = await getDefaultBranch(memberRoot);
     if (changes.history === 'missing') {
       log.error(changes.shallow
@@ -1209,10 +1252,14 @@ async function defaultBranchGuard(
         + 'from it, so pushing would overwrite that change. Nothing was pushed. '
         + `Merge origin/${defaultBranch} (\`git pull origin ${defaultBranch}\`), resolve any conflict, then push again.`);
     }
-    for (const item of retiring) {
-      log.error(`${named([item])} would delete .teamai/${supersededPathOf(item)}, which changed on `
-        + `origin/${defaultBranch} since this checkout branched from it. Nothing was pushed. `
-        + `Run \`git pull origin ${defaultBranch}\`, carry that change into ${sourceOf(item)}, then push again.`);
+    for (const { item, placed, tip } of replacing) {
+      if (placed === item.relativePath) {
+        log.error(`${named([item])} would overwrite .teamai/${placed}, which changed on origin/${defaultBranch} since this machine delivered it. Nothing was pushed. Run \`git pull origin ${defaultBranch}\`, carry that change into ${sourceOf(item)}, then run \`teamai push --carried .teamai/${placed}@${tip}\` with the other options you used. --carried accepts only this version of that file.`);
+      } else {
+        log.error(deliveredBlobOf(item)
+          ? `${named([item])} would delete .teamai/${placed}, which changed on origin/${defaultBranch} since this machine delivered it. Nothing was pushed. Run \`git pull origin ${defaultBranch}\`, carry that change into ${sourceOf(item)}, then run \`teamai push --carried .teamai/${placed}@${tip}\` with the other options you used. --carried accepts only this version of that file.`
+          : `${named([item])} would delete .teamai/${placed}, which changed on origin/${defaultBranch} since this checkout branched from it (this older placement has no recorded delivered blob). Nothing was pushed. Run \`git pull origin ${defaultBranch}\`, carry that change into ${sourceOf(item)}, then push again.`);
+      }
     }
     process.exitCode = 2;
     return true;
@@ -1223,7 +1270,7 @@ async function defaultBranchGuard(
 async function pushCore(
   localConfig: LocalConfig,
   teamConfig: TeamaiConfig,
-  options: GlobalOptions & { all?: boolean; role?: string; project?: string; shared?: boolean; branch?: string },
+  options: GlobalOptions & { all?: boolean; role?: string; project?: string; shared?: boolean; branch?: string; carried?: string[] },
   initialPendingTeamConfig: string | null = null,
   result?: { completed: boolean },
 ): Promise<void> {
@@ -1716,8 +1763,8 @@ async function pushCore(
 
   const memberRoot = selfMode ? localConfig.projectRoot : undefined;
   const branchGuard = memberRoot
-    ? await defaultBranchGuard(localConfig, memberRoot, listed)
-    : { leftOut: [], stops: async () => false };
+    ? await defaultBranchGuard(localConfig, memberRoot, listed, options.carried ?? [])
+    : { leftOut: [], stops: async () => carriedVersions(options.carried ?? [], []) === undefined };
   const allItems = listed.filter((item) => !branchGuard.leftOut.includes(item));
 
   // Such an agent is skipped like any other, and a skipped agent does not
@@ -2007,6 +2054,8 @@ async function pushCore(
   }
 
   if (allItems.length === 0) {
+    // Nothing goes out, so this rejects every --carried value.
+    if (await branchGuard.stops(allItems)) return;
     // No resource changes, but the user may have edited teamai.yaml (sources /
     // publicSkills) via `teamai source add`. Push that config change on its own
     // rather than reporting "nothing to push".

@@ -7,7 +7,8 @@ import { parseLearningDoc, titleFromFilename } from './utils/search-index.js';
 import { requireInit, detectProjectConfig } from './config.js';
 import { calculateTeamHealth } from './skill-health.js';
 import { createGit } from './utils/git.js';
-import type { UserStats, TokenUsage } from './types.js';
+import type { RunModeSplit, UserStats, UserModeStats, UserOutcomeStats, TokenUsage } from './types.js';
+import { OUTCOME_MODES, OUTCOME_ROWS, addOutcomeStats } from './outcomes.js';
 import { totalTokens } from './types.js';
 import { mergeDailyStats, summarizeTrendWindow, type TrendPeriod } from './session-trends.js';
 
@@ -226,13 +227,14 @@ async function getRecentSessions(repoPath: string): Promise<string[]> {
  */
 async function getRecentLearnings(
   learningsDirs: readonly string[],
+  namespaces?: readonly string[],
 ): Promise<{ recent: LearningInfo[]; total: number }> {
   const recent: LearningInfo[] = [];
   let total = 0;
 
   try {
     const { listLearningFiles } = await import('./utils/learnings-roots.js');
-    const mdFiles = await listLearningFiles(learningsDirs);
+    const mdFiles = await listLearningFiles(learningsDirs, namespaces);
     total = mdFiles.length;
 
     // Calculate 7-day cutoff as YYYY-MM-DD string for comparison
@@ -316,6 +318,54 @@ export function summarizeInterventions(teamStats: UserStats[]): InterventionSumm
     avgPerSession: totalSessions > 0 ? totalInterventions / totalSessions : 0,
     ranked,
   };
+}
+
+/**
+ * The team's `count` split by run mode. A member's top-level counter holds every count of their own sessions, and what
+ * neither mode holds was recorded without one, so it is shown apart, never as a mode.
+ */
+export function splitByRunMode(teamStats: UserStats[], count: (stats: UserModeStats | undefined) => number): RunModeSplit {
+  const split: RunModeSplit = { attended: 0, unattended: 0, notRecorded: 0 };
+  for (const user of teamStats) {
+    const attended = count(user.attended);
+    const unattended = count(user.unattended);
+    split.attended += attended;
+    split.unattended += unattended;
+    split.notRecorded += Math.max(0, count(user) - attended - unattended);
+  }
+  return split;
+}
+
+function formatRunModeSplit(split: RunModeSplit, unit: string, format: (count: number) => string = String): string {
+  return `  By run mode: attended ${format(split.attended)} · unattended ${format(split.unattended)} · not recorded ${format(split.notRecorded)} ${unit}`;
+}
+
+const OUTCOME_MODE_LABELS: Record<(typeof OUTCOME_MODES)[number], string> = {
+  attended: 'attended', unattended: 'unattended', notRecorded: 'not recorded',
+};
+
+function outcomeRow([mode, outcome, sessions, tokens, interventions]: readonly [string, string, string, string, string]): string {
+  return `  ${mode.padEnd(14)}${outcome.padEnd(11)}${sessions.padEnd(11)}${tokens.padEnd(17)}${interventions}`;
+}
+
+/** The team's finished sessions by run mode and outcome (#1387) as the lines of a table; none before any is reported. */
+export function formatOutcomeLines(teamStats: UserStats[]): string[] {
+  const team = teamStats.reduce<UserOutcomeStats>((sum, user) => (user.outcomes ? addOutcomeStats(sum, user.outcomes) : sum), {});
+  const rows = OUTCOME_MODES.flatMap((mode) => OUTCOME_ROWS.flatMap((kind) => {
+    const counts = team[mode]?.[kind];
+    if (!counts || counts.sessions === 0) return [];
+    return [outcomeRow([
+      OUTCOME_MODE_LABELS[mode], kind, String(counts.sessions),
+      formatTokenCount(Math.round((counts.tokens.input + counts.tokens.output) / counts.sessions)),
+      (counts.interventions / counts.sessions).toFixed(1),
+    ])];
+  }));
+  if (rows.length === 0) return [];
+  return [
+    outcomeRow(['runMode', 'outcome', 'sessions', 'tokens/session', 'interventions/session']),
+    ...rows,
+    '  A session with a pull request and a learning is in both rows, so rows do not add up.',
+  ];
 }
 
 /** Aggregated team-wide conversation-turn + token-usage summary (Issue #75). */
@@ -505,8 +555,14 @@ export async function generateDigest(): Promise<void> {
     // Not another repository's learnings checkout, if one sits where this
     // project's would (#808).
     const { indexableLearningsRoots } = await import('./utils/learnings-roots.js');
+    const { readWorkspaceChildren, safeDeliveredLearningsNamespaces } = await import('./workspace-children.js');
+    const learningsNamespaces = await safeDeliveredLearningsNamespaces(
+      await readWorkspaceChildren(localConfig),
+      'digest',
+    );
     const { recent: recentLearnings, total: totalLearnings } = await getRecentLearnings(
       await indexableLearningsRoots(localConfig),
+      learningsNamespaces,
     );
     if (recentLearnings.length > 0) {
       console.log(`📚 New Learnings This Week: ${recentLearnings.length}`);
@@ -560,6 +616,15 @@ export async function generateDigest(): Promise<void> {
       console.log(
         `  Breakdown: interrupt ${interventions.interrupt} · reject ${interventions.toolReject} · correction ${interventions.correction}`,
       );
+      console.log(formatRunModeSplit(splitByRunMode(teamStats, (stats) => stats?.interventions?.sessions ?? 0), 'sessions'));
+      console.log('');
+    }
+
+    // What finished sessions delivered (#1387)
+    const outcomeLines = formatOutcomeLines(teamStats);
+    if (outcomeLines.length > 0) {
+      console.log('📦 Session Outcomes (finished sessions):');
+      for (const line of outcomeLines) console.log(line);
       console.log('');
     }
 
@@ -569,11 +634,13 @@ export async function generateDigest(): Promise<void> {
       const t = conversation.tokens;
       console.log('💬 Lifetime Conversation & Token Usage:');
       console.log(`  Lifetime human prompts: ${conversation.totalPrompts}`);
+      console.log(formatRunModeSplit(splitByRunMode(teamStats, (stats) => stats?.prompts ?? 0), 'prompts'));
       console.log(
         `  Lifetime tokens: ${formatTokenCount(conversation.totalTokens)} ` +
         `(input ${formatTokenCount(t.input)} · output ${formatTokenCount(t.output)} · ` +
         `cache read ${formatTokenCount(t.cacheRead)} · cache write ${formatTokenCount(t.cacheCreation)})`,
       );
+      console.log(formatRunModeSplit(splitByRunMode(teamStats, (stats) => totalTokens(stats?.tokens)), 'tokens', formatTokenCount));
       console.log('');
     }
 

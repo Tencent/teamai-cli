@@ -1,53 +1,14 @@
 import path from 'node:path';
-import { COPILOT_TOOL_ID, getCopilotHome, resolveToolBaseDir, toolGateRoot, toolInstallRoot } from '../types.js';
+import { toolInstallRoot } from '../types.js';
 import type { ResourceType, ResourceItem, ResourceDiff, DeliveryTarget, TeamaiConfig, LocalConfig, PendingPush, State } from '../types.js';
 
 /** The placement records `publishedNameFor` resolves a bare name through. */
 export type PlacementRecords = Pick<State, 'placedRules' | 'placedAgents'>;
 import { readFileSafe, writeFile, ensureDir, pathExists } from '../utils/fs.js';
 import { getUserHome } from '../utils/home.js';
-import { installGateOf, isToolId } from '../tools.js';
-import { defaultToolHome, homeRoot } from '../tool-home.js';
 import type { DeliveryLedger } from './delivered-copies.js';
 
 const TOMBSTONE_FILE = '.removed';
-
-/** Detect an installed tool while respecting tool-specific user roots. */
-export async function isToolInstalledForConfig(
-  tool: string,
-  toolPath: string,
-  localConfig: LocalConfig,
-  exactConfigPath?: string,
-): Promise<boolean> {
-  const baseDir = resolveToolBaseDir(tool, localConfig);
-  if (tool === COPILOT_TOOL_ID) {
-    return localConfig.enabledAgents?.includes(COPILOT_TOOL_ID) === true
-      || (exactConfigPath !== undefined && await pathExists(exactConfigPath))
-      || pathExists(getCopilotHome());
-  }
-  // The `--agent` entry is the bootstrap a project-only init needs before the
-  // app has ever run and created its root (#904).
-  if (isToolId(tool)) {
-    const gate = installGateOf(tool);
-    switch (gate) {
-      case 'home-edition':
-        return localConfig.enabledAgents?.includes(tool) === true || pathExists(defaultToolHome(tool, { home: getUserHome(), path }));
-      case 'home':
-        return pathExists(defaultToolHome(tool, { home: getUserHome(), path }));
-      case 'own-root': {
-        const root = homeRoot(tool);
-        return ResourceHandler.isToolInstalled(root, baseDir, toolGateRoot(tool, root, localConfig.toolRoots));
-      }
-      case undefined:
-        break;
-      default: {
-        const unhandled: never = gate;
-        return unhandled;
-      }
-    }
-  }
-  return ResourceHandler.isToolInstalled(toolPath, baseDir, toolGateRoot(tool, toolPath, localConfig.toolRoots));
-}
 
 /**
  * Abstract base class for resource handlers.

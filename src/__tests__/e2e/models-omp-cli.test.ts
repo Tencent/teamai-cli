@@ -13,9 +13,9 @@ const CLI = path.join(ROOT, 'dist', 'index.js');
  * Drives the built CLI against a scratch HOME so a switch here never touches
  * the developer's real ~/.teamai or ~/.omp.
  *
- * OMP reads no agent-dir override for models: its `PI_CODING_AGENT_DIR` is the
- * variable Pi honors, so TeamAI deliberately writes only the default
- * `~/.omp/agent/models.yml` and the scratch HOME is what redirects it here. The
+ * TeamAI does not follow `PI_CODING_AGENT_DIR` for OMP models: it is the
+ * variable Pi honors. With no OMP profile set, the file is the default
+ * `~/.omp/agent/models.yml`, and the scratch HOME is what redirects it here. The
  * file is YAML, and the assertions parse it as YAML — an OMP provider catalog
  * written as JSON would pass a JSON parse but is not what the tool documents.
  */

@@ -16,6 +16,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dataHomeKey } from '../../dashboard-collector.js';
 import { projectSlug } from '../../utils/partition.js';
+import { waitForDetachedChildren } from '../helpers/detached-processes.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -180,11 +181,9 @@ function scenario({ userScope, breakProjectConfig = false, bare = false, project
     // Each turn carries Claude Code's `prompt_id`; a skill counts once per turn (#1221).
     await hook('prompt-submit', { hook_event_name: 'UserPromptSubmit', prompt: 'work in b', prompt_id: 'p1' });
     await hook('post-tool-use', { ...skillUse, prompt_id: 'p1' });
-    // Its credit is written by the detached pass; the turn ends before the worktree goes.
-    const credited = Date.now() + 20_000;
-    while (!fs.existsSync(path.join(partition, 'usage.jsonl')) && Date.now() < credited) {
-      await new Promise((r) => setTimeout(r, 100));
-    }
+    // Its credit is written by the detached pass, which also prepares the new
+    // worktree (#1424); the turn ends before the worktree goes.
+    await waitForDetachedChildren();
     if (movedOn) {
       // Another repo, in the user scope: it records a scope and an anchor of its own.
       const elsewhere = path.join(sandbox, 'elsewhere');
@@ -235,11 +234,15 @@ function scenario({ userScope, breakProjectConfig = false, bare = false, project
   const afterRemoval = () => readJsonl<RecordedEvent>(eventsFile).slice(state.before).filter((e) => e.sessionId === SESSION);
   // Every hook here goes through `hook-dispatch`, which spawns a detached child
   // for the background-only handlers (SessionEnd, Stop). The suite waits for the
-  // events that child writes, never for the child itself to exit, so a removal
-  // that runs straight afterwards can race it: `rmdir '.teamai'` lands while the
-  // child is still creating a file there and fails with ENOTEMPTY. Retry like
-  // git-kind-learnings.test.ts does for the same `git gc --auto` race.
-  const cleanup = () => fs.rmSync(sandbox, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  // events that child writes, never for the child itself to exit: it keeps
+  // writing `state.json` and `debug.log` under `.teamai` for a moment after,
+  // so a removal that runs straight afterwards raced it into ENOTEMPTY on CI
+  // (#1413). Teardown joins every detached pid the suite recorded before
+  // removing the sandbox; the maxRetries rmSync stays as a backstop.
+  const cleanup = async (): Promise<void> => {
+    await waitForDetachedChildren();
+    fs.rmSync(sandbox, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  };
   return { state, setup, afterRemoval, cleanup, hook, writeSessionState };
 }
 
@@ -406,5 +409,5 @@ it.runIf(process.platform !== 'win32').each([[false, false], [true, false], [tru
     const events = readJsonl<RecordedEvent>(state.eventsFile).slice(before).filter(event => event.sessionId === SESSION && event.type === 'stop');
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ dataHomeKey: await dataHomeKey(state.partition), projectAnchor: state.anchor });
-  } finally { fixture.cleanup(); }
+  } finally { await fixture.cleanup(); }
 });

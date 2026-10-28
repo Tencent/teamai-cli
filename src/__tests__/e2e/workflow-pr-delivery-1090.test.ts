@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { ciRecipesOf, runCommandsOf, type CiRecipe } from '../helpers/ci-recipe.js';
-import { trackDetachedProcesses } from '../helpers/detached-processes.js';
+import { waitForDetachedChildren } from '../helpers/detached-processes.js';
 import { fakeGhHost, type FakeGh } from '../helpers/fake-gh.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
@@ -120,8 +120,7 @@ function runState(root: string, run: string): z.infer<typeof RunSchema> {
  */
 function runRecipe(origin: string, required: boolean): { recipe: CiRecipe; ran: Ran[]; root: string; gh: FakeGh; team: string; product: string } {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-ci-recipe-')));
-  const detached = trackDetachedProcesses(root);
-  fixtures.push({ root, settled: detached.waitForExit });
+  fixtures.push({ root, settled: waitForDetachedChildren });
   const home = path.join(root, 'home');
   const bin = path.join(root, 'bin');
   const team = path.join(root, 'team.git');
@@ -147,7 +146,6 @@ function runRecipe(origin: string, required: boolean): { recipe: CiRecipe; ran: 
     HOME: home, USERPROFILE: home, GIT_CONFIG_GLOBAL: path.join(home, '.gitconfig'), GH_CONFIG_DIR: path.join(home, '.gh'),
     PATH: [bin, path.dirname(gh.bin), process.env.PATH ?? ''].join(path.delimiter),
     GIT_TERMINAL_PROMPT: '0', GH_PROMPT_DISABLED: '1', FORCE_COLOR: '0',
-    NODE_OPTIONS: [process.env.NODE_OPTIONS, detached.nodeOptions].filter(Boolean).join(' '),
   };
   for (const name of ['XDG_CONFIG_HOME', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'GITHUB_TOKEN', 'GH_TOKEN']) delete env[name];
 

@@ -3,7 +3,7 @@
  *
  * OMP has no settings.json-style shell-command hook list. It auto-loads
  * TypeScript *extensions* from the active agent dir — `~/.omp/agent/extensions`
- * by default (`--hook` is an alias of `--extension`, and the legacy
+ * by default, moved by a profile (`TOOLS.omp.home`) (`--hook` is an alias of `--extension`, and the legacy
  * `hooks/pre|post` TS files feed the same runner). An extension default-exports
  * a factory that receives the ExtensionAPI; teamai subscribes to OMP's own
  * events and shells out to the same `teamai hook-dispatch` entry point every
@@ -37,7 +37,7 @@
 
 import path from 'node:path';
 import { generatedFileState, writeIfChanged, remove } from './utils/fs.js';
-import { getUserHome } from './utils/home.js';
+import { hookAdapterDir } from './locate.js';
 import { log } from './utils/logger.js';
 import { resolveCliEntry } from './builtin-hooks.js';
 
@@ -46,16 +46,6 @@ export const OMP_HOOK_FILE = 'teamai-hooks.ts';
 
 /** Marker so `teamai uninstall` / `teamai hooks list` can recognize our generated file. */
 const TEAMAI_MARKER = '[teamai]';
-
-/**
- * Directory OMP auto-discovers user extensions in: the active agent dir's
- * `extensions/`. Only the default `~/.omp/agent/` layout is supported —
- * OMP profiles (`OMP_PROFILE` / `PI_CODING_AGENT_DIR` / `PI_CONFIG_DIR`)
- * relocate the agent dir and are out of scope.
- */
-export function resolveOmpExtensionsDir(): string {
-  return path.join(getUserHome(), '.omp', 'agent', 'extensions');
-}
 
 /**
  * Build the teamai OMP extension source.
@@ -249,7 +239,7 @@ export default function teamaiHooks(pi) {
  * OMP config dir on its own.
  */
 export async function injectOmpHooks(): Promise<void> {
-  const file = path.join(resolveOmpExtensionsDir(), OMP_HOOK_FILE);
+  const file = path.join(hookAdapterDir('omp-extension'), OMP_HOOK_FILE);
   if (await hasForeignOmpHooks()) {
     log.warn(`Skipping OMP hook injection: ${file} exists without the TeamAI marker`);
     return;
@@ -261,19 +251,19 @@ export async function injectOmpHooks(): Promise<void> {
   }
 }
 
-/** Remove the teamai OMP extension if present. */
-export async function removeOmpHooks(): Promise<void> {
-  const file = path.join(resolveOmpExtensionsDir(), OMP_HOOK_FILE);
-  if (!await hasOmpHooks()) return;
+/** Remove the teamai OMP extension from `dir`, the active profile's extensions by default, if present. */
+export async function removeOmpHooks(dir = hookAdapterDir('omp-extension')): Promise<void> {
+  const file = path.join(dir, OMP_HOOK_FILE);
+  if (!await hasOmpHooks(dir)) return;
   await remove(file);
   log.success(`Removed teamai OMP hook from ${file}`);
 }
 
-const ompHookState = () => generatedFileState(path.join(resolveOmpExtensionsDir(), OMP_HOOK_FILE), `${TEAMAI_MARKER} hooks extension`);
+const ompHookState = (dir = hookAdapterDir('omp-extension')) => generatedFileState(path.join(dir, OMP_HOOK_FILE), `${TEAMAI_MARKER} hooks extension`);
 
-/** Whether the OMP extension file is teamai's. */
-export async function hasOmpHooks(): Promise<boolean> {
-  return await ompHookState() === 'teamai';
+/** Whether the OMP extension file in `dir`, the active profile's extensions by default, is teamai's. */
+export async function hasOmpHooks(dir = hookAdapterDir('omp-extension')): Promise<boolean> {
+  return await ompHookState(dir) === 'teamai';
 }
 
 async function hasForeignOmpHooks(): Promise<boolean> {

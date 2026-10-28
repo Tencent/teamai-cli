@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import matter from 'gray-matter';
 
-import { callClaude, getAICliName } from './utils/ai-client.js';
+import { callTool, isOverrideInvalid } from './tool-launch/call.js';
 import { createGit } from './utils/git.js';
 import { stripFrontmatter } from './utils/frontmatter.js';
 import { log } from './utils/logger.js';
@@ -375,8 +375,8 @@ export async function generateCodebaseMd(opts: {
       learningsInjection;
   }
 
-  log.debug(`generateCodebaseMd: 调用 AI 生成文档 (model: ${getAICliName()})`);
-  const rawResult = await callClaude(prompt);
+  log.debug('generateCodebaseMd: calling AI to generate the doc');
+  const rawResult = (await callTool(prompt, { launchedBy: 'codebase' })).text;
 
   // 剥离 AI 可能自行附加的 frontmatter，再 prepend 标准 frontmatter
   let body = stripExistingFrontmatter(rawResult);
@@ -411,7 +411,7 @@ export async function generateCodebaseIndex(codebaseMd: string): Promise<string>
     `文档内容：\n<codebase>\n${codebaseMd}\n</codebase>`;
 
   log.debug('generateCodebaseIndex: 调用 AI 生成索引');
-  const raw = await callClaude(prompt);
+  const raw = (await callTool(prompt, { launchedBy: 'codebase' })).text;
 
   const now = new Date().toISOString();
   const frontmatter = `---\ntitle: Codebase 索引\nlastUpdated: ${now}\n---\n\n`;
@@ -477,7 +477,7 @@ export async function lintCodebaseMd(codebaseMd: string): Promise<LintReport> {
   log.debug('lintCodebaseMd: 调用 AI 做 lint 检查');
 
   try {
-    const raw = await callClaude(prompt);
+    const raw = (await callTool(prompt, { launchedBy: 'codebase' })).text;
 
     // 从输出中提取 JSON 对象
     const jsonMatch = raw.match(/\{[\s\S]*\}/);
@@ -490,6 +490,7 @@ export async function lintCodebaseMd(codebaseMd: string): Promise<LintReport> {
       summary: typeof parsed.summary === 'string' ? parsed.summary : '检查完成',
     };
   } catch (err) {
+    if (isOverrideInvalid(err)) throw err;
     log.debug(`lintCodebaseMd: 解析失败 — ${String(err)}`);
     return { issues: [], summary: '解析失败，无法 lint' };
   }
@@ -528,6 +529,6 @@ export async function applyCodebaseSuggestions(
     `- 输出必须是可以直接写入文件的完整 codebase.md`;
 
   log.debug(`applyCodebaseSuggestions: 应用 ${effectiveSuggestions.length} 条建议`);
-  const result = await callClaude(prompt);
+  const result = (await callTool(prompt, { launchedBy: 'codebase' })).text;
   return result;
 }

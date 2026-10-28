@@ -230,15 +230,15 @@ describe('#1083 workflow run records', () => {
       // A place the host made that a prepare cannot adopt; the attempt stays leased.
       'adopt_mismatch',
       // Refusals of a --driver skill call, answered to the agent with the command it can run instead.
-      'confirm_needed', 'needs_local_driver', 'not_skill_run', 'orchestrator_active', 'choice_pending', 'unknown_choice', 'unknown_offer', 'unknown_attempt', 'not_dispatched',
+      'confirm_needed', 'needs_local_driver', 'not_skill_run', 'orchestrator_active', 'choice_pending', 'unknown_choice', 'unknown_offer', 'unknown_attempt', 'not_dispatched', 'tool_needed',
       // An error thrown inside a --driver skill call, answered to the agent as one envelope with its message.
       'skill_call_failed',
       // Why the skill driver stopped judging a run, told to the agent in a judging-off event.
-      'judge_runner_gone',
+      'judge_runner_gone', 'no_child_agent',
       // Refusals of teamai score --run, answered to the member who asked for a pass to be judged.
       'scoring_unavailable', 'pass_not_found', 'scorer_not_found', 'entry_leased',
       // Refusals of teamai score --session, answered to the member who asked for a session to be judged.
-      'session_required', 'source_required', 'session_not_found', 'session_ambiguous',
+      'session_required', 'source_required', 'session_not_found', 'session_ambiguous', 'scorer_invalid',
       // Why a judge attempt closed: kept with the attempt under scores/, never on a run.
       ...JUDGE_FAILURES];
     const src = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -424,6 +424,28 @@ describe('#1083 workflow run records', () => {
 
     expect(buildEndRecord(run, driver, 'tester').prs).toEqual([pr(3), pr(1), pr(2)]);
     expect(buildEndRecord(runState(), driver, 'tester')).not.toHaveProperty('prs');
+  });
+
+  it('gives each pass what it delivered: the commits on its branch, its own pull request, and what its commands reported (#1387)', () => {
+    const sha = (digit: string): string => digit.repeat(40);
+    const pr = (n: number): string => `https://github.com/acme/app/pull/${n}`;
+    const receipt = (n: number, step: string, pass: number) => ({ url: PrUrlSchema.parse(pr(n)), branch: `teamai/r1234567890abcdef/${step}/p${pass}`, base: 'main', step, pass });
+    const run = runState({
+      steps: [
+        {
+          id: 'one', status: 'succeeded', attempt: 'a1', settledAt: 2, outcome: 'success',
+          changes: { branch: 'teamai/r1234567890abcdef/one/p1', base: 'main', from: sha('0'), to: sha('b'), commits: [sha('a'), sha('b')] },
+        },
+        { id: 'two', status: 'succeeded', attempt: 'a2', settledAt: 3, outcome: 'success', outcomes: [{ kind: 'learning', id: 'retry-backoff-2026-10-24-p0x1za' }] },
+      ],
+      deliveries: [receipt(43, 'one', 1), receipt(44, 'one', 2)],
+    });
+
+    expect(buildEndRecord(run, driver, 'tester').steps).toEqual([
+      expect.objectContaining({ step: 'one', pass: 1, outcomes: [{ kind: 'commit', sha: sha('a') }, { kind: 'commit', sha: sha('b') }, { kind: 'pr', url: pr(43) }] }),
+      expect.objectContaining({ step: 'two', pass: 1, outcomes: [{ kind: 'learning', id: 'retry-backoff-2026-10-24-p0x1za' }] }),
+    ]);
+    expect(buildEndRecord(runState(), driver, 'tester').steps?.[0]).not.toHaveProperty('outcomes');
   });
 
   it('drops the prs of an earlier end when a retried run ends again without them', () => {

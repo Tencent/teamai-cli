@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { summarizeInterventions } from '../digest.js';
+import { splitByRunMode, summarizeInterventions } from '../digest.js';
 import type { UserStats } from '../types.js';
 
 function user(username: string, iv?: UserStats['interventions']): UserStats {
@@ -39,5 +39,17 @@ describe('summarizeInterventions', () => {
     expect(s.ranked[0].username).toBe('bob');
     expect(s.ranked[0].rate).toBeCloseTo(2.0);
     expect(s.ranked[1].username).toBe('alice');
+  });
+});
+
+describe('splitByRunMode (#1384)', () => {
+  it('shows what neither mode holds as not recorded, never as a mode', () => {
+    const stats: UserStats[] = [
+      { ...user('alice'), prompts: 430, attended: { prompts: 395 }, unattended: { prompts: 3 } },
+      // Reported only before modes were recorded.
+      { ...user('bob'), prompts: 20 },
+    ];
+
+    expect(splitByRunMode(stats, (counters) => counters?.prompts ?? 0)).toEqual({ attended: 395, unattended: 3, notRecorded: 52 });
   });
 });

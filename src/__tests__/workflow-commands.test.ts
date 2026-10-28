@@ -2,8 +2,8 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { LocalConfig } from '../types.js';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { getUserConfigPath, type LocalConfig } from '../types.js';
 
 const state = vi.hoisted(() => ({ config: undefined as LocalConfig | undefined }));
 
@@ -47,6 +47,14 @@ function testConfig(): LocalConfig {
 }
 
 const driver = { kind: 'local', machine: 'a', workspace: '/work' };
+
+/** ~/.teamai/config.yaml holding `content`, for this test only. */
+function machineConfig(content: string): void {
+  const file = getUserConfigPath();
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, content);
+  onTestFinished(() => fs.rmSync(file, { force: true }));
+}
 
 async function startBuild(): Promise<{ config: LocalConfig; runId: string }> {
   const config = testConfig();
@@ -222,6 +230,49 @@ steps:
     expect(started).toEqual({ error: { code: 'invalid_inputs', message: 'inputs.issue must be a number' } });
     expect(process.exitCode).toBe(1);
     expect(fs.existsSync(path.join(config.dataHome!, 'workflows', 'runs'))).toBe(false);
+  });
+
+  it.each([
+    { case: 'a value of the wrong type', content: 'workflows:\n  allow:\n    network: flase\n', names: 'workflows.allow in', key: 'network' },
+    { case: 'a key it does not know', content: 'workflows:\n  allow:\n    netwrok: false\n', names: 'workflows.allow in', key: 'netwrok' },
+    { case: 'a YAML error, so what it restricts is unknown', content: 'workflows:\n  allow:\n    network: false\n  tools: [unclosed\n', names: 'is not valid YAML', key: 'workflows.allow' },
+  ])("refuses to start while this machine's config has $case, and creates no run", async ({ content, names, key }) => {
+    const config = inputsConfig();
+    await syncWorkflowDefinitions(config);
+    state.config = config;
+    machineConfig(content);
+
+    const started = await capture(() => workflowStart('fix', { inputs: '{"issue":42}' }));
+
+    expect(started.error).toMatchObject({ code: 'not_initialized', message: expect.stringContaining(getUserConfigPath()) });
+    expect(started.error?.message).toContain(names);
+    expect(started.error?.message).toContain(key);
+    expect(process.exitCode).toBe(1);
+    expect(fs.existsSync(path.join(config.dataHome ?? '', 'workflows', 'runs'))).toBe(false);
+  });
+
+  it("refuses to start while this machine's config cannot be read, so what it restricts is unknown", async () => {
+    const config = inputsConfig();
+    await syncWorkflowDefinitions(config);
+    state.config = config;
+    const file = getUserConfigPath();
+    fs.mkdirSync(file, { recursive: true });
+    onTestFinished(() => fs.rmSync(file, { recursive: true, force: true }));
+
+    const started = await capture(() => workflowStart('fix', { inputs: '{"issue":42}' }));
+
+    expect(started.error).toMatchObject({ code: 'not_initialized', message: expect.stringContaining(`${file} could not be read`) });
+    expect(fs.existsSync(path.join(config.dataHome ?? '', 'workflows', 'runs'))).toBe(false);
+  });
+
+  it("refuses to drive a run it already has while this machine's workflows.allow is invalid", async () => {
+    const { config, runId } = await startBuild();
+    state.config = config;
+    machineConfig('workflows:\n  allow:\n    network: "false"\n');
+
+    const answer = await capture(() => workflowNext(runId, { json: JSON.stringify({ driver }) }));
+
+    expect(answer.error).toMatchObject({ code: 'not_initialized', message: expect.stringContaining(`workflows.allow in ${getUserConfigPath()}`) });
   });
 
   it('rejects --inputs that is not JSON', async () => {

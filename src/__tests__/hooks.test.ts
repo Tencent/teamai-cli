@@ -15,6 +15,7 @@ vi.mock('../utils/fs.js', () => ({
   expandHome: (p: string) => p,
   ensureDir: vi.fn(),
   pathExists: vi.fn(async () => true),
+  readFileSafe: vi.fn(async () => null),
 }));
 
 vi.mock('../utils/logger.js', () => ({
@@ -27,7 +28,7 @@ vi.mock('../utils/logger.js', () => ({
   },
 }));
 
-import { getHookStatus, injectHooks, removeHooks, injectHooksToAllTools, TEAMAI_HOOK_SUBCOMMANDS, TEAMAI_LEGACY_HOOK_SUBCOMMANDS, CLAUDE_TO_CURSOR_EVENTS, reconcileHooks, applyAgentHook, removeAgentHook, isAgentHookSupportedTool, isAgentHookEvent, agentHookDescription } from '../hooks.js';
+import { getHookStatus, injectHooks, removeHooks, injectHooksToAllTools, reconcileHooksToAllTools, TEAMAI_HOOK_SUBCOMMANDS, TEAMAI_LEGACY_HOOK_SUBCOMMANDS, CLAUDE_TO_CURSOR_EVENTS, reconcileHooks, applyAgentHook, removeAgentHook, isAgentHookSupportedTool, isAgentHookEvent, agentHookDescription } from '../hooks.js';
 
 // ── Helpers ──────────────────────────────────────────────
 
@@ -410,6 +411,26 @@ describe('hooks', () => {
       }
     });
 
+    it('writes no settings hooks for a tool that reads none, whatever toolPaths names', async () => {
+      const originalHome = process.env.HOME;
+      process.env.HOME = '/test-home';
+
+      try {
+        await injectHooksToAllTools({ joycode: { settings: '.joycode/settings.json' }, trae: { settings: '.trae/settings.json' } });
+        await reconcileHooksToAllTools({ joycode: { settings: '.joycode/settings.json' } }, '/test-home', [], '/test-home/.teamai/managed-hooks.json', {});
+
+        expect(Object.keys(mockFiles)).toEqual([]);
+
+        // Removal still clears what an earlier release wrote there.
+        await injectHooks(path.join('/test-home', '.joycode/settings.json'), 'claude');
+        await reconcileHooksToAllTools({ joycode: { settings: '.joycode/settings.json' } }, '/test-home', [], '/test-home/.teamai/managed-hooks.json', { removeAll: true });
+
+        expect(JSON.stringify(mockFiles[path.join('/test-home', '.joycode/settings.json')])).not.toContain('teamai hook-dispatch');
+      } finally {
+        process.env.HOME = originalHome;
+      }
+    });
+
     it('skips tools whose root directory does not exist', async () => {
       const originalHome = process.env.HOME;
       process.env.HOME = '/test-home';
@@ -648,12 +669,12 @@ describe('hooks', () => {
   });
 
   describe('agent hooks (issue #238)', () => {
-    it('isAgentHookSupportedTool: claude/codex/workbuddy/codebuddy/openclaw yes, cursor no', () => {
-      for (const t of ['claude', 'codex', 'workbuddy', 'codebuddy', 'codex-internal', 'openclaw', 'qclaw', 'easyclaw', 'autoclaw']) {
-        expect(isAgentHookSupportedTool(t)).toBe(true);
+    it('isAgentHookSupportedTool: a Claude or Codex settings file, or an adapter that takes agent hooks; not Cursor, Copilot, ZCode, OMP, dsh or a tool with no hook channel', () => {
+      for (const t of ['claude', 'codex', 'workbuddy', 'codebuddy', 'codex-internal', 'muse', 'openclaw', 'qclaw', 'easyclaw', 'autoclaw', 'hermes', 'opencode', 'pi', 'my-tool']) {
+        expect(isAgentHookSupportedTool(t), t).toBe(true);
       }
-      for (const t of ['cursor']) {
-        expect(isAgentHookSupportedTool(t)).toBe(false);
+      for (const t of ['cursor', 'copilot', 'zcode', 'omp', 'dsh', 'kiro', 'trae']) {
+        expect(isAgentHookSupportedTool(t), t).toBe(false);
       }
     });
 

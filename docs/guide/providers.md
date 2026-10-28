@@ -199,6 +199,8 @@ export GITLAB_API_PREFIX=api/gitlab
 export GITLAB_TOKEN=glpat-xxx
 ```
 
+GitLab MR creation has a 30-second deadline, shared by reviewer lookups, the create request and their response bodies. Init uses its configured push timeout instead. An expired reviewer lookup stops creation; other reviewer lookup failures remain best-effort. If creation times out, the pushed branch remains available for manual review. A timeout after the create request was sent cannot prove that GitLab did not create the MR; check the host before retrying.
+
 ### Default email domain
 
 The GitLab provider sets no default email domain (same as GitHub) and uses the user's global git configuration.

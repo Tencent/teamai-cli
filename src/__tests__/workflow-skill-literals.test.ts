@@ -123,6 +123,31 @@ describe.each(INVOCATIONS)('skill driver literals run as %s', (invocation) => {
   });
 });
 
+describe('--tools of the skill driver', () => {
+  const ONE_TOOL = '--driver skill takes only --tools default=<tool>, the tool this coding session works in';
+
+  it('names this coding session\'s tool with default=<tool> on describe, start and resume, and the start literal carries it', () => {
+    expect(parseSkillCall({ kind: 'start', name: 'check', options: { describe: true, tools: 'default=omp' } }, {})).toEqual({ kind: 'describe', name: 'check', tool: 'omp' });
+    expect(parseSkillCall({ kind: 'start', name: 'check', options: { tools: 'default=omp' } }, {})).toMatchObject({ kind: 'start', name: 'check', tool: 'omp' });
+    expect(parseSkillCall({ kind: 'resume', run: RUN, options: { tools: ' default = hermes ' } }, {})).toMatchObject({ kind: 'resume', run: RUN, tool: 'hermes' });
+    expect(skillCall(startLiteral('teamai', 'check', { tool: 'omp' }), 'teamai')).toMatchObject({ kind: 'start', name: 'check', tool: 'omp' });
+    expect(skillCall(describeLiteral('teamai', 'check', { tool: 'omp' }), 'teamai')).toEqual({ kind: 'describe', name: 'check', tool: 'omp' });
+    expect(skillCall(skillResumeLiteral('teamai', RUN, { claim: true, tool: 'omp' }), 'teamai')).toMatchObject({ kind: 'resume', run: RUN, claim: true, tool: 'omp' });
+    // The describe a session with no tool is asked to run, once it fills the {tool} slot.
+    expect(skillCall(describeLiteral('teamai', 'check', { tool: '{tool}' }).replace("'{tool}'", 'omp'), 'teamai')).toEqual({ kind: 'describe', name: 'check', tool: 'omp' });
+  });
+
+  it('refuses a role map or a tool teamai does not know', () => {
+    for (const tools of ['implementer=codex', 'default=claude,implementer=codex', 'default=']) {
+      expect(parseSkillCall({ kind: 'start', name: 'check', options: { tools } }, {}), tools).toEqual({ error: { code: 'invalid_arguments', message: ONE_TOOL, next: null } });
+    }
+    expect(parseSkillCall({ kind: 'start', name: 'check', options: { tools: 'default=vim' } }, {}))
+      .toEqual({ error: { code: 'invalid_arguments', message: expect.stringMatching(/^--tools default=vim names no tool teamai knows: claude, .*hermes/), next: null } });
+    expect(parseSkillCall({ kind: 'start', name: 'check', options: { describe: true, tools: 'default={tool}' } }, {}))
+      .toEqual({ error: { code: 'invalid_arguments', message: expect.stringMatching(/^--tools default=\{tool\} names no tool teamai knows: claude, /), next: null } });
+  });
+});
+
 describe('start and respond options of the skill driver', () => {
   it('take one answer to how optional gates are answered, and the pass of the gate an answer is for', () => {
     expect(parseSkillCall({ kind: 'start', name: 'check', options: { hitl: 'recommend', autoApprove: true } }, {}))

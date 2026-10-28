@@ -257,7 +257,7 @@ import type { PublishResult } from '../utils/branch-worktree.js';
 
 describe('init', () => {
   const HOME = process.env.HOME ?? '';
-  const localPath = `${HOME}/.teamai/team-repo`;
+  const localPath = path.join(HOME, '.teamai', 'team-repo');
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -1163,6 +1163,29 @@ describe('init', () => {
       expect(saveLocalConfigForScope).not.toHaveBeenCalled();
     });
 
+    it.each([{ repo: '.' }, { self: true }])('refuses --scope user before writing anything: %o', async (target) => {
+      vi.mocked(loadLocalConfigForScope).mockClear();
+      const { log } = await import('../utils/logger.js');
+      const { saveLocalConfigForScope } = await import('../config.js');
+      vi.mocked(saveLocalConfigForScope).mockClear();
+
+      await init({ ...target, scope: 'user' });
+
+      expect(mockExit).toHaveBeenCalledWith(1);
+      const errorCalls = vi.mocked(log.error).mock.calls.map(([message]) => String(message)).join('\n');
+      expect(errorCalls).toContain('--scope user is not supported in single-repo mode');
+      expect(errorCalls).toContain('~/.teamai/config.yaml');
+      // The suggestion must not point single-repo members at a team-mode init,
+      // which would clone/skeleton their business repo as a separate team repo.
+      expect(errorCalls).not.toContain('teamai init --scope user');
+      expect(errorCalls).toContain('repo.kind: self');
+      // The hand-written config must name every required field, or the first
+      // `status`/`pull`/`doctor` fails on repo.remote or username (#1455).
+      expect(errorCalls).toContain('repo.remote: <origin URL>');
+      expect(errorCalls).toContain('username: <you>');
+      expect(saveLocalConfigForScope).not.toHaveBeenCalled();
+    });
+
     it('aborts on a malformed roles manifest instead of initializing role-less', async () => {
       // A role-less config matches every role when hooks are reconciled, so
       // swallowing the parse failure would install exactly the hooks the manifest
@@ -1446,7 +1469,7 @@ describe('init', () => {
 // instead of letting init detect GitLab and ask for GITLAB_TOKEN.
 describe('init --provider', () => {
   const HOME = process.env.HOME ?? '';
-  const localPath = `${HOME}/.teamai/team-repo`;
+  const localPath = path.join(HOME, '.teamai', 'team-repo');
   const GITLAB_REPO = 'https://gitlab.example.test/group/team-repo.git';
   const fetchMock = vi.fn<typeof fetch>();
   const TEAM_CONFIG = {

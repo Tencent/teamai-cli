@@ -4,7 +4,8 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { afterEach, expect, it, vi } from 'vitest';
 import { reconcileHooks, reconcileTeamHooksForConfig, sweepLegacyProjectHooks } from '../hooks.js';
-import { hookSettingsPath, hookToolPathsForConfig, TeamaiConfigSchema, type LocalConfig } from '../types.js';
+import { hookToolPathsForConfig, TeamaiConfigSchema, type LocalConfig } from '../types.js';
+import { hookSettingsFile } from '../locate.js';
 
 let root = '';
 const normalized = (text: string) => text.replace(/\\+/g, '/').toLowerCase();
@@ -62,6 +63,6 @@ it('uses the ZCode user-scope override while leaving other tools at the hook sco
   const local: LocalConfig = { repo: { kind: 'self', localPath: 'fixture', remote: 'fixture' }, username: 'test', additionalRoles: [], scope: 'project', projectRoot: 'project' };
   const paths = hookToolPathsForConfig(team, local);
   expect(paths.zcode.settings).toBe('.zcode/cli/custom.json');
-  expect(hookSettingsPath('zcode', 'project', paths.zcode.settings!)).toBe(path.join(os.homedir(), '.zcode/cli/custom.json'));
-  expect(hookSettingsPath('claude', 'project', '.claude/settings.json')).toBe(path.join('project', '.claude/settings.json'));
+  expect(hookSettingsFile('zcode', 'project', paths.zcode.settings!)).toBe(path.join(os.homedir(), '.zcode/cli/custom.json'));
+  expect(hookSettingsFile('claude', 'project', '.claude/settings.json')).toBe(path.join('project', '.claude/settings.json'));
 });

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { execFileSync, spawn } from 'node:child_process';
 import { once } from 'node:events';
 import fs from 'node:fs';
@@ -63,6 +63,9 @@ describe.each([{ version: 'V1', binary: V1 }, { version: 'V2', binary: V2 }])('r
     try {
       const output = execFileSync(process.execPath, [shim, 'hooks', 'inject'], { env, cwd: work, encoding: 'utf8' });
       expect(output).toContain('OpenCode hook');
+      // In-process, the agent hook finds OpenCode's config home from this sandbox's environment, as the CLI does.
+      vi.stubEnv('HOME', home);
+      vi.stubEnv('OPENCODE_CONFIG_DIR', env.OPENCODE_CONFIG_DIR);
       await applyOpencodeAgentHook({ slug: 'start-proof', event: 'SessionStart', command: `node -e ${JSON.stringify(`require('node:fs').appendFileSync(${JSON.stringify(commands)},'start\\n')`)}`, baseDir: home, scope: 'user' });
       const port = await freePort();
       const url = `http://127.0.0.1:${port}`;
@@ -105,6 +108,7 @@ describe.each([{ version: 'V1', binary: V1 }, { version: 'V2', binary: V2 }])('r
         await closed;
         clearTimeout(force);
       }
+      vi.unstubAllEnvs();
       fs.rmSync(sandbox, { recursive: true, force: true });
     }
   });

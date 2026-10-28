@@ -119,14 +119,14 @@ describe('doctor — where a tool takes agents', () => {
     expect(await check?.check()).toBe(true);
   });
 
-  it('notes that OpenCode\'s other files stay in its default home while its agents follow the moved one', async () => {
+  it('notes nothing left in OpenCode\'s default home once its agents follow the moved one (#1221)', async () => {
     const xdg = path.join(tempDir, 'xdg');
     await fse.ensureDir(path.join(xdg, 'opencode'));
     vi.stubEnv('XDG_CONFIG_HOME', xdg);
 
     const { notes } = await report();
 
-    expect(notes).toContain(`opencode takes agents from ${path.join(xdg, 'opencode', 'agents')}, but teamai still writes some of its other files under ${path.join(homeDir, '.config', 'opencode')}.`);
+    expect(notes?.some((note) => note.includes('still writes some of its other files'))).toBe(false);
   });
 
   describe('Codex project trust for a team that ships agents and no MCP servers', () => {

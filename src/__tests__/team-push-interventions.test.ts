@@ -5,18 +5,10 @@ import os from 'node:os';
 import YAML from 'yaml';
 import type { LocalConfig } from '../types.js';
 
-// Stub out git I/O so we exercise reportUsageToTeam's reporting logic
-// (delta → stats yaml → reported snapshot) without a real repo/remote.
-const pushRepoDirectly = vi.fn().mockResolvedValue(undefined);
+// Stub out reports-branch writes so we exercise reportUsage's reporting
+// logic (delta → stats yaml → reported snapshot) without a real remote.
 const reportsMocks = vi.hoisted(() => ({
   updateReports: vi.fn(),
-}));
-vi.mock('../utils/git.js', () => ({
-  createGit: vi.fn(() => ({})),
-  pushRepoDirectly: (...args: unknown[]) => pushRepoDirectly(...args),
-  pullRepo: vi.fn().mockResolvedValue(undefined),
-  resetToCleanMaster: vi.fn().mockResolvedValue(undefined),
-  isDedicatedRepoRoot: vi.fn().mockResolvedValue(true),
 }));
 vi.mock('../utils/reports-branch.js', () => ({
   updateReports: (...args: unknown[]) => reportsMocks.updateReports(...args),
@@ -34,7 +26,7 @@ vi.mock('../utils/fs.js', async (importActual) => {
   };
 });
 
-import { reportUsageToTeam } from '../team-push.js';
+import { reportUsage } from '../team-push.js';
 import { dataHomeKey } from '../dashboard-collector.js';
 import { withTimeout } from '../utils/async.js';
 
@@ -78,7 +70,6 @@ beforeEach(async () => {
   // tests exercise reporting mechanics, not the privacy filter.
   fs.mkdirSync(path.join(repoDir, 'skills', 'review'), { recursive: true });
   fs.writeFileSync(path.join(repoDir, 'skills', 'review', 'SKILL.md'), '# review\n');
-  pushRepoDirectly.mockReset().mockResolvedValue(undefined);
   reportsMocks.updateReports.mockReset().mockImplementation(async (cfg: LocalConfig, write: (wt: string, ctx: { onDelivered: (fn: () => Promise<void>) => void }) => Promise<{ files: string[]; message: string } | null>) => {
     const dir = path.join(path.dirname(cfg.repo.localPath), 'reports-wt');
     fs.mkdirSync(dir, { recursive: true });
@@ -102,7 +93,7 @@ function writeDashboardEvents(lines: object[]): void {
   fs.writeFileSync(p, lines.map((l) => JSON.stringify({ ...l, dataHomeKey: userKey })).join('\n') + '\n');
 }
 
-describe('reportUsageToTeam — intervention reporting', () => {
+describe('reportUsage — intervention reporting', () => {
   function seedReport(): string {
     const timestamp = new Date().toISOString();
     writeDashboardEvents([
@@ -117,48 +108,49 @@ describe('reportUsageToTeam — intervention reporting', () => {
     return usagePath;
   }
 
-  it.each(['reports', 'legacy'])('finishes acknowledgement after the caller times out (%s)', async (backend) => {
+  it('skips HTTP repos', async () => {
+    const config = gitConfig();
+    config.repo.kind = 'http';
+
+    expect(await reportUsage(repoDir, 'me', { selfConfig: config })).toBe('unreported');
+    expect(reportsMocks.updateReports).not.toHaveBeenCalled();
+  });
+
+  it('finishes acknowledgement after the caller times out', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const usagePath = seedReport();
-    const seeded = fs.readFileSync(usagePath, 'utf-8');
     let finish!: (value: { status: 'published' }) => void;
     let started!: () => void;
     const pushStarted = new Promise<void>((resolve) => { started = resolve; });
     const pushResult = new Promise<{ status: 'published' }>((resolve) => { finish = resolve; });
     const delayedPush = () => { started(); return pushResult; };
-    if (backend === 'reports') {
-      reportsMocks.updateReports.mockImplementationOnce(async (cfg: LocalConfig, write: (wt: string, ctx: { onDelivered: (fn: () => Promise<void>) => void }) => Promise<{ files: string[]; message: string } | null>) => {
-        const dir = path.join(path.dirname(cfg.repo.localPath), 'reports-wt');
-        fs.mkdirSync(dir, { recursive: true });
-        const delivered: (() => Promise<void>)[] = [];
-        await write(dir, { onDelivered: (fn) => { delivered.push(fn); } });
-        const result = await delayedPush();
-        for (const fn of delivered) await fn();
-        return result;
-      });
-    } else {
-      pushRepoDirectly.mockImplementationOnce(delayedPush);
-    }
+    reportsMocks.updateReports.mockImplementationOnce(async (cfg: LocalConfig, write: (wt: string, ctx: { onDelivered: (fn: () => Promise<void>) => void }) => Promise<{ files: string[]; message: string } | null>) => {
+      const dir = path.join(path.dirname(cfg.repo.localPath), 'reports-wt');
+      fs.mkdirSync(dir, { recursive: true });
+      const delivered: (() => Promise<void>)[] = [];
+      await write(dir, { onDelivered: (fn) => { delivered.push(fn); } });
+      const result = await delayedPush();
+      for (const fn of delivered) await fn();
+      return result;
+    });
 
-    const operation = reportUsageToTeam(repoDir, 'me', backend === 'reports' ? { selfConfig: gitConfig() } : undefined);
+    const operation = reportUsage(repoDir, 'me', { selfConfig: gitConfig() });
     const timeout = expect(withTimeout(operation, 5000, 'report pending')).rejects.toThrow('report pending');
     await pushStarted;
     await vi.advanceTimersByTimeAsync(5000);
     await timeout;
     expect(fs.readFileSync(usagePath, 'utf-8')).toContain('review');
-    expect(reportedSnapshot('prompt-tokens', backend === 'reports').slow).toBeUndefined();
+    expect(reportedSnapshot('prompt-tokens').slow).toBeUndefined();
 
     finish({ status: 'published' });
-    expect(await operation).toBe(true);
-    // A caller without a scope config has no usage of its own to report (#748),
-    // so it leaves the user-scope file for the scope that owns it.
-    expect(fs.readFileSync(usagePath, 'utf-8')).toBe(backend === 'reports' ? '' : seeded);
+    expect(await operation).toBe('reported');
+    expect(fs.readFileSync(usagePath, 'utf-8')).toBe('');
     for (const name of ['interventions', 'prompt-tokens', 'daily-sessions']) {
-      expect(reportedSnapshot(name, backend === 'reports').slow).toBeDefined();
+      expect(reportedSnapshot(name).slow).toBeDefined();
     }
-    const statsPath = backend === 'reports' ? reportsStatsPath() : path.join(repoDir, 'stats', 'me.yaml');
+    const statsPath = reportsStatsPath();
     const before = fs.readFileSync(statsPath, 'utf-8');
-    expect(await reportUsageToTeam(repoDir, 'me', backend === 'reports' ? { selfConfig: gitConfig() } : undefined)).toBe(true);
+    expect(await reportUsage(repoDir, 'me', { selfConfig: gitConfig() })).toBe('nothing');
     expect(fs.readFileSync(statsPath, 'utf-8')).toBe(before);
   });
 
@@ -167,12 +159,12 @@ describe('reportUsageToTeam — intervention reporting', () => {
     const before = fs.readFileSync(usagePath, 'utf-8');
     if (failure === 'false') reportsMocks.updateReports.mockResolvedValueOnce({ status: 'failed', reason: 'not confirmed' });
     else reportsMocks.updateReports.mockRejectedValueOnce(new Error('offline'));
-    expect(await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() })).toBe(false);
+    expect(await reportUsage(repoDir, 'me', { selfConfig: gitConfig() })).toBe('unreported');
     expect(fs.readFileSync(usagePath, 'utf-8')).toBe(before);
     for (const name of ['interventions', 'prompt-tokens', 'daily-sessions']) {
       expect(reportedSnapshot(name).slow).toBeUndefined();
     }
-    expect(await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() })).toBe(true);
+    expect(await reportUsage(repoDir, 'me', { selfConfig: gitConfig() })).toBe('reported');
     const stats = YAML.parse(fs.readFileSync(reportsStatsPath(), 'utf-8'));
     expect(stats.skills.review.count).toBe(1);
     expect(stats.prompts).toBe(1);
@@ -186,7 +178,7 @@ describe('reportUsageToTeam — intervention reporting', () => {
       { type: 'stop', timestamp: ts, sessionId: 's1', tool: 'claude', interventions: { interrupt: 2, toolReject: 1 } },
     ]);
 
-    await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
+    await reportUsage(repoDir, 'me', { selfConfig: gitConfig() });
 
     // stats yaml carries the merged intervention totals on the reports worktree
     const statsPath = reportsStatsPath();
@@ -195,7 +187,6 @@ describe('reportUsageToTeam — intervention reporting', () => {
     expect(stats.interventions).toEqual({ sessions: 1, interrupt: 2, toolReject: 1, correction: 0 });
     expect(stats.daily[ts.slice(0, 10)]).toMatchObject({ sessionsEnded: 1, sessionsSucceeded: 0 });
 
-    expect(pushRepoDirectly).not.toHaveBeenCalled();
     expect(reportsMocks.updateReports).toHaveBeenCalledTimes(1);
 
     // reported snapshot persisted so a second run reports nothing new
@@ -205,21 +196,19 @@ describe('reportUsageToTeam — intervention reporting', () => {
     expect(reportedSnapshot('daily-sessions').s1).toMatchObject({ date: ts.slice(0, 10) });
 
     reportsMocks.updateReports.mockClear();
-    await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
+    await reportUsage(repoDir, 'me', { selfConfig: gitConfig() });
     // Nothing new (no usage, no intervention delta, no votes) → no push
     expect(reportsMocks.updateReports).not.toHaveBeenCalled();
-    expect(pushRepoDirectly).not.toHaveBeenCalled();
   });
 
   it('does nothing when there are no events, interventions, or votes', async () => {
-    await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
+    await reportUsage(repoDir, 'me', { selfConfig: gitConfig() });
     expect(reportsMocks.updateReports).not.toHaveBeenCalled();
-    expect(pushRepoDirectly).not.toHaveBeenCalled();
     expect(fs.existsSync(reportsStatsPath())).toBe(false);
   });
 });
 
-describe('reportUsageToTeam — preserve fields across partial reports (Issue #425)', () => {
+describe('reportUsage — preserve fields across partial reports (Issue #425)', () => {
   it('keeps interventions when a follow-up report is tokens-only', async () => {
     const ts = new Date().toISOString();
     // Report 1: interventions + prompts/tokens together
@@ -232,7 +221,7 @@ describe('reportUsageToTeam — preserve fields across partial reports (Issue #4
         tokens: { input: 10, output: 5, cacheRead: 0, cacheCreation: 0 },
       },
     ]);
-    await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
+    await reportUsage(repoDir, 'me', { selfConfig: gitConfig() });
 
     const statsPath = reportsStatsPath();
     let stats = YAML.parse(fs.readFileSync(statsPath, 'utf-8'));
@@ -252,7 +241,7 @@ describe('reportUsageToTeam — preserve fields across partial reports (Issue #4
       },
     ]);
     reportsMocks.updateReports.mockClear();
-    await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
+    await reportUsage(repoDir, 'me', { selfConfig: gitConfig() });
 
     stats = YAML.parse(fs.readFileSync(statsPath, 'utf-8'));
     // Must still have interventions after a tokens-only report
@@ -260,7 +249,6 @@ describe('reportUsageToTeam — preserve fields across partial reports (Issue #4
     expect(stats.prompts).toBe(2);
     expect(stats.tokens).toEqual({ input: 50, output: 20, cacheRead: 0, cacheCreation: 0 });
     expect(reportsMocks.updateReports).toHaveBeenCalledTimes(1);
-    expect(pushRepoDirectly).not.toHaveBeenCalled();
   });
 
   it('keeps prompts/tokens when a follow-up report is intervention-only', async () => {
@@ -274,7 +262,7 @@ describe('reportUsageToTeam — preserve fields across partial reports (Issue #4
         tokens: { input: 10, output: 5, cacheRead: 0, cacheCreation: 0 },
       },
     ]);
-    await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
+    await reportUsage(repoDir, 'me', { selfConfig: gitConfig() });
 
     const statsPath = reportsStatsPath();
     let stats = YAML.parse(fs.readFileSync(statsPath, 'utf-8'));
@@ -292,7 +280,7 @@ describe('reportUsageToTeam — preserve fields across partial reports (Issue #4
       },
     ]);
     reportsMocks.updateReports.mockClear();
-    await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
+    await reportUsage(repoDir, 'me', { selfConfig: gitConfig() });
 
     stats = YAML.parse(fs.readFileSync(statsPath, 'utf-8'));
     expect(stats.interventions).toEqual({ sessions: 1, interrupt: 1, toolReject: 0, correction: 0 });
@@ -300,18 +288,17 @@ describe('reportUsageToTeam — preserve fields across partial reports (Issue #4
     expect(stats.prompts).toBe(1);
     expect(stats.tokens).toEqual({ input: 10, output: 5, cacheRead: 0, cacheCreation: 0 });
     expect(reportsMocks.updateReports).toHaveBeenCalledTimes(1);
-    expect(pushRepoDirectly).not.toHaveBeenCalled();
   });
 });
 
-describe('reportUsageToTeam — usage recorded while the usage lock was held (#788)', () => {
+describe('reportUsage — usage recorded while the usage lock was held (#788)', () => {
   it('reports the event without the side file id it was folded in with', async () => {
     const timestamp = new Date().toISOString();
     const usagePath = path.join(tmpDir, '.teamai', 'user-usage.jsonl');
     fs.mkdirSync(path.dirname(usagePath), { recursive: true });
     fs.writeFileSync(usagePath, JSON.stringify({ skill: 'review', timestamp, tool: 'claude', pendingId: '0f8e2c1a-1b2c-4d5e-8f90-a1b2c3d4e5f6' }) + '\n');
 
-    expect(await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() })).toBe(true);
+    expect(await reportUsage(repoDir, 'me', { selfConfig: gitConfig() })).toBe('reported');
 
     const yaml = fs.readFileSync(reportsStatsPath(), 'utf-8');
     expect(YAML.parse(yaml).skills.review.count).toBe(1);

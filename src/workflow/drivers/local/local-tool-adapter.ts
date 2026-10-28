@@ -10,7 +10,7 @@ import { writeJsonAtomic } from '../../../utils/fs.js';
 import { log } from '../../../utils/logger.js';
 import { stopProcess } from '../../../tool-launch/process-stop.js';
 import { toolStdout, type TokenUsage, type ToolReport } from '../../../tool-launch/stdout.js';
-import { localToolFamily, opencodeModelArgs, type LaunchTool } from '../../../tool-launch/tools.js';
+import { executableOf, launchAdapterIdOf, opencodeModelArgs, type LaunchTool } from '../../../tool-launch/tools.js';
 import type { StepModel } from '../../step-model.js';
 import type { WorkflowFailure } from '../../types.js';
 
@@ -68,12 +68,12 @@ function resultInstruction(input: LocalToolRun, prompt: string): string {
 
 /** Codex, and OpenCode 1 for a subagent, which `opencode run --agent` does not start, get the definition's instructions in the prompt. */
 function promptHandoff(tool: LaunchTool, input: LocalToolRun, opencodeMajor: number): boolean {
-  const family = localToolFamily(tool);
+  const family = launchAdapterIdOf(tool);
   return family === 'codex' || (family === 'opencode' && opencodeMajor < 2 && input.agent?.settings?.['mode'] === 'subagent');
 }
 
 function invocation(tool: LaunchTool, input: LocalToolRun, opencodeMajor: number, interactive: boolean): string[] {
-  const family = localToolFamily(tool);
+  const family = launchAdapterIdOf(tool);
   const viaPrompt = promptHandoff(tool, input, opencodeMajor);
   const agentPrompt = input.agent?.instructions
     ? `${input.agent.instructions}\n\n${input.prompt}`
@@ -83,21 +83,29 @@ function invocation(tool: LaunchTool, input: LocalToolRun, opencodeMajor: number
   const model = input.model ? ['--model', input.model.name] : [];
   const effort = input.model?.effort;
   const resume = input.resume ? ['--resume', input.resume] : [];
-  if (interactive) {
-    if (family === 'claude') return [...agent, ...model, ...(effort ? ['--effort', effort] : []), ...resume, prompt];
-    if (family === 'codex') return [...(input.resume ? ['resume', input.resume] : []), ...model, ...(effort ? ['-c', `model_reasoning_effort=${effort}`] : []), prompt];
-    return [...agent, ...model, '--prompt', prompt];
+  const turns = input.maxTurns !== undefined ? ['--max-turns', String(input.maxTurns)] : [];
+  switch (family) {
+    case 'claude':
+      if (interactive) return [...agent, ...model, ...(effort ? ['--effort', effort] : []), ...resume, prompt];
+      return ['-p', prompt, '--output-format', 'stream-json', '--verbose', ...turns, ...agent, ...model, ...(effort ? ['--effort', effort] : []), ...resume];
+    case 'codebuddy':
+      // Claude's flags, with no --effort.
+      if (interactive) return [...agent, ...model, ...resume, prompt];
+      return ['-p', prompt, '--output-format', 'stream-json', '--verbose', ...turns, ...agent, ...model, ...resume];
+    case 'codex': {
+      if (interactive) return [...(input.resume ? ['resume', input.resume] : []), ...model, ...(effort ? ['-c', `model_reasoning_effort=${effort}`] : []), prompt];
+      const codexModel = input.model?.name ?? input.agent?.model;
+      const codexResume = input.resume ? ['resume', input.resume] : [];
+      return ['exec', ...codexResume, '--json', ...(codexModel ? ['--model', codexModel] : []), ...(effort ? ['-c', `model_reasoning_effort=${effort}`] : []), prompt];
+    }
+    case 'opencode':
+      if (interactive) return [...agent, ...model, '--prompt', prompt];
+      return ['run', '--format', 'json', prompt, ...agent, ...opencodeModelArgs(input.model, opencodeMajor)];
+    default: {
+      const unhandled: never = family;
+      throw new Error(`No workflow step profile for adapter ${String(unhandled)}`);
+    }
   }
-  if (family === 'claude') {
-    const turns = input.maxTurns !== undefined ? ['--max-turns', String(input.maxTurns)] : [];
-    return ['-p', prompt, '--output-format', 'stream-json', '--verbose', ...turns, ...agent, ...model, ...(effort ? ['--effort', effort] : []), ...resume];
-  }
-  if (family === 'codex') {
-    const codexModel = input.model?.name ?? input.agent?.model;
-    const codexResume = input.resume ? ['resume', input.resume] : [];
-    return ['exec', ...codexResume, '--json', ...(codexModel ? ['--model', codexModel] : []), ...(effort ? ['-c', `model_reasoning_effort=${effort}`] : []), prompt];
-  }
-  return ['run', '--format', 'json', prompt, ...agent, ...opencodeModelArgs(input.model, opencodeMajor)];
 }
 
 function parseResultFile(value: unknown): ResultFile | null {
@@ -155,7 +163,7 @@ export function createLocalToolAdapter(
   const launch =
     async (tool: LaunchTool, input: LocalToolRun, signal: AbortSignal | undefined, interactive: boolean): Promise<LocalToolResult> => {
       await fs.mkdir(path.dirname(input.resultPath), { recursive: true });
-      const executable = resolveTool(tool);
+      const executable = resolveTool(executableOf(tool));
       if (!executable) {
         return {
           started: false,
@@ -163,7 +171,7 @@ export function createLocalToolAdapter(
           failure: { code: 'tool_unavailable', message: `The ${tool} executable is not available on PATH` },
         };
       }
-      const opencode = localToolFamily(tool) === 'opencode';
+      const opencode = launchAdapterIdOf(tool) === 'opencode';
       const opencodeMajor = opencode && (input.agent || input.model?.effort) ? await opencodeMajorVersion(executable) : 1;
       if (opencode && input.agent) {
         const { name, model, settings = {} } = input.agent;
@@ -247,7 +255,7 @@ export function createLocalToolAdapter(
         };
       }
       const fileResult = await readResultFile(input.resultPath);
-      const reported = toolStdout(tool, completed.stdout);
+      const reported = toolStdout(launchAdapterIdOf(tool), completed.stdout);
       const result = combineResults(fileResult, reported) ?? (interactive ? {} : null);
       if (!result) {
         return {

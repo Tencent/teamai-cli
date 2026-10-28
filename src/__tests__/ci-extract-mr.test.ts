@@ -17,9 +17,13 @@ vi.mock('../ci/mr-comment.js', () => ({
 }));
 
 const mockPushRepoDirectly = vi.fn();
-vi.mock('../utils/git.js', () => ({
-  pushRepoDirectly: (...args: unknown[]) => mockPushRepoDirectly(...args),
-}));
+vi.mock('../utils/git.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../utils/git.js')>();
+  return {
+    ...actual,
+    pushRepoDirectly: (...args: unknown[]) => mockPushRepoDirectly(...args),
+  };
+});
 
 const mockAppendPendingReview = vi.fn();
 vi.mock('../review-store.js', () => ({
@@ -272,6 +276,25 @@ describe('ciExtractMr write: the teamwiki update goes through teamai import', ()
     await ciExtractMr({ url: 'https://github.com/org/repo/pull/8', mode: 'write', teamRepo });
 
     expect(mockImportLocalCheckout).toHaveBeenCalledWith(expect.objectContaining({ incremental: true }));
+  });
+
+  it('finds changed files through the repository default branch when it is not master', async () => {
+    const first = execFileSync('git', ['rev-parse', 'HEAD~1'], { cwd: source, encoding: 'utf8' }).trim();
+    execFileSync('git', ['update-ref', 'refs/remotes/origin/main', first], { cwd: source, stdio: 'ignore' });
+    execFileSync('git', ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main'], { cwd: source, stdio: 'ignore' });
+
+    // HEAD's own diff and `git show` contain no source file; only the
+    // origin/<default>...HEAD comparison reaches back to the source change.
+    await fse.outputFile(path.join(source, 'README.md'), 'docs only\n');
+    git('add', '-A');
+    git('commit', '-q', '-m', 'docs only');
+
+    const teamRepo = path.join(tmpDir, 'team-repo');
+    await fse.ensureDir(teamRepo);
+
+    await ciExtractMr({ url: 'https://github.com/org/repo/pull/9', mode: 'write', teamRepo });
+
+    expect(mockImportLocalCheckout).toHaveBeenCalledWith(expect.objectContaining({ sourceDir: source }));
   });
 
   it('skips the teamwiki update when the team repo is cloned inside the checkout', async () => {

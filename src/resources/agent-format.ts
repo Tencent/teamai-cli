@@ -1,9 +1,11 @@
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import matter from 'gray-matter';
 import { stringify as stringifyToml, parse as parseToml } from 'smol-toml';
 import { getDispatchCommand } from '../builtin-hooks.js';
 import type { AgentToolId } from '../tools.js';
+import type { Scope } from '../types.js';
 
 // ─── Tool name type ──────────────────────────────────────────────────────────
 
@@ -69,26 +71,7 @@ export interface AgentSpec {
    * Passed through verbatim when rendering for the matching tool,
    * and collected when reversing from a tool's native format.
    */
-  tool_extras?: {
-    claude?: Record<string, unknown>;
-    'claude-internal'?: Record<string, unknown>;
-    tclaude?: Record<string, unknown>;
-    codebuddy?: Record<string, unknown>;
-    codex?: Record<string, unknown>;
-    'codex-internal'?: Record<string, unknown>;
-    tcodex?: Record<string, unknown>;
-    cursor?: Record<string, unknown>;
-    copilot?: Record<string, unknown>;
-    joycode?: Record<string, unknown>;
-    qoder?: Record<string, unknown>;
-    'qoder-cn'?: Record<string, unknown>;
-    kiro?: Record<string, unknown>;
-    zcode?: Record<string, unknown>;
-    omp?: Record<string, unknown>;
-    opencode?: Record<string, unknown>;
-    workbuddy?: Record<string, unknown>;
-    muse?: Record<string, unknown>;
-  };
+  tool_extras?: { [T in ToolName]?: Record<string, unknown> };
   /**
    * Which tools this agent should be deployed to.
    * When undefined, the agent is deployed to ALL installed supported tools.
@@ -208,7 +191,7 @@ export function renderForWorkbuddy(spec: AgentSpec): RenderResult {
   };
 }
 
-/** TeamAI-managed Kiro CLI session-start hook embedded in each agent config. */
+/** Legacy embedded entry, recognized when migrating pre-V3 teamai agents. */
 export const KIRO_SESSION_START_COMMAND = getDispatchCommand('session-start', 'kiro');
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -223,21 +206,21 @@ function isManagedKiroSessionHook(value: unknown): boolean {
 
 /**
  * Render a Kiro custom agent as JSON. JSON is supported by both the 2.x and 3.x
- * agent harnesses, while 2.x requires this format for embedded `agentSpawn`
- * hooks. TeamAI owns only its session-start entry and preserves all other
- * Kiro-private fields and hook entries from `tool_extras.kiro`.
+ * agent harnesses. Lifecycle hooks live in the V3 standalone user file, so
+ * remove the old managed agentSpawn entry to avoid running it twice.
  */
 export function renderForKiro(spec: AgentSpec): RenderResult {
   const extras = { ...spec.tool_extras?.['kiro'] };
-  const existingHooks = isRecord(extras['hooks']) ? { ...extras['hooks'] } : {};
-  const existingAgentSpawn = Array.isArray(existingHooks['agentSpawn'])
-    ? existingHooks['agentSpawn'].filter((entry) => !isManagedKiroSessionHook(entry))
-    : [];
-  existingHooks['agentSpawn'] = [
-    ...existingAgentSpawn,
-    { command: KIRO_SESSION_START_COMMAND },
-  ];
-  extras['hooks'] = existingHooks;
+  if (isRecord(extras['hooks'])) {
+    const hooks = { ...extras['hooks'] };
+    if (Array.isArray(hooks['agentSpawn'])) {
+      const kept = hooks['agentSpawn'].filter((entry) => !isManagedKiroSessionHook(entry));
+      if (kept.length === 0) delete hooks['agentSpawn'];
+      else hooks['agentSpawn'] = kept;
+    }
+    if (Object.keys(hooks).length > 0) extras['hooks'] = hooks;
+    else delete extras['hooks'];
+  }
 
   const json: Record<string, unknown> = {
     name: spec.name,
@@ -403,6 +386,67 @@ export function renderForMuse(spec: AgentSpec): RenderResult {
   if (requested !== undefined && requested !== null) frontmatterData['tools'] = museTools(requested).kept;
   else delete frontmatterData['tools'];
   return { ext: agentFileExtensionForTool('muse'), content: matter.stringify(spec.instructions, frontmatterData) };
+}
+
+/** The subagent names Trae loads (docs.trae.ai/ide/subagents); it ignores a file with any other. */
+const TRAE_AGENT_NAME = /^[A-Za-z](?:[A-Za-z0-9-]{0,48}[A-Za-z0-9])?$/;
+
+/** Why teamai cannot give `tool` the agent `name` in `scope`, or null when it can. */
+export function agentRejection({ tool, name, spec, scope }: {
+  readonly tool: string; readonly name: string; readonly spec: AgentSpec | undefined; readonly scope: Scope;
+}): string | null {
+  if (tool !== 'trae' && tool !== 'trae-cn') return null;
+  if (!TRAE_AGENT_NAME.test(name)) {
+    return 'Trae loads a subagent only when its name starts with a letter, holds only letters, digits and -, ends with a letter or digit, and is at most 50 characters.';
+  }
+  const clashes = scope === 'user' || spec === undefined ? [] : traeExtrasClashes(spec);
+  if (clashes.length === 0) return null;
+  const pairs = clashes.map((key) => `tool_extras.trae.${key} and tool_extras.trae-cn.${key}`).join(', ');
+  return `Trae and Trae CN read one project file, and ${pairs} differ. Give both editions the same value, or set it for one edition only.`;
+}
+
+/** Both editions' `tool_extras` but `model`, which differs per edition: what the project file they share takes. */
+function traeEditionExtras(spec: AgentSpec): { readonly trae: Record<string, unknown>; readonly cn: Record<string, unknown> } {
+  const { model: _trae, ...trae } = spec.tool_extras?.['trae'] ?? {};
+  const { model: _cn, ...cn } = spec.tool_extras?.['trae-cn'] ?? {};
+  return { trae, cn };
+}
+
+/** The `tool_extras` keys the two Trae editions give different values, which their shared project file cannot carry. */
+export function traeExtrasClashes(spec: AgentSpec): string[] {
+  const { trae, cn } = traeEditionExtras(spec);
+  return Object.keys(trae).filter((key) => key in cn && !isDeepStrictEqual(trae[key], cn[key]));
+}
+
+/**
+ * Trae and Trae CN take `tools` as one comma-separated string, and a `model`
+ * only from their own ids, which differ per edition. So the spec's own
+ * `model` is left out. In a user scope, the edition's own `tool_extras` and
+ * the model an alias or they give it are written; a project's `.trae/agents`
+ * is read by both editions, so it gets both editions' `tool_extras` but no
+ * model, and both render the same bytes (`agentRejection` skips a clash).
+ */
+function renderForTrae(spec: AgentSpec, tool: 'trae' | 'trae-cn', resolved: ResolvedAgentModel | undefined, scope: Scope | undefined): string {
+  const isUser = scope === 'user';
+  const { tools, ...rest } = withModel(spec, isUser ? resolved?.model : undefined);
+  const { trae, cn } = traeEditionExtras(spec);
+  const joined = traeTools(tools);
+  return renderMarkdownAgent(rest, isUser ? toolExtrasFor(spec, tool) : { ...cn, ...trae }, joined === undefined ? undefined : { tools: joined });
+}
+
+/** Trae gives an agent with no `tools` every tool, and one with `tools: ''` none. */
+function traeTools(tools: string[] | string | undefined): string | undefined {
+  if (tools === undefined) return undefined;
+  return Array.isArray(tools) ? tools.join(', ') : tools;
+}
+
+/** Reverse a Trae subagent: Claude's Markdown, with `tools` a comma-separated string. */
+export function reverseFromTrae(filePath: string, content: string): ReverseResult {
+  const result = reverseFromClaude(filePath, content);
+  if (!result.ok) return result;
+  const tools: unknown = result.spec.tools;
+  if (typeof tools === 'string') result.spec.tools = tools.split(',').map((tool) => tool.trim()).filter(Boolean);
+  return result;
 }
 
 /**
@@ -964,6 +1008,21 @@ export function toolExtrasFor(spec: AgentSpec, tool: ToolName): Record<string, u
   return base ? { ...extras?.[base], ...extras?.[tool] } : extras?.[tool];
 }
 
+/**
+ * The extras `tool` renders in `scope` from another tool's `tool_extras`,
+ * which push cannot change from `tool`'s copy: tclaude's and tcodex's base
+ * tool's, and in a project the other Trae edition's but `model`, as both
+ * editions read one file.
+ */
+export function inheritedExtras(spec: AgentSpec, tool: ToolName, scope: Scope | undefined): { readonly from: ToolName; readonly extras: Record<string, unknown> } | undefined {
+  if (scope !== 'user' && (tool === 'trae' || tool === 'trae-cn')) {
+    const { trae, cn } = traeEditionExtras(spec);
+    return tool === 'trae' ? { from: 'trae-cn', extras: cn } : { from: 'trae', extras: trae };
+  }
+  const base = EXTRAS_BASE_TOOL[tool];
+  return base === undefined ? undefined : { from: base, extras: spec.tool_extras?.[base] ?? {} };
+}
+
 /** The agent-file field `tool` reads a reasoning effort from, if it has one. */
 export function agentEffortField(tool: ToolName): string | undefined {
   switch (tool) {
@@ -1000,9 +1059,10 @@ export interface ResolvedAgentModel {
  * @param spec - The agent specification.
  * @param tool - Target tool name.
  * @param resolved - The model and effort resolved for this tool, if any.
+ * @param scope - The scope the copy lands in: Trae writes an edition's model only in a user scope.
  * @returns Rendered file extension and content.
  */
-export function renderForTool(spec: AgentSpec, tool: ToolName, resolved?: ResolvedAgentModel): RenderResult {
+export function renderForTool(spec: AgentSpec, tool: ToolName, resolved?: ResolvedAgentModel, scope?: Scope): RenderResult {
   const target = resolved ? withModel(spec, resolved.model) : spec;
   const effortField = agentEffortField(tool);
   const fields = effortField && resolved?.effort !== undefined ? { [effortField]: resolved.effort } : undefined;
@@ -1029,10 +1089,64 @@ export function renderForTool(spec: AgentSpec, tool: ToolName, resolved?: Resolv
     case 'opencode': return renderForOpencode(target, fields);
     case 'workbuddy': return renderForWorkbuddy(target);
     case 'muse': return renderForMuse(target);
+    case 'trae':
+    case 'trae-cn':
+      return { ext, content: renderForTrae(spec, tool, resolved, scope) };
   }
 }
 
 function withModel(spec: AgentSpec, model: string | undefined): AgentSpec {
   const { model: _replaced, ...rest } = spec;
   return model === undefined ? rest : { ...rest, model };
+}
+
+/**
+ * Dispatch reverse parsing to the correct function for each tool, keying the
+ * extras by that tool: several tools share a parser, and each renders its own key.
+ */
+export function reverseByTool(tool: ToolName, filePath: string, content: string): ReverseResult {
+  const result = reverseByParser(tool, filePath, content);
+  const extras = result.ok ? Object.values(result.spec.tool_extras ?? {})[0] : undefined;
+  if (result.ok && extras) result.spec.tool_extras = { [tool]: extras };
+  return result;
+}
+
+function reverseByParser(tool: ToolName, filePath: string, content: string): ReverseResult {
+  switch (tool) {
+    case 'claude':
+    case 'claude-internal':
+    case 'tclaude':
+      return reverseFromClaude(filePath, content);
+    case 'codebuddy':
+      return reverseFromCodebuddy(filePath, content);
+    case 'codex':
+    case 'codex-internal':
+    case 'tcodex':
+      return reverseFromCodex(filePath, content);
+    case 'cursor':
+      return reverseFromCursor(filePath, content);
+    case 'copilot':
+      return reverseFromCopilot(filePath, content);
+    case 'joycode':
+      return reverseFromJoycode(filePath, content);
+    case 'qoder':
+      return reverseFromClaude(filePath, content);
+    case 'qoder-cn':
+      return reverseFromClaude(filePath, content);
+    case 'kiro':
+      return reverseFromKiro(filePath, content);
+    case 'zcode':
+      return reverseFromClaude(filePath, content);
+    case 'omp':
+      return reverseFromClaude(filePath, content);
+    case 'opencode':
+      return reverseFromOpencode(filePath, content);
+    case 'workbuddy':
+      return reverseFromWorkbuddy(filePath, content);
+    case 'muse':
+      return reverseFromMuse(filePath, content);
+    case 'trae':
+    case 'trae-cn':
+      return reverseFromTrae(filePath, content);
+  }
 }

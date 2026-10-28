@@ -31,11 +31,10 @@ import { getAgentVersion } from './agent-version.js';
 import { getMachineId, deriveLocalAgentId } from './machine-id.js';
 import { EXCLUDED_RULE_NAMES } from './builtin-rules.js';
 import { ruleStemFromFilename } from './resources/rule-format.js';
+import { unreadableConfigOf } from './resources/rules.js';
 import { resolveTeamaiEntryScript } from './builtin-hooks.js';
-import { resolveOpenclawWorkspaceDir } from './openclaw-hooks.js';
 import { assertSafeResourceName } from './utils/path-safety.js';
 import {
-  detectMcpFormat,
   supportsTransport,
   renderJsonEntry,
   renderCodexBlock,
@@ -80,7 +79,6 @@ import { opencodeV1ClaudeFile } from './resources/opencode-config.js';
 import { reconcilePlugins, teardownAllPlugins, parseGetConfig, substituteVars, unresolvedPlaceholders, type ReconcileDeps, type PluginState } from './plugin-lifecycle.js';
 import {
   resolveBaseDir,
-  resolveToolBaseDir,
   scopedToolPaths,
   applyToolRoots,
   getDataHome,
@@ -118,7 +116,8 @@ import {
 } from './git-exclude-notices.js';
 import { blockingEntries, contentHash, deliveredSkillFiles, describeMembersDirLeft, isLink, keepsTrackedCopy, ownsSkillDir } from './resources/delivered-copies.js';
 import { skillOrigin, withSkillFrontmatter } from './resources/skills.js';
-import { installOf, locate, ownOf, writable, type FilePlace } from './locate.js';
+import { hookSettingsFile, installOf, locate, ownOf, writable, type FilePlace } from './locate.js';
+import { mcpFormatOf } from './tools.js';
 import { acquireLock, releaseLock } from './update.js';
 
 const execFileAsync = promisify(execFile);
@@ -559,9 +558,10 @@ async function claudeUserRoot(): Promise<string> {
 
 /**
  * The settings files an agent hook for `tool` can sit in, absolute: first the
- * user-scope file `teamai pull` writes and the tool reads, then the
- * project-scope path that versions before #1220 wrote under $HOME, when it
- * differs. Installs write the first; removals clear them all.
+ * user-scope file `teamai pull` writes and the tool reads, in its home a
+ * recorded or env move relocates, then the project-scope path that versions
+ * before #1220 wrote under $HOME, and the default home's file, when they
+ * differ. Installs write the first; removals clear them all.
  */
 async function agentHookSettingsPaths(config: LocalAgentConfig | null, tool: string): Promise<string[]> {
   // Hook cleanup also runs after the source configuration has been cleared.
@@ -572,18 +572,23 @@ async function agentHookSettingsPaths(config: LocalAgentConfig | null, tool: str
     throw new Error(`unsupported tool: ${tool} (no settings path)`);
   }
   const legacy = applyToolRoots(teamConfig.toolPaths, toolRoots)[tool]?.settings;
-  return [...new Set([settings, legacy ?? settings])].map((rel) => path.join(getUserHome(), rel));
+  const home = getUserHome();
+  return [...new Set([hookSettingsFile(tool, home, settings), ...[settings, legacy ?? settings].map((rel) => path.join(home, rel))])];
 }
 
 async function memberCodexTrust(): Promise<CodexTrustPolicy> {
-  const { loadLocalConfig } = await import('./config.js');
-  return codexTrustPolicy(await loadLocalConfig() ?? {});
+  const { loadLocalConfig, loadMemberSettings } = await import('./config.js');
+  const local = await loadLocalConfig();
+  const settings = local?.scope === 'user' ? local : { ...(await loadMemberSettings()), ...local };
+  return codexTrustPolicy(settings);
 }
 
 /** The member turned off teamai's Codex trust writes (`codexTrustEnabled: false`). */
 async function codexTrustDisabled(): Promise<boolean> {
-  const { loadLocalConfig } = await import('./config.js');
-  return (await loadLocalConfig())?.codexTrustEnabled === false;
+  const { loadLocalConfig, loadMemberSettings } = await import('./config.js');
+  const local = await loadLocalConfig();
+  const settings = local?.scope === 'user' ? local : { ...(await loadMemberSettings()), ...local };
+  return settings.codexTrustEnabled === false;
 }
 
 function agentHookCodexTrust(disabled: boolean, settingsPath: string): CodexTrustPolicy {
@@ -2816,19 +2821,29 @@ async function syncClaudemd(
     }
     const location = await locate(tool, 'blocks', install);
     // A server-sent workspace can exist where OpenClaw's own lookup finds none.
-    const openclawWs = tool === 'openclaw' && localConfig.scope !== 'project' ? await resolveOpenclawWorkspaceDir(workspacePath) : null;
-    const own: FilePlace | null = openclawWs
-      ? { kind: 'file', path: path.join(openclawWs, 'AGENTS.md'), owned: false, header: null }
+    const sentWorkspace = tool === 'openclaw' && localConfig.scope !== 'project' && workspacePath !== undefined && await pathExists(workspacePath)
+      ? workspacePath
+      : null;
+    const own: FilePlace | null = sentWorkspace !== null
+      ? { kind: 'file', path: path.join(sentWorkspace, 'AGENTS.md'), owned: false, header: null }
       : ownOf(location);
+    const unreadable = sentWorkspace === null ? unreadableConfigOf(location) : undefined;
+    if (unreadable !== undefined) {
+      const problem = `teamai cannot read ${unreadable.file} as plain JSON, so it cannot tell which workspace ${tool} reads, `
+        + 'and writes no instructions there. Make that file plain JSON (no comments or trailing commas), then retry.';
+      log.warn(problem);
+      skipped.push(problem);
+      continue;
+    }
     if (own === null) continue;
-    const toolInstalled = openclawWs ? await pathExists(openclawWs) : writable(location) !== null;
+    const toolInstalled = sentWorkspace !== null || writable(location) !== null;
     if (!toolInstalled) {
       log.debug(`Skipped CLAUDE.md sync for ${tool}: target not found`);
       continue;
     }
 
     const claudeMdPath = own.path;
-    const baseDir = resolveToolBaseDir(tool, localConfig);
+    const baseDir = resolveBaseDir(localConfig);
     // OpenCode V1's Claude fallback already carries the blocks, as in pull
     // (#945), so OpenCode's file is written for V2's plugin but not listed.
     const claudeUserFile = opencodeV1ClaudeFile(getUserHome());
@@ -2893,7 +2908,7 @@ async function syncClaudemd(
     for (const tool of target.tools) {
       if (tool === 'opencode' && block && !resolved.opencodeFallback) {
         const { opencodeContextReference, readOpencodeInstructionList } = await import('./resources/opencode-config.js');
-        const { config, entry } = opencodeContextReference(target.path, localConfig.scope, resolveToolBaseDir(tool, localConfig));
+        const { config, entry } = opencodeContextReference(target.path, localConfig.scope, resolveBaseDir(localConfig));
         if (!(await readOpencodeInstructionList(config))?.includes(entry)) continue;
       }
       reached.push(tool);
@@ -3719,9 +3734,6 @@ async function runHookRuleCommand(
   if (!tool) {
     throw new Error('install_hook_rule: missing current tool in context');
   }
-  if (!isAgentHookSupportedTool(tool)) {
-    throw new Error(`unsupported tool: ${tool}`);
-  }
   const slug = command.slug;
   if (!slug) {
     throw new Error(`${command.type}: missing slug`);
@@ -3752,7 +3764,10 @@ async function runHookRuleCommand(
     return undefined;
   }
 
-  // install_hook_rule
+  // install_hook_rule. Removal above acts on the tool the hook was installed for, whatever runs now.
+  if (!isAgentHookSupportedTool(tool)) {
+    throw new Error(`unsupported tool: ${tool}`);
+  }
   const event = command.event;
   const cmd = command.cmd;
   if (!event || !cmd) {
@@ -3801,7 +3816,7 @@ async function runHookRuleCommand(
     const { applyOpenClawAgentHook } = await import('./openclaw-hooks.js');
     await applyOpenClawAgentHook({ slug, event, command: cmd, tool, matcher, timeout });
   } else if (tool === 'opencode') {
-    // OpenCode loads plugins from ~/.config/opencode/plugin (user scope).
+    // OpenCode loads user plugins from the plugin directory of its config home.
     const { applyOpencodeAgentHook } = await import('./opencode-hooks.js');
     await applyOpencodeAgentHook({ slug, event, command: cmd, baseDir: getUserHome(), scope: 'user', matcher });
   } else if (tool === 'pi') {
@@ -3962,7 +3977,7 @@ async function installMcpServer(
     throw new Error(`install_mcp: tool "${tool}" has no MCP config path for scope "${scope}"`);
   }
 
-  const format = detectMcpFormat(tool);
+  const format = mcpFormatOf(tool);
   if (!format) {
     throw new Error(`install_mcp: tool "${tool}" has no known MCP format`);
   }
@@ -4172,7 +4187,7 @@ async function uninstallMcpServer(
   if (!place) return;
 
   const projectScope = scope === 'project';
-  const format = detectMcpFormat(tool);
+  const format = mcpFormatOf(tool);
   if (!format) return;
 
   const { resolveDataHomeForScope } = await import('./config.js');

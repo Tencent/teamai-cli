@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { channelReadiness } from '../instruction-targets.js';
-import { buildPiExtensionSource, resolvePiExtensionsDir, PI_HOOK_FILE } from '../pi-hooks.js';
+import { buildPiExtensionSource, PI_HOOK_FILE } from '../pi-hooks.js';
+import { hookAdapterDir } from '../locate.js';
 import { buildPluginSource, opencodeContextPlugin, resolveOpencodePluginDir, OPENCODE_HOOK_FILE } from '../opencode-hooks.js';
 
 let home: string;
@@ -11,13 +12,14 @@ let entry: string;
 beforeEach(() => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-launcher-check-'));
   vi.stubEnv('HOME', home); vi.stubEnv('USERPROFILE', home);
+  vi.stubEnv('PI_CODING_AGENT_DIR', '');
   vi.stubEnv('OPENCODE_CONFIG_DIR', ''); vi.stubEnv('XDG_CONFIG_HOME', '');
   entry = path.join(home, 'other install.mjs');
   fs.writeFileSync(entry, '// CLI entry in another installation');
 });
 afterEach(() => { vi.unstubAllEnvs(); fs.rmSync(home, { recursive: true, force: true }); });
 it('accepts a Pi extension installed by another live CLI entry, but not a missing entry or altered handler', async () => {
-  const file = path.join(resolvePiExtensionsDir(), PI_HOOK_FILE);
+  const file = path.join(hookAdapterDir('pi-extension'), PI_HOOK_FILE);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const source = buildPiExtensionSource(entry);
   fs.writeFileSync(file, source);
@@ -45,6 +47,45 @@ it.each(['bun', 'hermes'])('recognizes %s launcher metadata without ignoring han
     : `${value.slice(0, -1)}, "hook-dispatch", "instructions", "--tool", "hermes"]`;
   expect(await hookSourceMatches(source(launcher), source(current))).toBe(true);
   expect(await hookSourceMatches(source(launcher) + '\nchanged();', source(current))).toBe(false);
+  expect(await hookSourceMatches(source(JSON.stringify([entry, process.execPath])), source(current))).toBe(false);
   fs.unlinkSync(entry);
+  fs.mkdirSync(entry);
   expect(await hookSourceMatches(source(launcher), source(current))).toBe(false);
+  fs.rmdirSync(entry);
+  expect(await hookSourceMatches(source(launcher), source(current))).toBe(false);
+});
+
+it.each(['node', 'node-22', 'nodejs', 'nodejs-22', 'node.exe', 'node-22.exe', 'bun', 'bun.exe'])('accepts a Pi launcher saved with the %s runtime name', async name => {
+  const runtime = path.join(home, name);
+  fs.writeFileSync(runtime, 'runtime fixture');
+  const file = path.join(hookAdapterDir('pi-extension'), PI_HOOK_FILE);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const source = buildPiExtensionSource(entry)
+    .replace(`const NODE = ${JSON.stringify(process.execPath)};`, `const NODE = ${JSON.stringify(runtime)};`);
+  fs.writeFileSync(file, source);
+  expect((await channelReadiness('pi', 'pi-extension')).ready).toBe(true);
+  expect(fs.readFileSync(file, 'utf8')).toBe(source);
+});
+
+it.each(['entry directory', 'runtime directory', 'swapped paths', 'shell runtime'])('rejects a Pi launcher with %s', async kind => {
+  const file = path.join(hookAdapterDir('pi-extension'), PI_HOOK_FILE);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  let source = buildPiExtensionSource(entry);
+  if (kind === 'entry directory') {
+    fs.unlinkSync(entry);
+    fs.mkdirSync(entry);
+  } else if (kind === 'runtime directory') {
+    const runtime = path.join(home, 'node');
+    fs.mkdirSync(runtime);
+    source = source.replace(`const NODE = ${JSON.stringify(process.execPath)};`, `const NODE = ${JSON.stringify(runtime)};`);
+  } else if (kind === 'swapped paths') {
+    source = source.replace(`const NODE = ${JSON.stringify(process.execPath)};`, `const NODE = ${JSON.stringify(entry)};`)
+      .replace(`const ENTRY = ${JSON.stringify(entry)};`, `const ENTRY = ${JSON.stringify(process.execPath)};`);
+  } else {
+    const runtime = path.join(home, 'sh');
+    fs.writeFileSync(runtime, 'shell runtime fixture');
+    source = source.replace(`const NODE = ${JSON.stringify(process.execPath)};`, `const NODE = ${JSON.stringify(runtime)};`);
+  }
+  fs.writeFileSync(file, source);
+  expect((await channelReadiness('pi', 'pi-extension')).ready).toBe(false);
 });

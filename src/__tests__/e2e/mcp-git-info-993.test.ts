@@ -17,7 +17,7 @@ import { createServer } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { trackDetachedProcesses } from '../helpers/detached-processes.js';
+import { waitForDetachedChildren } from '../helpers/detached-processes.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -37,7 +37,6 @@ interface Run { code: number | null; output: string }
 let sandbox: string;
 let home: string;
 /** The background hook-dispatch a session start leaves running, and anything else the CLI detaches. */
-let detached: ReturnType<typeof trackDetachedProcesses>;
 
 function env(): NodeJS.ProcessEnv {
   const base: NodeJS.ProcessEnv = {
@@ -48,7 +47,6 @@ function env(): NodeJS.ProcessEnv {
     XDG_CONFIG_HOME: path.join(home, '.config'),
     GIT_CONFIG_NOSYSTEM: '1',
     SHELL: '/bin/bash',
-    NODE_OPTIONS: [process.env.NODE_OPTIONS, detached.nodeOptions].filter(Boolean).join(' '),
     FORCE_COLOR: '0',
   };
   delete base.CLAUDE_CONFIG_DIR;
@@ -177,12 +175,11 @@ describe('a repository without .git/info/ (#993 bug 5)', () => {
     sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-git-info-e2e-')));
     home = path.join(sandbox, 'home');
     fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
-    detached = trackDetachedProcesses(sandbox);
   });
 
   afterAll(async () => {
     // Init and pull may detach children too: none may write into the sandbox while it goes.
-    if (detached) await detached.waitForExit();
+    await waitForDetachedChildren();
     if (sandbox) fs.rmSync(sandbox, { recursive: true, force: true });
   });
 
@@ -283,7 +280,7 @@ describe('a repository without .git/info/ (#993 bug 5)', () => {
         const code = await new Promise<number | null>((resolve) => child.on('close', resolve));
         // The hook leaves its background pass (`hook-dispatch --bg-only`) running in the
         // sandbox HOME; it must end before this fixture removes the local agent's state.
-        await detached.waitForExit();
+        await waitForDetachedChildren();
         expect(code, output).toBe(0);
         expect(acks, output).toHaveLength(1);
         return acks[0];

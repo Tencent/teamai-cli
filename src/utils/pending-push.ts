@@ -245,12 +245,18 @@ export async function toPendingItems(items: ResourceItem[], repoPath: string): P
  * found in its namespace by the scanner, which means that namespace is active
  * here and the scan will find it again; recording it would turn a temporary
  * activation into standing permission to keep editing an agent long after the
- * role or project that granted it was dropped. The one exception is an agent
- * the scan reached THROUGH its record and rewrote under another extension
- * (`supersedes`): the record has to follow it to the new path.
+ * role or project that granted it was dropped. The exception is an agent the
+ * scan reached THROUGH its record: rewritten under another extension
+ * (`supersedes`), the record has to follow it to the new path; edited where
+ * the record holds what this machine delivered (`deliveredBlob`), that blob
+ * has to follow the edit, or the member's next push reads their own merged
+ * edit as a teammate's; edited where the record holds no blob yet
+ * (`needsDeliveredBlob`), the edit gives it one.
  */
 export function isPlacement(item: ResourceItem): boolean {
   if (item.type === 'agents' && 'supersedes' in item && typeof item.supersedes === 'string') return true;
+  if (item.type === 'agents' && 'deliveredBlob' in item && typeof item.deliveredBlob === 'string') return true;
+  if (item.type === 'agents' && 'needsDeliveredBlob' in item && item.needsDeliveredBlob === true) return true;
   if (item.status !== 'new' || !item.namespace) return false;
   // A rule the scanner already found in a subdirectory carries the namespace
   // in its name and matches by full path, so it needs no record.
@@ -321,7 +327,7 @@ function sharedRootPaths(root: 'rules' | 'agents', name: string): string[] {
  */
 export async function reconcilePlacementRecords(
   repoPath: string,
-  state: Pick<State, 'placedRules' | 'placedAgents' | 'pendingPushes' | 'placementsCheckedAt' | 'retiredPlacedAgents' | 'placements'>,
+  state: Pick<State, 'placedRules' | 'placedAgents' | 'placedAgentSources' | 'pendingPushes' | 'placementsCheckedAt' | 'retiredPlacedAgents' | 'placements'>,
   tip?: string,
   deliversEveryNamespace: () => Promise<boolean> = async () => false,
 ): Promise<boolean> {
@@ -371,7 +377,18 @@ export async function reconcilePlacementRecords(
         changed = true;
         continue;
       }
-      if (!await exists(item.relativePath)) continue;
+      if (!await exists(item.relativePath)) {
+        // A placement can merge and be deleted before this machine observes
+        // it. History still proves that the root copy belongs to that agent.
+        if (field === 'placedAgents'
+          && await blobInHistory(repoPath, item.blob, item.relativePath, entry.base, history) === true) {
+          state.retiredPlacedAgents = { ...state.retiredPlacedAgents, [item.name]: item.relativePath };
+          item.placed = false;
+          delete item.blob;
+          changed = true;
+        }
+        continue;
+      }
       // Bounded by `base`: the same bytes may have sat at this path before the
       // push, and a PR closed unmerged must not borrow that history.
       if (await blobInHistory(repoPath, item.blob, item.relativePath, entry.base, history) !== true) {
@@ -399,6 +416,7 @@ export async function reconcilePlacementRecords(
       if (entry.base && await pathDeletedSince(repoPath, entry.base, item.relativePath, history) === true) {
         log.debug(`Not recording placement ${field ?? placementKey}.${item.name}: ${item.relativePath} was deleted after it landed`);
         item.placed = false;
+        if (field === 'placedAgents') state.retiredPlacedAgents = { ...state.retiredPlacedAgents, [item.name]: item.relativePath };
         delete item.blob;
         changed = true;
         continue;
@@ -406,6 +424,9 @@ export async function reconcilePlacementRecords(
       log.debug(`Recording placement ${field ?? placementKey}.${item.name} → ${item.relativePath}: landed on the default branch`);
       if (field) {
         state[field] = { ...state[field], [item.name]: item.relativePath };
+        if (field === 'placedAgents') {
+          state.placedAgentSources = { ...state.placedAgentSources, [item.name]: { path: item.relativePath, blob: item.blob } };
+        }
         recordedNow.add(`${field}:${item.name}`);
       } else if (placementKey) {
         state.placements = { ...state.placements, [placementKey]: { path: item.relativePath, blob: item.blob } };
@@ -463,6 +484,26 @@ export async function reconcilePlacementRecords(
       kept[name] = recorded;
     }
     state[field] = kept;
+  }
+
+  // A new shared source supersedes the deleted namespaced copy's history.
+  // Otherwise its author can never publish edits after the team re-adds it.
+  for (const name of Object.keys(state.retiredPlacedAgents ?? {})) {
+    for (const candidate of sharedRootPaths('agents', name)) {
+      if (await exists(candidate)) {
+        delete state.retiredPlacedAgents?.[name];
+        changed = true;
+        break;
+      }
+    }
+  }
+
+  const agentSources = state.placedAgentSources;
+  for (const [name, source] of Object.entries(agentSources ?? {})) {
+    if (state.placedAgents?.[name] !== source.path) {
+      if (agentSources) delete agentSources[name];
+      changed = true;
+    }
   }
 
   // A repo-backed placement whose destination is gone from the default branch

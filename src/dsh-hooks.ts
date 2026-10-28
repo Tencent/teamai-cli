@@ -12,7 +12,7 @@ import YAML from 'yaml';
 import { reconcileHooks } from './hooks.js';
 import type { BuiltinHookOverride } from './builtin-hooks.js';
 import { isAgentExcluded, type HookDef, type LocalConfig } from './types.js';
-import { getUserHome } from './utils/home.js';
+import { hookAdapterDir } from './locate.js';
 import { toolHome } from './tool-home.js';
 import { pathExists, readFileSafe, remove, writeIfChanged } from './utils/fs.js';
 import { log } from './utils/logger.js';
@@ -23,28 +23,15 @@ export const DSH_HOOK_PLUGIN_ID = 'teamai-hooks-claude-code';
 export const DSH_HOOK_PLUGIN_PACKAGE = '@deepseek-ai/dsh-hooks-claude-code';
 
 /**
- * DeepSeek Harness's own home, where it reads the user `AGENTS.md`: the
- * recorded one (`toolHome`), else `DSH_HOME`, else `~/.dsh` (dsh `config.ts` `dshHome`).
- */
-export function resolveDshHome(): string {
-  return toolHome('dsh');
-}
-
-/**
- * Whether DeepSeek Harness is installed: its home (`resolveDshHome`) exists.
+ * Whether DeepSeek Harness is installed: its home (`toolHome('dsh')`) exists.
  * The hook bridge, the user-scope rules file, doctor and init all ask here.
  */
 export async function isDshInstalled(): Promise<boolean> {
-  return pathExists(resolveDshHome());
-}
-
-/** The TeamAI-managed DSH bridge directory under the resolved user home. */
-export function resolveDshHooksDir(): string {
-  return path.join(getUserHome(), '.teamai', 'dsh');
+  return pathExists(toolHome('dsh'));
 }
 
 export function resolveDshHookConfigPath(): string {
-  return path.join(resolveDshHooksDir(), DSH_HOOK_CONFIG_FILE);
+  return path.join(hookAdapterDir('dsh-hooks'), DSH_HOOK_CONFIG_FILE);
 }
 
 /**
@@ -53,14 +40,14 @@ export function resolveDshHookConfigPath(): string {
  * home patch already mounts the hooks, so inserting them again would load them twice.
  */
 export function resolveDshPatchPath(): string {
-  return path.join(resolveDshHooksDir(), DSH_PATCH_FILE);
+  return path.join(hookAdapterDir('dsh-hooks'), DSH_PATCH_FILE);
 }
 
 const DSH_LEGACY_PATCH = '# teamai mounts its hooks from $DSH_HOME/cordis.patch.yml. Passing this file to dsh --patch is no longer needed.\n[]\n';
 
 /** The patch list dsh applies on every boot: the member's file, in which teamai owns one row. */
 export function resolveDshHomePatchPath(): string {
-  return path.join(resolveDshHome(), DSH_PATCH_FILE);
+  return path.join(toolHome('dsh'), DSH_PATCH_FILE);
 }
 
 const isTeamaiRow = (entry: unknown): boolean => YAML.isMap(entry) && entry.get('id') === DSH_HOOK_PLUGIN_ID;

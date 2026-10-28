@@ -11,7 +11,7 @@ import { LabelStore } from '../scorers/label-store.js';
 import { getReportsDir, type LocalConfig } from '../types.js';
 import { log } from '../utils/logger.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
-import { leaseNext, parseReport, reportAttempt, startRun } from '../workflow/engine.js';
+import { leaseNext, parseNextPayload, parseReport, reportAttempt, startRun, type NextOptions } from '../workflow/engine.js';
 import { workflowRunDetail } from '../dashboard/workflow-runs.js';
 import { buildEndRecord } from '../workflow/records.js';
 import { projectRun } from '../workflow/snapshot.js';
@@ -88,12 +88,12 @@ async function runOf(config: LocalConfig, runId: string): Promise<RunState> {
 
 /**
  * Starts the review workflow and settles its one step through workflow next and report, as an external driver would,
- * with `reported` added to its report payload.
+ * with `reported` added to its report payload and `asked` to its first next payload.
  */
-async function settledRun(config: LocalConfig, reported: Record<string, unknown> = {}): Promise<string> {
+async function settledRun(config: LocalConfig, reported: Record<string, unknown> = {}, asked: Omit<NextOptions, 'env'> = {}): Promise<string> {
   await syncWorkflowDefinitions(config);
   const runId = String(data(await startRun(config, 'review', {}, { secrets: await knownSecrets(config) })).run);
-  const lease = z.object({ attempt: z.string(), revision: z.number() }).parse(data(await leaseNext(config, runId, workDriver)).lease);
+  const lease = z.object({ attempt: z.string(), revision: z.number() }).parse(data(await leaseNext(config, runId, workDriver, asked)).lease);
   const parsed = parseReport({ attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: workDriver, outputs: { reviewed: true }, ...reported });
   if (typeof parsed === 'string') throw new Error(parsed);
   data(await reportAttempt(config, runId, parsed.report));
@@ -760,6 +760,41 @@ steps:
   it('refuses a report whose used is not a list of skill names', () => {
     expect(parseReport({ attempt: 'a1', revision: 1, outcome: 'success', driver: workDriver, used: { skills: 'review-notes' } }))
       .toBe('used must be an object whose skills is an array of skill names');
+  });
+});
+
+describe('the run mode of a judged pass (#1384)', () => {
+  const labelled = async (config: LocalConfig): Promise<Record<string, unknown>> => {
+    const lease = leaseOf(await nextJudgeLease(config, request()));
+    data(await submitJudgeLease(config, lease.ref, { driver: judgeDriver, outcome: 'success', answer: { label: 'good', reasoning: 'r' } }));
+    return z.object({}).passthrough().parse((await LabelStore.local(config))[0]);
+  };
+
+  it.each([
+    ['unattended', { runMode: 'unattended' as const }, 'unattended'],
+    ['no mode', {}, 'absent'],
+  ])('labels a pass whose driver took its lease %s with its mode, never the judge\'s', async (_, asked, runMode) => {
+    const config = fixture(scorer(100));
+    await settledRun(config, {}, asked);
+
+    const label = await labelled(config);
+
+    expect('runMode' in label ? label.runMode : 'absent').toBe(runMode);
+  });
+
+  it('refuses a next payload whose runMode names no mode', () => {
+    expect(parseNextPayload({ driver: workDriver, runMode: 'robot' })).toBe('runMode must be attended or unattended');
+  });
+
+  it('keeps the mode of a lease the run cancelled before its driver reported', async () => {
+    const config = fixture(scorer(100));
+    await syncWorkflowDefinitions(config);
+    const runId = String(data(await startRun(config, 'review', {}, { secrets: await knownSecrets(config) })).run);
+    data(await leaseNext(config, runId, workDriver, { runMode: 'unattended' }));
+
+    data(await cancelRun(config, runId, await knownSecrets(config)));
+
+    expect(await runOf(config, runId)).toMatchObject({ steps: [{ status: 'cancelled', runMode: 'unattended' }] });
   });
 });
 

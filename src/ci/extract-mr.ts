@@ -14,7 +14,7 @@ import path from 'node:path';
 import { importFromMR } from '../import-mr.js';
 // applyCodebaseSuggestions removed: codebase updates now handled by teamwiki/ graph engine
 import { appendPendingReview } from '../review-store.js';
-import { pushRepoDirectly } from '../utils/git.js';
+import { getDefaultBranch, pushRepoDirectly } from '../utils/git.js';
 import { log } from '../utils/logger.js';
 import type { LearningDraft, CodebaseSuggestion } from '../types.js';
 import { postOrUpdateMrComment, postIndividualComments, postCodebaseGraphComment, parseMrUrl } from './mr-comment.js';
@@ -305,16 +305,17 @@ export async function ciExtractMr(opts: CiExtractMrOptions): Promise<void> {
     // Get the files this MR/PR changed from git
     // Try several ways, to cope with a shallow clone (HEAD~1 does not exist at depth=1)
     let changedFiles: string[] = [];
+    const defaultBranch = await getDefaultBranch(businessRepo).catch(() => 'master');
     const diffCommands = [
       ['diff', '--name-only', 'HEAD~1', 'HEAD'],
       ['show', '--name-only', '--format=', 'HEAD'],
-      ['diff', '--name-only', 'origin/master...HEAD'],
+      ['diff', '--name-only', `origin/${defaultBranch}...HEAD`],
     ];
     for (const args of diffCommands) {
       try {
         const diffOutput = execFileSync(
           'git', args,
-          { cwd: businessRepo, encoding: 'utf-8', timeout: 10_000 },
+          { cwd: businessRepo, encoding: 'utf-8', timeout: 10_000, stdio: ['ignore', 'pipe', 'ignore'] },
         );
         changedFiles = diffOutput.trim().split('\n')
           .filter(f => f && /\.(ts|tsx|js|jsx|py|go|rs|java|swift|scala)$/.test(f));

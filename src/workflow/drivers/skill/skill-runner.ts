@@ -269,7 +269,7 @@ async function begin(context: SkillContext, lock: RunLock, attempt: AttemptId, p
   if (open.phase !== 'preparing') return { kind: 'gone', status: 'gone' };
   const { agent, model, defaultModel, output, place, writes, interactive, readOnly, isolation } = lease;
   const picked = await pickChildModel({
-    config: context.config, toolPaths: context.toolPaths, step: open.step, tool: context.tool,
+    config: context.config, toolPaths: context.toolPaths, step: open.step, tool: state.orchestrator.tool ?? context.tool,
     ...(agent !== undefined ? { agent } : {}), ...(model !== undefined ? { model } : {}), ...(defaultModel !== undefined ? { defaultModel } : {}),
   });
   if (!picked.ok) return failed(picked.failure, 'model');

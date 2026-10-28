@@ -56,7 +56,7 @@ describe('the SOUL.md rules block an older project pull wrote, on a machine with
       additionalRoles: [], scope: 'project', projectRoot, enabledAgents: ['hermes', 'claude'],
     } as LocalConfig);
     // What a pre-#946 project pull wrote into the global SOUL.md.
-    await upsertSoulRules('Old project rule that the team since deleted.');
+    await upsertSoulRules(path.join(home, '.hermes', 'SOUL.md'), 'Old project rule that the team since deleted.');
   });
   afterEach(async () => { vi.unstubAllEnvs(); vi.mocked(detectProjectConfig).mockResolvedValue(null); await fse.remove(tmp); });
 
@@ -65,13 +65,13 @@ describe('the SOUL.md rules block an older project pull wrote, on a machine with
 
     await pull({});
 
-    expect(await readSoulRules()).toBe('Old project rule that the team since deleted.');
+    expect(await readSoulRules(path.join(home, '.hermes', 'SOUL.md'))).toBe('Old project rule that the team since deleted.');
   });
 
   it('leaves the block alone on a dry run', async () => {
     await pull({ dryRun: true });
 
-    expect(await readSoulRules()).toBe('Old project rule that the team since deleted.');
+    expect(await readSoulRules(path.join(home, '.hermes', 'SOUL.md'))).toBe('Old project rule that the team since deleted.');
   });
 
   it('keeps the block when Hermes is excluded in the project', async () => {
@@ -81,7 +81,7 @@ describe('the SOUL.md rules block an older project pull wrote, on a machine with
 
     await pull({});
 
-    expect(await readSoulRules()).toBe('Old project rule that the team since deleted.');
+    expect(await readSoulRules(path.join(home, '.hermes', 'SOUL.md'))).toBe('Old project rule that the team since deleted.');
   });
 
   it('is removed by a project pull', async () => {
@@ -90,10 +90,10 @@ describe('the SOUL.md rules block an older project pull wrote, on a machine with
 
     await pull({});
 
-    expect(await readSoulRules()).toBeNull();
+    expect(await readSoulRules(path.join(home, '.hermes', 'SOUL.md'))).toBeNull();
     expect(await fse.readFile(soul, 'utf8')).toContain('My own standing instructions.');
-    await upsertSoulRules('Another stale project block.');
+    await upsertSoulRules(path.join(home, '.hermes', 'SOUL.md'), 'Another stale project block.');
     await pull({});
-    expect(await readSoulRules()).toBeNull();
+    expect(await readSoulRules(path.join(home, '.hermes', 'SOUL.md'))).toBeNull();
   });
 });

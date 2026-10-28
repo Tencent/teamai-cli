@@ -10,9 +10,9 @@
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { locate, unreadWrites, writesOf, type Install, type Location, type Place, type Resource, type Retired } from '../../locate.js';
-import type { BlocksHeader, ChannelProbe, ReadGateKind, RunTimeVia } from '../../tools.js';
+import { isToolId, TOOLS, type BlocksHeader, type ChannelProbe, type HomeMove, type ReadGateKind, type RunTimeVia, type ToolDescriptor } from '../../tools.js';
 import type { Host } from '../../tool-home.js';
-import { DEFAULT_TOOL_PATHS, type TeamaiConfig } from '../../types.js';
+import { DEFAULT_TOOL_PATHS, type TeamaiConfig, type ToolId } from '../../types.js';
 
 type Platform = 'darwin' | 'linux' | 'win32';
 /** The session's directory: a project root in $HOME, a subdirectory of it, or a root outside $HOME (#1197). */
@@ -41,6 +41,8 @@ type RowCommon = {
   readonly env?: Readonly<Record<string, Spot>>;
   readonly envLiterals?: Readonly<Record<string, string>>;
   readonly json?: readonly { readonly at: Spot; readonly value: Record<string, unknown> }[];
+  /** JSON files `host.readJson` cannot parse: an openclaw.json with comments. */
+  readonly invalidJson?: readonly Spot[];
   /** Small text files `host.readText` finds: a linked worktree's `.git` and `commondir`. */
   readonly texts?: readonly { readonly at: Spot; readonly text: string }[];
   /** Paths `host.exists` finds: directories, and the files a first-existing lookup tries. */
@@ -61,6 +63,8 @@ type RowCommon = {
   readonly platforms?: readonly Platform[];
   /** null: nothing says whether the tool is installed, so the location has no `installed` gate. */
   readonly installed: { readonly probe: Spot; readonly met: boolean } | null;
+  /** `none`: the resource puts no gate on teamai's write, not even `selected` (sessions). */
+  readonly gates?: 'none';
   readonly readableConfig?: { readonly file: Spot; readonly met: boolean };
   readonly retired?: readonly { readonly at: Spot; readonly was: Retired<Place>['was'] }[];
   readonly source: string;
@@ -82,6 +86,8 @@ export type FilesRow = RowCommon & {
   /** OpenCode's `instructions` key (rules, blocks); null when the row omits it and the location has the field. */
   readonly activation?: PlaceSpec;
   readonly alternate?: PlaceSpec;
+  /** The project file a team repo's workspace takes the team's hooks in (Copilot); null when the row omits it and the location has the field. */
+  readonly workspace?: PlaceSpec;
   readonly writtenBy?: string;
   /** Cells whose write the tool does not read from some cwd, with the issue that tracks it. */
   readonly broken?: Partial<Record<Cwd, { readonly reason: 'not-read' | 'shadowed' | 'cwd-only' | 'outside-workspace'; readonly issue: `#${number}` }>>;
@@ -135,21 +141,26 @@ function envFor(row: MatrixRow, platform: Platform, cwd: Cwd): Record<string, st
 function hostFor(row: MatrixRow, cell: Cell): Host {
   const existing = new Set(row.existingDirs.map((spot) => at(spot, cell)));
   const files = new Map((row.json ?? []).map((file) => [at(file.at, cell), file.value]));
+  const invalid = new Set((row.invalidJson ?? []).map((spot) => at(spot, cell)));
   const texts = new Map((row.texts ?? []).map((file) => [at(file.at, cell), file.text]));
   return {
     platform: cell.platform,
     path: flavorOf(cell.platform),
     home: HOMES[cell.platform],
+    profileHome: HOMES[cell.platform],
     env: cell.env,
     toolHomes: { kind: 'ok', homes: expand(row.toolHomes, cell) },
     cwd: () => cwdOf(cell.platform, cell.cwd),
     exists: async (dir) => existing.has(dir),
     readJson: async (file) => {
+      if (invalid.has(file)) return { kind: 'invalid', error: 'Unexpected token' };
       const value = files.get(file);
       return value === undefined ? { kind: 'missing' } : { kind: 'ok', value };
     },
     realpath: async (file) => file,
     readText: async (file) => texts.get(file) ?? null,
+    existsNow: (file) => existing.has(file),
+    readTextNow: (file) => texts.get(file) ?? null,
     userToolRoots: async () => row.userToolRoots && expand(row.userToolRoots, cell),
   };
 }
@@ -187,7 +198,7 @@ function isFilesRow(row: MatrixRow): row is FilesRow {
 function conditionsOf(row: MatrixRow): string {
   const conditions = [
     ...Object.keys(row.env ?? {}), ...Object.entries(row.envLiterals ?? {}).map(([name, value]) => `${name}=${value}`),
-    ...(row.json ?? []).map((file) => file.at), ...(row.texts ?? []).map((file) => file.at), ...Object.keys(row.toolHomes ?? {}).map((tool) => `recorded ${tool}`),
+    ...(row.json ?? []).map((file) => file.at), ...(row.invalidJson ?? []).map((spot) => `unreadable ${spot}`), ...(row.texts ?? []).map((file) => file.at), ...Object.keys(row.toolHomes ?? {}).map((tool) => `recorded ${tool}`),
     ...Object.keys(row.userToolRoots ?? {}).map((tool) => `user toolRoots.${tool}`),
     ...(row.install?.gitExclude ? ['gitExclude'] : []), ...(row.install?.self ? ['self'] : []),
     ...(row.install?.workspaceChildren ? ['children'] : []), ...(row.installed === null || row.installed.met ? [] : ['not installed']),
@@ -209,8 +220,85 @@ function expectFiles(row: FilesRow, where: Location, cell: Cell, host: Host): vo
   if ('activation' in where) expect(where.activation).toEqual(row.activation === undefined ? null : expect.objectContaining(placeOf(row.activation, cell)));
   if ('alternate' in where) expect(where.alternate).toEqual(row.alternate === undefined ? null : expect.objectContaining(placeOf(row.alternate, cell)));
   if ('writtenBy' in where) expect(where.writtenBy).toEqual(row.writtenBy ?? null);
+  if ('workspace' in where) expect(where.workspace).toEqual(row.workspace === undefined ? null : expect.objectContaining(placeOf(row.workspace, cell)));
   const broken = row.broken?.[cell.cwd];
   expect(unreadWrites<Place>(where, host).map((unread) => unread.reason)).toEqual(broken ? [broken.reason] : []);
+}
+
+/**
+ * A setting that moves a tool's home (`Home.moves`), as a row sets it: env
+ * values, a text file (Hermes's `active_profile`), or a Windows cell for `%LOCALAPPDATA%`.
+ */
+type MoveSetting = {
+  readonly tool: ToolId;
+  readonly name: string;
+  readonly env: Readonly<Record<string, string>>;
+  readonly text?: { readonly at: Spot; readonly text: string };
+  readonly win32: boolean;
+};
+
+function moveSettingsOf(tool: ToolId, move: HomeMove): MoveSetting[] {
+  const setting = (name: string, value: string): MoveSetting => ({ tool, name, env: { [name]: value }, win32: false });
+  switch (move.kind) {
+    case 'env':
+      return [setting(move.name, '/moved')];
+    case 'xdg':
+      return [setting('XDG_CONFIG_HOME', '/moved')];
+    case 'openclaw-state':
+      return [setting('OPENCLAW_STATE_DIR', '/moved'), setting('OPENCLAW_HOME', '/moved'), setting('OPENCLAW_PROFILE', 'moved')];
+    case 'omp-agent':
+      return [setting('OMP_PROFILE', 'moved'), setting('PI_PROFILE', 'moved'), setting('PI_CONFIG_DIR', '.moved')];
+    case 'hermes-home':
+      return [
+        setting('HERMES_HOME', '/moved'), setting('HERMES_DATA_DIR_SUFFIX', '-moved'),
+        { tool, name: 'LOCALAPPDATA', env: { LOCALAPPDATA: 'D:\\moved' }, win32: true },
+        { tool, name: 'active_profile', env: {}, text: { at: '~/.hermes/active_profile', text: 'moved' }, win32: false },
+      ];
+    default: {
+      const unhandled: never = move;
+      return unhandled;
+    }
+  }
+}
+
+function moveSettings(): MoveSetting[] {
+  return Object.keys(TOOLS).filter(isToolId).flatMap((tool) => {
+    const { home }: ToolDescriptor = TOOLS[tool];
+    return (home.moves?.by ?? []).flatMap((move) => moveSettingsOf(tool, move));
+  });
+}
+
+/** The paths `tool` writes `resource` to on a host where every path exists, with `env` set. */
+async function writesWith(resource: Resource, tool: ToolId, scope: 'user' | 'project', platform: Platform, env: Readonly<Record<string, string>>, texts: RowCommon['texts'] = []): Promise<string[]> {
+  const row: MatrixRow = { tool, scope, existingDirs: [], texts, installed: null, channel: 'none', source: '' };
+  const cell: Cell = { platform, cwd: 'project-root', env };
+  const host: Host = { ...hostFor(row, cell), exists: async () => true };
+  return writesOf<Place>(await locate(tool, resource, installFor(row, cell), host)).map((place) => place.path);
+}
+
+/**
+ * The home moves that move a write of `resource` and no row sets: each one a
+ * cell the matrix lacks (issue #1221: "each env override").
+ */
+async function uncoveredMoves(resource: Resource, rows: readonly MatrixRow[]): Promise<string[]> {
+  const uncovered: string[] = [];
+  for (const move of moveSettings()) {
+    for (const scope of ['user', 'project'] as const) {
+      const platform: Platform = move.win32 ? 'win32' : 'darwin';
+      const base = envFor({ tool: move.tool, scope, existingDirs: [], installed: null, channel: 'none', source: '' }, platform, 'project-root');
+      const moved = { ...base, ...move.env };
+      const texts = move.text === undefined ? [] : [move.text];
+      const [before, after] = await Promise.all([writesWith(resource, move.tool, scope, platform, base), writesWith(resource, move.tool, scope, platform, moved, texts)]);
+      if (JSON.stringify(before) === JSON.stringify(after)) continue;
+      const { text } = move;
+      const covered = rows.some((row) => row.tool === move.tool && row.scope === scope && (move.win32
+        ? (row.platforms ?? ['win32']).includes('win32')
+        : text !== undefined ? (row.texts ?? []).some((file) => file.at === text.at)
+          : Object.hasOwn(row.env ?? {}, move.name) || Object.hasOwn(row.envLiterals ?? {}, move.name)));
+      if (!covered) uncovered.push(`${move.tool} ${scope} ${move.name}`);
+    }
+  }
+  return uncovered;
 }
 
 export function describeLocateMatrix(resource: Resource, rows: readonly MatrixRow[]): void {
@@ -225,7 +313,8 @@ export function describeLocateMatrix(resource: Resource, rows: readonly MatrixRo
             const where: Location = await locate(row.tool, resource, installFor(row, cell), host);
             const installed = row.installed === null ? [] : [{ kind: 'installed', probe: at(row.installed.probe, cell), met: row.installed.met }];
             const readable = row.readableConfig === undefined ? [] : [{ kind: 'readable-config', file: at(row.readableConfig.file, cell), met: row.readableConfig.met }];
-            expect(where.gates).toEqual([{ kind: 'selected', met: !(row.install?.disabledAgents ?? []).includes(row.tool) }, ...installed, ...readable]);
+            const selected = { kind: 'selected', met: !(row.install?.disabledAgents ?? []).includes(row.tool) };
+            expect(where.gates).toEqual(row.gates === 'none' ? [] : [selected, ...installed, ...readable]);
             expect(where.retired.map((retired) => ({ path: retired.place.path, was: retired.was })))
               .toEqual((row.retired ?? []).map((retired) => ({ path: at(retired.at, cell), was: retired.was })));
             if (isFilesRow(row)) {
@@ -239,6 +328,10 @@ export function describeLocateMatrix(resource: Resource, rows: readonly MatrixRo
         }
       }
     }
+
+    it('every home move that moves a write has a row that sets it', async () => {
+      expect(await uncoveredMoves(resource, rows)).toEqual([]);
+    });
 
     it('every row write is among its reads, or the row names its issue', () => {
       const spotOf = (write: PlaceSpec): Spot => typeof write === 'string' ? write : write.at;

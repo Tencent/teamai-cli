@@ -31,8 +31,9 @@ import {
 import { attemptDir, AttemptIdSchema, attemptResultPath, attemptsDir, readRun, RunIdSchema, withRunLock, type RunId, type RunLock } from '../../store.js';
 import { abandonPlace, placeLeaseOf, placeOf, placeRoot, preparePlace, runPlaceSetup, type StepEnd } from '../../place/place.js';
 import { commandEnd, managedReport, unreadablePlace } from '../../protocol.js';
+import { memberTools, type MemberTool } from '../../../tool-launch/call.js';
 import { startGroupedCommand, stopRecordedGroup, type CommandExit, type GroupedCommand } from '../../../tool-launch/process-stop.js';
-import { isLaunchTool, localToolFamily, type LaunchTool } from '../../../tool-launch/tools.js';
+import { isLaunchTool, LAUNCH_ORDER, LAUNCH_TOOLS, launchAdapterIdOf, type LaunchTool } from '../../../tool-launch/tools.js';
 import { chooseStepModel, loadDeployedAgent } from '../../step-model.js';
 import type { DriverIdentity, StepHitl, WorkflowEnvelope, WorkflowFailure } from '../../types.js';
 import { isWorkflowError, WORKSPACE_MODES } from '../../types.js';
@@ -173,13 +174,47 @@ function supportedTool(value: string): value is LaunchTool {
   return isLaunchTool(value);
 }
 
+/**
+ * The tool a prompt step runs on: `--tools`, then `workflows.tools`, the agent's entry before the default, with the
+ * member's own AI tool between them: TEAMAI_AI_TOOL before `workflows.tools.default`, and `ai.tool`, the project's before
+ * the machine's, after it. A member's tool that teamai does not launch fails the step; one that runs no workflow step
+ * gives way to the next rung.
+ */
+function stepTool(agent: string | undefined, config: LocalConfig, flags: Record<string, string>, members: MemberTool[]): { ok: true; tool: string | undefined } | { ok: false; failure: WorkflowFailure } {
+  const configured = config.workflows?.tools ?? {};
+  const member = ({ setting, tool }: MemberTool) => ({ source: setting, named: tool, member: true });
+  const rungs = [
+    { source: '--tools', named: agent ? flags[agent] : undefined, member: false },
+    { source: `workflows.tools.${agent}`, named: agent ? configured[agent] : undefined, member: false },
+    { source: '--tools', named: flags.default, member: false },
+    ...members.filter(({ source }) => source === 'TEAMAI_AI_TOOL').map(member),
+    { source: 'workflows.tools.default', named: configured.default, member: false },
+    ...members.filter(({ source }) => source !== 'TEAMAI_AI_TOOL').map(member),
+  ];
+  const passed: { source: string; named: string }[] = [];
+  for (const { source, named, member: isMember } of rungs) {
+    if (!named) continue;
+    if (isMember && !isLaunchTool(named)) {
+      if (!LAUNCH_ORDER.some((tool) => tool === named)) {
+        return { ok: false, failure: { code: 'tool_unsupported', message: `${source} is "${named}", which is not a tool teamai launches. Set it to one of: ${LAUNCH_TOOLS.join(', ')}.` } };
+      }
+      passed.push({ source, named });
+      continue;
+    }
+    for (const skipped of passed) log.warn(`${skipped.source} is "${skipped.named}", which cannot run a workflow step. Using ${source} (${named}) instead.`);
+    return { ok: true, tool: named };
+  }
+  for (const skipped of passed) log.warn(`${skipped.source} is "${skipped.named}", which cannot run a workflow step.`);
+  return { ok: true, tool: undefined };
+}
+
 function ignoredCodexSettings(agent: AgentSpec): string[] {
   const extras = Object.keys(agent.tool_extras?.codex ?? {});
   return agent.tools?.length ? ['tools', ...extras] : extras;
 }
 
 function definitionRun(tool: LaunchTool, name: string, agent: AgentSpec): NonNullable<LocalToolRun['agent']> {
-  const settings = localToolFamily(tool) === 'opencode' ? toolExtrasFor(agent, 'opencode') : undefined;
+  const settings = launchAdapterIdOf(tool) === 'opencode' ? toolExtrasFor(agent, 'opencode') : undefined;
   return { name, instructions: agent.instructions, ...(agent.model ? { model: agent.model } : {}), ...(settings ? { settings } : {}) };
 }
 
@@ -237,14 +272,14 @@ async function stageLease(lease: Lease, { config, lock, root, values, mode, sign
 async function resumeSession(archive: SessionArchive, lease: Lease, tool: LaunchTool, cwd: string): Promise<{ id: string; resumed: SessionRef } | undefined> {
   const to = AgentSession.platformForTool(tool);
   if (!lease.session || !to) return undefined;
-  const resumes = localToolFamily(tool) !== 'opencode';
+  const resumes = launchAdapterIdOf(tool) !== 'opencode';
   const misses: string[] = [];
   for (const session of [lease.session, ...(lease.session.earlier ?? [])]) {
     if (!supportedTool(session.tool)) continue;
     const from = AgentSession.platformForTool(session.tool);
     if (!from) continue;
     const resumed = { tool: session.tool, id: session.id };
-    if (localToolFamily(session.tool) === localToolFamily(tool) && resumes) {
+    if (launchAdapterIdOf(session.tool) === launchAdapterIdOf(tool) && resumes) {
       const found = await AgentSession.find({ platform: from, sessionId: session.id }, { scrub: false });
       if (found.status === 'done') return { id: session.id, resumed };
       misses.push(found.failure.message);
@@ -289,19 +324,20 @@ async function promptReport(
   lock: RunLock,
   driver: DriverIdentity,
   lease: Lease,
-  tools: Record<string, string>,
   adapter: LocalToolAdapter,
   options: LocalDriverOptions,
   archive: SessionArchive,
   signal: AbortSignal,
   mode: RunMode,
 ): Promise<ReportBody> {
-  const selected = lease.agent && tools[lease.agent] ? tools[lease.agent] : tools.default;
   const giveUp = async (failure: WorkflowFailure, tool?: string): Promise<ReportBody> => {
     const unrestored = await abandonPlace({ config, lock, attempt: lease.attempt });
     const reported = unrestored ? { ...failure, message: `${failure.message.replace(/\.?$/, '.')} ${unrestored}` } : failure;
     return { attempt: lease.attempt, revision: lease.revision, driver, ...(tool ? { tool } : {}), ...failureReport(reported) };
   };
+  const choice = stepTool(lease.agent, config, options.tools ?? {}, await memberTools(config));
+  if (!choice.ok) return giveUp(choice.failure);
+  const selected = choice.tool;
   if (!selected) return giveUp({ code: 'tool_unconfigured', message: 'No local workflow tool is configured for this prompt step' });
   if (!supportedTool(selected)) {
     return giveUp({ code: 'tool_unsupported', message: `The local workflow tool "${selected}" is not supported` }, selected);
@@ -320,7 +356,7 @@ async function promptReport(
     step: lease.step, tool: selected, model: lease.model, defaultModel: lease.defaultModel, agent: agent ?? undefined, config: stepConfig,
   });
   if (!chosen.ok) return giveUp(chosen.failure, selected);
-  if (agent && localToolFamily(selected) === 'codex') {
+  if (agent && launchAdapterIdOf(selected) === 'codex') {
     const ignored = ignoredCodexSettings(agent);
     if (ignored.length > 0) {
       log.warn(`Agent "${agent.name}" on ${selected} does not apply ${ignored.join(', ')} from the deployed agent file. codex exec still has a shell. The step is not blocked.`);
@@ -349,8 +385,8 @@ async function promptReport(
     workflowLaunch(stepConfig, selected),
     delivered ? deliveredTeamSkills(stepConfig, cwd, delivered).catch(() => undefined) : undefined,
   ]);
-  // Only headless Claude has a turn limit; any other launch reports the cap as not enforced.
-  const capsTurns = lease.maxTurns !== undefined && !lease.interactive && localToolFamily(selected) === 'claude';
+  // Only headless Claude and CodeBuddy have a turn limit; any other launch reports the cap as not enforced.
+  const capsTurns = lease.maxTurns !== undefined && !lease.interactive && (launchAdapterIdOf(selected) === 'claude' || launchAdapterIdOf(selected) === 'codebuddy');
   let result: LocalToolResult;
   const launchedAt = Date.now();
   try {
@@ -460,7 +496,6 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options
   const canHitl = options.hitl ?? (mode === 'attended' && process.stdin.isTTY === true && process.stderr.isTTY === true);
   const can = localCan(config, canHitl);
   const driver = driverIdentity('local', cwd);
-  const tools = { ...config.workflows?.tools, ...options.tools };
   const adapter = options.adapter ?? createLocalToolAdapter();
   const archive = openSessionArchive(config);
   const maxParallel = config.workflows?.max_parallel ?? 1;
@@ -540,7 +575,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options
       const turn = { ...resolved, secrets: rememberSecrets(seen, resolved.secrets) };
       env = turn;
       const next = await leaseNext(config, runId, driver, {
-        running, canTakeLease, can, autoApprove: options.autoApprove, ...(base ? { base } : {}), env: turn,
+        running, canTakeLease, can, autoApprove: options.autoApprove, runMode: mode, ...(base ? { base } : {}), env: turn,
       });
       if (signalled) continue;
       if (isWorkflowError(next)) return next;
@@ -631,7 +666,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options
             }
             if (failure) return unstaged(lease, failure);
             interactiveIgnores = ignored;
-            return promptReport(config, lock, driver, lease, tools, adapter, options, archive, controller.signal, mode);
+            return promptReport(config, lock, driver, lease, adapter, options, archive, controller.signal, mode);
           })() };
         }
       }

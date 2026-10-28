@@ -41,6 +41,8 @@ sharing:
     injectShellProfile: true
   coAuthor:
     enabled: false
+  autoCompact:
+    tokens: 400000
   gitExclude:
     enabled: true              # init 为新团队写入 true
   contributeHint:
@@ -71,6 +73,7 @@ scope: workspace               # workspace（init 默认）或 user；project �
 projectRoot: /path/to/my-workspace
 inheritUserScope: true
 coAuthorEnabled: true
+autoCompactTokens: 0           # 0 表示不参与团队的 autoCompact
 gitExcludeEnabled: true
 contributeHintEnabled: false
 usageReportEnabled: false
@@ -80,9 +83,61 @@ scoring:
 toolRoots:
   claude: ~/.claude-work
   codex: ~/.codex-alt
+ai:
+  tool: codex                  # teamai 自身 AI 调用使用的工具；见下文 AI 工具
 ```
 
 角色、项目和 tag 字段保存的是这个目录自己的选择。workspace 还会交付其中已初始化仓库的选择，这些选择在每次 pull 时读取，不会写入这里。参见[包含仓库的 workspace](./distribution.md#包含仓库的-workspace)。
+
+#### 成员设置
+
+成员设置按以下顺序读取，第一个设置了它的层级生效：
+
+1. 环境变量或命令行参数，如果该设置有的话（`TEAMAI_AI_TOOL`、`TEAMAI_RECALL_DISABLED`、`--tools` 等）。
+2. 命令所在 scope 的配置：workspace 或 self 安装是 `~/.teamai/projects/<slug>/config.yaml`，user scope 是 `~/.teamai/config.yaml`。
+3. `~/.teamai/config.yaml`，即本机。它不需要 `repo` 或 `username`，没有 user scope 安装时也有效。
+4. 团队的 `teamai.yaml`，如果该设置有对应的团队键。
+5. 默认值。
+
+成员设置包括 `ai.tool`、`workflows.*`、`recallEnabled`、`contributeHintEnabled`、`mrHintEnabled`、`coAuthorEnabled`、`usageReportEnabled`、`codexTrustEnabled`、`modelAliases`、`sessions`、`autoCompactTokens` 和 `updatePolicy`。`workflows.tools`、`workflows.allow` 和 `modelAliases` 中的每一项单独计算。`updatePolicy` 和 `autoCompactTokens` 作用于整台机器，因此由一个 scope 决定：有 user scope 时由它决定，否则由运行的 scope 决定。其他键都属于某一个安装，不会从本机读取。`~/.teamai/config.yaml` 不是安装时，`doctor` 会列出其中这类键。
+
+```yaml
+# ~/.teamai/config.yaml：本机，不需要安装
+recallEnabled: true
+workflows:
+  tools: { default: codex }
+```
+
+```yaml
+# ~/.teamai/projects/<slug>/config.yaml：仅这个 workspace
+recallEnabled: false
+```
+
+`~/.teamai/config.yaml` 中类型错误的值会被跳过并给出警告，由下一层级决定。`workflows.allow` 例外：其中的错误值，或无法读取或解析的文件，会让工作流命令停止运行，直到你修正它。保存配置时不会把本机的值复制进 workspace 的文件；`recall enable` 和 `recall disable` 会写入它们自己的值。`teamai doctor` 会列出每个由某一层级设置的成员设置、设置它的层级，以及更低层级的值。
+
+#### AI 工具（`ai.tool`）
+
+teamai 自身的 AI 调用（enrich、codebase、import、promote、投票评审）使用 teamai 能启动的第一个已安装工具：先是 Claude Code 及其内部版本，然后是 Codex 及其内部版本，再是[工具支持](./tool-support.md)中标记为支持 AI 调用的其他工具。要换用其他工具，指定一个工具 id，例如 `codex`。以下设置中第一个有值的生效：
+
+1. `TEAMAI_AI_TOOL`，作用于单个 shell。
+2. 命令所在的 workspace 或 self 安装的配置 `~/.teamai/projects/<slug>/config.yaml` 中的 `ai.tool`。
+3. `~/.teamai/config.yaml` 中的 `ai.tool`，作用于本机。不在任何安装中运行的命令只读取这一项。
+
+本机没有 user scope 安装时，`~/.teamai/config.yaml` 可以只包含这一项设置：
+
+```yaml
+# ~/.teamai/config.yaml
+ai:
+  tool: codex
+```
+
+```yaml
+# ~/.teamai/projects/<slug>/config.yaml，与 init 写入的字段放在一起
+ai:
+  tool: opencode
+```
+
+指定的名称不是 teamai 能启动的工具，或工具不在 PATH 上时，调用会失败，并说明该修改哪个文件中的哪个设置。当前目录的 workspace 配置无法读取时，调用同样会失败。重新 init 会保留 `ai`。工作流步骤也会回退到这些设置，见[工作流](./workflow.md)。
 
 #### 迁移后的工具根目录（`toolRoots`）
 
@@ -102,7 +157,7 @@ Cursor CLI 会搬两个目录：`CURSOR_DATA_DIR` 放会话记录，`CURSOR_CONF
 
 #### 记录的工具主目录（`~/.teamai/tool-homes.json`）
 
-有些工具会按变量搬家：`XDG_CONFIG_HOME`（OpenCode、Muse）、`OPENCODE_CONFIG_DIR`、`HERMES_HOME`、`PI_CODING_AGENT_DIR`、`CODEBUDDY_CONFIG_DIR`、`COPILOT_HOME`、`DSH_HOME`、`OPENCLAW_STATE_DIR` 和 `OPENCLAW_PROFILE`。在 Windows 上，Hermes 在 `%LOCALAPPDATA%\hermes`。工具自己的变量是相对路径时，和工具一样按运行 teamai 的目录解析；`XDG_CONFIG_HOME` 或 `%LOCALAPPDATA%` 是相对路径时会被忽略。teamai 会同步到搬过去的主目录。OpenCode、Muse、Pi 和 CodeBuddy 目前只有一部分跟着走。设了 `XDG_CONFIG_HOME=/x` 时，OpenCode 的技能、agents、位于 `/x/opencode/rules` 的规则、位于 `/x/opencode/teamai-context.md` 的指令块，以及 MCP 和 `teamai models switch` 写的 `opencode.json` 都放到 `/x/opencode`。Muse 的技能和 agents 放到 `/x/muse`，它的 MCP 配置也放到 `/x/muse`，它的用户规则和指令块是 `/x/muse/AGENTS.md`。Muse 的模型设置也会跟随该主目录；它的 hooks 仍留在 `~/.config/muse`，OpenCode 的 hooks 仍留在 `~/.config/opencode`。设了 `PI_CODING_AGENT_DIR=/x` 时，Pi 的技能、MCP 配置和 `models.json` 放到 `/x`，它的用户规则和指令块是 `/x/AGENTS.md`，扩展仍留在 `~/.pi/agent`。设了 `CODEBUDDY_CONFIG_DIR=/x` 时，CodeBuddy 的技能、规则、agents、`CODEBUDDY.md` 和 MCP 文件（包括 `.codebuddy.json`）放到 `/x`，hooks 仍留在 `~/.codebuddy/settings.json`。`teamai doctor` 会提示。
+有些工具会按变量搬家：`XDG_CONFIG_HOME`（OpenCode、Muse）、`OPENCODE_CONFIG_DIR`、`HERMES_HOME`、`HERMES_DATA_DIR_SUFFIX`、`PI_CODING_AGENT_DIR`（Pi）、`OMP_PROFILE`、`PI_PROFILE` 和 `PI_CONFIG_DIR`（Oh My Pi）、`CODEBUDDY_CONFIG_DIR`、`COPILOT_HOME`、`DSH_HOME`、`OPENCLAW_STATE_DIR`、`OPENCLAW_HOME` 和 `OPENCLAW_PROFILE`。Hermes 还会搬到它的 `active_profile` 文件指定的 profile。teamai 每次运行都在已记录或搬过去的 Hermes 主目录里读这个文件，从不记录 profile，所以 `hermes profile use` 在下一次 pull 就生效。Oh My Pi 也会读 `PI_CODING_AGENT_DIR`，但 teamai 不把 Oh My Pi 的文件写到那里，因为那是 Pi 的目录。`pull` 和 `teamai hooks remove` 只改当前的 Hermes 或 Oh My Pi profile，因为各个 profile 并行使用。`teamai uninstall` 会从默认主目录、已记录或搬过去的主目录，以及它们下面的每个 profile 里，删除 teamai 的 Hermes hook 脚本、指令插件、它们在 `config.yaml` 里的条目和授权、SOUL.md 块，以及 teamai 的 Oh My Pi 扩展。在 Windows 上，Hermes 在 `%LOCALAPPDATA%\hermes`。工具自己的变量是相对路径时，和工具一样按运行 teamai 的目录解析；`XDG_CONFIG_HOME` 或 `%LOCALAPPDATA%` 是相对路径时会被忽略。teamai 会同步到搬过去的主目录。`teamai skill list`、`teamai skill show` 和 `teamai list skills --source local` 读取那里的技能，`teamai doctor` 也在那里检查工具是否已安装。设了 `XDG_CONFIG_HOME=/x` 时，OpenCode 的技能、agents、位于 `/x/opencode/rules` 的规则、位于 `/x/opencode/teamai-context.md` 的指令块、hook 插件，以及 MCP 和 `teamai models switch` 写的 `opencode.json` 都放到 `/x/opencode`。Muse 的技能、agents、MCP 配置、模型设置和 hooks 放到 `/x/muse`，它的用户规则和指令块是 `/x/muse/AGENTS.md`。设了 `PI_CODING_AGENT_DIR=/x` 时，Pi 的技能、MCP 配置、`models.json` 和扩展放到 `/x`，它的用户规则和指令块是 `/x/AGENTS.md`。设了 `CODEBUDDY_CONFIG_DIR=/x` 时，CodeBuddy 的技能、规则、agents、hooks、`CODEBUDDY.md` 和 MCP 文件（包括 `.codebuddy.json`）放到 `/x`。以前的版本把这四个工具的 hooks 写在默认主目录下。`pull`、`teamai hooks remove` 和 `teamai uninstall` 会删除这份副本：OpenCode 1.x 也会加载那里的插件，而留在那里的团队 hook 之后无法再识别并删除。[工具支持](tool-support.md)列出每个工具的主目录、移动它的变量，以及 teamai 把每类资源写到哪里。
 
 第一次看到该变量的 `pull` 会在该目录存在时把主目录记到 `~/.teamai/tool-homes.json`，整台机器共用这一份记录；pull 不会替换已有的记录。`teamai init` 也会记录，并且会替换已有的记录：工具自己的变量（`HERMES_HOME`、`OPENCLAW_PROFILE` 等）在目录还不存在时也记，`XDG_CONFIG_HOME` 要等目录存在才记。Hermes 在 Windows 上的默认目录只会补上缺的记录。所以请在你的工具运行的 shell 里运行 `init`。之后即使在没设该变量的 shell 里 pull，各个 scope 也仍然同步到那里。要换主目录，带着新值运行 `teamai init`。要清掉记录，把变量设为空再运行一次。记录的目录不存在时，`teamai doctor` 会报 `<tool> home exists`；shell 里的变量指向别的目录时，会报 `<tool> home matches <variable>`。
 
@@ -159,7 +214,7 @@ profiles:
 | OpenCode | 任意 | `opencode.json` |
 | CodeBuddy / WorkBuddy | `openai-chat-completions` | `models.json` (CodeBuddy 跟随记录的主目录) |
 | Pi | 任意 | `~/.pi/agent/models.json` |
-| OMP | 任意 | `~/.omp/agent/models.yml` |
+| OMP | 任意 | `~/.omp/agent/models.yml`，或 `OMP_PROFILE`（或 `PI_PROFILE`）和 `PI_CONFIG_DIR` 指定的 agent 目录 |
 | Muse Code | `openai-responses` | `<Muse 主目录>/settings.json`（已记录目录，否则使用 `$XDG_CONFIG_HOME/muse` 或 `~/.config/muse`），密钥以 `META_API_KEY` 写入 `~/.teamai/models/env.sh`，由 shell 配置文件加载 |
 
 上面的例子没有 `openai-responses`，所以不会改 Codex 和 Muse Code。
@@ -220,3 +275,7 @@ teamai models remove local:my-gateway
 ## ZCode hook stdout 容量
 
 Doctor 会按 UTF-8 字节计算项目规则回复序列化后的大小，并与 `~/.zcode/cli/config.json` 中的 `hooks.maxOutputBytes`（默认 32768）比较。这只是大小下界：其他会话提示还会增加完整回复的字节数。即使 hook 已注册，ZCode 仍会截断超限的标准输出，并静默丢弃截断后无法解析的回复。请缩短规则，或将该正整数上限增大到足以容纳完整回复，再启动新的 ZCode 会话。TeamAI 不会自行修改上限或截断规则。
+
+## Kiro 生命周期 hooks
+
+Kiro CLI V3 会为所有 agent（包括默认 agent）加载 `~/.kiro/hooks/teamai.json`。pull 和 hook 注入会安装其中的 SessionStart hook，无需先同步团队 agent。`hooks list` 和 `doctor` 检查它；移除 hooks 或用户级卸载会删除它，项目级卸载保留这份共享用户 hook。同名个人文件会被保留并提示。启用独立 hook 前，pull 和 hook 注入会从现有 Kiro agent（包括成员编辑过的副本）中仅移除 TeamAI 旧的 `agentSpawn` 命令，保留个人 hooks 和 agent 字段。生命周期集成需要 V3，Kiro 2.x 不加载这份独立 hook。

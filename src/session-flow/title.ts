@@ -7,8 +7,33 @@
  * becomes a wall of prompt text — the user cannot see what they asked, only a pile of XML.
  */
 
+import { MIN_ENV_VALUE_LENGTH, redact, redactWithEnv } from '../utils/redact.js';
+
 /** Title length cap: the first user message may be tens of KB of injected context. */
 const TITLE_MAX = 60;
+
+/** Cuts a title to its length cap after redacting it: a cut can split a secret into a start the redactor no longer recognizes. */
+export function cutTitle(text: string, maxLen = TITLE_MAX): string {
+  return redactWithEnv(text).slice(0, maxLen);
+}
+
+/** The shortest start of a secret a cut title is checked for: a shorter one ends ordinary words too often. */
+const CUT_SECRET_MIN = 4;
+
+/**
+ * Masks the start of one of `secrets` that a title cut to its length cap ends with, as the cut would have had it known
+ * that secret. A title is cut when its session is read, before the team's declared secrets are known.
+ */
+export function maskCutSecret(title: string, secrets: Record<string, string>): string {
+  if (title.length < TITLE_MAX) return title;
+  for (const value of Object.values(secrets)) {
+    if (value.length < MIN_ENV_VALUE_LENGTH) continue;
+    for (let length = Math.min(value.length - 1, title.length); length >= CUT_SECRET_MIN; length--) {
+      if (title.endsWith(value.slice(0, length))) return redact(`${title.slice(0, -length)}${value}`, { envSecrets: secrets }).slice(0, title.length);
+    }
+  }
+  return title;
+}
 
 /** Wrapper tags that appear at the start when the whole message is platform-injected. */
 const INJECTED_HEAD =
@@ -80,7 +105,7 @@ export function cleanTitleText(text: string, maxLen = TITLE_MAX): string {
     .replace(/\s+/g, ' ')
     .trim();
   if (!stripped || /[<>]/.test(stripped)) return '';
-  return stripped.slice(0, maxLen);
+  return cutTitle(stripped, maxLen);
 }
 
 /** Fallback when no usable title can be obtained. */
@@ -146,7 +171,7 @@ export function typedText(text: string): string {
 /** The first line the member typed in a user message, as a title. */
 export function typedTitle(text: string): string {
   const line = typedText(text).split('\n').map((typed) => typed.replace(/\s+/g, ' ').trim()).find((typed) => typed !== '');
-  return line ? line.slice(0, TITLE_MAX) : '';
+  return line ? cutTitle(line) : '';
 }
 
 /** Attachment refs (@image:/path, @file:/path) and tool-result placeholders are not title material. */
@@ -204,7 +229,7 @@ export function titleFromUserText(text: string, maxLen = TITLE_MAX): string {
       const s = seg.replace(/\s+/g, ' ').replace(/^[\s\-:,，。.]+|[\s\-:,，。.]+$/g, '');
       if (!s || s.length < 2 || HYGIENE_RE.test(s)) continue;
       if (ATTACH_SEG_RE.test(s) || PATH_SEG_RE.test(s)) continue;
-      return s.slice(0, maxLen);
+      return cutTitle(s, maxLen);
     }
   }
   return '';

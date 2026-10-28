@@ -9,6 +9,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import { AgentObservationSchema, observeCheckout, settleObservation, type AgentObservation } from '../agent-observation.js';
 import { getAgentVersion } from '../agent-version.js';
+import { agreedRunMode, launchedBy, resolveRunMode, RunModeSchema, type RunMode } from '../launch-context.js';
 import type { CheckoutRecord } from '../pull.js';
 import { deliveredTeamSkills } from '../skill-use.js';
 import { getDataHome, type DeliverySelection, type LocalConfig } from '../types.js';
@@ -21,6 +22,8 @@ export const SessionCaptureSchema = z.object({
   platform: z.string().min(1),
   sessionId: z.string().min(1),
   capturedAt: z.string().datetime(),
+  /** The run mode the session started in. Absent on captures written before it was recorded. */
+  runMode: RunModeSchema.optional(),
   agent: AgentObservationSchema,
   /** The session's own pull delivered a new revision to its checkout, so it may have loaded assets of either. */
   teamChanged: z.literal(true).optional(),
@@ -57,7 +60,7 @@ async function atStart(config: LocalConfig, tool: string, payload: Record<string
   const platform = AgentSession.platformForTool(tool);
   const sessionId = payload.session_id;
   const cwd = payload.cwd;
-  if (env.TEAMAI_LAUNCHED_BY || payload.source === 'compact') return undefined;
+  if (launchedBy(env) || payload.source === 'compact') return undefined;
   if (!platform || typeof sessionId !== 'string' || !SEGMENT.test(sessionId) || typeof cwd !== 'string') return undefined;
   try {
     const model = typeof payload.model === 'string' ? { requested: payload.model } : undefined;
@@ -70,7 +73,7 @@ async function atStart(config: LocalConfig, tool: string, payload: Record<string
     const { teamDelivery } = await import('../pull.js');
     const delivered = (await teamDelivery(config, tool, { beforeOwnPull: true }).catch(() => undefined))?.record?.delivered;
     const capture: SessionCapture = {
-      captureId: randomUUID(), platform, sessionId, capturedAt: new Date().toISOString(), agent,
+      captureId: randomUUID(), platform, sessionId, capturedAt: new Date().toISOString(), runMode: resolveRunMode(env), agent,
       ...(typeof file === 'string' && path.isAbsolute(file) ? { sessionFile: file } : {}),
       ...(delivered ? { teamSkills: await deliveredTeamSkills(config, cwd, delivered) } : {}),
     };
@@ -224,7 +227,12 @@ export interface CapturedSession {
   platform: string;
   sessionId: string;
   captures: readonly [SessionCapture, ...SessionCapture[]];
+  /** Whether a drain reached it (#1385): an unattended session is finished from then on. */
+  drained: boolean;
 }
+
+/** The file in a session's capture directory that says a drain reached it. Captures end in `.json`; it does not. */
+const DRAINED_FILE = 'drained';
 
 /** Every session captured here, as `sweep` walks them. */
 async function list(config: LocalConfig): Promise<CapturedSession[]> {
@@ -233,10 +241,25 @@ async function list(config: LocalConfig): Promise<CapturedSession[]> {
   for (const platform of (await fs.readdir(root).catch(() => [])).filter((name) => SEGMENT.test(name)).sort()) {
     for (const sessionId of (await fs.readdir(path.join(root, platform)).catch(() => [])).sort()) {
       const [first, ...rest] = await read(config, platform, sessionId);
-      if (first) sessions.push({ platform, sessionId, captures: [first, ...rest] });
+      if (!first) continue;
+      const drained = await fs.stat(path.join(sessionDir(config, platform, sessionId), DRAINED_FILE)).then(() => true, () => false);
+      sessions.push({ platform, sessionId, captures: [first, ...rest], drained });
     }
   }
   return sessions;
+}
+
+/**
+ * Records that a drain reached `captured`, at `now`. Written once: a session stays drained, and a drain that finds it
+ * marked by another leaves it. Only that the file exists counts, so a partly written one counts too.
+ */
+async function markDrained(config: LocalConfig, captured: Pick<CapturedSession, 'platform' | 'sessionId'>, now: string): Promise<void> {
+  const file = path.join(sessionDir(config, captured.platform, captured.sessionId), DRAINED_FILE);
+  try {
+    await fs.writeFile(file, `${now}\n`, { mode: 0o600, flag: 'wx' });
+  } catch (error) {
+    if (!(error instanceof Error && 'code' in error && error.code === 'EEXIST')) throw error;
+  }
 }
 
 /** The platforms whose sessions named `sessionId` were captured here. */
@@ -269,4 +292,9 @@ function agentOf(captures: readonly SessionCapture[], reportedModel: string | un
   return settled && { ...settled, teamai };
 }
 
-export const SessionCaptures = { atStart, addToolVersion, checkoutDelivery, markTeamChanged, read, list, platformsOf, agentOf, sweep } as const;
+/** The run mode every capture of a session recorded, or undefined when they differ or one recorded none. */
+function runModeOf(captures: readonly SessionCapture[]): RunMode | undefined {
+  return agreedRunMode(captures.map((capture) => capture.runMode));
+}
+
+export const SessionCaptures = { atStart, addToolVersion, checkoutDelivery, markTeamChanged, read, list, markDrained, platformsOf, agentOf, runModeOf, sweep } as const;

@@ -1,89 +1,16 @@
 /**
- * fs.ts — path resolution and JSONL read/write helpers.
+ * fs.ts — cwd encoding and JSONL read/write helpers.
  *
- * Resolves each platform's session storage path, encodes and decodes cwd
- * (each platform encodes the working directory differently), and reads and
- * writes JSONL as a stream.
+ * Encodes and decodes cwd (each platform encodes the working directory
+ * differently), and reads and writes JSONL as a stream. Each platform's store
+ * resolves in `sessionStoreDir` (locate.ts).
  */
 
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { homedir } from 'node:os';
 import { StringDecoder } from 'node:string_decoder';
 import { z } from 'zod';
-import {
-  CLAUDE_TOOL_ID,
-  CODEX_TOOL_ID,
-  CURSOR_DATA_TOOL_ID,
-  DEFAULT_CLAUDE_ROOT,
-  DEFAULT_CODEX_ROOT,
-  DEFAULT_CURSOR_ROOT,
-  resolveToolRootDir,
-  type LocalConfig,
-} from '../types.js';
-
-// ---------------------------------------------------------------------------
-// Default per-platform storage paths
-// ---------------------------------------------------------------------------
-
-/**
- * The root of a relocatable tool: the one the member recorded (`toolRoots`, written by `teamai
- * init` from CLAUDE_CONFIG_DIR, CODEX_HOME or CURSOR_DATA_DIR), else the default one in the home
- * directory.
- */
-function toolRootDir(tool: string, defaultRoot: string, toolRoots: LocalConfig['toolRoots']): string {
-  return toolRoots?.[tool] ? resolveToolRootDir(tool, defaultRoot, toolRoots) : path.join(homedir(), defaultRoot);
-}
-
-export function getClaudeCodeProjectsDir(toolRoots?: LocalConfig['toolRoots']): string {
-  return path.join(toolRootDir(CLAUDE_TOOL_ID, DEFAULT_CLAUDE_ROOT, toolRoots), 'projects');
-}
-
-/** TeamAI variant: claude-internal */
-export function getClaudeInternalProjectsDir(): string {
-  return path.join(homedir(), '.claude-internal', 'projects');
-}
-
-/** TeamAI variant: tclaude */
-export function getTClaudeProjectsDir(): string {
-  return path.join(homedir(), '.tclaude', 'projects');
-}
-
-export function getCodexSessionsDir(toolRoots?: LocalConfig['toolRoots']): string {
-  return path.join(toolRootDir(CODEX_TOOL_ID, DEFAULT_CODEX_ROOT, toolRoots), 'sessions');
-}
-
-/** TeamAI variant: codex-internal */
-export function getCodexInternalSessionsDir(): string {
-  return path.join(homedir(), '.codex-internal', 'sessions');
-}
-
-/** TeamAI variant: tcodex */
-export function getTCodexSessionsDir(): string {
-  return path.join(homedir(), '.tcodex', 'sessions');
-}
-
-export function getCodeBuddyProjectsDir(): string {
-  return path.join(homedir(), '.codebuddy', 'projects');
-}
-
-/**
- * WorkBuddy session directory. Same layout as CodeBuddy (<encoded-cwd>/<uuid>.jsonl),
- * but it also provides <uuid>.meta.json with the real cwd — avoiding the lossy
- * problem of reversing the directory name.
- */
-export function getWorkBuddyProjectsDir(): string {
-  return path.join(homedir(), '.workbuddy', 'projects');
-}
-
-/**
- * Cursor CLI's transcript store: <data root>/projects, where the data root is `CURSOR_DATA_DIR`
- * when the member recorded one (cursor-agent 2026.09.28) and `~/.cursor` otherwise.
- */
-export function getCursorProjectsDir(toolRoots?: LocalConfig['toolRoots']): string {
-  return path.join(toolRootDir(CURSOR_DATA_TOOL_ID, DEFAULT_CURSOR_ROOT, toolRoots), 'projects');
-}
 
 // ---------------------------------------------------------------------------
 // cwd encode/decode

@@ -5,7 +5,7 @@ import { pathExists, readFileSafe, readJsonObject, remove, writeFile } from './u
 import { getUserHome } from './utils/home.js';
 import { CODEX_TOOL_IDS } from './utils/tool-names.js';
 import { channelsOf, TOOLS, type BlocksHeader, type ChannelProbe, type RunTime } from './tools.js';
-import { installOf, locate, ownOf, writable, type FilePlace, type Gate, type Install } from './locate.js';
+import { hookAdapterDir, installOf, locate, ownOf, writable, type FilePlace, type Gate, type Install } from './locate.js';
 import {
   opencodeContextReference, opencodeV1ClaudeFile, readOpencodeInstructionList, reconcileOpencodeInstructions,
 } from './resources/opencode-config.js';
@@ -13,7 +13,7 @@ import { gitUntracked } from './git-exclude.js';
 import { TEAMAI_CONTEXT_RULE_NAME } from './builtin-rules.js';
 import {
   isAgentExcluded,
-  resolveToolBaseDir,
+  resolveBaseDir,
   resolveHookScope,
   scopedToolPaths,
   TEAMAI_CLAUDEMD_END,
@@ -196,10 +196,10 @@ export async function channelReadiness(
   switch (probe) {
     case 'omp-extension':
     case 'pi-extension': {
-      const { buildOmpExtensionSource, resolveOmpExtensionsDir, OMP_HOOK_FILE } = await import('./omp-hooks.js');
-      const { buildPiExtensionSource, resolvePiExtensionsDir, PI_HOOK_FILE } = await import('./pi-hooks.js');
+      const { buildOmpExtensionSource, OMP_HOOK_FILE } = await import('./omp-hooks.js');
+      const { buildPiExtensionSource, PI_HOOK_FILE } = await import('./pi-hooks.js');
       const omp = probe === 'omp-extension';
-      const file = omp ? path.join(resolveOmpExtensionsDir(), OMP_HOOK_FILE) : path.join(resolvePiExtensionsDir(), PI_HOOK_FILE);
+      const file = omp ? path.join(hookAdapterDir('omp-extension'), OMP_HOOK_FILE) : path.join(hookAdapterDir('pi-extension'), PI_HOOK_FILE);
       const expected = omp ? buildOmpExtensionSource() : buildPiExtensionSource();
       return {
         ready: await hookSourceMatches(await readFileSafe(file), expected),
@@ -300,9 +300,9 @@ async function hooksInstalled(file: string, tool: string): Promise<boolean> {
  */
 export async function instructionHookChannelInstallable(tool: string): Promise<boolean> {
   if (tool === 'omp' || tool === 'pi') {
-    const { hasOmpHooks, resolveOmpExtensionsDir, OMP_HOOK_FILE } = await import('./omp-hooks.js');
-    const { hasPiHooks, resolvePiExtensionsDir, PI_HOOK_FILE } = await import('./pi-hooks.js');
-    const file = tool === 'omp' ? path.join(resolveOmpExtensionsDir(), OMP_HOOK_FILE) : path.join(resolvePiExtensionsDir(), PI_HOOK_FILE);
+    const { hasOmpHooks, OMP_HOOK_FILE } = await import('./omp-hooks.js');
+    const { hasPiHooks, PI_HOOK_FILE } = await import('./pi-hooks.js');
+    const file = tool === 'omp' ? path.join(hookAdapterDir('omp-extension'), OMP_HOOK_FILE) : path.join(hookAdapterDir('pi-extension'), PI_HOOK_FILE);
     return !await pathExists(file) || (tool === 'omp' ? await hasOmpHooks() : await hasPiHooks());
   }
   if (tool === 'hermes') {
@@ -487,7 +487,7 @@ export async function registerOpencodeContext(
   // Old or malformed blocks the plan could not replace are not this sync's.
   const present = wanted && delivered && ready;
   // Pull, doctor and uninstall read the entry from the config beside the file, whatever the team maps MCP to.
-  const { config, entry } = opencodeContextReference(contextFile, localConfig.scope, resolveToolBaseDir('opencode', localConfig));
+  const { config, entry } = opencodeContextReference(contextFile, localConfig.scope, resolveBaseDir(localConfig));
   // An entry goes only if teamai recorded adding it: one the member listed
   // before teamai wrote the file is theirs.
   if (!present) {

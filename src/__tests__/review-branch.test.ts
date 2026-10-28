@@ -31,7 +31,7 @@ vi.mock('../utils/logger.js', () => {
 });
 
 import { localAliasesPath } from '../models/aliases.js';
-import { reviewBranchDir, materializeRef, type BranchReview } from '../review-branch.js';
+import { reviewBranchDir, materializeRef, type BranchReview, type Finding } from '../review-branch.js';
 import { INVOKE_ALIAS_SINCE } from '../workflow/parse.js';
 
 const BRANCH = 'teamai/push/tester/20260101-000000';
@@ -508,7 +508,7 @@ describe('reviewBranchDir — read-only health checks for a pushed branch (#776)
     expect(Array.isArray(parsed.findings)).toBe(true);
     for (const finding of parsed.findings) {
       expect(['fail', 'warn', 'info']).toContain(finding.level);
-      expect(['structure', 'naming', 'duplicates', 'format', 'leaks', 'workflows', 'scorers']).toContain(finding.check);
+      expect(['structure', 'naming', 'duplicates', 'format', 'leaks', 'safety', 'workflows', 'scorers', 'models']).toContain(finding.check);
       expect(typeof finding.message).toBe('string');
     }
   });
@@ -599,6 +599,480 @@ describe('reviewBranchDir — read-only health checks for a pushed branch (#776)
         path: 'workflows/ship.yaml',
         message: 'workflows/ship.yaml:6: field "steps[0].workflow": step "run" runs workflow "check", which has no runnable version; fix or add workflows/check.yaml',
       },
+    ]);
+  });
+});
+
+describe('reviewBranchDir — skill links, Agent Skills limits and piped installs (#1398)', () => {
+  let repoDir: string;
+
+  beforeEach(async () => {
+    repoDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-review-skill-files-'));
+  });
+
+  afterEach(async () => {
+    await fse.remove(repoDir);
+  });
+
+  function skill(name: string, body: string[], description = 'Use this skill when cutting a release of the project.'): string {
+    return ['---', `name: ${name}`, `description: ${description}`, '---', '', ...body, ''].join('\n');
+  }
+
+  async function writeSkillFile(relativePath: string, content: string): Promise<void> {
+    await fse.outputFile(path.join(repoDir, ...relativePath.split('/')), content);
+  }
+
+  function warnings(review: BranchReview): Array<Pick<Finding, 'check' | 'path' | 'message'>> {
+    return review.findings.filter((f) => f.level === 'warn').map(({ check, path: file, message }) => ({ check, path: file, message }));
+  }
+
+  it('warns once for a SKILL.md link to a file the skill does not have, and not for links that work or are skipped', async () => {
+    await writeSkill(repoDir, 'skills/release', skill('release', [
+      'See [the checklist](references/missing.md) and [it again](references/missing.md#top).',
+      'Read [setup](references/setup.md), [the docs](https://example.com/docs), [mail](mailto:a@example.com),',
+      '[below](#section), [root](/etc/hosts) and `[code](references/inline.md)`.',
+      '',
+      '```md',
+      '[fenced](references/fenced.md)',
+      '```python',
+      '[still fenced](references/still-fenced.md)',
+      '```',
+      '',
+      '[TODO]: tighten this section later',
+    ]));
+    await writeSkillFile('skills/release/references/setup.md', '# Setup\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(review.ok).toBe(true);
+    expect(warnings(review)).toEqual([{
+      check: 'format',
+      path: 'skills/release/SKILL.md',
+      message: 'skills/release/SKILL.md links to references/missing.md, which is not in the skill.',
+    }]);
+  });
+
+  it('reads links after a code block and reference definitions in a file with CRLF line endings', async () => {
+    await writeSkill(repoDir, 'skills/release', skill('release', ['```sh', 'echo', '```', '', '[guide]: references/missing.md']).replace(/\n/g, '\r\n'));
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(warnings(review).map((f) => f.message)).toEqual(['skills/release/SKILL.md links to references/missing.md, which is not in the skill.']);
+  });
+
+  it('reads links the way Markdown does around code, comments, brackets and parentheses', async () => {
+    await writeSkill(repoDir, 'skills/release', skill('release', [
+      'A stray ` backtick.',
+      '',
+      '[after stray](references/after-stray.md)',
+      '',
+      'Then `code` and [the [best] guide](references/nested.md) and [paren](references/foo(1).md).',
+      '',
+      '<!-- [old](references/old.md) -->',
+      '',
+      'An example:',
+      '',
+      '    [indented](references/indented.md)',
+      '',
+      '1. Step one.',
+      '',
+      '    See [listed](references/listed.md).',
+      '',
+      '[titled]: references/titled.md "say \\"hi\\""',
+      '[setup](references/SETUP.md)',
+    ]));
+    await writeSkillFile('skills/release/references/foo(1).md', '# Foo\n');
+    await writeSkillFile('skills/release/references/setup.md', '# Setup\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(warnings(review).map((f) => f.message.replace(/, which is not in the skill\.$/, ''))).toEqual([
+      'skills/release/SKILL.md links to references/after-stray.md',
+      'skills/release/SKILL.md links to references/nested.md',
+      'skills/release/SKILL.md links to references/listed.md',
+      'skills/release/SKILL.md links to references/SETUP.md',
+      'skills/release/SKILL.md links to references/titled.md',
+    ]);
+  });
+
+  it('reads links around comments, list fences, block boundaries, escapes and deep brackets, and resolves them as pull copies the skill', async () => {
+    await writeSkill(repoDir, 'skills/release', skill('release', [
+      'Code `<!--` here.',
+      '',
+      '[after comment opener](references/after-comment.md)',
+      '',
+      'Code `-->` here.',
+      '',
+      '1. Step one.',
+      '',
+      '    ```md',
+      '    [list fenced](references/list-fenced.md)',
+      '',
+      '    ```',
+      '',
+      '2. Read [list guide].',
+      '',
+      '    [list guide]: references/list-guide.md',
+      '',
+      '# A heading with a stray `',
+      '[after heading](references/after-heading.md)',
+      '- an item with a stray `',
+      '',
+      '[hash](references/file%23name.md), \\[escaped](references/escaped.md), [a [b [c] d] e](references/deep.md),',
+      '[symlinked](references/linked.md), [ignored](references/.DS_Store), [file as dir](references/setup.md/).',
+    ]));
+    await writeSkillFile('skills/release/references/setup.md', '# Setup\n');
+    await writeSkillFile('skills/release/references/file#name.md', '# Hash\n');
+    await writeSkillFile('skills/release/references/.DS_Store', '');
+    await fse.symlink('setup.md', path.join(repoDir, 'skills/release/references/linked.md'));
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(warnings(review).map((f) => f.message.replace(/^skills\/release\/SKILL\.md links to /, '')).sort()).toEqual([
+      'references/.DS_Store, which pull does not copy (a symlink or an ignored name); replace it with the file itself.',
+      'references/after-comment.md, which is not in the skill.',
+      'references/after-heading.md, which is not in the skill.',
+      'references/deep.md, which is not in the skill.',
+      'references/linked.md, which pull does not copy (a symlink or an ignored name); replace it with the file itself.',
+      'references/list-guide.md, which is not in the skill.',
+      'references/setup.md/, which is not in the skill.',
+    ]);
+  });
+
+  it('reads comments and code spans in one pass, keeps a blockquote paragraph whole, and closes a fence only on its own marker', async () => {
+    await writeSkill(repoDir, 'skills/release', skill('release', [
+      'A <!-- ` --> [after comment](references/after-comment.md) and `code`.',
+      '',
+      '> `Example:',
+      '> [quoted code](references/quoted-code.md)',
+      '> end`',
+      '',
+      '> Press the `',
+      '>',
+      '> [quoted guide](references/quoted-guide.md)',
+      '>',
+      '> Another `',
+      '',
+      '```md',
+      '```~~~',
+      '[fenced](references/fenced.md)',
+      '```',
+    ]));
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(warnings(review).map((f) => f.message)).toEqual([
+      'skills/release/SKILL.md links to references/after-comment.md, which is not in the skill.',
+      'skills/release/SKILL.md links to references/quoted-guide.md, which is not in the skill.',
+    ]);
+  });
+
+  it('reads HTML comment blocks before fences, fences on list-marker lines, escaped backticks and character references', async () => {
+    await writeSkill(repoDir, 'skills/release', skill('release', [
+      '<!--',
+      '~~~',
+      '-->',
+      '[after comment block](references/after-comment-block.md)',
+      '',
+      '- ~~~md',
+      '  [list marker fence](references/list-marker-fence.md)',
+      '  ~~~',
+      '',
+      'Escaped \\`[between escaped ticks](references/between-ticks.md)\\` and [entity](references/a&amp;b.md).',
+    ]));
+    await writeSkillFile('skills/release/references/a&b.md', '# A and B\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(warnings(review).map((f) => f.message.replace(/^skills\/release\/SKILL\.md links to /, '')).sort()).toEqual([
+      'references/after-comment-block.md, which is not in the skill.',
+      'references/between-ticks.md, which is not in the skill.',
+    ]);
+  });
+
+  it('reads indented code inside a list item and ends a list fence at the outdent', async () => {
+    await writeSkill(repoDir, 'skills/release', skill('release', [
+      '- Example:',
+      '',
+      '      [list code](references/list-code.md)',
+      '',
+      '- ~~~md',
+      '  [list fenced](references/list-fenced.md)',
+      '',
+      '[after list fence](references/after-list-fence.md)',
+    ]));
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(warnings(review).map((f) => f.message)).toEqual(['skills/release/SKILL.md links to references/after-list-fence.md, which is not in the skill.']);
+  });
+
+  it('warns for a reference definition to a file the skill does not have', async () => {
+    await writeSkill(repoDir, 'skills/release', skill('release', ['Read the [guide].', '', '[guide]: references/missing.md']));
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(warnings(review)).toEqual([{
+      check: 'format',
+      path: 'skills/release/SKILL.md',
+      message: 'skills/release/SKILL.md links to references/missing.md, which is not in the skill.',
+    }]);
+  });
+
+  it('resolves a link from the directory of the file that holds it', async () => {
+    await writeSkill(repoDir, 'skills/release', skill('release', ['Start at [a](references/a.md).']));
+    await writeSkillFile('skills/release/references/a.md', 'Then read [b](b.md) and [c](c.md).\n');
+    await writeSkillFile('skills/release/references/b.md', '# B\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(warnings(review)).toEqual([{
+      check: 'format',
+      path: 'skills/release/references/a.md',
+      message: 'skills/release/references/a.md links to c.md, which is not in the skill.',
+    }]);
+  });
+
+  it('resolves a link outside the skill where pull delivers skills, side by side by name', async () => {
+    await fse.ensureDir(path.join(repoDir, 'manifest'));
+    await fse.writeFile(path.join(repoDir, 'manifest', 'roles.yaml'), rolesYaml(['frontend', 'backend']));
+    await writeSkill(repoDir, 'skills/frontend/release', skill('release', [
+      'See [notes](../notes/SKILL.md), [deploy](../deploy/SKILL.md), [deploy by repo path](../../backend/deploy/SKILL.md),',
+      '[missing in notes](../notes/references/missing.md) and [guide](../../../docs/guide.md).',
+    ]));
+    await writeSkill(repoDir, 'skills/frontend/notes', skill('notes', ['# Notes']));
+    await writeSkill(repoDir, 'skills/backend/deploy', skill('deploy', ['# Deploy']));
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+    const linkFindings = review.findings
+      .filter((f) => f.path === 'skills/frontend/release/SKILL.md')
+      .map(({ level, message }) => `${level} ${message.replace(/^skills\/frontend\/release\/SKILL\.md links to /, '')}`);
+
+    expect(review.ok).toBe(true);
+    expect(linkFindings).toEqual([
+      'info ../notes/SKILL.md, in skill "notes"; it resolves only for a member who also receives that skill.',
+      'info ../deploy/SKILL.md, in skill "deploy"; it resolves only for a member who also receives that skill.',
+      'warn ../../backend/deploy/SKILL.md, which pull never delivers there: it delivers each skill as <skills>/<name>/, '
+        + 'so link another skill as ../<name>/… and move any other file into the skill.',
+      'warn ../notes/references/missing.md, which is not in skill "notes".',
+      'warn ../../../docs/guide.md, which pull never delivers there: it delivers each skill as <skills>/<name>/, '
+        + 'so link another skill as ../<name>/… and move any other file into the skill.',
+    ]);
+  });
+
+  it('warns for a description over 1024 characters and not for one of 1024, counting characters rather than UTF-16 units', async () => {
+    await writeSkill(repoDir, 'skills/long', skill('long', ['# Long'], 'd'.repeat(1025)));
+    await writeSkill(repoDir, 'skills/limit', skill('limit', ['# Limit'], 'd'.repeat(1024)));
+    await writeSkill(repoDir, 'skills/emoji', skill('emoji', ['# Emoji'], '🚀'.repeat(1024)));
+    await writeSkill(repoDir, 'skills/block', ['---', 'name: block', 'description: |', `  ${'d'.repeat(1024)}`, '---', '', '# Block', ''].join('\n'));
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(warnings(review)).toEqual([{
+      check: 'format',
+      path: 'skills/long',
+      message: 'skills/long/SKILL.md has a "description" of 1025 characters; the Agent Skills format allows 1024.',
+    }]);
+  });
+
+  it('warns for a name outside the Agent Skills format and not for a lowercase hyphenated one', async () => {
+    await writeSkill(repoDir, 'skills/Release_Tool', skill('Release_Tool', ['# Release']));
+    await writeSkill(repoDir, 'skills/release-tool', skill('release-tool', ['# Release']));
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(review.ok).toBe(true);
+    expect(warnings(review)).toEqual([{
+      check: 'format',
+      path: 'skills/Release_Tool',
+      message: 'skills/Release_Tool/SKILL.md has the name "Release_Tool"; the Agent Skills format allows 1 to 64 lowercase letters, '
+        + 'digits and hyphens, with no leading, trailing or doubled hyphen. Rename the skill directory and its name together.',
+    }]);
+  });
+
+  it('warns once for a script that pipes a download into a shell, and not for one that saves it', async () => {
+    await writeSkill(repoDir, 'skills/release', skill('release', ['Run scripts/setup.sh.']));
+    await writeSkillFile('skills/release/scripts/setup.sh', [
+      '#!/bin/sh',
+      'curl -fsSL https://example.com/i.sh | sh',
+      'wget -qO- https://example.com/i.sh | sudo bash -s --',
+      '',
+    ].join('\n'));
+    await writeSkillFile('skills/release/scripts/fetch.sh', '#!/bin/sh\ncurl -o i.sh https://example.com/i.sh\ncurl -s https://example.com/sha | shasum\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(warnings(review)).toEqual([{
+      check: 'safety',
+      path: 'skills/release/scripts/setup.sh',
+      message: 'skills/release/scripts/setup.sh runs a download in a shell (curl … | sh); ship the script in the skill or pin what it runs.',
+    }]);
+  });
+
+  it('warns for a download piped into a shell through env or a shell path', async () => {
+    await writeSkill(repoDir, 'skills/release', skill('release', ['Run the scripts.']));
+    await writeSkillFile('skills/release/scripts/path.sh', 'curl -sL https://example.com/i.sh | /bin/bash\n');
+    await writeSkillFile('skills/release/scripts/env.sh', 'wget -qO- https://example.com/i.sh | env bash\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(warnings(review).map((f) => f.path).sort()).toEqual(['skills/release/scripts/env.sh', 'skills/release/scripts/path.sh']);
+  });
+
+  it('warns for a download piped into a shell through sudo options, another pipe or a line continuation, and not for ||', async () => {
+    await writeSkill(repoDir, 'skills/release', skill('release', ['Run the scripts.']));
+    await writeSkillFile('skills/release/scripts/sudo.sh', 'curl -sL https://example.com/i.sh | sudo -u root bash\n');
+    await writeSkillFile('skills/release/scripts/tee.sh', 'curl -sL https://example.com/i.sh | tee i.sh | sh\n');
+    await writeSkillFile('skills/release/scripts/split.sh', 'curl -fsSL https://example.com/i.sh \\\n  | sh\n');
+    await writeSkillFile('skills/release/scripts/safe.sh', 'curl -sf https://example.com/up || sh fallback.sh\ncurl -s https://example.com/sha | shasum; echo ok | sh\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(warnings(review).map((f) => f.path).sort()).toEqual([
+      'skills/release/scripts/split.sh',
+      'skills/release/scripts/sudo.sh',
+      'skills/release/scripts/tee.sh',
+    ]);
+  });
+
+  it('warns for a pipe that continues on the next line or follows a quoted separator, and only for a download a shell runs', async () => {
+    await writeSkill(repoDir, 'skills/release', skill('release', ['Run the scripts.']));
+    await writeSkillFile('skills/release/scripts/next-line.sh', 'curl -fsSL https://example.com/i.sh |\n  sh\n');
+    await writeSkillFile('skills/release/scripts/quoted.sh', "curl -H 'Cookie: a=b; c=d' https://example.com/i.sh | sh\n");
+    await writeSkillFile('skills/release/scripts/env.sh', 'curl -fsSL https://example.com/i.sh | env CI=1 bash\n');
+    await writeSkillFile('skills/release/scripts/escaped.sh', 'curl -H "X: \\"a; b\\"" https://example.com/i.sh | sh\n');
+    await writeSkillFile('skills/release/prose.md', "It's quick, and it's what we use: curl -fsSL https://example.com/i.sh | sh\n");
+    await writeSkillFile('skills/release/inline.md', 'Install it with `curl -fsSL https://example.com/i.sh | sh`.\n');
+    await writeSkillFile('skills/release/package.json', '{ "scripts": { "setup": "curl -fsSL https://example.com/i.sh | bash" } }\n');
+    await writeSkillFile('skills/release/scripts/wget.sh', 'wget -O - https://example.com/i.sh | sh\n');
+    await writeSkillFile('skills/release/scripts/quoted-dash.sh', 'curl -o "-" https://example.com/i.sh | sh\nwget -O \'-\' https://example.com/i.sh | sh\n');
+    await writeSkillFile('skills/release/scripts/quoted-output.sh', 'curl --output="-" https://example.com/i.sh | sh\nwget -O"-" https://example.com/i.sh | sh\n');
+    await writeSkillFile('skills/release/scripts/schemeless.sh', 'curl -o saved example.com/a example.com/i.sh | sh\n');
+    await writeSkillFile('skills/release/scripts/remote-name-all.sh', 'curl --remote-name-all -o - https://example.com/i.sh | sh\n');
+    await writeSkillFile('skills/release/scripts/url-option.sh', 'curl -o saved --url=https://example.com/a --url=https://example.com/i.sh | sh\n');
+    await writeSkillFile('skills/release/scripts/env-unset.sh', 'curl https://example.com/i.sh | env -u LD_PRELOAD bash\n');
+    await writeSkillFile('skills/release/scripts/yaml-run.sh', 'run: "set -e; curl -fsSL https://example.com/i.sh | sh"\n');
+    await writeSkillFile('skills/release/scripts/retry-flag.sh', 'curl -o saved --retry-all-errors https://example.com/a https://example.com/i.sh | sh\n');
+    await writeSkillFile('skills/release/scripts/proxy-flag.sh', 'curl -o saved --proxy-insecure https://example.com/a https://example.com/i.sh | sh\n');
+    await writeSkillFile('skills/release/scripts/assignment.sh', 'curl -sfL https://example.com/i.sh | INSTALL_EXEC=server sh -\n');
+    await writeSkillFile('skills/release/scripts/sudo-assignment.sh', 'curl -fsSL https://example.com/i.sh | sudo -E CI=1 bash\n');
+    await writeSkillFile('skills/release/scripts/curl-dev-stdout.sh', 'curl -fsSL -o /dev/stdout https://example.com/i.sh | sh\n');
+    await writeSkillFile('skills/release/scripts/wget-dev-stdout.sh', 'wget -q -O /dev/stdout https://example.com/i.sh | bash\n');
+    await writeSkillFile('skills/release/scripts/attached.sh', 'curl -HOrigin:example.test https://example.com/i.sh | sh\n');
+    await writeSkillFile('skills/release/scripts/two-urls.sh', 'curl -o saved https://example.com/a https://example.com/i.sh | sh\n');
+    await writeSkillFile('skills/release/scripts/safe.sh', [
+      'curl -fsSL https://example.com/i.sh | bash-format',
+      'echo curl | sh',
+      "printf 'curl x' | sh",
+      'curl -o i.sh https://example.com/i.sh | sh',
+      'curl -fsSLO https://example.com/i.sh | sh',
+      'curl -OfsSL https://example.com/i.sh | sh',
+      'curl -o saved --proxy https://proxy.example.com https://example.com/i.sh | sh',
+      'curl -o saved -x https://proxy.example.com https://example.com/i.sh | sh',
+      "curl -H 'X: | sh' -o saved https://example.com/i.sh",
+      'curl https://example.com/i.sh > installer.sh | sh',
+      'curl -o saved --retry 3 https://example.com/i.sh | sh',
+      'curl -o saved --data https://example.com/payload https://example.com/i.sh | sh',
+      'curl https://example.com/i.sh>installer.sh | sh',
+      'wget -O - -O saved https://example.com/i.sh | sh',
+      "curl https://example.com/i.sh | sh -c 'echo done'",
+      "curl -H 'User-Agent: curl | sh' -o saved https://example.com/i.sh",
+      'echo -n curl | sh',
+      'curl --remote-name-all https://example.com/a https://example.com/b | sh',
+      'wget https://example.com/i.sh | sh',
+      '',
+    ].join('\n'));
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(warnings(review).map((f) => f.path).sort()).toEqual([
+      'skills/release/inline.md',
+      'skills/release/package.json',
+      'skills/release/prose.md',
+      'skills/release/scripts/assignment.sh',
+      'skills/release/scripts/attached.sh',
+      'skills/release/scripts/curl-dev-stdout.sh',
+      'skills/release/scripts/env-unset.sh',
+      'skills/release/scripts/env.sh',
+      'skills/release/scripts/escaped.sh',
+      'skills/release/scripts/next-line.sh',
+      'skills/release/scripts/proxy-flag.sh',
+      'skills/release/scripts/quoted-dash.sh',
+      'skills/release/scripts/quoted-output.sh',
+      'skills/release/scripts/quoted.sh',
+      'skills/release/scripts/remote-name-all.sh',
+      'skills/release/scripts/retry-flag.sh',
+      'skills/release/scripts/schemeless.sh',
+      'skills/release/scripts/sudo-assignment.sh',
+      'skills/release/scripts/two-urls.sh',
+      'skills/release/scripts/url-option.sh',
+      'skills/release/scripts/wget-dev-stdout.sh',
+      'skills/release/scripts/wget.sh',
+      'skills/release/scripts/yaml-run.sh',
+    ]);
+  });
+
+  it('warns for a download a shell runs through process or command substitution, and not for one it saves', async () => {
+    await writeSkill(repoDir, 'skills/release', skill('release', ['Run the scripts.']));
+    await writeSkillFile('skills/release/scripts/process.sh', 'bash <(curl -fsSL https://example.com/i.sh)\n');
+    await writeSkillFile('skills/release/scripts/homebrew.sh',
+      '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"\n');
+    await writeSkillFile('skills/release/scripts/oh-my-zsh.sh', 'sh -c "$(wget -qO- https://example.com/i.sh)"\n');
+    await writeSkillFile('skills/release/scripts/safe.sh', 'bash <(curl -o saved https://example.com/i.sh)\ndiff <(curl -s https://example.com/a) b\nbash "$(curl -fsSL https://example.com/path)"\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(warnings(review).map((f) => f.message)).toEqual([
+      'skills/release/scripts/homebrew.sh runs a download in a shell (bash -c "$(curl …)"); ship the script in the skill or pin what it runs.',
+      'skills/release/scripts/oh-my-zsh.sh runs a download in a shell (sh -c "$(wget …)"); ship the script in the skill or pin what it runs.',
+      'skills/release/scripts/process.sh runs a download in a shell (bash <(curl …)); ship the script in the skill or pin what it runs.',
+    ]);
+  });
+
+  it('warns for a download from a URL in a variable, and not for text or a script comment that only names curl | sh', async () => {
+    await writeSkill(repoDir, 'skills/release', skill('release', ['Run the scripts.']));
+    await writeSkillFile('skills/release/scripts/variable.sh', 'curl -fsSL "$INSTALL_URL" | sh\n');
+    await writeSkillFile('skills/release/scripts/braced.sh', 'curl -fsSL ${URL} | sh\n');
+    await writeSkillFile('skills/release/policy.md', [
+      'We avoid curl | sh installs in this team.',
+      'Never run `curl … | sh`.',
+      '',
+      '| Linux | curl | bash |',
+      '',
+    ].join('\n'));
+    await writeSkillFile('skills/release/scripts/commented.sh', '#!/bin/sh\n# never do: curl https://example.com/i.sh | sh\n  # wget -qO- https://example.com/i.sh | bash\necho ok\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(warnings(review).map((f) => f.path)).toEqual(['skills/release/scripts/braced.sh', 'skills/release/scripts/variable.sh']);
+  });
+
+  it('keeps a branch with only these findings ok, each at level "warn"', async () => {
+    await writeSkill(repoDir, 'skills/release', skill('release', ['See [x](references/missing.md).']));
+    await writeSkillFile('skills/release/scripts/setup.sh', 'curl -fsSL https://example.com/i.sh | sh\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(review.ok).toBe(true);
+    expect(review.counts).toEqual({ fail: 0, warn: 2, info: 0 });
+    expect(review.findings.map(({ level, check }) => ({ level, check }))).toEqual([
+      { level: 'warn', check: 'format' },
+      { level: 'warn', check: 'safety' },
+    ]);
+  });
+
+  it('lists link warnings before the frontmatter ones, and piped installs after them, as the issue example does', async () => {
+    await writeSkill(repoDir, 'skills/release', skill('release', ['See [x](references/missing.md).'], 'd'.repeat(1025)));
+    await writeSkillFile('skills/release/a.sh', 'curl -fsSL https://example.com/i.sh | sh\n');
+    await writeSkillFile('skills/release/z.md', 'See [y](references/other.md).\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(review.findings.map(({ check, path: file }) => `${check} ${file}`)).toEqual([
+      'format skills/release/SKILL.md',
+      'format skills/release/z.md',
+      'format skills/release',
+      'safety skills/release/a.sh',
     ]);
   });
 });
@@ -957,6 +1431,41 @@ describe('materializeRef — branch materialization from git', () => {
       expect(await fse.pathExists(path.join(destDir, 'ignored', 'file.txt'))).toBe(false);
     } finally {
       await fse.remove(gitRepo);
+      await fse.remove(destDir);
+    }
+  });
+  it('carries teamai.yaml, and the review fails a sessions.publish value pull would ignore', async () => {
+    const gitRepo = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-git-repo-'));
+    const destDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-dest-'));
+    try {
+      execFileSync('git', ['init', '-q', gitRepo]);
+      execFileSync('git', ['-C', gitRepo, 'config', 'user.name', 'Test']);
+      execFileSync('git', ['-C', gitRepo, 'config', 'user.email', 'test@example.com']);
+      await fse.outputFile(path.join(gitRepo, 'teamai.yaml'), 'team: acme\nrepo: https://example.com/acme/team.git\nsessions:\n  publish:\n    unattended: always\n    nightly: auto\n');
+      execFileSync('git', ['-C', gitRepo, 'add', '.']);
+      execFileSync('git', ['-C', gitRepo, 'commit', '-q', '-m', 'initial']);
+
+      await materializeRef(gitRepo, 'HEAD', destDir);
+      const review = await reviewBranchDir(BRANCH, destDir);
+
+      expect(review.findings).toEqual([
+        { level: 'fail', check: 'sessions', path: 'teamai.yaml', message: 'teamai.yaml sessions.publish.unattended is "always", not off, ask or auto, so it is ignored' },
+        { level: 'fail', check: 'sessions', path: 'teamai.yaml', message: 'teamai.yaml sessions.publish.nightly is not a run mode (attended, unattended), so it is ignored' },
+      ]);
+    } finally {
+      await fse.remove(gitRepo);
+      await fse.remove(destDir);
+    }
+  });
+  it('reports nothing about sessions when the branch teamai.yaml is not valid YAML', async () => {
+    const destDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-dest-'));
+    try {
+      await fse.outputFile(path.join(destDir, 'teamai.yaml'), 'team: acme\nsessions: [\n');
+
+      const review = await reviewBranchDir(BRANCH, destDir);
+
+      expect(review.findings).toEqual([]);
+    } finally {
       await fse.remove(destDir);
     }
   });

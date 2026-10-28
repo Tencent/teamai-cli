@@ -9,11 +9,11 @@ import path from 'node:path';
 import { installOf, locate, ownOf } from '../locate.js';
 import { isModelAlias, loadModelAliases, noModelCause, noModelReason, resolveModelValue, type NoModel } from '../models/aliases.js';
 import {
-  agentFileExtensionForTool, reverseFromClaude, reverseFromCodex, reverseFromOpencode, toolExtrasFor, type AgentSpec, type ToolName,
+  agentFileExtensionForTool, reverseByTool, toolExtrasFor, type AgentSpec, type ToolName,
 } from '../resources/agent-format.js';
 import { isAgentToolId } from '../tools.js';
 import type { LocalConfig, TeamaiConfig } from '../types.js';
-import { isLaunchTool, localToolFamily, type LaunchTool } from '../tool-launch/tools.js';
+import { isLaunchTool, launchAdapterIdOf } from '../tool-launch/tools.js';
 import { readFileSafe } from '../utils/fs.js';
 import type { WorkflowFailure } from './types.js';
 
@@ -75,8 +75,9 @@ export async function chooseStepModel(request: StepModelRequest): Promise<StepMo
     : agent?.model === undefined && request.defaultModel !== undefined ? { origin: 'defaults', value: request.defaultModel } : undefined;
   if (!chosen) {
     // A tool teamai does not launch starts the agent itself, from the file it reads the model from.
-    const family = isLaunchTool(tool) ? localToolFamily(tool) : undefined;
-    if (!agent?.model || family === undefined || family === 'claude') return { ok: true };
+    const family = isLaunchTool(tool) ? launchAdapterIdOf(tool) : undefined;
+    // Claude and CodeBuddy read it from the agent file `--agent` names.
+    if (!agent?.model || family === undefined || family === 'claude' || family === 'codebuddy') return { ok: true };
     const variant = family === 'opencode' ? toolExtrasFor(agent, 'opencode')?.['variant'] : undefined;
     return { ok: true, by: 'definition', model: { name: agent.model, ...(variant !== undefined ? { effort: String(variant) } : {}) } };
   }
@@ -92,13 +93,6 @@ export async function chooseStepModel(request: StepModelRequest): Promise<StepMo
     model: { name: resolution.model, ...(resolution.effort !== undefined ? { effort: resolution.effort } : {}) },
     ...(isModelAlias(aliases, chosen.value) ? { alias: chosen.value } : {}),
   };
-}
-
-function reverseAgent(tool: LaunchTool, file: string, content: string) {
-  const family = localToolFamily(tool);
-  if (family === 'claude') return reverseFromClaude(file, content);
-  if (family === 'codex') return reverseFromCodex(file, content);
-  return reverseFromOpencode(file, content);
 }
 
 /**
@@ -120,6 +114,6 @@ export async function loadDeployedAgent(input: {
   const file = path.join(agents, `${name}${agentFileExtensionForTool(tool)}`);
   const content = await readFileSafe(file);
   if (content === null) return null;
-  const reversed = reverseAgent(tool, file, content);
+  const reversed = reverseByTool(tool, file, content);
   return reversed.ok ? { spec: reversed.spec, file } : null;
 }

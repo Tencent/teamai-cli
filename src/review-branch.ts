@@ -25,6 +25,8 @@ import path from 'node:path';
 
 import chalk from 'chalk';
 import fse from 'fs-extra';
+import YAML from 'yaml';
+import { z } from 'zod';
 
 import { resolveConfigForDir } from './config.js';
 import { caseFoldKey, isSafeNamespaceSegment, NAMESPACE_RULE } from './manifest-schema.js';
@@ -43,7 +45,7 @@ import { loadRolesManifestIfPresent, type RolesManifest } from './roles.js';
 import { AGENT_TOOLS } from './tools.js';
 import { LocalConfigSchema, type GlobalOptions, type LocalConfig, type ResourceItem, type TeamaiConfig } from './types.js';
 import { splitFrontmatter } from './utils/frontmatter.js';
-import { listFilesRecursive, pathExists, readFileIfExists, writeFile, ensureDir } from './utils/fs.js';
+import { isIgnored, listFilesRecursive, pathExists, readFileIfExists, writeFile, ensureDir } from './utils/fs.js';
 import { getFileContentAtRev, getHeadCommit, listTreeAtRev } from './utils/git.js';
 import { isSilent, log, setSilent } from './utils/logger.js';
 import { redact } from './utils/redact.js';
@@ -56,6 +58,7 @@ import { scorerModelUnavailableText } from './scorers/judge-model.js';
 import { loadCachedScorer, SCORING_FILE, syncScorerDefinitions, type CachedScorer } from './scorers/cache.js';
 import { requiredIsolation, unknownIsolationText } from './scorers/isolation.js';
 import { parseScoringFile } from './scorers/settings.js';
+import { SessionPolicy } from './session-flow/session-policy.js';
 
 // ─── Findings ────────────────────────────────────────────────────────────────
 
@@ -63,7 +66,7 @@ import { parseScoringFile } from './scorers/settings.js';
 export type FindingLevel = 'fail' | 'warn' | 'info';
 
 /** Which group of checks produced a finding. */
-export type FindingCheck = 'structure' | 'naming' | 'duplicates' | 'format' | 'leaks' | 'workflows' | 'scorers' | 'models';
+export type FindingCheck = 'structure' | 'naming' | 'duplicates' | 'format' | 'leaks' | 'safety' | 'workflows' | 'scorers' | 'sessions' | 'models';
 
 /** One thing worth reporting about the branch. */
 export interface Finding {
@@ -395,6 +398,10 @@ async function frontmatterName(resource: ReviewResource, readText: (p: string) =
   return null;
 }
 
+/** Limits of the Agent Skills format (agentskills.io) for a SKILL.md `name` and `description`. */
+const AGENT_SKILLS_NAME = /^(?=.{1,64}$)[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const AGENT_SKILLS_DESCRIPTION_MAX = 1024;
+
 async function formatFindings(resources: ReviewResource[], readText: (p: string) => Promise<string | null>): Promise<Finding[]> {
   const findings: Finding[] = [];
   for (const resource of resources) {
@@ -419,7 +426,27 @@ async function formatFindings(resources: ReviewResource[], readText: (p: string)
           message: `${resource.relativePath}/SKILL.md has a frontmatter block that does not parse as a YAML mapping.`,
         });
       }
+      const name = data['name'];
+      if (typeof name === 'string' && !AGENT_SKILLS_NAME.test(name)) {
+        findings.push({
+          level: 'warn',
+          check: 'format',
+          path: resource.relativePath,
+          message: `${resource.relativePath}/SKILL.md has the name "${name}"; the Agent Skills format allows 1 to 64 lowercase letters, `
+            + 'digits and hyphens, with no leading, trailing or doubled hyphen. Rename the skill directory and its name together.',
+        });
+      }
       const description = data['description'];
+      const descriptionLength = typeof description === 'string' ? Array.from(description.trim()).length : 0;
+      if (descriptionLength > AGENT_SKILLS_DESCRIPTION_MAX) {
+        findings.push({
+          level: 'warn',
+          check: 'format',
+          path: resource.relativePath,
+          message: `${resource.relativePath}/SKILL.md has a "description" of ${descriptionLength} characters; `
+            + `the Agent Skills format allows ${AGENT_SKILLS_DESCRIPTION_MAX}.`,
+        });
+      }
       if (typeof description !== 'string' || description.trim() === '') {
         findings.push({
           level: 'warn',
@@ -525,7 +552,7 @@ async function leakFindings(repoDir: string, resources: ReviewResource[], readTe
     if (seenFiles.has(file.absolutePath)) continue;
     seenFiles.add(file.absolutePath);
     const content = await readText(file.absolutePath);
-    if (content === null || content.length > MAX_SCANNED_FILE_BYTES || content.includes('\0')) continue;
+    if (!isScannable(content)) continue;
 
     const redacted = redact(content);
     if (redacted !== content) {
@@ -548,6 +575,526 @@ async function leakFindings(repoDir: string, resources: ReviewResource[], readTe
         message: `${file.relativePath} contains an internal address (${addresses.join(', ')}); confirm it is safe to share before merging.`,
       });
     }
+  }
+  return findings;
+}
+
+/** A skill file whose text the checks read: the same files, size cap and binary skip as `leaks`. */
+interface SkillFile {
+  skill: ReviewResource;
+  relativePath: string;
+  content: string;
+}
+
+function isScannable(content: string | null): content is string {
+  return content !== null && content.length <= MAX_SCANNED_FILE_BYTES && !content.includes('\0');
+}
+
+async function scannableSkillFiles(resources: ReviewResource[], readText: (p: string) => Promise<string | null>): Promise<SkillFile[]> {
+  const files: SkillFile[] = [];
+  for (const skill of resources) {
+    if (skill.type !== 'skills') continue;
+    const listed = (await filesUnder(skill.relativePath, skill.absolutePath))
+      .sort((a, b) => (a.relativePath < b.relativePath ? -1 : 1));
+    for (const file of listed) {
+      const content = await readText(file.absolutePath);
+      if (isScannable(content)) files.push({ skill, relativePath: file.relativePath, content });
+    }
+  }
+  return files;
+}
+
+/** The inside of `[text]` with up to `depth` levels of brackets, as Markdown link text allows. */
+function bracketContent(depth: number): string {
+  const nested = depth === 0 ? '' : String.raw`|\[${bracketContent(depth - 1)}\]`;
+  return String.raw`(?:[^\[\]\\]|\\.${nested})*`;
+}
+// A bracket escaped by an odd run of backslashes is literal text, not a link.
+// The check follows the bracket so it only runs where a bracket is.
+const UNESCAPED_OPEN_BRACKET = String.raw`\[(?<=(?:^|[^\\])(?:\\\\)*\[)`;
+const LINK_DESTINATION = String.raw`(<[^<>\n]*>|(?:[^\s()\\]|\\.|\((?:[^\s()\\]|\\.)*\))+)`;
+const LINK_TITLE = String.raw`(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\((?:[^()\\]|\\.)*\))`;
+/** Inline links and images `[text](target "title")`, and reference definitions `[id]: target`. */
+const INLINE_LINK = new RegExp(String.raw`${UNESCAPED_OPEN_BRACKET}${bracketContent(3)}\]\(\s*${LINK_DESTINATION}(?:\s+${LINK_TITLE})?\s*\)`, 'g');
+const REFERENCE_DEFINITION = new RegExp(
+  String.raw`^[ \t]*\[(?!\^)(?:[^\[\]\\]|\\.)+\]:[ \t]*${LINK_DESTINATION}(?:[ \t]+${LINK_TITLE})?[ \t]*$`,
+  'gm',
+);
+const LIST_ITEM = /^ {0,3}(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$)/;
+const LIST_MARKER = /^ {0,3}(?:[-*+]|\d{1,9}[.)])[ \t]+/;
+/** A line that starts a block of its own, so a code span cannot continue into it; a blockquote starts one only after a line outside it. */
+const BLOCK_START = /^ {0,3}(?:#{1,6}(?:[ \t]|$)|(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$))/;
+const BLOCKQUOTE = /^ {0,3}>/;
+
+/** The indentation of a line in columns, a tab counting as four. */
+function indentOf(line: string): number {
+  let columns = 0;
+  for (const char of /^[ \t]*/.exec(line)?.[0] ?? '') columns += char === '\t' ? 4 - (columns % 4) : 1;
+  return columns;
+}
+
+/**
+ * Markdown with fenced and indented code blocks, inline code and HTML comments
+ * blanked, so links shown as code are not read as links. Inside a list item an
+ * indented line continues the item unless it is indented four columns past the
+ * item's content, and a fence may sit at the item's indentation.
+ */
+function withoutCode(markdown: string): string {
+  let fence: string | null = null;
+  let previousBlank = true;
+  let inCode = false;
+  let inList = false;
+  // Where the current list item's content starts, and that of the item holding the open fence.
+  let listIndent = 0;
+  let fenceListIndent: number | null = null;
+  let previousQuoted = false;
+  let inCommentBlock = false;
+  const blocks: string[][] = [[]];
+  const startBlock = (): void => {
+    if ((blocks[blocks.length - 1] ?? []).length > 0) blocks.push([]);
+  };
+  const keep = (line: string): void => {
+    blocks[blocks.length - 1]?.push(line);
+  };
+  for (const line of markdown.split(/\r?\n/)) {
+    // A line that starts with `<!--` opens an HTML block that runs to its `-->`;
+    // what it holds, a fence included, is comment text the final pass removes.
+    if (fence === null && (inCommentBlock || /^ {0,3}<!--/.test(line))) {
+      inCommentBlock = !line.includes('-->', inCommentBlock ? 0 : line.indexOf('<!--') + 4);
+      keep(line);
+      continue;
+    }
+    if (fence !== null) {
+      // A fence inside a list item also ends where a line outdents past the item.
+      if (fenceListIndent !== null && line.trim() !== '' && indentOf(line) < fenceListIndent) {
+        fence = null;
+        inList = false;
+      } else {
+        const closing = (inList ? /^\s*(`{3,}|~{3,})[ \t]*$/ : /^ {0,3}(`{3,}|~{3,})[ \t]*$/).exec(line)?.[1];
+        if (closing?.[0] === fence[0] && closing.length >= fence.length) fence = null;
+        continue;
+      }
+    }
+    const isListItem = LIST_ITEM.test(line);
+    if (isListItem) listIndent = LIST_MARKER.exec(line)?.[0].length ?? line.trimEnd().length + 1;
+    const fenceLine = isListItem ? line.replace(LIST_MARKER, '') : line;
+    const fenceMarker = (inList || isListItem ? /^\s*(`{3,}|~{3,})/ : /^ {0,3}(`{3,}|~{3,})/).exec(fenceLine)?.[1];
+    if (fenceMarker) {
+      fence = fenceMarker;
+      if (isListItem) inList = true;
+      fenceListIndent = inList ? listIndent : null;
+      startBlock();
+      previousBlank = false;
+      continue;
+    }
+    const isBlank = line.trim() === '';
+    if (isBlank) {
+      startBlock();
+      previousQuoted = false;
+    } else {
+      if (isListItem) inList = true;
+      else if (previousBlank && !/^\s/.test(line)) inList = false;
+      // Indented code starts four columns past the content of the list item it sits in.
+      if (!isListItem && (inCode || previousBlank) && indentOf(line) >= (inList ? listIndent : 0) + 4) {
+        inCode = true;
+        previousBlank = false;
+        continue;
+      }
+      inCode = false;
+      const isQuoted = BLOCKQUOTE.test(line);
+      // Inside a blockquote, a blank quoted line or a quoted heading or list item starts a block too.
+      const quoted = isQuoted ? line.replace(/^(?: {0,3}> ?)+/, '') : line;
+      if (BLOCK_START.test(quoted) || quoted.trim() === '' || (isQuoted && !previousQuoted)) startBlock();
+      previousQuoted = isQuoted;
+      keep(line);
+      if (/^ {0,3}#{1,6}(?:[ \t]|$)/.test(line)) startBlock();
+    }
+    previousBlank = isBlank;
+  }
+  return withoutSpansAndComments(blocks.map((block) => block.join('\n')).join('\n\n'));
+}
+
+/**
+ * `text` without code spans and HTML comments, read left to right as Markdown
+ * does, so `<!--` shown as code opens no comment and a backtick inside a comment
+ * opens no code span. A code span ends within its block (blocks are joined by a
+ * blank line); a comment runs to its `-->`, or to the end when it never closes.
+ */
+function withoutSpansAndComments(text: string): string {
+  // Backtick runs by length, each list in text order; the scan only moves forward,
+  // so one pointer per length finds every closing run in linear time.
+  const runsByLength = new Map<number, number[]>();
+  for (const run of text.matchAll(/`+/g)) byKey(runsByLength, run[0].length).push(run.index);
+  const nextRun = new Map<number, number>();
+  const closingRun = (length: number, from: number, before: number): number => {
+    const starts = runsByLength.get(length) ?? [];
+    let next = nextRun.get(length) ?? 0;
+    while ((starts[next] ?? Infinity) < from) next++;
+    nextRun.set(length, next);
+    const start = starts[next] ?? Infinity;
+    return start < before ? start : -1;
+  };
+
+  const opener = /`+|<!--/g;
+  let kept = '';
+  let at = 0;
+  let blockEnd = -1;
+  for (let match = opener.exec(text); match !== null; match = opener.exec(text)) {
+    // A backslash escapes the first backtick of a run; the rest may still open a span.
+    let escapedBackslashes = 0;
+    while (text.charAt(match.index - 1 - escapedBackslashes) === '\\') escapedBackslashes++;
+    const escaped = match[0] !== '<!--' && escapedBackslashes % 2 === 1;
+    if (match[0] === '<!--') {
+      const close = text.indexOf('-->', match.index + 4);
+      kept += text.slice(at, match.index);
+      at = close < 0 ? text.length : close + 3;
+    } else {
+      if (match.index > blockEnd) {
+        blockEnd = text.indexOf('\n\n', match.index);
+        if (blockEnd < 0) blockEnd = text.length;
+      }
+      const start = match.index + (escaped ? 1 : 0);
+      const run = match[0].length - (escaped ? 1 : 0);
+      const close = run === 0 ? -1 : closingRun(run, start + run, blockEnd);
+      if (close < 0) continue;
+      kept += text.slice(at, start);
+      at = close + run;
+    }
+    opener.lastIndex = at;
+  }
+  return kept + text.slice(at);
+}
+
+const NAMED_CHARACTER_REFERENCES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: '\u00a0' };
+
+/** `text` with numeric character references and the common named ones (`&amp;`, `&lt;`, …) decoded, as Markdown reads a destination. */
+function decodeCharacterReferences(text: string): string {
+  return text.replace(/&(?:#(\d{1,7})|#[xX]([\da-fA-F]{1,6})|([a-zA-Z]+));/g, (reference, decimal?: string, hex?: string, name?: string) => {
+    const codePoint = decimal !== undefined ? Number(decimal) : hex !== undefined ? Number.parseInt(hex, 16) : undefined;
+    if (codePoint !== undefined) return codePoint > 0 && codePoint <= 0x10ffff ? String.fromCodePoint(codePoint) : '\ufffd';
+    return (name !== undefined ? NAMED_CHARACTER_REFERENCES[name] : undefined) ?? reference;
+  });
+}
+
+/** The local link targets of a Markdown file, without `#anchor` or `?query`; links with a scheme or a leading `/` are left out. */
+function localLinkTargets(markdown: string): string[] {
+  const text = withoutCode(markdown);
+  const targets = new Set<string>();
+  for (const match of [...text.matchAll(INLINE_LINK), ...text.matchAll(REFERENCE_DEFINITION)]) {
+    const written = decodeCharacterReferences((match[1] ?? '').replace(/^<(.*)>$/, '$1').replace(/\\([!-/:-@[-`{-~])/g, '$1'));
+    if (/^[a-z][a-z0-9+.-]*:/i.test(written) || written.startsWith('/')) continue;
+    const target = written.replace(/[#?].*$/, '');
+    if (target === '') continue;
+    try {
+      targets.add(decodeURIComponent(target));
+    } catch {
+      targets.add(target);
+    }
+  }
+  return [...targets];
+}
+
+/**
+ * Whether `segments` name an entry under `root` that pull copies with the skill.
+ * Case must match exactly, as on the case-sensitive file systems members sync
+ * to, and pull's copy skips a symlink or an ignored name on the way.
+ */
+async function linkTargetState(root: string, segments: string[], mustBeDirectory: boolean): Promise<'copied' | 'missing' | 'skipped'> {
+  let dir = root;
+  for (const [index, segment] of segments.entries()) {
+    const entries = await fse.readdir(dir, { withFileTypes: true }).catch(() => []);
+    const entry = entries.find((candidate) => candidate.name === segment);
+    if (!entry) return 'missing';
+    if (entry.isSymbolicLink() || isIgnored(segment)) return 'skipped';
+    const isLast = index === segments.length - 1;
+    if ((!isLast || mustBeDirectory) && !entry.isDirectory()) return 'missing';
+    dir = path.join(dir, segment);
+  }
+  return 'copied';
+}
+
+/**
+ * Links between the files of a skill, read where pull delivers it: each skill on
+ * its own as `<skills>/<name>/`, namespaces flattened. A link that leaves the
+ * skill resolves only into another skill delivered beside it, and only for a
+ * member who also receives that skill; anything else never resolves.
+ */
+async function skillLinkFindings(files: SkillFile[], resources: ReviewResource[]): Promise<Finding[]> {
+  const skillsByName = new Map<string, ReviewResource[]>();
+  for (const resource of resources) if (resource.type === 'skills') byKey(skillsByName, resource.name).push(resource);
+  const findings: Finding[] = [];
+  for (const file of files) {
+    if (!/\.(md|markdown)$/i.test(file.relativePath)) continue;
+    const fromDir = path.posix.dirname(path.posix.relative(file.skill.relativePath, file.relativePath));
+    for (const target of localLinkTargets(file.content)) {
+      const mustBeDirectory = target.endsWith('/');
+      const resolved = path.posix.normalize(path.posix.join(fromDir, target)).replace(/\/$/, '');
+      const finding = (level: FindingLevel, message: string): void => {
+        findings.push({ level, check: 'format', path: file.relativePath, message: `${file.relativePath} links to ${target}${message}` });
+      };
+      const segments = resolved === '.' ? [] : resolved.split('/');
+      if (segments[0] !== '..') {
+        reportLinkTarget(await linkTargetState(file.skill.absolutePath, segments, mustBeDirectory), ', which is not in the skill.', finding);
+        continue;
+      }
+      const [, skillName = '', ...inSkill] = segments;
+      const siblings = skillName === '..' ? [] : skillsByName.get(skillName) ?? [];
+      if (siblings.length === 0) {
+        finding('warn', ', which pull never delivers there: it delivers each skill as <skills>/<name>/, '
+          + 'so link another skill as ../<name>/… and move any other file into the skill.');
+        continue;
+      }
+      const states = await Promise.all(siblings.map((sibling) => linkTargetState(sibling.absolutePath, inSkill, mustBeDirectory)));
+      const state = states.includes('copied') ? 'copied' : states.includes('skipped') ? 'skipped' : 'missing';
+      if (state === 'copied' && skillName !== file.skill.name) {
+        finding('info', `, in skill "${skillName}"; it resolves only for a member who also receives that skill.`);
+        continue;
+      }
+      reportLinkTarget(state, `, which is not in skill "${skillName}".`, finding);
+    }
+  }
+  return findings;
+}
+
+/** The finding for a link target inside a skill, if any: `missing` says `missingText`. */
+function reportLinkTarget(
+  state: 'copied' | 'missing' | 'skipped',
+  missingText: string,
+  finding: (level: FindingLevel, message: string) => void,
+): void {
+  switch (state) {
+    case 'copied':
+      return;
+    case 'missing':
+      finding('warn', missingText);
+      return;
+    case 'skipped':
+      finding('warn', ', which pull does not copy (a symlink or an ignored name); replace it with the file itself.');
+      return;
+    default: {
+      const unhandled: never = state;
+      throw new Error(`Unhandled link target state: ${String(unhandled)}`);
+    }
+  }
+}
+
+/** What may precede the shell word of a stage: assignments, `sudo` with its options and assignments, `env` with options and assignments, and a directory. */
+const COMMAND_PREFIX = String.raw`^\s*(?:\w+=\S*\s+)*(?:sudo\s+(?:-\S+(?:\s+(?!-)\S+)?\s+)*(?:\w+=\S*\s+)*)?`
+  + String.raw`(?:env\s+(?:(?:-[uCS]\s*\S+|--(?:unset|chdir|split-string)(?:=|\s+)\S+|-\S+|\w+=\S*)\s+)*)?(?:\S*\/)?`;
+// The shell word ends where the stage, a code span, a quoted string or a subshell does.
+const SHELL_STAGE = new RegExp(String.raw`${COMMAND_PREFIX}((?:ba|da|k|z)?sh|fish)(?=[\s\`'")]|$)`);
+
+/**
+ * Whether the shell whose arguments start at `args` reads its script from stdin:
+ * not when `-c` gives it one, unless `-s` says so. Reading stops at the first word
+ * that is not an option, and at a code span, a quote or a subshell, since prose
+ * may follow the command.
+ */
+function shellReadsStdin(args: string): boolean {
+  let readsStdin = true;
+  for (const word of (args.split(/[`'")]/)[0] ?? '').trim().split(/\s+/)) {
+    if (!/^-[a-zA-Z]+$/.test(word)) break;
+    if (word.includes('s')) return true;
+    if (word.includes('c')) readsStdin = false;
+  }
+  return readsStdin;
+}
+
+/** The `curl` or `wget` a stage runs: a whole word, as a command or in prose, but not text `echo` or `printf` prints. */
+function downloaderOf(stage: string): { word: 'curl' | 'wget'; argsAt: number } | undefined {
+  const found = /(?<![\w.-])(curl|wget)(?=\s|$)/.exec(stage);
+  const word = found?.[1];
+  if (!found || (word !== 'curl' && word !== 'wget') || /\b(?:echo|printf)(?:\s+-\S+)*\s+['"]?$/.test(stage.slice(0, found.index))) return undefined;
+  return { word, argsAt: found.index + word.length };
+}
+
+/** The words of a command as the shell splits them, quotes still in place. */
+function commandWords(command: string): string[] {
+  return command.match(/(?:"(?:[^"\\]|\\.)*"|'[^']*'|[^\s"'])+/g) ?? [];
+}
+
+/** A word with its quotes removed, as the command receives it. */
+function unquote(word: string): string {
+  return word.replace(/"((?:[^"\\]|\\.)*)"|'([^']*)'/g, (_quoted, double?: string, single?: string) => double ?? single ?? '');
+}
+
+/** A download URL without a scheme, such as `example.com/i.sh`; a bare number such as a `--retry` count is not one. */
+const SCHEMELESS_URL = /^(?!\d+(?:\.\d+)*$)[\w-]+(?:\.[\w-]+)+(?::\d+)?(?:\/\S*)?$/;
+
+/** Short options that take a value, attached or as the next word; the rest of a bundle after one is that value. */
+const SHORT_OPTIONS_WITH_VALUE: Record<'curl' | 'wget', ReadonlySet<string>> = {
+  curl: new Set('AbcCdDeEFhHKmoPQrtTuUwxXyYz'),
+  wget: new Set('aABDeiIlLoOPQRtTUwX'),
+};
+/** curl long options that take the next word as their value, so a URL there is not a download. */
+const CURL_LONG_OPTION_WITH_VALUE = new RegExp(String.raw`^--(?:data(?:-[a-z]+)?|form(?:-string)?|json|header|proxy(?:-(?:user|header|cacert|capath|cert|key|pass|ciphers|service-name|tlsuser|tlspassword))?|preproxy|referer|doh-url`
+  + String.raw`|user(?:-agent)?|cookie(?:-jar)?|upload-file|url-query|request|resolve|connect-to|config|cacert|capath|cert|key|output-dir`
+  + String.raw`|retry(?:-delay|-max-time)?|max-time|connect-timeout|max-filesize|limit-rate|range|time-cond|write-out|dump-header|trace(?:-ascii)?)$`);
+
+/** Whether a shell word sends standard output to a file or another descriptor: `>file`, `1>file`, `&>file`, `>&2`, attached or not. */
+function redirectsStdout(rawWord: string): boolean {
+  const unquoted = rawWord.replace(/"(?:[^"\\]|\\.)*"|'[^']*'/g, '');
+  const at = unquoted.indexOf('>');
+  if (at < 0) return false;
+  const descriptor = unquoted.slice(0, at);
+  return !/^\d+$/.test(descriptor) || descriptor === '1';
+}
+
+/**
+ * Whether the `curl` or `wget` whose arguments are `args` writes a download to
+ * standard output rather than to a file. curl writes each URL to stdout unless an
+ * output option (`-o FILE`, `-O`, `--output FILE`, `--remote-name`) is paired with
+ * it; wget writes to stdout only when its last `-O` is `-`. A redirection of the
+ * command's stdout feeds nothing to the pipe.
+ */
+function writesToStdout(downloader: 'curl' | 'wget', args: string): boolean {
+  const rawWords = commandWords(args);
+  if (rawWords.some(redirectsStdout)) return false;
+  const words = rawWords.map(unquote);
+  const withValue = SHORT_OPTIONS_WITH_VALUE[downloader];
+  let urls = 0;
+  let savedOutputs = 0;
+  let stdoutOutputs = 0;
+  let remoteNameAll = false;
+  // wget writes where its last -O points.
+  let wgetOutput: string | undefined;
+  // `-`, `/dev/stdout` and `/dev/fd/1` all name standard output.
+  const isStdout = (value: string | undefined): boolean => value === '-' || value === '/dev/stdout' || value === '/dev/fd/1';
+  const countOutput = (value: string): void => {
+    if (isStdout(value)) stdoutOutputs++;
+    else savedOutputs++;
+  };
+  for (let index = 0; index < words.length; index++) {
+    const word = words[index] ?? '';
+    const valueOf = (attached: string): string => (attached !== '' ? attached : words[++index] ?? '');
+    if (/^-[^-]/.test(word)) {
+      for (let at = 1; at < word.length; at++) {
+        const letter = word.charAt(at);
+        if (downloader === 'curl' && letter === 'O') savedOutputs++;
+        if (!withValue.has(letter)) continue;
+        const value = valueOf(word.slice(at + 1));
+        if (downloader === 'wget' && letter === 'O') wgetOutput = value;
+        if (downloader === 'curl' && letter === 'o') countOutput(value);
+        break;
+      }
+      continue;
+    }
+    // A `$` expansion stands for a URL, as in `curl "$INSTALL_URL"`.
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(word) || SCHEMELESS_URL.test(word) || word.startsWith('--url=') || word.startsWith('$')) urls++;
+    if (downloader === 'wget') {
+      const long = /^--output-document(?:=(.*))?$/.exec(word);
+      if (long) wgetOutput = valueOf(long[1] ?? '');
+      continue;
+    }
+    if (word === '--remote-name-all') remoteNameAll = true;
+    if (word === '--remote-name') savedOutputs++;
+    const long = /^--output(?:=(.*))?$/.exec(word);
+    if (long) countOutput(valueOf(long[1] ?? ''));
+    if (CURL_LONG_OPTION_WITH_VALUE.test(word)) index++;
+  }
+  // Without a URL it is text that names the command, such as "we avoid curl | sh".
+  if (urls === 0) return false;
+  if (downloader === 'wget') return isStdout(wgetOutput);
+  // curl pairs output options with URLs in order: `-o -` sends its URL to stdout,
+  // and a URL left without an output goes there too unless --remote-name-all saves it.
+  return stdoutOutputs > 0 || (!remoteNameAll && urls > savedOutputs + stdoutOutputs);
+}
+
+/**
+ * `line` with `;`, `&` and `|` inside a closed quote blanked, since there they are
+ * part of an argument rather than the end of a command. A quote with no closing match
+ * on the line is literal, and so is every later one of that kind, which keeps the
+ * scan linear.
+ */
+function blankQuotedSeparators(line: string): string {
+  let blanked = '';
+  let at = 0;
+  const unclosed = new Set<string>();
+  while (at < line.length) {
+    const char = line.charAt(at);
+    const close = (char === "'" || char === '"') && !unclosed.has(char) ? closingQuote(line, at) : -1;
+    if (close < 0) {
+      if (char === "'" || char === '"') unclosed.add(char);
+      blanked += char;
+      at++;
+      continue;
+    }
+    // A quote whose text runs a download, such as a package.json or YAML script, is
+    // still read as a command; a download word elsewhere in it, as in a header, is not.
+    const quoted = line.slice(at, close + 1);
+    const holdsCommand = /(?:^["']|[;&|])\s*(?:sudo\s+)?(?:curl|wget)\b/.test(quoted);
+    blanked += quoted.replace(holdsCommand ? /[;&]/g : /[;&|]/g, ' ');
+    at = close + 1;
+  }
+  return blanked;
+}
+
+/** The index of the quote that closes the one at `open`, or -1; inside double quotes a backslash escapes it. */
+function closingQuote(line: string, open: number): number {
+  const quote = line.charAt(open);
+  for (let at = line.indexOf(quote, open + 1); at >= 0; at = line.indexOf(quote, at + 1)) {
+    let backslashes = 0;
+    if (quote === '"') while (line.charAt(at - 1 - backslashes) === '\\') backslashes++;
+    if (backslashes % 2 === 0) return at;
+  }
+  return -1;
+}
+
+/** A shell that runs a download through process or command substitution: `bash <(curl …)`, `sh -c "$(curl …)"`. */
+const SUBSTITUTED_INSTALL = /(?<![\w.-])((?:ba|da|k|z)?sh)\s+((?:-\S+\s+)*)(<\(|["']?\$\()\s*(curl|wget)(?=\s)/;
+
+/**
+ * The first `curl` or `wget` whose output a shell runs, written as the install
+ * reads (`curl … | sh`): a later stage of the same pipeline, or a shell around a
+ * substitution. Commands are split on newlines, `;`, `&&` and `||` and then into
+ * stages on `|`, so the scan stays linear in the file size.
+ */
+function findPipedInstall(text: string): string | null {
+  const commands = text
+    // A trailing backslash or pipe continues the command on the next line.
+    .replace(/\\\r?\n/g, ' ')
+    .replace(/\|[ \t]*\r?\n/g, '| ')
+    .split('\n')
+    .flatMap((line) => blankQuotedSeparators(line).split(/;|&&|\|\|/));
+  for (const command of commands) {
+    const substituted = SUBSTITUTED_INSTALL.exec(command);
+    const [, substitutingShell, options = '', opener, substitutedDownloader] = substituted ?? [];
+    // A command substitution is a script only after `-c`; without it the shell opens a file of that name.
+    const runsSubstitution = opener === '<(' || /(?:^|\s)-[a-zA-Z]*c/.test(options);
+    if (substituted && substitutingShell !== undefined && runsSubstitution && (substitutedDownloader === 'curl' || substitutedDownloader === 'wget')) {
+      const args = command.slice(substituted.index + substituted[0].length).split(')')[0] ?? '';
+      if (writesToStdout(substitutedDownloader, args)) {
+        return opener === '<(' ? `${substitutingShell} <(${substitutedDownloader} …)` : `${substitutingShell} -c "$(${substitutedDownloader} …)"`;
+      }
+    }
+    let downloader: string | undefined;
+    for (const stage of command.split('|')) {
+      const shellStage = downloader === undefined ? null : SHELL_STAGE.exec(stage);
+      const shell = shellStage?.[1];
+      if (downloader !== undefined && shellStage && shell !== undefined && shellReadsStdin(stage.slice(shellStage[0].length))) {
+        return `${downloader} … | ${shell}`;
+      }
+      const download = downloaderOf(stage);
+      if (downloader === undefined && download !== undefined && writesToStdout(download.word, stage.slice(download.argsAt))) downloader = download.word;
+    }
+  }
+  return null;
+}
+
+function pipedInstallFindings(files: SkillFile[]): Finding[] {
+  const findings: Finding[] = [];
+  for (const file of files) {
+    // A script's comment lines are not run; a Markdown `#` line is a heading.
+    const runnable = /\.(md|markdown)$/i.test(file.relativePath) ? file.content : file.content.replace(/^[ \t]*#.*$/gm, '');
+    const pipedInstall = findPipedInstall(runnable);
+    if (!pipedInstall) continue;
+    findings.push({
+      level: 'warn',
+      check: 'safety',
+      path: file.relativePath,
+      message: `${file.relativePath} runs a download in a shell (${pipedInstall}); `
+        + 'ship the script in the skill or pin what it runs.',
+    });
   }
   return findings;
 }
@@ -650,6 +1197,23 @@ async function scoringSettingsFindings(repoDir: string, readText: (p: string) =>
     findings.push(...messages.map((message): Finding => ({ level: 'fail', check: 'scorers', path: relativePath, message })));
   }
   return findings;
+}
+
+const TeamSessionsSchema = z.object({ sessions: z.unknown() });
+
+/** The branch's `teamai.yaml` `sessions.publish` (#1385): each value pull ignores. A file that does not parse reports nothing here. */
+async function sessionsFindings(repoDir: string, readText: (p: string) => Promise<string | null>): Promise<Finding[]> {
+  const text = await readText(path.join(repoDir, 'teamai.yaml'));
+  if (text === null) return [];
+  let team: unknown;
+  try {
+    team = YAML.parse(text);
+  } catch {
+    return [];
+  }
+  const parsed = TeamSessionsSchema.safeParse(team);
+  const sessions = parsed.success ? parsed.data.sessions : undefined;
+  return SessionPolicy.readPublish('teamai.yaml', sessions).problems.map((message): Finding => ({ level: 'fail', check: 'sessions', path: 'teamai.yaml', message }));
 }
 
 /**
@@ -851,15 +1415,19 @@ export async function reviewBranchDir(branch: string, repoDir: string): Promise<
   const index = buildManifestIndex(roles, projects);
   const resources = await scanResources(repoDir, index);
   const readText = makeTextReader();
+  const skillFiles = await scannableSkillFiles(resources, readText);
 
   const findings: Finding[] = [
     ...await structureFindings(resources, index),
     ...await namingFindings(resources, readText),
     ...await duplicateFindings(resources, index),
+    ...await skillLinkFindings(skillFiles, resources),
     ...await formatFindings(resources, readText),
+    ...pipedInstallFindings(skillFiles),
     ...await leakFindings(repoDir, resources, readText),
     ...await workflowFindings(repoDir),
     ...await scoringSettingsFindings(repoDir, readText),
+    ...await sessionsFindings(repoDir, readText),
     ...await modelFindings(repoDir, resources, readText, roles, projects),
   ];
 
@@ -872,12 +1440,12 @@ export async function reviewBranchDir(branch: string, repoDir: string): Promise<
 // ─── Read-only branch reader ─────────────────────────────────────────────────
 
 /**
- * The repo roots read out of the branch; everything else is irrelevant here.
+ * The repo roots read out of the branch, and `teamai.yaml`; everything else is irrelevant here.
  * Wiki is read from its authoritative root `teamwiki/evidence/code`, matching
  * where the resource handler and pull actually read it — reading `wiki/` would
  * let everything under the real root bypass review.
  */
-const READ_ROOTS = [...PLACEABLE_TYPES.map(repoRootFor), 'manifest'];
+const READ_ROOTS = [...PLACEABLE_TYPES.map(repoRootFor), 'manifest', 'teamai.yaml'];
 
 /**
  * The ref to read `branch` from: the name itself when it resolves locally, else

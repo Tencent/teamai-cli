@@ -23,12 +23,12 @@ import {
 } from './instruction-targets.js';
 import { getHandler, RulesHandler, DocsHandler, EnvHandler, AgentsHandler } from './resources/index.js';
 import { removedAgentOrigin, reportHeldAgents, type RedeployedCopy } from './resources/agents.js';
-import { ruleOrigin } from './resources/rules.js';
+import { ruleOrigin, rulesReceivingTools } from './resources/rules.js';
 import {
   deliveredDocFiles, describeLinkedDocsRoot, isLinkedDocsRoot, isTeamDocsDirectory, keepDocsSearchWhitelist, listStaleDocDirectories, membersDocs,
   resolveDesiredDocs, resolveDocsDestination,
 } from './resources/docs.js';
-import { isToolInstalledForConfig, ResourceHandler } from './resources/base.js';
+import { ResourceHandler } from './resources/base.js';
 import { CODEX_TOOL, mayDeleteSkillCopy, skillOrigin } from './resources/skills.js';
 import { installOf, locate, ownOf, SHARED_AGENT_SKILLS_PATH, writable, writesOf } from './locate.js';
 import { describeToolHomeChange, recordToolHomes } from './tool-home-record.js';
@@ -51,9 +51,10 @@ import {
   TEAMAI_RECALL_RULES_START,
   TEAMAI_RECALL_RULES_END,
   CultureFrontmatterSchema,
-  resolveToolBaseDir,
+  resolveBaseDir,
   resolveHookScope,
   getDataHome,
+  getTeamaiHomeDir,
   getProjectSearchIndexPath,
   isRecallEnabled,
   isUsageReportEnabled,
@@ -156,7 +157,7 @@ async function teamFetchedWithinTtl(localConfig: LocalConfig): Promise<boolean> 
  */
 async function refreshTeamRepo(
   localConfig: LocalConfig,
-  options: Pick<GlobalOptions, 'inline' | 'fetchTimeoutMs' | 'dryRun' | 'teamRef' | 'silent'> = {},
+  options: Pick<GlobalOptions, 'inline' | 'localOnly' | 'fetchTimeoutMs' | 'dryRun' | 'teamRef' | 'silent'> = {},
 ): Promise<{ label: string; version: string | null; submodulesFailed: boolean; submodulesChanged: boolean }> {
   if (localConfig.repo.kind === 'http') {
     const { resolveApiKey } = await import('./api-key.js');
@@ -205,10 +206,12 @@ async function refreshTeamRepo(
   // the reconcile/source/report stages — so there is no unlocked window in which
   // another writer could reset/checkout the tree. We must NOT lock here: the lock
   // is non-reentrant, so re-acquiring it in the same process would fail.
-  // The new-worktree hook reads a recently fetched clone as it is.
-  if (options.teamRef === undefined && options.inline && options.fetchTimeoutMs === undefined && await teamFetchedWithinTtl(localConfig)) {
+  // The new-worktree hook reads a recently fetched clone as it is; a tool use preparing a checkout, any clone.
+  if (options.teamRef === undefined && options.inline && options.fetchTimeoutMs === undefined
+    && (options.localOnly || await teamFetchedWithinTtl(localConfig))) {
     const version = await getHeadRev(localConfig.repo.localPath).catch(() => null);
-    return { label: 'fetched within the TTL, not refetched', version, submodulesFailed: false, submodulesChanged: false };
+    const label = options.localOnly ? 'read as last fetched, not refetched' : 'fetched within the TTL, not refetched';
+    return { label, version, submodulesFailed: false, submodulesChanged: false };
   }
   // The git-pull hook caps the fetch: git pull is waiting on it.
   const cap = options.fetchTimeoutMs === undefined ? undefined : AbortSignal.timeout(options.fetchTimeoutMs);
@@ -419,7 +422,7 @@ async function sweepSharedSkillCopies(
   ledger: DeliveryLedger | undefined,
   scopeLabel: string,
 ): Promise<string[]> {
-  const sharedDir = path.join(resolveToolBaseDir(CODEX_TOOL, localConfig), SHARED_AGENT_SKILLS_PATH);
+  const sharedDir = path.join(resolveBaseDir(localConfig), SHARED_AGENT_SKILLS_PATH);
   const removed: string[] = [];
   for (const name of await listDirs(sharedDir)) {
     if (BUILTIN_SKILL_NAMES.has(name) || !swept(name)) continue;
@@ -657,9 +660,8 @@ async function cleanupTombstonedResources(
         if (rulesDir === undefined) continue;
         typeDir = rulesDir.path;
       } else {
-        if (!await isToolInstalledForConfig(tool, dir, localConfig)) continue;
-        if (isAgentExcluded(localConfig, tool)) continue;
-        typeDir = path.join(resolveToolBaseDir(tool, localConfig), dir);
+        const unhandled: never = type;
+        return unhandled;
       }
       // OMP's copy of a namespaced rule is flat (#946). A file of that name
       // may be the member's own, so only its record makes it teamai's.
@@ -1021,10 +1023,21 @@ export async function userScopeRecord(state: State): Promise<CheckoutRecord> {
 }
 
 /** The record of the checkout `localConfig`'s pulls deliver into, if any. */
-async function deliveringCheckoutRecord(localConfig: LocalConfig, state?: State): Promise<CheckoutRecord | undefined> {
+export async function deliveringCheckoutRecord(localConfig: LocalConfig, state?: State): Promise<CheckoutRecord | undefined> {
   const key = await checkoutRecordKey(localConfig);
   if (!key) return undefined;
   return (state ?? await loadStateForScope(localConfig)).lastPullByWorkspace?.[key];
+}
+
+/**
+ * How a `once` preparation sees its checkout removed under it (#1424): the
+ * `.git` the checkout had when the pass began is gone, or the folder itself
+ * when it had none. The pass then stops before its next write phase, so it
+ * never creates the folder again, and runs no postDeploy there.
+ */
+async function watchCheckoutRemoval(root: string): Promise<() => Promise<boolean>> {
+  const marker = await pathExists(path.join(root, '.git')) ? path.join(root, '.git') : root;
+  return async () => !await pathExists(marker);
 }
 
 /**
@@ -1353,6 +1366,8 @@ async function pullForScope(
     revisionField?: 'lastPullRev' | 'lastInheritedPullRev';
     /** What this scope's writers deliver into the project checkout (#915): the project scope's alone. */
     recorder?: DeliveryRecorder;
+    /** Whether a `once` preparation's checkout was removed under it: the scope stops before its next write phase (#1424). */
+    checkoutRemoved?: () => Promise<boolean>;
   } = {},
   /** Set to `{ completed: true }` on a real (non-dry-run) sync. See pull(). */
   result?: PullSyncResult,
@@ -1362,6 +1377,7 @@ async function pullForScope(
 ): Promise<void> {
   const scopeLabel = installScopeName(localConfig.scope);
   const revisionField = policy.revisionField ?? 'lastPullRev';
+  const checkoutRemoved = policy.checkoutRemoved ?? (async () => false);
   const targetsField = revisionField === 'lastPullRev'
     ? 'lastPullTargets' as const
     : 'lastInheritedPullTargets' as const;
@@ -1787,6 +1803,7 @@ async function pullForScope(
 
         if (targetSetMatches && recordedPlaces !== undefined
           && await placesUnmoved({ places: recordedPlaces, sessionToolHomes: checkout?.sessionToolHomes }, currentPlaces)) {
+          if (await checkoutRemoved()) return;
           log.success(`[${scopeLabel}] Already synced at ${currentRev}, skipping`);
           // 即使 repo 未变化，仍部署 CLI 内置资源（确保 CLI 升级后新版本 agent/rules 生效）
           const skipRecall = !isRecallEnabled(localConfig, freshConfig);
@@ -1947,6 +1964,7 @@ async function pullForScope(
   let rootRepoSkillNames: Set<string> | null = null;
 
   for (const type of resourceTypes) {
+    if (await checkoutRemoved()) return;
     const handler = getHandler(type);
 
     if (type === 'rules') {
@@ -1971,7 +1989,14 @@ async function pullForScope(
           if (result) { result.resourceSyncFailed = true; result.delivery = 'failed'; }
         }
         if (items.length > 0) {
-          log.success(`[${scopeLabel}] Synced ${items.length} rule(s)${skippedByTags > 0 ? ` (skipped ${skippedByTags} by tags)` : ''}`);
+          // A member whose rules tools are all fail-closed (WorkBuddy 5.7-only,
+          // #1290) or not installed gets the truth, not a count of rules no
+          // tool took.
+          if ((await rulesReceivingTools(freshConfig, localConfig)).length > 0) {
+            log.success(`[${scopeLabel}] Synced ${items.length} rule(s)${skippedByTags > 0 ? ` (skipped ${skippedByTags} by tags)` : ''}`);
+          } else {
+            log.info(`[${scopeLabel}] Held ${items.length} rule(s): no installed tool reads rules in this scope`);
+          }
         }
         if (reportKeptCopies() > 0) membersFilesKept = true;
       }
@@ -2051,6 +2076,7 @@ async function pullForScope(
             for (const file of deliveredDocFiles(desired, members)) ledger.recorder?.report('docs', path.join(destination, file));
           }
         } else {
+          if (await checkoutRemoved()) return;
           if (await docsHandler.pullDocs(desired, freshConfig, localConfig, ledger.recorder) > 0) membersFilesKept = true;
           log.success(`[${scopeLabel}] Synced ${fileCount} docs`);
         }
@@ -2197,6 +2223,7 @@ async function pullForScope(
   const undeliveredSkills = new Set<string>();
   let rootSkillUndelivered = false;
 
+  if (await checkoutRemoved()) return;
   // Step 3: Clean up tombstoned resources
   if (!options.dryRun) {
     await cleanupTombstonedResources(freshConfig, localConfig, scopeLabel, ledger, revisionRemovals, unpinnedRef);
@@ -2230,6 +2257,7 @@ async function pullForScope(
     }
   }
 
+  if (await checkoutRemoved()) return;
   // Step 3b: Clean up local skills not in the desired union set (role + tags)
   if (!options.dryRun && desiredSkillNames && knownRepoSkillNames) {
     const install = installOf(freshConfig, localConfig);
@@ -2317,10 +2345,12 @@ async function pullForScope(
   // (#704); see `syncLearningsAndRebuildIndex`.
   await syncLearningsAndRebuildIndex();
 
+  if (await checkoutRemoved()) return;
   // Steps 3.6-3.8: Deliver team culture, shared instructions and the recall block.
   const delivery = await syncManagedInstructions(freshConfig, localConfig, roleContext, scopeLabel, options.dryRun, ledger.recorder);
   instructions?.set(localConfig, delivery);
 
+  if (await checkoutRemoved()) return;
   // Step 4: Deploy CLI built-in skills
   // What they write is delivered too (#915); a deployment that failed says so.
   // A dry run only reports what they would write, for the block's preview.
@@ -2366,6 +2396,7 @@ async function pullForScope(
   }
   recorder?.succeeded('builtin');
 
+  if (await checkoutRemoved()) return;
   // Step 4b: Record where each tool took skills, rules, instruction blocks and
   // agents, once they and the built-ins had their chance at the new place, and
   // name the places a tool left.
@@ -2547,6 +2578,7 @@ async function pullForScope(
     }
   }
 
+  if (await checkoutRemoved()) return;
   await syncWorkflows(localConfig, freshConfig, !!options.dryRun, scopeLabel, recorder);
 
   // A real sync ran to completion for this scope. The "Already synced" fast path
@@ -2749,7 +2781,7 @@ async function syncManagedInstructions(
       && Object.values(blocks).some(Boolean) && !await opencodeDeliversThroughPlugin(config, localConfig)) {
       const { opencodeContextReference, readOpencodeInstructionList } = await import('./resources/opencode-config.js');
       const target = targets.find((candidate) => candidate.tools.includes('opencode'))!;
-      const { config: file, entry } = opencodeContextReference(target.path, localConfig.scope, resolveToolBaseDir('opencode', localConfig));
+      const { config: file, entry } = opencodeContextReference(target.path, localConfig.scope, resolveBaseDir(localConfig));
       opencodeReady = (await readOpencodeInstructionList(file))?.includes(entry) ?? false;
     }
   } catch (e) {
@@ -3007,9 +3039,13 @@ export async function pull(
   // A pull a git hook started: inline, or the detached one it hands over to.
   const { isGitHookEvent } = await import('./git-hook.js');
   const hookEnv = process.env.TEAMAI_GIT_HOOK;
-  // Read once; the scripts this pull runs (postPull) must not inherit it.
+  const prepareEnv = process.env.TEAMAI_PREPARE_CHECKOUT;
+  // Read once; the scripts this pull runs (postPull, postDeploy) must not inherit them.
   delete process.env.TEAMAI_GIT_HOOK;
+  delete process.env.TEAMAI_PREPARE_CHECKOUT;
   if (!options.gitHook && isGitHookEvent(hookEnv)) options = { ...options, gitHook: hookEnv };
+  // The pull a new checkout's hook hands over to writes its first record when the hook's own could not.
+  if (!options.prepareCheckout && prepareEnv === 'once') options = { ...options, prepareCheckout: 'once' };
   // What the scopes below say in their own words, so the post-pull pass does
   // not repeat it. Owned here rather than at module scope so nothing survives
   // into another call.
@@ -3044,6 +3080,7 @@ export async function pull(
   const contended = new Set<LocalConfig>();
   const heldLocks = new Map<LocalConfig, string>();
   let usageReport: Promise<void> | undefined;
+  const reportOutcomes = new Map<LocalConfig, { reported: boolean; at: string }>();
   // Team repo whose pull completed, for `scripts.postPull` — run at the very
   // end of pull(). The config is kept so postPull and postDeploy receive the
   // checkout identity, not only the repo path.
@@ -3051,6 +3088,10 @@ export async function pull(
   let projectConfig: LocalConfig | null = null;
   let postPullRepo: string | null = null;
   let scriptOwner: LocalConfig | null = null;
+  // A `once` preparation found no record of the checkout under the lock and wrote one: its first delivery, which runs postDeploy.
+  let firstDelivery = false;
+  // Whether a `once` preparation's checkout was removed under it: the pass stops at its next write phase.
+  let checkoutRemoved = async (): Promise<boolean> => false;
   const lockScope = async (config: LocalConfig): Promise<boolean> => {
     // git-mode guards its shared team clone; self mode guards its machine-data
     // writes (state/env/search-index) against a concurrent P2 migration relocating
@@ -3207,6 +3248,8 @@ export async function pull(
     }
   }
 
+  if (options.prepareCheckout === 'once' && projectConfig?.projectRoot) checkoutRemoved = await watchCheckoutRemoval(projectConfig.projectRoot);
+
   // 3. Project scope.
   if (projectConfig) {
     // The git hook runs silently; what failed in it is said here, once.
@@ -3214,7 +3257,12 @@ export async function pull(
     try {
       if (await lockScope(projectConfig)) {
         if (!options.dryRun && !options.inline) await runTeamScript(projectConfig, 'prePull');
-        await pullForScope(projectConfig, options, reported, { recorder: deliveryRecorder }, syncResult, teamEnvs, instructions);
+        const undelivered = options.prepareCheckout === 'once' && !await deliveringCheckoutRecord(projectConfig);
+        // An inline preparation that waited out another trigger's finds nothing left to deliver.
+        if (options.prepareCheckout === 'once' && options.inline && !undelivered) return;
+        await pullForScope(projectConfig, options, reported, { recorder: deliveryRecorder, checkoutRemoved }, syncResult, teamEnvs, instructions);
+        if (await checkoutRemoved()) return;
+        firstDelivery = undelivered && await deliveringCheckoutRecord(projectConfig) !== undefined;
         if (pinRequired && syncResult.teamRepoFailed) return;
         await excludeWorkspaceInstructions(projectConfig, options);
       }
@@ -3240,6 +3288,7 @@ export async function pull(
   scriptOwner = reconcileProject ?? reconcileUser ?? null;
   postPullRepo = scriptOwner?.repo.localPath ?? null;
 
+  if (await checkoutRemoved()) return;
   // 3.4. Legacy hook-format migration (pre-dispatch era). Runs UNDER the scope
   // lock (unlike the old step-0 call) against a locked, non-contended scope, so
   // it reads teamConfig.toolPaths from a stable clone rather than a concurrent
@@ -3258,6 +3307,7 @@ export async function pull(
     }
   }
 
+  if (await checkoutRemoved()) return;
   // 3.5. Reconcile built-in + team hooks for the active scope only. Runs OUTSIDE
   // pullForScope so it bypasses the "Already synced" rev fast-path — this is
   // what self-heals new built-in hooks and applies hooks.yaml changes on every
@@ -3267,10 +3317,12 @@ export async function pull(
   startupErrors.push(...hooks.errors);
   unwritten.push(...hooks.unwritten);
 
+  if (await checkoutRemoved()) return;
   // 3.6. Reconcile team MCP servers. Outside pullForScope for the same reason as
   // hooks. User-scope MCP remains isolated in project mode.
   startupErrors.push(...await reconcileMcpAllScopes(reconcileUser, reconcileProject, options, teamEnvs));
 
+  if (await checkoutRemoved()) return;
   // 3.6a. Trust in Codex what the two stages above wrote for it: its hooks and,
   // for a project, the main checkout whose `.codex/` holds team hooks or MCP
   // servers (#955). After both, so a project whose only Codex content is its MCP
@@ -3282,11 +3334,25 @@ export async function pull(
   // on every session.
   if (!options.silent) await reportEnvAdvisories(reconcileUser, reconcileProject, teamEnvs);
 
+  if (await checkoutRemoved()) return;
   // 3.7. Reconcile the team co-author policy (does an AI tool stamp a
   // Co-Authored-By / attribution trailer on its commits?). Outside pullForScope
   // for the same reason as hooks/MCP; write-only, so it self-heals but never
   // strips a trailer once the team drops the policy.
   unwritten.push(...await reconcileCoAuthorAllScopes(reconcileUser, reconcileProject, options, deliveryRecorder));
+
+  // 3.8. Reconcile the team auto-compact threshold into each tool's own config.
+  //      The user scope decides when there is one, also when this pull skipped
+  //      or only inherited it. A contended one is left to the next pull: handing
+  //      the decision to the project would flip the value.
+  const userScope = activeUserConfig ?? inheritedUserConfig;
+  if (userScope) {
+    if (!contended.has(userScope)) await reconcileAutoCompact(userScope, options);
+  } else if (projectMode && !inheritUserScope) {
+    await reconcileAutoCompactPastSkippedUser(reconcileProject, options);
+  } else {
+    await reconcileAutoCompact(reconcileProject, options);
+  }
 
   // 4. Auto-report usage data to all active scopes. Skill usage lives in each
   //    scope's own file (`<dataHome>/usage.jsonl`, the user scope's
@@ -3297,13 +3363,14 @@ export async function pull(
   if (!options.dryRun && !options.inline && !pendingUsageReport) {
     pendingUsageReport = (async () => {
       try {
-        const { reportUsageToTeam } = await import('./team-push.js');
+        const { reportUsage } = await import('./team-push.js');
         const { truncateUsageAfterReport, readUsageEvents, capUsageEvents } = await import('./usage-tracker.js');
         const targets: Array<{ repoPath: string; username: string; opts: { skipTruncate: true; selfConfig: LocalConfig } }> = [];
         // Per-target opt-out (teamai.yaml `usageReport: false`, or the member's
         // `usageReportEnabled: false`): a scope that disables stat commits is
         // dropped from the targets — e.g. teams pulling from a read-only
-        // remote never accumulate unpushable commits.
+        // remote never accumulate unpushable commits. Clear an excluded
+        // scope's old pending notice without consuming its retained data.
         if (reconcileProject && reconcileProject.repo.kind !== 'http'
           && !await usageReportDisabled(reconcileProject)) {
           targets.push({
@@ -3315,6 +3382,8 @@ export async function pull(
               selfConfig: reconcileProject,
             },
           });
+        } else if (reconcileProject) {
+          reportOutcomes.set(reconcileProject, { reported: true, at: new Date().toISOString() });
         }
         if (reconcileUser && reconcileUser.repo.kind !== 'http'
           && !await usageReportDisabled(reconcileUser)) {
@@ -3328,6 +3397,8 @@ export async function pull(
               selfConfig: reconcileUser,
             },
           });
+        } else if (reconcileUser) {
+          reportOutcomes.set(reconcileUser, { reported: true, at: new Date().toISOString() });
         }
 
         // Credit the sessions whose recall evidence is still pending (a read
@@ -3345,11 +3416,14 @@ export async function pull(
         // still truncates, even if pull has already stopped waiting.
         for (const t of targets) {
           const eventCount = (await readUsageEvents(t.opts.selfConfig)).length;
+          let usageReported = false;
           try {
-            const usageReported = await reportUsageToTeam(t.repoPath, t.username, t.opts);
+            usageReported = await reportUsage(t.repoPath, t.username, t.opts) !== 'unreported';
             if (usageReported && eventCount > 0) await truncateUsageAfterReport(eventCount, t.opts.selfConfig);
           } catch (e) {
             log.error(`Auto-report to ${t.repoPath} skipped: ${(e as Error).message}`);
+          } finally {
+            reportOutcomes.set(t.opts.selfConfig, { reported: usageReported, at: new Date().toISOString() });
           }
           // Drain queued workflow run records (#1083): a publication that
           // failed at run start/end is retried here, once per pull.
@@ -3389,6 +3463,7 @@ export async function pull(
     }
   }
 
+  if (await checkoutRemoved()) return;
   // 5. Pull cross-team source skills (always — even in project mode), against
   //    the active scope so deploys land in the right base dir. Use the
   //    contention-filtered scopes: pullSources re-reads `sources` from the shared
@@ -3407,6 +3482,7 @@ export async function pull(
     }
   }
 
+  if (await checkoutRemoved()) return;
   // 5a. Keep what this pull delivered into the project out of git (#915),
   //     after its last writer and still under the scope's sync lock. A
   //     contended scope is skipped: the lock's holder syncs.
@@ -3480,24 +3556,42 @@ export async function pull(
       }
     }
     if (result) result.completed = syncResult.completed && !syncResult.docsSyncFailed && !syncResult.agentModelsHeld;
-    const releaseSyncLocks = async () => {
+    const finishReportAndReleaseLocks = async () => {
+      // Other pull stages save whole state snapshots. Record report outcomes
+      // after those writers, still under the sync locks, including late pushes.
+      for (const [config, outcome] of reportOutcomes) {
+        try {
+          const state = await loadStateForScope(config);
+          if (outcome.reported) {
+            if (state.autoReportPendingSince === undefined) continue;
+            delete state.autoReportPendingSince;
+          } else {
+            if (state.autoReportPendingSince !== undefined) continue;
+            state.autoReportPendingSince = outcome.at;
+          }
+          await saveStateForScope(state, config);
+        } catch (error) {
+          log.error(`Could not save auto-report status: ${(error as Error).message}`);
+        }
+      }
       for (const lock of heldLocks.values()) await releaseLock(lock);
     };
     // Late reporting still writes the shared clone and local acknowledgement.
     // Keep its partition locks until completion so another CLI cannot re-report
     // the same data while this pull is no longer waiting.
     if (usageReport && usageReport === pendingUsageReport) {
-      lateUsageReport = usageReport.then(releaseSyncLocks, releaseSyncLocks).catch((e) => {
+      lateUsageReport = usageReport.then(finishReportAndReleaseLocks, finishReportAndReleaseLocks).catch((e) => {
         log.error(`Could not release report sync locks: ${(e as Error).message}`);
       });
     } else {
-      await releaseSyncLocks();
+      await finishReportAndReleaseLocks();
     }
   }
 
-  // 6. Checkout preparation waits for `scripts.postDeploy` before git returns.
-  //    Inline pulls otherwise skip team scripts. Nothing here can fail the pull.
-  if (!options.dryRun && options.prepareCheckout && scriptOwner) {
+  // 6. Checkout preparation waits for `scripts.postDeploy` before returning;
+  //    a `once` one only when it wrote the checkout's first record. Inline
+  //    pulls otherwise skip team scripts. Nothing here can fail the pull.
+  if (!options.dryRun && (options.prepareCheckout === 'always' || firstDelivery) && scriptOwner && !await checkoutRemoved()) {
     await runTeamScript(scriptOwner, 'postDeploy');
   }
 
@@ -3655,8 +3749,10 @@ function setWriterPaths(paths: GitExcludePaths, writer: WriterId, list: string[]
 /**
  * The delivered lists of the project's live checkouts (liveCheckoutRecords),
  * `current` standing in for the list of the checkout keyed `current.key`
- * (this pull's, which may have no record yet). A record without `root` or
- * without `gitExcludePaths` is a live checkout with no list. Read-only.
+ * (this pull's, which may have no record yet). A record without
+ * `gitExcludePaths` is a live checkout with no list. One without `root`, from
+ * an older CLI, names no checkout and is left out: git lists each checkout it
+ * may belong to, below, as one with no list. Read-only.
  */
 export async function liveDeliveredLists(
   projectRoot: string,
@@ -3666,10 +3762,10 @@ export async function liveDeliveredLists(
   const live = await liveCheckoutRecords(projectRoot, records) ?? {};
   const lists: ListedCheckout[] = Object.entries(live)
     .filter(([key]) => key !== current?.key)
-    .map(([, { root, gitExcludePaths }]) => ({
-      root: root ?? projectRoot,
-      paths: root !== undefined && gitExcludePaths ? Object.values(gitExcludePaths).flat() : null,
-    }));
+    .flatMap(([, { root, gitExcludePaths }]) => root === undefined ? [] : [{
+      root,
+      paths: gitExcludePaths ? Object.values(gitExcludePaths).flat() : null,
+    }]);
   if (current) lists.push({ root: projectRoot, paths: Object.values(current.paths).flat() });
   // A checkout git lists that teamai has no record of (made before it was set
   // up) has no list either: its files hold lines back like an unlisted one's.
@@ -4003,6 +4099,64 @@ async function scopeEnv(localConfig: LocalConfig, teamEnvs: Map<LocalConfig, Tea
   const teamEnv = await resolveTeamEnv(localConfig);
   teamEnvs.set(localConfig, teamEnv);
   return teamEnv;
+}
+
+/**
+ * The auto-compact step of a workspace pull that skipped the user scope. The
+ * user scope still decides when it is set up. Its config and clone are read
+ * under its sync lock, held for this step only; while another process holds
+ * it, the step is left to the next pull.
+ */
+async function reconcileAutoCompactPastSkippedUser(projectConfig: LocalConfig | null, options: GlobalOptions): Promise<void> {
+  if (options.dryRun) return;
+  const lock = path.join(getTeamaiHomeDir(), SYNC_LOCK_FILENAME);
+  if (!(await acquireLock(lock))) {
+    log.debug('[autocompact] skipped: another teamai process holds the user scope\'s sync lock; the next pull retries');
+    return;
+  }
+  try {
+    await reconcileAutoCompact((await loadLocalConfigForScope('user')) ?? projectConfig, options);
+  } finally {
+    await releaseLock(lock);
+  }
+}
+
+/**
+ * Apply the auto-compact threshold to every installed tool. The files are all
+ * per-machine (each tool's home), so one scope decides: the user scope when
+ * there is one, else the project's. What teamai wrote is kept in one
+ * machine-wide record, so it stays teamai's when the deciding scope changes and
+ * a member's own value is never overwritten.
+ */
+async function reconcileAutoCompact(localConfig: LocalConfig | null, options: GlobalOptions): Promise<void> {
+  if (options.dryRun || !localConfig) return;
+  try {
+    const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
+    if (!teamConfig) return;
+    const { reconcileAutoCompactLocked } = await import('./autocompact-reconcile.js');
+    const changes = await reconcileAutoCompactLocked(teamConfig, localConfig);
+    if (!changes) {
+      log.debug('[autocompact] skipped: another teamai process holds the record lock; the next pull retries');
+      return;
+    }
+    for (const c of changes) {
+      if (c.action === 'skipped') log.debug(`[autocompact] ${c.tool}: skipped — ${c.reason}`);
+    }
+    if (options.silent) return;
+    const updated = changes.filter((c) => c.action === 'updated');
+    if (updated.length > 0) {
+      log.info(`Auto-compact threshold applied to ${[...new Set(updated.map((c) => c.tool))].join(', ')}. Restart your AI tool to apply.`);
+    }
+    const removed = changes.filter((c) => c.action === 'removed');
+    if (removed.length > 0) {
+      log.info(`Removed the auto-compact setting teamai wrote for ${[...new Set(removed.map((c) => c.tool))].join(', ')}.`);
+    }
+    for (const c of changes.filter((change) => change.notable)) {
+      log.warn(`Auto-compact threshold not applied to ${c.tool}: ${c.reason}`);
+    }
+  } catch (e) {
+    log.debug(`[autocompact] reconcile failed: ${(e as Error).message}`);
+  }
 }
 
 /**

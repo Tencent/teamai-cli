@@ -34,7 +34,6 @@ vi.mock('node:fs', async (importOriginal) => {
  * 覆盖点：
  * - listAllRepoIdentities：canonical 反查（目录名编码有损，只能从 _index.json 读回）、
  *   损坏/无索引目录跳过、_unattributed 的纳入条件
- * - listSessionsAcrossRepos：跨 repo 合并、author 过滤、旧索引条目的 repoIdentity 回填
  * - saveSession 去重（P8）：sessionId+author 命中 → 原地更新，无 `_1` 副本；
  *   旧索引无 sessionId → 退化为名冲突路径
  * - rebuildIndex：幂等重建且保留 origin.sessionId
@@ -201,56 +200,6 @@ describe('listAllRepoIdentities', () => {
 
   it('returns an empty list for an empty team repo', () => {
     expect(new SyncManager(repoRoot).listAllRepoIdentities()).toEqual([]);
-  });
-});
-
-describe('listSessionsAcrossRepos', () => {
-  it('merges sessions from every repo and _unattributed', async () => {
-    const mgr = new SyncManager(repoRoot);
-    await mgr.saveSession(mkSession({ sessionId: 'a-1', title: 'alpha task' }), mkMeta({ sessionId: 'a-1', repoIdentity: 'github.com/org/alpha' }));
-    await mgr.saveSession(mkSession({ sessionId: 'b-1', title: 'beta task' }), mkMeta({ sessionId: 'b-1', author: 'bob', repoIdentity: 'gitlab.company.com/g/beta' }));
-    await mgr.saveSession(mkSession({ sessionId: 'c-1', title: 'plain task' }), mkMeta({ sessionId: 'c-1', author: 'carol', repoIdentity: null }));
-
-    const all = mgr.listSessionsAcrossRepos();
-    expect(all.map((s) => s.sessionId).sort()).toEqual(['a-1', 'b-1', 'c-1']);
-    // 每个条目都带 repoIdentity，标识来源 repo（null → _unattributed）
-    expect(all.find((s) => s.sessionId === 'a-1')?.repoIdentity).toBe('github.com/org/alpha');
-    expect(all.find((s) => s.sessionId === 'b-1')?.repoIdentity).toBe('gitlab.company.com/g/beta');
-    expect(all.find((s) => s.sessionId === 'c-1')?.repoIdentity).toBeNull();
-  });
-
-  it('filters by author across repos', async () => {
-    const mgr = new SyncManager(repoRoot);
-    await mgr.saveSession(mkSession({ sessionId: 'a-1', title: 'alpha alice' }), mkMeta({ sessionId: 'a-1', author: 'alice', repoIdentity: 'github.com/org/alpha' }));
-    await mgr.saveSession(mkSession({ sessionId: 'b-1', title: 'beta bob' }), mkMeta({ sessionId: 'b-1', author: 'bob', repoIdentity: 'gitlab.company.com/g/beta' }));
-    await mgr.saveSession(mkSession({ sessionId: 'c-1', title: 'plain alice' }), mkMeta({ sessionId: 'c-1', author: 'alice', repoIdentity: null }));
-
-    const byAlice = mgr.listSessionsAcrossRepos('alice');
-    expect(byAlice.map((s) => s.sessionId).sort()).toEqual(['a-1', 'c-1']);
-  });
-
-  it('backfills repoIdentity for legacy index entries that lack it', () => {
-    // 旧格式索引条目没有 repoIdentity 字段 → 用所在 repo 的 identity 回填，
-    // 展示层（list --all 的 SOURCE 列）依赖它
-    writeRepoIndex('github.com/org/alpha', {
-      version: 1,
-      repoIdentity: 'github.com/org/alpha',
-      updatedAt: '2026-01-01T00:00:00.000Z',
-      sessions: [
-        { sessionName: 'old_x', author: 'alice', platform: 'claude-code', title: 'x', cwd: '/p', messageCount: 1, createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z', status: 'active' },
-      ],
-    });
-    fs.mkdirSync(unattrDir(), { recursive: true });
-    fs.writeFileSync(
-      path.join(unattrDir(), '_index.json'),
-      JSON.stringify({ version: 1, repoIdentity: null, updatedAt: '2026-01-01T00:00:00.000Z', sessions: [
-        { sessionName: 'old_y', author: 'bob', platform: 'codex', title: 'y', cwd: '/q', messageCount: 1, createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z', status: 'active' },
-      ] }),
-    );
-
-    const all = new SyncManager(repoRoot).listSessionsAcrossRepos();
-    expect(all.find((s) => s.sessionName === 'old_x')?.repoIdentity).toBe('github.com/org/alpha');
-    expect(all.find((s) => s.sessionName === 'old_y')?.repoIdentity).toBeNull();
   });
 });
 

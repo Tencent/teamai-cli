@@ -8,7 +8,7 @@ import { fetchGitHubPR } from './providers/github/mr-fetch.js';
 import { fetchGitLabMR } from './providers/gitlab/mr-fetch.js';
 import { fetchTGitMR } from './providers/tgit/mr-fetch.js';
 import type { MRData, MRFetchOptions, MRThread, LearningDraft } from './types.js';
-import { callClaude } from './utils/ai-client.js';
+import { callTool } from './tool-launch/call.js';
 import { extractKeywords, findOverlappingLearnings } from './utils/dedup.js';
 import { log, spinner } from './utils/logger.js';
 import { getUserHome } from './utils/home.js';
@@ -105,7 +105,7 @@ export function formatMrThreads(threads: MRThread[], mrAuthor: string | undefine
  *
  * @param mr        MR data object
  * @param language  The team's `language` from teamai.yaml
- * @returns         Full prompt string for callClaude
+ * @returns         Full prompt string for callTool
  */
 export function extractMRLearningPrompt(mr: MRData, language?: 'en' | 'zh'): string {
   const commitsFormatted = mr.commits
@@ -324,7 +324,7 @@ export async function importFromMR(opts: {
 
   let learningContent: string;
   try {
-    learningContent = await callClaude(extractMRLearningPrompt(mr, opts.language));
+    learningContent = (await callTool(extractMRLearningPrompt(mr, opts.language), { launchedBy: 'import-mr' })).text;
     aiSpinner.succeed('AI analysis complete');
   } catch (err: unknown) {
     aiSpinner.fail('AI analysis failed');

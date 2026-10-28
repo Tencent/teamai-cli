@@ -16,7 +16,7 @@ const SHELL_KEYS = (key: string) => key.startsWith('ANTHROPIC_') || key.startsWi
   || key === 'CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY';
 
 beforeEach(async () => {
-  const keys = ['HOME', 'SHELL', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'XDG_CONFIG_HOME', 'OPENCODE_CONFIG', 'PI_CODING_AGENT_DIR', 'TEAMAI_TEST_MODEL_KEY', 'ZDOTDIR',
+  const keys = ['HOME', 'SHELL', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'XDG_CONFIG_HOME', 'OPENCODE_CONFIG', 'PI_CODING_AGENT_DIR', 'OMP_PROFILE', 'PI_PROFILE', 'PI_CONFIG_DIR', 'TEAMAI_TEST_MODEL_KEY', 'ZDOTDIR',
     ...Object.keys(process.env).filter(SHELL_KEYS)];
   originalEnv = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   for (const key of keys) delete process.env[key];
@@ -604,6 +604,25 @@ describe('Pi model switching', () => {
     expect(Object.keys((await fse.readJson(path.join(first, 'models.json'))).providers)).toEqual(['Mine']);
   });
 
+  it('writes OMP\'s models.yml into the OMP_PROFILE agent dir, and does not restore from another profile', async () => {
+    const work = path.join(home, '.omp', 'profiles', 'work', 'agent', 'models.yml');
+    const other = path.join(home, '.omp', 'profiles', 'other', 'agent', 'models.yml');
+    process.env.OMP_PROFILE = 'work';
+    await fse.outputFile(work, 'providers:\n  Mine:\n    baseUrl: https://mine.example/v1\n');
+    expect((await switchModelProfile(routed({ 'openai-chat-completions': ['team-model'] }), ['omp']))[0].status).toBe('switched');
+    expect(await fse.readFile(work, 'utf8')).toContain('team:tokenhub');
+    expect(await fse.pathExists(path.join(home, '.omp', 'agent', 'models.yml'))).toBe(false);
+    process.env.OMP_PROFILE = 'other';
+    await fse.outputFile(other, 'providers:\n  Other:\n    baseUrl: https://other.example/v1\n');
+    const skipped = (await restoreModelProfiles(['omp']))[0];
+    expect(skipped.status).toBe('skipped');
+    expect(skipped.message).toContain(work);
+    expect(skipped.message).toContain(other);
+    process.env.OMP_PROFILE = 'work';
+    expect((await restoreModelProfiles(['omp']))[0].status).toBe('restored');
+    expect(await fse.readFile(work, 'utf8')).not.toContain('team:tokenhub');
+  });
+
   it('writes into the Pi home recorded on this machine, from a shell without PI_CODING_AGENT_DIR', async () => {
     const recorded = path.join(home, 'recorded-pi');
     await fse.ensureDir(recorded);
@@ -886,6 +905,39 @@ describe('model switch bookkeeping', () => {
     await fse.outputJson(process.env.OPENCODE_CONFIG, { plugin: ['keep'] });
     expect((await switchModelProfile(routed({ 'openai-chat-completions': ['team'] }), ['opencode']))[0].status).toBe('switched');
     expect((await fse.readJson(process.env.OPENCODE_CONFIG)).plugin).toEqual(['keep']);
+  });
+
+  it('writes into the Claude and Codex roots teamai init recorded, from a shell without CLAUDE_CONFIG_DIR or CODEX_HOME', async () => {
+    const claudeRoot = path.join(home, '.claude-work');
+    const codexRoot = path.join(home, '.codex-work');
+    await fse.outputFile(path.join(home, '.teamai', 'config.yaml'), `repo:\n  localPath: /x\n  remote: ''\nusername: u\ntoolRoots:\n  claude: ${claudeRoot}\n  codex: ${codexRoot}\n`);
+    await fse.outputJson(path.join(claudeRoot, 'settings.json'), { env: { KEEP: 'yes' } });
+    await fse.outputFile(path.join(codexRoot, 'config.toml'), 'model = "personal"\n');
+    expect((await switchModelProfile(routed({ anthropic: ['team'] }), ['claude']))[0].status).toBe('switched');
+    expect((await switchModelProfile(routed({ 'openai-responses': ['team'] }), ['codex']))[0].status).toBe('switched');
+    expect((await fse.readJson(path.join(claudeRoot, 'settings.json'))).env.KEEP).toBe('yes');
+    expect(await fse.readFile(path.join(codexRoot, 'config.toml'), 'utf8')).toContain('model = "team"');
+    expect(await fse.pathExists(claudeFile())).toBe(false);
+    expect(await fse.pathExists(codexFile())).toBe(false);
+    expect((await restoreModelProfiles(['claude', 'codex'])).map((row) => row.status)).toEqual(['restored', 'restored']);
+    expect(await fse.readFile(path.join(codexRoot, 'config.toml'), 'utf8')).toMatch(/^model = "personal"\n+$/);
+  });
+
+  it('names the way out when a switch an earlier release wrote under the default root no longer matches the recorded root', async () => {
+    await fse.outputJson(claudeFile(), { env: { KEEP: 'yes' } });
+    expect((await switchModelProfile(routed({ anthropic: ['team'] }), ['claude']))[0].status).toBe('switched');
+    const claudeRoot = path.join(home, '.claude-work');
+    await fse.ensureDir(claudeRoot);
+    await fse.outputFile(path.join(home, '.teamai', 'config.yaml'), `repo:\n  localPath: /x\n  remote: ''\nusername: u\ntoolRoots:\n  claude: ${claudeRoot}\n`);
+
+    const [skipped] = await restoreModelProfiles(['claude']);
+    expect(skipped.status).toBe('skipped');
+    expect(skipped.message).toContain(path.join(claudeRoot, 'settings.json'));
+    expect(skipped.message).toContain(claudeFile());
+
+    process.env.CLAUDE_CONFIG_DIR = path.join(home, '.claude');
+    expect((await restoreModelProfiles(['claude']))[0].status).toBe('restored');
+    expect(await fse.readJson(claudeFile())).toEqual({ env: { KEEP: 'yes' } });
   });
 
   it('does not restore into a different Codex configuration directory', async () => {

@@ -123,12 +123,19 @@ export function reportStaleEntries(entries: StaleEntry[]): void {
  * same period a stale entry was being ignored. These serve as context for the
  * AI to understand what the team actually preferred.
  */
+export interface RelatedAdoptedLearningsOptions {
+  limit?: number;
+  namespaces?: readonly string[];
+}
+
 export async function findRelatedAdoptedLearnings(
   staleEntry: StaleEntry,
   votesDir: string,
   learningsDirs: readonly string[],
-  limit: number = 5,
+  options?: RelatedAdoptedLearningsOptions,
 ): Promise<string[]> {
+  const limit = options?.limit ?? 5;
+  const namespaces = options?.namespaces;
   const perDoc = new Map<string, number>();
   const voteFiles = await listFiles(votesDir);
 
@@ -152,7 +159,7 @@ export async function findRelatedAdoptedLearnings(
     .slice(0, limit);
 
   const byName = new Map(
-    (await listLearningFiles(learningsDirs)).map((learning) => [learning.file, learning.absPath]),
+    (await listLearningFiles(learningsDirs, namespaces)).map((learning) => [learning.file, learning.absPath]),
   );
   const contents: string[] = [];
   for (const [docId] of sorted) {
@@ -177,7 +184,7 @@ export async function generateUpdateDraft(
   const currentContent = await readFileSafe(staleEntry.path);
   if (!currentContent) return null;
 
-  const { callClaude } = await import('../utils/ai-client.js');
+  const { callTool, isOverrideInvalid } = await import('../tool-launch/call.js');
 
   const learningContext = relatedLearnings.length > 0
     ? `\n\nThe following learnings were actually adopted by team members (these represent what the team found more useful):\n\n${relatedLearnings.map((l, i) => `--- Learning ${i + 1} ---\n${l}`).join('\n\n')}`
@@ -203,9 +210,10 @@ Please rewrite this entry to be more actionable and directly useful. Keep the sa
 Output ONLY the updated markdown file content (including frontmatter).`;
 
   try {
-    const draft = await callClaude(prompt);
+    const draft = (await callTool(prompt, { launchedBy: 'quality-update' })).text;
     return draft.trim();
   } catch (e) {
+    if (isOverrideInvalid(e)) throw e;
     log.error(`AI update generation failed: ${(e as Error).message}`);
     return null;
   }

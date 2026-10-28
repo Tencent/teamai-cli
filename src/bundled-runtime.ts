@@ -10,6 +10,7 @@ import { execFileSync } from 'node:child_process';
 import { getUserHome } from './utils/home.js';
 import { isOnPath, pathDirs } from './utils/lookpath.js';
 import { log } from './utils/logger.js';
+import type { ToolId } from './types.js';
 
 const WORKBUDDY_BUNDLED_NODE_DIR = '.workbuddy/bundled/node/versions';
 const WORKBUDDY_PORTABLE_GIT_DIR = '.workbuddy/binaries/PortableGit/versions';
@@ -272,7 +273,7 @@ export function ensureBundledRuntimeOnPath(platform: NodeJS.Platform = process.p
 const BUNDLED_SHELLS: Record<string, () => string | null> = {
   workbuddy: resolveWorkbuddyShell,
   codebuddy: resolveCodebuddyShell,
-};
+} satisfies Partial<Record<ToolId, () => string | null>>;
 
 /**
  * Return the shell a tool provides for hook commands, or null when it provides

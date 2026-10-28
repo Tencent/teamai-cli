@@ -27,6 +27,8 @@ teamai contribute --file /tmp/session.md --namespace payments
 
 `--namespace` must be a learnings namespace this scope's projects declare in `manifest/projects.yaml`, or its roles in `manifest/roles.yaml`. `--namespace ""` writes to the shared root `learnings/`.
 
+[The usage report](reporting.md#what-your-sessions-delivered) counts the learning as an outcome of the session it came from (`--session-id`, else the agent's session). When teamai can tell which tool ran that session, the learning also names it as `session` in its frontmatter.
+
 To stop the prompt, set this in `teamai.yaml`:
 
 ```yaml
@@ -79,7 +81,7 @@ teamai recall disable
 teamai recall status
 ```
 
-One machine overrides this with `recallEnabled` in `~/.teamai/config.yaml`. `TEAMAI_RECALL_DISABLED=1` forces it off. While it is off, pull does not install recall. `teamai recall` still searches.
+One machine overrides this with `recallEnabled` in `~/.teamai/config.yaml`. `TEAMAI_RECALL_DISABLED=1` forces it off, and `teamai recall status` names it when it does. While it is off, pull does not install recall. `teamai recall` still searches. The variable changes files that every shell in the scope shares: a pull from a shell with it set removes the recall files and the CLAUDE.md recall block for the whole scope, and a pull from a shell without it puts them back.
 
 Turning recall off does not silence the SessionStart hint for recently merged MRs. That hint points to `teamai import --from-mr`, which can capture and publish a learning before the team enables recall. It has its own switch, so a team can turn it off without touching `contributeHint`:
 
@@ -103,6 +105,8 @@ teamai recall maintenance --update-quality
 
 `--archive` puts aside learnings whose confidence is below 0.15. `--update-quality` writes a `.draft.md`. Rename it to `.md` when the draft is right.
 
+Digest and maintenance commands (`teamai digest`, `teamai recall maintenance`, and `teamai recall promote`) include the active learnings namespaces for the current scope alongside the shared root.
+
 Confidence is an activity score from 0 to 1, not a probability that the knowledge is correct or a task succeeded. Its upvote-to-recall ratio is capped at 1, so repeated positive feedback cannot exceed that factor's 30% weight. Recency uses the later of the last recall and the last upvote, so a fresh upvote also refreshes recency.
 
 ### Promoting Learnings
@@ -116,6 +120,8 @@ teamai recall promote
 teamai recall promote <learningId> --category skills
 teamai recall promote <learningId> --dry-run
 ```
+
+Promotion pushes the new entry to a review branch and opens a PR/MR when the provider supports it. With the `git` provider, open the review request yourself using the printed branch name. The learning is marked as promoted only after the entry is pushed; merge the review request before teammates pull it. If the push fails, the learning stays eligible for retry. If a review request is closed without merging, delete its branch and the learning is offered for promotion again. Existing target files are never overwritten, and `--category` accepts only `skills`, `rules`, or `docs`.
 
 ## Codebase Knowledge Graph
 
@@ -142,13 +148,13 @@ When GitHub import falls back from `gh` to REST, it reads commit pages of 100, u
 
 GitLab MR import reads commit pages of 50 instead of using only the first page, up to 100 pages. Each GitLab MR API request has a 30-second deadline, including reading its response body. A metadata timeout fails that MR; a commits, diff or review-threads timeout leaves out that optional data and continues. Each commit or review-thread page gets its own deadline. A later commit-page failure leaves out the whole commit list rather than passing an incomplete history to extraction.
 
-For GitLab `--from-org` and the GitHub REST fallback, each page of the group or organization project list has a 30-second deadline, including reading its response body. A timeout on any page fails the import before writing the whitelist or importing repositories.
+For GitLab `--from-org`, and for GitHub `--from-org` on both the `gh` path and the REST fallback, each page of the group or organization project list has a 30-second deadline, including reading its response body. A timeout on any page fails the import before writing the whitelist or importing repositories, and neither path falls back to `/users/<org>/repos` after a page has timed out.
 
 The extraction reads the MR's review threads along with its description, commits and diff: GitLab discussions, GitHub review comments, reviews and conversation comments, TGit notes. Each thread goes into the prompt with the file and line it is anchored to, whether it is resolved, and its notes marked as the MR author's or a reviewer's; a decision in a resolved thread outweighs the diff. teamai's own CI comments are skipped. `--no-discussions` leaves the threads out, for `teamai ci extract-mr` too. With `language: en` in `teamai.yaml` the learning is written in English; otherwise in Chinese.
 
 If an AI-generated MR learning has a non-string `title`, the MR title is used for its summary and queued filename. Only string entries in a `tags` array are displayed. The draft content is not rewritten to repair metadata.
 
-`--incremental` re-extracts only the files changed since the last import; each codebase keeps that baseline in its own `evidence/code/<slug>/`. A remote repo's slug is `<provider>__<owner>__<repo>`, shared by `--from-repo`, `--from-mr` and `teamai ci extract-mr`; `--dir` uses the repo name.
+`--incremental` re-extracts only the files changed since the last import; each codebase keeps that baseline in its own `evidence/code/<slug>/`. A remote repo's slug is `<provider>__<owner>__<repo>`, shared by `--from-repo`, `--from-mr` and `teamai ci extract-mr`. `--dir` uses it too when the checkout's `origin` names the repo; otherwise it uses the repo or directory name, and refuses to replace evidence there that another remote repo, another directory of the same repo, or another checkout without an `origin` published. A checkout without an `origin` whose name another such checkout already holds gets `<name>-<hash8>`; the import prints the slug it used as `project:`.
 
 `--max-files` raises the cap on source files collected per repository (default 200). Files are collected key-file first; a source with more files is truncated, and the run warns with both counts instead of dropping the rest silently.
 
@@ -192,6 +198,8 @@ teamai ci extract-mr --url "$MR_URL" --mode write --team-repo ../team-repo --ind
 Write mode runs in the merged source checkout. Its code knowledge goes through the same path as `teamai import --dir . --incremental`, into `<team-repo>/teamwiki/evidence/code/<provider>__<owner>__<repo>/`, re-extracting only the changed files. Clone the team repo outside the checkout: otherwise its files would be extracted as source, so this step is skipped.
 
 Mark a suggestion to drop it: 👎 on GitHub and GitLab, ☝️ on TGit. Templates — GitHub Actions, GitLab CI and 智研/Coding CI — are in [`examples/ci/`](../../examples/ci/README.md).
+
+On GitLab, comment updates search the most recently updated notes first and stop at the first matching marker. This keeps the original pipeline's comment discoverable as it is edited in place. If the marker is still missing after 20 pages and more pages remain, the command fails instead of risking a duplicate.
 
 ## Knowledge Base Health Report
 

@@ -6,17 +6,17 @@ import os from 'node:os';
 import path from 'node:path';
 
 // Mock the AI client so extract/deep-enrich cannot hang on a live CLI.
-vi.mock('../utils/ai-client.js', () => ({
-  getAICliName: () => 'mock-cli',
-  callClaude: vi.fn(async () => {
+vi.mock('../tool-launch/call.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../tool-launch/call.js')>(),
+  callTool: vi.fn(async () => {
     throw new Error('mock: AI unavailable');
   }),
-  callClaudeParallel: vi.fn(async () => {
+  callToolParallel: vi.fn(async () => {
     throw new Error('mock: AI batch unavailable');
   }),
 }));
 
-import { callClaudeParallel } from '../utils/ai-client.js';
+import { CallError, callToolParallel } from '../tool-launch/call.js';
 import { extractCodebase } from '../codebase-extract.js';
 import { repoIdentity } from '../utils/git.js';
 import { codebaseCmd } from '../codebase-cmd.js';
@@ -162,6 +162,17 @@ describe('extract writes a fallback evidence manifest (#508)', () => {
       expect(component.docPath).toEqual(expect.any(String));
       expect(component.docPath?.length).toBeGreaterThan(0);
     }
+  });
+
+  it('fails instead of writing the fallback when the member names a tool teamai cannot run', async () => {
+    const root = createWidgetFixture();
+    // AI enrich only asks about a module with at least five facts.
+    fs.writeFileSync(path.join(root, 'src', 'shapes.ts'), ['Circle', 'Square', 'Triangle', 'Hexagon', 'Ellipse', 'Rhombus'].map((shape) => `export class ${shape} {\n  area() { return 1; }\n}\n`).join(''));
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    vi.mocked(callToolParallel).mockRejectedValueOnce(new CallError('override_invalid', 'TEAMAI_AI_TOOL is "gemini", which is not a tool teamai launches.'));
+
+    await expect(extractCodebase({ path: root, project: 'widget', json: true })).rejects.toMatchObject({ kind: 'override_invalid' });
+    expect(fs.existsSync(path.join(root, 'teamwiki', 'evidence', 'code', 'widget', '_manifest.json'))).toBe(false);
   });
 
   it('writes the same fallback when --skip-enrich is set', async () => {
@@ -426,7 +437,7 @@ describe('extract writes a fallback evidence manifest (#508)', () => {
         '',
       ].join('\n'),
     );
-    vi.mocked(callClaudeParallel).mockImplementation(async (tasks) =>
+    vi.mocked(callToolParallel).mockImplementation(async (tasks) =>
       tasks.map((task) =>
         task.parse(
           '{"domain":"widgets","responsibilities":["render"],"layer":"service","summary":"ui","description":"ui kit","keywords":["widget"]}',

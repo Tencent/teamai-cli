@@ -146,6 +146,21 @@ describe('dashboard workflow runs', () => {
       expect(rows[0]).toMatchObject({ prs, teamRevision: 'b'.repeat(40) });
     });
 
+    it('shows what each pass delivered, keeping only outcomes it can read and pull requests on https (#1387)', async () => {
+      const config = scope('http');
+      const pr = 'https://github.com/team/app/pull/43';
+      publish(config, record('r0000000000000001', { steps: [
+        { step: 'fix', pass: 1, outcome: 'success', outcomes: [{ kind: 'commit', sha: 'c'.repeat(40) }, { kind: 'pr', url: pr }, { kind: 'pr', url: 'javascript:alert(1)' }] },
+        { step: 'close', pass: 1, outcome: 'success', outcomes: [{ kind: 'learning', id: 'retry-backoff-2026-10-24-p0x1za' }, { kind: 'issue', id: '7' }] },
+        { step: 'skip-me', pass: 1 },
+      ] }));
+      expect((await workflowRunDetail(config, 'reported', 'r0000000000000001'))?.steps.map((step) => [step.step, step.outcomes])).toEqual([
+        ['fix', [{ kind: 'commit', sha: 'c'.repeat(40) }, { kind: 'pr', url: pr }]],
+        ['close', [{ kind: 'learning', id: 'retry-backoff-2026-10-24-p0x1za' }]],
+        ['skip-me', undefined],
+      ]);
+    });
+
     it('carries no field a record holds outside what the page reads, and skips a record it cannot read', async () => {
       const config = scope('http');
       publish(config, record('r0000000000000001', { inputs: { ticket: 'TICKET-SECRET-42' }, workspace: '/private/work' }));

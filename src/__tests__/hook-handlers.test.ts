@@ -32,8 +32,11 @@ const mockClaimPackageHint = vi.fn().mockResolvedValue(null);
 const mockTakePendingPackageHint = vi.fn().mockResolvedValue(null);
 
 const mockTeamDelivery = vi.fn().mockResolvedValue({ complete: false, key: undefined, gap: 'no_record' });
+// The checkout already has a delivery record: a session start or tool use prepares nothing.
+const mockDeliveringCheckoutRecord = vi.fn().mockResolvedValue({ rev: 'abc', targets: [] });
 vi.mock('../pull.js', () => ({
   pull: mockPull,
+  deliveringCheckoutRecord: mockDeliveringCheckoutRecord,
   settleLateUsageReport: mockSettleLateUsageReport,
   teamDelivery: mockTeamDelivery,
 }));
@@ -46,6 +49,7 @@ vi.mock('../dashboard-collector.js', () => ({
   dataHomeKey: vi.fn().mockResolvedValue('key'),
   eventProjectAnchor: vi.fn().mockResolvedValue(undefined),
   addGitStateAtStart: vi.fn().mockResolvedValue(undefined),
+  addGitHeadAtStop: vi.fn().mockResolvedValue(undefined),
   gitStateIn: vi.fn().mockReturnValue(undefined),
   // The payload's cwd: what hookScopeDir answers for a cwd that exists (#810).
   hookScopeDir: async (stdin: Record<string, unknown>) =>
@@ -187,13 +191,15 @@ vi.mock('../utils/reports-branch.js', () => ({
 }));
 
 const mockSeedProjectAgentRoot = vi.fn().mockResolvedValue(undefined);
+const mockCreateProjectToolRoots = vi.fn().mockResolvedValue(undefined);
 vi.mock('../project-agent-root.js', () => ({
   seedProjectAgentRoot: mockSeedProjectAgentRoot,
+  createProjectToolRoots: mockCreateProjectToolRoots,
 }));
 
 // No scope scores finished sessions unless a test says so; a detached process is never started for real.
-const mockSessionScoringScopes = vi.fn().mockResolvedValue([]);
-vi.mock('../score-sessions.js', () => ({ sessionScoringScopes: mockSessionScoringScopes }));
+const mockBackgroundPassScopes = vi.fn().mockResolvedValue([]);
+vi.mock('../score-sessions.js', () => ({ backgroundPassScopes: mockBackgroundPassScopes }));
 const { mockSpawn } = vi.hoisted(() => ({ mockSpawn: vi.fn(() => ({ on: vi.fn().mockReturnThis(), unref: vi.fn() })) }));
 vi.mock('node:child_process', async (importOriginal) => ({ ...(await importOriginal<typeof import('node:child_process')>()), spawn: mockSpawn }));
 
@@ -517,23 +523,23 @@ describe('hook-handlers registry', () => {
   it('session-start pull starts score-sessions detached once the late usage report settles, when a scope scores sessions (#1179)', async () => {
     const handler = sessionStartPull();
     const cwd = fs.realpathSync.native(os.tmpdir());
-    mockSessionScoringScopes.mockResolvedValueOnce([scope]);
+    mockBackgroundPassScopes.mockResolvedValueOnce([scope]);
 
     await handler.execute({ cwd }, 'claude', scope);
 
-    expect(mockSessionScoringScopes).toHaveBeenCalledWith(cwd);
+    expect(mockBackgroundPassScopes).toHaveBeenCalledWith(cwd);
     expect(mockSpawn).toHaveBeenCalledWith(process.execPath, [expect.any(String), 'score-sessions'], expect.objectContaining({ cwd, detached: true, stdio: 'ignore' }));
     expect(mockSettleLateUsageReport.mock.invocationCallOrder.at(-1)).toBeLessThan(mockSpawn.mock.invocationCallOrder.at(-1) ?? 0);
   });
 
   it('session-start pull scores the sessions of the directory it runs in when the payload names none (#1179)', async () => {
     const handler = sessionStartPull();
-    mockSessionScoringScopes.mockResolvedValueOnce([scope]);
+    mockBackgroundPassScopes.mockResolvedValueOnce([scope]);
     mockSpawn.mockClear();
 
     await handler.execute({}, 'claude', scope);
 
-    expect(mockSessionScoringScopes).toHaveBeenLastCalledWith(process.cwd());
+    expect(mockBackgroundPassScopes).toHaveBeenLastCalledWith(process.cwd());
     expect(mockSpawn).toHaveBeenCalledWith(process.execPath, [expect.any(String), 'score-sessions'], expect.objectContaining({ cwd: process.cwd() }));
   });
 
@@ -1284,10 +1290,11 @@ describe('hook-handlers registry', () => {
 
     // Judge was asked only about the uncredited docs (with their paths), the
     // trusted knowledge roots to restrict excerpt reads to (repo clone + the
-    // user-scope learnings mirror), and only its verdict upvoted.
+    // user-scope learnings mirror), and the hook's scope, whose AI tool it
+    // runs on; only its verdict upvoted.
     expect(mockJudgeAdoption).toHaveBeenCalledWith(
       'I applied doc-a here.', ['doc-a', 'doc-b'], { 'doc-a': '/l/doc-a.md', 'doc-b': '/l/doc-b.md' },
-      expect.arrayContaining(['/tmp']),
+      expect.arrayContaining(['/tmp']), scope,
     );
     expect(mockIncrementUpvoted).toHaveBeenCalledWith(expect.any(String), ['doc-a'], expect.any(String));
     // Ledger-only dedup: nothing is recorded beyond the ledger, so a later Stop
@@ -1312,7 +1319,7 @@ describe('hook-handlers registry', () => {
       'claude', scope,
     );
 
-    expect(mockJudgeAdoption).toHaveBeenCalledWith('used something', ['doc-b'], { 'doc-b': '/l/doc-b.md' }, expect.arrayContaining(['/tmp']));
+    expect(mockJudgeAdoption).toHaveBeenCalledWith('used something', ['doc-b'], { 'doc-b': '/l/doc-b.md' }, expect.arrayContaining(['/tmp']), scope);
   });
 
   describe("votes-judge and the learnings checkout's owner (#808)", () => {
@@ -1432,7 +1439,7 @@ describe('hook-handlers registry', () => {
     );
 
     // Both docs go to the judge (no marker excludes doc-a); only doc-b is credited.
-    expect(mockJudgeAdoption).toHaveBeenCalledWith('final reply using doc-b', ['doc-a', 'doc-b'], expect.anything(), expect.anything());
+    expect(mockJudgeAdoption).toHaveBeenCalledWith('final reply using doc-b', ['doc-a', 'doc-b'], expect.anything(), expect.anything(), scope);
     expect(mockIncrementUpvoted).toHaveBeenCalledWith(expect.any(String), ['doc-b'], expect.any(String));
   });
 
@@ -1498,7 +1505,7 @@ describe('hook-handlers registry', () => {
 
     // Only the project-scope doc is judged; the inherited user-scope doc is
     // excluded (read-only while the project is active).
-    expect(mockJudgeAdoption).toHaveBeenCalledWith('used both', ['proj-doc'], expect.anything(), expect.anything());
+    expect(mockJudgeAdoption).toHaveBeenCalledWith('used both', ['proj-doc'], expect.anything(), expect.anything(), projectScope);
   });
 
   it('votes-sync writes votes through updateReports when deltas are pending', async () => {
@@ -1677,6 +1684,80 @@ describe('post-tool-use dispatch — local-agent runs detached, never blocks hos
   });
 });
 
+describe('a checkout no pull delivered into (#1424)', () => {
+  let root: string;
+  beforeEach(() => {
+    vi.clearAllMocks();
+    root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'new-checkout-')));
+    mockDeliveringCheckoutRecord.mockResolvedValue(undefined);
+    // A linked worktree: its `.git` file names a git dir holding `commondir`.
+    fs.mkdirSync(path.join(root, 'project'));
+    fs.mkdirSync(path.join(root, 'repo.git', 'worktrees', 'project'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'repo.git', 'worktrees', 'project', 'commondir'), '../..\n');
+    fs.writeFileSync(path.join(root, 'project', '.git'), `gitdir: ${path.join(root, 'repo.git', 'worktrees', 'project')}\n`);
+  });
+  afterEach(() => {
+    mockDeliveringCheckoutRecord.mockResolvedValue({ rev: 'abc', targets: [] });
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  const projectConfig = (kind: 'git' | 'http'): LocalConfig => ({
+    repo: { kind, localPath: path.join(root, 'team'), remote: '' }, username: 'test', scope: 'project',
+    additionalRoles: [], dataHome: path.join(root, 'data'), projectRoot: path.join(root, 'project'),
+  });
+  const toolUse = (config: LocalConfig) => createDispatcher({ handlers: buildHandlerRegistry(), localConfig: config })
+    .dispatch('post-tool-use', '*', { tool_name: 'EnterWorktree', cwd: path.join(root, 'project') }, 'claude', 'background');
+
+  it('prepares it from the team clone as last fetched', async () => {
+    await toolUse(projectConfig('git'));
+
+    expect(mockPull).toHaveBeenCalledWith({ silent: true, prepareCheckout: 'once', inline: true, localOnly: true });
+  });
+
+  it('prepares nothing in a main checkout, where init runs', async () => {
+    fs.rmSync(path.join(root, 'project', '.git'));
+    fs.mkdirSync(path.join(root, 'project', '.git'));
+
+    await toolUse(projectConfig('git'));
+
+    expect(mockPull).not.toHaveBeenCalled();
+  });
+
+  it('prepares nothing in a submodule or a --separate-git-dir checkout, whose git dir holds no commondir', async () => {
+    fs.rmSync(path.join(root, 'repo.git', 'worktrees', 'project', 'commondir'));
+
+    await toolUse(projectConfig('git'));
+
+    expect(mockPull).not.toHaveBeenCalled();
+  });
+
+  it('prepares nothing for an HTTP team, whose checkouts keep no delivery record', async () => {
+    await toolUse(projectConfig('http'));
+
+    expect(mockPull).not.toHaveBeenCalled();
+  });
+
+  it('git\'s hook for a new worktree hands the pull it starts after git returns the checkout to prepare', async () => {
+    const dispatcher = createDispatcher({ handlers: buildHandlerRegistry(), localConfig: projectConfig('git') });
+
+    await dispatcher.dispatch('post-checkout', '*', {
+      cwd: path.join(root, 'project'), hook_event_name: 'post-checkout', git_args: ['0'.repeat(40), 'a'.repeat(40), '1'],
+    }, 'git');
+
+    expect(mockSpawn).toHaveBeenCalledWith(process.execPath, [expect.any(String), 'pull', '--silent'], expect.objectContaining({
+      env: expect.objectContaining({ TEAMAI_GIT_HOOK: 'post-checkout', TEAMAI_PREPARE_CHECKOUT: 'once' }),
+    }));
+  });
+
+  it('a session start still pulls when the tool roots cannot be created', async () => {
+    mockCreateProjectToolRoots.mockRejectedValueOnce(new Error('EACCES'));
+    const handler = buildHandlerRegistry().find((r) => r.event === 'session-start' && r.handler.name === 'pull')?.handler;
+
+    await handler?.execute({ session_id: 's-roots', cwd: path.join(root, 'project') }, 'claude', projectConfig('git'));
+
+    expect(mockPull).toHaveBeenCalledWith({ silent: true, prepareCheckout: 'once' });
+  });
+});
+
 describe('session-start team env hint (#875, #1018)', () => {
   let teamRepo: string;
 
@@ -1805,6 +1886,12 @@ describe('dashboard-report team correction keywords', () => {
       'team: test\nrepo: r\nsharing:\n  intervention:\n    correctionKeywords: [rehazlo]\n');
     await handler().execute({ hook_event_name: 'Stop', session_id: 's' }, 'claude', scopeWithTeam());
     expect(mockParseHookEvent).toHaveBeenCalledWith(expect.any(String), 'claude', { correctionKeywords: [] });
+  });
+
+  it("prices a stop with the model aliases of the hook's own scope", async () => {
+    const workspace: LocalConfig = { ...scopeWithTeam(), scope: 'project', projectRoot: teamRepo, modelAliases: { 'gw-sonnet': 'claude-sonnet-4' } };
+    await handler().execute({ hook_event_name: 'Stop', session_id: 's' }, 'claude', workspace);
+    expect(mockParseHookEvent).toHaveBeenCalledWith(expect.any(String), 'claude', { correctionKeywords: [], modelAliases: { 'gw-sonnet': 'claude-sonnet-4' } });
   });
 });
 

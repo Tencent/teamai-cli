@@ -16,6 +16,8 @@ import { runLocalDriver } from '../workflow/drivers/local/local-driver.js';
 import { respondProvenance, respondToHitl } from '../workflow/run-controls.js';
 import { attemptDir, AttemptIdSchema, deliveryLockPath, readRun, RunIdSchema, runsDir, skillStatePath, updateRun, type RunId } from '../workflow/store.js';
 import { DeliveryReceiptSchema } from '../workflow/delivery-schema.js';
+import { syncWorkflowDefinitions } from '../workflow/cache.js';
+import { syncScorerDefinitions } from '../scorers/cache.js';
 import type { Runners } from '../workflow/drivers/skill/skill-driver.js';
 // The doc comparison reads the table itself; every behaviour below goes through runSkillCall.
 import { TRANSITIONS, type TransitionRow } from '../workflow/drivers/skill/transitions.js';
@@ -572,7 +574,7 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     run: async () => {
       const made = await harness({ release: RELEASE });
       expect(await made.call({ kind: 'describe', name: 'release' })).toMatchObject({ data: { describe: { ask: { kind: 'ask', question: {
-        text: '- Only you can answer the approval at go-live, from your own terminal or teamai dashboard.\n- Optional approvals: plan-review.\nHow should it run?',
+        text: '- Only you can answer the approval at go-live, from your own terminal or teamai dashboard.\n- Optional approval at plan-review: before `node -e "process.exit(0)"`.\n- The recommended start lets this session\'s agent answer optional approvals and say why; "answer optional approvals automatically" answers each approval yes.\nHow should it run?',
         options: [
           { label: 'Recommended: you decide optional approvals', start: 'teamai workflow start release --driver skill --hitl recommend' },
           { label: 'Same, but ask me at optional approvals', start: 'teamai workflow start release --driver skill --hitl person' },
@@ -903,7 +905,7 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       const describeCall = { kind: 'describe', name: 'release-docs' } as const;
       const named = { ...made.config, workflows: { tools: { default: 'codex' } } };
       expect(await made.call(describeCall, { config: named })).toMatchObject({ data: { describe: { ask: { start: 'teamai workflow start release-docs --driver local' } } } });
-      expect(await made.call(describeCall, { tool: 'codebuddy' })).toMatchObject({ data: { describe: { ask: { start: 'teamai workflow start release-docs --driver local' } } } });
+      expect(await made.call(describeCall, { tool: 'cursor' })).toMatchObject({ data: { describe: { ask: { start: 'teamai workflow start release-docs --driver local' } } } });
       expect(await made.call({ kind: 'start', name: 'release-docs', answers: { confirmed: false }, inputs: undefined })).toMatchObject({ error: {
         code: 'needs_local_driver', message: expect.stringContaining('Ask the person to run teamai workflow start release-docs --driver local --tools default=claude in their own terminal.'),
       } });
@@ -1037,6 +1039,53 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       if (!('data' in other) || typeof other.data.run !== 'string') throw new Error(JSON.stringify(other));
       expect(await made.call({ kind: 'next', run: RunIdSchema.parse(other.data.run), wait: false })).toMatchObject({ error: { code: 'not_skill_run', next: `teamai workflow resume ${other.data.run} --driver skill` } });
       return made.rows;
+    },
+  },
+  {
+    name: 'a resume or takeover that would drive a run here from a session that names no tool the run needs answers tool_needed, whose next fills the tool',
+    rows: ['R28', 'R19'],
+    run: async () => {
+      const made = await harness({ review: REVIEW }, { scorers: SCORERS, tool: null });
+      const other = await made.context.client.start('review', { checkout: made.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
+      if (!('data' in other) || typeof other.data.run !== 'string') throw new Error(JSON.stringify(other));
+      const run = RunIdSchema.parse(other.data.run);
+      const refused = { error: {
+        code: 'tool_needed', message: `Run ${run} needs the tool this coding session works in, for the models of its steps or its judging, and it names none.`,
+        next: `teamai workflow resume ${run} --driver skill --tools default='{tool}'`,
+      } };
+      expect(await made.call({ kind: 'resume', run, claim: false, confirmed: false, answers: {} })).toEqual(refused);
+      expect(await made.call({ kind: 'takeover', run, confirmed: false })).toEqual(refused);
+      // The next keeps the options of the resume it refuses.
+      expect(await made.call({ kind: 'resume', run, claim: false, confirmed: true, answers: { parallel: 2, hitl: 'auto-approve' } })).toMatchObject({ error: {
+        code: 'tool_needed', next: `teamai workflow resume ${run} --driver skill --tools default='{tool}' --parallel 2 --auto-approve --confirmed`,
+      } });
+      expect(await turnOf(await made.call({ kind: 'resume', run, claim: false, confirmed: false, answers: {}, tool: 'claude' }))).toMatchObject({ run, actions: [{ kind: 'choose', about: 'host' }] });
+      return made.rows;
+    },
+  },
+  {
+    name: 'a claim refused for the tool the run needs drops the skill.json kept here, so the resume that names the tool drives the claimed run anew',
+    rows: ['R28', 'R19'],
+    run: async () => {
+      const team = sharedTeam({ handed: HANDED.replace('    prompt: Write the API.', '    prompt: Write the API.\n    model: sonnet') });
+      const ci = await team.install('ci');
+      // CI drives the run with the skill driver, so it keeps a skill.json, and publishes it.
+      const first = await harness({}, { install: ci, tool: 'claude' });
+      const { run } = await turnOf(await first.call({ kind: 'start', name: 'handed', answers: { confirmed: false, parallel: 1 }, inputs: undefined }));
+      await first.call({ kind: 'choose', run, choice: 'h1' });
+      for (let poll = 0; poll < 3; poll += 1) await first.call({ kind: 'next', run, wait: true });
+      expect(await publishRun(ci.config, run, { checkout: ci.checkout })).toMatchObject({ ok: true });
+      // A member takes it over and publishes it.
+      const member = await team.install('member');
+      await turnOf(await (await harness({}, { install: member, tool: 'claude' })).call({ kind: 'resume', run, claim: false, confirmed: false, answers: {} }));
+      expect(await publishRun(member.config, run, { checkout: member.checkout })).toMatchObject({ ok: true });
+      // Back on CI, a session that names no tool claims it back.
+      const back = await harness({}, { install: ci, tool: null });
+      expect(await back.call({ kind: 'resume', run, claim: true, confirmed: false, answers: { parallel: 2 } }))
+        .toMatchObject({ error: { code: 'tool_needed', next: `teamai workflow resume ${run} --driver skill --tools default='{tool}' --parallel 2` } });
+      expect(await turnOf(await back.call({ kind: 'resume', run, claim: false, confirmed: false, answers: { parallel: 2 }, tool: 'claude' })))
+        .toMatchObject({ run, actions: [{ kind: 'choose', about: 'host' }] });
+      return back.rows;
     },
   },
   {
@@ -1350,6 +1399,8 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       expect(await back.call({ kind: 'resume', run, claim: false, confirmed: false, answers: {} })).toEqual({
         error: { code: 'not_owner', message: expect.stringContaining(`Run ${run} is owned by member`), next: `teamai workflow resume ${run} --driver skill --claim` },
       });
+      expect(await back.call({ kind: 'resume', run, claim: false, confirmed: false, answers: {}, tool: 'claude' }))
+        .toMatchObject({ error: { code: 'not_owner', next: `teamai workflow resume ${run} --driver skill --tools default=claude --claim` } });
       expect(await turnOf(await back.call({ kind: 'resume', run, claim: true, confirmed: false, answers: {} }))).toMatchObject({ run, status: 'driving', actions: [{ kind: 'choose', about: 'host' }] });
       return [...member.rows, ...back.rows];
     },
@@ -1914,6 +1965,51 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     },
   },
   {
+    name: 'a session that resumes a run it judges itself gets the score --next on done, and none with --no-judge',
+    rows: ['R19'],
+    run: async () => {
+      const made = await harness({ review: REVIEW }, { scorers: SCORERS });
+      const resumedToDone = async (answers: { judge?: false }) => {
+        const created = await made.context.client.start('review', { checkout: made.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
+        if (!('data' in created)) throw new Error(JSON.stringify(created));
+        const run = RunIdSchema.parse(created.data.run);
+        await turnOf(await made.call({ kind: 'resume', run, claim: false, confirmed: false, answers }, { tool: 'copilot' }));
+        const [dispatch] = dispatches(await turnOf(await made.call({ kind: 'choose', run, choice: 'h1' })));
+        if (!dispatch) throw new Error(`no dispatch for ${run}`);
+        await made.call({ kind: 'ack', run, attempt: dispatch.attempt });
+        childWrites(dispatch.brief, { kind: 'output', output: 'Reviewed the change.' });
+        await made.call({ kind: 'report', run, attempt: dispatch.attempt, role: 'agent', modelUnavailable: false });
+        return { run, turn: await turnOf(await made.call({ kind: 'next', run, wait: false })) };
+      };
+      const judged = await resumedToDone({});
+      expect(judged.turn.actions).toEqual([{ kind: 'done', outcome: 'succeeded', prs: [], score: expect.stringContaining(`teamai score --next --json '{"run":"${judged.run}",`) }]);
+      expect(judged.turn.actions[0]).toHaveProperty('score', expect.stringContaining('"can":{"judge":{"isolation":"best-effort","access":"read","tools":["copilot"]}}'));
+      expect((await resumedToDone({ judge: false })).turn.actions).toEqual([{ kind: 'done', outcome: 'succeeded', prs: [] }]);
+      return made.rows;
+    },
+  },
+  {
+    name: 'a resume decides session judging from the scorers its run pinned, not from a later pull',
+    rows: ['R19'],
+    run: async () => {
+      const made = await harness({ review: REVIEW }, { scorers: SCORERS });
+      const created = await made.context.client.start('review', { checkout: made.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
+      if (!('data' in created)) throw new Error(JSON.stringify(created));
+      const run = RunIdSchema.parse(created.data.run);
+      // The team now asks for verified isolation; the run keeps the best-effort scorer it pinned.
+      fs.writeFileSync(path.join(made.config.repo.localPath, 'scorers', 'review-quality.md'), SCORERS['review-quality'].replace('samplingRate: 100', 'samplingRate: 100\nisolation: verified'));
+      await syncScorerDefinitions(made.config);
+      await turnOf(await made.call({ kind: 'resume', run, claim: false, confirmed: false, answers: {} }, { tool: 'copilot' }));
+      const [dispatch] = dispatches(await turnOf(await made.call({ kind: 'choose', run, choice: 'h1' })));
+      if (!dispatch) throw new Error(`no dispatch for ${run}`);
+      await made.call({ kind: 'ack', run, attempt: dispatch.attempt });
+      childWrites(dispatch.brief, { kind: 'output', output: 'Reviewed the change.' });
+      await made.call({ kind: 'report', run, attempt: dispatch.attempt, role: 'agent', modelUnavailable: false });
+      expect((await turnOf(await made.call({ kind: 'next', run, wait: false }))).actions).toEqual([{ kind: 'done', outcome: 'succeeded', prs: [], score: expect.stringContaining(`"run":"${run}"`) }]);
+      return made.rows;
+    },
+  },
+  {
     name: 'judging here is asked about first, with each option again without judging, and a start without it judges nothing',
     rows: ['R3', 'R10'],
     run: async () => {
@@ -1926,6 +2022,56 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       expect(await reviewed(made, { judge: false })).toEqual(expect.objectContaining({ status: 'done', actions: [{ kind: 'done', outcome: 'succeeded', prs: [] }], events: [expect.objectContaining({ kind: 'settled' })] }));
       expect(made.rows).not.toContain('J1');
       return made.rows;
+    },
+  },
+  {
+    name: 'describe asks a session whose host names no tool for it, with a describe whose {tool} slot it fills, when the run needs a tool',
+    rows: ['R27', 'R3', 'R4'],
+    run: async () => {
+      const plain = REVIEW.replace('    scorers: [review-quality]\n', '');
+      const defaulted = plain.replace('name: review', 'name: defaulted').replace('steps:', 'defaults:\n  model: claude-opus-4-1\nsteps:');
+      const made = await harness({ review: REVIEW, check: CHECK, plain: plain.replace('name: review', 'name: plain'), defaulted }, { scorers: SCORERS, tool: null });
+      for (const mode of ['attended', 'unattended'] as const) {
+        expect(await made.call({ kind: 'describe', name: 'review' }, { mode })).toMatchObject({ data: { describe: { ask: {
+          kind: 'tool', reason: 'This coding session names no tool, which the run needs for the models of its steps or its judging.',
+          describe: "teamai workflow start --describe review --driver skill --tools default='{tool}'", tools: expect.arrayContaining(['claude', 'omp', 'qoder']),
+        } } } });
+      }
+      expect(await made.call({ kind: 'describe', name: 'review', tool: 'claude' })).toMatchObject({ data: { describe: { ask: { kind: 'ask', question: {
+        options: [{ label: 'Recommended: with judging', start: 'teamai workflow start review --driver skill --tools default=claude' }, { label: 'Same, but without judging', start: 'teamai workflow start review --driver skill --tools default=claude --no-judge' }],
+      } } } } });
+      // A model the workflow's defaults pin needs the tool too.
+      expect(await made.call({ kind: 'describe', name: 'defaulted' })).toMatchObject({ data: { describe: { ask: { kind: 'tool' } } } });
+      // A run of commands alone needs no tool, and neither does a prompt step that pins no model and is not judged.
+      expect(await made.call({ kind: 'describe', name: 'check' })).toMatchObject({ data: { describe: { ask: { kind: 'start', start: 'teamai workflow start check --driver skill' } } } });
+      expect(await made.call({ kind: 'describe', name: 'plain' })).toMatchObject({ data: { describe: { ask: { kind: 'start', start: 'teamai workflow start plain --driver skill' } } } });
+      return made.rows;
+    },
+  },
+  {
+    name: 'judging by the session, when its tool has no confined judge here, is asked about too, and judging nobody here can do is not',
+    rows: ['R3', 'R4'],
+    run: async () => {
+      const made = await harness({ review: REVIEW }, { scorers: SCORERS });
+      expect(await made.call({ kind: 'describe', name: 'review' }, { tool: 'copilot' })).toMatchObject({ data: { describe: { judging: { kind: 'session' }, ask: { kind: 'ask', question: {
+        text: '- review is judged by this session in a subagent once the run is done, at best-effort isolation. The coding session\'s tool, copilot, has no confined judge teamai runs.\nHow should it run?',
+        options: [{ label: 'Recommended: with judging', start: 'teamai workflow start review --driver skill' }, { label: 'Same, but without judging', start: 'teamai workflow start review --driver skill --no-judge' }],
+      } } } } });
+      // A scorer that asks for verified isolation leaves its work to another driver.
+      const verified = await harness({ review: REVIEW }, { scorers: { 'review-quality': SCORERS['review-quality'].replace('samplingRate: 100', 'samplingRate: 100\nisolation: verified') } });
+      expect(await verified.call({ kind: 'describe', name: 'review' }, { tool: 'copilot' })).toMatchObject({ data: { describe: { judging: { kind: 'elsewhere' }, ask: {
+        kind: 'start', say: '- review is not judged on this machine. The coding session\'s tool, copilot, has no confined judge teamai runs, and review-quality asks for verified isolation.',
+        start: 'teamai workflow start review --driver skill',
+      } } } });
+      // A project whose teamai data is still inside its repository, where scoring is off.
+      const member = await sharedTeam({ review: REVIEW }).install('legacy');
+      const config: LocalConfig = { ...member.config, scope: 'project', projectRoot: member.checkout, dataHome: path.join(member.checkout, '.teamai') };
+      await syncWorkflowDefinitions(config);
+      const legacy = await harness({ review: REVIEW }, { install: { config, checkout: member.checkout } });
+      expect(await legacy.call({ kind: 'describe', name: 'review' }, { tool: 'cursor' })).toMatchObject({ data: { describe: { judging: { kind: 'elsewhere' }, ask: {
+        kind: 'start', say: expect.stringMatching(/^- review is not judged on this machine\. Scoring is off for this project/), start: 'teamai workflow start review --driver skill',
+      } } } });
+      return [...made.rows, ...verified.rows, ...legacy.rows];
     },
   },
   {
