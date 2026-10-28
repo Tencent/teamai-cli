@@ -2769,7 +2769,7 @@ steps:
 
   /** A process that runs teamai in a CI job, with no agent session: unattended unless `mode` says otherwise. */
   function runnerTaker(mode: 'attended' | 'unattended' = 'unattended') {
-    return { caller: { evidence: { kind: 'none' as const }, confirmed: false, mode }, driver: 'local' as const };
+    return { caller: { evidence: { kind: 'none' as const }, confirmed: false, mode }, driver: 'local' as const, hasPerson: false };
   }
 
   /** What `member` reads of teamai-reports after a pull. */
@@ -2778,7 +2778,7 @@ steps:
     return PublishedRuns.list(member.config, { taker, env: await resolveWorkflowEnv(member.config, {}) });
   }
 
-  it('lists an offered run whose step left has a required approval as needing a person, which an unattended runner does not take', async () => {
+  it('lists an offered run whose step left has a required approval as needing a person, which a runner no person attends does not take', async () => {
     const acme = team({ release: RELEASE });
     const alice = await acme.member('alice');
     const runner = await acme.member('runner');
@@ -2794,9 +2794,9 @@ steps:
       offer: { at: expect.any(String), needs: ['only a person can answer the approval at ship'] },
     })]);
     const self = (await installOwner(runner.config)).id;
-    expect(PublishedRuns.candidates(runs, { repository: 'github.com/acme/app', mode: 'unattended', self })).toEqual([]);
-    expect(PublishedRuns.candidates(runs, { repository: 'github.com/acme/app', mode: 'attended', self }).map((run) => run.run)).toEqual([runId]);
-    expect(PublishedRuns.candidates(runs, { repository: 'github.com/acme/other', mode: 'attended', self })).toEqual([]);
+    expect(PublishedRuns.candidates(runs, { repository: 'github.com/acme/app', hasPerson: false, self })).toEqual([]);
+    expect(PublishedRuns.candidates(runs, { repository: 'github.com/acme/app', hasPerson: true, self }).map((run) => run.run)).toEqual([runId]);
+    expect(PublishedRuns.candidates(runs, { repository: 'github.com/acme/other', hasPerson: true, self })).toEqual([]);
   });
 
   it('lets a runner with no agent session take an offered run of an invoke: deny workflow, and refuses it to the skill driver', async () => {
@@ -2809,7 +2809,7 @@ steps:
 
     expect(await publishedRuns(runner)).toMatchObject([{ run: runId, offer: { needs: [] } }]);
     expect((await publishedRuns(runner))[0]?.offer).not.toHaveProperty('refusal');
-    const skill = { caller: { evidence: { kind: 'skill-driver' as const }, confirmed: false, mode: 'unattended' as const }, driver: 'skill' as const };
+    const skill = { caller: { evidence: { kind: 'skill-driver' as const }, confirmed: false, mode: 'unattended' as const }, driver: 'skill' as const, hasPerson: false };
     expect(await publishedRuns(runner, skill)).toMatchObject([{ run: runId, offer: { refusal: { code: 'invoke_denied' } } }]);
   });
 

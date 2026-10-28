@@ -510,6 +510,16 @@ describe('workflow resume lists the runs a checkout can resume, and --next takes
     ]));
   }, 180_000);
 
+  it('leaves a run that needs a person to an attended --next with no terminal, where nobody could answer it', async () => {
+    const release = await offer('release');
+
+    const idle = await teamai('runner', ['workflow', 'resume', '--next'], { env: { TEAMAI_MODE: 'attended' } });
+    expect(idle.code, said(idle)).toBe(0);
+    expect(idle.envelope()).toMatchObject({ data: { idle: { offered: expect.any(Number) } } });
+    expect(idle.stderr).not.toContain(`Claimed ${release}`);
+    expect(publishedState(release)).toMatchObject({ status: 'running', offered: { at: expect.any(String) } });
+  }, 180_000);
+
   it('refuses --next with a run id, since it picks the run itself', async () => {
     const refused = await teamai('runner', ['workflow', 'resume', 'r0123456789abcdef', '--next']);
     expect(refused.code, said(refused)).toBe(1);

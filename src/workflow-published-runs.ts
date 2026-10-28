@@ -7,7 +7,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { WorkflowEnv } from './env-resolution.js';
-import type { RunMode } from './launch-context.js';
 import { log } from './utils/logger.js';
 import { getReportsDir, usesBranchWorktree, type LocalConfig } from './types.js';
 import { describeWorkflow } from './workflow/describe.js';
@@ -18,10 +17,14 @@ import { parseSnapshot, SNAPSHOTS_DIR, snapshotPath, type HandoffOwner, type Run
 import { installOwner, readRuns, RunIdSchema, type RunId } from './workflow/store.js';
 import type { RunState, RunStatus, WorkflowFailure } from './workflow/types.js';
 
-/** Who would take an offered run: the calling process, as `invoke` judges it, and the driver it would drive the run with. */
+/**
+ * Who would take an offered run: the calling process, as `invoke` judges it, the driver it would drive the run with, and
+ * whether a person answers what the run asks them, as that driver finds out.
+ */
 export interface Taker {
   caller: InvokeCaller;
   driver: 'local' | 'skill';
+  hasPerson: boolean;
 }
 
 /** An offered run, as `taker` would find it. */
@@ -111,12 +114,12 @@ async function offerOf(config: LocalConfig, snapshot: RunSnapshot, at: string, {
 
 /**
  * The runs `workflow resume --next` tries, in order, from `runs` as `list` gave them: offered by an install other than
- * `self`, in business repository `repository`, refused by nothing, and, in an unattended run, with no step left that
- * needs a person, since `--auto-approve` answers none of them.
+ * `self`, in business repository `repository`, refused by nothing, and, unless `hasPerson`, with no step left that needs
+ * a person, since `--auto-approve` answers none of them.
  */
-function candidates(runs: readonly PublishedRun[], { repository, mode, self }: { repository: string | undefined; mode: RunMode; self: string }): PublishedRun[] {
+function candidates(runs: readonly PublishedRun[], { repository, hasPerson, self }: { repository: string | undefined; hasPerson: boolean; self: string }): PublishedRun[] {
   return runs.filter(({ offer, owner, repository: of }) => offer !== undefined && owner.id !== self && repository !== undefined && of === repository
-    && offer.refusal === undefined && (mode === 'attended' || offer.needs.length === 0));
+    && offer.refusal === undefined && (hasPerson || offer.needs.length === 0));
 }
 
 /**

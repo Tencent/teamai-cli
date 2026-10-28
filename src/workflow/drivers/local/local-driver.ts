@@ -483,6 +483,14 @@ function localCan(config: LocalConfig, hitl: boolean): Required<DriverCan> {
   return { hitl, workspace: [...WORKSPACE_MODES], network: false, isolation: config.workflows?.sandbox ? 'sandbox' : 'none', env: true, tokens: true, max_turns: true, setup: true };
 }
 
+/**
+ * Whether a person answers the HITL requests the local driver puts to them in run mode `mode`: an attended run at a
+ * terminal. A terminal alone is not a person: an unattended run under a pseudo-terminal asks nobody.
+ */
+export function personAnswers(mode: RunMode): boolean {
+  return mode === 'attended' && process.stdin.isTTY === true && process.stderr.isTTY === true;
+}
+
 async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options: LocalDriverOptions): Promise<WorkflowEnvelope> {
   const runId = lock.run;
   const started = await readRun(config, runId);
@@ -492,8 +500,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options
   if (unreconciled) return { error: unreconciled };
   // Resolved once per drive, so a resume where a person attends runs attended whatever mode the run started in.
   const mode = resolveRunMode(process.env);
-  // A terminal alone is not a person: an unattended run under a pseudo-terminal asks nobody.
-  const canHitl = options.hitl ?? (mode === 'attended' && process.stdin.isTTY === true && process.stderr.isTTY === true);
+  const canHitl = options.hitl ?? personAnswers(mode);
   const can = localCan(config, canHitl);
   const driver = driverIdentity('local', cwd);
   const adapter = options.adapter ?? createLocalToolAdapter();

@@ -13,7 +13,7 @@ import type { HandoffOwner } from './workflow/snapshot.js';
 import { getRepoIdentity } from './session-flow/sync.js';
 import { readableReportsWorktree } from './utils/reports-branch.js';
 import { callerProvenance, cancelRun, respondProvenance, respondToHitl, retryStep } from './workflow/run-controls.js';
-import { runLocalDriver, withDriverLock } from './workflow/drivers/local/local-driver.js';
+import { personAnswers, runLocalDriver, withDriverLock } from './workflow/drivers/local/local-driver.js';
 import { driverIdentity } from './driver-identity.js';
 import { getBusinessRoot, getDataHome, usesBranchWorktree, type LocalConfig, type TeamaiConfig } from './types.js';
 import { AttemptIdSchema, installOwner, readRun, RunIdSchema } from './workflow/store.js';
@@ -606,7 +606,8 @@ async function resumeOffered(runId: string | undefined, options: ResumeOptions):
   const evidence = agentEvidence(process.env);
   // `--driver skill` counts as an agent's, as it does for a start.
   const caller: InvokeCaller = { ...invokeCaller(options.confirmed), ...(isSkill && evidence.kind === 'none' ? { evidence: { kind: 'skill-driver' } } : {}) };
-  const taker: Taker = { caller, driver: isSkill ? 'skill' : 'local' };
+  // The skill driver's session asks the person; the local driver asks at this terminal, which a cron job has not.
+  const taker: Taker = { caller, driver: isSkill ? 'skill' : 'local', hasPerson: isSkill ? caller.mode === 'attended' : personAnswers(caller.mode) };
   if (options.next) await takeNext(loaded, taker, options, tools);
   else await listResumable(loaded, taker);
 }
@@ -647,7 +648,7 @@ async function takeNext(loaded: Ready, taker: Taker, options: ResumeOptions, too
   const [runs, self] = await Promise.all([PublishedRuns.list(config, { taker, env: loaded.env }), installOwner(config)]);
   const others = runs.filter((run) => run.offer !== undefined && run.owner.id !== self.id);
   let moved = 0;
-  for (const run of PublishedRuns.candidates(runs, { repository, mode: taker.caller.mode, self: self.id })) {
+  for (const run of PublishedRuns.candidates(runs, { repository, hasPerson: taker.hasPerson, self: self.id })) {
     const taken = isSkill
       ? await skillAnswer({ kind: 'resume', run: run.run, options: { ...withoutDriver(options), next: true } })
       : { envelope: await driveOffered(loaded, run, { tools, autoApprove: options.autoApprove }), secrets };
