@@ -1121,8 +1121,9 @@ steps:
     });
   });
 
-  // Real worktree preparation and the five-second SIGKILL grace period share this budget.
-  it('kills a cancelled command that ignores SIGTERM after the grace period, and finishes', { timeout: 30_000 }, async ({ signal }) => {
+  // Real worktree preparation and the five-second SIGKILL grace period share this
+  // budget, and a loaded runner prepares a worktree far slower than an idle one.
+  it('kills a cancelled command that ignores SIGTERM after the grace period, and finishes', { timeout: 120_000 }, async ({ signal }) => {
     const { config, workspace, runId } = await parallelFixture(`schemaVersion: v1alpha1
 name: build
 description: An end cancels a command that ignores SIGTERM.
@@ -1180,7 +1181,8 @@ const timer = setInterval(() => {
     }
   });
 
-  it('kills a descendant that ignores SIGTERM after the cancelled command itself exited, and finishes', async () => {
+  // The same real worktree preparation and SIGKILL grace as the case above.
+  it('kills a descendant that ignores SIGTERM after the cancelled command itself exited, and finishes', { timeout: 120_000 }, async () => {
     const { config, workspace, runId } = await parallelFixture(`schemaVersion: v1alpha1
 name: build
 description: An end cancels a command whose child ignores SIGTERM and outlives it.

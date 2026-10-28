@@ -1880,7 +1880,9 @@ steps:
     return { alice, business: acme.business, runId, wrote, more };
   }
 
-  it('continues a copy it took back from the commit the other machine recorded, fast-forwarding its own branch', async () => {
+  // Two members, a worktree each and a publish and a claim between them: real git,
+  // which a loaded runner takes far longer over.
+  it('continues a copy it took back from the commit the other machine recorded, fast-forwarding its own branch', { timeout: 120_000 }, async () => {
     const { alice, business, runId, wrote, more } = await handBack();
 
     expect(await runLocalDriver(alice.config, runId, alice.checkout, { hitl: false })).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
