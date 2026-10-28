@@ -24,6 +24,27 @@ import type { EnvAgentSession } from './utils/session-id.js';
  *  normalization that applies to learnings scores. */
 const CODEBASE_RELEVANCE_THRESHOLD = 4.0;
 
+/**
+ * Ranking penalty applied to codebase-graph hits when they compete with
+ * learnings/docs hits on the shared 0-10 scale.
+ *
+ * Codebase scores are log-compressed and saturate that scale easily (any graph
+ * score >= 31 maps to the cap), so a code hit usually outranks a docs hit
+ * that matched the query terms explicitly — the hand-written deep page that
+ * answers the question loses to a generated module overview.
+ *
+ * Applied when ordering the merged list only (see `rankingScoreOf`); the
+ * stored score keeps its raw value so the relevance check, quality tracking
+ * and printed output are unaffected.
+ *
+ * Measured on a 363-entry team knowledge base (58-question blind set, plus a
+ * 305-question tuning set):
+ *   penalty 1.00 → blind fact@3 45/58, tuning fact@3 300/305
+ *   penalty 0.80 → blind fact@3 49/58, tuning fact@3 299/305
+ *   penalty 0.75 → blind fact@3 51/58, tuning fact@3 282/305 (too aggressive)
+ */
+const CODE_HIT_RANKING_PENALTY = 0.8;
+
 /** Relevance threshold for learnings/docs hits, expressed as a fraction of the
  *  theoretical single-token-match baseline rather than an absolute score.
  *  Learnings scores are unbounded TF-IDF sums whose magnitude scales with
@@ -40,13 +61,17 @@ const CODEBASE_RELEVANCE_THRESHOLD = 4.0;
  *  cutoff, while unrelated queries scored 0 — they are excluded by the
  *  title/tag gate in `search` rather than by this threshold.
  *
- *  IMPORTANT: this ratio is only "stricter" for N ≳ 20 (where baseline×1.35 >
- *  4.0). For small corpora (N=1–5) the ratio gives a cutoff of 1.35–3.57, which
- *  is significantly looser than 4.0. That is why LEARNINGS_ABSOLUTE_FLOOR exists:
- *  isRelevantScore uses max(baseline*ratio, floor) so cold-start corpora are
- *  held to the same strict bar as historical code, and the relative threshold
- *  only takes effect once N is large enough (~20+) to push it above the floor. */
-const LEARNINGS_RELEVANCE_RATIO = 1.35;
+ *  IMPORTANT: this ratio is only "stricter" for N ≳ 20 (where baseline×ratio >
+ *  floor). For small corpora (N=1–5) the ratio gives a cutoff below the floor,
+ *  which is why LEARNINGS_ABSOLUTE_FLOOR exists: isRelevantScore uses
+ *  max(baseline*ratio, floor) so cold-start corpora are held to the same strict
+ *  bar as historical code, and the relative threshold only takes effect once N
+ *  is large enough (~20+) to push it above the floor.
+ *
+ *  The ratio is exported so tests can assert against the shipped value instead
+ *  of hardcoding it — changing a constant must not require rewriting the
+ *  expectations that encode the invariant below. */
+export const LEARNINGS_RELEVANCE_RATIO = 1.35;
 
 /** Absolute floor for learnings relevance, applied when the corpus is too small
  *  for the relative threshold to be meaningful.
@@ -57,8 +82,10 @@ const LEARNINGS_RELEVANCE_RATIO = 1.35;
  *  keeps the stricter pre-existing behavior until the corpus is large enough
  *  (N >= ~20) for the relative threshold to exceed the floor on its own.
  *
- *  Like the ratio above, this compares against query-length-normalized scores. */
-const LEARNINGS_ABSOLUTE_FLOOR = 4.0;
+ *  Like the ratio above, this compares against query-length-normalized scores.
+ *
+ *  Exported for the same reason as the ratio above. */
+export const LEARNINGS_ABSOLUTE_FLOOR = 4.0;
 
 /**
  * Decide whether a top-1 recall result clears the relevance bar.
@@ -140,6 +167,27 @@ export function normalizeLearningsScoreForRanking(score: number, idfBaseline: nu
   const baseline = idfBaseline > 0 ? idfBaseline : 1;
   const threshold = Math.max(baseline * LEARNINGS_RELEVANCE_RATIO, LEARNINGS_ABSOLUTE_FLOOR);
   return Math.min(10, Math.max(0, 4 + 2 * Math.log2(score / threshold)));
+}
+
+/** The subset of a merged result that decides its position in the output. */
+export interface RankableResult {
+  score: number;
+  fromCodebase?: boolean;
+  idfBaseline?: number;
+}
+
+/**
+ * Score used to order the merged codebase + learnings result list.
+ *
+ * Deliberately separate from `result.score`: the stored score is what
+ * `--check`, quality tracking and the printed output report, and those must
+ * keep seeing the raw codebase score (its relevance threshold is 4.0 on that
+ * scale). Only the ordering gets the cross-source penalty.
+ */
+export function rankingScoreOf(result: RankableResult, idfBaseline: number): number {
+  return result.fromCodebase
+    ? result.score * CODE_HIT_RANKING_PENALTY
+    : normalizeLearningsScoreForRanking(result.score, result.idfBaseline ?? idfBaseline);
 }
 
 /** Search result with scope label for merged output. */
@@ -749,9 +797,7 @@ export async function recall(
 
   // Re-sort merged results by normalized score descending, then date descending.
   // Keep each result's original score for --check, quality tracking, and output.
-  const rankingScore = (result: ScopedSearchResult): number => result.fromCodebase
-    ? result.score
-    : normalizeLearningsScoreForRanking(result.score, result.idfBaseline ?? idfBaseline);
+  const rankingScore = (result: ScopedSearchResult): number => rankingScoreOf(result, idfBaseline);
   allResults.sort((a, b) => {
     const scoreDelta = rankingScore(b) - rankingScore(a);
     if (scoreDelta !== 0) return scoreDelta;
