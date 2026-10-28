@@ -22,7 +22,7 @@ import { WorkOutcomeSchema, type WorkOutcome } from '../outcomes.js';
 import { locateStep } from '../workflow/engine.js';
 import { buildEndRecord, RECORDS_DIR, runRecordStates, type RecordState, type WorkflowRunRecord } from '../workflow/records.js';
 import { callerProvenance, respondProvenance, respondToHitl } from '../workflow/run-controls.js';
-import { PublishedRuns, type PublishedRun, type Taker } from '../workflow/published-runs.js';
+import { PublishedRuns, type PublishedRun, type Taker } from '../workflow-published-runs.js';
 import { installOwner, isRunId, readRun, readRuns } from '../workflow/store.js';
 import type { TokenUsage } from '../tool-launch/stdout.js';
 import type { StepHitl, RunState } from '../workflow/types.js';

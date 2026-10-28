@@ -22,7 +22,7 @@ import { cancelRun, retryStep } from '../workflow/run-controls.js';
 import type { LocalToolAdapter } from '../workflow/drivers/local/local-tool-adapter.js';
 import type { StepPass, StepState } from '../workflow/step-state.js';
 import { installOwner, readRun, runLockPath, updateRun } from '../workflow/store.js';
-import { PublishedRuns, type Taker } from '../workflow/published-runs.js';
+import { PublishedRuns, type Taker } from '../workflow-published-runs.js';
 import type { DriverIdentity, RunState, WorkflowDefinition, WorkflowEnvelope } from '../workflow/types.js';
 import { ensureWorktree, fetchMissingCommits, headCommit, markReadCopy, worktreePath } from '../workflow/worktree.js';
 import { knownSecrets, resolveWorkflowEnv } from '../env-resolution.js';

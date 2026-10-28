@@ -6,18 +6,17 @@
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import type { WorkflowEnv } from '../env-resolution.js';
-import type { RunMode } from '../launch-context.js';
-import { log } from '../utils/logger.js';
-import { getReportsDir, usesBranchWorktree, type LocalConfig } from '../types.js';
-import { describeWorkflow } from './describe.js';
-import { canFor } from './drivers/skill/host-profiles.js';
-import { ceilingOf, localReason, stepNeeds } from './drivers/skill/preflight.js';
-import { definitionsOf, settledSteps } from './handoff.js';
-import { invokeRefusal, type InvokeCaller } from './protocol.js';
-import { parseSnapshot, SNAPSHOTS_DIR, snapshotPath, type HandoffOwner, type RunSnapshot } from './snapshot.js';
-import { installOwner, readRuns, RunIdSchema, type RunId } from './store.js';
-import type { RunState, RunStatus, WorkflowFailure } from './types.js';
+import type { WorkflowEnv } from './env-resolution.js';
+import type { RunMode } from './launch-context.js';
+import { log } from './utils/logger.js';
+import { getReportsDir, usesBranchWorktree, type LocalConfig } from './types.js';
+import { describeWorkflow } from './workflow/describe.js';
+import { canFor, ceilingOf, localReason, stepNeeds } from './workflow/drivers/skill/skill-driver.js';
+import { definitionsOf, settledSteps } from './workflow/handoff.js';
+import { invokeRefusal, type InvokeCaller } from './workflow/protocol.js';
+import { parseSnapshot, SNAPSHOTS_DIR, snapshotPath, type HandoffOwner, type RunSnapshot } from './workflow/snapshot.js';
+import { installOwner, readRuns, RunIdSchema, type RunId } from './workflow/store.js';
+import type { RunState, RunStatus, WorkflowFailure } from './workflow/types.js';
 
 /** Who would take an offered run: the calling process, as `invoke` judges it, and the driver it would drive the run with. */
 export interface Taker {

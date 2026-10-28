@@ -7,7 +7,7 @@ import { log, setStderrOnly } from './utils/logger.js';
 import { collectEnvSecrets, redactJson } from './utils/redact.js';
 import { parseNextPayload, parseReport, parseResponsePayload, resumableSessions, withIgnored, type ParsedResponsePayload } from './workflow/engine.js';
 import { claimOffered, publishRun, resumeRun } from './workflow/handoff.js';
-import { PublishedRuns, type PublishedRun, type ResumableRun, type Taker } from './workflow/published-runs.js';
+import { PublishedRuns, type PublishedRun, type ResumableRun, type Taker } from './workflow-published-runs.js';
 import { safeText } from './session-flow/session-cmd-shared.js';
 import type { HandoffOwner } from './workflow/snapshot.js';
 import { getRepoIdentity } from './session-flow/sync.js';

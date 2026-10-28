@@ -25,6 +25,10 @@ import { agentReport, foreground, plannedState, poll } from './tick.js';
 import { describeRow, judgedBy, startRow, type ResumeAnswers, type RowId } from './transitions.js';
 import { errorOf, type SkillAnswer, type SkillError } from './turn.js';
 
+// What the runs offered on teamai-reports are judged by outside this driver, as a resume through it judges them.
+export { canFor } from './host-profiles.js';
+export { ceilingOf, localReason, stepNeeds } from './preflight.js';
+
 /** `tool`: `--tools default=<tool>`, the tool of the calling session, which its host may not name. */
 export type SkillCall =
   | { kind: 'describe'; name: string; tool?: ToolId }
