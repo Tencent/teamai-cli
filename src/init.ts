@@ -1679,6 +1679,27 @@ function guideWebCreation(kind: string, name: string, url: string | null): void 
   }
 }
 
+/**
+ * Detect whether `repoDir` is a single-repo team repository (`.teamai/teamai.yaml`
+ * with `mode: self` on its default branch and no root `teamai.yaml`). Initializing
+ * against its remote URL as a standalone team repo would push a default skeleton
+ * to the business repo's main branch (#1500).
+ */
+export async function isSingleRepoTeam(repoDir: string): Promise<boolean> {
+  if (await pathExists(path.join(repoDir, 'teamai.yaml'))) {
+    return false;
+  }
+  const selfYamlPath = path.join(repoDir, '.teamai', 'teamai.yaml');
+  const content = await readFileSafe(selfYamlPath);
+  if (!content) return false;
+  try {
+    const raw = YAML.parse(content) as Partial<TeamaiConfig> | null;
+    return raw?.mode === 'self';
+  } catch {
+    return false;
+  }
+}
+
 export async function init(options: GlobalOptions & {
   repo?: string;
   repoPositional?: string;
@@ -2084,6 +2105,17 @@ export async function init(options: GlobalOptions & {
         process.exit(1);
       }
     }
+  }
+
+  // Refuse to initialize a single-repo team as a standalone team repo (#1500).
+  if (await isSingleRepoTeam(localPath)) {
+    await remove(localPath);
+    log.error(
+      `${repoInput} is a single-repo team: its config is .teamai/teamai.yaml. ` +
+        'Clone the repository and run `teamai init --self` in it.',
+    );
+    process.exit(1);
+    return;
   }
 
   // Step 3.5: Configure git user for the team repo

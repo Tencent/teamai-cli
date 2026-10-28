@@ -246,13 +246,14 @@ vi.mock('../utils/prompt.js', async (importOriginal) => ({
 // Prevent process.exit from actually exiting
 const mockExit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
 
-import { init, resolveInitProvider } from '../init.js';
+import { init, resolveInitProvider, isSingleRepoTeam } from '../init.js';
 import { GenericGitProvider } from '../providers/git/index.js';
 import { GitLabProvider } from '../providers/gitlab/index.js';
 import { RepoNotFoundError, RepoCreatePermissionError } from '../providers/types.js';
 import { CnbRepoNotFoundError } from '../providers/cnb/cnb-cli.js';
 import { saveLocalConfig, loadLocalConfigForScope } from '../config.js';
 import fse from 'fs-extra';
+import { readFileSafe } from '../utils/fs.js';
 import type { PublishResult } from '../utils/branch-worktree.js';
 
 describe('init', () => {
@@ -263,6 +264,7 @@ describe('init', () => {
     vi.clearAllMocks();
     questionAnswers = [];
     pathExistsFn = () => false;
+    vi.mocked(readFileSafe).mockResolvedValue(null);
   });
 
   afterEach(() => {
@@ -279,6 +281,66 @@ describe('init', () => {
     expect(mockExit).toHaveBeenCalledWith(1);
     expect(mockEnsureGfInstalled).not.toHaveBeenCalled();
     expect(mockGfRepoClone).not.toHaveBeenCalled();
+  });
+
+  describe('refusal of single-repo team URL (#1500)', () => {
+    it('isSingleRepoTeam identifies single-repo teams by mode: self in .teamai/teamai.yaml without root teamai.yaml', async () => {
+      // 1. root teamai.yaml exists -> false
+      pathExistsFn = (p: string) => p === path.join('/fake/repo', 'teamai.yaml');
+      expect(await isSingleRepoTeam('/fake/repo')).toBe(false);
+
+      // 2. .teamai/teamai.yaml has mode: self and no root teamai.yaml -> true
+      pathExistsFn = (p: string) => p === path.join('/fake/repo', '.teamai', 'teamai.yaml');
+      vi.mocked(readFileSafe).mockResolvedValueOnce(JSON.stringify({ team: 'biz', mode: 'self', repo: 'https://git.example/biz.git' }));
+      expect(await isSingleRepoTeam('/fake/repo')).toBe(true);
+
+      // 3. .teamai/teamai.yaml exists but without mode: self -> false
+      vi.mocked(readFileSafe).mockResolvedValueOnce(JSON.stringify({ team: 'biz', repo: 'https://git.example/biz.git' }));
+      expect(await isSingleRepoTeam('/fake/repo')).toBe(false);
+
+      // 4. neither exists -> false
+      pathExistsFn = () => false;
+      vi.mocked(readFileSafe).mockResolvedValueOnce(null);
+      expect(await isSingleRepoTeam('/fake/repo')).toBe(false);
+
+      // 5. malformed YAML -> false
+      pathExistsFn = (p: string) => p === path.join('/fake/repo', '.teamai', 'teamai.yaml');
+      vi.mocked(readFileSafe).mockResolvedValueOnce('not-valid-json-{{{');
+      expect(await isSingleRepoTeam('/fake/repo')).toBe(false);
+    });
+
+    it('refuses to initialize a single-repo team as a standalone team repo, removes clone, and exits 1', async () => {
+      const { log } = await import('../utils/logger.js');
+      mockExit.mockClear();
+      mockRemove.mockClear();
+      vi.mocked(log.error).mockClear();
+
+      pathExistsFn = (p: string) => {
+        if (p === localPath) return true;
+        if (p === path.join(localPath, '.teamai', 'teamai.yaml')) return true;
+        return false;
+      };
+
+      vi.mocked(readFileSafe).mockImplementation(async (p: string) => {
+        if (p === path.join(localPath, '.teamai', 'teamai.yaml')) {
+          return JSON.stringify({ team: 'biz', mode: 'self', repo: 'https://git.woa.com/HyperAI/biz-repo.git' });
+        }
+        return null;
+      });
+
+      await init({ repo: 'https://git.woa.com/HyperAI/biz-repo.git', scope: 'user' });
+
+      expect(mockRemove).toHaveBeenCalledWith(localPath);
+      expect(log.error).toHaveBeenCalledWith(
+        'https://git.woa.com/HyperAI/biz-repo.git is a single-repo team: its config is .teamai/teamai.yaml. ' +
+          'Clone the repository and run `teamai init --self` in it.',
+      );
+      expect(mockExit).toHaveBeenCalledWith(1);
+      expect(mockGit.commit).not.toHaveBeenCalled();
+      expect(mockGit.push).not.toHaveBeenCalled();
+
+      vi.mocked(readFileSafe).mockResolvedValue(null);
+    });
   });
 
   describe('empty repo fallback', () => {
