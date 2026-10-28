@@ -214,7 +214,7 @@ same filter.
 Wiki codebase slugs follow the same rule under `resources.wiki`: once any role
 or project lists a `teamwiki/evidence/code/<slug>/` slug there, `recall` only
 surfaces it for members with that namespace active; an undeclared slug stays
-shared. The slug is whatever `teamai codebase --project <slug>` wrote, not
+shared. The slug is the `project:` value that `teamai import` prints, not
 necessarily the project's manifest id.
 
 ## Keep delivered files out of git

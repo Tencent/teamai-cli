@@ -85,10 +85,10 @@ steps:
 ```console
 $ teamai workflow start review-and-fix --driver local     # 运行照常结束，评审从不阻塞它
 $ teamai score --next --json '{"driver":{"kind":"local","machine":"m1","workspace":"/work","can":{"judge":{"isolation":"verified","tools":["claude"]}}}}'
-{"data":{"lease":{"ref":"s5d1e07c2a9b4/a91c0d7e","subject":{"runId":"r3f9…","step":"review","pass":1},
+{"data":{"lease":{"ref":"s5d1e07c2a9b4a/a91c0d7e","subject":{"runId":"r3f9…","step":"review","pass":1},
   "evidence":"…/scores/evidence/a91c0d7e/","prompt":"…/prompt.md","answer":{"schema":{…}},
-  "submit":"teamai score --lease s5d1e07c2a9b4/a91c0d7e --submit --stdin"}}}
-$ teamai score --lease s5d1e07c2a9b4/a91c0d7e --json '{"driver":{"kind":"local","machine":"m1","workspace":"/work"}}'
+  "submit":"teamai score --lease s5d1e07c2a9b4a/a91c0d7e --submit --stdin"}}}
+$ teamai score --lease s5d1e07c2a9b4a/a91c0d7e --json '{"driver":{"kind":"local","machine":"m1","workspace":"/work"}}'
 {"data":{"label":{"scorer":"review-quality","label":"good","score":1,"passed":true,…},"published":true}}
 ```
 
@@ -104,7 +104,7 @@ driver 用自己的评审者处理 `prompt.md`，只允许它读取证据目录�
 
 ```console
 $ teamai score --next --json '{"driver":{"kind":"t3","machine":"m1","workspace":"/work","can":{"judge":{"isolation":"verified","access":"read","tools":["claude"]}}},"running":[]}'
-$ teamai score --lease s5d1e07c2a9b4/a91c0d7e --submit --stdin <<'JSON'
+$ teamai score --lease s5d1e07c2a9b4a/a91c0d7e --submit --stdin <<'JSON'
 {"driver":{"kind":"t3","machine":"m1","workspace":"/work"},"outcome":"success",
  "answer":{"label":"good","reasoning":"…"},"judge":{"tool":"claude"}}
 JSON

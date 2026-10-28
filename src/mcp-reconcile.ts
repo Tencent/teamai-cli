@@ -2787,7 +2787,7 @@ async function applyJson(
   const allowBare = target.format === 'copilot' && target.projectScope;
   const doc = await readJsonDoc(target.file, serverKey, allowBare, target.projectKey);
   if (!doc) {
-    log.warn(`Could not parse ${target.file} — skipping MCP injection for ${target.tool}`);
+    log.warn(`Could not parse ${target.file} — teamai left its MCP servers for ${target.tool} unchanged`);
     return null;
   }
   const existed = await pathExists(target.file);
@@ -3541,7 +3541,7 @@ async function applyCodex(
 ): Promise<boolean | null> {
   const previous = await readCodexConfig(target.file);
   if (previous === undefined) {
-    log.warn(`Could not read ${target.file} — skipping MCP injection for ${target.tool}`);
+    log.warn(`Could not read ${target.file} — teamai left its MCP servers for ${target.tool} unchanged`);
     return null;
   }
   let source = previous ?? '';

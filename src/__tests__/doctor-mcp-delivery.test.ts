@@ -201,6 +201,8 @@ describe('doctor — MCP servers delivered on disk', () => {
     const check = await mcpCheck();
     expect(await check.check()).toBe(false);
     expect(check.fix).toContain('could not be parsed');
+    expect(check.fix!.split(path.join(homeDir, '.claude.json')).length - 1).toBe(1);
+    expect(check.fix).not.toContain('env/env.yaml');
   });
 
   it('fails when mcp.yaml is present but does not parse', async () => {
