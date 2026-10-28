@@ -73,6 +73,8 @@ import { channelsOf, hookFormatOf } from './tools.js';
 import { CODEX_TOOL_IDS } from './utils/tool-names.js';
 import { allowsSkillDirectory, CODEX_TOOL, describeOutsideSkillLink, describeSkillDirectoryBlock, findSkillDirectoryBlock, skillOrigin } from './resources/skills.js';
 import { describeKeptDir, describeMembersDirLeft, isLink, keepsTrackedCopy, ownsSkillDir, teamaiSkillFiles } from './resources/delivered-copies.js';
+import { generatedSkillAt } from './workflow/discovery/generated-marker.js';
+import { WORKFLOW_SKILL_PREFIX } from './workflow/discovery/workflow-skills.js';
 import { clearInstructionFile, resolveInstructionTargets } from './instruction-targets.js';
 import {
   pathExists,
@@ -692,8 +694,10 @@ async function discoverToolResources(
       if (await pathExists(skillsDir)) {
         const dirs = await listDirs(skillsDir);
         for (const dir of dirs) {
-          if (!teamSkillNames.has(dir)) continue;
           const skillDir = path.join(skillsDir, dir);
+          // A skill pull generated from a workflow has no team name, only its marker; `ownsSkill` keeps an edited one.
+          const isGenerated = dir.startsWith(WORKFLOW_SKILL_PREFIX) && (await generatedSkillAt(skillDir)).kind === 'ours';
+          if (!isGenerated && !teamSkillNames.has(dir)) continue;
           // Delivery's rule: a root linked out of the checkout is not deleted through.
           if (!await allowsSkillDirectory(rootBase, skillDir, { keepSkillLink: true })) {
             res.keptSkillDirs.push(describeOutsideSkillLink(skillDir));

@@ -65,6 +65,7 @@ import { getTeamSecretsPath } from '../secret-store.js';
 import YAML from 'yaml';
 import type { TeamaiConfig, LocalConfig } from '../types.js';
 import { hookAdapterDir } from '../locate.js';
+import { renderWorkflowSkill } from '../workflow/discovery/render.js';
 
 // ─── Helpers ───────────────────────────────────────────
 
@@ -3694,6 +3695,33 @@ describe('uninstall', () => {
     expect(await fse.pathExists(path.join(legacy, 'scripts'))).toBe(false);
     // A directory with nothing of the member's in it still goes whole.
     expect(await fse.pathExists(legacyShare)).toBe(false);
+  });
+
+  it('removes the skill pull generated from a workflow, and keeps and names one the member edited', async () => {
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+    const skills = path.join(homeDir, '.claude', 'skills');
+    const generated = path.join(skills, 'workflow-session-close');
+    await fse.outputFile(path.join(generated, 'SKILL.md'),
+      renderWorkflowSkill({ name: 'session-close', description: 'Close the session', invoke: 'ask' }, 'claude'));
+    const edited = path.join(skills, 'workflow-release');
+    await fse.outputFile(path.join(edited, 'SKILL.md'),
+      `${renderWorkflowSkill({ name: 'release', description: 'Cut a release', invoke: 'ask' }, 'claude')}My own step.\n`);
+    mockAutoDetectInit.mockResolvedValue({ localConfig: makeLocalConfig(homeDir, repoPath), teamConfig: makeTeamConfig() });
+
+    const printed: string[] = [];
+    vi.spyOn(console, 'log').mockImplementation((line?: unknown) => { printed.push(String(line ?? '')); });
+    await uninstall({ dryRun: true, force: true });
+    expect(printed).toContain(`     ${generated}`);
+    expect(printed).not.toContain(`     ${edited}`);
+
+    await uninstall({ force: true });
+
+    expect(await fse.pathExists(generated)).toBe(false);
+    expect(await fse.readFile(path.join(edited, 'SKILL.md'), 'utf-8')).toContain('My own step.');
+    const warnings = vi.mocked(log.warn).mock.calls.map(([message]) => String(message));
+    expect(warnings).toContainEqual(expect.stringContaining(`Kept ${edited}:`));
   });
 
   it('names a packaged file the repository started tracking after the plan once, as tracked, not as a file TeamAI did not put there', async () => {
