@@ -100,7 +100,7 @@ User scope, from #1221's matrix; a fix merged since is marked `t`, with a note. 
 | WorkBuddy | ? | ✓t | ✓t | ? | ✓t | ? | ✓t<sup>25</sup> | ? |
 | OpenCode | ? | ✓t | ✓v | ✓t<sup>2</sup> | ✓v | ? | ✓t<sup>1</sup> | ✓v<sup>26</sup> |
 | Muse Code | ✓t | +v | ✓t | ✓v | ✓v | ✓t<sup>3</sup> | ✓t<sup>1</sup> | ✓t<sup>27</sup> |
-| Antigravity CLI | ? | ? | ? | ? | ? | ? | ? | ? |
+| Antigravity CLI | ? | ? | ? | ✓v | ? | ? | ? | ? |
 
 Notes:
 

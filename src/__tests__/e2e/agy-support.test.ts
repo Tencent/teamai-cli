@@ -193,6 +193,14 @@ describe('Antigravity CLI resource delivery', () => {
       .toEqual({ decision: 'deny', reason: 'rm -rf is blocked here; run git clean -n first.' });
     expect(dispatch('pre-tool-use', { toolCall: { name: 'run_command', args: { CommandLine: 'ls build', Cwd: cwd } } })).toBe('');
 
+    // agy loads a skill by reading its SKILL.md; that read is the skill use `teamai stats` counts.
+    dispatch('prompt-submit', { invocationNum: 0, initialNumSteps: 1, lastUserInput: 'Draft the release notes for v2.3' });
+    dispatch('post-tool-use', { stepIdx: 3, error: '', toolCall: { name: 'view_file', args: { AbsolutePath: path.join(config, 'skills', 'release-notes', 'SKILL.md') } } });
+    await waitForDetachedChildren();
+    const stats = await runCLI(['stats'], cwd, home);
+    expect(stats.code, stats.output).toBe(0);
+    expect(stats.output).toMatch(/release-notes\s+1\b/);
+
     // A member's own hook survives a user uninstall; teamai's goes.
     fs.writeFileSync(path.join(config, 'hooks.json'), JSON.stringify({ ...hooks, 'lint-on-save': { PostToolUse: [{ matcher: 'write_to_file', hooks: [{ type: 'command', command: './lint.sh' }] }] } }));
     const uninstall = await runCLI(['uninstall', '--agent', 'agy', '--force'], cwd, home);

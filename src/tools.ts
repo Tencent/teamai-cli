@@ -1269,7 +1269,7 @@ export const TOOLS = {
       env: '?',
       workflows: '?',
       recall: '?',
-      stats: '?',
+      stats: '✓v',
       aiBackend: '?',
       votesJudge: '?',
       sessionJudge: '?',
