@@ -11,6 +11,7 @@ import { AgentSession } from './session-flow/agent-session.js';
 import { SessionPolicy, type PolicySource, type SessionPolicies } from './session-flow/session-policy.js';
 import { SessionWork, type SampledScorer } from './session-flow/session-work.js';
 import type { LocalConfig } from './types.js';
+import type { OutputSchema } from './workflow/types.js';
 
 /** The name of teamai's default close-out workflow, and of a team file that replaces it. */
 const NAME = 'session-close';
@@ -145,4 +146,47 @@ async function offer(
   }
 }
 
-export const SessionClose = { NAME, offer } as const;
+/**
+ * The inputs teamai proposes values for, by name and parsed type. A team override that declares one with the same name
+ * and type gets it filled; an enum matches in any order.
+ */
+const CONTRACT = {
+  session: { type: 'string' },
+  source: { type: 'string' },
+  publish: { type: 'boolean' },
+  scorers: { type: 'array', items: { type: 'string' } },
+  judge: { type: 'enum', values: ['here', 'driver'] },
+} as const satisfies Record<keyof SessionCloseOffer, OutputSchema>;
+
+function isContractInput(name: string): name is keyof SessionCloseOffer {
+  return Object.hasOwn(CONTRACT, name);
+}
+
+function sameType(left: OutputSchema, right: OutputSchema): boolean {
+  if (left.type === 'enum' && right.type === 'enum') return [...left.values].sort().join('\0') === [...right.values].sort().join('\0');
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+const NO_SESSION_WHY = 'No agent session found: give the session and its tool.';
+
+/**
+ * What describe proposes for the declared `inputs` of the workflow `name` resolves to, by input: for `session-close`,
+ * each input the contract names with the same type, from {@link offer} for the calling session; with no agent session,
+ * only why for `session` and `source`. Nothing for another workflow or another input.
+ */
+async function proposals(
+  config: LocalConfig,
+  { name, inputs }: { name: string; inputs: Readonly<Record<string, OutputSchema>> },
+  caller: { session: string | undefined; tool: string | undefined },
+): Promise<Record<string, { value?: unknown; why: string }>> {
+  if (name !== NAME) return {};
+  const matching = Object.entries(inputs).flatMap(([input, type]) => (isContractInput(input) && sameType(type, CONTRACT[input]) ? [input] : []));
+  if (matching.length === 0) return {};
+  if (caller.session === undefined || caller.tool === undefined) {
+    return Object.fromEntries(matching.filter((input) => input === 'session' || input === 'source').map((input) => [input, { why: NO_SESSION_WHY }]));
+  }
+  const proposed = await offer(config, { tool: caller.tool, sessionId: caller.session });
+  return Object.fromEntries(matching.map((input) => [input, proposed[input]]));
+}
+
+export const SessionClose = { NAME, offer, proposals } as const;

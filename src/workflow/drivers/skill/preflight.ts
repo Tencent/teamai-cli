@@ -8,7 +8,7 @@ import { envAdvice } from '../../requirements.js';
 import type { OutputSchema } from '../../types.js';
 import { describeLiteral, localStartLiteral, startLiteral, type Invocation, type Literal } from './literals.js';
 import { judgedBy, type DescribeVerdict } from './transitions.js';
-import type { DescribeAsk } from './turn.js';
+import type { DescribeAsk, DescribedInput } from './turn.js';
 
 /**
  * The answers a start must carry: the person's yes for `invoke: ask`, the inputs, how many steps run at once, how
@@ -306,10 +306,13 @@ function recommendedPick(description: WorkflowDescription): StartPick {
   return { ...(needed.includes('parallel') ? { parallel: description.facts.width } : {}), ...(needed.includes('hitl') ? { hitl: 'recommend' as const } : {}) };
 }
 
-/** The inputs of `description`, as describe lists them for its `{inputs}` slot. */
-function inputsOf(description: WorkflowDescription): Array<{ name: string; type: OutputSchema }> {
-  return Object.entries(description.inputs).map(([input, type]) => ({ name: input, type }));
+/** The inputs of `description`, as describe lists them for its `{inputs}` slot, each with what `proposed` holds for it. */
+function inputsOf(description: WorkflowDescription, proposed: Proposed): DescribedInput[] {
+  return Object.entries(description.inputs).map(([input, type]) => ({ name: input, type, ...proposed[input] }));
 }
+
+/** The value and why describe proposes, by input; an input it proposes nothing for is absent. */
+export type Proposed = Readonly<Record<string, { value?: unknown; why: string }>>;
 
 /**
  * The prompt tool a person's local run must be told: the session's `tool`, when nothing on this machine picks the tool
@@ -325,9 +328,10 @@ export function localPromptTool({ config, tool, aiTools }: { config: LocalConfig
 
 /**
  * The describe reply's `ask` of the kind the transitions chose. `tools.local`: the prompt tool a local start names.
- * `tools.session`: the tool the session declared, which every skill start it offers keeps.
+ * `tools.session`: the tool the session declared, which every skill start it offers keeps. `proposed`: the value and why
+ * describe proposes for each input it has one for.
  */
-export function askFor(verdict: DescribeVerdict, description: WorkflowDescription, invocation: Invocation, judging: Judging, tools: { local?: string; session?: ToolId }): DescribeAsk {
+export function askFor(verdict: DescribeVerdict, description: WorkflowDescription, invocation: Invocation, judging: Judging, tools: { local?: string; session?: ToolId }, proposed: Proposed): DescribeAsk {
   const { name } = description;
   const session = tools.session !== undefined ? { tool: tools.session } : {};
   const facts = factsOf(description, judging, verdict.ask === 'unattended' ? 'auto-approve' : 'picked').map((fact) => `- ${fact}`);
@@ -335,7 +339,7 @@ export function askFor(verdict: DescribeVerdict, description: WorkflowDescriptio
     case 'start':
       return { kind: 'start', ...(facts.length > 0 ? { say: facts.join('\n') } : {}), start: startLiteral(invocation, name, session) };
     case 'unattended': {
-      const inputs = inputsOf(description);
+      const inputs = inputsOf(description, proposed);
       const start = startLiteral(invocation, name, { ...startFlags(description), ...recommendedPick(description), hitl: 'auto-approve', ...session });
       return { kind: 'start', ...(facts.length > 0 ? { say: facts.join('\n') } : {}), start, ...(inputs.length > 0 ? { inputs } : {}) };
     }
@@ -349,7 +353,7 @@ export function askFor(verdict: DescribeVerdict, description: WorkflowDescriptio
     case 'ask': {
       const options = optionsOf(description, judging, invocation, tools.session);
       const confirmed = description.invoke === 'ask';
-      const inputs = inputsOf(description);
+      const inputs = inputsOf(description, proposed);
       const closing = options.length > 1 ? (confirmed ? 'Start it, and if so, how should it run?' : 'How should it run?')
         : confirmed || inputs.length === 0 ? 'Start it?' : `What should the input${inputs.length > 1 ? 's' : ''} be?`;
       return { kind: 'ask', question: { text: [...facts, closing].join('\n'), inputs, options } };
