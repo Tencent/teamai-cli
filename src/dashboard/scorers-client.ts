@@ -92,7 +92,7 @@ function agreementCell(a){
  if(!a||!a.paired)return '<span class="muted" title="'+e(t('No hand labels to compare with yet'))+'">—</span>';
  return meter(a.agree/a.paired)+' '+pct(a.agree/a.paired)+'<small>'+number(a.agree)+' / '+number(a.paired)+' '+label('paired')+'</small>';
 }
-const verdict=(value,passed)=>'<span class="'+(passed?'good':'amber')+'" data-verbatim>'+e(value)+'</span> <small>'+(passed?label('passed'):label('failed'))+'</small>';
+const verdict=(value,passed)=>'<span class="label-value '+(passed?'good':'amber')+'" data-verbatim>'+e(value)+'</span> <small>'+(passed?label('passed'):label('failed'))+'</small>';
 const sameJudge=(a,b)=>a.kind===b.kind&&(a.kind==='human'||(a.tool===b.tool&&(a.model?a.model.id:'')===(b.model?b.model.id:'')&&(a.model?a.model.isReported:true)===(b.model?b.model.isReported:true)));
 function agreementPanel(sel){
  const a=sel.agreement, c=sel.cohort;
@@ -103,8 +103,8 @@ function agreementPanel(sel){
  const rows=a.judges.map(j=>'<tr class="'+(sameJudge(j.judge,c.judge)?'selected-row':'')+'"><td>'+judgeText(j.judge)+'</td><td>'+number(j.labels)+'</td><td>'+number(j.paired)+'</td><td>'+number(j.agree)+'</td><td>'+(j.paired?meter(j.agree/j.paired)+' '+pct(j.agree/j.paired):'—')+'</td><td'+(j.judgePassedHumanFailed?' class="amber"':'')+'>'+number(j.judgePassedHumanFailed)+'</td><td'+(j.judgeFailedHumanPassed?' class="amber"':'')+'>'+number(j.judgeFailedHumanPassed)+'</td></tr>').join('')
   +'<tr><td>'+label('Hand label')+'</td><td>'+number(a.handLabelled)+'</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>';
  const off=a.disagreements;
- const list=off.length?'<h3 class="agreement-sub">'+label('Where they disagree')+' <span class="count">'+number(off.length)+'</span></h3><div class="table-scroll"><table class="session-table"><thead><tr>'+['SCORED','JUDGE','JUDGE SAID','HAND LABEL','BY','OPEN'].map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'
-  +off.map(d=>'<tr><td>'+e(when(d.judged.scoredAt))+'</td><td>'+judgeText(d.judge)+'</td><td>'+verdict(d.judged.label,d.judged.passed)+'</td><td>'+verdict(d.hand.label,d.hand.passed)+'</td><td data-verbatim>'+e(d.hand.author)+'</td><td>'+subjectCell(d)+'</td></tr>').join('')
+ const list=off.length?'<h3 class="agreement-sub">'+label('Where they disagree')+' <span class="count">'+number(off.length)+'</span></h3><div class="table-scroll"><table class="session-table compact"><thead><tr>'+['HAND LABEL','BY','JUDGE SAID','JUDGE','SCORED','OPEN'].map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'
+  +off.map(d=>'<tr><td>'+verdict(d.hand.label,d.hand.passed)+'</td><td data-verbatim>'+e(d.hand.author)+'</td><td>'+verdict(d.judged.label,d.judged.passed)+'</td><td>'+judgeText(d.judge)+'</td><td>'+e(when(d.judged.scoredAt))+'</td><td>'+subjectCell(d)+'</td></tr>').join('')
   +'</tbody></table></div>':'';
  return '<section class="panel sessions agreement">'+head+'<div class="table-scroll"><table class="session-table compact"><thead><tr>'+['JUDGE','LABELS','PAIRED','AGREE','AGREEMENT','JUDGE PASSED, HUMAN FAILED','JUDGE FAILED, HUMAN PASSED'].map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'+rows+'</tbody></table></div>'
   +'<p class="scorer-hint">'+label('A judge label in the window pairs with the newest hand label of its session, whoever gave it and whenever, while this rubric lists its value. Judge passed, human failed: the judge is more lenient than members. Judge failed, human passed: it is stricter.')+'</p>'
