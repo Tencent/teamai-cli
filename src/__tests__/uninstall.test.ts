@@ -3838,6 +3838,81 @@ describe('uninstall', () => {
     expect(await fse.readJson(path.join(hermesHome, 'shell-hooks-allowlist.json'))).toEqual({ approvals: [] });
   });
 
+  it("removes teamai's Hermes hook, plugin and SOUL.md block from the default home and every profile, and lists them (#1221)", async () => {
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+    vi.stubEnv('HERMES_HOME', '');
+    const hermes = path.join(homeDir, '.hermes');
+    const work = path.join(hermes, 'profiles', 'work');
+    const { injectHermesHooks } = await import('../hermes-hooks.js');
+    // An earlier release wrote the default home; a pull with `work` active wrote the profile.
+    await injectHermesHooks();
+    await fse.ensureDir(work);
+    await fse.writeFile(path.join(hermes, 'active_profile'), 'work\n');
+    await injectHermesHooks();
+    const block = `${TEAMAI_RULES_START}\nTeam rule\n${TEAMAI_RULES_END}\n`;
+    await fse.outputFile(path.join(hermes, 'SOUL.md'), `my soul\n\n${block}`);
+    await fse.outputFile(path.join(work, 'SOUL.md'), block);
+    // The member switched to another profile since.
+    await fse.ensureDir(path.join(hermes, 'profiles', 'other'));
+    await fse.writeFile(path.join(hermes, 'active_profile'), 'other\n');
+    const foreignPlugin = path.join(hermes, 'profiles', 'mine', 'plugins', 'teamai-instructions', 'plugin.yaml');
+    await fse.outputFile(foreignPlugin, 'name: teamai-instructions\n');
+
+    const teamConfig = makeTeamConfig();
+    teamConfig.toolPaths.hermes = { skills: '.hermes/skills' };
+    mockAutoDetectInit.mockResolvedValue({ localConfig: makeLocalConfig(homeDir, repoPath), teamConfig });
+    const printed = vi.spyOn(console, 'log').mockImplementation(() => {});
+    await uninstall({ force: true });
+    const summary = printed.mock.calls.map((call) => call.join(' ')).join('\n');
+
+    for (const home of [hermes, work]) {
+      const script = path.join(home, 'hooks', 'teamai-status-report.sh');
+      expect(await fse.pathExists(script)).toBe(false);
+      expect(summary).toContain(script);
+      expect(await fse.pathExists(path.join(home, 'plugins', 'teamai-instructions'))).toBe(false);
+      expect(summary).toContain(path.join(home, 'plugins', 'teamai-instructions'));
+      expect(YAML.parse(await fse.readFile(path.join(home, 'config.yaml'), 'utf8')) ?? {}).toEqual({});
+      expect(await fse.readJson(path.join(home, 'shell-hooks-allowlist.json'))).toEqual({ approvals: [] });
+      expect(summary).toContain(path.join(home, 'SOUL.md'));
+    }
+    expect(await fse.readFile(path.join(hermes, 'SOUL.md'), 'utf8')).toBe('my soul\n');
+    expect(await fse.pathExists(path.join(work, 'SOUL.md'))).toBe(false);
+    expect(await fse.readFile(foreignPlugin, 'utf8')).toBe('name: teamai-instructions\n');
+  });
+
+  it("removes teamai's Oh My Pi extension from the default profile and every other one, and lists them (#1221)", async () => {
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+    const { injectOmpHooks, OMP_HOOK_FILE } = await import('../omp-hooks.js');
+    await injectOmpHooks();
+    vi.stubEnv('OMP_PROFILE', 'work');
+    await injectOmpHooks();
+    const extensions = [
+      path.join(homeDir, '.omp', 'agent', 'extensions', OMP_HOOK_FILE),
+      path.join(homeDir, '.omp', 'profiles', 'work', 'agent', 'extensions', OMP_HOOK_FILE),
+    ];
+    const foreign = path.join(homeDir, '.omp', 'profiles', 'mine', 'agent', 'extensions', OMP_HOOK_FILE);
+    await fse.outputFile(foreign, '// my own extension\n');
+
+    const defaults = TeamaiConfigSchema.parse({ team: 't', repo: 'owner/repo' }).toolPaths;
+    mockAutoDetectInit.mockResolvedValue({
+      localConfig: makeLocalConfig(homeDir, repoPath, { enabledAgents: ['omp'] }),
+      teamConfig: makeTeamConfig({ toolPaths: { omp: defaults.omp } }),
+    });
+    const printed = vi.spyOn(console, 'log').mockImplementation(() => {});
+    await uninstall({ force: true });
+    const summary = printed.mock.calls.map((call) => call.join(' ')).join('\n');
+
+    for (const file of extensions) {
+      expect(await fse.pathExists(file)).toBe(false);
+      expect(summary).toContain(file);
+    }
+    expect(await fse.readFile(foreign, 'utf8')).toBe('// my own extension\n');
+  });
+
   it('a project-scope uninstall leaves the SOUL.md rules block, which only a user-scope pull writes (#946)', async () => {
     const projectRoot = path.join(tmpDir, 'hermes-project');
     const homeDir = path.join(tmpDir, 'home');

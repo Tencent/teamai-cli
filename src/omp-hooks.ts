@@ -251,19 +251,19 @@ export async function injectOmpHooks(): Promise<void> {
   }
 }
 
-/** Remove the teamai OMP extension if present. */
-export async function removeOmpHooks(): Promise<void> {
-  const file = path.join(hookAdapterDir('omp-extension'), OMP_HOOK_FILE);
-  if (!await hasOmpHooks()) return;
+/** Remove the teamai OMP extension from `dir`, the active profile's extensions by default, if present. */
+export async function removeOmpHooks(dir = hookAdapterDir('omp-extension')): Promise<void> {
+  const file = path.join(dir, OMP_HOOK_FILE);
+  if (!await hasOmpHooks(dir)) return;
   await remove(file);
   log.success(`Removed teamai OMP hook from ${file}`);
 }
 
-const ompHookState = () => generatedFileState(path.join(hookAdapterDir('omp-extension'), OMP_HOOK_FILE), `${TEAMAI_MARKER} hooks extension`);
+const ompHookState = (dir = hookAdapterDir('omp-extension')) => generatedFileState(path.join(dir, OMP_HOOK_FILE), `${TEAMAI_MARKER} hooks extension`);
 
-/** Whether the OMP extension file is teamai's. */
-export async function hasOmpHooks(): Promise<boolean> {
-  return await ompHookState() === 'teamai';
+/** Whether the OMP extension file in `dir`, the active profile's extensions by default, is teamai's. */
+export async function hasOmpHooks(dir = hookAdapterDir('omp-extension')): Promise<boolean> {
+  return await ompHookState(dir) === 'teamai';
 }
 
 async function hasForeignOmpHooks(): Promise<boolean> {

@@ -193,6 +193,49 @@ function followsActiveProfile(tool: ToolId): boolean {
   return home.moves?.by.some((move) => move.kind === 'hermes-home') ?? false;
 }
 
+/**
+ * Every home of `tool` teamai may have written on this machine: the default, recorded and env homes,
+ * the one it uses now, and each profile under them, as Hermes and Oh My Pi run profiles side by side
+ * and a pull before a move or a profile switch wrote another. Only the ones on disk; uninstall cleans
+ * them all (#1221).
+ */
+export async function toolHomesAcrossProfiles(tool: 'hermes' | 'omp', host: Host = realHost()): Promise<string[]> {
+  const p = host.path;
+  const moves = [recordedHomes(host)[tool], envToolHome(tool, host)?.dir].filter((home) => home !== undefined);
+  const homes = [toolHome(tool, host)];
+  switch (tool) {
+    case 'hermes':
+      for (const base of [defaultToolHome(tool, host), ...moves]) {
+        homes.push(base, ...(await subdirs(p.join(base, 'profiles'))).map((name) => p.join(base, 'profiles', name)));
+      }
+      break;
+    case 'omp':
+      homes.push(...moves);
+      for (const base of new Set([p.dirname(defaultToolHome(tool, host)), p.join(host.home, host.env.PI_CONFIG_DIR || '.omp')])) {
+        homes.push(p.join(base, 'agent'), ...(await subdirs(p.join(base, 'profiles'))).map((name) => p.join(base, 'profiles', name, 'agent')));
+      }
+      break;
+    default: {
+      const unhandled: never = tool;
+      return unhandled;
+    }
+  }
+  const seen = new Set<string>();
+  const found: string[] = [];
+  for (const home of homes) {
+    const real = await host.realpath(home);
+    if (seen.has(real) || !await host.exists(home)) continue;
+    seen.add(real);
+    found.push(home);
+  }
+  return found;
+}
+
+async function subdirs(dir: string): Promise<string[]> {
+  const entries = await fs.promises.readdir(dir, { withFileTypes: true }).catch(() => []);
+  return entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+}
+
 /** The homes `host` records: none while the record is missing or invalid. */
 export function recordedHomes(host: Pick<Host, 'toolHomes'>): Readonly<Record<string, string>> {
   return host.toolHomes.kind === 'ok' ? host.toolHomes.homes : {};
