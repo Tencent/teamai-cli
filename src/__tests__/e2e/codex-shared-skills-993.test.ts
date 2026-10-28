@@ -6,6 +6,8 @@
  * repo's history. Otherwise the copy is the member's: teamai leaves it alone,
  * delivers to `.codex/skills/<name>`, and names the conflict on every full
  * pull. `teamai remove` and `teamai uninstall` delete only teamai's copy.
+ * While teamai's copy of one team skill is in `.agents/skills`, every other
+ * team skill follows it there, so a relative link between two resolves (#1501).
  *
  * Each case gets its own team remote: a local bare repo reached through a
  * synthetic HTTPS URL (`url.<path>.insteadOf` in the sandbox HOME), and its
@@ -141,16 +143,16 @@ const TEAM = {
   'skills/fe-skill/scripts/run.sh': 'echo team\n',
 };
 
+beforeAll(() => {
+  if (!fs.existsSync(CLI)) throw new Error(`CLI binary not found at ${CLI}. Run "npm run build" first.`);
+  sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-codex-shared-e2e-')));
+});
+
+afterAll(() => {
+  if (sandbox) fs.rmSync(sandbox, { recursive: true, force: true });
+});
+
 describe('Codex skills in the shared .agents/skills directory (#993 bug 3)', () => {
-  beforeAll(() => {
-    if (!fs.existsSync(CLI)) throw new Error(`CLI binary not found at ${CLI}. Run "npm run build" first.`);
-    sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-codex-shared-e2e-')));
-  });
-
-  afterAll(() => {
-    if (sandbox) fs.rmSync(sandbox, { recursive: true, force: true });
-  });
-
   it('leaves the member\'s skill that was there before init, delivers to .codex/skills, and remove deletes only teamai\'s copy', () => {
     const m = machine('before', TEAM);
     const dir = m.business({ '.agents/skills/fe-skill/SKILL.md': MY_SKILL });
@@ -271,5 +273,52 @@ describe('Codex skills in the shared .agents/skills directory (#993 bug 3)', () 
     const uninstalled = m.ok(['uninstall', '--force'], m.home);
     expect(fs.existsSync(codex), uninstalled.output).toBe(false);
     expect(read(path.join(shared, 'SKILL.md'))).toBe(MY_SKILL);
+  });
+});
+
+describe('Codex receives all of one team\'s skills in one directory (#1501 part 3)', () => {
+  // `review` points at `lint` by a relative path: it resolves only while both share a directory.
+  const LINKED = {
+    'skills/lint/SKILL.md': skillMd('lint', 'Run the linter.'),
+    'skills/review/SKILL.md': skillMd('review', 'Before review, follow [lint](../lint/SKILL.md).'),
+  };
+
+  it('follows an earlier teamai copy of one skill into ~/.agents/skills with every other skill, so a relative link resolves', () => {
+    const m = machine('one-dir', LINKED);
+    const shared = path.join(m.home, '.agents', 'skills');
+    const codex = path.join(m.home, '.codex', 'skills');
+    // What an earlier release left: teamai's copy of `lint` in the shared directory, and of `review` in Codex's own.
+    writeFile(path.join(shared, 'lint', 'SKILL.md'), LINKED['skills/lint/SKILL.md']);
+    writeFile(path.join(codex, 'review', 'SKILL.md'), LINKED['skills/review/SKILL.md']);
+
+    const run = deliver(m, 'user', m.home);
+
+    expect(fs.existsSync(path.join(shared, 'lint', 'SKILL.md')), run.output).toBe(true);
+    expect(read(path.join(shared, 'review', 'SKILL.md')), run.output).toBe(LINKED['skills/review/SKILL.md']);
+    expect(fs.existsSync(path.join(codex, 'review')), run.output).toBe(false);
+    expect(fs.existsSync(path.join(codex, 'lint'))).toBe(false);
+    expect(run.output).not.toContain('Codex skill conflict');
+
+    // doctor looks for each skill where pull put it.
+    const doctor = m.run(['doctor'], m.home);
+    expect(doctor.output).toContain('✔ Skills delivered to codex');
+    expect(doctor.output).toContain('✔ codex skills are where the last pull wrote them');
+  });
+
+  it('leaves the member\'s own skill in ~/.agents/skills and names the conflict, while the rest follow teamai\'s copy there', () => {
+    const m = machine('one-dir-member', { ...LINKED, ...TEAM });
+    const shared = path.join(m.home, '.agents', 'skills');
+    const codex = path.join(m.home, '.codex', 'skills');
+    writeFile(path.join(shared, 'lint', 'SKILL.md'), LINKED['skills/lint/SKILL.md']);
+    writeFile(path.join(shared, 'fe-skill', 'SKILL.md'), MY_SKILL);
+
+    const run = deliver(m, 'user', m.home);
+
+    expect(read(path.join(shared, 'fe-skill', 'SKILL.md'))).toBe(MY_SKILL);
+    expect(fs.readdirSync(path.join(shared, 'fe-skill'))).toEqual(['SKILL.md']);
+    expect(read(path.join(codex, 'fe-skill', 'SKILL.md'))).toBe(skillMd('fe-skill', 'Team skill.'));
+    expect(run.output).toContain(conflictLine('fe-skill'));
+    expect(fs.existsSync(path.join(shared, 'review', 'SKILL.md')), run.output).toBe(true);
+    expect(fs.existsSync(path.join(codex, 'review'))).toBe(false);
   });
 });

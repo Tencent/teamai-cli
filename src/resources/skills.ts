@@ -23,7 +23,7 @@ import { openPrDestinations, recordedNamespace } from '../utils/pending-push.js'
 import { splitFrontmatter, stringifyFrontmatter } from '../utils/frontmatter.js';
 import {
   blockingEntries, deliveredSkillFiles, describeKeptDir, describeMembersDirLeft, describeMembersFile, describeMembersLink, describeSkippedLink, isLink, judgeCopy, judgeRemoval, keepsEditedCopy, keepsTrackedCopy,
-  isRecordedFromTeamSkill, isTeamSkillAsDelivered, isUneditedSkillCopy, membersLinkAt, ownsSkillDir, recordDelivered, recordedUnder, teamaiSkillFiles,
+  isRecordedFromTeamSkill, isTeamaiSkillCopy, isTeamSkillAsDelivered, isUneditedSkillCopy, membersLinkAt, ownsSkillDir, recordDelivered, recordedUnder, teamaiSkillFiles,
   type DeliveredHashes, type DeliveryLedger,
 } from './delivered-copies.js';
 
@@ -152,6 +152,20 @@ async function sharedSkillsDelivered(install: Install, sharedDir: string): Promi
 }
 
 /**
+ * Whether Codex's shared `sharedDir` holds teamai's copy of any skill of the
+ * team repo at `repoPath`: on the checkout's record `previous`, or a version
+ * from that repo's history. All of the team's Codex skills then go there, so a
+ * relative link between two of them resolves (#1501).
+ */
+async function holdsTeamSkillCopy(sharedDir: string, repoPath: string, previous: DeliveredHashes | undefined): Promise<boolean> {
+  for (const name of await listDirs(sharedDir)) {
+    const dir = path.join(sharedDir, name);
+    if (recordedUnder(previous ?? {}, dir).length > 0 || await isTeamaiSkillCopy(dir, skillOrigin(repoPath, name))) return true;
+  }
+  return false;
+}
+
+/**
  * Where Codex's copy of `skillName` goes: the shared `.agents/skills/<name>`
  * when a copy there is teamai's (`ownsShared`), else the configured directory.
  * Other tools get the configured directory.
@@ -224,11 +238,13 @@ export interface SkillTargetRequest {
 export function skillTargetsFor(
   teamConfig: Pick<TeamaiConfig, 'toolPaths'>,
   localConfig: LocalConfig,
+  teamSkills?: { previous: DeliveredHashes | undefined },
 ): (request: SkillTargetRequest) => Promise<string | null> {
   const install = installOf(teamConfig, localConfig);
   const toolPaths = scopedToolPaths(teamConfig, localConfig);
   // Asked once per run, and only once a Codex skill needs it.
   let sharedDelivered: Promise<boolean> | undefined;
+  let sharedHoldsTeamSkill: Promise<boolean> | undefined;
   return async ({ tool, skillName, ownsShared, sourcePath }) => {
     const where = await locate(tool, 'skills', install);
     const skillsDir = writable(where)?.path ?? null;
@@ -239,11 +255,13 @@ export function skillTargetsFor(
 
     // Codex alone can redirect a skill to the shared `.agents/skills`
     // directory: for a skill whose copy there is teamai's, or for any skill
-    // while another tool delivers there — so the destination is per-skill and
-    // the gate above cannot answer it.
+    // while another tool delivers there or, for `teamSkills`, while a team
+    // skill's copy is there — so the destination is per-skill and the gate
+    // above cannot answer it.
     const sharedDestination = path.join(sharedDir, skillName);
     sharedDelivered ??= sharedSkillsDelivered(install, sharedDir);
-    if (await sharedDelivered && !await pathExists(sharedDestination) && await ownsShared(sharedDestination)) {
+    sharedHoldsTeamSkill ??= teamSkills ? holdsTeamSkillCopy(sharedDir, localConfig.repo.localPath, teamSkills.previous) : Promise.resolve(false);
+    if ((await sharedDelivered || await sharedHoldsTeamSkill) && !await pathExists(sharedDestination) && await ownsShared(sharedDestination)) {
       // Codex's earlier copy in its own directory goes once the team history
       // proves it teamai's, so the move does not leave Codex a second version.
       const configuredDestination = path.join(skillsDir, skillName);
@@ -1251,7 +1269,7 @@ export class SkillsHandler extends ResourceHandler {
     const origin = skillOrigin(localConfig.repo.localPath, item.name);
     const targets: DeliveryTarget[] = [];
     const install = installOf(teamConfig, localConfig);
-    const skillTarget = skillTargetsFor(teamConfig, localConfig);
+    const skillTarget = skillTargetsFor(teamConfig, localConfig, { previous: ledger?.previous });
     for (const tool of Object.keys(install.toolPaths)) {
       const where = await locate(tool, 'skills', install);
       const skillsDir = writable(where)?.path ?? null;
