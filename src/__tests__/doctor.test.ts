@@ -1467,6 +1467,24 @@ describe('doctor — member settings (#1459)', () => {
         expect(printed).toContain(`  sessions.publish.unattended: off, from the machine config ${machineFile()}`);
     });
 
+    it('says the machine\'s session policy is not used where a workspace sets its own sessions', async () => {
+        // The workspace's own sessions replaces the machine's whole, so its unattended mode falls to the default.
+        const workspace = { ...mockLocalConfig, scope: 'project', projectRoot: '/tmp/ws', dataHome: '/tmp/ws-data', sessions: { publish: { attended: 'off' } }, memberSettingsOverlay: { local: { sessions: { publish: { attended: 'off' } } } } };
+        mockedDetectProjectConfig.mockResolvedValue(workspace);
+        onTestFinished(() => { mockedDetectProjectConfig.mockResolvedValue(null); });
+        mockedLoadMemberSettings.mockResolvedValue({ sessions: { publish: { unattended: 'off' } } });
+        const otherReads = mockedReadFileSafe.getMockImplementation();
+        mockedReadFileSafe.mockImplementation(async (filePath: string) => (
+            filePath === path.join('/tmp/ws-data', 'config.yaml') ? 'sessions:\n  publish:\n    attended: off\n' : otherReads?.(filePath)
+        ));
+
+        await doctor({});
+
+        const printed = consoleSpy.mock.calls.map(([line]) => String(line));
+        expect(printed).toContain(`  sessions.publish.attended: off, from the workspace config ${path.join('/tmp/ws-data', 'config.yaml')}`);
+        expect(printed).toContain("  sessions.publish.unattended: auto, from the default (the machine's off is not used)");
+    });
+
     it('names the keys of a machine config with no install that no command reads, being no member settings', async () => {
         const workspace = { ...mockLocalConfig, scope: 'project', projectRoot: '/tmp/ws', dataHome: '/tmp/ws-data', memberSettingsOverlay: { local: {} } };
         mockedDetectProjectConfig.mockResolvedValue(workspace);

@@ -219,7 +219,7 @@ function describeMemberSettingLevel({ level, file, variable }: MemberSettingSour
 function memberSettingLines(reports: MemberSettingsReport[], scope: LocalConfig['scope']): string[] {
   const shown = (value: unknown): string => typeof value === 'string' ? value : JSON.stringify(value);
   return reports.flatMap(({ key, effective, source, levels }) => {
-    if (!source || source.level === 'default') return [];
+    if (!source || (source.level === 'default' && levels.every(({ used }) => used !== false))) return [];
     const below = levels.slice(levels.indexOf(source) + 1).filter(({ level, used }) => level !== 'default' && used !== false)
       .map((lower, index) => `the ${describeMemberSettingLevel(lower, scope).short}${index === 0 ? ' says' : ''} ${shown(lower.value)}`);
     // A value set but not read, such as a workspace's own updatePolicy while the user scope decides it.
@@ -374,6 +374,8 @@ async function memberSettingsReport(ctx: DoctorContext): Promise<MemberSettingsR
       scopeValue = SessionPolicy.readPublish('config.yaml', readPath(rawScope, ['sessions'])).set[mode]?.policy;
       machineValue = SessionPolicy.readPublish('config.yaml', machine.sessions).set[mode]?.policy;
     }
+    // A workspace's own sessions replaces the machine's whole, whatever run modes it sets.
+    const machineShadowed = mode !== undefined && ctx.localConfig.scope !== 'user' && readPath(rawScope, ['sessions']) !== undefined;
     const levels: MemberSettingSource[] = [];
     if (key === 'ai.tool' && process.env.TEAMAI_AI_TOOL) levels.push(settingSource('environment', process.env.TEAMAI_AI_TOOL, undefined, 'TEAMAI_AI_TOOL'));
     if (key === 'recallEnabled' && process.env.TEAMAI_RECALL_DISABLED === '1') levels.push(settingSource('environment', false, undefined, 'TEAMAI_RECALL_DISABLED'));
@@ -381,7 +383,7 @@ async function memberSettingsReport(ctx: DoctorContext): Promise<MemberSettingsR
     if (key === 'mrHintEnabled' && process.env.TEAMAI_MR_HINT_DISABLED === '1') levels.push(settingSource('environment', false, undefined, 'TEAMAI_MR_HINT_DISABLED'));
 
     if (!machineWideUser && scopeValue !== undefined) levels.push(settingSource('scope', scopeValue, scopeSourceFile));
-    if (machineValue !== undefined && ctx.localConfig.scope !== 'user' && !machineWideUser) {
+    if (machineValue !== undefined && ctx.localConfig.scope !== 'user' && !machineWideUser && !machineShadowed) {
       levels.push(settingSource('machine', machineValue, machineFile));
     }
     if (machineWideUser && scopeValue !== undefined) levels.push(settingSource('scope', scopeValue, scopeSourceFile));
@@ -402,6 +404,7 @@ async function memberSettingsReport(ctx: DoctorContext): Promise<MemberSettingsR
       const workspaceValue = readPath(rawScope, parts);
       if (workspaceValue !== undefined) levels.push(settingSource('scope', workspaceValue, scopeFile, undefined, false));
     }
+    if (machineShadowed && machineValue !== undefined) levels.push(settingSource('machine', machineValue, machineFile, undefined, false));
     return levels;
   };
 
