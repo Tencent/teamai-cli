@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { COPILOT_RUNS_ENTRIES_SOURCE, copilotRunsEntries } from '../claude-hook-host.js';
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { COPILOT_RUNS_ENTRIES_SOURCE, claudeHookOtherHostSkip, copilotRunsEntries } from '../claude-hook-host.js';
 
 // The shell guard runs COPILOT_RUNS_ENTRIES_SOURCE; the CLI runs copilotRunsEntries.
 const guardRuns = new Function(`return ${COPILOT_RUNS_ENTRIES_SOURCE};`)() as (data: unknown) => unknown;
@@ -28,5 +32,36 @@ const FILES: Array<[string, unknown]> = [
 describe('COPILOT_RUNS_ENTRIES_SOURCE', () => {
   it.each(FILES)('reads %s as copilotRunsEntries does', (_name, file) => {
     expect(guardRuns(file)).toEqual(copilotRunsEntries(file));
+  });
+});
+
+
+describe('claudeHookOtherHostSkip on native Windows shells', () => {
+  it('uses PowerShell guards instead of bash syntax', () => {
+    const guard = claudeHookOtherHostSkip('Stop', undefined, 'echo RAN', 'win32');
+    expect(guard).toContain('$env:CURSOR_VERSION');
+    expect(guard).toContain('Select-String');
+    expect(guard).not.toContain('grep -q');
+    expect(guard).not.toContain('2>/dev/null');
+  });
+
+  it.each(['powershell.exe', 'pwsh.exe'])('runs the native %s guard', (shell) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-hook-powershell-'));
+    try {
+      const home = path.join(root, 'home');
+      const project = path.join(root, 'project');
+      fs.mkdirSync(path.join(home, '.cursor'), { recursive: true });
+      fs.mkdirSync(path.join(project, '.github', 'hooks'), { recursive: true });
+      fs.writeFileSync(path.join(home, '.cursor', 'hooks.json'), JSON.stringify({ hooks: { stop: [{ command: '--tool cursor' }] } }));
+      const env = { ...process.env, HOME: home, USERPROFILE: home, CURSOR_VERSION: '1', COPILOT_PROJECT_DIR: project };
+      const run = (event: string | undefined, extra: Record<string, string> = {}) => execFileSync(shell, ['-NoLogo', '-NoProfile', '-Command', `${claudeHookOtherHostSkip(event, undefined, 'Write-Output RAN', 'win32')}Write-Output RAN`], { env: { ...env, ...extra }, encoding: 'utf8' });
+      expect(run('Stop')).toBe('');
+      fs.rmSync(path.join(home, '.cursor', 'hooks.json'));
+      expect(run(undefined)).toBe('RAN\r\n');
+      fs.writeFileSync(path.join(project, '.github', 'hooks', 'teamai.json'), JSON.stringify({ version: 1, hooks: { Stop: [{ type: 'command', powershell: 'Write-Output RAN' }] } }));
+      expect(run('Stop')).toBe('');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });

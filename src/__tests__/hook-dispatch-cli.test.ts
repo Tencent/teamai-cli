@@ -123,7 +123,7 @@ describe('hookDispatchCli', () => {
 
     const runPrefix = (extra: NodeJS.ProcessEnv, event?: string, matcher?: string): string => execFileSync(
       'sh',
-      ['-c', `${claudeHookOtherHostSkip(event, matcher, 'echo RAN')}echo RAN`],
+      ['-c', `${claudeHookOtherHostSkip(event, matcher, 'echo RAN', 'linux')}echo RAN`],
       { env: { PATH: process.env.PATH ?? '', HOME: bare, ...extra }, encoding: 'utf8' },
     );
     expect(runPrefix({ CURSOR_VERSION: '1.2.3' }, 'Stop')).toBe('RAN\n');
@@ -239,7 +239,7 @@ describe('hookDispatchCli', () => {
       ['entry not a command', file({ ...builtin, type: 'prompt' }), file({ ...team, type: 'prompt' }), false],
     ];
     const env = { COPILOT_PROJECT_DIR: project, COPILOT_HOME: copilotHome, HOME: root };
-    const guard = (): string => execFileSync('sh', ['-c', `${claudeHookOtherHostSkip('Stop', undefined, 'echo RAN')}echo RAN`],
+    const guard = (): string => execFileSync('sh', ['-c', `${claudeHookOtherHostSkip('Stop', undefined, 'echo RAN', 'linux')}echo RAN`],
       { env: { PATH: process.env.PATH ?? '', ...env }, encoding: 'utf8' });
     try {
       for (const [name, builtinFile, teamFile, runs] of rows) {

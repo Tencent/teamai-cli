@@ -64,23 +64,68 @@ function copilotCopyKey(event: string, matcher: string | undefined, command: str
   return createHash('sha256').update(JSON.stringify([event, matcher && matcher !== '*' ? matcher : '', command])).digest('hex');
 }
 
+/** Quote a value for a PowerShell single-quoted string. */
+function powershellQuoteValue(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+/** PowerShell equivalent of the Cursor/Copilot guard for native Windows hooks. */
+const POWERSHELL_CURSOR_HOOK_SKIP =
+  'if ($env:CURSOR_VERSION) { $teamaiHome = if ($env:HOME) { $env:HOME } else { $env:USERPROFILE }; $files = @(); if ($teamaiHome) { $files += Join-Path (Join-Path $teamaiHome ".cursor") "hooks.json" }; if ($env:CURSOR_PROJECT_DIR) { $files += Join-Path (Join-Path $env:CURSOR_PROJECT_DIR ".cursor") "hooks.json" }; foreach ($file in $files) { if (Select-String -LiteralPath $file -SimpleMatch "--tool cursor" -Quiet -ErrorAction SilentlyContinue) { exit 0 } } }; ';
+
+function powershellProjectCopilotCopyCheck(event: string, matcher: string | undefined, command: string): string {
+  const expectedMatcher = matcher && matcher !== '*' ? matcher : '';
+  return [
+    '$teamaiHooks = Join-Path (Join-Path $env:COPILOT_PROJECT_DIR ".github") "hooks";',
+    'Get-ChildItem -LiteralPath $teamaiHooks -Filter "*.json" -File -ErrorAction SilentlyContinue | ForEach-Object {',
+    'try { $teamaiFile = Get-Content -LiteralPath $_.FullName -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop } catch { return };',
+    'if ($teamaiFile.version -ne 1 -or $teamaiFile.disableAllHooks -or $null -eq $teamaiFile.hooks) { return };',
+    `$teamaiEntries = @($teamaiFile.hooks.PSObject.Properties | Where-Object { $_.Name -ceq ${powershellQuoteValue(event)} } | ForEach-Object { $_.Value });`,
+    'foreach ($teamaiEntry in $teamaiEntries) {',
+    '$teamaiMatcher = if ($null -eq $teamaiEntry.matcher -or $teamaiEntry.matcher -ceq "*") { "" } else { [string]$teamaiEntry.matcher };',
+    `$teamaiCommands = @($teamaiEntry.bash, $teamaiEntry.powershell, $teamaiEntry.command); if ($teamaiEntry.type -ceq "command" -and $teamaiMatcher -ceq ${powershellQuoteValue(expectedMatcher)} -and $teamaiCommands -ccontains ${powershellQuoteValue(command)}) { exit 0 }`,
+    '}',
+    '}; ',
+  ].join(' ');
+}
+
+function usesPowerShellHookShell(platform: NodeJS.Platform = process.platform): boolean {
+  return platform === 'win32';
+}
+
 const CURSOR_HOOK_SKIP =
   'if [ -n "$CURSOR_VERSION" ] && { home="${HOME:-$USERPROFILE}"; [ -n "$home" ] && { grep -q -- \'--tool cursor\' "$home/.cursor/hooks.json" 2>/dev/null || { [ -n "$CURSOR_PROJECT_DIR" ] && grep -q -- \'--tool cursor\' "$CURSOR_PROJECT_DIR/.cursor/hooks.json" 2>/dev/null; }; }; }; then exit 0; fi; ';
 
+const POWERSHELL_COPILOT_LEGACY_SKIP =
+  'if ($env:COPILOT_PROJECT_DIR -and (Select-String -LiteralPath (Join-Path (Join-Path $env:COPILOT_PROJECT_DIR ".github") "hooks/teamai.json") -SimpleMatch "--tool copilot" -Quiet -ErrorAction SilentlyContinue)) { exit 0 }; ';
+
 /** Exact prefix emitted before Copilot built-ins moved to user scope. */
-export const LEGACY_CLAUDE_HOOK_OTHER_HOST_SKIP = CURSOR_HOOK_SKIP
-  + 'if [ -n "$COPILOT_PROJECT_DIR" ] && grep -q -- \'--tool copilot\' "$COPILOT_PROJECT_DIR/.github/hooks/teamai.json" 2>/dev/null; then exit 0; fi; ';
+export const LEGACY_CLAUDE_HOOK_OTHER_HOST_SKIP = usesPowerShellHookShell()
+  ? POWERSHELL_CURSOR_HOOK_SKIP + POWERSHELL_COPILOT_LEGACY_SKIP
+  : CURSOR_HOOK_SKIP
+    + 'if [ -n "$COPILOT_PROJECT_DIR" ] && grep -q -- \'--tool copilot\' "$COPILOT_PROJECT_DIR/.github/hooks/teamai.json" 2>/dev/null; then exit 0; fi; ';
 
 /**
- * Prefix for a Claude team command. Under Copilot it exits only when the
- * event's project delivers the same command to Copilot for the same event and
- * matcher, which then runs it. `copilotEvent` and `copilotMatcher` are the
- * Copilot renderer's for this hook; an event Copilot lacks has no replacement.
+ * Prefix for a Claude team command. The generated command must use the shell
+ * that Claude invokes on the member's machine: PowerShell on native Windows,
+ * POSIX shell elsewhere (including Git Bash on Windows).
  */
-export function claudeHookOtherHostSkip(copilotEvent: string | undefined, copilotMatcher: string | undefined, command: string): string {
-  if (!copilotEvent) return CURSOR_HOOK_SKIP;
-  return CURSOR_HOOK_SKIP + 'if [ -n "$COPILOT_PROJECT_DIR" ] && node -e ' + shellQuoteValue(PROJECT_COPILOT_COPY_CHECK) + ' '
-    + `"$COPILOT_PROJECT_DIR/.github/hooks" ${copilotCopyKey(copilotEvent, copilotMatcher, command)} 2>/dev/null; then exit 0; fi; `;
+export function claudeHookOtherHostSkip(
+  copilotEvent: string | undefined,
+  copilotMatcher: string | undefined,
+  command: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (!usesPowerShellHookShell(platform)) {
+    if (!copilotEvent) return CURSOR_HOOK_SKIP;
+    return CURSOR_HOOK_SKIP + 'if [ -n "$COPILOT_PROJECT_DIR" ] && node -e ' + shellQuoteValue(PROJECT_COPILOT_COPY_CHECK) + ' '
+      + `"$COPILOT_PROJECT_DIR/.github/hooks" ${copilotCopyKey(copilotEvent, copilotMatcher, command)} 2>/dev/null; then exit 0; fi; `;
+  }
+
+  if (!copilotEvent) return POWERSHELL_CURSOR_HOOK_SKIP;
+  return POWERSHELL_CURSOR_HOOK_SKIP + 'if ($env:COPILOT_PROJECT_DIR) { '
+    + powershellProjectCopilotCopyCheck(copilotEvent, copilotMatcher, command)
+    + '}; ';
 }
 
 function homeDir(env: NodeJS.ProcessEnv): string | undefined {
