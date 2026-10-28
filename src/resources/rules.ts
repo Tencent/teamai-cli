@@ -16,6 +16,7 @@ import { placedResourcePath } from '../push-namespaces.js';
 import { recordedNamespace } from '../utils/pending-push.js';
 import { deliversEveryNamespace } from '../resource-namespaces.js';
 import { getFileContentAtRev, isPastVersionOf, listFilesAtRev } from '../utils/git.js';
+import { gitUntracked } from '../git-exclude.js';
 import { historicalVersions } from '../utils/team-history.js';
 import {
   adoptRecord, contentHash, describeMembersDirLeft, describeMembersLink, forgetDelivered, holdsNonRegular, isLink, isTeamaiCopy, keepsEditedCopy, openLedger, recordDelivered, recordedUnchanged,
@@ -701,10 +702,19 @@ export class RulesHandler extends ResourceHandler {
       const delivered = (recorded !== undefined && recorded === await fileHash(file))
         || await isDeliveredRender(deliveredRenders(tool), file, rule, localConfig.repo.localPath, deliveredRevs);
       if (!delivered) continue;
-      // The instruction sync below may replace this path, but it must never
-      // remove a file the business repository tracks (#915). Keep the old rule
-      // copy and let the sync report that its own target is blocked instead.
-      if (await keepsTrackedCopy(file)) continue;
+      const target = ownOf(await locate(tool, 'blocks', installOf(teamConfig, localConfig)))?.path;
+      // An old rule copy at its replacement instruction target must make room
+      // for the blocks. A tracked instruction file stays in place, emptied so
+      // the sync below can fill it; with no blocks it remains an empty tracked
+      // file instead of becoming a deletion (#915). A tracked copy elsewhere
+      // remains untouched and is named once.
+      if (target !== file && await keepsTrackedCopy(file)) continue;
+      if (target === file && !await gitUntracked(file)) {
+        await writeFile(file, '');
+        if (ledger) forgetDelivered(ledger.hashes, file);
+        log.info(`Cleared ${file}, the tracked copy of the team rule ${TEAMAI_CONTEXT_RULE_NAME} an earlier release delivered: the team instructions go there now`);
+        continue;
+      }
       await remove(file);
       if (ledger) forgetDelivered(ledger.hashes, file);
       log.info(`Removed ${file}, the copy of the team rule ${TEAMAI_CONTEXT_RULE_NAME} an earlier release delivered: the team instructions go there now`);
