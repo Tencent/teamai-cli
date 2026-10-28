@@ -249,14 +249,14 @@ function parseLease(raw: unknown): Lease | undefined {
 }
 
 /**
- * Gets the lease a place to run under `root`, with the team env `values` resolved for it. `signal` stops setup, which
+ * Gets the lease a place to run under `root`, with the team env resolved for it. `signal` stops setup, which
  * then fails, and the workspace it was preparing is removed.
  */
-async function stageLease(lease: Lease, { config, lock, root, values, mode, signal }: {
+async function stageLease(lease: Lease, { config, lock, root, env, mode, signal }: {
   config: LocalConfig;
   lock: RunLock;
   root: string;
-  values: ReadonlyMap<string, string>;
+  env: WorkflowEnv;
   mode: RunMode;
   signal?: AbortSignal;
 }): Promise<WorkflowFailure | undefined> {
@@ -265,7 +265,7 @@ async function stageLease(lease: Lease, { config, lock, root, values, mode, sign
   // in the attempt's place is stopped before the attempt is staged again.
   await stopRecordedGroup(attemptDir(config, lock.run, lease.attempt));
   if (lease.envScope) {
-    const scoped = await stepEnvironment(values, lease.envScope);
+    const scoped = await stepEnvironment(env, lease.envScope);
     if (!scoped.ok) return scoped.failure;
     lease.processEnv = scoped.env;
   }
@@ -273,7 +273,7 @@ async function stageLease(lease: Lease, { config, lock, root, values, mode, sign
   if (prepared.kind !== 'prepared') return prepared.failure;
   lease.cwd = prepared.dir;
   if (prepared.prompt !== undefined) lease.prompt = prepared.prompt;
-  return runPlaceSetup({ config, run: lock.run, attempt: lease.attempt, mode, values, ...(signal ? { signal } : {}) });
+  return runPlaceSetup({ config, run: lock.run, attempt: lease.attempt, mode, env, ...(signal ? { signal } : {}) });
 }
 
 /**
@@ -647,7 +647,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options
         if (forwarded) handle(STOP_SIGNALS);
         inFlight.set(lease.attempt, { lease, command: stageThenStart(
           lease,
-          (signal) => stageLease(lease, { config, lock, root, values: turn.values, mode, signal }),
+          (signal) => stageLease(lease, { config, lock, root, env: turn, mode, signal }),
           () => {
             if (forwarded) handle(forwarded);
             // The lease `env` is set over the step's environment, so its values reach the shell only as variables.
@@ -675,7 +675,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options
           const controller = new AbortController();
           if (maxParallel === 1) handle(STOP_SIGNALS);
           prompt = { lease, controller, exit: (async () => {
-            const failure = await stageLease(lease, { config, lock, root, values: turn.values, mode, signal: controller.signal });
+            const failure = await stageLease(lease, { config, lock, root, env: turn, mode, signal: controller.signal });
             if (!startable(lease, controller.signal)) {
               await abandonPlace({ config, lock, attempt: lease.attempt });
               return undefined;

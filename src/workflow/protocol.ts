@@ -429,7 +429,7 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
       // The place an earlier attempt adopted no longer passes the checks, so the host makes another.
       return request.kind === 'adopt' ? { ...ask, refused: placed.failure.message } : ask;
     },
-    setup: (run, attempt, mode, signal) => runPlaceSetup({ config, run, attempt, mode, values: env.values, ...(signal ? { signal } : {}) }),
+    setup: (run, attempt, mode, signal) => runPlaceSetup({ config, run, attempt, mode, env, ...(signal ? { signal } : {}) }),
     start: async (name, { inputs, checkout, caller }) => {
       const cached = await loadCachedWorkflow(config, name);
       const refused = invokeRefusal(cached?.definition, caller, { kind: 'start' });
@@ -581,7 +581,7 @@ async function prepareLeased(input: { config: LocalConfig; lock: RunLock; driver
   // Setup runs in the mode the lease keeps, else in the mode of the process that prepares the attempt; never in the
   // mode the run started in, since a run another machine claimed can run its passes in another mode.
   const mode = (leased.kind === 'leased' ? leased.mode : undefined) ?? resolveRunMode(process.env);
-  const failure = await runPlaceSetup({ config, run: lock.run, attempt, mode, values: env.values });
+  const failure = await runPlaceSetup({ config, run: lock.run, attempt, mode, env });
   if (failure) return failed(failure);
   return { data: { ...answer.data, lease: { ...named.data, cwd: placed.dir, ...(placed.prompt !== undefined ? { prompt: placed.prompt } : {}) } } };
 }
