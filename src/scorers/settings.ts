@@ -24,7 +24,7 @@ import { listDirs, pathExists } from '../utils/fs.js';
 import { SCORING_FILE, scorerNamespaces } from './cache.js';
 import type { IsolationSetting } from './isolation.js';
 import { loadMemberSettings } from '../config.js';
-import { SessionPolicy, type SessionPolicies } from '../session-flow/session-policy.js';
+import { SessionPolicy, type PolicySource, type SessionPolicies } from '../session-flow/session-policy.js';
 
 /** Every key a `scoring.yaml` may set: the parser handles each one, and the problem for any other key lists them. */
 const SCORING_KEYS = ['batch', 'isolation', 'sessions', 'daily_limit'] as const;
@@ -87,8 +87,11 @@ export function parseScoringFile(relativePath: string, text: string): ScoringFil
 /** Judge launches a local day takes for finished sessions in one data home, when nothing sets another limit. */
 export const SESSION_DAILY_LIMIT = 10;
 
-/** Whether this scope's finished sessions are judge work in each run mode, and how many judge launches a local day may take for them. */
-export type SessionScoring = { policies: SessionPolicies; dailyLimit: number };
+/**
+ * Whether this scope's finished sessions are judge work in each run mode, and how many judge launches a local day may
+ * take for them, with what set that limit.
+ */
+export type SessionScoring = { policies: SessionPolicies; dailyLimit: number; dailyLimitSource: PolicySource };
 
 /**
  * What scoring in this scope follows: the team's `batch` default, every isolation setting that applies here, and whether
@@ -134,10 +137,11 @@ function sessionScoring(config: LocalConfig, machine: LocalConfig['scoring'], ro
     ? { value: machine.daily_limit, source: `${MACHINE_CONFIG} scoring.daily_limit` }
     : undefined;
   const daily = typeof limit === 'number' ? { value: limit, source: 'config.yaml scoring.daily_limit' } : machineLimit ?? ofTeamLimit;
-  if (!daily) return { policies, dailyLimit: SESSION_DAILY_LIMIT };
-  if (daily.value > 0) return { policies, dailyLimit: daily.value };
-  const off = { policy: 'off', source: { kind: 'setting', key: daily.source } } as const;
-  return { policies: { attended: off, unattended: off }, dailyLimit: 0 };
+  if (!daily) return { policies, dailyLimit: SESSION_DAILY_LIMIT, dailyLimitSource: { kind: 'default' } };
+  const dailyLimitSource = { kind: 'setting', key: daily.source } as const;
+  if (daily.value > 0) return { policies, dailyLimit: daily.value, dailyLimitSource };
+  const off = { policy: 'off', source: dailyLimitSource } as const;
+  return { policies: { attended: off, unattended: off }, dailyLimit: 0, dailyLimitSource };
 }
 
 function failed(cause: string): ScopeScoring {

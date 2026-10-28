@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished } from 'vitest';
 import { localAliasesPath } from '../models/aliases.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { scorerNotes } from '../doctor-scorers.js';
@@ -110,6 +110,19 @@ describe('scorerNotes', () => {
       'Scoring isolation: best-effort, the default.',
       'Judge tools here: none on PATH. Install one of: claude, claude-internal, tclaude, codex, codex-internal, tcodex, opencode, codebuddy, workbuddy, cursor, pi to judge on this machine.',
     ]);
+  });
+
+  it('prints what sets session judging in each run mode and the daily limit, once a setting does', async () => {
+    const machineFile = path.join(process.env.HOME ?? '', '.teamai', 'config.yaml');
+    fs.mkdirSync(path.dirname(machineFile), { recursive: true });
+    fs.writeFileSync(machineFile, 'scoring:\n  sessions: { unattended: off }\n  daily_limit: 2\n');
+    onTestFinished(() => fs.rmSync(machineFile, { force: true }));
+    const config = teamRepo({ 'scorers/q.md': SCORER, 'scorers/scoring.yaml': 'sessions: { attended: auto }\n' });
+
+    expect(await scorerNotes(config, { resolveTool: () => null })).toContain(
+      'Session judging: attended auto, set by scorers/scoring.yaml sessions.attended; unattended off, set by ~/.teamai/config.yaml scoring.sessions.unattended; '
+      + 'up to 2 sessions a day, set by ~/.teamai/config.yaml scoring.daily_limit.',
+    );
   });
 
   it('says nothing when every scorer is valid and known', async () => {

@@ -6,7 +6,9 @@ import { JUDGE_TOOLS } from './tool-launch/tools.js';
 import { chooseJudgeModel } from './scorers/judge-model.js';
 import { scoringUnavailable } from './scorers/home.js';
 import { requiredIsolation, unknownIsolationText } from './scorers/isolation.js';
-import { scopeScoring } from './scorers/settings.js';
+import { scopeScoring, type SessionScoring } from './scorers/settings.js';
+import { RUN_MODES } from './launch-context.js';
+import type { PolicySource } from './session-flow/session-policy.js';
 import type { LocalConfig } from './types.js';
 import { isSilent, setSilent } from './utils/logger.js';
 import { formatUnknownScorer, syncWorkflowDefinitions } from './workflow/cache.js';
@@ -20,7 +22,20 @@ async function isolationNotes(localConfig: LocalConfig, verified: readonly strin
   const raising = required.level === 'best-effort' && only
     ? [more.length === 0 ? `${only} asks for verified for its own work.` : `${verified.slice(0, -1).join(', ')} and ${verified.at(-1)} ask for verified for their own work.`]
     : [];
-  return [[`Scoring isolation: ${required.level}, ${setBy}.`, ...required.unknown.map((unknown) => `${unknownIsolationText(unknown)}.`), ...raising].join(' '), ...scoring.problems.map((problem) => `${problem}.`)];
+  return [
+    [`Scoring isolation: ${required.level}, ${setBy}.`, ...required.unknown.map((unknown) => `${unknownIsolationText(unknown)}.`), ...raising].join(' '),
+    ...sessionJudgingNote(scoring.sessions),
+    ...scoring.problems.map((problem) => `${problem}.`),
+  ];
+}
+
+/** Each run mode's session judging policy and the daily limit, with what set each, once a setting rather than the default does. */
+function sessionJudgingNote({ policies, dailyLimit, dailyLimitSource }: SessionScoring): string[] {
+  const sources = [...RUN_MODES.map((mode) => policies[mode].source), dailyLimitSource];
+  if (sources.every((source) => source.kind === 'default')) return [];
+  const setBy = (source: PolicySource) => (source.kind === 'setting' ? `set by ${source.key}` : 'the default');
+  const modes = RUN_MODES.map((mode) => `${mode} ${policies[mode].policy}, ${setBy(policies[mode].source)}`);
+  return [`Session judging: ${[...modes, `up to ${dailyLimit} sessions a day, ${setBy(dailyLimitSource)}`].join('; ')}.`];
 }
 
 async function judgeToolsNote(resolveTool: ResolveTool | undefined): Promise<string> {

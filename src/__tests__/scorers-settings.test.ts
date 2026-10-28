@@ -29,7 +29,7 @@ function teamRepo(files: Record<string, string>, member: Partial<LocalConfig> = 
 
 const MACHINE = { source: 'config.yaml scoring.isolation', value: undefined };
 const both = (policy: string, key: string) => ({ attended: { policy, source: { kind: 'setting', key } }, unattended: { policy, source: { kind: 'setting', key } } });
-const SESSIONS_DEFAULT = { policies: { attended: { policy: 'off', source: { kind: 'default' } }, unattended: { policy: 'auto', source: { kind: 'default' } } }, dailyLimit: 10 };
+const SESSIONS_DEFAULT = { policies: { attended: { policy: 'off', source: { kind: 'default' } }, unattended: { policy: 'auto', source: { kind: 'default' } } }, dailyLimit: 10, dailyLimitSource: { kind: 'default' } };
 
 describe('scopeScoring isolation', () => {
   it('reads the root file, and an active namespace file in its place; an inactive one is not read', async () => {
