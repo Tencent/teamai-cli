@@ -22,7 +22,7 @@ import { parseWorkflow } from '../workflow/parse.js';
 import { readRun, updateRun } from '../workflow/store.js';
 import type { DriverIdentity, RunState } from '../workflow/types.js';
 import { branchName } from '../workflow/workspace.js';
-import { applyBaseConfig, ensureWorktree, hooksPath, pushIfOrigin, worktreePath } from '../workflow/worktree.js';
+import { applyBaseConfig, ensureWorktree, git as workflowGit, hooksPath, pushIfOrigin, worktreePath } from '../workflow/worktree.js';
 import { launchHoldsCheckout } from '../launch-context.js';
 import { teamDelivery } from '../pull.js';
 import { pendingRecords } from '../workflow/records.js';
@@ -137,6 +137,7 @@ const driver = (workspace: string, machine = 'host'): DriverIdentity => ({ kind:
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -1468,6 +1469,70 @@ steps:
     git(['config', 'color.branch', 'always'], repo);
 
     expect(await pushIfOrigin(repo, 'teamai/solo', [])).toBe('pushed');
+  });
+
+  // While `git worktree add` writes a new worktree's entry, git's own `worktree add` and `worktree list` in the same
+  // repository die reading it (#1526). This git keeps the first add's entry that way for half a second.
+  it('opens a worktree for each of two steps that start at once, while git still writes the first one', async () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-worktree-race-')));
+    dirs.push(root);
+    const repo = path.join(root, 'repo');
+    execFileSync('git', ['init', '-q', '-b', 'main', repo]);
+    fs.writeFileSync(path.join(repo, 'tracked.txt'), 'one\n');
+    execFileSync('git', ['add', 'tracked.txt'], { cwd: repo });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'one'], { cwd: repo });
+    const head = git(['rev-parse', 'HEAD'], repo).trim();
+    const bin = path.join(root, 'bin');
+    fs.mkdirSync(bin);
+    const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+    fs.writeFileSync(path.join(bin, 'git'), `#!/bin/sh
+case " $* " in
+  *" worktree add "*)
+    if mkdir "${bin}/first" 2>/dev/null; then
+      entry="$("${realGit}" rev-parse --path-format=absolute --git-common-dir)/worktrees/half-written"
+      mkdir -p "$entry" && echo initializing > "$entry/locked" && echo "$entry/.git" > "$entry/gitdir" && : > "$entry/commondir"
+      sleep 0.5
+      rm -rf "$entry"
+    fi;;
+esac
+exec "${realGit}" "$@"
+`, { mode: 0o755 });
+    vi.stubEnv('PATH', `${bin}${path.delimiter}${process.env.PATH ?? ''}`);
+
+    const opened = await Promise.all([ensureWorktree(repo, 'teamai/r/left/p1', head), ensureWorktree(repo, 'teamai/r/right/p1', head)]);
+
+    expect(opened).toEqual([
+      { dir: worktreePath(repo, 'teamai/r/left/p1'), created: true },
+      { dir: worktreePath(repo, 'teamai/r/right/p1'), created: true },
+    ]);
+  });
+
+  // A fetch reads every worktree too, and dies the same way on an entry another `worktree add` is still writing.
+  it('fetches while another worktree add is still writing its entry, once git finished writing it', async () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-worktree-race-')));
+    dirs.push(root);
+    const origin = path.join(root, 'origin.git');
+    const repo = path.join(root, 'repo');
+    execFileSync('git', ['init', '-q', '--bare', '-b', 'main', origin]);
+    execFileSync('git', ['init', '-q', '-b', 'main', repo]);
+    fs.writeFileSync(path.join(repo, 'tracked.txt'), 'one\n');
+    execFileSync('git', ['add', 'tracked.txt'], { cwd: repo });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'one'], { cwd: repo });
+    execFileSync('git', ['remote', 'add', 'origin', origin], { cwd: repo });
+    execFileSync('git', ['push', '-q', 'origin', 'main'], { cwd: repo });
+    const entry = path.join(repo, '.git', 'worktrees', 'half-written');
+    fs.mkdirSync(entry, { recursive: true });
+    fs.writeFileSync(path.join(entry, 'locked'), 'initializing\n');
+    fs.writeFileSync(path.join(entry, 'gitdir'), `${path.join(root, 'half-written', '.git')}\n`);
+    fs.writeFileSync(path.join(entry, 'commondir'), '');
+    const written = new Promise<void>((resolve) => setTimeout(() => {
+      fs.writeFileSync(path.join(entry, 'commondir'), '../..\n');
+      resolve();
+    }, 300));
+
+    const [fetched] = await Promise.all([workflowGit(repo, ['fetch', '--quiet', 'origin']), written]);
+
+    expect(fetched).toMatchObject({ code: 0 });
   });
 
   it.each([
