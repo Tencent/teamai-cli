@@ -67,7 +67,7 @@ describe('dashboard workflow runs', () => {
     expect(workspace).toEqual(expect.any(String));
     const list = async () => await (await fetch(`${base}/api/workflows?workspace=${workspace}`)).text();
     const listed = await list();
-    expect(JSON.parse(listed)).toMatchObject({ configured: true, local: [{ run, workflow: 'ship', status: 'running', waiting: ['ship'] }], reported: { state: 'ok' } });
+    expect(JSON.parse(listed)).toMatchObject({ configured: true, local: [{ run, workflow: 'ship', status: 'running', waiting: ['ship'] }], reported: { state: 'ok', handoffs: [] } });
     const detail = await (await fetch(`${base}/api/workflows/run?workspace=${workspace}&source=local&id=${run}`)).text();
     expect(JSON.parse(detail)).toMatchObject({ steps: [{ step: 'ship', pass: 1, status: 'waiting', gate: { kind: 'approve', required: true } }] });
     for (const served of [listed, detail, html]) expect(served).not.toMatch(/TICKET-SECRET-42|echo shipped|Ship \{\{/);

@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { listHandoffs } from '../dashboard/workflow-runs.js';
 import { getAdapter } from '../session-flow/adapters/index.js';
 import { AgentSession } from '../session-flow/agent-session.js';
 import { SyncManager, defaultSyncMeta, getRepoIdentity } from '../session-flow/sync.js';
@@ -2794,5 +2795,29 @@ steps:
 
     const runs = await publishedRuns(alice);
     expect(runs.map((run) => [run.run, run.owner.user, run.offer !== undefined])).toEqual([[offered, 'alice', true], [held, 'bob', false]]);
+  });
+
+  it('shows the dashboard each run handed over, with what a runner would need, marking the ones this install published', async () => {
+    const acme = team({ build: BUILD, release: RELEASE });
+    const alice = await acme.member('alice');
+    const bob = await acme.member('bob');
+    originAt('https://github.com/acme/app.git', [alice, bob]);
+    const started = await startRun(alice.config, 'release', {}, { secrets: {} });
+    const offered = 'data' in started ? String(started.data.run) : '';
+    await publishRun(alice.config, offered, { env: {}, checkout: alice.checkout });
+    const held = await start(alice);
+    await publishRun(alice.config, held, { env: {}, checkout: alice.checkout });
+    await claimRun(bob.config, held, { checkout: bob.checkout });
+
+    await reportsBranch.readableReportsWorktree(alice.config);
+    const rows = await listHandoffs(alice.config);
+    expect(rows).toEqual([
+      expect.objectContaining({
+        run: offered, workflow: 'release', mine: true, owner: expect.objectContaining({ user: 'alice' }), repository: 'github.com/acme/app',
+        offer: { at: expect.any(String), needs: ['only a person can answer the approval at ship'] },
+      }),
+      expect.objectContaining({ run: held, workflow: 'build', mine: false, owner: expect.objectContaining({ user: 'bob' }) }),
+    ]);
+    expect(rows[1]).not.toHaveProperty('offer');
   });
 });
