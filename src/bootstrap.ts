@@ -36,7 +36,7 @@ export type BootstrapResult = 'bootstrapped' | 'already' | 'skip';
  * Returns null otherwise (not a single-repo project). Purely a marker read — no
  * schema validation beyond the mode field so a partial/older file still triggers.
  */
-async function readSelfModeMarker(dir: string): Promise<{ repo?: string; provider?: string } | null> {
+export async function readSelfModeMarker(dir: string): Promise<{ repo?: string; provider?: string } | null> {
   const yamlPath = path.join(dir, '.teamai', 'teamai.yaml');
   const content = await readFileSafe(yamlPath);
   if (!content) return null;

@@ -2,6 +2,7 @@ import YAML from 'yaml';
 import fs from 'node:fs';
 import path from 'node:path';
 import { readWorkspaceChildren } from './workspace-children.js';
+import { readSelfModeMarker } from './bootstrap.js';
 import { hasUserScopeInstall, saveLocalConfig, loadTeamConfig, saveLocalConfigForScope, loadLocalConfigForScope, loadStateForScope, refreshRoleAssignment, saveStateForScope, resolveProjectDataHome } from './config.js';
 import { codexTrustPolicy, deliveredHookFiles, describeUnappliedTeamHooks, hasTeamaiHooks, reconcileHooks, reconcileTeamHooksForConfig, reportCodexTrust, trustCodexForScope } from './hooks.js';
 import { configureGitUser, resolveAnchors, initRepo, isGitRepo, getRemoteUrl, getConfiguredRemoteUrl, remotesMatch, redactGitCredentials, pullRepoFastForward, DetachedTeamRepoError, pushRepoDirectly, autoPushViaMR, gitBlockTimeoutMs, createGitWithBlockTimeout } from './utils/git.js';
@@ -1689,15 +1690,7 @@ export async function isSingleRepoTeam(repoDir: string): Promise<boolean> {
   if (await pathExists(path.join(repoDir, 'teamai.yaml'))) {
     return false;
   }
-  const selfYamlPath = path.join(repoDir, '.teamai', 'teamai.yaml');
-  const content = await readFileSafe(selfYamlPath);
-  if (!content) return false;
-  try {
-    const raw = YAML.parse(content) as Partial<TeamaiConfig> | null;
-    return raw?.mode === 'self';
-  } catch {
-    return false;
-  }
+  return (await readSelfModeMarker(repoDir)) !== null;
 }
 
 export async function init(options: GlobalOptions & {
