@@ -411,7 +411,7 @@ async function buildHookChecks(
     if (tool === 'agy') {
       if (!isInstalledFor(await locate(tool, 'hooks', install))) continue;
       const { hasAgyHooks } = await import('./agy-hooks.js');
-      checks.push({ name: 'teamai hooks in Antigravity CLI hooks.json', source: 'local', check: hasAgyHooks, fix: 'Run `teamai hooks inject` to inject/update hooks' });
+      checks.push({ name: 'teamai hooks in Antigravity hooks.json', source: 'local', check: hasAgyHooks, fix: 'Run `teamai hooks inject` to inject/update hooks' });
       continue;
     }
     if (tool === 'pi') {

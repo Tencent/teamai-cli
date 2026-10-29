@@ -1662,7 +1662,7 @@ function printSummary(plan: RemovalPlan, agentFilter?: string): void {
     console.log('');
   }
   if (plan.kiroHookFile !== null) console.log(`   Kiro Hooks: ${plan.kiroHookFile}`);
-  if (plan.agyHookFile !== null) console.log(`   Antigravity CLI Hooks: ${plan.agyHookFile} (the "teamai" entry)`);
+  if (plan.agyHookFile !== null) console.log(`   Antigravity Hooks: ${plan.agyHookFile} (the "teamai" entry)`);
   if (plan.bridgedTeamHookFiles.length > 0) {
     console.log(`   Team hooks teamai runs (${plan.bridgedTeamHookFiles.length} files):`);
     for (const file of plan.bridgedTeamHookFiles) console.log(`     ${file}`);
@@ -2297,7 +2297,7 @@ async function executeRemoval(
       const { reconcileAgyHooks } = await import('./agy-hooks.js');
       await reconcileAgyHooks({ removeAll: true });
     } catch (e) {
-      log.warn(`Failed to remove Antigravity CLI hooks from ${plan.agyHookFile}: ${(e as Error).message}`);
+      log.warn(`Failed to remove Antigravity hooks from ${plan.agyHookFile}: ${(e as Error).message}`);
     }
   }
 

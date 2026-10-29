@@ -5,8 +5,8 @@ import { bridgedTeamHookEvents } from './bridged-team-hooks.js';
 import { readJsonObject, writeJsonAtomic } from './utils/fs.js';
 
 /**
- * Antigravity CLI loads `~/.gemini/config/hooks.json`, an object of named
- * hooks. teamai owns the one named `teamai` and leaves every other name alone.
+ * Antigravity CLI, the Antigravity app and Antigravity IDE all load `~/.gemini/config/hooks.json`, an object of
+ * named hooks. teamai owns the one named `teamai` and leaves every other name alone.
  */
 const HOOK_NAME = 'teamai';
 

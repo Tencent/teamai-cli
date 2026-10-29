@@ -49,7 +49,9 @@ sharing:
 
 你自己的 rule 会留下。`push` 只把已有团队 rule 的正文写回仓库。
 
-Antigravity CLI 只加载带 `trigger` 的 rule，所以 pull 会加上。带 `paths:` 的 rule 会变成模型处理这些文件时才采用的 rule：
+这里的 Antigravity 指三者：CLI（`agy`）、Antigravity 2.0 和 Antigravity IDE 读取同样的 `~/.gemini/config` 和 `.agents`，所以一次 pull 三者都能用。
+
+Antigravity 只加载带 `trigger` 的 rule，所以 pull 会加上。带 `paths:` 的 rule 会变成模型处理这些文件时才采用的 rule：
 
 ```markdown
 <!-- 团队仓库里的 rules/api-errors.md -->
@@ -93,7 +95,7 @@ teamai remove agents code-reviewer
 
 `pull` 按工具自己的格式写入它的 agents 目录：Codex 系列是 `<name>.toml`，Copilot 是 `<name>.agent.md`，Kiro 是 `<name>.json`，其余是 `<name>.md`。Trae 和 Trae CN 只在 Beta 设置“启用 Subagents 目录”打开时加载 `.trae/agents`，且只接受自己的模型 id，所以它们的副本不写 agent 的 `model`。Trae CN 在 `~/.trae-cn/agents` 的用户副本会写别名或 `tool_extras.trae-cn` 给出的模型。项目的 `.trae/agents` 两个版本都会读，所以从不写 `model`，其他键则同时取自 `tool_extras.trae` 和 `tool_extras.trae-cn`；两个版本给同一个键不同的值时，该 agent 在那里会被跳过，并给出点名该键的警告。`push` 会拒绝在该文件里修改或删除另一个版本给出的键。
 
-Antigravity CLI 的副本不带团队的 `model`（agy 会跳过它不认识模型的 agent），只写别名为 agy 映射的模型；工具名换成 agy 自己的：`tools: [Bash, Read]` 变成 `run_command`、`view_file` 和 `read_file`。没有这些，agy 的 subagent 就没有 shell。项目里的 `.agents/agents` 归 agy，所以装了 agy 时 Muse Code 不在那里写副本。
+Antigravity 的副本不带团队的 `model`（agy 会跳过它不认识模型的 agent），只写别名为 agy 映射的模型；工具名换成 agy 自己的：`tools: [Bash, Read]` 变成 `run_command`、`view_file` 和 `read_file`。没有这些，agy 的 subagent 就没有 shell。项目里的 `.agents/agents` 归 agy，所以装了 agy 时 Muse Code 不在那里写副本。CLI 和 Antigravity 2.0 把 agent 当作 subagent 运行；Antigravity IDE 没有 subagent，装了 CLI 时它的模型只能把活交给 `agy --agent <name>`。
 
 单仓库模式下，已放入命名空间的 agent 的根目录副本会推送到放置后的文件。把它从 `.md` 转为 `.yaml` 会移除原文件，即使当前检出落后于自己已合并的 PR 也是如此。两种情况下，TeamAI 都会把放置后的文件与你上次合并的推送写入的 blob 对比。团队之后又编辑过该文件时，推送会停止并给出 `teamai push --carried <path>@<blob>` 命令。把这次修改带入根目录副本，再运行该命令。该选项只接受这一版本，直接重试或团队之后再次编辑都会再次停止推送。团队已删除的 agent 不会从根目录副本重新添加。没有 blob 的旧放置记录，只有在检出落后于团队修改时才能发现这次修改；你通过它推送的第一次编辑合并后，该记录会补上这次的 blob。
 
@@ -270,7 +272,7 @@ hook 能做什么取决于事件。下表是每个运行该事件的工具都做
       not in: cursor (no PreToolUse hook there)
 ```
 
-OpenCode、Oh My Pi、Pi、OpenClaw、Kiro、Hermes 和 Antigravity CLI 没有 Claude Code 那样的 hook 文件，它们的 hook 由 teamai 来跑，payload 和工具名都按 Claude Code 的（`matcher: Bash` 能匹配 OpenCode 的 `bash` 和 Hermes 的 `terminal`）。在这些工具里：
+OpenCode、Oh My Pi、Pi、OpenClaw、Kiro、Hermes 和 Antigravity 没有 Claude Code 那样的 hook 文件，它们的 hook 由 teamai 来跑，payload 和工具名都按 Claude Code 的（`matcher: Bash` 能匹配 OpenCode 的 `bash` 和 Hermes 的 `terminal`）。在这些工具里：
 
 - 只跑 `SessionStart`、`UserPromptSubmit`、`PreToolUse`、`PostToolUse` 和 `Stop`。其他事件上的团队 hook，pull 会警告。
 - `UserPromptSubmit` 能加上下文，但拦不下这次输入。
@@ -287,7 +289,7 @@ sharing:
 
 本机全部停用团队 hook：`TEAMAI_HOOKS_DISABLED=1`。
 
-Antigravity CLI 也会运行这些 hook，经由 teamai 写在 `~/.gemini/config/hooks.json` 里的 hook。hook 收到的是 Claude Code 的 payload（`tool_name: Bash`、`tool_input.command`），退出码 2 会拦下这次调用，所以同一个 hook 两个工具都能用：
+Antigravity 也会运行这些 hook（CLI、Antigravity 2.0 和 Antigravity IDE 都一样），经由 teamai 写在 `~/.gemini/config/hooks.json` 里的 hook。hook 收到的是 Claude Code 的 payload（`tool_name: Bash`、`tool_input.command`），退出码 2 会拦下这次调用，所以同一个 hook 两个工具都能用：
 
 ```yaml
 hooks:
@@ -329,7 +331,7 @@ servers:
 
 ZCode 的 server 写入 `~/.zcode/cli/config.json` 或项目的 `.zcode/config.json`，位于 `mcp.servers` 下。这基于 3.16.2 源码，尚未认证 3.15.1。Pull 只从 `~/.agents/mcp.json` 移走未被修改的 teamai 条目。原生配置中有 server 后，桌面应用不再读取该备用文件，doctor 会列出其中的其他 server。
 
-Antigravity CLI 的用户级 server 写入 `~/.gemini/config/mcp_config.json`。项目级 server 它只从插件读取，所以 teamai 把它们写成一个插件：
+Antigravity 的用户级 server 写入 `~/.gemini/config/mcp_config.json`。项目级 server 它只从插件读取，所以 teamai 把它们写成一个插件：
 
 ```text
 .agents/plugins/teamai/plugin.json       {"name": "teamai"}

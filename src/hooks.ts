@@ -3255,7 +3255,7 @@ export async function injectHooksToAllTools(toolPaths: Record<string, { settings
         const { reconcileAgyHooks } = await import('./agy-hooks.js');
         if (await pathExists(toolHome('agy'))) await reconcileAgyHooks();
       } catch (e) {
-        log.warn(`Failed to inject Antigravity CLI hooks: ${(e as Error).message}`);
+        log.warn(`Failed to inject Antigravity hooks: ${(e as Error).message}`);
       }
     } else if (tool === 'pi') {
       try {
@@ -3522,7 +3522,7 @@ export async function reconcileHooksToAllTools(
         await reconcileBridged(tool);
         if (opts.removeAll || await pathExists(toolHome('agy'))) await reconcileAgyHooks({ removeAll: opts.removeAll });
       } catch (e) {
-        log.warn(`Failed to reconcile Antigravity CLI hooks: ${(e as Error).message}`);
+        log.warn(`Failed to reconcile Antigravity hooks: ${(e as Error).message}`);
         opts.unwritten?.push(tool);
       }
       continue;

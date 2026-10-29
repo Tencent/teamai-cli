@@ -85,11 +85,11 @@ describe('promptForSelfModeAgents — interactive Auto option', () => {
     expect(printed).toContain('10. Muse Code  (.config/muse)');
   });
 
-  it('offers Antigravity CLI with its ~/.gemini/config root', async () => {
+  it('offers Antigravity with its ~/.gemini/config root', async () => {
     vi.mocked(askSelection).mockResolvedValueOnce([0]);
     await promptForSelfModeAgents({});
     const printed = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
-    expect(printed).toContain('11. Antigravity CLI  (.gemini/config)');
+    expect(printed).toContain('11. Antigravity  (.gemini/config)');
   });
 
   it('renders "none detected" when HOME has no known tools, and Auto → claude', async () => {
