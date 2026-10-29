@@ -10,6 +10,41 @@ import { log } from './utils/logger.js';
 /** The caches an incremental extraction reuses, kept with each codebase's evidence. */
 const INCREMENTAL_CACHES = ['facts-cache.json', 'interfaces-cache.json'] as const;
 
+/**
+ * Serialises root source-manifest.json publishes inside this process.
+ *
+ * `--from-repo-list` imports up to `--concurrency` repos in one process, and
+ * every import publishes its staging manifest over the shared
+ * `teamwiki/source-manifest.json`. `fs.copy(..., { overwrite: true })`
+ * unlinks the destination before writing, so two repos reaching that line
+ * together raced: one unlinked the file the other had just unlinked and the
+ * import failed with ENOENT. The root manifest is a single-project baseline
+ * (the latest publish wins by design), so the fix is to serialise the
+ * publish, not to merge entries. Each codebase keeps its own baseline in
+ * `evidence/code/<slug>/source-manifest.json`.
+ */
+let manifestPublishQueue: Promise<void> = Promise.resolve();
+let manifestPublishSeq = 0;
+
+async function publishRootManifest(stagingManifest: string, wikiRoot: string): Promise<void> {
+  const target = path.join(wikiRoot, 'source-manifest.json');
+  const publish = manifestPublishQueue.then(async () => {
+    // Copy next to the target, then rename over it: a reader never sees a
+    // half-written manifest, and a failed copy cannot destroy the previous one.
+    const tmp = `${target}.tmp-${process.pid}-${manifestPublishSeq++}`;
+    try {
+      await fs.copyFile(stagingManifest, tmp);
+      await fs.rename(tmp, target);
+    } catch (err) {
+      await fs.remove(tmp).catch(() => {});
+      throw err;
+    }
+  });
+  // A failed publish must not wedge the queue for the repos still importing.
+  manifestPublishQueue = publish.catch(() => {});
+  await publish;
+}
+
 export interface ImportCodebaseOptions {
   /** Source checkout to extract (a local dir, a clone-cache dir, or a CI checkout). */
   sourceDir: string;
@@ -126,7 +161,7 @@ export async function importCodebase(opts: ImportCodebaseOptions): Promise<boole
     }
     const stagingManifest = path.join(stagingWiki, 'source-manifest.json');
     if (await fs.pathExists(stagingManifest)) {
-      await fs.copy(stagingManifest, path.join(wikiRoot, 'source-manifest.json'), { overwrite: true });
+      await publishRootManifest(stagingManifest, wikiRoot);
     }
     return true;
   } finally {
