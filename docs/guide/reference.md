@@ -152,7 +152,7 @@ workflows:
 
 In that workspace `implementer` and `reviewer` run on Claude, and every other agent on Codex.
 
-**Share less from one laptop than the team asks.** The team publishes and judges every session. On her laptop Ana keeps the sessions she runs by hand off `teamai-reports`, judges none from the jobs it runs, and caps judging at two sessions a day:
+**Share less from one laptop than the team asks.** The team publishes and judges every session. On her laptop Ana keeps the sessions she runs by hand off `teamai-reports`, judges none from the jobs it runs, and caps judging at two sessions a day in each workspace:
 
 ```yaml
 # ~/.teamai/config.yaml

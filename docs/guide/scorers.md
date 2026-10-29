@@ -304,8 +304,10 @@ scoring:
 | `sessions: true` | `scoring: { sessions: { unattended: off } }` | attended `auto`, unattended `off` |
 | `sessions: { attended: ask }` | `scoring: { sessions: false }` | `off` in both modes |
 | `sessions: false` | `scoring: { sessions: true }` | `off` in both modes: the team's `off` stays |
-| `daily_limit: 4` | `scoring: { daily_limit: 2 }` | 2 sessions a day |
-| `daily_limit: 4` | `scoring: { daily_limit: 20 }` | 4 sessions a day |
+| `daily_limit: 4` | `scoring: { daily_limit: 2 }` | 2 sessions a day in each workspace |
+| `daily_limit: 4` | `scoring: { daily_limit: 20 }` | 4 sessions a day in each workspace |
+
+Like the team's, the machine's limit counts each workspace on its own: a laptop with three workspaces under `daily_limit: 2` can still judge six sessions a day.
 
 `teamai doctor` says what decided each mode and the limit, once a setting does:
 

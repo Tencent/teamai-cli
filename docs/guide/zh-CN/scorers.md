@@ -304,8 +304,10 @@ scoring:
 | `sessions: true` | `scoring: { sessions: { unattended: off } }` | 有人值守 `auto`，无人值守 `off` |
 | `sessions: { attended: ask }` | `scoring: { sessions: false }` | 两种模式都是 `off` |
 | `sessions: false` | `scoring: { sessions: true }` | 两种模式都是 `off`：团队的 `off` 保持不变 |
-| `daily_limit: 4` | `scoring: { daily_limit: 2 }` | 每天 2 个会话 |
-| `daily_limit: 4` | `scoring: { daily_limit: 20 }` | 每天 4 个会话 |
+| `daily_limit: 4` | `scoring: { daily_limit: 2 }` | 每个 workspace 每天 2 个会话 |
+| `daily_limit: 4` | `scoring: { daily_limit: 20 }` | 每个 workspace 每天 4 个会话 |
+
+和团队的上限一样，本机的上限按每个 workspace 分别计数：一台有三个 workspace 的笔记本在 `daily_limit: 2` 下每天仍可评判六个会话。
 
 一旦有设置（而不是默认值）决定了某种模式或上限，`teamai doctor` 会说明它来自哪里：
 

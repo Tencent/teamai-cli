@@ -152,7 +152,7 @@ workflows:
 
 在这个 workspace 中，`implementer` 和 `reviewer` 跑在 Claude 上，其他 agent 跑在 Codex 上。
 
-**一台笔记本比团队要求的共享得更少。** 团队会发布并评判每个会话。在自己的笔记本上，Ana 不把手动运行的会话发布到 `teamai-reports`，不评判这台机器运行的任务中的会话，并且每天最多评判两个会话：
+**一台笔记本比团队要求的共享得更少。** 团队会发布并评判每个会话。在自己的笔记本上，Ana 不把手动运行的会话发布到 `teamai-reports`，不评判这台机器运行的任务中的会话，并且每个 workspace 每天最多评判两个会话：
 
 ```yaml
 # ~/.teamai/config.yaml
