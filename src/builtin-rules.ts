@@ -259,33 +259,3 @@ searched: relay that warning rather than conclude the team has no knowledge ther
 export function recallRuleContent(language?: 'en' | 'zh'): string {
     return language === 'en' ? TEAMAI_RECALL_RULE_CONTENT_EN : TEAMAI_RECALL_RULE_CONTENT;
 }
-
-/**
- * Remove the `teamai-recall` rule a pull wrote, for a pull that finds recall
- * off. A copy that is not teamai's render of the shipped rule is the member's
- * edit: it stays, and its path is returned.
- */
-export async function removeBuiltinRecallRules(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<string[]> {
-    const kept: string[] = [];
-    const install = installOf(teamConfig, localConfig);
-    for (const tool of Object.keys(install.toolPaths)) {
-        const location = await locate(tool, 'rules', install);
-        if (ownOf(location)?.kind !== 'dir') continue;
-        const rulesDir = writable(location)?.path;
-        if (rulesDir === undefined) continue;
-        const dest = path.join(rulesDir, `teamai-recall${ruleFileExtensionForTool(tool)}`);
-        let current: string;
-        try {
-            current = await fs.readFile(dest, 'utf8');
-        } catch {
-            continue;
-        }
-        if (current === renderRuleForTool(tool, recallRuleContent(teamConfig.language))) {
-            await fs.unlink(dest);
-            log.debug(`Removed built-in recall rule from ${tool}`);
-        } else {
-            kept.push(dest);
-        }
-    }
-    return kept;
-}

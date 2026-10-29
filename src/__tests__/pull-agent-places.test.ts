@@ -142,17 +142,17 @@ describe('a pull and the agents of a moved home', () => {
       expect(await present()).toEqual([false, false]);
     });
 
-    it('keeps a recall agent the member edited and names it once', async () => {
+    it('removes copies an older release wrote or the member edited, by name', async () => {
       const [agent, rule] = recallFiles();
-      await fse.appendFile(agent, '\nMy own instruction.\n');
+      await fse.writeFile(agent, 'The text teamai-cli 0.27.0 shipped.\n');
+      await fse.appendFile(rule, '\nMy own instruction.\n');
       config.recallEnabled = false;
 
       await pull({});
 
-      expect(await present()).toEqual([true, false]);
-      const warned = vi.mocked(log.warn).mock.calls.map(([message]) => String(message)).filter((line) => line.includes(agent));
-      expect(warned).toHaveLength(1);
-      expect(warned[0]).not.toContain(rule);
+      expect(await present()).toEqual([false, false]);
+      const warned = vi.mocked(log.warn).mock.calls.map(([message]) => String(message));
+      expect(warned.filter((line) => line.includes('teamai-recall'))).toEqual([]);
     });
 
     it('writes both back when recall is turned on again', async () => {

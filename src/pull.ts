@@ -832,21 +832,14 @@ async function reconcileEnvForUnchangedRepo(
 
 /**
  * With recall off, a `teamai-recall` agent and rule an earlier pull wrote would
- * keep the agent calling recall: remove them. A copy the member edited stays,
- * and the pull says so.
+ * keep the agent calling recall: remove them by name, as `recall disable` does.
+ * That includes a copy written by an older release or edited by the member.
  */
 async function removeRecallFilesQuietly(teamConfig: TeamaiConfig, localConfig: LocalConfig, dryRun?: boolean): Promise<void> {
   if (dryRun) return;
   try {
-    const { removeBuiltinRecallAgents } = await import('./builtin-agents.js');
-    const { removeBuiltinRecallRules } = await import('./builtin-rules.js');
-    const kept = [
-      ...await removeBuiltinRecallAgents(teamConfig, localConfig),
-      ...await removeBuiltinRecallRules(teamConfig, localConfig),
-    ];
-    if (kept.length > 0) {
-      warnOnce(`Recall is off, but ${kept.join(', ')} ${kept.length === 1 ? 'is' : 'are'} not the copy teamai installed, so ${kept.length === 1 ? 'it was' : 'they were'} kept.`);
-    }
+    const { removeRecallAgentAndRule } = await import('./recall-toggle.js');
+    await removeRecallAgentAndRule(teamConfig, localConfig);
   } catch (e) {
     log.debug(`Recall agent and rule removal skipped: ${(e as Error).message}`);
   }

@@ -17,9 +17,15 @@ import {
   type LocalConfig,
 } from './types.js';
 
-async function removeRecallArtifacts(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
+/**
+ * Remove the `teamai-recall` rule and agent by name, in every place teamai may
+ * have written them (including earlier tool homes and the `.md` copy older
+ * layouts left in a `.mdc` rules folder). Shared by `recall disable` and by a
+ * pull that finds recall off, so both leave the same files behind.
+ */
+export async function removeRecallAgentAndRule(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
   const install = installOf(teamConfig, localConfig);
-  for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
+  for (const tool of Object.keys(scopedToolPaths(teamConfig, localConfig))) {
     // Remove recall rule file
     const rulesDir = ownOf(await locate(tool, 'rules', install));
     if (rulesDir?.kind === 'dir') {
@@ -34,17 +40,6 @@ async function removeRecallArtifacts(teamConfig: TeamaiConfig, localConfig: Loca
       }
     }
 
-    // Remove the legacy recall skill an earlier release deployed. The served
-    // `share` workflow is gated at run time, but a member who upgrades and
-    // disables recall before pulling still has the old directory.
-    // Same resolver and gates as deployment: an uninstalled Codex must not have
-    // the shared .agents/skills root pruned on its behalf, and OpenClaw and
-    // Hermes are pruned where their skills actually live.
-    if (toolPath.skills && !isAgentExcluded(localConfig, tool)) {
-      const target = await builtinSkillsTarget(tool, teamConfig, localConfig);
-      if (target) await pruneLegacyBuiltinSkills(tool, target, LEGACY_RECALL_SKILL_NAMES);
-    }
-
     for (const { path: agentsDir } of cleanupOf(await locate(tool, 'agents', install))) {
       const extensions = new Set<string>(['.md']);
       if (isAgentToolId(tool)) {
@@ -57,6 +52,22 @@ async function removeRecallArtifacts(teamConfig: TeamaiConfig, localConfig: Loca
           log.debug(`Removed recall agent from ${tool}`);
         }
       }
+    }
+  }
+}
+
+async function removeRecallArtifacts(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
+  await removeRecallAgentAndRule(teamConfig, localConfig);
+  for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
+    // Remove the legacy recall skill an earlier release deployed. The served
+    // `share` workflow is gated at run time, but a member who upgrades and
+    // disables recall before pulling still has the old directory.
+    // Same resolver and gates as deployment: an uninstalled Codex must not have
+    // the shared .agents/skills root pruned on its behalf, and OpenClaw and
+    // Hermes are pruned where their skills actually live.
+    if (toolPath.skills && !isAgentExcluded(localConfig, tool)) {
+      const target = await builtinSkillsTarget(tool, teamConfig, localConfig);
+      if (target) await pruneLegacyBuiltinSkills(tool, target, LEGACY_RECALL_SKILL_NAMES);
     }
   }
 
