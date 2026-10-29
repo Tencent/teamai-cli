@@ -106,6 +106,7 @@ const DETECTORS: Record<string, VersionDetector> = {
   // leading "v" or trailing commit info). Extract leading semver-ish digits.
   dsh: detectDshVersion,
   muse: detectMuseVersion,
+  agy: detectAgyVersion,
 };
 
 async function detectDshVersion(): Promise<string> {
@@ -117,6 +118,12 @@ async function detectDshVersion(): Promise<string> {
 async function detectMuseVersion(): Promise<string> {
   // "Muse Code 1.4.6 (1.4.6-R6000.1)" → "1.4.6"
   const raw = await execVersion('muse');
+  return raw.match(/\d+\.\d+\.\d+/)?.[0] ?? '';
+}
+
+async function detectAgyVersion(): Promise<string> {
+  // Antigravity CLI: "1.4.10"
+  const raw = await execVersion('agy');
   return raw.match(/\d+\.\d+\.\d+/)?.[0] ?? '';
 }
 
