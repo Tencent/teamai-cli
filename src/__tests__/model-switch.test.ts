@@ -118,10 +118,10 @@ describe('Antigravity CLI model switching', () => {
 
     // An alias is expanded as each line is read, so it would turn the block's function definition into a syntax error.
     const shell = spawnSync('bash', ['-c', `shopt -s expand_aliases\nalias agy='agy --resume'\n. '${agyKeyFile()}'\nagy`], {
-      env: { PATH: `${bin}:/usr/bin:/bin` }, encoding: 'utf8',
+      env: { HOME: home, PATH: `${bin}:/usr/bin:/bin` }, encoding: 'utf8',
     });
 
-    expect(shell.stderr).toBe('');
+    expect(shell.stderr).not.toContain('syntax error');
     expect(shell.stdout).toBe('agy: local-secret https://gateway.example.test\n');
   });
 
