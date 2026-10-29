@@ -50,6 +50,24 @@ describe('builtin-rules', () => {
             expect(content).toContain('teamai recall');
         });
 
+        it('removes an unedited recall rule when recall is skipped, but keeps an edited copy', async () => {
+            const claudeRulesDir = path.join(tmpDir, '.claude', 'rules');
+            fs.mkdirSync(claudeRulesDir, { recursive: true });
+            const teamConfig = { toolPaths: { claude: { rules: '.claude/rules' } } } as any;
+            const { deployBuiltinRules } = await import('../builtin-rules.js');
+            await deployBuiltinRules(teamConfig);
+            const recall = path.join(claudeRulesDir, 'teamai-recall.md');
+            expect(fs.existsSync(recall)).toBe(true);
+
+            await deployBuiltinRules(teamConfig, undefined, { skipRecall: true });
+            expect(fs.existsSync(recall)).toBe(false);
+
+            await deployBuiltinRules(teamConfig);
+            fs.appendFileSync(recall, '\nMember edit.\n');
+            await deployBuiltinRules(teamConfig, undefined, { skipRecall: true });
+            expect(fs.readFileSync(recall, 'utf8')).toContain('Member edit.');
+        });
+
         it('deploys an English-only recall rule when language is en and treats that body as teamai-owned (#1014)', async () => {
             const claudeRulesDir = path.join(tmpDir, '.claude', 'rules');
             fs.mkdirSync(claudeRulesDir, { recursive: true });

@@ -101,6 +101,24 @@ describe('deployBuiltinAgents', () => {
     expect(await fse.pathExists(path.join(homeDir, '.cursor/agents/teamai-recall.md'))).toBe(false);
   });
 
+  it('removes an unedited recall agent when recall is skipped, but keeps an edited copy', async () => {
+    const recallSrc = path.join(builtinAgentsDir, 'teamai-recall.md');
+    if (!fs.existsSync(recallSrc)) return;
+
+    const localPath = path.join(homeDir, '.claude', 'agents', 'teamai-recall.md');
+    const teamConfig = buildTeamConfig({ claude: { agents: '.claude/agents' } });
+    await deployBuiltinAgents(teamConfig, localConfig);
+    expect(await fse.pathExists(localPath)).toBe(true);
+
+    await deployBuiltinAgents(teamConfig, localConfig, { skipRecall: true });
+    expect(await fse.pathExists(localPath)).toBe(false);
+
+    await deployBuiltinAgents(teamConfig, localConfig);
+    await fse.appendFile(localPath, '\nMember edit.\n');
+    await deployBuiltinAgents(teamConfig, localConfig, { skipRecall: true });
+    expect(await fse.readFile(localPath, 'utf8')).toContain('Member edit.');
+  });
+
   it('overwrites stale local copies with the CLI-built-in version', async () => {
     const recallSrc = path.join(builtinAgentsDir, 'teamai-recall.md');
     if (!fs.existsSync(recallSrc)) return; // Same skip guard

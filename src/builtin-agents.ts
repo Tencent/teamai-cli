@@ -5,9 +5,9 @@ import { ensureDir, pathExists, readFileSafe, writeFile, remove, listFiles } fro
 import { log } from './utils/logger.js';
 import type { TeamaiConfig, LocalConfig } from './types.js';
 import { keepsTrackedCopy } from './resources/delivered-copies.js';
-import { agentStemFromFilename, renderForTool, reverseFromClaude } from './resources/agent-format.js';
+import { agentFileExtensionForTool, agentStemFromFilename, renderForTool, reverseFromClaude } from './resources/agent-format.js';
 import { isAgentToolId } from './tools.js';
-import { installOf, locate, writable } from './locate.js';
+import { cleanupOf, installOf, locate, writable } from './locate.js';
 import type { DeliveryRecorder } from './git-exclude-delivered.js';
 
 // ─── Built-in agents deployment ──────────────────────────
@@ -90,6 +90,31 @@ async function removeStaleAgentSiblings(targetAgentsDir: string, stem: string, t
   }
 }
 
+export async function removeUnchangedRecallAgents(
+  teamConfig: TeamaiConfig,
+  localConfig: LocalConfig,
+  dryRun: boolean,
+): Promise<void> {
+  if (dryRun) return;
+  const source = await readFileSafe(path.join(getBuiltinAgentsDir(), 'teamai-recall.md'));
+  const parsed = source === null ? null : reverseFromClaude('teamai-recall.md', source);
+  if (!parsed?.ok) return;
+  const install = installOf(teamConfig, localConfig);
+  for (const tool of Object.keys(install.toolPaths)) {
+    if (!isAgentToolId(tool)) continue;
+    const expected = new Set([source, renderForTool(parsed.spec, tool).content]);
+    for (const place of cleanupOf(await locate(tool, 'agents', install))) {
+      for (const ext of new Set<string>(['.md', agentFileExtensionForTool(tool)])) {
+        const file = path.join(place.path, `teamai-recall${ext}`);
+        if (!await pathExists(file) || await keepsTrackedCopy(file)) continue;
+        if (!expected.has((await readFileSafe(file)) ?? '')) continue;
+        await remove(file);
+        log.debug(`Removed stale recall agent from ${tool}`);
+      }
+    }
+  }
+}
+
 export async function deployBuiltinAgents(
   teamConfig: TeamaiConfig,
   localConfig: LocalConfig,
@@ -111,6 +136,8 @@ export async function deployBuiltinAgents(
   } catch {
     return 0;
   }
+
+  if (options?.skipRecall) await removeUnchangedRecallAgents(teamConfig, localConfig, options.dryRun ?? false);
 
   const agentFiles = entries
     .filter((f) => f.endsWith('.md') && !f.startsWith('.'))

@@ -1,12 +1,13 @@
 import path from 'node:path';
 import { autoDetectInit, markMemberSettingsWritten, saveLocalConfigForScope } from './config.js';
 import { log } from './utils/logger.js';
-import { remove, pathExists } from './utils/fs.js';
 import { applyInstructionPlan, planInstructionFiles, registerOpencodeContext, resolveInstructionTargets } from './instruction-targets.js';
 import { agentFileExtensionForTool } from './resources/agent-format.js';
 import { isAgentToolId } from './tools.js';
-import { cleanupOf, installOf, locate, ownOf } from './locate.js';
-import { ruleFileExtensionForTool } from './resources/rule-format.js';
+import { cleanupOf, installOf, locate } from './locate.js';
+import { removeUnchangedRecallAgents } from './builtin-agents.js';
+import { removeUnchangedRecallRules } from './builtin-rules.js';
+import { remove, pathExists } from './utils/fs.js';
 import { LEGACY_RECALL_SKILL_NAMES, builtinSkillsTarget, pruneLegacyBuiltinSkills } from './builtin-skills.js';
 import {
   isRecallEnabled,
@@ -18,45 +19,31 @@ import {
 } from './types.js';
 
 async function removeRecallArtifacts(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
-  const install = installOf(teamConfig, localConfig);
-  for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
-    // Remove recall rule file
-    const rulesDir = ownOf(await locate(tool, 'rules', install));
-    if (rulesDir?.kind === 'dir') {
-      // Cursor and JoyCode copies are `.mdc`; older layouts also left `.md` files.
-      const extensions = new Set<string>([ruleFileExtensionForTool(tool), '.md']);
-      for (const extension of extensions) {
-        const ruleFile = path.join(rulesDir.path, `teamai-recall${extension}`);
-        if (await pathExists(ruleFile)) {
-          await remove(ruleFile);
-          log.debug(`Removed recall rule from ${tool}`);
-        }
-      }
-    }
+  await removeUnchangedRecallRules(teamConfig, localConfig);
+  await removeUnchangedRecallAgents(teamConfig, localConfig, false);
 
+  // Explicit `recall disable` also removes legacy-format siblings from older
+  // releases. They are not the native file for the current tool, so they
+  // cannot be a current edited copy; pull handles native copies conservatively.
+  const install = installOf(teamConfig, localConfig);
+  for (const tool of Object.keys(install.toolPaths)) {
+    if (!isAgentToolId(tool)) continue;
+    const native = agentFileExtensionForTool(tool);
+    for (const place of cleanupOf(await locate(tool, 'agents', install))) {
+      const legacy = path.join(place.path, 'teamai-recall.md');
+      if (native === '.md' || !await pathExists(legacy)) continue;
+      await remove(legacy);
+      log.debug(`Removed legacy recall agent from ${tool}`);
+    }
+  }
+
+  for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
     // Remove the legacy recall skill an earlier release deployed. The served
     // `share` workflow is gated at run time, but a member who upgrades and
     // disables recall before pulling still has the old directory.
-    // Same resolver and gates as deployment: an uninstalled Codex must not have
-    // the shared .agents/skills root pruned on its behalf, and OpenClaw and
-    // Hermes are pruned where their skills actually live.
     if (toolPath.skills && !isAgentExcluded(localConfig, tool)) {
       const target = await builtinSkillsTarget(tool, teamConfig, localConfig);
       if (target) await pruneLegacyBuiltinSkills(tool, target, LEGACY_RECALL_SKILL_NAMES);
-    }
-
-    for (const { path: agentsDir } of cleanupOf(await locate(tool, 'agents', install))) {
-      const extensions = new Set<string>(['.md']);
-      if (isAgentToolId(tool)) {
-        extensions.add(agentFileExtensionForTool(tool));
-      }
-      for (const extension of extensions) {
-        const agentFile = path.join(agentsDir, `teamai-recall${extension}`);
-        if (await pathExists(agentFile)) {
-          await remove(agentFile);
-          log.debug(`Removed recall agent from ${tool}`);
-        }
-      }
     }
   }
 

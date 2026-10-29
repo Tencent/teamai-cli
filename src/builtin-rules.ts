@@ -3,10 +3,11 @@ import { ensureDir, writeFile, pathExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import { renderRuleForTool, ruleFileExtensionForTool } from './resources/rule-format.js';
 import type { TeamaiConfig, LocalConfig } from './types.js';
-import { installOf, locate, ownOf, writable, type Install } from './locate.js';
+import { cleanupOf, installOf, locate, ownOf, writable, type Install } from './locate.js';
 import fs from 'node:fs/promises';
 import crypto from 'node:crypto';
 import type { DeliveryRecorder } from './git-exclude-delivered.js';
+import { keepsTrackedCopy } from './resources/delivered-copies.js';
 
 // ─── Built-in rules deployment ──────────────────────────
 //
@@ -52,6 +53,38 @@ export const EXCLUDED_RULE_NAMES = new Set<string>([
  *
  * @returns Number of tool directories that received built-in rules.
  */
+export async function removeUnchangedRecallRules(
+    teamConfig: TeamaiConfig,
+    localConfig?: LocalConfig,
+    options?: { dryRun?: boolean },
+): Promise<void> {
+    if (options?.dryRun) return;
+    const install: Install = localConfig === undefined
+        ? { toolPaths: teamConfig.toolPaths, agents: {}, toolRoots: {}, gitExclude: false, scope: 'user' }
+        : installOf(teamConfig, localConfig);
+    for (const tool of Object.keys(install.toolPaths)) {
+        const expected = renderRuleForTool(tool, recallRuleContent(teamConfig.language));
+        const extensions = new Set<string>([ruleFileExtensionForTool(tool), '.md']);
+        for (const place of cleanupOf(await locate(tool, 'rules', install))) {
+            for (const extension of extensions) {
+                const file = path.join(place.path, `teamai-recall${extension}`);
+                try {
+                    if (await keepsTrackedCopy(file)) continue;
+                    const content = await fs.readFile(file, 'utf8');
+                    // Keep the cleanup compatible with older CLI versions too:
+                    // the hash catalogue recognizes historical TeamAI renders,
+                    // while `expected` covers the current language/tool render.
+                    if (content !== expected && !isDeployedRecallRule(content)) continue;
+                    await fs.unlink(file);
+                    log.debug(`Removed stale recall rule from ${tool}`);
+                } catch {
+                    // Missing, unreadable, or member-edited: leave it alone.
+                }
+            }
+        }
+    }
+}
+
 export async function deployBuiltinRules(
     teamConfig: TeamaiConfig,
     localConfig?: LocalConfig,
@@ -69,6 +102,8 @@ export async function deployBuiltinRules(
     const builtinRules: Array<{ name: string; content: string }> = [
         { name: 'teamai-recall', content: recallRuleContent(teamConfig.language) },
     ].filter(r => !(options?.skipRecall && r.name === 'teamai-recall'));
+
+    if (options?.skipRecall) await removeUnchangedRecallRules(teamConfig, localConfig, options);
 
     for (const tool of Object.keys(install.toolPaths)) {
         const location = await locate(tool, 'rules', install);
