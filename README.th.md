@@ -141,7 +141,7 @@ teamai init https://github.com/your-org/your-repo --scope user
     <tr><td>ZCode</td><td align="center">✓</td><td align="center">✓¹</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓²</td><td align="center">—</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓³</td></tr>
     <tr><td>JoyCode</td><td align="center">✓</td><td align="center">✓¹</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">—</td></tr>
     <tr><td>Muse Code</td><td align="center">✓</td><td align="center">✓¹</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓³</td></tr>
-    <tr><td>Antigravity⁴</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td></tr>
+    <tr><td>Antigravity</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td></tr>
   </tbody>
 </table>
 
@@ -150,8 +150,6 @@ teamai init https://github.com/your-org/your-repo --scope user
 <sup>✓²</sup> env ส่งถึงได้ผ่าน `teamai env exec` เท่านั้น
 
 <sup>✓³</sup> ให้คะแนนเฉพาะ workflow ที่รันด้วย skill driver
-
-<sup>⁴</sup> Antigravity CLI, Antigravity 2.0 และ Antigravity IDE ใช้ skills, rules, MCP server และ hooks ที่ teamai ส่งให้ร่วมกัน Agent ทำงานใน CLI และ Antigravity 2.0 ส่วน models, ขั้นตอนของ workflow และ judge ของ scorer ใช้ CLI ข้อมูล session และ token ของ session อ่านจาก CLI และ Antigravity 2.0
 
 ## เรียนรู้เพิ่มเติม
 

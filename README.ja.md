@@ -141,7 +141,7 @@ Git を基盤に、3 層の能力を構築します：
     <tr><td>ZCode</td><td align="center">✓</td><td align="center">✓¹</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓²</td><td align="center">—</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓³</td></tr>
     <tr><td>JoyCode</td><td align="center">✓</td><td align="center">✓¹</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">—</td></tr>
     <tr><td>Muse Code</td><td align="center">✓</td><td align="center">✓¹</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓³</td></tr>
-    <tr><td>Antigravity⁴</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td></tr>
+    <tr><td>Antigravity</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td></tr>
   </tbody>
 </table>
 
@@ -150,8 +150,6 @@ Git を基盤に、3 層の能力を構築します：
 <sup>✓²</sup> env は `teamai env exec` 経由でのみ渡されます。
 
 <sup>✓³</sup> skill driver で実行したワークフローのみ評価されます。
-
-<sup>⁴</sup> Antigravity CLI、Antigravity 2.0、Antigravity IDE は teamai が配布する skills、ルール、MCP サーバー、hooks を共有します。エージェントは CLI と Antigravity 2.0 で動作します。モデル、ワークフローのステップ、スコアラーの judge は CLI を使います。セッションとセッションのトークンは CLI と Antigravity 2.0 から読み取ります。
 
 ## 詳細情報
 

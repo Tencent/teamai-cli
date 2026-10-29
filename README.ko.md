@@ -141,7 +141,7 @@ Git을 기반으로 세 층의 역량을 구축합니다:
     <tr><td>ZCode</td><td align="center">✓</td><td align="center">✓¹</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓²</td><td align="center">—</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓³</td></tr>
     <tr><td>JoyCode</td><td align="center">✓</td><td align="center">✓¹</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">—</td></tr>
     <tr><td>Muse Code</td><td align="center">✓</td><td align="center">✓¹</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓³</td></tr>
-    <tr><td>Antigravity⁴</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td></tr>
+    <tr><td>Antigravity</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td></tr>
   </tbody>
 </table>
 
@@ -150,8 +150,6 @@ Git을 기반으로 세 층의 역량을 구축합니다:
 <sup>✓²</sup> env는 `teamai env exec`를 통해서만 전달됩니다.
 
 <sup>✓³</sup> skill driver로 실행한 워크플로만 평가합니다.
-
-<sup>⁴</sup> Antigravity CLI, Antigravity 2.0, Antigravity IDE는 teamai가 배포하는 skills, 규칙, MCP 서버, hooks를 함께 씁니다. 에이전트는 CLI와 Antigravity 2.0에서 실행됩니다. 모델, 워크플로 단계, 스코어러 judge는 CLI를 사용합니다. 세션과 세션 토큰은 CLI와 Antigravity 2.0에서 읽습니다.
 
 ## 자세히 알아보기
 
