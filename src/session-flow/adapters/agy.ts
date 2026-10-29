@@ -26,6 +26,7 @@ import { fallbackTitle } from '../title.js';
 import { isSafeSessionFileId } from '../ids.js';
 import { findSqlite3 } from '../sqlite.js';
 import { execCommand, type ExecResult } from '../../utils/exec.js';
+import { log } from '../../utils/logger.js';
 
 const SummaryRow = z.object({
   conversation_id: z.string(),
@@ -129,7 +130,15 @@ export class AgyAdapter extends AgentAdapter {
   async listConversations(projectPath?: string): Promise<SessionMeta[]> {
     const workspace = projectPath === undefined ? undefined : resolveRealCwd(projectPath);
     const metas: SessionMeta[] = [];
-    const stored = await Promise.all(this.storeRoots.map(async (root) => (await this.summaries(root)).map((row) => ({ root, row }))));
+    const stored = await Promise.all(this.storeRoots.map(async (root, index) => {
+      // The app's store, unlike the CLI's, is left out when it cannot be read, so the CLI's conversations still list.
+      const rows = index === 0 ? await this.summaries(root) : await this.summaries(root).catch((error: unknown) => {
+        if (error instanceof ToolUnavailableError) throw error;
+        log.debug(`session: could not read the Antigravity conversations in ${root}: ${error instanceof Error ? error.message : String(error)}`);
+        return [];
+      });
+      return rows.map((row) => ({ root, row }));
+    }));
     for (const { root, row } of stored.flat()) {
       if (!isSafeSessionFileId(row.conversation_id)) continue;
       const cwd = workspaceOf(row);

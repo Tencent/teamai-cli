@@ -91,6 +91,23 @@ describe.skipIf(!HAS_SQLITE3)('agy session listing across the CLI and the Antigr
   });
 });
 
+describe.skipIf(!HAS_SQLITE3)('agy session listing beside an app store of another shape', () => {
+  it("still lists the CLI's conversations when the app's summaries table has other columns", async () => {
+    const app = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-antigravity-'));
+    try {
+      fs.mkdirSync(path.join(app, 'brain'));
+      // As a later app version might keep it: the table renamed its columns.
+      expect(spawnSync('sqlite3', [path.join(app, 'conversation_summaries.db'), 'CREATE TABLE conversation_summaries (id TEXT, name TEXT);']).status).toBe(0);
+
+      const listed = await new AgyAdapter([root, app]).listConversations();
+
+      expect(listed.map((meta) => meta.sessionId)).toEqual([SKILL, DENIED, NOTE]);
+    } finally {
+      fs.rmSync(app, { recursive: true, force: true });
+    }
+  });
+});
+
 describe.skipIf(!HAS_SQLITE3)('agy session listing from a store agy closed', () => {
   it('reads the summaries agy left in WAL mode, without a -shm file, and writes nothing beside them', async () => {
     const db = path.join(root, 'conversation_summaries.db');
