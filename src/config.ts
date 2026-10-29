@@ -19,6 +19,7 @@ import {
   getDataHome,
   MemberSettingsSchema,
   MemberWorkflowSettingsSchema,
+  WorkflowToolSchema,
   type MemberSettings,
   type MemberWorkflowSettings,
   SELF_BRANCH_HOME_DIRNAME,
@@ -338,9 +339,8 @@ function readMachineWorkflowSettings(raw: Record<string, unknown>, configPath: s
   const tools = asRecord(workflow.tools);
   if (tools) {
     const accepted: Record<string, string> = {};
-    const toolSchema = MemberWorkflowSettingsSchema.shape.tools.removeDefault().valueSchema;
     for (const [name, value] of Object.entries(tools)) {
-      const parsed = toolSchema.safeParse(value);
+      const parsed = WorkflowToolSchema.safeParse(value);
       if (parsed.success) accepted[name] = parsed.data;
       else warnOnce(`Ignoring workflows.tools.${name} in ${configPath}: ${describeConfigError(parsed.error)}.`);
     }

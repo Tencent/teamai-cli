@@ -820,13 +820,16 @@ export type MemberConfig = z.infer<typeof MemberConfigSchema>;
 
 // ─── Member settings overlay (~/.teamai/config.yaml) ───────
 
+/** One `workflows.tools` entry: the tool a step role runs on. */
+export const WorkflowToolSchema = z.string().min(1);
+
 /**
  * Settings a member may place in the machine config. These are deliberately
  * separate from install metadata: a workspace/self config overlays them at
  * runtime, but never persists the machine value into its own file.
  */
 export const MemberWorkflowSettingsSchema = z.object({
-  tools: z.record(z.string(), z.string().min(1)).default({}),
+  tools: z.record(z.string(), WorkflowToolSchema).default({}),
   /** How many command steps the local driver runs at once. Unset means 1. */
   max_parallel: z.number().int().positive().optional(),
   /** Whether a driver without HITL automatically answers optional approve requests and uses choose defaults. Unset means false. */
