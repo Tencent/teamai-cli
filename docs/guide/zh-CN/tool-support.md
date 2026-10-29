@@ -100,7 +100,7 @@ teamai 为每个工具把每类资源写到哪里，以及工具读取哪里，�
 | WorkBuddy | ? | ✓t | ✓t | ? | ✓t | ? | ✓t<sup>25</sup> | ? |
 | OpenCode | ? | ✓t | ✓v | ✓t<sup>2</sup> | ✓v | ? | ✓t<sup>1</sup> | ✓v<sup>26</sup> |
 | Muse Code | ✓t | +v | ✓t | ✓v | ✓v | ✓t<sup>3</sup> | ✓t<sup>1</sup> | ✓t<sup>27</sup> |
-| Antigravity | ✓v<sup>28</sup> | ✓v | ✓v | ✓v | ✓v | ✗v<sup>29</sup> | ✓v<sup>30</sup> | ✓t<sup>31</sup> |
+| Antigravity | ✓v<sup>28</sup> | ✓v | ✓v | ✓v | ✓v | ✗v<sup>29</sup> | ✓t<sup>30</sup> | ✓t<sup>31</sup> |
 
 注：
 
@@ -133,5 +133,5 @@ teamai 为每个工具把每类资源写到哪里，以及工具读取哪里，�
 27. #1224 writes them to settings.json; not rerun
 28. agy 1.4.8 run_command inherits the environment agy starts in
 29. agy 1.4.8 PostToolUse carries no tool output, so a teamai recall run never reaches the recall log
-30. invoke_subagent starts a fresh conversation that gets only its prompt (agy 1.4.8); no session variable, so the session names its tool with --tools; the judge flow not run
+30. invoke_subagent starts a fresh conversation that gets only its prompt (agy 1.4.8); no session variable, so the session names its tool with --tools; not run
 31. runs from teamai's team-hook bridge, which can block a tool call; the dispatcher hands it a Claude payload
