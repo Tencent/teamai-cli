@@ -110,6 +110,37 @@ describe('codebase deep-enrich', () => {
     expect(fs.existsSync(path.join(docsDir, 'architecture.md'))).toBe(false);
   });
 
+  it('writes G6 as confidence-labelled knowledge graph triples with a multi-hop index', async () => {
+    const root = createEnrichFixture();
+    const evidenceDir = path.join(root, 'teamwiki', 'evidence', 'code', 'faketest');
+    const manifestPath = path.join(evidenceDir, '_manifest.json');
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as { edges: unknown[] };
+    manifest.edges = [
+      { from: 'Api', to: 'Service', relation: 'CALLS', protocol: 'HTTP', confidence: 'EXTRACTED', weight: 0.9 },
+      { from: 'Service', to: 'Store', relation: 'WRITES', confidence: 'INFERRED', weight: 0.75 },
+      { from: 'Worker', to: 'Queue', relation: 'PUBLISHES', confidence: 'AMBIGUOUS' },
+    ];
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    await codebaseCmd({ deepEnrich: true, project: 'faketest', output: root, json: true });
+
+    const docsDir = path.join(evidenceDir, 'docs');
+    const g6 = fs.readFileSync(path.join(docsDir, 'graph-g6-triples.md'), 'utf8');
+    expect(g6).toContain('# faketest — Knowledge Graph Triples');
+    expect(g6).toContain('## Ontology definition');
+    expect(g6).toContain('## Explicit triples');
+    expect(g6).toContain('| Api | CALLS | Service | HTTP | EXTRACTED | 0.90 |');
+    expect(g6).toContain('| Service | WRITES | Store | — | INFERRED | 0.75 |');
+    expect(g6).toContain('| Worker | PUBLISHES | Queue | — | AMBIGUOUS | 0.30 |');
+    expect(g6).toContain('Api → (CALLS) → Service → (WRITES) → Store');
+    expect(g6).toContain('## Reverse reachability index');
+    expect(g6).not.toContain('3-hop BFS');
+
+    const readme = fs.readFileSync(path.join(docsDir, 'README.md'), 'utf8');
+    expect(readme).toContain('[graph-g6-triples.md](./graph-g6-triples.md)');
+  });
+
   it.skipIf(process.platform === 'win32')('does not overwrite a file outside the teamwiki through a docs symlink', async () => {
     const root = createEnrichFixture();
     const docsDir = path.join(root, 'teamwiki', 'evidence', 'code', 'faketest', 'docs');

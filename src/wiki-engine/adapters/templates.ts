@@ -175,14 +175,20 @@ export function graphReadmeTemplate(project: string, opts?: GraphReadmeOptions):
     '',
     '| 关键词 | 文档 | 说明 |',
     '|--------|------|------|',
-    '| 依赖/上游/下游/imports | [graph-g1-relations.md](./graph-g1-relations.md) | N×N 组件依赖矩阵 |',
-    '| 调用链/数据流/请求路径 | [graph-g2-dataflow.md](./graph-g2-dataflow.md) | 入口→数据层调用链 |',
+    '| 依赖/上游/下游/imports | [graph-g1-relations.md](./graph-g1-relations.md) | 带置信度的组件依赖索引 |',
+    '| 调用链/数据流/请求路径 | [graph-g2-dataflow.md](./graph-g2-dataflow.md) | 已提取的调用链证据 |',
+    '| 数据位置/接口/MQ | [graph-g3-interfaces.md](./graph-g3-interfaces.md) | 接口与数据流证据入口 |',
+    '| 错误码/故障排查 | [graph-g4-errors.md](./graph-g4-errors.md) | 错误码组件归属 |',
+    '| 风险/影响范围/blast | [graph-g7-risks.md](./graph-g7-risks.md) | 结构性影响指标 |',
+    '| 配置/参数/变更 | [graph-g8-config.md](./graph-g8-config.md) | 配置参数索引 |',
+    '| 业务规则/是否可执行 | [graph-g9-constraints.md](./graph-g9-constraints.md) | 约束矩阵与验证边界 |',
+    '| G1-G9/方法覆盖/缺口 | [graph-coverage.md](./graph-coverage.md) | 方法与 CLI 输出对照 |',
   ];
   if (hasG5) {
     lines.push('| 流程/场景/sequence | [graph-g5-scenarios.md](./graph-g5-scenarios.md) | 核心业务场景序列图 |');
   }
   if (hasG6) {
-    lines.push('| 传递依赖/影响范围/blast | [graph-g6-multihop.md](./graph-g6-multihop.md) | 多跳传递依赖分析 |');
+    lines.push('| 多跳推理/三元组/知识图谱 | [graph-g6-triples.md](./graph-g6-triples.md) | 带置信度的知识图谱三元组与多跳路径索引 |');
   }
   lines.push('');
   return lines.join('\n');

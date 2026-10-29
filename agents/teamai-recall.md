@@ -91,7 +91,7 @@ Determine if the query matches a G-document category:
 | 依赖/上游/下游/谁调用 | G1 | `teamwiki/evidence/code/<project>/docs/graph-g1-relations.md` |
 | 调用链/数据流/请求路径 | G2 | `teamwiki/evidence/code/<project>/docs/graph-g2-dataflow.md` |
 | 流程/场景/完整流程 | G5 | `teamwiki/evidence/code/<project>/docs/graph-g5-scenarios.md` |
-| 传递依赖/爆炸半径/影响 | G6 | `teamwiki/evidence/code/<project>/docs/graph-g6-multihop.md` |
+| 多跳推理/三元组/传递依赖/影响 | G6 | `teamwiki/evidence/code/<project>/docs/graph-g6-triples.md` |
 
 **If the query clearly matches a G-document type**: directly Read the
 corresponding file and extract relevant sections. Skip BM25 search.

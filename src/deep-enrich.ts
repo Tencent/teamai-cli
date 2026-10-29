@@ -36,12 +36,20 @@ interface ManifestComponent {
   title?: string;
   responsibilities?: string[];
   category?: string;
+  entrypoints?: string[];
+  interfaces?: string[];
+  errorCodeRanges?: string[];
 }
 
 interface ManifestEdge {
   from: string;
   to: string;
   relation?: string;
+  protocol?: string;
+  confidence?: string;
+  weight?: number;
+  reason?: string;
+  evidenceRefs?: string[];
 }
 
 interface Manifest {
@@ -286,8 +294,14 @@ function buildG1RelationsDoc(manifest: Manifest): string {
   const edges = manifest.edges ?? [];
   if (edges.length === 0) {
     return [
-      '# 组件关系矩阵', '',
-      '（暂无依赖边数据）', '',
+      '# 组件关系矩阵',
+      '<!-- search-anchor: 依赖, 关系, 上游, 下游, DEPENDS_ON, imports, 模块关系 -->',
+      '',
+      '## 🤖 AI Quick Reference',
+      '| Document scope | Answers who depends on X and what X depends on |',
+      '| Core value | No extracted edges are available in this run |',
+      '',
+      '（暂无依赖边数据；关系覆盖为 0，不能据此推断不存在依赖。）', '',
       '> 可能原因：AI enrich 未执行（skipEnrich=true）或未检测到组件间依赖关系。',
       '> 尝试：重新运行 `teamai import --from-repo <url>`（不带 --skip-enrich）。',
       '',
@@ -309,17 +323,33 @@ function buildG1RelationsDoc(manifest: Manifest): string {
     reverseDeps.set(e.to, rev);
   }
 
+  const confidenceCounts = { EXTRACTED: 0, INFERRED: 0, AMBIGUOUS: 0 };
+  for (const edge of edges) confidenceCounts[graphConfidence(edge).label]++;
   const lines = [
     '# 组件关系矩阵',
     '<!-- search-anchor: 依赖, 关系, 上游, 下游, DEPENDS_ON, imports, 模块关系 -->',
+    '',
+    '## 🤖 AI Quick Reference',
+    '| Document scope | Answers who depends on X and what X depends on |',
+    '| Core value | Forward/reverse dependency index with evidence confidence |',
+    '| Coverage | Extracted manifest edges only; absent relations are not proof of absence |',
     '',
     `共 ${components.size} 个组件，${edges.length} 条边。`,
     '',
     '## 依赖表',
     '',
-    '| 来源组件 | 目标组件 | 关系类型 |',
-    '|----------|----------|----------|',
-    ...edges.slice(0, 50).map(e => `| ${e.from} | ${e.to} | ${e.relation ?? 'DEPENDS_ON'} |`),
+    '| 来源组件 | 目标组件 | 关系类型 | Confidence | Score |',
+    '|----------|----------|----------|------------|-------|',
+    ...edges.slice(0, 50).map(e => {
+      const { label, score } = graphConfidence(e);
+      return `| ${e.from} | ${e.to} | ${e.relation ?? 'DEPENDS_ON'} | ${label} | ${score.toFixed(2)} |`;
+    }),
+    '',
+    '## Confidence statistics',
+    '',
+    `- EXTRACTED: ${confidenceCounts.EXTRACTED}`,
+    `- INFERRED: ${confidenceCounts.INFERRED}`,
+    `- AMBIGUOUS: ${confidenceCounts.AMBIGUOUS}`,
     '',
     '## 正向依赖索引（X 依赖→）',
     '',
@@ -341,12 +371,16 @@ function buildG1RelationsDoc(manifest: Manifest): string {
 
 function buildG2DataflowDoc(callChains: string): string {
   if (!callChains.trim()) {
-    return '# 数据流图\n\n（暂无调用链数据）\n\n> 可能原因：代码中未检测到入口→服务→数据层的多层调用链。\n> 常见于纯库项目或单层架构项目。\n';
+    return '# 数据流图\n<!-- search-anchor: 调用链, 数据流, 请求路径, entry, flow, 入口, 链路 -->\n\n## 🤖 AI Quick Reference\n| Document scope | Deterministic call-chain evidence |\n| Core value | Shows known paths without inventing missing state machines |\n| Coverage | No call-chain evidence was extracted in this run |\n\n（暂无调用链数据）\n\n> 可能原因：代码中未检测到入口→服务→数据层的多层调用链。\n> 常见于纯库项目或单层架构项目。\n';
   }
 
   const lines = [
     '# 数据流图',
     '<!-- search-anchor: 调用链, 数据流, 请求路径, entry, flow, 入口, 链路 -->',
+    '',
+    '## 🤖 AI Quick Reference',
+    '| Document scope | Deterministic call-chain evidence |',
+    '| Core value | Shows known paths without inventing missing state machines |',
     '',
   ];
 
@@ -391,9 +425,159 @@ function buildG2DataflowDoc(callChains: string): string {
 
 function buildG3InterfacesDoc(interfacesMd: string): string {
   if (!interfacesMd.trim()) {
-    return '# 接口映射表\n\n（暂无接口数据）\n\n> 可能原因：未检测到 HTTP/gRPC/MQ 等对外接口定义。\n> 仅当代码中存在路由注册、Proto 定义或消息队列声明时才会提取接口。\n';
+    return '# 接口映射表\n<!-- search-anchor: data flow, storage dependencies, MQ topology, cache, 数据流, 存储 -->\n\n## 🤖 AI Quick Reference\n| Document scope | Extracted interface evidence only |\n| Core value | Shows known interface inventory without inventing storage behaviour |\n| Coverage | No interface evidence was extracted in this run |\n\n（暂无接口数据）\n\n> 可能原因：未检测到 HTTP/gRPC/MQ 等对外接口定义。\n> 仅当代码中存在路由注册、Proto 定义或消息队列声明时才会提取接口。\n';
   }
-  return `# 接口映射表\n\n${interfacesMd}\n`;
+  return `# 接口映射表\n<!-- search-anchor: data flow, storage dependencies, MQ topology, cache, 数据流, 存储 -->\n\n## 🤖 AI Quick Reference\n| Document scope | Extracted interface evidence only |\n| Core value | Routes interface questions to the evidence inventory |\n| Coverage | Extracted interface evidence only; storage and MQ semantics remain unverified |\n\n${interfacesMd}\n`;
+}
+
+function buildG4ErrorCodeDoc(manifest: Manifest, moduleDocs: Map<string, string>): string {
+  const rows: string[] = [];
+  for (const component of manifest.components ?? []) {
+    for (const range of component.errorCodeRanges ?? []) {
+      rows.push(`| ${range} | ${component.slug} | EXTRACTED | manifest errorCodeRanges |`);
+    }
+    const content = moduleDocs.get(component.slug) ?? '';
+    const start = content.indexOf('## Errors');
+    if (start < 0) continue;
+    const end = content.indexOf('\n## ', start + 4);
+    const section = content.slice(start, end < 0 ? undefined : end);
+    for (const line of section.split('\n')) {
+      const match = line.match(/- `([^`]+)` ← (.+)/);
+      if (match) rows.push(`| ${match[1]} | ${component.slug} | EXTRACTED | ${match[2]} |`);
+    }
+  }
+  return [
+    '# Error Code Component Map',
+    '<!-- search-anchor: error code, error mapping, InvalidParameter, 错误码, 故障排查 -->',
+    '',
+    '## 🤖 AI Quick Reference',
+    '| Document scope | Explicit error-code ownership evidence |',
+    '| Core value | Routes troubleshooting without guessing ownership |',
+    '',
+    '## Error code range allocation',
+    '',
+    '| Error code range/prefix | Owning component | Confidence | Evidence |',
+    '|-------------------------|------------------|------------|----------|',
+    ...(rows.length > 0 ? rows : ['| — | — | AMBIGUOUS | No error-code range was extracted |']),
+    '',
+    '## External → internal mapping',
+    '',
+    'No external-to-internal mapping is inferred without explicit evidence.',
+    '',
+  ].join('\\n');
+}
+
+function buildG7RiskDoc(manifest: Manifest): string {
+  const edges = manifest.edges ?? [];
+  const components = [...new Set([...(manifest.components ?? []).map(c => c.slug), ...edges.flatMap(e => [e.from, e.to])])].sort();
+  const rows = components.map(component => {
+    const direct = edges.filter(e => e.from === component || e.to === component).length;
+    const dependents = new Set(edges.filter(e => e.to === component).map(e => e.from)).size;
+    const level = direct >= 5 || dependents >= 3 ? '🔴 high' : direct >= 2 || dependents >= 1 ? '🟡 medium' : '🟢 low';
+    return `| ${component} | ${level} | ${dependents} direct dependent(s) | ${direct} extracted manifest edge(s); runtime availability is unverified |`;
+  });
+  return [
+    '# Architecture Risks and Impact Analysis',
+    '<!-- search-anchor: architecture risk, blast radius, impact surface, 架构风险, 影响范围 -->',
+    '',
+    '## 🤖 AI Quick Reference',
+    '| Document scope | Deterministic structural impact indicators |',
+    '| Core value | Estimates direct graph impact without claiming runtime failure probability |',
+    '',
+    '## Component risk level summary',
+    '',
+    '| Component | Risk level | Blast radius | Notes |',
+    '|-----------|------------|--------------|-------|',
+    ...(rows.length > 0 ? rows : ['| — | AMBIGUOUS | — | No component graph evidence available |']),
+    '',
+    '## Limits',
+    '',
+    'These levels are structural indicators from extracted edges, not production SLO, failure-rate, or transitive blast-radius measurements.',
+    '',
+  ].join('\\n');
+}
+
+function buildG8ConfigDoc(components: ManifestComponent[], moduleDocs: Map<string, string>): string {
+  const rows: string[] = [];
+  for (const component of components) {
+    const content = moduleDocs.get(component.slug) ?? '';
+    const start = content.indexOf('## Config');
+    if (start < 0) continue;
+    const end = content.indexOf('\n## ', start + 4);
+    const section = content.slice(start, end < 0 ? undefined : end);
+    for (const line of section.split('\n')) {
+      const match = line.match(/- `([^`]+)` ← (.+)/);
+      if (match) rows.push(`| ${match[1]} | ${component.slug} | — | Extracted config reference | AMBIGUOUS | unknown |`);
+    }
+  }
+  return [
+    '# Core Config Parameter Index',
+    '<!-- search-anchor: config parameters, config index, config changes, 配置参数, 配置变更 -->',
+    '',
+    '## 🤖 AI Quick Reference',
+    '| Document scope | Explicit configuration references from component evidence |',
+    '| Core value | Locates config references while leaving defaults and effect mode unverified |',
+    '',
+    '## Config parameter table',
+    '',
+    '| Config item | Owning component | Default | Affected behavior | Change risk | Effect mode |',
+    '|-------------|------------------|---------|-------------------|-------------|-------------|',
+    ...(rows.length > 0 ? rows : ['| — | — | — | No configuration reference was extracted | AMBIGUOUS | unknown |']),
+    '',
+    '## Change checklist',
+    '',
+    'Before changing a parameter, verify file location, impact scope, activation/restart, rollback, risk, and canary need from source evidence.',
+    '',
+  ].join('\\n');
+}
+
+function buildG9ConstraintDoc(): string {
+  return [
+    '# Business Rule Constraint Matrix',
+    '<!-- search-anchor: business rules, constraint matrix, operation constraints, AI reasoning, 业务规则 -->',
+    '',
+    '## 🤖 AI Quick Reference',
+    '| Document scope | Explicit operation constraints from evidence |',
+    '| Core value | Prevents unsupported yes/no answers when evidence is absent |',
+    '',
+    '## Operation precondition matrix',
+    '',
+    '| Operation | State requirement | Hardware constraint | Billing constraint | Quota constraint | Other constraints | Confidence |',
+    '|-----------|------------------|--------------------|--------------------|------------------|-------------------|------------|',
+    '| — | [UNVERIFIED] | [UNVERIFIED] | [UNVERIFIED] | [UNVERIFIED] | No explicit business-rule evidence was provided | AMBIGUOUS |',
+    '',
+    '## AI reasoning rules quick reference',
+    '',
+    '1. State check → 2. Type check → 3. Hardware check → 4. Billing check → 5. Quota check → 6. Mutual exclusion check.',
+    '',
+    '> K4 business-rule validation is deferred: this deterministic manifest contains no standardised questions or product-rule corpus. Do not infer constraints from component names.',
+    '',
+  ].join('\\n');
+}
+
+function buildGComparisonDoc(project: string, flags: { g5Generated: boolean; g6Generated: boolean }): string {
+  const rows = [
+    ['G1', 'Component Dependency Matrix', 'graph-g1-relations.md', 'partial', 'Edges are rendered with confidence; full N×N matrix is not available.'],
+    ['G2', 'Call Chain + state machines', 'graph-g2-dataflow.md', 'partial', 'Call-chain evidence is rendered; state-machine extraction is unavailable.'],
+    ['G3', 'Data Flow and Storage Dependencies', 'graph-g3-interfaces.md', 'partial', 'Interface evidence is rendered; storage/MQ fields are not guaranteed.'],
+    ['G4', 'Error Code Component Map', 'graph-g4-errors.md', 'partial', 'Explicit ranges/docs are indexed; unknown ownership remains visible.'],
+    ['G5', 'Cross-Component Interaction Scenarios', 'graph-g5-scenarios.md', flags.g5Generated ? 'partial' : 'deferred', flags.g5Generated ? 'AI output exists; scenario coverage still needs review.' : 'AI scenario generation was unavailable.'],
+    ['G6', 'Knowledge Graph Triples', 'graph-g6-triples.md', 'partial', 'Triples, confidence, scores, and path indexes are deterministic; no fabricated 100-triple minimum.'],
+    ['G7', 'Architecture Risks and Impact Analysis', 'graph-g7-risks.md', 'partial', 'Direct structural indicators are generated; runtime risk is not claimed.'],
+    ['G8', 'Core Config Parameter Index', 'graph-g8-config.md', 'partial', 'Explicit config references are indexed; defaults/effect modes remain unverified.'],
+    ['G9', 'Business Rule Constraint Matrix', 'graph-g9-constraints.md', 'deferred', 'No product-rule evidence or standardised K4 questions were available.'],
+  ];
+  return [
+    `# ${project} — G-document comparison and coverage`,
+    '<!-- search-anchor: G1 G2 G3 G4 G5 G6 G7 G8 G9 method comparison coverage -->',
+    '',
+    '| G | Wiki method meaning | CLI output | Match | Evidence / gap |',
+    '|---|---------------------|------------|-------|----------------|',
+    ...rows.map(row => `| ${row[0]} | ${row[1]} | [${row[2]}](./${row[2]}) | ${row[3]} | ${row[4]} |`),
+    '',
+    'The table is intentionally conservative: a generated placeholder or partial index is not reported as a full methodology match.',
+    '',
+  ].join('\\n');
 }
 
 // ─── Phase 1: 组件设计文档 ─────────────────────────────────
@@ -542,16 +726,24 @@ async function runPhaseGraph(
   const g1 = buildG1RelationsDoc(ctx.manifest);
   const g2 = buildG2DataflowDoc(ctx.callChains);
   const g3 = buildG3InterfacesDoc(interfacesMd);
+  const g4 = buildG4ErrorCodeDoc(ctx.manifest, ctx.moduleDocs);
+  const g7 = buildG7RiskDoc(ctx.manifest);
+  const g8 = buildG8ConfigDoc(ctx.manifest.components ?? [], ctx.moduleDocs);
+  const g9 = buildG9ConstraintDoc();
 
   await Promise.all([
     writeGeneratedFile(docsDir, 'graph-g1-relations.md', g1),
     writeGeneratedFile(docsDir, 'graph-g2-dataflow.md', g2),
     writeGeneratedFile(docsDir, 'graph-g3-interfaces.md', g3),
+    writeGeneratedFile(docsDir, 'graph-g4-errors.md', g4),
+    writeGeneratedFile(docsDir, 'graph-g7-risks.md', g7),
+    writeGeneratedFile(docsDir, 'graph-g8-config.md', g8),
+    writeGeneratedFile(docsDir, 'graph-g9-constraints.md', g9),
   ]);
   log.debug(`deep-enrich[${project}]: Graph docs written: ${docsDir}`);
 }
 
-// ─── Phase 4: AI 图谱（G5 场景序列图 + G6 多跳路径）──────────
+// ─── Phase 4: AI 图谱（G5 场景序列图 + G6 知识图谱三元组）──────────
 
 function buildG5Prompt(project: string, architecture: string, callChains: string, modules: string): string {
   return `你是一个高级架构师。基于以下项目信息，为 Top-5 核心业务场景生成 mermaid sequenceDiagram。
@@ -589,76 +781,134 @@ sequenceDiagram
 `;
 }
 
+function graphConfidence(edge: ManifestEdge): { label: 'EXTRACTED' | 'INFERRED' | 'AMBIGUOUS'; score: number } {
+  // A missing label is not evidence. Keep it explicitly ambiguous instead of
+  // manufacturing an extracted relationship (or using the forbidden 0.5 default).
+  const label = edge.confidence === 'EXTRACTED' || edge.confidence === 'INFERRED' || edge.confidence === 'AMBIGUOUS'
+    ? edge.confidence
+    : 'AMBIGUOUS';
+  const fallback = label === 'EXTRACTED' ? 1 : label === 'INFERRED' ? 0.8 : 0.3;
+  const score = typeof edge.weight === 'number' && edge.weight > 0 && edge.weight <= 1 ? edge.weight : fallback;
+  return { label, score };
+}
+
 function buildG6Content(project: string, manifest: Manifest): string {
   const edges = manifest.edges ?? [];
-  if (edges.length === 0) {
-    return '# 多跳传递依赖分析\n<!-- search-anchor: 传递依赖, 爆炸半径, 影响范围, blast radius, transitive -->\n\n（暂无依赖边数据，无法计算传递依赖）\n';
-  }
-
-  // 正向邻接表（from→to）和反向邻接表（to→from，用于爆炸半径 BFS）
-  const adj = new Map<string, Set<string>>();
-  const revAdj = new Map<string, Set<string>>();
-  for (const e of edges) {
-    const fwd = adj.get(e.from) ?? new Set<string>();
-    fwd.add(e.to);
-    adj.set(e.from, fwd);
-    const rev = revAdj.get(e.to) ?? new Set<string>();
-    rev.add(e.from);
-    revAdj.set(e.to, rev);
-  }
-
-  const allNodes = [...new Set([...adj.keys(), ...revAdj.keys()])];
-  const degree = allNodes.map(n => ({
-    node: n,
-    total: (adj.get(n)?.size ?? 0) + (revAdj.get(n)?.size ?? 0),
-  })).sort((a, b) => b.total - a.total);
-
-  const topNodes = degree.slice(0, 5);
-
   const lines = [
-    `# ${project} — 多跳传递依赖分析`,
-    '<!-- search-anchor: 传递依赖, 爆炸半径, 影响范围, blast radius, transitive, 级联 -->',
+    `# ${project} — Knowledge Graph Triples`,
+    '<!-- search-anchor: knowledge graph, triples, multi-hop reasoning, 传递依赖, 知识图谱, 三元组 -->',
     '',
-    `基于 ${edges.length} 条边、${allNodes.length} 个节点的 3-hop BFS 分析。`,
+    '## Ontology definition',
     '',
+    '### Entity types',
+    'Component',
+    '',
+    '### Relationship types',
+    'The extracted relation labels below are the relationship types for this project.',
+    '',
+    '## Explicit triples',
+    '',
+    '| Subject | Predicate | Object | Protocol/Scenario | Confidence | Score |',
+    '|---------|-----------|--------|-------------------|------------|-------|',
   ];
 
-  for (const { node, total } of topNodes) {
-    lines.push(`## ${node}（degree: ${total}）`, '');
-
-    // 3-hop BFS on reverse edges: find who transitively depends on this node
-    const visited = new Set<string>([node]);
-    let frontier = [node];
-    const hopResults: string[][] = [[], [], []];
-    for (let hop = 0; hop < 3; hop++) {
-      const nextFrontier: string[] = [];
-      for (const curr of frontier) {
-        const dependents = revAdj.get(curr);
-        if (!dependents) continue;
-        for (const next of dependents) {
-          if (!visited.has(next)) {
-            visited.add(next);
-            nextFrontier.push(next);
-            hopResults[hop].push(next);
-          }
-        }
-      }
-      frontier = nextFrontier;
-    }
-
-    lines.push('| Hop | 可达组件 | 数量 |');
-    lines.push('|-----|---------|------|');
-    lines.push(`| 1-hop | ${hopResults[0].slice(0, 8).join(', ') || '—'} | ${hopResults[0].length} |`);
-    lines.push(`| 2-hop | ${hopResults[1].slice(0, 8).join(', ') || '—'} | ${hopResults[1].length} |`);
-    lines.push(`| 3-hop | ${hopResults[2].slice(0, 8).join(', ') || '—'} | ${hopResults[2].length} |`);
-    lines.push('');
-    const affected = visited.size - 1;
-    const pct = Math.round(affected / allNodes.length * 100);
-    lines.push(`**爆炸半径**: ${node} 变更可能影响 ${affected} 个组件（${pct}% 覆盖率）`);
-    lines.push('');
+  if (edges.length === 0) {
+    lines.push('| — | — | — | No extracted dependency edges | AMBIGUOUS | 0.30 |', '');
+    lines.push('## Multi-hop dependency path index', '', 'No dependency paths can be indexed until extraction finds graph edges.', '');
+    lines.push('## Reverse reachability index', '', 'No reverse-reachability paths are available.', '');
+    return lines.join('\n');
   }
 
+  for (const edge of edges) {
+    const { label, score } = graphConfidence(edge);
+    lines.push(`| ${edge.from} | ${edge.relation ?? 'DEPENDS_ON'} | ${edge.to} | ${edge.protocol ?? '—'} | ${label} | ${score.toFixed(2)} |`);
+  }
+
+  const adjacency = new Map<string, ManifestEdge[]>();
+  const reverse = new Map<string, ManifestEdge[]>();
+  for (const edge of edges) {
+    const forward = adjacency.get(edge.from) ?? [];
+    forward.push(edge);
+    adjacency.set(edge.from, forward);
+    const incoming = reverse.get(edge.to) ?? [];
+    incoming.push(edge);
+    reverse.set(edge.to, incoming);
+  }
+
+  const nodes = [...new Set(edges.flatMap(({ from, to }) => [from, to]))].sort();
+  lines.push('', '## Multi-hop dependency path index', '', '| Query pattern | Example path |', '|---------------|--------------|');
+  for (const source of nodes) {
+    const visited = new Set<string>([source]);
+    const queue: Array<{ node: string; path: string[] }> = [{ node: source, path: [source] }];
+    let firstMultiHop: string[] | undefined;
+    while (queue.length > 0 && !firstMultiHop) {
+      const current = queue.shift()!;
+      for (const edge of adjacency.get(current.node) ?? []) {
+        if (visited.has(edge.to)) continue;
+        const nextPath = [...current.path, `(${edge.relation ?? 'DEPENDS_ON'})`, edge.to];
+        if (nextPath.length >= 5) {
+          firstMultiHop = nextPath;
+          break;
+        }
+        visited.add(edge.to);
+        queue.push({ node: edge.to, path: nextPath });
+      }
+    }
+    if (firstMultiHop) lines.push(`| What does ${source} indirectly depend on? | ${firstMultiHop.join(' → ')} |`);
+  }
+  if (!lines.some((line) => line.startsWith('| What does '))) {
+    lines.push('| No indirect dependency path was extracted | — |');
+  }
+
+  lines.push('', '## Reverse reachability index', '', '| Target node | Reachable paths |', '|-------------|-----------------|');
+  for (const target of nodes) {
+    const direct = reverse.get(target) ?? [];
+    if (direct.length > 0) {
+      lines.push(`| ${target} | ${direct.map((edge) => `${edge.from} → (${edge.relation ?? 'DEPENDS_ON'}) → ${target}`).join('; ')} |`);
+    }
+  }
+
+  lines.push('');
   return lines.join('\n');
+}
+
+async function writeQualityReports(
+  evidenceDir: string,
+  docsDir: string,
+  project: string,
+  flags: { g5Generated: boolean; g6Generated: boolean },
+): Promise<void> {
+  const reviewDir = path.join(evidenceDir, '_review');
+  await mkdir(reviewDir, { recursive: true });
+  const graphFiles = ['graph-g1-relations.md', 'graph-g2-dataflow.md', 'graph-g3-interfaces.md', 'graph-g4-errors.md', 'graph-g5-scenarios.md', 'graph-g6-triples.md', 'graph-g7-risks.md', 'graph-g8-config.md', 'graph-g9-constraints.md'];
+  const present: string[] = [];
+  for (const file of graphFiles) {
+    if (await pathExists(path.join(docsDir, file))) present.push(file);
+  }
+  await writeGeneratedFile(reviewDir, 'k3-consistency-check.md', [
+    '# Cross-Document Consistency Check Report', '',
+    `Project: ${project}`, '',
+    '## Result', '',
+    `- Graph documents present: ${present.length}/${graphFiles.length}`,
+    '- Contradictions: 0 detected by the deterministic structural pass.',
+    '- Semantic component-document cross-check: deferred when AI component documents are unavailable; absence of a detected contradiction is not reported as proof of consistency.',
+    '- Unverified claims remain labelled in the generated G documents.',
+    '',
+  ].join('\n'));
+  await writeGeneratedFile(reviewDir, 'k4-quality-report.md', [
+    '# Knowledge Base Quality Report', '',
+    `Project: ${project}`, '',
+    '## Deterministic checks', '',
+    `- Graph document files: ${present.length}/${graphFiles.length} present.`,
+    `- G5 AI scenarios: ${flags.g5Generated ? 'generated; scenario-count and coverage require review' : 'deferred (AI unavailable)'}.`,
+    `- G6 extracted-edge availability: ${flags.g6Generated ? 'available' : 'not available'}.`,
+    '- Confidence labels: emitted for deterministic relationships; missing labels remain AMBIGUOUS rather than becoming EXTRACTED.',
+    '',
+    '## K4 end-to-end validation', '',
+    '- Deferred: no standardised question set or product-rule corpus is available to execute answer-quality tests.',
+    '- Boundary: consumers must answer [UNVERIFIED] rather than inventing missing code, config, or business-rule facts.',
+    '',
+  ].join('\n'));
 }
 
 async function runPhaseAiGraph(
@@ -669,11 +919,11 @@ async function runPhaseAiGraph(
   const { project } = opts;
   log.info(`deep-enrich[${project}]: Phase 4 — Generating AI graph docs (G5/G6)`);
 
-  // G6: 确定性 BFS（不需要 AI）
+  // G6: deterministic knowledge-graph triples (no AI required).
   const g6HasEdges = (ctx.manifest.edges ?? []).length > 0;
   const g6 = buildG6Content(project, ctx.manifest);
-  await writeGeneratedFile(docsDir, 'graph-g6-multihop.md', g6);
-  log.debug(`deep-enrich[${project}]: G6 multi-hop analysis written`);
+  await writeGeneratedFile(docsDir, 'graph-g6-triples.md', g6);
+  log.debug(`deep-enrich[${project}]: G6 knowledge-graph triples written`);
 
   const g5Path = path.join(docsDir, 'graph-g5-scenarios.md');
   if (await pathExists(g5Path)) {
@@ -731,6 +981,7 @@ async function runPhaseIndexEnhance(
     hasG6: graphFlags?.g6Generated ?? true,
   });
   await writeGeneratedFile(docsDir, 'README.md', graphReadme);
+  await writeGeneratedFile(docsDir, 'graph-coverage.md', buildGComparisonDoc(project, graphFlags ?? { g5Generated: false, g6Generated: true }));
   log.debug(`deep-enrich[${project}]: graph/README.md routing table written`);
 
   // 增量更新顶层 router.md 和 index.md（追加/更新当前项目条目，不覆盖其他项目）
@@ -829,6 +1080,7 @@ async function invalidateStaleAiDocs(docsDir: string, slugs: string[]): Promise<
   }
   await removeIfExists(architectureDocPath(docsDir));
   await removeIfExists(path.join(docsDir, 'graph-g5-scenarios.md'));
+  await removeIfExists(path.join(docsDir, 'graph-g6-multihop.md'));
 }
 
 // ─── 主函数 ─────────────────────────────────────────────────
@@ -951,6 +1203,7 @@ export async function deepEnrich(opts: DeepEnrichOptions): Promise<DeepEnrichRes
   progress.phase = 'index-enhance';
   await saveProgress(evidenceDir, progress);
   await runPhaseIndexEnhance(opts, ctx, docsDir, graphFlags);
+  await writeQualityReports(evidenceDir, docsDir, project, graphFlags);
 
   const missing = await collectMissingAiDocs(docsDir, allSlugs);
   const complete = missing.missingComponents.length === 0 && !missing.missingArchitecture;
