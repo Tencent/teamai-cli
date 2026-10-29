@@ -90,7 +90,7 @@ function toolCallCandidates(stdin: Record<string, unknown>, tool: string): Candi
   });
 }
 
-function promptFormOf(tool: string): '$name' | 'skill-block' | '/name' {
+function promptFormOf(tool: string): '$name' | 'skill-block' | 'command-uri' | '/name' {
   const load = skillLoadOf(tool);
   return load === undefined || load === 'unknown' ? '/name' : load.promptForm ?? '/name';
 }
@@ -108,6 +108,11 @@ function promptCandidates(prompt: string, tool: string): Candidate[] {
       const block = PI_SKILL_BLOCK.exec(prompt);
       return block ? [{ skill: block[1], file: block[2] }] : [];
     }
+    case 'command-uri':
+      // CodeBuddy turns slash commands into an anchored command URI in the prompt.
+      // Do not count the same text when it is quoted or pasted mid-sentence.
+      pattern = new RegExp(`^@command://(${NAME})(?=\\s|$)`, 'g');
+      break;
     case '/name':
       // A whole token at the start, so a prompt beginning with an absolute path is not a skill use.
       pattern = new RegExp(`^/(${NAME})(?=\\s|$)`, 'g');

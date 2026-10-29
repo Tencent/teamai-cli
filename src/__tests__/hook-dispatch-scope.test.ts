@@ -127,6 +127,28 @@ describe('hook runs and the scope they belong to (#748)', () => {
     expect(fs.readFileSync(path.join(dataHome, 'usage.jsonl'), 'utf-8')).toContain('skill-a');
   });
 
+  it('recovers CodeBuddy’s workspace from SessionStart when PostToolUse reports an extension cwd', async () => {
+    const root = gitRepo('codebuddy-project');
+    const extensionCwd = path.join(tmp, 'extension-host');
+    fs.mkdirSync(extensionCwd);
+    const dataHome = await resolveProjectDataHome(root);
+    await saveLocalConfigForScope({
+      repo: { localPath: path.join(dataHome, 'team-repo'), remote: 'https://example.test/acme/team-a.git' },
+      username: 'tester', scope: 'project', projectRoot: root, additionalRoles: [], dataHome,
+    });
+    const skill = path.join(root, '.codebuddy', 'skills', 'skill-a', 'SKILL.md');
+    fs.mkdirSync(path.dirname(skill), { recursive: true });
+    fs.writeFileSync(skill, '# skill-a\n');
+
+    await hook('session-start', '*', { session_id: 'codebuddy-session', generation_id: 'g1', cwd: root, hook_event_name: 'SessionStart' }, 'codebuddy');
+    await hook('post-tool-use', '*', {
+      session_id: 'codebuddy-session', generation_id: 'g1', cwd: extensionCwd,
+      hook_event_name: 'PostToolUse', tool_name: 'use_skill', tool_input: { command: 'skill-a' },
+    }, 'codebuddy');
+
+    expect(fs.readFileSync(path.join(dataHome, 'usage.jsonl'), 'utf-8')).toContain('skill-a');
+  });
+
   it('a hook whose cwd no longer exists falls back to the user scope instead of failing', async () => {
     userScope();
     const gone = path.join(tmp, 'deleted-worktree');
@@ -258,7 +280,8 @@ describe('skill use through the CLI (#1221)', () => {
     fs.writeFileSync(skillMd, '# hello-skill\n');
     const captured = (name: string): Record<string, unknown> => {
       const text = fs.readFileSync(path.join(__dirname, 'fixtures', 'skill-use', `${name}.json`), 'utf-8')
-        .replaceAll('${HOME}', home).replaceAll('${CWD}', project);
+        .replaceAll('${HOME}', home.replaceAll('\\', '\\\\'))
+        .replaceAll('${CWD}', project.replaceAll('\\', '\\\\'));
       const payload: unknown = JSON.parse(text);
       if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) throw new Error(`${name} is not an object`);
       return { ...payload };

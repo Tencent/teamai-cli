@@ -6,7 +6,7 @@ export type Evidence = 'verified' | 'source' | 'docs' | 'assumed';
 export type SkillCall = { readonly name: string; readonly evidence: Evidence };
 
 export type SkillLoad =
-  | { readonly calls: readonly SkillCall[]; readonly promptForm?: '$name' | 'skill-block' }
+  | { readonly calls: readonly SkillCall[]; readonly promptForm?: '$name' | 'skill-block' | 'command-uri' }
   | 'unknown';
 
 export type ToolDescriptor = { readonly home: { readonly dir: string }; readonly skillLoad: SkillLoad };
@@ -42,8 +42,15 @@ export const TOOLS = {
   zcode: { home: { dir: '.zcode' }, skillLoad: { calls: [{ name: 'Skill', evidence: 'source' }] } },
   omp: { home: { dir: '.omp' }, skillLoad: { calls: [] } },
   pi: { home: { dir: '.pi' }, skillLoad: { calls: [], promptForm: 'skill-block' } },
-  // The CodeBuddy IDE sends `skill` (src/utils/tool-names.ts).
-  codebuddy: { home: { dir: '.codebuddy' }, skillLoad: { calls: [{ name: 'Skill', evidence: 'verified' }, { name: 'skill', evidence: 'assumed' }] } },
+  // The CodeBuddy IDE sends `use_skill` (src/utils/tool-names.ts).
+  codebuddy: { home: { dir: '.codebuddy' }, skillLoad: {
+    calls: [
+      { name: 'Skill', evidence: 'verified' },
+      { name: 'skill', evidence: 'assumed' },
+      { name: 'use_skill', evidence: 'verified' },
+    ],
+    promptForm: 'command-uri',
+  } },
   // Hermes (`skill_view`) and OpenClaw (`skills_read`) have skill tools, but teamai installs no post-tool-use hook for them yet.
   openclaw: { home: { dir: '.openclaw' }, skillLoad: 'unknown' },
   hermes: { home: { dir: '.hermes' }, skillLoad: 'unknown' },

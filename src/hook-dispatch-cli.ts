@@ -464,7 +464,27 @@ export async function hookDispatchCli(
         return;
       }
     }
-    const localConfig = await resolveHookConfig(stdin, tool);
+    let localConfig = await resolveHookConfig(stdin, tool);
+    // Some GUI hosts send a truthy extension-host cwd (often `/`) on
+    // PostToolUse even though SessionStart carried the real workspace. When
+    // that cwd has no config, recover the same-session workspace before
+    // filtering config-dependent handlers (#1516).
+    if (!localConfig && tool === 'codebuddy') {
+      const { recordedHookCwd } = await import('./dashboard-collector.js');
+      const previousCwd = await recordedHookCwd(stdin, tool);
+      if (previousCwd && previousCwd !== cwd) {
+        stdin.cwd = previousCwd;
+        localConfig = await resolveHookConfig(stdin, tool);
+        if (localConfig) {
+          try {
+            process.chdir(previousCwd);
+          } catch (e) {
+            log.debug(`hook-dispatch: chdir to recovered workspace ${previousCwd} failed: ${(e as Error).message}`);
+          }
+          log.debug(`hook-dispatch: recovered workspace cwd from session history for ${tool}`);
+        }
+      }
+    }
     // A self project's overrides and local hooks remain authoritative where
     // Copilot loaded them, so the global built-ins step aside there.
     const copilotProject = process.env.COPILOT_PROJECT_DIR?.trim();

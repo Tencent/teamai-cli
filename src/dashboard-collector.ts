@@ -2351,6 +2351,7 @@ interface RecordedScope {
 }
 
 const recordedScopes = new Map<string, Promise<RecordedScope>>();
+const recordedHookCwds = new Map<string, Promise<string | undefined>>();
 
 /**
  * What the session last recorded at `cwd`, else anywhere. A detached hook (a
@@ -2372,6 +2373,32 @@ function recordedScope(sessionId: string, cwd: string): Promise<RecordedScope> {
       };
     });
     recordedScopes.set(key, known);
+  }
+  return known;
+}
+
+/**
+ * Recover the most recent same-session cwd that still resolves to a TeamAI
+ * config. GUI hosts may report their extension-host cwd for later hooks even
+ * after SessionStart recorded the real workspace (#1516).
+ */
+export async function recordedHookCwd(hookData: Record<string, unknown>, tool: string): Promise<string | undefined> {
+  const sessionId = deriveDispatchSessionId(hookData, tool);
+  let known = recordedHookCwds.get(sessionId);
+  if (!known) {
+    known = (async () => {
+      const events = await readEvents();
+      const seen = new Set<string>();
+      const { resolveConfigForDir } = await import('./config.js');
+      for (const event of events.filter((entry) => entry.sessionId === sessionId).reverse()) {
+        if (!event.cwd || seen.has(event.cwd)) continue;
+        seen.add(event.cwd);
+        if (await resolveConfigForDir(event.cwd)) return event.cwd;
+      }
+      return undefined;
+    })();
+    recordedHookCwds.set(sessionId, known);
+    if (await known === undefined) recordedHookCwds.delete(sessionId);
   }
   return known;
 }

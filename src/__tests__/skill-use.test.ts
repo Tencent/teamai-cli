@@ -61,8 +61,8 @@ function config(): LocalConfig {
 
 function fixture(name: string): Record<string, unknown> {
   const text = fs.readFileSync(path.join(FIXTURES, `${name}.json`), 'utf-8')
-    .replaceAll('${HOME}', home)
-    .replaceAll('${CWD}', cwd);
+    .replaceAll('${HOME}', home.replaceAll('\\', '\\\\'))
+    .replaceAll('${CWD}', cwd.replaceAll('\\', '\\\\'));
   const payload: unknown = JSON.parse(text);
   if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) throw new Error(`${name} is not an object`);
   return { ...payload };
@@ -104,6 +104,7 @@ type ToolCallCase = { fixture: string; tool: string; root: string; project?: boo
 const TOOL_CALL_CASES: ToolCallCase[] = [
   { fixture: 'claude-skill', tool: 'claude', root: '.claude/skills' },
   { fixture: 'codebuddy-skill', tool: 'codebuddy', root: '.codebuddy/skills' },
+  { fixture: 'codebuddy-use-skill', tool: 'codebuddy', root: '.codebuddy/skills' },
   { fixture: 'copilot-skill', tool: 'copilot', root: '.copilot/skills' },
   { fixture: 'muse-read-skill', tool: 'muse', root: '.config/muse/skills' },
   { fixture: 'opencode-skill', tool: 'opencode', root: '.config/opencode/skills' },
@@ -119,6 +120,15 @@ describe('skill use from a tool call (#1221)', () => {
     install(root, { project });
     await toolCall(fixture(name), tool);
     expect(await credits()).toEqual([{ skill: SKILL, tool }]);
+  });
+
+  it('credits CodeBuddy use_skill calls with their command input', async () => {
+    install('.codebuddy/skills');
+    await toolCall({
+      session_id: 'codebuddy-use-skill-direct', generation_id: 'g1', cwd,
+      hook_event_name: 'PostToolUse', tool_name: 'use_skill', tool_input: { command: SKILL },
+    }, 'codebuddy');
+    expect(await credits()).toEqual([{ skill: SKILL, tool: 'codebuddy' }]);
   });
 
   it('has a captured case for every skill tool marked verified', () => {
@@ -279,6 +289,13 @@ describe('skill use from a prompt mention (#1221)', () => {
     install('.codex/skills');
     await prompt(fixture('codex-real-b-mention'), 'codex');
     expect(await credits()).toEqual([{ skill: SKILL, tool: 'codex' }]);
+  });
+
+  it('credits CodeBuddy’s anchored command URI, but not one quoted mid-prompt', async () => {
+    install('.codebuddy/skills');
+    await prompt({ session_id: 'codebuddy-command', generation_id: 'g1', cwd, prompt: `@command://${SKILL} review this` }, 'codebuddy');
+    await prompt({ session_id: 'codebuddy-command', generation_id: 'g2', cwd, prompt: `Please run @command://${SKILL} later` }, 'codebuddy');
+    expect(await credits()).toEqual([{ skill: SKILL, tool: 'codebuddy' }]);
   });
 
   it('gates Codex mentions on Codex installations', async () => {
