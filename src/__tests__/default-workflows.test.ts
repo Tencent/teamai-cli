@@ -163,6 +163,24 @@ steps:
     } });
   });
 
+  it('start teamai-share-learnings with a team teamai-share-session that lists judge\'s values in another order', async () => {
+    const config = testConfig();
+    writeWorkflow(config, 'teamai-share-session', `schemaVersion: v1alpha1
+name: teamai-share-session
+description: Publish this session our way.
+inputs: { session: string, source: string, publish: boolean, scorers: [string], judge: driver | here }
+steps:
+  - id: note
+    command: echo wrapped
+`);
+    const warn = vi.spyOn(log, 'warn');
+    await syncWorkflowDefinitions(config);
+
+    expect(warn).not.toHaveBeenCalled();
+    const started = await startRun(config, 'teamai-share-learnings', { session: 's1', source: 'claude', publish: false, scorers: [], judge: 'here' }, { secrets: await knownSecrets(config) });
+    expect(started).toMatchObject({ data: { run: expect.any(String) } });
+  });
+
   it('run as a sub-workflow of a team workflow', async () => {
     const config = testConfig();
     writeWorkflow(config, 'wrap-up', `schemaVersion: v1alpha1

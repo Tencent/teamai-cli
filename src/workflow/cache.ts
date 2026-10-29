@@ -2,7 +2,6 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { isDeepStrictEqual } from 'node:util';
 import { loadLocalConfigForScope } from '../config.js';
 import { syncScorerDefinitions, type SyncScorerOptions, type SyncScorerResult } from '../scorers/cache.js';
 import { log } from '../utils/logger.js';
@@ -21,7 +20,7 @@ import {
 import { LineCounter, parseDocument } from 'yaml';
 import { formatDiagnostic, parseWorkflow, promptFileDiagnostics, stepField } from './parse.js';
 import { locate, valueNode, type WorkflowFiles } from './parse-context.js';
-import type { CachedWorkflow, ResolvedWorkflow, WorkflowDefinition, WorkflowDiagnostic, WorkflowStep } from './types.js';
+import type { CachedWorkflow, OutputSchema, ResolvedWorkflow, WorkflowDefinition, WorkflowDiagnostic, WorkflowStep } from './types.js';
 import { DefaultWorkflows } from '../default-workflows.js';
 import { assertSafePath, assertWithinRoot } from '../utils/path-safety.js';
 import { createGit } from '../utils/git.js';
@@ -549,6 +548,30 @@ function withMismatch(parent: string, { step, with: passed }: { step: string; wi
   return message === undefined ? undefined : { code: 'invalid_inputs', message };
 }
 
+/** Whether `left` and `right` accept the same values: an enum's values in any order, an object's fields in any order. */
+function sameType(left: OutputSchema, right: OutputSchema): boolean {
+  switch (left.type) {
+    case 'string':
+    case 'number':
+    case 'boolean':
+      return right.type === left.type;
+    case 'enum':
+      return right.type === 'enum' && left.values.length === right.values.length && left.values.every((value) => right.values.includes(value));
+    case 'array':
+      return right.type === 'array' && sameType(left.items, right.items);
+    case 'object': {
+      if (right.type !== 'object') return false;
+      const names = Object.keys(left.fields);
+      return names.length === Object.keys(right.fields).length
+        && names.every((name) => { const other = right.fields[name]; const own = left.fields[name]; return own !== undefined && other !== undefined && sameType(own, other); });
+    }
+    default: {
+      const unhandled: never = left;
+      return unhandled;
+    }
+  }
+}
+
 /**
  * Why step `step` of teamai's default `parent` cannot pass `child` what it passes, one reason per input, when `child`
  * replaces the default the step runs and declares one of those inputs as another type. `parent` renders its `with`
@@ -559,7 +582,11 @@ function retypedInputs(parent: WorkflowDefinition, { step, workflow, with: passe
   const shipped = DefaultWorkflows.named(workflow)?.definition;
   if (DefaultWorkflows.named(parent.name)?.definition !== parent || !shipped || shipped === child) return [];
   return Object.keys(passed ?? {})
-    .filter((input) => child.inputs?.[input] !== undefined && !isDeepStrictEqual(child.inputs[input], shipped.inputs?.[input]))
+    .filter((input) => {
+      const declared = child.inputs?.[input];
+      const expected = shipped.inputs?.[input];
+      return declared !== undefined && expected !== undefined && !sameType(declared, expected);
+    })
     .map((input) => `step "${step}" passes ${input}, which workflow "${child.name}" declares as another type than teamai's default ${workflow}`);
 }
 
