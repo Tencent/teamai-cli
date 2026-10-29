@@ -706,17 +706,14 @@ export async function pushLearningToOrigin(
 }
 
 /**
- * Best-effort push all changes in a team repo clone.
- * Logs other push failures; refuses detached team clones.
- * @deprecated Use autoPushViaMR instead for import flows.
+ * Push all pending changes in a team repo clone.
+ *
+ * Push failures are intentionally propagated: import callers must not report
+ * publication until the remote push has actually succeeded. Detached team
+ * clones still throw their dedicated error.
  */
 export async function autoPushTeamRepo(repoPath: string, message: string): Promise<void> {
-  try {
-    await pushRepoDirectly(repoPath, message, ['.']);
-  } catch (err) {
-    DetachedTeamRepoError.rethrow(err);
-    log.warn(`[git] autoPush failed (non-blocking): ${(err as Error).message}`);
-  }
+  await pushRepoDirectly(repoPath, message, ['.']);
 }
 
 /**

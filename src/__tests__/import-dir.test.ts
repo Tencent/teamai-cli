@@ -108,6 +108,26 @@ describe('import --dir', () => {
     expect(autoPushTeamRepo).toHaveBeenCalled();
   });
 
+  it('does not report a successful import when publishing its teamwiki changes fails', async () => {
+    vi.mocked(autoPushTeamRepo).mockRejectedValueOnce(new Error('remote rejected the push'));
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => { lines.push(args.map(String).join(' ')); });
+    const exits: unknown[] = [];
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code: unknown) => {
+      exits.push(code);
+    }) as never);
+    try {
+      await runImportDir({ dir: projectDir });
+    } finally {
+      spy.mockRestore();
+      exitSpy.mockRestore();
+    }
+
+    expect(lines.join('\n')).toContain('remote rejected the push');
+    expect(lines.join('\n')).not.toContain('Pushed to team knowledge repo');
+    expect(exits).toEqual([1]);
+  });
+
   it('names the roles and projects whose resources.wiki still lists the directory-named slug', async () => {
     vi.mocked(defaultProjectSlug).mockResolvedValueOnce('github__acme__my-project');
     await fs.outputFile(path.join(teamRepoDir, 'manifest', 'roles.yaml'),

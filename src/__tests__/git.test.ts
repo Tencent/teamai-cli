@@ -71,7 +71,7 @@ vi.mock('../utils/logger.js', () => ({
   },
 }));
 
-import { generateBranchName, pushRepoBranch, checkoutMaster, pushRepoDirectly, initRepo, configureGitUser, getHeadRev, resetToCleanMaster, isMetadataOnlyDiff, isGitRepo, normalizeRepoUrlForCompare, remotesMatch, redactGitCredentials, pullRepo, pullRepoFastForward, pushLearningToOrigin, gitCommonDir, unusedBranchName } from '../utils/git.js';
+import { autoPushTeamRepo, generateBranchName, pushRepoBranch, checkoutMaster, pushRepoDirectly, initRepo, configureGitUser, getHeadRev, resetToCleanMaster, isMetadataOnlyDiff, isGitRepo, normalizeRepoUrlForCompare, remotesMatch, redactGitCredentials, pullRepo, pullRepoFastForward, pushLearningToOrigin, gitCommonDir, unusedBranchName } from '../utils/git.js';
 import fse from 'fs-extra';
 import { createGit, createGitWithBlockTimeout, disableGitTerminalPrompt } from '../utils/git.js';
 
@@ -410,6 +410,14 @@ describe('pushRepoDirectly', () => {
     expect(mockGit.add).toHaveBeenCalledWith(['file.txt']);
     expect(mockGit.commit).not.toHaveBeenCalled();
     expect(mockGit.push).not.toHaveBeenCalled();
+  });
+
+  it('propagates a rejected push instead of hiding the publication failure', async () => {
+    mockGit.status.mockResolvedValue({ staged: ['file.txt'] });
+    mockGit.revparse.mockResolvedValue('main');
+    mockGit.push.mockRejectedValueOnce(new Error('remote rejected the push'));
+
+    await expect(autoPushTeamRepo('/repo', 'msg')).rejects.toThrow('remote rejected the push');
   });
 });
 
