@@ -258,22 +258,26 @@ describe('teamai list / status resource coverage', () => {
     expect(lines.join('\n')).toContain('server "duplicate" is defined in both');
   });
 
-  it('list workflows shows whether each runs the team\'s file or teamai\'s default, and which team files cannot run', async () => {
+  it('list workflows shows each by the alias that starts it, then its name, whether it runs the team\'s file or teamai\'s default, and which team files cannot run', async () => {
     localConfig.dataHome = path.join(tmpDir, 'data');
-    const workflow = (name: string) => `schemaVersion: v1alpha1\nname: ${name}\ndescription: Review it.\nsteps:\n  - id: review\n    command: node review.js\n`;
-    await fse.outputFile(path.join(repoPath, 'workflows', 'review-and-fix.yaml'), workflow('review-and-fix'));
+    const workflow = (name: string, extra = '') => `schemaVersion: v1alpha1\nname: ${name}\ndescription: Review it.\n${extra}steps:\n  - id: review\n    command: node review.js\n`;
+    await fse.outputFile(path.join(repoPath, 'workflows', 'review-and-fix.yaml'), workflow('review-and-fix', 'alias: fix\n'));
     await fse.outputFile(path.join(repoPath, 'workflows', 'broken.yaml'), 'schemaVersion: v1alpha1\nname: broken\n');
     await syncWorkflowDefinitions(localConfig);
 
     await list('workflows', { source: 'repo' });
-    expect(lines).toEqual(['', '=== REPO WORKFLOWS ===', '  broken  (not runnable)', '  review-and-fix  (team)', '  session-close  (default)', '']);
+    expect(lines).toEqual([
+      '', '=== REPO WORKFLOWS ===', '  broken  (not runnable)', '  fix (review-and-fix)  (team)', '  teamai-share-learnings  (default)', '  teamai-share-session  (default)', '',
+    ]);
 
-    await fse.outputFile(path.join(repoPath, 'workflows', 'session-close.yaml'), workflow('session-close'));
+    await fse.outputFile(path.join(repoPath, 'workflows', 'teamai-share-session.yaml'), workflow('teamai-share-session', 'alias: share-session\n'));
     await syncWorkflowDefinitions(localConfig);
     lines.length = 0;
 
     await list('workflows', { source: 'repo' });
-    expect(lines).toEqual(['', '=== REPO WORKFLOWS ===', '  broken  (not runnable)', '  review-and-fix  (team)', '  session-close  (team)', '']);
+    expect(lines).toEqual([
+      '', '=== REPO WORKFLOWS ===', '  broken  (not runnable)', '  fix (review-and-fix)  (team)', '  teamai-share-learnings  (default)', '  share-session (teamai-share-session)  (team)', '',
+    ]);
   });
 
   it('status lists the scorers pull cached, next to the resource counts', async () => {

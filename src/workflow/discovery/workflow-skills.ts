@@ -14,7 +14,7 @@ import { warnOnce } from '../../utils/warn-once.js';
 import { DefaultWorkflows } from '../../default-workflows.js';
 import { SessionShare } from '../../session-share.js';
 import { shareBlock } from '../../skill-content.js';
-import { listCachedWorkflows, loadCachedWorkflow } from '../cache.js';
+import { listCachedWorkflows, startingAlias } from '../cache.js';
 import { generatedSkillAt, readGenerated } from './generated-marker.js';
 import { renderWorkflowSkill, type AdvertisedWorkflow } from './render.js';
 
@@ -27,11 +27,11 @@ async function advertisedWorkflows(teamConfig: TeamaiConfig, localConfig: LocalC
   const advertised: AdvertisedWorkflow[] = [];
   const sharing = await shareBlock({ localConfig, teamConfig }) === null;
   for (const { definition, source } of await listCachedWorkflows(localConfig)) {
-    const { name, description, alias, invoke } = definition;
+    const { name, description, invoke } = definition;
     if (invoke !== 'allow' && invoke !== 'ask') continue;
     if (source === 'default' && name === SessionShare.SHARE_LEARNINGS && !sharing) continue;
-    const starts = alias !== undefined && (await loadCachedWorkflow(localConfig, alias))?.definition.name === name;
-    advertised.push({ name, description, invoke, source, skill: skillName(name, starts ? alias : undefined), ...(starts ? { alias } : {}) });
+    const alias = await startingAlias(localConfig, definition);
+    advertised.push({ name, description, invoke, source, skill: skillName(name, alias), ...(alias !== undefined ? { alias } : {}) });
   }
   return advertised;
 }

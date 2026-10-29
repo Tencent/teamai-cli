@@ -131,6 +131,11 @@ export async function loadCachedWorkflow(config: LocalConfig, name: string): Pro
   return shipped && aliases.length === 0 ? { ...shipped, source: 'default' } : null;
 }
 
+/** `definition`'s alias when a start by that alias runs it, else undefined: another workflow has the alias as its name or alias. */
+export async function startingAlias(config: LocalConfig, { name, alias }: { name: string; alias?: string }): Promise<string | undefined> {
+  return alias !== undefined && (await loadCachedWorkflow(config, alias))?.definition.name === name ? alias : undefined;
+}
+
 /**
  * Where a start of workflow `name` from `config`'s directory runs, and what it runs: a team version in `config`'s scope,
  * else, from a project, one in the user scope, whose generated skills show in every directory, else teamai's default in
