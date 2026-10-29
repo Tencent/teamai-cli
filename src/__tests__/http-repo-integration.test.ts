@@ -12,7 +12,7 @@ let tmpDir: string;
 let originalHome: string;
 let server: MockServerHandle | undefined;
 const API_KEY = 'e2e-key';
-const ENV_KEYS = ['TEAMAI_API_TOKEN', 'TEAMAI_API_KEY', 'TEAMAI_REPORT_ENDPOINT'];
+const ENV_KEYS = ['TEAMAI_API_TOKEN', 'TEAMAI_API_KEY', 'TEAMAI_REPORT_ENDPOINT', 'TEAMAI_HTTP_ENDPOINT'];
 const saved: Record<string, string | undefined> = {};
 
 beforeEach(() => {
@@ -128,6 +128,16 @@ describe('teamai init --http and the HTTP local agent', () => {
   it('sets up the local agent with --token on a first user-scope init while TEAMAI_API_TOKEN holds another key', async () => {
     server = await startMockServer({ apiKey: API_KEY });
     process.env.TEAMAI_API_TOKEN = 'old-key';
+
+    const { init } = await import('../init.js');
+    await init({ http: server.url, token: API_KEY, scope: 'user' });
+
+    expect(localAgentConfig()).toMatchObject({ endpoint: server.url, token: API_KEY });
+  });
+
+  it('sets up the local agent on a first init while TEAMAI_HTTP_ENDPOINT names another endpoint', async () => {
+    server = await startMockServer({ apiKey: API_KEY });
+    process.env.TEAMAI_HTTP_ENDPOINT = 'https://env-host.example/api';
 
     const { init } = await import('../init.js');
     await init({ http: server.url, token: API_KEY, scope: 'user' });

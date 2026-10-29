@@ -697,7 +697,10 @@ function mergeWorkspaceBindings(
   return base;
 }
 
-export async function loadLocalAgentConfig(options: { dryRun?: boolean } = {}): Promise<LocalAgentConfig | null> {
+/** `envFallback: false` reads only what is stored: config.json or a legacy config.yaml. */
+export async function loadLocalAgentConfig(
+  options: { dryRun?: boolean; envFallback?: boolean } = {},
+): Promise<LocalAgentConfig | null> {
   const fileConfig = await readJson<LocalAgentConfig | { disabled: true }>(getConfigPath());
   // A removed source must not reconnect through legacy config or environment fallback.
   if (fileConfig && 'disabled' in fileConfig && fileConfig.disabled === true) return null;
@@ -770,6 +773,7 @@ export async function loadLocalAgentConfig(options: { dryRun?: boolean } = {}): 
     return backfilled;
   }
 
+  if (options.envFallback === false) return null;
   const envEndpoint =
     process.env.TEAMAI_HTTP_ENDPOINT ??
     process.env.TEAMAI_ENDPOINT ??
@@ -4710,7 +4714,8 @@ export async function writeTokenFile(tokenPath: string, token: string): Promise<
  * anything. The same endpoint and token again is a re-run.
  */
 export async function assertNoLocalAgentReplacement(options: { endpoint: string; token?: string }): Promise<void> {
-  const existing = await loadLocalAgentConfig({ dryRun: true });
+  // An environment endpoint is not replaced: the config init writes takes precedence over it.
+  const existing = await loadLocalAgentConfig({ dryRun: true, envFallback: false });
   if (!existing) return;
   const endpoint = normalizeEndpoint(options.endpoint);
   if (existing.endpoint !== endpoint) {
