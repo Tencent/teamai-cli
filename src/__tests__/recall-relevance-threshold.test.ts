@@ -170,9 +170,13 @@ describe('rankingScoreOf', () => {
   });
 
   it('does not change the score that --check and the output report see', () => {
-    const result = { score: 4.0, fromCodebase: true };
-    expect(rankingScoreOf(result, 8)).toBeLessThan(result.score);
-    expect(result.score).toBe(4.0); // the raw score is what isRelevantScore compares
+    // A codebase hit just above the 4.0 bar: the relevance check reads the raw
+    // score, so it stays relevant, while the penalized score it is ordered by
+    // falls below that bar. The two must not be confused.
+    const result = { score: 4.1, fromCodebase: true };
+    expect(isRelevantScore(result.score, true, 8)).toBe(true);
+    expect(rankingScoreOf(result, 8)).toBeLessThan(4.0);
+    expect(result.score).toBe(4.1); // the raw score is what isRelevantScore compares
   });
 });
 

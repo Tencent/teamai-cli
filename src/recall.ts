@@ -37,6 +37,11 @@ const CODEBASE_RELEVANCE_THRESHOLD = 4.0;
  * stored score keeps its raw value so the relevance check, quality tracking
  * and printed output are unaffected.
  *
+ * A hit that clears its own relevance bar is ordered above one that does not,
+ * whatever their penalized scores: `--check` reads the first result only, so an
+ * irrelevant hit at the top of the list would make it report "nothing
+ * relevant" while a relevant hit sits below it.
+ *
  * Measured on a 363-entry team knowledge base (58-question blind set, plus a
  * 305-question tuning set):
  *   penalty 1.00 → blind fact@3 45/58, tuning fact@3 300/305
@@ -795,10 +800,19 @@ export async function recall(
     log.warn('recall: code graph retrieval unavailable, run teamai codebase --lint to diagnose');
   }
 
-  // Re-sort merged results by normalized score descending, then date descending.
-  // Keep each result's original score for --check, quality tracking, and output.
+  // Re-sort merged results: the relevant ones first, then by normalized score
+  // descending, then by date descending. Keep each result's original score for
+  // --check, quality tracking, and output.
   const rankingScore = (result: ScopedSearchResult): number => rankingScoreOf(result, idfBaseline);
+  const relevant = (result: ScopedSearchResult): boolean =>
+    isRelevantScore(result.score, result.fromCodebase ?? false, result.idfBaseline ?? idfBaseline);
   allResults.sort((a, b) => {
+    // A relevant hit outranks an irrelevant one whatever their scores. `--check`
+    // reads the first result only, so an irrelevant hit at the top makes it
+    // report "nothing relevant" while a relevant hit sits below it — the
+    // cross-source penalty must not buy that position (#1524).
+    const relevanceDelta = Number(relevant(b)) - Number(relevant(a));
+    if (relevanceDelta !== 0) return relevanceDelta;
     const scoreDelta = rankingScore(b) - rankingScore(a);
     if (scoreDelta !== 0) return scoreDelta;
     return (b.entry.date || '').localeCompare(a.entry.date || '');
