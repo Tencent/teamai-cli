@@ -706,8 +706,9 @@ export async function pushLearningToOrigin(
 }
 
 /**
- * Best-effort push all changes in a team repo clone.
- * Logs other push failures; refuses detached team clones.
+ * Push all changes in a team repo clone.
+ * Refuses detached team clones. Throws when the push fails (a moved `main`, a protected
+ * branch, a hook rejection), so a caller never reports a publish that did not happen.
  * @deprecated Use autoPushViaMR instead for import flows.
  */
 export async function autoPushTeamRepo(repoPath: string, message: string): Promise<void> {
@@ -715,7 +716,8 @@ export async function autoPushTeamRepo(repoPath: string, message: string): Promi
     await pushRepoDirectly(repoPath, message, ['.']);
   } catch (err) {
     DetachedTeamRepoError.rethrow(err);
-    log.warn(`[git] autoPush failed (non-blocking): ${(err as Error).message}`);
+    const reason = (err as Error).message.split('\n').find(line => line.trim())?.trim() ?? 'unknown error';
+    throw new Error(`Push to the team repo failed: ${reason}. Run \`teamai pull\`, then rerun this command.`);
   }
 }
 

@@ -300,6 +300,29 @@ describe('import --dir', () => {
     expect(await fs.pathExists(staging!)).toBe(false);
   });
 
+  it('does not report a publish when the push to the team repo fails', async () => {
+    (autoPushTeamRepo as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error('Push to the team repo failed: rejected. Run `teamai pull`, then rerun this command.'),
+    );
+    const lines: string[] = [];
+    const logSpy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => { lines.push(args.map(String).join(' ')); });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
+    let exitCode: unknown;
+    try {
+      await runImportDir({ dir: projectDir });
+      exitCode = exitSpy.mock.calls[0]?.[0];
+    } finally {
+      logSpy.mockRestore();
+      errorSpy.mockRestore();
+      exitSpy.mockRestore();
+    }
+
+    expect(exitCode).toBe(1);
+    expect(lines.join('\n')).not.toContain('Pushed to team knowledge repo');
+    expect(lines.join('\n')).not.toContain('import complete');
+  });
+
   it('source directory is not polluted with teamwiki/', async () => {
     await runImportDir({ dir: projectDir });
 

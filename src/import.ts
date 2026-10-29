@@ -509,10 +509,10 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
         dryRun: opts.dryRun,
         outputDir: opts.output,
       });
-      log.success('Import complete');
       if (pushed > 0 && !opts.dryRun && !opts.output) {
         await autoPushTeamRepo(localConfig.repo.localPath, `[teamai] Import from local: claude-rules`);
       }
+      log.success('Import complete');
     } else {
       // 默认：未指定来源，提示用户
       log.info('Please specify import source: --dir <path>, --from-repo <url>, --from-repo-list <yaml>, --from-org <org>, --from-mr <url>, or --from-iwiki <id>');
