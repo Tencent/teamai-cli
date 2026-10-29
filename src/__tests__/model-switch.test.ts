@@ -109,6 +109,22 @@ describe('Antigravity CLI model switching', () => {
     expect(shell.stdout).toBe('agy: local-secret https://gateway.example.test\ngemini: member-own-key no-gateway\n');
   });
 
+  it.skipIf(process.platform === 'win32')('hands the gateway to agy when the member defined an agy alias before the block', async () => {
+    process.env.SHELL = '/bin/zsh';
+    await fse.outputJson(agyFile(), {});
+    await switchModelProfile(routed({ gemini: ['gemini-3.8-flash'] }), ['agy']);
+    const bin = path.join(home, 'bin');
+    await fse.outputFile(path.join(bin, 'agy'), '#!/bin/sh\necho "agy: $GEMINI_API_KEY $GOOGLE_GEMINI_BASE_URL"\n', { mode: 0o755 });
+
+    // An alias is expanded as each line is read, so it would turn the block's function definition into a syntax error.
+    const shell = spawnSync('bash', ['-c', `shopt -s expand_aliases\nalias agy='agy --resume'\n. '${agyKeyFile()}'\nagy`], {
+      env: { PATH: `${bin}:/usr/bin:/bin` }, encoding: 'utf8',
+    });
+
+    expect(shell.stderr).toBe('');
+    expect(shell.stdout).toBe('agy: local-secret https://gateway.example.test\n');
+  });
+
   it('keeps Muse Code switched when agy is restored', async () => {
     process.env.SHELL = '/bin/zsh';
     await fse.outputJson(museFile(), { schema_version: 1 });

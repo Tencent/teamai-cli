@@ -16,10 +16,13 @@ export function agyKeyFilePath(): string {
   return path.join(getUserHome(), '.teamai', 'models', 'agy-env.sh');
 }
 
-/** The key file's content: `key` is `"${VAR}"` for a key the member's environment holds, else the literal key. */
+/**
+ * The key file's content: `key` is `"${VAR}"` for a key the member's environment holds, else the literal key. An agy
+ * alias defined earlier would make the definition a syntax error, so the line before removes it.
+ */
 export function agyKeyFunction(key: { envRef: string } | { value: string }, baseUrl: string): string {
   const keyValue = 'envRef' in key ? `"\${${key.envRef}}"` : shellQuoteValue(key.value);
-  return `agy() { GEMINI_API_KEY=${keyValue} GOOGLE_GEMINI_BASE_URL=${shellQuoteValue(baseUrl)} command agy "$@"; }\n`;
+  return `unalias agy 2>/dev/null || true\nagy() { GEMINI_API_KEY=${keyValue} GOOGLE_GEMINI_BASE_URL=${shellQuoteValue(baseUrl)} command agy "$@"; }\n`;
 }
 
 const SINGLE_QUOTED = String.raw`'(?:[^']|'\\'')*'`;
