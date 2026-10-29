@@ -305,7 +305,7 @@ export async function runLocalJudge(input: JudgeInput, { resolveTool = resolveCl
       prompt += await fs.readFile(path.join(evidence, 'prompt.md'), 'utf8');
       break;
     case 'agy':
-      args = ['--input-format=stream-json', '--output-format=stream-json', '--print=', '--mode', 'plan', '--sandbox', ...model];
+      args = ['--input-format=stream-json', '--output-format=stream-json', '--print=', '--mode', 'plan', '--sandbox', ...model, ...(input.model?.effort ? ['--effort', input.model.effort] : [])];
       prompt += await fs.readFile(path.join(evidence, 'prompt.md'), 'utf8');
       break;
     case 'opencode': {

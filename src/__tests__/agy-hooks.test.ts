@@ -44,6 +44,10 @@ describe('agy hook payloads', () => {
     expect(agyHookPayload('prompt-submit', { ...COMMON, invocationNum: 3, initialNumSteps: 11 })).toBeNull();
   });
 
+  it('hands a team hook the transcript path under its Claude name', () => {
+    expect(agyHookPayload('stop', COMMON)).toMatchObject({ transcript_path: COMMON.transcriptPath });
+  });
+
   it('names the session start and stop events', () => {
     expect(agyHookPayload('session-start', COMMON)).toMatchObject({ hook_event_name: 'SessionStart', cwd: '/work/shop' });
     expect(agyHookPayload('stop', { ...COMMON, terminationReason: 'NO_TOOL_CALL' })).toMatchObject({ hook_event_name: 'Stop' });
