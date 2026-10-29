@@ -125,6 +125,15 @@ export function contentHash(content: string | Buffer): string {
   return crypto.createHash('sha256').update(content).digest('hex');
 }
 
+/** Hashes of the LF and CRLF forms of a text file, for Git/worktree comparisons. */
+function textContentHashes(content: string | Buffer): Set<string> {
+  const normalized = content.toString('utf8').replace(/\r\n/g, '\n');
+  return new Set([
+    contentHash(normalized),
+    contentHash(normalized.replace(/\n/g, '\r\n')),
+  ]);
+}
+
 /** The recorded paths of the copy at `dest`: the file, or every file under the skill directory. */
 export function recordedUnder(hashes: DeliveredHashes, dest: string): string[] {
   return Object.keys(hashes).filter((file) => file === dest || file.startsWith(dest + path.sep));
@@ -214,7 +223,7 @@ export async function isRecordedFromTeamSkill(
     if (bytes === null) continue;
     const text = bytes.toString('utf-8');
     const written = withSkillFrontmatter(text, path.posix.basename(teamDir));
-    if (contentHash(written === text ? bytes : written) === recorded) return true;
+    if (textContentHashes(written === text ? bytes : written).has(recorded)) return true;
   }
   return false;
 }
