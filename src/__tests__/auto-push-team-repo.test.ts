@@ -48,7 +48,23 @@ describe('autoPushTeamRepo', () => {
     await fs.writeFile(path.join(member, 'svc', 'index.md'), 'imported\n');
 
     await expect(autoPushTeamRepo(member, '[teamai] Import from local dir: svc')).rejects.toThrow(
-      /^Push to the team repo failed: .*failed to push some refs.*Run `teamai pull`, then rerun this command\.$/s,
+      /^Push to the team repo failed: .*\(fetch first\).*failed to push some refs.*\nRun `teamai pull`, then rerun this command\.$/s,
     );
+  });
+
+  it('keeps the hook output and gives no pull advice when a hook declines the push', async () => {
+    const hook = path.join(remote, 'hooks', 'pre-receive');
+    await fs.writeFile(hook, '#!/bin/sh\necho "main is protected" >&2\nexit 1\n', { mode: 0o755 });
+    const third = path.join(root, 'third');
+    await clone(third);
+    await fs.mkdir(path.join(third, 'svc'));
+    await fs.writeFile(path.join(third, 'svc', 'index.md'), 'imported\n');
+
+    const err = await autoPushTeamRepo(third, '[teamai] Import from local dir: svc').catch(e => e as Error);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toMatch(/^Push to the team repo failed: /);
+    expect((err as Error).message).toContain('main is protected');
+    expect((err as Error).message).toContain('pre-receive hook declined');
+    expect((err as Error).message).not.toContain('teamai pull');
   });
 });

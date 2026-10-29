@@ -717,9 +717,15 @@ export async function autoPushTeamRepo(repoPath: string, message: string): Promi
   } catch (err) {
     DetachedTeamRepoError.rethrow(err);
     const lines = (err as Error).message.split('\n').map(line => line.trim()).filter(Boolean);
-    // git prints the remote URL first; the line that says what failed is the error:/fatal: one.
-    const reason = lines.find(line => /^(error|fatal):/.test(line)) ?? lines[0] ?? 'unknown error';
-    throw new Error(`Push to the team repo failed: ${reason}. Run \`teamai pull\`, then rerun this command.`, { cause: err });
+    // Keep the lines that say why git refused: the `! [rejected]` ref line (fetch first,
+    // pre-receive hook declined, protected branch), the hook's `remote:` output and the generic
+    // error:/fatal: line. git prints the remote URL first, which is not a cause.
+    const reasonLines = lines.filter(line => /^(error|fatal|remote):/.test(line) || /^!\s/.test(line) || /\[(remote )?rejected\]/.test(line));
+    const reason = (reasonLines.length > 0 ? reasonLines : lines.slice(0, 1)).join('\n') || 'unknown error';
+    // Only a stale clone is fixed by pulling; a protected branch or a hook rejection is not.
+    const stale = /\(fetch first\)|\(non-fast-forward\)/.test((err as Error).message);
+    const advice = stale ? '\nRun `teamai pull`, then rerun this command.' : '';
+    throw new Error(`Push to the team repo failed: ${reason}${advice}`, { cause: err });
   }
 }
 
