@@ -178,6 +178,21 @@ describe('dashboard workflow runs', () => {
       expect(rows[1]).not.toHaveProperty('origin');
     });
 
+    it('lists the learnings a run shared, from every pass that recorded one, once each', async () => {
+      const config = scope('http');
+      const learning = (id: string) => ({ kind: 'learning', id });
+      publish(config, record('r0000000000000001', { workflow: 'teamai-share-learnings', steps: [
+        { step: 'learning', pass: 1, outcome: 'success' },
+        { step: 'contribute[0]', pass: 1, outcome: 'success', outcomes: [learning('delay-the-readiness-probe-2026-10-29-k3x9qa')] },
+        { step: 'contribute[1]', pass: 1, outcome: 'success', outcomes: [learning('rollout-status-hides-init-2026-10-29-p0z7mf'), { kind: 'commit', sha: 'c'.repeat(40) }] },
+        { step: 'contribute[1]', pass: 2, outcome: 'success', outcomes: [learning('rollout-status-hides-init-2026-10-29-p0z7mf')] },
+      ] }));
+
+      expect((await listReportedRuns(config))[0]?.learnings).toEqual([
+        'delay-the-readiness-probe-2026-10-29-k3x9qa', 'rollout-status-hides-init-2026-10-29-p0z7mf',
+      ]);
+    });
+
     it('reads the alias a record names its workflow by', async () => {
       const config = scope('http');
       publish(config, record('r0000000000000001', { workflow: 'review-and-fix', alias: 'fix' }));

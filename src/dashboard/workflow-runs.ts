@@ -99,6 +99,8 @@ interface RunRow {
   /** Whether the run ran the team's definition or teamai's default, and which teamai shipped it; absent in older records. */
   origin?: RunOrigin;
   prs: string[];
+  /** The ids of the learnings its passes recorded, once each, in the order they appear. */
+  learnings: string[];
   stepCounts?: ReadRecord['stepCounts'];
 }
 
@@ -150,6 +152,14 @@ function tokenTotal(steps: StepEntry[] | undefined): number {
   return (steps ?? []).reduce((sum, entry) => sum + (entry.tokens?.input ?? 0) + (entry.tokens?.output ?? 0), 0);
 }
 
+function learningsOf(steps: StepEntry[] | undefined): string[] {
+  const ids = (steps ?? []).flatMap((entry) => (entry.outcomes ?? []).flatMap((outcome) => {
+    const parsed = WorkOutcomeSchema.safeParse(outcome);
+    return parsed.success && parsed.data.kind === 'learning' ? [parsed.data.id] : [];
+  }));
+  return [...new Set(ids)];
+}
+
 function rowOf(record: ReadRecord): RunRow {
   return {
     run: record.run,
@@ -166,6 +176,7 @@ function rowOf(record: ReadRecord): RunRow {
     ...(record.teamRevision !== undefined ? { teamRevision: record.teamRevision } : {}),
     ...(record.origin ? { origin: record.origin } : {}),
     prs: (record.prs ?? []).filter(isWebUrl),
+    learnings: learningsOf(record.steps),
     ...(record.stepCounts ? { stepCounts: record.stepCounts } : {}),
   };
 }

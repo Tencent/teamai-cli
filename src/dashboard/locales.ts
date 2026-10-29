@@ -285,7 +285,6 @@ export const dashboardMessages: Record<string, string> = {
   "Team": "团队",
   "teamai default": "teamai 默认",
   "The definition this teamai version ships; the team keeps no file of this name.": "此 teamai 版本自带的定义；团队没有同名文件。",
-  "PULL REQUESTS": "拉取请求",
   "STEP": "步骤",
   "PASS": "轮次",
   "ANSWER": "回答",
