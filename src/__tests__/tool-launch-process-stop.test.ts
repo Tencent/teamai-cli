@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
-import { processStarts, stopGroup, stopProcess } from '../tool-launch/process-stop.js';
+import { processStarts, recordGroup, stopGroup, stopProcess, stopRecordedGroup } from '../tool-launch/process-stop.js';
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); vi.useRealTimers(); });
 
@@ -185,5 +185,24 @@ it.skipIf(process.platform === 'win32')('leaves a group alone when its pid now l
     expect(alive()).toBe(true);
   } finally {
     process.kill(-pid, 'SIGKILL');
+  }
+});
+
+it.skipIf(process.platform === 'win32')('stops every group recorded in a directory, not only the last one', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-stop-groups-'));
+  const first = await detachedGroup();
+  const second = await detachedGroup();
+  try {
+    recordGroup(first.shell, directory);
+    recordGroup(second.shell, directory);
+    await stopRecordedGroup(directory);
+    expect(first.alive()).toBe(false);
+    expect(second.alive()).toBe(false);
+    expect(fs.readdirSync(directory)).toEqual([]);
+  } finally {
+    for (const group of [first, second]) {
+      try { process.kill(-group.pid, 'SIGKILL'); } catch { /* Already stopped. */ }
+    }
+    fs.rmSync(directory, { recursive: true, force: true });
   }
 });
