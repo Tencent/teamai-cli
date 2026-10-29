@@ -33,7 +33,13 @@ function defaultsDir(): string {
 
 let loaded: ReadonlyMap<string, CachedWorkflow> | undefined;
 
-/** Every default by name, read and parsed once. A shipped file that does not parse is a teamai bug, so it throws. */
+/** Every default's name starts with this, so its generated skill, named after it, is one prune and uninstall look at. */
+const PREFIX = 'teamai-';
+
+/**
+ * Every default by name, read and parsed once. A shipped file that does not parse, or whose name lacks `PREFIX`, is a
+ * teamai bug, so it throws.
+ */
 function defaults(): ReadonlyMap<string, CachedWorkflow> {
   if (loaded) return loaded;
   const dir = defaultsDir();
@@ -43,6 +49,7 @@ function defaults(): ReadonlyMap<string, CachedWorkflow> {
     const content = fs.readFileSync(path.join(dir, file), 'utf8');
     const parsed = parseWorkflow(relativePath, content);
     if (!parsed.ok) throw new Error(`teamai's default ${relativePath} does not parse: ${parsed.diagnostics.map(formatDiagnostic).join('; ')}`);
+    if (!parsed.definition.name.startsWith(PREFIX)) throw new Error(`teamai's default ${relativePath} is named ${parsed.definition.name}, which does not start with ${PREFIX}`);
     found.set(parsed.definition.name, {
       relativePath,
       sourceHash: createHash('sha256').update(content).digest('hex'),
@@ -85,4 +92,4 @@ function sourceOfRun(run: { origin?: RunOrigin }): WorkflowSource {
   return run.origin?.source ?? 'team';
 }
 
-export const DefaultWorkflows = { named, all, originOf, sourceOfRun } as const;
+export const DefaultWorkflows = { PREFIX, named, all, originOf, sourceOfRun } as const;

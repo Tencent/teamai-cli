@@ -20,8 +20,9 @@ import { renderWorkflowSkill, type AdvertisedWorkflow } from './render.js';
 
 /**
  * Every runnable `invoke: allow` or `ask` workflow, a cached team file or teamai's default, each with its alias only when
- * the alias starts it. The cache is what `start` resolves from, so no skill names a workflow that cannot start. teamai's
- * `teamai-share-learnings` is left out while `share` is withheld, since its learning step runs `share`.
+ * the alias starts it. The cache is what `start` resolves from, so no skill names a workflow that cannot start.
+ * `teamai-share-learnings`, teamai's or a team copy of it, is left out while `share` is withheld, since its learning
+ * step runs `share`.
  */
 async function advertisedWorkflows(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<AdvertisedWorkflow[]> {
   const advertised: AdvertisedWorkflow[] = [];
@@ -29,7 +30,7 @@ async function advertisedWorkflows(teamConfig: TeamaiConfig, localConfig: LocalC
   for (const { definition, source } of await listCachedWorkflows(localConfig)) {
     const { name, description, invoke } = definition;
     if (invoke !== 'allow' && invoke !== 'ask') continue;
-    if (source === 'default' && name === SessionShare.SHARE_LEARNINGS && !sharing) continue;
+    if (name === SessionShare.SHARE_LEARNINGS && !sharing) continue;
     const alias = await startingAlias(localConfig, definition);
     advertised.push({ name, description, invoke, source, skill: skillName(name, alias), ...(alias !== undefined ? { alias } : {}) });
   }
@@ -50,7 +51,7 @@ function skillName(name: string, alias: string | undefined): string {
  * starts with `teamai-`. Only the marker in its SKILL.md proves it.
  */
 export function mayBeGeneratedSkill(dir: string): boolean {
-  return dir.startsWith(WORKFLOW_SKILL_PREFIX) || dir.startsWith(DEFAULT_SKILL_PREFIX);
+  return dir.startsWith(WORKFLOW_SKILL_PREFIX) || dir.startsWith(DefaultWorkflows.PREFIX);
 }
 
 /** Where one generated skill goes, and what it holds there. */
@@ -71,8 +72,6 @@ interface Root {
 
 /** A skill pull generates starts with this, then the workflow's alias or name. */
 const WORKFLOW_SKILL_PREFIX = 'workflow-';
-/** The name of every default teamai ships starts with this, and so does its skill. */
-const DEFAULT_SKILL_PREFIX = 'teamai-';
 const WRITER = 'workflow-skills';
 
 /**
