@@ -69,6 +69,8 @@ const AgyPayload = z.object({
   conversationId: z.string().optional().catch(undefined),
   workspacePaths: z.array(z.string()).optional().catch(undefined),
   lastUserInput: z.string().optional().catch(undefined),
+  /** On PostToolUse: empty when the call ran, else why it did not. */
+  error: z.string().optional().catch(undefined),
   toolCall: z.object({ name: z.string(), args: z.record(z.unknown()).catch({}).default({}) }).optional().catch(undefined),
 });
 
@@ -89,6 +91,8 @@ export function agyHookPayload(event: string, payload: Record<string, unknown>):
     shaped.tool_name = CLAUDE_TOOL[agy.toolCall.name] ?? agy.toolCall.name;
     shaped.tool_input = Object.fromEntries(Object.entries(agy.toolCall.args).map(([key, value]) => [CLAUDE_ARG[key] ?? key, value]));
   }
+  // agy sends no tool output, so a call it reports an error for is the only one known to have failed.
+  if (event === 'post-tool-use' && agy.error) shaped.tool_status = 'failure';
   return shaped;
 }
 

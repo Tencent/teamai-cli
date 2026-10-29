@@ -29,6 +29,14 @@ describe('agy hook payloads', () => {
       .toMatchObject({ tool_name: 'Read', tool_input: { file_path: '/work/shop/README.md' } });
   });
 
+  // agy's PostToolUse carries no output, only `error`: empty when the call ran, the reason when it did not.
+  it('marks a tool call agy reports an error for as failed, so a denied read loads no skill', () => {
+    const read = { name: 'read_file', args: { Path: '/work/shop/.agents/skills/release-notes/SKILL.md' } };
+    expect(agyHookPayload('post-tool-use', { ...COMMON, stepIdx: 4, error: 'tool call denied by pre-tool hook: Reading skills is paused', toolCall: read }))
+      .toMatchObject({ tool_name: 'Read', tool_status: 'failure' });
+    expect(agyHookPayload('post-tool-use', { ...COMMON, stepIdx: 4, error: '', toolCall: read })).not.toHaveProperty('tool_status');
+  });
+
   // PreInvocation fires before every model call of a turn; only the first one is the prompt.
   it('takes only the first invocation of a turn as the prompt', () => {
     expect(agyHookPayload('prompt-submit', { ...COMMON, invocationNum: 0, initialNumSteps: 1 }))
