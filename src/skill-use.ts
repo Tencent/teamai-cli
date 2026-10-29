@@ -296,6 +296,7 @@ export async function deliveredTeamSkills(config: LocalConfig, cwd: string, deli
 /** What a session records of a delivered team skill (#1469): the description it then had, and its skills namespace if any. */
 export interface DeliveredSkillInfo {
   namespace?: string;
+  namespaceUnknown?: true;
   description: string;
 }
 
@@ -368,8 +369,12 @@ export async function deliveredTeamSkillInfo(config: LocalConfig, cwd: string, d
       const roleMatches = matches.length > 1 && deliveredRoleNamespaces
         ? matches.filter((source) => source.namespace !== undefined && deliveredRoleNamespaces!.has(source.namespace)) : [];
       // Identical historical copies cannot be attributed to a namespace when the
-      // saved selection includes both. Do not infer one from today's manifest.
-      if (matches.length > 1 && roleMatches.length !== 1) { others.add(name); continue; }
+      // saved selection includes both. Keep the known skill, marking only its source unknown.
+      if (matches.length > 1 && roleMatches.length !== 1) {
+        const description = String(parseFrontmatter(await readFileSafe(file) ?? '').data.description ?? '').trim();
+        found.set(name, { namespaceUnknown: true, description });
+        continue;
+      }
       const source = matches.length === 1 ? matches[0] : roleMatches.length === 1 ? roleMatches[0] : undefined;
       const namespace = source ? source.namespace : entry?.namespace;
       const description = String(parseFrontmatter(await readFileSafe(file) ?? '').data.description ?? '').trim();

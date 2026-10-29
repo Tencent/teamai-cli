@@ -35,7 +35,7 @@ export const SessionCaptureSchema = z.object({
    * Each delivered team skill's description as its SKILL.md then carried it and its skills namespace (#1469), present
    * (if only as `{}`) once a capture read the delivery record, absent on captures written before #1469.
    */
-  teamSkillInfo: z.record(z.object({ namespace: z.string().optional(), description: z.string() })).optional(),
+  teamSkillInfo: z.record(z.object({ namespace: z.string().optional(), namespaceUnknown: z.literal(true).optional(), description: z.string() })).optional(),
 });
 export type SessionCapture = z.infer<typeof SessionCaptureSchema>;
 

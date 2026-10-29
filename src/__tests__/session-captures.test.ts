@@ -224,7 +224,7 @@ describe('session captures (#1178)', () => {
     await SessionCaptures.atStart(member, 'claude', start(project), {});
 
     expect((await SessionCaptures.read(member, 'claude-code', SESSION)).map((capture) => capture.teamSkillInfo))
-      .toEqual([{}]);
+      .toEqual([{ ship: { namespaceUnknown: true, description: 'Shared release.' } }]);
   });
 
   it('writes a second capture when the session resumes, and none for a compaction', async () => {

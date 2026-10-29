@@ -47,6 +47,11 @@ describe('the skills a session is judged with (#1469)', () => {
     });
   });
 
+  it('preserves a delivered skill while marking ambiguous namespace provenance', () => {
+    expect(skillsEvidence([{ teamSkillInfo: { ship: { namespaceUnknown: true, description: 'shared release' } } }], [], upper))
+      .toEqual({ skills: { available: [{ name: 'ship', namespaceUnknown: true, description: 'SHARED RELEASE' }], used: [] } });
+  });
+
   it('copies the used names it is given rather than aliasing them', () => {
     const used = ['a', 'b'];
     const result = skillsEvidence([{ teamSkillInfo: {} }], used, same);

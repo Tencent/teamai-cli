@@ -8,6 +8,7 @@
 export interface AvailableSkill {
   name: string;
   namespace?: string;
+  namespaceUnknown?: true;
   description: string;
 }
 
@@ -20,6 +21,7 @@ export interface SkillsEvidence {
 /** What one capture recorded of a delivered team skill: the description it then had, and its skills namespace if any. */
 export interface CapturedSkill {
   namespace?: string;
+  namespaceUnknown?: true;
   description: string;
 }
 
@@ -43,7 +45,7 @@ export function skillsEvidence(
     for (const [name, info] of Object.entries(capture.teamSkillInfo ?? {})) latest.set(name, info);
   }
   const available = [...latest.entries()]
-    .map(([name, info]): AvailableSkill => ({ name, ...(info.namespace !== undefined ? { namespace: info.namespace } : {}), description: mask(info.description) }))
+    .map(([name, info]): AvailableSkill => ({ name, ...(info.namespace !== undefined ? { namespace: info.namespace } : {}), ...(info.namespaceUnknown ? { namespaceUnknown: true } : {}), description: mask(info.description) }))
     .sort((left, right) => left.name.localeCompare(right.name));
   return { skills: { available, used: [...used] } };
 }
