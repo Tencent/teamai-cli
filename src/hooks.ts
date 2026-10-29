@@ -2716,11 +2716,11 @@ async function rewireBridgedTeamHooks(tool: string): Promise<void> {
       await refreshOpenClawTeamHooks();
       return;
     }
-    // PreToolUse is in agy's hooks.json only while a hook needs it.
+    // PreToolUse is in agy's hooks.json only while a hook needs it. Only a pull installs teamai's hook there, so an
+    // uninstall that removes it before the agent hooks does not get it back.
     case 'agy-hooks': {
-      if (!await pathExists(toolHome('agy'))) return;
-      const { reconcileAgyHooks } = await import('./agy-hooks.js');
-      await reconcileAgyHooks();
+      const { hasAgyHooks, reconcileAgyHooks } = await import('./agy-hooks.js');
+      if (await hasAgyHooks()) await reconcileAgyHooks();
       return;
     }
     case 'opencode-plugin':

@@ -180,6 +180,9 @@ describe('agy hooks.json', () => {
     vi.resetModules();
     const { applyBridgedAgentHook, removeBridgedAgentHook } = await import('../hooks.js');
     const { runBridgedTeamHooks } = await import('../bridged-team-hooks.js');
+    const { reconcileAgyHooks } = await import('../agy-hooks.js');
+    // The pull that set the member up wrote teamai's hook.
+    await reconcileAgyHooks();
     await applyBridgedAgentHook('agy', { slug: 'no-rm', event: 'PreToolUse', matcher: 'Bash', command: 'grep -q "rm -rf" && { echo "No rm -rf" >&2; exit 2; } || true' });
     expect(JSON.parse((await runBridgedTeamHooks('agy', 'PreToolUse', rmRf)).stdout)).toEqual({ block: 'No rm -rf' });
     expect(Object.keys(JSON.parse(fs.readFileSync(file, 'utf8')).teamai)).toContain('PreToolUse');
@@ -187,6 +190,20 @@ describe('agy hooks.json', () => {
     await removeBridgedAgentHook('agy', 'no-rm');
     expect((await runBridgedTeamHooks('agy', 'PreToolUse', rmRf)).stdout).toBe('');
     expect(Object.keys(JSON.parse(fs.readFileSync(file, 'utf8')).teamai)).not.toContain('PreToolUse');
+  });
+
+  it("does not put teamai's hook back when an uninstall removes an agent hook after it", async () => {
+    vi.resetModules();
+    const { applyBridgedAgentHook, removeBridgedAgentHook } = await import('../hooks.js');
+    const { reconcileAgyHooks, hasAgyHooks } = await import('../agy-hooks.js');
+    await reconcileAgyHooks();
+    await applyBridgedAgentHook('agy', { slug: 'no-rm', event: 'PreToolUse', matcher: 'Bash', command: 'exit 0' });
+    expect(Object.keys(JSON.parse(fs.readFileSync(file, 'utf8')).teamai)).toContain('PreToolUse');
+
+    await reconcileAgyHooks({ removeAll: true });
+    await removeBridgedAgentHook('agy', 'no-rm');
+
+    expect(await hasAgyHooks()).toBe(false);
   });
 
   it("removes only teamai's named hook", async () => {
