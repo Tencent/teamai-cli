@@ -54,6 +54,8 @@ export interface Offer {
 export interface PublishedRun {
   run: RunId;
   workflow: string;
+  /** The alias that started the workflow, the name people use for it; absent when it had none. */
+  alias?: string;
   owner: HandoffOwner;
   ownedAt: string;
   /** The business repository it works in, as `host/owner/repo`; unknown for a run published before teamai recorded it. */
@@ -89,6 +91,7 @@ async function list(config: LocalConfig, { taker, env }: { taker: Taker; env: Wo
   const runs = await Promise.all(running.map(async (snapshot): Promise<PublishedRun> => ({
     run: RunIdSchema.parse(snapshot.run),
     workflow: snapshot.name,
+    ...(snapshot.alias !== undefined ? { alias: snapshot.alias } : {}),
     owner: snapshot.owner,
     ownedAt: snapshot.ownedAt,
     ...(snapshot.repository !== undefined ? { repository: snapshot.repository } : {}),

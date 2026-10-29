@@ -129,6 +129,23 @@ describe('dashboard workflow runs', () => {
     expect(buildStartRecord(run, undefined, 'tester')).toMatchObject({ workflow: 'review-and-fix', alias: 'fix' });
   });
 
+  it('names a run by its workflow\'s name while its alias starts another workflow', async () => {
+    const config = scope('self');
+    fs.mkdirSync(path.join(config.repo.localPath, 'workflows'), { recursive: true });
+    const write = (name: string, alias?: string) => fs.writeFileSync(path.join(config.repo.localPath, `workflows/${name}.yaml`), [
+      'schemaVersion: v1alpha1', `name: ${name}`, ...(alias ? [`alias: ${alias}`] : []), 'description: Review the change.', 'steps:', '  - id: review', '    command: echo review',
+    ].join('\n'));
+    write('review-and-fix', 'fix');
+    write('fix');
+    await syncWorkflowDefinitions(config);
+    const started = await startRun(config, 'review-and-fix', {}, { secrets: {} });
+    if ('error' in started) throw new Error(started.error.message);
+
+    const [row] = await listLocalRuns(config);
+    expect(row).toMatchObject({ workflow: 'review-and-fix' });
+    expect(row).not.toHaveProperty('alias');
+  });
+
   it('refuses an answer to a pass the page no longer shows, and a repeated one', async () => {
     const run = await waitingRun('approve: Ship it?');
     expect(await refusal(answerFromDashboard(run.config, { run: run.id, step: 'ship', pass: 2, choice: 'yes' })))

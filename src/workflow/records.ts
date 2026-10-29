@@ -57,7 +57,7 @@ export type WorkflowRunRecord = {
   /** The run's logical key; a retry publishes the same id. */
   run: string;
   workflow: string;
-  /** The alias the workflow's definition had when the run started: the name people use for it. */
+  /** The alias that started the workflow when the run started: the name people use for it. */
   alias?: string;
   /** Exact workflow and prompt bytes that ran. Absent on records published before source provenance. */
   sourceHash?: string;
@@ -156,7 +156,7 @@ export function buildStartRecord(
     schemaVersion: 'v1alpha1',
     run: run.id,
     workflow: run.name,
-    ...(run.definition.alias !== undefined ? { alias: run.definition.alias } : {}),
+    ...(run.alias !== undefined ? { alias: run.alias } : {}),
     sourceHash: run.sourceHash,
     ...(run.teamRevision ? { teamRevision: run.teamRevision } : {}),
     phase: 'start',
