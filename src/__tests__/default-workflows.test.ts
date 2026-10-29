@@ -98,7 +98,7 @@ name: wrap-up
 description: Run the checks, then share the session.
 inputs: { session: string, source: string, publish: boolean, scorers: [string], judge: here | driver }
 steps:
-  - id: close
+  - id: share
     workflow: teamai-share-session
     with: { session: "{{ inputs.session }}", source: "{{ inputs.source }}", publish: "{{ inputs.publish }}", scorers: "{{ inputs.scorers }}", judge: "{{ inputs.judge }}" }
 `);
@@ -125,12 +125,12 @@ steps:
       return run;
     };
 
-    const closed = await runOf('teamai-share-session', { session: 's1', source: 'claude', publish: false, scorers: [], judge: 'here' });
+    const shared = await runOf('teamai-share-session', { session: 's1', source: 'claude', publish: false, scorers: [], judge: 'here' });
     const built = await runOf('build', {});
 
-    expect(closed).toMatchObject({ origin: { source: 'default', teamaiVersion: PACKAGE_VERSION } });
-    expect(closed).not.toHaveProperty('teamRevision');
-    expect(buildStartRecord(closed, undefined, 'tester')).toMatchObject({ origin: { source: 'default', teamaiVersion: PACKAGE_VERSION } });
+    expect(shared).toMatchObject({ origin: { source: 'default', teamaiVersion: PACKAGE_VERSION } });
+    expect(shared).not.toHaveProperty('teamRevision');
+    expect(buildStartRecord(shared, undefined, 'tester')).toMatchObject({ origin: { source: 'default', teamaiVersion: PACKAGE_VERSION } });
     expect(built.origin).toEqual({ source: 'team' });
     expect(buildStartRecord(built, undefined, 'tester').origin).toEqual({ source: 'team' });
   });

@@ -544,14 +544,14 @@ interface HintContext {
   promptSummary?: string;
   isKnowledgeGap: boolean;
   /** Whether the reminder offers the teamai-share-learnings workflow rather than the `share` skill. */
-  offersClose: boolean;
+  offersShareLearnings: boolean;
 }
 
 /** The command that describes teamai-share-learnings's inputs, with values proposed for the calling session. */
 const SHARE_LEARNINGS_DESCRIBE = 'teamai workflow start --describe teamai-share-learnings --driver skill';
 
 /** Build the STDOUT hint from the same context that drove the score. */
-function buildHint({ friction, promptSummary, isKnowledgeGap, offersClose }: HintContext): string {
+function buildHint({ friction, promptSummary, isKnowledgeGap, offersShareLearnings }: HintContext): string {
   const reasons = formatFrictionReasons(friction).join(', ');
   let headline: string;
   if (isKnowledgeGap) {
@@ -564,7 +564,7 @@ function buildHint({ friction, promptSummary, isKnowledgeGap, offersClose }: Hin
       : '[teamai] This session may contain a problem worth documenting.';
   }
   const task = promptSummary ? `\n\nTask: ${promptSummary}` : '';
-  if (offersClose) {
+  if (offersShareLearnings) {
     return `${headline}${task}\n\nOffer the person the teamai-share-learnings workflow: run \`${SHARE_LEARNINGS_DESCRIBE}\` and start it with the inputs it proposes, once the person confirms them.`;
   }
   const action = isKnowledgeGap
@@ -708,7 +708,7 @@ export async function contributeCheckForSession(
   // UserPromptSubmit delivery, never both.
   // The teamai-share-learnings offer is computed only on the Stop where the reminder fires.
   const offered = willHint && offer ? await offer() : undefined;
-  const hintText = willHint ? buildHint({ friction, promptSummary, isKnowledgeGap, offersClose: offered !== undefined }) : null;
+  const hintText = willHint ? buildHint({ friction, promptSummary, isKnowledgeGap, offersShareLearnings: offered !== undefined }) : null;
 
   // Single write: re-read first to avoid clobbering parallel /contribute marks.
   // Skip the write on cache hit + low score (state is already current).

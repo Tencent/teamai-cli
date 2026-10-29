@@ -108,10 +108,14 @@ export async function recallDisable(opts: GlobalOptions): Promise<void> {
   await saveLocalConfigForScope(updated, localConfig.scope, localConfig.projectRoot);
 
   await removeRecallArtifacts(teamConfig, localConfig);
-  // teamai-share-learnings runs `share`, which recall gates, so its skill follows the setting.
-  const { deployWorkflowSkills } = await import('./workflow/discovery/workflow-skills.js');
-  await deployWorkflowSkills({ teamConfig, localConfig: updated });
+  await redeployWorkflowSkills(teamConfig, updated);
   log.success('Recall disabled. AI tools will no longer auto-search the knowledge base.');
+}
+
+/** teamai-share-learnings runs `share`, which recall gates, so its skill follows the setting. */
+async function redeployWorkflowSkills(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
+  const { deployWorkflowSkills } = await import('./workflow/discovery/workflow-skills.js');
+  await deployWorkflowSkills({ teamConfig, localConfig });
 }
 
 export async function recallEnable(opts: GlobalOptions): Promise<void> {
@@ -126,8 +130,7 @@ export async function recallEnable(opts: GlobalOptions): Promise<void> {
   await saveLocalConfigForScope(updated, localConfig.scope, localConfig.projectRoot);
 
   await deployRecallArtifacts(teamConfig, localConfig);
-  const { deployWorkflowSkills } = await import('./workflow/discovery/workflow-skills.js');
-  await deployWorkflowSkills({ teamConfig, localConfig: updated });
+  await redeployWorkflowSkills(teamConfig, updated);
   log.success('Recall enabled. AI tools will auto-search the knowledge base before tasks.');
 }
 
