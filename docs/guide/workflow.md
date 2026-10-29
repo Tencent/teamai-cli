@@ -159,7 +159,7 @@ workflows:
     implementer: codex
 ```
 
-An agent-specific entry wins over `default`. `claude`, `claude-internal`, `tclaude`, `codex`, `codex-internal`, `tcodex`, `opencode`, `codebuddy`, and `workbuddy` are supported. For CI, override this selection for one start with `--tools default=claude,implementer=codex`. A step with no entry of its own runs on `TEAMAI_AI_TOOL`, then `default`, then [`ai.tool`](./reference.md#ai-tool-aitool) in the run's workspace config, then in `~/.teamai/config.yaml`. When `TEAMAI_AI_TOOL` or `ai.tool` names a tool that cannot run steps, the step skips it with a warning; a name teamai does not launch at all fails the step with `tool_unsupported`. A named agent is read from the file `teamai pull` already deployed for the selected tool, in that tool's directory for this scope.
+An agent-specific entry wins over `default`. `claude`, `claude-internal`, `tclaude`, `codex`, `codex-internal`, `tcodex`, `opencode`, `codebuddy`, `workbuddy`, and `agy` (Antigravity CLI) are supported. For CI, override this selection for one start with `--tools default=claude,implementer=codex`. A step with no entry of its own runs on `TEAMAI_AI_TOOL`, then `default`, then [`ai.tool`](./reference.md#ai-tool-aitool) in the run's workspace config, then in `~/.teamai/config.yaml`. When `TEAMAI_AI_TOOL` or `ai.tool` names a tool that cannot run steps, the step skips it with a warning; a name teamai does not launch at all fails the step with `tool_unsupported`. A named agent is read from the file `teamai pull` already deployed for the selected tool, in that tool's directory for this scope.
 
 ```text
 teamai workflow start build --driver local

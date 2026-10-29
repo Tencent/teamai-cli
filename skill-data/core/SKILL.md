@@ -178,7 +178,7 @@ aliases:
 in that tool's own field: `effort` for the Claude family, CodeBuddy, Qoder and Qoder CN,
 `model_reasoning_effort` for the Codex family, `variant` for OpenCode. Cursor takes
 effort inside its model string (`claude-opus-5[effort=high]`); Copilot, Kiro, WorkBuddy,
-JoyCode, ZCode, OMP and Muse Code take none, and pull warns and drops an effort mapped for them.
+JoyCode, ZCode, OMP, Muse Code and Antigravity CLI take none, and pull warns and drops an effort mapped for them.
 Qoder CN uses the `qoder` entry; only the Claude and Codex variants and Qoder CN inherit
 an entry, so never expect a `claude` model in Qoder or ZCode. A tool the alias does
 not map gets no `model` and uses its default; a concrete model such as `opus` is

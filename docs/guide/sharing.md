@@ -73,6 +73,8 @@ teamai remove agents code-reviewer
 
 `pull` writes each tool's own format into that tool's agents directory: `<name>.toml` for the Codex family, `<name>.agent.md` for Copilot, `<name>.json` for Kiro, and `<name>.md` for the rest. Trae and Trae CN load `.trae/agents` only while the Beta setting "Enable Subagents Directory" is on, and accept only their own model ids, so their copy leaves out the agent's `model`. Trae CN's user copy in `~/.trae-cn/agents` takes one an alias or `tool_extras.trae-cn` gives it. A project's `.trae/agents` is read by both editions, so it never gets a `model`, and it takes the other keys of both `tool_extras.trae` and `tool_extras.trae-cn`; an agent whose two editions give one key different values is skipped there, with a warning naming the key. `push` refuses an edit to that file that changes or removes a key the other edition gives.
 
+Antigravity CLI's copy keeps no team `model` (agy skips an agent whose model it does not know), only one an alias maps for agy, and lists agy's own names for the agent's tools: `tools: [Bash, Read]` becomes `run_command`, `view_file` and `read_file`. Without them an agy subagent has no shell. In a project, `.agents/agents` is agy's, so Muse Code gets no copy there while agy is installed.
+
 In single-repo mode, your root copy of an agent placed in a namespace is pushed to the placed file. Changing it from `.md` to `.yaml` retires the original file, even while your checkout is behind its own merged PR. Either way, TeamAI compares the placed file with the blob your last merged push delivered there. If the team edited it since, the push stops and prints a `teamai push --carried <path>@<blob>` command. Carry that edit into your root copy, then run it. The option accepts only that version, so a plain retry or a later team edit stops the push again. An agent deleted by the team is not re-added from your root copy. An older placement record without a blob catches a team edit only while your checkout is behind it, until your first edit through it merges and records its blob.
 
 ### Model aliases
@@ -265,6 +267,20 @@ sharing:
 
 Turn team hooks off on this machine with `TEAMAI_HOOKS_DISABLED=1`.
 
+Antigravity CLI runs them too, through teamai's own hook in `~/.gemini/config/hooks.json`. A hook gets the Claude Code payload (`tool_name: Bash`, `tool_input.command`), and exit 2 blocks the call, so one hook serves both tools:
+
+```yaml
+hooks:
+  - id: block-rm-rf
+    description: Block recursive deletes
+    event: PreToolUse
+    matcher: Bash
+    command: 'grep -q "rm -rf" && { echo "rm -rf is blocked; run git clean -n first." >&2; exit 2; } || exit 0'
+    tools: [claude, agy]
+```
+
+agy then refuses the command with `tool call denied by pre-tool hook: rm -rf is blocked; run git clean -n first.`
+
 ## MCP servers
 
 Muse may save stdio servers without `type`. Pull and removal compare that form without rewriting personal servers or unchanged managed entries when another server changes.
@@ -292,6 +308,8 @@ servers:
 Write secrets as `${VAR}` and declare the key in `env/secrets.yaml`. A server for one project goes in `mcp/<ns>/mcp.yaml`.
 
 ZCode servers use `mcp.servers` in `~/.zcode/cli/config.json` or the project's `.zcode/config.json`. This follows the 3.16.2 source; 3.15.1 is not certified. Pull moves only unchanged teamai entries out of `~/.agents/mcp.json`. Doctor names other servers there because the desktop app stops reading that fallback once the native config has servers.
+
+Antigravity CLI takes user servers in `~/.gemini/config/mcp_config.json`. It reads a project's servers only from a plugin, so teamai writes them to `.agents/plugins/teamai/mcp_config.json` with a `plugin.json` beside it.
 
 WorkBuddy uses the first existing user file in `~/.workbuddy/.mcp.json`, `~/.workbuddy/mcp.json`, and `~/.codebuddy.json`. `CODEBUDDY_CONFIG_DIR` moves the last file. A project uses `.mcp.json`, or `mcp.json` when only that exists. With `sharing.gitExclude` on, its servers use `projects[<project path>].mcpServers` in `.codebuddy.json`. These paths follow the CodeBuddy 2.168.0 engine; WorkBuddy's launcher binding is not certified. Pull removes only unchanged teamai entries from the former `.workbuddy/mcp.json` project file.
 

@@ -275,8 +275,25 @@ profiles:
 | Pi | any | `~/.pi/agent/models.json` |
 | OMP | any | `~/.omp/agent/models.yml`, or the agent dir of `OMP_PROFILE` (or `PI_PROFILE`) and `PI_CONFIG_DIR` |
 | Muse Code | `openai-responses` | `<Muse home>/settings.json` (recorded home, else `$XDG_CONFIG_HOME/muse` or `~/.config/muse`), and the key as `META_API_KEY` in `~/.teamai/models/env.sh`, which your shell profile loads |
+| Antigravity CLI | `gemini` | `modelProvider: "gemini"` in `~/.gemini/antigravity-cli/settings.json`, and `GEMINI_API_KEY` and `GOOGLE_GEMINI_BASE_URL` in `~/.teamai/models/agy-env.sh`, which your shell profile loads |
 
-The example has no `openai-responses` group, so Codex and Muse Code are left alone.
+The example has no `openai-responses` group, so Codex and Muse Code are left alone, and no `gemini` group, so Antigravity CLI is too.
+
+A gateway that serves the Gemini API reaches Antigravity CLI:
+
+```yaml
+profiles:
+  - id: gemini-gw
+    name: Team Gemini gateway
+    base_url: https://llm-gw.example.com
+    api_key: ${API_KEY}
+    model_groups:
+      - protocols: [gemini]
+        models:
+          - gemini-3.8-flash
+```
+
+After `teamai models switch gemini-gw --agent agy`, agy sends `POST https://llm-gw.example.com/v1beta/models/gemini-3.8-flash:streamGenerateContent` with the key. The model stays the one picked in agy (`/model`): agy sends its own catalog's Gemini ids, so the gateway must serve them.
 
 ### Use a team profile
 
