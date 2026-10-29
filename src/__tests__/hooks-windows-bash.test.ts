@@ -261,6 +261,29 @@ describe('Claude team-hook shell on Windows', () => {
       }
     }
   });
+
+  it('retains PowerShell-gated manifest records outside a project scope', async () => {
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+    vi.stubEnv('HOME', tmp);
+    vi.stubEnv('ProgramFiles', path.join(tmp, 'missing-pf'));
+    vi.stubEnv('ProgramFiles(x86)', path.join(tmp, 'missing-pf86'));
+    vi.stubEnv('LOCALAPPDATA', path.join(tmp, 'missing-local'));
+    const projectRoot = path.join(tmp, 'project');
+    const hooksPath = path.join(tmp, 'retained-project-gate.json');
+    const manifestPath = path.join(tmp, 'managed-hooks.json');
+    fs.mkdirSync(projectRoot, { recursive: true });
+
+    await reconcileHooks(hooksPath, 'claude', [team], { manifestPath, teamHookProjectRoot: projectRoot });
+    const before = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as { claude?: Array<{ command: string }> };
+    expect(before.claude).toHaveLength(1);
+    expect(before.claude?.[0]?.command?.startsWith('$teamaiPwd = $PWD.Path; if (')).toBe(true);
+
+    // A later shared-HOME reconciliation has no project root. It must retain
+    // this existing project record just as it retains the POSIX gate form.
+    await reconcileHooks(hooksPath, 'claude', [], { manifestPath });
+    const after = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as { claude?: Array<{ command: string }> };
+    expect(after.claude).toEqual(before.claude);
+  });
 });
 
 describe('Cursor hook command on Windows PowerShell', () => {

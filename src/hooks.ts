@@ -948,6 +948,7 @@ function isGatedForProject(command: string, projectRoot: string): boolean {
 
 function isProjectGatedCommand(command: string): boolean {
   return parseCodebuddyTeamGate(command) !== null
+    || command.startsWith('$teamaiPwd = $PWD.Path; if (')
     || command.startsWith('if [ "$PWD" = ') || command.startsWith('cd| findstr ');
 }
 
