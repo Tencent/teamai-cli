@@ -14,7 +14,7 @@ import { SessionPolicy, type SessionPolicies } from './session-flow/session-poli
 import { SessionWork, type SampledScorer } from './session-flow/session-work.js';
 import { getDataHome, type LocalConfig, type SessionShareOffered } from './types.js';
 import { nestedStart } from './workflow/attempt-marker.js';
-import { resolveStart } from './workflow/cache.js';
+import { loadWorkflowTree, resolveStart } from './workflow/cache.js';
 import { projectPartitions } from './workflow/run-location.js';
 import type { OutputSchema } from './workflow/types.js';
 
@@ -179,7 +179,8 @@ async function offer(config: LocalConfig, session: { tool: string; sessionId: st
  * session of `run`: the `publish` and `scorers` describe proposes for it. Undefined, so the reminder stays today's, in
  * a session teamai launched, one that runs unattended, one in a workflow place, where no start is allowed, one that
  * drives a skill-driven run not done yet in this machine's data homes, its own share run included, and where teamai-share-learnings resolves to no
- * definition or to one whose `invoke` is deny. The values are those of the scope a start would run in. It looks for
+ * definition, to one whose `invoke` is deny, or to one that cannot start, such as with a team teamai-share-session of
+ * other inputs. The values are those of the scope a start would run in. It looks for
  * judge tools only when a sampled scorer needs verified isolation.
  */
 async function reminderOffer(
@@ -189,7 +190,9 @@ async function reminderOffer(
 ): Promise<SessionShareOffered | undefined> {
   if (run.launchedBy !== undefined || run.runMode === 'unattended' || (await nestedStart(process.env, cwd)) !== undefined) return undefined;
   const start = await resolveStart(config, SHARE_LEARNINGS);
-  if ((start.workflow?.definition.invoke ?? 'deny') === 'deny') return undefined;
+  if (!start.workflow || (start.workflow.definition.invoke ?? 'deny') === 'deny') return undefined;
+  // A sub-workflow the team replaced with other inputs would fail the run after its learnings were shared.
+  if ('failed' in await loadWorkflowTree(start.config, start.workflow)) return undefined;
   // The skill driver imports this module for describe, so this one loads it only here.
   const { drivesUndoneRun } = await import('./workflow/drivers/skill/skill-driver.js');
   // A run lives in the data home of the scope it was started in, and a session drives it from any directory.

@@ -147,6 +147,16 @@ describe('the friction reminder keeps today\'s text, offering nothing,', () => {
 
     await expectTodaysReminder(config);
   });
+
+  it('where the team\'s teamai-share-session does not take the inputs teamai-share-learnings passes it', async () => {
+    const config = await memberConfig();
+    const workflows = path.join(config.repo.localPath, 'workflows');
+    fs.mkdirSync(workflows);
+    fs.writeFileSync(path.join(workflows, 'teamai-share-session.yaml'), 'schemaVersion: v1alpha1\nname: teamai-share-session\nalias: wrap-up\ndescription: Publish this session our way.\ninputs: { session: string, source: string }\nsteps:\n  - id: note\n    command: node -e "console.log(\'wrapped\')"\n');
+    expect((await syncWorkflowDefinitions(config)).cached).toEqual(['teamai-share-session']);
+
+    await expectTodaysReminder(config);
+  });
 });
 
 describe('the teamai-share-learnings offer of a session that drives a skill-driven run', () => {

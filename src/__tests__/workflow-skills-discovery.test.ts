@@ -249,6 +249,14 @@ describe('generated skills of teamai\'s default workflows', () => {
     expect(fs.existsSync(skillAt('teamai-share-learnings'))).toBe(false);
   });
 
+  it('offers no teamai-share-learnings skill while the team\'s teamai-share-session does not take the inputs it passes', async () => {
+    const { deploy, skillAt } = await team({ 'teamai-share-session': workflow('teamai-share-session', 'ask', 'inputs: { session: string, source: string }\n') }, undefined, { recall: true });
+    await deploy();
+
+    expect(fs.existsSync(skillAt('teamai-share-learnings'))).toBe(false);
+    expect(fs.existsSync(skillAt('teamai-share-session'))).toBe(true);
+  });
+
   it('removes the teamai-share-learnings skill once recall is turned off', async () => {
     const { deploy, skillAt, teamConfig } = await team({}, undefined, { recall: true });
     await deploy();

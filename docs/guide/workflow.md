@@ -600,6 +600,29 @@ For one name, the first runnable version wins: the project's team file, then the
 ⚠ [workflows] workflows/teamai-share-session.yaml has no runnable version, so teamai's default teamai-share-session stays in effect
 ```
 
+`teamai-share-learnings` runs `teamai-share-session` with its five inputs, so a team `teamai-share-session` declares the same five, even the ones it ignores:
+
+```yaml
+schemaVersion: v1alpha1
+name: teamai-share-session
+alias: wrap-up
+description: Publish this session our way.
+invoke: ask
+inputs: { session: string, source: string, publish: boolean, scorers: [string], judge: here | driver }
+steps:
+  - id: archive
+    command: ./scripts/archive-session.sh "$SESSION"
+    env: { SESSION: "{{ inputs.session }}" }
+```
+
+With other inputs, such as only `session` and `source`, pull warns once per input and writes no `/teamai-share-learnings` skill, `teamai-share-learnings` refuses to start with `invalid_inputs` before any learning is shared, and the friction reminder goes back to `teamai skill get share`:
+
+```text
+⚠ [workflows] teamai's default teamai-share-learnings cannot start: step "share-session" with.publish is not an input workflow "teamai-share-session" declares
+```
+
+Keep the five inputs, or replace `teamai-share-learnings` too.
+
 `workflow start --describe` reports which one starts, as `source` (`team` or `default`). A run keeps it as `origin` in its state and its [run records](#run-records): `{"source":"team"}` beside `teamRevision`, or `{"source":"default","teamaiVersion":"0.29.0"}`. The [dashboard](dashboard.md#workflow-runs) shows `Team 7a6134a25e74` or `teamai default 0.29.0`. Another machine can continue a run of a default only when its teamai ships the same file; otherwise it refuses with `definition_mismatch` and names both versions.
 
 ### teamai-share-learnings and teamai-share-session

@@ -14,7 +14,7 @@ import { warnOnce } from '../../utils/warn-once.js';
 import { DefaultWorkflows } from '../../default-workflows.js';
 import { SessionShare } from '../../session-share.js';
 import { shareBlock } from '../../skill-content.js';
-import { listCachedWorkflows, startingAlias } from '../cache.js';
+import { listCachedWorkflows, loadWorkflowTree, startingAlias } from '../cache.js';
 import { generatedSkillAt, readGenerated } from './generated-marker.js';
 import { renderWorkflowSkill, type AdvertisedWorkflow } from './render.js';
 
@@ -27,10 +27,13 @@ import { renderWorkflowSkill, type AdvertisedWorkflow } from './render.js';
 async function advertisedWorkflows(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<AdvertisedWorkflow[]> {
   const advertised: AdvertisedWorkflow[] = [];
   const sharing = await shareBlock({ localConfig, teamConfig }) === null;
-  for (const { definition, source } of await listCachedWorkflows(localConfig)) {
+  for (const cached of await listCachedWorkflows(localConfig)) {
+    const { definition, source } = cached;
     const { name, description, invoke } = definition;
     if (invoke !== 'allow' && invoke !== 'ask') continue;
     if (name === SessionShare.SHARE_LEARNINGS && !sharing) continue;
+    // A default whose sub-workflow the team replaced with other inputs cannot start.
+    if ('failed' in await loadWorkflowTree(localConfig, cached)) continue;
     const alias = await startingAlias(localConfig, definition);
     advertised.push({ name, description, invoke, source, skill: skillName(name, alias), ...(alias !== undefined ? { alias } : {}) });
   }

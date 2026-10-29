@@ -91,6 +91,33 @@ describe('default workflows', () => {
     expect(fs.existsSync(home) ? fs.readdirSync(home, { recursive: true }).map(String).filter((file) => file.includes('teamai-share')) : []).toEqual([]);
   });
 
+  it('refuse to start teamai-share-learnings while the team\'s teamai-share-session does not take the inputs it passes', async () => {
+    const config = testConfig();
+    writeWorkflow(config, 'teamai-share-session', `schemaVersion: v1alpha1
+name: teamai-share-session
+alias: wrap-up
+description: Publish this session our way.
+inputs: { session: string, source: string }
+steps:
+  - id: note
+    command: echo wrapped
+`);
+    const warn = vi.spyOn(log, 'warn');
+    await syncWorkflowDefinitions(config);
+
+    expect(warn.mock.calls.map(([message]) => message)).toEqual([
+      '[workflows] teamai\'s default teamai-share-learnings cannot start: step "share-session" with.publish is not an input workflow "teamai-share-session" declares',
+      '[workflows] teamai\'s default teamai-share-learnings cannot start: step "share-session" with.scorers is not an input workflow "teamai-share-session" declares',
+      '[workflows] teamai\'s default teamai-share-learnings cannot start: step "share-session" with.judge is not an input workflow "teamai-share-session" declares',
+    ]);
+    const started = await startRun(config, 'teamai-share-learnings', { session: 's1', source: 'claude', publish: false, scorers: [], judge: 'here' }, { secrets: await knownSecrets(config) });
+
+    expect(started).toMatchObject({ error: {
+      code: 'invalid_inputs',
+      message: 'Workflow "teamai-share-learnings" step "share-session" passes publish, scorers, judge to workflow "teamai-share-session", which does not declare them. Make the two agree, then pull again.',
+    } });
+  });
+
   it('run as a sub-workflow of a team workflow', async () => {
     const config = testConfig();
     writeWorkflow(config, 'wrap-up', `schemaVersion: v1alpha1
