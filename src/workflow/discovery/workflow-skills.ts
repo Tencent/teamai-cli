@@ -32,7 +32,7 @@ async function advertisedWorkflows(teamConfig: TeamaiConfig, localConfig: LocalC
     const { name, description, invoke } = definition;
     if (invoke !== 'allow' && invoke !== 'ask') continue;
     if (name === SessionShare.SHARE_LEARNINGS && !sharing) continue;
-    // A default whose sub-workflow the team replaced with other inputs cannot start.
+    // No skill for a workflow `start` refuses: a workflow it runs is missing, runs in a cycle, or does not take its inputs.
     if ('failed' in await loadWorkflowTree(localConfig, cached)) continue;
     const alias = await startingAlias(localConfig, definition);
     advertised.push({ name, description, invoke, source, skill: skillName(name, alias), ...(alias !== undefined ? { alias } : {}) });
