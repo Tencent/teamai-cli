@@ -47,6 +47,7 @@ describe('claudeHookOtherHostSkip on native Windows shells', () => {
     const guard = claudeHookOtherHostSkip('Stop', undefined, 'echo RAN', 'win32', null);
     expect(guard).toContain('$env:CURSOR_VERSION');
     expect(guard).toContain('Select-String');
+    expect(guard).toContain('-Encoding UTF8');
     expect(guard).not.toContain('grep -q');
     expect(guard).not.toContain('2>/dev/null');
   });

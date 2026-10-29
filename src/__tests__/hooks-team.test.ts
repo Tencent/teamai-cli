@@ -18,6 +18,7 @@ vi.mock('../utils/logger.js', () => ({
 }));
 
 import { claudeHookOtherHostSkip, reconcileHooks } from '../hooks.js';
+import * as bundledRuntime from '../bundled-runtime.js';
 import type { HookDef } from '../types.js';
 
 const SETTINGS = '/test/settings.json';
@@ -71,6 +72,7 @@ describe('reconcileHooks — team (B) hooks', () => {
 
     it('writes a PowerShell team guard with an explicit shell on Windows', async () => {
       vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+      vi.spyOn(bundledRuntime, 'findGitBashWindows').mockReturnValue(null);
       await reconcileHooks(SETTINGS, 'claude', [teamDef()], { manifestPath: MANIFEST });
 
       const hook = claudeHooks().PostToolUse.at(-1)!.hooks[0] as { command: string; shell?: string };

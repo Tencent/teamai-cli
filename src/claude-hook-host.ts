@@ -79,7 +79,7 @@ function powershellProjectCopilotCopyCheck(event: string, matcher: string | unde
   return [
     '$teamaiHooks = Join-Path (Join-Path $env:COPILOT_PROJECT_DIR ".github") "hooks";',
     'Get-ChildItem -LiteralPath $teamaiHooks -Filter "*.json" -File -ErrorAction SilentlyContinue | ForEach-Object {',
-    'try { $teamaiFile = Get-Content -LiteralPath $_.FullName -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop } catch { return };',
+    'try { $teamaiFile = Get-Content -LiteralPath $_.FullName -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop } catch { return };',
     '$teamaiVersion = $teamaiFile.version;',
     'if ($null -eq $teamaiVersion -or $teamaiVersion -is [string] -or $teamaiVersion -is [bool] -or $teamaiVersion -ne 1 -or $teamaiFile.disableAllHooks -or $null -eq $teamaiFile.hooks -or $teamaiFile.hooks -is [array] -or $teamaiFile.hooks -is [string]) { return };',
     `$teamaiEntries = @($teamaiFile.hooks.PSObject.Properties | Where-Object { $_.Name -ceq ${powershellQuoteValue(event)} } | ForEach-Object { if ($_.Value -is [array]) { $_.Value } });`,
