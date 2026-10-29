@@ -44,7 +44,7 @@ import { recordAppliedTeamHooks } from './team-hook-bridges.js';
 import { entryLayout } from './namespaced-entries.js';
 import { historicalContents } from './utils/team-history.js';
 import { getUserHome } from './utils/home.js';
-import { LEGACY_CLAUDE_HOOK_OTHER_HOST_SKIP, claudeHookOtherHostSkip, copilotRunsEntries } from './claude-hook-host.js';
+import { LEGACY_CLAUDE_HOOK_OTHER_HOST_SKIP, claudeHookOtherHostSkip, claudeHookUsesPowerShell, copilotRunsEntries } from './claude-hook-host.js';
 import { gitCommonDir, listWorktrees, resolveAnchors } from './utils/git.js';
 import {
   codexBuildSkewMessage, codexBuildsIdentity, keepCodexHookTrust, readCodexHookTrust, removeOwnedCodexProjectTrust, trustCodexHooks,
@@ -1495,8 +1495,7 @@ function scopedTeamDefs(
     ...def,
     command: skipWhenAnotherHostLoadsClaudeSettings(def, tool, legacyGuard),
     ...(tool === 'claude' && def.source === 'team' && process.platform === 'win32' && !legacyGuard
-      ? { shell: 'powershell' as const }
-      : {}),
+      && claudeHookUsesPowerShell() ? { shell: 'powershell' as const } : {}),
   }));
   if (!projectRoot) return prepared;
   if (tool === 'codebuddy' && process.platform === 'win32' && codebuddyDualRunner) {

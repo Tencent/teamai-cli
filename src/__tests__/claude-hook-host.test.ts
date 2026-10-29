@@ -3,7 +3,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { COPILOT_RUNS_ENTRIES_SOURCE, claudeHookOtherHostSkip, copilotRunsEntries } from '../claude-hook-host.js';
+import { COPILOT_RUNS_ENTRIES_SOURCE, claudeHookOtherHostSkip, claudeHookUsesPowerShell, copilotRunsEntries } from '../claude-hook-host.js';
 
 // The shell guard runs COPILOT_RUNS_ENTRIES_SOURCE; the CLI runs copilotRunsEntries.
 const guardRuns = new Function(`return ${COPILOT_RUNS_ENTRIES_SOURCE};`)() as (data: unknown) => unknown;
@@ -37,8 +37,14 @@ describe('COPILOT_RUNS_ENTRIES_SOURCE', () => {
 
 
 describe('claudeHookOtherHostSkip on native Windows shells', () => {
+  it('selects the shell Claude will use on Windows', () => {
+    expect(claudeHookUsesPowerShell('win32', 'C:/Program Files/Git/bin/bash.exe')).toBe(false);
+    expect(claudeHookUsesPowerShell('win32', null)).toBe(true);
+    expect(claudeHookUsesPowerShell('linux', null)).toBe(false);
+  });
+
   it('uses PowerShell guards instead of bash syntax for native PowerShell', () => {
-    const guard = claudeHookOtherHostSkip('Stop', undefined, 'echo RAN', 'win32');
+    const guard = claudeHookOtherHostSkip('Stop', undefined, 'echo RAN', 'win32', null);
     expect(guard).toContain('$env:CURSOR_VERSION');
     expect(guard).toContain('Select-String');
     expect(guard).not.toContain('grep -q');
@@ -46,7 +52,7 @@ describe('claudeHookOtherHostSkip on native Windows shells', () => {
   });
 
   it('keeps the POSIX guard off Windows', () => {
-    const guard = claudeHookOtherHostSkip('Stop', undefined, 'echo RAN', 'linux');
+    const guard = claudeHookOtherHostSkip('Stop', undefined, 'echo RAN', 'linux', null);
     expect(guard).toContain('grep -q');
     expect(guard).toContain('2>/dev/null');
     expect(guard).not.toContain('$env:CURSOR_VERSION');
@@ -61,7 +67,7 @@ describe('claudeHookOtherHostSkip on native Windows shells', () => {
       fs.mkdirSync(path.join(project, '.github', 'hooks'), { recursive: true });
       fs.writeFileSync(path.join(home, '.cursor', 'hooks.json'), JSON.stringify({ hooks: { stop: [{ command: '--tool cursor' }] } }));
       const env = { ...process.env, HOME: home, USERPROFILE: home, CURSOR_VERSION: '1', COPILOT_PROJECT_DIR: project };
-      const run = (event: string | undefined, extra: Record<string, string> = {}) => execFileSync(shell, ['-NoLogo', '-NoProfile', '-Command', `${claudeHookOtherHostSkip(event, undefined, 'Write-Output RAN', 'win32')}Write-Output RAN`], { env: { ...env, ...extra }, encoding: 'utf8' });
+      const run = (event: string | undefined, extra: Record<string, string> = {}) => execFileSync(shell, ['-NoLogo', '-NoProfile', '-Command', `${claudeHookOtherHostSkip(event, undefined, 'Write-Output RAN', 'win32', null)}Write-Output RAN`], { env: { ...env, ...extra }, encoding: 'utf8' });
       expect(run('Stop')).toBe('');
       fs.rmSync(path.join(home, '.cursor', 'hooks.json'));
       expect(run(undefined)).toBe('RAN\r\n');

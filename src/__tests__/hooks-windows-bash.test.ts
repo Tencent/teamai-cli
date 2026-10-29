@@ -130,9 +130,65 @@ type CursorHooksFile = {
   hooks: Record<string, Array<{ command: string; matcher?: string; timeout?: number }>>;
 };
 
+type ClaudeHooksFile = {
+  hooks: Record<string, Array<{ description?: string; hooks: Array<{ command: string; shell?: string }> }>>;
+};
+
 function cursorCommands(parsed: CursorHooksFile): string[] {
   return Object.values(parsed.hooks).flatMap((entries) => entries.map((entry) => entry.command));
 }
+
+describe('Claude team-hook shell on Windows', () => {
+  let tmp: string;
+
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-claude-shell-'));
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  const team: HookDef = {
+    source: 'team',
+    key: 'bash-command',
+    event: 'SessionStart',
+    command: 'if [ -f README.md ]; then echo RAN; fi',
+    description: '[teamai:hook:bash-command] bash command',
+  };
+
+  const shellFor = async (git: 'found' | 'absent'): Promise<{ command: string; shell?: string }> => {
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+    vi.stubEnv('HOME', tmp);
+    if (git === 'found') makeFakeGit(tmp);
+    vi.stubEnv('ProgramFiles', path.join(tmp, 'missing-pf'));
+    vi.stubEnv('ProgramFiles(x86)', path.join(tmp, 'missing-pf86'));
+    vi.stubEnv('LOCALAPPDATA', git === 'found' ? tmp : path.join(tmp, 'missing-local'));
+    const hooksPath = path.join(tmp, `${git}.json`);
+    await reconcileHooks(hooksPath, 'claude', [team]);
+    const parsed = JSON.parse(fs.readFileSync(hooksPath, 'utf8')) as ClaudeHooksFile;
+    const entry = parsed.hooks.SessionStart.find((matcher) => matcher.description === team.description)?.hooks[0];
+    if (!entry) throw new Error('missing team hook');
+    return entry;
+  };
+
+  it('keeps Git Bash commands POSIX when Git Bash is installed', async () => {
+    const entry = await shellFor('found');
+    expect(entry.command).toContain('if [ -f README.md ]; then echo RAN; fi');
+    expect(entry.command).toContain('grep -q');
+    expect(entry.shell).toBeUndefined();
+  });
+
+  it('pins the PowerShell guard only when Git Bash is unavailable', async () => {
+    await expect(shellFor('absent')).resolves.toMatchObject({
+      command: expect.stringContaining('if [ -f README.md ]; then echo RAN; fi'),
+      shell: 'powershell',
+    });
+    await expect(shellFor('absent')).resolves.toMatchObject({ command: expect.stringContaining('$env:CURSOR_VERSION') });
+  });
+});
 
 describe('Cursor hook command on Windows PowerShell', () => {
   let tmp: string;

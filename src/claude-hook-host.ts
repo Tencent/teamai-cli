@@ -12,6 +12,7 @@ import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { shellQuoteValue } from './utils/shell-profile.js';
+import { findGitBashWindows } from './bundled-runtime.js';
 
 const CURSOR_MARKER = '--tool cursor';
 const COPILOT_MARKER = '--tool copilot';
@@ -95,8 +96,11 @@ function powershellProjectCopilotCopyCheck(event: string, matcher: string | unde
  * runnable regardless of which shell invokes `teamai` or later reads a shared
  * settings file. Git Bash entries keep the POSIX command and need no override.
  */
-function usesPowerShellHookShell(platform: NodeJS.Platform = process.platform): boolean {
-  return platform === 'win32';
+export function claudeHookUsesPowerShell(
+  platform: NodeJS.Platform = process.platform,
+  gitBashPath: string | null | undefined = platform === 'win32' ? findGitBashWindows() : null,
+): boolean {
+  return platform === 'win32' && !gitBashPath;
 }
 
 const CURSOR_HOOK_SKIP =
@@ -123,8 +127,9 @@ export function claudeHookOtherHostSkip(
   copilotMatcher: string | undefined,
   command: string,
   platform: NodeJS.Platform = process.platform,
+  gitBashPath: string | null | undefined = platform === 'win32' ? findGitBashWindows() : null,
 ): string {
-  if (!usesPowerShellHookShell(platform)) {
+  if (!claudeHookUsesPowerShell(platform, gitBashPath)) {
     if (!copilotEvent) return CURSOR_HOOK_SKIP;
     return CURSOR_HOOK_SKIP + 'if [ -n "$COPILOT_PROJECT_DIR" ] && node -e ' + shellQuoteValue(PROJECT_COPILOT_COPY_CHECK) + ' '
       + `"$COPILOT_PROJECT_DIR/.github/hooks" ${copilotCopyKey(copilotEvent, copilotMatcher, command)} 2>/dev/null; then exit 0; fi; `;
