@@ -307,7 +307,7 @@ _review/                                ← Process files (not part of the knowl
 | Deep knowledge | Use `teamai codebase --deep-enrich --project <slug>` after the import has written `teamwiki/evidence/code/<slug>/`. Prefix with `teamai --dry-run` to preview without writing. TeamAI does not ship a separate team-wiki CLI. No extra plugin is required. |
 | Compile into the wiki after K3 | Skip. TeamAI does not ship a separate team-wiki CLI. Continue with this skill using `teamai` and the files under this skill directory. No extra plugin is required. |
 | Product docs into the graph | Skip. Same English note as above. |
-| Product ↔ code bridging | Use `teamai codebase --reconcile` after product pages are under `teamwiki/product/` next to the imported code pages. Prefix with `teamai --dry-run` to preview without updating the graph. |
+| Product ↔ code bridging | Use `teamai codebase --reconcile` after product pages are under `teamwiki/product/` next to the imported code pages. In the team repo it commits and pushes only the graph, not the product pages. Prefix with `teamai --dry-run` to preview without updating the graph. |
 | One-shot refresh | Use `teamai import --dir <repo> --incremental --skip-enrich`, reusing the Phase 0 repository path even when running from another directory. Do not look for another CLI. |
 | Quality assessment | Use `python3 "{SKILL_DIR}/scripts/validate_kb.py" <output_dir>` and `teamai codebase --lint`. Skip any extra evaluate binary. |
 | No team repo | When `teamai init` has not run, add `--output <dir>` to every `teamai import` and `teamai codebase` command above: they all use `<dir>/teamwiki/`. |

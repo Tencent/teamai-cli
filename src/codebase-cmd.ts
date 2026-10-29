@@ -5,6 +5,7 @@ import chalk from 'chalk';
 
 import type { GlobalOptions } from './types.js';
 import type { WikiLintSeverity } from './codebase-wiki-lint.js';
+import type { TeamwikiTarget } from './utils/teamwiki-root.js';
 import { DetachedTeamRepoError } from './utils/git.js';
 import { log } from './utils/logger.js';
 
@@ -29,13 +30,13 @@ export interface CodebaseCmdOptions extends GlobalOptions {
  * The teamwiki `teamai import` writes: `<output>/teamwiki` with `--output`,
  * else the team repo's. Undefined when there is neither.
  */
-async function teamwikiDirFor(opts: CodebaseCmdOptions, readOnly: boolean): Promise<string | undefined> {
+async function teamwikiTargetFor(opts: CodebaseCmdOptions, readOnly: boolean): Promise<TeamwikiTarget | undefined> {
     const { assertTeamwikiWritable, resolveTeamwiki } = await import('./utils/teamwiki-root.js');
     try {
         // A read never persists a config migration (#893).
         const target = await resolveTeamwiki({ output: opts.output, dryRun: opts.dryRun || readOnly });
         if (!readOnly && !opts.dryRun) await assertTeamwikiWritable(target);
-        return target.wikiRoot;
+        return target;
     } catch (error) {
         DetachedTeamRepoError.rethrow(error);
         return undefined;
@@ -82,9 +83,9 @@ export async function codebaseCmd(opts: CodebaseCmdOptions): Promise<void> {
 
     // `--lint` alone only reads.
     const { pathExists } = await import('./utils/fs.js');
-    let teamwikiDir: string | undefined;
+    let target: TeamwikiTarget | undefined;
     try {
-        teamwikiDir = await teamwikiDirFor(opts, !opts.reconcile && !opts.deepEnrich);
+        target = await teamwikiTargetFor(opts, !opts.reconcile && !opts.deepEnrich);
     } catch (error) {
         if (!(error instanceof DetachedTeamRepoError)) throw error;
         log.error(error.message);
@@ -92,11 +93,12 @@ export async function codebaseCmd(opts: CodebaseCmdOptions): Promise<void> {
         return;
     }
 
-    if (!teamwikiDir || !(await pathExists(teamwikiDir))) {
+    if (!target || !(await pathExists(target.wikiRoot))) {
         console.log('No teamwiki found. Run `teamai import` first.');
         if (opts.reconcile || opts.deepEnrich) process.exitCode = 1;
         return;
     }
+    const teamwikiDir = target.wikiRoot;
 
     if (opts.deepEnrich) {
         const project = opts.project?.trim() ?? '';
@@ -168,11 +170,31 @@ export async function codebaseCmd(opts: CodebaseCmdOptions): Promise<void> {
 
     if (opts.reconcile) {
         const { reconcileKnowledge } = await import('./wiki-engine/adapters/index.js');
-        const result = await reconcileKnowledge({ wikiRoot: teamwikiDir, dryRun: opts.dryRun });
-        if (opts.json) {
-            console.log(JSON.stringify(result, null, 2));
-        } else {
-            console.log(`Reconciliation complete: mappings=${result.mappings}, gaps=${result.gaps.length}, conflicts=${result.conflicts.length}`);
+        // In the team repo, write under the import lock and publish the graph as
+        // `teamai import` does, so the next `teamai push` does not find the clone dirty.
+        // Only the graph: a product page is the member's, and the `teamai pull` a
+        // rejected push calls for would drop it with the unpushed commit.
+        const team = opts.dryRun ? undefined : target.team;
+        const { lockTeamwiki } = await import('./utils/teamwiki-root.js');
+        const releaseLock = team ? await lockTeamwiki(target) : async () => {};
+        try {
+            const result = await reconcileKnowledge({ wikiRoot: teamwikiDir, dryRun: opts.dryRun });
+            if (opts.json) {
+                console.log(JSON.stringify(result, null, 2));
+            } else {
+                console.log(`Reconciliation complete: mappings=${result.mappings}, gaps=${result.gaps.length}, conflicts=${result.conflicts.length}`);
+            }
+            if (team) {
+                const { autoPushTeamRepo } = await import('./utils/git.js');
+                const pushed = await autoPushTeamRepo(
+                    team.localConfig.repo.localPath,
+                    '[teamai] Reconcile product and code knowledge',
+                    [path.relative(team.localConfig.repo.localPath, path.join(teamwikiDir, '.indices', 'graph-index.json'))],
+                );
+                if (pushed && !opts.json) log.success(`Pushed to team knowledge repo (${team.localConfig.repo.remote})`);
+            }
+        } finally {
+            await releaseLock();
         }
         return;
     }
@@ -198,7 +220,7 @@ export async function codebaseCmd(opts: CodebaseCmdOptions): Promise<void> {
  * tell which commit the knowledge base corresponds to.
  */
 async function printCodebaseStatus(opts: CodebaseCmdOptions): Promise<void> {
-    const teamwikiDir = await teamwikiDirFor(opts, true);
+    const teamwikiDir = (await teamwikiTargetFor(opts, true))?.wikiRoot;
     if (!teamwikiDir) {
         if (opts.json) {
             console.log(JSON.stringify({ error: 'no-teamwiki' }));

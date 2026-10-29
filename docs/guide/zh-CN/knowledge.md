@@ -181,6 +181,14 @@ teamai codebase --lint
 
 没有团队仓库时，给 `teamai import` 和 `teamai codebase` 都加上 `--output <dir>`，两者都用 `<dir>/teamwiki/`。
 
+在团队仓库里，`--reconcile` 会提交并推送它更新的图谱。你的 `teamwiki/product/` 页面保持原样；图谱没有变化时不推送：
+
+```text
+$ teamai codebase --reconcile
+Reconciliation complete: mappings=3, gaps=1, conflicts=0
+✔ Pushed to team knowledge repo (https://git.example.com/acme/team-ai.git)
+```
+
 `import` 也会用你的 AI 工具执行这一步 deep enrich。没能完成时，evidence 照样发布，但 `import` 以 1 退出，并打印继续执行的命令。在团队仓库里，这条命令就是同一次 import，它会把补上的文档一起发布：
 
 ```text

@@ -640,13 +640,15 @@ export async function getDefaultBranch(localPath: string): Promise<string> {
  *
  * `opts.initPush` selects the spawn-level block timeout factory used by init
  * (see {@link createGitWithBlockTimeout}); other callers get the plain factory.
+ *
+ * @returns false when there was nothing to commit, so nothing was pushed
  */
 export async function pushRepoDirectly(
   localPath: string,
   message: string,
   files: string[],
   opts: { initPush?: boolean } = {},
-): Promise<void> {
+): Promise<boolean> {
   const git = opts.initPush ? createGitWithBlockTimeout(localPath) : createGit(localPath);
   await assertAttachedTeamRepo(git, localPath);
   const existingFiles = [];
@@ -656,18 +658,19 @@ export async function pushRepoDirectly(
   }
   if (existingFiles.length === 0) {
     log.debug('No files to add');
-    return;
+    return false;
   }
   await git.add(existingFiles);
   const status = await git.status();
   if (status.staged.length === 0) {
     log.debug('Nothing to commit');
-    return;
+    return false;
   }
   await git.commit(message);
   // Use --set-upstream for first push on repos initialized from empty remotes
   const branch = (await git.revparse(['--abbrev-ref', 'HEAD'])).trim();
   await git.push(['-u', 'origin', branch]);
+  return true;
 }
 
 /**
@@ -706,14 +709,15 @@ export async function pushLearningToOrigin(
 }
 
 /**
- * Push all changes in a team repo clone.
+ * Push the changes under `files` (all of them by default) in a team repo clone.
  * Refuses detached team clones. Throws when the push fails (a moved `main`, a protected
  * branch, a hook rejection), so a caller never reports a publish that did not happen.
+ * @returns false when there was nothing to commit
  * @deprecated Use autoPushViaMR instead for import flows.
  */
-export async function autoPushTeamRepo(repoPath: string, message: string): Promise<void> {
+export async function autoPushTeamRepo(repoPath: string, message: string, files: string[] = ['.']): Promise<boolean> {
   try {
-    await pushRepoDirectly(repoPath, message, ['.']);
+    return await pushRepoDirectly(repoPath, message, files);
   } catch (err) {
     DetachedTeamRepoError.rethrow(err);
     const lines = (err as Error).message.split('\n').map(line => line.trim()).filter(Boolean);

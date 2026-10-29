@@ -181,6 +181,14 @@ teamai codebase --lint
 
 Without a team repo, add `--output <dir>` to both `teamai import` and `teamai codebase`; both then use `<dir>/teamwiki/`.
 
+In a team repo, `--reconcile` commits and pushes the graph it updates. It leaves your `teamwiki/product/` pages as they are, and pushes nothing when the graph did not change:
+
+```text
+$ teamai codebase --reconcile
+Reconciliation complete: mappings=3, gaps=1, conflicts=0
+✔ Pushed to team knowledge repo (https://git.example.com/acme/team-ai.git)
+```
+
 `import` also runs this deep enrich with your AI tool. When it cannot finish, the evidence is still published, but `import` exits 1 and prints the command that resumes it. In a team repo that is the same import, which publishes the docs it adds:
 
 ```text
