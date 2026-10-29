@@ -65,6 +65,34 @@ describe.skipIf(!HAS_SQLITE3)('agy session listing', () => {
   });
 });
 
+describe.skipIf(!HAS_SQLITE3)('agy session listing from a store agy closed', () => {
+  it('reads the summaries agy left in WAL mode, without a -shm file, and writes nothing beside them', async () => {
+    const db = path.join(root, 'conversation_summaries.db');
+    expect(spawnSync('sqlite3', [db, 'PRAGMA journal_mode=WAL;']).status).toBe(0);
+    const before = fs.readdirSync(root).sort();
+
+    const listed = await new AgyAdapter(root).listConversations();
+
+    expect(listed.map((meta) => meta.sessionId)).toEqual([SKILL, DENIED, NOTE]);
+    expect(fs.readdirSync(root).sort()).toEqual(before);
+  });
+});
+
+describe.skipIf(!HAS_SQLITE3)('agy session listing with a row agy wrote oddly', () => {
+  it('still lists the conversation, without the workspace or start time it cannot read, and the others with it', async () => {
+    const db = path.join(root, 'conversation_summaries.db');
+    const odd = spawnSync('sqlite3', [db, `UPDATE conversation_summaries SET workspace_uris = 'not json' WHERE conversation_id = '${DENIED}';`]);
+    expect(odd.status).toBe(0);
+    fs.writeFileSync(transcriptOf(NOTE), '{"step_index":"0","type":"USER_INPUT","created_at":"yesterday"}\n');
+
+    const listed = await new AgyAdapter(root).listConversations();
+
+    expect(listed.map((meta) => meta.sessionId)).toEqual([SKILL, DENIED, NOTE]);
+    expect(listed[1]).toMatchObject({ sessionId: DENIED, cwd: '', updatedAt: '2026-10-28T23:47:37.443Z' });
+    expect(listed[2]).toMatchObject({ sessionId: NOTE, createdAt: '2026-10-28T23:36:55.411Z', updatedAt: '2026-10-28T23:36:55.411Z' });
+  });
+});
+
 describe.skipIf(!HAS_SQLITE3)('agy session reading', () => {
   it('reads the request, the tool calls with their arguments decoded, the results and the answer', async () => {
     const session = await new AgyAdapter(root).readSession({ sessionId: SKILL });

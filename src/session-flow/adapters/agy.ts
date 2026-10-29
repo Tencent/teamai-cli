@@ -14,6 +14,7 @@
  */
 
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
@@ -23,32 +24,38 @@ import { dirExists, readJsonl, readJsonlHead, resolveRealCwd } from '../fs.js';
 import { fallbackTitle } from '../title.js';
 import { isSafeSessionFileId } from '../ids.js';
 import { findSqlite3 } from '../sqlite.js';
-import { execCommand } from '../../utils/exec.js';
+import { execCommand, type ExecResult } from '../../utils/exec.js';
 
-const SummaryRows = z.array(
-  z.object({
-    conversation_id: z.string(),
-    title: z.string(),
-    last_modified_time: z.string(),
-    workspace_uris: z.string(),
-  }),
-);
-type SummaryRow = z.infer<typeof SummaryRows>[number];
+const SummaryRow = z.object({
+  conversation_id: z.string(),
+  title: z.string(),
+  last_modified_time: z.string(),
+  workspace_uris: z.string(),
+});
+type SummaryRow = z.infer<typeof SummaryRow>;
 
-const WorkspaceUris = z.array(z.string());
+/** `workspace_uris` as agy stores it: a JSON array of URIs. */
+const WorkspaceUris = z.string().transform((text, ctx) => {
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'not JSON' });
+    return z.NEVER;
+  }
+}).pipe(z.array(z.string()));
 
 const StepTime = z.object({ created_at: z.string() });
 
-/** `2026-10-28 23:53:38.208141+00:00`, as agy stores a time, in ISO 8601. */
-function isoOf(stored: string): string {
+/** `2026-10-28 23:53:38.208141+00:00`, as agy stores a time, in ISO 8601, or undefined when it is not a time. */
+function isoOf(stored: string): string | undefined {
   const at = new Date(stored.replace(' ', 'T'));
-  if (Number.isNaN(at.getTime())) throw new Error(`agy recorded a time TeamAI cannot read: ${stored}`);
-  return at.toISOString();
+  return Number.isNaN(at.getTime()) ? undefined : at.toISOString();
 }
 
-/** The first workspace a conversation names, as a path, or '' when it names none. */
+/** The first workspace a conversation names, as a path, or '' when it names none TeamAI can read. */
 function workspaceOf(row: SummaryRow): string {
-  const [uri] = WorkspaceUris.parse(JSON.parse(row.workspace_uris));
+  const uris = WorkspaceUris.safeParse(row.workspace_uris);
+  const [uri] = uris.success ? uris.data : [];
   return uri?.startsWith('file:') ? fileURLToPath(uri) : '';
 }
 
@@ -83,12 +90,31 @@ export class AgyAdapter extends AgentAdapter {
       );
     }
     if (!fs.existsSync(db)) return [];
-    // The id is a single path segment of letters, digits, `-` and `_`, so it cannot break out of the quotes.
+    // A safe id is a single path segment of letters, digits, `-` and `_`, so it cannot break out of the quotes.
+    if (sessionId !== undefined && !isSafeSessionFileId(sessionId)) return [];
     const where = sessionId === undefined ? '' : ` WHERE conversation_id = '${sessionId}'`;
     const sql = `SELECT conversation_id, title, last_modified_time, workspace_uris FROM conversation_summaries${where} ORDER BY last_modified_time DESC;`;
-    const result = await execCommand(sqlite3, ['-readonly', '-json', db, sql], { timeoutMs: 30_000 });
+    // agy keeps the database in WAL mode, which sqlite3 cannot open read-only once agy has closed it and removed its
+    // -shm file. A copy, with the -wal that holds what agy has not checkpointed yet, reads without writing beside agy's.
+    const copy = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'teamai-agy-summaries-'));
+    let result: ExecResult;
+    try {
+      const copied = path.join(copy, 'conversation_summaries.db');
+      await fs.promises.copyFile(db, copied);
+      await fs.promises.copyFile(`${db}-wal`, `${copied}-wal`).catch((error: unknown) => {
+        if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
+      });
+      result = await execCommand(sqlite3, ['-json', copied, sql], { timeoutMs: 30_000 });
+    } finally {
+      await fs.promises.rm(copy, { recursive: true, force: true });
+    }
     if (result.code !== 0) throw new Error(`sqlite3 could not read ${db}: ${result.stderr.trim() || `exit ${result.code}`}`);
-    return result.stdout.trim() ? SummaryRows.parse(JSON.parse(result.stdout)) : [];
+    if (!result.stdout.trim()) return [];
+    // A row of another shape is left out, so the rest still list.
+    return z.array(z.unknown()).parse(JSON.parse(result.stdout)).flatMap((raw) => {
+      const row = SummaryRow.safeParse(raw);
+      return row.success ? [row.data] : [];
+    });
   }
 
   async listConversations(projectPath?: string): Promise<SessionMeta[]> {
@@ -105,7 +131,7 @@ export class AgyAdapter extends AgentAdapter {
       } catch {
         continue;
       }
-      const updatedAt = isoOf(row.last_modified_time);
+      const updatedAt = isoOf(row.last_modified_time) ?? fs.statSync(filePath).mtime.toISOString();
       const [first] = [...readJsonlHead(filePath, 1)];
       const started = StepTime.safeParse(first);
       metas.push({
@@ -113,7 +139,7 @@ export class AgyAdapter extends AgentAdapter {
         title: row.title || fallbackTitle(row.conversation_id),
         cwd,
         platform: 'agy',
-        createdAt: started.success ? isoOf(started.data.created_at) : updatedAt,
+        createdAt: (started.success ? isoOf(started.data.created_at) : undefined) ?? updatedAt,
         updatedAt,
         filePath,
         sizeBytes,
@@ -135,8 +161,9 @@ export class AgyAdapter extends AgentAdapter {
   async readSession(ref: SessionReadRef): Promise<Session> {
     const row = await this.summaryOf(ref.sessionId, ref.projectPath);
     if (!row) throw new Error(`No agy conversation ${ref.sessionId}${ref.projectPath ? ` in ${ref.projectPath}` : ''}.`);
-    const messages = messagesOf(readJsonl(ref.filePath ?? this.transcriptOf(row.conversation_id)));
-    const updatedAt = isoOf(row.last_modified_time);
+    const transcript = ref.filePath ?? this.transcriptOf(row.conversation_id);
+    const messages = messagesOf(readJsonl(transcript));
+    const updatedAt = isoOf(row.last_modified_time) ?? fs.statSync(transcript).mtime.toISOString();
     return {
       sessionId: row.conversation_id,
       title: row.title || fallbackTitle(row.conversation_id),
