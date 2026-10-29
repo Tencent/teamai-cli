@@ -186,11 +186,15 @@ function namesIdentifier(page: string, title: string, identifier: string): boole
     const stem = segment.replace(/\.[a-z0-9]+$/, '');
     if (stem === identifier || stem.split('__').includes(identifier)) return true;
   }
+  // Hyphens and underscores belong to the identifier, matching the character
+  // class identifiers are extracted with: `smart-sale-service` must not match
+  // a page titled `smart-sale-service-api overview`.
   const escaped = identifier.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`).test(title.toLowerCase());
+  return new RegExp(`(^|[^a-z0-9_-])${escaped}([^a-z0-9_-]|$)`).test(title.toLowerCase());
 }
 
-/** The subset of a merged result that decides its position in the output. */export interface RankableResult {
+/** The subset of a merged result that decides its position in the output. */
+export interface RankableResult {
   score: number;
   fromCodebase?: boolean;
   idfBaseline?: number;
@@ -784,13 +788,13 @@ export async function recall(
     // from the raw query rather than from word segments, which split a
     // hyphenated slug into "smart"/"sale"/"service": those generic pieces
     // match every codebase whose slug shares one word, while the full
-    // identifier names one module. Only identifier-shaped tokens count —
-    // a hyphen, underscore, digit or inner capital — so ordinary words
+    // identifier names one module. Only identifier-shaped tokens count — a
+    // hyphen, underscore, digit or inner capital — so ordinary words
     // ("service", "payment", "retry") never name a module.
     const queryIdentifiers = [...query.matchAll(/[A-Za-z][A-Za-z0-9_-]{3,}/g)]
       .map((match) => match[0])
       .filter((token) => token.length >= 5
-        && (/[-_\d]/.test(token) || /[a-z][A-Z]/.test(token) || /^[A-Z]{2,}/.test(token)))
+        && (/[-_\d]/.test(token) || /[a-z][A-Z]/.test(token)))
       .map((token) => token.toLowerCase());
     // A wiki codebase slug declared under `resources.wiki` but not active for
     // this directory stays out of recall, the same way docs are scoped

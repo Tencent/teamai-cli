@@ -263,6 +263,42 @@ describe('the order of the merged recall list', () => {
     expect(namedPosition).toBeLessThan(otherPosition);
   });
 
+  it('does not treat a codebase whose name extends the query identifier as the same module', async () => {
+    vi.mocked(detectProjectConfig).mockResolvedValue(projectConfig);
+    vi.mocked(queryCodeKnowledge).mockResolvedValueOnce([
+      { page: 'evidence/code/gitlab__znkf__smart-sale-service-api/overview.md', title: 'smart-sale-service-api overview', score: 40, snippet: 'a', kind: 'codebase' },
+      { page: 'evidence/code/gitlab__znkf__smart-sale-service/overview.md', title: 'smart-sale-service overview', score: 28, snippet: 's', kind: 'codebase' },
+    ]);
+    vi.mocked(search).mockReturnValue([]);
+
+    await recall('smart-sale-service HTTP interfaces endpoints routes', { dryRun: true });
+
+    const exact = captured.indexOf('[docs] smart-sale-service overview');
+    const sibling = captured.indexOf('[docs] smart-sale-service-api overview');
+    expect(exact).toBeGreaterThanOrEqual(0);
+    expect(sibling).toBeGreaterThanOrEqual(0);
+    expect(exact).toBeLessThan(sibling);
+  });
+
+  it('orders a learnings hit that falls between two code pages by score, whatever the input order', async () => {
+    vi.mocked(detectProjectConfig).mockResolvedValue(projectConfig);
+    vi.mocked(queryCodeKnowledge).mockResolvedValueOnce([
+      { page: 'evidence/code/smart-sale-service/overview.md', title: 'Sale Overview', score: 22, snippet: 's', kind: 'codebase' },
+      { page: 'evidence/code/other/overview.md', title: 'Other Overview', score: 40, snippet: 'o', kind: 'codebase' },
+    ]);
+    // 8.0 (code) > 7.8 (learnings) > 7.24 + 0.5 bonus (named page).
+    vi.mocked(search).mockReturnValue([learningHit('Gateway Runbook', 14.9)]);
+
+    await recall('smart-sale-service gateway', { dryRun: true });
+
+    const other = captured.indexOf('[docs] Other Overview');
+    const learnings = captured.indexOf('[learnings] Gateway Runbook');
+    const named = captured.indexOf('[docs] Sale Overview');
+    expect(other).toBeGreaterThanOrEqual(0);
+    expect(learnings).toBeGreaterThan(other);
+    expect(named).toBeGreaterThan(learnings);
+  });
+
   it('does not treat an ordinary word in the query as a module name', async () => {
     vi.mocked(detectProjectConfig).mockResolvedValue(projectConfig);
     vi.mocked(queryCodeKnowledge).mockResolvedValueOnce([
