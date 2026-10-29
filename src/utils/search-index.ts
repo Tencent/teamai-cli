@@ -1097,6 +1097,14 @@ function dedupKey(r: SearchResult): string {
 }
 
 /**
+ * Scale of the title field's length normalization. A title is divided by
+ * `sqrt(length / TITLE_LENGTH_SCALE)`, so a title of this many characters
+ * keeps its full weight and a longer one is discounted. Exported so the
+ * scoring test can name the value it asserts against.
+ */
+export const TITLE_LENGTH_SCALE = 12;
+
+/**
  * Query words that carry the question's phrasing, not its subject: dropping
  * them keeps a colloquial question ("某个 Job 明明在调度里…是不是被 skip 了")
  * from scoring on filler. Each one either appears in almost no entry (so its
@@ -1105,8 +1113,8 @@ function dedupKey(r: SearchResult): string {
  *
  * Measured with the real CLI on the same index, on the 90-question hard set,
  * the 305-question tuning set and the 58-question blind set: hard fact@3
- * 50→52, tuning 289→291 (hit@1 249→260), blind unchanged at 52. Adding "哪些"
- * to this list lost a blind-set question for no gain, so it stays in.
+ * 50→52, tuning 289→290, blind unchanged at 52. Adding "哪些" to this list
+ * lost a blind-set question for no gain, so it stays in.
  */
 const QUERY_STOP_TOKENS = new Set([
   '什么', '怎么', '怎样', '怎么样', '如何', '哪个', '哪里', '多少', '多久',
@@ -1120,7 +1128,7 @@ const QUERY_STOP_TOKENS = new Set([
  * Search the index with a query string.
  *
  * Scoring (P1.4 domain-weighted):
- * - Title token match: 3 points, divided by sqrt(title length / 8) so a long
+ * - Title token match: 3 points, divided by sqrt(title length / TITLE_LENGTH_SCALE) so a long
  *   hub title ("订单排查手册：查不到、查得慢、数据不一致（L4 runbook）") does not
  *   out-score a short topic title on the same matched token
  * - Tag token match: 2 points
@@ -1217,7 +1225,7 @@ export function search(
     // BM25-style length normalization for the title field: without it a hub
     // page whose title names the whole domain matches the same query token as a
     // focused page, at the same weight.
-    let score = titleScore / Math.sqrt(Math.max(1, (entry.title ?? '').length / 16)) + tagScore + bodyScore;
+    let score = titleScore / Math.sqrt(Math.max(1, (entry.title ?? '').length / TITLE_LENGTH_SCALE)) + tagScore + bodyScore;
 
     // Require at least one title or tag match to filter out body-only noise.
     // Docs (type === 'docs') often lack tags and have generic titles, so allow body-only

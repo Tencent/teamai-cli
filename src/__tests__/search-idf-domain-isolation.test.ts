@@ -350,7 +350,9 @@ describe('IDF domain isolation (regression)', () => {
     const learningsDir = path.join(tmpDir, 'learnings-cjk');
 
     // Both entries share identical CJK title tokens so their raw IDF scores are
-    // equal. The only multiplier difference is the domain weight column.
+    // equal, and their titles are the same length so the title field's length
+    // normalization cancels out. The only multiplier difference is the domain
+    // weight column.
     // Part A uses technical-leaning Chinese (接口超时重试).
     // Part B uses ops-leaning Chinese (集群节点重启).
     const docs: Record<string, string> = {
@@ -360,7 +362,7 @@ describe('IDF domain isolation (regression)', () => {
         '接口超时重试配置说明 timeout retry config',
       ),
       'ops-cjk.md': learningDoc(
-        '接口超时重试配置 k8s ops',
+        '接口超时重试配置 k8s ops infra',
         ['k8s', 'deploy'],
         '接口超时重试配置说明 timeout retry config',
       ),
@@ -405,7 +407,7 @@ describe('IDF domain isolation (regression)', () => {
         '集群节点重启排查说明 cluster node restart',
       ),
       'ops-cjk-ops.md': learningDoc(
-        '集群节点重启排查 k8s ops',
+        '集群节点重启排查 k8s ops infra',
         ['k8s', 'deploy'],
         '集群节点重启排查说明 cluster node restart',
       ),

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { search } from '../utils/search-index.js';
+import { search, TITLE_LENGTH_SCALE } from '../utils/search-index.js';
 import type { SearchIndex, SearchIndexEntry } from '../types.js';
 
 // Scoring behavior that the hard-set measurements depend on:
@@ -62,5 +62,21 @@ describe('search scoring', () => {
     const results = search('订单', index([hub, short]), 5);
     expect(results.map((r) => r.entry.filename)).toEqual(['short.md', 'hub.md']);
     expect(results[0].score).toBeGreaterThan(results[1].score);
+  });
+
+  it('divides the title score by sqrt(title length / TITLE_LENGTH_SCALE)', () => {
+    const title = '订单排查手册：查不到、查得慢、数据不一致（L4 runbook）';
+    // Only the title token matches, so the score is the title contribution
+    // alone and the ratio of the two scores is the ratio of the divisors.
+    const long = entry({ filename: 'long.md', title, tokens: ['title:订单'] });
+    const short = entry({ filename: 'short.md', title: '订单', tokens: ['title:订单'] });
+    const results = search('订单', index([long, short]), 5);
+    const longResult = results.find((r) => r.entry.filename === 'long.md')!;
+    const shortResult = results.find((r) => r.entry.filename === 'short.md')!;
+    const longFactor = Math.sqrt(Math.max(1, title.length / TITLE_LENGTH_SCALE));
+    const shortFactor = Math.sqrt(Math.max(1, '订单'.length / TITLE_LENGTH_SCALE));
+    // The long title's contribution is divided by a larger factor, so it scores
+    // lower by exactly that ratio.
+    expect(longResult.score / shortResult.score).toBeCloseTo(shortFactor / longFactor, 6);
   });
 });
