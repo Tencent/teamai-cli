@@ -452,10 +452,19 @@ export async function syncWorkflowDefinitions(
   for (const conflict of result.aliasConflicts) log.warn(`[workflows] ${formatDiagnostic(conflict)}`);
   // A default is checked against the team versions this sync settled on, as a team file is, so a team replacement of a
   // workflow it runs that takes other inputs is reported here, not by a run that fails after its first steps.
-  const settledNames = new Map(versions.map(({ definition }) => [definition.name, definition]));
-  const runnable = (name: string): WorkflowDefinition | null => settledNames.get(name) ?? DefaultWorkflows.named(name)?.definition ?? null;
+  // Resolved as `loadCachedWorkflow` resolves a start: the team file of that name, else the one team alias, else the default.
+  const settledTeam = (name: string): WorkflowDefinition | null | undefined => {
+    const named = versions.find(({ definition }) => definition.name === name);
+    if (named) return named.definition;
+    const aliased = versions.filter(({ definition }) => definition.alias === name);
+    return aliased.length === 1 ? aliased[0]?.definition : aliased.length > 1 ? null : undefined;
+  };
+  const runnable = (name: string): WorkflowDefinition | null => {
+    const team = settledTeam(name);
+    return team === undefined ? DefaultWorkflows.named(name)?.definition ?? null : team;
+  };
   for (const shipped of DefaultWorkflows.all()) {
-    if (settledNames.has(shipped.definition.name) || shipped.content === undefined) continue;
+    if (settledTeam(shipped.definition.name) !== undefined || shipped.content === undefined) continue;
     const parsed = parseWorkflow(shipped.relativePath, shipped.content, { runnable, cycle: () => undefined });
     for (const diagnostic of parsed.ok ? [] : parsed.diagnostics) log.warn(`[workflows] teamai's default ${shipped.definition.name} cannot start: ${diagnostic.message}`);
   }

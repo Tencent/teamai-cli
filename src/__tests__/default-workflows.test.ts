@@ -118,6 +118,27 @@ steps:
     } });
   });
 
+  it('warn at pull while a team workflow whose alias replaces teamai-share-session does not take the inputs teamai-share-learnings passes it', async () => {
+    const config = testConfig();
+    writeWorkflow(config, 'wrap-up', `schemaVersion: v1alpha1
+name: wrap-up
+alias: teamai-share-session
+description: Publish this session our way.
+inputs: { session: string, source: string }
+steps:
+  - id: note
+    command: echo wrapped
+`);
+    const warn = vi.spyOn(log, 'warn');
+    await syncWorkflowDefinitions(config);
+
+    expect(warn.mock.calls.map(([message]) => message)).toEqual([
+      '[workflows] teamai\'s default teamai-share-learnings cannot start: step "share-session" with.publish is not an input workflow "teamai-share-session" declares',
+      '[workflows] teamai\'s default teamai-share-learnings cannot start: step "share-session" with.scorers is not an input workflow "teamai-share-session" declares',
+      '[workflows] teamai\'s default teamai-share-learnings cannot start: step "share-session" with.judge is not an input workflow "teamai-share-session" declares',
+    ]);
+  });
+
   it('run as a sub-workflow of a team workflow', async () => {
     const config = testConfig();
     writeWorkflow(config, 'wrap-up', `schemaVersion: v1alpha1
