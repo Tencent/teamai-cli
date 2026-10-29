@@ -15,7 +15,7 @@
  * slot in `~/.teamai/sessions/<sid>-skills.json`; only a first claim is
  * recorded.
  */
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
@@ -40,6 +40,7 @@ import {
   updateKnownSkills,
 } from './usage-tracker.js';
 import { resolvePath } from './utils/agent-path.js';
+import { getFileContentAtRev, listFilesAtRev } from './utils/git.js';
 import { pathExists, readFileSafe, readJson, writeJson } from './utils/fs.js';
 import { parseFrontmatter } from './utils/frontmatter.js';
 import { getUserHome } from './utils/home.js';
@@ -303,7 +304,7 @@ export interface DeliveredSkillInfo {
  * A name with a copy teamai did not deliver, or one changed since, is left out, as there too. The description is read
  * from the first delivered copy of a name; the manifest masks it later.
  */
-export async function deliveredTeamSkillInfo(config: LocalConfig, cwd: string, delivered: DeliveredHashes, selection?: DeliverySelection): Promise<Record<string, DeliveredSkillInfo>> {
+export async function deliveredTeamSkillInfo(config: LocalConfig, cwd: string, delivered: DeliveredHashes, selection?: DeliverySelection, deliveredRev?: string): Promise<Record<string, DeliveredSkillInfo>> {
   // The member may have changed roles since the last pull; the delivered copy still belongs to the old selection.
   const selectedConfig: LocalConfig = selection ? {
     ...config,
@@ -325,6 +326,17 @@ export async function deliveredTeamSkillInfo(config: LocalConfig, cwd: string, d
   const team = desired?.kind === 'resolved'
     ? new Map(desired.items.map((item) => [item.name, { namespace: item.namespace }] as const))
     : await collectTeamRepoSkills(config.repo.localPath);
+  // The role manifest may have changed since the last pull. Match the delivered file's hash
+  // against skill sources at that pull's revision before trusting today's namespace selection.
+  const historical = new Map<string, Array<{ path: string; namespace?: string }>>();
+  if (deliveredRev) {
+    for (const source of await listFilesAtRev(config.repo.localPath, deliveredRev, 'skills')) {
+      const parts = source.split('/');
+      if (parts[0] !== 'skills' || parts.at(-1) !== 'SKILL.md' || (parts.length !== 3 && parts.length !== 4)) continue;
+      const name = parts[parts.length - 2];
+      historical.set(name, [...historical.get(name) ?? [], { path: source, ...(parts.length === 4 ? { namespace: parts[1] } : {}) }]);
+    }
+  }
   const toolRoots = config.toolRoots ?? await resolveMemberToolRoots(cwd);
   const found = new Map<string, DeliveredSkillInfo>();
   const others = new Set<string>();
@@ -332,11 +344,16 @@ export async function deliveredTeamSkillInfo(config: LocalConfig, cwd: string, d
     for (const name of await fs.readdir(root).catch(() => [])) {
       const entry = team.get(name);
       const file = path.join(root, name, 'SKILL.md');
-      if (entry === undefined || !await pathExists(file)) continue;
+      if ((entry === undefined && !historical.has(name)) || !await pathExists(file)) continue;
       if (!await recordedUnchanged(delivered, file)) { others.add(name); continue; }
       if (found.has(name)) continue;
+      const matches = (await Promise.all((historical.get(name) ?? []).map(async (source) => {
+        const content = await getFileContentAtRev(config.repo.localPath, deliveredRev!, source.path);
+        return content && createHash('sha256').update(content).digest('hex') === delivered[file] ? source : null;
+      }))).filter((source): source is { path: string; namespace?: string } => source !== null);
+      const namespace = matches.length === 1 ? matches[0].namespace : entry?.namespace;
       const description = String(parseFrontmatter(await readFileSafe(file) ?? '').data.description ?? '').trim();
-      found.set(name, { ...(entry.namespace !== undefined ? { namespace: entry.namespace } : {}), description });
+      found.set(name, { ...(namespace !== undefined ? { namespace } : {}), description });
     }
   }
   return Object.fromEntries([...found].filter(([name]) => !others.has(name)));

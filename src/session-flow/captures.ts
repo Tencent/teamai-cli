@@ -81,7 +81,7 @@ async function atStart(config: LocalConfig, tool: string, payload: Record<string
     const capture: SessionCapture = {
       captureId: randomUUID(), platform, sessionId, capturedAt: new Date().toISOString(), runMode: resolveRunMode(env), agent,
       ...(typeof file === 'string' && path.isAbsolute(file) ? { sessionFile: file } : {}),
-      ...(delivered ? { teamSkills: await deliveredTeamSkills(config, cwd, delivered), teamSkillInfo: await deliveredTeamSkillInfo(config, cwd, delivered, record?.selection) } : {}),
+      ...(delivered ? { teamSkills: await deliveredTeamSkills(config, cwd, delivered), teamSkillInfo: await deliveredTeamSkillInfo(config, cwd, delivered, record?.selection, record?.rev) } : {}),
     };
     await writeCapture(config, capture);
     return capture.captureId;
@@ -164,10 +164,10 @@ function withTeamSkills(capture: SessionCapture, pulled: Record<string, string[]
 }
 
 /** `capture` with the descriptions of the skills `pulled` added for names it does not already hold, so a later pull leaves them (#1469). */
-function withTeamSkillInfo(capture: SessionCapture, pulled: Record<string, { namespace?: string; description: string }>): SessionCapture {
+function withTeamSkillInfo(capture: SessionCapture, pulled: Record<string, { namespace?: string; description: string }>, observed: boolean): SessionCapture {
   const teamSkillInfo = { ...capture.teamSkillInfo };
   for (const [name, info] of Object.entries(pulled)) if (!(name in teamSkillInfo)) teamSkillInfo[name] = info;
-  return Object.keys(teamSkillInfo).length > 0 ? { ...capture, teamSkillInfo } : capture;
+  return observed || capture.teamSkillInfo !== undefined ? { ...capture, teamSkillInfo } : capture;
 }
 
 /**
@@ -184,13 +184,14 @@ async function markTeamChanged(config: LocalConfig, tool: string, payload: Recor
   const record = await checkoutRecord(config, tool);
   const changed = !isDeepStrictEqual(deliveryOf(record), before);
   try {
-    const pulled = record?.delivered && typeof cwd === 'string' && typeof captureId === 'string'
-      ? await deliveredTeamSkills(config, cwd, record.delivered) : {};
-    const pulledInfo = record?.delivered && typeof cwd === 'string' && typeof captureId === 'string'
-      ? await deliveredTeamSkillInfo(config, cwd, record.delivered, record.selection) : {};
-    if (!changed && Object.keys(pulled).length === 0) return;
+    const observed = record?.delivered !== undefined && typeof cwd === 'string' && typeof captureId === 'string';
+    const pulled = observed
+      ? await deliveredTeamSkills(config, cwd, record!.delivered!) : {};
+    const pulledInfo = observed
+      ? await deliveredTeamSkillInfo(config, cwd, record!.delivered!, record!.selection, record!.rev) : {};
+    if (!changed && Object.keys(pulled).length === 0 && !observed) return;
     await rewrite(config, platform, sessionId, () => true, (capture) => ({
-      ...(capture.captureId === captureId ? withTeamSkillInfo(withTeamSkills(capture, pulled), pulledInfo) : capture),
+      ...(capture.captureId === captureId ? withTeamSkillInfo(withTeamSkills(capture, pulled), pulledInfo, observed) : capture),
       ...(changed ? { teamChanged: true } : {}),
     }));
   } catch (e) {

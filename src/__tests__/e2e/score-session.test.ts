@@ -63,6 +63,8 @@ describe('teamai score --session', () => {
     knowledge = path.join(root, 'knowledge');
     team = path.join(root, 'team.git');
     fs.mkdirSync(path.join(knowledge, 'scorers'), { recursive: true });
+    fs.mkdirSync(path.join(knowledge, 'skills', 'review-notes'), { recursive: true });
+    fs.writeFileSync(path.join(knowledge, 'skills', 'review-notes', 'SKILL.md'), '---\ndescription: Write review notes for a PR.\n---\nReview a PR.\n');
     fs.writeFileSync(path.join(knowledge, 'teamai.yaml'), `team: acme\nrepo: ${TEAM_URL}\nprovider: github\n`);
     fs.writeFileSync(path.join(knowledge, 'scorers', 'review-quality.md'), SCORER);
     git(root, 'init', '-q', '-b', 'main', knowledge);
@@ -90,6 +92,7 @@ const fs = require('node:fs');
 if (process.argv.includes('--version')) { console.log('2.1.308 (Claude Code)'); process.exit(); }
 const transcript = fs.readFileSync(require('node:path').join('transcripts', 'session.md'), 'utf8');
 fs.writeFileSync(${JSON.stringify(path.join(root, 'judged-transcript.md'))}, transcript);
+fs.writeFileSync(${JSON.stringify(path.join(root, 'judged-evidence.json'))}, fs.readFileSync('evidence.json'));
 const label = transcript.includes('Added the retries.') ? 'shallow' : 'thorough';
 process.stdin.resume(); process.stdin.on('end', () => {
 console.log(JSON.stringify({ type: 'system', subtype: 'init', model: 'm1' }));
@@ -273,4 +276,19 @@ console.log(JSON.stringify({ type: 'result', structured_output: { label, reasoni
       judge: { kind: 'model', tool: 'cursor', isolation: 'best-effort', access: 'read', model: { reported: 'composer-1' } },
     });
   });
+  it('passes delivered and used skills through a real session-start hook and score CLI (#1469)', async () => {
+    const transcript = path.join(env.HOME ?? '', '.claude', 'projects', encodeCwdClaude(app), `${SESSION}.jsonl`);
+    const hook = await runCLI(['hook-dispatch', 'session-start', '--tool', 'claude'], app, env,
+      JSON.stringify({ cwd: app, session_id: SESSION, hook_event_name: 'SessionStart', source: 'startup', model: 'claude-x', transcript_path: transcript }) + '\n');
+    expect(hook.code, hook.stdout + hook.stderr).toBe(0);
+
+    const scored = await runCLI(['score', '--session', SESSION, '--source', 'claude-code', '--scorer', 'review-quality'], app, env);
+    expect(scored.code, scored.stdout + scored.stderr).toBe(0);
+    const evidence = JSON.parse(fs.readFileSync(path.join(root, 'judged-evidence.json'), 'utf8')) as Record<string, unknown>;
+    expect(evidence).toMatchObject({
+      skills: { available: [{ name: 'review-notes', description: 'Write review notes for a PR.' }], used: [] },
+    });
+    expect(evidence.gaps).not.toContain('skills_unknown');
+  });
+
 });

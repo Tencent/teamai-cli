@@ -196,9 +196,12 @@ describe('session captures (#1178)', () => {
 
     const switched = { ...member, primaryRole: 'ops' };
     await SessionCaptures.atStart(switched, 'claude', start(project, { source: 'resume' }), {});
+    commitFile(team, 'manifest/roles.yaml', 'version: 1\nroles:\n  - id: web\n    resources: { knowledge: [], skills: [ops] }\n  - id: ops\n    resources: { knowledge: [], skills: [ops] }\n');
+    await SessionCaptures.atStart(member, 'claude', start(project, { source: 'resume' }), {});
 
     expect((await SessionCaptures.read(member, 'claude-code', SESSION)).map((capture) => capture.teamSkillInfo))
       .toEqual([
+        { ship: { namespace: 'web', description: 'Web release.' } },
         { ship: { namespace: 'web', description: 'Web release.' } },
         { ship: { namespace: 'web', description: 'Web release.' } },
       ]);
@@ -282,6 +285,17 @@ describe('session captures (#1178)', () => {
     await recordDelivery(config, { rev: commitFile(config.repo.localPath, 'skills/other/SKILL.md'), targets: ['claude'], files: [skill] });
     await SessionCaptures.markTeamChanged(config, 'claude', start(project), before);
     expect((await SessionCaptures.read(config, 'claude-code', SESSION)).map((capture) => capture.teamChanged)).toEqual([true, true]);
+  });
+
+  it('records an empty skills inventory after the session own pull delivered none (#1469)', async () => {
+    const { config, project, rev } = checkout();
+    const captureId = await SessionCaptures.atStart(config, 'claude', start(project), {});
+    const before = await SessionCaptures.checkoutDelivery(config, 'claude');
+    await recordDelivery(config, { rev, targets: ['claude'], files: [] });
+
+    await SessionCaptures.markTeamChanged(config, 'claude', { ...start(project), [CAPTURE_PAYLOAD_KEY]: captureId }, before);
+
+    expect((await SessionCaptures.read(config, 'claude-code', SESSION)).map((capture) => capture.teamSkillInfo)).toEqual([{}]);
   });
 
   it('adds the team skills the session\'s own pull delivered to its captures, and keeps the ones it started with', async () => {
