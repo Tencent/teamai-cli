@@ -125,6 +125,51 @@ describe('read-only protection (http kind)', () => {
       process.chdir(originalCwd);
     }
   });
+
+  it('exits 1 without a success line when the local agent is initialized already and --force is not given (#1500)', async () => {
+    writeApiKey();
+    server = await startMockServer({ apiKey: API_KEY });
+    const project = path.join(tmpDir, 'project-force');
+    const codexHome = path.join(tmpDir, '.codex');
+    fs.mkdirSync(project);
+    fs.mkdirSync(codexHome);
+    const fakeBin = installFakeCodex();
+    const oldPath = process.env.PATH;
+    const oldCwd = process.cwd();
+    const oldExitCode = process.exitCode;
+    process.env.PATH = `${fakeBin}${path.delimiter}${oldPath ?? ''}`;
+    process.chdir(project);
+    const error = vi.spyOn(log, 'error').mockImplementation(() => {});
+    const success = vi.spyOn(log, 'success').mockImplementation(() => {});
+    try {
+      const { init } = await import('../init.js');
+      await init({ http: server.url, force: true, scope: 'project', agent: ['codex'] });
+
+      // The seeded local agent must block a second init that does not force;
+      // the overwrite confirmation is answered so the run reaches step 6.
+      process.exitCode = undefined;
+      error.mockClear();
+      success.mockClear();
+      const promptModule = await import('../utils/prompt.js');
+      const confirmSpy = vi.spyOn(promptModule, 'askConfirmation').mockResolvedValue(true);
+      try {
+        await init({ http: server.url, force: false, scope: 'project', agent: ['codex'] });
+      } finally {
+        confirmSpy.mockRestore();
+      }
+
+      expect(error).toHaveBeenCalledWith(expect.stringContaining('HTTP local agent is already initialized'));
+      expect(error).toHaveBeenCalledWith(expect.stringContaining('--force'));
+      expect(success).not.toHaveBeenCalledWith(expect.stringContaining('teamai initialized (HTTP read-only)'));
+      expect(process.exitCode).toBe(1);
+    } finally {
+      process.exitCode = oldExitCode;
+      process.chdir(oldCwd);
+      if (oldPath === undefined) delete process.env.PATH;
+      else process.env.PATH = oldPath;
+      fs.rmSync(fakeBin, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('hook registry wiring', () => {

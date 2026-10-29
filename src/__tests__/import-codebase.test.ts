@@ -5,12 +5,18 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'fs-extra';
 
-import { importCodebase } from '../import-codebase.js';
+import { importCodebase, importLocalCheckout } from '../import-codebase.js';
 
 const { mockEnrichWithAI } = vi.hoisted(() => ({ mockEnrichWithAI: vi.fn() }));
 vi.mock('../enrich-with-ai.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../enrich-with-ai.js')>();
   return { ...actual, enrichWithAI: (...args: unknown[]) => mockEnrichWithAI(...args) };
+});
+
+const { mockDeepEnrich } = vi.hoisted(() => ({ mockDeepEnrich: vi.fn() }));
+vi.mock('../deep-enrich.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../deep-enrich.js')>();
+  return { ...actual, deepEnrich: (...args: unknown[]) => mockDeepEnrich(...args) };
 });
 
 function git(cwd: string, ...args: string[]): void {
@@ -566,5 +572,72 @@ describe('importCodebase: the extraction every import source shares', () => {
     await importCodebase({ sourceDir: second, slug, wikiRoot, skipEnrich: true });
 
     expect(await fs.pathExists(path.join(evidence, 'docs', 'curated.md'))).toBe(false);
+  });
+});
+
+describe('importLocalCheckout: deep-enrich exit status (#1500)', () => {
+  let root: string;
+  let wikiRoot: string;
+  let logs: string[];
+
+  beforeEach(async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-import-de-'));
+    wikiRoot = path.join(root, 'team-repo', 'teamwiki');
+    logs = [];
+    mockEnrichWithAI.mockReset();
+    mockDeepEnrich.mockReset();
+    vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => { logs.push(args.map(String).join(' ')); });
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await fs.remove(root);
+  });
+
+  const repo = async (): Promise<string> => makeRepo(root, 'svc', 'export function greet() { return "hi"; }\n');
+
+  it('fails the command when deep enrich leaves docs missing, and still publishes the evidence', async () => {
+    mockDeepEnrich.mockResolvedValue({ project: 'svc', complete: false, missingComponents: ['src'], missingArchitecture: true });
+    const oldExitCode = process.exitCode;
+    try {
+      expect(await importLocalCheckout({ sourceDir: await repo(), slug: 'svc', wikiRoot, skipEnrich: false })).toBe(true);
+
+      const all = logs.join('\n');
+      expect(all).toContain('Deep enrich incomplete: missing component docs: src, missing architecture.md');
+      expect(all).toContain('teamai codebase --deep-enrich --project svc');
+      expect(all).not.toContain('Deep enrich complete');
+      expect(process.exitCode).toBe(1);
+      expect(await fs.pathExists(path.join(wikiRoot, 'evidence', 'code', 'svc', 'overview.md'))).toBe(true);
+    } finally {
+      process.exitCode = oldExitCode;
+    }
+  });
+
+  it('exits 0 and reports completion when deep enrich completes', async () => {
+    mockDeepEnrich.mockResolvedValue({ project: 'svc', complete: true, missingComponents: [], missingArchitecture: false });
+    const oldExitCode = process.exitCode;
+    try {
+      expect(await importLocalCheckout({ sourceDir: await repo(), slug: 'svc', wikiRoot, skipEnrich: false })).toBe(true);
+
+      expect(logs.join('\n')).toContain('Deep enrich complete: svc');
+      expect(process.exitCode).toBe(oldExitCode);
+    } finally {
+      process.exitCode = oldExitCode;
+    }
+  });
+
+  it('fails the command when deep enrich throws', async () => {
+    mockDeepEnrich.mockRejectedValue(new Error('EACCES: cannot acquire the import lock'));
+    const oldExitCode = process.exitCode;
+    try {
+      expect(await importLocalCheckout({ sourceDir: await repo(), slug: 'svc', wikiRoot, skipEnrich: false })).toBe(true);
+
+      const all = logs.join('\n');
+      expect(all).toContain('deep-enrich failed for svc: EACCES: cannot acquire the import lock');
+      expect(all).toContain('teamai codebase --deep-enrich --project svc');
+      expect(process.exitCode).toBe(1);
+    } finally {
+      process.exitCode = oldExitCode;
+    }
   });
 });

@@ -517,7 +517,9 @@ export async function importCodebase(opts: ImportCodebaseOptions): Promise<boole
 
 /**
  * Reconcile product docs with code knowledge, then deep-enrich the codebase.
- * Both are non-blocking; deep enrich runs only when `_manifest.json` exists.
+ * Reconcile stays non-blocking; an incomplete or failed deep enrich keeps the
+ * published evidence but reports itself and fails the command, like
+ * `codebase --deep-enrich` and the `deep-enrich` command already do (#1500).
  */
 export async function reconcileAndDeepEnrich(params: {
   slug: string;
@@ -540,11 +542,24 @@ export async function reconcileAndDeepEnrich(params: {
   if (skipEnrich || !(await fs.pathExists(path.join(evidenceDir, '_manifest.json')))) return;
   try {
     const { deepEnrich } = await import('./deep-enrich.js');
-    await deepEnrich({ project: slug, evidenceDir, wikiRoot, cacheDir: sourceDir });
-    log.info(`Deep enrich complete: ${slug}`);
+    const result = await deepEnrich({ project: slug, evidenceDir, wikiRoot, cacheDir: sourceDir });
+    if (result.complete) {
+      log.info(`Deep enrich complete: ${slug}`);
+      return;
+    }
+    const missing: string[] = [];
+    if (result.missingComponents.length > 0) {
+      missing.push(`missing component docs: ${result.missingComponents.join(', ')}`);
+    }
+    if (result.missingArchitecture) missing.push('missing architecture.md');
+    log.warn(`Deep enrich incomplete: ${missing.join(', ')}. `
+      + `Run \`teamai codebase --deep-enrich --project ${slug}\` to retry.`);
+    process.exitCode = 1;
   } catch (err) {
     if (isOverrideInvalid(err)) throw err;
-    log.debug(`deep-enrich failed for ${slug} (non-blocking): ${(err as Error).message}`);
+    log.warn(`deep-enrich failed for ${slug}: ${(err as Error).message}. `
+      + `Run \`teamai codebase --deep-enrich --project ${slug}\` to retry.`);
+    process.exitCode = 1;
   }
 }
 

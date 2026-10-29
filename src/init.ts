@@ -929,12 +929,16 @@ export async function initHttp(
   await reconcileHooksForInit(teamConfig, localConfig, filterAgents);
 
   // Step 6: also initialize local-agent config so the new hook-dispatch --stdin
-  // path can deliver rules/claudemd (not just skills).
+  // path can deliver rules/claudemd (not just skills). A local agent that is
+  // not (re)initialized leaves the old endpoint and token in place, so the
+  // command must not report success (#1500).
   const { initLocalAgentHttp } = await import('./local-agent.js');
   try {
     await initLocalAgentHttp({ endpoint: url, token: options.token, force: options.force, filterAgents });
   } catch (e) {
-    log.debug(`Local agent init: ${(e as Error).message}`);
+    log.error(`Local agent init: ${(e as Error).message}`);
+    process.exitCode = 1;
+    return;
   }
 
   await runInitScript(localConfig, 'postInit', options.dryRun, true);
