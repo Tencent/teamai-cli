@@ -197,7 +197,9 @@ describe('sharing an agent session with teamai\'s default teamai-share-learnings
 
     const shared = shareSession(install, SHARE_INPUTS, sharing(install));
 
-    const contributed = shared.events.filter((event) => event.kind === 'settled' && event.step?.startsWith('contribute['));
+    // The two contribute passes run side by side, so they settle in either order.
+    const contributed = shared.events.filter((event) => event.kind === 'settled' && event.step?.startsWith('contribute['))
+      .sort((a, b) => String(a.step).localeCompare(String(b.step)));
     expect(contributed).toEqual([
       expect.objectContaining({ step: 'contribute[0]', outcome: 'success', exitCode: 0 }),
       expect.objectContaining({ step: 'contribute[1]', outcome: 'success', exitCode: 0 }),
@@ -224,11 +226,13 @@ describe('sharing an agent session with teamai\'s default teamai-share-learnings
       { kind: 'learning', id: expect.stringMatching(/^pnpm-needs-frozen-lockfile-in-ci-/) },
     ]);
     const ofSession = (await readSessionOutcomes(path.join(install.home, '.teamai', 'dashboard', 'events.jsonl'))).filter((event) => event.sessionId === SESSION);
-    expect(ofSession).toEqual([
+    // Each contribute pass records its outcome as it settles, in either order.
+    expect(ofSession).toHaveLength(2);
+    expect(ofSession).toEqual(expect.arrayContaining([
       expect.objectContaining({ tool: 'claude', outcomes: [learnings[0]] }),
       expect.objectContaining({ tool: 'claude', outcomes: [learnings[1]] }),
-    ]);
-    expect(ofSession[0]).not.toHaveProperty('launchedBy');
+    ]));
+    for (const event of ofSession) expect(event).not.toHaveProperty('launchedBy');
   });
 
   it('ends a judging item with an empty label when teamai score refuses the lease, and the run still succeeds', async () => {
