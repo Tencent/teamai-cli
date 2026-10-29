@@ -53,6 +53,9 @@ jobs:
       - name: Unit tests
         run: npx vitest run ${{ matrix.os == 'ubuntu-latest' && matrix.node-version == 20 && '--coverage' || '' }}
 
+      - name: Asset benchmark report tests
+        run: node --test scripts/benchmark-assets.test.mjs
+
       - name: Upload coverage
         if: matrix.os == 'ubuntu-latest' && matrix.node-version == 20
         uses: actions/upload-artifact@v4
