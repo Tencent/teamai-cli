@@ -510,7 +510,7 @@ skill 以人们对工作流的称呼命名：
 | 你的 `workflows/teamai-share-session.yaml`，没有别名 | `/teamai-share-session` |
 | 你的 `workflows/teamai-share-session.yaml`，带 `alias: wrap-up` | `/workflow-wrap-up` |
 
-冲突的别名（`alias_conflict`）不指向任何工作流，所以在冲突解决之前，它的 skill 回到 `workflow-<name>`。
+冲突的别名（`alias_conflict`）不指向任何工作流，所以在冲突解决之前，它的 skill 回到 `workflow-<name>`，默认工作流则回到它自己的名字，例如 `teamai-share-session`。
 
 请修改工作流，而不是 skill。工作流变化时，pull 会重写未改动过的 skill；别名变化时重命名它；工作流被删除或改为 `deny` 时，pull 会删除它。被你编辑过的 skill 会保留，并给出警告。没有生成标记的同名团队或成员 skill 会取代它，`teamai doctor` 会列出这种情况。`teamai push` 从不发布生成的 skill。`push --skill` 拒绝生成的 skill，也拒绝 CLI 自有的 skill，如 `teamai`。在项目中，pull 会把生成的 skill 列入 `.git/info/exclude`。
 
@@ -572,7 +572,7 @@ teamai 自带两个工作流，团队不用自己编写就能使用。它们都�
 
 | 工作流 | 作用 | 它的 skill 何时出现 |
 |---|---|---|
-| `teamai-share-learnings` | 把会话学到的东西分享为团队经验（一条或多条），然后运行 `teamai-share-session` | [recall](knowledge.md) 开启且来源可写时，因为它的第一步运行 `teamai skill get share` |
+| `teamai-share-learnings` | 把会话学到的东西分享为团队经验（一条或多条），然后运行 `teamai-share-session` | [recall](knowledge.md) 开启且来源可写时，因为它的第一步运行 `teamai skill get share`；团队的同名副本也一样 |
 | `teamai-share-session` | 发布会话的转录（已脱敏），并用团队的评分器给它评分 | 始终 |
 
 团队写一个同名文件就会取代默认工作流：
@@ -612,7 +612,7 @@ inputs: { session: string, source: string, publish: boolean, scorers: [string], 
 
 learning         interactive：会话的 agent 和本人一起运行 `teamai skill get share`
                  → { learnings: [{ title, file, namespace }, …] }，没什么可分享时为 []
-└─ approve       有一条或更多经验时运行。可选审批：Share these N learnings with the team? [标题]
+└─ approve       有一条或更多经验时运行。可选审批：Share these N learnings with the team? [每条的标题、文件和命名空间]
    └─ contribute 每条经验一次 → teamai contribute --file … --title … --namespace … --session-id <session>
 share-session    用相同输入运行 teamai-share-session：
   publish        只在 publish: true 时运行。必需审批：只有本人能回答

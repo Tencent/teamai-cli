@@ -510,7 +510,7 @@ The skill is named after what people call the workflow:
 | your `workflows/teamai-share-session.yaml`, no alias | `/teamai-share-session` |
 | your `workflows/teamai-share-session.yaml` with `alias: wrap-up` | `/workflow-wrap-up` |
 
-An alias in conflict (`alias_conflict`) names nothing, so its skill goes back to `workflow-<name>` until the conflict is gone.
+An alias in conflict (`alias_conflict`) names nothing, so its skill goes back to `workflow-<name>`, or a default's own name such as `teamai-share-session`, until the conflict is gone.
 
 Edit the workflow, not the skill. Pull rewrites an unchanged skill when the workflow changes, renames it when the alias changes, and removes it when the workflow is removed or set to `deny`. It keeps a skill you edited, with a warning. A team or member skill of the same name without the generated marker takes its place, and `teamai doctor` lists it. `teamai push` never publishes a generated skill. `push --skill` refuses one, and refuses a skill the CLI owns, such as `teamai`. In a project, pull lists the generated skills in `.git/info/exclude`.
 
@@ -572,7 +572,7 @@ teamai ships two workflows a team gets without writing them. Both start with `te
 
 | Workflow | What it does | Its skill appears |
 |---|---|---|
-| `teamai-share-learnings` | shares what the session taught as team learnings, one or several, then runs `teamai-share-session` | while [recall](knowledge.md) is on and the source is writable, since its first step runs `teamai skill get share` |
+| `teamai-share-learnings` | shares what the session taught as team learnings, one or several, then runs `teamai-share-session` | while [recall](knowledge.md) is on and the source is writable, since its first step runs `teamai skill get share`; a team copy of it too |
 | `teamai-share-session` | publishes the session's transcript, scrubbed, and scores it with the team's scorers | always |
 
 A team file with the same name replaces a default:
@@ -612,7 +612,7 @@ inputs: { session: string, source: string, publish: boolean, scorers: [string], 
 
 learning         interactive: the session's agent runs `teamai skill get share` with the person
                  → { learnings: [{ title, file, namespace }, …] }, [] when nothing is worth sharing
-└─ approve       when there is one learning or more. Optional approval: Share these N learnings with the team? [titles]
+└─ approve       when there is one learning or more. Optional approval: Share these N learnings with the team? [each title, file and namespace]
    └─ contribute once per learning → teamai contribute --file … --title … --namespace … --session-id <session>
 share-session    runs teamai-share-session with the same inputs:
   publish        on publish: true only. Required approval: only the person answers

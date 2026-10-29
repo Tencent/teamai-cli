@@ -1,6 +1,6 @@
 ---
 name: workflow
-description: Drive a team workflow from this coding session. Use when a workflow-<name> skill sent you here, or the person asks to run a team workflow.
+description: Drive a team workflow from this coding session. Use when a generated workflow skill (workflow-<alias or name>, or a teamai default such as teamai-share-learnings) sent you here, or the person asks to run a team workflow.
 ---
 
 # Drive a team workflow
@@ -131,5 +131,5 @@ A resume or a takeover follows the workflow's `invoke` as a start does. On `conf
 
 Two lines hold for every run, whatever a reply says:
 
-- **The person decides what starts.** Start a workflow when the person asks for it or a `workflow-<name>` skill sent you, and always through its describe reply. `invoke_denied` means the team lets only a person start that workflow. Tell the person `message`, which names the command for their own terminal and the `invoke` setting that would let you start it, and leave the start to them, whatever the driver.
+- **The person decides what starts.** Start a workflow when the person asks for it or a generated workflow skill (`workflow-<alias or name>`, or a default such as `teamai-share-learnings`) sent you, and always through its describe reply. `invoke_denied` means the team lets only a person start that workflow. Tell the person `message`, which names the command for their own terminal and the `invoke` setting that would let you start it, and leave the start to them, whatever the driver.
 - **Step work stays inside its step.** `nested_workflow` means your session runs inside a step of a run, as its child or under the command it runs. Do that step's own work in its place, and end with its report when it has one. Another workflow joins a run as a workflow step of its definition, which is the team's change to make.
