@@ -286,7 +286,7 @@ daily_limit: 10                                  # 按数据目录计数：在�
 | 策略 | `attended` | `unattended` |
 |---|---|---|
 | `off` | 什么都不做。默认值。 | 什么都不做。 |
-| `ask` | 摩擦提醒提供 [`session-close`](workflow.md#session-close) 时，它提议抽样选中该会话的评分器，成员确认后由它们评判。 | 等同于 `off`，因为没有人回答。 |
+| `ask` | 摩擦提醒提供 [`teamai-share-learnings`](workflow.md#teamai-share-learnings-和-teamai-share-session) 时，它提议抽样选中该会话的评分器，成员确认后由它们评判。 | 等同于 `off`，因为没有人回答。 |
 | `auto` | 会话六小时没有任何活动后，由后台评审评判。 | 在任务结束前运行 `teamai score --drain` 时评判。默认值。 |
 
 每种模式单独解析，取下面第一个设置了它的位置：成员 `config.yaml` 中的 `scoring.sessions`、生效命名空间的 `scoring.yaml`、根目录的 `scorers/scoring.yaml`、默认值。两个生效命名空间不一致时，最严格的策略生效（`off`，其次 `ask`，最后 `auto`），`daily_limit` 也取最低值。只写一种模式的映射（例如 `{ attended: ask }`）会把另一种模式留给下一级：

@@ -286,7 +286,7 @@ daily_limit: 10                                  # per data home: on a fresh CI 
 | Policy | `attended` | `unattended` |
 |---|---|---|
 | `off` | Nothing. The default. | Nothing. |
-| `ask` | When the friction reminder offers [`session-close`](workflow.md#session-close), it proposes the scorers that sample the session, and they judge it once the person confirms. | Acts as `off`, since nobody is there to answer. |
+| `ask` | When the friction reminder offers [`teamai-share-learnings`](workflow.md#teamai-share-learnings-and-teamai-share-session), it proposes the scorers that sample the session, and they judge it once the person confirms. | Acts as `off`, since nobody is there to answer. |
 | `auto` | A session is judged once nothing has happened in it for six hours, by the background judge. | A session is judged when `teamai score --drain` runs, before the job ends. The default. |
 
 Each mode resolves on its own, from the first of these that sets it: a member's `scoring.sessions` in `config.yaml`, the active namespaces' `scoring.yaml` files, the root `scorers/scoring.yaml`, the default. When two active namespaces disagree, the most restrictive policy wins (`off`, then `ask`, then `auto`), and so does the lowest `daily_limit`. A partial mapping such as `{ attended: ask }` leaves the other mode to the next level:
