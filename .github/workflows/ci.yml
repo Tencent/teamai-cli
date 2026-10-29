@@ -96,11 +96,28 @@ jobs:
   # consume the prepared artifact as soon as it is available.
   build:
     name: Build
-    needs: [lint-and-test, prepare-build]
+    needs: [lint-and-test, prepare-build, sync-roundtrip]
     runs-on: ubuntu-latest
     steps:
       - name: Confirm build and unit matrix passed
         run: echo "Build and unit test matrix passed."
+
+  sync-roundtrip:
+    name: Skill sync round trip (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      - run: npx vitest run --config vitest.e2e.config.ts src/__tests__/e2e/sync-roundtrip.test.ts
 
   # Three shards of the suite at once, each on its own 4-vCPU runner: vitest's
   # hash splits the files into thirds of about the same running time. Runs on
