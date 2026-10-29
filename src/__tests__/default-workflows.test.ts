@@ -181,6 +181,24 @@ steps:
     expect(started).toMatchObject({ data: { run: expect.any(String) } });
   });
 
+  it('warn at pull while the team\'s teamai-share-session repeats one of judge\'s values in place of another', async () => {
+    const config = testConfig();
+    writeWorkflow(config, 'teamai-share-session', `schemaVersion: v1alpha1
+name: teamai-share-session
+description: Publish this session our way.
+inputs: { session: string, source: string, publish: boolean, scorers: [string], judge: here | here }
+steps:
+  - id: note
+    command: echo wrapped
+`);
+    const warn = vi.spyOn(log, 'warn');
+    await syncWorkflowDefinitions(config);
+
+    expect(warn.mock.calls.map(([message]) => message)).toEqual([
+      '[workflows] teamai\'s default teamai-share-learnings cannot start: step "share-session" passes judge, which workflow "teamai-share-session" declares as another type than teamai\'s default teamai-share-session',
+    ]);
+  });
+
   it('run as a sub-workflow of a team workflow', async () => {
     const config = testConfig();
     writeWorkflow(config, 'wrap-up', `schemaVersion: v1alpha1

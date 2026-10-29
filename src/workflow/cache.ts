@@ -556,7 +556,7 @@ function sameType(left: OutputSchema, right: OutputSchema): boolean {
     case 'boolean':
       return right.type === left.type;
     case 'enum':
-      return right.type === 'enum' && left.values.length === right.values.length && left.values.every((value) => right.values.includes(value));
+      return right.type === 'enum' && left.values.every((value) => right.values.includes(value)) && right.values.every((value) => left.values.includes(value));
     case 'array':
       return right.type === 'array' && sameType(left.items, right.items);
     case 'object': {
