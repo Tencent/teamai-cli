@@ -120,6 +120,61 @@ describe('agy hooks.json', () => {
     expect(teamai.SessionStart[0].timeout).toBe(60);
   });
 
+  // A team's own `toolPaths.agy`, from before agy was built in, took Claude-format hooks in its `settings` file, and
+  // agy runs a top-level "hooks" key there as one more named hook.
+  it("clears the Claude-format hooks a custom toolPaths.agy left in its settings file, and keeps the member's", async () => {
+    const legacy = (command: string, description: string) => ({ matcher: '', hooks: [{ type: 'command', command }], description });
+    const mine = { matcher: '', hooks: [{ type: 'command', command: './notify.sh' }] };
+    fs.writeFileSync(file, JSON.stringify({
+      hooks: {
+        SessionStart: [legacy('teamai hook-dispatch session-start --tool agy', '[teamai] session start'), mine],
+        Stop: [legacy('./check-tests.sh', '[teamai:hook:check-tests] Run the tests before stopping')],
+      },
+    }));
+    const manifest = path.join(home, '.teamai', 'managed-hooks.json');
+    fs.mkdirSync(path.dirname(manifest), { recursive: true });
+    fs.writeFileSync(manifest, JSON.stringify({ agy: [{ key: 'check-tests', event: 'Stop', matcher: '*', command: './check-tests.sh' }] }));
+    vi.resetModules();
+    const { reconcileHooksToAllTools } = await import('../hooks.js');
+    await reconcileHooksToAllTools({ agy: { settings: '.gemini/config/hooks.json' } }, home, [], manifest);
+    const written = JSON.parse(fs.readFileSync(file, 'utf8'));
+    expect(written.hooks.SessionStart).toEqual([mine]);
+    expect(written.hooks.Stop).toEqual([]);
+    expect(Object.keys(written.teamai).sort()).toEqual(['PostToolUse', 'PreInvocation', 'SessionStart', 'Stop']);
+  });
+
+  it('clears them from hooks.json once the team has dropped its own toolPaths.agy', async () => {
+    const legacy = { matcher: '', hooks: [{ type: 'command', command: 'teamai hook-dispatch stop --tool agy' }], description: '[teamai] stop' };
+    fs.writeFileSync(file, JSON.stringify({ hooks: { Stop: [legacy] } }));
+    vi.resetModules();
+    const { reconcileHooksToAllTools } = await import('../hooks.js');
+    await reconcileHooksToAllTools({ agy: {} }, home, [], path.join(home, '.teamai', 'managed-hooks.json'));
+    expect(JSON.parse(fs.readFileSync(file, 'utf8')).hooks).toEqual({ Stop: [] });
+  });
+
+  it("runs a team PreToolUse hook through the bridge on every pull, and drops it once the team does", async () => {
+    const manifest = path.join(home, '.teamai', 'managed-hooks.json');
+    const hook = {
+      source: 'team' as const, key: 'no-force-push', event: 'PreToolUse', matcher: 'Bash', timeout: 10,
+      command: 'grep -Eq \'push (-f|--force)\\b\' && { echo "Use --force-with-lease" >&2; exit 2; } || true',
+      description: '[teamai:hook:no-force-push] Refuse a force push',
+    };
+    const forcePush = JSON.stringify({ cwd: home, tool_name: 'Bash', tool_input: { command: 'git push -f origin main' } });
+    vi.resetModules();
+    const { reconcileHooksToAllTools } = await import('../hooks.js');
+    const { runBridgedTeamHooks } = await import('../bridged-team-hooks.js');
+    await reconcileHooksToAllTools({ agy: {} }, home, [hook], manifest);
+    await reconcileHooksToAllTools({ agy: {} }, home, [hook], manifest);
+    expect(JSON.parse((await runBridgedTeamHooks('agy', 'PreToolUse', forcePush)).stdout)).toEqual({ block: 'Use --force-with-lease' });
+    expect(Object.keys(JSON.parse(fs.readFileSync(file, 'utf8')).teamai)).toContain('PreToolUse');
+    // The second pull cleans the old Claude-format entries from hooks.json; teamai's record of the hook stays.
+    expect(JSON.parse(fs.readFileSync(manifest, 'utf8')).agy).toEqual([expect.objectContaining({ id: 'no-force-push' })]);
+
+    await reconcileHooksToAllTools({ agy: {} }, home, [], manifest);
+    expect((await runBridgedTeamHooks('agy', 'PreToolUse', forcePush)).stdout).toBe('');
+    expect(Object.keys(JSON.parse(fs.readFileSync(file, 'utf8')).teamai)).not.toContain('PreToolUse');
+  });
+
   it("removes only teamai's named hook", async () => {
     const { reconcileAgyHooks, hasAgyHooks } = await load();
     fs.writeFileSync(file, JSON.stringify({ mine: { Stop: [{ command: './done.sh' }] } }));

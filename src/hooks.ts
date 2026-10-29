@@ -3511,8 +3511,15 @@ export async function reconcileHooksToAllTools(
     if (tool === 'agy') {
       if (opts.settingsOnly) continue;
       try {
+        // A team's own `toolPaths.agy`, from before agy was built in, took Claude-format hooks in its `settings`
+        // file, most often hooks.json, where agy runs a "hooks" key as one more named hook. Clear teamai's from it,
+        // and from hooks.json after the team drops that key. The records stay: they are the bridge's now.
+        const { agyHookFile, reconcileAgyHooks } = await import('./agy-hooks.js');
+        const legacy = new Set([agyHookFile(), ...paths.settings ? [hookSettingsFile(tool, baseDir, paths.settings)] : []].map((file) => path.resolve(file)));
+        for (const file of legacy) {
+          if (await pathExists(file)) await reconcileHooks(file, tool, [], { removeAll: true, manifestPath, keepRecords: true });
+        }
         await reconcileBridged(tool);
-        const { reconcileAgyHooks } = await import('./agy-hooks.js');
         if (opts.removeAll || await pathExists(toolHome('agy'))) await reconcileAgyHooks({ removeAll: opts.removeAll });
       } catch (e) {
         log.warn(`Failed to reconcile Antigravity CLI hooks: ${(e as Error).message}`);
