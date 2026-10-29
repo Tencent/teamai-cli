@@ -1507,6 +1507,8 @@ export interface HookDef {
   matcher?: string;
   /** Shell command to run. */
   command: string;
+  /** Claude command-hook shell override; set when the generated guard is PowerShell on Windows. */
+  shell?: 'powershell';
   /** Per-hook timeout in seconds (tool-specific; omitted = tool default). */
   timeout?: number;
   /**

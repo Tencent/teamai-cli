@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -37,7 +37,7 @@ describe('COPILOT_RUNS_ENTRIES_SOURCE', () => {
 
 
 describe('claudeHookOtherHostSkip on native Windows shells', () => {
-  it('uses PowerShell guards instead of bash syntax', () => {
+  it('uses PowerShell guards instead of bash syntax for native PowerShell', () => {
     const guard = claudeHookOtherHostSkip('Stop', undefined, 'echo RAN', 'win32');
     expect(guard).toContain('$env:CURSOR_VERSION');
     expect(guard).toContain('Select-String');
@@ -45,7 +45,14 @@ describe('claudeHookOtherHostSkip on native Windows shells', () => {
     expect(guard).not.toContain('2>/dev/null');
   });
 
-  it.each(['powershell.exe', 'pwsh.exe'])('runs the native %s guard', (shell) => {
+  it('keeps the POSIX guard off Windows', () => {
+    const guard = claudeHookOtherHostSkip('Stop', undefined, 'echo RAN', 'linux');
+    expect(guard).toContain('grep -q');
+    expect(guard).toContain('2>/dev/null');
+    expect(guard).not.toContain('$env:CURSOR_VERSION');
+  });
+
+  const runNativeGuard = (shell: string) => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-hook-powershell-'));
     try {
       const home = path.join(root, 'home');
@@ -58,10 +65,22 @@ describe('claudeHookOtherHostSkip on native Windows shells', () => {
       expect(run('Stop')).toBe('');
       fs.rmSync(path.join(home, '.cursor', 'hooks.json'));
       expect(run(undefined)).toBe('RAN\r\n');
+
+      // Match the CLI predicate: malformed version and non-array event values
+      // must not suppress Claude's hook.
+      fs.writeFileSync(path.join(project, '.github', 'hooks', 'teamai.json'), JSON.stringify({ version: '1', hooks: { Stop: { type: 'command', powershell: 'Write-Output RAN' } } }));
+      expect(run('Stop', { CURSOR_VERSION: '' })).toBe('RAN\r\n');
       fs.writeFileSync(path.join(project, '.github', 'hooks', 'teamai.json'), JSON.stringify({ version: 1, hooks: { Stop: [{ type: 'command', powershell: 'Write-Output RAN' }] } }));
-      expect(run('Stop')).toBe('');
+      expect(run('Stop', { CURSOR_VERSION: '' })).toBe('');
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
-  });
+  };
+
+  for (const shell of ['powershell.exe', 'pwsh.exe']) {
+    it.skipIf(spawnSync(shell, ['-NoLogo', '-NoProfile', '-Command', 'exit 0'], { stdio: 'ignore' }).status !== 0)(
+      `runs the native ${shell} guard when available`,
+      () => runNativeGuard(shell),
+    );
+  }
 });

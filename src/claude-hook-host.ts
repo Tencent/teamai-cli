@@ -79,8 +79,9 @@ function powershellProjectCopilotCopyCheck(event: string, matcher: string | unde
     '$teamaiHooks = Join-Path (Join-Path $env:COPILOT_PROJECT_DIR ".github") "hooks";',
     'Get-ChildItem -LiteralPath $teamaiHooks -Filter "*.json" -File -ErrorAction SilentlyContinue | ForEach-Object {',
     'try { $teamaiFile = Get-Content -LiteralPath $_.FullName -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop } catch { return };',
-    'if ($teamaiFile.version -ne 1 -or $teamaiFile.disableAllHooks -or $null -eq $teamaiFile.hooks) { return };',
-    `$teamaiEntries = @($teamaiFile.hooks.PSObject.Properties | Where-Object { $_.Name -ceq ${powershellQuoteValue(event)} } | ForEach-Object { $_.Value });`,
+    '$teamaiVersion = $teamaiFile.version;',
+    'if ($null -eq $teamaiVersion -or $teamaiVersion -is [string] -or $teamaiVersion -is [bool] -or $teamaiVersion -ne 1 -or $teamaiFile.disableAllHooks -or $null -eq $teamaiFile.hooks -or $teamaiFile.hooks -is [array] -or $teamaiFile.hooks -is [string]) { return };',
+    `$teamaiEntries = @($teamaiFile.hooks.PSObject.Properties | Where-Object { $_.Name -ceq ${powershellQuoteValue(event)} } | ForEach-Object { if ($_.Value -is [array]) { $_.Value } });`,
     'foreach ($teamaiEntry in $teamaiEntries) {',
     '$teamaiMatcher = if ($null -eq $teamaiEntry.matcher -or $teamaiEntry.matcher -ceq "*") { "" } else { [string]$teamaiEntry.matcher };',
     `$teamaiCommands = @($teamaiEntry.bash, $teamaiEntry.powershell, $teamaiEntry.command); if ($teamaiEntry.type -ceq "command" -and $teamaiMatcher -ceq ${powershellQuoteValue(expectedMatcher)} -and $teamaiCommands -ccontains ${powershellQuoteValue(command)}) { exit 0 }`,
@@ -89,6 +90,11 @@ function powershellProjectCopilotCopyCheck(event: string, matcher: string | unde
   ].join(' ');
 }
 
+/**
+ * A native Windows Claude entry declares PowerShell explicitly, so it stays
+ * runnable regardless of which shell invokes `teamai` or later reads a shared
+ * settings file. Git Bash entries keep the POSIX command and need no override.
+ */
 function usesPowerShellHookShell(platform: NodeJS.Platform = process.platform): boolean {
   return platform === 'win32';
 }
@@ -96,14 +102,16 @@ function usesPowerShellHookShell(platform: NodeJS.Platform = process.platform): 
 const CURSOR_HOOK_SKIP =
   'if [ -n "$CURSOR_VERSION" ] && { home="${HOME:-$USERPROFILE}"; [ -n "$home" ] && { grep -q -- \'--tool cursor\' "$home/.cursor/hooks.json" 2>/dev/null || { [ -n "$CURSOR_PROJECT_DIR" ] && grep -q -- \'--tool cursor\' "$CURSOR_PROJECT_DIR/.cursor/hooks.json" 2>/dev/null; }; }; }; then exit 0; fi; ';
 
-const POWERSHELL_COPILOT_LEGACY_SKIP =
-  'if ($env:COPILOT_PROJECT_DIR -and (Select-String -LiteralPath (Join-Path (Join-Path $env:COPILOT_PROJECT_DIR ".github") "hooks/teamai.json") -SimpleMatch "--tool copilot" -Quiet -ErrorAction SilentlyContinue)) { exit 0 }; ';
-
 /** Exact prefix emitted before Copilot built-ins moved to user scope. */
-export const LEGACY_CLAUDE_HOOK_OTHER_HOST_SKIP = usesPowerShellHookShell()
-  ? POWERSHELL_CURSOR_HOOK_SKIP + POWERSHELL_COPILOT_LEGACY_SKIP
-  : CURSOR_HOOK_SKIP
-    + 'if [ -n "$COPILOT_PROJECT_DIR" ] && grep -q -- \'--tool copilot\' "$COPILOT_PROJECT_DIR/.github/hooks/teamai.json" 2>/dev/null; then exit 0; fi; ';
+const LEGACY_POSIX_CLAUDE_HOOK_OTHER_HOST_SKIP = CURSOR_HOOK_SKIP
+  + 'if [ -n "$COPILOT_PROJECT_DIR" ] && grep -q -- \'--tool copilot\' "$COPILOT_PROJECT_DIR/.github/hooks/teamai.json" 2>/dev/null; then exit 0; fi; ';
+
+/**
+ * The legacy form is intentionally always POSIX: releases before #1498 wrote
+ * only this command, including on Windows. Keeping it recognisable lets a
+ * current pull replace the old teamai entry rather than leaving a duplicate.
+ */
+export const LEGACY_CLAUDE_HOOK_OTHER_HOST_SKIP = LEGACY_POSIX_CLAUDE_HOOK_OTHER_HOST_SKIP;
 
 /**
  * Prefix for a Claude team command. The generated command must use the shell

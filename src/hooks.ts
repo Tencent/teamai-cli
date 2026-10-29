@@ -102,6 +102,8 @@ export const CLAUDE_TO_COPILOT_EVENTS: Record<string, string> = {
 interface HookEntry {
   type: string;
   command: string;
+  /** Explicit shell for a command that differs from Claude's detected default. */
+  shell?: 'powershell';
   /** Per-hook timeout in seconds. Falls back to the tool default if omitted. */
   timeout?: number;
 }
@@ -1492,6 +1494,9 @@ function scopedTeamDefs(
   const prepared = teamDefs.map((def) => ({
     ...def,
     command: skipWhenAnotherHostLoadsClaudeSettings(def, tool, legacyGuard),
+    ...(tool === 'claude' && def.source === 'team' && process.platform === 'win32' && !legacyGuard
+      ? { shell: 'powershell' as const }
+      : {}),
   }));
   if (!projectRoot) return prepared;
   if (tool === 'codebuddy' && process.platform === 'win32' && codebuddyDualRunner) {
@@ -1537,6 +1542,7 @@ function toClaudeEntry(def: HookDef): HookMatcher {
       {
         type: 'command',
         command: def.command,
+        ...(def.shell ? { shell: def.shell } : {}),
         ...(def.timeout !== undefined ? { timeout: def.timeout } : {}),
       },
     ],

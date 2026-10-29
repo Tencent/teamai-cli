@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 let mockFiles: Record<string, unknown> = {};
 
@@ -53,6 +53,10 @@ describe('reconcileHooks — team (B) hooks', () => {
     vi.clearAllMocks();
   });
 
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   describe('Claude format', () => {
     it('injects a team hook after the built-in hooks in its event', async () => {
       await reconcileHooks(SETTINGS, 'claude', [teamDef()], { manifestPath: MANIFEST });
@@ -63,6 +67,16 @@ describe('reconcileHooks — team (B) hooks', () => {
       expect(team.description).toBe('[teamai:hook:block-secret] scan secrets before bash');
       expect(team.matcher).toBe('Bash');
       expect(team.hooks[0].command).toBe(`${claudeHookOtherHostSkip('PostToolUse', 'Bash', teamDef().command)}${teamDef().command}`);
+    });
+
+    it('writes a PowerShell team guard with an explicit shell on Windows', async () => {
+      vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+      await reconcileHooks(SETTINGS, 'claude', [teamDef()], { manifestPath: MANIFEST });
+
+      const hook = claudeHooks().PostToolUse.at(-1)!.hooks[0] as { command: string; shell?: string };
+      expect(hook.shell).toBe('powershell');
+      expect(hook.command).toContain('$env:CURSOR_VERSION');
+      expect(hook.command).not.toContain('grep -q');
     });
 
     it('records the team hook in the manifest', async () => {
