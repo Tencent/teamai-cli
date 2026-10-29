@@ -558,12 +558,28 @@ export async function reconcileAndDeepEnrich(params: {
  * Fail the import a person ran whose deep enrich did not finish, and say how to
  * resume it. The extracted evidence stays published.
  */
-export function failIncompleteDeepEnrich({ slug, output }: { slug: string; output: string | undefined }): void {
-  // Quoted only when needed, so the printed command can be copied as is.
-  const outputArg = output && (/^[\w@%+=:,./-]+$/.test(output) ? output : shellQuoteValue(output));
-  const retry = `teamai codebase --deep-enrich --project ${slug}${outputArg ? ` --output ${outputArg}` : ''}`;
+export function failIncompleteDeepEnrich({ slug, output, importArgs }: {
+  slug: string;
+  output: string | undefined;
+  /**
+   * The arguments that import the same source again, such as
+   * `['--dir', './svc', '--max-files', '500']`; never `--incremental`, which
+   * would skip a source that has not changed.
+   */
+  importArgs: string[];
+}): void {
+  // Only an import publishes to the team repo; `codebase --deep-enrich` would
+  // leave the docs uncommitted in its clone.
+  const retry = output
+    ? `teamai codebase --deep-enrich --project ${slug} --output ${shellArg(output)}`
+    : `teamai import ${importArgs.map(shellArg).join(' ')}`;
   log.warn(`Deep enrich incomplete: ${slug}. Run \`${retry}\` to retry.`);
   process.exitCode = 1;
+}
+
+/** Quoted only when needed, so a printed command can be copied as is. */
+function shellArg(value: string): string {
+  return /^[\w@%+=:,./-]+$/.test(value) ? value : shellQuoteValue(value);
 }
 
 /** Rebuild the global graph and router.md / index.md after evidence changed. */

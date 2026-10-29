@@ -181,17 +181,32 @@ teamai codebase --lint
 
 没有团队仓库时，给 `teamai import` 和 `teamai codebase` 都加上 `--output <dir>`，两者都用 `<dir>/teamwiki/`。
 
-`import` 也会用你的 AI 工具执行这一步 deep enrich。没能完成时，evidence 照样发布，但 `import` 以 1 退出，并打印继续执行的命令：
+`import` 也会用你的 AI 工具执行这一步 deep enrich。没能完成时，evidence 照样发布，但 `import` 以 1 退出，并打印继续执行的命令。在团队仓库里，这条命令就是同一次 import，它会把补上的文档一起发布：
+
+```text
+$ teamai import --dir ./orders-api
+...
+⚠ deep-enrich[orders-api]: incomplete — missing component docs: billing, architecture: true
+...
+✔ Pushed to team knowledge repo (https://git.example.com/acme/team-ai.git)
+✔ Local directory orders-api import complete
+⚠ Deep enrich incomplete: orders-api. Run `teamai import --dir ./orders-api` to retry.
+$ echo $?
+1
+```
+
+`--from-repo-list` 或 `--from-org` 批量导入时，每个没完成的仓库各打印一行：
+
+```text
+⚠ Deep enrich incomplete: github__acme__billing. Run `teamai import --from-repo https://github.com/acme/billing` to retry.
+```
+
+用了 `--output` 时，重试命令是对该目录执行 `teamai codebase --deep-enrich`：
 
 ```text
 $ teamai import --dir ./orders-api --output ./wiki
 ...
-⚠ deep-enrich[orders-api]: incomplete — missing component docs: billing, architecture: true
-...
-✔ Local directory orders-api import complete
 ⚠ Deep enrich incomplete: orders-api. Run `teamai codebase --deep-enrich --project orders-api --output ./wiki` to retry.
-$ echo $?
-1
 ```
 
 只需要提取结果、运行环境里没有 AI 工具的任务，跳过 AI 这一步，以 0 退出：

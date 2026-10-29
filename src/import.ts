@@ -194,7 +194,16 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
       await tasks.run();
       if (!deepEnrichComplete) {
         const { failIncompleteDeepEnrich } = await import('./import-codebase.js');
-        failIncompleteDeepEnrich({ slug: repoSlugForUrl(fromRepo), output: opts.output });
+        failIncompleteDeepEnrich({
+          slug: repoSlugForUrl(fromRepo),
+          output: opts.output,
+          importArgs: [
+            '--from-repo', fromRepo,
+            ...(opts.ssh ? ['--ssh'] : []),
+            ...(opts.domain ? ['--domain', opts.domain] : []),
+            ...(opts.maxFiles ? ['--max-files', opts.maxFiles] : []),
+          ],
+        });
       }
       return;
     } else if (opts.fromRepoList) {
@@ -499,7 +508,13 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
           log.success(`Pushed to team knowledge repo (${team.localConfig.repo.remote})`);
         }
         log.success(`Local directory ${slug} import complete`);
-        if (imported.updated && !imported.deepEnrichComplete) failIncompleteDeepEnrich({ slug, output: opts.output });
+        if (imported.updated && !imported.deepEnrichComplete) {
+          failIncompleteDeepEnrich({
+            slug,
+            output: opts.output,
+            importArgs: ['--dir', opts.dir, ...(opts.maxFiles ? ['--max-files', opts.maxFiles] : [])],
+          });
+        }
       } finally {
         await releaseImportLock();
       }

@@ -131,7 +131,18 @@ export async function importFromRepoList(
                 skipEnrich,
                 maxFiles,
             });
-            if (!deepEnrichComplete) failIncompleteDeepEnrich({ slug: repoSlugForUrl(entry.url), output });
+            if (!deepEnrichComplete) {
+                failIncompleteDeepEnrich({
+                    slug: repoSlugForUrl(entry.url),
+                    output,
+                    importArgs: [
+                        '--from-repo', entry.url,
+                        ...(entryForceSsh ? ['--ssh'] : []),
+                        ...(entry.domain ? ['--domain', entry.domain] : []),
+                        ...(maxFiles !== undefined ? ['--max-files', String(maxFiles)] : []),
+                    ],
+                });
+            }
             succeeded.push(1);
         } catch (err) {
             const message = err instanceof Error ? err.message : String(err);

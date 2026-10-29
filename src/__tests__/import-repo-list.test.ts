@@ -138,6 +138,33 @@ describe('importFromRepoList', () => {
         expect(output).not.toContain('github__org__repo-1');
     });
 
+    it('names an import of each unfinished repo, with its auth, domain and file cap, as its retry in a team repo', async () => {
+        const localPath = path.join(tmpDir, 'team-repo');
+        await fs.ensureDir(path.join(localPath, 'teamwiki'));
+        vi.mocked(autoDetectInit).mockResolvedValueOnce({
+            localConfig: LocalConfigSchema.parse({ repo: { localPath, remote: 'https://example.com/team.git' }, username: 'test', scope: 'project' }),
+            teamConfig: TeamaiConfigSchema.parse({ team: 'test', repo: 'https://example.com/team.git' }),
+        });
+        const filePath = await writeYaml('repos.yaml', {
+            version: 1,
+            repos: [{ url: 'https://github.com/org/repo-1' }, { url: 'https://github.com/org/repo-2', auth: 'ssh', domain: 'billing' }],
+        });
+        vi.mocked(importFromRepo).mockResolvedValue(false);
+        const lines: string[] = [];
+        const spy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => { lines.push(args.map(String).join(' ')); });
+        try {
+            await importFromRepoList({ listPath: filePath, maxFiles: 500 });
+        } finally {
+            spy.mockRestore();
+            vi.mocked(importFromRepo).mockResolvedValue(true);
+        }
+
+        expect(process.exitCode).toBe(1);
+        const output = lines.join('\n');
+        expect(output).toContain('Deep enrich incomplete: github__org__repo-1. Run `teamai import --from-repo https://github.com/org/repo-1 --max-files 500` to retry.');
+        expect(output).toContain('Deep enrich incomplete: github__org__repo-2. Run `teamai import --from-repo https://github.com/org/repo-2 --ssh --domain billing --max-files 500` to retry.');
+    });
+
     it('加载 yaml → 调度 → 汇总数字正确（2 个成功）', async () => {
         const filePath = await writeYaml('repos.yaml', {
             version: 1,

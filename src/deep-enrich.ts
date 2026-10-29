@@ -69,14 +69,18 @@ async function readFileSafe(filePath: string): Promise<string> {
   }
 }
 
+function symlinkRefusal(linkPath: string): Error {
+  return new Error(`Cannot deep-enrich through a symbolic link: ${linkPath}. Replace it with a regular file or directory before retrying.`);
+}
+
 async function assertSafeOutputDir(dir: string): Promise<void> {
   try {
     if ((await lstat(dir)).isSymbolicLink()) {
-      throw new Error(`Cannot deep-enrich through a symbolic link: ${dir}`);
+      throw symlinkRefusal(dir);
     }
     for (const entry of await readdir(dir, { withFileTypes: true })) {
       if (entry.isSymbolicLink()) {
-        throw new Error(`Cannot deep-enrich through a symbolic link: ${path.join(dir, entry.name)}`);
+        throw symlinkRefusal(path.join(dir, entry.name));
       }
     }
   } catch (error) {
@@ -89,7 +93,7 @@ async function assertSafeEvidencePath(wikiRoot: string, evidenceDir: string): Pr
   const root = path.resolve(wikiRoot);
   for (let dir = path.resolve(evidenceDir); ; dir = path.dirname(dir)) {
     if ((await lstat(dir)).isSymbolicLink()) {
-      throw new Error(`Cannot deep-enrich through a symbolic link: ${dir}`);
+      throw symlinkRefusal(dir);
     }
     if (dir === root) break;
   }

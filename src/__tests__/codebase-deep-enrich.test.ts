@@ -123,7 +123,7 @@ describe('codebase deep-enrich', () => {
     fs.symlinkSync(outside, docsDir, process.platform === 'win32' ? 'junction' : 'dir');
 
     await expect(runHiddenDeepEnrich({ project: 'faketest', wikiRoot: path.join(root, 'teamwiki') }))
-      .rejects.toThrow(/symbolic link/i);
+      .rejects.toThrow(`Cannot deep-enrich through a symbolic link: ${docsDir}. Replace it with a regular file or directory before retrying.`);
     expect(fs.readdirSync(outside)).toEqual([]);
   });
 

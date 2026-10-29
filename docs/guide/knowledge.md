@@ -181,17 +181,32 @@ teamai codebase --lint
 
 Without a team repo, add `--output <dir>` to both `teamai import` and `teamai codebase`; both then use `<dir>/teamwiki/`.
 
-`import` also runs this deep enrich with your AI tool. When it cannot finish, the evidence is still published, but `import` exits 1 and prints the command that resumes it:
+`import` also runs this deep enrich with your AI tool. When it cannot finish, the evidence is still published, but `import` exits 1 and prints the command that resumes it. In a team repo that is the same import, which publishes the docs it adds:
+
+```text
+$ teamai import --dir ./orders-api
+...
+⚠ deep-enrich[orders-api]: incomplete — missing component docs: billing, architecture: true
+...
+✔ Pushed to team knowledge repo (https://git.example.com/acme/team-ai.git)
+✔ Local directory orders-api import complete
+⚠ Deep enrich incomplete: orders-api. Run `teamai import --dir ./orders-api` to retry.
+$ echo $?
+1
+```
+
+A `--from-repo-list` or `--from-org` batch prints one line for each repo that did not finish:
+
+```text
+⚠ Deep enrich incomplete: github__acme__billing. Run `teamai import --from-repo https://github.com/acme/billing` to retry.
+```
+
+With `--output`, the retry is `teamai codebase --deep-enrich` on that directory:
 
 ```text
 $ teamai import --dir ./orders-api --output ./wiki
 ...
-⚠ deep-enrich[orders-api]: incomplete — missing component docs: billing, architecture: true
-...
-✔ Local directory orders-api import complete
 ⚠ Deep enrich incomplete: orders-api. Run `teamai codebase --deep-enrich --project orders-api --output ./wiki` to retry.
-$ echo $?
-1
 ```
 
 A job that needs only the extraction, with no AI tool on the runner, skips the AI step and exits 0:
