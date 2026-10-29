@@ -32,13 +32,17 @@ function unquote(quoted: string): string {
   return quoted.slice(1, -1).replace(/'\\''/g, "'");
 }
 
-/** The gateway `content` (an `agyKeyFunction` result) points agy at, with `env` resolving a key it names by variable. */
-export function agyGatewayOf(content: string, env: NodeJS.ProcessEnv): { GEMINI_API_KEY?: string; GOOGLE_GEMINI_BASE_URL: string } | undefined {
+/**
+ * The gateway `content` (an `agyKeyFunction` result) points agy at, with `env` resolving a key it names by variable.
+ * An unset variable gives an empty key, as the shell function does, so the member's own GEMINI_API_KEY never goes
+ * to the gateway.
+ */
+export function agyGatewayOf(content: string, env: NodeJS.ProcessEnv): { GEMINI_API_KEY: string; GOOGLE_GEMINI_BASE_URL: string } | undefined {
   const match = KEY_FUNCTION.exec(content);
   if (!match) return undefined;
   const [, envRef, quotedKey, quotedUrl] = match;
-  const key = envRef !== undefined ? env[envRef] : quotedKey !== undefined ? unquote(quotedKey) : undefined;
-  return { ...(key !== undefined ? { GEMINI_API_KEY: key } : {}), GOOGLE_GEMINI_BASE_URL: unquote(quotedUrl) };
+  const key = envRef !== undefined ? env[envRef] ?? '' : unquote(quotedKey ?? "''");
+  return { GEMINI_API_KEY: key, GOOGLE_GEMINI_BASE_URL: unquote(quotedUrl) };
 }
 
 /** What an agy teamai launches needs in its environment while a model switch points agy at a gateway; empty otherwise. */
