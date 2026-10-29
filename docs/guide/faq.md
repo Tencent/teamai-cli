@@ -107,6 +107,8 @@ The pull removes the old team's skills and rules that teamai delivered and you d
 | `.claude/rules/frontend-style.md` | removed |
 | — | `.claude/skills/terraform-plan`, `.codex/skills/terraform-plan`, `.claude/rules/platform-style.md` |
 
+Hermes and OpenClaw are the exception. Your user scope and every project share their one skills directory (`~/.hermes/skills`), so the old team's skills stay there. Delete one yourself once no other install delivers it.
+
 **Q: Why are my team's Codex skills in `.agents/skills` instead of `.codex/skills`?**
 
 Codex reads both directories. teamai puts all of one team's skills in the same one, so a skill that links to another (`../lint/SKILL.md`) finds it. While `.agents/skills` holds teamai's copy of any team skill, for example one an older release wrote there, every team skill goes there:

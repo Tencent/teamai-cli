@@ -104,6 +104,8 @@ teamai pull
 | `.claude/rules/frontend-style.md` | 删除 |
 | — | `.claude/skills/terraform-plan`、`.codex/skills/terraform-plan`、`.claude/rules/platform-style.md` |
 
+Hermes 和 OpenClaw 例外：你的 user scope 和每个项目共用它们唯一的 skill 目录（`~/.hermes/skills`），所以旧团队的 skill 会留在那里。确认没有其他安装还在分发某个 skill 后，再手动删除它。
+
 **Q: 为什么团队的 Codex skill 在 `.agents/skills` 而不是 `.codex/skills`？**
 
 Codex 两个目录都会读取。teamai 把同一个团队的所有 skill 放在同一个目录里，这样一个 skill 链接到另一个（`../lint/SKILL.md`）时能找到它。只要 `.agents/skills` 里有 teamai 的任一团队 skill 副本（例如旧版本写在那里的），所有团队 skill 都会放到那里：
