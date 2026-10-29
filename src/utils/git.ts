@@ -716,8 +716,10 @@ export async function autoPushTeamRepo(repoPath: string, message: string): Promi
     await pushRepoDirectly(repoPath, message, ['.']);
   } catch (err) {
     DetachedTeamRepoError.rethrow(err);
-    const reason = (err as Error).message.split('\n').find(line => line.trim())?.trim() ?? 'unknown error';
-    throw new Error(`Push to the team repo failed: ${reason}. Run \`teamai pull\`, then rerun this command.`);
+    const lines = (err as Error).message.split('\n').map(line => line.trim()).filter(Boolean);
+    // git prints the remote URL first; the line that says what failed is the error:/fatal: one.
+    const reason = lines.find(line => /^(error|fatal):/.test(line)) ?? lines[0] ?? 'unknown error';
+    throw new Error(`Push to the team repo failed: ${reason}. Run \`teamai pull\`, then rerun this command.`, { cause: err });
   }
 }
 

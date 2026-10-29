@@ -48,7 +48,7 @@ describe('autoPushTeamRepo', () => {
     await fs.writeFile(path.join(member, 'svc', 'index.md'), 'imported\n');
 
     await expect(autoPushTeamRepo(member, '[teamai] Import from local dir: svc')).rejects.toThrow(
-      /^Push to the team repo failed: .*Run `teamai pull`, then rerun this command\.$/s,
+      /^Push to the team repo failed: .*failed to push some refs.*Run `teamai pull`, then rerun this command\.$/s,
     );
   });
 });
