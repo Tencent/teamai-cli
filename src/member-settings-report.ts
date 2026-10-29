@@ -287,7 +287,8 @@ export async function memberSettingsReport(ctx: { localConfig: LocalConfig; team
     if (key === 'coAuthorEnabled') return resolveCoAuthor(ctx.localConfig, ctx.teamConfig ?? {}) ?? true;
     const mode = publishMode(key);
     if (mode) return publishing[mode].policy;
-    if (key === 'autoCompactTokens') return resolveAutoCompactTokens(decidingConfig, decidingTeam ?? {});
+    // A 0 opts out, which resolves to nothing set: show the 0 the member wrote.
+    if (key === 'autoCompactTokens') return resolveAutoCompactTokens(decidingConfig, decidingTeam ?? {}) ?? decidingConfig.autoCompactTokens;
     if (key === 'updatePolicy') {
       const { resolveEffectiveUpdatePolicy } = await import('./update-policy.js');
       return resolveEffectiveUpdatePolicy(decidingConfig, decidingTeam);

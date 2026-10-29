@@ -48,6 +48,16 @@ describe('readMemberSettingsPanel', () => {
     ]));
   });
 
+  it('shows the 0 a member writes to opt out of auto-compact', async () => {
+    const { config, scopeFile } = await workspace('autoCompactTokens: 0\n');
+
+    const read = await readMemberSettingsPanel(config);
+
+    expect(read.configured && read.rows).toContainEqual(
+      { key: 'autoCompactTokens', value: 0, source: { level: 'scope', value: 0, file: scopeFile }, below: [], unused: [] },
+    );
+  });
+
   it('leaves a user install whose legacy role migration is pending as it is', async () => {
     const { config } = await workspace('');
     const team = config.repo.localPath;
