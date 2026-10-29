@@ -1563,12 +1563,13 @@ setInterval(() => {}, 1000);
 });
 
 describe('the model a prompt step runs on', () => {
-  type FakeTool = 'claude' | 'codex' | 'opencode';
+  type FakeTool = 'claude' | 'codex' | 'opencode' | 'agy';
 
   const AGENT_FILES: Record<FakeTool, { dir: string; ext: string }> = {
     claude: { dir: '.claude/agents', ext: '.md' },
     codex: { dir: '.codex/agents', ext: '.toml' },
     opencode: { dir: '.opencode/agents', ext: '.md' },
+    agy: { dir: '.agents/agents', ext: '.md' },
   };
 
   /** What each tool prints in its JSON mode, so the adapter reads stdout as it would from the real tool. */
@@ -1576,6 +1577,7 @@ describe('the model a prompt step runs on', () => {
     claude: '{"type":"system","subtype":"init","model":"claude-opus-4-1-20250805"}\n{"type":"result","result":"done","session_id":"session-1"}',
     codex: '{"type":"thread.started","thread_id":"thread-1"}',
     opencode: '{"type":"step_finish","sessionID":"session-1"}',
+    agy: '{"event":"result","result":{"conversation_id":"3fa76afc-bf4b-4fab-b887-502589d2f711","status":"SUCCESS","response":"done"}}',
   };
 
   const TEAM_ALIASES = `aliases:
@@ -1822,6 +1824,14 @@ steps:
       ['-p', prompt('Review it.'), '--output-format', 'stream-json', '--verbose', '--agent', 'reviewer'],
       ['-p', prompt('Summarize it.'), '--output-format', 'stream-json', '--verbose', '--model', 'opus', '--effort', 'high'],
     ]);
+  });
+
+  it("runs an agy definition on the model pull gave it, over defaults.model", async () => {
+    const reviewer = '---\nname: reviewer\ndescription: Reviews changes.\nmodel: gemini-3.8-flash-high\n---\nFollow the review checklist.\n';
+    const { argv } = await runOn('agy', oneStep('    agent: reviewer\n', 'defaults:\n  model: gemini-3.8-flash-low\n'), { agents: { reviewer } });
+
+    expect(argv?.[0]).toEqual(expect.arrayContaining(['--agent', 'reviewer', '--model', 'gemini-3.8-flash-high']));
+    expect(argv?.[0]).not.toContain('gemini-3.8-flash-low');
   });
 
   it('passes --variant for an OpenCode agent, and fails an OpenCode 1 step on its primary agent\'s own model with no effort when the agent sets a variant', async () => {
