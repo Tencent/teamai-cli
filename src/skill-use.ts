@@ -367,6 +367,9 @@ export async function deliveredTeamSkillInfo(config: LocalConfig, cwd: string, d
       }))).filter((source): source is { path: string; namespace?: string } => source !== null);
       const roleMatches = matches.length > 1 && deliveredRoleNamespaces
         ? matches.filter((source) => source.namespace !== undefined && deliveredRoleNamespaces!.has(source.namespace)) : [];
+      // Identical historical copies cannot be attributed to a namespace when the
+      // saved selection includes both. Do not infer one from today's manifest.
+      if (matches.length > 1 && roleMatches.length !== 1) { others.add(name); continue; }
       const source = matches.length === 1 ? matches[0] : roleMatches.length === 1 ? roleMatches[0] : undefined;
       const namespace = source ? source.namespace : entry?.namespace;
       const description = String(parseFrontmatter(await readFileSafe(file) ?? '').data.description ?? '').trim();

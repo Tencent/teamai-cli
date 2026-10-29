@@ -207,6 +207,26 @@ describe('session captures (#1178)', () => {
       ]);
   });
 
+  it('does not relabel identical copies when the delivery record cannot distinguish them (#1469)', async () => {
+    const { config, project } = checkout();
+    const team = config.repo.localPath;
+    commitFile(team, 'skills/ops/ship/SKILL.md', '---\ndescription: Shared release.\n---\n');
+    commitFile(team, 'skills/web/ship/SKILL.md', '---\ndescription: Shared release.\n---\n');
+    commitFile(team, 'teamai.yaml', 'team: fixture\nrepo: local\n');
+    const rev = commitFile(team, 'manifest/roles.yaml', 'version: 1\nroles:\n  - id: web\n    resources: { knowledge: [], skills: [web] }\n  - id: ops\n    resources: { knowledge: [], skills: [ops] }\n');
+    const ship = path.join(project, '.claude', 'skills', 'ship', 'SKILL.md');
+    fs.mkdirSync(path.dirname(ship), { recursive: true });
+    fs.writeFileSync(ship, '---\ndescription: Shared release.\n---\n');
+    const member = { ...config, primaryRole: 'web', additionalRoles: ['ops'] };
+    await recordDelivery(member, { rev, targets: ['claude'], files: [ship] });
+    commitFile(team, 'manifest/roles.yaml', 'version: 1\nroles:\n  - id: web\n    resources: { knowledge: [], skills: [ops] }\n  - id: ops\n    resources: { knowledge: [], skills: [ops] }\n');
+
+    await SessionCaptures.atStart(member, 'claude', start(project), {});
+
+    expect((await SessionCaptures.read(member, 'claude-code', SESSION)).map((capture) => capture.teamSkillInfo))
+      .toEqual([{}]);
+  });
+
   it('writes a second capture when the session resumes, and none for a compaction', async () => {
     const { config, project, rev, skill } = checkout();
     await recordDelivery(config, { rev: rev.slice(0, 7), targets: ['claude'], files: [skill] });
