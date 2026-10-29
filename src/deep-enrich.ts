@@ -865,26 +865,74 @@ function buildG6Content(project: string, manifest: Manifest): string {
     lines.push('| No indirect dependency path was extracted | — |');
   }
 
-  lines.push('', '## Reverse reachability index', '', '| Target node | Reachable paths |', '|-------------|-----------------|');
+  const MAX_REVERSE_REPRESENTATIVE_PATHS = 32;
+  // Prefer expanding predecessors that have their own incoming edges first.
+  // This keeps a useful multi-hop representative (Api → Service → Store) when
+  // the same source also has a direct edge to the target.
+  for (const incoming of reverse.values()) {
+    incoming.sort((a, b) => {
+      const aDepth = reverse.get(a.from)?.length ?? 0;
+      const bDepth = reverse.get(b.from)?.length ?? 0;
+      return bDepth - aDepth || a.from.localeCompare(b.from);
+    });
+  }
+
+  lines.push(
+    '',
+    '## Reverse reachability index',
+    '',
+    '| Target node | Reachable predecessor nodes | Representative paths (max 32) |',
+    '|-------------|----------------------------|--------------------------------|',
+  );
   for (const target of nodes) {
-    const paths: string[][] = [];
-    const queue: Array<{ node: string; path: string[]; visited: Set<string> }> = [
-      { node: target, path: [target], visited: new Set([target]) },
-    ];
-    while (queue.length > 0) {
-      const current = queue.shift()!;
-      for (const edge of reverse.get(current.node) ?? []) {
-        // Preserve an upstream path even if its source also has a direct edge
-        // to the target; only cycles within this individual path are excluded.
-        if (current.visited.has(edge.from)) continue;
-        const nextPath = [edge.from, `(${edge.relation ?? 'DEPENDS_ON'})`, ...current.path];
-        paths.push(nextPath);
-        const visited = new Set(current.visited);
-        visited.add(edge.from);
-        queue.push({ node: edge.from, path: nextPath, visited });
+    // Discover each reachable predecessor once. Parent pointers keep memory
+    // linear in the graph instead of retaining every simple path, which can be
+    // exponential in a layered DAG. The output still includes complete node
+    // reachability and only a bounded set of human-readable path examples.
+    const discovered = new Set<string>([target]);
+    const discoveryOrder: string[] = [];
+    const parent = new Map<string, { node: string; relation: string }>();
+    const stack: Array<{ node: string; nextEdge: number }> = [{ node: target, nextEdge: 0 }];
+
+    while (stack.length > 0) {
+      const frame = stack[stack.length - 1];
+      const incoming = reverse.get(frame.node) ?? [];
+      if (frame.nextEdge >= incoming.length) {
+        stack.pop();
+        continue;
       }
+      const edge = incoming[frame.nextEdge++];
+      if (discovered.has(edge.from)) continue;
+      discovered.add(edge.from);
+      discoveryOrder.push(edge.from);
+      parent.set(edge.from, { node: frame.node, relation: edge.relation ?? 'DEPENDS_ON' });
+      stack.push({ node: edge.from, nextEdge: 0 });
     }
-    if (paths.length > 0) lines.push(`| ${target} | ${paths.map((dependencyPath) => dependencyPath.join(' → ')).join('; ')} |`);
+
+    if (discoveryOrder.length === 0) continue;
+
+    const pathFor = (node: string): string[] => {
+      const segments: string[] = [node];
+      let current = node;
+      while (current !== target) {
+        const link = parent.get(current);
+        if (!link) break;
+        segments.push(`(${link.relation})`, link.node);
+        current = link.node;
+      }
+      return segments;
+    };
+    const representativePaths = discoveryOrder
+      .slice(0, MAX_REVERSE_REPRESENTATIVE_PATHS)
+      .map(node => pathFor(node).join(' → '));
+    if (discoveryOrder.length > MAX_REVERSE_REPRESENTATIVE_PATHS) {
+      representativePaths.push(
+        `… representative paths truncated after ${MAX_REVERSE_REPRESENTATIVE_PATHS}; all reachable predecessors are listed`,
+      );
+    }
+    lines.push(
+      `| ${target} | ${discoveryOrder.join(', ')} | ${representativePaths.join('; ')} |`,
+    );
   }
 
   lines.push('');

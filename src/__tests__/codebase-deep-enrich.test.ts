@@ -161,7 +161,7 @@ describe('codebase deep-enrich', () => {
 
     const g6 = fs.readFileSync(path.join(docsDir, 'graph-g6-triples.md'), 'utf8');
     expect(g6).toContain('Api → (CALLS) → Service → (WRITES) → Store');
-    expect(g6).toMatch(/\| Store \| [^|]*Api → \(CALLS\) → Service → \(WRITES\) → Store/);
+    expect(g6).toMatch(/\| Store \| [^|]*\| [^|]*Api → \(CALLS\) → Service → \(WRITES\) → Store/);
     expect(g6).not.toContain('No indirect dependency path was extracted');
     expect(g6).toContain('| EXTRACTED | 0.90 |');
     expect(fs.existsSync(path.join(docsDir, 'graph-g6-multihop.md'))).toBe(false);
@@ -174,6 +174,37 @@ describe('codebase deep-enrich', () => {
     const k3 = fs.readFileSync(path.join(evidenceDir, '_review', 'k3-consistency-check.md'), 'utf8');
     expect(k3).toContain('Contradiction comparison: deferred');
     expect(k3).not.toContain('Contradictions: 0 detected');
+  });
+
+  it('bounds reverse reachability output for a layered DAG', async () => {
+    const root = createEnrichFixture();
+    const evidenceDir = path.join(root, 'teamwiki', 'evidence', 'code', 'faketest');
+    const manifestPath = path.join(evidenceDir, '_manifest.json');
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as { edges: unknown[] };
+    const layers = [['Root']];
+    for (let layer = 1; layer <= 18; layer++) {
+      layers.push([`L${layer}A`, `L${layer}B`]);
+    }
+    const edges: Array<{ from: string; to: string; relation: string }> = [];
+    for (let layer = 1; layer < layers.length; layer++) {
+      for (const from of layers[layer - 1]) {
+        for (const to of layers[layer]) {
+          edges.push({ from, to, relation: 'DEPENDS_ON' });
+        }
+      }
+    }
+    expect(layers.flat()).toHaveLength(37);
+    expect(edges).toHaveLength(70);
+    manifest.edges = edges;
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    await codebaseCmd({ deepEnrich: true, project: 'faketest', output: root, json: true });
+
+    const g6 = fs.readFileSync(path.join(evidenceDir, 'docs', 'graph-g6-triples.md'), 'utf8');
+    expect(g6.length).toBeLessThan(120_000);
+    expect(g6).toContain('all reachable predecessors are listed');
+    expect(g6).toContain('representative paths truncated after 32');
   });
 
   it.skipIf(process.platform === 'win32')('does not overwrite a file outside the teamwiki through a docs symlink', async () => {
