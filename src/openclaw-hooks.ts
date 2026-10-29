@@ -83,13 +83,13 @@ function buildHookMd(tool: string): string {
     // A bare `[teamai] ...` value is a YAML flow sequence followed by a
     // scalar: a parse error, and OpenClaw then treats the metadata as invalid.
     `name: ${OPENCLAW_HOOK_KEY}`,
-    `description: ${JSON.stringify(`${TEAMAI_MARKER} Reports agent status to the team backend and syncs team resources.`)}`,
+    `description: ${JSON.stringify(`${TEAMAI_MARKER} Runs TeamAI hooks to sync Git team resources and collect local usage.`)}`,
     `metadata:`,
     `  ${metadata}`,
     `handler: ./handler.ts`,
     '---',
     '',
-    `${TEAMAI_MARKER} Reports agent status to the team backend (report/sync/ack) for tool \`${tool}\`.`,
+    `${TEAMAI_MARKER} Runs TeamAI hooks for tool \`${tool}\`.`,
     'Managed by teamai — do not edit by hand.',
     '',
   ].join('\n');

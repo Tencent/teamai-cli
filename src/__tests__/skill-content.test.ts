@@ -295,9 +295,9 @@ describe('teamai skill get / path against the shipped package', () => {
 });
 
 describe('the shipped skill-data content', () => {
-  it('serves six skills', async () => {
+  it('serves five skills', async () => {
     expect((await listServableSkills()).map((skill) => skill.name))
-      .toEqual(['core', 'setup', 'share', 'wiki', 'workflow', 'workflow-local']);
+      .toEqual(['core', 'sdlc', 'setup', 'share', 'wiki']);
   });
 
   it('names every skill after its directory, and promises no permissions it cannot grant', async () => {
@@ -320,7 +320,7 @@ describe('the shipped skill-data content', () => {
     // `teamai skill …` commands it asks for and the skill driver's calls that
     // cannot start a run (workflow-skill-literals.test.ts pins those). Everything
     // else a served workflow runs goes through the agent's own permission prompt.
-    expect(stub).toMatch(/^allowed-tools: Bash\(teamai skill:\*\), Bash\(npx teamai-cli skill:\*\), /m);
+    expect(stub).toMatch(/^allowed-tools: Bash\(teamai skill:\*\), Bash\(npx teamai-cli skill:\*\)$/m);
   });
 
   it('quotes {SKILL_DIR} and $(teamai skill path …) in every command it tells the agent to run', async () => {

@@ -23,7 +23,7 @@ import {
   planInstructionFiles, registerOpencodeContext, resolveInstructionTargets, retiredFilesOfReached, type InstructionBlocks, type InstructionTarget,
 } from './instruction-targets.js';
 import { getHandler, RulesHandler, DocsHandler, EnvHandler, AgentsHandler } from './resources/index.js';
-import { removedAgentOrigin, reportHeldAgents, type RedeployedCopy } from './resources/agents.js';
+import { removedAgentOrigin, type RedeployedCopy } from './resources/agents.js';
 import { ruleOrigin, rulesReceivingTools } from './resources/rules.js';
 import {
   deliveredDocFiles, describeLinkedDocsRoot, isLinkedDocsRoot, isTeamDocsDirectory, keepDocsSearchWhitelist, listStaleDocDirectories, membersDocs,
@@ -95,7 +95,7 @@ import {
   type DeliveryRecorder, type GitExcludePaths, type ListedCheckout, type WriterId,
 } from './git-exclude-delivered.js';
 import {
-  clearGitExcludeFailure, isBackgroundPull, localAgentGitExcludeNotices, noticeGitExclude, recordGitExcludeFailure,
+  clearGitExcludeFailure, isBackgroundPull, noticeGitExclude, recordGitExcludeFailure,
   sayGitExcludeNotices,
 } from './git-exclude-notices.js';
 
@@ -137,11 +137,9 @@ async function teamFetchedWithinTtl(localConfig: LocalConfig): Promise<boolean> 
 }
 
 /**
- * Refresh the local team-repo tree, abstracting the two backends.
+ * Refresh a Git team repository; legacy HTTP configurations are rejected.
  *
  * - git:  `git pull` into localPath; version = current HEAD rev.
- * - http: nothing to clone — skills/rules/CLAUDE.md are delivered per-session via
- *         report/sync/ack (the local-agent bypass), not a repo snapshot.
  *
  * Returns a display label and the opaque version string used as the
  * incremental-sync cache key (state.lastPullRev). `version` is null only when
@@ -161,17 +159,7 @@ async function refreshTeamRepo(
   localConfig: LocalConfig,
   options: Pick<GlobalOptions, 'inline' | 'localOnly' | 'fetchTimeoutMs' | 'dryRun' | 'teamRef' | 'silent'> = {},
 ): Promise<{ label: string; version: string | null; submodulesFailed: boolean; submodulesChanged: boolean }> {
-  if (localConfig.repo.kind === 'http') {
-    const { resolveApiKey } = await import('./api-key.js');
-    const apiKey = resolveApiKey();
-    if (!apiKey) {
-      throw new Error('No API key configured. Re-run `teamai init --http <url> --token <key>` or set TEAMAI_API_TOKEN.');
-    }
-    // HTTP backends deliver resources through report/sync (own hook handler),
-    // so there is no repo tree to pull here.
-    return { label: 'HTTP (report/sync delivery)', version: null, submodulesFailed: false, submodulesChanged: false };
-  }
-
+  if (localConfig.repo.kind === 'http') throw new Error('HTTP team sources are no longer supported. Initialize a Git team repository. Existing files are preserved.');
   if (localConfig.repo.kind === 'self') {
     // Single-repo mode: knowledge lives under <business-repo>/.teamai on main and
     // arrives with the business repo's own `git clone`/`git pull`. teamai must NOT
@@ -1270,60 +1258,36 @@ async function rerenderOutdatedRules(
   }
 }
 
-/**
- * Agents on the "Already synced" fast path (#830): an agent's model can
- * change while the team repo stays put — a CLI upgrade that resolves an alias
- * an older one wrote literally, and later the member's own alias file or a
- * switched tool — and an older CLI may have rendered a copy differently.
- * Only the agents `agentsToRedeploy` selects are redeployed, through the same
- * `pullItem` a full sync uses, so a copy the member changed is kept. No git work: this
- * runs on every session start. Returns whether it held an agent for its model.
- */
+/** Refresh native Agent renders after a CLI upgrade while preserving member edits and historical ownership. */
 async function redeployAgentsWithChangedModels(
   freshConfig: TeamaiConfig,
   localConfig: LocalConfig,
   roleContext: RolePullContext | null,
   scopeLabel: string,
-  revisionField: 'lastPullRev' | 'lastInheritedPullRev',
-  reported: Set<string>,
   recorder?: DeliveryRecorder,
-): Promise<boolean> {
+): Promise<void> {
   try {
     const key = await checkoutRecordKey(localConfig);
-    if (!key) return false;
+    if (!key) return;
     const desired = await resolveDesiredAgents(freshConfig, localConfig, roleContext);
     // The full sync that met this collision said so and kept the installed agents.
-    if (desired.kind === 'conflict') return false;
+    if (desired.kind === 'conflict') return;
     const state = await loadStateForScope(localConfig);
     const ledger = await openCheckoutLedger(localConfig, state, recorder);
     const handler = getHandler('agents') as AgentsHandler;
     const redeploy = await handler.agentsToRedeploy(desired.items, freshConfig, localConfig, ledger);
     for (const { item } of redeploy) await handler.pullItem(item, freshConfig, localConfig, ledger);
-    // Said as a full sync says it, and the checkout not counted as synced, so
-    // the next pull syncs in full and delivers what this one held.
-    const held = ledger.held.length > 0;
-    if (redeploy.length === 0 && !held) {
+    if (redeploy.length === 0) {
       // A copy kept for the member's edit changes nothing on record.
       reportKept(ledger, scopeLabel);
-      return false;
+      return;
     }
-    if (held && reportHeldAgents(ledger) > 0) reported.add('model-aliases');
     reportKept(ledger, scopeLabel);
     // A project checkout reaches the fast path only through its own record.
     const record = localConfig.scope === 'user' ? await userScopeRecord(state) : state.lastPullByWorkspace?.[key];
-    if (!record) return held;
+    if (!record) return;
     record.delivered = ledger.hashes;
     setAgentModels(record, ledger.agentModels);
-    if (held) {
-      // What gates this checkout's fast path: a project checkout's own record,
-      // reset as a forced full sync resets it, push bases kept; for the user
-      // scope, the revision field.
-      if (localConfig.scope === 'project' && revisionField === 'lastPullRev') {
-        state.lastPullByWorkspace = { ...state.lastPullByWorkspace, ...awaitingFullSync({ [key]: record }) };
-      } else {
-        state[revisionField] = null;
-      }
-    }
     await saveStateForScope(state, localConfig);
     // Named by what happened to the copies pull did write, the first reason that applies.
     const written = new Map<RedeployedCopy['reason'], string[]>();
@@ -1338,13 +1302,12 @@ async function redeployAgentsWithChangedModels(
     for (const [reason, names] of written) {
       log.success(`[${scopeLabel}] ${REDEPLOYED[reason](names.length)}: ${names.join(', ')}`);
     }
-    return held;
   } catch (e) {
     log.warn(
       `[${scopeLabel}] Could not check whether agent models changed: ${(e as Error).message}. `
       + 'Deployed agents may still carry the previous model; fix the cause, then run `teamai pull --force`.',
     );
-    return false;
+    return;
   }
 }
 
@@ -1383,7 +1346,6 @@ function awaitingFullSync(records: Record<string, CheckoutRecord>): Record<strin
 type PullSyncResult = {
   completed: boolean;
   docsSyncFailed: boolean;
-  agentModelsHeld: boolean;
   teamRepoFailed: boolean;
   resourceSyncFailed: boolean;
   delivery: 'pending' | 'complete' | 'failed';
@@ -1426,7 +1388,7 @@ async function pullForScope(
   const recordKey = await checkoutRecordKey(localConfig);
   const workspaceKey = revisionField === 'lastPullRev' && localConfig.scope === 'project' ? recordKey : undefined;
 
-  // Step 1: refresh team repo (git pull, or HTTP /repo materialization)
+  // Step 1: refresh the Git team repository.
   const pullSpin = (await spinner(`[${scopeLabel}] Pulling team repo...`)).start();
   let currentRev: string | null = null;
   // A failed submodule update holds the rev back below so the next pull
@@ -1765,16 +1727,6 @@ async function pullForScope(
       await reportsRootReady;
     }
   };
-  // Agents the user explicitly switched to one of this team's model profiles
-  // follow catalog updates; other agents are never touched by a pull.
-  let modelCatalogHint: string | undefined;
-  try {
-    const { syncTeamModelProfiles } = await import('./models-cmd.js');
-    modelCatalogHint = await syncTeamModelProfiles(localConfig, { dryRun: options.dryRun });
-  } catch (error) {
-    log.warn(`[${scopeLabel}] Team model profiles were not updated: ${(error as Error).message}`);
-  }
-
   // Before anything probes which tools this checkout has; once, like a new
   // worktree's post-checkout. A record saved before seeding existed reads as
   // never seeded; a missing original checkout leaves the marker unset so a
@@ -1917,10 +1869,7 @@ async function pullForScope(
           }
           // The repo has not moved, but an agent's model may have (#830).
           if (resourceTypes.includes('agents')) {
-            if (await redeployAgentsWithChangedModels(freshConfig, localConfig, roleContext, scopeLabel, revisionField, reported, recorder) && result) {
-              result.agentModelsHeld = true;
-              result.delivery = 'failed';
-            }
+            await redeployAgentsWithChangedModels(freshConfig, localConfig, roleContext, scopeLabel, recorder);
           }
           // A repo that has not moved can still carry a malformed env.yaml, or
           // scope a variable this CLI version now withholds; the Step 2 env
@@ -1934,7 +1883,6 @@ async function pullForScope(
           // on the fast path too, or an ordinary pull never surfaces a teammate's
           // learning until `pull --force` (#704).
           await syncLearningsAndRebuildIndex();
-          await syncWorkflows(localConfig, freshConfig, !!options.dryRun, scopeLabel, recorder);
           if (result && result.delivery !== 'failed') result.delivery = 'complete';
           return;
         }
@@ -1946,10 +1894,6 @@ async function pullForScope(
       log.debug(`[${scopeLabel}] Rev check failed, proceeding with full sync`);
     }
   }
-
-  // Mention unused team model profiles only when the repo moved, not on
-  // every already-synced pull.
-  if (modelCatalogHint) log.info(`[${scopeLabel}] ${modelCatalogHint}`);
 
   const excludedSkills = new Set(localConfig.excludedSkills ?? []);
 
@@ -1998,7 +1942,6 @@ async function pullForScope(
   // cause may be the member's own (their aliases override, the switch state),
   // which they fix without a new team revision, so the next pull must sync
   // again to deliver what was held.
-  let agentModelsHeld = false;
   // Set when a file of the member's own holds a team resource back (#993):
   // the next pull must sync again, so it delivers once the file is gone.
   let membersFilesKept = false;
@@ -2193,18 +2136,10 @@ async function pullForScope(
     if (options.dryRun) {
       const added = items.filter(i => !existingNames.has(i.name));
       const updated = items.filter(i => existingNames.has(i.name));
-      // The agents the real pull would hold for their model, said as it says them.
-      let held = 0;
-      if (type === 'agents') {
-        await (handler as AgentsHandler).queueModelHolds(items, freshConfig, localConfig, ledger);
-        held = reportHeldAgents(ledger, scopeLabel);
-      }
-
       if (added.length > 0 && type === 'skills') {
         log.info(`[${scopeLabel}] [dry-run] Would pull ${items.length} ${type} (${added.length} new, ${updated.length} updated)`);
         log.dim(`    new: ${added.map(i => i.name).join(', ')}`);
-      } else if (held > 0) {
-        log.info(`[${scopeLabel}] [dry-run] Would pull ${items.length - held} ${type} (${held} held)`);
+
       } else {
         log.info(`[${scopeLabel}] [dry-run] Would pull ${items.length} ${type}`);
       }
@@ -2215,8 +2150,6 @@ async function pullForScope(
       }
       if (type === 'skills' || type === 'agents') {
         await reportWouldKeep(handler, items, freshConfig, localConfig, ledger, scopeLabel, type);
-        // A held agent keeps the copies it has: the preview keeps their lines.
-        if (held > 0) ledger.recorder?.failed(type);
         ledger.recorder?.succeeded(type);
       } else {
         await reportWouldKeep(handler, items, freshConfig, localConfig, ledger, scopeLabel);
@@ -2244,16 +2177,10 @@ async function pullForScope(
         membersFilesKept = true;
         if (result) { result.resourceSyncFailed = true; result.delivery = 'failed'; }
       }
-      // Agents whose model cannot be resolved reach no tool: said once per reason, and not counted as synced.
-      if (ledger.held.length > 0) agentModelsHeld = true;
-      const held = ledger.held.length > 0 ? reportHeldAgents(ledger) : 0;
-      if (held > 0) reported.add('model-aliases');
-
       if (canReceive) {
         if (type === 'skills') {
           logSyncDetail(type, items, existingNames, !!options.verbose, scopeLabel, skippedByTags);
-        } else if (held > 0) {
-          log.success(`[${scopeLabel}] Synced ${items.length - held} ${type} (${held} held)`);
+
         } else {
           log.success(`[${scopeLabel}] Synced ${items.length} ${type}`);
         }
@@ -2520,10 +2447,10 @@ async function pullForScope(
       // A failed submodule update keeps the previous rev so the next pull
       // retries the update (see refreshTeamRepo); so does a held agent, or a
       // team resource a member's own file holds back.
-      if (!submodulesFailed && !agentModelsHeld && !membersFilesKept) state[revisionField] = deliveredRev;
+      if (!submodulesFailed && !membersFilesKept) state[revisionField] = deliveredRev;
       state[targetsField] = syncedTargets;
     }
-    const complete = !docsSyncFailed && !submodulesFailed && !agentModelsHeld && !membersFilesKept;
+    const complete = !docsSyncFailed && !submodulesFailed && !membersFilesKept;
     if (recordKey && deliveredRev && (!complete || revisionField === 'lastInheritedPullRev')) {
       // An inherited pull moves HOME's skills, rules and agents, not the rest,
       // and an incomplete one keeps its marker for a retry, yet both delivered
@@ -2641,14 +2568,11 @@ async function pullForScope(
   }
 
   if (await checkoutRemoved()) return;
-  await syncWorkflows(localConfig, freshConfig, !!options.dryRun, scopeLabel, recorder);
 
   // A real sync ran to completion for this scope. The "Already synced" fast path
   // and every error/skip path return before here, and dry-run is excluded so a
   // preview never reports completion (#702 follow-up).
-  // A held agent is not delivered either (#830).
-  if (result && agentModelsHeld) { result.agentModelsHeld = true; result.delivery = 'failed'; }
-  if (result && !options.dryRun && !docsSyncFailed && !agentModelsHeld) {
+  if (result && !options.dryRun && !docsSyncFailed) {
     result.completed = true;
     if (membersFilesKept) result.delivery = 'failed';
     else if (result.delivery !== 'failed') result.delivery = 'complete';
@@ -3040,25 +2964,6 @@ async function reinjectLegacyHooks(localConfig: LocalConfig): Promise<void> {
   log.debug('Hooks migrated to dispatch format');
 }
 
-/**
- * Validate workflows, and write a skill for each one an agent may start, without failing this pull when one file is
- * invalid. The skills it writes are delivered paths (#915).
- */
-async function syncWorkflows(
-  localConfig: LocalConfig, teamConfig: TeamaiConfig, dryRun: boolean, scopeLabel: string, recorder?: DeliveryRecorder,
-): Promise<void> {
-  try {
-    const { syncWorkflowDefinitions } = await import('./workflow/cache.js');
-    await syncWorkflowDefinitions(localConfig, { dryRun, scopeLabel });
-    if (dryRun) return;
-    const { deployWorkflowSkills } = await import('./workflow/discovery/workflow-skills.js');
-    await deployWorkflowSkills({ teamConfig, localConfig, recorder });
-  } catch (error) {
-    recorder?.failed('workflow-skills');
-    log.warn(`[${scopeLabel}] Workflows were not updated: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}
-
 /** Say the failure the git hook recorded. A pull that then completes clears it (see pull()). */
 async function mentionGitHookFailure(config: LocalConfig, reported: Set<string>): Promise<void> {
   const { readGitHookFailure, describeGitHookFailure } = await import('./git-hook.js');
@@ -3113,7 +3018,7 @@ export async function pull(
   // into another call.
   const reported = new Set<string>();
   // A later successful scope must not hide an earlier docs failure (or vice versa).
-  const syncResult: PullSyncResult = { completed: false, docsSyncFailed: false, agentModelsHeld: false, teamRepoFailed: false, resourceSyncFailed: false, delivery: 'pending' };
+  const syncResult: PullSyncResult = { completed: false, docsSyncFailed: false, teamRepoFailed: false, resourceSyncFailed: false, delivery: 'pending' };
   const startupErrors: string[] = [];
   // The project scope's hook and co-author writes that failed. Kept out of
   // startupErrors, which also decides a git hook's failure record, so only
@@ -3487,21 +3392,6 @@ export async function pull(
           } finally {
             reportOutcomes.set(t.opts.selfConfig, { reported: usageReported, at: new Date().toISOString() });
           }
-          // Drain queued workflow run records (#1083): a publication that
-          // failed at run start/end is retried here, once per pull.
-          try {
-            const { publishPendingRecords } = await import('./workflow/records.js');
-            await publishPendingRecords(t.opts.selfConfig);
-          } catch (e) {
-            log.debug(`Workflow record publish to ${t.repoPath} deferred: ${(e as Error).message}`);
-          }
-          // Score labels a submit could not publish (#1085) ride the same drain.
-          try {
-            const { LabelStore } = await import('./scorers/label-store.js');
-            await LabelStore.publish(t.opts.selfConfig);
-          } catch (e) {
-            log.debug(`Score label publish to ${t.repoPath} deferred: ${e instanceof Error ? e.message : String(e)}`);
-          }
         }
 
         // Cap every active scope, reporting or not (#788): http and
@@ -3550,12 +3440,7 @@ export async function pull(
   //     contended scope is skipped: the lock's holder syncs.
   //     A background pull keeps what it has to say; the next interactive one
   //     says it first, once.
-  //     The local agent's sessions keep theirs in its state home, whatever the scope.
-  if (!options.dryRun && !isBackgroundPull(options) && await sayGitExcludeNotices(localAgentGitExcludeNotices())) {
-    reported.add('local-agent-git-exclude-failure');
-  }
   const teamaiOnlyFailures = reconcileProject ? await reportTeamaiOnlyFiles(reconcileProject, deliveryRecorder, options) : [];
-  // What git says of the project's directories, for this run: the sync and the checks after it ask about the same ones.
   const gitContext = new GitContext();
   if (reconcileProject && !options.dryRun) {
     if (!isBackgroundPull(options) && await sayGitExcludeNotices(reconcileProject)) reported.add('git-exclude-failure');
@@ -3586,7 +3471,6 @@ export async function pull(
   const retriesHookFailure = Boolean(options.gitHook) || reported.has('git-hook-failure');
   if (retriesHookFailure && !options.dryRun && reconcileProject && !syncResult.teamRepoFailed) {
     if (syncResult.docsSyncFailed) startupErrors.push('Docs delivery failed');
-    if (syncResult.agentModelsHeld) startupErrors.push('Agent models could not be resolved');
     if (syncResult.resourceSyncFailed) startupErrors.push('Resource delivery did not complete');
     const { clearGitHookFailure, recordGitHookFailure } = await import('./git-hook.js');
     if (startupErrors.length > 0) {
@@ -3617,7 +3501,7 @@ export async function pull(
         log.debug(`Could not read the pinned team revision: ${(error as Error).message}`);
       }
     }
-    if (result) result.completed = syncResult.completed && !syncResult.docsSyncFailed && !syncResult.agentModelsHeld;
+    if (result) result.completed = syncResult.completed && !syncResult.docsSyncFailed;
     const finishReportAndReleaseLocks = async () => {
       // Other pull stages save whole state snapshots. Record report outcomes
       // after those writers, still under the sync locks, including late pushes.

@@ -18,5 +18,5 @@ Then you can say:
 /teamai Help me set up TeamAI for my team from scratch
 /teamai Help me join my team's TeamAI, repo URL is https://github.com/your-org/your-repo
 /teamai Share my xxx skill with the team
-/teamai Open the TeamAI dashboard
+/teamai Check my TeamAI installation
 ```

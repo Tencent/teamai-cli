@@ -86,15 +86,6 @@ describe('getUserHome', () => {
       spy.mockRestore();
     }
   });
-
-  it('resolves user-scope resource paths from USERPROFILE when HOME is unavailable', async () => {
-    delete process.env.HOME;
-    process.env.USERPROFILE = 'C:\\Users\\alice';
-
-    const { getApiKeyPath } = await import('../api-key.js');
-
-    expect(getApiKeyPath()).toBe(path.join('C:\\Users\\alice', '.teamai', 'apikey'));
-  });
 });
 
 describe('getDataHome (machine-data home resolver)', () => {

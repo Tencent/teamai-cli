@@ -9,7 +9,7 @@ import { log } from '../utils/logger.js';
 import { debugOnce, warnOnce } from '../utils/warn-once.js';
 import { getFileContentWhenAdded, isPastVersionOf, resolveAnchors } from '../utils/git.js';
 import { isCliOwnedSkillName, ownedSkillFiles, prunedWhole, removeOwnedFiles, skillsGuardBase } from '../builtin-skills.js';
-import { generatedSkillAt } from '../workflow/discovery/generated-marker.js';
+import { generatedSkillAt } from './legacy-generated-skill.js';
 import { installOf, locate, ownOf, SHARED_AGENT_SKILLS_PATH, writable, writesOf, type Install } from '../locate.js';
 import {
   loadRolesManifest, resolveRoleResourceNamespaces, RolesManifestNotFoundError, type RolesManifest,

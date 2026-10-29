@@ -1243,16 +1243,12 @@ export async function buildAgentsDeliveryChecks(ctx: DoctorContext): Promise<Che
       return differingCopyLabel(item, target, agentLabels[1], localConfig, linesFor(memberLines, target.tool));
     },
   );
-  // An agent whose model cannot be resolved is held, not unreachable: the
-  // model aliases check names the reason.
-  const { heldAgentNames } = await import('./doctor-agent-models.js');
-  const held = await heldAgentNames(ctx);
   // A tool that would not load an agent gets no copy; this check, not the unreachable one, says why.
   const rejections: { name: string; tool: string; reason: string }[] = [];
   for (const item of items) {
     for (const { tool, reason } of await handler.rejectedTools(teamConfig, localConfig, item)) rejections.push({ name: item.name, tool, reason });
   }
-  const unreachable = unreceived.filter((name) => !held.has(name) && !rejections.some((rejection) => rejection.name === name));
+  const unreachable = unreceived.filter((name) => !rejections.some((rejection) => rejection.name === name));
 
   const checks: Check[] = [...byTool].map(([tool, delivery]) => {
     const modelChanged = delivery.problems.has(MODEL_CHANGED);
@@ -1687,40 +1683,6 @@ export async function buildMcpReadFileChecks(ctx: DoctorContext): Promise<Check[
 }
 
 /**
- * HTTP mode (#915): the project MCP servers the local agent recorded in a
- * project's `.mcp.json` while the git exclude flag gives Claude and CodeBuddy
- * theirs in the tool's local scope. Its next sync moves them there. Built
- * only while that file holds them. Read-only.
- */
-export async function buildLocalAgentMcpLocationChecks(ctx: DoctorContext): Promise<Check[]> {
-  const { localConfig, teamConfig } = ctx;
-  const { projectRoot } = localConfig;
-  if (!teamConfig || localConfig.repo.kind !== 'http' || localConfig.scope !== 'project' || !projectRoot) return [];
-  const { projectMcpLocations, mcpRelocated, installedMcpEntries, describeMcpLocation } = await import('./mcp-reconcile.js');
-  const { loadProjectMcpManifest } = await import('./utils/mcp-manifest.js');
-  const { manifest } = await loadProjectMcpManifest(getDataHome(localConfig), projectRoot, { dryRun: true });
-  const checks: Check[] = [];
-  for (const tool of Object.keys(teamConfig.toolPaths)) {
-    const records = manifest[managedMcpManifestKey(tool, true)] ?? [];
-    if (records.length === 0) continue;
-    const places = await projectMcpLocations(teamConfig, localConfig, tool);
-    if (!places || !await mcpRelocated(teamConfig, localConfig, tool)) continue;
-    const installed = await installedMcpEntries(places.tree);
-    const names = records.map((record) => record.name).filter((name) => installed?.has(name)).sort();
-    if (names.length === 0) continue;
-    checks.push({
-      name: `${tool} gets the local agent's MCP servers from its local scope`,
-      source: 'local',
-      check: async () => false,
-      fix: `teamai's MCP servers for ${tool} from the local agent (${nameList(names)}) are still in ${places.tree.file}, while sharing.gitExclude `
-        + `gives ${tool} them in ${describeMcpLocation(places.local)}. Start a new session: the local agent's sync moves them there. `
-        + `A copy you changed stays in ${places.tree.file}, as yours.`,
-    });
-  }
-  return checks;
-}
-
-/**
  * Codex loads a project's `.codex/config.toml` only in a trusted project, and
  * skips an untrusted one silently (#954), so team servers a pull or
  * `teamai mcp inject` wrote there are on disk and inert. Built while that file
@@ -1942,7 +1904,6 @@ async function resolveEntryTypes(
   const { SECRETS_LAYOUT, secretsEntryReader } = await import('./resources/secrets.js');
   const { hooksEntryReader } = await import('./resources/hooks.js');
   const { mcpEntryReader } = await import('./resources/mcp.js');
-  const { modelsEntryReader } = await import('./models/profile.js');
   return [
     { layout: entryLayout('env'), resolution: await resolveEntriesFor(envEntryReader, localConfig), checkName: null },
     {
@@ -1956,11 +1917,6 @@ async function resolveEntryTypes(
       checkName: 'Team hooks can be resolved',
     },
     { layout: entryLayout('mcp'), resolution: await resolveEntriesFor(mcpEntryReader, localConfig), checkName: null },
-    {
-      layout: entryLayout('models'),
-      resolution: await resolveEntriesFor(modelsEntryReader, localConfig),
-      checkName: 'Team model profiles can be resolved',
-    },
   ];
 }
 

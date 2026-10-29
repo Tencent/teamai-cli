@@ -315,3 +315,12 @@ _review/                                ← Process files (not part of the knowl
 **Path convention**: `{SKILL_DIR}` is the directory printed by `teamai skill path wiki`. The methodology is in `{SKILL_DIR}/references/methodology/`, sub-agent prompts in `{SKILL_DIR}/references/agents/`, and scripts in `{SKILL_DIR}/scripts/`.
 
 The whole workflow runs within the content served by `teamai skill get wiki` and the `teamai` CLI. No extra plugin is required.
+
+## Knowledge document format
+
+New generated Markdown concepts use OKF frontmatter with a nonempty `type` and
+`sources` objects (each has `resource`). Preserve unknown metadata. Reserved
+`index.md` and `log.md` have their own OKF rules. Do not infer `verified` from
+confidence, usage or a review-state label. Use `teamai skill get sdlc` for the
+shared format checker and migration preview. Keep Octo authority references and
+repository task documents separate from this derived wiki.

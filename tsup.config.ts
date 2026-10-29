@@ -71,7 +71,7 @@ const simpleGitExitFallbackUnref: Plugin = {
 export default defineConfig({
   // `index` is the executable: it turns on Node's compile cache, then loads
   // `cli`, the CLI itself, which the cache can only cover as a separate file.
-  entry: { index: 'src/bin.ts', cli: 'src/index.ts' },
+  entry: { index: 'src/bin.ts', cli: 'src/index.ts', documents: 'src/documents/cli.ts' },
   format: ['esm'],
   target: 'node20',
   outDir: 'dist',

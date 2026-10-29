@@ -76,20 +76,6 @@ describe('--dry-run on a command with no preview', () => {
     if (sandbox) fs.rmSync(sandbox, { recursive: true, force: true });
   });
 
-  it('models remove --dry-run exits 1 and keeps the profile', () => {
-    const added = cli(['models', 'add', 'gw', '--name', 'Gateway', '--protocol', 'anthropic', '--base-url', 'https://gw.example.test',
-      '--model', 'm1', '--from-env', 'TEAMAI_E2E_KEY']);
-    expect(added.output).toContain('Added local model profile');
-    const before = snapshot(home);
-
-    const removed = cli(['models', 'remove', 'gw', '--dry-run']);
-
-    expect(removed.code, removed.output).toBe(1);
-    expect(removed.output).toContain('teamai models remove has no --dry-run preview, nothing was run');
-    expect(snapshot(home)).toEqual(before);
-    expect(cli(['models', 'list']).output).toContain('local:gw');
-  });
-
   it('no longer accepts codebase --extract and lets a read-only sibling through', () => {
     const before = snapshot(home);
 
@@ -97,7 +83,7 @@ describe('--dry-run on a command with no preview', () => {
     expect(extract.code, extract.output).toBe(1);
     expect(extract.output).toContain("unknown option '--extract'");
 
-    const list = cli(['models', 'list', '--dry-run']);
+    const list = cli(['skill', 'list', '--dry-run']);
     expect(list.code, list.output).toBe(0);
     expect(list.output).not.toContain('has no --dry-run preview');
 
@@ -165,7 +151,6 @@ describe('--dry-run on a command with no preview', () => {
       ['init', '.'],
       ['init', '--self'],
       ['init', '--repo', '.'],
-      ['init', '--http', 'https://teamai.example.test', '--token', 'k'],
     ]) {
       const result = cli([...args, '--agent', 'claude', '--force', '--dry-run'], repo);
       expect(result.code, `${args.join(' ')}\n${result.output}`).toBe(1);
@@ -231,7 +216,16 @@ describe('--dry-run on a command with no preview', () => {
     const preload = path.join(sandbox, 'block-provider.mjs');
     fs.writeFileSync(preload, [
       "import fs from 'node:fs';",
-      `globalThis.fetch = async () => { fs.writeFileSync(${JSON.stringify(marker)}, 'called'); throw new Error('provider access blocked by test'); };`,
+      "import https from 'node:https';",
+      "import cp from 'node:child_process';",
+      "import path from 'node:path';",
+      "import { syncBuiltinESMExports } from 'node:module';",
+      `const deny = () => { fs.writeFileSync(${JSON.stringify(marker)}, 'called'); throw new Error('provider access blocked by test'); };`,
+      'globalThis.fetch = async () => deny();',
+      'https.request = deny;',
+      'const spawnSync = cp.spawnSync;',
+      `cp.spawnSync = (command, ...args) => { if (['gh', 'gh.exe', 'gh.cmd'].includes(path.basename(String(command)))) { fs.writeFileSync(${JSON.stringify(marker)}, 'called'); return { status: 1, stdout: '', stderr: 'provider access blocked by test' }; } return spawnSync(command, ...args); };`,
+      'syncBuiltinESMExports();',
     ].join('\n'));
     const bin = path.join(sandbox, 'bin');
     fs.mkdirSync(bin);
@@ -254,16 +248,9 @@ describe('--dry-run on a command with no preview', () => {
     // provider request, proving the refusal did not merely mask a broken URL.
     const preview = cli(args, project, env);
     expect(preview.output).not.toContain('has no --dry-run preview');
+    expect(fs.existsSync(marker), preview.output).toBe(true);
     expect(fs.readFileSync(marker, 'utf8')).toBe('called');
     expect(snapshot(home)).toEqual(beforeHome);
     expect(snapshot(project)).toEqual(beforeProject);
-  });
-
-  it('bind-project --dry-run exits 1 and writes nothing', () => {
-    const before = snapshot(home);
-    const result = cli(['bind-project', '--skip', '--dry-run']);
-    expect(result.code, result.output).toBe(1);
-    expect(result.output).toContain('teamai bind-project has no --dry-run preview, nothing was run');
-    expect(snapshot(home)).toEqual(before);
   });
 });

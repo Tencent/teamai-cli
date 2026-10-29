@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import type { JudgeAccess } from '../scorers/label.js';
 import type { Evidence } from '../tools.js';
 import { agyRun, readToolMetadata, type TokenUsage } from './stdout.js';
 
@@ -32,30 +31,10 @@ export interface CallLaunch {
   read(output: CallOutput): CallReading;
 }
 
-/** A workflow step: a session the adapter starts and resumes, in `local-tool-adapter.ts`. */
-export interface StepLaunch {
-  readonly evidence: Evidence;
-}
-
-/** A confined judge for scorers, in `scorers/judge.ts`. */
-export interface JudgeLaunch {
-  readonly evidence: Evidence;
-  /** The member's variables the judge keeps, beyond the common ones. */
-  readonly env: readonly string[];
-  /** The variable the tool reads its home from. A judge started outside the member's shell, as background scoring is, gets the recorded one. */
-  readonly homeEnv?: string;
-  /** The versions whose confinement has been checked; any other version judges at best-effort. */
-  readonly verified?: RegExp;
-  /** What the judge can do beyond answering. */
-  readonly access: JudgeAccess;
-}
-
 export interface LaunchAdapter {
   /** The command that starts the tool, when it is not the tool's id. */
   readonly executable?: string;
   readonly call: CallLaunch;
-  readonly step?: StepLaunch;
-  readonly judge?: JudgeLaunch;
 }
 
 function jsonLines(stdout: string): unknown[] {
@@ -216,31 +195,15 @@ function readPlainReply({ stdout }: CallOutput): CallReading {
 export const LAUNCH_ADAPTERS = {
   claude: {
     call: { evidence: 'verified', prompt: 'stdin', args: () => ['-p', '--output-format', 'json'], read: readClaudeResult },
-    step: { evidence: 'verified' },
-    judge: {
-      evidence: 'verified',
-      env: ['CLAUDE_CONFIG_DIR', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'ANTHROPIC_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY'],
-      homeEnv: 'CLAUDE_CONFIG_DIR',
-      verified: /^2\.1\.308 \(Claude Code\)$/,
-      access: 'read',
-    },
   },
   codex: {
     call: { evidence: 'verified', prompt: 'stdin', args: ({ lastMessageFile }) => ['exec', '--json', '--skip-git-repo-check', '-o', lastMessageFile, '-'], read: readCodexExec },
-    step: { evidence: 'verified' },
-    judge: { evidence: 'verified', env: ['CODEX_HOME', 'OPENAI_API_KEY', 'OPENAI_BASE_URL'], homeEnv: 'CODEX_HOME', verified: /^codex-cli 0\.163\.0$/, access: 'read' },
   },
   opencode: {
     call: { evidence: 'verified', prompt: 'stdin', args: () => ['run', '--format', 'json'], read: readOpenCodeRun },
-    step: { evidence: 'verified' },
-    judge: { evidence: 'verified', env: ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GOOGLE_GENERATIVE_AI_API_KEY', 'GEMINI_API_KEY', 'OPENROUTER_API_KEY', 'OPENCODE_API_KEY'], verified: /^opencode v2\.1\.2$/, access: 'read' },
   },
   codebuddy: {
     call: { evidence: 'docs', prompt: 'stdin', args: () => ['-p', '--output-format', 'json'], read: readClaudeResult },
-    // Claude's flags and stream, without --effort.
-    step: { evidence: 'docs' },
-    // CodeBuddy lists about 70 tools whatever `--tools` says.
-    judge: { evidence: 'docs', env: ['CODEBUDDY_API_KEY', 'CODEBUDDY_AUTH_TOKEN', 'CODEBUDDY_CONFIG_DIR'], homeEnv: 'CODEBUDDY_CONFIG_DIR', access: 'full' },
   },
   // One embedded turn with ephemeral state, so no call leaves a session in the member's conversations (#1308).
   openclaw: {
@@ -250,7 +213,6 @@ export const LAUNCH_ADAPTERS = {
     executable: 'cursor-agent',
     // Ask mode answers without editing.
     call: { evidence: 'docs', prompt: 'stdin', args: () => ['-p', '--output-format', 'json', '--mode', 'ask', '--trust'], read: readClaudeResult },
-    judge: { evidence: 'docs', env: ['CURSOR_API_KEY', 'CURSOR_CONFIG_DIR', 'CURSOR_DATA_DIR'], access: 'full' },
   },
   // `-s` prints only the reply. Copilot 0.0.x has no JSON output to read tokens from.
   copilot: {
@@ -258,12 +220,6 @@ export const LAUNCH_ADAPTERS = {
   },
   pi: {
     call: { evidence: 'source', prompt: 'stdin', args: () => ['-p', '--mode', 'json', '--no-session'], read: readPiJson },
-    judge: {
-      evidence: 'docs',
-      env: ['PI_CODING_AGENT_DIR', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GEMINI_API_KEY', 'OPENROUTER_API_KEY', 'DEEPSEEK_API_KEY', 'GROQ_API_KEY'],
-      homeEnv: 'PI_CODING_AGENT_DIR',
-      access: 'full',
-    },
   },
   // pi's fork: the same call and events, with flags of its own elsewhere.
   omp: {
@@ -287,9 +243,6 @@ export const LAUNCH_ADAPTERS = {
   // agy reads stdin only as stream-json user events. `--print=` is print mode with the prompt left to them; a bare
   // `-p` would take the next flag as its prompt.
   agy: {
-    step: { evidence: 'verified' },
-    // Plan mode with the sandbox reads files but runs no shell and writes nothing in the workspace (agy 1.4.10).
-    judge: { evidence: 'verified', env: ['GEMINI_API_KEY', 'GOOGLE_GEMINI_BASE_URL'], access: 'read' },
     call: {
       evidence: 'verified',
       prompt: 'stdin',

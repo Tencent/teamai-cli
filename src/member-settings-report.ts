@@ -96,11 +96,6 @@ export function memberSettingLines(reports: MemberSettingsReport[], scope: Local
 
 const MEMBER_SETTING_REPORT_KEYS = [
   'ai.tool',
-  'workflows.tools.default',
-  'workflows.max_parallel',
-  'workflows.auto_approve',
-  'workflows.sandbox',
-  'workflows.allow.network',
   'recallEnabled',
   'contributeHintEnabled',
   'mrHintEnabled',
@@ -120,18 +115,6 @@ function publishMode(key: string): RunMode | undefined {
 
 const MACHINE_WIDE_MEMBER_SETTINGS = new Set(['updatePolicy', 'autoCompactTokens']);
 
-function addWorkflowReportKeys(target: Set<string>, value: unknown): void {
-  const workflows = readPath(value, ['workflows']);
-  if (typeof workflows !== 'object' || workflows === null || Array.isArray(workflows)) return;
-  const tools = (workflows as Record<string, unknown>).tools;
-  if (typeof tools === 'object' && tools !== null && !Array.isArray(tools)) {
-    for (const name of Object.keys(tools as Record<string, unknown>)) target.add(`workflows.tools.${name}`);
-  }
-  const allow = (workflows as Record<string, unknown>).allow;
-  if (typeof allow === 'object' && allow !== null && !Array.isArray(allow)
-    && Object.prototype.hasOwnProperty.call(allow, 'env')) target.add('workflows.allow.env');
-}
-
 /** Map settings need one provenance row per key: one merged object cannot name two winners. */
 function addModelAliasReportKeys(target: Set<string>, value: unknown): void {
   const aliases = readPath(value, ['modelAliases']);
@@ -145,7 +128,6 @@ function nonEmptyAiTool(value: unknown): unknown {
 
 /** Report keys use dots as separators except for literal map-entry names. */
 function reportPathParts(key: string): string[] {
-  if (key.startsWith('workflows.tools.')) return ['workflows', 'tools', key.slice('workflows.tools.'.length)];
   if (key.startsWith('modelAliases.')) return ['modelAliases', key.slice('modelAliases.'.length)];
   return key.split('.');
 }
@@ -187,8 +169,6 @@ export async function memberSettingsReport(ctx: { localConfig: LocalConfig; team
     ? await loadTeamConfig(userConfig.repo.localPath)
     : ctx.teamConfig;
   const reportKeys = new Set<string>(MEMBER_SETTING_REPORT_KEYS);
-  addWorkflowReportKeys(reportKeys, rawMachine);
-  addWorkflowReportKeys(reportKeys, rawScope);
   addModelAliasReportKeys(reportKeys, machine);
   addModelAliasReportKeys(reportKeys, rawScope);
 
@@ -207,9 +187,6 @@ export async function memberSettingsReport(ctx: { localConfig: LocalConfig; team
     return undefined;
   };
   const defaultValue = (key: string): unknown => {
-    if (key === 'workflows.max_parallel') return 1;
-    if (key === 'workflows.auto_approve') return false;
-    if (key === 'workflows.allow.network') return true;
     if (key === 'recallEnabled') return false;
     if (key === 'contributeHintEnabled' || key === 'mrHintEnabled' || key === 'usageReportEnabled') return true;
     if (key === 'coAuthorEnabled' || key === 'codexTrustEnabled') return true;

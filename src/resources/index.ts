@@ -17,13 +17,10 @@ const handlers: Record<ResourceType, ResourceHandler> = {
   agents: new AgentsHandler(),
   hooks: new HooksHandler(),
   mcp: new McpHandler(),
-  models: new RepoResourceHandler('models', 'models'),
   claudemd: new RepoResourceHandler('claudemd', 'claudemd'),
   learnings: new RepoResourceHandler('learnings', 'learnings'),
   wiki: new RepoResourceHandler('wiki', 'teamwiki/evidence/code'),
-  workflows: new RepoResourceHandler('workflows', 'workflows', (f) => f.endsWith('.yaml')),
   prompts: new RepoResourceHandler('prompts', 'prompts'),
-  scorers: new RepoResourceHandler('scorers', 'scorers'),
 };
 
 export function getHandler(type: ResourceType): ResourceHandler {

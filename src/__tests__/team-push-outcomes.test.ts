@@ -13,8 +13,8 @@ vi.mock('../utils/reports-branch.js', () => ({
 }));
 // The pull request host is stubbed; the checkout and its origin are real.
 const prMocks = vi.hoisted(() => ({ findDelivered: vi.fn() }));
-vi.mock('../workflow/pr-delivery.js', async (importOriginal) => ({
-  ...await importOriginal<typeof import('../workflow/pr-delivery.js')>(),
+vi.mock('../utils/pr-lookup.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../utils/pr-lookup.js')>(),
   findDelivered: (...args: unknown[]) => prMocks.findDelivered(...args),
 }));
 vi.mock('../utils/logger.js', () => ({

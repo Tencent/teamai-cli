@@ -119,32 +119,6 @@ describe('doctor — namespace overrides and repeated names', () => {
     expect(checks.map((check) => check.name).join('\n')).not.toMatch(/replace/i);
   });
 
-  it('notes a model alias an agent uses from a namespace that resources.models does not activate', async () => {
-    localConfig.primaryRole = 'frontend';
-    await team('manifest/roles.yaml', `${ROLES_YAML}      models: [frontend]\n  - id: backend\n    resources:\n`
-      + '      knowledge: []\n      skills: []\n      models: [backend]\n');
-    await team('models/aliases.yaml', 'aliases:\n  strong:\n    claude: opus\n');
-    await team('models/frontend/aliases.yaml', 'aliases:\n  fast:\n    claude: haiku\n');
-    await team('models/backend/aliases.yaml', 'aliases:\n  strong:\n    claude: fable\n  auditor:\n    claude: fable\n  unused:\n    claude: fable\n');
-    await team('agents/implementer.yaml', 'name: implementer\ndescription: x\ninstructions: x\nmodel: strong\n');
-    await team('agents/checker.yaml', 'name: checker\ndescription: x\ninstructions: x\nmodel: auditor\n');
-    await team('agents/quick.yaml', 'name: quick\ndescription: x\ninstructions: x\nmodel: fast\n');
-
-    const { notes } = await report();
-    const aliasNotes = (notes ?? []).filter((note) => note.startsWith('models: alias'));
-
-    // In agent scan order; the aliases no received agent uses, or only active files define, get no note.
-    expect(aliasNotes).toEqual([
-      'models: alias "auditor" in models/backend/aliases.yaml, used by agent checker, does not apply here, as your roles and '
-        + 'projects do not list "backend" in resources.models: no active team file maps "auditor", so each tool uses its default '
-        + 'model unless your local aliases file maps it. If it should apply, add `models: [backend]` to the resources of your role '
-        + 'in manifest/roles.yaml or of your project in manifest/projects.yaml.',
-      'models: alias "strong" in models/backend/aliases.yaml, used by agent implementer, does not apply here, as your roles and '
-        + 'projects do not list "backend" in resources.models: "strong" comes from models/aliases.yaml instead. If it should '
-        + 'apply, add `models: [backend]` to the resources of your role in manifest/roles.yaml or of your project in manifest/projects.yaml.',
-    ]);
-  });
-
   it('lists names the team repo defines twice in legacy mode', async () => {
     const { notes } = await report();
 

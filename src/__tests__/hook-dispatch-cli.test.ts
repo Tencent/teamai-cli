@@ -60,7 +60,7 @@ describe('deriveDispatchSessionId', () => {
 });
 
 describe('hookDispatchCli', () => {
-  it.each(['scorer', 'recall-promote', 'codebase'])('skips the hooks of a session teamai launched for %s before reading stdin or resolving config, including background children', async (launchedBy) => {
+  it.each(['workflow', 'scorer', 'recall-promote', 'codebase'])('skips the hooks of a session teamai launched for %s before reading stdin or resolving config, including background children', async (launchedBy) => {
     const resolveScope = vi.spyOn(await import('../dashboard-collector.js'), 'resolveHookScopeFor');
     const readFile = vi.spyOn(fs, 'readFileSync');
     vi.stubEnv('TEAMAI_LAUNCHED_BY', launchedBy);
@@ -288,38 +288,7 @@ describe('hookDispatchCli', () => {
   });
 
   it.each([
-    ['forwards the workflow launch its environment carries', { TEAMAI_LAUNCHED_BY: 'workflow', TEAMAI_LAUNCHED_TOOL: 'claude', TEAMAI_LAUNCHED_CHECKOUT: 'checkout-1' }],
-    ['drops a workflow launch only the host payload names', {}],
-  ])('%s to the detached pull (#1176)', async (_case, env) => {
-    const stdinFile = path.join(os.tmpdir(), `launch-hook-${process.pid}-${Date.now()}.json`);
-    const sent = { TEAMAI_LAUNCHED_BY: 'workflow', TEAMAI_LAUNCHED_TOOL: 'claude', TEAMAI_LAUNCHED_CHECKOUT: 'from-host' };
-    fs.writeFileSync(stdinFile, JSON.stringify({ hook_event_name: 'SessionStart', session_id: 's', cwd: process.cwd(), teamai_launch: sent }));
-    let detachedPayload = '';
-    mockSpawn.mockReturnValue({
-      on: vi.fn(),
-      stdin: { on: vi.fn(), end: vi.fn((raw: string, done: () => void) => {
-        detachedPayload = raw;
-        done();
-      }) },
-      unref: vi.fn(),
-    });
-    const saved = { ...process.env };
-    Object.assign(process.env, env);
-
-    try {
-      await hookDispatchCli('session-start', 'codex', '*', { stdinFile });
-      expect(JSON.parse(detachedPayload).teamai_launch).toEqual('TEAMAI_LAUNCHED_BY' in env ? env : undefined);
-    } finally {
-      for (const key of Object.keys(env)) {
-        if (saved[key] === undefined) delete process.env[key];
-        else process.env[key] = saved[key];
-      }
-      fs.rmSync(stdinFile, { force: true });
-    }
-  });
-
-  it.each([
-    [{ CI: 'true', TEAMAI_WORKFLOW_ATTEMPT: 'r0123456789abcdef/a0000000a' }, { runMode: 'unattended', launchedBy: 'workflow' }],
+    [{ CI: 'true' }, { runMode: 'unattended' }],
     [{}, { runMode: 'attended' }],
   ])('forwards the run mode and launcher of %o to the detached pass, never the ones the host payload names (#1384)', async (env, forwarded) => {
     const stdinFile = path.join(os.tmpdir(), `run-hook-${process.pid}-${Date.now()}.json`);

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import path from 'node:path';
 import os from 'node:os';
@@ -57,15 +58,12 @@ import { checkoutKey } from '../pull.js';
 import { fileHash } from '../utils/fs.js';
 import { writeAnchorFile } from '../utils/partition.js';
 import { TeamaiConfigSchema, getDataHome, managedMcpManifestKey, managedMcpManifestPath } from '../types.js';
-import { ModelProfileSchema, resolveProfile } from '../models/profile.js';
 import { renderRuleForTool } from '../resources/rule-format.js';
 import { entryHash } from '../resources/mcp-format.js';
-import { switchModelProfile } from '../models/switch.js';
 import { getTeamSecretsPath } from '../secret-store.js';
 import YAML from 'yaml';
 import type { TeamaiConfig, LocalConfig } from '../types.js';
 import { hookAdapterDir } from '../locate.js';
-import { renderWorkflowSkill } from '../workflow/discovery/render.js';
 
 // ─── Helpers ───────────────────────────────────────────
 
@@ -3171,38 +3169,6 @@ describe('uninstall', () => {
     expect(await fse.pathExists(teamaiHome)).toBe(false);
   });
 
-  it('keeps the ownership manifest when a full uninstall cannot restore an externally edited model', async () => {
-    const { homeDir, repoPath, teamaiHome } = await setupFixture(tmpDir);
-    vi.stubEnv('HOME', homeDir);
-    vi.stubEnv('SHELL', '/bin/zsh');
-    const mcpPath = path.join(homeDir, '.claude.json');
-    await fse.writeJson(mcpPath, { mcpServers: { 'team-mcp': { type: 'http', url: 'https://team.example/mcp' } } });
-    await fse.writeJson(path.join(teamaiHome, 'managed-mcp.json'), { claude: [{ name: 'team-mcp', hash: 'abc' }] });
-    mockAutoDetectInit.mockResolvedValue({
-      localConfig: makeLocalConfig(homeDir, repoPath),
-      teamConfig: makeTeamConfig({ toolPaths: { claude: {
-        skills: '.claude/skills', rules: '.claude/rules', settings: '.claude/settings.json',
-        claudemd: '.claude/CLAUDE.md', mcp: '.claude.json', mcpProject: '.mcp.json',
-      } } }),
-    });
-    const profile = resolveProfile({ source: 'local', profile: ModelProfileSchema.parse({
-      id: 'gateway', name: 'Gateway', base_url: 'https://gateway.example.test', api_key: '${API_KEY}',
-      model_groups: [{ protocols: ['anthropic'], models: ['team-model'] }],
-    }) }, { 'local:gateway': { API_KEY: { value: 'test-key' } } });
-    expect((await switchModelProfile(profile, ['claude']))[0].status).toBe('switched');
-    const settingsPath = path.join(homeDir, '.claude', 'settings.json');
-    const settings = await fse.readJson(settingsPath);
-    settings.env.ANTHROPIC_AUTH_TOKEN = 'externally-edited';
-    await fse.writeJson(settingsPath, settings);
-
-    await uninstall({ force: true });
-    expect(await fse.pathExists(path.join(teamaiHome, 'models', 'managed.json'))).toBe(true);
-    expect((await fse.readJson(settingsPath)).env.ANTHROPIC_AUTH_TOKEN).toBe('externally-edited');
-    expect((await fse.readJson(mcpPath)).mcpServers).toHaveProperty('team-mcp');
-    expect(process.exitCode).toBe(1);
-    process.exitCode = 0;
-  });
-
   it('project scope 定位正确目录', async () => {
     const projectRoot = path.join(tmpDir, 'my-project');
     const repoPath = path.join(projectRoot, '.teamai', 'team-repo');
@@ -3231,11 +3197,6 @@ describe('uninstall', () => {
 
     const globalSettings = path.join(process.env.HOME!, '.claude', 'settings.json');
     await fse.outputJson(globalSettings, { env: { KEEP_ME: 'yes' } });
-    const profile = resolveProfile({ source: 'local', profile: ModelProfileSchema.parse({
-      id: 'gateway', name: 'Gateway', base_url: 'https://gateway.example.test', api_key: '${API_KEY}',
-      model_groups: [{ protocols: ['anthropic'], models: ['team-model'] }],
-    }) }, { 'local:gateway': { API_KEY: { value: 'test-key' } } });
-    expect((await switchModelProfile(profile, ['claude']))[0].status).toBe('switched');
     const active = await fse.readJson(globalSettings);
 
     commitTeamRepo(repoPath);
@@ -3246,7 +3207,6 @@ describe('uninstall', () => {
     // Project .teamai/ removed
     expect(await fse.pathExists(teamaiHome)).toBe(false);
     expect(await fse.readJson(globalSettings)).toEqual(active);
-    expect(await fse.pathExists(path.join(process.env.HOME!, '.teamai', 'models', 'managed.json'))).toBe(true);
   });
 
   it('non-self project scope removes hooks from HOME, where #370 injects them (not <projectRoot>)', async () => {
@@ -3782,10 +3742,10 @@ describe('uninstall', () => {
     const skills = path.join(homeDir, '.claude', 'skills');
     const generated = path.join(skills, 'workflow-session-close');
     await fse.outputFile(path.join(generated, 'SKILL.md'),
-      renderWorkflowSkill({ name: 'session-close', description: 'Close the session', invoke: 'ask' }, 'claude'));
+      legacySkill('session-close'));
     const edited = path.join(skills, 'workflow-release');
     await fse.outputFile(path.join(edited, 'SKILL.md'),
-      `${renderWorkflowSkill({ name: 'release', description: 'Cut a release', invoke: 'ask' }, 'claude')}My own step.\n`);
+      `${legacySkill('release')}My own step.\n`);
     mockAutoDetectInit.mockResolvedValue({ localConfig: makeLocalConfig(homeDir, repoPath), teamConfig: makeTeamConfig() });
 
     const printed: string[] = [];
@@ -5024,3 +4984,15 @@ describe('user-scope uninstall and the projects still set up (#1025)', () => {
     expect(await fse.pathExists(otherRecord)).toBe(unknownKept);
   });
 });
+
+function legacySkill(name: string): string {
+  const marker = '  teamai-generated: ';
+  const raw = `---
+name: workflow-${name}
+metadata:
+${marker}
+---
+Legacy skill.
+`;
+  return raw.replace(marker, `  teamai-generated: workflow/${name} sha256:${createHash('sha256').update(raw).digest('hex')}`);
+}

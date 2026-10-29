@@ -4,7 +4,7 @@ The user already ran `teamai init`. Do NOT re-init or re-register. Before changi
 anything, say what you are about to change. Pick the task below that matches.
 
 Day-to-day management is mostly **publishing and updating team resources — skills,
-rules, MCP servers, and env** — plus inviting members and checking the dashboard.
+rules, MCP servers, and env** — plus inviting members and checking installation health.
 
 ## Publish or update a skill / rule / doc
 
@@ -45,7 +45,7 @@ written into its project config (`.mcp.json`, `.cursor/mcp.json`, ...). With
 `sharing.gitExclude` on, Claude's (not in a single-repo team, whose worktrees
 each read their own branch's servers) and CodeBuddy's and WorkBuddy's servers go to their local
 scopes in `~/.claude.json` and `.codebuddy.json` instead, outside the project,
-and the next pull (on an HTTP-backed team, the local agent's next sync) moves
+and the next pull moves
 teamai's servers out of `.mcp.json`. Before
 that write, teamai lists the file in the clone's `.git/info/exclude`, inside a
 `# [teamai:mcp-exclude:start]` block; the committed `.gitignore` is never touched.
@@ -80,11 +80,7 @@ file of a tool `managed-mcp.json` has no record for, when a pull writes that
 tool's first record (its record lost, or teamai's first delivery to it). While that
 note cannot be written (another teamai command holds the record), the line stays
 until a later pull writes it. A Copilot project config's bare top-level servers
-still count once another tool writes `mcpServers` into the file. On an HTTP-backed
-team the local agent's `install_mcp` lists a project config before writing a
-server with any header, env value, argument or URL (only a bare stdio command is not), fails the install when it cannot, and only
-`teamai uninstall` takes that line out. The next sync or `teamai pull` in the
-workspace also lists a file an older local agent wrote a credential into; `teamai doctor` checks those files too.
+still count once another tool writes `mcpServers` into the file. Legacy HTTP delivery is removed; existing credential exclusion records remain protected.
 
 ZCode servers use `mcp.servers` in `~/.zcode/cli/config.json` or the project's `.zcode/config.json`. This follows the 3.16.2 source; 3.15.1 is not certified. Pull moves only unchanged teamai entries out of `~/.agents/mcp.json`. Doctor names other servers there because the desktop app stops reading that fallback once the native config has servers.
 
@@ -181,7 +177,7 @@ name differs. A failed fast-forward or missing upstream uses origin/current-bran
 for the real reset fallback. Removal refuses when that refresh also fails.
 
 Every namespace that names a directory — `knowledge`, `skills`, `agents`, `env`,
-`hooks`, `mcp`, `models`, `docs` and `wiki` in either manifest, and `learnings` in `projects.yaml` (a role's `learnings:` is
+`hooks`, `mcp`, `docs` and `wiki` in either manifest, and `learnings` in `projects.yaml` (a role's `learnings:` is
 not checked) — must be a single path segment: no `/`, `\`, `:` or control character, no trailing
 `.` or space, and not a Windows device name (`CON`, `NUL`, `COM1`, …). `team-codebase`
 cannot be a `docs` namespace (`docs/team-codebase/` is the legacy codebase output). Two
@@ -236,15 +232,6 @@ Either takes effect on the next pull, no `--force`; turned off, the next pull
 removes only that block. `teamai doctor` says where the setting comes from and
 what git still sees; `teamai pull --dry-run` previews the block.
 
-## Team dashboard (web UI)
-
-```bash
-teamai dashboard             # start the AI coding session dashboard (default port 3721)
-teamai dashboard --port 8080 # custom port
-```
-
-Opens a local web UI for team coding-session activity, workflow runs, scorer pass rates, and knowledge-base health.
-
 ## Team packages (npm + Claude plugins)
 
 Declare packages once; members get a prompt to install them (TeamAI never runs
@@ -295,11 +282,6 @@ and push it with git. `teamai doctor` lists each override.
   `teamai doctor` name the file, entry and key; correct the key or remove it.
   A key a later teamai version adds is unknown to an older one, so upgrade every
   member before the team uses a new entry key.
-- Team model profiles work the same way: `models/<ns>/models.yaml`, declared under
-  `resources.models`, replaces the root profile with the same `id` for members who
-  have `<ns>` active. A member's API key is bound to the profile's gateway origin:
-  when an override points at another host, their pull leaves the agent alone and
-  asks them to run `teamai models switch team:<id>` to set the key for it.
 - Secrets are declared with no value in `env/secrets.yaml` or `env/<ns>/secrets.yaml`
   (active through `resources.env`; a namespace entry replaces the root entry with the
   same key): a `secrets:` list of `key`, optional `description` and optional `url`
@@ -317,7 +299,7 @@ and push it with git. `teamai doctor` lists each override.
   and also set in `env.yaml` is a secret: its `env.yaml` value is not delivered. A
   secrets file that does not parse keeps `env.sh` and MCP servers as they were, and
   `teamai doctor` fails a check naming the file.
-- Have every member upgrade before declaring `env`, `hooks`, `mcp`, `models`, `docs` or `wiki` in a
+- Have every member upgrade before declaring `env`, `hooks`, `mcp`, `docs` or `wiki` in a
   manifest: teamai 0.25.0 and the 0.26.0 betas reject those keys and their pull stops.
 
 ## When sync fails
@@ -328,14 +310,7 @@ has no session-start hook, they run `teamai pull` manually.
 
 ## Capture a lesson learned
 
-Turning a tricky fix into team knowledge is **automatic** once recall is on for
-the team (`sharing.recall.enabled: true` in `teamai.yaml`, then `teamai push`; it is
-off by default, and `teamai recall enable` turns it on for one machine only): at the end of a session
-worth sharing, TeamAI prompts the member and offers the `session-close` workflow:
-its learning step runs the `share` skill (`teamai skill get share`) to summarize the
-session, and its contribute step runs `teamai contribute`. A team file
-`workflows/session-close.yaml` replaces teamai's default. Nobody has to invoke it by hand. (A member whose teamai config
-cannot be loaded gets no prompt; `teamai skill get share` names the file and the error.)
+When recall is enabled, TeamAI can suggest `teamai skill get share` after a session worth documenting. The member reviews a reusable learning before contributing it. Session publication is separate; no scoring runs.
 
 Teams that work in English set `language: en` in `teamai.yaml` and `teamai push`.
 That makes the built-in teamai-recall rule, the TodoWrite hint, and the merged-MR
@@ -350,7 +325,7 @@ can do it, see `"$(teamai skill path core)/references/contribute-member.md"`.)
 ### Turn the sharing prompt on or off (admin)
 
 The auto-share prompt is **on by default once recall is on**, and only shows in directories set up
-with teamai (never on a read-only HTTP source, or while a member's teamai config cannot be loaded).
+with teamai (never while a member's teamai config cannot be loaded).
 To disable it team-wide, set this in
 `teamai.yaml` and `teamai push`:
 

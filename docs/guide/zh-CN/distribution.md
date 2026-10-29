@@ -54,7 +54,7 @@ teamai pull --team-ref main  # 用团队的默认分支名解除固定
 
 切换版本时，新版本没有的 skill、rule 和 agent 的未修改副本会被移除。修改过的副本会保留，解除固定时会指出哪些修改会被 `push` 发到默认分支。固定期间 `push` 不发送任何内容，`source add`、`source remove` 和写入团队 wiki 的 `import` 会拒绝执行；pull 仍上报用量和 learnings。固定版本的 pull 失败或交付不完整时退出码为 1。`--team-ref` 不能与 `--dry-run` 同用。
 
-此功能要求 workspace 安装，不继承 user scope，且同一团队未在 user scope 安装。不支持 HTTP 或单仓库模式。其他 workspace 保持各自的版本。
+此功能要求 workspace 安装，不继承 user scope，且同一团队未在 user scope 安装。不支持 单仓库模式。其他 workspace 保持各自的版本。
 
 ### 不独立
 
@@ -101,7 +101,7 @@ sharing:
 .teamai/mcp/mcp.yaml
 ```
 
-`teamai push` 发送所有分布式资源类型——skills、rules、agents、docs、env、hooks、mcp、models、claudemd、learnings、wiki、workflows、prompts、scorers——并按 `--project` 和 `--role` 做命名空间放置。
+`teamai push` 发送所有分布式资源类型——skills、rules、agents、docs、env、hooks、mcp、claudemd、learnings、wiki、prompts——并按 `--project` 和 `--role` 做命名空间放置。
 
 ### Git 权限
 
@@ -181,7 +181,6 @@ projects:
       env: [checkout]          # env/checkout/env.yaml
       hooks: [checkout]        # hooks/checkout/hooks.yaml
       mcp: [checkout]          # mcp/checkout/mcp.yaml
-      models: [checkout]       # models/checkout/models.yaml
       docs: [checkout]         # docs/checkout/
       wiki: [github__acme__checkout]  # teamai import 输出的 project: slug
 ```
@@ -211,11 +210,11 @@ default: []        # 这个文件未列出的成员所持有的角色
 
 列在第一位的是主角色，其余是附加角色。该文件存在时：
 
-- 成员的生效角色就是这里分配的角色。`teamai roles set` 会被拒绝，dashboard 的 Distribution 页面也一样，只展示角色而不提供修改。
+- 成员的生效角色就是这里分配的角色。`teamai roles set` 会被拒绝。
 - 文件未列出的成员持有 `default`——除非另行声明即为无角色——并且只接收共享资源，而不是没有该文件时无角色成员得到的全量同步。
 - 谁可以分配角色由代码平台决定，和 `roles.yaml` 一样：保护分支、合并请求、`manifest/` 的 code owner。teamai 自己不维护任何权限名单。
 
-自动化程序也和其他成员一样是成员。[接手交出的运行](workflow.md#从-ci-接手交出的运行)的 CI 运行器会执行 `teamai init --provider git`，它把 `git config user.name` 记录为用户名，所以要列出这个名字：
+自动化程序也和其他成员一样是成员。使用团队资产的 CI 运行器会执行 `teamai init --provider git`，它把 `git config user.name` 记录为用户名，所以要列出这个名字：
 
 ```yaml
 # manifest/members.yaml（团队仓库就是业务仓库时为 .teamai/manifest/members.yaml）
@@ -292,13 +291,3 @@ teamai push
 ```
 
 `source add` 写进本团队仓库。`push` 合入后，每位成员的 `pull` 都会装上。没写 `publicSkills` 时，这个源是空的。
-
-### HTTP 源
-
-```bash
-teamai source add-http https://your-team-host/api --token <api-key>
-teamai source list
-teamai source remove-http
-```
-
-每个安装只能有一个 HTTP 源。主仓已经是 `init --http` 时，不能再 `add-http`。接口见 [ClawPro HTTP 后端](./http-contract.md)。用 Agent 接入凭证（`sk-`）时加 `--agent <tool>`：这种凭证只能给一个 Agent 用，每个 Agent 各存各的。只有跑过一次 `teamai bind-project` 的工作区才会同步；不绑定项目就加 `--skip`。

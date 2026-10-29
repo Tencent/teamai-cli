@@ -206,7 +206,6 @@ function scenario({ userScope, breakProjectConfig = false, bare = false, project
     await hook('session-end', { hook_event_name: 'SessionEnd' });
     state.stopOutput = await hook('stop', { hook_event_name: 'Stop' });
     // ...and through the entry points hooks from an earlier install still call.
-    await legacy(['dashboard-report'], { hook_event_name: 'UserPromptSubmit', prompt: 'legacy prompt' });
     await legacy(['track'], { ...skillUse, prompt_id: 'p2' });
     await legacy(['track-slash'], { hook_event_name: 'UserPromptSubmit', prompt: '/team-skill go', prompt_id: 'p3' });
 

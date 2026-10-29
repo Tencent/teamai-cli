@@ -99,21 +99,6 @@ Antigravity 的副本不带团队的 `model`（agy 会跳过它不认识模型�
 
 单仓库模式下，已放入命名空间的 agent 的根目录副本会推送到放置后的文件。把它从 `.md` 转为 `.yaml` 会移除原文件，即使当前检出落后于自己已合并的 PR 也是如此。两种情况下，TeamAI 都会把放置后的文件与你上次合并的推送写入的 blob 对比。团队之后又编辑过该文件时，推送会停止并给出 `teamai push --carried <path>@<blob>` 命令。把这次修改带入根目录副本，再运行该命令。该选项只接受这一版本，直接重试或团队之后再次编辑都会再次停止推送。团队已删除的 agent 不会从根目录副本重新添加。没有 blob 的旧放置记录，只有在检出落后于团队修改时才能发现这次修改；你通过它推送的第一次编辑合并后，该记录会补上这次的 blob。
 
-### 模型别名
-
-`model: strong` 这类名字在 `models/aliases.yaml` 里按工具对应到具体模型：
-
-```yaml
-aliases:
-  strong:
-    claude: { model: opus, effort: high }
-    codex: { model: gpt-6-sol, effort: high }
-  fast:
-    claude: haiku
-```
-
-别名以小写字母开头，后面可以是小写字母、数字或 `-`。某个 namespace 要换一套时，写 `models/<ns>/aliases.yaml`。
-
 ## Env、hooks 与 MCP server 按 namespace 划分
 
 根目录的文件给所有人。`resources:` 里声明的 namespace 只给激活了它的成员，并替换根目录里的同名条目。
@@ -358,27 +343,6 @@ teamai mcp remove
 
 Muse 调整 JSON 对象的键顺序不会被视为个人修改。移除时会核对记录的内容（包括嵌套对象），仍会保留实际修改过命令、参数或环境变量的 server。旧记录如果没有内容指纹，需要团队 Git 历史中与原 hash 匹配的定义作为依据；无法证明时会保留 server 并提示。
 
-## 模型
-
-`models/models.yaml` 自己 commit。密钥留在每人自己的机器上。只给一个项目时写 `models/<ns>/models.yaml`。
-
-```yaml
-profiles:
-  - id: tokenhub
-    name: Tencent TokenHub
-    base_url: https://tokenhub.tencentmaas.com
-    api_key: ${API_KEY}
-    model_groups:
-      - protocols: [anthropic, openai-chat-completions]
-        models:
-          - glm-5.3
-          - deepseek-v4-flash
-```
-
-```bash
-teamai models switch tokenhub
-```
-
 ## 团队包
 
 ```bash
@@ -404,7 +368,7 @@ pull 之后跑 `teamai packages`。
 
 ## 会话
 
-无人值守的运行现在默认发布自己的会话。在 CI、云虚拟机或托管任务中，[`teamai score --drain`](scorers.md#无人值守任务结束前运行-drain) 会把本机记录为无人值守的已捕获会话，以及在这里驱动的工作流运行的步骤会话，脱敏后归档到 `teamai-reports`。本地驱动在无人值守运行结束时执行它。要保持原来的行为，设置 `unattended: off`：
+会话可通过 session 命令及其发布策略归档。
 
 ```yaml
 # teamai.yaml
@@ -419,7 +383,7 @@ sessions:
   publish: { attended: ask, unattended: auto }
 ```
 
-有人值守的 `ask` 会在摩擦提醒提供 [`session-close`](workflow.md#session-close) 时提议发布，成员要确认两次：启动时一次，转录发出前再在自己的终端或仪表盘确认一次。除此之外，成员的会话只会通过 `teamai session push` 等命令归档。无人值守的 `ask` 等同于 `off`，因为没有人在场确认。有人值守的 `auto` 在会话六小时没有任何活动后归档它，由评判已结束会话的后台任务完成。发布总会脱敏。HTTP 团队没有会话归档，因此在那里 `sessions.publish` 等同于 `off`，`teamai doctor` 会说明这一点。
+使用 `ask` 时，通过 `teamai session push` 明确归档会话；不再提供自动确认工作流。无人值守的 `ask` 等同于 `off`。有人值守的 `auto` 由会话发布后台步骤归档六小时内没有活动的会话。发布总会脱敏。旧 HTTP 来源不能发布会话归档。
 
 成员的 `config.yaml` 优先，按模式分别生效。它没有写的模式沿用 `teamai.yaml`：
 
@@ -429,7 +393,7 @@ sessions:
   publish: { attended: ask }   # 只设置有人值守；无人值守仍按团队设置
 ```
 
-值不是 `off`、`ask` 或 `auto` 时，`teamai doctor` 会报告它所在的文件和键，teamai 忽略该值，这种模式交给下一级。分支的 `teamai.yaml` 含有这样的值时，`teamai review --branch` 判定失败。会话是否评判由 `scorers/scoring.yaml` 中的 `sessions` 决定，见[已结束的会话](scorers.md#已结束的会话)。
+值不是 `off`、`ask` 或 `auto` 时，`teamai doctor` 会报告它所在的文件和键，teamai 忽略该值，这种模式交给下一级。分支的 `teamai.yaml` 含有这样的值时，`teamai review --branch` 判定失败。
 
 ## Docs（文档）
 

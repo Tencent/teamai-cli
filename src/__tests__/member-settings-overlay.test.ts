@@ -44,7 +44,6 @@ describe('member settings overlay', () => {
       codexTrustEnabled: false,
       autoCompactTokens: 120000,
       updatePolicy: 'skip',
-      workflows: { tools: { default: 'codex', review: 'codex' }, max_parallel: 2 },
     });
     writeConfig(projectConfig, {
       repo: { localPath: path.join(home, 'team-repo'), remote: 'https://example.test/team.git' },
@@ -52,7 +51,6 @@ describe('member settings overlay', () => {
       scope: 'project',
       projectRoot,
       recallEnabled: true,
-      workflows: { tools: { review: 'claude' } },
     });
 
     const loaded = await loadLocalConfigForScope('project', projectRoot);
@@ -63,7 +61,6 @@ describe('member settings overlay', () => {
       codexTrustEnabled: false,
       autoCompactTokens: 120000,
       updatePolicy: 'skip',
-      workflows: { tools: { default: 'codex', review: 'claude' }, max_parallel: 2 },
     });
   });
 
@@ -71,14 +68,12 @@ describe('member settings overlay', () => {
     writeConfig(machineConfig, {
       recallEnabled: false,
       codexTrustEnabled: false,
-      workflows: { tools: { default: 'codex' }, max_parallel: 2 },
     });
     writeConfig(projectConfig, {
       repo: { localPath: path.join(home, 'team-repo'), remote: 'https://example.test/team.git' },
       username: 'member',
       scope: 'project',
       projectRoot,
-      workflows: { tools: { review: 'claude' } },
     });
 
     const loaded = await loadLocalConfigForScope('project', projectRoot);
@@ -88,34 +83,13 @@ describe('member settings overlay', () => {
     const saved = YAML.parse(fs.readFileSync(projectConfig, 'utf8')) as Record<string, unknown>;
     expect(saved).not.toHaveProperty('recallEnabled');
     expect(saved).not.toHaveProperty('codexTrustEnabled');
-    expect(saved).toMatchObject({ workflows: { tools: { review: 'claude' } } });
-    expect((saved.workflows as Record<string, unknown>).tools).not.toHaveProperty('default');
-    expect((saved.workflows as Record<string, unknown>).max_parallel).toBeUndefined();
-  });
-
-  it('fails closed when a workflow policy value has the wrong type', async () => {
-    writeConfig(machineConfig, {
-      workflows: { allow: { network: 'false', env: 'not-a-list' } },
-    });
-    writeConfig(projectConfig, {
-      repo: { localPath: path.join(home, 'team-repo'), remote: 'https://example.test/team.git' },
-      username: 'member',
-      scope: 'project',
-      projectRoot,
-    });
-
-    const loaded = await loadLocalConfigForScope('project', projectRoot);
-
-    expect(loaded?.workflows?.allow).toEqual({ network: false, env: [] });
-    expect(vi.mocked(log.warn).mock.calls.flat().join('\\n')).toContain('Ignoring network');
-    expect(vi.mocked(log.warn).mock.calls.flat().join('\\n')).toContain('Ignoring env');
+    expect(saved).not.toHaveProperty('workflows');
   });
 
   it('keeps valid machine settings when a sibling setting has the wrong type', async () => {
     writeConfig(machineConfig, {
       recallEnabled: 'yes',
       codexTrustEnabled: false,
-      workflows: { tools: { default: 'codex', broken: 42 } },
     });
     writeConfig(projectConfig, {
       repo: { localPath: path.join(home, 'team-repo'), remote: 'https://example.test/team.git' },
@@ -128,7 +102,6 @@ describe('member settings overlay', () => {
 
     expect(loaded?.recallEnabled).toBeUndefined();
     expect(loaded?.codexTrustEnabled).toBe(false);
-    expect(loaded?.workflows?.tools).toEqual({ default: 'codex' });
     expect(vi.mocked(log.warn)).toHaveBeenCalled();
   });
 

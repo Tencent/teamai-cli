@@ -15,8 +15,7 @@ import {
 import { getReportsDir, isSelfMode, usesBranchWorktree, type LocalConfig } from '../types.js';
 import { isInteractive } from '../utils/prompt.js';
 import { readableReportsWorktree, updateReports } from '../utils/reports-branch.js';
-import type { WorkflowEnvelope } from '../workflow/types.js';
-import { worktreeCheckout } from '../workflow/worktree.js';
+import type { CommandEnvelope } from '../utils/envelope.js';
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes}B`;
@@ -202,7 +201,7 @@ export function deriveArchiveIdentity(session: { cwd: string }, platform: string
   const nativeCwd = session.cwd;
   if (nativeCwd && path.isAbsolute(nativeCwd)) {
     // A workflow step's worktree is removed once the step is done; the checkout it was made from has the same remote.
-    return getRepoIdentity(worktreeCheckout(nativeCwd) ?? nativeCwd);
+    return getRepoIdentity(nativeCwd);
   }
   console.warn(
     `  ⚠ native cwd unknowable for ${platform} session, archived under _unattributed`,
@@ -410,7 +409,7 @@ export function reportArchiveBusy(repoRoot: string, lockPath: string): void {
 }
 
 /** `session migrate --json` prints the same `{ data } | { error }` envelope as the workflow commands. */
-export function printEnvelope(envelope: WorkflowEnvelope): void {
+export function printEnvelope(envelope: CommandEnvelope): void {
   process.stdout.write(`${JSON.stringify(envelope)}\n`);
   if ('error' in envelope) process.exitCode = 1;
 }

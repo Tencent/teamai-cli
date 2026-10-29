@@ -680,7 +680,7 @@ describe('doctor — JSON report', () => {
         expect(report.checks.every((c) => c.ok)).toBe(true);
     });
 
-    it('reports the same winners as runtime resolvers across user, environment, and workflow-map settings', async () => {
+    it('reports the same winners as runtime resolvers across user, environment, and machine settings', async () => {
         const project = {
             ...mockLocalConfig,
             scope: 'project',
@@ -773,10 +773,6 @@ describe('doctor — JSON report', () => {
             effective: 'claude-haiku-4',
             source: { level: 'machine', value: 'claude-haiku-4' },
         });
-        expect(byKey['workflows.tools.review.v2']).toMatchObject({
-            effective: 'codex',
-            source: { level: 'machine', value: 'codex' },
-        });
         expect(byKey['modelAliases.local']).toMatchObject({
             effective: 'claude-opus-4',
             source: { level: 'scope', value: 'claude-opus-4' },
@@ -784,8 +780,6 @@ describe('doctor — JSON report', () => {
         expect(byKey.recallEnabled).toMatchObject({ effective: false, source: { level: 'environment', value: false, variable: 'TEAMAI_RECALL_DISABLED' } });
         expect(byKey.contributeHintEnabled).toMatchObject({ effective: false, source: { level: 'environment', value: false, variable: 'TEAMAI_CONTRIBUTE_HINT_DISABLED' } });
         expect(byKey.mrHintEnabled).toMatchObject({ effective: false, source: { level: 'environment', value: false, variable: 'TEAMAI_MR_HINT_DISABLED' } });
-        expect(byKey['workflows.tools.implementer']).toMatchObject({ effective: 'claude', source: { level: 'machine', value: 'claude' } });
-        expect(byKey['workflows.allow.env']).toMatchObject({ effective: ['CI'], source: { level: 'machine', value: ['CI'] } });
         expect(byKey.coAuthorEnabled).toMatchObject({ effective: true, source: { level: 'default', value: true } });
         expect(byKey.codexTrustEnabled).toMatchObject({ effective: true, source: { level: 'default', value: true } });
         for (const report of Object.values(byKey) as Array<{ effective: unknown; levels: Array<{ value: unknown }> }>) {
@@ -939,7 +933,7 @@ describe('doctor — JSON report', () => {
         expect(emittedReport().notes).toContain('Sessions are not published: the team repo is an HTTP repo, which keeps no session archive, so sessions.publish acts as off.');
     });
 
-    it('names the enabled tools teamai reads no sessions from in one line per mode whose sessions are published or scored, ask counting as off', async () => {
+    it('names the enabled tools teamai reads no sessions from in one line per mode whose sessions are published, ask counting as off', async () => {
         mockedLoadTeamConfig.mockResolvedValue({
             ...mockTeamConfig,
             toolPaths: { ...mockTeamConfig.toolPaths, muse: { skills: '.config/muse/skills' }, lyre: { skills: '.config/lyre/skills' } },
@@ -948,11 +942,11 @@ describe('doctor — JSON report', () => {
         await doctor({ json: true });
 
         expect(emittedReport().notes?.filter((note) => note.includes('reads no sessions from'))).toEqual([
-            'Sessions are published and scored in unattended mode, but teamai reads no sessions from muse, lyre: they are neither published nor judged.',
+            'Sessions are published in unattended mode, but teamai reads no sessions from muse, lyre: they are not published.',
         ]);
     });
 
-    it('names no tool teamai reads no sessions from while sessions are neither published nor scored', async () => {
+    it('names no tool teamai reads no sessions from while sessions are not published', async () => {
         mockedLoadLocalConfig.mockResolvedValue({ ...mockLocalConfig, scoring: { sessions: false } });
         mockedLoadTeamConfig.mockResolvedValue({
             ...mockTeamConfig,
@@ -1044,24 +1038,6 @@ describe('buildChecks', () => {
         // warning already says it, with the push error, so the post-pull pass
         // skips this one rather than repeat it — see pull-post-checks.test.ts.
         expect(check?.reportedByPull).toBe('pending-learnings');
-    });
-
-    it('reports score labels that are kept but not published, next to learnings', async () => {
-        mockedLoadLocalConfig.mockResolvedValue(mockLocalConfig);
-        mockedLoadTeamConfig.mockResolvedValue(mockTeamConfig);
-
-        const ctx = await resolveDoctorContext();
-        if (!ctx) throw new Error('expected a resolved doctor context');
-
-        const names = (await buildChecks(ctx)).map((c) => c.name);
-        expect(names.slice(names.indexOf('Contributed learnings are published'), names.indexOf('Contributed learnings are published') + 2))
-            .toEqual(['Contributed learnings are published', 'Score labels are published']);
-        const check = (await buildChecks(ctx)).find((c) => c.name === 'Score labels are published');
-        expect(check?.fix).toContain('teamai score --push');
-        const { LabelStore } = await import('../scorers/label-store.js');
-        vi.spyOn(LabelStore, 'unpublished').mockResolvedValueOnce(2).mockResolvedValueOnce(0);
-        expect(await check?.check()).toBe(false);
-        expect(await check?.check()).toBe(true);
     });
 
     it('flags only the queue check as one the pull reports itself', async () => {
@@ -1514,6 +1490,6 @@ describe('doctor — member settings (#1459)', () => {
         await doctor({ json: true });
 
         const report = JSON.parse(String(consoleSpy.mock.calls.at(-1)?.[0])) as DoctorReport;
-        expect(report.notes).toContain(`Not read from ${machineFile()}, which holds no user-scope install so only its member settings apply: excludedSkills, username.`);
+        expect(report.notes).toContain(`Not read from ${machineFile()}, which holds no user-scope install so only its member settings apply: excludedSkills, scoring, username.`);
     });
 });

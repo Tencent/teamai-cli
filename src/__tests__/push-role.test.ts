@@ -1101,32 +1101,6 @@ describe('push namespace routing for rules and agents', () => {
     expect(agent?.namespace).toBe('pm');
   });
 
-  it('--role places a root scorer, and a scorer in a scorers/<dir>/ no role or project declares stays shared', async () => {
-    const pushedItems: Array<Record<string, unknown>> = [];
-    mockLoadRolesManifest.mockResolvedValue({
-      version: 1,
-      roles: [{ id: 'ops', description: '', resources: { knowledge: [], skills: [], agents: [], scorers: ['ops'] } }],
-    });
-    mockAutoDetectInit.mockResolvedValue({ localConfig: makeLocalConfig({ primaryRole: 'ops' }), teamConfig: makeTeamConfig() });
-    const scorer = (relativePath: string) => ({
-      name: relativePath.slice('scorers/'.length), type: 'scorers', sourcePath: `/tmp/${relativePath}`, relativePath, status: 'new',
-    });
-    mockGetHandler.mockImplementation((type: string) => ({
-      scanLocalForPush: vi.fn().mockResolvedValue(type === 'scorers' ? [scorer('scorers/z.md'), scorer('scorers/shared/x.md'), scorer('scorers/ops/y.md')] : []),
-      pushItem: vi.fn().mockImplementation(async (item: Record<string, unknown>) => {
-        pushedItems.push(item);
-      }),
-    }));
-
-    await push({ all: true, role: 'ops' });
-
-    expect(Object.fromEntries(pushedItems.map((item) => [item.name, item.relativePath]))).toEqual({
-      'z.md': 'scorers/ops/z.md',
-      'shared/x.md': 'scorers/shared/x.md',
-      'ops/y.md': 'scorers/ops/y.md',
-    });
-  });
-
   it.each(silentPlacementCases)('$name', async ({ resource, setup, expected, error, root }) => {
     const pushedItems: Array<Record<string, unknown>> = [];
     const localConfig = setup();

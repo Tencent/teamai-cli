@@ -1,6 +1,6 @@
 # CI E2E Setup
 
-The `e2e` job on GitHub Actions runs the remote cases of the end-to-end suite (init / push / pull / env / tags / roles / contribute / dashboard / uninstall …) against a real fixture repo, matching the coverage that used to be checked by hand, one command at a time. This page explains the configuration the job needs before it will run on CI.
+The `e2e` job on GitHub Actions runs the remote cases of the end-to-end suite (init / push / pull / env / tags / roles / contribute / uninstall …) against a real fixture repo, matching the coverage that used to be checked by hand, one command at a time. This page explains the configuration the job needs before it will run on CI.
 
 ---
 
@@ -75,7 +75,6 @@ The `remote commands` and `init project scope` describes in `src/__tests__/e2e/e
 | `stats` / `digest` / `recall` | Read-only analysis commands |
 | `track --tool claude` | Hook event reporting |
 | `contribute --dry-run --file ...` | Learning contribution dry run |
-| `dashboard -p 37210` | Spawns the web server, checks it with curl, kills it |
 | `uninstall --dry-run` / `uninstall --force` | Uninstall preview, real uninstall, re-init recovery |
 | `roles set + pull` | The skill set changes after switching role |
 | `init <repo> --force` (default workspace scope) | Fresh init (sandbox cwd + isolated HOME) |
@@ -119,10 +118,6 @@ On CI: check that the secret and variable names match exactly (case matters). A 
 ### `403 Resource not accessible by personal access token`
 
 The fine-grained token is missing a permission. Confirm `Contents: read/write` and `Pull requests: read/write` are both on and the right repository is selected.
-
-### The `dashboard` test times out
-
-Startup took longer than 10 seconds. Raise `testTimeout` in `vitest.e2e.config.ts`, or the `i < 20` bound in the loop.
 
 ### The fixture repo is left dirty (for example a stray `__ci_e2e_tag__`)
 

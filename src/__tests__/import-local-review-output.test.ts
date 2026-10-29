@@ -24,6 +24,7 @@ vi.mock('../utils/logger.js', () => ({
 
 import { interactiveReview, pushAccepted } from '../import-local.js';
 import { log } from '../utils/logger.js';
+import { readDocument } from '../documents/okf.js';
 import type { ClassifiedItem, ImportSession } from '../types.js';
 
 const CJK = /[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]/;
@@ -84,6 +85,8 @@ describe('import review output', () => {
 
     const ok = await pushAccepted(session, tmpDir, {});
     expect(ok).toEqual({ pushed: 1, skipped: 0 });
+    const learned = fs.readdirSync(path.join(tmpDir, 'learnings'))[0]!;
+    expect(readDocument(fs.readFileSync(path.join(tmpDir, 'learnings', learned), 'utf8')).diagnostics).toEqual([]);
     const infoCalls = vi.mocked(log.info).mock.calls.map(([msg]) => String(msg));
     expect(infoCalls.some((msg) => msg.startsWith(`Wrote: ${path.join(tmpDir, 'learnings')}`))).toBe(true);
 

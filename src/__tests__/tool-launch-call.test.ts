@@ -268,33 +268,6 @@ it('runs agy with the prompt as a stream-json user message on stdin, and reads t
   expect(stdin).toBe(`${JSON.stringify({ event: 'user', message: { role: 'user', content: 'Classify "this"\nentry' } })}\n`);
 });
 
-// A model switch hands agy its gateway through a shell function; teamai's own launch runs no shell.
-it("runs agy on the gateway a model switch gave it, over the member's own key", async () => {
-  const agy = await fakeTool('agy', { stdout: agyEvents({ status: 'SUCCESS', response: 'ok\n' }) });
-  vi.stubEnv('HOME', root);
-  vi.stubEnv('GEMINI_API_KEY', 'member-own-key');
-  await fs.mkdir(path.join(root, '.teamai', 'models'), { recursive: true });
-  await fs.writeFile(path.join(root, '.teamai', 'models', 'agy-env.sh'), `agy() { GEMINI_API_KEY='gateway-key' GOOGLE_GEMINI_BASE_URL='https://gateway.example.test' command agy "$@"; }\n`);
-
-  await only('agy', agy.executable).callTool('hi', { launchedBy: 'recall-promote' });
-
-  expect((await agy.invocation()).env).toMatchObject({ GEMINI_API_KEY: 'gateway-key', GOOGLE_GEMINI_BASE_URL: 'https://gateway.example.test' });
-});
-
-it('never hands the gateway the member\'s own key when the variable the profile keeps its key in is unset', async () => {
-  const agy = await fakeTool('agy', { stdout: agyEvents({ status: 'SUCCESS', response: 'ok\n' }) });
-  vi.stubEnv('HOME', root);
-  vi.stubEnv('GEMINI_API_KEY', 'member-own-key');
-  vi.stubEnv('TEAM_GATEWAY_KEY', undefined);
-  await fs.mkdir(path.join(root, '.teamai', 'models'), { recursive: true });
-  await fs.writeFile(path.join(root, '.teamai', 'models', 'agy-env.sh'), `agy() { GEMINI_API_KEY="\${TEAM_GATEWAY_KEY}" GOOGLE_GEMINI_BASE_URL='https://gateway.example.test' command agy "$@"; }\n`);
-
-  await only('agy', agy.executable).callTool('hi', { launchedBy: 'recall-promote' });
-
-  // As the shell function does: an unset variable gives agy an empty key.
-  expect((await agy.invocation()).env).toMatchObject({ GEMINI_API_KEY: '', GOOGLE_GEMINI_BASE_URL: 'https://gateway.example.test' });
-});
-
 it('fails with the error agy reports in its result', async () => {
   const agy = await fakeTool('agy', { stdout: agyEvents({ status: 'ERROR', response: '', error: 'model no-such-model is not recognized' }), exitCode: 1 });
 

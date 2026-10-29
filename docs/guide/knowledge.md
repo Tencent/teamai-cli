@@ -10,28 +10,7 @@ Team Context is learnings, the codebase graph, and teamwiki. `teamai recall` sea
 
 ### Contributing knowledge
 
-When you correct the AI, deny a tool call, or the AI retries a failing command, the session ends with a reminder that offers teamai's [`session-close`](workflow.md#session-close) workflow:
-
-```text
-[teamai] This session may contain a problem worth documenting: you interrupted the AI twice, the AI retried failing tools 6 times.
-
-Task: The payments pod restarts in a loop after deploy; find out why
-
-Offer the person the session-close workflow: run `teamai workflow start --describe session-close --driver skill` and start it with the inputs it proposes, once the person confirms them.
-```
-
-The agent shows you what it proposes: share a learning, publish the transcript, score the session. You confirm or change it, and then it runs. What happens to each offer:
-
-| Offer | Who decides |
-|---|---|
-| The learning | You, while you work it with the agent: say what to share and under which namespace, or that nothing is worth sharing |
-| `Share "<title>" with the team?` | The agent under the recommended start, or you when you pick "ask me at optional approvals" |
-| `Publish this session, scrubbed, to the team?` | Only you, in your own terminal or `teamai dashboard` |
-| Scorers | Nobody asks again: they judge the scorers you confirmed at the start |
-
-Each session is offered this at most once. The reminder keeps its old text, "Consider running `/teamai share what this session taught me` … (or run `teamai skill get share`)", where `session-close` cannot run: in a session teamai launched (a workflow step or a judge), in a workflow worktree, in an unattended session, while the session drives a workflow run that is not done, and when the team's `workflows/session-close.yaml` sets `invoke: deny`.
-
-Or hand in a note yourself:
+After a difficult session, TeamAI may suggest `teamai skill get share`. Work with the Agent to review and contribute a reusable lesson. Session publication follows the separate session policy; there is no automatic session rating. You can also contribute a note directly:
 
 ```bash
 teamai contribute --file /tmp/session.md
@@ -256,10 +235,6 @@ Mark a suggestion to drop it: 👎 on GitHub and GitLab, ☝️ on TGit. Templat
 
 On GitLab, comment updates search the most recently updated notes first and stop at the first matching marker. This keeps the original pipeline's comment discoverable as it is edited in place. If the marker is still missing after 20 pages and more pages remain, the command fails instead of risking a duplicate.
 
-## Knowledge Base Health Report
+## Knowledge health
 
-```bash
-teamai dashboard
-```
-
-Open Team Context, or go to `http://localhost:3721/kb-report`.
+Use `teamai doctor` to inspect the repository.

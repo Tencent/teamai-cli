@@ -42,7 +42,6 @@ export async function resolveResourceNamespaces(localConfig: LocalConfig): Promi
     inactiveDocsNamespaces: inAll(resolved.map((one) => one.inactiveDocsNamespaces)),
     inactiveWikiNamespaces: inAll(resolved.map((one) => one.inactiveWikiNamespaces)),
     inactivePromptsNamespaces: inAll(resolved.map((one) => one.inactivePromptsNamespaces)),
-    inactiveScorersNamespaces: inAll(resolved.map((one) => one.inactiveScorersNamespaces)),
   };
 }
 
@@ -187,22 +186,12 @@ async function resolveOwnResourceNamespaces(localConfig: LocalConfig) {
   const activePrompts = new Set(activeNamespaces.prompts ?? []);
   const inactivePromptsNamespaces = [...declaredPromptsNamespaces].filter((namespace) => !activePrompts.has(namespace));
 
-  // Which scorers/<dir>/ is a namespace is `isNamespaceDir`'s rule; the scorer
-  // cache withholds this set.
-  const declaredScorersNamespaces = new Set<string>([
-    ...(rolesManifest?.roles ?? []).flatMap((role) => role.resources.scorers ?? []),
-    ...(projectsManifest?.projects ?? []).flatMap((project) => project.resources.scorers ?? []),
-  ]);
-  const activeScorers = new Set(activeNamespaces.scorers ?? []);
-  const inactiveScorersNamespaces = [...declaredScorersNamespaces].filter((namespace) => !activeScorers.has(namespace));
-
   return {
     activeNamespaces,
     allSkillNamespaces,
     inactiveDocsNamespaces,
     inactiveWikiNamespaces,
     inactivePromptsNamespaces,
-    inactiveScorersNamespaces,
   };
 }
 
@@ -220,7 +209,6 @@ export interface NamespaceDeclarations {
  * it. Scorers are flat files and follow prompts, except that with no manifest at all every directory is a namespace.
  */
 export function isNamespaceDir(type: PlaceableType, dir: string, declarations: NamespaceDeclarations): boolean {
-  if (type === 'scorers') return declarations.manifestFree || declarations.declares(NAMESPACE_AXIS.scorers, dir);
   if (isNestedPlaceableType(type)) return declarations.declares(NAMESPACE_AXIS[type], dir);
   return true;
 }

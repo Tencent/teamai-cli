@@ -24,7 +24,7 @@ import { readFileSafe } from './utils/fs.js';
 import { warnOnce } from './utils/warn-once.js';
 import { collectEnvSecrets, MIN_DECLARED_SECRET_LENGTH } from './utils/redact.js';
 import { isReservedTeamEnvKey } from './env-reserved.js';
-import type { EnvFacts } from './workflow/requirements.js';
+import type { EnvFacts } from './resources/env-facts.js';
 
 export interface SecretValue {
   readonly source: 'team' | 'global' | 'environment';
@@ -354,12 +354,12 @@ function teamSecretsOf(secrets: StoreResolution<SecretValue>): Record<string, st
 
 /**
  * Every value teamai masks on this machine, keyed by name: environment values that look secret, and the team's
- * declared secrets. Publishing a run, writing its file, and printing a workflow envelope agree on it. A team value
- * replaces the environment's under the same name for a step, but both stay known: the environment's is kept as
+ * declared secrets. Session publication and diagnostic output use the same masking values. A team value
+ * replaces the environment's under the same name for a command, but both stay known: the environment's is kept as
  * `<name> (environment)`.
  */
 export async function knownSecrets(localConfig: LocalConfig, env: NodeJS.ProcessEnv = process.env): Promise<Record<string, string>> {
-  return (await resolveWorkflowEnv(localConfig, env)).secrets;
+  return (await resolveEnvironment(localConfig, env)).secrets;
 }
 
 function maskSet(fromEnvironment: Record<string, string>, team: Record<string, string>): Record<string, string> {
@@ -409,21 +409,21 @@ export function variablesKeptWarning(reason: string): string {
   return `${reason} Team env variables keep the values the last pull wrote until it is fixed.`;
 }
 
-/** This machine's team env for one workflow operation, resolved once, so what the engine holds and what is masked agree. */
-export interface WorkflowEnv {
-  /** By name only, which is all the workflow engine may hold. */
+/** This machine's team environment, resolved once for value lookup and masking. */
+export interface ResolvedEnvironment {
+  /** Names only, safe for diagnostics. */
   readonly facts: EnvFacts;
-  /** Each value a step can be given: the variables `teamai env exec` applies, each declared secret's, else the environment's. */
+  /** Each value a command can be given: the variables `teamai env exec` applies, each declared secret's, else the environment's. */
   readonly values: ReadonlyMap<string, string>;
   /** What every write and print masks, as `knownSecrets` says. */
   readonly secrets: Record<string, string>;
 }
 
 /**
- * The team env a workflow step can be given on this machine, and what masking hides. A key nothing here declares takes
+ * The team environment available on this machine, and what masking hides. A key nothing here declares takes
  * its value from the environment, as a CI job's token does.
  */
-export async function resolveWorkflowEnv(localConfig: LocalConfig, env: NodeJS.ProcessEnv = process.env): Promise<WorkflowEnv> {
+export async function resolveEnvironment(localConfig: LocalConfig, env: NodeJS.ProcessEnv = process.env): Promise<ResolvedEnvironment> {
   const values = new Map(Object.entries(env).flatMap(([key, value]) => (value ? [[key, value]] : [])));
   if (!resolvesTeamEnv(localConfig)) {
     return { facts: { declared: new Set(), secrets: new Set(), present: new Set(values.keys()) }, values, secrets: collectEnvSecrets(env) };

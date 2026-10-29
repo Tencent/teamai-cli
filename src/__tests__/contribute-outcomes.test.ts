@@ -5,7 +5,6 @@ import path from 'node:path';
 import { AGENT_SESSION_ENV } from '../utils/session-id.js';
 import { parseFrontmatter } from '../utils/frontmatter.js';
 import { getDataHome } from '../types.js';
-import { runsDir } from '../workflow/store.js';
 
 vi.mock('../utils/logger.js', () => ({
   log: {
@@ -46,7 +45,7 @@ vi.mock('../config.js', async (importOriginal) => ({
 
 const { contribute } = await import('../contribute.js');
 const { readSessionOutcomes } = await import('../dashboard-collector.js');
-const { readContributeState } = await import('../contribute-check.js');
+await import('../contribute-check.js');
 const { writeInstallConfig } = await import('./helpers/install-config.js');
 
 function queued(): Array<{ relPath: string; content: string }> {
@@ -89,7 +88,7 @@ describe('a learning contributed from a session', () => {
     const { content } = await contributeNote('---\ntitle: Pod startup timeouts\ntags: [k8s]\n---\nRaise the probe delay.\n');
 
     const { data, body } = parseFrontmatter(content);
-    expect(data).toEqual({ title: 'Pod startup timeouts', tags: ['k8s'], session: { platform: 'claude-code', sessionId: '7c1e-session' } });
+    expect(data).toEqual({ type: 'Learning', title: 'Pod startup timeouts', tags: ['k8s'], session: { platform: 'claude-code', sessionId: '7c1e-session' } });
     expect(body).toBe('Raise the probe delay.\n');
   });
 
@@ -105,7 +104,7 @@ describe('a learning contributed from a session', () => {
 
     const { content } = await contributeNote('Raise the probe delay.\n', { sessionId: 'earlier-session' });
 
-    expect(parseFrontmatter(content)).toEqual({ data: { session: { platform: 'codex', sessionId: 'earlier-session' } }, body: 'Raise the probe delay.\n' });
+    expect(parseFrontmatter(content)).toEqual({ data: { type: 'Learning', session: { platform: 'codex', sessionId: 'earlier-session' } }, body: 'Raise the probe delay.\n' });
   });
 
   it('is recorded on this machine as an outcome of its session, by its path under learnings/ without .md, namespace included', async () => {
@@ -131,57 +130,5 @@ describe('a learning contributed from a session', () => {
       outcomes: [{ kind: 'learning', id: expect.stringMatching(/^k8s\/pod-startup-timeouts-\d{4}-\d{2}-\d{2}-[a-z0-9]{6}$/) }],
     });
     expect(`${event?.outcomes[0]?.kind === 'learning' ? event.outcomes[0].id : ''}.md`).toBe(relPath);
-  });
-});
-
-describe('a learning contributed inside a workflow attempt', () => {
-  const run = 'r0123456789abcdef';
-  const attempt = 'a0000000a';
-
-  beforeEach(() => {
-    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-contribute-attempt-'));
-    roleOf = undefined;
-    process.env.HOME = path.join(tmp, 'home');
-    for (const name of AGENT_SESSION_ENV) delete process.env[name];
-    fs.mkdirSync(path.join(tmp, 'not-a-clone'), { recursive: true });
-    fs.mkdirSync(process.env.HOME, { recursive: true });
-    writeInstallConfig(config());
-    fs.mkdirSync(runsDir(config()), { recursive: true });
-    fs.writeFileSync(path.join(runsDir(config()), `${run}.json`), '{}');
-    process.env.TEAMAI_WORKFLOW_ATTEMPT = `${run}/${attempt}`;
-  });
-
-  afterEach(() => {
-    process.env = { ...savedEnv };
-    fs.rmSync(tmp, { recursive: true, force: true });
-  });
-
-  it('is appended to the outcome file of the attempt, for the engine to put on the pass', async () => {
-    const { relPath } = await contributeNote('Back off before retrying.\n', { title: 'Retry backoff' });
-
-    const lines = fs.readFileSync(path.join(runsDir(config()), run, 'outcomes', `${attempt}.jsonl`), 'utf8').trim().split('\n');
-    expect(lines.map((line) => JSON.parse(line))).toEqual([{ kind: 'learning', id: relPath.replace(/\.md$/, '') }]);
-  });
-
-  it('also counts for the member session --session-id names, which the attempt that writes it did not launch', async () => {
-    process.env.CLAUDE_CODE_SESSION_ID = 'the-step-session';
-    process.env.TEAMAI_MODE = 'unattended';
-
-    await contributeNote('Back off before retrying.\n', { title: 'Retry backoff', sessionId: 'member-session' });
-
-    const [event] = await readSessionOutcomes();
-    expect(event?.sessionId).toBe('member-session');
-    expect(event).not.toHaveProperty('launchedBy');
-    expect(event).not.toHaveProperty('runMode');
-  });
-
-  it('still counts as contributed when its outcome file cannot be written', async () => {
-    process.env.CLAUDE_CODE_SESSION_ID = 'the-step-session';
-    fs.mkdirSync(path.join(runsDir(config()), run));
-    fs.writeFileSync(path.join(runsDir(config()), run, 'outcomes'), 'not a directory');
-
-    await contributeNote('Back off before retrying.\n', { title: 'Retry backoff' });
-
-    expect(await readContributeState('the-step-session')).toMatchObject({ contributed: true });
   });
 });

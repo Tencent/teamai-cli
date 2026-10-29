@@ -54,7 +54,7 @@ Pitfalls:
 
 #### Write access and team stats
 
-`digest` / `dashboard` read `stats/`, `sessions/`, and `members/` from the team repo. Those files are written via git, so **no write ⇒ not in team stats**.
+`digest` reads `stats/`, `sessions/`, and `members/` from the team repo. Those files are written via git, so **no write ⇒ not in team stats**.
 
 Giving every internet contributor write on the hub repo is not acceptable.
 
@@ -82,8 +82,6 @@ src/
 See [docs/dev/adding-a-provider.md](../docs/dev/adding-a-provider.md) for how to add a new git provider.
 
 Before you change `src/session-flow/`, read [docs/dev/agent-sessions.md](../docs/dev/agent-sessions.md). It lists the rules that span more than one file.
-
-Before you change `src/workflow/`, read [docs/dev/workflow-engine.md](../docs/dev/workflow-engine.md). It lists the rules that span more than one file.
 
 ## Making a Change
 
@@ -141,7 +139,7 @@ expect(join && 'failure' in join ? join.failure : undefined, JSON.stringify(type
   .toMatchObject({ code: 'merge_conflict' });
 ```
 
-That message showed `fatal: failed to read .git/worktrees/<id>/commondir`: two steps ran `git worktree add` at once. Then widen the window with a fake binary first on `PATH`, so a test fails on every run until the cause is fixed. The case "opens a worktree for each of two steps that start at once, while git still writes the first one" in `workflow-workspace.test.ts` uses a `git` that leaves a worktree entry half written for half a second.
+That message showed `fatal: failed to read .git/worktrees/<id>/commondir`: two steps ran `git worktree add` at once. Then widen the window with a fake binary first on `PATH`, so a test fails on every run until the cause is fixed. A historical worktree regression used a fake `git` that left an entry half written for half a second.
 
 **A timeout inside the test: slow down what comes before it.** The setup case gave its step `timeout: 1s`, which counts from the lease, and the lease makes the worktree first. This `git` makes that worktree as slow as a loaded runner does, and the case fails on every run, as it did on CI:
 
@@ -163,7 +161,7 @@ it('continues a copy it took back from the commit the other machine recorded, fa
 
 ```bash
 for i in $(seq 12); do
-  npx vitest run src/__tests__/workflow-workspace.test.ts -t "left in an agent file" > "/tmp/run-$i.log" 2>&1 &
+  npx vitest run src/__tests__/documents-reviews.test.ts -t "shares history" > "/tmp/run-$i.log" 2>&1 &
 done; wait
 grep -lE "Tests +[0-9]+ failed" /tmp/run-*.log
 ```

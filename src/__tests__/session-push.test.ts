@@ -8,11 +8,10 @@ import { getAdapter } from '../session-flow/adapters/index.js';
 import { saveLocalConfig } from '../config.js';
 import { encodeCwdClaude } from '../session-flow/fs.js';
 import { registerSessionFlowCommands } from '../session-flow/session-cmd.js';
-import { encodeRepoIdentity, withSessionPublicationLock } from '../session-flow/sync.js';
+import { withSessionPublicationLock } from '../session-flow/sync.js';
 import { getReportsDir, REPORTS_LOCK_FILENAME, type LocalConfig } from '../types.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { ensureReportsWorktree, updateReports } from '../utils/reports-branch.js';
-import { worktreePath } from '../workflow/worktree.js';
 
 const project = vi.hoisted(() => ({ config: null as LocalConfig | null }));
 
@@ -297,25 +296,6 @@ describe('session list and search for a team that keeps its workflows in the bus
 
     expect(listed.code, listed.stderr).toBe(0);
     expect(fs.existsSync(path.join(reportsDir, '.git'))).toBe(true);
-  });
-});
-
-describe('session push of a session a workflow step ran', () => {
-  it('files it under the repository of the checkout whose step worktree it ran in, after that worktree is removed', async () => {
-    const team = repository('team');
-    const { checkout } = repository('product');
-    git(checkout, 'remote', 'set-url', 'origin', 'https://github.com/acme/product.git');
-    const worktree = worktreePath(checkout, 'teamai/r0123abcd/review');
-    await claudeSession(worktree);
-    fs.rmSync(worktree, { recursive: true });
-
-    const pushed = await session('push', '--source', 'claude-code', '--all', '-y', '--repo-root', team.checkout);
-
-    expect(pushed.code, pushed.stderr).toBe(0);
-    const files = archived(team.origin, 'main');
-    expect(files.filter((file) => file.endsWith('.jsonl')), files.join('\n')).toEqual([
-      expect.stringContaining(`sessions/repos/${encodeRepoIdentity('github.com/acme/product')}/`),
-    ]);
   });
 });
 

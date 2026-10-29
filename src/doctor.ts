@@ -5,8 +5,6 @@ import { detectProjectConfig, loadLocalConfig, loadTeamConfig, ownMemberSettings
 import { AgentSession } from './session-flow/agent-session.js';
 import { SessionPolicy, type SessionPolicy as Policy } from './session-flow/session-policy.js';
 import { explainRunMode, RUN_MODES, type ExplainedRunMode } from './launch-context.js';
-import { scoringUnavailable } from './scorers/home.js';
-import { scopeScoring } from './scorers/settings.js';
 import { readWorkspaceChildren } from './workspace-children.js';
 import { machineUnreadKeys, memberSettingLines, memberSettingsReport, type MemberSettingsReport } from './member-settings-report.js';
 import { pathExists, readFileSafe } from './utils/fs.js';
@@ -56,7 +54,7 @@ import {
   buildMcpDeliveryChecks,
   mcpTransportNotes,
   buildMcpReadFileChecks,
-  buildLocalAgentMcpLocationChecks,
+
   buildCodexProjectTrustCheck,
   buildMcpGitExcludeCheck,
   buildEnvDeliveryCheck,
@@ -68,9 +66,8 @@ import {
   buildDocsCheck,
   keptDocNotes,
 } from './doctor-delivery.js';
-import { agentModelNotes, aliasNamespaceNotes, buildAgentModelChecks } from './doctor-agent-models.js';
 import {
-  buildDeliveredGitExcludeChecks, buildLocalAgentGitExcludeChecks, deliveredGitExcludeNotes, localAgentGitExcludeNotes,
+  buildDeliveredGitExcludeChecks,  deliveredGitExcludeNotes,
 } from './doctor-git-exclude.js';
 
 /**
@@ -560,17 +557,12 @@ async function unreadSessionToolNotes({ localConfig, teamConfig, toolPaths }: Do
   const tools = AgentSession.toolsWithoutSessions(Object.keys(toolPaths));
   if (tools.length === 0) return [];
   const publish = SessionPolicy.publish(localConfig, teamConfig).policies;
-  const scoring = scoringUnavailable(localConfig) ? undefined : await scopeScoring(localConfig);
-  const scored = scoring?.ok ? scoring.sessions.policies : undefined;
   // `ask` acts as `off` for now (#1388): nothing is offered.
   const described = (policy: Policy | undefined, word: string) => (policy === 'auto' ? word : undefined);
   return RUN_MODES.flatMap((mode) => {
     const published = described(publish[mode].policy, 'published');
-    const judged = described(scored?.[mode].policy, 'scored');
-    if (published === undefined && judged === undefined) return [];
-    const lead = [published, judged].filter((part) => part !== undefined).join(' and ');
-    const outcome = published && judged ? 'neither published nor judged' : published ? 'not published' : 'not judged';
-    return [`Sessions are ${lead} in ${mode} mode, but teamai reads no sessions from ${tools.join(', ')}: they are ${outcome}.`];
+    if (!published) return [];
+    return [`Sessions are published in ${mode} mode, but teamai reads no sessions from ${tools.join(', ')}: they are not published.`];
   });
 }
 
@@ -771,16 +763,6 @@ export async function buildChecks(ctx: DoctorContext, stage: CheckStage = 'docto
         + 'can push to the team repo (run with --verbose to see the push error).',
     },
     {
-      // A score label waits on this machine until a push or a pull publishes it.
-      name: 'Score labels are published',
-      source: 'local',
-      check: async () => {
-        const { LabelStore } = await import('./scorers/label-store.js');
-        return await LabelStore.unpublished(localConfig) === 0;
-      },
-      fix: 'Run `teamai score --push` to publish them; it says why when it cannot.',
-    },
-    {
       // A dead process's lock cannot block anything — the next writer of that
       // same lock reclaims it — but a leftover file is exactly the noise #1027
       // reports, and the only way a SIGKILLed run ever gets cleaned up.
@@ -812,14 +794,11 @@ export async function buildChecks(ctx: DoctorContext, stage: CheckStage = 'docto
     ...(stage === 'doctor' ? await buildRulesDeliveryChecks(ctx) : []),
     ...(stage === 'doctor' ? await buildAgentsDeliveryChecks(ctx) : []),
     ...(stage === 'doctor' ? await buildInstructionDeliveryChecks(ctx) : []),
-    ...await buildAgentModelChecks(ctx, stage),
     ...await buildMcpDeliveryChecks(ctx),
     ...await buildMcpReadFileChecks(ctx),
-    ...await buildLocalAgentMcpLocationChecks(ctx),
     ...await buildCodexProjectTrustCheck(ctx),
     ...await buildMcpGitExcludeCheck(ctx),
     ...await buildDeliveredGitExcludeChecks(ctx),
-    ...await buildLocalAgentGitExcludeChecks(),
     ...await buildDocsCheck(ctx),
     ...await buildEnvDeliveryCheck(ctx),
     ...await buildEntryResolutionChecks(ctx),
@@ -1019,19 +998,11 @@ export async function doctor(options: DoctorOptions): Promise<boolean> {
   // how each alias agent's model resolved in each tool (#830).
   const { ruleChannelNotes } = await import('./resources/rules.js');
   const { dshSandboxNote } = await import('./dsh-hooks.js');
-  const { scorerNotes } = await import('./doctor-scorers.js');
-  const { shadowedWorkflowSkills } = await import('./workflow/discovery/workflow-skills.js');
   const notes = [
     ...await buildNamespaceNotes(ctx),
     ...await entryNamespaceNotes(ctx),
     // Hook entries a pull keeps as the member's (#993): the team's own entries are written beside them.
     ...ctx.teamConfig ? await keptTeamHookEntries(ctx.teamConfig, localConfig) : [],
-    ...await aliasNamespaceNotes(ctx),
-    ...await agentModelNotes(ctx),
-    // Invalid scorer files and scorers a workflow step lists without one, which a silent hook pull never shows.
-    ...await scorerNotes(localConfig),
-    // A team or member skill named workflow-<name> stands in for the skill pull generates (#1086).
-    ...ctx.teamConfig ? await shadowedWorkflowSkills({ teamConfig: ctx.teamConfig, localConfig }) : [],
     ...(await envAdvisories(localConfig, ctx.teamConfig, ctx.teamEnv)).map(describeEnvAdvisory),
     // A team MCP server a tool cannot use over its transport.
     ...await mcpTransportNotes(ctx),
@@ -1046,7 +1017,6 @@ export async function doctor(options: DoctorOptions): Promise<boolean> {
     ...await unreadSessionToolNotes(ctx),
     // What git sees of the delivered team resources, and what no pull changes (#915).
     ...await deliveredGitExcludeNotes(ctx),
-    ...await localAgentGitExcludeNotes(),
     ...await keptDocNotes(ctx),
     ...await skillReadNotes(ctx),
     ...await recordedPlaceNotes(ctx, 'rules'),

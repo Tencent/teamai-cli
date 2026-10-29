@@ -6,8 +6,8 @@
 import { z } from 'zod';
 import { RUN_MODES, RunModeSchema } from './launch-context.js';
 import type { OutcomeCounts, UserOutcomeStats } from './types.js';
-import { CommitIdSchema } from './workflow/delivery-schema.js';
-import { PrUrlSchema } from './workflow/pr-url.js';
+import { CommitIdSchema } from './utils/commit-id.js';
+import { PrUrlSchema } from './utils/pr-url.js';
 
 export const WorkOutcomeSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('commit'), sha: CommitIdSchema }),

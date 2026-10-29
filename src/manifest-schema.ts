@@ -81,12 +81,9 @@ export const HAND_DECLARED_RESOURCE_TYPES = [
   'env',
   'hooks',
   'mcp',
-  'models',
   'docs',
   'wiki',
-  'workflows',
   'prompts',
-  'scorers',
 ] as const;
 
 export type HandDeclaredResourceType = typeof HAND_DECLARED_RESOURCE_TYPES[number];
@@ -113,7 +110,6 @@ export const HandDeclaredNamespacesShape = {
   env: OptionalNamespaceList,
   hooks: OptionalNamespaceList,
   mcp: OptionalNamespaceList,
-  models: OptionalNamespaceList,
   docs: DocsNamespaceList,
   // Scopes `teamwiki/evidence/code/<slug>/` recall by project/role (#912), the
   // same way `docs` already scopes `docs/<namespace>/`. The slug is a `teamai
@@ -121,9 +117,7 @@ export const HandDeclaredNamespacesShape = {
   // project id — a team picks one it already uses so declaring it needs no
   // new convention.
   wiki: OptionalNamespaceList,
-  workflows: OptionalNamespaceList,
   prompts: OptionalNamespaceList,
-  scorers: OptionalNamespaceList,
 } satisfies Record<HandDeclaredResourceType, z.ZodOptional<z.ZodArray<z.ZodType<string>>>>;
 
 /**

@@ -592,47 +592,6 @@ describe('remote commands', () => {
   );
 
   it.skipIf(!CAN_RUN_REMOTE)(
-    'teamai dashboard — boots HTTP server',
-    async () => {
-      const port = '37210';
-      const child = spawn('node', [CLI, 'dashboard', '-p', port], {
-        env: { ...process.env, FORCE_COLOR: '0' },
-        stdio: ['pipe', 'pipe', 'pipe'],
-        cwd: ROOT,
-      });
-
-      try {
-        let ok = false;
-        for (let i = 0; i < 20; i++) {
-          await new Promise((r) => setTimeout(r, 500));
-          try {
-            const res = await fetch(`http://127.0.0.1:${port}/`);
-            if (res.status >= 200 && res.status < 500) {
-              ok = true;
-              break;
-            }
-          } catch {
-            /* keep waiting for boot */
-          }
-        }
-        expect(ok).toBe(true);
-      } finally {
-        child.kill('SIGTERM');
-        await new Promise<void>((r) => {
-          const t = setTimeout(() => {
-            child.kill('SIGKILL');
-            r();
-          }, 3000);
-          child.on('close', () => {
-            clearTimeout(t);
-            r();
-          });
-        });
-      }
-    },
-  );
-
-  it.skipIf(!CAN_RUN_REMOTE)(
     'teamai uninstall --dry-run — previews resources without changes',
     async () => {
       const { code, output } = await runCLI(['uninstall', '--dry-run']);

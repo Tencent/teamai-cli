@@ -11,9 +11,7 @@ import { detectProjectConfig, resolveProjectDataHome, saveLocalConfigForScope } 
 import { createProjectToolRoots, seedInheritedCheckoutRoots } from '../project-agent-root.js';
 import { liveCheckoutRecords, checkoutKey } from '../pull.js';
 import { pruneWorkspaceDirs, writeWorkspaceRoot } from '../utils/partition.js';
-import { dashboardWorkspaces, workspaceEvents } from '../dashboard/workspaces.js';
 import { status } from '../status.js';
-import { localAgentCheckouts } from '../local-agent.js';
 import { deployBuiltinSkills } from '../builtin-skills.js';
 import { allowsSkillDirectory, describeSkippedSkillDirectory, findSkillDirectoryBlock } from '../resources/skills.js';
 
@@ -127,18 +125,6 @@ describe('submodule checkouts', () => {
     expect(after.hooks.Stop.map((e: { hooks: { command: string }[] }) => e.hooks[0].command)).toEqual(['echo member']);
   });
 
-  it('returns actual local-agent checkouts rather than stored identity directories', async () => {
-    const anchor = path.join(parent, '.git/modules/service');
-    const home = path.join(base, 'home/.teamai/local-agent');
-    fs.mkdirSync(home, { recursive: true });
-    fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify({
-      endpoint: 'https://example.com/api', token: 'fixture', localAgentId: 'fixture', createdAt: '2026-10-11',
-      workspaceBindings: { [anchor]: { projectId: 1 }, [checkout]: { projectId: 1 } },
-    }));
-    expect(await localAgentCheckouts()).toContain(checkout);
-    expect(await localAgentCheckouts()).not.toContain(anchor);
-  });
-
   it.each(['.claude/settings.local.json', '.codex/hooks.json'])('preserves an empty old %s without blocking Git hook installation', async (relative) => {
     const original = config();
     original.dataHome = await resolveProjectDataHome(checkout);
@@ -164,19 +150,6 @@ describe('submodule checkouts', () => {
     } finally {
       output.mockRestore();
     }
-  });
-
-  it('shows the real submodule checkout while preserving dashboard identity', async () => {
-    const original = config();
-    original.dataHome = await resolveProjectDataHome(checkout);
-    await saveLocalConfigForScope(original);
-    const anchor = path.join(parent, '.git/modules/service');
-    const events = [{ type: 'session_start' as const, tool: 'claude', timestamp: '2026-10-11T00:00:00Z',
-      sessionId: 'removed-worktree', projectAnchor: anchor, cwd: path.join(base, 'removed') }];
-    const workspaces = await dashboardWorkspaces(events);
-    const project = workspaces.find((w) => w.scope === 'project');
-    expect(project?.root).toBe(checkout);
-    expect(workspaceEvents(events, project!, workspaces)).toEqual(events);
   });
 
   it('seeds a linked submodule worktree from the original tool roots', async () => {

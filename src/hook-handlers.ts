@@ -9,7 +9,7 @@
  * remain unchanged for backward compatibility during migration.
  */
 
-import os from 'node:os';
+
 import path from 'node:path';
 
 import type { ResolvedEntry } from './namespaced-entries.js';
@@ -78,12 +78,6 @@ const TODOWRITE_HINT_TIMEOUT_MS = 2_500;
 /** Background (detached) npm-registry update check — not awaited by the host. */
 const UPDATE_TIMEOUT_MS = 10_000;
 /**
- * Background (detached) local-agent HTTP report/sync. Detached runs are not
- * awaited by the host, so they keep a full budget to complete real work such as
- * resource downloads. Foreground local-agent runs use FOREGROUND_HOOK_TIMEOUT_MS.
- */
-const LOCAL_AGENT_TIMEOUT_MS = 15_000;
-/**
  * Background (detached) upvote LLM-judge (issue #723, opt-in). It shells out to
  * the local signed-in CLI (judgeAdoption caps that call at 30s), so it needs a
  * budget slightly above that to also parse + write + sync votes. Detached, so it
@@ -150,14 +144,8 @@ const pullHandler: HookHandler = {
     // cut the push of a report pull() stopped waiting for. The host does not
     // wait for this pass, so waiting here does not delay the session.
     await settleLateUsageReport();
-    // Finished attended sessions are judged or published in a process this pass does not wait for, where a scope turns that on.
-    const { backgroundPassScopes } = await import('./score-sessions.js');
-    const passCwd = await pathExists(hintCwd) ? hintCwd : os.homedir();
-    const scopes = await backgroundPassScopes(passCwd).catch((e: unknown) => {
-      log.debug(`hook-dispatch: could not tell whether sessions are scored or published here: ${e instanceof Error ? e.message : String(e)}`);
-      return [];
-    });
-    if (scopes.length > 0) await spawnDetachedScoreSessions(passCwd);
+    const { publishFinishedSessions } = await import('./session-flow/auto-publish.js');
+    await publishFinishedSessions(hintCwd);
     return null;
   },
 };
@@ -290,12 +278,9 @@ const newCheckoutHandler: HookHandler = {
  * hooks, since a pull would restore what was removed (#993), nor when a
  * workflow launched the session in a checkout it holds (#1176).
  */
-async function toolMayDeliver(stdin: Record<string, unknown>, tool: string, config: LocalConfig): Promise<boolean> {
+async function toolMayDeliver(_stdin: Record<string, unknown>, tool: string, config: LocalConfig): Promise<boolean> {
   const { isAgentExcluded } = await import('./types.js');
-  if (isAgentExcluded(config, tool)) return false;
-  const { LAUNCH_PAYLOAD_KEY, launchHoldsCheckout, readLaunch } = await import('./launch-context.js');
-  const launch = readLaunch(stdin[LAUNCH_PAYLOAD_KEY]);
-  return !(launch && await launchHoldsCheckout(config, launch));
+  return !isAgentExcluded(config, tool);
 }
 
 /** How long `git pull` waits for its hook's team repo fetch. */
@@ -369,15 +354,6 @@ async function spawnDetachedPull(cwd: string, event: GitHookEvent, how: { prepar
   spawn(process.execPath, [resolveCliEntry() ?? '', 'pull', '--silent'], {
     cwd, detached: true, stdio: 'ignore', windowsHide: true, env: { ...process.env, TEAMAI_GIT_HOOK: event, ...prepare },
   }).on('error', (e) => log.debug(`git hook: detached pull failed to start: ${e.message}`)).unref();
-}
-
-/** Start `teamai score-sessions` in `cwd`, which this process does not wait for. */
-async function spawnDetachedScoreSessions(cwd: string): Promise<void> {
-  const { resolveCliEntry } = await import('./builtin-hooks.js');
-  const { spawn } = await import('node:child_process');
-  spawn(process.execPath, [resolveCliEntry() ?? '', 'score-sessions'], {
-    cwd, detached: true, stdio: 'ignore', windowsHide: true,
-  }).on('error', (e) => log.debug(`hook-dispatch: detached score-sessions failed to start: ${e.message}`)).unref();
 }
 
 /**
@@ -563,7 +539,7 @@ export function eligibleUpvotes(
 
 const contributeCheckHandler: HookHandler = {
   name: 'contribute-check',
-  async execute(stdin, tool, localConfig) {
+  async execute(stdin, tool) {
     // The payload's cwd, not the process's: hook-dispatch changes into it, but
     // that can fail, and the gate must not then read the launcher's directory.
     // A removed worktree's session keeps its recorded scope (#810).
@@ -585,10 +561,7 @@ const contributeCheckHandler: HookHandler = {
     // next UserPromptSubmit, so contributeCheckForSession returns null here.
     const stash = stopStdoutUnsupported(tool);
     // The session's mode and launcher as the dispatcher forwarded them, else as this process's environment has them.
-    const { readSessionRun, sessionRun } = await import('./launch-context.js');
-    const run = readSessionRun(stdin) ?? sessionRun(process.env);
-    const offer = localConfig ? async () => (await import('./session-close.js')).SessionClose.reminderOffer(localConfig, { tool, sessionId, cwd: cwd ?? process.cwd(), run }) : undefined;
-    const { hint } = await contributeCheckForSession(sessionId, cwd, transcriptPath, stash, offer);
+    const { hint } = await contributeCheckForSession(sessionId, cwd, transcriptPath, stash);
     if (!hint) return null;
     // The hint is addressed to the user, so a host that hides the payload needs
     // the model to pass it on. Claude Code prints it and must not be asked (#719).
@@ -1136,49 +1109,6 @@ const instructionsHandler: HookHandler = {
 };
 
 /**
- * The HTTP local agent's prompts from its resource cache for the session's
- * project (#945), for a tool with no project file the agent could write to.
- * Pi, OMP and Hermes ask through `instructions`; the Codex family gets them
- * at SessionStart and SubagentStart, beside the team rules. Runs without a
- * teamai config, since an HTTP-only machine has none.
- */
-const localAgentInstructionsHandler: HookHandler = {
-  name: 'http-prompt-instructions',
-  async execute(stdin, tool, config) {
-    const { isAgentExcluded } = await import('./types.js');
-    if (config && isAgentExcluded(config, tool)) return null;
-    const { deliversInstructionsByHook } = await import('./instruction-targets.js');
-    const { getsRulesFromSessionHook } = await import('./resources/rule-format.js');
-    if (!deliversInstructionsByHook(tool, 'project')) return null;
-    const sessionEvent = stdin.hook_event_name === 'SessionStart' || stdin.hook_event_name === 'SubagentStart';
-    // Each tool through its own channel only; a resumed Codex session holds them already.
-    if (getsRulesFromSessionHook(tool) !== sessionEvent || stdin.source === 'resume') return null;
-    const { localAgentInstructionText } = await import('./local-agent.js');
-    const text = await localAgentInstructionText(resolveHookCwd(stdin) ?? process.cwd(), tool);
-    if (!text) return null;
-    const hookEventName = stdin.hook_event_name === 'SubagentStart' ? 'SubagentStart' : 'SessionStart';
-    return JSON.stringify({ hookSpecificOutput: { hookEventName, additionalContext: text } });
-  },
-};
-
-/** HTTP local-agent report/sync + workspace binding prompts. */
-const localAgentHandler: HookHandler = {
-  name: 'local-agent-sync',
-  async execute(stdin, tool, config) {
-    const { isAgentExcluded } = await import('./types.js');
-    if (config && isAgentExcluded(config, tool)) return null;
-    const { reportAndSyncFromHook } = await import('./local-agent.js');
-    const output = await reportAndSyncFromHook(stdin, tool);
-    // Codex's first prompt must read the cache after this sync, rather than
-    // racing it in another handler. SubagentStart reads the parent's cache.
-    if (stdin.hook_event_name === 'SessionStart') {
-      return await localAgentInstructionsHandler.execute(stdin, tool, config) ?? output;
-    }
-    return output;
-  },
-};
-
-/**
  * Map a host's `hook_event_name` (as normalized by parseStdin) to the canonical
  * webhook event names teams subscribe to. The handler used to read `stdin.event`,
  * which hosts never send, so every event was forwarded as `unknown` and no
@@ -1275,10 +1205,8 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     { event: 'session-start', matcher: '*', handler: mrHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true, requiresConfig: true },
     { event: 'session-start', matcher: '*', handler: packageHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },
     { event: 'session-start', matcher: '*', handler: teamEnvHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },
-    { event: 'session-start', matcher: '*', handler: localAgentHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
     // Asked for by the Pi and OMP extensions and the Hermes plugin, which add the result to the prompt.
     { event: 'instructions', matcher: '*', handler: instructionsHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },
-    { event: 'instructions', matcher: '*', handler: localAgentInstructionsHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
     { event: 'session-start', matcher: '*', handler: webhookHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true, requiresConfig: true },
 
     // Copilot emits SessionEnd after its final turn (not Stop), so the webhook
@@ -1305,13 +1233,11 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     { event: 'stop', matcher: '*', handler: votesJudgeHandler, timeoutMs: VOTES_JUDGE_TIMEOUT_MS, background: true, gitOnly: true, requiresConfig: true },
     { event: 'stop', matcher: '*', handler: contributeCheckHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true, requiresConfig: true },
     { event: 'stop', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true, requiresConfig: true },
-    { event: 'stop', matcher: '*', handler: localAgentHandler, timeoutMs: LOCAL_AGENT_TIMEOUT_MS, background: true },
     { event: 'stop', matcher: '*', handler: webhookHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true, requiresConfig: true },
 
     // ─── SubagentStart ────────────────────────────────
     // Codex only (SUBAGENT_START_SPEC): a fresh subagent fires no SessionStart (#938).
     { event: 'subagent-start', matcher: '*', handler: teamRulesHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },
-    { event: 'subagent-start', matcher: '*', handler: localAgentInstructionsHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
 
     // ─── SubagentStop ─────────────────────────────────
     // A subagent can finish after the session's last Stop (a background
@@ -1330,7 +1256,6 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     { event: 'post-tool-use', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true, requiresConfig: true },
     { event: 'post-tool-use', matcher: '*', handler: recallAttributionHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true, requiresConfig: true },
     { event: 'post-tool-use', matcher: 'TodoWrite', handler: todowriteHintHandler, timeoutMs: TODOWRITE_HINT_TIMEOUT_MS, requiresConfig: true },
-    { event: 'post-tool-use', matcher: '*', handler: localAgentHandler, timeoutMs: LOCAL_AGENT_TIMEOUT_MS, background: true },
     { event: 'post-tool-use', matcher: '*', handler: skillUseHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true, requiresConfig: true },
     // A worktree an agent tool entered without any git hook (Claude Code's EnterWorktree, Codex CLI) gets the
     // team's resources on its first tool use there; any other checkout costs a few file reads.
@@ -1341,7 +1266,6 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     { event: 'prompt-submit', matcher: '*', handler: packagePendingHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
     { event: 'prompt-submit', matcher: '*', handler: skillMentionHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },
     { event: 'prompt-submit', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },
-    { event: 'prompt-submit', matcher: '*', handler: localAgentHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
 
     // ─── Git (`--tool git`, see git-hook.ts) ──────────
     // Inline: the delivery has to land before `git worktree add` returns. Git

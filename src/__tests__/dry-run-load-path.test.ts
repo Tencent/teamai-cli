@@ -42,7 +42,6 @@ import { hooksList } from '../hooks-cmd.js';
 import { importCmd } from '../import.js';
 import { mcpInject, mcpList } from '../mcp-cmd.js';
 import { maybeMigrate, queueKeptInCheckout } from '../migrate.js';
-import { modelsList, modelsSwitch } from '../models-cmd.js';
 import { pkgInstall } from '../pkg/commands.js';
 import { listMembers } from '../members.js';
 import { projectsAdd, projectsList, projectsMembers, projectsRemove, projectsUpdate } from '../projects-cmd.js';
@@ -55,7 +54,7 @@ import { remove } from '../remove.js';
 import { rolesAdd, rolesInit, rolesList, rolesRemove, rolesSet, rolesUpdate } from '../roles-cmd.js';
 import { skillList, skillShow } from '../skill-cmd.js';
 import { skillGet, skillPath } from '../skill-content.js';
-import { sourceAdd, sourceAddHttp, sourceBrowse, sourceList, sourceRemove } from '../source.js';
+import { sourceAdd, sourceBrowse, sourceList, sourceRemove } from '../source.js';
 import { list, status } from '../status.js';
 import { tagsAdd, tagsList, tagsRemove, tagsSubscribe, tagsUnsubscribe } from '../tags.js';
 import { uninstall } from '../uninstall.js';
@@ -310,7 +309,6 @@ describe('--dry-run through the loaders the commands share (#850)', () => {
     ['doctor (its loader)', async () => { await resolveDoctorContext(); }],
     ['skill get share', () => skillGet(['share'])],
     ['skill path share', () => skillPath('share')],
-    ['models list', () => modelsList()],
     ['codebase --status', () => codebaseCmd({ status: true })],
     ['uninstall --dry-run', () => uninstall({ dryRun: true, force: true })],
     ['packages install --dry-run', () => pkgInstall(undefined, { dryRun: true })],
@@ -360,7 +358,6 @@ describe('--dry-run through the loaders the commands share (#850)', () => {
     ['tags remove', (dryRun) => tagsRemove('skills', 'x', ['a'], { dryRun })],
     ['source add', (dryRun) => sourceAdd('https://github.com/acme/other.git', { dryRun })],
     ['source remove', (dryRun) => sourceRemove('x', { dryRun })],
-    ['source add-http', (dryRun) => sourceAddHttp('https://h.test', { dryRun, token: 't' })],
     ['remove', (dryRun) => remove('skills', ['x'], { dryRun })],
     ['packages install', (dryRun) => pkgInstall(undefined, { dryRun })],
     ['import --from-iwiki', (dryRun) => importCmd({ fromIwiki: 'x', dryRun })],
@@ -371,7 +368,6 @@ describe('--dry-run through the loaders the commands share (#850)', () => {
     // No candidates on this fixture: covers the scan's load, not the one after review.
     ['import --from-claude', (dryRun) => importCmd({ fromClaude: true, all: true, dryRun })],
     ['codebase --deep-enrich', (dryRun) => codebaseCmd({ deepEnrich: true, project: 'x', dryRun })],
-    ['models switch', (dryRun) => modelsSwitch('p', { dryRun })],
   ];
 
   describe.each(PREVIEWS)('%s', (_command, run) => {

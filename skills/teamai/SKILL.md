@@ -11,7 +11,7 @@ description: >-
   after a friction reminder. Triggers include "set up teamai", "join the team repo", "sync team
   skills", "team wiki", "share what I learned", and running /teamai. Talking about a team needs no
   skill; operating on what the team shares does.
-allowed-tools: Bash(teamai skill:*), Bash(npx teamai-cli skill:*), Bash(teamai workflow start --describe:*), Bash(teamai workflow next:*), Bash(teamai workflow report:*), Bash(teamai workflow respond:*), Bash(npx teamai-cli workflow start --describe:*), Bash(npx teamai-cli workflow next:*), Bash(npx teamai-cli workflow report:*), Bash(npx teamai-cli workflow respond:*)
+allowed-tools: Bash(teamai skill:*), Bash(npx teamai-cli skill:*)
 ---
 
 # teamai
@@ -37,8 +37,7 @@ The CLI serves skill content that always matches the installed version, so instr
 teamai skill get setup            # day 0: create a team repo (admin) or join one (member), manage, uninstall
 teamai skill get wiki             # large multi-repo codebase: architecture reverse-engineering and knowledge base
 teamai skill get share            # turn what this session taught you into a team learning (needs recall on)
-teamai skill get workflow         # drive a requested team workflow from this coding session
-teamai skill get workflow-local   # run a workflow unattended: CI, cloud agents, a handed-off run
+teamai skill get sdlc             # Loop task: intent, spec, plan, human reviews, code, checks and PR
 ```
 
 Publishing a skill, rule or doc the user already has is in `core`; it needs no recall.

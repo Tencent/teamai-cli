@@ -1,3 +1,4 @@
+import { asKnowledge } from './documents/okf.js';
 // -*- coding: utf-8 -*-
 /**
  * review 子命令实现：list / show / apply / reject 待处理项。
@@ -150,7 +151,7 @@ async function applyOne(
             source: item.source,
             syncedAt: new Date().toISOString(),
         });
-        if (!dryRun) await fs.writeFile(filePath, newMd, 'utf8');
+        if (!dryRun) await fs.writeFile(filePath, asKnowledge(newMd, 'Imported Reference'), 'utf8');
         return { ok: true };
     } catch (err) {
         return { ok: false, reason: err instanceof Error ? err.message : String(err) };

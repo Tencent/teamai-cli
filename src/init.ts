@@ -143,30 +143,7 @@ function settingsReinitKeeps(file: LocalConfig | null, remote: string) {
   return remotesMatch(repo.remote, remote) ? settings : anyTeamSettings;
 }
 import { log, spinner } from './utils/logger.js';
-import {
-  CLAUDE_TOOL_ID,
-  detectToolRoot,
-  isAgentExcluded,
-  RELOCATABLE_TOOLS,
-  resolveHookScope,
-  scopedToolPaths,
-  toolRootRejection,
-  type TeamaiConfig,
-  getTeamaiHomeDir,
-  REPORTS_BRANCH,
-  SELF_BRANCH_HOME_DIRNAME,
-  type GlobalOptions,
-  type LocalConfig,
-  LocalConfigSchema,
-  ProviderNameSchema,
-  type ProviderName,
-  type Scope,
-  parseInstallScope,
-  getTeamaiHome,
-  getConfigPath,
-  getDataHome,
-  installScopeName,
-} from './types.js';
+import { detectToolRoot, isAgentExcluded, RELOCATABLE_TOOLS, resolveHookScope, scopedToolPaths, toolRootRejection, type TeamaiConfig, getTeamaiHomeDir, REPORTS_BRANCH, SELF_BRANCH_HOME_DIRNAME, type GlobalOptions, type LocalConfig, LocalConfigSchema, ProviderNameSchema, type ProviderName, type Scope, parseInstallScope, getTeamaiHome, getConfigPath, getDataHome, installScopeName } from './types.js';
 import { getUserHome } from './utils/home.js';
 import { describeRoles, listRoleIds, loadRolesManifest, RolesManifestNotFoundError } from './roles.js';
 import { loadRoleAssignmentsIfPresent, resolveAssignedRoles, ROLE_ASSIGNMENTS_FILE } from './role-assignments.js';
@@ -209,15 +186,6 @@ function validateGitInitAgentIds(agentIds: string[], teamConfig?: TeamaiConfig |
     ' Valid ids: ' + validAgentIds(teamConfig).join(', ') + '.',
   );
   return false;
-}
-
-function warnAboutUncheckedHttpAgentIds(agentIds: string[]): void {
-  const unknown = unknownAgentIds(agentIds);
-  if (unknown.length === 0) return;
-  log.warn(
-    'Cannot check custom --agent id(s) ' + unknown.map((id) => '"' + id + '"').join(', ') +
-    ' during HTTP init because the team config is unavailable. They may be valid once the team config is available.',
-  );
 }
 
 /**
@@ -293,10 +261,6 @@ async function releasePreviousToolRoots(
       const { changes } = await reconcileMcpForConfig(toolOnly, previous, { removeAll: true });
       const removed = changes.filter((c) => c.action === 'removed').length;
       if (removed > 0) log.info(`Removed ${removed} teamai-managed MCP server(s) from the previous ${label} root`);
-      if (tool === CLAUDE_TOOL_ID) {
-        const { releaseClaudeModelConfig } = await import('./local-agent.js');
-        await releaseClaudeModelConfig(path.dirname(oldSettings));
-      }
     }
     // No previous root on disk means nothing teamai wrote was left behind.
     if (!await pathExists(path.dirname(oldSettings))) continue;
@@ -748,216 +712,6 @@ async function isInsideGitRepo(dir: string): Promise<boolean> {
     if (parent === current) return false;
     current = parent;
   }
-}
-
-/**
- * Git-free HTTP onboarding (issue #1). A read-only consumer only needs an API
- * key: no git auth, no clone, no member/reviewer push. Skills/rules/CLAUDE.md are
- * delivered on each session via the report/sync/ack lifecycle (the local-agent
- * bypass), not by cloning a repo.
- */
-export async function initHttp(
-  url: string,
-  options: GlobalOptions & { scope?: string; role?: string; project?: string; agent?: string | string[]; force?: boolean; token?: string; inheritUserScope?: boolean },
-): Promise<void> {
-  const { resolveApiKey, saveApiKey, getApiKeyPath } = await import('./api-key.js');
-
-  log.info('Initializing teamai (HTTP read-only consumer)...');
-  const requestedAgents = normalizeAgentList(options.agent);
-  warnAboutUncheckedHttpAgentIds(requestedAgents);
-
-  // Step 6 below points the local agent at this endpoint; refuse a replacement
-  // now, before anything is written (resolving the scope may migrate a config),
-  // and only here: by Step 6 the local agent may read back the config this init saved.
-  const { assertNoLocalAgentReplacement, initLocalAgentHttp } = await import('./local-agent.js');
-  if (!options.force) {
-    await assertNoLocalAgentReplacement({ endpoint: url, token: options.token, filterAgents: requestedAgents });
-  }
-
-  // Step 0: scope (same rules as git init — default project)
-  let scope: Scope;
-  let projectRoot: string | undefined;
-  let explicit: boolean;
-  let fallbackReason: string | undefined;
-  let existingLocalConfig: LocalConfig | null;
-  try {
-    ({ scope, projectRoot, explicit, fallbackReason, existingLocalConfig } = await resolveInitContext(options.scope));
-  } catch (e) {
-    log.error((e as Error).message);
-    process.exit(1);
-    return;
-  }
-  let inheritUserScope: boolean | undefined;
-  try {
-    inheritUserScope = resolveInheritUserScope(
-      scope,
-      options.inheritUserScope,
-      existingLocalConfig?.inheritUserScope,
-    );
-  } catch (e) {
-    log.error((e as Error).message);
-    process.exit(1);
-    return;
-  }
-  if (fallbackReason) {
-    log.warn(fallbackReason);
-  }
-  const teamaiHome = scope === 'project' && projectRoot
-    ? (existingLocalConfig?.dataHome ?? await resolveProjectDataHome(projectRoot))
-    : getTeamaiHome(scope, projectRoot);
-  printScopeSummary(scope, projectRoot, explicit, path.join(teamaiHome, 'config.yaml'));
-
-  if (scope === 'project' && !(await isInsideGitRepo(process.cwd()))) {
-    log.warn(`cwd is not inside a git repository; will create ${teamaiHome}/`);
-  }
-
-  // Re-init guard
-  const existingConfigPath = path.join(teamaiHome, 'config.yaml');
-  if (await holdsInstallFor(scope, existingConfigPath) && !options.force) {
-    const confirmed = await askConfirmation(`teamai already initialized at ${existingConfigPath}. Overwrite? [y/N] `);
-    if (!confirmed) {
-      log.info('Aborted. Existing config is unchanged.');
-      return;
-    }
-  }
-  const replacedFile = existingLocalConfig && await readConfigFile(existingConfigPath);
-
-  // Step 1: API key. Persist --token when given (one command sets endpoint+key),
-  // otherwise fall back to TEAMAI_API_TOKEN / an existing ~/.teamai/apikey.
-  if (options.token && options.token.trim()) {
-    await saveApiKey(options.token.trim());
-    log.success(`API key saved to ${getApiKeyPath()}`);
-  }
-  const apiKey = resolveApiKey();
-  if (!apiKey) {
-    log.error('No API key found. Pass --token <key> to `teamai init --http`, or set TEAMAI_API_TOKEN.');
-    process.exit(1);
-  }
-
-  // Step 2: write a minimal local teamai.yaml stub (default toolPaths) to drive
-  // hook injection + the reporter. Skills/rules/CLAUDE.md are not cloned; they
-  // are delivered on each session via report/sync/ack (see Step 6).
-  const localPath = expandHome(path.join(teamaiHome, 'team-repo'));
-  await ensureDir(localPath);
-  const stubPath = path.join(localPath, 'teamai.yaml');
-  if (!(await pathExists(stubPath))) {
-    await writeFile(stubPath, YAML.stringify({ team: 'http-reporting', repo: url, sharing: {} }));
-  }
-  const teamConfig = await loadTeamConfig(localPath);
-  if (!teamConfig) {
-    log.error('Failed to write a valid teamai.yaml stub. Check filesystem permissions.');
-    process.exit(1);
-  }
-
-  // Step 4: save local config (kind: http; only the URL is stored, never the key)
-  const localConfig: LocalConfig = {
-    ...settingsReinitKeeps(replacedFile, url),
-    repo: { localPath, remote: url, kind: 'http', url },
-    username: 'http-consumer',
-    scope,
-    projectRoot,
-    additionalRoles: [],
-    ...(scope === 'project' ? { dataHome: teamaiHome } : {}),
-    ...(inheritUserScope !== undefined ? { inheritUserScope } : {}),
-  };
-  try {
-    Object.assign(localConfig, await promptForRoleProfile(localConfig.repo, localConfig.username, options.role));
-  } catch (error) {
-    // Two cases leave the role unset on purpose: a repo with no roles manifest,
-    // and a person who skipped the prompt. Anything else — a manifest that does
-    // not parse, an unknown `--role` — must not be swallowed: a role-less config
-    // matches every role when hooks are reconciled, so it would install exactly
-    // the hooks the manifest restricts.
-    const lenient = error instanceof RolesManifestNotFoundError || error instanceof NoRoleSelectedError;
-    if (!lenient) throw error;
-  }
-  // The team's assignment, if it has one (#1186). This config is handed to the
-  // hook, MCP and env reconciliation below before any load can overlay it, and
-  // a role-less config matches every role-scoped entry. Runtime-only: the save
-  // writes the member's own selection, which an assignment leaves empty.
-  await refreshRoleAssignment(localConfig);
-  Object.assign(localConfig, await resolveProjectsForInit(localPath, options.project));
-
-  // Persist --agent into enabledAgents (additive across runs)
-  if (requestedAgents.length > 0) {
-    const existing = await loadLocalConfigForScope(scope, projectRoot);
-    const prev = existing?.enabledAgents ?? [];
-    localConfig.enabledAgents = [...new Set([...prev, ...requestedAgents])];
-    localConfig.disabledAgents = (existing?.disabledAgents ?? []).filter((t) => !requestedAgents.includes(t));
-  }
-
-  // Carry the member's recorded tool roots across a re-init. `init` is
-  // re-runnable and CLAUDE_CONFIG_DIR / CODEX_HOME live in one shell profile, so a re-init
-  // from a shell that does not export it must not quietly send every later sync
-  // back to the default root. recordToolRoots then overwrites a tool's
-  // entry when its variable IS set.
-  // A project-scope config with no record of its own starts from the user-scope
-  // one: the root is a fact about this machine, and project hooks land in HOME.
-  const carriedToolRoots = existingLocalConfig?.toolRoots
-    ?? (scope === 'project' ? (await loadLocalConfigForScope('user'))?.toolRoots : undefined);
-  if (carriedToolRoots) localConfig.toolRoots = { ...carriedToolRoots };
-  recordToolRoots(localConfig);
-  for (const change of await recordToolHomes('init')) log.info(describeToolHomeChange(change));
-  await releasePreviousToolRoots(teamConfig, existingLocalConfig, localConfig);
-
-  await ensureDir(teamaiHome);
-  await settleModeSwitch(existingLocalConfig, localConfig, async () => {
-    if (scope === 'project') {
-      await saveLocalConfigForScope(localConfig, scope, projectRoot);
-    } else {
-      await ensureDir(getTeamaiHomeDir());
-      await saveLocalConfig(localConfig);
-    }
-  });
-  log.success(`Local config saved to ${teamaiHome}/config.yaml`);
-
-  // Invalidate cache so the next pull does a full sync.
-  try {
-    const state = await loadStateForScope(localConfig);
-    state.lastPullRev = null;
-    await saveStateForScope(state, localConfig);
-  } catch {
-    // state may not exist yet
-  }
-
-  // Step 4.5: seed a custom agent's configured root before hook injection —
-  // see the matching comment in the git-mode `init` path (#867).
-  try {
-    const { seedSelfModeToolDirs } = await import('./known-agents.js');
-    const seeded = await seedSelfModeToolDirs(localConfig, teamConfig);
-    if (seeded.length > 0) log.debug(`Seeded tool dirs for: ${seeded.join(', ')}`);
-  } catch (e) {
-    log.debug(`Tool-dir seeding skipped: ${(e as Error).message}`);
-  }
-
-  // Step 5: inject hooks (built-in dispatch incl. the reporter) via the same
-  // authoritative path the git init uses, so HTTP consumers behave identically.
-  const filterAgents = requestedAgents.length > 0 ? requestedAgents : undefined;
-  await runInitScript(localConfig, 'preInit', options.dryRun);
-  await reconcileHooksForInit(teamConfig, localConfig, filterAgents);
-
-  // Step 6: also initialize local-agent config so the new hook-dispatch --stdin
-  // path can deliver rules/claudemd (not just skills).
-  let localAgentFailed = false;
-  try {
-    await initLocalAgentHttp({ endpoint: url, token: options.token, force: options.force, filterAgents });
-  } catch (e) {
-    // Not debug: a refusal here (an access token with no single --agent) leaves
-    // the credentials this machine already has, so this init did not finish.
-    localAgentFailed = true;
-    process.exitCode = 1;
-    log.error(`Local agent init: ${(e as Error).message}`);
-  }
-
-  await runInitScript(localConfig, 'postInit', options.dryRun, true);
-
-  if (localAgentFailed) {
-    log.warn('teamai initialized (HTTP read-only) without the local agent: report/sync keeps the credentials this machine already had.');
-  } else {
-    log.success('teamai initialized (HTTP read-only)!');
-    log.info('Skills/rules will auto-sync on each session start in an enrolled workspace via report/sync. This team is read-only (no push).');
-  }
-  closePrompt();
 }
 
 /**
@@ -1758,8 +1512,6 @@ export async function init(options: GlobalOptions & {
   project?: string;
   agent?: string | string[];
   force?: boolean;
-  http?: string;
-  token?: string;
   inheritUserScope?: boolean;
   self?: boolean;
   provider?: string;
@@ -1767,16 +1519,10 @@ export async function init(options: GlobalOptions & {
   let forcedProvider: ProviderName | undefined;
   try {
     forcedProvider = resolveInitProvider(options.provider);
-    if (forcedProvider && options.http) {
-      throw new Error('--provider cannot be combined with --http: an HTTP team repo has no git provider.');
-    }
   } catch (e) {
     log.error((e as Error).message);
     process.exit(1);
     return;
-  }
-  if (options.http) {
-    return initHttp(options.http, options);
   }
   // Single-repo mode: `teamai init .` or `teamai init --self`. The current git
   // repo IS the team repo; knowledge lives on main under .teamai/, reports go to

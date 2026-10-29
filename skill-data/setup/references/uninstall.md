@@ -114,14 +114,13 @@ and give it your team repo URL."*
 - Project uninstall keeps the global Pi and Oh My Pi extensions, Hermes
   plugin and config, OpenCode's user plugin, Antigravity's `teamai` hook in
   `~/.gemini/config/hooks.json`, and the Codex family's user-level hooks, which the user
-  scope, the HTTP agent or another project may use, and names them. If none
+  scope or another project may use, and names them. If none
   does, run `teamai hooks remove` in the project first: it removes them.
   Targeted project Codex uninstall keeps project config and records its
   exclusion, even without local resources. Legacy project hook copies go.
   User-scope uninstall removes these global channels, the Hermes and Oh My
   Pi ones from every home and profile teamai wrote.
-  The retained adapters respect project exclusions, including cached HTTP
-  prompt injection and HTTP sync. An excluded tool does not download its
+  The retained adapters respect project exclusions. An excluded tool does not download its
   resources again on the next session start.
 - An enabled, installed Pi, Oh My Pi, Hermes or project Codex also keeps the
   project's shared state in use without a local tool directory. Uninstalling
@@ -134,34 +133,8 @@ and give it your team repo URL."*
   `hook.teamai-post-checkout`, `hook.teamai-post-merge` and `hook.teamai-post-rewrite` entries in the repo's git
   config and the `# >>> teamai git hook` block in `.git/hooks/post-checkout`,
   `post-merge` and `post-rewrite`. Other hooks stay; a script left with only its shebang is deleted.
-- In a project, uninstall also takes teamai's blocks out of `.git/info/exclude`
-  once it has deleted the files they hid: the `delivered` block, the
-  `delivered/<id>` block it keeps in another repository (a tool folder that is
-  a nested clone or submodule, a tool home kept in git), the HTTP local
-  agent's lines for this project (it keeps serving the other workspaces; a
-  user-scope uninstall removes its `local-agent` block in every exclude file it
-  recorded), and every other `# [teamai:…]` block in those files. A file the user creates later at one of
-  those paths is visible to git. Their own lines stay, and so does another
-  project's block in a shared repository. A read-only exclude file is left as
-  it is, and the warning lists the lines to delete by hand; the uninstall is
-  then incomplete (exit 1) and keeps its records, so rerunning it once the
-  file is writable removes the block. Copies in other
-  worktrees stay on disk and become visible there. `--agent <tool>` drops only
-  that tool's lines (`.agents/skills` too for Codex) from every worktree,
-  keeping a path another tool in use reads. `--dry-run` lists the blocks under
-  `Git exclude blocks (teamai's):`. An incomplete uninstall keeps the line of
-  every file still on disk until the retry. With no configuration found (a
-  machine set up only with `init --http`, uninstall run outside its projects),
-  uninstall removes `~/.teamai/` and the HTTP source, and first teamai's lines
-  from every exclude file its records name, but the line of a file it leaves on
-  disk (named), and the local agent's MCP servers in Claude's and CodeBuddy's
-  local scopes that are still as it wrote them (a changed copy stays, named).
-  If such a file does not parse, `~/.teamai/` and the records stay and it exits
-  1, naming the file: fix it and rerun. `teamai source remove-http` leaves
-  those servers but keeps their records, for this uninstall to remove. In a workspace with no project config, run uninstall there: it also reads that workspace's `.teamai/managed-local-mcp.json`, with or without user config. A failed removal keeps those records and exits 1; repair the named file and retry in the same workspace. It does not scan other unconfigured workspaces. The local agent's skills and rules go only as far as they are
-  still what it installed: a file the user added inside a skill, an edited
-  copy, and a tracked file stay, named. If another pull or push holds the
-  project's sync lock, uninstall changes nothing and exits 1: run it again.
+- In a project, uninstall removes delivered Git exclusion blocks only after removing their owned files. User lines and other projects' blocks stay. A failed removal keeps its ownership records and exclusion lines for a retry. `--agent <tool>` removes only that tool's owned resources.
+- Legacy HTTP delivery no longer runs. Its remaining copies and exclusion records are preserved when ownership cannot be proven. Uninstall does not silently delete those files or expose possible credentials. Review the named files before removing them manually.
 - A `credentials` line stays, with a warning, while the models file it names
   still holds an API key in any checkout of that repository. MCP lines
   (the `# [teamai:mcp-exclude:start]` block) go only for MCP configs it proves

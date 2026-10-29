@@ -1,16 +1,5 @@
-/**
- * The environment contract between teamai launching an AI tool for a
- * workflow step and that tool's session-start hook (#1176). The step records
- * the team revision its checkout holds, so the hook must not pull a new one
- * into it while the step runs.
- *
- * Every process the tool starts inherits these variables, so the launch is
- * bound to the checkout it ran in: a nested session elsewhere pulls as before.
- * The hook's background pass reads the launch from its payload, never from its
- * own environment, which a detached child does not inherit on Windows.
- */
+/** Run-mode and launcher attribution shared by AI calls, session capture and human-review guards. */
 import { z } from 'zod';
-import type { LocalConfig } from './types.js';
 import { envFlag } from './utils/prompt.js';
 
 /**
@@ -21,7 +10,7 @@ export const RUN_MODES = ['attended', 'unattended'] as const;
 export type RunMode = typeof RUN_MODES[number];
 export const RunModeSchema = z.enum(RUN_MODES);
 
-/** The variable that names the run mode, and that every process of a workflow attempt inherits it in. */
+/** The variable that names the run mode inherited by child processes. */
 export const RUN_MODE_ENV = 'TEAMAI_MODE';
 
 let warnedRunMode = false;
@@ -63,20 +52,13 @@ export function resolveRunMode(env: NodeJS.ProcessEnv): RunMode {
   return explained.mode;
 }
 
-/**
- * The variable a skill driver's runner is started with, and passes to the command it runs: `<run>/<attempt>`. A
- * `workflow report` call that carries the marker of the attempt it reports is that attempt's runner.
- */
+/** Legacy marker retained only to read session attribution and refuse automated human confirmation. */
 export const ATTEMPT_ENV = 'TEAMAI_WORKFLOW_ATTEMPT';
 
-/** The variable that names who launched a tool's session: `workflow` for a step, `scorer` for a judge, or the {@link LaunchedBy} caller of one of teamai's own AI calls. */
+/** The variable that names the internal caller that launched a tool session. */
 export const LAUNCHED_BY_ENV = 'TEAMAI_LAUNCHED_BY';
 
-/**
- * Who launched the session `vars` (an environment, or a launch a payload forwarded) runs in: `TEAMAI_LAUNCHED_BY`, else
- * `workflow` under a skill driver's attempt marker, which sets no `TEAMAI_LAUNCHED_BY`. Undefined for the member's own
- * session. A child session a host starts for a skill-driven run carries neither, so it counts as the member's.
- */
+/** Read current or legacy launcher attribution; this never starts or resumes a workflow. */
 export function launchedBy(vars: Readonly<Record<string, unknown>>): string | undefined {
   const by = vars[LAUNCHED_BY_ENV];
   if (typeof by === 'string' && by) return by;
@@ -103,53 +85,6 @@ export function readSessionRun(payload: Readonly<Record<string, unknown>>): Sess
   return parsed.success ? parsed.data : undefined;
 }
 
-/**
- * Who in teamai launched a tool's session, as `TEAMAI_LAUNCHED_BY` carries it: a workflow step, a scorer judge, or the
- * module whose AI call started it.
- */
+/** Internal AI callers that may launch a new session. */
 export type LaunchedBy =
-  | 'workflow' | 'scorer'
   | 'codebase' | 'deep-enrich' | 'enrich-with-ai' | 'import-local' | 'iwiki-dual' | 'import-mr' | 'recall-promote' | 'quality-update' | 'votes-judge';
-
-/** A tool launched by a workflow step, in the checkout whose pull record has key `checkout`. */
-export type Launch = { by: 'workflow'; tool: string; checkout: string };
-
-/** The hook payload field the foreground dispatcher forwards the launch in. */
-export const LAUNCH_PAYLOAD_KEY = 'teamai_launch';
-
-const TOOL = 'TEAMAI_LAUNCHED_TOOL';
-const CHECKOUT = 'TEAMAI_LAUNCHED_CHECKOUT';
-
-export function launchEnv(launch: Launch): Record<string, string> {
-  return { [LAUNCHED_BY_ENV]: launch.by, [TOOL]: launch.tool, [CHECKOUT]: launch.checkout };
-}
-
-/** The launch `vars` (an environment or a forwarded payload value) carry, unless one of its variables is missing. */
-export function readLaunch(vars: unknown): Launch | undefined {
-  if (!vars || typeof vars !== 'object') return undefined;
-  const values = vars as Record<string, unknown>;
-  const tool = values[TOOL];
-  const checkout = values[CHECKOUT];
-  if (launchedBy(values) !== 'workflow' || typeof tool !== 'string' || !tool || typeof checkout !== 'string' || !checkout) return undefined;
-  return { by: 'workflow', tool, checkout };
-}
-
-/** The launch of `tool` for a step in the checkout `config`'s pulls deliver into; undefined when the scope has none. */
-export async function workflowLaunch(config: LocalConfig, tool: string): Promise<Launch | undefined> {
-  const { checkoutRecordKey } = await import('./pull.js');
-  const checkout = await checkoutRecordKey(config);
-  return checkout ? { by: 'workflow', tool, checkout } : undefined;
-}
-
-/**
- * Whether a session `launch` started may leave the checkout as delivered: `config`'s checkout is the one the tool was
- * launched in, and its record holds one complete team delivery for that tool. That holds for any tool the launched one
- * starts there, so its pull cannot move the step's files; one the checkout was not delivered to gets its first delivery
- * at its next session outside the step. Anything else pulls, root seeding included, so a new worktree or a newly
- * enabled tool still gets the team's assets.
- */
-export async function launchHoldsCheckout(config: LocalConfig, launch: Launch): Promise<boolean> {
-  const { teamDelivery } = await import('./pull.js');
-  const delivery = await teamDelivery(config, launch.tool);
-  return delivery.complete && delivery.key === launch.checkout;
-}

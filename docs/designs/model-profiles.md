@@ -1,6 +1,6 @@
 # Model profile management
 
-> Status: **implemented**. See the [Usage Guide](../guide/reference.md#model-profiles) for how to use `teamai models`.
+> Status: Retired. The feature described here has been removed; this document is historical design context.
 
 ## Goals and boundaries
 

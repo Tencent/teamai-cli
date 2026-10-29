@@ -2,7 +2,7 @@ import path from 'node:path';
 import { updateFileLocked } from './git-exclude.js';
 import { getDataHome, type GlobalOptions, type LocalConfig } from './types.js';
 import { pathExists, readFileSafe } from './utils/fs.js';
-import { getUserHome } from './utils/home.js';
+
 import { log } from './utils/logger.js';
 import { warnOnce } from './utils/warn-once.js';
 
@@ -40,11 +40,6 @@ const NOTICES_FILE = 'git-exclude-notices.json';
  * key in a state home's file. `label` names the run a failure came from.
  */
 export type GitExcludeNoticesHome = LocalConfig | { stateHome: string; owner: string; label: string };
-
-/** The local agent's record, beside its `git-exclude.json`. */
-export function localAgentGitExcludeNotices(): GitExcludeNoticesHome {
-  return { stateHome: path.join(getUserHome(), '.teamai', 'local-agent'), owner: 'local-agent', label: 'A local agent sync' };
-}
 
 function locate(home: GitExcludeNoticesHome): { file: string; owner: string | null; label: string } {
   return 'stateHome' in home

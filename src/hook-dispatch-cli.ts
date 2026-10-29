@@ -420,9 +420,9 @@ export async function hookDispatchCli(
   matcher: string,
   options: { bgOnly?: boolean; copilotGlobal?: string; stdinFile?: string; hookArgs?: string[] } = {},
 ): Promise<void> {
-  // A session teamai launched for itself, a judge or an AI call, is not the member's: only a workflow step's runs hooks.
+  // A session teamai launched for an internal AI call is not the member's session.
   const launcher = launchedBy(process.env);
-  if (launcher && launcher !== 'workflow') return;
+  if (launcher) return;
   const { bgOnly = false, stdinFile } = options;
   setStderrOnly(true);
   if (claudeHookRunsInAnotherHost(tool, process.env, false)) {
@@ -553,12 +553,6 @@ export async function hookDispatchCli(
       if (typeof stdin.session_id !== 'string' || !stdin.session_id) {
         stdin.session_id = deriveDispatchSessionId(stdin, tool);
       }
-      // The background pass reads a workflow launch from the payload, never from its own environment, which a child
-      // started through WMI does not inherit. Only this process's environment can set it (#1176).
-      const { LAUNCH_PAYLOAD_KEY, launchEnv, readLaunch } = await import('./launch-context.js');
-      const launch = readLaunch(process.env);
-      if (launch) stdin[LAUNCH_PAYLOAD_KEY] = launchEnv(launch);
-      else delete stdin[LAUNCH_PAYLOAD_KEY];
       settling = spawnBackground(event, tool, matcher, JSON.stringify(stdin), cwd);
     }
 

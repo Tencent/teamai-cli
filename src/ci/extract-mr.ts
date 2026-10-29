@@ -1,3 +1,4 @@
+import { asKnowledge } from '../documents/okf.js';
 // -*- coding: utf-8 -*-
 /**
  * CI MR knowledge extraction orchestration.
@@ -129,7 +130,7 @@ async function writeKnowledgeToRepo(
 
     if (!dryRun) {
       await fs.mkdir(learningsDir, { recursive: true });
-      await fs.writeFile(learningPath, learning.content, 'utf-8');
+      await fs.writeFile(learningPath, asKnowledge(learning.content, 'Learning'), 'utf-8');
     }
     log.success(`Learning written: learnings/${filename}`);
     changedFiles.push(`learnings/${filename}`);
@@ -223,7 +224,7 @@ async function writeArtifacts(
   await fs.mkdir(outputDir, { recursive: true });
 
   if (learning) {
-    await fs.writeFile(path.join(outputDir, 'learning.md'), learning.content, 'utf-8');
+    await fs.writeFile(path.join(outputDir, 'learning.md'), asKnowledge(learning.content, 'Learning'), 'utf-8');
   }
 
   if (suggestions && suggestions.length > 0) {

@@ -67,57 +67,7 @@ This is the #1 onboarding issue. In order:
    local setup.
    In workspace scope, `teamai hooks remove` preserves other projects' gated team
    hooks in HOME, while removing the shared built-in hooks.
-   If `source remove-http` reports incomplete hook removal, the HTTP source is
-   disabled and the failed hooks stay on record. Fix the settings file it names,
-   then repeat `source remove-http` to finish removing them.
-   If removal cannot acquire the HTTP source lock, it leaves the source intact.
-   Wait for sync or plugin reconciliation to finish, check directory permissions,
-   then retry removal.
-   If you initialized workspace scope but expected machine-wide resources, re-run
-   with `--scope user`.
-5. **Tool has no hook surface** (e.g. Gemini CLI, JoyCode): there is no auto-sync;
-   run `teamai pull` manually each time.
-6. **Claude Code or Codex reads a different directory** (`CLAUDE_CONFIG_DIR` or
-   `CODEX_HOME` is set). `teamai doctor` reports `Claude Code root matches
-   CLAUDE_CONFIG_DIR` / `Codex root matches CODEX_HOME` when the directory the
-   variable names is not the one this config syncs to. Re-run
-   `teamai init` from a shell that has the variable exported; it records the root
-   and moves the install. If the check says the value cannot be synced to (outside
-   your home, or neither a plain directory in it nor one under `.config/`), fix the
-   variable first. `<tool> home matches <variable>` (`XDG_CONFIG_HOME`,
-   `HERMES_HOME`, `COPILOT_HOME`, ...) is the same check for the homes recorded in
-   `~/.teamai/tool-homes.json`, and `<tool> home exists` fails when a recorded home
-   is gone; re-run `teamai init` from the shell with the variable you want.
-6. **A command reports a broken manifest** (`Invalid roles manifest…`,
-   `Invalid projects manifest…`, `Invalid manifests…`, or `…manifest … could not
-   be read`). `pull` skips that scope on purpose, since syncing without the
-   manifest would deliver every namespace it gates; `push` stops before pushing
-   anything, even with `--role`; `status` lists the other resource types. The fix
-   belongs in the team repo's `manifest/roles.yaml` or `manifest/projects.yaml`,
-   which the error names by entry — tell the user to ask a team admin. Do not
-   delete the manifest or edit the local clone to get past it.
-   `recall` still searches learnings and warns once (`Recall indexed learnings
-   only…` or `Recall indexed the shared learnings only…`): what it names is
-   missing from results until the manifest is fixed and `teamai pull` rebuilds
-   the index, so do not report that the team has none of it. If recall also says
-   `Recall skips the older index at <path>…`, the smaller index could not be
-   written and that scope was not searched at all: resolve the error it names
-   (for example a read-only file or a full disk), then fix the manifest and pull.
-7. **`pull` says `Nothing was synced: <file>: <reason>`.** The project's teamai
-   config exists but cannot be read, so no scope syncs there, not even the user
-   scope, and the session-start hook syncs nothing either. Show the user the
-   file and the reason; `teamai doctor` checks another config and can pass
-   here. Moving it aside and re-running `teamai init` replaces their settings
-   for that project: do it only with their consent.
-   `recall` refuses the same way with `Nothing was searched: <file>: <reason>`:
-   no team knowledge was searched, so do not report that the team has none.
-8. **`pull` says `<file> is not a tool-homes record (<reason>)`.** The file
-   where teamai records moved tool homes, `~/.teamai/tool-homes.json`, cannot
-   be read, so pull syncs nothing in any scope. Hook-run pulls stop the same
-   way and write the line only to `~/.teamai/debug.log`; `teamai doctor`
-   reports it as `tool homes record is readable`. Fix the entry the reason
-   names (each home must be an absolute directory), or delete the file and
-   re-run `teamai init` from a shell your tools run in.
+
 
 ## Path names appear in skill usage statistics
 
@@ -202,7 +152,7 @@ ever committed with it; then `teamai pull`. Do not run `git rm` or commit for
 them. For an exclude file that is not writable, one another teamai command
 held, or a git error, relay the fix the line gives.
 
-For new HTTP local-agent MCP installs, a failed initial ownership-manifest write leaves the MCP config and Git exclusions unchanged. Retry the install after fixing the manifest write error. A bare Copilot entry beside `mcpServers` is removed only with a matching ownership record proving a completed bare write. Older records without that evidence preserve the bare entry. A bare ownership record cannot claim a same-named member entry under `mcpServers`: updates skip the collision, and removal leaves that keyed entry alone. An unmarked Copilot record needs a matching keyed hash that does not also match the bare entry. Completed writes record `bare: true` or `bare: false`; missing placement remains unproven, including after a failed placement-record write. Existing JSON MCP updates keep the old ownership until the config write completes; a later manifest failure restores the config. `uninstall_mcp` keeps ownership if reading or writing the config fails, and restores the entry if removing its manifest record fails. MCP reconcile also restores all configs written before an ownership-save failure. If restoration fails too, repair the named configs and ownership records before retrying; the error reports both failures, and configs still carrying credentials stay excluded from Git.
+Legacy HTTP delivery no longer runs. Keep exclusion lines for old MCP and model files while they may contain credentials. Current MCP reconcile restores configurations when saving ownership fails; if restoration also fails, repair the named files and records before retrying.
 
 ## "Workspace child <path> is left out" / "<item> differs between ..."
 

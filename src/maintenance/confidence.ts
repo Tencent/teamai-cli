@@ -1,7 +1,7 @@
+import { readDocument, writeDocument } from '../documents/okf.js';
 // -*- coding: utf-8 -*-
 import path from 'node:path';
 
-import matter from 'gray-matter';
 
 import { ensureDir, readFileSafe, writeFile, listFiles } from '../utils/fs.js';
 import { isInWriteRoot, listLearningFiles } from '../utils/learnings-roots.js';
@@ -116,13 +116,13 @@ export async function writeBackConfidence(
     if (!content) continue;
 
     try {
-      const { data, content: body } = matter(content);
+      const document = readDocument(content);
+      const data = document.data;
       const existingConf = typeof data.confidence === 'number' ? data.confidence : undefined;
 
       if (existingConf !== undefined && Math.abs(existingConf - newConf) <= 0.05) continue;
 
-      data.confidence = newConf;
-      const newContent = matter.stringify(body, data);
+      const newContent = writeDocument(document, { ...data, confidence: newConf });
       // An inherited learning lives in a root nothing pushes, so rewriting it
       // there would be discarded by the next realign and never reach the team.
       // The new version goes to the write root instead, where it takes

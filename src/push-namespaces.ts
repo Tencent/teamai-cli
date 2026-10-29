@@ -28,13 +28,11 @@ export type PlaceableType =
   | 'env'
   | 'hooks'
   | 'mcp'
-  | 'models'
   | 'claudemd'
   | 'learnings'
   | 'wiki'
-  | 'workflows'
   | 'prompts'
-  | 'scorers';
+  ;
 
 export const PLACEABLE_TYPES: readonly PlaceableType[] = [
   'skills',
@@ -44,13 +42,10 @@ export const PLACEABLE_TYPES: readonly PlaceableType[] = [
   'env',
   'hooks',
   'mcp',
-  'models',
   'claudemd',
   'learnings',
   'wiki',
-  'workflows',
   'prompts',
-  'scorers',
 ];
 
 export function isPlaceableType(type: ResourceType | string): type is PlaceableType {
@@ -71,13 +66,10 @@ export const NAMESPACE_AXIS = {
   env: 'env',
   hooks: 'hooks',
   mcp: 'mcp',
-  models: 'models',
   claudemd: 'knowledge',
   learnings: 'learnings',
   wiki: 'wiki',
-  workflows: 'workflows',
   prompts: 'prompts',
-  scorers: 'scorers',
 } as const satisfies Record<PlaceableType, AllProjectResourceType>;
 
 /**

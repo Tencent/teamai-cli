@@ -1,7 +1,6 @@
 import path from 'node:path';
 import YAML from 'yaml';
 import { autoDetectInit, loadStateForScope } from './config.js';
-import { listCachedWorkflows, resolveStart } from './workflow/cache.js';
 import { summarizeWorkspaceChildren } from './workspace-children.js';
 import { teamRefNotice } from './team-ref.js';
 import { getDefaultBranch, getHeadRev, getRepoStatus } from './utils/git.js';
@@ -27,7 +26,6 @@ import { resolveTeamHookEntries } from './resources/hooks.js';
 import { envEntryReader } from './resources/env.js';
 import { envListing } from './env-listing.js';
 import { resolveTeamEnv } from './env-resolution.js';
-import { cachedScorerNames, SCORING_FILE } from './scorers/cache.js';
 import {
   describeEntryFailure, describeOrigin, describeOrigins, reportUndeliveredEntryNotices, resolveEntriesFor,
   type EntryResolution, type EntryType,
@@ -137,10 +135,9 @@ export async function status(options: GlobalOptions): Promise<void> {
   count('mcp', await resolveEntriesFor(mcpEntryReader, localConfig));
 
   // Repo-backed types: count what's in the team repo tree.
-  for (const type of ['models', 'claudemd', 'learnings', 'wiki', 'workflows', 'prompts', 'scorers'] as const) {
+  for (const type of ['claudemd', 'learnings', 'wiki', 'prompts'] as const) {
     try {
-      counts[type] = (await getHandler(type).scanTeamForPull(teamConfig, localConfig))
-        .filter((item) => type !== 'scorers' || path.posix.basename(item.relativePath) !== SCORING_FILE).length;
+      counts[type] = (await getHandler(type).scanTeamForPull(teamConfig, localConfig)).length;
     } catch {
       counts[type] = 0;
     }
@@ -149,8 +146,6 @@ export async function status(options: GlobalOptions): Promise<void> {
   for (const type of RESOURCE_TYPES) {
     console.log(`  ${type}: ${counts[type] ?? 0}${origins[type] ?? ''}`);
   }
-  const scorers = await cachedScorerNames(localConfig);
-  console.log(`  scorers: ${scorers.length}${scorers.length > 0 ? ` (${scorers.join(', ')})` : ''}`);
 
   // Local pushable items
   console.log('');
@@ -420,12 +415,6 @@ async function printRepoSection(
   const handler = getAllHandlers().find((h) => h.type === t);
   if (!handler) return;
 
-  if (t === 'workflows') {
-    const files = await handler.scanTeamForPull(teamConfig, localConfig);
-    for (const line of await workflowSourceLines(localConfig, files, options)) console.log(line);
-    return;
-  }
-
   const items = await handler.scanTeamForPull(teamConfig, localConfig);
   if (items.length === 0) {
     console.log('  (none)');
@@ -444,25 +433,6 @@ async function printRepoSection(
       console.log(`    path: ${item.sourcePath}`);
     }
   }
-}
-
-/**
- * One line per workflow name, with what `workflow start` runs for it: `team` for a valid team version, in this scope or,
- * from a project, in the user scope, `default` for teamai's default, and `not runnable` for a team file with neither.
- */
-async function workflowSourceLines(
-  localConfig: Awaited<ReturnType<typeof autoDetectInit>>['localConfig'],
-  files: ReadonlyArray<{ name: string; sourcePath: string }>,
-  options: ListOptions,
-): Promise<string[]> {
-  const paths = new Map(files.map((file) => [file.name.replace(/\.yaml$/, ''), file.sourcePath]));
-  const names = [...new Set([...paths.keys(), ...(await listCachedWorkflows(localConfig)).map(({ definition }) => definition.name)])].sort();
-  if (names.length === 0) return ['  (none)'];
-  const sources = await Promise.all(names.map(async (name) => (await resolveStart(localConfig, name)).workflow?.source ?? 'not runnable'));
-  return names.flatMap((name, index) => {
-    const sourcePath = paths.get(name);
-    return [`  ${name}  (${sources[index]})`, ...(options.verbose && sourcePath ? [`    path: ${sourcePath}`] : [])];
-  });
 }
 
 async function printLocalAgentsSection(

@@ -5,6 +5,8 @@ and is how other members discover the learning.
 
 ```markdown
 ---
+type: Learning
+sources: []
 title: "<short title naming the core problem or finding>"
 author: <username>
 date: <YYYY-MM-DD>
@@ -30,6 +32,8 @@ How did you solve it? What were the key steps?
 
 | Field | Required | Meaning | Example |
 |------|------|------|------|
+| type | yes | Producer-defined OKF type | Learning |
+| sources | no | Actual sources as resource objects; no invented verification | [{ resource: "src/retry.ts" }] |
 | title | yes | Short title (under 60 characters) | "Diagnosing K8s Pod OOM kills" |
 | author | yes | Contributor's username | jeffyxu |
 | date | yes | Date as YYYY-MM-DD | 2026-03-28 |

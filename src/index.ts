@@ -5,7 +5,6 @@ import { applyNonInteractiveGitEnv } from './utils/git-env.js';
 import { ensureBundledRuntimeOnPath } from './bundled-runtime.js';
 import type { GlobalOptions, LocalConfig } from './types.js';
 import type { MaintenancePaths } from './maintenance/paths.js';
-import type { ScoreOptions } from './score-commands.js';
 import { GLOBAL_OPTIONS } from './global-options.js';
 import { TEAMAI_HOOK_SUBCOMMANDS } from './hooks.js';
 import { dryRunRefusal } from './dry-run-guard.js';
@@ -170,10 +169,8 @@ program
   .description('Initialize teamai (configure Git provider, clone repo, register member)')
   .argument('[repo]', 'Team repo (owner/repo or full URL). Pass "." for single-repo mode (the current git repo is the team repo).')
   .option('--repo <repo>', 'Team repo (alias of the positional argument)')
-  .option('--http <url>', 'Git-free HTTP team repo (read-only consumer; only needs an API key)')
   .option('--provider <name>', 'Git provider for the team repo on this machine: tgit, github, cnb, gitlab, gitcode, or git. Skips auto-detection. `git` uses your existing Git auth and needs no platform token, but opens no PR/MR.')
   .option('--self', 'Single-repo mode: the current git repo is the team repo (equivalent to `teamai init .`). Knowledge lives on main under .teamai/; reports go to the teamai-reports orphan branch.')
-  .option('--token <key>', 'API key for HTTP team repo / status reporting (stored 0600, never committed). Also reads TEAMAI_API_TOKEN. With --http and a single --agent, an agent access token (sk-) is kept for that agent only, next to the other agents\' tokens (--force keeps them too); while that agent\'s current token still works it is kept and the new one is not used. Without --agent on a machine where one agent already holds a token, that agent takes it, or — keeping its working one — the new token serves the tools without a token of their own.')
   .option('--scope <scope>', 'Install scope: workspace (default, <cwd>/.teamai + <cwd>/.claude) or user (~/.teamai + ~/.claude); project is the older name for workspace')
   .option('--inherit-user-scope', 'In workspace scope, also sync safe user-scope resources, load its env variables (not its secrets) in the workspace, and search its knowledge')
   .option('--no-inherit-user-scope', 'Disable user-scope inheritance for this workspace')
@@ -200,7 +197,7 @@ program
     + 'When the team has manifest/roles.yaml or manifest/projects.yaml, a role or project there must declare it for each type it places. '
     + 'Without --role, --project or --shared, the namespaces of your role and active projects decide')
   .option('--project <id>', "Target a project: each new resource goes to that project's namespace for its own type "
-    + '— skills, knowledge for rules, agents, learnings, docs, env, hooks, mcp, models, and more (from manifest/projects.yaml)')
+    + '— skills, knowledge for rules, agents, learnings, docs, env, hooks, mcp, and more (from manifest/projects.yaml)')
   .option('--shared', 'Place new resources at the shared root for all roles; cannot combine with --role or --project')
   .option('--branch <name>', 'Push to this destination branch instead of a generated teamai/push branch')
   .option('--carried <path@blob>', 'Override the stop for a push that would overwrite or delete a placed agent file a teammate changed. '
@@ -246,7 +243,7 @@ program
 
 program
   .command('list [type]')
-  .description('List resources (skills|rules|docs|env|agents|hooks|mcp|workflows). For skills, --source local/all also scans installed AI agent skill directories. Workflows show their source: team, teamai\'s default, or not runnable.')
+  .description('List resources (skills|rules|docs|env|agents|hooks|mcp). For skills, --source local/all also scans installed AI agent skill directories.')
   .option('--source <src>', 'Where to look for skills: repo | local | all', 'all')
   .option('--agent <name>', 'Filter local agents by id (only applies to skills)')
   .option('--reveal', 'Show env values in plaintext (default: masked)')
@@ -491,7 +488,7 @@ projectsCmd
 projectsCmd
   .command('add <id>')
   .description('Add a project to manifest/projects.yaml, creating the file if needed (admin)')
-  .requiredOption('--namespaces <ns>', 'Comma-separated namespaces for knowledge, skills, learnings and agents (e.g. common,checkout); env, hooks, mcp, models, docs and wiki are declared by hand')
+  .requiredOption('--namespaces <ns>', 'Comma-separated namespaces for knowledge, skills, learnings and agents (e.g. common,checkout); env, hooks, mcp, docs and wiki are declared by hand')
   .option('--name <name>', 'Display name for the project')
   .option('-d, --description <desc>', 'Description for the project')
   .action(async (id: string, cmdOpts) => {
@@ -640,35 +637,6 @@ sourceCmd
   });
 
 sourceCmd
-  .command('add-http <endpoint>')
-  .description('Add an HTTP source (report/sync/ack) alongside a git main repo')
-  .option('--token <key>', 'API token for the HTTP endpoint (stored 0600, never committed)')
-  .option('--agent <name>', 'The AI tool this token is for (e.g. codebuddy, claude); hooks are injected into that tool only. An agent access token (sk-) works for one agent only, so each agent keeps its own; while that agent\'s current token still works it is kept and the new one is not used.')
-  .option('--force', 'Overwrite an existing HTTP source config')
-  .action(async (endpoint: string, cmdOpts) => {
-    const globalOpts = program.opts() as GlobalOptions;
-    const { sourceAddHttp } = await import('./source.js');
-    await sourceAddHttp(endpoint, { ...globalOpts, ...cmdOpts });
-  });
-
-sourceCmd
-  .command('remove-http')
-  .description('Remove the HTTP source and clean up its resources')
-  .action(async () => {
-    const globalOpts = program.opts() as GlobalOptions;
-    const { sourceRemoveHttp } = await import('./source.js');
-    await sourceRemoveHttp(globalOpts);
-  });
-
-sourceCmd
-  .command('reconcile-plugins', { hidden: true })
-  .description('Run plugin reconcile worker (called internally by session_start hook)')
-  .action(async () => {
-    const { runPluginReconcileWorker } = await import('./local-agent.js');
-    await runPluginReconcileWorker();
-  });
-
-sourceCmd
   .command('list')
   .description('List all configured sources')
   .action(async () => {
@@ -799,137 +767,6 @@ envCmd
     exitLike(await envExec(argv.slice(argv.indexOf('exec', argv.indexOf('env')) + 1), globalOpts));
   });
 
-const workflowCmd = program
-  .command('workflow')
-  .description('Run a validated workflow from workflows/<name>.yaml. Writable steps may set deliver: pr to open review requests; TeamAI never merges them.');
-
-workflowCmd
-  .command('start <name>')
-  .description('Create a run. With --driver skill, the current coding session drives it; with --driver local, this process runs it headless, and in unattended mode (TEAMAI_MODE=unattended or CI) runs teamai score --drain once the run settles, before it exits, unless sessions.publish and session scoring are both off for unattended.')
-  .option('--describe', 'Show workflow metadata and required input schemas without creating a run. With --driver skill, also say how to start it: the start command, a question for the person, or the local driver.')
-  .option('--driver <kind>', 'Select skill for the current coding session, which then runs the commands each reply prints, or local for headless execution in this process.')
-  .option('--parallel <n>', 'With --driver skill: the most steps that run at once, as the describe reply offered')
-  .option('--confirmed', 'The person agreed to start this run, as the describe reply asked. From an agent session, an invoke: ask workflow starts only with it, with any driver; teamai takes the agent\'s word for it. In an unattended run (TEAMAI_MODE=unattended or CI) an agent cannot start an invoke: ask workflow, with or without it')
-  .option('--hitl <mode>', 'With --driver skill: who answers optional approvals and choices, as the describe reply offered: person (the agent asks the person; refused in an unattended run) or recommend (the agent answers). A required approval always goes to the person')
-  .option('--no-judge', 'With --driver skill: leave the scored steps unjudged on this machine, as the describe reply offered')
-  .option('--tools <list>', 'Override local prompt tools for this run, as comma-separated name=tool pairs. With --driver skill: only default=<tool>, the tool this coding session works in, which judges its scored steps and which its steps\' models resolve for when teamai installs agents for it. Pass it when the describe reply says the session names no tool')
-  .option('--auto-approve', 'Answer optional approve HITL requests yes and choose requests with their default: with --driver local in this process, with --driver skill for this run. A required approval still goes to the person')
-  .option('--inputs <json>', 'Values for the inputs the workflow declares, as a JSON object, for example {"issue":42}. Every declared input is required.')
-  .action(async (name: string, cmdOpts: { driver?: string; tools?: string; inputs?: string; autoApprove?: boolean; describe?: boolean; parallel?: string; confirmed?: boolean; hitl?: string; judge?: boolean }) => {
-    const { workflowStart } = await import('./workflow-commands.js');
-    await workflowStart(name, cmdOpts);
-  });
-
-workflowCmd
-  .command('next <run>')
-  .description('Get a lease, hitl, wait, or done JSON envelope. Show hitl.message and hitl.respond to a person, who replaces <option> with a choice.')
-  .option('--prepare', 'Prepare the leased workspace in its original checkout; report commits and pushes it automatically')
-  .option('--attempt <attempt>', 'With --prepare: prepare this attempt, which an earlier next leased this driver, instead of taking a new lease. wrong_attempt when the run no longer leases it to the driver. With --driver skill: the attempt of a place action, with --adopt')
-  .option('--adopt <dir>', 'With --prepare --attempt: prepare the attempt in <dir>, a place the host made: a clean worktree of this repository on the lease\'s workspace branch, or detached at its start. A place that does not fit answers adopt_mismatch and leaves the attempt leased. TeamAI never removes an adopted place. With --driver skill --attempt: adopt <dir> as the place action of that attempt asked, as its adopt prints it')
-  .option('--json <payload>', 'Driver identity, for example {"driver":{"kind":"local","machine":"host","workspace":"/work"}}. Optional: running, the attempt ids of its open leases the driver still runs (an open lease left out is handed back), canTakeLease, false to poll while a tool runs without taking a new lease, and driver.can, what the driver can do on this request: hitl (a person can answer HITL requests and work interactively), workspace, env (true, or "commands" when the driver scopes team env for command steps and setup only), setup, tokens, max_turns, network, isolation. An omitted key is not offered, so a step that needs it waits, and wait.held names what it lacks. Send driver.can on every next request, including busy polls. claim, true to take a run another install published from teamai-reports before leasing; a run this install owns stays as it is. Every answer lists in cancelled the running attempts whose tools the driver must stop.')
-  .option('--driver <kind>', 'skill: advance a run the current coding session drives, and print its turn: the actions to carry out and the command to run next')
-  .option('--wait', 'With --driver skill: wait until the run has something to show, up to 100 s. Run it in the background.')
-  .option('--takeover', 'With --driver skill: drive the run from this coding session instead of the one that drives it. Run it only when the person agrees, after an orchestrator_active answer')
-  .option('--confirmed', 'With --driver skill --takeover: the person agreed to take this run over, as the confirm_needed answer asked. From an agent session, a run of an invoke: ask workflow is taken over only with it; teamai takes the agent\'s word for it. In an unattended run (TEAMAI_MODE=unattended or CI) an agent cannot take over a run of an invoke: ask workflow, with or without it')
-  .option('--choice <id>', 'With --driver skill: answer the host question with the id of one of its options, as its run prints it')
-  .option('--ack <offer>', 'With --driver skill: acknowledge that the child of a dispatch started, as its ack prints it, so later turns stop offering it')
-  .action(async (run: string, cmdOpts: { json?: string; prepare?: boolean; attempt?: string; adopt?: string; driver?: string; wait?: boolean; takeover?: boolean; confirmed?: boolean; choice?: string; ack?: string }) => {
-    const { workflowNext } = await import('./workflow-commands.js');
-    await workflowNext(run, cmdOpts);
-  });
-
-workflowCmd
-  .command('report <run>')
-  .description('Report the outcome of a leased step. Prints a JSON envelope.')
-  .option('--json <payload>', 'attempt, revision, outcome (success, failed, or released), and driver')
-  .option('--driver <kind>', 'skill: report an attempt of a run the current coding session drives, as its turn printed the command')
-  .option('--attempt <id>', 'With --driver skill: the attempt to report')
-  .option('--model-unavailable', 'With --driver skill and --attempt: the host cannot run the model the dispatch names, so the step fails model_unavailable')
-  .action(async (run: string, cmdOpts: { json?: string; driver?: string; attempt?: string; modelUnavailable?: boolean }) => {
-    const { workflowReport } = await import('./workflow-commands.js');
-    await workflowReport(run, cmdOpts);
-  });
-
-workflowCmd
-  .command('respond <run> <step> <choice>')
-  .description('Answer a waiting approve (yes/no) or choose HITL request. A required HITL request accepts only the person\'s answer: from their own terminal, or declared by a driver UI, sent from outside an agent session. Prints one JSON envelope.')
-  .option('--json <payload>', 'Driver identity {"driver":{"kind":"ide","machine":"host","workspace":"/work"}} declares an answer a person gave in the driver UI, never one its agent chose. Records channel driver; sent from inside an agent session it records agent true, which a required HITL request refuses.')
-  .option('--driver <kind>', 'skill: answer an optional gate of a run the current coding session drives, as its choose action prints it, and print the turn. Records the agent\'s answer, which a required HITL request refuses')
-  .option('--note <text>', 'Keep a note with the answer, readable as steps.<id>.note')
-  .option('--pass <n>', 'Answer only this positive pass number; rejects an answered or replaced HITL request')
-  .action(async (run: string, step: string, choice: string, options: { note?: string; pass?: string; json?: string; driver?: string }) => {
-    const { workflowRespond } = await import('./workflow-commands.js');
-    await workflowRespond(run, step, choice, options);
-  });
-
-workflowCmd
-  .command('retry <run> <step>')
-  .description('Retry a leased or stopped step, or a HITL request to answer it again, with a new pass and revision. A failed pull request delivery is retried in the same pass, without running the step again. Reopen its dependent steps and a settled run; keep earlier passes. After reopening, run resume or let your driver poll next. Prints one JSON envelope.')
-  .action(async (run: string, step: string) => {
-    const { workflowRetry } = await import('./workflow-commands.js');
-    await workflowRetry(run, step);
-  });
-
-workflowCmd
-  .command('resume [run]')
-  .description("Continue a run with the local driver after retry, respond, or a stopped driver (Ctrl-C or closed terminal). Uses this machine's open local lease workspace, then the latest local driver's workspace on this machine, then cwd. Another live local driver returns driver_running. A settled run returns done. A run this machine does not have is taken from teamai-reports, where workflow publish put it; a published run continues only while this install owns it, else not_owner names the owner. With --driver skill, the current coding session continues the run instead, as after a skill start, and the reply is its first turn. In unattended mode, the local driver runs teamai score --drain once the run settles, as start does. Without a run id, fetches teamai-reports as pull does and lists the runs this checkout can resume: the runs teamai-reports offers for its business repository (origin), each with what holds it back, and this machine's running runs, each with the command to resume it.")
-  .option('--next', 'Instead of a run id: take the oldest run teamai-reports offers for this checkout\'s business repository (origin) that nothing refuses this caller, claim it, and drive it as resume <run> does; a workflow publish offers a running run until someone claims it. When nobody here would answer (an unattended run, TEAMAI_MODE=unattended or CI, or the local driver with no terminal) it skips a run whose steps left need a person: a required approval, an interactive step, or a choice with no default. It skips a run whose steps left require env with no value here and, with the local driver, one whose prompt steps left have no tool to run on here: none configured, or not on PATH; resume without --next lists each as cannot run here, with what gives it, and --next says on stderr why it left each run. With --driver skill it also skips a run that needs the local driver. Prints {"data":{"idle":{"offered":N}}} when it takes none, N being the offered runs it left')
-  .option('--driver <kind>', 'local, the default, to drive the run in this process, or skill for the current coding session, which then runs the commands each reply prints. An agent runs it only when the person agrees')
-  .option('--parallel <n>', 'With --driver skill: the most steps that run at once; 1 when left out')
-  .option('--hitl <mode>', 'With --driver skill: who answers optional approvals and choices: person (the agent asks the person; the default, refused in an unattended run) or recommend (the agent answers). A required approval always goes to the person')
-  .option('--no-judge', 'With --driver skill: leave the scored steps unjudged on this machine')
-  .option('--tools <list>', 'Override local prompt tools for this run, as comma-separated name=tool pairs. With --driver skill: only default=<tool>, the tool this coding session works in, which judges its scored steps and which its steps\' models resolve for when teamai installs agents for it. Pass it when the describe reply says the session names no tool')
-  .option('--auto-approve', 'Answer optional approve HITL requests yes and choose requests with their default: with --driver local in this process, with --driver skill for this run. A required approval still goes to the person')
-  .option('--claim', 'Take the published run over from the install that owns it, replacing this machine\'s copy and releasing its leases')
-  .option('--confirmed', 'The person agreed to continue this run, as the confirm_needed answer asked. From an agent session, a run of an invoke: ask workflow continues only with it, with any driver; teamai takes the agent\'s word for it. In an unattended run (TEAMAI_MODE=unattended or CI) an agent cannot continue a run of an invoke: ask workflow, with or without it')
-  .action(async (run: string | undefined, options: { driver?: string; parallel?: string; hitl?: string; judge?: boolean; tools?: string; autoApprove?: boolean; claim?: boolean; confirmed?: boolean; next?: boolean }) => {
-    const { workflowResume } = await import('./workflow-commands.js');
-    await workflowResume(run, options);
-  });
-
-workflowCmd
-  .command('publish <run>')
-  .description("Publish a run's state to teamai-reports so another member or a runner can continue it with workflow resume. A running run published from a checkout of its business repository (origin) is also offered: the first workflow resume --next in a checkout of that repository claims it, and any claim, or the owner's own workflow resume, takes the offer away, so two runners never take one run. Publish once you stop driving the run. The first publish makes this install the run's owner; publishing an unchanged run writes nothing. Refuses a run with records not yet on teamai-reports, or with a value that looks like a secret. Prints one JSON envelope with offered, and listing the leases still in flight.")
-  .option('--sessions', "Also put the agent sessions that the run's unsettled steps continue (session: continue or session.from) in the team session archive, scrubbed, so whoever continues the run resumes them; listed in the envelope as sessions. Without it, those steps start new sessions on another machine")
-  .action(async (run: string, options: { sessions?: boolean }) => {
-    const { workflowPublish } = await import('./workflow-commands.js');
-    await workflowPublish(run, options);
-  });
-
-workflowCmd
-  .command('cancel <run> [step]')
-  .description('Cancel a whole run, or a pending, waiting, leased, running, or delivering step and its open descendants. Invalidates leases; drivers stop tools listed in next.cancelled. Prints one JSON envelope.')
-  .action(async (run: string, step?: string) => {
-    const { workflowCancel } = await import('./workflow-commands.js');
-    await workflowCancel(run, step);
-  });
-
-program
-  .command('score')
-  .description('Judge workflow passes with team scorers (scorers/<name>.md). Any driver takes judge work with --next, runs its own judge on the lease prompt with the lease evidence directory as its only readable root and settles it with --lease <ref> --submit, or judges it here with --lease <ref>. --run <id> --step <path> --scorer <name> judges a pass on demand. --scorer <name> [--session <id>] judges a finished agent session here: the one --session names, or, inside a session, the one its agent session variable names; it never guesses. --team-session <name> judges a session a member pushed instead. --label <value> labels the session by hand instead of judging it. With --json, it leases that session to the driver\'s own judge instead. workflow next never hands out judge work, and a driver never lists a judge ref in workflow next running. Prints one JSON envelope; --drain prints lines.')
-  .option('--next', 'Take judge work: workflow passes first, then finished sessions of each run mode whose scoring.sessions policy is auto (config.yaml, else scorers/scoring.yaml, which ~/.teamai/config.yaml can only make stricter; by default off attended, auto unattended). An attended session is finished 6 hours after its last activity, an unattended one once a score --drain reached it. A lease has ref, source (workflow or session), scorer, subject, evidence, prompt, answer.schema, expiresAt, the cwd to submit from and a submit command line; else idle with counts. A batch lease, for scorers of one pass that share a judge call, has scorers and batched: true instead of scorer. --json {"driver":{"kind":"t3","machine":"host","workspace":"/work","can":{"judge":{"isolation":"verified","access":"read","tools":["claude"]}}},"running":["<ref>"]}. isolation is verified or best-effort; access is what your judge can do, answer (no tools), read (reads the evidence) or full (any tool), default full, and its labels record it; tools in your order of preference. running lists the judge refs you still run, which renews them; a live workflow lease of yours left out is handed back, and a session lease left out lapses: a session is judged once. A lease lapses 30 minutes after it was taken or renewed. Optional: run, a run id, to take only that run\'s workflow passes and never a session, from any directory, since the run\'s scope is found by its id; canTakeLease, false to renew running and take nothing, not even a lease handed back.')
-  .option('--lease <ref>', 'The judge lease, as --next printed it (s<13 hex>/a<8 hex>). Without --submit, judge it here with the tool the lease names, in a confined profile, and settle it through the submit path: --json {"driver":{…same as --next…}}.')
-  .option('--submit', 'Settle --lease <ref> with the payload {"driver":{…same as --next…},"outcome":"success","answer":{"label":"<one of answer.schema>","reasoning":"…"},"judge":{"tool":"claude","model":"…","usage":{"inputTokens":0,"outputTokens":0}}}. For a batch lease, answer is {"<scorer>":{"label":"…","reasoning":"…"},…} with one entry per scorer. outcome is success, failed, or released. A label a scorer does not list is refused, the whole answer with it, and the lease stays open; teamai computes score and passed.')
-  .option('--json <payload>', 'The payload as a JSON string')
-  .option('--stdin', 'Read the payload from stdin')
-  .option('--run <id>', 'Judge a pass of this run on demand, whatever sampling says, with --step and --scorer; this also reopens judge work that failed or expired. Without --queue, judges it here with the local judge and prints the label.')
-  .option('--step <path>', 'With --run: the step path, such as review or check.review')
-  .option('--pass <n>', 'With --run: the pass to judge; default the step\'s latest succeeded pass')
-  .option('--session <id>', 'Judge this finished session of an agent tool on this machine, whatever sampling says, with --scorer. Prints the session\'s first prompt and directory first, then the label; the session and the judge\'s reasoning are never published. With --json {"driver":{…same as --next…}}, prints a lease for your own judge, as --next does, instead of judging here; several --scorer need --batch. The lease is taken whatever sampling, the six idle hours, scoring.sessions, the scorer\'s sessions, an earlier label or daily_limit say, and counts toward the day\'s daily_limit. Nothing is taken when a scorer asks for more isolation than can.judge offers (isolation_unmet), when none of its tools runs a scorer\'s model (judge_model_unavailable), or while a live lease holds the work (busy).')
-  .option('--source <platform>', 'With --session: the tool that holds it, as session migrate --source names it (claude-code, codex, opencode, …); needed unless the agent session variable names that session, or the captures its session-start hook wrote here name one platform for it')
-  .option('--team-session <name>', 'Judge a session a member pushed with session push instead of one on this machine, by the name session list prints for this directory\'s repository: read from teamai-reports, else from the archive the team kept on its default branch before, and redacted before a judge reads it. Run session pull first for the newest. Its label is about the session where it ran, so it pairs with that session\'s labels from the machine that ran it, and records no agent. Not with --session, --source or --json')
-  .option('--author <name>', 'With --team-session: who pushed it, when two members pushed a session with that name')
-  .option('--label <value>', 'Label the session by hand with this value of the one --scorer: no judge runs, score and passed come from the scorer, and no reasoning is kept. A value the scorer does not list fails and lists the ones it does. A hand label and a model label of a session are kept side by side, so rescoring with the model never replaces yours; the dashboard Scorers page shows how often the model judge agrees with hand labels. Not with a scorer file, --batch or --json')
-  .option('--scorer <name>', 'With --run: a scorer the run pinned or one teamai pull cached. With --session, or alone inside a session: a scorer teamai pull cached, or a scorer file to try before pushing it: a path with / or ending in .md. A file\'s label is never stored, so it takes no --push; the output adds the labels stored for its scorer (stored) and its verdict on the session\'s first prompt alone (control). Repeatable.', (value: string, previous: string[]) => previous.concat(value), [] as string[])
-  .option('--queue', 'With --run: leave the work to any driver\'s score --next instead of judging it here')
-  .option('--batch', 'With --run or --session: the scorers share one judge call when they resolve to the same tool and model')
-  .option('--push', 'Publish every pending label of this machine to scores/<member>/<YYYY-MM>.jsonl on teamai-reports, alone or after --session. Labels only: never the session, the prompt or the judge\'s reasoning. With usage reporting off, or when the push fails, they stay pending for the next --push.')
-  .option('--drain', 'What every unattended job runs before it ends, alone, in every scope this directory reaches: in unattended mode, finish each session captured unattended here; judge each pass and session a judge tool here can take, a failed judgment final and never retried; publish pending labels; where sessions.publish is auto for this run mode, archive, scrubbed, its finished sessions and the step sessions of its ended runs on teamai-reports; report usage to stats/<member>.yaml. Prints a line per kind of work and what it left for other drivers; exits 1 only when a judgment or a publish failed, and what stayed pending goes on the next --drain.')
-  .action(async (cmdOpts: ScoreOptions) => {
-    const { scoreCommand } = await import('./score-commands.js');
-    await scoreCommand(cmdOpts);
-  });
-
 // ─── Hooks commands ─────────────────────────────────────
 
 const hooksCmd = program
@@ -1035,77 +872,6 @@ webhookCmd
     await testWebhook(cmdOpts.url, { dryRun: globalOpts.dryRun });
   });
 
-// ─── Model profile commands ─────────────────────────────
-
-/** Model commands fail with one readable line instead of a stack trace. */
-async function runModelsCommand(run: (commands: typeof import('./models-cmd.js')) => Promise<void>): Promise<void> {
-  try {
-    await run(await import('./models-cmd.js'));
-  } catch (error) {
-    log.error((error as Error).message);
-    process.exitCode = 1;
-  }
-}
-
-const collectRepeatable = (val: string, acc: string[]) => acc.concat(val);
-
-const modelsCmd = program
-  .command('models')
-  .description('Share gateway model profiles and switch agents to them');
-
-modelsCmd
-  .command('list [profile]')
-  .description('Show team and personal model profiles, or one profile, and the agents using them')
-  .action((profile: string | undefined) => runModelsCommand((m) => m.modelsList(profile)));
-
-modelsCmd
-  .command('add <id>')
-  .description('Add a personal model profile stored only on this machine')
-  .option('--name <name>', 'Display name')
-  .option('--protocol <protocols>', 'Comma-separated: anthropic, openai-chat-completions, openai-responses, gemini')
-  .option('--base-url <url>', 'Gateway root URL (without /v1)')
-  .option('--model <ids>', 'Comma-separated model IDs; the first is the default')
-  .option('--from-env <name>', 'Read the API key from this environment variable')
-  .option('--api-key-stdin', 'Read the API key from stdin without placing it in shell history')
-  .action((id: string, cmdOpts) => runModelsCommand((m) => m.modelsAdd(id, cmdOpts)));
-
-modelsCmd
-  .command('configure <profile>')
-  .description('Set the API key of a profile, or edit a personal profile')
-  .option('--from-env <name>', 'Read the API key from this environment variable')
-  .option('--api-key-stdin', 'Read the API key from stdin without placing it in shell history')
-  .option('--name <name>', 'Personal profiles: new display name')
-  .option('--base-url <url>', 'Personal profiles: new gateway root URL')
-  .option('--protocol <protocols>', 'Personal profiles: serve models over these protocols too')
-  .option('--model <ids>', 'Personal profiles: add model IDs')
-  .action((profile: string, cmdOpts) => runModelsCommand((m) => m.modelsConfigure(profile, cmdOpts)));
-
-modelsCmd
-  .command('switch [profile]')
-  .description('Point agents at a model profile (every compatible agent by default); omit the profile to pick one')
-  .option('--agent <name>', 'Only switch this agent. Repeatable or comma-separated.', collectRepeatable, [] as string[])
-  .option('--model <id>', 'Default model to select (defaults to the first in the profile)')
-  .option('--dry-run', 'Show what would change without writing')
-  .action((profile: string | undefined, cmdOpts) => {
-    const globalOpts = program.opts() as GlobalOptions;
-    return runModelsCommand((m) => m.modelsSwitch(profile, { ...globalOpts, ...cmdOpts }));
-  });
-
-modelsCmd
-  .command('restore')
-  .description('Restore agent model settings captured before the first TeamAI switch')
-  .option('--agent <name>', 'Only restore this agent. Repeatable or comma-separated.', collectRepeatable, [] as string[])
-  .option('--dry-run', 'Show what would change without writing')
-  .action((cmdOpts) => {
-    const globalOpts = program.opts() as GlobalOptions;
-    return runModelsCommand((m) => m.modelsRestore({ ...globalOpts, ...cmdOpts }));
-  });
-
-modelsCmd
-  .command('remove <profile>')
-  .description('Remove a personal model profile without changing agent settings')
-  .action((profile: string) => runModelsCommand((m) => m.modelsRemove(profile)));
-
 // ─── Usage tracking commands ────────────────────────────
 
 program
@@ -1186,38 +952,6 @@ program
   .action(async () => {
     const { generateDigest } = await import('./digest.js');
     await generateDigest();
-  });
-
-// ─── Dashboard commands ─────────────────────────────────
-
-program
-  .command('dashboard')
-  .description('Start the AI coding session dashboard (Web UI)')
-  .option('-p, --port <port>', 'Port number', String(3721))
-  .action(async (cmdOpts) => {
-    const { startDashboard } = await import('./dashboard.js');
-    await startDashboard(Number(cmdOpts.port));
-  });
-
-program
-  .command('dashboard-report', { hidden: true })
-  
-  .description('Report session state to dashboard (called by hooks)')
-  .option('--stdin', 'Read hook data from STDIN')
-  .option('--tool <name>', 'Tool identifier (e.g. claude, claude-internal)')
-  .action(async (cmdOpts) => {
-    if (cmdOpts.stdin) {
-      const { dashboardReport } = await import('./dashboard-collector.js');
-      await dashboardReport(cmdOpts.tool);
-    }
-  });
-
-program
-  .command('score-sessions', { hidden: true })
-  .description('Judge this machine\'s finished sessions with the local judge (started by the session-start hook)')
-  .action(async () => {
-    const { scoreSessionsCommand } = await import('./score-sessions.js');
-    await scoreSessionsCommand();
   });
 
 program
@@ -1306,19 +1040,6 @@ program
     }
   });
 
-program
-  .command('bind-project')
-  .description('Enroll the current workspace in HTTP local-agent sync and bind it to a ClawPro project. A workspace where this never ran is left alone')
-  .option('--project-id <id>', 'Project ID from /projects/mine')
-  .option('--skip', 'Enroll the current workspace without a project (never prompt again)')
-  .action(async (cmdOpts) => {
-    const { bindCurrentProject } = await import('./local-agent.js');
-    await bindCurrentProject({
-      projectId: cmdOpts.projectId ? Number.parseInt(cmdOpts.projectId, 10) : undefined,
-      skip: !!cmdOpts.skip,
-    });
-  });
-
 // ─── Contribute commands ──────────────────────────────────
 
 program
@@ -1340,7 +1061,7 @@ program
   .option('--file <path>', 'Path to the contribution document')
   .option('--title <title>', 'Title for the contribution document')
   .option('--namespace <ns>', 'Write to an active learnings namespace, or to the shared root with "" (default: the only active namespace, or the shared root when none or several are active)')
-  .option('--session-id <id>', 'Session the learning came from (default: the agent\'s session, e.g. $CLAUDE_CODE_SESSION_ID). Recorded as `session` in the learning and counted as that session\'s outcome. Inside a workflow attempt, the learning is also recorded on the step')
+  .option('--session-id <id>', 'Session the learning came from (default: the agent\'s session, e.g. $CLAUDE_CODE_SESSION_ID). Recorded as `session` in the learning and counted as that session\'s outcome.')
   .option('--scope <scope>', 'Target scope: user or workspace')
   .action(async (cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;

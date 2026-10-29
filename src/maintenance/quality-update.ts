@@ -1,3 +1,4 @@
+import { asKnowledge, readDocument, writeDocument } from '../documents/okf.js';
 // -*- coding: utf-8 -*-
 import path from 'node:path';
 
@@ -211,7 +212,11 @@ Output ONLY the updated markdown file content (including frontmatter).`;
 
   try {
     const draft = (await callTool(prompt, { launchedBy: 'quality-update' })).text;
-    return draft.trim();
+    if (staleEntry.type !== 'docs' && staleEntry.type !== 'learnings') return draft.trim();
+    const parsed = readDocument(draft.trim());
+    const original = readDocument(currentContent);
+    const merged = writeDocument(parsed, { ...original.data, ...parsed.data });
+    return asKnowledge(merged, staleEntry.type === 'docs' ? 'Reference' : 'Learning');
   } catch (e) {
     if (isOverrideInvalid(e)) throw e;
     log.error(`AI update generation failed: ${(e as Error).message}`);

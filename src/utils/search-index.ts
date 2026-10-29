@@ -1,8 +1,8 @@
+import { readDocument } from '../documents/okf.js';
 import path from 'node:path';
 import { readFile, readdir, rm, stat } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import type { Dirent } from 'node:fs';
-import matter from 'gray-matter';
 import { expandHome, readFileSafe, readJson, writeJsonAtomic, listFiles, pathExists, isIgnored } from './fs.js';
 import { tokenize, wordSegments, MAX_TOKENIZE_CHARS } from './tokenizer.js';
 import { log } from './logger.js';
@@ -302,7 +302,11 @@ export function parseLearningDoc(
   let data: Record<string, unknown>;
   let body: string;
   try {
-    ({ data, content: body } = matter(content));
+    const document = readDocument(content, filename);
+    if (document.diagnostics.some((entry) => entry.code === 'OKF_YAML')) throw new Error('Invalid YAML');
+    if (document.diagnostics.length) log.debug(`${filename}: ${document.diagnostics.map((entry) => entry.code).join(', ')}`);
+    data = document.data;
+    body = document.body;
   } catch {
     // A rule glob such as `paths: **/*.ts` is not strict YAML: read the
     // frontmatter the way the rule renders do, and keep it out of the body (#946).
@@ -555,7 +559,7 @@ async function entryFromMdFile(
   // `domain` frontmatter field directly from the raw gray-matter parse.
   const rawFrontmatterDomain = (() => {
     try {
-      return (matter(content).data['domain'] as string | undefined);
+      return (readDocument(content).data['domain'] as string | undefined);
     } catch {
       return undefined;
     }

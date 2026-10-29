@@ -1,3 +1,4 @@
+import { asKnowledge } from './documents/okf.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
@@ -545,7 +546,8 @@ export async function pushAccepted(
 
     try {
       await ensureDir(destDir);
-      await writeFile(destPath, draft.content);
+      const kind = detectTypeFromContent(draft.content);
+      await writeFile(destPath, kind === 'rule' ? draft.content : asKnowledge(draft.content, kind === 'doc' ? 'Reference' : 'Learning'));
       log.info(`Wrote: ${destPath}`);
       pushed++;
     } catch (err: unknown) {

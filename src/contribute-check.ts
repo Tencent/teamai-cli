@@ -10,7 +10,7 @@ import { readRecallQuality } from './recall-quality.js';
 import { deriveSessionId } from './utils/session-id.js';
 import { resolveHookCwd } from './utils/hook-cwd.js';
 import { redactWithEnv } from './utils/redact.js';
-import type { ContributeState, DashboardEvent, SessionCloseOffered, SessionFriction } from './types.js';
+import type { ContributeState, DashboardEvent, SessionFriction } from './types.js';
 import {
   CONTRIBUTE_SMART_THRESHOLD,
   CONTRIBUTE_BASE_THRESHOLD,
@@ -25,7 +25,6 @@ import {
   CONTRIBUTE_TOOLERROR_TIERS,
   CONTRIBUTE_SKILL_BONUS,
   CONTRIBUTE_DIVERSITY_BONUS_MAX,
-  SessionCloseOfferedSchema,
 } from './types.js';
 import { getUserHome } from './utils/home.js';
 
@@ -56,17 +55,12 @@ import { getUserHome } from './utils/home.js';
 //      │
 //      ├─ score < SMART_THRESHOLD → persist updates, exit(no hint)
 //      │
-//      ├─ reminder fires → offer() (session-close.ts), only now:
-//      │   ├─ undefined (teamai launched the session, unattended, workflow place,
-//      │   │   drives a run not done, session-close is invoke: deny)
-//      │   │             → today's text: `/teamai share` (`teamai skill get share`)
-//      │   └─ { publish, scorers }
-//      │                 → the text names session-close's describe command, no inputs
+//      ├─ reminder fires → suggest `/teamai share`
 //      │
 //      └─ Single write (re-read latest first to avoid clobbering /contribute):
 //          persist score, toolCount, friction, promptSummary, lastEvaluated, hinted=true,
-//          offered, and pendingHint for a tool whose Stop cannot print
-//          → STDOUT hint → AI reads, offers session-close or suggests /contribute
+//          and pendingHint for a tool whose Stop cannot print
+//          → STDOUT hint → AI reads and suggests sharing useful knowledge
 //
 
 /**
@@ -171,7 +165,6 @@ export async function readContributeState(sessionId: string): Promise<Contribute
         ? normalizePromptSummary(raw.promptSummary)
         : undefined,
       pendingHint: typeof raw.pendingHint === 'string' ? raw.pendingHint : undefined,
-      offered: SessionCloseOfferedSchema.safeParse(raw.offered).data,
     };
   } catch {
     return defaultState();
@@ -214,9 +207,9 @@ function sweptDir(sessionsDir: string): string {
 }
 
 /** A contribute state file: other hooks keep their own per-session files beside it, which never hold `contributed`. */
-const StateSchema = z.object({ contributed: z.boolean(), hinted: z.boolean().optional(), offered: SessionCloseOfferedSchema.optional() });
+const StateSchema = z.object({ contributed: z.boolean(), hinted: z.boolean().optional() });
 /** A swept record; one written before #1388 holds `hinted` only. */
-const SweptSchema = z.object({ hinted: z.boolean(), contributed: z.boolean().optional(), offered: SessionCloseOfferedSchema.optional() });
+const SweptSchema = z.object({ hinted: z.boolean(), contributed: z.boolean().optional() });
 type OfferFacts = z.infer<typeof SweptSchema>;
 
 /**
@@ -226,8 +219,8 @@ type OfferFacts = z.infer<typeof SweptSchema>;
 async function readOfferFacts(file: string, schema: typeof StateSchema | typeof SweptSchema): Promise<OfferFacts | undefined> {
   const parsed = schema.safeParse(await readJson<unknown>(file).catch(() => null));
   if (!parsed.success) return undefined;
-  const { hinted, contributed, offered } = parsed.data;
-  return { hinted: hinted === true, contributed: contributed === true, ...(offered ? { offered } : {}) };
+  const { hinted, contributed } = parsed.data;
+  return { hinted: hinted === true, contributed: contributed === true };
 }
 
 /**
@@ -259,11 +252,9 @@ export async function cleanupStaleSessions(dir: string, currentSessionId: string
         const record = path.join(sweptDir(dir), entry);
         if (live !== undefined) {
           const kept = await readOfferFacts(record, SweptSchema);
-          const offered = live.offered ?? kept?.offered;
           await writeJsonAtomic(record, {
             hinted: live.hinted || kept?.hinted === true,
             contributed: live.contributed || kept?.contributed === true,
-            ...(offered ? { offered } : {}),
           } satisfies OfferFacts);
         }
         await fs.promises.unlink(filePath);
@@ -543,15 +534,10 @@ interface HintContext {
   friction: SessionFriction;
   promptSummary?: string;
   isKnowledgeGap: boolean;
-  /** Whether the reminder offers the session-close workflow rather than the `share` skill. */
-  offersClose: boolean;
 }
 
-/** The command that describes session-close's inputs, with values proposed for the calling session. */
-const SESSION_CLOSE_DESCRIBE = 'teamai workflow start --describe session-close --driver skill';
-
 /** Build the STDOUT hint from the same context that drove the score. */
-function buildHint({ friction, promptSummary, isKnowledgeGap, offersClose }: HintContext): string {
+function buildHint({ friction, promptSummary, isKnowledgeGap }: HintContext): string {
   const reasons = formatFrictionReasons(friction).join(', ');
   let headline: string;
   if (isKnowledgeGap) {
@@ -564,9 +550,6 @@ function buildHint({ friction, promptSummary, isKnowledgeGap, offersClose }: Hin
       : '[teamai] This session may contain a problem worth documenting.';
   }
   const task = promptSummary ? `\n\nTask: ${promptSummary}` : '';
-  if (offersClose) {
-    return `${headline}${task}\n\nOffer the person the session-close workflow: run \`${SESSION_CLOSE_DESCRIBE}\` and start it with the inputs it proposes, once the person confirms them.`;
-  }
   const action = isKnowledgeGap
     ? 'Consider running `/teamai share what this session taught me` to summarize what you learned, share it with your team, and fill the knowledge gap (or run `teamai skill get share`).'
     : 'Consider running `/teamai share what this session taught me` to summarize what you learned and share it with your team (or run `teamai skill get share`).';
@@ -592,13 +575,12 @@ function buildHint({ friction, promptSummary, isKnowledgeGap, offersClose }: Hin
  *     - cache miss: readEvents → computeSmartScore + explanation context
  *
  *   Hint emission (score >= SMART_THRESHOLD):
- *     - `offer`, when given, says what to offer with the session-close workflow; it runs only here
- *     - Return hint string built from cached friction + task context, naming session-close when offered
+ *     - Return a sharing hint built from cached friction + task context
  *
  *   Persistence (single atomic write per call, re-read latest first to avoid
  *   clobbering /contribute marks set during the read↔write window):
  *     - Cache miss path always writes (smartScore + context + lastEvaluated)
- *     - Hint path additionally sets hinted=true, and offered when the hint names session-close
+ *     - Hint path additionally sets hinted=true
  *     - Cache hit + low score path skips the write entirely (state is current)
  *
  * Returns the hint string (caller writes to stdout) or null if no hint.
@@ -608,7 +590,6 @@ export async function contributeCheckForSession(
   cwd?: string,
   transcriptPath?: string,
   stashInsteadOfReturn = false,
-  offer?: () => Promise<SessionCloseOffered | undefined>,
 ): Promise<{ hint: string | null }> {
   const state = await readContributeState(sessionId);
   const now = Date.now();
@@ -707,8 +688,7 @@ export async function contributeCheckForSession(
   // Build the hint text once; it is either returned (Stop stdout) or stashed for
   // UserPromptSubmit delivery, never both.
   // The session-close offer is computed only on the Stop where the reminder fires.
-  const offered = willHint && offer ? await offer() : undefined;
-  const hintText = willHint ? buildHint({ friction, promptSummary, isKnowledgeGap, offersClose: offered !== undefined }) : null;
+  const hintText = willHint ? buildHint({ friction, promptSummary, isKnowledgeGap }) : null;
 
   // Single write: re-read first to avoid clobbering parallel /contribute marks.
   // Skip the write on cache hit + low score (state is already current).
@@ -729,7 +709,6 @@ export async function contributeCheckForSession(
     if (latest.hinted || willHint) {
       updated.hinted = true;
     }
-    if (offered) updated.offered = offered;
     // For tools whose Stop hook ignores stdout, stash the hint in this same
     // write for delivery on the next UserPromptSubmit — no second write.
     if (willHint && stashInsteadOfReturn) {
@@ -808,16 +787,11 @@ export async function contributeCheck(toolArg?: string): Promise<void> {
 
   const { stopStdoutUnsupported } = await import('./utils/tool-names.js');
   const tool = toolArg?.toLowerCase() ?? 'claude';
-  const { sessionRun } = await import('./launch-context.js');
-  const offer = async () => (await import('./session-close.js')).SessionClose.reminderOffer(config, {
-    tool, sessionId: stdinData.sessionId, cwd: stdinData.cwd ?? process.cwd(), run: sessionRun(process.env),
-  });
   const { hint } = await contributeCheckForSession(
     stdinData.sessionId,
     stdinData.cwd,
     stdinData.transcriptPath,
     stopStdoutUnsupported(tool),
-    offer,
   );
   if (hint !== null) {
     const { formatStopHookOutput } = await import('./utils/hook-output.js');

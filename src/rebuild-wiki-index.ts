@@ -1,3 +1,4 @@
+import { asKnowledge } from './documents/okf.js';
 import { readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathExists } from './utils/fs.js';
@@ -159,7 +160,7 @@ export async function rebuildWikiIndex(teamwikiRoot: string): Promise<void> {
   routerLines.push('4. **调用链/排障** → 查对应仓库的 dependency-paths.md');
   routerLines.push('5. **模块职责概述** → 查 overview.md 或 modules/*.md');
   routerLines.push('');
-  await writeFile(path.join(teamwikiRoot, 'router.md'), routerLines.join('\n'), 'utf-8');
+  await writeFile(path.join(teamwikiRoot, 'router.md'), asKnowledge(routerLines.join('\n'), 'Navigation'), 'utf-8');
 
   // Generate index.md (categorized with descriptions)
   const indexLines = [
@@ -205,7 +206,7 @@ export async function rebuildWikiIndex(teamwikiRoot: string): Promise<void> {
   await writeFile(path.join(teamwikiRoot, 'index.md'), indexLines.join('\n'), 'utf-8');
 
   if (!await pathExists(path.join(teamwikiRoot, 'hot.md'))) {
-    await writeFile(path.join(teamwikiRoot, 'hot.md'), HOT_TEMPLATE, 'utf-8');
+    await writeFile(path.join(teamwikiRoot, 'hot.md'), asKnowledge(HOT_TEMPLATE, 'Navigation'), 'utf-8');
   }
 
   log.debug(`rebuildWikiIndex: ${projects.length} projects, ${totalNodes} nodes, ${totalEdges} edges`);

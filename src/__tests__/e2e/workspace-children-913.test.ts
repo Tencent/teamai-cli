@@ -525,23 +525,6 @@ describe('a workspace delivers what the repos inside it select (#913)', () => {
     expect(exec.output).toContain('https://child.example.com');
   });
 
-  it('lists the model profile a child selects, which the workspace\'s pull announced', async () => {
-    publish('a model profile for svc-a', (seed) => {
-      selectNamespaces(seed, 'models');
-      fs.mkdirSync(path.join(seed, 'models', 'svc-a'), { recursive: true });
-      fs.writeFileSync(path.join(seed, 'models', 'svc-a', 'models.yaml'), YAML.stringify({
-        profiles: [{ id: 'child-model', name: 'Child model', base_url: 'https://models.example.com', api_key: '${API_KEY}', model_groups: [{ protocols: ['anthropic'], models: ['child-llm'] }] }],
-      }));
-    });
-    const pull = await run(['pull'], ws);
-    expect(pull.code, pull.output).toBe(0);
-    expect(pull.output).toContain('1 team model profile(s) available');
-
-    const list = await run(['models', 'list'], ws);
-
-    expect(list.output).toContain('team:child-model');
-  });
-
   it('pushes an edit only to the namespaces that delivered it, not to an equal root skill', async () => {
     publish('an equal skill at the root and in both services', (seed) => {
       for (const namespace of ['', 'svc-a', 'svc-b']) {

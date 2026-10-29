@@ -8,12 +8,10 @@
  * removed git could no longer map its path back to the repo.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
-import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { projectSlug } from '../../utils/partition.js';
 
@@ -60,16 +58,6 @@ function byRepo(output: string): Array<[string, number]> {
     .map((m): [string, number] => [m[1], Number(m[2])]);
 }
 
-async function freePort(): Promise<number> {
-  const server = net.createServer();
-  server.listen(0, '127.0.0.1');
-  await once(server, 'listening');
-  const address = server.address();
-  const port = typeof address === 'object' && address ? address.port : 0;
-  await new Promise<void>((resolve) => server.close(() => resolve()));
-  return port;
-}
-
 describe('one repo, many worktrees (#809)', () => {
   let sandbox: string;
   let home: string;
@@ -77,21 +65,18 @@ describe('one repo, many worktrees (#809)', () => {
   let worktree: string;
   let workApi: string;
   let personalApi: string;
-  let dashboard: ChildProcess | undefined;
 
   const events = () => fs.readFileSync(path.join(home, '.teamai', 'dashboard', 'events.jsonl'), 'utf8')
     .split('\n').filter(Boolean).map((line) => JSON.parse(line) as { sessionId: string; cwd?: string });
 
   /** A prompt and a tool call, sent the way the installed hooks send them. */
-  const session = async (sessionId: string, cwd: string, writer: 'dispatch' | 'legacy' = 'dispatch') => {
+  const session = async (sessionId: string, cwd: string) => {
     const payloads = [
       { hook: 'prompt-submit', data: { session_id: sessionId, hook_event_name: 'UserPromptSubmit', cwd, prompt: `work in ${sessionId}` } },
       { hook: 'post-tool-use', data: { session_id: sessionId, hook_event_name: 'PostToolUse', cwd, tool_name: 'Edit', tool_input: {}, tool_response: {} } },
     ];
     for (const { hook, data } of payloads) {
-      const args = writer === 'dispatch'
-        ? ['hook-dispatch', hook, '--tool', 'claude', '--stdin']
-        : ['dashboard-report', '--stdin', '--tool', 'claude'];
+      const args = ['hook-dispatch', hook, '--tool', 'claude', '--stdin'];
       const r = await runCLI(args, cwd, home, JSON.stringify(data));
       expect(r.code, r.output).toBe(0);
     }
@@ -169,7 +154,7 @@ describe('one repo, many worktrees (#809)', () => {
     await session('main-1', repo);
     await session('main-2', path.join(repo, 'src'));
     await session('wt-1', worktree);
-    await session('wt-2', worktree, 'legacy');
+    await session('wt-2', worktree);
     // Starts in HOME, then `cd`s into the repo.
     await session('cd-1', home);
     await session('cd-1', repo);
@@ -178,11 +163,6 @@ describe('one repo, many worktrees (#809)', () => {
   }, 120_000);
 
   afterAll(async () => {
-    if (dashboard && dashboard.exitCode === null) {
-      const exited = once(dashboard, 'exit');
-      dashboard.kill('SIGTERM');
-      await exited;
-    }
     if (sandbox) fs.rmSync(sandbox, { recursive: true, force: true });
   });
 
@@ -229,35 +209,5 @@ describe('one repo, many worktrees (#809)', () => {
     } finally {
       fs.rmSync(output, { recursive: true, force: true });
     }
-  });
-
-  it('keeps a removed worktree\'s sessions in the repo\'s dashboard workspace, listed once in the Repository filter', async () => {
-    git(['worktree', 'remove', '--force', worktree], repo);
-
-    const port = await freePort();
-    const base = `http://127.0.0.1:${port}`;
-    dashboard = spawn(process.execPath, [CLI, 'dashboard', '--port', String(port)], { cwd: home, env: cliEnv(home), stdio: 'pipe' });
-    let output = '';
-    dashboard.stdout?.on('data', (b: Buffer) => { output += b.toString(); });
-    dashboard.stderr?.on('data', (b: Buffer) => { output += b.toString(); });
-    const deadline = Date.now() + 15_000;
-    while (!output.includes('Dashboard running') && Date.now() < deadline) {
-      if (dashboard.exitCode !== null) throw new Error(output);
-      await new Promise((r) => setTimeout(r, 50));
-    }
-    expect(output).toContain('Dashboard running');
-
-    const workspaces = await (await fetch(`${base}/api/workspaces`)).json() as Array<{ id: string; scope: string; root: string }>;
-    const project = workspaces.find((w) => w.scope === 'project' && w.root === repo);
-    expect(project, JSON.stringify(workspaces)).toBeDefined();
-    const sessions = await (await fetch(`${base}/api/sessions?workspace=${project?.id}`)).json() as
-      Array<{ sessionId: string; cwd: string; repoKey?: string; repoLabel?: string }>;
-    expect(sessions.map((s) => s.sessionId).sort()).toEqual(['cd-1', 'main-1', 'main-2', 'wt-1', 'wt-2']);
-
-    // The Repository filter lists one option per repoKey (the cwd before #809),
-    // labelled with repoLabel. Session rows still show the cwd.
-    const options = new Map(sessions.map((s) => [s.repoKey ?? s.cwd, s.repoLabel ?? s.cwd]));
-    expect([...options.values()]).toEqual(['my-repo']);
-    expect(sessions.find((s) => s.sessionId === 'wt-1')?.cwd).toBe(worktree);
   });
 });

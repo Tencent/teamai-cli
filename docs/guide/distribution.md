@@ -54,7 +54,7 @@ The pin stays in this workspace's local config and applies to all its checkouts 
 
 A revision switch removes unchanged skill, rule, and agent copies the new revision lacks. Edited copies stay, and unpinning names edits that `push` would send to the default branch. While pinned, `push` sends nothing, and `source add`, `source remove` and `import` into the team wiki refuse; pull still reports usage and learnings. A failed or incomplete pinned pull exits 1. `--team-ref` with `--dry-run` is refused.
 
-This requires a workspace install without user-scope inheritance or the same team installed at user scope. It does not apply to HTTP or single-repo mode. Other workspaces keep their own revision.
+This requires a workspace install without user-scope inheritance or the same team installed at user scope. It does not apply to single-repo mode. Other workspaces keep their own revision.
 
 ### Inside the project repo
 
@@ -101,7 +101,7 @@ sharing:
 .teamai/mcp/mcp.yaml
 ```
 
-`teamai push` sends every distributed resource type — skills, rules, agents, docs, env, hooks, mcp, models, claudemd, learnings, wiki, workflows, prompts, and scorers — with `--project` and `--role` namespace placement.
+`teamai push` sends every distributed resource type — skills, rules, agents, docs, env, hooks, mcp, claudemd, learnings, wiki, prompts — with `--project` and `--role` namespace placement.
 
 ### Git permissions
 
@@ -181,7 +181,6 @@ projects:
       env: [checkout]          # env/checkout/env.yaml
       hooks: [checkout]        # hooks/checkout/hooks.yaml
       mcp: [checkout]          # mcp/checkout/mcp.yaml
-      models: [checkout]       # models/checkout/models.yaml
       docs: [checkout]         # docs/checkout/
       wiki: [github__acme__checkout]  # the slug teamai import printed as project:
 ```
@@ -211,11 +210,11 @@ default: []        # roles of a member this file does not list
 
 The first role listed is the member's primary role, the rest are additional. While the file exists:
 
-- A member's effective roles are the ones assigned here. `teamai roles set` refuses, and so does the dashboard's Distribution page, which shows the roles instead of offering them.
+- A member's effective roles are the ones assigned here. `teamai roles set` refuses.
 - A member the file does not list holds `default` — no roles unless you say otherwise — and receives shared resources only, rather than the unfiltered sync a role-less member gets without this file.
 - Who may assign roles is your forge's decision, as it already is for `roles.yaml`: a protected branch, a merge request, code owners for `manifest/`. teamai keeps no access list of its own.
 
-An automation is a member like any other. A CI runner that [takes offered runs](workflow.md#take-offered-runs-from-ci) runs `teamai init --provider git`, which records `git config user.name` as its username, so list that name:
+An automation is a member like any other. A CI runner using team assets runs `teamai init --provider git`, which records `git config user.name` as its username, so list that name:
 
 ```yaml
 # manifest/members.yaml (.teamai/manifest/members.yaml when the team repo is the business repository)
@@ -292,13 +291,3 @@ teamai push
 ```
 
 `source add` writes into this team's repo. After `push` merges, every member's `pull` installs them. A source with no `publicSkills` is empty.
-
-### HTTP source
-
-```bash
-teamai source add-http https://your-team-host/api --token <api-key>
-teamai source list
-teamai source remove-http
-```
-
-An install has one HTTP source. `add-http` is unavailable when the main repo is already `init --http`. The API is the [ClawPro HTTP backend](./http-contract.md). Pass `--agent <tool>` with an agent access token (`sk-`): it works for one agent only, so each agent keeps its own. It syncs only a workspace where `teamai bind-project` ran once; `--skip` enrolls such a workspace without a project.

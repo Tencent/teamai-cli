@@ -13,7 +13,6 @@
     "!**/__pycache__",
     "!**/*.pyc",
     "agents",
-    "workflows",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"
@@ -55,7 +54,6 @@
     "chalk": "^5.3.0",
     "commander": "^12.1.0",
     "cross-spawn": "^7.0.6",
-    "fflate": "^0.8.3",
     "fs-extra": "^11.2.0",
     "gray-matter": "^4.0.3",
     "listr2": "^9.0.5",

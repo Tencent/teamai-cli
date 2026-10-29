@@ -1,3 +1,4 @@
+import { asKnowledge } from './documents/okf.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import readline from 'node:readline/promises';
@@ -400,10 +401,11 @@ async function writeLearning(
   queueLearning?: (filename: string, content: string) => Promise<string>,
   outputFileName?: string,
 ): Promise<string | undefined> {
+  const content = asKnowledge(draft.content, 'Learning');
   if (outputDir) {
     await fs.mkdir(outputDir, { recursive: true });
     const filePath = path.join(outputDir, outputFileName ?? 'learning.md');
-    await fs.writeFile(filePath, draft.content, 'utf-8');
+    await fs.writeFile(filePath, content, 'utf-8');
     log.info(`Learning written: ${filePath}`);
     return filePath;
   }
@@ -412,7 +414,7 @@ async function writeLearning(
     // contribute's naming: the random suffix keeps two members' learnings with
     // the same title and day apart once both are published (#823).
     const { generateFilename } = await import('./contribute.js');
-    const filePath = await queueLearning(generateFilename(draft.title), draft.content);
+    const filePath = await queueLearning(generateFilename(draft.title), content);
     log.info(`Learning written: ${filePath}`);
     return filePath;
   }

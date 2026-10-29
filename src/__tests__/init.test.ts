@@ -119,10 +119,6 @@ vi.mock('../mcp-reconcile.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../mcp-reconcile.js')>()),
   reconcileMcpForConfig: vi.fn(async () => ({ changes: [], wrote: false })),
 }));
-vi.mock('../local-agent.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../local-agent.js')>()),
-  releaseClaudeModelConfig: vi.fn(),
-}));
 vi.mock('../hooks.js', async (importOriginal) => ({
   describeUnappliedTeamHooks: (await importOriginal<typeof import('../hooks.js')>()).describeUnappliedTeamHooks,
   codexTrustPolicy: (await importOriginal<typeof import('../hooks.js')>()).codexTrustPolicy,
@@ -1213,40 +1209,6 @@ describe('init', () => {
   });
 
   describe('single-repo mode', () => {
-    it('accepts an existing HTTP origin without persisting its credentials', async () => {
-      pathExistsFn = (p: string) => p.endsWith(`${path.sep}.git`) || p.endsWith('/.git');
-      mockGit.raw.mockResolvedValue(
-        'http://user:token-must-not-appear@git.example.com/group/repo.git\n',
-      );
-
-      const { log } = await import('../utils/logger.js');
-      const { loadTeamConfig, saveLocalConfigForScope } = await import('../config.js');
-      vi.mocked(loadTeamConfig).mockResolvedValue({
-        team: 'repo',
-        description: '',
-        repo: 'http://git.example.com/group/repo.git',
-        provider: 'git',
-        reviewers: [],
-        sharing: { rules: { enforced: [] }, docs: {}, env: { injectShellProfile: true } },
-        toolPaths: {},
-      } as never);
-
-      await init({ repo: '.' });
-
-      const errorCalls = vi.mocked(log.error).mock.calls.map(([message]) => String(message));
-      const debugCalls = vi.mocked(log.debug).mock.calls.map(([message]) => String(message));
-      expect(mockExit).not.toHaveBeenCalled();
-      expect(errorCalls).not.toContainEqual(expect.stringContaining('Could not parse the business repo remote'));
-      expect(errorCalls.join('\n')).not.toContain('token-must-not-appear');
-      expect(debugCalls.join('\n')).not.toContain('token-must-not-appear');
-      expect(saveLocalConfigForScope).toHaveBeenCalledWith(
-        expect.objectContaining({
-          repo: expect.objectContaining({ remote: 'http://git.example.com/group/repo.git' }),
-        }),
-        'project',
-        process.cwd(),
-      );
-    });
 
     // Loading the config bootstraps a clone whose teamai.yaml says `mode: self`
     // (#852), so a dry run must stop before it (#900).
@@ -1454,8 +1416,6 @@ describe('init', () => {
           expect.objectContaining({ toolRoots: { claude: relocated } }),
           { removeAll: true },
         );
-        const { releaseClaudeModelConfig } = await import('../local-agent.js');
-        expect(vi.mocked(releaseClaudeModelConfig)).toHaveBeenCalledWith(relocated);
         // Team hooks are only stripped on a manifest-aware pass; a plain
         // removeHooks() would leave them firing in the old root.
         const { reconcileHooks } = await import('../hooks.js');
@@ -1640,15 +1600,6 @@ describe('init --provider', () => {
     expect(log.error).toHaveBeenCalledWith(expect.stringContaining('Invalid --provider "gitlabb"'));
     expect(GenericGitProvider.prototype.cloneRepo).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it('refuses --provider with an HTTP team repo, which has no git provider', async () => {
-    const { log } = await import('../utils/logger.js');
-
-    await init({ http: 'https://teamai.example.test', provider: 'git', scope: 'user', role: 'hai' });
-
-    expect(mockExit).toHaveBeenCalledWith(1);
-    expect(log.error).toHaveBeenCalledWith(expect.stringContaining('--provider cannot be combined with --http'));
   });
 
   it('uses plain git for a configured self-hosted GitLab without asking for a token', async () => {

@@ -1,3 +1,4 @@
+import { asKnowledge, readDocument } from './documents/okf.js';
 /**
  * Codebase knowledge extraction and graph building.
  *
@@ -996,7 +997,7 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<boo
   }
 
   for (const [filename, content] of pages) {
-    await writeIfChanged(path.join(evidenceDir, filename), content);
+    await writeIfChanged(path.join(evidenceDir, filename), filename === 'index.md' ? readDocument(content).body : asKnowledge(content, 'Code Reference', filename));
   }
 
   // Build architecture overlay (directory-level contains edges)
@@ -1085,13 +1086,13 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<boo
     const modulesDir = path.join(evidenceDir, 'modules');
     await mkdir(modulesDir, { recursive: true });
     for (const [filename, content] of moduleSummaries) {
-      await writeIfChanged(path.join(modulesDir, filename), content);
+      await writeIfChanged(path.join(modulesDir, filename), filename === 'index.md' ? readDocument(content).body : asKnowledge(content, 'Code Reference', filename));
     }
   }
 
   // 生成 overview.md — 确定性架构概览 (B16)
   const overview = buildOverview(facts, repoGraph, project, interfaceInventory, callChains);
-  await writeIfChanged(path.join(evidenceDir, 'overview.md'), overview);
+  await writeIfChanged(path.join(evidenceDir, 'overview.md'), asKnowledge(overview, 'Code Reference'));
 
   // 生成 team-wiki 标准入口文件
   const proj = [{ slug: project, label: project }];
@@ -1106,8 +1107,8 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<boo
     interfaces: Object.keys(ifByType).length > 0 ? ifByType : undefined,
     callChains: callChains.length > 0 ? callChains.length : undefined,
   };
-  await writeIfChanged(path.join(wikiRoot, 'router.md'), routerTemplate(proj, aiDomains.length > 0 ? aiDomains : undefined));
-  await writeIfChanged(path.join(wikiRoot, 'hot.md'), HOT_TEMPLATE);
+  await writeIfChanged(path.join(wikiRoot, 'router.md'), asKnowledge(routerTemplate(proj, aiDomains.length > 0 ? aiDomains : undefined), 'Navigation'));
+  await writeIfChanged(path.join(wikiRoot, 'hot.md'), asKnowledge(HOT_TEMPLATE, 'Navigation'));
   await writeIfChanged(path.join(wikiRoot, 'index.md'), indexTemplate(proj, indexStats));
 
   // 生成 gaps/ — 知识缺口追踪
@@ -1135,7 +1136,7 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<boo
     gapLines.push('| — | — | — | 未发现明显知识缺口 | — |');
   }
   gapLines.push('');
-  await writeIfChanged(path.join(gapsDir, 'detected.md'), gapLines.join('\n'));
+  await writeIfChanged(path.join(gapsDir, 'detected.md'), asKnowledge(gapLines.join('\n'), 'Knowledge Gaps'));
 
   // 更新 facts 和 interfaces 缓存
   await saveFactsCache(indicesDir, facts);

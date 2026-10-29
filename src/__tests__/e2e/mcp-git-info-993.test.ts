@@ -11,9 +11,8 @@
  * synthetic HTTPS URL (`url.<path>.insteadOf` in the sandbox HOME).
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
-import { createServer } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -86,6 +85,7 @@ function team(name: string): string {
     '    headers:', '      Authorization: "Bearer ${LAB_TOKEN}"', '',
   ].join('\n'));
   writeFile(path.join(seed, 'env', 'env.yaml'), `variables:\n  - key: LAB_TOKEN\n    value: "${TOKEN}"\n`);
+  writeFile(path.join(seed, 'docs', 'shared.md'), '---\ntype: Reference\n---\n# Shared reference\n');
   gitOk(['init', '-q', '-b', 'main'], seed);
   gitOk(['add', '-A'], seed);
   gitOk(['commit', '-q', '-m', 'seed'], seed);
@@ -192,6 +192,25 @@ describe('a repository without .git/info/ (#993 bug 5)', () => {
     expectDelivered(dir, path.join(dir, '.git', 'info'), initRun);
   });
 
+  it('keeps task Markdown outside shared docs delivery and push discovery', () => {
+    const url = team('task-isolation');
+    const dir = business('task-isolation-biz');
+    const relative = 'intent/ws/task/intent.md';
+    const content = '---\ntype: Intent\n---\n# Business task\n';
+    writeFile(path.join(dir, relative), content);
+    gitOk(['add', relative], dir);
+    gitOk(['commit', '-qm', 'task intent'], dir);
+    init(url, dir);
+    const mirror = path.join(dir, '.teamai', 'docs');
+    expect(fs.readFileSync(path.join(mirror, 'shared.md'), 'utf8')).toContain('Shared reference');
+    expect(fs.existsSync(path.join(mirror, 'intent'))).toBe(false);
+    expect(fs.readFileSync(path.join(dir, relative), 'utf8')).toBe(content);
+    const push = teamai(['push', '--dry-run'], dir);
+    expect(push.code, push.output).toBe(0);
+    expect(push.output).not.toContain(relative);
+    expect(gitOk(['diff', '--', relative], dir)).toBe('');
+  });
+
   it.skipIf(isRoot)('still reports a read-only exclude file as not writable, naming the file', () => {
     const url = team('ro-exclude');
     const dir = business('ro-exclude-biz');
@@ -243,82 +262,6 @@ describe('a repository without .git/info/ (#993 bug 5)', () => {
     withReadOnlyExclude(infoDir, () => {
       init(url, worktree);
       expectWithheld(worktree, path.join(infoDir, 'exclude'), teamai(['pull'], worktree));
-    });
-  });
-
-  describe('a local-agent MCP install carrying a credential', () => {
-    /** Run a Claude SessionStart hook whose local-agent sync hands back one workspace `install_mcp` for `dir`; the ack it sent. */
-    async function installThroughLocalAgent(dir: string): Promise<{ status: string; error?: string }> {
-      const acks: Array<{ status: string; error?: string }> = [];
-      const server = createServer((request, response) => {
-        let body = '';
-        request.on('data', (chunk: Buffer) => { body += chunk.toString(); });
-        request.on('end', () => {
-          response.setHeader('Content-Type', 'application/json');
-          if (request.url?.endsWith('/commands/ack')) acks.push(JSON.parse(body));
-          response.end(JSON.stringify(request.url?.endsWith('/local-agent/sync') ? {
-            ok: true,
-            cmds: [{
-              id: 1, type: 'install_mcp', scope: 'workspace', workspace_path: dir, slug: 'clawpro', version: '1.0.0',
-              mcp_config: { transport: 'http', url: 'https://clawpro.example.com/mcp', headers: { Authorization: `Bearer ${TOKEN}` } },
-            }],
-          } : { ok: true }));
-        });
-      });
-      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-      const endpoint = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
-      try {
-        // The workspace is enrolled (`teamai bind-project` ran there): the local agent serves no other.
-        writeFile(path.join(home, '.teamai', 'local-agent', 'config.json'), JSON.stringify({
-          endpoint, token: 'fixture-token', localAgentId: 'fixture', createdAt: '2026-01-01T00:00:00.000Z',
-          workspaceBindings: { [fs.realpathSync.native(dir)]: { projectId: 0, projectName: '__pending__', boundAt: '2026-01-01T00:00:00.000Z' } },
-        }));
-        // Async: the server above answers on this process's event loop.
-        const child = spawn(process.execPath, [CLI, 'hook-dispatch', 'session-start', '--tool', 'claude'], { cwd: dir, env: env(), stdio: ['pipe', 'pipe', 'pipe'] });
-        let output = '';
-        child.stdout.on('data', (chunk: Buffer) => { output += chunk.toString(); });
-        child.stderr.on('data', (chunk: Buffer) => { output += chunk.toString(); });
-        child.stdin.end(JSON.stringify({ cwd: dir, session_id: 'git-info', hook_event_name: 'SessionStart', source: 'startup' }));
-        const code = await new Promise<number | null>((resolve) => child.on('close', resolve));
-        // The hook leaves its background pass (`hook-dispatch --bg-only`) running in the
-        // sandbox HOME; it must end before this fixture removes the local agent's state.
-        await waitForDetachedChildren();
-        expect(code, output).toBe(0);
-        expect(acks, output).toHaveLength(1);
-        return acks[0];
-      } finally {
-        await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
-        fs.rmSync(path.join(home, '.teamai', 'local-agent'), { recursive: true, force: true });
-      }
-    }
-
-    it('creates .git/info/ and lists the config before writing the credential', async () => {
-      const dir = business('agent-no-info');
-
-      const ack = await installThroughLocalAgent(dir);
-
-      expect(ack.status, ack.error).toBe('success');
-      expect(fs.readFileSync(path.join(dir, '.mcp.json'), 'utf8')).toContain(TOKEN);
-      expect(teamBlock(path.join(dir, '.git', 'info'))).toMatch(/^\/\.mcp\.json$/m);
-      expect(gitOk(['status', '--porcelain', '--untracked-files=all', '--', '.mcp.json'], dir)).toBe('');
-    });
-
-    it.skipIf(isRoot)('withholds it from a repository whose exclude file is read-only, naming the file', async () => {
-      const dir = business('agent-ro-exclude');
-      const infoDir = path.join(dir, '.git', 'info');
-      let ack: { status: string; error?: string } = { status: '' };
-
-      writeFile(path.join(infoDir, 'exclude'), '# mine\n');
-      fs.chmodSync(path.join(infoDir, 'exclude'), 0o444);
-      try {
-        ack = await installThroughLocalAgent(dir);
-      } finally {
-        fs.chmodSync(path.join(infoDir, 'exclude'), 0o644);
-      }
-
-      expect(ack.status).toBe('failed');
-      expect(ack.error).toContain(`${path.join(infoDir, 'exclude')} is not writable`);
-      expect(fs.existsSync(path.join(dir, '.mcp.json'))).toBe(false);
     });
   });
 });

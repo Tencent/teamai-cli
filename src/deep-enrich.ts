@@ -1,3 +1,4 @@
+import { asKnowledge } from './documents/okf.js';
 import { readFile, writeFile, readdir, mkdir, unlink, lstat, rename } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
@@ -105,7 +106,7 @@ async function writeGeneratedFile(dir: string, name: string, content: string): P
   const target = path.join(dir, name);
   const pending = path.join(dir, `.${name}.${randomUUID()}.tmp`);
   try {
-    await writeFile(pending, content, { encoding: 'utf-8', flag: 'wx' });
+    await writeFile(pending, name.endsWith('.md') ? asKnowledge(content, 'Code Reference', name) : content, { encoding: 'utf-8', flag: 'wx' });
     await rename(pending, target);
   } catch (error) {
     await unlink(pending).catch(() => undefined);
@@ -752,7 +753,7 @@ async function runPhaseIndexEnhance(
     const kw = keywords.length > 0 ? ` [${keywords.slice(0, 5).join(', ')}]` : '';
     const desc = description ? ` — ${description}` : ' — 代码知识';
     const line = `- ${projectLink}${desc}${kw}\n`;
-    await writeFile(routerPath, routerContent.trimEnd() + '\n' + line, 'utf-8');
+    await writeFile(routerPath, asKnowledge(routerContent.trimEnd() + '\n' + line, 'Navigation'), 'utf-8');
   }
 
   // index.md: 检查当前项目是否已有条目，无则追加导航块

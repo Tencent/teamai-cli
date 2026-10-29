@@ -9,7 +9,6 @@ import type { WorkspaceChildren } from './workspace-children.js';
 import type { HeadState } from './utils/git.js';
 import type { RunMode } from './launch-context.js';
 import type { OutcomeKind, SessionUsage, WorkOutcome } from './outcomes.js';
-import { AllowSchema } from './workflow/requirements.js';
 
 const COPILOT_USER_MCP_CONFIG = 'mcp-config.json';
 const COPILOT_PROJECT_MCP_CONFIG = '.github/mcp.json';
@@ -831,30 +830,6 @@ export const MemberConfigSchema = z.object({
 
 export type MemberConfig = z.infer<typeof MemberConfigSchema>;
 
-// ─── Member settings overlay (~/.teamai/config.yaml) ───────
-
-/** One `workflows.tools` entry: the tool a step role runs on. */
-export const WorkflowToolSchema = z.string().min(1);
-
-/**
- * Settings a member may place in the machine config. These are deliberately
- * separate from install metadata: a workspace/self config overlays them at
- * runtime, but never persists the machine value into its own file.
- */
-export const MemberWorkflowSettingsSchema = z.object({
-  tools: z.record(z.string(), WorkflowToolSchema).default({}),
-  /** How many command steps the local driver runs at once. Unset means 1. */
-  max_parallel: z.number().int().positive().optional(),
-  /** Whether a driver without HITL automatically answers optional approve requests and uses choose defaults. Unset means false. */
-  auto_approve: z.boolean().optional(),
-  /** This host contains what it runs, such as a CI VM or a container, so the local driver declares `sandbox` isolation. */
-  sandbox: z.boolean().optional(),
-  /** What a workflow step may use on this machine, whatever driver runs it. An unset key allows. */
-  allow: AllowSchema.optional(),
-});
-
-export type MemberWorkflowSettings = z.infer<typeof MemberWorkflowSettingsSchema>;
-
 export const MemberSettingsSchema = z.object({
   /**
    * The AI tool teamai's own calls run on this machine; TEAMAI_AI_TOOL overrides it. Checked when a call runs. An empty
@@ -895,23 +870,6 @@ export const MemberSettingsSchema = z.object({
    * `publish: { attended?, unattended? }` of off, ask or auto. Kept as written; `doctor` reports a value it cannot use.
    */
   sessions: z.unknown().optional(),
-  /** Per-machine tool selection for locally executed workflow prompt steps. */
-  workflows: MemberWorkflowSettingsSchema.optional(),
-  /**
-   * How this scope judges sessions. In ~/.teamai/config.yaml below a workspace or self scope, a value applies only where
-   * it is stricter than what the team sets (`scopeScoring`), so a machine never starts paid judging.
-   */
-  scoring: z.object({
-    /** The least isolation a judge of this scope needs, raising the team's and the scorer's. A value teamai does not know counts as `verified`. */
-    isolation: z.string().optional().catch(({ input }) => JSON.stringify(input)),
-    /**
-     * Judge this scope's finished agent sessions, per run mode: `{ attended?, unattended? }` of off, ask or auto, or true
-     * or false for auto or off in both. Kept as written; the scope's scoring settings report a value they cannot use.
-     */
-    sessions: z.unknown().optional(),
-    /** How many sessions a local day may lease for judging; 0 turns session scoring off. Another value is kept as its text, which sets nothing. */
-    daily_limit: z.union([z.number().int().nonnegative(), z.string()]).optional().catch(({ input }) => JSON.stringify(input)),
-  }).optional(),
 });
 export type MemberSettings = z.infer<typeof MemberSettingsSchema>;
 
@@ -933,7 +891,7 @@ export const LocalConfigSchema = z.object({
     /**
      * Team repo backend. Defaults to 'git' for backward compatibility.
      * - 'git':  a standalone team repo cloned to <home>/team-repo.
-     * - 'http': a git-free HTTP team repo (read-only consumer).
+     * - 'http': a legacy marker, retained for diagnostics and credential protection only.
      * - 'self': single-repo mode — the business repo IS the team repo.
      *           Knowledge lives on main under <businessRepoRoot>/.teamai/;
      *           reports (members/sessions/votes/stats) live on the
@@ -1133,7 +1091,7 @@ export type PendingPush = z.infer<typeof PendingPushSchema>;
 
 /**
  * The model and effort one tool's copy of an agent received, and the
- * resolution step that produced them (`ResolutionStep` in models/aliases.ts).
+ * current or historical resolution step that produced them.
  * `step` is a plain string so a record a newer CLI wrote still parses.
  * `source` is the aliases file that decided it (`ModelResolution.source`).
  * `alias` is the spec's `model` an alias step resolved, so a removed alias is
@@ -1306,8 +1264,8 @@ export const StateSchema = z.object({
   /** The blob that proved each agent placement landed; never inferred from the current tip. */
   placedAgentSources: z.record(z.string(), PlacementRecordSchema).optional(),
   /**
-   * Where push placed a repo-backed resource (docs, wiki, prompts, workflows,
-   * scorers, models, env, hooks, claudemd, learnings) that the author still edits at
+   * Where push placed a repo-backed resource (docs, wiki, prompts,
+   * env, hooks, claudemd, learnings) that the author still edits at
    * its shared-root path, keyed `<type>:<path the author edits>`, e.g.
    * `{ "docs:docs/guide.md": { "path": "docs/ops/guide.md", "blob": "<git blob id>" } }`.
    * `blob` is what that push delivered. A self-mode scan compares the author's
@@ -1405,13 +1363,11 @@ export type ResourceType =
   | 'agents'
   | 'hooks'
   | 'mcp'
-  | 'models'
   | 'claudemd'
   | 'learnings'
   | 'wiki'
-  | 'workflows'
   | 'prompts'
-  | 'scorers';
+  ;
 
 export type ResourceItemStatus = 'new' | 'modified';
 
@@ -1789,13 +1745,10 @@ export const RESOURCE_TYPES: ResourceType[] = [
   'agents',
   'hooks',
   'mcp',
-  'models',
   'claudemd',
   'learnings',
   'wiki',
-  'workflows',
   'prompts',
-  'scorers',
 ];
 
 export const TEAMAI_RULES_START = '<!-- [teamai:rules:start] -->';
@@ -1899,12 +1852,6 @@ export interface UserStats {
   tokens?: TokenUsage;
   /** UTC-day buckets used by digest trends. Existing cumulative fields remain for compatibility. */
   daily?: Record<string, DailyUserStats>;
-  /**
-   * Cumulative workflow run totals for this user (#1083): end-phase records
-   * folded at publication time. Privacy: counts and durations only — the
-   * record files under workflows/runs/ carry the per-run allowlist.
-   */
-  workflows?: { runs: number; succeeded: number; failed: number; totalDurationMs: number };
   /**
    * The part of `interventions`, `prompts`, `tokens` and `daily` recorded in each run mode. Those top-level counters
    * keep every count of the member's own sessions, so what neither holds was not recorded with a mode: counts from
@@ -2365,16 +2312,7 @@ export interface ContributeState {
    * that deliver the hint directly through the Stop hook.
    */
   pendingHint?: string;
-  /**
-   * What the reminder offered with the session-close workflow (#1388), set in the write that sets `hinted`: whether to
-   * publish the session, and the scorers to judge it with. Absent when the reminder named no workflow.
-   */
-  offered?: SessionCloseOffered;
 }
-
-/** What the friction reminder offers a session with the session-close workflow, as the session's state keeps it. */
-export const SessionCloseOfferedSchema = z.object({ publish: z.boolean(), scorers: z.array(z.string()) });
-export type SessionCloseOffered = z.infer<typeof SessionCloseOfferedSchema>;
 
 /**
  * Layer 1 (fast-path) threshold: if toolCount < this, skip reading events.jsonl.
@@ -2518,7 +2456,7 @@ export interface SearchIndexEntry {
 }
 
 /** Schema version of the on-disk search-index.json (bump on breaking change). */
-export const SEARCH_INDEX_VERSION = 7;
+export const SEARCH_INDEX_VERSION = 8;
 
 /** Per-file derivation only; votes and selection are recomputed on every build. */
 export interface SearchIndexFileCache {

@@ -1,3 +1,4 @@
+import { asKnowledge, readDocument, writeDocument } from '../documents/okf.js';
 // -*- coding: utf-8 -*-
 import path from 'node:path';
 import { writeFile as writeNewFile } from 'node:fs/promises';
@@ -192,7 +193,7 @@ Remove personal narrative. Write as objective technical documentation.`,
   try {
     const prompt = `You are a technical knowledge engineer promoting a team learning into formal knowledge.
 
-The following "learning" has been repeatedly validated by the team (high confidence, adopted by multiple members). Transform it into ${categoryGuide[category]}
+The following learning was selected by team usage signals. These signals do not establish factual verification. Transform it into ${categoryGuide[category]}
 
 Original learning (title: "${title}"):
 ---
@@ -249,6 +250,13 @@ export async function executePromotion(
 
   // AI transforms the learning into a generalized format for the target category
   let promotedContent = await generatePromotedContent(originalContent, category, candidate.title);
+  if (category === 'docs') promotedContent = asKnowledge(promotedContent, 'Reference');
+  else {
+    const document = readDocument(promotedContent);
+    const native = { ...document.data };
+    for (const key of ['type', 'sources', 'generated', 'verified', 'status', 'stale_after', 'runtime']) delete native[key];
+    promotedContent = writeDocument(document, native);
+  }
   if (category === 'skills') {
     const { withSkillFrontmatter } = await import('../resources/skills.js');
     const skillName = path.posix.basename(normalizedFilename).replace(/\.md$/i, '');
@@ -262,9 +270,8 @@ export async function executePromotion(
   // mark goes to the write root instead: written in place it would be discarded
   // by the next realign, and the same learning would be promoted again on the
   // next run, paying for another model call.
-  const { data, content: body } = matter(originalContent);
-  data.promoted_to = relativePath;
-  const updated = matter.stringify(body, data);
+  const document = readDocument(originalContent);
+  const updated = writeDocument(document, { ...document.data, promoted_to: relativePath });
   const markPath = options.learningsWriteDir
     && !isInWriteRoot(candidate.path, options.learningsWriteDir)
     ? path.join(options.learningsWriteDir, candidate.filename)

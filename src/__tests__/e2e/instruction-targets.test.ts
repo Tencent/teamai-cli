@@ -1189,7 +1189,7 @@ describe('instruction block targets on real CLI pull (#945)', () => {
     console.log('pull after OpenCode config repair: entry listed; delivery reported as successful');
   });
 
-  it('includes a freshly downloaded HTTP prompt in the first real Codex SessionStart', async () => {
+  it('keeps legacy HTTP server configuration inert during Codex SessionStart', async () => {
     const sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-945-first-http-')));
     sandboxes.push(sandbox);
     const member = makeProjectMember(sandbox, makeTeamAndProject(sandbox), 'dev', 'developer', []);
@@ -1249,14 +1249,14 @@ describe('instruction block targets on real CLI pull (#945)', () => {
       const first = await runCLI(['hook-dispatch', 'session-start', '--tool', 'codex'], { HOME: member.home, NODE_OPTIONS: `--require ${JSON.stringify(preload)}` }, member.projectRoot,
         JSON.stringify({ cwd: member.projectRoot, session_id: 'first-http', hook_event_name: 'SessionStart', source: 'startup' }));
       expect(first.code, first.output).toBe(0);
-      expect(first.stdout).toContain('FIRST-HTTP-PROMPT-SENTINEL');
-      expect(acks).toEqual([expect.objectContaining({ status: 'success' })]);
+      expect(first.stdout).not.toContain('FIRST-HTTP-PROMPT-SENTINEL');
+      expect(acks).toEqual([]);
+      expect(syncRequests).toBe(0);
       const started = fs.readdirSync(workers).filter((file) => file.endsWith('.started'));
       expect(started.length).toBeGreaterThan(0);
       for (const file of started) {
         expect(fs.existsSync(path.join(workers, file.replace('.started', '.done'))), `Worker ${file} must exit before fixture cleanup`).toBe(true);
       }
-      console.log('real Codex SessionStart: empty HTTP cache → download ACK success → FIRST-HTTP-PROMPT-SENTINEL in first output');
       const removed = await runCLI(['uninstall', '--agent', 'codex', '--force'], { HOME: member.home }, member.projectRoot);
       expect(removed.code, removed.output).toBe(0);
       const before = syncRequests;

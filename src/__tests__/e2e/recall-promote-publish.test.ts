@@ -1,8 +1,6 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { execFileSync, spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { once } from 'node:events';
+import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
-import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -28,7 +26,6 @@ describe('recall promote publishes the artifact before the marker', () => {
   let home: string;
   let project: string;
   let remote: string;
-  let dashboard: ChildProcess | undefined;
 
   function cliEnv() {
     const env: Record<string, string | undefined> = {
@@ -46,28 +43,6 @@ describe('recall promote publishes the artifact before the marker', () => {
       cwd: project, env: cliEnv(), encoding: 'utf8', input: '', timeout: 30_000,
     });
     return { code: result.status, output: `${result.stdout}${result.stderr}` };
-  }
-
-  /** What the dashboard serves as its knowledge-base context. */
-  async function dashboardContext(): Promise<unknown> {
-    const server = net.createServer().listen(0, '127.0.0.1');
-    await once(server, 'listening');
-    const address = server.address();
-    if (address === null || typeof address === 'string') throw new Error(`No TCP port to start the dashboard on: ${address}`);
-    const { port } = address;
-    await new Promise((resolve) => server.close(resolve));
-    dashboard = spawn(process.execPath, [CLI, 'dashboard', '--port', String(port)], { cwd: project, env: cliEnv(), stdio: 'pipe' });
-    let output = '';
-    dashboard.stdout?.on('data', (chunk) => { output += chunk; });
-    dashboard.stderr?.on('data', (chunk) => { output += chunk; });
-    const deadline = Date.now() + 15_000;
-    while (!output.includes('Dashboard running')) {
-      if (dashboard.exitCode !== null || Date.now() > deadline) throw new Error(output);
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    const response = await fetch(`http://127.0.0.1:${port}/api/context`);
-    expect(response.status).toBe(200);
-    return response.json();
   }
 
   const git = (args: string[], cwd = remote) => execFileSync('git', args, { cwd, encoding: 'utf8' });
@@ -148,12 +123,6 @@ describe('recall promote publishes the artifact before the marker', () => {
   });
 
   afterEach(async () => {
-    if (dashboard && dashboard.exitCode === null) {
-      const exited = once(dashboard, 'exit');
-      dashboard.kill('SIGTERM');
-      await exited;
-    }
-    dashboard = undefined;
     if (sandbox) fs.rmSync(sandbox, { recursive: true, force: true });
   });
 
@@ -222,14 +191,6 @@ describe('recall promote publishes the artifact before the marker', () => {
     expect(again.code, again.output).toBe(0);
     expect(git(['show', 'teamai-learnings:learnings/ready.md'])).toContain('promoted_to: rules/ready.md');
   });
-
-  it('counts the learning as a dashboard candidate once the listing offers it again', async () => {
-    expect(cli(['recall', 'promote', 'ready', '--category', 'docs']).code).toBe(0);
-    git(['branch', '-D', remotePushBranches()]);
-    expect(cli(['recall', 'promote']).output).toContain('- ready');
-
-    expect(await dashboardContext()).toMatchObject({ maintenanceCounts: { promote: 1 } });
-  }, 60_000);
 
   it('lists from the last fetch while another sync holds the lock', () => {
     expect(cli(['recall', 'promote', 'ready', '--category', 'docs']).code).toBe(0);

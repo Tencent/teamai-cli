@@ -16,13 +16,11 @@ import YAML from 'yaml';
 import type { LocalConfigInput } from '../../types.js';
 import { projectSlug } from '../../utils/partition.js';
 import { waitForDetachedChildren } from '../helpers/detached-processes.js';
-import { startMockServer, type MockServerHandle } from '../helpers/mock-server.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLI = path.resolve(__dirname, '..', '..', '..', 'dist', 'index.js');
 const TEAM_URL = 'https://git.example.test/team/a.git';
 const OTHER_TEAM_URL = 'https://git.example.test/team/b.git';
-const API_KEY = 'e2e-http-key';
 const GIT_ENV = {
   GIT_AUTHOR_NAME: 'TeamAI CI',
   GIT_AUTHOR_EMAIL: 'ci@teamai.test',
@@ -48,23 +46,19 @@ const MEMBER_SETTINGS = {
   autoCompactTokens: 0,
   codexTrustEnabled: false,
   ai: { tool: 'codex' },
-  workflows: { tools: { default: 'codex' }, max_parallel: 2, auto_approve: true, sandbox: true, allow: { network: false, env: ['CI'] } },
   modelAliases: { 'gateway-model-42': 'claude-opus-4-1' },
-  scoring: { isolation: 'verified', sessions: false, daily_limit: 0 },
   sessions: { publish: { attended: 'auto', unattended: 'off' } },
 } satisfies Required<Omit<LocalConfigInput, InitDecides>>;
 
 interface Run { code: number | null; output: string }
 
 let sandbox: string;
-let server: MockServerHandle;
 /** The bare repository each team URL is cloned from. */
 const teamRemotes = new Map<string, string>();
 
 beforeAll(async () => {
   if (!fs.existsSync(CLI)) throw new Error(`CLI binary not found at ${CLI}. Run "npm run build" first.`);
   sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-init-keeps-settings-1458-')));
-  server = await startMockServer({ apiKey: API_KEY });
   for (const [team, url] of [['a', TEAM_URL], ['b', OTHER_TEAM_URL]]) {
     const seed = path.join(sandbox, `team-${team}-seed`);
     fs.mkdirSync(seed);
@@ -80,7 +74,6 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await waitForDetachedChildren();
-  await server?.close();
   if (sandbox) fs.rmSync(sandbox, { recursive: true, force: true });
 });
 
@@ -127,7 +120,6 @@ function member(name: string) {
 const INITS: Array<[string, () => string[]]> = [
   ['a team repo', () => ['init', TEAM_URL, '--provider', 'git', '--agent', 'claude']],
   ['single-repo mode', () => ['init', '.', '--provider', 'git', '--agent', 'claude']],
-  ['an HTTP team repo', () => ['init', '--http', server.url, '--token', API_KEY, '--agent', 'claude']],
 ];
 
 describe('init --force in a workspace keeps the member\'s own settings (#1458)', () => {

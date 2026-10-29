@@ -1416,7 +1416,8 @@ describe('the usage report counts the member\'s own sessions, split by run mode 
     await sessionIn({ TEAMAI_LAUNCHED_BY: 'workflow' }, { session_id: 'sid-step', cwd: root });
 
     expect(events().map((event) => [event.type, event.runMode, event.launchedBy])).toEqual([
-      ['session_start', 'attended', 'workflow'], ['prompt_submit', 'attended', 'workflow'], ['stop', 'attended', 'workflow'],
+      // Removed Workflow launches no longer dispatch start/prompt hooks. Historical Stop events still stay out of totals.
+      ['stop', 'attended', 'workflow'],
     ]);
     expect(await report(project)).toBeNull();
   });

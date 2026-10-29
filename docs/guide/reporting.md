@@ -4,7 +4,7 @@
 
 ---
 
-`teamai pull` commits session and usage counts into the team repo, and `teamai workflow` commits [run records](workflow.md#run-records). Turn that off with:
+`teamai pull` commits session and usage counts into the team repo. Turn that off with:
 
 ```yaml
 # teamai.yaml
@@ -88,9 +88,9 @@ With no reported data yet, the command prints `No team usage data available yet.
 
 ### Your sessions, by run mode
 
-The counts cover only your own sessions. A session teamai launched itself, such as a workflow step or a judge, counts in none of them, and a session of yours that a step continued counts only up to that step. A session your tool started for a skill-driven run, such as a subagent or a worktree task, still counts as yours: only its worktree or its `teamai/<run>/…` branch shows where it came from.
+The counts cover your own sessions. Internal AI calls do not count as member activity; historical launcher attribution remains readable.
 
-Each session records its [run mode](workflow.md#attended-and-unattended-runs), and `stats/<member>.yaml` splits the counts by it:
+Each session records its run mode (`TEAMAI_MODE=attended` or `unattended`; otherwise CI selects unattended), and `stats/<member>.yaml` splits the counts by it:
 
 ```yaml
 prompts: 430          # every prompt of your own sessions
@@ -100,11 +100,11 @@ unattended:
   prompts: 3          # recorded as unattended, such as your hooks in CI
 ```
 
-`interventions`, `prompts`, `tokens`, and `daily` work the same way. What neither mode holds, here 32 prompts, was recorded without a mode: counts reported before teamai recorded modes, and sessions that recorded nothing after teamai was upgraded. The turns a session added since the last report count in the mode of its latest event. `teamai digest` and the dashboard show it as `not recorded`.
+`interventions`, `prompts`, `tokens`, and `daily` work the same way. What neither mode holds, here 32 prompts, was recorded without a mode: counts reported before teamai recorded modes, and sessions that recorded nothing after teamai was upgraded. The turns a session added since the last report count in the mode of its latest event. `teamai digest` show it as `not recorded`.
 
 ### What your sessions delivered
 
-A session of yours is added to `outcomes`, by its run mode and by what it delivered, by the next report once it has been idle for 6 hours. An unattended session is also added by the `teamai score --drain` that ends its job, so an ephemeral runner reports its sessions:
+A session of yours is added to `outcomes`, by its run mode and by what it delivered, by the next report once it has been idle for 6 hours:
 
 ```yaml
 outcomes:
@@ -121,10 +121,10 @@ outcomes:
 | Outcome | What the session delivered |
 |---|---|
 | `commit` | Commits made with your git identity in the session's checkout, between its start and its last Stop |
-| `pr` | The pull request of the last branch the session stopped on that holds one of those commits, open when a report looked it up. A Stop on a detached HEAD, as in a rebase, keeps the branch before it. Each report looks until it finds one, so one merged before the session is finished still counts. It uses the credentials `deliver: pr` uses; a lookup that fails leaves it out |
+| `pr` | The pull request of the last branch the session stopped on that holds one of those commits, open when a report looked it up. A Stop on a detached HEAD, as in a rebase, keeps the branch before it. Each report looks until it finds one, so one merged before the session is finished still counts. It uses the configured Git provider credentials; a lookup that fails leaves it out |
 | `learning` | A learning `teamai contribute` recorded for the session (`--session-id`, else the agent's session) |
 | `none` | Nothing of the above |
 
-A session with a pull request and a learning is in both rows, so rows do not add up. Each session is added once: `reported-outcomes.json`, beside the other report baselines, flags it. Your first report on a release with outcomes adds none of the sessions already finished, since the release that recorded them kept no commit or learning of theirs. The report publishes counts only; the session id, commit shas, pull request URLs and learning ids stay in this machine's dashboard events.
+A session with a pull request and a learning is in both rows, so rows do not add up. Each session is added once: `reported-outcomes.json`, beside the other report baselines, flags it. Your first report on a release with outcomes adds none of the sessions already finished, since the release that recorded them kept no commit or learning of theirs. The report publishes counts only; the session id, commit shas, pull request URLs and learning ids stay in this machine's session events.
 
 A skill use is counted when the agent calls its skill tool, reads a skill's `SKILL.md`, or the prompt names the skill: `/code-review` at the start of the prompt, `$code-review` in Codex, `/skill:code-review` in Pi, `@command://code-review` in CodeBuddy. Only skills installed for the tool count, and each skill counts once per prompt. Paths such as `/Volumes/External/project` and URL components are not skill invocations. Previously recorded usage stays.

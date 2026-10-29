@@ -48,23 +48,6 @@ describe('doctor — env, hooks and MCP namespaces', () => {
     expect(await entryNamespaceNotes(ctx())).toEqual([]);
   });
 
-  it('lists a model profile override as a note', async () => {
-    const catalog = (url: string): string => [
-      'profiles:',
-      `  - { id: gw, name: Gateway, base_url: '${url}', api_key: '\${API_KEY}', model_groups: [{ protocols: [anthropic], models: [m] }] }`,
-      '',
-    ].join('\n');
-    await fse.outputFile(path.join(repoPath, 'manifest', 'projects.yaml'),
-      'version: 1\nprojects:\n  - id: checkout\n    resources: { models: [checkout] }\n');
-    await fse.outputFile(path.join(repoPath, 'models', 'models.yaml'), catalog('https://gw.company.test'));
-    await fse.outputFile(path.join(repoPath, 'models', 'checkout', 'models.yaml'), catalog('https://gw.checkout.test'));
-
-    expect(await entryNamespaceNotes(ctx({ projects: ['checkout'] }))).toEqual([
-      'models: 1 received here (1 checkout)',
-      'models: "gw" from models/checkout/models.yaml replaces models/models.yaml',
-    ]);
-  });
-
   it('lists a name the root file repeats in legacy mode, where it is not an error', async () => {
     await fse.outputFile(path.join(repoPath, 'mcp', 'mcp.yaml'), [
       'servers:',
@@ -138,15 +121,6 @@ describe('doctor — env, hooks and MCP namespaces', () => {
     expect(check.fix).toContain('hooks/a/hooks.yaml and hooks/b/hooks.yaml');
   });
 
-  it('fails a check when a model profiles file does not parse', async () => {
-    await fse.outputFile(path.join(repoPath, 'models', 'models.yaml'), 'profiles: [unclosed\n');
-
-    const checks = await buildEntryResolutionChecks(ctx());
-
-    expect(checks.map((check) => check.name)).toEqual(['Team model profiles can be resolved']);
-    expect(checks[0]?.fix).toContain('models/models.yaml');
-  });
-
   // #875: the secrets file is its own set, named as such, and a broken one fails a check.
   it('fails a check naming the secrets file when it does not parse', async () => {
     await fse.outputFile(path.join(repoPath, 'env', 'env.yaml'), 'variables:\n  - { key: A, value: x }\n');
@@ -176,10 +150,5 @@ describe('doctor — env, hooks and MCP namespaces', () => {
 
     expect(await entryNamespaceNotes(ctx()))
       .toEqual(['secrets: "A" is defined more than once in env/secrets.yaml (legacy mode does not check this; keep one of them)']);
-  });
-
-  it('adds no resolution check when hooks and model profiles resolve', async () => {
-    await fse.outputFile(path.join(repoPath, 'hooks', 'hooks.yaml'), 'hooks:\n  - { id: lint, description: x, event: Stop, command: echo }\n');
-    expect(await buildEntryResolutionChecks(ctx())).toEqual([]);
   });
 });

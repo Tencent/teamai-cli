@@ -34,8 +34,8 @@ afterEach(() => {
   }
 });
 
-describe('all 14 placeable resource types and namespace axis mapping', () => {
-  it('covers all 14 distributed resource types in PLACEABLE_TYPES', () => {
+describe('all 11 placeable resource types and namespace axis mapping', () => {
+  it('covers all 11 distributed resource types in PLACEABLE_TYPES', () => {
     const expected = [
       'skills',
       'rules',
@@ -44,13 +44,10 @@ describe('all 14 placeable resource types and namespace axis mapping', () => {
       'env',
       'hooks',
       'mcp',
-      'models',
       'claudemd',
       'learnings',
       'wiki',
-      'workflows',
       'prompts',
-      'scorers',
     ];
     expect([...PLACEABLE_TYPES].sort()).toEqual(expected.sort());
     for (const t of expected) {
@@ -66,13 +63,10 @@ describe('all 14 placeable resource types and namespace axis mapping', () => {
     expect(NAMESPACE_AXIS.env).toBe('env');
     expect(NAMESPACE_AXIS.hooks).toBe('hooks');
     expect(NAMESPACE_AXIS.mcp).toBe('mcp');
-    expect(NAMESPACE_AXIS.models).toBe('models');
     expect(NAMESPACE_AXIS.claudemd).toBe('knowledge');
     expect(NAMESPACE_AXIS.learnings).toBe('learnings');
     expect(NAMESPACE_AXIS.wiki).toBe('wiki');
-    expect(NAMESPACE_AXIS.workflows).toBe('workflows');
     expect(NAMESPACE_AXIS.prompts).toBe('prompts');
-    expect(NAMESPACE_AXIS.scorers).toBe('scorers');
   });
 });
 
@@ -81,8 +75,6 @@ describe('isAtSharedRoot and withNamespace across all resource types', () => {
     const sampleItems: Array<{ type: (typeof PLACEABLE_TYPES)[number]; path: string; shared: boolean }> = [
       { type: 'docs', path: 'docs/guide.md', shared: true },
       { type: 'docs', path: 'docs/team-a/guide.md', shared: true },
-      { type: 'workflows', path: 'workflows/ci.yaml', shared: true },
-      { type: 'workflows', path: 'workflows/team-a/ci.yaml', shared: false },
       { type: 'prompts', path: 'prompts/review.md', shared: true },
       // An undeclared prompts/ directory is shared content, like docs/ and
       // wiki/: a workflow resolves a nested prompt below the root when no
@@ -91,10 +83,6 @@ describe('isAtSharedRoot and withNamespace across all resource types', () => {
       { type: 'prompts', path: 'prompts/topic/note.md', shared: true },
       // A scorer is scorers/<name>.md (frontmatter plus a prompt), never .py:
       // review --branch fails any other file under scorers/ but README.md.
-      { type: 'scorers', path: 'scorers/accuracy.md', shared: true },
-      { type: 'scorers', path: 'scorers/team-a/accuracy.md', shared: false },
-      { type: 'models', path: 'models/config.json', shared: true },
-      { type: 'models', path: 'models/team-a/config.json', shared: false },
       { type: 'wiki', path: 'wiki/home.md', shared: true },
       { type: 'wiki', path: 'wiki/team-a/home.md', shared: true },
       { type: 'hooks', path: 'hooks/pre-commit.json', shared: true },
@@ -153,10 +141,7 @@ describe('isAtSharedRoot and withNamespace across all resource types', () => {
 
   it('correctly inserts namespace segments for various resource formats', () => {
     expect(withNamespace('docs/readme.md', 'core')).toBe('docs/core/readme.md');
-    expect(withNamespace('workflows/build.yaml', 'ci')).toBe('workflows/ci/build.yaml');
     expect(withNamespace('prompts/codegen.txt', 'ai')).toBe('prompts/ai/codegen.txt');
-    expect(withNamespace('scorers/metric.md', 'eval')).toBe('scorers/eval/metric.md');
-    expect(withNamespace('models/deepseek.json', 'llm')).toBe('models/llm/deepseek.json');
     expect(withNamespace('wiki/architecture.md', 'docs')).toBe('wiki/docs/architecture.md');
     expect(withNamespace('hooks/pre-push.sh', 'git')).toBe('hooks/git/pre-push.sh');
     expect(withNamespace('mcp/postgres.json', 'db')).toBe('mcp/db/postgres.json');
@@ -174,13 +159,10 @@ describe('resolveProjectNamespace behavior across newly added axes', () => {
         description: 'Infra project description',
         resources: {
           docs: ['infra-docs'],
-          workflows: ['infra-wf'],
           prompts: ['infra-prompts'],
-          scorers: ['infra-scorers'],
           env: ['infra-env'],
           hooks: ['infra-hooks'],
           mcp: ['infra-mcp'],
-          models: ['infra-models'],
           knowledge: ['infra-know'],
           skills: ['infra-skills'],
           learnings: ['infra-learnings'],
@@ -219,25 +201,17 @@ describe('resolveProjectNamespace behavior across newly added axes', () => {
       ok: true,
       namespace: 'infra-docs',
     });
-    expect(resolveProjectNamespace(manifest, 'infra-project', 'workflows')).toEqual({
-      ok: true,
-      namespace: 'infra-wf',
-    });
     expect(resolveProjectNamespace(manifest, 'infra-project', 'prompts')).toEqual({
       ok: true,
       namespace: 'infra-prompts',
     });
-    expect(resolveProjectNamespace(manifest, 'infra-project', 'scorers')).toEqual({
-      ok: true,
-      namespace: 'infra-scorers',
-    });
   });
 
   it('fails with clear error when axis has no namespaces declared', () => {
-    const res = resolveProjectNamespace(manifest, 'empty-project', 'workflows');
+    const res = resolveProjectNamespace(manifest, 'empty-project', 'prompts');
     expect(res.ok).toBe(false);
     if (!res.ok) {
-      expect(res.message).toContain('workflows');
+      expect(res.message).toContain('prompts');
       expect(res.message).toContain('empty-project');
     }
   });
@@ -281,13 +255,10 @@ describe('repo resource handler push and scan', () => {
       'docs',
       'hooks',
       'mcp',
-      'models',
       'claudemd',
       'learnings',
       'wiki',
-      'workflows',
       'prompts',
-      'scorers',
     ] as const;
 
     for (const t of types) {
@@ -314,20 +285,20 @@ describe('repo resource handler push and scan', () => {
       additionalRoles: [],
     };
 
-    // Create a new workflow in project .teamai/workflows/ops/test.yaml
-    const activeDir = path.join(projectRoot, '.teamai', 'workflows', 'ops');
+    // Create a new workflow in project .teamai/prompts/ops/test.md
+    const activeDir = path.join(projectRoot, '.teamai', 'prompts', 'ops');
     fs.mkdirSync(activeDir, { recursive: true });
-    fs.writeFileSync(path.join(activeDir, 'test.yaml'), 'name: test\n');
+    fs.writeFileSync(path.join(activeDir, 'test.md'), 'name: test\n');
 
-    const scanned = await scanRepoResourceForPush('workflows', 'workflows', {} as any, localConfig);
+    const scanned = await scanRepoResourceForPush('prompts', 'prompts', {} as any, localConfig);
     expect(scanned.length).toBe(1);
-    expect(scanned[0].name).toBe('ops/test.yaml');
-    expect(scanned[0].relativePath).toBe('workflows/ops/test.yaml');
+    expect(scanned[0].name).toBe('ops/test.md');
+    expect(scanned[0].relativePath).toBe('prompts/ops/test.md');
     expect(scanned[0].status).toBe('new');
 
     // Now push it
     await pushRepoResourceItem(scanned[0], localConfig);
-    const destFile = path.join(repoLocal, 'workflows', 'ops', 'test.yaml');
+    const destFile = path.join(repoLocal, 'prompts', 'ops', 'test.md');
     expect(fs.existsSync(destFile)).toBe(true);
     expect(fs.readFileSync(destFile, 'utf8')).toBe('name: test\n');
   });

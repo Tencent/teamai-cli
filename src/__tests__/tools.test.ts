@@ -2,13 +2,11 @@ import { describe, expect, it } from 'vitest';
 import path from 'node:path';
 import { installedBuiltinHookDefs } from '../builtin-hooks.js';
 import { KNOWN_AGENTS, SELF_MODE_AGENT_CHOICES } from '../known-agents.js';
-import { ModelAgentSchema, type ModelAgent } from '../models/profile.js';
 import { EXTRAS_BASE_TOOL, type ToolName } from '../resources/agent-format.js';
 import { AGENT_TOOLS, isToolId, TOOLS, type Support, type ToolDescriptor } from '../tools.js';
 import { DEFAULT_TOOL_PATHS, scopedToolPaths, TeamaiConfigSchema, type ToolId } from '../types.js';
 import { CODEX_TOOL_IDS, normalizeAgentType } from '../utils/tool-names.js';
 import { LAUNCH_ADAPTERS } from '../tool-launch/adapters.js';
-import type { LaunchTool } from '../tool-launch/tools.js';
 
 const TOOL_IDS = Object.keys(DEFAULT_TOOL_PATHS).filter(isToolId);
 const USER_PATHS = scopedToolPaths(TeamaiConfigSchema.parse({ team: 't', repo: 'https://example.com/t.git' }), { scope: 'user' });
@@ -27,16 +25,13 @@ describe('ToolId', () => {
   it('covers every typed tool list', () => {
     const lists: true[] = [
       true satisfies IsSubset<ToolName, ToolId>,
-      true satisfies IsSubset<ModelAgent, ToolId>,
-      true satisfies IsSubset<LaunchTool, ToolId>,
     ];
-    expect(lists).toHaveLength(3);
+    expect(lists).toHaveLength(1);
   });
 
   it('covers every runtime tool list and alias table', () => {
     const ids = [
       ...AGENT_TOOLS,
-      ...ModelAgentSchema.options,
       ...SELF_MODE_AGENT_CHOICES,
       ...CODEX_TOOL_IDS,
       ...Object.entries(EXTRAS_BASE_TOOL).flat(),
@@ -113,14 +108,10 @@ describe('TOOLS skillLoad', () => {
 describe('TOOLS features', () => {
   /** Whether the cell says teamai builds the feature: it works, works with a catch, or is broken. */
   const builds = (support: Support) => /^[✓◐✗]/u.test(typeof support === 'string' ? support : support.cell);
-  const hasProfile = (tool: ToolId, profile: 'call' | 'step') => {
+  const hasProfile = (tool: ToolId, profile: 'call') => {
     const adapter = TOOLS[tool].launch;
     return adapter !== 'none' && profile in LAUNCH_ADAPTERS[adapter];
   };
-
-  it('marks workflows built exactly for the tools whose launch adapter runs steps', () => {
-    expect(TOOL_IDS.filter((tool) => builds(TOOLS[tool].features.workflows))).toEqual(TOOL_IDS.filter((tool) => hasProfile(tool, 'step')));
-  });
 
   it("marks teamai's own AI calls built exactly for the tools teamai launches", () => {
     expect(TOOL_IDS.filter((tool) => builds(TOOLS[tool].features.aiBackend))).toEqual(TOOL_IDS.filter((tool) => hasProfile(tool, 'call')));

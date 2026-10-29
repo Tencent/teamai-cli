@@ -293,17 +293,12 @@ describe('workspace team ref (#1183)', () => {
     expect(r.output.split('Local resources not yet pushed:')[1]).not.toContain('trial');
   });
 
-  it('fails a contended or incomplete pinned delivery and recovers a stale detached clone', () => {
+  it('fails a contended pinned delivery and recovers a stale detached clone', () => {
     const m = machine();
     m.ok(['pull', '--team-ref', 'trial']);
     write(path.join(m.dataHome(), '.sync-lock'), JSON.stringify({ pid: process.pid, ts: Date.now() }));
     expect(m.run(['pull']).code).toBe(1);
     fs.rmSync(path.join(m.dataHome(), '.sync-lock'));
-    m.teamCommit({ 'models/aliases.yaml': 'aliases:\n  strong:\n    claude: opus\n', 'agents/held.yaml': 'name: held\ndescription: Held\ninstructions: Hold.\nmodel: strong\n' });
-    write(path.join(m.home, '.teamai/models/aliases.yaml'), 'aliases: [broken\n');
-    const held = m.run(['pull']);
-    expect(held.code, held.output).toBe(1);
-    fs.rmSync(path.join(m.home, '.teamai/models/aliases.yaml'));
     m.editConfig((c) => { delete c.repo.ref; });
     m.ok(['pull']);
     expect(m.git(['branch', '--show-current'], m.clone())).toBe('main');
@@ -843,39 +838,6 @@ it.each(['reconcile', 'deep-enrich', 'hidden'])('refuses %s before writing into 
   expect(result.output).not.toContain('DetachedTeamRepoError');
   expect(result.output).toContain('The team repo is checked out at a fixed commit (a team ref pin, or an interrupted switch), so this command cannot change it. Run teamai pull --team-ref main to follow the default branch again.');
   expect(m.git(['status', '--porcelain'], m.clone())).toBe('');
-});
-
-it('records the pinned team commit as a workflow step agent team revision', () => {
-  const m = machine();
-  const workflow = 'schemaVersion: v1alpha1\nname: check\ndescription: Check.\nsteps:\n  - id: review\n    prompt: Review.\n';
-  m.teamCommit({ 'workflows/check.yaml': workflow }, 'main');
-  const pinned = m.teamCommit({ 'workflows/check.yaml': workflow });
-  const bin = path.join(m.root, 'bin');
-  write(path.join(bin, 'claude'), `#!${process.execPath}
-const fs = require('node:fs');
-if (process.argv.includes('--version')) { console.log('2.1.301 (Claude Code)'); process.exit(0); }
-fs.mkdirSync(require('node:path').dirname(process.env.TEAMAI_WORKFLOW_RESULT), { recursive: true });
-fs.writeFileSync(process.env.TEAMAI_WORKFLOW_RESULT, JSON.stringify({}));
-process.stdout.write(JSON.stringify({ type: 'system', subtype: 'init', model: 'fake-claude', session_id: 's' }) + '\\n');
-process.stdout.write(JSON.stringify({ type: 'result', session_id: 's' }) + '\\n');
-`);
-  fs.chmodSync(path.join(bin, 'claude'), 0o755);
-  m.env.PATH = `${bin}${path.delimiter}${m.env.PATH}`;
-  const recorded = (): string | undefined => {
-    const started = m.ok(['workflow', 'start', 'check', '--driver', 'local', '--tools', 'default=claude']);
-    const envelope = JSON.parse(started.output.trim().split('\n').findLast((line) => line.startsWith('{'))!);
-    const run = String(envelope.data.done.run);
-    const record = JSON.parse(m.git(['show', `teamai-reports:workflows/runs/${run}.json`], m.remote));
-    return record.steps[0].agent?.team?.revision;
-  };
-  m.ok(['pull', '--team-ref', 'trial']);
-  expect(recorded()).toBe(pinned);
-  const tip = m.teamCommit({ 'skills/trial/SKILL.md': skill('trial', 'NEW TIP') });
-  m.ok(['pull']);
-  expect(recorded()).toBe(tip);
-  m.ok(['pull', '--team-ref', 'main']);
-  m.ok(['pull']);
-  expect(recorded()).toBe(m.git(['rev-parse', 'refs/heads/main'], m.remote));
 });
 
 function pinSubmoduleSkill() {

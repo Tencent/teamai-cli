@@ -8,7 +8,7 @@ import { fileHash, listFilesRecursive } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { resolveReal } from '../utils/path-safety.js';
 import { historicalVersions, matchesHistory, readBlob } from '../utils/team-history.js';
-import { isUneditedGeneratedSkill } from '../workflow/discovery/generated-marker.js';
+import { isUneditedGeneratedSkill } from './legacy-generated-skill.js';
 import { warnOnce } from '../utils/warn-once.js';
 
 /**
@@ -80,12 +80,6 @@ export interface DeliveryLedger {
    * held keeps its old entry.
    */
   readonly agentModels: AgentModelRecords;
-  /**
-   * Agents pull held because their model cannot be resolved (#830), said
-   * once per reason after the pass: `tools` when only those tools are held,
-   * `everyTool` when no tool the agent targets received it.
-   */
-  readonly held: { name: string; reason: string; tools?: string[]; everyTool: boolean }[];
   /** Copies that failed with an error, already reported: the pull is not synced, and the next one is full. */
   readonly failed: { name: string; tool: string }[];
   /** Tools that did not receive every skill this pull delivers: a copy there was kept, skipped or failed. */
@@ -111,7 +105,6 @@ export function openLedger(
     kept: [],
     members: [],
     otherRecords,
-    held: [],
     failed: [],
     toolsMissingSkills: new Set(),
     toolsMissingRules: new Set(),

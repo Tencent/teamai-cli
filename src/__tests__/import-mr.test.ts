@@ -1,3 +1,4 @@
+import { parseFrontmatter } from '../utils/frontmatter.js';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -100,7 +101,7 @@ describe('importFromMR AI draft metadata', () => {
     { tags: { topic: 'agent' }, displayed: undefined },
     { tags: ['agent', null, 42, { topic: 'retry' }, ['nested'], 'retry'], displayed: 'agent, retry' },
     { tags: ['agent', 'retry'], displayed: 'agent, retry' },
-  ])('saves the original draft when tags are $tags', async ({ tags, displayed }) => {
+  ])('preserves draft metadata and adds its knowledge type when tags are $tags', async ({ tags, displayed }) => {
     const content = `---\ntitle: Retry budget\ntags: ${JSON.stringify(tags)}\n---\n${DRAFT_BODY}\n`;
     vi.mocked(callTool).mockResolvedValueOnce({ text: content, tool: 'claude' });
 
@@ -108,7 +109,9 @@ describe('importFromMR AI draft metadata', () => {
 
     expect(result.learning).toEqual({ title: 'Retry budget', content });
     expect(result.learningFile).toBe(path.join(root, 'learning.md'));
-    expect(fs.readFileSync(result.learningFile!, 'utf8')).toBe(content);
+    const stored = parseFrontmatter(fs.readFileSync(result.learningFile!, 'utf8'));
+    expect(stored.data).toEqual({ title: 'Retry budget', tags, type: 'Learning' });
+    expect(stored.body).toBe(`${DRAFT_BODY}\n`);
     expect(vi.mocked(log.info).mock.calls.map(([message]) => String(message)).filter((message) => message.startsWith('   Tags:')))
       .toEqual(displayed ? [`   Tags: ${displayed}`] : []);
   });
@@ -117,12 +120,13 @@ describe('importFromMR AI draft metadata', () => {
     'uses the MR title to queue a draft with a non-string title $title', async ({ title }) => {
       const content = `---\ntitle: ${JSON.stringify(title)}\ntags: [agent]\n---\n${DRAFT_BODY}\n`;
       vi.mocked(callTool).mockResolvedValueOnce({ text: content, tool: 'claude' });
-      const queueLearning = vi.fn(async (filename: string) => path.join(root, filename));
+      const queueLearning = vi.fn(async (filename: string, _content: string) => path.join(root, filename));
 
       const result = await importFromMR({ url, all: true, learningsDirs: [], queueLearning });
 
       expect(result.learning).toEqual({ title: 'Retry budget', content });
-      expect(queueLearning).toHaveBeenCalledWith(expect.stringMatching(/^retry-budget-.*\.md$/), content);
+      expect(queueLearning).toHaveBeenCalledWith(expect.stringMatching(/^retry-budget-.*\.md$/), expect.any(String));
+      expect(parseFrontmatter(queueLearning.mock.calls[0]![1]).data).toMatchObject({ type: 'Learning', title });
       expect(result.learningFile).toBe(await queueLearning.mock.results[0].value);
     },
   );

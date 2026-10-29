@@ -1,10 +1,4 @@
-/**
- * What teamai does with a member's captured sessions in each run mode (#1385): `off` does nothing, `ask` offers it to
- * the person (#1388), `auto` does it unasked. Scoring reads its policies from `scorers/scoring.yaml` `sessions`,
- * publishing from `teamai.yaml` `sessions.publish`; a member's `config.yaml` overrides either, one mode at a time.
- * Below a workspace or self scope, ~/.teamai/config.yaml `sessions` stands in for the member's own when it sets none,
- * and its `scoring` can only make judging stricter (`scopeScoring`).
- */
+/** Session publication policy from team and member settings, resolved separately for each run mode. */
 import { z } from 'zod';
 import { RunModeSchema, type RunMode } from '../launch-context.js';
 import { ownMemberSettings } from '../config.js';

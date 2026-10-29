@@ -37,7 +37,7 @@ describe('teamai skill get / path CLI (e2e)', () => {
     expect(listed.status).toBe(0);
 
     const catalog = JSON.parse(listed.stdout) as { skills: Array<{ name: string; path: string }> };
-    expect(catalog.skills.map((s) => s.name)).toEqual(['core', 'setup', 'share', 'wiki', 'workflow', 'workflow-local']);
+    expect(catalog.skills.map((s) => s.name)).toEqual(['core', 'sdlc', 'setup', 'share', 'wiki']);
 
     for (const skill of catalog.skills) {
       const got = run('skill', 'get', skill.name);
@@ -53,8 +53,8 @@ describe('teamai skill get / path CLI (e2e)', () => {
   it('serves every skill with --all and no name, and fails with neither', () => {
     const all = run('skill', 'get', '--all');
     expect(all.status, all.stderr).toBe(0);
-    // No team config in this HOME, so the recall gate fails open and all six are served.
-    expect(all.stdout.match(/^name: /gm)).toHaveLength(6);
+    // No team config in this HOME, so the recall gate fails open and all five are served.
+    expect(all.stdout.match(/^name: /gm)).toHaveLength(5);
 
     const none = run('skill', 'get');
     expect(none.status).toBe(1);
@@ -208,7 +208,7 @@ describe('teamai skill recall gate CLI (e2e)', () => {
 
     const all = run('skill', 'get', '--all');
     expect(all.status, all.stderr).toBe(0);
-    expect(all.stdout.match(/^name: /gm)).toEqual(['name: ', 'name: ', 'name: ', 'name: ', 'name: ']);
+    expect(all.stdout.match(/^name: /gm)).toHaveLength(4);
     expect(all.stdout).not.toContain('name: share');
     expect(all.stderr).toContain('Skipped share');
 
@@ -237,7 +237,7 @@ describe('teamai skill recall gate CLI (e2e)', () => {
     expect(enable.status, enable.stderr).toBe(0);
 
     expect(run('skill', 'get', 'share').stdout).toContain('name: share');
-    expect(run('skill', 'get', '--all').stdout.match(/^name: /gm)).toHaveLength(6);
+    expect(run('skill', 'get', '--all').stdout.match(/^name: /gm)).toHaveLength(5);
     const servedDir = run('skill', 'path', 'share').stdout.trim();
     expect(fs.existsSync(path.join(servedDir, 'SKILL.md'))).toBe(true);
     expect(run('skill', 'show', 'share').stdout).toContain(`Package dir  : ${servedDir}/`);

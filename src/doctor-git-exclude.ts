@@ -5,7 +5,7 @@ import type { DamagedMarker, GitExcludeReport } from './git-exclude.js';
 import {
   describeForeign, describeUnreadableGitExcludeSetting, deliveredUnion, reportDeliveredGitExclude, type DeliveredUnion,
 } from './git-exclude-delivered.js';
-import { localAgentGitExcludeNotices, readGitExcludeNotices, type GitExcludeNotices } from './git-exclude-notices.js';
+import { readGitExcludeNotices, type GitExcludeNotices } from './git-exclude-notices.js';
 import { getDataHome, isUnmigratedDataHome, resolveGitExclude } from './types.js';
 import { execCommand } from './utils/exec.js';
 import { withoutGitRepositoryEnv } from './utils/git-env.js';
@@ -204,27 +204,6 @@ export async function buildDeliveredGitExcludeChecks(ctx: DoctorContext): Promis
     });
   }
   return checks;
-}
-
-/**
- * The last failure the local agent's sessions kept for their `local-agent`
- * block, in its state home whatever the scope: one file read, no git.
- */
-export async function buildLocalAgentGitExcludeChecks(): Promise<Check[]> {
-  const { lastFailure } = await readGitExcludeNotices(localAgentGitExcludeNotices());
-  return lastFailure ? [{
-    name: 'Last local agent sync could not keep its git exclude block up to date',
-    source: 'local',
-    reportedByPull: 'local-agent-git-exclude-failure',
-    check: async () => false,
-    fix: `${lastFailure.message} (${lastFailure.at})`,
-  }] : [];
-}
-
-/** What the local agent's sessions had to say about its `local-agent` block, for `doctor` only. */
-export async function localAgentGitExcludeNotes(): Promise<string[]> {
-  const { notices } = await readGitExcludeNotices(localAgentGitExcludeNotices());
-  return notices.map(({ at, message }) => `From a local agent sync (${at}): ${message}`);
 }
 
 /**

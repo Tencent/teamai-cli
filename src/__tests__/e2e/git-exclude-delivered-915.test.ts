@@ -379,24 +379,6 @@ describe('delivered team skills stay out of git (#915)', () => {
     expect(m.teamSkillEntries().length === 0).toBe(team === ON);
   });
 
-  it('keeps the lines when the fast path holds an agent for its model and resets the checkout for a full sync', () => {
-    const m = machine('held-agent', {
-      team: ON,
-      files: {
-        ...TEAM_SKILLS,
-        'models/aliases.yaml': 'aliases:\n  strong:\n    claude: { model: opus }\n    codex: { model: gpt-6-sol }\n',
-        'agents/implementer.yaml': 'name: implementer\ndescription: Implements a change\ninstructions: Make the change.\nmodel: strong\n',
-      },
-    });
-    expect(m.teamSkillEntries()).toEqual([]);
-    writeFile(path.join(m.home, '.teamai', 'models', 'aliases.yaml'), 'aliases: [broken\n');
-
-    const held = m.ok(['pull']);
-    expect(held.output).toContain('Already synced');
-    expect(held.output).toContain('Held implementer');
-    expect(m.teamSkillEntries(), held.output).toEqual([]);
-  });
-
   it.skipIf(process.getuid?.() === 0)('keeps a copy\'s line when the full sync that should rewrite it fails', () => {
     const m = machine('failed-writer', { team: ON });
     // The copy is rewritten in place: a directory that refuses new entries fails it.
@@ -774,24 +756,6 @@ describe('every writer keeps what it delivered out of git (#915)', () => {
     const repaired = m.ok(['pull', '--force']);
     expect(read(local)).toBe(written);
     expect(notIgnored(m, ['.claude/settings.local.json']), repaired.output).toEqual([]);
-  });
-
-  it('keeps listing an agent copy a full sync holds for its model', () => {
-    const m = machine('held-full', {
-      team: ON,
-      files: {
-        'models/aliases.yaml': 'aliases:\n  strong:\n    claude: { model: opus }\n    codex: { model: gpt-6-sol }\n',
-        'agents/implementer.yaml': 'name: implementer\ndescription: Implements a change\ninstructions: Make the change.\nmodel: strong\n',
-        'agents/helper.yaml': agentYaml('helper'),
-      },
-    });
-    const copies = ['.claude/agents/implementer.md', '.codex/agents/implementer.toml', '.claude/agents/helper.md'];
-    expect(notIgnored(m, copies)).toEqual([]);
-    writeFile(path.join(m.home, '.teamai', 'models', 'aliases.yaml'), 'aliases: [broken\n');
-
-    const held = m.ok(['pull', '--force']);
-    expect(held.output).toContain('Held implementer');
-    expect(notIgnored(m, copies), held.output).toEqual([]);
   });
 
   it('a pull with no configured source drops the source lines and leaves the copies visible; a failed source keeps them', () => {

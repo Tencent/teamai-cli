@@ -394,36 +394,6 @@ describe('ownership of unrecorded rule and agent files (#993 bugs 2 and 12)', ()
     expect(read(path.join(skill, 'SKILL.md'))).toContain('# Team skill');
   });
 
-  it('delivers a held agent once its model alias resolves, even when the pull that held it found the checkout at the team revision', () => {
-    const t = team('held-at-rev', {
-      'models/aliases.yaml': 'aliases:\n  strong:\n    claude: { model: opus }\n',
-      'agents/team-agent.yaml': `${agentYaml('team-agent', 'Team version.')}model: strong\n`,
-    });
-    // The member's override lives in HOME: changing it makes no team revision.
-    const override = path.join(home, '.teamai', 'models', 'aliases.yaml');
-    writeFile(override, 'aliases:\n  strong:\n    claude: { model: sonnet }\n');
-    const dir = business('held-at-rev-biz');
-    const agent = path.join(dir, '.claude', 'agents', 'team-agent.md');
-    try {
-      init(t, dir);
-      expect(read(agent)).toMatch(/^model: sonnet$/m);
-
-      // The override breaks: no `strong` resolves, so the forced pull at the team revision holds the agent.
-      writeFile(override, 'aliases: [broken\n');
-      expect(teamaiOk(['pull', '--force'], dir).output).toContain('Held team-agent.yaml');
-      expect(read(agent)).toMatch(/^model: sonnet$/m);
-
-      // Fixed by deleting it: `strong` resolves through the team file again, at the same revision.
-      fs.rmSync(override);
-      teamaiOk(['pull'], dir);
-
-      expect(read(agent)).toMatch(/^model: opus$/m);
-      expect(read(agent)).toContain('Team version.');
-    } finally {
-      fs.rmSync(override, { force: true });
-    }
-  });
-
   it('updates an unrecorded agent copy an older CLI rendered with another tool\'s extras (0.26.0, before #830)', () => {
     const t = team('old-agent-render', {
       'agents/reviewer.yaml': [

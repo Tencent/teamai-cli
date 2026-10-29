@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ALL_MODEL_AGENTS } from '../models/profile.js';
 import { runsTeamHookOn } from '../hooks.js';
 import { isToolId, TOOLS, type Support } from '../tools.js';
 import { DEFAULT_TOOL_PATHS, type ToolId } from '../types.js';
@@ -10,7 +9,7 @@ import { DEFAULT_TOOL_PATHS, type ToolId } from '../types.js';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const READMES = fs.readdirSync(ROOT).filter((file) => /^README(\..+)?\.md$/.test(file)).sort();
 
-const COLUMNS = ['skills', 'rules', 'culture', 'agents', 'hooks', 'mcp', 'workflows', 'env', 'models', 'context', 'usage', 'sessions', 'scorers'] as const;
+const COLUMNS = ['skills', 'rules', 'culture', 'agents', 'hooks', 'mcp', 'env', 'context', 'usage', 'sessions'] as const;
 type Column = (typeof COLUMNS)[number];
 
 /** The README's row label for each tool it lists. */
@@ -61,15 +60,9 @@ describe('README agent matrix', () => {
     const blocks = typeof d.blocks.user === 'object' || typeof d.blocks.project === 'object';
     if (typeof d.rules.user === 'object' && d.rules.user.channel === 'inline') expect(cell(row, 'rules')).toBe('✓¹');
     expect(cell(row, 'culture')).toBe(blocks ? '✓' : '—');
-    expect(cell(row, 'models')).toBe(ALL_MODEL_AGENTS.some((agent) => agent === tool) ? '✓' : '—');
     // ✓ is teamai's hooks and the team's hooks/hooks.yaml both.
     expect(cell(row, 'hooks')).toBe(typeof d.hooks.user === 'object' && runsTeamHookOn(tool, 'SessionStart') ? '✓' : '—');
     const usage = decided(d.features.stats);
     if (usage !== undefined) expect(cell(row, 'usage')).toBe(usage);
-    // The skill driver runs workflows wherever the teamai skill reaches the session.
-    expect(cell(row, 'workflows')).toBe(cell(row, 'skills'));
-    const sessionJudge = decided(d.features.sessionJudge) === '✓';
-    // Without a session reader, a tool whose session judges its skill-driven runs scores only those (✓³).
-    expect(cell(row, 'scorers')).toBe(Array.isArray(d.sessions) ? '✓' : sessionJudge ? '✓³' : '—');
   });
 });

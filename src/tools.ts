@@ -261,8 +261,6 @@ export type Support = SupportCell | { readonly cell: SupportCell; readonly note:
 export type ToolFeatures = {
   /** The team env in teamai's shell profile block reaches the tool's sessions. */
   readonly env: Support;
-  /** The local driver (`teamai workflow start --driver local`) runs prompt steps on the tool. */
-  readonly workflows: Support;
   /** The recall skill and its session-start reminder. */
   readonly recall: Support;
   /** The tool's skill calls are recorded for usage stats. */
@@ -271,8 +269,6 @@ export type ToolFeatures = {
   readonly aiBackend: Support;
   /** The votes judge reads the tool's session replies. */
   readonly votesJudge: Support;
-  /** With the skill driver and no verified judge of the tool here, the tool's session judges the workflow run it drives (#1386). */
-  readonly sessionJudge: Support;
   /** The HTTP local agent installs server-pushed hooks for the tool. */
   readonly agentHooks: Support;
 };
@@ -359,12 +355,10 @@ export const TOOLS = {
     launch: 'claude',
     features: {
       env: '✓t',
-      workflows: '✓v',
       recall: '✓v',
       stats: '✓v',
       aiBackend: '✓v',
       votesJudge: '✓v',
-      sessionJudge: { cell: '✓t', note: '#1386 the session judges its skill-driven run; not rerun' },
       agentHooks: '✓v',
     },
   },
@@ -398,12 +392,10 @@ export const TOOLS = {
     launch: 'codex',
     features: {
       env: '✓t',
-      workflows: '✓t',
       recall: '✓v',
       stats: { cell: '✓t', note: 'A1 (#1245) records its skill loads; not rerun' },
       aiBackend: '✓v',
       votesJudge: { cell: '✓t', note: '#1374 judges the reply in its Stop payload; not rerun' },
-      sessionJudge: { cell: '✓t', note: '#1386 the session judges its skill-driven run; not rerun' },
       agentHooks: { cell: '✓t', note: '#1224 runs the Codex trust pass; not rerun' },
     },
   },
@@ -424,12 +416,10 @@ export const TOOLS = {
     launch: 'codex',
     features: {
       env: '?',
-      workflows: '✓t',
       recall: '?',
       stats: '?',
       aiBackend: '✓t',
       votesJudge: '?',
-      sessionJudge: '?',
       agentHooks: '?',
     },
   },
@@ -446,12 +436,10 @@ export const TOOLS = {
     launch: 'claude',
     features: {
       env: '?',
-      workflows: '✓t',
       recall: '?',
       stats: '?',
       aiBackend: '✓t',
       votesJudge: '?',
-      sessionJudge: '?',
       agentHooks: '?',
     },
   },
@@ -471,12 +459,10 @@ export const TOOLS = {
     launch: 'claude',
     features: {
       env: '?',
-      workflows: '✓t',
       recall: '?',
       stats: '?',
       aiBackend: '✓t',
       votesJudge: '?',
-      sessionJudge: '?',
       agentHooks: '?',
     },
   },
@@ -497,12 +483,10 @@ export const TOOLS = {
     launch: 'codex',
     features: {
       env: '?',
-      workflows: '✓t',
       recall: '?',
       stats: '?',
       aiBackend: '✓t',
       votesJudge: '?',
-      sessionJudge: '?',
       agentHooks: '?',
     },
   },
@@ -541,12 +525,10 @@ export const TOOLS = {
     launch: 'cursor',
     features: {
       env: '?',
-      workflows: { cell: '+s', note: 'Cursor IDE: —' },
       recall: { cell: '✗v', note: 'Cursor IDE: ✓v' },
       stats: { cell: '✓v', note: 'Cursor IDE: ✓t' },
       aiBackend: '✓d',
       votesJudge: '+s',
-      sessionJudge: { cell: '✓t', note: '#1386 the session judges its skill-driven run; not rerun' },
       agentHooks: { cell: '+t', note: 'teamai refuses agent hooks in the Cursor hook format' },
     },
   },
@@ -590,12 +572,10 @@ export const TOOLS = {
     launch: 'copilot',
     features: {
       env: '?',
-      workflows: '+s',
       recall: '✓v',
       stats: { cell: '✓t', note: 'A1 (#1245) records its skill loads; not rerun' },
       aiBackend: '✓d',
       votesJudge: '?',
-      sessionJudge: { cell: '✓t', note: '#1386 the session judges its skill-driven run; not rerun' },
       agentHooks: '—t',
     },
   },
@@ -619,12 +599,10 @@ export const TOOLS = {
     launch: 'none',
     features: {
       env: '?',
-      workflows: '?',
       recall: '◐s',
       stats: '?',
       aiBackend: '?',
       votesJudge: '?',
-      sessionJudge: '?',
       agentHooks: '?',
     },
   },
@@ -655,12 +633,10 @@ export const TOOLS = {
     launch: 'qoder',
     features: {
       env: '?',
-      workflows: '?',
       recall: '◐s',
       stats: '✓s',
       aiBackend: '✓d',
       votesJudge: '?',
-      sessionJudge: { cell: '✓s', note: 'Claude Code-style subagents, transcripts under <id>/subagents/ (qodercli 1.1.78); not run' },
       agentHooks: '✓s',
     },
   },
@@ -691,12 +667,10 @@ export const TOOLS = {
     launch: 'none',
     features: {
       env: '?',
-      workflows: '?',
       recall: '◐s',
       stats: '✓s',
       aiBackend: '?',
       votesJudge: '?',
-      sessionJudge: { cell: '✓s', note: 'Claude Code-style subagents, transcripts under <id>/subagents/ (qodercli 1.1.78); not run' },
       agentHooks: { cell: '✓t', note: '#1224 writes ~/.qoder-cn/settings.json; not rerun' },
     },
   },
@@ -727,12 +701,10 @@ export const TOOLS = {
     launch: 'kiro',
     features: {
       env: '?',
-      workflows: '?',
       recall: '◐d',
       stats: '?',
       aiBackend: '✓d',
       votesJudge: '?',
-      sessionJudge: { cell: '✓d', note: 'a subagent works in its own context window, without the conversation; not run' },
       agentHooks: { cell: '✓d', note: 'runs from teamai\'s team-hook bridge, which can block a tool call; Kiro\'s hook docs' },
     },
   },
@@ -766,12 +738,10 @@ export const TOOLS = {
     launch: 'none',
     features: {
       env: '?',
-      workflows: '?',
       recall: '?',
       stats: '?',
       aiBackend: '?',
       votesJudge: '?',
-      sessionJudge: { cell: '✓s', note: 'the Task tool starts a fresh subagent; no session variable, so the session names its tool with --tools; not run' },
       agentHooks: '?',
     },
   },
@@ -803,12 +773,10 @@ export const TOOLS = {
     launch: 'none',
     features: {
       env: '?',
-      workflows: '?',
       recall: '?',
       stats: '?',
       aiBackend: '?',
       votesJudge: '?',
-      sessionJudge: { cell: '✓s', note: 'the Task tool starts a fresh subagent; no session variable, so the session names its tool with --tools; not run' },
       agentHooks: '?',
     },
   },
@@ -840,12 +808,10 @@ export const TOOLS = {
     launch: 'none',
     features: {
       env: '✓t',
-      workflows: '+s',
       recall: '✓s',
       stats: '✓s',
       aiBackend: '+s',
       votesJudge: { cell: '✓t', note: '#1374 judges the reply in its Stop payload; not rerun' },
-      sessionJudge: { cell: '✓d', note: 'the built-in general-purpose subagent works in its own context; not run' },
       agentHooks: { cell: '+t', note: 'refused until teamai writes the hooks.events shape (#1224)' },
     },
   },
@@ -882,12 +848,10 @@ export const TOOLS = {
     launch: 'omp',
     features: {
       env: '✓s',
-      workflows: '+s',
       recall: '✓v',
       stats: { cell: '✓t', note: 'A1 (#1245) records its skill loads; not rerun' },
       aiBackend: '✓d',
       votesJudge: '?',
-      sessionJudge: { cell: '✓s', note: 'the task tool starts each child as a new agent session (omp 18.12.6); not run' },
       agentHooks: { cell: '✓s', note: 'runs from teamai\'s team-hook bridge, which can block a tool call; OMP\'s extension source' },
     },
   },
@@ -918,12 +882,10 @@ export const TOOLS = {
     launch: 'pi',
     features: {
       env: '✓s',
-      workflows: '+v',
       recall: '✓v',
       stats: { cell: '✓t', note: 'A1 (#1245) records its skill loads; not rerun' },
       aiBackend: '✓s',
       votesJudge: '?',
-      sessionJudge: { cell: '◐s', note: 'bare Pi starts no subagent, so its session answers h4 and does not judge; the subagent example extension adds one (since 0.24.0); not run' },
       agentHooks: { cell: '✓s', note: 'runs from teamai\'s team-hook bridge, which can block a tool call; Pi\'s extension source' },
     },
   },
@@ -975,12 +937,10 @@ export const TOOLS = {
     launch: 'codebuddy',
     features: {
       env: '?',
-      workflows: '✓d',
       recall: '✓s',
       stats: '✓v',
       aiBackend: '✓d',
       votesJudge: '+v',
-      sessionJudge: { cell: '✓t', note: '#1386 the session judges its skill-driven run; not rerun' },
       agentHooks: '✓s',
     },
   },
@@ -1010,12 +970,10 @@ export const TOOLS = {
     launch: 'openclaw',
     features: {
       env: '◐d',
-      workflows: '+d',
       recall: '✓s',
       stats: '+s',
       aiBackend: '✓d',
       votesJudge: '—t',
-      sessionJudge: { cell: '◐s', note: 'sessions_spawn with isolated context, in the coding and messaging tool profiles; a tool policy can remove it; not run' },
       agentHooks: { cell: '✓s', note: 'runs from teamai\'s team-hook bridge, which can block a tool call; OpenClaw\'s plugin source' },
     },
   },
@@ -1042,12 +1000,10 @@ export const TOOLS = {
     launch: 'hermes',
     features: {
       env: '◐s',
-      workflows: '+s',
       recall: '✓v',
       stats: '+s',
       aiBackend: '✓s',
       votesJudge: '—t',
-      sessionJudge: { cell: '✓s', note: 'delegate_task starts a child agent with a fresh conversation; not run' },
       agentHooks: { cell: '✓s', note: 'runs from teamai\'s team-hook bridge, which can block a tool call; Hermes\'s shell-hook source' },
     },
   },
@@ -1070,12 +1026,10 @@ export const TOOLS = {
     launch: 'none',
     features: {
       env: '✗s',
-      workflows: '+s',
       recall: '✓s',
       stats: { cell: '✓t', note: 'A1 (#1245) records its skill loads; not rerun' },
       aiBackend: '+s',
       votesJudge: '?',
-      sessionJudge: { cell: '◐s', note: 'the subagent tool with the fresh spawn backend, not fork; the minimal preset leaves it out; not run' },
       agentHooks: '—t',
     },
   },
@@ -1119,12 +1073,10 @@ export const TOOLS = {
     launch: 'codebuddy',
     features: {
       env: '?',
-      workflows: '✓t',
       recall: '✓t',
       stats: '?',
       aiBackend: '✓t',
       votesJudge: '?',
-      sessionJudge: { cell: '✓t', note: 'CodeBuddy\'s engine, whose session judges its skill-driven run; not run' },
       agentHooks: '?',
     },
   },
@@ -1183,12 +1135,10 @@ export const TOOLS = {
     launch: 'opencode',
     features: {
       env: '?',
-      workflows: '✓t',
       recall: '✓v',
       stats: { cell: '✓t', note: 'A1 (#1245) records its skill loads; not rerun' },
       aiBackend: '✓v',
       votesJudge: '?',
-      sessionJudge: { cell: '✓t', note: '#1386 the session judges its skill-driven run; not rerun' },
       agentHooks: { cell: '✓v', note: 'runs from teamai\'s team-hook bridge, which can block a tool call; OpenCode 1.18.23 ran a team hook through it' },
     },
   },
@@ -1227,12 +1177,10 @@ export const TOOLS = {
     launch: 'muse',
     features: {
       env: '✓t',
-      workflows: '+v',
       recall: '✓t',
       stats: '✓v',
       aiBackend: '✓v',
       votesJudge: { cell: '✓t', note: '#1374 judges the reply in its Stop payload; not rerun' },
-      sessionJudge: { cell: '✓t', note: '#1386 the session judges its skill-driven run; not rerun' },
       agentHooks: { cell: '✓t', note: '#1224 writes them to settings.json; not rerun' },
     },
   },
@@ -1267,12 +1215,10 @@ export const TOOLS = {
     launch: 'agy',
     features: {
       env: { cell: '✓v', note: 'agy 1.4.8 run_command inherits the environment agy starts in' },
-      workflows: '✓v',
       recall: '✓v',
       stats: '✓v',
       aiBackend: '✓v',
       votesJudge: { cell: '✗v', note: 'agy 1.4.8 PostToolUse carries no tool output, so a teamai recall run never reaches the recall log' },
-      sessionJudge: { cell: '✓t', note: 'invoke_subagent starts a fresh conversation that gets only its prompt (agy 1.4.8); no session variable, so the session names its tool with --tools; not run' },
       agentHooks: { cell: '✓t', note: 'runs from teamai\'s team-hook bridge, which can block a tool call; the dispatcher hands it a Claude payload' },
     },
   },

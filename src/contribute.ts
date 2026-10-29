@@ -1,3 +1,4 @@
+import { asKnowledge } from './documents/okf.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
@@ -10,11 +11,9 @@ import { agentSessionFromEnv } from './utils/session-id.js';
 import { splitFrontmatter, stringifyFrontmatter } from './utils/frontmatter.js';
 import { AgentSession } from './session-flow/agent-session.js';
 import { SessionCaptures } from './session-flow/captures.js';
-import type { SessionSubject } from './scorers/label.js';
 import { appendEvent, dataHomeKey } from './dashboard-collector.js';
-import { ATTEMPT_ENV, LAUNCHED_BY_ENV, sessionRun, type SessionRun } from './launch-context.js';
+import { sessionRun } from './launch-context.js';
 import { learningIdOf } from './outcomes.js';
-import { appendAttemptOutcome, RunIdSchema } from './workflow/store.js';
 import { pendingLearningsDir, queueWriteRefusal, savePendingLearning } from './utils/pending-learnings.js';
 import { publishQueuedLearnings } from './utils/learnings-publish.js';
 import { indexableLearningsRoots } from './utils/learnings-roots.js';
@@ -171,51 +170,9 @@ async function recordLearningOutcome(localConfig: LocalConfig, session: Contribu
     sessionId: session.sessionId,
     ...(session.tool ? { tool: session.tool } : {}),
     dataHomeKey: await dataHomeKey(getDataHome(localConfig)),
-    ...(session.own ? await ownSessionRun(localConfig) : {}),
+    ...(session.own ? sessionRun(process.env) : {}),
     outcomes: [{ kind: 'learning', id: learningIdOf(relPath) }],
   });
-}
-
-/**
- * The run mode of the session this process runs in, and who launched it. A command a skill driver's runner runs carries
- * the attempt marker, which names a launcher for a session started inside the attempt; the session that drives the
- * marker's run is the member's own, so it has none.
- */
-async function ownSessionRun(localConfig: LocalConfig): Promise<SessionRun> {
-  const run = sessionRun(process.env);
-  const marker = process.env[ATTEMPT_ENV];
-  if (!marker || process.env[LAUNCHED_BY_ENV]) return run;
-  const runId = RunIdSchema.safeParse(marker.split('/')[0]);
-  const { sessionDrivesRun } = await import('./workflow/drivers/skill/skill-driver.js');
-  return runId.success && await sessionDrivesRun(localConfig, runId.data) ? { runMode: run.runMode } : run;
-}
-
-/**
- * Record the learning at `relPath` on the workflow attempt `marker` names, for the engine to put on the step's pass when
- * the attempt settles. Not recording it never fails the contribution.
- */
-async function recordStepOutcome(localConfig: LocalConfig, marker: string, relPath: string): Promise<void> {
-  const id = learningIdOf(relPath);
-  let recorded: Awaited<ReturnType<typeof appendAttemptOutcome>>;
-  try {
-    recorded = await appendAttemptOutcome(localConfig, marker, { kind: 'learning', id });
-  } catch (e) {
-    log.warn(`Learning ${id} is not recorded on workflow attempt ${marker}: ${e instanceof Error ? e.message : String(e)}`);
-    return;
-  }
-  switch (recorded) {
-    case 'appended': return;
-    case 'bad_marker':
-      log.warn(`Learning ${id} is not recorded on a workflow step: ${ATTEMPT_ENV} is "${marker}", not <run>/<attempt>.`);
-      return;
-    case 'unknown_run':
-      log.warn(`Learning ${id} is not recorded on workflow attempt ${marker}: this scope holds no such run. Run teamai contribute in the step's checkout, or pass --scope with the scope the run started in.`);
-      return;
-    default: {
-      const unhandled: never = recorded;
-      return unhandled;
-    }
-  }
 }
 
 /**
@@ -223,7 +180,7 @@ async function recordStepOutcome(localConfig: LocalConfig, marker: string, relPa
  * the author's own fields keep their spelling; a block that already has a `session` is rewritten with this one. A block
  * that does not parse is left as it is.
  */
-function withSessionField(content: string, session: SessionSubject): string {
+function withSessionField(content: string, session: { platform: string; sessionId: string }): string {
   const line = `session: ${YAML.stringify(session, { collectionStyle: 'flow' }).trimEnd()}`;
   const { raw, valid, data, body } = splitFrontmatter(content);
   if (!raw) return `---\n${line}\n---\n${body}`;
@@ -260,6 +217,14 @@ export async function contribute(
 
   if (!content.trim()) {
     log.error('Contribution file is empty — nothing to push.');
+    return;
+  }
+
+  try {
+    content = asKnowledge(content, 'Learning');
+  } catch (error) {
+    log.error(`Cannot contribute knowledge: ${(error as Error).message}`);
+    process.exitCode = 1;
     return;
   }
 
@@ -338,8 +303,6 @@ export async function contribute(
       return;
     }
     if (session) await recordLearningOutcome(localConfig, session, relPath);
-    const attempt = process.env[ATTEMPT_ENV];
-    if (attempt) await recordStepOutcome(localConfig, attempt, relPath);
   } catch (e) {
     spin.fail(`Contribution failed: ${(e as Error).message}`);
     log.info('You can retry with: teamai contribute --file <path>');

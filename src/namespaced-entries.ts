@@ -34,19 +34,18 @@ import { log } from './utils/logger.js';
 import { warnOnce } from './utils/warn-once.js';
 import { deliveredMembers, unionMemberItems } from './workspace-children.js';
 
-export type EntryType = 'env' | 'hooks' | 'mcp' | 'models';
+export type EntryType = 'env' | 'hooks' | 'mcp';
 
-const ENTRY_FILE: Record<EntryType, string> = { env: 'env.yaml', hooks: 'hooks.yaml', mcp: 'mcp.yaml', models: 'models.yaml' };
+const ENTRY_FILE: Record<EntryType, string> = { env: 'env.yaml', hooks: 'hooks.yaml', mcp: 'mcp.yaml' };
 
 /** What one entry is called, for messages. */
-export const ENTRY_NOUN: Record<EntryType, string> = { env: 'variable', hooks: 'hook', mcp: 'server', models: 'profile' };
+export const ENTRY_NOUN: Record<EntryType, string> = { env: 'variable', hooks: 'hook', mcp: 'server' };
 
 /** What a failure leaves unchanged, for messages. */
 const INSTALLED: Record<EntryType, string> = {
   env: 'exported env variables',
   hooks: 'installed team hooks',
   mcp: 'installed team MCP servers',
-  models: 'agent model settings',
 };
 
 /**

@@ -170,17 +170,16 @@ describe('init --agent validates ids against built-in and team agents', () => {
     expect((YAML.parse(fs.readFileSync(configPath(fixture.home), 'utf8')) as { enabledAgents?: string[] }).enabledAgents).toEqual(ids);
   });
 
-  it('warns and continues for an unchecked custom id in HTTP mode', () => {
+  it('rejects removed HTTP initialization without saving configuration', () => {
     const { home, env } = newHome('http-custom-agent');
 
     const result = teamai([
       'init', '--http', 'http://127.0.0.1:9/team', '--agent', 'my-ide', '--scope', 'user', '--force',
     ], home, env);
 
-    expect(result.code, result.output).toBe(0);
-    expect(result.output).toContain('my-ide');
-    expect(result.output).toContain('team config is unavailable');
-    expect((YAML.parse(fs.readFileSync(configPath(home), 'utf8')) as { enabledAgents?: string[] }).enabledAgents).toEqual(['my-ide']);
+    expect(result.code, result.output).not.toBe(0);
+    expect(result.output).toContain("unknown option '--http'");
+    expect(fs.existsSync(configPath(home))).toBe(false);
   });
 
   it('rejects an unknown id in single-repo git init before saving config', () => {

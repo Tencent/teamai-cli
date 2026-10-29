@@ -2,7 +2,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import fse from 'fs-extra';
 import YAML from 'yaml';
-import { loadTeamConfig, autoDetectInit, loadLocalConfig, detectProjectConfig } from './config.js';
+import { loadTeamConfig, autoDetectInit } from './config.js';
 import { assertAttachedTeamRepo, createGit, DetachedTeamRepoError, pullRepo } from './utils/git.js';
 import { parseFrontmatter } from './utils/frontmatter.js';
 import { detectProvider, getProvider } from './providers/index.js';
@@ -571,30 +571,19 @@ async function sourceRemoveLocked(name: string, options: GlobalOptions, localCon
   if (removeSubscription) log.info('Run `teamai push` to share this change with your team.');
 }
 
-/**
- * List all configured sources: team-level git cross-team sources (from
- * teamai.yaml) plus the personal HTTP bypass (report/sync/ack), if configured.
- */
+/** List configured Git cross-team sources. */
 export async function sourceList(): Promise<void> {
-  // Git cross-team sources come from the team config. Tolerate a missing init:
-  // the HTTP bypass is independent of the team repo, so still show it.
+  // A missing init has no configured team sources.
   let gitSources: SourceConfig[] = [];
   try {
     // Read-only: the load never persists a migration (#893).
     const { teamConfig } = await autoDetectInit(undefined, { dryRun: true });
     gitSources = teamConfig.sources ?? [];
   } catch {
-    // Not initialized (no team repo) — only the HTTP bypass may exist.
+    // Not initialized (no team repo).
   }
 
-  const { describeLocalAgent } = await import('./local-agent.js');
-  const httpSource = await describeLocalAgent({ dryRun: true });
-
-  if (gitSources.length === 0 && !httpSource) {
-    log.info('No sources configured. Use `teamai source add <url>` or `teamai source add-http <endpoint>`.');
-    return;
-  }
-
+  if (gitSources.length === 0) log.info('No sources configured. Use `teamai source add <url>`.');
   if (gitSources.length > 0) {
     log.info(`Git cross-team sources (${gitSources.length}):`);
     for (const source of gitSources) {
@@ -606,72 +595,7 @@ export async function sourceList(): Promise<void> {
     }
   }
 
-  if (httpSource) {
-    const { skills, rules, claudemd } = httpSource.resourceCounts;
-    log.info('HTTP source (report/sync/ack):');
-    log.info(`  ${httpSource.endpoint}`);
-    log.dim(`    ${skills} skill(s), ${rules} rule(s), ${claudemd} claude.md`);
-    for (const p of httpSource.boundProjects) {
-      log.dim(`    bound: ${p.projectName ?? p.projectId} — ${p.path}`);
-    }
-  }
-}
 
-/**
- * Add a personal HTTP source (report/sync/ack side channel) alongside the git
- * main repo. Reuses the local-agent bypass so a git-based user gets the same
- * report/sync/ack lifecycle an `init --http` user has, without touching the git
- * main repo.
- *
- * Rejected when the main repo itself is HTTP: that setup already owns the single
- * local-agent config, and a second endpoint would silently overwrite it.
- */
-export async function sourceAddHttp(
-  endpoint: string,
-  options: { token?: string; force?: boolean; agent?: string } & GlobalOptions,
-): Promise<void> {
-  const trimmed = endpoint.trim();
-  if (!trimmed) {
-    log.error('Endpoint is required. Usage: teamai source add-http <endpoint> --token <key>');
-    return;
-  }
-
-  // Guard: if the main repo is already an HTTP backend, it owns the single
-  // local-agent config — refuse rather than overwrite its endpoint.
-  const mainConfig = (await detectProjectConfig(undefined, undefined, { dryRun: options.dryRun }))
-    ?? (await loadLocalConfig({ dryRun: options.dryRun }));
-  if (mainConfig?.repo.kind === 'http') {
-    log.error('Your main team repo is already an HTTP backend, which owns the HTTP source config.');
-    log.info('An HTTP bypass is only for git-based main repos. Nothing changed.');
-    return;
-  }
-
-  if (options.dryRun) {
-    log.info(`[dry-run] Would add HTTP source ${trimmed}`);
-    return;
-  }
-
-  const { initLocalAgentHttp } = await import('./local-agent.js');
-  const { normalizeAgentList } = await import('./known-agents.js');
-  // force: true so re-running add-http updates the bypass's own endpoint/token.
-  // filterAgents stays undefined without --agent: hooks go to every tool, as before.
-  // --agent may name several tools, as it does on init.
-  const agents = normalizeAgentList(options.agent);
-  await initLocalAgentHttp({ endpoint: trimmed, token: options.token, force: true, filterAgents: agents.length > 0 ? agents : undefined });
-  log.success(`HTTP source added (${trimmed}).`);
-  log.info('It will report/sync on the next AI session in each workspace where `teamai bind-project` ran once (via the hook-dispatch hook already installed).');
-}
-
-/**
- * Remove the personal HTTP source: uninstall its resources and clear its config.
- */
-export async function sourceRemoveHttp(options: GlobalOptions): Promise<void> {
-  if (options.dryRun) {
-    log.info('[dry-run] Would remove the HTTP source');
-    return;
-  }
-  const { removeLocalAgentHttp } = await import('./local-agent.js');
-  await removeLocalAgentHttp();
 }
 
 /**

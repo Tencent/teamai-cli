@@ -17,7 +17,6 @@ import {
 import { envEntryReader } from '../resources/env.js';
 import { hooksEntryReader } from '../resources/hooks.js';
 import { mcpEntryReader } from '../resources/mcp.js';
-import { inactiveNamespaceDefines, modelsEntryReader } from '../models/profile.js';
 import type { LocalConfig } from '../types.js';
 
 /**
@@ -41,7 +40,6 @@ describe('reading the active entry files', () => {
     ['env', envEntryReader],
     ['hooks', hooksEntryReader],
     ['mcp', mcpEntryReader],
-    ['models', modelsEntryReader],
   ];
 
   it.each(readers)('fails %s instead of taking the namespace file for absent', async (_label, reader) => {
@@ -68,7 +66,6 @@ describe('reading the active entry files', () => {
       env: 'variables:\n  - { key: A, value: b }\n',
       hooks: 'hooks:\n  - { id: lint, description: x, event: Stop, command: echo }\n',
       mcp: 'servers:\n  - { name: db, transport: stdio, command: db }\n',
-      models: "profiles:\n  - { id: gw, name: Gateway, base_url: 'https://gw.test', api_key: '${API_KEY}', model_groups: [{ protocols: [anthropic], models: [m] }] }\n",
     };
     await fse.outputFile(path.join(repoPath, ...entryFilePath(reader.type, 'Checkout').split('/')), content[reader.type]);
     const localConfig: LocalConfig = {
@@ -128,13 +125,5 @@ describe('reading the active entry files', () => {
     if (failed.kind !== 'failed') return;
     expect(describeEntryFailure(failed.failure))
       .toBe('env/checkout/secrets.yaml defines secret "A" more than once. No secret was resolved this run. Keep one of them in the team repo and push.');
-  });
-
-  it('does not take a model profile namespace directory for inactive when only its case differs', async () => {
-    await fse.outputFile(path.join(repoPath, 'models', 'Checkout', 'models.yaml'),
-      "profiles:\n  - { id: gw, name: Gateway, base_url: 'https://gw.test', api_key: '${API_KEY}', model_groups: [{ protocols: [anthropic], models: [m] }] }\n");
-
-    expect(await inactiveNamespaceDefines(repoPath, ['checkout'], 'gw')).toBe(false);
-    expect(await inactiveNamespaceDefines(repoPath, ['billing'], 'gw')).toBe(true);
   });
 });

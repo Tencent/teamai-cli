@@ -33,7 +33,7 @@ describe('isPlaceableType', () => {
   it('accepts all 14 placeable resource types and rejects invalid ones', () => {
     const validTypes = [
       'skills', 'rules', 'agents', 'docs', 'env', 'hooks', 'mcp',
-      'models', 'claudemd', 'learnings', 'wiki', 'workflows', 'prompts', 'scorers',
+      'claudemd', 'learnings', 'wiki', 'prompts',
     ];
     for (const t of validTypes) {
       expect(isPlaceableType(t)).toBe(true);
@@ -49,7 +49,6 @@ describe('withNamespace', () => {
     expect(withNamespace('rules/my-rule.md', 'knowledge-ns')).toBe('rules/knowledge-ns/my-rule.md');
     expect(withNamespace('skills/my-skill', 'skills-ns')).toBe('skills/skills-ns/my-skill');
     expect(withNamespace('docs/guide.md', 'docs-ns')).toBe('docs/docs-ns/guide.md');
-    expect(withNamespace('workflows/ci.yaml', 'wf-ns')).toBe('workflows/wf-ns/ci.yaml');
     expect(withNamespace('prompts/system.md', 'pr-ns')).toBe('prompts/pr-ns/system.md');
   });
 
@@ -77,12 +76,9 @@ const manifest: ProjectsManifest = {
         env: ['fe-env'],
         hooks: ['fe-hooks'],
         mcp: ['fe-mcp'],
-        models: ['fe-models'],
         claudemd: ['fe-claudemd'],
         wiki: ['fe-wiki'],
-        workflows: ['fe-workflows'],
         prompts: ['fe-prompts'],
-        scorers: ['fe-scorers'],
       },
     },
     {
@@ -116,12 +112,9 @@ describe('resolveProjectNamespace', () => {
     expect(resolveProjectNamespace(manifest, 'front-app', 'env')).toEqual({ ok: true, namespace: 'fe-env' });
     expect(resolveProjectNamespace(manifest, 'front-app', 'hooks')).toEqual({ ok: true, namespace: 'fe-hooks' });
     expect(resolveProjectNamespace(manifest, 'front-app', 'mcp')).toEqual({ ok: true, namespace: 'fe-mcp' });
-    expect(resolveProjectNamespace(manifest, 'front-app', 'models')).toEqual({ ok: true, namespace: 'fe-models' });
     expect(resolveProjectNamespace(manifest, 'front-app', 'claudemd')).toEqual({ ok: true, namespace: 'fe-know' });
     expect(resolveProjectNamespace(manifest, 'front-app', 'wiki')).toEqual({ ok: true, namespace: 'fe-wiki' });
-    expect(resolveProjectNamespace(manifest, 'front-app', 'workflows')).toEqual({ ok: true, namespace: 'fe-workflows' });
     expect(resolveProjectNamespace(manifest, 'front-app', 'prompts')).toEqual({ ok: true, namespace: 'fe-prompts' });
-    expect(resolveProjectNamespace(manifest, 'front-app', 'scorers')).toEqual({ ok: true, namespace: 'fe-scorers' });
   });
 
   it('fails naming the type and the axis when the project declares none', () => {

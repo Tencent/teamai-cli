@@ -179,7 +179,7 @@ describe('Muse Code resource delivery', () => {
     }, 120_000,
   );
 
-  it.each([['git', false], ['git', true], ['http', false], ['http', true]] as const)(
+  it.each([['git', false], ['git', true]] as const)(
     'rejects reinitializing an existing ancestor from a plain folder (%s, force=%s)', async (mode, force) => {
       const home = makeHome(`home-guard-${mode}-${force}-${Date.now()}`);
       fs.mkdirSync(path.join(home, '.config', 'muse'), { recursive: true });
@@ -194,7 +194,7 @@ describe('Muse Code resource delivery', () => {
         .map(file => [String(file), fs.readFileSync(path.join(home, '.teamai', String(file)), 'utf8')]);
       const before = configFiles();
       expect(before.length).toBeGreaterThan(0);
-      const args = mode === 'git' ? ['init', FAKE_URL] : ['init', '--http', 'http://127.0.0.1:1', '--token', 'must-not-be-saved'];
+      const args = ['init', FAKE_URL];
       const result = await runCLI([...args, '--scope', 'workspace', '--role', 'ops', '--agent', 'muse', ...(force ? ['--force'] : [])], cwd, home);
       expect(result.code, result.output).toBe(1);
       expect(result.output).toContain('already has a workspace config');

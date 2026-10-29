@@ -99,21 +99,6 @@ Antigravity's copy keeps no team `model` (agy skips an agent whose model it does
 
 In single-repo mode, your root copy of an agent placed in a namespace is pushed to the placed file. Changing it from `.md` to `.yaml` retires the original file, even while your checkout is behind its own merged PR. Either way, TeamAI compares the placed file with the blob your last merged push delivered there. If the team edited it since, the push stops and prints a `teamai push --carried <path>@<blob>` command. Carry that edit into your root copy, then run it. The option accepts only that version, so a plain retry or a later team edit stops the push again. An agent deleted by the team is not re-added from your root copy. An older placement record without a blob catches a team edit only while your checkout is behind it, until your first edit through it merges and records its blob.
 
-### Model aliases
-
-A name such as `model: strong` is mapped per tool in `models/aliases.yaml`:
-
-```yaml
-aliases:
-  strong:
-    claude: { model: opus, effort: high }
-    codex: { model: gpt-6-sol, effort: high }
-  fast:
-    claude: haiku
-```
-
-An alias starts with a lowercase letter, then lowercase letters, digits, or `-`. A namespace that needs its own mapping uses `models/<ns>/aliases.yaml`.
-
 ## Env, hooks and MCP servers by namespace
 
 The root file reaches everyone. A namespace declared under `resources:` reaches only members who have it active, and replaces the root entry of the same name.
@@ -358,27 +343,6 @@ teamai mcp remove
 
 Muse reordering JSON object keys does not make a managed server a personal edit. Removal compares its recorded content, including nested objects, while preserving real command, argument or environment changes. Older records without that content fingerprint need a matching original definition in team Git history; if that proof is unavailable, removal keeps the server and warns.
 
-## Models
-
-Commit `models/models.yaml` yourself. The key stays on each machine. A catalog for one project goes in `models/<ns>/models.yaml`.
-
-```yaml
-profiles:
-  - id: tokenhub
-    name: Tencent TokenHub
-    base_url: https://tokenhub.tencentmaas.com
-    api_key: ${API_KEY}
-    model_groups:
-      - protocols: [anthropic, openai-chat-completions]
-        models:
-          - glm-5.3
-          - deepseek-v4-flash
-```
-
-```bash
-teamai models switch tokenhub
-```
-
 ## Packages
 
 ```bash
@@ -404,7 +368,7 @@ After pull, run `teamai packages`.
 
 ## Sessions
 
-Unattended runs now publish their sessions by default. In CI, on a cloud VM or in a hosted job, [`teamai score --drain`](scorers.md#drain-before-an-unattended-job-ends) archives the sessions this machine captured as unattended, and the step sessions of the workflow runs driven here, scrubbed, on `teamai-reports`. The local driver runs it at the end of an unattended run. To keep the old behavior, set `unattended: off`:
+Sessions can be archived with the session commands and their publishing policy.
 
 ```yaml
 # teamai.yaml
@@ -419,7 +383,7 @@ sessions:
   publish: { attended: ask, unattended: auto }
 ```
 
-Attended `ask` proposes publishing when the friction reminder offers [`session-close`](workflow.md#session-close), and the person confirms it twice: at the start, and again from their own terminal or the dashboard before the transcript goes out. Otherwise a person's sessions are archived only by a command such as `teamai session push`. Unattended `ask` acts as `off`, since nobody is there to confirm. Attended `auto` archives a session once nothing has happened in it for six hours, in the background pass that judges finished sessions. Publishing always scrubs. An HTTP team keeps no session archive, so there `sessions.publish` acts as `off`, and `teamai doctor` says so.
+With `ask`, archive a session explicitly using `teamai session push`; there is no automatic confirmation workflow. Unattended `ask` acts as `off`. Attended `auto` archives sessions after six hours without activity, through the background session publication pass. Publishing always scrubs. Legacy HTTP sources cannot publish session archives.
 
 A member's `config.yaml` wins, one mode at a time. A mode it does not name falls through to `teamai.yaml`:
 
@@ -429,7 +393,7 @@ sessions:
   publish: { attended: ask }   # attended only; unattended still follows the team
 ```
 
-`teamai doctor` reports a value that is not `off`, `ask` or `auto`, with its file and key, and teamai ignores it, so that mode falls to the next level. `teamai review --branch` fails a branch whose `teamai.yaml` has such a value. [Finished sessions](scorers.md#finished-sessions) covers `sessions` in `scorers/scoring.yaml`, which decides whether sessions are judged.
+`teamai doctor` reports a value that is not `off`, `ask` or `auto`, with its file and key, and teamai ignores it, so that mode falls to the next level. `teamai review --branch` fails a branch whose `teamai.yaml` has such a value.
 
 ## Docs
 

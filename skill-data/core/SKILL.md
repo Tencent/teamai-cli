@@ -16,7 +16,7 @@ do not skip, reorder, or invent commands.
 Look at what the user typed after `/teamai`.
 
 **If they gave NO scenario right after a TeamAI friction reminder** (the
-`[teamai]` line that offers the `session-close` workflow, or suggests
+`[teamai]` line that suggests
 `/teamai share what this session taught me`), that reminder is the scenario:
 do what it says.
 
@@ -38,9 +38,6 @@ Usage examples (copy one to get started):
   🔧  Admin — daily management (publish & update skills, rules, MCP, env):
       /teamai I already have TeamAI set up, help me manage it
 
-  📊  Anyone — open the team dashboard:
-      /teamai Open the TeamAI dashboard
-
   💡  Member — share a skill with the team (just ask in plain language):
       /teamai Share this <skill-name> skill with my team
 
@@ -57,7 +54,6 @@ Usage examples (copy one to get started):
 | Share what this session taught them                                    | `teamai skill get share`                       |
 | Understand a large multi-repo codebase, build an architecture wiki     | `teamai skill get wiki`                        |
 | Sync now, see differences, diagnose                                    | `teamai pull` · `teamai status` · `teamai doctor` |
-| Open the team dashboard                                                | `teamai dashboard` — it starts a local server (default port 3721); give the user the URL |
 | Something broke                                                        | `{SKILL_DIR}/references/troubleshooting.md`    |
 
 If the request is ambiguous (e.g. "help me with teamai" with no direction),
@@ -163,81 +159,8 @@ disablement. A conflicting rebase syncs only on completion; commit amend does no
 skip checkout hooks, prepare the worktree before launch; see the new-worktree
 section in `references/troubleshooting.md`.
 
-A team agent (`agents/<name>.yaml`) can set `model: strong`, `model: fast`, or an
-alias the team defines, instead of one tool's model. The team maps each alias per
-tool in `models/aliases.yaml`, in that tool's own model value, with an optional effort:
-
-```yaml
-aliases:
-  strong:
-    claude: { model: opus, effort: high }
-    codex:  { model: gpt-6-sol, effort: high }
-```
-
-`teamai pull` writes the mapped model into each tool's agent file, with the effort
-in that tool's own field: `effort` for the Claude family, CodeBuddy, Qoder and Qoder CN,
-`model_reasoning_effort` for the Codex family, `variant` for OpenCode. Cursor takes
-effort inside its model string (`claude-opus-5[effort=high]`); Copilot, Kiro, WorkBuddy,
-JoyCode, ZCode, OMP, Muse Code and Antigravity CLI take none, and pull warns and drops an effort mapped for them.
-Qoder CN uses the `qoder` entry; only the Claude and Codex variants and Qoder CN inherit
-an entry, so never expect a `claude` model in Qoder or ZCode. A tool the alias does
-not map gets no `model` and uses its default; a concrete model such as `opus` is
-written as is; `tool_extras.<tool>.model` pins one tool and skips the alias. Suggest
-YAML agents: a legacy `agents/<name>.md` is copied as is, so its alias is not resolved.
-Before a team adds its first alias, every member updates teamai: an older CLI writes
-`model: strong` literally, and its push can replace the alias with a concrete model.
-
-A member overrides an entry on their machine in `~/.teamai/models/aliases.yaml`
-(same `aliases:` shape). For one tool it replaces the team's whole entry, effort
-included, and `~` or `default` gives that tool no model and no effort. Order per
-tool: extras model, local entry, team entry, no model. Keys must be `strong`, `fast`
-or a team alias; other names do nothing. One file serves every scope and every team
-with that alias name. An ordinary `teamai pull` applies an edit. In the team file,
-`default` is a literal model value and `~` is an error.
-
-A role or project redefines an alias in `models/<ns>/aliases.yaml`, read where `<ns>`
-is in `resources.models`, like `models/<ns>/models.yaml`. The namespace alias replaces
-the root alias whole (a tool it does not map gets no `model`); the same alias in two
-active namespaces holds alias agents, as a structural error does. A name defined in any
-aliases file of the team repo, active or not, is an alias: with no active definition it
-gives no `model`, and pull warns once per such alias. `teamai doctor` notes an agent's
-alias defined in an inactive namespace; to use it, add `models: [<ns>]` to the role's or
-project's resources, or rename the alias if it was meant as a concrete model id.
-
-A structural error in any aliases file, active or not (bad YAML, a wrong type, a bad alias
-name, an effort without a model, `~` in a team file, keys but no top-level `aliases:`)
-holds every agent with a `model`; one
-in the local file holds only agents whose `model` is an alias. Pull keeps
-their copies and push skips them until the file its warning names is fixed; then an
-ordinary `teamai pull` delivers them. An unknown
-tool key, an unknown option field, or an alias named like `opus` or `inherit` is only
-dropped, with a warning when an agent uses that alias; `gateways` is ignored.
-
-On a tool switched with `teamai models switch`, alias agents get no effort (not even a
-`tool_extras.<tool>` one, unless the extras also pin a `model`), and
-Claude keeps only `opus`, `sonnet` or `haiku` (the switch routes those to the gateway)
-while Codex, OpenCode, CodeBuddy and WorkBuddy get no `model`. No `model` means the
-tool's native inheritance (for Codex, `[agents].default_subagent_model` or the parent's
-model), not the profile's model. Variants such as tclaude are never switched. An ordinary
-`teamai pull` after `models switch` or `models restore` rewrites the affected agents.
-
-On push, an alias agent's model and alias effort are never read as edits: a copy that
-matches the last pull or the current mapping is unedited, and a hand-edited model or
-effort is reported as drift and not pushed (other edits still push), with where to change
-it: the member's override file, the team aliases file the alias comes from, or `teamai models
-restore --agent <tool>` for a switched tool. Writing an alias name in a deployed copy (`model: fast`)
-and pushing proposes `model: <alias>`, except in a tool whose `tool_extras.<tool>.model` pins it,
-where a changed value is drift on that pin. Never tell a user to push a concrete model over an alias.
-
-To answer "why does this tool run this model", run `teamai doctor`. Each alias agent gets
-a note with one line per tool: the model and effort it receives, then `[step: source]`.
-`extras` = `tool_extras.<tool>.model`; `switched` = the tool runs a model profile;
-`local` = the member's override (`tool default (chosen in <path>)` is their `~`/`default`);
-`team` = the team file named; `default` = no model field (alias unmapped for that tool, or
-no active file defines it). A Codex line with no effort means the session's effort carries
-over. A line naming what "the last pull deployed" is fixed by an ordinary `teamai pull`.
-The failing check `Agent model aliases can be resolved` names why agents are held (broken
-aliases file, namespace conflict, unreadable switched-tool settings) and which file to fix.
+A team agent's native `model` and `tool_extras` values are passed to the target
+tool. TeamAI does not define model aliases or switch gateway configurations.
 
 ## References
 
@@ -251,3 +174,11 @@ In the files below, `{SKILL_DIR}` is the directory `teamai skill path core` prin
 
 `teamai skill get core --full` prints this skill with all three references
 appended. Load a single file above when you only need one.
+
+## Task documents and knowledge format
+
+For task-level intent, spec, plan, required human reviews and PR delivery, load
+`teamai skill get sdlc`. Task documents live in the business repository under
+`intent/<workspace_id>/<task_id>/`, outside the shared docs mirror. New generated
+knowledge uses OKF; inspect existing documents and preview migrations with the
+same skill. Executable skills and rules keep their native formats.

@@ -1,3 +1,4 @@
+import { asKnowledge } from './documents/okf.js';
 // -*- coding: utf-8 -*-
 /**
  * iWiki 双路模式：在产出 learning 之外，同时产出 codebase suggestions。
@@ -346,7 +347,7 @@ export async function importFromIWikiDual(opts: IWikiDualOptions): Promise<{
         }
 
         if (updatedSections.length > 0) {
-            await fs.writeFile(filePath, content, 'utf8');
+            await fs.writeFile(filePath, asKnowledge(content, 'Imported Reference'), 'utf8');
         }
     } else {
         for (const sectionKey of sections) {

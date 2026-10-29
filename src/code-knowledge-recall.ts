@@ -1,3 +1,4 @@
+import { readDocument, sourceResources } from './documents/okf.js';
 /**
  * Graph-aware codebase knowledge recall (BM25 + graph-boost).
  *
@@ -8,7 +9,6 @@
 import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 
-import matter from 'gray-matter';
 
 import type { GraphIndex } from './wiki-engine/core/graph-index.schema.js';
 import { tokenize, tokenCount, MAX_TOKENIZE_CHARS } from './utils/tokenizer.js';
@@ -489,19 +489,12 @@ async function loadPagesRecursive(
         let title: string;
         let sources: string[] | undefined;
         try {
-          const { data } = matter(content);
+          const { data } = readDocument(content, relFilePath);
           title = typeof data.title === 'string' && data.title.trim()
             ? data.title.trim()
             : entry.name.replace('.md', '');
-          const raw = data.source;
-          if (Array.isArray(raw)) {
-            const filtered = raw.filter((s): s is string => typeof s === 'string' && s.trim() !== '');
-            sources = filtered.length > 0 ? filtered : undefined;
-          } else if (typeof raw === 'string' && raw.trim() !== '') {
-            sources = [raw.trim()];
-          } else {
-            sources = undefined;
-          }
+          const resources = sourceResources(data);
+          sources = resources.length ? resources : undefined;
         } catch {
           // gray-matter 解析失败（frontmatter 格式损坏）→ 降级为正则抓 title，sources 置空
           const titleMatch = content.match(/^title:\s*(.+)$/m);

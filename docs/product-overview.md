@@ -2,7 +2,7 @@
 
 Setup and daily use are in the [Usage Guide](usage-guide.md).
 
-TeamAI keeps a team's skills, rules, agents, learnings, models, MCP, and other AI assets in a git repo, and syncs them into each person's AI tools.
+TeamAI keeps a team's skills, rules, agents, learnings, MCP, and other AI assets in a git repo, and syncs them into each person's AI tools.
 
 ---
 
@@ -10,9 +10,9 @@ TeamAI keeps a team's skills, rules, agents, learnings, models, MCP, and other A
 
 | Layer | What it does | Read |
 |-------|--------------|------|
-| **Team Execution** | The same skills, rules, and hooks on every machine | [Core Harness](guide/sharing.md), [Distribution mechanism](guide/distribution.md), [Workflows](guide/workflow.md) |
+| **Team Execution** | The same skills, rules, and hooks on every machine | [Core Harness](guide/sharing.md), [Distribution mechanism](guide/distribution.md) |
 | **Team Context** (beta) | Agents can search what the team learned and how the code is built | [Team Context](guide/knowledge.md) |
-| **Team Improvement** (beta) | Sessions feed lessons back to the team, and you see how the team uses AI | [Dashboard](guide/dashboard.md), [Usage reporting](guide/reporting.md), [Scorers](guide/scorers.md) |
+| **Team Improvement** (beta) | Sessions feed lessons back to the team, and you see how the team uses AI | [Usage reporting](guide/reporting.md) |
 
 What each agent supports is in the README's [Product Overview](../README.md#product-overview). Git hosts: GitHub, GitLab, GitCode, CNB, TGit, and any private Git service.
 
@@ -36,7 +36,6 @@ SessionStart hook → teamai pull → each AI tool
 | Env | `env/env.yaml` |
 | Hooks | `hooks/hooks.yaml` |
 | MCP | `mcp/mcp.yaml` |
-| Models | `models/models.yaml` |
 | Packages | `packages` in `teamai.yaml` |
 | Docs | `docs/` |
 | Learnings | `learnings/` |
@@ -60,6 +59,5 @@ With recall on, an agent searches the team's lessons before a task. When a sessi
 teamai digest                                     # weekly team digest
 teamai session save                               # save a redacted session summary
 teamai session migrate                            # move a full transcript between AI tools; archive, search, and restore team sessions
-teamai dashboard                                  # local dashboard
 teamai recall maintenance --prune --dry-run       # find lessons nobody uses
 ```

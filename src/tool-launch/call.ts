@@ -10,7 +10,6 @@ import { log } from '../utils/logger.js';
 import { runTool } from './run.js';
 import type { TokenUsage } from './stdout.js';
 import { executableOf, LAUNCH_ORDER, launchAdapterOf, type LaunchOrderTool } from './tools.js';
-import { agyGatewayEnv } from '../models/agy-gateway.js';
 
 const DEFAULT_TIMEOUT_MS = 600_000;
 const DEFAULT_CONCURRENCY = 3;
@@ -53,7 +52,7 @@ export interface MemberTool {
 
 /**
  * The tools the member names for `scope`, the most specific first: TEAMAI_AI_TOOL, then `ai.tool` in the scope's own
- * config, then in ~/.teamai/config.yaml. AI calls take the first; a workflow step puts its own settings between them.
+ * config, then in ~/.teamai/config.yaml. AI calls take the first configured value.
  * Each names the level that sets it, so a message sends the member to the file that does.
  */
 export async function memberTools(scope: LocalConfig | undefined): Promise<MemberTool[]> {
@@ -105,10 +104,10 @@ export function isOverrideInvalid(error: unknown): error is CallError & { kind: 
 type Picked = { tool: LaunchOrderTool; executable: string };
 
 /** The environment a call's tool runs in: the member's own, marked as teamai's launch, without an outer launch's checkout. */
-function callEnv(launchedBy: LaunchedBy, tool: string): NodeJS.ProcessEnv {
+function callEnv(launchedBy: LaunchedBy, _selectedTool: string): NodeJS.ProcessEnv {
   const { TEAMAI_LAUNCHED_TOOL: _tool, TEAMAI_LAUNCHED_CHECKOUT: _checkout, ...env } = process.env;
   // Our own session, not the user's: its hooks would print the share-learnings hint into the answer we read.
-  return { ...env, ...(tool === 'agy' ? agyGatewayEnv(env) : {}), TEAMAI_CONTRIBUTE_HINT_DISABLED: '1', [LAUNCHED_BY_ENV]: launchedBy, [RUN_MODE_ENV]: resolveRunMode(process.env) };
+  return { ...env, TEAMAI_CONTRIBUTE_HINT_DISABLED: '1', [LAUNCHED_BY_ENV]: launchedBy, [RUN_MODE_ENV]: resolveRunMode(process.env) };
 }
 
 /** A caller that resolves its tool once per scope and reuses it for every call there. */

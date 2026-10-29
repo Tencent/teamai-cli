@@ -25,13 +25,12 @@
  * teamai's git hooks run with the member's HOME.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { waitForDetachedChildren } from '../helpers/detached-processes.js';
-import { startMockServer, type MockServerHandle } from '../helpers/mock-server.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -586,57 +585,5 @@ describe.skipIf(process.platform === 'win32')('doctor, pull --dry-run and backgr
     const doctor = m.teamai(['doctor'], app);
     expect(doctor).toContain(`Git exclude for delivered team resources: on, from gitExcludeEnabled: true in ${m.partitionConfig()}.`);
     expect(doctor).toContain('✔ Delivered team resources are kept out of git');
-  }, 120_000);
-});
-
-describe.skipIf(process.platform === 'win32')('the git exclude setting in HTTP mode (#915)', () => {
-  let server: MockServerHandle | undefined;
-  afterAll(async () => { await server?.close(); });
-
-  it('reads no team setting: without the member\'s gitExcludeEnabled the setting is off, with no teamai.yaml too', async () => {
-    const API_KEY = 'e2e-http-key';
-    server = await startMockServer({ apiKey: API_KEY });
-    const base = fs.mkdtempSync(path.join(sandbox, 'http-'));
-    const home = path.join(base, 'home');
-    fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
-    const env: NodeJS.ProcessEnv = {
-      ...process.env, ...GIT_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: path.join(home, '.config'),
-      GIT_CONFIG_NOSYSTEM: '1', FORCE_COLOR: '0',
-    };
-    delete env.CLAUDE_CONFIG_DIR;
-    delete env.TEAMAI_API_TOKEN;
-    delete env.TEAMAI_API_KEY;
-    // Spawned asynchronously: the mock backend runs in this process.
-    const cli = (args: string[], cwd: string): Promise<Run> => new Promise((resolve) => {
-      const child = spawn(process.execPath, [CLI, ...args], { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
-      let output = '';
-      child.stdout.on('data', (chunk) => { output += String(chunk); });
-      child.stderr.on('data', (chunk) => { output += String(chunk); });
-      child.on('close', (code) => resolve({ code, output }));
-    });
-    const project = path.join(base, 'app');
-    write(path.join(project, 'README.md'), '# app\n');
-    fs.mkdirSync(path.join(project, '.claude'));
-    spawnSync('git', ['init', '-q', '-b', 'main'], { cwd: project, env });
-    const app = fs.realpathSync.native(project);
-    const init = await cli(['init', '--http', server.url, '--token', API_KEY, '--scope', 'project', '--agent', 'claude', '--force'], app);
-    expect(init.code, init.output).toBe(0);
-    const projects = path.join(home, '.teamai', 'projects');
-    const config = path.join(projects, fs.readdirSync(projects)[0], 'config.yaml');
-    const stub = path.join(/^ {2}localPath: (.+)$/m.exec(read(config))![1].trim(), 'teamai.yaml');
-    const exclude = path.join(app, '.git', 'info', 'exclude');
-
-    write(config, `${read(config)}gitExcludeEnabled: true\n`);
-    const on = await cli(['pull'], app);
-    expect(on.code, on.output).toBe(0);
-    expect(blockLines(exclude)).toContain('/.claude/skills/teamai/SKILL.md');
-
-    write(config, read(config).replace('gitExcludeEnabled: true\n', ''));
-    fs.rmSync(stub);
-    const off = await cli(['pull'], app);
-    expect(off.output).not.toContain('could not read sharing.gitExclude');
-    expect(blockLines(exclude)).toEqual([]);
-    const doctor = await cli(['doctor'], app);
-    expect(doctor.output).toContain('Git exclude for delivered team resources: off, from the default.');
   }, 120_000);
 });

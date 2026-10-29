@@ -364,16 +364,6 @@ describe("the member's ai.tool across a write of the config file", () => {
     expect(await hasUserScopeInstall()).toBe(true);
   });
 
-  it('skips an empty workflows.tools entry of the machine file and keeps the others', async () => {
-    const machineFile = path.join(home, '.teamai', 'config.yaml');
-    fs.mkdirSync(path.dirname(machineFile), { recursive: true });
-    fs.writeFileSync(machineFile, 'workflows:\n  tools: { default: codex, reviewer: "" }\n');
-    vi.mocked(log.warn).mockClear();
-
-    expect(await loadMemberSettings()).toEqual({ workflows: { tools: { default: 'codex' } } });
-    expect(vi.mocked(log.warn).mock.calls.flat().join('\n')).toContain(`Ignoring workflows.tools.reviewer in ${machineFile}`);
-  });
-
   it('keeps all machine settings when a user-scope init writes the install record', async () => {
     const machineFile = path.join(home, '.teamai', 'config.yaml');
     fs.mkdirSync(path.dirname(machineFile), { recursive: true });
@@ -382,7 +372,7 @@ describe("the member's ai.tool across a write of the config file", () => {
     await saveLocalConfig(freshInstall('user'));
 
     const saved = YAML.parse(fs.readFileSync(machineFile, 'utf8'));
-    expect(saved).toMatchObject({ recallEnabled: true, workflows: { tools: { default: 'codex' } } });
+    expect(saved).toMatchObject({ recallEnabled: true, });
     expect(await hasUserScopeInstall()).toBe(true);
   });
 

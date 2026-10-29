@@ -74,64 +74,51 @@ Paths are relative to the project root. `cwd only`: the tool reads it only from 
 
 User scope, from #1221's matrix; a fix merged since is marked `t`, with a note. `✓` works. `◐` works by default, and a condition breaks it while doctor still reports it delivered. `✗` broken in the default setup. `+` the tool supports it and teamai does not build it. `—` the tool has no such feature. `?` unknown. The letter after the mark is the evidence, as above.
 
-| Tool | Env | Workflows (local driver) | Recall | Stats | AI backend | Votes judge | Session judge | HTTP agent hooks |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Claude Code | ✓t | ✓v | ✓v | ✓v | ✓v | ✓v | ✓t<sup>1</sup> | ✓v |
-| Codex CLI | ✓t | ✓t | ✓v | ✓t<sup>2</sup> | ✓v | ✓t<sup>3</sup> | ✓t<sup>1</sup> | ✓t<sup>4</sup> |
-| Codex CLI Internal | ? | ✓t | ? | ? | ✓t | ? | ? | ? |
-| Claude Code Internal | ? | ✓t | ? | ? | ✓t | ? | ? | ? |
-| TClaude | ? | ✓t | ? | ? | ✓t | ? | ? | ? |
-| TCodex | ? | ✓t | ? | ? | ✓t | ? | ? | ? |
-| Cursor | ? | +s<sup>5</sup> | ✗v<sup>6</sup> | ✓v<sup>7</sup> | ✓d | +s | ✓t<sup>1</sup> | +t<sup>8</sup> |
-| Copilot | ? | +s | ✓v | ✓t<sup>2</sup> | ✓d | ? | ✓t<sup>1</sup> | —t |
-| JoyCode | ? | ? | ◐s | ? | ? | ? | ? | ? |
-| Qoder | ? | ? | ◐s | ✓s | ✓d | ? | ✓s<sup>9</sup> | ✓s |
-| Qoder CN | ? | ? | ◐s | ✓s | ? | ? | ✓s<sup>9</sup> | ✓t<sup>10</sup> |
-| Kiro | ? | ? | ◐d | ? | ✓d | ? | ✓d<sup>11</sup> | ✓d<sup>12</sup> |
-| Trae | ? | ? | ? | ? | ? | ? | ✓s<sup>13</sup> | ? |
-| Trae CN | ? | ? | ? | ? | ? | ? | ✓s<sup>13</sup> | ? |
-| ZCode | ✓t | +s | ✓s | ✓s | +s | ✓t<sup>3</sup> | ✓d<sup>14</sup> | +t<sup>15</sup> |
-| Oh My Pi | ✓s | +s | ✓v | ✓t<sup>2</sup> | ✓d | ? | ✓s<sup>16</sup> | ✓s<sup>17</sup> |
-| Pi Coding Agent | ✓s | +v | ✓v | ✓t<sup>2</sup> | ✓s | ? | ◐s<sup>18</sup> | ✓s<sup>19</sup> |
-| CodeBuddy | ? | ✓d | ✓s | ✓v | ✓d | +v | ✓t<sup>1</sup> | ✓s |
-| OpenClaw | ◐d | +d | ✓s | +s | ✓d | —t | ◐s<sup>20</sup> | ✓s<sup>21</sup> |
-| Hermes | ◐s | +s | ✓v | +s | ✓s | —t | ✓s<sup>22</sup> | ✓s<sup>23</sup> |
-| DeepSeek Harness | ✗s | +s | ✓s | ✓t<sup>2</sup> | +s | ? | ◐s<sup>24</sup> | —t |
-| WorkBuddy | ? | ✓t | ✓t | ? | ✓t | ? | ✓t<sup>25</sup> | ? |
-| OpenCode | ? | ✓t | ✓v | ✓t<sup>2</sup> | ✓v | ? | ✓t<sup>1</sup> | ✓v<sup>26</sup> |
-| Muse Code | ✓t | +v | ✓t | ✓v | ✓v | ✓t<sup>3</sup> | ✓t<sup>1</sup> | ✓t<sup>27</sup> |
-| Antigravity | ✓v<sup>28</sup> | ✓v | ✓v | ✓v | ✓v | ✗v<sup>29</sup> | ✓t<sup>30</sup> | ✓t<sup>31</sup> |
+| Tool | Env | Recall | Stats | AI backend | Votes judge | HTTP agent hooks |
+| --- | --- | --- | --- | --- | --- | --- |
+| Claude Code | ✓t | ✓v | ✓v | ✓v | ✓v | ✓v |
+| Codex CLI | ✓t | ✓v | ✓t<sup>1</sup> | ✓v | ✓t<sup>2</sup> | ✓t<sup>3</sup> |
+| Codex CLI Internal | ? | ? | ? | ✓t | ? | ? |
+| Claude Code Internal | ? | ? | ? | ✓t | ? | ? |
+| TClaude | ? | ? | ? | ✓t | ? | ? |
+| TCodex | ? | ? | ? | ✓t | ? | ? |
+| Cursor | ? | ✗v<sup>4</sup> | ✓v<sup>5</sup> | ✓d | +s | +t<sup>6</sup> |
+| Copilot | ? | ✓v | ✓t<sup>1</sup> | ✓d | ? | —t |
+| JoyCode | ? | ◐s | ? | ? | ? | ? |
+| Qoder | ? | ◐s | ✓s | ✓d | ? | ✓s |
+| Qoder CN | ? | ◐s | ✓s | ? | ? | ✓t<sup>7</sup> |
+| Kiro | ? | ◐d | ? | ✓d | ? | ✓d<sup>8</sup> |
+| Trae | ? | ? | ? | ? | ? | ? |
+| Trae CN | ? | ? | ? | ? | ? | ? |
+| ZCode | ✓t | ✓s | ✓s | +s | ✓t<sup>2</sup> | +t<sup>9</sup> |
+| Oh My Pi | ✓s | ✓v | ✓t<sup>1</sup> | ✓d | ? | ✓s<sup>10</sup> |
+| Pi Coding Agent | ✓s | ✓v | ✓t<sup>1</sup> | ✓s | ? | ✓s<sup>11</sup> |
+| CodeBuddy | ? | ✓s | ✓v | ✓d | +v | ✓s |
+| OpenClaw | ◐d | ✓s | +s | ✓d | —t | ✓s<sup>12</sup> |
+| Hermes | ◐s | ✓v | +s | ✓s | —t | ✓s<sup>13</sup> |
+| DeepSeek Harness | ✗s | ✓s | ✓t<sup>1</sup> | +s | ? | —t |
+| WorkBuddy | ? | ✓t | ? | ✓t | ? | ? |
+| OpenCode | ? | ✓v | ✓t<sup>1</sup> | ✓v | ? | ✓v<sup>14</sup> |
+| Muse Code | ✓t | ✓t | ✓v | ✓v | ✓t<sup>2</sup> | ✓t<sup>15</sup> |
+| Antigravity | ✓v<sup>16</sup> | ✓v | ✓v | ✓v | ✗v<sup>17</sup> | ✓t<sup>18</sup> |
 
 Notes:
 
-1. #1386 the session judges its skill-driven run; not rerun
-2. A1 (#1245) records its skill loads; not rerun
-3. #1374 judges the reply in its Stop payload; not rerun
-4. #1224 runs the Codex trust pass; not rerun
-5. Cursor IDE: —
-6. Cursor IDE: ✓v
-7. Cursor IDE: ✓t
-8. teamai refuses agent hooks in the Cursor hook format
-9. Claude Code-style subagents, transcripts under <id>/subagents/ (qodercli 1.1.78); not run
-10. #1224 writes ~/.qoder-cn/settings.json; not rerun
-11. a subagent works in its own context window, without the conversation; not run
-12. runs from teamai's team-hook bridge, which can block a tool call; Kiro's hook docs
-13. the Task tool starts a fresh subagent; no session variable, so the session names its tool with --tools; not run
-14. the built-in general-purpose subagent works in its own context; not run
-15. refused until teamai writes the hooks.events shape (#1224)
-16. the task tool starts each child as a new agent session (omp 18.12.6); not run
-17. runs from teamai's team-hook bridge, which can block a tool call; OMP's extension source
-18. bare Pi starts no subagent, so its session answers h4 and does not judge; the subagent example extension adds one (since 0.24.0); not run
-19. runs from teamai's team-hook bridge, which can block a tool call; Pi's extension source
-20. sessions_spawn with isolated context, in the coding and messaging tool profiles; a tool policy can remove it; not run
-21. runs from teamai's team-hook bridge, which can block a tool call; OpenClaw's plugin source
-22. delegate_task starts a child agent with a fresh conversation; not run
-23. runs from teamai's team-hook bridge, which can block a tool call; Hermes's shell-hook source
-24. the subagent tool with the fresh spawn backend, not fork; the minimal preset leaves it out; not run
-25. CodeBuddy's engine, whose session judges its skill-driven run; not run
-26. runs from teamai's team-hook bridge, which can block a tool call; OpenCode 1.18.23 ran a team hook through it
-27. #1224 writes them to settings.json; not rerun
-28. agy 1.4.8 run_command inherits the environment agy starts in
-29. agy 1.4.8 PostToolUse carries no tool output, so a teamai recall run never reaches the recall log
-30. invoke_subagent starts a fresh conversation that gets only its prompt (agy 1.4.8); no session variable, so the session names its tool with --tools; not run
-31. runs from teamai's team-hook bridge, which can block a tool call; the dispatcher hands it a Claude payload
+1. A1 (#1245) records its skill loads; not rerun
+2. #1374 judges the reply in its Stop payload; not rerun
+3. #1224 runs the Codex trust pass; not rerun
+4. Cursor IDE: ✓v
+5. Cursor IDE: ✓t
+6. teamai refuses agent hooks in the Cursor hook format
+7. #1224 writes ~/.qoder-cn/settings.json; not rerun
+8. runs from teamai's team-hook bridge, which can block a tool call; Kiro's hook docs
+9. refused until teamai writes the hooks.events shape (#1224)
+10. runs from teamai's team-hook bridge, which can block a tool call; OMP's extension source
+11. runs from teamai's team-hook bridge, which can block a tool call; Pi's extension source
+12. runs from teamai's team-hook bridge, which can block a tool call; OpenClaw's plugin source
+13. runs from teamai's team-hook bridge, which can block a tool call; Hermes's shell-hook source
+14. runs from teamai's team-hook bridge, which can block a tool call; OpenCode 1.18.23 ran a team hook through it
+15. #1224 writes them to settings.json; not rerun
+16. agy 1.4.8 run_command inherits the environment agy starts in
+17. agy 1.4.8 PostToolUse carries no tool output, so a teamai recall run never reaches the recall log
+18. runs from teamai's team-hook bridge, which can block a tool call; the dispatcher hands it a Claude payload

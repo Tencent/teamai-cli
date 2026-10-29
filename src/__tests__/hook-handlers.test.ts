@@ -246,7 +246,7 @@ describe('hook-handlers registry', () => {
     // the inline pass for a plain tool call has no handlers at all, and the
     // host-visible cost collapses to bundle load + spawn.
     const handlers = buildHandlerRegistry().filter((r) => r.event === 'post-tool-use' && r.matcher === '*');
-    for (const name of ['dashboard-report', 'recall-attribution', 'local-agent-sync']) {
+    for (const name of ['dashboard-report', 'recall-attribution']) {
       const reg = handlers.find((r) => (r.handler as { name: string }).name === name);
       expect(reg, name).toBeDefined();
       expect(reg!.background, `${name} must run detached`).toBe(true);
@@ -454,28 +454,6 @@ describe('hook-handlers registry', () => {
     }
   });
 
-  it.each(['pi', 'omp', 'hermes', 'codex', 'codex-internal', 'tcodex'])('does not read or sync HTTP prompts for excluded %s', async (tool) => {
-    const registry = buildHandlerRegistry();
-    const cached = registry.find((r) => r.handler.name === 'http-prompt-instructions')!.handler;
-    const sync = registry.find((r) => r.handler.name === 'local-agent-sync')!.handler;
-    const config = { scope: 'project', disabledAgents: [tool] } as never;
-    const input = { cwd: '/project', hook_event_name: tool.includes('codex') ? 'SubagentStart' : 'instructions' };
-    expect(await cached.execute(input, tool, config)).toBeNull();
-    expect(await sync.execute({ cwd: '/project', hook_event_name: 'SessionStart' }, tool, config)).toBeNull();
-    expect(mockLocalAgentInstructionText).not.toHaveBeenCalled();
-    expect(mockReportAndSyncFromHook).not.toHaveBeenCalled();
-  });
-
-  it('still delivers cached HTTP prompts without a git team configuration', async () => {
-    mockLocalAgentInstructionText.mockResolvedValue('HTTP-PROMPT');
-    const registry = buildHandlerRegistry();
-    const cached = registry.find((r) => r.handler.name === 'http-prompt-instructions')!.handler;
-    const sync = registry.find((r) => r.handler.name === 'local-agent-sync')!.handler;
-    expect(await cached.execute({ cwd: '/project' }, 'pi', null)).toContain('HTTP-PROMPT');
-    expect(await sync.execute({ cwd: '/project', hook_event_name: 'SessionStart' }, 'codex', null)).toContain('HTTP-PROMPT');
-    expect(mockReportAndSyncFromHook).toHaveBeenCalledOnce();
-  });
-
   it('session-start pull seeds the hook tool root before pulling', async () => {
     const registry = buildHandlerRegistry();
     const handler = registry.find(
@@ -519,29 +497,6 @@ describe('hook-handlers registry', () => {
     if (!registered) throw new Error('no session-start pull handler');
     return registered.handler;
   }
-
-  it('session-start pull starts score-sessions detached once the late usage report settles, when a scope scores sessions (#1179)', async () => {
-    const handler = sessionStartPull();
-    const cwd = fs.realpathSync.native(os.tmpdir());
-    mockBackgroundPassScopes.mockResolvedValueOnce([scope]);
-
-    await handler.execute({ cwd }, 'claude', scope);
-
-    expect(mockBackgroundPassScopes).toHaveBeenCalledWith(cwd);
-    expect(mockSpawn).toHaveBeenCalledWith(process.execPath, [expect.any(String), 'score-sessions'], expect.objectContaining({ cwd, detached: true, stdio: 'ignore' }));
-    expect(mockSettleLateUsageReport.mock.invocationCallOrder.at(-1)).toBeLessThan(mockSpawn.mock.invocationCallOrder.at(-1) ?? 0);
-  });
-
-  it('session-start pull scores the sessions of the directory it runs in when the payload names none (#1179)', async () => {
-    const handler = sessionStartPull();
-    mockBackgroundPassScopes.mockResolvedValueOnce([scope]);
-    mockSpawn.mockClear();
-
-    await handler.execute({}, 'claude', scope);
-
-    expect(mockBackgroundPassScopes).toHaveBeenLastCalledWith(process.cwd());
-    expect(mockSpawn).toHaveBeenCalledWith(process.execPath, [expect.any(String), 'score-sessions'], expect.objectContaining({ cwd: process.cwd() }));
-  });
 
   it('session-start pull starts no score-sessions when no scope scores sessions (#1179)', async () => {
     const handler = sessionStartPull();
@@ -662,7 +617,7 @@ describe('hook-handlers registry', () => {
 
     await handler.execute({ session_id: 'sid-abc', cwd: '/x' }, 'claude', null);
     // transcriptPath is the third arg; absent from this stdin so it is undefined.
-    expect(mockContributeCheckForSession).toHaveBeenCalledWith('sid-abc', '/x', undefined, false, undefined);
+    expect(mockContributeCheckForSession).toHaveBeenCalledWith('sid-abc', '/x', undefined, false);
   });
 
   it('contribute-check handler forwards transcript_path so friction is read live', async () => {
@@ -677,7 +632,7 @@ describe('hook-handlers registry', () => {
       { session_id: 'sid-abc', cwd: '/x', transcript_path: '/t/transcript.jsonl' },
       'claude', null,
     );
-    expect(mockContributeCheckForSession).toHaveBeenCalledWith('sid-abc', '/x', '/t/transcript.jsonl', false, undefined);
+    expect(mockContributeCheckForSession).toHaveBeenCalledWith('sid-abc', '/x', '/t/transcript.jsonl', false);
   });
 
   it('contribute-check handler routes hint through formatStopHookOutput for cursor', async () => {
@@ -721,7 +676,7 @@ describe('hook-handlers registry', () => {
 
     const result = await handler.execute({ session_id: 's1', cwd: '/x' }, tool, null);
     expect(result).toBeNull();
-    expect(mockContributeCheckForSession).toHaveBeenCalledWith('s1', '/x', undefined, true, undefined);
+    expect(mockContributeCheckForSession).toHaveBeenCalledWith('s1', '/x', undefined, true);
   });
 
   it('contribute-check handler returns stdout hint for claude (unchanged)', async () => {
@@ -736,7 +691,7 @@ describe('hook-handlers registry', () => {
     expect(result).not.toBeNull();
     expect(result).toContain('do share');
     // claude is not a stash tool: called with stash=false.
-    expect(mockContributeCheckForSession).toHaveBeenCalledWith('s2', '/x', undefined, false, undefined);
+    expect(mockContributeCheckForSession).toHaveBeenCalledWith('s2', '/x', undefined, false);
   });
 
   it('contribute-check handler stays silent when the team turned the hint off', async () => {
@@ -1004,20 +959,6 @@ describe('hook-handlers registry', () => {
     expect(skillUse).toMatchObject({ matcher: '*', background: true, requiresConfig: true });
   });
 
-  // Perf regression: post-tool-use fires on every tool call, so its local-agent
-  // report/sync (two HTTP round-trips) must run detached — never in the
-  // foreground where it stalls the host's hook completion by ~300ms–seconds
-  // depending on network latency. Mirrors the `stop` event, which already
-  // backgrounds local-agent-sync.
-  it('post-tool-use wildcard local-agent-sync is a background handler', () => {
-    const registry = buildHandlerRegistry();
-    const localAgent = registry.find(
-      (r) => r.event === 'post-tool-use' && r.matcher === '*' && r.handler.name === 'local-agent-sync',
-    );
-    expect(localAgent).toBeDefined();
-    expect(localAgent!.background).toBe(true);
-  });
-
   // post-tool-use dashboard-report runs detached (#1216): the old "fast local
   // append, detaching adds spawn overhead" premise is platform-dependent — on
   // Windows (Defender, disk contention) the same append measured 3.8 s inside
@@ -1032,41 +973,6 @@ describe('hook-handlers registry', () => {
     );
     expect(dashboard).toBeDefined();
     expect(dashboard!.background).toBe(true);
-  });
-
-  // prompt-submit local-agent-sync must NOT be backgrounded: when the org
-  // binding prompt is enabled (TEAMAI_BIND_PROMPT_ENABLED=1) it writes the
-  // binding hint to STDOUT for the host to inject back into the session, and a
-  // detached child's STDOUT is discarded. Guards against a copy-paste of the
-  // post-tool-use change onto prompt-submit.
-  it('prompt-submit wildcard local-agent-sync stays foreground', () => {
-    const registry = buildHandlerRegistry();
-    const localAgent = registry.find(
-      (r) => r.event === 'prompt-submit' && r.matcher === '*' && r.handler.name === 'local-agent-sync',
-    );
-    expect(localAgent).toBeDefined();
-    expect(localAgent!.background).not.toBe(true);
-  });
-
-  // Regression: foreground local-agent-sync runs inline and blocks the host's
-  // hook. Its timeout MUST stay safely under CodeBuddy's per-event hook cap
-  // (see builtin-hooks.ts: UserPromptSubmit=10s, SessionStart=15s). Otherwise a
-  // slow/unreachable HTTP endpoint makes CodeBuddy abort the hook with
-  // "Hook timed out after 10000ms" (error 3003) on every prompt — breaking the
-  // IDE for anyone who installed `teamai init --http`.
-  it('foreground local-agent-sync timeouts are unified under 5s', () => {
-    const registry = buildHandlerRegistry();
-    const promptSubmit = registry.find(
-      (r) => r.event === 'prompt-submit' && r.matcher === '*' && r.handler.name === 'local-agent-sync',
-    );
-    const sessionStart = registry.find(
-      (r) => r.event === 'session-start' && r.matcher === '*' && r.handler.name === 'local-agent-sync',
-    );
-    // Kept < 5s (and unified) so a slow/unreachable HTTP endpoint never blocks the
-    // IDE long enough to trip CodeBuddy's per-event hook cap (error 3003).
-    expect(promptSubmit!.timeoutMs).toBeLessThan(5_000);
-    expect(sessionStart!.timeoutMs).toBeLessThan(5_000);
-    expect(promptSubmit!.timeoutMs).toBe(sessionStart!.timeoutMs);
   });
 
   it('post-tool-use Bash/Grep/WebSearch/WebFetch have no registered handlers', () => {
@@ -1137,7 +1043,6 @@ describe('hook-handlers registry', () => {
     expect(names).toContain('pull');
     expect(names).toContain('package-hint');
     expect(names).toContain('package-pending-hint');
-    expect(names).toContain('local-agent-sync');
   });
 
   it('filterHandlersForConfig keeps all handlers for git source', () => {
@@ -1156,8 +1061,6 @@ describe('hook-handlers registry', () => {
     // A new handler must decide: team handlers set requiresConfig, the rest join this list.
     const names = new Set(filterHandlersForConfig(buildHandlerRegistry(), null).map((r) => r.handler.name));
     expect([...names].sort()).toEqual([
-      'http-prompt-instructions',
-      'local-agent-sync',
       'package-pending-hint',
       'pull',
       'update',
@@ -1639,48 +1542,6 @@ describe('hook-handlers registry', () => {
 
     const result = await handler.execute({ session_id: 'sid-both-absent', cwd: '/x' }, 'codebuddy', scope);
     expect(result).toBeNull();
-  });
-});
-
-// End-to-end: wire the real handler registry through the real dispatcher and
-// assert the foreground/background split that actually governs host latency.
-// The registry declares `background: true`; the dispatcher must honor it by
-// keeping local-agent-sync OUT of the foreground pass (so the host's hook
-// returns without waiting on the two HTTP round-trips) while still running it
-// in the detached background pass (so report/sync are not silently dropped).
-describe('post-tool-use dispatch — local-agent runs detached, never blocks host', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  const stdin = { tool_name: 'Bash', tool_input: { command: 'ls' }, cwd: '/tmp/proj' };
-
-  it('hasBackground is true for the post-tool-use wildcard', () => {
-    const dispatcher = createDispatcher({ handlers: buildHandlerRegistry(), localConfig: scope });
-    expect(dispatcher.hasBackground('post-tool-use', '*')).toBe(true);
-  });
-
-  it('foreground pass does NOT invoke local-agent-sync (host is not blocked on HTTP)', async () => {
-    const dispatcher = createDispatcher({ handlers: buildHandlerRegistry(), localConfig: scope });
-    await dispatcher.dispatch('post-tool-use', '*', stdin, 'claude', 'foreground');
-    expect(mockReportAndSyncFromHook).not.toHaveBeenCalled();
-  });
-
-  it('background pass DOES invoke local-agent-sync (report/sync still happen)', async () => {
-    const dispatcher = createDispatcher({ handlers: buildHandlerRegistry(), localConfig: scope });
-    await dispatcher.dispatch('post-tool-use', '*', stdin, 'claude', 'background');
-    expect(mockReportAndSyncFromHook).toHaveBeenCalledOnce();
-  });
-
-  it('the background pass runs dashboard-report; a plain tool call leaves the foreground pass empty (#1216)', async () => {
-    const dispatcher = createDispatcher({ handlers: buildHandlerRegistry(), localConfig: scope });
-    await dispatcher.dispatch('post-tool-use', '*', stdin, 'claude', 'foreground');
-    // dashboard-report and recall-attribution moved to the detached pass: the
-    // inline pass for a plain tool call runs no handlers at all, so the host
-    // waits only for bundle load + spawn.
-    expect(mockParseHookEvent).not.toHaveBeenCalled();
-    await dispatcher.dispatch('post-tool-use', '*', stdin, 'claude', 'background');
-    expect(mockParseHookEvent).toHaveBeenCalled();
   });
 });
 

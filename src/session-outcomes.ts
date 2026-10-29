@@ -18,15 +18,15 @@ import { RunModeSchema } from './launch-context.js';
 import { appendEvent, dataHomeKey, readSessionOutcomes, SESSION_OUTCOME_RETENTION_MS, sessionRuns } from './dashboard-collector.js';
 import { addCounts, uniqueOutcomes, type SessionOutcomeEvent, type SessionUsage, type WorkOutcome } from './outcomes.js';
 import { interventionsEntry, promptTokensEntry, snapshotPathIn, type ReportedInterventions, type ReportedPromptTokens } from './session-owners.js';
-import { FINISHED_AFTER_MS } from './session-flow/session-work.js';
+import { FINISHED_AFTER_MS } from './session-flow/completion.js';
 import { getDataHome, type DashboardEvent, type LocalConfig, type UserOutcomeStats } from './types.js';
 import { pathExists, readJson, writeJson } from './utils/fs.js';
 import { checkoutForProjectAnchor, getCurrentBranch, getDefaultBranch, getHeadCommit } from './utils/git.js';
 import { log } from './utils/logger.js';
-import { CommitIdSchema } from './workflow/delivery-schema.js';
-import { findDelivered } from './workflow/pr-delivery.js';
-import { PrUrlSchema } from './workflow/pr-url.js';
-import { git } from './workflow/worktree.js';
+import { CommitIdSchema } from './utils/commit-id.js';
+import { findDelivered } from './utils/pr-lookup.js';
+import { PrUrlSchema } from './utils/pr-url.js';
+import { git } from './utils/git-command.js';
 
 const GIT_TIMEOUT_MS = 10_000;
 

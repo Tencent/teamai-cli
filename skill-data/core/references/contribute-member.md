@@ -17,7 +17,7 @@ thing now.
 
 - **A learning** (a lesson, a gotcha, how you solved something) → this is
   **automatic** once recall is on (off by default) and the teamai config loads: TeamAI prompts at the end of a session worth sharing and
-  offers the `session-close` workflow, whose learning step runs the `share` skill
+  suggests the `share` skill
   (`teamai skill get share`) to summarize the session before `teamai contribute`. The user does not come through this flow
   for it. (Step A below is only a manual fallback for while recall is off.)
 - **A reusable skill** (a `SKILL.md` others invoke) → author the skill, then
@@ -166,5 +166,4 @@ when written as a block-list entry under `paths:`.
 ## If push is denied
 
 A permission error usually means you don't have write access to the team repo.
-Copy the exact error to your admin and ask them to grant access. (In read-only
-HTTP mode, `contribute` / `push` are not available — you can only consume.)
+Copy the exact error to your admin and ask them to grant access.

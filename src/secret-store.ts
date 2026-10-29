@@ -19,7 +19,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import { ENV_KEY_RE, envTable, envValue } from './resources/env-key.js';
-import { isRepoReference } from './models/profile.js';
+import { isRepoReference } from './utils/repo-reference.js';
 import { getTeamaiHomeDir, type LocalConfig } from './types.js';
 import { acquireLock, releaseLock } from './update.js';
 import { writeJsonAtomic } from './utils/fs.js';

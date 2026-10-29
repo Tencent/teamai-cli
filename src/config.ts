@@ -18,13 +18,10 @@ import {
   getStatePath,
   getDataHome,
   MemberSettingsSchema,
-  MemberWorkflowSettingsSchema,
-  WorkflowToolSchema,
   type MemberSettings,
-  type MemberWorkflowSettings,
   SELF_BRANCH_HOME_DIRNAME,
 } from './types.js';
-import { readFileIfExists, readFileSafe, readJson, writeFileAtomic, writeJsonAtomic, expandHome, pathExists } from './utils/fs.js';
+import { readFileSafe, readJson, writeFileAtomic, writeJsonAtomic, expandHome, pathExists } from './utils/fs.js';
 import { nearestGitEntry, resolveAnchors } from './utils/git.js';
 import { getUserHome } from './utils/home.js';
 import { resolvePartitionDir, writeAnchorFile } from './utils/partition.js';
@@ -32,7 +29,6 @@ import { log } from './utils/logger.js';
 import { listRoleIds, loadRolesManifest, RolesManifestNotFoundError } from './roles.js';
 import { loadRoleAssignmentsIfPresent, resolveAssignedRoles, ROLE_ASSIGNMENTS_FILE } from './role-assignments.js';
 import { warnOnce } from './utils/warn-once.js';
-import { AllowSchema } from './workflow/requirements.js';
 
 /**
  * Loads that serve a --dry-run write nothing: the legacy role migration, the
@@ -180,7 +176,6 @@ function withLocalMemberSettings(config: LocalConfig): LocalConfig {
   const { memberSettingsOverlay, ...rest } = config;
   for (const key of MEMBER_SETTING_KEYS) delete (rest as Record<string, unknown>)[key];
   const restored = { ...rest, ...memberSettingsOverlay.local };
-  if (restored.workflows && !restored.workflows.tools) restored.workflows.tools = {};
   return restored as LocalConfig;
 }
 
@@ -202,8 +197,8 @@ export async function refreshRoleAssignment(config: LocalConfig): Promise<void> 
     // A user init promotes a settings-only machine file, and saveLocalConfig
     // keeps its settings below the in-memory ones. Rank them the same here so
     // the reconcile that follows acts on what the save writes (#1484).
-    const { workflows, ...machine } = await readSettingsOnlyConfig(expandHome(getUserConfigPath()));
-    resolved = { ...machine, ...(workflows ? { workflows: { ...workflows, tools: workflows.tools ?? {} } } : {}), ...resolved };
+    const machine = await readSettingsOnlyConfig(expandHome(getUserConfigPath()));
+    resolved = { ...machine, ...resolved };
   }
 
   // `resolved` can alias `config` when there is no role or settings overlay.
@@ -321,53 +316,6 @@ function memberSettingAt(
   return invalidValue;
 }
 
-/** The valid values of `workflows` in a machine file, merged by key rather than as one all-or-nothing object. */
-function readMachineWorkflowSettings(raw: Record<string, unknown>, configPath: string): MemberWorkflowSettings | undefined {
-  const workflow = asRecord(raw.workflows);
-  if (!workflow) {
-    if (Object.prototype.hasOwnProperty.call(raw, 'workflows')) {
-      warnOnce(`Ignoring workflows in ${configPath}: expected an object.`);
-    }
-    return undefined;
-  }
-  const settings: Record<string, unknown> = {};
-  for (const key of ['max_parallel', 'auto_approve', 'sandbox'] as const) {
-    const value = memberSettingAt(workflow, key, MemberWorkflowSettingsSchema.shape[key], configPath);
-    if (value !== undefined) settings[key] = value;
-  }
-
-  const tools = asRecord(workflow.tools);
-  if (tools) {
-    const accepted: Record<string, string> = {};
-    for (const [name, value] of Object.entries(tools)) {
-      const parsed = WorkflowToolSchema.safeParse(value);
-      if (parsed.success) accepted[name] = parsed.data;
-      else warnOnce(`Ignoring workflows.tools.${name} in ${configPath}: ${describeConfigError(parsed.error)}.`);
-    }
-    if (Object.keys(accepted).length > 0) settings.tools = accepted;
-  } else if (Object.prototype.hasOwnProperty.call(workflow, 'tools')) {
-    warnOnce(`Ignoring workflows.tools in ${configPath}: expected an object.`);
-  }
-
-  const allow = asRecord(workflow.allow);
-  if (allow) {
-    const accepted: Record<string, unknown> = {};
-    for (const [key, schema] of Object.entries(AllowSchema.shape)) {
-      const invalidFallback = key === 'network' ? false : [];
-      const value = memberSettingAt(allow, key, schema, configPath, invalidFallback);
-      if (value !== undefined) accepted[key] = value;
-    }
-    // A malformed policy must remain restrictive. In particular, silently
-    // dropping `network: "false"` would turn a deny into the default allow.
-    if (Object.keys(accepted).length > 0) settings.allow = accepted;
-  } else if (Object.prototype.hasOwnProperty.call(workflow, 'allow')) {
-    warnOnce(`Ignoring workflows.allow in ${configPath}: expected an object.`);
-    settings.allow = { network: false, env: [] };
-  }
-
-  return Object.keys(settings).length > 0 ? MemberWorkflowSettingsSchema.parse(settings) : undefined;
-}
-
 /** Read valid member settings from a machine file, whether or not it is a user-scope install. */
 export async function loadMemberSettings(configPath = expandHome(getUserConfigPath())): Promise<MemberSettings> {
   const content = await readFileSafe(configPath);
@@ -382,42 +330,10 @@ export async function loadMemberSettings(configPath = expandHome(getUserConfigPa
 
   const settings: Record<string, unknown> = {};
   for (const key of MEMBER_SETTING_KEYS) {
-    if (key === 'workflows') continue;
     const value = memberSettingAt(raw, key, MemberSettingsSchema.shape[key], configPath);
     if (value !== undefined) settings[key] = value;
   }
-  const workflows = readMachineWorkflowSettings(raw, configPath);
-  if (workflows !== undefined) settings.workflows = workflows;
   return MemberSettingsSchema.parse(settings);
-}
-
-/**
- * What is wrong with `workflows.allow` in ~/.teamai/config.yaml, or undefined. Another bad machine value is skipped
- * with a warning, but skipping a restriction lifts it, so a workflow command refuses to run on this one, and on a
- * file it cannot read or parse, whose restrictions are unknown.
- */
-export async function machineWorkflowAllowProblem(): Promise<string | undefined> {
-  const configPath = expandHome(getUserConfigPath());
-  let content: string | null;
-  try {
-    content = await readFileIfExists(configPath);
-  } catch (e) {
-    return `${configPath} could not be read (${describeConfigError(e)}), so the workflows.allow restrictions it may set are unknown. `
-      + 'A workflow does not run until it is fixed.';
-  }
-  if (!content) return undefined;
-  let workflows: Record<string, unknown> | undefined;
-  try {
-    workflows = asRecord(asRecord(YAML.parse(content))?.workflows);
-  } catch (e) {
-    return `${configPath} is not valid YAML (${describeConfigError(e)}), so the workflows.allow restrictions it may set are unknown. `
-      + 'A workflow does not run until it is fixed.';
-  }
-  if (!workflows || !Object.prototype.hasOwnProperty.call(workflows, 'allow')) return undefined;
-  const parsed = AllowSchema.safeParse(workflows.allow);
-  if (parsed.success) return undefined;
-  return `workflows.allow in ${configPath} is not valid: ${describeConfigError(parsed.error)}. `
-    + 'A workflow does not run while a restriction it sets may be lifted. Fix or remove it.';
 }
 
 /** Overlay the machine settings below a workspace/self config and remember that config's own values for a later save. */
@@ -426,30 +342,16 @@ function applyMachineSettings(config: LocalConfig, machine: MemberSettings): Loc
   const local = MemberSettingsSchema.parse(config);
   // `ai.tool` has a dedicated precedence reader (`aiToolSettings`) used by
   // tool-launch. Do not inject the machine copy into every workspace config;
-  // keeping it in this overlay would create a second, stale reader. The
-  // machine's `scoring` only restricts, so `scopeScoring` reads it beside the
-  // scope's own instead of letting it stand in for that.
-  const { ai: _machineAi, scoring: _machineScoring, ...machineWithoutAi } = machine;
-  const { ai: _localAi, scoring: _localScoring, ...localWithoutAi } = local;
+  // keeping it in this overlay would create a second, stale reader.
+  const { ai: _machineAi, ...machineWithoutAi } = machine;
+  const { ai: _localAi, ...localWithoutAi } = local;
   const merged: MemberSettings = { ...machineWithoutAi, ...localWithoutAi };
 
-  const mergedWorkflows = machine.workflows || local.workflows
-    ? {
-        ...machine.workflows,
-        ...local.workflows,
-        tools: { ...machine.workflows?.tools, ...local.workflows?.tools },
-        allow: { ...machine.workflows?.allow, ...local.workflows?.allow },
-      }
-    : undefined;
-  const workflows = mergedWorkflows
-    ? { ...mergedWorkflows, tools: mergedWorkflows.tools ?? {} }
-    : undefined;
   const modelAliases = machine.modelAliases || local.modelAliases
     ? { ...machine.modelAliases, ...local.modelAliases }
     : undefined;
   const effective: Partial<LocalConfig> = {
     ...merged,
-    ...(workflows ? { workflows } : { workflows: undefined }),
     ...(modelAliases ? { modelAliases } : { modelAliases: undefined }),
   };
   return { ...config, ...effective, memberSettingsOverlay: { local } };
@@ -473,19 +375,10 @@ export function ownMemberSettings(config: LocalConfig): MemberSettings {
 /** Mark settings a command deliberately wrote, so a later save keeps them even when they equal a machine value. */
 export function markMemberSettingsWritten(config: LocalConfig, written: MemberSettings): LocalConfig {
   const local = config.memberSettingsOverlay?.local ?? MemberSettingsSchema.parse(config);
-  const workflows = local.workflows || written.workflows
-    ? {
-        ...local.workflows,
-        ...written.workflows,
-        tools: { ...local.workflows?.tools, ...written.workflows?.tools },
-        allow: { ...local.workflows?.allow, ...written.workflows?.allow },
-      }
-    : undefined;
   return {
     ...config,
     ...written,
-    ...(workflows ? { workflows: { ...workflows, tools: workflows.tools ?? {} } } : {}),
-    memberSettingsOverlay: { local: { ...local, ...written, ...(workflows ? { workflows } : {}) } },
+    memberSettingsOverlay: { local: { ...local, ...written } },
   } as LocalConfig;
 }
 
@@ -559,18 +452,8 @@ function serializeLocalConfig(config: LocalConfig, carriedSettings?: MemberSetti
   // goes, and a stale copy is exactly what a member must not be able to keep.
   const { dataHome: _dataHome, branchHome: _branchHome, roleUnresolved: _roleUnresolved, children: _children, roleAssignment: _assignment, memberSettingsOverlay: overlay, ...persisted } = withLocalRoles(config);
   const localSettings = overlay?.local ?? MemberSettingsSchema.parse(persisted);
-  const settings = {
-    ...localSettings,
-    ...(localSettings.workflows ? {
-      workflows: {
-        ...localSettings.workflows,
-        ...(localSettings.workflows.tools ? { tools: localSettings.workflows.tools } : {}),
-        ...(localSettings.workflows.allow ? { allow: localSettings.workflows.allow } : {}),
-      },
-    } : {}),
-  };
   for (const key of MEMBER_SETTING_KEYS) delete (persisted as Record<string, unknown>)[key];
-  return YAML.stringify({ ...carriedSettings, ...settings, ...persisted, scope: installScopeName(persisted.scope) });
+  return YAML.stringify({ ...carriedSettings, ...localSettings, ...persisted, scope: installScopeName(persisted.scope) });
 }
 
 /** Read valid member settings before user init promotes a machine file to an install. */
