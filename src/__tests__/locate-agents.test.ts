@@ -431,6 +431,13 @@ const ROWS: readonly MatrixRow[] = [
     reads: 'unknown',
     source: '#1221 matrix workspace Agents ?v: Muse\'s project agents read is not established; its home says it is installed',
   },
+  {
+    tool: 'muse', scope: 'project', install: { enabledAgents: ['muse', 'agy'] },
+    channel: 'unknown',
+    existingDirs: ['~/.config/muse', '~/.gemini/config'], installed: { probe: '~/.config/muse', met: true },
+    source: 'agy 1.4.8 reads <root>/.agents/agents, where Muse\'s project copy would land in Muse\'s render (model kept): '
+      + 'with both installed the dir is agy\'s, and nothing is retired there, since the files in it are agy\'s',
+  },
 ];
 
 describeLocateMatrix('agents', ROWS);
