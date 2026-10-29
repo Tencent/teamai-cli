@@ -1273,7 +1273,7 @@ export const TOOLS = {
       aiBackend: '✓v',
       votesJudge: { cell: '✗v', note: 'agy 1.4.8 PostToolUse carries no tool output, so a teamai recall run never reaches the recall log' },
       sessionJudge: { cell: '✓v', note: 'invoke_subagent starts a fresh conversation that gets only its prompt (agy 1.4.8); no session variable, so the session names its tool with --tools; the judge flow not run' },
-      agentHooks: { cell: '+t', note: 'teamai refuses agent hooks for agy: its hooks.json hands a command agy\'s payload, not the Claude one agent hooks read' },
+      agentHooks: { cell: '✓t', note: 'runs from teamai\'s team-hook bridge, which can block a tool call; the dispatcher hands it a Claude payload' },
     },
   },
 } as const satisfies Record<ToolId, ToolDescriptor>;

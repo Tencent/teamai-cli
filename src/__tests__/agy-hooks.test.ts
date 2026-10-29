@@ -175,6 +175,20 @@ describe('agy hooks.json', () => {
     expect(Object.keys(JSON.parse(fs.readFileSync(file, 'utf8')).teamai)).not.toContain('PreToolUse');
   });
 
+  it('runs an agent hook the HTTP local agent installs, and asks agy for PreToolUse while it is there', async () => {
+    const rmRf = JSON.stringify({ cwd: home, tool_name: 'Bash', tool_input: { command: 'rm -rf build' } });
+    vi.resetModules();
+    const { applyBridgedAgentHook, removeBridgedAgentHook } = await import('../hooks.js');
+    const { runBridgedTeamHooks } = await import('../bridged-team-hooks.js');
+    await applyBridgedAgentHook('agy', { slug: 'no-rm', event: 'PreToolUse', matcher: 'Bash', command: 'grep -q "rm -rf" && { echo "No rm -rf" >&2; exit 2; } || true' });
+    expect(JSON.parse((await runBridgedTeamHooks('agy', 'PreToolUse', rmRf)).stdout)).toEqual({ block: 'No rm -rf' });
+    expect(Object.keys(JSON.parse(fs.readFileSync(file, 'utf8')).teamai)).toContain('PreToolUse');
+
+    await removeBridgedAgentHook('agy', 'no-rm');
+    expect((await runBridgedTeamHooks('agy', 'PreToolUse', rmRf)).stdout).toBe('');
+    expect(Object.keys(JSON.parse(fs.readFileSync(file, 'utf8')).teamai)).not.toContain('PreToolUse');
+  });
+
   it("removes only teamai's named hook", async () => {
     const { reconcileAgyHooks, hasAgyHooks } = await load();
     fs.writeFileSync(file, JSON.stringify({ mine: { Stop: [{ command: './done.sh' }] } }));
