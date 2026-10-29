@@ -100,7 +100,7 @@ teamai 为每个工具把每类资源写到哪里，以及工具读取哪里，�
 | WorkBuddy | ? | ✓t | ✓t | ? | ✓t | ? | ✓t<sup>25</sup> | ? |
 | OpenCode | ? | ✓t | ✓v | ✓t<sup>2</sup> | ✓v | ? | ✓t<sup>1</sup> | ✓v<sup>26</sup> |
 | Muse Code | ✓t | +v | ✓t | ✓v | ✓v | ✓t<sup>3</sup> | ✓t<sup>1</sup> | ✓t<sup>27</sup> |
-| Antigravity CLI | ✓v<sup>28</sup> | ? | ? | ✓v | ? | ? | ? | ? |
+| Antigravity CLI | ✓v<sup>28</sup> | ✓v | ? | ✓v | ✓v | ? | ? | ? |
 
 注：
 

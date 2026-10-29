@@ -107,6 +107,33 @@ describe('local tool adapter', () => {
     expect(result).toMatchObject({ output: { ok: true }, session: 'session-2', tokens: { input: 7, output: 3 } });
   });
 
+  it('runs an agy step in print mode with its model, effort, agent and conversation, and reads its stream-json events', async () => {
+    const resultPath = path.join(os.tmpdir(), `teamai-workflow-agy-${Date.now()}.json`);
+    files.push(resultPath);
+    // As agy 1.4.8 prints `--output-format=stream-json`: the init event names the model, the result the conversation and usage.
+    const stdout = [
+      { event: 'init', conversation_id: 'conv-2', init: { model: 'gemini-3.8-flash-high', cwd: os.tmpdir() } },
+      { event: 'step_update', step_update: { conversation_id: 'conv-2', step_index: 3, state: 'DONE', step_type: 'agent_response', text_delta: '{"ok":true}' } },
+      { event: 'result', result: { conversation_id: 'conv-2', status: 'SUCCESS', response: '{"ok":true}', usage: { input_tokens: 15000, output_tokens: 40, cache_read_tokens: 9000 } } },
+    ].map((event) => JSON.stringify(event)).join('\n') + '\n';
+    const spawnTool = vi.fn(() => child(stdout)) as unknown as ToolSpawn;
+    const adapter = createLocalToolAdapter(spawnTool, () => '/bin/agy');
+
+    const result = await adapter.run('agy', {
+      prompt: 'Review.', cwd: os.tmpdir(), resultPath, model: { name: 'gemini-3.8-flash', effort: 'high' }, resume: 'conv-1',
+      agent: { name: 'reviewer', instructions: 'Review the change.' },
+    });
+
+    const args = vi.mocked(spawnTool).mock.calls[0]?.[1] ?? [];
+    for (const [flag, value] of [['--model', 'gemini-3.8-flash'], ['--effort', 'high'], ['--conversation', 'conv-1'], ['--agent', 'reviewer']]) {
+      expect(args[args.indexOf(flag) + 1]).toBe(value);
+    }
+    expect(args).toContain('--output-format=stream-json');
+    // `--print=` keeps the prompt attached: agy takes a bare `-p`'s next argument as the prompt even when it is a flag.
+    expect(args.at(-1)).toMatch(/^--print=Review\.\n\nWrite the workflow result as JSON to /);
+    expect(result).toMatchObject({ output: { ok: true }, model: 'gemini-3.8-flash-high', session: 'conv-2', tokens: { input: 15000, output: 40, cachedInput: 9000 } });
+  });
+
   it('passes maxTurns to headless Claude as --max-turns', async () => {
     const resultPath = path.join(os.tmpdir(), `teamai-workflow-turns-${Date.now()}.json`);
     files.push(resultPath);
@@ -339,7 +366,7 @@ process.exit(1);
 });
 
 describe('interactive tool invocations', () => {
-  it.each(['claude', 'codex', 'opencode'] as const)('opens %s in the foreground with the initial prompt and optional result file', async (tool) => {
+  it.each(['claude', 'codex', 'opencode', 'agy'] as const)('opens %s in the foreground with the initial prompt and optional result file', async (tool) => {
     const resultPath = path.join(os.tmpdir(), `teamai-interactive-${tool}-${Date.now()}.json`);
     files.push(resultPath);
     const spawnTool = vi.fn(() => child('')) as unknown as ToolSpawn;
@@ -354,6 +381,7 @@ describe('interactive tool invocations', () => {
     expect(args).not.toContain('-p');
     expect(args).not.toContain('run');
     if (tool === 'opencode') expect(args).toContain('--prompt');
+    if (tool === 'agy') expect(args).toContain('--prompt-interactive');
     if (tool === 'codex') expect(args).toContain('model_reasoning_effort=high');
     expect(vi.mocked(spawnTool).mock.calls[0]![2]).toMatchObject({ cwd: os.tmpdir(), stdio: 'inherit', detached: false });
   });

@@ -101,6 +101,13 @@ function invocation(tool: LaunchTool, input: LocalToolRun, opencodeMajor: number
     case 'opencode':
       if (interactive) return [...agent, ...model, '--prompt', prompt];
       return ['run', '--format', 'json', prompt, ...agent, ...opencodeModelArgs(input.model, opencodeMajor)];
+    case 'agy': {
+      const conversation = input.resume ? ['--conversation', input.resume] : [];
+      const agyEffort = effort ? ['--effort', effort] : [];
+      if (interactive) return [...agent, ...model, ...agyEffort, ...conversation, '--prompt-interactive', prompt];
+      // `--print=` keeps the prompt attached: a bare `-p` takes its next argument as the prompt, even a flag.
+      return ['--output-format=stream-json', ...agent, ...model, ...agyEffort, ...conversation, `--print=${prompt}`];
+    }
     default: {
       const unhandled: never = family;
       throw new Error(`No workflow step profile for adapter ${String(unhandled)}`);
