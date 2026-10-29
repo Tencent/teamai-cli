@@ -885,10 +885,16 @@ steps:
     const run = RunIdSchema.parse(started.data.turn.run);
     const attempt = AttemptIdSchema.parse(started.data.turn.running[0]?.attempt);
     await harness.context.runners.sleep(1_000);
-    // The setup writes the pid of the process it left running: wait for that file, so the process is the one the
-    // setup really started.
-    for (let wait = 0; wait < 600 && !fs.existsSync(pidFile); wait += 1) await new Promise((resolve) => { setTimeout(resolve, 50); });
-    const pid = Number(fs.readFileSync(pidFile, 'utf8'));
+    // The setup writes the pid of the process it left running: wait for that file to hold it, so the process is
+    // the one the setup really started. A file that exists but is empty reads as 0, and `kill(0, 0)` succeeds
+    // for every pid there is.
+    let pid = 0;
+    for (let wait = 0; wait < 600 && pid === 0; wait += 1) {
+      const written = fs.existsSync(pidFile) ? Number(fs.readFileSync(pidFile, 'utf8')) : 0;
+      if (written > 0) pid = written;
+      else await new Promise((resolve) => { setTimeout(resolve, 50); });
+    }
+    expect(pid).toBeGreaterThan(0);
     const alive = (): boolean => { try { return process.kill(pid, 0); } catch { return false; } };
     expect(alive()).toBe(true);
 

@@ -42,10 +42,19 @@ const GROUP_FILE = /^group-\d+\.json$/;
 export function recordGroup(child: ChildProcess, dir: string): void {
   const start = child.pid === undefined ? undefined : processStarts()?.get(child.pid);
   if (child.pid === undefined || start === undefined) return;
-  const file = path.join(dir, `${GROUP_PREFIX}${child.pid}.json`);
+  const body = JSON.stringify({ pid: child.pid, start });
+  writeGroup(path.join(dir, `${GROUP_PREFIX}${child.pid}.json`), body);
+  // A teamai before #1523 reads only `group.json`, so the latest group is written there as well: a release that
+  // predates the per-group files then stops one group rather than none. It reads the same group twice here, which
+  // stops nothing twice.
+  writeGroup(path.join(dir, LEGACY_GROUP_FILE), body);
+}
+
+/** Writes the record of one process group, so a reader never sees half of it. */
+function writeGroup(file: string, body: string): void {
   const temporary = `${file}.${process.pid}.tmp`;
   try {
-    fs.writeFileSync(temporary, JSON.stringify({ pid: child.pid, start }));
+    fs.writeFileSync(temporary, body);
     fs.renameSync(temporary, file);
   } catch {
     // The starter still stops its child itself; only a starter killed with it would leave the group running.
