@@ -33,14 +33,19 @@ function transcriptOf(id: string): string {
   return path.join(root, 'brain', id, '.system_generated', 'logs', 'transcript.jsonl');
 }
 
+/** A summaries database in `store` with agy's table and `rows`. */
+function writeSummaries(store: string, rows: ReadonlyArray<(typeof ROWS)[number]>): void {
+  const inserts = rows.map(([id, title, steps, modified, uris, input]) =>
+    `INSERT INTO conversation_summaries (conversation_id, title, preview, step_count, last_modified_time, workspace_uris, status, project_id, last_user_input_time, app_data_dir) VALUES ('${id}', '${title}', '${title}', ${steps}, '${modified}', '${uris}', 'CASCADE_RUN_STATUS_IDLE', 'default-cli-project', '${input}', '${path.basename(store)}');`);
+  const made = spawnSync('sqlite3', [path.join(store, 'conversation_summaries.db')], { input: [SCHEMA, ...inserts].join('\n') });
+  expect(made.status).toBe(0);
+}
+
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-agy-'));
   fs.cpSync(path.join(FIXTURES, 'brain'), path.join(root, 'brain'), { recursive: true });
   if (!HAS_SQLITE3) return;
-  const inserts = ROWS.map(([id, title, steps, modified, uris, input]) =>
-    `INSERT INTO conversation_summaries (conversation_id, title, preview, step_count, last_modified_time, workspace_uris, status, project_id, last_user_input_time, app_data_dir) VALUES ('${id}', '${title}', '${title}', ${steps}, '${modified}', '${uris}', 'CASCADE_RUN_STATUS_IDLE', 'default-cli-project', '${input}', 'antigravity-cli');`);
-  const made = spawnSync('sqlite3', [path.join(root, 'conversation_summaries.db')], { input: [SCHEMA, ...inserts].join('\n') });
-  expect(made.status).toBe(0);
+  writeSummaries(root, ROWS);
 });
 
 afterEach(() => {
@@ -49,7 +54,7 @@ afterEach(() => {
 
 describe.skipIf(!HAS_SQLITE3)('agy session listing', () => {
   it('lists each conversation with its title, workspace and times, newest first', async () => {
-    const listed = await new AgyAdapter(root).listConversations();
+    const listed = await new AgyAdapter([root]).listConversations();
 
     expect(listed.map((meta) => meta.sessionId)).toEqual([SKILL, DENIED, NOTE]);
     expect(listed[0]).toEqual({
@@ -65,13 +70,34 @@ describe.skipIf(!HAS_SQLITE3)('agy session listing', () => {
   });
 });
 
+// The Antigravity app keeps its conversations in ~/.gemini/antigravity, in the same shape as the CLI's.
+describe.skipIf(!HAS_SQLITE3)('agy session listing across the CLI and the Antigravity app', () => {
+  it("lists and reads the app's conversations beside the CLI's, newest first", async () => {
+    const app = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-antigravity-'));
+    try {
+      fs.mkdirSync(path.join(app, 'brain'));
+      fs.renameSync(path.join(root, 'brain', DENIED), path.join(app, 'brain', DENIED));
+      writeSummaries(app, ROWS.filter(([id]) => id === DENIED));
+
+      const adapter = new AgyAdapter([root, app]);
+      const listed = await adapter.listConversations();
+
+      expect(listed.map((meta) => meta.sessionId)).toEqual([SKILL, DENIED, NOTE]);
+      expect(listed[1]).toMatchObject({ cwd: '/tmp/agyprobe/hooksreal/work', filePath: path.join(app, 'brain', DENIED, '.system_generated', 'logs', 'transcript.jsonl') });
+      expect(await adapter.readSession({ sessionId: DENIED })).toMatchObject({ sessionId: DENIED, title: 'Executing Shell Command And System Security Check' });
+    } finally {
+      fs.rmSync(app, { recursive: true, force: true });
+    }
+  });
+});
+
 describe.skipIf(!HAS_SQLITE3)('agy session listing from a store agy closed', () => {
   it('reads the summaries agy left in WAL mode, without a -shm file, and writes nothing beside them', async () => {
     const db = path.join(root, 'conversation_summaries.db');
     expect(spawnSync('sqlite3', [db, 'PRAGMA journal_mode=WAL;']).status).toBe(0);
     const before = fs.readdirSync(root).sort();
 
-    const listed = await new AgyAdapter(root).listConversations();
+    const listed = await new AgyAdapter([root]).listConversations();
 
     expect(listed.map((meta) => meta.sessionId)).toEqual([SKILL, DENIED, NOTE]);
     expect(fs.readdirSync(root).sort()).toEqual(before);
@@ -85,7 +111,7 @@ describe.skipIf(!HAS_SQLITE3)('agy session listing with a row agy wrote oddly', 
     expect(odd.status).toBe(0);
     fs.writeFileSync(transcriptOf(NOTE), '{"step_index":"0","type":"USER_INPUT","created_at":"yesterday"}\n');
 
-    const listed = await new AgyAdapter(root).listConversations();
+    const listed = await new AgyAdapter([root]).listConversations();
 
     expect(listed.map((meta) => meta.sessionId)).toEqual([SKILL, DENIED, NOTE]);
     expect(listed[1]).toMatchObject({ sessionId: DENIED, cwd: '', updatedAt: '2026-10-28T23:47:37.443Z' });
@@ -95,7 +121,7 @@ describe.skipIf(!HAS_SQLITE3)('agy session listing with a row agy wrote oddly', 
 
 describe.skipIf(!HAS_SQLITE3)('agy session reading', () => {
   it('reads the request, the tool calls with their arguments decoded, the results and the answer', async () => {
-    const session = await new AgyAdapter(root).readSession({ sessionId: SKILL });
+    const session = await new AgyAdapter([root]).readSession({ sessionId: SKILL });
 
     expect(session).toMatchObject({ sessionId: SKILL, title: 'Release Notes Skill Code Word', cwd: '/tmp/agyprobe/usagereal/work', platform: 'agy' });
     const [request, injected, call, result, answer] = session.messages;
@@ -113,7 +139,7 @@ describe.skipIf(!HAS_SQLITE3)('agy session reading', () => {
   });
 
   it('reads a tool call a hook denied as a failed result carrying the reason', async () => {
-    const session = await new AgyAdapter(root).readSession({ sessionId: DENIED });
+    const session = await new AgyAdapter([root]).readSession({ sessionId: DENIED });
     const call = session.messages.find((message) => message.content.some((block) => block.type === 'tool_call'));
     expect(call?.content).toContainEqual(expect.objectContaining({ toolName: 'bash', arguments: expect.objectContaining({ CommandLine: 'rm -rf build .' }) }));
     const results = session.messages.flatMap((message) => message.content).filter((block) => block.type === 'tool_result');
@@ -121,7 +147,7 @@ describe.skipIf(!HAS_SQLITE3)('agy session reading', () => {
   });
 
   it('finds a session by id, and only in its own workspace when one is given', async () => {
-    const adapter = new AgyAdapter(root);
+    const adapter = new AgyAdapter([root]);
     expect(await adapter.existingSessionId(NOTE)).toBe(NOTE);
     expect(await adapter.existingSessionId(NOTE, '/tmp/agyprobe/proj6')).toBe(NOTE);
     expect(await adapter.existingSessionId(NOTE, '/tmp/agyprobe/hooksreal/work')).toBeUndefined();
@@ -132,7 +158,7 @@ describe.skipIf(!HAS_SQLITE3)('agy session reading', () => {
 
 describe('agy session writing', () => {
   it('refuses to write or delete a conversation, since agy resumes from a store teamai cannot write', async () => {
-    const adapter = new AgyAdapter(root);
+    const adapter = new AgyAdapter([root]);
     const session = { sessionId: 's', title: 't', cwd: '/tmp', platform: 'claude-code', createdAt: '', updatedAt: '', messages: [] };
     await expect(adapter.writeSession(session)).rejects.toThrow(/cannot write agy sessions/);
     expect(await adapter.deleteSession(NOTE)).toBe(false);

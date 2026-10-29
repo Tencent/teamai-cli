@@ -1,7 +1,8 @@
 /**
  * adapters/agy.ts — Antigravity CLI (agy) platform adapter, read-only.
  *
- * agy 1.4.8 keeps its conversations in `~/.gemini/antigravity-cli` (the store root):
+ * agy 1.4.8 keeps its conversations in `~/.gemini/antigravity-cli`, and the Antigravity app (2.24) its own in
+ * `~/.gemini/antigravity`, each store laid out the same way:
  *   - `brain/<conversationId>/.system_generated/logs/transcript.jsonl`: one step per line, with
  *     `step_index`, `source`, `type`, `status`, `created_at`, `content`, and on a MODEL
  *     PLANNER_RESPONSE `tool_calls` (`{name, args}`, each arg value JSON-encoded) and token counts.
@@ -59,11 +60,19 @@ function workspaceOf(row: SummaryRow): string {
   return uri?.startsWith('file:') ? fileURLToPath(uri) : '';
 }
 
+/**
+ * The stores of `cliStore` (`sessionStoreDir('agy')`, `~/.gemini/antigravity-cli`) and of the Antigravity app beside
+ * it. Antigravity IDE keeps no summaries database, so its conversations have no workspace TeamAI can read.
+ */
+export function agyStoreRoots(cliStore: string): string[] {
+  return [cliStore, path.join(path.dirname(cliStore), 'antigravity')];
+}
+
 export class AgyAdapter extends AgentAdapter {
   static readonly platform = 'agy';
 
-  /** @param storeRoot agy's data directory (`sessionStoreDir`): `~/.gemini/antigravity-cli`. */
-  constructor(private readonly storeRoot: string) {
+  /** @param storeRoots the stores to read, as `agyStoreRoots` names them. */
+  constructor(private readonly storeRoots: readonly string[]) {
     super();
   }
 
@@ -72,16 +81,16 @@ export class AgyAdapter extends AgentAdapter {
   }
 
   isReady(): boolean {
-    return dirExists(path.join(this.storeRoot, 'brain'));
+    return this.storeRoots.some((root) => dirExists(path.join(root, 'brain')));
   }
 
-  private transcriptOf(sessionId: string): string {
-    return path.join(this.storeRoot, 'brain', sessionId, '.system_generated', 'logs', 'transcript.jsonl');
+  private transcriptOf(root: string, sessionId: string): string {
+    return path.join(root, 'brain', sessionId, '.system_generated', 'logs', 'transcript.jsonl');
   }
 
-  /** The summary rows of the conversations `sessionId` names, or of all of them, newest first. */
-  private async summaries(sessionId?: string): Promise<SummaryRow[]> {
-    const db = path.join(this.storeRoot, 'conversation_summaries.db');
+  /** The summary rows in `root` of the conversations `sessionId` names, or of all of them, newest first. */
+  private async summaries(root: string, sessionId?: string): Promise<SummaryRow[]> {
+    const db = path.join(root, 'conversation_summaries.db');
     const sqlite3 = findSqlite3();
     if (!sqlite3) {
       throw new ToolUnavailableError(
@@ -120,11 +129,12 @@ export class AgyAdapter extends AgentAdapter {
   async listConversations(projectPath?: string): Promise<SessionMeta[]> {
     const workspace = projectPath === undefined ? undefined : resolveRealCwd(projectPath);
     const metas: SessionMeta[] = [];
-    for (const row of await this.summaries()) {
+    const stored = await Promise.all(this.storeRoots.map(async (root) => (await this.summaries(root)).map((row) => ({ root, row }))));
+    for (const { root, row } of stored.flat()) {
       if (!isSafeSessionFileId(row.conversation_id)) continue;
       const cwd = workspaceOf(row);
       if (workspace !== undefined && (!cwd || resolveRealCwd(cwd) !== workspace)) continue;
-      const filePath = this.transcriptOf(row.conversation_id);
+      const filePath = this.transcriptOf(root, row.conversation_id);
       let sizeBytes: number;
       try {
         sizeBytes = fs.statSync(filePath).size;
@@ -145,23 +155,27 @@ export class AgyAdapter extends AgentAdapter {
         sizeBytes,
       });
     }
-    return metas;
+    return metas.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
 
-  /** The summary of `sessionId` when its transcript is here, and in `projectPath` when one is given. */
-  private async summaryOf(sessionId: string, projectPath?: string): Promise<SummaryRow | undefined> {
-    if (!isSafeSessionFileId(sessionId) || !fs.existsSync(this.transcriptOf(sessionId))) return undefined;
-    const [row] = await this.summaries(sessionId);
+  /** The summary of `sessionId` and its transcript, from the first store that has both, in `projectPath` when one is given. */
+  private async summaryOf(sessionId: string, projectPath?: string): Promise<{ row: SummaryRow; transcript: string } | undefined> {
+    if (!isSafeSessionFileId(sessionId)) return undefined;
+    const root = this.storeRoots.find((store) => fs.existsSync(this.transcriptOf(store, sessionId)));
+    if (root === undefined) return undefined;
+    const [row] = await this.summaries(root, sessionId);
     if (!row) return undefined;
-    if (projectPath === undefined) return row;
+    const found = { row, transcript: this.transcriptOf(root, sessionId) };
+    if (projectPath === undefined) return found;
     const cwd = workspaceOf(row);
-    return cwd && resolveRealCwd(cwd) === resolveRealCwd(projectPath) ? row : undefined;
+    return cwd && resolveRealCwd(cwd) === resolveRealCwd(projectPath) ? found : undefined;
   }
 
   async readSession(ref: SessionReadRef): Promise<Session> {
-    const row = await this.summaryOf(ref.sessionId, ref.projectPath);
-    if (!row) throw new Error(`No agy conversation ${ref.sessionId}${ref.projectPath ? ` in ${ref.projectPath}` : ''}.`);
-    const transcript = ref.filePath ?? this.transcriptOf(row.conversation_id);
+    const found = await this.summaryOf(ref.sessionId, ref.projectPath);
+    if (!found) throw new Error(`No agy conversation ${ref.sessionId}${ref.projectPath ? ` in ${ref.projectPath}` : ''}.`);
+    const { row } = found;
+    const transcript = ref.filePath ?? found.transcript;
     const messages = messagesOf(readJsonl(transcript));
     const updatedAt = isoOf(row.last_modified_time) ?? fs.statSync(transcript).mtime.toISOString();
     return {
@@ -176,7 +190,7 @@ export class AgyAdapter extends AgentAdapter {
   }
 
   async existingSessionId(sessionId: string, projectPath?: string): Promise<string | undefined> {
-    return (await this.summaryOf(sessionId, projectPath))?.conversation_id;
+    return (await this.summaryOf(sessionId, projectPath))?.row.conversation_id;
   }
 
   async writeSession(_session: Session, _projectPath?: string): Promise<string> {

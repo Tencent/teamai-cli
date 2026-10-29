@@ -853,16 +853,21 @@ const AgyPlannerStep = z.object({
 async function readAgySessionTokens(sessionId: string): Promise<TokenUsage | null> {
   if (!SESSION_UUID_RE.test(sessionId)) return null;
   const { sessionStoreDir } = await import('./locate.js');
-  const file = path.join(sessionStoreDir('agy', undefined), 'brain', sessionId, '.system_generated', 'logs', 'transcript.jsonl');
-  let text: string;
-  try {
-    text = await fs.promises.readFile(file, 'utf-8');
-  } catch (e) {
-    if (!(e instanceof Error && 'code' in e && e.code === 'ENOENT')) {
-      log.debug(`dashboard: could not read the Antigravity CLI transcript ${file}: ${e instanceof Error ? e.message : String(e)}`);
+  const { agyStoreRoots } = await import('./session-flow/adapters/agy.js');
+  // The CLI's store first, then the Antigravity app's: a conversation id is in one of them.
+  let text: string | undefined;
+  for (const store of agyStoreRoots(sessionStoreDir('agy', undefined))) {
+    const file = path.join(store, 'brain', sessionId, '.system_generated', 'logs', 'transcript.jsonl');
+    try {
+      text = await fs.promises.readFile(file, 'utf-8');
+      break;
+    } catch (e) {
+      if (!(e instanceof Error && 'code' in e && e.code === 'ENOENT')) {
+        log.debug(`dashboard: could not read the Antigravity transcript ${file}: ${e instanceof Error ? e.message : String(e)}`);
+      }
     }
-    return null;
   }
+  if (text === undefined) return null;
   let tokens: TokenUsage | null = null;
   for (const line of text.split('\n')) {
     if (!line.includes('"PLANNER_RESPONSE"')) continue;

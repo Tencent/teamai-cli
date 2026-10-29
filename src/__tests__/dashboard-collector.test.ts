@@ -1605,6 +1605,15 @@ describe('parseHookEvent: Antigravity CLI session tokens', () => {
     }));
   });
 
+  it('reads a session of the Antigravity app from its own store', async () => {
+    const appTranscript = path.join(tmpDir, '.gemini', 'antigravity', 'brain', sessionId, '.system_generated', 'logs', 'transcript.jsonl');
+    fs.mkdirSync(path.dirname(appTranscript), { recursive: true });
+    // As the Antigravity app 2.24 writes them: counts are numbers.
+    fs.writeFileSync(appTranscript, JSON.stringify({ step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', input_tokens: 9100, cache_read_tokens: 100, output_tokens: 18 }) + '\n');
+
+    expect((await stop())?.tokens).toEqual({ input: 9000, output: 18, cacheRead: 100, cacheCreation: 0 });
+  });
+
   it('records no tokens when the session has no transcript', async () => {
     expect((await stop())?.tokens).toBeUndefined();
   });
