@@ -7,7 +7,7 @@ import type { AgentModelRecords, CopyOrigin, DeliveryTarget, ResourceItem } from
 import { fileHash, listFilesRecursive } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { resolveReal } from '../utils/path-safety.js';
-import { historicalVersions, matchesHistory, readBlob } from '../utils/team-history.js';
+import { historicalVersions, matchesHistory, readBlob, readRenderedBlob } from '../utils/team-history.js';
 import { isUneditedGeneratedSkill } from '../workflow/discovery/generated-marker.js';
 import { warnOnce } from '../utils/warn-once.js';
 
@@ -223,7 +223,8 @@ export async function isRecordedFromTeamSkill(
   if (recorded === undefined) return false;
   const { withSkillFrontmatter } = await import('./skills.js');
   for (const version of await historicalVersions(repoPath, `${teamDir}/${SKILL_MD}`, { currentLifetime: true }) ?? []) {
-    const bytes = await readBlob(repoPath, version.blob);
+    const source = await readBlob(repoPath, version.blob);
+    const bytes = source === null ? null : await readRenderedBlob(repoPath, version.blob, version.path) ?? source;
     if (bytes === null) continue;
     const text = bytes.toString('utf-8');
     const written = withSkillFrontmatter(text, path.posix.basename(teamDir));

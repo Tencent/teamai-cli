@@ -93,6 +93,7 @@ describe('isRecordedFromTeamSkill', () => {
       fs.writeFileSync(path.join(repo, 'skills', 'lf', 'skill', 'SKILL.md'), lf);
       fs.writeFileSync(path.join(repo, 'skills', 'crlf', 'skill', 'SKILL.md'), crlf);
       commitTeamRepo(repo);
+      execFileSync('git', ['config', 'core.autocrlf', 'false'], { cwd: repo });
       fs.mkdirSync(dest, { recursive: true });
       fs.writeFileSync(destFile, lf);
       const record = { [destFile]: contentHash(lf) };

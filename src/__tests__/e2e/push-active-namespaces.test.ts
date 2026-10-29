@@ -131,13 +131,20 @@ beforeAll(() => {
     writeFile(path.join(seed, 'skills', ns, name, 'SKILL.md'), skillMd(name));
   }
   writeFile(path.join(seed, 'rules', 'svc-a', 'a-rule.md'), '# a rule\n');
+  // The source skill is forced to LF while the later same-named candidate is
+  // binary CRLF, so a core.autocrlf checkout must compare what Git rendered.
+  writeFile(path.join(seed, '.gitattributes'), [
+    'skills/svc-a/a-skill/SKILL.md text eol=lf',
+    'skills/svc-b/a-skill/SKILL.md -text',
+    '',
+  ].join('\n'));
   git(['init', '-q', '-b', 'main'], seed);
   git(['add', '.'], seed);
   git(['commit', '-qm', 'fixture'], seed);
   git(['clone', '-q', '--bare', seed, origin]);
-  git(['clone', '-q', origin, clone]);
-  git(['config', 'core.autocrlf', 'true'], clone);
-  git(['checkout', '-q', '--force', 'HEAD'], clone);
+  // Set autocrlf at clone time: changing it after checkout does not rewrite
+  // unchanged index entries, so it would not exercise a Windows-style clone.
+  git(['-c', 'core.autocrlf=true', 'clone', '-q', origin, clone]);
   writeFile(path.join(project, '.teamai', 'config.yaml'), YAML.stringify({
     repo: { localPath: clone, remote: origin, kind: 'git' },
     username: 'member', scope: 'project', projectRoot: project,
@@ -145,6 +152,10 @@ beforeAll(() => {
   }));
   const pulled = run(['pull']);
   expect(pulled.code, pulled.output).toBe(0);
+  // The first pull may materialise tracked text through its own writer. Reset
+  // the team checkout to the filtered HEAD before the edit scenarios so the
+  // fixture tests origin routing, not unrelated checkout dirtiness.
+  git(['reset', '--hard', 'HEAD'], clone);
   fs.renameSync(sandbox, template);
 });
 
@@ -232,7 +243,9 @@ describe('push an edit of a skill pull kept after a project switch (#1020)', () 
     commitOnTeam('skills/svc-b/a-skill/SKILL.md', skillMd('a-skill').replace(/\n/g, '\r\n'));
     git(['pull', '-q', 'origin', 'main'], path.join(project, '.teamai', 'team-repo'));
     const localSkill = path.join(project, '.claude', 'skills', 'a-skill', 'SKILL.md');
-    fs.appendFileSync(localSkill, '\\nEdited after the CRLF namespace was added.\\n');
+    expect(fs.readFileSync(localSkill, 'utf8')).not.toContain('\r\n');
+    expect(fs.readFileSync(path.join(project, '.teamai', 'team-repo', 'skills', 'svc-b', 'a-skill', 'SKILL.md'), 'utf8')).toContain('\r\n');
+    fs.appendFileSync(localSkill, '\nEdited after the CRLF namespace was added.\n');
 
     const pushed = run(['push', '--all']);
 
