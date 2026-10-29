@@ -14,7 +14,7 @@ import { syncScorerDefinitions } from '../scorers/cache.js';
 import { LabelStore } from '../scorers/label-store.js';
 import { encodeCwdClaude } from '../session-flow/fs.js';
 import { SessionWork } from '../session-flow/session-work.js';
-import { SessionClose } from '../session-close.js';
+import { SessionShare } from '../session-share.js';
 import { AGENT_SESSION_ENV } from '../utils/session-id.js';
 
 const scorer = (frontmatter: string) => `---
@@ -34,7 +34,7 @@ const PUBLISH_WHY = 'Archive this session\'s transcript, scrubbed, for the team.
 
 let root = '';
 beforeEach(() => {
-  root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-session-close-')));
+  root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-session-share-')));
   mocks.home = path.join(root, 'home');
   for (const name of AGENT_SESSION_ENV) vi.stubEnv(name, '');
   vi.stubEnv('HOME', mocks.home);
@@ -77,9 +77,9 @@ async function member({ scorers, files = {}, config = {} }: { scorers: Record<st
   return local;
 }
 
-const offerOf = (config: LocalConfig, tool = 'claude', judgeTools = ['claude']) => SessionClose.offer(config, { tool, sessionId: SESSION }, { now: NOW, judgeTools: () => judgeTools });
+const offerOf = (config: LocalConfig, tool = 'claude', judgeTools = ['claude']) => SessionShare.offer(config, { tool, sessionId: SESSION }, { now: NOW, judgeTools: () => judgeTools });
 
-describe('the session-close offer', () => {
+describe('the session share offer', () => {
   it('proposes the scorers that sample the session, as the background judge picks them', async () => {
     const config = await member({ scorers: {
       'review-quality.md': scorer('samplingRate: 100\nsessions: true\n'),
@@ -173,7 +173,7 @@ describe('the session-close offer', () => {
     const config = await member({ scorers: { 'review-quality.md': scorer('samplingRate: 100\nsessions: true\n') } });
 
     expect(await offerOf(config, 'trae')).toMatchObject({
-      session: { value: SESSION, why: 'The session to close: this one.' },
+      session: { value: SESSION, why: 'The session to share: this one.' },
       source: { value: 'trae' },
       publish: { value: false, why: `${PUBLISH_WHY} Not proposed: teamai reads no sessions from trae.` },
       scorers: { value: [], why: `${SCORERS_WHY} None proposed: teamai reads no sessions from trae.` },
@@ -184,7 +184,7 @@ describe('the session-close offer', () => {
     const config = await member({ scorers: {} });
 
     expect(await offerOf(config)).toMatchObject({
-      session: { value: SESSION, why: 'The session to close: this one.' },
+      session: { value: SESSION, why: 'The session to share: this one.' },
       source: { value: 'claude-code', why: 'This session\'s tool, as teamai session list names it.' },
     });
   });
@@ -192,7 +192,7 @@ describe('the session-close offer', () => {
   it('offers in the reminder the same publish and scorers describe proposes, looking for judge tools only when a scorer needs verified isolation', async () => {
     const judgeTools = vi.fn(() => []);
     const plain = await member({ scorers: { 'review-quality.md': scorer('samplingRate: 100\nsessions: true\n') } });
-    expect(await SessionClose.reminderOffer(plain, { tool: 'claude', sessionId: SESSION, cwd: root, run: { runMode: 'attended' } }, { now: NOW, judgeTools })).toEqual({ publish: true, scorers: ['review-quality'] });
+    expect(await SessionShare.reminderOffer(plain, { tool: 'claude', sessionId: SESSION, cwd: root, run: { runMode: 'attended' } }, { now: NOW, judgeTools })).toEqual({ publish: true, scorers: ['review-quality'] });
     expect(judgeTools).not.toHaveBeenCalled();
 
     const verified = await member({ scorers: {
@@ -200,7 +200,7 @@ describe('the session-close offer', () => {
       'secure-review.md': scorer('samplingRate: 100\nsessions: true\nisolation: verified\n'),
     } });
     const proposed = await offerOf(verified, 'claude', []);
-    expect(await SessionClose.reminderOffer(verified, { tool: 'claude', sessionId: SESSION, cwd: root, run: { runMode: 'attended' } }, { now: NOW, judgeTools }))
+    expect(await SessionShare.reminderOffer(verified, { tool: 'claude', sessionId: SESSION, cwd: root, run: { runMode: 'attended' } }, { now: NOW, judgeTools }))
       .toEqual({ publish: proposed.publish.value, scorers: proposed.scorers.value });
     expect(proposed.scorers.value).toEqual(['review-quality']);
     expect(judgeTools).toHaveBeenCalledTimes(1);

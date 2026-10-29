@@ -587,7 +587,7 @@ const contributeCheckHandler: HookHandler = {
     // The session's mode and launcher as the dispatcher forwarded them, else as this process's environment has them.
     const { readSessionRun, sessionRun } = await import('./launch-context.js');
     const run = readSessionRun(stdin) ?? sessionRun(process.env);
-    const offer = localConfig ? async () => (await import('./session-close.js')).SessionClose.reminderOffer(localConfig, { tool, sessionId, cwd: cwd ?? process.cwd(), run }) : undefined;
+    const offer = localConfig ? async () => (await import('./session-share.js')).SessionShare.reminderOffer(localConfig, { tool, sessionId, cwd: cwd ?? process.cwd(), run }) : undefined;
     const { hint } = await contributeCheckForSession(sessionId, cwd, transcriptPath, stash, offer);
     if (!hint) return null;
     // The hint is addressed to the user, so a host that hides the payload needs

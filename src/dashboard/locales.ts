@@ -502,7 +502,7 @@ export const dashboardMessages: Record<string, string> = {
   "Set by": "来自",
   "the default": "默认值",
   "an HTTP team repo, which keeps no session archive": "HTTP 团队仓库，不保留会话归档",
-  "proposed when the friction reminder offers session-close": "摩擦提醒提供 session-close 时提议",
+  "proposed when the friction reminder offers teamai-share-learnings": "摩擦提醒提供 teamai-share-learnings 时提议",
   "acts as off: nobody is there to confirm": "等同于 off：无人在场确认",
   "no scorer sets sessions: true": "没有评分器设置 sessions: true",
   "Scoring is unavailable here": "此处无法评分",

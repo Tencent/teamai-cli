@@ -104,10 +104,10 @@ describe('dashboard workflow runs', () => {
 
     const config = scope('self');
     fs.mkdirSync(config.repo.localPath, { recursive: true });
-    const started = await startRun(config, 'session-close', { session: '7c1e-session', source: 'claude-code', publish: false, scorers: [], judge: 'here' }, { secrets: {} });
+    const started = await startRun(config, 'teamai-share-session', { session: '7c1e-session', source: 'claude-code', publish: false, scorers: [], judge: 'here' }, { secrets: {} });
     if ('error' in started) throw new Error(started.error.message);
     const [row] = await listLocalRuns(config);
-    expect(row).toMatchObject({ workflow: 'session-close', origin: { source: 'default', teamaiVersion: PACKAGE_VERSION } });
+    expect(row).toMatchObject({ workflow: 'teamai-share-session', origin: { source: 'default', teamaiVersion: PACKAGE_VERSION } });
     expect(row).not.toHaveProperty('teamRevision');
   });
 
@@ -152,10 +152,10 @@ describe('dashboard workflow runs', () => {
 
     it('reads where a record\'s definition came from, and drops an origin it cannot read', async () => {
       const config = scope('http');
-      publish(config, record('r0000000000000002', { workflow: 'session-close', origin: { source: 'default', teamaiVersion: '0.22.0' }, startedAt: '2026-10-02T10:00:00.000Z' }));
+      publish(config, record('r0000000000000002', { workflow: 'teamai-share-session', origin: { source: 'default', teamaiVersion: '0.22.0' }, startedAt: '2026-10-02T10:00:00.000Z' }));
       publish(config, record('r0000000000000001', { origin: { source: 'elsewhere' } }));
       const rows = await listReportedRuns(config);
-      expect(rows[0]).toMatchObject({ workflow: 'session-close', origin: { source: 'default', teamaiVersion: '0.22.0' } });
+      expect(rows[0]).toMatchObject({ workflow: 'teamai-share-session', origin: { source: 'default', teamaiVersion: '0.22.0' } });
       expect(rows[1]).toMatchObject({ run: 'r0000000000000001' });
       expect(rows[1]).not.toHaveProperty('origin');
     });

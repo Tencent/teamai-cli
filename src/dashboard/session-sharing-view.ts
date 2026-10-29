@@ -6,7 +6,7 @@ export const sessionSharingView = `
 const sharingModeNames = { attended: 'Attended', unattended: 'Unattended' };
 const sharingModeSources = { TEAMAI_MODE: 'set by TEAMAI_MODE', CI: 'set by CI', default: 'neither TEAMAI_MODE nor CI is set' };
 const sharingWhen = { attended: 'in the background, once a session has been idle for 6 hours', unattended: 'by teamai score --drain before the job ends' };
-const sharingAsk = { attended: 'proposed when the friction reminder offers session-close', unattended: 'acts as off: nobody is there to confirm' };
+const sharingAsk = { attended: 'proposed when the friction reminder offers teamai-share-learnings', unattended: 'acts as off: nobody is there to confirm' };
 const sharingStates = {
  attended: [['active','active'],['finished','kept on this machine'],['waitingToArchive','waiting to be archived'],['archived','archived']],
  unattended: [['waitingForDrain','waiting for a drain'],['finished','kept on this machine'],['waitingToArchive','waiting to be archived'],['archived','archived']]
