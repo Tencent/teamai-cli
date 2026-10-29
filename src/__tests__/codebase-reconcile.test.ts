@@ -100,6 +100,33 @@ describe('codebase reconciliation', () => {
     expect(log.mock.calls.flat().join('\n')).toContain(`Pushed to team knowledge repo (${remote})`);
   });
 
+  it('leaves a product page the member staged out of the commit, and still staged', async () => {
+    const { clone, remote } = await createTeamFixture();
+    fs.writeFileSync(path.join(clone, 'teamwiki', 'product', 'draft.md'), '# Draft\n');
+    await createGit(clone).add('teamwiki/product/draft.md');
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    await codebaseCmd({ reconcile: true });
+
+    expect(await createGit(clone).raw(['--git-dir', remote, 'ls-tree', '--name-only', 'main', 'teamwiki/product/'])).not.toContain('draft.md');
+    expect((await createGit(clone).status()).staged).toEqual(['teamwiki/product/draft.md']);
+  });
+
+  it('publishes the graph a failed push left committed when the command is run again', async () => {
+    const { clone, remote } = await createTeamFixture();
+    const git = createGit(clone);
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    await git.remote(['set-url', 'origin', path.join(path.dirname(remote), 'unreachable.git')]);
+    await expect(codebaseCmd({ reconcile: true })).rejects.toThrow('Push to the team repo failed');
+    await git.remote(['set-url', 'origin', remote]);
+
+    await codebaseCmd({ reconcile: true });
+
+    expect(process.exitCode).toBeUndefined();
+    const published = JSON.parse(await git.raw(['--git-dir', remote, 'show', 'main:teamwiki/.indices/graph-index.json'])) as GraphIndex;
+    expect(published.edges.filter((edge) => edge.source === 'bridge-reconcile')).toHaveLength(1);
+  });
+
   it('pushes nothing when a second run in the team repo finds nothing new', async () => {
     const { clone, remote } = await createTeamFixture();
     vi.spyOn(console, 'log').mockImplementation(() => undefined);

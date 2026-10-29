@@ -387,29 +387,51 @@ describe('pushRepoDirectly', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
+  afterEach(() => {
+    mockGit.raw.mockReset();
+  });
 
-  it('should add, commit, and push with upstream when there are staged changes', async () => {
-    mockGit.status.mockResolvedValue({ staged: ['file.txt'] });
+  /** `git diff --cached` names `staged`; `git rev-list` counts `ahead` unpushed commits. */
+  function gitRawAnswers({ staged, ahead }: { staged: string; ahead: string }): void {
+    mockGit.raw.mockImplementation(async (args: string[]) => {
+      if (args[0] === 'diff') return staged;
+      if (args[0] === 'rev-list') return ahead;
+      return '';
+    });
+  }
+
+  it('should add, commit only the given files, and push with upstream when they hold changes', async () => {
+    gitRawAnswers({ staged: 'file.txt\n', ahead: '0' });
     mockGit.revparse.mockResolvedValue('main');
 
-    await pushRepoDirectly('/repo', 'direct commit', ['file.txt']);
+    await expect(pushRepoDirectly('/repo', 'direct commit', ['file.txt'])).resolves.toBe(true);
 
     expect(mockGit.add).toHaveBeenCalledWith(['file.txt']);
     // Ordinary path: do not skip hooks (unlike isolated worktree commits).
-    expect(mockGit.commit).toHaveBeenCalledWith('direct commit');
-    expect(mockGit.commit.mock.calls[0]).toHaveLength(1);
+    expect(mockGit.commit).toHaveBeenCalledWith('direct commit', ['file.txt']);
+    expect(mockGit.commit.mock.calls[0]).toHaveLength(2);
     expect(mockGit.revparse).toHaveBeenCalledWith(['--abbrev-ref', 'HEAD']);
     expect(mockGit.push).toHaveBeenCalledWith(['-u', 'origin', 'main']);
   });
 
-  it('should skip commit and push when nothing is staged', async () => {
-    mockGit.status.mockResolvedValue({ staged: [] });
+  it('should skip commit and push when the files hold nothing new and nothing is unpushed', async () => {
+    gitRawAnswers({ staged: '', ahead: '0' });
 
-    await pushRepoDirectly('/repo', 'msg', ['file.txt']);
+    await expect(pushRepoDirectly('/repo', 'msg', ['file.txt'])).resolves.toBe(false);
 
     expect(mockGit.add).toHaveBeenCalledWith(['file.txt']);
     expect(mockGit.commit).not.toHaveBeenCalled();
     expect(mockGit.push).not.toHaveBeenCalled();
+  });
+
+  it('should push the commits an earlier failed push left when the files hold nothing new', async () => {
+    gitRawAnswers({ staged: '', ahead: '1' });
+    mockGit.revparse.mockResolvedValue('main');
+
+    await expect(pushRepoDirectly('/repo', 'msg', ['file.txt'])).resolves.toBe(true);
+
+    expect(mockGit.commit).not.toHaveBeenCalled();
+    expect(mockGit.push).toHaveBeenCalledWith(['-u', 'origin', 'main']);
   });
 });
 

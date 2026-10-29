@@ -127,7 +127,7 @@ describe('createGit hang guards (init-hang regression)', () => {
     // No timeout, no throw — the guarded instance completes a normal push.
     await expect(
       pushRepoDirectly(clone, '[teamai] Register member: bob', ['members/bob.yaml'], { initPush: true }),
-    ).resolves.toBeUndefined();
+    ).resolves.toBe(true);
   });
 });
 

@@ -641,7 +641,10 @@ export async function getDefaultBranch(localPath: string): Promise<string> {
  * `opts.initPush` selects the spawn-level block timeout factory used by init
  * (see {@link createGitWithBlockTimeout}); other callers get the plain factory.
  *
- * @returns false when there was nothing to commit, so nothing was pushed
+ * Only `files` are committed: anything else already staged stays staged. Commits
+ * an earlier push left behind are pushed even when `files` hold nothing new.
+ *
+ * @returns false when there was nothing to push
  */
 export async function pushRepoDirectly(
   localPath: string,
@@ -661,16 +664,27 @@ export async function pushRepoDirectly(
     return false;
   }
   await git.add(existingFiles);
-  const status = await git.status();
-  if (status.staged.length === 0) {
+  const staged = (await git.raw(['diff', '--cached', '--name-only', '--', ...existingFiles])).trim();
+  if (staged) {
+    await git.commit(message, existingFiles);
+  } else if (!(await hasUnpushedCommits(git))) {
     log.debug('Nothing to commit');
     return false;
   }
-  await git.commit(message);
   // Use --set-upstream for first push on repos initialized from empty remotes
   const branch = (await git.revparse(['--abbrev-ref', 'HEAD'])).trim();
   await git.push(['-u', 'origin', branch]);
   return true;
+}
+
+/** Whether HEAD has commits its `origin` branch lacks; false before a first commit or push. */
+async function hasUnpushedCommits(git: SimpleGit): Promise<boolean> {
+  try {
+    const branch = (await git.revparse(['--abbrev-ref', 'HEAD'])).trim();
+    return (await git.raw(['rev-list', '--count', `origin/${branch}..HEAD`])).trim() !== '0';
+  } catch {
+    return false;
+  }
 }
 
 /**
